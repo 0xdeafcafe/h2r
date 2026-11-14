@@ -50,6 +50,7 @@ up as structured Rust.
 - [LIFTER.md](docs/LIFTER.md): lifter design proposal
 - [localization.md](docs/localization.md): string IDs and localized text (`crates/tags`)
 - [map-format.md](docs/map-format.md): cache file (v8) format and the `map` reader
+- [movies.md](docs/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)

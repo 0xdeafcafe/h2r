@@ -14,6 +14,7 @@ font = { path = "../font" }
 assets.workspace = true
 map.workspace = true
 xiso.workspace = true
+movies.workspace = true
 xbe.workspace = true
 analyze.workspace = true
 symbols.workspace = true
