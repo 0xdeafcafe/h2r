@@ -23,7 +23,7 @@ tables are included.
 - Repository HEAD at survey: `169378a492a2fb52d53fe0e16f2b3d183573859f`.
   Used the existing `target/release/h2`; no crate edits or rebuilds. XDK matches
   came from the existing symbols-lane binary in
-  `.claude/worktrees/agent-a24c0f724aba4e2d6/target/release/h2`.
+  `target/release/h2`.
 - `h2 analyze`: 18,735 discovered functions across executable sections;
   `.text` has 16,072 starts, 3,453,203 decoded code bytes out of 3,570,764 bytes.
   Its 99.90% *known* coverage includes data and padding. This is not proof of
@@ -442,7 +442,7 @@ target/release/h2 disasm disc/default.xbe 0x18eaa0 60
 scripts/ghidra decompile 0x12b450
 scripts/ghidra x-ref to 0x4e3b44
 scripts/ghidra x-ref to 0x3f9d00
-.claude/worktrees/agent-a24c0f724aba4e2d6/target/release/h2 symbols disc/default.xbe --list --no-xcheck
+target/release/h2 symbols disc/default.xbe --list --no-xcheck
 ```
 
 The survey joined Ghidra instruction references to function owners and inspected
