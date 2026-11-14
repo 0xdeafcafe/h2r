@@ -289,7 +289,7 @@ pub fn decode_bytes(desc: &TextureDesc, data: &[u8]) -> Result<Vec<Level>> {
         .map(|l| {
             let mut rgba = l.data;
             if swap {
-                for p in rgba.chunks_exact_mut(4) {
+                for p in rgba.as_chunks_mut::<4>().0.iter_mut() {
                     p.swap(0, 2);
                 }
             }
@@ -551,8 +551,8 @@ mod tests {
             let img = image(fmt, TagKind::D2, [4, 4, 1], 0, DXT);
             let desc = texture_desc(&img, 0).unwrap();
             let levels = decode_bytes(&desc, &data).unwrap();
-            for px in levels[0].rgba.chunks_exact(4) {
-                assert_eq!(px, [255, 0, 0, a], "{fmt:?}");
+            for px in levels[0].rgba.as_chunks::<4>().0.iter() {
+                assert_eq!(*px, [255, 0, 0, a], "{fmt:?}");
             }
         }
     }

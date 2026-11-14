@@ -2,13 +2,15 @@
 //! Thin wrapper over `crates/assets`; pixel data may live in sibling maps.
 use std::collections::{BTreeMap, HashSet};
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use assets::{Region, ResourceFiles};
 use map::{FourCC, Map, ResourceFile, TagQuery};
 use tags::{DecodedTag, TagData};
+
+use crate::safe_out::OutDir;
 
 const USAGE: &str = "usage: h2 bitmap <map> <tag name> [--image N] [--out DIR] [--mips] [--disc disc.iso]
        h2 bitmap --all <map> [--list] [--out DIR] [--disc disc.iso]   (--list: one line per image)
@@ -114,43 +116,27 @@ fn file_stem(tag: &str, id: map::TagId) -> String {
     format!("{clean}_{:08x}", id.0)
 }
 
-/// Creates output files inside one directory, never following symlinks and
-/// never reusing a name within a run.
+/// Writes output files through the shared symlink-safe [`OutDir`] and never
+/// reuses a name within a run. Bitmap export has no `--force` flag and has
+/// always replaced existing regular files, so the dir is opened with force on;
+/// symlinks and non-regular files are still refused.
 struct Out {
-    dir: PathBuf,
+    dir: OutDir,
     seen: HashSet<String>,
 }
 
 impl Out {
     fn new(dir: &Path) -> Result<Self> {
-        fs::create_dir_all(dir)?;
-        Ok(Self { dir: dir.to_owned(), seen: HashSet::new() })
+        Ok(Self { dir: OutDir::new(dir, true)?, seen: HashSet::new() })
     }
 
-    /// `name` must be a plain file name. An existing regular file is replaced;
-    /// an existing symlink (or anything else) is an error, and a name already
-    /// written in this run is a collision error.
-    fn create(&mut self, name: &str) -> Result<(File, PathBuf)> {
-        if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\']) {
-            bail!("unsafe output file name {name:?}");
-        }
+    /// `name` must be a plain file name; a name already written in this run is
+    /// a collision error.
+    fn write(&mut self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
         if !self.seen.insert(name.to_owned()) {
             bail!("output name collision: {name}");
         }
-        let path = self.dir.join(name);
-        match fs::symlink_metadata(&path) {
-            Ok(m) if m.file_type().is_symlink() => {
-                bail!("refusing to write through symlink {}", path.display())
-            }
-            Ok(m) if m.is_file() => fs::remove_file(&path)?,
-            Ok(_) => bail!("{} exists and is not a regular file", path.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
-        // create_new is O_EXCL: it fails rather than follow a symlink that
-        // appears after the check above.
-        let f = fs::OpenOptions::new().write(true).create_new(true).open(&path)?;
-        Ok((f, path))
+        Ok(self.dir.write(&[name.to_owned()], bytes)?)
     }
 }
 
@@ -180,10 +166,10 @@ fn write_image(
             if mips {
                 name += &format!("_mip{}", l.level);
             }
-            let (f, path) = out.create(&(name + ".png"))?;
             let z = z as usize;
-            assets::png::write_rgba(BufWriter::new(f), l.width, l.height, &l.rgba[z * slice..(z + 1) * slice])?;
-            written.push(path);
+            let mut png = Vec::new();
+            assets::png::write_rgba(&mut png, l.width, l.height, &l.rgba[z * slice..(z + 1) * slice])?;
+            written.push(out.write(&(name + ".png"), &png)?);
         }
     }
     Ok(written)
@@ -226,8 +212,7 @@ fn one(
                 if let Some(r) = r {
                     // Raw dumps are capped like every other read.
                     let bytes = files.read(r.pointer.file, r.pointer.offset, r.size)?;
-                    let (mut f, _) = out.create(&format!("{stem}_img{i}_lod{l}.bin"))?;
-                    std::io::Write::write_all(&mut f, &bytes)?;
+                    out.write(&format!("{stem}_img{i}_lod{l}.bin"), &bytes)?;
                 }
             }
         }
@@ -367,11 +352,11 @@ mod tests {
         fs::write(&victim, b"precious").unwrap();
         std::os::unix::fs::symlink(&victim, out_dir.join("x.png")).unwrap();
         let mut out = Out::new(&out_dir).unwrap();
-        assert!(out.create("x.png").is_err());
+        assert!(out.write("x.png", b"x").is_err());
         assert_eq!(fs::read(&victim).unwrap(), b"precious");
         // dangling link too
         std::os::unix::fs::symlink(root.join("nowhere"), out_dir.join("y.png")).unwrap();
-        assert!(out.create("y.png").is_err());
+        assert!(out.write("y.png", b"x").is_err());
         assert!(!root.join("nowhere").exists());
         fs::remove_dir_all(root).unwrap();
     }
@@ -381,12 +366,10 @@ mod tests {
         let root = scratch("regular");
         fs::write(root.join("a.png"), b"old").unwrap();
         let mut out = Out::new(&root).unwrap();
-        let (mut f, p) = out.create("a.png").unwrap();
-        std::io::Write::write_all(&mut f, b"new").unwrap();
-        drop(f);
+        let p = out.write("a.png", b"new").unwrap();
         assert_eq!(fs::read(p).unwrap(), b"new");
         for bad in ["../evil.png", "a/b.png", "a\\b.png", "..", ""] {
-            assert!(out.create(bad).is_err(), "{bad:?}");
+            assert!(out.write(bad, b"x").is_err(), "{bad:?}");
         }
         fs::remove_dir_all(root).unwrap();
     }
@@ -398,9 +381,9 @@ mod tests {
         assert_ne!(a, b);
         let root = scratch("collide");
         let mut out = Out::new(&root).unwrap();
-        out.create(&format!("{a}.png")).unwrap();
-        out.create(&format!("{b}.png")).unwrap();
-        assert!(out.create(&format!("{a}.png")).is_err());
+        out.write(&format!("{a}.png"), b"x").unwrap();
+        out.write(&format!("{b}.png"), b"x").unwrap();
+        assert!(out.write(&format!("{a}.png"), b"x").is_err());
         // long names are bounded
         assert!(file_stem(&"x".repeat(1000), map::TagId(1)).len() < 140);
         fs::remove_dir_all(root).unwrap();

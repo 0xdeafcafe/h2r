@@ -36,3 +36,20 @@ it was built for.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for how this is meant to end
 up as structured Rust.
+
+## Docs
+
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md): goals, the two-stage plan, crate table, milestones
+- [audio.md](docs/audio.md): DirectSound replacement (`crates/audio`)
+- [bitmaps.md](docs/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`)
+- [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
+- [graphics.md](docs/graphics.md): D3D8 on wgpu (`crates/gfx`)
+- [input.md](docs/input.md): XInput replacement (`crates/input`)
+- [kernel-imports.md](docs/kernel-imports.md): kernel imports work list
+- [LIFTER.md](docs/LIFTER.md): lifter design proposal
+- [localization.md](docs/localization.md): string IDs and localized text (`crates/tags`)
+- [map-format.md](docs/map-format.md): cache file (v8) format and the `map` reader
+- [oracle.md](docs/oracle.md): independent x86 instruction oracle
+- [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
+- [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
+- [xdk-libraries.md](docs/xdk-libraries.md): XDK library identification

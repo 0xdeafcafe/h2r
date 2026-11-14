@@ -78,14 +78,39 @@ cpal, Bink on a native decoder, and Xbox Live stubbed out.
 
 ## Crates
 
-| crate     | role |
-|-----------|------|
-| `xiso`    | Reads the XDVDFS game partition (plain XISO or full Redump image) |
-| `xbe`     | Parses the XBE: header, certificate, sections, libraries, kernel thunks |
-| `analyze` | Disassembly (iced-x86), function discovery, coverage report |
-| `symbols` | Identifies statically linked XDK library functions by OOVPA signature (see [xdk-libraries.md](xdk-libraries.md)) |
-| `runtime` | Guest memory, CPU state, dispatch/override table, and later the kernel replacement |
-| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols` |
+Status "done" means the crate exists on master and does what its row says;
+"in progress" means the work is landing elsewhere and is not on master yet.
+
+| crate     | purpose | status |
+|-----------|---------|--------|
+| `xiso`    | Reads the XDVDFS game partition (plain XISO or full Redump image) | done |
+| `xbe`     | Parses the XBE: header, certificate, sections, libraries, kernel thunks | done |
+| `analyze` | Disassembly (iced-x86), function discovery, coverage report | done |
+| `symbols` | Identifies statically linked XDK library functions by OOVPA signature ([xdk-libraries.md](xdk-libraries.md)) | done |
+| `map`     | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](map-format.md)) | done |
+| `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](sound.md)) and localized text ([localization.md](localization.md)) | done |
+| `gfx`     | Direct3D 8 replacement on wgpu, plus the texture decoder ([graphics.md](graphics.md)) | done, foundation only |
+| `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](bitmaps.md)) | done |
+| `audio`   | DirectSound replacement foundation ([audio.md](audio.md)) | done, foundation only |
+| `input`   | XInput (XAPI) controller replacement foundation ([input.md](input.md)) | done, foundation only |
+| `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
+| `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
+| `runtime` | Guest memory, CPU state, dispatch/override table; nothing runs yet | in progress |
+| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings` and more | done |
+
+Planned crates, not on master yet and in progress elsewhere:
+
+| crate / area | purpose |
+|--------------|---------|
+| `kernel`     | Rust replacement for the kernel imports ([kernel-imports.md](kernel-imports.md)) |
+| `lift`, `ir`, `emit` | Lifter pipeline: x86 to IR to generated code ([LIFTER.md](LIFTER.md)) |
+| `shaders`    | Shader translation for the D3D layer |
+| `d3d`        | D3D8 API surface over `gfx` |
+| `dsound`     | DirectSound API surface over `audio` |
+| `xapi`       | XAPI API surface over `input` |
+| `hs`         | HaloScript runtime |
+| `viewer`     | Map and tag viewer |
+| `bsp`        | Structure BSP loading and rendering |
 
 ## Milestones
 
