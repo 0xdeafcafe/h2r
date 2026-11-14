@@ -83,8 +83,9 @@ cpal, Bink on a native decoder, and Xbox Live stubbed out.
 | `xiso`    | Reads the XDVDFS game partition (plain XISO or full Redump image) |
 | `xbe`     | Parses the XBE: header, certificate, sections, libraries, kernel thunks |
 | `analyze` | Disassembly (iced-x86), function discovery, coverage report |
+| `symbols` | Identifies statically linked XDK library functions by OOVPA signature (see [xdk-libraries.md](xdk-libraries.md)) |
 | `runtime` | Guest memory, CPU state, dispatch/override table, and later the kernel replacement |
-| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze` |
+| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols` |
 
 ## Milestones
 

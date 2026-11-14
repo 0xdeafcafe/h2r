@@ -13,5 +13,6 @@ map.workspace = true
 xiso.workspace = true
 xbe.workspace = true
 analyze.workspace = true
+symbols.workspace = true
 anyhow.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }

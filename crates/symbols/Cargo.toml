@@ -1,0 +1,10 @@
+[package]
+name = "symbols"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Identify statically linked Xbox SDK library functions in an XBE using OOVPA signatures"
+
+[dependencies]
+xbe.workspace = true
+thiserror.workspace = true

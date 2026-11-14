@@ -18,6 +18,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
   disasm <addr> [count]   decode instructions at a virtual address
   analyze [--functions <out.txt>] [--against <ghidra-functions.tsv>] [--explain <addr>]...
                           function discovery and coverage
+  symbols [--list] [--no-xcheck] [--db <dir>]
+                          identify statically linked XDK library functions
+                          (needs scripts/setup-xbsymboldb.sh)
 
 [disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
 first .iso in the repo's disc/ folder.";
@@ -32,11 +35,17 @@ fn main() -> Result<()> {
     let mut functions_out = None;
     let mut against = None;
     let mut explain = Vec::new();
+    let mut list = false;
+    let mut no_xcheck = false;
+    let mut db_dir = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
             "--explain" => explain.push(args.next().context("--explain needs an address")?),
             "--against" => against = Some(PathBuf::from(args.next().context("--against needs a path")?)),
+            "--list" => list = true,
+            "--no-xcheck" => no_xcheck = true,
+            "--db" => db_dir = Some(PathBuf::from(args.next().context("--db needs a path")?)),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
         }
@@ -65,6 +74,7 @@ fn main() -> Result<()> {
         ("extract-xbe", [out]) => extract_xbe(&disc, out),
         ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe")),
         ("analyze", []) => run_analyze(&disc, functions_out, against, &explain),
+        ("symbols", []) => run_symbols(&disc, list, !no_xcheck, db_dir),
         ("disasm", [addr]) => disasm(&disc, addr, None),
         ("disasm", [addr, n]) => disasm(&disc, addr, Some(n)),
         _ => bail!("{USAGE}"),
@@ -205,6 +215,82 @@ fn extract_xbe(disc: &Path, out: &Path) -> Result<()> {
     let data = load_xbe(disc)?;
     fs::write(out, &data).with_context(|| format!("writing {}", out.display()))?;
     println!("wrote {} ({} bytes)", out.display(), data.len());
+    Ok(())
+}
+
+fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -> Result<()> {
+    use std::collections::BTreeSet;
+    use symbols::Kind;
+    let data = load_xbe(path)?;
+    let x = xbe::Xbe::parse(&data)?;
+    let dir = db_dir.unwrap_or_else(|| symbols::default_db_dir(&repo_root()));
+    let r = symbols::identify(&x, &dir)?;
+    let starts: Option<BTreeSet<u32>> =
+        if xcheck { Some(analyze::analyze(&x)?.functions.keys().copied().collect()) } else { None };
+
+    println!("linked libraries");
+    for l in &x.libraries {
+        println!("  {:<10} {}.{}.{}", l.name, l.major, l.minor, l.build);
+    }
+    if !r.unscanned_libraries.is_empty() {
+        println!("  (no signature database for: {})", r.unscanned_libraries.join(", "));
+    }
+    println!("\nlibrary     found  candidates  ltcg  ambiguous  on-start  off-start");
+    let mut total = 0;
+    for (lib, (n, amb, ltcg)) in &r.counts() {
+        let (mut on, mut off) = (0, 0);
+        if let Some(st) = &starts {
+            for m in r.matches.iter().filter(|m| m.library == *lib && m.kind == Kind::Function) {
+                if st.contains(&m.va) {
+                    on += 1
+                } else {
+                    off += 1
+                }
+            }
+        }
+        let cand = r.candidate_symbols.get(lib).copied().unwrap_or(0);
+        let (a, b) = if starts.is_some() { (on.to_string(), off.to_string()) } else { ("-".into(), "-".into()) };
+        println!("{lib:<10} {n:>6} {cand:>11} {ltcg:>5} {amb:>10} {a:>9} {b:>10}");
+        total += n;
+    }
+    println!("{:<10} {total:>6}", "total");
+    if let Some(st) = &starts {
+        let uniq: BTreeSet<u32> = r.matches.iter().filter(|m| m.kind == Kind::Function).map(|m| m.va).collect();
+        let on = uniq.iter().filter(|v| st.contains(v)).count();
+        let shared = r.matches.iter().filter(|m| m.shared).map(|m| m.va).collect::<BTreeSet<_>>().len();
+        println!("{shared} addresses carry more than one name (weak signatures from different library flavours)");
+        println!(
+            "\n{} distinct addresses identified: {} are `h2 analyze` function starts, {} are not",
+            uniq.len(),
+            on,
+            uniq.len() - on
+        );
+    }
+    println!(
+        "{} signature tasks never ran (they reference a symbol that was not found); {} table entries named a missing signature, {} loose matches dropped",
+        r.unresolved_tasks, r.missing_sigs, r.dropped_ambiguous
+    );
+    if list {
+        println!("\nunresolved references (tasks waiting on each):");
+        for (n, c) in &r.missing_refs {
+            println!("  {n} {c}");
+        }
+        println!();
+        for m in &r.matches {
+            let flag = starts.as_ref().map_or("", |s| if s.contains(&m.va) { "" } else { " [not a function start]" });
+            println!(
+                "{:#010x} {:<9} {:<5} {}{}{}{}{}",
+                m.va,
+                m.library,
+                m.xdk_version,
+                m.name,
+                if m.ltcg { " (ltcg)" } else { "" },
+                if m.ambiguous { " (ambiguous)" } else { "" },
+                if m.shared { " (shared)" } else { "" },
+                flag
+            );
+        }
+    }
     Ok(())
 }
 
