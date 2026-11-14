@@ -1,0 +1,504 @@
+# Halo 2 retail Xbox engine map
+
+Surveyed 2026-11-14. **Start with cache/tag loading, guest-compatible allocation,
+localized strings, and the D3D boundary. Keep the main loop, object creation,
+HaloScript, and physics generated until the menu actually renders.** A first
+`mainmenu.map` frame requires more than a device and a clear: the normal path
+loads a scenario/BSP, runs lifecycle callbacks, builds views, draws world/UI
+geometry, and swaps. A boot/loading-screen swap is a useful earlier milestone,
+but is not that goal.
+
+This is an address guide for incremental Rust overrides, following
+[ARCHITECTURE.md](ARCHITECTURE.md), [LIFTER.md](LIFTER.md), and
+[map-format.md](map-format.md). It is static analysis, **not a successful boot or
+an observed frame trace**. Names below are assigned descriptions, not recovered
+Bungie symbols. No executable bytes, disassembly listings, assets, or string
+tables are included.
+
+## Identity, evidence, and limitations
+
+- XBE SHA-256: `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`.
+  Title ID `4D530064`, retail certificate version 3, entry `0x002d0aee`.
+  The linked XDK library records report build 5849, including `D3D8LTCG`.
+- Repository HEAD at survey: `169378a492a2fb52d53fe0e16f2b3d183573859f`.
+  Used the existing `target/release/h2`; no crate edits or rebuilds. XDK matches
+  came from the existing symbols-lane binary in
+  `.claude/worktrees/agent-a24c0f724aba4e2d6/target/release/h2`.
+- `h2 analyze`: 18,735 discovered functions across executable sections;
+  `.text` has 16,072 starts, 3,453,203 decoded code bytes out of 3,570,764 bytes.
+  Its 99.90% *known* coverage includes data and padding. This is not proof of
+  function boundaries or complete dynamic reachability.
+- The existing Ghidra 12.1.4 project/export has 13,654 functions. It misses
+  several table-referenced initialization functions and truncates some switch
+  bodies. For example, Ghidra shows only the dispatch prefix of `0x0018eaa0`;
+  direct disassembly reveals its cache-load branch at `0x0018eade`.
+- `h2 symbols --list --no-xcheck`: 315 matches at 311 distinct addresses.
+  The signature database is pinned to
+  [`20eced544726f5558c5a408458f38a086cc4e543`][xbsym]. A match is supporting
+  evidence, not a recovered prototype. Shared/weak matches are not used to
+  establish engine identities here.
+
+**Confirmed** means the described operation is directly supported by inspected
+instructions/data or a distinctive SDK match plus its call context. **Likely**
+means strong structural/call-graph evidence but incomplete semantics.
+**Guess** means a search lead or an estimated ownership boundary. Confidence
+applies to the narrow description in each row, not every implication of its
+assigned name. All addresses are guest virtual addresses, never host pointers.
+
+Evidence uses direct calls, global accesses, selected string xrefs, FourCC
+constants, and table entries. The public Xbox 1.00 OpenSauce layouts independently
+match many local anchors; H2V/H2EK sources supply vocabulary and comparison,
+**not transferable addresses or structure layouts**. Ghidra's inferred C
+signatures are particularly unreliable with LTCG: EAX/EBX/EDI often carry
+arguments omitted from the displayed parameter list.
+
+## Startup and the main loop
+
+```text
+0x002d0aee  mainCRTStartup
+  -> 0x002d21c6 CreateThread -> kernel PsCreateSystemThreadEx
+     -> 0x002d212e thread system routine
+        -> 0x002d0a7a application-thread startup
+           -> 0x002d1b4e XapiInitProcess / CRT startup helpers
+           -> 0x00012190 game_main
+              -> 0x00012420 boot display create/swap/release
+              -> 0x0012b400 physical arena setup
+              -> 0x00012000 platform/game bootstrap
+              -> 0x0012b690 main_loop_run
+                 -> 0x00137c20 initialize subsystem table
+                 -> repeat 0x0012b450 main_loop_iteration
+```
+
+| Address / assigned name | Confidence | Evidence and consequence |
+|---|---|---|
+| `0x002d0aee` `mainCRTStartup` | Confirmed | XAPI signature; computes TLS sizing and starts the application thread. It does not directly call game main. |
+| `0x002d0a7a` `application_thread_start` | Confirmed | Start address passed by entry; calls process/CRT helpers and calls `0x00012190` at `0x002d0ad6`. Ghidra has no function at this entry; inspect with `h2 disasm`. |
+| `0x00012190` `game_main` | Confirmed | Calls the boot-display path, arena setup, bootstrap, and loop runner in that order; shutdown follows if the runner returns. |
+| `0x00012420` `boot_display_once` | Confirmed | Calls `0x00012490`, then matched D3D Swap, then releases the temporary device. Thus the first Swap is not evidence of a menu frame. |
+| `0x0012b400` `physical_arena_initialize` | Confirmed | Calls XPhysicalAlloc for `0x30e4000` bytes with preferred address `0x61000`; establishes opposing arena cursors. Preserve physical/virtual alias semantics. |
+| `0x00012000` `platform_bootstrap` | Confirmed | Allocates a small arena, configures FP, then calls async I/O init, preferences, fonts, cache services, animation cache, game-state arena, rasterizer, input, and sound setup. Semantic names of some children remain likely. |
+| `0x00120a90` `async_io_initialize` | Likely | Initializes a request pool, mutexes, worker state; creates a thread at `0x00120c30`. Cache reads and preferences wait on completion flags. |
+| `0x00137c20` `engine_systems_initialize` | Confirmed | Allocates/clears game globals, stores the pointer at `0x004e6948`, then calls 68 initialization slots at `0x00440dd8 + n*0x24`. |
+| `0x0012b690` `main_loop_run` | Confirmed | Initializes timing and systems, repeatedly calls `0x0012b450` until exit byte `0x00547f2b` changes, then walks disposal callbacks backwards. |
+| `0x0012b450` `main_loop_iteration` | Confirmed | Reached from that back edge; exact address also named MAIN_LOOP by [OpenSauce Xbox game layout][os-game]. |
+
+The ordered bootstrap children in `0x00012000` are useful stopping points:
+`0x00120a90` async I/O, `0x00121350` preferences, `0x00121fc0` fonts,
+`0x002136c0` cache services, `0x00123180` animation cache,
+`0x00123b30` game-state arena, `0x00012560` rasterizer,
+`0x001248b0` input, `0x001253d0` sound. Fonts are identified by file-path
+xrefs at `0x00453390`; the animation-cache diagnostic is at `0x00453454`.
+
+The lifecycle table has 36-byte records, with the first initialization pointer
+at `0x00440dd8`; do not treat every word as a function. Inspected entries include
+time `0x00146550`, players `0x0014b4b0`, objects `0x000b67c0`, rasterizer
+`0x00012560`, script nodes `0x0020a700`, AI `0x001c7790`, and physics
+`0x001c25a0`. Map/BSP lifecycle columns are separate from initialization and
+per-tick updates. Shared no-op callbacks are common. The table is not a list
+of 68 independent rewrite modules.
+
+### Frame phases, in observed call order
+
+This is the normal branch of `0x0012b450`; gates also select loading/inactive
+paths. Labels are semantic identifications, not claims of a strict single-thread
+pipeline. Async I/O and SDK workers can run concurrently.
+
+| Phase | Anchors | Confidence / evidence |
+|---|---|---|
+| Pending map/state changes | `0x0018f1c0`, `0x0018e810` | Confirmed: requests mainmenu when needed, processes pending transitions; also handles save/revert/reset flags before ordinary frame work. |
+| Input | `0x00124950` → `0x00124c00` → `0x00409b6c`; then `0x00217c40` | Confirmed: XInputGetState match, four controller handles, dead-zone/remapping arithmetic. |
+| Cache/background progress and UI time | `0x002141f0`, `0x00163820`, `0x0012b0e0`, `0x001479c3` | Likely phase labels: cache state and UI dispatch. `0x0012b0e0` produces frame timing; do not trust its missing decompiler return type. |
+| Network pre-update | `0x0008df50` | Likely receive/pump phase: calls link-status refresh `0x0008d7e0`, transport/session helpers; matched XNetGetEthernetLinkStatus below it. |
+| Simulation timing | `0x00146660` → `0x001870a0` → `0x00137f70` | Confirmed fixed-step budgeting and tick loop; likely player-control preparation at `0x001870a0`. |
+| Simulation tick(s) | `0x00137fe0` | Confirmed: invokes players before/after, AI, scripting, object phases and Havok; increments game-time tick count. Can execute zero or multiple times per frame. |
+| Network post-update | `0x0008dfc0` | Likely send/session flush phase; called after ticks, and also on the inactive branch. Exact receive/send ownership below these two pumps needs packet traces. |
+| Frame-time updates / camera | `0x00137ed0`, `0x001554b0`, `0x0016f280` | Confirmed variable-delta work and camera callback dispatch; likely observer smoothing at the last address. |
+| Controller feedback | `0x00222a70` | Likely: walks local players/controller state, accumulates timers, updates feedback values. |
+| Render / present | `0x00223240` → world or fallback render → `0x00013f10` | Confirmed: normal renderer calls Swap through the presentation wrapper. Swap is gated while resource-cache countdowns are active. |
+| Sound service | `0x00125b40` | Confirmed sound-related frame service after rendering: voice/listener/cache helpers, sound state and DirectSound-dependent children. |
+
+Inside a simulated tick, inspected call order includes players-before
+`0x0014d3a0`, AI `0x001c83c0`, script scheduler `0x00209310`, object pre-physics
+`0x000b6f10`, Havok `0x001c3d30`, object post-physics `0x000b7060`, object
+finalization `0x000b7150`, then players-after `0x0014d8b0`. Other game systems
+interleave these calls. OpenSauce independently identifies both player phases
+and their call sites. [Xbox player hooks][os-game]
+
+## Cache files, tags, strings, and allocation
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x0018f1c0` `request_mainmenu` | Confirmed | Uses the mainmenu scenario-path literal at `0x004533e4`, builds game options, queues them through `0x0018e790`. |
+| `0x0018e810` / `0x0018e8b0` `process_transition` / `start_game` | Confirmed | Pending-options flags lead to teardown, cache acquisition `0x0018eaa0`, then game activation `0x0018f000`. |
+| `0x0018eaa0` `load_requested_scenario_cache` | Confirmed | Switch branch calls `0x001228f0` at `0x0018eae0`, then resource preparation and `0x0018ec60`. This branch is missing from Ghidra's abbreviated decompilation. |
+| `0x00214db0` `cache_path_build` | Confirmed | Xrefs `0x0045693c`/`0x0045694c`: map-file path formats, disc path and alternate storage prefixes. |
+| `0x002136c0` `cache_services_initialize` | Likely | Initializes cache records, language/build invalidation and backing-file setup. `0x00214a60` selects an opened cache record. |
+| `0x00122870` `cache_header_validate` | Confirmed | Tests `head`, `foot`, version 8, file-size/type/name constraints. Build compatibility is additionally checked through `0x00012130`. |
+| `0x001228f0` `cache_tags_load` | Confirmed | Copies a `0x800` header, allocates tag space, reads index/metadata, checks `tags`, publishes index and entry pointers, resolves scenario/globals roots. |
+| `0x00122d60` `cache_read_wait` | Confirmed | Submits via `0x00213760`, yields with SwitchToThread until completion, checks completed byte count. A fake successful file read without completion cannot satisfy it. |
+| `0x00122c10` `tag_get_checked` | Confirmed | Validates slot bounds and full salted datum; accepts group/parent/grandparent using `0x00122d00`; returns metadata pointer or zero. ID is in ECX and expected group is in EBX on this body. |
+| `0x00122d00` `tag_group_find` | Confirmed | Searches the index's 12-byte group records using `0x0013ddd0` and comparator `0x00122cf0`. |
+| `0x00122c70` `tag_iterator_next` | Confirmed | Walks 16-byte tag entries, skips absent group/datum slots, optionally filters through the same ancestry records. |
+| `0x0011c1b0` `scenario_switch_structure_bsp` | Confirmed | Reads scenario BSP block at `+0x210/+0x214`, stride `0x44`; invokes disposal/init callbacks and loads selected BSP/lightmap. |
+| `0x00122b40` `cache_bsp_load_and_fixup` | Confirmed | Checks `sbsp`; replaces BSP/lightmap tag-entry metadata pointers from region header. Critical because ordinary index entries need not contain resident BSP pointers. |
+| `0x0012c0d0`, `0x0012d8b0`, `0x002185d0` `texture/geometry/sound_cache_initialize` | Confirmed | Allocation-name xrefs at `0x004534d8`, `0x00453514`, `0x004570b0`; common cache constructor `0x0013d170`. Cache-content decoding remains outside this survey. |
+
+Important globals, confirmed by loader stores and subsequent reads:
+`0x00547700` is the **inline header buffer**, `0x00547f00` holds the tag-index
+pointer, `0x004e3b44` the tag-entry pointer, `0x004e0350` the scenario pointer,
+`0x004e034c` the globals pointer, `0x004e0348` the active BSP pointer, and
+`0x004e0344` the lightmap pointer. OpenSauce's names corroborate these locations,
+but its pointer macros are not a substitute for inspecting the accesses:
+the header at `0x00547700` is copied inline, not fetched through another pointer.
+[Xbox cache layout][os-cache], [Assembly Xbox index/BSP layouts][assembly]
+
+The root identities `scnr`/`matg` follow their index roles and layouts, rather
+than literal FourCC comparisons in every caller. Explicit local constants
+include `sbsp` at `0x00122b70`, `ltmp` at `0x0012def0`, `bitm` at
+`0x0012c654`, `obje` at `0x000a5bdb`, and `bipd`/`coll`/`phmo` in resource
+preparation `0x0011c840`. Constants alone identify an expected tag class, not a
+whole function. Read FourCCs as numeric little-endian storage, preserving
+punctuation in `snd!` and `ugh!`. [Format rules](map-format.md)
+
+**Rewrite constraint:** the checked accessor is only one path. The common
+release path inlines `(datum & 0xffff) * 0x10`, loads `0x004e3b44`, then takes
+entry `+8`. This survey found 995 distinct Ghidra function owners directly
+referencing that global. A Rust override must keep the published guest index
+and guest metadata addresses valid until those consumers are replaced. Do not
+silently replace engine behavior with the stricter host parser: the checked
+accessor here sign-extends the low 16-bit slot, whereas the fast inline path
+masks it. Capture the actual contract for each entry.
+
+### String IDs and localized menu text
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x001a01e0` `locale_tables_load` | Confirmed | Allocates an eight-byte-per-entry index plus string blob and reads both through `0x00122d60`; marks locale resident. Called during `0x0018ec60`. |
+| `0x001a0180` `localized_tag_string_get` | Confirmed | Resolves a tag datum, selects language, reads the tag's range at `+0x10 + language*4`, calls `0x001a0350`. This matches `unic` language ranges. |
+| `0x001a02d0` `locale_string_id_find` | Confirmed | Scans a bounded locale-index range, compares the **full** string-ID key, returns blob base plus matched offset; miss returns an empty-string address. |
+| `0x001a0350` `localized_string_copy` | Confirmed | Requires loaded locale state, invokes lookup, conversion helper `0x00140440`, and bounded wide-string copy. |
+
+A StringID's high byte encodes length and low 24 bits its identifier in the
+public H2V/cache model. The local **localized** resolver compares the packed
+value; do not strip its high byte before that comparison. The general
+StringID-to-debug/name-string resolver for the map header's string table was
+**not identified**. It is distinct from resolving menu text through `unic` and
+`matg`. Implement host-side indexed string names using the map reader, while
+preserving this runtime localization path. [Pinned H2V StringID definition][h2v-string],
+[Assembly locale layouts][assembly]
+
+The runtime locale record starts eight bytes before Assembly's documented
+count field: local code uses `matg + 0x188 + language*0x1c`, with two resident
+pointers followed by count/size/file offsets. Assembly reports the count at
+`matg + 0x190`. These are compatible views, not two competing offsets.
+
+### Arenas, pools, and datums
+
+| Address / assigned name | Confidence | Evidence / rewrite boundary |
+|---|---|---|
+| `0x00123b30` `game_state_arena_initialize` | Confirmed | Gets backing from `0x00214f10`, clears `0x3fe000` bytes, sets header/global allocations using base `0x004e6080` and cursor `0x004e6084`. |
+| `0x00123dd0` `game_state_pool_new` | Confirmed | Bump-allocates a pool plus header from that arena and initializes it with `0x0018e250`. |
+| `0x0018e1f0` / `0x0018e2b0` `memory_pool_new` / `memory_pool_allocate` | Confirmed | Allocator-backed pool construction; aligned block allocation, owner pointer/backlinks and free-byte accounting. Shared by objects/UI. |
+| `0x0016b570` / `0x0016b5f0` / `0x0016b650` `data_new` / `data_initialize_contiguous` / `data_initialize` | Confirmed | Allocation and construction of named arrays with capacity, element stride, salt and occupancy bitmap. `0x0011cc20` is another arena-backed constructor. |
+| `0x0016b840` `datum_new` | Confirmed | Finds free bitmap slot, clears element, assigns/increments salt, returns `(salt << 16) | slot`; failure is all ones. |
+| `0x0016ba40` `datum_delete` | Confirmed | Clears occupancy bit and salt, updates free-slot/high-water/live-count fields; used by object rollback and script-thread retirement. |
+| `0x0016bc00` `data_next_index` | Confirmed | Searches occupancy bitmap up to array high-water mark; independently named by [OpenSauce engine functions][os-functions]. |
+| `0x0013d170` `lruv_cache_new` | Likely | Shared named animation/texture/geometry/sound-cache constructor over a data array. |
+
+These are good small Rust candidates once guest allocation identity and failure
+behavior are reproduced. Array data and occupancy pointers are at `+0x44` and
+`+0x48`; the many inlined consumers make immediate conversion to Rust-owned
+collections unsafe for compatibility. Maintain generation/salt behavior and
+allocation order before changing ownership.
+
+## Game state, objects, players, AI, and HaloScript
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x00146550` / `0x001465b0` `game_time_initialize` / `game_time_new_map` | Confirmed | First allocates `0x24` bytes and stores pointer at `0x00510c54`; second copies tick rate from game options and computes its reciprocal. Both need direct disassembly in this Ghidra project. |
+| `0x00146660` `game_time_budget_ticks` | Confirmed | Pause/state/speed checks, fractional accumulator, bounded whole-tick count and elapsed simulation time. |
+| `0x00137f70` / `0x00137fe0` `game_update_ticks` / `game_tick` | Confirmed | Loop over budgeted ticks; latter updates subsystems and increments `game_time +8`. Time step is `+4`, tick rate is `+2`, speed is `+0xc`. |
+| `0x000b67c0` `objects_initialize` | Confirmed | Allocates 2,048 twelve-byte object headers and a one-MiB object pool; name references at `0x0045322c`/`0x00453224`; stores `0x004e0300` and `0x004de2ec`. |
+| `0x000b7b40` `object_new` | Confirmed | Resolves definition tag, chooses type descriptor at `0x00468630`, allocates datum/body, initializes transform/attachments/vitality/physics, invokes type initialization, rolls back on failure. Returns salted object ID. |
+| `0x000bc280` `object_header_and_body_allocate` | Confirmed | Calls datum allocator and memory-pool allocator, stores body pointer at object-header `+8`, zeros body; rollback deletes header. |
+| `0x000badc0` `object_get_with_type_mask` | Likely | Used by player-from-unit and camera/object helpers with allowed-type masks. Verify failure/salt checks before overriding. |
+| `0x00108a90` `object_type_new_dispatch` | Confirmed | Called from object_new after common allocation; walks the descriptor ancestry list at `+0x84` and invokes callback `+0x2c`. |
+| `0x00108c60` / `0x00108cd0` `object_type_update` / `object_type_post_physics` | Confirmed | Walk the same descriptor ancestry, invoking `+0x40` / `+0x44`; reached through `0x000bc470` / `0x000bc820`. |
+| `0x000c4410` / `0x000c6b30` `unit_new` / `unit_update` | Confirmed callback roles | The `unit` descriptor at `0x004679b0` supplies these at `+0x2c` / `+0x40`; biped ancestry includes it. Full behaviors are not audited. |
+| `0x000dc540` / `0x000dd360` / `0x000dd990` `biped_new` / `biped_update` / `biped_post_physics` | Confirmed callback roles | The `bipd` descriptor at `0x00467a78` supplies `+0x2c` / `+0x40` / `+0x44`; biped_new calls `0x000de4c0`. |
+| `0x0014b4b0` `players_initialize` | Confirmed | Allocates 16 entries of stride `0x21c`; players-name xref `0x00453984`, published pointer `0x004e8c24`. |
+| `0x0014de70` / `0x0014de90` `local_player_get_player_index` / `player_index_from_unit_index` | Confirmed | Local-player mapping and unit-to-player access; exact addresses in [OpenSauce engine functions][os-functions]. The latter reads unit `+0x13c` here. |
+| `0x001c7790` / `0x001c79e0` `ai_initialize` / `ai_initialize_for_new_map` | Likely / Confirmed | Lifecycle-table slots; new-map entry explicitly identified by [OpenSauce AI layout][os-ai]. |
+| `0x001c83c0` `ai_update` | Confirmed | Called per tick, gates on AI globals `0x004f55d0`, invokes actor/squad/behavior work. Actor array at `0x004f55f0` has extensive local consumers. |
+| `0x00257d00` `ai_command_scripts_initialize` | Confirmed | Allocates command-script and joint-command-script arrays; diagnostic-name xrefs `0x0045a690`/`0x0045a678`, corresponding [OpenSauce globals][os-ai]. |
+| `0x0020a700` / `0x00208ff0` `hs_initialize` / `hs_runtime_initialize` | Confirmed | Script-node array has stride `0x14`; runtime creates named thread/global arrays and publishes pointers. |
+| `0x00209310` `hs_update` | Confirmed | Walks script-thread datums, compares wake tick with `game_time +8`, executes ready threads via `0x00209850`. |
+| `0x00209850` `hs_thread_execute` | Confirmed | Uses scenario scripts, node array, thread stack frames; dispatches builtins through table `0x004744e0` or expression handling `0x00209bf0`. |
+
+The game-time layout agrees with [H2V's named 0x24-byte structure][h2v-time],
+but the local tick rate is read from options; this survey does not hard-code
+30 Hz as a universally valid runtime contract.
+
+Object headers and variable-size object bodies are separate. The local common
+body initializes type at `+0xaa`; type descriptors fan out to biped, vehicle,
+weapon and other behaviors. Type slot zero at `0x00468630` points to the biped
+descriptor. Its ancestry list is object (`0x004678e8`, `obje`), unit
+(`0x004679b0`, `unit`), biped (`0x00467a78`, `bipd`), then null. The FourCC
+at descriptor `+4`, short diagnostic name, and actual dispatcher offsets
+establish the callback roles above. Their bodies are discoverable with
+`h2 disasm` even where Ghidra has no function. Do not copy the H2V biped layout
+wholesale: its public player datum is at `+0x140`, whereas this Xbox helper
+reads `+0x13c`.
+[H2V comparison, not Xbox ABI][h2v-objects]
+
+HaloScript globals are `0x004f9394` nodes, `0x004f9384` threads,
+`0x004f9380` globals, matching [OpenSauce HS layout][os-hs]. The scheduler uses
+`0x418`-byte thread records and script nodes with `0x14` stride. Runtime execution
+is not a console text parser. H2Codez's opcode/global tables and prolog/epilog
+interface explain the vocabulary, but their editor opcodes and function
+addresses must not be imported unverified. [Pinned H2EK interface][h2c-hs]
+
+**Rewrite order:** datums first, common object identity next, type-specific
+behavior later. Keep the scheduler and reached script opcodes working for menu
+camera/UI behavior. A blank AI state is not proof that all AI lifecycle hooks
+can be removed; retain generated initialization until a menu trace proves which
+work is unnecessary.
+
+## Rendering, camera, and UI
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x00012560` `rasterizer_initialize` | Confirmed | Creates normal device through `0x000128c0`, sets render states/palettes, creates resources and geometry/texture caches. |
+| `0x00012490` / `0x000128c0` `boot_device_create` / `game_device_create` | Confirmed | Two direct calls into SDK creation, at `0x00012526` and `0x000129cd` respectively. |
+| `0x003f5240` `Direct3D_CreateDevice` | Confirmed | Unique D3D8LTCG match and device construction/body inspection. Custom register ABI; not desktop D3D8's COM signature. |
+| `0x00223240` `render_frame_and_present` | Confirmed | Chooses `0x002234e0` when game/BSP state is ready, otherwise `0x002232a0`; then presents when resource-cache counters allow. |
+| `0x002234e0` `render_game_views` | Confirmed | Builds per-player/cinematic viewport and camera records; invokes `0x0002b5d0`. |
+| `0x0002b5d0` `render_views` | Confirmed | Begin-frame setup, loops view records, selects game-view `0x0002b790` or alternate view, ends drawing. |
+| `0x0002b790` / `0x0002ba10` `render_game_view` / `render_view_scene` | Likely | Camera/player preparation, render-state setup, scene passes, then UI composition `0x00147af1`. |
+| `0x00013680` / `0x0002bcd0` `select_scene_passes` / `render_scene_passes` | Likely | Repeated scene-pass dispatch with render-target/state changes; exact pass taxonomy is not recovered. |
+| `0x00041040` `submit_structure_or_model_geometry` | Likely | Branches between active BSP cluster/instance records and render-model tag geometry, then shader/material and vertex/index submission callbacks. Strong choke point for separating asset interpretation from D3D. |
+| `0x0003d270` `object_render_cache_initialize` | Confirmed | Cached-object-render-state diagnostic xref at `0x004508c0`, data-array initialization. |
+| `0x001554b0` `director_update` | Confirmed | Dispatches camera callbacks per local player; explicitly recognizes scripted and first-person callback addresses. |
+| `0x0016c840` / `0x0023c110` `scripted_camera_update` / `first_person_camera_update` | Confirmed | Local director references plus exact names in [OpenSauce camera layout][os-game]. Following/dead cameras have public anchors `0x0023cbb0`/`0x0023de50` (likely here; not deeply inspected). |
+| `0x0016f280` `observer_update` | Likely | Called after director with frame delta; observer/camera state feeds view records. |
+| `0x00147af1` `ui_render_layers` | Confirmed | Draws several UI object layers via virtual callbacks, screen overlays/fades; called by both world-view and fallback rendering. |
+| `0x001a474c` `ui_memory_initialize` | Confirmed | UI-pool diagnostic at `0x00454a94`; configures shared memory-pool allocator. `0x001a480d` creates UI data arrays. |
+| `0x00013f10` `rasterizer_present` | Confirmed | Optional readback path, backbuffer scaling, SDK Swap at callsite `0x000140fc`, TV settings, frame counter. |
+| `0x003f9d00` `D3DDevice_Swap` | Confirmed | D3D8LTCG signature plus callers. This is the present boundary found here; no separately established desktop-style `Present` entry. |
+
+Structure rendering is distributed: `0x00041040` consumes active BSP fields
+including cluster/instance metadata, while `0x0003c3c0` handles another
+structure-specific block. Object rendering shares material/geometry submission;
+there is no confirmed single `render_objects` wrapper yet. Follow object-render
+cache pointer `0x00509434` and scene submissions instead of calling every
+low-address renderer routine a BSP renderer. `mode`, `bitm`, shader families,
+`sbsp` and `ltmp` are relevant asset classes; their role does not prove a literal
+FourCC test exists in each path.
+
+For the menu, preserve the normal views and UI renderer first. `wgtz`/`wigl`/
+`wgit`, `unic`, bitmaps, fonts and scenario background assets are the relevant
+public tag families, but this survey has not assigned all their constructors.
+The font initialization at `0x00121fc0`, localized resolver above, and per-layer
+virtual calls are concrete entry points. Profile-list constructor `0x00249f0d`
+has a diagnostic xref at `0x00459efc`; it is not the entire main-menu constructor.
+
+**D3D replacement cannot consist only of CreateDevice and Swap.** State setters,
+resource methods and GPU push-buffer work are linked/inlined into engine code.
+Retain generated engine rendering while implementing the reached D3D semantics
+on wgpu, then replace higher-level geometry/material operations. The D3D section
+has 237 analyzer starts and 57,105 decoded code bytes; the section's virtual
+size is 78,948 bytes, including data/tails. [LTCG and boundary design](LIFTER.md)
+
+## Sound, physics, networking, and persistence
+
+| Subsystem / anchors | Confidence | Evidence and first-frame strategy |
+|---|---|---|
+| Sound initialization `0x001253d0` → `0x0021e4b0` → `0x0037d797` | Confirmed | Named source/cache/controller arrays; DirectSoundCreate match, capabilities, distance/rolloff/doppler settings, buffer creation/play. A silent backend still needs correct buffer lifetimes and completion/status behavior. |
+| Sound frame service `0x00125b40`; looping `0x0021a0c0`; effects `0x0021d490` | Confirmed | Allocation names, shared sound globals, cache/listener helpers. `snd!` expected-group constant at `0x00188c03` is in an object-related sound path. Decode only needed menu resources initially. |
+| Havok world setup `0x001c2d40` → `0x003101c0` | Confirmed | Publishes world pointer `0x0051e9a4`; constructor has Havok version-mismatch diagnostic and hkWorld source-file xref `0x00413978`. Presence of Havok is established; exact product/version is not inferred from the numeric compatibility token. |
+| Havok BSP integration `0x001c2910` | Confirmed | Diagnostic at `0x004558f0` describes building BSP physics; reads active BSP and creates collision representation. |
+| Physics step `0x001c3d30` → `0x00311100` | Confirmed wrapper; likely inner step identity | Called between object phases; reads tick delta and world pointer, manages x87/MXCSR, invokes Havok and collision callbacks. Preserve generated behavior first. |
+| Collision query `0x0016a8e0` | Likely sphere/world contact query | Geometry/planes, radius and contact adjustment math, used by effects; exact API name and argument ABI are unresolved. Collision includes Halo geometry queries as well as Havok. |
+| Transport `0x000b4d50`, `0x000b4fa0`, `0x000b5000`, `0x000b5060`, `0x000b5110` | Likely create/read/write/read-from/write-to | Exact names from [OpenSauce networking layout][os-network]; SDK/XNet-linked neighborhood, but full socket ABI and error paths not audited. |
+| Network pumps `0x0008df50` / `0x0008dfc0` | Likely semantic phases | Link polling via `0x0008d7e0` reaches matched XNetGetEthernetLinkStatus `0x0036c47d`; state/session operations surround ticks. Do not remove local simulation merely because Xbox Live is offline. |
+| Simulation lifecycle `0x00067e30`, tick envelope `0x000683a0` / `0x000684e0` | Likely | Lifecycle slot plus calls enclosing game_tick. Multiplayer/session and local simulation boundaries still need a runtime trace. |
+| Preferences `0x00121350` | Confirmed | File-path xref `0x0045333c`, async read, XCalculateSignature calls, version/size checks and defaults on invalid/missing data. |
+| Save backing `0x00214f80`; snapshot/export `0x00124490` | Confirmed backing-file roles; likely snapshot semantics | Save-file path xref `0x00456968`; binary-output path references `0x004534a0`/`0x004534b0`. These identify I/O roles, not a complete save-game contract. |
+| Profile/config cache `0x0007fa40` / `0x0007fb50`; profile type naming `0x00216b60` | Likely cache read/write; confirmed type naming | Shared configuration-cache pathname at `0x00450c68`; profile/variant naming branches. UI and persistence are separate parts of the profile flow. |
+
+The linked middleware sizes are measurable even when engine ownership is not:
+DSOUND has 476 analyzer starts / 47,892 decoded bytes; WMADEC 144 / 45,803;
+XONLINE 913 / 182,012; XNET 381 / 77,836. These are discovery/code-byte counts,
+not API counts. WMADEC contains substantial undecoded content. Havok is mixed
+into `.text`, not a convenient separately named section. Bink has its own
+sections; a movie-only display must not be mistaken for the menu-map renderer.
+
+## Size, coupling, and rewrite priority
+
+**Size estimates below are survey windows, not recovered module boundaries.**
+`functions` counts analyzer starts in the stated half-open address windows;
+`bytes` is their summed address span, including alignment, embedded tables and
+possibly neighboring systems. They exclude out-of-line code elsewhere. Window
+ownership is **guess**; counts/spans are measured. This avoids pretending a
+partial symbol map establishes complete subsystem totals. Startup/frame is
+scattered; its row measures selected known bodies instead.
+
+P0 = unblock the menu frame now; P1 = next useful readable Rust; P2 = preserve
+scaffolding and defer. These are implementation recommendations, not measured
+runtime costs.
+
+| Subsystem | Survey size: functions / bytes | Window(s), hex | Coupling | Rewrite priority |
+|---|---:|---|---|---|
+| Startup/frame orchestration | ≥10 / 1,679 body bytes | Explicit anchors below | Very high; lifecycle callbacks, threads, all services | P0 trace/run; P2 full rewrite |
+| Cache/tag core | 46 / 8,048 | `122870–122f90`, `2136c0–214f10` | Very high fan-out; relatively small loader core | P0; best typed-engine investment |
+| Localized strings | 6 / 560 | `1a0180–1a03b0` | Moderate; tags, locale blobs, conversion/fonts | P0 for menu labels |
+| Datum/pool primitives | 30 / 3,120 | `16b570–16bc90`, `18e1f0–18e700` | Very high; inlined layout users | P0 guest-compatible leaves; P1 ownership redesign |
+| Game time core | 9 / 1,088 | `146550–146990` | High; simulation, scripts, camera, audio | P1; keep exact timing initially |
+| Objects/units/weapons | 1,194 / 415,328 | `0b67c0–11be20` | Very high; physics, tags, network, animation | P1 object identity; P2 behaviors |
+| Player core | 98 / 33,728 | `14b4b0–153870` | High; input, objects, simulation | P1; local-user setup still needed now |
+| AI actor neighborhood | 426 / 112,176 | `1a6f70–1c25a0` | Very high; objects, world queries, scripts | P2; estimate excludes much squad/pathfinding code |
+| HaloScript core | 65 / 12,784 | `207cf0–20aee0` | High; builtin dispatch reaches most engine systems | P1 VM; P0 preserve reached menu scripts |
+| Rasterizer/renderer core | 641 / 265,120 | `012560–053100` | Very high; resource caches, materials, GPU state | P0 D3D HLE; P1 native engine renderer |
+| Camera neighborhoods | 76 / 20,016 | `1552e0–155f70`, `16c840–1709e0` | High; script/player/observer/view state | P1; keep generated menu camera initially |
+| Sound core | 164 / 41,984 | `2185d0–2229d0` | High; cache, objects, workers, SDK | P0 minimal backend; P2 mixer/voice rewrite |
+| Physics integration | 97 / 20,976 | `1c25a0–1c7790` | Very high; excludes Havok library and other collision code | P2; retain initialization/step behavior |
+| UI neighborhood | 582 / 57,616 | `22e000–23c110` | High; vtables, strings, input, profiles, renderer | P0 reached widgets; P1 UI model |
+| Network core | 2,032 / 400,976 | `053420–0b5270` | Very high; session and simulation cross gameplay | P0 offline service behavior; P2 protocol rewrite |
+| Save/profile core | 93 / 11,328 | `214f80–217bc0` | Moderate/high; VFS, signatures, UI, async work | P0 defaults/storage behavior; P1 typed profiles |
+
+The 10 startup/body anchors are `2d0aee`, `12190`, `12000`, `12420`, `12b400`,
+`137c20`, `12b690`, `12b450`, `137f70`, `137fe0`. Their sizes are the existing
+Ghidra body's address counts; they are a lower bound, not a startup-module total.
+Other rows deliberately use a different, explicitly labeled window metric.
+Do not sum this table into a total engine size.
+
+Coupling also has direct evidence: unique Ghidra function owners referencing
+object-array pointer `0x004e0300`: **1,387**; tag entries `0x004e3b44`: **995**;
+game time `0x00510c54`: **486**; actor array `0x004f55f0`: **502**; active BSP
+`0x004e0348`: **184**. These are consumers, not subsystem-owned function counts,
+and omit indirect aliases and Ghidra's undiscovered functions. They explain why
+maintaining guest-facing tables is more practical than migrating ownership all
+at once.
+
+### A concrete first-frame sequence
+
+1. Run through both startup device lifetimes and async I/O initialization.
+   Track the eventual scenario identity; a successful boot Swap is insufficient.
+2. Supply cache reads with real completion, load mainmenu index/metadata,
+   shared raw resources, selected BSP/lightmap and language tables. Preserve
+   the resident pointers and publish the same guest data structures.
+3. Keep subsystem/new-map/BSP callbacks and the initial tick/script/camera
+   work generated. Replace only understood leaf contracts with Rust.
+4. Implement reached D3D resource/state/draw behavior, fonts and menu UI layers.
+   Give audio, input, storage and offline networking coherent observable state.
+5. Record the first normal `0x00223240` → view render → `0x00013f10` → Swap
+   sequence with mainmenu active, completed resource loads and actual world/UI
+   draws. Validate an image against Xbox/xemu evidence when available.
+6. Replay captured calls to grow typed Rust from tag lookup, locale lookup and
+   datum/pool primitives into resource interpretation and geometry submission.
+
+## Top 20 functions to understand first
+
+Ordered for the first menu frame. These are investigation priorities; the
+smallest safe rewrite is not always the earliest function executed.
+
+| # | Address / assigned name | Confidence | Why it comes first |
+|---:|---|---|---|
+| 1 | `0x002d0aee` `mainCRTStartup` | Confirmed | Establish TLS/thread handoff and the real entry contract. |
+| 2 | `0x00012190` `game_main` | Confirmed | Separates boot display, memory/bootstrap, and persistent loop. |
+| 3 | `0x00012000` `platform_bootstrap` | Confirmed | Exposes the earliest required file, font, renderer, input and audio services. |
+| 4 | `0x00137c20` `engine_systems_initialize` | Confirmed | Recover the lifecycle registration model before bypassing any systems. |
+| 5 | `0x0012b450` `main_loop_iteration` | Confirmed | Coordinates transitions, ticks, network, camera, render and sound. |
+| 6 | `0x0018eaa0` `load_requested_scenario_cache` | Confirmed | Connects game options to cache loading; inspect the switch's full body. |
+| 7 | `0x001228f0` `cache_tags_load` | Confirmed | Publishes the structures almost every engine system reads. |
+| 8 | `0x00122c10` `tag_get_checked` | Confirmed | Small salt/group-aware Rust target and reference for inline accesses. |
+| 9 | `0x0011c1b0` `scenario_switch_structure_bsp` | Confirmed | Owns BSP/lightmap residency and lifecycle transitions. |
+| 10 | `0x0016b840` `datum_new` | Confirmed | Small shared foundation for objects, scripts and UI lists. |
+| 11 | `0x001a02d0` `locale_string_id_find` | Confirmed | Small deterministic path from packed StringID to localized bytes. |
+| 12 | `0x000128c0` `game_device_create` | Confirmed | Recover Halo's actual device parameters and output handle. |
+| 13 | `0x003f5240` `Direct3D_CreateDevice` | Confirmed | First normal-renderer SDK replacement and custom ABI boundary. |
+| 14 | `0x00223240` `render_frame_and_present` | Confirmed | Distinguishes active world rendering, fallback rendering, and skipped swaps. |
+| 15 | `0x0002b5d0` `render_views` | Confirmed | Connects camera/view records to rendering. |
+| 16 | `0x00041040` `submit_structure_or_model_geometry` | Likely | Promising native Rust geometry/material boundary after D3D works. |
+| 17 | `0x00147af1` `ui_render_layers` | Confirmed | Menu composition and virtual widget draw calls. |
+| 18 | `0x00013f10` `rasterizer_present` | Confirmed | Engine-level end-of-frame observables and readback. |
+| 19 | `0x003f9d00` `D3DDevice_Swap` | Confirmed | Actual display boundary, needed by boot and normal renderer. |
+| 20 | `0x00209310` `hs_update` | Confirmed | Follow menu script scheduling and identify the reached builtin subset. |
+
+Next: `object_new` at `0x000b7b40`, tick budgeting `0x00146660`, async reader
+`0x00213760`, and sound initializer `0x0021e4b0`. They are central but larger or
+more stateful than the first leaf overrides.
+
+## Reproduce and extend
+
+These commands are read-only. The CLI's explicit disc argument, when used,
+comes **before** disassembly address/count, despite its abbreviated usage text.
+
+```sh
+target/release/h2 info disc/default.xbe
+target/release/h2 analyze disc/default.xbe
+target/release/h2 disasm disc/default.xbe 0x2d0a7a 35
+target/release/h2 disasm disc/default.xbe 0x18eaa0 60
+scripts/ghidra decompile 0x12b450
+scripts/ghidra x-ref to 0x4e3b44
+scripts/ghidra x-ref to 0x3f9d00
+.claude/worktrees/agent-a24c0f724aba4e2d6/target/release/h2 symbols disc/default.xbe --list --no-xcheck
+```
+
+The survey joined Ghidra instruction references to function owners and inspected
+selected decompilations, then used `h2 disasm` for absent entries/switch arms.
+Raw pointer scans were only candidate generators; relevant candidates were
+checked against instructions. Size-window counts use analyzer starts, while
+coupling counts use unique Ghidra owners with direct references to the named
+global. Neither uses transitive call-graph reachability as subsystem ownership.
+Scratch scripts and private analysis exports remained in session temporary
+storage. Only this guide is the requested repository output.
+
+Remaining work is explicit: audit the unit/biped callback behaviors;
+recover a general StringID-to-name resolver if present; name individual render
+passes and UI constructors; establish all register/stack ABIs; trace menu
+scripts, asynchronous resource completion, and offline simulation conditions;
+measure actual menu-frame reachability and screenshots. No confidence label
+here substitutes for those runtime checks.
+
+## Pinned public references
+
+- OpenSauce commit [`d200c970c918921d40e9fb376ec685c77797c8b7`][os-root],
+  **Halo2_Xbox / Memory / 1.00**, is the matching-build comparison, not its
+  Alpha or AutoUpdate address maps: [game/camera/time/players][os-game],
+  [engine helpers][os-functions], [cache][os-cache], [objects][os-objects],
+  [HaloScript][os-hs], [AI][os-ai], [physics][os-physics],
+  [networking][os-network], [input/interface][os-interface], [sound][os-sound].
+  Local accesses were checked before treating these names as confirmed.
+- Assembly commit `fd14ef3c46135e9422966c6a64cd926fb0bd23fb`:
+  [Xbox core index/BSP/locale layouts][assembly]. Additional pinned format
+  sources and the on-disc validation limits are in [map-format.md](map-format.md).
+- Project Cartographer / H2V commit
+  `f4a6e912dce18715591673561dca8502889d2322`:
+  [game-time structure][h2v-time], [StringID encoding][h2v-string],
+  [object/player comparison][h2v-objects]. These are comparison material, not
+  a source of Xbox addresses or authoritative Xbox member offsets.
+- H2Codez / H2EK commit `a5a89d3200a15d5ab80f1a0a6fb57f3724858f28`:
+  [HaloScript command/global interface][h2c-hs]. Editor extensions do not
+  establish retail opcode counts or availability.
+- XbSymbolDatabase commit `20eced544726f5558c5a408458f38a086cc4e543`:
+  [signature source][xbsym]. Signatures and their database are not reproduced
+  here; the reported SDK identities were checked at the indicated call sites.
+
+[os-root]: https://github.com/MirisWisdom/OpenSauce/tree/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox
+[os-game]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Game.inl
+[os-functions]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Game.EngineFunctions.inl
+[os-cache]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Cache.inl
+[os-objects]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Objects.inl
+[os-hs]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.HS.inl
+[os-ai]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.AI.inl
+[os-physics]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Physics.inl
+[os-network]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Networking.inl
+[os-interface]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Interface.inl
+[os-sound]: https://github.com/MirisWisdom/OpenSauce/blob/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox/Memory/1.00/_EngineLayout.Sound.inl
+[assembly]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Blamite/Formats/Halo2Xbox/Layouts/H2X_Layouts_Core.xml
+[h2v-time]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Engine/Game/GameTimeGlobals.h
+[h2v-string]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Cache/DataTypes/StringID.h
+[h2v-objects]: https://github.com/pnill/cartographer/blob/f4a6e912dce18715591673561dca8502889d2322/xlive/Blam/Engine/Objects/Objects.h
+[h2c-hs]: https://github.com/num0005/H2Codez/blob/a5a89d3200a15d5ab80f1a0a6fb57f3724858f28/H2Codez/HaloScriptInterface.h
+[xbsym]: https://github.com/Cxbx-Reloaded/XbSymbolDatabase/tree/20eced544726f5558c5a408458f38a086cc4e543
