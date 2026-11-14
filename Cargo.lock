@@ -339,6 +339,7 @@ dependencies = [
  "iced-x86",
  "map",
  "symbols",
+ "tags",
  "xbe",
  "xiso",
 ]
@@ -2145,6 +2146,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "tags"
+version = "0.1.0"
+dependencies = [
+ "map",
+ "thiserror 2.0.21",
+ "xiso",
 ]
 
 [[package]]

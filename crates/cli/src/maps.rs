@@ -7,14 +7,16 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use map::{FourCC, Map};
 
-const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]";
+const USAGE: &str = "usage: h2 maps [disc.iso]\n       h2 tags <map-name-or-file> [group] [--disc disc.iso]\n       h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]";
 
 pub(super) fn run(command: &str, args: Vec<String>) -> Result<()> {
     let mut args = args.into_iter();
     let mut positional = Vec::new();
     let mut disc = None;
+    let mut mode = tags::DecodeMode::Strict;
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--lenient" if command == "tag" => mode = tags::DecodeMode::Lenient,
             "--disc" => {
                 if disc.is_some() {
                     bail!("--disc specified twice");
@@ -36,6 +38,8 @@ pub(super) fn run(command: &str, args: Vec<String>) -> Result<()> {
         ("maps", [path]) if disc.is_none() => list_maps(Path::new(path)),
         ("tags", [name]) => list_tags(name, None, disc),
         ("tags", [name, group]) => list_tags(name, Some(group.parse()?), disc),
+        ("tag", [name, tag]) => dump_tag(name, tag, None, disc, mode),
+        ("tag", [name, tag, group]) => dump_tag(name, tag, Some(group.parse()?), disc, mode),
         _ => bail!("{USAGE}"),
     }
 }
@@ -131,4 +135,44 @@ fn list_tags(name: &str, group: Option<FourCC>, disc: Option<PathBuf>) -> Result
         map.index_slots()
     );
     Ok(())
+}
+
+fn dump_tag(
+    name: &str,
+    tag_name: &str,
+    group: Option<FourCC>,
+    disc: Option<PathBuf>,
+    mode: tags::DecodeMode,
+) -> Result<()> {
+    let mut map = load_map(name, disc)?;
+    let query = match group {
+        Some(group) => map::TagQuery::NameInGroup(tag_name, group),
+        None => map::TagQuery::Name(tag_name),
+    };
+    let id = map.tag(query)?.id;
+    let decoded = tags::DecodedTag::read_with_mode(&mut map, id, mode)?;
+    println!("{} {} {}", decoded.id, decoded.group, tag_name);
+    println!("{:#?}", decoded.data);
+    println!("Structural checks: {:?}", decoded.validation);
+    for warning in &decoded.warnings {
+        println!(
+            "warning: {}.{} {:?}: preserved, layout and bounds unverified",
+            warning.record, warning.field, warning.block
+        );
+    }
+    println!(
+        "Bitmap resource locations are decoded; external files are not opened by this command."
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lenient_is_an_explicit_single_tag_option() {
+        assert!(super::run("tag", vec!["--lenient".into(), "--help".into()]).is_ok());
+        for command in ["maps", "tags"] {
+            assert!(super::run(command, vec!["--lenient".into(), "--help".into()]).is_err());
+        }
+    }
 }

@@ -13,6 +13,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
+  tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -28,7 +29,7 @@ first .iso in the repo's disc/ folder.";
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
-    if matches!(cmd.as_str(), "maps" | "tags") {
+    if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
     }
     let mut positional = Vec::new();

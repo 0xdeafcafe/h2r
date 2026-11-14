@@ -1,0 +1,12 @@
+[package]
+name = "tags"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+map.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true
