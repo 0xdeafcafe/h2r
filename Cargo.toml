@@ -8,6 +8,7 @@ version = "0.1.0"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+map = { path = "crates/map" }
 xiso = { path = "crates/xiso" }
 xbe = { path = "crates/xbe" }
 analyze = { path = "crates/analyze" }
