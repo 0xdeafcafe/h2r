@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
 mod bitmap;
+mod fonts;
 mod maps;
 mod safe_out;
 mod sound;
@@ -23,6 +24,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
   strings <map>           localized text; --lang en, --tag name, --all, --disc iso
+  font <font> <text> --out <png>
+                          render text with a /maps/fonts file; --all validates every font
+                          (options --color RRGGBB[AA], --force, --disc <iso>)
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -46,6 +50,9 @@ fn main() -> Result<()> {
     }
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
+    }
+    if cmd == "font" {
+        return fonts::run(args.collect());
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());

@@ -91,12 +91,13 @@ Status "done" means the crate exists on master and does what its row says;
 | `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](sound.md)) and localized text ([localization.md](localization.md)) | done |
 | `gfx`     | Direct3D 8 replacement on wgpu, plus the texture decoder ([graphics.md](graphics.md)) | done, foundation only |
 | `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](bitmaps.md)) | done |
+| `font`    | Halo 2 packed bitmap font parser and CPU text rasteriser ([fonts.md](fonts.md)) | done |
 | `audio`   | DirectSound replacement foundation ([audio.md](audio.md)) | done, foundation only |
 | `input`   | XInput (XAPI) controller replacement foundation ([input.md](input.md)) | done, foundation only |
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
 | `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
 | `runtime` | Guest memory, CPU state, dispatch/override table; nothing runs yet | in progress |
-| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings` and more | done |
+| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings`, `font` and more | done |
 
 Planned crates, not on master yet and in progress elsewhere:
 

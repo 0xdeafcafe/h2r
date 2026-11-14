@@ -1,0 +1,12 @@
+[package]
+name = "font"
+description = "Halo 2 packed bitmap font parser and CPU text rasteriser"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true

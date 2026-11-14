@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 tags.workspace = true
+font = { path = "../font" }
 assets.workspace = true
 map.workspace = true
 xiso.workspace = true

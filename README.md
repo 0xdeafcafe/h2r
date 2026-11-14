@@ -43,6 +43,7 @@ up as structured Rust.
 - [audio.md](docs/audio.md): DirectSound replacement (`crates/audio`)
 - [bitmaps.md](docs/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`)
 - [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
+- [fonts.md](docs/fonts.md): packed bitmap fonts and text rasteriser (`crates/font`)
 - [graphics.md](docs/graphics.md): D3D8 on wgpu (`crates/gfx`)
 - [input.md](docs/input.md): XInput replacement (`crates/input`)
 - [kernel-imports.md](docs/kernel-imports.md): kernel imports work list
