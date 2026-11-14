@@ -1,0 +1,19 @@
+[package]
+name = "shaders"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Xbox (NV2A) vertex microcode and register-combiner translation to WGSL"
+
+[dependencies]
+thiserror.workspace = true
+naga = { version = "30", features = ["wgsl-in"] }
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in", "msl-out"] }
+wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "wgsl"] }
+pollster = "1"
+# Corpus extractor (examples/extract_corpus.rs) and manifest check.
+sha2 = "0.10"
+xiso.workspace = true
+map.workspace = true

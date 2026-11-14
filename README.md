@@ -53,6 +53,7 @@ up as structured Rust.
 - [map-format.md](docs/map-format.md): cache file (v8) format and the `map` reader
 - [movies.md](docs/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle
+- [shaders.md](docs/shaders.md): NV2A vertex microcode and register combiners to WGSL (`crates/shaders`)
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
 - [xdk-libraries.md](docs/xdk-libraries.md): XDK library identification
