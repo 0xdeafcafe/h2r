@@ -106,7 +106,7 @@ where
 /// clamping to -1..1. Mono devices get the average; channels past the first
 /// two are silent.
 pub fn write_frames<T: Sample + FromSample<f32>>(mix: &[f32], out: &mut [T], channels: usize) {
-    for (src, dst) in mix.chunks_exact(2).zip(out.chunks_exact_mut(channels)) {
+    for (src, dst) in mix.as_chunks::<2>().0.iter().zip(out.chunks_exact_mut(channels)) {
         let (l, r) = (src[0].clamp(-1.0, 1.0), src[1].clamp(-1.0, 1.0));
         for (c, slot) in dst.iter_mut().enumerate() {
             let v = match (channels, c) {

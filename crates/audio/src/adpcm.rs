@@ -121,7 +121,7 @@ pub fn decode_with(
         return Err(AudioError::UnsupportedFormat("Xbox ADPCM is mono or stereo"));
     }
     let block_bytes = BLOCK_BYTES_PER_CHANNEL * channels;
-    if data.len() % block_bytes != 0 {
+    if !data.len().is_multiple_of(block_bytes) {
         return Err(AudioError::BadLength {
             len: data.len(),
             unit: block_bytes,

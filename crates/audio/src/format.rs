@@ -114,7 +114,7 @@ impl WaveFormat {
     /// Decodes `data` to interleaved `f32` in -1.0..1.0. `data` must be a
     /// whole number of blocks.
     pub fn decode(&self, data: &[u8]) -> Result<Vec<f32>, AudioError> {
-        if data.len() % self.block_align() != 0 {
+        if !data.len().is_multiple_of(self.block_align()) {
             return Err(AudioError::BadLength {
                 len: data.len(),
                 unit: self.block_align(),
@@ -124,8 +124,8 @@ impl WaveFormat {
         Ok(match self.codec {
             Codec::Pcm8 => data.iter().map(|&b| (b as f32 - 128.0) / 128.0).collect(),
             Codec::Pcm16 => data
-                .chunks_exact(2)
-                .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+                .as_chunks::<2>().0.iter()
+                .map(|c| i16::from_le_bytes(*c) as f32 / 32768.0)
                 .collect(),
             Codec::XboxAdpcm => adpcm::decode(data, self.channels as usize)?
                 .into_iter()

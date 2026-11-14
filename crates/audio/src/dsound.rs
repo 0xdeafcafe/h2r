@@ -158,7 +158,7 @@ impl SoundBuffer {
         if offset >= size.max(1) || len > size {
             return Err(AudioError::OutOfRange { offset, len, size });
         }
-        if offset % align != 0 || len % align != 0 {
+        if !offset.is_multiple_of(align) || !len.is_multiple_of(align) {
             return Err(AudioError::BadLength { len: offset | len, unit: align, what: "lock alignment" });
         }
         Ok(Lock { buf: self, offset, len })
@@ -252,7 +252,7 @@ impl SoundBuffer {
                 [self.decoded[i * 2], self.decoded[i * 2 + 1]]
             }
         };
-        for frame in out.chunks_exact_mut(2) {
+        for frame in out.as_chunks_mut::<2>().0 {
             let i = self.pos.floor() as usize;
             let t = (self.pos - i as f64) as f32;
             let a = fetch(i, self.looping);
@@ -416,7 +416,7 @@ impl Stream {
         }
         let step = self.params.frequency as f64 / host_rate as f64;
         let ch = self.format.channels() as usize;
-        for frame in out.chunks_exact_mut(2) {
+        for frame in out.as_chunks_mut::<2>().0 {
             if self.queue.is_empty() {
                 break;
             }
