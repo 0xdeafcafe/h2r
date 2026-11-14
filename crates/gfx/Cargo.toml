@@ -1,0 +1,20 @@
+[package]
+name = "gfx"
+description = "Direct3D 8 (Xbox flavour) replacement on wgpu: texture decoding, state model, presenter"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+wgpu = "30"
+bytemuck = "1"
+pollster = "1"
+thiserror.workspace = true
+
+[dev-dependencies]
+winit = "0.30"
+anyhow.workspace = true
+
+[[example]]
+name = "window"
+path = "examples/window.rs"
