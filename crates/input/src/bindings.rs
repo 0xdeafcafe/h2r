@@ -215,9 +215,7 @@ impl Bindings {
         let raw: Raw = toml::from_str(text).map_err(|e| BindingError::Toml(e.to_string()))?;
         raw.convert.validate()?;
         raw.mouse.validate()?;
-        let mut b = Bindings::default();
-        b.convert = raw.convert;
-        b.mouse = raw.mouse;
+        let mut b = Bindings { convert: raw.convert, mouse: raw.mouse, ..Default::default() };
         for (c, names) in raw.bind {
             let inputs = names.iter().map(|n| n.parse()).collect::<Result<Vec<Input>, _>>()?;
             b.bind.insert(c, inputs);

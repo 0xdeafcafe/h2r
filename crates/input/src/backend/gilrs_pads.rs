@@ -52,6 +52,8 @@ pub struct GilrsPads {
 }
 
 impl GilrsPads {
+    // gilrs::Error is large but public API; boxing it would change the signature.
+    #[allow(clippy::result_large_err)]
     pub fn new() -> Result<Self, gilrs::Error> {
         Ok(GilrsPads { gilrs: Gilrs::new()?, effects: HashMap::new(), generations: Generations::default() })
     }

@@ -217,8 +217,7 @@ mod tests {
 
     #[test]
     fn stick_deadzone_and_scaling() {
-        let mut s = HostPadState::default();
-        s.left_stick = (0.05, 0.05);
+        let mut s = HostPadState { left_stick: (0.05, 0.05), ..Default::default() };
         assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, 0);
         s.left_stick = (1.0, 0.0);
         assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, 32767);
@@ -236,9 +235,7 @@ mod tests {
 
     #[test]
     fn virtual_pads_skip_deadzone() {
-        let mut s = HostPadState::default();
-        s.right_stick = (0.02, 0.0);
-        s.right_trigger = 0.05;
+        let s = HostPadState { right_stick: (0.02, 0.0), right_trigger: 0.05, ..Default::default() };
         let g = s.to_gamepad(&cfg(), false);
         assert_eq!(g.thumb_rx, 655);
         assert_eq!(g.analog(AnalogButton::RightTrigger), 13);
@@ -247,8 +244,7 @@ mod tests {
 
     #[test]
     fn triggers_rescale() {
-        let mut s = HostPadState::default();
-        s.left_trigger = 1.0;
+        let mut s = HostPadState { left_trigger: 1.0, ..Default::default() };
         assert_eq!(s.to_gamepad(&cfg(), true).analog(AnalogButton::LeftTrigger), 255);
         s.left_trigger = 0.1;
         assert_eq!(s.to_gamepad(&cfg(), true).analog(AnalogButton::LeftTrigger), 0);
@@ -258,11 +254,13 @@ mod tests {
 
     #[test]
     fn non_finite_axes_zero_only_that_axis() {
-        let mut s = HostPadState::default();
-        s.left_stick = (f32::NAN, 0.5);
-        s.right_stick = (f32::INFINITY, -1.0);
-        s.left_trigger = f32::NAN;
-        s.right_trigger = 1.0;
+        let s = HostPadState {
+            left_stick: (f32::NAN, 0.5),
+            right_stick: (f32::INFINITY, -1.0),
+            left_trigger: f32::NAN,
+            right_trigger: 1.0,
+            ..Default::default()
+        };
         let g = s.to_gamepad(&cfg(), true);
         assert_eq!(g.thumb_lx, 0);
         assert!(g.thumb_ly > 0, "y survives a NaN x");
@@ -274,8 +272,7 @@ mod tests {
 
     #[test]
     fn out_of_range_is_clamped_before_deadzone() {
-        let mut s = HostPadState::default();
-        s.left_stick = (100.0, 0.0);
+        let mut s = HostPadState { left_stick: (100.0, 0.0), ..Default::default() };
         assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, 32767);
         s.left_stick = (-5.0, 0.0);
         assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, -32767);
