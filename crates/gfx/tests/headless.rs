@@ -456,7 +456,7 @@ fn depth_bias_on_lines_and_enables_do_not_break_validation() {
     for prim in [PrimitiveType::LineList, PrimitiveType::PointList] {
         let mut enc = ctx.device.create_command_encoder(&Default::default());
         renderer
-            .render(&ctx, &mut enc, &target.target(), Clear::all([0.0; 4]), &[draw(&[VertexStream { data: &verts, stride: 0 }], 2, &layout, prim, state.clone())])
+            .render(&ctx, &mut enc, &target.target(), Clear::all([0.0; 4]), &[draw(&[VertexStream { data: &verts, stride: 0 }], 2, &layout, prim, state)])
             .unwrap();
         ctx.queue.submit([enc.finish()]);
     }

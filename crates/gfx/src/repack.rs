@@ -231,6 +231,7 @@ fn convert_attribute(a: &PlannedAttribute, src: &[u8], dst: &mut [u8]) {
             }
         }
         Conversion::PByteToFloat(n) => {
+            #[allow(clippy::needless_range_loop)] // index also addresses dst; keep the panic on short src
             for i in 0..n as usize {
                 put_f32(dst, i, src[i] as f32 / 255.0);
             }

@@ -256,8 +256,7 @@ mod tests {
     fn cache_hits_and_misses() {
         let mut cache: PipelineCache<u32> = PipelineCache::new();
         let a = key(&RenderState::default());
-        let mut other = RenderState::default();
-        other.blend_enable = true;
+        let other = RenderState { blend_enable: true, ..Default::default() };
         let b = key(&other);
         let mut built = 0;
         for k in [&a, &a, &b, &a, &b] {

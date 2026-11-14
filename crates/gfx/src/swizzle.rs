@@ -73,7 +73,7 @@ impl Swizzler {
                     // Software PDEP: scatter the bits of `c` into `mask`.
                     let (mut out, mut src, mut m) = (0u32, c, mask);
                     while m != 0 {
-                        let low = m & m.wrapping_neg();
+                        let low = m.isolate_lowest_one();
                         if src & 1 != 0 {
                             out |= low;
                         }

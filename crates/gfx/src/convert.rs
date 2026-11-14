@@ -169,7 +169,7 @@ pub fn to_bgra8(fmt: TexelFormat, src: &[u8], texels: usize) -> Result<Vec<u8>, 
     }
     let mut out = src[..need].to_vec();
     if fmt == TexelFormat::X8R8G8B8 {
-        for p in out.chunks_exact_mut(4) {
+        for p in out.as_chunks_mut::<4>().0.iter_mut() {
             p[3] = 255;
         }
     }

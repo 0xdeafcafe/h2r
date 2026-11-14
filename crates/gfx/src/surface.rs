@@ -612,6 +612,7 @@ impl SurfaceStore {
 
     /// `CopyRects` when sizes or formats differ: a filtered blit of `src`
     /// (optionally a sub-rectangle) over the whole of `dst`.
+    #[allow(clippy::too_many_arguments)] // mirrors the D3D CopyRects parameter list
     pub fn stretch(
         &self,
         ctx: &GfxContext,
@@ -676,12 +677,12 @@ impl SurfaceStore {
         match s.wgpu_format {
             wgpu::TextureFormat::Depth16Unorm => {
                 let raw = read(wgpu::TextureAspect::DepthOnly, 2);
-                let depth = raw.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]]) as f32 / 65535.0).collect();
+                let depth = raw.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c) as f32 / 65535.0).collect();
                 Ok(DepthPlane { depth, stencil: None })
             }
             wgpu::TextureFormat::Depth32FloatStencil8 => {
                 let raw = read(wgpu::TextureAspect::DepthOnly, 4);
-                let depth = raw.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+                let depth = raw.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
                 let stencil = Some(read(wgpu::TextureAspect::StencilOnly, 1));
                 Ok(DepthPlane { depth, stencil })
             }

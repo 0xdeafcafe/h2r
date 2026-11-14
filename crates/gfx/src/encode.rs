@@ -78,7 +78,7 @@ pub fn encode_color(
     let mut out: Vec<u8> = Vec::new();
     let bpt = match texel {
         T::A8R8G8B8 | T::X8R8G8B8 => {
-            for p in pixels[..n * 4].chunks_exact(4) {
+            for p in pixels[..n * 4].as_chunks::<4>().0.iter() {
                 let (r, g, b, a) = rgba(p);
                 let a = if texel == T::X8R8G8B8 { 255 } else { a };
                 out.extend_from_slice(&[b, g, r, a]);
@@ -86,7 +86,7 @@ pub fn encode_color(
             4
         }
         T::R5G6B5 | T::A1R5G5B5 | T::X1R5G5B5 | T::A4R4G4B4 => {
-            for p in pixels[..n * 4].chunks_exact(4) {
+            for p in pixels[..n * 4].as_chunks::<4>().0.iter() {
                 let (r, g, b, a) = rgba(p);
                 let (r, g, b, a) = (r as u16, g as u16, b as u16, a as u16);
                 let v = match texel {
