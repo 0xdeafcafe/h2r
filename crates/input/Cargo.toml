@@ -1,0 +1,17 @@
+[package]
+name = "input"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp"
+
+[features]
+default = ["gilrs"]
+# Physical gamepads through gilrs (IOKit HID on macOS).
+gilrs = ["dep:gilrs"]
+
+[dependencies]
+thiserror.workspace = true
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+gilrs = { version = "0.11", optional = true }
