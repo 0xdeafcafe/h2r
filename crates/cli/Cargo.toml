@@ -1,0 +1,15 @@
+[package]
+name = "cli"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "h2"
+path = "src/main.rs"
+
+[dependencies]
+xiso.workspace = true
+xbe.workspace = true
+analyze.workspace = true
+anyhow.workspace = true

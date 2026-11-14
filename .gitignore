@@ -1,0 +1,9 @@
+/target
+# Never commit game data or anything derived from it.
+*.iso
+*.xiso
+*.xbe
+*.map
+*.bik
+/extracted
+/out

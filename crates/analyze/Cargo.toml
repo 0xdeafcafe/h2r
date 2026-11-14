@@ -1,0 +1,9 @@
+[package]
+name = "analyze"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+xbe.workspace = true
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

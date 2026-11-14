@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+xiso = { path = "crates/xiso" }
+xbe = { path = "crates/xbe" }
+analyze = { path = "crates/analyze" }
+runtime = { path = "crates/runtime" }
+thiserror = "2"
+anyhow = "1"
