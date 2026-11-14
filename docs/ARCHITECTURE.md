@@ -4,6 +4,35 @@ Goal: Halo 2 (original Xbox, title `4D530064`) running natively, ending up as
 well-structured, mostly safe Rust. The game disc is supplied by the user at
 build time and nothing derived from it is committed.
 
+## Targets
+
+- **macOS on arm64 and x86-64, rendering through Metal.** This is the first target.
+- **The TV.** Two candidates: Apple TV (tvOS: arm64 and Metal, so close to the
+  Mac build) or an Xbox in Developer Mode (x86-64 and DX12). Personal,
+  sideloaded use only.
+- **Rendering goes through wgpu,** which covers Metal, Vulkan and DX12 with
+  one renderer.
+
+The recompiled code is portable C or LLVM IR, so arm64 and x86-64 builds
+take the same path. Nothing relies on running the original x86 directly.
+
+## What "done" means
+
+Stage 1 below is scaffolding. The real product is stage 2: an engine in
+readable Rust that you can extend and build editors on, using the
+recompiled code as the reference it's tested against. So rewrite order
+favours the parts that editing and modding touch:
+
+1. Tag and cache-file (`.map`) loading, as a typed Rust data model. Editors
+   build on this.
+2. The renderer, above the D3D layer: start with D3D8 replaced on wgpu to get
+   pixels, then rewrite Halo's own rendering layer natively.
+3. Objects, game state and the HaloScript runtime.
+4. Physics and AI, last. Their floating-point behaviour needs the most care.
+
+Platform code (window, input, audio, file access) lives in its own layer,
+so a tvOS or Xbox port only swaps that layer.
+
 ## The path to good Rust
 
 Going straight from x86 to idiomatic Rust is not something a tool can do. The

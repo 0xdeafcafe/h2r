@@ -9,3 +9,4 @@
 /out
 # Your own disc lives here; `h2` picks it up automatically.
 /disc/
+/.tools/

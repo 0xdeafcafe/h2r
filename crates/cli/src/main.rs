@@ -10,7 +10,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   info                    title, sections, libraries
   ls                      files on the disc
   extract [out-dir]       copy every file off the disc (default disc/extracted)
-  analyze [--functions <out.txt>]
+  extract-xbe [out]       just default.xbe (default disc/default.xbe)
+  analyze [--functions <out.txt>] [--against <ghidra-functions.tsv>]
                           function discovery and coverage
 
 [disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
@@ -21,25 +22,38 @@ fn main() -> Result<()> {
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
     let mut positional = Vec::new();
     let mut functions_out = None;
+    let mut against = None;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
+            "--against" => against = Some(PathBuf::from(args.next().context("--against needs a path")?)),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
         }
     }
-    // The disc is the only positional that names an existing .iso/.xbe file.
-    let disc_pos = positional.iter().position(|p| is_disc(p));
-    let disc = match disc_pos {
-        Some(i) => positional.remove(i),
-        None => default_disc()?,
+    // Commands take at most this many arguments of their own; one more in
+    // front of them is the disc.
+    let own = match cmd.as_str() {
+        "extract" | "extract-xbe" => 1,
+        _ => 0,
+    };
+    let disc = if positional.len() > own {
+        let p = positional.remove(0);
+        if !is_disc(&p) {
+            bail!("{} is not an .iso or .xbe file\n\n{USAGE}", p.display());
+        }
+        p
+    } else {
+        default_disc()?
     };
     match (cmd.as_str(), positional.as_slice()) {
         ("info", []) => info(&disc),
         ("ls", []) => ls(&disc),
         ("extract", [out]) => extract(&disc, out),
         ("extract", []) => extract(&disc, &repo_root().join("disc/extracted")),
-        ("analyze", []) => run_analyze(&disc, functions_out),
+        ("extract-xbe", [out]) => extract_xbe(&disc, out),
+        ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe")),
+        ("analyze", []) => run_analyze(&disc, functions_out, against),
         _ => bail!("{USAGE}"),
     }
 }
@@ -64,7 +78,7 @@ fn default_disc() -> Result<PathBuf> {
         .flatten()
         .flatten()
         .map(|e| e.path())
-        .filter(|p| is_disc(p))
+        .filter(|p| is_disc(p) && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")))
         .collect();
     isos.sort();
     isos.into_iter().next().with_context(|| {
@@ -148,7 +162,14 @@ fn extract(path: &Path, out: &Path) -> Result<()> {
     Ok(())
 }
 
-fn run_analyze(path: &Path, functions_out: Option<PathBuf>) -> Result<()> {
+fn extract_xbe(disc: &Path, out: &Path) -> Result<()> {
+    let data = load_xbe(disc)?;
+    fs::write(out, &data).with_context(|| format!("writing {}", out.display()))?;
+    println!("wrote {} ({} bytes)", out.display(), data.len());
+    Ok(())
+}
+
+fn run_analyze(path: &Path, functions_out: Option<PathBuf>, against: Option<PathBuf>) -> Result<()> {
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
     let a = analyze::analyze(&x)?;
@@ -160,6 +181,12 @@ fn run_analyze(path: &Path, functions_out: Option<PathBuf>) -> Result<()> {
         }
         fs::write(&out, s)?;
         println!("wrote {} functions to {}", a.functions.len(), out.display());
+    }
+    if let Some(tsv) = against {
+        let text = fs::read_to_string(&tsv).with_context(|| format!("reading {}", tsv.display()))?;
+        let theirs = analyze::compare::parse_ghidra_tsv(&text);
+        println!("\ncompared with {} ({} functions)", tsv.display(), theirs.len());
+        print!("{}", analyze::compare::compare(&a, &theirs));
     }
     Ok(())
 }

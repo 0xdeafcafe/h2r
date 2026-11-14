@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# ghidra-cli pointed at this repo's pinned Ghidra and its project folder.
+#   scripts/ghidra function list --filter "size > 1000"
+#   scripts/ghidra decompile 0x2d0aee
+# The first call starts a resident Ghidra in the background; later calls
+# are fast. Projects live in disc/ghidra/ (Ghidra 12.1+ refuses project
+# paths with a dot-prefixed folder, so not under .tools/).
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+cli="$root/.tools/ghidra-cli/bin/ghidra"
+[[ -x "$cli" ]] || { echo "run scripts/setup-ghidra.sh first" >&2; exit 1; }
+export GHIDRA_INSTALL_DIR="$root/.tools/ghidra_12.1.4_PUBLIC"
+# Without a known JDK, Ghidra's launcher asks for one on stdin and hangs.
+export JAVA_HOME="${JAVA_HOME:-$(/usr/libexec/java_home -v 21+ 2>/dev/null || true)}"
+[[ -n "$JAVA_HOME" ]] || { echo "need a JDK 21+ (set JAVA_HOME)" >&2; exit 1; }
+# Headless Ghidra defaults to a 2 GB heap, tight for a 4.8 MB XBE.
+export GHIDRA_HEADLESS_MAXMEM="${GHIDRA_HEADLESS_MAXMEM:-8G}"
+mkdir -p "$root/disc/ghidra"
+exec "$cli" --java-home "$JAVA_HOME" --projects-dir "$root/disc/ghidra" --project h2 --program default.xbe "$@"

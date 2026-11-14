@@ -6,6 +6,8 @@
 //! it was decoded as an instruction, recognised as data or padding, or is
 //! still unknown. Shrinking "unknown" is the job of milestone 2.
 
+pub mod compare;
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
@@ -89,6 +91,8 @@ pub struct Analysis {
     pub kernel_imports: usize,
     /// Largest unknown runs: (va, len).
     pub gaps: Vec<(u32, usize)>,
+    /// Code sections: (va, len, name).
+    pub ranges: Vec<(u32, u32, String)>,
 }
 
 struct Analyzer<'a> {
@@ -413,6 +417,7 @@ impl<'a> Analyzer<'a> {
             kernel_calls: self.kernel_calls,
             kernel_imports,
             gaps,
+            ranges: self.regions.iter().map(|r| (r.va, r.bytes.len() as u32, r.name.clone())).collect(),
         }
     }
 }
@@ -422,6 +427,11 @@ fn is_padding(b: u8) -> bool {
 }
 
 impl Analysis {
+    /// Name of the code section containing `va`.
+    pub fn section_of(&self, va: u32) -> Option<&str> {
+        self.ranges.iter().find(|(s, len, _)| va >= *s && va - *s < *len).map(|(_, _, n)| n.as_str())
+    }
+
     pub fn total(&self) -> SectionCoverage {
         let mut t = SectionCoverage { name: "total".into(), ..Default::default() };
         for s in &self.sections {
