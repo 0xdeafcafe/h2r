@@ -354,6 +354,7 @@ dependencies = [
  "analyze",
  "anyhow",
  "assets",
+ "audio",
  "iced-x86",
  "map",
  "symbols",

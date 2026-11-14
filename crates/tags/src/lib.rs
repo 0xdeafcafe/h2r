@@ -8,6 +8,8 @@
 #![forbid(unsafe_code)]
 
 pub mod wire;
+/// Sound tags (`snd!`, `ugh!`); self-contained, see `docs/sound.md`.
+pub mod sound;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }

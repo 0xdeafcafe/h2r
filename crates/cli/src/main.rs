@@ -7,6 +7,8 @@ use xiso::Xiso;
 
 mod bitmap;
 mod maps;
+mod safe_out;
+mod sound;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 
@@ -17,6 +19,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
+  sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
+                          (options --out DIR, --disc <iso>)
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -32,6 +36,9 @@ first .iso in the repo's disc/ folder.";
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
+    if cmd == "sound" {
+        return sound::run(args.collect());
+    }
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
     }
@@ -196,7 +203,7 @@ fn disasm(disc: &Path, addr: &Path, count: Option<&PathBuf>) -> Result<()> {
     use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter};
     let parse = |p: &Path| -> Result<u32> {
         let s = p.to_string_lossy();
-        Ok(u32::from_str_radix(s.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {s}"))?)
+        u32::from_str_radix(s.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {s}"))
     };
     let va = parse(addr)?;
     let n: usize = count.map(|c| c.to_string_lossy().parse()).transpose()?.unwrap_or(20);

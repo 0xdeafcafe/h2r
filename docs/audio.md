@@ -51,7 +51,8 @@ Xbox ADPCM yields 64 per channel per block: the header predictor plus 63
 nibbles, final high nibble discarded. An independent review confirmed this
 against vgmstream `ima_decoder.c` and xemu `hw/xbox/mcpx/apu/vp/vp.c`
 (pinned at 4bdad199). `SamplesPerBlock::Ima65` remains only as a non-Xbox
-comparison mode. Still worth a final check against a real Halo 2 sound.
+comparison mode. Confirmed against real Halo 2 data and the engine's own
+format builder; see [sound.md](sound.md).
 
 ### Tests
 
@@ -112,7 +113,7 @@ is the trace source for validating the mixer later.
 
 ## Next steps
 
-1. Confirm the 64-sample block against a real Halo 2 sound.
+1. (Done: 64 confirmed, docs/sound.md.)
 2. A guest-facing shim crate mapping `IDirectSound*` vtable calls onto this
    model (owned by the runtime).
 3. Notifications and play regions, then reverb (a simple FDN as an I3DL2
