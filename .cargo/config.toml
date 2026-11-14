@@ -1,0 +1,3 @@
+[alias]
+# `cargo h2 analyze` etc. Uses the disc in disc/ unless given a path.
+h2 = "run --release -q -p cli --"

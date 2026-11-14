@@ -5,22 +5,71 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
-const USAGE: &str = "usage:
-  h2 info    <image.iso|default.xbe>
-  h2 ls      <image.iso>
-  h2 extract <image.iso> <out-dir>
-  h2 analyze <image.iso|default.xbe> [--functions <out.txt>]";
+const USAGE: &str = "usage: h2 <command> [disc]
+
+  info                    title, sections, libraries
+  ls                      files on the disc
+  extract [out-dir]       copy every file off the disc (default disc/extracted)
+  analyze [--functions <out.txt>]
+                          function discovery and coverage
+
+[disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
+first .iso in the repo's disc/ folder.";
 
 fn main() -> Result<()> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["info", input] => info(Path::new(input)),
-        ["ls", input] => ls(Path::new(input)),
-        ["extract", input, out] => extract(Path::new(input), Path::new(out)),
-        ["analyze", input] => run_analyze(Path::new(input), None),
-        ["analyze", input, "--functions", out] => run_analyze(Path::new(input), Some(out.into())),
+    let mut args = std::env::args().skip(1);
+    let Some(cmd) = args.next() else { bail!("{USAGE}") };
+    let mut positional = Vec::new();
+    let mut functions_out = None;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
+            "-h" | "--help" => bail!("{USAGE}"),
+            _ => positional.push(PathBuf::from(a)),
+        }
+    }
+    // The disc is the only positional that names an existing .iso/.xbe file.
+    let disc_pos = positional.iter().position(|p| is_disc(p));
+    let disc = match disc_pos {
+        Some(i) => positional.remove(i),
+        None => default_disc()?,
+    };
+    match (cmd.as_str(), positional.as_slice()) {
+        ("info", []) => info(&disc),
+        ("ls", []) => ls(&disc),
+        ("extract", [out]) => extract(&disc, out),
+        ("extract", []) => extract(&disc, &repo_root().join("disc/extracted")),
+        ("analyze", []) => run_analyze(&disc, functions_out),
         _ => bail!("{USAGE}"),
     }
+}
+
+fn is_disc(p: &Path) -> bool {
+    let ext = p.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    p.is_file() && matches!(ext.as_deref(), Some("iso" | "xbe"))
+}
+
+fn repo_root() -> PathBuf {
+    // crates/cli -> repo root
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+fn default_disc() -> Result<PathBuf> {
+    if let Some(p) = std::env::var_os("H2_DISC") {
+        return Ok(p.into());
+    }
+    let dir = repo_root().join("disc");
+    let mut isos: Vec<PathBuf> = fs::read_dir(&dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| is_disc(p))
+        .collect();
+    isos.sort();
+    isos.into_iter().next().with_context(|| {
+        format!("no disc given and none found in {} (put your .iso there or set H2_DISC)", dir.display())
+    })
 }
 
 fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
