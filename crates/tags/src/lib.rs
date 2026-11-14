@@ -4,7 +4,9 @@
 //! The five supported groups validate reviewed fields; opaque header spans are
 //! preserved without claiming validation of their internal pointers. Only
 //! bitmap image/sequence/sprite records are decoded recursively in this stage.
-//! Unknown nested records remain opaque; see `docs/map-format.md` for evidence.
+//! Localized text and compiled `unic` lists have a separate decoder in
+//! [`localization`]. Unknown nested records remain opaque; see
+//! `docs/map-format.md` for evidence.
 #![forbid(unsafe_code)]
 
 pub mod wire;
@@ -13,6 +15,11 @@ pub mod sound;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }
+// Localized text decoding is isolated from the generated tag codecs.
+pub mod localization;
+pub use localization::{Language, Localization, Unic};
+pub use wire::{StringId, StringIdParts};
+
 mod decode;
 pub use decode::*;
 

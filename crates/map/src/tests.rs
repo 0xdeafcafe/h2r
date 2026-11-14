@@ -295,3 +295,20 @@ fn bsps_can_reuse_virtual_addresses_without_aliasing_file_data() {
         0xb10
     );
 }
+
+#[test]
+fn public_file_ranges_obey_declared_map_bounds_and_read_budget() {
+    let raw = fixture();
+    let mut container = vec![0xaa; 37];
+    container.extend(&raw);
+    container.extend([0xbb; 32]);
+    let mut map = Map::from_region(Cursor::new(container), 37, raw.len() as u64 + 32).unwrap();
+    assert_eq!(map.read_file_range(0x800, 5).unwrap(), b"alpha");
+    assert!(map.read_file_range(0x1fff, 2).is_err());
+    assert!(map.read_file_range(u64::MAX, 1).is_err());
+    assert!(matches!(
+        map.read_file_range(0, 64 * 1024 * 1024 + 1),
+        Err(Error::Limit)
+    ));
+    assert!(map.read_file_range(0x2000, 0).unwrap().is_empty());
+}

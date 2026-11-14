@@ -126,17 +126,35 @@ wrapper!(
     u32,
     "A string-ID value: lower 24 bits index, upper 8 bits byte length."
 );
+/// Decoded Xbox StringID: a 24-bit name index and an 8-bit name length.
+/// Bits 16..23 belong to the index; this format has no set field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StringIdParts {
+    pub index: u32,
+    pub length: u8,
+}
 impl StringId {
-    pub fn index(self) -> usize {
-        (self.0 & 0xffffff) as usize
+    pub const NULL: Self = Self(u32::MAX);
+    pub const EMPTY: Self = Self(0);
+
+    /// Split the packed value, including sentinels, without validating a name.
+    /// The length describes the identifier name, not its localized text.
+    pub const fn decode(self) -> StringIdParts {
+        StringIdParts {
+            index: self.0 & 0x00ff_ffff,
+            length: (self.0 >> 24) as u8,
+        }
     }
-    pub fn length(self) -> usize {
-        (self.0 >> 24) as usize
+    pub const fn index(self) -> usize {
+        self.decode().index as usize
+    }
+    pub const fn length(self) -> usize {
+        self.decode().length as usize
     }
     /// Check both index and encoded length. Null is `0xffffffff`; zero may
     /// resolve the empty string and is not treated as a tag datum.
     pub fn resolve(self, strings: &[Option<String>]) -> Result<Option<&str>> {
-        if self.0 == u32::MAX {
+        if self == Self::NULL {
             return Ok(None);
         }
         let s = strings

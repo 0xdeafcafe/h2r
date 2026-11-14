@@ -115,7 +115,8 @@ high 8 bits carrying its length. The public API currently exposes indexed
 strings rather than promising a complete StringID semantic validator.
 [Length-based resolver][stringids]. Localized UI text is separate: language
 information is in `matg`, with nine language records (descriptors start at `+0x188`; `+0x190` is the count field eight bytes in), stride `0x1c`,
-and `unic` selects ranges. Locale decoding is not implemented or verified.
+and `unic` selects ranges. The later [localization decoder and evidence](localization.md) covers all nine
+languages, compiled `unic` ranges, and the executable's wide-text conversion.
 [Core layouts][core].
 
 **V:** classes are FourCCs stored as little-endian integers: e.g. `scnr` is bytes

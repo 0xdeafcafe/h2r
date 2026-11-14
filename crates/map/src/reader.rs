@@ -302,6 +302,16 @@ impl<R: Read + Seek> Map<R> {
         self.read(loc.file_offset()?, u64::from(loc.size))
     }
 
+    /// Read a map-relative file range (not a metadata or resource pointer).
+    /// Bounded by the declared map size, even inside a larger disc image.
+    /// Individual reads are capped at the same 64 MiB limit as index tables.
+    pub fn read_file_range(&mut self, offset: u64, size: u64) -> Result<Vec<u8>> {
+        if size > MAX_TABLE_BYTES {
+            return Err(Error::Limit);
+        }
+        self.read(offset, size)
+    }
+
     fn read(&mut self, offset: u64, size: u64) -> Result<Vec<u8>> {
         read_at(&mut self.reader, self.base, self.length, offset, size)
     }

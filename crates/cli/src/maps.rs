@@ -44,7 +44,11 @@ pub(super) fn run(command: &str, args: Vec<String>) -> Result<()> {
     }
 }
 
-fn disc_map(path: &Path, partition: u64, entry: &xiso::Entry) -> Result<Map<BufReader<File>>> {
+pub(super) fn disc_map(
+    path: &Path,
+    partition: u64,
+    entry: &xiso::Entry,
+) -> Result<Map<BufReader<File>>> {
     let base = partition + u64::from(entry.sector) * xiso::SECTOR;
     Map::from_region(BufReader::new(File::open(path)?), base, entry.size.into())
         .with_context(|| format!("parsing {}", entry.path))
@@ -82,7 +86,7 @@ fn list_maps(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn load_map(name: &str, disc: Option<PathBuf>) -> Result<Map<BufReader<File>>> {
+pub(super) fn load_map(name: &str, disc: Option<PathBuf>) -> Result<Map<BufReader<File>>> {
     if Path::new(name).is_file() {
         Map::from_reader(BufReader::new(File::open(name)?))
             .with_context(|| format!("parsing {name}"))

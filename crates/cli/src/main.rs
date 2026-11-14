@@ -9,6 +9,7 @@ mod bitmap;
 mod maps;
 mod safe_out;
 mod sound;
+mod strings;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 
@@ -21,6 +22,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
   bitmap --all <map>      bulk decode check of every bitmap in a map
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
+  strings <map>           localized text; --lang en, --tag name, --all, --disc iso
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -38,6 +40,9 @@ fn main() -> Result<()> {
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
     if cmd == "sound" {
         return sound::run(args.collect());
+    }
+    if cmd == "strings" {
+        return strings::run(args.collect());
     }
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
