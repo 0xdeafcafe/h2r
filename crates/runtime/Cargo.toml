@@ -6,3 +6,7 @@ license.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+xbe.workspace = true
+
+[dev-dependencies]
+runtime-test-probe = { path = "test-probe" }

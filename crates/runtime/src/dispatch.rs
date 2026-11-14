@@ -1,92 +1,132 @@
-//! Address-to-function table. Generated code calls through this so any guest
-//! function can be swapped for a hand-written Rust override without
-//! regenerating anything.
+//! Entry overrides and generated continuations are separate contracts. A
+//! resolved handler owns its adapter, so Runtime drops its table lock before
+//! invocation, including handlers which change dispatch or reenter services.
 
-use std::collections::HashMap;
+use crate::{CpuAbi, ExecCtx, GuestFault, GuestFn, TransferAbi};
+use std::{collections::HashMap, sync::Arc};
 
-use crate::{Cpu, Guest};
+type SafeFn =
+    dyn Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault> + Send + Sync;
 
-pub type GuestFn = fn(&mut Cpu, &mut Guest);
+#[derive(Clone)]
+pub(crate) enum Handler {
+    Native(GuestFn),
+    Rust(Arc<SafeFn>),
+}
 
-#[derive(Clone, Copy)]
-struct Override {
-    name: &'static str,
-    f: GuestFn,
-    enabled: bool,
+#[derive(Clone)]
+pub struct Override {
+    pub name: String,
+    handler: Handler,
+    pub enabled: bool,
 }
 
 #[derive(Default)]
 pub struct Dispatch {
-    generated: HashMap<u32, GuestFn>,
+    generated: HashMap<u32, Handler>,
     overrides: HashMap<u32, Override>,
+    resumes: HashMap<u32, (u32, u32)>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
-#[error("no function at {0:#010x}")]
-pub struct Missing(pub u32);
-
-impl Dispatch {
-    pub fn register_generated(&mut self, addr: u32, f: GuestFn) {
-        self.generated.insert(addr, f);
-    }
-
-    /// Overrides start enabled; `set_enabled` turns one off to bisect.
-    pub fn register_override(&mut self, addr: u32, name: &'static str, f: GuestFn) {
-        self.overrides.insert(addr, Override { name, f, enabled: true });
-    }
-
-    pub fn set_enabled(&mut self, addr: u32, enabled: bool) -> bool {
-        self.overrides.get_mut(&addr).map(|o| o.enabled = enabled).is_some()
-    }
-
-    pub fn override_name(&self, addr: u32) -> Option<&'static str> {
-        self.overrides.get(&addr).map(|o| o.name)
-    }
-
-    pub fn resolve(&self, addr: u32) -> Result<GuestFn, Missing> {
-        match self.overrides.get(&addr) {
-            Some(o) if o.enabled => Ok(o.f),
-            _ => self.generated.get(&addr).copied().ok_or(Missing(addr)),
-        }
-    }
-
-    pub fn call(&self, addr: u32, cpu: &mut Cpu, guest: &mut Guest) -> Result<(), Missing> {
-        self.resolve(addr)?(cpu, guest);
-        Ok(())
-    }
+pub enum RegistrationError {
+    #[error("handler ABI version {0} does not match runtime ABI")]
+    AbiVersion(u32),
+    #[error("resume owner {0:#010x} has no generated original")]
+    MissingOwner(u32),
+    #[error("generated handler already registered at {0:#010x}")]
+    DuplicateGenerated(u32),
+    #[error("resume already registered at {0:#010x}")]
+    DuplicateResume(u32),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn generated(cpu: &mut Cpu, _: &mut Guest) {
-        cpu.eax = 1;
+impl Dispatch {
+    pub(crate) fn register_generated_handler(
+        &mut self,
+        addr: u32,
+        handler: Handler,
+    ) -> Result<(), RegistrationError> {
+        if self.generated.contains_key(&addr) {
+            return Err(RegistrationError::DuplicateGenerated(addr));
+        }
+        self.generated.insert(addr, handler);
+        Ok(())
     }
-    fn rewritten(cpu: &mut Cpu, _: &mut Guest) {
-        cpu.eax = 2;
+    pub(crate) fn register_override_handler(
+        &mut self,
+        addr: u32,
+        name: String,
+        handler: Handler,
+    ) -> Option<Override> {
+        self.overrides.insert(
+            addr,
+            Override {
+                name,
+                handler,
+                enabled: true,
+            },
+        )
     }
 
-    #[test]
-    fn override_wins_until_disabled() {
-        let mut d = Dispatch::default();
-        let (mut cpu, mut g) = (Cpu::default(), Guest::new());
-        d.register_generated(0x1234, generated);
-        d.call(0x1234, &mut cpu, &mut g).unwrap();
-        assert_eq!(cpu.eax, 1);
-
-        d.register_override(0x1234, "rewritten", rewritten);
-        d.call(0x1234, &mut cpu, &mut g).unwrap();
-        assert_eq!(cpu.eax, 2);
-
-        assert!(d.set_enabled(0x1234, false));
-        d.call(0x1234, &mut cpu, &mut g).unwrap();
-        assert_eq!(cpu.eax, 1);
+    /// Restore a previously displaced override, returning the one it replaces.
+    pub fn restore_override(&mut self, addr: u32, previous: Override) -> Option<Override> {
+        self.overrides.insert(addr, previous)
     }
 
-    #[test]
-    fn missing_address() {
-        let d = Dispatch::default();
-        assert_eq!(d.resolve(0x10).err(), Some(Missing(0x10)));
+    /// A safe adapter owns captured state and has no FFI pointer obligations.
+    pub fn register_override<F>(
+        &mut self,
+        addr: u32,
+        name: impl Into<String>,
+        f: F,
+    ) -> Option<Override>
+    where
+        F: Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault>
+            + Send
+            + Sync
+            + 'static,
+    {
+        self.register_override_handler(addr, name.into(), Handler::Rust(Arc::new(f)))
+    }
+
+    /// Only exact validated PCs are accepted. `start_pc` selects the owner's
+    /// generated label; it is not interpreted as an address interval.
+    pub fn register_resume(
+        &mut self,
+        pc: u32,
+        owner: u32,
+        start_pc: u32,
+    ) -> Result<(), RegistrationError> {
+        if !self.generated.contains_key(&owner) {
+            return Err(RegistrationError::MissingOwner(owner));
+        }
+        if self.resumes.contains_key(&pc) {
+            return Err(RegistrationError::DuplicateResume(pc));
+        }
+        self.resumes.insert(pc, (owner, start_pc));
+        Ok(())
+    }
+    pub fn set_enabled(&mut self, addr: u32, enabled: bool) -> bool {
+        self.overrides
+            .get_mut(&addr)
+            .map(|o| o.enabled = enabled)
+            .is_some()
+    }
+    pub fn override_name(&self, addr: u32) -> Option<&str> {
+        self.overrides.get(&addr).map(|o| o.name.as_str())
+    }
+    pub(crate) fn resolve(&self, addr: u32) -> Option<Handler> {
+        self.overrides
+            .get(&addr)
+            .filter(|o| o.enabled)
+            .map(|o| o.handler.clone())
+            .or_else(|| self.resolve_original(addr))
+    }
+    pub(crate) fn resolve_original(&self, addr: u32) -> Option<Handler> {
+        self.generated.get(&addr).cloned()
+    }
+    pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32)> {
+        let &(owner, selector) = self.resumes.get(&pc)?;
+        Some((self.resolve_original(owner)?, selector))
     }
 }

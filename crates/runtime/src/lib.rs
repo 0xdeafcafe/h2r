@@ -1,14 +1,28 @@
-//! Runtime the recompiled code links against.
-//!
-//! Nothing runs yet. This crate fixes the shapes that both the generated
-//! code and the hand-written Rust overrides are written against: guest
-//! memory, CPU state, and the dispatch table that decides per address
-//! whether the generated or the rewritten version of a function runs.
+//! Native runtime for the C11 lifter. Guest pointers remain 32-bit addresses;
+//! versioned C types transport canonical state and explicit control transfers.
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(unsafe_code)]
 
+pub mod abi;
+pub mod atomic;
+mod continuation;
 pub mod cpu;
 pub mod dispatch;
+pub mod events;
+pub mod exec;
+#[allow(unsafe_code)]
+pub mod ffi;
 pub mod guest;
+mod handler;
+pub mod kernel;
+pub mod loader;
+pub mod runner;
+pub mod services;
 
-pub use cpu::Cpu;
-pub use dispatch::{Dispatch, GuestFn};
-pub use guest::Guest;
+pub use abi::{GuestFn, TransferAbi};
+pub use cpu::CpuAbi;
+pub use dispatch::Dispatch;
+pub use exec::{Event, ExecCtx, Runner, Runtime};
+pub use ffi::ExecCtxOpaque;
+pub use guest::{Guest, GuestFault};
+pub use loader::{LoadedImage, load_xbe};

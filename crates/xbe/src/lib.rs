@@ -111,6 +111,17 @@ pub struct KernelImport {
     pub ordinal: u32,
 }
 
+/// Guest IMAGE_TLS_DIRECTORY, including zero-filled payload metadata.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlsDirectory {
+    pub raw_start: u32,
+    pub raw_end: u32,
+    pub index_addr: u32,
+    pub callbacks_addr: u32,
+    pub zero_fill: u32,
+    pub characteristics: u32,
+}
+
 pub struct Xbe<'a> {
     data: &'a [u8],
     pub base: u32,
@@ -120,6 +131,8 @@ pub struct Xbe<'a> {
     pub entry: u32,
     pub kernel_thunk: u32,
     pub tls_addr: u32,
+    pub stack_commit: u32,
+    pub tls: Option<TlsDirectory>,
     pub certificate: Certificate,
     pub sections: Vec<Section>,
     pub libraries: Vec<Library>,
@@ -149,6 +162,11 @@ impl<'a> Xbe<'a> {
         }
         let base = u32_at(data, 0x104)?;
         let size_of_headers = u32_at(data, 0x108)?;
+        data.get(..size_of_headers as usize)
+            .ok_or(Error::Truncated {
+                offset: 0,
+                len: size_of_headers as usize,
+            })?;
         let size_of_image = u32_at(data, 0x10C)?;
         let cert_addr = u32_at(data, 0x118)?;
         let section_count = u32_at(data, 0x11C)? as usize;
@@ -168,6 +186,8 @@ impl<'a> Xbe<'a> {
             entry: 0,
             kernel_thunk: 0,
             tls_addr,
+            stack_commit: u32_at(data, 0x130)?,
+            tls: None,
             certificate: Certificate {
                 title_id: 0,
                 title_name: String::new(),
@@ -201,11 +221,14 @@ impl<'a> Xbe<'a> {
         }
 
         let c = header(cert_addr)?;
-        let title = data
-            .get(c + 0xC..c + 0xC + 80)
-            .ok_or(Error::Truncated { offset: c + 0xC, len: 80 })?;
+        let title = data.get(c + 0xC..c + 0xC + 80).ok_or(Error::Truncated {
+            offset: c + 0xC,
+            len: 80,
+        })?;
         let units: Vec<u16> = title
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|p| u16::from_le_bytes([p[0], p[1]]))
             .take_while(|&u| u != 0)
             .collect();
@@ -220,7 +243,9 @@ impl<'a> Xbe<'a> {
             let l = header(library_addr)?;
             for i in 0..library_count {
                 let o = l + i * LIBRARY_VERSION_SIZE;
-                let name = data.get(o..o + 8).ok_or(Error::Truncated { offset: o, len: 8 })?;
+                let name = data
+                    .get(o..o + 8)
+                    .ok_or(Error::Truncated { offset: o, len: 8 })?;
                 xbe.libraries.push(Library {
                     name: cstr(name),
                     major: u16_at(data, o + 8)?,
@@ -236,12 +261,36 @@ impl<'a> Xbe<'a> {
         let (kind, entry, thunk) = KEYS
             .iter()
             .map(|&(k, ek, tk)| (k, entry_enc ^ ek, thunk_enc ^ tk))
-            .find(|&(_, e, _)| xbe.sections.iter().any(|s| s.flags.executable() && s.contains(e)))
+            .find(|&(_, e, _)| {
+                xbe.sections
+                    .iter()
+                    .any(|s| s.flags.executable() && s.contains(e))
+            })
             .ok_or(Error::UnknownKey)?;
         xbe.kind = kind;
         xbe.entry = entry;
         xbe.kernel_thunk = thunk;
+        // Inspection remains available when the directory is in a zero-filled
+        // section tail. The runtime parses it from loaded memory instead.
+        xbe.tls = xbe.tls_directory().ok().flatten();
         Ok(xbe)
+    }
+
+    /// Parse file-backed TLS metadata on demand. BSS-backed directories return
+    /// Unmapped here; they do not prevent parsing other image metadata.
+    pub fn tls_directory(&self) -> Result<Option<TlsDirectory>> {
+        if self.tls_addr == 0 {
+            return Ok(None);
+        }
+        let b = self.bytes_at(self.tls_addr, 24)?;
+        Ok(Some(TlsDirectory {
+            raw_start: u32_at(b, 0)?,
+            raw_end: u32_at(b, 4)?,
+            index_addr: u32_at(b, 8)?,
+            callbacks_addr: u32_at(b, 12)?,
+            zero_fill: u32_at(b, 16)?,
+            characteristics: u32_at(b, 20)?,
+        }))
     }
 
     pub fn data(&self) -> &'a [u8] {
@@ -259,9 +308,15 @@ impl<'a> Xbe<'a> {
     /// File bytes backing `[va, va + len)`. Fails for the zero-filled tail of
     /// a section (vsize > raw_size), which has no file backing.
     pub fn bytes_at(&self, va: u32, len: usize) -> Result<&'a [u8]> {
-        if let Some(o) = va.checked_sub(self.base).filter(|o| *o < self.size_of_headers) {
-            let o = o as usize;
-            return self.data.get(o..o + len).ok_or(Error::Unmapped(va));
+        if let Some(o) = va
+            .checked_sub(self.base)
+            .filter(|o| *o < self.size_of_headers)
+        {
+            let end = (o as usize)
+                .checked_add(len)
+                .filter(|end| *end <= self.size_of_headers as usize)
+                .ok_or(Error::Unmapped(va))?;
+            return self.data.get(o as usize..end).ok_or(Error::Unmapped(va));
         }
         let s = self.section_containing(va).ok_or(Error::Unmapped(va))?;
         let off = (va - s.va) as usize;
@@ -277,7 +332,10 @@ impl<'a> Xbe<'a> {
         let start = s.raw_addr as usize;
         self.data
             .get(start..start + s.raw_size as usize)
-            .ok_or(Error::Truncated { offset: start, len: s.raw_size as usize })
+            .ok_or(Error::Truncated {
+                offset: start,
+                len: s.raw_size as usize,
+            })
     }
 
     pub fn read_u32(&self, va: u32) -> Result<u32> {
@@ -288,14 +346,20 @@ impl<'a> Xbe<'a> {
     /// Kernel thunk table, terminated by a zero slot.
     pub fn kernel_imports(&self) -> Result<Vec<KernelImport>> {
         let mut out = Vec::new();
+        if self.kernel_thunk == 0 {
+            return Ok(out);
+        }
         let mut slot = self.kernel_thunk;
         loop {
             let v = self.read_u32(slot)?;
             if v == 0 {
                 return Ok(out);
             }
-            out.push(KernelImport { slot_va: slot, ordinal: v & 0x7FFF_FFFF });
-            slot += 4;
+            out.push(KernelImport {
+                slot_va: slot,
+                ordinal: v & 0x7FFF_FFFF,
+            });
+            slot = slot.checked_add(4).ok_or(Error::Unmapped(slot))?;
         }
     }
 }
@@ -322,7 +386,11 @@ mod tests {
         put(&mut d, 0x160, 1);
         put(&mut d, 0x164, base + 0x300);
         // section header
-        put(&mut d, 0x200, SectionFlags::EXECUTABLE | SectionFlags::PRELOAD);
+        put(
+            &mut d,
+            0x200,
+            SectionFlags::EXECUTABLE | SectionFlags::PRELOAD,
+        );
         put(&mut d, 0x204, 0x11000);
         put(&mut d, 0x208, 0x100);
         put(&mut d, 0x20C, 0x1000);
@@ -366,8 +434,14 @@ mod tests {
         assert_eq!(
             k,
             [
-                KernelImport { slot_va: 0x11010, ordinal: 1 },
-                KernelImport { slot_va: 0x11014, ordinal: 0xBB },
+                KernelImport {
+                    slot_va: 0x11010,
+                    ordinal: 1
+                },
+                KernelImport {
+                    slot_va: 0x11014,
+                    ordinal: 0xBB
+                },
             ]
         );
     }

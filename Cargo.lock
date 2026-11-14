@@ -1976,7 +1976,16 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "runtime"
 version = "0.1.0"
 dependencies = [
+ "runtime-test-probe",
  "thiserror 2.0.21",
+ "xbe",
+]
+
+[[package]]
+name = "runtime-test-probe"
+version = "0.1.0"
+dependencies = [
+ "runtime",
 ]
 
 [[package]]

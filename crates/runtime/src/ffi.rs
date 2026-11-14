@@ -1,0 +1,406 @@
+//! Audited native boundary. Only this module dereferences foreign pointers.
+//!
+//! Native handlers receive exclusive CPU/context borrows for one invocation.
+//! They must not retain pointers, alias those borrows, unwind, or call helpers
+//! concurrently on the same context. Memory buffers must be valid for `width`
+//! bytes and disjoint from ExecCtx storage. Atomic outputs may alias CpuAbi
+//! after the operation's CPU borrow ends. C never receives a RAM pointer.
+
+use crate::{
+    CpuAbi, Dispatch, Event, ExecCtx, GuestFn, TransferAbi,
+    cpu::ABI_VERSION,
+    dispatch::{Handler, RegistrationError},
+};
+
+/// Incomplete in C. Its pointer is an invocation-scoped handle, not guest data.
+#[repr(C)]
+pub struct ExecCtxOpaque {
+    _private: [u8; 0],
+    _marker: std::marker::PhantomData<(*mut u8, std::marker::PhantomPinned)>,
+}
+
+pub(crate) fn call_native(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
+    // SAFETY: native registration promises the documented ABI; these disjoint
+    // exclusive borrows remain alive for exactly the synchronous call.
+    unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) }
+}
+
+/// Adapter for handwritten native fixtures/bridges. Rust overrides should use
+/// Dispatch::register_override and receive references directly.
+///
+/// # Safety
+/// Pointers must be the live, exclusive pair supplied to the current handler.
+/// `f` must not retain either reference after returning.
+pub(crate) unsafe fn with_context<R>(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    f: impl FnOnce(&mut CpuAbi, &mut ExecCtx) -> R,
+) -> R {
+    // SAFETY: caller establishes validity, exclusivity and lifetime above.
+    unsafe { f(&mut *cpu, &mut *exec.cast::<ExecCtx>()) }
+}
+
+fn status(ctx: &mut ExecCtx, pc: u32, result: Result<(), crate::GuestFault>) -> u32 {
+    match result {
+        Ok(()) => 0,
+        Err(fault) => {
+            let id = ctx.emit(Event::MemoryFault { pc, fault });
+            // Generated code must stop at the first failed access. Preserve
+            // that instruction's fault if a broken handler continues issuing
+            // helpers; later faults are ordinary, evictable diagnostics.
+            ctx.pending_fault.get_or_insert(id);
+            id
+        }
+    }
+}
+
+fn invalid(
+    ctx: &mut ExecCtx,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    access: crate::guest::Access,
+    reason: crate::guest::FaultReason,
+) -> u32 {
+    status(
+        ctx,
+        pc,
+        Err(crate::GuestFault {
+            addr,
+            len: width as usize,
+            access,
+            reason,
+        }),
+    )
+}
+
+/// Read 1, 2, 4, 8, 10 or 16 little-endian bytes. Returns zero on success or
+/// an ExecCtx event id on fault; failure leaves the host output untouched.
+/// `alignment` is one for ordinary accesses, 16 for MOVAPS, etc.
+///
+/// # Safety
+/// `exec` is the current exclusive handle. `out` is writable for `width`
+/// bytes, nonoverlapping with the context, and valid until this call returns.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_read(
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    alignment: u32,
+    out: *mut u8,
+) -> u32 {
+    // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    if !matches!(width, 1 | 2 | 4 | 8 | 10 | 16) {
+        return invalid(
+            ctx,
+            pc,
+            addr,
+            width,
+            crate::guest::Access::Read,
+            crate::guest::FaultReason::InvalidWidth,
+        );
+    }
+    if out.is_null() {
+        return invalid(
+            ctx,
+            pc,
+            addr,
+            width,
+            crate::guest::Access::Read,
+            crate::guest::FaultReason::InvalidBuffer,
+        );
+    }
+    let mut bytes = [0u8; 16];
+    let result = ctx
+        .memory()
+        .read_bytes(addr, &mut bytes[..width as usize], alignment);
+    let result = status(ctx, pc, result);
+    if result == 0 {
+        // SAFETY: caller provides width writable bytes; local temporary cannot
+        // overlap that buffer. No guest-memory pointer escapes the lock.
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, width as usize);
+        }
+    }
+    result
+}
+
+/// Write all bytes atomically with respect to ordinary guest/HLE accesses.
+/// The status and alignment rules match h2abi_v1_read.
+///
+/// # Safety
+/// `exec` is the current exclusive handle. `value` is readable for `width`
+/// bytes and disjoint from the context throughout this call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_write(
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    alignment: u32,
+    value: *const u8,
+) -> u32 {
+    // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    if !matches!(width, 1 | 2 | 4 | 8 | 10 | 16) {
+        return invalid(
+            ctx,
+            pc,
+            addr,
+            width,
+            crate::guest::Access::Write,
+            crate::guest::FaultReason::InvalidWidth,
+        );
+    }
+    if value.is_null() {
+        return invalid(
+            ctx,
+            pc,
+            addr,
+            width,
+            crate::guest::Access::Write,
+            crate::guest::FaultReason::InvalidBuffer,
+        );
+    }
+    let mut bytes = [0u8; 16];
+    // SAFETY: width was bounded above; source validity is the caller's contract.
+    unsafe {
+        std::ptr::copy_nonoverlapping(value, bytes.as_mut_ptr(), width as usize);
+    }
+    let result = ctx
+        .memory()
+        .write_bytes(addr, &bytes[..width as usize], alignment);
+    status(ctx, pc, result)
+}
+
+/// Typed runtime identity, distinct from a generated object's C version probe.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RuntimeAbiVersion(u32);
+impl RuntimeAbiVersion {
+    pub const fn get(self) -> u32 {
+        self.0
+    }
+}
+
+pub fn runtime_abi_version() -> RuntimeAbiVersion {
+    RuntimeAbiVersion(ABI_VERSION)
+}
+
+// C retains its existing scalar query ABI. Keeping this typed export private
+// prevents accidentally registering it as a generated object's version probe.
+#[unsafe(export_name = "h2abi_v1_version")]
+extern "C" fn runtime_version_export() -> RuntimeAbiVersion {
+    runtime_abi_version()
+}
+
+/// Compatibility query for Rust callers. It deliberately uses the Rust ABI;
+/// only generated object probes have the GeneratedAbiVersion C signature.
+///
+/// ```compile_fail
+/// use runtime::ffi::{h2abi_v1_version, GeneratedAbiVersion};
+/// let wrong_probe: GeneratedAbiVersion = h2abi_v1_version;
+/// ```
+///
+/// ```compile_fail
+/// use runtime::ffi::{runtime_abi_version, GeneratedAbiVersion};
+/// let wrong_probe: GeneratedAbiVersion = runtime_abi_version;
+/// ```
+pub fn h2abi_v1_version() -> u32 {
+    runtime_abi_version().get()
+}
+
+impl Dispatch {
+    /// # Safety
+    /// `f` must implement the ABI v1 pointer, lifetime and no-unwind contract
+    /// in ffi.rs and h2abi.h. Its code must remain loaded while registered.
+    /// The supplied version must describe the compiled object, not the runtime.
+    pub unsafe fn register_generated(
+        &mut self,
+        addr: u32,
+        version: u32,
+        f: GuestFn,
+    ) -> Result<(), RegistrationError> {
+        if version != ABI_VERSION {
+            return Err(RegistrationError::AbiVersion(version));
+        }
+        self.register_generated_handler(addr, Handler::Native(f))
+    }
+
+    /// # Safety
+    /// Same obligations as `register_generated`.
+    pub unsafe fn register_native_override(
+        &mut self,
+        addr: u32,
+        name: impl Into<String>,
+        version: u32,
+        f: GuestFn,
+    ) -> Result<Option<crate::dispatch::Override>, RegistrationError> {
+        if version != ABI_VERSION {
+            return Err(RegistrationError::AbiVersion(version));
+        }
+        Ok(self.register_override_handler(addr, name.into(), Handler::Native(f)))
+    }
+}
+
+/// ABI probe exported by a generated object, compiled with that object's header.
+pub type GeneratedAbiVersion = unsafe extern "C" fn() -> u32;
+impl Dispatch {
+    /// Register using the generated object's compiled-in version, rather than
+    /// asking the runtime to compare its own version with itself.
+    ///
+    /// # Safety
+    /// Both functions must remain loaded and obey their C ABI contracts.
+    pub unsafe fn register_generated_object(
+        &mut self,
+        addr: u32,
+        object_version: GeneratedAbiVersion,
+        f: GuestFn,
+    ) -> Result<(), RegistrationError> {
+        // SAFETY: caller supplies a loaded object version probe.
+        let version = unsafe { object_version() };
+        // SAFETY: caller also establishes the native handler contract.
+        unsafe { self.register_generated(addr, version, f) }
+    }
+}
+
+/// End all CPU/context borrows before storing the output. A C caller may pass
+/// a CpuAbi field as `out`; the final output store intentionally wins over any
+/// earlier update of that field by the instruction helper.
+unsafe fn atomic_output(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    out: *mut u32,
+    operation: impl FnOnce(&mut CpuAbi, &mut ExecCtx) -> Result<u32, crate::GuestFault>,
+) -> u32 {
+    if out.is_null() {
+        // SAFETY: caller supplies the live context; CPU is not borrowed here.
+        let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+        return invalid(
+            ctx,
+            pc,
+            addr,
+            width,
+            crate::guest::Access::Write,
+            crate::guest::FaultReason::InvalidBuffer,
+        );
+    }
+    // SAFETY: the caller supplies the exclusive invocation pair. The closure
+    // returns an owned result, so no reference to CPU/context escapes this call.
+    let result = unsafe { with_context(cpu, exec, operation) };
+    match result {
+        Ok(old) => {
+            // SAFETY: out is writable, disjoint from ExecCtx, and may alias CPU
+            // now that all reborrowed Rust CPU references have ended.
+            unsafe {
+                std::ptr::write_unaligned(out, old);
+            }
+            0
+        }
+        Err(fault) => {
+            // SAFETY: the earlier context borrow has ended; out stays untouched.
+            let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+            status(ctx, pc, Err(fault))
+        }
+    }
+}
+
+/// Apply locked 8/16/32-bit arithmetic/logic and return the old memory operand.
+///
+/// # Safety
+/// CPU/context are the current pair; out is writable for a u32 and disjoint
+/// from the context. It may point into CpuAbi; the output store occurs last.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_atomic_rmw(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    op: u32,
+    operand: u32,
+    out: *mut u32,
+) -> u32 {
+    // SAFETY: pointer validity and aliasing requirements are the caller's contract.
+    unsafe {
+        atomic_output(cpu, exec, pc, addr, width, out, |cpu, ctx| {
+            let op = crate::atomic::AtomicOp::from_tag(op).ok_or(crate::GuestFault {
+                addr,
+                len: width as usize,
+                access: crate::guest::Access::Write,
+                reason: crate::guest::FaultReason::InvalidOperation,
+            })?;
+            ctx.memory().atomic_rmw(cpu, addr, width, op, operand)
+        })
+    }
+}
+
+/// Exchange an 8/16/32-bit operand under one memory guard.
+///
+/// # Safety
+/// Same pointer and output-alias contract as h2abi_v1_atomic_rmw.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_xchg(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    value: u32,
+    out: *mut u32,
+) -> u32 {
+    // SAFETY: caller supplies valid pointers, permitting output to alias CPU.
+    unsafe {
+        atomic_output(cpu, exec, pc, addr, width, out, |_, ctx| {
+            ctx.memory().atomic_xchg(addr, width, value)
+        })
+    }
+}
+
+/// CMPXCHG compares AL/AX/EAX, updates arithmetic flags, and loads the old
+/// memory operand into that accumulator slice on failure.
+///
+/// # Safety
+/// Same pointer and output-alias contract as h2abi_v1_atomic_rmw.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_cmpxchg(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    replacement: u32,
+    out: *mut u32,
+) -> u32 {
+    // SAFETY: caller supplies valid pointers, permitting output to alias CPU.
+    unsafe {
+        atomic_output(cpu, exec, pc, addr, width, out, |cpu, ctx| {
+            ctx.memory().atomic_cmpxchg(cpu, addr, width, replacement)
+        })
+    }
+}
+
+/// CMPXCHG8B uses EDX:EAX and ECX:EBX and changes only ZF.
+///
+/// # Safety
+/// CPU/context must be the current exclusive invocation pair.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_cmpxchg8b(
+    cpu: *mut CpuAbi,
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+) -> u32 {
+    // SAFETY: caller provides the exclusive invocation pair.
+    unsafe {
+        with_context(cpu, exec, |cpu, ctx| {
+            let result = ctx.memory().atomic_cmpxchg8b(cpu, addr);
+            status(ctx, pc, result)
+        })
+    }
+}
