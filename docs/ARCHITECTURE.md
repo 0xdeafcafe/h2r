@@ -96,6 +96,7 @@ Status "done" means the crate exists on master and does what its row says;
 | `hs`      | HaloScript scenario tables, builtin catalog and typed expression API; no VM yet ([haloscript.md](haloscript.md)) | done, decoding only |
 | `shaders` | Xbox vertex microcode and register-combiner translation to WGSL ([shaders.md](shaders.md)) | done |
 | `audio`   | DirectSound replacement foundation ([audio.md](audio.md)) | done, foundation only |
+| `dsound`  | Guest-facing DirectSound replacement over `audio` ([dsound.md](dsound.md)) | done |
 | `input`   | XInput (XAPI) controller replacement foundation ([input.md](input.md)) | done, foundation only |
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
 | `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
@@ -109,7 +110,6 @@ Planned crates, not on master yet and in progress elsewhere:
 | `kernel`     | Rust replacement for the kernel imports ([kernel-imports.md](kernel-imports.md)) |
 | `lift`, `ir`, `emit` | Lifter pipeline: x86 to IR to generated code ([LIFTER.md](LIFTER.md)) |
 | `d3d`        | D3D8 API surface over `gfx` |
-| `dsound`     | DirectSound API surface over `audio` |
 | `xapi`       | XAPI API surface over `input` |
 | `hs` runtime | HaloScript VM over the `hs` decoder |
 | `viewer`     | Map and tag viewer |

@@ -1,0 +1,11 @@
+[package]
+name = "dsound"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Guest-facing DirectSound replacement for h2recomp: guest memory in, crates/audio out"
+
+[dependencies]
+# The device (cpal) feature is the host's business, not the shim's.
+audio = { path = "../audio", default-features = false }
+thiserror.workspace = true

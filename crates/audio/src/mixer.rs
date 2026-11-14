@@ -85,6 +85,16 @@ impl Mixer {
         self.streams.remove(&id)
     }
 
+    /// Number of buffers held by the mixer, playing or not.
+    pub fn buffer_count(&self) -> usize {
+        self.buffers.len()
+    }
+
+    /// Number of streams held by the mixer, with queued data or not.
+    pub fn stream_count(&self) -> usize {
+        self.streams.len()
+    }
+
     /// Number of buffers currently playing plus streams with queued data.
     pub fn active_voices(&self) -> usize {
         self.buffers.values().filter(|b| b.is_playing()).count()
@@ -220,6 +230,19 @@ mod tests {
         let id = m.add_buffer(buf(&[1; 2], 8000));
         assert!(m.remove_buffer(id).is_some());
         assert!(m.buffer(id).is_none());
+    }
+
+    #[test]
+    fn counts_include_stopped_voices() {
+        let mut m = Mixer::new(8000);
+        assert_eq!((m.buffer_count(), m.stream_count()), (0, 0));
+        let id = m.add_buffer(buf(&[1; 2], 8000));
+        let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 8000).unwrap()).unwrap());
+        assert_eq!((m.buffer_count(), m.stream_count()), (1, 1));
+        assert_eq!(m.active_voices(), 0, "stopped voices are still counted");
+        m.remove_buffer(id);
+        m.remove_stream(sid);
+        assert_eq!((m.buffer_count(), m.stream_count()), (0, 0));
     }
 
     #[test]
