@@ -1,0 +1,21 @@
+[package]
+name = "oracle"
+description = "Independent x86-32 instruction oracle for synthetic differential fixtures"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+default = []
+unicorn = ["dep:unicorn-engine"]
+
+[dependencies]
+iced-x86 = { version = "1.22", default-features = false, features = ["std", "decoder", "instr_info"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicorn-engine = { version = "=2.1.5", optional = true, default-features = false, features = ["arch_x86"] }
+
+[[bin]]
+name = "oracle-fixtures"
+path = "src/bin/fixtures.rs"
+required-features = ["unicorn"]
