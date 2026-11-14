@@ -1,0 +1,980 @@
+use crate::{
+    ATTR_ARCHIVE, ATTR_DIRECTORY, ATTR_NORMAL, BasicInfo, DirectoryEntry, Error, FATX_ATTRIBUTES,
+    FATX_CLUSTER_SIZE, FATX_MAX_DIRECTORY_ENTRIES, FATX_MAX_FILE_SIZE, FATX_MAX_NAME, Metadata,
+    Result, Timestamp, VolumeInfo,
+    backend::Backend,
+    path::{components, validate_fatx_name, validate_fatx_path},
+};
+use std::{
+    cell::RefCell,
+    collections::{BTreeMap, BTreeSet},
+    fs::{self, File, OpenOptions},
+    io::{Read, Seek, SeekFrom, Write},
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::SystemTime,
+};
+
+#[derive(Clone)]
+struct Child {
+    name: String,
+    host: fs::Metadata,
+}
+struct DirectoryIndex {
+    eligible_count: usize,
+    modified: Option<SystemTime>,
+    children: Arc<BTreeMap<String, Vec<Child>>>,
+}
+#[derive(Default)]
+struct Cache {
+    directories: BTreeMap<PathBuf, DirectoryIndex>,
+    used_bytes: Option<u64>,
+    atimes: BTreeMap<String, Timestamp>,
+    dirty_data: BTreeSet<String>,
+    #[cfg(test)]
+    directory_scans: usize,
+    #[cfg(test)]
+    usage_scans: usize,
+    #[cfg(test)]
+    data_syncs: usize,
+}
+
+/// FATX view of a private host directory. Metadata is outside the mounted tree.
+/// One owner must serialize mutations, including direct Backend calls. The Vfs checks access at open.
+pub struct HostBackend {
+    root: PathBuf,
+    metadata_root: PathBuf,
+    capacity: u64,
+    label: String,
+    serial: u32,
+    cache: RefCell<Cache>,
+    #[cfg(test)]
+    next_create_sync_error: std::cell::Cell<Option<Error>>,
+    #[cfg(test)]
+    next_metadata_retire_error: std::cell::Cell<Option<Error>>,
+}
+
+fn host_litter(name: &str) -> bool {
+    name.eq_ignore_ascii_case(".DS_Store")
+        || name.starts_with("._")
+        || name.eq_ignore_ascii_case(".Spotlight-V100")
+        || name.eq_ignore_ascii_case(".fseventsd")
+}
+fn visible_name(name: &str) -> bool {
+    !host_litter(name) && validate_fatx_name(name).is_ok()
+}
+fn representable(host: &fs::Metadata) -> bool {
+    if !host.is_dir() && !host.is_file() {
+        return false;
+    }
+    if host.is_file() && host.len() > FATX_MAX_FILE_SIZE {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if host.is_file() && host.nlink() != 1 {
+            return false;
+        }
+    }
+    true
+}
+fn allocated(host: &fs::Metadata) -> u64 {
+    if host.is_dir() {
+        FATX_CLUSTER_SIZE
+    } else {
+        host.len().div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE
+    }
+}
+fn sync_directory(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all().map_err(Into::into)
+}
+fn durable_create_dirs(path: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut parent = path;
+    while !parent.try_exists()? {
+        missing.push(parent.to_owned());
+        parent = parent.parent().ok_or(Error::InvalidParameter)?;
+    }
+    for directory in missing.into_iter().rev() {
+        fs::create_dir(&directory)?;
+        sync_directory(directory.parent().unwrap())?;
+    }
+    Ok(())
+}
+impl HostBackend {
+    pub fn new(root: impl AsRef<Path>, metadata_root: impl AsRef<Path>) -> Result<Self> {
+        let root = std::path::absolute(root)?;
+        let metadata_root = std::path::absolute(metadata_root)?;
+        durable_create_dirs(&root)?;
+        durable_create_dirs(&metadata_root)?;
+        let root = fs::canonicalize(root)?;
+        let metadata_root = fs::canonicalize(metadata_root)?;
+        if metadata_root.starts_with(&root) || root.starts_with(&metadata_root) {
+            return Err(Error::InvalidParameter);
+        }
+        Ok(Self {
+            root,
+            metadata_root,
+            capacity: 5 * 1024 * 1024 * 1024,
+            label: "Xbox Data".into(),
+            serial: 1,
+            cache: RefCell::new(Cache::default()),
+            #[cfg(test)]
+            next_create_sync_error: std::cell::Cell::new(None),
+            #[cfg(test)]
+            next_metadata_retire_error: std::cell::Cell::new(None),
+        })
+    }
+    pub fn with_volume(mut self, label: impl Into<String>, serial: u32, capacity: u64) -> Self {
+        self.label = label.into();
+        self.serial = serial;
+        self.capacity = capacity / FATX_CLUSTER_SIZE * FATX_CLUSTER_SIZE;
+        self
+    }
+    /// Cache names, not guest metadata. A directory timestamp change refreshes its index.
+    fn children(&self, directory: &Path) -> Result<Arc<BTreeMap<String, Vec<Child>>>> {
+        let host = fs::symlink_metadata(directory)?;
+        if !host.is_dir() {
+            return Err(Error::ObjectPathNotFound);
+        }
+        let modified = host.modified().ok();
+        if let Some(index) = self.cache.borrow().directories.get(directory)
+            && modified.is_some()
+            && index.modified == modified
+        {
+            return Ok(index.children.clone());
+        }
+        let mut children: BTreeMap<String, Vec<Child>> = BTreeMap::new();
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if !visible_name(&name) {
+                continue;
+            }
+            let host = fs::symlink_metadata(entry.path())?;
+            children
+                .entry(name.to_ascii_lowercase())
+                .or_default()
+                .push(Child { name, host });
+        }
+        let children = Arc::new(children);
+        let mut cache = self.cache.borrow_mut();
+        #[cfg(test)]
+        {
+            cache.directory_scans += 1;
+        }
+        cache.directories.insert(
+            directory.to_owned(),
+            DirectoryIndex {
+                eligible_count: children
+                    .values()
+                    .filter(|c| c.len() == 1 && representable(&c[0].host))
+                    .count(),
+                modified,
+                children: children.clone(),
+            },
+        );
+        Ok(children)
+    }
+    fn update_parent(&self, host: &Path, exists: bool) -> Result<()> {
+        let parent = host.parent().ok_or(Error::InvalidParameter)?;
+        let name = host
+            .file_name()
+            .and_then(|n| n.to_str())
+            .ok_or(Error::ObjectNameInvalid)?;
+        let metadata = if exists {
+            Some(fs::symlink_metadata(host)?)
+        } else {
+            None
+        };
+        let modified = fs::symlink_metadata(parent)?.modified().ok();
+        let mut cache = self.cache.borrow_mut();
+        if let Some(index) = cache.directories.get_mut(parent) {
+            let key = name.to_ascii_lowercase();
+            let entries = Arc::make_mut(&mut index.children);
+            let old = entries
+                .get(&key)
+                .is_some_and(|c| c.len() == 1 && representable(&c[0].host));
+            if let Some(host) = metadata {
+                entries.insert(
+                    key.clone(),
+                    vec![Child {
+                        name: name.to_owned(),
+                        host,
+                    }],
+                );
+            } else {
+                entries.remove(&key);
+            }
+            let new = entries
+                .get(&key)
+                .is_some_and(|c| c.len() == 1 && representable(&c[0].host));
+            index.eligible_count = index.eligible_count - usize::from(old) + usize::from(new);
+            index.modified = modified;
+        }
+        Ok(())
+    }
+    fn resolve(&self, path: &str, allow_missing_leaf: bool) -> Result<PathBuf> {
+        validate_fatx_path(path)?;
+        let parts = components(path)?;
+        let mut host = self.root.clone();
+        for (i, part) in parts.iter().enumerate() {
+            let children = self.children(&host)?;
+            let found = children.get(&part.to_ascii_lowercase());
+            if let Some(found) = found {
+                if found.len() != 1 {
+                    return Err(Error::FileCorrupt);
+                }
+                let child = &found[0];
+                if child.host.file_type().is_symlink() {
+                    return Err(Error::AccessDenied);
+                }
+                host.push(&child.name);
+            } else if allow_missing_leaf && i + 1 == parts.len() && !host_litter(part) {
+                host.push(part);
+            } else {
+                return Err(if i + 1 == parts.len() {
+                    Error::ObjectNameNotFound
+                } else {
+                    Error::ObjectPathNotFound
+                });
+            }
+        }
+        Ok(host)
+    }
+    fn metadata_path(&self, path: &str) -> PathBuf {
+        let mut result = self.metadata_root.clone();
+        for part in path.split('\\').filter(|p| !p.is_empty()) {
+            result.push(
+                part.to_ascii_lowercase()
+                    .bytes()
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>(),
+            );
+        }
+        result.push("record");
+        result
+    }
+    fn retire_metadata(&self, path: &str) -> Result<()> {
+        #[cfg(test)]
+        if let Some(error) = self.next_metadata_retire_error.take() {
+            return Err(error);
+        }
+        let state = self.metadata_path(path).parent().unwrap().to_owned();
+        match fs::remove_dir_all(&state) {
+            Ok(()) => sync_directory(state.parent().unwrap()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+    fn remove_litter(&self, directory: &Path) -> Result<()> {
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            if !entry.file_name().to_str().is_some_and(host_litter) {
+                continue;
+            }
+            // Inspect the link itself: Finder litter may be a link to unrelated data.
+            if fs::symlink_metadata(entry.path())?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+        Ok(())
+    }
+    fn sync_created_parent(&self, parent: &Path) {
+        #[cfg(test)]
+        let injected = self.next_create_sync_error.take();
+        #[cfg(not(test))]
+        let injected: Option<Error> = None;
+        let synced = injected.map_or_else(|| sync_directory(parent), Err);
+        if let Err(error) = synced {
+            eprintln!("vfs: created entry, but parent directory sync failed: {error}");
+        }
+    }
+    fn host_basic(host: &fs::Metadata) -> Result<BasicInfo> {
+        let modified = Timestamp::from_system(host.modified()?).fatx();
+        Ok(BasicInfo {
+            attributes: if host.is_dir() {
+                ATTR_DIRECTORY
+            } else {
+                ATTR_ARCHIVE
+            },
+            creation_time: host
+                .created()
+                .map(Timestamp::from_system)
+                .unwrap_or(modified)
+                .fatx(),
+            last_access_time: host
+                .accessed()
+                .map(Timestamp::from_system)
+                .unwrap_or(modified)
+                .fatx(),
+            last_write_time: modified,
+            change_time: modified,
+        })
+    }
+    fn load_basic(&self, path: &str, host: &fs::Metadata) -> Result<BasicInfo> {
+        let mut info = match fs::read(self.metadata_path(path)) {
+            Ok(bytes)
+                if bytes.len() == 40
+                    && &bytes[..4] == b"HVF1"
+                    && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) & !FATX_ATTRIBUTES
+                        == 0 =>
+            {
+                let time = |at| {
+                    Timestamp(u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())).fatx()
+                };
+                BasicInfo {
+                    attributes: u32::from_le_bytes(bytes[4..8].try_into().unwrap()),
+                    creation_time: time(8),
+                    last_access_time: time(16),
+                    last_write_time: time(24),
+                    change_time: time(32),
+                }
+            }
+            Ok(_) => Self::host_basic(host)?, // Torn/old metadata must never hide intact game data.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::host_basic(host)?,
+            Err(e) => return Err(e.into()),
+        };
+        info.attributes =
+            (info.attributes & !ATTR_DIRECTORY) | if host.is_dir() { ATTR_DIRECTORY } else { 0 };
+        if let Some(atime) = self.cache.borrow().atimes.get(&path.to_ascii_lowercase()) {
+            info.last_access_time = *atime;
+        }
+        Ok(info)
+    }
+    fn store_basic(&self, path: &str, info: BasicInfo) -> Result<()> {
+        let mut bytes = Vec::with_capacity(40);
+        bytes.extend_from_slice(b"HVF1");
+        bytes.extend_from_slice(&info.attributes.to_le_bytes());
+        for time in [
+            info.creation_time,
+            info.last_access_time,
+            info.last_write_time,
+            info.change_time,
+        ] {
+            bytes.extend_from_slice(&time.fatx().0.to_le_bytes());
+        }
+        let target = self.metadata_path(path);
+        let parent = target.parent().unwrap();
+        durable_create_dirs(parent)?;
+        let staged = target.with_extension("new");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&staged)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(staged, &target)?;
+        sync_directory(parent)?;
+        self.cache
+            .borrow_mut()
+            .atimes
+            .remove(&path.to_ascii_lowercase());
+        Ok(())
+    }
+    fn flush_atime(&self, path: &str) -> Result<()> {
+        if !self
+            .cache
+            .borrow()
+            .atimes
+            .contains_key(&path.to_ascii_lowercase())
+        {
+            return Ok(());
+        }
+        let host = self.resolve(path, false)?;
+        let metadata = fs::symlink_metadata(host)?;
+        self.store_basic(path, self.load_basic(path, &metadata)?)
+    }
+    fn metadata(&self, path: &str, host_path: &Path) -> Result<Metadata> {
+        let host = fs::symlink_metadata(host_path)?;
+        if !representable(&host) {
+            return Err(if host.is_file() && host.len() > FATX_MAX_FILE_SIZE {
+                Error::FileTooLarge
+            } else {
+                Error::AccessDenied
+            });
+        }
+        Ok(Metadata {
+            basic: self.load_basic(path, &host)?,
+            end_of_file: if host.is_dir() { 0 } else { host.len() },
+            allocation_size: allocated(&host),
+        })
+    }
+    fn mutable_file(&self, path: &str) -> Result<(PathBuf, Metadata)> {
+        let host = self.resolve(path, false)?;
+        let info = self.metadata(path, &host)?;
+        if info.is_directory() {
+            return Err(Error::FileIsADirectory);
+        }
+        // Desired access was granted at open; later READONLY changes cannot revoke a handle's rights.
+        Ok((host, info))
+    }
+    fn used_bytes(&self) -> Result<u64> {
+        if let Some(used) = self.cache.borrow().used_bytes {
+            return Ok(used);
+        }
+        let mut bytes = 0u64;
+        let mut dirs = vec![self.root.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entries in self.children(&dir)?.values() {
+                // Ambiguous or unrepresentable host objects are outside the guest allocation model.
+                if entries.len() != 1 {
+                    continue;
+                }
+                let entry = &entries[0];
+                if !representable(&entry.host) {
+                    continue;
+                }
+                bytes = bytes.saturating_add(allocated(&entry.host));
+                if entry.host.is_dir() {
+                    dirs.push(dir.join(&entry.name));
+                }
+            }
+        }
+        let mut cache = self.cache.borrow_mut();
+        #[cfg(test)]
+        {
+            cache.usage_scans += 1;
+        }
+        cache.used_bytes = Some(bytes);
+        Ok(bytes)
+    }
+    fn update_usage(&self, before: u64, after: u64) {
+        let mut cache = self.cache.borrow_mut();
+        if let Some(used) = &mut cache.used_bytes {
+            *used = used.saturating_sub(before).saturating_add(after);
+        }
+    }
+    fn check_growth(&self, old: u64, new: u64) -> Result<()> {
+        if new > FATX_MAX_FILE_SIZE {
+            return Err(Error::FileTooLarge);
+        }
+        let growth = new
+            .div_ceil(FATX_CLUSTER_SIZE)
+            .saturating_sub(old.div_ceil(FATX_CLUSTER_SIZE))
+            * FATX_CLUSTER_SIZE;
+        if growth > 0 && self.used_bytes()?.saturating_add(growth) > self.capacity {
+            return Err(Error::DiskFull);
+        }
+        Ok(())
+    }
+    fn touch(&self, path: &str, mut basic: BasicInfo) -> Result<()> {
+        let now = Timestamp::now();
+        basic.last_write_time = now;
+        basic.change_time = now;
+        basic.attributes |= ATTR_ARCHIVE;
+        self.store_basic(path, basic)
+    }
+}
+impl Backend for HostBackend {
+    fn read_only(&self) -> bool {
+        false
+    }
+    fn stat(&mut self, path: &str) -> Result<Metadata> {
+        self.metadata(path, &self.resolve(path, false)?)
+    }
+    fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
+        let dir = self.resolve(path, false)?;
+        if !self.metadata(path, &dir)?.is_directory() {
+            return Err(Error::InvalidParameter);
+        }
+        let mut out = Vec::new();
+        for children in self.children(&dir)?.values() {
+            if children.len() != 1 {
+                return Err(Error::FileCorrupt);
+            }
+            let child = &children[0];
+            if !representable(&child.host) {
+                continue;
+            }
+            let relative = if path.is_empty() {
+                child.name.clone()
+            } else {
+                format!("{path}\\{}", child.name)
+            };
+            let metadata = match self.metadata(&relative, &dir.join(&child.name)) {
+                Ok(info) => info,
+                Err(
+                    Error::AccessDenied
+                    | Error::FileTooLarge
+                    | Error::FileCorrupt
+                    | Error::ObjectNameNotFound,
+                ) => continue,
+                Err(e) => return Err(e),
+            };
+            out.push(DirectoryEntry {
+                name: child.name.clone(),
+                metadata,
+            });
+        }
+        Ok(out)
+    }
+    fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize> {
+        let host = self.resolve(path, false)?;
+        let info = self.metadata(path, &host)?;
+        if info.is_directory() {
+            return Err(Error::FileIsADirectory);
+        }
+        if buffer.is_empty() || offset >= info.end_of_file {
+            return Ok(0);
+        }
+        let mut file = File::open(host)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let read = file.read(buffer)?;
+        if read != 0 {
+            self.cache
+                .borrow_mut()
+                .atimes
+                .insert(path.to_ascii_lowercase(), Timestamp::now());
+        }
+        Ok(read)
+    }
+    fn create(&mut self, path: &str, directory: bool, attributes: u32) -> Result<()> {
+        if attributes & !(FATX_ATTRIBUTES | ATTR_NORMAL) != 0 {
+            return Err(Error::InvalidParameter);
+        }
+        if path.is_empty() {
+            return Err(Error::ObjectNameCollision);
+        }
+        let host = self.resolve(path, true)?;
+        if host.try_exists()? {
+            return Err(Error::ObjectNameCollision);
+        }
+        // Count names/kinds, not sidecar metadata, so damaged/unrepresentable neighbors cannot block create.
+        let parent = host.parent().ok_or(Error::InvalidParameter)?;
+        self.children(parent)?;
+        let count = self.cache.borrow().directories[parent].eligible_count;
+        if count >= FATX_MAX_DIRECTORY_ENTRIES {
+            return Err(Error::DiskFull);
+        }
+        let growth = if directory { FATX_CLUSTER_SIZE } else { 0 };
+        if self.used_bytes()?.saturating_add(growth) > self.capacity {
+            return Err(Error::DiskFull);
+        }
+        // A successful directory unlink may leave metadata if its cleanup failed.
+        // Never attach that orphaned subtree to a newly created object.
+        self.retire_metadata(path)?;
+        if directory {
+            fs::create_dir(&host)?;
+        } else {
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&host)?;
+        }
+        self.update_parent(&host, true)?;
+        let attributes = (attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY)
+            | if directory {
+                ATTR_DIRECTORY
+            } else {
+                ATTR_ARCHIVE
+            };
+        if let Err(e) = self.store_basic(path, BasicInfo::new(attributes)) {
+            if directory {
+                let _ = fs::remove_dir(&host);
+            } else {
+                let _ = fs::remove_file(&host);
+            }
+            // A rollback failure leaves an entry: refresh its cached kind/count without hiding the original error.
+            let _ = self.update_parent(&host, host.try_exists().unwrap_or(true));
+            return Err(e);
+        }
+        self.update_usage(0, growth);
+        if !directory {
+            self.cache
+                .borrow_mut()
+                .dirty_data
+                .insert(path.to_ascii_lowercase());
+        }
+        self.sync_created_parent(parent);
+        Ok(())
+    }
+    fn write_at(&mut self, path: &str, offset: u64, buffer: &[u8]) -> Result<usize> {
+        let (host, info) = self.mutable_file(path)?;
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        let end = offset
+            .checked_add(buffer.len() as u64)
+            .ok_or(Error::FileTooLarge)?;
+        self.used_bytes()?;
+        self.check_growth(info.end_of_file, end.max(info.end_of_file))?;
+        let mut file = OpenOptions::new().write(true).open(&host)?;
+        file.seek(SeekFrom::Start(offset))?;
+        let written = file.write(buffer)?;
+        if written != 0 {
+            self.cache
+                .borrow_mut()
+                .dirty_data
+                .insert(path.to_ascii_lowercase());
+        }
+        let after = info
+            .end_of_file
+            .max(offset + written as u64)
+            .div_ceil(FATX_CLUSTER_SIZE)
+            * FATX_CLUSTER_SIZE;
+        self.update_usage(info.allocation_size, after);
+        self.update_parent(&host, true)?;
+        self.touch(path, info.basic)?;
+        Ok(written)
+    }
+    fn set_len(&mut self, path: &str, size: u64) -> Result<()> {
+        let (host, info) = self.mutable_file(path)?;
+        self.used_bytes()?;
+        self.check_growth(info.end_of_file, size)?;
+        OpenOptions::new().write(true).open(&host)?.set_len(size)?;
+        self.cache
+            .borrow_mut()
+            .dirty_data
+            .insert(path.to_ascii_lowercase());
+        self.update_usage(
+            info.allocation_size,
+            size.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE,
+        );
+        self.update_parent(&host, true)?;
+        self.touch(path, info.basic)
+    }
+    fn set_basic_info(&mut self, path: &str, mut basic: BasicInfo) -> Result<()> {
+        let metadata = self.stat(path)?;
+        if basic.attributes & !(FATX_ATTRIBUTES | ATTR_NORMAL) != 0
+            || basic.is_directory() != metadata.is_directory()
+        {
+            return Err(Error::InvalidParameter);
+        }
+        basic.attributes &= FATX_ATTRIBUTES;
+        self.store_basic(path, basic)
+    }
+    fn remove(&mut self, path: &str) -> Result<()> {
+        if path.is_empty() {
+            return Err(Error::AccessDenied);
+        }
+        let host = self.resolve(path, false)?;
+        let info = self.metadata(path, &host)?;
+        if info.is_directory() && !self.read_directory(path)?.is_empty() {
+            return Err(Error::DirectoryNotEmpty);
+        }
+        if info.is_directory() {
+            self.remove_litter(&host)?;
+            // ENOTEMPTY or another host error must preserve the directory's metadata.
+            fs::remove_dir(&host)?;
+            self.cache.borrow_mut().directories.remove(&host);
+        } else {
+            self.retire_metadata(path)?;
+            fs::remove_file(&host)?;
+        }
+        self.cache
+            .borrow_mut()
+            .atimes
+            .remove(&path.to_ascii_lowercase());
+        self.cache
+            .borrow_mut()
+            .dirty_data
+            .remove(&path.to_ascii_lowercase());
+        self.update_usage(info.allocation_size, 0);
+        self.update_parent(&host, false)?;
+        if info.is_directory()
+            && let Err(error) = self.retire_metadata(path)
+        {
+            eprintln!("vfs: removed directory, but metadata cleanup failed: {error}");
+        }
+        if let Err(error) = sync_directory(host.parent().unwrap()) {
+            eprintln!("vfs: removed entry, but parent directory sync failed: {error}");
+        }
+        Ok(())
+    }
+    fn flush(&mut self, path: &str) -> Result<()> {
+        self.flush_atime(path)?;
+        let host = self.resolve(path, false)?;
+        File::open(host)?.sync_all()?;
+        #[cfg(test)]
+        {
+            self.cache.borrow_mut().data_syncs += 1;
+        }
+        self.cache
+            .borrow_mut()
+            .dirty_data
+            .remove(&path.to_ascii_lowercase());
+        Ok(())
+    }
+    fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {
+        if write_access
+            || self
+                .cache
+                .borrow()
+                .dirty_data
+                .contains(&path.to_ascii_lowercase())
+        {
+            self.flush(path)
+        } else {
+            self.flush_atime(path)
+        }
+    }
+    fn volume_info(&mut self) -> Result<VolumeInfo> {
+        let total = self.capacity / FATX_CLUSTER_SIZE;
+        Ok(VolumeInfo {
+            label: self.label.clone(),
+            filesystem: "FATX",
+            serial: self.serial,
+            read_only: false,
+            bytes_per_sector: 512,
+            sectors_per_allocation_unit: (FATX_CLUSTER_SIZE / 512) as u32,
+            total_allocation_units: total,
+            available_allocation_units: total
+                .saturating_sub(self.used_bytes()? / FATX_CLUSTER_SIZE),
+            maximum_component_name_length: FATX_MAX_NAME as u32,
+        })
+    }
+}
+impl Drop for HostBackend {
+    fn drop(&mut self) {
+        let paths: BTreeSet<_> = self
+            .cache
+            .borrow()
+            .atimes
+            .keys()
+            .cloned()
+            .chain(self.cache.borrow().dirty_data.iter().cloned())
+            .collect();
+        for path in paths {
+            let _ = self.cleanup(&path, false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ATTR_HIDDEN;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "vfs-host-regression-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+        fn backend(&self) -> HostBackend {
+            HostBackend::new(self.0.join("root"), self.0.join("metadata")).unwrap()
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn repeated_reads_defer_atime_record_writes_until_flush() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("data", false, 0).unwrap();
+        backend.write_at("data", 0, b"contents").unwrap();
+        let mut basic = backend.stat("data").unwrap().basic;
+        basic.last_access_time = Timestamp(125_911_584_000_000_000);
+        backend.set_basic_info("data", basic).unwrap();
+        let record = backend.metadata_path("data");
+        let before = fs::read(&record).unwrap();
+        for _ in 0..20 {
+            assert_eq!(backend.read_at("DATA", 0, &mut [0]), Ok(1));
+        }
+        assert_eq!(fs::read(&record).unwrap(), before);
+        assert!(backend.stat("data").unwrap().basic.last_access_time > basic.last_access_time);
+        assert_eq!(backend.cache.borrow().atimes.len(), 1);
+        backend.flush("data").unwrap();
+        assert_ne!(fs::read(record).unwrap(), before);
+        assert!(backend.cache.borrow().atimes.is_empty());
+    }
+
+    #[test]
+    fn growth_and_volume_queries_reuse_usage_and_directory_indexes() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("data", false, 0).unwrap();
+        backend.write_at("data", 0, b"x").unwrap();
+        let (usage_scans, directory_scans) = {
+            let cache = backend.cache.borrow();
+            (cache.usage_scans, cache.directory_scans)
+        };
+        for n in 1..12 {
+            backend
+                .write_at("DATA", n * FATX_CLUSTER_SIZE, b"x")
+                .unwrap();
+            let volume = backend.volume_info().unwrap();
+            assert_eq!(
+                volume.total_allocation_units - volume.available_allocation_units,
+                n + 1
+            );
+        }
+        for n in 0..8 {
+            let name = format!("extra{n}");
+            backend.create(&name, false, 0).unwrap();
+            backend.remove(&name).unwrap();
+        }
+        let cache = backend.cache.borrow();
+        assert_eq!(cache.usage_scans, usage_scans);
+        assert_eq!(cache.directory_scans, directory_scans);
+        drop(cache);
+        backend.set_len("data", 0).unwrap();
+        assert_eq!(
+            backend.volume_info().unwrap().available_allocation_units,
+            backend.volume_info().unwrap().total_allocation_units
+        );
+        backend.remove("data").unwrap();
+        backend.create("folder", true, 0).unwrap();
+        let volume = backend.volume_info().unwrap();
+        assert_eq!(
+            volume.total_allocation_units - volume.available_allocation_units,
+            1
+        );
+        backend.remove("folder").unwrap();
+        let volume = backend.volume_info().unwrap();
+        assert_eq!(
+            volume.total_allocation_units,
+            volume.available_allocation_units
+        );
+    }
+
+    #[test]
+    fn metadata_retirement_failure_preserves_host_data_and_recreation_has_fresh_attributes() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("save", false, ATTR_HIDDEN).unwrap();
+        backend.write_at("save", 0, b"payload").unwrap();
+        let record = backend.metadata_path("save");
+        let state = record.parent().unwrap();
+        let moved = temp.0.join("old-state");
+        fs::rename(state, &moved).unwrap();
+        fs::write(state, b"blocked metadata directory").unwrap();
+        assert!(backend.remove("save").is_err());
+        assert_eq!(fs::read(backend.root.join("save")).unwrap(), b"payload");
+        fs::remove_file(state).unwrap();
+        fs::rename(moved, state).unwrap();
+        backend.remove("save").unwrap();
+        assert!(!state.exists());
+        backend.create("save", false, 0).unwrap();
+        assert_eq!(backend.stat("save").unwrap().basic.attributes, ATTR_ARCHIVE);
+        let bytes = fs::read(&record).unwrap();
+        assert_eq!(bytes.len(), 40);
+        assert_eq!(&bytes[..4], b"HVF1");
+        assert!(!state.join("record.new").exists());
+    }
+    #[test]
+    fn failed_directory_unlink_preserves_metadata_and_litter_cleanup_never_follows_links() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("folder", true, ATTR_HIDDEN).unwrap();
+        let folder = backend.root.join("folder");
+        fs::write(folder.join(".DS_Store"), b"finder").unwrap();
+        fs::write(folder.join("unaddressable:"), b"keep").unwrap();
+        let record = backend.metadata_path("folder");
+        let before = fs::read(&record).unwrap();
+        assert!(backend.read_directory("folder").unwrap().is_empty());
+        assert_eq!(backend.remove("folder"), Err(Error::DirectoryNotEmpty));
+        assert_eq!(fs::read(&record).unwrap(), before);
+        assert_eq!(
+            backend.stat("folder").unwrap().basic.attributes,
+            ATTR_HIDDEN | ATTR_DIRECTORY
+        );
+        assert_eq!(fs::read(folder.join("unaddressable:")).unwrap(), b"keep");
+        fs::remove_file(folder.join("unaddressable:")).unwrap();
+        #[cfg(unix)]
+        {
+            let outside = temp.0.join("outside");
+            fs::create_dir(&outside).unwrap();
+            fs::write(outside.join("payload"), b"private").unwrap();
+            std::os::unix::fs::symlink(&outside, folder.join("._link")).unwrap();
+        }
+        backend.remove("folder").unwrap();
+        assert!(!folder.exists());
+        assert!(!record.parent().unwrap().exists());
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read(temp.0.join("outside/payload")).unwrap(),
+            b"private"
+        );
+    }
+
+    #[test]
+    fn read_only_cleanup_persists_atime_without_syncing_file_data_or_directories() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("file", false, 0).unwrap();
+        backend.write_at("file", 0, b"data").unwrap();
+        backend.flush("file").unwrap();
+        backend.create("folder", true, 0).unwrap();
+        let before = backend.cache.borrow().data_syncs;
+        backend.cleanup("file", false).unwrap();
+        backend.cleanup("folder", false).unwrap();
+        assert_eq!(backend.cache.borrow().data_syncs, before);
+        backend.read_at("file", 0, &mut [0]).unwrap();
+        assert_eq!(backend.cache.borrow().atimes.len(), 1);
+        backend.cleanup("file", false).unwrap();
+        assert!(backend.cache.borrow().atimes.is_empty());
+        assert_eq!(backend.cache.borrow().data_syncs, before);
+        backend.cleanup("file", true).unwrap();
+        assert_eq!(backend.cache.borrow().data_syncs, before + 1);
+        backend.write_at("file", 0, b"x").unwrap();
+        backend.cleanup("file", false).unwrap();
+        assert_eq!(backend.cache.borrow().data_syncs, before + 2);
+    }
+
+    #[test]
+    fn parent_sync_failure_does_not_turn_successful_create_into_an_error() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        for (name, directory) in [("file", false), ("folder", true)] {
+            backend
+                .next_create_sync_error
+                .set(Some(Error::IoDeviceError));
+            assert_eq!(backend.create(name, directory, ATTR_HIDDEN), Ok(()));
+            assert_eq!(backend.next_create_sync_error.get(), None);
+            assert!(backend.root.join(name).exists());
+            assert_eq!(backend.stat(name).unwrap().is_directory(), directory);
+            assert!(backend.stat(name).unwrap().basic.attributes & ATTR_HIDDEN != 0);
+            assert_eq!(
+                backend.create(name, directory, 0),
+                Err(Error::ObjectNameCollision)
+            );
+        }
+        let volume = backend.volume_info().unwrap();
+        assert_eq!(
+            volume.total_allocation_units - volume.available_allocation_units,
+            1
+        );
+    }
+
+    #[test]
+    fn orphaned_directory_metadata_is_not_attached_to_recreated_directory() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("folder", true, ATTR_HIDDEN).unwrap();
+        let record = backend.metadata_path("folder");
+        backend
+            .next_metadata_retire_error
+            .set(Some(Error::IoDeviceError));
+        assert_eq!(backend.remove("folder"), Ok(()));
+        assert!(!backend.root.join("folder").exists());
+        assert!(record.exists());
+        backend
+            .next_metadata_retire_error
+            .set(Some(Error::IoDeviceError));
+        assert_eq!(backend.create("folder", true, 0), Err(Error::IoDeviceError));
+        assert!(!backend.root.join("folder").exists());
+        backend.create("folder", true, 0).unwrap();
+        assert_eq!(
+            backend.stat("folder").unwrap().basic.attributes,
+            ATTR_DIRECTORY
+        );
+    }
+}
