@@ -1,0 +1,13 @@
+[package]
+name = "assets"
+description = "Glue from decoded game tags (bitmaps first) to gfx texture decoding"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gfx = { path = "../gfx" }
+tags.workspace = true
+map.workspace = true
+thiserror.workspace = true
+png = "0.18"

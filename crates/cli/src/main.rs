@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
+mod bitmap;
 mod maps;
 
 const USAGE: &str = "usage: h2 <command> [disc]
@@ -14,6 +15,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   maps [disc.iso]         map headers and tag counts on the disc
   tags <map> [group]      tags in a disc map or local .map; optional --disc <iso>
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
+  bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
+  bitmap --all <map>      bulk decode check of every bitmap in a map
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -31,6 +34,9 @@ fn main() -> Result<()> {
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
     if matches!(cmd.as_str(), "maps" | "tags" | "tag") {
         return maps::run(&cmd, args.collect());
+    }
+    if cmd == "bitmap" {
+        return bitmap::run(args.collect());
     }
     let mut positional = Vec::new();
     let mut functions_out = None;

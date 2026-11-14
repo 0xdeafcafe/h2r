@@ -10,6 +10,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 tags = { path = "crates/tags" }
 map = { path = "crates/map" }
+assets = { path = "crates/assets" }
 xiso = { path = "crates/xiso" }
 xbe = { path = "crates/xbe" }
 analyze = { path = "crates/analyze" }
