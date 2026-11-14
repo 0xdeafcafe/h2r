@@ -63,7 +63,7 @@ fn encode_mono(pcm: &[i16]) -> Vec<u8> {
     const ADJ: [i32; 8] = [-1, -1, -1, -1, 2, 4, 6, 8];
     let mut out = Vec::new();
     let mut index = 0i32;
-    for block in pcm.chunks_exact(adpcm::SAMPLES_PER_BLOCK) {
+    for block in pcm.as_chunks::<{ adpcm::SAMPLES_PER_BLOCK }>().0.iter() {
         let mut pred = block[0] as i32;
         out.extend_from_slice(&block[0].to_le_bytes());
         out.extend_from_slice(&[index as u8, 0]);
@@ -96,7 +96,7 @@ fn encode_mono(pcm: &[i16]) -> Vec<u8> {
             index = (index + ADJ[(code & 7) as usize]).clamp(0, 88);
             codes[i - 1] = code;
         }
-        for pair in codes.chunks_exact(2) {
+        for pair in codes.as_chunks::<2>().0.iter() {
             out.push(pair[0] | (pair[1] << 4));
         }
     }

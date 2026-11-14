@@ -165,7 +165,7 @@ mod tests {
         let f = WaveFormat::xbox_adpcm(2, 44100).unwrap();
         assert_eq!(f.block_align(), 72);
         assert_eq!(f.frames_in(72 * 3), 192);
-        assert_eq!(f.decode(&vec![0u8; 144]).unwrap().len(), 128 * 2);
+        assert_eq!(f.decode(&[0u8; 144]).unwrap().len(), 128 * 2);
     }
 
     #[test]

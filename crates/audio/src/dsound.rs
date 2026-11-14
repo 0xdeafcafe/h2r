@@ -703,7 +703,7 @@ mod tests {
         let mut s = Stream::new(WaveFormat::pcm16(1, 8000).unwrap()).unwrap();
         let a = s.submit(&mono16(&[16384; 4])).unwrap();
         let b = s.submit(&mono16(&[-16384; 4])).unwrap();
-        let mut out = vec![0.0; 12 * 2];
+        let mut out = [0.0; 12 * 2];
         let g = s.params().gains();
         s.render(&mut out[..2 * 5], 8000, g); // 5 frames: all of a, 1 of b
         assert_eq!(s.take_completed(), vec![(a, PacketStatus::Success)]);
