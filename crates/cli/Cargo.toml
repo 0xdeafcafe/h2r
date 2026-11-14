@@ -13,3 +13,4 @@ xiso.workspace = true
 xbe.workspace = true
 analyze.workspace = true
 anyhow.workspace = true
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }

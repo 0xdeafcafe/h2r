@@ -22,6 +22,7 @@ version = "0.1.0"
 dependencies = [
  "analyze",
  "anyhow",
+ "iced-x86",
  "xbe",
  "xiso",
 ]

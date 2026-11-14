@@ -35,6 +35,10 @@ pub fn parse_ghidra_tsv(text: &str) -> Vec<ExternalFunction> {
 
 pub struct Comparison {
     pub both: usize,
+    /// Their starts we don't have, by what we have there:
+    /// 'I' an instruction inside another function, 'i' mid-instruction,
+    /// 'd' data, '?' undecoded.
+    pub only_theirs_by_claim: BTreeMap<char, Vec<u32>>,
     pub only_ours: BTreeMap<Source, Vec<u32>>,
     pub only_theirs: Vec<u32>,
     /// Our conflict addresses that the other tool treats as a function start.
@@ -49,9 +53,10 @@ pub fn compare(ours: &Analysis, theirs: &[ExternalFunction]) -> Comparison {
     let their_starts: BTreeSet<u32> = theirs.iter().map(|f| f.entry).filter(|v| in_code(*v)).collect();
     let mut c = Comparison {
         both: 0,
+        only_theirs_by_claim: BTreeMap::new(),
         only_ours: BTreeMap::new(),
         only_theirs: Vec::new(),
-        conflicts_at_their_starts: ours.conflicts.iter().filter(|a| their_starts.contains(a)).count(),
+        conflicts_at_their_starts: ours.conflicts.iter().filter(|c| their_starts.contains(&c.va)).count(),
         named: BTreeMap::new(),
         named_examples: Vec::new(),
     };
@@ -63,6 +68,10 @@ pub fn compare(ours: &Analysis, theirs: &[ExternalFunction]) -> Comparison {
         }
     }
     c.only_theirs = their_starts.iter().copied().filter(|v| !ours.functions.contains_key(v)).collect();
+    for &v in &c.only_theirs {
+        let claim = ours.claim(v).map_or(' ', |(ch, _)| ch);
+        c.only_theirs_by_claim.entry(claim).or_default().push(v);
+    }
     for f in theirs {
         if f.source != "DEFAULT"
             && let Some(sec) = ours.section_of(f.entry)
@@ -86,6 +95,17 @@ impl fmt::Display for Comparison {
         }
         let sample: Vec<String> = self.only_theirs.iter().take(8).map(|a| format!("{a:#x}")).collect();
         writeln!(f, "only theirs: {} (e.g. {})", self.only_theirs.len(), sample.join(" "))?;
+        for (claim, v) in &self.only_theirs_by_claim {
+            let what = match claim {
+                'I' => "inside another of our functions",
+                'i' => "mid-instruction for us",
+                'd' => "data for us",
+                '?' => "undecoded for us",
+                _ => "other",
+            };
+            let sample: Vec<String> = v.iter().take(6).map(|a| format!("{a:#x}")).collect();
+            writeln!(f, "  {what}: {} (e.g. {})", v.len(), sample.join(" "))?;
+        }
         writeln!(f, "our conflicts at their function starts: {}", self.conflicts_at_their_starts)?;
         writeln!(f, "named by them, per section: {:?}", self.named)?;
         for (va, name) in &self.named_examples {
