@@ -1,0 +1,13 @@
+[package]
+name = "hs"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+map.workspace = true
+xbe.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true

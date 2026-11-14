@@ -9,6 +9,7 @@ mod bitmap;
 mod fonts;
 mod maps;
 mod movies_cmd;
+mod scripts;
 mod safe_out;
 mod sound;
 mod strings;
@@ -31,6 +32,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   movies <iso> --out DIR [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
+  hs <map> [--script name] [--builtins] [--disc iso]
+  hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -63,6 +66,9 @@ fn main() -> Result<()> {
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());
+    }
+    if cmd == "hs" {
+        return scripts::run(args.collect());
     }
     let mut positional = Vec::new();
     let mut functions_out = None;

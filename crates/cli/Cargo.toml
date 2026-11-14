@@ -9,6 +9,7 @@ name = "h2"
 path = "src/main.rs"
 
 [dependencies]
+hs.workspace = true
 tags.workspace = true
 font = { path = "../font" }
 assets.workspace = true

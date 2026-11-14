@@ -45,6 +45,7 @@ up as structured Rust.
 - [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
 - [fonts.md](docs/fonts.md): packed bitmap fonts and text rasteriser (`crates/font`)
 - [graphics.md](docs/graphics.md): D3D8 on wgpu (`crates/gfx`)
+- [haloscript.md](docs/haloscript.md): HaloScript syntax, builtins and the VM (`crates/hs`)
 - [input.md](docs/input.md): XInput replacement (`crates/input`)
 - [kernel-imports.md](docs/kernel-imports.md): kernel imports work list
 - [LIFTER.md](docs/LIFTER.md): lifter design proposal

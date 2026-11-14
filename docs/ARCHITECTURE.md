@@ -93,12 +93,13 @@ Status "done" means the crate exists on master and does what its row says;
 | `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](bitmaps.md)) | done |
 | `font`    | Halo 2 packed bitmap font parser and CPU text rasteriser ([fonts.md](fonts.md)) | done |
 | `movies`  | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](movies.md)) | done |
+| `hs`      | HaloScript scenario tables, builtin catalog and typed expression API; no VM yet ([haloscript.md](haloscript.md)) | done, decoding only |
 | `audio`   | DirectSound replacement foundation ([audio.md](audio.md)) | done, foundation only |
 | `input`   | XInput (XAPI) controller replacement foundation ([input.md](input.md)) | done, foundation only |
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
 | `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
 | `runtime` | Guest memory, CPU state, dispatch/override table; nothing runs yet | in progress |
-| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings`, `font`, `movies` and more | done |
+| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings`, `font`, `movies`, `hs` and more | done |
 
 Planned crates, not on master yet and in progress elsewhere:
 
@@ -110,7 +111,7 @@ Planned crates, not on master yet and in progress elsewhere:
 | `d3d`        | D3D8 API surface over `gfx` |
 | `dsound`     | DirectSound API surface over `audio` |
 | `xapi`       | XAPI API surface over `input` |
-| `hs`         | HaloScript runtime |
+| `hs` runtime | HaloScript VM over the `hs` decoder |
 | `viewer`     | Map and tag viewer |
 | `bsp`        | Structure BSP loading and rendering |
 

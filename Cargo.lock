@@ -356,6 +356,7 @@ dependencies = [
  "assets",
  "audio",
  "font",
+ "hs",
  "iced-x86",
  "map",
  "movies",
@@ -860,6 +861,16 @@ name = "hermit-abi"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
+
+[[package]]
+name = "hs"
+version = "0.1.0"
+dependencies = [
+ "map",
+ "thiserror 2.0.21",
+ "xbe",
+ "xiso",
+]
 
 [[package]]
 name = "iced-x86"
