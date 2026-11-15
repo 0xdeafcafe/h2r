@@ -751,12 +751,21 @@ fn unary_impl<const FAST: bool>(s: &mut X87Abi, op: u32) -> u32 {
             finish(s, fl, None, Cc::round(fl), set0(v))
         }
         SIN | COS => {
-            let t = if op == SIN { sin(a) } else { crate::cos(a) };
+            let t = match (op == SIN, FAST) {
+                (true, true) => sin(a),
+                (true, false) => crate::trans::sin_n::<8>(a),
+                (false, true) => crate::cos(a),
+                (false, false) => crate::trans::cos_n::<8>(a),
+            };
             let cc = Cc::round(t.flags).with(SW_C2, t.out_of_range);
             finish(s, t.flags, None, cc, set0(t.value))
         }
         TAN => {
-            let t = tan(a);
+            let t = if FAST {
+                tan(a)
+            } else {
+                crate::trans::tan_n::<8>(a)
+            };
             let cc = Cc::round(t.flags).with(SW_C2, t.out_of_range);
             let out = t.out_of_range;
             finish(s, t.flags, None, cc, move |s| {
@@ -767,7 +776,11 @@ fn unary_impl<const FAST: bool>(s: &mut X87Abi, op: u32) -> u32 {
             })
         }
         SINCOS => {
-            let (t, c) = sincos(a);
+            let (t, c) = if FAST {
+                sincos(a)
+            } else {
+                crate::trans::sincos_n::<8>(a)
+            };
             let cc = Cc::round(t.flags).with(SW_C2, t.out_of_range);
             let out = t.out_of_range;
             finish(s, t.flags, None, cc, move |s| {
@@ -779,7 +792,8 @@ fn unary_impl<const FAST: bool>(s: &mut X87Abi, op: u32) -> u32 {
         }
         PATAN | YL2X | YL2XP1 => {
             let (v, fl) = match op {
-                PATAN => patan(b, a),
+                PATAN if FAST => patan(b, a),
+                PATAN => crate::trans::patan_n::<8>(b, a),
                 YL2X if FAST => yl2x(b, a),
                 YL2X => crate::trans::yl2x_n::<8>(b, a),
                 _ => yl2xp1(b, a),

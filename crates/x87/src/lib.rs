@@ -12,7 +12,8 @@
 //!   conversion are exact (correctly rounded where they round).
 //! * The transcendentals compute in a 512-bit software float and round once
 //!   to 64 bits under round-to-nearest. The default `fast-trans` feature
-//!   first tries guarded 128-bit evaluation for FYL2X and F2XM1;
+//!   first tries guarded 128-bit evaluation for FYL2X, F2XM1, FSIN, FCOS,
+//!   FSINCOS, FPTAN and FPATAN;
 //!   ambiguous cases retain 512 bits. See docs/x87-transcendentals.md and
 //!   [`TRANSCENDENTAL_IS_CORRECTLY_ROUNDED`].
 //!
