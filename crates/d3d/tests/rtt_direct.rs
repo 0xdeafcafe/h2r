@@ -570,6 +570,8 @@ fn active_depth_store<B: d3d::Backend>(backend: B, lazy: bool) -> Vec<u8> {
     m.write(addr, &[0x11; 4]).unwrap();
     d.note_write(addr, 4);
     d.set_render_target(&mut m, back, 0).unwrap();
+    // Lazy depth levels (on the GPU) stay on the host until a wait.
+    d.block_on_resource(&mut m, texture).unwrap();
     assert_eq!(d.take_events(), []);
     m.read_vec(addr, 8).unwrap()
 }

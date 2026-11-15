@@ -886,6 +886,7 @@ impl ShaderProvider for Nv2aShaders {
         let w_buffer = key.pixel_options.w_buffer;
         if w_clipped(&key.vertex, draw) {
             vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
+            vu.w_clamp = depth_clamp(&self.table, draw);
         }
         if w_buffer {
             // The polygon offset joins the stored w in the fragment stage
@@ -897,7 +898,13 @@ impl ShaderProvider for Nv2aShaders {
             } else {
                 (0.0, 0.0)
             };
-            pu.depth = [vu.z_max, units, slope, 0.0];
+            let integer = !matches!(
+                draw.target.depth_format,
+                Some(gfx::D3DFormat::F16 | gfx::D3DFormat::LinF16 | gfx::D3DFormat::F24S8 | gfx::D3DFormat::LinF24S8)
+            );
+            pu.depth = [vu.z_max, units, slope, if integer { 1.0 } else { 0.0 }];
+            let [lo, hi] = vu.w_clip.unwrap_or([0.0, vu.z_max]);
+            pu.depth_range = [lo, hi, 0.0, 0.0];
         }
         pu.lod_bias = std::array::from_fn(|n| {
             let bias = draw.state.stages[n].mip_lod_bias;
@@ -1139,7 +1146,11 @@ fn program_key(
             // to a colour-only target still clips w but writes no depth
             // (a pipeline whose fragment writes depth without one fails
             // validation).
-            w_buffer: w_clipped(&vertex, draw) && draw.target.depth_format.is_some(),
+            // A draw that neither tests nor writes depth gets no depth
+            // write either (it would only cost the early depth test).
+            w_buffer: w_clipped(&vertex, draw)
+                && draw.target.depth_format.is_some()
+                && uses_depth(render),
         };
         let key = ProgramKey {
             vertex,
@@ -1176,6 +1187,23 @@ pub fn w_buffered(draw: &ResolvedDraw) -> bool {
 /// vertex program.
 fn w_clipped(vertex: &VertexSource, draw: &ResolvedDraw) -> bool {
     matches!(vertex, VertexSource::Microcode(_)) && w_buffered(draw)
+}
+
+/// Whether the depth buffer matters to a draw: tested or written.
+fn uses_depth(render: &gfx::state::RenderState) -> bool {
+    render.depth_mode != gfx::state::DepthBufferMode::Disabled
+        && (render.depth_write || render.depth_func != CompareFunc::Always)
+}
+
+/// `D3DRS_DEPTHCLIPCONTROL` (canonical 82), which D3D and Halo's inlined
+/// copies push to `NV097_SET_ZMIN_MAX_CONTROL` (`0x1D78`): bits 7:4 = 1
+/// (`D3DDCC_DEPTHCLAMP`) clamp out-of-range depth instead of culling it
+/// (xemu's `ZCLAMP_EN`, `pgraph.c` and `glsl/psh.c`).
+pub const RS_DEPTHCLIPCONTROL: u32 = 82;
+
+/// Whether out-of-range depth is clamped, not culled.
+fn depth_clamp(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
+    (raw(table, draw, RS_DEPTHCLIPCONTROL) >> 4) & 0xF == 1
 }
 
 /// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,

@@ -70,6 +70,10 @@ pub struct VertexUniforms {
     /// depth units. `None` clips z to `[0, z_max]` as usual. With it the
     /// fragment stage must write the depth (`PixelOptions::w_buffer`).
     pub w_clip: Option<[f32; 2]>,
+    /// With `w_clip`: `SET_ZMIN_MAX_CONTROL` clamps instead of culling
+    /// (`D3DDCC_DEPTHCLAMP`). Nothing is clipped by w beyond w > 0; the
+    /// fragment stage clamps the stored w to the range instead.
+    pub w_clamp: bool,
 }
 
 impl Default for VertexUniforms {
@@ -80,6 +84,7 @@ impl Default for VertexUniforms {
             surface: [640.0, 480.0],
             z_max: 16_777_215.0,
             w_clip: None,
+            w_clamp: false,
         }
     }
 }
@@ -97,7 +102,7 @@ impl VertexUniforms {
             }
         }
         let clip = match self.w_clip {
-            Some([lo, hi]) => [lo, hi, 1.0, 0.0],
+            Some([lo, hi]) => [lo, hi, 1.0, if self.w_clamp { 1.0 } else { 0.0 }],
             None => [0.0; 4],
         };
         for f in [self.surface[0], self.surface[1], self.z_max, 0.0].into_iter().chain(clip) {
@@ -116,7 +121,8 @@ struct XvsUniforms {
     // x, y: guest render-target size in the units the program's viewport
     // constants use; z: depth full scale (65535 for D16, 16777215 for D24).
     viewport: vec4f,
-    // W-buffering when z is 1: x, y the depth clip range for w.
+    // W-buffering when z is 1: x, y the depth clip range for w; w is 1
+    // when out-of-range depth is clamped (by the fragment stage), not culled.
     clip: vec4f,
 }
 @group(0) @binding(0) var<uniform> xvs: XvsUniforms;
@@ -215,9 +221,11 @@ fn xvs_fixup(p: vec4f) -> vec4f {
         // a = hi / (hi - lo) is 0 at w = lo and equals w at w = hi, and it
         // is linear in the clip coordinates, so the rasterizer's
         // 0 <= z <= w clip is exactly lo <= w <= hi.
+        // Clamped instead: z = w / 2 is always inside.
         let lo = xvs.clip.x;
         let hi = xvs.clip.y;
-        return vec4f(n.xy * w, hi / (hi - lo) * (w - lo), w);
+        let z = select(hi / (hi - lo) * (w - lo), 0.5 * w, xvs.clip.w != 0.0);
+        return vec4f(n.xy * w, z, w);
     }
     return vec4f(n * w, w);
 }

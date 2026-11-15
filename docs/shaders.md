@@ -268,10 +268,37 @@ in `glsl/psh.c`). `d3d::nv2a` turns this on for vertex programs
 a·(w − lo) with a = hi / (hi − lo): it is 0 at w = lo and equals w at
 w = hi, and it is linear in the clip coordinates, so the rasterizer's
 `0 <= z <= w` clip keeps exactly `lo <= w <= hi` (`interp::fixup_w_buffer`).
-The fragment stage writes `frag_depth = (1 / position.w + units + factor ·
-max(|dpdx|, |dpdy|)) / Zmax`, with the polygon offset in `XpsUniforms.depth`,
-and the pipeline's own depth bias is turned off for such draws
-(`PreparedShader::writes_depth`). Halo's first-person weapon and hands use
+With `CLIP_MIN` at 0 that cannot cull the far end (a = 1), so such
+draws are clamped there instead. The fragment stage writes
+`frag_depth = q(clamp(1 / position.w + units + factor · max(|dpdx|, |dpdy|),
+lo, hi)) / Zmax`, with the polygon offset in `XpsUniforms.depth` and the
+range in `XpsUniforms.depth_range`, and the pipeline's own depth bias is
+turned off for such draws (`PreparedShader::writes_depth`). For D16 and D24,
+q is `floor`: the NV2A stores the whole part of w, as xemu's D24 and D16
+paths do. Halo draws a surface in several passes with different programs,
+the later ones testing EQUAL; passes whose w differs in the last bit or two
+stored different floats, the likely source of the dense stripes on
+Ascension's tower and the Banshee, while the whole part almost always agrees
+(`w_buffered_passes_with_ulp_different_w_store_equal_depth`: 88% of the
+pixels failed without it, under 1% with it). The position is also
+`@invariant`, so identical position code gives identical bits in every
+program.
+
+`D3DRS_DEPTHCLIPCONTROL` (`NV097_SET_ZMIN_MAX_CONTROL`) with
+`D3DDCC_DEPTHCLAMP` (bits 7:4 = 1) clamps out-of-range depth instead of
+culling it (`ZCLAMP_EN` in xemu's `pgraph.c` and `glsl/psh.c`). Such a draw
+(`VertexUniforms::w_clamp`) outputs clip z = w / 2, so nothing is culled by
+the range, and the fragment clamp keeps the stored w inside it. Ascension's black
+sky is the likely case: sky geometry past the far clip, culled
+(`w_buffered_depth_clamp_keeps_what_lies_past_the_clip_range`). Clamp mode
+isn't applied to Z-buffered draws yet.
+
+A draw that neither tests nor writes depth gets no depth write. Writing
+the depth from the fragment stage turns off the GPU's early depth test for
+the draw, which costs frame time; rasterizing the depth instead needs a
+mapping of w that is affine in screen space (a function of 1/w), and none
+keeps the ordering across the range at float precision as the stored w
+does, so this stays a known cost. Halo's first-person weapon and hands use
 another projection than the level, so their z did not order against the
 level's while their w does; drawn with z they were hidden behind nearby
 walls. `crates/d3d/tests/shaders_render.rs`

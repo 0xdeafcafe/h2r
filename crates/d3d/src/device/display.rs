@@ -195,7 +195,7 @@ impl<B: Backend> Device<B> {
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "PersistDisplay inside Begin/End"));
         }
-        self.flush_render_targets(mem)?;
+        self.flush_render_targets_for(mem, WritebackCause::PersistDisplay)?;
         // An independent copy of what is on screen: the swap ring goes with
         // the device at teardown, the persisted image must not.
         if self.display.shown_lost {
@@ -285,9 +285,9 @@ impl<B: Backend> Device<B> {
         self.live(E)?;
         self.sync_push_buffer(mem)?;
         if self.rtt_lazy() {
-            self.flush_for_texture(mem, resource)?;
+            self.flush_for_texture(mem, resource, WritebackCause::Busy)?;
         } else {
-            self.flush_render_targets(mem)?;
+            self.flush_render_targets_for(mem, WritebackCause::Busy)?;
         }
         let refs = common::INTREFCOUNT_MASK;
         let is_surface = |c: u32| c & common::TYPE_MASK == 0x5_0000;

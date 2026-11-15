@@ -103,7 +103,12 @@ pub struct PixelReport {
     buffer: Arc<wgpu::Buffer>,
     value: Arc<Mutex<Option<u64>>>,
     submission: Arc<Mutex<Option<wgpu::SubmissionIndex>>>,
+    /// The map started by [`try_read`](Self::try_read): its outcome
+    /// arrives here once the GPU is done with the buffer.
+    mapping: Arc<Mutex<Option<MapOutcome>>>,
 }
+
+type MapOutcome = std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>;
 
 impl PixelReport {
     /// Records the submission that holds the encoder the report was
@@ -122,11 +127,7 @@ impl PixelReport {
         if let Some(v) = *v {
             return Ok(v);
         }
-        let slice = self.buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |r| {
-            let _ = tx.send(r);
-        });
+        let rx = self.start_map()?;
         let submission_index = self.submission.lock().ok().and_then(|s| s.clone());
         ctx.device
             .poll(wgpu::PollType::Wait {
@@ -134,17 +135,76 @@ impl PixelReport {
                 timeout: None,
             })
             .map_err(|e| format!("waiting for the pixel count: {e}"))?;
-        rx.recv()
-            .map_err(|_| "pixel-count readback dropped".to_owned())?
-            .map_err(|e| format!("mapping the pixel count: {e}"))?;
+        let outcome = rx
+            .lock()
+            .map_err(|_| "pixel count poisoned")?
+            .take()
+            .ok_or("pixel-count readback dropped")?
+            .recv()
+            .map_err(|_| "pixel-count readback dropped".to_owned())?;
+        let count = self.take_mapped(outcome)?;
+        *v = Some(count);
+        Ok(count)
+    }
+
+    /// The count if the GPU has already written it, without waiting:
+    /// starts the read the first time, and answers `None` until the
+    /// buffer is mapped. The value is the one [`read`](Self::read) gives.
+    pub fn try_read(&self, ctx: &GfxContext) -> Result<Option<u64>, String> {
+        let mut v = self.value.lock().map_err(|_| "pixel count poisoned")?;
+        if let Some(v) = *v {
+            return Ok(Some(v));
+        }
+        let rx = self.start_map()?;
+        // Runs the callbacks of the work the GPU has finished.
+        ctx.device
+            .poll(wgpu::PollType::Poll)
+            .map_err(|e| format!("polling for the pixel count: {e}"))?;
+        let mut guard = rx.lock().map_err(|_| "pixel count poisoned")?;
+        let outcome = match guard
+            .as_ref()
+            .ok_or("pixel-count readback dropped")?
+            .try_recv()
+        {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                return Err("pixel-count readback dropped".to_owned());
+            }
+        };
+        guard.take();
+        drop(guard);
+        let count = self.take_mapped(outcome)?;
+        *v = Some(count);
+        Ok(Some(count))
+    }
+
+    /// Starts mapping the buffer once; the receiver of its outcome.
+    fn start_map(&self) -> Result<&Arc<Mutex<Option<MapOutcome>>>, String> {
+        let mut m = self.mapping.lock().map_err(|_| "pixel count poisoned")?;
+        if m.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |r| {
+                    let _ = tx.send(r);
+                });
+            *m = Some(rx);
+        }
+        Ok(&self.mapping)
+    }
+
+    fn take_mapped(&self, outcome: Result<(), wgpu::BufferAsyncError>) -> Result<u64, String> {
+        outcome.map_err(|e| format!("mapping the pixel count: {e}"))?;
         let count = {
-            let data = slice
+            let data = self
+                .buffer
+                .slice(..)
                 .get_mapped_range()
                 .map_err(|e| format!("pixel count: {e}"))?;
             u32::from_le_bytes(data[..4].try_into().expect("4 bytes")) as u64
         };
         self.buffer.unmap();
-        *v = Some(count);
         Ok(count)
     }
 }
@@ -273,6 +333,7 @@ impl PixelCounter {
             buffer: Arc::new(buffer),
             value: Arc::new(Mutex::new(None)),
             submission: Arc::new(Mutex::new(None)),
+            mapping: Arc::new(Mutex::new(None)),
         }
     }
 

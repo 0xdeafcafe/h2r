@@ -671,7 +671,7 @@ fn w_buffer_fixup_clips_w_to_the_clip_range() {
     let clip = [10.0, 1000.0];
     for z in [-5.0, 0.0, 1e9] {
         for (w, inside) in [(9.9, false), (10.0, true), (500.0, true), (1000.0, true), (1000.5, false)] {
-            let p = vsh::interp::fixup_w_buffer([3.0, 4.0, z, w], [640.0, 480.0], clip);
+            let p = vsh::interp::fixup_w_buffer([3.0, 4.0, z, w], [640.0, 480.0], clip, false);
             let kept = p[2] >= 0.0 && p[2] <= p[3];
             assert_eq!(kept, inside, "w = {w}, z = {z}: {p:?}");
         }

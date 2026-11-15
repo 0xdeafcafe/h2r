@@ -396,6 +396,15 @@ pub trait Backend: Send {
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
         Err(format!("the backend cannot count pixels (ticket {ticket})"))
     }
+    /// The count behind a ticket if the GPU has already written it,
+    /// without waiting; `Some` spends the ticket and is the value
+    /// [`read_pixel_count`](Self::read_pixel_count) would give. `Ok(None)`:
+    /// not back yet, or the backend cannot tell (the default); the ticket
+    /// stays live.
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        let _ = ticket;
+        Ok(None)
+    }
     /// Forgets a ticket that will never be read.
     fn drop_pixel_count(&mut self, ticket: u64) {
         let _ = ticket;
@@ -424,6 +433,22 @@ pub trait Backend: Send {
     /// read back unchanged only). `Ok(None)`: the backend cannot (the
     /// default).
     fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+        let _ = surface;
+        Ok(None)
+    }
+    /// Whether [`depth_level_texture`](Self::depth_level_texture) answers
+    /// for `D24S8` depth surfaces. With it, lazy render-to-texture keeps
+    /// depth levels on the host too (`docs/d3d.md`).
+    fn can_sample_depth_surfaces(&self) -> bool {
+        false
+    }
+    /// A texture with the texels a depth texture over depth/stencil
+    /// surface `surface` decodes to once the surface is written back as
+    /// `D24S8` ([`read_depth`](Self::read_depth)): its raw bits
+    /// ([`gfx::convert::depth_channels`]), one 2D level of the surface's
+    /// size, as of the work queued so far, without reading back.
+    /// `Ok(None)`: the backend cannot (the default).
+    fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let _ = surface;
         Ok(None)
     }
@@ -542,6 +567,13 @@ pub enum Recorded {
         /// The texture handle returned.
         id: u32,
     },
+    /// `depth_level_texture`.
+    DepthLevelTexture {
+        /// Depth surface converted.
+        surface: u32,
+        /// The texture handle returned.
+        id: u32,
+    },
     /// `snapshot_surface`.
     Snapshot {
         /// Surface copied.
@@ -606,6 +638,9 @@ pub struct RecordingBackend {
     /// Whether it claims to sample surfaces directly
     /// ([`Backend::can_sample_surfaces`]; default false).
     pub sample_surfaces: bool,
+    /// Whether it answers [`Backend::depth_level_texture`] (lazy depth
+    /// levels); off by default.
+    pub sample_depth: bool,
 }
 
 impl RecordingBackend {
@@ -787,6 +822,20 @@ impl Backend for RecordingBackend {
         }
         self.next += 1;
         self.calls.push(Recorded::SurfaceTexture {
+            surface,
+            id: self.next,
+        });
+        Ok(Some(self.next))
+    }
+    fn can_sample_depth_surfaces(&self) -> bool {
+        self.sample_depth
+    }
+    fn depth_level_texture(&mut self, surface: u32) -> Result<Option<u32>, String> {
+        if !self.sample_depth {
+            return Ok(None);
+        }
+        self.next += 1;
+        self.calls.push(Recorded::DepthLevelTexture {
             surface,
             id: self.next,
         });

@@ -706,7 +706,10 @@ and allocations are bounded before anything is read:
     - `PersistDisplay`, a destroy of the level or its texture, a header
       rewritten with another identity, and teardown, which then destroys
       the host surfaces.
-    Not when the target changes, at `Swap` or at `KickOff`. Eagerly
+    Not when the target changes, at `Swap` or at `KickOff`. Each write-back
+    is counted by what asked for it (`Stats::writeback_causes`), and
+    `H2_D3D_WRITEBACK_TRACE=1` prints each one with the level, format and
+    size, for finding which waits a scene's read-backs come from. Eagerly
     (`set_rtt_direct(false)`, or a backend that cannot sample surfaces)
     also at every target change, `Swap` and `KickOff`, and every busy
     check or wait writes back all dirty levels.
@@ -745,10 +748,31 @@ and allocations are bounded before anything is read:
     (`ZENABLE` with `ZWRITEENABLE`; or `STENCILENABLE` on a format with
     stencil, a non-zero `STENCILWRITEMASK` and some operation other than
     `KEEP`) and by clears of depth or stencil; a skipped draw dirties
-    nothing. It is written back whenever either the colour or the
-    depth/stencil binding changes, lazily too (it is never sampled in
-    place). A backend without `read_depth` stops
+    nothing. Eagerly it is written back whenever either the colour or the
+    depth/stencil binding changes. A backend without `read_depth` stops
     at the write-back.
+  - **Lazy depth levels** (the default with lazy render-to-texture on a
+    backend that samples depth surfaces, `Backend::can_sample_depth_surfaces`:
+    `GfxBackend` with `DEPTH32FLOAT_STENCIL8`; `Device::set_lazy_depth`,
+    `H2_D3D_LAZY_DEPTH=0` turns it off). A depth level is then written
+    back where a colour level is (a wait or busy check on it, `BlockOnTime`,
+    a callback, a sample that cannot use the surface, destroy, teardown),
+    not at the binding change. When it stops being the depth target the
+    guest bytes become the match, as for a colour level, so guest stores
+    after that win at the write-back. A draw that samples a dirty `D24S8`
+    level through a whole single-level 2D texture of the same format, size
+    and layout (no `COLORSIGN`) gets `Backend::depth_level_texture`: a
+    texture made on the GPU from the surface that holds exactly what an
+    upload of the written-back level holds (`gfx::depth_bits`: the
+    read-back's `round(clamp(d, 0, 1) * 16777215)` with halves away from
+    zero, as `depth_channels` lays the bits out). It is made once per time
+    the level is drawn into (`Stats::depth_level_textures`). Anything else
+    (`D16`, a mismatched header, a level with guest stores since) goes
+    through the write-back and the texture cache as before. `gfx`'s
+    `depth_bits_*` tests compare the two paths over every 24-bit depth
+    and a sweep of `f32` depths with the values next to each rounding tie;
+    `gpu_lazy_depth_levels_sample_and_write_back_as_the_eager_ones` checks
+    pixels and guest bytes at the wait against the eager device.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other
     way), or whose format does not match how it is bound, stops too.
@@ -1534,12 +1558,18 @@ be wrong somewhere, so the counts are real.
   for the host GPU (`Backend::read_pixel_count`) the first time and keeps
   the count, so asking again answers the same. It never returns
   `D3DERR_TESTINCOMPLETE`. That is what the hardware answers once caught
-  up, and the game cannot tell a fast GPU from a slow one. The cost is a
-  GPU wait at each test's first read, and the wait covers everything
-  submitted so far, not only that test's report. Halo reads several
-  query objects a frame, so this needs measuring in gameplay; batching the
-  reports or answering `D3DERR_TESTINCOMPLETE` asynchronously are the
-  fallbacks.
+  up, and the game cannot tell a fast GPU from a slow one. Halo reads a
+  test two frames after it ends, so the report is long back by then: at
+  each `Swap` `GfxBackend` starts mapping every report not yet read
+  (`PixelReport::try_read`), and the read finds the count mapped. On the
+  render thread, after each present the thread moves the counts already
+  back (`Backend::try_pixel_count`) where the guest's side reads them
+  without queueing behind the frame's work (`Waits::landed_counts`); a
+  count not back yet is read as before, after everything queued. The
+  value is the same either way (the same report buffer), so this changes
+  only the wait. `D3DERR_TESTINCOMPLETE` is still never returned:
+  answering it would change what the game computes (it keeps last
+  frame's value) depending on host timing.
 - An index never ended, or at or above `0x4000` (`VISIBILITY_INDICES`), is
   an invalid call. Ending an index again replaces its result. Teardown
   forgets every test. Counted in `Stats::visibility_tests`.
@@ -1647,10 +1677,10 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   write-back. A store that skips every wait is merged by page reports'
   byte differences only (above); exact store ranges from the runtime, or a
   trap on the first store to a watched page, would make it exact.
-- **Depth as a texture on the GPU.** Textures over the depth buffer and
-  sampled depth levels go through a CPU round trip: a readback, then a
-  decode and an upload (and, for levels, guest memory). A pass that writes
-  the bits straight into a colour texture would avoid the stall. The
+- **Depth as a texture on the GPU.** `D24S8` depth levels are now
+  converted on the GPU (`gfx::depth_bits`, above). Textures over the
+  depth buffer (`depth_alias_texture`) and `D16` levels still go through a
+  CPU round trip: a readback, then a decode and an upload. The
   shadow-map comparison itself is in `crates/shaders` (shaders.md,
   "Shadow maps").
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as

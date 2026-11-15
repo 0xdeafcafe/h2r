@@ -562,11 +562,12 @@ impl<B: Backend> Device<B> {
                         ),
                     ));
                 }
-                self.write_back(mem, header)?;
+                self.write_back(mem, header, WritebackCause::Rewritten)?;
             }
             self.rtt.remove(&header);
             self.rtt_synced.remove(&header);
             self.rtt_stores.remove(&header);
+            self.depth_level_tex.remove(&header);
             self.backend
                 .destroy_surface(old.surface)
                 .map_err(D3dError::Backend)?;
@@ -621,6 +622,15 @@ impl<B: Backend> Device<B> {
         self.rtt_direct = on;
     }
 
+    /// Lazy depth levels (on by default, `H2_D3D_LAZY_DEPTH=0` turns them
+    /// off): with lazy render-to-texture and a backend that samples depth
+    /// surfaces ([`Backend::can_sample_depth_surfaces`]), a depth level is
+    /// written back only where a colour level is, not at every binding
+    /// change, and draws sample it through [`Backend::depth_level_texture`].
+    pub fn set_lazy_depth(&mut self, on: bool) {
+        self.lazy_depth = on;
+    }
+
     /// Writes back the other levels drawn into whose memory overlaps
     /// `header`'s, before `header`'s surface is filled from or matched
     /// against that memory (two surface headers over one level).
@@ -645,7 +655,7 @@ impl<B: Backend> Device<B> {
             .map(|(h, _)| *h)
             .collect();
         for h in others {
-            self.write_back(mem, h)?;
+            self.write_back(mem, h, WritebackCause::Overlap)?;
         }
         Ok(())
     }
@@ -835,6 +845,7 @@ impl<B: Backend> Device<B> {
         t.hash = hash;
         self.rtt_synced.insert(header, bytes);
         self.rtt_stores.remove(&header);
+        self.depth_level_tex.remove(&header);
         Ok(())
     }
 
@@ -850,7 +861,7 @@ impl<B: Backend> Device<B> {
         let t = *self.rtt.get(&header).expect("cached");
         if t.dirty {
             if self.rtt_lazy() && self.rtt_guest_stores(mem, header)?.is_some() {
-                self.write_back(mem, header)?;
+                self.write_back(mem, header, WritebackCause::GuestStores)?;
             }
             return Ok(());
         }
@@ -890,6 +901,7 @@ impl<B: Backend> Device<B> {
         if writes_depth && self.depth_stencil != 0 {
             if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
                 t.dirty = true;
+                self.depth_level_tex.remove(&self.depth_stencil);
             }
             if self.depth_stencil == self.depth_header {
                 self.depth_generation += 1;
@@ -937,12 +949,25 @@ impl<B: Backend> Device<B> {
         &mut self,
         mem: &mut dyn GuestMemory,
         header: u32,
+        cause: WritebackCause,
     ) -> Result<(), D3dError> {
         let Some(t) = self.rtt.get(&header).copied() else {
             return Ok(());
         };
         if !t.dirty {
             return Ok(());
+        }
+        self.stats.writeback_causes.count(cause);
+        if writeback_trace() {
+            eprintln!(
+                "d3d write-back: {cause:?} level {header:#010x} (texture {:#010x}) {:?} {}x{} {} at vblank {}",
+                t.parent,
+                t.format,
+                t.width,
+                t.height,
+                if t.depth { "depth" } else { "colour" },
+                self.stats.vblanks,
+            );
         }
         let mut bytes = if t.depth {
             self.backend
@@ -1010,7 +1035,7 @@ impl<B: Backend> Device<B> {
         if self.rtt_lazy() {
             return Ok(());
         }
-        self.flush_render_targets(mem)
+        self.flush_render_targets_for(mem, WritebackCause::Sync)
     }
 
     /// Writes back every dirty render-to-texture target (the guest is about
@@ -1018,6 +1043,15 @@ impl<B: Backend> Device<B> {
     /// and eagerly also `Swap`, `KickOff`, `BlockOnResource` and the busy
     /// check).
     pub fn flush_render_targets(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        self.flush_render_targets_for(mem, WritebackCause::Host)
+    }
+
+    /// [`flush_render_targets`](Self::flush_render_targets), counted under `cause`.
+    pub(super) fn flush_render_targets_for(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        cause: WritebackCause,
+    ) -> Result<(), D3dError> {
         let headers: Vec<u32> = self
             .rtt
             .iter()
@@ -1025,7 +1059,7 @@ impl<B: Backend> Device<B> {
             .map(|(h, _)| *h)
             .collect();
         for h in headers {
-            self.write_back(mem, h)?;
+            self.write_back(mem, h, cause)?;
         }
         Ok(())
     }
@@ -1038,6 +1072,7 @@ impl<B: Backend> Device<B> {
         &mut self,
         mem: &mut dyn GuestMemory,
         texture: u32,
+        cause: WritebackCause,
     ) -> Result<(), D3dError> {
         if self.rtt.is_empty() {
             return Ok(());
@@ -1055,7 +1090,7 @@ impl<B: Backend> Device<B> {
             .map(|(h, _)| *h)
             .collect();
         for h in headers {
-            self.write_back(mem, h)?;
+            self.write_back(mem, h, cause)?;
         }
         Ok(())
     }
@@ -1084,9 +1119,10 @@ impl<B: Backend> Device<B> {
         &mut self,
         mem: &mut dyn GuestMemory,
     ) -> Result<(), D3dError> {
-        self.flush_render_targets(mem)?;
+        self.flush_render_targets_for(mem, WritebackCause::Teardown)?;
         self.rtt_synced.clear();
         self.rtt_stores.clear();
+        self.depth_level_tex.clear();
         for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
             self.backend
                 .destroy_surface(t.surface)
@@ -1100,7 +1136,7 @@ impl<B: Backend> Device<B> {
     pub(super) fn leave_target(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         let h = self.render_target;
         if !self.rtt_lazy() {
-            return self.write_back(mem, h);
+            return self.write_back(mem, h, WritebackCause::LeaveTarget);
         }
         // Eagerly the write-back here would overwrite every guest store
         // made while the level was the target; lazily the host pixels win
@@ -1118,6 +1154,117 @@ impl<B: Backend> Device<B> {
             self.rtt.get_mut(&h).expect("cached").generation = generation;
         }
         Ok(())
+    }
+
+    /// Whether depth levels stay on the host until the guest is about to
+    /// read them, as colour levels do lazily, and draws sample them through
+    /// [`Backend::depth_level_texture`]: lazy render-to-texture, a backend
+    /// that can ([`Backend::can_sample_depth_surfaces`]), and not turned off
+    /// (`H2_D3D_LAZY_DEPTH=0`).
+    pub(super) fn rtt_lazy_depth(&self) -> bool {
+        self.lazy_depth && self.rtt_lazy() && self.backend.can_sample_depth_surfaces()
+    }
+
+    /// Lazily, depth level `h` stops being the depth/stencil target and
+    /// keeps its pixels on the host: as for a colour level
+    /// ([`leave_target`](Self::leave_target)), the guest bytes as they are
+    /// now become the match, so only stores after this count as the
+    /// guest's when it is written back.
+    pub(super) fn leave_depth(&mut self, mem: &mut dyn GuestMemory, h: u32) -> Result<(), D3dError> {
+        let Some(t) = self.rtt.get(&h).copied() else {
+            return Ok(());
+        };
+        if t.dirty {
+            let bytes = mem.read_vec(t.data, t.len() as usize)?;
+            self.rtt_synced.insert(h, bytes);
+            self.rtt_stores.remove(&h);
+            let generation = self.tracker.generation();
+            self.rtt.get_mut(&h).expect("cached").generation = generation;
+        }
+        Ok(())
+    }
+
+    /// A draw samples texture `header`. When its memory is a dirty depth
+    /// level kept on the host (lazy depth, [`rtt_lazy_depth`](Self::rtt_lazy_depth)):
+    /// a `D24S8` level under a whole single-level 2D texture of the same
+    /// format, size and layout, with no `COLORSIGN`. The backend makes the
+    /// texture from the surface ([`Backend::depth_level_texture`]: the same
+    /// texels an upload of the written-back level gives), once per time the
+    /// level is drawn into. Answers the texture's info and the level, whose
+    /// texture is in `depth_level_tex`. `None`: through the write-back and
+    /// the texture cache as before.
+    pub(super) fn rtt_depth_texture(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+        color_sign: u32,
+    ) -> Result<Option<(TextureInfo, u32)>, D3dError> {
+        if self.rtt.is_empty() || !self.rtt_lazy_depth() || color_sign & COLOR_SIGN_MASK != 0 {
+            return Ok(None);
+        }
+        let pc = PixelContainer::read(mem, header)?;
+        if pc.resource.kind() != ResourceType::Texture {
+            return Ok(None);
+        }
+        let Ok(desc) = TextureDesc::from_header(pc.format, pc.size) else {
+            return Ok(None);
+        };
+        if desc.kind != gfx::texture::TextureKind::D2
+            || desc.levels != 1
+            || !matches!(desc.format, D3DFormat::D24S8 | D3DFormat::LinD24S8)
+        {
+            return Ok(None);
+        }
+        let data = self.cfg.address_map.to_virtual(pc.resource.data);
+        let Some((h, t)) = self
+            .rtt
+            .iter()
+            .find(|(_, t)| t.depth && t.dirty && t.data == data)
+            .map(|(h, t)| (*h, *t))
+        else {
+            return Ok(None);
+        };
+        let pitch = desc.pitch.max(desc.width * 4);
+        let layout = match desc.format.layout() {
+            gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
+            _ => GuestLayoutKind::Linear { pitch },
+        };
+        if t.format != desc.format || (t.width, t.height) != (desc.width, desc.height) || t.layout != layout {
+            return Ok(None);
+        }
+        // Another level over these bytes goes to memory first, and guest
+        // stores into this one are merged (which writes it back: then it
+        // is clean and goes through guest memory below).
+        self.write_back_overlapping(mem, h)?;
+        self.refresh_rtt(mem, h)?;
+        if !self.rtt.get(&h).is_some_and(|t| t.dirty) {
+            return Ok(None);
+        }
+        if !self.depth_level_tex.contains_key(&h) {
+            let Some(texture) = self
+                .backend
+                .depth_level_texture(t.surface)
+                .map_err(D3dError::Backend)?
+            else {
+                return Ok(None);
+            };
+            self.stats.depth_level_textures += 1;
+            self.depth_level_tex.insert(h, texture);
+        }
+        self.stats.rtt_direct_samples += 1;
+        Ok(Some((
+            TextureInfo {
+                header,
+                palette: 0,
+                format: desc.format,
+                kind: desc.kind,
+                width: desc.width,
+                height: desc.height,
+                depth: desc.depth,
+                levels: desc.levels,
+            },
+            h,
+        )))
     }
 
     /// The area a draw may write: its bounding rectangle

@@ -88,6 +88,11 @@ struct Shared {
     presented_cv: Condvar,
     /// Wall time the render thread spent in the inner backend (ns).
     busy_ns: AtomicU64,
+    /// Pixel counts already back from the GPU, by proxy ticket: the render
+    /// thread asks the inner backend after each present
+    /// ([`Backend::try_pixel_count`]), so a read of an older report answers
+    /// without waiting for the queue.
+    landed: Mutex<HashMap<u64, u64>>,
 }
 
 static READS: AtomicU64 = AtomicU64::new(0);
@@ -95,6 +100,7 @@ static READ_NS: AtomicU64 = AtomicU64::new(0);
 static THROTTLES: AtomicU64 = AtomicU64::new(0);
 static THROTTLE_NS: AtomicU64 = AtomicU64::new(0);
 static BUSY_NS: AtomicU64 = AtomicU64::new(0);
+static LANDED_COUNTS: AtomicU64 = AtomicU64::new(0);
 
 /// [`Waits`] summed over every render thread in the process so far (for
 /// a measurement window: take it twice and subtract).
@@ -106,6 +112,7 @@ pub fn total_waits() -> Waits {
         throttles: THROTTLES.load(Ordering::Relaxed),
         throttle_wait: d(&THROTTLE_NS),
         busy: d(&BUSY_NS),
+        landed_counts: LANDED_COUNTS.load(Ordering::Relaxed),
     }
 }
 
@@ -122,6 +129,9 @@ pub struct Waits {
     pub throttle_wait: std::time::Duration,
     /// Wall time the render thread spent running backend work.
     pub busy: std::time::Duration,
+    /// Pixel-count reads answered from a report already back, without a
+    /// wait (every thread's, in [`total_waits`]).
+    pub landed_counts: u64,
 }
 
 impl Shared {
@@ -146,6 +156,25 @@ impl<B: Backend> Worker<B> {
     }
     fn depth(&self, id: Option<u32>) -> Result<Option<B::Surface>, String> {
         id.map(|d| self.surface(d)).transpose()
+    }
+    /// Moves the pixel counts the GPU has written into
+    /// [`Shared::landed`]. Same values as a read: only the wait goes.
+    fn land_pixel_counts(&mut self) -> Result<(), String> {
+        let mut landed = Vec::new();
+        for (&proxy, &t) in &self.tickets {
+            if let Some(c) = self.inner.try_pixel_count(t)? {
+                landed.push((proxy, c));
+            }
+        }
+        if landed.is_empty() {
+            return Ok(());
+        }
+        let mut l = self.shared.landed.lock().unwrap();
+        for (proxy, c) in landed {
+            self.tickets.remove(&proxy);
+            l.insert(proxy, c);
+        }
+        Ok(())
     }
     /// Runs `f`, latching an error.
     fn run(&mut self, f: impl FnOnce(&mut Self) -> Result<(), String>) {
@@ -188,6 +217,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     shared: Arc<Shared>,
     bc: bool,
     sample_surfaces: bool,
+    sample_depth: bool,
     next_surface: u32,
     next_texture: u64,
     next_ticket: u64,
@@ -210,6 +240,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let bc = inner.bc_supported();
         let judge = inner.judge();
         let sample_surfaces = inner.can_sample_surfaces();
+        let sample_depth = inner.can_sample_depth_surfaces();
         let s = Arc::clone(&shared);
         let join = std::thread::Builder::new()
             .name("d3d-render".into())
@@ -250,6 +281,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             shared,
             bc,
             sample_surfaces,
+            sample_depth,
             next_surface: 1,
             next_texture: 1,
             next_ticket: 1,
@@ -535,7 +567,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             let r = w.inner.present_with_gamma(s, flags, gamma.as_deref());
             *w.shared.presented.lock().unwrap() = n;
             w.shared.presented_cv.notify_all();
-            r
+            r?;
+            w.land_pixel_counts()
         });
         // Frame-in-flight limit: wall time only, never logical time.
         let t = std::time::Instant::now();
@@ -679,7 +712,19 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     }
 
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        // Already back: the count the inner backend's read gives, with no
+        // wait for the work queued since.
+        self.check()?;
+        if let Some(c) = self.shared.landed.lock().unwrap().remove(&ticket) {
+            LANDED_COUNTS.fetch_add(1, Ordering::Relaxed);
+            self.waits.landed_counts += 1;
+            return Ok(c);
+        }
         self.call(move |w| {
+            // It may have landed after the check above.
+            if let Some(c) = w.shared.landed.lock().unwrap().remove(&ticket) {
+                return Ok(c);
+            }
             let t = w
                 .tickets
                 .remove(&ticket)
@@ -689,7 +734,9 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     }
 
     fn drop_pixel_count(&mut self, ticket: u64) {
+        self.shared.landed.lock().unwrap().remove(&ticket);
         self.post(move |w| {
+            w.shared.landed.lock().unwrap().remove(&ticket);
             if let Some(t) = w.tickets.remove(&ticket) {
                 w.inner.drop_pixel_count(t);
             }
@@ -699,6 +746,29 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn can_sample_surfaces(&self) -> bool {
         self.sample_surfaces
+    }
+
+    fn can_sample_depth_surfaces(&self) -> bool {
+        self.sample_depth
+    }
+
+    fn depth_level_texture(&mut self, surface: u32) -> Result<Option<ProxyTexture<B>>, String> {
+        self.check()?;
+        // An RGBA8 texture: it has a view.
+        let t = self.new_texture(true);
+        let id = t.id;
+        let shared = Arc::clone(&self.shared);
+        self.post(move |w| {
+            let s = w.surface(surface)?;
+            match w.inner.depth_level_texture(s)? {
+                Some(h) => {
+                    w.textures.insert(id, h);
+                }
+                None => shared.miss("depth_level_texture returned None".into()),
+            }
+            Ok(())
+        });
+        Ok(Some(t))
     }
 
     fn defers_depth_aliases(&self) -> bool {
