@@ -40,6 +40,7 @@ up as structured Rust.
 ## Docs
 
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md): goals, the two-stage plan, crate table, milestones
+- [BUILD-CACHE.md](docs/BUILD-CACHE.md): generated-source and object caches, iteration builds
 - [animation.md](docs/animation.md): animation graphs (jmad) and frame decompression (`crates/tags`)
 - [audio.md](docs/audio.md): DirectSound replacement (`crates/audio`)
 - [bitmaps.md](docs/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`)

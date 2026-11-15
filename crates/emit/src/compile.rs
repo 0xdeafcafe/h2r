@@ -5,8 +5,8 @@
 //! [`toolchain_identity`]), so regenerating an image where only some
 //! shards changed recompiles only those, and switching compiler or SDK
 //! recompiles everything rather than mixing objects. Everything lives
-//! under the output directory the caller chooses, which should be under
-//! `target/`: it is derived from the disc and never committed. The objects
+//! under the output directory the caller chooses, under a temporary or user
+//! cache directory: it is derived from the disc and never committed. The objects
 //! can instead go to a cache shared between checkouts (`H2_OBJ_CACHE`, see
 //! [`obj_dir`]), kept under a size cap (`H2_OBJ_CACHE_MAX`, see
 //! [`prune_obj_cache`]).
@@ -102,6 +102,18 @@ impl Arch {
     }
 }
 
+/// Architectures selected by the CLI. Iteration builds the host by default;
+/// `all` explicitly requests both release targets.
+pub fn architectures(selection: Option<&str>) -> Result<Vec<Arch>, Error> {
+    match selection.unwrap_or("host") {
+        "host" => Ok(vec![Arch::host()]),
+        "all" => Ok(Arch::ALL.to_vec()),
+        "arm64" => Ok(vec![Arch::Arm64]),
+        "x86_64" => Ok(vec![Arch::X86_64]),
+        value => Err(err(format!("--arch {value}: expected host, all, arm64 or x86_64"))),
+    }
+}
+
 /// Result of building one architecture.
 #[derive(Debug, Clone)]
 pub struct Build {
@@ -117,6 +129,10 @@ pub struct Build {
     pub reused: usize,
     /// Wall time for compiling (not archiving).
     pub compile_secs: f64,
+    /// Toolchain probes, source hashing and pin management.
+    pub cache_secs: f64,
+    /// Archive validation or creation.
+    pub archive_secs: f64,
     /// Sum of object file sizes (debug info included).
     pub object_bytes: u64,
     pub library: PathBuf,
@@ -457,6 +473,7 @@ pub fn archive(library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
 /// recompile, never lose an input. The archive is written by [`archive`];
 /// an existing one is reused only if it holds exactly the build's objects.
 pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs: usize, cc: &Path) -> Result<Build, Error> {
+    let cache_start = Instant::now();
     let pin_dir = out_dir.join("pin").join(arch.name());
     for d in [obj_dir, out_dir, &pin_dir] {
         std::fs::create_dir_all(d).map_err(err)?;
@@ -533,6 +550,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
             let _ = std::fs::remove_file(e.path());
         }
     }
+    let cache_secs = cache_start.elapsed().as_secs_f64();
     let todo: Vec<_> = jobs_list.iter().filter(|j| j.3).collect();
     let next = AtomicUsize::new(0);
     let failures = Mutex::new(Vec::new());
@@ -590,6 +608,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
         let m = std::fs::metadata(o).map_err(|e| err(format!("pinned object {}: {e}", o.display())))?;
         object_bytes += m.len();
     }
+    let archive_start = Instant::now();
     let library = out_dir.join(format!("libh2gen-{}.a", arch.name()));
     // Object names embed their content keys, so the same member names mean
     // the same archive: skip archiving when it already holds exactly these.
@@ -608,6 +627,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
         objects,
         cache_objects,
         compile_secs,
+        cache_secs,
+        archive_secs: archive_start.elapsed().as_secs_f64(),
         object_bytes,
         library,
         library_bytes,
@@ -663,6 +684,17 @@ mod tests {
             &move |k| env.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone()),
             &move |cmd, args| Some(if args == ["--version"] { version.clone() } else { format!("{cmd} ok") }),
         )
+    }
+
+    #[test]
+    fn architecture_selection_defaults_to_the_host() {
+        assert_eq!(architectures(None).unwrap(), vec![Arch::host()]);
+        assert_eq!(architectures(Some("host")).unwrap(), vec![Arch::host()]);
+        assert_eq!(architectures(Some("all")).unwrap(), Arch::ALL);
+        assert_eq!(architectures(Some("arm64")).unwrap(), vec![Arch::Arm64]);
+        assert_eq!(architectures(Some("x86_64")).unwrap(), vec![Arch::X86_64]);
+        assert!(architectures(Some("aarch64")).is_err());
+        assert!(architectures(Some("")).is_err());
     }
 
     #[test]
@@ -803,6 +835,36 @@ mod tests {
 
     fn member_names(b: &Build) -> Vec<String> {
         b.objects.iter().map(|o| o.file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    /// Changing one function recompiles only its source; changing any
+    /// included support header invalidates both objects.
+    #[test]
+    fn one_changed_source_reuses_the_other_objects() {
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED one_changed_source_reuses_the_other_objects: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-incremental-{}", std::process::id()));
+        let src = tiny_tree(&dir);
+        std::fs::write(src.join("two.c"), "int h2_two(void) { return 2; }\n").unwrap();
+        let out = dir.join("out");
+        let first = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+        assert_eq!((first.compiled, first.reused), (2, 0));
+        let warm = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+        assert_eq!((warm.compiled, warm.reused), (0, 2));
+        std::fs::write(src.join("one.c"), "int h2_one(void) { return 3; }\n").unwrap();
+        let changed = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+        assert_eq!((changed.compiled, changed.reused), (1, 1));
+        assert_ne!(first.objects[0], changed.objects[0]);
+        assert_eq!(first.objects[1], changed.objects[1]);
+        assert_eq!(archive_members(&changed.library).unwrap(), member_names(&changed));
+        for name in ["h2gen.h", "h2simd.h", "h2x87.h", "h2abi.h"] {
+            std::fs::write(src.join(name), "/* changed support */\n").unwrap();
+            let changed = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+            assert_eq!((changed.compiled, changed.reused), (2, 0), "{name}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Another checkout pruning a shared cache to nothing between this

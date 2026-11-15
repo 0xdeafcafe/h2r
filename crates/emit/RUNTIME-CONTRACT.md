@@ -339,11 +339,13 @@ Its semantics:
 
 Objects are compiled with clang at `-std=c11 -fno-strict-aliasing
 -fno-fast-math -ffp-contract=off` plus the profile flags, for
-`arm64-apple-macos11` and `x86_64-apple-macos11`, and archived as
-`libh2gen-<arch>.a`. The profile is `-O1 -gline-tables-only` by default;
+`arm64-apple-macos11` or `x86_64-apple-macos11`, and archived as
+`libh2gen-<arch>.a`. `h2 emit` defaults to the host architecture; use
+`--arch all` for both, or `--arch arm64` / `--arch x86_64` for one.
+`--jobs N` selects clang parallelism (default: available cores). The profile is `-O1 -gline-tables-only` by default;
 `H2_OPT` (`0`, `1`, `g`, `s`, `2`) picks the optimisation level and
 `H2_DEBUG` (`lines`, `full` for `-g`, `none`) the debug info. The object
-cache is keyed on the sources, `h2gen.h`, `h2simd.h`, `h2abi.h`, the
+cache is keyed on the sources, `h2gen.h`, `h2simd.h`, `h2x87.h`, `h2abi.h`, the
 flags, the target and the toolchain identity. The identity covers the
 compiler executable, which is `clang` resolved on `PATH` once and then
 invoked by that path for every compile: its path, its symlink target and
@@ -370,3 +372,11 @@ deletes an object of the build that just ran, for either architecture,
 even when those alone exceed the cap. The pins hold their objects' disk
 space until the next build into the same `<out>`, so the space a shared
 cache really uses can exceed the cap by the checkouts' current builds.
+
+The CLI keeps an emission receipt under `<out>` (default `$TMPDIR/h2gen`).
+A hit skips analysis, lifting and C emission only after checking the XBE,
+package version, executable contents, and the contents and names of every
+source and support header. Changing the executable invalidates this receipt
+including when the package version is unchanged. ABI installation and the
+object cache checks still run. `--no-emit-cache` or `H2_TRACE` forces the
+front end to run again. See [BUILD-CACHE.md](../../docs/BUILD-CACHE.md).

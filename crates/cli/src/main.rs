@@ -9,6 +9,7 @@ mod anim;
 mod bitmap;
 mod collision;
 mod effects;
+mod emit_cache;
 mod extract_shaders;
 mod fonts;
 mod lighting;
@@ -83,9 +84,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           the default), mnemonic counts, one function's IR, or
                           interpret from the entry to the first kernel call
   emit [--out <dir>] [--abi-header <h2abi.h>] [--no-build] [--run-entry]
-                          generate C for every function, build static libs for
-                          arm64 and x86_64 (default out: target/h2gen); with
-                          --run-entry, run the entry through the generated code
+       [--arch host|all|arm64|x86_64] [--jobs N] [--no-emit-cache]
+                          generate C and build the host static lib (default out:
+                          $TMPDIR/h2gen); --arch all builds both architectures;
+                          --run-entry runs the entry through the generated code
                           (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
                           caps it, dropping least recently used; H2_OPT, H2_DEBUG)
 
@@ -191,6 +193,15 @@ fn main() -> Result<()> {
                 lift_opts.abi_header = Some(PathBuf::from(args.next().context("--abi-header needs a path")?))
             }
             "--no-build" => lift_opts.no_build = true,
+            "--arch" => lift_opts.arch = Some(args.next().context("--arch needs host, all, arm64 or x86_64")?),
+            "--jobs" => {
+                let n: usize = args.next().context("--jobs needs a positive count")?.parse().context("--jobs needs a positive count")?;
+                if n == 0 {
+                    bail!("--jobs needs a positive count");
+                }
+                lift_opts.jobs = Some(n);
+            }
+            "--no-emit-cache" => lift_opts.no_emit_cache = true,
             "--dump" => lift_opts.dump.push(args.next().context("--dump needs an address")?),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
@@ -551,6 +562,9 @@ struct LiftOpts {
     out: Option<PathBuf>,
     abi_header: Option<PathBuf>,
     no_build: bool,
+    arch: Option<String>,
+    jobs: Option<usize>,
+    no_emit_cache: bool,
 }
 
 fn parse_hex(s: &str) -> Result<u32> {
@@ -604,31 +618,48 @@ fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
 
 fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     use std::time::Instant;
+    let arches = emit::compile::architectures(opts.arch.as_deref())?;
+    if opts.run_entry && !opts.no_build && !arches.contains(&emit::compile::Arch::host()) {
+        bail!("--run-entry requires the host architecture (use --arch host or all)");
+    }
+    let total = Instant::now();
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
-    let t = Instant::now();
-    let a = analyze::analyze(&x)?;
-    println!("analyze: {:.1}s", t.elapsed().as_secs_f64());
-    let t = Instant::now();
-    let owners = emit::plan_image(&a, &x)?;
-    println!("lift + plan: {:.1}s", t.elapsed().as_secs_f64());
-    let out = opts.out.clone().unwrap_or_else(|| repo_root().join("target/h2gen"));
+    let out = opts.out.clone().unwrap_or_else(|| std::env::temp_dir().join("h2gen"));
     let src = out.join("src");
     let t = Instant::now();
-    let w = emit::write_module(&owners, &src)?;
-    println!(
-        "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries, {} loop back-edges",
-        t.elapsed().as_secs_f64(),
-        w.owners,
-        w.files.len(),
-        w.written,
-        w.bytes as f64 / 1e6,
-        w.entries,
-        w.resumes,
-        w.entry_exits,
-        w.back_edges
-    );
+    let cache_key = emit_cache::key(&data, &std::env::current_exe()?)?;
+    // Tracing is explicitly requested analysis work, even on a cache hit.
+    let reuse = !opts.no_emit_cache && std::env::var_os("H2_TRACE").is_none() && emit_cache::valid(&out, &cache_key);
+    println!("emit cache: {:.3}s, {}", t.elapsed().as_secs_f64(), if reuse { "hit" } else { "miss" });
+    if !reuse {
+        emit_cache::invalidate(&out)?;
+        let t = Instant::now();
+        let a = analyze::analyze(&x)?;
+        println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
+        let t = Instant::now();
+        let owners = emit::plan_image(&a, &x)?;
+        println!("lift + plan: {:.3}s", t.elapsed().as_secs_f64());
+        let t = Instant::now();
+        let w = emit::write_module(&owners, &src)?;
+        println!(
+            "emit: {:.3}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries, {} loop back-edges",
+            t.elapsed().as_secs_f64(),
+            w.owners,
+            w.files.len(),
+            w.written,
+            w.bytes as f64 / 1e6,
+            w.entries,
+            w.resumes,
+            w.entry_exits,
+            w.back_edges
+        );
+        let t = Instant::now();
+        emit_cache::record(&out, &cache_key)?;
+        println!("emit cache record: {:.3}s", t.elapsed().as_secs_f64());
+    }
     if opts.no_build {
+        println!("total: {:.3}s", total.elapsed().as_secs_f64());
         return Ok(());
     }
     let header = opts
@@ -637,18 +668,20 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         .or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from))
         .unwrap_or_else(|| repo_root().join("crates/runtime/include/h2abi.h"));
     emit::compile::install_header(&src, &header)?;
-    let jobs = emit::compile::default_jobs();
+    let jobs = opts.jobs.unwrap_or_else(emit::compile::default_jobs);
     let cache_max = emit::compile::obj_cache_max()?;
     let mut host = None;
     let mut built = std::collections::HashSet::new();
-    for arch in emit::compile::Arch::ALL {
+    for arch in arches {
         let b = emit::compile::build(&src, &out, arch, jobs)?;
         println!(
-            "{:<7} {} compiled, {} cached, {:.1}s wall ({jobs} jobs); objects {:.1} MB, {} {:.1} MB",
+            "{:<7} {} compiled, {} cached, {:.3}s clang, {:.3}s cache, {:.3}s archive ({jobs} jobs); objects {:.1} MB, {} {:.1} MB",
             arch.name(),
             b.compiled,
             b.reused,
             b.compile_secs,
+            b.cache_secs,
+            b.archive_secs,
             b.object_bytes as f64 / 1e6,
             b.library.display(),
             b.library_bytes as f64 / 1e6
@@ -673,7 +706,9 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     if opts.run_entry {
         let b = host.context("no host build")?;
         let dylib = out.join("libh2gen-host.dylib");
+        let t = Instant::now();
         emit::compile::host_dylib(&b, &src, &[("bridge.c", emit::host::BRIDGE)], &dylib)?;
+        println!("host bridge + link: {:.3}s", t.elapsed().as_secs_f64());
         let (cpu, transfer, ctx) = emit_run_entry(&x, &dylib)?;
         println!("{transfer:x?}");
         for (n, v) in ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"].iter().zip(cpu.gpr) {
@@ -681,6 +716,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         }
         println!("  eflags = {:#010x} (defined {:#x}), events {:?}", cpu.eflags, cpu.eflags_defined, ctx.events);
     }
+    println!("total: {:.3}s", total.elapsed().as_secs_f64());
     Ok(())
 }
 
