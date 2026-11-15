@@ -79,6 +79,39 @@ purpose, since every tree maps to the same `.`; a constant in the key
 retires objects built under the old naming.
 These keys supersede earlier header-only keys, so existing objects rebuild
 once without requiring a manual cache clear.
+
+### Sharing probes between sources
+
+Both probes used to run for every translation unit, about 0.1 s each, so a
+full image paid about 2000 clang processes on every build, even one where
+every object was cached. Generated sources look alike to both probes, so
+one run now serves many sources. The keys are the same as before; only the
+number of probes changes.
+
+- **Driver (`-###`).** The driver sees a source only as its path. One dry
+  run serves every source in a directory with the same extension: the
+  source's path is replaced by a placeholder in the trace, and each source's
+  own name goes into its key. If the name appears anywhere else in the
+  trace (a `-D` value, an `-include`), that directory falls back to one
+  probe per source.
+- **Dependencies (`-M`).** Two sources in one directory include the same
+  files when they have the same *preprocessor skeleton*: every line that
+  holds or could hold a directive (`#`, `%:`, `??=`), with its line number,
+  since `__LINE__` is visible to `#if`. Lines joined to such a line count
+  too: one ending in a backslash (or `??/`), the line after it, and every
+  line that starts or ends inside a block comment. One scan serves every
+  source with that skeleton. The scanned source is dropped from the shared
+  list, and each source hashes its own text.
+- **Never shared.** A source whose text has `_Pragma`, `__COUNTER__`,
+  `__FILE__`, `__FILE_NAME__` or `__BASE_FILE__` is scanned on its own.
+  If any header of the build uses `__BASE_FILE__`, `push_macro`/`pop_macro`
+  or `include_alias`, every source is scanned on its own.
+
+Generated shards share one skeleton and one directory, so a full image
+needs about two probes instead of about 2000. Tests in `compile.rs` check
+that sharing still rebuilds exactly the right objects: a header only one
+source includes, a conditional include, a moved directive, and a header
+that turns sharing off.
 A change confined to one shard recompiles that shard. Sources use stable
 address buckets and oversized functions get their own file; the compiler
 schedules large sources first. Unchanged files keep their objects even
@@ -142,6 +175,42 @@ change one function in a private XBE copy and use the same output; compare
 time and exit status, and handles version/resource probes unchanged. Use
 the same wrapper for before/after runs: changing its contents changes the
 object cache identity. Measured results are in [build-perf.md](build-perf.md).
+
+## The `h2 build` and `h2 play` path
+
+`h2 build`, and `h2 run`/`play` when they rebuild, don't use the emission
+receipt above. They write `<out>/src`, compile it with the same object
+cache, link `libh2game.dylib` and stamp it (docs/BOOT.md). What each kind
+of change costs:
+
+- **Nothing changed.** `play` and `build --check` read the image and
+  compare the stamp, and do nothing else.
+- **Runtime only.** The stamp covers the runtime only through
+  `runtime/include` (`h2abi.h`), so a runtime change keeps the dylib.
+- **Generator change** (xbe, analyze, ir, lift, opt, emit, x87, or boot's
+  bridge in `crates/boot/c`): the whole pipeline runs again, but most of
+  it is now cheap.
+  - *Analysis* is cached in the boot cache (`H2_BOOT_CACHE`, default
+    `$TMPDIR/h2boot-cache`; `off` disables it), keyed by the image's hash
+    and size and by `ANALYSIS_SOURCE_HASH`: the xbe and analyze sources,
+    `Cargo.lock` and the rustc version. A change outside xbe and analyze
+    reuses it. `H2_TRACE` bypasses it, so diagnostics always come from a
+    fresh analysis. A damaged, truncated or other-version file is
+    recomputed (`Analysis::decode` refuses it).
+  - *Lifting, IR passes, C generation and file writes* run on every core
+    (`emit::par`). Results are kept in owner order, so the C is
+    byte-identical to a serial run.
+  - *Keying* runs about two clang probes, not two per source (above).
+  - Only shards whose C changed are rewritten and compiled.
+- `build` prints every phase: analyze (and whether it was cached), lift,
+  plan, emit, keying, compiling, archive, link and the total.
+
+`h2 play --follow` builds each new commit's game into `gen/<short>` of its
+cache, with the object cache at `<cache>/objcache`. A new `gen/<short>`
+starts as an APFS clone (`cp -cR`) of the last game's `src/`, so the emit
+rewrites only the files that commit changed, and the unchanged ones share
+their blocks with the last game. If the clone fails, the emit writes every
+file as before.
 
 ## Rust dependency builds
 

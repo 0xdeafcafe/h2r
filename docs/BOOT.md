@@ -48,7 +48,7 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
 | `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
 | `H2_BOOT_REALTIME=1` | pace the scheduler to wall-clock time (`Pacer::real_time`); off by default, so runs go as fast as the host allows |
-| `H2_BOOT_CACHE=<dir>` or `off` | where the fallback caches its unread jump-table targets (default `$TMPDIR/h2boot-cache`), keyed on the XBE hash and a hash of the analyze sources |
+| `H2_BOOT_CACHE=<dir>` or `off` | the boot cache (default `$TMPDIR/h2boot-cache`), shared by every `--out`: the fallback's unread jump-table targets, and the image's analysis (`analysis-<hash>-<size>-<analyzer>.h2a`), keyed on the XBE hash and size and on `ANALYSIS_SOURCE_HASH` (xbe and analyze sources, `Cargo.lock`, rustc version). `h2 build` writes the analysis and the fallback reads it at run time; `H2_TRACE` skips it. `off` caches nothing |
 | `H2_BOOT_INPUT=BUTTONS@WHEN,...` | scripted pad timeline through the keyboard pad and XInputGetState. BUTTONS: `A B X Y BLACK WHITE LT RT UP DOWN LEFT RIGHT START BACK LS RS LUP LDOWN LLEFT LRIGHT` or a key name, joined with `\|`. WHEN: `T`, `T+D` or `T-U`, a slice or (`f` prefix) a present count; held 4 presents or 100 slices by default. Each press is printed. |
 | `H2_BOOT_INPUT_FILE=<file>` | the same entries, one per line, `#` comments; merged with `H2_BOOT_INPUT` |
 | `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/boot/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
@@ -264,9 +264,12 @@ target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
   presents the run prints `present N: last 100 at X fps`.
 - `H2_BOOT_GFX_EVERY=never` keeps the GPU path but writes no PNGs; drop
   it for a screenshot every N.
-- The first run of a build analyzes the image for the fallback (15-20 s
-  alone); later runs read the unread-target cache and analyze in the
-  background, so compare second runs.
+- The fallback reads the image's analysis from the boot cache, where
+  `h2 build` left it, so a run after a build doesn't analyze again. Only a
+  run whose analyzer has no cached analysis yet (a run with
+  `H2_BOOT_CACHE=off`, or a dylib built elsewhere) analyzes the image for
+  the fallback (15-20 s alone); later runs read the unread-target cache
+  and analyze in the background, so compare second runs.
 - Numbers are only meaningful on a quiet machine: with heavy builds
   running alongside (load average 170-430) the same run fell to a
   fraction of its quiet-machine rate, and the analysis went from 15 s to

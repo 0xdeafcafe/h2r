@@ -138,3 +138,46 @@ Each has regression tests; [BUILD-CACHE.md](BUILD-CACHE.md) describes the
 result. Full-image timings were not repeated after these changes, so they
 do not include the added dependency and driver discovery or the tree
 inspection.
+
+## The `h2 build` path after a generator change
+
+Measured on 2026-11-15, same machine, release `h2` from the `emit-speed`
+branch against master `2affe31`, one `h2 build` at a time under the shared
+emit gate, with other lanes' builds running (load average 25-120). Each
+case used a private object cache and boot cache. Single runs, so read them
+as rough.
+
+| Case | Before (2affe31) | After |
+|---|---:|---:|
+| Cold: new `--out`, empty object and analysis caches | 386.3 s | 242.3 s |
+| No-op: `build --check` on a current dylib | not measured | 0.02 s |
+| Rebuild into the same `--out`, analyzer unchanged | 25.7 s to the link (failed, disk full) | 3.5 s |
+| Same, analyzer changed (analysis cache miss) | the row above | 12.2 s |
+| `--follow`: new `gen/<short>`, shared object cache | not measured | 4.4 s |
+| `--follow` with the last game's `src/` cloned first | | 3.8 s, plus a 0.17 s clone |
+
+| Phase, rebuild into the same `--out` | Before | After |
+|---|---:|---:|
+| analyze | 8.5 s | 0.0 s (cached) |
+| lift | 0.8 s | 0.2 s |
+| plan (IR passes) | not printed | 0.6 s |
+| emit (1006 files, 505 MB of C) | 4.9 s | 1.0 s |
+| keying (probes, hashing, pins) | not printed, about 2000 clang probes | 0.7 s, two probes |
+| compile | 0 objects | 0 objects |
+| link | failed | 0.5 s |
+
+- The cold case is dominated by clang (350.2 s before, 223.9 s after). That
+  difference is load, not this change. Before, about 14 s of the cold wall
+  time was in no printed phase (plan and keying). After, every phase is
+  printed and they add up to the total.
+- These rebuilds change no C. A real generator change also compiles each
+  shard whose C changed, about 5 s each under this load.
+- `--follow` today writes all 1006 files into the new directory. Cloning
+  the last game's `src/` first rewrote none of them. The emit took 1.1 s
+  instead of 1.4 s, and the disk used by the new directory fell from about
+  877 MB to about 393 MB. That's free space before and after, so other
+  lanes add noise, but the difference is about the 505 MB of C. The rest
+  is the archive and the dylib.
+- The C is byte-identical. The parallel emit's `src/manifest.tsv` matches
+  the one master wrote for all 1006 files. The run into the cloned
+  directory produced the same manifest again.
