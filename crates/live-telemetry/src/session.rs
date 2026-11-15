@@ -20,6 +20,9 @@ struct Match {
 pub struct Session {
     host: String,
     console: Option<String>,
+    /// The Live account signed in on local player slot 0, if any: that
+    /// player's roster entries carry its XUID.
+    signed_in: Option<live_proto::Xuid>,
     current: Option<Match>,
     output: Vec<Output>,
 }
@@ -29,8 +32,24 @@ impl Session {
         Self {
             host: host.into(),
             console,
+            signed_in: None,
             current: None,
             output: Vec::new(),
+        }
+    }
+
+    /// Links the player on local slot 0 to the signed-in Live account.
+    pub fn with_signed_in(mut self, xuid: Option<live_proto::Xuid>) -> Self {
+        self.signed_in = xuid;
+        self
+    }
+
+    /// Sets the signed-in account's XUID on the player who plays from local
+    /// slot 0. Other players keep whatever the game said (nothing, today).
+    fn link(&self, players: &mut [PlayerState]) {
+        let Some(xuid) = self.signed_in else { return };
+        for p in players.iter_mut().filter(|p| p.local_user == Some(0)) {
+            p.player.xuid = Some(xuid);
         }
     }
 
@@ -54,6 +73,8 @@ impl Session {
         players: Vec<PlayerState>,
         teams: Vec<live_proto::game::TeamScore>,
     ) {
+        let mut players = players;
+        self.link(&mut players);
         self.end_previous();
         if !info.is_match() {
             return;
@@ -130,6 +151,8 @@ impl Session {
     }
 
     pub fn sample(&mut self, snapshot: &Snapshot) {
+        let mut linked = snapshot.players.clone();
+        self.link(&mut linked);
         let Some(current) = &mut self.current else {
             return;
         };
@@ -152,8 +175,7 @@ impl Session {
             .filter(|(index, datum)| after.get(index) != Some(datum))
             .map(|(index, _)| *index)
             .collect();
-        let joined: Vec<PlayerState> = snapshot
-            .players
+        let joined: Vec<PlayerState> = linked
             .iter()
             .filter(|p| before.get(&p.player.index) != Some(&p.datum))
             .cloned()
@@ -176,7 +198,7 @@ impl Session {
                 },
             );
         }
-        current.players.clone_from(&snapshot.players);
+        current.players = linked;
 
         let scores = snapshot.scores();
         if snapshot.has_stats
@@ -313,6 +335,7 @@ mod tests {
                 appearance: None,
             },
             appearance: Appearance::default(),
+            local_user: (index == 0).then_some(0),
             unit: u32::MAX,
             stats: PlayerStats {
                 score,
@@ -555,5 +578,67 @@ mod tests {
         );
         state.teams[1].score = 7;
         assert_eq!(state.winner(true), None);
+    }
+
+    #[test]
+    fn the_signed_in_account_is_the_player_on_local_slot_zero() {
+        let xuid = live_proto::Xuid::parse("0009a1b2c3d4e5f6").unwrap();
+        let mut session = Session::new("test", None).with_signed_in(Some(xuid));
+        // Slot 0 is the signed-in local player; 1 is remote; 2 is a second
+        // local player on another controller (not the signed-in account).
+        let mut guest = player(2, 0);
+        guest.local_user = Some(1);
+        session.start(&info(), vec![player(0, 0), player(1, 0)]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        assert_eq!(started.data["players"][0]["xuid"], "0009a1b2c3d4e5f6");
+        assert_eq!(
+            started.data["players"][0]["name"], "P0",
+            "the in-game name stays"
+        );
+        assert!(started.data["players"][1].get("xuid").is_none());
+
+        session.sample(&snapshot(2, vec![player(0, 0), player(1, 0), guest]));
+        let outputs = session.take_output();
+        let joined: Vec<_> = outputs
+            .iter()
+            .filter_map(|o| match o {
+                Output::Event(e) if e.kind == "PlayerJoined" => Some(e),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            joined.len(),
+            1,
+            "linking does not make the roster look changed"
+        );
+        assert!(joined[0].data["player"].get("xuid").is_none());
+
+        // A player who rejoins on slot 0 (a new datum) is linked again.
+        let mut back = player(0, 0);
+        back.datum ^= 0x0001_0000;
+        session.sample(&snapshot(4, vec![back]));
+        let rejoin = session
+            .take_output()
+            .into_iter()
+            .find_map(|o| match o {
+                Output::Event(e) if e.kind == "PlayerJoined" => Some(e),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(rejoin.data["player"]["xuid"], "0009a1b2c3d4e5f6");
+    }
+
+    #[test]
+    fn without_a_signed_in_account_players_have_no_xuid() {
+        let mut session = Session::new("test", None);
+        session.start(&info(), vec![player(0, 0)]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        assert!(started.data["players"][0].get("xuid").is_none());
     }
 }

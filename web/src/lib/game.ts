@@ -42,7 +42,4 @@ export function teamName(team: number): string {
   return ["Red", "Blue", "Green", "Gold", "Purple", "Pink", "Teal", "Brown"][team] ?? `Team ${team + 1}`;
 }
 
-export function elapsedSeconds(g: GameState, now: number): number {
-  const end = g.ended_at ? Date.parse(g.ended_at) : now;
-  return Math.max(0, (end - Date.parse(g.started_at)) / 1000);
-}
+export { elapsedSeconds, gameSeconds } from "../state/length";

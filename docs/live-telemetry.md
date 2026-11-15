@@ -119,6 +119,11 @@ contract allows, and batches up to four game events into one JWS signed with
 the account key through `live-proto`. Empty batches and messages over 16 KiB
 are rejected. The account key is never included in debug output.
 
+The player on local slot 0 is the signed-in account: its roster entries
+(`GameStarted`, `PlayerJoined`) carry that account's `xuid`, while `name`
+stays the in-game profile name. Other local slots and remote players have no
+`xuid` until their accounts are known. Offline capture links no one.
+
 ## Runtime validation needed first
 
 Unit tests use synthetic guest memory and do not execute the game. Before

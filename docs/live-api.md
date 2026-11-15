@@ -327,7 +327,10 @@ above where they differ.
   it.
 - **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
   the caller isn't signed in. Presence expires 90 s after the last event or
-  ping; a game with no events or frames for 5 minutes ends as `lost`.
+  ping; a game with no events or frames for 5 minutes ends as `lost`. That
+  `GameEnded` carries the last tick seen, but its `at` (the game's
+  `ended_at`) is when the server gave up, so a game's length is
+  `(GameEnded.tick - GameStarted.tick) / 30`, not `ended_at - started_at`.
 - **`recent_games`** on an account is the latest 10.
 - **Account creation** payload is `{gamertag, jwk, invite?, aud, iat}`;
   `aud` is the server id from the well-known document and `iat` must be

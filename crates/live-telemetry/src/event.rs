@@ -60,6 +60,9 @@ pub struct PlayerState {
     pub datum: u32,
     pub player: live_proto::game::Player,
     pub appearance: Appearance,
+    /// The local player slot (0..3) this player plays from, or `None` for a
+    /// remote player.
+    pub local_user: Option<u8>,
     pub unit: u32,
     pub stats: PlayerStats,
 }

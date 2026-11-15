@@ -210,7 +210,7 @@ fn install_at(
         }
     };
     let telemetry = Arc::new(Telemetry::new(
-        Session::new("h2recomp", Some("h2recomp".into())),
+        Session::new("h2recomp", Some("h2recomp".into())).with_signed_in(signed_in(config)),
         sink,
     ));
     // Resolve every original before edit_dispatch: resolve_original takes the
@@ -291,6 +291,15 @@ fn install_at(
         Ok(())
     })?;
     Ok(Some(telemetry))
+}
+
+/// The Live account the game is signed in with: the one whose key signs the
+/// events. Offline capture has none.
+fn signed_in(config: &TelemetryConfig) -> Option<live_proto::Xuid> {
+    match &config.sink {
+        TelemetrySinkConfig::Server { account, .. } => live_proto::Xuid::parse(&account.xuid).ok(),
+        TelemetrySinkConfig::File(_) => None,
+    }
 }
 
 fn install_post(

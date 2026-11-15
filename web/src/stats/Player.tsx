@@ -19,7 +19,7 @@ import { Crumbs, Derived, Pager, Panel, Tabs, Title, playerHref } from "./Layout
 import GametypeIcon from "../components/GametypeIcon";
 import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, playlist } from "./Side";
 import { titleCase } from "../lib/format";
-import { elapsedSeconds, teamName } from "../lib/game";
+import { gameSeconds, teamName } from "../lib/game";
 import { now } from "../lib/now";
 import Wordmark from "./Wordmark";
 import { hms, longDate, num, ratio, usDate, usDateTime } from "./fmt";
@@ -275,7 +275,7 @@ function Preview(props: { row: HistoryRow; gamertag: string }) {
     const top = [...m.entries()].sort((a, b) => b[1] - a[1])[0];
     return top ? g().players[top[0]]?.name : null;
   });
-  const length = () => elapsedSeconds(g(), now());
+  const length = () => gameSeconds(g(), now());
   return (
     <aside class="s-preview">
       <A href={`/stats/games/${g().game_id}`} class="s-preview-pic" style={{ display: "block" }}><MapThumb game={g()} /></A>

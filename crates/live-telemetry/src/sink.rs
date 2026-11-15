@@ -242,6 +242,7 @@ mod tests {
                     appearance: None,
                 },
                 appearance: crate::event::Appearance::default(),
+                local_user: None,
                 unit: u32::MAX,
                 stats: crate::event::PlayerStats::ZERO,
             }],

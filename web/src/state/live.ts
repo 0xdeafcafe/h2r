@@ -8,7 +8,7 @@ import type { WireEvent, PlayerKilled } from "../api/types";
 import { api, type Api } from "../api/http";
 import { fetchWellKnown, initialBase, remember, targetFor, wsUrl, type ServerTarget, type WellKnown } from "../api/server";
 import {
-  applyAccountsSnapshot, applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, seedTail, type LiveState,
+  addGamePositions, applyAccountsSnapshot, applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, seedTail, type LiveState,
 } from "./reducer";
 import { loadSnapshot } from "./snapshot";
 import { FrameHub } from "./frames";
@@ -184,6 +184,16 @@ function createLive() {
     return p;
   }
 
+  /** Checks the signatures of a game's events read over REST (a replay
+   *  loads the whole game stream), and counts them in its summary. Events
+   *  the stream already queued are not checked twice. */
+  function checkGameEvents(id: string, evs: WireEvent[]) {
+    let added: number[] = [];
+    setState(produce((s) => { added = addGamePositions(s, id, evs); }));
+    const fresh = new Set(added);
+    for (const ev of evs) if (fresh.has(ev.position) && !verify[ev.position]) verifier?.enqueue(ev);
+  }
+
   async function useServer(base: string): Promise<void> {
     setServerError(null);
     let wk: WellKnown | null = null;
@@ -226,6 +236,7 @@ function createLive() {
     verifySummary,
     loadMode,
     ensureGame,
+    checkGameEvents,
     useServer,
     start,
     api: () => rest,

@@ -36,6 +36,11 @@ export interface Kill {
 }
 
 export interface GamePlayerState extends GamePlayer {
+  /** What the site shows: the account's gamertag for a player linked to an
+   *  account (by `xuid`), otherwise the name the game sent. */
+  name: string;
+  /** The in-game (profile) name, when it differs from the gamertag shown. */
+  game_name: string | null;
   left: boolean;
   /** The player's appearance (emblem layers, profile colours), when roster
    *  events have carried one. */
@@ -106,14 +111,32 @@ function streamGameId(stream: string): GameId | null {
   return stream.startsWith("game-") ? stream.slice(5) : null;
 }
 
-function addPlayer(g: GameState, p: GamePlayer) {
+/** An account's gamertag, if the account itself is known (a placeholder
+ *  made from presence alone carries its XUID as the gamertag). */
+function gamertagOf(s: LiveState, xuid: Xuid | null | undefined): string | null {
+  const a = xuid ? s.accounts[xuid] : undefined;
+  return a && a.gamertag !== a.xuid ? a.gamertag : null;
+}
+
+/** A player linked to an account is shown by gamertag; the game's own name
+ *  (the profile name on the console) is kept beside it. */
+function displayName(p: { name: string; game_name: string | null }, tag: string | null) {
+  if (!tag || tag === p.name) return;
+  p.game_name ??= p.name;
+  p.name = tag;
+}
+
+function addPlayer(s: LiveState, g: GameState, p: GamePlayer) {
   // Telemetry may carry the player's appearance; the API type doesn't know
   // it yet, so read it softly. A roster repeat that omits it keeps what the
   // game already learned.
   const wire = p as GamePlayer & { appearance?: unknown };
   const prev = g.players[p.index];
+  const tag = gamertagOf(s, p.xuid);
   g.players[p.index] = {
     ...p,
+    name: tag ?? p.name,
+    game_name: tag && tag !== p.name ? p.name : null,
     xuid: p.xuid ?? null,
     left: false,
     appearance: normalizeAppearance(wire.appearance) ?? prev?.appearance ?? null,
@@ -154,6 +177,11 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         presence: prev?.presence ?? null,
         last_seen: prev?.last_seen ?? null,
       };
+      // Games that named this account before it was known (a replay, or an
+      // account seen first through presence) now show its gamertag.
+      for (const g of Object.values(s.games)) {
+        for (const p of Object.values(g.players)) if (p.xuid === d.xuid) displayName(p, d.gamertag);
+      }
       break;
     }
     case "SignedIn":
@@ -209,7 +237,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         first_position: ev.position,
         positions: [ev.position],
       };
-      for (const p of d.players ?? []) addPlayer(g, p);
+      for (const p of d.players ?? []) addPlayer(s, g, p);
       if (g.team_play) for (const p of Object.values(g.players)) g.teams[p.team] ??= 0;
       s.games[id] = g;
       s.gameOrder = [id, ...s.gameOrder.filter((x) => x !== id)];
@@ -219,7 +247,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const g = gameFor(s, ev);
       const d = ev.data as PlayerJoined;
       if (!g || !d.player) break;
-      addPlayer(g, d.player);
+      addPlayer(s, g, d.player);
       if (g.team_play) g.teams[d.player.team] ??= 0;
       break;
     }
@@ -347,6 +375,8 @@ export function endedGames(s: LiveState, limit = 20): GameState[] {
 export interface Standing {
   index: number;
   name: string;
+  /** The in-game name, when the gamertag shown differs from it. */
+  game_name: string | null;
   team: number;
   xuid: Xuid | null;
   left: boolean;
@@ -361,6 +391,7 @@ export function standings(g: GameState): Standing[] {
     .map((p) => ({
       index: p.index,
       name: p.name,
+      game_name: p.game_name ?? null,
       team: p.team,
       xuid: p.xuid ?? null,
       left: p.left,
@@ -491,12 +522,13 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
     if (det.time_limit_s !== undefined) g.time_limit_s = det.time_limit_s ?? null;
     if (det.console !== undefined) g.console = det.console ?? null;
     if (det.host != null) g.host = det.host;
+    if (det.tick != null && !g.start_tick) g.start_tick = det.tick;
     if (det.end_reason !== undefined) g.end_reason = det.end_reason ?? null;
     if (det.winner !== undefined) g.winner = normalizeWinner(det.winner);
     if (d.ended_at) { g.ended_at = d.ended_at; g.status = "ended"; }
     if (det.last_tick) g.last_tick = Math.max(g.last_tick, det.last_tick);
   }
-  for (const p of d.players ?? []) if (!g.players[p.index]) addPlayer(g, p);
+  for (const p of d.players ?? []) if (!g.players[p.index]) addPlayer(s, g, p);
   for (const t of d.teams ?? []) g.teams[t.team] = t.score;
   if (g.team_play) for (const p of Object.values(g.players)) g.teams[p.team] ??= 0;
   if (det.scoreboard) applyScores(g, det.scoreboard);
@@ -509,6 +541,23 @@ function insertByStart(s: LiveState, id: GameId, startedAt: string): GameId[] {
   const i = order.findIndex((x) => Date.parse(s.games[x]?.started_at ?? "") < t);
   order.splice(i < 0 ? order.length : i, 0, id);
   return order;
+}
+
+/** Records the log positions of a game's events fetched outside the stream
+ *  (a replay's REST read), so the game's signature summary covers them.
+ *  Returns the positions that were new. */
+export function addGamePositions(s: LiveState, gameId: GameId, evs: WireEvent[]): number[] {
+  const g = s.games[gameId];
+  if (!g) return [];
+  const have = new Set(g.positions);
+  const added: number[] = [];
+  for (const ev of evs) {
+    if (ev.stream !== "game-" + gameId || ev.position <= 0 || have.has(ev.position)) continue;
+    have.add(ev.position);
+    added.push(ev.position);
+  }
+  if (added.length) g.positions = [...g.positions, ...added].sort((a, b) => a - b);
+  return added;
 }
 
 /** Fills the event page's tail with events from before the stream's start. */
