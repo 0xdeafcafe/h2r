@@ -47,6 +47,7 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
 | `H2_GFX_MERGE_PASSES=0` | with `H2_BOOT_GFX` or in `h2 play`, one render pass per draw instead of the default merged passes (`GfxBackend::set_merge_passes`); about 2.5x slower; the exact reference, which merged passes matched on every menu frame checked |
 | `H2_GFX_MERGE_CHECK=N` | with `H2_BOOT_GFX`, render each pending pass of frame N both merged and one pass per draw and print what differs, down to the draws involved (`GfxBackend::set_merge_check`; slow) |
+| `H2_RENDER_THREAD=1` | **Opt-in, off by default.** With `H2_BOOT_GFX`, run the `GfxBackend`'s work (shader preparation, encoding, uploads, submission, present, the `D3DSWAP_FINISH` wait) on a `d3d-render` thread (`d3d::ThreadedBackend`); the guest waits only for read-backs. Same frames and guest-visible state; see [render-thread.md](render-thread.md) |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
 | `H2_PIPELINE_CACHE=<file>` | the persistent pipeline cache (docs/graphics.md "Pipeline compiles"): pipelines recorded there are built on worker threads at startup; `off` disables it. Default `~/Library/Caches/h2recomp/pipelines-v1.jsonl` |
 | `H2_GFX_COMPILE_THREADS=N` | pipeline compile workers (default half the cores, 2-4; `0` builds each pipeline on the game thread when its pass is encoded) |
@@ -302,8 +303,10 @@ run.
 `cargo build --release -p boot --example menu_cpu` builds a bounded driver:
 `menu_cpu DISC OUT FRESH_DATA_DIR`. It runs boot's normal headless backend,
 keeps 4096 trace rows, and stops after present 560. `MENU_CPU` reports wall
-FPS and process user+system CPU milliseconds per frame for presents 480–560.
-CPU includes every process thread; GPU execution and time descheduled are
+FPS, process user+system CPU milliseconds per frame for presents 480–560, and
+`guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time (every guest
+thread, and the backend's work unless `H2_RENDER_THREAD=1` moves it).
+Process CPU includes every process thread; GPU execution and time descheduled are
 not CPU time. Samples are taken between scheduler slices at those presents,
 so boundaries can differ slightly from the backend's frame timestamps.
 Compare CPU as well as FPS when shared-machine load changes. Pixel-fidelity

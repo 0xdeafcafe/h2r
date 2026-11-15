@@ -74,6 +74,12 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             if let Some(path) = d3d::pipeline_store::default_path() {
                 backend = backend.with_pipeline_cache(path);
             }
+            // H2_RENDER_THREAD=1: backend work (shader preparation, encoding,
+            // uploads, submission, present) on a render thread of its own
+            // (docs/render-thread.md). Off by default.
+            if std::env::var("H2_RENDER_THREAD").is_ok_and(|v| v == "1") {
+                return install_with(rt, d3d::ThreadedBackend::new(backend)?);
+            }
             install_with(rt, backend)
         }
     }

@@ -22,7 +22,9 @@
 //! * [`abi`]: LTCG register-argument adapters (TODO-register);
 //! * [`runtime_glue`]: [`register`] installs them as `crates/runtime` overrides;
 //! * [`backend`], [`gfx_backend`], [`shader`]: the host side;
-//! * [`nv2a`]: the [`ShaderProvider`] over `crates/shaders`.
+//! * [`nv2a`]: the [`ShaderProvider`] over `crates/shaders`;
+//! * [`threaded`]: a render thread that runs a backend's work off the
+//!   guest's thread (opt-in, docs/render-thread.md).
 
 pub mod abi;
 pub mod backend;
@@ -41,6 +43,7 @@ pub mod resource;
 pub mod runtime_glue;
 pub mod shader;
 pub mod state;
+pub mod threaded;
 pub mod vblank;
 
 pub use backend::{
@@ -57,4 +60,5 @@ pub use nv2a::Nv2aShaders;
 pub use resource::AddressMap;
 pub use runtime_glue::register;
 pub use shader::{ShaderInputs, ShaderProvider};
+pub use threaded::ThreadedBackend;
 pub use vblank::{FrameWait, register_frame_wait};

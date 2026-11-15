@@ -1030,7 +1030,9 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    `d3d::register_frame_wait(.., FrameWait::HALO2_CLOCKED, ..)`; without a
    kernel, `Device::set_vblanks_per_swap(n)` and/or the inline frame wait.
 5. **Present.** `GfxBackend::on_present` receives the surface on every
-   `Swap`, after the pending pass has been submitted. Blit it with
+   `Swap`, after the pending pass has been submitted.
+   With `d3d::ThreadedBackend` (opt-in) every backend call, the hook
+   included, runs on a render thread; see [render-thread.md](render-thread.md). Blit it with
    `gfx::surface::present_surface`.
 6. **Shaders.** `GfxBackend::new` installs `Nv2aShaders`; replace it with
    `GfxBackend::with_shaders`, or drop it with `without_shaders`.
