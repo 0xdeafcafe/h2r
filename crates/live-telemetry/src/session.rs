@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 
-use live_proto::game::{
-    Frame, FramePlayer, GameEnded, GameStarted, NewGame, PlayerJoined, PlayerKilled, PlayerLeft,
-    ScoreChanged,
-};
+use live_proto::game::{Frame, FramePlayer, GameEnded, PlayerKilled, PlayerLeft, ScoreChanged};
 
 use crate::event::{GameEvent, GameInfo, ObjectState, Output, PlayerState, Snapshot};
 use crate::memory::yaw;
@@ -62,7 +59,7 @@ impl Session {
             return;
         }
         let game_id = live_proto::sign::random_id();
-        let game = NewGame {
+        let game = live_proto::game::NewGame {
             console: self.console.clone(),
             map: info.map.clone(),
             mode: info.mode.clone(),
@@ -71,12 +68,12 @@ impl Session {
             score_limit: info.score_limit,
             time_limit_s: info.time_limit_s,
             tick: Some(info.tick),
-            players: players.iter().map(|p| p.player.clone()).collect(),
+            players: players.iter().map(|p| p.wire_player()).collect(),
         };
         self.output.push(Output::Event(GameEvent::new(
             game_id.clone(),
             live_proto::game::GAME_STARTED,
-            GameStarted {
+            live_proto::game::GameStarted {
                 game_id: game_id.clone(),
                 host: self.host.clone(),
                 game,
@@ -174,8 +171,8 @@ impl Session {
                 &mut self.output,
                 current.game_id.clone(),
                 live_proto::game::PLAYER_JOINED,
-                PlayerJoined {
-                    player: player.player,
+                live_proto::game::PlayerJoined {
+                    player: player.wire_player(),
                 },
             );
         }
@@ -289,7 +286,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::event::{ObjectState, PlayerStats};
+    use crate::event::{Appearance, ObjectState, PlayerStats};
 
     fn info() -> GameInfo {
         GameInfo {
@@ -313,7 +310,9 @@ mod tests {
                 xuid: None,
                 team: 0,
                 local: Some(index == 0),
+                appearance: None,
             },
+            appearance: Appearance::default(),
             unit: u32::MAX,
             stats: PlayerStats {
                 score,
@@ -375,6 +374,77 @@ mod tests {
         assert_eq!(event.data["players"][0]["score"], 5);
         session.end(&snapshot(62, vec![player(0, 6)]));
         assert!(session.take_output().is_empty(), "end is idempotent");
+    }
+
+    #[test]
+    fn roster_events_carry_appearance() {
+        let mut session = Session::new("test", None);
+        let mut host = player(0, 0);
+        host.appearance = Appearance {
+            primary: Some(5),
+            secondary: Some(9),
+            tertiary: Some(2),
+            quaternary: Some(11),
+            emblem_foreground: Some(30),
+            emblem_background: Some(7),
+        };
+        session.start(&info(), vec![host, player(1, 0)]);
+        let outputs = session.take_output();
+        let Output::Event(started) = &outputs[0] else {
+            panic!()
+        };
+        assert_eq!(started.kind, "GameStarted");
+        assert_eq!(
+            started.data["players"][0]["appearance"],
+            serde_json::json!({
+                "primary": 5, "secondary": 9, "tertiary": 2, "quaternary": 11,
+                "emblem_foreground": 30, "emblem_background": 7
+            })
+        );
+        assert!(
+            started.data["players"][1].get("appearance").is_none(),
+            "an unknown appearance is omitted entirely"
+        );
+
+        // A join carries the new player's appearance; an unchanged roster
+        // never re-sends one, and there is no appearance anywhere else.
+        let mut joiner = player(2, 0);
+        joiner.appearance = Appearance {
+            primary: Some(1),
+            ..Appearance::default()
+        };
+        session.sample(&snapshot(2, vec![player(0, 0), player(1, 0), joiner]));
+        let events = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) => Some(e),
+                Output::Frame(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "PlayerJoined");
+        assert_eq!(events[0].data["player"]["index"], 2);
+        assert_eq!(events[0].data["player"]["appearance"]["primary"], 1);
+
+        session.sample(&snapshot(
+            30,
+            vec![player(0, 1), player(1, 0), player(2, 0)],
+        ));
+        let events = session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Event(e) => Some(e),
+                Output::Frame(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "ScoreChanged");
+        assert!(
+            events[0].data.get("appearance").is_none(),
+            "appearance never rides score or frame events"
+        );
     }
 
     #[test]

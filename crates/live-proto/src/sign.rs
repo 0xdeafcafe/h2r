@@ -343,6 +343,12 @@ pub fn parse_time(s: &str) -> Option<time::OffsetDateTime> {
     time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()
 }
 
+/// [`format_time`] for a unix timestamp, for callers (the CLI) that keep
+/// seconds rather than a clock type.
+pub fn format_unix(t: i64) -> String {
+    format_time(time::OffsetDateTime::from_unix_timestamp(t).expect("a timestamp in range"))
+}
+
 /// What an author signs for one event (security §2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventBody {
@@ -375,6 +381,25 @@ impl EventBody {
             at: format_time(at),
             nonce: random_id(),
         }
+    }
+
+    /// [`EventBody::new`] for a unix timestamp in seconds.
+    pub fn at_unix(
+        key: &KeyPair,
+        author: &str,
+        stream: &str,
+        kind: &str,
+        data: Value,
+        t: i64,
+    ) -> Self {
+        Self::new(
+            key,
+            author,
+            stream,
+            kind,
+            data,
+            time::OffsetDateTime::from_unix_timestamp(t).expect("a timestamp in range"),
+        )
     }
 
     pub fn sign(&self, key: &KeyPair) -> String {

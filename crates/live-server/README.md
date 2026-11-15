@@ -49,6 +49,7 @@ What is built of [live-api.md](../../docs/live-api.md):
 | `GET /v1/accounts` | list of `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | plus `id`, `recent_games` (the 10 latest) |
 | `GET /v1/accounts/{gamertag}/keys`, `/v1/accounts/by-xuid/{xuid}/keys` | `{keys: [{kid, jwk, valid_from, valid_to}]}` |
+| `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([live-api.md, Friends](../../docs/live-api.md#friends)) |
 | `GET /v1/presence` | list of `{xuid, gamertag, state, game_id?, since}` |
 | `POST /v1/presence/ping` | `events.write`; refreshes the 90 s deadline, writes nothing; `{ok, expires_in}` |
 | `POST /v1/invites?days=` | operator only, `invites.write`; 201 `{invite}` |
@@ -73,9 +74,11 @@ Errors are `{"error": "<code>", "message"}` with codes `invalid`,
 `rate_limited`, `unimplemented`, `unavailable`.
 
 Accounts may append, on their own streams only: `KeyAdded` / `KeyRevoked`
-on `account-<xuid>` (a new key must be unregistered; the last key cannot be
-revoked) and `SignedIn` / `PresenceChanged` / `SignedOut` on
-`presence-<xuid>` (states `online`, `away`, `playing` with `game_id`).
+and the friend events (`FriendRequested` from oneself, `FriendAccepted` /
+`FriendDeclined` by the request's recipient, `FriendRemoved` by either
+side) on `account-<xuid>`, and `SignedIn` / `PresenceChanged` /
+`SignedOut` on `presence-<xuid>` (states `online`, `away`, `playing` with
+`game_id`).
 
 ## Design
 
@@ -115,7 +118,8 @@ cargo test -p live-proto -p live-server
 ```
 
 runs the unit tests, the router tests (`tests/http.rs`, `tests/games.rs`,
-tower `oneshot` over the in-memory store, sharing `tests/common`) and the
+`tests/friends.rs`, tower `oneshot` over the in-memory store, sharing
+`tests/common`) and the
 WebSocket tests (`tests/stream.rs`, a real socket, ingest included). The Postgres tests skip with a note unless `H2_LIVE_TEST_DB`
 is set:
 

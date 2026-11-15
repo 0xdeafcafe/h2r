@@ -10,7 +10,9 @@ use std::sync::RwLock;
 
 use live_proto::game::{self, GameEnded, GameStarted, KillRecord, Player, PlayerScore, TeamScore};
 use live_proto::sign::{Jwk, MAX_EVENT_SKEW_S, PublicKey, parse_time};
-use live_proto::{AccountKey, Gamertag, PublishedFile, TitleId, Xuid, types};
+use live_proto::{
+    AccountKey, FriendEventData, FriendRemovedData, Gamertag, PublishedFile, TitleId, Xuid, types,
+};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
@@ -48,6 +50,16 @@ pub struct Presence {
     /// Unix seconds of the last presence event or ping; the presence
     /// manager expires it a TTL later.
     pub last_seen: i64,
+}
+
+/// One account's friendship relations, projected from the friend events on
+/// the account streams: mutual friends and pending requests in and out.
+/// Each entry pairs the other account's XUID with the event's `at`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Relations {
+    pub friends: Vec<(Xuid, String)>,
+    pub incoming: Vec<(Xuid, String)>,
+    pub outgoing: Vec<(Xuid, String)>,
 }
 
 /// How many kills a game keeps for `GET /v1/games/{id}`.
@@ -116,6 +128,9 @@ pub struct State {
     pub keys: HashMap<String, Key>,
     pub files: HashMap<(TitleId, String), File>,
     pub presence: HashMap<Xuid, Presence>,
+    /// Friendship relations per account (docs/live-api.md, Friends). Only
+    /// accounts that ever sent or received a request have an entry.
+    pub friends: HashMap<Xuid, Relations>,
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
@@ -174,6 +189,25 @@ impl State {
             .values()
             .filter(|k| k.xuid == xuid && k.to.is_none())
             .count()
+    }
+
+    /// An account's friendship relations; empty for one that never had any.
+    pub fn relations_of(&self, xuid: Xuid) -> Relations {
+        self.friends.get(&xuid).cloned().unwrap_or_default()
+    }
+
+    /// Whether `a` and `b` are friends (mutual, so one lookup is enough).
+    pub fn is_friends(&self, a: Xuid, b: Xuid) -> bool {
+        self.friends
+            .get(&a)
+            .is_some_and(|r| r.friends.iter().any(|(x, _)| *x == b))
+    }
+
+    /// Whether a request `from -> to` is pending.
+    pub fn pending(&self, from: Xuid, to: Xuid) -> bool {
+        self.friends
+            .get(&from)
+            .is_some_and(|r| r.outgoing.iter().any(|(x, _)| *x == to))
     }
 }
 
@@ -452,8 +486,68 @@ impl Model {
                     },
                 );
             }
+            types::FRIEND_REQUESTED => {
+                let Some(d) = data::<FriendEventData>(e) else {
+                    return;
+                };
+                s.friends
+                    .entry(d.from)
+                    .or_default()
+                    .outgoing
+                    .push((d.to, b.at.clone()));
+                s.friends
+                    .entry(d.to)
+                    .or_default()
+                    .incoming
+                    .push((d.from, b.at.clone()));
+            }
+            types::FRIEND_ACCEPTED => {
+                let Some(d) = data::<FriendEventData>(e) else {
+                    return;
+                };
+                drop_pending(&mut s, d.from, d.to);
+                s.friends
+                    .entry(d.from)
+                    .or_default()
+                    .friends
+                    .push((d.to, b.at.clone()));
+                s.friends
+                    .entry(d.to)
+                    .or_default()
+                    .friends
+                    .push((d.from, b.at.clone()));
+            }
+            types::FRIEND_DECLINED => {
+                let Some(d) = data::<FriendEventData>(e) else {
+                    return;
+                };
+                drop_pending(&mut s, d.from, d.to);
+            }
+            types::FRIEND_REMOVED => {
+                let Some(d) = data::<FriendRemovedData>(e) else {
+                    return;
+                };
+                drop_pending(&mut s, d.by, d.friend);
+                drop_pending(&mut s, d.friend, d.by);
+                if let Some(r) = s.friends.get_mut(&d.by) {
+                    r.friends.retain(|(x, _)| *x != d.friend);
+                }
+                if let Some(r) = s.friends.get_mut(&d.friend) {
+                    r.friends.retain(|(x, _)| *x != d.by);
+                }
+            }
             _ => {}
         }
+    }
+}
+
+/// Takes the pending request `from -> to`, if there is one, off both sides.
+fn drop_pending(s: &mut State, from: Xuid, to: Xuid) {
+    if let Some(r) = s.friends.get_mut(&from) {
+        r.outgoing.retain(|(x, _)| *x != to);
+    }
+    if let Some(r) = s.friends.get_mut(&to) {
+        r.incoming.retain(|(x, _)| *x != from);
     }
 }
 
@@ -608,5 +702,96 @@ mod tests {
         }
         log.push(&format!("presence-{X}"), "SignedOut", json!({"xuid": X}));
         assert!(log.model.read().presence.is_empty());
+    }
+
+    #[test]
+    fn friendships_project_from_the_log() {
+        let x1 = Xuid::parse("0009000000000001").unwrap();
+        let x2 = Xuid::parse("0009000000000002").unwrap();
+        let x3 = Xuid::parse("0009000000000003").unwrap();
+        let mut log = Log::new();
+        for (x, tag) in [(x1, "Alpha"), (x2, "Bravo"), (x3, "Charlie")] {
+            log.push(
+                &format!("account-{x}"),
+                "AccountCreated",
+                json!({"xuid": x.to_string(), "gamertag": tag}),
+            );
+        }
+        log.push(
+            &format!("account-{x1}"),
+            types::FRIEND_REQUESTED,
+            serde_json::to_value(FriendEventData { from: x1, to: x2 }).unwrap(),
+        );
+        {
+            let s = log.model.read();
+            let a = s.relations_of(x1);
+            let b = s.relations_of(x2);
+            assert_eq!(a.outgoing.iter().map(|(x, _)| *x).collect::<Vec<_>>(), [x2]);
+            assert_eq!(b.incoming.iter().map(|(x, _)| *x).collect::<Vec<_>>(), [x1]);
+            assert!(s.pending(x1, x2));
+            assert!(!s.pending(x2, x1));
+            assert!(!s.is_friends(x1, x2));
+            // An account with no relations reads as empty, not missing.
+            assert_eq!(s.relations_of(x3), Relations::default());
+        }
+        log.push(
+            &format!("account-{x2}"),
+            types::FRIEND_ACCEPTED,
+            serde_json::to_value(FriendEventData { from: x1, to: x2 }).unwrap(),
+        );
+        {
+            let s = log.model.read();
+            assert!(s.is_friends(x1, x2) && s.is_friends(x2, x1));
+            assert!(!s.pending(x1, x2));
+            assert!(s.relations_of(x1).outgoing.is_empty());
+            assert!(s.relations_of(x2).incoming.is_empty());
+            assert_eq!(
+                s.relations_of(x2)
+                    .friends
+                    .iter()
+                    .map(|(x, _)| *x)
+                    .collect::<Vec<_>>(),
+                [x1]
+            );
+        }
+        // Declined: the pending request is gone, no friendship.
+        log.push(
+            &format!("account-{x1}"),
+            types::FRIEND_REQUESTED,
+            serde_json::to_value(FriendEventData { from: x1, to: x3 }).unwrap(),
+        );
+        log.push(
+            &format!("account-{x3}"),
+            types::FRIEND_DECLINED,
+            serde_json::to_value(FriendEventData { from: x1, to: x3 }).unwrap(),
+        );
+        {
+            let s = log.model.read();
+            assert!(!s.pending(x1, x3));
+            assert!(s.relations_of(x1).outgoing.is_empty());
+            assert!(s.relations_of(x3).incoming.is_empty());
+        }
+        // Removed by either side: the friendship ends both ways.
+        log.push(
+            &format!("account-{x2}"),
+            types::FRIEND_REMOVED,
+            serde_json::to_value(FriendRemovedData { by: x2, friend: x1 }).unwrap(),
+        );
+        {
+            let s = log.model.read();
+            assert!(!s.is_friends(x1, x2) && !s.is_friends(x2, x1));
+        }
+        // A pending request can be cancelled by its sender just the same.
+        log.push(
+            &format!("account-{x1}"),
+            types::FRIEND_REQUESTED,
+            serde_json::to_value(FriendEventData { from: x1, to: x3 }).unwrap(),
+        );
+        log.push(
+            &format!("account-{x1}"),
+            types::FRIEND_REMOVED,
+            serde_json::to_value(FriendRemovedData { by: x1, friend: x3 }).unwrap(),
+        );
+        assert!(!log.model.read().pending(x1, x3));
     }
 }

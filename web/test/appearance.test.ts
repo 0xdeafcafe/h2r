@@ -29,6 +29,13 @@ describe("normalizeAppearance", () => {
     expect(normalizeAppearance({ ...a, extra: true })).toEqual(a); // unknown members are not kept
   });
 
+  test("reads the game's flat wire shape", () => {
+    expect(normalizeAppearance({
+      primary: 5, secondary: 9, tertiary: 2, quaternary: 11, emblem_foreground: 30, emblem_background: 7,
+    })).toEqual({ emblem: { fg: 30, bg: 7 }, colours: { primary: 5, secondary: 9, tertiary: 2, quaternary: 11 } });
+    expect(normalizeAppearance({ emblem_background: 0 })).toEqual({ emblem: { bg: 0 } });
+  });
+
   test("a half-shape keeps the indices it has, without undefined members", () => {
     expect(normalizeAppearance({ emblem: { bg: 2, fg: true } })).toEqual({ emblem: { bg: 2 } });
     expect(normalizeAppearance({ colours: { quaternary: 17 } })).toEqual({ colours: { quaternary: 17 } });

@@ -255,6 +255,10 @@ pub mod types {
     pub const PRESENCE_CHANGED: &str = "PresenceChanged";
     pub const SIGNED_OUT: &str = "SignedOut";
     pub const PRESENCE_EXPIRED: &str = "PresenceExpired";
+    pub const FRIEND_REQUESTED: &str = "FriendRequested";
+    pub const FRIEND_ACCEPTED: &str = "FriendAccepted";
+    pub const FRIEND_DECLINED: &str = "FriendDeclined";
+    pub const FRIEND_REMOVED: &str = "FriendRemoved";
 }
 
 /// Token `lxm` values: the method a token is good for.
@@ -398,6 +402,67 @@ pub struct Presence {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_id: Option<String>,
     pub since: String,
+}
+
+/// The data a `FriendRequested`, `FriendAccepted` or `FriendDeclined` event
+/// signs: `from` is the requester, `to` the account the request is
+/// addressed to. Requests are directional; the friendship, once accepted,
+/// is mutual (docs/live-api.md, Friends).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FriendEventData {
+    pub from: Xuid,
+    pub to: Xuid,
+}
+
+/// The data a `FriendRemoved` event signs: `by` is the account writing it,
+/// `friend` the other side of the friendship or pending request it ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FriendRemovedData {
+    pub by: Xuid,
+    pub friend: Xuid,
+}
+
+/// A friend's current presence, folded into a friends read. Offline is the
+/// absence of `presence` on the friend, not a state.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FriendPresence {
+    pub state: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_id: Option<String>,
+    pub since: String,
+}
+
+/// One entry of the `friends` list of `GET /v1/accounts/{gamertag}/friends`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Friend {
+    pub xuid: Xuid,
+    pub gamertag: Gamertag,
+    /// When they became friends: the `FriendAccepted` event's `at`.
+    pub friends_since: String,
+    /// Current presence; absent when the friend is offline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<FriendPresence>,
+}
+
+/// A pending request of `GET /v1/accounts/{gamertag}/friends`: the other
+/// account (the requester for `requests_in`, the target for `requests_out`)
+/// and when the request was made.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FriendRequest {
+    pub xuid: Xuid,
+    pub gamertag: Gamertag,
+    pub at: String,
+}
+
+/// `GET /v1/accounts/{gamertag}/friends`: an account's friends (with
+/// presence, sorted by gamertag) and its pending requests in and out —
+/// everything the game's friends list needs in one document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Friends {
+    pub friends: Vec<Friend>,
+    pub requests_in: Vec<FriendRequest>,
+    pub requests_out: Vec<FriendRequest>,
+    pub position: u64,
 }
 
 /// `PUT /v1/titles/{title}/files/{name}` reply, and the
@@ -696,5 +761,101 @@ mod wire_tests {
         );
         let c: ClientMessage = serde_json::from_str(r#"{"kind":"auth","token":"t"}"#).unwrap();
         assert_eq!(c, ClientMessage::Auth { token: "t".into() });
+    }
+
+    #[test]
+    fn friend_event_data_is_two_xuids() {
+        assert_eq!(
+            serde_json::to_value(FriendEventData {
+                from: Xuid(0x0009_0000_0000_0001),
+                to: Xuid(0x0009_0000_0000_0002),
+            })
+            .unwrap(),
+            serde_json::json!({"from": "0009000000000001", "to": "0009000000000002"})
+        );
+        assert_eq!(
+            serde_json::from_value::<FriendEventData>(serde_json::json!({
+                "from": "0009000000000001", "to": "0009000000000002"
+            }))
+            .unwrap(),
+            FriendEventData {
+                from: Xuid(0x0009_0000_0000_0001),
+                to: Xuid(0x0009_0000_0000_0002)
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(FriendRemovedData {
+                by: Xuid(0x0009_0000_0000_0001),
+                friend: Xuid(0x0009_0000_0000_0002),
+            })
+            .unwrap(),
+            serde_json::json!({"by": "0009000000000001", "friend": "0009000000000002"})
+        );
+    }
+
+    #[test]
+    fn friends_document_round_trips() {
+        let friends = Friends {
+            friends: vec![Friend {
+                xuid: Xuid(0x0009_0000_0000_0002),
+                gamertag: Gamertag::new("NoIcE").unwrap(),
+                friends_since: "2026-11-15T20:14:03.120Z".into(),
+                presence: Some(FriendPresence {
+                    state: "playing".into(),
+                    game_id: Some("7f3c".into()),
+                    since: "2026-11-15T20:15:00.000Z".into(),
+                }),
+            }],
+            requests_in: vec![FriendRequest {
+                xuid: Xuid(0x0009_0000_0000_0003),
+                gamertag: Gamertag::new("Sneaky Pete").unwrap(),
+                at: "2026-11-15T20:10:00.000Z".into(),
+            }],
+            requests_out: Vec::new(),
+            position: 1042,
+        };
+        assert_eq!(
+            serde_json::to_value(&friends).unwrap(),
+            serde_json::json!({
+                "friends": [{
+                    "xuid": "0009000000000002", "gamertag": "NoIcE",
+                    "friends_since": "2026-11-15T20:14:03.120Z",
+                    "presence": {
+                        "state": "playing", "game_id": "7f3c",
+                        "since": "2026-11-15T20:15:00.000Z"
+                    }
+                }],
+                "requests_in": [{
+                    "xuid": "0009000000000003", "gamertag": "Sneaky Pete",
+                    "at": "2026-11-15T20:10:00.000Z"
+                }],
+                "requests_out": [],
+                "position": 1042
+            })
+        );
+        // An offline friend has no `presence`, an online one no `game_id`
+        // unless playing.
+        let back = serde_json::from_value::<Friends>(serde_json::json!({
+            "friends": [{
+                "xuid": "0009000000000002", "gamertag": "NoIcE",
+                "friends_since": "2026-11-15T20:14:03.120Z",
+                "presence": {"state": "online", "since": "2026-11-15T20:15:00.000Z"}
+            }],
+            "requests_in": [], "requests_out": [], "position": 7
+        }))
+        .unwrap();
+        assert_eq!(
+            back.friends[0].presence.as_ref().map(|p| p.game_id.clone()),
+            Some(None)
+        );
+        let gone = serde_json::from_value::<Friends>(serde_json::json!({
+            "friends": [{
+                "xuid": "0009000000000002", "gamertag": "NoIcE",
+                "friends_since": "2026-11-15T20:14:03.120Z"
+            }],
+            "requests_in": [], "requests_out": [], "position": 7
+        }))
+        .unwrap();
+        assert!(gone.friends[0].presence.is_none());
     }
 }

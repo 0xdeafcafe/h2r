@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
-use crate::event::{GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot};
+use crate::event::{Appearance, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot};
 use crate::layout;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
@@ -95,6 +95,41 @@ pub fn game_info(guest: &Guest) -> ReadResult<GameInfo> {
     })
 }
 
+/// Reads a local player's appearance from their player slot's signed-in
+/// profile copy (docs/live-gamestate.md, "Local player slots and profile
+/// appearance"). Only the four local slots hold profiles; a remote player or
+/// a slot without the signed-in flag reads as empty. Values outside their
+/// known ranges are dropped so an unvalidated "likely" offset cannot put
+/// garbage in events.
+fn appearance(guest: &Guest, local_user: i16) -> ReadResult<Appearance> {
+    if !(0..layout::PLAYER_SLOT_COUNT as i16).contains(&local_user) {
+        return Ok(Appearance::default());
+    }
+    let slot = layout::PLAYER_SLOTS + local_user as u32 * layout::PLAYER_SLOT_SIZE;
+    if guest.u32(slot + layout::PLAYER_SLOT_FLAGS)? & layout::PLAYER_SLOT_SIGNED_IN == 0 {
+        return Ok(Appearance::default());
+    }
+    let block = slot + layout::PLAYER_SLOT_PROFILE + layout::PROFILE_APPEARANCE;
+    let field = |offset: u32, limit: u32| -> ReadResult<Option<u8>> {
+        let value = guest.u8(block + offset)?;
+        Ok((u32::from(value) < limit).then_some(value))
+    };
+    Ok(Appearance {
+        primary: field(layout::APPEARANCE_PRIMARY, layout::PALETTE_COLOURS)?,
+        secondary: field(layout::APPEARANCE_SECONDARY, layout::PALETTE_COLOURS)?,
+        tertiary: field(layout::APPEARANCE_TERTIARY, layout::PALETTE_COLOURS)?,
+        quaternary: field(layout::APPEARANCE_QUATERNARY, layout::PALETTE_COLOURS)?,
+        emblem_foreground: field(
+            layout::APPEARANCE_EMBLEM_FOREGROUND,
+            layout::EMBLEM_FOREGROUNDS,
+        )?,
+        emblem_background: field(
+            layout::APPEARANCE_EMBLEM_BACKGROUND,
+            layout::EMBLEM_BACKGROUNDS,
+        )?,
+    })
+}
+
 pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
     let array = ptr(guest, layout::PLAYERS_PTR)?;
     let data = ptr(guest, array + layout::DATUM_DATA)?;
@@ -121,6 +156,7 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
         } else {
             PlayerStats::ZERO
         };
+        let local_user = i16(guest.u16(address + layout::PLAYER_LOCAL_USER)?);
         out.push(PlayerState {
             datum: (u32::from(salt) << 16) | slot,
             player: Player {
@@ -132,8 +168,10 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
                 )?,
                 xuid: None,
                 team: i32::from(guest.u8(address + layout::PLAYER_TEAM)? as i8),
-                local: Some(i16(guest.u16(address + layout::PLAYER_LOCAL_USER)?) != -1),
+                local: Some(local_user != -1),
+                appearance: None,
             },
+            appearance: appearance(guest, local_user)?,
             unit: guest.u32(address + layout::PLAYER_UNIT)?,
             stats,
         });
@@ -335,6 +373,41 @@ pub(crate) mod fixture {
             .unwrap();
     }
 
+    /// Signs a local player slot in and writes its profile appearance block:
+    /// the four palette colours and the two emblem layers.
+    pub fn put_slot_profile(
+        guest: &mut Guest,
+        slot: u32,
+        colors: [u8; 4],
+        emblem_foreground: u8,
+        emblem_background: u8,
+    ) {
+        let address = super::layout::PLAYER_SLOTS + slot * super::layout::PLAYER_SLOT_SIZE;
+        guest
+            .set_u32(
+                address + super::layout::PLAYER_SLOT_FLAGS,
+                super::layout::PLAYER_SLOT_SIGNED_IN,
+            )
+            .unwrap();
+        let block =
+            address + super::layout::PLAYER_SLOT_PROFILE + super::layout::PROFILE_APPEARANCE;
+        for (i, color) in colors.into_iter().enumerate() {
+            guest.set_u8(block + i as u32, color).unwrap();
+        }
+        guest
+            .set_u8(
+                block + super::layout::APPEARANCE_EMBLEM_FOREGROUND,
+                emblem_foreground,
+            )
+            .unwrap();
+        guest
+            .set_u8(
+                block + super::layout::APPEARANCE_EMBLEM_BACKGROUND,
+                emblem_background,
+            )
+            .unwrap();
+    }
+
     pub fn put_object(guest: &mut Guest, slot: u32, parent: u32) {
         let header = OBJECT_DATA + slot * super::layout::OBJECT_HEADER_SIZE;
         guest.set_u16(header, 0x9001 + slot as u16).unwrap();
@@ -486,6 +559,76 @@ mod tests {
             .unwrap();
         assert_eq!(players(&guest).unwrap().len(), 1);
         assert!(object(&guest, 0x90020000).unwrap().is_none());
+    }
+
+    #[test]
+    fn reads_local_appearance_from_the_slot_profile() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Local", 0, true, u32::MAX);
+        fixture::put_player(&mut guest, 1, "Remote", 0, false, u32::MAX);
+        fixture::put_slot_profile(&mut guest, 0, [5, 9, 2, 11], 30, 7);
+        // A second local player joined through slot 2: the appearance comes
+        // from that slot, not slot 0 (colour zero is a valid index).
+        fixture::put_player(&mut guest, 2, "Guest", 0, true, u32::MAX);
+        guest
+            .set_u16(
+                fixture::PLAYER_DATA + 2 * layout::PLAYER_SIZE + layout::PLAYER_LOCAL_USER,
+                2,
+            )
+            .unwrap();
+        fixture::put_slot_profile(&mut guest, 2, [0, 1, 2, 3], 0, 0);
+
+        let players = players(&guest).unwrap();
+        assert_eq!(
+            players[0].appearance,
+            Appearance {
+                primary: Some(5),
+                secondary: Some(9),
+                tertiary: Some(2),
+                quaternary: Some(11),
+                emblem_foreground: Some(30),
+                emblem_background: Some(7),
+            }
+        );
+        assert_eq!(players[1].appearance, Appearance::default());
+        assert_eq!(
+            players[2].appearance,
+            Appearance {
+                primary: Some(0),
+                secondary: Some(1),
+                tertiary: Some(2),
+                quaternary: Some(3),
+                emblem_foreground: Some(0),
+                emblem_background: Some(0),
+            }
+        );
+    }
+
+    #[test]
+    fn appearance_drops_out_of_range_values_and_unsigned_slots() {
+        let mut guest = fixture::memory();
+        fixture::put_player(&mut guest, 0, "Local", 0, true, u32::MAX);
+        fixture::put_slot_profile(&mut guest, 0, [18, 0xff, 2, 11], 64, 31);
+
+        let players = players(&guest).unwrap();
+        assert_eq!(
+            players[0].appearance,
+            Appearance {
+                tertiary: Some(2),
+                quaternary: Some(11),
+                emblem_background: Some(31),
+                ..Appearance::default()
+            }
+        );
+
+        // Without the signed-in flag nothing is read, bytes present or not.
+        guest
+            .set_u32(layout::PLAYER_SLOTS + layout::PLAYER_SLOT_FLAGS, 0)
+            .unwrap();
+        assert_eq!(
+            super::players(&guest).unwrap()[0].appearance,
+            Appearance::default()
+        );
     }
 
     #[test]

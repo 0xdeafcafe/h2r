@@ -186,6 +186,25 @@ There is no separate player-datum alive boolean to substitute for `+0x2c`. For o
 
 The local-user map is at `read_u32(0x004e8c20)+0x0c`: four `i32` salted player datums. The four local-controller mappings begin at `+0x1c`; local machine index is `+0x98`.
 
+### Local player slots and profile appearance
+
+The appearance fields a scoreboard wants (profile colours and emblem layers) are **not** pinned inside the `0x21c` player record; the configuration gap between the name (`+0x44`) and team (`+0xc0`) is the unvalidated candidate. What the same-hash decompilation does establish is where a signed-in profile lives, addressable through the confirmed local user index at `+0x28`:
+
+| Field | Address / offset | Type | Confidence | Evidence |
+|---|---|---:|---|---|
+| local player slots | `0x0054e8e0` | 4 × `0xc70` bytes | likely | One slot per controller; `s_player_slot_view` |
+| slot flags | `slot+0x00` | `u32` | likely | Bit 4 (`0x10`) signed in with a profile; bit 6 profile changed during a game |
+| slot profile copy | `slot+0x18` | 0x1e0 bytes | likely | The signed-in `s_player_profile` copied here raw |
+| appearance block | `slot+0x130` (`+0x18`+`0x118`) | 0x10 bytes | likely | `s_player_profile_appearance` in the profile |
+| profile colours | `+0x130..+0x133` | 4 × `i8` | likely | Palette indices; 18 colours (string-id table at `0x0014986f`) |
+| model | `+0x134` | `u8` | likely | Not needed for identity |
+| emblem foreground | `+0x135` | `u8` | likely | 0..63; profile byte `+0x11d` as the settings list shows it (`0x00149b5a`) |
+| emblem background | `+0x136` | `u8` | likely | 0..31; profile byte `+0x11e` (`0x00149da5`) |
+
+Join: player record `+0x28` (confirmed, `0..3`) selects the slot. A slot without the signed-in flag, a remote player (`+0x28 == -1`), or any value outside its range reads as "no appearance". The player's rank/level is an Xbox Live attribute, not guest memory — the matchmaking attributes carry no rank — so nothing is read for it.
+
+Remote players' profiles arrive over the network, not through the local slots, so their appearance is unknown until the in-record location is validated; the configuration gap `+0x84..+0xc0` (in both the active block and the shadow copy at `+0xd4`) is the candidate to check at runtime.
+
 ## 5. Game-engine statborg and scores
 
 The stats are separate from the player datum. `E` points to a 0xc9c-byte game-engine global block. The inline statborg begins at `E+0x304` and is 0x254 bytes. It is usable only when the selected object at `0x0055e4d0[engine_index]` is nonnull and its valid field is set; campaign should not be assumed to have multiplayer stats.
@@ -439,6 +458,7 @@ Consistency rules:
 - PGCR's detailed output structure was not mapped; only its construction hook is included.
 - A direct causative weapon tag is not available at `0x0015ce70`. Correlate `0x000d9640`'s `jpt!` damage datum if damage-effect identity is sufficient.
 - Options types other than `1`, `2`, and `3`, the ninth stat counter, and exact original names for game-engine state values remain unresolved and are not needed for the initial scoreboard.
+- The appearance path above is static-analysis-only: validate the local player-slot/profile offsets against the profile editor, and find where remote players' appearance lives in the `0x21c` record (candidate: the `+0x84..+0xc0` configuration gap). Rank is Xbox Live state and is not recoverable from guest memory.
 
 ## References
 

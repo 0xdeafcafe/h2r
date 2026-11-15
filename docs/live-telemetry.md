@@ -36,6 +36,44 @@ Fields rated **likely** by the research document are listed only in
 the initial event contract. Confirmed offsets used by the readers share that
 file so runtime validation has one correction point.
 
+## Player appearance
+
+Each player's emblem and colours are read from the signed-in profile of
+their local player slot ([live-gamestate.md](live-gamestate.md), "Local
+player slots and profile appearance"): palette indices for the four profile
+colours and the two emblem layers. Those offsets are rated likely, so the
+reader range-checks every value (colours 0..17, foreground 0..63,
+background 0..31) and omits what fails; an unvalidated offset cannot put
+garbage in events. Only the four local slots hold profile copies, so remote
+players' appearance is absent until the in-record location is validated.
+The game's rank is an Xbox Live attribute, not guest memory, and is never
+sent.
+
+Appearance rides the roster events only — never frames or scores — and is
+never re-sent unchanged:
+
+- `GameStarted` `players[i]` and `PlayerJoined` `player` gain an
+  `appearance` object, omitted when nothing is known:
+
+```json
+{ "index": 0, "name": "Sneaky Pete", "team": 1, "local": true,
+  "appearance": { "primary": 5, "secondary": 9, "tertiary": 2,
+                  "quaternary": 11, "emblem_foreground": 30,
+                  "emblem_background": 7 } }
+```
+
+- `primary`..`quaternary` are indices into the art manifest's 18-colour
+  `palette`; `emblem_foreground`/`emblem_background` index
+  `emblem/fg/<0..63>` and `emblem/bg/<0..31>`. Any field may be missing on
+  its own.
+- A mid-game appearance change to a player already in the roster cannot be
+  announced with the current event types (the server rejects a
+  `PlayerJoined` for a known player); a `PlayerUpdated`-style type would be
+  needed if that ever matters.
+
+The server's live-proto validation ignores the extra `appearance` keys
+until its `Player` type gains the field.
+
 ## Failure behaviour
 
 Observer errors and panics are caught, logged once, and disable telemetry. A
@@ -95,3 +133,7 @@ relying on live output, check in this order:
    and reconnect behavior against the live ingest implementation.
 5. Whether end-latch reasons other than `finished` can be distinguished; the
    current hook cannot reliably identify `quit` or `lost`.
+6. The likely appearance path: local player slots at `0x0054e8e0` (profile
+   copy at `+0x18`, appearance at `+0x118` inside it) joined by player
+   `+0x28`, checked against the profile editor's colours and emblem; and
+   where remote players' appearance lives in the `0x21c` player record.
