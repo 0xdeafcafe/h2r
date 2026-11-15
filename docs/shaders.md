@@ -627,6 +627,54 @@ bump-env reads `.rg`. No format-based signed decode is needed, and one
 would be wrong: a `G8B8` texture without `COLORSIGN` reads unsigned on
 the NV2A too.
 
+### Shadow maps
+
+On the NV2A a texture in a depth format (`D24S8`, `D16`, `F24S8`, `F16`,
+swizzled or linear) is always a shadow map. PROJECT2D and PROJECT3D on it
+compare the stored depth with a reference and give 1 or 0 in every
+channel. `PixelOptions::shadow[n]` marks such a stage and carries the
+format, the function, the filter and the addressing (`psh::shadow`). The
+behaviour follows xemu's `psh_append_shadowmap`:
+
+- The comparison is `stored OP reference`. `OP` is `SHADOWCTL`'s
+  function, which D3D sets from `D3DRS_SHADOWFUNC`
+  (`SetRenderState_ShadowFunc` pushes `Value - 0x200` to
+  `NV097_SET_SHADOW_DEPTH_FUNC`), so the `D3DCMP_*` value applies as
+  written. `GREATER` (`0x204`, the first campaign level's) passes where the
+  stored depth is greater than the reference.
+- PROJECT2D compares with 0. PROJECT3D compares with `r/q` clamped to
+  `[0, max]`: 16777215 for D24, 65535 for D16, 511.9375 for F16 and
+  `(2 - 2^-16) * 2^127` for F24 (the `D3DZ_MAX` values window z uses).
+- NEVER gives 0 and ALWAYS gives 1, without sampling.
+- The renderer uploads depth textures as raw bits in RGBA8 (depth bytes
+  high to low in r, g, b, stencil in a; D16 and F16 in r and g). The
+  stored value is rebuilt from `round(c * 255)` exactly: an integer for
+  D24 and D16; for F24 the 24 bits are an IEEE single's top bits without
+  the sign (8-bit exponent, bias 127, 16-bit mantissa); F16 has a 4-bit
+  exponent (bias 7), a 12-bit mantissa and denormals at exponent 0.
+- Filtering is per texel, then on the results. GeForce3-class hardware,
+  which the NV2A is, compares each of the four neighbouring texels and
+  bilinearly weights the 1/0 results when the filter is linear (2x2
+  percentage-closer filtering; NVIDIA's "Hardware Shadow Mapping"
+  whitepaper). xemu filters the depth values and compares once; we don't.
+  The translation fetches texels with `textureLoad`, so the host never
+  filters raw bits. It uses one texel (`floor(uv * size)`) for point
+  filtering, or four around `uv * size - 0.5` weighted by the fraction
+  for linear. Wrap, mirror and clamp addressing apply to the texel
+  indices.
+- `s/q` and `t/q` are multiplied by `tex_scale`, as for colour textures,
+  so linear (texel-addressed) shadow maps work.
+
+abaire's nxdk_pgraph_tests check the comparison on hardware
+(`texture_shadow_comparator_tests.cpp`, with results in
+nxdk_pgraph_tests_golden_results). Its function names are the operands
+swapped: its `GREATER` is register value 1, `LESS` here, and on hardware
+that passes where the stored depth is below the reference (raw-value test
+`3R24_0-FFFFFF_7FFFFF_GT`: the 0, 1 and `ref - 1` boxes pass, `ref` and
+above don't). This matches xemu and the order used here. PROJECT2D with
+the same function passes nowhere (`2R24_..._GT`), matching "compare with
+0".
+
 The other per-pipeline state the combiners need comes in through
 `PixelOptions`: `D3DTSS_ALPHAKILL` per stage (kill when the fetched alpha is
 0), `D3DTSS_COLORSIGN` per stage, the alpha test (wgpu has none, so it's emulated with `discard` against
@@ -714,6 +762,15 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   and vertex fog over coordinates on both sides of their ranges and
   compares the fog register with the interpreter, which `tests/psh.rs`
   checks against D3D's closed forms.
+- `tests/shadow.rs` covers shadow maps with synthetic raw-bit depth
+  textures. It checks every comparison function with D24, D16, F24 and F16,
+  in PROJECT2D and PROJECT3D, against stored values below, equal to and
+  above the reference. It also checks clamping of `r/q`, exact decoding
+  (neighbouring 24-bit values that any depth filtering would blur), 2x2
+  PCF weights, and wrap, mirror and clamp addressing. NEVER and ALWAYS
+  must not sample. The expected values come from the ordering alone, and
+  both the interpreter and the GPU must match them exactly (461 fragments
+  on the GPU).
 - `tests/render.rs` draws through a linked module with a real texture and
   checks the pixels.
 - The GPU tests pass trivially when no adapter is present. Set
@@ -758,11 +815,18 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   match exactly. Inf and NaN in `rcp`/`rsq`, and NaN through `min`/`max`,
   follow the host GPU. The NV2A's exact rounding isn't modelled. No Halo 2
   program produces a non-finite value on the corpus test's inputs.
-- **Colour key, convolution filters, shadow-map compare (PROJECT2D/3D on
-  depth textures) and texture border adjustment** are sampler and texture
-  state outside the PSDEF. They're left to the renderer and not implemented.
-  No retail material sets `COLORKEYOP` (all 809,233 resolved stage states
-  are 0).
+- **Colour key, convolution filters and texture border adjustment** are
+  sampler and texture state outside the PSDEF. They're left to the renderer
+  and not implemented. No retail material sets `COLORKEYOP` (all 809,233
+  resolved stage states are 0).
+- **Shadow maps** (see "Shadow maps" above) read mip level 0 only, treat
+  `BORDER` addressing as clamp, and choose PCF when either the min or the
+  mag filter is linear, since there is no LOD to choose between them. The
+  float formats' decoding (F24 as an IEEE single's top bits, F16 with
+  bias 7 and denormals) is derived from their `D3DZ_MAX` values, not
+  checked on hardware, and F24 denormals may flush to zero on the GPU.
+  The weights are exact f32; the NV2A's filter-weight precision isn't
+  modelled. Only PROJECT2D and PROJECT3D compare.
 - **Signed blend equations.** `BLENDOP = ADDSIGNED/REVSUBTRACTSIGNED` have
   no wgpu equivalent and fall back to the unsigned ones. Retail materials
   only use `ADD`.
@@ -799,6 +863,18 @@ facts only. No code was copied, and xemu and Cxbx-Reloaded are GPL.
   `src/Assembly/Plugins/Halo2Xbox/vrtx.xml` and `spas.xml` (tag layouts;
   the PSDEF offset inside the implementation block is our own finding,
   above). <https://github.com/XboxChaos/Assembly>
+- xemu, same commit: `glsl/psh.c` `psh_append_shadowmap` (shadow-map
+  comparison, PROJECT2D against 0, PROJECT3D against clamped `r/q`,
+  NEVER/ALWAYS), `nv2a_regs.h` (`NV097_SET_SHADOW_DEPTH_FUNC` values).
+- abaire's nxdk_pgraph_tests, `src/tests/texture_shadow_comparator_tests.cpp`
+  (main branch, read 2026-11-15), and the hardware results in
+  <https://github.com/abaire/nxdk_pgraph_tests_golden_results>
+  (`results/Texture_shadow_comparator/3R24_0-FFFFFF_7FFFFF_GT.png`,
+  `..._LT.png`, `2R24_0-FFFFFF_7FFFFF_GT.png`); nxdk's `pbkit/nv_regs.h`
+  for its `NV097_SET_SHADOW_COMPARE_FUNC_*` names.
+- Cass Everitt, Ashu Rege and Cem Cebenoyan, "Hardware Shadow Mapping"
+  (NVIDIA whitepaper): GeForce3 compares the four neighbouring texels and
+  bilinearly filters the results under linear filtering.
 - NVIDIA's `NV_register_combiners` and `NV_vertex_program1_1` OpenGL
   extension specs, for the general combiner and vertex-program model the
   NV2A is built on. The final combiner's V1R0 operand mapping and the

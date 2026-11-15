@@ -166,9 +166,10 @@ Unknown or unverified details, flagged so nobody trusts them blindly:
   function (D3D's `D3DRS_SHADOWFUNC`), giving 1 or 0 in every channel; xemu's
   `psh_append_shadowmap` compares with 0 for PROJECT2D and with `r/q`,
   clamped to the format's depth range (16777215, 65535, or 511.9375 for
-  float), for PROJECT3D, and short-cuts NEVER and ALWAYS. The comparison is
-  the shader translator's job; until it exists `d3d::nv2a` skips such draws
-  with a reason. A colour texture over depth memory is not a depth texture:
+  float), for PROJECT3D, and short-cuts NEVER and ALWAYS. `crates/shaders`
+  compares per texel and then filters (2x2 PCF under linear filtering; see
+  docs/shaders.md, "Shadow maps"), with `d3d::nv2a` passing each stage's
+  format, function, filter and addressing. A colour texture over depth memory is not a depth texture:
   it reads the same bits through its own colour format.
 * Volume mip levels halve depth (resolved: xemu's per-level upload loop also
   halves depth; `pgraph_get_texture_length` only over-approximates the total).

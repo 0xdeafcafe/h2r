@@ -695,20 +695,27 @@ and allocations are bounded before anything is read:
     shadow map: xemu (`psh_append_shadowmap`) compares the stored depth
     with the texture coordinate under `SHADOWCTL`'s function, which D3D
     sets from `D3DRS_SHADOWFUNC` (guest slot 156, `0x3f5330`;
-    `state::slot::SHADOWFUNC`), and returns 1 or 0 in every channel
-    (PROJECT2D compares with 0, PROJECT3D with `r/q` clamped to the
+    `state::slot::SHADOWFUNC`; the function pushes `Value - 0x200` to
+    `NV097_SET_SHADOW_DEPTH_FUNC`, `0x1E6C`), and returns 1 or 0 in every
+    channel (PROJECT2D compares with 0, PROJECT3D with `r/q` clamped to the
     format's depth range). A colour-format header over the same memory is
-    raw bits, not a comparison. The translated programs do not compare
-    yet, so `Nv2aShaders` skips a draw that samples a depth-format
-    texture with `Event::DrawSkipped` (naming the stage, format and
-    `SHADOWFUNC`); the texture is uploaded all the same.
+    raw bits, not a comparison. `Nv2aShaders` passes each such stage to the
+    translator as `PixelOptions::shadow` (`nv2a::shadow_stages`): the
+    format, the `D3DCMP_*` function, 2x2 percentage-closer filtering when
+    the stage's min or mag filter is linear, and the u/v addressing (see
+    docs/shaders.md, "Shadow maps"). A depth texture sampled by a mode
+    other than PROJECT2D/PROJECT3D, or a `SHADOWFUNC` that is not a
+    `D3DCMP_*` value, skips the draw with `Event::DrawSkipped` naming the
+    stage, format and value; the texture is uploaded all the same.
   - In the boot (boot plus this device, `maps\00a_introduction.map`
     through the scripted click-through) the first level no longer stops
     at about present 4210: it ran to 8164 presents with no stop, drawing
     into 512x512 and 128x128 targets as well as the back buffer. Its one
     shadow map is a `LIN_D24S8` texture (`0x004b50b4`) sampled on stage 0
     with `D3DRS_SHADOWFUNC` `0x204` (`GREATER`); those draws (136,667 over the
-    run) are the only skips left, until the comparison is translated.
+    run) were the only skips left. They are now translated as
+    comparisons (`stored > reference`), but the boot hasn't been rerun
+    with that yet.
 - **Swap** (`Device::swap`, `0x3f9d00`). CreateDevice sets device flag
   `0x4000` (`device::COPY_SWAP_FLAG`) for a multisampled device (type bits
   `0x3000`) or `D3DSWAPEFFECT_COPY` (`0x3fc9a2..0x3fc9c0`), and stores the
