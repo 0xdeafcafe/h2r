@@ -115,6 +115,8 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 252, 253 | PhyInitialize / PhyGetLinkState on the offline path; contract below. |
 | 269, 304, 305 | RtlCompareMemoryUlong (whole leading DWORDs; unaligned source stops), RtlTimeFieldsToTime (validated, BOOLEAN) and RtlTimeToTimeFields (proleptic Gregorian from 1601; negative times stop). |
 | 335–337 | XcSHAInit/Update/Final: SHA-1 (FIPS 180-4) in the caller's 116-byte context. |
+| 340 | XcHMAC: HMAC-SHA1 (RFC 2104) over input then input2 (a zero length is not read); keys over 64 bytes stop. |
+| 323 DATA | XboxHDKey: filled with `crypto::XBOX_HD_KEY` (all zero, this console's key); `content` signs installed content with it (docs/map-pack.md). |
 | 187, 197 | Close/duplicate typed guest handles, including file handles; current-thread pseudo-handle close is a no-op and duplication creates a real thread handle. |
 | 190, 202 | VFS create/open, root-directory-relative and ObDosDevices (root -3) opens, synchronous and asynchronous file objects, free-space-query opens, guest handle and IO_STATUS_BLOCK outputs. |
 | 198, 219, 236 | VFS flush/read/write in bounded 64 KiB host chunks, byte counts, explicit/current/append offsets, EOF and backend NTSTATUS errors; an Event argument is reset then signalled on completion. |

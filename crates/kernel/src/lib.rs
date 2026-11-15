@@ -4,6 +4,7 @@
 pub mod abi;
 pub mod clock;
 pub mod console;
+pub mod content;
 pub mod crypto;
 mod dispatcher;
 pub mod dos;
@@ -259,6 +260,11 @@ impl Kernel {
         }
         if let Some(&address) = data.get(&ord::HAL_DISK_CACHE_PARTITION_COUNT) {
             runtime.memory().set_u32(address, CACHE_PARTITION_COUNT)?;
+        }
+        if let Some(&address) = data.get(&ord::XBOX_HD_KEY) {
+            runtime
+                .memory()
+                .write_bytes(address, &crypto::XBOX_HD_KEY, 1)?;
         }
         if let Some(&address) = data.get(&ord::XE_IMAGE_FILE_NAME) {
             let name = config.image_file_name.as_bytes();
@@ -773,6 +779,7 @@ impl Core {
                 self.object_call(memory, a, tid)
             }
             ord::XC_SHA_INIT | ord::XC_SHA_UPDATE | ord::XC_SHA_FINAL => self.sha_call(memory, a),
+            ord::XC_HMAC => self.hmac_call(memory, a),
             // No NIC model; see net.rs for the decoded contract.
             ord::PHY_INITIALIZE | ord::PHY_GET_LINK_STATE => Ok(self.phy_call(a)),
             ord::RTL_COMPARE_MEMORY_ULONG

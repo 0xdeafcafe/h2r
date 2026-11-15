@@ -93,6 +93,8 @@ pub const RTL_NT_STATUS_TO_DOS_ERROR: u32 = 301;
 pub const LAUNCH_DATA_PAGE: u32 = 164;
 pub const HAL_DISK_CACHE_PARTITION_COUNT: u32 = 40;
 pub const XE_IMAGE_FILE_NAME: u32 = 326;
+/// XboxHDKey (DATA): this console's hard disk key, see `crypto::XBOX_HD_KEY`.
+pub const XBOX_HD_KEY: u32 = 323;
 
 pub const HAL_REGISTER_SHUTDOWN_NOTIFICATION: u32 = 47;
 pub const KE_CANCEL_TIMER: u32 = 97;
@@ -118,6 +120,7 @@ pub const RTL_TIME_TO_TIME_FIELDS: u32 = 305;
 pub const XC_SHA_INIT: u32 = 335;
 pub const XC_SHA_UPDATE: u32 = 336;
 pub const XC_SHA_FINAL: u32 = 337;
+pub const XC_HMAC: u32 = 340;
 /// OBJECT_TYPE DATA exports, compared by address in 246.
 pub const EX_EVENT_OBJECT_TYPE: u32 = 16;
 pub const PS_THREAD_OBJECT_TYPE: u32 = 259;

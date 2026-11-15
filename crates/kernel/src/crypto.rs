@@ -1,5 +1,7 @@
 //! XcSHAInit / XcSHAUpdate / XcSHAFinal (335-337): SHA-1 as specified by
 //! FIPS 180-4, written from the specification (no kernel code or tables).
+//! XcHMAC (340): HMAC-SHA1 (RFC 2104) over the concatenation of its two
+//! input spans.
 //!
 //! The context is the caller's opaque XC_SERVICE_SHA_CONTEXT_SIZE (116-byte)
 //! buffer. Its layout here is private to this kernel; callers only pass it
@@ -28,6 +30,33 @@ const INITIAL: [u32; 5] = [
     0x1032_5476,
     0xc3d2_e1f0,
 ];
+
+/// XboxHDKey (323 DATA) of the console this kernel models.
+///
+/// On a real Xbox it is the per-console hard disk key from the EEPROM, and it
+/// is what makes "non-roamable" signatures (saves and installed content
+/// signed for one console) fail on another. This console's key is all zero:
+/// there is no EEPROM here, and nothing of a real console's is in the repo.
+/// The kernel writes it into the DATA export at install, and the map pack
+/// import signs content with it (`content`), so the two always agree.
+pub const XBOX_HD_KEY: [u8; 16] = [0; 16];
+
+/// HMAC-SHA1 block size; XcHMAC keys longer than this stop (see `hmac_call`).
+pub const HMAC_BLOCK: usize = 64;
+
+/// HMAC-SHA1 (RFC 2104) of the concatenated `parts`, for keys of at most
+/// [`HMAC_BLOCK`] bytes (zero-padded to the block, as the RFC says).
+pub fn hmac_sha1(key: &[u8], parts: &[&[u8]]) -> [u8; 20] {
+    assert!(key.len() <= HMAC_BLOCK, "HMAC key longer than one block");
+    let mut pad = [0u8; HMAC_BLOCK];
+    pad[..key.len()].copy_from_slice(key);
+    let mut inner = Sha1::new();
+    inner.update(&pad.map(|b| b ^ 0x36));
+    for part in parts {
+        inner.update(part);
+    }
+    hmac_outer(&pad, &inner.finish())
+}
 
 /// Incremental SHA-1, usable on the host as well (tests, tools).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,6 +205,54 @@ impl Core {
         }
         Ok(Action::Complete(Value::Void))
     }
+
+    /// XcHMAC(pbKey, dwKeyLength, pbInput, dwInputLength, pbInput2,
+    /// dwInputLength2, pbDigest): HMAC-SHA1 of input || input2 into a
+    /// 20-byte digest. A zero-length span is not read (XAPI passes NULL for
+    /// an unused second input). Keys over one block stop: RFC 2104 hashes
+    /// them first, and no caller here needs that path.
+    pub(crate) fn hmac_call(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
+        let (key, key_length) = (a.get(0), a.get(1));
+        let spans = [(a.get(2), a.get(3)), (a.get(4), a.get(5))];
+        let digest = a.get(6);
+        if key_length as usize > HMAC_BLOCK {
+            return Ok(Action::Stop("XcHMAC key longer than 64 bytes"));
+        }
+        let mut key_bytes = vec![0u8; key_length as usize];
+        memory.read_bytes(key, &mut key_bytes, 1)?;
+        for &(input, length) in &spans {
+            if length != 0 {
+                memory.check(input, length as usize, Access::Read, 1)?;
+            }
+        }
+        memory.check(digest, 20, Access::Write, 1)?;
+        let mut pad = [0u8; HMAC_BLOCK];
+        pad[..key_bytes.len()].copy_from_slice(&key_bytes);
+        let mut inner = Sha1::new();
+        inner.update(&pad.map(|b| b ^ 0x36));
+        // Bounded host scratch, whatever the guest lengths.
+        let mut chunk = [0u8; 4096];
+        for (input, length) in spans {
+            let mut done = 0u32;
+            while done < length {
+                let n = (length - done).min(chunk.len() as u32);
+                memory.read_bytes(input + done, &mut chunk[..n as usize], 1)?;
+                inner.update(&chunk[..n as usize]);
+                done += n;
+            }
+        }
+        let inner = inner.finish();
+        let mac = hmac_outer(&pad, &inner);
+        memory.write_bytes(digest, &mac, 1)?;
+        Ok(Action::Complete(Value::Void))
+    }
+}
+
+fn hmac_outer(pad: &[u8; HMAC_BLOCK], inner: &[u8; 20]) -> [u8; 20] {
+    let mut outer = Sha1::new();
+    outer.update(&pad.map(|b| b ^ 0x5c));
+    outer.update(inner);
+    outer.finish()
 }
 
 #[cfg(test)]
@@ -202,6 +279,48 @@ mod tests {
             s.update(&[b'a'; 1000]);
         }
         assert_eq!(hex(s.finish()), "34aa973cd4c4daa4f61eeb2bdbad27316534016f");
+    }
+    /// RFC 2202 section 3 (HMAC-SHA-1), the cases with keys of one block or
+    /// less; split inputs give the same MAC.
+    #[test]
+    fn rfc_2202_hmac_sha1_vectors() {
+        let cases: [(&[u8], &[u8], &str); 5] = [
+            (
+                &[0x0b; 20],
+                b"Hi There",
+                "b617318655057264e28bc0b6fb378c8ef146be00",
+            ),
+            (
+                b"Jefe",
+                b"what do ya want for nothing?",
+                "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79",
+            ),
+            (
+                &[0xaa; 20],
+                &[0xdd; 50],
+                "125d7342b9ac11cd91a39af48aa17b4f63f175d3",
+            ),
+            (
+                &[
+                    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+                    23, 24, 25,
+                ],
+                &[0xcd; 50],
+                "4c9007f4026250c6bc8414f9bf50c86c2d7235da",
+            ),
+            (
+                &[0x0c; 20],
+                b"Test With Truncation",
+                "4c1a03424b55e07fe7f27be1d58bb9324a9a5a04",
+            ),
+        ];
+        for (key, data, want) in cases {
+            assert_eq!(hex(super::hmac_sha1(key, &[data])), want);
+            assert_eq!(
+                hex(super::hmac_sha1(key, &[&data[..3], &[], &data[3..]])),
+                want
+            );
+        }
     }
     #[test]
     fn split_updates_match_one_update() {
