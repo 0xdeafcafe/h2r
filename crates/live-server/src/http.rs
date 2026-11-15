@@ -175,6 +175,7 @@ fn api_router(live: Arc<Live>) -> Router {
         .route("/v1/games/{id}/frames", get(game_frames))
         .route("/v1/games/{id}/events", post(game_events))
         .route("/v1/ingest", get(crate::ingest::ingest))
+        .route("/v1/local/signin", any(crate::local_signin::redeem))
         .route(
             "/v1/{*rest}",
             any(|| async { not_found("no such endpoint") }),

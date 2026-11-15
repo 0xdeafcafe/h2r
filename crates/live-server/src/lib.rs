@@ -21,6 +21,7 @@ pub mod guard;
 pub mod http;
 pub mod identity;
 pub mod ingest;
+pub mod local_signin;
 pub mod model;
 pub mod pg;
 pub mod store;

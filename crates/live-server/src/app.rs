@@ -135,6 +135,7 @@ pub struct Live {
     jtis: ReplayGuard,
     writes: RateLimiter,
     creates: RateLimiter,
+    pub(crate) local_signin: crate::local_signin::Offers,
     dispatcher: tokio::task::AbortHandle,
 }
 
@@ -353,6 +354,7 @@ impl Live {
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
+            local_signin: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
         };

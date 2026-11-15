@@ -12,6 +12,7 @@ import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import Events from "./stats/Events";
 import Admin from "./admin/Admin";
+import SignIn from "./signin/SignIn";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
 
@@ -40,6 +41,7 @@ render(
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
+      <Route path="/signin" component={SignIn} />
       <Route path="/games/:id" component={OldGame} />
       <Route path="/players/:tag" component={OldPlayer} />
       <Route path="/players" component={() => <Navigate href="/dash/players" />} />

@@ -1,0 +1,6 @@
+/* `/signin`: one panel in the stats site's column. */
+.si-body { padding: 8px 10px; line-height: 1.5; }
+.si-body p { margin: 0 0 8px; }
+.si-body p:last-child { margin-bottom: 0; }
+.si-error { color: var(--s-bad); }
+.si-actions { display: flex; gap: 8px; }
