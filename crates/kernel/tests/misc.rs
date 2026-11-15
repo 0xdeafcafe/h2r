@@ -301,3 +301,148 @@ fn phy_initializes_and_reports_no_link() {
     assert_eq!(h.success(253, &[0, 0]), status::SUCCESS);
     assert_eq!(h.success(252, &[0]), 0);
 }
+
+fn read(h: &Harness, address: u32, n: usize) -> Vec<u8> {
+    let mut out = vec![0u8; n];
+    h.runtime.memory().read_bytes(address, &mut out, 1).unwrap();
+    out
+}
+
+/// XcHMAC through the guest ABI: HMAC-SHA1 of input || input2 (RFC 2202
+/// case 2, split every way), a NULL second input of length 0 as XAPI passes
+/// it, and stops/faults before any write on unsupported or unmapped spans.
+#[test]
+fn xc_hmac_macs_both_guest_spans() {
+    let mut h = Harness::new();
+    const KEY: u32 = DATA + 0x100;
+    const INPUT: u32 = DATA + 0x200;
+    const DIGEST: u32 = DATA + 0x300;
+    let message = b"what do ya want for nothing?";
+    let want = "effcdf6ae5eb2fa2d27416d5f184df9c259a7c79";
+    h.bytes(KEY, b"Jefe");
+    h.bytes(INPUT, message);
+    let hex = |d: &[u8]| d.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    for split in [0, 1, 4, 27, 28] {
+        h.bytes(DIGEST, &[0xee; 24]);
+        let rest = 28 - split;
+        let second = if rest == 0 { 0 } else { INPUT + split };
+        h.success(340, &[KEY, 4, INPUT, split, second, rest, DIGEST]);
+        assert_eq!(hex(&read(&h, DIGEST, 20)), want, "split {split}");
+        assert_eq!(read(&h, DIGEST + 20, 4), [0xee; 4]);
+    }
+    assert_eq!(
+        kernel::crypto::hmac_sha1(b"Jefe", &[message]),
+        read(&h, DIGEST, 20)[..]
+    );
+    h.bytes(DIGEST, &[0xee; 20]);
+    h.stopped(340, &[KEY, 65, INPUT, 28, 0, 0, DIGEST]);
+    assert_eq!(
+        h.call(340, &[KEY, 4, 0xdead_0000, 4, 0, 0, DIGEST]).kind,
+        runtime::abi::FAULT
+    );
+    assert_eq!(
+        h.call(340, &[KEY, 4, INPUT, 4, 0, 0, 0xdead_0000]).kind,
+        runtime::abi::FAULT
+    );
+    assert_eq!(read(&h, DIGEST, 20), [0xee; 20]);
+}
+
+/// The kernel fills XboxHDKey (323 DATA) with the key the content signer
+/// uses, so imported content and the guest agree on it.
+#[test]
+fn xbox_hd_key_export_holds_the_console_key() {
+    let h = Harness::config(kernel::Config {
+        data_exports: [(323, DATA + 0x800)].into(),
+        ..kernel::Config::default()
+    });
+    h.bytes(DATA + 0x810, &[0xcc; 4]);
+    assert_eq!(read(&h, DATA + 0x800, 16), kernel::crypto::XBOX_HD_KEY);
+    assert_eq!(read(&h, DATA + 0x810, 4), [0xcc; 4]);
+}
+
+/// A ContentMeta.xbx signed by `kernel::content::sign` passes the check
+/// Halo 2's XAPI makes (0x2d2938, from its readers 0x2d2a1d and 0x2d2f6d),
+/// done here the guest's way through the kernel exports: the per-title key
+/// from XcHMAC over XboxHDKey as the guest reads it from its DATA export,
+/// then HMAC-SHA1 of header bytes 0x14..header size built on XcSHA* with
+/// the 0x36/0x5c pads, as XAPI's own HMAC does. A disc's unsigned header,
+/// or one signed for another title, fails it.
+#[test]
+fn signed_content_meta_passes_the_guest_signature_check() {
+    const HD_KEY: u32 = DATA + 0x800;
+    const TITLE: u32 = DATA + 0x820;
+    const KEY: u32 = DATA + 0x840;
+    const CTX: u32 = DATA + 0x880;
+    const PAD: u32 = DATA + 0x900;
+    const META: u32 = DATA + 0x1000;
+    const INNER: u32 = DATA + 0x980;
+    const MAC: u32 = DATA + 0x9a0;
+    let mut h = Harness::config(kernel::Config {
+        data_exports: [(323, HD_KEY)].into(),
+        ..kernel::Config::default()
+    });
+    let title = 0x4d53_0064u32;
+
+    // Synthetic: magic, header size 0x88, title, then a body of names and a
+    // file table that the header's own SHA-1 digests would cover.
+    let mut meta = vec![0u8; 0x200];
+    meta[0x14..0x18].copy_from_slice(b"XCSF");
+    meta[0x18..0x1c].copy_from_slice(&0x88u32.to_le_bytes());
+    meta[0x1c..0x20].copy_from_slice(&1u32.to_le_bytes());
+    meta[0x24..0x28].copy_from_slice(&title.to_le_bytes());
+    meta[0x28..0x30].copy_from_slice(&((title as u64) << 32 | 1).to_le_bytes());
+    for (i, b) in meta[0x30..].iter_mut().enumerate() {
+        *b = (i * 13) as u8;
+    }
+    meta[..20].fill(0);
+    meta[0x20..0x24].fill(0);
+    let unsigned = meta.clone();
+
+    let guest_check = |h: &mut Harness, meta: &[u8], title: u32| -> bool {
+        h.bytes(META, meta);
+        h.set(TITLE, title);
+        // XAPI 0x2d2919: XcHMAC(XboxHDKey, 16, &title, 4, NULL, 0, key).
+        h.success(340, &[HD_KEY, 16, TITLE, 4, 0, 0, KEY]);
+        let key = read(h, KEY, 20);
+        let size = h.get(META + 0x18).min(0x88);
+        let mut pad = [0u8; 64];
+        pad[..20].copy_from_slice(&key);
+        // Inner: SHA-1(key ^ ipad || header[0x14..size]).
+        h.bytes(PAD, &pad.map(|b| b ^ 0x36));
+        h.success(335, &[CTX]);
+        h.success(336, &[CTX, PAD, 64]);
+        h.success(336, &[CTX, META + 0x14, size - 0x14]);
+        h.success(337, &[CTX, INNER]);
+        // Outer: SHA-1(key ^ opad || inner).
+        h.bytes(PAD, &pad.map(|b| b ^ 0x5c));
+        h.success(335, &[CTX]);
+        h.success(336, &[CTX, PAD, 64]);
+        h.success(336, &[CTX, INNER, 20]);
+        h.success(337, &[CTX, MAC]);
+        let magic = read(h, META + 0x14, 4) == b"XCSF";
+        let installed = h.get(META + 0x20) & 1 == 1;
+        magic && installed && read(h, MAC, 20) == read(h, META, 20)
+    };
+
+    assert!(!guest_check(&mut h, &unsigned, title));
+    let mut signed = unsigned.clone();
+    kernel::content::sign(&mut signed, title).unwrap();
+    assert!(guest_check(&mut h, &signed, title));
+    // Only the signature and the installed flag changed.
+    let changed: Vec<usize> = (0..signed.len())
+        .filter(|&i| signed[i] != unsigned[i])
+        .collect();
+    assert!(changed.iter().all(|&i| i < 20 || i == 0x20), "{changed:x?}");
+    // Another title's key (as another title's XAPI would derive) or a
+    // changed header byte: rejected.
+    assert!(!guest_check(&mut h, &signed, title + 1));
+    let mut tampered = signed.clone();
+    tampered[0x40] ^= 1;
+    assert!(!guest_check(&mut h, &tampered, title));
+    // A good signature without the installed flag (the readers' test).
+    tampered = signed.clone();
+    tampered[0x20] &= !1;
+    let mac = kernel::content::signature(&tampered, title).unwrap();
+    tampered[..20].copy_from_slice(&mac);
+    assert!(!guest_check(&mut h, &tampered, title));
+}

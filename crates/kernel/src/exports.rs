@@ -231,4 +231,5 @@ pub const EXPORTS: &[Export] = &[
     Export::stdcall(ord::XC_SHA_INIT, "XcSHAInit", 1),
     Export::stdcall(ord::XC_SHA_UPDATE, "XcSHAUpdate", 3),
     Export::stdcall(ord::XC_SHA_FINAL, "XcSHAFinal", 2),
+    Export::stdcall(ord::XC_HMAC, "XcHMAC", 7),
 ];

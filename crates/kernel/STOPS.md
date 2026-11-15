@@ -46,7 +46,6 @@ The inventory is checked against Runtime by `tests/stops.rs`.
 | 312 | RtlUnwind |
 | 338 | XcRC4Key |
 | 339 | XcRC4Crypt |
-| 340 | XcHMAC |
 | 343 | XcPKGetKeyLen |
 | 344 | XcVerifyPKCS1Signature |
 | 345 | XcModExp |
@@ -67,8 +66,9 @@ difference. File handles use the existing 187/197 close/duplicate adapters.
 
 Partly supported exports also stop on unsupported inputs; see README.md.
 HLE initializes DATA 156 (KeTickCount), 164 (LaunchDataPage), 40
-(HalDiskCachePartitionCount = 3) and 326 (XeImageFileName). The other DATA
-ordinals (**16, 41, 42, 259, 322, 323, 324, 325, 353, 354, 355, 356, 357**)
+(HalDiskCachePartitionCount = 3), 323 (XboxHDKey = `crypto::XBOX_HD_KEY`,
+all zero) and 326 (XeImageFileName). The other DATA
+ordinals (**16, 41, 42, 259, 322, 324, 325, 353, 354, 355, 356, 357**)
 are not initialized by HLE. Runtime still exposes
 their original zero placeholders. Reads cannot currently be intercepted to
 produce a named kernel stop: these values must not be treated as a console
