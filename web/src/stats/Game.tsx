@@ -6,10 +6,14 @@ import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Scoreboard from "../components/Scoreboard";
 import KillFeed from "../components/KillFeed";
 import { VerifySummary } from "../components/bits";
-import { Crumbs, Panel } from "./Layout";
+import { Block, Crumbs, Strip, Title } from "./Layout";
 import Carnage from "./Carnage";
+import GametypeIcon from "../components/GametypeIcon";
+import { MapThumb, gameTitle, hostName, playlist } from "./Side";
+import { hms, usDateTime, agoWords } from "./fmt";
+import { teamStandings, standings } from "../state/reducer";
 import { colourFor, elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
-import { clock, titleCase, ago } from "../lib/format";
+import { clock, titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { ReplayClock, ReplayTimeline } from "../state/replay";
@@ -29,20 +33,24 @@ export default function Game() {
   }));
   return (
     <>
-      <Crumbs trail={[["Home", "/stats"], ["Games", "/stats"], [game()?.status === "ended" ? "Carnage Report" : "Game Details"]]} />
+      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], [game()?.status === "ended" ? "Carnage Report" : "Game Details"]]} />
+      <Strip kind="game" />
       <Show
         when={game()}
         fallback={
-          <Show when={missing()} fallback={<div class="s-loading">Loading game…</div>}>
-            <Panel title="Game not found"><p class="s-pad">This game isn't available on this server. <A href="/stats">Back to games</A></p></Panel>
-          </Show>
+          <div class="s-full">
+            <Title class="s-title--bar" back={["see all games", "/stats"]}>Game Details</Title>
+            <Show when={missing()} fallback={<div class="s-loading">Loading game…</div>}>
+              <p class="s-pad">This game isn't available on this server. <A href="/stats">Back to games</A></p>
+            </Show>
+          </div>
         }
       >
         {(g) => (
-          <>
+          <div class="s-full">
             <GameView game={g()} />
             <Carnage game={g()} />
-          </>
+          </div>
         )}
       </Show>
     </>
@@ -51,29 +59,52 @@ export default function Game() {
 
 function Header(props: { game: GameState; replayTick?: number }) {
   const g = () => props.game;
-  const winner = () => {
+  const result = () => {
     const w = g().winner;
-    if (!w || g().status !== "ended") return null;
-    return "team" in w ? `${teamName(w.team)} Team won` : `${g().players[w.player]?.name ?? "Someone"} won`;
+    if (g().status !== "ended") return "In progress";
+    if (!w) return g().end_reason === "quit" ? "Ended early" : g().end_reason === "lost" ? "Connection lost" : "No winner";
+    return "team" in w ? `${teamName(w.team)} Team won` : `${g().players[w.player]?.name ?? "Someone"} placed 1st`;
   };
+  const host = () => hostName(g());
   return (
     <>
-      <h1 class="s-h1">{g().status === "ended" ? "Carnage Report" : "Game Details"} <A href="/stats" class="s-h1-link">Return to Games</A></h1>
-      <div class="s-game-head">
-        <div class="s-game-title">
-          <span class="s-game-variant">{titleCase(g().variant ?? g().mode)}</span> on <b>{titleCase(g().map)}</b>
-          <Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show>
+      <Title class="s-title--bar" back={["see all games", "/stats"]}>Game Details</Title>
+      <div class="s-overview">
+        <MapThumb game={g()} />
+        <ul class="s-summary">
+          <li class="first"><GametypeIcon variant={g().variant} size={20} />{gameTitle(g())} on {titleCase(g().map)} <Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show></li>
+          <li class="break styled">{result()}</li>
+          <li class="styled">Playlist - {playlist(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>
+          <li>{usDateTime(g().started_at)}<Show when={g().ended_at}> (ended {agoWords(g().ended_at, now())})</Show></li>
+          <li>{props.replayTick !== undefined ? "Replay at" : "Length:"} {hms(props.replayTick !== undefined ? props.replayTick / TICKS_PER_SECOND : elapsedSeconds(g(), now()))}</li>
+        </ul>
+        <div class="s-booty">
+          <header><span>Game Record ({g().positions.length})</span><span><VerifySummary positions={() => g().positions} /></span></header>
+          <ul class="s-booty-body">
+            <li>Players ({Object.keys(g().players).length})</li>
+            <li>Knockouts ({Object.values(g().scores).reduce((n, s) => n + s.kills, 0)})</li>
+            <Show when={host()}><li>Host: {host()}<Show when={g().console && g().console !== host() && !live.state.accounts[g().console!]}> ({g().console})</Show></li></Show>
+            <li>{g().status === "live" ? "Positions streamed at up to 15 Hz" : "Replay recorded at 1 Hz"}</li>
+            <li>Every event signed and chained</li>
+          </ul>
         </div>
-        <dl class="s-game-facts">
-          <dt>Playlist</dt><dd>{g().team_play ? "Team Game" : "Free for All"}{g().score_limit ? ` · first to ${g().score_limit}` : ""}{g().time_limit_s ? ` · ${Math.round(g().time_limit_s! / 60)} min` : ""}</dd>
-          <dt>Date</dt><dd>{new Date(g().started_at).toLocaleString()}</dd>
-          <dt>{props.replayTick !== undefined ? "Replay" : "Length"}</dt><dd class="s-mono">{clock(props.replayTick !== undefined ? props.replayTick / TICKS_PER_SECOND : elapsedSeconds(g(), now()))}</dd>
-          <Show when={g().status === "ended"}><dt>Result</dt><dd>{winner() ?? (g().end_reason === "quit" ? "Ended early" : g().end_reason === "lost" ? "Connection lost" : "No winner")}<Show when={g().ended_at}> · {ago(g().ended_at, now())}</Show></dd></Show>
-          <Show when={g().console}><dt>Host</dt><dd>{(live.state.accounts[g().console!]?.gamertag) ?? g().console}</dd></Show>
-          <dt>Signatures</dt><dd><VerifySummary positions={() => g().positions} /></dd>
-        </dl>
       </div>
     </>
+  );
+}
+
+function Legend(props: { game: GameState }) {
+  return (
+    <div class="s-legend" aria-label="Map legend">
+      <Show
+        when={props.game.team_play}
+        fallback={<For each={standings(props.game)}>{(s) => <span><i style={{ background: colourFor(props.game, s.team, s.index) }} />{s.name}</span>}</For>}
+      >
+        <For each={teamStandings(props.game)}>{(t) => <span><i style={{ background: colourFor(props.game, t.team, 0) }} />{teamName(t.team)} Team</span>}</For>
+      </Show>
+      <span><i class="wedge" />facing</span>
+      <span><i class="x" />knockout</span>
+    </div>
   );
 }
 
@@ -98,17 +129,19 @@ function GameView(props: { game: GameState }) {
   return (
     <Show when={props.game.status === "live"} fallback={<Replay game={props.game} />}>
       <Header game={props.game} />
-      <div class="s-game">
-        <Panel title="Tactical Map" right={<span class="s-live-tag">LIVE · up to 15 Hz</span>} class="s-map-panel">
+      <Title right={<span class="s-live-tag">LIVE · up to 15 Hz</span>}>Game Viewer</Title>
+      <div class="s-viewer">
+        <Block title="Tactical Map" right={`${titleCase(props.game.map)}`} class="s-sec">
           <div class="s-map">
             <MapCanvas frame={liveFrameSource(props.game.game_id, roster)} roster={roster} outline={outline} layer={layer} highlight={hover} label={`Live map of ${props.game.map}`} />
             <LayerPicker count={outline()?.layers.length ?? 0} value={layer()} onChange={setLayer} />
             <Show when={!outline()}><div class="s-map-note">Map outline not available; the grid is fitted to where players have been.</div></Show>
           </div>
-        </Panel>
-        <aside class="s-game-side">
-          <Panel title="Scoreboard"><Scoreboard game={props.game} onHover={setHover} /></Panel>
-          <Panel title="Field Report" right="kill feed"><KillFeed game={props.game} kills={props.game.kills} /></Panel>
+          <Legend game={props.game} />
+        </Block>
+        <aside class="s-viewer-side">
+          <Block title="Scoreboard" class="s-sec"><Scoreboard game={props.game} onHover={setHover} /></Block>
+          <Block title="Field Report" right="newest first" class="s-sec"><KillFeed game={props.game} kills={props.game.kills} /></Block>
         </aside>
       </div>
     </Show>
@@ -206,16 +239,18 @@ function Replay(props: { game: GameState }) {
   return (
     <>
       <Header game={props.game} replayTick={timeline() ? tick() - timeline()!.startTick : undefined} />
-      <div class="s-game">
-        <Panel title="Tactical Map" right="replay · recorded at 1 Hz" class="s-map-panel">
+      <Title right={<span class="s-dim">replay · recorded at 1 Hz · space plays, arrows step</span>}>Game Viewer</Title>
+      <div class="s-viewer">
+        <Block title="Tactical Map" right={titleCase(props.game.map)} class="s-sec">
           <Show when={!error()} fallback={<p class="s-pad s-bad">Couldn't load the replay: {error()}</p>}>
             <Show when={timeline()} fallback={<div class="s-loading">Loading recorded frames…</div>}>
               {(tl) => (
-                <Show when={tl().frames.length} fallback={<p class="s-pad s-dim">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
+                <Show when={tl().frames.length} fallback={<p class="s-empty">No recorded frames for this game. The scoreboard and field report are still here.</p>}>
                   <div class="s-map">
                   <MapCanvas frame={frame} roster={roster} outline={outline} layer={layer} highlight={hover} label={`Replay of ${props.game.map}`} />
                   <LayerPicker count={outline()?.layers.length ?? 0} value={layer()} onChange={setLayer} />
                   </div>
+                  <Legend game={props.game} />
                   <div class="replay-bar">
                     <button class="play" onClick={toggle} aria-label={playing() ? "Pause" : "Play"}>{playing() ? "❚❚" : "▶"}</button>
                     <div class="scrub">
@@ -251,10 +286,10 @@ function Replay(props: { game: GameState }) {
               )}
             </Show>
           </Show>
-        </Panel>
-        <aside class="s-game-side">
-          <Panel title="Scoreboard" right={<span class="s-mono">at {clock((tick() - (timeline()?.startTick ?? 0)) / TICKS_PER_SECOND)}</span>}><Scoreboard game={snapshot()} onHover={setHover} /></Panel>
-          <Panel title="Field Report" right="kill feed"><KillFeed game={props.game} kills={kills()} /></Panel>
+        </Block>
+        <aside class="s-viewer-side">
+          <Block title="Scoreboard" right={`at ${clock((tick() - (timeline()?.startTick ?? 0)) / TICKS_PER_SECOND)}`} class="s-sec"><Scoreboard game={snapshot()} onHover={setHover} /></Block>
+          <Block title="Field Report" right="newest first" class="s-sec"><KillFeed game={props.game} kills={kills()} /></Block>
         </aside>
       </div>
     </>

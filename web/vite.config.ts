@@ -13,6 +13,8 @@ export default defineConfig({
       "/v1": { target: mock, ws: true },
       "/healthz": { target: mock },
       "/.well-known": { target: mock },
+      // Optional game art; no forwarding headers, so a local server still sees a loopback client.
+      "/art/game": { target: mock },
     },
   },
   build: { outDir: "dist", target: "es2022" },

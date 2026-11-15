@@ -16,6 +16,7 @@ pub mod dsound_glue;
 pub mod fallback;
 pub mod game_glue;
 pub mod live_glue;
+pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
 pub mod sse;
@@ -439,6 +440,8 @@ pub fn run_hosted_with_live(
         log::note(&format!("page {:#x} widened to {:?}", n.page, n.effective));
     }
     let t = Instant::now();
+    // Shadow pages: trace 0xa0ff0000, wrappers 0xa0ff1000, d3d 0xa0ff2000,
+    // barrier 0xa0ff4000, live telemetry 0xa0ff5000.
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
     // Interpreting past unsupported instructions is a stopgap too.
@@ -450,6 +453,7 @@ pub fn run_hosted_with_live(
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
     let _live = live_glue::install(&loaded.runtime, &k, live)?;
+    let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&loaded.runtime, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
     std::fs::create_dir_all(&opts.data_root)?;
     let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     let v = match vfs::Vfs::with_disc(cfg.clone(), &opts.disc) {

@@ -350,7 +350,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
     };
     // Before the window: the session (and an embedded server) lives until
     // the game is over.
-    let session = live.enabled.then(|| start_live(&live)).transpose()?;
+    let session = live
+        .enabled
+        .then(|| start_live(&live, &opts.disc))
+        .transpose()?;
     let live_config = session
         .as_ref()
         .map(|s| s.config.clone())
@@ -413,7 +416,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
 
 /// Starts `--live`: the server and account, with a line saying where the
 /// web app is.
-fn start_live(live: &crate::play_live::LiveOpts) -> Result<crate::play_live::Session> {
+fn start_live(
+    live: &crate::play_live::LiveOpts,
+    disc: &std::path::Path,
+) -> Result<crate::play_live::Session> {
     let db = std::env::var("H2_LIVE_DB")
         .ok()
         .filter(|s| !s.is_empty())
@@ -421,7 +427,16 @@ fn start_live(live: &crate::play_live::LiveOpts) -> Result<crate::play_live::Ses
     let places = crate::play_live::Places::under(&crate::live_cmd::live_dir()?);
     let web = live_server::web_dir();
     let has_web = web.is_some();
-    let session = crate::play_live::start(live, &db, &places, web, &crate::play_live::os_user())?;
+    // Art for the embedded server, from this disc (extracted once).
+    let game_art = live
+        .server
+        .is_none()
+        .then(|| {
+            crate::play_live::game_art(disc, &crate::live_cmd::game_art_dir(&places.server_data))
+        })
+        .flatten();
+    let site = live_server::http::Site { web, game_art };
+    let session = crate::play_live::start(live, &db, &places, site, &crate::play_live::os_user())?;
     eprintln!(
         "live: playing as {} ({}) on {}{}",
         session.account.gamertag,

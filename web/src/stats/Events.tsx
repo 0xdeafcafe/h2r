@@ -2,7 +2,9 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { live } from "../state/live";
 import type { WireEvent } from "../api/types";
 import { VerifyMark } from "../components/bits";
-import { Crumbs, Panel } from "./Layout";
+import { Crumbs, Panel, Strip, Title } from "./Layout";
+import { Pills } from "./Side";
+import { num } from "./fmt";
 
 const CATEGORY: Record<string, string> = {
   AccountCreated: "account", GamertagReserved: "account", TitleFilePublished: "file",
@@ -21,7 +23,16 @@ export default function Events() {
   const [older, setOlder] = createSignal<WireEvent[]>([]);
   const [loadingOlder, setLoadingOlder] = createSignal(false);
 
-  const types = createMemo(() => Object.entries(live.state.typeCounts).sort((a, b) => b[1] - a[1]));
+  // Counts come from the stream; before it has said anything, count what the snapshot loaded.
+  const types = createMemo(() => {
+    let c: Record<string, number> = live.state.typeCounts;
+    if (!Object.keys(c).length) {
+      c = {};
+      for (const e of live.state.tail) c[e.type] = (c[e.type] ?? 0) + 1;
+    }
+    return Object.entries(c).sort((a, b) => b[1] - a[1]);
+  });
+  const seen = () => Math.max(live.state.eventCount, live.state.tail.length);
   const source = () => (paused() ? frozen() : live.state.tail);
   const rows = createMemo(() => {
     const t = type(), s = stream().trim();
@@ -45,50 +56,80 @@ export default function Events() {
     }
   }
 
+  const v = () => live.verifySummary;
   return (
-    <div class="events-page">
-      <Crumbs trail={[["Home", "/stats"], ["Event Log"]]} />
-      <h1 class="s-h1">Event Log</h1>
-      <p class="s-intro">
-        Every change on the server is an event. {live.state.eventCount} seen this session, head at position {live.state.position}.{" "}
-        Signatures: {live.verifySummary.verified} verified
-        <Show when={live.verifySummary.bad}>, <span class="warn">{live.verifySummary.bad} bad</span></Show>
-        <Show when={live.verifySummary.unknown}>, {live.verifySummary.unknown} unchecked</Show>
-        <Show when={live.verifySummary.unsigned}>, {live.verifySummary.unsigned} unsigned</Show>.
-      </p>
-      <Panel title="Signed Event Stream" right={paused() ? "paused" : live.state.caughtUp ? `caught up to #${live.state.position}` : "catching up"}>
-      <div class="toolbar">
-        <select value={type()} onChange={(e) => setType(e.currentTarget.value)} aria-label="Event type">
-          <option value="">all types</option>
-          <For each={types()}>{([t, n]) => <option value={t}>{t} ({n})</option>}</For>
-        </select>
-        <input placeholder="stream contains… (e.g. game-, presence-)" value={stream()} onInput={(e) => setStream(e.currentTarget.value)} aria-label="Stream filter" />
-        <label class="check"><input type="checkbox" checked={hideFrames()} onChange={(e) => setHideFrames(e.currentTarget.checked)} /> hide frames</label>
-        <button onClick={() => { if (!paused()) setFrozen([...live.state.tail]); setPaused(!paused()); }}>{paused() ? "resume" : "pause"}</button>
-        <button onClick={() => void loadOlder()} disabled={loadingOlder()}>{loadingOlder() ? "loading…" : "load older"}</button>
+    <>
+      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Event Log"]]} />
+      <Strip kind="events" />
+      <div class="s-cols">
+        <aside class="s-left">
+          <Title>Event Log</Title>
+          <Pills label="Event log" items={[
+            { label: "h2 live Online", href: "/stats" },
+            { label: "Players & Leaderboards", href: "/stats/players" },
+            { label: "Server Details", href: "/dash/server" },
+          ]} />
+          <Panel title="Signature Check" sub="verified in this browser">
+            <dl class="s-rows">
+              <div><dt>Verified</dt><dd>{num(v().verified)}</dd></div>
+              <div><dt>Failed</dt><dd classList={{ warn: v().bad > 0 }}>{num(v().bad)}</dd></div>
+              <div><dt>Unchecked</dt><dd>{num(v().unknown)}</dd></div>
+              <div><dt>Unsigned</dt><dd>{num(v().unsigned)}</dd></div>
+            </dl>
+          </Panel>
+          <Panel title="Event Types" sub="seen this session; pick one to filter">
+            <dl class="s-rows">
+              <div><dt><button class="s-linkbtn" onClick={() => setType("")}>All Events</button></dt><dd>{num(seen())}</dd></div>
+              <For each={types()}>
+                {([t, n]) => <div><dt><button class="s-linkbtn" classList={{ on: type() === t }} onClick={() => setType(type() === t ? "" : t)}>{t}</button></dt><dd>{num(n)}</dd></div>}
+              </For>
+            </dl>
+          </Panel>
+        </aside>
+        <div class="s-right events-page">
+          <Title right={<span class="s-dim" style={{ color: "#9d9d9d" }}>{paused() ? "paused" : live.state.caughtUp ? `caught up to #${live.state.position}` : "catching up"}</span>}>Signed Event Stream</Title>
+          <div class="s-matte" style={{ padding: "8px" }}>
+            <p style={{ padding: "0 2px 8px", "font-size": "11px" }}>
+              Every change on the server is an event. {num(seen())} loaded this session, head at position {live.state.position}.
+            </p>
+            <div class="s-toolbar">
+              <label class="sr-only" for="ev-type">Event type</label>
+              <select id="ev-type" value={type()} onChange={(e) => setType(e.currentTarget.value)}>
+                <option value="">all types</option>
+                <For each={types()}>{([t, n]) => <option value={t}>{t} ({n})</option>}</For>
+              </select>
+              <input placeholder="stream contains… (game-, presence-)" value={stream()} onInput={(e) => setStream(e.currentTarget.value)} aria-label="Stream filter" />
+              <label class="check"><input type="checkbox" checked={hideFrames()} onChange={(e) => setHideFrames(e.currentTarget.checked)} /> hide frames</label>
+              <button class="s-btn" style={{ "margin-left": "auto" }} onClick={() => { if (!paused()) setFrozen([...live.state.tail]); setPaused(!paused()); }}>{paused() ? "resume" : "pause"}</button>
+              <button class="s-btn" onClick={() => void loadOlder()} disabled={loadingOlder()}>{loadingOlder() ? "loading…" : "load older"}</button>
+            </div>
+            <div class="s-events">
+              <div class="s-events-head"><span>#</span><span>Type</span><span>Stream</span><span>Summary</span><span>Time</span><span /></div>
+              <ol class="event-list">
+                <For each={rows()} fallback={<li class="s-empty">Nothing matches. The log is listening…</li>}>
+                  {(e) => (
+                    <li class={`ev ev--${CATEGORY[e.type] ?? "other"}`} classList={{ "ev--open": open() === e.position }}>
+                      <button class="ev__row" onClick={() => setOpen(open() === e.position ? null : e.position)}>
+                        <span class="ev__pos">{e.position}</span>
+                        <span class="ev__type">{e.type}</span>
+                        <span class="ev__stream">{e.stream}<span class="muted">@{e.version}</span></span>
+                        <span class="ev__summary">{summary(e)}</span>
+                        <span class="ev__at">{e.at?.slice(11, 19)}</span>
+                        <VerifyMark position={e.position} compact />
+                      </button>
+                      <Show when={open() === e.position}>
+                        <pre class="ev__json">{JSON.stringify({ ...e, jws: e.jws ? e.jws.slice(0, 48) + "…" : undefined }, null, 2)}</pre>
+                        <Show when={live.verify[e.position]?.reason}><div class="warn small s-pad">{live.verify[e.position]!.reason}</div></Show>
+                      </Show>
+                    </li>
+                  )}
+                </For>
+              </ol>
+            </div>
+          </div>
+        </div>
       </div>
-      <ol class="event-list">
-        <For each={rows()} fallback={<li class="muted">Nothing matches. The log is listening…</li>}>
-          {(e) => (
-            <li class={`ev ev--${CATEGORY[e.type] ?? "other"}`} classList={{ "ev--open": open() === e.position }}>
-              <button class="ev__row" onClick={() => setOpen(open() === e.position ? null : e.position)}>
-                <span class="ev__pos">#{e.position}</span>
-                <span class="ev__type">{e.type}</span>
-                <span class="ev__stream">{e.stream}<span class="muted">@{e.version}</span></span>
-                <span class="ev__summary">{summary(e)}</span>
-                <span class="ev__at muted">{e.at?.slice(11, 19)}</span>
-                <VerifyMark position={e.position} compact />
-              </button>
-              <Show when={open() === e.position}>
-                <pre class="ev__json">{JSON.stringify({ ...e, jws: e.jws ? e.jws.slice(0, 48) + "…" : undefined }, null, 2)}</pre>
-                <Show when={live.verify[e.position]?.reason}><div class="warn small">{live.verify[e.position]!.reason}</div></Show>
-              </Show>
-            </li>
-          )}
-        </For>
-      </ol>
-      </Panel>
-    </div>
+    </>
   );
 }
 

@@ -5,18 +5,20 @@ import "./styles/app.css";
 import "./styles/dash.css";
 import "./styles/stats.css";
 import Dashboard from "./dash/Dashboard";
-import StatsLayout, { Panel } from "./stats/Layout";
+import StatsLayout, { Title } from "./stats/Layout";
 import Game from "./stats/Game";
 import Games from "./stats/Games";
 import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import Events from "./stats/Events";
 import { live } from "./state/live";
+import { startGameArt } from "./state/gameart";
 
 live.start();
+startGameArt();
 
 function NotFound() {
-  return <Panel title="Page not found"><p class="s-pad">That page isn't here. Try the links above.</p></Panel>;
+  return <div class="s-full"><Title class="s-title--bar">Page Not Found</Title><p class="s-pad">That page isn't here. Try the links above.</p></div>;
 }
 
 const OldGame = () => <Navigate href={`/stats/games/${useParams().id}`} />;
@@ -25,7 +27,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 render(
   () => (
     <Router>
-      <Route path={["/", "/dash/:section"]} component={Dashboard} />
+      <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
         <Route path="/" component={Games} />
         <Route path="/games/:id" component={Game} />

@@ -13,6 +13,7 @@
 //! clients. Run it with `h2 live serve`.
 
 pub mod app;
+pub mod art;
 pub mod dispatch;
 pub mod games;
 pub mod guard;
@@ -48,8 +49,8 @@ pub struct Config {
     pub tls: Option<(PathBuf, PathBuf)>,
     /// Allow plain HTTP on a non-loopback address.
     pub insecure_http: bool,
-    /// The built web app, served at `/` ([`web_dir`]).
-    pub web: Option<PathBuf>,
+    /// The built web app, served at `/` ([`web_dir`]), and game art.
+    pub site: http::Site,
 }
 
 /// Loopback serves plain HTTP; anything else needs TLS or an explicit
@@ -92,6 +93,18 @@ pub fn web_dir() -> Option<PathBuf> {
     dir.join("index.html").is_file().then_some(dir)
 }
 
+/// The line `serve` prints about game art.
+pub fn art_notice(art: &art::GameArt) -> String {
+    if art.share {
+        format!(
+            "serving game art from {} to everyone: this redistributes your copy of the game's files",
+            art.dir.display()
+        )
+    } else {
+        format!("game art from {} (to this machine only)", art.dir.display())
+    }
+}
+
 /// Serves until the process is stopped.
 pub async fn serve(config: Config) -> Result<()> {
     check_bind(config.listen, config.tls.is_some(), config.insecure_http)?;
@@ -102,7 +115,7 @@ pub async fn serve(config: Config) -> Result<()> {
     let id = identity.id.clone();
     let private = config.policy.private;
     let live = Live::start(Arc::new(store), identity, config.policy).await?;
-    let app = http::router_with_web(live.clone(), config.web.as_deref());
+    let app = http::router_with_site(live.clone(), &config.site);
     let reads = if private { "private" } else { "public" };
     let scheme = if config.tls.is_some() {
         "https"
@@ -115,9 +128,12 @@ pub async fn serve(config: Config) -> Result<()> {
         live.position(),
         redact(&config.db)
     );
-    match &config.web {
+    match &config.site.web {
         Some(dir) => println!("h2 live: web app from {}", dir.display()),
         None => println!("h2 live: no web app (build it: cd web && bun run build)"),
+    }
+    if let Some(art) = &config.site.game_art {
+        println!("h2 live: {}", art_notice(art));
     }
     match config.tls {
         Some((cert, key)) => {
@@ -126,14 +142,18 @@ pub async fn serve(config: Config) -> Result<()> {
                 .await
                 .with_context(|| format!("loading {} and {}", cert.display(), key.display()))?;
             axum_server::bind_rustls(config.listen, tls)
-                .serve(app.into_make_service())
+                .serve(app.into_make_service_with_connect_info::<SocketAddr>())
                 .await?;
         }
         None => {
             let listener = tokio::net::TcpListener::bind(config.listen)
                 .await
                 .with_context(|| format!("binding {}", config.listen))?;
-            axum::serve(listener, app).await?;
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await?;
         }
     }
     Ok(())
@@ -169,7 +189,7 @@ pub fn start_embedded(
     db: &str,
     listen: SocketAddr,
     data_dir: &std::path::Path,
-    web: Option<PathBuf>,
+    site: http::Site,
 ) -> Result<Embedded> {
     check_bind(listen, false, false)?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -200,8 +220,9 @@ pub fn start_embedded(
         anyhow::Ok((live, kind, listener))
     })?;
     let url = format!("http://{}", listener.local_addr()?);
-    let app = http::router_with_web(live.clone(), web.as_deref());
+    let app = http::router_with_site(live.clone(), &site);
     runtime.spawn(async move {
+        let app = app.into_make_service_with_connect_info::<SocketAddr>();
         if let Err(e) = axum::serve(listener, app).await {
             eprintln!("live: server stopped: {e}");
         }

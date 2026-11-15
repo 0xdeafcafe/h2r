@@ -30,13 +30,16 @@ use crate::live_accounts::{self, LocalAccount};
 const USAGE: &str = "usage: h2 live <command> [options]
 
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
-        [--private] [--invite-only]
+        [--private] [--invite-only] [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
                           run the service. --db defaults to $H2_LIVE_DB or
                           postgres://localhost/h2live, --listen to
                           127.0.0.1:8074; a non-loopback address needs TLS or
                           --insecure-http. --id (fixed on first start) names
-                          the server in tokens and author ids
+                          the server in tokens and author ids. Game art
+                          (--game-art, default --data's game-art/ if
+                          extracted) is served at /art/game/ to this machine
+                          only, unless --share-game-art
   account create <gamertag> [--server URL] [--invite CODE]
                           make a key, register it, keep both in accounts.json
   account import <file> [--server URL]
@@ -52,6 +55,11 @@ const USAGE: &str = "usage: h2 live <command> [options]
   invite create [--days N] [--server URL] [--data DIR]
                           print an invite code for an --invite-only server
                           (POST /v1/invites, signed with the server key)
+  assets extract [--disc PATH] [--out DIR]
+                          decode the stats site's art (emblems, ranks, game
+                          types, weapons, map previews) from your own disc to
+                          PNGs and a manifest.json; --out defaults to
+                          game-art/ in the server directory
   q <what> [--server URL] [--json|--jsonl]
                           query the service; `h2 live q --help` lists what
 
@@ -69,6 +77,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("account", Some("import")) => account_import(rest.shift()),
         ("account", Some("list")) => account_list(rest.shift()),
         ("q", _) => crate::live_query::run(rest),
+        ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
         ("invite", Some("create")) => invite_create(rest.shift()),
         ("-h" | "--help", _) => bail!("{USAGE}"),
@@ -161,9 +170,12 @@ fn serve(mut args: Args) -> Result<()> {
         ..live_server::Policy::default()
     };
     let insecure_http = args.flag("--insecure-http");
+    let art_dir = args.take("--game-art")?.map(PathBuf::from);
+    let share_art = args.flag("--share-game-art");
     if !args.positional()?.is_empty() {
         bail!("serve takes no positional arguments\n\n{USAGE}");
     }
+    let game_art = game_art(art_dir, &data_dir, share_art)?;
     let config = live_server::Config {
         db,
         listen,
@@ -172,13 +184,57 @@ fn serve(mut args: Args) -> Result<()> {
         policy,
         tls,
         insecure_http,
-        web: live_server::web_dir(),
+        site: live_server::http::Site {
+            web: live_server::web_dir(),
+            game_art,
+        },
     };
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("starting tokio")?;
     rt.block_on(live_server::serve(config))
+}
+
+/// The game art to serve: `--game-art DIR` (which must hold a manifest),
+/// else `game-art/` in the server directory if it was extracted there.
+fn game_art(
+    flag: Option<PathBuf>,
+    data_dir: &Path,
+    share: bool,
+) -> Result<Option<live_server::art::GameArt>> {
+    match flag {
+        Some(dir) => live_server::art::GameArt::found(&dir, share)
+            .map(Some)
+            .with_context(|| {
+                format!(
+                    "{} has no manifest.json; run `h2 live assets extract --out {}`",
+                    dir.display(),
+                    dir.display()
+                )
+            }),
+        None => Ok(live_server::art::GameArt::found(
+            &game_art_dir(data_dir),
+            share,
+        )),
+    }
+}
+
+/// Where extracted art goes by default: `game-art/` in the server directory.
+pub(crate) fn game_art_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("game-art")
+}
+
+fn assets_extract(mut args: Args) -> Result<()> {
+    let disc = args.take("--disc")?.map(PathBuf::from);
+    let out = args.take("--out")?.map(PathBuf::from);
+    args.positional()?;
+    let disc = disc.map_or_else(crate::default_disc, Ok)?;
+    let out = out.map_or_else(
+        || Ok(game_art_dir(&data_dir(None)?)),
+        Ok::<_, anyhow::Error>,
+    )?;
+    crate::live_art::run(disc, out)
 }
 
 /// A service, found from its base URL.
@@ -577,7 +633,7 @@ mod tests {
             live_server::MEMORY_DB,
             "127.0.0.1:0".parse().unwrap(),
             &dir.join("server"),
-            None,
+            Default::default(),
         )
         .unwrap();
         // What the web app does: make a key, sign up, download the entry.

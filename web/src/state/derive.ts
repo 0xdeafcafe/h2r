@@ -123,6 +123,21 @@ export function weaponBreakdown(kills: readonly Kill[], slots?: Set<number>): We
     .sort((a, b) => b.kills - a.kills || a.weapon.localeCompare(b.weapon));
 }
 
+/** Deaths by weapon for the given slots: what knocked them out, most often first. */
+export function weaponsAgainst(kills: readonly Kill[], slots: Set<number>): WeaponRow[] {
+  const m = new Map<string, number>();
+  let total = 0;
+  for (const k of kills) {
+    if (!scoringKill(k) || !slots.has(k.victim)) continue;
+    const w = k.weapon ?? "unknown";
+    m.set(w, (m.get(w) ?? 0) + 1);
+    total++;
+  }
+  return [...m.entries()]
+    .map(([weapon, n]) => ({ weapon, kills: n, share: total ? n / total : 0 }))
+    .sort((a, b) => b.kills - a.kills || a.weapon.localeCompare(b.weapon));
+}
+
 export function mergeWeapons(rows: WeaponRow[][]): WeaponRow[] {
   const m = new Map<string, number>();
   for (const rs of rows) for (const r of rs) m.set(r.weapon, (m.get(r.weapon) ?? 0) + r.kills);
@@ -219,6 +234,8 @@ export interface ServiceRecord {
   exp: number;
   rank: string;
   weapons: WeaponRow[];
+  /** What knocked this player out, by weapon (`kills` counts their deaths). */
+  weaponsAgainst: WeaponRow[];
   medals: Map<MedalId, number>;
   /** Kills the totals were derived from (snapshots carry at most 50 per game). */
   killsSeen: number;
@@ -231,18 +248,31 @@ export const RANKS: Array<[number, string]> = [
 ];
 
 export function rankFor(exp: number): string {
-  let r = RANKS[0]![1];
-  for (const [at, name] of RANKS) if (exp >= at) r = name;
+  return RANKS[rankIndex(exp)]![1];
+}
+
+/** Position on the rank ladder, 0-based. */
+export function rankIndex(exp: number): number {
+  let r = 0;
+  RANKS.forEach(([at], i) => { if (exp >= at) r = i; });
   return r;
 }
 
-export function serviceRecord(s: LiveState, xuid: Xuid): ServiceRecord {
-  const hist = gameHistory(s, xuid);
+/** EXP the next rank needs, or null at the top of the ladder. */
+export function nextRankAt(exp: number): number | null {
+  return RANKS[rankIndex(exp) + 1]?.[0] ?? null;
+}
+
+/** Totals for an account; `only` narrows them to some of its games (a map, a playlist). */
+export function serviceRecord(s: LiveState, xuid: Xuid, only?: (g: GameState) => boolean): ServiceRecord {
+  const all = gameHistory(s, xuid);
+  const hist = only ? all.filter((h) => only(h.game)) : all;
   const rec: ServiceRecord = {
     games: hist.length, completed: 0, wins: 0, kills: 0, deaths: 0, assists: 0, kd: null, bestSpree: 0,
-    firstPlayed: null, lastPlayed: null, exp: 0, rank: RANKS[0]![1], weapons: [], medals: new Map(), killsSeen: 0,
+    firstPlayed: null, lastPlayed: null, exp: 0, rank: RANKS[0]![1], weapons: [], weaponsAgainst: [], medals: new Map(), killsSeen: 0,
   };
   const weapons: WeaponRow[][] = [];
+  const against: WeaponRow[][] = [];
   for (const h of hist) {
     const g = h.game;
     if (g.status === "ended") rec.completed++;
@@ -253,10 +283,12 @@ export function serviceRecord(s: LiveState, xuid: Xuid): ServiceRecord {
     if (!rec.lastPlayed || g.started_at > rec.lastPlayed) rec.lastPlayed = g.started_at;
     const slots = new Set(h.slots);
     weapons.push(weaponBreakdown(g.kills, slots));
+    against.push(weaponsAgainst(g.kills, slots));
     for (const [m, n] of countMedals(gameMedals(g.kills), slots)) rec.medals.set(m, (rec.medals.get(m) ?? 0) + n);
     rec.killsSeen += g.kills.filter((k) => k.killer !== null && slots.has(k.killer)).length;
   }
   rec.weapons = mergeWeapons(weapons);
+  rec.weaponsAgainst = mergeWeapons(against);
   rec.kd = rec.deaths ? rec.kills / rec.deaths : null;
   rec.exp = rec.completed + rec.wins * 2;
   rec.rank = rankFor(rec.exp);

@@ -1,37 +1,48 @@
-// Player emblems: original geometric badges picked deterministically from
-// the XUID (or gamertag), a background shape plus a foreground glyph.
+// Player emblems. With the server's game art (state/gameart.ts) an emblem is
+// two mask layers coloured on a canvas; otherwise it is one of the art
+// pack's original two-colour symbols. Either way the pick is deterministic
+// from the seed (an XUID or gamertag) until telemetry carries a player's
+// real emblem, which `emblem` is for.
 
-import { hueFor } from "../lib/format";
+import { createEffect, createSignal, onCleanup } from "solid-js";
+import { emblemArt } from "../lib/art";
+import { emblemChoice, type EmblemSpec } from "../lib/gameart";
+import { emblemLayers, emblemUrl } from "../state/gameart";
 
-const BACKS = [
-  "M50 6 L92 28 L92 72 L50 94 L8 72 L8 28 Z", // hexagon
-  "M50 4 L96 50 L50 96 L4 50 Z", // diamond
-  "M10 10 H90 V70 L50 94 L10 70 Z", // shield
-  "M50 6 A44 44 0 1 1 49.9 6 Z", // circle
-  "M14 8 H86 L94 16 V84 L86 92 H14 L6 84 V16 Z", // cut square
-];
-const GLYPHS = [
-  "M50 20 L58 42 L82 42 L62 56 L70 80 L50 66 L30 80 L38 56 L18 42 L42 42 Z", // star
-  "M20 64 L50 34 L80 64 L80 50 L50 20 L20 50 Z", // chevron
-  "M56 14 L30 54 L48 54 L42 86 L72 42 L54 42 Z", // bolt
-  "M50 22 A28 28 0 1 1 49.9 22 Z M50 36 A14 14 0 1 0 50.1 36 Z", // ring
-  "M50 18 L84 78 L16 78 Z", // triangle
-  "M66 18 A32 32 0 1 0 66 82 A24 24 0 1 1 66 18 Z", // crescent
-  "M44 16 H56 V44 H84 V56 H56 V84 H44 V56 H16 V44 H44 Z", // cross
-  "M50 16 L60 40 L84 50 L60 60 L50 84 L40 60 L16 50 L40 40 Z", // spark
-];
+/** A stable index for a seed, spread better than a plain sum. */
+function pick(seed: string): number {
+  let h = 2166136261;
+  for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
+  return (h >>> 0) % 24;
+}
 
-export default function Emblem(props: { seed: string; size?: number; class?: string; title?: string }) {
-  const h = () => hueFor(props.seed);
-  const back = () => BACKS[h() % BACKS.length]!;
-  const glyph = () => GLYPHS[Math.floor(h() / 7) % GLYPHS.length]!;
-  const c1 = () => `hsl(${(h() * 7) % 360} 55% 38%)`;
-  const c2 = () => `hsl(${(h() * 13 + 140) % 360} 85% 70%)`;
+export default function Emblem(props: {
+  seed: string; size?: number; class?: string; title?: string;
+  /** The player's real emblem (layers and colours), once it is known. */
+  emblem?: Partial<EmblemSpec>;
+}) {
+  const size = () => props.size ?? 48;
+  const pack = () => emblemArt(pick(props.seed), size());
+  const [game, setGame] = createSignal<string | null>(null);
+  createEffect(() => {
+    const l = emblemLayers();
+    if (!l) { setGame(null); return; }
+    const spec: EmblemSpec = { ...emblemChoice(props.seed, l.fg, l.bg), ...props.emblem };
+    let current = true;
+    onCleanup(() => { current = false; });
+    void emblemUrl(l.a, spec).then((url) => { if (current) setGame(url); });
+  });
   return (
-    <svg class={`emblem ${props.class ?? ""}`} width={props.size ?? 48} height={props.size ?? 48} viewBox="0 0 100 100" role="img" aria-label={props.title ?? "player emblem"}>
-      <rect width="100" height="100" fill="#0b0d10" />
-      <path d={back()} fill={c1()} stroke="rgba(255,255,255,.35)" stroke-width="2" />
-      <path d={glyph()} fill={c2()} fill-rule="evenodd" stroke="rgba(0,0,0,.5)" stroke-width="1.5" />
-    </svg>
+    <img
+      class={`emblem ${props.class ?? ""}`}
+      classList={{ "emblem--game": !!game() }}
+      src={game() ?? pack().src}
+      srcset={game() ? undefined : pack().srcset}
+      width={size()}
+      height={size()}
+      alt={props.title ?? ""}
+      decoding="async"
+      draggable={false}
+    />
   );
 }

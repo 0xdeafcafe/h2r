@@ -497,7 +497,7 @@ mod tests {
             live_server::MEMORY_DB,
             "127.0.0.1:0".parse().unwrap(),
             &dir,
-            None,
+            Default::default(),
         )
         .unwrap();
         let client = Client::at(&server.url).unwrap();

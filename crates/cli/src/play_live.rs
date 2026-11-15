@@ -105,7 +105,7 @@ pub fn start(
     opts: &LiveOpts,
     db: &str,
     places: &Places,
-    web: Option<PathBuf>,
+    site: live_server::http::Site,
     default_name: &str,
 ) -> Result<Session> {
     let embedded = match &opts.server {
@@ -118,7 +118,7 @@ pub fn start(
                 db,
                 listen,
                 &places.server_data,
-                web,
+                site,
             )?)
         }
     };
@@ -221,6 +221,30 @@ pub fn bootstrap(
     )
 }
 
+/// The game art in `dir`, extracted from `disc` first unless it already
+/// holds this disc's art. Any failure is a warning: the web app keeps its
+/// own art.
+pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
+    let fresh = match crate::live_art::disc_key(disc) {
+        Ok((key, _)) => crate::live_art::cached(dir, &key).is_some(),
+        Err(e) => {
+            eprintln!("live: no game art ({e:#})");
+            return None;
+        }
+    };
+    if !fresh {
+        eprintln!(
+            "live: extracting game art from the disc into {} (once per disc)",
+            dir.display()
+        );
+        if let Err(e) = crate::live_art::extract(disc, dir) {
+            eprintln!("live: game art extraction failed ({e:#}); the web app keeps its own art");
+            return None;
+        }
+    }
+    live_server::art::GameArt::found(dir, false)
+}
+
 /// The OS user name, for a default gamertag.
 pub fn os_user() -> String {
     ["USER", "LOGNAME", "USERNAME"]
@@ -299,7 +323,14 @@ mod tests {
             enabled: true,
             ..LiveOpts::default()
         };
-        let session = start(&opts, live_server::MEMORY_DB, &places, None, "test.user").unwrap();
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "test.user",
+        )
+        .unwrap();
         assert_eq!(session.store(), Some("memory"));
         assert_eq!(session.account.gamertag, "test user");
         assert_eq!(
@@ -337,7 +368,14 @@ mod tests {
 
         // A fresh in-memory server no longer has the account: a new one
         // replaces the stale entry.
-        let session = start(&opts, live_server::MEMORY_DB, &places, None, "test.user").unwrap();
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "test.user",
+        )
+        .unwrap();
         assert_eq!(session.account.gamertag, "test user");
         let accounts = live_accounts::load(&places.accounts).unwrap();
         assert_eq!(

@@ -9,6 +9,7 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
     <tr
       class="score-row"
       classList={{ "score-row--left": props.s.left }}
+      style={{ "--row": colourFor(props.g, props.s.team, props.s.index) }}
       onMouseEnter={() => props.onHover?.(props.s.index)}
       onMouseLeave={() => props.onHover?.(null)}
     >
@@ -31,7 +32,7 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
 function Head() {
   return (
     <thead>
-      <tr><th /><th>player</th><th class="num">score</th><th class="num" title="kills">K</th><th class="num" title="deaths">D</th><th class="num" title="assists">A</th></tr>
+      <tr><th /><th>Players</th><th class="num">Score</th><th class="num" title="Kills">K</th><th class="num" title="Deaths">D</th><th class="num" title="Assists">A</th></tr>
     </thead>
   );
 }
@@ -55,7 +56,7 @@ export default function Scoreboard(props: { game: GameState; onHover?: (i: numbe
           {(t: TeamStanding) => (
             <section class="team-block" style={{ "--team-colour": colourFor(props.game, t.team, 0) }}>
               <header class="team-head">
-                <span>{teamName(t.team)} team</span>
+                <span>{teamName(t.team)} Team</span>
                 <strong>{t.score}</strong>
               </header>
               <table class="score-table">

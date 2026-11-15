@@ -139,6 +139,59 @@ there:
 Polygons are top-down projections of floor surfaces, grouped into height
 layers so multi-storey maps can be drawn one floor at a time.
 
+## Optional game art
+
+A server may serve art extracted from its owner's own disc (`h2 live assets
+extract`; nothing of it is in this repo). Clients must work without it.
+
+- `GET /art/game/manifest.json`: the manifest, or 404 when the server has
+  no game art or will not give it to this client. By default it is served
+  only to clients on the server's own machine (a loopback peer with no
+  `Forwarded`/`X-Forwarded-For`); an operator's `--share-game-art` serves
+  it to everyone. A 404 means "use your own art".
+- `GET /art/game/<file>`: a PNG named by the manifest, 404 likewise.
+
+```json
+{ "version": 1,
+  "source": "<sha256 of the disc's map files>",
+  "images":  { "<key>": { "file": "rank/12.png", "width": 28, "height": 26 } },
+  "aliases": { "gametype/slayer": "gametype/0" },
+  "emblem":  { ...colouring rules, below... },
+  "skipped": { "<key or prefix>": "why it is missing" } }
+```
+
+`file` is relative to the manifest. Keys (a client looks a key up in
+`aliases` first, then `images`):
+
+| Key | What |
+|---|---|
+| `emblem/fg/<0..63>` | emblem foreground layers |
+| `emblem/bg/<0..31>` | emblem background layers |
+| `rank/<1..50>` | rank (level) icons |
+| `live/<0..31>` | Live status icons (friend, invite, voice, message...) |
+| `gametype/<0..10>` | game-type icons; aliases `gametype/slayer`, `king_of_the_hill`, `oddball`, `juggernaut`, `ctf`, `assault`, `territories` (identified by eye; the others have only an index) |
+| `weapon/<0..18>` | weapon silhouettes (index only; which weapon each is is not yet mapped) |
+| `map/<map>/preview` | a multiplayer map's preview picture; `<map>` is the map file name without `.map` |
+
+Medals are not in the manifest: no medal art has been found on the disc.
+
+**Emblems.** An emblem is a background layer with a foreground layer drawn
+over it. Each layer image holds two masks, not colours: mask *a* is the red
+channel (green equals it, so it looks yellow) and mask *b* the blue channel.
+The image's alpha copies mask *b* and is not coverage. Per pixel, with
+channels in 0..1:
+
+```
+rgb      = colour_a * red + colour_b * blue
+coverage = background: 1;  foreground: max(red, blue)
+```
+
+`emblem.colours` in the manifest gives the profile colour for each mask
+(foreground: primary for *a*, secondary for *b*; background: background
+colour for *a*, a second background colour for *b*). The masks were
+measured on the disc. Which profile colour fills which mask has not been
+confirmed against the game.
+
 ## Clarifications (2026-11-15)
 
 Settled after the first client was built against this page.
