@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use runtime::dispatch::Dispatch;
+use runtime::exec::OriginalHandler;
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, ExecCtx, Runtime, TransferAbi, abi};
 
@@ -173,6 +174,32 @@ pub fn install(
     runtime: &Runtime,
     config: &TelemetryConfig,
 ) -> Result<Option<Arc<Telemetry>>, String> {
+    install_at(runtime, config, Hooks::RETAIL)
+}
+
+/// The guest entries telemetry wraps.
+#[derive(Clone, Copy)]
+struct Hooks {
+    start: u32,
+    tick: u32,
+    end: u32,
+    kill: u32,
+}
+
+impl Hooks {
+    const RETAIL: Self = Self {
+        start: layout::MATCH_START,
+        tick: layout::GAME_TICK,
+        end: layout::GAME_END,
+        kill: layout::PLAYER_KILLED,
+    };
+}
+
+fn install_at(
+    runtime: &Runtime,
+    config: &TelemetryConfig,
+    hooks: Hooks,
+) -> Result<Option<Arc<Telemetry>>, String> {
     if !config.enabled {
         return Ok(None);
     }
@@ -186,26 +213,27 @@ pub fn install(
         Session::new("h2recomp", Some("h2recomp".into())),
         sink,
     ));
-    for address in [
-        layout::MATCH_START,
-        layout::GAME_TICK,
-        layout::GAME_END,
-        layout::PLAYER_KILLED,
-    ] {
-        if runtime.resolve_original(address).is_none() {
-            return Err(format!("telemetry original {address:#x} is not registered"));
-        }
-    }
+    // Resolve every original before edit_dispatch: resolve_original takes the
+    // dispatch read lock, and calling it under the write lock deadlocks boot.
+    let original = |address: u32| {
+        runtime
+            .resolve_original(address)
+            .ok_or_else(|| format!("telemetry original {address:#x} is not registered"))
+    };
+    let start = (original(hooks.start)?, original(hooks.start)?);
+    let tick = (original(hooks.tick)?, original(hooks.tick)?);
+    let end = (original(hooks.end)?, original(hooks.end)?);
+    let kill_original = original(hooks.kill)?;
     runtime
         .memory()
         .map_zeroed(SHADOW_START, SHADOW_BYTES, Permissions::RX)
         .map_err(|e| format!("map telemetry shadow entries: {e:?}"))?;
     runtime.edit_dispatch(|dispatch| {
         for address in [
-            layout::MATCH_START,
-            layout::GAME_TICK,
-            layout::GAME_END,
-            layout::PLAYER_KILLED,
+            hooks.start,
+            hooks.tick,
+            hooks.end,
+            hooks.kill,
             SHADOW_START,
             SHADOW_TICK,
             SHADOW_END,
@@ -218,52 +246,48 @@ pub fn install(
         }
         install_post(
             dispatch,
-            runtime,
-            layout::MATCH_START,
+            start,
+            hooks.start,
             SHADOW_START,
             PostHook::Start,
             Arc::clone(&telemetry),
         );
         install_post(
             dispatch,
-            runtime,
-            layout::GAME_TICK,
+            tick,
+            hooks.tick,
             SHADOW_TICK,
             PostHook::Tick,
             Arc::clone(&telemetry),
         );
         install_post(
             dispatch,
-            runtime,
-            layout::GAME_END,
+            end,
+            hooks.end,
             SHADOW_END,
             PostHook::End,
             Arc::clone(&telemetry),
         );
 
-        let original = runtime.resolve_original(layout::PLAYER_KILLED).unwrap();
+        let original = kill_original;
         let observer = Arc::clone(&telemetry);
-        dispatch.register_override(
-            layout::PLAYER_KILLED,
-            "live telemetry kill",
-            move |cpu, ctx, _| {
-                let mut observation = || {
+        dispatch.register_override(hooks.kill, "live telemetry kill", move |cpu, ctx, _| {
+            let mut observation = || {
+                let guest = ctx.memory();
+                let attacker = guest.u32(cpu.esp.wrapping_add(4))?;
+                let victim = guest.u32(cpu.esp.wrapping_add(8))?;
+                let betrayal = guest.u32(cpu.esp.wrapping_add(0x0c))? != 0;
+                let _packed_damage = guest.u32(cpu.esp.wrapping_add(0x10))?;
+                Ok::<_, runtime::GuestFault>((attacker, victim, betrayal))
+            };
+            if let Ok((attacker, victim, betrayal)) = observation() {
+                observer.protect(|| {
                     let guest = ctx.memory();
-                    let attacker = guest.u32(cpu.esp.wrapping_add(4))?;
-                    let victim = guest.u32(cpu.esp.wrapping_add(8))?;
-                    let betrayal = guest.u32(cpu.esp.wrapping_add(0x0c))? != 0;
-                    let _packed_damage = guest.u32(cpu.esp.wrapping_add(0x10))?;
-                    Ok::<_, runtime::GuestFault>((attacker, victim, betrayal))
-                };
-                if let Ok((attacker, victim, betrayal)) = observation() {
-                    observer.protect(|| {
-                        let guest = ctx.memory();
-                        observer.kill(&guest, attacker, victim, betrayal)
-                    });
-                }
-                Ok(original.invoke(cpu, ctx, layout::PLAYER_KILLED))
-            },
-        );
+                    observer.kill(&guest, attacker, victim, betrayal)
+                });
+            }
+            Ok(original.invoke(cpu, ctx, hooks.kill))
+        });
         Ok(())
     })?;
     Ok(Some(telemetry))
@@ -271,21 +295,15 @@ pub fn install(
 
 fn install_post(
     dispatch: &mut Dispatch,
-    runtime: &Runtime,
+    (original_shadow, original_fallback): (OriginalHandler, OriginalHandler),
     address: u32,
     shadow: u32,
     kind: PostHook,
     telemetry: Arc<Telemetry>,
 ) {
-    let original_shadow = runtime
-        .resolve_original(address)
-        .expect("generated original checked");
     dispatch.register_override(shadow, "live telemetry original", move |cpu, ctx, _| {
         Ok(original_shadow.invoke(cpu, ctx, address))
     });
-    let original_fallback = runtime
-        .resolve_original(address)
-        .expect("generated original checked");
     dispatch.register_override(address, "live telemetry observer", move |cpu, ctx, _| {
         let return_pc_result = {
             let memory = ctx.memory();
@@ -440,5 +458,61 @@ mod tests {
         let mut session = Session::new("test", None);
         session.start(&info, Vec::<PlayerState>::new());
         assert!(session.take_output().is_empty());
+    }
+
+    /// Regression: install used to resolve originals under the dispatch write
+    /// lock and hung boot forever whenever Live was on.
+    #[test]
+    fn install_on_a_real_runtime_returns() {
+        use runtime::guest::Guest;
+        use runtime::{Dispatch, RegisteredModule};
+        let mut dispatch = Dispatch::default();
+        // SAFETY: the fixture's tables, handlers and probes follow its ABI.
+        let registered = unsafe {
+            dispatch.register_generated_module(
+                &runtime_test_probe::h2gen_fixture_module,
+                runtime_test_probe::h2gen_fixture_module_abi_version,
+            )
+        };
+        assert!(matches!(registered, Ok(RegisteredModule { .. })));
+        let runtime = Runtime::new(Guest::new(), dispatch);
+        let path = std::env::temp_dir().join(format!(
+            "h2-telemetry-install-{}.jsonl",
+            live_proto::sign::random_id()
+        ));
+        let config = TelemetryConfig {
+            enabled: true,
+            sink: TelemetrySinkConfig::File(path.clone()),
+        };
+        // The fixture module's four entries stand in for the retail hooks.
+        let hooks = Hooks {
+            start: 0x40_1000,
+            tick: 0x40_2000,
+            end: 0x40_3000,
+            kill: 0x40_4000,
+        };
+        let (done, wait) = std::sync::mpsc::channel();
+        let rt = Arc::clone(&runtime);
+        std::thread::spawn(move || {
+            let result = install_at(&rt, &config, hooks).map(|t| t.is_some());
+            let names = rt.edit_dispatch(|d| {
+                [hooks.start, hooks.kill, SHADOW_START]
+                    .map(|a| d.override_name(a).map(str::to_owned))
+            });
+            let _ = done.send((result, names));
+        });
+        let (result, names) = wait
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("install deadlocked");
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            names,
+            [
+                Some("live telemetry observer".into()),
+                Some("live telemetry kill".into()),
+                Some("live telemetry original".into()),
+            ]
+        );
+        let _ = std::fs::remove_file(path);
     }
 }

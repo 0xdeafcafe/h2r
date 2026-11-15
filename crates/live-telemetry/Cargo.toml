@@ -15,3 +15,6 @@ ureq = { version = "2", default-features = false, features = ["json", "tls"] }
 tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 webpki-roots = "1"
+
+[dev-dependencies]
+runtime-test-probe = { path = "../runtime/test-probe" }
