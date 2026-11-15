@@ -678,7 +678,8 @@ and allocations are bounded before anything is read:
       `LIN_A8R8G8B8` (texels that read back unchanged, so the surface
       holds what an upload of the written-back level would);
     - a level has the same `Data`, format, size and pitch (the one drawn
-      into, if several do);
+      into, if several do; any other level drawn into over part of the
+      same memory is written back first);
     - the stage has no `COLORSIGN` (signed channels are stored biased);
     - the level is not the target being drawn (that reads what the level
       held before the draw, through guest memory, as before).
@@ -689,10 +690,12 @@ and allocations are bounded before anything is read:
     `Backend::read_surface` and noted in the write tracker. Lazily that is
     when the guest is about to read it:
     - `BlockOnResource` or the busy check `0x3fb710` on the level, its
-      texture, or a resource with the same `Data`;
+      texture, or a resource whose memory overlaps it (a texture or
+      surface by its whole layout, another resource by its first byte);
     - `BlockOnTime` (after a fence wait anything drawn before may be
       read) and push-buffer callbacks (Halo's `0x24970` reads texels);
-    - a sample that cannot read the surface in place;
+    - a sample that cannot read the surface in place, of a texture whose
+      memory overlaps the level (an offset alias included);
     - `PersistDisplay`, a destroy of the level or its texture, a header
       rewritten with another identity, and teardown, which then destroys
       the host surfaces.
@@ -700,15 +703,23 @@ and allocations are bounded before anything is read:
     (`set_rtt_direct(false)`, or a backend that cannot sample surfaces)
     also at every target change, `Swap` and `KickOff`, and every busy
     check or wait writes back all dirty levels.
-  - Lazily, the guest may write into a level whose pixels are only on the
+  - Lazily, the guest may store into a level whose pixels are only on the
     host. Each level keeps its bytes from when surface and memory last
-    matched. When it is next bound, sampled or written back, a reported
-    write (or, under `Always`/`Verify`, any difference) is checked
-    against those bytes: unchanged bytes (a write report that changed
-    nothing) only move the match forward; changed ones win over the drawn
-    pixels, the merged level is written back, and the surface is filled
-    with it. A guest store of the byte the level already held there is
-    indistinguishable from no store, and takes the drawn pixel.
+    matched; when it stops being the target, the guest bytes as they are
+    then become the match (eagerly the write-back there would overwrite
+    any store made while it was the target). When the level is next
+    bound, sampled or written back, the guest's stores since win over the
+    drawn pixels, the merged level is written back, and the surface is
+    filled with it. A store reported exactly (`Device::note_write`) owns
+    every byte it covers, whatever its value. Page reports
+    (`Device::note_written_pages`) and changes the upload policy finds
+    own only the bytes that differ from the match: a store of the value
+    memory already held is not seen there and takes the drawn pixel, and
+    a page report that changed nothing (the device's own write-back
+    reported back) costs no write-back. Telling those apart needs exact
+    store ranges or a trap on the first store to a page, which the boot's
+    page-granular barrier does not give; a title that waits on the level
+    before its CPU writes (as it must on the Xbox) is not affected.
   - A compressed format stops. Eagerly, a header rewritten while its
     level holds unwritten pixels stops too.
   - **Depth levels.** A level bound as `pNewZStencil` (shadow maps; the
@@ -903,9 +914,13 @@ bound.
 
 The runtime has to keep these rules:
 
-1. It reports every guest store the device did not make, through
-   `Device::note_write(addr, len)`, by guest virtual address in 4 KiB pages.
+1. It reports every guest store the device did not make, by guest
+   virtual address: exactly through `Device::note_write(addr, len)`, or
+   as whole 4 KiB pages through `Device::note_written_pages(addr, len)`
+   (the boot's barrier, which also reports the device's own stores back).
    This covers lifted code, the interpreter, and kernel or DMA-like copies.
+   Only the exact form tells a lazily held render-to-texture level which
+   bytes the guest stored (see "Render-to-texture").
 2. A write must be reported before the next D3D entry point runs.
 3. The runtime folds aliases first: physical and contiguous views map to
    the `0x80000000 | pa` view the device uses.
@@ -986,7 +1001,8 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    `Tracked`, so set `upload` as above. `Tracked` is only correct once the
    runtime keeps the invalidation contract above:
    - Forward every guest store D3D did not make to
-     `Device::note_write(addr, len)`. That covers stores from lifted code,
+     `Device::note_write(addr, len)` (exact) or
+     `Device::note_written_pages(addr, len)` (whole pages). That covers stores from lifted code,
      the interpreter, kernel calls (`NtReadFile`, `memcpy`-like HLE
      helpers) and DMA-like copies.
    - Fold aliases to the `0x80000000 | pa` view first.
@@ -1613,7 +1629,9 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   level (`BlockOnResource`, the busy check, a fence, a callback) before
   its CPU reads the texels, as the Xbox GPU's own asynchronous writes
   require. A read that skips every wait sees the level as of its last
-  write-back.
+  write-back. A store that skips every wait is merged by page reports'
+  byte differences only (above); exact store ranges from the runtime, or a
+  trap on the first store to a watched page, would make it exact.
 - **Depth as a texture on the GPU.** Textures over the depth buffer and
   sampled depth levels go through a CPU round trip: a readback, then a
   decode and an upload (and, for levels, guest memory). A pass that writes

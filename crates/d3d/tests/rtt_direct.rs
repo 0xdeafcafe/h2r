@@ -231,8 +231,9 @@ fn ping_pong_is_the_same_sampled_in_place() {
 /// A level drawn into, then rewritten in part by the guest before anything
 /// reads it, then sampled: the guest's bytes win where it wrote, the drawn
 /// pixels everywhere else (eagerly the write-back came first; lazily the
-/// two are merged when the level is next used). A reported write that
-/// changes nothing writes nothing back.
+/// two are merged when the level is next used). Pages reported written
+/// (the runtime's write barrier) that hold what was last synced write
+/// nothing back.
 fn guest_rewrite(lazy: bool, change: bool) -> Option<(Outcome, d3d::Stats)> {
     let (mut d, mut m) = gpu(lazy)?;
     let back = m
@@ -246,13 +247,12 @@ fn guest_rewrite(lazy: bool, change: bool) -> Option<(Outcome, d3d::Stats)> {
     // memory.
     for row in [4u32, 5, 20, 21] {
         let at = 0x8000_0000 | (DATA_A + 128 * row);
-        let bytes = if change {
-            vec![0x5A; 128]
+        if change {
+            m.write(at, &[0x5A; 128]).unwrap();
+            d.note_write(at, 128);
         } else {
-            m.read_vec(at, 128).unwrap()
-        };
-        m.write(at, &bytes).unwrap();
-        d.note_write(at, 128);
+            d.note_written_pages(at, 128);
+        }
     }
     let before = d.stats();
     d.set_texture(&mut m, 0, TEX_A).unwrap();
@@ -284,6 +284,168 @@ fn guest_writes_into_a_level_kept_on_the_host_are_merged() {
             assert_eq!(row(0)[..4], [0xFF, 0x40, 0x20, 0xFF], "drawn row kept");
         }
     }
+}
+
+/// Guest stores into level A after it was drawn, through exact
+/// `note_write` ranges, where some or all of the stored bytes equal what
+/// the level held when it was last synced: row 4 gets `[30 5A 30 5A]`
+/// repeated (the 0x30s are the memory fill), row 6 the whole of the
+/// original fill, row 20 (never drawn) the mixed row too. Every store must
+/// win over the drawn pixels, as it does eagerly. With `during`, the same
+/// stores land while A is still the target: eagerly leaving it writes the
+/// level over them, and lazily must too.
+fn exact_stores(lazy: bool, during: bool) -> Option<(Outcome, d3d::Stats)> {
+    let (mut d, mut m) = gpu(lazy)?;
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+    clear_rect(&mut d, &mut m, [0, 0, 32, 16], 0xFF20_40FF);
+    let store = |d: &mut Device<GfxBackend>, m: &mut SparseMemory| {
+        let mixed = [0x30u8, 0x5A, 0x30, 0x5A].repeat(32);
+        for (row, bytes) in [(4u32, &mixed), (6, &vec![0x30; 128]), (20, &mixed)] {
+            let at = 0x8000_0000 | (DATA_A + 128 * row);
+            m.write(at, bytes).unwrap();
+            d.note_write(at, 128);
+        }
+    };
+    if during {
+        store(&mut d, &mut m);
+    }
+    d.set_render_target(&mut m, back, 0).unwrap();
+    if !during {
+        store(&mut d, &mut m);
+    }
+    let before = d.stats();
+    d.set_texture(&mut m, 0, TEX_A).unwrap();
+    textured_quad(&mut d, &mut m, (0.0, 0.0, 32.0, 32.0), false, 0xFFFF_FFFF);
+    let mut stats = d.stats();
+    stats.rtt_writebacks -= before.rtt_writebacks;
+    Some((outcome(&mut d, &mut m), stats))
+}
+
+#[test]
+fn guest_stores_of_the_synced_bytes_still_win() {
+    for during in [false, true] {
+        let Some((eager, _)) = exact_stores(false, during) else {
+            return;
+        };
+        let Some((lazy, stats)) = exact_stores(true, during) else {
+            return;
+        };
+        assert_eq!(eager.back, lazy.back, "back buffer, during {during}");
+        assert_eq!(eager.a, lazy.a, "level A, during {during}");
+        assert_eq!(stats.rtt_direct_samples, 1, "during {during}");
+        let row = |r: u32| &lazy.a[(128 * r) as usize..(128 * r + 128) as usize];
+        let drawn = [0xFF, 0x40, 0x20, 0xFF].repeat(32);
+        if during {
+            // Leaving the target wrote the drawn pixels over the stores.
+            assert_eq!(row(4), drawn, "row 4");
+            assert_eq!(row(6), drawn, "row 6");
+        } else {
+            assert_eq!(stats.rtt_writebacks, 1);
+            assert_eq!(row(4), [0x30, 0x5A, 0x30, 0x5A].repeat(32), "row 4");
+            assert_eq!(row(6), [0x30; 128], "row 6");
+            assert_eq!(row(5), drawn, "row 5");
+        }
+        // Eagerly leaving writes the whole level back, undrawn rows too.
+        let row_20 = if during {
+            vec![0x30; 128]
+        } else {
+            [0x30, 0x5A, 0x30, 0x5A].repeat(32)
+        };
+        assert_eq!(row(20), row_20, "row 20");
+    }
+}
+
+/// A 32x16 linear texture whose data starts 8 rows into level A.
+const TEX_ALIAS: u32 = MISC + 0x4400;
+const ALIAS_DATA: u32 = DATA_A + 8 * 128;
+
+fn alias_header(m: &mut SparseMemory) {
+    let size = (SIZE - 1) | (15 << 12) | ((128 / 64 - 1) << 24);
+    for (i, w) in [
+        1 | (4 << 16) | 0x0100_0000,
+        ALIAS_DATA,
+        0,
+        format_word(0x12, false),
+        size,
+    ]
+    .iter()
+    .enumerate()
+    {
+        m.write_u32(TEX_ALIAS + 4 * i as u32, *w).unwrap();
+    }
+}
+
+/// Level A drawn over (rows 0..24 blue), then a texture over its rows
+/// 8..24 used: sampled into the back buffer, or (with `wait`) waited on,
+/// after which guest memory must hold the drawn rows without any further
+/// flush.
+fn offset_alias(lazy: bool, wait: bool) -> Option<(Outcome, Vec<u8>, d3d::Stats)> {
+    let (mut d, mut m) = gpu(lazy)?;
+    alias_header(&mut m);
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+    clear_rect(&mut d, &mut m, [0, 0, 32, 24], 0xFF00_00FF);
+    d.set_render_target(&mut m, back, 0).unwrap();
+    if wait {
+        d.block_on_resource(&mut m, TEX_ALIAS).unwrap();
+    } else {
+        d.set_texture(&mut m, 0, TEX_ALIAS).unwrap();
+        textured_quad(&mut d, &mut m, (0.0, 0.0, 32.0, 16.0), false, 0xFFFF_FFFF);
+    }
+    let stats = d.stats();
+    let seen = m.read_vec(0x8000_0000 | DATA_A, LEN).unwrap();
+    Some((outcome(&mut d, &mut m), seen, stats))
+}
+
+#[test]
+fn a_texture_inside_a_drawn_level_sees_the_drawn_pixels() {
+    for wait in [false, true] {
+        let Some((eager, eager_seen, _)) = offset_alias(false, wait) else {
+            return;
+        };
+        let Some((lazy, lazy_seen, stats)) = offset_alias(true, wait) else {
+            return;
+        };
+        assert_eq!(eager, lazy, "wait {wait}");
+        assert_eq!(
+            eager_seen, lazy_seen,
+            "guest memory at the use, wait {wait}"
+        );
+        assert_eq!(stats.rtt_writebacks, 1, "wait {wait}: {stats:?}");
+        assert_eq!(stats.rtt_direct_samples, 0, "wait {wait}");
+        let row = |r: u32| &lazy_seen[(128 * r) as usize..(128 * r + 4) as usize];
+        assert_eq!(row(8), [0xFF, 0x00, 0x00, 0xFF], "drawn row in memory");
+        assert_eq!(row(28), [0x30; 4], "undrawn row in memory");
+        if !wait {
+            assert!(lazy.back.iter().any(|&b| b != 0), "something drawn");
+        }
+    }
+}
+
+#[test]
+fn waits_on_a_texture_inside_a_level_write_it_back() {
+    let (mut d, mut m, _) = recorded();
+    // Headers over the level's second row, and just past its end.
+    let mut header = |at: u32, data: u32| {
+        let h = d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 3, 64, data);
+        h.write(&mut m, at).unwrap();
+    };
+    let inside = MISC + 0x7300;
+    let after = MISC + 0x7340;
+    header(inside, TEX_DATA + 64);
+    header(after, TEX_DATA + 256);
+    d.block_on_resource(&mut m, after).unwrap();
+    d.resource_busy(&mut m, after).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 0);
+    d.block_on_resource(&mut m, inside).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 1);
 }
 
 /// A draw that samples the level it draws into reads what the level held

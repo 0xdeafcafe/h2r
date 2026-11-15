@@ -412,8 +412,8 @@ const BARRIER_SHADOW: u32 = 0xa0ff_4000;
 /// view, and every d3d entry is wrapped so that
 ///
 /// - on entry, the pages written since the last drain (lifted code, the
-///   interpreter, kernel and HLE copies) go to `Device::note_write`, before
-///   the device reads any resource;
+///   interpreter, kernel and HLE copies) go to
+///   `Device::note_written_pages`, before the device reads any resource;
 /// - nothing is drained on return. The entry is a guest call: runner safe
 ///   points, interrupts and other contexts can store between the entry
 ///   drain and the return, and dropping the pages then would lose those
@@ -448,7 +448,7 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
                 if !dirty.is_empty() {
                     let mut dv = dev.lock().unwrap();
                     for r in dirty {
-                        dv.note_write(r.addr, r.len);
+                        dv.note_written_pages(r.addr, r.len);
                     }
                 }
                 let ret_pc = mem.u32(cpu.esp)?;

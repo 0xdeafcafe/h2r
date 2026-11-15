@@ -586,6 +586,9 @@ pub struct Device<B: Backend> {
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
     rtt_synced: HashMap<u32, Vec<u8>>,
+    /// Exact guest stores into each lazily held level since that match,
+    /// as (offset, length) in the level ([`Device::note_write`]).
+    rtt_stores: HashMap<u32, Vec<(u32, u32)>>,
     /// Lazy render-to-texture is wanted ([`Device::set_rtt_direct`]).
     rtt_direct: bool,
     /// The push-buffer callback being delivered, between
@@ -687,6 +690,7 @@ impl<B: Backend> Device<B> {
             depth_copy: None,
             depth_alias: HashMap::new(),
             rtt_synced: HashMap::new(),
+            rtt_stores: HashMap::new(),
             rtt_direct: true,
             active_callback: None,
             undelivered: None,
@@ -1774,6 +1778,7 @@ impl<B: Backend> Device<B> {
         // A level drawn into keeps its pixels in the parent's texels.
         self.write_back(mem, header)?;
         self.rtt_synced.remove(&header);
+        self.rtt_stores.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
             self.backend
                 .destroy_surface(t.surface)
@@ -1788,6 +1793,7 @@ impl<B: Backend> Device<B> {
         {
             self.write_back(mem, h)?;
             self.rtt_synced.remove(&h);
+            self.rtt_stores.remove(&h);
             let t = self.rtt.remove(&h).expect("listed");
             self.backend
                 .destroy_surface(t.surface)
@@ -1892,9 +1898,22 @@ impl<B: Backend> Device<B> {
         }
     }
 
-    /// Reports a guest store the device did not make (the runtime's write
-    /// barrier; see [`crate::dirty`]).
+    /// Reports a guest store the device did not make, exactly: `len`
+    /// bytes at `addr` were stored (see [`crate::dirty`]). A lazily held
+    /// render-to-texture level takes those bytes from guest memory when
+    /// it is merged, whatever their value.
     pub fn note_write(&mut self, addr: u32, len: u32) {
+        self.tracker.note_write(addr, len);
+        self.note_rtt_store(addr, len);
+    }
+
+    /// Reports pages the guest may have stored into (the runtime's
+    /// page-granular write barrier; may include the device's own stores).
+    /// Uploads are refreshed as for [`note_write`](Self::note_write), but a
+    /// lazily held render-to-texture level can only take the bytes that
+    /// differ from what it last matched: a store of the value memory
+    /// already held there is not seen (`docs/d3d.md`).
+    pub fn note_written_pages(&mut self, addr: u32, len: u32) {
         self.tracker.note_write(addr, len);
     }
 

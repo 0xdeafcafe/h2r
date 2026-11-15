@@ -120,6 +120,10 @@ type Edges = (i64, i64, i64, i64);
 /// rectangle, the pieces.
 type ClipArea = (PixelRect, Vec<PixelRect>);
 
+/// A level's current guest bytes and, per byte, whether a guest store
+/// owns it over the host surface.
+type GuestStores = (Vec<u8>, Vec<bool>);
+
 /// The pieces of `base` (left, top, right, bottom; right and bottom
 /// exclusive) that scissor rectangles `rects` keep: inside any of them, or,
 /// with `exclusive`, outside all of them. The pieces are disjoint and
@@ -523,6 +527,7 @@ impl<B: Backend> Device<B> {
             }
             self.rtt.remove(&header);
             self.rtt_synced.remove(&header);
+            self.rtt_stores.remove(&header);
             self.backend
                 .destroy_surface(old.surface)
                 .map_err(D3dError::Backend)?;
@@ -606,36 +611,70 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// The level's guest bytes if the guest changed them since the host
-    /// surface and memory last matched (by the upload policy, as
-    /// [`refresh_rtt`](Self::refresh_rtt)); `None` if not. A reported write
-    /// that left the bytes as they were (the runtime may report the
-    /// device's own write-backs again) only moves the match forward.
-    fn rtt_guest_changed(
+    /// What the guest stored into a level since its host surface and
+    /// guest memory last matched, as the level's current guest bytes and,
+    /// per byte, whether the guest's store owns it; `None` if nothing.
+    /// Owned: every byte of a store reported exactly
+    /// ([`Device::note_write`]), whatever its value, and every byte that
+    /// differs from the match (a page-granular report,
+    /// [`Device::note_written_pages`], or a change the upload policy
+    /// found). A page report that left the bytes as they were (the runtime
+    /// reports the device's own write-backs again) only moves the match
+    /// forward.
+    fn rtt_guest_stores(
         &mut self,
         mem: &dyn GuestMemory,
         header: u32,
-    ) -> Result<Option<Vec<u8>>, D3dError> {
+    ) -> Result<Option<GuestStores>, D3dError> {
         let t = *self.rtt.get(&header).expect("cached");
         let len = t.len();
+        let stores = self.rtt_stores.get(&header).cloned().unwrap_or_default();
         let written = self.tracker.dirty_since(t.data, len, t.generation);
-        if self.cfg.upload == UploadPolicy::Tracked && !written {
+        if self.cfg.upload == UploadPolicy::Tracked && !written && stores.is_empty() {
             return Ok(None);
         }
         let bytes = mem.read_vec(t.data, len as usize)?;
-        if self.rtt_synced.get(&header) == Some(&bytes) {
+        let synced = self.rtt_synced.get(&header).expect("filled when made");
+        let mut owned: Vec<bool> = bytes.iter().zip(synced).map(|(b, s)| b != s).collect();
+        let changed = owned.contains(&true);
+        for (off, n) in stores {
+            owned[off as usize..(off + n) as usize].fill(true);
+        }
+        if !owned.contains(&true) {
             let generation = self.tracker.generation();
             self.rtt.get_mut(&header).expect("cached").generation = generation;
             return Ok(None);
         }
-        if !written && self.cfg.upload == UploadPolicy::Verify {
+        if changed && !written && self.cfg.upload == UploadPolicy::Verify {
             self.events.push(Event::MissedInvalidation {
                 header,
                 addr: t.data,
                 len,
             });
         }
-        Ok(Some(bytes))
+        Ok(Some((bytes, owned)))
+    }
+
+    /// An exact guest store (`addr`, `len` bytes) into the levels it
+    /// overlaps that hold pixels only on the host (lazily, not the target
+    /// being drawn, whose write-back overwrites the whole level as the
+    /// eager one at the target change does).
+    pub(super) fn note_rtt_store(&mut self, addr: u32, len: u32) {
+        if self.rtt.is_empty() || !self.rtt_lazy() {
+            return;
+        }
+        let (start, end) = (addr as u64, addr as u64 + len as u64);
+        for (h, t) in &self.rtt {
+            let (a, b) = (t.data as u64, t.data as u64 + t.len() as u64);
+            if !t.dirty || *h == self.render_target || end <= a || b <= start {
+                continue;
+            }
+            let (lo, hi) = (start.max(a), end.min(b));
+            self.rtt_stores
+                .entry(*h)
+                .or_default()
+                .push(((lo - a) as u32, (hi - lo) as u32));
+        }
     }
 
     /// A draw samples texture `header`. When its memory is a
@@ -694,6 +733,9 @@ impl<B: Backend> Device<B> {
         {
             return Ok(None);
         }
+        // Another level drawn into over part of these bytes (an offset
+        // alias) goes to memory first, and this one takes it up there.
+        self.write_back_overlapping(mem, h)?;
         self.refresh_rtt(mem, h)?;
         let Some(texture) = self
             .backend
@@ -748,6 +790,7 @@ impl<B: Backend> Device<B> {
         t.generation = generation;
         t.hash = hash;
         self.rtt_synced.insert(header, bytes);
+        self.rtt_stores.remove(&header);
         Ok(())
     }
 
@@ -762,7 +805,7 @@ impl<B: Backend> Device<B> {
     fn refresh_rtt(&mut self, mem: &mut dyn GuestMemory, header: u32) -> Result<(), D3dError> {
         let t = *self.rtt.get(&header).expect("cached");
         if t.dirty {
-            if self.rtt_lazy() && self.rtt_guest_changed(mem, header)?.is_some() {
+            if self.rtt_lazy() && self.rtt_guest_stores(mem, header)?.is_some() {
                 self.write_back(mem, header)?;
             }
             return Ok(());
@@ -842,10 +885,10 @@ impl<B: Backend> Device<B> {
     }
 
     /// Writes one render-to-texture target back into guest memory if it
-    /// was drawn into. Lazily, the guest may have written into the level
-    /// since its pixels went to the host only: where its bytes changed
-    /// from what both last held, they win, and the surface is filled with
-    /// the merged level.
+    /// was drawn into. Lazily, the guest may have stored into the level
+    /// since its pixels went to the host only: the bytes its stores own
+    /// ([`rtt_guest_stores`](Self::rtt_guest_stores)) win, and the surface
+    /// is filled with the merged level.
     pub(super) fn write_back(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -881,17 +924,17 @@ impl<B: Backend> Device<B> {
         }
         bytes.truncate(len);
         let merged = match self.rtt_lazy() {
-            true => self.rtt_guest_changed(mem, header)?,
+            true => self.rtt_guest_stores(mem, header)?,
             false => None,
         };
-        if let Some(guest) = &merged {
-            let synced = self.rtt_synced.get(&header).expect("filled when made");
+        if let Some((guest, owned)) = &merged {
             for (i, b) in bytes.iter_mut().enumerate() {
-                if guest[i] != synced[i] {
+                if owned[i] {
                     *b = guest[i];
                 }
             }
         }
+        self.rtt_stores.remove(&header);
         mem.write(t.data, &bytes)?;
         self.tracker.note_write(t.data, len as u32);
         self.stats.rtt_writebacks += 1;
@@ -955,20 +998,39 @@ impl<B: Backend> Device<B> {
         if self.rtt.is_empty() {
             return Ok(());
         }
-        let data = self
-            .cfg
-            .address_map
-            .to_virtual(mem.read_u32(at(texture, 4)?)?);
+        let (start, end) = self.resource_span(mem, texture)?;
         let headers: Vec<u32> = self
             .rtt
             .iter()
-            .filter(|(h, t)| t.dirty && (**h == texture || t.parent == texture || t.data == data))
+            .filter(|(h, t)| {
+                t.dirty
+                    && (**h == texture
+                        || t.parent == texture
+                        || (start < t.data as u64 + t.len() as u64 && (t.data as u64) < end))
+            })
             .map(|(h, _)| *h)
             .collect();
         for h in headers {
             self.write_back(mem, h)?;
         }
         Ok(())
+    }
+
+    /// The guest memory `resource` reads: a texture's or surface's whole
+    /// layout from `Data`, any other resource's first byte.
+    fn resource_span(&self, mem: &dyn GuestMemory, resource: u32) -> Result<(u64, u64), D3dError> {
+        let pc = PixelContainer::read(mem, resource)?;
+        let start = self.cfg.address_map.to_virtual(pc.resource.data) as u64;
+        let len = match pc.resource.kind() {
+            ResourceType::Texture | ResourceType::Surface => {
+                TextureDesc::from_header(pc.format, pc.size)
+                    .ok()
+                    .and_then(|d| d.layout().ok())
+                    .map_or(1, |l| l.total_size as u64)
+            }
+            _ => 1,
+        };
+        Ok((start, start + len.max(1)))
     }
 
     /// Teardown: writes back every dirty level, then destroys the host
@@ -979,6 +1041,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<(), D3dError> {
         self.flush_render_targets(mem)?;
         self.rtt_synced.clear();
+        self.rtt_stores.clear();
         for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
             self.backend
                 .destroy_surface(t.surface)
@@ -990,11 +1053,26 @@ impl<B: Backend> Device<B> {
     /// The colour target is about to change: eagerly, its pixels go to
     /// guest memory; lazily they stay on the host.
     pub(super) fn leave_target(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
-        if self.rtt_lazy() {
-            return Ok(());
-        }
         let h = self.render_target;
-        self.write_back(mem, h)
+        if !self.rtt_lazy() {
+            return self.write_back(mem, h);
+        }
+        // Eagerly the write-back here would overwrite every guest store
+        // made while the level was the target; lazily the host pixels win
+        // over the same stores when the level is written back. Guest
+        // bytes as they are now become the match, so only stores after
+        // this count as the guest's.
+        let Some(t) = self.rtt.get(&h).copied() else {
+            return Ok(());
+        };
+        if t.dirty {
+            let bytes = mem.read_vec(t.data, t.len() as usize)?;
+            self.rtt_synced.insert(h, bytes);
+            self.rtt_stores.remove(&h);
+            let generation = self.tracker.generation();
+            self.rtt.get_mut(&h).expect("cached").generation = generation;
+        }
+        Ok(())
     }
 
     /// The area a draw may write: its bounding rectangle

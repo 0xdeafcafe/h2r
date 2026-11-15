@@ -127,7 +127,7 @@ fed on the guest's clock, the callback count, a monotonic clock and
   (or `GfxBackend` with `H2_BOOT_GFX`), with `UploadPolicy::Tracked`.
   The write barrier subscribes to the runtime's write watch over all of
   RAM and wraps every d3d entry: on entry, `take_dirty` goes to
-  `Device::note_write`. Nothing is drained on return: other contexts can
+  `Device::note_written_pages`. Nothing is drained on return: other contexts can
   store while the call is in flight, so the device's own stores come back
   to it at the next entry instead.
 - **`dsound_glue.rs`**: `dsound::register`. Completion events go to
