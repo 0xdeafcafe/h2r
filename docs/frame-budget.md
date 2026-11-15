@@ -12,6 +12,11 @@ shared: load average 35-67 during the runs, from other lanes' builds and
 benches. Expect every ms to be lower on a quiet machine. The shares and
 the hitch causes carry over.
 
+The current numbers are in [Re-measured on master 1a5aa8d
+(2026-11-15)](#re-measured-on-master-1a5aa8d-2026-11-15) below: 14.8 fps,
+no compile hitch with a warm pipeline cache, and a cost that grows by
+about 0.12 ms per draw.
+
 ## What "gameplay" is here
 
 The smallest level reachable today is The Heretic (`00a_introduction`).
@@ -256,6 +261,170 @@ Not needed on this evidence:
   handoff is already a 3-slot mailbox that never blocks the game.
   A late frame costs its own lateness, not a whole extra vblank. Revisit
   if a fixed-vblank pacing mode is added.
+
+## Re-measured on master 1a5aa8d (2026-11-15)
+
+Same window (presents 4220-4520), input and command as above, with the
+pipeline cache pointed at a fresh scratch file (`H2_PIPELINE_CACHE`).
+Everything that was an opt-in above is now the default: merged passes,
+FASTMEM, x87-native, the access counter and the guarded FYL2X/F2XM1
+fast path. Dylib emitted from cae8a4a. 1a5aa8d changes only d3d, gfx and
+shaders, so the generated code is the same, and the dylib's stamp
+matched. Release `h2` built at each commit with `--features perf`. The
+schedule is identical in every run (56,572 slices, 94,097 preemptions,
+1.45 M accesses and 306 draws a frame), so the frames compare one for
+one. Load is the 1-minute load average while the window ran (the last
+~20 s of each run).
+
+| run | commit | load | fps | p50 / p90 / p99 / max ms | guest CPU ms/frame | encode / submit / gpu-wait |
+|---|---|---|---|---|---|---|
+| previous: old defaults (above) | 9a39ed7 | 35-67 | 8.42 | 112.0 / 131.5 / 195.9 / 808.3 | 98.4 | 13.6 / 2.6 / 4.0 |
+| previous: all opt-ins (above) | 9a39ed7 | ~10 | 13.31 | 71.6 / 78.9 / 81.5 / 721.1 | 58.1 | 12.5 / 2.1 / 2.2 |
+| defaults, cold pipeline cache | 1a5aa8d | 9-11 | 14.39 | 64.6 / 80.4 / 85.8 / 469.9 | 44.6 | 11.8 / 7.2 / 5.8 |
+| defaults, warm pipeline cache | 1a5aa8d | 3-4 | **14.80** | 64.8 / 78.0 / 82.1 / **83.3** | 44.4 | 10.1 / 7.1 / 5.8 |
+| defaults, cold cache | cae8a4a | 3-4 | 14.76 | 63.1 / 77.8 / 86.8 / 464.7 | 43.7 | 11.2 / 6.9 / 5.8 |
+| defaults, warm cache | cae8a4a | 7 | 14.48 | 65.6 / 80.4 / 87.6 / 90.6 | 45.1 | 10.5 / 7.4 / 5.9 |
+| warm cache + `H2_RENDER_THREAD=1` | cae8a4a | 7-8 | **15.79** | **60.4** / 71.7 / 90.3 / 110.7 | ~47 (63.1 minus ~16 of waits) | moved to `d3d-render` |
+| warm cache + `H2_RENDER_THREAD=1` | 1a5aa8d | 15-40 | 10.31 | 84.4 / 141.1 / 229.9 / 271.1 | - | loaded, not comparable |
+| warm cache + `H2_RENDER_THREAD=1` | 1a5aa8d | 22-65 | 12.53 | 59.6 / 100.7 / 508.6 / 1008.4 | - | loaded, not comparable |
+
+Guest CPU is frame stats' `cpu` phase (game code, runtime, kernel, HLE).
+With the render thread `cpu` also holds the game thread's waits for the
+render thread; the sampler puts those at ~16 ms a frame, which is
+subtracted here. Both 1a5aa8d render-thread runs met other lanes' builds
+(load up to 65), so the cae8a4a run stands for the render thread: its
+code did not change between the two commits.
+
+- **+11% over the opt-in run, +76% over the old defaults.** p50 drops
+  from 71.6 to 64.8 ms. Guest CPU drops from 58.1 to 44.4 ms a frame,
+  almost all of it x87: the guarded transcendental fast path takes x87
+  from ~15 ms to 2.6 ms a frame. Some of that comes back on the GPU
+  side: `submit` is 7.1 ms against 2.1 and `gpu-wait` 5.8 against 2.2.
+  `encode + submit + gpu-wait` is 23 ms against 16.8. Not bisected. The
+  likely cause is the pipeline-compile and recording changes that came
+  in after 9a39ed7 (see "Per-draw cost" below: the time is now in
+  wgpu-core's `command_encoder_finish`, which runs at submit).
+- **The warm pipeline cache removes the compile stall.** Cold, frame
+  4329 still compiles 2-3 pipelines on the game thread: 465-470 ms,
+  416 ms of it `encode`. The compile workers bring that down from 665 ms
+  but do not remove it. Warm, no frame waits for a pipeline
+  (`pipelines` 0 in all 301 frames) and the worst frame is 83 ms, a
+  normal 388-draw frame. The file held 581 entries after one run.
+- **No frame is under 33.3 ms.** The fastest is 58 ms with the sync
+  backend and 55 ms with the render thread.
+- **W-buffer fix (1a5aa8d): no measurable GPU cost here.** 235 of the
+  275 programs in the cache are W-buffered and now write `frag_depth`,
+  which turns off early depth rejection (and hidden-surface removal on
+  Apple GPUs) for those draws. Warm, cae8a4a against 1a5aa8d: `gpu-wait`
+  5.89 against 5.77 ms, `surface readback` (which includes waiting for
+  the GPU to finish the frame's draws) 5.52 against 5.41 ms, and its
+  slope 26.9 against 25.4 us per draw. This scene is bound by CPU and
+  round trips, not by fragment work, so the GPU has slack to absorb it.
+  Recheck in a GPU-bound open view: there it could show, and it scales
+  with overdraw, not draw count.
+
+### The render thread in a level
+
+It worked. The first in-level run of `H2_RENDER_THREAD=1` stopped
+nowhere, with no judge mismatch or backend error in three runs. The
+schedule matched the synchronous runs exactly, and the frame-4215
+screenshot was byte-identical to the synchronous run's, on both commits.
+
+It gained 5 ms of p50 (65.6 to 60.4 ms, 14.48 to 15.79 fps at the same
+load). That is less than the ~17 ms of encode, record and submit it
+takes off the game thread, because the guest still waits for the render
+thread at every read-back. `H2_RENDER_THREAD_STATS` counts 32,479 waits
+over the run, 65 s of 259 s. In the window the sampler puts the game
+thread's waits at 15.8 ms a frame: `read_surface` 9.6, `read_depth` 4.6,
+`read_pixel_count` 1.6. Each one drains everything queued before it,
+then a GPU round trip. A further 2.2 ms is the handoff itself (cloning
+stream bytes into the queue in `ThreadedBackend::draw`). The tail was
+worse, p99 90 and max 111 against 88 and 91, at a load of 8: the render
+thread competes for cores with the game thread and the compile workers.
+
+### Fixed cost and per-draw cost
+
+The user's report on master: 18-30 fps on the menu, about 17 fps in
+game, worst looking over a large open space (multiplayer). That points
+at a cost that grows with what is on screen. The Heretic window has two
+kinds of shot, which is enough to fit the slope: 192 frames at 266-280
+draws (29 submits, 4 readbacks) and 69 frames at 380-392 draws
+(21 submits, 3 readbacks), plus a few in between. A least-squares fit
+of each frame's time against its draw count (warm, 1a5aa8d, 299 frames):
+
+| cost | fixed ms | per draw | r | at 306 draws | at 600 draws |
+|---|---|---|---|---|---|
+| **whole frame (wall)** | **32.0** | **116 us** | 0.92 | 67.5 | ~102 |
+| guest `slice` (game code: culling, building the push buffer) | 27.6 | 25.6 us | 0.68 | 35.5 | 43 |
+| `queue submit` (wgpu-core `command_encoder_finish` and Metal commit) | -4.6 | 38.3 us | 0.97 | 7.1 | 18 |
+| `surface readback` (drain, then wait for the GPU to finish the draws so far) | -2.4 | 25.4 us | 0.98 | 5.4 | 13 |
+| `hle call` (D3D entry wrappers, per-draw entry) | 4.0 | 14.6 us | 0.88 | 8.5 | 13 |
+| `draw` (record into the pending pass, vertex repack) | -0.5 | 13.1 us | 0.93 | 3.5 | 7.4 |
+| `shader prepare` | 0.4 | 2.8 us | 0.92 | 1.2 | 2.1 |
+| `surface write`, `flush pass` | ~6 | ~0 | - | 4.8 | ~5 |
+| guest accesses | 1.12 M | 1,090 per draw | 0.97 | 1.45 M | 1.77 M |
+
+`queue submit` does not follow the submit count (r = -0.95: the
+388-draw shots have fewer, bigger passes). It follows the draws: wgpu
+encodes the recorded passes into Metal at `CommandEncoder::finish`, so
+its cost is per draw. With the render thread the game thread's slope is
+about the same, 108 us per draw (30.3 ms fixed, r = 0.79), because the
+read-backs make it wait for the render thread's per-draw work anyway.
+
+So a frame is **~32 ms fixed plus ~0.12 ms per draw**. The fixed part
+alone is the whole 33 ms budget. Each extra 100 draws costs ~12 ms,
+~40% of it in wgpu and Metal on the CPU, ~20% the GPU itself (as seen
+through read-backs), ~20% the game's own work and ~12% the D3D wrappers.
+Draws, accesses and passes are the counters that move. Texture uploads
+stay at one a frame and readbacks at 3-4, whatever the shot.
+
+### Budget (warm cache, 1a5aa8d, sync backend)
+
+Sampler shares on the game thread, scaled to the 67.5 ms mean frame,
+ranked:
+
+| # | cost | ms/frame | % | grows with draws |
+|---|---|---|---|---|
+| 1 | Guest code (generated C, own time; flat, top function 2.9%) | 14.9 | 22.0% | partly |
+| 2 | GPU round trips: `read_surface` 8.8 (of which ~3.5 is flushing and encoding the pending pass, ~4.6 the `poll` wait), `read_depth` 2.1 (CPU depth decode included), pixel counters 1.4 | 12.3 | 18.2% | yes |
+| 3 | wgpu and Metal per draw: `record` 3.1, submit and wgpu encode 2.6, shader prepare 1.3, other draw 0.9 | 7.9 | 11.7% | yes |
+| 4 | D3D HLE: entry wrappers, state resolve, `WriteTracker::dirty_since` (SipHash), stream copies out of guest memory (`read_vec`) | 6.0 | 8.9% | yes |
+| 5 | Dispatch, runner, budget charge (`handler::execute`, `run_inner`, resolve, interrupts) | 5.0 | 7.5% | no |
+| 6 | Guest block copies (`h2_fast_copy` and the memmove under it, `rep movs`) | 3.9 | 5.8% | partly |
+| 7 | `write_surface`: CPU writes into render targets, re-uploaded | 3.9 | 5.7% | no |
+| 8 | SSE soft-float helpers (`h2s_addps`, `round_pack`, `mul1`, ...) | 3.3 | 4.9% | partly |
+| 9 | x87 (was ~15) | 2.6 | 3.9% | no |
+| 10 | Kernel, XAPI, scheduler, DirectSound | 2.1 | 3.1% | no |
+| 11 | Fallback interpreter (unread switch targets) | 2.0 | 3.0% | no |
+| 12 | Guest memory accessors (was ~46 before FASTMEM) | 1.5 | 2.2% | no |
+| 13 | Boot trace file writes (`h2 run` only, not `h2 play`) | 0.9 | 1.3% | no |
+| 14 | Present, snapshots, uploads, clears | 1.4 | 2.0% | no |
+
+Guest-side rows (1, 5, 6, 8-12) are 35 ms. Graphics rows (2-4, 7, 14)
+are 31 ms. Unlike the menu, x87 and the memory accessors are no longer
+in the top half.
+
+### Next targets
+
+The open-space case is the per-draw slope. At 600 draws the frame is
+~100 ms, and 30 fps needs the per-draw cost on the game thread far below
+the 116 us measured. The three targets that move it most, in order:
+
+| # | target | owner | steady saving here (306 draws) | at 600 draws | confidence |
+|---|---|---|---|---|---|
+| 1 | **Take the read-backs off the frame's critical path, then turn the render thread on.** 3-4 `read_surface`/`read_depth` and the pixel counters drain the queue and wait for the GPU every frame. Keep render-to-texture and depth-alias results on the GPU when only the GPU samples them, and write a level back to guest memory only when the guest's CPU really touches it (a write-watch or fault on those pages, the way FASTMEM tracks writes). Decode depth on the GPU. Answer pixel counts from a report that has already landed, where the guest polls rather than blocks. With nothing to wait for, the render thread overlaps all of the wgpu work. | d3d, gfx-perf | **-17 to -20** sync and render thread together (12.3 of round trips and ~8 of per-draw wgpu off the game thread): ~65 -> ~45-48 ms p50 | game-thread slope from ~110 to ~45 us per draw (guest plus HLE only) | medium: the waits are measured; the hard part is proving which write-backs the guest never reads on the CPU |
+| 2 | **Cut wgpu's per-draw CPU cost** (38 us per draw in `queue submit`, 13 in `record`, 3 in prepare). Persistent mapped rings instead of a `queue.write_buffer` per flush, which shows as `madvise` and memmove churn. Bind groups and uniforms cached across frames. Fewer pipeline and state switches per merged pass. Find what came in after 9a39ed7 that took `submit` from 2.1 to 7.1 ms. | gfx-perf | -5 to -8 on the sync path. With the render thread, this bounds its throughput rather than the game thread | -15 to -25 (54 -> ~25 us per draw) | medium: the time is in wgpu-core's `command_encoder_finish` and Metal's encoder setup |
+| 3 | **Guest per-draw and fixed work:** native SSE scalar and packed ops instead of the `h2s_*` soft-float helpers (3.3 ms; the x87-native pattern), `h2_fast_copy` as a host memcpy on FASTMEM RAM (3.9 ms), and in the D3D per-draw entry, FxHash or a generation counter instead of SipHash in `dirty_since`, and stream copies without the `read_vec` allocation (6.0 ms). | codegen-opt, runtime, d3d | -7 to -10 | -10 to -14 (the guest and HLE slope is ~40 us per draw) | medium for SSE and copies (the same pattern as x87 and FASTMEM), low for HLE |
+
+From 64.8 ms p50: -18, -6, -8 is **~33 ms**. That is at the 30 fps
+line for this scene, with no margin for host noise or a wider view. The
+fixed 32 ms still has to come down below ~20 ms before a 600-draw view
+fits. That is guest code and dispatch (~20 ms, the flat profile of row 1
+and 5), the previous section's item 6.
+
+Not new, still true: the host-contention tail is the p99 (the loaded
+render-thread runs reached p99 509 ms at load 65), and with the
+render thread the game thread and the render thread compete for cores.
 
 ## Reading these numbers on another machine
 
