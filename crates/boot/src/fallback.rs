@@ -94,9 +94,12 @@ fn state() -> &'static Mutex<State> {
         let t = std::time::Instant::now();
         let x: &'static xbe::Xbe<'static> = Box::leak(Box::new(xbe::Xbe::parse(bytes).unwrap()));
         let mut analysis = analyze::analyze(x).unwrap();
-        // The interpreter's own copy: unread jump-table targets become
-        // entries so the lazy lifter can reach them.
-        for &addr in COPY_TARGETS.get().map_or(&[][..], Vec::as_slice) {
+        // The interpreter's own copy: with the stopgap, unread jump-table
+        // targets become entries so the lazy lifter can reach them.
+        let unread = UNREAD_ENABLED
+            .load(std::sync::atomic::Ordering::SeqCst)
+            .then(|| UNREAD.get_or_init(|| unread_targets(bytes, &analysis)));
+        for &addr in unread.map_or(&[][..], |u| u.all.as_slice()) {
             analysis.functions.entry(addr).or_insert(analyze::Function {
                 start: addr,
                 source: analyze::Source::CodeRef,
@@ -271,7 +274,7 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
                         let f = mem.1.take();
                         break Err(format!("memory fault at {pc:#x}: {f:x?}"));
                     }
-                    Err(interp::Exit::UnknownTarget { target, .. }) if is_copy_target(target) => {
+                    Err(interp::Exit::UnknownTarget { pc, target }) if unread_allowed(pc, target) => {
                         icpu.eip = target;
                         continue;
                     }
@@ -352,9 +355,9 @@ pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, s
     // SAFETY: the handler has returned; the pair is ours again.
     let (cpu, ctx) = unsafe { (&mut *cpu, &mut *ctx.cast::<ExecCtx>()) };
     if let Some(target) = crate::shim::take_unknown_switch(ctx.thread_id, cpu.eip)
-        && is_copy_target(target)
+        && unread_allowed(cpu.eip, target)
     {
-        // A CRT copy switch generated with too few cases: take the jump.
+        // A switch generated with too few cases: take the jump.
         cpu.eip = target;
         return run(cpu, ctx);
     }
@@ -370,9 +373,18 @@ pub const CRT_COPY: u32 = 0x0032_0890;
 /// How far past [`CRT_COPY`] its code and tables reach.
 const CRT_COPY_LEN: u32 = 0x400;
 
-/// The CRT copy's jump-table targets, set by [`install_unread_targets`]
-/// (a boot stopgap, so absent with `--no-stopgaps`).
-static COPY_TARGETS: OnceLock<Vec<u32>> = OnceLock::new();
+/// Jump-table targets the analyzer did not read; see [`unread_targets`].
+pub struct Unread {
+    /// `jmp` site to the targets its table holds.
+    pub by_site: HashMap<u32, Vec<u32>>,
+    /// Every target, sorted.
+    pub all: Vec<u32>,
+}
+
+static UNREAD: OnceLock<Unread> = OnceLock::new();
+/// Set by [`install_unread_targets`] (the stopgap) before the interpreter's
+/// analysis is built.
+static UNREAD_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Every jump-table target of the CRT copy routine, read from the image.
 ///
@@ -380,59 +392,101 @@ static COPY_TARGETS: OnceLock<Vec<u32>> = OnceLock::new();
 /// or negated (the backward dword tail indexes below its base), not
 /// bounded by a cmp/ja guard. The analyzer reads such tables as unbounded,
 /// stops at slot 0 (which overlaps code) or misses the negative slots, and
-/// emits the switch with too few cases (`crates/analyze` `jump_table`;
-/// owner: analyze). Here every `jmp [r*4+disp32]` in the routine names a
-/// table, and the 8 dwords on either side of it that point back into the
-/// routine are its targets.
+/// emits the switch with too few cases. Every `jmp [r*4+disp32]` in the
+/// routine names a table, and the 8 dwords on either side of it that point
+/// back into the routine are its targets.
 pub fn copy_targets(xbe_bytes: &[u8]) -> Vec<u32> {
-    let Ok(x) = xbe::Xbe::parse(xbe_bytes) else { return Vec::new() };
-    let read = |va: u32, n: u32| -> Option<Vec<u8>> { x.bytes_at(va, n as usize).ok().map(<[u8]>::to_vec) };
+    copy_sites(xbe_bytes).into_values().flatten().collect::<std::collections::BTreeSet<_>>().into_iter().collect()
+}
+
+fn copy_sites(xbe_bytes: &[u8]) -> HashMap<u32, Vec<u32>> {
+    let mut out = HashMap::new();
+    let Ok(x) = xbe::Xbe::parse(xbe_bytes) else { return out };
     let (lo, hi) = (CRT_COPY, CRT_COPY + CRT_COPY_LEN);
-    let Some(code) = read(lo, CRT_COPY_LEN) else { return Vec::new() };
-    let inside = |v: u32| (lo..hi).contains(&v);
-    let mut out = std::collections::BTreeSet::new();
+    let Ok(code) = x.bytes_at(lo, CRT_COPY_LEN as usize) else { return out };
+    let inside = |v: u32| (lo..hi).contains(&v) && v != lo;
     for i in 0..code.len().saturating_sub(7) {
-        // FF /4 with a SIB of scale 4 and no base: jmp [index*4+disp32].
-        if code[i] != 0xff || code[i + 1] != 0x24 || code[i + 2] & 0xc7 != 0x85 {
+        let Some(table) = table_of(&code[i..]) else { continue };
+        if !(lo..hi).contains(&table) {
             continue;
         }
-        let table = u32::from_le_bytes(code[i + 3..i + 7].try_into().unwrap());
-        if !inside(table) {
-            continue;
-        }
-        for k in -8i32..8 {
-            let at = table.wrapping_add_signed(4 * k);
-            if let Some(b) = read(at, 4) {
-                let v = u32::from_le_bytes(b.try_into().unwrap());
-                if inside(v) && v != lo {
-                    out.insert(v);
-                }
+        let targets: Vec<u32> = (-8i32..8)
+            .filter_map(|k| x.read_u32(table.wrapping_add_signed(4 * k)).ok())
+            .filter(|&v| inside(v))
+            .collect();
+        out.insert(lo + i as u32, targets);
+    }
+    out
+}
+
+/// The table of a `jmp [index*4+disp32]` (FF /4, SIB scale 4, no base).
+fn table_of(code: &[u8]) -> Option<u32> {
+    (code.len() >= 7 && code[0] == 0xff && code[1] == 0x24 && code[2] & 0xc7 == 0x85)
+        .then(|| u32::from_le_bytes(code[3..7].try_into().unwrap()))
+}
+
+/// Jump-table targets the analyzer emitted no case for:
+///
+/// - the CRT copy routine's ([`copy_targets`]);
+/// - every switch the analyzer found unguarded (`SwitchKind::Unbounded`):
+///   its table is read from the image until an entry is neither zero nor
+///   code in the site's section, skipping zeros. The analyzer stops at the
+///   first zero, which some tables use for impossible cases (`0x336f0`,
+///   indexed by a caller-checked value). Up to 256 entries.
+///
+/// Owner: analyze (`jump_table`).
+pub fn unread_targets(xbe_bytes: &[u8], analysis: &analyze::Analysis) -> Unread {
+    let mut by_site = copy_sites(xbe_bytes);
+    if let Ok(x) = xbe::Xbe::parse(xbe_bytes) {
+        for (&site, kind) in &analysis.switches {
+            if *kind != analyze::SwitchKind::Unbounded || by_site.contains_key(&site) {
+                continue;
             }
+            let (Some(sec), Ok(code)) = (x.section_containing(site), x.bytes_at(site, 7)) else { continue };
+            let Some(table) = table_of(code) else { continue };
+            let mut targets = Vec::new();
+            for k in 0..256u32 {
+                let Ok(v) = x.read_u32(table.wrapping_add(4 * k)) else { break };
+                if v == 0 {
+                    continue;
+                }
+                if !sec.contains(v) {
+                    break;
+                }
+                targets.push(v);
+            }
+            by_site.insert(site, targets);
         }
     }
-    out.into_iter().collect()
+    let all = by_site.values().flatten().copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    Unread { by_site, all }
 }
 
-fn is_copy_target(target: u32) -> bool {
-    COPY_TARGETS.get().is_some_and(|t| t.binary_search(&target).is_ok())
+/// Whether the switch at `site` may continue at `target` (a target its
+/// table holds; never an arbitrary address).
+fn unread_allowed(site: u32, target: u32) -> bool {
+    UNREAD.get().and_then(|u| u.by_site.get(&site)).is_some_and(|t| t.contains(&target))
 }
 
-/// Boot stopgap: register every CRT copy table target that has no
-/// generated entry or resume as a fallback entry, and let the interpreter
-/// lift from them. Generated code and the interpreter both stop on such a
-/// switch with an unknown target; [`trampoline`] and [`run`] continue at the
-/// target when it is one of these (and only then). Returns how many were
-/// registered. Retire when analyze sizes these tables.
+/// Boot stopgap: let the interpreter lift from every [`unread_targets`]
+/// target, and register each that has no generated entry or resume as a
+/// fallback entry. A switch that stops with an unknown target, in
+/// generated code or the interpreter, continues at it when the site's
+/// table holds it ([`trampoline`], [`run`]). Returns how many were
+/// registered. Retire when analyze reads these tables. Builds the
+/// interpreter's analysis now.
 pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
-    let targets = COPY_TARGETS.get_or_init(|| copy_targets(XBE.get().copied().unwrap_or(&[])));
+    UNREAD_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = state();
+    let Some(unread) = UNREAD.get() else { return 0 };
     let tables = TABLES.get().unwrap();
     let mut n = 0;
     rt.edit_dispatch(|d| {
-        for &addr in targets {
+        for &addr in &unread.all {
             if tables.entries.contains(&addr) || tables.resumes.contains(&addr) {
                 continue;
             }
-            d.register_override(addr, "boot:fallback from a CRT copy table target", move |cpu, ctx, _| {
+            d.register_override(addr, "boot:fallback from an unread jump-table target", move |cpu, ctx, _| {
                 cpu.eip = addr;
                 Ok(run(cpu, ctx))
             });
