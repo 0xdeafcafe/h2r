@@ -25,6 +25,22 @@ use std::{
 pub const CDROM_DEVICE: &str = "\\Device\\CdRom0";
 pub const DATA_DEVICE: &str = "\\Device\\Harddisk0\\Partition1";
 
+/// Directory under a title's `T:` that holds installed content (downloaded or
+/// installed from a disc), one subdirectory per offer.
+pub const CONTENT_DIR: &str = "$c";
+
+/// Name of a content package's directory: the 64-bit offer ID as 16 lowercase
+/// hex digits, the `%016I64x` the title formats it with.
+pub fn content_dir_name(offer_id: u64) -> String {
+    format!("{offer_id:016x}")
+}
+
+/// An offer ID for `title_id`: the title ID in the high half, the title's own
+/// content number in the low half.
+pub fn offer_id(title_id: u32, content: u32) -> u64 {
+    (u64::from(title_id) << 32) | u64::from(content)
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub data_root: PathBuf,
@@ -39,6 +55,21 @@ impl Config {
             title_id,
             utility_partition: 5,
         }
+    }
+    /// Host directory behind `T:`: `<data_root>/disk/Partition1/TDATA/<TITLE>`.
+    pub fn title_data_dir(&self) -> PathBuf {
+        self.data_root
+            .join("disk")
+            .join("Partition1")
+            .join("TDATA")
+            .join(format!("{:08X}", self.title_id))
+    }
+    /// Host directory of one installed content package, `T:\$c\<offer id>`.
+    /// See [`content_dir_name`] and docs/map-pack.md.
+    pub fn content_dir(&self, offer_id: u64) -> PathBuf {
+        self.title_data_dir()
+            .join(CONTENT_DIR)
+            .join(content_dir_name(offer_id))
     }
     pub fn for_title(title_id: u32) -> Result<Self> {
         let home = std::env::var_os("HOME")

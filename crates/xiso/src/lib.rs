@@ -151,6 +151,11 @@ impl<R: Read + Seek> Xiso<R> {
             let len = u32::from_le_bytes(raw[8..12].try_into().unwrap());
             let attr = raw[12];
             let name_len = raw[13] as usize;
+            if name_len == 0 {
+                // extract-xiso writes an empty directory as one zero-filled
+                // sector: a single record with no name. It names nothing.
+                continue;
+            }
             let name = table
                 .get(at + 14..at + 14 + name_len)
                 .ok_or(Error::CorruptDirectory(sector))?;
@@ -267,6 +272,25 @@ mod tests {
         assert_eq!(x.partition_offset(), pad);
         let e = x.find("/b").unwrap();
         assert_eq!(x.read(&e).unwrap(), b"bb");
+    }
+
+    /// extract-xiso writes an empty directory as a zero-filled sector. Its
+    /// one record has no name and must not show up as an entry (it used to
+    /// list as `/e/`, which `h2 extract` then refused as an unsafe path).
+    #[test]
+    fn zero_filled_directory_is_empty() {
+        let mut img = image();
+        let e = dirent(0, 0, 39, SECTOR as u32, ATTR_DIRECTORY, "e");
+        // Hang `e` off `c` as its right child; sector 39 stays all zeros.
+        let c_rec = 33 * 2048 + (dirent(0, 0, 0, 0, 0, "b").len() + dirent(0, 0, 0, 0, 0, "a").len());
+        let e_off = 1500usize;
+        img[c_rec + 2..c_rec + 4].copy_from_slice(&((e_off / 4) as u16).to_le_bytes());
+        img[33 * 2048 + e_off..33 * 2048 + e_off + e.len()].copy_from_slice(&e);
+        let mut x = Xiso::open(Cursor::new(img)).unwrap();
+        let entries = x.entries().unwrap();
+        let paths: Vec<_> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(paths, ["/a", "/b", "/c", "/c/d", "/e"]);
+        assert!(entries[4].is_dir);
     }
 
     #[test]

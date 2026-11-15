@@ -215,6 +215,7 @@ Running the game:
 - [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
 - [settings-menu.md](docs/settings-menu.md): design for an expanded in-game settings menu for the opt-in enhancements (not built)
 - [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
+- [map-pack.md](docs/map-pack.md): the Multiplayer Map Pack disc: its content packages, the title update it carries, and `h2 import-mappack` (the maps need the update, which doesn't run yet)
 - [kernel-imports.md](docs/kernel-imports.md): work list of every kernel import Halo 2 uses
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
 - [xapi.md](docs/xapi.md): guest XAPI service replacements (`crates/xapi`)

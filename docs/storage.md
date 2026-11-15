@@ -42,7 +42,11 @@ title ID is `0x4D530064`.
 | Y: | `\Device\Harddisk0\Partition4` | `disk/Partition4` |
 | Z: | `\Device\Harddisk0\Partition5` by default | `disk/Partition5` |
 
-The title suffix follows `Config.title_id`. X/Y and the default Z mapping
+The title suffix follows `Config.title_id`. Installed content (downloaded,
+or installed from a disc such as the Map Pack, [map-pack.md](map-pack.md))
+lives under `T:\$c\<offer ID as 16 hex digits>\`. `Config::title_data_dir`
+and `Config::content_dir(offer)` give the host paths, and `vfs::offer_id`
+builds an offer ID from a title ID and content number. X/Y and the default Z mapping
 are this runtime's reference layout. A retail title's utility partition is
 selected by XAPI; it is not permanently guaranteed to be Partition5. Select
 3, 4 or 5 with `Config.utility_partition`, or delete/create the Z: link later.
