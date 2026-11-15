@@ -568,7 +568,7 @@ this document: the previous text said `true` while the crate had `false`.
   significand at RN. The series stop below 2^-520 relative, and the sign of
   the omitted tail feeds the rounding, so PE and C1 are right whenever the
   rounding is.
-  The optional `x87/fast-trans` feature first attempts guarded 128-bit
+  The default `x87/fast-trans` feature first attempts guarded 128-bit
   evaluation for FYL2X and F2XM1. Its domains, per-function error
   bounds and value/PE/C1 acceptance test are documented in
   [x87-transcendentals.md](x87-transcendentals.md). Other functions and

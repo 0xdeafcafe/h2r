@@ -6,7 +6,7 @@ The generated C runs guarded x87 arithmetic in native binary64. It is
 run: the C flags participate in the object-cache keys and the boot dylib
 stamp. Values other than `0` and `1` are rejected.
 
-The separate `x87/fast-trans` Cargo feature accelerates guarded integer
+The separate `x87/fast-trans` Cargo feature (on by default) accelerates guarded integer
 log/exp evaluation; see [x87-transcendentals.md](x87-transcendentals.md).
 
 ```sh

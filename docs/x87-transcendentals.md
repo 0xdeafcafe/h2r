@@ -1,7 +1,9 @@
 # Guarded FYL2X and F2XM1
 
-`x87/fast-trans` opts into a 128-bit integer first pass for **FYL2X and
-F2XM1 only**. It is off by default and independent of `H2_X87_NATIVE`.
+`x87/fast-trans` adds a 128-bit integer first pass for **FYL2X and
+F2XM1 only**. It is a default feature of the `x87` crate (build with
+`--no-default-features --features abi` to drop it) and independent of
+`H2_X87_NATIVE`.
 Other transcendentals use the original helpers. An accepted result has
 exactly the same ext80 bytes and flags as the 512-bit helper; ambiguous
 rounding and operands outside the guards use that helper.
