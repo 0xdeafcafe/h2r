@@ -9,7 +9,7 @@
 
 mod memory;
 pub use memory::{FastAccess, MemoryGuard, h2abi_v1_fast_acquire, h2abi_v1_fast_release};
-pub(crate) use memory::{Memory, MemoryShared, sync_accesses};
+pub(crate) use memory::{Memory, MemoryShared, OwnedFastAccess, sync_accesses};
 
 use crate::{
     CpuAbi, Dispatch, Event, ExecCtx, GuestFn, TransferAbi,

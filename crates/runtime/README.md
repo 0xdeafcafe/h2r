@@ -102,6 +102,15 @@ subscribers before exposing Guest. Thus aliases, watch changes and dirty
 queries see the same page-level barrier semantics. The runner can use the
 same gated table for execute checks, falling back for faults or contention.
 
+The invocation view is owned by a raw-pointer allocation, created once with
+`Box::into_raw` and reclaimed only when the context drops. Generated C keeps
+that same pointer across slow accessor callbacks. Rust updates counts and
+budgets through raw field pointers derived from it, never by reborrowing an
+owning `Box<FastAccess>`. The regression
+`ffi::memory::tests::retained_fast_view_survives_slow_callbacks` is Rust-only
+and can run under Miri; it crosses a page boundary and executes an atomic
+between simulated inline accesses.
+
 Successful inline accesses accumulate in the context view. C sets the slice
 wake bit on the exact access that exhausts the budget; slow helpers and every
 handler exit settle the count into the context. No lock spans a handler,

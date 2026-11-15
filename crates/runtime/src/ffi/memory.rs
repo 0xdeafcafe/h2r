@@ -3,6 +3,7 @@
 use crate::{ExecCtx, Guest};
 use std::cell::UnsafeCell;
 use std::ops::{Deref, DerefMut};
+use std::ptr::NonNull;
 use std::sync::{
     Mutex, MutexGuard,
     atomic::{AtomicBool, AtomicU32, Ordering},
@@ -180,8 +181,8 @@ impl Drop for MemoryGuard<'_> {
 #[repr(C)]
 pub struct FastAccess {
     memory: *const MemoryShared,
-    pub(crate) accesses: u64,
-    pub(crate) budget: u64,
+    accesses: u64,
+    budget: u64,
     preempt: *const AtomicU32,
 }
 // SAFETY: pointers refer to allocations owned by this context's Runtime and
@@ -190,11 +191,66 @@ pub struct FastAccess {
 unsafe impl Send for FastAccess {}
 unsafe impl Sync for FastAccess {}
 
+/// Owns the allocation without reborrowing it through Box while generated C
+/// retains its pointer. All accesses (including callbacks) derive from `ptr`.
+/// Box is reconstructed only at destruction, after the invocation has ended.
+pub(crate) struct OwnedFastAccess {
+    ptr: NonNull<FastAccess>,
+}
+impl OwnedFastAccess {
+    fn new(view: FastAccess) -> Self {
+        Self {
+            ptr: NonNull::new(Box::into_raw(Box::new(view))).expect("Box is non-null"),
+        }
+    }
+    fn as_ptr(&self) -> *mut FastAccess {
+        self.ptr.as_ptr()
+    }
+    fn take_accesses(&mut self) -> u64 {
+        // SAFETY: the context is exclusively borrowed during a callback; C is
+        // suspended. Raw field accesses preserve the retained pointer's provenance.
+        unsafe {
+            let field = &raw mut (*self.as_ptr()).accesses;
+            let count = field.read();
+            field.write(0);
+            count
+        }
+    }
+    pub(crate) fn set_budget(&mut self, budget: u64) {
+        // SAFETY: called only by the exclusively borrowed context, with C suspended.
+        unsafe {
+            (&raw mut (*self.as_ptr()).budget).write(budget);
+        }
+    }
+    fn configure(&mut self, memory: *const MemoryShared, budget: u64) {
+        // SAFETY: same exclusive invocation contract. Never re-create an owning
+        // Box or a reference to the allocation while a foreign pointer is live.
+        unsafe {
+            (&raw mut (*self.as_ptr()).memory).write(memory);
+        }
+        self.set_budget(budget);
+    }
+}
+// SAFETY: ownership may move with ExecCtx; use is serialized by its exclusive
+// invocation borrow. The view itself is not exposed by safe shared methods.
+unsafe impl Send for OwnedFastAccess {}
+unsafe impl Sync for OwnedFastAccess {}
+impl Drop for OwnedFastAccess {
+    fn drop(&mut self) {
+        // SAFETY: exactly one owner, created by Box::into_raw. ExecCtx cannot be
+        // dropped during a borrowed native invocation; retained pointers may not
+        // escape that invocation. Nothing accesses the pointer after this drop.
+        unsafe {
+            drop(Box::from_raw(self.as_ptr()));
+        }
+    }
+}
+
 pub(crate) fn sync_accesses(ctx: &mut ExecCtx) {
     let count = ctx
         .fast_memory
         .as_mut()
-        .map_or(0, |f| std::mem::take(&mut f.accesses));
+        .map_or(0, OwnedFastAccess::take_accesses);
     if count != 0 {
         if let Some(p) = &mut ctx.profile {
             p.fast_memory_accesses += count;
@@ -225,16 +281,15 @@ pub unsafe extern "C" fn h2abi_v1_fast_acquire(exec: *mut crate::ExecCtxOpaque) 
     };
     let preempt = ctx.preempt_ptr();
     let view = ctx.fast_memory.get_or_insert_with(|| {
-        Box::new(FastAccess {
+        OwnedFastAccess::new(FastAccess {
             memory,
             accesses: 0,
             budget,
             preempt,
         })
     });
-    view.memory = memory;
-    view.budget = budget;
-    &mut **view
+    view.configure(memory, budget);
+    view.as_ptr()
 }
 
 /// Settle inline access counts at every generated exit, including faults.
@@ -254,3 +309,71 @@ const _: () = {
     assert!(std::mem::offset_of!(MemoryShared, data) == 8);
     assert!(size_of::<FastAccess>() == 32);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::guest::Permissions;
+    use crate::{CpuAbi, Dispatch, Runtime};
+
+    /// Rust-only model of a native handler retaining its actual runtime view
+    /// across real slow callbacks. Does not load C, so it also runs under Miri.
+    #[test]
+    fn retained_fast_view_survives_slow_callbacks() {
+        let rt = Runtime::new(Guest::new(), Dispatch::default());
+        {
+            let mut memory = rt.memory();
+            memory.map(0x1000, 0x1000, 0, Permissions::RW).unwrap();
+            memory.map(0x2000, 0x1000, 0x4000, Permissions::RW).unwrap();
+            memory.write_bytes(0x1fff, &[1, 2, 3, 4], 1).unwrap();
+        }
+        let mut ctx = ExecCtx::new(rt, 0);
+        ctx.enable_profiling(true);
+        ctx.arm_preemption(5);
+        // Only the count/budget fields are used by this Rust model of C. Avoid
+        // allocating the million-entry C page table in the interpreter; the
+        // allocation owner and slow callback paths below are production code.
+        ctx.fast_memory = Some(OwnedFastAccess::new(FastAccess {
+            memory: std::ptr::null(),
+            accesses: 0,
+            budget: 5,
+            preempt: ctx.preempt_ptr(),
+        }));
+        let retained = ctx.fast_memory.as_ref().unwrap().as_ptr();
+        let exec = (&mut ctx as *mut ExecCtx).cast();
+        let mut cpu = CpuAbi::default();
+        let mut bytes = [0; 4];
+        let mut old = 0;
+        // SAFETY: mimic the exclusively running C handler. Every Rust callback
+        // completes before that same raw pointer is reused; buffers are disjoint.
+        unsafe {
+            (*retained).accesses += 1;
+            assert_eq!(
+                crate::ffi::h2abi_v1_read(exec, 0x8000, 0x1fff, 4, 1, bytes.as_mut_ptr()),
+                0
+            );
+            assert_eq!(bytes, [1, 2, 3, 4]);
+            assert_eq!((*retained).accesses, 0);
+            assert_eq!((*retained).budget, 3);
+            (*retained).accesses += 1;
+            assert_eq!(
+                crate::ffi::h2abi_v1_xchg(&mut cpu, exec, 0x8001, 0x1000, 4, 42, &mut old),
+                0
+            );
+            assert_eq!(old, 0);
+            assert_eq!((*retained).budget, 1);
+            (*retained).accesses += 1;
+            h2abi_v1_fast_release(exec);
+            assert_eq!((*retained).accesses, 0);
+            assert_eq!((*retained).budget, u64::MAX);
+        }
+        assert_eq!(ctx.slice_spent(), 5);
+        assert_ne!(ctx.preempt_pending(), 0);
+        let profile = ctx.take_profile().unwrap();
+        assert_eq!(
+            (profile.memory_accessors, profile.fast_memory_accesses),
+            (5, 3)
+        );
+        assert_eq!(ctx.memory().u32(0x1000).unwrap(), 42);
+    }
+}

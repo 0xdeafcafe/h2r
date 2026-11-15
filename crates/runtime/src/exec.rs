@@ -24,7 +24,7 @@ pub struct ExecCtx {
     preempt: crate::preempt::WordPtr,
     runtime: Arc<Runtime>,
     pub(crate) profile: Option<crate::perf::Profile>,
-    pub(crate) fast_memory: Option<Box<crate::ffi::FastAccess>>,
+    pub(crate) fast_memory: Option<crate::ffi::OwnedFastAccess>,
     pub(crate) fast_memory_enabled: bool,
     pub thread_id: u32,
     events: Vec<Event>,

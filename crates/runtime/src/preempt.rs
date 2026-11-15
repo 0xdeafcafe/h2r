@@ -214,11 +214,11 @@ impl ExecCtx {
             self.slice.left = self.slice.left.saturating_sub(count);
         }
         if let Some(view) = &mut self.fast_memory {
-            view.budget = if self.slice.armed && self.slice.left != 0 {
+            view.set_budget(if self.slice.armed && self.slice.left != 0 {
                 self.slice.left
             } else {
                 u64::MAX
-            };
+            });
         }
     }
     /// Accesses the context may make before its slice expires, for
