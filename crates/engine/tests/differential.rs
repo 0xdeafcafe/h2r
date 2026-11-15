@@ -2,11 +2,9 @@
 //! against the original x86, lifted by `crates/lift` and run on the IR
 //! interpreter (`ir::interp`), from identical 64 MB guest states.
 //!
-//! Behind the `differential` feature. TODO(differential): `ir` and `lift`
-//! are not on master yet; add them to `[dependencies]` (optional, in the
-//! feature) when they land. This file is written against their current API
-//! (`lift::Lifter::{new, lift}`, `lift::harness::load_image`,
-//! `ir::interp::{step, Cpu, FlatMemory}`).
+//! Behind the `differential` feature, which pulls in `ir`, `lift`,
+//! `analyze` and `xbe`. It uses `lift::Lifter::{new, lift}`,
+//! `lift::harness::load_image` and `ir::interp::{step, Cpu, FlatMemory}`.
 //!
 //! Needs the user's XBE, never in the repo: `H2_XBE=/abs/path/default.xbe`,
 //! or `disc/default.xbe` in the checkout. Without one it prints SKIPPED and

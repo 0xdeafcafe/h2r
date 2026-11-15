@@ -10,13 +10,12 @@ description = "Hand-written Rust replacements for Halo 2 engine functions, over 
 # adapters with the runtime's dispatch table.
 runtime = { workspace = true, optional = true }
 # For tests/differential.rs only.
-# TODO(differential): also needs `ir` and `lift` (optional, added to the
-# feature below) once those crates are on master.
 analyze = { workspace = true, optional = true }
 xbe = { workspace = true, optional = true }
+ir = { workspace = true, optional = true }
+lift = { workspace = true, optional = true }
 
 [features]
 runtime-glue = ["dep:runtime"]
-# Seeded differential test against the lifted original. Not buildable
-# until `ir`/`lift` land; see the TODO above and tests/differential.rs.
-differential = ["dep:analyze", "dep:xbe"]
+# Seeded differential test against the lifted original (tests/differential.rs).
+differential = ["dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]

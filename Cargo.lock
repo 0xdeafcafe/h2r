@@ -759,6 +759,8 @@ name = "engine"
 version = "0.1.0"
 dependencies = [
  "analyze",
+ "ir",
+ "lift",
  "runtime",
  "xbe",
 ]

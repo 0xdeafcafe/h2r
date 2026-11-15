@@ -331,27 +331,27 @@ changes on the boot side, not on master yet, wire it in.
    `perf::boot::hold` counts frames with `timeline::frames()` and reports
    frames per wall-clock second.
 
-## Which lane uses what
+## Which tool fits which job
 
-- **perf** (runtime and emit fast paths): `h2 bench --only hot-loop`
+- **Runtime and emit fast paths:** `h2 bench --only hot-loop`
   before and after each change, then `h2 bench compare`. Use
   `h2 profile hot-loop/memory` or `hot-loop/call` to see which accessor,
   lock or dispatch step dominates, and `--by-category` to watch the
   runtime-to-guest ratio. Once the boot hook lands, `H2_PROFILE` on a boot
   gives the same tables for the real game, and the guest-instruction table
   shows which loops are worth a fast path.
-- **gfx-perf** (wgpu submission): `--timeline` with
+- **wgpu submission (crates/gfx):** `--timeline` with
   `--cats frame,d3d,gfx` shows `queue submit` and `present` spans against
   frames and `Swap`. The profile's `gfx` category, and the `d3d` versus
   `gfx` split, separate CPU-side translation from submission.
   `d3d/pushbuf-frame` benchmarks the CPU side without a GPU.
-- **codegen-opt** (IR optimisation passes): `hot-loop/alu` and
+- **IR optimisation passes (crates/opt):** `hot-loop/alu` and
   `hot-loop/memory` are mostly generated code, so a pass that helps should
   move them. Compare runs built with and without the pass (the scenarios
   rebuild through emit, so the pass applies). The "guest instructions"
   table and the `@0x...` folded leaves show which instructions the time
   goes to.
-- **build-perf** (build times): `perf` brings in `addr2line` (with its loader:
+- **Build dependencies:** `perf` brings in `addr2line` (with its loader:
   `gimli`, `object`, `memmap2`, `typed-arena`), `rustc-demangle`,
   `serde_json` and `iced-x86` (code_asm), but only into `cli` builds with
   `--features perf`. `timeline` has no dependencies. The hot-loop scenarios use emit's object

@@ -143,16 +143,20 @@ uses tables. Unicorn also never sets MXCSR's exception flags, so after SSE
 arithmetic only MXCSR's control bits are compared. `crates/simd` checks
 the flags against hardware with its own oracle corpus.
 
-The current corpus is 37,207 fixtures: the original 21,152, plus 16,055
-covering every SSE and MMX form the image uses. It gives 36,293 matches, 0
-differences and 914 skips. The test prints the skip classes:
+The corpus was 37,207 fixtures when last counted: the original 21,152, plus
+16,055 covering every SSE and MMX form the image uses. It gave 36,293
+matches, 0 differences and 914 skips. These counts predate x87 lowering
+(e5c4251) and have not been redone since: the x87 skips below should now be
+matches, and the fixture files come from `oracle-fixtures`
+(docs/oracle.md), so the totals may differ too. The test prints the skip
+classes (`--nocapture`):
 
 | skipped | why |
 |--------:|-----|
 | 330 | 16-bit address-size string ops (`67` prefix, CX/SI/DI): not lowered |
 | 259 | BCD and `salc` (`aaa`, `aad`, `aam`, `aas`, `daa`, `das`, `salc`): not lowered |
 | 185 | refused by the oracle (`popfd`, `pause`) |
-| 66  | x87 arithmetic (`fld1`, `faddp`): counted before x87 was lowered (e5c4251), not re-counted since |
+| 66  | x87 arithmetic (`fld1`, `faddp`): skipped before x87 was lowered (e5c4251); expected to be matches now |
 | 37  | `cmpxchg8b`: not lowered |
 | 37  | 16-bit addressing (`lea` with `67`): not lowered |
 

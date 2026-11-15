@@ -1,5 +1,8 @@
 //! The x87 for the boot fallback: one instruction at a time on the
-//! interpreter's CPU, until crates/lift lowers x87 (docs/FLOAT.md).
+//! interpreter's CPU. crates/lift lowers x87 to helper calls now
+//! (docs/FLOAT.md), so generated code no longer needs this; it remains the
+//! interpreter-side x87 for `crate::fallback`, which interprets whatever
+//! the generated module stops on.
 //!
 //! This is a decoder over crates/x87's state machine (`x87::abi`, the same
 //! helpers generated code will call): stack faults, source-format
