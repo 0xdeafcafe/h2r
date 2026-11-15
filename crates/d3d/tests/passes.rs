@@ -345,10 +345,12 @@ fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
         header_words(&m, f::BACK_BUFFER),
         (DISPLAY_BUFFER_DATA, 0x2222)
     );
-    assert_eq!(
-        header_words(&m, f::DISPLAY_SURFACE),
-        (BACK_BUFFER_DATA, 0x1111)
-    );
+    // Then 0x3f9cc0 stamps the display header's Lock with the GPU time and
+    // records a fence for this swap's parity.
+    let (data, lock) = header_words(&m, f::DISPLAY_SURFACE);
+    let time = m.read_u32(L.device + f::GPU_TIME).unwrap();
+    assert_eq!((data, lock), (BACK_BUFFER_DATA, time - 1));
+    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap(), time);
     assert_eq!((d.back_buffer(), d.front_buffer()), (Some(f0), Some(b0)));
     // The headers themselves stay where they are.
     assert_eq!(m.read_u32(L.device + f::BACK_BUFFER).unwrap(), back);
@@ -361,7 +363,10 @@ fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
         Some(b0)
     );
     d.swap(&mut m, 0).unwrap();
-    assert_eq!(header_words(&m, f::BACK_BUFFER), (BACK_BUFFER_DATA, 0x1111));
+    assert_eq!(
+        header_words(&m, f::BACK_BUFFER),
+        (BACK_BUFFER_DATA, time - 1)
+    );
     assert_eq!((d.back_buffer(), d.front_buffer()), (Some(b0), Some(f0)));
     // Drawing into the back buffer never copies into the front: it holds
     // the image presented until the next flip.
@@ -487,15 +492,21 @@ fn copy_swap_flags_follow_the_original() {
         assert_eq!(d.swap(&mut m, flags).unwrap(), 0, "flags {flags}");
     }
     assert!(presents(&d).is_empty());
-    // BYPASSCOPY without COPY: a stop, not a silent guess.
-    let e = d.swap(&mut m, 2).unwrap_err();
-    assert!(e.to_string().contains("BYPASSCOPY"), "{e}");
-    assert!(presents(&d).is_empty());
-    // COPY alone counts and shows back0.
-    let back = d.back_buffer().unwrap();
+    // FINISH still stamps the display header and records a fence.
+    let time = m.read_u32(L.device + f::GPU_TIME).unwrap();
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).1, time - 1);
+    assert_eq!(m.read_u32(L.device + f::SWAP_FENCES).unwrap(), time);
+    // COPY alone counts and, with two frame buffers, scans out at once.
+    let (back, front) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
     assert_eq!(d.swap(&mut m, 1).unwrap(), 1);
     assert_eq!(presents(&d), [back]);
     assert_eq!(d.back_buffer(), Some(back));
+    // BYPASSCOPY counts and re-shows the display buffer, into which
+    // nothing new is copied: the image the copy above put there.
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    assert_eq!(copies(&d), [(back, front)]);
+    assert_eq!(d.swap(&mut m, 2).unwrap(), 2);
+    assert_eq!(presents(&d), [back, front]);
 }
 
 #[test]
@@ -523,7 +534,7 @@ fn copy_swap_with_two_back_buffers_exchanges_the_display_and_third_headers() {
     // 0x3f991c: display and third trade Data and Lock; back stays.
     assert_eq!(d.swap(&mut m, 0).unwrap(), 1);
     assert_eq!(header_words(&m, f::BACK_BUFFER).0, BACK_BUFFER_DATA);
-    assert_eq!(header_words(&m, f::DISPLAY_SURFACE), (THIRD_BUFFER_DATA, 0));
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, THIRD_BUFFER_DATA);
     assert_eq!(
         header_words(&m, THIRD_HEADER),
         (DISPLAY_BUFFER_DATA, 0x2222)
@@ -579,6 +590,72 @@ fn a_lost_shown_image_does_not_outlive_the_device() {
     assert_eq!(d.persist_display(&mut m).unwrap(), 0);
 }
 
+#[test]
+fn three_buffer_copy_swap_shows_the_copy_only_on_finish() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        p.swap_effect = 3;
+        p.back_buffer_count = 2;
+    });
+    let (back, front) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
+    // Frame 1 in back0. COPY alone: counted, display and third headers
+    // exchanged, copy owed, but scanout does not move (0x3f9981).
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    assert_eq!(d.swap(&mut m, 1).unwrap(), 1);
+    assert!(presents(&d).is_empty(), "nothing shown before FINISH");
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, THIRD_BUFFER_DATA);
+    let display = d.front_buffer().unwrap();
+    assert_ne!(display, front);
+    // Frame 2 starts in back0: its first write copies frame 1 into the
+    // display buffer.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    assert_eq!(copies(&d), [(back, display)]);
+    // FINISH alone: scanout moves to the display header's buffer, holding
+    // frame 1, not back0's frame 2; the count does not change.
+    let fences = m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap();
+    assert_eq!(d.swap(&mut m, 4).unwrap(), 1);
+    assert_eq!(presents(&d), [display]);
+    let time = m.read_u32(L.device + f::GPU_TIME).unwrap();
+    assert_eq!(
+        header_words(&m, f::DISPLAY_SURFACE),
+        (THIRD_BUFFER_DATA, time - 1)
+    );
+    let slot = m.read_u32(L.device + f::SWAP_FENCES + 4).unwrap();
+    assert_ne!(slot, fences);
+    assert_eq!(slot, time);
+    // COPY | FINISH together: exchanged back, copied and shown at once.
+    assert_eq!(d.swap(&mut m, 5).unwrap(), 2);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, DISPLAY_BUFFER_DATA);
+    assert_eq!(d.front_buffer(), Some(front));
+    assert_eq!(presents(&d), [display, back], "back0 holds the owed copy");
+    assert_eq!(d.back_buffer(), Some(back));
+}
+
+#[test]
+fn gpu_three_buffer_copy_then_finish_shows_the_copied_frame() {
+    let Some((mut d, mut m, scope)) = gpu_with(|p| {
+        p.swap_effect = 3;
+        p.back_buffer_count = 2;
+    }) else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    let (red, green) = ([0xFF, 0, 0, 0xFF], [0, 0xFF, 0, 0xFF]);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    d.swap(&mut m, 1).unwrap();
+    let before = d.backend.last_presented();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    assert_eq!(
+        d.backend.last_presented(),
+        before,
+        "COPY alone shows nothing"
+    );
+    d.swap(&mut m, 4).unwrap();
+    let shown = d.backend.last_presented().unwrap();
+    assert_eq!(rgba(&mut d, shown, 10, 10), red, "frame 1, copied");
+    assert_eq!(back_buffer(&mut d)(10, 10), green, "frame 2 drawing on");
+    finish(scope);
+}
+
 /// CreateDevice again after a teardown, with the same parameters.
 fn recreate<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
     let out = call(
@@ -599,6 +676,13 @@ fn recreate<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
 // GPU ---------------------------------------------------------------------
 
 fn gpu() -> Option<(Device<GfxBackend>, SparseMemory, wgpu::ErrorScopeGuard)> {
+    gpu_with(|_| {})
+}
+
+/// [`gpu`] with the present parameters changed by `edit`.
+fn gpu_with(
+    edit: impl FnOnce(&mut d3d::device::PresentParameters),
+) -> Option<(Device<GfxBackend>, SparseMemory, wgpu::ErrorScopeGuard)> {
     let ctx = match GfxContext::headless() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -607,8 +691,18 @@ fn gpu() -> Option<(Device<GfxBackend>, SparseMemory, wgpu::ErrorScopeGuard)> {
         }
     };
     let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
-    let (d, m) = create(GfxBackend::new(ctx), UploadPolicy::Always);
+    let (d, m) = create_with(GfxBackend::new(ctx), UploadPolicy::Always, edit);
     Some((d, m, scope))
+}
+
+/// Pixel `x, y` of `surface` as RGBA.
+fn rgba(d: &mut Device<GfxBackend>, surface: gfx::surface::SurfaceId, x: u32, y: u32) -> [u8; 4] {
+    let (px, order) = d.backend.read_color(surface).unwrap();
+    let p = pixel(&px, x, y);
+    match order {
+        HostPixelOrder::Bgra8 => [p[2], p[1], p[0], p[3]],
+        _ => p,
+    }
 }
 
 /// The back buffer as RGBA.

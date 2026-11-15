@@ -207,8 +207,8 @@ impl<B: Backend> Device<B> {
         let front = buffer == sw.front;
         let (source, which) = if buffer == sw.back[0] {
             (buffer, "the back buffer")
-        } else if front && sw.shown_in_back {
-            (sw.shown, "the display surface")
+        } else if front && sw.copy_pending {
+            (sw.back[0], "the display surface")
         } else if front {
             (buffer, "the display surface")
         } else {
@@ -460,17 +460,20 @@ impl<B: Backend> Device<B> {
         let Some(sw) = self.swap.as_mut() else {
             return Ok(());
         };
-        if !sw.shown_in_back || sw.shown != color {
+        if !sw.copy_pending || sw.back[0] != color {
             return Ok(());
         }
-        let (src, dst) = (sw.shown, sw.front);
-        sw.shown_in_back = false;
+        let (src, dst) = (sw.back[0], sw.front);
+        sw.copy_pending = false;
         if self
             .backend
             .copy_surface(src, dst)
             .map_err(D3dError::Backend)?
         {
-            self.swap.as_mut().expect("checked").shown = dst;
+            let sw = self.swap.as_mut().expect("checked");
+            if sw.shown == src {
+                sw.shown = dst;
+            }
         } else {
             self.display.shown_lost = true;
         }

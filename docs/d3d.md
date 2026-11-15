@@ -676,24 +676,31 @@ and allocations are bounded before anything is read:
   - **Flip** (flag clear; Halo's device: no multisampling, swap effect 1
     or 2 from `0x128c0`). With `FINISH` (4) set, as in `Swap(0)`
     (`COPY | FINISH`, Halo's one per-frame call at `0x140fc`), `0x3f9d75`
-    goes to `0x3f9a70`, which rotates `Data` and `Lock` through the
-    headers from `+0x1A14`: the display surface (`+0x1A18`) gets the back
-    buffer's, the back buffer the last header's; the CRTC then scans out
-    the display surface's `Data`. The headers stay put; the buffers they
-    name trade places. The device does the same: its host ring rotates,
-    and the guest headers' words rotate as `0x3f9a70` rotates them.
-    Without `FINISH` the original returns the swap count and does nothing
-    else (`0x3f9d7a`); so does the device, presenting nothing.
-  - **Copy** (flag set). With `COPY` (1) the swap counts and, with three
-    frame buffers, first exchanges the display and third headers' `Data`
-    and `Lock` (`0x3f991c..0x3f9944`; the host front and second back
-    buffer trade places, after any copy still pending in back0 is made).
-    The back buffer stays; its image is shown and copied to the front
-    lazily (see "Display entries"). With neither `COPY` nor `BYPASSCOPY`
-    (2) nothing visible happens and the count is not incremented
-    (`0x3f9d35` -> `0x3f98f0`). `BYPASSCOPY` without `COPY` would re-show
-    a display buffer nothing was copied into; Halo's flip device cannot
-    reach it, and the device stops with `Unimplemented`.
+    sets a fence, counts and goes to `0x3f9a70`, which rotates `Data` and
+    `Lock` through the headers from `+0x1A14`: the display surface
+    (`+0x1A18`) gets the back buffer's, the back buffer the last
+    header's; the CRTC then scans out the display surface's `Data`. The
+    headers stay put; the buffers they name trade places. The device does
+    the same: its host ring rotates, and the guest headers' words rotate
+    as `0x3f9a70` rotates them. Without `FINISH` the original returns the
+    swap count and does nothing else (`0x3f9d7a`); so does the device,
+    presenting nothing.
+  - **Copy** (flag set). The steps are separate, as in `0x3f98f0`:
+    - `COPY` (1) or `BYPASSCOPY` (2) set a fence and count. With three
+      frame buffers the display and third headers then exchange `Data`
+      and `Lock` (`0x3f991c..0x3f9944`; the host front and second back
+      buffer trade places, after any copy still owed from back0 is made).
+      With `COPY`, back0 is copied into the display buffer (deferred to
+      the first write into back0, see "Display entries").
+    - With fewer than three frame buffers scanout moves to the display
+      buffer at once (`0x3f998c..0x3f99d4`); with three only on `FINISH`
+      (`0x3f9981`, `0x3f9a16..0x3f9a57`), which moves it even with
+      neither copy bit set, and does not count. So `Swap(1)` then
+      `Swap(4)` shows the copied frame at the second call.
+  - **`FINISH`** on either kind ends with `0x3f9cc0`: the display
+    header's `Lock` (its parent's, for a level) takes the GPU time
+    (`+0x2C`), and a new fence is stored at `+0x1974[swap count & 1]`
+    (`layout::device_field::SWAP_FENCES`).
   - A device re-created after teardown starts with no lost-image state
     (`shown_lost`, set when a backend cannot make the deferred copy).
 - **Frame buffers as textures** (`src/device/raster.rs`). The frame

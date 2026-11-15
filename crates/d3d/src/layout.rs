@@ -135,6 +135,10 @@ pub mod device_field {
     pub const DISPLAY_SURFACE: u32 = 0x1A18;
     /// Swap counter returned by `Swap`.
     pub const SWAP_COUNT: u32 = 0x2478;
+    /// Two fences, indexed by swap-count parity: the one recorded when a
+    /// `FINISH` swap completed (`0x3f9cc0`). The flip path waits on the
+    /// previous parity's before flipping again (`0x3f9d83..0x3f9d9b`).
+    pub const SWAP_FENCES: u32 = 0x1974;
     /// W-buffer parameters derived from the projection by `SetTransform`
     /// (`0x3f7ff0`): `+0x93C`, `+0x940` and `+0x944 = 1 / +0x940`.
     pub const W_NEAR: u32 = 0x93C;
