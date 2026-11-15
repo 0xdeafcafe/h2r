@@ -1,0 +1,15 @@
+[package]
+name = "emit"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+ir.workspace = true
+lift.workspace = true
+analyze.workspace = true
+xbe.workspace = true
+libloading = "0.8"
+
+[dev-dependencies]
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }

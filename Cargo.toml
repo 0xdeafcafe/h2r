@@ -21,6 +21,7 @@ runtime = { path = "crates/runtime" }
 bink-hle = { path = "crates/bink-hle" }
 ir = { path = "crates/ir" }
 lift = { path = "crates/lift" }
+emit = { path = "crates/emit" }
 simd = { path = "crates/simd" }
 thiserror = "2"
 anyhow = "1"
