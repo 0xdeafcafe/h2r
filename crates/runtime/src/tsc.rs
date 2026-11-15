@@ -92,4 +92,31 @@ mod tests {
         tsc.set_clock(Some(Arc::new(|| None)));
         assert_eq!(tsc.read(), TSC_HZ + 2 * TSC_MIN_STEP, "an unreadable clock");
     }
+
+    #[test]
+    fn concurrent_reads_are_distinct_and_increasing() {
+        // With no clock every read is one step on from the last, so the
+        // values from all threads together are exactly the first n steps.
+        let tsc = Arc::new(Tsc::default());
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let tsc = tsc.clone();
+                std::thread::spawn(move || {
+                    let reads: Vec<u64> = (0..10_000).map(|_| tsc.read()).collect();
+                    assert!(
+                        reads.windows(2).all(|w| w[1] > w[0]),
+                        "a thread saw time go back"
+                    );
+                    reads
+                })
+            })
+            .collect();
+        let mut all: Vec<u64> = threads
+            .into_iter()
+            .flat_map(|t| t.join().unwrap())
+            .collect();
+        all.sort_unstable();
+        let steps: Vec<u64> = (1..=all.len() as u64).map(|i| i * TSC_MIN_STEP).collect();
+        assert_eq!(all, steps);
+    }
 }

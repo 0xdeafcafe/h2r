@@ -1440,6 +1440,36 @@ fn cpuid_describes_the_xbox_pentium_iii() {
     // TSC and CMOV, and the CX8 the kernel's interlocked helpers assume.
     assert_eq!((features >> 4 & 1, features >> 15 & 1, features >> 8 & 1), (1, 1, 1));
     assert_eq!(leaf(2), lift::lower::XBOX_CPUID[2]);
+    // Leaf 2 decoded with the descriptors from Intel's SDM (vol. 2A, CPUID
+    // table 3-12): one round (AL = 1), every register valid (bit 31 clear).
+    let regs = leaf(2);
+    assert_eq!(regs[0] & 0xFF, 1, "one round");
+    assert!(regs.iter().all(|r| r >> 31 == 0));
+    let mut caches: Vec<&str> = regs
+        .iter()
+        .flat_map(|r| r.to_le_bytes())
+        .skip(1)
+        .filter(|d| *d != 0)
+        .map(|d| match d {
+            0x01 => "ITLB 4K 4-way 32",
+            0x02 => "ITLB 4M full 2",
+            0x03 => "DTLB 4K 4-way 64",
+            0x04 => "DTLB 4M 4-way 8",
+            0x08 => "L1I 16K 4-way 32B",
+            0x0C => "L1D 16K 4-way 32B",
+            0x41 => "L2 128K 4-way 32B",
+            0x42 => "L2 256K 4-way 32B",
+            0x79 => "L2 128K 8-way 64B sectored",
+            0x82 => "L2 256K 8-way 32B",
+            d => panic!("descriptor {d:#04x} is not a P6 one"),
+        })
+        .collect();
+    caches.sort_unstable();
+    assert_eq!(
+        caches,
+        ["DTLB 4K 4-way 64", "DTLB 4M 4-way 8", "ITLB 4K 4-way 32", "ITLB 4M full 2", "L1D 16K 4-way 32B", "L1I 16K 4-way 32B", "L2 128K 4-way 32B"],
+        "the Xbox's 128 KB L2 with 32-byte lines; 4-way is the nearest descriptor to its 8-way"
+    );
     // Past the highest leaf, extended leaves included: leaf 2 again.
     assert_eq!(leaf(3), leaf(2));
     assert_eq!(leaf(0x8000_0000), leaf(2));

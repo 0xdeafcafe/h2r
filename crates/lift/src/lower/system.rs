@@ -13,8 +13,13 @@ use super::*;
 /// - leaf 1: the signature, brand index 0, and the Pentium III features
 ///   FPU VME DE PSE TSC MSR PAE MCE CX8 SEP MTRR PGE MCA CMOV PAT PSE36 MMX
 ///   FXSR SSE (no APIC, no PSN);
-/// - leaf 2: one descriptor round: 4 KB and 4 MB TLBs, 16 KB L1 I and D,
-///   and descriptor 0x41 for the 128 KB L2.
+/// - leaf 2: one descriptor round: 4 KB and 4 MB TLBs, 16 KB L1 I and D
+///   (4-way, 32-byte lines), and 0x41 for the 128 KB L2. The Xbox's L2 is
+///   8-way, but Intel defines no 128 KB 8-way descriptor with the P6's
+///   32-byte lines (0x79 has 64-byte sectored lines), so this reports 4-way
+///   with the right size and line, as the Coppermine Celeron does. Code
+///   that sizes buffers from leaf 2 gets the right answer; only the
+///   associativity is off.
 ///
 /// A leaf past 2, extended leaves included, returns leaf 2, as Intel parts
 /// without them do.
