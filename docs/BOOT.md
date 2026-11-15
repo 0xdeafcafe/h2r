@@ -250,13 +250,15 @@ makes every run take the same path; the script picks the Default profile
 and leaves the main menu up, then the run stops on its own.
 
 ```
-T=$TMPDIR/h2bench
+T=$TMPDIR/h2bench; OUT=$TMPDIR/shared-gen/$(git rev-parse --short HEAD)
 cargo build --release -p cli            # target/release/h2
-h2 build disc/halo2.iso --out $T/out     # once per emitted module
+# Once per generator (h2 run rebuilds a dylib whose .stamp doesn't match,
+# so stamp the shared one inside the emit gate first):
+gate.sh emit -- h2 build disc/halo2.iso --out $OUT
 H2_BOOT_GFX=$T/gfx H2_BOOT_GFX_EVERY=never \
 H2_BOOT_INPUT="START@f310,DOWN@f408,A@f419" \
 H2_BOOT_FPS_FROM=440 H2_BOOT_STOP_AT_PRESENT=560 \
-h2 run disc/halo2.iso --out $T/out --data $T/data --fresh-data
+gate.sh game -- h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
 ```
 
 - Window: presents 440-560, the main menu after it has faded in (the
