@@ -143,6 +143,14 @@ fn stmts(f: &mut Formatter<'_>, list: &[Stmt], depth: usize) -> fmt::Result {
                 stmts(f, body, depth + 1)?;
                 writeln!(f, "{pad}}}")?;
             }
+            Stmt::LazyFlags(l) => {
+                let a: Vec<String> = l.args.iter().map(|v| v.to_string()).collect();
+                let fl: Vec<String> = l.formula.flags.iter().map(|(fl, v)| format!("{fl} = {v}")).collect();
+                writeln!(f, "lazy flags({}) {{ {} }}", a.join(", "), fl.join(", "))?;
+                for (t, e) in &l.formula.body {
+                    writeln!(f, "{pad}    {t}:{} = {e}", t.width)?;
+                }
+            }
             Stmt::Unsupported { mnemonic, detail } => writeln!(f, "unsupported {mnemonic}: {detail}")?,
         }
     }

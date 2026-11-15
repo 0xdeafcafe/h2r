@@ -391,6 +391,21 @@ fn base_fixtures() -> Vec<(&'static str, Asm)> {
             a.cmovnz(eax, edx)?;
             a.ret()
         }),
+        // Lazy flags from two formulas meeting at a loop header: add's on
+        // the way in, dec's from the back edge. inc rewrites neither's CF,
+        // so it settles add's (visible at the ret) from whichever is
+        // pending; jnz reads dec's ZF in place.
+        ("lazy-merge", |a| {
+            let mut top = a.create_label();
+            a.and(ecx, 7)?;
+            a.inc(ecx)?;
+            a.add(eax, ebx)?;
+            a.set_label(&mut top)?;
+            a.inc(esi)?;
+            a.dec(ecx)?;
+            a.jnz(top)?;
+            a.ret()
+        }),
         ("sse", |a| {
             a.movaps(xmm0, xmmword_ptr(ebx))?; // alignment is random: #GP
             a.movups(xmm1, xmmword_ptr(esi))?;

@@ -689,7 +689,10 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
             w.back_edges
         );
         let o = w.opt;
-        println!("passes: {} of {} flag writes dead, {} pure statements removed", o.dead_flags, o.flag_writes, o.dead_stmts);
+        println!(
+            "passes: {} of {} flag writes dead, {} lazy, {} pure statements removed",
+            o.dead_flags, o.flag_writes, o.lazy_flags, o.dead_stmts
+        );
         let t = Instant::now();
         emit_cache::record(&out, &cache_key)?;
         println!("emit cache record: {:.3}s", t.elapsed().as_secs_f64());

@@ -41,6 +41,7 @@ fn uses(stmts: &[Stmt], used: &mut HashSet<u32>) {
             }
             Stmt::Intrinsic { args, .. } => args.iter().for_each(|v| use_value(v, used)),
             Stmt::Repeat { body, .. } => uses(body, used),
+            Stmt::LazyFlags(l) => l.args.iter().for_each(|v| use_value(v, used)),
             Stmt::ReadReg { .. }
             | Stmt::ReadFlag { .. }
             | Stmt::ReadEflags { .. }

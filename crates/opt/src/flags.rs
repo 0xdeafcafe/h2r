@@ -58,6 +58,21 @@ fn stmts(list: &mut Vec<Stmt>, mut live: u32, edit: bool, removed: &mut usize) -
                 }
             }
             Stmt::WriteEflags { mask, .. } => live &= !(*mask & ALL),
+            // A lazy group goes only when all of it is dead: keeping dead
+            // flags in a live one costs nothing (the inputs are captured
+            // anyway) and spares the backend settling the flags it would
+            // otherwise leave pending from an earlier group.
+            Stmt::LazyFlags(l) => {
+                let m = l.formula.mask();
+                if live & m == 0 {
+                    if edit {
+                        *removed += l.formula.flags.len();
+                        list.remove(i);
+                    }
+                } else {
+                    live &= !m;
+                }
+            }
             Stmt::ReadFlag { flag, .. } => live |= bit(*flag),
             Stmt::ReadEflags { .. } => live |= ALL,
             Stmt::Load { .. }

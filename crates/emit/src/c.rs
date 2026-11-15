@@ -42,6 +42,10 @@
 //! Inside a REP loop every exit (fault or stop) first restores EFLAGS and
 //! the defined mask saved when the instruction began, matching the IR's
 //! `Repeat` contract: a faulting `repe cmpsb` reports its starting flags.
+//!
+//! `LazyFlags` statements capture their formula's inputs and are settled
+//! into `fl`/`fd` only where something reads them and in the epilogue; see
+//! [`crate::lazy`].
 
 use std::collections::BTreeSet;
 
@@ -50,6 +54,8 @@ use ir::{
     Addr, Atomic, AtomicOp, BinOp, CastOp, CmpOp, Control, Dest, Expr, Fault, Flag, FlagValue, Gpr, Intrinsic,
     IrFunction, IrInsn, RepKind, Segment, Slice, Stmt, StopReason, Target, Temp, UnOp, Value, Width,
 };
+
+use crate::lazy::{self, Lazy, Pend};
 
 /// Everything the emitter needs to know about one owner's place in the
 /// image, decided by [`crate::plan`].
@@ -68,7 +74,11 @@ pub fn symbol(entry: u32) -> String {
 
 /// Emit one owner as a C function definition.
 pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
-    let mut e = Emitter { out: String::new(), shape, in_repeat: false, x87: crate::x87::uses_x87(f) };
+    let lazy = Lazy::of(f);
+    let entry_of_settle = format!("{:08x}", f.entry);
+    let x87 = crate::x87::uses_x87(f);
+    let mut e =
+        Emitter { out: String::new(), shape, in_repeat: false, x87, lazy, pend: Pend::default(), entry_of_settle };
     e.function(f);
     e.out
 }
@@ -80,6 +90,12 @@ struct Emitter<'a> {
     in_repeat: bool,
     /// The handler has x87 ops: it has the x87 locals and fail block.
     x87: bool,
+    /// The handler's lazy flags, if it has any.
+    lazy: Option<Lazy>,
+    /// What may be pending at the statement being emitted.
+    pend: Pend,
+    /// `h2lz_` suffix: the handler's entry, as `%08x`.
+    entry_of_settle: String,
 }
 
 /// C for `reg[slice] = v` (a partial-register merge below `Full`); `v` is
@@ -146,6 +162,18 @@ fn ulit(w: Width, bits: u128) -> String {
         "uint32_t" => format!("{bits:#x}u"),
         "uint64_t" => format!("UINT64_C({bits:#x})"),
         _ => lit(Width::W128, bits),
+    }
+}
+
+/// C running `arms[i]` when `lzk` is `kinds[i]`: the arm alone for one
+/// kind, a `switch` for several.
+fn by_kind(kinds: &[u32], arms: &[String]) -> String {
+    match kinds {
+        [_] => arms[0].clone(),
+        _ => {
+            let cases: String = kinds.iter().zip(arms).map(|(k, a)| format!("case {k}u: {{ {a}break; }} ")).collect();
+            format!("switch (lzk) {{ {cases}default: break; }} ")
+        }
     }
 }
 
@@ -220,8 +248,15 @@ impl Emitter<'_> {
 
     fn function(&mut self, f: &IrFunction) {
         let name = symbol(f.entry);
+        if self.lazy.is_some() {
+            self.settle_fn(f.entry);
+        }
         self.line(0, format!("TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
         self.line(1, "H2_LOCALS();");
+        if let Some(l) = &self.lazy {
+            let slots: Vec<String> = (0..l.slots).map(|i| format!("lz{i} = 0")).collect();
+            self.line(1, format!("uint32_t lzk = 0, lzm = 0; uint64_t {};", slots.join(", ")));
+        }
         let x87 = self.x87;
         if x87 {
             self.line(1, "H2X87_LOCALS();");
@@ -241,6 +276,9 @@ impl Emitter<'_> {
         self.line(1, "{ uint32_t e_ = h2shim_v1_event(ctx, start, start, H2SHIM_BAD_ENTRY, start); H2_STOP_EVENT(start, e_); }");
         for b in f.blocks.values() {
             self.line(0, format!("L_{:08x}:;", b.start));
+            if let Some(l) = &self.lazy {
+                self.pend = l.entry[&b.start];
+            }
             if headers.contains(&b.start) {
                 // Every way round the loop passes here. clang rotates the
                 // poll onto the back-edge: one load and a branch per trip.
@@ -259,6 +297,17 @@ impl Emitter<'_> {
         }
         if x87 {
             self.line(1, "H2X87_FAIL();");
+        }
+        if self.lazy.is_some() {
+            // The epilogue, with everything still pending settled first.
+            self.line(0, "h2_exit:;");
+            let call = self.settle_call("lzm");
+            self.line(1, format!("if (lzm) {{ fl = {call}; fd |= lzm; }}"));
+            if x87 {
+                self.line(1, "H2X87_SPILL();");
+            }
+            self.line(1, "H2_EPILOGUE_BODY();");
+        } else if x87 {
             self.line(1, "H2X87_EPILOGUE();");
         } else {
             self.line(1, "H2_EPILOGUE();");
@@ -266,11 +315,112 @@ impl Emitter<'_> {
         self.line(0, "}");
     }
 
+    /// `h2lz_<entry>(kind, mask, slots..., fl)`: EFLAGS with the flags in
+    /// `mask` of formula `kind` computed from the slots.
+    fn settle_fn(&mut self, entry: u32) {
+        let l = self.lazy.as_ref().unwrap();
+        let formulas = l.formulas.clone();
+        let slots: Vec<String> = (0..l.slots).map(|i| format!("uint64_t a{i}")).collect();
+        self.line(0, format!("static uint32_t h2lz_{entry:08x}(uint32_t k, uint32_t m, {}, uint32_t fl) {{", slots.join(", ")));
+        self.line(1, "switch (k) {");
+        for (k, fm) in formulas.iter().enumerate() {
+            self.line(1, format!("case {k}u: {{"));
+            for (i, w) in fm.params.iter().enumerate() {
+                self.line(2, format!("{t} t{i} = ({t})a{i};", t = ty(*w)));
+            }
+            for (t, e) in &fm.body {
+                let rhs = self.expr(*t, e);
+                self.line(2, format!("{} t{} = {rhs};", ty(t.width), t.id));
+            }
+            for (flag, v) in &fm.flags {
+                let b = flag.eflags_bit();
+                self.line(2, format!("if (m & {:#x}u) fl = (fl & ~{:#x}u) | ((uint32_t)({} & 1u) << {b});", 1u32 << b, 1u32 << b, val(v)));
+            }
+            self.line(2, "break;");
+            self.line(1, "}");
+        }
+        self.line(1, "default: break;");
+        self.line(1, "}");
+        self.line(1, "return fl;");
+        self.line(0, "}");
+    }
+
+    fn settle_call(&self, mask: &str) -> String {
+        let l = self.lazy.as_ref().unwrap();
+        let slots: Vec<String> = (0..l.slots).map(|i| format!("lz{i}")).collect();
+        format!("h2lz_{}(lzk, {mask}, {}, fl)", self.entry_of_settle, slots.join(", "))
+    }
+
+    /// Settle the flags in `mask` that may be pending, before they are read
+    /// or the slots change: in place when the formula is known, else
+    /// through the handler's switch.
+    fn settle(&mut self, mask: u32, d: usize) {
+        let m = mask & self.pend.mask;
+        if m == 0 {
+            return;
+        }
+        let set = match self.pend.known() {
+            Some(kinds) => {
+                let arms: Vec<String> = kinds
+                    .iter()
+                    .map(|&k| {
+                        let (mut body, values) = self.formula_inline(k);
+                        for (flag, v) in values.iter().filter(|(f, _)| m & (1 << f.eflags_bit()) != 0) {
+                            let b = flag.eflags_bit();
+                            body.push_str(&format!(
+                                "if (m_ & {:#x}u) fl = (fl & ~{:#x}u) | ((uint32_t)({v} & 1u) << {b}); ",
+                                1u32 << b,
+                                1u32 << b,
+                            ));
+                        }
+                        body
+                    })
+                    .collect();
+                by_kind(&kinds, &arms)
+            }
+            None => format!("fl = {}; ", self.settle_call("m_")),
+        };
+        self.line(d, format!("{{ uint32_t m_ = lzm & {m:#x}u; if (m_) {{ {set}fd |= m_; lzm &= ~m_; }} }}"));
+        self.pend = self.pend.without(m);
+    }
+
+    /// Formula `k` computed from the slots, as declarations (temps renamed
+    /// clear of the instruction's own) and each flag's C value.
+    fn formula_inline(&self, k: u32) -> (String, Vec<(Flag, String)>) {
+        const BASE: u32 = 1 << 20;
+        let fm = &self.lazy.as_ref().unwrap().formulas[k as usize];
+        let rn = |v: &Value| match v {
+            Value::Temp(t) => Value::Temp(Temp { id: t.id + BASE, width: t.width }),
+            c => *c,
+        };
+        let mut body = String::new();
+        for (i, w) in fm.params.iter().enumerate() {
+            body.push_str(&format!("{t} t{} = ({t})lz{i}; ", i as u32 + BASE, t = ty(*w)));
+        }
+        for (t, e) in &fm.body {
+            let e = match *e {
+                Expr::Unary { op, a } => Expr::Unary { op, a: rn(&a) },
+                Expr::Binary { op, a, b } => Expr::Binary { op, a: rn(&a), b: rn(&b) },
+                Expr::Compare { op, a, b } => Expr::Compare { op, a: rn(&a), b: rn(&b) },
+                Expr::Cast { op, a } => Expr::Cast { op, a: rn(&a) },
+                Expr::Select { cond, a, b } => Expr::Select { cond: rn(&cond), a: rn(&a), b: rn(&b) },
+            };
+            let t = Temp { id: t.id + BASE, width: t.width };
+            body.push_str(&format!("{} t{} = {}; ", ty(t.width), t.id, self.expr(t, &e)));
+        }
+        (body, fm.flags.iter().map(|(f, v)| (*f, val(&rn(v)))).collect())
+    }
+
     fn insn(&mut self, insn: &IrInsn, last: bool) {
         let pc = insn.pc;
         self.line(1, format!("/* {pc:#010x} */ {{"));
         match &insn.atomic {
-            Some(a) => self.atomic(insn, a),
+            Some(a) => {
+                // The runtime reads the spilled flags.
+                self.settle(lazy::ALL, 2);
+                self.atomic(insn, a);
+                self.pend = Pend::default();
+            }
             None => self.stmts(&insn.stmts, insn, 2),
         }
         self.control(insn, last);
@@ -394,6 +544,20 @@ impl Emitter<'_> {
     fn stmts(&mut self, list: &[Stmt], insn: &IrInsn, d: usize) {
         let pc = insn.pc;
         for s in list {
+            // A flag read from known formulas is computed in place.
+            let inline = matches!(s, Stmt::ReadFlag { .. }) && self.pend.known().is_some();
+            self.settle(if inline { 0 } else { lazy::reads(s) }, d);
+            // An eager write takes a pending flag back from the formula.
+            let taken = self.pend.mask
+                & match s {
+                    Stmt::WriteFlag { flag, .. } => 1 << flag.eflags_bit(),
+                    Stmt::WriteEflags { mask, .. } => *mask,
+                    _ => 0,
+                };
+            if taken != 0 {
+                self.line(d, format!("lzm &= ~{taken:#x}u;"));
+                self.pend = self.pend.without(taken);
+            }
             match s {
                 Stmt::Assign { dst, expr } => {
                     let rhs = self.expr(*dst, expr);
@@ -421,7 +585,35 @@ impl Emitter<'_> {
                     self.line(d, s);
                 }
                 Stmt::ReadFlag { dst, flag } => {
-                    self.line(d, format!("uint8_t t{} = H2_FLAG({});", dst.id, flag.eflags_bit()))
+                    let b = flag.eflags_bit();
+                    match self.pend.known() {
+                        Some(kinds) if self.pend.mask & (1 << b) != 0 => {
+                            // Pending (on some paths, at least): the
+                            // formula's value, else the stored bit.
+                            let id = dst.id;
+                            let kinds: Vec<u32> = kinds
+                                .into_iter()
+                                .filter(|&k| self.lazy.as_ref().unwrap().formulas[k as usize].mask() & (1 << b) != 0)
+                                .collect();
+                            let arms: Vec<String> = kinds
+                                .iter()
+                                .map(|&k| {
+                                    let (body, values) = self.formula_inline(k);
+                                    let v = &values.iter().find(|(f, _)| f == flag).unwrap().1;
+                                    format!("{body}t{id} = (uint8_t)({v} & 1u); ")
+                                })
+                                .collect();
+                            self.line(
+                                d,
+                                format!(
+                                    "uint8_t t{id} = H2_FLAG({b}); if (lzm & {:#x}u) {{ {}}}",
+                                    1u32 << b,
+                                    by_kind(&kinds, &arms)
+                                ),
+                            );
+                        }
+                        _ => self.line(d, format!("uint8_t t{} = H2_FLAG({b});", dst.id)),
+                    }
                 }
                 Stmt::WriteFlag { flag, value } => match value {
                     FlagValue::Defined(v) => self.line(d, format!("H2_SETF({}, {});", flag.eflags_bit(), val(v))),
@@ -458,11 +650,14 @@ impl Emitter<'_> {
                 }
                 Stmt::If { cond, then, otherwise } => {
                     self.line(d, format!("if ({}) {{", val(cond)));
+                    let before = self.pend;
                     self.stmts(then, insn, d + 1);
+                    let then_pend = std::mem::replace(&mut self.pend, before);
                     if !otherwise.is_empty() {
                         self.line(d, "} else {");
                         self.stmts(otherwise, insn, d + 1);
                     }
+                    self.pend = self.pend.join(then_pend);
                     self.line(d, "}");
                 }
                 Stmt::Intrinsic { op: Intrinsic::ReadTsc, dsts, .. } => {
@@ -521,6 +716,21 @@ impl Emitter<'_> {
                         RepKind::RepNe => self.line(d + 1, format!("if (H2_FLAG({zf})) break;")),
                     }
                     self.line(d, "}");
+                }
+                Stmt::LazyFlags(l) => {
+                    let m = l.formula.mask();
+                    // The slots are about to change: settle what this does
+                    // not rewrite.
+                    self.settle(!m, d);
+                    let k = self.lazy.as_ref().unwrap().kind(&l.formula);
+                    let pending = Pend::of(m, k);
+                    let mut line = String::new();
+                    for (i, a) in l.args.iter().enumerate() {
+                        line.push_str(&format!("lz{i} = (uint64_t){}; ", val(a)));
+                    }
+                    line.push_str(&format!("lzk = {k}u; lzm = {m:#x}u;"));
+                    self.line(d, line);
+                    self.pend = pending;
                 }
                 Stmt::Unsupported { mnemonic, detail } => {
                     self.line(

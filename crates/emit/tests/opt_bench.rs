@@ -26,6 +26,9 @@ const SRC: u32 = MEM + 0x1000;
 const DST: u32 = MEM + 0x9000;
 /// Words in the source buffer the memory loops walk.
 const WORDS: u32 = 0x1000;
+/// Interleaved trials per build; the best counts. Short trials, many of
+/// them: on a loaded machine some run undisturbed.
+const TRIALS: usize = 61;
 
 type Body = Box<dyn Fn(&mut CodeAssembler) -> Result<(), IcedError>>;
 
@@ -71,10 +74,10 @@ fn loops() -> Vec<(&'static str, u32, Body)> {
         // reads them.
         (
             "alu",
-            50_000_000,
+            5_000_000,
             Box::new(|a| {
                 let mut l = a.create_label();
-                a.mov(ecx, 50_000_000u32)?;
+                a.mov(ecx, 5_000_000u32)?;
                 a.xor(eax, eax)?;
                 a.mov(edx, 0x1234_5678u32)?;
                 a.set_label(&mut l)?;
@@ -92,10 +95,10 @@ fn loops() -> Vec<(&'static str, u32, Body)> {
         // Sum a buffer of words, indexing and comparing like compiled C.
         (
             "sum",
-            20_000_000,
+            2_000_000,
             Box::new(|a| {
                 let (mut outer, mut inner) = (a.create_label(), a.create_label());
-                a.mov(edi, 20_000_000u32 / WORDS)?;
+                a.mov(edi, 2_000_000u32 / WORDS)?;
                 a.xor(eax, eax)?;
                 a.set_label(&mut outer)?;
                 a.xor(ecx, ecx)?;
@@ -114,11 +117,11 @@ fn loops() -> Vec<(&'static str, u32, Body)> {
         // Copy words, with the loop counter in memory like a spilled local.
         (
             "copy",
-            20_000_000,
+            2_000_000,
             Box::new(|a| {
                 let (mut outer, mut inner) = (a.create_label(), a.create_label());
                 a.sub(esp, 8)?;
-                a.mov(dword_ptr(esp), 20_000_000u32 / WORDS)?;
+                a.mov(dword_ptr(esp), 2_000_000u32 / WORDS)?;
                 a.set_label(&mut outer)?;
                 a.mov(esi, SRC)?;
                 a.mov(edi, DST)?;
@@ -139,10 +142,10 @@ fn loops() -> Vec<(&'static str, u32, Body)> {
         // Compare two equal byte strings, strcmp style, then start over.
         (
             "strcmp",
-            20_000_000,
+            2_000_000,
             Box::new(|a| {
                 let (mut outer, mut inner, mut done) = (a.create_label(), a.create_label(), a.create_label());
-                a.mov(edi, 20_000_000u32 / 0x400)?;
+                a.mov(edi, 2_000_000u32 / 0x400)?;
                 a.set_label(&mut outer)?;
                 a.mov(ecx, SRC)?;
                 a.mov(esi, SRC + 0x2000)?;
@@ -215,7 +218,7 @@ fn bench_passes() {
             .collect();
         let mut times = vec![f64::MAX; built.len()];
         let mut ends: Vec<Option<(CpuAbi, Vec<u8>)>> = vec![None; built.len()];
-        for _ in 0..15 {
+        for _ in 0..TRIALS {
             for (k, g) in built.iter().enumerate() {
                 let (mut cpu, mut ctx) = state();
                 let t0 = thread_time();

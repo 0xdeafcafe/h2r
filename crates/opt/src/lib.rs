@@ -21,6 +21,7 @@ use ir::IrFunction;
 
 pub mod dce;
 pub mod flags;
+pub mod lazy;
 
 /// Where a handler can be entered and where it polls.
 #[derive(Debug, Clone, Copy)]
@@ -37,17 +38,22 @@ pub struct Shape<'a> {
 pub struct Passes {
     /// Remove flag writes nothing can observe ([`flags::dead_flags`]).
     pub dead_flags: bool,
+    /// Turn flag writes read at most by a branch or `ReadFlag` in their own
+    /// block into [`ir::Stmt::LazyFlags`] ([`lazy::lazy_flags`]): the
+    /// backend computes the read flag in place and the rest on exit.
+    pub lazy_flags: bool,
 }
 
 /// Turns one pass on or off.
 type Setter = fn(&mut Passes, bool);
 
 /// `(name, setter)` for every pass, in the order they run.
-const NAMES: &[(&str, Setter)] = &[("dead-flags", |p, on| p.dead_flags = on)];
+const NAMES: &[(&str, Setter)] =
+    &[("dead-flags", |p, on| p.dead_flags = on), ("lazy-flags", |p, on| p.lazy_flags = on)];
 
 impl Passes {
-    pub const NONE: Passes = Passes { dead_flags: false };
-    pub const ALL: Passes = Passes { dead_flags: true };
+    pub const NONE: Passes = Passes { dead_flags: false, lazy_flags: false };
+    pub const ALL: Passes = Passes { dead_flags: true, lazy_flags: true };
 
     /// Every pass name, for usage text.
     pub fn names() -> impl Iterator<Item = &'static str> {
@@ -101,6 +107,8 @@ pub struct Report {
     pub flag_writes: usize,
     /// Flag writes removed as dead.
     pub dead_flags: usize,
+    /// Flag writes made lazy.
+    pub lazy_flags: usize,
     /// Pure statements removed because their results became unused.
     pub dead_stmts: usize,
 }
@@ -109,6 +117,7 @@ impl std::ops::AddAssign for Report {
     fn add_assign(&mut self, o: Report) {
         self.flag_writes += o.flag_writes;
         self.dead_flags += o.dead_flags;
+        self.lazy_flags += o.lazy_flags;
         self.dead_stmts += o.dead_stmts;
     }
 }
@@ -116,6 +125,12 @@ impl std::ops::AddAssign for Report {
 /// Run the enabled passes over `f`.
 pub fn optimize(f: &mut IrFunction, shape: &Shape<'_>, passes: Passes) -> Report {
     let mut r = Report { flag_writes: flags::count_writes(f), ..Report::default() };
+    // Lazy first, so each lazy group keeps every flag its instruction
+    // writes; dead-flags then removes dead eager writes and whole dead
+    // groups.
+    if passes.lazy_flags {
+        r.lazy_flags = lazy::lazy_flags(f);
+    }
     if passes.dead_flags {
         r.dead_flags = flags::dead_flags(f, shape);
     }

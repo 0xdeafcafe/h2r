@@ -63,6 +63,15 @@
 //! its bit in the defined mask. Every backend must do the same, so a later
 //! `pushfd`/`lahf` (which observe the stored bit) agrees across backends.
 //!
+//! # Lazy flags
+//!
+//! The lifter never produces [`Stmt::LazyFlags`]; the optimiser (`crates/opt`)
+//! does, for flags that are seldom read before they are written again. Its
+//! meaning is exactly that of the [`Stmt::WriteFlag`]s it replaces, executed
+//! where it stands: each flag gets its formula's value and becomes defined. A
+//! backend may compute the values later, as long as they are exact wherever
+//! they are read or state can be observed; see [`LazyFlags`].
+//!
 //! # Atomic instructions
 //!
 //! An [`IrInsn`] with [`IrInsn::atomic`] set (LOCK prefix, or `xchg` with
@@ -454,7 +463,7 @@ pub enum CastOp {
 }
 
 /// A pure computation, assigned to a temp by [`Stmt::Assign`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Expr {
     Unary { op: UnOp, a: Value },
     Binary { op: BinOp, a: Value, b: Value },
@@ -736,6 +745,57 @@ impl Intrinsic {
     }
 }
 
+/// A pure computation of flag values from captured inputs, shared by every
+/// [`Stmt::LazyFlags`] of the same shape. Parameter `i` is the temp with id
+/// `i` and width `params[i]`; `body` assigns further temps (ids from
+/// `params.len()`, each once, before use); `flags` are the `W1` results.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FlagFormula {
+    pub params: Vec<Width>,
+    pub body: Vec<(Temp, Expr)>,
+    pub flags: Vec<(Flag, Value)>,
+}
+
+impl FlagFormula {
+    /// The flag values for `args` (one per parameter).
+    pub fn eval(&self, args: &[u128]) -> Vec<(Flag, bool)> {
+        let mut temps: Vec<u128> = args.iter().zip(&self.params).map(|(v, w)| v & w.mask()).collect();
+        let get = |temps: &Vec<u128>, v: &Value| match v {
+            Value::Const { bits, .. } => *bits,
+            Value::Temp(t) => temps[t.id as usize],
+        };
+        for (t, e) in &self.body {
+            let v = interp::eval(t.width, e, &|v| get(&temps, v));
+            debug_assert_eq!(temps.len(), t.id as usize);
+            temps.push(v & t.width.mask());
+        }
+        self.flags.iter().map(|(f, v)| (*f, get(&temps, v) != 0)).collect()
+    }
+
+    /// The EFLAGS bits this formula writes.
+    pub fn mask(&self) -> u32 {
+        self.flags.iter().map(|(f, _)| 1u32 << f.eflags_bit()).fold(0, |a, b| a | b)
+    }
+}
+
+/// Flags written by a formula over values captured here ([`Stmt::LazyFlags`]).
+///
+/// Executing it is executing `WriteFlag { flag, Defined(value) }` for each
+/// of the formula's flags, at this point; nothing else is promised. What
+/// makes it worth having is where the optimiser puts it: on writes whose
+/// flags are, at most, read by a `ReadFlag` later in the same block (a
+/// branch on `ZF`, an `adc` on `CF`) and otherwise only observed by exits
+/// from the handler. A backend may keep the inputs and compute the flags
+/// late, on every exit path and before every read (`ReadFlag`,
+/// `ReadEflags`, `Repeat`, the spill before an atomic instruction); a read
+/// of one flag can take that flag alone from the formula.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LazyFlags {
+    pub formula: std::sync::Arc<FlagFormula>,
+    /// One per parameter, at the parameter's width.
+    pub args: Vec<Value>,
+}
+
 /// One effect or computation in an instruction's semantics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stmt {
@@ -818,6 +878,9 @@ pub enum Stmt {
     /// interruption there (a long `rep movsd` need not run to completion
     /// in one go): resuming at the PC continues where it stopped.
     Repeat { kind: RepKind, body: Vec<Stmt> },
+    /// Write the formula's flags, which a backend may compute late; see
+    /// [`LazyFlags`]. Only the optimiser produces this.
+    LazyFlags(LazyFlags),
     /// An instruction (or form of one) the lifter does not implement. It is
     /// a stop with diagnostics: executing it must not silently continue.
     /// `mnemonic` is the decoder's name for it, `detail` says what is
@@ -1077,6 +1140,11 @@ impl IrInsn {
                     Stmt::If { then, otherwise, .. } => {
                         walk(then, fx);
                         walk(otherwise, fx);
+                    }
+                    Stmt::LazyFlags(l) => {
+                        for (f, _) in &l.formula.flags {
+                            fx.defined.insert(*f);
+                        }
                     }
                     _ => {}
                 }

@@ -225,11 +225,46 @@ impl Checker {
                     self.stmts(body)?;
                     self.defined = saved;
                 }
+                Stmt::LazyFlags(l) => {
+                    let fm = &l.formula;
+                    if l.args.len() != fm.params.len() {
+                        return self.err("lazy flags with the wrong number of arguments");
+                    }
+                    for (a, w) in l.args.iter().zip(&fm.params) {
+                        self.expect(a, *w, "lazy flag argument")?;
+                    }
+                    formula(fm).map_err(|m| ValidateError { pc: self.pc, message: m })?;
+                }
                 Stmt::Unsupported { .. } => {}
             }
         }
         Ok(())
     }
+}
+
+/// A [`FlagFormula`] is self-contained: parameters, then body temps
+/// numbered in order, each defined before use, `W1` flags each once.
+fn formula(fm: &FlagFormula) -> Result<(), String> {
+    let mut c = Checker { pc: 0, defined: HashMap::new(), ever: Default::default() };
+    for (i, w) in fm.params.iter().enumerate() {
+        c.define(&Temp { id: i as u32, width: *w }).map_err(|e| e.message)?;
+    }
+    for (k, (t, e)) in fm.body.iter().enumerate() {
+        if t.id as usize != fm.params.len() + k {
+            return Err("lazy flag formula temps out of order".into());
+        }
+        c.expr(t, e).map_err(|e| e.message)?;
+        c.define(t).map_err(|e| e.message)?;
+    }
+    let mut seen = FlagSet::default();
+    for (f, v) in &fm.flags {
+        if seen.contains(*f) {
+            return Err(format!("lazy flag formula writes {f:?} twice"));
+        }
+        seen.insert(*f);
+        c.expect(v, Width::W1, "lazy flag value").map_err(|e| e.message)?;
+    }
+    Ok(())
 }
 
 /// At most one write per flag on any path. `written` is what the path has
@@ -256,6 +291,16 @@ fn flags_once(stmts: &[Stmt], written: FlagSet) -> Result<FlagSet, String> {
                         }
                         f.insert(flag);
                     }
+                }
+                f
+            }
+            Stmt::LazyFlags(l) => {
+                let mut f = FlagSet::default();
+                for (flag, _) in &l.formula.flags {
+                    if written.contains(*flag) {
+                        return Err(format!("{flag:?} written twice"));
+                    }
+                    f.insert(*flag);
                 }
                 f
             }
@@ -314,7 +359,7 @@ fn atomic_shape(insn: &IrInsn, a: &Atomic) -> Result<(), String> {
                 }
             }
             Stmt::WriteReg { .. } | Stmt::WriteFlag { .. } | Stmt::WriteEflags { .. } | Stmt::WriteXmm { .. }
-            | Stmt::WriteMmx { .. }
+            | Stmt::WriteMmx { .. } | Stmt::LazyFlags(_)
                 if store.is_none() =>
             {
                 return Err("atomic instruction writes state before its store".into());

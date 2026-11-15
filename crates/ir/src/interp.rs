@@ -666,6 +666,12 @@ impl<M: Memory> Exec<'_, M> {
                         }
                     }
                 }
+                Stmt::LazyFlags(l) => {
+                    let args: Vec<u128> = l.args.iter().map(|a| self.val(a)).collect();
+                    for (f, v) in l.formula.eval(&args) {
+                        self.cpu.set_flag(f, v);
+                    }
+                }
                 Stmt::Unsupported { mnemonic, detail } => {
                     return Err(Exit::Unsupported {
                         pc: self.pc,

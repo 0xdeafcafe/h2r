@@ -45,6 +45,7 @@ pub mod backedge;
 pub mod c;
 pub mod compile;
 pub mod host;
+mod lazy;
 pub mod output;
 mod x87;
 
