@@ -667,9 +667,10 @@ and allocations are bounded before anything is read:
   - Any other texture inside either buffer's `FRAME_DATA_SPAN` (another
     format or size, an offset into it, or anything over the depth buffer)
     skips the draw with `Event::DrawSkipped` saying why, when the draw
-    reads that stage: a pixel shader's `PSTEXTUREMODES` gives the stage a
-    mode, or, fixed function, the stage comes before the first `COLOROP =
-    DISABLE`. On a stage the draw does not read, it is left unbound and
+    reads that stage's image: a pixel shader's `PSTEXTUREMODES` gives the
+    stage a mode that fetches a texel (`TexMode::texture_dim`; not
+    `CLIPPLANE`, `PASSTHRU`, `BRDF`, `DOT_ZW` or `DOTPRODUCT`), or, fixed
+    function, the stage comes before the first `COLOROP = DISABLE`. On a stage the draw does not read, it is left unbound and
     the draw goes ahead. Depth bits read as colour are not modelled. A
     backend without `snapshot_surface` skips too.
   - Guest memory at those addresses is never read or written by the

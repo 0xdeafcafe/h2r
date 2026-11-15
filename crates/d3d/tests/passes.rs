@@ -598,3 +598,52 @@ fn gpu_x8_texture_over_the_back_buffer_reads_opaque_alpha() {
     }
     finish(scope);
 }
+
+/// Review P2 (re-check): a pixel-shader stage whose mode fetches no texel
+/// (CLIPPLANE, PASSTHRU, dot-only) does not read the bound image, so an
+/// unsupported depth alias on it leaves the draw alone.
+#[test]
+fn gpu_clipplane_stage_over_a_depth_alias_does_not_cancel_the_draw() {
+    use shaders::psh::PixelShaderDef;
+    use shaders::psh::bits::*;
+    const PSDEF: u32 = MISC + 0x7400;
+    const PS_OBJECT: u32 = MISC + 0x7500;
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    quad(&mut d, &mut m, 0xFFFF_0000);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    // r0 = v0 (diffuse); stage 3 texkill on its coordinates, which the
+    // pre-transformed quad leaves at 0 (nonnegative: nothing is killed).
+    let mut def = PixelShaderDef {
+        combiner_count: 1,
+        texture_modes: texture_modes([0, 0, 0, TEX_CLIPPLANE]),
+        ..PixelShaderDef::default()
+    };
+    // r0 = v0 * 1.
+    def.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
+    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
+    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    m.write(PSDEF, &def.to_bytes()).unwrap();
+    for (i, w) in [1, 0, PSDEF].iter().enumerate() {
+        m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
+    }
+    d.set_pixel_shader(&mut m, PS_OBJECT).unwrap();
+    frame_texture(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H);
+    d.set_texture(&mut m, 3, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    assert_eq!(back_buffer(&d)(32, 32), [0xFF, 0, 0, 0xFF]);
+    // The same alias on a PROJECT2D stage is read: skipped.
+    def.texture_modes = texture_modes([0, 0, 0, TEX_PROJECT2D]);
+    m.write(PSDEF, &def.to_bytes()).unwrap();
+    d.set_pixel_shader(&mut m, PS_OBJECT).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert!(
+        d.take_events()
+            .iter()
+            .any(|e| matches!(e, Event::DrawSkipped { .. }))
+    );
+    finish(scope);
+}

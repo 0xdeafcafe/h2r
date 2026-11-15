@@ -3297,8 +3297,9 @@ fn linear_twin(f: D3DFormat) -> D3DFormat {
     }
 }
 
-/// The texture stages a draw reads: with a pixel shader, the stages its
-/// `PSTEXTUREMODES` (slot 136, five bits a stage) gives a mode; for the
+/// The texture stages whose image a draw reads: with a pixel shader, the
+/// stages whose `PSTEXTUREMODES` mode (slot 136, five bits a stage)
+/// samples a texture (`TexMode::texture_dim`); for the
 /// fixed-function combiner, the stages before the first `COLOROP =
 /// DISABLE` (where [`crate::nv2a::fixed_function_def`] stops).
 fn sampled_stages(
@@ -3307,8 +3308,14 @@ fn sampled_stages(
     state: &crate::state::DrawState,
 ) -> [bool; 4] {
     if shader.pixel_shader.is_some() {
-        let modes = words.render[slot::PS_TEXTURE_MODES as usize];
-        return std::array::from_fn(|n| (modes >> (5 * n)) & 0x1F != 0);
+        // Only modes that fetch a texel read the image: CLIPPLANE (texkill),
+        // PASSTHRU and the dot-only modes do not.
+        let def = shaders::psh::PixelShaderDef {
+            texture_modes: words.render[slot::PS_TEXTURE_MODES as usize],
+            ..Default::default()
+        };
+        let modes = def.decode().texture_modes;
+        return std::array::from_fn(|n| modes[n].texture_dim().is_some());
     }
     let mut on = true;
     std::array::from_fn(|n| {
