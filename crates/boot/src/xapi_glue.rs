@@ -26,6 +26,12 @@ impl xapi::Events for KernelEvents {
 pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Result<(Shared, input::backend::keyboard::KeyboardMouse)> {
     let (input, keyboard) = input::InputManager::with_keyboard_pad(input::bindings::Bindings::default())
         .map_err(|e| anyhow::anyhow!("input: {e:?}"))?;
+    Ok((register_with(rt, k, input)?, keyboard))
+}
+
+/// [`register`] on the caller's input manager (a host window's keyboard,
+/// mouse and pads), instead of a headless keyboard pad.
+pub fn register_with(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>, input: input::InputManager) -> anyhow::Result<Shared> {
     let storage = xapi::VfsStorage::new(k.vfs().context("VFS not attached")?);
     let config = xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD);
     let x = xapi::Xapi::new(config, input, storage).map_err(|e| anyhow::anyhow!("xapi: {e}"))?;
@@ -33,7 +39,7 @@ pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Resul
     let mut r = None;
     rt.edit_dispatch(|d| r = Some(xapi::register(d, &x, xapi::GuestLayout::default())));
     r.unwrap().map_err(|e| anyhow::anyhow!("xapi::register: {e}"))?;
-    Ok((x, keyboard))
+    Ok(x)
 }
 
 /// A scripted pad timeline, fed through the keyboard pad and so through

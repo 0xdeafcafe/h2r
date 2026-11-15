@@ -34,13 +34,52 @@ pub struct Call {
     pub detail: String,
 }
 
-#[derive(Default)]
 pub struct Trace {
-    pub calls: Vec<Call>,
+    /// The most recent calls in memory, oldest first (at most `limit`).
+    pub calls: std::collections::VecDeque<Call>,
+    /// Calls traced so far; the next call's `seq`.
+    pub total: u64,
+    /// Calls pushed out of `calls` before they returned, by `seq`.
+    evicted_open: std::collections::BTreeMap<u64, Call>,
+    limit: usize,
     out: Option<std::fs::File>,
 }
 
 impl Trace {
+    fn push(&mut self, mut c: Call) -> u64 {
+        let seq = self.total;
+        self.total += 1;
+        c.seq = seq;
+        self.calls.push_back(c);
+        while self.calls.len() > self.limit.max(1) {
+            if let Some(old) = self.calls.pop_front()
+                && old.result.is_none()
+            {
+                self.evicted_open.insert(old.seq, old);
+            }
+        }
+        seq
+    }
+
+    /// Record `seq`'s EAX and write its line.
+    fn finish(&mut self, seq: u64, eax: u32) {
+        let front = self.calls.front().map_or(u64::MAX, |c| c.seq);
+        let c = if seq >= front {
+            self.calls.get_mut((seq - front) as usize).map(|c| {
+                c.result = Some(eax);
+                c.clone()
+            })
+        } else {
+            self.evicted_open.remove(&seq).map(|mut c| {
+                c.result = Some(eax);
+                c
+            })
+        };
+        if let Some(c) = c {
+            self.write(&c);
+        }
+    }
+
     fn write(&mut self, c: &Call) {
         if let Some(f) = &mut self.out {
             let args: Vec<String> = c.args.iter().map(|a| format!("{a:#x}")).collect();
@@ -67,9 +106,18 @@ pub type Shared = Arc<Mutex<Trace>>;
 /// TSV line per completed call (seq, thread, ordinal, name, return pc,
 /// args, eax) and per call that never returned (eax `-`), at the end.
 pub fn install(rt: &runtime::Runtime, path: Option<&std::path::Path>) -> anyhow::Result<Shared> {
+    install_bounded(rt, path, usize::MAX)
+}
+
+/// [`install`] keeping only the last `limit` calls in memory (plus any
+/// still open); the TSV, if any, still gets every call. For long runs.
+pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, limit: usize) -> anyhow::Result<Shared> {
     rt.memory().map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
     let trace: Shared = Arc::new(Mutex::new(Trace {
-        calls: Vec::new(),
+        calls: Default::default(),
+        total: 0,
+        evicted_open: Default::default(),
+        limit,
         out: path.map(std::fs::File::create).transpose()?,
     }));
     rt.edit_dispatch(|d| {
@@ -95,21 +143,22 @@ pub fn install(rt: &runtime::Runtime, path: Option<&std::path::Path>) -> anyhow:
                     8 => cstr(&mem, stack[0]),
                     _ => String::new(),
                 };
-                let idx = {
-                    let mut tr = t.lock().unwrap();
-                    let seq = tr.calls.len() as u64;
-                    tr.calls.push(Call { seq, thread: ctx.thread_id, ordinal, name, args, ret_pc, result: None, detail });
-                    seq as usize
-                };
+                let seq = t.lock().unwrap().push(Call {
+                    seq: 0,
+                    thread: ctx.thread_id,
+                    ordinal,
+                    name,
+                    args,
+                    ret_pc,
+                    result: None,
+                    detail,
+                });
                 // Pop the caller's return word; call_guest pushes the token
                 // into the same slot.
                 cpu.esp = cpu.esp.wrapping_add(4);
                 let t2 = Arc::clone(&t);
                 ctx.call_guest(cpu, &mut mem, shadow, move |cpu, _ctx| {
-                    let mut tr = t2.lock().unwrap();
-                    tr.calls[idx].result = Some(cpu.eax);
-                    let c = tr.calls[idx].clone();
-                    tr.write(&c);
+                    t2.lock().unwrap().finish(seq, cpu.eax);
                     Ok(TransferAbi::ret(ret_pc))
                 })
             }) else {
@@ -124,7 +173,8 @@ pub fn install(rt: &runtime::Runtime, path: Option<&std::path::Path>) -> anyhow:
 /// Write the calls that never returned (the stop, thread exits).
 pub fn flush(t: &Shared) {
     let mut tr = t.lock().unwrap();
-    let open: Vec<Call> = tr.calls.iter().filter(|c| c.result.is_none()).cloned().collect();
+    let mut open: Vec<Call> = tr.evicted_open.values().cloned().collect();
+    open.extend(tr.calls.iter().filter(|c| c.result.is_none()).cloned());
     for c in &open {
         tr.write(c);
     }
@@ -158,5 +208,46 @@ fn ansi_at(mem: &runtime::Guest, p: Option<u32>, off: u32) -> String {
             if root != 0 { format!("[root {root:#x}] {n}") } else { n }
         }
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn call(ordinal: u32) -> Call {
+        Call { seq: 0, thread: 0, ordinal, name: "x", args: vec![], ret_pc: 0, result: None, detail: String::new() }
+    }
+
+    fn bounded(limit: usize) -> Trace {
+        Trace { calls: Default::default(), total: 0, evicted_open: Default::default(), limit, out: None }
+    }
+
+    #[test]
+    fn a_bounded_trace_keeps_the_newest_calls_and_every_open_one() {
+        let mut t = bounded(3);
+        let blocked = t.push(call(1)); // never returns while the others run
+        for i in 2..=10 {
+            let s = t.push(call(i));
+            t.finish(s, i);
+        }
+        assert_eq!(t.total, 10);
+        assert_eq!(t.calls.iter().map(|c| c.seq).collect::<Vec<_>>(), [7, 8, 9]);
+        assert!(t.calls.iter().all(|c| c.result == Some(c.ordinal)));
+        // The evicted open call still completes by its seq.
+        assert_eq!(t.evicted_open.keys().copied().collect::<Vec<_>>(), [blocked]);
+        t.finish(blocked, 0x55);
+        assert!(t.evicted_open.is_empty());
+    }
+
+    #[test]
+    fn unbounded_keeps_everything() {
+        let mut t = bounded(usize::MAX);
+        for i in 0..100 {
+            t.push(call(i));
+        }
+        assert_eq!(t.calls.len(), 100);
+        t.finish(42, 7);
+        assert_eq!(t.calls[42].result, Some(7));
     }
 }

@@ -86,7 +86,48 @@ pub fn wake_idle(a: &Audio, k: &kernel::Kernel, rt: &runtime::Runtime, idle: &mu
     Ok(true)
 }
 
+/// Opens the sink the logical-time output plays into, on the output thread
+/// (`audio::output::DeviceSink` is not `Send` on macOS).
+pub type SinkOpener = Box<dyn FnOnce() -> Box<dyn audio::sink::AudioSink> + Send>;
+
+/// A boxed sink, so [`SinkOpener`] can pick one at run time.
+struct BoxedSink(Box<dyn audio::sink::AudioSink>);
+
+impl audio::sink::AudioSink for BoxedSink {
+    fn sample_rate(&self) -> u32 {
+        self.0.sample_rate()
+    }
+    fn queued_frames(&self) -> usize {
+        self.0.queued_frames()
+    }
+    fn free_frames(&self) -> usize {
+        self.0.free_frames()
+    }
+    fn write(&mut self, samples: &[f32]) -> usize {
+        self.0.write(samples)
+    }
+    fn stats(&self) -> audio::sink::SinkStats {
+        self.0.stats()
+    }
+    fn maintain(&mut self) {
+        self.0.maintain()
+    }
+}
+
 pub fn install(rt: &Arc<runtime::Runtime>, k: &Arc<kernel::Kernel>, xbe: &[u8]) -> anyhow::Result<Audio> {
+    install_with_sink(rt, k, xbe, Box::new(|| Box::new(audio::NullSink::new(RATE as u32, RATE as usize / 4))))
+}
+
+/// [`install`] playing into the caller's sink (a host's audio device).
+/// Pacing stays logical: audio time is the kernel's, so guest-visible audio
+/// state is the same as a headless run; a host slower than real time is
+/// heard as underruns, never as a different schedule.
+pub fn install_with_sink(
+    rt: &Arc<runtime::Runtime>,
+    k: &Arc<kernel::Kernel>,
+    xbe: &[u8],
+    open: SinkOpener,
+) -> anyhow::Result<Audio> {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE as u32)));
     let hle = Hle::new(DirectSound::new(Arc::clone(&mixer), Layout::default()), Box::new(KernelEvents(Arc::clone(k))));
     let mut r = None;
@@ -99,7 +140,7 @@ pub fn install(rt: &Arc<runtime::Runtime>, k: &Arc<kernel::Kernel>, xbe: &[u8]) 
     let output = hle
         .spawn_output(
             Arc::clone(rt),
-            || audio::NullSink::new(RATE as u32, RATE as usize / 4),
+            move || BoxedSink(open()),
             dsound::OutputConfig {
                 period: std::time::Duration::from_millis(5),
                 pacing: dsound::Pacing::Logical { origin: k.clock().counter(), max_queued: std::time::Duration::from_millis(250) },

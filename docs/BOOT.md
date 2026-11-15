@@ -73,6 +73,26 @@ The run prints a report when it ends. It covers:
 name, return address, args, EAX and decoded detail (object names for the
 file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
 
+## Hosted runs
+
+`run` is `run_hosted(xbe, dylib, opts, Host::default())`. A host (today
+`h2 play`, docs/app.md "Playing") fills in `boot::Host`:
+
+| Field | Instead of | Goes to |
+| --- | --- | --- |
+| `gfx: Option<d3d::GfxBackend>` | `RecordingBackend` or `H2_BOOT_GFX` | `d3d_glue::install_with` (present hook already attached) |
+| `audio_sink: Option<dsound_glue::SinkOpener>` | a `NullSink` | `dsound_glue::install_with_sink`: the same logical-time output, advanced after every slice, playing into the sink the opener returns (called on the output thread; `DeviceSink` is not `Send`) |
+| `input: Option<input::InputManager>` | a headless keyboard pad | `xapi_glue::register_with` |
+| `keyboard: Option<KeyboardMouse>` | that pad | what `H2_BOOT_INPUT` presses |
+| `trace_limit: Option<usize>` | every call in memory | `trace::install_bounded`: the last N calls (plus any still open) stay in memory; the TSV still gets all |
+| `between_slices: Option<BetweenSlices>` | nothing | called after every slice, input pump and audio advance with the kernel; `false` ends the run with outcome `HostStop` (the output is halted as on any end) |
+
+Everything else (stopgaps, fallback, vblanks, report) is the same in both
+modes. `tests/hosted.rs` (ignored; needs `$H2_XBE`, `$H2_DISC`,
+`$H2_BOOT_DYLIB`) checks the sink is opened once off the runner thread and
+fed on the guest's clock, the callback count, a monotonic clock and
+`HostStop`; `trace.rs` tests the bounded trace.
+
 ## How it fits together
 
 - **`crates/boot/src/lib.rs`**: `build` and `run`.

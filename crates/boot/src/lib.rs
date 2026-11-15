@@ -282,9 +282,43 @@ pub struct RunReport {
     pub kernel_log: Vec<String>,
 }
 
+/// What the run is hosted in. The default is headless: a `RecordingBackend`
+/// (or `H2_BOOT_GFX`), logical-time audio into a `NullSink`, a keyboard pad
+/// only `H2_BOOT_INPUT` presses, every kernel call kept in memory, and
+/// `max_slices` as the only stop. A windowed host (`h2 play`, crates/app)
+/// fills these in; see docs/BOOT.md "Hosted runs".
+#[derive(Default)]
+pub struct Host {
+    /// D3D renders here (present hook attached) instead of the headless
+    /// backend; `H2_BOOT_GFX` is then ignored.
+    pub gfx: Option<d3d::GfxBackend>,
+    /// Where the logical-time audio output plays (an audio device), instead
+    /// of a `NullSink` (`dsound_glue::install_with_sink`).
+    pub audio_sink: Option<dsound_glue::SinkOpener>,
+    /// XAPI's input manager (`xapi_glue::register_with`).
+    pub input: Option<input::InputManager>,
+    /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
+    pub keyboard: Option<input::backend::keyboard::KeyboardMouse>,
+    /// Keep only this many kernel calls in memory (`trace::install_bounded`).
+    pub trace_limit: Option<usize>,
+    /// Called after every slice, input pump and audio advance, with the
+    /// kernel (for its logical clock). Returning false ends the run
+    /// (outcome `HostStop`).
+    pub between_slices: Option<BetweenSlices>,
+}
+
+/// [`Host::between_slices`]: true to keep running.
+pub type BetweenSlices = Box<dyn FnMut(&kernel::Kernel) -> bool>;
+
 /// Map the image, attach the kernel, register the generated module and run
 /// the entry thread.
 pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> {
+    run_hosted(xbe_bytes, dylib, opts, Host::default())
+}
+
+/// [`run`] inside a host: its D3D backend, audio sink and input, and a
+/// callback between slices that paces the run and can end it.
+pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
     if !dylib_current(xbe_bytes, dylib) {
         bail!(
@@ -362,7 +396,11 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
     }
-    let mut d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
+    let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
+        (false, _) => None,
+        (true, Some(b)) => Some(d3d_glue::install_with(&loaded.runtime, b)?),
+        (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
+    };
     // Vblanks on the 60 Hz logical clock (docs/d3d.md "Vertical blank"),
     // delivered as DPCs; the frame wait above is the clocked one.
     if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
@@ -372,20 +410,25 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     if d3d_calls.is_some() && uses.is_some() {
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
-    let ds = if opts.dsound { Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?) } else { None };
-    let (xa, pad) = match opts.xapi {
-        true => {
+    let ds = match (opts.dsound, host.audio_sink.take()) {
+        (false, _) => None,
+        (true, Some(open)) => Some(dsound_glue::install_with_sink(&loaded.runtime, &k, xbe_bytes, open)?),
+        (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
+    };
+    let (xa, pad) = match (opts.xapi, host.input.take()) {
+        (false, _) => (None, None),
+        (true, Some(input)) => (Some(xapi_glue::register_with(&loaded.runtime, &k, input)?), host.keyboard.take()),
+        (true, None) => {
             let (x, pad) = xapi_glue::register(&loaded.runtime, &k)?;
             (Some(x), Some(pad))
         }
-        false => (None, None),
     };
     let script = xapi_glue::InputScript::from_env();
     if opts.bink {
         let hle = bink_hle::BinkHle::new(None);
         loaded.runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
     }
-    let tr = trace::install(&loaded.runtime, opts.trace.as_deref())?;
+    let tr = trace::install_bounded(&loaded.runtime, opts.trace.as_deref(), host.trace_limit.unwrap_or(usize::MAX))?;
     let mut m = kernel::Machine::new(
         Arc::clone(&loaded.runtime),
         Arc::clone(&k),
@@ -405,6 +448,7 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     // One slice at a time so XAPI's input pump runs between slices
     // (docs/xapi.md "Input pump"); no guard is held here.
     let mut outcome = kernel::RunOutcome::SliceLimit;
+    let mut host_stop = false;
     let mut input_errors = 0u64;
     let mut audio_errors: Vec<String> = Vec::new();
     // Logical time added for pending audio alone since a thread last ran.
@@ -449,6 +493,12 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             && audio_errors.len() < 8
         {
             audio_errors.push(format!("slice {slice}: {e}"));
+        }
+        if let Some(f) = &mut host.between_slices
+            && !f(&k)
+        {
+            host_stop = true;
+            break;
         }
     }
     if let Some(a) = &ds {
@@ -537,7 +587,7 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     }
     {
         let t = tr.lock().unwrap();
-        eprintln!("{} kernel calls; last 40:", t.calls.len());
+        eprintln!("{} kernel calls; last 40:", t.total);
         for c in t.calls.iter().rev().take(40).collect::<Vec<_>>().into_iter().rev() {
             let args: Vec<String> = c.args.iter().map(|a| format!("{a:x}")).collect();
             eprintln!(
@@ -585,7 +635,8 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     for (o, r) in &stops {
         eprintln!("kernel stop reason #{o}: {r}");
     }
-    let report = RunReport { outcome: format!("{outcome:x?}"), stop, eip, kernel_log: k.log() };
+    let outcome = if host_stop { "HostStop".to_string() } else { format!("{outcome:x?}") };
+    let report = RunReport { outcome, stop, eip, kernel_log: k.log() };
     drop(m);
     drop(loaded);
     drop(module);
