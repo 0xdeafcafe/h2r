@@ -43,7 +43,7 @@ struct Args {
 fn usage() -> ! {
     eprintln!(
         "usage: h2-app-demo [--frames N] [--fps N] [--aspect 4:3|16:9|source] [--scaling fit|integer|stretch]\n\
-         \x20                  [--nearest] [--no-vsync] [--no-audio] [--no-gamepads] [--pause-on-blur] [--fullscreen]"
+         \x20                  [--input-config PATH] [--input-script PATH] [--nearest] [--no-vsync] [--no-audio] [--no-gamepads] [--pause-on-blur] [--fullscreen]"
     );
     std::process::exit(2)
 }
@@ -86,6 +86,34 @@ fn parse() -> Args {
                     _ => usage(),
                 }
             }
+            "--input-config" => {
+                let path = value();
+                a.config.bindings = std::fs::read_to_string(&path)
+                    .map_err(|e| e.to_string())
+                    .and_then(|s| {
+                        input::bindings::Bindings::from_toml(&s).map_err(|e| e.to_string())
+                    })
+                    .unwrap_or_else(|e| {
+                        eprintln!("{path}: {e}");
+                        usage()
+                    });
+            }
+            "--input-script" => {
+                let path = value();
+                a.config.scripted_input = Some(
+                    std::fs::read_to_string(&path)
+                        .map_err(|e| e.to_string())
+                        .and_then(|s| {
+                            input::backend::scripted::Timeline::from_toml(&s)
+                                .map_err(|e| e.to_string())
+                        })
+                        .unwrap_or_else(|e| {
+                            eprintln!("{path}: {e}");
+                            usage()
+                        })
+                        .playback(),
+                );
+            }
             "--nearest" => a.config.filter = Filter::Nearest,
             "--no-vsync" => a.config.vsync = false,
             "--no-audio" => a.config.audio = false,
@@ -107,7 +135,8 @@ fn main() -> anyhow::Result<()> {
         fps,
         config,
     } = parse();
-    let report = app::run(config, move |host| guest(host, frames, fps))?;
+    let script = config.scripted_input.clone();
+    let report = app::run(config, move |host| guest(host, frames, fps, script))?;
     println!(
         "exit: {:?}; frames published {}, shown {}, dropped {}; pacing {} sleeps, {} rebases",
         report.guest,
@@ -122,7 +151,12 @@ fn main() -> anyhow::Result<()> {
 
 /// The synthetic guest: 60 Hz of logical time, a test pattern, input echo
 /// and a tone. Shaped like the real guest loop: tick, input, frame.
-fn guest(mut host: GuestHost, frames: Option<u64>, fps: u32) -> anyhow::Result<()> {
+fn guest(
+    mut host: GuestHost,
+    frames: Option<u64>,
+    fps: u32,
+    script: Option<input::backend::scripted::ScriptedInput>,
+) -> anyhow::Result<()> {
     let mut input = host.take_input().expect("first take");
     let mut sink = host.frame_sink();
     let mixer = host.mixer();
@@ -157,6 +191,9 @@ fn guest(mut host: GuestHost, frames: Option<u64>, fps: u32) -> anyhow::Result<(
         if host.tick(guest_ticks) == Control::Stop {
             println!("demo: stop requested after {n} frames");
             break;
+        }
+        if let Some(script) = &script {
+            script.advance_to(guest_ticks)?;
         }
         input.sync();
         if input.connected_mask() != connected {

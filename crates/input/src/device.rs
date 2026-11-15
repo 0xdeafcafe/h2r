@@ -488,6 +488,20 @@ mod tests {
     }
 
     #[test]
+    fn packet_number_wraps_on_the_next_published_change() {
+        let (mut m, sh) = setup();
+        sh.lock().unwrap().pads = vec![pad(1, false)];
+        m.sync();
+        let h = m.open(p(0)).unwrap();
+        m.device_mut(h).unwrap().published.packet_number = u32::MAX;
+        sh.lock().unwrap().pads = vec![pad(1, true)];
+        m.sync();
+        assert_eq!(m.get_state(h).unwrap().packet_number, 0);
+        m.sync();
+        assert_eq!(m.get_state(h).unwrap().packet_number, 0);
+    }
+
+    #[test]
     fn manual_poll_holds_snapshot_until_polled() {
         let (mut m, sh) = setup();
         sh.lock().unwrap().pads = vec![pad(1, false)];

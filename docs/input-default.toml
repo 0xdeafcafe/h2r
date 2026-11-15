@@ -1,0 +1,41 @@
+# Pass to Bindings::from_toml; h2-app-demo --input-config PATH.
+# GameController supplies calibrated axes, so these host drift filters only
+# apply to raw physical backends. Halo retains its own gameplay deadzone.
+[convert]
+stick_deadzone = 0.08
+trigger_deadzone = 0.03
+
+[mouse]
+look = true
+sensitivity = 0.04
+invert_y = false
+
+# Physical gamepads: south/east/west/north = A/B/X/Y; RB = Black,
+# LB = White; Menu = Start, Options = Back; stick clicks = thumb buttons.
+# Keyboard and mouse share player one with the first physical controller.
+[bind]
+a = ["Space"]
+b = ["V", "MouseMiddle"]
+x = ["E"]
+y = ["Q"]
+black = ["F"]
+white = ["R"]
+left_trigger = ["G", "MouseBack"]
+right_trigger = ["MouseLeft"]
+dpad_up = ["ArrowUp"]
+dpad_down = ["ArrowDown"]
+dpad_left = ["ArrowLeft"]
+dpad_right = ["ArrowRight"]
+start = ["Escape"]
+back = ["Tab"]
+left_thumb = ["ControlLeft", "C"]
+right_thumb = ["MouseRight"]
+left_stick_up = ["W"]
+left_stick_down = ["S"]
+left_stick_left = ["A"]
+left_stick_right = ["D"]
+# Right stick comes from mouse motion; optionally bind keys here.
+right_stick_up = []
+right_stick_down = []
+right_stick_left = []
+right_stick_right = []

@@ -307,9 +307,9 @@ mod tests {
             right_stick: (-1.0, -1.0),
             ..Default::default()
         });
-        // Full diagonal is clamped to the unit circle: ~0.707 of 32767 each.
-        assert!(g.thumb_lx > 23000 && g.thumb_ly > 23000);
-        assert!(g.thumb_rx < -23000 && g.thumb_ry < -23000);
+        // Framework-calibrated axes are passed through independently.
+        assert_eq!((g.thumb_lx, g.thumb_ly), (32767, 32767));
+        assert_eq!((g.thumb_rx, g.thumb_ry), (-32768, -32768));
         let g = gp(&Snapshot {
             left_stick: (0.0, 1.0),
             right_stick: (-1.0, 0.0),

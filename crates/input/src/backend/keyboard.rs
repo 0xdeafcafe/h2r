@@ -185,6 +185,15 @@ impl KeyboardMouse {
             s.right_stick.1 =
                 (f64::from(s.right_stick.1) + sign * i.delta.1 * k).clamp(-1.0, 1.0) as f32;
         }
+        // Synthesised directions have no physical gate. Normalise here so
+        // calibrated hardware and scripted reports can retain independent axes.
+        for stick in [&mut s.left_stick, &mut s.right_stick] {
+            let magnitude = stick.0.hypot(stick.1);
+            if magnitude > 1.0 {
+                stick.0 /= magnitude;
+                stick.1 /= magnitude;
+            }
+        }
         i.delta = (0.0, 0.0);
         s
     }

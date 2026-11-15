@@ -19,7 +19,7 @@ platform-free.
  winit event loop                            your closure: FnOnce(GuestHost)
  window + wgpu Metal surface                   Machine::run(chunk) loop
  cpal output stream (not Send)                 d3d GfxBackend on host.gfx_context()
- keys/mouse -> KeyboardMouse  ---(Arc)--->     InputManager (keyboard pad + gilrs)
+ keys/mouse -> KeyboardMouse  ---(Arc)--->     InputManager (pad + keyboard fallback)
                                                xapi::Xapi ... app::pump_input
  audio callback <- audio::Mixer <--(Arc)--     dsound::DirectSound on host.mixer()
  redraw: FrameSource::latest  <--3 slots--     Swap -> present hook -> FrameSink
@@ -53,8 +53,8 @@ frame counters and pacing counters.
 | `gfx_context() -> GfxContext` | The shared device. `d3d::GfxBackend::new(host.gfx_context())`. |
 | `present_hook()` | `impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static`, exactly what `GfxBackend::on_present` takes. Copies the swapped surface into the handoff (resolving MSAA, forcing alpha opaque for X8/R5G6B5 formats like `gfx::surface::present_surface`) and returns at once. Errors are printed, never returned to the guest. |
 | `frame_sink() -> FrameSink` | For frames that are not gfx surfaces: `submit_rgba(size, &pixels)`, `submit_view(&view, size, opaque)`, `submit_surface(&store, id)`. |
-| `take_input() -> Option<InputManager>` | Once. Keyboard+mouse pad first (port 0), then gilrs pads. Build `xapi::Xapi` on it. |
-| `keyboard() -> Option<&KeyboardMouse>` | The handle the window feeds; for scripted input. |
+| `take_input() -> Option<InputManager>` | Once. Player one combines keyboard/mouse with the first physical pad; scripts replace live sources. Build `xapi::Xapi` on it. |
+| `keyboard() -> Option<&KeyboardMouse>` | The handle the window feeds; absent in timeline mode. |
 | `mixer() -> Arc<Mutex<audio::Mixer>>`, `sample_rate()` | The mixer the device plays, created at the device rate. Build `dsound::DirectSound` on it. |
 | `tick(guest_ticks) -> Control` | Call between scheduler chunks with `kernel.clock().counter()`. Blocks while paused, sleeps while guest time is ahead of wall time, returns `Control::Stop` once a close was requested. |
 | `lifecycle() -> Lifecycle`, `should_stop()` | Stop/pause flags for checks from inside overrides (`Send + Sync`, cloneable). |
@@ -180,8 +180,8 @@ vertical-blank callbacks, which should be kernel timers at
 
 The window feeds `input::backend::keyboard::KeyboardMouse` (`keymap.rs` maps
 winit's physical `KeyCode` to the W3C names the bindings use, so WASD is
-positional on any layout). gilrs reads pads on its own. Nothing reaches the
-guest until the guest thread pumps: `InputManager::sync` runs inside
+positional on any layout). GameController reads pads on macOS; gilrs handles
+other desktop hosts. Nothing reaches the guest until the guest thread pumps: `InputManager::sync` runs inside
 `Xapi::sync_input`, so the guest sees a consistent snapshot per frame.
 
 - Default bindings are docs/input.md's: WASD move, mouse look, Space A,
@@ -194,6 +194,18 @@ guest until the guest thread pumps: `InputManager::sync` runs inside
 - Host shortcuts, with Cmd held (never forwarded): Cmd+Q quit, Cmd+F or
   Cmd+Enter borderless fullscreen, Cmd+P pause.
 - Focus loss releases every held key and button.
+
+Configuration and deterministic input: [input-default.toml](input-default.toml)
+contains the full keyboard/mouse mapping and drift filter settings. Load it
+into `AppConfig::bindings`, or use the demo's `--input-config PATH`.
+`AppConfig::scripted_input = Some(timeline.playback())` replaces all live
+sources, including in `GuestHost::headless`. Keep a playback clone and advance
+it to relative guest ticks before each input pump. See [input.md](input.md)
+for the timeline format, clock contract, next-transition scheduling and the
+boot runner integration. `--input-script PATH` wires that flow in the demo.
+The app uses GameController on macOS, with physical haptics when available.
+With keyboard enabled the first controller and keyboard share player one;
+turn keyboard off to expose physical controller hotplug directly.
 
 ## Audio
 
@@ -278,7 +290,8 @@ cargo run -p app --release --bin h2-app-demo -- --frames 300    # closes itself 
 
 Flags: `--frames N`, `--fps N`, `--aspect 4:3|16:9|source`, `--scaling
 fit|integer|stretch`, `--nearest`, `--no-vsync`, `--no-audio`,
-`--no-gamepads`, `--pause-on-blur`, `--fullscreen`.
+`--no-gamepads`, `--pause-on-blur`, `--fullscreen`, `--input-config PATH`,
+`--input-script PATH`.
 
 A synthetic guest drives the real shell exactly like the game will: 60 Hz of
 logical time through `tick`, input through `InputManager`, frames through a
@@ -301,8 +314,6 @@ mouse capture were not exercised in this session.
 
 ## Known gaps
 
-- Rumble: macOS gilrs has none (docs/input.md); `GCController` would need its
-  own backend.
 - HiDPI: the surface is in physical pixels and the frame is scaled into it;
   nothing is done about the backing scale beyond that.
 - Pacing granularity is the chunk size (see Pacing).

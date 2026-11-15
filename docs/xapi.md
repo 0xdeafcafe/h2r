@@ -142,12 +142,12 @@ rumble loop at `00124f31` reads that status and ignores EAX. This models host ca
 **Host source.** `InputManager::with_keyboard_pad(bindings)` is the default:
 the keyboard+mouse pad is the first backend, so it is on port 0 and connected
 from the first sync. It returns the `KeyboardMouse` handle the platform layer
-feeds (crates/app's window does the same with its own pad). That pad
+feeds (the app uses the shared player-one fallback described below). That pad
 advertises both motors and accepts feedback like a standard controller.
 Requests complete with status 0, and `KeyboardMouse::rumble()` holds the
 newest motor speeds. A plain `KeyboardMouse::new` keeps the no-motor policy
-(50). `set_rumble_supported(true)` on app's handle enables rumble too; call it
-before the first sync, because a pad's capabilities are fixed at insertion.
+(50). App's `KeyboardFallback` always accepts feedback and forwards it to the first
+physical pad when present. Standalone pad capabilities are fixed at insertion.
 Halo's loop at `00124f31` submits with `hEvent = 0` whenever the status is 0,
 skips while it is 997 and clears any other status, so a pad without motors
 alternates 50/0 every frame. Halo accepts capabilities SubType 1 or 2
@@ -837,3 +837,24 @@ See [input.md](input.md), [storage.md](storage.md),
 [architecture](ARCHITECTURE.md) and [kernel-imports.md](kernel-imports.md) for
 host and kernel contracts. External signatures and game disassembly stay out
 of the repository.
+
+## Campaign input acceptance and scripted runners
+
+`input` now supplies externally clocked timelines and `app::AppConfig` can
+replace live input with one. [input.md](input.md#deterministic-timelines-for-boot-and-headless-runners)
+documents the integration: retain a `ScriptedInput` clone, call
+`advance_to(relative_guest_ticks)` before `service_input`/`pump_input`, and
+keep the usual status-write / unlock / signal / acknowledge sequence.
+No new guest entry addresses or overrides are needed. XGetDevices and
+XInputPoll remain available as adapters, without an invented retail address;
+the generated device readers consume the published Cur/Chg/Prev object.
+
+Synthetic `tests/input_semantics.rs` exercises the stdcall entries for every
+button's press/hold/release, all pressure values, both sticks, packet changes,
+manual polling, capabilities, feedback completion and insertion/removal with
+stale handles. `tests/register.rs` additionally drives the actual registered
+state/capabilities/feedback entries at 0x409b6c/0x409994/0x409bdf with a timeline.
+The existing retry, disconnected snapshot, event pinning and memory-fault
+tests remain applicable. These tests prove service semantics; observing
+0x124c36's consumer and 0x2a9470..0x2a9550's Armory pitch gates during a retail
+boot remains the boot lane's integration acceptance.

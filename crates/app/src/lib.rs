@@ -35,6 +35,7 @@ use gfx::GfxContext;
 use gfx::surface::{SurfaceId, SurfaceStore};
 use input::InputManager;
 use input::backend::keyboard::KeyboardMouse;
+use input::backend::scripted::ScriptedInput;
 use input::bindings::Bindings;
 
 pub use frame::{Compositor, Filter, FrameError, FrameSink, FrameSource, FrameStats, ShownFrame};
@@ -63,12 +64,15 @@ pub struct AppConfig {
     pub pause_on_focus_loss: bool,
     /// Click to capture the mouse for look; Cmd or focus loss releases it.
     pub mouse_capture: bool,
-    /// Add physical controllers (gilrs) after the keyboard pad.
+    /// Add physical controllers (GameController on macOS, gilrs elsewhere).
     pub gamepads: bool,
-    /// Add the keyboard+mouse virtual pad (port 0 when added first).
+    /// Keyboard/mouse shares player one with the first physical pad.
     pub keyboard: bool,
     /// Keyboard and mouse bindings (and stick/trigger deadzones).
     pub bindings: Bindings,
+    /// Exclusive timeline source, replacing all live backends. Retain a clone
+    /// and call advance_to(guest_ticks) before pump_input. Polls never advance it.
+    pub scripted_input: Option<ScriptedInput>,
     /// Open the default audio device. Off (or no device) still gives the
     /// guest a mixer, at [`audio_out::FALLBACK_RATE`].
     pub audio: bool,
@@ -97,6 +101,7 @@ impl Default for AppConfig {
             gamepads: true,
             keyboard: true,
             bindings: Bindings::default(),
+            scripted_input: None,
             audio: true,
             pacing: PacePolicy::default(),
             keep_open_on_guest_exit: true,
@@ -152,7 +157,8 @@ pub struct GuestHost {
 impl GuestHost {
     /// A host with no window: frames are accepted and counted, audio goes to
     /// a mixer consumed in real time by a `DiscardRenderer`, input has only the backends `config` enables
-    /// (`keyboard` gives a pad nobody presses; `gamepads` reads real pads).
+    /// (`keyboard` supplies the player-one fallback; `gamepads` reads real pads).
+    /// `scripted_input` replaces both with the runner-controlled timeline.
     pub fn headless(config: &AppConfig) -> Result<Self, gfx::GfxError> {
         let ctx = GfxContext::headless()?;
         let (sink, source) = frame::channel(&ctx);
@@ -288,37 +294,60 @@ pub fn share_context(ctx: &GfxContext) -> GfxContext {
 }
 
 /// The input manager the guest gets, and the keyboard handle the window
-/// keeps. The keyboard pad goes first so it takes port 0.
+/// keeps. The keyboard and first physical pad share port 0.
 fn build_input(config: &AppConfig) -> (InputManager, Option<KeyboardMouse>) {
-    let mut manager = match InputManager::new(config.bindings.convert) {
-        Ok(m) => m,
+    let convert = match config.bindings.convert.validate() {
+        Ok(()) => config.bindings.convert,
         Err(e) => {
             eprintln!("app: invalid deadzones in bindings ({e}); using defaults");
-            InputManager::new(Default::default()).expect("default deadzones are valid")
+            Default::default()
         }
     };
-    let keyboard = config.keyboard.then(|| {
-        let kb = KeyboardMouse::new(config.bindings.clone());
-        manager.add_backend(Box::new(kb.clone()));
-        kb
-    });
-    if config.gamepads {
-        add_gamepads(&mut manager);
+    let mut manager = InputManager::new(convert).expect("validated deadzones");
+    if let Some(scripted) = &config.scripted_input {
+        manager.add_backend(Box::new(scripted.clone()));
+        return (manager, None);
     }
+    let physical = config.gamepads.then(gamepad_backend).flatten();
+    let keyboard = if config.keyboard {
+        let kb = KeyboardMouse::new(config.bindings.clone());
+        manager.add_backend(Box::new(input::backend::fallback::KeyboardFallback::new(
+            kb.clone(),
+            physical,
+            convert,
+        )));
+        Some(kb)
+    } else {
+        if let Some(physical) = physical {
+            manager.add_backend(physical);
+        }
+        None
+    };
     (manager, keyboard)
 }
 
-#[cfg(feature = "gamepads")]
-fn add_gamepads(manager: &mut InputManager) {
+#[cfg(all(feature = "gamepads", target_os = "macos"))]
+fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
+    Some(Box::new(
+        input::backend::game_controller::GameControllerPads::new(),
+    ))
+}
+
+#[cfg(all(feature = "gamepads", not(target_os = "macos")))]
+fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
     match input::backend::gilrs_pads::GilrsPads::new() {
-        Ok(p) => manager.add_backend(Box::new(p)),
-        Err(e) => eprintln!("app: gamepads unavailable: {e}"),
+        Ok(p) => Some(Box::new(p)),
+        Err(e) => {
+            eprintln!("app: gamepads unavailable: {e}");
+            None
+        }
     }
 }
 
 #[cfg(not(feature = "gamepads"))]
-fn add_gamepads(_: &mut InputManager) {
+fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
     eprintln!("app: built without the `gamepads` feature; keyboard only");
+    None
 }
 
 /// Opens the window and runs `guest` on a worker thread until the window
@@ -330,4 +359,67 @@ where
     F: FnOnce(GuestHost) -> anyhow::Result<()> + Send + 'static,
 {
     shell::run(config, Box::new(guest))
+}
+
+#[cfg(test)]
+mod input_tests {
+    use super::*;
+    use input::PortIndex;
+    use input::backend::scripted::Timeline;
+
+    #[test]
+    fn timeline_replaces_live_input_and_advances_only_on_runner_clock() {
+        let script = Timeline::from_toml(include_str!("../../../docs/input-menu-example.toml"))
+            .unwrap()
+            .playback();
+        let config = AppConfig {
+            scripted_input: Some(script.clone()),
+            ..Default::default()
+        };
+        // No GPU, audio device, window or physical controller is needed.
+        let (mut input, keyboard) = build_input(&config);
+        assert!(keyboard.is_none(), "scripts replace live sources");
+        input.sync();
+        let h = input.open(PortIndex::new(0).unwrap()).unwrap();
+        assert_eq!(input.connected_mask(), 1);
+        assert_eq!(input.get_state(h).unwrap().gamepad.analog[0], 0);
+        script.advance_to(10_000_000).unwrap();
+        input.sync();
+        assert_eq!(input.get_state(h).unwrap().gamepad.analog[0], 255);
+        input.sync();
+        assert_eq!(input.get_state(h).unwrap().gamepad.analog[0], 255);
+        script.advance_to(11_000_000).unwrap();
+        input.sync();
+        assert_eq!(input.get_state(h).unwrap().gamepad.analog[0], 0);
+        script.advance_to(12_000_000).unwrap();
+        input.sync();
+        assert_eq!(input.get_state(h).unwrap().gamepad.buttons.0, 2);
+    }
+
+    #[test]
+    fn documented_bindings_drive_all_fallback_inputs_and_release_on_focus_loss() {
+        let config = AppConfig {
+            gamepads: false,
+            bindings: Bindings::from_toml(include_str!("../../../docs/input-default.toml"))
+                .unwrap(),
+            ..Default::default()
+        };
+        let (mut input, keyboard) = build_input(&config);
+        let keyboard = keyboard.unwrap();
+        keyboard.key_down("Space");
+        keyboard.key_down("W");
+        keyboard.mouse_button(input::bindings::MouseButton::Left, true);
+        keyboard.mouse_motion(10.0, -10.0);
+        input.sync();
+        let h = input.open(PortIndex::new(0).unwrap()).unwrap();
+        let pad = input.get_state(h).unwrap().gamepad;
+        assert_eq!(pad.analog[0], 255);
+        assert_eq!(pad.analog[7], 255);
+        assert_eq!(pad.thumb_ly, i16::MAX);
+        assert!(pad.thumb_rx > 0 && pad.thumb_ry > 0);
+        keyboard.release_all();
+        input.sync();
+        assert_eq!(input.get_state(h).unwrap().gamepad, Default::default());
+        assert_eq!(input.capabilities(h).unwrap().output.left_motor, u16::MAX);
+    }
 }

@@ -1,0 +1,26 @@
+# Illustrative input sequence, not a verified retail menu timing.
+# Every frame is a complete state, held until the next timestamp.
+# Times are absolute guest ticks: 10,000,000 = 1 second.
+[[frame]]
+at_ticks = 0
+
+[[frame]]
+at_ticks = 10000000
+buttons = ["a"]
+
+[[frame]]
+at_ticks = 11000000 # release A after 100 ms
+
+[[frame]]
+at_ticks = 12000000
+buttons = ["dpad_down"]
+
+[[frame]]
+at_ticks = 13000000
+
+[[frame]]
+at_ticks = 14000000
+buttons = ["a"]
+
+[[frame]]
+at_ticks = 15000000

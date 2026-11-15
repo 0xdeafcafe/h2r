@@ -9,8 +9,8 @@
 //!
 //! * Face buttons: south/east/west/north become A/B/X/Y (Xbox layout:
 //!   A bottom, B right, X left, Y top). The Xbox face buttons are pressure
-//!   sensitive (0..=255) but no host API we use exposes pressure, so a
-//!   digital press reports 255 and release 0.
+//!   sensitive (0..=255). GameController carries reported pressure; a
+//!   digital-only host reports 255 for a press and 0 for release.
 //! * Black and White (the Xbox shoulder buttons, which are analog too): the
 //!   right bumper is Black, the left bumper is White. This is the usual
 //!   emulator convention; it is a policy choice and lives in one place.
@@ -20,7 +20,7 @@
 //!   `sThumbLY`/`sThumbRY` are positive up, like the host float convention
 //!   used here. The real Xbox pad reports raw values and games apply their
 //!   own deadzone, so we only remove host-side noise (default 0.08), not a
-//!   gameplay deadzone. Virtual pads (keyboard/mouse) and backends that
+//!   gameplay deadzone. Virtual pads and backends that
 //!   report `prefiltered` input (GameController) skip it.
 //! * D-pad: opposing directions cancel each other (a real d-pad cannot
 //!   report both, and keyboards can).
@@ -149,8 +149,12 @@ fn stick_to_i16(stick: (f32, f32), deadzone: f32) -> (i16, i16) {
         return (0, 0);
     }
     let dz = deadzone.clamp(0.0, 0.99);
-    let scaled = ((mag.min(1.0) - dz) / (1.0 - dz)).clamp(0.0, 1.0);
-    let f = scaled / mag;
+    // Already calibrated reports (GameController and scripted Xbox values)
+    // retain independent axis ranges. A second circular clamp would change
+    // already calibrated diagonals before Halo applies its own deadzone.
+    let f = if dz == 0.0 { 1.0 } else {
+        ((mag.min(1.0) - dz) / (1.0 - dz)).clamp(0.0, 1.0) / mag
+    };
     // Asymmetric like i16 itself: -1.0 reaches -32768, +1.0 reaches 32767.
     let conv = |v: f32| {
         let v = v * f;
@@ -170,6 +174,33 @@ fn trigger_to_u8(v: f32, deadzone: f32) -> u8 {
 }
 
 impl HostPadState {
+    /// An already calibrated Xbox report, for virtual/composite backends.
+    /// Round-trips the full signed axis range without a second deadzone.
+    pub fn from_gamepad(g: Gamepad) -> Self {
+        let mut state = Self::default();
+        for (host, xbox) in [
+            (HostButton::DpadUp, Buttons::DPAD_UP),
+            (HostButton::DpadDown, Buttons::DPAD_DOWN),
+            (HostButton::DpadLeft, Buttons::DPAD_LEFT),
+            (HostButton::DpadRight, Buttons::DPAD_RIGHT),
+            (HostButton::Start, Buttons::START),
+            (HostButton::Back, Buttons::BACK),
+            (HostButton::LeftStick, Buttons::LEFT_THUMB),
+            (HostButton::RightStick, Buttons::RIGHT_THUMB),
+        ] {
+            state.buttons.set(host, g.buttons.contains(xbox));
+        }
+        let pressure = g.analog.map(|v| f32::from(v) / 255.0);
+        state.analog_buttons = Some(pressure[..6].try_into().expect("six pressures"));
+        state.left_trigger = pressure[6];
+        state.right_trigger = pressure[7];
+        let axis = |v: i16| f32::from(v) / if v < 0 { 32768.0 } else { 32767.0 };
+        state.left_stick = (axis(g.thumb_lx), axis(g.thumb_ly));
+        state.right_stick = (axis(g.thumb_rx), axis(g.thumb_ry));
+        state.prefiltered = true;
+        state
+    }
+
     /// Convert to the Xbox representation. `apply_deadzone` is false for
     /// virtual pads.
     pub fn to_gamepad(&self, cfg: &ConvertConfig, apply_deadzone: bool) -> Gamepad {
@@ -248,7 +279,7 @@ mod tests {
         assert!((g.thumb_lx as i32 + 16384).abs() <= 1, "{}", g.thumb_lx);
         s.left_stick = (0.0, 1.0);
         assert_eq!(s.to_gamepad(&cfg(), true).thumb_ly, 32767);
-        // Corner values are clamped to the unit circle, not left at sqrt(2).
+        // A configured host drift deadzone normalises the live range.
         s.right_stick = (1.0, 1.0);
         let g = s.to_gamepad(&cfg(), true);
         let m = f64::from(g.thumb_rx).hypot(f64::from(g.thumb_ry));
@@ -259,8 +290,7 @@ mod tests {
     fn stick_endpoints_are_asymmetric_i16() {
         let g = HostPadState { left_stick: (-1.0, 1.0), right_stick: (1.0, -1.0), ..Default::default() };
         let g = g.to_gamepad(&ConvertConfig { stick_deadzone: 0.0, trigger_deadzone: 0.0 }, true);
-        // Full diagonal is clamped to the circle, so test pure-axis endpoints.
-        assert!(g.thumb_lx < -23000 && g.thumb_ly > 23000);
+        assert_eq!((g.thumb_lx, g.thumb_ly, g.thumb_rx, g.thumb_ry), (-32768, 32767, 32767, -32768));
         let g = HostPadState { left_stick: (-1.0, 0.0), ..Default::default() }.to_gamepad(&cfg(), true);
         assert_eq!(g.thumb_lx, i16::MIN);
         let g = HostPadState { left_stick: (1.0, 0.0), ..Default::default() }.to_gamepad(&cfg(), true);
@@ -284,6 +314,19 @@ mod tests {
         assert_eq!((g.thumb_rx, g.thumb_ry), (0, 32767), "NaN axis still sanitised");
         let g = HostPadState { prefiltered: false, ..s }.to_gamepad(&cfg(), true);
         assert_eq!(g.thumb_lx, 0, "unfiltered input still gets the deadzone");
+    }
+
+    #[test]
+    fn calibrated_reports_preserve_every_signed_axis_value() {
+        for value in i16::MIN..=i16::MAX {
+            let g = Gamepad {
+                thumb_lx: value, thumb_ly: value,
+                thumb_rx: value, thumb_ry: value,
+                analog: [value as u8; 8],
+                ..Default::default()
+            };
+            assert_eq!(HostPadState::from_gamepad(g).to_gamepad(&cfg(), true), g);
+        }
     }
 
     #[test]

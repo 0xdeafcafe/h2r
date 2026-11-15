@@ -432,3 +432,77 @@ fn cache_row_follows_the_layout() {
     assert_eq!(w.returns(0x002d_5b77, &[0]), 1);
     assert_eq!(w.u32(0x0046_1d80), 3);
 }
+
+#[test]
+fn scripted_campaign_controls_cross_registered_state_capability_and_feedback_entries() {
+    use input::backend::scripted::Timeline;
+    use input::gamepad::Gamepad;
+
+    let script = Timeline::from_toml(
+        "[[frame]]\nat_ticks=0\n[[frame]]\nat_ticks=10\nbuttons=['a','start']\nleft_stick=[0,32767]\nright_stick=[0,-32768]\n[[frame]]\nat_ticks=20",
+    ).unwrap().playback();
+    let mut input = InputManager::new(Default::default()).unwrap();
+    input.add_backend(Box::new(script.clone()));
+    let xapi = Arc::new(Mutex::new(
+        Xapi::new(Config::for_gamepad(GAMEPAD), input, Utility::default()).unwrap(),
+    ));
+    let mut dispatch = Dispatch::default();
+    register(&mut dispatch, &xapi, GuestLayout::default()).unwrap();
+    let mut w = world_with(dispatch, xapi);
+    w.returns(0x408c57, &[0, 0]);
+    let h = w.returns(0x409932, &[GAMEPAD, 0, 0, 0]);
+    assert_eq!(w.returns(0x409994, &[h, SCRATCH]), 0);
+    let mut caps = [0; 25];
+    w.runtime
+        .memory()
+        .read_bytes(SCRATCH, &mut caps, 1)
+        .unwrap();
+    assert_eq!(
+        &caps[3..13],
+        &[255, 0, 255, 255, 255, 255, 255, 255, 255, 255]
+    );
+    let mut events = KernelLike {
+        runtime: Arc::clone(&w.runtime),
+        calls: vec![],
+    };
+    script.advance_to(10).unwrap();
+    service_input(&w.runtime, &w.xapi, &mut events).unwrap();
+    // Actual Halo input boundary at 0x124c36 -> 0x409b6c.
+    assert_eq!(w.returns(0x409b6c, &[h, SCRATCH]), 0);
+    assert_eq!(w.u32(SCRATCH), 1);
+    let mut bytes = [0; 18];
+    w.runtime
+        .memory()
+        .read_bytes(SCRATCH + 4, &mut bytes, 1)
+        .unwrap();
+    let pad = Gamepad::from_bytes(&bytes);
+    assert_eq!(pad.buttons.0, 16);
+    assert_eq!(pad.analog[0], 255);
+    assert_eq!((pad.thumb_ly, pad.thumb_ry), (32767, -32768));
+    w.put(
+        SCRATCH + 0x100,
+        &Feedback {
+            status: 42,
+            h_event: 0x55,
+            rumble: Rumble {
+                left_motor: 65535,
+                right_motor: 123,
+            },
+        }
+        .to_bytes(),
+    );
+    assert_eq!(w.returns(0x409bdf, &[h, SCRATCH + 0x100]), 997);
+    service_input(&w.runtime, &w.xapi, &mut events).unwrap();
+    assert_eq!(w.u32(SCRATCH + 0x100), 0);
+    assert_eq!(events.calls, [0x55]);
+    assert_eq!(script.rumble().right_motor, 123);
+    script.advance_to(20).unwrap();
+    service_input(&w.runtime, &w.xapi, &mut events).unwrap();
+    assert_eq!(w.returns(0x409b6c, &[h, SCRATCH]), 0);
+    assert_eq!(w.u32(SCRATCH), 2);
+    w.runtime
+        .memory()
+        .read_bytes(SCRATCH + 4, &mut bytes, 1)
+        .unwrap();
+    assert_eq!(Gamepad::from_bytes(&bytes), Gamepad::default());
+}

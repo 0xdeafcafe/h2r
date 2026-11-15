@@ -1,7 +1,9 @@
 //! Host input backends. Each lives in its own module so a tvOS or Xbox
 //! build can swap them out without touching the device model.
 
+pub mod fallback;
 pub mod keyboard;
+pub mod scripted;
 
 #[cfg(feature = "gilrs")]
 pub mod gilrs_pads;

@@ -7,8 +7,8 @@ license.workspace = true
 
 [features]
 default = ["gamepads"]
-# Physical controllers through input's gilrs backend.
-gamepads = ["input/gilrs"]
+# GameController on macOS, gilrs elsewhere.
+gamepads = ["input/game-controller", "input/gilrs"]
 
 [dependencies]
 gfx = { path = "../gfx" }

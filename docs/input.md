@@ -7,7 +7,7 @@ game calls `XInitDevices`, `XGetDevices`, `XGetDeviceChanges`, `XInputOpen`,
 is emulated.
 
 ```
-host backends (GameController pads, gilrs pads, keyboard+mouse)
+host backends (GameController pads, gilrs pads, keyboard+mouse, timeline)
         | HostPad { HostPadState: floats }
         v
 host::to_gamepad  (deadzones, Xbox button mapping)
@@ -131,13 +131,15 @@ only code that touches Objective-C. Tests drive the mapping and the
   assigns the first four to ports 0 to 3, a fifth waits for a free port, and
   `device_changes()` returns the insertion and removal masks, including the
   unplug-and-replug-between-syncs case. Tested.
-- **Axes.** Sticks are -1..1 with +Y up and go through the radial deadzone to
-  +-32767. Triggers are 0..1 pressure, rescaled to 0..=255.
+- **Axes.** Sticks are -1..1 with +Y up; framework-calibrated values are
+  scaled independently to -32768..32767 without an extra radial deadzone.
+  Triggers are 0..1 pressure, rescaled to 0..=255.
 - **The eight analog buttons.** `bAnalogButtons` takes real pressure from
   `GCControllerButtonInput.value`: A, B, X, Y, Black (right shoulder), White
   (left shoulder) via the new `HostPadState::analog_buttons`, and the two
-  triggers. The digital bit of a button is set at pressure >= 0.5. Face
-  buttons keep their physical position (south = A).
+  triggers. The host button bit is set at pressure >= 0.5, while the Xbox
+  report retains pressure below that threshold. Face buttons keep their
+  physical position (south = A).
 - **Menu / Options** are Start / Back; stick clicks are the thumb buttons.
 - **Rumble.** `GCDeviceHaptics.createEngineWithLocality:` gives one
   CoreHaptics engine per handle: left handle for the heavy motor, right for
@@ -152,9 +154,12 @@ only code that touches Objective-C. Tests drive the mapping and the
 
 Not verified: no physical controller was available, so `AppleSource` is
 compile-checked and the mapping is unit tested but live input, haptics output
-and connect notifications without a running main run loop have not been seen on
-hardware. Controllers without an extended profile (Siri Remote and other micro
-gamepads) are skipped. tvOS uses the same framework; `apple.rs` is cfg'd to
+and connect notifications have not been seen on hardware in this lane.
+Connect/disconnect discovery requires the main run loop; windowed app hosts
+already run it. Headless physical-input hosts must call
+`game_controller::service_main_loop` regularly on the main thread. Scripts
+have no run-loop dependency. Controllers without an extended profile (Siri
+Remote and other micro gamepads) are skipped. tvOS uses the same framework; `apple.rs` is cfg'd to
 macOS only and would need a `target_vendor = "apple"` widening plus the
 `objc2-core-haptics` target dependency, untested.
 
@@ -175,12 +180,12 @@ gilrs reuses a gamepad id on replug, so the backend consumes connect and
 disconnect events and folds a per-pad generation into the `HostPadId`; the
 manager then sees a removal plus an insertion and old handles go stale.
 
-Decision: use gilrs now. It is pure Rust with no unsafe in our code and
-covers the Mac target. Rumble is unavailable on macOS: requests return 50
-and motor capability masks are zero (`supports_rumble` is false, so the
-device model never calls the backend; on Linux and Windows it drives gilrs's effect API, left motor = strong, right = weak). On macOS prefer the GameController
-backend above, which has rumble and pressure buttons. gilrs stays for Linux
-and Windows (and tvOS has no gilrs support; not tested).
+gilrs remains the backend for non-Apple desktop hosts. Its rumble is
+unavailable on macOS: requests return 50 and motor capability masks are zero
+(`supports_rumble` is false). On Linux and Windows it drives gilrs's effect
+API, left motor = strong, right = weak. On macOS the app selects
+GameController, which carries rumble and pressure buttons. tvOS has no
+gilrs support (not tested).
 
 ### Keyboard and mouse (`backend/keyboard.rs`)
 
@@ -248,21 +253,21 @@ deflection yet.
 
 `host.rs`.
 
-- Face buttons A/B/X/Y and Black/White are 0..255 on Xbox. No host API we use
-  exposes face-button pressure, so a digital press is 255 and release 0. The
-  trade-off is that games which read the pressure (some use it for weapon
-  fire thresholds) get a binary signal. Backends that learn about pressure
-  could extend `HostPadState`.
+- Face buttons A/B/X/Y and Black/White are 0..255 on Xbox. GameController
+  carries each element's reported pressure; digital-only hosts report 255
+  for a press and 0 for release. Hardware that exposes only on/off buttons
+  still produces only those endpoints.
 - Layout: south/east/west/north become A/B/X/Y. Right bumper is Black, left
   bumper is White (one place to change: `to_gamepad`).
 - Triggers: host 0..1, subtract the trigger deadzone (default 0.03), rescale
   to 0..255. Digital-only triggers give 0 or 255.
-- Sticks: radial deadzone (default 0.08) with rescaling so output starts at
-  zero at the edge of the deadzone and reaches full scale at 1.0, then +-32767
-  (symmetric, -32768 is not produced). Radial rather than per-axis so
-  diagonals keep their angle. The Xbox pad itself has no hardware deadzone,
-  and Halo applies its own, so this only masks host-side drift. Keep it low or
-  Halo's own deadzone stacks on top. Virtual (keyboard/mouse) pads skip it.
+- Sticks span -32768..32767, with +Y up. Raw physical backends use the
+  configured radial drift deadzone (default 0.08) and rescale the live range.
+  Set it to 0 for raw independent axes. GameController is already calibrated,
+  so it skips that filter and preserves both axes, including full diagonals.
+  Scripted Xbox values also pass through exactly. Keyboard/mouse normalises
+  its own synthetic diagonals before conversion. Halo applies its gameplay
+  deadzone after reading XInput; the host must not apply that deadzone twice.
 - Non-finite host axis values (NaN, infinity) become 0 for that axis only;
   finite values are clamped to range before the deadzone test.
 - D-pad: opposing directions cancel (a real d-pad can't press both).
@@ -277,4 +282,100 @@ change masks, stale handles, port limit, packet numbering, manual poll,
 rumble) and the binding table including TOML errors. `cargo run -p input
 --example pads` prints live state for every connected pad, one line per port,
 whenever it changes (`-- --rumble` attempts one rumble on the first pad;
-macOS rejects it as unsupported).
+gilrs on macOS rejects it as unsupported).
+
+## Campaign host configuration
+
+[`input-default.toml`](input-default.toml) is a complete, tested binding
+config. Load it with `Bindings::from_toml(&std::fs::read_to_string(path)?)`
+and assign `AppConfig::bindings`; the shell demo accepts `--input-config PATH`.
+Omitted bindings retain defaults, and an empty list unbinds a control.
+Physical pad mapping follows the GameController layout above; `[bind]`
+configures keyboard/mouse controls.
+
+The app's `gamepads` feature selects GameController on macOS and gilrs on
+other desktop hosts. With `AppConfig::keyboard = true`, `KeyboardFallback`
+combines the first physical pad and keyboard/mouse into one persistent pad
+on port 0. Pressure uses the greater value, digital buttons combine (opposed
+d-pad directions cancel), and each stick uses the source with the greater
+whole-stick deflection (keyboard wins ties). Remaining pads take ports 1–3.
+This prevents the keyboard pad from occupying player one while a real pad
+can only control player two. The same primary pad is retained until unplugged.
+
+The combined virtual pad remains connected when hardware disappears and
+accepts/completes feedback even without physical motors. Rumble is forwarded
+to the selected physical pad and restored on attach. To expose actual
+physical insertion/removal, disable `keyboard`; physical devices then use
+native identities, stale-handle rules and capability masks. `InputManager`
+without this wrapper always exposes those native semantics.
+
+## Deterministic timelines for boot and headless runners
+
+`backend::scripted::{Timeline, ScriptedInput}` supplies one virtual controller
+and accepts rumble with the same asynchronous completion path as hardware.
+It needs no window, GPU, run loop or controller. The tested
+[`input-menu-example.toml`](input-menu-example.toml) shows A, release, down,
+release, A. Its timings are illustrative, not a verified retail Campaign route.
+
+Each `[[frame]]` is a **complete state** at absolute `at_ticks` (100 ns guest
+ticks; 10,000,000 = one second). Omitted buttons and axes are released; the
+state is held until the next timestamp, including after the final frame.
+Before the first frame the pad is connected and neutral. Include a final
+neutral frame to release the last press. Unknown fields/buttons, out-of-range
+integers, empty timelines and non-increasing timestamps are errors.
+
+`buttons` accepts the eight analog names (`a`, `b`, `x`, `y`, `black`,
+`white`, `left_trigger`, `right_trigger`) and eight digital names (`dpad_up`,
+`dpad_down`, `dpad_left`, `dpad_right`, `start`, `back`, `left_thumb`,
+`right_thumb`).
+`analog = [1, 32, 64, 96, 128, 160, 192, 255]` optionally replaces all eight
+pressures, in A/B/X/Y/Black/White/LT/RT order. `left_stick = [-32768, 32767]`
+and `right_stick = [32767, -32768]` are exact Xbox axis values, including
+small values that Halo's own deadzone evaluates. `connected = false` removes
+the pad; a later connected frame creates a fresh identity. A disconnect and
+reconnect skipped by a coarse clock advance still invalidates old handles.
+
+For a runner without the app shell:
+
+```rust,ignore
+let timeline = input::backend::scripted::Timeline::from_toml(&text)?;
+let script = timeline.playback();
+let mut input = input::InputManager::new(Default::default())?;
+input.add_backend(Box::new(script.clone()));
+// Supply input to Xapi::new, register its verified entries, then per slice:
+script.advance_to(relative_guest_ticks)?;
+xapi::service_input(&runtime, &xapi, &mut kernel_events)?;
+// Run the next bounded scheduler slice.
+```
+
+For the app shell, set `AppConfig::scripted_input = Some(script.clone())`
+before `app::run` or `GuestHost::headless`. It replaces all live backends,
+including keyboard/mouse, so headless results cannot depend on human input.
+Take the manager with `host.take_input()`, build XAPI as usual, and retain the
+other script clone in the guest closure. Advance it to guest time before
+`app::pump_input` or `xapi::service_input`. Use ticks relative to a fixed run
+or menu-ready epoch; wall time is deliberately not consulted. `host.tick`
+paces the guest but does not advance the script itself.
+
+Playback polls never consume a step. Repeated init, sync, GetState or Poll
+calls at one timestamp see the same input. `advance_to` rejects a backwards
+clock; use `timeline.playback()` for a fresh run. `next_transition_ticks()`
+lets a runner limit its slice to the next transition. Pump at least once
+inside every desired press interval: jumping straight past a press and its
+release cannot make the guest observe the press. Longer holds or starting
+the timeline after a known menu-ready condition handle slow boot/loading.
+Do not rewind input on checkpoint/revert; use monotonic runner time or
+start a new playback epoch explicitly.
+
+The shell demo accepts `--input-script docs/input-menu-example.toml` and
+advances it from the demo's logical clock. This validates wiring; entering
+retail Campaign still requires the boot lane to choose menu-ready timing
+and pump while executing the generated game. Tests establish XAPI values,
+not completion of Armory's generated pitch/movement gates.
+
+`tests/input_semantics.rs` in xapi covers every control's press/hold/release,
+all 256 pressures, exact stick extremes/small values, packet changes,
+manual polling, capabilities, rumble completion and disconnect/reconnect.
+The registered-runtime test also crosses the verified capabilities/state/
+feedback addresses. Input unit tests cover packet wrapping and timeline
+validation; app tests load both checked-in TOML examples without a GPU.
