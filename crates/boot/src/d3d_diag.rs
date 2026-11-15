@@ -21,7 +21,8 @@
 //! - `snap-K.bin`: with `H2_BOOT_CAPTURE_SNAP=K[-L][,...]`, the colour
 //!   target read back (guest bytes, `read_surface`) after draw K;
 //! - `H2_BOOT_CAPTURE_SKIP=K[-L][,...]` drops those draws, to see what
-//!   each contributes.
+//!   each contributes;
+//! - `H2_BOOT_CAPTURE_LITE=1` writes no texture or guest-write bytes.
 //!
 //! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
@@ -115,6 +116,9 @@ struct Capture {
     writes: u64,
     snaps: BTreeSet<u64>,
     skips: BTreeSet<u64>,
+    /// `H2_BOOT_CAPTURE_LITE`: no texture or guest-write bytes (frame.txt,
+    /// streams and snapshots only), for quick looks at one frame.
+    lite: bool,
 }
 
 /// `K[-L][,...]` as a set of draw indices.
@@ -138,6 +142,9 @@ impl Capture {
         }
     }
     fn blob(&self, file: &str, bytes: &[u8]) {
+        if self.lite && (file.starts_with("tex-") || file.starts_with("write-")) {
+            return;
+        }
         let _ = std::fs::write(self.dir.join(file), bytes);
     }
 }
@@ -161,7 +168,7 @@ impl<B> DiagBackend<B> {
             let dir = std::path::PathBuf::from(d);
             std::fs::create_dir_all(&dir).map_err(|e| eprintln!("boot: H2_BOOT_CAPTURE {}: {e}", dir.display())).ok()?;
             let frame = std::env::var("H2_BOOT_CAPTURE_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(480);
-            Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP") })
+            Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP"), lite: std::env::var_os("H2_BOOT_CAPTURE_LITE").is_some() })
         });
         (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0 }, stats)
     }
