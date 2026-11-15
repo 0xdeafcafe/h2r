@@ -1,4 +1,4 @@
-//! Halo 2 retail Xbox (cache v8) reader, with no game data or unsafe code.
+//! Halo 2 retail Xbox (cache v8) reader and writer, with no game data or unsafe code.
 //!
 //! [`Map::open`] opens a file; [`Map::from_reader`] accepts a seekable stream,
 //! and [`Map::from_region`] reads directly from a bounded region of a disc.
@@ -9,8 +9,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+/// Engine checksum and streaming checksum state.
+pub mod checksum;
 mod format;
 mod reader;
+/// Pass-through cache writing (not a rebuild) and bounded edits.
+pub mod writer;
 
 pub use format::*;
 pub use reader::Map;

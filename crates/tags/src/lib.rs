@@ -12,6 +12,8 @@
 
 /// The effects family (`effe`, `prt3`, `pmov`, ...); see `docs/effects.md`.
 pub mod effects;
+/// Reviewed edits using the lossless cache writer.
+pub mod edit;
 pub mod wire;
 /// Object collision and physics models (`coll`, `phmo`); see `docs/collision.md`.
 pub mod collision;

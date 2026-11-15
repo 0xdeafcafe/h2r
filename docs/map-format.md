@@ -1,6 +1,6 @@
 # Halo 2 retail Xbox cache files (version 8)
 
-This describes the reader in `crates/map`, not an on-disk Rust struct ABI.
+This describes the reader and lossless writer in `crates/map`, not an on-disk Rust struct ABI.
 All integers below are little-endian. Offsets are hexadecimal and relative to
 one `.map` file, including when the map is read inside an ISO.
 
@@ -70,7 +70,7 @@ resource encodings are **S**, outside this reader's implementation.
 | `018` | u32 | Ordinary metadata byte length | V |
 | `01c` | u32 | Total metadata memory size, including BSP space | S |
 | `120` | char[32] | NUL-terminated build string | V |
-| `140` | u32 | 0 campaign, 1 multiplayer, 2 menu, 3 shared, 4 campaign-shared | V |
+| `140` | u32 (engine: i16, see caveats under "Lossless writing") | 0 campaign, 1 multiplayer, 2 menu, 3 shared, 4 campaign-shared | V |
 | `144` | u32 | CRC checksum field (not the XOR field below) | S |
 | `154` | u32 | Low-detail bitmap data count | S |
 | `158` | u32 | Low-detail bitmap data offset | V |
@@ -87,14 +87,15 @@ resource encodings are **S**, outside this reader's implementation.
 | `2c4` | u32 | Tag-name blob file offset | V |
 | `2c8` | u32 | Tag-name blob byte length | V |
 | `2cc` | u32 | Tag-name offset-array file offset | V |
-| `2d0` | u32 | XOR checksum, not validated by this reader | S |
+| `2d0` | u32 | Copy-time XOR checksum; explicit validation via `Map::validate_checksum` | E + V |
 | `7fc` | FourCC | `foot` | V |
 
 Sources for this table: [core layouts][core], [header interpretation][header],
-[cache type enumeration][types]. The XOR algorithm (XOR u32 words after the
-header) is **S**, from the [whitepaper][whitepaper]; checksum correctness and
-runtime rejection behavior have not been tested. Other header fields remain
-uninterpreted; they should not be assumed to be padding that a writer may erase.
+[cache type enumeration][types]. The checksum now has independent executable
+and disc evidence: see "Lossless writing and bounded edits" below. The old
+whitepaper description (XOR u32 words after the header) omits the routine's
+qword parity seed and incomplete-tail behavior. Other header fields remain
+uninterpreted; the writer preserves them, rather than treating them as padding.
 
 ## Strings, names and groups
 
@@ -259,7 +260,8 @@ string tables and the class hierarchy, resolved scenario/globals and BSPs,
 and read every tag's resolved payload. Standalone opening was also exercised
 using a map extracted only into session `$TMPDIR`. Per-map counts and detailed
 validation output stay outside the repository. This does not test gameplay,
-checksum enforcement, resource decoding, or arbitrary modded caches.
+in-engine checksum rejection, resource decoding, or arbitrary modded caches.
+The writer checks the recovered checksum independently, as described below.
 
 **Design:** tests are entirely synthetic. They cover ordinary and BSP address
 spaces, absent lightmaps, sparse/null entries, duplicate names across groups,
@@ -267,7 +269,7 @@ stale salts, corrupted ranges/counts, malformed/unterminated strings, wrong
 platform/version, truncated files, and container-boundary escapes. Eager table
 buffers and total decoded string bytes per table are each capped at 64 MiB;
 tag slots are capped at 65,536. Payload lengths are checked against their
-region and allocated with fallible reservation. There is no cache writer yet.
+region and allocated with fallible reservation. The lossless writer is described below.
 
 ## Rust tag definitions for an editable engine
 
@@ -668,3 +670,224 @@ how models should render. Screenshots and validation output stay outside the
 repository.
 
 [openh2-mode-proc]: https://github.com/ronbrogan/OpenH2/blob/d09a123b3dd16821295f380f01fb5639c697899a/src/OpenH2.Core/Tags/Common/Models/ModelResourceContainerProcessor.cs
+
+
+## Lossless writing and bounded edits
+
+**Design:** `Map::write_to(&mut impl Write)` streams the entire bounded input,
+including header, index and null slots, both indexed string tables, auxiliary
+fixed strings, BSPs, local raw/resource bytes, unknown sections, internal gaps,
+and physical trailing padding. It does not decode/re-encode opaque data or
+repair an unedited checksum. `Map::from_region` retains the supplied physical
+length separately from the declared header length: normal payload reads still
+stop at the declared length; writing and copy-time checksumming stop at the
+physical length. Neither operation reads the next ISO entry. The caller must
+supply the actual file/entry length, not an entire remaining disc region.
+Only a 1 MiB streaming buffer is needed in addition to reader tables.
+
+The writer is a pass-through plus bounded patches, not a rebuild: it copies the
+source and applies only queued patches, appended name tables and the header
+fields listed below. Any "byte-identical round trip" claim in this document means
+this pass-through of an unedited map, not a re-encode of decoded structures.
+
+There is no canonicalization exception: unchanged writes are byte-identical,
+including invalid recorded checksum values if the caller opened a damaged map.
+Call `validate_checksum()` explicitly when integrity is required.
+
+**Caveats.** (1) How the engine uses the tag-name table at runtime is unverified
+(finding 4): the writer keeps it consistent with this crate's reader, and nothing
+here shows the retail engine reads or needs it. (2) The engine reads the cache
+type at header `+0x140` as an `i16` (`0x1228a3`), but this crate reads it as a
+`u32`; they agree for the small values retail maps use. (3) The editor rejects
+sources whose string or name tables sit inside the first `0x800` header bytes
+(the header is rewritten), and patches that overlap the tag index or any
+string/name table, because either would yield output the reader rejects.
+
+### Checksum evidence from the retail executable
+
+**E** here means independently inspected with this repository's `h2 disasm`
+on the owner's read-only `disc/default.xbe` (SHA-256
+`03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`).
+No community checksum code or map bytes are included in the implementation
+or fixtures.
+
+- `0x123110` is the checksum function. `0x123137`–`0x12313a` loads the byte
+  length and shifts right by three. It processes complete 8-byte units only;
+  a final 0–7 bytes is ignored, not padded or handled as one more dword.
+- `0x123117`–`0x123133` constructs seed bytes `01 02 04 08 10 20 40 80`.
+  `0x123143`–`0x12314b` selects that seed if the qword count is odd, otherwise
+  zero. `0x123160` XORs each qword; `0x123168`–`0x123171` folds the two dwords.
+  Equivalently, XOR each qword's two little-endian dwords and `0x88442211`.
+  For a body divisible by 16, the seed cancels, leaving the familiar u32 XOR.
+- The copy state machine starts at `0x2141f0`. It reads the header to
+  `0x55b4f0` at `0x214312`–`0x214322`. It obtains the physical source length
+  through the call at `0x2143ff` and stores it at `0x55bcfc` (the queued
+  callback `0x1a15d0` calls the file-size routine `0x2d2715`). It clears the
+  checksum accumulator at `0x214444` and starts body copying at offset `0x800`
+  at `0x214524`. `0x21455b`–`0x214572` clips each copy to physical EOF.
+- `0x2145dd` calls `0x123110` on the bytes actually copied, and `0x2145e8`
+  XORs the result into the accumulator. `0x214616` compares the final value
+  against `0x55b7c0`, i.e. header base `0x55b4f0 + 0x2d0`, and `0x21461c`
+  sets the success flag from equality. Thus physical trailing storage is
+  included; the header and its checksum field are excluded.
+
+`checksum::engine_xor` exposes the exact buffer routine.
+`checksum::XorChecksum` permits arbitrary host chunk boundaries, buffering a
+partial qword until the next call. `Map::computed_checksum` covers the physical
+body; `Map::validate_checksum` compares it with the recorded value. Host
+streaming equals the engine's XOR of copy chunks when its intermediate chunks
+are qword-aligned. The six copy-buffer sizes at `0x448ff0`, selected at
+`0x214545`, are
+`0x40000` and five `0x100000` entries, all divisible by eight. All tested files
+are sector-aligned. Synthetic tests distinguish the odd-qword seed, ignored tails,
+and a changed physical tail from the simpler folklore algorithm.
+
+### Header signatures and acceptance boundaries
+
+**E:** `0x122870`, called during the copy at `0x21437c`, checks numeric `head`
+and `foot` at `+0` / `+0x7fc` (`0x122880`, `0x122888`), nonnegative declared
+size bounded by `0x20800000` (`0x122894`–`0x1228a1`), cache type 0–4 and its
+size limit (`0x1228a3`–`0x1228bf`), internal name length below 32
+(`0x1228c1`–`0x1228dc`), and version 8 (`0x1228de`). The size-limit switch at
+`0x214ed0` allows campaign `0x11800000`, multiplayer/menu `0x05000000`, shared
+`0x0b400000`, and campaign-shared `0x20800000` bytes. Edits enforce these limits.
+The ordinary load path at `0x122934` calls `0x12130` on header `+0x120`, comparing
+its build string against the accepted build table.
+
+The copy also compares three present dependency identities (8-byte values at
+header `+0x180`, `+0x188`, `+0x190`, gated by bytes `+0x174`–`+0x176`) with
+loaded-cache identities at `0x214390`–`0x2143d1`. The writer preserves those,
+the build string, the `+0x178` build identity, the `+0x144` field, and all
+uninterpreted header bytes. No cryptographic map signing is implemented or
+claimed. These inspected paths establish structural/signature markers and XOR
+validation, not a proof that every engine/network validation path accepts a
+mod. Renaming or patching shared caches does not automatically update dependent
+maps; this API leaves build identities intact. Resource decoding and gameplay
+validation remain separate work.
+
+### API and relocation policy
+
+```rust
+let mut cache = map::Map::open(input)?;
+cache.validate_checksum()?;
+let id = cache.tag(map::TagQuery::NameInGroup(name, map::FourCC(*b"weap")))?.id;
+let mut edit = cache.edit();
+tags::edit::set_object_bounding_radius(&mut edit, id, 1.25)?;
+edit.rename_tag(id, "mods\\example_weapon")?;
+edit.write_to(&mut destination)?;
+```
+
+`MapEditor::patch_tag(id, relative_offset, bytes)` replaces a bounded fixed-size
+range, checks the full datum salt, uses the tag's own ordinary/BSP address space,
+and rejects overlapping patches. `read_tag_range` and `source` inspect the
+original, not queued edits. Field semantics belong to the caller; the low-level
+patch API does not validate arbitrary block pointers or references.
+`tags::edit::set_object_bounding_radius` supplies one reviewed scalar operation:
+object prefix `+4`, verified by `0x000be075`, finite and nonnegative new values,
+and a known object class. Unknown bytes are retained.
+
+`rename_tag` rebuilds the complete tag-name blob and offset array, including
+names on null slots, and writes them at sector-aligned EOF. It updates header
+`+8`, `+0x2c0`, `+0x2c4`, `+0x2c8`, `+0x2cc`, pads the new end to 512 bytes,
+and refreshes `+0x2d0`. Old table bytes remain in place; nothing else shifts.
+Missing names (`0xffffffff`), empty names, duplicate names, and stripped tables
+are handled separately. Renaming does not change a tag's datum or resource
+references. String IDs and fixed string slots are preserved exactly; changing
+StringID lengths would require repairing references in opaque tags.
+
+This minimal relocation policy deliberately does not resize metadata blocks,
+repack raw resources, compact old tables, or rewrite unknown pointer fields.
+Those operations need a complete relocation schema. The tag index and all
+metadata/raw offsets remain valid because their original regions do not move.
+The renamed table is bounded to the reader's 64 MiB string-table limit.
+
+All writer APIs accept streams rather than opening output paths. The source
+must remain unchanged throughout an edit/write and must not alias the output.
+`Map::write_to` needs `Write`; edited output needs `Write + Seek` to backpatch the
+checksum, starts at the current position, and leaves the cursor at the end.
+The caller supplies an empty/truncated destination region, handles atomic
+replacement, and flushes/syncs as needed. The demo uses `create_new` under
+`$TMPDIR` and cannot overwrite its input. Tests never write under `disc/`.
+
+### Reproduction
+
+Run the public synthetic suite normally. The retail integration test is
+`#[ignore]`-gated and requires an explicit `H2_DISC` ISO path, as existing disc
+checks do. It uses `xiso::Xiso` and `Map::from_region`, writes one temporary map
+at a time, byte-compares the full output with the corresponding ISO entry,
+re-reads it, and verifies its checksum. On maps with a weapon it also patches
+the radius, rebuilds the name offsets, re-reads both changes and checks the new
+checksum. Temporary retail maps are removed after each successful case. No map
+bytes or game-derived fixtures are committed.
+
+```sh
+H2_DISC=/path/to/halo2.iso CARGO_TARGET_DIR="$TMPDIR/map-write-target" RUSTC_WRAPPER= cargo test -p tags --test map_write -- --ignored --nocapture
+```
+
+The demo accepts a standalone map or an ISO plus entry path. It retains its
+output in `$TMPDIR`, prints its path, and checks the result after closing the
+writer:
+
+```sh
+CARGO_TARGET_DIR="$TMPDIR/map-write-target" RUSTC_WRAPPER= cargo run -p tags --example edit_map -- /path/to/input.map
+```
+
+Or run directly against the read-only ISO without extracting an input map:
+
+```sh
+CARGO_TARGET_DIR="$TMPDIR/map-write-target" RUSTC_WRAPPER= cargo run -p tags --example edit_map -- /path/to/halo2.iso /maps/beavercreek.map
+```
+
+### Retail results (2026-11-15)
+
+All 30 maps in the supplied retail ISO round-tripped **byte-identically**, with
+no semantic-only exceptions. All recorded and recomputed checksums matched.
+Every map also passed a weapon-radius patch plus tag-name relocation, followed
+by re-reading the new field/name and validating its recomputed checksum.
+Physical and declared lengths matched on this disc; synthetic tests separately
+cover trailing physical padding and embedded-region boundaries.
+
+| Map | Original bytes | Exact / checksum / edited |
+|---|---:|---|
+| `00a_introduction.map` | 113,031,168 | pass / pass / pass |
+| `01a_tutorial.map` | 69,169,664 | pass / pass / pass |
+| `01b_spacestation.map` | 248,586,240 | pass / pass / pass |
+| `03a_oldmombasa.map` | 203,507,712 | pass / pass / pass |
+| `03b_newmombasa.map` | 234,307,584 | pass / pass / pass |
+| `04a_gasgiant.map` | 194,758,656 | pass / pass / pass |
+| `04b_floodlab.map` | 199,387,136 | pass / pass / pass |
+| `05a_deltaapproach.map` | 195,034,112 | pass / pass / pass |
+| `05b_deltatowers.map` | 213,932,032 | pass / pass / pass |
+| `06a_sentinelwalls.map` | 213,370,880 | pass / pass / pass |
+| `06b_floodzone.map` | 221,074,432 | pass / pass / pass |
+| `07a_highcharity.map` | 272,911,872 | pass / pass / pass |
+| `07b_forerunnership.map` | 180,540,928 | pass / pass / pass |
+| `08a_deltacliffs.map` | 143,452,160 | pass / pass / pass |
+| `08b_deltacontrol.map` | 262,776,832 | pass / pass / pass |
+| `ascension.map` | 29,735,936 | pass / pass / pass |
+| `beavercreek.map` | 28,942,336 | pass / pass / pass |
+| `burial_mounds.map` | 32,114,688 | pass / pass / pass |
+| `coagulation.map` | 41,397,248 | pass / pass / pass |
+| `colossus.map` | 31,132,160 | pass / pass / pass |
+| `cyclotron.map` | 46,205,952 | pass / pass / pass |
+| `foundation.map` | 37,599,232 | pass / pass / pass |
+| `headlong.map` | 56,096,256 | pass / pass / pass |
+| `lockout.map` | 34,523,136 | pass / pass / pass |
+| `mainmenu.map` | 59,670,016 | pass / pass / pass |
+| `midship.map` | 30,519,808 | pass / pass / pass |
+| `shared.map` | 183,370,752 | pass / pass / pass |
+| `single_player_shared.map` | 429,017,088 | pass / pass / pass |
+| `waterworks.map` | 41,352,704 | pass / pass / pass |
+| `zanzibar.map` | 53,547,008 | pass / pass / pass |
+
+The standalone `edit_map` demo was also run directly on `/maps/beavercreek.map`:
+a weapon's bounding radius field was changed, tag-name offsets were rebuilt,
+and the saved map re-opened with a matching checksum. Its output lives only
+under session `$TMPDIR`.
+
+Validation: `cargo test -p map -p tags` (292 synthetic tests, one retail test
+ignored by default); the explicit retail test above (30 maps / 30 edits);
+`cargo clippy -p map -p tags --no-deps --all-targets -- -D warnings`; and
+`cargo check --workspace --all-targets`. Commands use
+`CARGO_TARGET_DIR=$TMPDIR/map-write-target` and an empty `RUSTC_WRAPPER`.
+These are file/structure/checksum checks, not an in-game playthrough.

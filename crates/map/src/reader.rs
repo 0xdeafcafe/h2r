@@ -15,6 +15,7 @@ pub struct Map<R = File> {
     reader: R,
     base: u64,
     length: u64,
+    storage_length: u64,
     header: Header,
     groups: Vec<TagGroup>,
     strings: Vec<Option<String>>,
@@ -44,7 +45,8 @@ impl<R: Read + Seek> Map<R> {
 
     /// Parse a bounded map inside another file (e.g. an XDVDFS entry).
     /// `base` and `length` describe the container region; exposed offsets stay
-    /// map-relative. Reads cannot escape this region or the declared file size.
+    /// map-relative. Payload reads cannot escape the declared file size. Lossless
+    /// writing and checksumming include trailing bytes within the supplied region.
     pub fn from_region(mut reader: R, base: u64, length: u64) -> Result<Self> {
         let actual = reader.seek(SeekFrom::End(0))?;
         bounds("container", base, length, actual)?;
@@ -99,6 +101,7 @@ impl<R: Read + Seek> Map<R> {
         if u64::from(header.file_size) < HEADER_SIZE {
             return Err(Error::Invalid("declared file smaller than header"));
         }
+        let storage_length = length;
         let length = u64::from(header.file_size);
         let index = u64::from(header.index_offset);
         if index < HEADER_SIZE || header.index_size < 32 {
@@ -208,6 +211,7 @@ impl<R: Read + Seek> Map<R> {
             reader,
             base,
             length,
+            storage_length,
             header,
             groups,
             strings,
@@ -310,6 +314,25 @@ impl<R: Read + Seek> Map<R> {
             return Err(Error::Limit);
         }
         self.read(offset, size)
+    }
+
+    /// Entire bounded input length, including storage padding after the declared map.
+    pub fn storage_length(&self) -> u64 {
+        self.storage_length
+    }
+
+    // Only the lossless writer/checksummer may read beyond the declared map.
+    pub(crate) fn read_storage_range(&mut self, offset: u64, size: u64) -> Result<Vec<u8>> {
+        if size > MAX_TABLE_BYTES {
+            return Err(Error::Limit);
+        }
+        read_at(
+            &mut self.reader,
+            self.base,
+            self.storage_length,
+            offset,
+            size,
+        )
     }
 
     fn read(&mut self, offset: u64, size: u64) -> Result<Vec<u8>> {

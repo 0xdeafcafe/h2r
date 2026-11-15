@@ -312,3 +312,228 @@ fn public_file_ranges_obey_declared_map_bounds_and_read_budget() {
     ));
     assert!(map.read_file_range(0x2000, 0).unwrap().is_empty());
 }
+
+#[test]
+fn lossless_writer_preserves_unknown_bytes_padding_and_container_bounds() {
+    let mut bytes = fixture();
+    bytes[0x300..0x700].fill(0x95); // uninterpreted header, not disposable padding
+    bytes[0x1900..].fill(0x7b); // opaque raw/padding
+    bytes.extend([0x56; 29]); // physical storage tail, beyond declared size
+    let mut container = vec![0xcc; 37];
+    container.extend(&bytes);
+    container.extend([0xee; 100]);
+    let mut map = Map::from_region(Cursor::new(container), 37, bytes.len() as u64).unwrap();
+    let mut output = Vec::new();
+    assert_eq!(map.write_to(&mut output).unwrap(), bytes.len() as u64);
+    assert_eq!(output, bytes);
+    let mut editor_output = Cursor::new(Vec::new());
+    map.edit().write_to(&mut editor_output).unwrap();
+    assert_eq!(editor_output.into_inner(), bytes);
+}
+
+#[test]
+fn edits_rebuild_name_offsets_preserve_payloads_and_checksum_physical_tail() {
+    let mut bytes = fixture();
+    bytes.extend([0x89; 24]);
+    let mut map = parse(bytes.clone()).unwrap();
+    let mut edit = map.edit();
+    edit.rename_tag(id(4), "new\\longer\\name").unwrap();
+    edit.patch_tag(id(0), 3, &[7, 8, 9, 10]).unwrap();
+    edit.patch_tag(id(2), 0, &[0xab]).unwrap(); // BSP-specific address space
+    let mut output = Cursor::new(vec![0xcc; 37]);
+    output.set_position(37);
+    let size = edit.write_to(&mut output).unwrap();
+    assert_eq!(output.position(), 37 + size);
+    let result = &output.get_ref()[37..];
+    let mut reread = Map::from_reader(Cursor::new(result)).unwrap();
+    reread.validate_checksum().unwrap();
+    assert_eq!(
+        reread.tag(id(4)).unwrap().name.as_deref(),
+        Some("new\\longer\\name")
+    );
+    assert_eq!(reread.strings(), map.strings());
+    assert_eq!(
+        reread.tag(id(0)).unwrap().name,
+        map.tag(id(0)).unwrap().name
+    );
+    assert_eq!(reread.tag(id(0)).unwrap().index_address, META);
+    assert_eq!(&reread.read_tag_bytes(id(0)).unwrap()[3..7], &[7, 8, 9, 10]);
+    assert_eq!(reread.read_tag_bytes(id(2)).unwrap()[0], 0xab);
+    assert_eq!(&result[INDEX..INDEX + 0x200], &bytes[INDEX..INDEX + 0x200]);
+    assert_eq!(&result[0x2000..0x2018], &bytes[0x2000..]);
+    assert!(reread.header().tag_names.data_offset as usize >= bytes.len());
+    assert_eq!(reread.header().tag_names.index_offset % 512, 0);
+    assert_eq!(size % 512, 0);
+    assert_eq!(reread.header().tag_names.data_offset % 512, 0);
+    // Only explicit patches and the documented header fields change in the old file.
+    let allowed = [8..12, 0x2c0..0x2d4, 0x1203..0x1207, 0xa10..0xa11];
+    for i in 0..bytes.len() {
+        if !allowed.iter().any(|r| r.contains(&i)) {
+            assert_eq!(result[i], bytes[i], "offset {i:#x}");
+        }
+    }
+}
+
+#[test]
+fn edits_reject_stale_handles_bounds_overlaps_and_nuls() {
+    let mut map = parse(fixture()).unwrap();
+    let mut edit = map.edit();
+    assert!(edit.patch_tag(TagId(0xb0000000), 0, &[1]).is_err());
+    assert!(edit.patch_tag(id(0), u32::MAX, &[1]).is_err());
+    assert!(edit.patch_tag(id(0), 15, &[1, 2]).is_err());
+    assert!(edit.rename_tag(id(0), "bad\0name").is_err());
+    edit.patch_tag(id(0), 3, &[1, 2, 3]).unwrap();
+    assert!(edit.patch_tag(id(0), 4, &[4]).is_err());
+    assert!(edit.patch_tag(id(0), 2, &[4, 5]).is_err());
+    edit.patch_tag(id(0), 6, &[4]).unwrap();
+}
+
+#[test]
+fn renamed_sparse_and_stripped_tables_keep_missing_distinct_from_empty() {
+    for stripped in [false, true] {
+        let mut bytes = fixture();
+        if stripped {
+            put(&mut bytes, 0x2c0, 0);
+        }
+        let mut map = parse(bytes).unwrap();
+        let mut edit = map.edit();
+        edit.rename_tag(id(0), "").unwrap();
+        let mut output = Cursor::new(Vec::new());
+        edit.write_to(&mut output).unwrap();
+        let mut result = Map::from_reader(output).unwrap();
+        assert_eq!(result.tag(id(0)).unwrap().name.as_deref(), Some(""));
+        assert_eq!(result.index_slots(), 6);
+        if stripped {
+            assert!(result.tag(id(1)).unwrap().name.is_none());
+        }
+        let table = result.header().tag_names;
+        let last = result
+            .read_file_range(u64::from(table.index_offset) + 20, 4)
+            .unwrap();
+        assert_eq!(last, u32::MAX.to_le_bytes());
+        result.validate_checksum().unwrap();
+    }
+}
+
+#[test]
+fn checksum_detects_raw_mutation_and_includes_storage_padding() {
+    let mut bytes = fixture();
+    bytes.extend([0x12; 8]);
+    let expected = checksum::engine_xor(&bytes[0x800..]);
+    put(&mut bytes, 0x2d0, expected);
+    parse(bytes.clone()).unwrap().validate_checksum().unwrap();
+    bytes[0x1900] ^= 1;
+    assert!(parse(bytes.clone()).unwrap().validate_checksum().is_err());
+    bytes[0x1900] ^= 1;
+    bytes[0x2000] ^= 1;
+    assert!(parse(bytes).unwrap().validate_checksum().is_err());
+}
+
+#[test]
+fn patch_crossing_stream_chunks_and_writes_report_io_failure() {
+    let mut bytes = fixture();
+    bytes.resize(0x110000, 0);
+    put(&mut bytes, 8, 0x110000);
+    put(&mut bytes, 0x18, 0x110000 - 0x1200);
+    // Make the last ordinary tag straddle the writer's first body chunk.
+    put(&mut bytes, TAGS + 64 + 8, META + 0x1007fc - 0x1200);
+    let mut map = parse(bytes.clone()).unwrap();
+    let mut edit = map.edit();
+    edit.patch_tag(id(4), 0, &[0x57; 16]).unwrap();
+    let mut output = Cursor::new(Vec::new());
+    edit.write_to(&mut output).unwrap();
+    assert_eq!(&output.get_ref()[0x1007fc..0x10080c], &[0x57; 16]);
+    let mut reread = Map::from_reader(output).unwrap();
+    reread.validate_checksum().unwrap();
+    let mut short = [0; 8];
+    assert!(map.write_to(&mut short.as_mut_slice()).is_err());
+}
+
+#[test]
+fn name_rebuild_preserves_names_even_for_null_index_slots() {
+    let mut bytes = fixture();
+    put(&mut bytes, 0x880 + 5 * 4, 0); // null slot with an existing name
+    let mut map = parse(bytes).unwrap();
+    let mut edit = map.edit();
+    edit.rename_tag(id(1), "different").unwrap();
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    let mut map = Map::from_reader(out).unwrap();
+    let table = map.header().tag_names;
+    let index = map.read_file_range(table.index_offset.into(), 24).unwrap();
+    let offset = u32::from_le_bytes(index[20..24].try_into().unwrap());
+    let value = map
+        .read_file_range(u64::from(table.data_offset) + u64::from(offset), 5)
+        .unwrap();
+    assert_eq!(value, b"same\0");
+}
+
+#[test]
+fn hostile_tables_are_rejected_before_writing_an_unreadable_map() {
+    // (string index offset, string data offset): tables crossing the header
+    // (rewritten on write) must be rejected, not silently corrupted.
+    for (index, data) in [(0x2d2, 0x800), (0x820, 0x2cb)] {
+        let mut bytes = fixture();
+        put(&mut bytes, 0x16c, index);
+        put(&mut bytes, 0x170, data);
+        let mut map = parse(bytes).unwrap();
+        let mut edit = map.edit();
+        edit.rename_tag(id(0), "x").unwrap();
+        assert!(edit.write_to(&mut Cursor::new(Vec::new())).is_err());
+        let mut edit = map.edit();
+        edit.patch_tag(id(0), 0, &[1]).unwrap();
+        assert!(edit.write_to(&mut Cursor::new(Vec::new())).is_err());
+    }
+}
+
+#[test]
+fn patches_over_the_index_or_tables_are_rejected() {
+    // String index at 0x1215..0x1221 overlaps the first byte of tag 1's payload.
+    let mut bytes = fixture();
+    put(&mut bytes, 0x16c, 0x1215);
+    bytes[0x1215..0x1221].fill(0xff);
+    let mut map = parse(bytes).unwrap();
+    let mut edit = map.edit();
+    assert!(edit.patch_tag(id(1), 0, &[1]).is_err());
+    edit.patch_tag(id(0), 0, &[1]).unwrap();
+}
+
+#[test]
+fn low_offset_patch_is_rejected_by_the_header_guard() {
+    let mut bytes = fixture();
+    put(&mut bytes, 0x1600, 0x400); // BSP payload now starts inside the header
+    let moved = bytes[0xa00..0xa40].to_vec();
+    bytes[0x400..0x440].copy_from_slice(&moved);
+    let mut map = parse(bytes).unwrap();
+    let mut edit = map.edit();
+    assert!(edit.patch_tag(id(2), 0, &[1]).is_err());
+}
+
+fn sized_multiplayer(len: usize) -> Map<Cursor<Vec<u8>>> {
+    let mut bytes = fixture();
+    bytes.resize(len, 0);
+    put(&mut bytes, 8, len as u32);
+    put(&mut bytes, 0x140, 1);
+    parse(bytes).unwrap()
+}
+
+#[test]
+fn engine_size_limits_apply_to_source_and_edited_output() {
+    const LIMIT: usize = 0x0500_0000;
+    // Source over the limit.
+    let mut map = sized_multiplayer(LIMIT + 512);
+    let mut edit = map.edit();
+    edit.patch_tag(id(0), 0, &[1]).unwrap();
+    assert!(edit.write_to(&mut Cursor::new(Vec::new())).is_err());
+    // Exactly at the limit: a patch fits, a rename (appends) does not.
+    let mut map = sized_multiplayer(LIMIT);
+    let mut edit = map.edit();
+    edit.patch_tag(id(0), 0, &[1]).unwrap();
+    assert_eq!(
+        edit.write_to(&mut Cursor::new(Vec::new())).unwrap(),
+        LIMIT as u64
+    );
+    let mut edit = map.edit();
+    edit.rename_tag(id(0), "x").unwrap();
+    assert!(edit.write_to(&mut Cursor::new(Vec::new())).is_err());
+}
