@@ -166,10 +166,13 @@ Postgres.
 
 ## 5. Order of work
 
-1. **Name the boundary.** Turn the 131 call targets into a named table
-   (address, XDK name, arguments) with Ghidra and `xonline.h`, starting from
-   sign-in. Checked in as addresses and names only, as with every other
-   hook.
+1. **Name the boundary.** Done statically: [live-boundary.md](live-boundary.md)
+   lists 130 entry points (62 confirmed, 68 likely), the sign-in sequence and
+   how each logon result routes to a dialog or the dashboard. Sign-in also
+   needs `XOnlineLogonTaskGetResults` (connected = `0x001510f0`, separate
+   from task success `0x001500f0`), `XOnlineGetServiceInfo` for 13 services,
+   and an `XNetQosServiceLookup` that completes; the logon task must stay
+   open while signed in.
 2. **Signed in, offline service.** Link up, XNet startup, `XOnlineStartup`,
    `XOnlineGetUsers`, `XOnlineLogon` succeed for a CLI account with a fixed
    in-process stub. Success is the game showing the gamertag as online.
