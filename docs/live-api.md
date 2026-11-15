@@ -89,13 +89,16 @@ up to 15 Hz and are not stored.
 ## Write endpoints
 
 Every write needs `Authorization: Bearer <self-issued JWT>` (security §3)
-except account creation. Event bodies are signed JWS (security §2):
+except account creation. Signed bodies are sent raw as a compact JWS with
+`Content-Type: application/jose`. Event bodies are signed JWS (security §2):
 `POST /v1/games/{id}/events` takes one JWS over the array.
 
 | method and path | body | does |
 |---|---|---|
 | `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id}`, 409 if taken |
-| `PUT /v1/titles/{title}/files/{name}` | raw bytes | publish a title file |
+| `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
+| `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
+| `POST /v1/invites` | (operator token) | create a single-use invite |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
