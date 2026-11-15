@@ -1178,6 +1178,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "analyze",
  "emit",
  "iced-x86",
  "ir",

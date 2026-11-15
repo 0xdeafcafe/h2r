@@ -11,6 +11,7 @@ thiserror.workspace = true
 vfs = { path = "../vfs" }
 
 [dev-dependencies]
+analyze.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
 # tests/preempt.rs lifts, emits and compiles synthetic guest loops.
 emit.workspace = true

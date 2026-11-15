@@ -579,3 +579,12 @@ The compatibility contracts in [LIFTER.md](../../docs/LIFTER.md),
 [Runtime API changes](../runtime/API-CHANGES.md), and
 [VFS storage contract](../../docs/storage.md) remain the integration references.
 These moving references and synthetic tests are not hardware trace validation.
+
+## Campaign cache integration
+
+The ignored `campaign_cold_warm_cache_slots` gate lifts the supplied retail
+copy/publication path and executes it through kernel/VFS/runtime against a
+read-only ISO. It covers slots 4/5, SP-shared slot 1, their menu/shared
+prerequisites, warm reopen, failure counts, and staging/resource-buffer
+lifetime. See [cache-slots.md](../../docs/cache-slots.md) for the command,
+fixture boundaries, and remaining full-activation checks.
