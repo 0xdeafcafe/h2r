@@ -402,8 +402,9 @@ The merge self-check at The Heretic's frame 4216 found two passes off
 All of them write every channel, and the later ones are additive
 (`DstAlpha`, `One`) with depth `Equal`. So an earlier additive draw
 triggers it too, not only a masked one. It is off by default. In the
-bench it takes the churn scene from 200 render passes and 32.6 us a draw
-to 1 and 9.4 us. Whether the exact mode is exact on that level frame was
+bench it takes the churn scene from 200 render passes to 1, and from
+41-53 us a draw to 9-10.5 at a load average of about 55
+(frame-budget.md, "The submit regression"). Whether the exact mode is exact on that level frame was
 not checked: the self-check ran only with the fast mode on.
 
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
