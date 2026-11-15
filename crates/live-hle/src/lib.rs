@@ -3,7 +3,11 @@
 //! neither guard escapes an invocation. See docs/live-boundary.md for the ABI.
 #![deny(unsafe_code)]
 
+mod client;
 mod config;
+mod messages;
+pub use client::{ServerOptions, ServerStatus};
+pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
 mod host;
 mod network;
@@ -11,6 +15,7 @@ mod network_config;
 mod qos;
 mod qos_memory;
 mod state;
+mod ui;
 pub use network_config::NetworkConfig;
 
 pub use config::{ConfigError, LiveConfig};
@@ -28,12 +33,26 @@ pub const PHY_LINK: u32 = 0x0d;
 
 pub mod status {
     pub const OK: u32 = 0;
+    pub const NO_ACCEPTED_INVITE: u32 = 0x8000_4005; // E_FAIL; S_FALSE would be an invite to Halo.
+    pub const CANNOT_ACCESS_SERVICE: u32 = 0x8015_1001;
+    pub const SERVERS_BUSY: u32 = 0x8015_1003;
+    pub const CONNECTION_LOST: u32 = 0x8015_1004;
+    pub const BUFFER_TOO_SMALL: u32 = 0x8015_0001;
+    pub const MESSAGE_INVALID_ID: u32 = 0x8015_5a01;
+    pub const MESSAGE_DOWNLOAD_REQUIRED: u32 = 0x8015_5a02;
+    pub const MESSAGE_PROPERTY_NOT_FOUND: u32 = 0x8015_5a03;
     pub const CONNECTED: u32 = 0x0015_10f0;
     pub const TASK_SUCCESS: u32 = 0x0015_00f0;
+    pub const TASK_RESULTS_AVAILABLE: u32 = 0x0015_00f1;
+    pub const SERVICE_TEMPORARILY_UNAVAILABLE: u32 = 0x8015_1102;
+    pub const TEAM_NOT_FOUND: u32 = 0x8015_210b;
+    pub const STAT_USER_NOT_FOUND: u32 = 0x8015_9003;
+    pub const QUERY_DATASET_NOT_FOUND: u32 = 0x8015_6109;
     pub const RUNNING_IDLE: u32 = 0x0015_00f2;
     pub const NO_NEW_CONTENT: u32 = 0x0015_3102;
     pub const USER_CHANGE_COMMIT: u32 = 0x0015_13f0;
     pub const USER_CHANGE_COMPLETE: u32 = 0x0015_13f1;
+    pub const USER_CHANGE_FAILED: u32 = 0x8015_1300;
     pub const INVALID_ARGUMENT: u32 = 0x8007_0057;
     pub const NOT_INITIALIZED: u32 = 0x8015_0005;
     pub const NO_SESSION: u32 = 0x8015_0002;
@@ -77,14 +96,50 @@ impl Hle {
         config: LiveConfig,
         network: NetworkConfig,
     ) -> Result<Arc<Self>, ConfigError> {
+        Self::with_server_options(config, network, ServerOptions::default())
+    }
+    /// Host HTTP timing, including the 30-second production heartbeat. The
+    /// worker is started without making a request; logon initiates service I/O.
+    pub fn with_server_options(
+        config: LiveConfig,
+        network: NetworkConfig,
+        options: ServerOptions,
+    ) -> Result<Arc<Self>, ConfigError> {
         network.validate().map_err(ConfigError::Network)?;
+        if options.request_timeout.is_zero() || options.heartbeat_interval.is_zero() {
+            return Err(ConfigError::Worker);
+        }
         let address = network.address;
         let accounts = config.accounts()?;
+        let service = if config.enabled {
+            config
+                .server_url
+                .as_ref()
+                .map(|url| client::Service::start(url.clone(), options))
+                .transpose()
+                .map_err(|_| ConfigError::Worker)?
+        } else {
+            None
+        };
         Ok(Arc::new(Self {
             config,
-            state: Mutex::new(state::State::new(accounts, address)),
+            state: Mutex::new(state::State::new(accounts, address, service)),
             network: network::Network::new(network),
         }))
+    }
+    /// Telemetry can call this after the server assigns a game ID; no I/O or
+    /// guest memory access occurs on the caller's thread. None returns to online.
+    pub fn set_game_id(&self, id: Option<&str>) -> Result<(), u32> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_game_id(id)
+    }
+    pub fn server_status(&self) -> ServerStatus {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .server_status()
     }
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config
