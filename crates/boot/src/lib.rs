@@ -418,6 +418,7 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         if let Some(pad) = &pad {
             script.step(slice, pad);
         }
+        let ran_before = dsound_glue::guest_slices(&m);
         outcome = m.run(1).context("machine run")?;
         // Every thread waits and nothing is timed: pending audio is a wake
         // source the scheduler does not know about (dsound_glue::wake_idle).
@@ -433,7 +434,11 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         if !matches!(outcome, kernel::RunOutcome::SliceLimit) {
             break;
         }
-        audio_idle = 0;
+        // Only a guest thread running refills the audio-only budget, not a
+        // slice that just delivered vblank.
+        if dsound_glue::guest_slices(&m) != ran_before {
+            audio_idle = 0;
+        }
         if let Some(x) = &xa
             && xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))).is_err()
         {

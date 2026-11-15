@@ -62,6 +62,14 @@ impl Audio {
     }
 }
 
+/// Guest-thread slices the machine has scheduled so far. [`wake_idle`]'s
+/// budget is reset only when this moves: a slice that only delivered a
+/// periodic callback (vblank) ends in `SliceLimit` too, and must not refill
+/// the budget while every thread stays blocked.
+pub fn guest_slices(m: &kernel::Machine) -> u64 {
+    m.schedule().len() as u64 + m.dropped_schedule()
+}
+
 /// The scheduler found no runnable thread and no timed wake. If audio is
 /// pending (and `idle` logical ticks added this way since a thread last ran
 /// are under [`IDLE_LIMIT_TICKS`]), advance logical time by one audio
