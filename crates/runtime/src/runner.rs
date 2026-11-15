@@ -1,7 +1,6 @@
 //! Explicit guest transfers and callbacks use a bounded host stack.
 use crate::{
     CpuAbi, Event, ExecCtx, TransferAbi, abi,
-    guest::Access,
     handler::{Invocation, execute},
     kernel,
 };
@@ -164,9 +163,7 @@ impl Runner {
                 .filter(|v| v.is_multiple_of(4))
                 .and_then(|v| kernel::function(v / 4));
             if token.is_none() {
-                let access = ctx
-                    .memory()
-                    .check(transfer.target_pc, 1, Access::Execute, 1);
+                let access = ctx.runtime().check_execute(transfer.target_pc);
                 if let Err(fault) = access {
                     return ctx.fault(transfer.target_pc, fault);
                 }

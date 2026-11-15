@@ -11,6 +11,7 @@
 #define H2GEN_H
 #include "h2abi.h"
 #include <string.h>
+#include "h2fastmem.h"
 
 typedef unsigned __int128 h2u128;
 /* SSE floating-point reference semantics (h2s_*), written next to this
@@ -268,7 +269,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     uint32_t esp = cpu->esp, ebp = cpu->ebp, esi = cpu->esi, edi = cpu->edi;    \
     uint32_t fl = cpu->eflags, fd = cpu->eflags_defined;                       \
     uint32_t x_kind, x_route, x_target, x_resume, x_event, x_eip;               \
-    H2_PERF_LOCALS(); (void)ctx
+    H2_PERF_LOCALS(); H2_FAST_LOCALS(); (void)ctx
 
 /* Every way out of a handler sets the x_* locals and jumps to the one
  * shared epilogue, which commits canonical state and returns. Keeping a
@@ -281,7 +282,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;             \
     cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;             \
     cpu->eflags = fl | 2u; cpu->eflags_defined = fd; cpu->eip = x_eip;          \
-    H2_PERF_FLUSH();                                                         \
+    H2_FAST_RELEASE(); H2_PERF_FLUSH();                                                         \
     return h2_transfer(x_kind, x_route, x_target, x_resume, x_event)
 
 #define H2_EXIT_(kind, route, target, resume, event, eip)                       \
@@ -306,7 +307,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     T dst = 0;                                                                  \
     do {                                                                        \
         uint8_t b_[16];                                                         \
-        uint32_t st_ = h2abi_v1_read(ctx, (pc), (addr), (n), 1u, b_);           \
+        uint32_t st_ = h2_mem_read(h2_mem_, ctx, (pc), (addr), (n), 1u, b_);           \
         if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                          \
         memcpy(&dst, b_, (n));                                                  \
     } while (0)
@@ -332,7 +333,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         T v_ = (value);                                                         \
         uint8_t b_[16];                                                         \
         memcpy(b_, &v_, (n));                                                   \
-        uint32_t st_ = h2abi_v1_write(ctx, (pc), (addr), (n), 1u, b_);          \
+        uint32_t st_ = h2_mem_write(h2_mem_, ctx, (pc), (addr), (n), 1u, b_);          \
         if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                          \
     } while (0)
 #define H2_ST(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (void)0)

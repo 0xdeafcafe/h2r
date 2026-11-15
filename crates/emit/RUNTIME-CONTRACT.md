@@ -19,7 +19,8 @@ listed so the contract is complete.
 ### 1.1 Memory: `h2abi_v1_read`, `h2abi_v1_write` (existing)
 
 These are used exactly as `h2abi.h` documents them. Every guest load and
-store in generated code is one call, and `alignment` is always 1. The
+store uses these helpers by default; `H2_FASTMEM=1` may complete it inline
+under the protocol below. `alignment` is always 1. The
 16-byte alignment rule of the aligned SSE forms is checked by the
 generated code before the access (`#GP`, code 7 below), so the runtime never
 sees a misaligned aligned-SSE access. A non-zero status is an event id. The
@@ -28,6 +29,47 @@ instruction's PC, and has made no other change for that instruction (the
 IR orders faulting accesses before register and flag writes). The one
 exception is a REP string instruction (section 4): iterations completed
 before the faulting one keep their stores and their ESI/EDI/ECX progress.
+
+#### Optional inline RAM view (`H2_FASTMEM=1`)
+
+`h2abi_v1_fast_acquire(ctx)` returns an invocation-scoped `H2FastAccess *`,
+or null to retain the Rust path. `h2fastmem.h` defines the extension layout;
+its 64-bit host sizes are asserted in both C and Rust. The named extension
+functions do not change ABI v2 layouts. A bridge must forward them explicitly;
+use a versioned install symbol with an explicit size when extending its table.
+The test bridge uses `h2bridge_install_v2(table, size)` and
+`h2bridge_layout_v2`; installation rejects a wrong size before reading the
+table. Its original eight-callback install/layout symbols remain compatible,
+with profiling disabled and null fast views. Tooling using that legacy bridge
+must adopt the v2 table and forward both fast callbacks to measure inline RAM.
+
+The emitted ordinary-access helpers try the shared atomic gate with acquire
+ordering. While holding it they validate the one-page span, access permission
+and physical RAM bounds, then copy bytes. Stores mark physical dirty bits.
+The gate is released before every Rust helper and on every fast-path exit.
+A failed fast check performs no access and falls back to the ordinary helper,
+which preserves precise fault ordering and whole-span failure semantics.
+Atomics always use their operation-wide Rust helper.
+
+Rust memory guards use that same gate and publish pending C dirty pages before
+HLE can inspect Guest. Page pointers and permissions may be read only while
+the gate is held. The C view, RAM addresses and page-table pointers must never
+be retained after the invocation or used as accessor buffers. There is no
+unlocked C RAM access, and no gate is held across an invocation or callback.
+
+Each successful fast access increments its context-local count. The access
+that reaches the supplied budget atomically raises SLICE on the existing
+preempt word. Slow helpers settle pending fast accesses before charging their
+own access, and `h2abi_v1_fast_release(ctx)` settles them at the common epilogue,
+including faults and preemption. Runtime invocation also settles as a backstop.
+The two paths therefore charge identical access budgets and guest work.
+`enable_fast_memory(false)` is a per-context comparison/diagnostic switch.
+
+The header and `H2_FASTMEM` flag participate in C object cache keys. The default
+is off until the loading host provides the extension bridge. The emitter's
+mock host returns null; generated/runtime tests install the real view and
+cover mapping changes, permissions, aliases, every width, fault transactions,
+access budgets, host concurrency and replacement of the backing Guest.
 
 ### 1.2 Atomics: `h2abi_v1_atomic_rmw`, `h2abi_v1_xchg`, `h2abi_v1_cmpxchg` (existing)
 

@@ -14,21 +14,44 @@ typedef struct H2Bridge {
     uint32_t (*xchg)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
     uint32_t (*cmpxchg)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
     void (*profile)(ExecCtxOpaque *, uint64_t, uint64_t);
+    H2FastAccess *(*fast_acquire)(ExecCtxOpaque *);
+    void (*fast_release)(ExecCtxOpaque *);
 } H2Bridge;
 
 static H2Bridge bridge;
 
-void h2bridge_install(const H2Bridge *b) { bridge = *b; }
+/* Version the install symbol and check size before reading the table: a
+ * prefix layout check cannot distinguish an old size from a new offset. */
+uint32_t h2bridge_install_v2(const H2Bridge *b, size_t size) {
+    if (size != sizeof bridge) return 0;
+    bridge = *b;
+    return 1;
+}
 
 /* The table's layout, so a Rust copy can check it before installing:
- * slots 0-7 give each callback's offset in declaration order, 8 the size. */
-size_t h2bridge_layout(uint32_t slot) {
+ * slots 0-10 give each callback's offset in declaration order, 11 the size. */
+size_t h2bridge_layout_v2(uint32_t slot) {
     static const size_t layout[] = {
         offsetof(H2Bridge, read),  offsetof(H2Bridge, write), offsetof(H2Bridge, event),
         offsetof(H2Bridge, unsupported), offsetof(H2Bridge, rdtsc), offsetof(H2Bridge, rmw),
-        offsetof(H2Bridge, xchg),  offsetof(H2Bridge, cmpxchg), offsetof(H2Bridge, profile), sizeof(H2Bridge),
+        offsetof(H2Bridge, xchg),  offsetof(H2Bridge, cmpxchg), offsetof(H2Bridge, profile), offsetof(H2Bridge, fast_acquire), offsetof(H2Bridge, fast_release), sizeof(H2Bridge),
     };
     return slot < sizeof layout / sizeof layout[0] ? layout[slot] : 0;
+}
+
+/* Original eight-callback clients remain usable, but cannot opt into the
+ * new extensions. Never copy an expanded table from an unversioned caller. */
+static void legacy_profile(ExecCtxOpaque *c, uint64_t l, uint64_t x) { (void)c; (void)l; (void)x; }
+static H2FastAccess *legacy_fast_acquire(ExecCtxOpaque *c) { (void)c; return NULL; }
+static void legacy_fast_release(ExecCtxOpaque *c) { (void)c; }
+void h2bridge_install(const void *b) {
+    memcpy(&bridge, b, offsetof(H2Bridge, profile));
+    bridge.profile = legacy_profile;
+    bridge.fast_acquire = legacy_fast_acquire;
+    bridge.fast_release = legacy_fast_release;
+}
+size_t h2bridge_layout(uint32_t slot) {
+    return slot < 8 ? h2bridge_layout_v2(slot) : slot == 8 ? offsetof(H2Bridge, profile) : 0;
 }
 
 uint32_t h2abi_v1_version(void) { return H2_ABI_VERSION; }
@@ -69,3 +92,6 @@ uint32_t h2abi_v1_cmpxchg(CpuAbi *cpu, ExecCtxOpaque *c, uint32_t pc, uint32_t a
 }
 
 void h2abi_v1_profile(ExecCtxOpaque *c, uint64_t loops, uint64_t x87) { bridge.profile(c, loops, x87); }
+
+H2FastAccess *h2abi_v1_fast_acquire(ExecCtxOpaque *c) { return bridge.fast_acquire(c); }
+void h2abi_v1_fast_release(ExecCtxOpaque *c) { bridge.fast_release(c); }

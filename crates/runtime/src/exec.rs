@@ -1,6 +1,6 @@
 //! Per-thread diagnostics and Rust callback continuations.
 use crate::{CpuAbi, Guest, GuestFault, TransferAbi};
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 // Keep previous module paths working while the implementation is split.
 pub use crate::events::{
@@ -24,6 +24,8 @@ pub struct ExecCtx {
     preempt: crate::preempt::WordPtr,
     runtime: Arc<Runtime>,
     pub(crate) profile: Option<crate::perf::Profile>,
+    pub(crate) fast_memory: Option<Box<crate::ffi::FastAccess>>,
+    pub(crate) fast_memory_enabled: bool,
     pub thread_id: u32,
     events: Vec<Event>,
     event_ids: Vec<u32>,
@@ -60,7 +62,16 @@ impl ExecCtx {
             slice: Default::default(),
             preempted: None,
             profile: None,
+            fast_memory: None,
+            fast_memory_enabled: true,
         }
+    }
+    /// Enable the optional generated-C RAM view for subsequent handler calls.
+    /// Disabling it keeps the same generated module on checked Rust helpers,
+    /// which is useful for comparisons and diagnosing a fast-path discrepancy.
+    pub fn enable_fast_memory(&mut self, enabled: bool) {
+        crate::ffi::sync_accesses(self);
+        self.fast_memory_enabled = enabled;
     }
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
@@ -76,7 +87,7 @@ impl ExecCtx {
     ///     let _ = memory.u32(0x10000);
     /// }
     /// ```
-    pub fn memory(&mut self) -> MutexGuard<'_, Guest> {
+    pub fn memory(&mut self) -> crate::ffi::MemoryGuard<'_> {
         self.runtime.memory()
     }
     pub fn events(&self) -> &[Event] {

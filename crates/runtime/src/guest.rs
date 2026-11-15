@@ -132,12 +132,20 @@ impl VirtualClaim {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct FastPage {
+    pub physical: u32,
+    pub permissions: u32,
+}
+
 pub struct Guest {
     ram: Box<[u8]>,
     mappings: Vec<Mapping>,
     // Hints only: every hit rechecks the current mapping's virtual range.
     // Never cache permissions or RAM pointers. Atomics retain Guest: Sync.
     mapping_hints: [AtomicUsize; 8],
+    fast_pages: Option<Box<[FastPage]>>,
     next_physical: u32,
     reservations: Vec<PhysicalReservation>,
     claims: Vec<VirtualClaim>,
@@ -168,6 +176,7 @@ impl Guest {
             ram: vec![0; RAM_SIZE].into_boxed_slice(),
             mappings: Vec::new(),
             mapping_hints: std::array::from_fn(|_| AtomicUsize::new(usize::MAX)),
+            fast_pages: None,
             next_physical: 0,
             reservations: Vec::new(),
             claims: Vec::new(),
@@ -254,6 +263,14 @@ impl Guest {
             permissions,
         });
         self.mappings.sort_unstable_by_key(|m| m.virtual_start);
+        if let Some(pages) = &mut self.fast_pages {
+            for offset in (0..len).step_by(PAGE_SIZE as usize) {
+                pages[((va as u64 + offset as u64) >> 12) as usize] = FastPage {
+                    physical: physical + offset,
+                    permissions: permissions.0 as u32,
+                };
+            }
+        }
     }
 
     /// Allocate distinct page-aligned physical storage for a virtual range.
@@ -297,11 +314,18 @@ impl Guest {
         }
     }
     pub fn protect(&mut self, va: u32, permissions: Permissions) -> Result<(), MapError> {
-        self.mappings
+        let m = self
+            .mappings
             .iter_mut()
             .find(|m| m.virtual_start == va)
-            .ok_or(MapError::InvalidRange)?
-            .permissions = permissions;
+            .ok_or(MapError::InvalidRange)?;
+        m.permissions = permissions;
+        if let Some(pages) = &mut self.fast_pages {
+            let end = (m.virtual_start as u64 + m.len as u64) >> 12;
+            for page in &mut pages[(va >> 12) as usize..end as usize] {
+                page.permissions = permissions.0 as u32;
+            }
+        }
         Ok(())
     }
 
@@ -663,12 +687,20 @@ impl Guest {
                 m.permissions = permissions;
             }
         }
+        if let Some(pages) = &mut self.fast_pages {
+            for page in &mut pages[(start >> 12) as usize..(end >> 12) as usize] {
+                page.permissions = permissions.0 as u32;
+            }
+        }
     }
     fn apply_unmap(&mut self, start: u64, end: u64) {
         self.split_at(start);
         self.split_at(end);
         self.mappings
             .retain(|m| !(start..end).contains(&(m.virtual_start as u64)));
+        if let Some(pages) = &mut self.fast_pages {
+            pages[(start >> 12) as usize..(end >> 12) as usize].fill(FastPage::default());
+        }
     }
 
     /// Zero physical bytes, reporting the change to the write watch.
@@ -676,6 +708,38 @@ impl Guest {
         self.ram[physical..physical + len].fill(0);
         if self.watch.active() {
             self.watch.note(physical, len);
+        }
+    }
+
+    /// Built only when a generated module requests the optional C fast path.
+    pub(crate) fn prepare_fast_pages(&mut self) {
+        if self.fast_pages.is_some() {
+            return;
+        }
+        let mut pages = vec![FastPage::default(); 1 << 20].into_boxed_slice();
+        for m in &self.mappings {
+            for offset in (0..m.len).step_by(PAGE_SIZE as usize) {
+                pages[((m.virtual_start as u64 + offset as u64) >> 12) as usize] = FastPage {
+                    physical: m.physical_start + offset,
+                    permissions: m.permissions.0 as u32,
+                };
+            }
+        }
+        self.fast_pages = Some(pages);
+    }
+    pub(crate) fn fast_parts(&mut self) -> (*mut u8, *const FastPage, bool) {
+        (
+            self.ram.as_mut_ptr(),
+            self.fast_pages
+                .as_ref()
+                .map_or(std::ptr::null(), |p| p.as_ptr()),
+            self.watch.active(),
+        )
+    }
+    pub(crate) fn note_fast_page(&mut self, page: usize) {
+        if self.watch.active() {
+            self.watch
+                .note(page * PAGE_SIZE as usize, PAGE_SIZE as usize);
         }
     }
 

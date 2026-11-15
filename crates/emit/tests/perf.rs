@@ -78,7 +78,7 @@ fn function(
     f
 }
 
-fn module(kind: &str, n: u32, instrumented: bool) -> (libloading::Library, Dispatch) {
+fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Library, Dispatch) {
     let f = function(A, |a| {
         let mut l = a.create_label();
         a.mov(ecx, n)?;
@@ -112,10 +112,18 @@ fn module(kind: &str, n: u32, instrumented: bool) -> (libloading::Library, Dispa
             funcs.push(function(A + 0x200, |a| a.ret()));
         }
     }
+    compile_module(kind, funcs, instrumented, fast)
+}
+fn compile_module(kind: &str, funcs: Vec<IrFunction>, instrumented: bool, fast: bool) -> (libloading::Library, Dispatch) {
     let owners = emit::plan(funcs);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("perf-{kind}-{instrumented}"));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("perf-{kind}-{instrumented}-{fast}"));
     let src = dir.join("src");
     emit::write_module(&owners, &src).unwrap();
+    if fast {
+        let header = src.join("h2gen.h");
+        let content = std::fs::read_to_string(&header).unwrap();
+        std::fs::write(header, format!("#define H2_FASTMEM 1\n{content}")).unwrap();
+    }
     if instrumented {
         let header = src.join("h2gen.h");
         let content = std::fs::read_to_string(&header).unwrap();
@@ -128,15 +136,31 @@ fn module(kind: &str, n: u32, instrumented: bool) -> (libloading::Library, Dispa
         b.compile_secs, b.compiled, b.object_bytes
     );
     let dylib = dir.join("perf.dylib");
-    emit::compile::host_dylib(&b, &src, &[("bridge.c", emit::host::BRIDGE)], &dylib).unwrap();
+    let probe = r#"#include "h2gen.h"
+uint32_t h2probe_read(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align, uint8_t *out) {
+    H2FastAccess *f = h2abi_v1_fast_acquire(c);
+    uint32_t status = h2_mem_read(f, c, 0, a, n, align, out);
+    h2abi_v1_fast_release(c);
+    return status;
+}
+uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align, const uint8_t *in) {
+    H2FastAccess *f = h2abi_v1_fast_acquire(c);
+    uint32_t status = h2_mem_write(f, c, 0, a, n, align, in);
+    h2abi_v1_fast_release(c);
+    return status;
+}
+"#;
+    let mut extras = vec![("bridge.c", emit::host::BRIDGE)];
+    if kind == "fast-semantics" { extras.push(("probe.c", probe)); }
+    emit::compile::host_dylib(&b, &src, &extras, &dylib).unwrap();
     // Initialize x87's helper bridge, then replace the memory/event callbacks
     // with the production runtime. Both bridges implement h2abi.h exactly.
     let _test_host = unsafe { emit::host::Generated::load(&dylib) }.unwrap();
     let lib = unsafe { libloading::Library::new(&dylib) }.unwrap();
     let mut dispatch = Dispatch::default();
     unsafe {
-        let install: libloading::Symbol<unsafe extern "C" fn(*const *const ())> =
-            lib.get(b"h2bridge_install").unwrap();
+        let install: libloading::Symbol<unsafe extern "C" fn(*const *const (), usize) -> u32> =
+            lib.get(b"h2bridge_install_v2").unwrap();
         let callbacks = [
             runtime::ffi::h2abi_v1_read as *const (),
             runtime::ffi::h2abi_v1_write as *const (),
@@ -147,11 +171,14 @@ fn module(kind: &str, n: u32, instrumented: bool) -> (libloading::Library, Dispa
             runtime::ffi::h2abi_v1_xchg as *const (),
             runtime::ffi::h2abi_v1_cmpxchg as *const (),
             runtime::ffi::h2abi_v1_profile as *const (),
+            runtime::ffi::h2abi_v1_fast_acquire as *const (),
+            runtime::ffi::h2abi_v1_fast_release as *const (),
         ];
         let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
-            lib.get(b"h2bridge_layout").unwrap();
+            lib.get(b"h2bridge_layout_v2").unwrap();
         assert_eq!(layout(callbacks.len() as u32), size_of_val(&callbacks));
-        install(callbacks.as_ptr());
+        assert_eq!(install(std::ptr::null(), 0), 0);
+        assert_eq!(install(callbacks.as_ptr(), size_of_val(&callbacks)), 1);
         let table: libloading::Symbol<*const runtime::generated::H2GenModule> =
             lib.get(b"h2gen_module").unwrap();
         let version = lib
@@ -183,6 +210,7 @@ fn generated_runtime_benchmark() {
             kind,
             n,
             std::env::var_os("H2_PERF").is_some_and(|v| v == "1"),
+            std::env::var_os("H2_FASTMEM").is_some_and(|v| v == "1"),
         );
         let mut mem = Guest::new();
         mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
@@ -234,7 +262,7 @@ fn generated_runtime_benchmark() {
 #[test]
 fn generated_counts_match_executed_work() {
     for kind in ["read", "x87", "call", "tail"] {
-        let (_lib, dispatch) = module(kind, 11, true);
+        let (_lib, dispatch) = module(kind, 11, true, true);
         let mut mem = Guest::new();
         mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
@@ -276,4 +304,156 @@ fn generated_counts_match_executed_work() {
         assert_eq!(p.timing(runtime::perf::Scope::Runner).calls, 1);
         assert_eq!(ctx.profile().unwrap(), &runtime::perf::Profile::default());
     }
+}
+
+#[test]
+fn inline_ram_checks_track_mapping_changes_faults_writes_and_slice_budget() {
+    use runtime::{abi, guest::FaultReason, watch::CONTIGUOUS_BASE};
+    const SP: u32 = 0x200000;
+    const ALIAS: u32 = 0x300000;
+    let f = function(A, |a| {
+        a.mov(eax, dword_ptr(esi))?;
+        a.mov(dword_ptr(edi), eax)?;
+        a.ret()
+    });
+    let (lib, dispatch) = compile_module("fast-semantics", vec![f], true, true);
+    let make_memory = || {
+        let mut m = Guest::new();
+        m.map(A, 4096, 0, Permissions::RX).unwrap();
+        m.map(DATA, 8192, 4096, Permissions::RW).unwrap();
+        m.map(SP, 4096, 12288, Permissions::RW).unwrap();
+        m.map(ALIAS, 4096, 4096, Permissions::RW).unwrap();
+        m.set_u32(SP, runtime::exec::HARNESS_EXIT).unwrap();
+        m.set_u32(DATA, 0x12345678).unwrap();
+        m
+    };
+    let rt = Runtime::new(make_memory(), dispatch);
+    let watch = {
+        let mut m = rt.memory();
+        let watch = m.subscribe_writes("fast test");
+        m.watch_writes(watch, CONTIGUOUS_BASE + 4096, 4096).unwrap();
+        watch
+    };
+    let mut ctx = ExecCtx::new(rt.clone(), 1);
+    ctx.enable_profiling(true);
+    let mut cpu = CpuAbi { esp: SP, esi: DATA, edi: ALIAS + 8, ..CpuAbi::default() };
+    let run = |cpu: &mut CpuAbi, ctx: &mut ExecCtx| {
+        cpu.esp = SP;
+        Runner::default().run(cpu, ctx, A)
+    };
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::STOP);
+    assert_eq!(rt.memory().u32(DATA + 8).unwrap(), 0x12345678);
+    let p = ctx.take_profile().unwrap();
+    assert_eq!((p.memory_accessors, p.fast_memory_accesses), (3, 3));
+    let dirty = rt.memory().take_dirty(watch).unwrap();
+    assert_eq!(dirty.len(), 1);
+    assert_eq!(dirty[0].addr, CONTIGUOUS_BASE + 4096);
+
+    // A slow cross-page read followed by fast stores still expires at the
+    // second access, and accounts for the return-address read past expiry.
+    rt.memory().set_u32(DATA + 4094, 0xaabbccdd).unwrap();
+    cpu.esi = DATA + 4094;
+    ctx.arm_preemption(2);
+    let stop = run(&mut cpu, &mut ctx);
+    assert_eq!((stop.kind, stop.event_id), (abi::STOP, 0));
+    assert_eq!(ctx.take_preempted().unwrap().target_pc, runtime::exec::HARNESS_EXIT);
+    assert_eq!(ctx.take_slice_spent(), 3);
+    let p = ctx.take_profile().unwrap();
+    assert_eq!((p.memory_accessors, p.fast_memory_accesses), (3, 2));
+    assert_eq!(rt.memory().u32(DATA + 8).unwrap(), 0xaabbccdd);
+    ctx.disarm_preemption();
+
+    // The page table must immediately observe protection changes; slow
+    // cross-page failure must not write its valid prefix.
+    rt.memory().protect_range(DATA + 4096, 4096, Permissions::NONE).unwrap();
+    let before = rt.memory().u16(DATA + 4094).unwrap();
+    cpu.esi = DATA;
+    cpu.edi = DATA + 4094;
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::FAULT);
+    assert_eq!(rt.memory().u16(DATA + 4094).unwrap(), before);
+    assert_eq!(ctx.take_profile().unwrap().memory_accessors, 2);
+    rt.memory().protect_range(DATA, 4096, Permissions::READ).unwrap();
+    cpu.edi = DATA + 8;
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::FAULT);
+    rt.memory().unmap(DATA, 4096).unwrap();
+    assert_eq!(rt.memory().u32(DATA).unwrap_err().reason, FaultReason::Unmapped);
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::FAULT);
+    rt.memory().map(DATA, 4096, 16384, Permissions::RW).unwrap();
+    rt.memory().set_u32(DATA, 0x87654321).unwrap();
+    cpu.edi = ALIAS + 8;
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::STOP);
+    assert_eq!(rt.memory().u32(ALIAS + 8).unwrap(), 0x87654321);
+
+    // A safe caller can replace Guest wholesale. Cached context views must
+    // neither retain the freed RAM/page table nor miss the new storage.
+    *rt.memory() = make_memory();
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::STOP);
+    assert_eq!(rt.memory().u32(DATA + 8).unwrap(), 0x12345678);
+
+    rt.memory().protect(A, Permissions::READ).unwrap();
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::FAULT);
+    rt.memory().unmap(A, 4096).unwrap();
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::FAULT);
+    rt.memory().map(A, 4096, 0, Permissions::RX).unwrap();
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::STOP);
+    ctx.take_profile();
+    ctx.enable_fast_memory(false);
+    assert_eq!(run(&mut cpu, &mut ctx).kind, abi::STOP);
+    let p = ctx.take_profile().unwrap();
+    assert_eq!((p.memory_accessors, p.fast_memory_accesses), (3, 0));
+    ctx.enable_fast_memory(true);
+
+    // Exercise C's actual checks and copies for every accessor width.
+    type Read = unsafe extern "C" fn(*mut runtime::ExecCtxOpaque, u32, u32, u32, *mut u8) -> u32;
+    type Write = unsafe extern "C" fn(*mut runtime::ExecCtxOpaque, u32, u32, u32, *const u8) -> u32;
+    // SAFETY: these test probes are compiled above with exactly these signatures.
+    let read: libloading::Symbol<Read> = unsafe { lib.get(b"h2probe_read") }.unwrap();
+    let write: libloading::Symbol<Write> = unsafe { lib.get(b"h2probe_write") }.unwrap();
+    let ptr = (&mut ctx as *mut ExecCtx).cast();
+    for width in [1u32, 2, 4, 8, 10, 16] {
+        let input = [0x5a; 16];
+        let mut output = [0xa5; 16];
+        // SAFETY: disjoint valid buffers and exclusive invocation context.
+        unsafe {
+            assert_eq!(write(ptr, DATA + 1, width, 1, input.as_ptr()), 0);
+            assert_eq!(read(ptr, DATA + 1, width, 1, output.as_mut_ptr()), 0);
+        }
+        assert_eq!(&output[..width as usize], &input[..width as usize]);
+        assert!(output[width as usize..].iter().all(|v| *v == 0xa5));
+    }
+    let input = [0x11; 16];
+    let mut output = [0xa5; 16];
+    unsafe {
+        assert_ne!(read(ptr, DATA + 1, 16, 16, output.as_mut_ptr()), 0);
+        assert_ne!(write(ptr, DATA + 1, 16, 16, input.as_ptr()), 0);
+        assert_ne!(read(ptr, 0xfd000000, 4, 1, output.as_mut_ptr()), 0);
+        assert_ne!(read(ptr, u32::MAX, 4, 1, output.as_mut_ptr()), 0);
+    }
+    assert_eq!(output, [0xa5; 16]);
+
+    // A compound Rust guard is indivisible to C, even though the host writes
+    // two separate words. A C read must never observe a torn pair.
+    rt.memory().set_u64(DATA, 0).unwrap();
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+    let host_rt = rt.clone();
+    let host_barrier = barrier.clone();
+    let writer = std::thread::spawn(move || {
+        host_barrier.wait();
+        for i in 1..10000u32 {
+            let mut m = host_rt.memory();
+            m.set_u32(DATA, i).unwrap();
+            m.set_u32(DATA + 4, i).unwrap();
+        }
+    });
+    let mut concurrent = ExecCtx::new(rt.clone(), 2);
+    let ptr = (&mut concurrent as *mut ExecCtx).cast();
+    barrier.wait();
+    for _ in 0..10000 {
+        let mut pair = [0u8; 8];
+        // SAFETY: the probe runs synchronously with a valid exclusive context;
+        // its RAM gate synchronizes the separate host thread's memory guard.
+        assert_eq!(unsafe { read(ptr, DATA, 8, 1, pair.as_mut_ptr()) }, 0);
+        assert_eq!(&pair[..4], &pair[4..]);
+    }
+    writer.join().unwrap();
 }

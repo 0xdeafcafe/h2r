@@ -36,6 +36,8 @@ pub struct Profile {
     pub runner_safe_points: u64,
     pub loop_safe_points: u64,
     pub memory_accessors: u64,
+    /// Successful inline C accesses, included in memory_accessors.
+    pub fast_memory_accesses: u64,
     pub x87_helpers: u64,
     /// Handler exits that supplied generated counters; zero means those
     /// counters may be unavailable (build generated C with H2_PERF=1).
@@ -49,6 +51,7 @@ impl Profile {
         self.runner_safe_points += other.runner_safe_points;
         self.loop_safe_points += other.loop_safe_points;
         self.memory_accessors += other.memory_accessors;
+        self.fast_memory_accesses += other.fast_memory_accesses;
         self.x87_helpers += other.x87_helpers;
         self.generated_batches += other.generated_batches;
         for (a, b) in self.scopes.iter_mut().zip(other.scopes) {
@@ -71,11 +74,12 @@ impl fmt::Display for Profile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "perf: transfers={} safe_points={}/{} (runner/loop) memory_accessors={} x87_helpers={} generated_batches={}",
+            "perf: transfers={} safe_points={}/{} (runner/loop) memory_accesses={} inline={} x87_helpers={} generated_batches={}",
             self.transfers,
             self.runner_safe_points,
             self.loop_safe_points,
             self.memory_accessors,
+            self.fast_memory_accesses,
             self.x87_helpers,
             self.generated_batches
         )?;

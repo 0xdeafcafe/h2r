@@ -20,7 +20,7 @@
 //! (transfer, fault, stop) sets the outgoing transfer and jumps to the one
 //! shared epilogue, which spills them to `CpuAbi`, so state is canonical
 //! whenever the runtime sees it. Memory goes through the ABI's checked
-//! `h2abi_v1_read`/`write` every time; there is no RAM pointer. XMM and FP
+//! the checked helpers or the opt-in gated inline RAM path (`h2fastmem.h`). XMM and FP
 //! state are read and written in `CpuAbi` directly. All arithmetic is
 //! unsigned and fixed-width, through the total helpers in `h2gen.h`, so no
 //! IR operation can become C undefined behaviour.

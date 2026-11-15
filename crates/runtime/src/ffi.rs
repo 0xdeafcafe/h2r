@@ -4,7 +4,12 @@
 //! They must not retain pointers, alias those borrows, unwind, or call helpers
 //! concurrently on the same context. Memory buffers must be valid for `width`
 //! bytes and disjoint from ExecCtx storage. Atomic outputs may alias CpuAbi
-//! after the operation's CPU borrow ends. C never receives a RAM pointer.
+//! after the operation's CPU borrow ends. Optional C RAM views follow the
+//! gate protocol in `memory.rs` and may not escape their invocation.
+
+mod memory;
+pub use memory::{FastAccess, MemoryGuard, h2abi_v1_fast_acquire, h2abi_v1_fast_release};
+pub(crate) use memory::{Memory, MemoryShared, sync_accesses};
 
 use crate::{
     CpuAbi, Dispatch, Event, ExecCtx, GuestFn, TransferAbi,
@@ -22,7 +27,9 @@ pub struct ExecCtxOpaque {
 pub(crate) fn call_native(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
     // SAFETY: native registration promises the documented ABI; these disjoint
     // exclusive borrows remain alive for exactly the synchronous call.
-    unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) }
+    let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
+    sync_accesses(ctx);
+    result
 }
 
 /// Adapter for handwritten native fixtures/bridges. Rust overrides should use
@@ -80,7 +87,7 @@ fn invalid(
 ///
 /// # Safety
 /// `exec` is the current exclusive handle. `out` is writable for `width`
-/// bytes, nonoverlapping with the context, and valid until this call returns.
+/// bytes, nonoverlapping with the context or guest RAM, and valid until this call returns.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn h2abi_v1_read(
     exec: *mut ExecCtxOpaque,
@@ -126,7 +133,7 @@ pub unsafe extern "C" fn h2abi_v1_read(
 ///
 /// # Safety
 /// `exec` is the current exclusive handle. `value` is readable for `width`
-/// bytes and disjoint from the context throughout this call.
+/// bytes and disjoint from the context and guest RAM throughout this call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn h2abi_v1_write(
     exec: *mut ExecCtxOpaque,

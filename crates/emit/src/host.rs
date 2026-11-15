@@ -339,11 +339,13 @@ struct Bridge {
     xchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
     profile: unsafe extern "C" fn(*mut c_void, u64, u64),
+    fast_acquire: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
+    fast_release: unsafe extern "C" fn(*mut c_void),
 }
 
 impl Bridge {
-    /// What `h2bridge_layout` must report: each slot's offset, then the size.
-    const LAYOUT: [usize; 10] = [
+    /// What `h2bridge_layout_v2` must report: each slot's offset, then the size.
+    const LAYOUT: [usize; 12] = [
         std::mem::offset_of!(Bridge, read),
         std::mem::offset_of!(Bridge, write),
         std::mem::offset_of!(Bridge, event),
@@ -353,6 +355,8 @@ impl Bridge {
         std::mem::offset_of!(Bridge, xchg),
         std::mem::offset_of!(Bridge, cmpxchg),
         std::mem::offset_of!(Bridge, profile),
+        std::mem::offset_of!(Bridge, fast_acquire),
+        std::mem::offset_of!(Bridge, fast_release),
         size_of::<Bridge>(),
     ];
 }
@@ -615,12 +619,12 @@ impl Generated {
                 return Err(format!("module ABI {} != host {ABI_VERSION}", version()));
             }
             let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
-                lib.get(b"h2bridge_layout").map_err(|e| e.to_string())?;
+                lib.get(b"h2bridge_layout_v2").map_err(|e| e.to_string())?;
             if let Some(slot) = (0..Bridge::LAYOUT.len()).find(|&i| layout(i as u32) != Bridge::LAYOUT[i]) {
                 return Err(format!("bridge.c and host Bridge disagree at layout slot {slot}"));
             }
-            let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge)> =
-                lib.get(b"h2bridge_install").map_err(|e| e.to_string())?;
+            let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge, usize) -> u32> =
+                lib.get(b"h2bridge_install_v2").map_err(|e| e.to_string())?;
             let bridge = Bridge {
                 read: cb_read,
                 write: cb_write,
@@ -631,8 +635,12 @@ impl Generated {
                 xchg: cb_xchg,
                 cmpxchg: cb_cmpxchg,
                 profile: cb_profile,
+                fast_acquire: cb_fast_acquire,
+                fast_release: cb_fast_release,
             };
-            install(&bridge);
+            if install(&bridge, size_of::<Bridge>()) != 1 {
+                return Err("bridge table size rejected".into());
+            }
             let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const c_void, u32)> =
                 lib.get(b"h2x87bridge_install").map_err(|e| e.to_string())?;
             let fns = x87_helpers();
@@ -697,3 +705,6 @@ unsafe extern "C" fn cb_profile(c: *mut c_void, loops: u64, x87: u64) {
     ctx.perf[0] += loops;
     ctx.perf[1] += x87;
 }
+
+unsafe extern "C" fn cb_fast_acquire(_: *mut c_void) -> *mut c_void { std::ptr::null_mut() }
+unsafe extern "C" fn cb_fast_release(_: *mut c_void) {}

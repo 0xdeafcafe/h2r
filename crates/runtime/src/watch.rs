@@ -1,9 +1,10 @@
 //! Guest write watch: per-consumer dirty bits over physical RAM pages.
 //!
-//! Every byte of guest RAM changes through [`Guest`]: the RAM store is
-//! private to `guest.rs`, and generated code, atomics, HLE and kernel copies
-//! all reach it through `write_bytes` (`h2abi_v1_write` included). So the
-//! watch is a software barrier at that one point, not host page protection.
+//! Rust stores reach [`Guest::write_bytes`]. Optional inline C stores hold
+//! the shared memory gate and accumulate physical dirty-page bits; the next
+//! Runtime memory guard publishes them through this same watch before HLE
+//! can observe or change subscriptions. This is a software barrier, not host
+//! page protection.
 //! Pages are physical, so every virtual alias of a page dirties the same bit;
 //! ranges are reported in the contiguous view `0x80000000 | pa`.
 use crate::Guest;

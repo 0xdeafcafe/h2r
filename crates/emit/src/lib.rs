@@ -56,6 +56,7 @@ use ir::{Control, IrFunction, Target};
 
 /// The support header, copied next to the generated files.
 pub const PRELUDE: &str = include_str!("../c/h2gen.h");
+pub const FAST_MEMORY_HEADER: &str = include_str!("../c/h2fastmem.h");
 /// The SSE reference semantics in C (`h2s_*`), included by [`PRELUDE`].
 pub const SIMD_HEADER: &str = include_str!("../../simd/c/h2simd.h");
 /// The x87 helper declarations (`h2x87_v1_*`), included by [`PRELUDE`].
@@ -254,6 +255,7 @@ pub fn write_module(owners: &[Owner], dir: &Path) -> io::Result<WriteReport> {
     let mut report = WriteReport { owners: owners.len(), ..Default::default() };
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     files.insert("h2gen.h".into(), PRELUDE.to_owned());
+    files.insert("h2fastmem.h".into(), FAST_MEMORY_HEADER.to_owned());
     files.insert("h2simd.h".into(), SIMD_HEADER.to_owned());
     files.insert("h2x87.h".into(), X87_HEADER.to_owned());
 

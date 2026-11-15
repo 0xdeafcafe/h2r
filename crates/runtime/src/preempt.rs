@@ -195,21 +195,30 @@ impl ExecCtx {
     /// One guest memory access by generated code.
     #[inline]
     pub(crate) fn spend_access(&mut self) {
+        crate::ffi::sync_accesses(self);
+        self.spend_accesses(1);
+    }
+    pub(crate) fn preempt_ptr(&self) -> *const AtomicU32 {
+        &self.word.0
+    }
+    pub(crate) fn spend_accesses(&mut self, count: u64) {
         if let Some(p) = &mut self.profile {
-            p.memory_accessors += 1;
+            p.memory_accessors += count;
         }
-        if !self.slice.armed {
-            return;
-        }
-        self.slice.spent += 1;
-        match self.slice.left {
-            0 => {}
-            1 => {
-                self.slice.left = 0;
+        if self.slice.armed {
+            self.slice.spent += count;
+            if self.slice.left != 0 && count >= self.slice.left {
                 self.slice.expired = true;
                 self.word.request(SLICE);
             }
-            _ => self.slice.left -= 1,
+            self.slice.left = self.slice.left.saturating_sub(count);
+        }
+        if let Some(view) = &mut self.fast_memory {
+            view.budget = if self.slice.armed && self.slice.left != 0 {
+                self.slice.left
+            } else {
+                u64::MAX
+            };
         }
     }
     /// First step of the runner's safe point: take this context's wake bits

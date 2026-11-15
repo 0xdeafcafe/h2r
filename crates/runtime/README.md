@@ -54,7 +54,8 @@ memory guard before handing the transfer to the runner.
 context for the lifetime of its memory guard. Reads, writes, `call` and `ret`
 are Guest methods on that guard. These helpers acquire no additional locks.
 Do not hold any Runtime memory guard while entering a runner or callback.
-Every generated C access uses the same backing mutex as HLE. Atomic RMW,
+Ordinary generated accesses use checked helpers, or the optional gated C RAM
+path below. Both synchronize with HLE memory guards. Atomic RMW,
 XCHG, CMPXCHG and CMPXCHG8B hold it for the entire operation, including flags
 and results. Atomic outputs may alias CpuAbi fields: the CPU borrow ends before
 the final output store, which wins if it targets a field modified by the helper.
@@ -64,7 +65,8 @@ address. Ordinary accesses allow 1/2/4/8/10/16 bytes and explicit alignment.
 Failure leaves memory and output unchanged and records an access fault.
 
 Memory has 64 MB of physical backing. Sorted mappings preserve aliases and
-holes; accesses use binary search without allocating. Cross-mapping writes
+holes; checked accesses use validated mapping-index hints with binary-search
+fallback. Cross-mapping writes
 validate the entire span before changing bytes. NV2A addresses report an
 unsupported-device fault. The loader maps page-rounded headers and sections,
 combines shared-page permissions, and honors each section's head/tail read-only
@@ -75,6 +77,37 @@ and contributing regions' requests. Unused mapped page bytes start zero. TLS is 
 its index is validated after protections are final. `tls_data_size` records
 aligned payload bytes plus the leading pointer slot. Guest startup still
 performs its own TLS stores.
+
+### Optional inline RAM accesses
+
+Build generated code with `H2_FASTMEM=1` to use `h2fastmem.h`. The runtime
+provides `h2abi_v1_fast_acquire` and `h2abi_v1_fast_release`; a dynamic bridge
+must forward both. `ExecCtx::enable_fast_memory(false)` selects checked Rust
+helpers in the same generated image for comparison or diagnosis. ABI v2's
+architectural layouts and context preempt-word prefix do not change.
+
+The fast path uses an eight-MB virtual-page table, allocated lazily per Guest.
+It checks width, alignment, page extent, permission and physical bounds in C.
+Cross-page accesses, missing/protected pages, gate contention and atomics use
+the existing Rust helpers. A shared atomic gate excludes C from a Rust
+`MemoryGuard`, preserving compound HLE operations and host-thread access.
+The gate is inactive until a module requests a view. Runtime and ExecCtx
+memory methods return `ffi::MemoryGuard`, which dereferences to Guest like
+the previous MutexGuard. Explicit MutexGuard type annotations must change.
+
+Mapping insertion, both protection APIs, unmapping and whole-Guest replacement
+refresh or invalidate the view under the gate. Fast stores mark physical
+pages; the next Rust memory guard publishes those bits to the existing
+subscribers before exposing Guest. Thus aliases, watch changes and dirty
+queries see the same page-level barrier semantics. The runner can use the
+same gated table for execute checks, falling back for faults or contention.
+
+Successful inline accesses accumulate in the context view. C sets the slice
+wake bit on the exact access that exhausts the budget; slow helpers and every
+handler exit settle the count into the context. No lock spans a handler,
+helper call or transfer. A view or RAM pointer must not escape its invocation,
+and accessor buffers must not alias the RAM view. See the emitter contract
+for the full foreign-code protocol and `docs/performance.md` for measurements.
 
 ### Range protection, unmapping and physical reservations
 

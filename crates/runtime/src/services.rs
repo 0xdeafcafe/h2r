@@ -10,17 +10,16 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
 use std::time::{Duration, Instant};
 
 pub struct Runtime {
-    memory: Mutex<Guest>,
+    memory: crate::ffi::Memory,
     dispatch: RwLock<Dispatch>,
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
     pub(crate) words: crate::preempt::Words,
-    contention: LockContention,
 }
 
 /// Waits on the guest memory lock that found it held by another thread.
 #[derive(Debug, Default)]
-struct LockContention {
+pub(crate) struct LockContention {
     waits: AtomicU64,
     nanos: AtomicU64,
 }
@@ -33,15 +32,42 @@ pub struct Contention {
     pub waited: Duration,
 }
 
+impl LockContention {
+    #[inline]
+    pub(crate) fn lock<'a>(&self, memory: &'a Mutex<Guest>) -> MutexGuard<'a, Guest> {
+        match memory.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => self.contended(memory),
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn contended<'a>(&self, memory: &'a Mutex<Guest>) -> MutexGuard<'a, Guest> {
+        let _t = timeline::span(timeline::Cat::Lock, timeline::Track::Host, "memory lock wait");
+        let start = Instant::now();
+        let g = memory.lock().unwrap_or_else(|e| e.into_inner());
+        let waited = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        self.waits.fetch_add(1, Ordering::Relaxed);
+        self.nanos.fetch_add(waited, Ordering::Relaxed);
+        g
+    }
+    pub(crate) fn snapshot(&self) -> Contention {
+        Contention {
+            waits: self.waits.load(Ordering::Relaxed),
+            waited: Duration::from_nanos(self.nanos.load(Ordering::Relaxed)),
+        }
+    }
+}
+
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
         Arc::new(Self {
-            memory: Mutex::new(memory),
+            memory: crate::ffi::Memory::new(memory),
             dispatch: RwLock::new(dispatch),
             interrupts: Default::default(),
             tsc: Tsc::default(),
             words: Default::default(),
-            contention: Default::default(),
         })
     }
     /// Install (or with `None` remove) the guest-time source the
@@ -63,40 +89,24 @@ impl Runtime {
     }
     /// Compound HLE operations use this guard, including Guest::call/ret.
     /// Release it before dispatching or invoking callbacks.
-    ///
-    /// An uncontended lock costs what `lock` does. One held by another
-    /// thread is waited for on a cold path that counts the wait
-    /// ([`Runtime::memory_contention`]) and records a `memory lock wait`
-    /// span when the timeline's `lock` category is on.
+    /// Mutex contention is counted separately from the inline-memory gate.
     #[inline]
-    pub fn memory(&self) -> MutexGuard<'_, Guest> {
-        match self.memory.try_lock() {
-            Ok(g) => g,
-            Err(TryLockError::Poisoned(e)) => e.into_inner(),
-            Err(TryLockError::WouldBlock) => self.memory_contended(),
-        }
+    pub fn memory(&self) -> crate::ffi::MemoryGuard<'_> {
+        self.memory.lock()
     }
-    #[cold]
-    #[inline(never)]
-    fn memory_contended(&self) -> MutexGuard<'_, Guest> {
-        let _t = timeline::span(
-            timeline::Cat::Lock,
-            timeline::Track::Host,
-            "memory lock wait",
-        );
-        let start = Instant::now();
-        let g = self.memory.lock().unwrap_or_else(|e| e.into_inner());
-        let waited = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        self.contention.waits.fetch_add(1, Ordering::Relaxed);
-        self.contention.nanos.fetch_add(waited, Ordering::Relaxed);
-        g
-    }
-    /// Contended waits on the guest memory lock since the runtime was made.
+    /// Contended waits on the guest mutex since the runtime was made.
     pub fn memory_contention(&self) -> Contention {
-        Contention {
-            waits: self.contention.waits.load(Ordering::Relaxed),
-            waited: Duration::from_nanos(self.contention.nanos.load(Ordering::Relaxed)),
+        self.memory.contention()
+    }
+    pub(crate) fn check_execute(&self, addr: u32) -> Result<(), crate::GuestFault> {
+        if self.memory.allows_execute(addr) {
+            Ok(())
+        } else {
+            self.memory().check(addr, 1, crate::guest::Access::Execute, 1)
         }
+    }
+    pub(crate) fn fast_memory(&self) -> *const crate::ffi::MemoryShared {
+        self.memory.fast_shared()
     }
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         f(&mut self.dispatch.write().unwrap_or_else(|e| e.into_inner()))

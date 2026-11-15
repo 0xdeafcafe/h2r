@@ -305,12 +305,15 @@ struct Bridge {
         unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg:
         unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, *mut u32) -> u32,
+    profile: unsafe extern "C" fn(*mut ExecCtxOpaque, u64, u64),
+    fast_acquire: unsafe extern "C" fn(*mut ExecCtxOpaque) -> *mut runtime::ffi::FastAccess,
+    fast_release: unsafe extern "C" fn(*mut ExecCtxOpaque),
 }
 
 impl Bridge {
-    /// What bridge.c's `h2bridge_layout` must report: each slot's offset in
+    /// What bridge.c's `h2bridge_layout_v2` must report: each slot's offset in
     /// declaration order, then the size.
-    const LAYOUT: [usize; 9] = [
+    const LAYOUT: [usize; 12] = [
         std::mem::offset_of!(Bridge, read),
         std::mem::offset_of!(Bridge, write),
         std::mem::offset_of!(Bridge, event),
@@ -319,6 +322,9 @@ impl Bridge {
         std::mem::offset_of!(Bridge, rmw),
         std::mem::offset_of!(Bridge, xchg),
         std::mem::offset_of!(Bridge, cmpxchg),
+        std::mem::offset_of!(Bridge, profile),
+        std::mem::offset_of!(Bridge, fast_acquire),
+        std::mem::offset_of!(Bridge, fast_release),
         size_of::<Bridge>(),
     ];
 }
@@ -360,12 +366,15 @@ fn build() -> Option<libloading::Library> {
         rmw: runtime::ffi::h2abi_v1_atomic_rmw,
         xchg: runtime::ffi::h2abi_v1_xchg,
         cmpxchg: runtime::ffi::h2abi_v1_cmpxchg,
+        profile: runtime::ffi::h2abi_v1_profile,
+        fast_acquire: runtime::ffi::h2abi_v1_fast_acquire,
+        fast_release: runtime::ffi::h2abi_v1_fast_release,
     };
     // SAFETY: bridge.c copies the table, whose layout is checked first;
     // the signatures match h2abi.h.
     unsafe {
         let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
-            lib.get(b"h2bridge_layout").unwrap();
+            lib.get(b"h2bridge_layout_v2").unwrap();
         let c: Vec<usize> = (0..Bridge::LAYOUT.len() as u32)
             .map(|i| layout(i))
             .collect();
@@ -374,9 +383,10 @@ fn build() -> Option<libloading::Library> {
             Bridge::LAYOUT,
             "bridge.c's H2Bridge and this Bridge differ"
         );
-        let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge)> =
-            lib.get(b"h2bridge_install").unwrap();
-        install(&bridge);
+        let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge, usize) -> u32> =
+            lib.get(b"h2bridge_install_v2").unwrap();
+        assert_eq!(install(std::ptr::null(), 0), 0);
+        assert_eq!(install(&bridge, size_of::<Bridge>()), 1);
     }
     Some(lib)
 }

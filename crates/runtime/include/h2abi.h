@@ -39,6 +39,11 @@ typedef struct TransferAbi {
     uint32_t target_pc, resume_pc, event_id;
 } TransferAbi;
 typedef struct ExecCtxOpaque ExecCtxOpaque;
+/* Optional H2_FASTMEM extension: view lifetime is one generated invocation.
+ * Use only through h2fastmem.h; ordinary ABI v2 modules need no new symbols. */
+typedef struct H2FastAccess H2FastAccess;
+H2FastAccess *h2abi_v1_fast_acquire(ExecCtxOpaque *);
+void h2abi_v1_fast_release(ExecCtxOpaque *);
 typedef TransferAbi (*H2Handler)(CpuAbi *, ExecCtxOpaque *, uint32_t);
 
 /* Runtime accessors have versioned symbols. The caller checks the object version before
@@ -47,7 +52,7 @@ typedef TransferAbi (*H2Handler)(CpuAbi *, ExecCtxOpaque *, uint32_t);
 uint32_t h2abi_v1_version(void);
 /* width: 1/2/4/8/10/16; alignment: 1 normally, 16 for aligned SIMD operations.
  * Buffers contain little-endian guest bytes and must be valid for width bytes,
- * disjoint from CPU/context. Zero status means success; otherwise status is a
+ * disjoint from CPU/context and any RAM view. Zero status means success; otherwise status is a
  * context event id. Reads leave output untouched on failure; writes preflight
  * the whole span. Return H2_FAULT immediately after any failing helper. */
 uint32_t h2abi_v1_read(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
