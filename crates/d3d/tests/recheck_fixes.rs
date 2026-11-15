@@ -476,18 +476,19 @@ fn t1_teardown_releases_bound_resources_and_clears_the_streams() {
     assert_eq!(m.read_words(streams, 48).unwrap(), vec![0; 48]);
 }
 
-/// The last reference would need D3D_DestroyResource: stop, write nothing.
+/// The last reference goes to D3D_DestroyResource (`0x3fc63c`): the word
+/// is decremented, then the buffer is queued for the original to free.
 #[test]
-fn t1_teardown_that_would_destroy_a_resource_stops_untouched() {
+fn t1_teardown_destroys_a_resource_only_the_device_held() {
     let (mut d, mut m) = rec();
     quad(&mut d, &mut m);
     // Title reference count 0: the device holds the only reference.
     m.write_u32(VB_HEADER, 0x0108_0000).unwrap();
-    let r = d.release_device(&mut m, DEV);
-    assert!(is_unimplemented(&r), "{r:?}");
-    assert_eq!(m.read_u32(VB_HEADER).unwrap(), 0x0108_0000);
+    d.release_device(&mut m, DEV).unwrap();
+    assert_eq!(d.take_pending_destroys(), vec![VB_HEADER]);
+    assert_eq!(m.read_u32(VB_HEADER).unwrap(), 0x0100_0000);
     let streams = d3d::GuestLayout::HALO2.streams;
-    assert_eq!(m.read_u32(streams + 8).unwrap(), VB_HEADER);
+    assert_eq!(m.read_u32(streams + 8).unwrap(), 0);
 }
 
 #[test]

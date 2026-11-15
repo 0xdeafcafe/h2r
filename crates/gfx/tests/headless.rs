@@ -166,6 +166,7 @@ fn rejects_bad_draws() {
             viewport: None,
             scissor: None,
             indices: None,
+            count_samples: false,
         };
         renderer.render(&ctx, &mut enc, &target.target(), Clear::NONE, &[d])
     };
@@ -586,4 +587,83 @@ fn snapshot_copies_a_surface_into_a_texture_that_can_be_sampled() {
     let d = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinD24S8, 8, 4), SurfaceKind::DepthStencil).unwrap();
     let mut enc = ctx.device.create_command_encoder(&Default::default());
     assert!(store.snapshot(&ctx, &mut enc, d).is_err());
+}
+
+/// Counted draws add the samples they write: a 16x8 quad is 128, a draw
+/// scissored to nothing adds 0, overdraw counts twice, a clear restarts the
+/// count, and depth-tested samples that fail are not counted.
+#[test]
+fn pixel_counter_counts_samples() {
+    use gfx::occlusion::PixelCounter;
+    use gfx::surface::{SurfaceDesc, SurfaceKind, SurfaceStore};
+    use gfx::ScissorRect;
+    let Some(ctx) = context() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    let color = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinA8R8G8B8, 32, 32), SurfaceKind::Color).unwrap();
+    let depth = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinD24S8, 32, 32), SurfaceKind::DepthStencil).unwrap();
+    let mut renderer = Renderer::new(&ctx);
+    let mut counter = PixelCounter::new(&ctx);
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let c = 0xFFFF_FFFF;
+    let quad = |z: f32| {
+        [
+            vertex_z(0.0, 0.0, z, c), vertex_z(16.0, 0.0, z, c), vertex_z(0.0, 8.0, z, c),
+            vertex_z(16.0, 0.0, z, c), vertex_z(16.0, 8.0, z, c), vertex_z(0.0, 8.0, z, c),
+        ]
+        .concat()
+    };
+    let near = quad(0.25);
+    let far = quad(0.75);
+    let depth_state = RenderState { depth_func: CompareFunc::LessEqual, ..RenderState::default() };
+    // One encoder per step, submitted at once, like the d3d backend.
+    let mut step = |f: &mut dyn FnMut(&mut wgpu::CommandEncoder, &mut Renderer, &mut PixelCounter)| {
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        f(&mut enc, &mut renderer, &mut counter);
+        ctx.queue.submit([enc.finish()]);
+    };
+    let draw_one = |enc: &mut wgpu::CommandEncoder,
+                    r: &mut Renderer,
+                    k: &mut PixelCounter,
+                    verts: &[u8],
+                    scissor: Option<ScissorRect>,
+                    clear: Clear| {
+        let streams = [VertexStream { data: verts, stride: 0 }];
+        let mut d = draw(&streams, 6, &vl, PrimitiveType::TriangleList, depth_state);
+        d.scissor = scissor;
+        d.count_samples = true;
+        let t = store.target(color, Some(depth)).unwrap();
+        r.render_counted(&ctx, enc, &t, clear, &[d], Some(k)).unwrap();
+    };
+    let clear_all = Clear { color: Some([0.0; 4]), depth: Some(1.0), stencil: Some(0) };
+    let mut reports = Vec::new();
+    step(&mut |e, r, k| {
+        k.clear(e);
+        draw_one(e, r, k, &far, None, clear_all);
+        reports.push(k.report(&ctx, e));
+        // Scissored to nothing: adds 0.
+        draw_one(e, r, k, &far, Some(ScissorRect { x: 0, y: 0, width: 0, height: 0 }), Clear::NONE);
+        reports.push(k.report(&ctx, e));
+        // In front of the first: passes again (overdraw counts).
+        draw_one(e, r, k, &near, None, Clear::NONE);
+        reports.push(k.report(&ctx, e));
+    });
+    step(&mut |e, r, k| {
+        k.clear(e);
+        // Behind what is there now: fails the depth test.
+        draw_one(e, r, k, &far, None, Clear::NONE);
+        reports.push(k.report(&ctx, e));
+        // Half of it, scissored, at the same depth as the front quad.
+        draw_one(e, r, k, &near, Some(ScissorRect { x: 0, y: 0, width: 8, height: 8 }), Clear::NONE);
+        reports.push(k.report(&ctx, e));
+    });
+    let got: Vec<u64> = reports.iter().map(|r| r.read(&ctx).unwrap()).collect();
+    assert_eq!(got, [128, 128, 256, 0, 64]);
+
+    // A counted draw needs a counter.
+    let streams = [VertexStream { data: &near, stride: 0 }];
+    let mut d = draw(&streams, 6, &vl, PrimitiveType::TriangleList, RenderState::default());
+    d.count_samples = true;
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    let t = store.target(color, Some(depth)).unwrap();
+    assert_eq!(renderer.render(&ctx, &mut enc, &t, Clear::NONE, &[d]), Err(DrawError::NoPixelCounter));
 }

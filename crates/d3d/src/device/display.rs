@@ -18,6 +18,13 @@ use super::*;
 /// `D3DVBLANK_SWAPDONE`: a swap completed since the previous vblank.
 pub const VBLANK_SWAPDONE: u32 = 1;
 
+/// Offset of the miniport object in the device (`0x12cb4`: `lea eax,
+/// [edx+1C28h]`); its first dword is the NV2A register base.
+pub const MINIPORT: u32 = 0x1C28;
+
+/// Bytes of a `D3DGAMMARAMP`: 256 red, 256 green, then 256 blue entries.
+pub const GAMMA_RAMP_BYTES: usize = 3 * 256;
+
 /// One vertical blank to deliver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VBlank {
@@ -32,6 +39,8 @@ pub struct VBlank {
 pub(crate) struct Display<S> {
     /// Last flicker-filter value sent (`0x3f8c70`).
     pub flicker: Option<u32>,
+    /// Gamma ramp last loaded (`0x3ff5c6`): 256 red, 256 green, 256 blue.
+    pub gamma: Option<Box<[u8; GAMMA_RAMP_BYTES]>>,
     /// Surface `PersistDisplay` kept for the next title.
     pub persisted: Option<S>,
     /// Vertical blanks counted.
@@ -51,6 +60,7 @@ impl<S> Default for Display<S> {
     fn default() -> Self {
         Self {
             flicker: None,
+            gamma: None,
             persisted: None,
             vblanks: 0,
             swapped: false,
@@ -90,6 +100,44 @@ impl<B: Backend> Device<B> {
     /// The flicker filter last sent, if any.
     pub fn flicker_filter(&self) -> Option<u32> {
         self.display.flicker
+    }
+
+    /// `0x3ff5c6`, the miniport's gamma-ramp load (`EAX` = miniport, device
+    /// `+0x1C28`; `EDX` = a `D3DGAMMARAMP`; `ret`). Halo's inlined
+    /// `SetGammaRamp` (`0x12c71..0x12d08`, in the brightness update) builds
+    /// the ramp from the brightness setting, and when it differs from the
+    /// current one copies it into the miniport (`+0x1DC + 0x300 * n`,
+    /// selecting `n` at `+0x7E4`) and calls this. The original writes the
+    /// 768 entries to the DAC palette (PRAMDAC `0x6813C8`/`0x6813C9`
+    /// through the register base at `[EAX]`), red, green and blue per
+    /// index. Here the ramp is kept ([`Device::gamma_ramp`]); nothing
+    /// applies it at present yet.
+    pub fn load_gamma_ramp(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        miniport: u32,
+        ramp: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3D miniport gamma ramp (0x3ff5c6)";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let expected = self.cfg.layout.device + MINIPORT;
+        if miniport != expected {
+            return Err(D3dError::invalid(
+                E,
+                format!("miniport {miniport:#010x} is not device + 0x1C28 ({expected:#010x})"),
+            ));
+        }
+        let mut bytes = Box::new([0u8; GAMMA_RAMP_BYTES]);
+        mem.read(ramp, &mut bytes[..])?;
+        self.display.gamma = Some(bytes);
+        Ok(())
+    }
+
+    /// The gamma ramp last loaded (`0x3ff5c6`): `[red; 256]`, `[green;
+    /// 256]`, `[blue; 256]`, each entry the output for that input level.
+    pub fn gamma_ramp(&self) -> Option<&[u8; GAMMA_RAMP_BYTES]> {
+        self.display.gamma.as_deref()
     }
 
     /// `D3DDevice_SetStipple` (`0x3f8cc0`, stdcall `pPattern`, `ret 4`):

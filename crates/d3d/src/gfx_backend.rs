@@ -32,7 +32,17 @@
 //! `set_pretransformed_z_max` is renderer-wide, so it is set
 //! before every built-in draw. The backend opens one pass per draw,
 //! correct but slow.
+//!
+//! Visibility tests: a draw issued while `SET_ZPASS_PIXEL_COUNT_ENABLE` is
+//! set has its samples counted into a [`gfx::occlusion::PixelCounter`]
+//! (a count pass before the draw; see that module for what is and is not
+//! counted). `report_pixel_count` copies the total without waiting and
+//! `read_pixel_count` waits for the GPU. A counted draw that is skipped (no
+//! translation) counts nothing.
 
+use std::collections::HashMap;
+
+use gfx::occlusion::{PixelCounter, PixelReport};
 use gfx::renderer::{SHADER_XYZRHW_DIFFUSE, d3dz_max};
 use gfx::surface::{SurfaceDesc, SurfaceId, SurfaceKind, SurfaceStore};
 use gfx::texture::DecodedTexture;
@@ -57,6 +67,10 @@ pub struct GfxBackend {
     shaders: Option<Box<dyn ShaderProvider>>,
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
+    /// Made at the first counted draw.
+    counter: Option<PixelCounter>,
+    reports: HashMap<u64, PixelReport>,
+    next_ticket: u64,
 }
 
 impl GfxBackend {
@@ -71,6 +85,9 @@ impl GfxBackend {
             shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
             present_hook: None,
+            counter: None,
+            reports: HashMap::new(),
+            next_ticket: 0,
         }
     }
 
@@ -117,8 +134,15 @@ impl GfxBackend {
         }
         {
             let target = self.store.target(color, depth).map_err(|e| e.to_string())?;
+            let counted = draws.iter().any(|d| d.count_samples);
+            let ctx = &self.ctx;
+            let counter = if counted {
+                Some(self.counter.get_or_insert_with(|| PixelCounter::new(ctx)))
+            } else {
+                None
+            };
             self.renderer
-                .render(&self.ctx, &mut enc, &target, clear, draws)
+                .render_counted(ctx, &mut enc, &target, clear, draws, counter)
                 .map_err(|e| e.to_string())?;
         }
         self.store
@@ -253,6 +277,7 @@ impl Backend for GfxBackend {
             let draw = Draw {
                 scissor,
                 indices,
+                count_samples: d.hw.zpass_count_enable,
                 ..Draw::new(
                     SHADER_XYZRHW_DIFFUSE,
                     &d.layout,
@@ -300,6 +325,7 @@ impl Backend for GfxBackend {
             bind_groups: &groups,
             scissor,
             indices,
+            count_samples: d.hw.zpass_count_enable,
             ..Draw::new(
                 prepared.id,
                 &d.layout,
@@ -497,6 +523,38 @@ impl Backend for GfxBackend {
             let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
         }
         Ok(())
+    }
+
+    fn clear_pixel_count(&mut self) -> Result<(), String> {
+        let ctx = &self.ctx;
+        let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        counter.clear(&mut enc);
+        ctx.queue.submit([enc.finish()]);
+        Ok(())
+    }
+
+    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        let ctx = &self.ctx;
+        let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        let report = counter.report(ctx, &mut enc);
+        ctx.queue.submit([enc.finish()]);
+        self.next_ticket += 1;
+        self.reports.insert(self.next_ticket, report);
+        Ok(Some(self.next_ticket))
+    }
+
+    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        let report = self
+            .reports
+            .remove(&ticket)
+            .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))?;
+        report.read(&self.ctx)
+    }
+
+    fn drop_pixel_count(&mut self, ticket: u64) {
+        self.reports.remove(&ticket);
     }
 }
 

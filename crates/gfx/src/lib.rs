@@ -23,6 +23,7 @@ pub mod convert;
 pub mod dxt;
 pub mod encode;
 pub mod format;
+pub mod occlusion;
 pub mod pipeline;
 pub mod presenter;
 pub mod program;

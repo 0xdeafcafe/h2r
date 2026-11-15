@@ -60,10 +60,12 @@ use crate::state::{StateWords, slot};
 mod display;
 mod fragments;
 mod raster;
+mod visibility;
 
-pub use display::{VBLANK_SWAPDONE, VBlank};
+pub use display::{GAMMA_RAMP_BYTES, MINIPORT, VBLANK_SWAPDONE, VBlank};
 use raster::FrameTexture;
 pub use raster::{RttTarget, scissor_region};
+pub use visibility::{D3DERR_TESTINCOMPLETE, VISIBILITY_INDICES, VisibilityAnswer};
 
 /// A range of guest virtual memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -310,6 +312,10 @@ pub struct Stats {
     /// Push-buffer callbacks handed out for delivery
     /// ([`Device::drain_until_callback`]).
     pub push_callbacks: u64,
+    /// `EndVisibilityTest` calls.
+    pub visibility_tests: u64,
+    /// Resources destroyed ([`Device::destroy_resource`]).
+    pub destroys: u64,
 }
 
 /// A guest callback the push buffer asks for: `NV097_NO_OPERATION` with
@@ -381,6 +387,9 @@ struct Swap<S> {
 #[derive(Default)]
 struct Staged {
     words: Vec<(u32, u32)>,
+    /// Resources left with no reference: destroyed when the staged writes
+    /// commit, in this order ([`Device::destroy_resource`]).
+    destroys: Vec<u32>,
 }
 
 impl Staged {
@@ -398,11 +407,19 @@ impl Staged {
         }
     }
 
-    fn commit(self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+    fn destroy(&mut self, header: u32) {
+        if !self.destroys.contains(&header) {
+            self.destroys.push(header);
+        }
+    }
+
+    /// Writes the words; returns the resources to destroy.
+    #[must_use = "the destroys have to reach Device::destroy_resource"]
+    fn commit(self, mem: &mut dyn GuestMemory) -> Result<Vec<u32>, D3dError> {
         for (addr, value) in self.words {
             mem.write_u32(addr, value)?;
         }
-        Ok(())
+        Ok(self.destroys)
     }
 }
 
@@ -497,6 +514,11 @@ pub struct Device<B: Backend> {
     /// A callback the drain reached whose write-back failed: handed out by
     /// the next [`Device::drain_until_callback`] once the write-back works.
     undelivered: Option<PushCallback>,
+    /// Ended visibility tests, by index (the original's report slots).
+    visibility: HashMap<u32, visibility::VisibilityTest>,
+    /// Destroyed resources the original `D3D_DestroyResource` has yet to
+    /// free ([`Device::take_pending_destroys`]).
+    pending_destroys: Vec<u32>,
 }
 
 fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
@@ -577,6 +599,8 @@ impl<B: Backend> Device<B> {
             rtt: HashMap::new(),
             active_callback: None,
             undelivered: None,
+            visibility: HashMap::new(),
+            pending_destroys: Vec::new(),
         }
     }
 
@@ -893,6 +917,8 @@ impl<B: Backend> Device<B> {
         self.swap_count = 0;
         self.fence = 0;
         self.cache.clear();
+        self.drop_visibility_tests();
+        self.hw.zpass_count_enable = false;
         Ok(())
     }
 
@@ -905,9 +931,9 @@ impl<B: Backend> Device<B> {
     /// buffer (and, here, each `SetVertexShaderInput` buffer, which this
     /// device also holds a reference to); then `D3D__Streams` (16 records,
     /// `0x30` dwords) is zeroed (`0x3fc704..0x3fc710`). Like the original,
-    /// only `Common` changes. A release that would drop the last reference
-    /// needs `D3D_DestroyResource`, which is not implemented: that stops
-    /// before anything is written.
+    /// only `Common` changes. A release that drops the last reference
+    /// destroys the resource ([`Device::destroy_resource`]) once the whole
+    /// set is committed.
     fn release_bindings(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -934,18 +960,24 @@ impl<B: Backend> Device<B> {
         }
         for (h, n) in counts {
             let word = refs.read(mem, h)?;
-            let c = word.wrapping_sub(n.wrapping_mul(common::INTREFCOUNT_ONE));
-            if (word & common::INTREFCOUNT_MASK) < n * common::INTREFCOUNT_ONE
-                || c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0
-            {
-                return Err(D3dError::unimplemented(
+            if (word & common::INTREFCOUNT_MASK) < n * common::INTREFCOUNT_ONE {
+                return Err(D3dError::invalid(
                     entry,
-                    format!("releasing the last reference to {h:#010x} (D3D_DestroyResource)"),
+                    format!(
+                        "{h:#010x} is bound {n} time(s) with fewer internal references ({word:#010x})"
+                    ),
                 ));
             }
+            // `0x3fc622..0x3fc63c`: each release stores the decremented
+            // word and destroys a resource left with no reference.
+            let c = word.wrapping_sub(n.wrapping_mul(common::INTREFCOUNT_ONE));
             refs.write(h, c);
+            if c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
+                refs.destroy(h);
+            }
         }
-        refs.commit(mem)?;
+        let destroys = refs.commit(mem)?;
+        self.destroy_resources(mem, destroys)?;
         let dev = self.cfg.layout.device;
         mem.write_u32(dev + field::RENDER_TARGET, 0)?;
         mem.write_u32(dev + field::DEPTH_STENCIL, 0)?;
@@ -1219,6 +1251,10 @@ impl<B: Backend> Device<B> {
                             // holds by the time this drains.
                             let slot = self.mirror_slot(m).expect("checked");
                             self.push_slot(mem, slot, w)?;
+                        }
+                        None if m == crate::hw::method::CLEAR_REPORT_VALUE => {
+                            self.clear_report(c.at, w)?;
+                            self.stats.hw_methods += 1;
                         }
                         None => {
                             let mut mems = Memories {
@@ -1513,8 +1549,12 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// Unbinding `header` (a texture, palette or vertex buffer): drops the
+    /// internal reference and stamps `Lock` with the last-use time. With no
+    /// reference left the resource is destroyed instead, as by `0x3fb5a0`
+    /// (no decrement; [`Device::destroy_resource`]).
     fn drop_internal_ref(
-        &self,
+        &mut self,
         mem: &mut dyn GuestMemory,
         entry: &'static str,
         header: u32,
@@ -1522,18 +1562,97 @@ impl<B: Backend> Device<B> {
         if header == 0 {
             return Ok(());
         }
-        let c = mem.read_u32(header)?.wrapping_sub(common::INTREFCOUNT_ONE);
-        if c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
-            // The original calls D3D_DestroyResource here, which frees guest
-            // memory through D3D's allocator.
-            return Err(D3dError::unimplemented(
+        let word = mem.read_u32(header)?;
+        if word & common::INTREFCOUNT_MASK == 0 {
+            return Err(D3dError::invalid(
                 entry,
-                format!("unbinding the last reference to {header:#010x} (D3D_DestroyResource)"),
+                format!("{header:#010x} is bound without an internal reference ({word:#010x})"),
             ));
+        }
+        let c = word.wrapping_sub(common::INTREFCOUNT_ONE);
+        if c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
+            return self.destroy_resource(mem, header);
         }
         mem.write_u32(header, c)?;
         mem.write_u32(at(header, 8)?, self.fence)?; // Lock = last-use time
         Ok(())
+    }
+
+    /// `D3D_DestroyResource` for `header`, which has no reference left.
+    ///
+    /// The original (`0x3fb520`, `EDI` = resource; `ret`) waits for the GPU
+    /// (`BlockOnResource`, except for a surface the title made), unlinks the
+    /// resource from D3D's list at `0x408644`, frees its data
+    /// (`0x2d0a60(Data | 0x80000000, 0xA1800000)` for D3D-created vertex
+    /// buffers, palettes, textures and surfaces; `Data` itself for a push
+    /// buffer; nothing for index buffers and fixups) and frees the header
+    /// (`0x122c0(header, 0x24800000)`). It only touches guest memory and
+    /// calls overridden D3D entries, so it runs as compiled
+    /// ([`crate::abi::NATIVE`]): the device drops what it keeps for the
+    /// header (cached textures, a render-to-texture surface, after writing
+    /// its pixels back) and queues the header. The runtime glue calls the
+    /// original for each queued header when the entry returns
+    /// ([`Device::take_pending_destroys`]).
+    pub fn destroy_resource(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+    ) -> Result<(), D3dError> {
+        if header == 0 || !self.title_surface(header) {
+            return Err(D3dError::invalid(
+                "D3D_DestroyResource",
+                format!("{header:#010x} is not a title resource"),
+            ));
+        }
+        // A level drawn into keeps its pixels in the parent's texels.
+        self.write_back(mem, header)?;
+        if let Some(t) = self.rtt.remove(&header) {
+            self.backend
+                .destroy_surface(t.surface)
+                .map_err(D3dError::Backend)?;
+        }
+        for h in self
+            .rtt
+            .iter()
+            .filter(|(_, t)| t.parent == header)
+            .map(|(h, _)| *h)
+            .collect::<Vec<_>>()
+        {
+            self.write_back(mem, h)?;
+            let t = self.rtt.remove(&h).expect("listed");
+            self.backend
+                .destroy_surface(t.surface)
+                .map_err(D3dError::Backend)?;
+        }
+        if let Some((_, s)) = self.other_surfaces.remove(&header) {
+            self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
+        }
+        self.cache.retain(|k, _| k.0 != header && k.1 != header);
+        if !self.pending_destroys.contains(&header) {
+            self.pending_destroys.push(header);
+        }
+        self.stats.destroys += 1;
+        Ok(())
+    }
+
+    fn destroy_resources(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        headers: Vec<u32>,
+    ) -> Result<(), D3dError> {
+        for h in headers {
+            self.destroy_resource(mem, h)?;
+        }
+        Ok(())
+    }
+
+    /// Resources destroyed by the last entries, oldest first, for the
+    /// original `D3D_DestroyResource` (`0x3fb520`, `EDI` = resource) to free.
+    /// The runtime glue takes them after every entry and calls it for each
+    /// before returning to the caller; a caller driving the device directly
+    /// has to do the same.
+    pub fn take_pending_destroys(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.pending_destroys)
     }
 
     /// `D3DResource_AddRef` (`0x3fb600`): bumps the title reference count.
@@ -1543,34 +1662,63 @@ impl<B: Backend> Device<B> {
         header: u32,
     ) -> Result<u32, D3dError> {
         self.sync_push_buffer(mem)?;
+        self.add_ref(mem, header)
+    }
+
+    /// `0x3fb600`: the first title reference to a texture level also takes
+    /// one on its parent texture (`0x3fb607..0x3fb622`).
+    fn add_ref(&mut self, mem: &mut dyn GuestMemory, header: u32) -> Result<u32, D3dError> {
         let c = mem.read_u32(header)?;
+        if c & common::REFCOUNT_MASK == 0 {
+            let parent = Self::surface_parent(mem, header)?;
+            if parent != 0 {
+                self.add_ref(mem, parent)?;
+            }
+        }
         let n = (c & common::REFCOUNT_MASK).wrapping_add(1) & common::REFCOUNT_MASK;
         mem.write_u32(header, (c & !common::REFCOUNT_MASK) | n)?;
         Ok(n)
     }
 
-    /// `D3DResource_Release` (`0x3fb640`). Releasing the last reference
-    /// destroys the resource, which is not implemented.
+    /// `D3DResource_Release` (`0x3fb640`). As compiled: releasing the last
+    /// title reference to a texture level releases its parent first
+    /// (`0x3fb654..0x3fb668`), and a resource left with no internal
+    /// reference either is destroyed and 0 returned (`0x3fb66d..0x3fb67b`,
+    /// [`Device::destroy_resource`]). Otherwise the count drops by one.
     pub fn resource_release(
         &mut self,
         mem: &mut dyn GuestMemory,
         header: u32,
     ) -> Result<u32, D3dError> {
-        const E: &str = "D3DResource_Release";
         self.sync_push_buffer(mem)?;
+        self.release(mem, header)
+    }
+
+    fn release(&mut self, mem: &mut dyn GuestMemory, header: u32) -> Result<u32, D3dError> {
+        const E: &str = "D3DResource_Release";
         let c = mem.read_u32(header)?;
-        let n = (c & common::REFCOUNT_MASK).wrapping_sub(1) & common::REFCOUNT_MASK;
-        if n == 0 && c & common::INTREFCOUNT_MASK == 0 {
-            return Err(D3dError::unimplemented(
+        match c & common::REFCOUNT_MASK {
+            0 => Err(D3dError::invalid(
                 E,
-                format!("releasing the last reference to {header:#010x} (D3D_DestroyResource)"),
-            ));
+                format!("{header:#010x} has no reference to release ({c:#010x})"),
+            )),
+            1 => {
+                let parent = Self::surface_parent(mem, header)?;
+                if parent != 0 {
+                    self.release(mem, parent)?;
+                }
+                if c & common::INTREFCOUNT_MASK == 0 {
+                    self.destroy_resource(mem, header)?;
+                    return Ok(0);
+                }
+                mem.write_u32(header, c - 1)?;
+                Ok(0)
+            }
+            n => {
+                mem.write_u32(header, c - 1)?;
+                Ok(n - 1)
+            }
         }
-        mem.write_u32(header, (c & !common::REFCOUNT_MASK) | n)?;
-        if n == 0 {
-            self.cache.retain(|k, _| k.0 != header && k.1 != header);
-        }
-        Ok(n)
     }
 
     /// Reports a guest store the device did not make (the runtime's write
@@ -2242,7 +2390,8 @@ impl<B: Backend> Device<B> {
         if target != self.render_target {
             self.leave_target(mem)?;
         }
-        refs.commit(mem)?;
+        let destroys = refs.commit(mem)?;
+        self.destroy_resources(mem, destroys)?;
         self.render_target = target;
         self.depth_stencil = z_stencil;
         let dev = self.cfg.layout.device;
@@ -2292,8 +2441,8 @@ impl<B: Backend> Device<B> {
     /// Unbinding a surface: stamps `Lock` (of the parent, for a level) with
     /// the GPU time (`0x3f7b67..0x3f7b79`), then drops the internal
     /// reference as `0x3fb5a0` does. The last internal reference also
-    /// drops the parent's; a resource left with no references at all would
-    /// be destroyed (`D3D_DestroyResource`, which stops).
+    /// drops the parent's; a resource left with no references at all is
+    /// staged for destruction (see [`Device::destroy_resource`]).
     ///
     /// Everything goes into `refs`; nothing is written unless the whole
     /// release can be done.
@@ -2311,12 +2460,6 @@ impl<B: Backend> Device<B> {
         let time = mem.read_u32(self.cfg.layout.device + field::GPU_TIME)?;
         refs.write(at(if parent != 0 { parent } else { header }, 8)?, time);
         let c = refs.read(mem, header)?;
-        let destroy = |h: u32| {
-            D3dError::unimplemented(
-                entry,
-                format!("unbinding the last reference to {h:#010x} (D3D_DestroyResource)"),
-            )
-        };
         match c & common::INTREFCOUNT_MASK {
             0 => {
                 return Err(D3dError::invalid(
@@ -2325,17 +2468,23 @@ impl<B: Backend> Device<B> {
                 ));
             }
             common::INTREFCOUNT_ONE => {
+                // `0x3fb5b3..0x3fb5d9`: the parent's reference goes, and
+                // with nothing left the parent is destroyed (the
+                // decremented word is stored first, as the original does).
                 if parent != 0 {
                     let p = refs
                         .read(mem, parent)?
                         .wrapping_sub(common::INTREFCOUNT_ONE);
-                    if p & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
-                        return Err(destroy(parent));
-                    }
                     refs.write(parent, p);
+                    if p & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
+                        refs.destroy(parent);
+                    }
                 }
+                // `0x3fb5de..0x3fb5e9`: no title reference either: destroyed
+                // as it is, without the decrement.
                 if c & common::REFCOUNT_MASK == 0 {
-                    return Err(destroy(header));
+                    refs.destroy(header);
+                    return Ok(());
                 }
             }
             _ => {}

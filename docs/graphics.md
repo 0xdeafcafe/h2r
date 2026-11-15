@@ -391,7 +391,12 @@ renderer, not polish.
 * Palettes are passed in by the caller as a `&[u32]`; locating them from the
   guest `D3DPalette` is the HLE layer's job.
 * Multisampling (`MULTISAMPLE*` states, `D3DMULTISAMPLE_TYPE` quincunx etc.),
-  occlusion queries, point sprites/size, line width, edge AA, dithering.
+  point sprites/size, line width, edge AA, dithering.
+* Occlusion counts (`gfx::occlusion::PixelCounter`, `Draw::count_samples`)
+  re-draw each counted draw into an additive `R16Float` target and sum it
+  with a compute pass, because wgpu occlusion queries are boolean on Metal.
+  The count pass does not run the draw's fragment program, so alpha test and
+  `discard` do not reject samples. See "Visibility tests" in `d3d.md`.
 * Push-buffer/NV2A method-stream paths: out of scope by design. Inlined D3D
   fast paths must be intercepted at the call/region level (LIFTER.md section 7;
   Cxbx's `XbPushBuffer.cpp` shows what a draw submission has to preserve).

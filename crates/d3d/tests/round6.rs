@@ -368,11 +368,13 @@ fn same_size_targets_hold_an_internal_reference_while_bound() {
     // binding keeps it alive.
     let n = common::call(&mut d, &mut m, 0x3fb640, Regs::default(), &[surf]);
     assert_eq!(n.unwrap().eax, Some(0));
-    // Unbinding the last reference would destroy it, which stops.
-    let err = common::call(&mut d, &mut m, 0x3f7b30, Regs::default(), &[back])
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("D3D_DestroyResource"), "{err}");
+    // Unbinding the last reference destroys it, as is (`0x3fb5e9`): the
+    // original D3D_DestroyResource gets it from the runtime glue.
+    let bound = m.read_u32(surf).unwrap();
+    common::call(&mut d, &mut m, 0x3f7b30, Regs::default(), &[back]).unwrap();
+    assert_eq!(d.take_pending_destroys(), vec![surf]);
+    assert_eq!(m.read_u32(surf).unwrap(), bound);
+    assert_eq!(m.read_u32(DEV + f::RENDER_TARGET).unwrap(), back);
 }
 
 #[test]
@@ -452,48 +454,58 @@ fn teardown_releases_the_bound_title_targets() {
     }
 }
 
+/// Teardown releases a level only the binding still holds: the parent's
+/// last reference goes with it, and both are destroyed, parent first
+/// (`0x3fb5d9`, then `0x3fb5e9`).
 #[test]
-fn a_teardown_that_stops_changes_no_reference() {
+fn a_teardown_destroys_what_only_the_binding_held() {
+    use d3d::resource::common::INTREFCOUNT_ONE as ONE;
     let (mut d, mut m) = rec();
     let surf = texture_level(&mut m);
+    let p0 = m.read_u32(TEX_HEADER).unwrap();
     common::call(&mut d, &mut m, 0x3f7b30, Regs::default(), &[surf]).unwrap();
+    // Releasing the level's last title reference releases the parent's
+    // too (`0x3fb668`); the binding keeps both.
     common::call(&mut d, &mut m, 0x3fb640, Regs::default(), &[surf]).unwrap();
-    let (s, p) = (m.read_u32(surf).unwrap(), m.read_u32(TEX_HEADER).unwrap());
-    let err = d.release_device(&mut m, DEV).unwrap_err().to_string();
-    assert!(err.contains("D3D_DestroyResource"), "{err}");
-    assert_eq!(m.read_u32(surf).unwrap(), s);
-    assert_eq!(m.read_u32(TEX_HEADER).unwrap(), p);
+    assert_eq!(m.read_u32(TEX_HEADER).unwrap(), p0 - 1 + ONE);
+    let s = m.read_u32(surf).unwrap();
+    assert!(d.take_pending_destroys().is_empty());
+    d.release_device(&mut m, DEV).unwrap();
+    assert_eq!(d.take_pending_destroys(), vec![TEX_HEADER, surf]);
+    assert_eq!(m.read_u32(surf).unwrap(), s, "destroyed as it is");
+    assert_eq!(
+        m.read_u32(TEX_HEADER).unwrap(),
+        p0 - 1,
+        "decremented, then destroyed"
+    );
+    assert_eq!(d.stats().destroys, 2);
 }
 
+/// Unbinding a level only the binding holds destroys it and its parent,
+/// writes its pixels back first, and drops its host surface.
 #[test]
-fn an_unbind_that_stops_changes_nothing_and_can_be_retried() {
+fn an_unbind_destroys_a_level_only_the_binding_held() {
     use d3d::resource::common::INTREFCOUNT_ONE as ONE;
     let (mut d, mut m) = rec();
     let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
     let surf = texture_level(&mut m);
     let (s0, p0) = (m.read_u32(surf).unwrap(), m.read_u32(TEX_HEADER).unwrap());
     common::call(&mut d, &mut m, 0x3f7b30, Regs::default(), &[surf]).unwrap();
-    // The title drops its reference; only the binding holds the level.
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    let live = d.backend.live_surfaces();
     common::call(&mut d, &mut m, 0x3fb640, Regs::default(), &[surf]).unwrap();
-    let bound = (m.read_u32(surf).unwrap(), m.read_u32(TEX_HEADER).unwrap());
-    assert_eq!(bound, (s0 - 1 + ONE, p0 + ONE));
-    for _ in 0..2 {
-        let err = common::call(&mut d, &mut m, 0x3f7b30, Regs::default(), &[back])
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("D3D_DestroyResource"), "{err}");
-        assert_eq!(
-            (m.read_u32(surf).unwrap(), m.read_u32(TEX_HEADER).unwrap()),
-            bound
-        );
-        assert_eq!(m.read_u32(DEV + f::RENDER_TARGET).unwrap(), surf);
-    }
-    // With a caller reference back, the same switch goes through.
-    let c = m.read_u32(surf).unwrap();
-    m.write_u32(surf, c + 1).unwrap();
+    assert_eq!(
+        (m.read_u32(surf).unwrap(), m.read_u32(TEX_HEADER).unwrap()),
+        (s0 - 1 + ONE, p0 - 1 + ONE)
+    );
     common::call(&mut d, &mut m, 0x3f7b30, Regs::default(), &[back]).unwrap();
-    assert_eq!(m.read_u32(surf).unwrap(), s0);
-    assert_eq!(m.read_u32(TEX_HEADER).unwrap(), p0);
+    assert_eq!(d.take_pending_destroys(), vec![TEX_HEADER, surf]);
+    assert_eq!(d.stats().rtt_writebacks, 1);
+    assert_eq!(
+        d.backend.live_surfaces(),
+        live - 1,
+        "the level's host surface"
+    );
     assert_eq!(m.read_u32(DEV + f::RENDER_TARGET).unwrap(), back);
 }
 

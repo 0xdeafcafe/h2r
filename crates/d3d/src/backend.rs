@@ -333,6 +333,30 @@ pub trait Backend: Send {
         let _ = (surface, opaque);
         Ok(None)
     }
+    /// `CLEAR_REPORT_VALUE` (zpass): the sample count restarts at zero.
+    fn clear_pixel_count(&mut self) -> Result<(), String> {
+        Ok(())
+    }
+    /// `GET_REPORT`: a ticket for the samples counted since the last
+    /// [`clear_pixel_count`](Self::clear_pixel_count), by every draw whose
+    /// [`ResolvedDraw::hw`] had `zpass_count_enable` set (samples that
+    /// passed the depth and stencil tests, as the NV2A counts them). It need
+    /// not wait for the GPU; [`read_pixel_count`](Self::read_pixel_count)
+    /// does. `Ok(None)`: the backend cannot count (the default), and the
+    /// device stops.
+    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        Ok(None)
+    }
+    /// The count behind a ticket from
+    /// [`report_pixel_count`](Self::report_pixel_count), waiting for the
+    /// GPU if it has to. The ticket is spent.
+    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        Err(format!("the backend cannot count pixels (ticket {ticket})"))
+    }
+    /// Forgets a ticket that will never be read.
+    fn drop_pixel_count(&mut self, ticket: u64) {
+        let _ = ticket;
+    }
     /// A colour surface that is also a texture, for a render-to-texture
     /// level. The default is [`create_surface`](Self::create_surface).
     fn create_texture_target(
@@ -431,6 +455,20 @@ pub enum Recorded {
         /// Flags.
         flags: u32,
     },
+    /// `clear_pixel_count`.
+    ClearPixelCount,
+    /// `report_pixel_count`.
+    ReportPixelCount {
+        /// The ticket handed out.
+        ticket: u64,
+        /// The count it stands for.
+        value: u64,
+    },
+    /// `read_pixel_count`.
+    ReadPixelCount {
+        /// The ticket.
+        ticket: u64,
+    },
 }
 
 /// Records every call; surfaces and textures are numbers.
@@ -441,6 +479,13 @@ pub struct RecordingBackend {
     next: u32,
     /// The byte `read_surface` returns.
     pub readback_fill: u8,
+    /// Samples counted since the last `clear_pixel_count`: each counted
+    /// draw adds the area of its clip rectangle (every pixel it may touch
+    /// passes; nothing is rasterised here).
+    pub pixel_count: u64,
+    /// Reports not yet read, by ticket.
+    pub pixel_reports: std::collections::HashMap<u64, u64>,
+    next_ticket: u64,
 }
 
 impl RecordingBackend {
@@ -544,6 +589,17 @@ impl Backend for RecordingBackend {
         draw: &ResolvedDraw,
         textures: [Option<&u32>; 4],
     ) -> Result<DrawOutcome, String> {
+        if draw.hw.zpass_count_enable
+            && let Some(c) = draw.clip
+        {
+            // The writable area: the clip, or its pieces when it has them.
+            let area = |r: &PixelRect| r.width as u64 * r.height as u64;
+            self.pixel_count += if draw.clip_rects.is_empty() {
+                area(&c)
+            } else {
+                draw.clip_rects.iter().map(area).sum()
+            };
+        }
         self.calls.push(Recorded::Draw {
             color,
             draw: Box::new(draw.clone()),
@@ -579,6 +635,30 @@ impl Backend for RecordingBackend {
             id: self.next,
         });
         Ok(Some(self.next))
+    }
+    fn clear_pixel_count(&mut self) -> Result<(), String> {
+        self.pixel_count = 0;
+        self.calls.push(Recorded::ClearPixelCount);
+        Ok(())
+    }
+    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        self.next_ticket += 1;
+        let ticket = self.next_ticket;
+        self.pixel_reports.insert(ticket, self.pixel_count);
+        self.calls.push(Recorded::ReportPixelCount {
+            ticket,
+            value: self.pixel_count,
+        });
+        Ok(Some(ticket))
+    }
+    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        self.calls.push(Recorded::ReadPixelCount { ticket });
+        self.pixel_reports
+            .remove(&ticket)
+            .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))
+    }
+    fn drop_pixel_count(&mut self, ticket: u64) {
+        self.pixel_reports.remove(&ticket);
     }
     /// Records the bytes.
     fn write_surface(

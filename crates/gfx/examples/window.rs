@@ -117,6 +117,7 @@ impl App {
                 layout: &self.layout,
                 primitive: PrimitiveType::TriangleList,
                 state: opaque,
+                count_samples: false,
             },
             Draw {
                 shader: SHADER_XYZRHW_DIFFUSE,
@@ -129,6 +130,7 @@ impl App {
                 layout: &self.layout,
                 primitive: PrimitiveType::QuadList,
                 state: translucent,
+                count_samples: false,
             },
         ];
 

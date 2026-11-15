@@ -21,12 +21,14 @@ included here.
 - **91** D3D functions are reached from outside the section. **26** of those
   have no signature match and are named below from evidence: which state
   slot they store, what they push, and who calls them.
-- Of those 91, **80** are implemented (adapter plus device method), **5**
-  stop with `D3dError::Unimplemented` (which carries the entry name and
-  its convention), and **6** are left to the original code
-  (`d3d::abi::NATIVE`): four pure helpers and two push-buffer writers.
-- `d3d::register` installs **89** overrides in a `runtime::Dispatch`
-  (see "Integration"): **82** implemented and **7** stopping. Beyond the
+- Of those 91, **83** are implemented (adapter plus device method), **1**
+  stops with `D3dError::Unimplemented` (which carries the entry name and
+  its convention), and **7** are left to the original code
+  (`d3d::abi::NATIVE`): four pure helpers, `D3D_DestroyResource` (run by
+  the runtime glue after the device's part, see "Resource destruction")
+  and two push-buffer writers.
+- `d3d::register` installs **88** overrides in a `runtime::Dispatch`
+  (see "Integration"): **85** implemented and **3** stopping. Beyond the
   census:
   - `SetRenderState_PSTextureModes` (`0x3f5cc0`, implemented). It is
     matched by signature and has an adapter, but no code outside the
@@ -110,8 +112,8 @@ overridden; the original runs).
 | `0x3f8100` | `D3DDevice_SetViewport` | yes | stdcall(pViewport); ret 4 | 3 / 2 | yes |
 | `0x3f8320` | `D3DDevice_SetTexture` | yes | EAX = Stage, [esp+4] = pTexture; ret 4 | 2 / 2 | yes |
 | `0x3f84d0` | `D3DDevice_SetPalette` | yes | EAX = Stage, [esp+4] = pPalette; ret 4 | 7 / 4 | yes |
-| `0x3f85d0` | `D3DDevice_EndVisibilityTest` | yes | register (unrecovered) | 1 / 1 | stop |
-| `0x3f8630` | `D3DDevice_GetVisibilityTestResult (assumed)` | no | EAX = index; ret 4 | 2 / 2 | stop |
+| `0x3f85d0` | `D3DDevice_EndVisibilityTest` | yes | EAX = index; returns EAX = 0; ret | 1 / 1 | yes |
+| `0x3f8630` | `D3DDevice_GetVisibilityTestResult` | no | EAX = index, EDX = ULONGLONG* timestamp (optional), [esp+4] = UINT* count; returns EAX = 0; ret 4 | 2 / 2 | yes (always complete) |
 | `0x3f8760` | `D3DDevice_SetScissors` | yes | stdcall(Count, Exclusive, pRects); ret 0xC | 3 / 3 | yes |
 | `0x3f8ad0` | `D3DDevice_PersistDisplay` | yes | no args; returns EAX = HRESULT | 1 / 1 | yes |
 | `0x3f8c70` | `D3D display/flicker filter (0x3f8c70)` | no | ESI = filter | 1 / 1 | yes |
@@ -135,7 +137,7 @@ overridden; the original runs).
 | `0x3fb3e0` | `D3DDevice_SetVertexDataColor` | yes | stdcall(Register, D3DCOLOR); ret 8 | 10 / 5 | yes |
 | `0x3fb440` | `D3DDevice_Begin` | yes | stdcall(PrimitiveType); ret 4 | 11 / 9 | yes |
 | `0x3fb480` | `D3DDevice_End` | yes | no args; ret | 21 / 17 | yes |
-| `0x3fb520` | `D3D_DestroyResource` | yes | register (unrecovered) | 1 / 1 | stop |
+| `0x3fb520` | `D3D_DestroyResource` | yes | EDI = resource; ret | 1 / 1 | native (after the device's part) |
 | `0x3fb600` | `D3DResource_AddRef` | yes | stdcall(this); returns EAX = new count; ret 4 | 6 / 3 | yes |
 | `0x3fb640` | `D3DResource_Release` | yes | stdcall(this); returns EAX = new count; ret 4 | 14 / 7 | yes |
 | `0x3fb710` | `D3DResource_IsBusy (0x3fb710)` | no | ECX = resource; returns EAX = busy (0/1) | 7 / 5 | yes |
@@ -144,7 +146,7 @@ overridden; the original runs).
 | `0x3fdb20` | `Get2DSurfaceDesc` | yes | EDI = container, EBX = level, ESI = out desc | 4 / 4 | native |
 | `0x3fdbc0` | `D3D surface level layout (0x3fdbc0)` | no | stdcall 8 args; ret 0x20 | 12 / 9 | native |
 | `0x3fde00` | `D3D texture header setup (0x3fde00)` | no | stdcall 8 args; ret 0x20 | 3 / 3 | native |
-| `0x3ff5c6` | `D3D miniport (0x3ff5c6)` | no | unrecovered | 1 / 1 | stop |
+| `0x3ff5c6` | `D3D miniport gamma ramp (0x3ff5c6)` | no | EAX = miniport (device + 0x1C28), EDX = D3DGAMMARAMP (768 bytes); ret | 1 / 1 | yes (stored) |
 | `0x400fa0` | `D3D commit deferred state (0x400fa0)` | no | no args; ret | 23 / 19 | yes |
 | `0x401030` | `CDevice_SetStateVB` | yes | stdcall(device, base); ret 8 | 1 / 1 | native |
 
@@ -284,11 +286,14 @@ Notes on the table:
     reference of any kind remains, `& 0x78FFFF == 0`), then destroys the
     surface when its refcount is 0 and otherwise takes `0x80000` off it.
   - The device's own back-buffer and depth headers are skipped. A destroy
-    stops (`D3D_DestroyResource`): nothing on the menu path reaches it.
+    goes through `Device::destroy_resource` and then the original
+    `D3D_DestroyResource` (see "Resource destruction"). As retail does,
+    the parent's decremented word is stored before the parent is
+    destroyed.
   - The whole switch is staged and checked before anything is written. A
     switch that stops leaves every count, `Lock` and the binding as they
-    were, so it can be retried; retail decrements the parent before the
-    destroy, but it also finishes the switch.
+    were, so it can be retried. Destroys are staged with it and happen
+    only when the switch commits.
   - Teardown releases the bound target and then depth/stencil the same way
     (`0x3fc720`, called at `0x3fc5cb`) before the texture, palette and
     stream releases, and clears both device fields. The releases are one
@@ -425,7 +430,7 @@ inline, with site/function counts:
 | `0x1D8C` | `SET_ZSTENCIL_CLEAR_VALUE`/`SET_COLOR_CLEAR_VALUE`, two words: an inlined `InsertCallback` at `0x0002460e` (function `0x24970`, context), then NO_OPERATION 7 | 1 / 1 | yes (push callback) |
 | `0x1480` | `SET_STIPPLE_PATTERN`, 32 words (`0x0001e4ae`, in `0x0001e370`; what `SetStipple` pushes) | 1 / 1 | yes (register state) |
 | `0x1710` | `BREAK_VERTEX_BUFFER_CACHE`, value 0 (`0x00043a1a`) | 1 / 1 | yes (no-op: vertices are read at every draw) |
-| `0x17C8` | `CLEAR_REPORT_VALUE`/`SET_ZPASS_PIXEL_COUNT_ENABLE` (an inlined `BeginVisibilityTest`, `0x00020cec`) | 1 / 1 | **stops** |
+| `0x17C8` | `CLEAR_REPORT_VALUE`/`SET_ZPASS_PIXEL_COUNT_ENABLE` (an inlined `BeginVisibilityTest`, `0x00020cec`) | 1 / 1 | yes (restarts the backend's sample count; type 1 only; see "Visibility tests") |
 
 An earlier version of this table also listed `0x0A20` and a 1800-word
 `0x1A20`, both at `0x00052b89`. Those are not push-buffer headers: they are
@@ -767,6 +772,10 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    - Before the adapter runs, the handler drains the push buffer up to
      the next push-buffer callback and, if there is one, calls it and
      enters the entry again (see "Push-buffer callbacks").
+   - After an adapter succeeds, the handler calls the original
+     `D3D_DestroyResource` for each resource the entry destroyed
+     (`runtime_glue::destroy_then_return`, see "Resource destruction"),
+     then delivers pending vblanks, and only then returns to the caller.
    - `abi::NATIVE` addresses get no override.
    `tests/registration.rs` runs Halo's boot device sequence through
    `runtime::Runner` with these overrides.
@@ -1134,7 +1143,7 @@ listed under "Stops on the way to the menu" below.
 No boot trace exists yet, so this is static. Conditional stops that normal
 view rendering (`0x223240 -> 0x2232a0 -> 0x2c8a0 -> 0x132d0`) can reach:
 
-Of the 18 entries that stopped before, 5 remain (`abi::UNIMPLEMENTED`).
+Of the 18 entries that stopped before, 1 remains (`abi::UNIMPLEMENTED`).
 The fragments, the display entries, `SetStipple` (`0x3f8cc0`), the busy
 check (`0x3fb710`), `SetVertexShaderConstantNotInline` (`0x3f7410`) and
 Get2DSurfaceDesc are done (see the inventory), and so are the cases
@@ -1159,8 +1168,8 @@ below:
 - **Inline methods.** The view-rendering paths push the stipple pattern
   (`0x1e4ae`), an `InsertCallback` (`0x2460e`, see "Push-buffer
   callbacks") and the vertex-cache break (`0x43a1a`); all three drain now.
-  The inline `BeginVisibilityTest` (`0x17C8`, `0x20cec`) still stops, with
-  the visibility entries below.
+  The inline `BeginVisibilityTest` (`0x17C8`, `0x20cec`) drains too (see
+  "Visibility tests").
 
 - **Inline arrays.** `0x4b220`'s draw through BeginPush and SetStateVB
   (both native) drains: `INLINE_ARRAY` (`0x1818`) words between
@@ -1184,25 +1193,111 @@ below:
   notes). Tests for both, the commit's kept bits and the internal
   references: `tests/round6.rs`.
 
-The 5 that still stop, and where the menu path reaches them:
+- **Visibility tests** (`0x3f85d0`, `0x3f8630`, the lens-flare pass
+  `0x20bb0`): implemented with counting queries (see "Visibility tests").
+- **Resource destruction** (`0x3fb520`): the device does its part and the
+  original runs after the entry (see "Resource destruction").
+- **Gamma ramp** (`0x3ff5c6`, from the brightness update at `0x12d08`):
+  implemented (see "Gamma ramp").
+
+The one that still stops:
 
 - `0x3f77c0` Reset. It is reached only if the game's device pointer is
   still set at `0x128c0`; it is not, after boot step 1.
-- `0x3f85d0` / `0x3f8630`: visibility tests (occlusion queries).
-  `EndVisibilityTest` (`EAX` = index; `ret`) stamps a 16-byte report slot
-  (pages at device `+0x7D4`) with the GPU time and pushes
-  `SET_ZPASS_PIXEL_COUNT_ENABLE` 0 and `GET_REPORT`;
-  `GetVisibilityTestResult` (`EAX` = index, `EDX` = optional 64-bit
-  timestamp out, `[esp+4]` = pixel count out; `ret 4`) returns
-  `D3DERR_TESTINCOMPLETE` (`0x88760828`) until the report is written.
-  Halo divides the count by an expected pixel count (`0x20840`), so a
-  constant answer is wrong somewhere; a faithful one needs counting
-  occlusion queries from gfx, which it does not have yet.
-- `0x3fb520` `D3D_DestroyResource` (1 caller).
-- `0x3ff5c6`, the miniport (1 caller).
 
-None of them is on the static boot path above; which of them the menu
-reaches needs a boot trace.
+It is not on the static boot path above. The port-I/O guards that stop
+(see "Port I/O guards") are not reached from game code.
+
+## Visibility tests
+
+Halo's one user is the lens-flare/sun visibility pass (`0x20bb0`). Per
+query it pushes `CLEAR_REPORT_VALUE` 1 and `SET_ZPASS_PIXEL_COUNT_ENABLE`
+1 inline (`0x20cec`), draws through a callback that returns the pixel
+count it expects, and calls `EndVisibilityTest` (`0x20d0f`). On a later
+frame (the index rotates through three sets, `frame % 3`) it calls
+`GetVisibilityTestResult` (`0x20cbb`, `0x20840`) and divides the count by
+the expected one, clamped to `[0, 1]` (`0x20861`). A constant answer would
+be wrong somewhere, so the counts are real.
+
+- **Retail.** `EndVisibilityTest` stamps report slot `index & 0xFF` of page
+  `index >> 8` (64 pages of 256 16-byte slots at device `+0x7D4`) with the
+  GPU time and pushes `SET_ZPASS_PIXEL_COUNT_ENABLE` 0 and `GET_REPORT`.
+  `GetVisibilityTestResult` returns `D3DERR_TESTINCOMPLETE` (`0x88760828`)
+  while the slot's status word is `0xFFFFFFFF`, and otherwise copies out
+  the count and timestamp. The pages are D3D-private: only `0x3f8570`,
+  `0x3f8630` and the teardown (`0x3fc69d`) touch `+0x7D4`. The device
+  keeps the results itself, by index, and allocates no guest pages.
+- **Counting.** While `SET_ZPASS_PIXEL_COUNT_ENABLE` is on
+  (`HwState::zpass_count_enable`), every draw is a counted draw
+  (`gfx::Draw::count_samples`). `CLEAR_REPORT_VALUE` type 1 calls
+  `Backend::clear_pixel_count`, and `EndVisibilityTest` drains, takes a
+  ticket from `Backend::report_pixel_count` and turns counting off. Any
+  other report type stops. A backend that cannot count stops at the end.
+- **Synchronous results (the choice).** The device drains the push buffer
+  before every entry (see "GPU model"), so a test that has been ended has
+  its result. `GetVisibilityTestResult` therefore always answers: it waits
+  for the host GPU (`Backend::read_pixel_count`) the first time and keeps
+  the count, so asking again answers the same. It never returns
+  `D3DERR_TESTINCOMPLETE`. That is what the hardware answers once caught
+  up, and the game cannot tell a fast GPU from a slow one. The wait costs
+  one GPU round trip per test, once per frame for the flare.
+- An index never ended, or at or above `0x4000` (`VISIBILITY_INDICES`), is
+  an invalid call. Ending an index again replaces its result. Teardown
+  forgets every test. Counted in `Stats::visibility_tests`.
+- **The count in gfx** (`gfx::occlusion`). wgpu occlusion queries are
+  boolean on Metal, so they cannot give a count. Instead each counted draw
+  is drawn a second time first, into an `R16Float` target with additive
+  blending, the draw's depth/stencil test, no depth or stencil writes and a
+  fragment shader that writes 1. A compute pass then adds up the texels
+  inside the draw's scissor into a `u32` (`PixelCounter`). With
+  multisampling it counts samples, as the NV2A does. Limit: the count
+  pass does not run the draw's own fragment program, so alpha test and
+  `discard` do not reject samples there. The flare's occlusion draws do
+  not depend on them.
+- Tests: `tests/round7.rs` (device and runner) and `gfx`'s
+  `pixel_counter_counts_samples`. The ignored `visibility_conventions`
+  checks the call sites and conventions in the image.
+
+## Resource destruction
+
+`D3D_DestroyResource` (`0x3fb520`, `EDI` = resource) frees a resource's
+guest memory through the game's allocators (`0x2d0a60`, `0x122c0`). Its
+D3D callees are the overridden `BlockOnResource` and `0x3fb4d0`, an unlink
+from the list at `0x408644` that nothing else names, so the list is always
+empty. `Release` (`0x3fb640`) and the internal release `0x3fb5a0` (target
+switches, unbinds and teardown) call it. The other two direct calls, game
+code at `0x13d24` (in `0x13cd0`) and teardown at `0x3fc611`, release device
+`+0x7A0`, which is only ever stored as 0, so they never run.
+
+- The device implements `Release`, `AddRef`, the internal release and the
+  teardown as compiled. `Release` of a level releases its parent first,
+  and destroys at the last reference when no internal reference remains.
+  `AddRef` of a level with refcount 0 adds a reference to its parent.
+  `Release` of a refcount-0 resource is an invalid call.
+- A destroy (`Device::destroy_resource`) writes back render-to-texture
+  pixels, drops the host surfaces of the resource and its levels, purges
+  it from the texture cache and queues the header (`Stats::destroys`).
+- After the entry returns, the runtime glue (`runtime_glue`) takes the
+  queue (`Device::take_pending_destroys`) and calls the original
+  `0x3fb520` for each header through `ExecCtx::call_guest`, with `EDI` =
+  header. It then restores the entry's registers and delivers any pending
+  vblanks. The guest memory is freed by the game's own code, so the
+  allocator state stays the game's.
+- Tests: `tests/round7.rs` (a runner with a stand-in at `0x3fb520`) and
+  `round6.rs`/`recheck_fixes.rs` (teardown and unbind destroys). The
+  ignored `destroy_resource_conventions` checks that `EDI` is the
+  resource, the callees, that only `0x3fb4d0` names `0x408644`, and that
+  `+0x7A0` is only stored as 0.
+
+## Gamma ramp
+
+`0x3ff5c6` loads a `D3DGAMMARAMP` (768 bytes: 256 red, 256 green, 256
+blue) into the miniport. `EAX` = the miniport (device `+0x1C28`) and
+`EDX` = the ramp. Halo calls it once, from the brightness update
+(`0x12d08`, an inlined `SetGammaRamp`). The device checks `EAX`, copies the
+ramp (`Device::gamma_ramp`) and does not apply it: the presenter has no
+gamma stage yet. The ignored `gamma_ramp_conventions` checks the
+convention.
 
 ## gfx changes this wants
 
@@ -1212,9 +1307,14 @@ copy of a colour surface, for the back buffer read as a texture),
 (`gfx::Draw::scissor`/`viewport`), rectangle and channel-masked clears
 (`Renderer::clear_rects`), render-to-texture surfaces
 (`SurfaceStore::create_texture_target`), the surface upload
-`SurfaceStore::write_color(ctx, id, &TextureDesc, bytes)` (added with this
-change), alpha test in the built-in shader, and indexed draws
-(`gfx::Draw::indices`). Still wanted:
+`SurfaceStore::write_color(ctx, id, &TextureDesc, bytes)`, alpha test in
+the built-in shader, indexed draws (`gfx::Draw::indices`), and sample
+counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
+`Renderer::render_counted`). Still wanted:
+
+- **Counting through the draw's own fragment program.** The count pass
+  writes 1 for every sample that passes depth/stencil, so alpha test and
+  `discard` are not applied to the count.
 
 - **Sampling render targets directly.** A level drawn into is written back
   to guest memory and uploaded again as a texture. Binding the

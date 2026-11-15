@@ -65,6 +65,21 @@ pub mod method {
     /// the vertex-format dirty bit (`0x10`) is set. Inline arrays
     /// (`0x1818`) are unpacked with these.
     pub const VERTEX_DATA_ARRAY_FORMAT: u32 = 0x1760;
+    /// `NV097_CLEAR_REPORT_VALUE`: zeroes the report counter its parameter
+    /// names (1, `ZPASS_PIXEL_CNT`, the only type D3D uses). Halo's inlined
+    /// `BeginVisibilityTest` (`0x20cec`) pushes it with
+    /// [`ZPASS_PIXEL_COUNT_ENABLE`] = 1 in one two-word command. The device
+    /// handles it in the drain (it restarts the backend's sample count);
+    /// it is not register state.
+    pub const CLEAR_REPORT_VALUE: u32 = 0x17C8;
+    /// `NV097_SET_ZPASS_PIXEL_COUNT_ENABLE`: while set, draws add the
+    /// samples that pass the depth and stencil tests to the zpass counter.
+    pub const ZPASS_PIXEL_COUNT_ENABLE: u32 = 0x17CC;
+    /// `NV097_GET_REPORT` (bits 31:24 the type, 23:0 an offset into the
+    /// report DMA context): writes the counter to memory. Only
+    /// `EndVisibilityTest` (`0x3f85d0`) pushes it, and the device overrides
+    /// that, so the drain does not decode it (an unknown method stops).
+    pub const GET_REPORT: u32 = 0x17D0;
     /// `NV097_SET_ZSTENCIL_CLEAR_VALUE`. D3D (and the inlined
     /// `InsertCallback` at `0x2460e`) also loads it with a software-method
     /// operand: the callback function, or a register offset.
@@ -133,6 +148,9 @@ pub struct HwState {
     /// only: nothing draws from GPU-side arrays (`DRAW_ARRAYS` and the
     /// `ARRAY_ELEMENT` methods stop as unknown).
     pub vertex_offset: [u32; 16],
+    /// `SET_ZPASS_PIXEL_COUNT_ENABLE`: draws issued while it is set count
+    /// the samples they pass ([`crate::backend::Backend::report_pixel_count`]).
+    pub zpass_count_enable: bool,
 }
 
 /// The reset value of every `SET_VERTEX_DATA_ARRAY_FORMAT` register: float,
@@ -158,6 +176,7 @@ impl Default for HwState {
             color_clear_value: 0,
             vertex_format: [VERTEX_FORMAT_DISABLED; 16],
             vertex_offset: [0; 16],
+            zpass_count_enable: false,
         }
     }
 }
@@ -239,6 +258,7 @@ impl HwState {
             _ if (VERTEX_DATA_ARRAY_FORMAT..VERTEX_DATA_ARRAY_FORMAT + 0x40).contains(&m) => {
                 self.vertex_format[((m - VERTEX_DATA_ARRAY_FORMAT) / 4) as usize] = w;
             }
+            ZPASS_PIXEL_COUNT_ENABLE => self.zpass_count_enable = w != 0,
             ZSTENCIL_CLEAR_VALUE => self.zstencil_clear_value = w,
             COLOR_CLEAR_VALUE => self.color_clear_value = w,
             EXECUTION_MODE => self.execution_mode = w,

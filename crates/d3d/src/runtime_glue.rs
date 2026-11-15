@@ -216,23 +216,25 @@ where
             let error = match (result, fault) {
                 (Ok(o), _) => {
                     apply(cpu, o);
-                    let pending = dev
+                    let (destroys, vblanks) = dev
                         .lock()
-                        .map(|mut d| d.take_pending_vblanks())
+                        .map(|mut d| (d.take_pending_destroys(), d.take_pending_vblanks()))
                         .unwrap_or_default();
                     let guest = ctx.memory();
-                    if pending.is_empty() {
+                    if destroys.is_empty() && vblanks.is_empty() {
                         return guest.ret(cpu, o.cleanup);
                     }
-                    // Vblanks counted by Swap: run the callback for each
-                    // before returning to the caller (crate::vblank).
+                    // Resources the entry destroyed go to the original
+                    // D3D_DestroyResource, and vblanks counted by Swap to the
+                    // callback (crate::vblank), before the caller resumes.
                     let ret = guest.ret(cpu, o.cleanup)?;
                     drop(guest);
                     let saved = *cpu;
-                    return crate::vblank::deliver_then_return(
+                    return destroy_then_return(
                         cpu,
                         ctx,
-                        pending.into(),
+                        destroys.into(),
+                        vblanks.into(),
                         saved,
                         ret.target_pc,
                     );
@@ -316,6 +318,37 @@ pub fn deliver_push_callback<B: Backend + Send + 'static>(
         d.end_push_callback();
     }
     call
+}
+
+/// The original `D3D_DestroyResource` (`0x3fb520`; [`abi::NATIVE`]).
+pub const DESTROY_RESOURCE: u32 = 0x3fb520;
+
+/// Calls the original `D3D_DestroyResource` (`EDI` = resource; `ret`) for
+/// each header the entry destroyed ([`Device::destroy_resource`]), oldest
+/// first, then delivers `vblanks` ([`crate::vblank::deliver_then_return`])
+/// and returns to `ret_pc` with every register as in `saved` (the entry's
+/// results applied, its frame popped). Each call runs below `saved.esp`,
+/// with the direction flag clear.
+pub fn destroy_then_return(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mut destroys: std::collections::VecDeque<u32>,
+    vblanks: std::collections::VecDeque<crate::device::VBlank>,
+    saved: CpuAbi,
+    ret_pc: u32,
+) -> Result<TransferAbi, GuestFault> {
+    const DIRECTION_FLAG: u32 = 1 << 10;
+    let Some(header) = destroys.pop_front() else {
+        return crate::vblank::deliver_then_return(cpu, ctx, vblanks, saved, ret_pc);
+    };
+    let runtime = Arc::clone(ctx.runtime());
+    let mut guest = runtime.memory();
+    *cpu = saved;
+    cpu.edi = header;
+    cpu.eflags &= !DIRECTION_FLAG;
+    ctx.call_guest(cpu, &mut guest, DESTROY_RESOURCE, move |cpu, ctx| {
+        destroy_then_return(cpu, ctx, destroys, vblanks, saved, ret_pc)
+    })
 }
 
 fn regs(cpu: &CpuAbi) -> Regs {

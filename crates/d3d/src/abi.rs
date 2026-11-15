@@ -149,21 +149,8 @@ render_state_setters! {
 
 /// Entry points reached from game code that are not implemented: calling
 /// one stops with `D3dError::Unimplemented`.
-pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
-    (0x3f77c0, "D3DDevice_Reset", "EBX = pPresentationParameters"),
-    (
-        0x3f85d0,
-        "D3DDevice_EndVisibilityTest",
-        "register (unrecovered)",
-    ),
-    (
-        0x3f8630,
-        "D3DDevice_GetVisibilityTestResult (assumed)",
-        "EAX = index; ret 4",
-    ),
-    (0x3fb520, "D3D_DestroyResource", "register (unrecovered)"),
-    (0x3ff5c6, "D3D miniport (0x3ff5c6)", "unrecovered"),
-];
+pub const UNIMPLEMENTED: &[(u32, &str, &str)] =
+    &[(0x3f77c0, "D3DDevice_Reset", "EBX = pPresentationParameters")];
 
 /// D3D-internal functions that execute port I/O: `in al, dx` / `out dx, al`
 /// on the GPIO port `0x80C0` (the field/encoder bit) at `0x3fe131`,
@@ -212,12 +199,17 @@ pub fn stops(addr: u32) -> bool {
 }
 
 /// D3D-section functions game code calls that are deliberately not
-/// overridden, so the original code runs. Two kinds:
+/// overridden, so the original code runs. Three kinds:
 ///
 /// * helpers that only compute from their arguments and read-only D3D
 ///   tables (plus `XMemAlloc` and the overridden `D3DResource_AddRef`).
 ///   Their transitive callees were checked for device globals, NV2A
 ///   registers and push-buffer writes;
+/// * `D3D_DestroyResource` (`0x3fb520`), which frees guest memory through
+///   the game's allocators and calls only the overridden
+///   `BlockOnResource`; the device does its own part of a destroy and the
+///   runtime glue calls this for each resource it destroyed
+///   ([`crate::Device::destroy_resource`]);
 /// * push-buffer writers (`0x3fae10`, `0x401030`) that read only guest
 ///   state the device keeps current (the dirty flags, `D3D__Streams`, the
 ///   shader object at device `+0x794`), call only overridden D3D entries
@@ -250,6 +242,11 @@ pub const NATIVE: &[(u32, &str, &str)] = &[
         0x401030,
         "CDevice_SetStateVB",
         "stdcall(device, base); commits through 0x400fa0 when other dirty bits are set, then pushes SET_VERTEX_DATA_ARRAY_FORMAT x16 (dirty bit 0x10) and one SET_VERTEX_DATA_ARRAY_OFFSET per enabled attribute; ret 8",
+    ),
+    (
+        0x3fb520,
+        "D3D_DestroyResource",
+        "EDI = resource; ret; BlockOnResource (overridden) unless a title surface, unlink from 0x408644 (0x3fb4d0), XMemFree data (0x2d0a60) and header (0x122c0); called by the glue for every resource the device destroys",
     ),
     (
         0x3fde00,
@@ -540,6 +537,32 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             },
         },
         Entry {
+            addr: 0x3f85d0,
+            name: "D3DDevice_EndVisibilityTest",
+            convention: "EAX = index; returns EAX = 0 (S_OK); ret",
+            call: |d, m, r| {
+                d.end_visibility_test(m, r.eax)?;
+                Ok(Outcome::eax(0, 0))
+            },
+        },
+        Entry {
+            addr: 0x3f8630,
+            name: "D3DDevice_GetVisibilityTestResult",
+            convention: "EAX = index, EDX = ULONGLONG* timestamp (optional), [esp+4] = UINT* count; returns EAX = 0 (never D3DERR_TESTINCOMPLETE: results are synchronous); ret 4",
+            call: |d, m, r| {
+                let out = arg(m, r, 0)?;
+                let a = d.get_visibility_test_result(m, r.eax)?;
+                // 0x3f866f..0x3f8683: the count first, then the timestamp
+                // when EDX is non-null.
+                m.write_u32(out, a.count)?;
+                if r.edx != 0 {
+                    m.write_u32(r.edx, a.timestamp as u32)?;
+                    m.write_u32(r.edx.wrapping_add(4), (a.timestamp >> 32) as u32)?;
+                }
+                Ok(Outcome::eax(0, 4))
+            },
+        },
+        Entry {
             addr: 0x3f8760,
             name: "D3DDevice_SetScissors",
             convention: "stdcall(Count, Exclusive, pRects); ret 0xC",
@@ -824,6 +847,15 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             name: "D3DResource_IsBusy (0x3fb710)",
             convention: "ECX = resource; returns EAX = busy (0/1); ret",
             call: |d, m, r| Ok(Outcome::eax(d.resource_busy(m, r.ecx)?, 0)),
+        },
+        Entry {
+            addr: 0x3ff5c6,
+            name: "D3D miniport gamma ramp (0x3ff5c6)",
+            convention: "EAX = miniport (device + 0x1C28), EDX = D3DGAMMARAMP (768 bytes); ret",
+            call: |d, m, r| {
+                d.load_gamma_ramp(m, r.eax, r.edx)?;
+                Ok(Outcome::pop(0))
+            },
         },
         Entry {
             addr: 0x400fa0,
