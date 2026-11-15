@@ -92,6 +92,16 @@ fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Li
                 a.fld1()?;
                 a.fstp(st0)?;
             }
+            // A compiled function's usual run: saves, loads, a store, restores.
+            "frame" => {
+                a.push(ebx)?;
+                a.push(edi)?;
+                a.mov(ebx, dword_ptr(esi))?;
+                a.add(ebx, dword_ptr(esi + 4))?;
+                a.mov(dword_ptr(esi + 8), ebx)?;
+                a.pop(edi)?;
+                a.pop(ebx)?;
+            }
             "call" | "tail" => a.call((A + 0x100) as u64)?,
             _ => a.add(eax, ecx)?,
         }
@@ -112,7 +122,13 @@ fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Li
             funcs.push(function(A + 0x200, |a| a.ret()));
         }
     }
-    compile_module(kind, funcs, instrumented, fast)
+    // The benchmark builds as the image does: accounting unless H2_ACCESS_COUNT=0.
+    let codegen = if kind == "frame" || std::env::var_os("H2_ACCESS_COUNT").is_some() {
+        emit::Codegen::from_env().unwrap()
+    } else {
+        emit::Codegen::default()
+    };
+    compile_module_with(kind, funcs, instrumented, fast, emit::opt::Passes::from_env().unwrap(), codegen)
 }
 fn compile_module(kind: &str, funcs: Vec<IrFunction>, instrumented: bool, fast: bool) -> (libloading::Library, Dispatch) {
     let passes = emit::opt::Passes::from_env().unwrap();
@@ -219,7 +235,7 @@ fn generated_runtime_benchmark() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(7);
-    for kind in ["register", "read", "write", "x87", "call", "tail"] {
+    for kind in ["register", "read", "write", "frame", "x87", "call", "tail"] {
         if std::env::var("H2_PERF_KIND").is_ok_and(|k| k != kind) {
             continue;
         }
@@ -715,4 +731,288 @@ fn bulk_rep_movs_preserves_overlap_fault_progress_watch_and_accounting() {
             }
         }
     }
+}
+
+/// A handler with runs of accesses, loops longer than one hold, a REP, x87
+/// between accesses, calls and a page-crossing access.
+fn held_gate_functions() -> Vec<IrFunction> {
+    let main = function(A, |a| {
+        let (mut top, mut sum, mut cross) = (a.create_label(), a.create_label(), a.create_label());
+        a.push(ebx)?;
+        a.push(ecx)?;
+        a.xor(ebx, ebx)?;
+        a.set_label(&mut top)?;
+        a.mov(eax, dword_ptr(esi))?;
+        a.add(eax, dword_ptr(esi + 4))?;
+        a.mov(dword_ptr(edi), eax)?;
+        a.add(dword_ptr(edi + 4), eax)?;
+        a.fld(dword_ptr(esi))?;
+        a.fstp(dword_ptr(edi + 8))?;
+        a.push(eax)?;
+        a.call((A + 0x400) as u64)?;
+        a.pop(edx)?;
+        a.add(esi, 4)?;
+        a.add(edi, 12)?;
+        a.dec(ecx)?;
+        a.jnz(top)?;
+        // More trips than one hold lasts, with no exit in between.
+        a.mov(ecx, 100u32)?;
+        a.set_label(&mut sum)?;
+        a.mov(edx, dword_ptr(ecx * 4 + DATA + 0x100))?;
+        a.add(ebx, edx)?;
+        a.mov(dword_ptr(ecx * 4 + DATA + 0x900), ebx)?;
+        a.dec(ecx)?;
+        a.jnz(sum)?;
+        // The fifth read crosses a page: the slow helper, mid-hold.
+        a.mov(ecx, 7u32)?;
+        a.set_label(&mut cross)?;
+        a.add(ebx, dword_ptr(ecx * 4 + DATA + 0xfee))?;
+        a.mov(dword_ptr(ecx * 4 + DATA + 0xc00), ebx)?;
+        a.dec(ecx)?;
+        a.jnz(cross)?;
+        a.mov(ecx, 70u32)?;
+        a.mov(eax, 0x55aa_1234u32)?;
+        a.mov(edi, DATA + 0x600)?;
+        a.cld()?;
+        a.rep().stosd()?;
+        a.pop(ecx)?;
+        a.pop(ebx)?;
+        // Fast stores, then one that may fault with the gate held.
+        a.mov(dword_ptr(DATA + 0xd00), eax)?;
+        a.mov(dword_ptr(DATA + 0xd04), ecx)?;
+        a.mov(dword_ptr(ebp), ebx)?;
+        a.mov(dword_ptr(DATA + 0xd08), ebx)?;
+        a.ret()
+    });
+    let leaf = function(A + 0x400, |a| {
+        a.add(eax, dword_ptr(esp + 4))?;
+        a.mov(dword_ptr(esp + 4), eax)?;
+        a.ret()
+    });
+    vec![main, leaf]
+}
+
+/// Holding the gate across accesses changes nothing the guest or the
+/// runtime can see: against the same module with the inline path off, every
+/// slice ends at the same safe point with the same accesses spent, and the
+/// run ends (returning, or faulting on a read-only page with the gate held)
+/// with the same registers, flags and memory. The memory guard taken after
+/// every stop would hang if a handler left with the gate.
+#[test]
+fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
+    use runtime::{TransferAbi, abi};
+    const RO: u32 = 0x10b000;
+    let memory = || {
+        let mut mem = Guest::new();
+        mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+        mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
+        mem.map_zeroed(RO, 4096, Permissions::READ).unwrap();
+        for i in 0..1024 {
+            mem.set_u32(DATA + 4 * i, i.wrapping_mul(0x9e37_79b9) ^ 0x3f80_0000).unwrap();
+        }
+        mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        mem
+    };
+    for accounting in [false, true] {
+        let (_lib, dispatch) = compile_module_with(
+            "held-gate",
+            held_gate_functions(),
+            false,
+            true,
+            emit::opt::Passes::ALL,
+            emit::Codegen { accounting },
+        );
+        let rt = Runtime::new(memory(), dispatch);
+        for fault in [false, true] {
+            let mut want = None;
+            for fast in [false, true] {
+                for slice in [1, 2, 3, 7, 33, 64, 1_000_000] {
+                    *rt.memory() = memory();
+                    let mut ctx = ExecCtx::new(rt.clone(), 1);
+                    ctx.enable_fast_memory(fast);
+                    ctx.enable_profiling(true);
+                    ctx.arm_preemption(slice);
+                    let mut cpu = CpuAbi {
+                        esp: STACK,
+                        esi: DATA + 0x100,
+                        edi: DATA + 0x300,
+                        ecx: 40,
+                        ebp: if fault { RO + 0x10 } else { DATA + 0xd10 },
+                        ..CpuAbi::default()
+                    };
+                    let mut t = TransferAbi::jump(A);
+                    let mut stops = Vec::new();
+                    let end = loop {
+                        let end = Runner::default().run_from(&mut cpu, &mut ctx, t);
+                        let Some(next) = ctx.take_preempted() else { break end };
+                        // A leaked gate would block here for ever.
+                        let stack = rt.memory().u32(cpu.esp).unwrap();
+                        stops.push((next.target_pc, ctx.take_slice_spent(), cpu, stack));
+                        ctx.arm_preemption(slice);
+                        t = next;
+                    };
+                    let key = format!("accounting {accounting} fault {fault} fast {fast} slice {slice}");
+                    assert_eq!(end.kind, if fault { abi::FAULT } else { abi::STOP }, "{key}: {:?}", ctx.events());
+                    let spent = stops.iter().map(|s| s.1).sum::<u64>() + ctx.take_slice_spent();
+                    let p = ctx.take_profile().unwrap();
+                    assert_eq!(p.memory_accessors, spent, "{key}");
+                    // Only the page-crossing read and the faulting store miss
+                    // (a counting module does not report its inline accesses).
+                    let inline = if fast && !accounting { spent - 1 - u64::from(fault) } else { 0 };
+                    assert_eq!(p.fast_memory_accesses, inline, "{key}");
+                    let mut out = vec![0; 8192];
+                    rt.memory().read_bytes(DATA, &mut out, 1).unwrap();
+                    // Stops differ with the slice; the end state does not.
+                    let got = (spent, cpu, out);
+                    let want = want.get_or_insert_with(|| got.clone());
+                    assert!(&got == want, "{key}: {spent} accesses, {cpu:x?}");
+                    if slice == 1_000_000 {
+                        assert!(stops.is_empty(), "{key}");
+                    }
+                }
+            }
+        }
+        // The same stops, slice by slice, fast or not.
+        for slice in [1, 5, 33] {
+            let run = |fast: bool| {
+                *rt.memory() = memory();
+                let mut ctx = ExecCtx::new(rt.clone(), 1);
+                ctx.enable_fast_memory(fast);
+                ctx.arm_preemption(slice);
+                let mut cpu =
+                    CpuAbi { esp: STACK, esi: DATA + 0x100, edi: DATA + 0x300, ecx: 40, ebp: DATA + 0xd10, ..CpuAbi::default() };
+                let mut t = TransferAbi::jump(A);
+                let mut stops = Vec::new();
+                loop {
+                    Runner::default().run_from(&mut cpu, &mut ctx, t);
+                    let Some(next) = ctx.take_preempted() else { break };
+                    stops.push((next.target_pc, ctx.take_slice_spent(), cpu));
+                    ctx.arm_preemption(slice);
+                    t = next;
+                }
+                stops
+            };
+            assert!(run(false) == run(true), "accounting {accounting} slice {slice}: stops differ");
+        }
+    }
+}
+
+/// A host thread taking memory guards while a handler runs loops under the
+/// held gate: neither starves, and each guard's two writes land together.
+#[test]
+fn held_gate_gives_way_to_a_waiting_memory_guard() {
+    let f = function(A, |a| {
+        let mut top = a.create_label();
+        a.xor(ebx, ebx)?;
+        a.set_label(&mut top)?;
+        a.mov(eax, dword_ptr(esi))?;
+        a.add(ebx, dword_ptr(esi + 4))?;
+        a.mov(dword_ptr(esi + 8), eax)?;
+        a.dec(ecx)?;
+        a.jnz(top)?;
+        a.ret()
+    });
+    let (_lib, dispatch) =
+        compile_module_with("held-gate-host", vec![f], false, true, emit::opt::Passes::ALL, emit::Codegen { accounting: true });
+    let mut mem = Guest::new();
+    mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+    mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
+    mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+    let rt = Runtime::new(mem, dispatch);
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (host_rt, host_done) = (rt.clone(), done.clone());
+    let writer = std::thread::spawn(move || {
+        let mut guards = 0u32;
+        while !host_done.load(std::sync::atomic::Ordering::Relaxed) || guards < 2000 {
+            guards += 1;
+            let mut m = host_rt.memory();
+            assert_eq!(m.u32(DATA + 0x800).unwrap(), m.u32(DATA + 0x804).unwrap());
+            m.set_u32(DATA + 0x800, guards).unwrap();
+            m.set_u32(DATA + 0x804, guards).unwrap();
+        }
+        guards
+    });
+    let mut ctx = ExecCtx::new(rt.clone(), 1);
+    for _ in 0..20 {
+        let mut cpu = CpuAbi { esp: STACK, esi: DATA + 0x800, ecx: 200_000, ..CpuAbi::default() };
+        let t = Runner::default().run(&mut cpu, &mut ctx, A);
+        assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
+    }
+    done.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert!(writer.join().unwrap() >= 2000);
+    let m = rt.memory();
+    assert_eq!(m.u32(DATA + 0x800).unwrap(), m.u32(DATA + 0x804).unwrap());
+}
+
+/// How many of the image's inline accesses take the gate themselves, and
+/// how many follow another under the same hold. Static counts over the
+/// lifted image (a lower bound on sharing: a hold is taken to end with its
+/// block, though it lasts until a context call, an exit or a loop header).
+/// `cargo test -p emit --release --test perf image_gate_holds -- --ignored --nocapture`
+#[test]
+#[ignore = "reads the retail XBE (H2_XBE)"]
+fn image_gate_holds() {
+    use ir::{Intrinsic, Stmt};
+    let Some(path) = common::xbe_path() else {
+        common::skip("image_gate_holds", "no XBE (set H2_XBE)");
+        return;
+    };
+    let data = std::fs::read(path).unwrap();
+    let x = xbe::Xbe::parse(&data).unwrap();
+    let analysis = analyze::analyze(&x).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::ALL).unwrap();
+    // (accesses, gate takes) of a statement list; `held` carries across.
+    fn walk(stmts: &[Stmt], held: &mut bool, n: &mut [u64; 2]) {
+        for s in stmts {
+            match s {
+                Stmt::Load { .. } | Stmt::Store { .. } => {
+                    n[0] += 1;
+                    n[1] += u64::from(!*held);
+                    *held = true;
+                }
+                Stmt::Intrinsic { op: Intrinsic::ReadTsc, .. } | Stmt::Unsupported { .. } => *held = false,
+                Stmt::If { then, otherwise, .. } => {
+                    let (mut a, mut b) = (*held, *held);
+                    walk(then, &mut a, n);
+                    walk(otherwise, &mut b, n);
+                    *held = a && b;
+                }
+                // One trip stands for the loop.
+                Stmt::Repeat { body, .. } => walk(body, held, n),
+                _ => {}
+            }
+        }
+    }
+    let (mut n, mut blocks, mut with_access, mut histogram) = ([0u64; 2], 0u64, 0u64, [0u64; 6]);
+    for o in &owners {
+        for b in o.func.blocks.values() {
+            let mut held = false;
+            let before = n;
+            for i in &b.insns {
+                if i.atomic.is_some() {
+                    held = false;
+                    continue;
+                }
+                walk(&i.stmts, &mut held, &mut n);
+            }
+            blocks += 1;
+            let accesses = n[0] - before[0];
+            if accesses != 0 {
+                with_access += 1;
+                histogram[(accesses as usize).min(6) - 1] += 1;
+            }
+        }
+    }
+    println!("owners {}, blocks {blocks}, with accesses {with_access}", owners.len());
+    println!(
+        "accesses {}, gate takes {} ({:.1}%), sharing a hold {} ({:.1}%), {:.2} accesses per hold",
+        n[0],
+        n[1],
+        100.0 * n[1] as f64 / n[0] as f64,
+        n[0] - n[1],
+        100.0 * (n[0] - n[1]) as f64 / n[0] as f64,
+        n[0] as f64 / n[1] as f64
+    );
+    println!("blocks by accesses (1, 2, 3, 4, 5, 6+): {histogram:?}");
+    assert!(n[1] <= n[0]);
 }

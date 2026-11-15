@@ -21,7 +21,9 @@
 //! shared epilogue, which spills them to `CpuAbi`, so state is canonical
 //! whenever the runtime sees it. Memory goes through the ABI's checked
 //! the checked helpers or the opt-in gated inline RAM path (`h2fastmem.h`). XMM and FP
-//! state are read and written in `CpuAbi` directly. All arithmetic is
+//! state are read and written in `CpuAbi` directly. The inline path's gate
+//! is held across consecutive accesses and dropped (`H2_GATE_DROP`) before
+//! anything that takes the context, at every exit, and every few loop trips. All arithmetic is
 //! unsigned and fixed-width, through the total helpers in `h2gen.h`, so no
 //! IR operation can become C undefined behaviour.
 //!
@@ -719,6 +721,7 @@ impl Emitter<'_> {
                     // The counter is the runtime's; it cannot fail. Guest
                     // time may follow the accesses spent: settle first.
                     self.acc_settle(d, 0);
+                    self.line(d, "H2_GATE_DROP();");
                     self.line(d, format!("uint64_t t{} = h2shim_v1_rdtsc(ctx, {pc:#x}u);", dsts[0].id));
                 }
                 // In an x87 handler the wait shares the fail block: #MF
@@ -760,8 +763,12 @@ impl Emitter<'_> {
                     self.line(d, "uint32_t rfl_ = fl, rfd_ = fd; (void)rfl_; (void)rfd_;");
                     self.line(d, "for (;;) {");
                     self.line(d + 1, "if (!ecx) break;");
+                    // A long REP gives the RAM gate up every few trips.
+                    self.line(d + 1, "h2_gate_tick(h2_mem_, &h2g_);");
                     if *kind == RepKind::Rep && let Some(width) = rep_movs_width(body) {
                         let limit = if self.shape.accounting { "(h2left > h2acc ? h2left - h2acc : 0u)" } else { "UINT64_MAX" };
+                        // The bulk copy takes the gate itself.
+                        self.line(d + 1, "H2_GATE_DROP();");
                         self.line(d + 1, format!("uint32_t n_ = h2_fast_movs(h2_mem_, esi, edi, ecx, {width}u, H2_FLAG(10), {limit});"));
                         self.line(d + 1, "if (n_) {");
                         self.line(d + 2, format!("uint32_t delta_ = n_ * {width}u; if (H2_FLAG(10)) delta_ = 0u - delta_; esi += delta_; edi += delta_; ecx -= n_;"));
@@ -809,7 +816,7 @@ impl Emitter<'_> {
                     self.line(
                         d,
                         format!(
-                            "{{ {}uint32_t e_ = h2shim_v1_unsupported(ctx, {pc:#x}u, {}, {}); H2_STOP_EVENT({pc:#x}u, e_); }}",
+                            "{{ {}H2_GATE_DROP(); uint32_t e_ = h2shim_v1_unsupported(ctx, {pc:#x}u, {}, {}); H2_STOP_EVENT({pc:#x}u, e_); }}",
                             self.restore(),
                             c_string(mnemonic),
                             c_string(detail)

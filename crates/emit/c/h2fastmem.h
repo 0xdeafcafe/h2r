@@ -37,11 +37,32 @@ _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32
 #define H2_MEM_READ_SLOW h2abi_v1_read
 #define H2_MEM_WRITE_SLOW h2abi_v1_write
 #endif
+/* The gate word: bit 0 is the holder (C or a Rust memory guard), bit 1 a
+ * Rust guard waiting for it. C only ever takes a gate that is entirely
+ * clear and releases bit 0 alone, so a waiting guard is next: C's following
+ * access fails its try and blocks in the slow helper behind that guard. */
+#define H2_GATE_HELD 1u
+#define H2_GATE_WANTED 2u
+#define H2_GATE_RELEASE(m) ((void)__atomic_fetch_and(&(m)->gate, ~H2_GATE_HELD, __ATOMIC_RELEASE))
+/* A handler's hold on the gate, kept across consecutive inline accesses
+ * (h2_held_read/h2_held_write) instead of taking and releasing it for each.
+ * `held` is 0 when the gate is not held, else 1 plus the loop headers passed
+ * since it was taken. `pages`, `ram` and `watching` are the view read when
+ * it was taken: they cannot change while it is held, and are never used
+ * after it is dropped. The handler drops it (H2_GATE_DROP in h2gen.h)
+ * before every call that takes the context, on every way out, and after
+ * H2_GATE_TRIPS loop headers or as soon as a Rust guard wants it. */
+typedef struct H2Gate {
+    uint32_t held, watching;
+    const H2FastPage *pages;
+    uint8_t *ram;
+} H2Gate;
+#define H2_GATE_TRIPS 32u
 #if H2_FASTMEM
-#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); (void)h2_mem_
+#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {0, 0, NULL, NULL}; (void)h2_mem_
 #define H2_FAST_RELEASE() h2abi_v1_fast_release(ctx)
 #else
-#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; (void)h2_mem_
+#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {0, 0, NULL, NULL}; (void)h2_mem_
 #define H2_FAST_RELEASE() ((void)0)
 #endif
 
@@ -62,12 +83,12 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
     if (!__atomic_compare_exchange_n(&m->gate, &unlocked, 1u, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
     H2MemoryData *d = &m->data;
     if (!d->pages) {
-        __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE);
+        H2_GATE_RELEASE(m);
         return 0;
     }
     H2FastPage page = d->pages[addr >> 12];
     if (!(page.permissions & (write ? 2u : 1u)) || page.physical > 0x04000000u - 4096u) {
-        __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE);
+        H2_GATE_RELEASE(m);
         return 0;
     }
     uint8_t *ram = d->ram + page.physical + (addr & 4095u);
@@ -82,7 +103,7 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
     } else {
         memcpy(out, ram, width);
     }
-    __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE);
+    H2_GATE_RELEASE(m);
     H2_FAST_CHARGE(f);
     return 1;
 }
@@ -110,11 +131,11 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
     uint32_t unlocked = 0;
     if (!__atomic_compare_exchange_n(&m->gate, &unlocked, 1u, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
     H2MemoryData *d = &m->data;
-    if (!d->pages) { __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE); return 0; }
+    if (!d->pages) { H2_GATE_RELEASE(m); return 0; }
     H2FastPage sp = d->pages[src >> 12], dp = d->pages[dst >> 12];
     if (!(sp.permissions & 1u) || !(dp.permissions & 2u) ||
         sp.physical > 0x04000000u - 4096u || dp.physical > 0x04000000u - 4096u) {
-        __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE); return 0;
+        H2_GATE_RELEASE(m); return 0;
     }
     uint32_t from = sp.physical + so, to = dp.physical + doff, bytes = n * width;
     if (reverse) { from -= bytes - width; to -= bytes - width; }
@@ -122,7 +143,7 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
      * Compare physical spans: virtual aliases must not hide overlap. */
     if (from < to + bytes && to < from + bytes && from != to &&
         (reverse ? to < from : to > from)) {
-        __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE); return 0;
+        H2_GATE_RELEASE(m); return 0;
     }
     memmove(d->ram + to, d->ram + from, bytes);
     if (d->watching) {
@@ -131,7 +152,7 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
         if (word < d->dirty_lo) d->dirty_lo = word;
         if (word + 1u > d->dirty_hi) d->dirty_hi = word + 1u;
     }
-    __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE);
+    H2_GATE_RELEASE(m);
 #if !H2_ACCOUNTING
     uint64_t previous = f->accesses, charged = (uint64_t)n * 2u;
     f->accesses += charged;
@@ -142,6 +163,73 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
     return n;
 #else
     (void)f; (void)src; (void)dst; (void)count; (void)width; (void)reverse; (void)limit;
+    return 0;
+#endif
+}
+/* ---- Accesses under a held gate. A zero return means nothing was accessed
+ * and the caller must drop the gate (it may or may not be held) and take
+ * the ordinary helper, which keeps fault order and whole-span failure. */
+static inline int h2_gate_take(H2FastAccess *f, H2Gate *g) {
+    H2MemoryShared *m = f->memory;
+    uint32_t unlocked = 0;
+    if (!__atomic_compare_exchange_n(&m->gate, &unlocked, H2_GATE_HELD, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
+    if (!m->data.pages) {
+        H2_GATE_RELEASE(m);
+        return 0;
+    }
+    g->pages = m->data.pages;
+    g->ram = m->data.ram;
+    g->watching = m->data.watching;
+    g->held = 1u;
+    return 1;
+}
+static inline void h2_gate_drop(H2FastAccess *f, H2Gate *g) {
+    if (g->held) {
+        H2_GATE_RELEASE(f->memory);
+        g->held = 0u;
+    }
+}
+/* At a loop header: bound the hold, and give way to a waiting Rust guard. */
+static inline void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
+    if (g->held && (++g->held > H2_GATE_TRIPS
+                    || (__atomic_load_n(&f->memory->gate, __ATOMIC_RELAXED) & H2_GATE_WANTED))) {
+        H2_GATE_RELEASE(f->memory);
+        g->held = 0u;
+    }
+}
+#define H2_FAST_WIDTH_OK(width) ((width) == 1u || (width) == 2u || (width) == 4u || (width) == 8u || (width) == 10u || (width) == 16u)
+static inline int h2_held_read(H2FastAccess *f, H2Gate *g, uint32_t addr, uint32_t width, uint8_t *out) {
+#if H2_FASTMEM
+    if (!f || !H2_FAST_WIDTH_OK(width) || (addr & 4095u) > 4096u - width) return 0;
+    if (!g->held && !h2_gate_take(f, g)) return 0;
+    H2FastPage page = g->pages[addr >> 12];
+    if (!(page.permissions & 1u) || page.physical > 0x04000000u - 4096u) return 0;
+    memcpy(out, g->ram + page.physical + (addr & 4095u), width);
+    H2_FAST_CHARGE(f);
+    return 1;
+#else
+    (void)f; (void)g; (void)addr; (void)width; (void)out;
+    return 0;
+#endif
+}
+static inline int h2_held_write(H2FastAccess *f, H2Gate *g, uint32_t addr, uint32_t width, const uint8_t *value) {
+#if H2_FASTMEM
+    if (!f || !H2_FAST_WIDTH_OK(width) || (addr & 4095u) > 4096u - width) return 0;
+    if (!g->held && !h2_gate_take(f, g)) return 0;
+    H2FastPage page = g->pages[addr >> 12];
+    if (!(page.permissions & 2u) || page.physical > 0x04000000u - 4096u) return 0;
+    memcpy(g->ram + page.physical + (addr & 4095u), value, width);
+    if (g->watching) {
+        H2MemoryData *d = &f->memory->data;
+        uint32_t p = page.physical >> 12, word = p >> 6;
+        d->dirty[word] |= UINT64_C(1) << (p & 63u);
+        if (word < d->dirty_lo) d->dirty_lo = word;
+        if (word + 1u > d->dirty_hi) d->dirty_hi = word + 1u;
+    }
+    H2_FAST_CHARGE(f);
+    return 1;
+#else
+    (void)f; (void)g; (void)addr; (void)width; (void)value;
     return 0;
 #endif
 }

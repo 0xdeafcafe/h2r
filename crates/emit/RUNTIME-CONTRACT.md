@@ -46,7 +46,25 @@ must adopt the v2 table and forward both fast callbacks to measure inline RAM.
 The emitted ordinary-access helpers try the shared atomic gate with acquire
 ordering. While holding it they validate the one-page span, access permission
 and physical RAM bounds, then copy bytes. Stores mark physical dirty bits.
-The gate is released before every Rust helper and on every fast-path exit.
+
+A handler keeps the gate across consecutive accesses (`H2Gate`,
+`h2_held_read`/`h2_held_write`) with the page table, RAM pointer and watch
+flag it read when it took it; none of them can change while it is held. It
+drops the gate (`H2_GATE_DROP`) before every call that takes the context
+(the slow accessors, atomics, `h2shim_v1_*`, `h2abi_v1_charge`), on every
+way out, after `H2_GATE_TRIPS` (32) loop headers or REP trips, and at the
+first loop header where a Rust guard is waiting. Helpers that take only
+`CpuAbi` or `X87Abi` (x87, SSE, the other intrinsics) cannot reach guest
+memory or block on it, and may run under the gate. A new helper that takes
+the context must be preceded by `H2_GATE_DROP()`, or it deadlocks on its
+first memory guard.
+
+The gate word has two bits: 1, held (by C or by a Rust guard), and 2, a
+Rust guard is waiting. C takes the gate only when the word is 0 and releases
+by clearing the held bit alone (`fetch_and(~1)`). A guard that finds it
+held sets the waiting bit, so C's next attempt fails, takes the slow helper
+and blocks on the Guest mutex behind that guard: a handler that retakes the
+gate at once cannot starve a host thread.
 Only full virtual pages with aligned physical backing enter the fast table;
 partial mappings and shifted physical backing retain the Rust path.
 A failed fast check performs no access and falls back to the ordinary helper,
@@ -57,7 +75,8 @@ Rust memory guards use that same gate and publish pending C dirty pages before
 HLE can inspect Guest. Page pointers and permissions may be read only while
 the gate is held. The C view, RAM addresses and page-table pointers must never
 be retained after the invocation or used as accessor buffers. There is no
-unlocked C RAM access, and no gate is held across an invocation or callback.
+unlocked C RAM access, and no gate is held across an invocation or a
+callback that takes the context.
 
 Each successful fast access increments its context-local count. The access
 that reaches the supplied budget atomically raises SLICE on the existing
