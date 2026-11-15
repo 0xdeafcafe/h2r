@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check]
-  h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi]
+  h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi] [--no-mappack]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
 --data defaults to $TMPDIR/h2boot-data (host root of the hard-disk partitions).
@@ -14,6 +14,8 @@ const USAGE: &str = "usage:
   run leaves behind change what the next run does, so runs compared frame
   for frame need it (and must not share a data directory while running).
   It refuses to when the disc, image or --out lies inside what it would empty.
+`run` installs a mappack.iso found next to the disc into --data (once; a warning
+never stops the run). --no-mappack or H2_MAPPACK=0 skips it (docs/map-pack.md).
 `run` builds first when the dylib is missing or was built from another
 image or generator (its .stamp). `build --check` builds nothing: it exits 0
 when --out's dylib is current for this h2 and the image, 3 otherwise.";
@@ -33,6 +35,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut xapi = true;
     let mut fresh = false;
     let mut check = false;
+    let mut no_mappack = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -47,6 +50,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--no-bink" => bink = false,
             "--no-dsound" => dsound = false,
             "--no-xapi" => xapi = false,
+            "--no-mappack" => no_mappack = true,
             "--slices" => slices = val()?.parse()?,
             "--transfers" => transfers = val()?.parse()?,
             "-h" | "--help" => bail!("{USAGE}"),
@@ -75,6 +79,9 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
         for d in fresh_data_dirs(&data, &[&disc, &out])? {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
+    }
+    if crate::mappack_cmd::auto_enabled(no_mappack) {
+        crate::mappack_cmd::auto_install(&disc, &data);
     }
     let r = boot::run(
         &xbe,

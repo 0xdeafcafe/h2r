@@ -38,7 +38,8 @@ builds each new commit in its own worktree under the cache dir (default
 ~/Library/Caches/h2recomp/follow), and shows a banner in the game window.
 F5 on \"Update ready\" restarts into the new build; F6 hides the banner.
 The game's data dir stays the same unless --fresh-data. Closing the window
-ends it.";
+ends it. The child installs a mappack.iso beside the disc into its data dir
+as `h2 play` does (--no-mappack and H2_MAPPACK=0 reach it).";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
@@ -2758,5 +2759,14 @@ fn main() {
         let (disc, ..) = play_paths(&args("--bindings keys.toml disc.iso"));
         assert_eq!(disc, Some(PathBuf::from("disc.iso")));
         assert!(parse_args(args("--follow --follow-status x")).is_err());
+    }
+
+    #[test]
+    fn no_mappack_reaches_the_child_with_the_same_disc() {
+        let args = |s: &str| s.split(' ').map(String::from).collect::<Vec<_>>();
+        let f = parse_args(args("--follow disc/halo2.iso --no-mappack")).unwrap();
+        assert_eq!(f.play, args("disc/halo2.iso --no-mappack"));
+        let (disc, ..) = play_paths(&f.play);
+        assert_eq!(disc, Some(PathBuf::from("disc/halo2.iso")));
     }
 }

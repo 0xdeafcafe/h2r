@@ -268,6 +268,116 @@ pub fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Automatic install for `h2 play` and `h2 run`.
+
+/// The name the docs tell people to give the map pack disc.
+const AUTO_NAME: &str = "mappack.iso";
+/// Beside the data root's own directories: what was installed, from which
+/// file, for which base disc.
+const STAMP: &str = "mappack.stamp";
+
+/// Whether the automatic install runs: not with `--no-mappack`, and not with
+/// `H2_MAPPACK` set to `0`, `false`, `no` or `off`.
+pub fn auto_enabled(no_flag: bool) -> bool {
+    auto_enabled_with(no_flag, std::env::var("H2_MAPPACK").ok().as_deref())
+}
+
+fn auto_enabled_with(no_flag: bool, env: Option<&str>) -> bool {
+    let off = env.is_some_and(|v| ["0", "false", "no", "off"].contains(&v.trim().to_ascii_lowercase().as_str()));
+    !no_flag && !off
+}
+
+/// Whether `path` is a disc with the map pack's content layout. Reads the
+/// disc's header and directory tables only.
+fn looks_like_map_pack(path: &Path) -> bool {
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let Ok(mut iso) = Xiso::open(std::io::BufReader::new(f)) else { return false };
+    iso.entries().is_ok_and(|e| Plan::from_entries(&e).is_ok())
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+}
+
+/// The map pack disc beside the game disc: `mappack.iso` (any case), else
+/// the first other `.iso` (by name) that has the map pack's layout.
+pub fn discover(game_disc: &Path) -> Option<PathBuf> {
+    let dir = match game_disc.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let mut isos: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("iso")))
+        .filter(|p| p.is_file() && !same_file(p, game_disc))
+        .collect();
+    isos.sort();
+    let named = |p: &PathBuf| p.file_name().is_some_and(|n| n.eq_ignore_ascii_case(AUTO_NAME));
+    if let Some(i) = isos.iter().position(named) {
+        return Some(isos.swap_remove(i));
+    }
+    isos.into_iter().find(|p| looks_like_map_pack(p))
+}
+
+fn stamp_text(iso: &Path, base_version: u32) -> Result<String> {
+    let m = std::fs::metadata(iso)?;
+    let mtime = m.modified()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    Ok(format!("size={} mtime={mtime} base={base_version:#x}\n", m.len()))
+}
+
+/// Whether this disc, in this state, was already installed into `data`.
+fn already_installed(data: &Path, iso: &Path, base_version: u32) -> bool {
+    let content = vfs::Config::new(data, HALO2_TITLE).title_data_dir().join(vfs::CONTENT_DIR);
+    content.is_dir()
+        && stamp_text(iso, base_version).is_ok_and(|want| std::fs::read_to_string(data.join(STAMP)).is_ok_and(|have| have == want))
+}
+
+/// Looks for the map pack beside `game_disc` and installs it into `data`
+/// when it is not there yet. Prints one line; never fails: a problem is a
+/// warning and the game starts anyway.
+pub fn auto_install(game_disc: &Path, data: &Path) {
+    match try_auto(game_disc, data) {
+        Ok(Some(line)) => println!("map pack: {line}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("map pack: not installed: {e:#}"),
+    }
+}
+
+fn try_auto(game_disc: &Path, data: &Path) -> Result<Option<String>> {
+    let Some(iso_path) = discover(game_disc) else { return Ok(None) };
+    let name = iso_path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+    let bytes = crate::load_xbe(game_disc)?;
+    let x = xbe::Xbe::parse(&bytes)?;
+    if x.certificate.title_id != HALO2_TITLE {
+        return Ok(None);
+    }
+    let base = x.certificate;
+    if already_installed(data, &iso_path, base.version) {
+        return Ok(Some("already installed".into()));
+    }
+    let mut iso = crate::open_iso(&iso_path)?;
+    let plan = Plan::from_entries(&iso.entries()?).with_context(|| name.clone())?;
+    let has_update = plan.update_for(base.version).is_some();
+    // Overwrite: whatever is there came from this import or an older one.
+    let out = OutDir::new(data, true)?.protecting(&iso_path);
+    install(&mut iso, &plan, &out, data, has_update.then_some(&base), false)?;
+    std::fs::write(data.join(STAMP), stamp_text(&iso_path, base.version)?)?;
+    let maps = plan
+        .packages
+        .iter()
+        .flat_map(|p| &p.files)
+        .filter(|f| f.path.to_ascii_lowercase().ends_with(".map"))
+        .count();
+    Ok(Some(if has_update {
+        format!("installed {maps} maps and title update from {name}")
+    } else {
+        format!("installed {maps} maps from {name} (no title update for this disc's version)")
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -487,6 +597,146 @@ mod tests {
         assert!(check_update(&xbe(HALO2_TITLE, 0x3), &base(3)).is_err(), "the base itself is not an update");
         assert!(check_update(&xbe(0x4D53_80CD, 0x303), &base(3)).is_err());
         assert!(check_update(b"not an xbe", &base(3)).is_err());
+    }
+
+    /// A temp dir with links resolved (`/var` is a symlink on macOS).
+    fn real_scratch(name: &str) -> PathBuf {
+        scratch(name).canonicalize().unwrap()
+    }
+
+    /// A game "disc": a raw XBE is enough for `load_xbe`.
+    fn game(dir: &Path, title: u32, version: u32) -> PathBuf {
+        let p = dir.join("halo2.xbe");
+        fs::write(&p, xbe(title, version)).unwrap();
+        p
+    }
+
+    #[test]
+    fn auto_install_can_be_switched_off() {
+        assert!(auto_enabled_with(false, None));
+        assert!(auto_enabled_with(false, Some("1")));
+        assert!(auto_enabled_with(false, Some("")));
+        assert!(!auto_enabled_with(true, None));
+        for v in ["0", "false", "No", " off "] {
+            assert!(!auto_enabled_with(false, Some(v)), "{v}");
+        }
+    }
+
+    #[test]
+    fn discover_takes_mappack_iso_in_any_case() {
+        for name in ["mappack.iso", "MapPack.ISO", "MAPPACK.iso"] {
+            let d = real_scratch("disc-case");
+            let g = d.join("halo2.iso");
+            fs::write(&g, b"game").unwrap();
+            fs::write(d.join(name), b"not even an xiso").unwrap();
+            let found = discover(&g).unwrap();
+            assert_eq!(found.file_name().unwrap(), name);
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    #[test]
+    fn discover_recognises_another_iso_by_layout_and_skips_the_rest() {
+        let d = real_scratch("disc-layout");
+        let g = d.join("halo2.iso");
+        fs::write(&g, disc()).unwrap(); // the game disc itself is never a candidate
+        fs::write(d.join("a-junk.iso"), vec![7u8; 100]).unwrap();
+        fs::write(d.join("b-empty.iso"), b"").unwrap();
+        fs::write(d.join("mappack.txt"), disc()).unwrap();
+        fs::write(d.join("mappack.iso.part"), disc()).unwrap();
+        fs::create_dir(d.join("dir.iso")).unwrap();
+        assert_eq!(discover(&g), None);
+
+        // A valid disc with another layout: no content packages.
+        let mut other = disc();
+        other[34 * SECTOR + 14..34 * SECTOR + 17].copy_from_slice(b"xyz");
+        fs::write(d.join("c-other.iso"), other).unwrap();
+        assert_eq!(discover(&g), None);
+
+        fs::write(d.join("d-pack.ISO"), disc()).unwrap();
+        assert_eq!(discover(&g).unwrap(), d.join("d-pack.ISO"));
+
+        // The name wins over a layout match.
+        fs::write(d.join("mappack.iso"), b"named").unwrap();
+        assert_eq!(discover(&g).unwrap(), d.join("mappack.iso"));
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn discover_in_an_empty_or_missing_directory() {
+        let d = real_scratch("disc-none");
+        assert_eq!(discover(&d.join("halo2.iso")), None);
+        assert_eq!(discover(&d.join("nope/halo2.iso")), None);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn auto_installs_once_then_says_already_installed() {
+        let d = real_scratch("auto");
+        let data = d.join("data");
+        let g = game(&d, HALO2_TITLE, 3);
+        assert_eq!(try_auto(&g, &data).unwrap(), None, "no map pack beside the disc");
+        assert!(!data.exists());
+
+        fs::write(d.join("MAPPACK.ISO"), disc()).unwrap();
+        assert_eq!(
+            try_auto(&g, &data).unwrap().unwrap(),
+            "installed 2 maps and title update from MAPPACK.ISO"
+        );
+        let cfg = vfs::Config::new(&data, HALO2_TITLE);
+        let one = cfg.content_dir(0x4D53_0064_0000_0001);
+        assert_eq!(fs::read(one.join("alpha.map")).unwrap(), vec![0xA5; 2000]);
+        assert!(data.join("updates/4D530064/00000303/default.xbe").is_file());
+        assert_eq!(try_auto(&g, &data).unwrap().unwrap(), "already installed");
+
+        // The maps are gone (a fresh data dir): installs again, over the stamp.
+        fs::remove_dir_all(data.join("disk")).unwrap();
+        assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed 2 maps"));
+        assert!(one.join("alpha.map").is_file());
+
+        // A different file at the same name (size changes): installs again.
+        let mut bigger = disc();
+        bigger.extend([0u8; SECTOR]);
+        fs::write(d.join("MAPPACK.ISO"), bigger).unwrap();
+        assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed"));
+        assert_eq!(try_auto(&g, &data).unwrap().unwrap(), "already installed");
+
+        // Another base disc version needs its own update.
+        let g4 = game(&d, HALO2_TITLE, 4);
+        assert!(try_auto(&g4, &data).unwrap().unwrap().starts_with("installed"));
+        assert!(data.join("updates/4D530064/00000304/default.xbe").is_file());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn auto_installs_maps_without_an_update_for_an_unknown_base_version() {
+        let d = real_scratch("auto-noupdate");
+        let data = d.join("data");
+        let g = game(&d, HALO2_TITLE, 9);
+        fs::write(d.join("mappack.iso"), disc()).unwrap();
+        assert_eq!(
+            try_auto(&g, &data).unwrap().unwrap(),
+            "installed 2 maps from mappack.iso (no title update for this disc's version)"
+        );
+        assert!(!data.join("updates").exists());
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn auto_ignores_other_games_and_survives_a_bad_map_pack() {
+        let d = real_scratch("auto-bad");
+        let data = d.join("data");
+        fs::write(d.join("mappack.iso"), disc()).unwrap();
+        let other = game(&d, 0x4D53_80CD, 3);
+        assert_eq!(try_auto(&other, &data).unwrap(), None);
+        assert!(!data.exists());
+
+        let g = game(&d, HALO2_TITLE, 3);
+        fs::write(d.join("mappack.iso"), b"garbage").unwrap();
+        assert!(try_auto(&g, &data).is_err());
+        auto_install(&g, &data); // warns, does not panic
+        assert!(!data.join(STAMP).exists());
+        fs::remove_dir_all(d).unwrap();
     }
 
     #[test]

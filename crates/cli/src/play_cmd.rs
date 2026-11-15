@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
-          [--input-timeline FILE] [--frame-stats] [--no-watermark]
+          [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
           [--icons auto|xbox|xbox360|playstation|keyboard]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
@@ -37,6 +37,9 @@ branch, build time, fps, frame time, draws, map, renderer) runs along the
 bottom of the picture; F3 toggles it, --no-watermark or H2_WATERMARK=0 turns
 it off. --input-timeline plays an
 input crate timeline (docs/input.md) on guest time instead of live input.
+A mappack.iso next to the disc (or another .iso there with the map pack's
+layout) is installed into --data on the way in, once: a warning never stops
+the game. --no-mappack or H2_MAPPACK=0 skips it (docs/map-pack.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
@@ -257,6 +260,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut audio = true;
+    let mut no_mappack = false;
     let mut follow_status = None;
     let mut icons: Option<font::icons::IconChoice> = None;
     let mut frame_stats = timeline::phase::Config::from_env();
@@ -303,6 +307,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--nearest" => config.filter = app::Filter::Nearest,
             "--fullscreen" => config.fullscreen = true,
             "--no-audio" => audio = false,
+            "--no-mappack" => no_mappack = true,
             "--no-gamepads" => config.gamepads = false,
             "--no-vsync" => config.vsync = false,
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
@@ -362,6 +367,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     if needs_build(&xbe, &lib) {
         let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
         boot::build(&xbe, &out, jobs)?;
+    }
+    if crate::mappack_cmd::auto_enabled(no_mappack) {
+        crate::mappack_cmd::auto_install(&disc, &data);
     }
     let opts = boot::RunOpts {
         disc,

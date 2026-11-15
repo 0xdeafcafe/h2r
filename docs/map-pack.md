@@ -1,5 +1,8 @@
 # The Multiplayer Map Pack disc
 
+To install it: put the map pack ISO next to `halo2.iso` as `mappack.iso`.
+`h2 play` and `h2 run` do the rest at start-up ([section 4](#4-automatic-install)).
+
 Status: `h2 import-mappack` installs the disc's content into the emulated
 hard disk and keeps its title update aside. **The new maps won't show up in
 the game yet.** Only the title update reads their map list, and we can't run
@@ -127,7 +130,44 @@ To be confirmed once the update runs:
   hashes in it. If it does, the files have to be copied byte for byte, which
   is what we do.
 
-## 4. `h2 import-mappack`
+## 4. Automatic install
+
+`h2 play` and `h2 run` look in the directory of the game disc you pass
+(`disc/` for `disc/halo2.iso`) before starting:
+
+1. `mappack.iso`, in any case, is the map pack.
+2. Failing that, any other `.iso` there whose directory tree has the map pack
+   layout (content packages under `/demos/dlc/`, each with a
+   `ContentMeta.xbx`) is. Only the disc's header and directory tables are
+   read, so an unrelated image costs a few reads. The game disc itself is
+   never a candidate.
+
+If one is found and isn't installed yet, it runs the same import as
+`h2 import-mappack` (with the update for your disc, and overwriting an older
+import) and prints one line, such as
+`map pack: installed 9 maps and title update from mappack.iso`. When this
+disc's version has no update on the map pack, only the maps are installed
+and the line says so. Otherwise it prints `map pack: already installed`.
+
+"Installed" means `<data>/mappack.stamp` records the ISO's size, its
+modification time and the base disc's certificate version, and
+`<data>/disk/Partition1/TDATA/4D530064/$c` still exists. Replace the ISO, change
+the game disc version, or empty the data dir (`--fresh-data`), and the next
+start installs again.
+
+It never stops the game from starting: a problem is printed as
+`map pack: not installed: <why>` and the game runs on. `--no-mappack` or
+`H2_MAPPACK=0` (also `false`, `no`, `off`) skips the check.
+
+`h2 play --follow` runs `h2 play` as a child with the same disc path and
+`--data`, so the followed build does the install itself; `--no-mappack`
+passes through. With `--fresh-data` the data dir is emptied at every launch,
+so every launch installs again (about 430 MB).
+
+## 5. `h2 import-mappack`
+
+The manual path, for a map pack ISO kept elsewhere or to see what would be
+written.
 
 ```sh
 cargo h2 import-mappack ~/Downloads/<map pack>.iso
@@ -195,7 +235,7 @@ holds a single record with an empty name, which the reader used to list as
 `h2 extract` refused the whole disc as having an unsafe path. Nameless
 records are now skipped.
 
-## 5. What's left before the maps can be played
+## 6. What's left before the maps can be played
 
 1. **Run the update** ([title-updates.md](title-updates.md)): an address map
    from 1.0 to `0x303`, hooks placed through it, and `--image` so `h2 play`
