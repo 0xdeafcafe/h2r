@@ -27,6 +27,7 @@ pub mod shim;
 pub mod speaker_row;
 pub mod speaker_setting;
 pub mod sse;
+pub mod sweep_diag;
 pub mod stopgaps;
 pub mod trace;
 pub mod wrappers;
