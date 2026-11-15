@@ -192,6 +192,11 @@ URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
 
+With the embedded server it also prints a one-use link
+(`/signin#once=…`, loopback only, ten minutes) that signs this machine's
+browser in as the playing account, an admin there for the session; see
+[live-admin.md](live-admin.md) §4.
+
 Before starting, it builds the web app (`bun install --frozen-lockfile`,
 `bun run build`) when `web/dist` is missing or was built from a different
 `web/` tree (`web/dist/.h2-web-tree` records it; with uncommitted changes
@@ -550,8 +555,8 @@ stable user array, task handles and QoS headers. Tokens advance without reuse,
 even after cleanup, so stale handles cannot name later tasks. Exhaustion returns
 out-of-memory rather than growing indefinitely.
 
-All 130 named boundary targets are registered when enabled: 93 have implemented
-results, including deliberate empty views or failed tasks, and 37 remain named
+All 130 named boundary targets are registered when enabled: 111 have implemented
+results, including deliberate empty views or failed tasks, and 19 remain named
 stops. The menu audit and remaining-stop list appear below. A stop reports
 `unimplemented Live API <name>` before reading arguments or executing the linked
 library. There is no silent fallback to XONLINES. Tests establish these API and
@@ -831,7 +836,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling uses the server-backed title inbox above, or count 0 without a server. |
 
-These 37 entries still stop by API name because their backend behavior is not
+These 19 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -839,17 +844,15 @@ listed API name.
 | Prefix | Remaining suffixes |
 |---|---|
 | `XOnline` | `TitleUpdate` |
-| `XOnlineMatch` | `SessionCreate`, `SessionUpdate`, `SessionGetInfo`, `SessionDelete`, `SessionFindFromID`, `Search`, `SearchGetResults`, `SearchParse`, `SearchResultsLen` |
-| `XOnlineFriends` | `Remove`, `GameInvite`, `AnswerRequest`, `AnswerGameInvite`, `JoinGame`, `RequestEx`, `RequestByNameEx` |
-| `XOnlineGameInvite` | `Send`, `Answer` |
+| `XOnlineFriends` | `Remove`, `GameInvite`, `AnswerRequest`, `AnswerGameInvite`, `JoinGame` |
+| `XOnlineGameInvite` | `Answer` |
 | `XOnlineMutelist` | `Add`, `Remove` |
-| `XOnlineTeam` | `Create`, `Delete`, `MemberSetProperties`, `MemberRemove`, `MemberRecruit`, `MemberRecruitByName`, `MemberAnswerRecruit` |
-| `XOnlineMessage` | `Create`, `Destroy`, `SetProperty`, `Send` |
+| `XOnlineTeam` | `Create`, `Delete`, `MemberSetProperties`, `MemberRemove`, `MemberAnswerRecruit` |
 | `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
 | `XNet` | `TsAddrToInAddr` |
 
-Matchmaking/session registration, invitations, clans, feedback storage and remote
-friend presence are future work. The HTTP worker does not turn these into fake
+Server-backed session discovery, invitation delivery, clans, feedback storage
+and remote friend presence are future work. The HTTP worker does not turn these into fake
 successful operations. The current proof covers the API boundary and local host
 transport; it does not establish an end-to-end online match.
 
@@ -1018,3 +1021,132 @@ runs the hook through the real Runner with the fixture module's leaf
 standing in for the fill, and checks that only error `0x23` changes, that
 install refuses to wrap an existing override and skips a missing original,
 and that local-only Live installs nothing. They need no XBE or game build.
+
+## Client HLE: outgoing messages
+
+The observed stop `0x003a9d8e` is reached from `0x0008f070`, through
+`0x0008ef90` and the UI send action `0x002b7e69`. This is the by-name social
+message composer. Its internal type 1 builds a Live type-2 friend request; its
+internal type 2 builds a Live type-4 clan recruitment message, with the team
+context flag. Both can carry text/language and voice data/codec/duration. The
+backtrace alone does not include the type field, so it does not distinguish
+these two actions. This path does not send feedback or the MOTD/hopper files.
+The shared composer also builds type-3 game invitations and title-custom mail.
+
+MessageCreate (`0x003a9d8e`) now returns an opaque guest handle. It retains the
+message type, 64-bit context, flags and expiry. Property/count sizes are allocation
+hints rather than hard limits on later setters. MessageSetProperty (`0x003a9dc3`)
+validates and owns typed values: NULL, 8/16/32/64-bit integers, UTF-16 strings,
+FILETIME, binary, attachment, BOOL and string ID. Replacing a property's identifier
+replaces its stored value. Inline details are limited to 4096 bytes; voice/blob
+attachments are copied into host-owned memory, bounded to 1 MiB each and 16 per
+message. The non-exportable attachment flag is retained. Directory attachments
+are not read from the host filesystem and return INVALID_ARGUMENT. Guest pointer
+faults and rejected values leave the existing builder unchanged.
+
+MessageSend (`0x003ab060`) snapshots the message and its array of 12-byte XUID
+recipients. The composer uses typed send APIs too: FriendsRequestEx and
+FriendsRequestByNameEx (`0x003a835d`/`0x003a838a`), TeamMemberRecruit and
+TeamMemberRecruitByName (`0x003a8399`/`0x003a83d4`), and GameInviteSend
+(`0x003a8321`). These capture the same owned message with the recipient XUID or
+bounded ANSI gamertag, plus team/member properties or session ID as appropriate.
+A null optional message on a typed send becomes an empty message of that type.
+The sender must be signed in. No account lookup or delivery occurs yet.
+
+Every accepted send returns a task whose Continue result is
+XONLINETASK_S_SUCCESS (`0x001500f0`), rather than the running value S_OK. The game
+pumps these tasks through `0x0006c450` and `0x0006c670`; the completion callback
+`0x0008f960` can finish and dispose its message. No SendGetResults or
+SendGetProgress entry is used in this verified boundary. MessageDestroy
+(`0x003a9db8`) frees the builder; TaskClose frees only the task. Each accepted
+send is captured once, independently of later edits, destruction or task pumps.
+
+`Hle::message_sends()` snapshots the accepted sends and
+`Hle::drain_message_sends()` transfers them to a future server-event forwarder.
+Records retain sequence/time, sender, send kind, recipients and built properties;
+`H2_BOOT_VERBOSE=1` prints these as debug diagnostics. They contain no account
+signing key or guest pointer. Captures survive cleanup/sign-out, while those
+operations invalidate live builders and tasks. The local journal holds up to
+256 sends and an 8 MiB value budget; builders have a separate 8 MiB budget and
+64-handle limit. Exhaustion returns OUT_OF_MEMORY without discarding earlier
+captures. Destroying builders and draining captures free the respective budgets.
+Captures are in memory only. A successful task means accepted locally; it does
+not establish delivery, friendship, clan membership or an accepted invitation.
+
+Synthetic guest-stack tests cover all nine entries, the by-name composer flow,
+all property types, packed XUID/member layouts, successful tasks, copied
+ownership, validation/fault atomicity, destruction, cleanup and bounded journals.
+They use no XBE and do not run the title.
+
+## Client HLE: local sessions and empty searches
+
+This implements the local host/search half of
+[live-matchmaking.md](live-matchmaking.md) sections 1.1, 1.2 and 4. It does not
+implement the proposed server session API, shared discovery, joins or a matcher.
+The observed playlist host stop was `0x003a06a8`, called by `0x0008fcc0` from
+`0x00072e40`. All nine Match boundary entries now return checked local results.
+
+SessionCreate accepts the four slot counts and owns the supplied attribute
+values in `sessions.rs`. XONLINE_ATTRIBUTE is 16 bytes: ID, changed BOOL, then an
+eight-byte union. Its ID datatype bits select a 64-bit integer, a UTF-16 string
+pointer, a blob pointer/length, or NULL. Strings are bounded to 400 UTF-16 units
+and blobs to 800 bytes. The local backend supports 64 attributes per session and
+32 simultaneous advertisements. Nested buffers are copied during the call;
+invalid data or pointer faults cannot partially advertise or update a session.
+Create consumes all attributes; Update consumes only changed attributes. On
+success both clear the supplied changed flags, matching the retail request
+serializer at `0x003b396e`. NULL clears the corresponding value. Updates replace
+slot counts and merge changed values; no-op updates leave the revision alone.
+
+Creation owns a new random eight-byte session ID and sixteen-byte exchange key.
+The ID has the Live online-peer prefix (`0x80` in its upper nibble). Repeated
+SessionGetInfo calls on its task return that same pair; updates preserve it.
+The retail GetInfo wrapper `0x0008fd90` retrieves the ID/key, then calls
+XNetGetTitleXnAddr for the separate host address. On host completion the call at
+`0x00072f39` passes the pair through key-registration wrapper `0x0007a920` before
+QoS listening. XNetCreateKey's separate local/System Link path is not a source
+of the Live session pair. The HLE therefore does not pre-register or replace an
+existing XNet key. The returned pair works with the existing XNetRegisterKey and
+address conversion APIs.
+
+Create, Update and Delete return tasks whose Continue result is
+XONLINETASK_S_SUCCESS (`0x001500f0`). Closing a create/update task leaves its
+advertisement alive; Delete removes it and completes independently. Unknown IDs
+return MATCH_INVALID_SESSION_ID (`0x80155100`). Sign-out/cleanup removes all
+advertisements and invalidates their tasks. `Hle::local_sessions()` exposes owned
+snapshots containing users, address, slots, attributes and revision, with no
+exchange key. `H2_BOOT_VERBOSE=1` logs changes/deletes. The exchange key is never
+included in these debug records.
+
+SearchResultsLen follows the retail capacity formula at `0x003b32f9`: 92 bytes
+plus the requested row count times an 84-byte row header and each column's
+eight-byte overhead/value capacity. Integer capacity is eight bytes; strings use
+twice the declared character capacity plus two; blobs use their declared byte
+capacity plus two. Invalid or excessive capacities return zero in this DWORD
+slot instead of a large error value. The local limits are 1000 rows, 64 columns
+and 16 MiB. The title's procedure-1 wrapper at `0x0008fa80` requests up to 50
+rows, builds positional integer/NULL query parameters, and sizes seven result
+columns before Search.
+
+Search validates and copies the query during the call, without consuming its
+changed flags. It completes successfully with no rows. SearchGetResults checks
+both output words, then writes a null array pointer and count zero. FindFromID
+uses the same successful empty view, including for locally advertised IDs; local
+advertisements are not exposed as discoverable peers in this milestone. Thus
+`0x0008fb30` skips the parse/candidate loop and the game's empty-search path can
+choose to host. SearchParse matches the retail early return for an empty
+84-byte record (zero attribute count), leaving the destination untouched. No
+result record is issued here. A nonempty foreign record returns
+MATCH_INVALID_RESULT_COL rather than interpreting unverified columns.
+
+The sessions module is the seam for later background server operations. Its
+owned session/attribute types are independent of guest pointers, and complete
+search tasks are separate from advertisements. This milestone performs no
+network discovery or server writes. It lets the host/search API path complete;
+it does not prove a playlist starts a match or bypass ranked arbitration. The
+remaining optional menu/arbitration stops are still listed above.
+
+Synthetic guest-stack tests cover all nine APIs, exact stack cleanup, typed
+attributes and dirty flags, stable IDs/keys, XNet key registration, full lifecycle,
+empty search/find results, capacity math, pointer-fault atomicity, cleanup and
+advertisement limits. The tests do not load an XBE or run the game.
