@@ -18,6 +18,11 @@
 //!   `draw-K-sI.bin` and `draw-K-idx.bin` (u32 LE), and its textures as
 //!   the IDs above.
 //!
+//! - `snap-K.bin`: with `H2_BOOT_CAPTURE_SNAP=K[-L][,...]`, the colour
+//!   target read back (guest bytes, `read_surface`) after draw K;
+//! - `H2_BOOT_CAPTURE_SKIP=K[-L][,...]` drops those draws, to see what
+//!   each contributes.
+//!
 //! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -27,6 +32,42 @@ use std::sync::{Arc, Mutex};
 use d3d::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
+
+/// Presents so far, for timelines keyed on frames (`H2_BOOT_INPUT`).
+static PRESENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Presents seen by any [`DiagBackend`] so far.
+pub fn presents() -> u64 {
+    PRESENTS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Wall-clock time of every present, for the frame-rate report.
+static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
+
+/// Wall-clock frame rate: presents per second over the run since `start`,
+/// and over the last `tail` presents with their mean, median and worst
+/// frame time. `None` before two presents.
+pub fn frame_rate(start: std::time::Instant, tail: usize) -> Option<String> {
+    let times = PRESENT_TIMES.lock().unwrap();
+    let n = times.len();
+    if n < 2 {
+        return None;
+    }
+    let total = times[n - 1].duration_since(start).as_secs_f64();
+    let from = n.saturating_sub(tail + 1);
+    let mut gaps: Vec<f64> = times[from..].windows(2).map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1e3).collect();
+    let span: f64 = gaps.iter().sum();
+    gaps.sort_by(f64::total_cmp);
+    Some(format!(
+        "frames: {n} presents in {total:.1}s ({:.2} fps); last {}: {:.2} fps, frame ms mean {:.0} median {:.0} max {:.0}",
+        n as f64 / total,
+        gaps.len(),
+        gaps.len() as f64 * 1e3 / span,
+        span / gaps.len() as f64,
+        gaps[gaps.len() / 2],
+        gaps[gaps.len() - 1],
+    ))
+}
 
 /// What the wrapper saw over the run.
 #[derive(Default)]
@@ -72,6 +113,21 @@ struct Capture {
     frame: u64,
     draws: u64,
     writes: u64,
+    snaps: BTreeSet<u64>,
+    skips: BTreeSet<u64>,
+}
+
+/// `K[-L][,...]` as a set of draw indices.
+fn draw_set(var: &str) -> BTreeSet<u64> {
+    let spec = std::env::var(var).unwrap_or_default();
+    let mut set = BTreeSet::new();
+    for item in spec.split(',').map(str::trim).filter(|i| !i.is_empty()) {
+        let (a, b) = item.split_once('-').unwrap_or((item, item));
+        if let (Ok(a), Ok(b)) = (a.trim().parse::<u64>(), b.trim().parse::<u64>()) {
+            set.extend(a..=b);
+        }
+    }
+    set
 }
 
 impl Capture {
@@ -105,7 +161,7 @@ impl<B> DiagBackend<B> {
             let dir = std::path::PathBuf::from(d);
             std::fs::create_dir_all(&dir).map_err(|e| eprintln!("boot: H2_BOOT_CAPTURE {}: {e}", dir.display())).ok()?;
             let frame = std::env::var("H2_BOOT_CAPTURE_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(480);
-            Some(Capture { dir, frame, draws: 0, writes: 0 })
+            Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP") })
         });
         (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0 }, stats)
     }
@@ -195,8 +251,17 @@ impl<B: Backend> Backend for DiagBackend<B> {
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
         let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
+        let mut snap = None;
         if let Some(c) = self.capturing() {
             let k = c.draws;
+            if c.skips.contains(&k) {
+                c.draws += 1;
+                c.append("frame.txt", &format!("draw {k} skipped (H2_BOOT_CAPTURE_SKIP)"));
+                return Ok(DrawOutcome::Drawn);
+            }
+            if c.snaps.contains(&k) {
+                snap = Some((k, c.dir.join(format!("snap-{k}.bin"))));
+            }
             c.draws += 1;
             let mut d = draw.clone();
             for (i, st) in d.streams.iter_mut().enumerate() {
@@ -210,6 +275,16 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         let inner: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &t.inner));
         let r = self.inner.draw(color, depth, draw, inner);
+        if let Some((k, path)) = snap {
+            let t = &draw.target;
+            let layout = GuestLayoutKind::Linear { pitch: t.width * 4 };
+            match self.inner.read_surface(color, D3DFormat::LinA8R8G8B8, t.width, t.height, layout) {
+                Ok(bytes) => {
+                    let _ = std::fs::write(&path, bytes);
+                }
+                Err(e) => eprintln!("boot: snap after draw {k}: {e}"),
+            }
+        }
         let out = outcome_name(&r);
         let t = &draw.target;
         let target = format!("{}x{} {:?}", t.width, t.height, t.format);
@@ -281,6 +356,8 @@ impl<B: Backend> Backend for DiagBackend<B> {
             c.append("frame.txt", &format!("present {surface:?} flags={flags:#x}"));
         }
         self.stats.lock().unwrap().presents += 1;
+        PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        PRESENT_TIMES.lock().unwrap().push(std::time::Instant::now());
         self.in_frame += 1;
         if let Some(l) = &mut self.log {
             let _ = l.flush();

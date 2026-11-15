@@ -381,6 +381,9 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         o => (format!("{o:?}"), m.threads().next().map_or(0, |t| t.cpu.eip)),
     };
     eprintln!("ran {secs:.2}s, {} slices, {} preemptions", m.schedule().len(), m.preemptions());
+    if let Some(fps) = d3d_diag::frame_rate(t, 100) {
+        eprintln!("{fps}");
+    }
     for th in m.threads() {
         let c = &th.cpu;
         eprintln!(
