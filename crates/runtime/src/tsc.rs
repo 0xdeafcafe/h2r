@@ -55,11 +55,11 @@ impl Tsc {
         let clock = self.clock.read().unwrap_or_else(|e| e.into_inner()).clone();
         let now = clock.and_then(|c| c()).map_or(0, cycles);
         let mut out = 0;
-        // fetch_update retries on contention, so concurrent reads still get
+        // try_update retries on contention, so concurrent reads still get
         // distinct, increasing values.
         let _ = self
             .last
-            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
                 out = now.max(last.wrapping_add(TSC_MIN_STEP));
                 Some(out)
             });
