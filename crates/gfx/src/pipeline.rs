@@ -7,7 +7,7 @@
 //! The cache is generic over the stored value so the keying logic is
 //! unit-testable without a GPU.
 
-use std::collections::HashMap;
+use hashbrown::{HashMap, hash_map::EntryRef};
 
 use crate::state::RenderState;
 use crate::translate::{self, Capabilities};
@@ -99,14 +99,16 @@ impl<V> PipelineCache<V> {
 
     /// Returns the cached value for `key`, building it with `make` on a miss.
     pub fn get_or_insert_with(&mut self, key: &PipelineKey, make: impl FnOnce(&PipelineKey) -> V) -> &V {
-        if self.map.contains_key(key) {
-            self.hits += 1;
-        } else {
-            self.misses += 1;
-            let v = make(key);
-            self.map.insert(key.clone(), v);
+        match self.map.entry_ref(key) {
+            EntryRef::Occupied(entry) => {
+                self.hits += 1;
+                entry.into_mut()
+            }
+            EntryRef::Vacant(entry) => {
+                self.misses += 1;
+                entry.insert(make(key))
+            }
         }
-        &self.map[key]
     }
 
     /// Adds `value` for `key` (replacing any), without counting.

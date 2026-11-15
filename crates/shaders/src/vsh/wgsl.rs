@@ -95,20 +95,23 @@ impl VertexUniforms {
 
     /// Buffer contents matching the WGSL struct layout.
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(Self::SIZE);
-        for v in self.constants.iter().chain(self.defaults.iter()) {
-            for f in v {
-                out.extend_from_slice(&f.to_le_bytes());
-            }
-        }
+        let mut out = vec![0; Self::SIZE];
+        self.write_bytes(&mut out);
+        out
+    }
+
+    /// Writes the WGSL uniform layout into an existing buffer of [`Self::SIZE`]
+    /// bytes, preserving every float's bits (including NaNs and signed zero).
+    pub fn write_bytes(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), Self::SIZE);
+        let viewport = [self.surface[0], self.surface[1], self.z_max, 0.0];
         let clip = match self.w_clip {
             Some([lo, hi]) => [lo, hi, 1.0, if self.w_clamp { 1.0 } else { 0.0 }],
             None => [0.0; 4],
         };
-        for f in [self.surface[0], self.surface[1], self.z_max, 0.0].into_iter().chain(clip) {
-            out.extend_from_slice(&f.to_le_bytes());
-        }
-        out
+        let out = common::uniform_vectors(out, &self.constants);
+        let out = common::uniform_vectors(out, &self.defaults);
+        common::uniform_vectors(out, &[viewport, clip]);
     }
 }
 

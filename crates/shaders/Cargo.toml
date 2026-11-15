@@ -7,6 +7,7 @@ description = "Xbox (NV2A) vertex microcode and register-combiner translation to
 
 [dependencies]
 thiserror.workspace = true
+bytemuck = "1"
 naga = { version = "30", features = ["wgsl-in"] }
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }

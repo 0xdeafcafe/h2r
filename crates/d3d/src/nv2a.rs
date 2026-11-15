@@ -163,6 +163,8 @@ struct Compiled {
 /// default for [`GfxBackend::new`](crate::GfxBackend::new)).
 pub struct Nv2aShaders {
     bindings: Option<ProgramBindings>,
+    vertex_bytes: [u8; VertexUniforms::SIZE],
+    pixel_bytes: [u8; PixelUniforms::SIZE],
     programs: FxHashMap<ProgramKey, Result<Compiled, String>>,
     table: RenderStateTable,
     next: u32,
@@ -203,6 +205,8 @@ impl Nv2aShaders {
     pub fn new() -> Self {
         Self {
             bindings: None,
+            vertex_bytes: [0; VertexUniforms::SIZE],
+            pixel_bytes: [0; PixelUniforms::SIZE],
             programs: FxHashMap::default(),
             table: RenderStateTable::default(),
             next: 0,
@@ -929,7 +933,14 @@ impl ShaderProvider for Nv2aShaders {
                 pu.tex_scale[n] = [1.0 / w, 1.0 / h, 1.0, 1.0];
             }
         }
-        let group0 = bindings.uniforms(&ctx.device, &ctx.queue, &vu.to_bytes(), &pu.to_bytes());
+        vu.write_bytes(&mut self.vertex_bytes);
+        pu.write_bytes(&mut self.pixel_bytes);
+        let group0 = bindings.uniforms(
+            &ctx.device,
+            &ctx.queue,
+            &self.vertex_bytes,
+            &self.pixel_bytes,
+        );
 
         // Textures: a stand-in where the bound view has another dimension.
         let views: [Option<&wgpu::TextureView>; 4] = std::array::from_fn(|n| {

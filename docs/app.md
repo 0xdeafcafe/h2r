@@ -161,7 +161,7 @@ game's frame rate (docs/input.md, "Keyboard and mouse").
 ### Frame stats: `--frame-stats`
 
 `h2 play --frame-stats`, or `H2_FRAME_STATS=1` for `h2 play` and `h2 run`,
-times every frame on the game thread and splits it into phases
+times every frame on the game thread and records the renderer's phases too
 (`timeline::phase`, docs/frame-budget.md):
 
 | phase | what |
@@ -172,16 +172,26 @@ times every frame on the game thread and splits it into phases
 | `sub` / `submit` | `queue.submit` |
 | `gpu` / `gpu-wait` | blocking GPU round trips: readbacks, `D3DSWAP_FINISH` |
 | `pace` | the tick's sleep to wall time; slack, not cost |
+| `rt` / `render-wait` | game-thread wait for render-thread replies or the frame-in-flight limit, removed from `cpu`/decode |
 
 Over the last 5 s it shows fps and the p50, p99 and max frame time, and
 the mean of each phase: in the window's top-left corner (the banner, so
 not with `--follow`, whose banner keeps the corner), and once a second on
 stderr. At exit the run prints the whole run's percentiles and its ten
 worst frames, each with its phases and what happened in it: draws,
-submits, pipelines the game thread waited for (docs/graphics.md "Pipeline compiles"), nv2a shader compiles, texture uploads,
+submits, pipelines the encoding thread waited for (docs/graphics.md "Pipeline compiles"), nv2a shader compiles, texture uploads,
 readbacks and bytes read from files. `H2_FRAME_STATS_CSV=<file>` writes
 one row per frame; `H2_FRAME_STATS_FROM=N` starts the exit report at
 frame N. F6 hides the line until the next refresh.
+
+With the render thread, a queued marker forwards its counters and timings
+into the same numbered frame. A row appears after both threads reach its
+boundary; the game thread keeps running. Renderer phases overlap the
+game thread, so their sum can exceed the frame's wall time. `render-wait_us`
+is the game thread's own wait, including queue backlog, CPU encoding and
+GPU work needed for a reply. The CSV's `read_bytes` is file I/O, not GPU
+readback bytes. An incomplete render-thread tail at shutdown is omitted
+and counted in the exit report. See [frame-budget.md](frame-budget.md).
 
 Cost: one clock read per phase switch, about six per draw. At 300 draws
 that is under 0.1 ms of a 75 ms level frame. Add one short lock per frame. Off, each hook is a relaxed

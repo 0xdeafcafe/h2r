@@ -1350,6 +1350,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytemuck",
+ "hashbrown 0.17.1",
  "pollster",
  "serde",
  "thiserror 2.0.21",
@@ -3629,6 +3630,7 @@ dependencies = [
 name = "shaders"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "naga",
  "pollster",
  "serde",

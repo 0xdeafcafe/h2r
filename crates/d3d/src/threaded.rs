@@ -364,6 +364,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         f: impl FnOnce(&mut Worker<B>) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
         self.check()?;
+        let _phase = timeline::phase::enter(timeline::phase::Phase::RenderWait);
         let t = std::time::Instant::now();
         let (rtx, rrx) = mpsc::sync_channel(1);
         self.tx
@@ -548,6 +549,15 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         Ok(judged)
     }
 
+    fn frame_stats(&mut self) {
+        if let Some(frame) = timeline::phase::forward_frame() {
+            self.post(move |_| {
+                frame.finish();
+                Ok(())
+            });
+        }
+    }
+
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }
@@ -574,6 +584,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let t = std::time::Instant::now();
         let mut done = self.shared.presented.lock().unwrap();
         if n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
+            let _phase = timeline::phase::enter(timeline::phase::Phase::RenderWait);
             self.waits.throttles += 1;
             while n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
                 done = self.shared.presented_cv.wait(done).unwrap();

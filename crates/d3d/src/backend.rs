@@ -281,6 +281,9 @@ pub trait Backend: Send {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String>;
+    /// Marks this thread's frame-stat boundary. Asynchronous backends
+    /// forward queued statistics without waiting for the render thread.
+    fn frame_stats(&mut self) {}
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
     /// Presents with the current DAC ramp. Backends without a display may ignore it.

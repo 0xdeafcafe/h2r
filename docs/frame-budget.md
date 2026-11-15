@@ -516,6 +516,126 @@ and median 4.4 ms a frame (1a5aa8d at load 3-4: mean 7.1), `encode`
 20.4, `gpu-wait` 13.2. The schedule matched the earlier runs exactly
 (56,572 slices, 94,097 preemptions).
 
+### Per-draw CPU preparation (2026-11-15, `perf-perdraw`)
+
+Synthetic headless Metal measurements on an Apple M1 Max (10 CPU cores),
+against `origin/master` 453e6c4.
+The existing `draw_churn` integration benchmark is also available through
+Cargo's bench runner:
+
+```sh
+H2_BENCH_ONLY=city H2_BENCH_FRAMES=50 cargo bench -p d3d --bench draw_churn
+```
+
+The city cases use 1,500 draws over an 8x8 grid of synthetic textured quads,
+with six draws per material. Materials alternate two textures and change
+the texture factor, alpha test (every third material) and blending (every
+fifth). The masked case also writes only RGB on every twentieth draw.
+Both keep the default fast merge rule. This measures draw submission and
+state preparation through `Device<GfxBackend>` and `SparseMemory`; the
+geometry and shaders are deliberately small. It does not measure a game
+frame or the guest's culling and push-buffer construction.
+
+A 1 kHz samply recording of the **bench binary only** found uniform
+serialization at 13.0% inclusive (6.4% vertex, 6.5% pixel), pipeline-cache
+lookup at 7.1%, and `madvise` at 0.7% self time. The backend already uploads
+one packed buffer per ring per flush, caches texture groups across frames,
+uses dynamic uniform offsets, and skips redundant pipeline and bind-group
+sets. Two changes address the remaining preparation costs:
+
+- Serialize uniforms directly into reusable provider-owned byte arrays.
+  Contiguous float blocks use a safe bulk copy on little-endian hosts;
+  big-endian hosts retain explicit little-endian conversion. This removes
+  the temporary pixel `Vec<Vec4>`, its growth, per-float output growth, and
+  both per-draw byte-vector allocations. Float payload bits and integer
+  stipple rows are preserved.
+- Use a borrowed `hashbrown` pipeline-cache entry with its fast seeded
+  hasher. A hit hashes and probes once and clones no key; the old
+  `contains_key` followed by indexing hashed the full key twice with
+  SipHash. Keys, equality, pipeline construction and hit/miss accounting
+  retain their meaning.
+
+Eight alternating A/B runs per binary, 50 measured frames per case after
+two warm-up frames, release/bench profile, no concurrent compilation in
+this lane. Values below are medians of the per-run us/draw values; total
+includes the final GPU completion wait, record covers device draw/state
+calls, and swap covers flush/encode/submit. The host was shared, so the
+short alternating runs are more useful than the early standalone samples
+(which varied from about 5 to 24 us/draw as load changed).
+
+| case | total before / after | record before / after | swap before / after | total saving |
+|---|---|---|---|---|
+| city, 1 render pass/frame | **4.8 / 3.8 us** | 3.6 / 2.6 us | 1.15 / 1.15 us | **21%** |
+| city + masked, 76 render passes/frame | **8.6 / 7.4 us** | 3.7 / 2.6 us | 4.9 / 4.8 us | **14%** |
+
+Total ranges were 4.6-5.0 -> 3.6-4.4 us/draw for city, and 8.1-10.6 ->
+7.1-8.2 for masked city. Both submit once per frame. The saving is about
+1.0-1.2 us/draw, or 1.5-1.8 ms for these 1,500-draw synthetic frames.
+Rendering commands, draw order, pass boundaries and upload lifetime rules
+are unchanged. The earlier 116 us/draw whole-game slope includes many
+costs this fixture does not exercise; these numbers do not re-fit it.
+
+Correctness evidence: the captured 64x64 output bytes matched the saved
+baseline binary for both city cases at every measured optimization stage.
+`d3d/tests/draw_churn.rs` also compares every output byte over three frames
+against individual render passes, under both fast and exact merging,
+changing texture and vertex data between frames. `shaders/tests/uniform_bytes.rs`
+checks every field's serialized layout, including NaN payloads, signed zero,
+clip/clamp changes and stipple integer bits while reusing the output arrays.
+All resources and expected values are synthetic.
+
+`H2_BENCH_DRAWS` overrides both the legacy 600-draw cases and the new
+1,500-draw cases. `H2_BENCH_OUTPUT=<existing-directory>` writes each case's
+final raw color-buffer bytes after the timed window for an offline A/B
+comparison. The ignored integration entry remains available with
+`cargo test --release -p d3d --test draw_churn -- --ignored --nocapture`.
+
+### Render-thread frame stats and the supplied city CSV
+
+The supplied master CSV has 773 frames. All six renderer counters
+(`draws`, `submits`, `pipelines`, `shaders`, `uploads`, `readbacks`) and all
+three renderer timers (`encode_us`, `submit_us`, `gpu-wait_us`) are zero
+in every row. Their hooks wrote to the render thread's thread-local
+bucket, while `frame_end` read only the game thread's bucket. The user's
+city observation was 11-12 fps, p50 80-86 ms, with 70-91 ms in `cpu` and
+5-7 ms decoding; the menu was about 29 fps. The CSV's whole-run medians
+are 66.895 ms total, 57.999 ms `cpu`, and 4.244 ms decode.
+
+The old `cpu` includes synchronous render-thread reply waits and the
+frame-in-flight throttle. Their share **cannot be recovered from this
+CSV**. `read_bytes` is `NtReadFile` traffic (mean 526,980 bytes/frame in
+this file), not GPU readback bytes. Neither GPU readback volume nor the
+reported roughly 1,100 draws/present can be reconstructed from those
+zero renderer columns. No game run was made to fill the gap.
+
+Frame stats now queue a telemetry marker at the device's existing
+`count_swap` boundary. It joins the render thread's phase/counter deltas
+to that exact game-thread frame, including when the worker finishes
+before or after `frame_end`. CSV/overlay publication waits for both
+samples; the game thread does not wait for telemetry. Rows retain their
+original index, end timestamp and wall duration and are published in
+order. Worker idle time is excluded. A recording restarted with old work
+still queued discards that old work at its marker. At shutdown, any
+still-incomplete tail is omitted with an explicit count in the report,
+rather than emitted with zero renderer statistics or waited on.
+
+A new `render-wait_us` phase (`rt` in the overlay) measures game-thread
+wall time waiting for render-thread replies or the frame-in-flight
+limit, taking that time out of `cpu`/decode self time. This is the number
+to divide by `total_us` to see how much of a future city frame waits on
+the renderer. It includes queue backlog, backend CPU work and GPU waits
+needed to obtain a reply; it is not GPU time alone. With a render thread,
+`encode_us`, `submit_us` and `gpu-wait_us` describe its work in parallel
+with the game thread, so summing every phase can exceed `total_us`.
+FPS and frame percentiles still use the original game-thread wall time.
+
+The CPU-only `d3d/tests/threaded_frame_stats.rs` regression blocks a
+synthetic worker until after Swap returns, checks all nine formerly-zero
+CSV fields, distinct counters on consecutive frames, file-byte counts,
+reply-wait attribution, and restart/shutdown behavior. Timeline unit tests
+also cover worker samples arriving on either side of the game sample,
+ordered publication, unchanged wall-time FPS and exactly-once accounting.
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split

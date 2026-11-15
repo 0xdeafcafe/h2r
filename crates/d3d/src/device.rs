@@ -2961,6 +2961,9 @@ impl<B: Backend> Device<B> {
 
     /// Counts a swap (`+0x2478`) and the vertical blanks that follow it.
     fn count_swap(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        if timeline::phase::enabled() {
+            self.backend.frame_stats();
+        }
         timeline::frame();
         self.display.swapped = true;
         self.swap_count = self.swap_count.wrapping_add(1);

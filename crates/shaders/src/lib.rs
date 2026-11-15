@@ -32,6 +32,25 @@ pub use psh::PixelShaderDef;
 pub use vsh::Program as VertexProgram;
 
 pub(crate) mod common {
+    /// Copies a contiguous vec4 block into the little-endian GPU ABI.
+    /// The native little-endian path is a bulk copy, with no per-float
+    /// iterator or allocation. `cast_slice` preserves NaN payload bits.
+    pub fn uniform_vectors<'a>(out: &'a mut [u8], vectors: &[[f32; 4]]) -> &'a mut [u8] {
+        let (bytes, rest) = out.split_at_mut(std::mem::size_of_val(vectors));
+        #[cfg(target_endian = "little")]
+        bytes.copy_from_slice(bytemuck::cast_slice(vectors));
+        #[cfg(target_endian = "big")]
+        for (dst, src) in bytes
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(vectors.iter().flatten())
+        {
+            *dst = src.to_le_bytes();
+        }
+        rest
+    }
+
     /// The varyings struct, with or without flat colour interpolation.
     pub fn varyings_struct(flat: bool) -> String {
         let interp = if flat { " @interpolate(flat)" } else { "" };

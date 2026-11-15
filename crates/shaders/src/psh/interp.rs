@@ -67,24 +67,39 @@ impl Uniforms {
     /// The uniform buffer bytes, laid out as the WGSL struct (std140-like:
     /// every member here is a vec4 or an array of vec4).
     pub fn to_bytes(&self) -> Vec<u8> {
-        let mut v: Vec<Vec4> = Vec::new();
-        v.extend_from_slice(&self.c0);
-        v.extend_from_slice(&self.c1);
-        v.push(self.fog_color);
-        v.push(self.fog);
-        v.extend_from_slice(&self.bump_mat);
-        v.extend_from_slice(&self.bump_lum);
-        v.extend_from_slice(&self.tex_scale);
-        v.push(self.eye);
-        v.push(self.alpha_ref);
-        v.extend_from_slice(&self.border);
-        v.push(self.lod_bias);
-        for row in self.stipple.as_chunks::<4>().0 {
-            v.push(row.map(f32::from_bits));
+        let mut out = vec![0; Self::SIZE];
+        self.write_bytes(&mut out);
+        out
+    }
+
+    /// Size of the WGSL uniform block in bytes.
+    pub const SIZE: usize = 49 * 16;
+
+    /// Writes the WGSL layout into an existing buffer of [`Self::SIZE`] bytes.
+    /// Stipple rows are copied as integer bits, without float conversion.
+    pub fn write_bytes(&self, out: &mut [u8]) {
+        assert_eq!(out.len(), Self::SIZE);
+        let mut out = out;
+        for vectors in [
+            self.c0.as_slice(),
+            self.c1.as_slice(),
+            std::slice::from_ref(&self.fog_color),
+            std::slice::from_ref(&self.fog),
+            &self.bump_mat,
+            &self.bump_lum,
+            &self.tex_scale,
+            std::slice::from_ref(&self.eye),
+            std::slice::from_ref(&self.alpha_ref),
+            &self.border,
+            std::slice::from_ref(&self.lod_bias),
+        ] {
+            out = crate::common::uniform_vectors(out, vectors);
         }
-        v.push(self.depth);
-        v.push(self.depth_range);
-        v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
+        let (stipple, out) = out.split_at_mut(std::mem::size_of_val(&self.stipple));
+        for (dst, row) in stipple.as_chunks_mut::<4>().0.iter_mut().zip(self.stipple) {
+            *dst = row.to_le_bytes();
+        }
+        crate::common::uniform_vectors(out, &[self.depth, self.depth_range]);
     }
 }
 

@@ -44,3 +44,7 @@ kernel = { path = "../kernel" }
 [[bench]]
 name = "pushbuf"
 harness = false
+
+[[bench]]
+name = "draw_churn"
+harness = false

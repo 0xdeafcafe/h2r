@@ -8,12 +8,14 @@
 //! render passes and submissions per frame.
 //!
 //! ```sh
-//! cargo test --release -p d3d --test draw_churn -- --ignored --nocapture
+//! cargo bench -p d3d --bench draw_churn
 //! ```
 //!
 //! `H2_BENCH_FRAMES` sets the frame count (default 30), `H2_BENCH_DRAWS`
-//! the draws per frame (default 600), and `H2_BENCH_ONLY` runs only the
-//! scenarios whose name contains it.
+//! the draws per frame (default 600, or 1500 for city cases), and
+//! `H2_BENCH_ONLY` runs only the scenarios whose name contains it.
+//! `H2_BENCH_OUTPUT` writes final raw color bytes into an existing directory
+//! after the timed window, for offline A/B comparison.
 
 mod common;
 
@@ -50,6 +52,8 @@ fn swap(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {
 #[derive(Clone, Copy)]
 struct Churn {
     draws: u32,
+    /// Consecutive draws using the same material.
+    material_run: u32,
     alpha_test_every: Option<u32>,
     blend_every: Option<u32>,
     /// Every n-th draw writes only RGB (`COLORWRITEENABLE`).
@@ -98,15 +102,25 @@ fn setup(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {
     m.write_u32(l.texture_state_slot(0, 13), 2).unwrap(); // ALPHAOP = SELECTARG1
     m.write_u32(l.texture_state_slot(0, 18), 2).unwrap(); // ALPHAARG1 = TEXTURE
     let mut vb = Vec::new();
-    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-        for f in [8.0 * x, 8.0 * y, 0.5, 1.0] {
-            vb.extend_from_slice(&f.to_le_bytes());
-        }
-        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-        for f in [16.0 * x, 4.0 * y] {
-            vb.extend_from_slice(&f.to_le_bytes());
+    // A synthetic 8x8 skyline grid, covering the target rather than
+    // repeatedly overwriting the same few pixels.
+    for mesh in 0..64 {
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+            for f in [
+                8.0 * (x + (mesh % 8) as f32),
+                8.0 * (y + (mesh / 8) as f32),
+                0.5,
+                1.0,
+            ] {
+                vb.extend_from_slice(&f.to_le_bytes());
+            }
+            vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            for f in [16.0 * x, 4.0 * y] {
+                vb.extend_from_slice(&f.to_le_bytes());
+            }
         }
     }
+    m.map((0x8000_0000 | VB_DATA) + 0x1000, 0x1000);
     m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
     m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
     m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
@@ -123,16 +137,25 @@ fn setup(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {
 fn frame(d: &mut Device<GfxBackend>, m: &mut SparseMemory, c: Churn) {
     d.clear(m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
     for i in 0..c.draws {
-        let tex = if i % 2 == 0 { TEX_HEADER } else { TEX2_HEADER };
+        let material = i / c.material_run;
+        let tex = if material % 2 == 0 {
+            TEX_HEADER
+        } else {
+            TEX2_HEADER
+        };
         d.set_texture(m, 0, tex).unwrap();
-        d.set_render_state(m, RS_TEXTUREFACTOR, 0xFF00_0000 | (i & 0xFF) << 8 | 0x40)
-            .unwrap();
+        d.set_render_state(
+            m,
+            RS_TEXTUREFACTOR,
+            0xFF00_0000 | (material & 0xFF) << 8 | 0x40,
+        )
+        .unwrap();
         if let Some(n) = c.alpha_test_every {
-            d.set_render_state(m, RS_ALPHATESTENABLE, u32::from(i % n == 0))
+            d.set_render_state(m, RS_ALPHATESTENABLE, u32::from(material % n == 0))
                 .unwrap();
         }
         if let Some(n) = c.blend_every {
-            d.set_render_state(m, RS_ALPHABLENDENABLE, u32::from(i % n == 1))
+            d.set_render_state(m, RS_ALPHABLENDENABLE, u32::from(material % n == 1))
                 .unwrap();
         }
         if let Some(n) = c.masked_every {
@@ -140,7 +163,13 @@ fn frame(d: &mut Device<GfxBackend>, m: &mut SparseMemory, c: Churn) {
             m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(67), mask)
                 .unwrap();
         }
-        d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+        d.draw_vertices(
+            m,
+            TRIANGLESTRIP,
+            if c.material_run > 1 { 4 * (i % 64) } else { 0 },
+            4,
+        )
+        .unwrap();
     }
 }
 
@@ -182,6 +211,17 @@ fn run(name: &str, mode: Mode, c: Churn) {
         .poll(wgpu::PollType::wait_indefinitely());
     let wall = start.elapsed();
     let s = d.backend.batch_stats();
+    if let Ok(dir) = std::env::var("H2_BENCH_OUTPUT") {
+        let (pixels, _) = d
+            .backend
+            .read_color(d.backend.last_presented().unwrap())
+            .unwrap();
+        std::fs::write(
+            std::path::Path::new(&dir).join(format!("{name}.rgba")),
+            pixels,
+        )
+        .unwrap();
+    }
     let per = |t: Duration| t.as_secs_f64() * 1e6 / f64::from(frames * c.draws);
     println!(
         "{name:<34} {:>6.1} us/draw (record {:>5.1}, swap {:>5.1}) {:>6.2} ms/frame  render passes {:>4}/frame, submits {}/frame",
@@ -202,9 +242,14 @@ fn run(name: &str, mode: Mode, c: Churn) {
 #[test]
 #[ignore = "benchmark: run with --release -- --ignored --nocapture"]
 fn draw_churn() {
+    bench();
+}
+
+pub fn bench() {
     let draws = env("H2_BENCH_DRAWS", 600);
     let level = Churn {
         draws,
+        material_run: 1,
         alpha_test_every: Some(3),
         blend_every: Some(5),
         masked_every: None,
@@ -218,10 +263,92 @@ fn draw_churn() {
         masked_every: Some(20),
         ..level
     };
+    let city = Churn {
+        draws: env("H2_BENCH_DRAWS", 1500),
+        material_run: 6,
+        ..level
+    };
+    run("fast, city 1500", Mode::Fast, city);
+    run(
+        "fast, city 1500 + masked",
+        Mode::Fast,
+        Churn {
+            masked_every: Some(20),
+            ..city
+        },
+    );
     run("fast, uniforms + textures", Mode::Fast, plain);
     run("fast, level churn", Mode::Fast, level);
     run("fast, level churn + masked", Mode::Fast, masked);
     run("exact, level churn", Mode::Exact, level);
     run("exact, level churn + masked", Mode::Exact, masked);
     run("pass per draw, level churn", Mode::PerDraw, level);
+}
+
+/// Full output-byte comparison across frames, with independently submitted
+/// draws as the reference. The modified resources make stale upload or
+/// uniform reuse visible, including when masked draws split a pass.
+#[test]
+fn city_output_matches_individual_passes_across_frames() {
+    let render = |mode| {
+        let Some((mut d, mut m)) = device(mode) else {
+            return None;
+        };
+        setup(&mut d, &mut m);
+        let mut frames = Vec::new();
+        for epoch in 0..3u8 {
+            m.write(0x8000_0000 | TEX_DATA, &[0x50 + epoch * 0x20; 256])
+                .unwrap();
+            m.write(0x8000_0000 | TEX2_DATA, &[0xb0 - epoch * 0x20; 256])
+                .unwrap();
+            d.note_write(0x8000_0000 | TEX_DATA, 256);
+            d.note_write(0x8000_0000 | TEX2_DATA, 256);
+            // Change a vertex in an already-seen allocation between frames.
+            m.write(
+                0x8000_0000 | (VB_DATA + 16),
+                &(0xffff_ffffu32 - u32::from(epoch) * 0x0040_2000).to_le_bytes(),
+            )
+            .unwrap();
+            d.note_write(0x8000_0000 | (VB_DATA + 16), 4);
+            frame(
+                &mut d,
+                &mut m,
+                Churn {
+                    draws: 1500,
+                    material_run: 6,
+                    alpha_test_every: Some(3),
+                    blend_every: Some(5),
+                    masked_every: Some(20),
+                },
+            );
+            swap(&mut d, &mut m);
+            let (pixels, _) = d
+                .backend
+                .read_color(d.backend.last_presented().unwrap())
+                .unwrap();
+            assert!(pixels.chunks_exact(4).any(|p| p != &pixels[..4]));
+            frames.push(pixels);
+        }
+        assert!(frames[0] != frames[1], "updated frame 1 must change pixels");
+        assert!(frames[1] != frames[2], "updated frame 2 must change pixels");
+        assert!(
+            d.take_events()
+                .iter()
+                .all(|e| !matches!(e, d3d::Event::DrawSkipped { .. } | d3d::Event::BadState(_)))
+        );
+        Some(frames)
+    };
+    let Some(reference) = render(Mode::PerDraw) else {
+        return;
+    };
+    for mode in [Mode::Fast, Mode::Exact] {
+        for (epoch, (actual, expected)) in render(mode).unwrap().iter().zip(&reference).enumerate()
+        {
+            let mismatch = actual.iter().zip(expected).position(|(a, e)| a != e);
+            assert!(
+                mismatch.is_none(),
+                "frame {epoch}, first differing byte {mismatch:?}"
+            );
+        }
+    }
 }

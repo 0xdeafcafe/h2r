@@ -181,6 +181,11 @@ Against the requirements:
   thread unchanged. The persistent pipeline cache and its compile
   workers belong to the backend and move with it.
   `H2_RENDER_THREAD_STATS=1` prints the waits when it is dropped.
+  Frame stats also forward worker counters/timers through a queued marker
+  at the device's existing Swap boundary, preserving frame numbers without
+  making Swap wait. `render-wait_us` measures game-thread reply and throttle
+  waits separately from `cpu`; renderer phases can overlap that game-thread
+  wall time. See [frame-budget.md](frame-budget.md).
 - `menu_cpu` (docs/BOOT.md) now also prints
   `guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time,
   which is the guest's critical path.
