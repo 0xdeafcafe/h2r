@@ -1682,10 +1682,35 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   byte differences only (above); exact store ranges from the runtime, or a
   trap on the first store to a watched page, would make it exact.
 - **Depth as a texture on the GPU.** `D24S8` depth levels are now
-  converted on the GPU (`gfx::depth_bits`, above). Textures over the
-  depth buffer (`depth_alias_texture`) and `D16` levels still go through a
-  CPU round trip: a readback, then a decode and an upload. The
-  shadow-map comparison itself is in `crates/shaders` (shaders.md,
-  "Shadow maps").
+  converted on the GPU (`gfx::depth_bits`, above), and so are 32-bit
+  colour textures over the depth buffer ("Depth aliases on the GPU",
+  below). `D16` levels, and aliases in other formats or over a `D16`
+  depth buffer, still go through a CPU round trip: a readback, then a
+  decode and an upload. The shadow-map comparison itself is in
+  `crates/shaders` (shaders.md, "Shadow maps").
+- **Depth aliases on the GPU.** A texture over the depth buffer's memory
+  (`0x509368` `LIN_A8R8G8B8`, `0x50936C` `LIN_A8B8G8R8`: the menu's fog
+  pass, one a frame) was a `read_depth` of the whole buffer, a CPU decode
+  and an upload: the guest (or, with the render thread, the render
+  thread) waited for the whole queue once a frame. `GfxBackend` now
+  answers `Backend::defers_depth_aliases` and makes the texture in a
+  compute pass (`gfx::guest_words::GuestWords::depth_alias`): each texel's
+  byte address (offset, then the texture's pitch or swizzle) picks a word
+  of the `LIN_D24S8` buffer, the word is computed from the depth and
+  stencil aspects with `encode_depth`'s rounding, and its bytes become the
+  texel's channels as `decode_texture` orders them for the format, with
+  `COLORSIGN` channels biased. Covered: `A8R8G8B8`, `X8R8G8B8`,
+  `A8B8G8R8`, `B8G8R8A8`, `R8G8B8A8`, linear (pitch a multiple of 4) or
+  swizzled, at a 4-byte-aligned offset, over a single-sample
+  `Depth32FloatStencil8` buffer. Anything else is read back once per
+  depth generation and decoded on the CPU inside the backend, as the
+  device did. `crates/gfx/tests/guest_words.rs` checks the pass against
+  `read_depth_as` plus `decode_texture` byte for byte, and
+  `crates/d3d/tests/gpu_depth_alias.rs` draws seven alias layouts with
+  three sign masks over three depth contents with the pass on and off,
+  on the device's thread and through the render thread, and compares
+  the back buffers byte for byte. `H2_D3D_GPU_DEPTH_ALIAS=0`
+  (`GfxBackend::set_gpu_depth_aliases`) goes back to the device's
+  read-back.
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
   `gfx::encode::HostPixelOrder`.

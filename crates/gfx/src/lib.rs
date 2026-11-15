@@ -26,6 +26,7 @@ pub(crate) mod depth_fill;
 pub mod dxt;
 pub mod encode;
 pub mod format;
+pub mod guest_words;
 pub mod occlusion;
 pub mod pipeline;
 pub mod presenter;

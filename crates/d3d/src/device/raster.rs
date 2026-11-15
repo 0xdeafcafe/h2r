@@ -20,7 +20,10 @@
 //!   ([`DEPTH_BUFFER_DATA`]) reads the depth/stencil bits as the colour
 //!   format it names: the depth buffer is read back as guest bytes
 //!   ([`Backend::read_depth`]) once per change, and those bytes are decoded
-//!   as the texture, exactly as if the guest memory held them.
+//!   as the texture, exactly as if the guest memory held them. A backend
+//!   that makes such textures itself ([`Backend::depth_alias_texture`]:
+//!   `GfxBackend` decodes on the GPU, the render thread on its side) gets
+//!   the job instead, with no read-back on the guest's side.
 //! * **Render to texture.** A surface whose `Parent` is a texture (a level,
 //!   as `0x14850` builds for its two 64x64 targets with the native
 //!   `0x3fb7a0`) gets its own host surface: a colour surface, or a
