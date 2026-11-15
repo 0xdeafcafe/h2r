@@ -33,6 +33,7 @@ mod shader;
 mod sound;
 mod strings;
 mod ui;
+mod web_build;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 

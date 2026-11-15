@@ -188,9 +188,17 @@ account is the first local one for that server whose key the server still
 lists, else a new one named `--gamertag NAME` or after the OS user
 (letters and digits, a single space for anything else, numbered when
 taken). It prints the gamertag and, for the embedded server, the web app's
-URL (or the `bun run build` hint), then boots with `boot::LiveConfig {
+URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
+
+Before starting, it builds the web app (`bun install --frozen-lockfile`,
+`bun run build`) when `web/dist` is missing or was built from a different
+`web/` tree (`web/dist/.h2-web-tree` records it; with uncommitted changes
+under `web/` an existing build is kept). `h2 play --follow` does the same
+in each commit's build, so the banner's "Update ready" includes it. Without
+bun it says how to install it and runs without the web app; `H2_LIVE_WEB`
+points at a build of your own and skips this.
 
 Planned, not built: `h2 live friend add <gamertag> <gamertag>` (with
 friends).

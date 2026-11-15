@@ -447,6 +447,27 @@ fn start_live(
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| live_server::DEFAULT_DB.into());
     let places = crate::play_live::Places::under(&crate::live_cmd::live_dir()?);
+    // Build the web app first if it is missing or older than its sources
+    // (H2_LIVE_WEB points at a build of your own and skips this).
+    if std::env::var_os("H2_LIVE_WEB").is_none() {
+        let src = crate::web_build::source_dir();
+        if src.join("package.json").is_file() {
+            let bun = crate::web_build::find_bun();
+            let tree = crate::web_build::clean_tree(&src);
+            match crate::web_build::ensure(
+                &src,
+                bun.as_deref(),
+                tree.as_deref(),
+                &mut |what, cmd| {
+                    eprintln!("live: building the web app: {what}");
+                    crate::web_build::run_inherit(what, cmd)
+                },
+            ) {
+                Ok(_) => {}
+                Err(e) => eprintln!("live: no web app: {e}"),
+            }
+        }
+    }
     let web = live_server::web_dir();
     let has_web = web.is_some();
     // Art for the embedded server, from this disc (extracted once).
