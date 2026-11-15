@@ -446,6 +446,7 @@ mod tests {
                         xuid: None,
                         team: 0,
                         local: Some(true),
+                        appearance: None,
                     },
                 },
             ),

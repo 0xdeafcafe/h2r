@@ -12,8 +12,9 @@ use live_proto::sign::{
 };
 use live_proto::{
     AccountDetail, AccountKeys, AccountSummary, Author, CreatedAccount, Discovery, ErrorCode,
-    Gamertag, PRESENCE_STATES, Page, Presence, PublishedFile, TitleId, WireEvent, Xuid, lxm,
-    streams, types, valid_file_name,
+    Friend, FriendEventData, FriendPresence, FriendRemovedData, FriendRequest, Friends, Gamertag,
+    PRESENCE_STATES, Page, Presence, PublishedFile, TitleId, WireEvent, Xuid, lxm, streams, types,
+    valid_file_name,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -161,18 +162,33 @@ fn parse_data<'a, T: Deserialize<'a>>(data: &'a Value) -> Result<T, ApiError> {
     T::deserialize(data).map_err(|e| invalid(format!("event data: {e}")))
 }
 
-/// Who may append what (security §2): an account writes its own key and
-/// presence events; the server anything but the events it only writes
-/// through its own endpoints. Games come with the game endpoints.
+/// Who may append what (security §2): an account writes its own key,
+/// friend and presence events; the server anything but the events it only
+/// writes through its own endpoints, and the friend events, which are the
+/// accounts' own. Games come with the game endpoints.
 fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
     match author {
         Author::Server(_) => !matches!(
             kind,
-            types::ACCOUNT_CREATED | types::GAMERTAG_RESERVED | types::TITLE_FILE_PUBLISHED
+            types::ACCOUNT_CREATED
+                | types::GAMERTAG_RESERVED
+                | types::TITLE_FILE_PUBLISHED
+                | types::FRIEND_REQUESTED
+                | types::FRIEND_ACCEPTED
+                | types::FRIEND_DECLINED
+                | types::FRIEND_REMOVED
         ),
         Author::Account { xuid, .. } => {
             (stream == streams::account(*xuid)
-                && matches!(kind, types::KEY_ADDED | types::KEY_REVOKED))
+                && matches!(
+                    kind,
+                    types::KEY_ADDED
+                        | types::KEY_REVOKED
+                        | types::FRIEND_REQUESTED
+                        | types::FRIEND_ACCEPTED
+                        | types::FRIEND_DECLINED
+                        | types::FRIEND_REMOVED
+                ))
                 || (stream == streams::presence(*xuid)
                     && matches!(
                         kind,
@@ -243,6 +259,59 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 if (s == "playing") != d.game_id.is_some() {
                     return Err(invalid("game_id is set exactly when playing"));
                 }
+            }
+        }
+        types::FRIEND_REQUESTED | types::FRIEND_ACCEPTED | types::FRIEND_DECLINED => {
+            let d: FriendEventData = parse_data(&body.data)?;
+            let xuid = xuid.ok_or_else(|| invalid("not an account stream"))?;
+            if body.kind == types::FRIEND_REQUESTED {
+                // Sent from the writer's own account to another one that
+                // exists, with nothing between the two already.
+                if d.from != xuid {
+                    return Err(invalid(
+                        "a friend request is sent from the writer's own account",
+                    ));
+                }
+                if d.to == d.from {
+                    return Err(invalid("a friend request needs another account"));
+                }
+                if !state.accounts.contains_key(&d.to) {
+                    return Err(invalid("no such account"));
+                }
+                if state.is_friends(d.from, d.to) {
+                    return Err(conflict("already friends"));
+                }
+                if state.pending(d.from, d.to) || state.pending(d.to, d.from) {
+                    return Err(conflict("a friend request is already pending"));
+                }
+            } else {
+                // Answered by the account it was addressed to, while it is
+                // pending.
+                if d.to != xuid {
+                    return Err(invalid(
+                        "a friend request is answered on the recipient's account",
+                    ));
+                }
+                if !state.pending(d.from, d.to) {
+                    return Err(conflict("no pending friend request from that account"));
+                }
+            }
+        }
+        types::FRIEND_REMOVED => {
+            let d: FriendRemovedData = parse_data(&body.data)?;
+            let xuid = xuid.ok_or_else(|| invalid("not an account stream"))?;
+            if d.by != xuid {
+                return Err(invalid(
+                    "a friend removal is written from one of the two accounts",
+                ));
+            }
+            if !(state.is_friends(d.by, d.friend)
+                || state.pending(d.by, d.friend)
+                || state.pending(d.friend, d.by))
+            {
+                return Err(conflict(
+                    "no friendship or pending request with that account",
+                ));
             }
         }
         _ => {}
@@ -760,6 +829,57 @@ impl Live {
         }
     }
 
+    /// `GET /v1/accounts/{gamertag}/friends`: the account's friends (each
+    /// with its current presence, absent when offline) and its pending
+    /// requests in and out, sorted by gamertag — one document, so the
+    /// game's friends enumeration needs just this call.
+    pub fn friends(&self, tag: &Gamertag) -> Result<Friends, ApiError> {
+        let position = self.position();
+        let s = self.model.read();
+        let a = s
+            .account_by_tag(tag)
+            .ok_or_else(|| not_found("no such account"))?;
+        let relations = s.relations_of(a.xuid);
+        let request = |(xuid, at): &(Xuid, String)| -> Option<FriendRequest> {
+            let a = s.accounts.get(xuid)?;
+            Some(FriendRequest {
+                xuid: *xuid,
+                gamertag: a.gamertag.clone(),
+                at: at.clone(),
+            })
+        };
+        let mut friends: Vec<Friend> = relations
+            .friends
+            .iter()
+            .filter_map(|(xuid, since)| {
+                let a = s.accounts.get(xuid)?;
+                Some(Friend {
+                    xuid: *xuid,
+                    gamertag: a.gamertag.clone(),
+                    friends_since: since.clone(),
+                    presence: s.presence.get(xuid).map(|p| FriendPresence {
+                        state: p.state.clone(),
+                        game_id: p.game_id.clone(),
+                        since: p.since.clone(),
+                    }),
+                })
+            })
+            .collect();
+        let mut requests_in: Vec<FriendRequest> =
+            relations.incoming.iter().filter_map(&request).collect();
+        let mut requests_out: Vec<FriendRequest> =
+            relations.outgoing.iter().filter_map(&request).collect();
+        friends.sort_by_key(|f| f.gamertag.key());
+        requests_in.sort_by_key(|r| r.gamertag.key());
+        requests_out.sort_by_key(|r| r.gamertag.key());
+        Ok(Friends {
+            friends,
+            requests_in,
+            requests_out,
+            position,
+        })
+    }
+
     pub async fn file(
         &self,
         title: TitleId,
@@ -795,6 +915,16 @@ mod tests {
         let server = Author::Server("h".into());
         assert!(may_write(&acct, &streams::account(me), types::KEY_ADDED));
         assert!(may_write(&acct, &streams::presence(me), types::SIGNED_IN));
+        assert!(may_write(
+            &acct,
+            &streams::account(me),
+            types::FRIEND_REQUESTED
+        ));
+        assert!(may_write(
+            &acct,
+            &streams::account(me),
+            types::FRIEND_REMOVED
+        ));
         assert!(!may_write(
             &acct,
             &streams::account(me),
@@ -804,6 +934,16 @@ mod tests {
             &acct,
             &streams::presence(me),
             types::PRESENCE_EXPIRED
+        ));
+        assert!(!may_write(
+            &acct,
+            &streams::presence(me),
+            types::FRIEND_REQUESTED
+        ));
+        assert!(!may_write(
+            &acct,
+            &streams::account(Xuid(2)),
+            types::FRIEND_REQUESTED
         ));
         assert!(!may_write(
             &acct,
@@ -826,6 +966,188 @@ mod tests {
             &streams::account(me),
             types::ACCOUNT_CREATED
         ));
+        // Friendships are the accounts' own; the server does not forge them.
+        for kind in [
+            types::FRIEND_REQUESTED,
+            types::FRIEND_ACCEPTED,
+            types::FRIEND_DECLINED,
+            types::FRIEND_REMOVED,
+        ] {
+            assert!(!may_write(&server, &streams::account(me), kind), "{kind}");
+        }
+    }
+
+    #[test]
+    fn friend_event_rules() {
+        let me = Xuid(0x0009_0000_0000_0001);
+        let other = Xuid(0x0009_0000_0000_0002);
+        let nobody = Xuid(0x0009_0000_0000_0003);
+        let account = |x: Xuid| crate::model::Account {
+            xuid: x,
+            gamertag: Gamertag::new("Someone").unwrap(),
+            created_at: String::new(),
+            position: 1,
+        };
+        let mut state = crate::model::State::default();
+        state.accounts.insert(me, account(me));
+        state.accounts.insert(other, account(other));
+
+        let body = |stream: String, kind: &str, data: Value| EventBody {
+            stream,
+            kind: kind.into(),
+            data,
+            author: format!("acct:{me}@h"),
+            kid: String::new(),
+            at: String::new(),
+            nonce: String::new(),
+        };
+        let stream_of = |x: Xuid| streams::account(x);
+
+        // A request is sent from the writer's own account to another that
+        // exists, with nothing between the two already.
+        assert_eq!(
+            validate(
+                &state,
+                &body(
+                    stream_of(me),
+                    types::FRIEND_REQUESTED,
+                    json!({"from": me, "to": other})
+                )
+            ),
+            Ok(())
+        );
+        for (stream, data) in [
+            (stream_of(me), json!({"from": me, "to": me})),
+            (stream_of(me), json!({"from": me, "to": nobody})),
+            (stream_of(me), json!({"from": other, "to": me})),
+            (stream_of(other), json!({"from": me, "to": other})),
+        ] {
+            assert!(
+                validate(&state, &body(stream, types::FRIEND_REQUESTED, data)).is_err(),
+                "a friend request like this must be refused"
+            );
+        }
+
+        // Once one is pending, it is answered by its recipient only, and
+        // no second request fits in either direction.
+        state.friends.insert(
+            me,
+            crate::model::Relations {
+                outgoing: vec![(other, String::new())],
+                ..Default::default()
+            },
+        );
+        state.friends.insert(
+            other,
+            crate::model::Relations {
+                incoming: vec![(me, String::new())],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            validate(
+                &state,
+                &body(
+                    stream_of(other),
+                    types::FRIEND_ACCEPTED,
+                    json!({"from": me, "to": other})
+                )
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate(
+                &state,
+                &body(
+                    stream_of(other),
+                    types::FRIEND_DECLINED,
+                    json!({"from": me, "to": other})
+                )
+            ),
+            Ok(())
+        );
+        for (stream, kind, data) in [
+            // Answered on the requester's own stream instead.
+            (
+                stream_of(me),
+                types::FRIEND_ACCEPTED,
+                json!({"from": me, "to": other}),
+            ),
+            // No pending request the other way, either.
+            (
+                stream_of(me),
+                types::FRIEND_ACCEPTED,
+                json!({"from": other, "to": me}),
+            ),
+            // No such pending request.
+            (
+                stream_of(other),
+                types::FRIEND_DECLINED,
+                json!({"from": nobody, "to": other}),
+            ),
+            // A second request, either direction.
+            (
+                stream_of(me),
+                types::FRIEND_REQUESTED,
+                json!({"from": me, "to": other}),
+            ),
+            (
+                stream_of(other),
+                types::FRIEND_REQUESTED,
+                json!({"from": other, "to": me}),
+            ),
+        ] {
+            assert!(
+                validate(&state, &body(stream, kind, data)).is_err(),
+                "{kind}"
+            );
+        }
+
+        // Removal needs a friendship or a pending request between the two,
+        // written from one of their accounts.
+        let mut friends = crate::model::State::default();
+        friends.accounts.insert(me, account(me));
+        friends.accounts.insert(other, account(other));
+        assert!(
+            validate(
+                &friends,
+                &body(
+                    stream_of(me),
+                    types::FRIEND_REMOVED,
+                    json!({"by": me, "friend": other})
+                )
+            )
+            .is_err()
+        );
+        friends.friends.insert(
+            me,
+            crate::model::Relations {
+                friends: vec![(other, String::new())],
+                ..Default::default()
+            },
+        );
+        assert!(
+            validate(
+                &friends,
+                &body(
+                    stream_of(other),
+                    types::FRIEND_REMOVED,
+                    json!({"by": me, "friend": other})
+                )
+            )
+            .is_err()
+        );
+        assert_eq!(
+            validate(
+                &friends,
+                &body(
+                    stream_of(me),
+                    types::FRIEND_REMOVED,
+                    json!({"by": me, "friend": other})
+                )
+            ),
+            Ok(())
+        );
     }
 
     #[test]

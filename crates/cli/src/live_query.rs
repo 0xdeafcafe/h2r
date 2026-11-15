@@ -28,6 +28,9 @@ const USAGE: &str = "usage: h2 live q <what> [--server URL] [--json|--jsonl]
                           type, at, data, author, kid, jws, jws_index?, hash}];
                           --follow then streams new ones as JSON lines
   keys <gamertag>         {keys: [{kid, jwk, valid_from, valid_to}], position}
+  friends <gamertag>      one account's friends, with presence, and pending
+                          requests in and out: {friends: [{xuid, gamertag,
+                          friends_since, presence?}], requests_in, requests_out}
   verify [--from N]       re-check every event's signature and hash chain here:
                           {checked, anchored, bad: [{position, stream, type,
                           problem}], position}; exits 1 if any is bad
@@ -122,6 +125,12 @@ pub fn run(mut args: Args) -> Result<()> {
             let keys: Value = client.get(&format!("/accounts/{}/keys", path_part(&tag)), &[])?;
             emit(&mut out, format, Output::One(keys), &[])
         }
+        "friends" => {
+            let tag = one(args, "friends takes a gamertag")?;
+            let friends: Value =
+                client.get(&format!("/accounts/{}/friends", path_part(&tag)), &[])?;
+            emit(&mut out, format, Output::One(friends), &[])
+        }
         "verify" => {
             let from = from(&mut args)?;
             no_more(args)?;
@@ -169,7 +178,7 @@ fn from(args: &mut Args) -> Result<u64> {
 }
 
 /// A gamertag or id as one URL path segment (gamertags have spaces).
-fn path_part(s: &str) -> String {
+pub(crate) fn path_part(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
             b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),

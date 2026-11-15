@@ -219,9 +219,15 @@ export function normalizeAppearance(v: unknown): Appearance | null {
     const n = o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined;
     return typeof n === "number" && Number.isFinite(n) ? n : undefined;
   };
-  const fg = idx(w.emblem, "fg"), bg = idx(w.emblem, "bg");
-  const primary = idx(w.colours, "primary"), secondary = idx(w.colours, "secondary");
-  const tertiary = idx(w.colours, "tertiary"), quaternary = idx(w.colours, "quaternary");
+  // The game's telemetry sends it flat (`primary`..`quaternary`,
+  // `emblem_foreground`, `emblem_background`; docs/live-api.md); the nested
+  // form is accepted too.
+  const fg = idx(w.emblem, "fg") ?? idx(w, "emblem_foreground");
+  const bg = idx(w.emblem, "bg") ?? idx(w, "emblem_background");
+  const primary = idx(w.colours, "primary") ?? idx(w, "primary");
+  const secondary = idx(w.colours, "secondary") ?? idx(w, "secondary");
+  const tertiary = idx(w.colours, "tertiary") ?? idx(w, "tertiary");
+  const quaternary = idx(w.colours, "quaternary") ?? idx(w, "quaternary");
   // Only the keys that carry an index, so a kept half-shape has no
   // `undefined` members.
   const emblem = fg !== undefined || bg !== undefined

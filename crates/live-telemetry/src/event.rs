@@ -50,12 +50,29 @@ impl PlayerStats {
     }
 }
 
+/// A player's appearance read from the signed-in profile of their local
+/// player slot (docs/live-telemetry.md, "Player appearance"). The game's
+/// rank is an Xbox Live attribute, not guest memory, and is not read.
+pub use live_proto::game::Appearance;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlayerState {
     pub datum: u32,
     pub player: live_proto::game::Player,
+    pub appearance: Appearance,
     pub unit: u32,
     pub stats: PlayerStats,
+}
+
+impl PlayerState {
+    /// The player as roster events send it, with the appearance when any of
+    /// it is known.
+    pub fn wire_player(&self) -> live_proto::game::Player {
+        live_proto::game::Player {
+            appearance: self.appearance.known(),
+            ..self.player.clone()
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

@@ -11,7 +11,7 @@ mod session;
 mod sink;
 
 pub use config::{TelemetryAccount, TelemetryConfig, TelemetrySinkConfig};
-pub use event::{GameEvent, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot};
+pub use event::{Appearance, GameEvent, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot};
 pub use hooks::{Telemetry, install};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{game_info, game_tick, object, players, snapshot, team_scores, yaw};

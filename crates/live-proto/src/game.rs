@@ -56,6 +56,41 @@ pub struct Player {
     pub team: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local: Option<bool>,
+    /// What the player looks like, as far as the game's memory says
+    /// (docs/live-telemetry.md, Player appearance).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<Appearance>,
+}
+
+/// A player's colours and emblem: `primary`..`quaternary` index the art
+/// manifest's 18-colour palette, `emblem_foreground` 0..63 and
+/// `emblem_background` 0..31. Every field is independently optional.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Appearance {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secondary: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tertiary: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quaternary: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emblem_foreground: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emblem_background: Option<u8>,
+}
+
+impl Appearance {
+    /// True when no field is known.
+    pub fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// `None` when nothing is known, so the key is left out.
+    pub fn known(self) -> Option<Self> {
+        (!self.is_empty()).then_some(self)
+    }
 }
 
 /// `POST /v1/games`: `GameStarted` data without `game_id` (or `host`).
@@ -351,6 +386,7 @@ mod tests {
                 xuid: None,
                 team: 0,
                 local: Some(true),
+                appearance: None,
             },
             Player {
                 index: 1,
@@ -358,6 +394,7 @@ mod tests {
                 xuid: None,
                 team: 1,
                 local: None,
+                appearance: None,
             },
         ]
     }

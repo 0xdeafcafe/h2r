@@ -17,15 +17,17 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use live_proto::motd::Motd;
-use live_proto::sign::{AccountRequest, KeyPair, issue_token};
+use live_proto::sign::{AccountRequest, EventBody, KeyPair, issue_token};
 use live_proto::{
-    AccountKeys, AccountSummary, CreatedAccount, Discovery, ErrorBody, Gamertag, HALO_2_MOTD_FILE,
-    HALO_2_TITLE_ID, Page, PublishedFile, Xuid, bearer_allowed, lxm,
+    AccountDetail, AccountKeys, AccountSummary, CreatedAccount, Discovery, ErrorBody,
+    FriendEventData, FriendRemovedData, Friends, Gamertag, HALO_2_MOTD_FILE, HALO_2_TITLE_ID, Page,
+    PublishedFile, Xuid, bearer_allowed, lxm, streams, types,
 };
 use live_server::ServerIdentity;
 use serde::de::DeserializeOwned;
 
 use crate::live_accounts::{self, LocalAccount};
+use crate::live_query::path_part;
 
 const USAGE: &str = "usage: h2 live <command> [options]
 
@@ -47,6 +49,16 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           {xuid, gamertag, server, key}) to accounts.json,
                           once the server confirms the key is the account's
   account list [--server URL]
+  friend add <gamertag> [--as GAMERTAG] [--server URL]
+  friend accept <gamertag> [--as GAMERTAG] [--server URL]
+  friend decline <gamertag> [--as GAMERTAG] [--server URL]
+  friend remove <gamertag> [--as GAMERTAG] [--server URL]
+                          befriend other accounts as a local one: a signed
+                          friend event on your account stream (the server
+                          checks the request is yours to send or answer)
+  friend list [--as GAMERTAG] [--server URL]
+                          your friends with their presence, and pending
+                          requests in and out
   motd set <line>... [--header TEXT] [--server URL] [--data DIR]
   motd set --file PATH [--server URL] [--data DIR]
                           publish Halo 2's message_of_the_day.dat, built from
@@ -76,6 +88,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("account", Some("create")) => account_create(rest.shift()),
         ("account", Some("import")) => account_import(rest.shift()),
         ("account", Some("list")) => account_list(rest.shift()),
+        ("friend", Some("add")) => friend(rest.shift(), FriendAction::Add),
+        ("friend", Some("accept")) => friend(rest.shift(), FriendAction::Accept),
+        ("friend", Some("decline")) => friend(rest.shift(), FriendAction::Decline),
+        ("friend", Some("remove")) => friend(rest.shift(), FriendAction::Remove),
+        ("friend", Some("list")) => friend(rest.shift(), FriendAction::List),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
@@ -517,6 +534,233 @@ fn account_list(mut args: Args) -> Result<()> {
     }
 }
 
+/// What `h2 live friend` does to one friendship.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FriendAction {
+    /// Send a request.
+    Add,
+    /// Accept one addressed to the acting account.
+    Accept,
+    /// Decline one addressed to the acting account.
+    Decline,
+    /// End a friendship, or cancel a pending request.
+    Remove,
+    /// Friends with presence, pending requests in and out.
+    List,
+}
+
+impl FriendAction {
+    fn word(self) -> &'static str {
+        match self {
+            FriendAction::Add => "add",
+            FriendAction::Accept => "accept",
+            FriendAction::Decline => "decline",
+            FriendAction::Remove => "remove",
+            FriendAction::List => "list",
+        }
+    }
+}
+
+fn friend(mut args: Args, action: FriendAction) -> Result<()> {
+    let server = args.take("--server")?;
+    let as_tag = args.take("--as")?;
+    let target = match action {
+        FriendAction::List => {
+            let rest = args.positional()?;
+            if !rest.is_empty() {
+                bail!("friend list takes no gamertag\n\n{USAGE}");
+            }
+            None
+        }
+        _ => {
+            let [tag] = args.positional()?.try_into().map_err(|_| {
+                anyhow::anyhow!(
+                    "friend {} takes one gamertag (quote it if it has spaces)\n\n{USAGE}",
+                    action.word()
+                )
+            })?;
+            Some(tag)
+        }
+    };
+    let client = Client::connect(server)?;
+    friend_run(
+        &client,
+        &accounts_path()?,
+        as_tag.as_deref(),
+        action,
+        target.as_deref(),
+    )
+}
+
+/// Everything behind `h2 live friend`, against `client` with the local
+/// accounts in `accounts`: the acting local account is `as_tag` (by
+/// default the only one on this server), the other side `target` by
+/// gamertag. Writes are signed friend events on the account stream, by
+/// the existing signed-event path (`POST /v1/events`).
+pub(crate) fn friend_run(
+    client: &Client,
+    accounts: &Path,
+    as_tag: Option<&str>,
+    action: FriendAction,
+    target: Option<&str>,
+) -> Result<()> {
+    let me = pick_account(client, accounts, as_tag)?;
+    if action == FriendAction::List {
+        let friends: Friends = client.get(
+            &format!("/accounts/{}/friends", path_part(&me.gamertag)),
+            &[],
+        )?;
+        print_friends(&friends);
+        return Ok(());
+    }
+    let raw = target.unwrap_or_default();
+    let tag = Gamertag::new(raw).with_context(|| format!("{raw:?} is not a valid gamertag"))?;
+    let other = lookup(client, &tag)?;
+    let key = me.key_pair()?;
+    let author = me
+        .id
+        .clone()
+        .unwrap_or_else(|| live_accounts::author_id(me.xuid, &client.discovery.id));
+    let (kind, data, done) = match action {
+        FriendAction::Add => (
+            types::FRIEND_REQUESTED,
+            serde_json::to_value(FriendEventData {
+                from: me.xuid,
+                to: other,
+            })
+            .expect("serializes"),
+            format!("friend request sent to {tag}"),
+        ),
+        FriendAction::Accept | FriendAction::Decline => {
+            let word = action.word();
+            (
+                if action == FriendAction::Accept {
+                    types::FRIEND_ACCEPTED
+                } else {
+                    types::FRIEND_DECLINED
+                },
+                serde_json::to_value(FriendEventData {
+                    from: other,
+                    to: me.xuid,
+                })
+                .expect("serializes"),
+                format!("{tag}'s friend request {word}d"),
+            )
+        }
+        FriendAction::Remove => (
+            types::FRIEND_REMOVED,
+            serde_json::to_value(FriendRemovedData {
+                by: me.xuid,
+                friend: other,
+            })
+            .expect("serializes"),
+            format!("{tag} removed"),
+        ),
+        FriendAction::List => unreachable!("handled above"),
+    };
+    let body = EventBody::at_unix(&key, &author, &streams::account(me.xuid), kind, data, now());
+    let token = issue_token(
+        &key,
+        &author,
+        &client.discovery.id,
+        lxm::EVENTS_WRITE,
+        now(),
+    );
+    let req = client
+        .agent
+        .post(&client.url("/events"))
+        .set("content-type", "application/jose");
+    let req = client.authorized(req, token)?;
+    call(req, Some(body.sign(&key).as_bytes()))?;
+    println!("{done}");
+    Ok(())
+}
+
+/// The local account to act as on `client`'s server: the one named by
+/// `as_tag`, or the only one there.
+fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
+    let mine: Vec<LocalAccount> = live_accounts::load(accounts)?
+        .into_iter()
+        .filter(|a| a.is_on(&client.base, &client.discovery.id))
+        .filter(|a| as_tag.is_none_or(|t| a.gamertag.eq_ignore_ascii_case(t)))
+        .collect();
+    match mine.len() {
+        1 => Ok(mine.into_iter().next().expect("one")),
+        0 => {
+            let mut what = format!("no local account on {}", client.base);
+            if let Some(t) = as_tag {
+                what.push_str(&format!(" named {t:?}"));
+            }
+            bail!(
+                "{what} in {}; make one with `h2 live account create`",
+                accounts.display()
+            )
+        }
+        _ => bail!(
+            "several local accounts on {} ({}); pass --as <gamertag>",
+            client.base,
+            mine.iter()
+                .map(|a| a.gamertag.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// A gamertag's account on `client`'s server, as its XUID.
+fn lookup(client: &Client, tag: &Gamertag) -> Result<Xuid> {
+    let detail: AccountDetail = client
+        .get(&format!("/accounts/{}", path_part(tag.as_str())), &[])
+        .map_err(|e| {
+            if status_of(&e) == Some(404) {
+                anyhow::anyhow!("{tag} is not an account on {}", client.base)
+            } else {
+                e
+            }
+        })?;
+    Ok(detail.summary.xuid)
+}
+
+/// The friends document as a small report: friends with their presence,
+/// then pending requests in and out.
+fn print_friends(friends: &Friends) {
+    if friends.friends.is_empty()
+        && friends.requests_in.is_empty()
+        && friends.requests_out.is_empty()
+    {
+        println!("no friends and no pending requests");
+        return;
+    }
+    if !friends.friends.is_empty() {
+        println!(
+            "{:<18} {:<16} {:<8} {:<12} {}",
+            "xuid", "gamertag", "state", "game", "friends since"
+        );
+        for f in &friends.friends {
+            let (state, game) = match &f.presence {
+                Some(p) => (p.state.as_str(), p.game_id.as_deref().unwrap_or("-")),
+                None => ("offline", "-"),
+            };
+            println!(
+                "{:<18} {:<16} {:<8} {:<12} {}",
+                f.xuid, f.gamertag, state, game, f.friends_since
+            );
+        }
+    }
+    for (title, rows) in [
+        ("requests in", &friends.requests_in),
+        ("requests out", &friends.requests_out),
+    ] {
+        if rows.is_empty() {
+            continue;
+        }
+        println!("\n{title}:");
+        for r in rows {
+            println!("  {} ({}) at {}", r.gamertag, r.xuid, r.at);
+        }
+    }
+}
+
 /// The operator: this machine's server identity, checked against the
 /// server it is about to talk to.
 fn operator(data: Option<String>, client: &Client) -> Result<ServerIdentity> {
@@ -667,6 +911,121 @@ mod tests {
             status_of(&import(&file, None, &other).unwrap_err()),
             Some(404)
         );
+        drop(server);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn friend_commands_against_a_server() {
+        let dir = std::env::temp_dir().join(format!("h2-live-friends-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir.join("server"),
+            Default::default(),
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        let (alpha, alpha_key) = client.create_account("Alpha", None).unwrap();
+        let (bravo, bravo_key) = client.create_account("Bravo", None).unwrap();
+        let accounts = dir.join("accounts.json");
+        live_accounts::save(
+            &accounts,
+            &[
+                LocalAccount::new(
+                    alpha.xuid,
+                    "Alpha",
+                    &server.url,
+                    &client.discovery,
+                    &alpha_key,
+                ),
+                LocalAccount::new(
+                    bravo.xuid,
+                    "Bravo",
+                    &server.url,
+                    &client.discovery,
+                    &bravo_key,
+                ),
+            ],
+        )
+        .unwrap();
+
+        // Two local accounts on the server: the command wants --as.
+        let err =
+            friend_run(&client, &accounts, None, FriendAction::Add, Some("Bravo")).unwrap_err();
+        assert!(format!("{err:#}").contains("--as"), "{err:#}");
+
+        friend_run(
+            &client,
+            &accounts,
+            Some("Alpha"),
+            FriendAction::Add,
+            Some("Bravo"),
+        )
+        .unwrap();
+        let f: Friends = client.get("/accounts/Alpha/friends", &[]).unwrap();
+        assert_eq!(f.requests_out[0].gamertag.as_str(), "Bravo");
+        assert!(f.friends.is_empty());
+        let f: Friends = client.get("/accounts/Bravo/friends", &[]).unwrap();
+        assert_eq!(f.requests_in[0].gamertag.as_str(), "Alpha");
+
+        // A duplicate is the server's conflict, surfaced as its status.
+        let err = friend_run(
+            &client,
+            &accounts,
+            Some("Alpha"),
+            FriendAction::Add,
+            Some("Bravo"),
+        )
+        .unwrap_err();
+        assert_eq!(status_of(&err), Some(409));
+        // Only the request's recipient can answer it.
+        let err = friend_run(
+            &client,
+            &accounts,
+            Some("Alpha"),
+            FriendAction::Accept,
+            Some("Bravo"),
+        )
+        .unwrap_err();
+        assert_eq!(status_of(&err), Some(409));
+        // An unknown target.
+        let err = friend_run(
+            &client,
+            &accounts,
+            Some("Alpha"),
+            FriendAction::Add,
+            Some("Nobody"),
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("is not an account"), "{err:#}");
+
+        friend_run(
+            &client,
+            &accounts,
+            Some("Bravo"),
+            FriendAction::Accept,
+            Some("Alpha"),
+        )
+        .unwrap();
+        let f: Friends = client.get("/accounts/Alpha/friends", &[]).unwrap();
+        assert_eq!(f.friends[0].gamertag.as_str(), "Bravo");
+        assert!(f.friends[0].presence.is_none(), "Bravo is offline");
+        let f: Friends = client.get("/accounts/Bravo/friends", &[]).unwrap();
+        assert_eq!(f.friends[0].gamertag.as_str(), "Alpha");
+
+        friend_run(
+            &client,
+            &accounts,
+            Some("Alpha"),
+            FriendAction::Remove,
+            Some("Bravo"),
+        )
+        .unwrap();
+        let f: Friends = client.get("/accounts/Alpha/friends", &[]).unwrap();
+        assert!(f.friends.is_empty() && f.requests_in.is_empty() && f.requests_out.is_empty());
+
         drop(server);
         fs::remove_dir_all(&dir).unwrap();
     }

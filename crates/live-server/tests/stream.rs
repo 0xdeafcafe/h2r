@@ -288,6 +288,7 @@ async fn ingest_fans_out_and_records_frames() {
             xuid: Some(account.xuid),
             team: 0,
             local: Some(true),
+            appearance: None,
         }],
     };
     let game_id = live

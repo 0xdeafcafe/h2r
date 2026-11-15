@@ -44,6 +44,8 @@ Event types so far (payload fields):
 | stream | type | data |
 |---|---|---|
 | `account-<xuid>` | `AccountCreated` | `xuid`, `gamertag` |
+| `account-<xuid>` | `KeyAdded`, `KeyRevoked` | `jwk`, `kid` (security §1) |
+| `account-<xuid>` | `FriendRequested`, `FriendAccepted`, `FriendDeclined`, `FriendRemoved` | `from`/`to`, or `by`/`friend` ([Friends](#friends), below) |
 | `gamertag-<lower>` | `GamertagReserved` | `xuid` |
 | `title-<id>-file-<name>` | `TitleFilePublished` | `title_id`, `name`, `sha256`, `size` |
 | `presence-<xuid>` | `SignedIn`, `PresenceChanged`, `SignedOut`, `PresenceExpired` | `xuid`, `state`, `game_id?` |
@@ -57,6 +59,19 @@ Event types so far (payload fields):
 A player: `{ "index": 0, "name": "Sneaky Pete", "xuid": "...?", "team": 1,
 "local": true }`. `index` is the game's player slot and is stable for the
 game. `team` is the game's team index; colours are the web app's business.
+
+A player may also carry `appearance`, read from a local player's signed-in
+profile; it is left out when nothing is known, and so is any field in it:
+
+```json
+"appearance": { "primary": 5, "secondary": 9, "tertiary": 2, "quaternary": 11,
+                "emblem_foreground": 30, "emblem_background": 7 }
+```
+
+`primary`..`quaternary` index the art manifest's 18-colour `palette`;
+`emblem_foreground` (0..63) and `emblem_background` (0..31) index
+`emblem/fg/<n>` and `emblem/bg/<n>`. Remote players have none yet, and there
+is no rank (docs/live-telemetry.md, "Player appearance").
 
 A frame (`tick` is the game tick, 30 per second):
 
@@ -78,6 +93,7 @@ up to 15 Hz and are not stored.
 | `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
+| `GET /v1/accounts/{gamertag}/friends` | friends with presence, pending requests in and out ([Friends](#friends), below) |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
 | `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, team_play, started_at, ended_at?, players, teams?}` |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
@@ -102,6 +118,57 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
+
+## Friends
+
+Friendship is event sourced like everything else, on the account streams.
+A request is directional; once accepted, the friendship is mutual, and
+either side can end it. Each event names both accounts by XUID and is
+written by the acting account on **its own** account stream, signed with
+its key and sent like other account events (`POST /v1/events`, token with
+`lxm: events.write`):
+
+| type | data | written by | does |
+|---|---|---|---|
+| `FriendRequested` | `{from, to}` | `from` | asks `to`; pending until answered |
+| `FriendAccepted` | `{from, to}` | `to` | accepts; the two are friends from this event's `at` |
+| `FriendDeclined` | `{from, to}` | `to` | declines; the request is gone |
+| `FriendRemoved` | `{by, friend}` | either of the two | ends the friendship, or cancels a pending request between them |
+
+The server refuses (`invalid` or `conflict`) a request to oneself or to
+an account that does not exist, a second request while one is pending in
+either direction or the two are already friends, an answer on any account
+but the request's recipient or to a request that is not pending, and a
+removal without a friendship or pending request between the two.
+
+**`GET /v1/accounts/{gamertag}/friends`** (public like the other reads)
+is everything a friends list needs in one document, so clients enumerate
+with one call:
+
+```json
+{ "friends": [
+    { "xuid": "0009a1b2c3d4e5f6", "gamertag": "Sneaky Pete",
+      "friends_since": "2026-11-15T20:14:03.120Z",
+      "presence": { "state": "playing", "game_id": "7f3c...", "since": "..." } } ],
+  "requests_in":  [ { "xuid": "...", "gamertag": "...", "at": "..." } ],
+  "requests_out": [ { "xuid": "...", "gamertag": "...", "at": "..." } ],
+  "position": 1042 }
+```
+
+The lists are sorted by gamertag. `presence` is the friend's current
+presence and is absent when the friend is offline; a pending request
+carries no presence (the two are not friends yet), just the other account
+and when the request was made. `friends_since` is the `FriendAccepted`
+event's `at`.
+
+The game side's friends enumeration makes exactly this call with the
+signed-in account's gamertag and reads `friends` (gamertag, xuid,
+presence); the CLI is `h2 live friend add|accept|decline|remove
+<gamertag>` and `h2 live friend list`, and agents can query the same
+document with `h2 live q friends <gamertag>`. Friend events reach
+`/v1/stream` readers like every event (watch `FriendRequested` and
+`FriendAccepted` for the toast), and a client that misses some resumes
+from the snapshot's `position`.
 
 ## Streams (WebSocket)
 

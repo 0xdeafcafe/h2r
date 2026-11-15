@@ -151,6 +151,7 @@ fn api_router(live: Arc<Live>) -> Router {
         .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
         .route("/v1/accounts/{gamertag}", get(account))
         .route("/v1/accounts/{gamertag}/keys", get(keys_by_tag))
+        .route("/v1/accounts/{gamertag}/friends", get(account_friends))
         .route("/v1/presence", get(presence))
         .route("/v1/presence/ping", post(ping))
         .route("/v1/invites", post(create_invite))
@@ -321,6 +322,16 @@ async fn keys_by_tag(
 ) -> ApiResult<Response> {
     live.authorize_read(bearer(&headers))?;
     Ok(json(StatusCode::OK, &live.keys_by_tag(&gamertag(&tag)?)?))
+}
+
+/// `GET /v1/accounts/{gamertag}/friends` (docs/live-api.md, Friends).
+async fn account_friends(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.friends(&gamertag(&tag)?)?))
 }
 
 async fn keys_by_xuid(

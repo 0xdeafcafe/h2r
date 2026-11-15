@@ -36,6 +36,40 @@ pub const PLAYER_NAME: u32 = 0x44;
 pub const PLAYER_TEAM: u32 = 0xc0;
 pub const PLAYER_NAME_CODE_UNITS: usize = 32;
 
+// Player appearance (profile colours and emblem layers). The player record's
+// confirmed local user index (`PLAYER_LOCAL_USER`, 0..3) selects one of four
+// local player slots; a slot signed in with a profile (flags bit 4) embeds
+// the 0x1e0-byte profile raw at `PLAYER_SLOT_PROFILE`, and the profile's
+// appearance block sits `PROFILE_APPEARANCE` into it. Every offset below is
+// "likely" (same-hash community decompilation; docs/live-gamestate.md, local
+// player slots), not runtime-validated, so the reader range-checks each
+// value and drops what fails. Remote players' profiles never pass through
+// the local slots: their appearance reads as empty until the in-record
+// location is validated.
+pub const PLAYER_SLOTS: u32 = 0x0054_e8e0; // likely: 4 slots, one per controller
+pub const PLAYER_SLOT_COUNT: u32 = 4;
+pub const PLAYER_SLOT_SIZE: u32 = 0xc70; // likely
+pub const PLAYER_SLOT_FLAGS: u32 = 0x0; // likely
+pub const PLAYER_SLOT_SIGNED_IN: u32 = 0x10; // likely: flags bit 4
+pub const PLAYER_SLOT_PROFILE: u32 = 0x18; // likely: 0x1e0 bytes, raw
+pub const PROFILE_APPEARANCE: u32 = 0x118; // likely: 0x10 bytes
+pub const APPEARANCE_PRIMARY: u32 = 0x0; // likely: colours[0], palette index
+pub const APPEARANCE_SECONDARY: u32 = 0x1; // likely: colours[1]
+pub const APPEARANCE_TERTIARY: u32 = 0x2; // likely: colours[2]
+pub const APPEARANCE_QUATERNARY: u32 = 0x3; // likely: colours[3]
+#[allow(dead_code)] // documents the block; not sent
+pub const APPEARANCE_MODEL: u32 = 0x4; // likely; not sent
+pub const APPEARANCE_EMBLEM_FOREGROUND: u32 = 0x5; // likely: 0..63
+pub const APPEARANCE_EMBLEM_BACKGROUND: u32 = 0x6; // likely: 0..31
+#[allow(dead_code)] // documents the block; not sent
+pub const APPEARANCE_EMBLEM_FLAGS: u32 = 0x7; // likely; not sent
+
+// Valid ranges for the appearance values (18 palette colours, 64 foreground
+// layers, 32 background layers; the art manifest uses the same counts).
+pub const PALETTE_COLOURS: u32 = 18;
+pub const EMBLEM_FOREGROUNDS: u32 = 64;
+pub const EMBLEM_BACKGROUNDS: u32 = 32;
+
 pub const ENGINE_STATBORG: u32 = 0x304;
 pub const ENGINE_PLAYER_STATS: u32 = 0x308;
 pub const ENGINE_TEAM_STATS: u32 = 0x4c8;
@@ -67,6 +101,12 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("unit.vehicle_seat", 0x1fc),
     ("damage_report.body_amount", 0x44),
     ("damage_report.shield_amount", 0x48),
+    ("player_slot.signed_in_flag", 0x10),
+    ("player_slot.profile", 0x18),
+    ("profile.appearance", 0x118),
+    ("profile.appearance.colors", 0x118),
+    ("profile.appearance.emblem_foreground", 0x11d),
+    ("profile.appearance.emblem_background", 0x11e),
 ];
 
 pub const fn variant_name(index: i32) -> Option<&'static str> {
