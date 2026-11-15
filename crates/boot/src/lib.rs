@@ -878,12 +878,12 @@ mod tests {
 
     /// `h2 build`, `h2 run` and `h2 play` (and `h2 follow`, which runs
     /// `h2 play`) all stamp through here, so the stamp names the effective
-    /// defaults: inline RAM, native x87 and accounting on unless set to `0`.
+    /// defaults: inline RAM, native x87/SSE and accounting on unless set to `0`.
     #[test]
     fn the_stamp_records_the_effective_fast_path_defaults() {
         let stamp = build_stamp(b"synthetic");
         let on = |name: &str| std::env::var(name).as_deref() != Ok("0");
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE"] {
+        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE"] {
             assert_eq!(stamp.contains(&format!("\"-D{name}=1\"")), on(name), "{name}: {stamp}");
         }
         let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT") });

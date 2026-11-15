@@ -62,6 +62,8 @@ use ir::{Control, IrFunction, Target};
 /// The support header, copied next to the generated files.
 pub const PRELUDE: &str = include_str!("../c/h2gen.h");
 pub const FAST_MEMORY_HEADER: &str = include_str!("../c/h2fastmem.h");
+/// Guarded native SSE arithmetic; enabled unless `H2_SSE_NATIVE=0`.
+pub const SSE_NATIVE_HEADER: &str = include_str!("../c/h2sse_native.h");
 /// The SSE reference semantics in C (`h2s_*`), included by [`PRELUDE`].
 pub const SIMD_HEADER: &str = include_str!("../../simd/c/h2simd.h");
 /// The x87 helper declarations (`h2x87_v1_*`), included by [`PRELUDE`].
@@ -332,6 +334,7 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     files.insert("h2fastmem.h".into(), FAST_MEMORY_HEADER.to_owned());
     files.insert("h2simd.h".into(), SIMD_HEADER.to_owned());
     files.insert("h2x87.h".into(), X87_HEADER.to_owned());
+    files.insert("h2sse_native.h".into(), SSE_NATIVE_HEADER.to_owned());
     files.insert("h2x87_native.h".into(), X87_NATIVE_HEADER.to_owned());
 
     // Which file (stem) defines each owner's handler.

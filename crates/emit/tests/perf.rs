@@ -612,3 +612,77 @@ fn inline_ram_checks_track_mapping_changes_faults_writes_and_slice_budget() {
     }
     writer.join().unwrap();
 }
+
+/// Real RAM, aliases and page faults through both generated REP paths.
+#[test]
+fn bulk_rep_movs_preserves_overlap_fault_progress_watch_and_accounting() {
+    use runtime::{TransferAbi, abi, watch::CONTIGUOUS_BASE};
+    const SP: u32 = 0x200000;
+    const ALIAS: u32 = 0x300000;
+    for width in [1, 2, 4] {
+        let f = function(A, |a| {
+            match width { 1 => a.rep().movsb()?, 2 => a.rep().movsw()?, _ => a.rep().movsd()? }
+            a.ret()
+        });
+        let (_lib, dispatch) = compile_module_with(
+            &format!("bulk-rep-{width}"), vec![f], false, true,
+            emit::opt::Passes::ALL, emit::Codegen { accounting: true },
+        );
+        let rt = Runtime::new(Guest::new(), dispatch);
+        for (src, dst, count) in [
+            (DATA + 32, DATA + 800, 100),
+            (DATA + 32, DATA + 33, 100), // propagating forward overlap
+            (DATA + 33, DATA + 32, 100), // memmove-safe forward overlap
+            (DATA + 400, DATA + 399, 100), // propagating reverse overlap
+            (DATA + 399, DATA + 400, 100),
+            (DATA + 32, ALIAS + 33, 100), // physical overlap through aliases
+            (DATA + 4080, DATA + 800, 100), // source page crossing
+            (DATA + 800, DATA + 4080, 100), // destination page crossing
+            (DATA + 800, DATA + 8176, 100), // partial-progress write fault
+            (0xfd00_0000, DATA + 32, 5), // MMIO must retain its diagnostic
+            (u32::MAX - 1, DATA + 32, 5),
+            (DATA + 32, DATA + 800, 0),
+        ] {
+            for reverse in [false, true] {
+                for slice in [1, 3, 10000] {
+                    let mut results = Vec::new();
+                    for fast in [false, true] {
+                        let mut mem = Guest::new();
+                        mem.map(A, 4096, 0, Permissions::RX).unwrap();
+                        mem.map(DATA, 8192, 4096, Permissions::RW).unwrap();
+                        mem.map(ALIAS, 8192, 4096, Permissions::RW).unwrap();
+                        mem.map(SP, 4096, 12288, Permissions::RW).unwrap();
+                        let bytes: Vec<_> = (0..8192).map(|i| ((i * 71 + 37) >> 3) as u8).collect();
+                        mem.write_bytes(DATA, &bytes, 1).unwrap();
+                        mem.set_u32(SP, runtime::exec::HARNESS_EXIT).unwrap();
+                        let watch = mem.subscribe_writes("bulk-rep");
+                        mem.watch_writes(watch, CONTIGUOUS_BASE + 4096, 8192).unwrap();
+                        *rt.memory() = mem;
+                        let mut ctx = ExecCtx::new(rt.clone(), 1);
+                        ctx.enable_fast_memory(fast);
+                        let mut cpu = CpuAbi { esp: SP, esi: src, edi: dst, ecx: count,
+                            eflags: if reverse { 0x602 } else { 0x202 }, ..CpuAbi::default() };
+                        let mut pending = TransferAbi::jump(A);
+                        let mut stops = Vec::new();
+                        let mut charged = 0;
+                        let result = loop {
+                            ctx.arm_preemption(slice);
+                            let end = Runner::default().run_from(&mut cpu, &mut ctx, pending);
+                            charged += ctx.take_slice_spent();
+                            if let Some(next) = ctx.take_preempted() {
+                                stops.push((cpu, charged));
+                                pending = next;
+                            } else { break end; }
+                        };
+                        let mut bytes = vec![0;8192];
+                        rt.memory().read_bytes(DATA, &mut bytes, 1).unwrap();
+                        let dirty = rt.memory().take_dirty(watch).unwrap();
+                        results.push((cpu, result.kind, result.target_pc, charged, stops, bytes, dirty));
+                        assert!(matches!(result.kind, abi::STOP | abi::FAULT));
+                    }
+                    assert_eq!(results[0], results[1], "width={width} src={src:x} dst={dst:x} count={count} reverse={reverse} slice={slice}");
+                }
+            }
+        }
+    }
+}

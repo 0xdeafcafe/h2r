@@ -96,6 +96,33 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
     e.out
 }
 
+/// Recognize the complete flat MOVS iteration, including its address updates.
+/// Never infer memory behavior from a mnemonic or an instruction byte string.
+fn rep_movs_width(body: &[Stmt]) -> Option<u32> {
+    let [
+        Stmt::ReadFlag { dst: df, flag: Flag::Df },
+        Stmt::Assign { dst: step, expr: Expr::Select { cond, a: neg, b: pos } },
+        Stmt::ReadReg { dst: src, reg: Gpr::Esi, slice: Slice::Full },
+        Stmt::ReadReg { dst, reg: Gpr::Edi, slice: Slice::Full },
+        Stmt::Load { dst: value, addr: from },
+        Stmt::Store { addr: to, value: stored },
+        Stmt::Assign { dst: next_src, expr: Expr::Binary { op: BinOp::Add, a: sa, b: ss } },
+        Stmt::WriteReg { reg: Gpr::Esi, slice: Slice::Full, value: new_src },
+        Stmt::Assign { dst: next_dst, expr: Expr::Binary { op: BinOp::Add, a: da, b: ds } },
+        Stmt::WriteReg { reg: Gpr::Edi, slice: Slice::Full, value: new_dst },
+    ] = body else { return None };
+    let width = value.width.bytes();
+    (matches!(width, 1 | 2 | 4) && *cond == Value::Temp(*df)
+        && *pos == Value::u32(width) && *neg == Value::u32(width.wrapping_neg())
+        && *from == (Addr { seg: Segment::Flat, offset: Value::Temp(*src) })
+        && *to == (Addr { seg: Segment::Flat, offset: Value::Temp(*dst) })
+        && *stored == Value::Temp(*value)
+        && *sa == Value::Temp(*src) && *ss == Value::Temp(*step)
+        && *da == Value::Temp(*dst) && *ds == Value::Temp(*step)
+        && *new_src == Value::Temp(*next_src) && *new_dst == Value::Temp(*next_dst))
+        .then_some(width)
+}
+
 struct Emitter<'a> {
     out: String,
     shape: &'a OwnerShape<'a>,
@@ -733,6 +760,18 @@ impl Emitter<'_> {
                     self.line(d, "uint32_t rfl_ = fl, rfd_ = fd; (void)rfl_; (void)rfd_;");
                     self.line(d, "for (;;) {");
                     self.line(d + 1, "if (!ecx) break;");
+                    if *kind == RepKind::Rep && let Some(width) = rep_movs_width(body) {
+                        let limit = if self.shape.accounting { "(h2left > h2acc ? h2left - h2acc : 0u)" } else { "UINT64_MAX" };
+                        self.line(d + 1, format!("uint32_t n_ = h2_fast_movs(h2_mem_, esi, edi, ecx, {width}u, H2_FLAG(10), {limit});"));
+                        self.line(d + 1, "if (n_) {");
+                        self.line(d + 2, format!("uint32_t delta_ = n_ * {width}u; if (H2_FLAG(10)) delta_ = 0u - delta_; esi += delta_; edi += delta_; ecx -= n_;"));
+                        if self.shape.accounting {
+                            self.line(d + 2, "h2acc += (uint64_t)n_ * 2u;");
+                            self.line(d + 2, format!("if (ecx) H2_REP_POLL({pc:#x}u);"));
+                        }
+                        self.line(d + 2, "continue;");
+                        self.line(d + 1, "}");
+                    }
                     self.line(d + 1, "{");
                     self.in_repeat = true;
                     self.stmts(body, insn, d + 2);

@@ -17,6 +17,7 @@ typedef unsigned __int128 h2u128;
 /* SSE floating-point reference semantics (h2s_*), written next to this
  * header by crates/emit. */
 #include "h2simd.h"
+#include "h2sse_native.h"
 /* x87 helpers (h2x87_v1_*), implemented by crates/x87 and linked from the
  * runtime; the header is written next to this one by crates/emit. */
 #include "h2x87.h"
@@ -204,20 +205,20 @@ static inline uint32_t h2i_emms(CpuAbi *cpu) {
 /* SSE floating point (ir::Intrinsic::Sse): MXCSR in CpuAbi, h2s_* from
  * h2simd.h returning 1 on #XM. Results written only on success. */
 #define H2_SSE_RES(r) ((r) ? H2SHIM_SIMD_EXCEPTION : 0u)
-#define H2_SSE_SS(op)                                                           \
+#define H2_SSE_SS(op, impl)                                                           \
     static inline uint32_t h2i_sse_##op(CpuAbi *cpu, h2u128 a, uint32_t b, h2u128 *out) { \
-        return H2_SSE_RES(h2s_##op(&cpu->mxcsr, a, b, out));                   \
+        return H2_SSE_RES(impl(&cpu->mxcsr, a, b, out));                   \
     }
-#define H2_SSE_PS(op)                                                           \
+#define H2_SSE_PS(op, impl)                                                           \
     static inline uint32_t h2i_sse_##op(CpuAbi *cpu, h2u128 a, h2u128 b, h2u128 *out) { \
-        return H2_SSE_RES(h2s_##op(&cpu->mxcsr, a, b, out));                   \
+        return H2_SSE_RES(impl(&cpu->mxcsr, a, b, out));                   \
     }
-H2_SSE_SS(addss) H2_SSE_PS(addps) H2_SSE_SS(subss) H2_SSE_PS(subps)
-H2_SSE_SS(mulss) H2_SSE_PS(mulps) H2_SSE_SS(divss) H2_SSE_PS(divps)
-H2_SSE_SS(minss) H2_SSE_PS(minps) H2_SSE_SS(maxss) H2_SSE_PS(maxps)
-H2_SSE_SS(sqrtss) H2_SSE_SS(cvtsi2ss)
+H2_SSE_SS(addss, h2sn_addss) H2_SSE_PS(addps, h2sn_addps) H2_SSE_SS(subss, h2sn_subss) H2_SSE_PS(subps, h2sn_subps)
+H2_SSE_SS(mulss, h2sn_mulss) H2_SSE_PS(mulps, h2sn_mulps) H2_SSE_SS(divss, h2sn_divss) H2_SSE_PS(divps, h2sn_divps)
+H2_SSE_SS(minss, h2s_minss) H2_SSE_PS(minps, h2s_minps) H2_SSE_SS(maxss, h2s_maxss) H2_SSE_PS(maxps, h2s_maxps)
+H2_SSE_SS(sqrtss, h2sn_sqrtss) H2_SSE_SS(cvtsi2ss, h2s_cvtsi2ss)
 static inline uint32_t h2i_sse_sqrtps(CpuAbi *cpu, h2u128 b, h2u128 *out) {
-    return H2_SSE_RES(h2s_sqrtps(&cpu->mxcsr, b, out));
+    return H2_SSE_RES(h2sn_sqrtps(&cpu->mxcsr, b, out));
 }
 static inline uint32_t h2i_sse_rcpss(CpuAbi *cpu, h2u128 a, uint32_t b, h2u128 *out) { (void)cpu; *out = h2s_rcpss(a, b); return 0; }
 static inline uint32_t h2i_sse_rsqrtss(CpuAbi *cpu, h2u128 a, uint32_t b, h2u128 *out) { (void)cpu; *out = h2s_rsqrtss(a, b); return 0; }

@@ -632,6 +632,10 @@ pub struct Device<B: Backend> {
     pixel_shader: u32,
     streams: [StreamSource; 16],
     stream_inputs: Option<Vec<StreamSource>>,
+    /// Recycled after the synchronous backend has consumed a draw.
+    stream_pool: Vec<Vec<u8>>,
+    stream_pool_bytes: usize,
+    stream_scratch: Vec<StreamBytes>,
     program: Box<[u32; PROGRAM_SLOTS * 4]>,
     program_start: u32,
     /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
@@ -762,6 +766,9 @@ impl<B: Backend> Device<B> {
             pixel_shader: 0,
             streams: [StreamSource::default(); 16],
             stream_inputs: None,
+            stream_pool: Vec::new(),
+            stream_pool_bytes: 0,
+            stream_scratch: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
             constants: Box::new([0; CONSTANTS * 4]),
@@ -3307,7 +3314,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn read_stream(
-        &self,
+        &mut self,
         mem: &dyn GuestMemory,
         entry: &'static str,
         s: &StreamSource,
@@ -3334,13 +3341,57 @@ impl<B: Backend> Device<B> {
             s.offset as u64 + first as u64 * s.stride as u64,
         )?;
         at(va, len as u64)?;
-        Ok(StreamBytes {
-            data: mem.read_vec(va, len)?,
-            stride: s.stride,
-        })
+        self.copy_stream(mem, va, len, s.stride)
     }
 
-    fn submit(&mut self, mem: &mut dyn GuestMemory, parts: DrawParts) -> Result<(), D3dError> {
+    fn copy_stream(
+        &mut self,
+        mem: &dyn GuestMemory,
+        va: u32,
+        len: usize,
+        stride: u32,
+    ) -> Result<StreamBytes, D3dError> {
+        crate::guest::check_range(va, len)?;
+        let mut data = self.stream_pool.pop().unwrap_or_default();
+        self.stream_pool_bytes -= data.capacity();
+        data.resize(len, 0);
+        if let Err(e) = mem.read(va, &mut data) {
+            self.recycle_stream(data);
+            return Err(e.into());
+        }
+        Ok(StreamBytes { data, stride })
+    }
+
+    fn recycle_stream(&mut self, data: Vec<u8>) {
+        // Retain ordinary draws without keeping an exceptional 64 MiB span.
+        const MAX_POOL_BYTES: usize = 16 << 20;
+        if self.stream_pool.len() < 16 && data.capacity() <= MAX_POOL_BYTES - self.stream_pool_bytes
+        {
+            self.stream_pool_bytes += data.capacity();
+            self.stream_pool.push(data);
+        }
+    }
+
+    fn recycle_streams(&mut self, mut streams: Vec<StreamBytes>) {
+        for s in streams.drain(..) {
+            self.recycle_stream(s.data);
+        }
+        self.stream_scratch = streams;
+    }
+
+    fn submit(&mut self, mem: &mut dyn GuestMemory, mut parts: DrawParts) -> Result<(), D3dError> {
+        let mut streams = std::mem::take(&mut parts.streams);
+        let result = self.submit_inner(mem, parts, &mut streams);
+        self.recycle_streams(streams);
+        result
+    }
+
+    fn submit_inner(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        parts: DrawParts,
+        streams: &mut Vec<StreamBytes>,
+    ) -> Result<(), D3dError> {
         let entry = parts.entry;
         if parts.vertex_count == 0 {
             return Ok(());
@@ -3431,7 +3482,7 @@ impl<B: Backend> Device<B> {
             primitive: parts.primitive,
             vertex_count: parts.vertex_count,
             layout: parts.layout,
-            streams: parts.streams,
+            streams: std::mem::take(streams),
             indices: parts.indices,
             state,
             extras,
@@ -3457,11 +3508,9 @@ impl<B: Backend> Device<B> {
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
         self.stats.draws += 1;
-        match self
-            .backend
-            .draw(color, depth, &draw, textures)
-            .map_err(D3dError::Backend)?
-        {
+        let outcome = self.backend.draw(color, depth, &draw, textures);
+        *streams = draw.streams;
+        match outcome.map_err(D3dError::Backend)? {
             DrawOutcome::Drawn => self.mark_written(writes_depth),
             DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
             DrawOutcome::Unsupported(detail) => {
@@ -3525,11 +3574,23 @@ impl<B: Backend> Device<B> {
         let primitive = Self::primitive(E, primitive)?;
         vertex_limit(E, count)?;
         let (layout, vertex, sources) = self.vertex_setup(mem, E)?;
-        let streams = sources
-            .iter()
-            .map(|s| self.read_stream(mem, E, s, start, count))
-            .collect::<Result<Vec<_>, _>>()?;
-        let words = self.draw_state(mem)?;
+        let mut streams = std::mem::take(&mut self.stream_scratch);
+        for s in &sources {
+            match self.read_stream(mem, E, s, start, count) {
+                Ok(stream) => streams.push(stream),
+                Err(e) => {
+                    self.recycle_streams(streams);
+                    return Err(e);
+                }
+            }
+        }
+        let words = match self.draw_state(mem) {
+            Ok(words) => words,
+            Err(e) => {
+                self.recycle_streams(streams);
+                return Err(e);
+            }
+        };
         self.submit(
             mem,
             DrawParts {
@@ -3580,11 +3641,23 @@ impl<B: Backend> Device<B> {
         // The vertices `lo..=hi` the indices reach (at most 65536: 16-bit
         // indices), with the indices rebased onto them.
         let window = hi - lo + 1;
-        let mut streams = Vec::new();
+        let mut streams = std::mem::take(&mut self.stream_scratch);
         for s in &sources {
-            streams.push(self.read_stream(mem, E, s, lo, window)?);
+            match self.read_stream(mem, E, s, lo, window) {
+                Ok(stream) => streams.push(stream),
+                Err(e) => {
+                    self.recycle_streams(streams);
+                    return Err(e);
+                }
+            }
         }
-        let words = self.draw_state(mem)?;
+        let words = match self.draw_state(mem) {
+            Ok(words) => words,
+            Err(e) => {
+                self.recycle_streams(streams);
+                return Err(e);
+            }
+        };
         self.submit(
             mem,
             DrawParts {
@@ -3625,11 +3698,16 @@ impl<B: Backend> Device<B> {
         if layout.streams.len() != 1 || layout.streams[0].stream != 0 {
             return Err(D3dError::invalid(E, "UP draws use exactly stream 0"));
         }
-        let streams = vec![StreamBytes {
-            data: mem.read_vec(data, span(E, count, stride)?)?,
-            stride,
-        }];
-        let words = self.draw_state(mem)?;
+        let stream = self.copy_stream(mem, data, span(E, count, stride)?, stride)?;
+        let mut streams = std::mem::take(&mut self.stream_scratch);
+        streams.push(stream);
+        let words = match self.draw_state(mem) {
+            Ok(words) => words,
+            Err(e) => {
+                self.recycle_streams(streams);
+                return Err(e);
+            }
+        };
         self.submit(
             mem,
             DrawParts {

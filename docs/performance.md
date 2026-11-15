@@ -254,3 +254,70 @@ measured menu FPS, interval and load conditions, then the time each owner
 must remove to fit the 33.33 ms budget. A proportional extrapolation from
 samples is an estimate, not proof of an achievable FPS; preserve guest
 correctness, graphics work, input and scheduling throughout.
+
+## Guest CPU: SSE, REP copies and D3D entry (2026-11-15)
+
+`H2_SSE_NATIVE` enables guarded native binary32 arithmetic with observable
+MXCSR preserved; [sse-native.md](sse-native.md) gives the proof and escape
+hatch. The runtime ABI and Rust integer authority are unchanged.
+
+The per-access `h2_fast_copy` already used host `memcpy`; switching its
+runtime width to a fixed-width switch did not establish a speedup and was
+not retained. The new optimization batches flat REP MOVS iterations into
+page-bounded host `memmove` calls under the existing memory gate. The emitter
+recognizes the complete semantic IR shape, including DF and ESI/EDI updates.
+FS-relative or altered bodies retain ordinary iteration.
+
+Both source and destination must stay inside their current fully mapped RAM
+page with the required permissions. Crossings finish a page chunk then
+recheck; MMIO, partial mappings and failed checks use the original accessors.
+Physical spans determine overlap, including virtual aliases. Propagating
+overlap retains element-by-element execution; the opposite direction and
+identical spans permit memmove. Dirty pages are marked under the same gate.
+Each completed element still charges two accesses. With access accounting,
+chunks stop at the iteration that reaches the budget, and pending preemption
+allows only one iteration before the usual REP poll. Native chunks are
+bounded by 4 KiB; asynchronous requests arriving within a chunk are observed
+at its end. The helper does not turn REP into an unbounded critical section.
+
+D3D's `WriteTracker` now uses a sparse two-level page-generation array:
+8 KiB of roots plus 8 KiB per populated 4 MiB virtual region, with no hashing
+in `dirty_since`. Watch, reset and generation semantics are unchanged.
+API-bound and UP vertex stream copies reuse a device-local pool after the
+backend returns. It holds at most 16 payloads and 16 MiB in total. Each draw
+still reads current guest bytes; backend-owned clones remain independent.
+The outer stream vector is reused too. A larger draw can allocate when
+capacity grows; index and unrelated draw-state allocations are unchanged.
+No gfx, submission, readback or render-thread code is changed.
+
+Synthetic benchmarks (clang `-O1`, Apple Silicon, based on `33a73cc`):
+
+| Work | Before | After | Measurement |
+| --- | ---: | ---: | --- |
+| Four packed add/mul/sub/div operations | 142.34–145.17 ns | 47.95–48.37 ns | thread CPU per trip |
+| 1 KiB REP MOVSD, 256 elements | 3621.37–3623.41 ns | 21.06–21.40 ns | thread CPU per copy |
+| Four-page clean `dirty_since` | 31.34 ns | 3.22 ns | wall per query, release |
+| D3D, 1,200-draw synthetic frame | 2.750–2.824 ms | 2.545–2.566 ms | wall median per frame |
+
+The D3D frame benchmark used 100 frames per batch, alternating
+before/after/after/before with unchanged 126,000 draws, 48 uploads and
+251,952 cache hits including warmup. Load averages were 4.53 / 29.85 / 50.91
+throughout those batches. The earlier contended baseline was 3.054 ms
+median; it is excluded from this paired comparison.
+
+The C benchmark alternates before/after/after/before and preserves matching
+checksums, MXCSR and 102,400,000 accesses in both copy modes. It compares the
+per-element path against batching, not memcpy's intrinsic throughput. Run:
+
+```sh
+RUSTC_WRAPPER= cargo test -p emit --test fast_copy guest_microbenchmarks -- --ignored --nocapture
+RUSTC_WRAPPER= cargo test --release -p d3d --lib dirty_query_benchmark -- --ignored --nocapture
+RUSTC_WRAPPER= cargo bench -p d3d --bench pushbuf
+```
+
+These are synthetic costs, not a measured 7–10 ms improvement to the 67.5 ms
+Heretic frame. No game image was built and no game measurement was taken;
+unit and oracle tests establish exactness without one. Whole-frame savings
+remain to be measured after integration on presents 4220–4520 with a warm
+pipeline cache and recorded load. Build-target disk headroom limited this
+lane to focused tests and microbenchmarks.
