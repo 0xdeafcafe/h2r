@@ -3,7 +3,7 @@
 import { Show } from "solid-js";
 import { A } from "@solidjs/router";
 import type { AccountState } from "../state/reducer";
-import type { VerifyResult } from "../state/verify";
+import { countResults, summaryLine, type VerifyResult } from "../state/verify";
 import { live } from "../state/live";
 
 export type PresenceKind = "playing" | "online" | "away" | "offline";
@@ -62,28 +62,10 @@ export function VerifyMark(props: { position: number; compact?: boolean }) {
 
 /** Summary of signature checks over a set of positions. */
 export function VerifySummary(props: { positions: () => number[] }) {
-  const counts = () => {
-    const c = { verified: 0, bad: 0, other: 0, pending: 0 };
-    for (const p of props.positions()) {
-      const r = live.verify[p];
-      if (!r) c.pending++;
-      else if (r.status === "verified") c.verified++;
-      else if (r.status === "bad") c.bad++;
-      else c.other++;
-    }
-    return c;
-  };
+  const counts = () => countResults(props.positions(), live.verify);
   return (
     <span class="verify-summary" classList={{ "verify-summary--bad": counts().bad > 0 }}>
-      <Show
-        when={counts().bad === 0}
-        fallback={<><span class="verify__icon">!</span> {counts().bad} event{counts().bad === 1 ? "" : "s"} failed signature checks</>}
-      >
-        <span class="verify__icon">✓</span>
-        {counts().verified} signed event{counts().verified === 1 ? "" : "s"} verified
-        <Show when={counts().pending}> · {counts().pending} checking</Show>
-        <Show when={counts().other}> · {counts().other} unchecked</Show>
-      </Show>
+      <span class="verify__icon">{counts().bad ? "!" : counts().verified ? "✓" : "·"}</span> {summaryLine(counts())}
     </span>
   );
 }

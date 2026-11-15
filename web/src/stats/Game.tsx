@@ -12,7 +12,7 @@ import GametypeIcon from "../components/GametypeIcon";
 import { MapThumb, gameTitle, hostName, playlist } from "./Side";
 import { hms, usDateTime, agoWords } from "./fmt";
 import { teamStandings, standings } from "../state/reducer";
-import { colourFor, elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
+import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { clock, titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
@@ -76,7 +76,7 @@ function Header(props: { game: GameState }) {
           <li class="s-match-status"><Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show><span>{result()}</span></li>
           <li class="styled">Playlist - {playlist(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>
           <li title={g().ended_at ? `Ended ${agoWords(g().ended_at, now())}` : undefined}>{usDateTime(g().started_at)}</li>
-          <li>Length: <span class="s-match-length">{hms(elapsedSeconds(g(), now()))}</span></li>
+          <li title={lengthNote(g(), now())}>Length: <span class="s-match-length">{hms(gameSeconds(g(), now()))}</span></li>
         </ul>
         <section class="s-booty" aria-label="Game record">
           <header>Game Record</header>
@@ -91,6 +91,15 @@ function Header(props: { game: GameState }) {
       </div>
     </>
   );
+}
+
+/** Says which clock the length is on, and the other clock when they differ. */
+function lengthNote(g: GameState, now: number): string | undefined {
+  if (g.status !== "ended") return undefined;
+  const game = gameSeconds(g, now), wall = elapsedSeconds(g, now);
+  if (Math.abs(wall - game) < 5) return "Game time";
+  const why = g.end_reason === "lost" ? "; a lost game ends when the server stops waiting for the console" : "";
+  return `Game time. Start to end on the server's clock: ${hms(wall)}${why}`;
 }
 
 function Legend(props: { game: GameState }) {
@@ -170,9 +179,12 @@ function Replay(props: { game: GameState }) {
     const a = live.api();
     Promise.all([
       a.frames(id, undefined, undefined, ac.signal),
-      a.streamEvents("game-" + id, ac.signal).catch(() => eventsFromState(props.game)),
+      a.streamEvents("game-" + id, ac.signal).catch(() => null),
     ]).then(([frames, events]) => {
-      const t = new ReplayTimeline(frames, events.length ? events : eventsFromState(props.game));
+      // The game's whole stream: also what the Game Record's signature
+      // count covers, since a snapshot-loaded game knows no event positions.
+      if (events?.length) live.checkGameEvents(id, events);
+      const t = new ReplayTimeline(frames, events?.length ? events : eventsFromState(props.game));
       clockRef = new ReplayClock(t);
       setTimeline(t);
       setTick(t.startTick);
@@ -247,6 +259,7 @@ function Replay(props: { game: GameState }) {
                   <div class="s-map-tools"><span>Player positions</span><LayerPicker count={outline()?.layers.length ?? 0} value={layer()} onChange={setLayer} /></div>
                   <div class="s-map" tabindex="0" onKeyDown={onKey} role="group" aria-label="Replay map. Space plays or pauses; arrow keys step five seconds.">
                   <MapCanvas frame={frame} roster={roster} outline={outline} layer={layer} highlight={hover} label={`Replay of ${props.game.map}`} />
+                  <Show when={!outline()}><div class="s-map-note">Map outline not available; the grid is fitted to where players have been.</div></Show>
                   </div>
                   <Legend game={props.game} />
                   <div class="s-timeline-head"><span>Match Timeline</span><small>Markers show kills · Space to play</small></div>

@@ -172,6 +172,9 @@ pub fn players(guest: &Guest) -> ReadResult<Vec<PlayerState>> {
                 appearance: None,
             },
             appearance: appearance(guest, local_user)?,
+            local_user: u8::try_from(local_user)
+                .ok()
+                .filter(|u| u32::from(*u) < layout::PLAYER_SLOT_COUNT),
             unit: guest.u32(address + layout::PLAYER_UNIT)?,
             stats,
         });
@@ -579,6 +582,11 @@ mod tests {
         fixture::put_slot_profile(&mut guest, 2, [0, 1, 2, 3], 0, 0);
 
         let players = players(&guest).unwrap();
+        assert_eq!(
+            players.iter().map(|p| p.local_user).collect::<Vec<_>>(),
+            [Some(0), None, Some(2)],
+            "the local slot is kept so the signed-in one can be linked"
+        );
         assert_eq!(
             players[0].appearance,
             Appearance {

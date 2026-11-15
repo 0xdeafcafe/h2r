@@ -7,7 +7,7 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, endedGames, liveGames, standings, teamStandings, type GameState } from "../state/reducer";
 import MapCanvas from "../components/MapCanvas";
-import { colourFor, elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
+import { colourFor, elapsedSeconds, gameSeconds, liveFrameSource, rosterFor, teamName } from "../lib/game";
 import { clock, titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
@@ -54,7 +54,7 @@ function GameItem(props: { game: GameState }) {
             <Show when={host()} fallback="–">{(h) => <Show when={accountByGamertag(live.state, h())} fallback={h()}><A href={playerHref(h())}>{h()}</A></Show>}</Show></Show>
           </div>
           <div class="s-item-score"><ScoreLine game={g()} /></div>
-          <div class="s-item-dim">{num(kills())} knockouts<br />{g().status === "live" ? `${clock(elapsedSeconds(g(), now()))} played` : `${clock(elapsedSeconds(g(), now()))} long`}</div>
+          <div class="s-item-dim">{num(kills())} knockouts<br />{g().status === "live" ? `${clock(elapsedSeconds(g(), now()))} played` : `${clock(gameSeconds(g(), now()))} long`}</div>
         </div>
       </div>
       <footer>

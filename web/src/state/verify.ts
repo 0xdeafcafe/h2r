@@ -16,6 +16,34 @@ export interface VerifyResult {
 export interface Jwk { kty: string; crv: string; x: string; kid?: string }
 
 
+/** Signature results for a set of log positions (one game's events). */
+export interface VerifyCounts { verified: number; bad: number; other: number; pending: number }
+
+export function countResults(positions: readonly number[], results: Readonly<Record<number, VerifyResult | undefined>>): VerifyCounts {
+  const c = { verified: 0, bad: 0, other: 0, pending: 0 };
+  for (const p of positions) {
+    const r = results[p];
+    if (!r) c.pending++;
+    else if (r.status === "verified") c.verified++;
+    else if (r.status === "bad") c.bad++;
+    else c.other++;
+  }
+  return c;
+}
+
+/** The summary line for those results. With no events at all it says so,
+ *  rather than reporting zero verified, which reads like a failure. */
+export function summaryLine(c: VerifyCounts): string {
+  const plural = (n: number) => (n === 1 ? "" : "s");
+  if (c.bad) return `${c.bad} event${plural(c.bad)} failed signature checks`;
+  if (!c.verified && !c.pending && !c.other) return "No events loaded to check yet";
+  if (!c.verified && !c.other) return `Checking ${c.pending} signed event${plural(c.pending)}…`;
+  let s = `${c.verified} signed event${plural(c.verified)} verified`;
+  if (c.pending) s += ` · ${c.pending} checking`;
+  if (c.other) s += ` · ${c.other} unchecked`;
+  return s;
+}
+
 // ---------- encoding helpers ----------
 
 export function b64urlEncode(bytes: Uint8Array): string {

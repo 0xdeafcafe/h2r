@@ -65,6 +65,7 @@ export default function Carnage(props: { game: GameState }) {
         <Show when={p.r.s.xuid} fallback={<><Emblem seed={p.r.s.name} appearance={p.r.s.appearance} size={19} /><span>{p.r.s.name}</span></>}>
           {(x) => <><Emblem seed={x()} appearance={p.r.s.appearance} size={19} /><A href={playerHref(p.r.s.name)}>{p.r.s.name}</A></>}
         </Show>
+        <Show when={p.r.s.game_name}>{(n) => <small class="who-game-name" title="Name in the game">{n()}</small>}</Show>
         <Show when={p.r.s.left}><small>(left)</small></Show>
       </span>
     </td>
