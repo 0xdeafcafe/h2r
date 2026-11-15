@@ -379,7 +379,8 @@ fn color_sign_is_part_of_the_texture_cache_identity() {
     texture(&mut m, 0x80);
     d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
     d.set_texture(&mut m, 1, TEX_HEADER).unwrap();
-    d.set_texture_stage_state(&mut m, 1, 10, 0xE000_0000).unwrap(); // COLORSIGN
+    d.set_texture_stage_state(&mut m, 1, 10, 0xE000_0000)
+        .unwrap(); // COLORSIGN
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
     assert_eq!(d.backend.uploads(), 2, "unsigned and signed copies");
     let draw = d.backend.draws()[0].clone();
@@ -467,7 +468,13 @@ fn p1_9_raster_state_clip_and_back_buffer_scale() {
     d.set_scissors(&mut m, 2, 0, rect).unwrap();
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
     assert_eq!(clip(&d), (0, 0, 48, 48));
-    let pieces: Vec<_> = d.backend.draws().last().unwrap().clip_rects.iter()
+    let pieces: Vec<_> = d
+        .backend
+        .draws()
+        .last()
+        .unwrap()
+        .clip_rects
+        .iter()
         .map(|p| (p.x, p.y, p.width, p.height))
         .collect();
     assert_eq!(pieces, vec![(0, 0, 16, 16), (32, 32, 16, 16)]);
@@ -653,4 +660,68 @@ fn p2_12_reserved_header_bits_are_rejected() {
         d.commit(&mut m),
         Err(D3dError::Push(PushError::Reserved { .. }))
     ));
+}
+
+/// Guest memory that refuses writes at or above `limit`, like a protected
+/// page.
+struct WriteLimit {
+    inner: SparseMemory,
+    limit: u32,
+}
+
+impl GuestMemory for WriteLimit {
+    fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
+        self.inner.read(addr, out)
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
+        // Like the runtime's `write_bytes`: the whole access is checked
+        // before any byte changes.
+        if addr as u64 + data.len() as u64 > self.limit as u64 {
+            return Err(d3d::GuestError {
+                addr,
+                len: data.len() as u32,
+            });
+        }
+        self.inner.write(addr, data)
+    }
+}
+
+/// A constant upload whose shadow runs into an unwritable page stores the
+/// words before the boundary and faults on the first word past it (the
+/// per-word behaviour), not on the whole access.
+#[test]
+fn constant_shadow_fault_keeps_the_words_before_it() {
+    let (mut d, m) = rec();
+    let shadow = d3d::GuestLayout::HALO2.vs_constants;
+    // Register 140's shadow is 16 bytes at 0x407ff8; the page at 0x408000
+    // is protected.
+    let (reg, at) = (140u32, shadow + 16 * 140);
+    assert_eq!(at, 0x0040_7FF8);
+    let mut m = WriteLimit {
+        inner: m,
+        limit: 0x0040_8000,
+    };
+    for (i, w) in [0x1111_1111u32, 0x1111_1112, 0x1111_1113, 0x1111_1114]
+        .iter()
+        .enumerate()
+    {
+        m.inner.write_u32(SRC + 4 * i as u32, *w).unwrap();
+    }
+    let err = d
+        .set_vertex_shader_constant(&mut m, reg, SRC, 1, true)
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            D3dError::Guest(d3d::GuestError {
+                addr: 0x0040_8000,
+                len: 4
+            })
+        ),
+        "{err:?}"
+    );
+    assert_eq!(m.inner.read_u32(0x0040_7FF8).unwrap(), 0x1111_1111);
+    assert_eq!(m.inner.read_u32(0x0040_7FFC).unwrap(), 0x1111_1112);
+    // The host copy was updated first, as before.
+    assert_eq!(d.constant(reg as usize)[0].to_bits(), 0x1111_1111);
 }

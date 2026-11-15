@@ -332,7 +332,13 @@ The boot driver (crates/boot, on the `boot` branch) is not a dependency of
 `cargo bench -p d3d --bench pushbuf` replays a synthetic frame (1,200 draws,
 mostly indexed, texture rebinding on two stages, constant uploads, inline
 state through the push buffer, vertex-input switches) against a null backend,
-so only the device's own work is timed. Nothing in it is retail data. It prints
+so only the device's own work is timed. Nothing in it is retail data.
+It is a synthetic microbenchmark: it runs over `SparseMemory`, calls the device
+directly (no runtime lock, ABI or write-watch cost), uses 48 unchanging textures
+with `UploadPolicy::Tracked`, a pixel shader that samples nothing, and changes
+simple state on almost every draw (so translation-memo hits are rare). Its
+numbers say the device's own per-draw work shrank (p10 5.6 to 3.0 ms/frame
+there); they do not measure whole-game CPU per frame or other upload policies. It prints
 mean, median and p10 ms per frame; on a shared machine the mean is dominated
 by scheduling outliers, so compare p10 or median. `H2_BENCH_FRAMES`,
 `H2_BENCH_DRAWS` and `H2_BENCH_TRACE=1` (per-frame times) tune it. To profile,

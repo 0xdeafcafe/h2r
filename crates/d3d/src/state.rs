@@ -157,9 +157,13 @@ impl StateWords {
         // Straight into arrays: this runs for every draw.
         let mut render = [0; RENDER_STATE_SLOTS];
         read_words_into(mem, layout.render_state, &mut render)?;
+        // One 512-byte access, as `read_words` made: the whole range is
+        // checked first and a fault reports the whole access.
+        let mut all = [0; STAGES * STAGE_SLOTS];
+        read_words_into(mem, layout.texture_state, &mut all)?;
         let mut stages = [[0; STAGE_SLOTS]; STAGES];
-        for (i, s) in stages.iter_mut().enumerate() {
-            read_words_into(mem, layout.texture_state + (4 * STAGE_SLOTS * i) as u32, s)?;
+        for (s, chunk) in stages.iter_mut().zip(all.as_chunks::<STAGE_SLOTS>().0) {
+            s.copy_from_slice(chunk);
         }
         Ok(Self { render, stages })
     }
@@ -347,6 +351,28 @@ mod tests {
         m.map(l.texture_state & !0xFFF, 0x5000);
         w.write(&mut m, &l).unwrap();
         assert_eq!(StateWords::read(&m, &l).unwrap(), w);
+    }
+
+    #[test]
+    fn state_read_checks_the_whole_texture_array_with_a_custom_layout() {
+        // A layout whose texture array runs off the top of the address
+        // space: the access is one 512-byte read, rejected as a whole
+        // (no panic, no wrap to address zero).
+        let l = GuestLayout {
+            texture_state: 0xFFFF_FF80,
+            ..GuestLayout::HALO2
+        };
+        let mut m = crate::guest::SparseMemory::new();
+        m.map(l.render_state, RENDER_STATE_SLOTS as u32 * 4);
+        m.map(0xFFFF_F000, 0x1000);
+        m.map(0, 0x1000);
+        assert_eq!(
+            StateWords::read(&m, &l).unwrap_err(),
+            GuestError {
+                addr: 0xFFFF_FF80,
+                len: 512
+            }
+        );
     }
 
     #[test]
