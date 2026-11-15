@@ -318,7 +318,12 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let _ = follow_status;
     let report = app::run(config, move |host| {
         let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted));
-        let r = boot::run_hosted(&xbe, &lib, &opts, host)?;
+        let r = boot::run_hosted(&xbe, &lib, &opts, host);
+        // As `h2 run` does: the kernel's storage may outlive the run (or never
+        // drop), so store its pending write metadata at a normal exit, whether
+        // the run ended well or not. See docs/storage.md "Write metadata".
+        vfs::flush_pending_metadata();
+        let r = r?;
         for l in &r.kernel_log {
             println!("DbgPrint: {}", l.trim_end());
         }
