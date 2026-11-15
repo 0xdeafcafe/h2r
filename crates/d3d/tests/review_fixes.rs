@@ -1,0 +1,546 @@
+//! Regression tests for the first independent review of the D3D HLE, one
+//! (or a few) per finding. The numbers refer to that review.
+
+mod common;
+
+use common::*;
+use d3d::abi::{self, Regs};
+use d3d::pushbuf::{PushError, method};
+use d3d::resource::SurfaceHeader;
+use d3d::{D3dError, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
+use gfx::D3DFormat;
+use gfx::GfxContext;
+
+const SRC: u32 = MISC + 0x4000;
+const DEV: u32 = 0x0040_4FE0;
+
+fn rec() -> (d3d::Device<RecordingBackend>, SparseMemory) {
+    create(RecordingBackend::new(), UploadPolicy::Tracked)
+}
+
+fn rs(m: &SparseMemory, slot: u32) -> u32 {
+    m.read_u32(d3d::GuestLayout::HALO2.render_state_slot(slot))
+        .unwrap()
+}
+
+fn is_invalid(r: Result<(), D3dError>) -> bool {
+    matches!(r, Err(D3dError::Invalid { .. }))
+}
+
+fn is_unimplemented<T: std::fmt::Debug>(r: Result<T, D3dError>) -> bool {
+    matches!(r, Err(D3dError::Unimplemented { .. }))
+}
+
+/// A quad bound and ready to draw.
+fn quad(d: &mut d3d::Device<RecordingBackend>, m: &mut SparseMemory) {
+    quad_vb(m, 0.0, 0.0, 8.0, 8.0, 0xFFFF_FFFF);
+    bind_quad(d, m);
+}
+
+// 1 ------------------------------------------------------------------------
+
+#[test]
+fn p1_1_not_inline_fast_takes_a_dword_count() {
+    let (mut d, mut m) = rec();
+    for i in 0..8u32 {
+        m.write_u32(SRC + 4 * i, (1.0 + i as f32).to_bits())
+            .unwrap();
+    }
+    // ECX = register + 96, EDX = data, [esp+4] = 6 dwords.
+    call(
+        &mut d,
+        &mut m,
+        0x3f7330,
+        Regs {
+            ecx: 10,
+            edx: SRC,
+            ..Regs::default()
+        },
+        &[6],
+    )
+    .unwrap();
+    assert_eq!(d.constant(10), [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(d.constant(11), [5.0, 6.0, 0.0, 0.0], "ends mid-register");
+    assert_eq!(d.constant(12), [0.0; 4]);
+    // The original only pushes; the shadow is not touched.
+    let shadow = d3d::GuestLayout::HALO2.vs_constants;
+    assert_eq!(m.read_u32(shadow + 16 * 10).unwrap(), 0);
+    // Constant4 does update the shadow.
+    call(
+        &mut d,
+        &mut m,
+        0x3f7280,
+        Regs {
+            ecx: 20,
+            edx: SRC,
+            ..Regs::default()
+        },
+        &[],
+    )
+    .unwrap();
+    assert_eq!(m.read_u32(shadow + 16 * 20).unwrap(), 1.0f32.to_bits());
+    assert_eq!(d.constant(21), [5.0, 6.0, 7.0, 8.0]);
+    // 8 dwords from register 191 overrun the 192 registers.
+    let e = call(
+        &mut d,
+        &mut m,
+        0x3f7330,
+        Regs {
+            ecx: 191,
+            edx: SRC,
+            ..Regs::default()
+        },
+        &[8],
+    );
+    assert!(matches!(e, Err(D3dError::Invalid { .. })), "{e:?}");
+}
+
+// 2 ------------------------------------------------------------------------
+
+#[test]
+fn p1_2_guest_sizes_cannot_exhaust_memory_or_overflow() {
+    let (mut d, mut m) = rec();
+    quad(&mut d, &mut m);
+    // A 0xffffffff-index draw fails before allocating anything.
+    assert!(is_invalid(d.draw_indexed_vertices(
+        &mut m,
+        5,
+        u32::MAX,
+        SRC
+    )));
+    // Base vertex 0xffffffff + index 1.
+    m.write(SRC, &1u16.to_le_bytes()).unwrap();
+    m.write_u32(DEV + 0x1C, u32::MAX).unwrap();
+    assert!(is_invalid(d.draw_indexed_vertices(&mut m, 5, 1, SRC)));
+    m.write_u32(DEV + 0x1C, 0).unwrap();
+    // Constant register 0xffffffff + 1, and a count whose x4 overflows.
+    assert!(is_invalid(d.set_vertex_shader_constant(
+        &mut m,
+        u32::MAX,
+        SRC,
+        1,
+        true
+    )));
+    assert!(is_invalid(d.set_vertex_shader_constant_dwords(
+        &mut m,
+        u32::MAX,
+        SRC,
+        1
+    )));
+    assert!(is_invalid(d.set_vertex_shader_constant(
+        &mut m,
+        0,
+        SRC,
+        0x4000_0000,
+        true
+    )));
+    // Stream offset arithmetic: start * stride past 4 GiB.
+    assert!(is_invalid(d.draw_vertices(&mut m, 6, u32::MAX, 4)));
+    // Vertex count limit.
+    assert!(is_invalid(d.draw_vertices(&mut m, 6, 0, u32::MAX)));
+    // A stack pointer at the top of the address space.
+    let entries = abi::entries::<RecordingBackend>();
+    let begin = entries.iter().find(|e| e.addr == 0x3fb440).unwrap();
+    let r = abi::call(
+        begin,
+        &mut d,
+        &mut m,
+        &Regs {
+            esp: 0xffff_fffc,
+            ..Regs::default()
+        },
+    );
+    assert!(matches!(r, Err(D3dError::Invalid { .. })), "{r:?}");
+    // Nothing above latched the device: a normal draw still works.
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+
+    // put = consumed + 1 is not a word boundary.
+    let (mut d, mut m) = rec();
+    m.write_u32(DEV, PB.addr + 1).unwrap();
+    assert!(is_invalid(d.commit(&mut m)));
+}
+
+// 3 ------------------------------------------------------------------------
+
+#[test]
+fn p1_3_queued_inline_draws_keep_the_state_they_were_queued_with() {
+    let (mut d, mut m) = rec();
+    set_states(&mut d, &mut m); // blending off, pushed
+    bind_quad(&mut d, &mut m);
+    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
+    // Game code turns blending on: store into the array, push via Simple.
+    m.write_u32(
+        d3d::GuestLayout::HALO2.render_state_slot(RS_ALPHABLENDENABLE),
+        1,
+    )
+    .unwrap();
+    call(
+        &mut d,
+        &mut m,
+        0x3f5cf0,
+        Regs {
+            ecx: 0x0004_0304,
+            edx: 1,
+            ..Regs::default()
+        },
+        &[],
+    )
+    .unwrap();
+    // A second quad queued after the change, drained at Swap.
+    inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [0, 255, 0, 255]);
+    call(&mut d, &mut m, 0x3f9d00, Regs::default(), &[]).unwrap();
+    let draws = d.backend.draws();
+    assert_eq!(draws.len(), 2);
+    assert!(
+        !draws[0].state.render.blend_enable,
+        "the earlier quad drains with blending off"
+    );
+    assert!(draws[1].state.render.blend_enable);
+
+    // A plain array store with no push does not reach queued draws either.
+    let (mut d, mut m) = rec();
+    set_states(&mut d, &mut m);
+    bind_quad(&mut d, &mut m);
+    m.write_u32(
+        d3d::GuestLayout::HALO2.render_state_slot(RS_ALPHABLENDENABLE),
+        1,
+    )
+    .unwrap();
+    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
+    d.kick_off(&mut m).unwrap();
+    assert!(!d.backend.draws()[0].state.render.blend_enable);
+}
+
+// 5 ------------------------------------------------------------------------
+
+#[test]
+fn p1_5_draws_carry_full_state_and_resource_metadata() {
+    let (mut d, mut m) = rec();
+    quad(&mut d, &mut m);
+    texture(&mut m, 0x80);
+    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
+    // ALPHAKILL on stage 0, bump matrix m00, ALPHAREF (inline store).
+    d.set_texture_stage_state(&mut m, 0, 11, 4).unwrap();
+    d.set_texture_stage_state(&mut m, 0, 22, 0.5f32.to_bits())
+        .unwrap();
+    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(61), 0x80)
+        .unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    let draw = d.backend.draws()[0].clone();
+    let t = draw.texture_info[0].expect("stage 0 bound");
+    assert_eq!(
+        (t.width, t.height, t.format),
+        (16, 4, D3DFormat::LinA8R8G8B8)
+    );
+    assert_eq!(draw.target.width, 64);
+    assert_eq!(draw.target.height, 64);
+    assert_eq!(draw.target.format, D3DFormat::LinA8R8G8B8);
+    assert_eq!(draw.target.depth_format, Some(D3DFormat::LinD24S8));
+    assert_eq!(draw.extras[0].alpha_kill, 4);
+    assert_eq!(draw.extras[0].bump_env_mat[0], 0.5);
+    assert_eq!(draw.raw.render[61], 0x80);
+    assert_eq!(draw.state.render.alpha_ref, 0x80);
+}
+
+// 6 ------------------------------------------------------------------------
+
+fn psdef(m: &mut SparseMemory, def: u32, handle: u32, base: u32) {
+    for i in 0..60u32 {
+        m.write_u32(def + 4 * i, base + i).unwrap();
+    }
+    m.write_u32(handle, 1).unwrap();
+    m.write_u32(handle + 4, 0).unwrap();
+    m.write_u32(handle + 8, def).unwrap();
+}
+
+#[test]
+fn p1_6_set_pixel_shader_copies_the_psdef_into_render_state() {
+    let (mut d, mut m) = rec();
+    let (def, handle) = (MISC + 0x5000, MISC + 0x5100);
+    psdef(&mut m, def, handle, 0x1000);
+    call(
+        &mut d,
+        &mut m,
+        0x3fa3d0,
+        Regs {
+            eax: handle,
+            ..Regs::default()
+        },
+        &[],
+    )
+    .unwrap();
+    for i in 0..57 {
+        assert_eq!(rs(&m, i), 0x1000 + i, "slot {i}");
+    }
+    assert_ne!(rs(&m, 57), 0x1000 + 57, "slot 57 (ZFUNC) is past the copy");
+    assert_eq!(rs(&m, 136), 0x1000 + 54);
+    assert_eq!(m.read_u32(DEV + 0x784).unwrap(), handle);
+    assert_eq!(
+        m.read_u32(DEV + 0x788).unwrap(),
+        (0x1000 + 8) | (0x1000 + 9)
+    );
+    assert_eq!(m.read_u32(DEV + 0x78C).unwrap(), (0x1000 + 59) & 0x100);
+    assert_eq!(m.read_u32(DEV + 0x790).unwrap(), 0x1000 + 54);
+
+    // With device flag 0x10 (BehaviorFlags & 0x10) the copy is skipped.
+    m.write_u32(DEV + 8, 0x10).unwrap();
+    psdef(&mut m, def, handle, 0x2000);
+    d.set_pixel_shader(&mut m, handle).unwrap();
+    assert_eq!(rs(&m, 0), 0x1000);
+    assert_eq!(m.read_u32(DEV + 0x790).unwrap(), 0x2000 + 54);
+}
+
+// 7 ------------------------------------------------------------------------
+
+#[test]
+fn p1_7_zbias_derives_polygon_offset_state() {
+    let (mut d, mut m) = rec();
+    call(&mut d, &mut m, 0x3f59b0, Regs::default(), &[2]).unwrap();
+    assert_eq!(rs(&m, 77), (-0.5f32).to_bits());
+    assert_eq!(rs(&m, 78), (-2.0f32).to_bits());
+    assert_eq!([rs(&m, 79), rs(&m, 80), rs(&m, 81)], [1, 1, 1]);
+    assert_eq!(rs(&m, 149), 2);
+    quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    let r = d.backend.draws()[0].state.render;
+    assert_eq!(r.depth_bias, -2.0);
+    assert_eq!(r.depth_bias_slope_scale, -0.5);
+    assert!(r.solid_offset_enable);
+    // Zero turns the offsets off again.
+    call(&mut d, &mut m, 0x3f59b0, Regs::default(), &[0]).unwrap();
+    assert_eq!([rs(&m, 79), rs(&m, 80), rs(&m, 81)], [0, 0, 0]);
+}
+
+// 8 ------------------------------------------------------------------------
+
+const PAL_A: u32 = MISC + 0x6000;
+const PAL_B: u32 = MISC + 0x6010;
+const PAL_DATA: u32 = 0x0030_0000;
+
+fn p8_texture(m: &mut SparseMemory) {
+    m.map(0x8000_0000 | PAL_DATA, 0x2000);
+    // 4x4 swizzled P8: dims 2, format 0x0B, 1 level, log2 sizes 2 and 2.
+    m.write_u32(TEX_HEADER, 1 | (4 << 16) | 0x0100_0000)
+        .unwrap();
+    m.write_u32(TEX_HEADER + 4, TEX_DATA).unwrap();
+    m.write_u32(TEX_HEADER + 8, 0).unwrap();
+    m.write_u32(
+        TEX_HEADER + 12,
+        (2 << 4) | (0x0B << 8) | (1 << 16) | (2 << 20) | (2 << 24),
+    )
+    .unwrap();
+    m.write_u32(TEX_HEADER + 16, 0).unwrap();
+    m.write(0x8000_0000 | TEX_DATA, &[1; 16]).unwrap();
+    for (h, data) in [(PAL_A, PAL_DATA), (PAL_B, PAL_DATA + 0x1000)] {
+        m.write_u32(h, 1 | (3 << 16) | 0x0100_0000).unwrap();
+        m.write_u32(h + 4, data).unwrap();
+        m.write_u32(h + 8, 0).unwrap();
+    }
+}
+
+#[test]
+fn p1_8_palettes_are_part_of_the_texture_cache_identity() {
+    let (mut d, mut m) = rec();
+    quad(&mut d, &mut m);
+    p8_texture(&mut m);
+    // One P8 header on two stages with different palettes.
+    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
+    d.set_palette(&mut m, 0, PAL_A).unwrap();
+    d.set_texture(&mut m, 1, TEX_HEADER).unwrap();
+    d.set_palette(&mut m, 1, PAL_B).unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 2, "two palettes, two host textures");
+    assert!(d.cached_texture(TEX_HEADER, PAL_A).is_some());
+    assert!(d.cached_texture(TEX_HEADER, PAL_B).is_some());
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 2);
+
+    // A reported write to palette A's entries re-decodes that texture only
+    // (the palettes sit on different pages; tracking is per 4 KiB page).
+    m.write_u32(0x8000_0000 | PAL_DATA, 0xFF00_FF00).unwrap();
+    d.note_write(0x8000_0000 | PAL_DATA, 4);
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 3);
+
+    // Palette B shrinks to 128 entries (size bits): its identity changes.
+    m.write_u32(PAL_B, 1 | (3 << 16) | 0x0100_0000 | (1 << 30))
+        .unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 4);
+}
+
+#[test]
+fn p1_8_verify_hashes_palette_contents() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Verify);
+    quad(&mut d, &mut m);
+    p8_texture(&mut m);
+    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
+    d.set_palette(&mut m, 0, PAL_A).unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    m.write_u32(0x8000_0000 | PAL_DATA, 0x1234_5678).unwrap(); // unreported
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 2);
+    assert!(
+        d.take_events()
+            .iter()
+            .any(|e| matches!(e, d3d::Event::MissedInvalidation { .. }))
+    );
+}
+
+// 9 ------------------------------------------------------------------------
+
+#[test]
+fn p1_9_raster_state_gfx_cannot_express_stops() {
+    let (mut d, mut m) = rec();
+    quad(&mut d, &mut m);
+    // A 32x32 viewport.
+    let vp = MISC + 0x7000;
+    for (i, w) in [0, 0, 32, 32, 0.0f32.to_bits(), 1.0f32.to_bits()]
+        .iter()
+        .enumerate()
+    {
+        m.write_u32(vp + 4 * i as u32, *w).unwrap();
+    }
+    d.set_viewport(&mut m, vp).unwrap();
+    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    // A null viewport keeps it (0x3f8110); a full one (clipped from
+    // oversize, as the original does) draws.
+    d.set_viewport(&mut m, 0).unwrap();
+    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    m.write_u32(vp + 8, 1000).unwrap();
+    m.write_u32(vp + 12, 1000).unwrap();
+    d.set_viewport(&mut m, vp).unwrap();
+    assert_eq!((d.viewport().width, d.viewport().height), (W, H));
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+
+    // A partial scissor stops; one covering the target does not.
+    let rect = MISC + 0x7100;
+    for (i, w) in [0u32, 0, 16, 16].iter().enumerate() {
+        m.write_u32(rect + 4 * i as u32, *w).unwrap();
+    }
+    d.set_scissors(&mut m, 1, 0, rect).unwrap();
+    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    for (i, w) in [0u32, 0, 64, 64].iter().enumerate() {
+        m.write_u32(rect + 4 * i as u32, *w).unwrap();
+    }
+    d.set_scissors(&mut m, 1, 0, rect).unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    d.set_scissors(&mut m, 0, 0, 0).unwrap();
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+
+    // Back-buffer scaling and partial channel clears.
+    assert!(is_unimplemented(d.set_back_buffer_scale(&mut m, 0.5, 1.0)));
+    d.set_back_buffer_scale(&mut m, 1.0, 1.0).unwrap();
+    assert!(is_unimplemented(d.clear(&mut m, 0, 0, 0x10, 0, 1.0, 0)));
+}
+
+#[test]
+fn p1_9_alpha_test_with_the_builtin_shader_stops() {
+    let ctx = match GfxContext::headless() {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            eprintln!("skipping GPU test: {e}");
+            return;
+        }
+    };
+    let (mut d, mut m) = create(GfxBackend::new(ctx), UploadPolicy::Tracked);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(60), 1)
+        .unwrap(); // ALPHATESTENABLE
+    let e = d.draw_vertices(&mut m, 6, 0, 4);
+    assert!(
+        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("alpha test")),
+        "{e:?}"
+    );
+}
+
+// 10 -----------------------------------------------------------------------
+
+#[test]
+fn p1_10_render_to_texture_stops() {
+    let (mut d, mut m) = rec();
+    texture(&mut m, 0);
+    let surf = MISC + 0x7200;
+    let mut h = SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+    h.parent = TEX_HEADER;
+    h.write(&mut m, surf).unwrap();
+    let e = d.set_render_target(&mut m, surf, 0);
+    assert!(
+        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("render-to-texture")),
+        "{e:?}"
+    );
+    // A free-standing surface is still fine.
+    h.parent = 0;
+    h.write(&mut m, surf).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+}
+
+// 11, 12 -------------------------------------------------------------------
+
+fn push_words(m: &mut SparseMemory, words: &[u32]) {
+    let mut put = m.read_u32(DEV).unwrap();
+    for w in words {
+        m.write_u32(put, *w).unwrap();
+        put += 4;
+    }
+    m.write_u32(DEV, put).unwrap();
+}
+
+#[test]
+fn p2_11_a_push_buffer_failure_latches_instead_of_skipping() {
+    let (mut d, mut m) = rec();
+    set_states(&mut d, &mut m);
+    bind_quad(&mut d, &mut m);
+    inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
+    let bad = m.read_u32(DEV).unwrap();
+    push_words(&mut m, &[(1 << 18) | 0x0B00, 0]);
+    inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [0, 255, 0, 255]);
+    let e = d.commit(&mut m).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            D3dError::Push(PushError::UnknownMethod { method: 0x0B00, .. })
+        ),
+        "{e}"
+    );
+    assert_eq!(
+        d.backend.draws().len(),
+        1,
+        "the quad before ran exactly once"
+    );
+    assert!(d.fault().unwrap().contains(&format!("{bad:#010x}")));
+    // A retry does not skip the failing command and run the rest.
+    let e = d.commit(&mut m).unwrap_err();
+    assert!(matches!(e, D3dError::Faulted(_)), "{e}");
+    assert!(matches!(
+        d.draw_vertices(&mut m, 6, 0, 4),
+        Err(D3dError::Faulted(_))
+    ));
+    assert_eq!(d.backend.draws().len(), 1);
+}
+
+#[test]
+fn p2_12_reserved_header_bits_are_rejected() {
+    let (mut d, mut m) = rec();
+    push_words(&mut m, &[0x8004_0100, 0]); // "NOP" with bit 31 set
+    let e = d.commit(&mut m).unwrap_err();
+    assert!(
+        matches!(
+            e,
+            D3dError::Push(PushError::Reserved {
+                word: 0x8004_0100,
+                ..
+            })
+        ),
+        "{e}"
+    );
+    let (mut d, mut m) = rec();
+    push_words(&mut m, &[(1 << 18) | method::NOP | 0x0002_0000, 0]);
+    assert!(matches!(
+        d.commit(&mut m),
+        Err(D3dError::Push(PushError::Reserved { .. }))
+    ));
+}

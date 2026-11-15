@@ -1,0 +1,18 @@
+[package]
+name = "d3d"
+description = "Guest-facing Direct3D 8 (Xbox, XDK 5849 LTCG) replacement for Halo 2, on top of gfx"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+gfx = { path = "../gfx" }
+wgpu = "30"
+thiserror.workspace = true
+runtime.workspace = true
+# TODO(shaders): once crates/shaders lands, depend on it here and implement
+# `shader::ShaderProvider` with it. Until then the interface in `shader.rs`
+# is all the device needs.
+
+[dev-dependencies]
+pollster = "1"

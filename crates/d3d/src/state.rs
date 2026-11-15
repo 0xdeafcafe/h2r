@@ -1,0 +1,317 @@
+//! Render and texture-stage state, read from the guest's own arrays.
+//!
+//! **The guest arrays are authoritative.** Halo writes `D3D__RenderState`
+//! and `D3D__TextureState` directly from game code (386 and 432 `.text`
+//! accesses; see `docs/d3d.md`), then either calls a D3D helper that pushes
+//! the matching NV2A method or only sets a bit in `D3D__DirtyFlags` for the
+//! lazy commit. Rather than intercept every one of those sites, the device
+//! snapshots both arrays at each draw and translates the snapshot. Overridden
+//! setters (`SetRenderState_*`, `SetTextureState_*`) therefore only have to
+//! store into the arrays, exactly as the originals do.
+
+use gfx::state::{RenderState, RenderStateType, TextureStageState, TextureStageStateType};
+use gfx::xdk::RenderStateTable;
+
+use crate::guest::{GuestError, GuestMemory};
+use crate::layout::{GuestLayout, RENDER_STATE_SLOTS, STAGE_SLOTS, STAGES};
+
+/// Raw words of both state arrays.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateWords {
+    /// `D3D__RenderState`, guest numbering.
+    pub render: [u32; RENDER_STATE_SLOTS],
+    /// `D3D__TextureState[stage][state]`.
+    pub stages: [[u32; STAGE_SLOTS]; STAGES],
+}
+
+/// A state value the translation rejected (reported, the previous/default
+/// value is kept for that field).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BadState {
+    /// Render state, guest slot and value.
+    Render { slot: u32, value: u32 },
+    /// Texture-stage state.
+    Stage { stage: u32, state: u32, value: u32 },
+}
+
+/// The translated state for one draw.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DrawState {
+    /// Pipeline-relevant render state.
+    pub render: RenderState,
+    /// Per-stage sampler and fixed-function state.
+    pub stages: [TextureStageState; STAGES],
+    /// Rejected values.
+    pub bad: Vec<BadState>,
+}
+
+/// Guest-numbered render-state slots the device itself cares about.
+pub mod slot {
+    /// `D3DRS_PSTEXTUREMODES` (complex group).
+    pub const PS_TEXTURE_MODES: u32 = 136;
+    /// `D3DRS_ZENABLE`.
+    pub const ZENABLE: u32 = 143;
+    /// `D3DRS_STENCILENABLE`.
+    pub const STENCILENABLE: u32 = 144;
+    /// `D3DRS_CULLMODE`.
+    pub const CULLMODE: u32 = 147;
+    /// `D3DRS_POLYGONOFFSETZSLOPESCALE` (float).
+    pub const POLYGON_OFFSET_ZSLOPESCALE: u32 = 77;
+    /// `D3DRS_POLYGONOFFSETZOFFSET` (float).
+    pub const POLYGON_OFFSET_ZOFFSET: u32 = 78;
+    /// `D3DRS_POINTOFFSETENABLE`.
+    pub const POINT_OFFSET_ENABLE: u32 = 79;
+    /// `D3DRS_WIREFRAMEOFFSETENABLE`.
+    pub const WIREFRAME_OFFSET_ENABLE: u32 = 80;
+    /// `D3DRS_SOLIDOFFSETENABLE`.
+    pub const SOLID_OFFSET_ENABLE: u32 = 81;
+    /// `D3DRS_ZBIAS`.
+    pub const ZBIAS: u32 = 149;
+    /// Slots 0..57 mirror the first 57 dwords of a `D3DPIXELSHADERDEF`
+    /// (`PSALPHAINPUTS0` .. `PSINPUTTEXTURE`).
+    pub const PS_DEF_SLOTS: u32 = 57;
+}
+
+/// `D3DTSS_*` indices (`X_D3DTSS_*` numbering, Cxbx `XbD3D8Types.h`) that
+/// [`TextureStageState`] does not model but shader translation needs.
+pub mod stage_slot {
+    /// `D3DTSS_COLORKEYOP`.
+    pub const COLORKEYOP: usize = 9;
+    /// `D3DTSS_COLORSIGN`.
+    pub const COLORSIGN: usize = 10;
+    /// `D3DTSS_ALPHAKILL`.
+    pub const ALPHAKILL: usize = 11;
+    /// `D3DTSS_TEXTURETRANSFORMFLAGS`.
+    pub const TEXTURETRANSFORMFLAGS: usize = 21;
+    /// `D3DTSS_BUMPENVMAT00` (then 01, 11, 10).
+    pub const BUMPENVMAT00: usize = 22;
+    /// `D3DTSS_BUMPENVLSCALE`.
+    pub const BUMPENVLSCALE: usize = 26;
+    /// `D3DTSS_BUMPENVLOFFSET`.
+    pub const BUMPENVLOFFSET: usize = 27;
+    /// `D3DTSS_COLORKEYCOLOR`.
+    pub const COLORKEYCOLOR: usize = 30;
+}
+
+/// Per-stage state outside [`TextureStageState`], decoded from the raw words.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StageExtras {
+    /// `D3DTSS_COLORKEYOP`.
+    pub color_key_op: u32,
+    /// `D3DTSS_COLORSIGN` bits.
+    pub color_sign: u32,
+    /// `D3DTSS_ALPHAKILL` (`D3DTALPHAKILL_ENABLE` = 4).
+    pub alpha_kill: u32,
+    /// `D3DTSS_TEXTURETRANSFORMFLAGS`.
+    pub texture_transform_flags: u32,
+    /// Bump matrix `[m00, m01, m10, m11]`.
+    pub bump_env_mat: [f32; 4],
+    /// Luminance scale.
+    pub bump_env_lscale: f32,
+    /// Luminance offset.
+    pub bump_env_loffset: f32,
+    /// `D3DTSS_COLORKEYCOLOR`.
+    pub color_key_color: u32,
+}
+
+impl StateWords {
+    /// Stage state that only the raw words carry.
+    pub fn stage_extras(&self) -> [StageExtras; STAGES] {
+        use stage_slot::*;
+        std::array::from_fn(|n| {
+            let w = &self.stages[n];
+            let f = |i: usize| f32::from_bits(w[i]);
+            StageExtras {
+                color_key_op: w[COLORKEYOP],
+                color_sign: w[COLORSIGN],
+                alpha_kill: w[ALPHAKILL],
+                texture_transform_flags: w[TEXTURETRANSFORMFLAGS],
+                bump_env_mat: [
+                    f(BUMPENVMAT00),
+                    f(BUMPENVMAT00 + 1),
+                    f(BUMPENVMAT00 + 3),
+                    f(BUMPENVMAT00 + 2),
+                ],
+                bump_env_lscale: f(BUMPENVLSCALE),
+                bump_env_loffset: f(BUMPENVLOFFSET),
+                color_key_color: w[COLORKEYCOLOR],
+            }
+        })
+    }
+
+    /// Reads both arrays.
+    pub fn read(mem: &dyn GuestMemory, layout: &GuestLayout) -> Result<Self, GuestError> {
+        let mut render = [0; RENDER_STATE_SLOTS];
+        render.copy_from_slice(&mem.read_words(layout.render_state, RENDER_STATE_SLOTS)?);
+        let mut stages = [[0; STAGE_SLOTS]; STAGES];
+        let all = mem.read_words(layout.texture_state, STAGES * STAGE_SLOTS)?;
+        for (s, chunk) in stages.iter_mut().zip(all.as_chunks::<STAGE_SLOTS>().0) {
+            s.copy_from_slice(chunk);
+        }
+        Ok(Self { render, stages })
+    }
+
+    /// Writes both arrays.
+    pub fn write(&self, mem: &mut dyn GuestMemory, layout: &GuestLayout) -> Result<(), GuestError> {
+        for (i, w) in self.render.iter().enumerate() {
+            mem.write_u32(layout.render_state + 4 * i as u32, *w)?;
+        }
+        for (s, stage) in self.stages.iter().enumerate() {
+            for (i, w) in stage.iter().enumerate() {
+                mem.write_u32(layout.texture_state_slot(s as u32, i as u32), *w)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The D3D defaults, encoded as the guest stores them, for a device with
+    /// (`auto_depth`) or without an automatic depth buffer.
+    pub fn defaults(auto_depth: bool) -> Self {
+        let table = RenderStateTable::default();
+        let mut render = [0u32; RENDER_STATE_SLOTS];
+        let mut set = |canonical: u32, v: u32| {
+            if let Some(g) = table.canonical_to_guest(canonical) {
+                render[g as usize] = v;
+            }
+        };
+        let one = 1.0f32.to_bits();
+        for (canonical, v) in [
+            (57, 0x203),              // ZFUNC = LESSEQUAL
+            (58, 0x207),              // ALPHAFUNC = ALWAYS
+            (62, 1),                  // SRCBLEND = ONE
+            (63, 0),                  // DESTBLEND = ZERO
+            (64, 1),                  // ZWRITEENABLE
+            (66, 0x1D01),             // SHADEMODE = GOURAUD
+            (67, 0x0101_0101),        // COLORWRITEENABLE = ALL
+            (68, 0x1E00),             // STENCILZFAIL = KEEP
+            (69, 0x1E00),             // STENCILPASS = KEEP
+            (70, 0x207),              // STENCILFUNC = ALWAYS
+            (72, 0xFF),               // STENCILMASK
+            (73, 0xFF),               // STENCILWRITEMASK
+            (74, 0x8006),             // BLENDOP = ADD
+            (95, one),                // FOGEND
+            (96, one),                // FOGDENSITY
+            (102, 1),                 // LIGHTING
+            (116, one),               // POINTSIZE
+            (117, 0),                 // POINTSIZE_MIN
+            (120, one),               // POINTSCALE_A
+            (123, 64.0f32.to_bits()), // POINTSIZE_MAX
+            (139, 0x1B02),            // FILLMODE = SOLID
+            (140, 0x1B02),            // BACKFILLMODE = SOLID
+            (143, auto_depth as u32), // ZENABLE
+            (145, 0x1E00),            // STENCILFAIL = KEEP
+            (146, 0x900),             // FRONTFACE = CW
+            (147, 0x901),             // CULLMODE = CCW
+            (148, 0xFFFF_FFFF),       // TEXTUREFACTOR
+            (152, 1),                 // MULTISAMPLEANTIALIAS
+            (153, 0xFFFF_FFFF),       // MULTISAMPLEMASK
+            (158, one),               // LINEWIDTH
+        ] {
+            set(canonical, v);
+        }
+        let mut stages = [[0u32; STAGE_SLOTS]; STAGES];
+        for (n, s) in stages.iter_mut().enumerate() {
+            s[0] = 1; // ADDRESSU = WRAP
+            s[1] = 1;
+            s[2] = 1;
+            s[3] = 1; // MAGFILTER = POINT
+            s[4] = 1;
+            s[5] = 0; // MIPFILTER = NONE
+            s[8] = 1; // MAXANISOTROPY
+            s[12] = if n == 0 { 4 } else { 1 }; // COLOROP = MODULATE / DISABLE
+            s[13] = 1; // COLORARG0 = CURRENT
+            s[14] = 2; // COLORARG1 = TEXTURE
+            s[15] = 1; // COLORARG2 = CURRENT
+            s[16] = if n == 0 { 2 } else { 1 }; // ALPHAOP = SELECTARG1 / DISABLE
+            s[17] = 1;
+            s[18] = 2;
+            s[19] = 1;
+            s[20] = 1; // RESULTARG = CURRENT
+            s[28] = n as u32; // TEXCOORDINDEX
+        }
+        Self { render, stages }
+    }
+
+    /// Translates to the gfx state model. Invalid values are collected, not
+    /// fatal: the field keeps its default and the caller reports them.
+    pub fn translate(&self, table: &RenderStateTable) -> DrawState {
+        let mut render = RenderState::default();
+        let mut bad = Vec::new();
+        for (g, &v) in self.render.iter().enumerate() {
+            let Some(ty) = RenderStateType::from_guest_index(table, g as u32) else {
+                continue;
+            };
+            if matches!(ty, RenderStateType::Other(_)) {
+                continue;
+            }
+            if render.set_raw(ty, v).is_err() {
+                bad.push(BadState::Render {
+                    slot: g as u32,
+                    value: v,
+                });
+            }
+        }
+        let stages = std::array::from_fn(|s| {
+            let mut st = TextureStageState::default_for_stage(s as u32);
+            for (i, &v) in self.stages[s].iter().enumerate() {
+                let ty = TextureStageStateType::from_index(i as u32);
+                if matches!(ty, TextureStageStateType::Other(_)) {
+                    continue;
+                }
+                if st.set_raw(ty, v).is_err() {
+                    bad.push(BadState::Stage {
+                        stage: s as u32,
+                        state: i as u32,
+                        value: v,
+                    });
+                }
+            }
+            st
+        });
+        DrawState {
+            render,
+            stages,
+            bad,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gfx::state::{BlendFactor, CullMode, DepthBufferMode};
+
+    #[test]
+    fn defaults_translate_cleanly_to_gfx_defaults() {
+        let t = RenderStateTable::default();
+        let d = StateWords::defaults(true).translate(&t);
+        assert!(d.bad.is_empty(), "{:?}", d.bad);
+        assert_eq!(d.render, RenderState::default());
+        for (n, s) in d.stages.iter().enumerate() {
+            assert_eq!(*s, TextureStageState::default_for_stage(n as u32));
+        }
+        let d = StateWords::defaults(false).translate(&t);
+        assert_eq!(d.render.depth_mode, DepthBufferMode::Disabled);
+    }
+
+    #[test]
+    fn guest_writes_show_up_and_bad_values_are_reported() {
+        let t = RenderStateTable::default();
+        let mut w = StateWords::defaults(true);
+        w.render[59] = 1; // ALPHABLENDENABLE
+        w.render[62] = 0x302; // SRCBLEND = SRCALPHA
+        w.render[slot::CULLMODE as usize] = 0; // NONE
+        w.render[57] = 0x1234; // bogus ZFUNC
+        let d = w.translate(&t);
+        assert!(d.render.blend_enable);
+        assert_eq!(d.render.src_blend, BlendFactor::SrcAlpha);
+        assert_eq!(d.render.cull_mode, CullMode::None);
+        assert_eq!(
+            d.bad,
+            vec![BadState::Render {
+                slot: 57,
+                value: 0x1234
+            }]
+        );
+    }
+}

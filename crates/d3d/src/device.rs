@@ -1,0 +1,2554 @@
+//! The device model: host state for one `CDevice`, plus the D3D entry points
+//! as plain Rust methods over [`GuestMemory`].
+//!
+//! Ownership split:
+//!
+//! * **Guest-owned, read at use:** render/texture-stage state arrays,
+//!   resource headers and contents, the push-buffer words game code writes,
+//!   `PSDEF`s and vertex attribute formats. The device reads them when a draw
+//!   needs them, so guest code may change them behind its back.
+//! * **Device-owned (host):** surfaces and textures on the backend, the
+//!   swap ring, bindings set through the API (textures, streams, shaders,
+//!   render target), vertex program memory and constants, the viewport.
+//!   Where D3D mirrors these into guest-visible fields that game code reads
+//!   (`D3D__pDevice`, device `+0x1A04` render target, the constant shadow,
+//!   ...), the device writes the same fields.
+//!
+//! Every public entry first drains the push buffer
+//! ([`Device::sync_push_buffer`]) so inline game-code submissions execute in
+//! program order relative to API calls.
+//!
+//! **Ordering of inline draws and state.** On the Xbox, a state change
+//! reaches the GPU only when something pushes it: a setter, the
+//! `SetRenderState_Simple` helper, the deferred-state commit, or a draw. A
+//! value game code merely stores into `D3D__RenderState` is invisible to
+//! words already queued in the push buffer. The device models that with a
+//! *pushed* snapshot of both arrays, refreshed exactly at those points;
+//! queued inline draws are drained against the snapshot, not against the
+//! live arrays. Inline state-mirror methods in the push buffer refresh the
+//! snapshot when they execute.
+//!
+//! **Bounds.** All guest-controlled sizes and addresses go through checked
+//! arithmetic, and allocations are bounded ([`MAX_VERTICES`],
+//! [`MAX_SPAN`]) before anything is read.
+
+use std::collections::HashMap;
+
+use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
+use gfx::vertex::{
+    PrimitiveType, StreamLayout, VertexAttribute, VertexDataType, VertexLayout, VertexRegister,
+};
+use gfx::xdk::RenderStateTable;
+use gfx::{Clear, D3DFormat};
+
+use crate::backend::{
+    Backend, DrawOutcome, ResolvedDraw, StreamBytes, TargetInfo, TextureInfo, Viewport,
+};
+use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};
+use crate::events::{D3dError, Event, HleStop};
+use crate::guest::GuestMemory;
+use crate::layout::{GuestLayout, RENDER_STATE_SLOTS, device_field as field};
+use crate::pushbuf::{self, Effect, Immediate, ImmediateDraw, PushError, SimpleEncode};
+use crate::resource::{
+    AddressMap, PaletteHeader, PixelContainer, ResourceHeader, ResourceType, SurfaceHeader, common,
+};
+use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
+use crate::state::{StateWords, slot};
+
+/// A range of guest virtual memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GuestRange {
+    /// First byte.
+    pub addr: u32,
+    /// Length in bytes.
+    pub len: u32,
+}
+
+/// Bytes kept free below the push-buffer end: the largest single inline
+/// reservation seen (`DrawIndexedVertices` asks for `0x824` beyond put and
+/// checks against threshold + `0x200`) with room to spare.
+pub const PUSH_MARGIN: u32 = 0x4000;
+/// Scratch bytes the device needs for headers it creates.
+pub const SCRATCH_BYTES: u32 = 0x100;
+/// Most vertices one draw may use (the NV2A index range is 2^20).
+pub const MAX_VERTICES: u32 = 1 << 20;
+/// Most bytes the device reads from guest memory for one stream or index
+/// list.
+pub const MAX_SPAN: u64 = 64 << 20;
+/// `D3DDevice_SetScissors` accepts at most this many rectangles.
+pub const MAX_SCISSORS: u32 = 8;
+/// Host bound on `D3DDevice_Clear` rectangles (the original loops over any
+/// count; this only keeps a guest count from spinning the host).
+pub const MAX_CLEAR_RECTS: u32 = 4096;
+
+/// Device configuration supplied by the integration layer.
+#[derive(Clone, Copy, Debug)]
+pub struct DeviceConfig {
+    /// Where the D3D globals live.
+    pub layout: GuestLayout,
+    /// `Data` field to guest virtual address.
+    pub address_map: AddressMap,
+    /// Guest memory for the push buffer inline game code writes into.
+    /// Must be mapped and larger than [`PUSH_MARGIN`].
+    pub push_buffer: GuestRange,
+    /// Guest memory for surface headers the device creates (back buffer,
+    /// depth buffer); at least [`SCRATCH_BYTES`].
+    pub scratch: GuestRange,
+    /// Cache validation.
+    pub upload: UploadPolicy,
+}
+
+impl DeviceConfig {
+    /// Halo 2's layout with Xbox contiguous-memory addressing, tracked
+    /// uploads, and the given push-buffer and scratch ranges.
+    pub fn halo2(push_buffer: GuestRange, scratch: GuestRange) -> Self {
+        Self {
+            layout: GuestLayout::HALO2,
+            address_map: AddressMap::XboxContiguous,
+            push_buffer,
+            scratch,
+            upload: UploadPolicy::Tracked,
+        }
+    }
+}
+
+/// `D3DPRESENT_PARAMETERS` (Xbox layout).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentParameters {
+    /// Back buffer width.
+    pub width: u32,
+    /// Back buffer height.
+    pub height: u32,
+    /// Back buffer `D3DFORMAT`.
+    pub back_buffer_format: u32,
+    /// Back buffers (0 means 1).
+    pub back_buffer_count: u32,
+    /// `D3DMULTISAMPLE_TYPE`.
+    pub multisample_type: u32,
+    /// `D3DSWAPEFFECT`.
+    pub swap_effect: u32,
+    /// Create a depth/stencil surface.
+    pub enable_auto_depth_stencil: bool,
+    /// Its format.
+    pub auto_depth_stencil_format: u32,
+    /// `D3DPRESENTFLAG_*`.
+    pub flags: u32,
+    /// Refresh rate.
+    pub refresh_rate: u32,
+    /// `D3DPRESENT_INTERVAL_*`.
+    pub presentation_interval: u32,
+    /// `BufferSurfaces[0]`: title-supplied back buffer (unsupported if set).
+    pub buffer_surface: u32,
+    /// `DepthStencilSurface`: title-supplied depth buffer (unsupported if set).
+    pub depth_stencil_surface: u32,
+}
+
+impl PresentParameters {
+    /// Size of the structure.
+    pub const SIZE: u32 = 0x44;
+
+    /// Reads the structure.
+    pub fn read(mem: &dyn GuestMemory, addr: u32) -> Result<Self, D3dError> {
+        let w = mem.read_words(addr, 17)?;
+        Ok(Self {
+            width: w[0],
+            height: w[1],
+            back_buffer_format: w[2],
+            back_buffer_count: w[3],
+            multisample_type: w[4],
+            swap_effect: w[5],
+            // w[6] hDeviceWindow, w[7] Windowed: ignored on the Xbox.
+            enable_auto_depth_stencil: w[8] != 0,
+            auto_depth_stencil_format: w[9],
+            flags: w[10],
+            refresh_rate: w[11],
+            presentation_interval: w[12],
+            buffer_surface: w[13],
+            depth_stencil_surface: w[16],
+        })
+    }
+
+    /// Writes the structure (tests).
+    pub fn write(&self, mem: &mut dyn GuestMemory, addr: u32) -> Result<(), D3dError> {
+        let w = [
+            self.width,
+            self.height,
+            self.back_buffer_format,
+            self.back_buffer_count,
+            self.multisample_type,
+            self.swap_effect,
+            0,
+            0,
+            self.enable_auto_depth_stencil as u32,
+            self.auto_depth_stencil_format,
+            self.flags,
+            self.refresh_rate,
+            self.presentation_interval,
+            self.buffer_surface,
+            0,
+            0,
+            self.depth_stencil_surface,
+        ];
+        for (i, v) in w.into_iter().enumerate() {
+            mem.write_u32(at(addr, 4 * i as u64)?, v)?;
+        }
+        Ok(())
+    }
+}
+
+/// `SetStreamSource` / `D3DSTREAM_INPUT`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamSource {
+    /// Vertex buffer header (0 = unbound).
+    pub buffer: u32,
+    /// Stride in bytes.
+    pub stride: u32,
+    /// Byte offset of vertex 0.
+    pub offset: u32,
+}
+
+/// `D3DRECT`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Rect {
+    /// Left.
+    pub x1: i32,
+    /// Top.
+    pub y1: i32,
+    /// Right (exclusive).
+    pub x2: i32,
+    /// Bottom (exclusive).
+    pub y2: i32,
+}
+
+impl Rect {
+    fn covers(&self, w: u32, h: u32) -> bool {
+        self.x1 <= 0 && self.y1 <= 0 && self.x2 as i64 >= w as i64 && self.y2 as i64 >= h as i64
+    }
+}
+
+/// `D3DCLEAR_*` flags.
+pub mod clear_flags {
+    /// Depth.
+    pub const ZBUFFER: u32 = 0x01;
+    /// Stencil.
+    pub const STENCIL: u32 = 0x02;
+    /// All colour channels (`TARGET_R|G|B|A`).
+    pub const TARGET: u32 = 0xF0;
+}
+
+/// Counters, for tests and diagnostics.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Stats {
+    /// Draws handed to the backend (including skipped ones).
+    pub draws: u64,
+    /// Inline (push-buffer) immediate draws among them.
+    pub inline_draws: u64,
+    /// Push-buffer words consumed.
+    pub push_words: u64,
+    /// `SetRenderState_Simple` calls (value already in the guest array).
+    pub simple_state_calls: u64,
+    /// Texture uploads.
+    pub texture_uploads: u64,
+    /// Texture cache hits.
+    pub texture_hits: u64,
+}
+
+/// Cache key: texture header plus, for P8 textures, the palette header
+/// (one header bound with two palettes is two host textures).
+type TextureKey = (u32, u32);
+
+/// Palette part of a cached texture's identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PaletteIdentity {
+    header: u32,
+    /// `Common` (carries the size bits).
+    common: u32,
+    /// Data address (virtual).
+    va: u32,
+    /// Bytes.
+    len: u32,
+}
+
+struct CachedTexture<T> {
+    identity: [u32; 3],
+    palette: Option<PaletteIdentity>,
+    va: u32,
+    len: u32,
+    generation: u64,
+    hash: u64,
+    info: TextureInfo,
+    host: T,
+}
+
+struct Swap<S> {
+    /// `[back0, back1, ..]`: back0 is what the back-buffer header means now.
+    back: Vec<S>,
+    front: S,
+}
+
+/// `base + offset` as a guest address, or an error if it leaves the 32-bit
+/// address space.
+fn at(base: u32, offset: u64) -> Result<u32, D3dError> {
+    u32::try_from(base as u64 + offset).map_err(|_| D3dError::Invalid {
+        entry: "guest address",
+        detail: format!("{base:#010x} + {offset:#x} overflows the address space"),
+    })
+}
+
+/// `count * size` bytes, bounded by [`MAX_SPAN`].
+fn span(entry: &'static str, count: u32, size: u32) -> Result<usize, D3dError> {
+    let n = count as u64 * size as u64;
+    if n > MAX_SPAN {
+        return Err(D3dError::invalid(
+            entry,
+            format!("{count} x {size} bytes exceeds the {MAX_SPAN:#x}-byte limit"),
+        ));
+    }
+    Ok(n as usize)
+}
+
+fn vertex_limit(entry: &'static str, count: u32) -> Result<(), D3dError> {
+    if count > MAX_VERTICES {
+        return Err(D3dError::invalid(
+            entry,
+            format!("{count} vertices (limit {MAX_VERTICES})"),
+        ));
+    }
+    Ok(())
+}
+
+/// One Direct3D device.
+pub struct Device<B: Backend> {
+    cfg: DeviceConfig,
+    table: RenderStateTable,
+    /// The host backend.
+    pub backend: B,
+    created: bool,
+    params: Option<PresentParameters>,
+    swap: Option<Swap<B::Surface>>,
+    depth: Option<B::Surface>,
+    back_header: u32,
+    depth_header: u32,
+    other_surfaces: HashMap<u32, ([u32; 3], B::Surface)>,
+    render_target: u32,
+    depth_stencil: u32,
+    textures: [u32; 4],
+    palettes: [u32; 4],
+    vertex_shader: u32,
+    pixel_shader: u32,
+    streams: [StreamSource; 16],
+    stream_inputs: Option<Vec<StreamSource>>,
+    program: Box<[u32; PROGRAM_SLOTS * 4]>,
+    program_start: u32,
+    /// Constant registers as dwords (register r is `[4r, 4r + 4)`).
+    constants: Box<[u32; CONSTANTS * 4]>,
+    viewport: Viewport,
+    transforms: HashMap<u32, [f32; 16]>,
+    scissors: Vec<Rect>,
+    immediate: Immediate,
+    consumed: u32,
+    /// State as the GPU has seen it (see the module docs).
+    pushed: Option<StateWords>,
+    /// A latched push-buffer failure.
+    fault: Option<String>,
+    swap_count: u32,
+    fence: u32,
+    cache: HashMap<TextureKey, CachedTexture<B::Texture>>,
+    /// Guest-write tracking (see [`crate::dirty`]).
+    pub tracker: WriteTracker,
+    events: Vec<Event>,
+    last_stop: Option<HleStop>,
+    stats: Stats,
+    /// `D3DSIMPLERENDERSTATEENCODE`, read from the image at creation.
+    encode: Option<SimpleEncode>,
+}
+
+fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
+    let b = c.to_le_bytes(); // B, G, R, A
+    [
+        b[2] as f32 / 255.0,
+        b[1] as f32 / 255.0,
+        b[0] as f32 / 255.0,
+        b[3] as f32 / 255.0,
+    ]
+}
+
+/// What a resolved draw needs before the backend sees it.
+struct DrawParts {
+    entry: &'static str,
+    primitive: PrimitiveType,
+    vertex_count: u32,
+    layout: VertexLayout,
+    vertex: VertexProcessing,
+    streams: Vec<StreamBytes>,
+    words: StateWords,
+}
+
+impl<B: Backend> Device<B> {
+    /// A device that has not been created yet (`Direct3D_CreateDevice` does that).
+    pub fn new(cfg: DeviceConfig, backend: B) -> Self {
+        Self {
+            cfg,
+            table: RenderStateTable::default(),
+            backend,
+            created: false,
+            params: None,
+            swap: None,
+            depth: None,
+            back_header: 0,
+            depth_header: 0,
+            other_surfaces: HashMap::new(),
+            render_target: 0,
+            depth_stencil: 0,
+            textures: [0; 4],
+            palettes: [0; 4],
+            vertex_shader: 0,
+            pixel_shader: 0,
+            streams: [StreamSource::default(); 16],
+            stream_inputs: None,
+            program: Box::new([0; PROGRAM_SLOTS * 4]),
+            program_start: 0,
+            constants: Box::new([0; CONSTANTS * 4]),
+            viewport: Viewport {
+                x: 0,
+                y: 0,
+                width: 0,
+                height: 0,
+                min_z: 0.0,
+                max_z: 1.0,
+            },
+            transforms: HashMap::new(),
+            scissors: Vec::new(),
+            immediate: Immediate::default(),
+            consumed: cfg.push_buffer.addr,
+            pushed: None,
+            fault: None,
+            swap_count: 0,
+            fence: 0,
+            cache: HashMap::new(),
+            tracker: WriteTracker::new(),
+            events: Vec::new(),
+            last_stop: None,
+            stats: Stats::default(),
+            encode: None,
+        }
+    }
+
+    /// Configuration.
+    pub fn config(&self) -> &DeviceConfig {
+        &self.cfg
+    }
+
+    /// Counters.
+    pub fn stats(&self) -> Stats {
+        self.stats
+    }
+
+    /// Drains recorded events.
+    pub fn take_events(&mut self) -> Vec<Event> {
+        std::mem::take(&mut self.events)
+    }
+
+    /// Records the call that stopped the guest (the runtime glue does this).
+    pub fn note_stop(&mut self, stop: HleStop) {
+        self.last_stop = Some(stop);
+    }
+
+    /// The last recorded stop.
+    pub fn last_stop(&self) -> Option<&HleStop> {
+        self.last_stop.as_ref()
+    }
+
+    /// Present parameters of the created device.
+    pub fn present_parameters(&self) -> Option<&PresentParameters> {
+        self.params.as_ref()
+    }
+
+    /// The surface the back-buffer header currently stands for.
+    pub fn back_buffer(&self) -> Option<B::Surface> {
+        self.swap.as_ref().map(|s| s.back[0])
+    }
+
+    /// The front buffer (what the last `Swap` showed, after the flip).
+    pub fn front_buffer(&self) -> Option<B::Surface> {
+        self.swap.as_ref().map(|s| s.front)
+    }
+
+    /// Constant register `r` (hardware order, index = register + 96).
+    pub fn constant(&self, r: usize) -> [f32; 4] {
+        std::array::from_fn(|c| f32::from_bits(self.constants[4 * r + c]))
+    }
+
+    fn live(&self, entry: &'static str) -> Result<(), D3dError> {
+        if self.created {
+            Ok(())
+        } else {
+            Err(D3dError::NoDevice(entry))
+        }
+    }
+
+    fn layout(&self) -> GuestLayout {
+        self.cfg.layout
+    }
+
+    /// [`SimpleEncode::mirror_slot`] of the table read at creation.
+    fn mirror_slot(&self, m: u32) -> Option<u32> {
+        self.encode.as_ref().and_then(|e| e.mirror_slot(m))
+    }
+
+    // ---------------------------------------------------------------------
+    // Device lifetime
+    // ---------------------------------------------------------------------
+
+    /// `Direct3D_CreateDevice` (`0x3f5240`). `behavior_flags` is the LTCG
+    /// `EAX`, `params` the stack `pPresentationParameters`, and `pp_device`
+    /// the `ECX` out pointer (0 allowed). Returns the `HRESULT` (0).
+    ///
+    /// Guest-visible effects match the original: `*pp_device` and
+    /// `D3D__pDevice` point at the static device object; device flags get
+    /// `behavior & 0x10`; the push-buffer put/threshold fields are set up;
+    /// both state arrays get their defaults; render-target, depth and back
+    /// buffer fields point at surface headers the device creates in scratch
+    /// memory.
+    pub fn create_device(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        behavior_flags: u32,
+        params: u32,
+        pp_device: u32,
+    ) -> Result<u32, D3dError> {
+        const E: &str = "Direct3D_CreateDevice";
+        if self.created {
+            return Err(D3dError::unimplemented(
+                E,
+                "a second CreateDevice without releasing the first (Halo resets with D3DDevice_Reset instead)",
+            ));
+        }
+        let p = PresentParameters::read(mem, params)?;
+        if p.buffer_surface != 0 || p.depth_stencil_surface != 0 {
+            return Err(D3dError::unimplemented(
+                E,
+                "title-supplied BufferSurfaces/DepthStencilSurface",
+            ));
+        }
+        if p.width == 0 || p.height == 0 || p.width > 4096 || p.height > 4096 {
+            return Err(D3dError::invalid(
+                E,
+                format!("back buffer size {}x{}", p.width, p.height),
+            ));
+        }
+        if p.back_buffer_count > 2 {
+            return Err(D3dError::invalid(
+                E,
+                format!("{} back buffers", p.back_buffer_count),
+            ));
+        }
+        let pb = self.cfg.push_buffer;
+        if pb.len <= PUSH_MARGIN * 2
+            || self.cfg.scratch.len < SCRATCH_BYTES
+            || pb.addr as u64 + pb.len as u64 > 1 << 32
+        {
+            return Err(D3dError::invalid(
+                E,
+                "push buffer or scratch range invalid in DeviceConfig",
+            ));
+        }
+        let l = self.layout();
+        // The method-to-slot map comes from the image, not from this crate.
+        let encode = SimpleEncode::read(mem, l.simple_encode)
+            .map_err(|e| D3dError::unimplemented(E, e.to_string()))?;
+        self.encode = Some(encode);
+        // Back buffers are always created linear: the guest header records
+        // the title's format, the host surface uses its linear twin.
+        let fmt = D3DFormat::from_raw(p.back_buffer_format).ok_or_else(|| {
+            D3dError::unimplemented(E, format!("back buffer format {:#x}", p.back_buffer_format))
+        })?;
+        let host_fmt = linear_twin(fmt);
+        let count = p.back_buffer_count.max(1);
+        let mut back = Vec::new();
+        for _ in 0..count {
+            back.push(
+                self.backend
+                    .create_surface(host_fmt, p.width, p.height, false)
+                    .map_err(D3dError::Backend)?,
+            );
+        }
+        let front = self
+            .backend
+            .create_surface(host_fmt, p.width, p.height, false)
+            .map_err(D3dError::Backend)?;
+        self.swap = Some(Swap { back, front });
+
+        let scratch = self.cfg.scratch.addr;
+        self.back_header = scratch;
+        let bpp = host_fmt.bytes_per_texel().unwrap_or(4);
+        SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, 0)
+            .write(mem, self.back_header)?;
+        if p.enable_auto_depth_stencil {
+            let dfmt = D3DFormat::from_raw(p.auto_depth_stencil_format)
+                .filter(|f| f.is_depth())
+                .ok_or_else(|| {
+                    D3dError::unimplemented(
+                        E,
+                        format!("depth format {:#x}", p.auto_depth_stencil_format),
+                    )
+                })?;
+            let dlin = linear_twin(dfmt);
+            self.depth = Some(
+                self.backend
+                    .create_surface(dlin, p.width, p.height, true)
+                    .map_err(D3dError::Backend)?,
+            );
+            self.depth_header = at(scratch, SurfaceHeader::SIZE as u64)?;
+            let dbpp = dlin.bytes_per_texel().unwrap_or(4);
+            SurfaceHeader::linear(dlin, p.width, p.height, p.width * dbpp, 0)
+                .write(mem, self.depth_header)?;
+        }
+        self.render_target = self.back_header;
+        self.depth_stencil = self.depth_header;
+        // Device object.
+        let dev = l.device;
+        self.store_viewport(
+            mem,
+            Viewport {
+                x: 0,
+                y: 0,
+                width: p.width,
+                height: p.height,
+                min_z: 0.0,
+                max_z: 1.0,
+            },
+        )?;
+        mem.write_u32(dev + field::REF_COUNT, 1)?;
+        mem.write_u32(dev + field::PUT, pb.addr)?;
+        mem.write_u32(dev + field::THRESHOLD, pb.addr + pb.len - PUSH_MARGIN)?;
+        mem.write_u32(dev + field::FLAGS, behavior_flags & 0x10)?;
+        mem.write_u32(dev + field::RENDER_TARGET, self.back_header)?;
+        mem.write_u32(dev + field::DEPTH_STENCIL, self.depth_header)?;
+        mem.write_u32(dev + field::BACK_BUFFER, self.back_header)?;
+        mem.write_u32(dev + field::DISPLAY_SURFACE, self.back_header)?;
+        mem.write_u32(dev + field::SWAP_COUNT, 0)?;
+        mem.write_u32(l.p_device, dev)?;
+        mem.write_u32(l.dirty_flags, 0)?;
+        let defaults = StateWords::defaults(p.enable_auto_depth_stencil);
+        defaults.write(mem, &l)?;
+        self.pushed = Some(defaults);
+        if pp_device != 0 {
+            mem.write_u32(pp_device, dev)?;
+        }
+        self.consumed = pb.addr;
+        self.params = Some(p);
+        self.created = true;
+        Ok(0)
+    }
+
+    /// The device teardown `0x3fc530` (`EAX` = device), which Halo's inlined
+    /// `Release` calls when the reference count at `+0x938` is 1 (boot:
+    /// `0x12455`, right after the first CreateDevice and Swap). The original
+    /// waits for the GPU, frees the push buffer and releases the bound
+    /// resources; the caller then zeroes the device object and
+    /// `D3D__pDevice` itself.
+    ///
+    /// Here: execute what is still queued, then forget every host object and
+    /// all device state, so that a later CreateDevice starts afresh. Guest
+    /// memory is not touched. The backend, configuration, write tracker,
+    /// counters and undrained events survive.
+    pub fn release_device(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        device: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3D device teardown (0x3fc530)";
+        self.live(E)?;
+        if device != self.cfg.layout.device {
+            return Err(D3dError::invalid(
+                E,
+                format!("device {device:#010x} is not D3D__Device"),
+            ));
+        }
+        self.sync_push_buffer(mem)?;
+        if self.immediate.is_open() {
+            return Err(D3dError::invalid(E, "teardown inside Begin/End"));
+        }
+        self.release_bindings(mem, E)?;
+        // Every device-owned host surface goes with the device.
+        let mut surfaces = Vec::new();
+        if let Some(sw) = self.swap.take() {
+            surfaces.extend(sw.back);
+            surfaces.push(sw.front);
+        }
+        surfaces.extend(self.depth.take());
+        surfaces.extend(self.other_surfaces.drain().map(|(_, (_, s))| s));
+        for s in surfaces {
+            self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
+        }
+        self.created = false;
+        self.params = None;
+        self.swap = None;
+        self.depth = None;
+        self.back_header = 0;
+        self.depth_header = 0;
+        self.other_surfaces.clear();
+        self.render_target = 0;
+        self.depth_stencil = 0;
+        self.textures = [0; 4];
+        self.palettes = [0; 4];
+        self.vertex_shader = 0;
+        self.pixel_shader = 0;
+        self.streams = [StreamSource::default(); 16];
+        self.stream_inputs = None;
+        self.program.fill(0);
+        self.program_start = 0;
+        self.constants.fill(0);
+        self.viewport = Viewport {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            min_z: 0.0,
+            max_z: 1.0,
+        };
+        self.transforms.clear();
+        self.scissors.clear();
+        self.immediate = Immediate::default();
+        self.consumed = self.cfg.push_buffer.addr;
+        self.pushed = None;
+        self.fault = None;
+        self.swap_count = 0;
+        self.fence = 0;
+        self.cache.clear();
+        Ok(())
+    }
+
+    /// Teardown's resource releases (`0x3fc5f4..0x3fc69b`): one internal
+    /// reference off each bound texture and palette, each `D3D__Streams`
+    /// buffer (and, here, each `SetVertexShaderInput` buffer, which this
+    /// device also holds a reference to); then `D3D__Streams` (16 records,
+    /// `0x30` dwords) is zeroed (`0x3fc704..0x3fc710`). Like the original,
+    /// only `Common` changes. A release that would drop the last reference
+    /// needs `D3D_DestroyResource`, which is not implemented: that stops
+    /// before anything is written.
+    fn release_bindings(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+    ) -> Result<(), D3dError> {
+        let mut held: Vec<u32> = Vec::new();
+        held.extend(self.textures);
+        held.extend(self.palettes);
+        held.extend(self.streams.iter().map(|s| s.buffer));
+        if let Some(inputs) = &self.stream_inputs {
+            held.extend(inputs.iter().map(|s| s.buffer));
+        }
+        held.retain(|h| *h != 0);
+        // Net count per header, then check before writing anything.
+        let mut counts: Vec<(u32, u32)> = Vec::new();
+        for h in held {
+            match counts.iter_mut().find(|c| c.0 == h) {
+                Some(c) => c.1 += 1,
+                None => counts.push((h, 1)),
+            }
+        }
+        let mut updates = Vec::new();
+        for (h, n) in counts {
+            let word = mem.read_u32(h)?;
+            let c = word.wrapping_sub(n.wrapping_mul(common::INTREFCOUNT_ONE));
+            if (word & common::INTREFCOUNT_MASK) < n * common::INTREFCOUNT_ONE
+                || c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0
+            {
+                return Err(D3dError::unimplemented(
+                    entry,
+                    format!("releasing the last reference to {h:#010x} (D3D_DestroyResource)"),
+                ));
+            }
+            updates.push((h, c));
+        }
+        for (h, c) in updates {
+            mem.write_u32(h, c)?;
+        }
+        let streams = self.cfg.layout.streams;
+        mem.write(streams, &[0; 16 * 12])?;
+        Ok(())
+    }
+
+    /// `D3DDevice_SetShaderConstantMode` (`0x3f6e10`, `EAX` = mode). Device
+    /// flag `0x200` follows the `D3DSCM_NORESERVEDCONSTANTS` bit (`0x10`),
+    /// and `+0x1928` takes the mode without it. Halo's only call
+    /// (`0x12675`) passes `0x11` (192 constants, none reserved): constants
+    /// are stored by hardware register here regardless, so nothing else
+    /// changes. Mode 0 (96 constants) also reloads the reserved constants
+    /// through the push buffer (`0x3f6e3e..`), which is not implemented.
+    pub fn set_shader_constant_mode(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        mode: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetShaderConstantMode";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let base = mode & !0x10;
+        if base == 0 {
+            return Err(D3dError::unimplemented(
+                E,
+                format!("mode {mode:#x} (96 constants: reserved-constant reload)"),
+            ));
+        }
+        let dev = self.cfg.layout.device;
+        let flags = mem.read_u32(dev + field::FLAGS)?;
+        let flags = if mode & 0x10 != 0 {
+            flags | 0x200
+        } else {
+            flags & !0x200
+        };
+        mem.write_u32(dev + field::FLAGS, flags)?;
+        mem.write_u32(dev + field::SHADER_CONSTANT_MODE, base)?;
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // Push buffer
+    // ---------------------------------------------------------------------
+
+    /// Executes whatever game code wrote into the push buffer since the last
+    /// call. Every entry point calls this first.
+    ///
+    /// A failure latches the device: the failing command is not consumed,
+    /// and every later call returns [`D3dError::Faulted`] instead of
+    /// silently skipping it.
+    pub fn sync_push_buffer(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        if !self.created {
+            return Ok(());
+        }
+        if let Some(f) = &self.fault {
+            return Err(D3dError::Faulted(f.clone()));
+        }
+        match self.drain(mem) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.fault = Some(format!(
+                    "{e} (push-buffer command at {:#010x})",
+                    self.consumed
+                ));
+                Err(e)
+            }
+        }
+    }
+
+    /// The latched fault, if any.
+    pub fn fault(&self) -> Option<&str> {
+        self.fault.as_deref()
+    }
+
+    fn drain(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        let pb = self.cfg.push_buffer;
+        let end = pb.addr as u64 + pb.len as u64;
+        let put = mem.read_u32(self.cfg.layout.device + field::PUT)?;
+        if put == self.consumed {
+            return Ok(());
+        }
+        if put < self.consumed || put as u64 > end || !(put - self.consumed).is_multiple_of(4) {
+            return Err(D3dError::invalid(
+                "push buffer",
+                format!(
+                    "put {put:#010x} is not a word boundary in [{:#010x}, {end:#010x}]",
+                    self.consumed
+                ),
+            ));
+        }
+        while self.consumed < put {
+            let (next, call) = pushbuf::decode_one(mem, self.consumed, put)?;
+            if let Some(c) = call {
+                self.stats.push_words += 1 + c.data.len() as u64;
+                for (m, w) in c.writes() {
+                    match self.immediate.apply(c.at, m, w)? {
+                        Some(Effect::Draw(d)) => {
+                            self.stats.inline_draws += 1;
+                            self.immediate_draw(mem, "inline Begin/End", d)?;
+                        }
+                        Some(Effect::None) => {}
+                        None if self.mirror_slot(m).is_some() => {
+                            // A state the game pushed itself (or through
+                            // SetRenderState_Simple): the payload is what
+                            // the GPU sees from here on, whatever the array
+                            // holds by the time this drains.
+                            let slot = self.mirror_slot(m).expect("checked");
+                            self.push_slot(mem, slot, w)?;
+                        }
+                        None => {
+                            return Err(PushError::UnknownMethod {
+                                method: m,
+                                at: c.at,
+                            }
+                            .into());
+                        }
+                    }
+                }
+            }
+            // Consumed only once fully executed.
+            self.consumed = next;
+        }
+        Ok(())
+    }
+
+    /// `D3D_MakeRequestedSpace` (`0x3faae0`): called by inline writers when
+    /// put reached the threshold. Executes the buffer, rewinds it, and
+    /// returns the new put (also stored in the device).
+    pub fn make_requested_space(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        minimum: u32,
+        requested: u32,
+    ) -> Result<u32, D3dError> {
+        const E: &str = "D3D_MakeRequestedSpace";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let pb = self.cfg.push_buffer;
+        if minimum.max(requested.min(minimum)) > pb.len - PUSH_MARGIN {
+            return Err(D3dError::invalid(
+                E,
+                format!("request of {minimum:#x} bytes exceeds the push buffer"),
+            ));
+        }
+        mem.write_u32(self.cfg.layout.device + field::PUT, pb.addr)?;
+        self.consumed = pb.addr;
+        Ok(pb.addr)
+    }
+
+    /// `CDevice_KickOff`, `D3D_BlockOnTime`, `D3D_BlockOnResource`: execute
+    /// pending words (the host GPU is synchronous, so nothing waits).
+    pub fn kick_off(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        self.live("CDevice_KickOff")?;
+        self.sync_push_buffer(mem)
+    }
+
+    /// The deferred-state commit (`0x400fa0`): executes pending words, makes
+    /// the current arrays the pushed state, and clears the dirty flags.
+    pub fn commit(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        self.live("D3D_CommitState")?;
+        self.sync_push_buffer(mem)?;
+        self.refresh_pushed(mem)?;
+        mem.write_u32(self.cfg.layout.dirty_flags, 0)?;
+        Ok(())
+    }
+
+    /// `D3D_SetFence`: the GPU is synchronous here, so every fence has
+    /// passed by the time it is returned.
+    pub fn set_fence(&mut self, mem: &mut dyn GuestMemory) -> Result<u32, D3dError> {
+        self.live("D3D_SetFence")?;
+        self.sync_push_buffer(mem)?;
+        self.fence = self.fence.wrapping_add(1);
+        mem.write_u32(self.cfg.layout.device + field::GPU_TIME, self.fence)?;
+        Ok(self.fence)
+    }
+
+    // ---------------------------------------------------------------------
+    // State
+    // ---------------------------------------------------------------------
+
+    fn refresh_pushed(&mut self, mem: &dyn GuestMemory) -> Result<(), D3dError> {
+        self.pushed = Some(self.state(mem)?);
+        Ok(())
+    }
+
+    fn pushed_state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
+        match &self.pushed {
+            Some(s) => Ok(s.clone()),
+            None => self.state(mem),
+        }
+    }
+
+    /// Stores a render-state slot as a D3D setter does: into the guest array
+    /// and (because the setter pushes it) into the pushed snapshot.
+    fn store_rs(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        guest_slot: u32,
+        value: u32,
+    ) -> Result<(), D3dError> {
+        mem.write_u32(self.cfg.layout.render_state_slot(guest_slot), value)?;
+        if let Some(p) = &mut self.pushed {
+            p.render[guest_slot as usize] = value;
+        }
+        Ok(())
+    }
+
+    /// Any `SetRenderState_*` setter: stores into `D3D__RenderState` (guest
+    /// slot numbering).
+    pub fn set_render_state(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        guest_slot: u32,
+        value: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetRenderState";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if guest_slot as usize >= RENDER_STATE_SLOTS {
+            return Err(D3dError::invalid(E, format!("slot {guest_slot}")));
+        }
+        if guest_slot == slot::ZBIAS {
+            return self.apply_zbias(mem, value);
+        }
+        self.store_rs(mem, guest_slot, value)
+    }
+
+    /// `SetRenderState_ZBias` (`0x3f59b0`). As compiled it derives the
+    /// polygon-offset state from the bias and stores all of it:
+    /// `ZSLOPESCALE = -bias / 4`, `ZOFFSET = -bias` (bias as an unsigned
+    /// integer, converted to float), the three offset enables = `bias != 0`,
+    /// and `ZBIAS = bias`.
+    pub fn set_zbias(&mut self, mem: &mut dyn GuestMemory, bias: u32) -> Result<(), D3dError> {
+        self.live("D3DDevice_SetRenderState_ZBias")?;
+        self.sync_push_buffer(mem)?;
+        self.apply_zbias(mem, bias)
+    }
+
+    fn apply_zbias(&mut self, mem: &mut dyn GuestMemory, bias: u32) -> Result<(), D3dError> {
+        let f = -(bias as f64);
+        let enable = (bias != 0) as u32;
+        self.store_rs(
+            mem,
+            slot::POLYGON_OFFSET_ZSLOPESCALE,
+            ((f * 0.25) as f32).to_bits(),
+        )?;
+        self.store_rs(mem, slot::POLYGON_OFFSET_ZOFFSET, (f as f32).to_bits())?;
+        self.store_rs(mem, slot::POINT_OFFSET_ENABLE, enable)?;
+        self.store_rs(mem, slot::WIREFRAME_OFFSET_ENABLE, enable)?;
+        self.store_rs(mem, slot::SOLID_OFFSET_ENABLE, enable)?;
+        self.store_rs(mem, slot::ZBIAS, bias)
+    }
+
+    /// The GPU has seen `value` for guest render-state slot `slot` (an
+    /// inline write or `SetRenderState_Simple`). Only the pushed snapshot
+    /// changes: the guest array is the game's to store, before or after.
+    fn push_slot(&mut self, mem: &dyn GuestMemory, slot: u32, value: u32) -> Result<(), D3dError> {
+        if self.pushed.is_none() {
+            self.refresh_pushed(mem)?;
+        }
+        let p = self.pushed.as_mut().expect("just set");
+        p.render[slot as usize] = value;
+        Ok(())
+    }
+
+    /// `SetRenderState_Simple` (`0x3f5cf0`, `ECX` = push header
+    /// `1 << 18 | method`, `EDX` = value): writes exactly those two words
+    /// into the push buffer (`0x3f5d05`/`0x3f5d08`). Game code stores the
+    /// array either before or after the call (`0x1268b` then `0x1269a`), so
+    /// the registers are what counts: `EDX` becomes the pushed value of the
+    /// slot the method encodes ([`SimpleEncode`], read from the image).
+    pub fn set_render_state_simple(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+        value: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetRenderState_Simple";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let method = header & 0x3_FFFF;
+        let slot = (header >> 18 == 1)
+            .then(|| self.mirror_slot(method))
+            .flatten()
+            .ok_or_else(|| {
+                D3dError::unimplemented(
+                    E,
+                    format!("header {header:#x} is not a known one-word state method"),
+                )
+            })?;
+        self.push_slot(mem, slot, value)?;
+        self.stats.simple_state_calls += 1;
+        Ok(())
+    }
+
+    /// `SetTextureStageState` and the `SetTextureState_*` setters.
+    pub fn set_texture_stage_state(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stage: u32,
+        state: u32,
+        value: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetTextureStageState";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if stage >= 4 || state >= 32 {
+            return Err(D3dError::invalid(E, format!("stage {stage} state {state}")));
+        }
+        mem.write_u32(self.cfg.layout.texture_state_slot(stage, state), value)?;
+        if let Some(p) = &mut self.pushed {
+            p.stages[stage as usize][state as usize] = value;
+        }
+        Ok(())
+    }
+
+    fn add_internal_ref(mem: &mut dyn GuestMemory, header: u32) -> Result<(), D3dError> {
+        if header != 0 {
+            let c = mem.read_u32(header)?;
+            mem.write_u32(header, c.wrapping_add(common::INTREFCOUNT_ONE))?;
+        }
+        Ok(())
+    }
+
+    fn drop_internal_ref(
+        &self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        header: u32,
+    ) -> Result<(), D3dError> {
+        if header == 0 {
+            return Ok(());
+        }
+        let c = mem.read_u32(header)?.wrapping_sub(common::INTREFCOUNT_ONE);
+        if c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
+            // The original calls D3D_DestroyResource here, which frees guest
+            // memory through D3D's allocator.
+            return Err(D3dError::unimplemented(
+                entry,
+                format!("unbinding the last reference to {header:#010x} (D3D_DestroyResource)"),
+            ));
+        }
+        mem.write_u32(header, c)?;
+        mem.write_u32(at(header, 8)?, self.fence)?; // Lock = last-use time
+        Ok(())
+    }
+
+    /// `D3DResource_AddRef` (`0x3fb600`): bumps the title reference count.
+    pub fn resource_add_ref(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+    ) -> Result<u32, D3dError> {
+        self.sync_push_buffer(mem)?;
+        let c = mem.read_u32(header)?;
+        let n = (c & common::REFCOUNT_MASK).wrapping_add(1) & common::REFCOUNT_MASK;
+        mem.write_u32(header, (c & !common::REFCOUNT_MASK) | n)?;
+        Ok(n)
+    }
+
+    /// `D3DResource_Release` (`0x3fb640`). Releasing the last reference
+    /// destroys the resource, which is not implemented.
+    pub fn resource_release(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+    ) -> Result<u32, D3dError> {
+        const E: &str = "D3DResource_Release";
+        self.sync_push_buffer(mem)?;
+        let c = mem.read_u32(header)?;
+        let n = (c & common::REFCOUNT_MASK).wrapping_sub(1) & common::REFCOUNT_MASK;
+        if n == 0 && c & common::INTREFCOUNT_MASK == 0 {
+            return Err(D3dError::unimplemented(
+                E,
+                format!("releasing the last reference to {header:#010x} (D3D_DestroyResource)"),
+            ));
+        }
+        mem.write_u32(header, (c & !common::REFCOUNT_MASK) | n)?;
+        if n == 0 {
+            self.cache.retain(|k, _| k.0 != header && k.1 != header);
+        }
+        Ok(n)
+    }
+
+    /// Reports a guest store the device did not make (the runtime's write
+    /// barrier; see [`crate::dirty`]).
+    pub fn note_write(&mut self, addr: u32, len: u32) {
+        self.tracker.note_write(addr, len);
+    }
+
+    /// `D3DDevice_SetTexture` (`0x3f8320`, `EAX` = stage).
+    pub fn set_texture(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stage: u32,
+        texture: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetTexture";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if stage >= 4 {
+            return Err(D3dError::invalid(E, format!("stage {stage}")));
+        }
+        let old = self.textures[stage as usize];
+        if old == texture {
+            return Ok(());
+        }
+        Self::add_internal_ref(mem, texture)?;
+        self.drop_internal_ref(mem, E, old)?;
+        self.textures[stage as usize] = texture;
+        mem.write_u32(
+            self.cfg.layout.device + field::TEXTURES + 4 * stage,
+            texture,
+        )?;
+        Ok(())
+    }
+
+    /// `D3DDevice_SetPalette` (`0x3f84d0`, `EAX` = stage).
+    pub fn set_palette(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stage: u32,
+        palette: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetPalette";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if stage >= 4 {
+            return Err(D3dError::invalid(E, format!("stage {stage}")));
+        }
+        let old = self.palettes[stage as usize];
+        if old != palette {
+            Self::add_internal_ref(mem, palette)?;
+            self.drop_internal_ref(mem, E, old)?;
+            self.palettes[stage as usize] = palette;
+        }
+        Ok(())
+    }
+
+    /// `D3DDevice_SetStreamSource` (inlined/absent in Halo; kept for the API).
+    pub fn set_stream_source(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stream: u32,
+        buffer: u32,
+        stride: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetStreamSource";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if stream >= 16 {
+            return Err(D3dError::invalid(E, format!("stream {stream}")));
+        }
+        let old = self.streams[stream as usize].buffer;
+        if old != buffer {
+            Self::add_internal_ref(mem, buffer)?;
+            self.drop_internal_ref(mem, E, old)?;
+        }
+        self.streams[stream as usize] = StreamSource {
+            buffer,
+            stride,
+            offset: 0,
+        };
+        let rec = self.cfg.layout.streams + 12 * stream;
+        mem.write_u32(rec, stride)?;
+        mem.write_u32(rec + 4, 0)?;
+        mem.write_u32(rec + 8, buffer)?;
+        Ok(())
+    }
+
+    /// `D3DDevice_SetVertexShader` (`0x3f7060`). Even handles are FVF codes,
+    /// odd ones a vertex-shader object address plus one.
+    pub fn set_vertex_shader(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        handle: u32,
+    ) -> Result<(), D3dError> {
+        self.live("D3DDevice_SetVertexShader")?;
+        self.sync_push_buffer(mem)?;
+        self.vertex_shader = handle;
+        Ok(())
+    }
+
+    /// `D3DDevice_SetVertexShaderInput` (`0x3f7440`, stdcall `Handle,
+    /// StreamCount, pStreamInputs`). Halo's only vertex-binding path: it
+    /// sets the shader and overrides `SetStreamSource` until called with 0.
+    pub fn set_vertex_shader_input(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        handle: u32,
+        count: u32,
+        inputs: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetVertexShaderInput";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if count > 16 {
+            return Err(D3dError::invalid(E, format!("{count} streams")));
+        }
+        let mut new = Vec::new();
+        if handle != 0 {
+            for i in 0..count {
+                let w = mem.read_words(at(inputs, 12 * i as u64)?, 3)?;
+                new.push(StreamSource {
+                    buffer: w[0],
+                    stride: w[1],
+                    offset: w[2],
+                });
+            }
+            for s in &new {
+                Self::add_internal_ref(mem, s.buffer)?;
+            }
+        }
+        for s in self.stream_inputs.take().unwrap_or_default() {
+            self.drop_internal_ref(mem, E, s.buffer)?;
+        }
+        if handle != 0 {
+            self.vertex_shader = handle;
+            self.stream_inputs = Some(new);
+        }
+        Ok(())
+    }
+
+    /// `D3DDevice_LoadVertexShaderProgram` (`0x3f6c60`, stdcall `pFunction,
+    /// Address`): copies microcode into program memory. The function starts
+    /// with a 4-byte header whose third byte is the instruction count
+    /// (Cxbx `X_VSH_SHADER_HEADER`), followed by 4 dwords per instruction.
+    pub fn load_vertex_shader_program(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        function: u32,
+        address: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_LoadVertexShaderProgram";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let header = mem.read_u32(function)?;
+        let n = (header >> 16) & 0xFF;
+        if address as u64 + n as u64 > PROGRAM_SLOTS as u64 {
+            return Err(D3dError::invalid(
+                E,
+                format!("{n} instructions at slot {address}"),
+            ));
+        }
+        let words = mem.read_words(at(function, 4)?, 4 * n as usize)?;
+        self.program[4 * address as usize..4 * (address + n) as usize].copy_from_slice(&words);
+        Ok(())
+    }
+
+    /// `D3DDevice_SelectVertexShaderDirect` (`0x3f6cf0`): runs the program
+    /// at `address` with the attribute format at `vaf` (guest
+    /// `D3DVERTEXATTRIBUTEFORMAT`, 16 x 16 bytes; null keeps the current
+    /// shader). As compiled, the format is copied into D3D's static shader
+    /// object (`GuestLayout::static_vertex_shader`), which becomes current.
+    pub fn select_vertex_shader_direct(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        vaf: u32,
+        address: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SelectVertexShaderDirect";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if address >= PROGRAM_SLOTS as u32 {
+            return Err(D3dError::invalid(E, format!("slot {address}")));
+        }
+        self.program_start = address;
+        if vaf != 0 {
+            let obj = self.cfg.layout.static_vertex_shader;
+            let words = mem.read_words(vaf, 64)?;
+            for (i, w) in words.into_iter().enumerate() {
+                mem.write_u32(obj + 0x14 + 4 * i as u32, w)?;
+            }
+            self.vertex_shader = obj | 1;
+        }
+        Ok(())
+    }
+
+    /// `SetVertexShaderConstant1`/`1Fast`/`4` (`0x3f71d0`, `0x3f7230`,
+    /// `0x3f7280`): `count` float4 registers from `register` (already biased
+    /// by 96, 0..191). `shadow` says whether the original also updates the
+    /// guest shadow at `0x407738` (`1` and `4` do, `1Fast` does not).
+    pub fn set_vertex_shader_constant(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        register: u32,
+        data: u32,
+        count: u32,
+        shadow: bool,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetVertexShaderConstant";
+        if count as u64 * 4 > u32::MAX as u64 {
+            return Err(D3dError::invalid(E, format!("{count} registers")));
+        }
+        self.constants_dwords(mem, E, register, data, count * 4, shadow)
+    }
+
+    /// `SetVertexShaderConstantNotInlineFast` (`0x3f7330`): `dwords` is a
+    /// DWORD count (the original pushes them in batches of 16); writes start
+    /// at the first component of `register` and may end mid-register. It
+    /// does not update the guest shadow.
+    pub fn set_vertex_shader_constant_dwords(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        register: u32,
+        data: u32,
+        dwords: u32,
+    ) -> Result<(), D3dError> {
+        self.constants_dwords(
+            mem,
+            "D3DDevice_SetVertexShaderConstantNotInlineFast",
+            register,
+            data,
+            dwords,
+            false,
+        )
+    }
+
+    fn constants_dwords(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        register: u32,
+        data: u32,
+        dwords: u32,
+        shadow: bool,
+    ) -> Result<(), D3dError> {
+        self.live(entry)?;
+        self.sync_push_buffer(mem)?;
+        let first = register as u64 * 4;
+        if first + dwords as u64 > (CONSTANTS * 4) as u64 {
+            return Err(D3dError::invalid(
+                entry,
+                format!("{dwords} dwords from register {register} overrun the 192 registers"),
+            ));
+        }
+        let words = mem.read_words(data, dwords as usize)?;
+        let first = first as usize;
+        self.constants[first..first + words.len()].copy_from_slice(&words);
+        if shadow {
+            for (i, w) in words.iter().enumerate() {
+                mem.write_u32(self.cfg.layout.vs_constants + 4 * (first + i) as u32, *w)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `D3DDevice_SetPixelShader` (`0x3fa3d0`, `EAX` = handle). The handle is
+    /// an object `{RefCount, Flags, pPSDef}` (game code builds one inside the
+    /// device at `+0x924`); 0 selects the fixed-function combiner.
+    ///
+    /// As compiled: device `+0x784` = handle. With a shader, `+0x788` =
+    /// `PSDEF[8] | PSDEF[9]` (final-combiner inputs in use), `+0x78C` =
+    /// `PSDEF[59] & 0x100`, `+0x790` = `PSDEF[54]` (PSTextureModes); and
+    /// unless device flags bit `0x10` is set (`BehaviorFlags & 0x10`; Halo
+    /// passes `0x40`, so it is clear), the first 57 PSDEF dwords are copied
+    /// into render-state slots 0..57 and `PSDEF[54]` into slot 136.
+    pub fn set_pixel_shader(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        handle: u32,
+    ) -> Result<(), D3dError> {
+        self.live("D3DDevice_SetPixelShader")?;
+        self.sync_push_buffer(mem)?;
+        let dev = self.cfg.layout.device;
+        self.pixel_shader = handle;
+        mem.write_u32(dev + 0x784, handle)?;
+        if handle == 0 {
+            return Ok(());
+        }
+        let def_addr = mem.read_u32(at(handle, 8)?)?;
+        let def = mem.read_words(def_addr, 60)?;
+        mem.write_u32(dev + 0x788, def[8] | def[9])?;
+        mem.write_u32(dev + 0x78C, def[59] & 0x100)?;
+        mem.write_u32(dev + field::PS_TEXTURE_MODES, def[54])?;
+        if mem.read_u32(dev + field::FLAGS)? & 0x10 == 0 {
+            for (i, w) in def[..slot::PS_DEF_SLOTS as usize].iter().enumerate() {
+                self.store_rs(mem, i as u32, *w)?;
+            }
+            self.store_rs(mem, slot::PS_TEXTURE_MODES, def[54])?;
+        }
+        Ok(())
+    }
+
+    /// `D3DDevice_SetTransform`: stored for a fixed-function vertex path.
+    /// Halo never calls it from game code.
+    pub fn set_transform(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        state: u32,
+        matrix: u32,
+    ) -> Result<(), D3dError> {
+        self.live("D3DDevice_SetTransform")?;
+        self.sync_push_buffer(mem)?;
+        let w = mem.read_words(matrix, 16)?;
+        self.transforms
+            .insert(state, std::array::from_fn(|i| f32::from_bits(w[i])));
+        Ok(())
+    }
+
+    /// A stored transform.
+    pub fn transform(&self, state: u32) -> Option<&[f32; 16]> {
+        self.transforms.get(&state)
+    }
+
+    /// `D3DDevice_SetViewport` (`0x3f8100`, stdcall `pViewport`).
+    ///
+    /// As the original: a non-null viewport is clipped to the render target
+    /// (right and bottom edges at most the target size, `0x3f8172..0x3f81ed`),
+    /// stored at device `+0xEE0..+0xEF4` where Halo saves and restores it
+    /// (`0x14ac0`), and marks dirty bit `0x100`. A null pointer keeps the
+    /// current viewport (`0x3f8110` jumps past the stores). Either way the
+    /// scissors are reset (`SetScissors(0, 0, 0)` at `0x3f82e2`).
+    ///
+    /// Recorded; a draw with a viewport that is not the whole target stops
+    /// (gfx cannot apply one yet).
+    pub fn set_viewport(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        viewport: u32,
+    ) -> Result<(), D3dError> {
+        self.live("D3DDevice_SetViewport")?;
+        self.sync_push_buffer(mem)?;
+        if viewport != 0 {
+            let w = mem.read_words(viewport, 6)?;
+            let (tw, th) = self.target_size(mem)?;
+            // The original keeps X and Y and clips the far edges; an origin
+            // past the edge would wrap there, here it gives an empty extent.
+            let right = (w[0] as u64 + w[2] as u64).min(tw as u64) as u32;
+            let bottom = (w[1] as u64 + w[3] as u64).min(th as u64) as u32;
+            let v = Viewport {
+                x: w[0],
+                y: w[1],
+                width: right.saturating_sub(w[0]),
+                height: bottom.saturating_sub(w[1]),
+                min_z: f32::from_bits(w[4]),
+                max_z: f32::from_bits(w[5]),
+            };
+            self.store_viewport(mem, v)?;
+            let dirty = self.cfg.layout.dirty_flags;
+            let d = mem.read_u32(dirty)?;
+            mem.write_u32(dirty, d | 0x100)?;
+        }
+        self.scissors.clear();
+        Ok(())
+    }
+
+    /// Sets the viewport and mirrors it into device `+0xEE0`.
+    fn store_viewport(&mut self, mem: &mut dyn GuestMemory, v: Viewport) -> Result<(), D3dError> {
+        self.viewport = v;
+        let words = [
+            v.x,
+            v.y,
+            v.width,
+            v.height,
+            v.min_z.to_bits(),
+            v.max_z.to_bits(),
+        ];
+        let base = self.cfg.layout.device + field::VIEWPORT;
+        for (i, w) in words.iter().enumerate() {
+            mem.write_u32(base + 4 * i as u32, *w)?;
+        }
+        Ok(())
+    }
+
+    /// The current viewport.
+    pub fn viewport(&self) -> Viewport {
+        self.viewport
+    }
+
+    /// `D3DDevice_SetScissors` (`0x3f8760`, stdcall `Count, Exclusive,
+    /// pRects`). Recorded; a draw with scissors that do not cover the whole
+    /// target stops (gfx cannot apply them yet).
+    pub fn set_scissors(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        count: u32,
+        exclusive: u32,
+        rects: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetScissors";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if exclusive != 0 {
+            return Err(D3dError::unimplemented(E, "exclusive scissor rectangles"));
+        }
+        if count > MAX_SCISSORS {
+            return Err(D3dError::invalid(E, format!("{count} rectangles")));
+        }
+        self.scissors.clear();
+        for i in 0..count {
+            let w = mem.read_words(at(rects, 16 * i as u64)?, 4)?;
+            self.scissors.push(Rect {
+                x1: w[0] as i32,
+                y1: w[1] as i32,
+                x2: w[2] as i32,
+                y2: w[3] as i32,
+            });
+        }
+        Ok(())
+    }
+
+    /// `D3DDevice_SetBackBufferScale` (`0x3f9df0`). Only `1 x 1` is
+    /// supported; anything else stops.
+    pub fn set_back_buffer_scale(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        x: f32,
+        y: f32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetBackBufferScale";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if x != 1.0 || y != 1.0 {
+            return Err(D3dError::unimplemented(
+                E,
+                format!("back buffer scale {x} x {y}"),
+            ));
+        }
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // Render targets, clear, swap
+    // ---------------------------------------------------------------------
+
+    fn surface_for(
+        &mut self,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+        header: u32,
+        depth: bool,
+    ) -> Result<B::Surface, D3dError> {
+        if header == self.back_header && !depth {
+            return Ok(self.swap.as_ref().expect("created").back[0]);
+        }
+        if header == self.depth_header && depth {
+            return self
+                .depth
+                .ok_or_else(|| D3dError::invalid(entry, "no depth buffer"));
+        }
+        let h = SurfaceHeader::read(mem, header)?;
+        if h.pixels.resource.kind() != ResourceType::Surface {
+            return Err(D3dError::invalid(
+                entry,
+                format!("{header:#010x} is not a surface"),
+            ));
+        }
+        if h.parent != 0 {
+            // A level of a texture: drawing into a separate host surface
+            // would leave the texture's bytes stale for later sampling.
+            return Err(D3dError::unimplemented(
+                entry,
+                format!(
+                    "render target {header:#010x} is a level of texture {:#010x} (render-to-texture)",
+                    h.parent
+                ),
+            ));
+        }
+        let id = h.pixels.identity();
+        if let Some((i, s)) = self.other_surfaces.get(&header)
+            && *i == id
+        {
+            return Ok(*s);
+        }
+        let desc = TextureDesc::from_header(h.pixels.format, h.pixels.size)
+            .map_err(|e| D3dError::unimplemented(entry, format!("surface header: {e}")))?;
+        let s = self
+            .backend
+            .create_surface(desc.format, desc.width, desc.height, depth)
+            .map_err(D3dError::Backend)?;
+        if let Some((_, old)) = self.other_surfaces.insert(header, (id, s)) {
+            self.backend
+                .destroy_surface(old)
+                .map_err(D3dError::Backend)?;
+        }
+        Ok(s)
+    }
+
+    fn header_desc(&self, mem: &dyn GuestMemory, header: u32) -> Result<TextureDesc, D3dError> {
+        let h = PixelContainer::read(mem, header)?;
+        TextureDesc::from_header(h.format, h.size)
+            .map_err(|e| D3dError::invalid("render target", e.to_string()))
+    }
+
+    fn target_size(&self, mem: &dyn GuestMemory) -> Result<(u32, u32), D3dError> {
+        if self.render_target == self.back_header {
+            let p = self.params.expect("created");
+            return Ok((p.width, p.height));
+        }
+        let d = self.header_desc(mem, self.render_target)?;
+        Ok((d.width, d.height))
+    }
+
+    fn target_info(&self, mem: &dyn GuestMemory) -> Result<TargetInfo, D3dError> {
+        let c = self.header_desc(mem, self.render_target)?;
+        let depth_format = if self.depth_stencil != 0 {
+            Some(self.header_desc(mem, self.depth_stencil)?.format)
+        } else {
+            None
+        };
+        Ok(TargetInfo {
+            width: c.width,
+            height: c.height,
+            format: c.format,
+            depth_format,
+        })
+    }
+
+    /// `D3DDevice_SetRenderTarget` (`0x3f7870`, stdcall `pRenderTarget,
+    /// pNewZStencil`; a null target keeps the current one). A surface that
+    /// is a texture level (render-to-texture) stops.
+    pub fn set_render_target(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        target: u32,
+        z_stencil: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetRenderTarget";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let target = if target == 0 {
+            self.render_target
+        } else {
+            target
+        };
+        self.surface_for(mem, E, target, false)?;
+        if z_stencil != 0 {
+            self.surface_for(mem, E, z_stencil, true)?;
+        }
+        self.render_target = target;
+        self.depth_stencil = z_stencil;
+        let dev = self.cfg.layout.device;
+        mem.write_u32(dev + field::RENDER_TARGET, target)?;
+        mem.write_u32(dev + field::DEPTH_STENCIL, z_stencil)?;
+        Ok(())
+    }
+
+    fn current_targets(
+        &mut self,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+    ) -> Result<(B::Surface, Option<B::Surface>), D3dError> {
+        let c = self.surface_for(mem, entry, self.render_target, false)?;
+        let d = if self.depth_stencil != 0 {
+            Some(self.surface_for(mem, entry, self.depth_stencil, true)?)
+        } else {
+            None
+        };
+        Ok((c, d))
+    }
+
+    /// `D3DDevice_Clear` (`0x3f9fc0`, stdcall `Count, pRects, Flags, Color,
+    /// Z, Stencil`). Partial rectangles and partial colour-channel masks
+    /// stop.
+    #[allow(clippy::too_many_arguments)] // the D3D signature
+    pub fn clear(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        count: u32,
+        rects: u32,
+        flags: u32,
+        color: u32,
+        z: f32,
+        stencil: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_Clear";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let (w, h) = self.target_size(mem)?;
+        // As `0x3fa1a0..0x3fa247`: the viewport is the default rectangle
+        // (Count = 0), and every rectangle is intersected with it; empty
+        // intersections are skipped. The backend only clears whole
+        // attachments, so anything left that is not the whole target stops.
+        let v = self.viewport;
+        let vp = Rect {
+            x1: v.x as i32,
+            y1: v.y as i32,
+            x2: (v.x as i64 + v.width as i64).min(i32::MAX as i64) as i32,
+            y2: (v.y as i64 + v.height as i64).min(i32::MAX as i64) as i32,
+        };
+        let mut effective = Vec::new();
+        if count == 0 {
+            effective.push(vp);
+        } else {
+            if count > MAX_CLEAR_RECTS {
+                return Err(D3dError::invalid(E, format!("{count} rectangles")));
+            }
+            for i in 0..count {
+                let r = mem.read_words(at(rects, 16 * i as u64)?, 4)?;
+                effective.push(Rect {
+                    x1: (r[0] as i32).max(vp.x1),
+                    y1: (r[1] as i32).max(vp.y1),
+                    x2: (r[2] as i32).min(vp.x2),
+                    y2: (r[3] as i32).min(vp.y2),
+                });
+            }
+        }
+        effective.retain(|r| r.x1 < r.x2 && r.y1 < r.y2);
+        if effective.is_empty() {
+            return Ok(());
+        }
+        if !effective.iter().any(|r| r.covers(w, h)) {
+            let r = effective[0];
+            return Err(D3dError::unimplemented(
+                E,
+                format!(
+                    "partial clear of ({}, {})-({}, {}) on a {w}x{h} target ({} rectangle(s) after clipping to the viewport; gfx clears whole attachments)",
+                    r.x1,
+                    r.y1,
+                    r.x2,
+                    r.y2,
+                    effective.len()
+                ),
+            ));
+        }
+        let target_bits = flags & clear_flags::TARGET;
+        if target_bits != 0 && target_bits != clear_flags::TARGET {
+            return Err(D3dError::unimplemented(
+                E,
+                format!("partial colour-channel clear {target_bits:#x}"),
+            ));
+        }
+        let (c, d) = self.current_targets(mem, E)?;
+        let clear = Clear {
+            color: (target_bits != 0).then(|| d3dcolor_to_rgba(color)),
+            depth: (flags & clear_flags::ZBUFFER != 0 && d.is_some()).then_some(z),
+            stencil: (flags & clear_flags::STENCIL != 0 && d.is_some()).then_some(stencil as u8),
+        };
+        self.backend.clear(c, d, clear).map_err(D3dError::Backend)
+    }
+
+    /// `D3DDevice_Swap` (`0x3f9d00`, `EAX` = flags). As compiled, flags 0 is
+    /// replaced by 5 (`COPY | FINISH`). Returns the swap count, which is also
+    /// stored at device `+0x2478` where game code reads it.
+    pub fn swap(&mut self, mem: &mut dyn GuestMemory, flags: u32) -> Result<u32, D3dError> {
+        const E: &str = "D3DDevice_Swap";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if self.immediate.is_open() {
+            return Err(D3dError::invalid(E, "Swap inside Begin/End"));
+        }
+        let flags = if flags == 0 { 5 } else { flags };
+        let sw = self.swap.as_mut().expect("created");
+        let shown = sw.back[0];
+        self.backend
+            .present(shown, flags)
+            .map_err(D3dError::Backend)?;
+        if flags & 1 == 0 {
+            // Flip: the shown buffer becomes the front, the old front the
+            // last back buffer.
+            let old_front = std::mem::replace(&mut sw.front, shown);
+            sw.back.remove(0);
+            sw.back.push(old_front);
+        }
+        // COPY: the back buffer's contents are what is shown; the ring does
+        // not move (the backend presents `shown` directly).
+        self.swap_count = self.swap_count.wrapping_add(1);
+        mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
+        Ok(self.swap_count)
+    }
+
+    // ---------------------------------------------------------------------
+    // Draws
+    // ---------------------------------------------------------------------
+
+    /// Builds the vertex layout and processing mode for the current shader,
+    /// plus the stream bindings it reads.
+    fn vertex_setup(
+        &self,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+    ) -> Result<(VertexLayout, VertexProcessing, Vec<StreamSource>), D3dError> {
+        let h = self.vertex_shader;
+        let bound = |i: usize| -> StreamSource {
+            match &self.stream_inputs {
+                Some(v) => v.get(i).copied().unwrap_or_default(),
+                None => self.streams.get(i).copied().unwrap_or_default(),
+            }
+        };
+        if h & 1 == 0 {
+            if h == 0 {
+                return Err(D3dError::invalid(entry, "no vertex shader set"));
+            }
+            let layout = VertexLayout::from_fvf(h)
+                .map_err(|e| D3dError::unimplemented(entry, format!("FVF {h:#x}: {e}")))?;
+            let streams = layout
+                .streams
+                .iter()
+                .map(|s| bound(s.stream as usize))
+                .collect();
+            return Ok((layout, VertexProcessing::FixedFunction { fvf: h }, streams));
+        }
+        let obj = h & !1;
+        let vaf = mem.read_words(at(obj, 0x14)?, 64)?;
+        let mut by_stream: Vec<StreamLayout> = Vec::new();
+        for reg in 0..16usize {
+            let (stream, offset, format) =
+                (vaf[4 * reg], vaf[4 * reg + 1], vaf[4 * reg + 2] & 0xFF);
+            if format == 0x02 {
+                continue; // D3DVSDT_NONE
+            }
+            if stream >= 16 {
+                return Err(D3dError::invalid(
+                    entry,
+                    format!("vertex register {reg} reads stream {stream}"),
+                ));
+            }
+            let data_type = VertexDataType::from_xbox(format).ok_or_else(|| {
+                D3dError::unimplemented(
+                    entry,
+                    format!("vertex register {reg} data type {format:#x}"),
+                )
+            })?;
+            let attr = VertexAttribute {
+                register: VertexRegister(reg as u8),
+                data_type,
+                offset,
+            };
+            match by_stream.iter_mut().find(|s| s.stream == stream) {
+                Some(s) => s.attributes.push(attr),
+                None => by_stream.push(StreamLayout {
+                    stream,
+                    attributes: vec![attr],
+                    stride: bound(stream as usize).stride,
+                }),
+            }
+        }
+        by_stream.sort_by_key(|s| s.stream);
+        let streams = by_stream.iter().map(|s| bound(s.stream as usize)).collect();
+        let layout = VertexLayout {
+            streams: by_stream,
+            pretransformed: false,
+        };
+        Ok((
+            layout,
+            VertexProcessing::Program {
+                start: self.program_start,
+                microcode: self.microcode(),
+            },
+            streams,
+        ))
+    }
+
+    fn microcode(&self) -> Vec<u32> {
+        let mut out = Vec::new();
+        for s in self.program_start as usize..PROGRAM_SLOTS {
+            let insn = &self.program[4 * s..4 * s + 4];
+            out.extend_from_slice(insn);
+            if insn[3] & 1 != 0 {
+                break; // FINAL
+            }
+        }
+        out
+    }
+
+    fn shader_inputs(
+        &self,
+        mem: &dyn GuestMemory,
+        vertex: VertexProcessing,
+        layout: &VertexLayout,
+        words: &StateWords,
+    ) -> Result<ShaderInputs, D3dError> {
+        let provided = layout
+            .streams
+            .iter()
+            .flat_map(|s| &s.attributes)
+            .fold(0u16, |m, a| m | 1 << (a.register.0 & 15));
+        let pixel_shader = if self.pixel_shader != 0 {
+            let def = mem.read_u32(at(self.pixel_shader, 8)?)?;
+            let w = mem.read_words(def, 60)?;
+            Some(Box::new(<[u32; 60]>::try_from(w).expect("60 words")))
+        } else {
+            None
+        };
+        Ok(ShaderInputs {
+            vertex,
+            provided_inputs: provided,
+            vertex_defaults: *self.immediate.registers(),
+            constants: Box::new(std::array::from_fn(|r| self.constant(r))),
+            pixel_shader,
+            combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
+        })
+    }
+
+    /// Makes sure the host copy of the texture bound at `stage` is current;
+    /// returns its cache key and description.
+    fn resolve_texture(
+        &mut self,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+        header: u32,
+        palette: u32,
+    ) -> Result<(TextureKey, TextureInfo), D3dError> {
+        let pc = PixelContainer::read(mem, header)?;
+        if pc.resource.kind() != ResourceType::Texture {
+            return Err(D3dError::unimplemented(
+                entry,
+                format!(
+                    "binding a {:?} ({header:#010x}) as a texture",
+                    pc.resource.kind()
+                ),
+            ));
+        }
+        let desc = TextureDesc::from_header(pc.format, pc.size)
+            .map_err(|e| D3dError::unimplemented(entry, format!("texture {header:#010x}: {e}")))?;
+        let total = desc
+            .layout()
+            .map_err(|e| D3dError::unimplemented(entry, e.to_string()))?
+            .total_size;
+        if total as u64 > MAX_SPAN {
+            return Err(D3dError::invalid(
+                entry,
+                format!("texture {header:#010x} of {total} bytes"),
+            ));
+        }
+        let len = total as u32;
+        let va = self.cfg.address_map.to_virtual(pc.resource.data);
+        at(va, len as u64)?;
+        let pal = if desc.format == D3DFormat::P8 {
+            if palette == 0 {
+                return Err(D3dError::invalid(
+                    entry,
+                    format!("P8 texture {header:#010x} without a palette"),
+                ));
+            }
+            let p = PaletteHeader::read(mem, palette)?;
+            if p.resource.kind() != ResourceType::Palette {
+                return Err(D3dError::invalid(
+                    entry,
+                    format!("{palette:#010x} is not a palette"),
+                ));
+            }
+            let pva = self.cfg.address_map.to_virtual(p.resource.data);
+            let plen = 4 * p.entries();
+            at(pva, plen as u64)?;
+            Some(PaletteIdentity {
+                header: palette,
+                common: p.resource.common,
+                va: pva,
+                len: plen,
+            })
+        } else {
+            None
+        };
+        let key = (header, pal.map_or(0, |p| p.header));
+        let info = TextureInfo {
+            header,
+            palette: key.1,
+            format: desc.format,
+            kind: desc.kind,
+            width: desc.width,
+            height: desc.height,
+            depth: desc.depth,
+            levels: desc.levels,
+        };
+        let identity = pc.identity();
+        let policy = self.cfg.upload;
+        let read_all = |mem: &dyn GuestMemory| -> Result<(Vec<u8>, Option<Vec<u8>>), D3dError> {
+            let t = mem.read_vec(va, len as usize)?;
+            let p = match pal {
+                Some(p) => Some(mem.read_vec(p.va, p.len as usize)?),
+                None => None,
+            };
+            Ok((t, p))
+        };
+        let hash_of = |t: &[u8], p: &Option<Vec<u8>>| {
+            let mut all = t.to_vec();
+            if let Some(p) = p {
+                all.extend_from_slice(p);
+            }
+            hash_bytes(&all)
+        };
+        let mut prefetched = None;
+        if let Some(c) = self.cache.get(&key) {
+            let same = c.identity == identity && c.palette == pal && c.va == va && c.len == len;
+            let clean = same
+                && policy != UploadPolicy::Always
+                && !self.tracker.dirty_since(va, len, c.generation)
+                && pal.is_none_or(|p| !self.tracker.dirty_since(p.va, p.len, c.generation));
+            if clean && policy == UploadPolicy::Verify {
+                let bytes = read_all(mem)?;
+                if hash_of(&bytes.0, &bytes.1) == c.hash {
+                    self.stats.texture_hits += 1;
+                    return Ok((key, info));
+                }
+                self.events.push(Event::MissedInvalidation {
+                    header,
+                    addr: va,
+                    len,
+                });
+                prefetched = Some(bytes);
+            } else if clean {
+                self.stats.texture_hits += 1;
+                return Ok((key, info));
+            }
+        }
+        let (bytes, pal_bytes) = match prefetched {
+            Some(b) => b,
+            None => read_all(mem)?,
+        };
+        let palette_entries: Option<Vec<u32>> = pal_bytes.as_ref().map(|p| {
+            p.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect()
+        });
+        let decoded = decode_texture(
+            &desc,
+            &bytes,
+            palette_entries.as_deref(),
+            DecodeOptions {
+                bc_supported: self.backend.bc_supported(),
+            },
+        )
+        .map_err(|e| D3dError::unimplemented(entry, format!("texture {header:#010x}: {e}")))?;
+        let host = self
+            .backend
+            .upload_texture(&decoded)
+            .map_err(D3dError::Backend)?;
+        self.tracker.watch(va, len);
+        if let Some(p) = pal {
+            self.tracker.watch(p.va, p.len);
+        }
+        let hash = if policy == UploadPolicy::Verify {
+            hash_of(&bytes, &pal_bytes)
+        } else {
+            0
+        };
+        self.cache.insert(
+            key,
+            CachedTexture {
+                identity,
+                palette: pal,
+                va,
+                len,
+                generation: self.tracker.generation(),
+                hash,
+                info,
+                host,
+            },
+        );
+        self.stats.texture_uploads += 1;
+        Ok((key, info))
+    }
+
+    fn read_stream(
+        &self,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+        s: &StreamSource,
+        first: u32,
+        count: u32,
+    ) -> Result<StreamBytes, D3dError> {
+        if s.buffer == 0 {
+            return Err(D3dError::invalid(entry, "draw from an unbound stream"));
+        }
+        let vb = ResourceHeader::read(mem, s.buffer)?;
+        if vb.kind() != ResourceType::VertexBuffer {
+            return Err(D3dError::invalid(
+                entry,
+                format!(
+                    "{:#010x} is a {:?}, not a vertex buffer",
+                    s.buffer,
+                    vb.kind()
+                ),
+            ));
+        }
+        let len = span(entry, count, s.stride)?;
+        let va = at(
+            self.cfg.address_map.to_virtual(vb.data),
+            s.offset as u64 + first as u64 * s.stride as u64,
+        )?;
+        at(va, len as u64)?;
+        Ok(StreamBytes {
+            data: mem.read_vec(va, len)?,
+            stride: s.stride,
+        })
+    }
+
+    /// Raster state gfx cannot express yet: stop instead of rendering wrong.
+    fn check_raster(&self, mem: &dyn GuestMemory, entry: &'static str) -> Result<(), D3dError> {
+        let (w, h) = self.target_size(mem)?;
+        let v = self.viewport;
+        if v.x != 0 || v.y != 0 || v.width != w || v.height != h || v.min_z != 0.0 || v.max_z != 1.0
+        {
+            return Err(D3dError::unimplemented(
+                entry,
+                format!(
+                    "viewport {}x{} at ({}, {}) z [{}, {}] on a {w}x{h} target (gfx draws the whole target)",
+                    v.width, v.height, v.x, v.y, v.min_z, v.max_z
+                ),
+            ));
+        }
+        if !self.scissors.is_empty() && !self.scissors.iter().any(|r| r.covers(w, h)) {
+            return Err(D3dError::unimplemented(
+                entry,
+                format!(
+                    "{} scissor rectangle(s) not covering the {w}x{h} target",
+                    self.scissors.len()
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    fn submit(&mut self, mem: &dyn GuestMemory, parts: DrawParts) -> Result<(), D3dError> {
+        let entry = parts.entry;
+        if parts.vertex_count == 0 {
+            return Ok(());
+        }
+        self.check_raster(mem, entry)?;
+        let mut keys = [None; 4];
+        let mut texture_info = [None; 4];
+        for stage in 0..4 {
+            let header = self.textures[stage];
+            if header != 0 {
+                let (k, i) = self.resolve_texture(mem, entry, header, self.palettes[stage])?;
+                keys[stage] = Some(k);
+                texture_info[stage] = Some(i);
+            }
+        }
+        let target = self.target_info(mem)?;
+        let (color, depth) = self.current_targets(mem, entry)?;
+        let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
+        let state = parts.words.translate(&self.table);
+        for b in &state.bad {
+            self.events.push(Event::BadState(b.clone()));
+        }
+        let draw = ResolvedDraw {
+            entry,
+            primitive: parts.primitive,
+            vertex_count: parts.vertex_count,
+            layout: parts.layout,
+            streams: parts.streams,
+            state,
+            extras: parts.words.stage_extras(),
+            raw: Box::new(parts.words),
+            shader,
+            viewport: self.viewport,
+            target,
+            textures: self.textures.map(|t| (t != 0).then_some(t)),
+            texture_info,
+        };
+        let textures: [Option<&B::Texture>; 4] =
+            std::array::from_fn(|i| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host));
+        self.stats.draws += 1;
+        match self
+            .backend
+            .draw(color, depth, &draw, textures)
+            .map_err(D3dError::Backend)?
+        {
+            DrawOutcome::Drawn => {}
+            DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
+            DrawOutcome::Unsupported(detail) => {
+                return Err(D3dError::Unimplemented { entry, detail });
+            }
+        }
+        Ok(())
+    }
+
+    /// Info about the host texture cached for `header` (with `palette` for
+    /// P8), if any.
+    pub fn cached_texture(&self, header: u32, palette: u32) -> Option<TextureInfo> {
+        self.cache.get(&(header, palette)).map(|c| c.info)
+    }
+
+    fn state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
+        Ok(StateWords::read(mem, &self.cfg.layout)?)
+    }
+
+    /// State for an API draw: D3D commits all pending state first, so the
+    /// live arrays are what the GPU sees, and they become the pushed state.
+    fn draw_state(&mut self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
+        let s = self.state(mem)?;
+        self.pushed = Some(s.clone());
+        Ok(s)
+    }
+
+    fn primitive(entry: &'static str, v: u32) -> Result<PrimitiveType, D3dError> {
+        PrimitiveType::from_xbox(v)
+            .ok_or_else(|| D3dError::invalid(entry, format!("primitive type {v}")))
+    }
+
+    /// `D3DDevice_DrawVertices` (`0x3faed0`: `EAX` = VertexCount, `ECX` =
+    /// StartVertex, stack PrimitiveType).
+    pub fn draw_vertices(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: u32,
+        start: u32,
+        count: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_DrawVertices";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let primitive = Self::primitive(E, primitive)?;
+        vertex_limit(E, count)?;
+        let (layout, vertex, sources) = self.vertex_setup(mem, E)?;
+        let streams = sources
+            .iter()
+            .map(|s| self.read_stream(mem, E, s, start, count))
+            .collect::<Result<Vec<_>, _>>()?;
+        let words = self.draw_state(mem)?;
+        self.submit(
+            mem,
+            DrawParts {
+                entry: E,
+                primitive,
+                vertex_count: count,
+                layout,
+                vertex,
+                streams,
+                words,
+            },
+        )
+    }
+
+    /// `D3DDevice_DrawIndexedVertices` (`0x3fafa0`, stdcall `PrimitiveType,
+    /// VertexCount, pIndexData`: 16-bit indices in guest memory, offset by
+    /// the base vertex at device `+0x1C`). De-indexed on the CPU.
+    pub fn draw_indexed_vertices(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: u32,
+        count: u32,
+        indices: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_DrawIndexedVertices";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let primitive = Self::primitive(E, primitive)?;
+        vertex_limit(E, count)?;
+        let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
+        let raw = mem.read_vec(indices, span(E, count, 2)?)?;
+        let idx = raw
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|c| {
+                u32::try_from(base as u64 + u16::from_le_bytes(*c) as u64).map_err(|_| {
+                    D3dError::invalid(E, format!("base vertex {base:#x} + index overflows"))
+                })
+            })
+            .collect::<Result<Vec<u32>, _>>()?;
+        let (lo, hi) = match (idx.iter().min(), idx.iter().max()) {
+            (Some(&lo), Some(&hi)) => (lo, hi),
+            _ => return Ok(()),
+        };
+        let (layout, vertex, sources) = self.vertex_setup(mem, E)?;
+        let mut streams = Vec::new();
+        for s in &sources {
+            // The window is at most 65536 vertices (16-bit indices).
+            let window = self.read_stream(mem, E, s, lo, hi - lo + 1)?;
+            let stride = s.stride as usize;
+            let mut data = Vec::with_capacity(span(E, count, s.stride)?);
+            for &i in &idx {
+                let o = (i - lo) as usize * stride;
+                data.extend_from_slice(&window.data[o..o + stride]);
+            }
+            streams.push(StreamBytes {
+                data,
+                stride: s.stride,
+            });
+        }
+        let words = self.draw_state(mem)?;
+        self.submit(
+            mem,
+            DrawParts {
+                entry: E,
+                primitive,
+                vertex_count: count,
+                layout,
+                vertex,
+                streams,
+                words,
+            },
+        )
+    }
+
+    /// `D3DDevice_DrawVerticesUP`: vertices for stream 0 straight from guest
+    /// memory. Not present as a function in Halo's XBE; kept for the API.
+    pub fn draw_vertices_up(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        primitive: u32,
+        count: u32,
+        data: u32,
+        stride: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_DrawVerticesUP";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let primitive = Self::primitive(E, primitive)?;
+        vertex_limit(E, count)?;
+        let (layout, vertex, _) = self.vertex_setup(mem, E)?;
+        if layout.streams.len() != 1 || layout.streams[0].stream != 0 {
+            return Err(D3dError::invalid(E, "UP draws use exactly stream 0"));
+        }
+        let streams = vec![StreamBytes {
+            data: mem.read_vec(data, span(E, count, stride)?)?,
+            stride,
+        }];
+        let words = self.draw_state(mem)?;
+        self.submit(
+            mem,
+            DrawParts {
+                entry: E,
+                primitive,
+                vertex_count: count,
+                layout,
+                vertex,
+                streams,
+                words,
+            },
+        )
+    }
+
+    /// `D3DDevice_Begin` (`0x3fb440`). It calls the deferred-state commit
+    /// first, so the current arrays become the pushed state.
+    pub fn begin(&mut self, mem: &mut dyn GuestMemory, primitive: u32) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_Begin";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let p = Self::primitive(E, primitive)?;
+        self.refresh_pushed(mem)?;
+        self.immediate.begin(p, 0)?;
+        Ok(())
+    }
+
+    /// `D3DDevice_SetVertexData*`: `register` -1 means position
+    /// (`SET_VERTEX4F`; the 4f form only).
+    pub fn set_vertex_data(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        register: i32,
+        values: [f32; 4],
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetVertexData";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let reg = match register {
+            -1 => 0,
+            0..=15 => register as usize,
+            _ => return Err(D3dError::invalid(E, format!("register {register}"))),
+        };
+        if self.immediate.is_open() && reg == 0 && self.immediate_vertices() >= MAX_VERTICES {
+            return Err(D3dError::invalid(E, "too many immediate-mode vertices"));
+        }
+        self.immediate.set(0, reg, &values, 0, true)?;
+        Ok(())
+    }
+
+    fn immediate_vertices(&self) -> u32 {
+        self.immediate.vertex_count() as u32
+    }
+
+    /// `D3DDevice_End` (`0x3fb480`).
+    pub fn end(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_End";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        let d = self.immediate.end(0)?;
+        self.immediate_draw(mem, E, d)
+    }
+
+    /// Turns an assembled immediate-mode primitive into a draw, against the
+    /// pushed state.
+    fn immediate_draw(
+        &mut self,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+        d: ImmediateDraw,
+    ) -> Result<(), D3dError> {
+        let (layout, vertex) = if self.vertex_shader & 1 == 0 {
+            let (l, v, _) = self.vertex_setup(mem, entry)?;
+            (l, v)
+        } else {
+            // Programs read registers: give every register as float4.
+            let attributes = (0..16u8)
+                .filter(|r| d.written & (1 << r) != 0)
+                .map(|r| VertexAttribute {
+                    register: VertexRegister(r),
+                    data_type: VertexDataType::Float4,
+                    offset: 16 * r as u32,
+                })
+                .collect();
+            let l = VertexLayout {
+                streams: vec![StreamLayout {
+                    stream: 0,
+                    attributes,
+                    stride: 256,
+                }],
+                pretransformed: false,
+            };
+            (
+                l,
+                VertexProcessing::Program {
+                    start: self.program_start,
+                    microcode: self.microcode(),
+                },
+            )
+        };
+        let mut streams = Vec::new();
+        for s in &layout.streams {
+            let stride = s.stride as usize;
+            let mut data = Vec::with_capacity(span(entry, d.vertices.len() as u32, s.stride)?);
+            for v in &d.vertices {
+                let start = data.len();
+                data.resize(start + stride, 0);
+                for a in &s.attributes {
+                    let reg = v[(a.register.0 & 15) as usize];
+                    let o = start + a.offset as usize;
+                    let size = a.data_type.byte_size() as usize;
+                    if a.offset as usize + size > stride {
+                        return Err(D3dError::invalid(
+                            entry,
+                            format!("attribute at offset {} past stride {stride}", a.offset),
+                        ));
+                    }
+                    match a.data_type {
+                        VertexDataType::Float1
+                        | VertexDataType::Float2
+                        | VertexDataType::Float3
+                        | VertexDataType::Float4 => {
+                            for c in 0..size / 4 {
+                                data[o + 4 * c..o + 4 * c + 4]
+                                    .copy_from_slice(&reg[c].to_le_bytes());
+                            }
+                        }
+                        VertexDataType::D3dColor => {
+                            // Register (r, g, b, a) -> D3DCOLOR bytes B, G, R, A.
+                            let q = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+                            data[o..o + 4].copy_from_slice(&[
+                                q(reg[2]),
+                                q(reg[1]),
+                                q(reg[0]),
+                                q(reg[3]),
+                            ]);
+                        }
+                        other => {
+                            return Err(D3dError::unimplemented(
+                                entry,
+                                format!("immediate-mode vertex attribute type {other:?}"),
+                            ));
+                        }
+                    }
+                }
+            }
+            streams.push(StreamBytes {
+                data,
+                stride: s.stride,
+            });
+        }
+        let words = self.pushed_state(mem)?;
+        self.submit(
+            mem,
+            DrawParts {
+                entry,
+                primitive: d.primitive,
+                vertex_count: d.vertices.len() as u32,
+                layout,
+                vertex,
+                streams,
+                words,
+            },
+        )
+    }
+}
+
+/// The linear twin of a swizzled surface format (render targets are linear).
+fn linear_twin(f: D3DFormat) -> D3DFormat {
+    match f {
+        D3DFormat::A8R8G8B8 => D3DFormat::LinA8R8G8B8,
+        D3DFormat::X8R8G8B8 => D3DFormat::LinX8R8G8B8,
+        D3DFormat::R5G6B5 => D3DFormat::LinR5G6B5,
+        D3DFormat::X1R5G5B5 => D3DFormat::LinX1R5G5B5,
+        D3DFormat::A1R5G5B5 => D3DFormat::LinA1R5G5B5,
+        D3DFormat::A4R4G4B4 => D3DFormat::LinA4R4G4B4,
+        D3DFormat::D24S8 => D3DFormat::LinD24S8,
+        D3DFormat::D16 => D3DFormat::LinD16,
+        D3DFormat::F24S8 => D3DFormat::LinF24S8,
+        D3DFormat::F16 => D3DFormat::LinF16,
+        other => other,
+    }
+}
