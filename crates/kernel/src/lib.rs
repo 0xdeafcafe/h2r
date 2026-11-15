@@ -569,7 +569,7 @@ impl Kernel {
             // Settle the generated work before this call first, so what it
             // reads of time, and any relative deadline it sets, starts
             // after that work rather than before it.
-            core.charge_work(&mut memory, spent)?;
+            core.charge_work(&mut memory, ctx.thread_id, spent)?;
             let args = Args::read(export, cpu, &memory)?;
             core.write_tick(&mut memory)?;
             let action = core.call(&mut memory, &args, ctx.thread_id)?;
@@ -631,13 +631,18 @@ impl Core {
         self.log_bytes += message.len();
         self.log.push(message);
     }
-    /// Charge `accesses` of executed generated work to logical time at
-    /// [`threads::ACCESSES_PER_TICK`], carrying the remainder.
+    /// Charge `accesses` of executed generated work by thread `tid` to
+    /// logical time at [`threads::ACCESSES_PER_TICK`], carrying the
+    /// remainder, and to the thread's work since it last polled.
     pub(crate) fn charge_work(
         &mut self,
         memory: &mut Guest,
+        tid: u32,
         accesses: u64,
     ) -> Result<(), GuestFault> {
+        if let Some(record) = self.threads.get_mut(&tid) {
+            record.work_since_poll = record.work_since_poll.saturating_add(accesses);
+        }
         let carry = self.work_carry.saturating_add(accesses);
         self.work_carry = carry % threads::ACCESSES_PER_TICK;
         if carry >= threads::ACCESSES_PER_TICK {

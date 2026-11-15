@@ -345,7 +345,7 @@ impl<B: Backend> Device<B> {
     }
 
     /// Counts `n` vertical blanks that passed without a delivery of their
-    /// own (a clocked source's catch-up bound dropped them,
+    /// own (a clocked source dropped them from a debt too old to deliver,
     /// [`crate::vblank::clocked_vblanks`]): `VBlank` in the next record
     /// still counts them, as the hardware counter would.
     pub fn skip_vblanks(&mut self, n: u32) {

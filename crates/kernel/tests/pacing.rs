@@ -282,3 +282,66 @@ fn resume_keeps_the_coalescing_mode_that_replay_drops() {
     // An empty history cannot be charging.
     assert!(!Clock::resume(0, &[], true).unwrap().charging());
 }
+
+#[test]
+fn work_after_a_paced_sleep_waits_for_wall_time() {
+    // A lone thread sleeps 200 ms of logical time, then acts. Paced, the
+    // act (and each vblank callback on the way) happens no earlier in wall
+    // time than in logical time, even when run is entered one slice at a
+    // time.
+    let h = sleeper(2_000_000);
+    let start = std::time::Instant::now();
+    let woke = Arc::new(Mutex::new(None));
+    let calls = Arc::new(Mutex::new(Vec::new()));
+    let w = woke.clone();
+    h.code(0x100, move |cpu, ctx, _| {
+        *w.lock().unwrap() = Some(start.elapsed());
+        ctx.memory().ret(cpu, 0)
+    });
+    let c = calls.clone();
+    h.code(CALLBACK, move |cpu, ctx, _| {
+        c.lock().unwrap().push(start.elapsed());
+        ctx.memory().ret(cpu, 0)
+    });
+    h.kernel
+        .add_periodic(source(CallConvention::Cdecl, Arc::new(Mutex::new(0))))
+        .unwrap();
+    let mut m = attach(&h);
+    m.pacer = Some(kernel::pacer::Pacer::real_time());
+    while !matches!(m.run(1).unwrap(), RunOutcome::Complete { .. }) {}
+    let woke = woke.lock().unwrap().expect("the thread woke");
+    assert!(woke >= std::time::Duration::from_millis(198), "{woke:?}");
+    let calls = calls.lock().unwrap();
+    assert_eq!(calls.len(), 12);
+    for (i, at) in calls.iter().enumerate() {
+        let due = std::time::Duration::from_nanos((i as u64 + 1) * 1_000_000_000 / 60);
+        assert!(
+            *at + std::time::Duration::from_millis(2) >= due,
+            "vblank {i}: {at:?}"
+        );
+    }
+}
+
+#[test]
+fn a_debt_past_ten_seconds_is_dropped_and_the_rest_delivered() {
+    // Twenty seconds pass before the machine runs: 1200 periods due, the
+    // newest 600 (ten seconds) kept and all delivered, the older 600
+    // dropped and reported once. Then six more while the thread sleeps.
+    let h = sleeper(1_000_000);
+    let calls = Arc::new(Mutex::new(0));
+    let id = h
+        .kernel
+        .add_periodic(source(CallConvention::Cdecl, calls.clone()))
+        .unwrap();
+    h.kernel.advance_time(&h.runtime, 200_000_000).unwrap();
+    let mut m = attach(&h);
+    assert_eq!(
+        m.run(10_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 606)].into()
+        }
+    );
+    let stats = m.kernel.periodic_stats(id).unwrap();
+    assert_eq!((stats.delivered, stats.dropped, stats.owed), (606, 600, 0));
+    assert_eq!(m.kernel.clock().counter(), 201_000_000);
+}

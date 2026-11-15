@@ -15,20 +15,31 @@
 //! like timers do, except that a source alone never keeps a machine with
 //! no ready thread alive (see [`crate::threads::Machine::run`]).
 //!
-//! Catch-up is bounded. When the clock passes several deadlines between
-//! two wake passes (one long slice at DISPATCH_LEVEL, say), up to
-//! `max_catch_up` of them are delivered one after the other; the rest are
-//! dropped and reported to the next delivery as `missed`, so a stall never
-//! turns into a burst of callbacks.
+//! Catch-up is spread out, not dropped. When the clock passes several
+//! deadlines between two wake passes (one long slice at DISPATCH_LEVEL, a
+//! jump to a timer while threads were busy), every period stays owed: a
+//! guest callback that counts calls (Halo's `0x14280` adds one to
+//! `0x485AB0` per call and reads nothing else of the time) must see each
+//! one, or game time falls behind the clock. Each drain delivers at most
+//! `max_catch_up` of them and puts the source back on the queue, so the
+//! rest come in later drains, between thread slices, rather than as one
+//! burst. Only a debt older than [`MAX_DEBT_SECONDS`] is dropped, counted,
+//! and reported to the next delivery as `missed`.
 use crate::clock::Clock;
 use runtime::{Guest, GuestFault, GuestInterrupt};
+
+/// Owed periods are kept up to this much logical time's worth; older ones
+/// are dropped (a debugger stop or `Kernel::advance_time` by hours should
+/// not replay every vblank).
+pub const MAX_DEBT_SECONDS: u64 = 10;
 
 /// Scratch bytes a handler may write on the DPC stack for its call.
 pub const SCRATCH_SIZE: u32 = 64;
 
 /// Builds one delivery: `(guest, scratch, missed)`. `scratch` is the guest
 /// address of [`SCRATCH_SIZE`] bytes that stay valid until the call returns;
-/// `missed` counts the periods dropped since the previous delivery. `None`
+/// `missed` counts the periods dropped since the previous delivery (only a
+/// debt beyond [`MAX_DEBT_SECONDS`] is dropped). `None`
 /// delivers nothing for this period. Of the returned interrupt only
 /// `target`, `args`, `convention` and `name` are used: the call always runs
 /// on the DPC context, and the source does its own coalescing.
@@ -80,7 +91,8 @@ pub struct Source {
     /// Diagnostic name.
     pub name: &'static str,
     pub rate: Rate,
-    /// Most periods delivered for one wake pass (at least 1).
+    /// Most owed periods delivered in one drain, before the next thread
+    /// slice (at least 1). The rest wait for later drains.
     pub max_catch_up: u32,
     pub handler: Handler,
 }
@@ -90,8 +102,10 @@ pub struct Source {
 pub struct Stats {
     /// Periods whose handler ran.
     pub delivered: u64,
-    /// Periods dropped by the catch-up bound.
+    /// Periods dropped because the debt passed [`MAX_DEBT_SECONDS`].
     pub dropped: u64,
+    /// Due periods not yet delivered.
+    pub owed: u64,
     /// Clock ticks of the next deadline not yet due.
     pub next_deadline: u64,
 }
@@ -108,7 +122,9 @@ pub(crate) struct Periodic {
     pub missed: u64,
     /// Queued on the DPC queue.
     pub queued: bool,
-    max_catch_up: u64,
+    pub max_catch_up: u64,
+    /// Most periods owed at once ([`MAX_DEBT_SECONDS`]).
+    max_owed: u64,
     /// None while the handler runs.
     pub handler: Option<Handler>,
     pub stats: Stats,
@@ -128,6 +144,10 @@ impl Periodic {
             missed: 0,
             queued: false,
             max_catch_up: source.max_catch_up.max(1) as u64,
+            max_owed: source
+                .rate
+                .periods(MAX_DEBT_SECONDS * Clock::FREQUENCY)
+                .max(1),
             handler: Some(source.handler),
             stats: Stats::default(),
         };
@@ -146,13 +166,14 @@ impl Periodic {
         let due = self.rate.periods(now - self.origin);
         let new = due + 1 - self.next;
         self.next = due + 1;
-        self.owed += new;
-        if self.owed > self.max_catch_up {
-            let dropped = self.owed - self.max_catch_up;
+        self.owed = self.owed.saturating_add(new);
+        if self.owed > self.max_owed {
+            let dropped = self.owed - self.max_owed;
             self.missed += dropped;
             self.stats.dropped += dropped;
-            self.owed = self.max_catch_up;
+            self.owed = self.max_owed;
         }
+        self.stats.owed = self.owed;
         self.stats.next_deadline = self.deadline();
         true
     }

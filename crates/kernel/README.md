@@ -325,7 +325,7 @@ let id = kernel.add_periodic(kernel::periodic::Source {
     max_catch_up: 4,
     handler: Box::new(d3d::vblank::clocked_vblanks(device.clone())),
 })?;
-kernel.periodic_stats(id);  // delivered, dropped, next_deadline
+kernel.periodic_stats(id);  // delivered, dropped, owed, next_deadline
 kernel.remove_periodic(id);
 ```
 
@@ -345,19 +345,32 @@ kernel.remove_periodic(id);
   runs with guest memory locked and kernel state unlocked and must not call
   the kernel. A thread at DISPATCH_LEVEL or above holds delivery off, as on
   the one Xbox CPU.
-- **Bounded catch-up.** Periods that come due between two wake passes (a
-  long slice kept at DISPATCH_LEVEL, `Kernel::advance_time`) are delivered
-  back to back up to `max_catch_up` (at least 1); the rest are dropped,
-  counted in `Stats::dropped`, and reported to the next delivery as
-  `missed` so a hardware-style counter can still count them. A stall never
-  becomes a burst of callbacks.
+- **Catch-up, spread out.** Periods that come due between two wake passes
+  (a long slice kept at DISPATCH_LEVEL, a jump to a timer while threads were
+  busy, `Kernel::advance_time`) all stay owed: Halo's callback (`0x14280`)
+  adds one to `0x485AB0` per call and reads nothing else of the time, so a
+  dropped period is game time lost against the clock. A drain delivers at
+  most `max_catch_up` (at least 1) and queues the source again; the rest
+  come in later drains, after a slice of whatever thread is ready, so a
+  stall never becomes one burst of callbacks. No idle advance happens while
+  periods are owed. Only a debt beyond `periodic::MAX_DEBT_SECONDS` (10 s)
+  is dropped, counted in `Stats::dropped` and reported to the next delivery
+  as `missed`.
 - **Idle time.** A source's next deadline takes part in the idle advance
   and in NtYieldExecution's poll, so a thread that waits by yielding (or
   every thread polling) jumps straight to the next vblank, and a sleeping
-  machine steps through each vblank on the way to its wake-up. On its own
-  it never keeps a machine alive: with no ready thread and no other
-  deadline, `run` still reports Deadlock instead of ticking vblanks
-  forever.
+  machine steps through each vblank on the way to its wake-up. Only idle
+  polls count for it: a yield or Delay(0) after at least
+  `threads::POLL_WORK` (one tick, 100 accesses) of charged work since the
+  thread's last poll is a productive handoff, and while any thread that
+  would be scheduled made one, the next vblank comes by charged work, not
+  a jump. So workers handing off between units of work are not charged a
+  display period per round (timers and sleeps still advance as before).
+  Uncharged work (Rust overrides) looks idle. Nor does the clock move
+  between a drain and the next slice of a ready thread: a poller sees each
+  callback before time goes on. On its own a source never keeps a machine
+  alive: with no ready thread and no other deadline, `run` still reports
+  Deadlock instead of ticking vblanks forever.
 - **A spin on the count.** A generated loop that waits for the callback to
   bump a counter (Halo's frame wait spins at `0x12b330`) gets there by
   running: its charged work carries the clock to the deadline, the next
@@ -372,9 +385,11 @@ display-mode path (`0x3f9b80`) waits on. Swaps reach the callback through the re
 `D3DVBLANK_SWAPDONE`, which `0x14280` records at `0x485AB8`/`0x55E6B8`.
 
 `kernel::pacer::Pacer` (`Machine::pacer`, default None) holds logical time
-to wall time for a machine being watched: before each slice it sleeps until
-as much wall time has passed as logical time, so idle advances and fast
-guest work cannot run the game ahead of real time. It never hurries the
+to wall time for a machine being watched: after any idle advance and
+before the DPC or thread slice that runs at that time, it sleeps until as
+much wall time has passed as logical time, so what the guest does after a
+sleep or at a vblank happens no earlier in wall time than in logical time,
+and fast guest work cannot run the game ahead of real time. It never hurries the
 clock: a host that falls more than `max_lag` (100 ms) behind starts counting
 again from the present (`reanchors()`). It only makes the host wait, so
 schedule, history and guest state are the same paced or not.

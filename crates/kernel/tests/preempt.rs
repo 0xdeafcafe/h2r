@@ -50,6 +50,11 @@ const SWAP_WAIT: u32 = CODE + 0xA000;
 /// `yield_wait(n)` (stdcall): as `vblank_wait`, calling NtYieldExecution
 /// every trip.
 const YIELD_WAIT: u32 = CODE + 0xB000;
+/// `work_yield(counter)` (stdcall): `ROUNDS` times, add `WORK` to
+/// `*counter` one at a time, then NtYieldExecution; return `*counter`.
+const WORK_YIELD: u32 = CODE + 0xC000;
+const ROUNDS: u32 = 60;
+const WORK: u32 = 100;
 const VCOUNT: u32 = DATA + 0x200;
 const LAST_SWAP: u32 = DATA + 0x204;
 const SWAP_AT: u32 = DATA + 0x208;
@@ -238,7 +243,31 @@ fn guest_functions() -> Vec<ir::IrFunction> {
         a.pop(ebx)?;
         a.ret_1(4)
     });
+    let work_yield = function(WORK_YIELD, |a| {
+        let mut round = a.create_label();
+        let mut unit = a.create_label();
+        a.push(ebx)?;
+        a.push(esi)?;
+        a.push(edi)?;
+        a.mov(edi, dword_ptr(esp + 16))?;
+        a.mov(ebx, ROUNDS)?;
+        a.set_label(&mut round)?;
+        a.mov(esi, WORK)?;
+        a.set_label(&mut unit)?;
+        a.inc(dword_ptr(edi))?;
+        a.dec(esi)?;
+        a.jnz(unit)?;
+        a.call(runtime::kernel::function_token(238) as u64)?; // NtYieldExecution
+        a.dec(ebx)?;
+        a.jnz(round)?;
+        a.mov(eax, dword_ptr(edi))?;
+        a.pop(edi)?;
+        a.pop(esi)?;
+        a.pop(ebx)?;
+        a.ret_1(4)
+    });
     vec![
+        work_yield,
         spin,
         set,
         wait,
@@ -855,26 +884,60 @@ fn a_wait_for_a_swap_sees_it_at_the_next_vblank() {
 }
 
 #[test]
-fn a_clock_jump_delivers_a_bounded_catch_up_and_reports_the_rest() {
+fn a_clock_jump_delivers_every_vblank_spread_over_slices() {
     let Some(lib) = module() else { return };
-    // A second passes with no wake pass in between: 60 periods due. Four
-    // are delivered back to back, the other 56 are dropped and reported to
-    // the first, and the spin for four vblanks ends at once.
-    let h = alone(lib, VBLANK_WAIT, vec![4], 0);
+    // A second passes with no wake pass in between: 60 periods due. The
+    // guest counter (Halo's 0x485AB0 counts calls) must reach 60, but four
+    // a drain: thread slices run between the batches, not one burst.
+    let h = alone(lib, VBLANK_WAIT, vec![60], 0);
     let display = Display::default();
     let id = h.kernel.add_periodic(vblank_source(&display, 4)).unwrap();
     h.kernel.advance_time(&h.runtime, 10_000_000).unwrap();
     let mut m = machine_of(&h);
+    m.preempt_slice = Some(4096);
     assert_eq!(
-        m.run(100).unwrap(),
+        m.run(1_000).unwrap(),
         RunOutcome::Complete {
-            exits: [(1, 4)].into()
+            exits: [(1, 60)].into()
         }
     );
+    assert_eq!(m.runtime.memory().u32(VCOUNT).unwrap(), 60);
     let stats = m.kernel.periodic_stats(id).unwrap();
-    assert_eq!((stats.delivered, stats.dropped), (4, 56));
-    assert_eq!(*display.missed.lock().unwrap(), [56, 0, 0, 0]);
+    assert_eq!((stats.delivered, stats.dropped, stats.owed), (60, 0, 0));
+    assert_eq!(*display.missed.lock().unwrap(), [0; 60]);
     assert_eq!(stats.next_deadline, vblank_deadline(61));
-    assert!(m.kernel.clock().counter() < 10_000_000 + 10);
-    assert_eq!(m.preemptions(), 0);
+    // No batch is longer than four, and the spinner ran between them.
+    let dpc = kernel::threads::DPC_THREAD_ID;
+    let runs: Vec<usize> = m
+        .schedule()
+        .split(|t| *t != dpc)
+        .map(|r| r.len())
+        .filter(|n| *n > 0)
+        .collect();
+    assert_eq!(runs, [4; 15]);
+    // The catch-up held the clock: no idle jump while periods were owed.
+    assert!(m.kernel.clock().counter() < vblank_deadline(61));
+}
+
+#[test]
+fn cooperating_workers_are_not_charged_a_vblank_per_round() {
+    let Some(lib) = module() else { return };
+    // Two threads each do 60 rounds of real work (200 accesses), yielding
+    // after each. Their handoffs are productive, so with a 60 Hz source
+    // installed the clock moves by their work, not to a vblank per round.
+    let display = Display::default();
+    let mut m = machine_with(lib, WORK_YIELD, WORK_YIELD, vec![COUNTER], HOUR);
+    m.kernel.add_periodic(vblank_source(&display, 4)).unwrap();
+    assert_eq!(
+        m.run(10_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, ROUNDS * WORK), (2, 0)].into()
+        }
+    );
+    assert_eq!(m.runtime.memory().u32(FLAG).unwrap(), ROUNDS * WORK);
+    let ticks = m.kernel.clock().counter();
+    let work = 2 * (ROUNDS * WORK * 2) as u64 / kernel::threads::ACCESSES_PER_TICK;
+    assert!((work..work + 100).contains(&ticks), "{ticks} vs {work}");
+    assert!(ticks < vblank_deadline(1));
+    assert!(display.missed.lock().unwrap().is_empty());
 }

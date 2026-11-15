@@ -169,7 +169,8 @@ pub const VBLANK_SOURCE: &str = "D3D vertical-blank callback";
 /// A kernel periodic-source handler (`kernel::periodic::Handler`, boxed by
 /// the caller) that delivers the vertical blank on logical time: it counts
 /// the vblank ([`crate::Device::vblank`], plus any `missed` periods the
-/// source's catch-up bound dropped, [`crate::Device::skip_vblanks`]), writes
+/// source dropped from a debt over `kernel::periodic::MAX_DEBT_SECONDS`,
+/// [`crate::Device::skip_vblanks`]), writes
 /// `D3DVBLANKDATA` `{VBlank, Swap, Flags}` into the kernel's scratch area
 /// and returns the cdecl call `callback(&record)` for the callback at
 /// `+0x1DB8`. No callback registered (or no device yet): nothing to call,

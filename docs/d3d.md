@@ -914,8 +914,11 @@ d3d::register_frame_wait(&mut dispatch, device.clone(), FrameWait::HALO2_CLOCKED
 
 - At each 60 Hz deadline the kernel runs it the way the GPU interrupt's
   DPC would: between thread slices, on the kernel DPC stack at
-  DISPATCH_LEVEL. It counts the vblank (plus any periods the source's
-  catch-up bound dropped, `Device::skip_vblanks`), writes
+  DISPATCH_LEVEL. Periods owed after a clock jump come four a drain
+  (`max_catch_up`), each with its own callback, so Halo's counter, which
+  only counts calls, keeps up with the clock. It counts the vblank (plus
+  any periods dropped from a debt over ten seconds,
+  `Device::skip_vblanks`), writes
   `{VBlank, Swap, Flags}` into the kernel's scratch area on that stack and
   returns the cdecl call `callback(&record)`. No device or no callback:
   counted, nothing called.

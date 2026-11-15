@@ -61,6 +61,12 @@ pub(crate) struct Record {
     pub tib: [u32; 7],
     pub irql: u8,
     pub polling: bool,
+    /// Charged accesses since the thread last yielded or polled.
+    pub work_since_poll: u64,
+    /// The last poll followed at least [`POLL_WORK`] of charged work: a
+    /// cooperative handoff by a thread that is getting things done, which
+    /// may let timers and sleeps arrive but not a periodic deadline.
+    pub productive: bool,
     /// KeSetBasePriorityThread state: base priority and saturation (-1/0/1).
     pub base_priority: i8,
     /// KTHREAD Priority, the one the scheduler orders ready threads by.
@@ -126,6 +132,23 @@ pub struct Machine {
 /// not cycles; register-only work, access width and cache behaviour are
 /// not costed.
 pub const ACCESSES_PER_TICK: u64 = 100;
+
+/// Charged accesses between two yields (or Delay(0)s) above which the second
+/// is a productive handoff, not an idle poll: one clock tick of work. A
+/// polling loop reads its flag and calls back in with a handful; a worker
+/// handing off between units of work does more. Uncharged work (Rust
+/// overrides) looks idle.
+pub const POLL_WORK: u64 = ACCESSES_PER_TICK;
+
+impl Record {
+    /// The thread is about to poll (NtYieldExecution, Delay(0)): classify
+    /// the work it did since its last poll.
+    pub(crate) fn poll(&mut self) {
+        self.polling = true;
+        self.productive = self.work_since_poll >= POLL_WORK;
+        self.work_since_poll = 0;
+    }
+}
 
 impl Machine {
     /// Attach before executing image entry; CPU must still have its initial
@@ -199,6 +222,8 @@ impl Machine {
                     tib: [u32::MAX, tib_top, stack_bottom, 0, 0, 0, kpcr],
                     irql: 0,
                     polling: false,
+                    work_since_poll: 0,
+                    productive: false,
                     base_priority: PROCESS_BASE_PRIORITY,
                     priority: PROCESS_BASE_PRIORITY,
                     saturation: 0,
@@ -342,13 +367,7 @@ impl Machine {
         }
         for _ in 0..max_slices {
             self.collect_threads()?;
-            if let Some(pacer) = &mut self.pacer {
-                // Before any lock is taken: a host thread reading guest
-                // memory is not held up by the wait.
-                let now = self.kernel.lock().clock.counter();
-                pacer.wait(now);
-            }
-            let tid = {
+            let live = {
                 let mut core = self.kernel.lock();
                 let mut memory = self.runtime.memory();
                 // Completions queued under a Guest guard are applied here, with
@@ -360,7 +379,13 @@ impl Machine {
                     .threads
                     .values()
                     .any(|r| !matches!(r.state, State::Terminated(_)));
-                if live && core.dpcs.is_empty() && core.idle() {
+                // A ready poller sees what a drain did before the clock
+                // moves on: no advance between a DPC and the next slice.
+                if live
+                    && core.dpcs.is_empty()
+                    && (self.drained.is_empty() || core.ready.is_empty())
+                    && core.idle()
+                {
                     let deadline = core.idle_deadline();
                     if let Some(deadline) = deadline {
                         core.clock.advance_to(deadline)?;
@@ -380,6 +405,19 @@ impl Machine {
                         core.wake(&mut memory)?;
                     }
                 }
+                live
+            };
+            if let Some(pacer) = &mut self.pacer {
+                // After any idle advance and before the DPC or thread that
+                // runs at that time, with no lock held: what the guest does
+                // next happens no earlier in wall time than in logical time,
+                // and a host thread reading guest memory is not held up.
+                let now = self.kernel.lock().clock.counter();
+                pacer.wait(now);
+            }
+            let tid = {
+                let mut core = self.kernel.lock();
+                let mut memory = self.runtime.memory();
                 // DISPATCH_LEVEL work runs before any thread gets a slice, and
                 // a drain runs every queued DPC, chains of distinct DPCs
                 // included, in queue order. Only a DPC that comes round again
@@ -489,7 +527,11 @@ impl Machine {
                 // running and work never lets time leap ahead of it.
                 let kpcr = {
                     let mut core = self.kernel.lock();
-                    core.charge_work(&mut self.runtime.memory(), thread.ctx.take_slice_spent())?;
+                    core.charge_work(
+                        &mut self.runtime.memory(),
+                        tid,
+                        thread.ctx.take_slice_spent(),
+                    )?;
                     core.kpcr
                 };
                 thread.ctx.disarm_preemption();
@@ -561,23 +603,37 @@ impl Machine {
     fn run_dpc(&mut self, call: timers::DpcCall) -> Result<Option<RunOutcome>, Error> {
         self.run_on_dpc_stack(call.routine, &call.arguments, None, "DPC")
     }
-    /// Deliver the periods periodic source `id` owes, one guest call each
-    /// (`crate::periodic`). The source's handler builds each call, with the
-    /// scratch area just above the arguments on the DPC stack.
+    /// Deliver up to `max_catch_up` of the periods periodic source `id`
+    /// owes, one guest call each (`crate::periodic`), and queue it again if
+    /// it still owes some: they run in a later drain, after a thread slice
+    /// when a thread is ready. The source's handler builds each call, with
+    /// the scratch area just above the arguments on the DPC stack.
     fn run_periodic(&mut self, id: u32) -> Result<Option<RunOutcome>, Error> {
+        let mut budget = u64::MAX;
         loop {
             let (mut handler, missed, name) = {
                 let mut core = self.kernel.lock();
+                let core = &mut *core;
                 let Some(source) = core.periodic.get_mut(&id) else {
                     return Ok(None);
                 };
+                budget = budget.min(source.max_catch_up);
                 if source.owed == 0 {
                     return Ok(None);
                 }
+                if budget == 0 {
+                    if !source.queued {
+                        source.queued = true;
+                        core.dpcs.push_back(timers::Queued::Host(id));
+                    }
+                    return Ok(None);
+                }
+                budget -= 1;
                 let Some(handler) = source.handler.take() else {
                     return Err(Error::Invalid("periodic handler re-entered"));
                 };
                 source.owed -= 1;
+                source.stats.owed = source.owed;
                 source.stats.delivered += 1;
                 (handler, std::mem::take(&mut source.missed), source.name)
             };
@@ -722,24 +778,31 @@ impl Core {
     /// cannot run before them, so one that is never scheduled does not hold
     /// the clock (and the timers that would release the pollers) still.
     fn idle(&self) -> bool {
-        let Some(index) = self.next_ready() else {
-            return true;
-        };
-        let floor = self.threads[&self.ready[index]].priority;
+        self.scheduled_ready().all(|r| r.polling)
+    }
+    /// The next pick and every ready thread of its priority or higher.
+    fn scheduled_ready(&self) -> impl Iterator<Item = &Record> {
+        let floor = self
+            .next_ready()
+            .map(|index| self.threads[&self.ready[index]].priority);
         self.ready
             .iter()
             .map(|id| &self.threads[id])
-            .filter(|r| r.priority >= floor)
-            .all(|r| r.polling)
+            .filter(move |r| floor.is_some_and(|f| r.priority >= f))
     }
     /// Where an idle advance goes: the next sleep, wait or timer deadline,
     /// or a periodic deadline before it. A periodic source alone moves the
     /// clock only for ready (polling) threads: with none ready and no other
     /// deadline the machine still reports Deadlock rather than ticking
-    /// vblanks forever.
+    /// vblanks forever. And only for idle polls: when any thread that would
+    /// be scheduled handed off after real work ([`Record::productive`]),
+    /// the next vblank arrives through charged work, not a jump, so a
+    /// round of cooperating workers is not charged a display period.
     fn idle_deadline(&self) -> Option<u64> {
         let now = self.clock.counter();
-        let periodic = self.next_periodic_deadline().filter(|d| *d > now);
+        let periodic = self
+            .next_periodic_deadline()
+            .filter(|d| *d > now && !self.scheduled_ready().any(|r| r.productive));
         match self.next_deadline() {
             Some(d) => Some(periodic.map_or(d, |p| p.min(d))),
             None if !self.ready.is_empty() => periodic,
@@ -946,7 +1009,7 @@ impl Core {
                     memory.set_u8(self.threads[&tid].object + kthread::STATE, 1)?;
                     let record = self.threads.get_mut(&tid).unwrap();
                     record.state = State::Ready;
-                    record.polling = true;
+                    record.poll();
                     self.ready.push_back(tid);
                     if has_other {
                         self.yielder = Some(tid);
@@ -978,7 +1041,11 @@ impl Core {
                 memory.set_u8(self.threads[&tid].object + kthread::STATE, 5)?;
                 let record = self.threads.get_mut(&tid).unwrap();
                 record.state = State::Sleeping(deadline);
-                record.polling = deadline <= self.clock.counter();
+                if deadline <= self.clock.counter() {
+                    record.poll();
+                } else {
+                    record.polling = false;
+                }
                 Action::Block(Value::U32(status::SUCCESS))
             }
             ord::NT_RESUME_THREAD => {
@@ -1134,6 +1201,8 @@ impl Core {
                         tib: [u32::MAX, tib_top, bottom, 0, 0, 0, self.kpcr],
                         irql: 0,
                         polling: false,
+                        work_since_poll: 0,
+                        productive: false,
                         base_priority: PROCESS_BASE_PRIORITY,
                         priority: PROCESS_BASE_PRIORITY,
                         saturation: 0,

@@ -72,8 +72,18 @@ fn u64_at(g: &Guest, addr: u32) -> u64 {
     (g.u32(addr + 4).unwrap() as u64) << 32 | g.u32(addr).unwrap() as u64
 }
 
-#[test]
-fn the_frame_wait_sleeps_to_each_clocked_vblank() {
+struct Run {
+    runtime: std::sync::Arc<Runtime>,
+    kernel: std::sync::Arc<kernel::Kernel>,
+    device: d3d::abi::SharedDevice<RecordingBackend>,
+    machine: Machine,
+    source: u32,
+}
+
+/// One thread: CreateDevice, register the callback the way `0x12b093`
+/// does, then the frame wait for `targets.0` and for `targets.1`. The clock
+/// is moved on by `jump` ticks first.
+fn setup(targets: (u32, u32), jump: u64) -> Run {
     let cfg = DeviceConfig::halo2(PB, SCRATCH);
     let g = guest(&cfg);
     let device = runtime_glue::shared(cfg, RecordingBackend::new());
@@ -100,24 +110,24 @@ fn the_frame_wait_sleeps_to_each_clocked_vblank() {
     });
     // CreateDevice (EAX = 0x40, ECX = ppDevice, [esp+4] = params), register
     // the callback the way 0x12b093 does, then wait for target 3 twice.
-    let _ = dispatch.register_override(ENTRY, "thread", |cpu, ctx, _| {
+    let _ = dispatch.register_override(ENTRY, "thread", move |cpu, ctx, _| {
         let runtime = std::sync::Arc::clone(ctx.runtime());
         let mut m = runtime.memory();
         cpu.eax = 0x40;
         cpu.ecx = PP_DEVICE;
         cpu.esp -= 4;
         m.set_u32(cpu.esp, PARAMS)?;
-        ctx.call_guest(cpu, &mut m, 0x3f5240, |cpu, ctx| {
+        ctx.call_guest(cpu, &mut m, 0x3f5240, move |cpu, ctx| {
             let runtime = std::sync::Arc::clone(ctx.runtime());
             let mut m = runtime.memory();
             m.set_u32(OUT, cpu.eax)?;
             m.set_u32(DEV + 0x1DB8, CALLBACK)?;
-            m.set_u32(FW.target, 3)?;
-            ctx.call_guest(cpu, &mut m, FW.entry, |cpu, ctx| {
+            m.set_u32(FW.target, targets.0)?;
+            ctx.call_guest(cpu, &mut m, FW.entry, move |cpu, ctx| {
                 let runtime = std::sync::Arc::clone(ctx.runtime());
                 let mut m = runtime.memory();
                 m.set_u32(OUT + 4, cpu.edx)?;
-                m.set_u32(FW.target, 5)?;
+                m.set_u32(FW.target, targets.1)?;
                 ctx.call_guest(cpu, &mut m, FW.entry, |cpu, ctx| {
                     let mut m = ctx.memory();
                     m.set_u32(OUT + 8, cpu.edx)?;
@@ -142,7 +152,8 @@ fn the_frame_wait_sleeps_to_each_clocked_vblank() {
         ..CpuAbi::xbox_thread()
     };
     runtime.memory().set_u32(cpu.esp, HARNESS_EXIT).unwrap();
-    let mut m = Machine::new(
+    kernel.advance_time(&runtime, jump).unwrap();
+    let machine = Machine::new(
         runtime.clone(),
         kernel.clone(),
         cpu,
@@ -150,6 +161,24 @@ fn the_frame_wait_sleeps_to_each_clocked_vblank() {
         STACK_TOP,
     )
     .unwrap();
+    Run {
+        runtime,
+        kernel,
+        device,
+        machine,
+        source: id,
+    }
+}
+
+#[test]
+fn the_frame_wait_sleeps_to_each_clocked_vblank() {
+    let Run {
+        runtime,
+        kernel,
+        device,
+        machine: mut m,
+        source: id,
+    } = setup((3, 5), 0);
     assert!(matches!(m.run(100).unwrap(), RunOutcome::Complete { .. }));
     let g = runtime.memory();
     assert_eq!(g.u32(OUT).unwrap(), 0, "CreateDevice");
@@ -165,4 +194,36 @@ fn the_frame_wait_sleeps_to_each_clocked_vblank() {
     let stats = kernel.periodic_stats(id).unwrap();
     assert_eq!((stats.delivered, stats.dropped), (4, 0));
     assert_eq!(device.lock().unwrap().stats().vblanks, 4);
+}
+
+#[test]
+fn a_clock_jump_reaches_the_game_counter_one_vblank_at_a_time() {
+    // A second passes before anything runs: 60 vblanks due. The first
+    // drain (four of them) runs before the thread has created the device,
+    // so D3D counts those but has no callback to call. The other 56 must
+    // all reach Halo's counter (0x485AB0, one per callback), four a drain,
+    // or frame time falls behind the clock; dropped, the wait for 60 would
+    // only end near two seconds.
+    let Run {
+        runtime,
+        kernel,
+        device,
+        machine: mut m,
+        source: id,
+    } = setup((61, 61), 10_000_000);
+    assert!(matches!(m.run(1_000).unwrap(), RunOutcome::Complete { .. }));
+    let g = runtime.memory();
+    assert_eq!(g.u32(OUT + 4).unwrap(), 60, "the wait returned at 60");
+    assert_eq!(u64_at(&g, FW.counter), 60);
+    assert_eq!(g.u32(OUT + 0x10).unwrap(), 64, "the record's VBlank");
+    let stats = kernel.periodic_stats(id).unwrap();
+    assert_eq!((stats.delivered, stats.dropped, stats.owed), (64, 0, 0));
+    assert_eq!(device.lock().unwrap().stats().vblanks, 64);
+    // The whole debt within the second, then four ordinary vblanks.
+    assert_eq!(kernel.clock().counter(), (64 * 10_000_000u64).div_ceil(60));
+    let dpc = kernel::threads::DPC_THREAD_ID;
+    assert!(m.schedule().split(|t| *t != dpc).all(|r| r.len() <= 4));
+    // The pre-device batch called nothing, so it is not in the schedule:
+    // the thread, then a batch of four callbacks, then the thread again.
+    assert_eq!(&m.schedule()[..6], [1, 0, 0, 0, 0, 1]);
 }

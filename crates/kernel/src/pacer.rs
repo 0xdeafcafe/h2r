@@ -1,8 +1,9 @@
 //! Holding logical time to wall time, for a machine that is being watched.
 //!
 //! The kernel clock never reads the host clock: schedules depend only on
-//! guest work and deadlines. A [`Pacer`] only makes the host wait. Before
-//! each slice `Machine::run` hands it the logical time, and it sleeps until
+//! guest work and deadlines. A [`Pacer`] only makes the host wait. After
+//! any idle advance and before the DPC or thread slice that runs at that
+//! time, `Machine::run` hands it the logical time, and it sleeps until
 //! that much wall time has passed since it started, so idle advances and
 //! fast guest work cannot run the game ahead of real time. It never makes
 //! logical time catch up: a host that falls more than `max_lag` behind
