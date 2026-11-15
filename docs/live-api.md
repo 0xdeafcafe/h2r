@@ -135,3 +135,46 @@ there:
 
 Polygons are top-down projections of floor surfaces, grouped into height
 layers so multi-storey maps can be drawn one floor at a time.
+
+## Clarifications (2026-11-15)
+
+Settled after the first client was built against this page.
+
+1. **Positions.** The log starts at position 1. `?from=N` is exclusive:
+   the stream and `/v1/events` return events with `position > N`, so
+   `from=0` is the whole log and a client resumes with the last position it
+   applied.
+2. **Snapshots join the stream.** Every read response carries
+   `"position": <head when it was read>`, so a client can load a snapshot
+   and open the stream with `?from=<that position>`. The stream also takes
+   `?exclude=GameFrame` (comma-separated types to leave out) and
+   `?types=` (only these types).
+3. **Lists** are `{ "items": [...], "next": <string or null>, "position": n }`
+   everywhere. `next` is opaque; pass it back as `?cursor=`. For
+   `/v1/events` it happens to be the next `from`.
+4. **Errors** are exactly `{ "error": "<code>", "message": "..." }` with the
+   codes in Conventions (plus `unauthorized`, `forbidden`, `rate_limited`,
+   `too_large`, `unimplemented`).
+5. **Presence states** are `online`, `away` and `playing` (`game_id` set);
+   `SignedOut` and `PresenceExpired` mean offline.
+6. **`GameEnded.winner`** is `{ "team": n }` in team games,
+   `{ "player": index }` otherwise, or null for a draw or quit.
+7. **`GameEnded.players`** is the final scoreboard: `[{index, score, kills,
+   deaths, assists}]`.
+8. **Frames** are `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`
+   returning a list (item 3) of frames, at most 600 per page, oldest first.
+   `GameFrame.data` is the frame plus `source` (the ingesting author id).
+9. **`PlayerKilled`** carries `pos`, the victim's position.
+10. **`GameStarted`** carries `tick`, the game tick it started at.
+11. **Keys.** `GET /v1/accounts/{gamertag}/keys` and
+    `GET /v1/accounts/by-xuid/{xuid}/keys` both return
+    `{ "keys": [ { "kid", "jwk", "valid_from": <position>,
+    "valid_to": <position or null> } ] }`. The hash chain, batch JWS and
+    `at` rules are in [live-security.md §2](live-security.md).
+12. **Well-known `api`** may be relative (`"/v1"`); resolve it against the
+    well-known document's URL.
+13. **Axes.** World coordinates are the game's: x and y horizontal, z up,
+    in world units. `yaw` is radians counter-clockwise from +x. Map outlines
+    use the same axes.
+14. **`console`** is a free display string (the console's name); clients
+    may show it or not.

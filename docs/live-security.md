@@ -51,7 +51,19 @@ The client signs what it means; the server orders it.
    event in a stream is detectable. The stored record is the author's JWS
    untouched plus those fields.
 
-The wire event in live-api.md gains `author`, `kid`, `jws` and `hash`.
+Exact rules:
+
+- **Hash chain.** `hash = hex(sha256(prev || utf8(jws)))`, where `prev` is
+  the raw 32 bytes of the previous event's hash in the same stream, and
+  empty for the stream's first event.
+- **Batches.** A batch is one JWS whose payload is a JSON array of event
+  bodies. Each stored event keeps the batch `jws` plus `jws_index`, its
+  element in that array; its hash uses the batch JWS string.
+- **Time.** The body's `at` is the author's clock; the wire `at` is the same
+  value, copied. The server's append time is not part of the event.
+
+The wire event in live-api.md gains `author`, `kid`, `jws`, `jws_index`
+(batches only) and `hash`.
 Readers that don't care ignore them; readers that do verify the JWS with the
 author's public key from §4.
 
