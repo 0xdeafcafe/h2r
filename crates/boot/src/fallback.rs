@@ -9,9 +9,10 @@
 //! calls it, and runs the fallback on an unsupported-instruction STOP. The
 //! runtime, kernel and Machine see nothing different.
 //!
-//! This exists so the boot tracer can see past the x87 gap; it is not the
-//! design (docs/FLOAT.md is). It is slow, and transcendentals are not
-//! bit-exact.
+//! The lifter lowers x87 itself now (docs/FLOAT.md), so this is a safety
+//! net, not the design: it keeps a boot or trace running through any
+//! instruction the lifter still rejects instead of stopping dead. It is
+//! slow, and interpreted transcendentals are not bit-exact.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};

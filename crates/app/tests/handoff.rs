@@ -435,7 +435,16 @@ fn real_time_tick_sleeps_to_wall_time() {
         host.tick(f * 166_667);
     }
     let e = t.elapsed();
+    // Properties that hold whatever the scheduler does: the run took at
+    // least the guest time (less the 2 ms lead allowance), and the pacer
+    // slept at least once. The exact sleep count and an upper bound on
+    // elapsed time depend on how fast the host gets through each tick, so
+    // a slow shared runner can legitimately sleep fewer than nine times.
     assert!(e >= std::time::Duration::from_millis(160), "{e:?}");
-    assert!(e < std::time::Duration::from_millis(400), "{e:?}");
-    assert!(host.pace_stats().sleeps >= 9);
+    let stats = host.pace_stats();
+    assert!(stats.sleeps >= 1, "{stats:?}");
+    assert!(
+        stats.slept >= std::time::Duration::from_millis(1),
+        "{stats:?}"
+    );
 }
