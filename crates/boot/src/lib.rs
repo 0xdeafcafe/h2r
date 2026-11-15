@@ -324,7 +324,6 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             wrappers::install_set_allocation(&loaded.runtime, u);
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
-        game_glue::install_stream_purge(&loaded.runtime, u);
     }
     let d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
     if let (Some(_), Some(u)) = (&d3d_calls, &uses) {
@@ -373,7 +372,7 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         }
         o => (format!("{o:?}"), m.threads().next().map_or(0, |t| t.cpu.eip)),
     };
-    eprintln!("ran {secs:.2}s, {} slices", m.schedule().len());
+    eprintln!("ran {secs:.2}s, {} slices, {} preemptions", m.schedule().len(), m.preemptions());
     for th in m.threads() {
         let c = &th.cpu;
         eprintln!(
