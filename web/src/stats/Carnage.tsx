@@ -5,7 +5,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
 import type { GameState, Standing } from "../state/reducer";
 import { standings, teamStandings } from "../state/reducer";
-import { bestSprees, countMedals, gameMedals, ordinal, places, weaponBreakdown, type MedalId } from "../state/derive";
+import { bestSprees, countMedals, gameMedals, ordinal, places, weaponBreakdown, MEDALS, type MedalId } from "../state/derive";
 import Emblem from "../components/Emblem";
 import MedalIcon from "../components/MedalIcon";
 import WeaponIcon from "../components/WeaponIcon";
@@ -74,17 +74,18 @@ export default function Carnage(props: { game: GameState }) {
   const sum = (rs: Row[], f: (r: Row) => number) => rs.reduce((n, r) => n + f(r), 0);
 
   return (
-    <>
+    <section class="s-game-report" aria-label="Carnage report">
       <Title right={<Derived note="Places, sprees, medals and weapon counts are derived in your browser from the game's events. Snapshots carry each game's last 50 knockouts." />}>
         {ended() ? "Post Game Carnage Report" : "Carnage Report So Far"}
       </Title>
       <Tabs small label="Carnage report" active={tab()} onPick={setTab} tabs={[
         { id: "overview", label: "Overview" }, { id: "carnage", label: "Carnage" }, { id: "medals", label: "Medals" }, { id: "weapons", label: "Weapons" },
       ]} />
-      <div class="s-carnage">
+      <div class="s-carnage" role="tabpanel" aria-label={`${tab()} report`}>
+        <p class="s-report-note">{ended() ? "Final standings" : "Live standings"}<span>Medals and weapon counts cover the loaded game events.<Derived /></span></p>
         <Show when={tab() === "overview"}>
           <div class="s-carnage-cols">
-            <table class="s-stats">
+            <table class="s-stats s-overview-table" aria-label="Game standings">
               <colgroup><col /><col style={{ width: "70px" }} /><col style={{ width: "70px" }} /></colgroup>
               <thead><tr><th>Players</th><th>Place</th><th>Score</th></tr></thead>
               <tbody>
@@ -108,26 +109,27 @@ export default function Carnage(props: { game: GameState }) {
                 </For>
               </tbody>
             </table>
-            <div>
+            <div class="s-carnage-extras">
               <section class="s-sec">
                 <header><span>Total Game Medals</span><Derived /></header>
-                <div class="s-chest s-chest--squares" style={{ padding: "5px" }}>
-                  <div class="s-chest-group">
+                <div class="s-game-medals">
+                  <div class="s-game-medal-grid">
                     <For each={totalMedals()} fallback={<p class="s-dim" style={{ "grid-column": "1 / -1", padding: "8px 2px" }}>No medals yet.</p>}>
                       {([id, n]) => <div class="s-square"><span><MedalIcon id={id} size={26} /></span><b>{n}</b></div>}
                     </For>
                   </div>
                 </div>
               </section>
-              <section class="s-sec" style={{ "margin-top": "8px" }}>
+              <section class="s-sec">
                 <header><span>Tool of Destruction</span><Derived /></header>
-                <div class="s-tod" style={{ "padding-top": "4px" }}>
+                <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
+                <div class="s-tod s-game-weapons">
                   <For each={weapons().slice(0, 4)} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
                     {(w, i) => (
                       <div class="s-tod-row" classList={{ "s-tod-row--top": i() === 0 }}>
                         <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
-                        <div class="s-tod-bars"><div class="s-tod-bar" style={{ "margin-top": "7px" }}><span style={{ width: `${(w.share / max()) * 74}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
-                        <div class="s-tod-nums" style={{ "line-height": "30px" }}>{w.kills}</div>
+                        <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(w.share / max()) * 74}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
+                        <div class="s-tod-nums">{w.kills}</div>
                       </div>
                     )}
                   </For>
@@ -138,8 +140,8 @@ export default function Carnage(props: { game: GameState }) {
         </Show>
         <Show when={tab() === "carnage"}>
           <div class="s-scroll" tabindex="0" role="region" aria-label="Carnage">
-            <table class="s-stats" style={{ "min-width": "640px" }}>
-              <colgroup><col /><col span="7" style={{ width: "76px" }} /></colgroup>
+            <table class="s-stats s-carnage-table" aria-label="Player carnage statistics">
+              <colgroup><col class="s-player-col" /><col span="7" /></colgroup>
               <thead><tr><th>Players</th><th>Kills</th><th>Assists</th><th>Deaths</th><th>K/D Spread</th><th>Suicides</th><th>Betrayals</th><th>Score</th></tr></thead>
               <tbody>
                 <For each={groups()}>
@@ -171,41 +173,56 @@ export default function Carnage(props: { game: GameState }) {
           </div>
         </Show>
         <Show when={tab() === "medals"}>
-          <table class="s-stats">
-            <colgroup><col style={{ width: "250px" }} /><col style={{ width: "90px" }} /><col /></colgroup>
-            <thead><tr><th>Players</th><th>Best Spree</th><th style={{ "text-align": "left" }}>Medals</th></tr></thead>
-            <tbody>
-              <For each={groups()}>
-                {(grp) => (
-                  <>
-                    <Show when={grp.team !== null}>
-                      <tr class="team" style={teamStyle(grp.team!)}><td>{teamName(grp.team!)} Team</td><td>{Math.max(0, ...grp.players.map((r) => r.spree))}</td><td style={{ "text-align": "left" }}>{sum(grp.players, (r) => sum2(r.medals))} medals</td></tr>
-                    </Show>
-                    <For each={grp.players}>
-                      {(r) => (
-                        <tr classList={{ gone: r.s.left }} style={rowStyle(r)}>
-                          <Who r={r} />
-                          <td>{r.spree}</td>
-                          <td class="medals"><For each={r.medals}>{([id, n]) => <span><MedalIcon id={id} size={21} />{n > 1 ? <small>{n}</small> : null}</span>}</For></td>
-                        </tr>
-                      )}
-                    </For>
-                  </>
-                )}
-              </For>
-            </tbody>
-          </table>
+          <div class="s-scroll" tabindex="0" role="region" aria-label="Player medals">
+            <table class="s-stats s-medals-table" aria-label="Player medals and sprees">
+              <colgroup><col class="s-player-col" /><col style={{ width: "80px" }} /><col /></colgroup>
+              <thead><tr><th>Players</th><th>Best Spree</th><th style={{ "text-align": "left" }}>Medals</th></tr></thead>
+              <tbody>
+                <For each={groups()}>
+                  {(grp) => (
+                    <>
+                      <Show when={grp.team !== null}>
+                        <tr class="team" style={teamStyle(grp.team!)}><td>{teamName(grp.team!)} Team</td><td>{Math.max(0, ...grp.players.map((r) => r.spree))}</td><td style={{ "text-align": "left" }}>{sum(grp.players, (r) => sum2(r.medals))} medals</td></tr>
+                      </Show>
+                      <For each={grp.players}>
+                        {(r) => (
+                          <tr classList={{ gone: r.s.left }} style={rowStyle(r)}>
+                            <Who r={r} />
+                            <td>{r.spree}</td>
+                            <td class="medals"><For each={r.medals}>{([id, n]) => <span><MedalIcon id={id} size={21} />{n > 1 ? <small>{n}</small> : null}</span>}</For></td>
+                          </tr>
+                        )}
+                      </For>
+                    </>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </div>
+          <section class="s-sec s-game-medal-chest">
+            <header><span>Total Game Medals</span><Derived /></header>
+            <div class="s-game-medal-grid s-game-medal-grid--named">
+              <For each={MEDALS}>{(medal) => {
+                const count = () => totalMedals().find(([id]) => id === medal.id)?.[1] ?? 0;
+                return <div class="s-game-medal" classList={{ empty: !count() }}>
+                  <MedalIcon id={medal.id} size={30} dim={!count()} />
+                  <span><b>{count()}</b><small>{medal.name}</small></span>
+                </div>;
+              }}</For>
+            </div>
+          </section>
         </Show>
         <Show when={tab() === "weapons"}>
           <section class="s-sec">
-            <header><span>Tool of Destruction</span><small>Count (share of knockouts)</small></header>
-            <div class="s-tod" style={{ "padding-top": "4px" }}>
+            <header><span>Tool of Destruction</span><Derived /></header>
+            <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
+            <div class="s-tod s-game-weapons">
               <For each={weapons()} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
                 {(w, i) => (
                   <div class="s-tod-row" classList={{ "s-tod-row--top": i() === 0 }}>
                     <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
-                    <div class="s-tod-bars"><div class="s-tod-bar" style={{ "margin-top": "7px" }}><span style={{ width: `${(w.share / max()) * 86}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
-                    <div class="s-tod-nums" style={{ "line-height": "30px" }}>{w.kills}</div>
+                    <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(w.share / max()) * 86}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
+                    <div class="s-tod-nums">{w.kills}</div>
                   </div>
                 )}
               </For>
@@ -213,7 +230,7 @@ export default function Carnage(props: { game: GameState }) {
           </section>
         </Show>
       </div>
-    </>
+    </section>
   );
 }
 

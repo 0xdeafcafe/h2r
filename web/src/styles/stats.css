@@ -176,7 +176,7 @@
 
 /* Maps: the canvas is transparent here, over the tactical grid texture. */
 .stats .map-canvas { --map-bg: transparent; }
-.s-thumb, .s-world, .s-shot, .s-map { background: #051a30 url("/art/stats/tactical-grid.webp") 0 0 / 256px 256px; }
+.s-thumb, .s-world, .s-shot { background: #051a30 url("/art/stats/tactical-grid.webp") 0 0 / 256px 256px; }
 
 /* Map thumbnails */
 .s-thumb { position: relative; display: block; overflow: hidden; border: 1px solid #8a8a8a; }
@@ -400,47 +400,6 @@
 .s-square > span { display: grid; place-items: center; height: 36px; }
 .s-square > b { display: block; height: 13px; font: 10px/12px var(--font-ui); text-align: center; color: #fff; background: #1a1a1a; border-top: 1px solid #575757; }
 
-/* Game details / carnage report */
-.s-overview { display: grid; grid-template-columns: 232px minmax(0, 1fr) 345px; gap: 0 12px; padding: 15px; background: var(--s-matte); border-top: 1px solid #575757; border-bottom: 2px solid #575757; }
-.s-overview .s-thumb { width: 232px; height: 142px; border-color: #666; }
-.s-summary { font-size: 12px; line-height: 18px; }
-.s-summary .first { font: 16px/20px var(--font-ui); color: #fff; display: flex; gap: 8px; align-items: center; }
-.s-summary .styled { color: #fff; }
-.s-summary .break { padding-top: 30px; }
-.s-booty { align-self: start; border: 1px solid #575757; font-size: 12px; }
-.s-booty > header { display: flex; justify-content: space-between; padding: 0 12px; line-height: 30px; color: #fff; }
-.s-booty-body { padding: 10px 12px; border-top: 1px solid #575757; min-height: 90px; }
-.s-booty-body li { line-height: 17px; }
-.s-viewer { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 0 8px; padding: 8px; background: var(--s-matte); border-bottom: 2px solid #575757; align-items: start; }
-.s-viewer-side { display: grid; gap: 8px; min-width: 0; }
-.s-map { position: relative; height: 470px; }
-.s-map-note { position: absolute; left: 6px; bottom: 6px; padding: 1px 6px; font-size: 10px; color: #b9c9de; background: rgba(0, 0, 0, .6); }
-.s-legend { display: flex; flex-wrap: wrap; gap: 3px 14px; padding: 5px 8px; font-size: 10px; line-height: 13px; color: #c9c9c9; background: #101010; border-top: 1px solid #000; }
-.s-legend span { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
-.s-legend i { width: 9px; height: 9px; border-radius: 50%; border: 1px solid #fff; }
-.s-legend i.x { border: 0; border-radius: 0; background: linear-gradient(45deg, transparent 42%, #fff 42% 58%, transparent 58%), linear-gradient(-45deg, transparent 42%, #fff 42% 58%, transparent 58%); }
-.s-legend i.wedge { border: 0; border-radius: 0; width: 12px; background: conic-gradient(from 60deg at 0 50%, rgba(255, 255, 255, .6) 0 60deg, transparent 60deg); }
-.s-carnage { padding: 8px; background: var(--s-matte); border-bottom: 2px solid #575757; }
-.s-carnage-cols { display: grid; grid-template-columns: minmax(0, 1fr) 372px; gap: 0 10px; align-items: start; }
-.s-stats { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 12px; border: 1px solid #666; border-top: 0; }
-.s-stats th { padding: 0 6px; font: 12px/29px var(--font-ui); color: #fff; text-align: center; background: #000; border-top: 1px solid #666; }
-.s-stats th:first-child { text-align: left; }
-.s-stats td { padding: 0 6px; line-height: 25px; text-align: center; color: #fff; border-top: 1px solid #666; background: color-mix(in srgb, var(--row, #333) 46%, #191919); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.s-stats td:first-child { text-align: left; padding-left: 0; }
-.s-stats tr.team td { background: color-mix(in srgb, var(--row, #004095) 88%, #000); font-weight: bold; }
-.s-stats tr.team td:first-child { padding-left: 8px; }
-.s-stats tr.gone td { color: #bbb; }
-.s-stats tr:hover td { filter: brightness(1.18); }
-.s-stats .who { display: flex; align-items: center; gap: 6px; padding-left: 8px; }
-.s-stats .who .emblem { flex: none; border: 1px solid rgba(255, 255, 255, .6); }
-.stats .s-stats .who a { color: #fff; overflow: hidden; text-overflow: ellipsis; }
-.s-stats .who .rank-icon { margin-left: auto; flex: none; }
-.s-stats .who small { color: #ddd; }
-.s-stats td.medals { text-align: left; padding: 2px 6px; line-height: 0; white-space: normal; }
-.s-stats td.medals > span { position: relative; display: inline-block; margin-right: 6px; }
-.s-stats td.medals small { position: absolute; right: -5px; bottom: 0; font: bold 9px/10px var(--font-nav); color: #fff; text-shadow: 0 0 2px #000, 0 0 2px #000; }
-.s-scroll { overflow-x: auto; }
-
 /* Players */
 .s-top3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; padding: 8px 8px 0; }
 .s-top3 > a { position: relative; display: grid; grid-template-columns: 54px 1fr; gap: 8px; align-items: center; padding: 5px; background: linear-gradient(180deg, #474747, #383838); border: 1px solid #7d7d7d; box-shadow: 0 0 0 1px #111, inset 0 0 0 1px #2a2a2a; color: var(--s-ink) !important; text-decoration: none !important; font-size: 11px; line-height: 15px; }
@@ -509,19 +468,15 @@
   .s-snap-foot { grid-column: 1 / -1; padding-top: 6px; flex-wrap: wrap; }
   .s-achieve-body { grid-template-columns: 1fr; }
   .s-achieve-medals { justify-content: flex-start; }
-  .s-history, .s-career, .s-viewer, .s-carnage-cols, .s-overview { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .s-history, .s-career { grid-template-columns: minmax(0, 1fr); gap: 8px; }
   .s-history { padding: 6px; }
-  .s-overview { padding: 8px; }
-  .s-overview .s-thumb { width: 100%; height: 150px; }
-  .s-summary .break { padding-top: 6px; }
   .s-filter { grid-template-columns: 1fr; gap: 6px; }
   .s-filter-maps { justify-content: flex-start; }
   .s-sortbar { flex-wrap: wrap; }
   .s-sortbar form { margin-left: 0; width: 100%; }
   .s-sortbar form input { flex: 1; }
-  .s-map { height: 320px; }
   .s-grid td, .s-grid th { padding-left: 4px; padding-right: 4px; }
-  .s-grid .hide-s, .s-stats .hide-s { display: none; }
+  .s-grid .hide-s { display: none; }
   .s-grid th { font-size: 11px; }
   .s-top3 { grid-template-columns: 1fr; }
   .s-chest-group { grid-template-columns: repeat(2, minmax(0, 1fr)); }

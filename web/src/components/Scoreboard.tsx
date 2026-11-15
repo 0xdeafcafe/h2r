@@ -12,6 +12,8 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
       style={{ "--row": colourFor(props.g, props.s.team, props.s.index) }}
       onMouseEnter={() => props.onHover?.(props.s.index)}
       onMouseLeave={() => props.onHover?.(null)}
+      onFocusIn={() => props.onHover?.(props.s.index)}
+      onFocusOut={() => props.onHover?.(null)}
     >
       <td class="score-rank">{props.rank}</td>
       <td class="score-name">
@@ -32,7 +34,7 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
 function Head() {
   return (
     <thead>
-      <tr><th /><th>Players</th><th class="num">Score</th><th class="num" title="Kills">K</th><th class="num" title="Deaths">D</th><th class="num" title="Assists">A</th></tr>
+      <tr><th scope="col"><span class="sr-only">Place</span></th><th scope="col">Players</th><th scope="col" class="num">Score</th><th scope="col" class="num" title="Kills">K</th><th scope="col" class="num" title="Deaths">D</th><th scope="col" class="num" title="Assists">A</th></tr>
     </thead>
   );
 }
@@ -44,7 +46,7 @@ export default function Scoreboard(props: { game: GameState; onHover?: (i: numbe
       <Show
         when={props.game.team_play}
         fallback={
-          <table class="score-table">
+          <table class="score-table" aria-label="Free-for-all scoreboard">
             <Head />
             <tbody>
               <For each={standings(props.game)}>{(s, i) => <Row g={props.game} s={s} rank={i() + 1} onHover={props.onHover} />}</For>
@@ -59,7 +61,8 @@ export default function Scoreboard(props: { game: GameState; onHover?: (i: numbe
                 <span>{teamName(t.team)} Team</span>
                 <strong>{t.score}</strong>
               </header>
-              <table class="score-table">
+              <table class="score-table" aria-label={`${teamName(t.team)} Team scoreboard`}>
+                <Head />
                 <tbody>
                   <For each={t.players}>{(s, i) => <Row g={props.game} s={s} rank={i() + 1} onHover={props.onHover} />}</For>
                 </tbody>
