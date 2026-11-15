@@ -72,57 +72,79 @@ FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 `audio` (true), `pacing` (`PacePolicy::REAL_TIME`), `keep_open_on_guest_exit`
 (true), `shutdown_timeout` (3 s), `log_status` (false).
 
-## Wiring it into `h2 run` (for the boot lane)
+## Playing: `h2 play`
 
-The boot crate keeps its headless path and gains a hosted one. Sketch,
-against the boot worktree as of this writing:
+`h2 play` (crates/cli `play_cmd.rs`) runs the boot driver inside the shell:
 
-1. **CLI.** `h2 run` without `--headless` calls, on the main thread,
-   ```rust
-   let report = app::run(app::AppConfig { title: "Halo 2".into(), ..Default::default() },
-       move |host| boot::run_hosted(&xbe, &dylib, &opts, host).map(|_| ()))?;
-   ```
-   With `--headless`, either keep today's `boot::run`, or call
-   `boot::run_hosted(..., app::GuestHost::headless(&cfg)?)` so both modes
-   share code (pass `pacing: PacePolicy::Unpaced` for traces).
-2. **D3D** (`d3d_glue::install`). Replace `RecordingBackend::new()` with
-   ```rust
-   d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())
-   ```
-   and register `entries::<GfxBackend>()`. `Device<GfxBackend>` is `Send`, so
-   the `SharedDevice` shape in abi.rs is unchanged. The hook runs inside
-   `D3DDevice_Swap` with the guest-memory guard held; it only takes the
-   handoff lock and records one GPU blit, so that is safe.
-3. **DirectSound** (`dsound_glue::install`). Replace
-   `audio::Mixer::new(48_000)` with `host.mixer()`.
-4. **XAPI.** Build `xapi::Xapi::new(Config::for_gamepad(addr),
-   host.take_input().unwrap(), storage)` and hold it in a `Mutex` shared by
-   the XAPI overrides. Once per guest frame, outside any override:
-   ```rust
-   app::pump_input(&xapi, OwnedGuestMemory(rt.memory()), &mut KernelEvents(&k))?;
-   ```
-   `pump_input` takes the guest-memory adapter by value (it must own the
-   guard, unlike today's borrowed `GuestAdapter<'a>`), runs `sync_input` and
-   `take_signals` under memory then XAPI, drops both, delivers the event
-   signals, then relocks XAPI to `acknowledge_signals` (docs/xapi.md step 5).
-   `KernelEvents` implements `xapi::Events` over the kernel's event signal.
-5. **The run loop.** Replace the single `m.run(opts.max_slices)` with
-   chunks, so the host gets control between them:
-   ```rust
-   loop {
-       let out = m.run(256)?;                       // a few ms of guest work
-       if !matches!(out, kernel::RunOutcome::SliceLimit) { break out; }
-       app::pump_input(&xapi, ...)?;               // or on Swap, see below
-       if host.tick(k.clock().counter()) == app::Control::Stop { break out; }
-   }
-   ```
-   Pick the chunk size so a chunk is well under a frame; `tick` cannot sleep
-   in the middle of a chunk.
+```sh
+CARGO_TARGET_DIR=$TMPDIR/app-play-target cargo build --release -p cli
+$TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
+```
 
-Where to pump input: once per guest frame is what docs/input.md assumes for
-mouse sensitivity. Counting Swaps (the D3D call count or `frame_stats()`)
-and pumping when it changes is the closest match; pumping every chunk also
-works but makes mouse look depend on chunk rate.
+It builds the dylib first when `--out` (default `$TMPDIR/h2boot`) has none,
+like `h2 run`. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
+default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
+fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
+`--no-gamepads`, `--no-vsync`, `--unpaced`, `--bindings FILE` (docs/input.md
+TOML), `--input-timeline FILE` (an input timeline, docs/input.md, played on
+guest time in place of live input), `--status` (frame rates once a second,
+the slice count every 1000 slices). The boot's environment variables still
+apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
+scripted run goes through the same `KeyboardMouse`, `InputManager` and XAPI
+as a person's keys. Hold keys for one present at the menu's frame rate
+(`START@f330+2,DOWN@f455+1,Enter@f475+1`): the menus autorepeat, and at one
+or two presents a second a 4-present hold moves the cursor twice.
+`H2_BOOT_GFX` is ignored: frames go to the window.
+
+How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/BOOT.md
+"Hosted runs"):
+
+1. `main` calls `app::run` on the main thread; the closure runs on the guest
+   thread and calls `boot::run_hosted`.
+2. **D3D**: `d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())`,
+   installed with `d3d_glue::install_with` (same write barrier, clocked
+   vblanks, diagnostics and stopgaps as the headless run).
+3. **Audio**: boot's DirectSound output (audio-live) with **logical pacing
+   into a real device sink**: `Host::audio_sink` opens
+   `audio::output::DeviceSink::open_default()` on the output thread (a
+   `NullSink` if there is no device or with `--no-audio`). Audio time is the
+   kernel's logical time, advanced by boot after every slice exactly as in a
+   headless run, so packet completions and events are ordered with the
+   game's own calls and the run stays deterministic; the output thread only
+   plays rendered PCM and never touches guest memory, so there is no pump
+   competing for the guest-memory lock. The shell's pacer holds guest time
+   to wall time, so the device gets audio at its own rate; a host slower
+   than real time is heard as underruns (gaps), never as a different
+   schedule. Device pacing was rejected: completions would follow host
+   thread timing. The shell's own `AudioOut` is off (`AppConfig::audio =
+   false`): boot's output owns the device. Consequence: Cmd+P pauses the
+   guest, and the sound with it only because audio time stops; the device
+   plays out what is queued (at most 250 ms).
+4. **XAPI**: `host.take_input()` (player one is the keyboard and mouse
+   combined with the first GameController pad) through
+   `xapi_glue::register_with`; `xapi::service_input` runs after every slice,
+   as in the headless run.
+5. **Run loop**: after each slice, `host.tick(kernel.clock().counter())`
+   paces guest time to the wall clock and blocks while paused; on a close it
+   returns `Stop`, the run ends as `HostStop`, prints its usual report, and
+   the guest thread returns (`shutdown_timeout` is 10 s for the report).
+   The kernel's own `Machine::pacer` stays off: it sleeps inside
+   `Machine::run`, where a pause or close cannot interrupt it.
+6. **Trace**: only the last 4096 kernel calls stay in memory
+   (`Host::trace_limit`), so a long session does not grow; no TSV is
+   written.
+
+Bindings are input's defaults plus Enter for A and Backspace for B, so the
+menus work with arrows and Enter. Escape is START.
+
+Quitting: Cmd+Q or the close button stop the guest through the lifecycle
+(the run ends as `HostStop` and prints the boot report), then the window
+closes. Ctrl-C or SIGTERM in the terminal does the same from outside the
+window and exits the process once the report is out; a second exits at
+once. (A job started with a shell's `&` has SIGINT ignored; use SIGTERM.)
+
+Where the input pump runs: after every slice, not once per guest frame. Mouse
+look sensitivity therefore depends on the slice rate.
 
 ## Presentation
 

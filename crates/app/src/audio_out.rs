@@ -242,7 +242,27 @@ where
                 }
                 audio::output::write_frames(&scratch, data, channels);
             },
-            |e| eprintln!("app: audio stream error: {e}"),
+            {
+                // Underruns repeat while the guest is slow; report the first
+                // of each kind, then every 100th.
+                let mut seen: Vec<(String, u64)> = Vec::new();
+                move |e| {
+                    let msg = e.to_string();
+                    let n = match seen.iter_mut().find(|(m, _)| *m == msg) {
+                        Some((_, n)) => {
+                            *n += 1;
+                            *n
+                        }
+                        None => {
+                            seen.push((msg.clone(), 1));
+                            1
+                        }
+                    };
+                    if n == 1 || n.is_multiple_of(100) {
+                        eprintln!("app: audio stream error ({n}x): {msg}");
+                    }
+                }
+            },
             None,
         )
         .map_err(|e| e.to_string())

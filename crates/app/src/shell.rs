@@ -415,10 +415,11 @@ impl Shell {
         self.exit = Some(e);
     }
 
-    fn close(&mut self, event_loop: &ActiveEventLoop) {
+    fn close(&mut self, event_loop: &ActiveEventLoop, why: &str) {
         if self.closing {
             return;
         }
+        eprintln!("app: closing ({why})");
         self.closing = true;
         self.capture(false);
         if let Some(a) = &self.audio {
@@ -471,7 +472,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                     self.status.last = Instant::now() - Duration::from_secs(2);
                     self.update_status();
                 } else {
-                    self.close(event_loop);
+                    self.close(event_loop, "the guest exited");
                 }
             }
         }
@@ -479,7 +480,7 @@ impl ApplicationHandler<UserEvent> for Shell {
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => self.close(event_loop),
+            WindowEvent::CloseRequested => self.close(event_loop, "window closed"),
             WindowEvent::Resized(size) => {
                 if let Some(g) = self.gpu.as_mut() {
                     g.surface.resize(&g.ctx, (size.width, size.height));
@@ -511,7 +512,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                 if self.super_held {
                     if down && !event.repeat {
                         match keymap::shortcut(code) {
-                            Some(Shortcut::Quit) => self.close(event_loop),
+                            Some(Shortcut::Quit) => self.close(event_loop, "Cmd+Q"),
                             Some(Shortcut::Fullscreen) => self.toggle_fullscreen(),
                             Some(Shortcut::Pause) => {
                                 self.user_paused = !self.user_paused;

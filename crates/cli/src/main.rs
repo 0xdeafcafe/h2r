@@ -18,6 +18,7 @@ mod lighting;
 mod maps;
 mod movies_cmd;
 mod object;
+mod play_cmd;
 mod safe_out;
 mod scripts;
 mod shader;
@@ -29,6 +30,7 @@ const USAGE: &str = "usage: h2 <command> [disc]
 
   build <disc>            lift, emit and compile the whole XBE (docs/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
+  play <disc>             build if needed, then play it in a window (docs/app.md)
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
@@ -149,6 +151,9 @@ fn main() -> Result<()> {
     }
     if cmd == "anim" {
         return anim::run(args.collect());
+    }
+    if cmd == "play" {
+        return play_cmd::run(args.collect());
     }
     if matches!(cmd.as_str(), "build" | "run") {
         return boot_cmd::run(&cmd, args.collect());
