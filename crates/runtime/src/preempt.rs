@@ -125,6 +125,8 @@ pub(crate) struct Slice {
     pub left: u64,
     /// The budget ran out and the context has not yet given up its thread.
     pub expired: bool,
+    /// Accesses made since the context was armed, past the budget too.
+    pub spent: u64,
 }
 
 impl Runtime {
@@ -155,6 +157,7 @@ impl ExecCtx {
             armed: true,
             left: accesses,
             expired: false,
+            spent: 0,
         };
     }
     /// Stop counting and ignore preemption requests (the default).
@@ -163,6 +166,12 @@ impl ExecCtx {
     }
     pub fn preemption_armed(&self) -> bool {
         self.slice.armed
+    }
+    /// Guest memory accesses generated code has made since the context was
+    /// last armed (0 when it is not armed). A scheduler can charge them to
+    /// guest time.
+    pub fn slice_spent(&self) -> u64 {
+        self.slice.spent
     }
     /// The bits set on this context's own word.
     pub fn preempt_pending(&self) -> u32 {
@@ -180,6 +189,10 @@ impl ExecCtx {
     /// One guest memory access by generated code.
     #[inline]
     pub(crate) fn spend_access(&mut self) {
+        if !self.slice.armed {
+            return;
+        }
+        self.slice.spent += 1;
         match self.slice.left {
             0 => {}
             1 => {

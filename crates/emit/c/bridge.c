@@ -19,6 +19,17 @@ static H2Bridge bridge;
 
 void h2bridge_install(const H2Bridge *b) { bridge = *b; }
 
+/* The table's layout, so a Rust copy can check it before installing:
+ * slots 0-7 give each callback's offset in declaration order, 8 the size. */
+size_t h2bridge_layout(uint32_t slot) {
+    static const size_t layout[] = {
+        offsetof(H2Bridge, read),  offsetof(H2Bridge, write), offsetof(H2Bridge, event),
+        offsetof(H2Bridge, unsupported), offsetof(H2Bridge, rdtsc), offsetof(H2Bridge, rmw),
+        offsetof(H2Bridge, xchg),  offsetof(H2Bridge, cmpxchg), sizeof(H2Bridge),
+    };
+    return slot < sizeof layout / sizeof layout[0] ? layout[slot] : 0;
+}
+
 uint32_t h2abi_v1_version(void) { return H2_ABI_VERSION; }
 
 uint32_t h2abi_v1_read(ExecCtxOpaque *c, uint32_t pc, uint32_t addr, uint32_t width, uint32_t alignment,

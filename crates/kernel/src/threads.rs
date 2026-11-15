@@ -66,9 +66,6 @@ pub(crate) struct Record {
     /// KTHREAD Priority, the one the scheduler orders ready threads by.
     pub priority: i8,
     pub saturation: i8,
-    /// Where and in what CPU state the thread was last preempted, if its
-    /// last slice ended that way: the evidence that it is spinning.
-    pub spin_mark: Option<(TransferAbi, CpuAbi)>,
 }
 
 pub struct Thread {
@@ -112,10 +109,21 @@ pub struct Machine {
     /// up its slice at a loop header or transfer (`runtime::preempt`).
     /// `None` keeps the purely cooperative schedule: threads switch only
     /// in blocking kernel calls.
+    /// With a slice set, every thread slice also charges the accesses it
+    /// made to logical time ([`ACCESSES_PER_TICK`]).
     pub preempt_slice: Option<u64>,
     /// Slices that ended in preemption rather than a kernel call.
     preemptions: u64,
+    /// Accesses charged but not yet a whole clock tick.
+    work_carry: u64,
 }
+
+/// The rate at which executed guest work moves logical time: accesses by
+/// generated code per 100 ns clock tick, one per nanosecond. The 733 MHz
+/// Xbox CPU makes at most about one memory access per cycle, so this is at
+/// least as fast as the real machine: charged time never runs ahead of the
+/// work that paid for it.
+pub const ACCESSES_PER_TICK: u64 = 100;
 
 impl Machine {
     /// Attach before executing image entry; CPU must still have its initial
@@ -192,7 +200,6 @@ impl Machine {
                     base_priority: PROCESS_BASE_PRIORITY,
                     priority: PROCESS_BASE_PRIORITY,
                     saturation: 0,
-                    spin_mark: None,
                 },
             );
             core.objects.insert(object, Object::Thread { tid: 1 });
@@ -212,6 +219,7 @@ impl Machine {
             max_transfers_per_slice: 1_000_000,
             preempt_slice: Some(runtime::preempt::DEFAULT_SLICE),
             preemptions: 0,
+            work_carry: 0,
         };
         machine.collect_threads()?;
         Ok(machine)
@@ -445,6 +453,7 @@ impl Machine {
             );
             let thread = self.threads.get_mut(&tid).unwrap();
             let mut resume = self.kernel.lock().threads[&tid].resume;
+            let mut spent = 0u64;
             let (transfer, preempted) = loop {
                 if let Some(accesses) = self.preempt_slice {
                     thread.ctx.arm_preemption(accesses);
@@ -453,6 +462,7 @@ impl Machine {
                     max_transfers: self.max_transfers_per_slice,
                 }
                 .run_from(&mut thread.cpu, &mut thread.ctx, resume);
+                spent = spent.saturating_add(thread.ctx.slice_spent());
                 thread.ctx.disarm_preemption();
                 let Some(next) = thread.ctx.take_preempted() else {
                     break (transfer, None);
@@ -468,6 +478,16 @@ impl Machine {
             {
                 let mut core = self.kernel.lock();
                 let mut memory = self.runtime.memory();
+                // The slice's work moves logical time, whether it ended in a
+                // preemption or a kernel call, so a thread spinning on
+                // memory reaches a sleeper's deadline by running and work
+                // never lets time leap ahead of it.
+                let carry = self.work_carry.saturating_add(spent);
+                self.work_carry = carry % ACCESSES_PER_TICK;
+                if carry >= ACCESSES_PER_TICK {
+                    core.clock.advance(carry / ACCESSES_PER_TICK)?;
+                    core.write_tick(&mut memory)?;
+                }
                 let kpcr = core.kpcr;
                 let record = core.threads.get_mut(&tid).unwrap();
                 for i in 0..7 {
@@ -478,19 +498,13 @@ impl Machine {
                 if let Some(resume) = preempted {
                     // Preempted at a safe point: back of the ready queue,
                     // passed over once while another thread is ready, as
-                    // NtYieldExecution does. It counts as polling (letting
-                    // idle time advance to the next deadline) only with
-                    // evidence that it is spinning: it was preempted at
-                    // the same transfer with the same CPU state last time.
-                    // A thread doing real work changes its registers, so an
-                    // exhausted slice alone never moves logical time.
-                    let mark = (resume, thread.cpu);
-                    let spinning = record.spin_mark == Some(mark);
-                    record.spin_mark = Some(mark);
+                    // NtYieldExecution does. It is runnable, not idle: it
+                    // never lets the clock jump to the next deadline, only
+                    // the work it does moves time (above).
                     memory.set_u8(record.object + kthread::STATE, 1)?;
                     record.resume = resume;
                     record.state = State::Ready;
-                    record.polling = spinning;
+                    record.polling = false;
                     if core.ready.iter().any(|other| *other != tid) {
                         core.yielder = Some(tid);
                     }
@@ -498,7 +512,6 @@ impl Machine {
                     self.preemptions += 1;
                     continue;
                 }
-                record.spin_mark = None;
                 let yielded = core.yielded.remove(&tid);
                 if transfer.kind == runtime::abi::STOP
                     && let Some(resume) = yielded
@@ -1018,7 +1031,6 @@ impl Core {
                         base_priority: PROCESS_BASE_PRIORITY,
                         priority: PROCESS_BASE_PRIORITY,
                         saturation: 0,
-                        spin_mark: None,
                     },
                 );
                 self.objects.insert(object, Object::Thread { tid: id });

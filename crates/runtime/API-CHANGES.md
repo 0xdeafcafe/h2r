@@ -408,7 +408,7 @@ so a v1 runtime must not load v2 code and this runtime rejects v1 objects,
 modules and transfers. Added `runtime::preempt` (`SLICE`, `INTERRUPT`,
 `REQUEST`, `DEFAULT_SLICE`, `PreemptWord`), `Runtime::{request_preempt,
 preempt_pending}` and `ExecCtx::{arm_preemption, disarm_preemption,
-preemption_armed, preempt_pending, take_preempted}`.
+preemption_armed, preempt_pending, slice_spent, take_preempted}`.
 
 - `ExecCtx` is now `#[repr(C)]` with a private first field: the pointer to
   its own preempt word, which generated code reads. Each context has its
@@ -428,4 +428,7 @@ preemption_armed, preempt_pending, take_preempted}`.
 - The generated-code accessors spend one unit of an armed context's slice
   per call.
 - `kernel::Machine` gained `preempt_slice: Option<u64>` (default
-  `Some(DEFAULT_SLICE)`) and `preemptions()`.
+  `Some(DEFAULT_SLICE)`) and `preemptions()`. With a slice set, each thread
+  slice charges its `slice_spent()` accesses to logical time at
+  `kernel::threads::ACCESSES_PER_TICK`; a preempted thread never counts as
+  polling.

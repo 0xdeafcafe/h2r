@@ -235,15 +235,28 @@ loop header or transfer, goes to the back of the ready queue as if it had
 called NtYieldExecution (passed over once while any other thread is ready,
 whatever its priority; like NtYieldExecution this does not stop two
 higher-priority spinners alternating while a lower-priority thread waits),
-and resumes exactly there on its next slice. It counts as polling, which
-lets idle time advance to the next deadline, only when it is preempted at
-the same transfer with the same CPU state as at its previous preemption:
-a spin-wait repeats itself, real work changes its registers, so an
-exhausted slice alone never moves logical time. At
-DISPATCH_LEVEL or above it keeps the CPU and starts a fresh slice instead.
-The count is of accesses, not host time, so schedules stay reproducible;
-`Machine::preemptions()` counts these switches and `preempt_slice = None`
-restores the purely cooperative schedule.
+and resumes exactly there on its next slice. At DISPATCH_LEVEL or above it
+keeps the CPU and starts a fresh slice instead. The count is of accesses,
+not host time, so schedules stay reproducible; `Machine::preemptions()`
+counts these switches and `preempt_slice = None` restores the purely
+cooperative schedule.
+
+Time and work. A preempted thread is runnable, never polling: the clock
+does not jump for it. Instead, with a slice set, every thread slice charges
+the accesses its generated code made to logical time at
+`threads::ACCESSES_PER_TICK` (100 per 100 ns tick, one a nanosecond),
+whether the slice ended in a preemption or a kernel call, carrying the
+remainder to the next slice. The 733 MHz Xbox CPU makes at most about one
+access a cycle, so charged time never runs ahead of the work that paid
+for it: a productive loop moves the clock by its own cost and no more,
+however alike its states look, and a spin-wait (on a flag, a counter or
+the TSC) carries the clock to its sleeping setter's deadline by running,
+about 15 default slices per guest millisecond. Jumping to the next deadline
+stays reserved for threads that are blocked in the kernel or have asked to
+be: no thread ready, or every scheduled thread waiting, sleeping or polling
+through Delay(0)/NtYieldExecution as above. Rust overrides and DPCs make
+no charged accesses. The guest TSC follows this clock (and its
+per-read minimum step), so an `rdtsc` loop stays reproducible and ends.
 
 Timers: an inserted KTIMER is held in Rust by address with its deadline in
 clock ticks; the guest object keeps Header (type 8/9, Size 10, Inserted,
@@ -280,8 +293,10 @@ guest KMUTANT (type 2, Size 8, OwnerThread, Abandoned, MutantListEntry) up to
 date; a terminating thread abandons what it owns. Named mutants stop.
 KeSetBasePriorityThread priorities order the ready queue (above).
 
-This does not model Xbox priority boosts or decrements, quantum ends, or preempt a guest spin loop. Code that
-never blocks/yields can starve other threads. Kernel waits above APC_LEVEL, file
+This does not model Xbox priority boosts or decrements or wall-clock
+quantum ends. Generated loops are preempted by access count (above); Rust
+override code that never blocks/yields, and a generated loop that touches no
+memory, can still starve other threads. Kernel waits above APC_LEVEL, file
 I/O above PASSIVE_LEVEL, alertable waits/delays, APC/DPC/interrupt delivery, and
 KeSetEvent/KeReleaseSemaphore WaitNext handoffs stop. Dispatcher wait-list blocks
 are held in Rust; only the documented guest header/state fields are maintained.
@@ -292,21 +307,25 @@ SEH chain storage works, but exception dispatch/unwind stays stopped.
 `Clock` measures 100 ns ticks at a configured virtual frequency of 10 MHz, not a
 host or measured Xbox frequency. Its default NT epoch is explicitly zero;
 `Config::epoch_100ns` supplies another replay epoch. Reads do not advance time.
-The scheduler advances to idle/polling deadlines; the harness may inject time using
+The scheduler advances to idle/polling deadlines and by charged work
+(above); the harness may inject time using
 `Kernel::advance_time`. Tick updates occur on advances and service boundaries.
 `Clock::advances`, `Clock::replay` and the Machine schedule expose ordered inputs
 and outcomes. History retains at most 4096 absolute advances, dropping the older
 half when full; `dropped_advances()` reports truncation. `Kernel::clock()` uses
 an Arc-backed copy-on-write snapshot instead of copying history on every read.
 Replaying a retained suffix recovers current time, but a full long-run replay
-requires capturing advances externally before truncation. Overflow or backwards
+requires capturing advances externally before truncation; charged work adds
+an advance for most generated-code slices, so a long run truncates sooner.
+Overflow or backwards
 replay fails explicitly.
 
 This is clock/schedule determinism, not a full-memory/kernel snapshot facility.
 VFS host metadata and external I/O are additional inputs; host storage timestamps
 are currently supplied by VFS's host clock and need recording or clock injection
-for full replay. A guest polling KeTickCount in an unyielding loop will not make
-time progress without an external injection/safepoint policy.
+for full replay. A guest polling KeTickCount in an unyielding loop makes time
+progress only through the work it is charged (generated code with a
+preemption slice set); Rust override loops need an external injection.
 
 ## VFS boundaries
 

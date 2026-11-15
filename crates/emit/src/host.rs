@@ -337,6 +337,21 @@ struct Bridge {
     cmpxchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
 }
 
+impl Bridge {
+    /// What `h2bridge_layout` must report: each slot's offset, then the size.
+    const LAYOUT: [usize; 9] = [
+        std::mem::offset_of!(Bridge, read),
+        std::mem::offset_of!(Bridge, write),
+        std::mem::offset_of!(Bridge, event),
+        std::mem::offset_of!(Bridge, unsupported),
+        std::mem::offset_of!(Bridge, rdtsc),
+        std::mem::offset_of!(Bridge, rmw),
+        std::mem::offset_of!(Bridge, xchg),
+        std::mem::offset_of!(Bridge, cmpxchg),
+        size_of::<Bridge>(),
+    ];
+}
+
 /// # Safety (all callbacks)
 /// Generated code passes back the `Ctx` pointer it was given and buffers
 /// valid for `width` bytes, per the ABI contract.
@@ -593,6 +608,11 @@ impl Generated {
                 lib.get(b"h2gen_module_abi_version").map_err(|e| e.to_string())?;
             if version() != ABI_VERSION {
                 return Err(format!("module ABI {} != host {ABI_VERSION}", version()));
+            }
+            let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
+                lib.get(b"h2bridge_layout").map_err(|e| e.to_string())?;
+            if let Some(slot) = (0..Bridge::LAYOUT.len()).find(|&i| layout(i as u32) != Bridge::LAYOUT[i]) {
+                return Err(format!("bridge.c and host Bridge disagree at layout slot {slot}"));
             }
             let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge)> =
                 lib.get(b"h2bridge_install").map_err(|e| e.to_string())?;
