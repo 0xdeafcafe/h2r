@@ -674,14 +674,11 @@ mod tests {
     fn the_play_watermark_names_the_render_thread() {
         let wm = play_watermark(true);
         assert!(wm.visible());
-        let [top, bottom] = wm.lines(None, "metal");
-        assert!(
-            top.starts_with("h2recomp  \u{b7}  development build"),
-            "{top}"
-        );
-        assert!(bottom.ends_with("metal, render thread on"), "{bottom}");
-        let [_, off] = play_watermark(false).lines(None, "metal");
-        assert!(off.ends_with("render thread off"), "{off}");
+        let p = wm.panels(None, "metal");
+        assert_eq!(p.label[0], "h2recomp development build");
+        assert_eq!(p.live.last().unwrap(), "metal, render thread on");
+        let off = play_watermark(false).panels(None, "metal");
+        assert_eq!(off.live.last().unwrap(), "metal, render thread off");
     }
 
     #[test]
