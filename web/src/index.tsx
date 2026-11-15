@@ -5,6 +5,7 @@ import "./styles/app.css";
 import "./styles/dash.css";
 import "./styles/stats.css";
 import Dashboard from "./dash/Dashboard";
+import Veil from "./dash/Veil";
 import StatsLayout, { Title } from "./stats/Layout";
 import Game from "./stats/Game";
 import Games from "./stats/Games";
@@ -12,6 +13,7 @@ import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import Events from "./stats/Events";
 import Admin from "./admin/Admin";
+import SignIn from "./signin/SignIn";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
 
@@ -27,7 +29,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 
 render(
   () => (
-    <Router>
+    <Router root={Veil}>
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
         <Route path="/" component={Games} />
@@ -40,6 +42,7 @@ render(
         <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
+      <Route path="/signin" component={SignIn} />
       <Route path="/games/:id" component={OldGame} />
       <Route path="/players/:tag" component={OldPlayer} />
       <Route path="/players" component={() => <Navigate href="/dash/players" />} />

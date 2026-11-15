@@ -878,7 +878,7 @@ impl Network {
         Ok(0)
     }
 }
-fn random(len: usize) -> Result<Vec<u8>> {
+pub(crate) fn random(len: usize) -> Result<Vec<u8>> {
     let mut bytes = vec![0; len];
     std::fs::File::open("/dev/urandom")
         .and_then(|mut f| f.read_exact(&mut bytes))

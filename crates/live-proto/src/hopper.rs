@@ -71,6 +71,17 @@ const D_DWORDS: usize = 0x5a0;
 /// 17 dwords at +0x5a0 plus the one at +0x5e4.
 pub const DWORDS: usize = 18;
 const D_RANGES: usize = 0x5ec;
+/// Per-language title and description slots (nine languages, UTF-8,
+/// NUL-terminated), written by the compiled-in defaults (`0x001936e0`) from
+/// the `matchmaking_hopper_descriptions` strings.
+pub const LANGUAGES: usize = 9;
+const D_TITLE: usize = 0x0c;
+const D_TITLE_LEN: usize = 0x10;
+const D_DESC: usize = 0x9c;
+const D_DESC_LEN: usize = 0x80;
+/// Longest title and description in UTF-8 bytes (the slot minus its NUL).
+pub const MAX_TITLE: usize = D_TITLE_LEN - 1;
+pub const MAX_DESCRIPTION: usize = D_DESC_LEN - 1;
 // Data-block fields.
 const B_COUNT: usize = 0x44;
 const B_RECORDS: usize = 0x48;
@@ -80,6 +91,15 @@ const R_STRING: usize = 0x24c;
 const R_STRING_LEN: usize = 0x48;
 const R_FLAGS: usize = 0x294;
 const R_DWORDS: [usize; 2] = [0x248, 0x2a4];
+/// The record's game variant: the 0x130 bytes from +0x24c to the end of the
+/// slot, which session setup (`0x00192eb0`) copies out whole for the record
+/// it picks. Inside it: the name (32 UTF-16 units at +0x04), the game-engine
+/// index (+0x44) and the engine flags (+0x48, bit 0 team play;
+/// docs/live-gamestate.md).
+const R_VARIANT: usize = 0x24c;
+const V_NAME: usize = 0x04;
+const V_ENGINE: usize = 0x44;
+const V_FLAGS: usize = 0x48;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HopperError {
@@ -140,6 +160,31 @@ pub struct Record {
     pub flags: u32,
     /// The dwords at +0x248 and +0x2a4.
     pub dwords: [u32; 2],
+}
+
+/// A hopper's title and description as the playlist list shows them: the
+/// English slot on read; every language slot on write (as `motd set` does).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HopperText {
+    pub title: String,
+    pub description: String,
+}
+
+/// What a record's game variant says about itself (read-only: the rest of
+/// its 0x130 bytes are settings this codec does not model).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Variant {
+    pub name: String,
+    /// Game-engine index: 1 CTF, 2 Slayer, 3 Oddball, 4 King of the Hill,
+    /// 7 Juggernaut, 8 Territories, 9 Assault.
+    pub engine: u32,
+    pub team: bool,
+}
+
+/// A NUL-terminated UTF-8 field.
+fn get_utf8(field: &[u8]) -> String {
+    let end = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..end]).into_owned()
 }
 
 /// A `multiplayer_hopper.dat` image plus its download envelope. The image
@@ -294,11 +339,16 @@ impl HopperFile {
         if h.dwords.len() != DWORDS {
             return Err(HopperError::Dwords(h.dwords.len()));
         }
-        put_ascii(
-            &mut self.image[at + D_NAME..][..D_NAME_LEN],
-            &h.name,
-            MAX_NAME,
-        )?;
+        // Written only when it changes: the bytes after +0x51b are a table
+        // the game validates (`0x00193560`), which a zero-filled rewrite of
+        // an unchanged name would clobber.
+        if h.name != get_ascii(&self.image[at + D_NAME..][..D_NAME_LEN]) {
+            put_ascii(
+                &mut self.image[at + D_NAME..][..D_NAME_LEN],
+                &h.name,
+                MAX_NAME,
+            )?;
+        }
         put_le32(&mut self.image, at + D_TYPE, h.hopper_type);
         put_le32(&mut self.image, at + D_STATUS, h.status);
         put_le32(&mut self.image, at + D_COUNT, h.record_count);
@@ -373,16 +423,70 @@ impl HopperFile {
     /// Writes slot `j`'s editable fields; the rest of the slot is untouched.
     pub fn set_record(&mut self, i: usize, j: usize, r: &Record) -> Result<(), HopperError> {
         let at = self.slot_at(i, j)?;
-        put_ascii(
-            &mut self.image[at + R_STRING..][..R_STRING_LEN],
-            &r.string,
-            MAX_STRING,
-        )?;
+        // Written only when it changes: the field lies inside the record's
+        // game variant, and rewriting an unchanged string zero-fills the
+        // variant's name and engine index.
+        if r.string != get_ascii(&self.image[at + R_STRING..][..R_STRING_LEN]) {
+            put_ascii(
+                &mut self.image[at + R_STRING..][..R_STRING_LEN],
+                &r.string,
+                MAX_STRING,
+            )?;
+        }
         put_le32(&mut self.image, at + R_ID, r.id);
         put_le32(&mut self.image, at + R_FLAGS, r.flags);
         put_le32(&mut self.image, at + R_DWORDS[0], r.dwords[0]);
         put_le32(&mut self.image, at + R_DWORDS[1], r.dwords[1]);
         Ok(())
+    }
+
+    /// Hopper `i`'s title and description (the English slot).
+    pub fn text(&self, i: usize) -> Result<HopperText, HopperError> {
+        let at = self.descriptor_at(i)?;
+        Ok(HopperText {
+            title: get_utf8(&self.image[at + D_TITLE..][..D_TITLE_LEN]),
+            description: get_utf8(&self.image[at + D_DESC..][..D_DESC_LEN]),
+        })
+    }
+
+    /// Writes hopper `i`'s title and description into all nine language
+    /// slots, zero-filled.
+    pub fn set_text(&mut self, i: usize, t: &HopperText) -> Result<(), HopperError> {
+        let at = self.descriptor_at(i)?;
+        for (s, max) in [(&t.title, MAX_TITLE), (&t.description, MAX_DESCRIPTION)] {
+            if s.contains('\0') {
+                return Err(HopperError::Nul(s.clone()));
+            }
+            if s.len() > max {
+                return Err(HopperError::TooLong(s.clone(), max));
+            }
+        }
+        for l in 0..LANGUAGES {
+            for (base, len, s) in [
+                (D_TITLE, D_TITLE_LEN, &t.title),
+                (D_DESC, D_DESC_LEN, &t.description),
+            ] {
+                let field = &mut self.image[at + base + l * len..][..len];
+                field.fill(0);
+                field[..s.len()].copy_from_slice(s.as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    /// What slot `j`'s game variant says about itself.
+    pub fn variant(&self, i: usize, j: usize) -> Result<Variant, HopperError> {
+        let at = self.slot_at(i, j)? + R_VARIANT;
+        let name: Vec<u16> = self.image[at + V_NAME..][..0x40]
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .take_while(|u| *u != 0)
+            .collect();
+        Ok(Variant {
+            name: String::from_utf16_lossy(&name),
+            engine: le32(&self.image, at + V_ENGINE),
+            team: le32(&self.image, at + V_FLAGS) & 1 != 0,
+        })
     }
 
     /// The editable fields of hopper `i`'s first `record_count` records.
@@ -421,6 +525,96 @@ mod tests {
     }
 
     #[test]
+    fn unchanged_name_and_string_keep_the_bytes_under_them() {
+        let mut file = HopperFile::blank();
+        // The validated table after +0x51b, and a variant whose first byte
+        // is zero (so its "string" reads empty) but whose name is not.
+        for (k, b) in file.image_mut()[0x51c..0x59c].iter_mut().enumerate() {
+            *b = (k as u8 + 5).min(0x7f);
+        }
+        let slot = BLOCKS_AT + B_RECORDS;
+        file.image_mut()[slot + R_VARIANT + V_NAME] = b'S';
+        put_le32(file.image_mut(), slot + R_VARIANT + V_ENGINE, 2);
+        let before = file.image().to_vec();
+        let h = HopperFile::from_image(&before).unwrap().hopper(0).unwrap();
+        let mut h = h;
+        h.hopper_type = 1;
+        h.record_count = 1;
+        file.set_hopper(0, &h).unwrap();
+        let r = file.record(0, 0).unwrap();
+        assert_eq!(r.string, "");
+        file.set_record(
+            0,
+            0,
+            &Record {
+                dwords: [5, r.dwords[1]],
+                ..r
+            },
+        )
+        .unwrap();
+        assert_eq!(&file.image()[0x51b..0x5a0], &before[0x51b..0x5a0]);
+        assert_eq!(file.variant(0, 0).unwrap().engine, 2);
+        assert_eq!(file.variant(0, 0).unwrap().name, "S");
+        assert_eq!(file.record(0, 0).unwrap().dwords[0], 5);
+    }
+
+    #[test]
+    fn text_goes_to_every_language_slot() {
+        let mut file = HopperFile::blank();
+        file.image_mut()[DESCRIPTOR + D_TITLE] = 0xee; // hopper 1 untouched
+        let t = HopperText {
+            title: "Team Snipers".into(),
+            description: "Long shots only.".into(),
+        };
+        file.set_text(0, &t).unwrap();
+        assert_eq!(file.text(0).unwrap(), t);
+        for l in 0..LANGUAGES {
+            let at = D_TITLE + l * D_TITLE_LEN;
+            assert_eq!(&file.image()[at..at + 12], b"Team Snipers");
+            assert_eq!(file.image()[at + 12], 0);
+        }
+        assert_eq!(
+            D_DESC + LANGUAGES * D_DESC_LEN,
+            0x51c,
+            "slots end at the table"
+        );
+        assert_eq!(file.image()[DESCRIPTOR + D_TITLE], 0xee);
+        let long = HopperText {
+            title: "Sixteen chars!!!".into(),
+            description: String::new(),
+        };
+        assert!(matches!(
+            file.set_text(0, &long),
+            Err(HopperError::TooLong(_, 15))
+        ));
+        let nul = HopperText {
+            title: "a\0b".into(),
+            description: String::new(),
+        };
+        assert!(matches!(file.set_text(0, &nul), Err(HopperError::Nul(_))));
+    }
+
+    #[test]
+    fn variant_reads_name_engine_and_team() {
+        let mut file = HopperFile::blank();
+        let at = BLOCKS_AT + 2 * BLOCK + B_RECORDS + 3 * RECORD + R_VARIANT;
+        assert_eq!(R_VARIANT + 0x130, RECORD, "the variant ends the slot");
+        for (k, u) in "Team Fight".encode_utf16().enumerate() {
+            file.image_mut()[at + V_NAME + 2 * k..][..2].copy_from_slice(&u.to_le_bytes());
+        }
+        put_le32(file.image_mut(), at + V_ENGINE, 7);
+        put_le32(file.image_mut(), at + V_FLAGS, 0x81);
+        assert_eq!(
+            file.variant(2, 3).unwrap(),
+            Variant {
+                name: "Team Fight".into(),
+                engine: 7,
+                team: true
+            }
+        );
+    }
+
+    #[test]
     fn layout_matches_the_game() {
         assert_eq!(BLOCKS_AT, 0x6140);
         assert_eq!(BLOCKS_AT + HOPPERS * BLOCK, INFLATED_SIZE);
@@ -428,7 +622,7 @@ mod tests {
         assert_eq!(B_RECORDS + MAX_RECORDS * RECORD, BLOCK);
         assert_eq!(D_NAME + D_NAME_LEN, 0x5a0, "the name field ends at +0x5a0");
         assert_eq!(D_DWORDS + DWORDS * 4, 0x5e8);
-        assert!(D_RANGES + 3 * 4 <= DESCRIPTOR, "ranges fit the descriptor");
+        const { assert!(D_RANGES + 3 * 4 <= DESCRIPTOR, "ranges fit the descriptor") };
         assert_eq!(R_STRING + R_STRING_LEN, R_FLAGS, "the string ends at flags");
 
         let file = HopperFile::blank().build();

@@ -189,7 +189,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `H2_PAD_SPEAKER` | `1` on with defaults, `0` off, otherwise a TOML file of the keys below (on unless it says `enabled = false`) | off |
+| `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`) | on |
 | `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4 | `auto` |
 | `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both | `1` |
 | `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone | `1` (acts once a DualSense is found) |
@@ -202,7 +202,13 @@ routes = ["*shield*", "*reload*", "*empty*", "*skull*"]   # tag-name globs
 exclude = ["*music*"]
 ```
 
-`routes` defaults to `padroute::DEFAULT_ROUTES`. These are generic words,
+`routes` defaults to `padroute::DEFAULT_ROUTES`: the player's own sounds
+(shields, reloads, the empty click, skulls, round-start cues, the player
+character's pain, death, boarding, melee, jumps and landings, and
+first-person weapon handling: melee, raising, inspection poses, dry fire,
+grenade throws, zoom, overheating). Walking and running footsteps and
+gunfire stay on the main output. Routing goes by sound name, not by who
+plays the sound. These are generic words,
 not tag paths from the disc: check them against your maps with `h2 tags
 <map>` (filter `snd!`) and narrow them. Globs ignore case and treat `/` as `\`.
 In the settings menu this belongs with the restart-only audio settings
@@ -233,7 +239,8 @@ files:
   hears a voice, so installing it from another thread changes nothing the
   guest sees.
 
-It runs only when the controller speaker is on (`H2_PAD_SPEAKER`) and the
+It runs only when the controller speaker is on (the default; `H2_PAD_SPEAKER=0`
+turns it off) and the
 host gives an audio sink (`h2 play`); headless runs never read the maps.
 
 ### The two outputs (built)
@@ -362,8 +369,9 @@ who owns the voice transport. This document owns the device and capture side.
 
 ## Checking with a real pad
 
-Nothing above has met a DualSense. Over USB, with `H2_PAD_SPEAKER=1 h2
-play`, check:
+Confirmed on a USB DualSense on 2026-11-15: the routed sounds play from the
+pad's speaker, so the speaker is now on by default. To re-check, run `h2
+play` with the pad plugged in, and check:
 
 1. **The speaker plays the chosen sounds.** stderr says `controller speaker
    on <device>`. Shields, reloads, the empty click and the other default

@@ -118,6 +118,7 @@ except account creation. Signed bodies are sent raw as a compact JWS with
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
+| `POST /v1/local/signin` | `{"once": token}`, no token | embedded server and loopback peers only: answers once with the browser account entry `h2 play --live` offered; otherwise 404 (live-admin.md §4) |
 
 ## Friends
 
@@ -217,6 +218,9 @@ extract`; nothing of it is in this repo). Clients must work without it.
   `Forwarded`/`X-Forwarded-For`); an operator's `--share-game-art` serves
   it to everyone. A 404 means "use your own art".
 - `GET /art/game/<file>`: a PNG named by the manifest, 404 likewise.
+- `GET /art/game/catalog.json`: the playlist builder's catalog of the
+  game's maps, playlist texts and built-in variants
+  ([live-admin.md](live-admin.md), "The catalog"), 404 likewise.
 
 ```json
 { "version": 1,

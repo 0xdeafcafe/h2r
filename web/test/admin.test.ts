@@ -96,6 +96,8 @@ describe("hopper validation", () => {
     status: 1,
     record_count: 1,
     name: "Rumble Training",
+    title: "Rumble Pit",
+    description: "",
     ranges: [1, 8, 4],
     dwords: Array(18).fill(0),
     records: [{ id: 1, string: "slayer", flags: 0, dwords: [0, 0] }],
@@ -112,7 +114,14 @@ describe("hopper validation", () => {
     expect(hopperErrors(hopper({ type: 0 }))).toEqual(["type must be 1 to 5"]);
     expect(hopperErrors(hopper({ type: 6 } as Partial<HopperView>))).toEqual(["type must be 1 to 5"]);
     expect(hopperErrors(hopper({ status: 3 } as Partial<HopperView>))[0]).toContain("status");
-    expect(hopperErrors(hopper({ name: "" }))[0]).toContain("name");
+    // The raw name may be empty (it usually is); the title may not.
+    expect(hopperErrors(hopper({ name: "" }))).toEqual([]);
+    expect(hopperErrors(hopper({ title: "" }))[0]).toContain("title");
+    expect(hopperErrors(hopper({ title: "x".repeat(15) }))).toEqual([]);
+    expect(hopperErrors(hopper({ title: "x".repeat(16) }))[0]).toContain("15 bytes");
+    // UTF-8 bytes, not characters: 8 × é is 16 bytes.
+    expect(hopperErrors(hopper({ title: "é".repeat(8) }))[0]).toContain("15 bytes");
+    expect(hopperErrors(hopper({ description: "d".repeat(128) }))[0]).toContain("127 bytes");
     expect(hopperErrors(hopper({ name: "café" }))[0]).toContain("ASCII");
     const none = hopper({ records: [], record_count: 0 });
     expect(hopperErrors(none).join()).toContain("1 to 100 entries, got 0");
@@ -133,6 +142,7 @@ describe("the hopper PUT body", () => {
   const doc = (): HopperView[] => [
     {
       index: 0, type: 4, status: 1, record_count: 2, name: "Big Team Battle",
+      title: "Big Team Battle", description: "",
       ranges: [1, 8, 6], dwords: Array(18).fill(0x753007a4),
       records: [
         { id: 1, string: "one", flags: 0, dwords: [0, 0] },
@@ -141,6 +151,7 @@ describe("the hopper PUT body", () => {
     },
     {
       index: 1, type: 2, status: 1, record_count: 1, name: "Rumble Training",
+      title: "Rumble Pit", description: "",
       ranges: [1, 8, 4], dwords: Array(18).fill(0),
       records: [{ id: 9, string: "solo", flags: 0, dwords: [0, 0] }],
     },

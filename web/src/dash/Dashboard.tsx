@@ -1,14 +1,15 @@
 // The "Live" side. Three kinds of screen, like the console dashboard it
 // takes after:
-//   - the main menu: the orb, an arc of pods and their bars;
+//   - the main menu: the orb and a ring of pods and their bars, which
+//     turns to bring the selected one into focus;
 //   - list screens (live now, friends, players, game history): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (a player, sign up, server): one big pod, four small
-//     ones around it and an info plate.
-// Arrow keys move, Enter (or a) selects, Escape / Backspace (or b) goes
-// back; the mouse and touch work too.
+//   - pod screens (settings, a player, sign up, server): one big pod,
+//     four small ones around it and an info plate.
+// Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
+// Backspace (or b) goes back; the mouse and touch work too.
 
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
@@ -24,27 +25,44 @@ import { elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/gam
 import { outlineFor } from "../state/outlines";
 import { now } from "../lib/now";
 import Tunnel, { type TunnelAim } from "./Tunnel";
-import { BigPod, Glyph, Orb, Plate, Prompts, Tubes, type GlyphName } from "./parts";
+import { BigPod, Bracket, Glyph, Orb, Plate, Pod, Prompts, Tubes, Vine, type GlyphName } from "./parts";
+import { approach, ringPlace } from "./shape";
+import { sideOf } from "./cross";
+import { crossTo, crossing } from "./Veil";
 import "../styles/dash-pages.css";
 
-type SectionId = "live" | "friends" | "players" | "history" | "signup" | "server";
-type ScreenId = "menu" | "list" | "player" | "signup" | "server";
+type SectionId = "live" | "friends" | "players" | "history" | "settings" | "signup" | "server";
+type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server";
 
-const SECTIONS: Array<{ id: SectionId; label: () => string }> = [
-  { id: "live", label: () => "live now" },
-  { id: "friends", label: () => "friends" },
-  { id: "players", label: () => "players" },
-  { id: "history", label: () => "game history" },
-  { id: "signup", label: () => (identity.me() ? "profile" : "sign up") },
-  { id: "server", label: () => "server" },
-];
+const LABELS: Record<SectionId, () => string> = {
+  live: () => "live now",
+  friends: () => "friends",
+  players: () => "players",
+  history: () => "game history",
+  settings: () => "settings",
+  signup: () => (identity.me() ? "profile" : "sign up"),
+  server: () => "server",
+};
+const SECTION_IDS = Object.keys(LABELS) as SectionId[];
+
+/** The main menu: four items, five once signed in (friends are the people you've played).
+ *  Sign up / profile and the server live under settings. */
+const menuItems = (): SectionId[] => (identity.me() ? ["live", "friends", "players", "history", "settings"] : ["live", "players", "history", "settings"]);
+/** The menu item a section belongs under. */
+function menuHome(s: SectionId): SectionId {
+  if (menuItems().includes(s)) return s;
+  return s === "friends" ? "players" : "settings";
+}
+
+/** The orb's centre on the stage, and how far the ring turns per item (for the orb's skins). */
+const ORB_X = 444, ORB_Y = 318, RING_STEP_DEG = 24;
 
 interface Row { key: string; label: string; meta?: string }
 interface Sat { label: string; glyph: GlyphName; act?: () => void; lit?: boolean }
 
 // Kept outside the component: the route remounts it between "/" and
 // "/dash/...", and the menu should come back where it was left.
-const [menu, setMenu] = createSignal(0);
+const [menuId, setMenuId] = createSignal<SectionId>("live");
 const listSel: Partial<Record<SectionId, number>> = {};
 let booted = false;
 let lastScreen: ScreenId | null = null;
@@ -80,7 +98,7 @@ export default function Dashboard() {
   const params = useParams<{ section?: string; tag?: string }>();
   const navigate = useNavigate();
 
-  const section = createMemo((): SectionId | null => SECTIONS.find((s) => s.id === params.section)?.id ?? null);
+  const section = createMemo((): SectionId | null => SECTION_IDS.find((s) => s === params.section) ?? null);
   const viewed = createMemo((): AccountState | null => {
     const s = section();
     if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null } : null; }
@@ -91,21 +109,28 @@ export default function Dashboard() {
     const s = section();
     if (!s) return "menu";
     if (s === "server") return "server";
+    if (s === "settings") return "settings";
     if (s === "signup") return identity.me() ? "player" : "signup";
     return viewed() ? "player" : "list";
   });
 
-  createEffect(() => { const s = section(); if (s) setMenu(SECTIONS.findIndex((x) => x.id === s)); });
+  createEffect(() => { const s = section(); if (s) setMenuId(menuHome(s)); });
+  const items = createMemo(menuItems);
+  const menu = createMemo(() => Math.max(0, items().indexOf(menuId())));
+  const setMenu = (i: number) => { const id = items()[i]; if (id) setMenuId(id); };
 
   // Transitions: the leaving screen plays out, then the route changes and
   // the new screen plays in. "deeper" zooms in, "back" zooms out.
   const [leaving, setLeaving] = createSignal(false);
   const [dir, setDir] = createSignal<"deeper" | "back">("deeper");
-  const boot = !booted && !params.section;
+  const cameFrom = lastScreen;
+  const boot = !booted && !params.section && !crossing();
   booted = true;
   let timer: ReturnType<typeof setTimeout> | undefined;
   function go(href: string, d: "deeper" | "back", replace = false) {
     setDir(d);
+    // Off to the stats site: the veil carries it (and plays this screen out).
+    if (sideOf(href) === "stats") { crossTo(href, { replace }); return; }
     if (reducedMotion()) { navigate(href, { replace }); return; }
     setLeaving(true);
     clearTimeout(timer);
@@ -178,6 +203,13 @@ export default function Dashboard() {
           { label: "career stats", glyph: "career", act: () => go(`${playerHref(a.gamertag)}/career`, "deeper") },
         ];
       }
+      case "settings":
+        return [
+          { label: identity.me() ? "profile" : "sign up", glyph: "key", act: () => go("/dash/signup", "deeper") },
+          { label: "stats site", glyph: "record", act: () => go("/stats", "deeper") },
+          { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
+          { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
+        ];
       case "signup":
         return [
           { label: "new key", glyph: "key" }, { label: "signed request", glyph: "sign" },
@@ -221,12 +253,13 @@ export default function Dashboard() {
     const s = section();
     if (screen() === "menu") return;
     if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
+    else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else go("/", "back");
   }
 
   function select() {
     switch (screen()) {
-      case "menu": go(`/dash/${SECTIONS[menu()]!.id}`, "deeper"); break;
+      case "menu": go(`/dash/${items()[menu()]!}`, "deeper"); break;
       case "list": openRow(sel()); break;
       case "signup": (document.getElementById("dash-signup") as HTMLFormElement | null)?.requestSubmit(); break;
       default: {
@@ -244,7 +277,7 @@ export default function Dashboard() {
     const k = e.key;
     const isBack = k === "Escape" || k === "Backspace" || k === "b" || k === "B";
     const isSelect = k === "Enter" || k === "a" || k === "A";
-    const n = SECTIONS.length;
+    const n = items().length;
     switch (screen()) {
       case "menu":
         if (k === "ArrowDown") setMenu((menu() + 1) % n);
@@ -278,21 +311,78 @@ export default function Dashboard() {
 
   const aim = createMemo((): TunnelAim => {
     switch (screen()) {
-      case "menu": return { x: 0.36, y: 0.43, dim: 0 };
+      case "menu": return { x: 0.36, y: 0.44, dim: 0 };
       case "list": return { x: 0.66, y: 0.38, dim: 1 };
       default: return { x: 0.5, y: 0.36, dim: 1 };
     }
   });
 
-  const title = () => SECTIONS[menu()]!.label();
+  const title = () => LABELS[section() ?? menuId()]();
+
+  // The ring. `turn` is how far it has turned, in items; it eases towards
+  // the selected item, leaning a little to whichever one the pointer is on.
+  // The first time it shows it spins in from a few items round.
+  const [hover, setHover] = createSignal<number | null>(null);
+  const lean = () => { const h = hover(); return h === null ? 0 : Math.max(-0.3, Math.min(0.3, (h - menu()) * 0.1)); };
+  const [turn, setTurn] = createSignal(untrack(menu));
+  const going = () => leaving() || (crossing()?.to === "stats" && crossing()?.phase === "in");
+  let raf = 0, last = 0, slow = 0, hoverTimer: ReturnType<typeof setTimeout> | undefined, pick: ReturnType<typeof setTimeout> | undefined, wait: ReturnType<typeof setTimeout> | undefined;
+  const frame = (t: number) => {
+    // Leaving, the ring swings on past the focus as it fades.
+    const to = untrack(menu) + untrack(lean) + (untrack(going) ? 1.4 : 0);
+    const next = reducedMotion() ? to : approach(untrack(turn), to, Math.min(50, t - last), t < slow ? 240 : 95);
+    last = t;
+    setTurn(next);
+    raf = next === to ? 0 : requestAnimationFrame(frame);
+  };
+  const startTurn = () => { if (!raf) { last = performance.now(); raf = requestAnimationFrame(frame); } };
+  // Each time the menu shows, the ring swings in: up from below going in,
+  // down from above coming back, and a long slow turn the first time.
+  let shown = false;
+  createEffect(on(screen, (sc) => {
+    if (sc !== "menu") { shown = false; return; }
+    if (shown) return;
+    shown = true;
+    clearTimeout(wait);
+    if (reducedMotion()) { setTurn(untrack(menu)); return; }
+    const first = boot && !slow;
+    setTurn(untrack(menu) + (first ? -5 : cameFrom !== null && cameFrom !== "menu" ? 2.2 : -2.2));
+    if (first) { slow = performance.now() + 2200; wait = setTimeout(() => { wait = undefined; startTurn(); }, 450); } else startTurn();
+  }));
+  createEffect(on([menu, lean, going], () => { if (screen() === "menu" && !wait) startTurn(); }, { defer: true }));
+  onCleanup(() => { cancelAnimationFrame(raf); clearTimeout(hoverTimer); clearTimeout(pick); clearTimeout(wait); });
+  const place = (i: number) => ringPlace(i - turn(), ORB_X, ORB_Y);
+  const hoverOn = (i: number) => { clearTimeout(hoverTimer); setHover(i); };
+  const hoverOff = () => { clearTimeout(hoverTimer); hoverTimer = setTimeout(() => setHover(null), 260); };
+  /** A click: the item swings into focus, then opens. */
+  function pickItem(i: number) {
+    if (leaving()) return;
+    clearTimeout(pick);
+    if (menu() === i || reducedMotion()) { setMenu(i); select(); return; }
+    setMenu(i);
+    pick = setTimeout(select, 230);
+  }
+  /** The wheel turns the ring a notch at a time. */
+  let wheelSum = 0, wheelAt = 0;
+  function onWheel(e: WheelEvent) {
+    if (screen() !== "menu" || leaving()) return;
+    e.preventDefault();
+    const t = performance.now();
+    if (t - wheelAt > 400) wheelSum = 0;
+    wheelSum += e.deltaY + e.deltaX;
+    if (Math.abs(wheelSum) < 40 || t - wheelAt < 160) return;
+    const to = menu() + Math.sign(wheelSum);
+    wheelSum = 0;
+    wheelAt = t;
+    if (to >= 0 && to < items().length) setMenu(to);
+  }
   const selGame = () => { const r = rows()[sel()]; return r ? live.state.games[r.key] : undefined; };
   const selAccount = () => { const r = rows()[sel()]; return r ? live.state.accounts[r.key] : undefined; };
-  const cameFrom = lastScreen;
 
   return (
     <div
       class="dash dx"
-      classList={{ "dx--leaving": leaving(), "dx--boot": boot, "dx--back": dir() === "back" || (cameFrom !== null && cameFrom !== "menu" && screen() === "menu" && !leaving()) }}
+      classList={{ "dx--leaving": going(), "dx--boot": boot, "dx--back": dir() === "back" || (cameFrom !== null && cameFrom !== "menu" && screen() === "menu" && !leaving()) }}
       data-screen={screen()}
     >
       <Tunnel aim={aim()} />
@@ -300,35 +390,40 @@ export default function Dashboard() {
 
       <header class="dx-top">
         <span class="dx-brand">h2 live</span>
-        <span class="dx-chip"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
-        <Show when={identity.me()}>{(me) => <span class="dx-chip dx-chip--me">{me().gamertag}</span>}</Show>
+        <span class="dx-chip dx-chip--server"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
+        <Show when={identity.me()} fallback={<Show when={section() !== "signup"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signup" onClick={(e) => { e.preventDefault(); go("/dash/signup", "deeper"); }}>sign up</a></Show>}>
+          {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (section() !== "signup") go("/dash/signup", "deeper"); }}>{me().gamertag}</a>}
+        </Show>
         <a class="dx-chip dx-chip--link" href="/stats">stats site</a>
       </header>
 
       <main class="dx-stage">
         <Switch>
           <Match when={screen() === "menu"}>
-            <div class="dx-screen dx-menu">
-              <Orb />
+            <div class="dx-screen dx-menu" onWheel={onWheel}>
+              <Orb turn={-turn() * RING_STEP_DEG} />
               <div class="dx-orb-count"><b>{liveGames(live.state).length}</b> live <i /> <b>{online().length}</b> online</div>
-              <nav class="dx-arc" aria-label="Dashboard" style={{ "--sel": String(menu()), "--n": String(SECTIONS.length) }}>
-                <span class="dx-selbar" aria-hidden="true" />
-                <For each={SECTIONS}>
-                  {(s, i) => (
-                    <button
-                      class="dx-item"
-                      classList={{ on: menu() === i() }}
-                      style={{ "--i": String(i()) }}
-                      onMouseEnter={() => setMenu(i())}
-                      onFocus={() => setMenu(i())}
-                      onClick={() => { setMenu(i()); select(); }}
-                      aria-current={menu() === i() ? "true" : undefined}
-                    >
-                      <span class="dx-pod" aria-hidden="true"><i /></span>
-                      <span class="dx-wire" aria-hidden="true" />
-                      <span class="dx-bar"><span class="dx-bar-text">{s.label()}</span></span>
-                    </button>
-                  )}
+              <nav class="dx-arc" aria-label="Dashboard" style={{ "--n": String(items().length) }}>
+                <For each={items()}>
+                  {(id, i) => {
+                    const at = createMemo(() => place(i()));
+                    return (
+                      <button
+                        class="dx-item"
+                        classList={{ on: menu() === i(), hov: hover() === i(), "dx-item--far": at().opacity < 0.12 }}
+                        style={{ "--i": String(i()), "--x": at().x.toFixed(2), "--y": at().y.toFixed(2), "--s": at().scale.toFixed(4), "--o": at().opacity.toFixed(3), "--dr": at().drop.toFixed(2), "--lit": at().lit.toFixed(3) }}
+                        onMouseEnter={() => hoverOn(i())}
+                        onMouseLeave={hoverOff}
+                        onFocus={() => setMenu(i())}
+                        onClick={() => pickItem(i())}
+                        aria-current={menu() === i() ? "true" : undefined}
+                      >
+                        <Vine />
+                        <Pod seed={i()} />
+                        <span class="dx-bar"><Bracket /><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span></span>
+                      </button>
+                    );
+                  }}
                 </For>
               </nav>
               <Prompts onA={select} />
@@ -365,6 +460,22 @@ export default function Dashboard() {
                 <Prompts onA={select} onB={back} />
               </div>
             )}
+          </Match>
+
+          <Match when={screen() === "settings"}>
+            <div class="dx-screen dx-pods dx-pages">
+              <div class="dx-centre"><BigPod wire><Glyph name="gear" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <Plate small="h2 live" title="settings" main>
+                <dl>
+                  <dt>server</dt><dd>{live.wellKnown()?.id ?? new URL(live.server().base).host}</dd>
+                  <dt>link</dt><dd>{live.status() === "live" ? "connected" : live.status()}</dd>
+                  <dt>account</dt><dd>{identity.me()?.gamertag ?? "not signed in"}</dd>
+                  <dt>online</dt><dd>{online().length} <span>players</span> {liveGames(live.state).length} <span>games</span></dd>
+                </dl>
+              </Plate>
+              <Prompts onA={select} onB={back} />
+            </div>
           </Match>
 
           <Match when={screen() === "signup"}>
