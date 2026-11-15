@@ -399,7 +399,7 @@ pub struct BucketReference {
     pub section_offsets: Vec<Option<u16>>,
 }
 
-/// One lightmap group (0x98 bytes).
+/// One lightmap group (0x68 bytes).
 #[derive(Clone, Debug)]
 pub struct LightmapGroup {
     /// u32 at +4; equals the BSP checksum it lights.
@@ -422,15 +422,19 @@ pub struct LightmapGroup {
     pub instance_bucket_refs: Vec<BucketReference>,
     /// Block at +0x60.
     pub cluster_bucket_refs: Vec<BucketReference>,
-    /// Counts of the blocks at +0x10, +0x38 and +0x58 (no element layout
-    /// reviewed, not followed; +0x38 and +0x58 are nonempty in some disc maps).
+    /// Counts of the blocks at +0x10, +0x38 and +0x58 (not followed here;
+    /// +0x38 and +0x58 are nonempty in some disc maps). `lighting` decodes
+    /// +0x38 as light probes through the same budgeted view.
     pub unsupported_counts: [u32; 3],
-    /// All 0x98 bytes.
+    /// All 0x68 bytes.
     pub raw: Vec<u8>,
 }
 impl LightmapGroup {
-    /// Element stride.
-    pub const SIZE: usize = 0x98;
+    /// Element stride. E: the engine's per-group loop advances its group
+    /// offset with `add esi, 68h` at 0x00015c6b and compares the iteration
+    /// against `[ltmp+80h]`; the inner palette loop steps `0x400` at
+    /// 0x00015c51.
+    pub const SIZE: usize = 0x68;
 }
 
 /// Lightmap tag render linkage.

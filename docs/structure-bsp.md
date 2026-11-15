@@ -223,9 +223,9 @@ map-format.md):
 
 | Field | Meaning | Evidence |
 |---|---|---|
-| `ltmp+80` block, stride `98` | Lightmap groups | E `0x0004d2e9` (`[ltmp+84h]`, first group used directly). Every disc lightmap has exactly one group, so the `0x98` size rests on where the following data begins in an inspected map plus the engine offsets inside it, not on a multi-element stride |
+| `ltmp+80` block, stride `68` | Lightmap groups | E `0x0004d2e9` (`[ltmp+84h]`, first group used directly). E `0x00015c00`..`0x00015c78`: the palette set-up loop walks every group from `[ltmp+84h]`, advancing the group offset with `add esi, 68h` at `0x00015c6b` and comparing the iteration with `[ltmp+80h]`; its inner loop steps palettes by `0x400` (`0x00015c51`). An earlier `0x98` reading rested on where the following data begins in an inspected map; every disc lightmap has one group, so that bound could not tell the two apart. A synthetic two-group test does |
 
-Group (`0x98`):
+Group (`0x68`):
 
 | Offset | Meaning | Evidence |
 |---|---|---|
@@ -280,10 +280,10 @@ bucket. Every cluster-reference offset lies inside its bucket.
 ## Observations from the disc
 
 - All structure and bucket geometry is local to its map; no BSP section uses
-  `shared.map` or `single_player_shared.map`.
+  either shared resource cache.
 - Six definitions have no raw block.
 - Two lightmap groups carry a checksum different from their scenario-paired
-  BSP. One is the main-menu group, which is empty. The validator counts these
+  BSP. One of them is empty. The validator counts these
   (at most 2 allowed) and does not check their per-cluster tables.
 - Part kinds seen: 2, 3, 4, 5. Only "0 and 5 are not drawn" is engine-backed.
 
@@ -291,8 +291,8 @@ bucket. Every cluster-reference offset lies inside its bucket.
 
 ```sh
 cargo run -p viewer --release --bin bsp -- --all
-cargo run -p viewer --release --bin bsp -- lockout
-cargo run -p viewer --release --bin bsp -- lockout --render "$OUT" --bsp 0 [--force]
+cargo run -p viewer --release --bin bsp -- <map>
+cargo run -p viewer --release --bin bsp -- <map> --render "$OUT" --bsp 0 [--force]
 ```
 
 The disc comes from `--disc`, `H2_DISC` or `disc/halo2.iso`, as for the

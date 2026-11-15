@@ -27,7 +27,10 @@ fn sibling(name: &str) -> String {
 }
 
 /// Opens the map plus the region table for its raw-resource pointers.
-fn open(name: &str, disc: Option<PathBuf>) -> Result<(Map<BufReader<File>>, ResourceFiles)> {
+pub(super) fn open(
+    name: &str,
+    disc: Option<PathBuf>,
+) -> Result<(Map<BufReader<File>>, ResourceFiles)> {
     let mut files = ResourceFiles::new();
     if Path::new(name).is_file() {
         let path = PathBuf::from(name);

@@ -232,7 +232,7 @@ payload reads are lazy. Errors use `thiserror`; unsafe code is forbidden.
 ```rust
 use map::{Map, TagQuery, FourCC};
 
-let mut cache = Map::open("/path/to/your/mainmenu.map")?;
+let mut cache = Map::open("/path/to/your/<map>.map")?;
 for tag in cache.tags() {
     println!("{} {} {:?}", tag.id, tag.group, tag.name);
 }
@@ -447,6 +447,14 @@ Total decoded sprite count is capped at `payload_len / 0x20` so repeated,
 aliased sprite spans cannot produce quadratic allocations. Bounded aliasing is
 allowed; arbitrary next-block order or non-overlap is not assumed.
 
+The later [lighting decoder](lighting.md) additionally verifies three sky-child
+aliases into other sky payloads and one zero-sized fog identity alias on the
+retail disc. Those reads require a same-class owning payload in the identical
+address space; zero-sized roots require an exact metadata address match.
+They are explicitly budgeted exceptions to own-payload-only traversal, not a
+general fallback to arbitrary bytes elsewhere in metadata. See lighting.md
+for the field evidence, limits and synthetic rejection cases.
+
 **V for the retained checks:** all five supported groups in all 30 maps pass
 strict decoding. Root codecs round-trip exactly, retained data references fit,
 root tag references resolve full salted IDs with concrete/parent/grandparent
@@ -474,7 +482,7 @@ cargo run -p tags --example verify_disc -- disc/halo2.iso
 Dump one tag to the terminal, quoting its full cache path:
 
 ```sh
-cargo h2 tag mainmenu 'scenarios\ui\mainmenu\mainmenu' scnr --disc disc/halo2.iso
+cargo h2 tag <map> '<folder>\<subfolder>\<tag-name>' scnr --disc <disc.iso>
 ```
 
 `h2 tag <map-name-or-file> <tag-name> [group] [--lenient] [--disc disc.iso]`

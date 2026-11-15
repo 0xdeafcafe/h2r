@@ -16,11 +16,12 @@
 //!
 //! Out of scope: a hostile process racing the directory tree between the
 //! checks and the final link or rename. File operations after the directory
-//! walk are path based. The root itself is the caller's choice and may be a
-//! symlink.
+//! walk are path based. With [`OutDir::new`] the root itself is the caller's
+//! choice and may be a symlink; [`OutDir::new_strict`] also walks the root's
+//! own components and refuses user-controlled symlinks there.
 use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 
 /// Discs opened for reading by this process. Every [`OutDir`] refuses to
@@ -121,6 +122,63 @@ impl OutDir {
         let root = root.into();
         fs::create_dir_all(&root)?;
         Ok(Self { root, force, source: None })
+    }
+
+    /// Like [`Self::new`], but every component of the root path, from the
+    /// filesystem root down, is checked (and missing ones created) one level
+    /// at a time. An existing component must be a real directory. The only
+    /// symlinks accepted are the macOS system aliases in [`SYSTEM_ALIASES`]
+    /// (`/var`, `/tmp`, `/etc`), each only when root-owned with exactly its
+    /// expected target; the walk then continues, still strict, on the
+    /// resolved path, which becomes the stored root. Any other symlink, a
+    /// non-directory, or `..` is refused. Relative roots are resolved against
+    /// the (physical) working directory.
+    pub fn new_strict(root: impl Into<PathBuf>, force: bool) -> io::Result<Self> {
+        let root = root.into();
+        let root = if root.is_absolute() { root } else { std::env::current_dir()?.join(root) };
+        let mut cur = PathBuf::new();
+        for c in root.components() {
+            match c {
+                Component::Prefix(_) | Component::RootDir => {
+                    cur.push(c);
+                    continue;
+                }
+                Component::CurDir => continue,
+                Component::ParentDir => {
+                    return Err(bad(format!("output root {} contains '..'", root.display())));
+                }
+                Component::Normal(n) => cur.push(n),
+            }
+            match fs::symlink_metadata(&cur) {
+                Ok(m) if m.is_dir() => {}
+                Ok(m) if m.file_type().is_symlink() => {
+                    let target = fs::read_link(&cur)?;
+                    let resolved = system_alias(&cur, owner(&m), &target).ok_or_else(|| {
+                        bad(format!("{} is a symlink; refusing an untrusted output root", cur.display()))
+                    })?;
+                    // Re-walk the alias target strictly from the root.
+                    let mut real = PathBuf::from("/");
+                    for part in resolved.components().skip(1) {
+                        real.push(part);
+                        if !fs::symlink_metadata(&real)?.is_dir() {
+                            return Err(bad(format!("{} is not a real directory (symlink?)", real.display())));
+                        }
+                    }
+                    cur = real;
+                }
+                Ok(_) => {
+                    return Err(bad(format!("{} is not a real directory", cur.display())));
+                }
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                    fs::create_dir(&cur)?;
+                    if !fs::symlink_metadata(&cur)?.is_dir() {
+                        return Err(bad(format!("{} is not a real directory", cur.display())));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Self { root: cur, force, source: None })
     }
 
     /// Never write to `source` (the disc being read), even with `force`.
@@ -246,6 +304,33 @@ impl OutDir {
         cur.push(file);
         Ok((cur, held))
     }
+}
+
+/// The only symlinks [`OutDir::new_strict`] follows: macOS system aliases,
+/// as (link, exact `readlink` target).
+pub const SYSTEM_ALIASES: [(&str, &str); 3] =
+    [("/var", "private/var"), ("/tmp", "private/tmp"), ("/etc", "private/etc")];
+
+/// The resolved absolute path of `link` if it is exactly an allowlisted
+/// system alias: owned by root (`uid` 0) with exactly the expected target.
+fn system_alias(link: &Path, uid: Option<u32>, target: &Path) -> Option<PathBuf> {
+    if uid != Some(0) {
+        return None;
+    }
+    SYSTEM_ALIASES
+        .iter()
+        .find(|(l, t)| link == Path::new(l) && target == Path::new(t))
+        .map(|(_, t)| Path::new("/").join(t))
+}
+
+#[cfg(unix)]
+fn owner(m: &fs::Metadata) -> Option<u32> {
+    use std::os::unix::fs::MetadataExt;
+    Some(m.uid())
+}
+#[cfg(not(unix))]
+fn owner(_: &fs::Metadata) -> Option<u32> {
+    None
 }
 
 fn exists(p: &std::path::Path) -> io::Error {
@@ -504,5 +589,62 @@ mod tests {
         assert_eq!(r.unwrap_err().kind(), io::ErrorKind::AlreadyExists);
         assert_eq!(fs::read(&dest).unwrap(), b"theirs");
         assert_eq!(fs::read_dir(&d).unwrap().count(), 1, "temp file left behind");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn strict_root_refuses_symlinks_in_the_root_and_its_ancestors() {
+        use std::os::unix::fs::symlink;
+        let d = scratch("strict");
+        let real = d.join("real");
+        fs::create_dir_all(&real).unwrap();
+        symlink(&real, d.join("linked")).unwrap();
+        assert!(OutDir::new_strict(d.join("linked"), true).is_err());
+        assert!(OutDir::new_strict(d.join("linked").join("new"), true).is_err());
+        assert!(!real.join("new").exists());
+        assert!(OutDir::new_strict(d.join("real").join("..").join("real"), false).is_err());
+        fs::write(d.join("file"), b"x").unwrap();
+        assert!(OutDir::new_strict(d.join("file"), false).is_err());
+        // Real paths work, missing levels are created, and the lax
+        // constructor keeps its documented behaviour.
+        let out = OutDir::new_strict(d.join("a").join("b"), false).unwrap();
+        out.write(&parts(&["x"]), b"1").unwrap();
+        assert_eq!(fs::read(d.join("a").join("b").join("x")).unwrap(), b"1");
+        assert!(OutDir::new(d.join("linked"), false).is_ok());
+        // A dangling root link is not followed either.
+        symlink(d.join("target"), d.join("dangling")).unwrap();
+        assert!(OutDir::new_strict(d.join("dangling"), false).is_err());
+        assert!(!d.join("target").exists());
+    }
+
+    #[test]
+    fn only_exact_root_owned_system_aliases_are_trusted() {
+        let p = |s: &str| PathBuf::from(s);
+        assert_eq!(system_alias(&p("/var"), Some(0), &p("private/var")), Some(p("/private/var")));
+        assert_eq!(system_alias(&p("/tmp"), Some(0), &p("private/tmp")), Some(p("/private/tmp")));
+        assert_eq!(system_alias(&p("/etc"), Some(0), &p("private/etc")), Some(p("/private/etc")));
+        for (link, uid, target) in [
+            ("/var", Some(501), "private/var"), // right shape, wrong owner
+            ("/var", None, "private/var"),
+            ("/var", Some(0), "/private/var"), // absolute, not the exact target
+            ("/var", Some(0), "private/tmp"),  // another alias's target
+            ("/var", Some(0), "private/var/../../Users/x"),
+            ("/tmp", Some(0), "/Users/attacker/out"), // root-owned, points elsewhere
+            ("/usr/local", Some(0), "private/var"), // looks trusted, not listed
+            ("/private/var/x", Some(0), "private/var"),
+            ("/var/x", Some(0), "private/var"),
+        ] {
+            assert_eq!(system_alias(&p(link), uid, &p(target)), None, "{link} -> {target}");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn strict_root_resolves_system_aliases_without_writing() {
+        // Existing system directories: nothing is created, and the stored
+        // root is the resolved real path.
+        for (alias, real) in [("/var", "/private/var"), ("/etc", "/private/etc")] {
+            assert_eq!(OutDir::new_strict(alias, false).unwrap().root, PathBuf::from(real));
+        }
     }
 }

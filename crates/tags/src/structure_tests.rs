@@ -743,6 +743,53 @@ fn decodes_lightmap_group() {
 }
 
 #[test]
+fn lightmap_groups_use_the_engine_stride() {
+    // E 0x00015c6b: `add esi, 68h` per group. A second group sits 0x68
+    // bytes after the first, not 0x98.
+    let mut p = lightmap_payload();
+    put32(&mut p, 0x80, 2);
+    let g1 = 0x104 + 0x68;
+    put32(&mut p, g1 + 4, 0xbeef);
+    put32(&mut p, g1 + 0x1c, u32::MAX);
+    let l = decode_lightmap(&p).unwrap();
+    assert_eq!(l.groups.len(), 2);
+    assert_eq!(l.groups[0].raw.len(), 0x68);
+    assert_eq!(l.groups[1].structure_checksum, 0xbeef);
+    assert_eq!(l.groups[1].bitmap, None);
+    assert!(l.groups[1].palettes.is_empty());
+}
+
+#[test]
+fn malformed_block_descriptors_are_errors_not_panics() {
+    let empty = TagView::new(&[], BASE);
+    assert_eq!(
+        invalid(empty.block(&[], 0, 4)),
+        "tag block field outside its record"
+    );
+    assert_eq!(
+        invalid(empty.block(&[0; 8], usize::MAX - 2, 4)),
+        "tag block field outside its record"
+    );
+    assert_eq!(
+        invalid(empty.block(&[0; 7], 0, 4)),
+        "tag block field outside its record"
+    );
+    assert_eq!(
+        invalid(empty.block(&[0; 8], 0, 0)),
+        "tag block stride is zero"
+    );
+    assert_eq!(
+        invalid(empty.elements(1, BASE, 0)),
+        "tag block stride is zero"
+    );
+    // A count whose size overflows is rejected before any read.
+    let p = vec![0u8; 0x10];
+    let view = TagView::new(&p, BASE);
+    assert!(view.elements(u32::MAX, BASE, usize::MAX).is_err());
+    assert!(empty.block(&[0; 8], 0, 4).unwrap().is_empty());
+}
+
+#[test]
 fn lightmap_buckets_and_references_are_checked() {
     // A reference with no offsets: the engine would read past it.
     let mut q = lightmap_payload();

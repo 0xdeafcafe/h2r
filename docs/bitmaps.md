@@ -6,7 +6,7 @@ Mapping rules live (with evidence labels) in the module docs of
 `crates/assets/src/bitmap.rs`; this page records what the disc runs showed.
 No pixels or names of game assets are stored in the repo.
 
-Findings (retail disc, `mainmenu`, `00a_introduction`, `01b_spacestation`;
+Findings (retail disc, three maps: the main menu and two single-player maps;
 all 3 maps: zero decode failures, 100% of images satisfy
 "LOD size == layout size rounded up to 128 bytes"):
 
@@ -30,3 +30,7 @@ all 3 maps: zero decode failures, 100% of images satisfy
   raw-index luminance (layout verified, not colour).
 * Raw pointer selectors Local / MainMenu / Shared / SinglePlayerShared were all
   observed and resolve to sibling maps on the disc.
+
+For lightmap colours, `h2 lighting <map> --bsp N --page N --out DIR`
+resolves the `ltmp` palette instead of displaying index luminance. See
+[lighting.md](lighting.md) for palette selection and shading limits.

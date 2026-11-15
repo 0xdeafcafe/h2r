@@ -6,7 +6,8 @@
 //! bitmap image/sequence/sprite records are decoded recursively in this stage.
 //! Localized text and compiled `unic` lists have a separate decoder in
 //! [`localization`]. Unknown nested records remain opaque; see
-//! `docs/map-format.md` for evidence.
+//! `docs/map-format.md` for evidence. Lighting and atmosphere have a separate
+//! decoder in [`lighting`], extending the shared [`structure`] lightmap reader.
 #![forbid(unsafe_code)]
 
 /// The effects family (`effe`, `prt3`, `pmov`, ...); see `docs/effects.md`.
@@ -28,6 +29,10 @@ pub mod material;
 /// Shader instances, templates and passes (`shad`, `stem`, `spas`); see
 /// `docs/shader-instances.md`.
 pub mod shader;
+/// Lightmap, sky and atmosphere tags; see `docs/lighting.md`.
+pub mod lighting;
+#[cfg(test)]
+mod lighting_tests;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }

@@ -10,6 +10,7 @@ mod bitmap;
 mod collision;
 mod effects;
 mod fonts;
+mod lighting;
 mod maps;
 mod movies_cmd;
 mod object;
@@ -31,6 +32,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   bitmap --all <map>      bulk decode check of every bitmap in a map
   collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
+  lighting <map>          lighting/atmosphere summary; --bsp N; --page N --out DIR
+  lighting --all          validate every disc map (optional <map> for one map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
   object <map> <tag>      object-family tag, its hlmt and default variant;
@@ -73,6 +76,9 @@ first .iso in the repo's disc/ folder.";
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
+    if cmd == "lighting" {
+        return lighting::run(args.collect());
+    }
     if cmd == "sound" {
         return sound::run(args.collect());
     }
