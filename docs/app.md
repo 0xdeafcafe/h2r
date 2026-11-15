@@ -147,7 +147,9 @@ the window only shows its outcome. A second signal exits at once, and 20 s
 after the first the process exits regardless. (A job started with a shell's `&` has SIGINT ignored; use SIGTERM.)
 
 Where the input pump runs: after every slice, not once per guest frame. Mouse
-look sensitivity therefore depends on the slice rate.
+motion is held until the game's `XInputGetState` has read it and is scaled by
+the read interval, so mouse look does not depend on the slice rate or the
+game's frame rate (docs/input.md, "Keyboard and mouse").
 
 ## Following a branch: `h2 play --follow`
 

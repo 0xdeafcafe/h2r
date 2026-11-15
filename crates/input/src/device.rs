@@ -32,6 +32,7 @@
 //!   rumble value wins on the backend.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::backend::HostBackend;
 use crate::backend::keyboard::KeyboardMouse;
@@ -101,6 +102,8 @@ struct Device {
     polling: PollingParameters,
     rumble_sent: Rumble,
     pending: Vec<FeedbackRequest>,
+    /// `get_state` returned this device's state since the last `sync`.
+    read: AtomicBool,
 }
 
 /// One queued `XInputSetState`.
@@ -183,6 +186,15 @@ impl InputManager {
     /// Pull host state and update the ports: removals, insertions, auto-poll
     /// publishing and rumble forwarding.
     pub fn sync(&mut self) {
+        // Tell backends which states the guest has read, before they report
+        // new ones: a consumable input (mouse motion) is spent only once seen.
+        for port in &self.ports {
+            if let Some(d) = &port.device
+                && d.read.swap(false, Ordering::Relaxed)
+            {
+                self.backends[d.host.0].state_read(d.host.1);
+            }
+        }
         let mut seen: HashMap<(usize, HostPadId), crate::host::HostPad> = HashMap::new();
         let mut order = Vec::new();
         for (bi, b) in self.backends.iter_mut().enumerate() {
@@ -230,6 +242,7 @@ impl InputManager {
                 polling: PollingParameters::default(),
                 rumble_sent: Rumble::default(),
                 pending: Vec::new(),
+                read: AtomicBool::new(false),
             });
         }
         // Update.
@@ -306,8 +319,19 @@ impl InputManager {
         }
     }
 
-    /// `XInputGetState`.
+    /// `XInputGetState`: the guest reads the published state. The next `sync`
+    /// tells the device's backend that its state was seen
+    /// ([`HostBackend::state_read`]), which spends pending mouse motion. Host
+    /// bookkeeping that is not a guest read uses [`peek_state`](Self::peek_state).
     pub fn get_state(&self, h: Handle) -> Result<State, InputError> {
+        self.device(h).map(|d| {
+            d.read.store(true, Ordering::Relaxed);
+            d.published
+        })
+    }
+
+    /// The published state, without counting as a guest read.
+    pub fn peek_state(&self, h: Handle) -> Result<State, InputError> {
         self.device(h).map(|d| d.published)
     }
 

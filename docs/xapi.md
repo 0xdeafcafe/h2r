@@ -858,6 +858,11 @@ button's press/hold/release, all pressure values, both sticks, packet changes,
 manual polling, capabilities, feedback completion and insertion/removal with
 stale handles. `tests/register.rs` additionally drives the actual registered
 state/capabilities/feedback entries at 0x409b6c/0x409994/0x409bdf with a timeline.
+`tests/mouse_look.rs` runs `sync_input` every slice and `XInputGetState` every
+200 slices with the keyboard pad: each game-rate read must see the mouse
+motion since the last one. `sync_input` refreshes every handle's last state
+with `InputManager::peek_state`, not `get_state`, so that bookkeeping does not
+count as the game reading the pad (docs/input.md).
 The existing retry, disconnected snapshot, event pinning and memory-fault
 tests remain applicable. These tests prove service semantics; observing
 0x124c36's consumer and 0x2a9470..0x2a9550's Armory pitch gates during a retail

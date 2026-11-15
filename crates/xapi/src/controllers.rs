@@ -188,7 +188,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             .map_err(|error| Error::Win32(error.win32()))?;
         let last_state = self
             .input
-            .get_state(device_handle)
+            .peek_state(device_handle)
             .map_err(|error| Error::Win32(error.win32()))?;
         self.handles.insert(
             token,
@@ -215,7 +215,8 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
 
     fn remember_states(&mut self) {
         for opened in self.handles.values_mut() {
-            if let Ok(state) = self.input.get_state(opened.device_handle) {
+            // Bookkeeping, not a guest read: must not spend mouse motion.
+            if let Ok(state) = self.input.peek_state(opened.device_handle) {
                 opened.last_state = state;
             }
         }

@@ -92,6 +92,12 @@ are out of scope.
   and removed between drains appears in both raw masks. The XAPI adapter
   normalizes these against the last connection mask seen by the guest.
 - `InputManager::new` validates the deadzones (finite, in `[0, 1)`).
+- Guest reads: `get_state` is `XInputGetState` and marks the device read; the
+  next `sync()` calls the backend's `HostBackend::state_read` for it before
+  polling, at most once per sync. That is how the keyboard pad spends mouse
+  motion only once the game has seen it. Host bookkeeping (XAPI refreshing
+  each handle's last state on every sync, `XInputOpen`) uses `peek_state`,
+  which does not count as a read.
 
 Guest layouts (`gamepad.rs`, little-endian, packed, 32-bit guest):
 
@@ -109,7 +115,8 @@ emulated USB poll interval) before running the guest.
 
 ## Host backends
 
-`backend/`. The trait is `HostBackend { poll() -> Vec<HostPad>, set_rumble() }`.
+`backend/`. The trait is `HostBackend { poll() -> Vec<HostPad>, state_read(), set_rumble() }`;
+`state_read` and `set_rumble` default to doing nothing.
 Backends are platform-separated modules; a tvOS or Xbox build swaps them.
 
 ### Physical pads: Apple GameController (`backend/game_controller/`, feature `game-controller`, default)
@@ -215,7 +222,7 @@ trigger_deadzone = 0.03
 
 [mouse]
 look = true          # mouse motion drives the right stick
-sensitivity = 0.04   # stick deflection per mouse count, per sync
+sensitivity = 0.04   # stick deflection per mouse count per 1/60 s
 invert_y = false
 
 [bind]
@@ -240,12 +247,29 @@ arrow keys d-pad.
 
 Behaviour: keys are digital (buttons 255, triggers 1.0, stick keys full
 deflection, opposing keys cancel, diagonals normalised to the unit circle).
-Mouse motion accumulated since the last `sync` becomes `delta * sensitivity`
-on the right stick, clamped to 1, then resets. The stick is a turn rate in
-Halo, so mouse look is frame-rate dependent and will feel different from a
-real aim-by-position scheme. Tune `sensitivity` for the sync rate. Gentler
-options if it feels bad: smoothing across frames, or an acceleration curve.
-Neither is implemented. There is also no "walk" modifier for half stick
+Mouse look: motion stays on the right stick until the game has read a
+state carrying it (`state_read`), however many syncs pass first. The
+deflection is the mouse's speed over the game's read interval:
+`delta * sensitivity * (1/60 s) / interval`, with the interval counted as
+at least 1/60 s, then scaled back onto the unit circle if it is longer than
+1 (direction is kept). At a 60 Hz read rate that is the old
+`delta * sensitivity`, so existing `sensitivity` values mean the same thing:
+deflection per mouse count moved per 1/60 s. Halo treats the stick as a turn
+rate, so turning per mouse count no longer depends on the game's frame rate
+or on how often the host syncs. Motion the game leaves unread for more than
+a second (`STALE_MOTION`) is dropped rather than delivered late as a flick.
+
+Before this, motion was spent by every `sync`. `h2 play` syncs after every
+guest slice, far more often than the game polls (about 5 fps), so almost
+every `XInputGetState` saw a centred right stick and the reticle did not
+move. `crates/input/tests/mouse_look.rs` and `crates/xapi/tests/mouse_look.rs`
+cover this at slice-rate syncs and game-rate reads.
+
+The virtual pad applies no deadzone, but Halo applies its own after reading
+XInput. Very slow mouse movement can fall inside it; raise `sensitivity` if
+small movements do not turn. Mouse look still feels different from a real
+aim-by-position scheme. Gentler options if it feels bad: smoothing across
+frames, or an acceleration curve. Neither is implemented. There is also no "walk" modifier for half stick
 deflection yet.
 
 ## Analog mapping and deadzones
@@ -278,7 +302,10 @@ Per-controller calibration, curves and a settings UI are not done.
 `cargo test -p input` covers struct byte layouts, button masks, stick and
 trigger conversion, d-pad rules, the device model (insertion, removal,
 change masks, stale handles, port limit, packet numbering, manual poll,
-rumble) and the binding table including TOML errors. `cargo run -p input
+rumble) and the binding table including TOML errors. `tests/mouse_look.rs`
+syncs at host rate and reads at game rate, checking that every read after
+motion sees it, that deflection is proportional to mouse speed at 60, 30 and
+5 reads per second, and that a read spends the motion. `cargo run -p input
 --example pads` prints live state for every connected pad, one line per port,
 whenever it changes (`-- --rumble` attempts one rumble on the first pad;
 gilrs on macOS rejects it as unsupported).

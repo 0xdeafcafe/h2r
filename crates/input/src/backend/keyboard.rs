@@ -6,11 +6,17 @@
 //!
 //! * Keys are digital: buttons report 255, stick keys full deflection
 //!   (diagonals are normalised to the unit circle), trigger keys 1.0.
-//! * Mouse motion drives the right stick when `mouse.look` is on. Motion
-//!   accumulated since the last `poll` becomes a stick deflection of
-//!   `delta * sensitivity`, clamped to 1, then resets. Halo treats the stick
-//!   as a turn *rate*, so look speed is frame-rate dependent; tune
-//!   `sensitivity` for the sync rate you use (60 Hz default).
+//! * Mouse motion drives the right stick when `mouse.look` is on. Motion is
+//!   held until the guest has read a state carrying it
+//!   ([`HostBackend::state_read`]), not until the next `sync`: the manager
+//!   syncs far more often than the game polls, and a per-sync reset left the
+//!   game seeing a centred stick on almost every read. The deflection is the
+//!   mouse *speed* over the guest's read interval, `delta * sensitivity *
+//!   (1/60 s) / interval` (the interval counts as at least 1/60 s), so at a
+//!   60 Hz read rate it is `delta * sensitivity` as before, and since Halo
+//!   treats the stick as a turn rate, turning per mouse count does not grow
+//!   or shrink with the game's frame rate. Motion left unread for over
+//!   [`STALE_MOTION`] is dropped instead of arriving later as a flick.
 //! * The virtual pad is not "physical": no deadzone is applied, so tiny mouse
 //!   deltas still register.
 //! * Rumble is off by default (`XInputSetState` returns 50, like a pad without
@@ -22,11 +28,21 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use crate::backend::HostBackend;
 use crate::bindings::{Bindings, Control, Input, MouseButton, canonical_key};
 use crate::gamepad::Rumble;
 use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
+
+/// The read interval at which `delta * sensitivity` is the deflection.
+pub const LOOK_FRAME: Duration = Duration::from_nanos(1_000_000_000 / 60);
+
+/// Mouse motion older than this, with no guest read in between, is dropped.
+pub const STALE_MOTION: Duration = Duration::from_secs(1);
+
+/// Where the pad gets the time (wall clock by default; tests inject one).
+pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 
 /// Cloneable handle to one virtual keyboard+mouse pad. Clone it before
 /// boxing the backend into [`InputManager::add_backend`](crate::InputManager::add_backend):
@@ -35,13 +51,20 @@ use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
 #[derive(Clone)]
 pub struct KeyboardMouse {
     inner: Arc<Mutex<Inner>>,
+    clock: Clock,
 }
 
 struct Inner {
     bindings: Bindings,
     keys: HashSet<String>,
     mouse: HashSet<MouseButton>,
+    /// Mouse motion the guest has not read yet.
     delta: (f64, f64),
+    /// The part of `delta` in the newest reported state.
+    sampled: (f64, f64),
+    /// When the current read interval began: the last guest read, or the
+    /// first motion after none was pending.
+    since: Option<Instant>,
     enabled: bool,
     rumble_supported: bool,
     rumble: Rumble,
@@ -51,7 +74,13 @@ impl Inner {
     fn release_all(&mut self) {
         self.keys.clear();
         self.mouse.clear();
+        self.drop_motion();
+    }
+
+    fn drop_motion(&mut self) {
         self.delta = (0.0, 0.0);
+        self.sampled = (0.0, 0.0);
+        self.since = None;
     }
 
     fn held(&self, c: Control) -> bool {
@@ -64,16 +93,24 @@ impl Inner {
 
 impl KeyboardMouse {
     pub fn new(bindings: Bindings) -> Self {
+        Self::with_clock(bindings, Arc::new(Instant::now))
+    }
+
+    /// Like [`new`](Self::new), timing mouse look with `clock`.
+    pub fn with_clock(bindings: Bindings, clock: Clock) -> Self {
         KeyboardMouse {
             inner: Arc::new(Mutex::new(Inner {
                 bindings,
                 keys: HashSet::new(),
                 mouse: HashSet::new(),
                 delta: (0.0, 0.0),
+                sampled: (0.0, 0.0),
+                since: None,
                 enabled: true,
                 rumble_supported: false,
                 rumble: Rumble::default(),
             })),
+            clock,
         }
     }
 
@@ -128,10 +165,17 @@ impl KeyboardMouse {
     }
 
     /// Relative mouse motion in counts (screen space: +y is down). Non-finite
-    /// values are ignored.
+    /// values are ignored. It stays on the right stick until the guest reads it.
     pub fn mouse_motion(&self, dx: f64, dy: f64) {
         if dx.is_finite() && dy.is_finite() {
+            let now = (self.clock)();
             let mut i = self.lock();
+            if i.since
+                .is_none_or(|t| now.saturating_duration_since(t) > STALE_MOTION)
+            {
+                i.drop_motion();
+                i.since = Some(now);
+            }
             i.delta.0 += dx;
             i.delta.1 += dy;
         }
@@ -142,8 +186,11 @@ impl KeyboardMouse {
         self.lock().release_all();
     }
 
-    /// Build the pad state for the current held set, consuming mouse motion.
+    /// Build the pad state for the current held set and the mouse motion the
+    /// guest has not read yet. Nothing is consumed: [`HostBackend::state_read`]
+    /// spends the motion this state carried.
     pub fn state(&self) -> HostPadState {
+        let now = (self.clock)();
         let mut i = self.lock();
         use Control::*;
         let mut s = HostPadState::default();
@@ -178,13 +225,19 @@ impl KeyboardMouse {
             axis(i.held(RightStickDown), i.held(RightStickUp)),
         );
         let m = i.bindings.mouse;
-        if m.look {
+        if m.look && i.delta != (0.0, 0.0) {
             let sign = if m.invert_y { 1.0 } else { -1.0 }; // mouse up (dy < 0) looks up
-            let k = f64::from(m.sensitivity);
-            s.right_stick.0 = (f64::from(s.right_stick.0) + i.delta.0 * k).clamp(-1.0, 1.0) as f32;
-            s.right_stick.1 =
-                (f64::from(s.right_stick.1) + sign * i.delta.1 * k).clamp(-1.0, 1.0) as f32;
+            let interval = i
+                .since
+                .map_or(LOOK_FRAME, |t| now.saturating_duration_since(t))
+                .max(LOOK_FRAME);
+            let k = f64::from(m.sensitivity) * LOOK_FRAME.as_secs_f64() / interval.as_secs_f64();
+            // Unclamped here: the vector is scaled back to the unit circle
+            // below, which keeps the direction of a fast flick.
+            s.right_stick.0 = (f64::from(s.right_stick.0) + i.delta.0 * k) as f32;
+            s.right_stick.1 = (f64::from(s.right_stick.1) + sign * i.delta.1 * k) as f32;
         }
+        i.sampled = i.delta;
         // Synthesised directions have no physical gate. Normalise here so
         // calibrated hardware and scripted reports can retain independent axes.
         for stick in [&mut s.left_stick, &mut s.right_stick] {
@@ -194,7 +247,6 @@ impl KeyboardMouse {
                 stick.1 /= magnitude;
             }
         }
-        i.delta = (0.0, 0.0);
         s
     }
 }
@@ -215,6 +267,17 @@ impl HostBackend for KeyboardMouse {
             physical: false,
             supports_rumble: self.lock().rumble_supported,
         }]
+    }
+
+    /// The guest saw the newest state: spend the motion it carried and start
+    /// the next read interval.
+    fn state_read(&mut self, _id: HostPadId) {
+        let now = (self.clock)();
+        let mut i = self.lock();
+        i.delta.0 -= i.sampled.0;
+        i.delta.1 -= i.sampled.1;
+        i.sampled = (0.0, 0.0);
+        i.since = Some(now);
     }
 
     fn set_rumble(&mut self, _id: HostPadId, rumble: Rumble) {
@@ -258,17 +321,66 @@ mod tests {
         assert_eq!(gp(&k).thumb_lx, 0);
     }
 
+    /// A pad on a hand-wound clock, and the hand.
+    fn clocked(bindings: Bindings) -> (KeyboardMouse, Arc<Mutex<Instant>>) {
+        let now = Arc::new(Mutex::new(Instant::now()));
+        let hand = Arc::clone(&now);
+        let k = KeyboardMouse::with_clock(bindings, Arc::new(move || *hand.lock().unwrap()));
+        (k, now)
+    }
+
     #[test]
-    fn mouse_motion_is_consumed_and_signed() {
-        let k = KeyboardMouse::new(Bindings::default());
+    fn mouse_motion_is_held_until_read_and_signed() {
+        let (mut k, _) = clocked(Bindings::default());
         k.mouse_motion(5.0, -10.0); // right, up
         let g = gp(&k);
         assert_eq!(g.thumb_rx, (5.0f32 * 0.04 * 32767.0).round() as i16);
         assert_eq!(g.thumb_ry, (10.0f32 * 0.04 * 32767.0).round() as i16);
+        assert_eq!(gp(&k), g, "unread motion stays on the stick");
+        k.state_read(HostPadId(0));
         let g = gp(&k);
-        assert_eq!((g.thumb_rx, g.thumb_ry), (0, 0));
+        assert_eq!((g.thumb_rx, g.thumb_ry), (0, 0), "read motion is spent");
         k.mouse_motion(1000.0, 0.0);
         assert_eq!(gp(&k).thumb_rx, 32767);
+    }
+
+    #[test]
+    fn motion_after_the_sample_survives_the_read() {
+        let (mut k, _) = clocked(Bindings::default());
+        k.mouse_motion(5.0, 0.0);
+        let _ = k.state(); // what the guest is about to read
+        k.mouse_motion(3.0, 0.0); // arrives before the read is reported
+        k.state_read(HostPadId(0));
+        assert_eq!(gp(&k).thumb_rx, (3.0f32 * 0.04 * 32767.0).round() as i16);
+    }
+
+    #[test]
+    fn deflection_is_mouse_speed_over_the_read_interval() {
+        let (mut k, now) = clocked(Bindings::default());
+        k.state_read(HostPadId(0)); // a guest read starts the interval
+        // 30 counts over 10 look frames: 3 counts per frame.
+        k.mouse_motion(30.0, 0.0);
+        *now.lock().unwrap() += LOOK_FRAME * 10;
+        let rx = gp(&k).thumb_rx;
+        assert_eq!(rx, (3.0f32 * 0.04 * 32767.0).round() as i16);
+    }
+
+    #[test]
+    fn a_fast_flick_keeps_its_direction() {
+        let (k, _) = clocked(Bindings::default());
+        k.mouse_motion(300.0, -100.0);
+        let g = gp(&k);
+        let ratio = f64::from(g.thumb_rx) / f64::from(g.thumb_ry);
+        assert!((ratio - 3.0).abs() < 0.01, "{ratio}");
+    }
+
+    #[test]
+    fn motion_the_guest_never_reads_goes_stale() {
+        let (k, now) = clocked(Bindings::default());
+        k.mouse_motion(10.0, 0.0);
+        *now.lock().unwrap() += STALE_MOTION + LOOK_FRAME;
+        k.mouse_motion(1.0, 0.0);
+        assert_eq!(gp(&k).thumb_rx, (0.04f32 * 32767.0).round() as i16);
     }
 
     #[test]

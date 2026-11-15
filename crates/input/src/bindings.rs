@@ -7,7 +7,7 @@
 //!
 //! [mouse]                   # optional
 //! look = true               # mouse motion drives the right stick
-//! sensitivity = 0.04        # stick deflection per mouse count per frame
+//! sensitivity = 0.04        # stick deflection per mouse count per 1/60 s
 //! invert_y = false
 //!
 //! [bind]                    # control = [inputs]; omitted controls keep the defaults

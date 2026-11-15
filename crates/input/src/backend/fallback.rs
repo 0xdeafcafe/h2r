@@ -110,6 +110,21 @@ impl HostBackend for KeyboardFallback {
         out
     }
 
+    fn state_read(&mut self, id: HostPadId) {
+        if id == HostPadId(0) {
+            self.keyboard.state_read(HostPadId(0));
+            if let Some(backend) = &mut self.physical
+                && let Some(primary) = self.primary
+            {
+                backend.state_read(primary);
+            }
+        } else if let Some(backend) = &mut self.physical
+            && let Some((host, _)) = self.ids.iter().find(|(_, mapped)| **mapped == id)
+        {
+            backend.state_read(*host);
+        }
+    }
+
     fn set_rumble(&mut self, id: HostPadId, rumble: Rumble) {
         if id == HostPadId(0) {
             self.rumble = rumble;

@@ -22,6 +22,12 @@ pub trait HostBackend: Send {
     /// Called once per [`InputManager::sync`](crate::InputManager::sync).
     fn poll(&mut self) -> Vec<HostPad>;
 
+    /// The guest read pad `id`'s state through `XInputGetState` since the last
+    /// sync, so whatever that state carried has been seen. Called at the start
+    /// of the next [`InputManager::sync`](crate::InputManager::sync), before
+    /// `poll`, at most once per sync. Default: nothing to consume.
+    fn state_read(&mut self, _id: HostPadId) {}
+
     /// Drive the pad's rumble motors. Default: no rumble.
     fn set_rumble(&mut self, _id: HostPadId, _rumble: Rumble) {}
 }
