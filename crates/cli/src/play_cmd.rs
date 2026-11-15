@@ -581,13 +581,13 @@ mod tests {
             p50_ms: 61.2,
             p99_ms: 998.4,
             max_ms: 1402.0,
-            phase_ms: [40.1, 3.2, 8.4, 2.0, 5.5, 0.0],
+            phase_ms: [40.1, 3.2, 8.4, 2.0, 5.5, 0.0, 6.4],
         };
         let n = stats_notice(Some(s)).unwrap();
         assert_eq!(n.kind, app::NoticeKind::Info);
         assert_eq!(
             n.text,
-            "14.8 fps p50 61 p99 998 max 1402 ms | cpu 40 dec 3 enc 8 sub 2 gpu 6 pace 0"
+            "14.8 fps p50 61 p99 998 max 1402 ms | cpu 40 dec 3 enc 8 sub 2 gpu 6 pace 0 rt 6"
         );
         // The banner cuts at 96 characters.
         assert!(n.text.len() < 96);
