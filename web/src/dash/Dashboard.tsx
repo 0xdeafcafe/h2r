@@ -25,7 +25,7 @@ import { elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/gam
 import { outlineFor } from "../state/outlines";
 import { now } from "../lib/now";
 import Tunnel, { type TunnelAim } from "./Tunnel";
-import { BigPod, Glyph, Orb, Plate, Prompts, Tubes, type GlyphName } from "./parts";
+import { BigPod, Bracket, Glyph, Orb, Plate, Pod, Prompts, Tubes, Vine, type GlyphName } from "./parts";
 import { approach, ringPlace } from "./shape";
 import { sideOf } from "./cross";
 import { crossTo, crossing } from "./Veil";
@@ -55,7 +55,7 @@ function menuHome(s: SectionId): SectionId {
 }
 
 /** The orb's centre on the stage, and how far the ring turns per item (for the orb's skins). */
-const ORB_X = 444, ORB_Y = 318, RING_STEP_DEG = 21;
+const ORB_X = 444, ORB_Y = 318, RING_STEP_DEG = 24;
 
 interface Row { key: string; label: string; meta?: string }
 interface Sat { label: string; glyph: GlyphName; act?: () => void; lit?: boolean }
@@ -411,16 +411,16 @@ export default function Dashboard() {
                       <button
                         class="dx-item"
                         classList={{ on: menu() === i(), hov: hover() === i(), "dx-item--far": at().opacity < 0.12 }}
-                        style={{ "--i": String(i()), "--x": at().x.toFixed(2), "--y": at().y.toFixed(2), "--s": at().scale.toFixed(4), "--o": at().opacity.toFixed(3), "--lit": at().lit.toFixed(3) }}
+                        style={{ "--i": String(i()), "--x": at().x.toFixed(2), "--y": at().y.toFixed(2), "--s": at().scale.toFixed(4), "--o": at().opacity.toFixed(3), "--dr": at().drop.toFixed(2), "--lit": at().lit.toFixed(3) }}
                         onMouseEnter={() => hoverOn(i())}
                         onMouseLeave={hoverOff}
                         onFocus={() => setMenu(i())}
                         onClick={() => pickItem(i())}
                         aria-current={menu() === i() ? "true" : undefined}
                       >
-                        <span class="dx-pod" aria-hidden="true"><i /></span>
-                        <span class="dx-wire" aria-hidden="true" />
-                        <span class="dx-bar"><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span></span>
+                        <Vine />
+                        <Pod seed={i()} />
+                        <span class="dx-bar"><Bracket /><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span></span>
                       </button>
                     );
                   }}

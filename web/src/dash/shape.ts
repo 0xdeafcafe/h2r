@@ -51,21 +51,23 @@ export interface RingSlot {
   radius: number;
   scale: number;
   opacity: number;
+  /** How far the bar's centre hangs below its pod's, in stage units (before scaling): more the further down the ring. */
+  drop: number;
 }
 
 /** Slots by whole steps from the focus: index 5 is the focus, 0 is five before it, 10 five after. */
 const RING: RingSlot[] = [
-  { angle: -108, radius: 300, scale: 0.38, opacity: 0 },
-  { angle: -91, radius: 282, scale: 0.46, opacity: 0.3 },
-  { angle: -74, radius: 268, scale: 0.58, opacity: 0.45 },
-  { angle: -55, radius: 260, scale: 0.72, opacity: 0.62 },
-  { angle: -34, radius: 254, scale: 0.88, opacity: 0.82 },
-  { angle: -12, radius: 250, scale: 1, opacity: 1 },
-  { angle: 9, radius: 252, scale: 1, opacity: 1 },
-  { angle: 30, radius: 254, scale: 0.97, opacity: 0.96 },
-  { angle: 50, radius: 258, scale: 0.93, opacity: 0.9 },
-  { angle: 69, radius: 272, scale: 0.88, opacity: 0.82 },
-  { angle: 86, radius: 284, scale: 0.8, opacity: 0 },
+  { angle: -116, radius: 276, scale: 0.34, opacity: 0, drop: -10 },
+  { angle: -102, radius: 264, scale: 0.44, opacity: 0.3, drop: -8 },
+  { angle: -86, radius: 240, scale: 0.56, opacity: 0.45, drop: 3 },
+  { angle: -68, radius: 230, scale: 0.7, opacity: 0.62, drop: 5 },
+  { angle: -46.5, radius: 221, scale: 0.86, opacity: 0.82, drop: 9 },
+  { angle: -22.6, radius: 214, scale: 1, opacity: 1, drop: 13 },
+  { angle: 2.5, radius: 213, scale: 1, opacity: 1, drop: 20 },
+  { angle: 25.4, radius: 215, scale: 1, opacity: 1, drop: 26 },
+  { angle: 48.8, radius: 217, scale: 0.98, opacity: 0.96, drop: 29 },
+  { angle: 70.3, radius: 221, scale: 0.95, opacity: 0.9, drop: 35 },
+  { angle: 90, radius: 228, scale: 0.86, opacity: 0, drop: 40 },
 ];
 const RING_FOCUS = 5;
 
@@ -77,17 +79,17 @@ export function ringSlot(d: number): RingSlot {
   const i = Math.min(RING.length - 2, Math.floor(p));
   const t = p - i;
   const a = RING[i]!, b = RING[i + 1]!;
-  return { angle: lerp(a.angle, b.angle, t), radius: lerp(a.radius, b.radius, t), scale: lerp(a.scale, b.scale, t), opacity: lerp(a.opacity, b.opacity, t) };
+  return { angle: lerp(a.angle, b.angle, t), radius: lerp(a.radius, b.radius, t), scale: lerp(a.scale, b.scale, t), opacity: lerp(a.opacity, b.opacity, t), drop: lerp(a.drop, b.drop, t) };
 }
 
-export interface RingPlace { x: number; y: number; scale: number; opacity: number; lit: number }
+export interface RingPlace { x: number; y: number; scale: number; opacity: number; drop: number; lit: number }
 
 /** Where an item `d` steps from the focus sits round an orb at (cx, cy), and how lit it is (1 in focus, 0 a step away). */
 export function ringPlace(d: number, cx: number, cy: number): RingPlace {
   const s = ringSlot(d);
   const a = (s.angle * Math.PI) / 180;
   const lit = Math.min(1, Math.max(0, (0.85 - Math.abs(d)) / 0.5));
-  return { x: cx + Math.cos(a) * s.radius, y: cy + Math.sin(a) * s.radius, scale: s.scale, opacity: s.opacity, lit };
+  return { x: cx + Math.cos(a) * s.radius, y: cy + Math.sin(a) * s.radius, scale: s.scale, opacity: s.opacity, drop: s.drop, lit };
 }
 
 /** One frame of easing `from` towards `to`: closes all but e^(-dt/tau) of the gap, and lands when close. */

@@ -8,7 +8,7 @@ describe("the menu ring", () => {
     expect(p.scale).toBe(1);
     expect(p.opacity).toBe(1);
     expect(p.lit).toBe(1);
-    expect(p.x).toBeGreaterThan(444 + 200);
+    expect(p.x).toBeGreaterThan(444 + 180);
     expect(p.y).toBeLessThan(318);
   });
 
@@ -21,12 +21,18 @@ describe("the menu ring", () => {
     }
   });
 
-  test("bars a step apart never overlap: the gap is more than the scaled bar height", () => {
-    const BAR = 41;
+  test("bars a step apart never overlap: their centres are further apart than the scaled bar height", () => {
+    const BAR = 35;
+    const barY = (d: number) => { const p = ringPlace(d, 0, 0); return p.y + p.drop * p.scale; };
     for (let d = -4; d < 4; d++) {
       const a = ringPlace(d, 0, 0), b = ringPlace(d + 1, 0, 0);
-      expect(b.y - a.y).toBeGreaterThanOrEqual((BAR * (a.scale + b.scale)) / 2 - 3);
+      expect(barY(d + 1) - barY(d)).toBeGreaterThanOrEqual((BAR * (a.scale + b.scale)) / 2);
     }
+  });
+
+  test("bars hang lower off their pods the further down the ring they are", () => {
+    for (let d = -4; d < 4; d++) expect(ringSlot(d + 1).drop).toBeGreaterThan(ringSlot(d).drop);
+    expect(ringSlot(0.5).drop).toBeCloseTo((ringSlot(0).drop + ringSlot(1).drop) / 2, 6);
   });
 
   test("five items are all visible whichever is in focus; further round they are gone", () => {

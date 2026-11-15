@@ -85,6 +85,93 @@ export function Orb(props: { turn?: number }) {
   );
 }
 
+/** A menu pod: a thick, soft, slightly lumpy ring of green jelly round a dark
+ *  mottled hole, which fills with pale light when its item is in focus. Each
+ *  seed gives a different wobble. Drawn in a 100-unit box, the ring 70 across. */
+export function Pod(props: { seed: number }) {
+  const id = `dxp${props.seed}`;
+  const u = (name: string) => `url(#${id}-${name})`;
+  return (
+    <span class="dx-pod" aria-hidden="true">
+      <svg viewBox="-50 -50 100 100">
+        <defs>
+          <filter id={`${id}-goo`} x="-25%" y="-25%" width="150%" height="150%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="2" seed={props.seed * 7 + 3} result="n" />
+            <feDisplacementMap in="SourceGraphic" in2="n" scale="8" xChannelSelector="R" yChannelSelector="G" />
+            <feGaussianBlur stdDeviation="0.75" />
+          </filter>
+          <filter id={`${id}-mottle`} x="0" y="0" width="100%" height="100%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.085" numOctaves="3" seed={props.seed * 5 + 11} />
+            <feColorMatrix type="matrix" values="0 0 0 0 0.1  0 0 0 0 0.34  0 0 0 0 0.07  2.2 0 0 0 -0.95" />
+            <feComposite in2="SourceGraphic" operator="in" />
+            <feGaussianBlur stdDeviation="0.9" />
+          </filter>
+          <filter id={`${id}-soft`} x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="4" /></filter>
+          <filter id={`${id}-haze`} x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2" /></filter>
+          <radialGradient id={`${id}-hole`}>
+            <stop offset="0" stop-color="#010801" />
+            <stop offset=".62" stop-color="#051f06" />
+            <stop offset="1" stop-color="#14480d" />
+          </radialGradient>
+          <radialGradient id={`${id}-rim`} gradientUnits="userSpaceOnUse" cx="-3" cy="-4" r="38">
+            <stop offset=".58" stop-color="#1f5f12" stop-opacity=".9" />
+            <stop offset=".68" stop-color="#5fa434" stop-opacity=".92" />
+            <stop offset=".8" stop-color="#9ccc64" stop-opacity=".9" />
+            <stop offset=".9" stop-color="#7ab646" stop-opacity=".88" />
+            <stop offset="1" stop-color="#3f8a22" stop-opacity=".7" />
+          </radialGradient>
+          <radialGradient id={`${id}-lit`}>
+            <stop offset="0" stop-color="#d2d0c6" />
+            <stop offset=".5" stop-color="#bcc0a8" />
+            <stop offset=".8" stop-color="#9aad78" stop-opacity=".85" />
+            <stop offset="1" stop-color="#86a85a" stop-opacity="0" />
+          </radialGradient>
+        </defs>
+        <circle class="dx-pod-bloom" r="30" filter={u("soft")} />
+        <circle r="26" fill={u("hole")} />
+        <circle r="26" fill="#fff" filter={u("mottle")} />
+        <g filter={u("goo")}>
+          <g transform={`rotate(${props.seed * 67})`}>
+            <path class="dx-pod-swirl" d="M-11 5A12 12 0 0 1 7 -9M-3 13A9 9 0 0 0 12 1" />
+            <circle class="dx-pod-bud" cx="27" cy="23" r="5.5" />
+            <circle class="dx-pod-bud" cx="-33" cy="-12" r="3.2" />
+          </g>
+          <circle r="29.5" fill="none" stroke={u("rim")} stroke-width="11.5" />
+          <path class="dx-pod-shine" d="M-29 -10A30.5 30.5 0 0 1 -4 -30.5" />
+        </g>
+        <circle class="dx-pod-lit" r="25.5" fill={u("lit")} filter={u("haze")} />
+      </svg>
+    </span>
+  );
+}
+
+/** The tendril from a pod to its bar: a faint wire that wanders up off the
+ *  pod with a few kinks and side shoots, then drops (as far as the bar hangs)
+ *  onto the corner of the bar's bracket. */
+export function Vine() {
+  return (
+    <span class="dx-vine" aria-hidden="true">
+      <svg viewBox="0 0 36 26">
+        <path d="M2 23L6 17L5 11L10 7L16 8L18 4L24 5L28 9V14" />
+        <path d="M10 7L9 2H13M18 4L21 1M24 5L31 4L33 7M5 11L1 10" />
+        <path class="dx-vine-node" d="M4.5 16.5H7.5V19.5H4.5ZM22.5 3.5H25.5V6.5H22.5Z" />
+      </svg>
+      <i />
+    </span>
+  );
+}
+
+/** The open stepped bracket that sits behind a bar's top left corner, outline only. */
+export function Bracket() {
+  return (
+    <svg class="dx-bracket" viewBox="-12 -13 124 56" aria-hidden="true">
+      <path d="M-7 24V-5L-3 -9H86L95 0" />
+      <path d="M-7 28V33L-2 38H26" />
+      <path class="dx-bracket-in" d="M-2 -4.5H80" />
+    </svg>
+  );
+}
+
 /** Latitude and longitude lines of a sphere, seen slightly from above. */
 function WireSphere() {
   const longs = [8, 22, 35, 45];
