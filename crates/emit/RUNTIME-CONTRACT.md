@@ -149,13 +149,39 @@ returns its event id. Generated code then returns `STOP`/`ENTRY` with
 module. Copy them if they are kept beyond the call. `detail` starts with
 the ISA class (`integer:`, `x87:`, `sse:`, `mmx:`).
 
-### 1.5 Nothing else
+### 1.5 `h2shim_v1_rdtsc` (**new**, runtime exports)
+
+```c
+uint64_t h2shim_v1_rdtsc(ExecCtxOpaque *ctx, uint32_t pc);
+```
+
+`rdtsc` at `pc`: the guest's time-stamp counter, which generated code splits
+into EDX:EAX. It cannot fail and records no event. The runtime keeps one
+counter for every thread (the Xbox has one CPU), in `crates/runtime/src/tsc.rs`:
+
+- It counts at the Xbox CPU's clock, `runtime::tsc::TSC_HZ` = 733,333,333 Hz
+  (a 733 MHz Pentium III: a 133⅓ MHz bus times 5.5). That constant is the only
+  definition of the frequency.
+- It follows guest time: an embedder installs a clock with
+  `Runtime::set_guest_clock` (100 ns ticks; the kernel installs its logical
+  clock, the one `KeQueryPerformanceCounter` reads), and the counter is that
+  time in cycles.
+- Every read is at least `TSC_MIN_STEP` (64) cycles past the one before, so
+  a guest spinning on the counter while logical time stands still still gets
+  out. With no clock installed the step is all it does.
+
+The emitter's test host and the IR interpreter count reads instead (each read
+returns the counter and adds one), so differential tests are exact.
+
+### 1.6 Nothing else
 
 Handlers call no other runtime symbol. x87, MMX and MXCSR state are read
 and written directly in `CpuAbi` by `static inline` helpers in `h2gen.h`,
 and SSE floating point by the `h2s_*` functions of `h2simd.h` (copied next
 to `h2gen.h`, which includes it). Those helpers mirror
-`ir::interp::intrinsic` and need no runtime support.
+`ir::interp::intrinsic` (all but `ReadTsc`, which is §1.5) and need no
+runtime support. `cpuid` is constant IR (`lift::lower::XBOX_CPUID`), and
+`cli`, `sti` and `wbinvd` lower to nothing.
 
 MMX registers live in `X87Abi.st`, in physical order: `mmN` is `st[N]`
 bytes 0-7, and an MMX write sets bytes 8-9 to 0xFFFF. Every MMX instruction

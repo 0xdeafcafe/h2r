@@ -47,8 +47,8 @@ use std::collections::BTreeSet;
 
 
 use ir::{
-    Addr, Atomic, AtomicOp, BinOp, CastOp, CmpOp, Control, Dest, Expr, Fault, Flag, FlagValue, Gpr, IrFunction, IrInsn,
-    RepKind, Segment, Slice, Stmt, StopReason, Target, Temp, UnOp, Value, Width,
+    Addr, Atomic, AtomicOp, BinOp, CastOp, CmpOp, Control, Dest, Expr, Fault, Flag, FlagValue, Gpr, Intrinsic,
+    IrFunction, IrInsn, RepKind, Segment, Slice, Stmt, StopReason, Target, Temp, UnOp, Value, Width,
 };
 
 /// Everything the emitter needs to know about one owner's place in the
@@ -439,6 +439,10 @@ impl Emitter<'_> {
                         self.stmts(otherwise, insn, d + 1);
                     }
                     self.line(d, "}");
+                }
+                Stmt::Intrinsic { op: Intrinsic::ReadTsc, dsts, .. } => {
+                    // The counter is the runtime's; it cannot fail.
+                    self.line(d, format!("uint64_t t{} = h2shim_v1_rdtsc(ctx, {pc:#x}u);", dsts[0].id));
                 }
                 Stmt::Intrinsic { op, args, dsts } => {
                     // Results are locals of the instruction; the helper

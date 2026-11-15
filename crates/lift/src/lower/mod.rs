@@ -31,6 +31,9 @@ mod integer;
 mod mmx;
 mod sse;
 mod string;
+mod system;
+
+pub use system::XBOX_CPUID;
 
 type R<T = ()> = Result<T, String>;
 
@@ -388,6 +391,13 @@ impl Lower<'_> {
             M::Int => self.control = Control::Fault(Fault::Interrupt(insn.immediate8())),
             M::Ud2 => self.control = Control::Fault(Fault::InvalidOpcode),
             M::Hlt => self.control = Control::Stop(StopReason::Halt),
+
+            M::Rdtsc => self.rdtsc(),
+            M::Cpuid => self.cpuid(),
+            // IF is not modelled: nothing interrupts generated code, and
+            // `popfd` stops rather than change IF. Guest memory is coherent
+            // and uncached as far as lifted code can tell.
+            M::Cli | M::Sti | M::Wbinvd => {}
 
             // SSE data movement and bitwise ops: exact bit copies, so no
             // floating-point semantics (MXCSR, NaNs, denormals) are needed.

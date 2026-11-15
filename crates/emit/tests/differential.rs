@@ -7,11 +7,11 @@
 //! shifts and rotates by immediates and by CL (including zero), multiply
 //! and divide (and `#DE`), bit ops, atomics, string ops with REP (and a
 //! fault mid-iteration), stack and EFLAGS forms, branches and loops, SSE
-//! moves (and the alignment `#GP`), FP control intrinsics, traps, and
-//! transfers that leave the function. Each runs from many random states
-//! whose pointers land in, near and outside mapped memory, so loads and
-//! stores fault some of the time. Needs `h2abi.h` (`H2ABI_HEADER` or the
-//! workspace copy) and clang.
+//! moves (and the alignment `#GP`), FP control intrinsics, `rdtsc` and
+//! `cpuid`, traps, and transfers that leave the function. Each runs from
+//! many random states whose pointers land in, near and outside mapped
+//! memory, so loads and stores fault some of the time. Needs `h2abi.h`
+//! (`H2ABI_HEADER` or the workspace copy) and clang.
 
 mod common;
 
@@ -442,6 +442,20 @@ fn fixtures() -> Vec<(&'static str, Asm)> {
             a.wait()?;
             a.ret()
         }),
+        ("processor", |a| {
+            a.rdtsc()?;
+            a.mov(esi, eax)?;
+            a.mov(edi, edx)?;
+            a.cli()?;
+            a.wbinvd()?;
+            a.sti()?;
+            a.rdtsc()?;
+            a.mov(ebp, eax)?;
+            a.and(eax, 3)?; // leaves 0-2, and 3, past the highest
+            a.cpuid()?;
+            a.cpuid()?; // whatever the last leaf left in EAX
+            a.ret()
+        }),
         ("traps", |a| {
             let mut first = a.create_label();
             let mut done = a.create_label();
@@ -656,6 +670,9 @@ fn random_state(rng: &mut Rng) -> (Cpu, FlatMemory) {
         }
     }
     cpu.mxcsr = rng.next() & ir::interp::MXCSR_MASK;
+    // Half the time just short of the top, so the counter wraps.
+    let tsc = u64::from(rng.next()) << 32 | u64::from(rng.next());
+    cpu.tsc = if rng.next() & 1 == 0 { tsc } else { u64::MAX - (tsc & 0xff) };
     (cpu, mem)
 }
 
@@ -680,6 +697,8 @@ fn generated_c_matches_the_interpreter() {
             let (mut cpu, mut mem) = random_state(&mut rng);
             let mut abi = CpuAbi::from_interp(&cpu);
             let mut ctx = Ctx::new(mem.clone());
+            // The C side's counter lives in the host context.
+            ctx.tsc = cpu.tsc;
             let want = run_interp(f, &mut cpu, &mut mem);
             let got = run_c(&g, f.entry, &mut abi, &mut ctx);
             let kind = format!("{want:?}").split([' ', '(', '{']).next().unwrap().to_owned();
@@ -688,7 +707,7 @@ fn generated_c_matches_the_interpreter() {
             if got != want {
                 why.push(format!("end: C {got:x?}, interpreter {want:x?}"));
             }
-            let c = abi.to_interp();
+            let c = ir::interp::Cpu { tsc: ctx.tsc, ..abi.to_interp() };
             if c != cpu {
                 why.push(format!("cpu:\n  C    {c:x?}\n  interp {cpu:x?}"));
             }

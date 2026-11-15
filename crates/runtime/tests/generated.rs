@@ -862,6 +862,29 @@ fn diagnostic_strings_are_owned_and_read_no_further_than_the_cap() {
     assert_eq!(strings(&ctx, id), ("aaa".into(), "<null>".into()));
 }
 
+#[test]
+fn rdtsc_follows_the_guest_clock_and_never_repeats() {
+    use runtime::generated::h2shim_v1_rdtsc;
+    use runtime::tsc::{TSC_HZ, TSC_MIN_STEP};
+    let (_, _, mut ctx) = setup(|_| {});
+    // SAFETY: `ctx` is this thread's exclusive context.
+    let mut read = || unsafe { h2shim_v1_rdtsc(shim(&mut ctx), 0x10) };
+    let (a, b) = (read(), read());
+    assert_eq!(b - a, TSC_MIN_STEP, "no clock installed: the step alone");
+    let ticks = Arc::new(std::sync::atomic::AtomicU64::new(30_000_000));
+    let t = ticks.clone();
+    let clock = Arc::new(move || Some(t.load(std::sync::atomic::Ordering::SeqCst)));
+    let (_, _, mut ctx) = setup(|_| {});
+    ctx.runtime().set_guest_clock(Some(clock));
+    // SAFETY: as above.
+    let mut read = || unsafe { h2shim_v1_rdtsc(shim(&mut ctx), 0x10) };
+    assert_eq!(read(), 3 * TSC_HZ, "three seconds of guest time");
+    assert_eq!(read(), 3 * TSC_HZ + TSC_MIN_STEP);
+    ticks.store(40_000_000, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(read(), 4 * TSC_HZ);
+    assert!(ctx.events().is_empty(), "{:?}", ctx.events());
+}
+
 /// Rust overrides at three code addresses: MAIN calls LEAF, LEAF calls
 /// THIRD, and THIRD either restores MAIN's ESP and jumps back into MAIN (a
 /// longjmp) or tail-jumps to TAIL with ESP at its own return slot.

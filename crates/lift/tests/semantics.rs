@@ -930,9 +930,9 @@ fn lower_one(code: &[u8], env: &Env, site: Site<'_>) -> ir::IrInsn {
 
 #[test]
 fn unsupported_is_a_terminal_stop() {
-    // cpuid (0f a2) and a far jmp (ea ...) are not lowered: they stop,
+    // in al, dx (ec) and a far jmp (ea ...) are not lowered: they stop,
     // they never fall through.
-    for code in [&[0x0F, 0xA2][..], &[0xEA, 0, 0, 0, 0, 0x08, 0][..]] {
+    for code in [&[0xEC][..], &[0xEA, 0, 0, 0, 0, 0x08, 0][..]] {
         let ir = lower_one(code, &Env::default(), Site::Plain);
         assert!(!ir.is_supported());
         assert_eq!(ir.control, ir::Control::Stop(ir::StopReason::Unsupported));
@@ -1399,4 +1399,58 @@ fn mmx_shift_counts_of_the_lane_width_or_more_clear_or_fill() {
     assert_eq!(mm(0), 0);
     assert_eq!(mm(2), 0xffff_0000_ffff_0000);
     assert_eq!(mm(3), 0x10);
+}
+
+// ---- processor model -------------------------------------------------------
+
+#[test]
+fn rdtsc_splits_the_counter_into_edx_eax() {
+    // rdtsc (0f 31) twice: the interpreter's counter returns and counts up.
+    // EDX:EAX is the whole 64 bits; flags and other registers are kept.
+    let (c, _) = run(&[0x0F, 0x31, 0x89, 0xC1, 0x0F, 0x31], |c, _| {
+        c.tsc = 0x1234_5678_FFFF_FFFF;
+        c.set_flag(Cf, true);
+    });
+    // mov ecx, eax (89 c1) kept the first low half.
+    assert_eq!(c.reg(Ecx), 0xFFFF_FFFF);
+    assert_eq!((c.reg(Edx), c.reg(Eax)), (0x1234_5679, 0));
+    assert_eq!(c.tsc, 0x1234_5679_0000_0001);
+    flags(&c, &[(Cf, true)]);
+}
+
+#[test]
+fn cpuid_describes_the_xbox_pentium_iii() {
+    // cpuid (0f a2) for each leaf in EAX; ECX is ignored.
+    let leaf = |n: u32| {
+        let (c, _) = run(&[0x0F, 0xA2], |c, _| {
+            c.set_reg(Eax, n);
+            c.set_reg(Ecx, 0xDEAD);
+        });
+        [c.reg(Eax), c.reg(Ebx), c.reg(Ecx), c.reg(Edx)]
+    };
+    let vendor = leaf(0);
+    assert_eq!(vendor[0], 2, "highest basic leaf");
+    let name: Vec<u8> = [vendor[1], vendor[3], vendor[2]].iter().flat_map(|r| r.to_le_bytes()).collect();
+    assert_eq!(name, b"GenuineIntel");
+    // What 0x34881d unpacks: stepping, model, family (bits 0-3, 4-7, 8-11),
+    // then MMX, SSE and SSE2 (EDX bits 23, 25, 26).
+    let [sig, _, _, features] = leaf(1);
+    assert_eq!((sig & 0xF, sig >> 4 & 0xF, sig >> 8 & 0xF), (10, 8, 6));
+    assert_eq!((features >> 23 & 1, features >> 25 & 1, features >> 26 & 1), (1, 1, 0));
+    // TSC and CMOV, and the CX8 the kernel's interlocked helpers assume.
+    assert_eq!((features >> 4 & 1, features >> 15 & 1, features >> 8 & 1), (1, 1, 1));
+    assert_eq!(leaf(2), lift::lower::XBOX_CPUID[2]);
+    // Past the highest leaf, extended leaves included: leaf 2 again.
+    assert_eq!(leaf(3), leaf(2));
+    assert_eq!(leaf(0x8000_0000), leaf(2));
+    assert!(leaf(0x8000_0000)[0] < 0x8000_0000, "no extended leaves");
+}
+
+#[test]
+fn cli_sti_and_wbinvd_change_nothing() {
+    // cli (fa), sti (fb), wbinvd (0f 09).
+    let before = cpu();
+    let (mut c, _) = run(&[0xFA, 0xFB, 0x0F, 0x09], |_, _| {});
+    c.eip = before.eip;
+    assert_eq!(c, Cpu { eip: c.eip, ..before });
 }

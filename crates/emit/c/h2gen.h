@@ -42,6 +42,8 @@ typedef unsigned __int128 h2u128;
 uint32_t h2shim_v1_event(ExecCtxOpaque *, uint32_t pc, uint32_t saved_eip, uint32_t code, uint32_t arg);
 /* An instruction the lifter does not implement: a STOP with diagnostics. */
 uint32_t h2shim_v1_unsupported(ExecCtxOpaque *, uint32_t pc, const char *mnemonic, const char *detail);
+/* rdtsc at pc: the guest's time-stamp counter, which the runtime keeps. */
+uint64_t h2shim_v1_rdtsc(ExecCtxOpaque *, uint32_t pc);
 /* Atomics use the ABI's own operation-wide accessors (h2abi_v1_atomic_rmw,
  * h2abi_v1_xchg, h2abi_v1_cmpxchg); see H2_ATOMIC and
  * crates/emit/RUNTIME-CONTRACT.md. */

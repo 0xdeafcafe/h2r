@@ -22,6 +22,7 @@ pub mod kernel;
 pub mod loader;
 pub mod runner;
 pub mod services;
+pub mod tsc;
 pub mod watch;
 
 pub use abi::{GuestFn, TransferAbi};

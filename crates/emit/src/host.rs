@@ -232,11 +232,14 @@ pub struct Ctx {
     /// Calls to the atomic accessors, by `H2_ATOMIC_*` tag (`xchg` is 15,
     /// `cmpxchg` 16), so tests can see the operation-wide path was taken.
     pub atomics: Vec<u32>,
+    /// What `h2shim_v1_rdtsc` returns next; counts up like the
+    /// interpreter's [`ir::interp::Cpu::tsc`].
+    pub tsc: u64,
 }
 
 impl Ctx {
     pub fn new(mem: FlatMemory) -> Self {
-        Ctx { mem, events: Vec::new(), atomics: Vec::new() }
+        Ctx { mem, events: Vec::new(), atomics: Vec::new(), tsc: 0 }
     }
 
     fn emit(&mut self, e: HostEvent) -> u32 {
@@ -255,6 +258,7 @@ struct Bridge {
     write: unsafe extern "C" fn(*mut c_void, u32, u32, u32, u32, *const u8) -> u32,
     event: unsafe extern "C" fn(*mut c_void, u32, u32, u32, u32) -> u32,
     unsupported: unsafe extern "C" fn(*mut c_void, u32, *const c_char, *const c_char) -> u32,
+    rdtsc: unsafe extern "C" fn(*mut c_void, u32) -> u64,
     rmw: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, u32, *mut u32) -> u32,
     xchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
@@ -300,6 +304,15 @@ unsafe extern "C" fn cb_unsupported(c: *mut c_void, pc: u32, m: *const c_char, d
     let ctx = unsafe { &mut *c.cast::<Ctx>() };
     let s = |p: *const c_char| unsafe { CStr::from_ptr(p) }.to_string_lossy().into_owned();
     ctx.emit(HostEvent::Unsupported { pc, mnemonic: s(m), detail: s(d) })
+}
+
+/// The interpreter's TSC stand-in ([`ir::interp::Cpu::tsc`]): each read
+/// returns the counter and adds one.
+unsafe extern "C" fn cb_rdtsc(c: *mut c_void, _pc: u32) -> u64 {
+    let ctx = unsafe { &mut *c.cast::<Ctx>() };
+    let t = ctx.tsc;
+    ctx.tsc = t.wrapping_add(1);
+    t
 }
 
 // ---- atomics: h2abi.h v1 contract, after the runtime's atomic.rs ----------
@@ -510,6 +523,7 @@ impl Generated {
                 write: cb_write,
                 event: cb_event,
                 unsupported: cb_unsupported,
+                rdtsc: cb_rdtsc,
                 rmw: cb_rmw,
                 xchg: cb_xchg,
                 cmpxchg: cb_cmpxchg,

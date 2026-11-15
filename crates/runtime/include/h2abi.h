@@ -93,7 +93,9 @@ uint32_t h2abi_v1_cmpxchg8b(CpuAbi *, ExecCtxOpaque *, uint32_t pc, uint32_t add
  * records a guest exception (codes 1-7, 13; latched like a failed access) or a
  * stop (8-12) and returns its non-zero event id; saved_eip is the EIP the
  * exception reports (the next instruction for traps). h2shim_v1_unsupported
- * copies both strings and returns a stop's event id. These macros and
+ * copies both strings and returns a stop's event id. h2shim_v1_rdtsc returns
+ * the guest's time-stamp counter (rdtsc at pc): guest time at the Xbox CPU's
+ * 733 MHz, strictly increasing across every thread's reads. These macros and
  * prototypes are token-identical to the emitter's h2gen.h, so both headers can
  * be included together. */
 #define H2SHIM_DIVIDE_ERROR 1u
@@ -112,6 +114,7 @@ uint32_t h2abi_v1_cmpxchg8b(CpuAbi *, ExecCtxOpaque *, uint32_t pc, uint32_t add
 #define H2SHIM_FP_ERROR 14u
 uint32_t h2shim_v1_event(ExecCtxOpaque *, uint32_t pc, uint32_t saved_eip, uint32_t code, uint32_t arg);
 uint32_t h2shim_v1_unsupported(ExecCtxOpaque *, uint32_t pc, const char *mnemonic, const char *detail);
+uint64_t h2shim_v1_rdtsc(ExecCtxOpaque *, uint32_t pc);
 
 static inline TransferAbi h2_transfer(uint32_t kind, uint32_t route,
                                      uint32_t target, uint32_t resume,

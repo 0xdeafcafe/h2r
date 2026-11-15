@@ -193,6 +193,10 @@ pub struct Cpu {
     pub xmm: [u128; 8],
     pub x87: X87,
     pub mxcsr: u32,
+    /// The time-stamp counter [`Intrinsic::ReadTsc`] returns. Each read
+    /// returns it and adds one, so it is deterministic and never repeats; a
+    /// runtime derives the real one from guest time instead.
+    pub tsc: u64,
 }
 
 impl Default for Cpu {
@@ -206,12 +210,14 @@ impl Default for Cpu {
             xmm: [0; 8],
             x87: X87::default(),
             mxcsr: MXCSR_DEFAULT,
+            tsc: 0,
         }
     }
 }
 
-/// Execute one [`Intrinsic`] on `cpu`'s FP state. The C helpers in the
-/// emitter's support header implement exactly this.
+/// Execute one [`Intrinsic`] on `cpu`'s FP state (or its TSC). The C
+/// helpers in the emitter's support header implement exactly this, except
+/// [`Intrinsic::ReadTsc`], which the runtime answers.
 pub fn intrinsic(cpu: &mut Cpu, op: Intrinsic, args: &[u128]) -> Result<Vec<u128>, Fault> {
     use Intrinsic::*;
     Ok(match op {
@@ -254,6 +260,11 @@ pub fn intrinsic(cpu: &mut Cpu, op: Intrinsic, args: &[u128]) -> Result<Vec<u128
             vec![]
         }
         Sse(op) => return sse(cpu, op, args),
+        ReadTsc => {
+            let t = cpu.tsc;
+            cpu.tsc = t.wrapping_add(1);
+            vec![t as u128]
+        }
     })
 }
 
@@ -923,6 +934,15 @@ mod tests {
         cpu.x87.status = 0;
         assert_eq!(intrinsic(&mut cpu, Intrinsic::Emms, &[]), Ok(vec![]));
         assert_eq!(cpu.x87.tag, 0xFFFF);
+    }
+
+    #[test]
+    fn the_tsc_counts_reads_and_wraps() {
+        let mut cpu = Cpu { tsc: u64::MAX, ..Cpu::default() };
+        assert_eq!(Intrinsic::ReadTsc.signature(), (&[][..], &[Width::W64][..]));
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::ReadTsc, &[]), Ok(vec![u64::MAX as u128]));
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::ReadTsc, &[]), Ok(vec![0]));
+        assert_eq!(cpu.tsc, 1);
     }
 }
 

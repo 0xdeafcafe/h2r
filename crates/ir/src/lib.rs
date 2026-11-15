@@ -629,9 +629,9 @@ impl SseOp {
     }
 }
 
-/// Floating-point state operations, executed by [`Stmt::Intrinsic`]. See
-/// the crate docs for the FP state they act on. `args`/`dsts` widths are
-/// given by [`Intrinsic::signature`].
+/// Floating-point state operations, executed by [`Stmt::Intrinsic`], and
+/// the time-stamp counter. See the crate docs for the FP state they act on.
+/// `args`/`dsts` widths are given by [`Intrinsic::signature`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Intrinsic {
     /// `fninit`: control word 0x037F, status 0, all tags empty, pointers
@@ -665,6 +665,12 @@ pub enum Intrinsic {
     X87Wait,
     /// An SSE floating-point operation; see [`SseOp`].
     Sse(SseOp),
+    /// `rdtsc`: `dsts[0]` (`W64`) = the time-stamp counter. It belongs to
+    /// the runtime, not to the instruction stream: the C backend asks the
+    /// runtime for it (`h2shim_v1_rdtsc`), which derives it from guest time
+    /// at the Xbox CPU's clock and never returns the same value twice. The
+    /// interpreter's [`interp::Cpu::tsc`] is a stand-in that counts reads.
+    ReadTsc,
 }
 
 impl Intrinsic {
@@ -679,6 +685,7 @@ impl Intrinsic {
             MxcsrWrite => (&[Width::W32], &[]),
             MmxEnter | Emms | X87Wait => (&[], &[]),
             Sse(op) => op.signature(),
+            ReadTsc => (&[], &[Width::W64]),
         }
     }
 
@@ -726,6 +733,7 @@ impl Intrinsic {
             X87ClearExceptions => "x87_clear_exceptions",
             MxcsrRead => "mxcsr_read",
             MxcsrWrite => "mxcsr_write",
+            ReadTsc => "read_tsc",
         }
     }
 }

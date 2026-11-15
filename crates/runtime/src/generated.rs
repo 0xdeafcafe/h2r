@@ -33,6 +33,18 @@ pub unsafe extern "C" fn h2shim_v1_event(
     ctx.shim_event(pc, saved_eip, code, arg)
 }
 
+/// `rdtsc` at `pc`: the guest's time-stamp counter ([`crate::tsc`]). Never
+/// fails, records nothing, and returns a different value every call.
+///
+/// # Safety
+/// `exec` is the current exclusive handle supplied to the running handler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2shim_v1_rdtsc(exec: *mut ExecCtxOpaque, _pc: u32) -> u64 {
+    // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    ctx.runtime().read_tsc()
+}
+
 /// Longest string kept from a module's diagnostic, in input bytes.
 pub const MAX_DIAGNOSTIC: usize = 512;
 

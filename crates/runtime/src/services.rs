@@ -1,11 +1,17 @@
 //! Shared memory and dispatch services. Locks end before handler calls.
-use crate::{Dispatch, Guest, TransferAbi, abi, dispatch::Handler, handler::OriginalHandler};
+use crate::{
+    Dispatch, Guest, TransferAbi, abi,
+    dispatch::Handler,
+    handler::OriginalHandler,
+    tsc::{GuestClock, Tsc},
+};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 pub struct Runtime {
     memory: Mutex<Guest>,
     dispatch: RwLock<Dispatch>,
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
+    tsc: Tsc,
 }
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
@@ -13,7 +19,17 @@ impl Runtime {
             memory: Mutex::new(memory),
             dispatch: RwLock::new(dispatch),
             interrupts: Default::default(),
+            tsc: Tsc::default(),
         })
+    }
+    /// Install (or with `None` remove) the guest-time source the
+    /// time-stamp counter follows; see [`crate::tsc`].
+    pub fn set_guest_clock(&self, clock: Option<GuestClock>) {
+        self.tsc.set_clock(clock);
+    }
+    /// What `rdtsc` reads next; see [`crate::tsc`].
+    pub fn read_tsc(&self) -> u64 {
+        self.tsc.read()
     }
     /// Compound HLE operations use this guard, including Guest::call/ret.
     /// Release it before dispatching or invoking callbacks.
