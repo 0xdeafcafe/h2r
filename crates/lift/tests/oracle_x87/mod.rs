@@ -335,6 +335,10 @@ impl X87Check {
         // What the destination's masked bits contribute to the result, for
         // the flags computed from it.
         let mut read_masked = false;
+        // The destination's masked bits that reach the result, as bits of
+        // the operand, when only the destination brings any.
+        let mut result_masked = 0u32;
+        let mut source_masked = false;
         // `xor r, r` / `sub r, r`: zero whatever r held.
         let zeroing = matches!(m, M::Xor | M::Sub)
             && insn.op0_kind() == OpKind::Register
@@ -356,6 +360,11 @@ impl X87Check {
                 && self.eax & kept != 0
             {
                 read_masked = true;
+                if dest {
+                    result_masked |= (self.eax & kept) >> shift;
+                } else {
+                    source_masked = true;
+                }
             }
             if zeroing && dest {
                 self.eax &= !bits;
@@ -381,8 +390,10 @@ impl X87Check {
                     for (b, bits) in self.mem.iter_mut() {
                         let k = b.wrapping_sub(a);
                         if k < n {
-                            if *bits & (kept >> (8 * k)) as u8 != 0 {
+                            let through = *bits & (kept >> (8 * k)) as u8;
+                            if through != 0 {
                                 read_masked = true;
+                                result_masked |= (through as u32) << (8 * k);
                             }
                             if u.access() == OpAccess::ReadWrite {
                                 *bits &= !((decided >> (8 * k)) as u8);
@@ -394,13 +405,24 @@ impl X87Check {
                 _ => {}
             }
         }
-        // Flags computed from masked bits: `sahf` from AH bit for bit,
-        // anything else that reads them wholesale.
+        // Flags computed from masked bits: `sahf` from AH bit for bit; a
+        // logic op on its destination flag by flag, from where the masked
+        // bits land in the result (ZF anywhere, SF the top bit, PF the low
+        // byte; OF/CF are cleared); anything else wholesale.
+        let logic = matches!(m, M::And | M::Or | M::Xor | M::Test);
         if m == M::Sahf {
             let map = [(0x01, 0x001), (0x04, 0x004), (0x10, 0x010), (0x40, 0x040), (0x80, 0x080)];
             self.flags |= map.iter().filter(|(b, _)| ah & b != 0).map(|(_, f)| f).sum::<u32>();
+        } else if logic && read_masked && !source_masked {
+            let width = match insn.op0_kind() {
+                OpKind::Register => insn.op0_register().size(),
+                _ => insn.memory_size().size(),
+            } as u32
+                * 8;
+            let top = 1u32 << (width - 1);
+            let f = [(result_masked != 0, 0x40), (result_masked & top != 0, 0x80), (result_masked & 0xff != 0, 0x04)];
+            self.flags |= modified & f.iter().filter(|(on, _)| *on).map(|(_, b)| b).sum::<u32>();
         } else if read_masked {
-            let logic = matches!(m, M::And | M::Or | M::Xor | M::Test);
             self.flags |= if logic { modified & 0x00c4 } else { modified }; // SF ZF PF
         }
         self.predicted = None;

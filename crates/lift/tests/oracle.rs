@@ -769,6 +769,14 @@ mod harness {
         let fl = &mut f["outcome"]["state"]["eflags"];
         *fl = json!(u32_of(fl) ^ 0x40);
         assert_eq!(outcome(&f), Ok(Ok(())), "C0 and ZF from it stay masked");
+        // The result has only bits 8, 10 and 14: SF (bit 15) is 0 and PF
+        // (the low byte, 0) is 1 whatever the C bits were; both compared.
+        for flag in [0x80u32, 0x04] {
+            let mut g = agreeing("and-c-bits", &code, start.clone(), &[0; 64]);
+            let fl = &mut g["outcome"]["state"]["eflags"];
+            *fl = json!(u32_of(fl) ^ flag);
+            assert!(outcome(&g).unwrap_err().contains("eflags"), "flag {flag:#x}");
+        }
         f["outcome"]["state"]["eax"] = json!(0x1234_0000);
         assert!(outcome(&f).unwrap_err().contains("Eax"), "the high half is compared");
 
