@@ -1,0 +1,11 @@
+[package]
+name = "kernel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime.workspace = true
+xbe.workspace = true
+thiserror.workspace = true
+vfs = { path = "../vfs" }
