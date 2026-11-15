@@ -65,6 +65,12 @@ pub mod method {
     /// the vertex-format dirty bit (`0x10`) is set. Inline arrays
     /// (`0x1818`) are unpacked with these.
     pub const VERTEX_DATA_ARRAY_FORMAT: u32 = 0x1760;
+    /// `NV097_SET_EYE_VECTOR` (3 floats, into `NV_PGRAPH_EYEVEC0..2`): the
+    /// constant eye vector of the texture shader's `DOT_RFLCT_SPEC_CONST`
+    /// mode. No retail Halo 2 shader uses that mode, and no push of this
+    /// method has been seen; it is kept so a push lands in
+    /// [`HwState::eye_vector`] instead of stopping as unknown.
+    pub const EYE_VECTOR: u32 = 0x181C;
     /// `NV097_CLEAR_REPORT_VALUE`: zeroes the report counter its parameter
     /// names (1, `ZPASS_PIXEL_CNT`, the only type D3D uses). Halo's inlined
     /// `BeginVisibilityTest` (`0x20cec`) pushes it with
@@ -151,6 +157,9 @@ pub struct HwState {
     /// `SET_ZPASS_PIXEL_COUNT_ENABLE`: draws issued while it is set count
     /// the samples they pass ([`crate::backend::Backend::report_pixel_count`]).
     pub zpass_count_enable: bool,
+    /// `SET_EYE_VECTOR`: the eye vector `DOT_RFLCT_SPEC_CONST` reflects
+    /// (the pixel uniforms' `eye`).
+    pub eye_vector: [f32; 3],
 }
 
 /// The reset value of every `SET_VERTEX_DATA_ARRAY_FORMAT` register: float,
@@ -177,6 +186,7 @@ impl Default for HwState {
             vertex_format: [VERTEX_FORMAT_DISABLED; 16],
             vertex_offset: [0; 16],
             zpass_count_enable: false,
+            eye_vector: [0.0; 3],
         }
     }
 }
@@ -259,6 +269,9 @@ impl HwState {
                 self.vertex_format[((m - VERTEX_DATA_ARRAY_FORMAT) / 4) as usize] = w;
             }
             ZPASS_PIXEL_COUNT_ENABLE => self.zpass_count_enable = w != 0,
+            _ if (EYE_VECTOR..EYE_VECTOR + 12).contains(&m) => {
+                self.eye_vector[((m - EYE_VECTOR) / 4) as usize] = f;
+            }
             ZSTENCIL_CLEAR_VALUE => self.zstencil_clear_value = w,
             COLOR_CLEAR_VALUE => self.color_clear_value = w,
             EXECUTION_MODE => self.execution_mode = w,
@@ -327,6 +340,25 @@ mod tests {
         assert_eq!(m.constants[58 * 4 + 1], 2.0f32.to_bits());
         assert_eq!(m.constants[59 * 4], 0.5f32.to_bits());
         assert!(!hw.apply(0x17FC, 0, &mut m).unwrap());
+    }
+
+    #[test]
+    fn eye_vector_lands_in_its_three_registers() {
+        let (mut c, mut p) = mems();
+        let mut m = Memories {
+            constants: &mut c,
+            program: &mut p,
+        };
+        let mut hw = HwState::default();
+        for (i, v) in [0.5f32, -1.0, 2.0].iter().enumerate() {
+            assert!(
+                hw.apply(method::EYE_VECTOR + 4 * i as u32, v.to_bits(), &mut m)
+                    .unwrap()
+            );
+        }
+        assert_eq!(hw.eye_vector, [0.5, -1.0, 2.0]);
+        // The method after it is not part of it.
+        assert!(!hw.apply(method::EYE_VECTOR + 12, 0, &mut m).unwrap());
     }
 
     #[test]

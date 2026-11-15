@@ -431,6 +431,7 @@ inline, with site/function counts:
 | `0x1480` | `SET_STIPPLE_PATTERN`, 32 words (`0x0001e4ae`, in `0x0001e370`; what `SetStipple` pushes) | 1 / 1 | yes (register state) |
 | `0x1710` | `BREAK_VERTEX_BUFFER_CACHE`, value 0 (`0x00043a1a`) | 1 / 1 | yes (no-op: vertices are read at every draw) |
 | `0x17C8` | `CLEAR_REPORT_VALUE`/`SET_ZPASS_PIXEL_COUNT_ENABLE` (an inlined `BeginVisibilityTest`, `0x00020cec`) | 1 / 1 | yes (restarts the backend's sample count; type 1 only; see "Visibility tests") |
+| `0x181C` | `SET_EYE_VECTOR`, 3 floats (no literal push header in the XBE; no site known) | 0 / 0 | yes (register state: the eye of `DOT_RFLCT_SPEC_CONST`, `HwState::eye_vector`) |
 
 An earlier version of this table also listed `0x0A20` and a 1800-word
 `0x1A20`, both at `0x00052b89`. Those are not push-buffer headers: they are

@@ -440,16 +440,27 @@ hold anything.
 | bumpenvmap, bumpenvmap_lum (uv + M·(du,dv); ×clamp(lum·scale + offset)) | supported; see below |
 | dotproduct, dot_st, dot_str_3d, dot_str_cube | supported |
 | dot_rflct_diff, dot_rflct_spec (eye = q of t1 to t3) | supported |
-| dot_rflct_spec_const | supported; eye from `XpsUniforms.eye` (the source register is unconfirmed) |
+| dot_rflct_spec_const | supported; eye from `XpsUniforms.eye`, which the d3d provider fills from `NV097_SET_EYE_VECTOR` (`0x181C`, PGRAPH `EYEVEC0..2`) |
 | dpndnt_ar, dpndnt_gb | supported |
-| **dot_zw** | **unsupported.** The dot product is computed but depth is not replaced (no `frag_depth` write) |
-| **brdf** | **unsupported.** Reads zero (xemu doesn't implement it either) |
+| **dot_zw** | **unsupported.** The dot product is computed but depth is not replaced (no `frag_depth` write). Used 0 times |
+| **brdf** | **unsupported.** Reads zero (xemu doesn't implement it either). Used 0 times |
 | dot mappings zero_to_one, minus1_to_1_d3d/_gl/(nv) | supported, for unsigned 8-bit data |
 | dot mappings hilo_1, hilo_hemisphere_d3d/_gl/(nv) | supported; the texel is read as a 32-bit word, see below |
 
 Halo 2's tags use none of the unsupported entries. A stage that holds a mode it
 can't (dot_st in stage 0, for example) is skipped with a warning.
-`PixelShader::warnings` lists everything that was approximated.
+`PixelShader::warnings` lists everything that was approximated. The d3d
+provider prints them to stderr (`nv2a: pixel shader <id>: ...`) once per
+translated program, and `Nv2aShaders::warnings` returns them all.
+
+The "used" counts cover the 149 tag definitions and the 2,931 distinct
+pixel shaders of the 307,944 resolved material implementations
+(`h2 shader --all all`), which all translate without a warning. Neither
+BRDF nor dot_zw appears, so both stay unimplemented. dot_rflct_spec_const
+doesn't appear either, and no push of `SET_EYE_VECTOR` has been seen
+(the device would otherwise stop on it as an unknown method). The method
+is recorded anyway (`d3d::hw::HwState::eye_vector`), so the eye is set if
+something pushes it.
 
 #### HILO dot mappings
 

@@ -760,6 +760,7 @@ impl ShaderProvider for Nv2aShaders {
             fog_color: argb(render.fog_color),
             fog: fog_uniform(&self.table, draw),
             alpha_ref: [render.alpha_ref as f32, 0.0, 0.0, 0.0],
+            eye: eye_uniform(&draw.hw),
             ..PixelUniforms::default()
         };
         pu.border =
@@ -850,6 +851,12 @@ fn border_value(argb_color: u32, sign: u8) -> [f32; 4] {
     v
 }
 
+/// The constant eye vector of `DOT_RFLCT_SPEC_CONST` (`SET_EYE_VECTOR`).
+fn eye_uniform(hw: &crate::hw::HwState) -> [f32; 4] {
+    let [x, y, z] = hw.eye_vector;
+    [x, y, z, 0.0]
+}
+
 /// The fog uniform: `[mode, start, end, density]`. With `D3DRS_FOGENABLE`
 /// off the factor is 1 whatever the program reads (exp fog with density 0:
 /// a combiner program that reads the fog register sees no fog).
@@ -921,6 +928,14 @@ fn passes_diffuse(op: TextureOp, args: [TextureArg; 3], alpha: bool) -> bool {
     }
 }
 
+/// Prints what the translator approximated, once per translated program
+/// (`compile` runs once per cache key; failures are cached too).
+fn report_warnings(id: u32, warnings: &[String]) {
+    for w in warnings {
+        eprintln!("nv2a: pixel shader {id:#x}: {w}");
+    }
+}
+
 fn compile(
     ctx: &gfx::GfxContext,
     renderer: &mut gfx::Renderer,
@@ -941,6 +956,7 @@ fn compile(
     let vs = vsh::translate(&program, &key.vertex_options)
         .map_err(|e| format!("vertex program: {e}"))?;
     let ps = psh::translate(&key.pixel, &key.pixel_options);
+    report_warnings(id, &ps.warnings);
     let source = shaders::link(&vs, &ps).map_err(|e| e.to_string())?;
     shaders::validate(&source).map_err(|e| format!("generated WGSL: {e}"))?;
     let module = ctx
