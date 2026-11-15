@@ -406,6 +406,7 @@ impl Core {
             return Ok(Action::Stop("blocking wait above APC_LEVEL"));
         }
         memory.set_u8(self.threads[&tid].object + kthread::STATE, 5)?;
+        timeline::wait_begin(tid, "wait objects");
         self.threads.get_mut(&tid).unwrap().state = State::Waiting(Wait::Objects {
             objects,
             all,
@@ -662,6 +663,7 @@ impl Core {
                 return Ok(Action::Stop("contended critical section requires Machine"));
             }
             memory.set_u8(self.threads[&tid].object + kthread::STATE, 5)?;
+            timeline::wait_begin(tid, "wait critical section");
             self.threads.get_mut(&tid).unwrap().state = State::Waiting(Wait::Critical(address));
             self.wait_order.push_back(tid);
             self.write_critical(memory, address)?;

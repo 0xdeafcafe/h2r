@@ -148,7 +148,10 @@ impl GfxBackend {
         self.store
             .finish_target(&mut enc, color)
             .map_err(|e| e.to_string())?;
-        self.ctx.queue.submit([enc.finish()]);
+        {
+            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
+            self.ctx.queue.submit([enc.finish()]);
+        }
         Ok(())
     }
 }
@@ -389,7 +392,10 @@ impl Backend for GfxBackend {
         self.store
             .finish_target(&mut enc, color)
             .map_err(|e| e.to_string())?;
-        self.ctx.queue.submit([enc.finish()]);
+        {
+            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
+            self.ctx.queue.submit([enc.finish()]);
+        }
         Ok(DrawOutcome::Drawn)
     }
 
@@ -509,11 +515,15 @@ impl Backend for GfxBackend {
                 0,
             )
             .map_err(|e| e.to_string())?;
-        self.ctx.queue.submit([enc.finish()]);
+        {
+            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
+            self.ctx.queue.submit([enc.finish()]);
+        }
         Ok(true)
     }
 
     fn present(&mut self, surface: SurfaceId, flags: u32) -> Result<(), String> {
+        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.presented = Some(surface);
         if let Some(hook) = self.present_hook.as_mut() {
             hook(&self.ctx, &self.store, surface, flags);

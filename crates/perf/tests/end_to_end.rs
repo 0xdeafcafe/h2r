@@ -1,0 +1,147 @@
+//! The scenarios run for real, and the profiler attributes generated code
+//! to the guest functions and instructions it came from.
+
+use std::path::{Path, PathBuf};
+
+use perf::bench::{BenchCtx, Prepared, Scenario};
+use perf::hotloop::{self, HotLoop};
+use perf::profile::{self, Render};
+use perf::sample::{Sampler, ThreadTarget};
+use perf::symbolize::{Category, Frame, Symbolizer};
+
+fn work() -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join("perf-e2e")
+}
+
+fn ctx() -> BenchCtx {
+    BenchCtx {
+        work: work(),
+        quick: true,
+        frames: 1,
+    }
+}
+
+fn have_clang() -> bool {
+    let ok = emit::compile::compiler().is_ok();
+    if !ok {
+        eprintln!("SKIPPED: no clang");
+    }
+    ok
+}
+
+#[test]
+fn hot_loops_run_through_generated_code() {
+    if !have_clang() {
+        return;
+    }
+    let m = hotloop::shared(&work()).unwrap();
+    let cpu = m.call(hotloop::ALU, 10).unwrap();
+    assert_eq!(cpu.ecx, 0);
+    m.call(hotloop::MEMORY, 7).unwrap();
+    let counter = m.runtime.memory().u32(hotloop::DATA).unwrap();
+    assert!(counter >= 7, "{counter}");
+    // LEAF adds one to EAX per call.
+    let cpu = m.call(hotloop::CALL, 5).unwrap();
+    assert_eq!(cpu.ecx, 0);
+    for mut s in HotLoop::all() {
+        assert!(matches!(s.prepare(&ctx()).unwrap(), Prepared::Ready));
+        let v = s.measure().unwrap();
+        assert!(
+            v.value > 0.0 && v.value.is_finite(),
+            "{}: {}",
+            s.name(),
+            v.value
+        );
+    }
+}
+
+#[test]
+fn pushbuf_frame_drains_every_quad() {
+    let mut s = perf::pushbuf::PushbufFrame::default();
+    assert!(matches!(s.prepare(&ctx()).unwrap(), Prepared::Ready));
+    for _ in 0..3 {
+        let m = s.measure().unwrap();
+        assert!(m.value > 0.0);
+        assert_eq!(m.extra["quads"], 50.0);
+    }
+}
+
+#[test]
+fn the_pushbuf_scenario_records_d3d_timeline_spans() {
+    // Recording is process-global; this is the only test here using it.
+    let mut s = perf::pushbuf::PushbufFrame::default();
+    s.prepare(&ctx()).unwrap();
+    timeline::start(timeline::Config::all());
+    s.measure().unwrap();
+    let t = timeline::stop();
+    assert!(t.count("KickOff") >= 1, "{} events", t.len());
+}
+
+/// Profile the ALU loop: most on-CPU samples land in generated code, are
+/// charged to the loop's guest function, and name instructions inside it.
+#[cfg(target_os = "macos")]
+#[test]
+fn profiles_attribute_samples_to_guest_functions_and_instructions() {
+    if !have_clang() {
+        return;
+    }
+    let m = hotloop::shared(&work()).unwrap();
+    let sampler = Sampler::start(vec![ThreadTarget::current("game")], 2000).unwrap();
+    let t = std::time::Instant::now();
+    while t.elapsed() < std::time::Duration::from_millis(400) {
+        m.call(hotloop::ALU, 200_000).unwrap();
+    }
+    let raw = sampler.finish();
+    let p = profile::resolve(raw, &mut Symbolizer::new());
+    let r = Render {
+        on_cpu_only: true,
+        ..Render::default()
+    };
+    let s = p.summary(&r);
+    assert!(s.samples >= 50, "{} samples", s.samples);
+    let guest = s
+        .categories
+        .iter()
+        .find(|c| c.category == Some(Category::Guest))
+        .map_or(0, |c| c.samples);
+    assert!(
+        guest * 2 > s.samples,
+        "guest {guest} of {}:\n{}",
+        s.samples,
+        p.table(&r)
+    );
+    assert_eq!(
+        s.guest_self[0].name,
+        format!("guest {:#010x}", hotloop::ALU),
+        "{}",
+        p.table(&r)
+    );
+    // Line tables (emit's default H2_DEBUG=lines) give the instruction.
+    let insns: Vec<u32> = p
+        .stacks
+        .iter()
+        .filter_map(|st| match st.frames.first() {
+            Some(Frame::Guest {
+                function,
+                insn: Some(i),
+            }) if *function == hotloop::ALU => Some(*i),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !insns.is_empty(),
+        "no instruction-level samples:\n{}",
+        p.table(&r)
+    );
+    assert!(
+        insns
+            .iter()
+            .all(|&i| (hotloop::ALU..hotloop::ALU + 0x40).contains(&i)),
+        "{insns:x?}"
+    );
+    let folded = p.folded(&r);
+    assert!(
+        folded.contains(&format!("guest {:#010x};@0x", hotloop::ALU)),
+        "{folded}"
+    );
+}

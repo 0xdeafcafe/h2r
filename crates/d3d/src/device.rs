@@ -1210,6 +1210,8 @@ impl<B: Backend> Device<B> {
         if put == self.consumed {
             return Ok(None);
         }
+        let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "pushbuf drain")
+            .arg("bytes", put.wrapping_sub(self.consumed) as u64);
         if put < self.consumed || put as u64 > end || !(put - self.consumed).is_multiple_of(4) {
             return Err(D3dError::invalid(
                 "push buffer",
@@ -1349,6 +1351,7 @@ impl<B: Backend> Device<B> {
     /// `CDevice_KickOff`, `D3D_BlockOnTime`, `D3D_BlockOnResource`: execute
     /// pending words (the host GPU is synchronous, so nothing waits).
     pub fn kick_off(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "KickOff");
         self.live("CDevice_KickOff")?;
         self.sync_push_buffer(mem)?;
         self.flush_render_targets(mem)?;
@@ -2545,7 +2548,9 @@ impl<B: Backend> Device<B> {
     /// stored at device `+0x2478` where game code reads it.
     pub fn swap(&mut self, mem: &mut dyn GuestMemory, flags: u32) -> Result<u32, D3dError> {
         const E: &str = "D3DDevice_Swap";
+        let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "Swap");
         self.live(E)?;
+        timeline::frame();
         self.sync_push_buffer(mem)?;
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "Swap inside Begin/End"));

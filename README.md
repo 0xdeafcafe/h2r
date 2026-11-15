@@ -58,6 +58,7 @@ up as structured Rust.
 - [map-format.md](docs/map-format.md): cache file (v8) format and the `map` reader
 - [movies.md](docs/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle
+- [perf.md](docs/perf.md): sampling profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`)
 - [shaders.md](docs/shaders.md): NV2A vertex microcode and register combiners to WGSL (`crates/shaders`)
 - [structure-bsp.md](docs/structure-bsp.md): render models and structure BSP geometry, and the viewer (`crates/tags`, `crates/viewer`)
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)

@@ -181,6 +181,10 @@ pub(crate) fn deliver(
     cpu.eflags &= !DIRECTION_FLAG;
     let (target, name) = (interrupt.target, interrupt.name);
     let call = ctx.call_guest(cpu, &mut memory, target, move |cpu, ctx| {
+        if let Some(token) = ctx.interrupt_token {
+            let track = timeline::Track::Guest(ctx.thread_id);
+            timeline::async_end(timeline::Cat::Interrupt, track, name, token as u64);
+        }
         ctx.interrupt_token = None;
         let actual_esp = cpu.esp;
         *cpu = saved;
@@ -197,6 +201,8 @@ pub(crate) fn deliver(
     drop(memory);
     match call {
         Ok(call) if call.kind == abi::CALL => {
+            let track = timeline::Track::Guest(ctx.thread_id);
+            timeline::async_begin(timeline::Cat::Interrupt, track, name, call.resume_pc as u64);
             ctx.interrupt_token = Some(call.resume_pc);
             Some(call)
         }

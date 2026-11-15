@@ -388,6 +388,11 @@ impl Machine {
                 {
                     let deadline = core.idle_deadline();
                     if let Some(deadline) = deadline {
+                        timeline::instant(
+                            timeline::Cat::Kernel,
+                            timeline::Track::Host,
+                            "idle: clock to deadline",
+                        );
                         core.clock.advance_to(deadline)?;
                         core.write_tick(&mut memory)?;
                         // A new instant starts a new drain: a DPC run at
@@ -482,6 +487,7 @@ impl Machine {
                 }
                 record.state = State::Running;
                 record.polling = false;
+                timeline::wait_end(tid);
                 let thread = self.threads.get_mut(&tid).unwrap();
                 if let Some(value) = record.wake_value.take() {
                     match value {
@@ -512,6 +518,7 @@ impl Machine {
             );
             let thread = self.threads.get_mut(&tid).unwrap();
             let mut resume = self.kernel.lock().threads[&tid].resume;
+            let slice = timeline::span(timeline::Cat::Guest, timeline::Track::Guest(tid), "slice");
             let (transfer, preempted) = loop {
                 if let Some(accesses) = self.preempt_slice {
                     thread.ctx.arm_preemption(accesses);
@@ -545,6 +552,7 @@ impl Machine {
                 }
                 resume = next;
             };
+            drop(slice);
             {
                 let mut core = self.kernel.lock();
                 let mut memory = self.runtime.memory();
@@ -718,10 +726,17 @@ impl Machine {
             &mut self.dropped_schedule,
             DPC_THREAD_ID,
         );
+        let dpc = timeline::span(
+            timeline::Cat::Interrupt,
+            timeline::Track::Guest(DPC_THREAD_ID),
+            "DPC",
+        )
+        .arg("routine", call.routine as u64);
         let transfer = Runner {
             max_transfers: self.max_transfers_per_slice,
         }
         .run_from(&mut cpu, &mut ctx, resume);
+        drop(dpc);
         let completed = {
             let mut core = self.kernel.lock();
             let completed =
@@ -1040,6 +1055,7 @@ impl Core {
                 }
                 memory.set_u8(self.threads[&tid].object + kthread::STATE, 5)?;
                 let record = self.threads.get_mut(&tid).unwrap();
+                timeline::wait_begin(tid, "sleep");
                 record.state = State::Sleeping(deadline);
                 if deadline <= self.clock.counter() {
                     record.poll();

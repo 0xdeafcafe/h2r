@@ -1,0 +1,669 @@
+//! Timeline events for performance work: frames, guest thread slices,
+//! kernel waits, interrupt and DPC delivery, push-buffer drains and GPU
+//! submits, written out as Chrome trace-event JSON that Perfetto
+//! (<https://ui.perfetto.dev>) and `chrome://tracing` open directly.
+//!
+//! The crate has no dependencies so the runtime, the kernel, d3d and gfx
+//! can all call it. Every hook is one relaxed atomic load and a branch
+//! while recording is off; nothing allocates, locks or reads the clock
+//! until [`start`] has switched a category on. See `docs/perf.md`.
+//!
+//! ```
+//! use timeline::{Cat, Track};
+//! timeline::start(timeline::Config::all());
+//! {
+//!     let _s = timeline::span(Cat::Guest, Track::Guest(1), "slice");
+//! }
+//! timeline::frame();
+//! let trace = timeline::stop();
+//! let mut json = Vec::new();
+//! trace.write_chrome(&mut json).unwrap();
+//! assert!(String::from_utf8(json).unwrap().contains("\"slice\""));
+//! ```
+
+use std::cell::Cell;
+use std::collections::HashMap;
+use std::io::{self, Write};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::time::Instant;
+
+/// What an event is about. Each is one bit of the recording mask, so a
+/// trace can leave out the busy ones (`Hle` fires on every HLE call).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Cat {
+    /// Swap/Present, one instant per guest frame.
+    Frame,
+    /// A guest thread's slice on the host CPU (kernel `Machine::run`).
+    Guest,
+    /// Kernel waits, sleeps and idle clock advances.
+    Kernel,
+    /// Guest interrupt and DPC delivery.
+    Interrupt,
+    /// D3D push-buffer drains, KickOff, Swap.
+    D3d,
+    /// wgpu queue submits and presents.
+    Gfx,
+    /// Every HLE override call. Off in [`Config::default`]: it is frequent.
+    Hle,
+}
+
+impl Cat {
+    pub const ALL: [Cat; 7] = [
+        Cat::Frame,
+        Cat::Guest,
+        Cat::Kernel,
+        Cat::Interrupt,
+        Cat::D3d,
+        Cat::Gfx,
+        Cat::Hle,
+    ];
+    const fn bit(self) -> u32 {
+        1 << self as u32
+    }
+    /// The name used in the JSON `cat` field and in [`Config::parse`].
+    pub const fn name(self) -> &'static str {
+        match self {
+            Cat::Frame => "frame",
+            Cat::Guest => "guest",
+            Cat::Kernel => "kernel",
+            Cat::Interrupt => "interrupt",
+            Cat::D3d => "d3d",
+            Cat::Gfx => "gfx",
+            Cat::Hle => "hle",
+        }
+    }
+}
+
+/// Which row an event is drawn on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Track {
+    /// The host thread that records the event.
+    Host,
+    /// A guest thread, by its kernel thread id (the DPC pseudo-thread too).
+    Guest(u32),
+}
+
+/// What [`start`] records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    /// Events kept before further ones are counted in [`Trace::dropped`].
+    pub capacity: usize,
+    mask: u32,
+}
+
+impl Default for Config {
+    /// Everything but [`Cat::Hle`], up to four million events.
+    fn default() -> Self {
+        Self::all().without(Cat::Hle)
+    }
+}
+
+impl Config {
+    /// Every category.
+    pub fn all() -> Self {
+        Config {
+            capacity: 4 << 20,
+            mask: Cat::ALL.iter().fold(0, |m, c| m | c.bit()),
+        }
+    }
+    /// No category (add some with [`Config::with`]).
+    pub fn none() -> Self {
+        Config {
+            mask: 0,
+            ..Self::all()
+        }
+    }
+    pub fn with(mut self, c: Cat) -> Self {
+        self.mask |= c.bit();
+        self
+    }
+    pub fn without(mut self, c: Cat) -> Self {
+        self.mask &= !c.bit();
+        self
+    }
+    pub fn has(&self, c: Cat) -> bool {
+        self.mask & c.bit() != 0
+    }
+    /// `"all"`, `"default"`, or a comma list of category names, each
+    /// optionally prefixed with `-` to remove it from what came before
+    /// (`"all,-hle"`, `"frame,d3d,gfx"`).
+    pub fn parse(spec: &str) -> Result<Self, String> {
+        let mut c = Config::none();
+        for item in spec.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (remove, name) = match item.strip_prefix('-') {
+                Some(n) => (true, n),
+                None => (false, item),
+            };
+            let cats: Vec<Cat> = match name {
+                "all" => Cat::ALL.to_vec(),
+                "default" => Cat::ALL
+                    .iter()
+                    .copied()
+                    .filter(|&c| c != Cat::Hle)
+                    .collect(),
+                n => vec![
+                    *Cat::ALL
+                        .iter()
+                        .find(|c| c.name() == n)
+                        .ok_or_else(|| format!("unknown timeline category {n:?}"))?,
+                ],
+            };
+            for cat in cats {
+                c = if remove { c.without(cat) } else { c.with(cat) };
+            }
+        }
+        Ok(c)
+    }
+}
+
+static MASK: AtomicU32 = AtomicU32::new(0);
+static FRAMES: AtomicU64 = AtomicU64::new(0);
+static NEXT_HOST: AtomicU32 = AtomicU32::new(1);
+
+thread_local! {
+    static HOST_TID: Cell<u32> = const { Cell::new(0) };
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Phase {
+    Complete { dur: u64 },
+    Instant,
+    AsyncBegin { id: u64 },
+    AsyncEnd { id: u64 },
+    Counter { value: u64 },
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Ev {
+    ts: u64,
+    phase: Phase,
+    cat: Cat,
+    track: Track,
+    host: u32,
+    name: &'static str,
+    arg: Option<(&'static str, u64)>,
+}
+
+struct State {
+    events: Vec<Ev>,
+    capacity: usize,
+    dropped: u64,
+    host_names: Vec<(u32, String)>,
+    waits: HashMap<u32, (u64, &'static str)>,
+}
+
+fn state() -> MutexGuard<'static, State> {
+    static S: OnceLock<Mutex<State>> = OnceLock::new();
+    S.get_or_init(|| {
+        Mutex::new(State {
+            events: Vec::new(),
+            capacity: 0,
+            dropped: 0,
+            host_names: Vec::new(),
+            waits: HashMap::new(),
+        })
+    })
+    .lock()
+    .unwrap_or_else(|e| e.into_inner())
+}
+
+fn epoch() -> Instant {
+    static E: OnceLock<Instant> = OnceLock::new();
+    *E.get_or_init(Instant::now)
+}
+
+/// Nanoseconds since the first use of the timeline in this process.
+pub fn now_ns() -> u64 {
+    epoch().elapsed().as_nanos() as u64
+}
+
+/// True while `cat` is being recorded. One relaxed load.
+#[inline(always)]
+pub fn enabled(cat: Cat) -> bool {
+    MASK.load(Ordering::Relaxed) & cat.bit() != 0
+}
+
+/// True while anything is being recorded.
+#[inline(always)]
+pub fn recording() -> bool {
+    MASK.load(Ordering::Relaxed) != 0
+}
+
+fn host_tid() -> u32 {
+    HOST_TID.with(|t| {
+        if t.get() == 0 {
+            let id = NEXT_HOST.fetch_add(1, Ordering::Relaxed);
+            t.set(id);
+            let name = std::thread::current()
+                .name()
+                .map_or_else(|| format!("host thread {id}"), str::to_owned);
+            state().host_names.push((id, name));
+        }
+        t.get()
+    })
+}
+
+#[cold]
+fn push(ev: Ev) {
+    let mut s = state();
+    if s.events.len() < s.capacity {
+        s.events.push(ev);
+    } else {
+        s.dropped += 1;
+    }
+}
+
+fn ev(cat: Cat, track: Track, name: &'static str, phase: Phase, ts: u64) -> Ev {
+    Ev {
+        ts,
+        phase,
+        cat,
+        track,
+        host: host_tid(),
+        name,
+        arg: None,
+    }
+}
+
+/// Start recording the categories in `config`, discarding anything
+/// recorded before. The frame counter is not reset.
+pub fn start(config: Config) {
+    epoch();
+    {
+        let mut s = state();
+        s.events = Vec::with_capacity(config.capacity.min(1 << 16));
+        s.capacity = config.capacity;
+        s.dropped = 0;
+        s.waits.clear();
+    }
+    MASK.store(config.mask, Ordering::Release);
+}
+
+/// Stop recording and take what was recorded.
+pub fn stop() -> Trace {
+    MASK.store(0, Ordering::Release);
+    let mut s = state();
+    let mut events = std::mem::take(&mut s.events);
+    events.sort_by_key(|e| e.ts);
+    s.waits.clear();
+    Trace {
+        events,
+        dropped: std::mem::take(&mut s.dropped),
+        host_names: s.host_names.clone(),
+    }
+}
+
+/// An open span; records a complete event when dropped.
+#[must_use = "a span ends when this is dropped"]
+pub struct Span {
+    open: Option<(Ev, u64)>,
+}
+
+impl Span {
+    /// Attach one numeric argument (shown in the event's details).
+    pub fn arg(mut self, key: &'static str, value: u64) -> Self {
+        if let Some((e, _)) = &mut self.open {
+            e.arg = Some((key, value));
+        }
+        self
+    }
+    /// Set or replace the argument after the span started.
+    pub fn set_arg(&mut self, key: &'static str, value: u64) {
+        if let Some((e, _)) = &mut self.open {
+            e.arg = Some((key, value));
+        }
+    }
+}
+
+impl Drop for Span {
+    fn drop(&mut self) {
+        if let Some((mut e, start)) = self.open.take() {
+            e.phase = Phase::Complete {
+                dur: now_ns().saturating_sub(start),
+            };
+            push(e);
+        }
+    }
+}
+
+/// A span from now until the returned guard drops. Inert (no clock read)
+/// unless `cat` is recording.
+#[inline]
+pub fn span(cat: Cat, track: Track, name: &'static str) -> Span {
+    if !enabled(cat) {
+        return Span { open: None };
+    }
+    let ts = now_ns();
+    Span {
+        open: Some((ev(cat, track, name, Phase::Instant, ts), ts)),
+    }
+}
+
+/// A zero-length event.
+#[inline]
+pub fn instant(cat: Cat, track: Track, name: &'static str) {
+    if enabled(cat) {
+        push(ev(cat, track, name, Phase::Instant, now_ns()));
+    }
+}
+
+/// A zero-length event with one argument.
+#[inline]
+pub fn instant_arg(cat: Cat, track: Track, name: &'static str, key: &'static str, value: u64) {
+    if enabled(cat) {
+        let mut e = ev(cat, track, name, Phase::Instant, now_ns());
+        e.arg = Some((key, value));
+        push(e);
+    }
+}
+
+/// Start an asynchronous span: one that may outlive the host call that
+/// began it or overlap others on its track (an interrupt that a
+/// preemption interrupts). End it with the same `name` and `id`.
+#[inline]
+pub fn async_begin(cat: Cat, track: Track, name: &'static str, id: u64) {
+    if enabled(cat) {
+        push(ev(cat, track, name, Phase::AsyncBegin { id }, now_ns()));
+    }
+}
+
+/// End an [`async_begin`] span.
+#[inline]
+pub fn async_end(cat: Cat, track: Track, name: &'static str, id: u64) {
+    if enabled(cat) {
+        push(ev(cat, track, name, Phase::AsyncEnd { id }, now_ns()));
+    }
+}
+
+/// A counter sample (drawn as its own track).
+#[inline]
+pub fn counter(cat: Cat, name: &'static str, value: u64) {
+    if enabled(cat) {
+        push(ev(
+            cat,
+            Track::Host,
+            name,
+            Phase::Counter { value },
+            now_ns(),
+        ));
+    }
+}
+
+/// Guest thread `thread` started waiting (`name`: what on). Ended by the
+/// next [`wait_end`] for the thread; a second begin replaces the first.
+#[inline]
+pub fn wait_begin(thread: u32, name: &'static str) {
+    if enabled(Cat::Kernel) {
+        wait_begin_slow(thread, name);
+    }
+}
+
+#[cold]
+fn wait_begin_slow(thread: u32, name: &'static str) {
+    let ts = now_ns();
+    state().waits.insert(thread, (ts, name));
+}
+
+/// Guest thread `thread` runs again: closes its open wait, if any, as a
+/// span on the thread's track.
+#[inline]
+pub fn wait_end(thread: u32) {
+    if enabled(Cat::Kernel) {
+        wait_end_slow(thread);
+    }
+}
+
+#[cold]
+fn wait_end_slow(thread: u32) {
+    let Some((start, name)) = state().waits.remove(&thread) else {
+        return;
+    };
+    let mut e = ev(
+        Cat::Kernel,
+        Track::Guest(thread),
+        name,
+        Phase::Complete { dur: 0 },
+        start,
+    );
+    e.phase = Phase::Complete {
+        dur: now_ns().saturating_sub(start),
+    };
+    push(e);
+}
+
+/// One guest frame was presented (Swap). Always counted, so [`frames`]
+/// gives an fps without recording; also an instant when [`Cat::Frame`]
+/// is on.
+#[inline]
+pub fn frame() {
+    let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    if enabled(Cat::Frame) {
+        let mut e = ev(Cat::Frame, Track::Host, "frame", Phase::Instant, now_ns());
+        e.arg = Some(("n", n));
+        push(e);
+    }
+}
+
+/// Frames counted by [`frame`] since the process started.
+pub fn frames() -> u64 {
+    FRAMES.load(Ordering::Relaxed)
+}
+
+/// Recorded events, ready to write.
+#[derive(Debug, Clone)]
+pub struct Trace {
+    events: Vec<Ev>,
+    /// Events lost because the buffer was full.
+    pub dropped: u64,
+    host_names: Vec<(u32, String)>,
+}
+
+const HOST_PID: u32 = 1;
+const GUEST_PID: u32 = 2;
+
+fn json_str(out: &mut impl Write, s: &str) -> io::Result<()> {
+    out.write_all(b"\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => out.write_all(b"\\\"")?,
+            '\\' => out.write_all(b"\\\\")?,
+            c if (c as u32) < 0x20 => write!(out, "\\u{:04x}", c as u32)?,
+            c => write!(out, "{c}")?,
+        }
+    }
+    out.write_all(b"\"")
+}
+
+/// Microseconds with nanosecond precision, as trace-event `ts` expects.
+fn us(ns: u64) -> String {
+    format!("{}.{:03}", ns / 1000, ns % 1000)
+}
+
+impl Trace {
+    /// Number of events.
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+    /// Events named `name` (for tests and summaries).
+    pub fn count(&self, name: &str) -> usize {
+        self.events.iter().filter(|e| e.name == name).count()
+    }
+    /// Write Chrome trace-event JSON (the "JSON object" form).
+    pub fn write_chrome(&self, out: &mut impl Write) -> io::Result<()> {
+        out.write_all(b"{\"displayTimeUnit\":\"ns\",\"traceEvents\":[\n")?;
+        let mut first = true;
+        let mut sep = |out: &mut dyn Write| -> io::Result<()> {
+            if !std::mem::take(&mut first) {
+                out.write_all(b",\n")?;
+            }
+            Ok(())
+        };
+        for (pid, name) in [(HOST_PID, "host"), (GUEST_PID, "guest threads")] {
+            sep(out)?;
+            write!(
+                out,
+                "{{\"ph\":\"M\",\"name\":\"process_name\",\"pid\":{pid},\"tid\":0,\"args\":{{\"name\":"
+            )?;
+            json_str(out, name)?;
+            out.write_all(b"}}")?;
+        }
+        for (tid, name) in &self.host_names {
+            sep(out)?;
+            write!(
+                out,
+                "{{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":{HOST_PID},\"tid\":{tid},\"args\":{{\"name\":"
+            )?;
+            json_str(out, name)?;
+            out.write_all(b"}}")?;
+        }
+        let mut guests: Vec<u32> = self
+            .events
+            .iter()
+            .filter_map(|e| match e.track {
+                Track::Guest(t) => Some(t),
+                Track::Host => None,
+            })
+            .collect();
+        guests.sort_unstable();
+        guests.dedup();
+        for t in guests {
+            sep(out)?;
+            write!(
+                out,
+                "{{\"ph\":\"M\",\"name\":\"thread_name\",\"pid\":{GUEST_PID},\"tid\":{t},\"args\":{{\"name\":\"guest thread {t:#x}\"}}}}"
+            )?;
+        }
+        for e in &self.events {
+            sep(out)?;
+            let (pid, tid) = match e.track {
+                Track::Host => (HOST_PID, e.host),
+                Track::Guest(t) => (GUEST_PID, t),
+            };
+            out.write_all(b"{\"name\":")?;
+            json_str(out, e.name)?;
+            write!(
+                out,
+                ",\"cat\":\"{}\",\"pid\":{pid},\"tid\":{tid},\"ts\":{}",
+                e.cat.name(),
+                us(e.ts)
+            )?;
+            match e.phase {
+                Phase::Complete { dur } => write!(out, ",\"ph\":\"X\",\"dur\":{}", us(dur))?,
+                Phase::Instant => out.write_all(b",\"ph\":\"i\",\"s\":\"t\"")?,
+                Phase::AsyncBegin { id } => write!(out, ",\"ph\":\"b\",\"id\":\"{id:#x}\"")?,
+                Phase::AsyncEnd { id } => write!(out, ",\"ph\":\"e\",\"id\":\"{id:#x}\"")?,
+                Phase::Counter { value } => {
+                    out.write_all(b",\"ph\":\"C\",\"args\":{")?;
+                    json_str(out, e.name)?;
+                    write!(out, ":{value}}}}}")?;
+                    continue;
+                }
+            }
+            if let Some((k, v)) = e.arg {
+                out.write_all(b",\"args\":{")?;
+                json_str(out, k)?;
+                write!(out, ":{v}}}")?;
+            }
+            out.write_all(b"}")?;
+        }
+        out.write_all(b"\n]}\n")
+    }
+    /// Write the JSON to `path`.
+    pub fn save(&self, path: &std::path::Path) -> io::Result<()> {
+        let mut f = io::BufWriter::new(std::fs::File::create(path)?);
+        self.write_chrome(&mut f)?;
+        f.flush()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Recording is process-global; tests that start it take this.
+    static SERIAL: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn nothing_is_recorded_while_off() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = stop();
+        assert!(!recording());
+        let before = frames();
+        {
+            let _s = span(Cat::Guest, Track::Guest(1), "slice");
+        }
+        instant(Cat::Kernel, Track::Host, "idle");
+        wait_begin(3, "wait");
+        wait_end(3);
+        frame();
+        assert_eq!(frames(), before + 1, "frames count even while off");
+        assert!(stop().is_empty());
+    }
+
+    #[test]
+    fn spans_waits_and_frames_reach_the_json() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::all());
+        {
+            let _s = span(Cat::Guest, Track::Guest(7), "slice").arg("transfers", 12);
+            wait_begin(7, "KeWaitForSingleObject");
+        }
+        wait_end(7);
+        wait_end(7); // already closed: nothing
+        async_begin(Cat::Interrupt, Track::Guest(7), "vblank", 1);
+        async_end(Cat::Interrupt, Track::Guest(7), "vblank", 1);
+        counter(Cat::Gfx, "draws", 3);
+        frame();
+        let t = stop();
+        assert_eq!(t.count("slice"), 1);
+        assert_eq!(t.count("KeWaitForSingleObject"), 1);
+        assert_eq!(t.count("vblank"), 2);
+        assert_eq!(t.count("frame"), 1);
+        let mut out = Vec::new();
+        t.write_chrome(&mut out).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.starts_with("{\"displayTimeUnit\""));
+        assert!(s.contains("\"ph\":\"X\""));
+        assert!(s.contains("\"transfers\":12"));
+        assert!(s.contains("guest thread 0x7"));
+        assert!(s.contains("\"ph\":\"C\",\"args\":{\"draws\":3}"));
+        assert!(s.trim_end().ends_with("]}"));
+    }
+
+    #[test]
+    fn categories_filter_and_capacity_drops() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config {
+            capacity: 2,
+            ..Config::none().with(Cat::D3d)
+        });
+        instant(Cat::Gfx, Track::Host, "submit");
+        for _ in 0..5 {
+            instant(Cat::D3d, Track::Host, "drain");
+        }
+        let t = stop();
+        assert_eq!(t.count("submit"), 0);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t.dropped, 3);
+    }
+
+    #[test]
+    fn config_parses_lists_and_removals() {
+        let c = Config::parse("all,-hle").unwrap();
+        assert_eq!(c, Config::default());
+        let c = Config::parse("frame, d3d").unwrap();
+        assert!(c.has(Cat::Frame) && c.has(Cat::D3d) && !c.has(Cat::Guest));
+        assert!(Config::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn names_are_escaped() {
+        let mut out = Vec::new();
+        json_str(&mut out, "a\"b\\c\n").unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), "\"a\\\"b\\\\c\\u000a\"");
+    }
+}

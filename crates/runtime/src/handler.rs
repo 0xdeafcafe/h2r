@@ -30,7 +30,11 @@ pub(crate) fn execute(
         Invocation::Handler(Handler::Native(f)) => {
             Ok(crate::ffi::call_native(f, cpu, ctx, selector))
         }
-        Invocation::Handler(Handler::Rust(f)) => f(cpu, ctx, selector),
+        Invocation::Handler(Handler::Rust(f)) => {
+            let _t = timeline::span(timeline::Cat::Hle, timeline::Track::Host, "hle call")
+                .arg("pc", cpu.eip as u64);
+            f(cpu, ctx, selector)
+        }
         Invocation::Continuation(f) => f(cpu, ctx),
     };
     // The first memory/access fault has priority over malformed output.

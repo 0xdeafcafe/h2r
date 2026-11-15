@@ -1,0 +1,8 @@
+[package]
+name = "timeline"
+description = "Near-zero-cost timeline events (Chrome/Perfetto trace JSON) and a frame counter"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]

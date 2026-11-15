@@ -1,0 +1,235 @@
+//! `h2 profile` and `h2 bench`. Each returns the process exit code.
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use anyhow::{Context, Result, bail};
+
+use crate::bench::{self, BenchCtx, Plan, Prepared, Verdict};
+use crate::profile::{Render, Session, SessionConfig};
+
+pub const PROFILE_USAGE: &str = "usage: h2 profile <scenario> [options]
+
+Run a benchmark scenario repeatedly under the sampling profiler (and,
+optionally, the timeline) and write profile.folded, profile.txt and
+profile.json. `h2 bench list` names the scenarios.
+
+  --out DIR         output directory (default $TMPDIR/h2profile)
+  --seconds S       how long to keep running the scenario (default 3)
+  --hz N            samples per second (default 1000)
+  --top N           rows per table (default 25)
+  --cpu             leave out samples where the thread was not running
+  --by-category     root each folded stack at its category
+  --no-insns        no guest-instruction leaf frames in the folded stacks
+  --full-stacks     keep the start-up frames (main, lang_start) in them
+  --timeline FILE   also write a Chrome/Perfetto trace JSON
+  --cats SPEC       timeline categories (default: all but hle)
+  --work DIR        build scratch (default $TMPDIR/h2perf-work)
+  --disc ISO        for the boot scenario (default $H2_DISC)
+  --quick           the scenarios' small workloads
+
+Any run can be profiled without this command: set H2_PROFILE=<dir>
+and/or H2_TIMELINE=<file.json> for a binary that opens a perf::Session
+(docs/perf.md).";
+
+pub const BENCH_USAGE: &str = "usage:
+  h2 bench [run] [--out DIR] [--label NAME] [--only PATTERN]... [--samples N]
+           [--warmup N] [--frames N] [--work DIR] [--disc ISO] [--quick]
+  h2 bench list
+  h2 bench compare <base.json|DIR> [<new.json>] [--threshold PCT] [--json]
+
+run      runs every scenario (or those whose name contains a PATTERN) and
+         writes <DIR>/<unix time>-<label>.json (default DIR $TMPDIR/h2bench)
+compare  compares two runs; with a directory and no second file, its two
+         newest. Exits 1 when any scenario regressed by more than the
+         threshold (default 5%) and twice its noise (MAD).";
+
+fn tmp(name: &str) -> PathBuf {
+    std::env::temp_dir().join(name)
+}
+
+struct Args {
+    it: std::vec::IntoIter<String>,
+}
+
+impl Args {
+    fn value(&mut self, flag: &str) -> Result<String> {
+        self.it
+            .next()
+            .with_context(|| format!("{flag} needs a value"))
+    }
+    fn num<T: std::str::FromStr>(&mut self, flag: &str) -> Result<T>
+    where
+        T::Err: std::fmt::Display,
+    {
+        let v = self.value(flag)?;
+        v.parse().map_err(|e| anyhow::anyhow!("{flag} {v}: {e}"))
+    }
+}
+
+pub fn profile(args: Vec<String>) -> Result<i32> {
+    let mut a = Args {
+        it: args.into_iter(),
+    };
+    let mut cfg = SessionConfig {
+        profile: Some(tmp("h2profile")),
+        ..SessionConfig::default()
+    };
+    let mut seconds = 3.0f64;
+    let mut work = tmp("h2perf-work");
+    let mut disc = None;
+    let mut quick = false;
+    let mut scenario = None;
+    let mut cats = None;
+    while let Some(f) = a.it.next() {
+        match f.as_str() {
+            "--out" => cfg.profile = Some(a.value(&f)?.into()),
+            "--seconds" => seconds = a.num(&f)?,
+            "--hz" => cfg.hz = a.num(&f)?,
+            "--top" => cfg.render.top = a.num(&f)?,
+            "--cpu" => cfg.render.on_cpu_only = true,
+            "--by-category" => cfg.render.by_category = true,
+            "--no-insns" => cfg.render.guest_insns = false,
+            "--full-stacks" => cfg.render.full_stacks = true,
+            "--timeline" => cfg.timeline = Some(a.value(&f)?.into()),
+            "--cats" => cats = Some(a.value(&f)?),
+            "--work" => work = a.value(&f)?.into(),
+            "--disc" => disc = Some(PathBuf::from(a.value(&f)?)),
+            "--quick" => quick = true,
+            "-h" | "--help" => bail!("{PROFILE_USAGE}"),
+            _ if scenario.is_none() && !f.starts_with('-') => scenario = Some(f),
+            _ => bail!("unexpected {f}\n\n{PROFILE_USAGE}"),
+        }
+    }
+    if let Some(c) = cats {
+        cfg.timeline_config = timeline::Config::parse(&c).map_err(anyhow::Error::msg)?;
+    }
+    let name = scenario.context(PROFILE_USAGE)?;
+    let mut found = crate::scenarios(disc)
+        .into_iter()
+        .filter(|s| s.name() == name)
+        .collect::<Vec<_>>();
+    let Some(mut s) = found.pop() else {
+        bail!("no scenario {name:?}; `h2 bench list` names them");
+    };
+    let ctx = BenchCtx {
+        work,
+        quick,
+        frames: 60,
+    };
+    eprintln!("preparing {name}");
+    if let Prepared::Skip(why) = s.prepare(&ctx)? {
+        bail!("{name} cannot run here: {why}");
+    }
+    let render: Render = cfg.render;
+    let session = Session::start(cfg)?;
+    let t = Instant::now();
+    let mut runs = 0u64;
+    while t.elapsed() < Duration::from_secs_f64(seconds) || runs == 0 {
+        s.measure()?;
+        runs += 1;
+    }
+    let report = session.finish()?;
+    eprintln!("{runs} runs of {name} in {:.2}s", t.elapsed().as_secs_f64());
+    if let Some(p) = &report.profile {
+        print!("{}", p.table(&render));
+    }
+    if report.timeline_events > 0 || report.timeline_dropped > 0 {
+        eprintln!(
+            "timeline: {} events ({} dropped)",
+            report.timeline_events, report.timeline_dropped
+        );
+    }
+    for f in &report.files {
+        eprintln!("wrote {}", f.display());
+    }
+    Ok(0)
+}
+
+pub fn bench(args: Vec<String>) -> Result<i32> {
+    let mut args = args;
+    let sub = match args.first().map(String::as_str) {
+        Some("list") | Some("compare") | Some("run") => args.remove(0),
+        _ => "run".into(),
+    };
+    let mut a = Args {
+        it: args.into_iter(),
+    };
+    match sub.as_str() {
+        "list" => {
+            for s in crate::scenarios(None) {
+                println!("{:<24} {:<9} {}", s.name(), s.unit(), s.description());
+            }
+            Ok(0)
+        }
+        "compare" => {
+            let mut files = Vec::new();
+            let mut threshold = 5.0;
+            let mut json = false;
+            while let Some(f) = a.it.next() {
+                match f.as_str() {
+                    "--threshold" => threshold = a.num(&f)?,
+                    "--json" => json = true,
+                    "-h" | "--help" => bail!("{BENCH_USAGE}"),
+                    _ => files.push(PathBuf::from(f)),
+                }
+            }
+            let (base, new) = match files.as_slice() {
+                [dir] if dir.is_dir() => {
+                    let runs = bench::runs_in(dir)?;
+                    let [.., b, n] = runs.as_slice() else {
+                        bail!("{} has fewer than two runs", dir.display());
+                    };
+                    (b.clone(), n.clone())
+                }
+                [b, n] => (b.clone(), n.clone()),
+                _ => bail!("{BENCH_USAGE}"),
+            };
+            let (b, n) = (bench::load(&base)?, bench::load(&new)?);
+            let rows = bench::compare(&b, &n, threshold);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&rows)?);
+            } else {
+                print!("{}", bench::comparison_table(&b, &n, &rows));
+            }
+            Ok(i32::from(
+                rows.iter().any(|r| r.verdict == Verdict::Regressed),
+            ))
+        }
+        _ => {
+            let mut out = tmp("h2bench");
+            let mut label = "run".to_string();
+            let mut only = Vec::new();
+            let mut plan = Plan::default();
+            let mut ctx = BenchCtx {
+                work: tmp("h2perf-work"),
+                quick: false,
+                frames: 120,
+            };
+            let mut disc = None;
+            while let Some(f) = a.it.next() {
+                match f.as_str() {
+                    "--out" => out = a.value(&f)?.into(),
+                    "--label" => label = a.value(&f)?,
+                    "--only" => only.push(a.value(&f)?),
+                    "--samples" => plan.samples = a.num(&f)?,
+                    "--warmup" => plan.warmup = a.num(&f)?,
+                    "--frames" => ctx.frames = a.num(&f)?,
+                    "--work" => ctx.work = a.value(&f)?.into(),
+                    "--disc" => disc = Some(PathBuf::from(a.value(&f)?)),
+                    "--quick" => ctx.quick = true,
+                    "-h" | "--help" => bail!("{BENCH_USAGE}"),
+                    _ => bail!("unexpected {f}\n\n{BENCH_USAGE}"),
+                }
+            }
+            let mut scenarios = crate::select(disc, &only);
+            if scenarios.is_empty() {
+                bail!("no scenario matches {only:?}; `h2 bench list` names them");
+            }
+            let run = bench::run(&mut scenarios, &ctx, plan, &label, |l| eprintln!("{l}"));
+            let path = bench::save(&run, &out)?;
+            println!("{}", path.display());
+            Ok(0)
+        }
+    }
+}

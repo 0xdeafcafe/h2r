@@ -108,6 +108,8 @@ Status "done" means the crate exists on master and does what its row says;
 | `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
 | `runtime` | Guest memory, CPU state, dispatch/override table; nothing runs yet | in progress |
 | `engine`  | Hand-written Rust overrides over guest memory: checked tag lookup, datum arrays, localized-string lookup, with per-function adapters ([engine/README.md](engine/README.md)) | in progress; not yet registered with `runtime` |
+| `timeline` | Dependency-free timeline events (frames, slices, waits, interrupts, drains, submits) to Chrome/Perfetto JSON; one atomic load per hook when off ([perf.md](perf.md)) | done |
+| `perf`    | Guest-aware sampling profiler, timeline sessions, benchmark harness behind `h2 profile` and `h2 bench` ([perf.md](perf.md)) | done |
 | `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `lift`, `emit`, `bitmap`, `sound`, `strings`, `font`, `movies`, `hs`, `effect` and more | done |
 
 Planned crates, not on master yet and in progress elsewhere:

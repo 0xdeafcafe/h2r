@@ -89,6 +89,12 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
                           caps it, dropping least recently used; H2_OPT, H2_DEBUG)
 
+  profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...
+                          sample a benchmark scenario: guest-aware folded stacks,
+                          top-N table, optional Chrome/Perfetto timeline (docs/perf.md)
+  bench [run|list|compare] [--out DIR] [--only PATTERN] ...
+                          repeatable benchmarks as JSON; compare flags regressions
+
 [disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
 first .iso in the repo's disc/ folder.";
 
@@ -139,6 +145,12 @@ fn main() -> Result<()> {
     }
     if cmd == "ui" {
         return ui::run(args.collect());
+    }
+    if cmd == "profile" {
+        std::process::exit(perf::cli::profile(args.collect())?);
+    }
+    if cmd == "bench" {
+        std::process::exit(perf::cli::bench(args.collect())?);
     }
     let mut positional = Vec::new();
     let mut functions_out = None;

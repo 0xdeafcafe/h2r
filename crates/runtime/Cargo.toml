@@ -8,6 +8,8 @@ license.workspace = true
 thiserror.workspace = true
 xbe.workspace = true
 x87.workspace = true
+# Interrupt and HLE-call events (docs/perf.md); dependency-free.
+timeline = { path = "../timeline" }
 
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }

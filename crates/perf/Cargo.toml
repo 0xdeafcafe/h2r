@@ -1,0 +1,27 @@
+[package]
+name = "perf"
+description = "Performance tooling: guest-aware sampling profiler, timeline capture, benchmark harness"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+timeline = { path = "../timeline" }
+runtime.workspace = true
+kernel = { path = "../kernel" }
+d3d = { path = "../d3d" }
+gfx = { path = "../gfx" }
+emit.workspace = true
+lift.workspace = true
+ir.workspace = true
+anyhow.workspace = true
+libloading = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Host-PC symbolization (symbol tables, DWARF line tables, macOS debug maps).
+backtrace = "0.3"
+# Assembling the synthetic guest loops of the hot-loop benchmarks.
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "code_asm"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

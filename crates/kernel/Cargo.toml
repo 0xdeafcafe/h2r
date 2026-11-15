@@ -9,6 +9,8 @@ runtime.workspace = true
 xbe.workspace = true
 thiserror.workspace = true
 vfs = { path = "../vfs" }
+# Slice, wait, DPC and idle events (docs/perf.md).
+timeline = { path = "../timeline" }
 
 [dev-dependencies]
 analyze.workspace = true
