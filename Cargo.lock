@@ -378,6 +378,7 @@ dependencies = [
  "libc",
  "map",
  "movies",
+ "shaders",
  "symbols",
  "tags",
  "xbe",

@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 hs.workspace = true
 tags.workspace = true
+shaders = { path = "../shaders" }
 font = { path = "../font" }
 assets.workspace = true
 map.workspace = true

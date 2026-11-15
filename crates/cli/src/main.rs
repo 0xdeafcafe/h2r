@@ -15,6 +15,7 @@ mod movies_cmd;
 mod object;
 mod safe_out;
 mod scripts;
+mod shader;
 mod sound;
 mod strings;
 mod ui;
@@ -43,6 +44,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
   effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family
                           (option --disc <iso>)
+  shader <map> <tag>      print the material a shad resolves to (passes, textures,
+                          constants, render state); --all <map|all> validates
+                          every shad/stem/spas (options --disc <iso>)
   hs <map> [--script name] [--builtins] [--disc iso]
   hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
   ui <map> <screen tag>   print a wgit screen's widget tree (no localized text);
@@ -98,6 +102,9 @@ fn main() -> Result<()> {
     }
     if cmd == "effect" {
         return effects::run(args.collect());
+    }
+    if cmd == "shader" {
+        return shader::run(args.collect());
     }
     if cmd == "hs" {
         return scripts::run(args.collect());

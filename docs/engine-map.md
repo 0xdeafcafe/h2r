@@ -740,3 +740,24 @@ row was checked with `h2 disasm`, and with Ghidra where it has a function.
 It also reserves 8 bytes per attachment and `0x18` bytes per change-colour
 entry, and spawns the effect at definition `+0x50`. Ghidra has no functions at
 `0x000c4410`, `0x000dc540`, `0x000eeb80` or `0x000ee910`; use `h2 disasm`.
+
+## Shader instance setup (appended 2026-11-15)
+
+Static analysis of the draw-time material path, used to derive the `shad`,
+`stem` and `spas` layouts in [shader-instances.md](shader-instances.md).
+D3D identities are XDK signature matches (`h2 symbols`).
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x0001bbf0` `shader_draw_begin` | Confirmed | Checks the tag group is `shad` (`0x0001bcc9`), copies root `+0x3e/+0x40/+0x44/+0x48` to `0x485a64..0x485a70`, calls `0x00016b90`. 13 callers, e.g. `0x00016713`, `0x0003c577`. |
+| `0x00016610` `shader_draw_layer_passes` | Confirmed | Walks the template's pass list for a layer and draws each implementation that has a vertex shader (`+0x100 != -1`). |
+| `0x00016b90` `shader_setup` | Confirmed | `(state 0x485b48, shad, lod, layer, pass, implementation, size)`, `ret 0x1c`. Resolves shad → stem → spas postprocess records and runs the setup steps below. |
+| `0x00016f60` / `0x00017000` / `0x00017170` | Confirmed | Instance bitmaps → texture slots; vectors → vertex defaults/constants (copy-mode table `0x00017130`/`0x00017154`); colours → `PSConstant0/1` or the final constants of the copied PSDEF (lane masks `0x467068`). |
+| `0x00018900` / `0x000189a0` / `0x00018a90` | Confirmed | Pass render states (simple via method table `0x43e6f0`, deferred mask `0x43e4d0`, complex setters `0x4038d8`); sampler states into `0x404dd0 + 0x80·stage`; texture-stage bindings (engine sources via `0x00019530`, lightmap from `0x4e0344`). |
+| `0x0001ba00` `pixel_shader_build_variant` | Confirmed | Builds general/final combiners from spas fragments/variants/stages, selected by engine integer inputs. |
+| `0x0001ae70`, `0x0001b2c0` | Confirmed | Computes engine inputs per implementation mask (scalars `0x000336f0` table `0x338d4`, vectors `0x00033980` table `0x33f8c`, integers `0x00034060` table `0x340e0`); writes one into a register with mode/transform. |
+| `0x00019be0` / `0x00019ca0` / `0x0001a170` / `0x0001ab50` | Confirmed | Engine-driven vertex constants, pixel constants, render states (table `0x467020`) and sampler states (table `0x46703c`). |
+| `0x000174d0`, `0x00017420`, `0x00017550`, `0x000176a0`, `0x00017960`, `0x00017b60`, `0x00018560` | Confirmed | Instance animation leaf lookup and the five animated-target kinds; properties evaluated by `0x0001b230` → `0x0013b390`. |
+| `0x00018d70` / `0x00018e80` | Confirmed | Upload vertex defaults as `NV097_SET_VERTEX_DATA4F_M` and vertex constants via `D3DDevice_SetVertexShaderConstant1Fast` (`0x003f7230`) at hardware `c[18+i]`. |
+| `0x0001b0a0`, `0x000143c0`, `0x00014390`, `0x00014f60`, `0x0001cf50` | Confirmed | Frame/mip selection and bitmap binding; engine texture binding by source index; pending textures `0x51f3d8[4]` flushed to `D3DDevice_SetTexture` (`0x003f8320`). |
+| `0x0001b050` | Confirmed | `D3DDevice_SetPixelShader` (`0x003fa3d0`) with the patched PSDEF copy at state `+0x1424`. |

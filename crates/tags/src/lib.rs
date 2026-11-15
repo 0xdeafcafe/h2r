@@ -23,6 +23,11 @@ pub mod anim;
 pub mod anim_sample;
 /// Object family (`obje` subtypes, `hlmt`, `itmc`, `vehc`); see `docs/objects.md`.
 pub mod object;
+/// Materials resolved from `shad` tags into ordered, ready-to-draw passes.
+pub mod material;
+/// Shader instances, templates and passes (`shad`, `stem`, `spas`); see
+/// `docs/shader-instances.md`.
+pub mod shader;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }
