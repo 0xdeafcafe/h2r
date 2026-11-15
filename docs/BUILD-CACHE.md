@@ -6,7 +6,10 @@ with `--arch arm64` / `--arch x86_64`. Running the entry requires a host
 build. `--jobs N` selects clang parallelism; the default uses every available
 core. All outputs are derived from the user's disc and must stay untracked.
 The default output is `$TMPDIR/h2gen` (`std::env::temp_dir()`); use `--out`
-to choose another temporary or user cache directory.
+to choose another temporary or user cache directory. The CLI resolves symlinks
+and refuses output or `H2_OBJ_CACHE` paths inside any git work tree, including
+relative paths and defaults selected through `TMPDIR`. `--allow-repo-output`
+is the explicit override; derived game output must still never be committed.
 
 ## What a warm run reuses
 
@@ -20,6 +23,13 @@ Editing, deleting or adding a source causes
 a miss even when sizes and timestamps are unchanged. The receipt is
 invalidated before regeneration and published atomically after success.
 
+The CLI holds an exclusive `flock` on `<out>/.h2-emit.lock` from before
+receipt validation through emission, ABI installation, object compilation,
+pruning, linking and entry execution. Concurrent processes using the same
+output (including symlink aliases) serialize that entire transaction. The
+lock is released on return, failure or process death. The lock file stays
+in place so later writers lock the same inode.
+
 Rebuilding `h2` invalidates the receipt, including analyzer, IR, lifter or
 emitter edits without a crate version bump. This deliberately does not
 persist IR across generator builds, so pass changes in other lanes cannot
@@ -30,6 +40,15 @@ objects without repeating analysis and lifting.
 
 The object cache already works per emitted C file. Its keys cover source
 contents, all support/ABI headers, target, flags and compiler/SDK identity.
+Before object lookup, clang runs dependency preprocessing (`-M`, including
+system headers) with the actual target, flags and include environment for
+each C file. Every discovered dependency's contents enter that object's
+key. Shared headers are read and hashed once per build. Dependency discovery
+runs again on warm builds, so new include-path shadows and conditional
+includes cannot reuse a stale dependency graph. This also covers nested
+headers and unchanged `CPATH`/`C_INCLUDE_PATH` directories whose files change.
+Output-local header names are relative in the key, preserving reuse across
+output directories. These keys supersede the earlier direct-header cache.
 A change confined to one shard recompiles that shard. Sources use stable
 address buckets and oversized functions get their own file; the compiler
 schedules large sources first. Unchanged files keep their objects even
@@ -59,7 +78,7 @@ with strict floating-point behavior. `H2_OPT` also accepts `0`, `g`, `s`,
 can make guest execution slower; it is not the default.
 
 The CLI prints emission receipt validation, analysis, lift/plan, C emission,
-object lookup/hash/pin work, clang wall time, archive validation/creation,
+object dependency discovery/hash/pin work, clang wall time, archive validation/creation,
 host bridge compilation plus linking, and total wall time. A warm run still
 validates source and toolchain contents; `--run-entry` also rebuilds the
 small host bridge, links, loads and executes the image entry.

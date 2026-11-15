@@ -1,5 +1,7 @@
 //! A receipt for a completed analyze/lift/emit run. Validate file contents,
 //! not mtimes: a missing, edited or extra source must trigger regeneration.
+//! The caller holds emit_output::OutputLock across validation, writes, receipt
+//! publication, compilation and final use of the generated module.
 use std::fs::{self, File};
 use std::io::{self, Read};
 use std::path::Path;

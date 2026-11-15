@@ -10,6 +10,7 @@ mod bitmap;
 mod collision;
 mod effects;
 mod emit_cache;
+mod emit_output;
 mod extract_shaders;
 mod fonts;
 mod lighting;
@@ -85,9 +86,11 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           interpret from the entry to the first kernel call
   emit [--out <dir>] [--abi-header <h2abi.h>] [--no-build] [--run-entry]
        [--arch host|all|arm64|x86_64] [--jobs N] [--no-emit-cache]
+       [--allow-repo-output]
                           generate C and build the host static lib (default out:
                           $TMPDIR/h2gen); --arch all builds both architectures;
                           --run-entry runs the entry through the generated code
+                          repository output requires --allow-repo-output
                           (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
                           caps it, dropping least recently used; H2_OPT, H2_DEBUG)
 
@@ -202,6 +205,7 @@ fn main() -> Result<()> {
                 lift_opts.jobs = Some(n);
             }
             "--no-emit-cache" => lift_opts.no_emit_cache = true,
+            "--allow-repo-output" => lift_opts.allow_repo_output = true,
             "--dump" => lift_opts.dump.push(args.next().context("--dump needs an address")?),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
@@ -565,6 +569,7 @@ struct LiftOpts {
     arch: Option<String>,
     jobs: Option<usize>,
     no_emit_cache: bool,
+    allow_repo_output: bool,
 }
 
 fn parse_hex(s: &str) -> Result<u32> {
@@ -623,9 +628,13 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         bail!("--run-entry requires the host architecture (use --arch host or all)");
     }
     let total = Instant::now();
+    let out = opts.out.clone().unwrap_or_else(|| std::env::temp_dir().join("h2gen"));
+    // Validate both locations before even creating the output lock file.
+    let out = emit_output::location(&out, opts.allow_repo_output)?;
+    let object_cache = emit_output::location(&emit::compile::obj_dir(&out), opts.allow_repo_output)?;
+    let _transaction = emit_output::OutputLock::acquire(&out)?;
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
-    let out = opts.out.clone().unwrap_or_else(|| std::env::temp_dir().join("h2gen"));
     let src = out.join("src");
     let t = Instant::now();
     let cache_key = emit_cache::key(&data, &std::env::current_exe()?)?;
@@ -672,8 +681,9 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     let cache_max = emit::compile::obj_cache_max()?;
     let mut host = None;
     let mut built = std::collections::HashSet::new();
+    let compiler = emit::compile::compiler()?;
     for arch in arches {
-        let b = emit::compile::build(&src, &out, arch, jobs)?;
+        let b = emit::compile::build_in(&src, &out, &object_cache, arch, jobs, &compiler)?;
         println!(
             "{:<7} {} compiled, {} cached, {:.3}s clang, {:.3}s cache, {:.3}s archive ({jobs} jobs); objects {:.1} MB, {} {:.1} MB",
             arch.name(),
@@ -692,8 +702,8 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         }
     }
     if let Some(max) = cache_max {
-        let dir = emit::compile::obj_dir(&out);
-        let p = emit::compile::prune_obj_cache(&dir, max, &built)?;
+        let dir = &object_cache;
+        let p = emit::compile::prune_obj_cache(dir, max, &built)?;
         println!(
             "object cache {}: removed {} ({:.1} MB), {:.1} MB kept (cap {:.1} MB)",
             dir.display(),

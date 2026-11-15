@@ -21,6 +21,8 @@ use std::time::Instant;
 
 use crate::fnv64;
 
+mod dependencies;
+
 /// Flags for every generated object that do not depend on the build
 /// profile (LIFTER.md §1): no fast-math or FP contraction, no
 /// strict-aliasing assumptions. The optimisation level and debug-info
@@ -492,6 +494,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
         .filter(|p| p.extension().is_some_and(|x| x == "c"))
         .collect();
     sources.sort();
+    let source_root = std::fs::canonicalize(src_dir).map_err(err)?;
+    let headers = dependencies::Headers::default();
 
     // (source, object, pin, needs compiling). Hashing ~400 MB of sources is
     // serial work worth spreading over the cores on a no-op rebuild.
@@ -504,7 +508,8 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                     let i = cursor.fetch_add(1, Ordering::Relaxed);
                     let Some(src) = sources.get(i) else { break };
                     let r = std::fs::read(src).map_err(err).and_then(|text| {
-                        let key = fnv64(&[&common.to_le_bytes()[..], &text].concat());
+                        let dependencies = headers.fingerprint(cc, &flags, arch, src, &source_root)?;
+                        let key = fnv64(&[&common.to_le_bytes()[..], &dependencies.to_le_bytes()[..], &text].concat());
                         let stem = src.file_stem().unwrap().to_string_lossy();
                         let name = format!("{stem}.{}.{key:016x}.o", arch.name());
                         let (obj, pin) = (obj_dir.join(&name), pin_dir.join(&name));
@@ -864,6 +869,87 @@ mod tests {
             let changed = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
             assert_eq!((changed.compiled, changed.reused), (2, 0), "{name}");
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An included constant must match a clean build, including when it
+    /// comes from a system include directory or a newly shadowing header.
+    #[test]
+    fn transitive_headers_and_new_include_shadows_invalidate_objects() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED transitive_headers_and_new_include_shadows_invalidate_objects: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-transitive-{}", std::process::id()));
+        let src = tiny_tree(&dir);
+        std::fs::create_dir(src.join("nested")).unwrap();
+        let external = dir.join("system headers # $ with spaces");
+        std::fs::create_dir(&external).unwrap();
+        let leaf = external.join("selected.h");
+        std::fs::write(&leaf, "#define VALUE 1\n").unwrap();
+        std::fs::write(src.join("nested/outer.h"), "#include <selected.h>\n").unwrap();
+        std::fs::write(src.join("h2abi.h"), "#include \"nested/outer.h\"\n").unwrap();
+        std::fs::write(src.join("one.c"), "#include \"h2abi.h\"\nint h2_value(void) { return VALUE; }\n").unwrap();
+        std::fs::write(src.join("two.c"), "int h2_two(void) { return 0; }\n").unwrap();
+        let wrapper = dir.join("clang");
+        std::fs::write(&wrapper, format!("#!/bin/sh\nexec '{}' -I '{}' -isystem '{}' \"$@\"\n", cc.display(), src.display(), external.display())).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let out = dir.join("out");
+        let value = |build: &Build, name: &str| {
+            let dylib = dir.join(name);
+            host_dylib(build, &src, &[], &dylib).unwrap();
+            // SAFETY: this synthetic library defines h2_value with exactly
+            // this signature, and the symbol is used before unloading it.
+            unsafe {
+                let library = libloading::Library::new(dylib).unwrap();
+                let function: libloading::Symbol<unsafe extern "C" fn() -> i32> = library.get(b"h2_value").unwrap();
+                function()
+            }
+        };
+        let first = build_with(&src, &out, Arch::host(), 2, &wrapper).unwrap();
+        assert_eq!((first.compiled, first.reused), (2, 0));
+        assert_eq!(value(&first, "first.dylib"), 1);
+        let warm = build_with(&src, &out, Arch::host(), 2, &wrapper).unwrap();
+        assert_eq!((warm.compiled, warm.reused), (0, 2));
+        let mtime = std::fs::metadata(&leaf).unwrap().modified().unwrap();
+        std::fs::write(&leaf, "#define VALUE 2\n").unwrap();
+        std::fs::File::options().write(true).open(&leaf).unwrap().set_modified(mtime).unwrap();
+        let changed = build_with(&src, &out, Arch::host(), 2, &wrapper).unwrap();
+        assert_eq!((changed.compiled, changed.reused), (1, 1));
+        assert_ne!(first.objects[0], changed.objects[0]);
+        assert_eq!(first.objects[1], changed.objects[1]);
+        assert_eq!(value(&changed, "changed.dylib"), 2);
+        let clean = build_in(&src, &dir.join("clean-out"), &dir.join("clean-cache"), Arch::host(), 2, &wrapper).unwrap();
+        assert_eq!(value(&clean, "clean.dylib"), value(&changed, "cached.dylib"));
+        std::fs::write(src.join("selected.h"), "#define VALUE 3\n").unwrap();
+        let shadowed = build_with(&src, &out, Arch::host(), 2, &wrapper).unwrap();
+        assert_eq!((shadowed.compiled, shadowed.reused), (1, 1));
+        assert_eq!(value(&shadowed, "shadowed.dylib"), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dependency_keys_reuse_identical_headers_across_source_directories() {
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED dependency_keys_reuse_identical_headers_across_source_directories: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-dependency-shared-{}", std::process::id()));
+        let a = tiny_tree(&dir.join("a"));
+        let b = tiny_tree(&dir.join("b"));
+        for src in [&a, &b] {
+            std::fs::create_dir(src.join("nested")).unwrap();
+            std::fs::write(src.join("h2abi.h"), "#include \"nested/config.h\"\n").unwrap();
+            std::fs::write(src.join("nested/config.h"), "#define VALUE 7\n").unwrap();
+            std::fs::write(src.join("one.c"), "#include \"h2abi.h\"\nint h2_one(void) { return VALUE; }\n").unwrap();
+        }
+        let cache = dir.join("shared-cache");
+        let first = build_in(&a, &dir.join("out-a"), &cache, Arch::host(), 1, &cc).unwrap();
+        assert_eq!((first.compiled, first.reused), (1, 0));
+        let second = build_in(&b, &dir.join("out-b"), &cache, Arch::host(), 1, &cc).unwrap();
+        assert_eq!((second.compiled, second.reused), (0, 1));
+        assert_eq!(first.cache_objects, second.cache_objects);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

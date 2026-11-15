@@ -123,3 +123,26 @@ passed. Tests and clippy were repeated after enabling hardware SHA dispatch.
 Existing Rust files
 were not rustfmt-clean before this change, so only the two new Rust files
 were formatted, per lane rules.
+
+
+## Review corrections
+
+The preceding full-image timings describe the original implementation, before
+Astra's review fixes. They do not include the new per-file dependency-discovery
+cost. The original unguarded receipt transaction is superseded by an output
+lock; repository output/cache paths now require `--allow-repo-output`; and
+object keys include every transitive header discovered by clang. Regression
+tests impose the reviewed A/B receipt schedule, exercise path aliases and
+relative/default repository locations, and compare cached versus clean
+execution after changing an included constant. Full-image timings have not
+been repeated for these correctness changes.
+
+
+After rebasing onto master `4330dfb`, review-fix validation passed 131 tests
+with the same two explicit ignores and no runtime skips:
+`RUSTC_WRAPPER= cargo test -p cli -p emit --release -j 2 -- --test-threads=2`,
+with `H2_XBE` set to the user's read-only image. This includes retail entry
+CPU/memory equivalence and the scheduled receipt race, repository location,
+transitive-header, new-shadow, and cross-source-directory reuse regressions.
+`cargo clippy -p cli -p emit --all-targets --release -j 2 -- -D warnings`
+was also clean with `RUSTC_WRAPPER=`.

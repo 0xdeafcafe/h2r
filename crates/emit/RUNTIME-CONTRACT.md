@@ -346,7 +346,12 @@ Objects are compiled with clang at `-std=c11 -fno-strict-aliasing
 `H2_OPT` (`0`, `1`, `g`, `s`, `2`) picks the optimisation level and
 `H2_DEBUG` (`lines`, `full` for `-g`, `none`) the debug info. The object
 cache is keyed on the sources, `h2gen.h`, `h2simd.h`, `h2x87.h`, `h2abi.h`, the
-flags, the target and the toolchain identity. The identity covers the
+flags, the target and the toolchain identity. Clang dependency preprocessing
+also discovers every transitive include for each translation unit, including
+system/SDK and include-environment headers. The key includes their contents.
+Headers are hashed once per build; dependency discovery is repeated on cache
+lookup so newly added include shadows are detected. This work is reported
+in the cache stage. The toolchain identity covers the
 compiler executable, which is `clang` resolved on `PATH` once and then
 invoked by that path for every compile: its path, its symlink target and
 its content (size and mtime if over 64 MiB). It also covers that
@@ -380,3 +385,10 @@ source and support header. Changing the executable invalidates this receipt
 including when the package version is unchanged. ABI installation and the
 object cache checks still run. `--no-emit-cache` or `H2_TRACE` forces the
 front end to run again. See [BUILD-CACHE.md](../../docs/BUILD-CACHE.md).
+
+
+The CLI serializes each complete output-directory transaction with
+`<out>/.h2-emit.lock`, including receipt validation, source writes, ABI
+installation, object/cache/pin work and final link/use. It rejects resolved
+output/cache paths inside a git work tree unless `--allow-repo-output` is
+explicitly supplied.
