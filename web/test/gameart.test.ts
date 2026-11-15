@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { inflateSync } from "node:zlib";
 import {
   compositeEmblem, countKeys, emblemCacheKey, emblemChoice, gameArt, gameArtRoot, gametypeKey, levelForExp,
-  loadGameArt, mapKey, parseHexColour, parseManifest, rankKey, EMBLEM_COLOURS, type EmblemSpec,
+  emblemFromIndices, emblemPalette, loadGameArt, mapKey, normaliseMask, medalKey, weaponKey, parseHexColour, parseManifest, rankKey, EMBLEM_COLOURS, type EmblemSpec,
 } from "../src/lib/gameart";
-import { RANKS } from "../src/state/derive";
+import { MEDALS, RANKS } from "../src/state/derive";
 import { encodePng, mockGameArt } from "../mock/gameart";
 import { openAccountRequest } from "../mock/account";
 import { generateKey, signAccountRequest } from "../src/state/account";
@@ -97,6 +97,34 @@ describe("game art keys", () => {
     expect(gametypeKey(null)).toBeNull();
   });
 
+  test("our derived medals map onto the game's where one means the same", () => {
+    expect(medalKey("twofer")).toBe("medal/double_kill");
+    expect(medalKey("hat-trick")).toBe("medal/triple_kill");
+    expect(medalKey("full-house")).toBe("medal/killtacular");
+    expect(medalKey("encore")).toBe("medal/kill_frenzy");
+    expect(medalKey("hot-streak")).toBe("medal/killing_spree");
+    expect(medalKey("wildfire")).toBe("medal/running_riot");
+    expect(medalKey("untouchable")).toBe("medal/rampage");
+    for (const id of ["opening-act", "last-word", "payback"]) expect(medalKey(id)).toBeNull();
+    // Every derived medal is either mapped or deliberately left to the pack.
+    expect(MEDALS.filter((m) => medalKey(m.id)).length).toBe(7);
+  });
+
+  test("weapons go by the words of the reported name", () => {
+    expect(weaponKey("sword")).toBe("weapon/energy_sword");
+    expect(weaponKey("energy_sword")).toBe("weapon/energy_sword");
+    expect(weaponKey("Plasma Pistol")).toBe("weapon/plasma_pistol");
+    expect(weaponKey("plasma_rifle")).toBe("weapon/plasma_rifle");
+    expect(weaponKey("sniper")).toBe("weapon/sniper_rifle");
+    expect(weaponKey("Sniper Rifle")).toBe("weapon/sniper_rifle");
+    expect(weaponKey("beam-rifle")).toBe("weapon/beam_rifle");
+    expect(weaponKey("sentinel beam")).toBe("weapon/sentinel_beam");
+    expect(weaponKey("rocket")).toBe("weapon/rocket_launcher");
+    expect(weaponKey("smg")).toBe("weapon/smg");
+    expect(weaponKey("Submachine Gun")).toBe("weapon/smg");
+    for (const w of ["rifle", "shotgun", "grenade", "pistol", "blaster", "", null]) expect(weaponKey(w)).toBeNull();
+  });
+
   test("our rank ladder spreads over levels 1..50, each threshold on a higher level", () => {
     expect(levelForExp(0)).toBe(1);
     expect(levelForExp(-3)).toBe(1);
@@ -184,6 +212,22 @@ describe("emblem compositing", () => {
     expect(few.fg).toBeLessThan(3); expect(few.bg).toBeLessThan(2);
   });
 
+  test("colours come from the manifest's palette when it has one", () => {
+    const palette = emblemPalette({ palette: ["#cccccc", "#555555", "#aa2222", "oops", "#dd6622"] });
+    expect(palette).toEqual([[204, 204, 204], [85, 85, 85], [170, 34, 34], [221, 102, 34]]);
+    for (let i = 0; i < 50; i++) {
+      const e = emblemChoice("seed" + i, 64, 32, palette);
+      for (const c of [e.primary, e.secondary, e.background, e.background2]) expect(palette).toContain(c);
+    }
+    // No palette (older extract, or not found on the disc): our own colours.
+    expect(emblemPalette({ palette: [] })).toBe(EMBLEM_COLOURS);
+    expect(emblemPalette(null)).toBe(EMBLEM_COLOURS);
+    expect(parseManifest({ version: 1, images: {}, palette: "nope" })!.palette).toEqual([]);
+    // A profile's own values are indices into it.
+    expect(emblemFromIndices(palette, { fg: 7, bg: 3, primary: 2, secondary: 0, background: 1, background2: 3 }))
+      .toEqual({ fg: 7, bg: 3, primary: [170, 34, 34], secondary: [204, 204, 204], background: [85, 85, 85], background2: [221, 102, 34] });
+  });
+
   test("the cache key tells layers and colours apart", () => {
     const e: EmblemSpec = { fg: 1, bg: 2, primary: [1, 2, 3], secondary: [4, 5, 6], background: [7, 8, 9], background2: [0, 0, 0] };
     expect(emblemCacheKey(e)).toBe(emblemCacheKey({ ...e }));
@@ -222,7 +266,11 @@ describe("the mock's fake game art", () => {
     for (const name of ["slayer", "king_of_the_hill", "oddball", "juggernaut", "ctf", "assault", "territories"]) expect(a.has(`gametype/${name}`)).toBe(true);
     expect(a.has(mapKey("teacup"))).toBe(true);
     expect(a.has(mapKey("lighthouse"))).toBe(false); // one map without, so the fallback shows
-    expect(a.has("weapon/0")).toBe(false);
+    expect(a.has("live/0")).toBe(false);
+    expect(a.has(weaponKey("sword")!)).toBe(true);
+    expect(a.has(medalKey("twofer")!)).toBe(true);
+    expect(emblemPalette(m)).toHaveLength(18);
+    expect(emblemPalette(m)[0]).toEqual(EMBLEM_COLOURS[17]!);
   });
 
   test("serves every file it names, and nothing else", async () => {
@@ -283,5 +331,35 @@ describe("the mock's account endpoint checks aud and iat like the real server", 
     const { canonicalJson } = await import("../src/state/verify");
     const old = await signCompact(key.privateKey, { alg: "EdDSA", kid: key.publicJwk.kid, typ: TYP_ACCOUNT }, canonicalJson({ gamertag: "Old Client", jwk: key.publicJwk }));
     expect(await openAccountRequest(old, "mock.h2live.local", NOW)).toEqual({ error: "bad body: aud and iat are required" });
+  });
+});
+
+describe("the mock's weapon masks", () => {
+  test("are single faint masks (blue with matching alpha), stretched to full strength for tinting", async () => {
+    const art = mockGameArt(new URL("../public/art", import.meta.url).pathname);
+    const f = await art.file("weapon/0.png");
+    const png = decodePng(f!.bytes);
+    let on = 0;
+    for (let i = 0; i < png.rgba.length; i += 4) {
+      expect(png.rgba[i]).toBe(0);
+      expect(png.rgba[i + 1]).toBe(0);
+      expect(png.rgba[i + 3]).toBe(png.rgba[i + 2]!);
+      expect(png.rgba[i + 3]).toBeLessThanOrEqual(68);
+      if (png.rgba[i + 3] === 68) on++;
+    }
+    expect(on).toBeGreaterThan(50);
+    const mask = normaliseMask(png.rgba);
+    let full = 0;
+    for (let i = 0; i < mask.length; i += 4) {
+      expect([mask[i], mask[i + 1], mask[i + 2]]).toEqual([255, 255, 255]);
+      expect(mask[i + 3]).toBe(Math.round((png.rgba[i + 3]! / 68) * 255));
+      if (mask[i + 3] === 255) full++;
+    }
+    expect(full).toBe(on);
+  });
+
+  test("normalising keeps the shape's soft edge and survives an empty picture", () => {
+    expect([...normaliseMask(Uint8Array.from([0, 0, 68, 68, 0, 0, 34, 34, 0, 0, 0, 0]))]).toEqual([255, 255, 255, 255, 255, 255, 255, 128, 255, 255, 255, 0]);
+    expect([...normaliseMask(new Uint8Array(8))]).toEqual([255, 255, 255, 0, 255, 255, 255, 0]);
   });
 });

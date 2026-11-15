@@ -3,7 +3,7 @@
 // none: callers then use the art pack.
 
 import { createEffect, createMemo, createRoot, createSignal } from "solid-js";
-import { compositeEmblem, countKeys, emblemCacheKey, loadGameArt, type EmblemSpec, type GameArt, type GameArtRef } from "../lib/gameart";
+import { compositeEmblem, countKeys, emblemCacheKey, emblemPalette, normaliseMask, loadGameArt, type EmblemSpec, type GameArt, type GameArtRef } from "../lib/gameart";
 import { live } from "./live";
 
 const [art, setArt] = createSignal<GameArt | null>(null);
@@ -48,7 +48,7 @@ export const emblemLayers = createRoot(() => createMemo(() => {
   const a = art();
   if (!a) return null;
   const fg = countKeys(a, "emblem/fg/", 64), bg = countKeys(a, "emblem/bg/", 32);
-  return fg && bg ? { a, fg, bg } : null;
+  return fg && bg ? { a, fg, bg, palette: emblemPalette(a.manifest) } : null;
 }));
 
 const emblems = new Map<string, Promise<string | null>>();
@@ -88,6 +88,27 @@ export function emblemUrl(a: GameArt, spec: EmblemSpec): Promise<string | null> 
       return c.toDataURL("image/png");
     }).catch(() => null);
     emblems.set(key, p);
+  }
+  return p;
+}
+
+// ---- single-mask pictures (weapons) ----
+
+const masks = new Map<string, Promise<string | null>>();
+
+/** A mask picture made ready for CSS `mask` (see normaliseMask), or null
+ *  when it can't be read. Cached by URL. */
+export function maskUrl(ref: GameArtRef): Promise<string | null> {
+  let p = masks.get(ref.url);
+  if (!p) {
+    p = loadImage(ref.url).then((img) => {
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d")!.putImageData(new ImageData(normaliseMask(pixels(img, w, h)) as Uint8ClampedArray<ArrayBuffer>, w, h), 0, 0);
+      return c.toDataURL("image/png");
+    }).catch(() => null);
+    masks.set(ref.url, p);
   }
   return p;
 }

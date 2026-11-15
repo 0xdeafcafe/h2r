@@ -123,8 +123,10 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   (`rgb = colour_a * red + colour_b * blue`; the background is opaque, the
   foreground's coverage is `max(red, blue)`, PNG alpha is ignored) on a
   canvas, cached per layers and colours. Until telemetry carries a player's
-  real emblem, layers and colours are picked from the XUID (`emblemChoice`);
-  `<Emblem emblem={{fg, bg, primary, ...}}>` takes real values.
+  real emblem, layers and colours are picked from the XUID (`emblemChoice`),
+  the colours from the manifest's `palette` when it has one;
+  `<Emblem emblem={...}>` takes real values (`emblemFromIndices` turns
+  profile colour indices into them).
 - **Ranks**: our experience ladder is spread over the game's levels
   (`levelForExp`, then `rank/<1..50>`).
 - **Map previews** (`map/<map>/preview`) replace the top-down thumbnail in
@@ -132,12 +134,20 @@ any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
   header; a live game keeps its blips, drawn over the picture.
 - **Game-type icons** go by the words of the variant name (`gametypeKey`:
   slayer, ctf, assault, oddball, king of the hill, juggernaut, territories).
-- Weapons stay as the SVG silhouettes (the manifest's `weapon/<n>` are not
-  yet identified), and medals as the pack's (the disc has none).
+- **Medals** (`medal/<alias>`): the derived medals that mean the same as
+  one of the game's use its picture (`medalKey`: twofer, hat-trick,
+  full-house, encore are the multi-kills; hot-streak, wildfire, untouchable
+  the sprees). Opening Act, Last Word and Payback have no counterpart and
+  keep the pack's.
+- **Weapons** (`weapon/<alias>`, by the words of the reported name,
+  `weaponKey`) are single masks, used as a CSS mask so they take the page's
+  tint like the SVG silhouettes, which every other weapon keeps.
 
 The mock's stand-in (`mock/gameart.ts`) uses the pack's rank badges and
-draws its own emblem masks, game-type glyphs and map postcards in the real
-encoding, so nothing from the game is needed to run or test this path.
+medals and draws its own emblem masks, weapon masks, game-type glyphs and
+map postcards in the real encoding, so nothing from the game is needed to
+run or test this path. To look at a real server's art over the mock's
+world, point only that route at it: `H2_GAME_ART_URL=http://127.0.0.1:8074`.
 
 ## Architecture
 

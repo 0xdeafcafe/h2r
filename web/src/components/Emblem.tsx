@@ -18,7 +18,8 @@ function pick(seed: string): number {
 
 export default function Emblem(props: {
   seed: string; size?: number; class?: string; title?: string;
-  /** The player's real emblem (layers and colours), once it is known. */
+  /** The player's real emblem (layers and colours), once it is known;
+   *  `emblemFromIndices` turns profile colour indices into one. */
   emblem?: Partial<EmblemSpec>;
 }) {
   const size = () => props.size ?? 48;
@@ -27,7 +28,7 @@ export default function Emblem(props: {
   createEffect(() => {
     const l = emblemLayers();
     if (!l) { setGame(null); return; }
-    const spec: EmblemSpec = { ...emblemChoice(props.seed, l.fg, l.bg), ...props.emblem };
+    const spec: EmblemSpec = { ...emblemChoice(props.seed, l.fg, l.bg, l.palette), ...props.emblem };
     let current = true;
     onCleanup(() => { current = false; });
     void emblemUrl(l.a, spec).then((url) => { if (current) setGame(url); });

@@ -14,7 +14,8 @@ export default defineConfig({
       "/healthz": { target: mock },
       "/.well-known": { target: mock },
       // Optional game art; no forwarding headers, so a local server still sees a loopback client.
-      "/art/game": { target: mock },
+      // H2_GAME_ART_URL points just this at another server (say, a real one beside the mock).
+      "/art/game": { target: process.env.H2_GAME_ART_URL ?? mock },
     },
   },
   build: { outDir: "dist", target: "es2022" },

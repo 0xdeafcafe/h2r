@@ -11,6 +11,8 @@ export interface GameArtManifest {
   images: Record<string, GameArtImage>;
   aliases?: Record<string, string>;
   emblem?: unknown;
+  /** Player colours, `#rrggbb` by colour index; empty when not found. */
+  palette?: string[];
   skipped?: Record<string, string>;
 }
 
@@ -44,7 +46,8 @@ export function parseManifest(raw: unknown): GameArtManifest | null {
   if (m.aliases && typeof m.aliases === "object") {
     for (const [from, to] of Object.entries(m.aliases)) if (typeof to === "string") aliases[from] = to;
   }
-  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, skipped: m.skipped };
+  const palette = Array.isArray(m.palette) ? m.palette.filter((c): c is string => typeof c === "string" && parseHexColour(c) !== null) : [];
+  return { version: 1, source: typeof m.source === "string" ? m.source : undefined, images, aliases, emblem: m.emblem, palette, skipped: m.skipped };
 }
 
 /** A file must stay inside the manifest's directory. */
@@ -118,6 +121,36 @@ export function levelForExp(exp: number): number {
   return 50;
 }
 
+/** Our derived medals that mean the same as one of the game's. The rest
+ *  (opening-act, last-word, payback) have no counterpart and keep the pack's art. */
+const MEDAL_ALIASES: Record<string, string> = {
+  "twofer": "double_kill", "hat-trick": "triple_kill", "full-house": "killtacular", "encore": "kill_frenzy",
+  "hot-streak": "killing_spree", "wildfire": "running_riot", "untouchable": "rampage",
+};
+
+export function medalKey(id: string): string | null {
+  const alias = MEDAL_ALIASES[id];
+  return alias ? `medal/${alias}` : null;
+}
+
+const WEAPONS: Array<[RegExp, string]> = [
+  [/sword/, "energy_sword"],
+  [/plasma ?pistol/, "plasma_pistol"],
+  [/plasma ?rifle/, "plasma_rifle"],
+  [/beam ?rifle/, "beam_rifle"],
+  [/sentinel/, "sentinel_beam"],
+  [/sniper/, "sniper_rifle"],
+  [/rocket/, "rocket_launcher"],
+  [/\bsmg\b|sub ?machine/, "smg"],
+];
+
+/** The weapon key a reported weapon name points at, by word, if any. */
+export function weaponKey(weapon: string | null | undefined): string | null {
+  const w = (weapon ?? "").toLowerCase().replace(/[_-]+/g, " ");
+  for (const [re, name] of WEAPONS) if (re.test(w)) return `weapon/${name}`;
+  return null;
+}
+
 export const rankKey = (level: number) => `rank/${Math.min(50, Math.max(1, Math.round(level)))}`;
 
 // ---- emblems ----
@@ -140,7 +173,7 @@ export interface EmblemSpec {
   background2: Rgb;
 }
 
-/** Player colours to pick from until telemetry says what a player chose. */
+/** Player colours to pick from when the manifest has no palette. */
 export const EMBLEM_COLOURS: Rgb[] = [
   [236, 236, 236], [110, 110, 110], [28, 28, 28], [190, 40, 34], [226, 106, 30], [240, 190, 40],
   [126, 150, 60], [40, 130, 60], [246, 150, 170], [130, 60, 150], [40, 150, 160], [110, 180, 230],
@@ -155,9 +188,25 @@ function fnv(seed: string, salt: number): number {
   return h >>> 0;
 }
 
-/** A stable emblem for a seed (an XUID), within the layers the server has. */
-export function emblemChoice(seed: string, fgCount = 64, bgCount = 32): EmblemSpec {
-  const n = EMBLEM_COLOURS.length;
+/** The colours to pick from: the manifest's palette when it has one. */
+export function emblemPalette(manifest?: Pick<GameArtManifest, "palette"> | null): Rgb[] {
+  const own = (manifest?.palette ?? []).map(parseHexColour).filter((c): c is Rgb => c !== null);
+  return own.length >= 2 ? own : EMBLEM_COLOURS;
+}
+
+/** An emblem from profile values: layer numbers and palette colour indices,
+ *  the form telemetry will report them in. */
+export function emblemFromIndices(
+  palette: Rgb[], v: { fg: number; bg: number; primary: number; secondary: number; background: number; background2: number },
+): EmblemSpec {
+  const c = (i: number) => palette[((Math.trunc(i) % palette.length) + palette.length) % palette.length]!;
+  return { fg: v.fg, bg: v.bg, primary: c(v.primary), secondary: c(v.secondary), background: c(v.background), background2: c(v.background2) };
+}
+
+/** A stable emblem for a seed (an XUID), within the layers the server has
+ *  and from `palette` (the manifest's, else our own). */
+export function emblemChoice(seed: string, fgCount = 64, bgCount = 32, palette: Rgb[] = EMBLEM_COLOURS): EmblemSpec {
+  const n = palette.length;
   const primary = fnv(seed, 3) % n;
   // The other colours step away from the primary so the layers stay legible.
   const secondary = (primary + 1 + (fnv(seed, 4) % (n - 1))) % n;
@@ -166,8 +215,8 @@ export function emblemChoice(seed: string, fgCount = 64, bgCount = 32): EmblemSp
   return {
     fg: fnv(seed, 1) % Math.max(1, fgCount),
     bg: fnv(seed, 2) % Math.max(1, bgCount),
-    primary: EMBLEM_COLOURS[primary]!, secondary: EMBLEM_COLOURS[secondary]!,
-    background: EMBLEM_COLOURS[background]!, background2: EMBLEM_COLOURS[background2]!,
+    primary: palette[primary]!, secondary: palette[secondary]!,
+    background: palette[background]!, background2: palette[background2]!,
   };
 }
 
@@ -209,6 +258,22 @@ export function compositeEmblem(
       out[i + c] = Math.round(fa[c]! * fr + fb[c]! * fbm + under * keep);
     }
     out[i + 3] = 255;
+  }
+  return out;
+}
+
+/**
+ * A single-mask picture (weapon silhouettes: the shape is in blue, with
+ * alpha copying it) as a white image whose alpha is the shape, stretched so
+ * its strongest pixel is opaque. The extracted masks are faint (they peak
+ * near a quarter), so used as they are they would tint to a ghost.
+ */
+export function normaliseMask(rgba: ArrayLike<number>, out: Uint8ClampedArray = new Uint8ClampedArray(rgba.length)): Uint8ClampedArray {
+  let peak = 0;
+  for (let i = 3; i < rgba.length; i += 4) if (rgba[i]! > peak) peak = rgba[i]!;
+  for (let i = 0; i + 3 < rgba.length; i += 4) {
+    out[i] = out[i + 1] = out[i + 2] = 255;
+    out[i + 3] = peak ? Math.round((rgba[i + 3]! / peak) * 255) : 0;
   }
   return out;
 }
