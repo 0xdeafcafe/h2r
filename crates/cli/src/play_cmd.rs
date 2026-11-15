@@ -20,6 +20,7 @@ const USAGE: &str = "usage:
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--input-timeline FILE] [--frame-stats]
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
+          [--icons auto|xbox|xbox360|playstation|keyboard]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
 
@@ -46,7 +47,9 @@ your user; either is made on the server and kept in accounts.json if needed.
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
 Cmd+F fullscreen, Cmd+P pause. With --follow, F5 restarts into a ready update
-and F6 hides the banner. --bindings reads a TOML table (docs/input.md).";
+and F6 hides the banner. --bindings reads a TOML table (docs/input.md).
+--icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,
+follows the device last used (docs/button-icons.md).";
 
 /// The play bindings: input's Halo defaults, plus Enter for A and Backspace
 /// for B so the menus work the way a desktop user expects.
@@ -114,6 +117,7 @@ fn hosted(
     status: bool,
     timeline: Option<ScriptedInput>,
     interrupted: Arc<AtomicBool>,
+    icons: boot::icons::IconOptions,
 ) -> boot::Host {
     let mut gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
     // As for `h2 run`: passes are merged by default (the fast rule;
@@ -138,6 +142,7 @@ fn hosted(
         trace_limit: Some(TRACE_LIMIT),
         input,
         keyboard,
+        icons: Some(icons),
         between_slices: Some(Box::new({
             let mut slices = 0u64;
             move |k: &kernel::Kernel| {
@@ -250,6 +255,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut disc = None;
     let mut audio = true;
     let mut follow_status = None;
+    let mut icons: Option<font::icons::IconChoice> = None;
     let mut frame_stats = timeline::phase::Config::from_env();
     let mut live = crate::play_live::LiveOpts::default();
     let mut config = app::AppConfig {
@@ -321,6 +327,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
                 config.bindings = Bindings::from_toml(&text)
                     .with_context(|| format!("parsing {}", path.display()))?;
             }
+            "--icons" => {
+                icons = Some(
+                    val()?
+                        .parse()
+                        .map_err(|e: String| anyhow::anyhow!("--icons: {e}"))?,
+                )
+            }
             "-h" | "--help" => bail!("{USAGE}"),
             _ if disc.is_none() => disc = Some(PathBuf::from(a)),
             _ => bail!("unexpected {a}\n\n{USAGE}"),
@@ -330,6 +343,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
+    // --icons, then H2_ICONS, then auto: follow the device in use
+    // (docs/button-icons.md).
+    let icons = boot::icons::IconOptions {
+        choice: match icons {
+            Some(c) => c,
+            None => boot::icons::choice_from_env()?.unwrap_or_default(),
+        },
+        gamepads: config.gamepads,
+    };
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
     if needs_build(&xbe, &lib) {
@@ -378,7 +400,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
     }
     let report = app::run(config, move |host| {
-        let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted));
+        let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted), icons);
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether

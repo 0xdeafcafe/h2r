@@ -109,6 +109,14 @@ records. Those values are not a physical DVD geometry or volume ID. Unaddressabl
 record names, and descendants of an unaddressable directory, are skipped
 without failing the whole mount. Structural XISO corruption still fails.
 
+`RewriteBackend::new(inner, rewrite)` serves some of another backend's files
+with different contents (`Vfs::with_disc_rewrite` wraps the disc in one). For
+a path the `Rewrite` wants, the whole inner file is read once and handed to
+it; the result is kept in memory and gives the file's size in `stat` and
+listings and its bytes in `read_at`. Other paths, and files over 64 MiB, pass
+through. It is read-only and never writes the inner backend. The runner uses
+it for the font files ([button-icons.md](button-icons.md)).
+
 `HostBackend::new(root, metadata_root)` presents a host directory as FATX.
 The metadata tree must be separate, with neither root inside the other.
 Each parent directory has a cached index of ASCII-insensitive names,

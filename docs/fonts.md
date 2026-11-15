@@ -172,4 +172,6 @@ multiplies into every metric (`1.0` here). Control units below 0x20 are skipped.
 * Header `+0x14` (1710, 2100, 3240) and `+0x0a`.
 * Which engine font slot serves which UI element, and how the font table picks
   the CJK variant at run time.
-* The inline markup escapes and the private-use icon glyphs.
+* The inline markup escapes. The private-use icon glyphs are listed in
+  [button-icons.md](button-icons.md), which also covers `font::encode` (the
+  compressor) and `font::patch` (adding glyphs to a font file).

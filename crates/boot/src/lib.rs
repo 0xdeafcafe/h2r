@@ -16,6 +16,7 @@ pub mod d3d_glue;
 pub mod dsound_glue;
 pub mod fallback;
 pub mod game_glue;
+pub mod icons;
 pub mod layout_glue;
 pub mod live_glue;
 pub use live_telemetry as telemetry;
@@ -381,6 +382,10 @@ pub struct Host {
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
     pub keyboard: Option<input::backend::keyboard::KeyboardMouse>,
+    /// Button icons for the device in use (`icons`, docs/button-icons.md).
+    /// `None` takes `H2_ICONS`; with that unset too, the fonts and the glyph
+    /// lookups are left alone.
+    pub icons: Option<icons::IconOptions>,
     /// Keep only this many kernel calls in memory (`trace::install_bounded`).
     pub trace_limit: Option<usize>,
     /// Called after every slice, input pump and audio advance, with the
@@ -458,7 +463,21 @@ pub fn run_hosted_with_live(
     let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&loaded.runtime, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
     std::fs::create_dir_all(&opts.data_root)?;
     let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
-    let v = match vfs::Vfs::with_disc(cfg.clone(), &opts.disc) {
+    let icon_options = match host.icons {
+        Some(o) => Some(o),
+        None => icons::choice_from_env()?.map(|choice| icons::IconOptions { choice, gamepads: false }),
+    };
+    let icons = icon_options
+        .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
+        .filter(|i| i.enabled());
+    let mounted = match &icons {
+        Some(i) => vfs::Vfs::with_disc_rewrite(cfg.clone(), &opts.disc, i.font_rewrite()),
+        None => vfs::Vfs::with_disc(cfg.clone(), &opts.disc),
+    };
+    if let Some(i) = &icons {
+        icons::install(&loaded.runtime, Arc::clone(i))?;
+    }
+    let v = match mounted {
         Ok(v) => v,
         Err(e) => {
             // A raw XBE (or a file that is not an XISO) still boots, with no

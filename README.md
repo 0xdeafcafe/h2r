@@ -264,6 +264,7 @@ Data formats and tags:
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [structure-bsp.md](docs/structure-bsp.md): render models and structure BSP geometry, and the viewer (`crates/tags`, `crates/viewer`)
 - [ui.md](docs/ui.md): user-interface tags (wgit, wgtz, wigl, skin) (`crates/tags`)
+- [button-icons.md](docs/button-icons.md): the button glyphs in the fonts, and Xbox 360, PlayStation and keyboard icons that follow the device in use (`crates/font/src/icons`, `--icons`, `H2_ICONS`)
 - [keyboard-charset.md](docs/keyboard-charset.md): the on-screen keyboard's characters, what players use, and a design for extending them (not built)
 
 Engine:

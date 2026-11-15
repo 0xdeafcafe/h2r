@@ -52,6 +52,8 @@ pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
 pub struct KeyboardMouse {
     inner: Arc<Mutex<Inner>>,
     clock: Clock,
+    /// Last-used device of the pad this keyboard is part of.
+    active: crate::active::ActiveDevice,
 }
 
 struct Inner {
@@ -111,7 +113,15 @@ impl KeyboardMouse {
                 rumble: Rumble::default(),
             })),
             clock,
+            active: Default::default(),
         }
+    }
+
+    /// The last-used device of the pad this keyboard belongs to. The combined
+    /// player-one pad (`KeyboardFallback`) keeps it current; on its own a
+    /// keyboard pad never sets it.
+    pub fn active_device(&self) -> crate::active::ActiveDevice {
+        self.active.clone()
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {

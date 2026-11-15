@@ -16,6 +16,7 @@
 //!
 //! See `docs/input.md`.
 
+pub mod active;
 pub mod backend;
 pub mod bindings;
 pub mod device;

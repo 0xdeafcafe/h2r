@@ -86,6 +86,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
         })),
         input: Some(input),
         keyboard: Some(keyboard),
+        icons: None,
         trace_limit: Some(16),
         between_slices: Some(Box::new({
             let (slices, clock) = (Arc::clone(&slices), Arc::clone(&clock));

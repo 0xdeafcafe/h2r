@@ -17,6 +17,9 @@
 //! of range, or allocate more than a few hundred KiB beyond the font itself.
 use std::fmt;
 
+pub mod encode;
+pub mod icons;
+pub mod patch;
 pub mod raster;
 
 pub use raster::{Bitmap, RenderOptions, render};

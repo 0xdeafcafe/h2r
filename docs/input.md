@@ -336,6 +336,11 @@ whole-stick deflection (keyboard wins ties). Remaining pads take ports 1–3.
 This prevents the keyboard pad from occupying player one while a real pad
 can only control player two. The same primary pad is retained until unplugged.
 
+The combined pad also records which half the player used last
+(`input::active::ActiveDevice`, from `KeyboardMouse::active_device`): the
+keyboard and mouse, an Xbox-style pad or a PlayStation pad (by its name). The
+runner uses it to pick the button icons ([button-icons.md](button-icons.md)).
+
 The combined virtual pad remains connected when hardware disappears and
 accepts/completes feedback even without physical motors. Rumble is forwarded
 to the selected physical pad and restored on attach. To expose actual

@@ -92,6 +92,22 @@ impl HostBackend for KeyboardFallback {
         let gamepad = primary.as_ref().map_or_else(Gamepad::default, |p| {
             p.state.to_gamepad(&self.convert, p.physical)
         });
+        // Whichever half the player is using decides the button icons. With
+        // both or neither busy the last answer stands.
+        let pad_busy = primary.is_some() && crate::active::is_active(&gamepad);
+        match (crate::active::is_active(&keyboard), pad_busy) {
+            (true, false) => self
+                .keyboard
+                .active_device()
+                .set(crate::active::DeviceKind::Keyboard),
+            (false, true) => {
+                let name = primary.as_ref().map_or("", |p| p.name.as_str());
+                self.keyboard
+                    .active_device()
+                    .set(crate::active::pad_kind(name));
+            }
+            _ => {}
+        }
         let mut out = vec![HostPad {
             id: HostPadId(0),
             name: "Player one (pad + keyboard/mouse)".into(),
@@ -298,5 +314,71 @@ mod tests {
             1000,
             "retain selected primary across enumeration reordering"
         );
+    }
+    #[test]
+    fn last_used_device_follows_keyboard_and_pad_activity() {
+        use crate::active::DeviceKind;
+        use std::sync::{Arc, Mutex};
+        struct Physical(Arc<Mutex<(String, Gamepad)>>);
+        impl HostBackend for Physical {
+            fn name(&self) -> &str {
+                "test"
+            }
+            fn poll(&mut self) -> Vec<HostPad> {
+                let (name, pad) = self.0.lock().unwrap().clone();
+                vec![HostPad {
+                    id: HostPadId(7),
+                    name,
+                    state: HostPadState::from_gamepad(pad),
+                    physical: false,
+                    supports_rumble: false,
+                }]
+            }
+            fn set_rumble(&mut self, _: HostPadId, _: Rumble) {}
+        }
+        let pad = Arc::new(Mutex::new((
+            "DualSense Wireless Controller".to_owned(),
+            Gamepad::default(),
+        )));
+        let keyboard = KeyboardMouse::new(Bindings::default());
+        let active = keyboard.active_device();
+        let mut both = KeyboardFallback::new(
+            keyboard.clone(),
+            Some(Box::new(Physical(Arc::clone(&pad)))),
+            Default::default(),
+        );
+        // Nothing touched yet.
+        both.poll();
+        assert_eq!(active.get(), None);
+        // A key press claims the keyboard, and releasing it changes nothing.
+        keyboard.key_down("Space");
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Keyboard));
+        keyboard.key_up("Space");
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Keyboard));
+        // A pad button claims the pad, by the pad's kind.
+        pad.lock().unwrap().1.analog[0] = 255;
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::PlayStation));
+        // Both busy at once: the last answer stands.
+        keyboard.key_down("Space");
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::PlayStation));
+        // The pad goes idle while the key is still held: keyboard again.
+        pad.lock().unwrap().1 = Gamepad::default();
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Keyboard));
+        // Another pad's name gives the Xbox kind.
+        keyboard.key_up("Space");
+        *pad.lock().unwrap() = (
+            "Xbox Wireless Controller".to_owned(),
+            Gamepad {
+                thumb_lx: 30_000,
+                ..Default::default()
+            },
+        );
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Xbox));
     }
 }

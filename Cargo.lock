@@ -437,6 +437,7 @@ dependencies = [
  "d3d",
  "dsound",
  "emit",
+ "font",
  "gfx",
  "iced-x86",
  "input",

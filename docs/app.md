@@ -87,7 +87,9 @@ or one whose `.stamp` names another image, generator or module ABI
 default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--bindings FILE` (docs/input.md
-TOML), `--input-timeline FILE` (an input timeline, docs/input.md, played on
+TOML), `--icons auto|xbox|xbox360|playstation|keyboard` (button pictures in
+prompts; `auto`, the default, follows the device last used, see
+[button-icons.md](button-icons.md)), `--input-timeline FILE` (an input timeline, docs/input.md, played on
 guest time in place of live input), `--status` (frame rates once a second,
 the slice count every 1000 slices), `--frame-stats` (frame-time stats, below). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a

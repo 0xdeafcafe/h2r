@@ -7,12 +7,14 @@ mod backend;
 mod disc;
 mod host;
 mod path;
+mod rewrite;
 mod status;
 mod types;
 
 pub use backend::Backend;
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
+pub use rewrite::{MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
 pub use types::*;
@@ -192,6 +194,18 @@ impl Vfs {
         let disc = DiscBackend::open(disc)?;
         let mut vfs = Self::with_storage(config)?;
         vfs.mount(CDROM_DEVICE, disc)?;
+        Ok(vfs)
+    }
+    /// [`Vfs::with_disc`], with some of the disc's files served rewritten
+    /// (see [`RewriteBackend`]). The image itself is never modified.
+    pub fn with_disc_rewrite(
+        config: Config,
+        disc: impl AsRef<std::path::Path>,
+        rewrite: impl Rewrite + 'static,
+    ) -> Result<Self> {
+        let disc = DiscBackend::open(disc)?;
+        let mut vfs = Self::with_storage(config)?;
+        vfs.mount(CDROM_DEVICE, RewriteBackend::new(disc, rewrite))?;
         Ok(vfs)
     }
     pub fn mount(&mut self, device: &str, backend: impl Backend + 'static) -> Result<()> {
