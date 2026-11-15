@@ -12,7 +12,7 @@ use std::fmt::Write;
 
 /// `D3DCMPFUNC` for the alpha test, which wgpu does not have in fixed
 /// function.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[allow(missing_docs)]
 pub enum AlphaFunc {
     Never,
@@ -53,7 +53,7 @@ impl AlphaFunc {
 }
 
 /// Per-pipeline state outside the `D3DPIXELSHADERDEF` that changes the code.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PixelOptions {
     /// Dimension of the texture bound to each stage, when known. D3D's
     /// `PS_GLOBALFLAGS_TEXMODE_ADJUST` turns PROJECT2D/PROJECT3D/CUBEMAP

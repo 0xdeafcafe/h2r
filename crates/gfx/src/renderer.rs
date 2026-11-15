@@ -25,8 +25,10 @@
 //! subsets (see [`crate::clear`]).
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use crate::clear::{Clearer, MaskedClear};
+use crate::compile::{Compiler, Pending, PendingPipeline, Priority};
 use crate::context::GfxContext;
 use crate::occlusion::{COUNT_FORMAT, COUNT_FRAGMENT_WGSL, PixelCounter};
 use crate::pipeline::{
@@ -353,8 +355,14 @@ fn builtin_alpha_func(rs: &RenderState) -> f32 {
 pub struct Renderer {
     shaders: HashMap<ShaderId, ShaderProgram>,
     builtin_bgl: wgpu::BindGroupLayout,
-    cache: PipelineCache<wgpu::RenderPipeline>,
+    cache: PipelineCache<Arc<PendingPipeline>>,
     clearer: Clearer,
+    /// Builds pipelines off this thread.
+    compiler: Arc<Compiler>,
+    /// Keys of pipelines draws asked for that were not in the cache (and
+    /// whether it was the count pipeline), oldest first, until
+    /// [`take_new_keys`](Renderer::take_new_keys).
+    new_keys: Vec<(PipelineKey, bool)>,
     caps: Capabilities,
     z_max: f32,
     /// Vertex and index bytes of recorded draws.
@@ -367,7 +375,7 @@ pub struct Renderer {
     uniform_align: u64,
     /// Count-pass pipelines (see [`crate::occlusion`]), keyed by the
     /// draw's own key.
-    count_cache: PipelineCache<wgpu::RenderPipeline>,
+    count_cache: PipelineCache<Arc<PendingPipeline>>,
     count_fragment: Option<wgpu::ShaderModule>,
 }
 
@@ -375,7 +383,9 @@ pub struct Renderer {
 /// renderer's upload rings: ready for [`Renderer::encode_pass`] on a target
 /// with the size and formats it was recorded for.
 pub struct RecordedDraw {
-    pipeline: wgpu::RenderPipeline,
+    /// Built on a compile worker if it was not cached; waited for (or built)
+    /// when the draw is encoded.
+    pipeline: Arc<PendingPipeline>,
     vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
     indices: Option<(wgpu::Buffer, u64, u64)>,
     vertices: u32,
@@ -388,7 +398,7 @@ pub struct RecordedDraw {
     /// The count-pass pipeline of a draw that counts its samples, and
     /// whether it writes depth or stencil (the replay then needs a scratch
     /// copy of the attachment).
-    count: Option<(wgpu::RenderPipeline, bool)>,
+    count: Option<(Arc<PendingPipeline>, bool)>,
     /// [`encode_pass`](Renderer::encode_pass) opens a new render pass for
     /// this draw.
     new_pass: bool,
@@ -551,6 +561,8 @@ impl Renderer {
             builtin_bgl: bgl,
             cache: PipelineCache::new(),
             clearer: Clearer::new(&ctx.device),
+            compiler: Compiler::global().clone(),
+            new_keys: Vec::new(),
             caps: ctx.caps,
             z_max: D3DZ_MAX_24,
             vertices: UploadRing::new(
@@ -601,8 +613,48 @@ impl Renderer {
     }
 
     /// The pipeline cache (for stats).
-    pub fn cache(&self) -> &PipelineCache<wgpu::RenderPipeline> {
+    pub fn cache(&self) -> &PipelineCache<Arc<PendingPipeline>> {
         &self.cache
+    }
+
+    /// Builds pipelines on `compiler`'s workers instead of the global one
+    /// (`Compiler::new(0)`: on the first draw that encodes them).
+    pub fn set_compiler(&mut self, compiler: Arc<Compiler>) {
+        self.compiler = compiler;
+    }
+
+    /// The keys of pipelines draws needed that were not cached (`true`:
+    /// the draw's count pipeline) since the last call, oldest first: the
+    /// ones worth [`prewarm`](Self::prewarm)ing next time.
+    pub fn take_new_keys(&mut self) -> Vec<(PipelineKey, bool)> {
+        std::mem::take(&mut self.new_keys)
+    }
+
+    /// Starts building the pipeline for `key` (its count pipeline with
+    /// `count`) on a compile worker, behind any a draw is waiting for, so a
+    /// later draw that needs it finds it built. Returns `false` if it is
+    /// already cached or `key.shader` is not registered.
+    pub fn prewarm(&mut self, ctx: &GfxContext, key: &PipelineKey, count: bool) -> bool {
+        let Some(program) = self.shaders.get(&key.shader) else {
+            return false;
+        };
+        let cache = if count {
+            &mut self.count_cache
+        } else {
+            &mut self.cache
+        };
+        if cache.get(key).is_some() {
+            return false;
+        }
+        let pending = if count {
+            let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
+            pending_count(&ctx.device, key, program, &fragment)
+        } else {
+            pending_pipeline(&ctx.device, key, program)
+        };
+        self.compiler.submit(&pending, Priority::Background);
+        cache.insert(key.clone(), pending);
+        true
     }
 
     /// Whether the built-in shader can draw `layout` (pre-transformed float4
@@ -762,34 +814,29 @@ impl Renderer {
         {
             key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
         }
+        // A miss starts the compile on a worker; the draw waits for it only
+        // when it is encoded (`encode_pass`).
         let program = &self.shaders[&d.shader];
+        let compiler = &self.compiler;
+        let new_keys = &mut self.new_keys;
         let pipeline = self
             .cache
             .get_or_insert_with(&key, |k| {
-                timeline::phase::count(timeline::phase::Counter::Pipelines, 1);
-                let _t =
-                    timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "pipeline create");
-                create_render_pipeline(&ctx.device, k, program, "xbox draw")
+                new_keys.push((k.clone(), false));
+                let p = pending_pipeline(&ctx.device, k, program);
+                compiler.submit(&p, Priority::Draw);
+                p
             })
             .clone();
         let count = d.count_samples.then(|| {
-            let fragment = self.count_fragment.get_or_insert_with(|| {
-                ctx.device
-                    .create_shader_module(wgpu::ShaderModuleDescriptor {
-                        label: Some("gfx count fragment"),
-                        source: wgpu::ShaderSource::Wgsl(COUNT_FRAGMENT_WGSL.into()),
-                    })
-            });
+            let fragment = count_fragment(&mut self.count_fragment, &ctx.device);
             let pipeline = self
                 .count_cache
                 .get_or_insert_with(&key, |k| {
-                    timeline::phase::count(timeline::phase::Counter::Pipelines, 1);
-                    let _t = timeline::span(
-                        timeline::Cat::Gfx,
-                        timeline::Track::Host,
-                        "pipeline create",
-                    );
-                    create_count_pipeline(&ctx.device, k, program, fragment)
+                    new_keys.push((k.clone(), true));
+                    let p = pending_count(&ctx.device, k, program, &fragment);
+                    compiler.submit(&p, Priority::Draw);
+                    p
                 })
                 .clone();
             (
@@ -892,6 +939,7 @@ impl Renderer {
         if counter.is_none() && draws.iter().any(RecordedDraw::counts_samples) {
             return Err(DrawError::NoPixelCounter);
         }
+        wait_for_pipelines(draws);
         let has_stencil = target.depth_format.is_some_and(|f| f.has_stencil_aspect());
         let color_view = target.color;
         let attachment = {
@@ -988,7 +1036,7 @@ impl Renderer {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    PassState::default().draw(&mut pass, p, count);
+                    PassState::default().draw(&mut pass, p, count.get());
                 }
                 if !p.scissor.is_empty() {
                     let s = p.scissor;
@@ -1028,7 +1076,7 @@ impl Renderer {
             });
             let mut state = PassState::default();
             for p in &draws[run] {
-                state.draw(&mut pass, p, &p.pipeline);
+                state.draw(&mut pass, p, p.pipeline.get());
             }
         }
         Ok(passes)
@@ -1178,6 +1226,102 @@ fn create_count_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+/// A draw pipeline for `key` to be built on a worker (or its first user).
+fn pending_pipeline(
+    device: &wgpu::Device,
+    key: &PipelineKey,
+    program: &ShaderProgram,
+) -> Arc<PendingPipeline> {
+    let (device, key, program) = (device.clone(), key.clone(), program.clone());
+    Pending::new(move || {
+        on_worker_scope(&device, || {
+            create_render_pipeline(&device, &key, &program, "xbox draw")
+        })
+    })
+}
+
+/// Runs `build`; on a compile worker, inside a validation error scope of
+/// its own (scopes are per thread, so the error would otherwise reach the
+/// uncaptured-error handler from a thread nobody watches). The error is
+/// reported, and the invalid pipeline fails again where a draw uses it. On
+/// the drawing thread the caller's own scopes see it, as before.
+fn on_worker_scope(
+    device: &wgpu::Device,
+    build: impl FnOnce() -> wgpu::RenderPipeline,
+) -> wgpu::RenderPipeline {
+    if !std::thread::current()
+        .name()
+        .is_some_and(|n| n.starts_with(crate::compile::WORKER_NAME))
+    {
+        return build();
+    }
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let p = build();
+    if let Some(e) = pollster::block_on(scope.pop()) {
+        eprintln!("gfx: pipeline compile: {e}");
+    }
+    p
+}
+
+/// The count pipeline for `key`, likewise.
+fn pending_count(
+    device: &wgpu::Device,
+    key: &PipelineKey,
+    program: &ShaderProgram,
+    fragment: &wgpu::ShaderModule,
+) -> Arc<PendingPipeline> {
+    let (device, key, program, fragment) = (
+        device.clone(),
+        key.clone(),
+        program.clone(),
+        fragment.clone(),
+    );
+    Pending::new(move || {
+        on_worker_scope(&device, || {
+            create_count_pipeline(&device, &key, &program, &fragment)
+        })
+    })
+}
+
+/// The count pass's fragment module, made on first use.
+fn count_fragment(
+    slot: &mut Option<wgpu::ShaderModule>,
+    device: &wgpu::Device,
+) -> wgpu::ShaderModule {
+    slot.get_or_insert_with(|| {
+        device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("gfx count fragment"),
+            source: wgpu::ShaderSource::Wgsl(COUNT_FRAGMENT_WGSL.into()),
+        })
+    })
+    .clone()
+}
+
+/// Makes sure every pipeline `draws` use is built, before a pass borrows
+/// them. A pipeline that is not is a compile on the game thread's critical
+/// path: it is counted ([`timeline::phase::Counter::Pipelines`]) and timed
+/// (`pipeline wait`), and built here if no worker has started it.
+fn wait_for_pipelines(draws: &[RecordedDraw]) {
+    let pending = || {
+        draws
+            .iter()
+            .flat_map(|d| std::iter::once(&d.pipeline).chain(d.count.as_ref().map(|c| &c.0)))
+            .filter(|p| !p.is_ready())
+    };
+    if pending().next().is_none() {
+        return;
+    }
+    let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "pipeline wait");
+    let mut n = 0;
+    for p in pending() {
+        if !p.is_ready() {
+            n += 1;
+            p.get();
+        }
+    }
+    timeline::phase::count(timeline::phase::Counter::Pipelines, n);
 }
 
 #[cfg(test)]

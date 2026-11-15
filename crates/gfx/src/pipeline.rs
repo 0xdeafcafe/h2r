@@ -15,7 +15,7 @@ use crate::repack::RepackPlan;
 use crate::vertex::{OwnedVertexBufferLayout, PrimitiveType, VertexLayout};
 
 /// Identifies a shader program known to the renderer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ShaderId(pub u32);
 
 /// Render target formats a pipeline is compiled for.
@@ -30,7 +30,7 @@ pub struct TargetFormats {
 }
 
 /// Everything that distinguishes one wgpu render pipeline from another.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct PipelineKey {
     /// Shader program.
     pub shader: ShaderId,
@@ -109,6 +109,16 @@ impl<V> PipelineCache<V> {
         &self.map[key]
     }
 
+    /// Adds `value` for `key` (replacing any), without counting.
+    pub fn insert(&mut self, key: PipelineKey, value: V) {
+        self.map.insert(key, value);
+    }
+
+    /// Every key and value.
+    pub fn iter(&self) -> impl Iterator<Item = (&PipelineKey, &V)> {
+        self.map.iter()
+    }
+
     /// Looks up without building or counting.
     pub fn get(&self, key: &PipelineKey) -> Option<&V> {
         self.map.get(key)
@@ -150,6 +160,7 @@ impl<V> PipelineCache<V> {
 /// not interpret them.
 ///
 /// [`Renderer::register_shader`]: crate::renderer::Renderer::register_shader
+#[derive(Clone)]
 pub struct ShaderProgram {
     /// The compiled module.
     pub module: wgpu::ShaderModule,

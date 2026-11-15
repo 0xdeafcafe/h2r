@@ -113,6 +113,10 @@ fn hosted(
     if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
         gfx.set_merge_passes(false);
     }
+    // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE; docs/graphics.md).
+    if let Some(path) = d3d::pipeline_store::default_path() {
+        gfx = gfx.with_pipeline_cache(path);
+    }
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
     boot::Host {

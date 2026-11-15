@@ -69,6 +69,11 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
             // frame N and print what differs.
             backend.set_merge_check(std::env::var("H2_GFX_MERGE_CHECK").ok().and_then(|v| v.parse().ok()));
+            // The persistent pipeline cache (H2_PIPELINE_CACHE, default in
+            // the user's cache directory): prewarm last run's pipelines.
+            if let Some(path) = d3d::pipeline_store::default_path() {
+                backend = backend.with_pipeline_cache(path);
+            }
             install_with(rt, backend)
         }
     }

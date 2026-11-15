@@ -48,6 +48,8 @@ copies. Nothing is ever written next to it.
 | `H2_GFX_MERGE_PASSES=0` | with `H2_BOOT_GFX` or in `h2 play`, one render pass per draw instead of the default merged passes (`GfxBackend::set_merge_passes`); about 2.5x slower; the exact reference, which merged passes matched on every menu frame checked |
 | `H2_GFX_MERGE_CHECK=N` | with `H2_BOOT_GFX`, render each pending pass of frame N both merged and one pass per draw and print what differs, down to the draws involved (`GfxBackend::set_merge_check`; slow) |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
+| `H2_PIPELINE_CACHE=<file>` | the persistent pipeline cache (docs/graphics.md "Pipeline compiles"): pipelines recorded there are built on worker threads at startup; `off` disables it. Default `~/Library/Caches/h2recomp/pipelines-v1.jsonl` |
+| `H2_GFX_COMPILE_THREADS=N` | pipeline compile workers (default half the cores, 2-4; `0` builds each pipeline on the game thread when its pass is encoded) |
 | `H2_FRAME_STATS=1` | frame-time stats by phase: a line a second on stderr and the worst frames at the end (docs/app.md "Frame stats", docs/frame-budget.md); `H2_FRAME_STATS_CSV=<file>` writes every frame, `H2_FRAME_STATS_FROM=N` starts the end report at frame N |
 | `H2_PERF_FROM=N` | with an `h2` built with `--features perf`: open `perf::Session::from_env()` (`H2_PROFILE`, `H2_TIMELINE`) at present N, finished at the end of the run (docs/perf.md "Boot hook") |
 | `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |

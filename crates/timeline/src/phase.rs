@@ -80,7 +80,9 @@ pub enum Counter {
     Draws = 0,
     /// `queue.submit` calls.
     Submits = 1,
-    /// Render-pipeline cache misses (a Metal pipeline compile).
+    /// Render pipelines the game thread waited for or built when encoding
+    /// a pass (a Metal compile on the critical path). Cache misses a
+    /// compile worker finished in time are not counted.
     Pipelines = 2,
     /// nv2a programs translated to WGSL and compiled (shader cache misses).
     Shaders = 3,

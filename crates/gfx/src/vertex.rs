@@ -531,7 +531,7 @@ impl VertexLayout {
 }
 
 /// A `wgpu::VertexBufferLayout` that owns its attribute list.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct OwnedVertexBufferLayout {
     /// Bytes between vertices.
     pub stride: u64,

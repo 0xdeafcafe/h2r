@@ -1054,3 +1054,74 @@ fn texture_groups_are_replaced_and_evicted() {
     assert_ne!(group(&mut b, &a), first, "evicted");
     assert_ne!(group(&mut b, &other), replaced, "evicted");
 }
+
+/// Pipelines are built off the drawing thread: a draw-time miss is queued
+/// on a compile worker and collected when the pass is encoded (output as
+/// if built inline), and a prewarmed pipeline is never built by the
+/// drawing thread at all. Without workers a miss is built at encode, on the
+/// caller.
+#[test]
+fn pipelines_compile_off_the_drawing_thread() {
+    use gfx::compile::Compiler;
+    use std::time::{Duration, Instant};
+    let Some(ctx) = context() else { return };
+    let (w, h) = (16u32, 16u32);
+    let layout = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let verts = [vertex(0.0, 0.0, 0xFF00FF00), vertex(16.0, 0.0, 0xFF00FF00), vertex(0.0, 16.0, 0xFF00FF00)].concat();
+    let state = RenderState { cull_mode: CullMode::None, ..Default::default() };
+    let me = std::thread::current().id();
+    let run = |renderer: &mut Renderer| {
+        let target = OffscreenTarget::new(&ctx.device, (w, h), wgpu::TextureFormat::Bgra8Unorm);
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        let streams = [VertexStream { data: &verts, stride: 0 }];
+        let d = draw(&streams, 3, &layout, PrimitiveType::TriangleList, state);
+        let recorded = renderer.record(&ctx, &target.target(), &d).unwrap();
+        renderer.flush_uploads(&ctx.queue);
+        Renderer::encode_pass(&ctx, &mut enc, &target.target(), Clear::all([0.0, 0.0, 0.0, 1.0]), &[recorded], None)
+            .unwrap();
+        ctx.queue.submit([enc.finish()]);
+        target.read_pixels(&ctx)
+    };
+    let only = |r: &Renderer| {
+        assert_eq!(r.cache().len(), 1);
+        r.cache().iter().next().map(|(k, p)| (k.clone(), p.clone())).unwrap()
+    };
+
+    // No workers: the miss is not built when recorded, but at encode, here.
+    let mut inline = Renderer::new(&ctx);
+    inline.set_compiler(Compiler::new(0));
+    let want = run(&mut inline);
+    assert_eq!(pixel(&want, w, 2, 2), [0, 255, 0, 255]);
+    let (key, p) = only(&inline);
+    assert_eq!(p.built_on(), Some(me));
+    assert_eq!(inline.take_new_keys(), vec![(key.clone(), false)]);
+    assert!(inline.take_new_keys().is_empty());
+
+    // Prewarmed: built on a worker before the draw, so the draw only
+    // finds it; it is not a new key.
+    let mut warm = Renderer::new(&ctx);
+    warm.set_compiler(Compiler::new(2));
+    assert!(warm.prewarm(&ctx, &key, false));
+    assert!(!warm.prewarm(&ctx, &key, false), "already queued");
+    let (_, p) = only(&warm);
+    let start = Instant::now();
+    while !p.is_ready() {
+        assert!(start.elapsed() < Duration::from_secs(30), "prewarm never finished");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(run(&mut warm), want);
+    assert!(p.built_on().is_some_and(|t| t != me));
+    assert!(warm.take_new_keys().is_empty());
+    assert_eq!((warm.cache().hits(), warm.cache().misses()), (1, 0));
+
+    // A miss with workers: queued at record, same pixels.
+    let mut miss = Renderer::new(&ctx);
+    miss.set_compiler(Compiler::new(1));
+    assert_eq!(run(&mut miss), want);
+    assert_eq!(miss.take_new_keys(), vec![(key, false)]);
+
+    // An unregistered shader cannot be prewarmed.
+    let mut other = only(&inline).0;
+    other.shader = ShaderId(99);
+    assert!(!warm.prewarm(&ctx, &other, false));
+}

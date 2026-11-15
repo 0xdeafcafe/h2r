@@ -400,7 +400,69 @@ sample count, so states that translate identically share one pipeline: changing
 the stencil reference, blend constant, alpha ref or fog colour never rebuilds
 one, and a `QUADLIST` draw reuses the `TRIANGLELIST` pipeline. `PipelineCache<V>`
 is generic over the stored value so its behaviour is unit tested without a GPU;
-`Renderer` instantiates it with `wgpu::RenderPipeline`.
+`Renderer` instantiates it with `Arc<gfx::compile::PendingPipeline>`.
+
+### Pipeline compiles (`compile.rs`) and the pipeline cache
+
+A first-time pipeline is expensive, and almost all of it is the Metal
+compiler. Measured with `crates/d3d/tests/pipeline_cost.rs` (ignored; 24
+retail vertex programs from a local `h2 extract-shaders` corpus, each with
+a pass-through combiner, entry points renamed so Metal's own cache cannot
+hold them; release build, load average about 75):
+
+| step | ms per program |
+|---|---|
+| `vsh`/`psh` translation, link, naga validation (ours) | 2.3 |
+| `create_shader_module` (wgpu parses and validates the WGSL) | 1.4 |
+| naga's MSL back end, both stages (wgpu-hal runs it per pipeline) | 1.9 |
+| `create_render_pipeline` in total | 70.7 |
+| of which the Metal compiler (`newLibraryWithSource`, `newRenderPipelineState`) | 68.7 |
+
+So about 97% is Metal's, not translation; the 220 ms per pipeline in
+docs/frame-budget.md's worst frame is the same compile on a busier machine
+with real combiners. Built on 4 threads the same 24 take 0.70 s of wall
+time against 1.99 s on one: the compiler scales across threads. wgpu 30's
+pipeline cache (`PipelineCacheDescriptor`) is a no-op on Metal
+(`Features::PIPELINE_CACHE` is Vulkan-only), so nothing compiled can be
+persisted through wgpu. What is done instead:
+
+- **Off the drawing thread.** `Renderer::record` no longer builds a missing
+  pipeline. It makes a `PendingPipeline` and queues it on gfx's compile
+  workers (`gfx::compile::Compiler`, `H2_GFX_COMPILE_THREADS`, default half
+  the cores clamped to 2-4). The draw is recorded as usual. The pipeline is
+  collected in `Renderer::encode_pass`, when the pending pass is flushed
+  (a target switch, a readback, a present): by then a worker has usually
+  finished, or is part way. A pipeline no worker has started is built by
+  the encoding thread itself, so nothing waits on a queue. Draw-time misses
+  go ahead of prewarming.
+- **Never skipped.** A draw is never dropped or deferred while its pipeline
+  compiles: draws feed render-to-texture, readbacks and visibility counts
+  the game reads back, so a missing draw could change the guest's own
+  state, not just a frame's pixels. Output is identical with or without
+  workers and with or without the cache (`d3d/tests/pipeline_cache.rs`).
+  The cost of a cold miss is what is left of the compile at encode time,
+  and several misses in one pass compile in parallel.
+- **Persisted keys, prewarmed.** `d3d::pipeline_store` appends every
+  pipeline a draw needed to a JSON-lines file: the NV2A program
+  (`ProgramKey`: microcode or the pre-transformed program, the combiner
+  program without constants, the code-changing options) and the
+  `PipelineKey`. On startup `Nv2aShaders` translates the recorded programs
+  on a thread of its own, registers them as frames go by
+  (`ShaderProvider::maintain`, at every present) and queues their
+  pipelines on the workers. A draw that needs a program the prewarm thread
+  is still on waits for that one (`prewarm wait`) instead of translating
+  it twice. The file is `H2_PIPELINE_CACHE` (a path, or `off`), by default
+  `~/Library/Caches/h2recomp/pipelines-v1.jsonl` (`$XDG_CACHE_HOME/h2recomp/`
+  elsewhere). It derives from the game's shaders, so it is never committed.
+  Several processes may append to it at once; torn or unparsable lines are
+  skipped. `h2 play` and `h2 run` (`H2_BOOT_GFX`) use it.
+
+In frame stats (`H2_FRAME_STATS`) the `pipelines` counter now counts the
+pipelines the game thread had to wait for or build at encode time (the
+`pipeline wait` span), not cache misses: a miss a worker finished in time
+costs the frame nothing. Workers record no timeline spans, so their work
+never shows in a frame's budget. `Renderer::cache().misses()` still counts
+misses.
 
 ## What exists end to end
 

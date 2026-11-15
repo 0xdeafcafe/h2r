@@ -34,6 +34,7 @@ pub mod guest;
 pub mod hw;
 pub mod layout;
 pub mod nv2a;
+pub mod pipeline_store;
 pub mod pushbuf;
 pub mod regs;
 pub mod resource;

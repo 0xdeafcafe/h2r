@@ -231,6 +231,18 @@ impl GfxBackend {
         self
     }
 
+    /// Translates shaders with [`Nv2aShaders`] recording every pipeline to
+    /// the cache file at `path` and building the ones already in it ahead of
+    /// time, on worker threads (see [`crate::pipeline_store`]). Rendering is
+    /// the same with or without it: a draw whose pipeline is still being
+    /// built waits for it when its pass is encoded.
+    pub fn with_pipeline_cache(mut self, path: std::path::PathBuf) -> Self {
+        let mut shaders = Nv2aShaders::with_pipeline_cache(path);
+        shaders.maintain(&self.ctx, &mut self.renderer, &[]);
+        self.shaders = Some(Box::new(shaders));
+        self
+    }
+
     /// Removes the shader translator: only draws the built-in shader handles
     /// render; the rest are skipped.
     pub fn without_shaders(mut self) -> Self {
@@ -1084,8 +1096,10 @@ impl Backend for GfxBackend {
         self.flush()?;
         self.frame += 1;
         self.frame_draw = 0;
+        let new_pipelines = self.renderer.take_new_keys();
         if let Some(s) = self.shaders.as_mut() {
             s.end_frame();
+            s.maintain(&self.ctx, &mut self.renderer, &new_pipelines);
         }
         self.presented = Some(surface);
         if let Some(hook) = self.present_hook.as_mut() {

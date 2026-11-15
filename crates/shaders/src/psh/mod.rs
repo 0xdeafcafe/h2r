@@ -36,7 +36,7 @@ pub const PSDEF_SIZE: usize = 0xF0;
 pub struct Truncated(pub usize);
 
 /// The raw `D3DPIXELSHADERDEF`.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[allow(missing_docs)]
 pub struct PixelShaderDef {
     pub alpha_inputs: [u32; 8],
@@ -625,7 +625,7 @@ impl TexMode {
 }
 
 /// Texture dimensionality a stage samples.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum TextureDim {
     /// `texture_2d<f32>`.
     D2,

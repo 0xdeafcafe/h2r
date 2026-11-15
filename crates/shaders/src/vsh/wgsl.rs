@@ -12,7 +12,7 @@ use crate::common;
 use std::fmt::Write;
 
 /// Per-pipeline choices that change the generated vertex code.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct VertexOptions {
     /// Bit `n` set when the vertex layout supplies `v<n>`. Registers the
     /// program reads that are not supplied come from `xvs.defaults[n]`

@@ -47,7 +47,7 @@ use std::fmt::Write;
 pub type CompareFunc = AlphaFunc;
 
 /// The stored depth format of a shadow map.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum DepthFormat {
     /// 24-bit integer depth (`D24S8`, `LIN_D24S8`).
     D24,
@@ -110,7 +110,7 @@ impl DepthFormat {
 }
 
 /// Texel addressing for one axis of a shadow map.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ShadowAddress {
     /// `D3DTADDRESS_WRAP`.
     #[default]
@@ -145,7 +145,7 @@ impl ShadowAddress {
 }
 
 /// A stage that samples a shadow map (part of [`super::PixelOptions`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Shadow {
     /// Stored depth format.
     pub format: DepthFormat,

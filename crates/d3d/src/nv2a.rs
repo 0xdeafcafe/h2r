@@ -52,7 +52,9 @@
 //! cached too, so a draw that cannot be translated costs a lookup the next
 //! time.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::mpsc;
 
 use gfx::pipeline::ShaderId;
 use gfx::program::{ProgramBindings, StageDims};
@@ -73,6 +75,7 @@ use shaders::vsh::encode::{Inst, Operand, program};
 use shaders::vsh::{self, IluOp, MacOp, OutReg, ProgramKind, VertexOptions, VertexUniforms};
 
 use crate::backend::ResolvedDraw;
+use crate::pipeline_store::{PipelineStore, StoredPipeline, program_id};
 use crate::shader::{PreparedShader, ShaderProvider, VertexProcessing};
 use crate::state::slot;
 
@@ -108,13 +111,18 @@ pub struct Nv2aStats {
     pub failed: u64,
     /// Draws prepared.
     pub draws: u64,
+    /// Programs translated ahead of time from the pipeline cache (not
+    /// counted in `translated`).
+    pub prewarmed: u64,
+    /// Pipelines queued for building ahead of time from the pipeline cache.
+    pub prewarmed_pipelines: u64,
     /// Draws whose bound definition has a final combiner but whose pushed
     /// final-combiner inputs are both zero, so it runs as an all-zero
     /// final combiner (black, alpha 0; [`PixelShaderDef::explicit_final`]).
     pub zero_final_draws: u64,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 struct PretransformedKey {
     /// Vertex register read for `oT0..oT3` (`9 + D3DTSS_TEXCOORDINDEX`).
     texcoords: [u8; 4],
@@ -122,14 +130,14 @@ struct PretransformedKey {
     fog: PassthroughFog,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 enum VertexSource {
     Microcode(Vec<u32>),
     Pretransformed(PretransformedKey),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct ProgramKey {
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ProgramKey {
     vertex: VertexSource,
     vertex_options: VertexOptions,
     /// The combiner program with its constants cleared (they are uniforms).
@@ -154,6 +162,29 @@ pub struct Nv2aShaders {
     table: RenderStateTable,
     next: u32,
     stats: Nv2aStats,
+    /// The pipeline cache to open at the first [`maintain`](ShaderProvider::maintain).
+    cache_path: Option<PathBuf>,
+    persist: Option<Persist>,
+    warm: Option<Warm>,
+}
+
+/// Recording to the pipeline cache.
+struct Persist {
+    store: PipelineStore,
+    /// The program each registered shader id runs, and its cache id.
+    ids: HashMap<ShaderId, (u64, ProgramKey)>,
+}
+
+/// A translated program with its module (the source is dropped).
+type Translated = Result<(wgpu::ShaderModule, Translation), String>;
+
+/// Programs from the pipeline cache being translated on the prewarm thread.
+struct Warm {
+    rx: mpsc::Receiver<(ProgramKey, Translated)>,
+    /// Sent to the thread and not installed yet.
+    waiting: HashSet<ProgramKey>,
+    /// Recorded pipelines by program cache id, built once it is installed.
+    pipelines: HashMap<u64, Vec<StoredPipeline>>,
 }
 
 impl Default for Nv2aShaders {
@@ -171,6 +202,114 @@ impl Nv2aShaders {
             table: RenderStateTable::default(),
             next: 0,
             stats: Nv2aStats::default(),
+            cache_path: None,
+            persist: None,
+            warm: None,
+        }
+    }
+
+    /// A provider that records every pipeline it needs to the cache file at
+    /// `path` and, when it starts, builds the ones already in it ahead of
+    /// time (see [`crate::pipeline_store`]).
+    pub fn with_pipeline_cache(path: PathBuf) -> Self {
+        Self {
+            cache_path: Some(path),
+            ..Self::new()
+        }
+    }
+
+    /// Opens the cache file, queues the built-in shader's pipelines and
+    /// starts translating the recorded programs.
+    fn open_cache(&mut self, ctx: &gfx::GfxContext, renderer: &mut gfx::Renderer, path: PathBuf) {
+        let (store, loaded) = PipelineStore::open::<ProgramKey>(&path);
+        let mut pipelines: HashMap<u64, Vec<StoredPipeline>> = HashMap::new();
+        for p in loaded.pipelines {
+            match p.program {
+                None => {
+                    let key = gfx::pipeline::PipelineKey {
+                        shader: gfx::renderer::SHADER_XYZRHW_DIFFUSE,
+                        ..p.key
+                    };
+                    if renderer.prewarm(ctx, &key, p.count) {
+                        self.stats.prewarmed_pipelines += 1;
+                    }
+                }
+                Some(id) => pipelines.entry(id).or_default().push(p),
+            }
+        }
+        let keys: Vec<ProgramKey> = loaded.programs.into_iter().map(|(_, k)| k).collect();
+        let waiting: HashSet<ProgramKey> = keys.iter().cloned().collect();
+        let (tx, rx) = mpsc::channel();
+        let device = ctx.device.clone();
+        let spawned = std::thread::Builder::new()
+            .name("nv2a prewarm".into())
+            .spawn(move || {
+                for key in keys {
+                    let r = translate(&key).map(|mut t| {
+                        (module(&device, std::mem::take(&mut t.source)), t)
+                    });
+                    if tx.send((key, r)).is_err() {
+                        break;
+                    }
+                }
+            });
+        if spawned.is_ok() {
+            self.warm = Some(Warm { rx, waiting, pipelines });
+        }
+        self.persist = Some(Persist { store, ids: HashMap::new() });
+    }
+
+    /// Installs programs the prewarm thread has translated and queues their
+    /// pipelines; with `until`, waits until that program is in.
+    fn install_warm(
+        &mut self,
+        ctx: &gfx::GfxContext,
+        renderer: &mut gfx::Renderer,
+        until: Option<&ProgramKey>,
+    ) {
+        loop {
+            let Some(warm) = self.warm.as_mut() else { return };
+            let wait = until.is_some_and(|k| warm.waiting.contains(k));
+            let msg = if wait {
+                let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "prewarm wait");
+                warm.rx.recv().ok()
+            } else {
+                warm.rx.try_recv().ok()
+            };
+            let Some((key, r)) = msg else {
+                if wait || warm.waiting.is_empty() {
+                    // The thread is gone (or done): translate the rest on demand.
+                    self.warm = None;
+                }
+                return;
+            };
+            warm.waiting.remove(&key);
+            let stored = warm.pipelines.remove(&program_id(&key)).unwrap_or_default();
+            if self.programs.contains_key(&key) {
+                continue;
+            }
+            let r = r.map(|(module, t)| {
+                let Translation { dims, discards, warnings, .. } = t;
+                let id = ShaderId(SHADER_ID_BASE + self.next);
+                self.next += 1;
+                report_warnings(id.0, &warnings);
+                let bindings = self
+                    .bindings
+                    .get_or_insert_with(|| ProgramBindings::new(&ctx.device));
+                renderer.register_shader(id, bindings.program(&ctx.device, module, dims));
+                self.stats.prewarmed += 1;
+                if let Some(p) = self.persist.as_mut() {
+                    p.ids.insert(id, (program_id(&key), key.clone()));
+                }
+                for s in stored {
+                    let k = gfx::pipeline::PipelineKey { shader: id, ..s.key };
+                    if renderer.prewarm(ctx, &k, s.count) {
+                        self.stats.prewarmed_pipelines += 1;
+                    }
+                }
+                Compiled { id, dims, discards, warnings }
+            });
+            self.programs.insert(key, r);
         }
     }
 
@@ -262,7 +401,7 @@ pub fn guest_def(
 /// `rcp oFog, v0.w` (the vertex w) otherwise. The fog unit then applies the
 /// table mode to that coordinate ([`d3d_fog`]). D3D does this whatever
 /// `D3DRS_FOGENABLE` says; with fog off the factor is 1 anyway.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum PassthroughFog {
     /// `v4.w`: specular alpha (no fog table).
     SpecularAlpha,
@@ -774,15 +913,22 @@ impl ShaderProvider for Nv2aShaders {
             pixel: code,
             pixel_options,
         };
+        if !self.programs.contains_key(&key) {
+            // Being translated ahead of time: take that one.
+            self.install_warm(ctx, renderer, Some(&key));
+        }
         let bindings = self
             .bindings
             .get_or_insert_with(|| ProgramBindings::new(&ctx.device));
         if !self.programs.contains_key(&key) {
             let r = compile(ctx, renderer, bindings, &key, SHADER_ID_BASE + self.next);
             match &r {
-                Ok(_) => {
+                Ok(c) => {
                     self.next += 1;
                     self.stats.translated += 1;
+                    if let Some(p) = self.persist.as_mut() {
+                        p.ids.insert(c.id, (program_id(&key), key.clone()));
+                    }
                 }
                 Err(_) => self.stats.failed += 1,
             }
@@ -899,6 +1045,26 @@ impl ShaderProvider for Nv2aShaders {
     fn end_frame(&mut self) {
         if let Some(b) = &mut self.bindings {
             b.end_frame();
+        }
+    }
+
+    fn maintain(
+        &mut self,
+        ctx: &gfx::GfxContext,
+        renderer: &mut gfx::Renderer,
+        new_pipelines: &[(gfx::pipeline::PipelineKey, bool)],
+    ) {
+        if let Some(path) = self.cache_path.take() {
+            self.open_cache(ctx, renderer, path);
+        }
+        self.install_warm(ctx, renderer, None);
+        let Some(p) = self.persist.as_mut() else { return };
+        for (key, count) in new_pipelines {
+            if key.shader == gfx::renderer::SHADER_XYZRHW_DIFFUSE {
+                p.store.record::<ProgramKey>(None, *count, key);
+            } else if let Some((id, program)) = p.ids.get(&key.shader) {
+                p.store.record(Some((*id, program)), *count, key);
+            }
         }
     }
 }
@@ -1225,6 +1391,34 @@ fn compile(
     id: u32,
 ) -> Result<Compiled, String> {
     timeline::phase::count(timeline::phase::Counter::Shaders, 1);
+    let Translation { source, dims, discards, warnings } = translate(key)?;
+    report_warnings(id, &warnings);
+    let module = module(&ctx.device, source);
+    let id = ShaderId(id);
+    renderer.register_shader(id, bindings.program(&ctx.device, module, dims));
+    Ok(Compiled { id, dims, discards, warnings })
+}
+
+/// The WGSL module of a translated program.
+fn module(device: &wgpu::Device, source: String) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("nv2a program"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
+/// A translated program, before it has a module.
+struct Translation {
+    source: String,
+    dims: StageDims,
+    /// The pixel side may discard (see [`Compiled`]).
+    discards: bool,
+    warnings: Vec<String>,
+}
+
+/// Translates and validates a program: its WGSL, the texture dimensions it
+/// samples, whether it discards and the translator's warnings. Needs no GPU.
+fn translate(key: &ProgramKey) -> Result<Translation, String> {
     let program = match &key.vertex {
         VertexSource::Microcode(words) => vsh::Program::from_words(ProgramKind::Normal, words)
             .map_err(|e| format!("vertex program: {e}"))?,
@@ -1238,24 +1432,10 @@ fn compile(
     let vs = vsh::translate(&program, &key.vertex_options)
         .map_err(|e| format!("vertex program: {e}"))?;
     let ps = psh::translate(&key.pixel, &key.pixel_options);
-    report_warnings(id, &ps.warnings);
     let source = shaders::link(&vs, &ps).map_err(|e| e.to_string())?;
     shaders::validate(&source).map_err(|e| format!("generated WGSL: {e}"))?;
-    let module = ctx
-        .device
-        .create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("nv2a program"),
-            source: wgpu::ShaderSource::Wgsl(source.into()),
-        });
     let dims: StageDims = ps.textures.map(|d| d.map(view_dim));
-    let id = ShaderId(id);
-    renderer.register_shader(id, bindings.program(&ctx.device, module, dims));
-    Ok(Compiled {
-        id,
-        dims,
-        discards: ps.discards,
-        warnings: ps.warnings,
-    })
+    Ok(Translation { source, dims, discards: ps.discards, warnings: ps.warnings })
 }
 
 #[cfg(test)]

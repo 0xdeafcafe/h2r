@@ -18,6 +18,7 @@
 
 pub mod blit;
 pub mod clear;
+pub mod compile;
 pub mod context;
 pub mod convert;
 pub(crate) mod depth_fill;

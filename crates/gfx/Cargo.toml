@@ -6,8 +6,11 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
-wgpu = "30"
+# `serde`: pipeline keys are persisted (d3d::pipeline_store).
+wgpu = { version = "30", features = ["serde"] }
 bytemuck = "1"
+# Pipeline and program keys are persisted (d3d::pipeline_store).
+serde = { version = "1", features = ["derive"] }
 pollster = "1"
 thiserror.workspace = true
 # Pipeline-creation spans (docs/perf.md); no dependencies of its own.

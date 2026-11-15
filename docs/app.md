@@ -173,7 +173,7 @@ the mean of each phase: in the window's top-left corner (the banner, so
 not with `--follow`, whose banner keeps the corner), and once a second on
 stderr. At exit the run prints the whole run's percentiles and its ten
 worst frames, each with its phases and what happened in it: draws,
-submits, pipeline compiles, nv2a shader compiles, texture uploads,
+submits, pipelines the game thread waited for (docs/graphics.md "Pipeline compiles"), nv2a shader compiles, texture uploads,
 readbacks and bytes read from files. `H2_FRAME_STATS_CSV=<file>` writes
 one row per frame; `H2_FRAME_STATS_FROM=N` starts the exit report at
 frame N. F6 hides the line until the next refresh.
