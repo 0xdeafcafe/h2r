@@ -62,8 +62,8 @@ export default function Carnage(props: { game: GameState }) {
   const Who = (p: { r: Row }) => (
     <td>
       <span class="who">
-        <Show when={p.r.s.xuid} fallback={<><Emblem seed={p.r.s.name} size={19} /><span>{p.r.s.name}</span></>}>
-          {(x) => <><Emblem seed={x()} size={19} /><A href={playerHref(p.r.s.name)}>{p.r.s.name}</A></>}
+        <Show when={p.r.s.xuid} fallback={<><Emblem seed={p.r.s.name} appearance={p.r.s.appearance} size={19} /><span>{p.r.s.name}</span></>}>
+          {(x) => <><Emblem seed={x()} appearance={p.r.s.appearance} size={19} /><A href={playerHref(p.r.s.name)}>{p.r.s.name}</A></>}
         </Show>
         <Show when={p.r.s.left}><small>(left)</small></Show>
       </span>

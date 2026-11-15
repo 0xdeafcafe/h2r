@@ -53,12 +53,22 @@ code { font-family: var(--font-mono); }
 .killfeed { list-style: none; margin: 0; padding: 0; max-height: 262px; overflow-y: auto; font-size: 11px; line-height: 14px; scrollbar-width: thin; scrollbar-color: #555 #111; }
 .kf { display: flex; align-items: center; flex-wrap: wrap; gap: 0 4px; padding: 2px 6px; border-top: 1px solid #000; animation: kf-in .4s ease; }
 .kf:nth-child(odd) { background: #181818; } .kf:nth-child(even) { background: #252525; }
-.kf-name { font-weight: bold; }
+.kf-name { font-weight: bold; color: var(--kf-colour, #fff); }
+.kf-team { display: none; }
 .kf-verb { color: #bbb; }
 .kf-weapon { font-size: 10px; color: var(--s-gold); }
 .kf .verify { margin-left: auto; }
 .killfeed__empty { color: var(--s-ink-soft); padding: 10px 8px; font-style: italic; }
 @keyframes kf-in { from { background: #585858; } }
+/* On the stats site the feed is plain: names in the link colour with a
+   small team square, a muted weapon, and one quiet signature mark in the
+   feed's header instead of one per row. */
+.killfeed__head { display: none; }
+.stats .killfeed__head { display: flex; justify-content: flex-end; align-items: center; min-height: 17px; padding: 1px 6px; background: #101010; border-bottom: 1px solid #2a2a2a; }
+.stats .kf-name { font-weight: normal; color: var(--s-link); }
+.stats .kf-team { display: inline-block; width: 7px; height: 7px; margin-right: 4px; vertical-align: -1px; border: 1px solid rgba(255, 255, 255, .45); }
+.stats .kf .kf-weapon { color: var(--s-ink-soft); }
+.stats .kf .verify { display: none; }
 
 /* Map canvas */
 .map-canvas { position: relative; width: 100%; height: 100%; }
@@ -76,6 +86,12 @@ code { font-family: var(--font-mono); }
 .scrub input::-moz-range-thumb { width: 8px; height: 13px; border: 1px solid #000; border-radius: 1px; background: linear-gradient(180deg, #fff3b0, #f6b620 50%, #a36c06); }
 .scrub__kills { position: absolute; left: 4px; right: 4px; top: 0; height: 4px; pointer-events: none; }
 .scrub__kill { position: absolute; width: 2px; height: 4px; transform: translateX(-1px); background: var(--s-ink-soft); }
+/* The stats site's scrubber is flat too: a thin dark track, a small plain
+   thumb, no gradient and no gold. */
+.stats .scrub input::-webkit-slider-runnable-track { height: 4px; background: #101010; border: 1px solid #3a3a3a; }
+.stats .scrub input::-moz-range-track { height: 3px; background: #101010; border: 1px solid #3a3a3a; }
+.stats .scrub input::-webkit-slider-thumb { width: 8px; height: 8px; margin-top: -3px; border: 1px solid #000; border-radius: 0; background: #c9c9c9; }
+.stats .scrub input::-moz-range-thumb { width: 7px; height: 7px; border: 1px solid #000; border-radius: 0; background: #c9c9c9; }
 .replay-time { font: 11px/1 var(--font-ui); color: #fff; min-width: 78px; text-align: right; font-variant-numeric: tabular-nums; }
 
 /* Floors */

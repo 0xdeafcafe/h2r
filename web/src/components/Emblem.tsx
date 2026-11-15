@@ -1,12 +1,12 @@
 // Player emblems. With the server's game art (state/gameart.ts) an emblem is
 // two mask layers coloured on a canvas; otherwise it is one of the art
-// pack's original two-colour symbols. Either way the pick is deterministic
-// from the seed (an XUID or gamertag) until telemetry carries a player's
-// real emblem, which `emblem` is for.
+// pack's original two-colour symbols. The pick is deterministic from the
+// seed (an XUID or gamertag) until telemetry carries a player's real
+// appearance, which `appearance` (or a ready `emblem`) is for.
 
 import { createEffect, createSignal, onCleanup } from "solid-js";
 import { emblemArt } from "../lib/art";
-import { emblemChoice, type EmblemSpec } from "../lib/gameart";
+import { emblemChoice, emblemFromAppearance, type Appearance, type EmblemSpec } from "../lib/gameart";
 import { emblemLayers, emblemUrl } from "../state/gameart";
 
 /** A stable index for a seed, spread better than a plain sum. */
@@ -21,6 +21,9 @@ export default function Emblem(props: {
   /** The player's real emblem (layers and colours), once it is known;
    *  `emblemFromIndices` turns profile colour indices into one. */
   emblem?: Partial<EmblemSpec>;
+  /** The player's appearance as telemetry reports it (emblem layers and
+   *  profile colour indices); over the seed-derived pick when present. */
+  appearance?: Appearance | null;
 }) {
   const size = () => props.size ?? 48;
   const pack = () => emblemArt(pick(props.seed), size());
@@ -28,7 +31,10 @@ export default function Emblem(props: {
   createEffect(() => {
     const l = emblemLayers();
     if (!l) { setGame(null); return; }
-    const spec: EmblemSpec = { ...emblemChoice(props.seed, l.fg, l.bg, l.palette), ...props.emblem };
+    const spec: EmblemSpec = {
+      ...emblemFromAppearance(l.palette, props.appearance, emblemChoice(props.seed, l.fg, l.bg, l.palette)),
+      ...props.emblem,
+    };
     let current = true;
     onCleanup(() => { current = false; });
     void emblemUrl(l.a, spec).then((url) => { if (current) setGame(url); });

@@ -203,6 +203,65 @@ export function emblemFromIndices(
   return { fg: v.fg, bg: v.bg, primary: c(v.primary), secondary: c(v.secondary), background: c(v.background), background2: c(v.background2) };
 }
 
+/** A player's appearance as telemetry reports it: which emblem layers, and
+ *  the profile colours as palette indices. Every field is optional. */
+export interface Appearance {
+  emblem?: { fg?: number; bg?: number };
+  colours?: { primary?: number; secondary?: number; tertiary?: number; quaternary?: number };
+}
+
+/** An appearance off the wire, keeping only finite indices, so state never
+ *  carries a half-shape. Null when it says nothing usable. */
+export function normalizeAppearance(v: unknown): Appearance | null {
+  if (!v || typeof v !== "object") return null;
+  const w = v as { emblem?: unknown; colours?: unknown };
+  const idx = (o: unknown, k: string): number | undefined => {
+    const n = o && typeof o === "object" ? (o as Record<string, unknown>)[k] : undefined;
+    return typeof n === "number" && Number.isFinite(n) ? n : undefined;
+  };
+  const fg = idx(w.emblem, "fg"), bg = idx(w.emblem, "bg");
+  const primary = idx(w.colours, "primary"), secondary = idx(w.colours, "secondary");
+  const tertiary = idx(w.colours, "tertiary"), quaternary = idx(w.colours, "quaternary");
+  // Only the keys that carry an index, so a kept half-shape has no
+  // `undefined` members.
+  const emblem = fg !== undefined || bg !== undefined
+    ? { ...(fg !== undefined ? { fg } : {}), ...(bg !== undefined ? { bg } : {}) }
+    : undefined;
+  const colours = primary !== undefined || secondary !== undefined || tertiary !== undefined || quaternary !== undefined
+    ? {
+        ...(primary !== undefined ? { primary } : {}), ...(secondary !== undefined ? { secondary } : {}),
+        ...(tertiary !== undefined ? { tertiary } : {}), ...(quaternary !== undefined ? { quaternary } : {}),
+      }
+    : undefined;
+  if (!emblem && !colours) return null;
+  return { ...(emblem ? { emblem } : {}), ...(colours ? { colours } : {}) };
+}
+
+/** An emblem for a player's appearance over `base` (the XUID-derived
+ *  choice): the palette indices it carries are resolved through
+ *  `emblemFromIndices` (primary and secondary colour the foreground's two
+ *  masks, tertiary and quaternary the background's); anything it leaves out
+ *  keeps `base`'s value. */
+export function emblemFromAppearance(palette: Rgb[], a: Appearance | null | undefined, base: EmblemSpec): EmblemSpec {
+  if (!a) return base;
+  const e = a.emblem, c = a.colours;
+  // Resolve all the indices it carries in one go (absent ones land on 0 and
+  // are swapped back for `base`'s value below).
+  const from = emblemFromIndices(palette, {
+    fg: e?.fg ?? 0, bg: e?.bg ?? 0,
+    primary: c?.primary ?? 0, secondary: c?.secondary ?? 0,
+    background: c?.tertiary ?? 0, background2: c?.quaternary ?? 0,
+  });
+  return {
+    fg: e?.fg ?? base.fg,
+    bg: e?.bg ?? base.bg,
+    primary: c?.primary !== undefined ? from.primary : base.primary,
+    secondary: c?.secondary !== undefined ? from.secondary : base.secondary,
+    background: c?.tertiary !== undefined ? from.background : base.background,
+    background2: c?.quaternary !== undefined ? from.background2 : base.background2,
+  };
+}
+
 /** A stable emblem for a seed (an XUID), within the layers the server has
  *  and from `palette` (the manifest's, else our own). */
 export function emblemChoice(seed: string, fgCount = 64, bgCount = 32, palette: Rgb[] = EMBLEM_COLOURS): EmblemSpec {

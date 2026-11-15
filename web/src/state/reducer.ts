@@ -6,6 +6,7 @@ import type {
   KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
+import { normalizeAppearance, type Appearance } from "../lib/gameart";
 
 export interface Presence {
   state: string;
@@ -36,6 +37,9 @@ export interface Kill {
 
 export interface GamePlayerState extends GamePlayer {
   left: boolean;
+  /** The player's appearance (emblem layers, profile colours), when roster
+   *  events have carried one. */
+  appearance: Appearance | null;
 }
 
 export interface GameState {
@@ -103,7 +107,17 @@ function streamGameId(stream: string): GameId | null {
 }
 
 function addPlayer(g: GameState, p: GamePlayer) {
-  g.players[p.index] = { ...p, xuid: p.xuid ?? null, left: false };
+  // Telemetry may carry the player's appearance; the API type doesn't know
+  // it yet, so read it softly. A roster repeat that omits it keeps what the
+  // game already learned.
+  const wire = p as GamePlayer & { appearance?: unknown };
+  const prev = g.players[p.index];
+  g.players[p.index] = {
+    ...p,
+    xuid: p.xuid ?? null,
+    left: false,
+    appearance: normalizeAppearance(wire.appearance) ?? prev?.appearance ?? null,
+  };
   if (!g.scores[p.index]) g.scores[p.index] = emptyScore(p.index);
 }
 
@@ -336,6 +350,8 @@ export interface Standing {
   team: number;
   xuid: Xuid | null;
   left: boolean;
+  /** The player's appearance, when known (for `<Emblem appearance=…>`). */
+  appearance: Appearance | null;
   score: PlayerScore;
 }
 
@@ -348,6 +364,7 @@ export function standings(g: GameState): Standing[] {
       team: p.team,
       xuid: p.xuid ?? null,
       left: p.left,
+      appearance: p.appearance ?? null,
       score: g.scores[p.index] ?? emptyScore(p.index),
     }))
     .sort((a, b) =>
