@@ -15,6 +15,7 @@ mod emit_output;
 mod extract_shaders;
 mod fonts;
 mod lighting;
+mod mappack_cmd;
 mod maps;
 mod movies_cmd;
 mod object;
@@ -54,6 +55,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
   font <font> <text> --out <png>
                           render text with a /maps/fonts file; --all validates every font
                           (options --color RRGGBB[AA], --force, --disc <iso>)
+  import-mappack <iso> [--data DIR]
+                          install the Multiplayer Map Pack disc's maps into the
+                          emulated hard disk (docs/map-pack.md)
   movies <iso> --out DIR [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
@@ -151,6 +155,9 @@ fn main() -> Result<()> {
     }
     if cmd == "movies" {
         std::process::exit(movies_cmd::run(args.collect()));
+    }
+    if cmd == "import-mappack" {
+        return mappack_cmd::run(args.collect());
     }
     if cmd == "collision" {
         return collision::run(args.collect());

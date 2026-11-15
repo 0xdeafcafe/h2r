@@ -1701,3 +1701,63 @@ fn format_device_stays_inside_the_volume_after_root_or_ancestor_swaps() {
         }
     }
 }
+
+/// Content installed on the host by `h2 import-mappack` (docs/map-pack.md)
+/// shows up to the guest under `T:\$c\<offer id>\`, and the guest can list it.
+#[test]
+fn installed_content_appears_under_t_content_dir() {
+    let temp = TempDir::new();
+    let config = Config::new(&temp.0, 0x4D530064);
+    let offer = offer_id(config.title_id, 1);
+    assert_eq!(content_dir_name(offer), "4d53006400000001");
+    let dir = config.content_dir(offer);
+    assert_eq!(
+        dir,
+        temp.0
+            .join("disk/Partition1/TDATA/4D530064")
+            .join("$c")
+            .join("4d53006400000001")
+    );
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("ContentMeta.xbx"), b"synthetic meta").unwrap();
+    fs::write(dir.join("synthetic.map"), b"synthetic map").unwrap();
+
+    let mut vfs = linked(config);
+    let meta = vfs
+        .open(
+            "T:\\$C\\4D53006400000001\\contentmeta.xbx",
+            OpenOptions::default(),
+        )
+        .unwrap()
+        .handle;
+    let mut buf = [0u8; 32];
+    let n = vfs.read(meta, Offset::Absolute(0), &mut buf).unwrap();
+    assert_eq!(&buf[..n], b"synthetic meta");
+    vfs.close(meta).unwrap();
+
+    let list = |vfs: &mut Vfs, path: &str| {
+        let opts = OpenOptions {
+            directory: Some(true),
+            ..OpenOptions::default()
+        };
+        let h = vfs.open(path, opts).unwrap().handle;
+        let mut names = Vec::new();
+        while let Ok(e) = vfs.query_directory(h, None, false) {
+            names.push((e.name, e.metadata.is_directory()));
+        }
+        vfs.close(h).unwrap();
+        names.sort();
+        names
+    };
+    assert_eq!(
+        list(&mut vfs, "T:\\$c"),
+        [("4d53006400000001".to_string(), true)]
+    );
+    assert_eq!(
+        list(&mut vfs, "T:\\$c\\4d53006400000001"),
+        [
+            ("ContentMeta.xbx".to_string(), false),
+            ("synthetic.map".to_string(), false)
+        ]
+    );
+}

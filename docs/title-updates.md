@@ -1,14 +1,16 @@
 # Title updates
 
-Status: design only. Nothing here is implemented, and it can't be tested
-until we have an update `default.xbe` to work with.
+Status: design only. Nothing here is implemented. We now have an update to
+test with: the Multiplayer Map Pack disc carries one, certificate version
+`0x303` for our 1.0 disc (section 6, and [map-pack.md](map-pack.md)).
+`h2 import-mappack` copies it to `<data>/updates/4D530064/00000303/default.xbe`.
 
-Halo 2 shipped on disc as 1.0. Xbox Live title updates don't change the
-disc. Their installed result includes a replacement `default.xbe` at
-`E:\TDATA\4D530064\$u\default.xbe`, even when delivery uses a binary patch.
-The update image runs with the original disc's assets; downloadable maps
-are separate content. See Sources and formats below for evidence and the
-remaining launch-path checks. This page covers:
+Halo 2 shipped on disc as 1.0. Xbox Live title updates (1.1 and later) don't
+patch the disc. They put a new `default.xbe` on the console's hard disk under
+`TDATA\4D530064\$u\` (1.0 has that path built in), and that image runs in
+place of the disc's. The maps and other data still come from the disc (`D:`),
+and downloaded maps from `T:\$c\`. See Sources and formats below for
+evidence and the remaining launch-path checks. This page covers:
 
 - what in the repo assumes the 1.0 image;
 - what already copes with a different image;
@@ -529,9 +531,13 @@ Some of this pays for itself even without update files:
     maps? If so, check their header version, build string and tag index
     layout. Run `crates/tags` decoders over every tag, and diff the field
     sets against a disc map of the same name.
-  - Downloadable map packs, if the user has them, sit beside the update in
-    `TDATA`. Do the same checks on them, and see whether the update, unlike
-    1.0, expects them.
+  - Downloadable map packs sit beside the update in `TDATA`, under `$c`.
+    Answered for the Map Pack disc ([map-pack.md](map-pack.md)): its nine
+    maps have the same version 8 header and build string as the disc's, and
+    `crates/map` opens them. The update, unlike 1.0, lists them: 1.0 reads
+    each package's `patch.lvl`, which only names Lockout, and the update
+    reads `patch_v3.lvl`, which names the package's own maps. Still to do:
+    run the tag decoders over every tag and diff against a disc map.
   - Does the update XBE change the per-cache-type size limits that
     `map/src/writer.rs:137-142` copied from the 1.0 validator?
   - Saves. Checkpoints are raw snapshots of game-state memory
@@ -556,12 +562,13 @@ Some of this pays for itself even without update files:
 
 ### 3.6 CLI and UX
 
-- **Where files live**: `disc/updates/` (already ignored through `/disc/`).
-  The user copies the HDD's `E:/TDATA/4D530064/$u/` into it as is,
-  for example
-  `disc/updates/<anything>/default.xbe`. Also accept an emulated data root
-  laid out like the HDD (`<data>/disk/Partition1/TDATA/4D530064/...`), since
-  `vfs` mirrors that layout.
+- **Where files live**: `<data>/updates/4D530064/<certificate version>/default.xbe`,
+  which is where `h2 import-mappack` puts the Map Pack disc's update. Also
+  accept `disc/updates/` (already ignored through `/disc/`), where the user
+  can copy an HDD's `TDATA/4D530064/$u/` as is, for example
+  `disc/updates/<anything>/default.xbe`, and an emulated data root laid out
+  like the HDD (`<data>/disk/Partition1/TDATA/4D530064/$u/...`), since `vfs`
+  mirrors that layout.
 - **`h2 image list`** shows every image in `disc/` and `disc/updates/`: its
   label, certificate version, short hash, XDK builds and status (`base`,
   `mapped`, `needs map`, `refused: <reason>`).
@@ -717,4 +724,38 @@ per-build D3D and DSound layout work on top, probably another week.
   corrupting checkpoints until the save formats are known.
 - **Kernel imports.** An update may import ordinals that 1.0 doesn't.
   `kernel` already has a supplemental-export bridge (`kernel/src/lib.rs:237`),
-  so make `h2 image list` report unknown ordinals up front.
+  so make `h2 image list` report unknown ordinals up front. The `0x303`
+  update adds one: ordinal 270, `RtlCompareString`.
+
+## 6. The first update we have: `0x303`
+
+From the Multiplayer Map Pack disc ([map-pack.md](map-pack.md) has the
+details). The disc carries eight signed copies, `default.xbe.03` to `.10`,
+for base discs with certificate versions 3 to 10. They're one build: they
+differ only in the header signature and certificate, and each one's version
+is `0x300` plus its base's. Our 1.0 disc is version 3, so its update is
+`default.xbe.03`, version `0x303`.
+
+What it means for the design above:
+
+- **Same XDK.** Every library is 1.0.5849, the same set as 1.0. The
+  per-build layout risk in 3.1 doesn't apply to this update: `CDevice`
+  offsets, render-state numbering, DirectSound layouts and the library code
+  should all be the same, only relocated.
+- **Everything moved.** The entry point is `0x2d6f2e` (1.0: `0x2d0aee`), the
+  thunk table `0x417b60` (`0x411520`), the image `0x57d2a0` bytes
+  (`0x5754c0`). The title-ID + entry gates (1.4) correctly reject it, and
+  every literal hook address in section 1.1 is likely wrong: the address map is
+  needed.
+- **One new kernel import**, ordinal 270 (Risks, "Kernel imports").
+- **Version label.** Under the precedent in 3.1, the update can be named
+  `0x303` (certificate version) in code, keyed by its hash once measured on
+  the user's machine. The hash isn't recorded here.
+- **The update path is confirmed.** 1.0 builds
+  `\Device\Harddisk0\Partition1\TDATA\<title>\$u\<file>` itself, so the
+  relaunch in 3.6 is real. Keep the update out of the emulated `$u` until
+  `--image` selects it, as `h2 import-mappack` does.
+
+Next steps, in the order of section 4: A to G can now be tested against a
+real update (`H2_XBE_UPDATE=<data>/updates/4D530064/00000303/default.xbe`),
+and H can start.
