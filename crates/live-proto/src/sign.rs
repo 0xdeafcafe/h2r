@@ -73,6 +73,24 @@ pub struct Jwk {
     pub kid: Option<String>,
 }
 
+/// An Ed25519 private key as a JWK (RFC 8037: `d` is the 32-byte seed).
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivateJwk {
+    pub kty: String,
+    pub crv: String,
+    #[serde(default)]
+    pub x: String,
+    pub d: String,
+}
+
+impl std::fmt::Debug for PrivateJwk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PrivateJwk")
+            .field("x", &self.x)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A verifying key with its thumbprint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PublicKey {
@@ -165,6 +183,29 @@ impl KeyPair {
 
     pub fn public(&self) -> &PublicKey {
         &self.public
+    }
+
+    /// The private JWK (`d` set), the form WebCrypto exports.
+    pub fn private_jwk(&self) -> PrivateJwk {
+        let p = self.public.jwk();
+        PrivateJwk {
+            kty: p.kty,
+            crv: p.crv,
+            x: p.x,
+            d: self.secret_b64(),
+        }
+    }
+
+    /// From a private JWK; `x`, when present, must be `d`'s public key.
+    pub fn from_private_jwk(jwk: &PrivateJwk) -> Result<Self, SignError> {
+        if jwk.kty != "OKP" || jwk.crv != "Ed25519" {
+            return Err(SignError::BadJwk);
+        }
+        let key = Self::from_secret_b64(&jwk.d)?;
+        if !jwk.x.is_empty() && jwk.x != key.public.jwk().x {
+            return Err(SignError::KidMismatch);
+        }
+        Ok(key)
     }
 
     pub fn kid(&self) -> &str {
@@ -488,26 +529,48 @@ pub struct AccountRequest {
     pub jwk: Jwk,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invite: Option<String>,
+    /// The server id it is for, so it cannot be replayed elsewhere.
+    pub aud: String,
+    /// When it was signed (unix seconds); the server allows
+    /// [`MAX_EVENT_SKEW_S`] either way.
+    pub iat: i64,
 }
 
 impl AccountRequest {
-    pub fn sign(key: &KeyPair, gamertag: &str, invite: Option<String>) -> String {
+    pub fn sign(
+        key: &KeyPair,
+        gamertag: &str,
+        invite: Option<String>,
+        aud: &str,
+        iat: i64,
+    ) -> String {
         let body = AccountRequest {
             gamertag: gamertag.into(),
             jwk: key.public().jwk(),
             invite,
+            aud: aud.into(),
+            iat,
         };
         key.sign_json(TYP_ACCOUNT, &body)
     }
 
-    /// Opens and verifies a creation request against the key it carries.
-    pub fn open(compact: &str) -> Result<(Self, PublicKey), SignError> {
+    /// Opens and verifies a creation request against the key it carries,
+    /// and checks it is for `aud` and recent.
+    pub fn open(compact: &str, aud: &str, now: i64) -> Result<(Self, PublicKey), SignError> {
         let jws = Jws::parse(compact)?;
         let req: AccountRequest = from_value(jws.json_payload(TYP_ACCOUNT)?)?;
         let key = PublicKey::from_jwk(&req.jwk)?;
-        jws.verify(&key)?;
         if jws.kid().is_none() {
             return Err(SignError::KidMismatch);
+        }
+        jws.verify(&key)?;
+        if req.aud != aud {
+            return Err(SignError::Claims("account request is for another server"));
+        }
+        if (req.iat - now).abs() > MAX_EVENT_SKEW_S {
+            return Err(SignError::Claims(
+                "account request iat is more than 5 minutes off",
+            ));
         }
         Ok((req, key))
     }
@@ -559,6 +622,11 @@ mod tests {
     use serde_json::json;
 
     const NOW: i64 = 1_800_000_000;
+    const ACCOUNT_VECTOR: &str = concat!(
+        "eyJhbGciOiJFZERTQSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJ0eXAiOiJoMmxpdmUtYWNjb3VudCJ9.",
+        "eyJhdWQiOiJsb2NhbGhvc3QiLCJnYW1lcnRhZyI6IlNuZWFreSBQZXRlIiwiaWF0IjoxODAwMDAwMDAwLCJqd2siOnsiY3J2IjoiRWQyNTUxOSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJrdHkiOiJPS1AiLCJ4IjoiMTFxWUFZS3hDcmZWU183VHlXUUhPZzdoY3ZQYXBpTWxyd0lhYVBjSFVSbyJ9fQ.",
+        "CAbhCapHV4aPxyp0SgMosKYqEXCVZvD5fOSx8sUQo9IpOUII91YGE75JFkE2QN0aojf0I5zQH1lZN3ehfQOGBg"
+    );
 
     #[test]
     fn rfc_8037_vectors() {
@@ -736,21 +804,63 @@ mod tests {
     #[test]
     fn account_requests() {
         let key = KeyPair::generate();
-        let jws = AccountRequest::sign(&key, "Sneaky Pete", Some("inv".into()));
-        let (req, pk) = AccountRequest::open(&jws).unwrap();
+        let jws = AccountRequest::sign(&key, "Sneaky Pete", Some("inv".into()), "h", NOW);
+        let (req, pk) = AccountRequest::open(&jws, "h", NOW + 10).unwrap();
         assert_eq!(req.gamertag, "Sneaky Pete");
         assert_eq!(req.invite.as_deref(), Some("inv"));
         assert_eq!(pk, *key.public());
 
+        // Another server, or stale.
+        assert!(AccountRequest::open(&jws, "other", NOW).is_err());
+        assert!(AccountRequest::open(&jws, "h", NOW + 301).is_err());
         // Signed by a key other than the one it carries.
         let other = KeyPair::generate();
         let body = AccountRequest {
             gamertag: "X".into(),
             jwk: key.public().jwk(),
             invite: None,
+            aud: "h".into(),
+            iat: NOW,
         };
         let wrong = other.sign_json(TYP_ACCOUNT, &body);
-        assert!(AccountRequest::open(&wrong).is_err());
+        assert!(AccountRequest::open(&wrong, "h", NOW).is_err());
+    }
+
+    /// A fixed vector for cross-checking a browser (WebCrypto Ed25519 is
+    /// deterministic too): RFC 8037's key signing a creation request.
+    /// Header `{"alg":"EdDSA","kid":<thumbprint>,"typ":"h2live-account"}`
+    /// and payload are JCS; a client producing the same JSON gets the same
+    /// bytes.
+    #[test]
+    fn account_request_vector() {
+        let jwk = PrivateJwk {
+            kty: "OKP".into(),
+            crv: "Ed25519".into(),
+            x: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo".into(),
+            d: "nWGxne_9WmC6hEr0kuwsxERJxWl7MmkZcDusAxyuf2A".into(),
+        };
+        let key = KeyPair::from_private_jwk(&jwk).unwrap();
+        let jws = AccountRequest::sign(&key, "Sneaky Pete", None, "localhost", 1_800_000_000);
+        let parts: Vec<&str> = jws.split('.').collect();
+        assert_eq!(
+            String::from_utf8(B64.decode(parts[0]).unwrap()).unwrap(),
+            r#"{"alg":"EdDSA","kid":"kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k","typ":"h2live-account"}"#
+        );
+        assert_eq!(
+            String::from_utf8(B64.decode(parts[1]).unwrap()).unwrap(),
+            r#"{"aud":"localhost","gamertag":"Sneaky Pete","iat":1800000000,"jwk":{"crv":"Ed25519","kid":"kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k","kty":"OKP","x":"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"}}"#
+        );
+        assert_eq!(jws, ACCOUNT_VECTOR);
+        AccountRequest::open(ACCOUNT_VECTOR, "localhost", 1_800_000_000).unwrap();
+        assert_eq!(key.private_jwk(), jwk);
+        let bad = PrivateJwk {
+            x: KeyPair::generate().public().jwk().x,
+            ..jwk
+        };
+        assert_eq!(
+            KeyPair::from_private_jwk(&bad).unwrap_err(),
+            SignError::KidMismatch
+        );
     }
 
     #[test]

@@ -14,9 +14,11 @@
 
 pub mod app;
 pub mod dispatch;
+pub mod games;
 pub mod guard;
 pub mod http;
 pub mod identity;
+pub mod ingest;
 pub mod model;
 pub mod pg;
 pub mod store;
@@ -46,6 +48,8 @@ pub struct Config {
     pub tls: Option<(PathBuf, PathBuf)>,
     /// Allow plain HTTP on a non-loopback address.
     pub insecure_http: bool,
+    /// The built web app, served at `/` ([`web_dir`]).
+    pub web: Option<PathBuf>,
 }
 
 /// Loopback serves plain HTTP; anything else needs TLS or an explicit
@@ -71,22 +75,34 @@ fn redact(url: &str) -> String {
     }
 }
 
+/// Why a connection failed, without the URL's credentials.
+fn db_error(db: &str, e: &sqlx::Error) -> anyhow::Error {
+    let why = e
+        .as_database_error()
+        .map_or_else(|| "unreachable".to_string(), |d| d.message().to_string());
+    anyhow::anyhow!("connecting to {}: {why}", redact(db))
+}
+
+/// The built web app to serve at `/`: `$H2_LIVE_WEB`, else this checkout's
+/// `web/dist`, if it has an `index.html`.
+pub fn web_dir() -> Option<PathBuf> {
+    let dir = std::env::var_os("H2_LIVE_WEB")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../web/dist"));
+    dir.join("index.html").is_file().then_some(dir)
+}
+
 /// Serves until the process is stopped.
 pub async fn serve(config: Config) -> Result<()> {
     check_bind(config.listen, config.tls.is_some(), config.insecure_http)?;
     let identity = ServerIdentity::open(&config.data_dir, config.id.as_deref())?;
-    let db = redact(&config.db);
-    let store = pg::PostgresStore::connect(&config.db).await.map_err(|e| {
-        anyhow::anyhow!(
-            "connecting to {db}: {}",
-            e.as_database_error()
-                .map_or("unreachable".into(), |d| d.message().to_string())
-        )
-    })?;
+    let store = pg::PostgresStore::connect_creating(&config.db)
+        .await
+        .map_err(|e| db_error(&config.db, &e))?;
     let id = identity.id.clone();
     let private = config.policy.private;
-    let live = Arc::new(Live::start(Arc::new(store), identity, config.policy).await?);
-    let app = http::router(live.clone());
+    let live = Live::start(Arc::new(store), identity, config.policy).await?;
+    let app = http::router_with_web(live.clone(), config.web.as_deref());
     let reads = if private { "private" } else { "public" };
     let scheme = if config.tls.is_some() {
         "https"
@@ -94,10 +110,15 @@ pub async fn serve(config: Config) -> Result<()> {
         "http"
     };
     println!(
-        "h2 live: {id} on {scheme}://{}, log at position {} ({db}, {reads} reads)",
+        "h2 live: {id} on {scheme}://{}, log at position {} ({}, {reads} reads)",
         config.listen,
-        live.position()
+        live.position(),
+        redact(&config.db)
     );
+    match &config.web {
+        Some(dir) => println!("h2 live: web app from {}", dir.display()),
+        None => println!("h2 live: no web app (build it: cd web && bun run build)"),
+    }
     match config.tls {
         Some((cert, key)) => {
             let _ = rustls::crypto::ring::default_provider().install_default();
@@ -116,6 +137,81 @@ pub async fn serve(config: Config) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A server running inside another program (`h2 play --live`) on its own
+/// tokio runtime. Dropping it stops it.
+pub struct Embedded {
+    /// `http://127.0.0.1:<port>`.
+    pub url: String,
+    /// `postgres` or `memory`.
+    pub store: &'static str,
+    pub live: Arc<Live>,
+    runtime: Option<tokio::runtime::Runtime>,
+}
+
+impl Drop for Embedded {
+    fn drop(&mut self) {
+        if let Some(rt) = self.runtime.take() {
+            rt.shutdown_background();
+        }
+    }
+}
+
+/// The `db` of [`start_embedded`] that skips Postgres.
+pub const MEMORY_DB: &str = "memory";
+
+/// Starts a server on `listen` (port 0: a free one). Postgres at `db` if it
+/// is reachable (the database is created if missing), else the in-memory
+/// store, with a one-line warning: nothing then survives the process.
+/// [`MEMORY_DB`] asks for the in-memory store without trying Postgres.
+pub fn start_embedded(
+    db: &str,
+    listen: SocketAddr,
+    data_dir: &std::path::Path,
+    web: Option<PathBuf>,
+) -> Result<Embedded> {
+    check_bind(listen, false, false)?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_name("live-server")
+        .enable_all()
+        .build()
+        .context("starting the live server's runtime")?;
+    let identity = ServerIdentity::open(data_dir, None)?;
+    let (live, store, listener) = runtime.block_on(async {
+        let (store, kind): (Arc<dyn store::EventStore>, _) = match db {
+            MEMORY_DB => (Arc::new(store::MemoryStore::new()), "memory"),
+            _ => match pg::PostgresStore::connect_creating(db).await {
+                Ok(pg) => (Arc::new(pg), "postgres"),
+                Err(e) => {
+                    eprintln!(
+                        "live: {}; using an in-memory store (nothing is kept after exit)",
+                        db_error(db, &e)
+                    );
+                    (Arc::new(store::MemoryStore::new()), "memory")
+                }
+            },
+        };
+        let live = Live::start(store, identity, Policy::default()).await?;
+        let listener = tokio::net::TcpListener::bind(listen)
+            .await
+            .with_context(|| format!("binding {listen}"))?;
+        anyhow::Ok((live, kind, listener))
+    })?;
+    let url = format!("http://{}", listener.local_addr()?);
+    let app = http::router_with_web(live.clone(), web.as_deref());
+    runtime.spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            eprintln!("live: server stopped: {e}");
+        }
+    });
+    Ok(Embedded {
+        url,
+        store,
+        live,
+        runtime: Some(runtime),
+    })
 }
 
 #[cfg(test)]

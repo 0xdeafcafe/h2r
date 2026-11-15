@@ -120,18 +120,26 @@ all and proves the socket layer.
 
 ### 4.2 CLI
 
-Implemented (crates/cli/src/live_cmd.rs; `h2 live --help` has every flag):
+Implemented (crates/cli/src/live_cmd.rs, live_accounts.rs, live_query.rs,
+play_live.rs; `h2 live --help` has every flag):
 
 ```
 h2 live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
               [--private] [--invite-only]
               [--tls-cert PEM --tls-key PEM | --insecure-http]
 h2 live account create <gamertag> [--server URL] [--invite CODE]
+h2 live account import <file> [--server URL]
 h2 live account list [--server URL]
 h2 live motd set <line>... [--header TEXT] [--server URL] [--data DIR]
 h2 live motd set --file PATH [--server URL] [--data DIR]
-h2 live invite create [--days N] [--data DIR]
+h2 live invite create [--days N] [--server URL] [--data DIR]
+h2 live q <what> [--server URL] [--json|--jsonl]
+h2 play <disc> --live | --live-server URL [--live-listen ADDR] [--gamertag NAME]
 ```
+
+`h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
+`/`, with `index.html` for any path that is not a file or under `/v1/`; it
+prints a hint to run `cd web && bun run build` when there is none.
 
 Defaults: `--db` is `$H2_LIVE_DB` or `postgres://localhost/h2live`,
 `--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
@@ -140,12 +148,21 @@ Defaults: `--db` is `$H2_LIVE_DB` or `postgres://localhost/h2live`,
 Host data lives in `~/Library/Application Support/h2recomp/live`, beside
 the movies directory and the VFS data root ([storage.md](storage.md)):
 
-- `accounts.json` (mode 0600): one entry per account made here, `{xuid,
+- `accounts.json` (mode 0600): one entry per account held here, `{xuid,
   gamertag, id, server, server_id, kid, key}`, where `key` is the account's
-  Ed25519 private key. `account create` generates the key locally, signs
-  the creation request with it and stores it; the server only ever sees the
-  public half. The game-side HLE answers `XOnlineGetUsers` from `xuid` and
-  `gamertag`, so no HDD config-sector work is needed.
+  Ed25519 private JWK (`{kty, crv, x, d}`; older files hold the bare
+  base64url `d`, which still reads). `account create` generates the key
+  locally, signs the creation request (with `aud` = the server id and
+  `iat`) and stores it; the server only ever sees the public half.
+  `account import` takes the entry the web app downloads after a browser
+  sign-up (`{xuid, gamertag, server, key}`, or a list of them), checks that
+  the key parses and is a current key of that XUID on the server
+  (`/v1/accounts/by-xuid/{xuid}/keys`), and adds it, refusing an XUID that
+  is already there or a gamertag already held for that server. The
+  game-side HLE answers `XOnlineGetUsers` from `xuid` and `gamertag`, so no
+  HDD config-sector work is needed.
+- `play-accounts.json` (0600): the one account `h2 play --live` hands the
+  game, since the HLE takes every entry of the file it is given.
 - `server/` (mode 0700): `h2 live serve`'s identity, `server.key` (0600)
   and `server.json` (`{"id"}`). The server id is set on first start
   (`--id`, default `localhost`) and cannot change, because every author id
@@ -156,12 +173,57 @@ server's machine: `motd set` publishes `message_of_the_day.dat` (built from
 up to 32 lines plus an optional header, in the format of
 [live-motd.md](live-motd.md) §3.1, the same text in all nine language
 slots; or a prebuilt `--file`), and `invite create` prints an invite code
-for an `--invite-only` server. Clients find everything else from the base
-URL's `/.well-known/h2live.json`, and refuse to send a token over plain
-HTTP to anything but loopback.
+for an `--invite-only` server (`POST /v1/invites` with an operator
+token). Clients find everything else from the base URL's
+`/.well-known/h2live.json`, and refuse to send a token over plain HTTP to
+anything but loopback.
+
+**`h2 play --live`** starts a service inside the process on a background
+runtime: Postgres from `$H2_LIVE_DB` or `postgres://localhost/h2live`
+(creating the database if it is missing), else the in-memory store with a
+one-line warning. It binds 127.0.0.1 on a free port (`--live-listen ADDR`
+for a fixed one) with the identity in `live/server`, so its accounts are
+`h2 live serve`'s. `--live-server URL` uses a running service instead. The
+account is the first local one for that server whose key the server still
+lists, else a new one named `--gamertag NAME` or after the OS user
+(letters and digits, a single space for anything else, numbered when
+taken). It prints the gamertag and, for the embedded server, the web app's
+URL (or the `bun run build` hint), then boots with `boot::LiveConfig {
+enabled, accounts_path: play-accounts.json, server_url }`. The server stops
+when the game does.
 
 Planned, not built: `h2 live friend add <gamertag> <gamertag>` (with
-friends), `h2 play --live [url]` (boot with link up, signed in).
+friends).
+
+#### For agents: `h2 live q`
+
+Read-only queries. Output is JSON when stdout is not a terminal (or with
+`--json`), one JSON value per line with `--jsonl` (each item of a list), a
+compact table on a terminal. Lists follow every cursor, so they are whole.
+`--server` defaults as above. Failures exit non-zero with the server's
+`{error, message}` in the text.
+
+| Command | Output |
+|---|---|
+| `q accounts` | `[{xuid, gamertag, created_at, online}]` |
+| `q account <gamertag>` | `{xuid, gamertag, created_at, online, id, recent_games: [GameSummary], position}` |
+| `q presence` | `[{xuid, gamertag, state, game_id?, since}]` |
+| `q games [--live\|--ended]` | `[GameSummary]`, newest first: `{game_id, map, mode, variant, team_play, state, started_at, ended_at, players: [{index, name, xuid?, team, local?}], teams}` |
+| `q game <id>` | `GameSummary` plus `{console, host, score_limit, time_limit_s, tick, last_tick, scoreboard: [{index, score, kills, deaths, assists}], kills: [{tick, victim, killer?, weapon?, kind, pos?, position, at}], winner, end_reason, position}` |
+| `q game <id> --frames` | `[{game_id, tick, players: [{index, alive, pos, yaw, vehicle?}], source}]` (the 1 Hz recorded frames) |
+| `q events [--from N] [--type T] [--stream S]` | `[{position, stream, version, type, at, data, author, kid, jws, jws_index?, hash}]` after position N |
+| `q events ... --follow` | the same, then one event per line as they are appended (JSONL, from `/v1/stream`) |
+| `q keys <gamertag>` | `{keys: [{kid, jwk, valid_from, valid_to}], position}` |
+| `q verify [--from N]` | `{checked, anchored, bad: [{position, stream, type, problem}], position}`; exits 1 if `bad` is not empty |
+| `q health` | `{ok, position}` |
+
+`verify` re-checks the log on this side with `live_proto::audit`: each
+event's JWS opens to exactly its `stream`, `type`, `data`, `author`, `kid`
+and `at` (the batch element at `jws_index`), verifies under the author's
+key at that position (the server's from discovery, an account's from its
+keys with `valid_from`/`valid_to`), and its `hash` extends the stream's
+chain. A stream whose first event read is not its first (version 0, with
+`--from`) is taken as anchored there and counted in `anchored`.
 
 ### 4.3 Service
 
@@ -178,12 +240,13 @@ the CLI sign with exactly this code. `crates/live-server` is the service
 
 The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
 discovery, accounts (create, list, one, keys by gamertag and by XUID),
-presence, the event log (`GET /v1/events` with `from`/`cursor`, `type`,
+presence (with `POST /v1/presence/ping`), invites (`POST /v1/invites`,
+operator), the event log (`GET /v1/events` with `from`/`cursor`, `type`,
 `exclude`, `stream`, `limit`; `POST /v1/events` for one signed event), the
-`/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live
-events, with `types`/`exclude`), and title files. Games, ingest and map
-outlines answer 501 `unimplemented` until they are built. Deviations and
-choices the contract leaves open:
+`/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live events
+and game frames, with `types`/`exclude`/`stream`/`games`), title files,
+games, the `/v1/ingest` WebSocket and map outlines. Deviations and choices
+the contract leaves open:
 
 - `POST /v1/accounts` and `POST /v1/events` take the compact JWS as the
   raw body (`application/jose`). `POST /v1/events` is not in the contract's
@@ -195,6 +258,47 @@ choices the contract leaves open:
   `blobs` table keyed by SHA-256; the event carries `{title_id, name,
   sha256, size}`.
 - Error codes are the contract's plus `too_large` (413).
+- `POST /v1/events` answers 201 with the whole stored event, a superset of
+  `{position}`.
+
+**Games** (crates/live-server/src/games.rs, live-proto `game`). `POST
+/v1/games` (`games.write`) takes the game without an id; the server picks
+a random 32-hex `game_id` and writes `GameStarted` itself, signed by the
+server key, with `host` = the token's author, on `game-<id>`. Consoles
+then post batches to `POST /v1/games/{id}/events`: one batch JWS of
+`PlayerJoined`, `PlayerLeft`, `PlayerKilled`, `ScoreChanged` and
+`GameEnded` bodies by the token's author, who must be the host or a
+player's account. Each body is validated by type against the players as
+the batch changes them (indexes exist and are unique, at most 16 players,
+kill kinds and end reasons from the contract), `GameEnded` must be last,
+and nothing of a refused batch is written; a replayed batch is 409, a
+write to an ended game 409. `GET /v1/games` (newest first, `state=live|
+ended`, cursor = the start position) and `GET /v1/games/{id}` (scoreboard,
+team scores, the last 50 kills with `pos` and log position, winner, end
+reason) come from the read model; `GET /v1/games/{id}/frames` pages the
+recorded frames (`from_tick`, `to_tick`, 600 a page). Accounts list their
+10 latest games as `recent_games`.
+
+**Ingest.** `/v1/ingest` is the game's WebSocket: the first message is
+`{kind: "auth", token}` (`games.write`), then `frame`, `events` (`{game_id,
+jws}`: one batch JWS, answered `{kind: "appended", game_id, position}` or
+`{kind: "error", error, message}`) and `ping`. Frames go out to stream
+readers at most 15 a second per game; one a second per game is also
+written as a server-signed `GameFrame` whose `data.source` is the sender.
+The socket closes (4401) when its token expires unless a fresh `auth` by
+the same author arrives.
+
+**Map outlines.** `PUT /v1/maps/{map}/outline` (`games.write`, 2 MiB) stores
+the outline as a blob and a server-signed `MapOutlineStored` (`{map,
+sha256, size, source}`) on `map-<map>`. The first upload wins (409 after);
+the operator may replace it. `GET` returns the bytes.
+
+**Managers.** One sweeper task (every 5 s) ends what clients leave behind,
+as the server: presence with no event or ping for 90 s gets
+`PresenceExpired`, and a game with no frame or event for 5 minutes gets
+`GameEnded {reason: "lost"}`. Pings (`POST /v1/presence/ping`, or `ping` on
+the ingest socket) refresh the in-memory deadline only. Deadlines start
+from the projection (the last event's `at`), so they survive a restart.
 
 **Security** ([live-security.md](live-security.md), all but §5
 federation). Every event is a JWS by its author; the server writes its own
@@ -262,9 +366,8 @@ online, where and with whom. To keep that from flooding the log:
 
 - **Changes, not pings.** A presence stream records `SignedIn`,
   `PresenceChanged` (title, state, session), `SignedOut`. Keep-alive pings
-  only refresh an in-memory deadline and are never written. (Built:
-  presence events and the projection. Not built: the deadline, so nothing
-  expires yet.)
+  only refresh an in-memory deadline and are never written. (Built; see
+  Managers above.)
 - **Expiry is an event.** When a deadline passes, the server appends
   `PresenceExpired` (or `SessionExpired`), so a crashed client still ends
   its stream and a replay gives the same answer.

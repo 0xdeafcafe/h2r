@@ -21,6 +21,7 @@ sqlx = { version = "0.8", default-features = false, features = ["postgres", "run
 sha2 = "0.10"
 getrandom = "0.3"
 time = "0.3"
+tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
@@ -28,3 +29,6 @@ http-body-util = "0.1"
 tokio-tungstenite = "0.26"
 futures-util = "0.3"
 base64 = "0.22"
+# examples/fake_game.rs
+ureq = { version = "2", default-features = false, features = ["json"] }
+tungstenite = "0.26"

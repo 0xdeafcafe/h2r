@@ -19,6 +19,7 @@ const USAGE: &str = "usage:
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--input-timeline FILE] [--frame-stats]
+          [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
 
@@ -34,6 +35,13 @@ exit (docs/frame-budget.md). --input-timeline plays an
 input crate timeline (docs/input.md) on guest time instead of live input.
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
+
+--live signs the game in to Xbox Live (docs/live.md): it starts a service in
+the process (Postgres from $H2_LIVE_DB or postgres://localhost/h2live, made if
+missing; else in memory) on 127.0.0.1 and a free port, or --live-listen ADDR,
+serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
+running service instead. The account is --gamertag NAME, or one named after
+your user; either is made on the server and kept in accounts.json if needed.
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
@@ -241,6 +249,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut audio = true;
     let mut follow_status = None;
     let mut frame_stats = timeline::phase::Config::from_env();
+    let mut live = crate::play_live::LiveOpts::default();
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
@@ -255,6 +264,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
+        if live.take(&a, &mut val)? {
+            continue;
+        }
         match a.as_str() {
             "--out" => out = PathBuf::from(val()?),
             "--data" => data = PathBuf::from(val()?),
@@ -312,6 +324,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             _ => bail!("unexpected {a}\n\n{USAGE}"),
         }
     }
+    live.check()?;
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -333,6 +346,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
         dsound: true,
         xapi: true,
     };
+    // Before the window: the session (and an embedded server) lives until
+    // the game is over.
+    let session = live.enabled.then(|| start_live(&live)).transpose()?;
+    let live_config = session
+        .as_ref()
+        .map(|s| s.config.clone())
+        .unwrap_or_default();
     let status = config.log_status;
     let timeline = config.scripted_input.clone();
     let closer = app::Closer::new();
@@ -354,7 +374,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     let report = app::run(config, move |host| {
         let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted));
-        let r = boot::run_hosted(&xbe, &lib, &opts, host);
+        let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
         // the run ended well or not. See docs/storage.md "Write metadata".
@@ -380,12 +400,41 @@ pub fn run(args: Vec<String>) -> Result<()> {
         report.pacing.sleeps,
         report.pacing.rebases
     );
+    drop(session);
     #[cfg(unix)]
     if report.restart_requested {
         println!("play: restarting into the update");
         std::process::exit(crate::follow::RESTART_EXIT);
     }
     Ok(())
+}
+
+/// Starts `--live`: the server and account, with a line saying where the
+/// web app is.
+fn start_live(live: &crate::play_live::LiveOpts) -> Result<crate::play_live::Session> {
+    let db = std::env::var("H2_LIVE_DB")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| live_server::DEFAULT_DB.into());
+    let places = crate::play_live::Places::under(&crate::live_cmd::live_dir()?);
+    let web = live_server::web_dir();
+    let has_web = web.is_some();
+    let session = crate::play_live::start(live, &db, &places, web, &crate::play_live::os_user())?;
+    eprintln!(
+        "live: playing as {} ({}) on {}{}",
+        session.account.gamertag,
+        session.account.xuid,
+        session.server,
+        session
+            .store()
+            .map_or(String::new(), |s| format!(" (embedded, {s} store)"))
+    );
+    match (session.store(), has_web) {
+        (Some(_), true) => eprintln!("live: web app at {}/", session.server),
+        (Some(_), false) => eprintln!("live: no web app; build it with `cd web && bun run build`"),
+        (None, _) => {}
+    }
+    Ok(session)
 }
 
 /// A banner showing the frame stats' rolling window, refreshed once a

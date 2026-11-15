@@ -5,6 +5,8 @@
 //!
 //! No runtime and no I/O, so the recomp can link it without tokio.
 
+pub mod audit;
+pub mod game;
 pub mod jcs;
 pub mod motd;
 pub mod sign;
@@ -258,7 +260,10 @@ pub mod types {
 /// Token `lxm` values: the method a token is good for.
 pub mod lxm {
     pub const EVENTS_WRITE: &str = "events.write";
+    /// Game events, `POST /v1/games`, the ingest socket, map outlines.
+    pub const GAMES_WRITE: &str = "games.write";
     pub const TITLES_WRITE: &str = "titles.write";
+    pub const INVITES_WRITE: &str = "invites.write";
     /// Every read on a `--private` server, the stream included.
     pub const READ: &str = "read";
 }
@@ -359,8 +364,8 @@ pub struct AccountDetail {
     #[serde(flatten)]
     pub summary: AccountSummary,
     pub id: String,
-    /// Always empty until games are recorded.
-    pub recent_games: Vec<serde_json::Value>,
+    /// The latest games the account played in, newest first.
+    pub recent_games: Vec<game::GameSummary>,
     pub position: u64,
 }
 
@@ -410,15 +415,46 @@ pub struct PublishedFile {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StreamMessage {
-    Event { event: Box<WireEvent> },
-    CaughtUp { position: u64 },
+    Event {
+        event: Box<WireEvent>,
+    },
+    /// A live telemetry frame (not stored; up to 15 Hz per game).
+    Frame {
+        frame: Box<game::Frame>,
+    },
+    CaughtUp {
+        position: u64,
+    },
 }
 
-/// Messages a WebSocket client sends.
+/// Messages a WebSocket client sends. Readers of `/v1/stream` send only
+/// `auth`; the game's `/v1/ingest` sends all of them.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ClientMessage {
-    Auth { token: String },
+    Auth {
+        token: String,
+    },
+    Frame {
+        frame: Box<game::Frame>,
+    },
+    /// One batch JWS over game event bodies (security §2, Batches).
+    Events {
+        game_id: String,
+        jws: String,
+    },
+    /// Keeps the sender's presence alive.
+    Ping,
+}
+
+/// What the ingest socket sends back.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IngestReply {
+    /// A batch was appended; `position` is its last event's.
+    Appended { game_id: String, position: u64 },
+    /// A message was refused; the socket stays open unless auth failed.
+    Error { error: ErrorCode, message: String },
 }
 
 /// Every non-2xx body: `{"error": "<code>", "message": "..."}`.

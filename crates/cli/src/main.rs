@@ -15,13 +15,16 @@ mod emit_output;
 mod extract_shaders;
 mod fonts;
 mod lighting;
+mod live_accounts;
 mod live_cmd;
+mod live_query;
 mod maps;
 mod movies_cmd;
 mod object;
 #[cfg(unix)]
 mod follow;
 mod play_cmd;
+mod play_live;
 mod safe_out;
 mod scripts;
 mod shader;
@@ -36,6 +39,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   play <disc>             build if needed, then play it in a window (docs/app.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/app.md)
+  play <disc> --live      play signed in to Xbox Live, on a service started in
+                          the process (or --live-server URL; docs/live.md)
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
@@ -110,9 +115,13 @@ const USAGE: &str = "usage: h2 <command> [disc]
              [--invite-only] [--tls-cert PEM --tls-key PEM | --insecure-http]
                           run the Xbox Live service (docs/live.md)
   live account create <gamertag> [--server URL] [--invite CODE]
+  live account import <file> [--server URL]
   live account list [--server URL]
   live motd set <line>... [--header TEXT] | --file PATH
   live invite create [--days N]
+  live q <what> [--json|--jsonl]
+                          query it: accounts, account, presence, games, game,
+                          events [--follow], keys, verify, health
                           `h2 live --help` for details
 
   profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...   (--features perf)

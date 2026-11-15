@@ -18,7 +18,15 @@ h2 live serve --db postgres://localhost/other --id live.example.net \
 h2 live account create "Sneaky Pete"            # key made and kept locally
 h2 live motd set "Welcome back" "Double XP this weekend" --header "Halo 2"
 h2 live serve --invite-only & h2 live invite create
+h2 live q games --live                          # JSON off a terminal
+h2 play disc.iso --live                         # an embedded server, signed in
 ```
+
+`h2 live serve` also serves the web app from `web/dist` (`H2_LIVE_WEB`
+overrides) at `/`, falling back to `index.html` for client routes.
+`start_embedded` is the same server on a background runtime for `h2 play
+--live`: Postgres if reachable (database created if missing), else
+in-memory with a warning.
 
 The database URL comes from `--db`, then `H2_LIVE_DB`, then the default; it
 is only ever printed without credentials. The schema is created at startup
@@ -37,17 +45,26 @@ What is built of [live-api.md](../../docs/live-api.md):
 |---|---|
 | `GET /healthz` | `{ok, position}`, position = log head |
 | `GET /.well-known/h2live.json` | `{id, api: "/v1", keys, software, federation: false}` |
-| `POST /v1/accounts` | body: compact JWS by the new key over `{gamertag, jwk, invite?}`; 201 `{xuid, gamertag, id}` |
+| `POST /v1/accounts` | body: compact JWS by the new key over `{gamertag, jwk, invite?, aud, iat}` (`aud` = server id, `iat` within 5 min); 201 `{xuid, gamertag, id}` |
 | `GET /v1/accounts` | list of `{xuid, gamertag, created_at, online}` |
-| `GET /v1/accounts/{gamertag}` | plus `id`, `recent_games` (empty until games exist) |
+| `GET /v1/accounts/{gamertag}` | plus `id`, `recent_games` (the 10 latest) |
 | `GET /v1/accounts/{gamertag}/keys`, `/v1/accounts/by-xuid/{xuid}/keys` | `{keys: [{kid, jwk, valid_from, valid_to}]}` |
 | `GET /v1/presence` | list of `{xuid, gamertag, state, game_id?, since}` |
+| `POST /v1/presence/ping` | `events.write`; refreshes the 90 s deadline, writes nothing; `{ok, expires_in}` |
+| `POST /v1/invites?days=` | operator only, `invites.write`; 201 `{invite}` |
 | `GET /v1/events?from=&cursor=&type=&exclude=&stream=&limit=` | the log, oldest first, `from` exclusive |
 | `POST /v1/events` | body: one signed event (compact JWS), bearer token `events.write` |
-| `GET /v1/stream?from=&types=&exclude=` | WebSocket: replay, `caught_up`, live |
+| `GET /v1/stream?from=&types=&exclude=&stream=&games=` | WebSocket: replay, `caught_up`, live events and `frame`s |
 | `PUT /v1/titles/{title}/files/{name}` | operator only (token by the server key, `titles.write`), ≤ 2 MiB |
 | `GET /v1/titles/{title}/files/{name}` | raw bytes, `ETag`, 304 on `If-None-Match` |
-| `/v1/games*`, `/v1/ingest`, `/v1/maps/{map}/outline` | 501 `unimplemented` |
+| `POST /v1/games` | `games.write`; body: the game without an id; 201 `{game_id, position}` (server writes `GameStarted` with `host`) |
+| `GET /v1/games?state=live\|ended&cursor=&limit=` | `GameSummary` list, newest first |
+| `GET /v1/games/{id}` | summary plus scoreboard, last 50 kills, winner, end reason |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=&limit=` | recorded frames, oldest first, 600 a page |
+| `POST /v1/games/{id}/events` | `games.write`; body: one batch JWS by the host or a player |
+| `GET /v1/ingest` | WebSocket: `auth`, then `frame` / `events` / `ping` |
+| `PUT /v1/maps/{map}/outline` | `games.write`, ≤ 2 MiB; first upload wins, operator may replace |
+| `GET /v1/maps/{map}/outline` | the outline JSON |
 
 Lists are `{items, next, position}`; pass `next` back as `?cursor=`. Every
 read reply carries `position`, the last position the read model applied.
@@ -83,6 +100,9 @@ revoked) and `SignedIn` / `PresenceChanged` / `SignedOut` on
   rate limits per author and method.
 - **`http`**: routes, body caps (64 KiB, title files 2 MiB, WebSocket
   messages 16 KiB), CORS (any origin for GET/HEAD, none for writes).
+- **`games`**, **`ingest`**: game writes and reads, frames (15 Hz fan-out,
+  1 Hz recorded), outlines, and the sweeper that writes `PresenceExpired`
+  and `GameEnded {reason: "lost"}`.
 - **`identity`**: the server key and id on disk.
 
 The event's JWS is stored untouched and is the source of truth; events are
@@ -94,9 +114,9 @@ decoded from it on read. The other columns are copies for querying.
 cargo test -p live-proto -p live-server
 ```
 
-runs the unit tests, the router tests (`tests/http.rs`, tower `oneshot`
-over the in-memory store) and the WebSocket tests (`tests/stream.rs`, a
-real socket). The Postgres tests skip with a note unless `H2_LIVE_TEST_DB`
+runs the unit tests, the router tests (`tests/http.rs`, `tests/games.rs`,
+tower `oneshot` over the in-memory store, sharing `tests/common`) and the
+WebSocket tests (`tests/stream.rs`, a real socket, ingest included). The Postgres tests skip with a note unless `H2_LIVE_TEST_DB`
 is set:
 
 ```
@@ -105,14 +125,20 @@ H2_LIVE_TEST_DB=postgres://localhost/h2live_test_0 cargo test -p live-server
 dropdb h2live_test_0
 ```
 
+`examples/fake_game.rs` drives a running server the way a console would
+(accounts, presence pings, a finished game and a live one over ingest), for
+the web app and for trying the API:
+
+```
+cargo run -p live-server --example fake_game -- http://127.0.0.1:8074 --seconds 60
+```
+
 Queries are runtime-checked (`sqlx::query`, not `query!`), so no
 `DATABASE_URL` is needed to build.
 
 ## Known gaps
 
-- Games, ingest, frames and map outlines are not built (501).
-- Presence never expires: the keep-alive deadline and `PresenceExpired`
-  are not built.
+- Ingest throttling and ping deadlines are in memory, per process.
 - Federation (security §5) is not built; authors from another server are
   refused.
 - Single instance per database: the in-memory read model, replay sets and

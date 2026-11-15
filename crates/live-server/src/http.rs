@@ -12,7 +12,7 @@ use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use live_proto::sign::TOKEN_LEEWAY_S;
 use live_proto::{
     ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, StreamMessage, TitleId, Xuid, lxm,
@@ -28,9 +28,9 @@ pub const MAX_WS_MESSAGE: usize = 16 * 1024;
 const DEFAULT_LIMIT: usize = 100;
 const MAX_LIMIT: usize = 1000;
 /// How long a `--private` stream waits for its auth message.
-const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// WebSocket close code for a missing, bad or expired token.
-const CLOSE_UNAUTHORIZED: u16 = 4401;
+pub(crate) const CLOSE_UNAUTHORIZED: u16 = 4401;
 
 type Shared = State<Arc<Live>>;
 
@@ -131,13 +131,18 @@ fn list_param(p: &HashMap<String, String>, keys: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// The API, with JSON 404s for every other path.
 pub fn router(live: Arc<Live>) -> Router {
-    let unimplemented = || get(not_built).post(not_built).put(not_built);
+    router_with_web(live, None)
+}
+
+fn api_router(live: Arc<Live>) -> Router {
     let files = Router::new()
         .route(
             "/v1/titles/{title}/files/{name}",
             get(get_file).put(put_file),
         )
+        .route("/v1/maps/{map}/outline", get(outline).put(put_outline))
         .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
     Router::new()
         .route("/healthz", get(healthz))
@@ -147,16 +152,20 @@ pub fn router(live: Arc<Live>) -> Router {
         .route("/v1/accounts/{gamertag}", get(account))
         .route("/v1/accounts/{gamertag}/keys", get(keys_by_tag))
         .route("/v1/presence", get(presence))
+        .route("/v1/presence/ping", post(ping))
+        .route("/v1/invites", post(create_invite))
         .route("/v1/events", get(list_events).post(post_event))
         .route("/v1/stream", get(stream))
-        .route("/v1/games", unimplemented())
-        .route("/v1/games/{id}", unimplemented())
-        .route("/v1/games/{id}/frames", unimplemented())
-        .route("/v1/games/{id}/events", post(not_built))
-        .route("/v1/maps/{map}/outline", unimplemented())
-        .route("/v1/ingest", get(not_built))
+        .route("/v1/games", get(list_games).post(start_game))
+        .route("/v1/games/{id}", get(game))
+        .route("/v1/games/{id}/frames", get(game_frames))
+        .route("/v1/games/{id}/events", post(game_events))
+        .route("/v1/ingest", get(crate::ingest::ingest))
+        .route(
+            "/v1/{*rest}",
+            any(|| async { not_found("no such endpoint") }),
+        )
         .merge(files)
-        .fallback(|| async { not_found("no such endpoint") })
         .method_not_allowed_fallback(|| async {
             ApiError::new(ErrorCode::Invalid, "method not allowed here")
                 .into_response()
@@ -165,6 +174,18 @@ pub fn router(live: Arc<Live>) -> Router {
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .layer(middleware::from_fn(cors))
         .with_state(live)
+}
+
+/// [`router`] plus the built web app at `/`: files from `dir`, and
+/// `index.html` for any other path (the app routes in the browser). API
+/// paths keep their JSON 404s.
+pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router {
+    let api = api_router(live);
+    let Some(dir) = dir else {
+        return api.fallback(|| async { not_found("no such endpoint") });
+    };
+    let index = tower_http::services::ServeFile::new(dir.join("index.html"));
+    api.fallback_service(tower_http::services::ServeDir::new(dir).fallback(index))
 }
 
 trait WithStatus {
@@ -224,13 +245,6 @@ async fn cors(req: Request, next: Next) -> Response {
         );
     }
     resp
-}
-
-async fn not_built() -> ApiError {
-    ApiError::new(
-        ErrorCode::Unimplemented,
-        "games, ingest and map outlines are not built yet",
-    )
 }
 
 async fn healthz(State(live): Shared) -> ApiResult<axum::Json<Health>> {
@@ -385,8 +399,12 @@ async fn put_file(
 /// What a stream reader asked for.
 struct StreamFilter {
     from: Option<u64>,
+    /// `?stream=`: events of one stream only.
+    stream: Option<String>,
     types: Vec<String>,
     exclude: Vec<String>,
+    /// `?games=`: live frames only for these games (default: all).
+    games: Vec<String>,
 }
 
 impl StreamFilter {
@@ -394,7 +412,7 @@ impl StreamFilter {
         Query {
             after,
             limit,
-            stream: None,
+            stream: self.stream.clone(),
             types: self.types.clone(),
             exclude: self.exclude.clone(),
         }
@@ -416,8 +434,10 @@ async fn stream(
         .transpose()?;
     let filter = StreamFilter {
         from,
+        stream: p.get("stream").filter(|s| !s.is_empty()).cloned(),
         types: list_param(&p, &["types", "type"]),
         exclude: list_param(&p, &["exclude"]),
+        games: list_param(&p, &["games"]),
     };
     let ws = ws.map_err(|_| invalid("/v1/stream is a WebSocket"))?;
     Ok(ws
@@ -429,12 +449,20 @@ async fn stream(
         }))
 }
 
+pub(crate) async fn send_json<T: serde::Serialize>(
+    socket: &mut WebSocket,
+    msg: &T,
+) -> Result<(), axum::Error> {
+    let text = serde_json::to_string(msg).expect("serializes");
+    socket.send(Message::Text(text.into())).await
+}
+
 async fn send(socket: &mut WebSocket, msg: &StreamMessage) -> Result<(), axum::Error> {
     let text = serde_json::to_string(msg).expect("serializes");
     socket.send(Message::Text(text.into())).await
 }
 
-async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
+pub(crate) async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
     let frame = CloseFrame {
         code,
         reason: reason.to_string().into(),
@@ -443,10 +471,10 @@ async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
 }
 
 /// The token in an auth message, checked; its `exp`.
-fn auth_message(live: &Live, text: &str) -> Result<i64, ApiError> {
+pub(crate) fn auth_message(live: &Live, text: &str, method: &str) -> Result<i64, ApiError> {
     match serde_json::from_str::<ClientMessage>(text) {
-        Ok(ClientMessage::Auth { token }) => live.authenticate_until(&token, lxm::READ),
-        Err(_) => Err(ApiError::new(
+        Ok(ClientMessage::Auth { token }) => live.authenticate_until(&token, method),
+        _ => Err(ApiError::new(
             ErrorCode::Unauthorized,
             "expected {\"kind\":\"auth\",\"token\":...}",
         )),
@@ -500,7 +528,7 @@ async fn run_stream(
     if live.policy().private {
         let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
         let result = match first {
-            Ok(Some(Ok(Message::Text(text)))) => auth_message(&live, &text),
+            Ok(Some(Ok(Message::Text(text)))) => auth_message(&live, &text, lxm::READ),
             _ => Err(ApiError::new(
                 ErrorCode::Unauthorized,
                 "send an auth message first",
@@ -516,6 +544,7 @@ async fn run_stream(
     }
     // Subscribe before replaying, so nothing falls between the two.
     let mut feed = live.feed();
+    let mut frames = live.frames();
     let mut last = filter.from.unwrap_or_else(|| live.position());
     catch_up(&live, &mut socket, &filter, &mut last).await?;
     send(&mut socket, &StreamMessage::CaughtUp { position: last })
@@ -548,10 +577,20 @@ async fn run_stream(
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
             },
+            frame = frames.recv() => match frame {
+                Ok(f) => {
+                    if filter.games.is_empty() || filter.games.contains(&f.game_id) {
+                        send(&mut socket, &StreamMessage::Frame { frame: Box::new((*f).clone()) }).await.map_err(|e| e.to_string())?;
+                    }
+                }
+                // Frames are best effort: a slow reader skips some.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            },
             msg = socket.recv() => match msg {
                 // Fresh tokens on a private stream; public streams ignore
                 // what clients send.
-                Some(Ok(Message::Text(text))) if expires.is_some() => match auth_message(&live, &text) {
+                Some(Ok(Message::Text(text))) if expires.is_some() => match auth_message(&live, &text, lxm::READ) {
                     Ok(exp) => expires = Some(exp),
                     Err(e) => {
                         close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
@@ -567,4 +606,153 @@ async fn run_stream(
             }
         }
     }
+}
+
+async fn ping(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    let ttl = live.ping(bearer(&headers))?;
+    Ok(json(
+        StatusCode::OK,
+        &serde_json::json!({"ok": true, "expires_in": ttl}),
+    ))
+}
+
+async fn create_invite(
+    State(live): Shared,
+    headers: HeaderMap,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    let days = p
+        .get("days")
+        .map(|d| d.parse().map_err(|_| invalid("days must be a number")))
+        .transpose()?
+        .unwrap_or(7);
+    let invite = live.create_invite(bearer(&headers), days)?;
+    Ok(json(
+        StatusCode::CREATED,
+        &serde_json::json!({"invite": invite}),
+    ))
+}
+
+async fn list_games(
+    State(live): Shared,
+    headers: HeaderMap,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let paging = paging(&p)?;
+    let state = match p.get("state").map(String::as_str) {
+        None | Some("") => None,
+        Some(s @ ("live" | "ended")) => Some(s),
+        Some(_) => return Err(invalid("state is live or ended")),
+    };
+    let before = (paging.after > 0).then_some(paging.after);
+    Ok(json(
+        StatusCode::OK,
+        &live.games(state, before, paging.limit),
+    ))
+}
+
+async fn start_game(
+    State(live): Shared,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_bytes(body)?;
+    let new = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("game: {e}")))?;
+    let created = live.start_game(bearer(&headers), new).await?;
+    Ok(json(StatusCode::CREATED, &created))
+}
+
+fn game_id(id: &str) -> ApiResult<&str> {
+    if live_proto::game::valid_id(id) {
+        Ok(id)
+    } else {
+        Err(not_found("no such game"))
+    }
+}
+
+async fn game(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.game(game_id(&id)?)?))
+}
+
+async fn game_frames(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let tick = |k: &str| {
+        p.get(k)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                v.parse::<u64>()
+                    .map_err(|_| invalid(format!("{k} must be a tick")))
+            })
+            .transpose()
+    };
+    let (from_tick, to_tick) = (tick("from_tick")?, tick("to_tick")?);
+    let paging = paging(&p)?;
+    let limit = if p.contains_key("limit") {
+        paging.limit
+    } else {
+        crate::games::FRAMES_PAGE
+    };
+    Ok(json(
+        StatusCode::OK,
+        &live
+            .recorded_frames(game_id(&id)?, from_tick, to_tick, paging.after, limit)
+            .await?,
+    ))
+}
+
+async fn game_events(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let jws = jws_body(body)?;
+    let position = live
+        .append_game_events(bearer(&headers), game_id(&id)?, &jws)
+        .await?;
+    Ok(json(
+        StatusCode::CREATED,
+        &serde_json::json!({"position": position}),
+    ))
+}
+
+async fn outline(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(map): Path<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let bytes = live.outline(&map).await?;
+    Ok((
+        [(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        bytes,
+    )
+        .into_response())
+}
+
+async fn put_outline(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(map): Path<String>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let bytes = body_bytes(body)?;
+    Ok(json(
+        StatusCode::OK,
+        &live.put_outline(bearer(&headers), &map, &bytes).await?,
+    ))
 }

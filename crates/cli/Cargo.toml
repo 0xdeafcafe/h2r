@@ -39,13 +39,19 @@ asf = { path = "../asf" }
 wma = { path = "../wma" }
 live-proto.workspace = true
 live-server.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 # `h2 live account/motd` talk to the service over HTTP or HTTPS.
 ureq = { version = "2", default-features = false, features = ["tls"] }
+# `h2 live q events --follow` reads the event stream.
+tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
 # `h2 profile` and `h2 bench` (docs/perf.md): off by default so ordinary
 # builds skip the profiler's dependencies. `cargo run -p cli --features perf`.
 perf = { path = "../perf", optional = true }
+
+[dev-dependencies]
+time = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

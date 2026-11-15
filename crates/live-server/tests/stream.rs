@@ -22,11 +22,9 @@ async fn serve(policy: Policy) -> (Arc<Live>, SocketAddr) {
         live_proto::sign::random_id()
     ));
     let identity = ServerIdentity::open(&dir, Some("live.test")).unwrap();
-    let live = Arc::new(
-        Live::start(Arc::new(MemoryStore::new()), identity, policy)
-            .await
-            .unwrap(),
-    );
+    let live = Live::start(Arc::new(MemoryStore::new()), identity, policy)
+        .await
+        .unwrap();
     let _ = std::fs::remove_dir_all(&dir);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -37,7 +35,13 @@ async fn serve(policy: Policy) -> (Arc<Live>, SocketAddr) {
 async fn create(live: &Live, tag: &str) -> (KeyPair, CreatedAccount) {
     let key = KeyPair::generate();
     let created = live
-        .create_account(&AccountRequest::sign(&key, tag, None))
+        .create_account(&AccountRequest::sign(
+            &key,
+            tag,
+            None,
+            "live.test",
+            live_server::app::now(),
+        ))
         .await
         .unwrap();
     (key, created)
@@ -136,6 +140,13 @@ async fn filters_types() {
     assert_eq!(next(&mut ws).await, StreamMessage::CaughtUp { position: 3 });
     create(&live, "Second").await;
     assert_eq!(event_type(&next(&mut ws).await), (6, "KeyAdded".into()));
+    // One stream only.
+    let mut ws = connect(addr, "?from=0&stream=gamertag-second").await;
+    assert_eq!(
+        event_type(&next(&mut ws).await),
+        (4, "GamertagReserved".into())
+    );
+    assert_eq!(next(&mut ws).await, StreamMessage::CaughtUp { position: 6 });
 }
 
 async fn expect_close(ws: &mut Socket, code: u16) {
@@ -215,4 +226,208 @@ async fn private_streams_authenticate_first() {
         }
     }
     expect_close(&mut ws, 4401).await;
+}
+
+fn ingest_frame(game_id: &str, tick: u64) -> Message {
+    let frame = live_proto::game::Frame {
+        game_id: game_id.into(),
+        tick,
+        players: vec![live_proto::game::FramePlayer {
+            index: 0,
+            alive: true,
+            pos: [1.0, 2.0, 0.5],
+            yaw: 0.25,
+            vehicle: None,
+        }],
+    };
+    Message::Text(
+        serde_json::to_string(&ClientMessage::Frame {
+            frame: Box::new(frame),
+        })
+        .unwrap()
+        .into(),
+    )
+}
+
+async fn reply(ws: &mut Socket) -> live_proto::IngestReply {
+    let msg = tokio::time::timeout(Duration::from_secs(5), ws.next())
+        .await
+        .expect("a reply in time")
+        .unwrap()
+        .unwrap();
+    match msg {
+        Message::Text(t) => serde_json::from_str(&t).unwrap(),
+        other => panic!("unexpected {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn ingest_fans_out_and_records_frames() {
+    use live_proto::game::{NewGame, Player};
+    use live_proto::sign::{EventBody, sign_batch};
+    use live_proto::{Author, ErrorCode, IngestReply};
+
+    let (live, addr) = serve(Policy::default()).await;
+    let (key, account) = create(&live, "Host").await;
+    let (other_key, other) = create(&live, "Other").await;
+    let token = |key: &KeyPair, id: &str, method: &str| {
+        issue_token(key, id, "live.test", method, live_server::app::now())
+    };
+    let new = NewGame {
+        console: None,
+        map: "lockout".into(),
+        mode: "multiplayer".into(),
+        variant: None,
+        team_play: false,
+        score_limit: None,
+        time_limit_s: None,
+        tick: None,
+        players: vec![Player {
+            index: 0,
+            name: "Host".into(),
+            xuid: Some(account.xuid),
+            team: 0,
+            local: Some(true),
+        }],
+    };
+    let game_id = live
+        .start_game(Some(&token(&key, &account.id, lxm::GAMES_WRITE)), new)
+        .await
+        .unwrap()
+        .game_id;
+
+    let mut reader = connect(addr, &format!("?games={game_id}&exclude=GameFrame")).await;
+    assert!(matches!(
+        next(&mut reader).await,
+        StreamMessage::CaughtUp { .. }
+    ));
+
+    let mut ws = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/ingest"))
+        .await
+        .unwrap()
+        .0;
+    // The wrong method closes the socket.
+    let auth = |t: String| {
+        Message::Text(
+            serde_json::to_string(&ClientMessage::Auth { token: t })
+                .unwrap()
+                .into(),
+        )
+    };
+    ws.send(auth(token(&key, &account.id, lxm::EVENTS_WRITE)))
+        .await
+        .unwrap();
+    expect_close(&mut ws, 4401).await;
+
+    let mut ws = tokio_tungstenite::connect_async(format!("ws://{addr}/v1/ingest"))
+        .await
+        .unwrap()
+        .0;
+    ws.send(auth(token(&key, &account.id, lxm::GAMES_WRITE)))
+        .await
+        .unwrap();
+    // Two frames back to back: the second is inside the 15 Hz window.
+    ws.send(ingest_frame(&game_id, 30)).await.unwrap();
+    ws.send(ingest_frame(&game_id, 31)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    ws.send(ingest_frame(&game_id, 33)).await.unwrap();
+    let ticks: Vec<u64> = [next(&mut reader).await, next(&mut reader).await]
+        .into_iter()
+        .map(|m| match m {
+            StreamMessage::Frame { frame } => frame.tick,
+            other => panic!("expected a frame, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(ticks, [30, 33]);
+
+    // Event batches are answered; refused ones too, without closing.
+    let author = Author::parse(&account.id).unwrap();
+    let body = EventBody::new(
+        &key,
+        &author.to_string(),
+        &format!("game-{game_id}"),
+        "ScoreChanged",
+        serde_json::json!({"tick": 40, "players": [{"index": 0, "score": 1, "kills": 1, "deaths": 0, "assists": 0}]}),
+        time::OffsetDateTime::now_utc(),
+    );
+    let jws = sign_batch(&key, &[body]);
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::Events {
+            game_id: game_id.clone(),
+            jws: jws.clone(),
+        })
+        .unwrap()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    let IngestReply::Appended { position, .. } = reply(&mut ws).await else {
+        panic!("not appended")
+    };
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::Events {
+            game_id: game_id.clone(),
+            jws,
+        })
+        .unwrap()
+        .into(),
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        reply(&mut ws).await,
+        IngestReply::Error {
+            error: ErrorCode::Conflict,
+            ..
+        }
+    ));
+    // Pings need presence; frames for a game the author isn't in are refused.
+    ws.send(Message::Text(
+        serde_json::to_string(&ClientMessage::Ping).unwrap().into(),
+    ))
+    .await
+    .unwrap();
+    assert!(matches!(
+        reply(&mut ws).await,
+        IngestReply::Error {
+            error: ErrorCode::NotFound,
+            ..
+        }
+    ));
+    // A fresh token must be the same author's.
+    ws.send(auth(token(&other_key, &other.id, lxm::GAMES_WRITE)))
+        .await
+        .unwrap();
+    assert!(matches!(
+        reply(&mut ws).await,
+        IngestReply::Error {
+            error: ErrorCode::Forbidden,
+            ..
+        }
+    ));
+
+    // The reader sees the batch's event after the frames.
+    let event = loop {
+        if let StreamMessage::Event { event } = next(&mut reader).await {
+            break event;
+        }
+    };
+    assert_eq!(event.position, position);
+
+    // One frame a second was recorded, server-signed, with its source.
+    let mut recorded = Vec::new();
+    for _ in 0..50 {
+        recorded = live
+            .recorded_frames(&game_id, None, None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        if !recorded.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(recorded.len(), 1, "{recorded:?}");
+    assert_eq!(recorded[0]["tick"], 30);
+    assert_eq!(recorded[0]["source"], account.id.as_str());
 }

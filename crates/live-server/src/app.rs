@@ -30,6 +30,8 @@ use crate::store::{EventStore, NewEvent, Query, RecordedEvent, StoreError};
 pub const MAX_TITLE_FILE: usize = 2 * 1024 * 1024;
 /// How long a write waits for the read model to apply it.
 const APPLY_TIMEOUT: Duration = Duration::from_secs(5);
+/// How many games `GET /v1/accounts/{gamertag}` lists.
+const RECENT_GAMES: usize = 10;
 /// How long a token's `jti` is remembered (security §3: two minutes).
 const JTI_MEMORY_S: i64 = 120;
 
@@ -51,16 +53,16 @@ impl ApiError {
     }
 }
 
-fn invalid(m: impl Into<String>) -> ApiError {
+pub(crate) fn invalid(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Invalid, m)
 }
-fn unauthorized(m: impl Into<String>) -> ApiError {
+pub(crate) fn unauthorized(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Unauthorized, m)
 }
-fn forbidden(m: impl Into<String>) -> ApiError {
+pub(crate) fn forbidden(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Forbidden, m)
 }
-fn conflict(m: impl Into<String>) -> ApiError {
+pub(crate) fn conflict(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Conflict, m)
 }
 pub fn not_found(m: impl Into<String>) -> ApiError {
@@ -76,7 +78,7 @@ impl From<StoreError> for ApiError {
 }
 
 /// A signature problem is the caller's (401); a malformed body is 400.
-fn sign_error(e: SignError) -> ApiError {
+pub(crate) fn sign_error(e: SignError) -> ApiError {
     match e {
         SignError::BadSignature | SignError::KidMismatch => unauthorized(e.to_string()),
         _ => invalid(e.to_string()),
@@ -94,6 +96,12 @@ pub struct Policy {
     pub write_rate: (f64, u32),
     /// Account creation, server-wide.
     pub create_rate: (f64, u32),
+    /// Presence with no event or ping for this long expires.
+    pub presence_ttl_s: i64,
+    /// A live game with no event or frame for this long is ended as lost.
+    pub game_idle_s: i64,
+    /// How often the presence and game managers look.
+    pub sweep_every: Duration,
 }
 
 impl Default for Policy {
@@ -103,17 +111,22 @@ impl Default for Policy {
             invite_only: false,
             write_rate: (10.0, 30),
             create_rate: (1.0, 10),
+            presence_ttl_s: 90,
+            game_idle_s: 300,
+            sweep_every: Duration::from_secs(5),
         }
     }
 }
 
 pub struct Live {
-    store: Arc<dyn EventStore>,
-    model: Arc<Model>,
-    identity: ServerIdentity,
+    pub(crate) store: Arc<dyn EventStore>,
+    pub(crate) model: Arc<Model>,
+    pub(crate) identity: ServerIdentity,
     policy: Policy,
     applied: watch::Receiver<u64>,
     feed: broadcast::Sender<Arc<RecordedEvent>>,
+    pub(crate) frames: broadcast::Sender<Arc<live_proto::game::Frame>>,
+    pub(crate) ingest: crate::games::IngestState,
     jtis: ReplayGuard,
     writes: RateLimiter,
     creates: RateLimiter,
@@ -244,7 +257,7 @@ impl Live {
         store: Arc<dyn EventStore>,
         identity: ServerIdentity,
         policy: Policy,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Arc<Self>> {
         let model = Arc::new(Model::default());
         let mut dispatcher = Dispatcher::new(store.clone());
         dispatcher.subscribe(model.clone());
@@ -259,6 +272,8 @@ impl Live {
             identity,
             applied: applied.clone(),
             feed,
+            frames: broadcast::channel(256).0,
+            ingest: Default::default(),
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
@@ -266,6 +281,17 @@ impl Live {
             dispatcher: task.abort_handle(),
         };
         applied.wait_for(|p| *p >= head).await?;
+        let live = Arc::new(live);
+        // The presence and game managers; they stop with the service.
+        let weak = Arc::downgrade(&live);
+        let every = live.policy.sweep_every;
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let Some(live) = weak.upgrade() else { return };
+                live.sweep().await;
+            }
+        });
         Ok(live)
     }
 
@@ -296,7 +322,7 @@ impl Live {
     }
 
     /// The current key `kid` of `author`, from memory.
-    fn key_for(&self, author: &Author, kid: &str) -> Option<PublicKey> {
+    pub(crate) fn key_for(&self, author: &Author, kid: &str) -> Option<PublicKey> {
         if author.server() != self.identity.id {
             return None;
         }
@@ -351,7 +377,7 @@ impl Live {
         Ok(Token::parse(bearer).map(|t| t.claims.exp).unwrap_or(0))
     }
 
-    fn rate_limit(&self, author: &Author, method: &str) -> Result<(), ApiError> {
+    pub(crate) fn rate_limit(&self, author: &Author, method: &str) -> Result<(), ApiError> {
         if self.writes.allow(&format!("{author} {method}")) {
             Ok(())
         } else {
@@ -359,7 +385,7 @@ impl Live {
         }
     }
 
-    fn server_event(&self, stream: String, kind: &str, data: Value) -> NewEvent {
+    pub(crate) fn server_event(&self, stream: String, kind: &str, data: Value) -> NewEvent {
         let key = &self.identity.key;
         let body = EventBody::new(
             key,
@@ -376,7 +402,7 @@ impl Live {
         }
     }
 
-    async fn wait_applied(&self, position: u64) -> Result<(), ApiError> {
+    pub(crate) async fn wait_applied(&self, position: u64) -> Result<(), ApiError> {
         let mut rx = self.applied.clone();
         match tokio::time::timeout(APPLY_TIMEOUT, rx.wait_for(|p| *p >= position)).await {
             Ok(Ok(_)) => Ok(()),
@@ -398,7 +424,7 @@ impl Live {
                 "too many new accounts; try again shortly",
             ));
         }
-        let (req, key) = AccountRequest::open(jws).map_err(sign_error)?;
+        let (req, key) = AccountRequest::open(jws, &self.identity.id, now()).map_err(sign_error)?;
         let tag = Gamertag::new(&req.gamertag).map_err(|e| invalid(e.to_string()))?;
         let now = now();
         let invite = match (&req.invite, self.policy.invite_only) {
@@ -586,6 +612,36 @@ impl Live {
         Ok(meta)
     }
 
+    /// `POST /v1/invites`: the operator mints a single-use invite.
+    pub fn create_invite(&self, bearer: Option<&str>, days: i64) -> Result<String, ApiError> {
+        let author = self.authenticate(bearer, lxm::INVITES_WRITE)?;
+        if !matches!(author, Author::Server(_)) {
+            return Err(forbidden("only the server operator creates invites"));
+        }
+        Ok(Invite::issue(
+            &self.identity.key,
+            &self.identity.id,
+            now() + days.clamp(1, 365) * 86_400,
+        ))
+    }
+
+    /// `POST /v1/presence/ping`: keeps the caller's presence alive without
+    /// writing anything. Returns seconds until it would expire.
+    pub fn ping(&self, bearer: Option<&str>) -> Result<i64, ApiError> {
+        let author = self.authenticate(bearer, lxm::EVENTS_WRITE)?;
+        self.ping_as(&author)
+    }
+
+    pub(crate) fn ping_as(&self, author: &Author) -> Result<i64, ApiError> {
+        let Author::Account { xuid, .. } = author else {
+            return Err(forbidden("only accounts have presence"));
+        };
+        if !self.model.touch_presence(*xuid, now()) {
+            return Err(not_found("not signed in: append SignedIn first"));
+        }
+        Ok(self.policy.presence_ttl_s)
+    }
+
     pub fn discovery(&self) -> Discovery {
         Discovery {
             id: self.identity.id.clone(),
@@ -652,7 +708,12 @@ impl Live {
                 server: self.identity.id.clone(),
             }
             .to_string(),
-            recent_games: Vec::new(),
+            recent_games: s
+                .games_newest()
+                .filter(|g| g.xuids.contains(&a.xuid))
+                .take(RECENT_GAMES)
+                .map(|g| g.summary())
+                .collect(),
             position,
         })
     }

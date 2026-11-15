@@ -5,9 +5,10 @@
 //! It trusts the log: the server validated every event on the way in, so
 //! an event whose data does not parse is skipped with a log line.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::RwLock;
 
+use live_proto::game::{self, GameEnded, GameStarted, KillRecord, Player, PlayerScore, TeamScore};
 use live_proto::sign::{Jwk, MAX_EVENT_SKEW_S, PublicKey, parse_time};
 use live_proto::{AccountKey, Gamertag, PublishedFile, TitleId, Xuid, types};
 use serde::Deserialize;
@@ -44,6 +45,66 @@ pub struct Presence {
     pub state: String,
     pub game_id: Option<String>,
     pub since: String,
+    /// Unix seconds of the last presence event or ping; the presence
+    /// manager expires it a TTL later.
+    pub last_seen: i64,
+}
+
+/// How many kills a game keeps for `GET /v1/games/{id}`.
+pub const KEPT_KILLS: usize = 50;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Game {
+    pub started: GameStarted,
+    pub started_at: String,
+    pub position: u64,
+    pub players: Vec<Player>,
+    /// Everyone who was ever in the game (for `recent_games`).
+    pub xuids: Vec<Xuid>,
+    pub scoreboard: Vec<PlayerScore>,
+    pub teams: Option<Vec<TeamScore>>,
+    pub kills: VecDeque<KillRecord>,
+    pub last_tick: Option<u64>,
+    pub ended: Option<(GameEnded, String)>,
+    /// Unix seconds of the last event or frame; idle games are ended.
+    pub last_activity: i64,
+}
+
+impl Game {
+    pub fn summary(&self) -> game::GameSummary {
+        let g = &self.started.game;
+        game::GameSummary {
+            game_id: self.started.game_id.clone(),
+            map: g.map.clone(),
+            mode: g.mode.clone(),
+            variant: g.variant.clone(),
+            team_play: g.team_play,
+            state: if self.ended.is_some() {
+                "ended"
+            } else {
+                "live"
+            }
+            .into(),
+            started_at: self.started_at.clone(),
+            ended_at: self.ended.as_ref().map(|e| e.1.clone()),
+            players: self.players.clone(),
+            teams: self.teams.clone(),
+        }
+    }
+
+    /// May `author` write to this game: its host, or a player's account.
+    pub fn admits(&self, author: &live_proto::Author) -> bool {
+        if author.to_string() == self.started.host {
+            return true;
+        }
+        matches!(author, live_proto::Author::Account { xuid, .. } if self.xuids.contains(xuid))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outline {
+    pub sha256: String,
+    pub position: u64,
 }
 
 #[derive(Default)]
@@ -55,6 +116,10 @@ pub struct State {
     pub keys: HashMap<String, Key>,
     pub files: HashMap<(TitleId, String), File>,
     pub presence: HashMap<Xuid, Presence>,
+    pub games: HashMap<String, Game>,
+    /// Start position -> game id, oldest first.
+    games_by_position: BTreeMap<u64, String>,
+    pub outlines: HashMap<String, Outline>,
 }
 
 impl State {
@@ -94,6 +159,14 @@ impl State {
             .get(kid)
             .filter(|k| k.xuid == xuid && k.to.is_none())
             .map(|k| &k.key)
+    }
+
+    /// Games newest first, optionally only live or ended ones.
+    pub fn games_newest(&self) -> impl Iterator<Item = &Game> {
+        self.games_by_position
+            .values()
+            .rev()
+            .filter_map(|id| self.games.get(id))
     }
 
     pub fn active_key_count(&self, xuid: Xuid) -> usize {
@@ -167,15 +240,122 @@ impl Model {
         self.state.read().unwrap()
     }
 
+    /// A keep-alive: the account's presence lives on. False if it has none.
+    pub fn touch_presence(&self, xuid: Xuid, now: i64) -> bool {
+        let mut s = self.state.write().unwrap();
+        s.presence
+            .get_mut(&xuid)
+            .map(|p| p.last_seen = p.last_seen.max(now))
+            .is_some()
+    }
+
+    /// A frame arrived for a live game.
+    pub fn touch_game(&self, id: &str, now: i64) {
+        if let Some(g) = self.state.write().unwrap().games.get_mut(id) {
+            g.last_activity = g.last_activity.max(now);
+        }
+    }
+
+    fn apply_game(s: &mut State, e: &RecordedEvent, at: i64) {
+        let b = &e.body;
+        if b.kind == game::GAME_STARTED {
+            let Some(started) = data::<GameStarted>(e) else {
+                return;
+            };
+            let id = started.game_id.clone();
+            let players = started.game.players.clone();
+            let game = Game {
+                xuids: players.iter().filter_map(|p| p.xuid).collect(),
+                players,
+                started,
+                started_at: b.at.clone(),
+                position: e.position,
+                scoreboard: Vec::new(),
+                teams: None,
+                kills: VecDeque::new(),
+                last_tick: None,
+                ended: None,
+                last_activity: at,
+            };
+            s.games_by_position.insert(e.position, id.clone());
+            s.games.insert(id, game);
+            return;
+        }
+        let Some(id) = b.stream.strip_prefix("game-") else {
+            return;
+        };
+        let Some(g) = s.games.get_mut(id) else { return };
+        g.last_activity = g.last_activity.max(at);
+        match b.kind.as_str() {
+            game::PLAYER_JOINED => {
+                let Some(d) = data::<game::PlayerJoined>(e) else {
+                    return;
+                };
+                if let Some(x) = d.player.xuid.filter(|x| !g.xuids.contains(x)) {
+                    g.xuids.push(x);
+                }
+                g.players.push(d.player);
+            }
+            game::PLAYER_LEFT => {
+                let Some(d) = data::<game::PlayerLeft>(e) else {
+                    return;
+                };
+                g.players.retain(|p| p.index != d.index);
+            }
+            game::PLAYER_KILLED => {
+                let Some(kill) = data::<game::PlayerKilled>(e) else {
+                    return;
+                };
+                g.last_tick = Some(kill.tick);
+                if g.kills.len() == KEPT_KILLS {
+                    g.kills.pop_front();
+                }
+                g.kills.push_back(KillRecord {
+                    kill,
+                    position: e.position,
+                    at: b.at.clone(),
+                });
+            }
+            game::SCORE_CHANGED => {
+                let Some(d) = data::<game::ScoreChanged>(e) else {
+                    return;
+                };
+                g.last_tick = Some(d.tick);
+                g.scoreboard = d.players;
+                if d.teams.is_some() {
+                    g.teams = d.teams;
+                }
+            }
+            game::GAME_FRAME => {
+                if let Some(tick) = b.data.get("tick").and_then(|t| t.as_u64()) {
+                    g.last_tick = Some(tick);
+                }
+            }
+            game::GAME_ENDED => {
+                let Some(d) = data::<GameEnded>(e) else {
+                    return;
+                };
+                g.last_tick = Some(d.tick);
+                if !d.players.is_empty() {
+                    g.scoreboard = d.players.clone();
+                }
+                g.ended = Some((d, b.at.clone()));
+            }
+            _ => {}
+        }
+    }
+
     fn apply_event(&self, e: &RecordedEvent) {
         let b = &e.body;
-        if let Some(at) = parse_time(&b.at) {
-            let at = at.unix_timestamp();
-            let now = time::OffsetDateTime::now_utc().unix_timestamp();
-            self.nonces
-                .insert_new(nonce_key(&b.author, &b.nonce), at + MAX_EVENT_SKEW_S, now);
-        }
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let at = parse_time(&b.at).map_or(now, |t| t.unix_timestamp());
+        self.nonces
+            .insert_new(nonce_key(&b.author, &b.nonce), at + MAX_EVENT_SKEW_S, now);
         let mut s = self.state.write().unwrap();
+        if b.stream.starts_with("game-") {
+            Self::apply_game(&mut s, e, at);
+            return;
+        }
         match b.kind.as_str() {
             types::ACCOUNT_CREATED => {
                 let Some(d) = data::<AccountCreated>(e) else {
@@ -247,6 +427,7 @@ impl Model {
                         state,
                         game_id: d.game_id,
                         since,
+                        last_seen: at,
                     },
                 );
             }
@@ -255,6 +436,21 @@ impl Model {
                     return;
                 };
                 s.presence.remove(&d.xuid);
+            }
+            game::MAP_OUTLINE_STORED => {
+                #[derive(Deserialize)]
+                struct Stored {
+                    map: String,
+                    sha256: String,
+                }
+                let Some(d) = data::<Stored>(e) else { return };
+                s.outlines.insert(
+                    d.map,
+                    Outline {
+                        sha256: d.sha256,
+                        position: e.position,
+                    },
+                );
             }
             _ => {}
         }

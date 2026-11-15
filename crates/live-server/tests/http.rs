@@ -2,185 +2,17 @@
 //! in-memory store; the Postgres variants at the bottom run when
 //! `H2_LIVE_TEST_DB` is set.
 
-use std::path::PathBuf;
-use std::sync::Arc;
+mod common;
 
-use axum::Router;
 use axum::body::Body;
-use axum::http::{HeaderMap, Method, Request, StatusCode, header};
-use http_body_util::BodyExt;
+use axum::http::{Method, StatusCode, header};
+use common::*;
 use live_proto::sign::{self, AccountRequest, EventBody, Invite, KeyPair, issue_token};
-use live_proto::{Author, Xuid, lxm, streams, types};
-use live_server::store::{EventStore, MemoryStore};
-use live_server::{Live, Policy, ServerIdentity, http};
+use live_proto::{Author, lxm, streams, types};
+use live_server::Policy;
+use live_server::store::MemoryStore;
 use serde_json::{Value, json};
-use tower::ServiceExt;
-
-fn temp_dir() -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "h2live-http-{}-{}",
-        std::process::id(),
-        sign::random_id()
-    ))
-}
-
-fn now() -> i64 {
-    time::OffsetDateTime::now_utc().unix_timestamp()
-}
-
-struct Harness {
-    live: Arc<Live>,
-    app: Router,
-    /// A second copy of the server key: the operator.
-    operator: KeyPair,
-    id: String,
-    dir: PathBuf,
-}
-
-impl Drop for Harness {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
-    }
-}
-
-struct Resp {
-    status: StatusCode,
-    headers: HeaderMap,
-    body: Vec<u8>,
-}
-
-impl Resp {
-    fn json(&self) -> Value {
-        serde_json::from_slice(&self.body)
-            .unwrap_or_else(|_| panic!("not JSON: {}", String::from_utf8_lossy(&self.body)))
-    }
-    fn error(&self) -> String {
-        self.json()["error"].as_str().unwrap_or("").to_string()
-    }
-}
-
-/// An account this test created, with its key.
-struct User {
-    key: KeyPair,
-    xuid: Xuid,
-    author: String,
-}
-
-async fn start(store: Arc<dyn EventStore>, policy: Policy) -> Harness {
-    let dir = temp_dir();
-    let identity = ServerIdentity::open(&dir, Some("live.test")).unwrap();
-    let live = Arc::new(Live::start(store, identity, policy).await.unwrap());
-    Harness {
-        app: http::router(live.clone()),
-        live,
-        operator: ServerIdentity::load(&dir).unwrap().key,
-        id: "live.test".into(),
-        dir,
-    }
-}
-
-async fn harness() -> Harness {
-    start(Arc::new(MemoryStore::new()), Policy::default()).await
-}
-
-impl Harness {
-    async fn call(
-        &self,
-        method: Method,
-        uri: &str,
-        headers: &[(&str, String)],
-        body: impl Into<Body>,
-    ) -> Resp {
-        let mut req = Request::builder().method(method).uri(uri);
-        for (k, v) in headers {
-            req = req.header(*k, v);
-        }
-        let resp = self
-            .app
-            .clone()
-            .oneshot(req.body(body.into()).unwrap())
-            .await
-            .unwrap();
-        let status = resp.status();
-        let headers = resp.headers().clone();
-        let body = resp
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec();
-        Resp {
-            status,
-            headers,
-            body,
-        }
-    }
-
-    async fn get(&self, uri: &str) -> Resp {
-        self.call(Method::GET, uri, &[], Body::empty()).await
-    }
-
-    fn token(&self, key: &KeyPair, iss: &str, method: &str) -> String {
-        issue_token(key, iss, &self.id, method, now())
-    }
-
-    async fn create(&self, gamertag: &str) -> User {
-        let key = KeyPair::generate();
-        let r = self
-            .call(
-                Method::POST,
-                "/v1/accounts",
-                &[],
-                AccountRequest::sign(&key, gamertag, None),
-            )
-            .await;
-        assert_eq!(
-            r.status,
-            StatusCode::CREATED,
-            "{}",
-            String::from_utf8_lossy(&r.body)
-        );
-        let body = r.json();
-        let xuid = Xuid::parse(body["xuid"].as_str().unwrap()).unwrap();
-        User {
-            key,
-            xuid,
-            author: body["id"].as_str().unwrap().into(),
-        }
-    }
-
-    fn event(&self, user: &User, stream: &str, kind: &str, data: Value) -> String {
-        EventBody::new(
-            &user.key,
-            &user.author,
-            stream,
-            kind,
-            data,
-            time::OffsetDateTime::now_utc(),
-        )
-        .sign(&user.key)
-    }
-
-    async fn post_event(&self, user: &User, jws: String) -> Resp {
-        let auth = format!(
-            "Bearer {}",
-            self.token(&user.key, &user.author, lxm::EVENTS_WRITE)
-        );
-        self.call(Method::POST, "/v1/events", &[("authorization", auth)], jws)
-            .await
-    }
-
-    async fn sign_in(&self, user: &User) -> Resp {
-        let jws = self.event(
-            user,
-            &streams::presence(user.xuid),
-            types::SIGNED_IN,
-            json!({"xuid": user.xuid, "state": "online"}),
-        );
-        self.post_event(user, jws).await
-    }
-}
+use std::sync::Arc;
 
 #[tokio::test]
 async fn accounts_are_created_and_readable() {
@@ -251,7 +83,10 @@ async fn accounts_are_created_and_readable() {
         assert_eq!(opened.body.data, e["data"]);
     }
     let proof = items[2]["data"]["proof"].as_str().unwrap();
-    assert_eq!(AccountRequest::open(proof).unwrap().1, *user.key.public());
+    assert_eq!(
+        AccountRequest::open(proof, "live.test", now()).unwrap().1,
+        *user.key.public()
+    );
 }
 
 #[tokio::test]
@@ -261,25 +96,55 @@ async fn account_creation_rejections() {
     let post = |body: String| h.call(Method::POST, "/v1/accounts", &[], body);
 
     // Taken, whatever the case.
-    let r = post(AccountRequest::sign(&KeyPair::generate(), "noice", None)).await;
+    let r = post(AccountRequest::sign(
+        &KeyPair::generate(),
+        "noice",
+        None,
+        "live.test",
+        now(),
+    ))
+    .await;
     assert_eq!(
         (r.status, r.error().as_str()),
         (StatusCode::CONFLICT, "conflict")
     );
     // One key, one account.
     assert_eq!(
-        post(AccountRequest::sign(&user.key, "Other", None))
-            .await
-            .status,
+        post(AccountRequest::sign(
+            &user.key,
+            "Other",
+            None,
+            "live.test",
+            now()
+        ))
+        .await
+        .status,
         StatusCode::CONFLICT
     );
     // Not a gamertag.
     assert_eq!(
-        post(AccountRequest::sign(&KeyPair::generate(), "a  b", None))
-            .await
-            .status,
+        post(AccountRequest::sign(
+            &KeyPair::generate(),
+            "a  b",
+            None,
+            "live.test",
+            now()
+        ))
+        .await
+        .status,
         StatusCode::BAD_REQUEST
     );
+    // For another server, or stale.
+    let elsewhere = AccountRequest::sign(&KeyPair::generate(), "Roamer", None, "elsewhere", now());
+    assert_eq!(post(elsewhere).await.status, StatusCode::BAD_REQUEST);
+    let stale = AccountRequest::sign(
+        &KeyPair::generate(),
+        "Roamer",
+        None,
+        "live.test",
+        now() - 600,
+    );
+    assert_eq!(post(stale).await.status, StatusCode::BAD_REQUEST);
     // Not a JWS.
     assert_eq!(post("hello".into()).await.status, StatusCode::BAD_REQUEST);
     // Signed by a key other than the one it registers.
@@ -288,6 +153,8 @@ async fn account_creation_rejections() {
         gamertag: "Mallory".into(),
         jwk: key.public().jwk(),
         invite: None,
+        aud: "live.test".into(),
+        iat: now(),
     };
     let r = post(KeyPair::generate().sign_json(sign::TYP_ACCOUNT, &body)).await;
     assert_eq!(
@@ -308,32 +175,36 @@ async fn invite_only() {
     )
     .await;
     let post = |body: String| h.call(Method::POST, "/v1/accounts", &[], body);
-    let r = post(AccountRequest::sign(&KeyPair::generate(), "First", None)).await;
+    let r = post(AccountRequest::sign(
+        &KeyPair::generate(),
+        "First",
+        None,
+        "live.test",
+        now(),
+    ))
+    .await;
     assert_eq!(
         (r.status, r.error().as_str()),
         (StatusCode::FORBIDDEN, "forbidden")
     );
 
+    let signup = |tag: &str, invite: &str| {
+        AccountRequest::sign(
+            &KeyPair::generate(),
+            tag,
+            Some(invite.to_string()),
+            "live.test",
+            now(),
+        )
+    };
     let invite = Invite::issue(&h.operator, &h.id, now() + 3600);
     assert_eq!(
-        post(AccountRequest::sign(
-            &KeyPair::generate(),
-            "First",
-            Some(invite.clone())
-        ))
-        .await
-        .status,
+        post(signup("First", &invite)).await.status,
         StatusCode::CREATED
     );
     // Single use.
     assert_eq!(
-        post(AccountRequest::sign(
-            &KeyPair::generate(),
-            "Second",
-            Some(invite)
-        ))
-        .await
-        .status,
+        post(signup("Second", &invite)).await.status,
         StatusCode::FORBIDDEN
     );
     // Another server's invite, an expired one, one not signed by the server.
@@ -343,36 +214,18 @@ async fn invite_only() {
         Invite::issue(&KeyPair::generate(), &h.id, now() + 3600),
     ] {
         assert_eq!(
-            post(AccountRequest::sign(
-                &KeyPair::generate(),
-                "Third",
-                Some(bad)
-            ))
-            .await
-            .status,
+            post(signup("Third", &bad)).await.status,
             StatusCode::FORBIDDEN
         );
     }
     // A failed creation does not burn the invite.
     let invite = Invite::issue(&h.operator, &h.id, now() + 3600);
     assert_eq!(
-        post(AccountRequest::sign(
-            &KeyPair::generate(),
-            "first",
-            Some(invite.clone())
-        ))
-        .await
-        .status,
+        post(signup("first", &invite)).await.status,
         StatusCode::CONFLICT
     );
     assert_eq!(
-        post(AccountRequest::sign(
-            &KeyPair::generate(),
-            "Fourth",
-            Some(invite)
-        ))
-        .await
-        .status,
+        post(signup("Fourth", &invite)).await.status,
         StatusCode::CREATED
     );
 }
@@ -1009,25 +862,22 @@ async fn cors_reads_only() {
 }
 
 #[tokio::test]
-async fn unbuilt_and_unknown_routes() {
+async fn unknown_routes_and_caps() {
     let h = harness().await;
     for (method, uri) in [
-        (Method::GET, "/v1/games"),
-        (Method::POST, "/v1/games"),
-        (Method::GET, "/v1/games/abc"),
-        (Method::GET, "/v1/games/abc/frames?from_tick=0"),
-        (Method::POST, "/v1/games/abc/events"),
+        (Method::GET, "/v1/games/nope"),
         (Method::GET, "/v1/maps/lockout/outline"),
-        (Method::PUT, "/v1/maps/lockout/outline"),
-        (Method::GET, "/v1/ingest"),
+        (Method::GET, "/nope"),
     ] {
         let r = h.call(method.clone(), uri, &[], Body::empty()).await;
         assert_eq!(
             (r.status, r.error().as_str()),
-            (StatusCode::NOT_IMPLEMENTED, "unimplemented"),
+            (StatusCode::NOT_FOUND, "not_found"),
             "{method} {uri}"
         );
     }
+    let r = h.get("/v1/ingest").await;
+    assert_eq!(r.status, StatusCode::BAD_REQUEST);
     let r = h.get("/v1/nope").await;
     assert_eq!(
         (r.status, r.error().as_str()),
@@ -1077,7 +927,7 @@ async fn writes_are_rate_limited_per_author() {
             Method::POST,
             "/v1/accounts",
             &[],
-            AccountRequest::sign(&KeyPair::generate(), "Fourth", None),
+            AccountRequest::sign(&KeyPair::generate(), "Fourth", None, "live.test", now()),
         )
         .await;
     assert_eq!(r.status, StatusCode::TOO_MANY_REQUESTS);
@@ -1132,7 +982,13 @@ async fn postgres_end_to_end() {
                 Method::POST,
                 "/v1/accounts",
                 &[],
-                AccountRequest::sign(&KeyPair::generate(), &tag.to_uppercase(), None),
+                AccountRequest::sign(
+                    &KeyPair::generate(),
+                    &tag.to_uppercase(),
+                    None,
+                    "live.test",
+                    now(),
+                ),
             )
             .await;
         assert_eq!(taken.status, StatusCode::CONFLICT);

@@ -30,7 +30,11 @@ pub struct PostgresStore {
 impl PostgresStore {
     /// Connects and creates the schema if it is missing.
     pub async fn connect(url: &str) -> Result<Self, sqlx::Error> {
-        let pool = PgPoolOptions::new().max_connections(8).connect(url).await?;
+        let pool = PgPoolOptions::new()
+            .max_connections(8)
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(url)
+            .await?;
         // `create ... if not exists` races with itself; serialise it.
         let mut tx = pool.begin().await?;
         sqlx::query("select pg_advisory_xact_lock($1)")
@@ -40,6 +44,36 @@ impl PostgresStore {
         sqlx::raw_sql(SCHEMA).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(PostgresStore { pool })
+    }
+}
+
+impl PostgresStore {
+    /// [`PostgresStore::connect`], creating the database first if the
+    /// server is up but the database does not exist yet.
+    pub async fn connect_creating(url: &str) -> Result<Self, sqlx::Error> {
+        match Self::connect(url).await {
+            Err(e) if e.as_database_error().and_then(|d| d.code()).as_deref() == Some("3D000") => {
+                let opts: sqlx::postgres::PgConnectOptions = url.parse()?;
+                let name = opts.get_database().unwrap_or("h2live").to_string();
+                if !name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                {
+                    return Err(e);
+                }
+                let admin = PgPoolOptions::new()
+                    .max_connections(1)
+                    .connect_with(opts.database("postgres"))
+                    .await?;
+                // `create database` takes no parameters; the name is checked above.
+                sqlx::raw_sql(&format!("create database \"{name}\""))
+                    .execute(&admin)
+                    .await?;
+                admin.close().await;
+                Self::connect(url).await
+            }
+            r => r,
+        }
     }
 }
 
