@@ -565,6 +565,13 @@ fn mutelist_get_zeroes_count_and_returns_a_completing_task() {
 fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library() {
     let mut w = World::new();
     let implemented = [
+        "XOnlineStorageCreateServerPath",
+        "XOnlineStorageDownload",
+        "XOnlineStorageDownloadToMemory",
+        "XOnlineStorageDownloadToMemoryGetResults",
+        "XOnlineStorageUploadByServerPath",
+        "XOnlineStorageUploadFromMemory",
+        "XOnlineStorageGetProgress",
         "XNetGetEthernetLinkStatus",
         "XNetStartup",
         "WSAStartup",
@@ -946,4 +953,220 @@ fn saved_logon_state_has_public_header_and_no_signing_key_material() {
     assert_eq!(w.bytes(DATA, 4), vec![0x4c, 1, 4, 2]);
     assert_eq!(w.bytes(DATA + 4, 448), w.bytes(USERS, 448));
     assert_eq!(w.bytes(DATA + 516, 4), vec![0xcc; 4]);
+}
+
+fn wide_bytes(value: &str) -> Vec<u8> {
+    value
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect()
+}
+fn storage_path(w: &mut World, facility: u32, name: &str, capacity: u32, output: u32) -> u32 {
+    w.put(USERS, &wide_bytes(name));
+    w.word(OUTPUT, capacity);
+    w.call(
+        "XOnlineStorageCreateServerPath",
+        &[
+            facility,
+            ID as u32,
+            (ID >> 32) as u32,
+            0x87654321,
+            0x01234567,
+            USERS,
+            output,
+            OUTPUT,
+        ],
+    )
+}
+#[test]
+fn storage_paths_format_all_three_facilities_and_split_64_bit_ids() {
+    let mut w = World::new();
+    w.startup();
+    for (facility, prefix) in [
+        (
+            3,
+            "//tteam.4d530064/u:0123456787654321/4d530064/00091234567890ab/",
+        ),
+        (4, "//title.4d530064/t:4d530064/"),
+        (5, "//tuser.4d530064/u:00091234567890ab/4d530064/"),
+    ] {
+        let expected = wide_bytes(&format!("{prefix}settings.bin"));
+        w.put(DATA, &vec![0xcc; expected.len() + 4]);
+        assert_eq!(
+            storage_path(
+                &mut w,
+                facility,
+                "settings.bin",
+                expected.len() as u32 / 2,
+                DATA
+            ),
+            0
+        );
+        assert_eq!(w.u32(OUTPUT), expected.len() as u32 / 2);
+        assert_eq!(w.bytes(DATA, expected.len()), expected);
+        assert_eq!(w.bytes(DATA + expected.len() as u32, 4), vec![0xcc; 4]);
+    }
+}
+#[test]
+fn storage_path_size_queries_and_prefix_only_overflow_match_retail() {
+    let mut w = World::new();
+    w.startup();
+    let prefix = "//tuser.4d530064/u:00091234567890ab/4d530064/";
+    let required = prefix.len() as u32 + "settings.bin".len() as u32 + 1;
+    assert_eq!(
+        storage_path(&mut w, 5, "settings.bin", 0, 0),
+        INSUFFICIENT_BUFFER
+    );
+    assert_eq!(w.u32(OUTPUT), required);
+    assert_eq!(storage_path(&mut w, 5, "settings.bin", required, 0), 0);
+    w.put(DATA, &[0xcc; 256]);
+    assert_eq!(
+        storage_path(&mut w, 5, "settings.bin", prefix.len() as u32, DATA),
+        INSUFFICIENT_BUFFER
+    );
+    assert_eq!(w.bytes(DATA, 256), vec![0xcc; 256]);
+    assert_eq!(w.u32(OUTPUT), required);
+    assert_eq!(
+        storage_path(&mut w, 5, "settings.bin", prefix.len() as u32 + 1, DATA),
+        INSUFFICIENT_BUFFER
+    );
+    assert_eq!(w.bytes(DATA, (prefix.len() + 1) * 2), wide_bytes(prefix));
+    assert_eq!(
+        w.bytes(DATA + (prefix.len() as u32 + 1) * 2, 4),
+        vec![0xcc; 4]
+    );
+    assert_eq!(w.u32(OUTPUT), required);
+}
+#[test]
+fn storage_path_preserves_unicode_and_does_not_impose_a_256_character_format_cap() {
+    let mut w = World::new();
+    w.startup();
+    let name = format!("{}雪🙂", "x".repeat(280));
+    let expected = wide_bytes(&format!("//title.4d530064/t:4d530064/{name}"));
+    assert_eq!(storage_path(&mut w, 4, &name, 1024, DATA), 0);
+    assert_eq!(w.bytes(DATA, expected.len()), expected);
+    assert_eq!(w.u32(OUTPUT), expected.len() as u32 / 2);
+}
+#[test]
+fn storage_path_invalid_facilities_and_uninitialized_calls_leave_outputs_untouched() {
+    let mut w = World::new();
+    w.word(OUTPUT, 256);
+    assert_eq!(
+        w.call(
+            "XOnlineStorageCreateServerPath",
+            &[5, 0, 0, 0, 0, 0, 0, OUTPUT]
+        ),
+        NOT_INITIALIZED
+    );
+    w.startup();
+    for facility in [0, 1, 2, 6, u32::MAX] {
+        assert_eq!(
+            w.call(
+                "XOnlineStorageCreateServerPath",
+                &[facility, 0, 0, 0, 0, 0, 0, OUTPUT]
+            ),
+            STORAGE_INVALID_FACILITY
+        );
+        assert_eq!(w.u32(OUTPUT), 256);
+    }
+}
+#[test]
+fn missing_storage_download_tasks_complete_without_touching_the_receive_buffer_or_results() {
+    let mut w = World::new();
+    w.logon();
+    assert_eq!(storage_path(&mut w, 5, "settings.bin", 256, DATA), 0);
+    w.put(USERS, &[0xcc; 64]);
+    assert_eq!(
+        w.call(
+            "XOnlineStorageDownloadToMemory",
+            &[5, 0, DATA, USERS, 64, 0, 0, OUTPUT]
+        ),
+        0
+    );
+    let h = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), STORAGE_FILE_NOT_FOUND);
+    assert_eq!(w.bytes(USERS, 64), vec![0xcc; 64]);
+    w.put(OUTPUT, &[0xdd; 32]);
+    assert_eq!(
+        w.call(
+            "XOnlineStorageDownloadToMemoryGetResults",
+            &[h, OUTPUT, OUTPUT + 4, OUTPUT + 8, OUTPUT + 12, OUTPUT + 20]
+        ),
+        STORAGE_FILE_NOT_FOUND
+    );
+    assert_eq!(w.bytes(OUTPUT, 32), vec![0xdd; 32]);
+    assert_eq!(
+        w.call(
+            "XOnlineStorageGetProgress",
+            &[h, OUTPUT, OUTPUT + 4, OUTPUT + 12]
+        ),
+        STORAGE_FILE_NOT_FOUND
+    );
+    assert_eq!(w.bytes(OUTPUT, 20), vec![0; 20]);
+    assert_eq!(w.bytes(OUTPUT + 20, 4), vec![0xdd; 4]);
+    assert_eq!(w.call("XOnlineTaskClose", &[h]), 0);
+    assert_eq!(
+        w.call(
+            "XOnlineStorageDownloadToMemoryGetResults",
+            &[h, 0, 0, 0, 0, 0]
+        ),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(
+        w.call("XOnlineStorageGetProgress", &[h, 0, 0, 0]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn storage_package_reads_and_both_upload_forms_fail_cleanly_in_tasks() {
+    let mut w = World::new();
+    let logon = w.logon();
+    assert_eq!(storage_path(&mut w, 5, "settings.bin", 256, DATA), 0);
+    let cases = [
+        (
+            "XOnlineStorageDownload",
+            vec![5, 0, DATA, 0, 0, 0, OUTPUT],
+            STORAGE_FILE_NOT_FOUND,
+        ),
+        (
+            "XOnlineStorageUploadByServerPath",
+            vec![5, 0, DATA, 0, 0, 0, 0, 0, OUTPUT],
+            STORAGE_ACCESS_DENIED,
+        ),
+        (
+            "XOnlineStorageUploadFromMemory",
+            vec![5, 0, DATA, 0, 0, USERS, 16, 0, 0, OUTPUT],
+            STORAGE_ACCESS_DENIED,
+        ),
+    ];
+    for (name, args, status) in cases {
+        assert_eq!(w.call(name, &args), 0);
+        let task = w.u32(OUTPUT);
+        assert_eq!(w.call("XOnlineTaskContinue", &[task]), status);
+        assert_eq!(
+            w.call("XOnlineStorageGetProgress", &[task, 0, 0, 0]),
+            status
+        );
+        assert_eq!(
+            w.call(
+                "XOnlineStorageDownloadToMemoryGetResults",
+                &[task, 0, 0, 0, 0, 0]
+            ),
+            INVALID_ARGUMENT
+        );
+        assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    }
+    assert_eq!(w.call("XOnlineTaskContinue", &[logon]), CONNECTED);
+    assert_eq!(
+        w.call(
+            "XOnlineStorageDownloadToMemory",
+            &[5, 0, DATA, USERS, 16, 0, 0, OUTPUT]
+        ),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineCleanup", &[]), 0);
+    w.startup();
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
 }

@@ -550,8 +550,8 @@ stable user array, task handles and QoS headers. Tokens advance without reuse,
 even after cleanup, so stale handles cannot name later tasks. Exhaustion returns
 out-of-memory rather than growing indefinitely.
 
-All 130 named boundary targets are registered when enabled: 84 have implemented
-results, including deliberate empty views or failed tasks, and 46 remain named
+All 130 named boundary targets are registered when enabled: 91 have implemented
+results, including deliberate empty views or failed tasks, and 39 remain named
 stops. The menu audit and remaining-stop list appear below. A stop reports
 `unimplemented Live API <name>` before reading arguments or executing the linked
 library. There is no silent fallback to XONLINES. Tests establish these API and
@@ -830,10 +830,10 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling uses the server-backed title inbox above, or count 0 without a server. |
 
-These 46 entries still stop by API name because their backend behavior is not
-implemented. They are explicit actions or results used after those actions;
-ordinary empty-menu polling does not need them. Prefixes in the table are part
-of each listed API name.
+These 39 entries still stop by API name because their backend behavior is not
+implemented. Their menu/game fallbacks are a separate follow-up slice; the
+storage entries below no longer stop. Prefixes in the table are part of each
+listed API name.
 
 | Prefix | Remaining suffixes |
 |---|---|
@@ -845,7 +845,6 @@ of each listed API name.
 | `XOnlineTeam` | `Create`, `Delete`, `MemberSetProperties`, `MemberRemove`, `MemberRecruit`, `MemberRecruitByName`, `MemberAnswerRecruit` |
 | `XOnlineMessage` | `Create`, `Destroy`, `SetProperty`, `Send` |
 | `XOnlineStat` | `Write`, `WriteGetResult` |
-| `XOnlineStorage` | `CreateServerPath`, `Download`, `DownloadToMemory`, `DownloadToMemoryGetResults`, `UploadByServerPath`, `UploadFromMemory`, `GetProgress` |
 | `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
 | `XNet` | `TsAddrToInAddr` |
 
@@ -853,3 +852,48 @@ Matchmaking/session registration, invitations, clans, feedback storage and remot
 friend presence are future work. The HTTP worker does not turn these into fake
 successful operations. The current proof covers the API boundary and local host
 transport; it does not establish an end-to-end online match.
+
+## Client HLE: legacy storage fallback
+
+The signed-in resource manager `0x0008e240`, called each network update by
+`0x0008df50`, also fetches per-user/title storage. This is separate from the
+MOTD/hopper attachment path. The observed chain is `0x0008e3f5` → `0x000b4450`
+→ `0x000b4120` → StorageCreateServerPath, then `0x000b4511` →
+StorageDownloadToMemory. There is no StorageEnumerate call in the verified
+boundary inventory.
+
+StorageCreateServerPath implements the retail formatter at `0x003c79f2`, without
+any network request. It needs XOnlineStartup but not a signed-in user. The three
+supported facilities produce these UTF-16 paths, where `title` is lowercase
+8-digit hex (`4d530064`) and user/team IDs are lowercase 16-digit hex:
+
+| Facility | Path |
+|---|---|
+| 3: teams | `//tteam.{title}/u:{team}/{title}/{user}/{filename}` |
+| 4: per-title | `//title.{title}/t:{title}/{filename}` |
+| 5: per-user/title | `//tuser.{title}/u:{user}/{title}/{filename}` |
+
+The capacity and returned required size count UTF-16 code units including the
+terminator, not bytes. NULL output supports a size query. Insufficient capacity
+returns `0x8007007a` and updates the required count. If the buffer can hold the
+prefix and terminator, retail writes that prefix before checking whether the
+filename fits; the HLE preserves this behavior. Other facilities return
+STORAGE_INVALID_FACILITY (`0x8015c009`) without changing outputs. The formatter
+does not enforce the public 256-character path limit.
+
+StorageDownload and DownloadToMemory return tasks that complete with
+STORAGE_FILE_NOT_FOUND (`0x8015c004`); no receive bytes are written. The memory
+result getter returns the same error and leaves its optional outputs untouched.
+UploadByServerPath and UploadFromMemory return tasks that complete with
+STORAGE_ACCESS_DENIED (`0x8015c002`). No upload is claimed to be saved locally or
+on the server. GetProgress reports zero bytes and zero percent with the task's
+error. Close and cleanup invalidate these handles. Guest paths never reach the
+host filesystem.
+
+These are errors the title already classifies. `0x0006c4a0` maps FILE_NOT_FOUND
+to resource result 5 and ACCESS_DENIED to result 3; `0x0008e0f0` releases the
+resource/task after completion. The synchronous starter wrappers also handle
+negative HRESULTs. Real profile storage remains future work. Tests drive every
+storage entry through the synthetic guest ABI, including split 64-bit IDs,
+exact-size buffers, Unicode, size queries, prefix-only overflow, untouched result
+buffers and task cleanup.

@@ -15,6 +15,7 @@ mod network_config;
 mod qos;
 mod qos_memory;
 mod state;
+mod storage_api;
 mod ui;
 pub use network_config::NetworkConfig;
 
@@ -33,6 +34,11 @@ pub const PHY_LINK: u32 = 0x0d;
 
 pub mod status {
     pub const OK: u32 = 0;
+    pub const INSUFFICIENT_BUFFER: u32 = 0x8007_007a;
+    pub const STORAGE_FILE_NOT_FOUND: u32 = 0x8015_c004;
+    pub const STORAGE_ACCESS_DENIED: u32 = 0x8015_c002;
+    pub const STORAGE_INVALID_PATH: u32 = 0x8015_c008;
+    pub const STORAGE_INVALID_FACILITY: u32 = 0x8015_c009;
     pub const NO_ACCEPTED_INVITE: u32 = 0x8000_4005; // E_FAIL; S_FALSE would be an invite to Halo.
     pub const CANNOT_ACCESS_SERVICE: u32 = 0x8015_1001;
     pub const SERVERS_BUSY: u32 = 0x8015_1003;

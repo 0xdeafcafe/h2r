@@ -141,6 +141,7 @@ pub(crate) struct State {
     service: Option<Service>,
     messages: Messages,
     menu: crate::ui::Menu,
+    files: crate::storage_api::Files,
     user_ids: [u64; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
@@ -161,6 +162,7 @@ impl State {
             service,
             messages: Messages::default(),
             menu: crate::ui::Menu::default(),
+            files: crate::storage_api::Files::default(),
             user_ids: [0; 4],
             state_flags: [1; 4],
             game_id: None,
@@ -210,6 +212,7 @@ impl State {
         self.game_id = None;
         self.messages.clear();
         self.menu.clear();
+        self.files.clear();
         if let Some(base) = self.storage.base {
             m.write_bytes(base, &[0; USERS_SIZE], 1)?;
         }
@@ -360,6 +363,23 @@ impl State {
     }
     pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest) -> Result<u32> {
         use Operation::*;
+        if let Storage(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if op.starts_task() {
+                if !self.connected() {
+                    return Ok(NO_SESSION);
+                }
+                if a[1] >= 4 {
+                    return Ok(INVALID_ARGUMENT);
+                }
+                if self.user_ids[a[1] as usize] == 0 {
+                    return Ok(NO_USER);
+                }
+            }
+            return self.files.invoke(op, a, m, &mut self.storage);
+        }
         if let Ui(op) = op {
             let connected = self.connected();
             return self.menu.invoke(
@@ -562,6 +582,9 @@ impl State {
                 Ok(OK)
             }
             Continue => {
+                if let Some(status) = self.files.poll(a[0]) {
+                    return Ok(status);
+                }
                 if let Some(status) = self.menu.poll(a[0]) {
                     return Ok(status);
                 }
@@ -692,6 +715,9 @@ impl State {
                 Ok(OK)
             }
             Close => {
+                if self.files.close(a[0]) {
+                    return Ok(OK);
+                }
                 if self.menu.close(a[0]) {
                     return Ok(OK);
                 }
