@@ -377,6 +377,58 @@ pub fn validate_member(p: &MemberProperties) -> Result<()> {
     }
 }
 
+/// Validate a remote cache before constructing fixed-size SDK records.
+pub fn validate_team(t: &Team) -> std::result::Result<(), TeamError> {
+    validate_properties(&t.properties)?;
+    if crate::sign::parse_time(&t.created_at).is_none()
+        || t.members.keys().any(|id| t.recruits.contains_key(id))
+    {
+        return Err(TeamError::Invalid);
+    }
+
+    if t.deleted
+        || t.id.0 == 0
+        || t.max_members == 0
+        || t.max_members > 100
+        || t.members.len() + t.recruits.len() > t.max_members as usize
+    {
+        return Err(TeamError::Invalid);
+    }
+    if t.members
+        .get(&t.creator)
+        .is_none_or(|m| m.properties.privileges != LEADER)
+    {
+        return Err(TeamError::NoAdmin);
+    }
+    for (uid, m) in t.members.iter().chain(t.recruits.iter()) {
+        validate_member(&m.properties)?;
+        if crate::sign::parse_time(&m.joined_at).is_none() {
+            return Err(TeamError::Invalid);
+        }
+
+        if *uid != m.identity.xuid
+            || uid.0 == 0
+            || m.identity.gamertag.is_empty()
+            || m.identity.gamertag.len() > 15
+            || m.identity.gamertag.contains('\0')
+        {
+            return Err(TeamError::Invalid);
+        }
+        if *uid != t.creator && m.properties.privileges == LEADER {
+            return Err(TeamError::NoAdmin);
+        }
+    }
+    Ok(())
+}
+
+pub fn random_id() -> std::result::Result<Xuid, TeamError> {
+    let mut bytes = [0; 8];
+    getrandom::fill(&mut bytes).map_err(|_| TeamError::Invalid)?;
+    Ok(Xuid(
+        (u64::from_le_bytes(bytes) & 0x0000ffffffffffff) | 0x000a000000000000,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -396,6 +448,37 @@ mod tests {
             member: MemberProperties::default(),
             max_members: 100,
         }
+    }
+    #[test]
+    fn remote_records_reject_oversized_data_inconsistent_rosters_and_invalid_times() {
+        let mut store = Store::default();
+        store
+            .apply(&user(1), &create(10, "Clan"), "2026-01-01T00:00:00Z")
+            .unwrap();
+        let team = store.get(Xuid(10)).unwrap().clone();
+        assert_eq!(validate_team(&team), Ok(()));
+        let mut bad = team.clone();
+        bad.properties.data = vec![0; 101];
+        assert_eq!(validate_team(&bad), Err(TeamError::Invalid));
+        let mut bad = team.clone();
+        bad.recruits.insert(Xuid(1), bad.members[&Xuid(1)].clone());
+        assert_eq!(validate_team(&bad), Err(TeamError::Invalid));
+        let mut bad = team.clone();
+        bad.members.get_mut(&Xuid(1)).unwrap().identity.xuid = Xuid(2);
+        assert_eq!(validate_team(&bad), Err(TeamError::Invalid));
+        let mut bad = team.clone();
+        bad.created_at = "invalid".into();
+        assert_eq!(validate_team(&bad), Err(TeamError::Invalid));
+        let mut bad = team.clone();
+        bad.members.clear();
+        assert_eq!(validate_team(&bad), Err(TeamError::NoAdmin));
+        let mut bad = team.clone();
+        bad.deleted = true;
+        assert_eq!(validate_team(&bad), Err(TeamError::Invalid));
+        let mut bad = team;
+        bad.members.get_mut(&Xuid(1)).unwrap().identity.gamertag = "x".repeat(16);
+        assert_eq!(validate_team(&bad), Err(TeamError::Invalid));
+        assert_ne!(random_id().unwrap().0, 0);
     }
     #[test]
     fn permissions_pending_members_and_the_unique_leader_survive_serialization() {

@@ -55,7 +55,9 @@ read; writes need a `titles.write` token (operator or admin).
 ### `GET /v1/titles/{title}/motd`
 
 The published `message_of_the_day.dat` as its editable fields, 404 until
-one is published:
+one is published (the embedded server publishes a default at start, see
+below). Public on a public server: the dashboard shows the header and the
+stats site's "Did You Know?" box cycles the messages from this read.
 
 ```json
 { "header": "Halo 2 is back", "messages": ["Welcome, Spartan.", "…"] }
@@ -66,7 +68,41 @@ one is published:
 The same shape, admin-only. The server writes the same text into all nine
 language slots (as `motd set` does) and answers
 `{"published": {name, sha256, size}, "motd": …}`. Limits as the format
-requires: 1..=32 messages, at most 255 UTF-16 units each.
+requires: 1..=32 messages, at most 255 UTF-16 units each, and a built file
+of at most 18,842 bytes (`0x499a`, the game's one attachment buffer,
+[live-motd-fetch.md §5](live-motd-fetch.md); a larger file would fail the
+game's download and show nothing). A refused PUT leaves the published file
+as it was.
+
+### When the game shows it
+
+The game fetches the MOTD once per Xbox Live sign-in
+([live-motd.md §2.1, §4](live-motd.md)): its message manager enumerates
+the title messages after sign-in, downloads the attachment, and only then
+sets the flag the two screens check. The HLE fetches the current bytes on
+every details/download call, but the title does not repeat that fetch
+mid-session (not observed; no screen re-arms it), so **a MOTD published
+while the game is signed in shows after the next sign-in** (sign out and
+back in, or restart the game). The editor says so after a publish. The
+Live main menu shows the header once per screen visit; the matchmaking
+screen shows a random message, re-picked every 15 s.
+
+### The default MOTD and keeping what you publish
+
+`h2 play --live` without Postgres keeps its log in the live data directory
+(`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`;
+`crates/live-server/src/filestore.rs`), so accounts, friends, games and
+published title files survive a restart. Before this, that case used the
+in-memory store and lost every publish on exit, and since the game reads
+the MOTD only at sign-in, a MOTD published mid-session could never be seen.
+Only if that directory is held by another running server does it fall
+back to memory (with a warning).
+
+When no MOTD has ever been published, the embedded server (on Postgres or
+the file store) publishes a default one at start
+(`crates/live-server/src/default_motd.rs`): a short header and 21 original
+"Did you know?" lines and gameplay tips. It never replaces a published one;
+edit it like any other.
 
 ### `GET /v1/titles/{title}/hopper`
 
@@ -161,7 +197,8 @@ browser account is an admin (the `admin` field above). Three sections:
 
 - **Message of the Day** — the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
-  form (255 UTF-16 units, 32 messages).
+  form (255 UTF-16 units, 32 messages). After a publish it notes that the
+  game picks the new text up at its next sign-in.
 - **Playlists** — the 16 hoppers: pick one, edit its title and
   description, and per entry its map (a picker of the game's maps, by
   name, when the server has a catalog) and weight; each entry shows its

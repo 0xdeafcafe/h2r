@@ -53,6 +53,8 @@ struct Cache {
 /// file data. docs/storage.md "Write metadata".
 pub const METADATA_STALE: Duration = Duration::from_secs(1);
 /// How often the flusher thread looks for stale write metadata.
+/// Writable host files kept open at once (`HostBackend::handles`).
+const MAX_HANDLES: usize = 8;
 const FLUSH_TICK: Duration = Duration::from_millis(250);
 
 /// Basic info that writes and truncations changed (write and change times,
@@ -211,6 +213,12 @@ pub struct HostBackend {
     serial: u32,
     cache: RefCell<Cache>,
     written: Arc<Written>,
+    /// Files kept open for writing between `write_at`/`set_len` calls, most
+    /// recent last. Opening and closing the host file per guest write made
+    /// close(2) a large share of the game thread while the game copies maps
+    /// to its cache. Anything that can change which file a host path names
+    /// (create, remove, format) drops them, and so do flush and cleanup.
+    handles: Vec<(PathBuf, File)>,
     #[cfg(test)]
     next_create_sync_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
@@ -307,6 +315,7 @@ impl HostBackend {
             label: "Xbox Data".into(),
             serial: 1,
             cache: RefCell::new(Cache::default()),
+            handles: Vec::new(),
             #[cfg(test)]
             next_create_sync_error: std::cell::Cell::new(None),
             #[cfg(test)]
@@ -586,6 +595,23 @@ impl HostBackend {
             ),
         })
     }
+    /// An open writable handle for `host`, reused across calls.
+    fn handle(&mut self, host: &Path) -> Result<&File> {
+        if let Some(i) = self.handles.iter().position(|(p, _)| p == host) {
+            let entry = self.handles.remove(i);
+            self.handles.push(entry);
+        } else {
+            let file = OpenOptions::new().write(true).open(host)?;
+            if self.handles.len() >= MAX_HANDLES {
+                self.handles.remove(0);
+            }
+            self.handles.push((host.to_path_buf(), file));
+        }
+        Ok(&self.handles.last().expect("just pushed").1)
+    }
+    fn drop_handle(&mut self, host: &Path) {
+        self.handles.retain(|(p, _)| p != host);
+    }
     fn mutable_file(&self, path: &str) -> Result<(PathBuf, Metadata)> {
         let host = self.resolve(path, false)?;
         let info = self.metadata(path, &host)?;
@@ -736,6 +762,7 @@ impl Backend for HostBackend {
         Ok(read)
     }
     fn create(&mut self, path: &str, directory: bool, attributes: u32) -> Result<()> {
+        self.handles.clear();
         if attributes & !(FATX_ATTRIBUTES | ATTR_NORMAL) != 0 {
             return Err(Error::InvalidParameter);
         }
@@ -855,9 +882,11 @@ impl Backend for HostBackend {
             .ok_or(Error::FileTooLarge)?;
         self.used_bytes()?;
         self.check_growth(info.allocation_size, end.max(info.end_of_file))?;
-        let mut file = OpenOptions::new().write(true).open(&host)?;
-        file.seek(SeekFrom::Start(offset))?;
-        let written = file.write(buffer)?;
+        let written = {
+            let mut file = self.handle(&host)?;
+            file.seek(SeekFrom::Start(offset))?;
+            file.write(buffer)?
+        };
         if written != 0 {
             self.cache
                 .borrow_mut()
@@ -878,7 +907,7 @@ impl Backend for HostBackend {
         let (host, info) = self.mutable_file(path)?;
         self.used_bytes()?;
         self.check_growth(info.allocation_size, size)?;
-        OpenOptions::new().write(true).open(&host)?.set_len(size)?;
+        self.handle(&host)?.set_len(size)?;
         self.cache
             .borrow_mut()
             .reservations
@@ -912,6 +941,7 @@ impl Backend for HostBackend {
     /// ancestor path is never consulted.
     #[cfg(unix)]
     fn format(&mut self) -> Result<()> {
+        self.handles.clear();
         // Held throughout so no flusher stores a record mid-format. A
         // format that fails partway keeps the pending metadata of the files
         // that survive it and drops that of the files it removed, so no
@@ -973,9 +1003,11 @@ impl Backend for HostBackend {
     }
     #[cfg(not(unix))]
     fn format(&mut self) -> Result<()> {
+        self.handles.clear();
         Err(Error::NotSupported)
     }
     fn remove(&mut self, path: &str) -> Result<()> {
+        self.handles.clear();
         if path.is_empty() {
             return Err(Error::AccessDenied);
         }
@@ -1031,6 +1063,7 @@ impl Backend for HostBackend {
     fn flush(&mut self, path: &str) -> Result<()> {
         self.flush_metadata(path)?;
         let host = self.resolve(path, false)?;
+        self.drop_handle(&host);
         File::open(host)?.sync_all()?;
         #[cfg(test)]
         {
@@ -1199,6 +1232,44 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn kept_handles_never_write_into_a_replaced_file() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        let read = |b: &mut HostBackend, path: &str, n: usize| {
+            let mut v = vec![0; n];
+            let got = b.read_at(path, 0, &mut v).unwrap();
+            v.truncate(got);
+            v
+        };
+        backend.create("a", false, 0).unwrap();
+        backend.write_at("a", 0, b"one").unwrap();
+        backend.write_at("a", 3, b"two").unwrap();
+        assert_eq!(read(&mut backend, "a", 16), b"onetwo");
+        // Removed and created again at the same path: a new, empty file.
+        backend.remove("a").unwrap();
+        backend.create("a", false, 0).unwrap();
+        backend.write_at("a", 0, b"new").unwrap();
+        assert_eq!(read(&mut backend, "a", 16), b"new");
+        backend.set_len("a", 2).unwrap();
+        assert_eq!(read(&mut backend, "a", 16), b"ne");
+        // More files than kept handles: every write still lands.
+        for i in 0..2 * MAX_HANDLES {
+            let name = format!("f{i}");
+            backend.create(&name, false, 0).unwrap();
+            backend.write_at(&name, 0, name.as_bytes()).unwrap();
+        }
+        assert!(backend.handles.len() <= MAX_HANDLES);
+        for i in 0..2 * MAX_HANDLES {
+            let name = format!("f{i}");
+            backend.write_at(&name, name.len() as u64, b"!").unwrap();
+            assert_eq!(read(&mut backend, &name, 16), format!("{name}!").as_bytes());
+        }
+        // A flush lets go of the file.
+        backend.flush("a").unwrap();
+        assert!(!backend.handles.iter().any(|(p, _)| p.ends_with("a")));
     }
 
     #[test]

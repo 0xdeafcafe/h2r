@@ -1,6 +1,6 @@
 //! `h2 play --live`: the game signed in to a Live service. Either an
 //! embedded server on a background runtime (Postgres from `$H2_LIVE_DB`,
-//! else the in-memory store) or `--live-server URL`; an account for that
+//! else the file store in `server/log`) or `--live-server URL`; an account for that
 //! server is found in, or added to, the local accounts file, and the game
 //! is booted with `boot::LiveConfig` pointing at it (docs/live.md).
 

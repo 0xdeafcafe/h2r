@@ -45,8 +45,9 @@ branch, then offers a restart (`h2 play --follow --help`).
 
 --live signs the game in to Xbox Live (docs/live.md): it starts a service in
 the process (Postgres from $H2_LIVE_DB or postgres://localhost/h2live, made if
-missing; else in memory) on 127.0.0.1 and a free port, or --live-listen ADDR,
-serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
+missing; else a log in the live data directory's server/log, so accounts,
+friends, games and the MOTD are kept) on 127.0.0.1 and a free port, or
+--live-listen ADDR, serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
 running service instead. The account is --gamertag NAME, or one named after
 your user; either is made on the server and kept in accounts.json if needed.
 

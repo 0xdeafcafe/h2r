@@ -2,7 +2,8 @@
 //! docs/live-security.md): signed events in an append-only Postgres log,
 //! projected into memory, served over HTTP and WebSocket.
 //!
-//! - [`store`]: the log ([`pg::PostgresStore`], [`store::MemoryStore`]).
+//! - [`store`]: the log ([`pg::PostgresStore`], [`filestore::FileStore`],
+//!   [`store::MemoryStore`]).
 //! - [`dispatch`]: the one tailer, feeding [`dispatch::Subscriber`]s.
 //! - [`model`]: the read model, a subscriber replayed from 0 at startup.
 //! - [`app`]: authentication, write rules, operations.
@@ -15,7 +16,9 @@
 pub mod admin;
 pub mod app;
 pub mod art;
+pub mod default_motd;
 pub mod dispatch;
+pub mod filestore;
 pub mod games;
 pub mod guard;
 pub mod http;
@@ -25,6 +28,7 @@ pub mod local_signin;
 pub mod model;
 pub mod pg;
 pub mod store;
+mod teams;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -170,7 +174,7 @@ pub async fn serve(config: Config) -> Result<()> {
 pub struct Embedded {
     /// `http://127.0.0.1:<port>`.
     pub url: String,
-    /// `postgres` or `memory`.
+    /// `postgres`, `file` or `memory`.
     pub store: &'static str,
     pub live: Arc<Live>,
     runtime: Option<tokio::runtime::Runtime>,
@@ -184,13 +188,26 @@ impl Drop for Embedded {
     }
 }
 
-/// The `db` of [`start_embedded`] that skips Postgres.
+/// The `db` of [`start_embedded`] that skips Postgres: a bare in-memory
+/// store, nothing kept and no default MOTD (for tests).
 pub const MEMORY_DB: &str = "memory";
+/// The `db` of [`start_embedded`] that skips Postgres for the file store
+/// in the data directory ([`file_store_dir`]).
+pub const FILE_DB: &str = "file";
+
+/// Where [`start_embedded`] keeps its log without Postgres.
+pub fn file_store_dir(data_dir: &std::path::Path) -> PathBuf {
+    data_dir.join("log")
+}
 
 /// Starts a server on `listen` (port 0: a free one). Postgres at `db` if it
-/// is reachable (the database is created if missing), else the in-memory
-/// store, with a one-line warning: nothing then survives the process.
-/// [`MEMORY_DB`] asks for the in-memory store without trying Postgres.
+/// is reachable (the database is created if missing), else the file store
+/// in `data_dir` ([`filestore`]), so accounts, friends, title files and
+/// games survive a restart; the in-memory store only if that cannot open
+/// (another server holds it), with a warning. [`MEMORY_DB`] and
+/// [`FILE_DB`] pick a store without trying Postgres. Unless the store is
+/// the in-memory one, a default message of the day ([`default_motd`]) is
+/// published if none ever was.
 pub fn start_embedded(
     db: &str,
     listen: SocketAddr,
@@ -206,17 +223,38 @@ pub fn start_embedded(
         .context("starting the live server's runtime")?;
     let identity = ServerIdentity::open(data_dir, None)?;
     let (live, store, listener) = runtime.block_on(async {
+        let file_dir = file_store_dir(data_dir);
         let (store, kind): (Arc<dyn store::EventStore>, _) = match db {
             MEMORY_DB => (Arc::new(store::MemoryStore::new()), "memory"),
+            FILE_DB => (
+                Arc::new(
+                    filestore::FileStore::open(&file_dir)
+                        .await
+                        .with_context(|| format!("opening {}", file_dir.display()))?,
+                ),
+                "file",
+            ),
             _ => match pg::PostgresStore::connect_creating(db).await {
                 Ok(pg) => (Arc::new(pg), "postgres"),
-                Err(e) => {
-                    eprintln!(
-                        "live: {}; using an in-memory store (nothing is kept after exit)",
-                        db_error(db, &e)
-                    );
-                    (Arc::new(store::MemoryStore::new()), "memory")
-                }
+                Err(e) => match filestore::FileStore::open(&file_dir).await {
+                    Ok(file) => {
+                        eprintln!(
+                            "live: {}; keeping the log in {}",
+                            db_error(db, &e),
+                            file_dir.display()
+                        );
+                        (Arc::new(file), "file")
+                    }
+                    Err(fe) => {
+                        eprintln!(
+                            "live: {}; {} did not open ({fe}); using an in-memory store \
+                             (nothing is kept after exit)",
+                            db_error(db, &e),
+                            file_dir.display()
+                        );
+                        (Arc::new(store::MemoryStore::new()), "memory")
+                    }
+                },
             },
         };
         let policy = Policy {
@@ -224,6 +262,13 @@ pub fn start_embedded(
             ..Policy::default()
         };
         let live = Live::start(store, identity, policy).await?;
+        if kind != "memory" {
+            match default_motd::ensure(&live).await {
+                Ok(true) => eprintln!("live: published the default message of the day"),
+                Ok(false) => {}
+                Err(e) => eprintln!("live: {e:#}"),
+            }
+        }
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .with_context(|| format!("binding {listen}"))?;

@@ -131,6 +131,7 @@ pub struct State {
     /// Friendship relations per account (docs/live-api.md, Friends). Only
     /// accounts that ever sent or received a request have an entry.
     pub friends: HashMap<Xuid, Relations>,
+    pub teams: live_proto::team::Store,
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
@@ -388,6 +389,10 @@ impl Model {
         let mut s = self.state.write().unwrap();
         if b.stream.starts_with("game-") {
             Self::apply_game(&mut s, e, at);
+            return;
+        }
+        if live_proto::team::Action::is_kind(&b.kind) {
+            crate::teams::project(&mut s, e);
             return;
         }
         match b.kind.as_str() {

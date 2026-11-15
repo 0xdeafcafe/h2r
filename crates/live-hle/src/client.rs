@@ -64,6 +64,7 @@ pub(crate) enum Reply {
     Logon { files: Vec<File>, files_error: u32 },
     File(File),
     Done,
+    Teams(Vec<live_proto::team::Team>),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -115,11 +116,18 @@ impl Default for Presence {
         }
     }
 }
+#[derive(Debug, Clone)]
+pub(crate) enum TeamRequest {
+    User(Xuid),
+    Team(Xuid),
+    Change(live_proto::team::Action),
+}
 enum Work {
     Logon(Vec<Account>),
     Change(Vec<Account>),
     Presence { user: u64, value: Presence },
     File(&'static str, u32),
+    Teams { user: u64, request: TeamRequest },
     Wake,
 }
 struct Command {
@@ -212,6 +220,9 @@ impl Service {
     pub fn file(&self, s: &Session, name: &'static str, id: u32) -> Result<Pending, u32> {
         self.submit(s, Work::File(name, id))
     }
+    pub fn teams(&self, s: &Session, user: u64, request: TeamRequest) -> Result<Pending, u32> {
+        self.submit(s, Work::Teams { user, request })
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -250,10 +261,12 @@ enum Error {
     Transport,
     Protocol,
     TooLarge,
+    Team(live_proto::team::TeamError),
 }
 impl Error {
     fn result(self) -> u32 {
         match self {
+            Self::Team(error) => error.hresult(),
             Self::Status(401 | 403 | 404) => INVALID_USER,
             Self::Status(429 | 503) => SERVERS_BUSY,
             Self::TooLarge => BUFFER_TOO_SMALL,
@@ -276,7 +289,15 @@ impl Worker {
             None => req.call(),
         }
         .map_err(|e| match e {
-            ureq::Error::Status(code, _) => Error::Status(code),
+            ureq::Error::Status(code, response) => {
+                let mut data = Vec::new();
+                let _ = response.into_reader().take(4096).read_to_end(&mut data);
+                let team = serde_json::from_slice::<serde_json::Value>(&data)
+                    .ok()
+                    .and_then(|v| v.get("team_error").cloned())
+                    .and_then(|v| serde_json::from_value(v).ok());
+                team.map(Error::Team).unwrap_or(Error::Status(code))
+            }
             _ => Error::Transport,
         })?;
         let mut data = Vec::new();
@@ -436,6 +457,113 @@ impl Worker {
         }
         (files, error)
     }
+    fn team_json<T: DeserializeOwned>(&self, user: &Identity, path: &str) -> Result<T, Error> {
+        serde_json::from_slice(&self.response(
+            self.request("GET", path, user, lxm::READ),
+            None,
+            MAX_FILE,
+        )?)
+        .map_err(|_| Error::Protocol)
+    }
+    fn teams_request(
+        &self,
+        user: &Identity,
+        request: TeamRequest,
+    ) -> Result<Vec<live_proto::team::Team>, Error> {
+        use live_proto::team::{Action, Identity as TeamIdentity};
+        let teams = match request {
+            TeamRequest::User(uid) => {
+                let page: live_proto::Page<live_proto::team::Team> =
+                    self.team_json(user, &format!("/accounts/by-xuid/{uid}/teams"))?;
+                if page.items.len() > 8
+                    || page.next.is_some()
+                    || page
+                        .items
+                        .iter()
+                        .any(|t| !t.members.contains_key(&uid) && !t.recruits.contains_key(&uid))
+                    || page
+                        .items
+                        .iter()
+                        .map(|t| t.id)
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != page.items.len()
+                {
+                    return Err(Error::Protocol);
+                }
+                page.items
+            }
+            TeamRequest::Team(uid) => self.fetch_team(user, uid)?,
+            TeamRequest::Change(mut action) => {
+                if let Action::Recruit { target, .. } = &mut action {
+                    if target.xuid.0 == 0 {
+                        let part = path_part(&target.gamertag);
+                        let account: live_proto::AccountDetail = self
+                            .team_json(user, &format!("/accounts/{part}"))
+                            .map_err(|e| {
+                                if matches!(e, Error::Status(404)) {
+                                    Error::Team(live_proto::team::TeamError::UserNotFound)
+                                } else {
+                                    e
+                                }
+                            })?;
+                        *target = TeamIdentity {
+                            xuid: account.summary.xuid,
+                            gamertag: account.summary.gamertag.to_string(),
+                        };
+                    } else {
+                        *target = self
+                            .team_json(user, &format!("/accounts/by-xuid/{}", target.xuid))
+                            .map_err(|e| {
+                                if matches!(e, Error::Status(404)) {
+                                    Error::Team(live_proto::team::TeamError::UserNotFound)
+                                } else {
+                                    e
+                                }
+                            })?;
+                    }
+                }
+                let body = EventBody::new(
+                    &user.key,
+                    &self.author(user),
+                    &format!("team-{}", action.id()),
+                    action.kind(),
+                    serde_json::to_value(&action).map_err(|_| Error::Protocol)?,
+                    time::OffsetDateTime::now_utc(),
+                )
+                .sign(&user.key);
+                self.response(
+                    self.request("POST", "/events", user, lxm::EVENTS_WRITE)
+                        .set("content-type", "application/jose"),
+                    Some(&body),
+                    MAX_FILE,
+                )?;
+                if matches!(action, Action::Delete { .. }) {
+                    vec![]
+                } else {
+                    self.fetch_team(user, action.id())?
+                }
+            }
+        };
+        if teams
+            .iter()
+            .any(|t| live_proto::team::validate_team(t).is_err())
+        {
+            return Err(Error::Protocol);
+        }
+        Ok(teams)
+    }
+    fn fetch_team(&self, user: &Identity, id: Xuid) -> Result<Vec<live_proto::team::Team>, Error> {
+        #[derive(serde::Deserialize)]
+        struct Detail {
+            team: live_proto::team::Team,
+        }
+        let reply: Detail = self.team_json(user, &format!("/teams/{id}"))?;
+        if reply.team.id != id {
+            return Err(Error::Protocol);
+        }
+        Ok(vec![reply.team])
+    }
     fn run(&mut self, c: &Command) -> Result<Reply, u32> {
         if matches!(c.work, Work::Wake) {
             self.cancelled();
@@ -575,6 +703,17 @@ impl Worker {
                         _ => e.result(),
                     })
             }
+            Work::Teams { user, request } => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|s| s.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.get(user).ok_or(NO_USER)?;
+                self.teams_request(user, request.clone())
+                    .map(Reply::Teams)
+                    .map_err(Error::result)
+            }
             Work::Wake => Ok(Reply::Done),
         }
     }
@@ -613,4 +752,17 @@ impl Worker {
             }
         }
     }
+}
+
+fn path_part(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char)
+        } else {
+            use std::fmt::Write;
+            let _ = write!(&mut out, "%{b:02X}");
+        }
+    }
+    out
 }
