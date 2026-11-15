@@ -139,6 +139,13 @@ pub fn start(
             account.gamertag, account.xuid, client.discovery.id
         );
     }
+    // The embedded server is the owner's own machine: the account we are
+    // about to play as is an admin for this server's lifetime.
+    if let Some(server) = embedded.as_ref() {
+        server
+            .live
+            .grant_admin_runtime(account.xuid, account.gamertag.as_str());
+    }
     live_accounts::save(&places.session_accounts, std::slice::from_ref(&account))?;
     Ok(Session {
         config: boot::LiveConfig {

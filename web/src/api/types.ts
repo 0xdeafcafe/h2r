@@ -112,7 +112,7 @@ export type StreamMessage =
  *  `position` the log head when it was read. */
 export interface ListResponse<T> { items: T[]; next: string | null; position: number }
 
-export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean }
+export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean; admin?: boolean }
 
 export interface PresenceEntry { xuid: Xuid; gamertag: string; state: string; game_id?: GameId | null; since: string }
 

@@ -143,6 +143,19 @@ fn api_router(live: Arc<Live>) -> Router {
             get(get_file).put(put_file),
         )
         .route("/v1/maps/{map}/outline", get(outline).put(put_outline))
+        .route(
+            "/v1/titles/{title}/motd",
+            get(crate::admin::get_motd).put(crate::admin::put_motd),
+        )
+        .route(
+            "/v1/titles/{title}/hopper",
+            get(crate::admin::get_hopper).put(crate::admin::put_hopper),
+        )
+        .route("/v1/admins", get(crate::admin::list_admins))
+        .route(
+            "/v1/admins/{gamertag}",
+            post(crate::admin::grant_admin).delete(crate::admin::revoke_admin),
+        )
         .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
     Router::new()
         .route("/healthz", get(healthz))
