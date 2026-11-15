@@ -746,6 +746,7 @@ dependencies = [
  "ir",
  "libloading",
  "lift",
+ "runtime",
  "x87",
  "xbe",
 ]

@@ -27,6 +27,16 @@ impl Runner {
         &self,
         cpu: &mut CpuAbi,
         ctx: &mut ExecCtx,
+        transfer: TransferAbi,
+    ) -> TransferAbi {
+        ctx.measure(crate::perf::Scope::Runner, |ctx| {
+            self.run_inner(cpu, ctx, transfer)
+        })
+    }
+    fn run_inner(
+        &self,
+        cpu: &mut CpuAbi,
+        ctx: &mut ExecCtx,
         mut transfer: TransferAbi,
     ) -> TransferAbi {
         let mut remaining = self.max_transfers;
@@ -76,6 +86,9 @@ impl Runner {
             // interrupt runs first, as a call that resumes this transfer
             // when it returns. Then a preempted context stops with
             // `transfer` still undispatched and resumes with it as is.
+            if let Some(p) = &mut ctx.profile {
+                p.runner_safe_points += 1;
+            }
             let reasons = ctx.take_preempt();
             if let Some(call) = crate::interrupt::deliver(cpu, ctx, transfer) {
                 ctx.defer_preempt(reasons);
@@ -106,6 +119,9 @@ impl Runner {
                 return TransferAbi::fault(ctx.emit(Event::TransferLimit));
             }
             remaining -= 1;
+            if let Some(p) = &mut ctx.profile {
+                p.transfers += 1;
+            }
             if transfer.kind == abi::RETURN
                 && let Some(continuation) = ctx.take_continuation(transfer.target_pc)
             {

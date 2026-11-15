@@ -74,6 +74,11 @@ pub fn cflags() -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
     v.extend(profile_flags(env("H2_OPT").as_deref(), env("H2_DEBUG").as_deref())?);
+    match env("H2_PERF").as_deref() {
+        None | Some("0") => {}
+        Some("1") => v.push("-DH2_PERF=1".into()),
+        Some(value) => return Err(err(format!("H2_PERF={value}: expected 0 or 1"))),
+    }
     Ok(v)
 }
 

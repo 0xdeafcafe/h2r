@@ -13,6 +13,7 @@ typedef struct H2Bridge {
     uint32_t (*rmw)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
     uint32_t (*xchg)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
     uint32_t (*cmpxchg)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
+    void (*profile)(ExecCtxOpaque *, uint64_t, uint64_t);
 } H2Bridge;
 
 static H2Bridge bridge;
@@ -25,7 +26,7 @@ size_t h2bridge_layout(uint32_t slot) {
     static const size_t layout[] = {
         offsetof(H2Bridge, read),  offsetof(H2Bridge, write), offsetof(H2Bridge, event),
         offsetof(H2Bridge, unsupported), offsetof(H2Bridge, rdtsc), offsetof(H2Bridge, rmw),
-        offsetof(H2Bridge, xchg),  offsetof(H2Bridge, cmpxchg), sizeof(H2Bridge),
+        offsetof(H2Bridge, xchg),  offsetof(H2Bridge, cmpxchg), offsetof(H2Bridge, profile), sizeof(H2Bridge),
     };
     return slot < sizeof layout / sizeof layout[0] ? layout[slot] : 0;
 }
@@ -66,3 +67,5 @@ uint32_t h2abi_v1_cmpxchg(CpuAbi *cpu, ExecCtxOpaque *c, uint32_t pc, uint32_t a
                           uint32_t replacement, uint32_t *out) {
     return bridge.cmpxchg(cpu, c, pc, addr, width, replacement, out);
 }
+
+void h2abi_v1_profile(ExecCtxOpaque *c, uint64_t loops, uint64_t x87) { bridge.profile(c, loops, x87); }

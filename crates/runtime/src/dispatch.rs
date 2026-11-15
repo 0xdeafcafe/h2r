@@ -133,6 +133,28 @@ impl Dispatch {
         self.register_override_handler(addr, name.into(), Handler::Rust(Arc::new(f)))
     }
 
+    /// Time an existing override at its actual boundary, preserving enable and
+    /// replacement semantics. Call once after registration (before running).
+    /// Use D3d for guest API entries; Gfx for a backend submission adapter;
+    /// Fallback for an interpreter entry. Generated resumes are unaffected.
+    pub fn profile_override(&mut self, addr: u32, scope: crate::perf::Scope) -> bool {
+        let Some(over) = self.overrides.get_mut(&addr) else {
+            return false;
+        };
+        let handler = over.handler.clone();
+        over.handler = Handler::Rust(Arc::new(move |cpu, ctx, selector| {
+            Ok(ctx.measure(scope, |ctx| {
+                crate::handler::execute(
+                    crate::handler::Invocation::Handler(handler.clone()),
+                    cpu,
+                    ctx,
+                    selector,
+                )
+            }))
+        }));
+        true
+    }
+
     /// Only exact validated PCs are accepted. `start_pc` selects the owner's
     /// generated label; it is not interpreted as an address interval.
     pub fn register_resume(

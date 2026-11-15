@@ -250,12 +250,25 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 /* ---- Code-shape macros. They name the handler's locals: cpu, ctx, the
  * eight register locals, fl (EFLAGS) and fd (its defined mask). ---------- */
 
+/* No hot-loop clocks or callbacks: counters stay in handler locals until exit. */
+#if H2_PERF
+#define H2_PERF_LOCALS() uint64_t h2_perf_loops_ = 0, h2_perf_x87_ = 0
+#define H2_PERF_LOOP() (++h2_perf_loops_)
+#define H2_PERF_X87(call) (++h2_perf_x87_, (call))
+#define H2_PERF_FLUSH() h2abi_v1_profile(ctx, h2_perf_loops_, h2_perf_x87_)
+#else
+#define H2_PERF_LOCALS() ((void)0)
+#define H2_PERF_LOOP() ((void)0)
+#define H2_PERF_X87(call) (call)
+#define H2_PERF_FLUSH() ((void)0)
+#endif
+
 #define H2_LOCALS()                                                             \
     uint32_t eax = cpu->eax, ecx = cpu->ecx, edx = cpu->edx, ebx = cpu->ebx;    \
     uint32_t esp = cpu->esp, ebp = cpu->ebp, esi = cpu->esi, edi = cpu->edi;    \
     uint32_t fl = cpu->eflags, fd = cpu->eflags_defined;                       \
     uint32_t x_kind, x_route, x_target, x_resume, x_event, x_eip;               \
-    (void)ctx
+    H2_PERF_LOCALS(); (void)ctx
 
 /* Every way out of a handler sets the x_* locals and jumps to the one
  * shared epilogue, which commits canonical state and returns. Keeping a
@@ -268,6 +281,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;             \
     cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;             \
     cpu->eflags = fl | 2u; cpu->eflags_defined = fd; cpu->eip = x_eip;          \
+    H2_PERF_FLUSH();                                                         \
     return h2_transfer(x_kind, x_route, x_target, x_resume, x_event)
 
 #define H2_EXIT_(kind, route, target, resume, event, eip)                       \
@@ -473,6 +487,7 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #define H2_PREEMPT_LOCALS() const uint32_t *const h2_pre_ = h2_preempt_word(ctx)
 #define H2_LOOP_POLL(header)                                                    \
     do {                                                                        \
+        H2_PERF_LOOP();                                                         \
         if (__builtin_expect(__atomic_load_n(h2_pre_, __ATOMIC_RELAXED) != 0u, 0)) \
             H2_XFER(H2_JUMP, H2_RESUME, (header), 0u);                          \
     } while (0)

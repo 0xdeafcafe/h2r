@@ -195,6 +195,9 @@ impl ExecCtx {
     /// One guest memory access by generated code.
     #[inline]
     pub(crate) fn spend_access(&mut self) {
+        if let Some(p) = &mut self.profile {
+            p.memory_accessors += 1;
+        }
         if !self.slice.armed {
             return;
         }

@@ -75,7 +75,7 @@ fn chunk_copies(env: X87Env, vals: &[String], to_buffer: bool) -> String {
 pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
     let s = "&cpu->x87";
     let a = |i: usize| val(&args[i]);
-    let call = |c: String| format!("H2X87({pc:#x}u, {c});");
+    let call = |c: String| format!("H2X87({pc:#x}u, H2_PERF_X87({c}));");
     match op {
         X87Op::Mark { fop, mem } => vec![if mem {
             format!("H2X87_MARKM({pc:#x}u, {fop:#x}u, {});", a(0))
@@ -100,7 +100,7 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
                     None => format!("h2x87_v1_st_{}({s}, {src}u, &t{v}, &t{sw})", f.suffix()),
                 },
             };
-            vec![declare(dsts), format!("H2X87_ST({pc:#x}u, t{w}, {c});")]
+            vec![declare(dsts), format!("H2X87_ST({pc:#x}u, t{w}, H2_PERF_X87({c}));")]
         }
         X87Op::StoreCommit { pop } => {
             let p = if pop { a(1) } else { "0u".into() };
@@ -122,7 +122,7 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
                 src_bits(src, args),
                 to_flags as u32
             );
-            vec![declare(dsts), format!("H2X87_CMP({pc:#x}u, t{p}, t{sup}, {c});")]
+            vec![declare(dsts), format!("H2X87_CMP({pc:#x}u, t{p}, t{sup}, H2_PERF_X87({c}));")]
         }
         X87Op::Xam => vec![call(format!("h2x87_v1_xam({s})"))],
         X87Op::Xch(i) => vec![call(format!("h2x87_v1_xch({s}, {i}u)"))],

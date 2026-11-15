@@ -23,6 +23,7 @@ pub struct ExecCtx {
     /// Must stay first (RUNTIME-CONTRACT.md, "Loop safe points").
     preempt: crate::preempt::WordPtr,
     runtime: Arc<Runtime>,
+    pub(crate) profile: Option<crate::perf::Profile>,
     pub thread_id: u32,
     events: Vec<Event>,
     event_ids: Vec<u32>,
@@ -58,6 +59,7 @@ impl ExecCtx {
             interrupt_token: None,
             slice: Default::default(),
             preempted: None,
+            profile: None,
         }
     }
     pub fn runtime(&self) -> &Arc<Runtime> {

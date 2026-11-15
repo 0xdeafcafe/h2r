@@ -407,3 +407,8 @@ row of the module. It registers nothing unless the whole module is valid, and
 errors name the table and row. Entry rows of kind 0 and 1 dispatch with
 `start = addr`; resume rows dispatch their owner with their `start`. Returns
 check the resume table before entry dispatch.
+
+## Performance instrumentation
+
+See [performance](../../docs/performance.md) for opt-in per-context counters,
+coarse timers, generated `H2_PERF=1` counters, and the menu FPS acceptance test.

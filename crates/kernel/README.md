@@ -691,3 +691,9 @@ read-only ISO. It covers slots 4/5, SP-shared slot 1, their menu/shared
 prerequisites, warm reopen, failure counts, and staging/resource-buffer
 lifetime. See [cache-slots.md](../../docs/cache-slots.md) for the command,
 fixture boundaries, and remaining full-activation checks.
+## Performance instrumentation
+
+With `ExecCtx::enable_profiling(true)`, kernel adapters count and time every
+invocation (including failed and stopped calls) in `perf::Scope::Kernel`.
+The duration is inclusive host wall time, unrelated to the guest clock. See
+[performance](../../docs/performance.md) for aggregation and interpretation.

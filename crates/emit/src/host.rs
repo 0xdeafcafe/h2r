@@ -291,6 +291,8 @@ pub struct Ctx {
     /// What `h2shim_v1_rdtsc` returns next; counts up like the
     /// interpreter's [`ir::interp::Cpu::tsc`].
     pub tsc: u64,
+    /// Generated loop polls and x87 helper calls (H2_PERF=1).
+    pub perf: [u64; 2],
     /// The x87 state the CPU held when each #MF (event 14) was reported,
     /// as the callback saw it: FLOAT-ABI.md §2.4 has the raiser's
     /// FIP/FOP/FDP materialised before the event is raised.
@@ -310,6 +312,7 @@ impl Ctx {
             events: Vec::new(),
             atomics: Vec::new(),
             tsc: 0,
+            perf: [0; 2],
             fp_error_x87: Vec::new(),
             cpu: std::ptr::null(),
         }
@@ -335,11 +338,12 @@ struct Bridge {
     rmw: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, u32, *mut u32) -> u32,
     xchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg: unsafe extern "C" fn(*mut CpuAbi, *mut c_void, u32, u32, u32, u32, *mut u32) -> u32,
+    profile: unsafe extern "C" fn(*mut c_void, u64, u64),
 }
 
 impl Bridge {
     /// What `h2bridge_layout` must report: each slot's offset, then the size.
-    const LAYOUT: [usize; 9] = [
+    const LAYOUT: [usize; 10] = [
         std::mem::offset_of!(Bridge, read),
         std::mem::offset_of!(Bridge, write),
         std::mem::offset_of!(Bridge, event),
@@ -348,6 +352,7 @@ impl Bridge {
         std::mem::offset_of!(Bridge, rmw),
         std::mem::offset_of!(Bridge, xchg),
         std::mem::offset_of!(Bridge, cmpxchg),
+        std::mem::offset_of!(Bridge, profile),
         size_of::<Bridge>(),
     ];
 }
@@ -625,6 +630,7 @@ impl Generated {
                 rmw: cb_rmw,
                 xchg: cb_xchg,
                 cmpxchg: cb_cmpxchg,
+                profile: cb_profile,
             };
             install(&bridge);
             let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const c_void, u32)> =
@@ -683,4 +689,11 @@ impl Generated {
 pub fn entry_state(x: &xbe::Xbe) -> Result<(CpuAbi, Ctx), String> {
     let (cpu, mem) = lift::harness::initial_state(x)?;
     Ok((CpuAbi::from_interp(&cpu), Ctx::new(mem)))
+}
+
+unsafe extern "C" fn cb_profile(c: *mut c_void, loops: u64, x87: u64) {
+    // SAFETY: the generated handler supplies its exclusive live test context.
+    let ctx = unsafe { &mut *c.cast::<Ctx>() };
+    ctx.perf[0] += loops;
+    ctx.perf[1] += x87;
 }

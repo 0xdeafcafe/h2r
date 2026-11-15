@@ -350,7 +350,11 @@ impl Kernel {
                     dispatch.register_override(
                         runtime::kernel::function_token(import.ordinal),
                         import.name,
-                        move |cpu, ctx, _| Ok(abi::stop(export, cpu, ctx)),
+                        move |cpu, ctx, _| {
+                            ctx.measure(runtime::perf::Scope::Kernel, |ctx| {
+                                Ok(abi::stop(export, cpu, ctx))
+                            })
+                        },
                     );
                 }
             }
@@ -358,7 +362,9 @@ impl Kernel {
                 let kernel = Arc::clone(&kernel);
                 let entry = kernel.entry(export.ordinal).expect("declared export");
                 dispatch.register_override(entry, export.name, move |cpu, ctx, _| {
-                    kernel.invoke(export, cpu, ctx)
+                    ctx.measure(runtime::perf::Scope::Kernel, |ctx| {
+                        kernel.invoke(export, cpu, ctx)
+                    })
                 });
             }
         });

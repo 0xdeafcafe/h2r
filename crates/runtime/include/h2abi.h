@@ -55,6 +55,10 @@ uint32_t h2abi_v1_read(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
 uint32_t h2abi_v1_write(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
                       uint32_t width, uint32_t alignment, const uint8_t *value);
 
+/* Optional H2_PERF=1 generated counters, batched once at each handler exit.
+ * Extension symbol only: ordinary ABI v2 modules do not require it. */
+void h2abi_v1_profile(ExecCtxOpaque *, uint64_t loop_polls, uint64_t x87_helpers);
+
 /* Define once in each generated module's registration object. Registration
  * passes h2gen_abi_version to register_generated_object. */
 #define H2_DEFINE_GENERATED_ABI_NAMED(name) \

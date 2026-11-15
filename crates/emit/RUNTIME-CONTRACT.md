@@ -174,7 +174,16 @@ counter for every thread (the Xbox has one CPU), in `crates/runtime/src/tsc.rs`:
 The emitter's test host and the IR interpreter count reads instead (each read
 returns the counter and adds one), so differential tests are exact.
 
-### 1.6 Nothing else
+### 1.6 Optional profiling extension
+
+`H2_PERF=1` adds `void h2abi_v1_profile(ExecCtxOpaque *, uint64_t loop_polls,
+uint64_t x87_helpers)`. Each handler accumulates local counters and sends them
+once at its shared exit. A host bridge forwards this to `runtime::ffi`.
+Without that build flag, generated objects require no extension symbol and
+perform no profiling work. ABI layouts are unchanged. See
+[performance](../../docs/performance.md).
+
+### 1.7 Nothing else
 
 Handlers call no other runtime symbol. The one other thing they read is
 the preempt word through the context pointer (§4, "Loop safe points"). x87, MMX and MXCSR state are read

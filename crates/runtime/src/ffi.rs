@@ -412,3 +412,17 @@ pub unsafe extern "C" fn h2abi_v1_cmpxchg8b(
         })
     }
 }
+
+/// Batch local counters once on every generated handler exit. No retained pointer.
+/// # Safety
+/// `exec` is the live exclusive invocation context passed to the handler.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_profile(exec: *mut crate::ExecCtxOpaque, loops: u64, x87: u64) {
+    // SAFETY: caller guarantees the current invocation's context.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    if let Some(p) = &mut ctx.profile {
+        p.generated_batches += 1;
+        p.loop_safe_points += loops;
+        p.x87_helpers += x87;
+    }
+}
