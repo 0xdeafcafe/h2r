@@ -113,19 +113,12 @@ pub unsafe extern "C" fn h2abi_v1_read(
             crate::guest::FaultReason::InvalidBuffer,
         );
     }
-    let mut bytes = [0u8; 16];
-    let result = ctx
-        .memory()
-        .read_bytes(addr, &mut bytes[..width as usize], alignment);
-    let result = status(ctx, pc, result);
-    if result == 0 {
-        // SAFETY: caller provides width writable bytes; local temporary cannot
-        // overlap that buffer. No guest-memory pointer escapes the lock.
-        unsafe {
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out, width as usize);
-        }
-    }
-    result
+    // SAFETY: the ABI guarantees width writable bytes disjoint from context.
+    // Guest preflights the entire span before copying, so faults leave output
+    // untouched without staging through a second host buffer.
+    let out = unsafe { std::slice::from_raw_parts_mut(out, width as usize) };
+    let result = ctx.memory().read_bytes(addr, out, alignment);
+    status(ctx, pc, result)
 }
 
 /// Write all bytes atomically with respect to ordinary guest/HLE accesses.
@@ -166,14 +159,10 @@ pub unsafe extern "C" fn h2abi_v1_write(
             crate::guest::FaultReason::InvalidBuffer,
         );
     }
-    let mut bytes = [0u8; 16];
-    // SAFETY: width was bounded above; source validity is the caller's contract.
-    unsafe {
-        std::ptr::copy_nonoverlapping(value, bytes.as_mut_ptr(), width as usize);
-    }
-    let result = ctx
-        .memory()
-        .write_bytes(addr, &bytes[..width as usize], alignment);
+    // SAFETY: the ABI guarantees width readable bytes disjoint from context.
+    // Guest validates the complete write and retains its alias-aware barrier.
+    let value = unsafe { std::slice::from_raw_parts(value, width as usize) };
+    let result = ctx.memory().write_bytes(addr, value, alignment);
     status(ctx, pc, result)
 }
 
