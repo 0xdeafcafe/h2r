@@ -500,6 +500,8 @@ fn gpu_depth_level_fills_from_and_writes_back_to_guest_memory() {
         d.clear(&mut m, 0, 0, 0x02, 0, 0.0, 0x3C).unwrap();
         let back = m.read_u32(L.device + 0x1A04).unwrap();
         d.set_render_target(&mut m, back, 0).unwrap();
+        // Lazily the level stays on the host until the guest waits on it.
+        d.block_on_resource(&mut m, DTEX).unwrap();
         let out = m.read_vec(0x8000_0000 | DDATA, bytes.len()).unwrap();
         for (i, (got, want)) in out.chunks(4).zip(&words).enumerate() {
             let got = u32::from_le_bytes(got.try_into().unwrap());
@@ -996,4 +998,129 @@ fn the_render_thread_makes_the_same_depth_alias_textures() {
     let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
     assert_eq!(a.backend.calls, calls);
     assert_eq!(b.backend.misses(), 0);
+}
+
+/// One run of the lazy-depth comparison: the level filled from a guest
+/// pattern, half of it drawn over at another depth, unbound, sampled as a
+/// shadow map (PROJECT3D, `GREATER`), then waited on. Answers the back
+/// buffer, the level's guest bytes before and after the wait, and the
+/// stats before the wait.
+type ShadowRun = (Vec<u8>, Vec<u8>, Vec<u8>, d3d::Stats);
+
+fn shadow_run(lazy: bool, format: u32, pitch: Option<u32>) -> Option<ShadowRun> {
+    let (mut d, mut m, scope) = gpu()?;
+    d.set_lazy_depth(lazy);
+    set_states(&mut d, &mut m);
+    let words: Vec<u32> = (0..S * S).map(|i| ((0x10_0000 + i * 0x7_1234) << 8) | (i & 0xFF)).collect();
+    let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    m.write(0x8000_0000 | DDATA, &bytes).unwrap();
+    depth_texture(&mut m, format, pitch);
+    d.set_render_target(&mut m, CSURF, DLEVEL).unwrap();
+    quad_vb(&mut m, 0.0, 0.0, S as f32, (S / 2) as f32, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    z_writes(&mut m, true);
+    m.write_u32(L.render_state_slot(RS_ZFUNC), 8).unwrap(); // ALWAYS
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    z_writes(&mut m, false);
+    let back = m.read_u32(L.device + 0x1A04).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    t0_shader(&mut d, &mut m, shaders::psh::bits::TEX_PROJECT3D);
+    projective_quad(&mut d, &mut m, 2.0 * 8_388_608.0, 2.0);
+    d.set_texture(&mut m, 0, DTEX).unwrap();
+    m.write_u32(L.render_state_slot(RS_SHADOWFUNC), 0x204).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    // Sampled again with nothing drawn into the level: the same texture.
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let ev = d.take_events();
+    assert!(ev.is_empty(), "{ev:?}");
+    let bb = d.back_buffer().unwrap();
+    let (px, _) = d.backend.read_color(bb).unwrap();
+    let before = m.read_vec(0x8000_0000 | DDATA, bytes.len()).unwrap();
+    let stats = d.stats();
+    d.block_on_resource(&mut m, DTEX).unwrap();
+    let after = m.read_vec(0x8000_0000 | DDATA, bytes.len()).unwrap();
+    finish(scope);
+    Some((px, before, after, stats))
+}
+
+/// Lazy depth levels against the eager write-back at the binding change:
+/// the shadow-mapped pixels are the same, and so are the level's guest
+/// bytes once the guest waits on it (the only point it may read them).
+/// Lazily nothing was read back before the wait, and the sampled texture
+/// was made on the GPU once.
+#[test]
+fn gpu_lazy_depth_levels_sample_and_write_back_as_the_eager_ones() {
+    for (format, pitch) in [(0x2A, None), (0x2E, Some(64))] {
+        let Some((epx, ebefore, eafter, estats)) = shadow_run(false, format, pitch) else {
+            return;
+        };
+        let (lpx, lbefore, lafter, lstats) = shadow_run(true, format, pitch).unwrap();
+        assert_eq!(lpx, epx, "format {format:#x}: shadow-mapped pixels");
+        assert_eq!(lafter, eafter, "format {format:#x}: guest bytes after the wait");
+        assert_eq!(ebefore, eafter, "format {format:#x}: eagerly written back at the switch");
+        assert_ne!(lbefore, lafter, "format {format:#x}: lazily still the guest's pattern before the wait");
+        assert_eq!(estats.writeback_causes.depth_binding, 1);
+        assert_eq!(estats.depth_level_textures, 0);
+        assert_eq!(lstats.rtt_writebacks, 0, "format {format:#x}: no read-back before the wait");
+        assert_eq!(lstats.depth_level_textures, 1);
+    }
+}
+
+/// With the backend unable to sample depth surfaces (the recording
+/// backend by default), depth levels are written back at the binding
+/// change as before, even with lazy depth on.
+#[test]
+fn lazy_depth_needs_a_backend_that_samples_depth_surfaces() {
+    let (mut d, mut m) = mem();
+    d.set_lazy_depth(true);
+    depth_texture(&mut m, 0x2A, None);
+    let back = m.read_u32(L.device + 0x1A04).unwrap();
+    d.set_render_target(&mut m, CSURF, DLEVEL).unwrap();
+    d.clear(&mut m, 0, 0, 0x01, 0, 1.0, 0).unwrap();
+    d.backend.depth_readback = Some(vec![0x5A]);
+    d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(depth_reads(&d).len(), 1);
+    assert_eq!(d.stats().writeback_causes.depth_binding, 1);
+}
+
+/// A backend that samples depth surfaces: the level is not read back at
+/// the switch; a sample takes `depth_level_texture` once per time it is
+/// drawn into; `BlockOnResource` writes it back, and the guest's stores
+/// into it since it was unbound win over the drawn bytes, as for colour.
+#[test]
+fn lazy_depth_levels_are_read_back_only_when_waited_on() {
+    let (mut d, mut m) = mem();
+    d.backend.sample_surfaces = true;
+    d.backend.sample_depth = true;
+    depth_texture(&mut m, 0x2A, None);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, S as f32, S as f32, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    let back = m.read_u32(L.device + 0x1A04).unwrap();
+    d.set_render_target(&mut m, CSURF, DLEVEL).unwrap();
+    z_writes(&mut m, true);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    z_writes(&mut m, false);
+    d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(depth_reads(&d).len(), 0, "kept on the host");
+    let converted = |d: &Device<RecordingBackend>| {
+        d.backend.calls.iter().filter(|c| matches!(c, Recorded::DepthLevelTexture { .. })).count()
+    };
+    d.set_texture(&mut m, 0, DTEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(converted(&d), 1, "one texture while the level is unchanged");
+    assert!(!d.backend.calls.iter().any(|c| matches!(c, Recorded::Upload { size: (S, S), .. })), "no upload from guest memory");
+    let draw = *d.backend.draws().last().unwrap();
+    assert_eq!(draw.texture_info[0].unwrap().format, D3DFormat::D24S8);
+    // The guest stores into texel 1 after the switch; its byte wins.
+    m.write_u32(0x8000_0000 | (DDATA + 4), 0x1122_3344).unwrap();
+    d.note_write(0x8000_0000 | (DDATA + 4), 4);
+    d.backend.depth_readback = Some(vec![0x5A]);
+    d.block_on_resource(&mut m, DTEX).unwrap();
+    assert_eq!(depth_reads(&d).len(), 1);
+    assert_eq!(m.read_u32(0x8000_0000 | DDATA).unwrap(), 0x5A5A_5A5A);
+    assert_eq!(m.read_u32(0x8000_0000 | (DDATA + 4)).unwrap(), 0x1122_3344);
+    assert_eq!(d.stats().writeback_causes.block_on_resource, 1);
+    assert_eq!(d.take_events(), []);
 }

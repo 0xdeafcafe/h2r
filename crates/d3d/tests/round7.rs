@@ -400,6 +400,63 @@ fn gpu_visibility_test_counts_samples() {
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
 
+/// Halo's pattern: a test ended each frame and read two frames later,
+/// after two `Swap(0)`s. Its counts, through the backend directly and
+/// through the render thread. `caught_up` runs before each read.
+fn counts_two_frames_later<B: d3d::Backend>(
+    backend: B,
+    mut caught_up: impl FnMut(&mut Device<B>),
+) -> (Device<B>, Vec<u32>) {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    set_states(&mut d, &mut m);
+    d.set_vertex_shader(&mut m, gfx::vertex::fvf::XYZRHW | gfx::vertex::fvf::DIFFUSE)
+        .unwrap();
+    let mut counts = Vec::new();
+    for frame in 0..6u32 {
+        inline_quad(&mut m, 0.0, 0.0, 64.0, 64.0, [255, 0, 0, 255]);
+        begin_inline(&mut m);
+        let side = 4.0 * (frame + 1) as f32;
+        inline_quad(&mut m, 0.0, 0.0, side, side + 1.0, [0, 255, 0, 255]);
+        end(&mut d, &mut m, frame % 3).unwrap();
+        if frame >= 2 {
+            caught_up(&mut d);
+            counts.push(get(&mut d, &mut m, (frame - 2) % 3).unwrap().0);
+        }
+        d.swap(&mut m, 0).unwrap();
+    }
+    (d, counts)
+}
+
+/// The count of a report read after it is back is the count a wait gives:
+/// directly (`GfxBackend` maps reports at `Swap`) and through the render
+/// thread, which answers them without queueing behind the frame's work
+/// once it has run the presents after the report (here it is made to catch
+/// up before each read, so every count has landed; a count that has not is
+/// read after the queue, as before).
+#[test]
+fn gpu_visibility_counts_read_frames_later_need_no_wait() {
+    let (a, b) = match (GfxContext::headless(), GfxContext::headless()) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("skipping GPU test: {e}");
+            return;
+        }
+    };
+    let want: Vec<u32> = (0..4u32).map(|f| (4 * (f + 1)) * (4 * (f + 1) + 1)).collect();
+    let (_, direct) = counts_two_frames_later(GfxBackend::new(a), |_| {});
+    assert_eq!(direct, want);
+    let (d, queued) = counts_two_frames_later(d3d::ThreadedBackend::new(GfxBackend::new(b)).unwrap(), |d| {
+        d.backend.finish().unwrap()
+    });
+    assert_eq!(queued, want);
+    // Racing the render thread: the same counts, landed or not.
+    let c = GfxContext::headless().unwrap();
+    let (_, raced) = counts_two_frames_later(d3d::ThreadedBackend::new(GfxBackend::new(c)).unwrap(), |_| {});
+    assert_eq!(raced, want);
+    assert_eq!(d.backend.misses(), 0);
+    assert_eq!(d.backend.waits().landed_counts, 4, "every count was back");
+}
+
 // Resource destruction --------------------------------------------------------------
 
 /// A level of the test texture whose header the allocator `0x3fb7a0` would

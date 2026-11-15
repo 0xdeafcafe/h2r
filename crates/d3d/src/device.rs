@@ -350,6 +350,98 @@ pub struct Stats {
     pub visibility_tests: u64,
     /// Resources destroyed ([`Device::destroy_resource`]).
     pub destroys: u64,
+    /// Textures made on the backend from depth levels kept on the host
+    /// ([`Backend::depth_level_texture`]): one per time a level is drawn
+    /// into and then sampled.
+    pub depth_level_textures: u64,
+    /// [`rtt_writebacks`](Self::rtt_writebacks) by what asked for them.
+    pub writeback_causes: WritebackCauses,
+}
+
+/// What made the device write a render-to-texture level back to guest
+/// memory ([`Stats::writeback_causes`]; `H2_D3D_WRITEBACK_TRACE=1` prints
+/// each one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WritebackCause {
+    /// Another level over the same memory is bound or sampled.
+    Overlap,
+    /// The level's header was rewritten with another identity.
+    Rewritten,
+    /// Lazily, the guest stored into the level since it was drawn.
+    GuestStores,
+    /// A draw samples the level's memory and cannot read the surface in place.
+    Sample,
+    /// The depth/stencil level stopped being bound (or the colour target changed).
+    DepthBinding,
+    /// Eagerly, the colour target changed.
+    LeaveTarget,
+    /// Eagerly, `Swap` or `KickOff`.
+    Sync,
+    /// `BlockOnResource` on the level or memory it overlaps.
+    BlockOnResource,
+    /// The busy check `0x3fb710`.
+    Busy,
+    /// `BlockOnTime`.
+    BlockOnTime,
+    /// A push-buffer callback.
+    Callback,
+    /// The level or its texture was destroyed.
+    Destroy,
+    /// `PersistDisplay`.
+    PersistDisplay,
+    /// Device teardown.
+    Teardown,
+    /// A host caller ([`Device::flush_render_targets`]: tests, reports).
+    Host,
+}
+
+/// Write-backs per [`WritebackCause`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WritebackCauses {
+    pub overlap: u64,
+    pub rewritten: u64,
+    pub guest_stores: u64,
+    pub sample: u64,
+    pub depth_binding: u64,
+    pub leave_target: u64,
+    pub sync: u64,
+    pub block_on_resource: u64,
+    pub busy: u64,
+    pub block_on_time: u64,
+    pub callback: u64,
+    pub destroy: u64,
+    pub persist_display: u64,
+    pub teardown: u64,
+    pub host: u64,
+}
+
+impl WritebackCauses {
+    pub(crate) fn count(&mut self, cause: WritebackCause) {
+        let n = match cause {
+            WritebackCause::Overlap => &mut self.overlap,
+            WritebackCause::Rewritten => &mut self.rewritten,
+            WritebackCause::GuestStores => &mut self.guest_stores,
+            WritebackCause::Sample => &mut self.sample,
+            WritebackCause::DepthBinding => &mut self.depth_binding,
+            WritebackCause::LeaveTarget => &mut self.leave_target,
+            WritebackCause::Sync => &mut self.sync,
+            WritebackCause::BlockOnResource => &mut self.block_on_resource,
+            WritebackCause::Busy => &mut self.busy,
+            WritebackCause::BlockOnTime => &mut self.block_on_time,
+            WritebackCause::Callback => &mut self.callback,
+            WritebackCause::Destroy => &mut self.destroy,
+            WritebackCause::PersistDisplay => &mut self.persist_display,
+            WritebackCause::Teardown => &mut self.teardown,
+            WritebackCause::Host => &mut self.host,
+        };
+        *n += 1;
+    }
+}
+
+/// `H2_D3D_WRITEBACK_TRACE=1`: print every render-to-texture write-back.
+pub(crate) fn writeback_trace() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("H2_D3D_WRITEBACK_TRACE").is_some_and(|v| v == "1"))
 }
 
 /// A guest callback the push buffer asks for: `NV097_NO_OPERATION` with
@@ -590,6 +682,14 @@ pub struct Device<B: Backend> {
     /// Textures over the depth buffer, made from `depth_copy`, by header
     /// and effective channel signs.
     depth_alias: HashMap<raster::DepthAliasKey, raster::DepthAlias<B::Texture>>,
+    /// Lazy depth levels: the texture each dirty depth level was last
+    /// sampled through ([`Backend::depth_level_texture`]), until it is drawn
+    /// into, refilled or dropped.
+    depth_level_tex: HashMap<u32, B::Texture>,
+    /// Depth levels stay on the host like colour levels (lazy
+    /// render-to-texture and a backend that samples depth surfaces);
+    /// `H2_D3D_LAZY_DEPTH=0` turns it off.
+    lazy_depth: bool,
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
     rtt_synced: HashMap<u32, Vec<u8>>,
@@ -698,6 +798,8 @@ impl<B: Backend> Device<B> {
             depth_alias_decodes: Vec::new(),
             depth_read_generation: None,
             depth_alias: HashMap::new(),
+            depth_level_tex: HashMap::new(),
+            lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
             rtt_synced: HashMap::new(),
             rtt_stores: HashMap::new(),
             rtt_direct: true,
@@ -1001,7 +1103,7 @@ impl<B: Backend> Device<B> {
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "teardown inside Begin/End"));
         }
-        self.flush_render_targets(mem)?;
+        self.flush_render_targets_for(mem, WritebackCause::Teardown)?;
         self.release_bindings(mem, E)?;
         self.release_render_targets(mem)?;
         // Every device-owned host surface goes with the device.
@@ -1253,7 +1355,7 @@ impl<B: Backend> Device<B> {
         // A callback whose write-back failed last time: retry the write-back
         // and hand it out before draining anything after it.
         if let Some(cb) = self.undelivered {
-            self.flush_render_targets(mem)?;
+            self.flush_render_targets_for(mem, WritebackCause::Callback)?;
             self.undelivered = None;
             return Ok(Some(cb));
         }
@@ -1263,7 +1365,7 @@ impl<B: Backend> Device<B> {
                 // Like any other write-back failure (KickOff, Swap, ...),
                 // not latched: the targets stay dirty and the next call
                 // tries again. The callback waits with them.
-                if let Err(e) = self.flush_render_targets(mem) {
+                if let Err(e) = self.flush_render_targets_for(mem, WritebackCause::Callback) {
                     self.undelivered = Some(cb);
                     return Err(e);
                 }
@@ -1481,7 +1583,7 @@ impl<B: Backend> Device<B> {
         self.kick_off(mem)?;
         // The caller is about to touch the resource: lazily kept
         // render-to-texture pixels of it go to guest memory now.
-        self.flush_for_texture(mem, resource)
+        self.flush_for_texture(mem, resource, WritebackCause::BlockOnResource)
     }
 
     /// `D3D_BlockOnTime`: what [`kick_off`](Self::kick_off) does, and every
@@ -1489,7 +1591,7 @@ impl<B: Backend> Device<B> {
     /// fence the guest may read anything drawn before it).
     pub fn block_on_time(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         self.kick_off(mem)?;
-        self.flush_render_targets(mem)
+        self.flush_render_targets_for(mem, WritebackCause::BlockOnTime)
     }
 
     /// `CDevice_KickOff`, `D3D_BlockOnTime`, `D3D_BlockOnResource`: execute
@@ -1787,9 +1889,10 @@ impl<B: Backend> Device<B> {
             ));
         }
         // A level drawn into keeps its pixels in the parent's texels.
-        self.write_back(mem, header)?;
+        self.write_back(mem, header, WritebackCause::Destroy)?;
         self.rtt_synced.remove(&header);
         self.rtt_stores.remove(&header);
+        self.depth_level_tex.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
             self.backend
                 .destroy_surface(t.surface)
@@ -1802,10 +1905,11 @@ impl<B: Backend> Device<B> {
             .map(|(h, _)| *h)
             .collect::<Vec<_>>()
         {
-            self.write_back(mem, h)?;
+            self.write_back(mem, h, WritebackCause::Destroy)?;
             self.rtt_synced.remove(&h);
             self.rtt_stores.remove(&h);
             let t = self.rtt.remove(&h).expect("listed");
+            self.depth_level_tex.remove(&h);
             self.backend
                 .destroy_surface(t.surface)
                 .map_err(D3dError::Backend)?;
@@ -2607,12 +2711,19 @@ impl<B: Backend> Device<B> {
         if target != self.render_target {
             self.leave_target(mem)?;
         }
-        // A depth level is written back whenever either binding changes,
-        // as the colour level is (a target change is a point where the
-        // guest may look), after the colour level.
+        // Eagerly, a depth level is written back whenever either binding
+        // changes, as the colour level is (a target change is a point where
+        // the guest may look), after the colour level. Lazily it stays on
+        // the host like a colour level, when the backend can sample it.
         if target != self.render_target || z_stencil != self.depth_stencil {
             let old = self.depth_stencil;
-            self.write_back(mem, old)?;
+            if self.rtt_lazy_depth() {
+                if z_stencil != old {
+                    self.leave_depth(mem, old)?;
+                }
+            } else {
+                self.write_back(mem, old, WritebackCause::DepthBinding)?;
+            }
         }
         let destroys = refs.commit(mem)?;
         self.destroy_resources(mem, destroys)?;
@@ -3245,6 +3356,7 @@ impl<B: Backend> Device<B> {
         let mut texture_info = [None; 4];
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
+        let mut depth_levels: [Option<u32>; 4] = [None; 4];
         let mut bound = self.textures;
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = self.translate_state(&parts.words);
@@ -3285,7 +3397,14 @@ impl<B: Backend> Device<B> {
                     snapshots[stage] = Some(t);
                     continue;
                 }
-                self.flush_for_texture(mem, header)?;
+                if let Some((info, level)) =
+                    self.rtt_depth_texture(mem, header, extras[stage].color_sign)?
+                {
+                    texture_info[stage] = Some(info);
+                    depth_levels[stage] = Some(level);
+                    continue;
+                }
+                self.flush_for_texture(mem, header, WritebackCause::Sample)?;
                 let (k, i) = self.resolve_texture(
                     mem,
                     entry,
@@ -3334,6 +3453,7 @@ impl<B: Backend> Device<B> {
                         .and_then(|k| self.depth_alias.get(&k))
                         .map(|a| &a.texture)
                 })
+                .or_else(|| depth_levels[i].and_then(|h| self.depth_level_tex.get(&h)))
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
         self.stats.draws += 1;

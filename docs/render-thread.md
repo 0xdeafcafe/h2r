@@ -267,9 +267,17 @@ but still a ceiling of about 10 fps at 100 ms.
   backend call, not at the entry that caused it.
 - **Waits remaining.** RTT write-backs the guest asks for
   (`BlockOnResource`, the busy check, `BlockOnTime`, push-buffer
-  callbacks) and pixel-count reads still wait for the queue. The menu
-  has none in its steady state; a level with many could lose part of the
-  gain.
+  callbacks) still wait for the queue. Depth levels (shadow maps) no
+  longer read back at every binding change: they are lazy like colour
+  levels and sampled through a texture the render thread makes on the
+  GPU (`Backend::depth_level_texture`, docs/d3d.md "Lazy depth levels").
+  Pixel-count reads of a report already back are answered on the guest's
+  side without the queue: after each present the render thread moves the
+  counts the GPU has written (`Backend::try_pixel_count`) into a shared
+  map (`Waits::landed_counts` counts them). A count read before the
+  render thread reached the present after its report still waits for the
+  queue; with the guest up to two presents ahead that can happen, so the
+  gain depends on which side is slower.
 - **Memory and latency.** At most two presents in flight. Under load the
   limit is what holds the guest (6.30 fps run).
 - **`h2 play`** is wired but has not been run with it (no game runs on

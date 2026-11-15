@@ -21,6 +21,7 @@ pub mod clear;
 pub mod compile;
 pub mod context;
 pub mod convert;
+pub mod depth_bits;
 pub(crate) mod depth_fill;
 pub mod dxt;
 pub mod encode;

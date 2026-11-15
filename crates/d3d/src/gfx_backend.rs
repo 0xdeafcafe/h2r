@@ -124,6 +124,8 @@ pub struct GfxBackend {
     merge_passes: bool,
     /// Made at the first counted draw.
     counter: Option<PixelCounter>,
+    /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
+    depth_bits: Option<gfx::depth_bits::DepthBits>,
     reports: HashMap<u64, PixelReport>,
     next_ticket: u64,
     /// Presents so far plus one.
@@ -166,6 +168,7 @@ impl GfxBackend {
             merge_passes: true,
             counter: None,
             reports: HashMap::new(),
+            depth_bits: None,
             next_ticket: 0,
             frame: 1,
             frame_draw: 0,
@@ -995,6 +998,30 @@ impl Backend for GfxBackend {
         true
     }
 
+    fn can_sample_depth_surfaces(&self) -> bool {
+        // D24S8 surfaces are DEPTH32FLOAT_STENCIL8 only with the feature
+        // (Depth24Plus cannot be read at all, here or by `read_depth`).
+        self.ctx.caps.depth32_stencil8
+    }
+
+    fn depth_level_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        // After the draws into it.
+        self.flush()?;
+        let s = self.store.get(surface).map_err(|e| e.to_string())?;
+        let texture = s.texture().clone();
+        let d = *s.desc();
+        if texture.format() != wgpu::TextureFormat::Depth32FloatStencil8 || d.samples > 1 {
+            return Ok(None);
+        }
+        let ctx = &self.ctx;
+        let bits = self.depth_bits.get_or_insert_with(|| gfx::depth_bits::DepthBits::new(ctx));
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        let out = bits.convert(ctx, &mut enc, &texture, (d.width, d.height));
+        self.submit(enc);
+        Ok(Some(self.host_texture(out, TextureKind::D2)))
+    }
+
     fn surface_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {
         // No flush: the draw that binds the view submits a pending pass
         // into `surface` before it records anything (another target).
@@ -1113,6 +1140,12 @@ impl Backend for GfxBackend {
             let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
             let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
         }
+        // Reports from this frame and before are read later (Halo reads a
+        // visibility test two frames after it ends): start their reads now,
+        // so the read finds the count mapped instead of waiting.
+        for r in self.reports.values() {
+            r.try_read(&self.ctx)?;
+        }
         Ok(())
     }
 
@@ -1155,6 +1188,17 @@ impl Backend for GfxBackend {
             .remove(&ticket)
             .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))?;
         report.read(&self.ctx)
+    }
+
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        let Some(report) = self.reports.get(&ticket) else {
+            return Err(format!("pixel-count ticket {ticket} is not live"));
+        };
+        let count = report.try_read(&self.ctx)?;
+        if count.is_some() {
+            self.reports.remove(&ticket);
+        }
+        Ok(count)
     }
 
     fn drop_pixel_count(&mut self, ticket: u64) {

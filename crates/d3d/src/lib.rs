@@ -50,7 +50,7 @@ pub use backend::{
     Backend, ChannelMask, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
     RectClear, ResolvedDraw, StreamBytes, Viewport,
 };
-pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats};
+pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
 pub use events::{D3dError, Event, HleStop};
 pub use gfx_backend::GfxBackend;
