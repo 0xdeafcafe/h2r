@@ -6,10 +6,7 @@ use runtime::{CpuAbi, Event, ExecCtx, Runner};
 fn every_remaining_runtime_import_keeps_a_diagnostic_stop_and_its_frame() {
     let h = Harness::new();
     for import in runtime::kernel::FUNCTION_IMPORTS {
-        if kernel::EXPORTS
-            .iter()
-            .any(|e| e.ordinal == import.ordinal && e.ordinal != 171)
-        {
+        if kernel::EXPORTS.iter().any(|e| e.ordinal == import.ordinal) {
             continue;
         }
         let mut cpu = CpuAbi {
@@ -47,7 +44,7 @@ fn explicit_stop_policies_cover_unverified_slist_and_io_space() {
     h.stopped(177, &[0xfd000000, 4096, 4]);
     let remaining = h.kernel.stopped_ordinals();
     assert!(remaining.contains(&56));
-    assert!(remaining.contains(&171));
+    assert!(!remaining.contains(&171));
     assert!(remaining.contains(&177));
     assert!(remaining.contains(&95));
     assert!(!remaining.contains(&255));

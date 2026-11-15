@@ -15,7 +15,10 @@ pub mod kthread {
     pub const KERNEL_STACK: u32 = 0x24;
     pub const TLS_DATA: u32 = 0x28;
     pub const STATE: u32 = 0x2c;
+    pub const SATURATION: u32 = 0x31;
+    pub const PRIORITY: u32 = 0x32;
     pub const KERNEL_APC_DISABLE: u32 = 0x68;
+    pub const BASE_PRIORITY: u32 = 0x70;
     pub const SUSPEND_COUNT: u32 = 0x74;
     pub const HAS_TERMINATED: u32 = 0x77;
 }

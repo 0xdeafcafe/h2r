@@ -1,9 +1,9 @@
 # Xbox kernel HLE
 
-Safe Rust adapters for the native runtime. This crate adds 92 declared export
-contracts: 87 have implemented paths, and five are explicit stop policies. With
-VFS configured, 69 of Halo's 136 imported functions have implemented paths;
-67 still always stop. Supported functions can also stop on unsupported variants.
+Safe Rust adapters for the native runtime. This crate adds 106 declared export
+contracts: 102 have implemented paths, and four are explicit stop policies. With
+VFS configured, 84 of Halo's 136 imported functions have implemented paths;
+52 still always stop. Supported functions can also stop on unsupported variants.
 KeTickCount, the null LaunchDataPage, HalDiskCachePartitionCount and
 XeImageFileName are initialized among the 17 imported DATA exports.
 
@@ -16,9 +16,17 @@ lanes. No runtime, XBE, VFS or other lane's source was edited here.
 ## Attach to a loaded image
 
 ```rust,ignore
-let mut loaded = runtime::load_xbe(&user_supplied_xbe)?;
+// Halo 2: reserve its title arena (physical 0x61000..0x3145000, alias
+// 0x80061000) before anything else gets backing.
+let mut loaded = runtime::load_xbe_with(
+    &user_supplied_xbe,
+    &runtime::loader::LoadOptions::halo2(),
+)?;
 // Register generated code and its exact resume PCs as usual.
 let kernel = kernel::Kernel::for_image(&mut loaded)?;
+// Or `Kernel::for_image_with(&mut loaded, config)` to pass a console profile,
+// epoch, utility partition or image name; TLS, DATA and TitleID still come
+// from the image.
 // Optional: explicit disc/storage configuration, never an implicit host path.
 kernel.set_vfs(vfs::Vfs::with_disc(storage_config, disc_path)?)?;
 let mut machine = kernel::Machine::new(
@@ -82,7 +90,7 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 203, 215 | Open a namespace symbolic link as a handle; query its captured target. |
 | 327, 328 | XBE section reference counts, pristine reload of on-demand sections, shared-page counts. |
 | 2 | Read configured AV encoder settings (option 6); other options stop. |
-| 24 | Configured DWORD nonvolatile settings including XC_MISC, checked buffers and unknown-index stops. |
+| 24 | Configured DWORD nonvolatile settings including XC_MISC, checked buffers and unknown-index stops; XC_MAX_ALL (0xffff) is STATUS_OBJECT_NAME_NOT_FOUND (no EEPROM image). |
 | 301 | Explicit NTSTATUS-to-DOS conversion for kernel/VFS outputs; unknown status stops. |
 | 8 | DbgPrint guest cdecl varargs to an ordered byte log. |
 | 14, 15, 17, 23 | Aligned pool allocation, size/tag tracking, free/reuse, actual block size. |
@@ -96,20 +104,28 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 126, 127, 128 | Replayable 64-bit counter, matching frequency, and NT system time. |
 | 129, 160, 161 | IRQL raise/lower state, including low-byte fastcall arguments and invalid-transition stops. |
 | 158, 159, 233–235 | Pointer/handle WaitAny and atomic WaitAll, timeouts, deterministic wake ordering and signal consumption. |
-| 165, 166, 173, 179, 180 | Contiguous guest RAM with physical bounds/alignment/protection, physical translation and allocation queries. |
-| 184, 199, 217 | VM reserve/commit/query and release of wholly uncommitted reservations. Committed release/decommit stops. |
+| 165, 166, 171, 173, 179, 180 | Contiguous guest RAM with physical bounds/alignment/protection, free (unmap), physical translation and allocation queries. Bounds wholly inside a Runtime physical reservation map onto it (Halo's XPhysicalAlloc arena returns 0x80061000). |
+| 169, 170 | Kernel stacks in the internal range with an unmapped guard page; returns the top; delete unmaps. |
+| 182 | MmSetAddressProtect on contiguous or committed pages via `Guest::protect_range` (exact pages; other aliases keep theirs); queries report the new value. |
+| 184, 199, 217 | VM reserve/commit/query, MEM_TOP_DOWN placement, decommit (unmaps committed pages) and release. |
+| 143 | KeSetBasePriorityThread: NT base/saturation rules, writes KTHREAD Priority/BasePriority/Saturation, returns the old increment. The scheduler does not use priority. |
+| 192, 221 | Unnamed mutants: initial owner, recursive acquire, release counts, MUTANT_NOT_OWNED, abandonment on thread exit (STATUS_ABANDONED_WAIT_0 + index). |
+| 210 | NtQueryFullAttributesFile: FILE_NETWORK_OPEN_INFORMATION by path (root 0, -3 or a directory handle) without leaving a handle open. |
+| 246, 250 | ObReferenceObjectByHandle (thread/event types, null type, current-thread pseudo-handle) and ObfDereferenceObject; references pin the object. |
+| 252, 253 | PhyInitialize succeeds and PhyGetLinkState reports no link (no network device is modelled). |
+| 335–337 | XcSHAInit/Update/Final: SHA-1 (FIPS 180-4) in the caller's 116-byte context. |
 | 187, 197 | Close/duplicate typed guest handles, including file handles; current-thread pseudo-handle close is a no-op and duplication creates a real thread handle. |
-| 190, 202 | VFS create/open and root-directory-relative opens, synchronous alert/non-alert, free-space-query opens, guest handle and IO_STATUS_BLOCK outputs. |
-| 198, 219, 236 | VFS flush/read/write in bounded 64 KiB host chunks, byte counts, explicit/current/append offsets, EOF and backend NTSTATUS errors. |
+| 190, 202 | VFS create/open, root-directory-relative and ObDosDevices (root -3) opens, synchronous and asynchronous file objects, free-space-query opens, guest handle and IO_STATUS_BLOCK outputs. |
+| 198, 219, 236 | VFS flush/read/write in bounded 64 KiB host chunks, byte counts, explicit/current/append offsets, EOF and backend NTSTATUS errors; an Event argument is reset then signalled on completion. |
 | 207 | One ANSI directory record per call, classes 1 and 12; peek before packing, consume only after fit/write. |
 | 211 | File basic/standard/access/position/mode/network-open information, classes 4/5/8/14/16/34, answered whatever the handle's access (retail behavior). |
 | 218 | Volume size/full-size information, classes 3/7, from actual VFS volume data. |
 | 224, 238, 255, 258 | Suspended start, resume/count output, explicit yield, system-thread creation and noreturn termination. |
-| 226 | Set basic information/position/EOF/delete-pending, classes 4/14/20/13; preserve zero/-1 timestamp sentinels. |
+| 226 | Set basic information/position/EOF/delete-pending/allocation, classes 4/14/20/13/19; preserve zero/-1 timestamp sentinels. Allocation below EOF truncates; otherwise it is a no-op reservation. |
 | 260, 308 | ASCII ANSI/UTF-16 conversions with allocated or sufficiently large caller buffers. |
 | 277, 291, 294, 306 | Xbox 28-byte RTL critical sections, recursive ownership, try-enter and cooperative contention. |
 | 279, 286, 287, 289, 290 | Counted string equality/init/free with guest-width descriptors. |
-| 164 DATA | Null launch page by default; explicit `set_launch_data` API (free 171 still stops). |
+| 164 DATA | Null launch page by default; explicit `set_launch_data` API. |
 | 40, 326 DATA | Three cache partitions; XeImageFileName `\Device\CdRom0\default.xbe` (configurable). |
 | 156 DATA | Wrapping 32-bit millisecond boot counter maintained in Runtime's existing guest storage. |
 
@@ -124,14 +140,27 @@ free pool bytes remaining mapped is intentional (use-after-free is not a defined
 pool contract). VM reserve placement is 64 KiB aligned; commits are 4 KiB pages
 and may have scattered physical backing. Querying an existing mapping without
 allocation-type provenance stops, rather than claiming it is image memory.
-Allocation consults all Runtime mappings
-so image pages, aliases, DATA, stacks and kernel storage cannot be allocated twice.
-RW, read-only, RX and RWX protections are supported. PAGE_WRITECOMBINE and
+Physical placement asks Runtime (`Guest::find_free_physical`), which counts
+every mapping and physical reservation, so image pages, aliases, DATA, stacks,
+kernel storage and reserved arenas cannot be allocated twice. The only way into
+a reservation is a contiguous request whose [Lowest, Highest] lies wholly
+inside it; that maps through `Guest::map_reserved` at `0x80000000 + physical`
+(the reservation must have that alias, else a stop). Freeing such memory unmaps
+it and the pages stay reserved, bytes intact. MEM_TOP_DOWN places a new
+reservation at the highest vacant 64 KiB-aligned address below 0x7fff0000 (or
+the ZeroBits limit); with an explicit base it changes nothing. MEM_NOZERO stops.
+No-access, read-only, RW, RX and RWX protections are supported. PAGE_WRITECOMBINE and
 PAGE_NOCACHE preserve their query bits and use coherent guest RAM with the same
 base access permissions; there is no CPU cache/device timing model. Combining
-both modifiers is invalid. MEM_TOP_DOWN and MEM_NOZERO stop until implemented.
-No PAGE_NOACCESS, guest-requested PAGE_GUARD, physical pinning or quick-reboot
-persistence is claimed.
+both modifiers is invalid. No guest-requested PAGE_GUARD, physical pinning or
+quick-reboot persistence is claimed. NtFreeVirtualMemory decommit covers
+[base & ~0xfff, round_up(base + size)), or the rest of the allocation for size
+0; a range past the allocation, and release at an interior address, stop.
+Every committed page is checked before any is unmapped, so a free that would
+touch an HLE claim, a hole or lifted code stops with the region unchanged.
+No kernel allocator places anything in a reservation's alias windows (only
+`Guest::map_reserved` can fill them); a fixed virtual reserve or commit there
+fails with STATUS_CONFLICTING_ADDRESSES.
 Contiguous addresses use the `0x80000000 + physical` guest alias; internal storage
 uses a vacant `0xa1000000..0xb0000000` range. These are harness policies.
 `memory::HLE_RESERVED` (`0xa0000000..0xa1000000`, also `HLE_RESERVED_START` /
@@ -191,12 +220,23 @@ deadlines a WaitAny returns the index of the timer that expired first, and a
 synchronization timer is consumed by the first wait it satisfies. Timer deadlines take part in the idle/polling
 time advance like sleeps, so a game that only polls can jump straight to its
 next timer. A due time already reached expires during KeSetTimer itself.
-DPCs run one per slice before any thread, on a 16 KiB kernel stack, under
+A DPC queued while the caller is below DISPATCH_LEVEL runs before that caller
+continues, as on retail, where it runs as soon as IRQL drops: when a kernel call
+completes with DPCs queued, the thread is put back at the head of the ready
+queue and the DPCs run first. So KeSetTimer with a reached due time has run its
+DPC by the instruction after the call (Halo's voice engine, 0x332b6d, arms its
+20 ms DPC 0x332f4c that way), and a timer that expired at raised IRQL delivers
+on the KfLowerIrql. Otherwise DPCs run one per slice before any thread, on a 16 KiB kernel stack, under
 ExecCtx thread `threads::DPC_THREAD_ID` (0) at DISPATCH_LEVEL; the interrupted
 IRQL is restored when the routine returns. A routine that blocks, delays,
 yields or needs a KTHREAD stops: `RunOutcome::Stopped { thread: 0, .. }`,
 inspectable with `Machine::dpc_thread()`, and not retryable. An inserted
 timer or queued DPC whose guest header changed is a guest fault.
+
+Mutants (192/221 and waits) keep their owner in Rust by guest KTHREAD and the
+guest KMUTANT (type 2, Size 8, OwnerThread, Abandoned, MutantListEntry) up to
+date; a terminating thread abandons what it owns. Named mutants stop.
+KeSetBasePriorityThread records priorities, but scheduling stays FIFO.
 
 This does not model Xbox priority boosts or preempt a guest spin loop. Code that
 never blocks/yields can starve other threads. Kernel waits above APC_LEVEL, file
@@ -239,7 +279,9 @@ a published successful duplicate into an error. Native VFS handles never enter g
 
 FILE_SYNCHRONOUS_IO_NONALERT and FILE_SYNCHRONOUS_IO_ALERT are admitted and
 behave the same: every transfer completes on the host thread without a guest
-wait, so no alert or APC can interrupt it. FileModeInformation reports the bit
+wait, so no alert or APC can interrupt it. Asynchronous file objects (neither
+bit) are admitted too, and complete synchronously; see "Asynchronous I/O"
+below. FileModeInformation reports the bit
 the caller chose. FILE_OPEN_FOR_FREE_SPACE_QUERY is admitted for read-only
 FILE_OPEN (XAPI.md). Valid create options VFS does not implement stop.
 NtQueryInformationFile applies no per-class access check, matching retail
@@ -250,13 +292,28 @@ can alias the same RAM many times). Later chunks continue from the position
 the previous synchronous chunk left; a short chunk ends the transfer, and an
 end-of-file after some bytes is a successful short read. A backend error after
 some bytes were transferred is reported as that error. A scratch allocation
-failure reports STATUS_INSUFFICIENT_RESOURCES. Nonzero file event/APC/context
-arguments, asynchronous opens, allocation-size reservations, unsupported
+failure reports STATUS_INSUFFICIENT_RESOURCES. APC routines, unsupported
 object attributes, non-ASCII paths, unsupported information classes and
 unverified short-buffer/truncation contracts stop. Directory short-buffer stops
 retain the cursor for retry. File-object waits/guest FILE_OBJECT layouts, IRPs,
-IOCTLs, notifications, rename, symbolic-link object handles and full-attribute
-path queries remain unimplemented. Host backend calls execute synchronously on
+IOCTLs, notifications, rename and symbolic-link object handles remain
+unimplemented. OBJECT_ATTRIBUTES RootDirectory -3 (ObDosDevices) resolves the
+name under `\??\`; a rooted or empty name under it stops.
+
+### Asynchronous I/O
+
+Synchronous completion is equivalent for what Halo does. The 62 opens without a
+synchronous bit (options 0x4040) are all XAPI DeleteFile (0x2d6b7e): open
+DELETE, set FileDispositionInformation, close, with no I/O on the handle. XAPI
+ReadFile/WriteFile (0x2d2241) with an OVERLAPPED pass Event = hEvent,
+ApcRoutine = 0, ApcContext = the OVERLAPPED and IoStatusBlock = the OVERLAPPED,
+and treat any status other than STATUS_PENDING as complete. The kernel does the
+transfer before returning, writes the IO_STATUS_BLOCK, resets and then signals
+the event, and never returns STATUS_PENDING, which is a legal outcome on
+retail. On an asynchronous handle the ByteOffset is required (NULL is
+STATUS_INVALID_PARAMETER and FILE_USE_FILE_POINTER_POSITION stops), and the
+file position is left unchanged. An ApcRoutine stops, and waiting on the file
+handle itself is unsupported. Host backend calls execute synchronously on
 the scheduler's host thread; they do not overlap other guest execution.
 
 ## Host budgets
@@ -286,7 +343,7 @@ checked arithmetic: a header or field that would cross 2^32 is a guest fault.
 ## XAPI and completion integration
 
 [XAPI.md](XAPI.md) documents the conversion-table provenance, console settings,
-launch layout and 171 limitation, shared VFS, event signaling and owned dispatcher
+launch layout and its free, shared VFS, event signaling and owned dispatcher
 references, the completion API usable while a Guest guard is held, per-thread
 `last_error_cell`, the disk-space and cache-partition paths, symbolic-link
 objects, sections, and the power-down timer/DPC path. Generated XAPI wrappers
@@ -302,11 +359,14 @@ borrowed stack addresses are never cached as live kernel-owned objects.
 ## Remaining stops and API requests
 
 [STOPS.md](STOPS.md) lists every remaining function by ordinal, including the
-extra stop policies 56–58, 171 and 177, and the conditional VFS exports. Unknown
+extra stop policies 56–58 and 177, and the conditional VFS exports. Unknown
 or unimplemented functions retain KernelCall events and unmodified frames. No
 handler returns a placeholder success for unavailable behavior.
 
-DATA exports other than KeTickCount and LaunchDataPage retain Runtime's zero placeholders. The
+DATA exports other than KeTickCount and LaunchDataPage retain Runtime's zero
+placeholders. ObReferenceObjectByHandle compares its type argument with the
+addresses of DATA 259 (PsThreadObjectType) and 16 (ExEventObjectType), never
+their contents. The
 runtime has no data-read hook or no-access permission with which HLE could turn
 those reads into a named stop. They are not configured console data or initialized
 OBJECT_TYPE/IDE objects. This is a remaining integration limitation, not support.
@@ -314,23 +374,15 @@ OBJECT_TYPE/IDE objects. This is a remaining integration limitation, not support
 The runtime review API migration is complete: private `runtime()`, Guest guard
 helpers, `run_from`, owned `call_guest`, CpuAbi/GuestFault names and override
 replacement semantics are used. No additional callback/resume API is needed.
-The following changes are requested from the owning lanes; none were made here:
+The range API (`Guest::protect_range`, `unmap`, `Permissions::NONE`,
+`reserve_physical`/`map_reserved`, `find_free_physical`/`physical_free`) is
+used by 171, 182, 199, 170 and every physical allocator. Terminated thread
+stacks are not yet reclaimed with it. The following changes are requested from
+the owning lanes; none were made here:
 
 ```rust,ignore
-// Runtime Guest: transactional removal/splitting, including partial ranges.
-// Preserve backing bytes still referenced through an alias.
-pub fn unmap(&mut self, va: u32, len: u32)
-    -> Result<(), runtime::guest::MapError>;
-
-// Runtime permissions: enforce PAGE_NOACCESS and deny unsupported DATA reads.
-pub const NONE: runtime::guest::Permissions;
+// Runtime permissions: deny unsupported DATA reads (a read hook).
 ```
-
-Unmap is necessary for committed NtFreeVirtualMemory/decommit (199),
-MmFreeContiguousMemory (171), and reclaiming terminated thread stacks. Until
-then those frees stop. Whole uncommitted reservations and pooled objects can
-already be released correctly. Partial installation/allocation failures that
-need mapping rollback also depend on unmap.
 
 The loader/runner inventory only knows Halo's original imports. Supplemental
 exports such as Interlocked helpers currently use mapped executable adapters
@@ -391,10 +443,12 @@ in `ord.rs` and `layout.rs`.
 
 ## Validation and sources
 
-Validation on 2026-11-15: `cargo test -p kernel --all-targets` passed every
-test, with one local-disc test ignored by default. That test was run separately
-with `--ignored` against the supplied retail XBE and passed (it also checks
-section accounting and the seeded DATA exports). Kernel Clippy with
+Validation on 2026-11-15, against the runtime-mem range API: `cargo test -p
+kernel --all-targets` passed every test, with two local-disc tests ignored by
+default. They were run separately with `H2_XBE=<absolute path> ... --ignored`
+against the supplied retail XBE and passed: section accounting and the seeded
+DATA exports, and under `LoadOptions::halo2()` that kernel placements avoid
+the title arena and XPhysicalAlloc's request gets 0x80061000. Kernel Clippy with
 `--all-targets --no-deps -- -D warnings` and `cargo fmt -p kernel -- --check`
 passed.
 

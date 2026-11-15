@@ -24,12 +24,18 @@ impl Harness {
         Self::config(Config::default())
     }
     pub fn config(config: Config) -> Self {
+        Self::with_guest(config, |_| {})
+    }
+    /// `setup` runs on the guest (DATA, CODE and the stack already mapped)
+    /// before the kernel installs, e.g. to add physical reservations.
+    pub fn with_guest(config: Config, setup: impl FnOnce(&mut Guest)) -> Self {
         let mut memory = Guest::new();
         memory.map_zeroed(DATA, 0x20000, Permissions::RW).unwrap();
         memory.map_zeroed(CODE, 0x10000, Permissions::RWX).unwrap();
         memory
             .map_zeroed(STACK_BOTTOM, STACK_TOP - STACK_BOTTOM, Permissions::RW)
             .unwrap();
+        setup(&mut memory);
         let runtime = Runtime::new(memory, Dispatch::default());
         let kernel = Kernel::install(&runtime, config).unwrap();
         let cpu = CpuAbi {

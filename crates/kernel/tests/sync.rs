@@ -193,3 +193,237 @@ fn semaphore_header_at_the_end_of_the_address_space_faults_instead_of_overflowin
         Some(Event::MemoryFault { .. })
     ));
 }
+
+mod mutants {
+    use super::*;
+    use kernel::{Machine, RunOutcome};
+    use runtime::kernel::function_token as token;
+
+    const MUTANT: u32 = DATA + 0x900;
+    const PREVIOUS: u32 = DATA + 0x904;
+    const CHILD: u32 = DATA + 0x908;
+    const OBJECT: u32 = DATA + 0x90c;
+    const LOG: u32 = DATA + 0x910;
+    const CURRENT_THREAD: u32 = 0x28;
+
+    /// The KTHREAD of the running thread (FS:[0x28]).
+    fn current(cpu: &runtime::CpuAbi, ctx: &mut runtime::ExecCtx) -> u32 {
+        ctx.memory().u32(cpu.fs_base + CURRENT_THREAD).unwrap()
+    }
+    fn mutant(ctx: &mut runtime::ExecCtx) -> (i32, u32, u8, u32) {
+        let m = ctx.memory();
+        let at = m.u32(OBJECT).unwrap();
+        (
+            m.u32(at + 4).unwrap() as i32,
+            m.u32(at + 0x18).unwrap(),
+            m.u8(at + 0x1c).unwrap(),
+            at,
+        )
+    }
+
+    #[test]
+    fn mutants_are_recursive_owned_released_and_abandoned_on_thread_exit() {
+        let h = Harness::new();
+        // Thread 1: create owned, inspect, recurse, start a contender.
+        h.code(0, |cpu, ctx, _| {
+            guest_call(cpu, ctx, token(192), &[MUTANT, 0, 1], CODE + 0x10)
+        });
+        h.code(0x10, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(246), &[handle, 0, OBJECT], CODE + 0x20)
+        });
+        h.code(0x20, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let (signal, owner, abandoned, at) = mutant(ctx);
+            let me = current(cpu, ctx);
+            {
+                let m = ctx.memory();
+                assert_eq!(m.read::<4>(at)?, [2, 0, 8, 0], "KMUTANT header");
+                assert_eq!((signal, owner, abandoned), (0, me, 0));
+                // Linked into the owner's MutantListHead.
+                assert_eq!(m.u32(me + 0x10)?, at + 0x10);
+                assert_eq!(m.u32(at + 0x10)?, me + 0x10);
+            }
+            cpu.ecx = at;
+            guest_call(cpu, ctx, token(250), &[], CODE + 0x30)
+        });
+        h.code(0x30, |cpu, ctx, _| {
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(234), &[handle, 0, 0, 0], CODE + 0x40)
+        });
+        h.code(0x40, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0, "the owner reacquires without blocking");
+            assert_eq!(mutant(ctx).0, -1);
+            guest_call(
+                cpu,
+                ctx,
+                token(255),
+                &[CHILD, 0, 0x4000, 0, 0, CODE + 0x300, 0, 0, 0, 0],
+                CODE + 0x50,
+            )
+        });
+        h.code(0x50, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(221), &[handle, PREVIOUS], CODE + 0x60)
+        });
+        h.code(0x60, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            assert_eq!(ctx.memory().u32(PREVIOUS)? as i32, -1);
+            guest_call(cpu, ctx, token(238), &[], CODE + 0x70)
+        });
+        h.code(0x70, |cpu, ctx, _| {
+            // The child tried a release (not owner) and now waits.
+            assert_eq!(ctx.memory().u32(LOG)?, 1);
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(221), &[handle, PREVIOUS], CODE + 0x80)
+        });
+        h.code(0x80, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            assert_eq!(ctx.memory().u32(PREVIOUS)?, 0);
+            // The final release handed it straight to the waiting child.
+            let (signal, owner, _, _) = mutant(ctx);
+            assert_eq!(signal, 0);
+            assert_ne!(owner, current(cpu, ctx));
+            assert_ne!(owner, 0);
+            let child = ctx.memory().u32(CHILD)?;
+            guest_call(cpu, ctx, token(233), &[child, 0, 0], CODE + 0x90)
+        });
+        h.code(0x90, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            // The child exited owning it: free, and marked abandoned.
+            let (signal, owner, abandoned, _) = mutant(ctx);
+            assert_eq!((signal, owner, abandoned), (1, 0, 1));
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(234), &[handle, 0, 0, 0], CODE + 0xa0)
+        });
+        h.code(0xa0, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0x80, "STATUS_ABANDONED_WAIT_0");
+            let (signal, owner, abandoned, _) = mutant(ctx);
+            assert_eq!((signal, owner, abandoned), (0, current(cpu, ctx), 0));
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(221), &[handle, 0], CODE + 0xb0)
+        });
+        h.code(0xb0, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let (signal, owner, _, _) = mutant(ctx);
+            assert_eq!((signal, owner), (1, 0));
+            let me = current(cpu, ctx);
+            assert_eq!(ctx.memory().u32(me + 0x10)?, me + 0x10, "list empty again");
+            cpu.eax = 0;
+            ctx.memory().ret(cpu, 0)
+        });
+        // Thread 2: StartRoutine(Context).
+        h.code(0x300, |cpu, ctx, _| {
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(221), &[handle, 0], CODE + 0x310)
+        });
+        h.code(0x310, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, status::MUTANT_NOT_OWNED);
+            ctx.memory().set_u32(LOG, 1)?;
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(234), &[handle, 0, 0, 0], CODE + 0x320)
+        });
+        h.code(0x320, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            ctx.memory().ret(cpu, 4)
+        });
+        let mut machine = Machine::new(
+            h.runtime.clone(),
+            h.kernel.clone(),
+            h.cpu,
+            STACK_BOTTOM,
+            STACK_TOP,
+        )
+        .unwrap();
+        let outcome = machine.run(50).unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::Complete { .. }),
+            "{outcome:?}"
+        );
+        assert!(h.kernel.stop_reasons().is_empty());
+    }
+
+    /// MutantListEntry links are guest memory. A Flink whose Blink field
+    /// would sit past 0xffffffff faults the release instead of wrapping, and
+    /// the mutant stays owned with its count unchanged.
+    #[test]
+    fn mutant_release_with_an_overflowing_list_link_faults_without_changes() {
+        let h = Harness::new();
+        h.code(0, |cpu, ctx, _| {
+            guest_call(cpu, ctx, token(192), &[MUTANT, 0, 1], CODE + 0x10)
+        });
+        h.code(0x10, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(246), &[handle, 0, OBJECT], CODE + 0x20)
+        });
+        h.code(0x20, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let at = mutant(ctx).3;
+            ctx.memory().set_u32(at + 0x10, 0xffff_ffff)?;
+            let handle = ctx.memory().u32(MUTANT)?;
+            guest_call(cpu, ctx, token(221), &[handle, PREVIOUS], CODE + 0x30)
+        });
+        h.code(0x30, |_, _, _| panic!("the release must fault"));
+        let mut machine = Machine::new(
+            h.runtime.clone(),
+            h.kernel.clone(),
+            h.cpu,
+            STACK_BOTTOM,
+            STACK_TOP,
+        )
+        .unwrap();
+        let outcome = machine.run(20).unwrap();
+        let RunOutcome::Stopped { thread, transfer } = outcome else {
+            panic!("{outcome:?}");
+        };
+        assert!(matches!(
+            machine.thread(thread).unwrap().ctx.event(transfer.event_id),
+            Some(Event::MemoryFault { .. })
+        ));
+        let m = h.runtime.memory();
+        let at = m.u32(OBJECT).unwrap();
+        let owner = m.u32(at + 0x18).unwrap();
+        assert_ne!(owner, 0, "still owned");
+        assert_eq!(m.u32(at + 4).unwrap(), 0, "count unchanged");
+        assert_eq!(m.u32(at + 0x10).unwrap(), 0xffff_ffff);
+        assert_eq!(m.u32(owner + 0x10).unwrap(), at + 0x10, "list unchanged");
+    }
+
+    #[test]
+    fn mutant_handles_type_checks_and_unsupported_forms() {
+        let mut h = Harness::new();
+        // Unowned creation needs no thread; release by a non-owner fails.
+        assert_eq!(h.success(192, &[MUTANT, 0, 0]), 0);
+        let handle = h.get(MUTANT);
+        assert_eq!(
+            h.success(221, &[handle, PREVIOUS]),
+            status::MUTANT_NOT_OWNED
+        );
+        // An unowned mutant is signalled: an immediate wait with no thread
+        // cannot own it, so it stops rather than inventing an owner.
+        h.set(DATA + 0x100, 0);
+        h.set(DATA + 0x104, 0);
+        h.stopped(234, &[handle, 0, 0, DATA + 0x100]);
+        // Initial ownership needs a KTHREAD; names need a namespace.
+        h.stopped(192, &[MUTANT, 0, 1]);
+        h.set(DATA + 0x200, 0);
+        h.set(DATA + 0x204, DATA + 0x210);
+        h.set(DATA + 0x208, 0x40);
+        h.stopped(192, &[MUTANT, DATA + 0x200, 0]);
+        // Wrong object types.
+        assert_eq!(h.success(189, &[DATA + 0x300, 0, 0, 0]), 0);
+        let event = h.get(DATA + 0x300);
+        assert_eq!(h.success(221, &[event, 0]), status::OBJECT_TYPE_MISMATCH);
+        assert_eq!(
+            h.success(222, &[handle, 1, 0]),
+            status::OBJECT_TYPE_MISMATCH
+        );
+        assert_eq!(h.success(221, &[0x7ff0, 0]), status::INVALID_HANDLE);
+        // RtlNtStatusToDosError knows ERROR_NOT_OWNER.
+        assert_eq!(h.success(301, &[status::MUTANT_NOT_OWNED]), 288);
+        assert_eq!(h.success(187, &[handle]), 0);
+    }
+}

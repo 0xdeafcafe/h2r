@@ -308,3 +308,143 @@ fn wait_any_is_satisfied_by_the_earliest_expiry_when_time_jumps_past_several() {
         kernel::status::TIMEOUT
     );
 }
+
+/// The retail voice-engine start (0x332f67 -> 0x332b6d): KeQuerySystemTime,
+/// then KeSetTimer with that absolute time plus 0 ms and a DPC (0x332f4c)
+/// whose routine re-arms the timer 20 ms on. The due time is already reached,
+/// so the DPC must have run before the instruction after the KeSetTimer call.
+#[test]
+fn a_dpc_queued_by_a_call_runs_before_the_caller_continues() {
+    let h = Harness::new();
+    let mut machine = machine(&h);
+    // DPC routine: record, then re-arm its own timer 20 ms ahead (relative).
+    h.code(0x300, |cpu, ctx, _| {
+        {
+            let mut m = ctx.memory();
+            let count = m.u32(RECORD + 20)?;
+            m.set_u32(RECORD + 20, count + 1)?;
+            let irql = m.u8(cpu.fs_base + IRQL)?;
+            m.set_u32(RECORD + 16, irql as u32)?;
+        }
+        let (lo, hi) = relative(20);
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(149),
+            &[TIMER, lo, hi, DPC],
+            CODE + 0x340,
+        )
+    });
+    h.code(0x340, |cpu, ctx, _| {
+        // A KeSetTimer inside the DPC queues nothing new and does not yield.
+        assert_eq!(cpu.eax, 0);
+        ctx.memory().ret(cpu, 16)
+    });
+    h.code(0, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(113),
+            &[TIMER, 0],
+            CODE + 0x10,
+        )
+    });
+    h.code(0x10, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(107),
+            &[DPC, CODE + 0x300, 0],
+            CODE + 0x20,
+        )
+    });
+    h.code(0x20, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(128),
+            &[INTERVAL],
+            CODE + 0x30,
+        )
+    });
+    h.code(0x30, |cpu, ctx, _| {
+        let now = ctx.memory().u64(INTERVAL)?;
+        cpu.ebx = 0x5a5a;
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(149),
+            &[TIMER, now as u32, (now >> 32) as u32, DPC],
+            CODE + 0x40,
+        )
+    });
+    h.code(0x40, |cpu, ctx, _| {
+        // The return value and callee-saved state survive the DPC.
+        assert_eq!(cpu.eax, 0);
+        assert_eq!(cpu.ebx, 0x5a5a);
+        assert_eq!(ctx.memory().u32(RECORD + 20)?, 1, "DPC ran before this");
+        assert_eq!(ctx.memory().u32(RECORD + 16)?, 2);
+        assert_eq!(ctx.memory().u8(cpu.fs_base + IRQL)?, 0);
+        // The routine re-armed its timer.
+        assert_eq!(ctx.memory().u8(TIMER + 3)?, 1);
+        // Raised to DISPATCH_LEVEL, a due timer's DPC waits for the drop.
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(129),
+            &[],
+            CODE + 0x50,
+        )
+    });
+    h.code(0x50, |cpu, ctx, _| {
+        assert_eq!(cpu.eax, 0, "old IRQL");
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(149),
+            &[TIMER, 0, 0, DPC],
+            CODE + 0x60,
+        )
+    });
+    h.code(0x60, |cpu, ctx, _| {
+        assert_eq!(cpu.eax, 1, "it was inserted");
+        assert_eq!(ctx.memory().u32(RECORD + 20)?, 1, "not yet: IRQL is 2");
+        cpu.ecx = 0;
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(161),
+            &[],
+            CODE + 0x70,
+        )
+    });
+    h.code(0x70, |cpu, ctx, _| {
+        assert_eq!(
+            ctx.memory().u32(RECORD + 20)?,
+            2,
+            "delivered on KfLowerIrql"
+        );
+        // Stop the re-arming timer so the run can complete.
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(97),
+            &[TIMER],
+            CODE + 0x80,
+        )
+    });
+    h.code(0x80, |cpu, ctx, _| {
+        assert_eq!(cpu.eax, 1);
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    let outcome = machine.run(30).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}"
+    );
+    // Thread 1, the DPC, thread 1 again (twice).
+    let schedule = machine.schedule();
+    assert_eq!(schedule, [1, DPC_THREAD_ID, 1, DPC_THREAD_ID, 1]);
+    assert_eq!(h.kernel.clock().counter(), 0, "no time had to pass");
+}

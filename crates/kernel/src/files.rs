@@ -1,5 +1,7 @@
-//! Guest ABI packing around the shared VFS. Only synchronous, non-alertable
-//! files are admitted. Unsupported classes stop before changing VFS state.
+//! Guest ABI packing around the shared VFS. Every transfer completes before
+//! the call returns, on synchronous and asynchronous (overlapped) file objects
+//! alike; see README "VFS boundaries". Unsupported classes stop before
+//! changing VFS state.
 use crate::ord;
 use crate::{Action, Core, abi::Args, status};
 use runtime::{Guest, GuestFault, guest::Access};
@@ -35,9 +37,56 @@ fn guest_offset(base: u32, offset: usize) -> Result<u32, GuestFault> {
         .ok_or_else(|| crate::strings::overflow(base))
 }
 
+/// OBJECT_ATTRIBUTES.RootDirectory (HANDLE)-3, ObDosDevicesDirectory: the
+/// name is relative to `\??\` (XAPI's DeleteFile, GetFileAttributes and
+/// CreateFile pass drive paths such as `z:\cache000.map` this way).
+pub(crate) const DOS_DEVICES_ROOT: u32 = 0xffff_fffd;
+/// NtCreateFile/NtOpenFile options FILE_SYNCHRONOUS_IO_ALERT | _NONALERT.
+const SYNCHRONOUS_IO: u32 = 0x30;
+/// ByteOffset {FILE_USE_FILE_POINTER_POSITION, -1}.
+const USE_FILE_POINTER_POSITION: i64 = -2;
+
 pub(crate) struct File {
     mode: u32,
     access: vfs::Access,
+    /// Opened with a FILE_SYNCHRONOUS_IO_* option. Otherwise the file object
+    /// is asynchronous: transfers need an explicit ByteOffset and leave the
+    /// file position alone, as NT only keeps CurrentByteOffset for
+    /// synchronous file objects.
+    synchronous: bool,
+}
+
+/// An OBJECT_ATTRIBUTES name: absolute, or relative to a guest file handle.
+struct ObjectName {
+    root: u32,
+    path: String,
+}
+/// Decode OBJECT_ATTRIBUTES. A DosDevices-relative name becomes absolute
+/// (`\??\` + name). `Err` carries the diagnostic stop for an unsupported form.
+fn object_name(
+    memory: &Guest,
+    attributes: u32,
+) -> Result<Result<ObjectName, &'static str>, GuestFault> {
+    let fields = memory.read::<12>(attributes)?;
+    let root = u32::from_le_bytes(fields[..4].try_into().unwrap());
+    let descriptor = u32::from_le_bytes(fields[4..8].try_into().unwrap());
+    let flags = u32::from_le_bytes(fields[8..12].try_into().unwrap());
+    if flags & !0x40 != 0 {
+        return Ok(Err("object attributes unsupported"));
+    }
+    let Some(path) = name(memory, descriptor)? else {
+        return Ok(Err("unsupported file name"));
+    };
+    if root != DOS_DEVICES_ROOT {
+        return Ok(Ok(ObjectName { root, path }));
+    }
+    if path.is_empty() || path.starts_with('\\') {
+        return Ok(Err("rooted or empty name relative to \\?? unverified"));
+    }
+    Ok(Ok(ObjectName {
+        root: 0,
+        path: format!("\\??\\{path}"),
+    }))
 }
 
 pub(crate) fn is_file_export(ordinal: u32) -> bool {
@@ -51,6 +100,7 @@ pub(crate) fn is_file_export(ordinal: u32) -> bool {
             | ord::NT_OPEN_SYMBOLIC_LINK_OBJECT
             | ord::NT_QUERY_SYMBOLIC_LINK_OBJECT
             | ord::NT_QUERY_DIRECTORY_FILE
+            | ord::NT_QUERY_FULL_ATTRIBUTES_FILE
             | ord::NT_QUERY_INFORMATION_FILE
             | ord::NT_QUERY_VOLUME_INFORMATION_FILE
             | ord::NT_READ_FILE
@@ -190,6 +240,9 @@ impl Core {
         if a.export.ordinal == ord::NT_QUERY_SYMBOLIC_LINK_OBJECT {
             return self.link_query(memory, a);
         }
+        if a.export.ordinal == ord::NT_QUERY_FULL_ATTRIBUTES_FILE {
+            return self.full_attributes(memory, a, storage);
+        }
         if a.export.ordinal == ord::NT_CLOSE {
             let native = self.file_handle(a.get(0)).unwrap();
             let object = self.handles.close(a.get(0)).unwrap();
@@ -246,9 +299,25 @@ impl Core {
         match a.export.ordinal {
             ord::NT_FLUSH_BUFFERS_FILE => finish(memory, iosb, storage.flush(handle).map(|_| 0)),
             ord::NT_READ_FILE | ord::NT_WRITE_FILE => {
-                if a.get(1) != 0 || a.get(2) != 0 || a.get(3) != 0 {
-                    return Ok(Action::Stop("event/APC file I/O unsupported"));
+                // ApcRoutine needs user-APC delivery. An ApcContext without a
+                // routine is a completion-port key, and Xbox has no
+                // completion ports: XAPI passes its OVERLAPPED there.
+                if a.get(2) != 0 {
+                    return Ok(Action::Stop(
+                        "file I/O APC completion requires APC delivery",
+                    ));
                 }
+                let event = if a.get(1) == 0 {
+                    None
+                } else {
+                    match self.handles.get(a.get(1)) {
+                        Ok(object) => match self.ensure_object(memory, object)? {
+                            Some(crate::sync::Object::Event { .. }) => Some(object),
+                            _ => return Ok(Action::status(status::OBJECT_TYPE_MISMATCH)),
+                        },
+                        Err(s) => return Ok(Action::status(s)),
+                    }
+                };
                 let write = a.export.ordinal == ord::NT_WRITE_FILE;
                 let buffer = a.get(5);
                 let length = a.get(6) as usize;
@@ -258,11 +327,23 @@ impl Core {
                     if write { Access::Read } else { Access::Write },
                     1,
                 )?;
+                let object = self.handles.get(a.get(0)).unwrap();
+                let synchronous = self.files[&object].synchronous;
+                if !synchronous {
+                    // A non-synchronous file object has no position to use.
+                    if a.get(7) == 0 {
+                        return Ok(Action::status(status::INVALID_PARAMETER));
+                    }
+                    if memory.u64(a.get(7))? as i64 == USE_FILE_POINTER_POSITION {
+                        return Ok(Action::Stop(
+                            "file-pointer offset on an asynchronous file object unverified",
+                        ));
+                    }
+                }
                 let offset = match offset(memory, a.get(7), write)? {
                     Ok(o) => o,
                     Err(e) => return Ok(Action::status(e.ntstatus())),
                 };
-                let object = self.handles.get(a.get(0)).unwrap();
                 let access = self.files[&object].access;
                 if (!write && !access.contains(vfs::Access::READ))
                     || (write && access.0 & (vfs::Access::WRITE.0 | vfs::Access::APPEND.0) == 0)
@@ -271,6 +352,18 @@ impl Core {
                 }
                 let Some(mut chunk) = chunk_buffer(length) else {
                     return finish_status(memory, iosb, status::INSUFFICIENT_RESOURCES, 0);
+                };
+                if let Some(event) = event {
+                    // NtReadFile clears the caller's event before the transfer.
+                    self.event_set(memory, event, false)?;
+                }
+                let position = if synchronous {
+                    None
+                } else {
+                    match storage.query_information(handle) {
+                        Ok(info) => Some(info.position),
+                        Err(e) => return finish(memory, iosb, Err(e)),
+                    }
                 };
                 // Transfer in bounded chunks. The first chunk uses the caller's
                 // offset; later chunks continue from the position the previous
@@ -303,7 +396,18 @@ impl Core {
                         Err(e) => break Err(e),
                     }
                 };
-                finish(memory, iosb, result.map(|n| n as u32))
+                if let Some(position) = position {
+                    let _ = storage.set_position(handle, position);
+                }
+                let action = finish(memory, iosb, result.map(|n| n as u32))?;
+                // Completion signals the event. A request that fails at once
+                // completes without it, as NT does for a synchronous error.
+                if let (Some(event), Action::Complete(crate::abi::Value::U32(s))) = (event, &action)
+                    && status::nt_success(*s)
+                {
+                    self.event_set(memory, event, true)?;
+                }
+                Ok(action)
             }
             ord::NT_QUERY_INFORMATION_FILE => {
                 let class = a.get(4);
@@ -453,15 +557,9 @@ impl Core {
     ) -> Result<Action, GuestFault> {
         memory.check(a.get(0), 4, Access::Write, 1)?;
         memory.check(a.get(3), 8, Access::Write, 1)?;
-        let attributes = memory.read::<12>(a.get(2))?;
-        let root = u32::from_le_bytes(attributes[..4].try_into().unwrap());
-        let descriptor = u32::from_le_bytes(attributes[4..8].try_into().unwrap());
-        let flags = u32::from_le_bytes(attributes[8..12].try_into().unwrap());
-        if flags & !0x40 != 0 {
-            return Ok(Action::Stop("object attributes unsupported"));
-        }
-        let Some(path) = name(memory, descriptor)? else {
-            return Ok(Action::Stop("unsupported file name"));
+        let ObjectName { root, path } = match object_name(memory, a.get(2))? {
+            Ok(n) => n,
+            Err(reason) => return Ok(Action::Stop(reason)),
         };
         let (share, disposition, options, attributes) = if a.export.ordinal == ord::NT_CREATE_FILE {
             (a.get(6), a.get(7), a.get(8), a.get(5))
@@ -472,10 +570,9 @@ impl Core {
         // whether a wait inside the I/O can be alerted. Every transfer here
         // completes on the host thread without a guest wait, so no alert or
         // APC can arrive and both behave identically. Both bits together is
-        // rejected by VFS as STATUS_INVALID_PARAMETER.
-        if options & 0x30 == 0 {
-            return Ok(Action::Stop("asynchronous file objects unsupported"));
-        }
+        // rejected by VFS as STATUS_INVALID_PARAMETER. Neither bit opens an
+        // asynchronous file object (XAPI's DeleteFile uses 0x4040).
+        let synchronous = options & SYNCHRONOUS_IO != 0;
         // GetDiskFreeSpaceEx (retail 0x2d1620) opens the queried directory with
         // FILE_OPEN_FOR_FREE_SPACE_QUERY, then asks 218 for class 3. The handle
         // is an ordinary synchronous VFS handle: volume queries are answered
@@ -547,6 +644,7 @@ impl Core {
                     File {
                         mode: options & 0x3e,
                         access: open_options.access,
+                        synchronous,
                     },
                 );
                 memory.set_u32(a.get(0), handle)?;
@@ -567,15 +665,10 @@ impl Core {
         storage: &mut Vfs,
     ) -> Result<Action, GuestFault> {
         memory.check(a.get(0), 4, Access::Write, 1)?;
-        let attributes = memory.read::<12>(a.get(1))?;
-        let root = u32::from_le_bytes(attributes[..4].try_into().unwrap());
-        let descriptor = u32::from_le_bytes(attributes[4..8].try_into().unwrap());
-        let flags = u32::from_le_bytes(attributes[8..12].try_into().unwrap());
-        if root != 0 || flags & !0x40 != 0 {
-            return Ok(Action::Stop("symbolic-link object attributes unsupported"));
-        }
-        let Some(link) = name(memory, descriptor)? else {
-            return Ok(Action::Stop("unsupported symbolic-link name"));
+        let link = match object_name(memory, a.get(1))? {
+            Ok(ObjectName { root: 0, path }) => path,
+            Ok(_) => return Ok(Action::Stop("symbolic-link object attributes unsupported")),
+            Err(reason) => return Ok(Action::Stop(reason)),
         };
         let target = match storage.namespace.query_symbolic_link(&link) {
             Ok(target) => target.to_owned(),
@@ -632,6 +725,66 @@ impl Core {
         }
         Ok(Action::status(result))
     }
+    /// NtQueryFullAttributesFile(ObjectAttributes, FILE_NETWORK_OPEN_INFORMATION *):
+    /// path metadata without opening a guest handle, so it neither needs
+    /// access rights nor meets share modes. No IO_STATUS_BLOCK; the status is
+    /// the result. A trailing backslash names a directory, as in NtOpenFile.
+    fn full_attributes(
+        &mut self,
+        memory: &mut Guest,
+        a: &Args,
+        storage: &mut Vfs,
+    ) -> Result<Action, GuestFault> {
+        let out = a.get(1);
+        memory.check(out, 56, Access::Write, 1)?;
+        let ObjectName { root, path } = match object_name(memory, a.get(0))? {
+            Ok(n) => n,
+            Err(reason) => return Ok(Action::Stop(reason)),
+        };
+        let (path, directory) = match path.strip_suffix('\\') {
+            Some(stripped) if !stripped.is_empty() => (stripped.to_owned(), true),
+            _ => (path, false),
+        };
+        let result = if root == 0 {
+            storage.query_path(&path)
+        } else {
+            if self.handles.get(root).is_ok() && !self.file_handles.contains_key(&root) {
+                return Ok(Action::status(status::OBJECT_TYPE_MISMATCH));
+            }
+            let parent = match self.file_handle(root) {
+                Ok(h) => h,
+                Err(e) => return Ok(Action::status(e.ntstatus())),
+            };
+            // FILE_READ_ATTRIBUTES, share all: the query sees what an open
+            // would, through the same relative-name rules.
+            let options = OpenOptions::from_nt(0x80, 7, 1, 0, 0).expect("valid query open");
+            match storage.open_relative(parent, &path, options) {
+                Ok(opened) => {
+                    let info = storage.query_information(opened.handle);
+                    let _ = storage.close(opened.handle);
+                    info.map(|i| i.metadata)
+                }
+                Err(e) => Err(e),
+            }
+        };
+        let metadata = match result {
+            Ok(m) if directory && !m.is_directory() => Err(Error::NotADirectory),
+            other => other,
+        };
+        match metadata {
+            Err(Error::NotSupported) => Ok(Action::Stop("VFS operation unsupported")),
+            Err(e) => Ok(Action::status(e.ntstatus())),
+            Ok(m) => {
+                let mut bytes = [0u8; 56];
+                basic(&mut bytes, 0, m.basic);
+                put64(&mut bytes, 32, m.allocation_size);
+                put64(&mut bytes, 40, m.end_of_file);
+                put32(&mut bytes, 48, m.basic.attributes);
+                memory.write_bytes(out, &bytes, 1)?;
+                Ok(Action::status(status::SUCCESS))
+            }
+        }
+    }
     fn file_set_information(
         &mut self,
         memory: &mut Guest,
@@ -643,7 +796,7 @@ impl Core {
         let needed = match class {
             4 => 40,
             13 => 1,
-            14 | 20 => 8,
+            14 | 19 | 20 => 8,
             _ => return Ok(Action::Stop("file set-information class unsupported")),
         };
         if a.get(3) < needed {
@@ -657,6 +810,32 @@ impl Core {
             }
         }
         let result = match class {
+            // FileAllocationInformation: below end of file it truncates the
+            // file; otherwise it only reserves clusters, which VFS storage
+            // has no notion of, so it succeeds with nothing to do. XAPI's
+            // SetEndOfFile (0x2d2472) sets it equal to the new end of file.
+            19 => {
+                let size = memory.u64(a.get(2))?;
+                if size > i64::MAX as u64 {
+                    return Ok(Action::status(Error::InvalidParameter.ntstatus()));
+                }
+                let object = self.handles.get(a.get(0)).unwrap();
+                if !self.files[&object].access.contains(vfs::Access::WRITE) {
+                    return Ok(Action::status(Error::AccessDenied.ntstatus()));
+                }
+                let info = match storage.query_information(handle) {
+                    Ok(i) => i.metadata,
+                    Err(e) => return finish(memory, a.get(1), Err(e)),
+                };
+                if info.is_directory() {
+                    return Ok(Action::Stop("directory allocation size unverified"));
+                }
+                if size < info.end_of_file {
+                    storage.set_end_of_file(handle, size)
+                } else {
+                    Ok(())
+                }
+            }
             13 => storage.set_delete_pending(handle, memory.u8(a.get(2))? != 0),
             14 | 20 => {
                 let value = memory.u64(a.get(2))?;

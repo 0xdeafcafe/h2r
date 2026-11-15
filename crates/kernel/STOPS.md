@@ -29,39 +29,24 @@ The inventory is checked against Runtime by `tests/stops.rs`.
 | 137 | KeRemoveQueueDpc |
 | 139 | KeRestoreFloatingPointState |
 | 142 | KeSaveFloatingPointState |
-| 143 | KeSetBasePriorityThread |
 | 151 | KeStallExecutionProcessor |
 | 153 | KeSynchronizeExecution |
 | 167 | MmAllocateSystemMemory |
 | 168 | MmClaimGpuInstanceMemory |
-| 169 | MmCreateKernelStack |
-| 170 | MmDeleteKernelStack |
-| 171 | MmFreeContiguousMemory |
 | 172 | MmFreeSystemMemory |
 | 175 | MmLockUnlockBufferPages |
 | 176 | MmLockUnlockPhysicalPage |
 | 181 | MmQueryStatistics |
-| 182 | MmSetAddressProtect |
-| 192 | NtCreateMutant |
 | 195 | NtDeleteFile |
 | 196 | NtDeviceIoControlFile |
 | 200 | NtFsControlFile |
-| 210 | NtQueryFullAttributesFile |
-| 221 | NtReleaseMutant |
 | 228 | NtSetSystemTime |
-| 246 | ObReferenceObjectByHandle |
 | 247 | ObReferenceObjectByName |
-| 250 | ObfDereferenceObject |
-| 252 | PhyGetLinkState |
-| 253 | PhyInitialize |
 | 269 | RtlCompareMemoryUlong |
 | 302 | RtlRaiseException |
 | 304 | RtlTimeFieldsToTime |
 | 305 | RtlTimeToTimeFields |
 | 312 | RtlUnwind |
-| 335 | XcSHAInit |
-| 336 | XcSHAUpdate |
-| 337 | XcSHAFinal |
 | 338 | XcRC4Key |
 | 339 | XcRC4Crypt |
 | 340 | XcHMAC |
@@ -79,8 +64,8 @@ Supplemental exports **56, 57, 58** (SLIST atomics) and **177** (MmMapIoSpace)
 also have explicit stop adapters. They are outside Runtime's current Halo import
 inventory; use `Kernel::entry` for their mapped adapters in synthetic code.
 
-Without `Kernel::set_vfs`, **67, 69, 190, 198, 202, 203, 207, 211, 215, 218,
-219, 226, 236** stop as well. `Kernel::stopped_ordinals()` includes this configuration
+Without `Kernel::set_vfs`, **67, 69, 190, 198, 202, 203, 207, 210, 211, 215,
+218, 219, 226, 236** stop as well. `Kernel::stopped_ordinals()` includes this configuration
 difference. File handles use the existing 187/197 close/duplicate adapters.
 
 Partly supported exports also stop on unsupported inputs; see README.md.
@@ -96,14 +81,22 @@ profile, real object types, configured keys, or a working IDE device.
 Partly supported exports 2/24/301 stop on unknown encoder options, setting
 indices and status codes respectively; their supported subsets are in XAPI.md.
 164 (LaunchDataPage DATA) is explicitly null by default, with an opt-in setter.
-171 remains stopped, including cleanup after non-null launch info, pending
-Guest::unmap. Timers and DPCs (97, 107, 113, 149, 150) are implemented on
+Timers and DPCs (97, 107, 113, 149, 150) are implemented on
 logical time (README.md); KeInsertQueueDpc/KeRemoveQueueDpc (119/137) and
 interrupt objects still stop. Inside a DPC routine, blocking waits, delays,
 yields and thread-only services stop (no KTHREAD), and such a stop cannot be
 retried with `retry_kernel_call`.
 
-MEM_TOP_DOWN and MEM_NOZERO variants of 184 stop. PAGE_WRITECOMBINE and
+MEM_NOZERO variants of 184 stop (MEM_TOP_DOWN is implemented). 199 stops for
+a decommit range past its allocation and release at an interior address. 182
+stops outside contiguous or committed memory. 182, 171 and 199 stop, changing
+nothing, when they would remove Execute from or unmap lifted code
+(`MapError::LiftedCode`; the loader guards executable sections). 199 and 170
+also stop, changing nothing, over a page inside an HLE-owned virtual claim
+(`MapError::Claimed`); 199 likewise over a committed page no longer mapped. 166 stops for a reservation
+without a 0x80000000 alias. Named mutants, file-object references (246), APC
+routines on file I/O and FILE_USE_FILE_POINTER_POSITION on asynchronous handles
+stop. PAGE_WRITECOMBINE and
 PAGE_NOCACHE use coherent RAM while preserving protection query bits; those
 modifiers alone no longer force a stop. Invalid/mismatched dispatcher headers
 and KeReleaseSemaphore type/limit exceptions stop rather than returning counts.

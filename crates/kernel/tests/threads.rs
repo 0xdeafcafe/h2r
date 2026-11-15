@@ -597,3 +597,154 @@ fn thread_creation_with_a_full_handle_table_maps_nothing() {
         "a failed creation left its stack, guard or object mapped"
     );
 }
+
+mod object_references {
+    use super::*;
+    use runtime::kernel::function_token as token;
+
+    const THREAD_TYPE: u32 = DATA + 0xa00;
+    const EVENT_TYPE: u32 = DATA + 0xa10;
+    const OBJECT: u32 = DATA + 0xa20;
+    const EVENT: u32 = DATA + 0xa24;
+    const CURRENT: u32 = 0xffff_fffe;
+
+    fn harness() -> Harness {
+        let mut config = kernel::Config::default();
+        config.data_exports.insert(259, THREAD_TYPE); // PsThreadObjectType
+        config.data_exports.insert(16, EVENT_TYPE); // ExEventObjectType
+        Harness::config(config)
+    }
+
+    /// XAPI SetThreadPriority (0x2d1fb6): reference, set, dereference.
+    #[test]
+    fn set_thread_priority_references_the_thread_and_records_its_base_priority() {
+        let h = harness();
+        h.code(0, |cpu, ctx, _| {
+            guest_call(
+                cpu,
+                ctx,
+                token(246),
+                &[CURRENT, THREAD_TYPE, OBJECT],
+                CODE + 0x10,
+            )
+        });
+        h.code(0x10, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            let thread = ctx.memory().u32(OBJECT)?;
+            assert_eq!(thread, ctx.memory().u32(cpu.fs_base + 0x28)?);
+            {
+                let m = ctx.memory();
+                // A new thread starts at the process base priority, 8.
+                assert_eq!((m.u8(thread + 0x70)?, m.u8(thread + 0x32)?), (8, 8));
+            }
+            // THREAD_PRIORITY_TIME_CRITICAL (15) becomes 16: saturation.
+            guest_call(cpu, ctx, token(143), &[thread, 16], CODE + 0x20)
+        });
+        h.code(0x20, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0, "old increment");
+            let thread = ctx.memory().u32(OBJECT)?;
+            {
+                let m = ctx.memory();
+                assert_eq!(m.u8(thread + 0x31)?, 1, "saturated");
+                assert_eq!(m.u8(thread + 0x32)?, 15, "top of the variable class");
+                assert_eq!(m.u8(thread + 0x70)?, 15);
+            }
+            guest_call(cpu, ctx, token(143), &[thread, (-2i32) as u32], CODE + 0x30)
+        });
+        h.code(0x30, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 16, "a saturated thread reports +16");
+            let thread = ctx.memory().u32(OBJECT)?;
+            {
+                let m = ctx.memory();
+                assert_eq!(m.u8(thread + 0x31)?, 0);
+                assert_eq!((m.u8(thread + 0x70)?, m.u8(thread + 0x32)?), (6, 6));
+            }
+            guest_call(
+                cpu,
+                ctx,
+                token(143),
+                &[thread, (-16i32) as u32],
+                CODE + 0x40,
+            )
+        });
+        h.code(0x40, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, (-2i32) as u32);
+            let thread = ctx.memory().u32(OBJECT)?;
+            assert_eq!(ctx.memory().u8(thread + 0x31)?, 0xff, "saturated low");
+            assert_eq!(ctx.memory().u8(thread + 0x32)?, 1, "idle");
+            cpu.ecx = thread;
+            guest_call(cpu, ctx, token(250), &[], CODE + 0x50)
+        });
+        h.code(0x50, |cpu, ctx, _| {
+            // Wrong type: an event handle as a thread.
+            guest_call(cpu, ctx, token(189), &[EVENT, 0, 0, 0], CODE + 0x60)
+        });
+        h.code(0x60, |cpu, ctx, _| {
+            let event = ctx.memory().u32(EVENT)?;
+            guest_call(
+                cpu,
+                ctx,
+                token(246),
+                &[event, THREAD_TYPE, OBJECT],
+                CODE + 0x70,
+            )
+        });
+        h.code(0x70, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, status::OBJECT_TYPE_MISMATCH);
+            let event = ctx.memory().u32(EVENT)?;
+            guest_call(
+                cpu,
+                ctx,
+                token(246),
+                &[event, EVENT_TYPE, OBJECT],
+                CODE + 0x80,
+            )
+        });
+        h.code(0x80, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            // Closing the only handle leaves the referenced event alive.
+            let event = ctx.memory().u32(EVENT)?;
+            guest_call(cpu, ctx, token(187), &[event], CODE + 0x90)
+        });
+        h.code(0x90, |cpu, ctx, _| {
+            let object = ctx.memory().u32(OBJECT)?;
+            // Still a valid event: KeSetEvent works on the referenced body.
+            guest_call(cpu, ctx, token(145), &[object, 0, 0], CODE + 0xa0)
+        });
+        h.code(0xa0, |cpu, ctx, _| {
+            assert_eq!(cpu.eax, 0);
+            cpu.ecx = ctx.memory().u32(OBJECT)?;
+            guest_call(cpu, ctx, token(250), &[], CODE + 0xb0)
+        });
+        h.code(0xb0, |cpu, ctx, _| {
+            cpu.eax = 0;
+            ctx.memory().ret(cpu, 0)
+        });
+        let mut machine = attach(&h);
+        let outcome = machine.run(20).unwrap();
+        assert!(
+            matches!(outcome, RunOutcome::Complete { .. }),
+            "{outcome:?}"
+        );
+        assert!(h.kernel.stop_reasons().is_empty());
+    }
+
+    #[test]
+    fn object_references_reject_bad_handles_unknown_types_and_extra_dereferences() {
+        let mut h = harness();
+        assert_eq!(h.success(246, &[0x7ff0, 0, OBJECT]), status::INVALID_HANDLE);
+        assert_eq!(h.success(189, &[EVENT, 0, 0, 0]), 0);
+        let event = h.get(EVENT);
+        // An OBJECT_TYPE address that is not an imported type export.
+        h.stopped(246, &[event, DATA + 0xb00, OBJECT]);
+        // A null type accepts any dispatcher object.
+        assert_eq!(h.success(246, &[event, 0, OBJECT]), 0);
+        let object = h.get(OBJECT);
+        h.success(250, &[object]);
+        // More dereferences than references stop.
+        h.stopped(250, &[object]);
+        // The pseudo-handle and KeSetBasePriorityThread need Machine threads.
+        h.stopped(246, &[CURRENT, THREAD_TYPE, OBJECT]);
+        h.stopped(143, &[object, 1]);
+    }
+}

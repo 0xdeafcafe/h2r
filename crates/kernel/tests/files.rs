@@ -307,15 +307,17 @@ fn vfs_guest_faults_do_not_create_files_or_advance_io_and_unsupported_work_stops
     h.stopped(211, &[handle, IOSB, INFO, 8, 9]);
     h.stopped(218, &[handle, IOSB, INFO, 64, 1]);
     h.stopped(211, &[handle, IOSB, INFO, 1, 5]);
-    path(&h, "T:\\no-async.bin", 0);
-    h.stopped(
-        190,
-        &[DATA, vfs::Access::ALL.0, ATTR, IOSB, 0, 0, 7, 3, 0x40],
-    );
+    // Neither synchronous bit: an asynchronous file object (no stop).
+    path(&h, "T:\\async.bin", 0);
     assert_eq!(
-        h.success(202, &[DATA, vfs::Access::ALL.0, ATTR, IOSB, 7, 0x60]),
-        Error::ObjectNameNotFound.ntstatus()
+        h.success(
+            190,
+            &[DATA, vfs::Access::ALL.0, ATTR, IOSB, 0, 0, 7, 3, 0x40],
+        ),
+        0
     );
+    let asynchronous = h.get(DATA);
+    assert_eq!(h.success(187, &[asynchronous]), 0);
     h.runtime.memory().set_u64(INFO, (-1i64) as u64).unwrap();
     assert_eq!(
         h.success(226, &[handle, IOSB, INFO, 8, 14]),
@@ -695,9 +697,11 @@ fn xapi_generic_write_handle_answers_basic_and_network_open_information() {
         h.success(190, &[DATA, 0x4010_0000, ATTR, IOSB, 0, 0, 0, 2, 0x50]),
         0
     );
-    // Neither synchronous bit: asynchronous objects still stop.
+    // Neither synchronous bit: an asynchronous file object.
+    assert_eq!(h.success(187, &[handle]), 0);
     path(&h, "T:\\a.txt", 0);
-    h.stopped(202, &[DATA, 0x0010_0001, ATTR, IOSB, 7, 0x40]);
+    assert_eq!(h.success(202, &[DATA, 0x0010_0001, ATTR, IOSB, 7, 0x40]), 0);
+    assert_eq!(h.success(187, &[h.get(DATA)]), 0);
 }
 
 #[test]
@@ -878,4 +882,241 @@ fn raw_partition0_retains_a_bounded_number_of_written_sectors() {
     assert!(sector[1..].iter().all(|b| *b == 0));
     disk.read_at("", first * SECTOR_SIZE, &mut sector).unwrap();
     assert_eq!(sector[..2], [0xa5, 0x5a]);
+}
+
+const DOS_DEVICES: u32 = 0xffff_fffd;
+const EVENT_OUT: u32 = DATA + 0x700;
+const OFFSET: u32 = DATA + 0x710;
+
+#[test]
+fn dos_devices_root_names_resolve_relative_to_the_dos_devices_directory() {
+    let mut h = setup();
+    // XAPI CreateFile/DeleteFile: RootDirectory (HANDLE)-3 with "t:\a.txt".
+    let handle = open(&mut h, "t:\\a.txt", DOS_DEVICES, false, false);
+    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BUFFER, 5, 0]), 0);
+    assert_eq!(h.runtime.memory().read::<5>(BUFFER).unwrap(), *b"hello");
+    h.success(187, &[handle]);
+    let created = open(&mut h, "t:\\made.bin", DOS_DEVICES, true, false);
+    assert_eq!(h.get(IOSB + 4), 2); // FILE_CREATED
+    h.success(187, &[created]);
+    // A missing name reports the VFS status, as an absolute name would.
+    path(&h, "t:\\missing.bin", DOS_DEVICES);
+    assert_eq!(
+        h.success(202, &[DATA, vfs::Access::ALL.0, ATTR, IOSB, 7, 0x60]),
+        Error::ObjectNameNotFound.ntstatus()
+    );
+    // Symbolic-link objects resolve under the same root.
+    path(&h, "T:", DOS_DEVICES);
+    assert_eq!(h.success(203, &[DATA, ATTR]), 0);
+    h.success(187, &[h.get(DATA)]);
+    // A rooted or empty name relative to \?? is not a verified form.
+    path(&h, "\\t:\\a.txt", DOS_DEVICES);
+    h.stopped(202, &[DATA, vfs::Access::ALL.0, ATTR, IOSB, 7, 0x60]);
+    path(&h, "", DOS_DEVICES);
+    h.stopped(210, &[ATTR, INFO]);
+}
+
+#[test]
+fn query_full_attributes_reads_path_metadata_without_an_open_handle() {
+    let mut h = setup();
+    // An exclusive open with no sharing: a real open would collide, the
+    // attribute query does not.
+    path(&h, "T:\\a.txt", 0);
+    assert_eq!(
+        h.success(202, &[DATA, vfs::Access::ALL.0, ATTR, IOSB, 0, 0x60]),
+        0
+    );
+    let exclusive = h.get(DATA);
+    h.bytes(INFO, &[0xcc; 64]);
+    path(&h, "t:\\a.txt", DOS_DEVICES);
+    assert_eq!(h.success(210, &[ATTR, INFO]), 0);
+    let m = h.runtime.memory();
+    for (i, time) in [100u64, 200, 300, 400].into_iter().enumerate() {
+        assert_eq!(m.u64(INFO + i as u32 * 8).unwrap(), time);
+    }
+    assert_eq!(m.u64(INFO + 32).unwrap(), 16384);
+    assert_eq!(m.u64(INFO + 40).unwrap(), 5);
+    assert_eq!(m.u32(INFO + 48).unwrap(), vfs::ATTR_ARCHIVE);
+    assert_eq!(m.u32(INFO + 52).unwrap(), 0);
+    assert_eq!(m.u8(INFO + 56).unwrap(), 0xcc);
+    drop(m);
+    h.success(187, &[exclusive]);
+    // Missing names, and a trailing backslash on a file.
+    path(&h, "t:\\fonts\\", DOS_DEVICES);
+    assert_eq!(
+        h.success(210, &[ATTR, INFO]),
+        Error::ObjectNameNotFound.ntstatus()
+    );
+    path(&h, "t:\\a.txt\\", DOS_DEVICES);
+    assert_eq!(
+        h.success(210, &[ATTR, INFO]),
+        Error::NotADirectory.ntstatus()
+    );
+    // A volume root is a directory.
+    path(&h, "t:\\", DOS_DEVICES);
+    assert_eq!(h.success(210, &[ATTR, INFO]), 0);
+    assert_eq!(h.get(INFO + 48), vfs::ATTR_DIRECTORY);
+    // Relative to a directory handle; a non-file handle is a type mismatch.
+    let root = open(&mut h, "T:\\", 0, false, true);
+    path(&h, "b.bin", root);
+    assert_eq!(h.success(210, &[ATTR, INFO]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 40).unwrap(), 5);
+    assert_eq!(h.success(189, &[EVENT_OUT, 0, 0, 0]), 0);
+    path(&h, "b.bin", h.get(EVENT_OUT));
+    assert_eq!(h.success(210, &[ATTR, INFO]), status::OBJECT_TYPE_MISMATCH);
+    // Output is checked before anything else.
+    path(&h, "t:\\a.txt", DOS_DEVICES);
+    let t = h.call(210, &[ATTR, 0xdead0000]);
+    assert!(matches!(
+        h.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+}
+
+#[test]
+fn query_full_attributes_stops_without_a_vfs() {
+    let mut h = Harness::new();
+    h.stopped(210, &[0, 0]);
+}
+
+#[test]
+fn allocation_information_truncates_below_end_of_file_and_is_otherwise_a_reservation() {
+    let mut h = setup();
+    let handle = open(&mut h, "T:\\a.txt", 0, false, false);
+    // XAPI SetEndOfFile: class 20 then class 19 with the same size.
+    h.runtime.memory().set_u64(INFO, 3).unwrap();
+    assert_eq!(h.success(226, &[handle, IOSB, INFO, 8, 20]), 0);
+    assert_eq!(h.success(226, &[handle, IOSB, INFO, 8, 19]), 0);
+    assert_eq!((h.get(IOSB), h.get(IOSB + 4)), (0, 0));
+    // Larger: a cluster reservation only; end of file is unchanged.
+    h.runtime.memory().set_u64(INFO, 0x10000).unwrap();
+    assert_eq!(h.success(226, &[handle, IOSB, INFO, 8, 19]), 0);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 3);
+    // Smaller: truncates.
+    h.runtime.memory().set_u64(INFO, 1).unwrap();
+    assert_eq!(h.success(226, &[handle, IOSB, INFO, 8, 19]), 0);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 1);
+    // Short buffer, negative size, missing write access.
+    assert_eq!(
+        h.success(226, &[handle, IOSB, INFO, 4, 19]),
+        Error::InvalidParameter.ntstatus()
+    );
+    h.runtime.memory().set_u64(INFO, u64::MAX).unwrap();
+    assert_eq!(
+        h.success(226, &[handle, IOSB, INFO, 8, 19]),
+        Error::InvalidParameter.ntstatus()
+    );
+    h.success(187, &[handle]);
+    path(&h, "T:\\b.bin", 0);
+    assert_eq!(h.success(202, &[DATA, 0x0010_0001, ATTR, IOSB, 7, 0x60]), 0);
+    let read_only = h.get(DATA);
+    h.runtime.memory().set_u64(INFO, 0).unwrap();
+    assert_eq!(
+        h.success(226, &[read_only, IOSB, INFO, 8, 19]),
+        Error::AccessDenied.ntstatus()
+    );
+    assert_eq!(h.success(211, &[read_only, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 5);
+}
+
+/// NtWaitForSingleObjectEx with a zero timeout: 0 if signalled, else TIMEOUT.
+fn signalled(h: &mut Harness, handle: u32) -> bool {
+    h.runtime.memory().set_u64(OFFSET + 8, 0).unwrap();
+    match h.success(234, &[handle, 0, 0, OFFSET + 8]) {
+        0 => true,
+        status::TIMEOUT => false,
+        other => panic!("wait status {other:#x}"),
+    }
+}
+
+#[test]
+fn asynchronous_file_objects_complete_synchronously_with_event_and_iosb() {
+    let mut h = setup();
+    // XAPI DeleteFile: DELETE access only (no SYNCHRONIZE), options 0x4040.
+    path(&h, "t:\\b.bin", DOS_DEVICES);
+    assert_eq!(h.success(202, &[DATA, 0x10000, ATTR, IOSB, 7, 0x4040]), 0);
+    let deleting = h.get(DATA);
+    h.bytes(INFO, &[1]);
+    assert_eq!(h.success(226, &[deleting, IOSB, INFO, 1, 13]), 0);
+    assert_eq!(h.success(187, &[deleting]), 0);
+    path(&h, "t:\\b.bin", DOS_DEVICES);
+    assert_eq!(
+        h.success(210, &[ATTR, INFO]),
+        Error::ObjectNameNotFound.ntstatus()
+    );
+
+    // An overlapped reader: GENERIC_READ | GENERIC_WRITE, no synchronous bit.
+    path(&h, "T:\\a.txt", 0);
+    assert_eq!(h.success(202, &[DATA, 0xc000_0000, ATTR, IOSB, 7, 0x40]), 0);
+    let file = h.get(DATA);
+    assert_eq!(h.success(211, &[file, IOSB, INFO, 4, 16]), 0);
+    assert_eq!(h.get(INFO), 0, "FileModeInformation: no synchronous bit");
+    // No ByteOffset: invalid for an asynchronous object; IOSB untouched.
+    h.set(IOSB, 0x103);
+    h.set(IOSB + 4, 0xaaaa);
+    assert_eq!(
+        h.success(219, &[file, 0, 0, 0, IOSB, BUFFER, 5, 0]),
+        status::INVALID_PARAMETER
+    );
+    assert_eq!((h.get(IOSB), h.get(IOSB + 4)), (0x103, 0xaaaa));
+    // FILE_USE_FILE_POINTER_POSITION has no verified meaning here.
+    h.runtime.memory().set_u64(OFFSET, (-2i64) as u64).unwrap();
+    h.stopped(219, &[file, 0, 0, 0, IOSB, BUFFER, 5, OFFSET]);
+    // XAPI ReadFile with an OVERLAPPED: event, no APC routine, the OVERLAPPED
+    // as ApcContext (a completion key, ignored), IOSB = the OVERLAPPED.
+    assert_eq!(h.success(189, &[EVENT_OUT, 0, 0, 1]), 0); // signalled
+    let event = h.get(EVENT_OUT);
+    h.runtime.memory().set_u64(OFFSET, 1).unwrap();
+    h.bytes(BUFFER, &[0; 8]);
+    assert_eq!(
+        h.success(219, &[file, event, 0, IOSB, IOSB, BUFFER, 8, OFFSET]),
+        0
+    );
+    assert_eq!((h.get(IOSB), h.get(IOSB + 4)), (0, 4));
+    assert_eq!(h.runtime.memory().read::<4>(BUFFER).unwrap(), *b"ello");
+    assert!(signalled(&mut h, event));
+    // The position of an asynchronous object is not moved by transfers.
+    assert_eq!(h.success(211, &[file, IOSB, INFO, 8, 14]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO).unwrap(), 0);
+    // A failed transfer clears the event and does not signal it.
+    h.runtime.memory().set_u64(OFFSET, 100).unwrap();
+    assert_eq!(
+        h.success(219, &[file, event, 0, 0, IOSB, BUFFER, 8, OFFSET]),
+        Error::EndOfFile.ntstatus()
+    );
+    assert!(!signalled(&mut h, event));
+    // Writes at end of file (-1) append.
+    h.bytes(BUFFER, b"!!");
+    h.runtime.memory().set_u64(OFFSET, u64::MAX).unwrap();
+    assert_eq!(
+        h.success(236, &[file, event, 0, 0, IOSB, BUFFER, 2, OFFSET]),
+        0
+    );
+    assert!(signalled(&mut h, event));
+    assert_eq!(h.success(211, &[file, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 7);
+    // An APC routine needs APC delivery; a non-event handle is a mismatch.
+    h.stopped(219, &[file, 0, CODE, 0, IOSB, BUFFER, 1, OFFSET]);
+    h.runtime.memory().set_u64(OFFSET, 0).unwrap();
+    assert_eq!(
+        h.success(219, &[file, file, 0, 0, IOSB, BUFFER, 1, OFFSET]),
+        status::OBJECT_TYPE_MISMATCH
+    );
+    assert_eq!(
+        h.success(219, &[file, 0x7ff0, 0, 0, IOSB, BUFFER, 1, OFFSET]),
+        status::INVALID_HANDLE
+    );
+    h.success(187, &[file]);
+    // Synchronous objects take an event too, and move their position.
+    let sync = open(&mut h, "T:\\a.txt", 0, false, false);
+    assert_eq!(h.success(189, &[EVENT_OUT, 0, 0, 0]), 0); // not signalled
+    let event = h.get(EVENT_OUT);
+    assert!(!signalled(&mut h, event));
+    assert_eq!(h.success(219, &[sync, event, 0, 0, IOSB, BUFFER, 3, 0]), 0);
+    assert!(signalled(&mut h, event));
+    assert_eq!(h.success(211, &[sync, IOSB, INFO, 8, 14]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO).unwrap(), 3);
+    h.success(187, &[sync]);
 }

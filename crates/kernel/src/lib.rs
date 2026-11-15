@@ -4,6 +4,7 @@
 pub mod abi;
 pub mod clock;
 pub mod console;
+pub mod crypto;
 mod dispatcher;
 pub mod dos;
 pub use dispatcher::{DeferredSignal, DispatcherReference};
@@ -14,6 +15,7 @@ pub mod image;
 pub mod launch;
 pub mod layout;
 pub mod memory;
+mod objects;
 pub mod ord;
 pub mod rawdisk;
 mod sections;
@@ -170,6 +172,11 @@ pub(crate) struct Core {
     /// Symbolic-link objects opened by 203: pool object -> target captured at open.
     links: BTreeMap<u32, String>,
     timers: BTreeMap<u32, timers::Timer>,
+    /// Owned mutants: guest address -> owning thread ID.
+    mutant_owners: BTreeMap<u32, u32>,
+    /// ObReferenceObjectByHandle counts not yet released by ObfDereferenceObject
+    /// (also counted in `references`).
+    guest_references: BTreeMap<u32, usize>,
     dpcs: VecDeque<u32>,
     /// Set by a DPC routine's return continuation.
     dpc_complete: bool,
@@ -289,6 +296,8 @@ impl Kernel {
                 file_handles: BTreeMap::new(),
                 links: BTreeMap::new(),
                 timers: BTreeMap::new(),
+                mutant_owners: BTreeMap::new(),
+                guest_references: BTreeMap::new(),
                 dpcs: VecDeque::new(),
                 dpc_complete: false,
                 shutdown: Vec::new(),
@@ -329,6 +338,13 @@ impl Kernel {
         Ok(kernel)
     }
     pub fn for_image(image: &mut LoadedImage) -> Result<Arc<Self>, Error> {
+        Self::for_image_with(image, Config::default())
+    }
+    /// `for_image` with explicit settings: `tls`, `data_exports` and
+    /// `title_id` come from the image; every other field (console profile,
+    /// epoch, utility partition, image name) from
+    /// `config`.
+    pub fn for_image_with(image: &mut LoadedImage, config: Config) -> Result<Arc<Self>, Error> {
         // Certificate TitleID; synthetic images without a certificate have none.
         let title_id = {
             let memory = image.runtime.memory();
@@ -345,7 +361,7 @@ impl Kernel {
                 tls: image.tls,
                 data_exports: image.data_exports.clone(),
                 title_id,
-                ..Config::default()
+                ..config
             },
             &reclaimed,
         )?;
@@ -474,14 +490,12 @@ impl Kernel {
                             && !matches!(
                                 e.ordinal,
                                 ord::INTERLOCKED_FLUSH_S_LIST
-                                    ..=ord::INTERLOCKED_PUSH_ENTRY_S_LIST
-                                        | ord::MM_FREE_CONTIGUOUS_MEMORY
-                                        | ord::MM_MAP_IO_SPACE
+                                    ..=ord::INTERLOCKED_PUSH_ENTRY_S_LIST | ord::MM_MAP_IO_SPACE
                             )
                     })
             })
             .map(|f| f.ordinal)
-            .chain([56, 57, 58, 171, 177])
+            .chain([56, 57, 58, 177])
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect()
@@ -502,7 +516,20 @@ impl Kernel {
             (args, action)
         };
         match action {
-            Action::Complete(value) => args.finish(cpu, &ctx.runtime().memory(), value),
+            Action::Complete(value) => {
+                let resume = args.finish(cpu, &ctx.runtime().memory(), value)?;
+                // A DPC queued by this call (KeSetTimer with a due time already
+                // reached, for example) runs before the caller continues, as
+                // when retail lowers IRQL below DISPATCH_LEVEL on the way out.
+                if self
+                    .lock()
+                    .dispatch_pending(&mut ctx.runtime().memory(), ctx.thread_id)?
+                {
+                    self.lock().yielded.insert(ctx.thread_id, resume);
+                    return Ok(TransferAbi::stop(0));
+                }
+                Ok(resume)
+            }
             Action::Stop(reason) => {
                 let mut core = self.lock();
                 let core = &mut *core;
@@ -578,6 +605,7 @@ impl Core {
             | ord::NT_OPEN_SYMBOLIC_LINK_OBJECT
             | ord::NT_QUERY_SYMBOLIC_LINK_OBJECT
             | ord::NT_QUERY_DIRECTORY_FILE
+            | ord::NT_QUERY_FULL_ATTRIBUTES_FILE
             | ord::NT_QUERY_INFORMATION_FILE
             | ord::NT_QUERY_VOLUME_INFORMATION_FILE
             | ord::NT_READ_FILE
@@ -591,8 +619,11 @@ impl Core {
             | ord::MM_ALLOCATE_CONTIGUOUS_MEMORY_EX
             | ord::MM_FREE_CONTIGUOUS_MEMORY
             | ord::MM_GET_PHYSICAL_ADDRESS
+            | ord::MM_CREATE_KERNEL_STACK
+            | ord::MM_DELETE_KERNEL_STACK
             | ord::MM_MAP_IO_SPACE
             | ord::MM_PERSIST_CONTIGUOUS_MEMORY
+            | ord::MM_SET_ADDRESS_PROTECT
             | ord::MM_QUERY_ADDRESS_PROTECT
             | ord::MM_QUERY_ALLOCATION_SIZE
             | ord::NT_ALLOCATE_VIRTUAL_MEMORY
@@ -601,7 +632,22 @@ impl Core {
                 if a.export.ordinal == ord::MM_PERSIST_CONTIGUOUS_MEMORY {
                     return self.persist_call(memory, a);
                 }
-                self.memory.call(memory, a)
+                let freeing = (a.export.ordinal == ord::MM_FREE_CONTIGUOUS_MEMORY)
+                    .then(|| {
+                        self.memory
+                            .contiguous
+                            .get(&a.get(0))
+                            .map(|(n, _)| (a.get(0), *n))
+                    })
+                    .flatten();
+                let action = self.memory.call(memory, a)?;
+                // Freed pages no longer persist.
+                if let (Some((base, size)), Action::Complete(_)) = (freeing, &action) {
+                    self.persistent.retain(|p| {
+                        !(base as u64..base as u64 + size as u64).contains(&(*p as u64))
+                    });
+                }
+                Ok(action)
             }
             ord::HAL_REGISTER_SHUTDOWN_NOTIFICATION => {
                 let registration = a.get(0);
@@ -636,6 +682,14 @@ impl Core {
             | ord::KE_INITIALIZE_TIMER_EX
             | ord::KE_SET_TIMER
             | ord::KE_SET_TIMER_EX => self.timer_call(memory, a),
+            ord::OB_REFERENCE_OBJECT_BY_HANDLE | ord::OBF_DEREFERENCE_OBJECT => {
+                self.object_call(memory, a, tid)
+            }
+            ord::XC_SHA_INIT | ord::XC_SHA_UPDATE | ord::XC_SHA_FINAL => self.sha_call(memory, a),
+            // No NIC model: the PHY initializes and reports no link (cable
+            // unplugged), which XNet treats as "no network".
+            ord::PHY_INITIALIZE => Ok(Action::status(status::SUCCESS)),
+            ord::PHY_GET_LINK_STATE => Ok(Action::value(0)),
             ord::XE_LOAD_SECTION | ord::XE_UNLOAD_SECTION => {
                 self.section_call(memory, a.get(0), a.export.ordinal == ord::XE_LOAD_SECTION)
             }
@@ -675,6 +729,7 @@ impl Core {
             | ord::KE_ENTER_CRITICAL_REGION
             | ord::KE_GET_CURRENT_THREAD
             | ord::KE_LEAVE_CRITICAL_REGION
+            | ord::KE_SET_BASE_PRIORITY_THREAD
             | ord::NT_RESUME_THREAD
             | ord::NT_YIELD_EXECUTION
             | ord::PS_CREATE_SYSTEM_THREAD_EX
@@ -695,8 +750,8 @@ impl Core {
                 {
                     return Ok(Action::Stop("invalid IRQL transition"));
                 }
-                // Interrupt/DPC producers remain stops, so no unmodeled work
-                // can be pending when this initial IRQL model lowers a mask.
+                // Lowering below DISPATCH_LEVEL with DPCs queued delivers them
+                // before the caller continues (`Core::dispatch_pending`).
                 memory.set_u8(self.kpcr + crate::layout::kpcr::IRQL, new)?;
                 Ok(Action::Complete(
                     if a.export.ordinal == ord::KF_LOWER_IRQL {
@@ -725,8 +780,10 @@ impl Core {
             | ord::KE_WAIT_FOR_SINGLE_OBJECT
             | ord::NT_CLOSE
             | ord::NT_CREATE_EVENT
+            | ord::NT_CREATE_MUTANT
             | ord::NT_CREATE_SEMAPHORE
             | ord::NT_DUPLICATE_OBJECT
+            | ord::NT_RELEASE_MUTANT
             | ord::NT_RELEASE_SEMAPHORE
             | ord::NT_SET_EVENT
             | ord::NT_WAIT_FOR_SINGLE_OBJECT

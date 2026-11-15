@@ -238,3 +238,66 @@ fn handle_table_has_a_live_handle_budget() {
     table.close(4).unwrap();
     assert!(table.insert(0x1000).is_ok());
 }
+
+/// XcSHAInit/Update/Final through the guest ABI: the context is the caller's
+/// 116-byte buffer, updates may be split anywhere, and Final writes 20 bytes.
+#[test]
+fn xc_sha_hashes_split_guest_updates_into_a_fips_digest() {
+    let mut h = Harness::new();
+    const CTX: u32 = DATA + 0x100;
+    const INPUT: u32 = DATA + 0x200;
+    const DIGEST: u32 = DATA + 0x300;
+    assert_eq!(kernel::crypto::SHA_CONTEXT_SIZE, 116);
+    h.bytes(CTX, &[0xcc; 116]);
+    h.success(335, &[CTX]);
+    // Bytes past the state are the caller's.
+    assert_eq!(h.get(CTX + 112), 0xcccccccc);
+    h.bytes(INPUT, b"abc");
+    h.success(336, &[CTX, INPUT, 1]);
+    h.success(336, &[CTX, INPUT + 1, 0]);
+    h.success(336, &[CTX, INPUT + 1, 2]);
+    h.bytes(DIGEST, &[0; 24]);
+    h.success(337, &[CTX, DIGEST]);
+    let mut digest = [0u8; 24];
+    h.runtime
+        .memory()
+        .read_bytes(DIGEST, &mut digest, 1)
+        .unwrap();
+    let hex: String = digest[..20].iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hex, "a9993e364706816aba3e25717850c26c9cd0d89d");
+    assert_eq!(&digest[20..], &[0; 4]);
+    // A copied context continues independently (callers memcpy them).
+    let long: Vec<u8> = (0..10_000u32).map(|i| i as u8).collect();
+    h.bytes(INPUT, &long);
+    h.success(335, &[CTX]);
+    h.success(336, &[CTX, INPUT, 10_000]);
+    let mut host = kernel::crypto::Sha1::new();
+    host.update(&long);
+    h.success(337, &[CTX, DIGEST]);
+    h.runtime
+        .memory()
+        .read_bytes(DIGEST, &mut digest, 1)
+        .unwrap();
+    assert_eq!(&digest[..20], &host.finish());
+    // An uninitialised context stops; unmapped spans fault before any write.
+    h.bytes(CTX, &[0xff; 116]);
+    h.stopped(336, &[CTX, INPUT, 1]);
+    h.stopped(337, &[CTX, DIGEST]);
+    h.success(335, &[CTX]);
+    let before = h.get(CTX);
+    assert_eq!(
+        h.call(336, &[CTX, 0xdead_0000, 4]).kind,
+        runtime::abi::FAULT
+    );
+    assert_eq!(h.call(337, &[CTX, 0xdead_0000]).kind, runtime::abi::FAULT);
+    assert_eq!(h.get(CTX), before);
+}
+
+/// XNetGetEthernetLinkStatus (0x36c47d): PhyInitialize(0, 0) then
+/// PhyGetLinkState(0). No network device is modelled: no link.
+#[test]
+fn phy_initializes_and_reports_no_link() {
+    let mut h = Harness::new();
+    assert_eq!(h.success(253, &[0, 0]), status::SUCCESS);
+    assert_eq!(h.success(252, &[0]), 0);
+}

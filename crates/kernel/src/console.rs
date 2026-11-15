@@ -17,6 +17,8 @@ pub const XC_MISC_FLAG_AUTOPOWERDOWN: u32 = 0x01;
 /// XC_MISC: automatic daylight-saving adjustment disabled.
 pub const XC_MISC_FLAG_DISABLE_DST: u32 = 0x02;
 pub const XC_FACTORY_AV_REGION: u32 = 0x103;
+/// XC_MAX_ALL: the whole 256-byte EEPROM image.
+pub const XC_MAX_ALL: u32 = 0xffff;
 pub const XC_FACTORY_GAME_REGION: u32 = 0x104;
 pub const AV_STANDARD_NTSC_M: u32 = 0x100;
 pub const AV_STANDARD_NTSC_J: u32 = 0x200;
@@ -86,6 +88,12 @@ impl Core {
             }
             memory.set_u32(a.get(3), self.console.encoder_settings())?;
             return Ok(Action::Complete(Value::Void));
+        }
+        // No EEPROM image is configured (and none is fabricated), so the
+        // whole-EEPROM query finds nothing; nothing is written. XAPI's
+        // XQueryValue (0x2d6f62) converts this to ERROR_FILE_NOT_FOUND.
+        if a.get(0) == XC_MAX_ALL {
+            return Ok(Action::status(status::OBJECT_NAME_NOT_FOUND));
         }
         let Some(value) = self.console.setting(a.get(0)) else {
             return Ok(Action::Stop("unknown/unconfigured nonvolatile setting"));

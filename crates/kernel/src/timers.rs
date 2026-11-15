@@ -9,6 +9,8 @@
 //! WaitAny sees the earliest expiry even when time jumps past several. Timer deadlines take part in the scheduler's idle/polling time
 //! advance exactly like sleeps. `Machine::run` executes queued DPCs, one per
 //! slice and before any thread, on a kernel-owned stack at DISPATCH_LEVEL.
+//! A thread whose kernel call queued a DPC and returns below DISPATCH_LEVEL
+//! yields first, so the DPC runs before the caller's next instruction.
 use crate::layout::kpcr;
 use crate::ord;
 use crate::{
@@ -273,6 +275,35 @@ impl Core {
     }
     pub(crate) fn next_timer_deadline(&self) -> Option<u64> {
         self.timers.values().map(|t| t.deadline).min()
+    }
+    /// Called as guest thread `tid` returns from a kernel call. If DPCs are
+    /// queued and the thread is now below DISPATCH_LEVEL, retail would run
+    /// them before the caller continues (the IRQL drop requests the DPC
+    /// interrupt). Requeue the thread at the front of the ready queue and
+    /// return true: `Machine::run` then drains the DPC queue, one routine per
+    /// slice, before resuming it. The DPC context itself never yields here.
+    pub(crate) fn dispatch_pending(
+        &mut self,
+        memory: &mut Guest,
+        tid: u32,
+    ) -> Result<bool, GuestFault> {
+        if self.dpcs.is_empty() || tid == crate::threads::DPC_THREAD_ID {
+            return Ok(false);
+        }
+        if memory.u8(self.kpcr + kpcr::IRQL)? >= 2 {
+            return Ok(false);
+        }
+        let Some(record) = self.threads.get_mut(&tid) else {
+            return Ok(false);
+        };
+        if !matches!(record.state, crate::threads::State::Running) {
+            return Ok(false);
+        }
+        memory.set_u8(record.object + crate::layout::kthread::STATE, 1)?; // Ready
+        record.state = crate::threads::State::Ready;
+        record.polling = false;
+        self.ready.push_front(tid);
+        Ok(true)
     }
     pub(crate) fn dispatch_level(&self, memory: &mut Guest) -> Result<u8, GuestFault> {
         let old = memory.u8(self.kpcr + kpcr::IRQL)?;

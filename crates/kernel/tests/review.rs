@@ -102,11 +102,10 @@ fn unsupported_valid_allocation_flags_stop_instead_of_reporting_invalid_paramete
     let mut h = Harness::new();
     h.set(DATA, 0);
     h.set(DATA + 4, 4096);
-    for flag in [0x100000, 0x800000] {
-        h.stopped(184, &[DATA, 0, DATA + 4, 0x3000 | flag, 4]);
-        assert_eq!(h.get(DATA), 0);
-        assert_eq!(h.get(DATA + 4), 4096);
-    }
+    // MEM_NOZERO. MEM_TOP_DOWN (0x100000) is implemented; see tests/memory.rs.
+    h.stopped(184, &[DATA, 0, DATA + 4, 0x3000 | 0x800000, 4]);
+    assert_eq!(h.get(DATA), 0);
+    assert_eq!(h.get(DATA + 4), 4096);
 }
 
 #[test]

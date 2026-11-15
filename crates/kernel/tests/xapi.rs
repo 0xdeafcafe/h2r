@@ -116,7 +116,17 @@ fn configured_nonvolatile_dwords_and_encoder_readout_use_the_same_profile() {
     assert_ne!(ConsoleConfig::default().video_flags & AV_FLAGS_480P, 0);
     // XAPI's auto power-down setup (0x2d6f79) reads XC_MISC: default is off.
     assert_eq!(ConsoleConfig::default().setting(XC_MISC), Some(0));
-    h.stopped(24, &[0xffff, 0, 0, 0, 0]);
+    // XC_MAX_ALL (whole EEPROM) with no image configured: not found, and
+    // nothing written. XQueryValue (0x2d6f62) maps it to a DOS error.
+    h.bytes(DATA + 40, &[0xcc; 12]);
+    assert_eq!(
+        h.success(24, &[0xffff, DATA + 40, DATA + 44, 256, DATA + 48]),
+        status::OBJECT_NAME_NOT_FOUND
+    );
+    assert_eq!(
+        [h.get(DATA + 40), h.get(DATA + 44), h.get(DATA + 48)],
+        [0xcccccccc; 3]
+    );
     h.stopped(2, &[0, 9, 0, DATA]);
     h.stopped(2, &[0, 6, 1, DATA]);
 }

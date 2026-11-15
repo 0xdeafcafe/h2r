@@ -10,10 +10,63 @@ use runtime::{Guest, GuestFault, guest::Access};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Object {
-    Event { manual: bool },
-    Semaphore { limit: i32 },
-    Thread { tid: u32 },
-    Timer { synchronization: bool },
+    Event {
+        manual: bool,
+    },
+    Semaphore {
+        limit: i32,
+    },
+    Thread {
+        tid: u32,
+    },
+    Timer {
+        synchronization: bool,
+    },
+    /// Kernel-owned KMUTANT from NtCreateMutant; its owner is `Core::mutant_owners`.
+    Mutant,
+}
+
+/// KMUTANT (0x20 bytes): header type 2, Size 8, then MutantListEntry,
+/// OwnerThread (KTHREAD) and Abandoned. SignalState is 1 when free and
+/// 1 - recursion while owned.
+pub(crate) const MUTANT_TYPE: u8 = 2;
+pub(crate) const MUTANT_SIZE: u32 = 0x20;
+const MUTANT_LIST_ENTRY: u32 = 0x10;
+const MUTANT_OWNER: u32 = 0x18;
+const MUTANT_ABANDONED: u32 = 0x1c;
+
+/// The Blink field of the guest LIST_ENTRY at `entry`. Links are guest
+/// controlled, so a Flink of 0xfffffffd..=0xffffffff faults instead of
+/// wrapping.
+fn blink_of(entry: u32) -> Result<u32, GuestFault> {
+    entry
+        .checked_add(4)
+        .ok_or_else(|| crate::strings::overflow(entry))
+}
+/// Append `entry` to the guest LIST_ENTRY at `head` (InsertTailList). Every
+/// field it writes is checked first, so a fault changes nothing.
+fn insert_tail(memory: &mut Guest, head: u32, entry: u32) -> Result<(), GuestFault> {
+    let head_blink = blink_of(head)?;
+    let entry_blink = blink_of(entry)?;
+    let blink = memory.u32(head_blink)?;
+    memory.check(head, 8, Access::Write, 1)?;
+    memory.check(entry, 8, Access::Write, 1)?;
+    memory.check(blink, 4, Access::Write, 1)?;
+    memory.set_u32(entry, head)?;
+    memory.set_u32(entry_blink, blink)?;
+    memory.set_u32(blink, entry)?;
+    memory.set_u32(head_blink, entry)
+}
+/// RemoveEntryList on a guest LIST_ENTRY. Both neighbours are checked
+/// before either is written, so a fault changes nothing.
+fn remove_entry(memory: &mut Guest, entry: u32) -> Result<(), GuestFault> {
+    let flink = memory.u32(entry)?;
+    let blink = memory.u32(blink_of(entry)?)?;
+    let flink_blink = blink_of(flink)?;
+    memory.check(blink, 4, Access::Write, 1)?;
+    memory.check(flink_blink, 4, Access::Write, 1)?;
+    memory.set_u32(blink, flink)?;
+    memory.set_u32(flink_blink, blink)
 }
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Critical {
@@ -94,6 +147,16 @@ impl Core {
                     Some(Object::Thread { tid }) => Some(Object::Thread { tid }),
                     _ => None,
                 },
+                // Only NtCreateMutant makes mutants, so an unknown address with
+                // this header is not adopted as one.
+                (MUTANT_TYPE, 8) => match expected {
+                    Some(Object::Mutant)
+                        if i32::from_le_bytes(header[4..8].try_into().unwrap()) <= 1 =>
+                    {
+                        Some(Object::Mutant)
+                    }
+                    _ => None,
+                },
                 _ => None,
             })
         })();
@@ -135,6 +198,7 @@ impl Core {
         memory: &mut Guest,
         objects: &[u32],
         all: bool,
+        tid: u32,
     ) -> Result<Option<u32>, GuestFault> {
         let mut kinds = Vec::new();
         let mut available = Vec::new();
@@ -146,7 +210,11 @@ impl Core {
                 reason: runtime::guest::FaultReason::InvalidOperation,
             })?;
             kinds.push(kind);
-            available.push(memory.u32(address + 4)? as i32 > 0);
+            // A mutant is also available to the thread that already owns it.
+            available.push(
+                memory.u32(address + 4)? as i32 > 0
+                    || kind == Object::Mutant && self.mutant_owners.get(&address) == Some(&tid),
+            );
         }
         let selected = if all {
             if !available.iter().all(|s| *s) {
@@ -170,7 +238,11 @@ impl Core {
             ) {
                 memory.check(objects[i] + 4, 4, Access::Write, 1)?;
             }
+            if kinds[i] == Object::Mutant {
+                memory.check(objects[i], MUTANT_SIZE as usize, Access::Write, 1)?;
+            }
         }
+        let mut abandoned = false;
         for &i in &selected {
             let address = objects[i];
             match kinds[i] {
@@ -182,14 +254,104 @@ impl Core {
                     let count = memory.u32(address + 4)?;
                     memory.set_u32(address + 4, count - 1)?;
                 }
+                Object::Mutant => abandoned |= self.acquire_mutant(memory, address, tid)?,
                 _ => {}
             }
         }
-        Ok(Some(if all {
-            status::WAIT_0
+        let base = if abandoned {
+            status::ABANDONED_WAIT_0
         } else {
-            status::WAIT_0 + selected[0] as u32
-        }))
+            status::WAIT_0
+        };
+        Ok(Some(if all { base } else { base + selected[0] as u32 }))
+    }
+    /// KiWaitSatisfyMutant: one more level of ownership for `tid`. Returns
+    /// whether the mutant had been abandoned (the flag is cleared).
+    fn acquire_mutant(
+        &mut self,
+        memory: &mut Guest,
+        address: u32,
+        tid: u32,
+    ) -> Result<bool, GuestFault> {
+        let thread = self.threads[&tid].object;
+        memory.check(address, MUTANT_SIZE as usize, Access::Write, 1)?;
+        let signal = memory.u32(address + 4)? as i32;
+        // Recursion beyond 2^31 levels raises STATUS_MUTANT_LIMIT_EXCEEDED on
+        // retail; it is not reachable through any modelled caller.
+        let next = signal.checked_sub(1).ok_or(GuestFault {
+            addr: address,
+            len: MUTANT_SIZE as usize,
+            access: Access::Write,
+            reason: runtime::guest::FaultReason::InvalidOperation,
+        })?;
+        let mut abandoned = false;
+        if next == 0 {
+            // Link first: a faulting list leaves the mutant untouched.
+            insert_tail(
+                memory,
+                thread + kthread::MUTANT_LIST,
+                address + MUTANT_LIST_ENTRY,
+            )?;
+            abandoned = memory.u8(address + MUTANT_ABANDONED)? != 0;
+            memory.set_u8(address + MUTANT_ABANDONED, 0)?;
+            memory.set_u32(address + MUTANT_OWNER, thread)?;
+            self.mutant_owners.insert(address, tid);
+        }
+        memory.set_u32(address + 4, next as u32)?;
+        Ok(abandoned)
+    }
+    /// KeReleaseMutant(Abandoned = FALSE) by `tid`: the previous signal state,
+    /// or STATUS_MUTANT_NOT_OWNED. The final release frees it and readies waiters.
+    fn release_mutant(
+        &mut self,
+        memory: &mut Guest,
+        address: u32,
+        tid: u32,
+    ) -> Result<Result<i32, u32>, GuestFault> {
+        if self.mutant_owners.get(&address) != Some(&tid) {
+            return Ok(Err(status::MUTANT_NOT_OWNED));
+        }
+        memory.check(address, MUTANT_SIZE as usize, Access::Write, 1)?;
+        let old = memory.u32(address + 4)? as i32;
+        // Unlink before the count changes, so a bad guest link faults with
+        // the mutant still owned and unchanged.
+        if old + 1 == 1 {
+            self.free_mutant(memory, address)?;
+        }
+        memory.set_u32(address + 4, (old + 1) as u32)?;
+        if old + 1 == 1 {
+            self.wake(memory)?;
+        }
+        Ok(Ok(old))
+    }
+    /// Clear ownership: unlink from the owner's MutantListHead.
+    fn free_mutant(&mut self, memory: &mut Guest, address: u32) -> Result<(), GuestFault> {
+        remove_entry(memory, address + MUTANT_LIST_ENTRY)?;
+        memory.set_u32(address + MUTANT_OWNER, 0)?;
+        self.mutant_owners.remove(&address);
+        Ok(())
+    }
+    /// Thread exit abandons every mutant it still owns (KiRundownThread):
+    /// each becomes free with Abandoned set, and the next acquirer sees
+    /// STATUS_ABANDONED_WAIT_0. The caller runs the wake pass.
+    pub(crate) fn abandon_mutants(
+        &mut self,
+        memory: &mut Guest,
+        tid: u32,
+    ) -> Result<(), GuestFault> {
+        let owned: Vec<_> = self
+            .mutant_owners
+            .iter()
+            .filter(|(_, owner)| **owner == tid)
+            .map(|(&address, _)| address)
+            .collect();
+        for address in owned {
+            memory.check(address, MUTANT_SIZE as usize, Access::Write, 1)?;
+            self.free_mutant(memory, address)?;
+            memory.set_u32(address + 4, 1)?;
+            memory.set_u8(address + MUTANT_ABANDONED, 1)?;
+        }
+        Ok(())
     }
     fn wait(
         &mut self,
@@ -215,8 +377,12 @@ impl Core {
             return Ok(Action::status(status::INVALID_PARAMETER_MIX));
         }
         for &object in &objects {
-            if self.ensure_object(memory, object)?.is_none() {
-                return Ok(Action::Stop("unsupported dispatcher object"));
+            match self.ensure_object(memory, object)? {
+                None => return Ok(Action::Stop("unsupported dispatcher object")),
+                Some(Object::Mutant) if !self.threads.contains_key(&tid) => {
+                    return Ok(Action::Stop("mutant ownership requires a KTHREAD"));
+                }
+                Some(_) => {}
             }
         }
         let deadline = if timeout == 0 {
@@ -227,7 +393,7 @@ impl Core {
                 Err(_) => return Ok(Action::status(status::INVALID_PARAMETER)),
             }
         };
-        if let Some(status) = self.acquire(memory, &objects, all)? {
+        if let Some(status) = self.acquire(memory, &objects, all, tid)? {
             return Ok(Action::status(status));
         }
         if deadline.is_some_and(|v| v <= self.clock.counter()) {
@@ -299,7 +465,7 @@ impl Core {
                     all,
                     deadline,
                 }) => {
-                    if let Some(status) = self.acquire(memory, &objects, all)? {
+                    if let Some(status) = self.acquire(memory, &objects, all, tid)? {
                         Some(Value::U32(status))
                     } else if deadline.is_some_and(&due) {
                         Some(Value::U32(status::TIMEOUT))
@@ -342,7 +508,9 @@ impl Core {
                     matches!(&record.state, State::Waiting(Wait::Objects { objects, .. })
                     if objects.contains(object))
                 });
-                !handled && !pinned && !waited
+                // An owned mutant stays linked in its owner's mutant list.
+                let owned = self.mutant_owners.contains_key(object);
+                !handled && !pinned && !waited && !owned
             })
             .collect();
         for object in unused {
@@ -629,6 +797,62 @@ impl Core {
                         self.collect_objects();
                         Action::status(s)
                     }
+                }
+            }
+            ord::NT_CREATE_MUTANT => {
+                memory.check(a.get(0), 4, Access::Write, 1)?;
+                if !unnamed_attributes(memory, a.get(1))? {
+                    return Ok(Action::Stop(
+                        "named dispatcher objects need an object namespace",
+                    ));
+                }
+                let initial_owner = a.boolean(2);
+                if initial_owner && !self.threads.contains_key(&tid) {
+                    return Ok(Action::Stop("mutant ownership requires a KTHREAD"));
+                }
+                if let Err(s) = self.handles.check_capacity() {
+                    return Ok(Action::status(s));
+                }
+                let address = self.memory.allocate_pool(memory, MUTANT_SIZE, 0x6174754d);
+                if address == 0 {
+                    return Ok(Action::status(status::NO_MEMORY));
+                }
+                header(memory, address, MUTANT_TYPE, (MUTANT_SIZE / 4) as u8, 1)?;
+                memory.write_bytes(address + 16, &[0; 16], 1)?;
+                self.objects.insert(address, Object::Mutant);
+                self.owned_objects.insert(address);
+                if initial_owner {
+                    // KeInitializeMutant(InitialOwner = TRUE): owned once.
+                    self.acquire_mutant(memory, address, tid)?;
+                }
+                let handle = self.handles.insert(address).expect("capacity checked");
+                memory.set_u32(a.get(0), handle)?;
+                Action::status(status::SUCCESS)
+            }
+            ord::NT_RELEASE_MUTANT => {
+                let address = match self.handles.get(a.get(0)) {
+                    Ok(v) => v,
+                    Err(s) => return Ok(Action::status(s)),
+                };
+                if a.get(1) != 0 {
+                    memory.check(a.get(1), 4, Access::Write, 1)?;
+                }
+                if self.files.contains_key(&address) || self.links.contains_key(&address) {
+                    return Ok(Action::status(status::OBJECT_TYPE_MISMATCH));
+                }
+                match self.ensure_object(memory, address)? {
+                    Some(Object::Mutant) => {}
+                    Some(_) => return Ok(Action::status(status::OBJECT_TYPE_MISMATCH)),
+                    None => return Ok(Action::Stop("invalid dispatcher header for handle")),
+                }
+                match self.release_mutant(memory, address, tid)? {
+                    Ok(old) => {
+                        if a.get(1) != 0 {
+                            memory.set_u32(a.get(1), old as u32)?;
+                        }
+                        Action::status(status::SUCCESS)
+                    }
+                    Err(s) => Action::status(s),
                 }
             }
             ord::NT_RELEASE_SEMAPHORE | ord::NT_SET_EVENT => {

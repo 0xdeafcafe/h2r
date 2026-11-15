@@ -1,5 +1,8 @@
-//! One physical allocator derives availability from Runtime's mappings, so
-//! image pages, DATA exports, stacks and aliases cannot be handed out twice.
+//! Physical availability comes from Runtime (`Guest::find_free_physical`),
+//! which counts every mapping and physical reservation, so image pages, DATA
+//! exports, stacks, aliases and reserved arenas are never handed out twice.
+//! Contiguous requests bounded by a reservation (Halo 2's title arena) are
+//! mapped onto it with `Guest::map_reserved`.
 use crate::ord;
 use crate::{
     Action,
@@ -8,7 +11,7 @@ use crate::{
 };
 use runtime::{
     Guest, GuestFault,
-    guest::{Access, PAGE_SIZE, Permissions, RAM_SIZE},
+    guest::{Access, MapError, PAGE_SIZE, Permissions, RAM_SIZE, ReservationId},
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +19,8 @@ use std::collections::{BTreeMap, BTreeSet};
 /// movie arena). No kernel allocator places anything here, and fixed
 /// NtAllocateVirtualMemory requests into it fail with
 /// STATUS_CONFLICTING_ADDRESSES. Kernel internals use 0xa1000000..0xb0000000.
+/// Contiguous memory is mapped at `0x80000000 + physical`, as on retail.
+pub const CONTIGUOUS_ALIAS: u32 = runtime::loader::CONTIGUOUS_ALIAS_BASE;
 pub const HLE_RESERVED_START: u32 = 0xa000_0000;
 pub const HLE_RESERVED_END: u32 = 0xa100_0000;
 pub const HLE_RESERVED: std::ops::Range<u32> = HLE_RESERVED_START..HLE_RESERVED_END;
@@ -30,6 +35,7 @@ pub const MEM_TOP_DOWN: u32 = 0x100000;
 pub const MEM_NOZERO: u32 = 0x800000;
 pub const PAGE_NOCACHE: u32 = 0x200;
 pub const PAGE_WRITECOMBINE: u32 = 0x400;
+pub const PAGE_NOACCESS: u32 = 1;
 pub const PAGE_READONLY: u32 = 2;
 pub const PAGE_READWRITE: u32 = 4;
 pub const PAGE_EXECUTE_READ: u32 = 0x20;
@@ -49,11 +55,20 @@ pub struct PoolBlock {
     pub tag: u32,
     pub live: bool,
 }
+/// A live stack from MmCreateKernelStack, by its lowest mapped address.
+#[derive(Debug, Clone, Copy)]
+pub struct KernelStack {
+    pub size: u32,
+}
 #[derive(Debug, Default, Clone)]
 pub struct Memory {
     pub regions: BTreeMap<u32, Region>,
     pub pool: BTreeMap<u32, PoolBlock>,
     pub contiguous: BTreeMap<u32, (u32, u32)>,
+    /// MmSetAddressProtect values for contiguous pages, which override the
+    /// allocation's protection in MmQueryAddressProtect.
+    pub contiguous_pages: BTreeMap<u32, u32>,
+    pub kernel_stacks: BTreeMap<u32, KernelStack>,
     guards: BTreeSet<u32>,
 }
 
@@ -83,6 +98,7 @@ pub(crate) fn permissions(protect: u32) -> Option<Permissions> {
         return None;
     }
     match protect & !(PAGE_NOCACHE | PAGE_WRITECOMBINE) {
+        PAGE_NOACCESS => Some(Permissions::NONE),
         PAGE_READONLY => Some(Permissions::READ),
         PAGE_READWRITE => Some(Permissions::RW),
         PAGE_EXECUTE_READ => Some(Permissions::RX),
@@ -90,30 +106,88 @@ pub(crate) fn permissions(protect: u32) -> Option<Permissions> {
         _ => None,
     }
 }
+/// Whether [va, va + len) touches a page Runtime guards as lifted guest code
+/// (`Guest::guard_code`; the loader guards executable XBE sections).
+fn lifted_code(memory: &Guest, va: u32, len: u32) -> bool {
+    let (start, end) = (va as u64, va as u64 + len as u64);
+    memory
+        .code_ranges()
+        .iter()
+        .any(|r| start < r.end && r.start < end)
+}
+/// Whether `Guest::map` would accept `[va, va + len)`: no existing mapping
+/// and no physical reservation alias window overlaps it.
+fn mappable(memory: &Guest, va: u32, len: u32) -> bool {
+    !memory
+        .mappings()
+        .iter()
+        .any(|m| overlaps(va, len, m.virtual_start, m.len))
+        && !memory
+            .physical_reservations()
+            .iter()
+            .flat_map(|r| r.aliases.iter().map(move |&a| (a, r.len)))
+            .any(|(a, n)| overlaps(va, len, a, n))
+}
+/// Why `Guest::unmap(page, PAGE_SIZE)` would refuse, as a stop reason, or
+/// None if it would succeed: it refuses HLE claims, holes and lifted code.
+fn unmap_refusal(memory: &Guest, page: u32) -> Option<&'static str> {
+    if memory
+        .virtual_claims()
+        .iter()
+        .any(|c| overlaps(page, PAGE_SIZE, c.virtual_start, c.len))
+    {
+        return Some("freeing virtual memory inside an HLE-owned claim");
+    }
+    if !memory.mappings().iter().any(|m| {
+        page >= m.virtual_start
+            && page as u64 + PAGE_SIZE as u64 <= m.virtual_start as u64 + m.len as u64
+    }) {
+        return Some("freeing committed virtual memory that is no longer mapped");
+    }
+    lifted_code(memory, page, PAGE_SIZE).then_some("freeing virtual memory that holds lifted code")
+}
 fn overlaps(a: u32, n: u32, b: u32, m: u32) -> bool {
     (a as u64) < b as u64 + m as u64 && (b as u64) < a as u64 + n as u64
 }
 
 impl Memory {
     // Follow-up: range indexing; allocation/commit can scan O(pages × mappings).
-    fn vacant(&self, memory: &Guest, base: u32, size: u32) -> bool {
-        !overlaps(
-            base,
-            size,
+    /// Every occupied `[start, end)` overlapping `[base, base + size)`: the
+    /// HLE range, stack guards, kernel regions, Runtime mappings and the
+    /// alias windows of physical reservations (which only `map_reserved` can
+    /// fill). `own` exempts that reservation's windows, for placements made
+    /// inside them.
+    fn occupants(
+        &self,
+        memory: &Guest,
+        base: u32,
+        size: u32,
+        own: Option<ReservationId>,
+    ) -> Vec<(u64, u64)> {
+        let span = |start: u32, len: u32| (start as u64, start as u64 + len as u64);
+        let windows = memory
+            .physical_reservations()
+            .iter()
+            .filter(|r| Some(r.id) != own)
+            .flat_map(|r| r.aliases.iter().map(move |&a| span(a, r.len)));
+        std::iter::once(span(
             HLE_RESERVED_START,
             HLE_RESERVED_END - HLE_RESERVED_START,
-        ) && !self
-            .guards
-            .iter()
-            .any(|guard| overlaps(base, size, *guard, PAGE_SIZE))
-            && !self
-                .regions
-                .values()
-                .any(|r| overlaps(base, size, r.base, r.size))
-            && !memory
+        ))
+        .chain(self.guards.iter().map(|&g| span(g, PAGE_SIZE)))
+        .chain(self.regions.values().map(|r| span(r.base, r.size)))
+        .chain(
+            memory
                 .mappings()
                 .iter()
-                .any(|m| overlaps(base, size, m.virtual_start, m.len))
+                .map(|m| span(m.virtual_start, m.len)),
+        )
+        .chain(windows)
+        .filter(|&(start, end)| (base as u64) < end && start < base as u64 + size as u64)
+        .collect()
+    }
+    fn vacant(&self, memory: &Guest, base: u32, size: u32) -> bool {
+        self.occupants(memory, base, size, None).is_empty()
     }
     fn find_virtual(
         &self,
@@ -123,43 +197,63 @@ impl Memory {
         end: u32,
         align: u32,
     ) -> Option<u32> {
-        let mut base = round_up(start, align)?;
-        while base as u64 + size as u64 <= end as u64 {
-            if self.vacant(memory, base, size) {
-                return Some(base);
-            }
+        self.find_virtual_in(memory, size, start..end, align, None)
+    }
+    /// Lowest vacant `align`ed range of `size` bytes inside `range`, with
+    /// `own`'s alias windows treated as free.
+    fn find_virtual_in(
+        &self,
+        memory: &Guest,
+        size: u32,
+        range: std::ops::Range<u32>,
+        align: u32,
+        own: Option<ReservationId>,
+    ) -> Option<u32> {
+        let mut base = round_up(range.start, align)?;
+        while base as u64 + size as u64 <= range.end as u64 {
             let occupied_end = self
-                .regions
-                .values()
-                .filter(|r| overlaps(base, size, r.base, r.size))
-                .map(|r| r.base as u64 + r.size as u64)
-                .chain(
-                    memory
-                        .mappings()
-                        .iter()
-                        .filter(|m| overlaps(base, size, m.virtual_start, m.len))
-                        .map(|m| m.virtual_start as u64 + m.len as u64),
-                )
-                .chain(
-                    self.guards
-                        .iter()
-                        .filter(|g| overlaps(base, size, **g, PAGE_SIZE))
-                        .map(|g| *g as u64 + PAGE_SIZE as u64),
-                )
-                .chain(
-                    overlaps(
-                        base,
-                        size,
-                        HLE_RESERVED_START,
-                        HLE_RESERVED_END - HLE_RESERVED_START,
-                    )
-                    .then_some(HLE_RESERVED_END as u64),
-                )
-                .max()?;
+                .occupants(memory, base, size, own)
+                .into_iter()
+                .map(|(_, end)| end)
+                .max();
+            let Some(occupied_end) = occupied_end else {
+                return Some(base);
+            };
             base = round_up(u32::try_from(occupied_end).ok()?, align)?;
         }
         None
     }
+    /// Highest vacant `align`ed range of `size` bytes inside [start, end):
+    /// MEM_TOP_DOWN placement.
+    fn find_virtual_top_down(
+        &self,
+        memory: &Guest,
+        size: u32,
+        start: u32,
+        end: u32,
+        align: u32,
+    ) -> Option<u32> {
+        let mut top = end;
+        loop {
+            let base = top.checked_sub(size)? & !(align - 1);
+            if base < start {
+                return None;
+            }
+            // Retry below the lowest occupant overlapping this candidate.
+            let lowest = self
+                .occupants(memory, base, size, None)
+                .into_iter()
+                .map(|(start, _)| start)
+                .min();
+            let Some(lowest) = lowest else {
+                return Some(base);
+            };
+            top = lowest as u32;
+        }
+    }
+    /// Lowest free physical range in [low, high] (inclusive, as the
+    /// MmAllocateContiguousMemoryEx bounds are): Runtime's occupancy, which
+    /// includes mappings and physical reservations.
     fn find_physical(
         memory: &Guest,
         size: u32,
@@ -167,46 +261,19 @@ impl Memory {
         high: u32,
         alignment: u32,
     ) -> Option<u32> {
-        let mut base = round_up(low, alignment)?;
-        let end = (high as u64 + 1).min(RAM_SIZE as u64);
-        loop {
-            if base as u64 + size as u64 > end {
-                return None;
-            }
-            let conflict = memory
-                .mappings()
-                .iter()
-                .filter(|m| overlaps(base, size, m.physical_start, m.len))
-                .map(|m| m.physical_start as u64 + m.len as u64)
-                .max();
-            if let Some(end) = conflict {
-                base = round_up(u32::try_from(end).ok()?, alignment)?;
-            } else {
-                return Some(base);
-            }
-        }
+        let end = (high as u64 + 1).min(RAM_SIZE as u64) as u32;
+        memory.find_free_physical(size, low..end, alignment)
     }
+    /// `count` distinct free physical pages, lowest first.
     fn physical_pages(memory: &Guest, count: usize) -> Option<Vec<u32>> {
-        let mut occupied: Vec<_> = memory
-            .mappings()
-            .iter()
-            .map(|m| (m.physical_start, m.physical_start + m.len))
-            .collect();
-        occupied.sort_unstable();
-        occupied.push((RAM_SIZE as u32, RAM_SIZE as u32));
+        let mut pages = Vec::with_capacity(count);
         let mut cursor = 0;
-        let mut pages = Vec::new();
-        for (start, end) in occupied {
-            while pages.len() < count && cursor + PAGE_SIZE <= start {
-                pages.push(cursor);
-                cursor += PAGE_SIZE;
-            }
-            if pages.len() == count {
-                return Some(pages);
-            }
-            cursor = round_up(cursor.max(end), PAGE_SIZE)?;
+        while pages.len() < count {
+            let page = memory.find_free_physical(PAGE_SIZE, cursor..RAM_SIZE as u32, PAGE_SIZE)?;
+            pages.push(page);
+            cursor = page + PAGE_SIZE;
         }
-        None
+        Some(pages)
     }
     /// Internal objects use a separate harness VA range, but the same physical
     /// occupancy as every other allocation. A single map makes failure atomic.
@@ -251,6 +318,57 @@ impl Memory {
         zero(memory, bottom, stack_size).expect("fresh thread stack");
         self.guards.insert(base + PAGE_SIZE);
         Ok((base, bottom, bottom + stack_size))
+    }
+    /// MmCreateKernelStack: `size` (page multiple) RW zeroed bytes in the
+    /// kernel's internal range with an unmapped guard page below. Returns
+    /// the lowest stack address.
+    pub(crate) fn kernel_stack(&mut self, memory: &mut Guest, size: u32) -> Result<u32, NtStatus> {
+        let span = size.checked_add(PAGE_SIZE).ok_or(status::NO_MEMORY)?;
+        let base = self
+            .find_virtual(memory, span, 0xa100_0000, 0xb000_0000, PAGE_SIZE)
+            .ok_or(status::NO_MEMORY)?;
+        let physical =
+            Self::find_physical(memory, size, 0, u32::MAX, PAGE_SIZE).ok_or(status::NO_MEMORY)?;
+        let bottom = base + PAGE_SIZE;
+        memory
+            .map(bottom, size, physical, Permissions::RW)
+            .map_err(|_| status::NO_MEMORY)?;
+        zero(memory, bottom, size).expect("fresh kernel stack");
+        self.guards.insert(base);
+        self.kernel_stacks.insert(bottom, KernelStack { size });
+        Ok(bottom)
+    }
+    /// MmDeleteKernelStack(StackBase = top, StackLimit = bottom): unmap the
+    /// stack and release its guard. A range MmCreateKernelStack did not hand
+    /// out, or one Runtime refuses to unmap (an HLE claim inside it), is a
+    /// stop reason, and the stack stays live and unchanged.
+    pub(crate) fn delete_kernel_stack(
+        &mut self,
+        memory: &mut Guest,
+        top: u32,
+        bottom: u32,
+    ) -> Result<(), &'static str> {
+        let Some(stack) = self
+            .kernel_stacks
+            .get(&bottom)
+            .copied()
+            .filter(|s| bottom as u64 + s.size as u64 == top as u64)
+        else {
+            return Err("deleting a stack MmCreateKernelStack did not create");
+        };
+        match memory.unmap(bottom, stack.size) {
+            Ok(()) => {}
+            Err(MapError::Claimed) => {
+                return Err("deleting a kernel stack inside an HLE-owned claim");
+            }
+            Err(MapError::LiftedCode) => {
+                return Err("deleting a kernel stack that holds lifted code");
+            }
+            Err(_) => return Err("kernel stack unmap rejected by Runtime"),
+        }
+        self.kernel_stacks.remove(&bottom);
+        self.guards.remove(&(bottom - PAGE_SIZE));
+        Ok(())
     }
     pub(crate) fn allocate_pool(&mut self, memory: &mut Guest, size: u32, tag: u32) -> u32 {
         let Some(size) = round_up(size.max(1), 16) else {
@@ -298,18 +416,19 @@ impl Memory {
         let zero_bits = a.get(1);
         let flags = a.get(3);
         let protect = a.get(4);
-        if flags & (MEM_TOP_DOWN | MEM_NOZERO) != 0 {
-            return Ok(Action::Stop(
-                "allocation placement/initialization flags unsupported",
-            ));
+        if flags & MEM_NOZERO != 0 {
+            return Ok(Action::Stop("MEM_NOZERO initialization policy unsupported"));
         }
         if requested_size == 0
             || zero_bits > 21
-            || flags == 0
-            || flags & !(MEM_COMMIT | MEM_RESERVE) != 0
+            || flags & (MEM_COMMIT | MEM_RESERVE) == 0
+            || flags & !(MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN) != 0
         {
             return Ok(Action::status(status::INVALID_PARAMETER));
         }
+        // MEM_TOP_DOWN only chooses where a new reservation goes; with an
+        // explicit base address it changes nothing.
+        let top_down = flags & MEM_TOP_DOWN != 0;
         let Some(perms) = permissions(protect) else {
             return Ok(Action::Stop("unsupported page protection"));
         };
@@ -328,7 +447,12 @@ impl Memory {
             } else {
                 0x1000_0000
             };
-            let Some(base) = self.find_virtual(memory, size, start, end, 0x10000) else {
+            let found = if top_down {
+                self.find_virtual_top_down(memory, size, start, end, 0x10000)
+            } else {
+                self.find_virtual(memory, size, start, end, 0x10000)
+            };
+            let Some(base) = found else {
                 return Ok(Action::status(status::NO_MEMORY));
             };
             base
@@ -368,12 +492,9 @@ impl Memory {
             .collect();
         let commit = flags & MEM_COMMIT != 0;
         let physical = if commit {
-            if pages.iter().any(|page| {
-                memory
-                    .mappings()
-                    .iter()
-                    .any(|m| overlaps(*page, PAGE_SIZE, m.virtual_start, m.len))
-            }) {
+            // Guest::map refuses existing mappings and reservation alias
+            // windows; checking both here keeps the commit all-or-nothing.
+            if pages.iter().any(|&page| !mappable(memory, page, PAGE_SIZE)) {
                 return Ok(Action::status(status::CONFLICTING_ADDRESSES));
             }
             let Some(p) = Self::physical_pages(memory, pages.len()) else {
@@ -395,15 +516,26 @@ impl Memory {
             );
         }
         if commit {
-            let r = self.regions.get_mut(&region_base).unwrap();
-            for (i, page) in pages.iter().enumerate() {
-                memory
-                    .map(*page, PAGE_SIZE, physical[i], Permissions::RW)
-                    .expect("preflighted commit");
-                memory.write_bytes(*page, &[0; PAGE_SIZE as usize], 1)?;
-                memory.protect(*page, perms).expect("fresh mapping");
-                r.pages.insert(*page, protect);
+            for (i, &page) in pages.iter().enumerate() {
+                if memory
+                    .map(page, PAGE_SIZE, physical[i], Permissions::RW)
+                    .is_err()
+                {
+                    // Unreachable after the preflight; undo rather than
+                    // leave a partial commit.
+                    for &done in &pages[..i] {
+                        memory.unmap(done, PAGE_SIZE).expect("mapped just now");
+                    }
+                    if reserve {
+                        self.regions.remove(&base);
+                    }
+                    return Ok(Action::status(status::CONFLICTING_ADDRESSES));
+                }
+                zero(memory, page, PAGE_SIZE).expect("fresh RW mapping");
+                memory.protect(page, perms).expect("fresh mapping");
             }
+            let r = self.regions.get_mut(&region_base).unwrap();
+            r.pages.extend(pages.iter().map(|&page| (page, protect)));
         }
         memory.set_u32(base_ptr, base)?;
         memory.set_u32(size_ptr, size)?;
@@ -460,6 +592,132 @@ impl Memory {
         }
         Ok(Action::status(status::SUCCESS))
     }
+    /// MmSetAddressProtect(BaseAddress, NumberOfBytes, NewProtect) over pages
+    /// of contiguous allocations or committed virtual memory. The range is
+    /// checked first, then changed with `Guest::protect_range` (which splits
+    /// mappings at the range edges; other aliases keep their protection);
+    /// MmQueryAddressProtect and NtQueryVirtualMemory report the new value.
+    fn set_protect(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
+        let (base, size, protect) = (a.get(0), a.get(1), a.get(2));
+        let Some(perms) = permissions(protect) else {
+            return Ok(Action::Stop("unsupported page protection"));
+        };
+        if size == 0 {
+            return Ok(Action::Complete(Value::Void));
+        }
+        let first = base & !(PAGE_SIZE - 1);
+        let Some(end) = (base as u64 + size as u64)
+            .checked_next_multiple_of(PAGE_SIZE as u64)
+            .filter(|e| *e <= 1 << 32)
+        else {
+            return Ok(Action::Stop("protection range overflows the address space"));
+        };
+        let pages: Vec<u32> = (first as u64..end)
+            .step_by(PAGE_SIZE as usize)
+            .map(|p| p as u32)
+            .collect();
+        let contiguous = |page: u32| {
+            self.contiguous
+                .iter()
+                .any(|(&va, &(len, _))| page >= va && (page as u64) < va as u64 + len as u64)
+        };
+        let committed = |page: u32| self.regions.values().any(|r| r.pages.contains_key(&page));
+        if !pages.iter().all(|&p| contiguous(p) || committed(p)) {
+            return Ok(Action::Stop(
+                "protection change outside contiguous or committed memory",
+            ));
+        }
+        match memory.protect_range(first, (end - first as u64) as u32, perms) {
+            Ok(()) => {}
+            Err(MapError::Unmapped) => {
+                return Ok(Action::Stop("protection change over unmapped pages"));
+            }
+            Err(MapError::Claimed) => {
+                return Ok(Action::Stop("protection change inside an HLE-owned claim"));
+            }
+            Err(MapError::LiftedCode) => {
+                return Ok(Action::Stop(
+                    "protection change would remove Execute from lifted code",
+                ));
+            }
+            Err(_) => return Ok(Action::Stop("protection range rejected by Runtime")),
+        }
+        for page in pages {
+            if let Some(r) = self
+                .regions
+                .values_mut()
+                .find(|r| r.pages.contains_key(&page))
+            {
+                r.pages.insert(page, protect);
+            } else {
+                self.contiguous_pages.insert(page, protect);
+            }
+        }
+        Ok(Action::Complete(Value::Void))
+    }
+    /// NtFreeVirtualMemory(&BaseAddress, &RegionSize, FreeType). Decommit
+    /// covers [base & ~0xfff, round_up(base + size)), or to the end of the
+    /// allocation when size is 0; release takes the allocation base and size
+    /// 0. Committed pages are unmapped, so their physical pages are free again.
+    fn free_virtual(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
+        let (base_ptr, size_ptr, kind) = (a.get(0), a.get(1), a.get(2));
+        let base = memory.u32(base_ptr)?;
+        let size = memory.u32(size_ptr)?;
+        let Some(r) = self
+            .regions
+            .values()
+            .find(|r| base >= r.base && (base as u64) < r.base as u64 + r.size as u64)
+        else {
+            return Ok(Action::status(status::MEMORY_NOT_ALLOCATED));
+        };
+        let region_end = r.base as u64 + r.size as u64;
+        if kind == MEM_RELEASE && base != r.base {
+            return Ok(Action::Stop(
+                "release at an interior address is not implemented",
+            ));
+        }
+        if kind != MEM_RELEASE && kind != MEM_DECOMMIT || kind == MEM_RELEASE && size != 0 {
+            return Ok(Action::status(status::INVALID_PARAMETER));
+        }
+        let start = base & !(PAGE_SIZE - 1);
+        let end = if size == 0 {
+            region_end
+        } else {
+            (base as u64 + size as u64).next_multiple_of(PAGE_SIZE as u64)
+        };
+        if end > region_end {
+            return Ok(Action::Stop("decommit range extends past its allocation"));
+        }
+        memory.check(base_ptr, 4, Access::Write, 1)?;
+        memory.check(size_ptr, 4, Access::Write, 1)?;
+        let region = r.base;
+        let committed: Vec<u32> = r
+            .pages
+            .range(start..)
+            .map(|(&page, _)| page)
+            .take_while(|&page| (page as u64) < end)
+            .collect();
+        // Every page Guest::unmap would refuse is found before any page is
+        // unmapped, so a refusal leaves the mappings and the region as they
+        // were.
+        if let Some(reason) = committed
+            .iter()
+            .find_map(|&page| unmap_refusal(memory, page))
+        {
+            return Ok(Action::Stop(reason));
+        }
+        let r = self.regions.get_mut(&region).expect("found above");
+        for page in committed {
+            memory.unmap(page, PAGE_SIZE).expect("preflighted unmap");
+            r.pages.remove(&page);
+        }
+        if kind == MEM_RELEASE {
+            self.regions.remove(&region);
+        }
+        memory.set_u32(base_ptr, start)?;
+        memory.set_u32(size_ptr, (end - start as u64) as u32)?;
+        Ok(Action::status(status::SUCCESS))
+    }
     pub(crate) fn call(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
         Ok(match a.export.ordinal {
             ord::EX_ALLOCATE_POOL | ord::EX_ALLOCATE_POOL_WITH_TAG => {
@@ -504,37 +762,94 @@ impl Memory {
                 {
                     return Ok(Action::value(0));
                 }
-                let physical = size.and_then(|size| {
-                    let mut candidate = Self::find_physical(memory, size, low, high, alignment)?;
-                    loop {
-                        if self.vacant(memory, 0x8000_0000 + candidate, size) {
-                            break Some(candidate);
-                        }
-                        candidate = Self::find_physical(
-                            memory,
-                            size,
-                            candidate.checked_add(alignment)?,
-                            high,
-                            alignment,
-                        )?;
+                let Some(size) = size else {
+                    return Ok(Action::value(0));
+                };
+                // Bounds wholly inside a physical reservation (Halo 2's title
+                // arena: XPhysicalAlloc(0x30e4000, 0x61000..0x3144fff) at
+                // 0x12b43e) allocate from it, through its 0x80000000 alias.
+                if let Some(r) = memory
+                    .physical_reservations()
+                    .iter()
+                    .find(|r| {
+                        low >= r.physical_start
+                            && (high as u64) < r.physical_start as u64 + r.len as u64
+                    })
+                    .cloned()
+                {
+                    if !r.aliases.contains(&(CONTIGUOUS_ALIAS + r.physical_start)) {
+                        return Ok(Action::Stop(
+                            "reservation has no contiguous (0x80000000) alias window",
+                        ));
                     }
-                });
-                if let (Some(size), Some(physical)) = (size, physical) {
-                    let va = 0x8000_0000 + physical;
-                    if !self.vacant(memory, va, size) {
+                    let Some(va) = self.find_virtual_in(
+                        memory,
+                        size,
+                        CONTIGUOUS_ALIAS + low
+                            ..(CONTIGUOUS_ALIAS as u64 + high as u64 + 1).min(u32::MAX as u64)
+                                as u32,
+                        alignment,
+                        Some(r.id),
+                    ) else {
                         return Ok(Action::value(0));
-                    }
+                    };
                     memory
-                        .map(va, size, physical, perms)
-                        .expect("preflighted contiguous map");
+                        .map_reserved(r.id, va, size, perms)
+                        .expect("vacant window inside the reservation");
                     self.contiguous.insert(va, (size, protect));
-                    Action::value(va)
-                } else {
-                    Action::value(0)
+                    return Ok(Action::value(va));
+                }
+                let physical = {
+                    let mut candidate = Self::find_physical(memory, size, low, high, alignment);
+                    while let Some(c) = candidate {
+                        if self.vacant(memory, CONTIGUOUS_ALIAS + c, size) {
+                            break;
+                        }
+                        candidate = c.checked_add(alignment).and_then(|next| {
+                            Self::find_physical(memory, size, next, high, alignment)
+                        });
+                    }
+                    candidate
+                };
+                match physical {
+                    Some(physical) => {
+                        let va = CONTIGUOUS_ALIAS + physical;
+                        memory
+                            .map(va, size, physical, perms)
+                            .expect("preflighted contiguous map");
+                        self.contiguous.insert(va, (size, protect));
+                        Action::value(va)
+                    }
+                    None => Action::value(0),
                 }
             }
             ord::MM_FREE_CONTIGUOUS_MEMORY => {
-                Action::Stop("runtime cannot unmap contiguous allocations")
+                // Reserved pages stay reserved after the unmap.
+                let base = a.get(0);
+                let Some(&(size, _)) = self.contiguous.get(&base) else {
+                    return Ok(Action::Stop(
+                        "freeing memory MmAllocateContiguousMemory did not return",
+                    ));
+                };
+                // Checked first so a refusal changes nothing.
+                if lifted_code(memory, base, size) {
+                    return Ok(Action::Stop(
+                        "freeing contiguous memory that holds lifted code",
+                    ));
+                }
+                match memory.unmap(base, size) {
+                    Ok(()) => {}
+                    Err(MapError::LiftedCode) => {
+                        return Ok(Action::Stop(
+                            "freeing contiguous memory that holds lifted code",
+                        ));
+                    }
+                    Err(_) => return Ok(Action::Stop("contiguous unmap rejected by Runtime")),
+                }
+                self.contiguous.remove(&base);
+                let pages = base..base + (size - 1);
+                self.contiguous_pages.retain(|p, _| !pages.contains(p));
+                Action::Complete(Value::Void)
             }
             ord::MM_GET_PHYSICAL_ADDRESS => {
                 let va = a.get(0);
@@ -553,6 +868,11 @@ impl Memory {
                     .regions
                     .values()
                     .find_map(|r| r.pages.get(&(address & !(PAGE_SIZE - 1))).copied())
+                    .or_else(|| {
+                        self.contiguous_pages
+                            .get(&(address & !(PAGE_SIZE - 1)))
+                            .copied()
+                    })
                     .or_else(|| {
                         self.contiguous
                             .iter()
@@ -586,38 +906,29 @@ impl Memory {
                     None => Action::Stop("unknown allocation size"),
                 }
             }
-            ord::NT_ALLOCATE_VIRTUAL_MEMORY => return self.allocate_virtual(memory, a),
-            ord::NT_FREE_VIRTUAL_MEMORY => {
-                let base = memory.u32(a.get(0))?;
-                let size = memory.u32(a.get(1))?;
-                let Some(r) = self
-                    .regions
-                    .values()
-                    .find(|r| base >= r.base && base < r.base + r.size)
-                else {
-                    return Ok(Action::status(status::MEMORY_NOT_ALLOCATED));
-                };
-                if a.get(2) == MEM_RELEASE && base != r.base {
-                    return Ok(Action::Stop(
-                        "release at an interior address is not implemented",
-                    ));
+            ord::MM_SET_ADDRESS_PROTECT => return self.set_protect(memory, a),
+            ord::MM_CREATE_KERNEL_STACK => {
+                if a.boolean(1) {
+                    return Ok(Action::Stop("debugger kernel stacks unsupported"));
                 }
-                if a.get(2) == MEM_RELEASE && size == 0 && r.pages.is_empty() {
-                    memory.check(a.get(0), 4, Access::Write, 1)?;
-                    memory.check(a.get(1), 4, Access::Write, 1)?;
-                    let size = r.size;
-                    self.regions.remove(&base);
-                    memory.set_u32(a.get(0), base)?;
-                    memory.set_u32(a.get(1), size)?;
-                    Action::status(status::SUCCESS)
-                } else if a.get(2) != MEM_RELEASE && a.get(2) != MEM_DECOMMIT
-                    || a.get(2) == MEM_RELEASE && size != 0
-                {
-                    Action::status(status::INVALID_PARAMETER)
-                } else {
-                    Action::Stop("runtime cannot unmap committed pages")
+                let Some(size) = round_up(a.get(0), PAGE_SIZE).filter(|n| *n != 0) else {
+                    return Ok(Action::Stop("kernel stack size unsupported"));
+                };
+                // Returns the top: the initial stack pointer side (the
+                // caller at 0x335653 deletes it as (top, top - 0x6000)).
+                match self.kernel_stack(memory, size) {
+                    Ok(bottom) => Action::value(bottom + size),
+                    Err(_) => Action::value(0),
                 }
             }
+            ord::MM_DELETE_KERNEL_STACK => {
+                match self.delete_kernel_stack(memory, a.get(0), a.get(1)) {
+                    Ok(()) => Action::Complete(Value::Void),
+                    Err(reason) => Action::Stop(reason),
+                }
+            }
+            ord::NT_ALLOCATE_VIRTUAL_MEMORY => return self.allocate_virtual(memory, a),
+            ord::NT_FREE_VIRTUAL_MEMORY => return self.free_virtual(memory, a),
             ord::NT_QUERY_VIRTUAL_MEMORY => return self.query(memory, a.get(0), a.get(1)),
             _ => Action::Stop("declared export has no handler"),
         })

@@ -55,7 +55,10 @@ fn image_collision_is_reported_without_overwriting_or_installing_handlers() {
 #[test]
 #[ignore = "requires the user-supplied retail XBE"]
 fn retail_loader_data_exports_are_relocated_out_of_the_kernel_header_range() {
-    let bytes = std::fs::read("../../disc/default.xbe").unwrap();
+    // H2_XBE names the user's retail image (absolute path); the default is
+    // the repository checkout's disc/ directory.
+    let path = std::env::var("H2_XBE").unwrap_or_else(|_| "../../disc/default.xbe".into());
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mut loaded = runtime::load_xbe(&bytes).unwrap();
     let kernel = kernel::Kernel::for_image(&mut loaded).unwrap();
     assert_eq!(
@@ -69,6 +72,9 @@ fn retail_loader_data_exports_are_relocated_out_of_the_kernel_header_range() {
         );
     }
     assert_ne!(kernel.kpcr(), image::BASE);
+    // ObReferenceObjectByHandle type matching uses these DATA exports
+    // (SetThreadPriority passes [0x4115b0] = PsThreadObjectType).
+    assert!(loaded.data_exports.contains_key(&259));
     let m = loaded.runtime.memory();
     // Boot DATA: three cache partitions; the image launched from the DVD.
     assert_eq!(m.u32(loaded.data_exports[&40]).unwrap(), 3);
@@ -141,4 +147,71 @@ fn conflicting_data_is_copied_and_only_its_thunk_is_relocated() {
             .is_err()
     );
     assert_eq!(m.u16(image::BASE).unwrap(), 0x5a4d);
+}
+
+/// `load_xbe_with(.., &LoadOptions::halo2())` reserves the title arena; the
+/// kernel's own placements avoid it, and the game's XPhysicalAlloc
+/// (0x12b43e: MmAllocateContiguousMemoryEx(0x30e4000, 0x61000, 0x3144fff, 0,
+/// PAGE_READWRITE)) gets exactly the arena at 0x80061000.
+#[test]
+#[ignore = "requires the user-supplied retail XBE"]
+fn retail_title_arena_is_kept_free_and_handed_to_xphysicalalloc() {
+    use runtime::loader::{HALO2_PHYSICAL_ARENA, LoadOptions};
+    let path = std::env::var("H2_XBE").unwrap_or_else(|_| "../../disc/default.xbe".into());
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+    let mut loaded = runtime::load_xbe_with(&bytes, &LoadOptions::halo2()).unwrap();
+    let kernel = kernel::Kernel::for_image(&mut loaded).unwrap();
+    let window = HALO2_PHYSICAL_ARENA;
+    {
+        let m = loaded.runtime.memory();
+        for x in m.mappings() {
+            if (0x8006_1000..0x8314_5000).contains(&x.virtual_start) {
+                continue;
+            }
+            assert!(
+                x.physical_start as u64 + x.len as u64 <= window.start as u64
+                    || x.physical_start >= window.end,
+                "{:#x} -> {:#x}",
+                x.virtual_start,
+                x.physical_start
+            );
+        }
+    }
+    let call = |ordinal: u32, args: &[u32]| {
+        let export = *kernel::EXPORTS
+            .iter()
+            .find(|e| e.ordinal == ordinal)
+            .unwrap();
+        let mut cpu = runtime::CpuAbi {
+            esp: loaded.stack_top - 0x100,
+            ..loaded.cpu
+        };
+        frame(
+            &loaded.runtime,
+            &mut cpu,
+            export,
+            args,
+            runtime::exec::HARNESS_EXIT,
+        );
+        let mut ctx = runtime::ExecCtx::new(std::sync::Arc::clone(&loaded.runtime), 1);
+        let t = runtime::Runner { max_transfers: 10 }.run(
+            &mut cpu,
+            &mut ctx,
+            kernel.entry(ordinal).unwrap(),
+        );
+        assert!(
+            matches!(ctx.event(t.event_id), Some(runtime::Event::HarnessExit)),
+            "{ordinal}: {:?}",
+            ctx.event(t.event_id)
+        );
+        cpu.eax
+    };
+    let arena = call(166, &[0x30e_4000, 0x6_1000, 0x314_4fff, 0, 4]);
+    assert_eq!(arena, 0x8006_1000);
+    assert_eq!(call(173, &[arena + 0x123]), 0x6_1123);
+    // A carver's XPhysicalProtect(.., 0x404) on part of the arena.
+    call(182, &[0x8300_0000, 0x10_0000, 0x404]);
+    assert_eq!(call(179, &[0x8300_0000]), 0x404);
+    assert_eq!(call(179, &[0x8006_1000]), 4);
+    loaded.runtime.memory().set_u32(0x8314_4ffc, 1).unwrap();
 }

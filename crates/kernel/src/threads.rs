@@ -17,6 +17,12 @@ use runtime::{
 use std::{collections::BTreeMap, sync::Arc};
 
 pub const FX_SAVE_SIZE: u32 = 0x210;
+/// The title process's base priority (NORMAL_BASE_PRIORITY); every thread
+/// starts at it. Priorities are recorded, not scheduled (README.md).
+pub const PROCESS_BASE_PRIORITY: i8 = 8;
+/// LOW_REALTIME_PRIORITY and HIGH_PRIORITY bound the two priority classes.
+const LOW_REALTIME_PRIORITY: i32 = 16;
+const HIGH_PRIORITY: i32 = 31;
 /// ExecCtx thread ID used while a DPC routine runs. No KTHREAD has it, so
 /// blocking calls and thread-only services stop inside a DPC.
 pub const DPC_THREAD_ID: u32 = 0;
@@ -52,6 +58,9 @@ pub(crate) struct Record {
     pub tib: [u32; 7],
     pub irql: u8,
     pub polling: bool,
+    /// KeSetBasePriorityThread state: base priority and saturation (-1/0/1).
+    pub base_priority: i8,
+    pub saturation: i8,
 }
 
 pub struct Thread {
@@ -163,6 +172,8 @@ impl Machine {
                     tib: [u32::MAX, tib_top, stack_bottom, 0, 0, 0, kpcr],
                     irql: 0,
                     polling: false,
+                    base_priority: PROCESS_BASE_PRIORITY,
+                    saturation: 0,
                 },
             );
             core.objects.insert(object, Object::Thread { tid: 1 });
@@ -572,6 +583,8 @@ impl Core {
         memory.set_u32(object + kthread::STACK_LIMIT, bottom)?;
         memory.set_u32(object + kthread::KERNEL_STACK, esp)?;
         memory.set_u32(object + kthread::TLS_DATA, tls)?;
+        memory.set_u8(object + kthread::PRIORITY, PROCESS_BASE_PRIORITY as u8)?;
+        memory.set_u8(object + kthread::BASE_PRIORITY, PROCESS_BASE_PRIORITY as u8)?;
         memory.set_u8(object + kthread::STATE, 1)?; // Ready
         memory.set_u64(object + ethread::CREATE_TIME, self.clock.system_time())?;
         memory.set_u32(object + ethread::UNIQUE_THREAD, tid)?;
@@ -585,9 +598,11 @@ impl Core {
         status: u32,
         memory: &mut Guest,
     ) -> Result<(), GuestFault> {
-        let Some(record) = self.threads.get_mut(&tid) else {
+        if !self.threads.contains_key(&tid) {
             return Ok(());
-        };
+        }
+        self.abandon_mutants(memory, tid)?;
+        let record = self.threads.get_mut(&tid).unwrap();
         record.state = State::Terminated(status);
         memory.set_u32(record.object + kthread::SIGNAL_STATE, 1)?;
         memory.set_u8(record.object + kthread::STATE, 4)?;
@@ -623,6 +638,48 @@ impl Core {
                 };
                 memory.set_u32(address, new as u32)?;
                 Action::Complete(Value::Void)
+            }
+            ord::KE_SET_BASE_PRIORITY_THREAD => {
+                let thread = a.get(0);
+                let Some(Object::Thread { tid: target }) = self.ensure_object(memory, thread)?
+                else {
+                    return Ok(Action::Stop("KeSetBasePriorityThread requires a KTHREAD"));
+                };
+                memory.check(thread + kthread::SATURATION, 2, Access::Write, 1)?;
+                memory.check(thread + kthread::BASE_PRIORITY, 1, Access::Write, 1)?;
+                let increment = a.get(1) as i32;
+                let record = self.threads.get_mut(&target).unwrap();
+                let process = PROCESS_BASE_PRIORITY as i32;
+                // KeSetBasePriorityThread: the old increment, where a
+                // saturated thread reports +/-16.
+                let old = if record.saturation != 0 {
+                    (HIGH_PRIORITY + 1) / 2 * record.saturation as i32
+                } else {
+                    record.base_priority as i32 - process
+                };
+                record.saturation =
+                    if increment.unsigned_abs() >= (HIGH_PRIORITY as u32).div_ceil(2) {
+                        increment.signum() as i8
+                    } else {
+                        0
+                    };
+                let (low, high) = if process >= LOW_REALTIME_PRIORITY {
+                    (LOW_REALTIME_PRIORITY, HIGH_PRIORITY)
+                } else {
+                    (1, LOW_REALTIME_PRIORITY - 1)
+                };
+                let base = process.saturating_add(increment).clamp(low, high);
+                record.base_priority = base as i8;
+                // A saturated thread runs at the top or bottom of its class.
+                let priority = match record.saturation {
+                    1 => high,
+                    -1 => low,
+                    _ => base,
+                };
+                memory.set_u8(thread + kthread::SATURATION, record.saturation as u8)?;
+                memory.set_u8(thread + kthread::PRIORITY, priority as u8)?;
+                memory.set_u8(thread + kthread::BASE_PRIORITY, base as u8)?;
+                Action::value(old as u32)
             }
             ord::PS_TERMINATE_SYSTEM_THREAD => {
                 if self.threads.contains_key(&tid) {
@@ -830,6 +887,8 @@ impl Core {
                         tib: [u32::MAX, tib_top, bottom, 0, 0, 0, self.kpcr],
                         irql: 0,
                         polling: false,
+                        base_priority: PROCESS_BASE_PRIORITY,
+                        saturation: 0,
                     },
                 );
                 self.objects.insert(object, Object::Thread { tid: id });

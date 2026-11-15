@@ -43,7 +43,10 @@ flags), 10/11/12 (parental values), 0x11 (XC_MISC flags), 0x103 (standard |
 factory flags), and 0x104 (game region). XC_MISC is `ConsoleConfig::misc_flags`,
 default zero: auto power-down off (0x01, XC_MISC_FLAG_AUTOPOWERDOWN) and DST
 adjustment on (0x02 disables it). XAPI's auto power-down setup reads it at
-0x2d6f79. Unknown/unconfigured indices stop, including raw EEPROM dumps.
+0x2d6f79. Unknown/unconfigured indices stop. XC_MAX_ALL (0xffff, the whole
+EEPROM image) returns STATUS_OBJECT_NAME_NOT_FOUND and writes nothing, because
+no EEPROM image is configured or fabricated; XQueryValue (0x2d6f62) turns that
+into ERROR_FILE_NOT_FOUND.
 It returns REG_DWORD and four-byte ResultLength; ResultLength may be null.
 Short buffers report BUFFER_TOO_SMALL and required length without writing the
 value or type. Full output spans are checked before effects, and a longer value
@@ -75,12 +78,10 @@ rejected before publication. The setter reuses its own page, clears omitted
 bytes, and refuses to overwrite a guest-changed foreign page pointer. Its page
 is kernel-owned RAM retained until Runtime teardown, not quick-reboot storage.
 
-**171 remains a stop.** Runtime has no guest unmap/remap API. Claiming to free a
-mapped contiguous allocation would leave allocation/reuse behavior incorrect.
-Consequently non-null launch data can be inspected/copied by generated XAPI,
-but a wrapper that then frees it stops at 171. Null launch info is the supported
-end-to-end default. The existing requested `Guest::unmap(va, len)` API is still
-needed; no runtime or VFS source was changed to hide this limitation.
+MmFreeContiguousMemory (171) unmaps the allocation (`Guest::unmap`), so a
+wrapper that frees non-null launch data works; the launch page itself is
+kernel-owned and is never handed to the guest as an allocation to free. Null
+launch info remains the default.
 
 ## Disk-space query (202 + 218)
 
@@ -153,8 +154,8 @@ $$XSIMAGE, .XTLID in the retail XBE) start at zero and their pristine bytes
 are captured. XeLoadSection taking a section from 0 to 1 rewrites its range
 with those bytes (through each page's permissions) and counts its shared
 pages; XeUnloadSection of the last reference uncounts them, and unloading at
-zero returns STATUS_INVALID_PARAMETER. Unloaded sections stay mapped (no
-Guest::unmap). Reloading a released PRELOAD section and unknown headers stop.
+zero returns STATUS_INVALID_PARAMETER. Unloaded sections stay mapped: retail
+decommits them, and `Guest::unmap` could now, but that is not done yet. Reloading a released PRELOAD section and unknown headers stop.
 The preload accounting follows Cxbx-Reloaded's loader, not a hardware trace.
 
 ## Shutdown notifications (47) and persistent memory (178)
@@ -217,8 +218,31 @@ HLE event, semaphore or thread object. `address()` exposes its guest address;
 collection alongside handles and blocked waits, preventing pool reuse while a
 rumble completion is outstanding. Invalid handles, wrong types and changed guest
 headers fail; every use revalidates the guest header. These APIs support real
-handles, not the context-dependent NtCurrentThread pseudo-handle. Guest
-ObReferenceObjectByHandle/ObfDereferenceObject exports remain stops.
+handles, not the context-dependent NtCurrentThread pseudo-handle.
+
+The guest exports ObReferenceObjectByHandle (246) and ObfDereferenceObject
+(250) use the same pins. XAPI's SetThreadPriority (0x2d1fb6) references the
+handle with PsThreadObjectType ([0x4115b0] = DATA 259), calls
+KeSetBasePriorityThread (15 and -15 become 16 and -16, saturation) and
+dereferences. 246 accepts the NtCurrentThread pseudo-handle, a null type and
+the thread/event type addresses; another type pointer, file and link objects
+stop. Guest references are counted apart from host pins, so an extra guest
+dereference stops instead of dropping a host pin.
+
+## Mutants (192, 221)
+
+XAPI CreateMutex (0x2d626e) and ReleaseMutex (0x2d62c4) call NtCreateMutant
+and NtReleaseMutant directly. Unnamed mutants are implemented (named ones
+stop); ReleaseMutex by a non-owner gets STATUS_MUTANT_NOT_OWNED, which 301
+converts to ERROR_NOT_OWNER (288). A thread that exits owning a mutant abandons
+it, and the next wait that acquires it returns STATUS_ABANDONED_WAIT_0 + index.
+
+## Overlapped file I/O
+
+XAPI ReadFile/WriteFile (0x2d2241) with an OVERLAPPED complete synchronously:
+the IO_STATUS_BLOCK (the OVERLAPPED) is written, hEvent is reset and then
+signalled, and STATUS_PENDING is never returned, so ERROR_IO_PENDING never
+reaches the title. README.md ("Asynchronous I/O") gives the reasoning.
 
 ## Last-error TLS cell
 
@@ -248,5 +272,8 @@ retail six-hour relative due time, plus KeSetTimerEx (150) and KeCancelTimer
 (97). See README.md for the timer and DPC model. With logical time, the timer
 expires only when the scheduler advances to it (idle or polling threads) or
 the host injects time; its DPC then runs at DISPATCH_LEVEL on a kernel stack.
+A DPC queued by a kernel call made below DISPATCH_LEVEL runs before that call's
+caller continues (README.md). The voice engine's 20 ms timer (0x484248, DPC
+0x332f4c, armed due-now at 0x332b6d) relies on that.
 XC_MISC is read during this setup; how the DPC routine treats its
 auto-power-down bit has not been traced.
