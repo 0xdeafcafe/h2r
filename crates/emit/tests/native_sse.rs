@@ -198,6 +198,46 @@ fn arithmetic_matches_committed_sse_oracle() {
     eprintln!("native SSE matches {checked} independent oracle records");
 }
 
+/// Strict FP is scoped to the helpers. The header is included before the
+/// generated handlers (and before h2x87_native.h, which is empty when
+/// `H2_X87_NATIVE=0`), so `FENV_ACCESS ON` must not stay in effect for code
+/// that follows it.
+#[test]
+fn strict_fp_access_ends_with_the_header() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("native-sse-fenv-scope");
+    std::fs::create_dir_all(&dir).unwrap();
+    let src = dir.join("after.c");
+    std::fs::write(
+        &src,
+        "#include <stdint.h>\ntypedef unsigned __int128 h2u128;\n#include \"h2sse_native.h\"\n\
+         float h2_after_header(float a, float b) { return a + b; }\n",
+    )
+    .unwrap();
+    let ir = dir.join("after.ll");
+    let out = Command::new("clang")
+        .args(["-std=c11", "-O1", "-fno-fast-math", "-ffp-contract=off", "-S", "-emit-llvm"])
+        .arg("-DH2_SSE_NATIVE=1")
+        .arg("-I")
+        .arg(root.join("c"))
+        .arg("-I")
+        .arg(root.join("../simd/c"))
+        .arg(&src)
+        .arg("-o")
+        .arg(&ir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let ir = std::fs::read_to_string(&ir).unwrap();
+    let body = ir
+        .split("@h2_after_header(")
+        .nth(1)
+        .and_then(|rest| rest.split("\n}").next())
+        .expect("h2_after_header in the IR");
+    assert!(body.contains("fadd"), "{body}");
+    assert!(!body.contains("constrained"), "FENV_ACCESS leaked past h2sse_native.h:\n{body}");
+}
+
 #[test]
 fn host_rounding_flush_and_trap_controls_are_preserved() {
     let input = edge_records(false);

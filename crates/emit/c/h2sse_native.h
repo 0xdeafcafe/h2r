@@ -75,6 +75,9 @@ static inline int h2sn_arith(uint32_t *mx, unsigned op, h2u128 a, h2u128 b,
     *out = result;
     return 1;
 }
+/* Strict FP ends here: the generated handlers that follow are integer code
+ * and must not inherit it (h2x87_native.h is empty with H2_X87_NATIVE=0). */
+#pragma STDC FENV_ACCESS OFF
 #define H2SN_TRY(op, a, b, lanes) \
     if (h2sn_arith(mx, op, a, b, lanes, out)) return 0
 #else

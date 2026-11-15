@@ -613,6 +613,36 @@ fn inline_ram_checks_track_mapping_changes_faults_writes_and_slice_budget() {
     writer.join().unwrap();
 }
 
+/// The bulk path is only reached when the emitter recognizes the lifted MOVS
+/// iteration. If the lifter's shape drifts, the comparison below would pass
+/// with both runs on the ordinary path, so check the emitted call itself.
+#[test]
+fn lifted_rep_movs_reaches_the_bulk_copy() {
+    for accounting in [false, true] {
+        for width in [1u32, 2, 4] {
+            let f = function(A, |a| {
+                match width { 1 => a.rep().movsb()?, 2 => a.rep().movsw()?, _ => a.rep().movsd()? }
+                a.stosd()?;
+                a.ret()
+            });
+            let owners = emit::plan_with(vec![f], emit::opt::Passes::ALL);
+            let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+                .join(format!("rep-movs-shape-{width}-{accounting}"));
+            emit::write_module_with(&owners, &dir, emit::Codegen { accounting }).unwrap();
+            let mut c = String::new();
+            for e in std::fs::read_dir(&dir).unwrap() {
+                let path = e.unwrap().path();
+                if path.extension().is_some_and(|x| x == "c") {
+                    c += &std::fs::read_to_string(path).unwrap();
+                }
+            }
+            let calls = c.matches("h2_fast_movs(").count();
+            assert_eq!(calls, 1, "width={width} accounting={accounting}");
+            assert!(c.contains(&format!("ecx, {width}u, H2_FLAG(10)")), "width={width}");
+        }
+    }
+}
+
 /// Real RAM, aliases and page faults through both generated REP paths.
 #[test]
 fn bulk_rep_movs_preserves_overlap_fault_progress_watch_and_accounting() {

@@ -19,6 +19,8 @@ masks set, and host nearest rounding with exceptions masked. It reads FPCR
 on arm64 or MXCSR on x86-64; it never changes host controls. Strict
 `FENV_ACCESS`, `-fno-fast-math` and `-ffp-contract=off` prevent speculative
 arithmetic before the guard and contraction of separate guest operations.
+Strict FP is switched off again at the end of the native helpers, so the
+generated handlers that include the header never inherit it.
 
 Each operand must be signed zero or a normal binary32 with unbiased exponent
 in [-60,60]. Division additionally requires a nonzero divisor; sqrt requires
