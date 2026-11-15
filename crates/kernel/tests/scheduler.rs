@@ -303,3 +303,317 @@ fn a_self_requeueing_dpc_cannot_starve_a_ready_thread() {
     );
     assert_eq!(logged(&h), [1, 2, 3, 4, 5]);
 }
+
+// Review probes (kernel-r5 rework): priorities must not freeze logical
+// time, and finite DPC chains drain before the thread continues.
+/// An unused low-priority ready thread must not stop interrupt time.
+#[test]
+fn review_priority_pollers_must_not_freeze_periodic_timer() {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.code(0x300, |cpu, ctx, _| {
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        ctx.memory().ret(cpu, 16)
+    });
+    h.success(113, &[TIMER, 1]);
+    h.success(107, &[DPC, CODE + 0x300, 0]);
+    let (lo, hi) = relative(20);
+    h.success(150, &[TIMER, lo, hi, 20, DPC]);
+    h.code(0, |cpu, ctx, _| {
+        create(cpu, ctx, 0, CODE + 0x2000, CODE + 0x10)
+    });
+    h.code(0x10, |cpu, ctx, _| {
+        create(cpu, ctx, 1, CODE + 0x1000, CODE + 0x20)
+    });
+    set_priority(&h, 0x20, 0, -2, CODE + 0x50);
+    set_priority(&h, 0x50, 1, 2, CODE + 0x1000);
+    h.code(0x1000, |cpu, ctx, _| {
+        if ctx.memory().u32(DPC_COUNT)? != 0 {
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0);
+        }
+        guest_call(cpu, ctx, token(238), &[], CODE + 0x1000)
+    });
+    h.code(0x2000, |cpu, ctx, _| {
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    let outcome = machine.run(100).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}; timer DPCs={}, clock={}, schedule={:?}",
+        h.get(DPC_COUNT),
+        h.kernel.clock().counter(),
+        machine.schedule()
+    );
+}
+
+/// A single high-priority SwitchToThread poller and a low flag setter.
+#[test]
+fn review_single_high_yielder_allows_low_flag_setter() {
+    let h = Harness::new();
+    let mut machine = machine(&h);
+    h.code(0, |cpu, ctx, _| {
+        create(cpu, ctx, 0, CODE + 0x2000, CODE + 0x10)
+    });
+    set_priority(&h, 0x10, 0, -2, CODE + 0x1000);
+    h.code(0x1000, |cpu, ctx, _| {
+        if ctx.memory().u32(DPC_COUNT)? != 0 {
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0);
+        }
+        guest_call(cpu, ctx, token(238), &[], CODE + 0x1000)
+    });
+    h.code(0x2000, |cpu, ctx, _| {
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    assert!(matches!(
+        machine.run(100).unwrap(),
+        RunOutcome::Complete { .. }
+    ));
+}
+
+/// A single high yielder must let a low thread finish a timed wait.
+#[test]
+fn review_single_high_yielder_allows_low_timed_wait() {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.success(108, &[TIMER, 0, 0]); // notification event, unsignalled
+    let (lo, hi) = relative(10);
+    h.set(DATA + 0x300, lo);
+    h.set(DATA + 0x304, hi);
+    h.code(0, |cpu, ctx, _| {
+        create(cpu, ctx, 0, CODE + 0x2000, CODE + 0x10)
+    });
+    set_priority(&h, 0x10, 0, -2, CODE + 0x1000);
+    h.code(0x1000, |cpu, ctx, _| {
+        if ctx.memory().u32(DPC_COUNT)? != 0 {
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0);
+        }
+        guest_call(cpu, ctx, token(238), &[], CODE + 0x1000)
+    });
+    h.code(0x2000, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            token(159),
+            &[TIMER, 0, 0, 0, DATA + 0x300],
+            CODE + 0x2010,
+        )
+    });
+    h.code(0x2010, |cpu, ctx, _| {
+        assert_eq!(cpu.eax, status::TIMEOUT);
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    assert!(matches!(
+        machine.run(100).unwrap(),
+        RunOutcome::Complete { .. }
+    ));
+    assert_eq!(h.kernel.clock().counter(), 100_000);
+}
+
+/// A finite A -> B DPC chain should complete before returning to PASSIVE_LEVEL.
+#[test]
+fn review_distinct_nested_dpc_precedes_guest_continuation() {
+    let h = Harness::new();
+    let mut machine = machine(&h);
+    h.code(0, |cpu, ctx, _| {
+        guest_call(cpu, ctx, token(113), &[TIMER, 0], CODE + 0x10)
+    });
+    h.code(0x10, |cpu, ctx, _| {
+        guest_call(cpu, ctx, token(113), &[TIMER + 0x400, 0], CODE + 0x20)
+    });
+    h.code(0x20, |cpu, ctx, _| {
+        guest_call(cpu, ctx, token(107), &[DPC, CODE + 0x300, 0], CODE + 0x30)
+    });
+    h.code(0x30, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            token(107),
+            &[DPC + 0x400, CODE + 0x400, 0],
+            CODE + 0x40,
+        )
+    });
+    h.code(0x40, |cpu, ctx, _| {
+        guest_call(cpu, ctx, token(149), &[TIMER, 0, 0, DPC], CODE + 0x50)
+    });
+    h.code(0x50, |cpu, ctx, _| {
+        let second_dpc_ran = ctx.memory().u32(DPC_COUNT)?;
+        assert_eq!(
+            second_dpc_ran, 1,
+            "guest continuation ran before distinct DPC B"
+        );
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    h.code(0x300, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            token(149),
+            &[TIMER + 0x400, 0, 0, DPC + 0x400],
+            CODE + 0x340,
+        )
+    });
+    h.code(0x340, |cpu, ctx, _| ctx.memory().ret(cpu, 16));
+    h.code(0x400, |cpu, ctx, _| {
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        ctx.memory().ret(cpu, 16)
+    });
+    let outcome = machine.run(20).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}"
+    );
+}
+
+#[test]
+fn review_eight_equal_yielders_share_periodic_time() {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.code(0, |_, _, _| Ok(TransferAbi::jump(CODE + 0x1000)));
+    h.code(0x300, |cpu, ctx, _| {
+        let mut m = ctx.memory();
+        let n = m.u32(DPC_COUNT)?;
+        m.set_u32(DPC_COUNT, n + 1)?;
+        m.ret(cpu, 16)
+    });
+    for slot in 0..7 {
+        h.success(
+            255,
+            &[
+                HANDLES + slot * 4,
+                0,
+                0x4000,
+                0,
+                0,
+                CODE + 0x1000,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
+    }
+    h.success(113, &[TIMER, 1]);
+    h.success(107, &[DPC, CODE + 0x300, 0]);
+    let (lo, hi) = relative(20);
+    h.success(150, &[TIMER, lo, hi, 20, DPC]);
+    yielder(&h, 0x1000, 5, status::SUCCESS);
+    let outcome = machine.run(200).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(h.get(DPC_COUNT), 5);
+    assert_eq!(logged(&h), (0..6).flat_map(|_| 1..=8).collect::<Vec<_>>());
+}
+
+#[test]
+fn review_sleep_zero_must_not_freeze_periodic_timer() {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.code(0x300, |cpu, ctx, _| {
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        ctx.memory().ret(cpu, 16)
+    });
+    h.success(113, &[TIMER, 1]);
+    h.success(107, &[DPC, CODE + 0x300, 0]);
+    let (lo, hi) = relative(20);
+    h.success(150, &[TIMER, lo, hi, 20, DPC]);
+    h.code(0, |cpu, ctx, _| {
+        create(cpu, ctx, 0, CODE + 0x2000, CODE + 0x10)
+    });
+    set_priority(&h, 0x10, 0, -2, CODE + 0x1000);
+    h.code(0x1000, |cpu, ctx, _| {
+        if ctx.memory().u32(DPC_COUNT)? != 0 {
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0);
+        }
+        guest_call(cpu, ctx, token(99), &[0, 0, DATA + 0x300], CODE + 0x1000)
+    });
+    h.code(0x2000, |cpu, ctx, _| {
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    let outcome = machine.run(100).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}; timer DPCs={}, clock={}",
+        h.get(DPC_COUNT),
+        h.kernel.clock().counter()
+    );
+}
+
+#[test]
+fn review_timeout_wakeup_must_not_stop_later_timer() {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    const EVENT: u32 = DATA + 0x600;
+    h.success(108, &[EVENT, 0, 0]);
+    h.code(0x300, |cpu, ctx, _| {
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        ctx.memory().ret(cpu, 16)
+    });
+    h.success(113, &[TIMER, 1]);
+    h.success(107, &[DPC, CODE + 0x300, 0]);
+    let (lo, hi) = relative(20);
+    h.success(150, &[TIMER, lo, hi, 20, DPC]);
+    let (lo, hi) = relative(10);
+    h.set(DATA + 0x300, lo);
+    h.set(DATA + 0x304, hi);
+    h.code(0, |cpu, ctx, _| {
+        create(cpu, ctx, 0, CODE + 0x1000, CODE + 0x10)
+    });
+    h.code(0x10, |cpu, ctx, _| {
+        create(cpu, ctx, 1, CODE + 0x1000, CODE + 0x20)
+    });
+    set_priority(&h, 0x20, 1, 2, CODE + 0x50);
+    let root = machine.thread(1).unwrap().object;
+    h.code(0x50, move |cpu, ctx, _| {
+        guest_call(cpu, ctx, token(143), &[root, (-2i32) as u32], CODE + 0x70)
+    });
+    h.code(0x70, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            token(159),
+            &[EVENT, 0, 0, 0, DATA + 0x300],
+            CODE + 0x80,
+        )
+    });
+    h.code(0x80, |cpu, ctx, _| {
+        assert_eq!(cpu.eax, status::TIMEOUT);
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    h.code(0x1000, |cpu, ctx, _| {
+        if ctx.memory().u32(DPC_COUNT)? != 0 {
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0);
+        }
+        guest_call(cpu, ctx, token(238), &[], CODE + 0x1000)
+    });
+    let outcome = machine.run(100).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}; timer DPCs={}, clock={}",
+        h.get(DPC_COUNT),
+        h.kernel.clock().counter()
+    );
+}
+
+#[test]
+fn review_alertable_boundaries_stop_explicitly() {
+    let mut h = Harness::new();
+    let _machine = machine(&h);
+    h.success(108, &[TIMER, 0, 0]);
+    h.stopped(159, &[TIMER, 0, 0, 1, 0]);
+    h.stopped(99, &[0, 1, DATA + 0x300]);
+}

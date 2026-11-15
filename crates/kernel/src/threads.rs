@@ -14,7 +14,10 @@ use runtime::{
     CpuAbi, Event, ExecCtx, Guest, GuestFault, LoadedImage, Runner, Runtime, TransferAbi,
     guest::{Access, PAGE_SIZE},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 pub const FX_SAVE_SIZE: u32 = 0x210;
 /// The title process's base priority (NORMAL_BASE_PRIORITY); every thread
@@ -99,8 +102,8 @@ pub struct Machine {
     /// Context of the most recent DPC routine, kept for stop inspection.
     dpc: Option<Thread>,
     dpc_stack_top: u32,
-    /// DPCs the current drain may still run before a ready thread's slice.
-    dpc_budget: Option<usize>,
+    /// KDPCs already run in the current drain (since the last thread slice).
+    drained: BTreeSet<u32>,
     pub max_transfers_per_slice: u64,
 }
 
@@ -194,7 +197,7 @@ impl Machine {
             stopped: None,
             dpc: None,
             dpc_stack_top: 0,
-            dpc_budget: None,
+            drained: BTreeSet::new(),
             max_transfers_per_slice: 1_000_000,
         };
         machine.collect_threads()?;
@@ -324,11 +327,7 @@ impl Machine {
                     .threads
                     .values()
                     .any(|r| !matches!(r.state, State::Terminated(_)));
-                if live
-                    && core.dpcs.is_empty()
-                    && (core.ready.is_empty()
-                        || core.ready.iter().all(|id| core.threads[id].polling))
-                {
+                if live && core.dpcs.is_empty() && core.idle() {
                     let deadline = core.next_deadline();
                     if let Some(deadline) = deadline {
                         core.clock.advance_to(deadline)?;
@@ -344,23 +343,25 @@ impl Machine {
                         core.wake(&mut memory)?;
                     }
                 }
-                // DISPATCH_LEVEL work runs before any thread gets a slice, but
-                // only the DPCs already queued when this drain began: one that
-                // a DPC routine queues waits for a ready thread's next slice.
-                if live && !core.dpcs.is_empty() {
-                    let budget = self.dpc_budget.get_or_insert(core.dpcs.len());
-                    if *budget > 0 || core.ready.is_empty() {
-                        *budget = budget.saturating_sub(1);
-                        let call = core.next_dpc(&mut memory)?.expect("queued DPC");
-                        drop(memory);
-                        drop(core);
-                        if let Some(outcome) = self.run_dpc(call)? {
-                            return Ok(outcome);
-                        }
-                        continue;
+                // DISPATCH_LEVEL work runs before any thread gets a slice, and
+                // a drain runs to empty, chains of distinct DPCs included. Only
+                // a DPC that comes round again in the same drain (one that
+                // re-arms its own timer due now, say) waits for a ready
+                // thread's next slice, so a DPC cycle cannot starve threads.
+                if live
+                    && let Some(&dpc) = core.dpcs.front()
+                    && (core.ready.is_empty() || !self.drained.contains(&dpc))
+                {
+                    self.drained.insert(dpc);
+                    let call = core.next_dpc(&mut memory)?.expect("queued DPC");
+                    drop(memory);
+                    drop(core);
+                    if let Some(outcome) = self.run_dpc(call)? {
+                        return Ok(outcome);
                     }
+                    continue;
                 }
-                self.dpc_budget = None;
+                self.drained.clear();
                 let Some(tid) = core.pop_ready() else {
                     let pending: Vec<_> = core
                         .threads
@@ -538,17 +539,35 @@ impl Core {
     /// that has just yielded its slice is passed over while any other thread
     /// is ready, whatever that thread's priority (KiSelectReadyThread(1)).
     fn pop_ready(&mut self) -> Option<u32> {
-        let yielder = self
-            .yielder
-            .take()
-            .filter(|y| self.ready.iter().any(|id| id != y));
-        let (index, _) = self
-            .ready
+        let index = self.next_ready()?;
+        self.yielder = None;
+        self.ready.remove(index)
+    }
+    /// Index in `ready` of the thread `pop_ready` would take.
+    fn next_ready(&self) -> Option<usize> {
+        let yielder = self.yielder.filter(|y| self.ready.iter().any(|id| id != y));
+        self.ready
             .iter()
             .enumerate()
             .filter(|(_, id)| Some(**id) != yielder)
-            .max_by_key(|(i, id)| (self.threads[*id].priority, std::cmp::Reverse(*i)))?;
-        self.ready.remove(index)
+            .max_by_key(|(i, id)| (self.threads[*id].priority, std::cmp::Reverse(*i)))
+            .map(|(i, _)| i)
+    }
+    /// Whether logical time may advance: no thread is ready, or the threads
+    /// that would be scheduled are all polling. Those are the next pick and
+    /// every ready thread of its priority or higher; lower-priority threads
+    /// cannot run before them, so one that is never scheduled does not hold
+    /// the clock (and the timers that would release the pollers) still.
+    fn idle(&self) -> bool {
+        let Some(index) = self.next_ready() else {
+            return true;
+        };
+        let floor = self.threads[&self.ready[index]].priority;
+        self.ready
+            .iter()
+            .map(|id| &self.threads[id])
+            .filter(|r| r.priority >= floor)
+            .all(|r| r.polling)
     }
     fn next_deadline(&self) -> Option<u64> {
         self.threads

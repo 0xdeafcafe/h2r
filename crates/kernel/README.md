@@ -213,7 +213,11 @@ pending, otherwise as a poll (below).
 IRQL survives waits. WaitAll tests every object before consuming any signal.
 A run with no ready thread advances logical time to the next deadline; with no
 deadline it reports Deadlock. If every ready thread has just used Delay(0) or
-NtYieldExecution, advance to the next future deadline too. A newly ready thread
+NtYieldExecution, advance to the next future deadline too. With priorities,
+"every ready thread" means the ones that would be scheduled: the next pick and
+every ready thread of its priority or higher. A lower-priority thread that never
+gets a turn behind high-priority pollers does not hold the clock still, so the
+timer or timeout that releases the pollers still arrives. A newly ready thread
 gets a turn before being classified as polling, and an advance clears every
 ready thread's polling mark: each of them gets a slice before the clock can move
 again. Without that, a lone thread yielding while a periodic timer is armed
@@ -240,9 +244,10 @@ queue and the DPCs run first. So KeSetTimer with a reached due time has run its
 DPC by the instruction after the call (Halo's voice engine, 0x332b6d, arms its
 20 ms DPC 0x332f4c that way), and a timer that expired at raised IRQL delivers
 on the KfLowerIrql. Otherwise DPCs run one per slice before any thread. A drain
-runs only the DPCs queued when it began; one that a DPC routine queues (say by
-re-arming its timer due now) waits until a ready thread has had a slice, so
-DPC delivery cannot starve a thread either. They run on a 16 KiB kernel stack, under
+runs until the queue is empty, so a DPC that queues a different DPC has it run
+before any thread continues. Only a DPC that comes round again in the same drain
+(say by re-arming its own timer due now) waits until a ready thread has had a
+slice, so DPC delivery cannot starve a thread either. They run on a 16 KiB kernel stack, under
 ExecCtx thread `threads::DPC_THREAD_ID` (0) at DISPATCH_LEVEL; the interrupted
 IRQL is restored when the routine returns. A routine that blocks, delays,
 yields or needs a KTHREAD stops: `RunOutcome::Stopped { thread: 0, .. }`,
