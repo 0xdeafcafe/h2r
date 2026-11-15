@@ -84,6 +84,11 @@ struct Run {
 /// does, then the frame wait for `targets.0` and for `targets.1`. The clock
 /// is moved on by `jump` ticks first.
 fn setup(targets: (u32, u32), jump: u64) -> Run {
+    setup_with(targets, jump, true)
+}
+
+/// [`setup`], with or without the clocked source (`source` is 0 without).
+fn setup_with(targets: (u32, u32), jump: u64, with_source: bool) -> Run {
     let cfg = DeviceConfig::halo2(PB, SCRATCH);
     let g = guest(&cfg);
     let device = runtime_glue::shared(cfg, RecordingBackend::new());
@@ -138,14 +143,18 @@ fn setup(targets: (u32, u32), jump: u64) -> Run {
     });
     let runtime = Runtime::new(g, dispatch);
     let kernel = kernel::Kernel::install(&runtime, kernel::Config::default()).unwrap();
-    let id = kernel
-        .add_periodic(Source {
-            name: "vblank",
-            rate: Rate::HZ_60,
-            max_catch_up: 4,
-            handler: Box::new(d3d::vblank::clocked_vblanks(device.clone())),
-        })
-        .unwrap();
+    let id = if with_source {
+        kernel
+            .add_periodic(Source {
+                name: "vblank",
+                rate: Rate::HZ_60,
+                max_catch_up: 4,
+                handler: Box::new(d3d::vblank::clocked_vblanks(device.clone())),
+            })
+            .unwrap()
+    } else {
+        0
+    };
     let cpu = CpuAbi {
         eip: ENTRY,
         esp: STACK_TOP - 4,
@@ -226,4 +235,129 @@ fn a_clock_jump_reaches_the_game_counter_one_vblank_at_a_time() {
     // The pre-device batch called nothing, so it is not in the schedule:
     // the thread, then a batch of four callbacks, then the thread again.
     assert_eq!(&m.schedule()[..6], [1, 0, 0, 0, 0, 1]);
+}
+
+const WORKER: u32 = 0x003F_0500;
+/// Worker rounds, and the relative interval a sleeping worker uses.
+const ROUNDS: u32 = OUT + 0x200;
+const INTERVAL: u32 = OUT + 0x300;
+
+/// Start a second thread (PsCreateSystemThreadEx) that loops until the
+/// frame-wait counter moves: each round either does `accesses` charged guest
+/// reads (through the generated code's own access path) and yields, or,
+/// with `sleep`, sleeps 100 ms.
+fn spawn_worker(r: &Run, accesses: u32, sleep: bool) {
+    r.runtime
+        .memory()
+        .set_u64(INTERVAL, (-1_000_000i64) as u64)
+        .unwrap();
+    r.runtime.edit_dispatch(|d| {
+        d.register_override(WORKER, "test worker", move |cpu, ctx, _| {
+            if ctx.memory().u32(FW.counter)? > 0 {
+                return ctx.memory().ret(cpu, 0);
+            }
+            let n = ctx.memory().u32(ROUNDS)?;
+            ctx.memory().set_u32(ROUNDS, n + 1)?;
+            let spent = ctx.slice_spent();
+            let mut out = [0u8; 4];
+            for _ in 0..accesses {
+                // SAFETY: `ctx` is a live ExecCtx and `out` holds the 4
+                // bytes read; this is the entry generated code calls.
+                let status = unsafe {
+                    runtime::ffi::h2abi_v1_read(
+                        (ctx as *mut runtime::ExecCtx).cast(),
+                        WORKER,
+                        ROUNDS,
+                        4,
+                        1,
+                        out.as_mut_ptr(),
+                    )
+                };
+                assert_eq!(status, 0);
+            }
+            assert_eq!(ctx.slice_spent() - spent, accesses as u64);
+            let rt = ctx.runtime().clone();
+            let mut g = rt.memory();
+            if sleep {
+                cpu.esp -= 12;
+                g.set_u32(cpu.esp, 0)?;
+                g.set_u32(cpu.esp + 4, 0)?;
+                g.set_u32(cpu.esp + 8, INTERVAL)?;
+                let token = runtime::kernel::function_token(99); // KeDelayExecutionThread
+                return ctx.call_guest(cpu, &mut g, token, |_, _| {
+                    Ok(runtime::TransferAbi::jump(WORKER))
+                });
+            }
+            let token = runtime::kernel::function_token(238); // NtYieldExecution
+            ctx.call_guest(cpu, &mut g, token, |_, _| {
+                Ok(runtime::TransferAbi::jump(WORKER))
+            })
+        });
+    });
+    let mut cpu = CpuAbi {
+        esp: OUT + 0x2000,
+        ..CpuAbi::xbox_thread()
+    };
+    let args = [OUT + 0x100, 0, 0x4000, 0, 0, WORKER, 0, 0, 0, 0];
+    {
+        let mut g = r.runtime.memory();
+        g.set_u32(cpu.esp, HARNESS_EXIT).unwrap();
+        for (i, a) in args.iter().enumerate() {
+            g.set_u32(cpu.esp + 4 + 4 * i as u32, *a).unwrap();
+        }
+    }
+    let mut ctx = runtime::ExecCtx::new(r.runtime.clone(), 1);
+    let t =
+        runtime::Runner::default().run(&mut cpu, &mut ctx, runtime::kernel::function_token(255));
+    assert_eq!(ctx.event(t.event_id), Some(&runtime::Event::HarnessExit));
+}
+
+#[test]
+fn a_busy_worker_does_not_trip_the_frame_wait_watchdog() {
+    // Astra's repro: beside the waiting main thread, a worker does exactly
+    // 100 charged accesses per yield. Its handoffs are productive, so the
+    // clock reaches the first vblank by work, one tick a round: 166667
+    // rounds, far more than MAX_IDLE_YIELDS yields of the wait. The clock
+    // moves on every one of them, so the wait keeps going and ends there.
+    let mut r = setup((2, 2), 0);
+    spawn_worker(&r, 100, false);
+    let outcome = r.machine.run(1_000_000).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Complete { .. }),
+        "{outcome:?}: {:?}",
+        r.device.lock().unwrap().last_stop()
+    );
+    let g = r.runtime.memory();
+    assert_eq!(
+        g.u32(OUT + 4).unwrap(),
+        1,
+        "the wait returned at the vblank"
+    );
+    assert_eq!(g.u32(ROUNDS).unwrap(), 166_667);
+    drop(g);
+    assert_eq!(r.kernel.clock().counter(), 166_667);
+    assert_eq!(r.kernel.periodic_stats(r.source).unwrap().delivered, 1);
+}
+
+#[test]
+fn a_frame_wait_with_no_source_stops_after_two_seconds_of_logical_time() {
+    // No source, but a worker sleeping 100 ms at a time keeps the clock
+    // moving, so the yield count never trips: the logical-time bound does.
+    let mut r = setup_with((2, 2), 0, false);
+    spawn_worker(&r, 0, true);
+    let outcome = r.machine.run(1_000_000).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Stopped { thread: 1, .. }),
+        "{outcome:?}"
+    );
+    let stop = r.device.lock().unwrap().last_stop().unwrap().error.clone();
+    assert!(
+        stop.contains("ticks of logical time without a vblank"),
+        "{stop}"
+    );
+    let ticks = r.kernel.clock().counter();
+    assert!(
+        (d3d::vblank::MAX_VBLANK_GAP..d3d::vblank::MAX_VBLANK_GAP + 1_000_001).contains(&ticks),
+        "{ticks}"
+    );
 }

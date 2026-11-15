@@ -932,8 +932,12 @@ d3d::register_frame_wait(&mut dispatch, device.clone(), FrameWait::HALO2_CLOCKED
   run, or with nothing else runnable the clock jumps straight to the next
   vblank. Exit effects are the original's (below). It stops with a named
   error when no callback is registered, when the target is more than
-  `max_vblanks` ahead, or after `vblank::MAX_IDLE_YIELDS` (100000) yields
-  in a row bring no vblank (no source installed).
+  `max_vblanks` ahead, or when no vblank comes (no source installed):
+  after `vblank::MAX_IDLE_YIELDS` (100000) yields in a row with the
+  logical clock standing still, or after `vblank::MAX_VBLANK_GAP` (2 s) of
+  logical time. The watchdog reads the clock through
+  `Runtime::guest_time`, so other threads working their way to the next
+  deadline (a tick a round, say) never trip it.
 - `set_vblanks_per_swap` stays 0 with a clocked source, or vblanks would
   be counted twice.
 - Halo registers no swap callback: in device `+0x1DA0..+0x1E00` game code

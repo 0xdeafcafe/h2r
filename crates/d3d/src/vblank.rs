@@ -149,16 +149,24 @@ pub enum Delivery {
     Inline,
     /// A clocked source ([`clocked_vblanks`] on a kernel periodic source)
     /// delivers them; the override calls `NtYieldExecution` until the
-    /// counter arrives. It stops after [`MAX_IDLE_YIELDS`] yields in a row
-    /// see no vblank (no source installed).
+    /// counter arrives. It stops when no vblank comes while the logical
+    /// clock stands still for [`MAX_IDLE_YIELDS`] yields, or while it moves
+    /// [`MAX_VBLANK_GAP`] ticks (no source installed).
     Clock,
 }
 
-/// Yields in a row without a vblank after which a [`Delivery::Clock`] wait
-/// stops. Each yield gives every other ready thread a slice first, or lets
-/// the clock jump to the next deadline, so a running source delivers well
-/// within this.
+/// Yields in a row with neither a vblank nor any logical time passing after
+/// which a [`Delivery::Clock`] wait stops. A yield that lets the clock move
+/// (other threads' charged work, or a jump to a deadline) starts the count
+/// again: a busy machine reaches the next vblank by working, however many
+/// yields that takes. Without a guest clock in the runtime every yield
+/// counts.
 pub const MAX_IDLE_YIELDS: u32 = 100_000;
+
+/// Logical time (100 ns ticks) a [`Delivery::Clock`] wait lets pass with no
+/// vblank before it stops: two seconds, 120 periods of a healthy 60 Hz
+/// source.
+pub const MAX_VBLANK_GAP: u64 = 20_000_000;
 
 /// `NtYieldExecution`, the kernel export the clocked frame wait calls.
 const NT_YIELD_EXECUTION: u32 = 238;
@@ -257,8 +265,12 @@ struct Wait {
     ret_pc: u32,
     delivered: u32,
     last: Option<i64>,
-    /// Clocked: yields since the counter last moved.
+    /// Clocked: yields since the counter or the logical clock last moved.
     idle: u32,
+    /// Clocked: logical time at the last yield.
+    time: Option<u64>,
+    /// Clocked: logical time the counter last moved (or the wait began).
+    since: Option<u64>,
 }
 
 /// Installs the opt-in frame-wait override at `fw.entry`. Stops go through
@@ -292,6 +304,8 @@ pub fn register_frame_wait<B>(
             delivered: 0,
             last: None,
             idle: 0,
+            time: None,
+            since: None,
         };
         step(cpu, ctx, wait, device.clone(), on_stop.clone(), NAME)
     });
@@ -347,17 +361,35 @@ where
                 ),
             );
         }
-        if w.last == Some(counter) {
-            w.idle += 1;
-        } else {
+        // No lock is held here: the kernel's clock takes the kernel lock.
+        let now = ctx.runtime().guest_time();
+        if w.last != Some(counter) {
             w.idle = 0;
             w.last = Some(counter);
+            w.since = now;
+        } else if now.is_some() && now > w.time {
+            w.idle = 0;
+        } else {
+            w.idle += 1;
+        }
+        w.time = now;
+        if let (Some(now), Some(since)) = (now, w.since)
+            && now.saturating_sub(since) > MAX_VBLANK_GAP
+        {
+            return stop(
+                ctx,
+                format!(
+                    "{} ticks of logical time without a vblank (counter {counter}, waiting for {}): is a clocked vblank source installed?",
+                    now - since,
+                    target.wrapping_sub(1)
+                ),
+            );
         }
         if w.idle >= MAX_IDLE_YIELDS {
             return stop(
                 ctx,
                 format!(
-                    "{MAX_IDLE_YIELDS} yields without a vblank (counter {counter}, waiting for {}): is a clocked vblank source installed?",
+                    "{MAX_IDLE_YIELDS} yields without a vblank or logical time passing (counter {counter}, waiting for {}): is a clocked vblank source installed?",
                     target.wrapping_sub(1)
                 ),
             );

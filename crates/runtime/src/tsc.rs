@@ -43,6 +43,12 @@ impl Tsc {
         *self.clock.write().unwrap_or_else(|e| e.into_inner()) = clock;
     }
 
+    /// Guest time from the installed clock, without moving the counter.
+    pub fn guest_time(&self) -> Option<u64> {
+        let clock = self.clock.read().unwrap_or_else(|e| e.into_inner()).clone();
+        clock.and_then(|c| c())
+    }
+
     /// The next counter value: guest time in cycles, but always at least
     /// [`TSC_MIN_STEP`] past the previous value.
     pub fn read(&self) -> u64 {

@@ -29,6 +29,14 @@ impl Runtime {
     pub fn set_guest_clock(&self, clock: Option<GuestClock>) {
         self.tsc.set_clock(clock);
     }
+    /// Guest time in [`crate::tsc::GUEST_CLOCK_HZ`] ticks from the clock
+    /// [`Runtime::set_guest_clock`] installed (the kernel's logical clock),
+    /// or `None` without one. Reading it changes nothing. Call it with no
+    /// runtime lock held: the kernel's clock takes the kernel lock, which
+    /// comes before guest memory.
+    pub fn guest_time(&self) -> Option<u64> {
+        self.tsc.guest_time()
+    }
     /// What `rdtsc` reads next; see [`crate::tsc`].
     pub fn read_tsc(&self) -> u64 {
         self.tsc.read()
