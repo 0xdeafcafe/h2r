@@ -41,6 +41,7 @@ const RS_FOGTABLEMODE: u32 = 93;
 const RS_FOGSTART: u32 = 94;
 const RS_FOGEND: u32 = 95;
 const RS_FOGDENSITY: u32 = 96;
+const RS_RANGEFOGENABLE: u32 = 97;
 const RS_SPECULARENABLE: u32 = 103;
 const RS_FOGCOLOR: u32 = 138;
 const RS_TWOSIDEDLIGHTING: u32 = 141;
@@ -392,6 +393,7 @@ impl Gpu {
                 constants: Box::new([[0.0; 4]; CONSTANTS]),
                 // SetPixelShader's latch, from the definition it bound.
                 final_combiner_latch: pixel_shader.as_ref().is_some_and(|w| w[8] | w[9] != 0),
+                affine_projection: false,
                 pixel_shader,
                 combiner_state,
             },
@@ -864,6 +866,60 @@ fn fog_modes_and_color_order() {
     let mut both = with(&[(RS_SPECULARENABLE, 1)], 0.5);
     both.d1 = [0.0, 0.5, 0.0, 0.0];
     expect(g.run(&both), [0.5, 0.25, 0.5, 1.0], "specular and fog");
+}
+
+/// The rest of D3D's fog commit (`0x00400000`) as the hardware applies it
+/// to a vertex program's `oFog.x`: a table mode D3D does not name (here 7)
+/// falls through to EXP2; `RANGEFOGENABLE` only changes the generation
+/// mode, which a vertex program ignores; the factor clamps to [0, 1] on
+/// both sides of the linear range; the fog colour's alpha never shows; and
+/// a definition that reads the fog register in its own final combiner
+/// gets the same factor.
+#[test]
+fn fog_table_fallthrough_range_fog_and_clamps() {
+    let Some(mut g) = gpu() else { return };
+    let base = Case {
+        def: Some(copy_v0(1)),
+        d0: RED,
+        render: vec![(RS_FOGENABLE, 1), (RS_FOGCOLOR, 0x4000_00FF)],
+        ..Case::default()
+    };
+    let with = |extra: &[(u32, u32)], fog: f32| {
+        let mut c = base.clone();
+        c.render.extend_from_slice(extra);
+        c.fog = fog;
+        c
+    };
+    let mix = |k: f32| [k, 0.0, 1.0 - k, 1.0];
+    let other = [(RS_FOGTABLEMODE, 7), (RS_FOGDENSITY, f(0.01))];
+    expect(
+        g.run(&with(&other, 50.0)),
+        mix((-0.25f32).exp()),
+        "unnamed table mode is exp2",
+    );
+    let linear = [
+        (RS_FOGTABLEMODE, 3),
+        (RS_FOGSTART, f(20.0)),
+        (RS_FOGEND, f(60.0)),
+    ];
+    for range in [0, 1] {
+        let mut l = linear.to_vec();
+        l.push((RS_RANGEFOGENABLE, range));
+        expect(g.run(&with(&l, 30.0)), mix(0.75), "linear, range fog");
+        expect(g.run(&with(&l, 0.0)), mix(1.0), "nearer than start");
+        expect(g.run(&with(&l, 100.0)), mix(0.0), "beyond end");
+        expect(g.run(&with(&l, -50.0)), mix(1.0), "behind the eye");
+    }
+    // Vertex fog clamps below 0 too.
+    expect(g.run(&with(&[], -0.5)), mix(0.0), "negative vertex factor");
+    // A definition's own final combiner: rgb = fog.a * v0 + (1 - fog.a) *
+    // fog.rgb, alpha = fog.a (the factor, not FOGCOLOR's 0x40).
+    let mut own = copy_v0(1);
+    own.final_inputs_abcd = inputs(REG_FOG | CHAN_ALPHA, REG_R0, REG_FOG, REG_ZERO);
+    own.final_inputs_efg = final_efg(0, 0, REG_FOG | CHAN_ALPHA, 0);
+    let mut c = with(&linear, 50.0);
+    c.def = Some(own);
+    expect(g.run(&c), [0.25, 0.0, 0.75, 0.25], "own final combiner");
 }
 
 /// Texture formats sample in NV2A channel order: `A8R8G8B8` words are ARGB

@@ -342,7 +342,11 @@ Fixed-function stages follow D3D: `CURRENT` is diffuse until a stage writes
 it (a stage writing `TEMP` leaves it), results saturate to [0, 1],
 `MULTIPLYADD` is `arg0 + arg1 * arg2`, and an operation reading an unbound
 texture passes `CURRENT` through (as Wine documents D3D doing). With
-`FOGENABLE` off a combiner program's fog register reads factor 1. `crates/d3d/tests/shaders_render.rs` draws a
+`FOGENABLE` off a combiner program's fog register reads factor 1. Fog
+follows the NV2A fog unit as D3D programs it (shaders.md "Fog"):
+pre-transformed vertices take their fog coordinate from the specular
+alpha without a fog table, else from z (affine projection) or w, as D3D's
+pass-through programs do. `crates/d3d/tests/shaders_render.rs` draws a
 UI-like quad (vertex program with constants and a default input, combiner,
 linear texture, alpha blend and alpha test) and a fixed-function textured
 quad through the device and checks pixels; `cargo run -p d3d --example

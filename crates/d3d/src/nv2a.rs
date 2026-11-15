@@ -13,7 +13,9 @@
 //!   window position plus half a pixel with `w = 1/rhw` (`rhw = 0` counts as
 //!   1), exactly what gfx's built-in shader does; `oD0`/`oD1` are diffuse
 //!   and specular; `oTn` is the texture coordinate set
-//!   `D3DTSS_TEXCOORDINDEX` names; `oFog` is the specular alpha.
+//!   `D3DTSS_TEXCOORDINDEX` names; `oFog` is the coordinate D3D's own
+//!   pass-through program writes ([`PassthroughFog`]): the specular alpha
+//!   without a fog table, else the vertex z (affine projection) or w.
 //! * Untransformed fixed-function vertices (`XYZ` FVFs) need the transform
 //!   and lighting pipeline. Halo never draws them; they are skipped.
 //!
@@ -79,6 +81,7 @@ mod rs {
     pub const FOGSTART: u32 = 94;
     pub const FOGEND: u32 = 95;
     pub const FOGDENSITY: u32 = 96;
+    pub const RANGEFOGENABLE: u32 = 97;
     pub const SPECULARENABLE: u32 = 103;
     pub const TWOSIDEDLIGHTING: u32 = 141;
 }
@@ -109,8 +112,8 @@ pub struct Nv2aStats {
 struct PretransformedKey {
     /// Vertex register read for `oT0..oT3` (`9 + D3DTSS_TEXCOORDINDEX`).
     texcoords: [u8; 4],
-    /// Write `oFog.x` from the specular alpha.
-    fog: bool,
+    /// What `oFog.x` is.
+    fog: PassthroughFog,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -243,9 +246,47 @@ pub fn guest_def(
     def
 }
 
+/// The fog coordinate of pre-transformed (`XYZRHW`) vertices: what the
+/// pass-through program D3D loads writes to `oFog`. `0x3f6f40` picks one
+/// of three programs in the image (`GuestLayout::passthrough_programs`):
+/// with `D3DRS_FOGTABLEMODE` = `D3DFOG_NONE` it writes `mov oFog, v4.w`
+/// (the specular alpha, D3D's vertex fog); with a fog table it writes
+/// `mov oFog, v0.z` when the projection is affine (device flag 2) and
+/// `rcp oFog, v0.w` (the vertex w) otherwise. The fog unit then applies the
+/// table mode to that coordinate ([`d3d_fog`]). D3D does this whatever
+/// `D3DRS_FOGENABLE` says; with fog off the factor is 1 anyway.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PassthroughFog {
+    /// `v4.w`: specular alpha (no fog table).
+    SpecularAlpha,
+    /// `v0.z`: window z (fog table, affine projection).
+    Z,
+    /// `1/v0.w`: w (fog table, perspective projection).
+    W,
+}
+
+impl PassthroughFog {
+    /// `0x3f6f40`'s choice from `D3DRS_FOGTABLEMODE` and device flag 2
+    /// (affine projection).
+    pub fn select(fog_table_mode: u32, affine_projection: bool) -> Self {
+        if fog_table_mode == 0 {
+            Self::SpecularAlpha
+        } else if affine_projection {
+            Self::Z
+        } else {
+            Self::W
+        }
+    }
+}
+
 /// The vertex program for pre-transformed (`XYZRHW`) fixed-function
 /// vertices. Reads `c[0]` = (0.5, 0.5, 0, 0) and `c[1]` = 0.
-pub fn pretransformed_program(texcoords: [u8; 4], fog: bool) -> vsh::Program {
+///
+/// `oFog.x` follows `fog` ([`PassthroughFog`]). For [`PassthroughFog::W`]
+/// it is `rcp` of the vertex's own rhw, as in the guest program, so
+/// `rhw = 0` gives infinity (the fog unit's limit, see `psh::fog`) even
+/// though the position treats `rhw = 0` as 1.
+pub fn pretransformed_program(texcoords: [u8; 4], fog: PassthroughFog) -> vsh::Program {
     let (x, y, z, w) = (8u8, 4u8, 2u8, 1u8);
     let half = FF_HALF_PIXEL as u8;
     let zero = FF_ZERO as u8;
@@ -306,15 +347,15 @@ pub fn pretransformed_program(texcoords: [u8; 4], fog: bool) -> vsh::Program {
             ),
         );
     }
-    if fog {
-        insts.push(
-            Inst::mac(MacOp::Mov, Some(Operand::v(4).swz("w")), None, None).to_out(
-                false,
-                OutReg::Fog,
-                x,
-            ),
-        );
-    }
+    let fog_source = match fog {
+        PassthroughFog::SpecularAlpha => Operand::v(4).swz("w"),
+        PassthroughFog::Z => Operand::v(0).swz("z"),
+        PassthroughFog::W => Operand::v(0).swz("w"),
+    };
+    insts.push(match fog {
+        PassthroughFog::W => Inst::ilu(IluOp::Rcp, fog_source).to_out(true, OutReg::Fog, x),
+        _ => Inst::mac(MacOp::Mov, Some(fog_source), None, None).to_out(false, OutReg::Fog, x),
+    });
     let last = insts.pop().expect("non-empty").last();
     insts.push(last);
     vsh::Program::parse(&program(&insts)).expect("well-formed")
@@ -658,7 +699,10 @@ impl ShaderProvider for Nv2aShaders {
                 }
                 VertexSource::Pretransformed(PretransformedKey {
                     texcoords,
-                    fog: fog_enable,
+                    fog: PassthroughFog::select(
+                        raw(&self.table, draw, rs::FOGTABLEMODE),
+                        draw.shader.affine_projection,
+                    ),
                 })
             }
         };
@@ -883,21 +927,133 @@ fn eye_uniform(hw: &crate::hw::HwState) -> [f32; 4] {
     [x, y, z, 0.0]
 }
 
-/// The fog uniform: `[mode, start, end, density]`. With `D3DRS_FOGENABLE`
-/// off the factor is 1 whatever the program reads (exp fog with density 0:
-/// a combiner program that reads the fog register sees no fog).
-fn fog_uniform(table: &RenderStateTable, draw: &ResolvedDraw) -> [f32; 4] {
-    if !draw.state.render.fog_enable {
-        return [2.0, 0.0, 0.0, 0.0];
-    }
-    let mode = match raw(table, draw, rs::FOGTABLEMODE) {
-        1 => 2.0, // D3DFOG_EXP
-        2 => 3.0, // D3DFOG_EXP2
-        3 => 1.0, // D3DFOG_LINEAR
-        _ => 0.0, // factor from the vertex
+/// The exp fog scale per unit density, `−1/(16 ln 2)`, so that
+/// `2^(16·scale·d)` is `e^(−density·d)`. D3D multiplies by its own
+/// constant (`0x45E378`), which differs from this by about 4e-6 relative;
+/// the ignored `tests/fog_xbe.rs` reads it from `$H2_XBE` and checks the
+/// tolerance.
+pub fn exp_fog_scale() -> f32 {
+    (-1.0 / (16.0 * std::f64::consts::LN_2)) as f32
+}
+
+/// The exp2 fog scale per unit density, `−1/√(32 ln 2)`, so that
+/// `2^(−32·(scale·d)²)` is `e^(−(density·d)²)`. D3D's own constant
+/// (`0x45E374`) differs from this by a similar few parts per million.
+pub fn exp2_fog_scale() -> f32 {
+    (-1.0 / (32.0 * std::f64::consts::LN_2).sqrt()) as f32
+}
+
+/// `NV097_SET_FOG_GEN_MODE` values D3D pushes.
+pub mod fog_gen {
+    /// `FOGGEN_SPEC_ALPHA`: the specular alpha (no fog table).
+    pub const SPEC_ALPHA: u32 = 0;
+    /// `FOGGEN_RADIAL`: the eye-space distance (`D3DRS_RANGEFOGENABLE`).
+    pub const RADIAL: u32 = 1;
+    /// `FOGGEN_PLANAR`: the eye-space depth.
+    pub const PLANAR: u32 = 2;
+}
+
+/// The fog state D3D's lazy commit pushes (`0x00400000`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct D3dFog {
+    /// `NV097_SET_FOG_GEN_MODE` ([`fog_gen`]). It selects the coordinate
+    /// of the fixed-function transform only: vertex programs, D3D's
+    /// pass-through programs among them, supply the coordinate in `oFog`, so no
+    /// draw this provider translates reads it.
+    pub gen_mode: u32,
+    /// `NV097_SET_FOG_ENABLE`, `NV097_SET_FOG_MODE` and the bias and scale
+    /// of `NV097_SET_FOG_PARAMS`.
+    pub fog: psh::fog::Fog,
+}
+
+/// D3D's fog commit (`0x00400000`), from `D3DRS_FOGENABLE`,
+/// `D3DRS_FOGTABLEMODE`, `D3DRS_FOGSTART`, `D3DRS_FOGEND`,
+/// `D3DRS_FOGDENSITY` (the float states as their raw words) and
+/// `D3DRS_RANGEFOGENABLE`:
+///
+/// * fog off: only `SET_FOG_ENABLE` 0 is pushed. The other registers keep
+///   their old values, which no longer matter (the factor reads 1); this
+///   returns [`psh::fog::Fog::OFF`] and `SPEC_ALPHA`;
+/// * `D3DFOG_NONE`: `LINEAR` with bias 1 and scale 1, so the factor is the
+///   vertex's `oFog.x`, and generation mode `SPEC_ALPHA`;
+/// * `D3DFOG_LINEAR` (3): scale `−1/(end − start)` and bias
+///   `1 + end/(end − start)`, or scale `−8192` (`0x45DFF4`) when start and
+///   end compare equal (the x87 compare is unordered for NaN, which
+///   divides);
+/// * `D3DFOG_EXP` (1): bias 1.5 and scale `density ·` [`exp_fog_scale`];
+///   any other mode, `D3DFOG_EXP2` (2) included: bias 1.5 and scale
+///   `density ·` [`exp2_fog_scale`] (D3D's own constants differ from these
+///   closed forms by about 4e-6 relative);
+/// * with a table mode the generation mode is `RADIAL` when
+///   `D3DRS_RANGEFOGENABLE` is set and `PLANAR` otherwise.
+///
+/// The x87 code keeps intermediates in extended precision and rounds when
+/// it stores each parameter; here intermediates are `f64`.
+pub fn d3d_fog(
+    enable: bool,
+    table_mode: u32,
+    start: u32,
+    end: u32,
+    density: u32,
+    range_fog: bool,
+) -> D3dFog {
+    use psh::fog::{Fog, FogMode};
+    let f = |w: u32| f32::from_bits(w) as f64;
+    let table_gen = if range_fog {
+        fog_gen::RADIAL
+    } else {
+        fog_gen::PLANAR
     };
-    let f = |c: u32| f32::from_bits(raw(table, draw, c));
-    [mode, f(rs::FOGSTART), f(rs::FOGEND), f(rs::FOGDENSITY)]
+    let (gen_mode, fog) = match table_mode {
+        _ if !enable => (fog_gen::SPEC_ALPHA, Fog::OFF),
+        0 => (fog_gen::SPEC_ALPHA, Fog::FROM_VERTEX),
+        3 => {
+            let (start, end) = (f(start), f(end));
+            let k = if start == end {
+                8192.0
+            } else {
+                1.0 / (end - start)
+            };
+            let fog = Fog {
+                enable: true,
+                mode: FogMode::Linear,
+                bias: (end * k + 1.0) as f32,
+                scale: -k as f32,
+            };
+            (table_gen, fog)
+        }
+        m => {
+            let (mode, k) = if m == 1 {
+                (FogMode::Exp, exp_fog_scale())
+            } else {
+                (FogMode::Exp2, exp2_fog_scale())
+            };
+            let fog = Fog {
+                enable: true,
+                mode,
+                bias: 1.5,
+                scale: (f(density) * k as f64) as f32,
+            };
+            (table_gen, fog)
+        }
+    };
+    D3dFog { gen_mode, fog }
+}
+
+/// The fog uniform (`psh::fog`): the fog unit as D3D programs it for the
+/// draw's render state ([`d3d_fog`]).
+fn fog_uniform(table: &RenderStateTable, draw: &ResolvedDraw) -> [f32; 4] {
+    let r = |c: u32| raw(table, draw, c);
+    d3d_fog(
+        draw.state.render.fog_enable,
+        r(rs::FOGTABLEMODE),
+        r(rs::FOGSTART),
+        r(rs::FOGEND),
+        r(rs::FOGDENSITY),
+        r(rs::RANGEFOGENABLE) != 0,
+    )
+    .fog
+    .uniform()
 }
 
 fn stipple_eligible(primitive: gfx::vertex::PrimitiveType, fill: gfx::state::FillMode) -> bool {
@@ -1316,7 +1472,7 @@ mod tests {
 
     #[test]
     fn pretransformed_program_maps_rhw() {
-        let p = pretransformed_program([9, 10, 11, 12], true);
+        let p = pretransformed_program([9, 10, 11, 12], PassthroughFog::SpecularAlpha);
         let mut c = [[0.0f32; 4]; 192];
         c[FF_HALF_PIXEL] = [0.5, 0.5, 0.0, 0.0];
         let mut run = |rhw: f32| {
@@ -1331,5 +1487,94 @@ mod tests {
         assert_eq!(o.get(OutReg::T(1)), [0.25, 0.75, 0.0, 1.0]);
         assert_eq!(o.get(OutReg::Fog)[0], 0.5);
         assert_eq!(run(0.0).get(OutReg::Pos)[3], 1.0, "rhw 0 behaves as 1");
+    }
+
+    /// The pass-through fog coordinate: specular alpha without a fog
+    /// table, z with an affine projection, w (the same w as the position)
+    /// otherwise.
+    #[test]
+    fn pretransformed_program_fog_sources() {
+        let mut c = [[0.0f32; 4]; 192];
+        c[FF_HALF_PIXEL] = [0.5, 0.5, 0.0, 0.0];
+        let mut v = [[0.0f32, 0.0, 0.0, 1.0]; 16];
+        v[0] = [10.0, 20.0, 1234.5, 0.25];
+        v[4] = [0.0, 0.0, 0.0, 0.5];
+        let fog = |f: PassthroughFog, v: &[[f32; 4]; 16]| {
+            vsh::interp::run(&pretransformed_program([9; 4], f), v, &mut c.clone()).get(OutReg::Fog)
+                [0]
+        };
+        assert_eq!(fog(PassthroughFog::SpecularAlpha, &v), 0.5);
+        assert_eq!(fog(PassthroughFog::Z, &v), 1234.5);
+        assert_eq!(fog(PassthroughFog::W, &v), 4.0);
+        v[0][3] = 0.0;
+        // The position treats rhw 0 as 1; the fog coordinate is the
+        // guest's rcp of it, infinity.
+        assert_eq!(fog(PassthroughFog::W, &v), f32::INFINITY);
+        // 0x3f6f40's choice.
+        assert_eq!(
+            PassthroughFog::select(0, true),
+            PassthroughFog::SpecularAlpha
+        );
+        assert_eq!(
+            PassthroughFog::select(0, false),
+            PassthroughFog::SpecularAlpha
+        );
+        assert_eq!(PassthroughFog::select(1, true), PassthroughFog::Z);
+        assert_eq!(PassthroughFog::select(3, false), PassthroughFog::W);
+        assert_eq!(PassthroughFog::select(7, false), PassthroughFog::W);
+    }
+
+    /// What D3D's fog commit (`0x00400000`) pushes for each table mode.
+    #[test]
+    fn d3d_fog_commit_registers() {
+        use psh::fog::{Fog, FogMode};
+        let b = |x: f32| x.to_bits();
+        // Off: factor 1, whatever else is set.
+        let off = d3d_fog(false, 3, b(0.0), b(100.0), b(1.0), true);
+        assert_eq!(off.fog, Fog::OFF);
+        assert_eq!(off.fog.factor(50.0), 1.0);
+        // NONE: linear 1/1 and the specular-alpha generation mode, with or
+        // without range fog.
+        for range in [false, true] {
+            let v = d3d_fog(true, 0, b(10.0), b(20.0), b(0.5), range);
+            assert_eq!(v.fog, Fog::FROM_VERTEX);
+            assert_eq!(v.gen_mode, fog_gen::SPEC_ALPHA);
+        }
+        // LINEAR: bias 1 + end/(end - start), scale -1/(end - start).
+        let l = d3d_fog(true, 3, b(10.0), b(30.0), 0, false);
+        assert_eq!(
+            l.fog,
+            Fog {
+                enable: true,
+                mode: FogMode::Linear,
+                bias: 2.5,
+                scale: -0.05,
+            }
+        );
+        assert_eq!(l.gen_mode, fog_gen::PLANAR);
+        assert_eq!(l.fog.factor(25.0), 0.25);
+        // Range fog only changes the generation mode.
+        let r = d3d_fog(true, 3, b(10.0), b(30.0), 0, true);
+        assert_eq!((r.gen_mode, r.fog), (fog_gen::RADIAL, l.fog));
+        // start == end: scale -8192.
+        let e = d3d_fog(true, 3, b(50.0), b(50.0), 0, false);
+        assert_eq!((e.fog.bias, e.fog.scale), (1.0 + 50.0 * 8192.0, -8192.0));
+        assert_eq!(e.fog.factor(49.0), 1.0);
+        assert_eq!(e.fog.factor(51.0), 0.0);
+        // EXP and EXP2: bias 1.5, scale density times the image's constant.
+        let x = d3d_fog(true, 1, 0, 0, b(0.5), false);
+        assert_eq!(x.fog.mode, FogMode::Exp);
+        assert_eq!((x.fog.bias, x.fog.scale), (1.5, 0.5 * exp_fog_scale()));
+        assert!((x.fog.factor(2.0) - (-1.0f32).exp()).abs() < 1e-5);
+        let x2 = d3d_fog(true, 2, 0, 0, b(0.5), true);
+        assert_eq!(x2.fog.mode, FogMode::Exp2);
+        assert_eq!(x2.gen_mode, fog_gen::RADIAL);
+        assert_eq!(x2.fog.scale, 0.5 * exp2_fog_scale());
+        assert!((x2.fog.factor(2.0) - (-1.0f32).exp()).abs() < 1e-5);
+        // Any other table mode falls through to EXP2.
+        assert_eq!(d3d_fog(true, 9, 0, 0, b(0.5), false).fog, x2.fog);
+        // Unordered start/end (NaN) divides rather than taking 8192.
+        let n = d3d_fog(true, 3, b(f32::NAN), b(1.0), 0, false);
+        assert!(n.fog.scale.is_nan());
     }
 }

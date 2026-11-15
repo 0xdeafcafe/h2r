@@ -43,8 +43,9 @@ pub struct GuestLayout {
     pub default_vertex_shader: u32,
     /// The three screen-space pass-through vertex programs `0x3f6f40`
     /// loads (read from the image, never copied into the crate):
-    /// `[fog table mode off, w-buffered, z-buffered]` with 0x30, 0x2C and
-    /// 0x30 dwords (`0x3f6f5e`, `0x3f6f70`, `0x3f6f77`).
+    /// `[fog table mode off, affine projection, perspective]` (`oFog` from
+    /// the specular alpha, z and w; `nv2a::PassthroughFog`) with 0x30, 0x2C
+    /// and 0x30 dwords (`0x3f6f5e`, `0x3f6f70`, `0x3f6f77`).
     pub passthrough_programs: [(u32, u32); 3],
     /// Display globals of the flicker-filter setter `0x3f8c70`: the last
     /// value (`0x408630`) and its "sent" flag (`0x40863C`).

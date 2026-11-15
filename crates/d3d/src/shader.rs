@@ -58,6 +58,10 @@ pub struct ShaderInputs {
     /// at bind). The lazy commit reads this, not the definition, so it
     /// survives later zero pushes and reuse of the definition's buffer.
     pub final_combiner_latch: bool,
+    /// Device flag 2 (`+0x8`) at the draw: the projection is affine. With a
+    /// fog table, pre-transformed vertices then take their fog coordinate
+    /// from z instead of w (`0x3f6f40`; `nv2a::PassthroughFog`).
+    pub affine_projection: bool,
 }
 
 /// A compiled program plus the per-draw resources it reads.

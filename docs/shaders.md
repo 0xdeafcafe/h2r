@@ -341,22 +341,90 @@ register file. `psh::bits` has the `PS_*` encodings.
   inversion applies to the clamped operand, and the sum is only clamped with
   the flag (0.5·(1 + 1) reads 1.0 unclamped and 0.5 clamped). Both were read
   for the behaviour only, and nothing was transcribed.
-- **Fog** reads (fog colour rgb, factor). The factor is the interpolated
-  `oFog.x`, or a linear, exp or exp2 table mode from `XpsUniforms.fog`.
-  Applying fog is up to the final combiner, as on the Xbox. The modes
-  match what Halo 2's D3D pushes (`0x00400000`). With no table mode it
-  programs `LINEAR` with bias 1 and scale 1, so the factor is `oFog.x`.
-  `LINEAR` uses scale `−1/(end − start)` and bias `1 + end/(end − start)`,
-  which gives `(end − d)/(end − start)`, with scale 8192 when
-  `start == end`. `EXP` uses scale `density · −1/(16 ln 2)` and
-  `EXP2` uses `density · −1/√(32 ln 2)`. Both have bias 1.5, which gives
-  `exp(−density·d)` and `exp(−(density·d)²)`. The constants are read from
-  the XBE. `D3DRS_FOGCOLOR` stays a `D3DCOLOR` (ARGB) in the render-state
-  array. `SetRenderState_FogColor` (`0x3f5370`) swaps red and blue only
-  in the `SET_FOG_COLOR` method it pushes. The factor is computed per
-  fragment from the interpolated coordinate. That is exact for linear fog
-  and from the vertex, and an approximation for the exp modes, which the
-  NV2A may evaluate per vertex.
+- **Fog** reads (fog colour rgb, factor) in any combiner. The factor comes
+  from the NV2A fog unit, below.
+
+### Fog
+
+The vertex stage writes a fog *coordinate*, `oFog.x`, and the fog unit
+turns it into the factor the combiners read as `fog.a` (`psh::fog`). The
+NV2A state is `SET_FOG_ENABLE`, `SET_FOG_MODE`, the bias and scale of
+`SET_FOG_PARAMS`, and `SET_FOG_GEN_MODE`. Halo 2's D3D pushes them in its
+fog commit (`0x00400000`, from the deferred render states at `0x407608`),
+and `d3d::nv2a::d3d_fog` derives the same values from the render state:
+
+| `FOGTABLEMODE` | mode | bias | scale | gen mode |
+|---|---|---|---|---|
+| `NONE` (0) | `LINEAR` (`0x2601`) | 1 | 1 | `SPEC_ALPHA` |
+| `LINEAR` (3) | `LINEAR` | `1 + end/(end − start)` | `−1/(end − start)`, or −8192 when start == end | `PLANAR`, or `RADIAL` with `RANGEFOGENABLE` |
+| `EXP` (1) | `EXP` (`0x800`) | 1.5 | `density · −1/(16 ln 2)` | as for `LINEAR` |
+| anything else, `EXP2` (2) included | `EXP2` (`0x801`) | 1.5 | `density · −1/√(32 ln 2)` | as for `LINEAR` |
+
+With `FOGENABLE` off only `SET_FOG_ENABLE` 0 is pushed. The fog unit then
+computes, per fragment from the interpolated coordinate `d`:
+
+```text
+LINEAR   bias + scale·d − 1
+EXP      bias + 2^(16·scale·d) − 1.5
+EXP2     bias + 2^(−32·(scale·d)²) − 1.5
+*_ABS    the same with |d|     (0x802 EXP_ABS, 0x803 EXP2_ABS, 0x804 LINEAR_ABS)
+off      1
+```
+
+and clamps to [0, 1]. These are the formulas xemu's `glsl/vsh.c`
+evaluates. With D3D's parameters they give `(end − d)/(end − start)`,
+`e^(−density·d)` and `e^(−(density·d)²)`, and with no table the factor is
+`oFog.x` itself. The model computes the exp scales in closed form. D3D multiplies by its
+own constants (`0x45E378`, `0x45E374`), which differ from the closed forms
+by about 4e-6 relative; the ignored `crates/d3d/tests/fog_xbe.rs` reads
+them from `$H2_XBE` and checks that tolerance. The uniform
+carries `[mode, bias, scale]`, computed with f64 intermediates and f32
+stores, as the x87 code rounds. The fog register's rgb is
+`D3DRS_FOGCOLOR`. It stays a `D3DCOLOR` (ARGB) in the render-state array,
+and `SetRenderState_FogColor` (`0x3f5370`) swaps red and blue only in the
+`SET_FOG_COLOR` method it pushes. The register's alpha is always the
+factor, never the colour's alpha.
+
+**Where the coordinate comes from.**
+
+- With a vertex program bound, the coordinate is whatever the program
+  leaves in `oFog.x` (64 of Halo's 353 programs write it). The generation
+  mode only picks the
+  coordinate of the fixed-function transform (specular alpha, radial eye
+  distance, planar eye depth, absolute planar, fog X), and xemu likewise
+  takes `oFog.x` as the distance whenever a program is bound. So
+  `RANGEFOGENABLE` changes nothing for any draw this project renders.
+  Halo never draws untransformed fixed-function vertices (`d3d::nv2a`
+  skips them), and none of the fog writes in its vertex programs depends
+  on an `rsq`, which a radial distance needs (see the census below).
+- Pre-transformed (`XYZRHW`) vertices run one of D3D's three pass-through
+  programs (`0x3f6f40`, `GuestLayout::passthrough_programs`), which are
+  vertex programs too. Without a fog table, `mov oFog, v4.w` writes the
+  specular alpha (D3D's vertex fog). With a table, `mov oFog, v0.z` writes
+  the window z when the projection is affine (device flag 2), and
+  `rcp oFog, v0.w` writes w otherwise. `d3d::nv2a::PassthroughFog`
+  reproduces the choice (the device records the flag in
+  `ShaderInputs::affine_projection`), and the synthesized pre-transformed
+  program writes the same coordinate: `rcp` of the vertex's own rhw, so
+  `rhw = 0` gives infinity as in the guest, while the position still
+  treats `rhw = 0` as 1. An infinite coordinate follows xemu: `LINEAR`,
+  `LINEAR_ABS` and `EXP` read it as 0, and the other modes take their
+  limit (`EXP2` gives `bias − 1.5`, factor 0 with D3D's bias). The limits
+  are written out in `psh::fog`, and the WGSL recognises infinity by its
+  bits, because the GPU's fast math does not keep IEEE infinities. Whether
+  the rasteriser interpolates an infinite varying as infinity across a
+  triangle (rather than NaN where a vertex's weight is 0) is not
+  established. `crates/d3d/tests/fog_xbe.rs` (ignored, `$H2_XBE`) runs the
+  image's three programs through the interpreter, `rhw = 0` included, and
+  checks that their `oFog` matches, along with the commit's constants
+  (against the closed forms) and method headers.
+
+**Not settled by hardware evidence here.** The factor is evaluated per
+fragment. xemu evaluates it per vertex and marks that as a guess; the two
+agree for linear fog and differ inside a triangle for the exp modes. The
+`ABS` modes are taken to fold the coordinate (the eye-plane-absolute
+meaning), where xemu folds the factor. Xbox D3D never selects them. With
+fog off the factor is 1, as in xemu.
 
 ### What the retail definitions use
 
@@ -376,9 +444,20 @@ input or output slot that names a register, RGB portion first, then alpha.
   (24), with 10 blue reads.
 - **Fog:** 5 definitions read the fog register, only in the final
   combiner: `1 − fog.a` as F (2) and as A (2), `fog.a` as B (1) and
-  `fog.rgb` as C (2).
-  64 of the 353 vertex programs write `oFog`, mostly
-  `dph oFog.xw, rN, c[35]` or `mad oFog.w, rN.w, c.x, c.y`.
+  `fog.rgb` as C (2). Where `1 − fog.a` is A and `fog.rgb` is C, the
+  definition treats the factor as the amount of fog, the reverse of D3D's
+  convention.
+  64 of the 353 vertex programs write `oFog`, one write each. By the
+  shape of the writing instruction: 54 are a dot with a constant
+  (`dph oFog.xw, rN, c[35]`, or `c[26]` in 6), 9 multiply a `.w`
+  (`mad oFog.w, rN.w, c.x, c.y`) and 1 moves a vertex attribute
+  (`mov oFog.xw, v7.w`). The shapes say nothing about how `rN` was
+  computed; a backward slice over the temporaries does, and no fog write
+  depends on an `rsq`, so none is a radial distance.
+  `tests/corpus.rs` (`corpus_fog_census`) prints this tally and fails on
+  a write of another shape or one whose slice has an `rsq`
+  (`fog_slice_finds_a_radial_distance` checks the slice on synthetic
+  programs).
 - No definition reads a texture register of a `NONE` stage before writing
   it. Only one reads `r0.rgb` before writing it (zero on both sides), and
   only one reads the initial `r0.a`, with stage 0 textured.
@@ -562,7 +641,7 @@ the buffer contents. Vertex register `vN` is `@location(N)`.
 supplies. Any other register the program reads comes from
 `XvsUniforms.defaults[N]` (the `SetVertexData4f` value). The varyings are
 locations 0 to 3 for oD0, oD1, oB0 and oB1, 4 to 7 for oT0 to oT3, and 8 for
-the fog factor.
+the fog coordinate (`oFog.x`; the fragment stage turns it into the factor).
 
 Each instruction becomes a commented block with its disassembly and raw
 words. The program sits in plain functions, `xvs_program(v…) -> XvsRegs`
@@ -624,6 +703,10 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   since compute shaders have no derivatives. Lookups within rounding of a
   texel or cube-face boundary are skipped and counted. Every other fragment
   matches, and each mode is compared on at least 32 fragments.
+- `tests/gpu.rs` (`fog_unit_modes_on_gpu`) also runs every fog mode, off
+  and vertex fog over coordinates on both sides of their ranges and
+  compares the fog register with the interpreter, which `tests/psh.rs`
+  checks against D3D's closed forms.
 - `tests/render.rs` draws through a linked module with a real texture and
   checks the pixels.
 - The GPU tests pass trivially when no adapter is present. Set
@@ -635,8 +718,11 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   global `c0`/`c1` and the final constants (ARGB order), all eight input
   mappings on positive and negative values, output scale/bias with the
   register clamp, mux, AB/CD dots and blue-to-alpha, the final combiner's
-  lerp, `v1+r0` flags, `E·F` and `G`, every fog mode with D3D's default
-  final combiner and fog colour order, texture formats (`A8R8G8B8`,
+  lerp, `v1+r0` flags, `E·F` and `G`, every fog table mode (an unnamed
+  one falls through to exp2) with D3D's default final combiner and fog
+  colour order, fog clamping on both sides, `RANGEFOGENABLE` having no
+  effect on a program, a definition's own final combiner reading the
+  factor, texture formats (`A8R8G8B8`,
   `X8R8G8B8`, `A8B8G8R8`, 16-bit, `L8`, `A8L8`, DXT1, P8), `COLORSIGN`
   (the hardware ramp exactly, and filtering across 0x7F/0x80),
   `BLENDCOLOR` with constant blend factors, `TFACTOR` and `D3DCOLOR` vertex

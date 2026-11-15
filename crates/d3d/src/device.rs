@@ -2880,6 +2880,7 @@ impl<B: Backend> Device<B> {
             pixel_shader,
             combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
             final_combiner_latch: mem.read_u32(self.cfg.layout.device + 0x788)? != 0,
+            affine_projection: mem.read_u32(self.cfg.layout.device + field::FLAGS)? & 0x02 != 0,
         })
     }
 

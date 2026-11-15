@@ -54,7 +54,7 @@ pub(crate) mod common {
 }
 
 /// The struct both stages share (smooth interpolation). Locations: 0 = oD0,
-/// 1 = oD1, 2 = oB0, 3 = oB1, 4..=7 = oT0..oT3, 8 = fog factor (oFog.x).
+/// 1 = oD1, 2 = oB0, 3 = oB1, 4..=7 = oT0..oT3, 8 = fog coordinate (oFog.x).
 pub const VARYINGS_STRUCT: &str = "XboxVaryings";
 
 /// A vertex/pixel pair could not be linked.

@@ -108,6 +108,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60]) -> ResolvedDraw {
             pixel_shader: Some(Box::new(psdef)),
             combiner_state: Box::new(psdef[..57].try_into().unwrap()),
             final_combiner_latch: psdef[8] | psdef[9] != 0,
+            affine_projection: false,
         },
         raw: Box::new(words),
         viewport: Viewport {

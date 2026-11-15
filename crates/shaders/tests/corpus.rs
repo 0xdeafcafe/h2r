@@ -170,3 +170,227 @@ fn corpus_without_pixel_defs_fails() {
     std::fs::write(d.join("manifest.tsv"), format!("a.xvu\t{hash}\t1\tx\n")).unwrap();
     manifest_files(&d);
 }
+
+/// Whether the value instruction `at` writes through its output port
+/// depends on an `rsq` (any radial distance needs a square root): a
+/// backward slice over temporaries, whole registers, conservatively (a
+/// partial write keeps the register live). Writes to `oPos` count as `r12`.
+fn fog_slice_has_rsq(p: &vsh::Program, at: usize) -> bool {
+    let temps = |srcs: &[&vsh::Source]| -> u16 {
+        srcs.iter().fold(0u16, |m, s| match s.reg {
+            vsh::SrcReg::Temp(r) => m | 1 << r,
+            _ => m,
+        })
+    };
+    let mac_sources = |i: &vsh::Instruction| {
+        let (a, b, c) = i.mac_reads();
+        let mut v = Vec::new();
+        for (on, s) in [(a, &i.a), (b, &i.b), (c, &i.c)] {
+            if on {
+                v.push(s);
+            }
+        }
+        temps(&v)
+    };
+    let ilu_sources = |i: &vsh::Instruction| {
+        if i.ilu == vsh::IluOp::Nop {
+            0
+        } else {
+            temps(&[&i.c])
+        }
+    };
+    let i = &p.instructions[at];
+    if i.out.is_some_and(|o| o.unit == vsh::Unit::Ilu) && i.ilu == vsh::IluOp::Rsq {
+        return true;
+    }
+    let mut live = match i.out.map(|o| o.unit) {
+        Some(vsh::Unit::Ilu) => ilu_sources(i),
+        _ => mac_sources(i),
+    };
+    for i in p.instructions[..at].iter().rev() {
+        let mut mac_dest = if i.mac_writes_temp() {
+            1u16 << i.mac_temp
+        } else {
+            0
+        };
+        let mut ilu_dest = if i.ilu_writes_temp() {
+            1u16 << i.ilu_temp
+        } else {
+            0
+        };
+        if let Some(o) = i.out
+            && o.dest == vsh::OutDest::Output(vsh::OutReg::Pos)
+        {
+            match o.unit {
+                vsh::Unit::Mac => mac_dest |= 1 << 12,
+                vsh::Unit::Ilu => ilu_dest |= 1 << 12,
+            }
+        }
+        if ilu_dest & live != 0 {
+            if i.ilu == vsh::IluOp::Rsq {
+                return true;
+            }
+            live |= ilu_sources(i);
+        }
+        if mac_dest & live != 0 {
+            live |= mac_sources(i);
+        }
+    }
+    false
+}
+
+/// The slice sees a radial distance behind a final multiply, and none
+/// behind a plane distance (synthetic programs).
+#[test]
+fn fog_slice_finds_a_radial_distance() {
+    use vsh::encode::{Inst, Operand, program};
+    use vsh::{IluOp, MacOp, OutReg};
+    // r0 = v0 - c[10]; r1.x = dp3(r0, r0); r1.x = rsq; r1.x = 1/rsq;
+    // oFog = r1.x * c[11].x
+    let radial = program(&[
+        Inst::mac(
+            MacOp::Add,
+            Some(Operand::v(0)),
+            None,
+            Some(Operand::c(10).negated()),
+        )
+        .to_temp(0, 0xF),
+        Inst::mac(MacOp::Dp3, Some(Operand::r(0)), Some(Operand::r(0)), None).to_temp(2, 8),
+        Inst::ilu(IluOp::Rsq, Operand::r(2).swz("x")).ilu_to_temp(1, 8),
+        Inst::ilu(IluOp::Rcp, Operand::r(1).swz("x")).ilu_to_temp(1, 8),
+        Inst::mac(
+            MacOp::Mul,
+            Some(Operand::r(1).swz("x")),
+            Some(Operand::c(11).swz("x")),
+            None,
+        )
+        .to_out(false, OutReg::Fog, 8)
+        .last(),
+    ]);
+    let p = vsh::Program::parse(&radial).unwrap();
+    assert!(fog_slice_has_rsq(&p, 4));
+    // A normalised normal elsewhere does not taint a plane distance.
+    let planar = program(&[
+        Inst::mac(MacOp::Dp3, Some(Operand::v(2)), Some(Operand::v(2)), None).to_temp(3, 8),
+        Inst::ilu(IluOp::Rsq, Operand::r(3).swz("x")).ilu_to_temp(1, 8),
+        Inst::mac(
+            MacOp::Mul,
+            Some(Operand::v(2)),
+            Some(Operand::r(1).swz("x")),
+            None,
+        )
+        .to_out(false, OutReg::D0, 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_temp(4, 0xF),
+        Inst::mac(MacOp::Dph, Some(Operand::r(4)), Some(Operand::c(35)), None)
+            .to_out(false, OutReg::Fog, 8)
+            .last(),
+    ]);
+    let p = vsh::Program::parse(&planar).unwrap();
+    assert!(!fog_slice_has_rsq(&p, 4));
+}
+
+/// How the corpus produces and consumes fog: the form of every `oFog`
+/// write (a plane distance `dph`/`dp4` with a constant, a scaled `w` from
+/// `mad`/`mul`, a vertex attribute `mov`, or anything else, which would
+/// include a radial `dp3`/`rsq` distance), whether any write depends on an
+/// `rsq` ([`fog_slice_has_rsq`]), and which combiner slots read the fog
+/// register. Prints the census and asserts that every write has one of the
+/// three known shapes and none depends on an `rsq`.
+#[test]
+fn corpus_fog_census() {
+    let Some(dir) = std::env::var_os("H2_SHADER_CORPUS") else {
+        eprintln!("H2_SHADER_CORPUS not set; skipping");
+        return;
+    };
+    let mut writes: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut radial = Vec::new();
+    let (mut fog_programs, mut programs) = (0, 0);
+    let mut reads: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut fog_defs, mut defs) = (0, 0);
+    for path in manifest_files(Path::new(&dir)) {
+        let bytes = std::fs::read(&path).unwrap();
+        let name = path.display().to_string();
+        if name.ends_with(".xvu") {
+            programs += 1;
+            let p = vsh::Program::parse(&bytes).unwrap();
+            let mut any = false;
+            for (at, i) in p.instructions.iter().enumerate() {
+                let Some(out) = i.out else { continue };
+                if out.dest != vsh::OutDest::Output(vsh::OutReg::Fog) {
+                    continue;
+                }
+                any = true;
+                if fog_slice_has_rsq(&p, at) {
+                    radial.push(name.clone());
+                }
+                let from_const = |s: &vsh::Source| matches!(s.reg, vsh::SrcReg::Const { .. });
+                let kind = match (out.unit, i.mac, i.ilu) {
+                    (vsh::Unit::Mac, vsh::MacOp::Dph | vsh::MacOp::Dp4, _)
+                        if from_const(&i.a) || from_const(&i.b) =>
+                    {
+                        "plane distance (dph/dp4 with a constant)"
+                    }
+                    (vsh::Unit::Mac, vsh::MacOp::Mad | vsh::MacOp::Mul, _)
+                        if i.a.swizzle == [3; 4] =>
+                    {
+                        "scaled w (mad/mul of r.w)"
+                    }
+                    (vsh::Unit::Mac, vsh::MacOp::Mov, _)
+                        if matches!(i.a.reg, vsh::SrcReg::Input(_)) =>
+                    {
+                        "vertex attribute (mov v)"
+                    }
+                    _ => "other",
+                };
+                *writes.entry(kind).or_insert(0) += 1;
+            }
+            fog_programs += usize::from(any);
+        } else if name.ends_with(".psdef") {
+            defs += 1;
+            let d = psh::PixelShaderDef::from_bytes(&bytes).unwrap();
+            let mut any = false;
+            let mut note = |slot: String, byte: u32| {
+                if byte & 0x0F == 3 {
+                    let ch = if byte & 0x10 != 0 { "a" } else { "rgb" };
+                    let inv = if byte >> 5 == 1 { "1-" } else { "" };
+                    *reads.entry(format!("{slot}: {inv}fog.{ch}")).or_insert(0) += 1;
+                    any = true;
+                }
+            };
+            let stages = (d.combiner_count & 0xFF) as usize;
+            for n in 0..stages.min(8) {
+                for (k, l) in ["A", "B", "C", "D"].iter().enumerate() {
+                    note(
+                        format!("general rgb {l}"),
+                        d.rgb_inputs[n] >> (24 - 8 * k) & 0xFF,
+                    );
+                    note(
+                        format!("general alpha {l}"),
+                        d.alpha_inputs[n] >> (24 - 8 * k) & 0xFF,
+                    );
+                }
+            }
+            for (k, l) in ["A", "B", "C", "D"].iter().enumerate() {
+                note(
+                    format!("final {l}"),
+                    d.final_inputs_abcd >> (24 - 8 * k) & 0xFF,
+                );
+            }
+            for (k, l) in ["E", "F", "G"].iter().enumerate() {
+                note(
+                    format!("final {l}"),
+                    d.final_inputs_efg >> (24 - 8 * k) & 0xFF,
+                );
+            }
+            fog_defs += usize::from(any);
+        }
+    }
+    eprintln!("fog: {fog_programs} of {programs} vertex programs write oFog: {writes:?}");
+    eprintln!("fog: {fog_defs} of {defs} pixel defs read the fog register: {reads:?}");
+    eprintln!("fog: writes depending on an rsq: {radial:?}");
+    assert_eq!(writes.get("other"), None, "a fog write of an unknown shape");
+    assert!(
+        radial.is_empty(),
+        "fog writes depending on an rsq: {radial:?}"
+    );
+}

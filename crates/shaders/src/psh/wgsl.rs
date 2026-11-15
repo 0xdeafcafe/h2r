@@ -124,8 +124,8 @@ struct XpsUniforms {
     c0: array<vec4f, 9>,
     c1: array<vec4f, 9>,
     fog_color: vec4f,
-    // x: 0 = factor from the vertex (oFog.x), 1 = linear, 2 = exp, 3 = exp2;
-    // y: start, z: end, w: density.
+    // The NV2A fog unit (psh::fog): x: 0 = off, 1 linear, 2 exp, 3 exp2,
+    // 4..6 the same on |coordinate|; y: bias, z: scale (SET_FOG_PARAMS).
     fog: vec4f,
     // D3DTSS_BUMPENVMAT00, 01, 10, 11 per stage.
     bump_mat: array<vec4f, 4>,
@@ -151,18 +151,6 @@ struct XpsInputs {
     front: bool,
 }
 struct XpsResult { color: vec4f, kill: bool, }
-
-fn xps_fog_factor(f: f32) -> f32 {
-    let mode = u32(xps.fog.x);
-    if (mode == 1u) {
-        // D3D programs scale 1/(end - start), or 8192 when start == end.
-        let k = select(1.0 / (xps.fog.z - xps.fog.y), 8192.0, xps.fog.z == xps.fog.y);
-        return clamp((xps.fog.z - f) * k, 0.0, 1.0);
-    }
-    if (mode == 2u) { return clamp(exp(-xps.fog.w * f), 0.0, 1.0); }
-    if (mode == 3u) { let d = xps.fog.w * f; return clamp(exp(-d * d), 0.0, 1.0); }
-    return clamp(f, 0.0, 1.0);
-}
 
 // Dot-product input mappings, for unsigned 8-bit texture data.
 fn xps_sign_d3d(x: vec3f) -> vec3f { return (x * 255.0 - 128.0) / 127.0; }
@@ -360,6 +348,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     };
     let mut s = String::new();
     s.push_str(PRELUDE);
+    s.push_str(super::fog::WGSL);
     s.push_str(HILO_PRELUDE);
 
     // Texture bindings.

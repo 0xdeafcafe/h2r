@@ -583,13 +583,22 @@ fn random_combiners_match_interpreter() {
         }
         u.fog_color = std::array::from_fn(|_| rng.f(0.0, 1.0));
         u.alpha_ref = [rng.below(256) as f32, 0.0, 0.0, 0.0];
-        // Fog: from the vertex, linear (also with start == end), exp, exp2.
-        u.fog = match rng.below(5) {
-            0 => [1.0, 0.25, 0.75, 0.0],
-            1 => [1.0, 0.5, 0.5, 0.0],
-            2 => [2.0, 0.0, 0.0, rng.f(0.0, 2.0)],
-            3 => [3.0, 0.0, 0.0, rng.f(0.0, 2.0)],
-            _ => [0.0; 4],
+        // Fog: every NV2A fog mode with random parameters (D3D's linear
+        // start 0.25 / end 0.75, its start == end scale of 8192, exp and
+        // exp2 densities up to 2, the ABS modes), off, and from the vertex.
+        let ln2 = std::f64::consts::LN_2;
+        let exp_k = (-1.0 / (16.0 * ln2)) as f32;
+        let exp2_k = (-1.0 / (32.0 * ln2).sqrt()) as f32;
+        u.fog = match rng.below(9) {
+            0 => [1.0, 2.5, -2.0, 0.0],
+            1 => [1.0, 1.0 + 0.5 * 8192.0, -8192.0, 0.0],
+            2 => [2.0, 1.5, rng.f(0.0, 2.0) * exp_k, 0.0],
+            3 => [3.0, 1.5, rng.f(0.0, 2.0) * exp2_k, 0.0],
+            4 => [4.0, 2.5, -2.0, 0.0],
+            5 => [5.0, 1.5, rng.f(0.0, 2.0) * exp_k, 0.0],
+            6 => [6.0, 1.5, rng.f(0.0, 2.0) * exp2_k, 0.0],
+            7 => psh::fog::Fog::OFF.uniform(),
+            _ => psh::fog::Fog::FROM_VERTEX.uniform(),
         };
         for s in 0..4 {
             u.bump_mat[s] = std::array::from_fn(|_| rng.f(-1.0, 1.0));
@@ -891,6 +900,106 @@ fn harness_programs_use_the_expected_registers() {
                     _ => {}
                 }
             }
+        }
+    }
+}
+
+/// The fog unit on the GPU: every NV2A fog mode (with the parameters D3D
+/// derives for linear 10..30, start == end at 0.5, exp and exp2 at
+/// density 0.4, and the ABS modes), off and vertex fog, over coordinates
+/// on both sides of the ranges, read back through the fog register and
+/// compared with the interpreter.
+#[test]
+fn fog_unit_modes_on_gpu() {
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut d = PixelShaderDef::default();
+    d.rgb_inputs[0] = inputs(REG_FOG, ONE, 0, 0);
+    d.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    d.alpha_inputs[0] = inputs(REG_FOG | CHAN_ALPHA, ONE, 0, 0);
+    d.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    d.combiner_count = 1;
+    let t = psh::translate(&d, &Default::default());
+    let src = format!("{}{}", t.module(), PS_HARNESS);
+    common::check(&src);
+    // The closed-form scales, −1/(16 ln 2) and −1/√(32 ln 2), at density 0.4.
+    let ln2 = std::f64::consts::LN_2;
+    let exp = 0.4f32 * (-1.0 / (16.0 * ln2)) as f32;
+    let exp2 = 0.4f32 * (-1.0 / (32.0 * ln2).sqrt()) as f32;
+    let modes: [[f32; 4]; 10] = [
+        [1.0, 2.5, -0.05, 0.0],
+        [1.0, 1.0 + 0.5 * 8192.0, -8192.0, 0.0],
+        [2.0, 1.5, exp, 0.0],
+        [3.0, 1.5, exp2, 0.0],
+        [4.0, 2.5, -0.05, 0.0],
+        [5.0, 1.5, exp, 0.0],
+        [6.0, 1.5, exp2, 0.0],
+        psh::fog::Fog::OFF.uniform(),
+        psh::fog::Fog::FROM_VERTEX.uniform(),
+        [1.0, 1.0, 1.0, 0.0],
+    ];
+    let coords = [
+        -40.0f32,
+        -12.0,
+        -1.0,
+        -0.25,
+        0.0,
+        0.1,
+        0.25,
+        0.4,
+        0.6,
+        0.9,
+        1.0,
+        1.7,
+        5.0,
+        10.0,
+        17.5,
+        29.0,
+        30.0,
+        64.0,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ];
+    let mut u = PixelUniforms {
+        fog_color: [0.1, 0.2, 0.3, 0.7],
+        ..Default::default()
+    };
+    for fog in modes {
+        u.fog = fog;
+        let mut input = vec![0.0f32; 36 * coords.len()];
+        for (i, &c) in coords.iter().enumerate() {
+            input[i * 36 + 32] = c;
+            input[i * 36 + 33] = 1.0;
+        }
+        let out = gpu.run(
+            &src,
+            "harness",
+            1,
+            &u.to_bytes(),
+            &input,
+            8 * coords.len(),
+            coords.len() as u32,
+        );
+        for (i, &c) in coords.iter().enumerate() {
+            let inp = psh::interp::Inputs {
+                fog: c,
+                front: true,
+                ..Default::default()
+            };
+            let cpu = psh::interp::run(&d, &Default::default(), &inp, &u, &psh::interp::NoTextures)
+                .unwrap();
+            let want = psh::fog::factor_from_uniform(fog, c);
+            assert!((cpu[3] - want).abs() < 1e-6, "interp {fog:?} at {c}");
+            for k in 0..4 {
+                assert!(
+                    (out[i * 8 + k] - cpu[k]).abs() < 2e-4,
+                    "fog {fog:?} coord {c}.{k}: gpu {:?} cpu {cpu:?}",
+                    &out[i * 8..i * 8 + 4]
+                );
+            }
+            assert!((cpu[0] - 0.1).abs() < 1e-6, "rgb is the fog colour");
         }
     }
 }

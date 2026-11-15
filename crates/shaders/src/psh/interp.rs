@@ -43,7 +43,8 @@ impl Default for Uniforms {
             c0: [[0.0; 4]; 9],
             c1: [[0.0; 4]; 9],
             fog_color: [0.0; 4],
-            fog: [0.0; 4],
+            // D3D's vertex fog: the factor is the coordinate.
+            fog: fog::Fog::FROM_VERTEX.uniform(),
             bump_mat: [[0.0; 4]; 4],
             bump_lum: [[1.0, 0.0, 0.0, 0.0]; 4],
             tex_scale: [[1.0; 4]; 4],
@@ -97,25 +98,7 @@ impl Sampler for NoTextures {
 }
 
 fn fog_factor(u: &Uniforms, f: f32) -> f32 {
-    let mode = u.fog[0] as u32;
-    let r = match mode {
-        1 => {
-            // D3D's scale: 1/(end - start), or 8192 when they are equal.
-            let k = if u.fog[2] == u.fog[1] {
-                8192.0
-            } else {
-                1.0 / (u.fog[2] - u.fog[1])
-            };
-            (u.fog[2] - f) * k
-        }
-        2 => (-u.fog[3] * f).exp(),
-        3 => {
-            let d = u.fog[3] * f;
-            (-d * d).exp()
-        }
-        _ => f,
-    };
-    r.clamp(0.0, 1.0)
+    fog::factor_from_uniform(u.fog, f)
 }
 
 fn sign_d3d(x: f32) -> f32 {

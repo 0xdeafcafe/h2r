@@ -280,8 +280,9 @@ fn final_combiner_fog_lerp_and_special_registers() {
     // 0.25 * (0,0,1) + 0.75 * (1,0,0) + 0.1
     approx(out, [0.85, 0.1, 0.35, 0.6]);
 
-    // Linear table fog: start 10, end 20, coordinate 15 -> 0.5.
-    u.fog = [1.0, 10.0, 20.0, 0.0];
+    // Linear table fog: start 10, end 20, coordinate 15 -> 0.5 (D3D's
+    // scale -1/(end - start), bias 1 + end/(end - start)).
+    u.fog = linear_fog(10.0, 20.0).uniform();
     inp.fog = 15.0;
     let out = interp::run(&d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap();
     approx(out, [0.6, 0.1, 0.6, 0.6]);
@@ -856,7 +857,15 @@ fn color_sign_reads_signed_bytes() {
     // (stored 0xFF and 0x00) is about 0, not -1 or 1.
     let mid = [127.5 / 255.0; 4];
     let out = interp::run(&d, &opts, &inp, &u, &Flat([mid; 4])).unwrap();
-    approx(out, [0.5 - 0.5 / 255.0, 0.5 - 0.5 / 255.0, 0.5 - 0.5 / 255.0, 127.5 / 255.0]);
+    approx(
+        out,
+        [
+            0.5 - 0.5 / 255.0,
+            0.5 - 0.5 / 255.0,
+            0.5 - 0.5 / 255.0,
+            127.5 / 255.0,
+        ],
+    );
     // Signed alpha.
     let opts = PixelOptions {
         color_sign: [SIGN_A, 0, 0, 0],
@@ -894,11 +903,17 @@ fn shader_supplied_border() {
     };
     let mut inp = Inputs::default();
     inp.t[0] = [-0.25, 0.5, 0.0, 1.0];
-    approx(interp::run(&d, &opts, &inp, &u, &tex).unwrap(), [0.5, 0.5, 0.5, 1.0]);
+    approx(
+        interp::run(&d, &opts, &inp, &u, &tex).unwrap(),
+        [0.5, 0.5, 0.5, 1.0],
+    );
     // v is not bordered: only u decides.
     inp.t[0] = [0.5, 1.5, 0.0, 1.0];
     let inside = 0.5 * 254.0 / 255.0 + 0.5;
-    approx(interp::run(&d, &opts, &inp, &u, &tex).unwrap(), [inside, inside, inside, 1.0]);
+    approx(
+        interp::run(&d, &opts, &inp, &u, &tex).unwrap(),
+        [inside, inside, inside, 1.0],
+    );
     let w = psh::translate(&d, &opts);
     assert!(w.body.contains("xps_outside("), "{}", w.body);
     common::check(&w.module());
@@ -924,11 +939,25 @@ fn explicit_zero_final_combiner_runs() {
     assert_eq!((kept.final_inputs_abcd, kept.final_inputs_efg), (0, 0));
     let mut u = PixelUniforms::default();
     u.c0[0] = [1.0, 0.5, 0.25, 1.0];
-    let out = interp::run(&d, &Default::default(), &Inputs::default(), &u, &Flat([[0.0; 4]; 4])).unwrap();
+    let out = interp::run(
+        &d,
+        &Default::default(),
+        &Inputs::default(),
+        &u,
+        &Flat([[0.0; 4]; 4]),
+    )
+    .unwrap();
     approx(out, [0.0; 4]);
     d.explicit_final = false;
     assert!(d.decode().final_combiner.is_none());
-    let out = interp::run(&d, &Default::default(), &Inputs::default(), &u, &Flat([[0.0; 4]; 4])).unwrap();
+    let out = interp::run(
+        &d,
+        &Default::default(),
+        &Inputs::default(),
+        &u,
+        &Flat([[0.0; 4]; 4]),
+    )
+    .unwrap();
     approx(out, [1.0, 0.5, 0.25, 1.0]);
     // The 60-dword layout does not carry it.
     let mut e = d.clone();
@@ -945,9 +974,14 @@ fn linear_fog_with_equal_start_and_end() {
     d.rgb_inputs[0] = inputs(REG_FOG | CHAN_ALPHA, ONE, 0, 0);
     d.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
     let mut u = PixelUniforms::default();
-    u.fog = [1.0, 10.0, 10.0, 0.0];
+    u.fog = linear_fog(10.0, 10.0).uniform();
     let mut inp = Inputs::default();
-    for (f, want) in [(9.0, 1.0), (10.0, 0.0), (11.0, 0.0), (10.0 - 1.0 / 16384.0, 0.5)] {
+    for (f, want) in [
+        (9.0, 1.0),
+        (10.0, 0.0),
+        (11.0, 0.0),
+        (10.0 - 1.0 / 16384.0, 0.5),
+    ] {
         inp.fog = f;
         let out = interp::run(&d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap();
         assert!((out[0] - want).abs() < 1e-3, "fog {f}: {out:?}");
@@ -985,11 +1019,23 @@ fn default_final_combiner_matches_d3d() {
     let run = |d: &PixelShaderDef| {
         interp::run(d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap()
     };
-    approx(run(&d.with_default_final_combiner(false, false)), [1.0, 0.0, 0.0, 0.5]);
-    approx(run(&d.with_default_final_combiner(false, true)), [1.0, 0.5, 0.0, 0.5]);
+    approx(
+        run(&d.with_default_final_combiner(false, false)),
+        [1.0, 0.0, 0.0, 0.5],
+    );
+    approx(
+        run(&d.with_default_final_combiner(false, true)),
+        [1.0, 0.5, 0.0, 0.5],
+    );
     // 0.25 * diffuse + 0.75 * blue fog.
-    approx(run(&d.with_default_final_combiner(true, false)), [0.25, 0.0, 0.75, 0.5]);
-    approx(run(&d.with_default_final_combiner(true, true)), [0.25, 0.125, 0.75, 0.5]);
+    approx(
+        run(&d.with_default_final_combiner(true, false)),
+        [0.25, 0.0, 0.75, 0.5],
+    );
+    approx(
+        run(&d.with_default_final_combiner(true, true)),
+        [0.25, 0.125, 0.75, 0.5],
+    );
     // A definition with its own final combiner is left alone.
     d.final_inputs_abcd = inputs(0, 0, 0, REG_V0);
     d.final_inputs_efg = final_efg(0, 0, ONE, 0);
@@ -1116,4 +1162,143 @@ fn implicit_samples_use_each_stage_lod_bias() {
     let explicit = psh::translate(&d, &PixelOptions { explicit_lod: true, ..Default::default() });
     assert!(explicit.body.contains("textureSampleLevel(xps_tex0"));
     assert!(!explicit.body.contains("textureSampleBias"));
+}
+
+/// D3D's linear fog parameters (`0x00400068`): scale `-1/(end - start)`
+/// (8192 when they are equal), bias `1 + end/(end - start)`.
+fn linear_fog(start: f32, end: f32) -> psh::fog::Fog {
+    let k = if start == end {
+        8192.0
+    } else {
+        1.0 / (end as f64 - start as f64)
+    };
+    psh::fog::Fog {
+        enable: true,
+        mode: psh::fog::FogMode::Linear,
+        bias: (1.0 + end as f64 * k) as f32,
+        scale: -k as f32,
+    }
+}
+
+/// D3D's exp and exp2 parameters (`0x004000ad`): bias 1.5, scale
+/// `density * -1/(16 ln 2)` or `density * -1/sqrt(32 ln 2)`.
+fn exp_fog(mode: psh::fog::FogMode, density: f32) -> psh::fog::Fog {
+    let ln2 = std::f64::consts::LN_2;
+    let k = match mode {
+        psh::fog::FogMode::Exp | psh::fog::FogMode::ExpAbs => -1.0 / (16.0 * ln2),
+        _ => -1.0 / (32.0 * ln2).sqrt(),
+    };
+    psh::fog::Fog {
+        enable: true,
+        mode,
+        bias: 1.5,
+        scale: (density as f64 * k as f32 as f64) as f32,
+    }
+}
+
+/// A one-stage program whose output is `fog` (rgb = fog.rgb, alpha =
+/// fog.a), so the fog register can be read back directly.
+fn fog_reader() -> PixelShaderDef {
+    def(
+        &[(
+            inputs(REG_FOG, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+            inputs(REG_FOG | CHAN_ALPHA, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [0, 0, 0, 0],
+    )
+}
+
+/// Every NV2A fog mode with the parameters D3D derives gives D3D's fog
+/// functions, clamped to [0, 1]; fog off reads 1; the ABS modes use the
+/// coordinate's magnitude.
+#[test]
+fn fog_unit_modes_give_d3d_fog_functions() {
+    use psh::fog::{Fog, FogMode};
+    let close = |a: f32, b: f32, what: &str| assert!((a - b).abs() < 2e-4, "{what}: {a} vs {b}");
+    let lin = linear_fog(10.0, 30.0);
+    for d in [0.0f32, 10.0, 12.5, 20.0, 29.0, 30.0, 45.0, -5.0] {
+        close(lin.factor(d), ((30.0 - d) / 20.0).clamp(0.0, 1.0), "linear");
+    }
+    for density in [0.0f32, 0.01, 0.5, 2.0] {
+        let e = exp_fog(FogMode::Exp, density);
+        let e2 = exp_fog(FogMode::Exp2, density);
+        for d in [0.0f32, 0.5, 1.0, 3.0, 100.0] {
+            close(e.factor(d), (-density * d).exp(), "exp");
+            close(e2.factor(d), (-(density * d) * (density * d)).exp(), "exp2");
+        }
+    }
+    // Negative coordinates: exp grows past 1 and clamps; ABS folds them.
+    let e = exp_fog(FogMode::Exp, 0.5);
+    close(e.factor(-2.0), 1.0, "exp of a negative coordinate clamps");
+    let ea = Fog {
+        mode: FogMode::ExpAbs,
+        ..e
+    };
+    close(ea.factor(-2.0), (-1.0f32).exp(), "exp abs");
+    let la = Fog {
+        mode: FogMode::LinearAbs,
+        ..lin
+    };
+    close(la.factor(-20.0), 0.5, "linear abs");
+    let e2a = Fog {
+        mode: FogMode::Exp2Abs,
+        ..exp_fog(FogMode::Exp2, 0.5)
+    };
+    close(e2a.factor(-2.0), (-1.0f32).exp(), "exp2 abs");
+    // Vertex fog: the coordinate is the factor, clamped.
+    for (d, want) in [(0.25f32, 0.25f32), (-0.5, 0.0), (1.5, 1.0)] {
+        close(Fog::FROM_VERTEX.factor(d), want, "vertex");
+    }
+    // Off: 1 whatever the coordinate.
+    for d in [-1e9f32, 0.0, 0.5, 1e9] {
+        assert_eq!(Fog::OFF.factor(d), 1.0);
+    }
+    // Method values round-trip.
+    for m in [
+        FogMode::Linear,
+        FogMode::Exp,
+        FogMode::Exp2,
+        FogMode::LinearAbs,
+        FogMode::ExpAbs,
+        FogMode::Exp2Abs,
+    ] {
+        assert_eq!(FogMode::from_method(m.method()), Some(m));
+    }
+    assert_eq!(FogMode::from_method(0x0805), None);
+}
+
+/// The fog register reads (fog colour rgb, factor): the colour's own alpha
+/// never shows, in a general combiner as in the final one.
+#[test]
+fn fog_register_alpha_is_the_factor() {
+    let d = fog_reader();
+    let mut u = PixelUniforms::default();
+    u.fog_color = [0.2, 0.4, 0.6, 0.9];
+    u.fog = linear_fog(0.0, 100.0).uniform();
+    let mut inp = Inputs::default();
+    inp.fog = 25.0;
+    let out = interp::run(&d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap();
+    approx(out, [0.2, 0.4, 0.6, 0.75]);
+    u.fog = psh::fog::Fog::OFF.uniform();
+    let out = interp::run(&d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap();
+    approx(out, [0.2, 0.4, 0.6, 1.0]);
+}
+
+/// An infinite fog coordinate (D3D's pass-through `rcp` of `rhw = 0`):
+/// LINEAR and EXP read it as 0, EXP2 takes the limit, so with D3D's
+/// parameters the factor is (end/(end - start)) clamped, 1 and 0.
+#[test]
+fn infinite_fog_coordinate_takes_the_limits() {
+    use psh::fog::FogMode;
+    for inf in [f32::INFINITY, f32::NEG_INFINITY] {
+        assert_eq!(linear_fog(10.0, 30.0).factor(inf), 1.0, "linear: d = 0");
+        assert_eq!(linear_fog(-10.0, 10.0).factor(inf), 0.5, "linear: d = 0");
+        assert_eq!(exp_fog(FogMode::Exp, 0.5).factor(inf), 1.0, "exp: d = 0");
+        assert_eq!(exp_fog(FogMode::Exp2, 0.5).factor(inf), 0.0, "exp2 limit");
+        assert_eq!(exp_fog(FogMode::Exp2Abs, 0.5).factor(inf), 0.0);
+        assert_eq!(exp_fog(FogMode::ExpAbs, 0.5).factor(inf), 0.0);
+        assert_eq!(psh::fog::Fog::OFF.factor(inf), 1.0);
+    }
 }

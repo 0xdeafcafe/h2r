@@ -375,6 +375,72 @@ fn untextured_fixed_function_beyond_diffuse_uses_the_provider() {
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
 
+/// Table fog on pre-transformed vertices takes its coordinate where D3D's
+/// pass-through program does (`0x3f6f40`): z with an affine projection
+/// (device flag 2), w = 1/rhw otherwise, and the specular alpha without a
+/// table. Linear fog from 0 to 8 over red, with blue fog: z = 0.5 gives
+/// factor 0.9375, w = 4 gives 0.5, and the specular alpha 0 gives 0.
+#[test]
+fn pretransformed_table_fog_reads_z_or_w() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for f in [W as f32 * x, H as f32 * y, 0.5, 0.25] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+        vb.extend_from_slice(&0x80FF_0000u32.to_le_bytes());
+        vb.extend_from_slice(&0x0000_0000u32.to_le_bytes());
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    d.set_vertex_shader(&mut m, fvf::XYZRHW | fvf::DIFFUSE | fvf::SPECULAR)
+        .unwrap();
+    d.set_stream_source(&mut m, 0, VB_HEADER, 24).unwrap();
+    let draw = |d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory| {
+        d.clear(m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+        d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+        no_skips(d);
+        back_buffer(d)(5, 5)
+    };
+    let flags = d3d::GuestLayout::HALO2.device + 0x8;
+    let set_affine = |m: &mut SparseMemory, on: bool| {
+        let f = m.read_u32(flags).unwrap();
+        m.write_u32(flags, if on { f | 2 } else { f & !2 }).unwrap();
+    };
+    d.set_render_state(&mut m, RS_FOGCOLOR, 0xFF00_00FF)
+        .unwrap();
+    d.set_render_state(&mut m, RS_FOGENABLE, 1).unwrap();
+    d.set_render_state(&mut m, RS_FOGSTART, 0.0f32.to_bits())
+        .unwrap();
+    d.set_render_state(&mut m, RS_FOGEND, 8.0f32.to_bits())
+        .unwrap();
+
+    // No table: the specular alpha (0) is the factor.
+    set_affine(&mut m, false);
+    let got = draw(&mut d, &mut m);
+    assert!(close(got, [0, 0, 255, 0x80]), "vertex fog: {got:?}");
+    // Linear table, perspective: w = 4.
+    d.set_render_state(&mut m, RS_FOGTABLEMODE, 3).unwrap();
+    let got = draw(&mut d, &mut m);
+    assert!(close(got, [128, 0, 127, 0x80]), "w: {got:?}");
+    // Linear table, affine: z = 0.5.
+    set_affine(&mut m, true);
+    let got = draw(&mut d, &mut m);
+    assert!(close(got, [239, 0, 16, 0x80]), "z: {got:?}");
+    // FOGENABLE off: no fog whatever the table says.
+    d.set_render_state(&mut m, RS_FOGENABLE, 0).unwrap();
+    let got = draw(&mut d, &mut m);
+    assert!(close(got, [255, 0, 0, 0x80]), "fog off: {got:?}");
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}
+
 #[test]
 fn program_reads_set_vertex_data_and_fog_follows_fogenable() {
     let Some((mut d, mut m, scope)) = gpu() else {
