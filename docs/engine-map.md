@@ -659,7 +659,7 @@ in [effects.md](effects.md).
 | `0x0017ee20` / `0x0017ef10` decal add | Likely | Walks a chain of decal tags (`next_decal`), reads `+6` (skip if zero), `+0x14`, `+0x18`. |
 | `0x0017b7cb` contrail arrays init | Confirmed | Creates "contrail" and "contrail point" data arrays. |
 | `0x0017d23c` decal array init | Confirmed | "decals" data array. |
-| `0x0017ab2e` `ligh` case, `0x0017a8bd` `lens` case | Confirmed (dispatch only) | Light and lens flare creation; render code not traced. |
+| `0x0017ab2e` `ligh` case, `0x0017a8bd` `lens` case | Confirmed (dispatch only) | Light and lens flare creation. The light case calls `0x000c0350`; the light array, update and render path (`0x00031c80`, `0x00031170`) are in [e3-lighting.md](e3-lighting.md), "Phase 0 findings". Lens flare render not traced. |
 
 ## Effects: function evaluator
 

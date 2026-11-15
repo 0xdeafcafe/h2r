@@ -411,8 +411,10 @@ Engine: case `jpt!` of the part-creation switch (`0x0017a97f`) calls
 ### Open items for these groups
 
 - Scalar meanings (flags, ranges, colours, responses) are unreviewed;
-  decal, light and lens flare need their creation and render code traced
-  (`0x0017e670`/`0x0017ef10` for decals; light and lens render not located).
+  decal and lens flare need their creation and render code traced
+  (`0x0017e670`/`0x0017ef10` for decals; lens render not located). The light
+  path and the `ligh +0` bits it tests are in [e3-lighting.md](e3-lighting.md),
+  "Phase 0 findings".
 - `MGS2` is the class the engine creates; its role is unconfirmed.
 - Reference counts (all 30 maps, shared tags counted per map): deca 1,970 resolved,
   ligh 923, lens 1,286, cont 1,510, jpt! 14.
