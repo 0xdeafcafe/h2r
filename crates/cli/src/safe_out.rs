@@ -68,6 +68,20 @@ impl OutDir {
         published.map(|()| dest)
     }
 
+    /// Create `root/<components...>` under the same path rules as [`Self::write`]
+    /// and hand back the open file, for output too large to hold in memory.
+    /// Unlike `write`/`write_from` this is not published atomically: a failure
+    /// part-way leaves a partial file, and under `force` a regular file already
+    /// there is removed first.
+    pub fn create(&self, components: &[String]) -> io::Result<(File, PathBuf)> {
+        let dest = self.resolve(components)?;
+        if self.force && fs::symlink_metadata(&dest).is_ok_and(|m| m.is_file()) {
+            fs::remove_file(&dest)?;
+        }
+        let f: File = OpenOptions::new().write(true).create_new(true).open(&dest)?;
+        Ok((f, dest))
+    }
+
     /// Validate `components`, create parent directories and return the final
     /// path after checking what already sits there.
     fn resolve(&self, components: &[String]) -> io::Result<PathBuf> {
@@ -180,6 +194,26 @@ mod tests {
             assert!(out.write(&parts(&["d", bad]), b"x").is_err(), "{bad:?}");
         }
         assert!(out.write(&[], b"x").is_err());
+    }
+
+    #[test]
+    fn create_follows_the_same_rules_as_write() {
+        let d = scratch("create");
+        let out = OutDir::new(d.join("out"), false).unwrap();
+        let (mut f, p) = out.create(&parts(&["a", "x.json"])).unwrap();
+        io::Write::write_all(&mut f, b"1").unwrap();
+        drop(f);
+        assert_eq!(fs::read(&p).unwrap(), b"1");
+        assert_eq!(
+            out.create(&parts(&["a", "x.json"])).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert!(out.create(&parts(&["..", "x.json"])).is_err());
+        let forced = OutDir::new(d.join("out"), true).unwrap();
+        let (mut f, p) = forced.create(&parts(&["a", "x.json"])).unwrap();
+        io::Write::write_all(&mut f, b"2").unwrap();
+        drop(f);
+        assert_eq!(fs::read(&p).unwrap(), b"2");
     }
 
     #[cfg(unix)]

@@ -14,7 +14,7 @@ use tags::sound::{Compression, Encoding, Gestalt, ResourceReader, Sound};
 const USAGE: &str = "usage: h2 sound <map-name-or-file> <tag name> [--out DIR] [--force] [--disc disc.iso]\n       h2 sound --all <map-name-or-file> [--out DIR] [--force] [--check-durations] [--disc disc.iso]\n\nWrites 16-bit PCM WAV files (--out defaults to ./h2-sounds) named\n<tag path>.r<range>p<permutation>.wav. Existing files are never overwritten\nunless --force, and output cannot leave DIR through symlinks. With --all and\nno --out nothing is written: it validates every snd! tag and prints counts;\n--check-durations adds the max_play_time and block-size evidence. Exit status is\nnon-zero if any sound fails; WMA/codec streams are counted as unsupported, not\nfailed. In single export they are written as raw .wma (ASF).";
 
 /// The four raw-resource files, as byte windows in the disc image or local files.
-struct Resources {
+pub(super) struct Resources {
     files: [Option<(PathBuf, u64, u64)>; 4],
 }
 fn slot(f: ResourceFile) -> usize {
@@ -52,7 +52,7 @@ impl ResourceReader for Resources {
     }
 }
 
-fn open(name: &str, disc: Option<PathBuf>) -> Result<(Map<BufReader<File>>, Resources)> {
+pub(super) fn open(name: &str, disc: Option<PathBuf>) -> Result<(Map<BufReader<File>>, Resources)> {
     let mut res = Resources { files: [None, None, None, None] };
     let local = Path::new(name);
     let disc_path = match disc {

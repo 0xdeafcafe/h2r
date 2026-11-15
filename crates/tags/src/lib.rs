@@ -16,6 +16,9 @@ pub mod collision;
 pub mod sound;
 /// User-interface tags (`wgit`, `wgtz`, `wigl`, `skin`); self-contained, see `docs/ui.md`.
 pub mod ui;
+/// Animation graphs (`jmad`) and their compressed frame data; see `docs/animation.md`.
+pub mod anim;
+pub mod anim_sample;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }
@@ -67,3 +70,5 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod anim_tests;

@@ -578,3 +578,58 @@ functions reach tags through the inline `(datum & 0xffff) * 16` index on
 
 Constants used by these paths: `0x0045dc70` = 0.001, `0x0045dccc` = 1000.0,
 `0x0045dbc0` = 1.0. The UI clock at `0x0054d5b8` counts milliseconds.
+
+## Animation graphs (`jmad`) and animation decompression
+
+Added with the animation decoder (`crates/tags/src/anim.rs`, `anim_sample.rs`;
+[animation.md](animation.md)). Names are assigned descriptions, except codec
+and cache names, which are strings the executable itself carries. All addresses
+are guest virtual addresses read in Ghidra's decompilation and cross-checked with
+`h2 disasm`; every layout claim was then confirmed by decoding every `jmad` tag
+and animation on the disc (77,856 animations, zero failures). **Confirmed**
+means direct instruction evidence plus the disc check.
+
+### Data path, from tag to bytes
+
+| Address / assigned name | Confidence | Evidence and consequence |
+|---|---|---|
+| `0x00123180` `animation_cache_initialize` | Confirmed | Creates the "xbox animation" and "xbox predicted animations" data arrays and the LRU "xbox animation cache" (`0x0013d170`). Called from `platform_bootstrap` (`0x00012000`). Animation data is loaded on demand, not with the tag. |
+| `0x001237e0` `animation_resource_get` | Confirmed | Takes a resource record (graph `+0xb0`, stride `0x14`), loads it through the cache if needed (`0x001235b0` rounds its size up to `0x200` and reads it, `0x001234a0` evicts), returns the cache base. |
+| `0x001236f0` `animation_resource_request` | Confirmed | Queues a prediction/load; records `+0x10` byte `!= 0` gate it (the `flags` byte in the resource record). |
+| `0x001dd7c0` `animation_data_pointer` | Confirmed | Animation element = `graph[+0x30] + index * 0x6c`. If element byte `+0x16 & 0x10`: resource record `graph[+0xb0] + element[+0x24] * 0x14`, returned pointer is the cached base plus `element[+0x28]`. Otherwise the pointer is `element[+0x38]` (inline data, never taken on the disc). |
+| `0x001ddb40` `animation_view_build` | Confirmed | Fills a 12-byte view: data pointer, `&element[+0x3c]` (the data-sizes struct), node count (`+0x13`), frame-info type (`+0x11`), frame count (`+0x14`). |
+| `0x001daea0` / `0x001dafc0` / `0x001dd880` `animation_resolve` | Confirmed | A packed animation reference has the graph in its low 16 bits (-1 = this graph, otherwise a position in the *inheritance list*, graph `+0x4c`/`+0x50`, stride `0x20`, datum at `+4`) and the animation index in its high 16 bits. |
+| `0x001dd8f0` `animation_static_pose` | Confirmed | Reads `static_pose` (element `+0x2c`) from the block at graph `+0xb4`/`+0xb8`, stride `0x18`: four i16 (normalised), then translation and scale floats. |
+| `0x001dd9d0` / `0x001db170` / `0x001ddb90` `animation_preload` | Likely | Walk the action tables and the int lists of each weapon type (`+0x24`, `+0x2c`) to queue resources. |
+| `0x001db170` `animation_action_lookup` | Confirmed | Looks `(mode, class, type)` up through three nested blocks (strides `0x14`, `0x14`, `0x34`; helper `0x001dd560` is a linear search of a block by its leading string ID, stride passed in) and then the action list (stride 8: string ID, graph index i16, animation index i16). Resolved names on the disc confirm the hierarchy (mode, weapon class and weapon type names all resolve to sensible strings). |
+| `0x001c7450` `animation_events` | Confirmed | Walks element blocks at `+0x4c` (stride 4: type i16, frame i16; `1 << type` builds the event mask), `+0x54` (stride 8, sound events, index into graph block `+0x14`, stride `0x0c`) and `+0x5c` (stride 4, effect events, index into graph block `+0x1c`, stride `0x0c`). |
+
+### Evaluation and the codec table
+
+| Address / assigned name | Confidence | Evidence and consequence |
+|---|---|---|
+| `0x002798a0` `animation_evaluate_setup` | Confirmed | Clamps the frame to `frame_count - 1`, sets the current/next frame and the blend fraction (`0x00504464/68/6c`), then selects up to two streams. **Static stream** at blob offset 0 when the animation type (`+0x10`) is 0 and `sizes.static_size` (`+0x42`) is nonzero. **Animated stream** at `static_size` when `sizes.animated_size` (`+0x48`) is nonzero. Flag-array pointers (`0x00504490/94/98`: rotation, translation, scale) are `blob + static_size + animated_size`, plus the signed byte at `+0x3c` for the animated stream; each array is `((nodes + 31) >> 3) & ~3` bytes. The stream's first byte indexes the codec table. |
+| `0x00279d80`, `0x00279e40`, `0x0027a060` | Confirmed | Entry wrappers (plain frame, positional blend, interpolated) calling `0x002798a0`. |
+| `0x0027a6e0` .. `0x0028c090` | Confirmed | About 60 specialised per-node evaluators (one per codec/blend combination). Each walks the three flag arrays eight nodes at a time, increments the stream-local channel index (`0x005044b4/b8/bc`) for every flagged node, and for nodes in the requested mask calls the codec function. The output record is 32 bytes per node: rotation (4 floats) at `+0`, translation at `+0x10`, scale at `+0x1c`. |
+| `0x0047fb14` `animation_codec_table` | Confirmed | Records of `0x28` bytes indexed by the stream's codec byte (record 0 is unused). Record layout: `+0x00` default function `0x0028d170` (returns 0), `+0x04` name pointer, `+0x08`/`+0x0c` two ints, `+0x10`..`+0x24` six function pointers: rotation, translation, scale at an integer frame, then the same three for an interpolated frame. The dispatcher at `0x001c73a8` computes `codec * 5 * 8 + 0x47fb28`. |
+| `0x0045a7c8` .. `0x0045a8c4` codec names | Confirmed | `_uncompressed_static_data_codec`, `_uncompressed_animated_data_codec`, `_8byte_quantized_rotation_only_codec`, `byte_keyframe_lightly_quantized`, `word_keyframe_lightly_quantized`, `reverse_byte_keyframe_lightly_quantized`, `reverse_word_keyframe_lightly_quantized`, `_blend_screen_codec`: codecs 1 to 8 in table order. |
+| `0x00504460` .. `0x005044c0` evaluation globals | Confirmed | `0x504464` frame, `0x504468` next frame, `0x50446c` blend weight, `0x504480` stream pointer, `0x504484/88/8c` function slots, `0x5044b4/b8/bc` rotation/translation/scale indices, `0x5044c0` output pointer. |
+
+Per-codec functions (rotation / translation / scale at an integer frame; the
+interpolated variants are listed after the slash). Stream header: byte 0 codec,
+bytes 1 to 3 the number of rotation, translation and scale channels in the
+stream, then the offsets listed (all relative to the stream start):
+
+| Codec | Functions | Header fields the functions read |
+|---|---|---|
+| 1 `uncompressed_static_data` | `0x0028c470`, `0x0028c4e0`, `0x0028c510` (same three for interpolation) | rotations i16x4 at `+0x20 + i*8`; `+0x0c` translations (`i*12`); `+0x10` scales (`i*4`). Frame is ignored. |
+| 2 `uncompressed_animated_data` | `0x002c4d60`, `0x002c4da0`, `0x002c4de0` (same) | `+0x14`/`+0x18`/`+0x1c` per-channel strides; rotation float4 at `+0x20 + i*stride + frame*16`; translations at `[+0x0c] + i*stride + frame*12`; scales at `[+0x10] + i*stride + frame*4`. Not present on the disc. |
+| 3 `8byte_quantized_rotation_only` | `0x0028c960`, `0x0028c750`, `0x002c4de0` / `0x0028c790`, `0x0028c880`, `0x0028c6b0` | rotation i16x4 at `+0x20 + i*[+0x14] + frame*8`; translation by its own function `0x0028c750` (same stride layout as codec 2's, strides at `+0x18`), scale by codec 2's `0x002c4de0`. |
+| 4, 6 byte keyframes | `0x0028cdb0`, `0x0028cf40`, `0x0028d090` / `0x0028c9e0`, `0x0028cb70`, `0x0028ccc0` | per-channel word `count = w & 0xfff`, `first = w >> 12`: rotation words inline at `+0x30`, translation words at `[+0x0c]`, scale words at `[+0x10]`; key times (bytes) at `[+0x14]`, `[+0x18]`, `[+0x1c]` plus `first`; values (i16x4, float3, float) at `[+0x20]`, `[+0x24]`, `[+0x28]` plus `first` times the value size. Bisection for the last key time `<=` frame; blend with the next key. Codecs 4 and 6 share all six functions. |
+| 5, 7 word keyframes | `0x0028d560`, `0x0028d6f0`, `0x0028d840` / `0x0028d180`, `0x0028d320`, `0x0028d470` | as 4, with u16 key times. Codecs 5 and 7 share all six functions. |
+| 8 `blend_screen` | `0x0028c710`, `0x0028c750`, `0x002c4de0` / `0x0028c530`, `0x0028c5d0`, `0x0028c6b0` | rotation float4 at `+0x20 + i*[+0x14] + frame*16` (the code adds `frame + 2` blocks of 16 bytes to the stride base), translation (`0x0028c750`, not codec 2's function) and scale (`0x002c4de0`) as codec 3. |
+
+What the engine does not say: the meaning of `reverse_` (codecs 6 and 7 use
+exactly the functions of 4 and 5; on the disc all of their key times ascend like
+the non-reverse codecs), and the two ints in each table record. See
+[animation.md](animation.md) for the open items.

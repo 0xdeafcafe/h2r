@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
+mod anim;
 mod bitmap;
 mod collision;
 mod fonts;
@@ -40,6 +41,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
   ui <map> <screen tag>   print a wgit screen's widget tree (no localized text);
                           --all <map|all> validates every UI tag (option --disc <iso>)
+  anim <map> <jmad tag>   animation graph summary; --anim NAME for one animation,
+                          --json PATH to dump sampled transforms; --all validates the disc
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -72,6 +75,9 @@ fn main() -> Result<()> {
     }
     if cmd == "collision" {
         return collision::run(args.collect());
+    }
+    if cmd == "anim" {
+        return anim::run(args.collect());
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());
