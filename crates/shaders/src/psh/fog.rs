@@ -144,62 +144,68 @@ impl Fog {
 /// WGSL `xps_fog_factor` both evaluate).
 ///
 /// An infinite coordinate (D3D's perspective pass-through program writes
-/// `rcp oFog, v0.w`, infinity for `rhw = 0`) follows xemu's `glsl/vsh.c`:
-/// `LINEAR`, `LINEAR_ABS` and `EXP` treat it as 0, and the other modes take
-/// the limit of their formula (`EXP2`: the exponential term is 0, so the
-/// factor is `bias − 1.5`, which clamps to 0 with D3D's bias). The limits
-/// are spelled out rather than computed, because the GPU's fast math does
-/// not keep IEEE infinities.
+/// `rcp oFog, v0.w`, infinity for `rhw = 0`), and any coordinate whose
+/// formula comes out NaN, give a fixed factor per mode, whatever the bias,
+/// scale or sign: 1 for `LINEAR`, `LINEAR_ABS` and `EXP`, 0 for `EXP_ABS`,
+/// `EXP2` and `EXP2_ABS` ([`special_factor`]). These are the results xemu's
+/// `glsl/vsh.c` assigns. They are not the limits of the formulas: linear
+/// fog with D3D's negative scale tends to 0, not 1. The values are written
+/// out rather than computed, and the WGSL recognises infinity and NaN by
+/// their bits, because the GPU's fast math does not keep IEEE semantics.
 pub fn factor_from_uniform(u: [f32; 4], d: f32) -> f32 {
     let code = u[0] as u32;
     let (bias, scale) = (u[1], u[2]);
-    let f = if d.is_infinite() {
-        match code {
-            0 => 1.0,
-            1 | 4 => bias - 1.0,
-            2 => bias + 1.0 - 1.5,
-            5 if scale < 0.0 => bias - 1.5,
-            5 => 1.0,
-            3 | 6 if scale != 0.0 => bias - 1.5,
-            3 | 6 => bias + 1.0 - 1.5,
-            _ => 1.0,
+    if code == 0 {
+        return 1.0;
+    }
+    if d.is_infinite() {
+        return special_factor(code);
+    }
+    let d = if code >= 4 { d.abs() } else { d };
+    let f = match code {
+        1 | 4 => bias + scale * d - 1.0,
+        2 | 5 => bias + (16.0 * scale * d).exp2() - 1.5,
+        3 | 6 => {
+            let s = scale * d;
+            bias + (-32.0 * s * s).exp2() - 1.5
         }
-    } else {
-        let d = if code >= 4 { d.abs() } else { d };
-        match code {
-            0 => 1.0,
-            1 | 4 => bias + scale * d - 1.0,
-            2 | 5 => bias + (16.0 * scale * d).exp2() - 1.5,
-            3 | 6 => {
-                let s = scale * d;
-                bias + (-32.0 * s * s).exp2() - 1.5
-            }
-            _ => 1.0,
-        }
+        _ => 1.0,
     };
+    if f.is_nan() {
+        return special_factor(code);
+    }
     f.clamp(0.0, 1.0)
 }
 
+/// The factor for an infinite coordinate or a NaN result, by uniform code
+/// (xemu's `glsl/vsh.c`): 1 for off, `LINEAR`, `LINEAR_ABS` and `EXP`, 0
+/// for `EXP2`, `EXP_ABS` and `EXP2_ABS`.
+pub fn special_factor(code: u32) -> f32 {
+    match code {
+        3 | 5 | 6 => 0.0,
+        _ => 1.0,
+    }
+}
+
 /// The WGSL counterpart of [`factor_from_uniform`], reading
-/// `xps.fog` = `[code, bias, scale, 0]`. Infinity is recognised by its
-/// bits (fast math).
+/// `xps.fog` = `[code, bias, scale, 0]`. Infinity and NaN are recognised by
+/// their bits (fast math).
 pub(crate) const WGSL: &str = r#"
+fn xps_fog_special(code: u32) -> f32 {
+    return select(1.0, 0.0, code == 3u || code == 5u || code == 6u);
+}
 fn xps_fog_factor(coord: f32) -> f32 {
     let code = u32(xps.fog.x);
     let bias = xps.fog.y;
     let scale = xps.fog.z;
-    var f = 1.0;
-    if ((bitcast<u32>(coord) & 0x7fffffffu) == 0x7f800000u) {
-        if (code == 1u || code == 4u) { f = bias - 1.0; }
-        if (code == 2u) { f = bias - 0.5; }
-        if (code == 5u) { f = select(1.0, bias - 1.5, scale < 0.0); }
-        if (code == 3u || code == 6u) { f = select(bias - 0.5, bias - 1.5, scale != 0.0); }
-        return clamp(f, 0.0, 1.0);
-    }
+    if (code == 0u) { return 1.0; }
+    if ((bitcast<u32>(coord) & 0x7fffffffu) == 0x7f800000u) { return xps_fog_special(code); }
     let d = select(coord, abs(coord), code >= 4u);
+    var f = 1.0;
     if (code == 1u || code == 4u) { f = bias + scale * d - 1.0; }
     if (code == 2u || code == 5u) { f = bias + exp2(16.0 * scale * d) - 1.5; }
     if (code == 3u || code == 6u) { let s = scale * d; f = bias + exp2(-32.0 * s * s) - 1.5; }
+    if ((bitcast<u32>(f) & 0x7fffffffu) > 0x7f800000u) { return xps_fog_special(code); }
     return clamp(f, 0.0, 1.0);
 }
 "#;

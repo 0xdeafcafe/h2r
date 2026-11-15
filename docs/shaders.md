@@ -407,11 +407,18 @@ factor, never the colour's alpha.
   `ShaderInputs::affine_projection`), and the synthesized pre-transformed
   program writes the same coordinate: `rcp` of the vertex's own rhw, so
   `rhw = 0` gives infinity as in the guest, while the position still
-  treats `rhw = 0` as 1. An infinite coordinate follows xemu: `LINEAR`,
-  `LINEAR_ABS` and `EXP` read it as 0, and the other modes take their
-  limit (`EXP2` gives `bias − 1.5`, factor 0 with D3D's bias). The limits
-  are written out in `psh::fog`, and the WGSL recognises infinity by its
-  bits, because the GPU's fast math does not keep IEEE infinities. Whether
+  treats `rhw = 0` as 1. An infinite coordinate, of either sign, gives a
+  fixed factor per mode whatever the bias and scale, as xemu's
+  `glsl/vsh.c` assigns: 1 for `LINEAR`, `LINEAR_ABS` and `EXP`, 0 for
+  `EXP_ABS`, `EXP2` and `EXP2_ABS` (`psh::fog::special_factor`). A NaN
+  coordinate or formula result gives the same. These are not the limits
+  of the formulas: with D3D's negative scale, linear fog tends to 0, not
+  1, so with start −10 and end 10 an infinite coordinate reads 1 where
+  the coordinate 0 would read 0.5. The WGSL recognises infinity and NaN
+  by their bits, because the GPU's fast math does not keep IEEE
+  semantics. xemu evaluates the factor per vertex and clamps it to the
+  finite float range before interpolating; here the coordinate itself is
+  interpolated. Whether
   the rasteriser interpolates an infinite varying as infinity across a
   triangle (rather than NaN where a vertex's weight is 0) is not
   established. `crates/d3d/tests/fog_xbe.rs` (ignored, `$H2_XBE`) runs the

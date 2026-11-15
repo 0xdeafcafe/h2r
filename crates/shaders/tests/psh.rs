@@ -1286,19 +1286,46 @@ fn fog_register_alpha_is_the_factor() {
     approx(out, [0.2, 0.4, 0.6, 1.0]);
 }
 
-/// An infinite fog coordinate (D3D's pass-through `rcp` of `rhw = 0`):
-/// LINEAR and EXP read it as 0, EXP2 takes the limit, so with D3D's
-/// parameters the factor is (end/(end - start)) clamped, 1 and 0.
+/// An infinite fog coordinate (D3D's pass-through `rcp` of `rhw = 0`)
+/// gives xemu's fixed factor per mode, whatever the bias, scale or sign:
+/// 1 for LINEAR, LINEAR_ABS and EXP, 0 for EXP_ABS, EXP2 and EXP2_ABS, and
+/// 1 with fog off. NaN coordinates (and NaN results) give the same.
 #[test]
-fn infinite_fog_coordinate_takes_the_limits() {
-    use psh::fog::FogMode;
-    for inf in [f32::INFINITY, f32::NEG_INFINITY] {
-        assert_eq!(linear_fog(10.0, 30.0).factor(inf), 1.0, "linear: d = 0");
-        assert_eq!(linear_fog(-10.0, 10.0).factor(inf), 0.5, "linear: d = 0");
-        assert_eq!(exp_fog(FogMode::Exp, 0.5).factor(inf), 1.0, "exp: d = 0");
-        assert_eq!(exp_fog(FogMode::Exp2, 0.5).factor(inf), 0.0, "exp2 limit");
-        assert_eq!(exp_fog(FogMode::Exp2Abs, 0.5).factor(inf), 0.0);
-        assert_eq!(exp_fog(FogMode::ExpAbs, 0.5).factor(inf), 0.0);
-        assert_eq!(psh::fog::Fog::OFF.factor(inf), 1.0);
+fn infinite_fog_coordinate_gives_the_mode_constant() {
+    use psh::fog::{Fog, FogMode};
+    let with = |f: Fog, mode: FogMode| Fog { mode, ..f };
+    let cases = [
+        (linear_fog(10.0, 30.0), 1.0, "linear"),
+        (linear_fog(-10.0, 10.0), 1.0, "linear -10..10"),
+        (Fog::FROM_VERTEX, 1.0, "vertex fog"),
+        (
+            with(linear_fog(-10.0, 10.0), FogMode::LinearAbs),
+            1.0,
+            "linear abs",
+        ),
+        (exp_fog(FogMode::Exp, 0.5), 1.0, "exp"),
+        (exp_fog(FogMode::Exp, 0.0), 1.0, "exp, density 0"),
+        (exp_fog(FogMode::ExpAbs, 0.5), 0.0, "exp abs"),
+        (exp_fog(FogMode::Exp2, 0.5), 0.0, "exp2"),
+        (exp_fog(FogMode::Exp2, 0.0), 0.0, "exp2, density 0"),
+        (exp_fog(FogMode::Exp2Abs, 0.5), 0.0, "exp2 abs"),
+        (Fog::OFF, 1.0, "off"),
+    ];
+    for (fog, want, what) in cases {
+        for d in [f32::INFINITY, f32::NEG_INFINITY, f32::NAN] {
+            assert_eq!(fog.factor(d), want, "{what} at {d}");
+        }
     }
+    // A NaN result from finite inputs: exp with density 0 and a huge
+    // coordinate is 2^(0 * x), finite; linear with scale inf at 0 is NaN.
+    let nan_scale = Fog {
+        scale: f32::INFINITY,
+        ..linear_fog(0.0, 1.0)
+    };
+    assert_eq!(nan_scale.factor(0.0), 1.0, "NaN linear result");
+    let nan_exp2 = Fog {
+        scale: f32::INFINITY,
+        ..exp_fog(FogMode::Exp2, 0.5)
+    };
+    assert_eq!(nan_exp2.factor(0.0), 0.0, "NaN exp2 result");
 }

@@ -961,6 +961,7 @@ fn fog_unit_modes_on_gpu() {
         64.0,
         f32::INFINITY,
         f32::NEG_INFINITY,
+        f32::NAN,
     ];
     let mut u = PixelUniforms {
         fog_color: [0.1, 0.2, 0.3, 0.7],
