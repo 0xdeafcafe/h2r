@@ -178,6 +178,9 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.draw(color, depth, draw, textures);
         self.forget(r)
     }
+    fn frame_stats(&mut self) {
+        self.0.frame_stats()
+    }
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         let r = self.0.present(surface, flags);
         self.forget(r)

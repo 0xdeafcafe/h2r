@@ -138,7 +138,7 @@ fn frame(d: &mut Device<GfxBackend>, m: &mut SparseMemory, c: Churn) {
     d.clear(m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
     for i in 0..c.draws {
         let material = i / c.material_run;
-        let tex = if material % 2 == 0 {
+        let tex = if material.is_multiple_of(2) {
             TEX_HEADER
         } else {
             TEX2_HEADER
@@ -151,7 +151,7 @@ fn frame(d: &mut Device<GfxBackend>, m: &mut SparseMemory, c: Churn) {
         )
         .unwrap();
         if let Some(n) = c.alpha_test_every {
-            d.set_render_state(m, RS_ALPHATESTENABLE, u32::from(material % n == 0))
+            d.set_render_state(m, RS_ALPHATESTENABLE, u32::from(material.is_multiple_of(n)))
                 .unwrap();
         }
         if let Some(n) = c.blend_every {
@@ -291,9 +291,7 @@ pub fn bench() {
 #[test]
 fn city_output_matches_individual_passes_across_frames() {
     let render = |mode| {
-        let Some((mut d, mut m)) = device(mode) else {
-            return None;
-        };
+        let (mut d, mut m) = device(mode)?;
         setup(&mut d, &mut m);
         let mut frames = Vec::new();
         for epoch in 0..3u8 {
@@ -326,7 +324,13 @@ fn city_output_matches_individual_passes_across_frames() {
                 .backend
                 .read_color(d.backend.last_presented().unwrap())
                 .unwrap();
-            assert!(pixels.chunks_exact(4).any(|p| p != &pixels[..4]));
+            assert!(
+                pixels
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .any(|p| p.as_slice() != &pixels[..4])
+            );
             frames.push(pixels);
         }
         assert!(frames[0] != frames[1], "updated frame 1 must change pixels");

@@ -451,6 +451,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         r
     }
+    fn frame_stats(&mut self) {
+        self.inner.frame_stats()
+    }
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.present_with_gamma(surface, flags, None)
     }

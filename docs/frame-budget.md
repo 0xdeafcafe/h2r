@@ -519,7 +519,7 @@ and median 4.4 ms a frame (1a5aa8d at load 3-4: mean 7.1), `encode`
 ### Per-draw CPU preparation (2026-11-15, `perf-perdraw`)
 
 Synthetic headless Metal measurements on an Apple M1 Max (10 CPU cores),
-against `origin/master` 453e6c4.
+against pre-LFS master `453e6c4` (rewritten as `7151bc3`).
 The existing `draw_churn` integration benchmark is also available through
 Cargo's bench runner:
 
@@ -609,7 +609,8 @@ reported roughly 1,100 draws/present can be reconstructed from those
 zero renderer columns. No game run was made to fill the gap.
 
 Frame stats now queue a telemetry marker at the device's existing
-`count_swap` boundary. It joins the render thread's phase/counter deltas
+`count_swap` boundary. Boot's diagnostic and headless wrappers forward
+that hook to their inner backend. It joins the render thread's phase/counter deltas
 to that exact game-thread frame, including when the worker finishes
 before or after `frame_end`. CSV/overlay publication waits for both
 samples; the game thread does not wait for telemetry. Rows retain their
@@ -635,6 +636,28 @@ CSV fields, distinct counters on consecutive frames, file-byte counts,
 reply-wait attribution, and restart/shutdown behavior. Timeline unit tests
 also cover worker samples arriving on either side of the game sample,
 ordered publication, unchanged wall-time FPS and exactly-once accounting.
+
+### Validation after the history rewrite
+
+Rebased `perf-perdraw` onto `origin/master` `3bfc473` with
+`git rebase --onto origin/master 453e6c4 perf-perdraw`; no merge or push.
+With a single APFS-cloned target, `RUSTC_WRAPPER=`, four compiler jobs,
+incremental compilation disabled and `nice`:
+
+- `cargo test -p d3d -p gfx -p boot -- --test-threads=2`: **545 passed,
+  21 ignored** (including the GPU city byte comparison and queued-stats
+  CSV regression).
+- `cargo test -p shaders -p timeline -- --test-threads=2`: **94 passed**,
+  including the uniform ABI tests and timeline ordering/restart checks.
+- `cargo clippy -p d3d -p gfx -p boot --all-targets -- -D warnings` and
+  `cargo clippy -p shaders -p timeline --all-targets -- -D warnings`: clean.
+
+The GPU fixture reads the last presented surface after a flip and reports
+its synthetic resource edits through `Device::note_write` under tracked
+uploads. The stats fixture uses a FINISH swap, which reaches `count_swap`
+on a flipping chain. Tests also caught and fixed boot wrappers dropping
+the new hook. All proof used tests and synthetic resources; no game image
+was built and no game was run.
 
 ## Reading these numbers on another machine
 
