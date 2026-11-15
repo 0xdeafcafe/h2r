@@ -666,8 +666,39 @@ and allocations are bounded before anything is read:
     - at `Swap`, `KickOff` and `PersistDisplay`;
     - at the busy check `0x3fb710`;
     - at teardown, which then destroys the host surfaces.
-  - A depth level, a compressed format, or a header rewritten while its
-    level holds unwritten pixels stops.
+  - A compressed format, or a header rewritten while its level holds
+    unwritten pixels, stops.
+  - **Depth levels.** A level bound as `pNewZStencil` (shadow maps; the
+    first campaign level's first frame binds one at about present 4210)
+    gets a host depth/stencil surface (`Backend::create_surface(..,
+    true)`) of the level's format and size: `D24S8` or `D16`, swizzled
+    or linear. It is filled from the level's texels and written back
+    exactly like a colour level, through `Backend::write_surface` and
+    `Backend::read_depth` (guest words `z << 8 | stencil` for `D24S8`,
+    `z` for `D16`, in the level's layout; `GfxBackend` uses
+    `SurfaceStore::write_depth` and `read_depth_as`). It is marked dirty
+    only by draws that may write depth or stencil (`ZENABLE` with
+    `ZWRITEENABLE`, or `STENCILENABLE`) and by clears of depth or
+    stencil, and written back also when the depth/stencil binding
+    changes. A backend without `read_depth` stops at the write-back.
+    Float depth levels (`F24S8`, `F16`) stop: the host surface does not
+    hold their bits. A level bound as colour after depth (or the other
+    way), or whose format does not match how it is bound, stops too.
+  - **Depth textures.** The parent texture is then sampled from guest
+    memory like any texture (written back first). A depth-format texture
+    decodes to its raw bits (`gfx::convert::depth_channels`: depth
+    bytes high to low in red, green, blue and the stencil in alpha;
+    `D16` in red and green). On the NV2A a depth-format texture is a
+    shadow map: xemu (`psh_append_shadowmap`) compares the stored depth
+    with the texture coordinate under `SHADOWCTL`'s function, which D3D
+    sets from `D3DRS_SHADOWFUNC` (guest slot 156, `0x3f5330`;
+    `state::slot::SHADOWFUNC`), and returns 1 or 0 in every channel
+    (PROJECT2D compares with 0, PROJECT3D with `r/q` clamped to the
+    format's depth range). A colour-format header over the same memory is
+    raw bits, not a comparison. The translated programs do not compare
+    yet, so `Nv2aShaders` skips a draw that samples a depth-format
+    texture with `Event::DrawSkipped` (naming the stage, format and
+    `SHADOWFUNC`); the texture is uploaded all the same.
 - **Swap** (`Device::swap`, `0x3f9d00`). CreateDevice sets device flag
   `0x4000` (`device::COPY_SWAP_FLAG`) for a multisampled device (type bits
   `0x3000`) or `D3DSWAPEFFECT_COPY` (`0x3fc9a2..0x3fc9c0`), and stores the
@@ -751,15 +782,42 @@ and allocations are bounded before anything is read:
     frame buffers and the headers back at their first `Data`: nothing
     presented by the old device can be read as the previous frame. Halo
     rebuilds its textures from the new headers (`0x12b9e`).
-  - Any other texture inside a buffer's `FRAME_DATA_SPAN` (another
-    format or size, an offset into it, or anything over the depth buffer)
-    skips the draw with `Event::DrawSkipped` saying why, when the draw
-    reads that stage's image: a pixel shader's `PSTEXTUREMODES` gives the
-    stage a mode that fetches a texel (`TexMode::texture_dim`; not
-    `CLIPPLANE`, `PASSTHRU`, `BRDF`, `DOT_ZW` or `DOTPRODUCT`), or, fixed
-    function, the stage comes before the first `COLOROP = DISABLE`. On a stage the draw does not read, it is left unbound and
-    the draw goes ahead. Depth bits read as colour are not modelled. A
-    backend without `snapshot_surface` skips too.
+  - A texture inside the depth buffer's `FRAME_DATA_SPAN` reads its
+    depth/stencil bits as the colour format it names, the way d3d-pass's
+    back-buffer copy reads colour (`Device::depth_texture` in
+    `src/device/raster.rs`). The depth buffer is read back as the guest
+    words it would hold (`Backend::read_depth`: linear, pitch `width *
+    bpp`, `D24S8` as `z << 8 | stencil`), and the bytes from the texture's
+    offset on are decoded as the texture, exactly as if guest memory held
+    them. So `0x509368` (`LIN_A8R8G8B8`) samples the depth's top byte as
+    alpha, its middle and low bytes as red and green and the stencil as
+    blue, and `0x50936C` (`LIN_A8B8G8R8`) the same with red and blue
+    swapped. The main menu's depth-based fog/distortion pass (about 400
+    draws a frame, `HILO` dot mappings) reads it this way; the `HILO`
+    modes themselves are the shader translator's.
+    - The readback is cached by a depth generation, bumped by every draw
+      that may write depth or stencil into the device's depth buffer
+      (`ZENABLE` with `ZWRITEENABLE`, or `STENCILENABLE`) and by every
+      depth or stencil clear of it; each header is decoded once per
+      readback. A run of draws that test depth without writing it costs
+      one readback. Like the back-buffer copy, a draw sees the buffer as
+      it was before the draw. Counted in `Stats::depth_reads` and
+      `Stats::depth_alias_uploads`.
+    - A texture that runs past the end of the buffer, or whose header
+      does not decode, skips with a reason. So does any texture over it
+      when the backend has no `read_depth` (`GfxBackend` needs
+      `DEPTH32FLOAT_STENCIL8`; Metal has it), and a multisampled depth
+      buffer.
+  - Any other texture inside a frame buffer's `FRAME_DATA_SPAN` (another
+    format or size, or an offset into it) skips the draw with
+    `Event::DrawSkipped` saying why, when the draw reads that stage's
+    image: a pixel shader's `PSTEXTUREMODES` gives the stage a mode that
+    fetches a texel (`TexMode::texture_dim`; not `CLIPPLANE`, `PASSTHRU`,
+    `BRDF`, `DOT_ZW` or `DOTPRODUCT`), or, fixed function, the stage comes
+    before the first `COLOROP = DISABLE`. On a stage the draw does not
+    read, a texture over any buffer is left unbound (nothing is copied or
+    read back) and the draw goes ahead. A backend without
+    `snapshot_surface` skips too.
   - Guest memory at those addresses is never read or written by the
     device. A CPU read of the frame buffer through `Data` faults instead
     of returning stale bytes.
@@ -1463,7 +1521,10 @@ ignored `gamma_ramp_conventions` checks the convention.
 
 ## gfx changes this wants
 
-Done since the last revision: `SurfaceStore::snapshot` (a sampleable
+Done since the last revision: depth/stencil surfaces filled from guest
+texels (`SurfaceStore::write_depth`) and read back in any `D16`/`D24S8`
+layout (`SurfaceStore::read_depth_as`), depth formats decoded as their raw
+bits, `SurfaceStore::snapshot` (a sampleable
 copy of a colour surface, for the back buffer read as a texture),
 `Draw: Clone` (one draw repeated per scissor piece), per-draw scissor and viewport
 (`gfx::Draw::scissor`/`viewport`), rectangle and channel-masked clears
@@ -1483,8 +1544,10 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   `create_texture_target` surface's view (`Surface::view`) for the
   texture would avoid the round trip. That needs the texture cache to map
   a texture header to the surface.
-- **Depth as a texture.** The depth-buffer textures above need a pass
-  that converts depth/stencil bits into the colour format they are read
-  as.
+- **Depth as a texture on the GPU.** Textures over the depth buffer and
+  sampled depth levels go through a CPU round trip: a readback, then a
+  decode and an upload (and, for levels, guest memory). A pass that writes
+  the bits straight into a colour texture would avoid the stall. The
+  shadow-map comparison itself belongs in `crates/shaders`.
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
   `gfx::encode::HostPixelOrder`.

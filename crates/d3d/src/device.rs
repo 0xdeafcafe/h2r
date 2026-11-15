@@ -2444,7 +2444,8 @@ impl<B: Backend> Device<B> {
 
     /// `D3DDevice_SetRenderTarget` (`0x3f7870`, stdcall `pRenderTarget,
     /// pNewZStencil`; a null target keeps the current one). A surface that
-    /// is a texture level (render-to-texture) stops.
+    /// is a texture level gets its own host surface, colour or
+    /// depth/stencil (render-to-texture, `raster.rs`).
     pub fn set_render_target(
         &mut self,
         mem: &mut dyn GuestMemory,

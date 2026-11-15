@@ -156,8 +156,20 @@ Unknown or unverified details, flagged so nobody trusts them blindly:
 * Depth bias (`POLYGONOFFSETZOFFSET`) is in depth-buffer steps and passed
   through unscaled (xemu hands it to `glPolygonOffset` as is). It is dropped on
   line/point topologies and gated by `SOLID/WIREFRAME/POINTOFFSETENABLE`.
-* Depth textures sampled as colour (shadow maps) are not handled; xemu
-  routes them through a depth-aware swizzle (see its `kelvin_color_format_gl_map`).
+* Depth-format textures (`D24S8`, `F24S8`, `D16`, `F16`, swizzled or linear)
+  decode to their raw bits as RGBA8 (`convert::depth_channels`): 32-bit
+  formats give the depth bytes, most significant first, in red, green and
+  blue and the stencil in alpha; 16-bit formats give the two depth bytes in
+  red and green, blue and alpha zero. `round(c * 255)` recovers each byte
+  under point sampling. The NV2A does not sample them as colour: they are
+  shadow maps, compared with the texture coordinate under `SHADOWCTL`'s
+  function (D3D's `D3DRS_SHADOWFUNC`), giving 1 or 0 in every channel; xemu's
+  `psh_append_shadowmap` compares with 0 for PROJECT2D and with `r/q`,
+  clamped to the format's depth range (16777215, 65535, or 511.9375 for
+  float), for PROJECT3D, and short-cuts NEVER and ALWAYS. The comparison is
+  the shader translator's job; until it exists `d3d::nv2a` skips such draws
+  with a reason. A colour texture over depth memory is not a depth texture:
+  it reads the same bits through its own colour format.
 * Volume mip levels halve depth (resolved: xemu's per-level upload loop also
   halves depth; `pgraph_get_texture_length` only over-approximates the total).
 * Compare-func values `0x200..0x207` are confirmed by Cxbx's
@@ -224,6 +236,15 @@ surface with a mip chain that is both an attachment and a texture;
 surface from guest texels laid out as the `TextureDesc` says (its format,
 and its pitch for linear formats, which may differ from the surface's own),
 so a render-to-texture level starts from its texture's memory.
+Depth surfaces are made with `COPY_DST` too. `write_depth(ctx, id,
+&TextureDesc, bytes)` fills one from guest `D16`/`D24S8` texels
+(`encode::decode_depth`, the inverse of `encode_depth`): WebGPU cannot copy
+into the depth aspect of `Depth32Float*`/`Depth24Plus*`, so depth is drawn by
+a full-screen pass that writes `frag_depth` from an `R32Float` copy
+(`depth_fill.rs`), and stencil is copied into its aspect. `read_depth_as(ctx,
+id, format, &layout)` reads depth/stencil back encoded as any `D16`/`D24S8`
+layout (a render-to-texture depth level's texels, or the depth buffer as the
+words a texture over it reads).
 Limits: `F16` and
 `F24S8` depth cannot be encoded; tile compression and bank interleave are not
 modelled.
