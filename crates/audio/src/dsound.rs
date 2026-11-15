@@ -456,6 +456,10 @@ pub struct Stream {
     format: WaveFormat,
     params: VoiceParams,
     queue: VecDeque<Packet>,
+    /// The last [`HISTORY_FRAMES`] frames of packets already completed, for
+    /// read offsets that reach back past the front packet. Sized once, so
+    /// rendering never allocates for it.
+    history: VecDeque<[f32; 2]>,
     /// Fractional frame position within the front packet.
     pos: f64,
     paused: bool,
@@ -470,6 +474,7 @@ impl Stream {
             params: VoiceParams::new(&format),
             format,
             queue: VecDeque::new(),
+            history: VecDeque::with_capacity(HISTORY_FRAMES + 1),
             pos: 0.0,
             paused: false,
             next_id: 1,
@@ -508,6 +513,7 @@ impl Stream {
             self.completed.push((p.id, PacketStatus::Flushed));
         }
         self.pos = 0.0;
+        self.history.clear();
         // What plays next is a new sound: effects start over.
         self.fx_state.reset();
     }
@@ -533,7 +539,17 @@ impl Stream {
 
     /// Frame `i` counted from the start of the front packet, continuing into
     /// the packets behind it; the last queued frame if `i` runs past them all.
-    fn frame_rel(&self, mut i: usize) -> [f32; 2] {
+    fn frame_rel(&self, i: i64) -> [f32; 2] {
+        if i < 0 {
+            // Before the front packet: the tail of what already played, or
+            // the front packet's first frame if there is not that much.
+            let back = i.unsigned_abs() as usize;
+            return match self.history.len().checked_sub(back) {
+                Some(k) => self.history[k],
+                None => self.history.front().copied().or_else(|| self.frame(0, 0)).unwrap_or([0.0; 2]),
+            };
+        }
+        let mut i = i as usize;
         for k in 0..self.queue.len() {
             let n = self.queue[k].frames.len() / self.format.channels() as usize;
             if i < n {
@@ -557,6 +573,12 @@ impl Stream {
         (i < n).then(|| {
             if ch == 1 { [p.frames[i]; 2] } else { [p.frames[i * 2], p.frames[i * 2 + 1]] }
         })
+    }
+
+    /// Test access to the read-position offset pitch modulation has built up.
+    #[cfg(test)]
+    pub(crate) fn phase_offset(&self) -> f64 {
+        self.fx_state.phase_off
     }
 
     pub(crate) fn render(&mut self, out: &mut [f32], host_rate: u32, gain: (f32, f32)) {
@@ -586,8 +608,8 @@ impl Stream {
                 let b = self.frame(0, i + 1).or_else(|| self.frame(1, 0)).unwrap_or(a);
                 (a, b, t)
             } else {
-                let p = (self.pos + off).max(0.0);
-                let i = p.floor() as usize;
+                let p = self.pos + off;
+                let i = p.floor() as i64;
                 (self.frame_rel(i), self.frame_rel(i + 1), (p - i as f64) as f32)
             };
             if m != 1.0 {
@@ -606,6 +628,17 @@ impl Stream {
                 }
                 self.pos -= n as f64;
                 let done = self.queue.pop_front().expect("front exists");
+                let first = n.saturating_sub(HISTORY_FRAMES);
+                for k in first..n {
+                    if self.history.len() >= HISTORY_FRAMES {
+                        self.history.pop_front();
+                    }
+                    self.history.push_back(if ch == 1 {
+                        [done.frames[k]; 2]
+                    } else {
+                        [done.frames[k * 2], done.frames[k * 2 + 1]]
+                    });
+                }
                 self.completed.push((done.id, PacketStatus::Success));
             }
             if self.queue.is_empty() {
@@ -614,6 +647,10 @@ impl Stream {
         }
     }
 }
+
+/// Frames of completed-packet history a stream keeps for pitch modulation: the
+/// phase-offset bound plus room to interpolate.
+pub const HISTORY_FRAMES: usize = MAX_PHASE_OFFSET as usize + 2;
 
 /// A 3-vector in DirectSound's left-handed space (x right, y up, z forward).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]

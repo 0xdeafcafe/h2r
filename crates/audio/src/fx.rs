@@ -117,7 +117,9 @@ pub fn gain_word_to_db(word: u32) -> f32 {
         f64::from(c.min(0x7fff))
     };
     let ratio = 1.0 + v / 8192.0;
-    (20.0 * ratio.max(1e-3).log10()) as f32
+    // The encoded range keeps `ratio` above 1/8192 (-78.3 dB); the floor only
+    // guards the logarithm.
+    (20.0 * ratio.max(1e-9).log10()) as f32
 }
 
 /// The inverse of [`gain_word_to_db`], mirroring the converter, for tests
@@ -808,6 +810,15 @@ mod tests {
         // v = -4096, word 0xc000 + 4096, and decodes to -6.02 dB (not a boost).
         assert!((gain_word_to_db(0xc000 + 4096) + 6.02).abs() < 0.01);
         assert_eq!(gain_word_to_db(0xc000), 0.0);
+        // Analytical values, not a round trip: 0xd000 is v = -4096, ratio 1/2;
+        // the deepest valid cut 0xdfff is v = -8191, ratio 1/8192.
+        assert!((gain_word_to_db(0xd000) - 20.0 * 0.5f32.log10()).abs() < 1e-4);
+        assert!(
+            (gain_word_to_db(0xdfff) + 78.2678).abs() < 1e-3,
+            "{}",
+            gain_word_to_db(0xdfff)
+        );
+        assert!(gain_word_to_db(0xdfff) < gain_word_to_db(0xdffe));
         for db in [-24.0f32, -12.0, -6.0, -3.0, -0.5, 0.5, 3.0, 6.0, 12.0] {
             let back = gain_word_to_db(db_to_gain_word(db));
             assert!((back - db).abs() < 0.02, "{db} -> {back}");

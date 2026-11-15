@@ -225,10 +225,12 @@ impl Mixer {
             b.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (b.fx_clock() - c0) as usize;
             b.apply_fx(&mut scratch[..produced * 2], c0, rate);
-            let has_direct = b.direct_shelf(&scratch, &mut direct, rate);
+            // Only the frames the voice produced: the shelf state advances with the
+            // voice's own clock, so a block's padding never leaks a tail.
+            let has_direct = b.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = b.format().channels() as usize;
             let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
-            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..]), out);
+            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
         }
         let ids: Vec<StreamId> = self.streams.iter().filter(|(_, s)| s.is_audible()).map(|(&id, _)| id).collect();
         for id in ids {
@@ -240,10 +242,12 @@ impl Mixer {
             s.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (s.fx_clock() - c0) as usize;
             s.apply_fx(&mut scratch[..produced * 2], c0, rate);
-            let has_direct = s.direct_shelf(&scratch, &mut direct, rate);
+            // Only the frames the voice produced: the shelf state advances with the
+            // voice's own clock, so a block's padding never leaks a tail.
+            let has_direct = s.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = s.format().channels() as usize;
             let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
-            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..]), out);
+            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
         }
         for i in 0..buses.len() {
             buses[i].done = true;
@@ -896,26 +900,134 @@ mod tests {
         assert!(lfo_audio.iter().chain(&dop_audio).all(|v| v.is_finite()));
     }
 
-    #[test]
-    fn pitch_modulation_keeps_the_phase_offset_bounded() {
-        let mut st = crate::fx::FxState::default();
-        assert_eq!(st.phase_off, 0.0);
-        // The mixer drives it; here check a stream under a constant Doppler
-        // shift never reads further than the bound from its nominal position.
+    /// Drive a stream under a constant Doppler velocity in 100-frame blocks and
+    /// return the (min, max) read-position offset it reached.
+    fn doppler_phase_range(vz: f32) -> (f64, f64) {
         let mut m = Mixer::new(48_000);
         let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
         m.stream_mut(sid).unwrap().set_source_3d(Some(Source3d {
             position: Vec3::new(0.0, 0.0, 50.0),
-            velocity: Vec3::new(0.0, 0.0, -100.0),
+            velocity: Vec3::new(0.0, 0.0, vz),
             rolloff_factor: 0.0,
             ..Default::default()
         }));
         m.stream_mut(sid).unwrap().submit(&sine_pcm(300.0, 1.0)).unwrap();
-        let mut out = vec![0.0f32; 2 * 48_000];
-        m.render(&mut out);
-        assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
-        st.phase_off = 1e9;
-        assert!(st.phase_off > crate::fx::MAX_PHASE_OFFSET);
+        let (mut lo, mut hi) = (0.0f64, 0.0f64);
+        for _ in 0..30 {
+            let mut out = vec![0.0f32; 2 * 100];
+            m.render(&mut out);
+            assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
+            let off = m.stream_mut(sid).unwrap().phase_offset();
+            lo = lo.min(off);
+            hi = hi.max(off);
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn pitch_modulation_keeps_the_phase_offset_bounded() {
+        // Receding drifts about -0.47 frame per frame and approaching (ratio
+        // clamped at 8) +7, so unclamped both would leave the window within a
+        // few thousand frames. They must saturate exactly at the bound.
+        let bound = crate::fx::MAX_PHASE_OFFSET;
+        let (lo, hi) = doppler_phase_range(343.0);
+        assert!(hi <= 1e-9, "receding should not drift forward: {hi}");
+        assert_eq!(lo, -bound);
+        let (lo, hi) = doppler_phase_range(-343.0);
+        assert!(lo >= -1e-9, "approaching should not drift back: {lo}");
+        assert_eq!(hi, bound);
+    }
+
+    /// A shelf-obstructed source that ends (or starves) mid-render: the tail
+    /// must not depend on how the output is chunked.
+    fn shelf_render(block: usize, make: impl Fn(&mut Mixer) -> StreamId, frames: usize) -> Vec<f32> {
+        let mut m = Mixer::new(48_000);
+        let sid = make(&mut m);
+        let s = m.stream_mut(sid).unwrap();
+        s.set_i3dl2_source(Some(I3dl2Source { obstruction_hf: -2500, obstruction_lf_ratio: 0.2, ..Default::default() }));
+        let mut all = Vec::new();
+        while all.len() < 2 * frames {
+            let mut out = vec![0.0f32; 2 * block];
+            m.render(&mut out);
+            all.extend(out);
+        }
+        all.truncate(2 * frames);
+        all
+    }
+
+    #[test]
+    fn direct_shelf_does_not_depend_on_render_block_size() {
+        let ends = |m: &mut Mixer| {
+            let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+            m.stream_mut(sid).unwrap().submit(&sine_pcm(900.0, 0.01)).unwrap();
+            sid
+        };
+        let a = shelf_render(64, ends, 4096);
+        let b = shelf_render(512, ends, 4096);
+        assert_eq!(a, b);
+        assert!(a.iter().any(|v| v.abs() > 0.01));
+    }
+
+    #[test]
+    fn direct_shelf_survives_starvation_and_resume_identically() {
+        let run = |block: usize| {
+            let mut m = Mixer::new(48_000);
+            let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+            m.stream_mut(sid).unwrap().set_i3dl2_source(Some(I3dl2Source {
+                obstruction_hf: -2500,
+                obstruction_lf_ratio: 0.2,
+                ..Default::default()
+            }));
+            let mut all = Vec::new();
+            let mut render = |m: &mut Mixer, frames: usize| {
+                let mut left = frames;
+                while left > 0 {
+                    let n = left.min(block);
+                    let mut out = vec![0.0f32; 2 * n];
+                    m.render(&mut out);
+                    all.extend(out);
+                    left -= n;
+                }
+            };
+            m.stream_mut(sid).unwrap().submit(&sine_pcm(900.0, 0.01)).unwrap();
+            render(&mut m, 1536);
+            m.stream_mut(sid).unwrap().submit(&sine_pcm(1300.0, 0.01)).unwrap();
+            render(&mut m, 1536);
+            all
+        };
+        assert_eq!(run(64), run(512));
+    }
+
+    #[test]
+    fn packet_boundaries_do_not_change_a_stream_under_receding_doppler() {
+        let ramp = |lo: usize, hi: usize| -> Vec<u8> {
+            (lo..hi).flat_map(|i| ((i as i16) * 4).to_le_bytes()).collect()
+        };
+        let run = |split: bool| {
+            let mut m = Mixer::new(48_000);
+            let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+            let s = m.stream_mut(sid).unwrap();
+            s.set_source_3d(Some(Source3d {
+                position: Vec3::new(0.0, 0.0, 50.0),
+                velocity: Vec3::new(0.0, 0.0, 343.0),
+                rolloff_factor: 0.0,
+                ..Default::default()
+            }));
+            if split {
+                s.submit(&ramp(0, 2000)).unwrap();
+                s.submit(&ramp(2000, 4000)).unwrap();
+            } else {
+                s.submit(&ramp(0, 4000)).unwrap();
+            }
+            let mut out = vec![0.0f32; 2 * 3000];
+            m.render(&mut out);
+            out
+        };
+        let (one, two) = (run(false), run(true));
+        assert_eq!(one, two);
+        // The receding read position is behind nominal by now, so the join at
+        // frame 2000 was read through history rather than clamped.
+        assert!(one.iter().any(|v| *v != 0.0));
     }
 
     #[test]

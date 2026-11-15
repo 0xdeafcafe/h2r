@@ -225,7 +225,10 @@ change playback rate by design).
 - **Headroom** (`SetHeadroom`): attenuates the voice by its millibels.
 - **I3DL2 source** (`SetI3DL2Source`): direct-path level, obstruction and
   occlusion (low-frequency share = HF level × LF ratio) as a gain plus a
-  one-pole high-frequency shelf at 5 kHz, and the room send level.
+  one-pole high-frequency shelf at 5 kHz, and the room send level. The shelf
+  runs over the frames a voice produced, so block size never shows in the tail.
+  Streams keep 514 frames of completed-packet history for pitch-modulated
+  reads that reach behind the front packet.
 - **Reverb** (`Reverb`, `I3dl2Listener`): early-reflection taps, a
   four-line feedback delay network with per-line decay for the requested
   RT60, HF decay ratio via an in-loop one-pole, diffusion allpasses, room

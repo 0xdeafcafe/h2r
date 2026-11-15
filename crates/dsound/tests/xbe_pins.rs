@@ -174,6 +174,6 @@ fn parameq_gain_converter_uses_the_biased_cut_encoding() {
         assert!(imms.contains(&want), "limit {want:#x} not in {imms:x?}");
     }
     // The decoder agrees at the limits.
-    assert!(audio::fx::gain_word_to_db(0xdfff) <= -59.9);
+    assert!((audio::fx::gain_word_to_db(0xdfff) + 78.2678).abs() < 1e-3);
     assert!(audio::fx::gain_word_to_db(0x7fff) > 10.0);
 }

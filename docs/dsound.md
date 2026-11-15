@@ -638,6 +638,16 @@ and the final ratio are limited so nothing non-finite reaches the mix;
 recursive filter, shelf and diffuser state is flushed to zero when tiny;
 `SetOutputBuffer` holds a reference on its target (balanced on replace,
 clear and stream destruction; a stale pointer is a `BadHandle` stop).
+A second review fixed four more: the direct shelf runs over only the frames a
+voice produced in a render (its state used to advance over block padding, so
+tails depended on block size; tests `direct_shelf_does_not_depend_on_render_block_size`
+and `direct_shelf_survives_starvation_and_resume_identically`); a stream keeps
+the last 514 frames of completed packets in a preallocated ring so a negative
+read offset reads real history across a packet join (test
+`packet_boundaries_do_not_change_a_stream_under_receding_doppler`); the deepest
+PARAMEQ cut `0xdfff` decodes to -78.27 dB (the old -60 dB floor is gone; the
+ignored xbe pin now asserts it); and the phase-bound test drives receding and
+approaching Doppler and checks the stream's real offset saturates at +-512.
 
 Determinism and timing. Each voice's effects advance on a frame clock that
 the voice itself counts (stream clocks do not advance while starved, a
