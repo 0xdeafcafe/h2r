@@ -326,3 +326,38 @@ fn frame_wait_stops_instead_of_spinning_forever() {
     assert!(h.unsupported(t).contains("600 vblanks"));
     assert_eq!(h.u64(FW.counter), 600);
 }
+
+#[test]
+fn callbacks_can_reenter_d3d_and_leave_the_caller_stack_alone() {
+    let cfg = DeviceConfig::halo2(PB, SCRATCH);
+    let g = guest(&cfg);
+    let device = runtime_glue::shared(cfg, RecordingBackend::new());
+    let mut dispatch = Dispatch::default();
+    d3d::register(&mut dispatch, device.clone());
+    let callback_device = device.clone();
+    let _ = dispatch.register_override(CALLBACK, "reentrant vblank", move |cpu, ctx, _| {
+        assert!(
+            callback_device.try_lock().is_ok(),
+            "device lock held across the callback"
+        );
+        // A callback that calls into D3D (KickOff) through the overrides.
+        let runtime = std::sync::Arc::clone(ctx.runtime());
+        let mut m = runtime.memory();
+        ctx.call_guest(cpu, &mut m, 0x3fac30, |cpu, ctx| ctx.memory().ret(cpu, 0))
+    });
+    let mut h = Harness {
+        ctx: ExecCtx::new(Runtime::new(g, dispatch), 1),
+        device,
+    };
+    h.create();
+    h.set(DEV + 0x1DB8, CALLBACK);
+    h.device.lock().unwrap().set_vblanks_per_swap(2);
+    h.set(STACK, 0xAABB_CCDD);
+    let cpu = h.ok(0x3f9d00, saved_regs(), &[]);
+    assert_eq!(cpu.eax, 1);
+    assert_eq!(
+        h.u32(STACK),
+        0xAABB_CCDD,
+        "the caller's live stack is untouched"
+    );
+}

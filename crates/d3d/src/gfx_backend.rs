@@ -382,6 +382,28 @@ impl Backend for GfxBackend {
             .map_err(|e| e.to_string())
     }
 
+    fn copy_surface(&mut self, src: SurfaceId, dst: SurfaceId) -> Result<bool, String> {
+        let s = *self.store.get(src).map_err(|e| e.to_string())?.desc();
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        self.store
+            .copy_rect(
+                &mut enc,
+                src,
+                dst,
+                gfx::surface::CopyRect {
+                    x: 0,
+                    y: 0,
+                    width: s.width,
+                    height: s.height,
+                },
+                0,
+                0,
+            )
+            .map_err(|e| e.to_string())?;
+        self.ctx.queue.submit([enc.finish()]);
+        Ok(true)
+    }
+
     fn present(&mut self, surface: SurfaceId, flags: u32) -> Result<(), String> {
         self.presented = Some(surface);
         if let Some(hook) = self.present_hook.as_mut() {

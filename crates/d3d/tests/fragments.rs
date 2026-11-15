@@ -286,7 +286,8 @@ fn passthrough_tables(m: &mut SparseMemory) {
 fn passthrough_fragment_loads_constants_and_program() {
     let (mut d, mut m) = rec();
     passthrough_tables(&mut m);
-    // Not pass-through: EAX untouched, nothing pushed.
+    // Not pass-through: nothing pushed, EAX = the shader object
+    // (`mov eax,[esi+794h]` at 0x3f6f40).
     let at = put(&m);
     let o = call(
         &mut d,
@@ -299,7 +300,7 @@ fn passthrough_fragment_loads_constants_and_program() {
         &[],
     )
     .unwrap();
-    assert_eq!((o.eax, put(&m)), (None, at));
+    assert_eq!((o.eax, put(&m)), (Some(L.default_vertex_shader), at));
     // A pass-through object (flags 2).
     let obj = MISC + 0x6100;
     m.write_u32(obj + 4, 2).unwrap();
@@ -448,8 +449,20 @@ fn persist_display_keeps_the_front_buffer() {
     assert_eq!(o.eax, Some(0));
     assert_eq!(m.read_u32(L.persist_word).unwrap(), 0);
     assert_eq!(m.read_u32(L.flicker_filter.1).unwrap(), 0);
-    assert_eq!(d.persisted_surface(), d.front_buffer());
-    assert!(d.persisted_surface().is_some());
+    // A copy of the image on screen (the front, before any swap), in a
+    // surface of its own.
+    let saved = d.persisted_surface().unwrap();
+    assert_ne!(Some(saved), d.front_buffer());
+    assert!(d.backend.calls.iter().any(|c| matches!(c,
+        Recorded::CopySurface { src, dst } if Some(*src) == d.front_buffer() && *dst == saved)));
+    // Again: the old copy is released.
+    call(&mut d, &mut m, 0x3f8ad0, Regs::default(), &[]).unwrap();
+    assert!(
+        d.backend
+            .calls
+            .iter()
+            .any(|c| matches!(c, Recorded::DestroySurface { id } if *id == saved))
+    );
     // No device reference: E_FAIL (0x3f8afd).
     m.write_u32(DEV + f::REF_COUNT, 0).unwrap();
     let o = call(&mut d, &mut m, 0x3f8ad0, Regs::default(), &[]).unwrap();
@@ -594,4 +607,161 @@ fn gpu_render_to_texture_reaches_guest_memory() {
         assert_eq!(m.read_u32(a).unwrap(), 0xFFFF_0000, "texel {i}");
     }
     assert_eq!(d.stats().rtt_writebacks, 1);
+}
+
+/// A 16x4 level of the test texture (texels 0x11) bound as the target.
+fn rtt(upload: UploadPolicy) -> (Device<RecordingBackend>, SparseMemory, u32, u32) {
+    let (mut d, mut m) = create(RecordingBackend::new(), upload);
+    texture(&mut m, 0);
+    let surf = MISC + 0x7200;
+    let mut h =
+        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+    h.parent = TEX_HEADER;
+    h.write(&mut m, surf).unwrap();
+    let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
+    m.write(0x8000_0000 | TEX_DATA, &[0x11; 256]).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    (d, m, surf, back)
+}
+
+fn filled_with(d: &Device<RecordingBackend>, v: u8) -> bool {
+    d.backend
+        .calls
+        .iter()
+        .any(|c| matches!(c, Recorded::WriteSurface { bytes, .. } if bytes.iter().all(|b| *b == v)))
+}
+
+#[test]
+fn rtt_rebind_refills_from_changed_guest_texels() {
+    for policy in [
+        UploadPolicy::Always,
+        UploadPolicy::Tracked,
+        UploadPolicy::Verify,
+    ] {
+        let (mut d, mut m, surf, back) = rtt(policy);
+        assert!(filled_with(&d, 0x11), "{policy:?}");
+        d.set_render_target(&mut m, back, 0).unwrap();
+        // The guest rewrites the level and reports it.
+        m.write(0x8000_0000 | TEX_DATA, &[0x22; 256]).unwrap();
+        d.note_write(0x8000_0000 | TEX_DATA, 256);
+        d.backend.calls.clear();
+        d.set_render_target(&mut m, surf, 0).unwrap();
+        assert!(filled_with(&d, 0x22), "{policy:?}");
+        assert!(d.take_events().is_empty(), "{policy:?}");
+    }
+    // Unchanged texels: only Always refills.
+    for (policy, refill) in [
+        (UploadPolicy::Always, true),
+        (UploadPolicy::Tracked, false),
+        (UploadPolicy::Verify, false),
+    ] {
+        let (mut d, mut m, surf, back) = rtt(policy);
+        d.set_render_target(&mut m, back, 0).unwrap();
+        d.backend.calls.clear();
+        d.set_render_target(&mut m, surf, 0).unwrap();
+        assert_eq!(filled_with(&d, 0x11), refill, "{policy:?}");
+    }
+    // Verify catches an unreported write.
+    let (mut d, mut m, surf, back) = rtt(UploadPolicy::Verify);
+    d.set_render_target(&mut m, back, 0).unwrap();
+    m.write(0x8000_0000 | TEX_DATA, &[0x33; 256]).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    assert!(filled_with(&d, 0x33));
+    assert!(matches!(
+        d.take_events().as_slice(),
+        [d3d::Event::MissedInvalidation { .. }]
+    ));
+}
+
+#[test]
+fn rtt_written_back_is_not_refilled_by_its_own_write() {
+    let (mut d, mut m, surf, back) = rtt(UploadPolicy::Tracked);
+    d.backend.readback_fill = 0x5A;
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(d.stats().rtt_writebacks, 1);
+    let uploads = d.stats().rtt_uploads;
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    assert_eq!(d.stats().rtt_uploads, uploads);
+}
+
+#[test]
+fn teardown_writes_back_and_releases_rtt_surfaces() {
+    let (mut d, mut m, _, _) = rtt(UploadPolicy::Always);
+    let surface = d
+        .backend
+        .calls
+        .iter()
+        .find_map(|c| match c {
+            Recorded::WriteSurface { surface, .. } => Some(*surface),
+            _ => None,
+        })
+        .unwrap();
+    d.backend.readback_fill = 0x5A;
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    d.release_device(&mut m, DEV).unwrap();
+    assert_eq!(
+        m.read_u32(0x8000_0000 | TEX_DATA).unwrap(),
+        0x5A5A_5A5A,
+        "dirty texels reach memory"
+    );
+    assert!(
+        d.backend
+            .calls
+            .iter()
+            .any(|c| matches!(c, Recorded::DestroySurface { id } if *id == surface))
+    );
+}
+
+#[test]
+fn passthrough_fragment_without_a_push_returns_the_shader_object() {
+    let (mut d, mut m) = rec();
+    let vs = m.read_u32(DEV + f::VERTEX_SHADER).unwrap();
+    let o = call(
+        &mut d,
+        &mut m,
+        0x3f6f40,
+        Regs {
+            eax: 0x1234_5678,
+            esi: DEV,
+            ..Regs::default()
+        },
+        &[],
+    )
+    .unwrap();
+    assert_eq!(o.eax, Some(vs), "mov eax,[esi+794h] at 0x3f6f40");
+}
+
+#[test]
+fn gpu_persist_display_keeps_what_a_copy_swap_showed() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    let shown = d.back_buffer().unwrap();
+    d.swap(&mut m, 0).unwrap(); // COPY | FINISH
+    assert_eq!(d.backend.last_presented(), Some(shown));
+    // A COPY swap leaves the ring as it is: the image is back0, not front.
+    d.persist_display(&mut m).unwrap();
+    let saved = d.persisted_surface().unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, saved).unwrap();
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "B, G, R, A: red");
+    d.release_device(&mut m, DEV).unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, saved).unwrap();
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "kept through teardown");
+}
+
+#[test]
+fn persist_display_survives_device_teardown() {
+    let (mut d, mut m) = rec();
+    d.persist_display(&mut m).unwrap();
+    let saved = d.persisted_surface().unwrap();
+    d.release_device(&mut m, DEV).unwrap();
+    assert!(
+        !d.backend
+            .calls
+            .iter()
+            .any(|c| matches!(c, Recorded::DestroySurface { id } if *id == saved))
+    );
+    assert_eq!(d.persisted_surface(), Some(saved));
 }

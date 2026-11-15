@@ -340,7 +340,8 @@ impl<B: Backend> Device<B> {
     /// w-buffered, else 1; `b` the super-sample bias), program load 0 and
     /// the pass-through program the image holds for the fog/w mode, and
     /// stores the new put. Returns it (as `EAX`), or `None` when the shader
-    /// is not pass-through (the original returns with `EAX` untouched).
+    /// is not pass-through (the original then returns with `EAX` = the
+    /// shader object, from its first instruction `mov eax,[esi+794h]`).
     pub fn load_passthrough(
         &mut self,
         mem: &mut dyn GuestMemory,

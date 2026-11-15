@@ -93,7 +93,7 @@ overridden; the original runs).
 | `0x3f6c60` | `D3DDevice_LoadVertexShaderProgram` | yes | stdcall(pFunction, Address); ret 8 | 1 / 1 | yes |
 | `0x3f6cf0` | `D3DDevice_SelectVertexShaderDirect` | yes | EAX = Address, ECX = pVAF; ret | 1 / 1 | yes |
 | `0x3f6e10` | `D3DDevice_SetShaderConstantMode` | yes | EAX = mode; ret | 1 / 1 | yes (mode 0 stops) |
-| `0x3f6f40` | `D3D transform/viewport push (0x3f6f40)` | no | ESI = device; returns EAX = new put only when it pushes | 18 / 18 | yes |
+| `0x3f6f40` | `D3D transform/viewport push (0x3f6f40)` | no | ESI = device; returns EAX = new put when it pushes, else the shader object `[ESI+0x794]` | 18 / 18 | yes |
 | `0x3f71d0` | `D3DDevice_SetVertexShaderConstant1` | yes | ECX = Register + 96, EDX = pConstantData; ret | 12 / 5 | yes |
 | `0x3f7230` | `D3DDevice_SetVertexShaderConstant1Fast` | yes | ECX = Register + 96, EDX = pConstantData; ret | 6 / 6 | yes |
 | `0x3f7280` | `D3DDevice_SetVertexShaderConstant4` | yes | ECX = Register + 96, EDX = pConstantData; ret | 2 / 2 | yes |
@@ -204,7 +204,10 @@ Notes on the table:
   SetVertexShader (`0x3f6d50`). See "Fragments and NV2A registers" below.
 - **Display entries** (`src/device/display.rs`). `0x3f8c70` and
   PersistDisplay change the guest globals the way the original does,
-  without the AV-encoder kernel calls (there is no TV encoder). `0x3f8cc0`
+  without the AV-encoder kernel calls (there is no TV encoder).
+  PersistDisplay copies the image last presented into a surface of its own
+  (`Backend::copy_surface`). After a `COPY` swap that image is back0, not the
+  front. The copy outlives teardown. `0x3f8cc0`
   copies the ramp and pushes it. `0x3fb710` is the busy check: busy while
   the resource, or its parent texture, holds an internal reference;
   otherwise not busy (the host GPU is synchronous), and the `Lock` word is
@@ -518,13 +521,20 @@ and allocations are bounded before anything is read:
     through `Backend::write_surface`. A backend that cannot do this
     returns `Ok(false)`, and the surface starts as created; that is
     `GfxBackend` today.
+  - Bound again, a cached level is refilled when its guest texels changed,
+    judged apart from the header identity and by the upload policy, as
+    for textures: `Always` every time, `Tracked` after a reported write,
+    `Verify` when the hash differs (with `Event::MissedInvalidation` if no
+    write was reported). A level drawn into and not yet written back is
+    kept as it is.
   - A draw or clear into it marks it dirty.
   - A dirty level is written back to guest memory through
     `Backend::read_surface` and noted in the write tracker:
     - when the target changes;
     - before the texture is sampled;
     - at `Swap`, `KickOff` and `PersistDisplay`;
-    - at the busy check `0x3fb710`.
+    - at the busy check `0x3fb710`;
+    - at teardown, which then destroys the host surfaces.
   - A depth level, a compressed format, or a header rewritten while its
     level holds unwritten pixels stops.
 

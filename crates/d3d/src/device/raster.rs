@@ -42,6 +42,11 @@ pub struct RttTarget<S> {
     pub layout: GuestLayoutKind,
     /// Drawn into since the last write-back.
     pub dirty: bool,
+    /// Write-tracker generation when the host surface last matched guest
+    /// memory (filled from it, or written back into it).
+    pub generation: u64,
+    /// Hash of those bytes (`UploadPolicy::Verify` only; 0 otherwise).
+    pub hash: u64,
 }
 
 impl<S> RttTarget<S> {
@@ -83,9 +88,10 @@ impl<B: Backend> Device<B> {
             ));
         }
         let id = h.pixels.identity();
-        if let Some(t) = self.rtt.get(&header)
+        if let Some(t) = self.rtt.get(&header).copied()
             && t.identity == id
         {
+            self.refresh_rtt(mem, header, t)?;
             return Ok(t.surface);
         }
         let desc = TextureDesc::from_header(h.pixels.format, h.pixels.size)
@@ -138,23 +144,77 @@ impl<B: Backend> Device<B> {
             height: desc.height,
             layout,
             dirty: false,
+            generation: 0,
+            hash: 0,
         };
-        // The level's current texels, so draws that do not cover it all
-        // leave the rest as the guest had it. A backend that cannot
-        // (`Ok(false)`) leaves the surface as created.
-        let bytes = mem.read_vec(target.data, target.len() as usize)?;
-        self.backend
-            .write_surface(
-                surface,
-                target.format,
-                target.width,
-                target.height,
-                layout,
-                &bytes,
-            )
-            .map_err(D3dError::Backend)?;
+        self.tracker.watch(target.data, target.len());
         self.rtt.insert(header, target);
+        // The level's current texels, so draws that do not cover it all
+        // leave the rest as the guest had it.
+        let bytes = mem.read_vec(target.data, target.len() as usize)?;
+        self.fill_rtt(header, &bytes)?;
         Ok(surface)
+    }
+
+    /// Copies `bytes` (the level's guest texels) into its host surface and
+    /// records that they match. A backend that cannot (`Ok(false)`) leaves
+    /// the surface as it was.
+    fn fill_rtt(&mut self, header: u32, bytes: &[u8]) -> Result<(), D3dError> {
+        let t = *self.rtt.get(&header).expect("cached");
+        self.backend
+            .write_surface(t.surface, t.format, t.width, t.height, t.layout, bytes)
+            .map_err(D3dError::Backend)?;
+        self.stats.rtt_uploads += 1;
+        let hash = if self.cfg.upload == UploadPolicy::Verify {
+            hash_bytes(bytes)
+        } else {
+            0
+        };
+        let generation = self.tracker.generation();
+        let t = self.rtt.get_mut(&header).expect("cached");
+        t.generation = generation;
+        t.hash = hash;
+        Ok(())
+    }
+
+    /// A cached level is bound again: if the guest changed its texels since
+    /// the host surface last matched them, fill it again. Content is checked
+    /// apart from the header identity, by the upload policy, as for textures:
+    /// `Always` refills every time, `Tracked` when the tracker saw a write,
+    /// `Verify` when the hash differs (an unreported write is
+    /// `Event::MissedInvalidation`). A level drawn into and not yet written
+    /// back holds newer pixels than memory and is kept.
+    fn refresh_rtt(
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+        t: RttTarget<B::Surface>,
+    ) -> Result<(), D3dError> {
+        if t.dirty {
+            return Ok(());
+        }
+        let len = t.len();
+        let written = self.tracker.dirty_since(t.data, len, t.generation);
+        match self.cfg.upload {
+            UploadPolicy::Tracked if !written => return Ok(()),
+            UploadPolicy::Verify => {
+                let bytes = mem.read_vec(t.data, len as usize)?;
+                if hash_bytes(&bytes) == t.hash {
+                    return Ok(());
+                }
+                if !written {
+                    self.events.push(Event::MissedInvalidation {
+                        header,
+                        addr: t.data,
+                        len,
+                    });
+                }
+                return self.fill_rtt(header, &bytes);
+            }
+            _ => {}
+        }
+        let bytes = mem.read_vec(t.data, len as usize)?;
+        self.fill_rtt(header, &bytes)
     }
 
     /// Marks the current colour target drawn into, if it is a texture level.
@@ -191,8 +251,16 @@ impl<B: Backend> Device<B> {
         mem.write(t.data, &bytes[..len])?;
         self.tracker.note_write(t.data, len as u32);
         self.stats.rtt_writebacks += 1;
+        let hash = if self.cfg.upload == UploadPolicy::Verify {
+            hash_bytes(&bytes[..len])
+        } else {
+            0
+        };
+        let generation = self.tracker.generation();
         if let Some(t) = self.rtt.get_mut(&header) {
             t.dirty = false;
+            t.generation = generation;
+            t.hash = hash;
         }
         Ok(())
     }
@@ -234,6 +302,21 @@ impl<B: Backend> Device<B> {
             .collect();
         for h in headers {
             self.write_back(mem, h)?;
+        }
+        Ok(())
+    }
+
+    /// Teardown: writes back every dirty level, then destroys the host
+    /// surfaces and empties the cache.
+    pub(super) fn release_render_targets(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+    ) -> Result<(), D3dError> {
+        self.flush_render_targets(mem)?;
+        for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
+            self.backend
+                .destroy_surface(t.surface)
+                .map_err(D3dError::Backend)?;
         }
         Ok(())
     }

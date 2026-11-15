@@ -266,6 +266,8 @@ pub struct Stats {
     pub partial_clears: u64,
     /// Render-to-texture write-backs into guest memory.
     pub rtt_writebacks: u64,
+    /// Render-to-texture host surfaces filled from guest memory.
+    pub rtt_uploads: u64,
     /// Vertical blanks counted ([`Device::vblank`]).
     pub vblanks: u64,
 }
@@ -301,6 +303,12 @@ struct Swap<S> {
     /// `[back0, back1, ..]`: back0 is what the back-buffer header means now.
     back: Vec<S>,
     front: S,
+    /// The surface last presented: the front after a flip, back0 after a
+    /// `COPY` swap (whose ring does not move).
+    shown: S,
+    /// Host format and size of the ring's surfaces.
+    format: D3DFormat,
+    size: (u32, u32),
 }
 
 /// `base + offset` as a guest address, or an error if it leaves the 32-bit
@@ -603,7 +611,13 @@ impl<B: Backend> Device<B> {
             .backend
             .create_surface(host_fmt, p.width, p.height, false)
             .map_err(D3dError::Backend)?;
-        self.swap = Some(Swap { back, front });
+        self.swap = Some(Swap {
+            back,
+            front,
+            shown: front,
+            format: host_fmt,
+            size: (p.width, p.height),
+        });
 
         let scratch = self.cfg.scratch.addr;
         self.back_header = scratch;
@@ -676,10 +690,12 @@ impl<B: Backend> Device<B> {
     /// resources; the caller then zeroes the device object and
     /// `D3D__pDevice` itself.
     ///
-    /// Here: execute what is still queued, then forget every host object and
-    /// all device state, so that a later CreateDevice starts afresh. Guest
-    /// memory is not touched. The backend, configuration, write tracker,
-    /// counters and undrained events survive.
+    /// Here: execute what is still queued and write back render-to-texture
+    /// levels drawn into (the original's wait for the GPU leaves those texels
+    /// in memory), then forget every host object and all device state, so
+    /// that a later CreateDevice starts afresh. Guest memory is otherwise not
+    /// touched. The backend, configuration, write tracker, counters,
+    /// undrained events and the `PersistDisplay` image survive.
     pub fn release_device(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -697,7 +713,9 @@ impl<B: Backend> Device<B> {
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "teardown inside Begin/End"));
         }
+        self.flush_render_targets(mem)?;
         self.release_bindings(mem, E)?;
+        self.release_render_targets(mem)?;
         // Every device-owned host surface goes with the device.
         let mut surfaces = Vec::new();
         if let Some(sw) = self.swap.take() {
@@ -1844,6 +1862,7 @@ impl<B: Backend> Device<B> {
         }
         // COPY: the back buffer's contents are what is shown; the ring does
         // not move (the backend presents `shown` directly).
+        sw.shown = shown;
         self.swap_count = self.swap_count.wrapping_add(1);
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
         self.vblanks_after_swap(mem)?;

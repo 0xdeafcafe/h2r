@@ -697,11 +697,18 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
         Entry {
             addr: 0x3f6f40,
             name: "D3D transform/viewport push (0x3f6f40)",
-            convention: "ESI = device; stores and returns EAX = new put when it pushes; ret",
+            convention: "ESI = device; returns EAX = new put when it pushes, else the shader object [ESI+0x794]; ret",
             call: |d, m, r| {
                 Ok(match d.load_passthrough(m, r.esi)? {
                     Some(put) => Outcome::eax(put, 0),
-                    None => Outcome::pop(0),
+                    // 0x3f6f40: `mov eax,[esi+794h]`, then `je 0x3f705c` (ret).
+                    None => Outcome::eax(
+                        m.read_u32(
+                            r.esi
+                                .wrapping_add(crate::layout::device_field::VERTEX_SHADER),
+                        )?,
+                        0,
+                    ),
                 })
             },
         },

@@ -287,6 +287,12 @@ pub trait Backend: Send {
             "the backend cannot read surfaces back ({format:?})"
         ))
     }
+    /// Copies the whole of colour surface `src` into `dst` (same format and
+    /// size). `Ok(false)`: the backend cannot (the default).
+    fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
+        let _ = (src, dst);
+        Ok(false)
+    }
     /// Fills a colour surface from guest bytes laid out like
     /// [`read_surface`](Self::read_surface)'s, so a render-to-texture target
     /// starts with the level's current texels. `Ok(false)`: the backend
@@ -361,6 +367,13 @@ pub enum Recorded {
         surface: u32,
         /// Bytes returned.
         len: usize,
+    },
+    /// `copy_surface`.
+    CopySurface {
+        /// Source.
+        src: u32,
+        /// Destination.
+        dst: u32,
     },
     /// `write_surface`.
     WriteSurface {
@@ -511,6 +524,10 @@ impl Backend for RecordingBackend {
             clear: clear.clone(),
         });
         Ok(DrawOutcome::Drawn)
+    }
+    fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
+        self.calls.push(Recorded::CopySurface { src, dst });
+        Ok(true)
     }
     /// Records the bytes.
     fn write_surface(

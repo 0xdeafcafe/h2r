@@ -124,8 +124,9 @@ impl<B: Backend> Device<B> {
     /// clears `[0x408640]` and `[0x40863C]` (`0x3f8bf2`/`0x3f8bf7`, so the
     /// flicker filter is sent again) and returns 0. The original copies the
     /// front buffer into persistent contiguous memory and registers it with
-    /// `AvSetSavedDataAddress`; here the host front surface is kept
-    /// ([`Device::persisted_surface`]).
+    /// `AvSetSavedDataAddress`; here the image last presented is copied
+    /// into a surface of its own ([`Device::persisted_surface`]). A backend
+    /// without [`Backend::copy_surface`] stops.
     pub fn persist_display(&mut self, mem: &mut dyn GuestMemory) -> Result<u32, D3dError> {
         const E: &str = "D3DDevice_PersistDisplay";
         let dev = self.cfg.layout.device;
@@ -137,14 +138,41 @@ impl<B: Backend> Device<B> {
             return Err(D3dError::invalid(E, "PersistDisplay inside Begin/End"));
         }
         self.flush_render_targets(mem)?;
-        self.display.persisted = self.swap.as_ref().map(|s| s.front);
+        // An independent copy of what is on screen: the swap ring goes with
+        // the device at teardown, the persisted image must not.
+        let sw = self.swap.as_ref().expect("created");
+        let (src, format, (w, h)) = (sw.shown, sw.format, sw.size);
+        let copy = self
+            .backend
+            .create_surface(format, w, h, false)
+            .map_err(D3dError::Backend)?;
+        if !self
+            .backend
+            .copy_surface(src, copy)
+            .map_err(D3dError::Backend)?
+        {
+            self.backend
+                .destroy_surface(copy)
+                .map_err(D3dError::Backend)?;
+            return Err(D3dError::unimplemented(
+                E,
+                "the backend cannot copy surfaces, so the displayed image cannot be kept",
+            ));
+        }
+        if let Some(old) = self.display.persisted.replace(copy) {
+            self.backend
+                .destroy_surface(old)
+                .map_err(D3dError::Backend)?;
+        }
         mem.write_u32(self.cfg.layout.persist_word, 0)?;
         mem.write_u32(self.cfg.layout.flicker_filter.1, 0)?;
         self.display.flicker = None;
         Ok(0)
     }
 
-    /// The surface `PersistDisplay` kept.
+    /// The surface `PersistDisplay` kept: a copy of the image last
+    /// presented, owned by the device until the next `PersistDisplay` and
+    /// kept through teardown (it is the next title's boot image).
     pub fn persisted_surface(&self) -> Option<B::Surface> {
         self.display.persisted
     }
