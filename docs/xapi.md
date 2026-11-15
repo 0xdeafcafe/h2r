@@ -1,11 +1,8 @@
 # XAPI boundary
 
 `crates/xapi` overrides services that need native host integration. Ordinary
-XAPI routines stay generated over the kernel HLE. VFS is committed at
-`50f4a95`; [storage.md](storage.md) describes its shared namespace and ownership.
-The input lint was fixed at `983437d`. The N: mount, `VfsStorage` and the
-default keyboard pad were added on master `097c0e6` (lane `xapi-r2`,
-uncommitted).
+XAPI routines stay generated over the kernel HLE. [storage.md](storage.md)
+describes the VFS shared namespace and ownership.
 
 No game bytes, executable excerpts, keys, signature patterns or assets are
 included. `adapter.rs` is runtime-neutral. `register.rs` binds it to the
@@ -96,6 +93,9 @@ are zero and unsupported opens fail. `00409932` supplies port, slot and optional
 polling parameters; the adapter accepts ports 0..3 and gamepad slot zero.
 Preallocation entries are two guest words at `00408c57`; the adapter validates
 them without starting USB. Both init entry addresses above reach that same ABI.
+
+The direct call to `XInputGetState` is at `0x00124c34`, inside the controller
+input routine at `0x00124c00` (see the input phase in [engine-map.md](engine-map.md)).
 
 `004098c5` is the consuming XGetDeviceChanges function. With Chg=0, write two
 zero masks and return false. Otherwise compute:
