@@ -36,11 +36,13 @@
 //! edges. Discovery reports zero conflicts on the shipped image, so errors
 //! here mean the two passes disagree and are worth investigating.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use iced_x86::{Code, Decoder, DecoderOptions, FlowControl, Instruction, OpKind, Register};
 use xbe::Xbe;
 
+use crate::image::mapped_bytes;
 use crate::{Analysis, NORETURN_KERNEL, SwitchKind, is_code_section};
 
 /// A jump table as discovery read it: `jmp [index*4 + table]`, optionally
@@ -220,9 +222,10 @@ pub enum CfgError {
 }
 
 /// The executable bytes of an image, by virtual address. Same regions as
-/// discovery uses: code sections, truncated to their virtual size.
+/// discovery uses: code sections at their virtual size, zero-filled past
+/// their raw data as the loader maps them.
 pub struct CodeView<'a> {
-    regions: Vec<(u32, &'a [u8])>,
+    regions: Vec<(u32, Cow<'a, [u8]>)>,
 }
 
 impl<'a> CodeView<'a> {
@@ -231,18 +234,15 @@ impl<'a> CodeView<'a> {
             .sections
             .iter()
             .filter(|s| is_code_section(s))
-            .filter_map(|s| {
-                let b = xbe.section_bytes(s).ok()?;
-                Some((s.va, &b[..b.len().min(s.vsize as usize)]))
-            })
+            .filter_map(|s| Some((s.va, mapped_bytes(xbe, s).ok()?)))
             .collect();
         Self { regions }
     }
 
     /// Bytes from `va` to the end of its code section.
-    pub fn bytes_from(&self, va: u32) -> Option<&'a [u8]> {
-        self.regions.iter().find_map(|&(base, b)| {
-            let off = va.checked_sub(base)? as usize;
+    pub fn bytes_from(&self, va: u32) -> Option<&[u8]> {
+        self.regions.iter().find_map(|(base, b)| {
+            let off = va.checked_sub(*base)? as usize;
             (off < b.len()).then(|| &b[off..])
         })
     }

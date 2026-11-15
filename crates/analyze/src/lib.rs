@@ -141,6 +141,28 @@ pub struct Analysis {
     /// `jmp` sites the certain pass decided leave their function (tail
     /// calls). Read by [`cfg`] so the exported CFG makes the same call.
     tail_sites: HashSet<u32>,
+    /// What the aligned data words that point into code ended up pointing at.
+    pub pointers: PointerCensus,
+}
+
+/// Aligned words in the data sections whose value lies in a code section,
+/// sorted by what the analysis decided is at the address they hold. Distinct
+/// values, not words: a vtable slot shared by many classes counts once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PointerCensus {
+    /// A discovered function's first instruction.
+    pub entries: usize,
+    /// An instruction inside a function: an interior entry or a label.
+    pub interior: usize,
+    /// The middle of a decoded instruction.
+    pub bodies: usize,
+    /// Bytes claimed as data (jump tables).
+    pub data: usize,
+    /// Undecoded bytes that are all padding to the next claimed byte.
+    pub padding: usize,
+    /// Undecoded bytes that are not padding: code nobody reached, or a
+    /// value that is not a pointer.
+    pub unknown: usize,
 }
 
 struct FuncWork {
@@ -989,10 +1011,12 @@ impl<'a> Analyzer<'a> {
         va.is_multiple_of(16) || self.after_boundary(va)
     }
 
-    /// Straight after padding, `ret`, `ret n`, or an instruction nothing
-    /// falls through. Page-aligned values have to pass this, since being
-    /// aligned says nothing about them: `0xFE000` is far more often a size
-    /// than a function.
+    /// Straight after padding, `ret`, `ret n`, an instruction nothing
+    /// falls through, or a jump table (MSVC puts a function's tables after
+    /// its code, and nothing falls out of a table into the next function).
+    /// Page-aligned values have to pass this, since being aligned says
+    /// nothing about them: `0xFE000` is far more often a size than a
+    /// function.
     fn after_boundary(&self, va: u32) -> bool {
         // `va` comes from arbitrary immediates and data words (0 is common),
         // so there may be no byte `n` before it: that is "no evidence", not
@@ -1004,6 +1028,8 @@ impl<'a> Analyzer<'a> {
         };
         matches!(prev(1), Some(0xCC | 0x90 | 0xC3))
             || (prev(3) == Some(0xC2) && prev(1) == Some(0x00))
+            || (self.image.state(va) != Some(Byte::Data)
+                && va.checked_sub(1).is_some_and(|at| self.image.state(at) == Some(Byte::Data)))
             || self.after_terminator(va)
     }
 
@@ -1117,7 +1143,7 @@ impl<'a> Analyzer<'a> {
                     i += 1;
                 }
                 let s = start + padding_len(&r.bytes[start..i], r.va + start as u32);
-                if s == i {
+                if s == i || s >= r.raw {
                     continue;
                 }
                 let va = r.va + s as u32;
@@ -1140,12 +1166,16 @@ impl<'a> Analyzer<'a> {
                     Byte::InsnStart | Byte::InsnBody => c.code += 1,
                     Byte::Data => c.data += 1,
                     Byte::Unknown => {
+                        // Runs stop where the file's bytes do: the zero
+                        // fill after them is not code anyone left
+                        // unexplained.
                         let start = i;
-                        while i < r.state.len() && r.state[i] == Byte::Unknown {
+                        let end = if start < r.raw { r.raw } else { r.state.len() };
+                        while i < end && r.state[i] == Byte::Unknown {
                             i += 1;
                         }
                         let run = &r.bytes[start..i];
-                        if padding_len(run, r.va + start as u32) == run.len() {
+                        if start >= r.raw || padding_len(run, r.va + start as u32) == run.len() {
                             c.padding += run.len();
                         } else {
                             c.unknown += run.len();
@@ -1173,6 +1203,7 @@ impl<'a> Analyzer<'a> {
             })
             .collect();
         let labels = self.labels.iter().copied().filter(|l| !self.funcs.contains_key(l)).collect();
+        let pointers = self.pointer_census();
         let mut conflicts = self.conflicts;
         conflicts.sort_by_key(|c| c.va);
         conflicts.dedup_by_key(|c| (c.va, c.kind));
@@ -1195,7 +1226,39 @@ impl<'a> Analyzer<'a> {
             claims: self.image.regions.into_iter().map(|r| (r.va, r.state, r.owner)).collect(),
             losers: self.losers,
             tail_sites: self.tail_sites,
+            pointers,
         }
+    }
+
+    fn pointer_census(&self) -> PointerCensus {
+        let mut c = PointerCensus::default();
+        let mut seen = HashSet::new();
+        for s in self.xbe.sections.iter().filter(|s| !is_code_section(s)) {
+            let Ok(bytes) = self.xbe.section_bytes(s) else { continue };
+            for w in bytes.as_chunks::<4>().0 {
+                let v = u32::from_le_bytes(*w);
+                let Some(state) = self.image.state(v) else { continue };
+                if !seen.insert(v) {
+                    continue;
+                }
+                let slot = match state {
+                    Byte::InsnStart if self.funcs.contains_key(&v) => &mut c.entries,
+                    Byte::InsnStart => &mut c.interior,
+                    Byte::InsnBody => &mut c.bodies,
+                    Byte::Data => &mut c.data,
+                    Byte::Unknown => {
+                        let r = &self.image.regions[self.image.region(v).unwrap()];
+                        let off = (v - r.va) as usize;
+                        let run = r.state[off..].iter().take_while(|b| **b == Byte::Unknown).count();
+                        let end = off + run;
+                        let pad = off >= r.raw || padding_len(&r.bytes[off..end], v) == end - off;
+                        if pad { &mut c.padding } else { &mut c.unknown }
+                    }
+                };
+                *slot += 1;
+            }
+        }
+        c
     }
 }
 
@@ -1380,6 +1443,12 @@ impl fmt::Display for Analysis {
         writeln!(f, "functions by source: {by_source:?}")?;
         writeln!(f, "never return: {noreturn}")?;
         writeln!(f, "labels (address-taken code inside functions): {}", self.labels.len())?;
+        let p = &self.pointers;
+        writeln!(
+            f,
+            "data pointers into code: {} entries, {} interior, {} mid-instruction, {} into data, {} padding, {} unknown",
+            p.entries, p.interior, p.bodies, p.data, p.padding, p.unknown
+        )?;
         writeln!(f, "switches: {switch_kinds:?}")?;
         writeln!(f, "blacklisted speculative starts: {} (after {} rounds)", self.blacklisted, self.rounds)?;
         if !self.converged {

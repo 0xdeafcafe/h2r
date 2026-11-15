@@ -7,6 +7,13 @@ const RDATA: u32 = 0x12000;
 /// A minimal retail XBE: `.text` at 0x11000 holding `code`, and `.rdata` at
 /// 0x12000 holding a kernel thunk table that imports KeBugCheck.
 pub(crate) fn xbe_with(code: &[u8]) -> Vec<u8> {
+    xbe_full(code, 0x100, &[])
+}
+
+/// As [`xbe_with`], with only `text_raw` bytes of `.text` in the file (the
+/// rest of its 0x100 is the loader's zero fill), and `words` in `.rdata`
+/// from 0x12010.
+fn xbe_full(code: &[u8], text_raw: u32, words: &[u32]) -> Vec<u8> {
     let mut d = vec![0u8; 0x1200];
     let put = |d: &mut Vec<u8>, o: usize, v: u32| d[o..o + 4].copy_from_slice(&v.to_le_bytes());
     d[..4].copy_from_slice(b"XBEH");
@@ -23,15 +30,15 @@ pub(crate) fn xbe_with(code: &[u8]) -> Vec<u8> {
     put(&mut d, 0x204, TEXT);
     put(&mut d, 0x208, 0x100);
     put(&mut d, 0x20C, 0x1000);
-    put(&mut d, 0x210, 0x100);
+    put(&mut d, 0x210, text_raw);
     put(&mut d, 0x214, BASE + 0x280);
     d[0x280..0x286].copy_from_slice(b".text\0");
     // .rdata
     put(&mut d, 0x238, 0x02);
     put(&mut d, 0x23C, RDATA);
-    put(&mut d, 0x240, 0x10);
+    put(&mut d, 0x240, 0x100);
     put(&mut d, 0x244, 0x1100);
-    put(&mut d, 0x248, 0x10);
+    put(&mut d, 0x248, 0x100);
     put(&mut d, 0x24C, BASE + 0x290);
     d[0x290..0x297].copy_from_slice(b".rdata\0");
     // .text bytes, int3-filled
@@ -39,6 +46,9 @@ pub(crate) fn xbe_with(code: &[u8]) -> Vec<u8> {
     d[0x1000..0x1000 + code.len()].copy_from_slice(code);
     // thunk table: KeBugCheck (95), then the terminator
     put(&mut d, 0x1100, 0x8000_0000 | 95);
+    for (i, w) in words.iter().enumerate() {
+        put(&mut d, 0x1110 + 4 * i, *w);
+    }
     d
 }
 
@@ -230,6 +240,58 @@ fn small_immediates_and_pointers_do_not_underflow() {
     let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
     assert!(a.functions.contains_key(&TEXT));
     assert!(!a.functions.contains_key(&0) && !a.functions.contains_key(&2));
+}
+
+#[test]
+fn code_past_the_raw_data_is_zero_filled() {
+    // `ret 4` whose last byte is past the file's bytes, as at the end of
+    // two Bink sections: the loader maps it as 0, so it is `c2 04 00`. The
+    // file byte there (int3 fill) must not be read.
+    let data = xbe_full(&[0xC2, 0x04], 2, &[]);
+    let x = Xbe::parse(&data).unwrap();
+    let a = analyze(&x).unwrap();
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+    assert_eq!(a.claim(TEXT + 2), Some(('i', Some(TEXT))));
+    let text = &a.sections[0];
+    assert_eq!((text.size, text.code, text.unknown), (0x100, 3, 0));
+    let insn = a.function_cfg(&x, TEXT).unwrap();
+    assert_eq!(insn.blocks[&TEXT].end, TEXT + 3);
+}
+
+#[test]
+fn a_data_pointer_just_past_a_jump_table_is_a_function() {
+    // A switch with its table after its code, then a function at an
+    // address nothing but alignment would accept, known only from `.rdata`.
+    let code = pieces(&[
+        (0x11000, &[0x83, 0xF8, 0x01]),                         // cmp eax, 1
+        (0x11003, &[0x77, 0x0B]),                               // ja 0x11010
+        (0x11005, &[0xFF, 0x24, 0x85, 0x14, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11014]
+        (0x1100C, &[0xC3, 0xC3]),                               // the two cases
+        (0x11010, &[0xC3]),                                     // default
+        (0x11014, &[0x0C, 0x10, 0x01, 0x00, 0x0D, 0x10, 0x01, 0x00]),
+        (0x1101C, &[0x33, 0xC0, 0xC3]),                         // xor eax, eax; ret
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x1101C]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    assert_eq!(a.claim(0x1101B), Some(('d', Some(TEXT))));
+    assert_eq!(a.functions.get(&0x1101C).map(|f| f.source), Some(Source::DataPointer));
+    assert_eq!(a.pointers.entries, 1, "{:?}", a.pointers);
+}
+
+#[test]
+fn a_data_pointer_into_a_function_body_is_not_a_function() {
+    // The pointer lands mid-function, after a `call`, which is no boundary.
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x0B, 0, 0, 0]), // call 0x11010
+        (0x11005, &[0x33, 0xC0, 0xC3]),    // xor eax, eax; ret
+        (0x11010, &[0xC3]),
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x11005, 0x11006]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    assert_eq!(a.functions.keys().copied().collect::<Vec<_>>(), [0x11000, 0x11010]);
+    assert!(a.labels.is_empty());
+    let p = a.pointers;
+    assert_eq!((p.entries, p.interior, p.bodies), (0, 1, 1), "{p:?}");
 }
 
 /// Discovery plus the CFG of every function, for `.text` holding `code`.

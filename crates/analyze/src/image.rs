@@ -1,5 +1,6 @@
 //! What each byte of the code sections has been claimed as.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use xbe::Xbe;
@@ -12,6 +13,22 @@ pub const DATA_SECTIONS: &[&str] = &[
 
 pub fn is_code_section(s: &xbe::Section) -> bool {
     s.flags.executable() && !DATA_SECTIONS.contains(&s.name.as_str())
+}
+
+/// A code section's bytes as the loader maps them: its raw data, cut to the
+/// virtual size, or zero-filled up to it. Two Bink sections end one byte
+/// short of their last instruction (the `00` of a `ret 4`) and rely on the
+/// fill.
+pub fn mapped_bytes<'a>(xbe: &Xbe<'a>, s: &xbe::Section) -> Result<Cow<'a, [u8]>, xbe::Error> {
+    let raw = xbe.section_bytes(s)?;
+    let size = s.vsize as usize;
+    Ok(if raw.len() >= size {
+        Cow::Borrowed(&raw[..size])
+    } else {
+        let mut b = raw.to_vec();
+        b.resize(size, 0);
+        Cow::Owned(b)
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +63,10 @@ pub enum ConflictKind {
 pub struct Region<'a> {
     pub name: String,
     pub va: u32,
-    pub bytes: &'a [u8],
+    pub bytes: Cow<'a, [u8]>,
+    /// Bytes backed by the file; the rest of `bytes` is the loader's zero
+    /// fill up to the virtual size.
+    pub raw: usize,
     pub state: Vec<Byte>,
     /// Function whose exploration claimed each byte (0 = none).
     pub owner: Vec<u32>,
@@ -75,14 +95,15 @@ impl<'a> Image<'a> {
     pub fn new(xbe: &'a Xbe<'a>) -> Result<Self, xbe::Error> {
         let mut regions = Vec::new();
         for s in xbe.sections.iter().filter(|s| is_code_section(s)) {
-            let bytes = xbe.section_bytes(s)?;
-            let bytes = &bytes[..bytes.len().min(s.vsize as usize)];
+            let bytes = mapped_bytes(xbe, s)?;
+            let len = bytes.len();
             regions.push(Region {
                 name: s.name.clone(),
                 va: s.va,
                 bytes,
-                state: vec![Byte::Unknown; bytes.len()],
-                owner: vec![0; bytes.len()],
+                raw: len.min(s.raw_size as usize),
+                state: vec![Byte::Unknown; len],
+                owner: vec![0; len],
             });
         }
         Ok(Self { regions, yielding: None })
@@ -98,7 +119,7 @@ impl<'a> Image<'a> {
     }
 
     /// Bytes from `va` to the end of its section.
-    pub fn bytes_from(&self, va: u32) -> Option<&'a [u8]> {
+    pub fn bytes_from(&self, va: u32) -> Option<&[u8]> {
         let r = &self.regions[self.region(va)?];
         Some(&r.bytes[(va - r.va) as usize..])
     }
