@@ -1004,3 +1004,140 @@ fn fog_unit_modes_on_gpu() {
         }
     }
 }
+
+/// Runs `d` with no textures on the GPU and in the interpreter, one
+/// fragment per `v0` (diffuse) in `diffuse`; returns the GPU colours after
+/// checking that the interpreter agrees.
+fn run_untextured(
+    gpu: &common::Gpu,
+    d: &PixelShaderDef,
+    u: &PixelUniforms,
+    diffuse: &[[f32; 4]],
+) -> Vec<[f32; 4]> {
+    let t = psh::translate(d, &Default::default());
+    assert!(t.warnings.is_empty(), "{:?}", t.warnings);
+    let src = format!("{}{}", t.module(), PS_HARNESS);
+    common::check(&src);
+    let mut input = Vec::new();
+    for v0 in diffuse {
+        let mut frag = [0.0f32; 36];
+        frag[0..4].copy_from_slice(v0);
+        frag[33] = 1.0; // front
+        input.extend_from_slice(&frag);
+    }
+    let n = diffuse.len();
+    let out = gpu.run(&src, "harness", 1, &u.to_bytes(), &input, 8 * n, n as u32);
+    (0..n)
+        .map(|i| {
+            let got: [f32; 4] = std::array::from_fn(|k| out[8 * i + k]);
+            let inputs = psh::interp::Inputs {
+                d0: diffuse[i],
+                front: true,
+                ..Default::default()
+            };
+            let want =
+                psh::interp::run(d, &Default::default(), &inputs, u, &psh::interp::NoTextures)
+                    .expect("not killed");
+            for k in 0..4 {
+                assert!(
+                    (got[k] - want[k]).abs() < 1e-5,
+                    "fragment {i}: gpu {got:?}, interpreter {want:?}"
+                );
+            }
+            got
+        })
+        .collect()
+}
+
+fn assert_hand(got: [f32; 4], want: [f32; 4]) {
+    for k in 0..4 {
+        assert!(
+            (got[k] - want[k]).abs() < 1e-5,
+            "got {got:?}, NV2A maths gives {want:?}"
+        );
+    }
+}
+
+/// The shape of Halo 2's multichannel self-illumination pass, against
+/// NV2A register-combiner maths worked by hand: an RGB dot product and a
+/// product written from one stage, a ×2 sum in the next (each product
+/// reading `c0[0]` without `UNIQUE_C0`), and a final combiner whose `B` is
+/// `E·F` with `F` an alpha replicated into RGB and `E`, `F` reading the
+/// final combiner's own `c0` (index 8), `A` an alpha replicate and `G` one.
+#[test]
+fn self_illumination_combiners_match_hand_maths() {
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut d = PixelShaderDef::default();
+    // stage 0: r0.rgb = c0 . v0, r1.rgb = c0 * v0; r0.a = v0.b.
+    d.rgb_inputs[0] = inputs(REG_C0, REG_V0, REG_C0, REG_V0);
+    d.rgb_outputs[0] = outputs(REG_R0, REG_R1, 0, OUT_AB_DOT_PRODUCT);
+    d.alpha_inputs[0] = inputs(REG_V0 | CHAN_BLUE, ONE, 0, 0);
+    d.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    // stage 1: r0.rgb = (r0 * c0 + r1 * 1) x2.
+    d.rgb_inputs[1] = inputs(REG_R0, REG_C0, REG_R1, ONE);
+    d.rgb_outputs[1] = outputs(0, 0, REG_R0, OUT_SHIFTLEFT_1);
+    d.combiner_count = 2 | COUNT_MUX_MSB;
+    // final: rgb = r0.a * (c0.rgb * c0.a) + (1 - r0.a) * 0 + r0.rgb; a = 1.
+    d.final_inputs_abcd = inputs(REG_R0 | CHAN_ALPHA, REG_EF_PROD, 0, REG_R0);
+    d.final_inputs_efg = final_efg(REG_C0, REG_C0 | CHAN_ALPHA, ONE, 0);
+    let mut u = PixelUniforms::default();
+    u.c0[0] = [0.2, 0.4, 0.6, 0.5];
+    u.c0[1] = [9.0; 4]; // must not be read
+    u.c0[8] = [0.5, 0.25, 1.0, 0.4];
+    let got = run_untextured(&gpu, &d, &u, &[[0.9, 0.5, 0.25, 0.8]]);
+    // r0.rgb = 0.18 + 0.2 + 0.15 = 0.53, r1 = (0.18, 0.2, 0.15), r0.a = 0.25;
+    // stage 1: 2 * (0.53 * c0 + r1) = (0.572, 0.824, 0.936);
+    // E·F = (0.2, 0.1, 0.4); rgb = 0.25 * E·F + r0 = (0.622, 0.849, 1.036).
+    assert_hand(got[0], [0.622, 0.849, 1.0, 1.0]);
+}
+
+/// The shape of Halo 2's one-channel plasma self-illumination pass, against
+/// hand-worked NV2A maths: half-bias-negate inputs summed with an identity
+/// input, the output clamp to [-1, 1], an MSB mux on `r0.a` choosing the
+/// product of each side, a ×4 output mapping on signed squares, and a
+/// negative register read through the signed mapping.
+#[test]
+fn plasma_combiners_match_hand_maths() {
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let mut d = PixelShaderDef::default();
+    // stage 0: r0.rgb = v0.a + (0.5 - c0.a); r0.a = c0.a + (0.5 - v0.a).
+    d.rgb_inputs[0] = inputs(
+        REG_V0 | CHAN_ALPHA,
+        ONE,
+        REG_C0 | CHAN_ALPHA | MAP_HALFBIAS_NEGATE,
+        ONE,
+    );
+    d.rgb_outputs[0] = outputs(0, 0, REG_R0, 0);
+    d.alpha_inputs[0] = inputs(
+        REG_C0 | CHAN_ALPHA,
+        ONE,
+        REG_V0 | CHAN_ALPHA | MAP_HALFBIAS_NEGATE,
+        ONE,
+    );
+    d.alpha_outputs[0] = outputs(0, 0, REG_R0, 0);
+    // stage 1: r0.a = (r0.a^2 mux r0.b^2) x4, signed.
+    let sa = REG_R0 | CHAN_ALPHA | MAP_SIGNED_IDENTITY;
+    let sb = REG_R0 | CHAN_BLUE | MAP_SIGNED_IDENTITY;
+    d.alpha_inputs[1] = inputs(sa, sa, sb, sb);
+    d.alpha_outputs[1] = outputs(0, 0, REG_R0, OUT_AB_CD_MUX | OUT_SHIFTLEFT_2);
+    d.combiner_count = 2 | COUNT_MUX_MSB;
+    // final: rgb = r0.a; a = r0.a.
+    d.final_inputs_abcd = inputs(0, 0, 0, REG_R0 | CHAN_ALPHA);
+    d.final_inputs_efg = final_efg(0, 0, REG_R0 | CHAN_ALPHA, 0);
+    let mut u = PixelUniforms::default();
+    u.c0[0] = [0.0, 0.0, 0.0, 0.3];
+    let got = run_untextured(&gpu, &d, &u, &[[0.0, 0.0, 0.0, 0.7]]);
+    // r0.a = 0.3 + (0.5 - 0.7) = 0.1 < 0.5: the AB side, 4 * 0.1^2 = 0.04.
+    assert_hand(got[0], [0.04, 0.04, 0.04, 0.04]);
+    u.c0[0] = [0.0, 0.0, 0.0, 0.9];
+    let got = run_untextured(&gpu, &d, &u, &[[0.0, 0.0, 0.0, 0.2]]);
+    // r0.a = 0.9 + 0.3 = 1.2, clamped to 1: the CD side. r0.b = 0.2 + (0.5 -
+    // 0.9) = -0.2, read signed: 4 * 0.04 = 0.16.
+    assert_hand(got[0], [0.16, 0.16, 0.16, 0.16]);
+}
