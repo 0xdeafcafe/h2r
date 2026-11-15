@@ -1,0 +1,27 @@
+[package]
+name = "app"
+description = "Host shell for h2recomp: window, presentation, live input, audio device and guest-thread lifecycle (macOS first)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["gamepads"]
+# Physical controllers through input's gilrs backend.
+gamepads = ["input/gilrs"]
+
+[dependencies]
+gfx = { path = "../gfx" }
+input = { path = "../input", default-features = false }
+audio = { path = "../audio" }
+xapi = { path = "../xapi" }
+wgpu = "30"
+winit = "0.30"
+cpal = "0.18"
+pollster = "1"
+thiserror.workspace = true
+anyhow.workspace = true
+
+[[bin]]
+name = "h2-app-demo"
+path = "src/bin/demo.rs"

@@ -100,6 +100,7 @@ Status "done" means the crate exists on master and does what its row says;
 | `dsound`  | Guest-facing DirectSound replacement over `audio` ([dsound.md](dsound.md)) | done |
 | `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](xapi.md)) | done |
 | `input`   | XInput (XAPI) controller replacement foundation ([input.md](input.md)) | done, foundation only |
+| `app`     | Host shell: window, Metal surface, frame presentation, live input, audio device, guest-thread lifecycle ([app.md](app.md)) | done, not wired into `h2 run` yet |
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
 | `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
 | `runtime` | Guest memory, CPU state, dispatch/override table; nothing runs yet | in progress |
