@@ -23,6 +23,22 @@ fn campaign_tables_have_dispatch_entries() {
     assert!(!after.functions.contains_key(&0xa000d));
     let tables = catalog(&xbe, &after).unwrap();
     assert!(tables.iter().any(|t| t.name == "haloscript-evaluate"));
+    let codec_index = tables
+        .iter()
+        .position(|t| t.name == "animation-codecs")
+        .expect("codec family");
+    let codecs = &tables[codec_index];
+    assert_eq!(codecs.slots.len(), 9 * 7);
+    assert!(codecs.slots[..7].iter().all(|&(_, target)| target == 0));
+    assert_eq!(
+        codecs
+            .slots
+            .iter()
+            .filter(|&&(_, target)| target != 0)
+            .count(),
+        56
+    );
+    assert!(codecs.slots.contains(&(0x47fb50, 0x28c4e0)));
     let exported = entries(&xbe, &after);
     // Existing instruction boundaries become externally callable entries.
     for target in [0x2305f5, 0x354c28, 0x354e28, 0x354f28] {
@@ -53,6 +69,14 @@ fn campaign_tables_have_dispatch_entries() {
             c.cfg_errors
         );
         assert!(!c.sites.is_empty());
+        if root != 0x311100 {
+            let site = &c.sites[&0x1c7428];
+            assert!(
+                site.candidate_tables.contains(&codec_index),
+                "root {root:#x} misses codec association"
+            );
+            assert!(c.tables.contains(&codec_index));
+        }
     }
     println!(
         "functions {} -> {}; entries {} -> {}",

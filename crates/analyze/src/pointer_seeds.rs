@@ -75,12 +75,16 @@ fn seed_pass(a: &mut Analyzer<'_>) -> Result<(), xbe::Error> {
     let view = crate::cfg::CodeView::new(a.xbe);
     let mut candidates = BTreeSet::new();
     let mut traps = BTreeSet::new();
+    let mut bounded = BTreeSet::new();
     for table in &tables {
         for &(_, target) in &table.slots {
             if target == 0 {
                 continue;
             }
             candidates.insert(target);
+            if table.known_layout {
+                bounded.insert(target);
+            }
             if trap_callback(&view, target, table) {
                 traps.insert(target);
             }
@@ -90,6 +94,7 @@ fn seed_pass(a: &mut Analyzer<'_>) -> Result<(), xbe::Error> {
         if traps.contains(&target)
             && a.image.state(target) == Some(Byte::Unknown)
             && !a.blacklist.contains(&target)
+            && a.looks_like_start(target)
             && view.decode(target).is_some_and(|insn| {
                 a.image.check_insn(target, insn.len(), None).is_ok()
                     && a.image.check_insn(insn.next_ip32(), 1, None).is_ok()
@@ -97,9 +102,11 @@ fn seed_pass(a: &mut Analyzer<'_>) -> Result<(), xbe::Error> {
         {
             a.add_function(target, Source::DataPointer, target);
             a.run_certain();
-        } else {
-            // Bypass only alignment/prologue guesses, not the overlay validator,
-            // conflict arbitration, blacklist, or instruction/data boundaries.
+        } else if bounded.contains(&target) || a.image.state(target) == Some(Byte::InsnStart) {
+            // A heuristic run can end in pointer-shaped metadata. It may expose
+            // an already-decoded entry, but cannot authorize a fresh decode in
+            // unknown bytes. Only a validated schema bypasses start heuristics;
+            // the corroborated trap case above also requires a plausible start.
             a.try_candidate(target, Source::DataPointer);
         }
     }
@@ -224,6 +231,73 @@ mod tests {
         data[0x1114..0x1118].copy_from_slice(&0x11030u32.to_le_bytes());
         data
     }
+    // Sol's synthetic fixture: a one-slot vtable followed by metadata.
+    // The metadata points into a MOV immediate after a rejected UD2 block.
+    fn adjacent_metadata() -> Vec<u8> {
+        let mut code = vec![0xcc; 0x80];
+        code[..7].copy_from_slice(&[0xc7, 1, 0x10, 0x20, 1, 0, 0xc3]);
+        code[0x20] = 0xc3;
+        code[0x40..0x48].copy_from_slice(&[0x0f, 0x0b, 0xb8, 0x41, 0xc3, 0x41, 0x41, 0xc3]);
+        let mut data = xbe_with(&code);
+        data[0x1110..0x1114].copy_from_slice(&0x11020u32.to_le_bytes());
+        data[0x1114..0x1118].copy_from_slice(&0x11044u32.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn heuristic_tail_does_not_seed_metadata_inside_unclaimed_mov() {
+        let data = adjacent_metadata();
+        let xbe = xbe::Xbe::parse(&data).unwrap();
+        for seeded in [false, true] {
+            let a = analyze_with_pointer_seeds(&xbe, seeded).unwrap();
+            assert_eq!(a.claim(0x11044), Some(('?', None)));
+            assert!(!a.functions.contains_key(&0x11044));
+            assert!(!a.labels.contains(&0x11044));
+            assert!(a.conflicts.is_empty());
+        }
+    }
+
+    #[test]
+    fn final_rejected_candidate_is_still_seeded_as_a_trap_callback() {
+        for control in [false, true] {
+            let mut data = adjacent_metadata();
+            data[0x1040..0x1080].fill(0xcc);
+            data[0x1040..0x1047].copy_from_slice(&[0xc7, 1, 0x10, 0x20, 1, 0, 0xcc]);
+            data[0x1114..0x1118].copy_from_slice(&0x11040u32.to_le_bytes());
+            if control {
+                data[0x1060] = 0xc3;
+                data[0x1070..0x1072].copy_from_slice(&[0x0f, 0x0b]);
+                data[0x1118..0x111c].copy_from_slice(&0x11060u32.to_le_bytes());
+            }
+            let xbe = xbe::Xbe::parse(&data).unwrap();
+            let before = analyze_with_pointer_seeds(&xbe, false).unwrap();
+            assert_eq!(before.claim(0x11040), Some(('?', None)));
+            let after = analyze_with_pointer_seeds(&xbe, true).unwrap();
+            assert!(after.functions.contains_key(&0x11040), "control={control}");
+            assert!(!after.functions[&0x11040].returns);
+            assert!(after.conflicts.is_empty());
+            assert!(after.converged);
+        }
+    }
+
+    #[test]
+    fn seeding_respects_flat_far_jump_instruction_claims() {
+        for selector in [crate::FLAT_CS, 0x10] {
+            let mut data = adjacent_metadata();
+            // After the constructor store, far-jump into the MOV itself.
+            data[0x1006..0x100d].copy_from_slice(&[0xea, 0x42, 0x10, 1, 0, selector as u8, 0]);
+            let xbe = xbe::Xbe::parse(&data).unwrap();
+            for seeded in [false, true] {
+                let a = analyze_with_pointer_seeds(&xbe, seeded).unwrap();
+                let expected = if selector == crate::FLAT_CS { 'i' } else { '?' };
+                assert_eq!(a.claim(0x11044).unwrap().0, expected);
+                assert!(!a.functions.contains_key(&0x11044));
+                assert!(!a.labels.contains(&0x11044));
+                assert!(a.conflicts.is_empty());
+            }
+        }
+    }
+
     #[test]
     fn observed_table_base_excludes_prefix_words_and_preserves_singletons() {
         let data = image(true, 0x11021);

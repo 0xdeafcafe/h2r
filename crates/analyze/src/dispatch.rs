@@ -202,6 +202,29 @@ fn retail_tables(xbe: &Xbe) -> Option<Vec<Table>> {
             known_layout: true,
         });
     }
+    // docs/engine-map.md: eight codecs plus unused, null record 0. All
+    // callback columns share the family span, including indexed bases in
+    // record 0. Names and packed integer fields are never callback slots.
+    let base = 0x47fb14;
+    xbe.bytes_at(base, 9 * 0x28).ok()?;
+    let mut slots = Vec::new();
+    for record in 0..9 {
+        for offset in [0, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24] {
+            let slot = base + record * 0x28 + offset;
+            let target = read(slot)?;
+            if target != 0 && !code(xbe, target) {
+                return None;
+            }
+            slots.push((slot, target));
+        }
+    }
+    out.push(Table {
+        name: "animation-codecs".into(),
+        base,
+        spans: vec![(base, 9 * 0x28)],
+        slots,
+        known_layout: true,
+    });
     // Additional audited layouts: the indirect caller at 0x2cbae9 indexes
     // records with LEA index*3, then scale 4. Only +0 is a code pointer;
     // the other two words contain packed tuning fields. See coverage docs.
@@ -471,12 +494,56 @@ mod tests {
     }
 
     #[test]
+    fn codec_schema_keeps_null_record_and_indexes_the_whole_family() {
+        let mut data = retail_layout();
+        let address = |va| (va - 0x440000 + 0x1100) as usize;
+        for record in 1..9 {
+            for offset in [0, 0x10, 0x14, 0x18, 0x1c, 0x20, 0x24] {
+                put(
+                    &mut data,
+                    address(0x47fb14 + record * 0x28 + offset),
+                    0x11000,
+                );
+            }
+            // Pointer-shaped name/metadata fields must remain data.
+            for offset in [4, 8, 12] {
+                put(
+                    &mut data,
+                    address(0x47fb14 + record * 0x28 + offset),
+                    0x11040,
+                );
+            }
+        }
+        let xbe = Xbe::parse(&data).unwrap();
+        let ts = tables(&xbe).unwrap();
+        let i = ts
+            .iter()
+            .position(|t| t.name == "animation-codecs")
+            .unwrap();
+        let codecs = &ts[i];
+        assert_eq!(codecs.slots.len(), 63);
+        assert!(codecs.slots[..7].iter().all(|&(_, target)| target == 0));
+        assert!(
+            codecs.slots[7..]
+                .iter()
+                .all(|&(_, target)| target == 0x11000)
+        );
+        assert!(codecs.slots.contains(&(0x47fb50, 0x11000)));
+        assert!(table_index(&ts)[&0x47fb28].contains(&i));
+        assert!(
+            !ts.iter()
+                .any(|t| t.slots.iter().any(|&(slot, _)| slot == 0x47fb40))
+        );
+    }
+
+    #[test]
     fn malformed_known_layout_is_not_used_as_seed_evidence() {
         for (va, value) in [
             (0x44f6bc, 912),
             (0x478004, 0x12345678),
             (0x478000, 62),
             (0x47800c, 65),
+            (0x47fb50, 0x12345678),
         ] {
             let mut data = retail_layout();
             put(&mut data, (va - 0x440000 + 0x1100) as usize, value);

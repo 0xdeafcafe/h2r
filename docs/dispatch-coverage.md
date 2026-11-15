@@ -60,6 +60,11 @@ return/parameter types, parameter spans and count are validated. Object tables
 contain 13 descriptor pointers, callbacks at +0x10..+0x80 and a bounded,
 null-terminated ancestry list from +0x84. Null callbacks stay null. Layout
 provenance is documented in `engine-map.md`, `haloscript.md` and `objects.md`.
+Animation codecs at `0x47fb14` have nine `0x28`-byte records: unused record 0
+and codecs 1–8. Each has a default callback at +0 and six evaluation callbacks
+at +0x10..+0x24. The full family span includes indexed bases such as `0x47fb28`
+in null record 0, so referencing that base includes every codec. Name and
+integer fields stay data; null callback slots remain null.
 Three additional bounds prevent concrete false positives in the campaign
 closure. The callback table at `0x44f978` has ten 12-byte records: the caller
 at `0x2cbae9` uses an index multiplied by three and a four-byte memory scale;
@@ -97,16 +102,22 @@ resolve the remaining dynamic frontier.
 
 `pointer_seeds::seed` is called from one point after ordinary discovery has
 settled for a round, and processes table evidence to a fixpoint.
-It uses known layouts and observed dispatch table bases, then submits targets
-to the existing overlay validator without requiring an alignment/prologue
-heuristic. Instruction-body/data conflicts, blacklists and speculative
-arbitration remain in force. Address-taken instructions already discovered
-become interior entries rather than duplicate functions.
+Known layouts submit targets to the existing overlay validator without an
+alignment/prologue guess. Heuristic pointer runs do not authorize fresh ordinary
+function decodes in unknown bytes: an apparent tail slot might be unrelated
+metadata pointing into an unclaimed instruction's immediate. Such candidates
+remain in the inventory as unresolved. Observed table bases alone do not prove
+the tail's length or index stride. Instruction-body/data conflicts, blacklists
+and speculative arbitration remain in force. Already-decoded instruction starts
+can become interior entries rather than duplicate functions.
 
 There is one narrow exception to speculative trap rejection. A table member
 that stores an address within its own table to an object and immediately
 executes INT3 is an explicit trapping callback. Its complete instruction span
-must be compatible with existing claims before it becomes a function. It
+must be compatible with existing claims, and its start must satisfy the
+ordinary alignment/boundary heuristic before it becomes a function. Speculative
+trials restore the previous active-function state when they end, so a final
+rejected candidate cannot block its later insertion as a trap callback. It
 still executes INT3 in generated code: this closes `UnsupportedTarget`, not
 the deliberate guest trap. Unreferenced runs and stack-local stores do not
 provide this evidence. Switch sizing/recovery is unchanged.
@@ -131,19 +142,31 @@ behavior, but no such fallback is introduced here.
 
 ## Measured retail result
 
-Measured on baseline `a41dae4` and this change, with XBE SHA-256
+Measured after rebasing onto `55d7ac5`, with pointer seeding disabled/enabled
+in the same analyzer, and XBE SHA-256
 `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d`.
 
 | Measure | Unseeded | Seeded |
 |---|---:|---:|
-| Functions | 18,688 | 18,697 |
+| Functions | 18,686 | 18,695 |
 | Address-taken labels | 203 | 207 |
-| Callable entries | 18,891 | 18,904 |
+| Callable entries | 18,889 | 18,902 |
 | Non-null target misses in the catalog | 13 | 0 |
 | Analysis conflicts | 0 | 0 |
 
-Both analyses converge in five rounds. No existing entry is lost. Nine new
-functions preserve INT3 behavior; four other targets become interior entries.
+Both analyses converge in five rounds. Seeding loses no existing entry. Nine
+new functions preserve INT3 behavior; four other targets become interior entries.
+Compared with the original `a41dae4`-based report, the rebase removes two
+standalone gap-scan functions: `0x2d1e67` is now an instruction in owner
+`0x2d1e10`, and `0x2d6454` is in owner `0x2d6434`. The latter owner now
+returns through its flat far jump. These remain decoded code, not omitted
+callbacks; the new census reflects the corrected direct flow.
+
+The catalog has 453 tables, with 165 in the union of root closures. The union
+contains 2,229 indirect sites; 1,423 dynamic sites have no associated table
+reference in their owner. The codec family adds all 63 callback slots (seven
+nulls, 56 non-null slots, 27 distinct targets already discovered as functions).
+Its association with `0x1c7428` is present for new-map, BSP, HS, objects and AI.
 The table catalog includes constructors outside the root closure, retained as
 candidates for unresolved heap receivers. Only the `0x455f58` miss below is in
 the conservative root closure before seeding. Do not interpret the catalog
@@ -166,8 +189,21 @@ miss count as thirteen campaign-observed failures.
 | `0x004652b8` | `0x00354c28` | covered |
 | `0x004652c8` | `0x00354f28` | covered |
 
-The lifecycle, object descriptor and HaloScript evaluator targets were already
-covered. Null slots remain null. The remaining dynamic frontier is preserved
-in the site inventory; no campaign execution or success past a deliberate
+The lifecycle, object descriptor, HaloScript evaluator and animation codec
+targets were already covered. Null slots remain null. The remaining dynamic
+frontier is preserved in the site inventory; no campaign execution or success past a deliberate
 INT3 is claimed. Regenerate the emitted module and repeat the inventory after
 integrating other analyzer changes.
+
+## Review regression coverage
+
+The review fixes include synthetic regressions for a one-slot vtable followed
+by pointer-shaped metadata into an unclaimed MOV immediate, and for a valid
+trapping callback that is the final rejected speculative candidate (with and
+without later control candidates). A far-jump regression checks both the flat
+selector and an unsupported selector: known instruction bodies remain protected,
+and unknown bytes do not become heuristic tail seeds. The existing emitted-C
+far-jump test validates analyze → lift → emit execution on the rebased code.
+The codec fixture checks all nine records, null record 0 and exclusion of
+metadata fields; the ignored retail test checks slot `0x47fb50 → 0x28c4e0`
+and association of site `0x1c7428` with the family from five campaign roots.

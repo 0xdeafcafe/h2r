@@ -1009,10 +1009,13 @@ impl<'a> Analyzer<'a> {
 
     fn trial(&mut self, root: u32, source: Source, assume_return: bool) -> Result<(), ConflictKind> {
         self.trial = Some(Trial { assume_return, ..Default::default() });
-        self.current = root;
+        let previous_current = std::mem::replace(&mut self.current, root);
         let mut f = FuncWork::new(source, root);
         self.explore(&mut f, root);
         let t = self.trial.take().unwrap();
+        // A rejected candidate is no longer an active exploration. In
+        // particular, it must not trip add_function's self-recursion guard.
+        self.current = previous_current;
         self.last_trial_insns = t.insns;
         self.last_overlay = t.overlay;
         t.failed.map_or(Ok(()), Err)
