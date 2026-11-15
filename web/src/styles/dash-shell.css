@@ -4,6 +4,9 @@
    Lengths are in units of --u (see dash.css), so the screen scales as one
    picture. The orb, pods, bars and prompts are drawn here, not images. */
 
+/* The blocky face of the menu labels and the button letters: Press Start 2P (SIL OFL 1.1, see dash/fonts). */
+@font-face { font-family: "Press Start 2P"; src: url("../dash/fonts/PressStart2P-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+
 /* ---- background: a dark well lit from the orb, the mesh, a vignette ---- */
 .dx-bg { position: absolute; inset: 0; --vx: 36%; --vy: 43%; background: #010b01; }
 .dx-bg-glow {
@@ -132,6 +135,7 @@
 .dx-pod-bloom { fill: none; stroke: #4aa824; stroke-width: 13; opacity: .3; }
 .dx-pod-swirl { fill: none; stroke: #3c8a22; stroke-width: 2.2; stroke-linecap: round; opacity: .55; }
 .dx-pod-bud { fill: #86c250; opacity: .8; }
+.dx-pod-fold { fill: none; stroke: #174d0e; stroke-width: 2.2; stroke-linecap: round; opacity: .5; }
 .dx-pod-shine { fill: none; stroke: #e0f4bc; stroke-width: 3; stroke-linecap: round; opacity: .5; }
 .dx-pod-lit { opacity: var(--lit); }
 .dx-item.hov .dx-pod { filter: brightness(1.22); }
@@ -165,10 +169,10 @@
   box-shadow: 0 0 calc(var(--u) * 10) rgba(200, 235, 80, .3);
 }
 .dx-bar-text {
-  position: relative; z-index: 2; font-family: "Michroma", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17.5); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+  position: relative; z-index: 2; font-family: "Press Start 2P", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 15.5); line-height: 1; letter-spacing: 0; word-spacing: -.35em; text-transform: uppercase; white-space: nowrap;
+  transform: scaleX(1.25) translateY(calc(var(--u) * 1.5)); transform-origin: 0 50%;
   color: color-mix(in srgb, #2c4a12 calc(var(--lit) * 100%), #cfe9a0);
-  -webkit-text-stroke: calc(var(--u) * .7) currentColor;
-  text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.7 - var(--lit) * .7));
+  text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.6 - var(--lit) * .6));
 }
 
 /* ---- a / b prompts: a lettered ring pod and a thin label ---- */
@@ -176,17 +180,18 @@
 .dx-prompt--a { left: calc(var(--u) * 1018); top: calc(var(--u) * 632); }
 .dx-prompt--b { left: calc(var(--u) * 118); top: calc(var(--u) * 632); flex-direction: row-reverse; }
 .dx-menu .dx-prompt--a { left: calc(var(--u) * 824); top: calc(var(--u) * 590); }
+/* A flat disc of jelly: a soft pale rim round plain green, the letter blocky and pale. */
 .dx-btn {
   position: relative; flex: none; display: grid; place-items: center; width: calc(var(--u) * 54); height: calc(var(--u) * 54); border-radius: 50%;
   background:
-    radial-gradient(circle at 38% 30%, rgba(226, 255, 190, .34) 0, rgba(226, 255, 190, 0) 24%),
-    radial-gradient(circle closest-side, #2c9614 0, #1f7c0d 34%, #0f5207 50%, #2a8f14 58%, #93e63e 67%, #d2ff86 72%, #74d82a 78%, rgba(84, 204, 36, .5) 86%, rgba(84, 204, 36, .12) 94%, rgba(84, 204, 36, 0) 100%);
-  filter: drop-shadow(0 0 calc(var(--u) * 7) rgba(120, 255, 40, .5)); transition: transform .15s var(--ease), filter .15s;
+    radial-gradient(circle at 36% 26%, rgba(214, 240, 170, .2) 0, rgba(214, 240, 170, 0) 30%),
+    radial-gradient(circle closest-side, #33821f 0, #2f7a1c 58%, #3f8f28 66%, #86c452 74%, #a9d878 80%, #8cc85a 86%, rgba(96, 176, 56, .6) 91%, rgba(80, 170, 44, .16) 96%, rgba(80, 170, 44, 0) 100%);
+  filter: blur(calc(var(--u) * .3)); transition: transform .15s var(--ease), filter .15s;
 }
-.dx-btn b { font-family: var(--f-tech); font-weight: 800; font-size: calc(var(--u) * 19); line-height: 1; text-transform: uppercase; color: #dcffa8; text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .9), 0 0 calc(var(--u) * 6) rgba(190, 255, 110, .6); }
+.dx-btn b { font-family: "Press Start 2P", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17); line-height: 1; text-transform: uppercase; color: #d4eeaa; transform: scaleX(1.15) translate(calc(var(--u) * .5), calc(var(--u) * 1)); text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .6); }
 .dx-menu .dx-btn { width: calc(var(--u) * 50); height: calc(var(--u) * 50); }
-.dx-menu .dx-btn b { font-size: calc(var(--u) * 17.5); }
-.dx-prompt:hover .dx-btn, .dx-prompt:focus-visible .dx-btn { transform: scale(1.1); filter: brightness(1.25) drop-shadow(0 0 calc(var(--u) * 10) rgba(160, 255, 60, .8)); }
+.dx-menu .dx-btn b { font-size: calc(var(--u) * 16); }
+.dx-prompt:hover .dx-btn, .dx-prompt:focus-visible .dx-btn { transform: scale(1.08); filter: brightness(1.25); }
 .dx-prompt:active .dx-btn { transform: scale(.94); }
 .dx-prompt-label { font-family: var(--f-cond); font-weight: 500; font-size: calc(var(--u) * 18); letter-spacing: .16em; text-transform: uppercase; color: #c9f296; text-shadow: 0 0 calc(var(--u) * 6) rgba(120, 255, 40, .35), 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; }
 /* The menu's prompt trails a long thin arc off to the right. */
@@ -218,7 +223,7 @@
   .dx-item { --dr: 12 !important; opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 44 + var(--u) * 22 * cos((var(--i) - (var(--n) - 1) / 2) * 14deg) - var(--u) * 22), calc(var(--u) * 392 + var(--i) * var(--pitch))); }
   .dx-pod { left: calc(var(--u) * -40); top: calc(var(--u) * -40); width: calc(var(--u) * 80); height: calc(var(--u) * 80); }
   .dx-vine { left: calc(var(--u) * 14); top: calc(var(--u) * -34); transform: scale(.82); transform-origin: 0 100%; }
-  .dx-bar-text { font-size: calc(var(--u) * 16.5); }
+  .dx-bar-text { font-size: calc(var(--u) * 13.5); }
   .dx-prompt--a, .dx-menu .dx-prompt--a { left: auto; right: calc(var(--u) * 16); top: calc(var(--u) * 700); z-index: 6; }
   .dx-prompt--b { left: calc(var(--u) * 16); top: calc(var(--u) * 700); flex-direction: row; z-index: 6; }
   .dx-menu .dx-prompt--a::after { display: none; }
