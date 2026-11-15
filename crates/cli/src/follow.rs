@@ -2243,7 +2243,9 @@ mod tests {
     }
 
     /// A clone whose origin "answers" by sleeping: a fetch that hangs.
-    fn hanging_clone(root: &Path) -> (PathBuf, String) {
+    /// `secs` is the hang, and also the test's own process marker: tests run
+    /// in parallel, so each one looks for `sleep <secs>` with its own value.
+    fn hanging_clone(root: &Path, secs: u32) -> (PathBuf, String) {
         let origin = root.join("origin");
         let hash = repo_with_commit(&origin);
         let clone = root.join("clone");
@@ -2257,7 +2259,7 @@ mod tests {
             ],
         );
         sh(&clone, &["config", "protocol.ext.allow", "always"]);
-        sh(&clone, &["remote", "set-url", "origin", "ext::sleep 4242"]);
+        sh(&clone, &["remote", "set-url", "origin", &format!("ext::sleep {secs}")]);
         (clone, hash)
     }
 
@@ -2275,7 +2277,7 @@ mod tests {
     #[test]
     fn a_hanging_fetch_times_out_to_the_last_fetched_ref() {
         let root = scratch("fetch-timeout");
-        let (clone, hash) = hanging_clone(&root);
+        let (clone, hash) = hanging_clone(&root, 4242);
         let log = Log::open(&root.join("follow.log"));
         let start = Instant::now();
         let head = watch_of(&clone, Duration::from_secs(1)).head(&log).unwrap();
@@ -2294,19 +2296,19 @@ mod tests {
     #[test]
     fn an_interrupt_during_the_startup_fetch_ends_it_at_once() {
         let root = scratch("fetch-interrupt");
-        let (clone, _) = hanging_clone(&root);
+        let (clone, _) = hanging_clone(&root, 4241);
         let watch = watch_of(&clone, Duration::from_secs(600));
         let (tx, rx) = channel();
         let read = watch.spawn_baseline(Log::open(&root.join("follow.log")), tx.clone());
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !running("sleep 4242") && Instant::now() < deadline {
+        while !running("sleep 4241") && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         tx.send(Event::Interrupt).unwrap();
         let start = Instant::now();
         assert!(wait_baseline(&rx, &watch, read).unwrap().is_none());
         assert!(start.elapsed() < Duration::from_secs(30));
-        assert!(!running("sleep 4242"), "the fetch outlived the interrupt");
+        assert!(!running("sleep 4241"), "the fetch outlived the interrupt");
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2375,7 +2377,7 @@ mod tests {
 
     /// A clone whose origin's transport helper ignores SIGTERM and hangs.
     fn stubborn_clone(root: &Path, secs: u32) -> PathBuf {
-        let (clone, _) = hanging_clone(root);
+        let (clone, _) = hanging_clone(root, secs);
         let helper = root.join("stubborn-remote");
         fs::write(&helper, format!("#!/bin/sh\ntrap '' TERM\nsleep {secs}\n")).unwrap();
         use std::os::unix::fs::PermissionsExt;
