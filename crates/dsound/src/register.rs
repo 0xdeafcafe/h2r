@@ -15,7 +15,7 @@
 //!    A guest memory fault is a runtime FAULT instead.
 use crate::host::{EventSink, GuestMemory, MemFault, StreamCallback};
 use crate::overrides::{ENTRIES, Entry, invoke};
-use crate::state::{AudioClock, DirectSound, Stop};
+use crate::state::{AudioClock, Consumer, ConsumerConflict, DirectSound, Stop};
 use runtime::guest::{Access, FaultReason, MapError, Permissions};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, GuestFault, Runtime, TransferAbi};
 use std::cell::Cell;
@@ -217,6 +217,9 @@ impl Hle {
     pub fn take_stops(&self) -> Vec<StopRecord> {
         std::mem::take(&mut lock(&self.stops))
     }
+    pub(crate) fn record_stop(&self, stop: StopRecord) {
+        lock(&self.stops).push(stop);
+    }
     pub fn take_signal_failures(&self) -> Vec<SignalFailure> {
         std::mem::take(&mut lock(&self.signal_failures))
     }
@@ -342,13 +345,18 @@ impl Hle {
     /// when the app's `AudioOut` (a device or its discard renderer) already
     /// consumes the mixer. Stops and joins when the [`Pump`] drops. A
     /// [`Stop`] it hits is recorded in [`Hle::take_stops`] (address 0, name
-    /// `"Hle::pump"`) and ends the thread.
+    /// `"Hle::pump"`) and ends the thread. With `render` it claims the mixer
+    /// as [`Consumer::Pump`] (released when the [`Pump`] drops) and fails if
+    /// another consumer holds it.
     pub fn spawn_pump(
         self: &Arc<Self>,
         runtime: Arc<Runtime>,
         period: Duration,
         render: bool,
-    ) -> Pump {
+    ) -> Result<Pump, ConsumerConflict> {
+        if render {
+            lock(&self.ds).claim_consumer(Consumer::Pump)?;
+        }
         let stop = Arc::new(AtomicBool::new(false));
         let hle = Arc::clone(self);
         let flag = Arc::clone(&stop);
@@ -366,7 +374,11 @@ impl Hle {
                     std::thread::sleep(period);
                     let now = Instant::now();
                     let result = if render {
-                        hle.tick(&runtime, &mut clock, now - last).map(|_| ())
+                        let frames = clock.advance(now - last);
+                        hle.host_call(&runtime, |ds, bridge| {
+                            ds.advance_audio_as(bridge, frames, Consumer::Pump)
+                                .map(|_| ())
+                        })
                     } else {
                         hle.do_work(&runtime)
                     };
@@ -383,10 +395,11 @@ impl Hle {
                 }
             })
             .expect("spawning the dsound pump thread");
-        Pump {
+        Ok(Pump {
             stop,
             join: Some(join),
-        }
+            claim: render.then(|| Arc::clone(self)),
+        })
     }
 }
 
@@ -394,6 +407,8 @@ impl Hle {
 pub struct Pump {
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
+    /// Set for a render pump: gives the mixer back on drop.
+    claim: Option<Arc<Hle>>,
 }
 
 impl Pump {
@@ -408,6 +423,9 @@ impl Drop for Pump {
         self.stop.store(true, Ordering::Release);
         if let Some(j) = self.join.take() {
             let _ = j.join();
+        }
+        if let Some(hle) = self.claim.take() {
+            lock(&hle.ds).release_consumer(Consumer::Pump);
         }
     }
 }

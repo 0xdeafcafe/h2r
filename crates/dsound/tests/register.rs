@@ -1013,7 +1013,8 @@ fn concurrent_pump_and_process_deliver_every_pin_in_order() {
     let stream = stream_of(&mut w, 64);
     let pump = w
         .hle
-        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true);
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true)
+        .unwrap();
     for i in 0..48u32 {
         let (pkt, _, _) = w.packet(16, 0x200 + i);
         w.ok(0x0037_ad25, &[stream, pkt, 0]);
@@ -1126,7 +1127,8 @@ fn the_pump_renders_a_sinkless_mixer_and_completes_packets_on_its_own() {
     w.ok(0x0037_ad25, &[stream, pkt, 0]);
     let pump = w
         .hle
-        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(2), true);
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(2), true)
+        .unwrap();
     let runtime = Arc::clone(&w.runtime);
     // The status is written first, the event is signalled after the guards drop.
     let signals = Arc::clone(&w.signals);
@@ -1164,7 +1166,8 @@ fn a_service_only_pump_completes_what_an_external_sink_consumed() {
     // ...and the pump (render: false) reports it without waiting for the game.
     let pump = w
         .hle
-        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(2), false);
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(2), false)
+        .unwrap();
     let runtime = Arc::clone(&w.runtime);
     let signals = Arc::clone(&w.signals);
     assert!(wait_for(Duration::from_secs(5), || !signals
@@ -1182,4 +1185,367 @@ fn a_service_only_pump_completes_what_an_external_sink_consumed() {
         "the service-only pump never renders"
     );
     drop(pump);
+}
+
+// ---- the output thread ---------------------------------------------------
+
+/// A device stand-in for the output thread: it drains instantly (nothing
+/// stays queued), keeps everything written, and takes at most `room` more
+/// frames in total.
+struct CaptureSink {
+    rate: u32,
+    room: usize,
+    played: Arc<Mutex<Vec<f32>>>,
+}
+
+impl audio::AudioSink for CaptureSink {
+    fn sample_rate(&self) -> u32 {
+        self.rate
+    }
+    fn queued_frames(&self) -> usize {
+        0
+    }
+    fn free_frames(&self) -> usize {
+        self.room
+    }
+    fn write(&mut self, samples: &[f32]) -> usize {
+        let n = (samples.len() / 2).min(self.room);
+        self.room -= n;
+        self.played
+            .lock()
+            .unwrap()
+            .extend_from_slice(&samples[..2 * n]);
+        n
+    }
+    fn stats(&self) -> audio::SinkStats {
+        audio::SinkStats::default()
+    }
+}
+
+/// Events that record, at the moment of each signal, the status word the
+/// packet carrying that handle has in guest memory.
+struct StatusAtSignal {
+    runtime: RuntimeSlot,
+    status_of: Arc<Mutex<Vec<(u32, u32)>>>,
+    seen: Arc<Mutex<Vec<(u32, u32)>>>,
+}
+
+impl Events for StatusAtSignal {
+    fn signal(&mut self, handle: u32) -> Result<(), String> {
+        let runtime = self.runtime.lock().unwrap().clone().unwrap();
+        let ptr = self
+            .status_of
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|p| p.0 == handle)
+            .map(|p| p.1)
+            .ok_or("unknown handle")?;
+        let status = runtime.memory().u32(ptr).map_err(|e| e.to_string())?;
+        self.seen.lock().unwrap().push((handle, status));
+        Ok(())
+    }
+}
+
+type Seen = Arc<Mutex<Vec<(u32, u32)>>>;
+
+fn status_world() -> (World, Seen, Seen) {
+    let status_of: Seen = Arc::new(Mutex::new(Vec::new()));
+    let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+    let (s, v) = (Arc::clone(&status_of), Arc::clone(&seen));
+    let w = world_with(Some(Box::new(move |runtime| {
+        Box::new(StatusAtSignal {
+            runtime,
+            status_of: s,
+            seen: v,
+        })
+    })));
+    (w, status_of, seen)
+}
+
+/// Queues a mono PCM16 packet of `frames` samples of `value` with `event`.
+fn tone_packet(w: &mut World, stream: u32, frames: usize, value: i16, event: u32) -> u32 {
+    let pcm: Vec<u8> = std::iter::repeat_n(value, frames)
+        .flat_map(|s| s.to_le_bytes())
+        .collect();
+    let data = w.put(&pcm);
+    let status = w.words(&[0x5a5a_5a5a]);
+    let done = w.words(&[0x5a5a_5a5a]);
+    let pkt = w.words(&[data, pcm.len() as u32, done, status, event, 0]);
+    w.ok(0x0037_ad25, &[stream, pkt, 0]);
+    status
+}
+
+#[test]
+fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    // 8000 Hz mono: 100, 200 and 50 frames of three levels.
+    let plan = [
+        (100, 8192i16, 0x71u32),
+        (200, 16384, 0x72),
+        (50, -8192, 0x73),
+    ];
+    for (frames, value, event) in plan {
+        let status = tone_packet(&mut w, stream, frames, value, event);
+        status_of.lock().unwrap().push((event, status));
+    }
+    // Logical time in 100 ns ticks, moved by the test alone.
+    let logical = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let now = Arc::clone(&logical);
+    let played = Arc::new(Mutex::new(Vec::new()));
+    let sink_played = Arc::clone(&played);
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            move || CaptureSink {
+                rate: 8000,
+                room: usize::MAX,
+                played: sink_played,
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Logical {
+                    now: Box::new(move || now.load(std::sync::atomic::Ordering::Acquire)),
+                    max_catch_up: Duration::from_secs(1),
+                },
+            },
+        )
+        .unwrap();
+    // No logical time: nothing renders, nothing completes, however long the
+    // host waits. The game is "loading": it makes no DirectSound call.
+    thread::sleep(Duration::from_millis(30));
+    assert_eq!(output.stats().rendered_frames, 0);
+    assert!(seen.lock().unwrap().is_empty());
+    // 12.5 ms = 100 frames: exactly the first packet.
+    logical.store(125_000, std::sync::atomic::Ordering::Release);
+    assert!(wait_for(Duration::from_secs(5), || seen
+        .lock()
+        .unwrap()
+        .len()
+        == 1));
+    assert_eq!(output.stats().rendered_frames, 100);
+    // Then the rest: 250 more frames.
+    logical.store(125_000 + 312_500, std::sync::atomic::Ordering::Release);
+    assert!(wait_for(Duration::from_secs(5), || seen
+        .lock()
+        .unwrap()
+        .len()
+        == 3));
+    assert!(wait_for(Duration::from_secs(5), || output
+        .stats()
+        .rendered_frames
+        == 350));
+    // Submission order, each status already final when its event fired.
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            (0x71, XMEDIAPACKET_STATUS_SUCCESS),
+            (0x72, XMEDIAPACKET_STATUS_SUCCESS),
+            (0x73, XMEDIAPACKET_STATUS_SUCCESS)
+        ]
+    );
+    // The sink got every packet's samples, in order (mono to both channels).
+    let played = played.lock().unwrap();
+    assert_eq!(played.len(), 2 * 350);
+    let left: Vec<f32> = played.iter().step_by(2).copied().collect();
+    assert!(left[..99].iter().all(|&v| v == 0.25));
+    assert!(left[101..299].iter().all(|&v| v == 0.5));
+    assert!(left[301..349].iter().all(|&v| v == -0.25));
+    assert_eq!(output.stats().dropped_frames, 0);
+    assert!(output.stats().wakes > 0);
+    drop(output);
+    assert!(w.hle.take_stops().is_empty());
+    assert!(w.hle.take_signal_failures().is_empty());
+}
+
+#[test]
+fn logical_pacing_keeps_time_when_the_sink_is_full() {
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    let status = tone_packet(&mut w, stream, 400, 1000, 0x81);
+    status_of.lock().unwrap().push((0x81, status));
+    let played = Arc::new(Mutex::new(Vec::new()));
+    let sink_played = Arc::clone(&played);
+    let mut first = true;
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            move || CaptureSink {
+                rate: 8000,
+                room: 64,
+                played: sink_played,
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Logical {
+                    // 50 ms of logical time on the first wake, then none.
+                    now: Box::new(move || {
+                        let t = if first { 0 } else { 500_000 };
+                        first = false;
+                        t
+                    }),
+                    max_catch_up: Duration::from_secs(1),
+                },
+            },
+        )
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(5), || !seen
+        .lock()
+        .unwrap()
+        .is_empty()));
+    let stats = output.stats();
+    assert_eq!((stats.rendered_frames, stats.dropped_frames), (400, 336));
+    assert_eq!(played.lock().unwrap().len(), 2 * 64);
+    assert_eq!(*seen.lock().unwrap(), [(0x81, XMEDIAPACKET_STATUS_SUCCESS)]);
+}
+
+#[test]
+fn device_pacing_follows_the_sink_and_its_rate() {
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    let status = tone_packet(&mut w, stream, 800, 1000, 0x91);
+    status_of.lock().unwrap().push((0x91, status));
+    let played = Arc::new(Mutex::new(Vec::new()));
+    let sink_played = Arc::clone(&played);
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            move || CaptureSink {
+                rate: 16_000,
+                room: usize::MAX,
+                played: sink_played,
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Device {
+                    target_latency_ms: 20,
+                },
+            },
+        )
+        .unwrap();
+    // The instantly draining "device" takes 20 ms (320 frames at 16 kHz) a
+    // wake; the 8 kHz packet is 100 ms, 1600 output frames.
+    assert!(wait_for(Duration::from_secs(5), || !seen
+        .lock()
+        .unwrap()
+        .is_empty()));
+    assert_eq!(output.stats().sample_rate, 16_000);
+    assert_eq!(
+        w.hle.direct_sound().mixer().lock().unwrap().sample_rate(),
+        16_000
+    );
+    assert!(output.stats().rendered_frames >= 1600);
+    assert_eq!(*seen.lock().unwrap(), [(0x91, XMEDIAPACKET_STATUS_SUCCESS)]);
+    assert!(played.lock().unwrap().iter().any(|&v| v != 0.0));
+}
+
+#[test]
+fn the_output_thread_is_the_only_consumer() {
+    let mut w = world();
+    let stream = stream_of(&mut w, 4);
+    let _ = tone_packet(&mut w, stream, 16, 1, 0);
+    w.hle
+        .direct_sound()
+        .set_frames_per_do_work(Some(800))
+        .unwrap();
+    let open = || CaptureSink {
+        rate: 8000,
+        room: usize::MAX,
+        played: Arc::default(),
+    };
+    let refused = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            open,
+            dsound::OutputConfig::default(),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(
+        (refused.held, refused.wanted),
+        (dsound::Consumer::DoWork, dsound::Consumer::Output)
+    );
+    w.hle.direct_sound().set_frames_per_do_work(None).unwrap();
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            open,
+            dsound::OutputConfig::default(),
+        )
+        .unwrap();
+    assert!(
+        w.hle
+            .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true)
+            .is_err()
+    );
+    assert!(
+        w.hle
+            .direct_sound()
+            .set_frames_per_do_work(Some(1))
+            .is_err()
+    );
+    assert!(w.hle.advance_audio(&w.runtime, 1).is_err());
+    // A service-only pump does not render, so it may run alongside.
+    let pump = w
+        .hle
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), false)
+        .unwrap();
+    drop(pump);
+    drop(output);
+    assert_eq!(w.hle.direct_sound().consumer(), None);
+    w.hle.advance_audio(&w.runtime, 1).unwrap();
+}
+
+#[test]
+fn callbacks_completed_by_the_output_thread_run_at_the_next_override_call() {
+    let mut w = world();
+    let out = w.scratch(4);
+    w.ok(0x0037_d797, &[0, out, 0]);
+    let ds = w.u32(out);
+    let fmt = w.pcm16_format();
+    let sdesc = w.words(&[0, 8, fmt, CALLBACK, 0x5000, 0]);
+    w.ok(0x0037_d4e2, &[ds, sdesc, out, 0]);
+    let stream = w.u32(out);
+    for ctx in [0x61, 0x62] {
+        let _ = tone_packet(&mut w, stream, 40, 100, ctx);
+    }
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            || CaptureSink {
+                rate: 8000,
+                room: usize::MAX,
+                played: Arc::default(),
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Device {
+                    target_latency_ms: 40,
+                },
+            },
+        )
+        .unwrap();
+    let hle = Arc::clone(&w.hle);
+    assert!(wait_for(Duration::from_secs(5), || hle.pending_callbacks() == 2));
+    drop(output);
+    assert!(
+        w.callbacks.lock().unwrap().is_empty(),
+        "guest code waits for a guest thread"
+    );
+    // The game's next DirectSound call (here DoWork) runs them, in order.
+    w.ok(0x0037_b844, &[]);
+    assert_eq!(
+        *w.callbacks.lock().unwrap(),
+        [
+            [0x5000, 0x61, XMEDIAPACKET_STATUS_SUCCESS],
+            [0x5000, 0x62, XMEDIAPACKET_STATUS_SUCCESS]
+        ]
+    );
 }

@@ -11,10 +11,12 @@
 //! - [`state`]: the object model and every API implementation.
 //! - [`overrides`]: address table and dispatcher for the override layer.
 //! - [`register`]: installs [`overrides`] into a runtime `Dispatch`.
+//! - [`output`]: the output thread, the one consumer that takes the mixer to a sink.
 //! - [`testing`]: a synthetic guest memory for tests.
 
 pub mod abi;
 pub mod host;
+pub mod output;
 pub mod overrides;
 pub mod register;
 pub mod state;
@@ -24,4 +26,5 @@ pub use host::{EventSink, GuestMemory, Host, MemFault, StreamCallback};
 pub use register::{
     EventRef, Events, Hle, Pump, RegisterError, Registration, register, unregister,
 };
-pub use state::{AudioClock, DirectSound, EffectDesc, Layout, R, Stop};
+pub use output::{Output, OutputConfig, OutputStats, Pacing};
+pub use state::{AudioClock, Consumer, ConsumerConflict, DirectSound, EffectDesc, Layout, R, Stop};

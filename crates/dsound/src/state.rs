@@ -29,9 +29,37 @@ pub enum Stop {
     BadHandle { ptr: u32, expected: &'static str },
     #[error(transparent)]
     Memory(#[from] MemFault),
+    #[error(transparent)]
+    Consumer(#[from] ConsumerConflict),
 }
 
 pub type R = Result<u32, Stop>;
+
+/// What renders the mixer, and so drives audio time. Exactly one may hold
+/// the mixer: two would each render it and time would run twice. See
+/// `docs/dsound.md` "Audio clock".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Consumer {
+    /// `set_frames_per_do_work`: the game's own `DirectSoundDoWork` calls.
+    DoWork,
+    /// `advance_audio` / `Hle::tick` by hand.
+    Manual,
+    /// `Hle::spawn_pump(.., render: true)`.
+    Pump,
+    /// `Hle::spawn_output`: the host audio output.
+    Output,
+    /// Something outside this crate (the app's `AudioOut` device or
+    /// discard renderer). Claim it so the shim's own consumers refuse.
+    External,
+}
+
+/// A second consumer asked for the mixer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("DirectSound: the mixer is already consumed by {held:?} ({wanted:?} refused)")]
+pub struct ConsumerConflict {
+    pub held: Consumer,
+    pub wanted: Consumer,
+}
 
 fn unimpl(what: &'static str) -> Stop {
     Stop::Unimplemented { what }
@@ -319,6 +347,7 @@ pub struct DirectSound {
     light_hrtf_4_channel: bool,
     frames_per_do_work: Option<u64>,
     frames_rendered: u64,
+    consumer: Option<Consumer>,
     next_token: u64,
     ignored: BTreeMap<&'static str, u64>,
 }
@@ -341,6 +370,7 @@ impl DirectSound {
             light_hrtf_4_channel: false,
             frames_per_do_work: None,
             frames_rendered: 0,
+            consumer: None,
             next_token: 0,
             ignored: BTreeMap::new(),
         }
@@ -2064,6 +2094,18 @@ impl DirectSound {
     /// discard renderer) also consumes the mixer: time would run twice.
     /// Returns the frames rendered.
     pub fn advance_audio(&mut self, h: &mut dyn Host, frames: u64) -> Result<u64, Stop> {
+        self.advance_audio_as(h, frames, Consumer::Manual)
+    }
+
+    /// [`advance_audio`](Self::advance_audio) on behalf of `who`, which must
+    /// hold (or be able to claim) the mixer.
+    pub fn advance_audio_as(
+        &mut self,
+        h: &mut dyn Host,
+        frames: u64,
+        who: Consumer,
+    ) -> Result<u64, Stop> {
+        self.claim_consumer(who)?;
         self.render_discard(frames);
         self.service_all(h)?;
         Ok(frames)
@@ -2071,9 +2113,39 @@ impl DirectSound {
 
     /// Makes every `DirectSoundDoWork` advance the clock by `frames` output
     /// frames (for example `rate / 60` for a game that calls it once per
-    /// frame). `None`, the default, leaves the mixer to its sink.
-    pub fn set_frames_per_do_work(&mut self, frames: Option<u64>) {
+    /// frame). `None`, the default, leaves the mixer to its sink. Claims the
+    /// mixer as [`Consumer::DoWork`] (and `None` gives it back).
+    pub fn set_frames_per_do_work(&mut self, frames: Option<u64>) -> Result<(), ConsumerConflict> {
+        match frames {
+            Some(_) => self.claim_consumer(Consumer::DoWork)?,
+            None => self.release_consumer(Consumer::DoWork),
+        }
         self.frames_per_do_work = frames;
+        Ok(())
+    }
+
+    /// Takes the mixer for `who`. Claiming again for the same consumer is a
+    /// no-op; any other consumer is refused until it is released.
+    pub fn claim_consumer(&mut self, who: Consumer) -> Result<(), ConsumerConflict> {
+        match self.consumer {
+            Some(held) if held != who => Err(ConsumerConflict { held, wanted: who }),
+            _ => {
+                self.consumer = Some(who);
+                Ok(())
+            }
+        }
+    }
+
+    /// Gives the mixer back if `who` holds it.
+    pub fn release_consumer(&mut self, who: Consumer) {
+        if self.consumer == Some(who) {
+            self.consumer = None;
+        }
+    }
+
+    /// Who renders the mixer, if anyone has claimed it.
+    pub fn consumer(&self) -> Option<Consumer> {
+        self.consumer
     }
 
     fn render_discard(&mut self, frames: u64) {

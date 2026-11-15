@@ -1636,7 +1636,7 @@ fn frames_per_do_work_ties_the_clock_to_the_games_own_calls() {
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let stream = rig.create_stream(wfx, 0, 0, 0);
     let a = rig.process(stream, &pcm16(&[8192; 100]), 0x51);
-    rig.ds.set_frames_per_do_work(Some(40));
+    rig.ds.set_frames_per_do_work(Some(40)).unwrap();
     // The game's DirectSoundDoWork (0x37b844) is the only caller: 40 frames each.
     rig.call(DO_WORK, &[]);
     rig.call(DO_WORK, &[]);
@@ -1645,9 +1645,38 @@ fn frames_per_do_work_ties_the_clock_to_the_games_own_calls() {
     assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
     assert_eq!(rig.h.signalled, vec![0x51]);
     assert_eq!(rig.ds.frames_rendered(), 120);
-    rig.ds.set_frames_per_do_work(None);
+    rig.ds.set_frames_per_do_work(None).unwrap();
     rig.call(DO_WORK, &[]);
     assert_eq!(rig.ds.frames_rendered(), 120);
+}
+
+#[test]
+fn only_one_consumer_may_render_the_mixer() {
+    use dsound::{Consumer, ConsumerConflict};
+    let mut rig = Rig::new();
+    assert_eq!(rig.ds.consumer(), None);
+    rig.ds.set_frames_per_do_work(Some(40)).unwrap();
+    assert_eq!(rig.ds.consumer(), Some(Consumer::DoWork));
+    let refused = ConsumerConflict {
+        held: Consumer::DoWork,
+        wanted: Consumer::Manual,
+    };
+    assert_eq!(
+        rig.ds.advance_audio(&mut rig.h, 10),
+        Err(Stop::Consumer(refused))
+    );
+    assert_eq!(rig.ds.frames_rendered(), 0, "nothing rendered twice");
+    // The same consumer again is fine; another is refused until released.
+    rig.ds.set_frames_per_do_work(Some(80)).unwrap();
+    assert!(rig.ds.claim_consumer(Consumer::Output).is_err());
+    rig.ds.set_frames_per_do_work(None).unwrap();
+    rig.ds.claim_consumer(Consumer::External).unwrap();
+    assert!(rig.ds.set_frames_per_do_work(Some(1)).is_err());
+    rig.ds.release_consumer(Consumer::Manual); // not the holder: no effect
+    assert_eq!(rig.ds.consumer(), Some(Consumer::External));
+    rig.ds.release_consumer(Consumer::External);
+    rig.ds.advance_audio(&mut rig.h, 10).unwrap();
+    assert_eq!(rig.ds.consumer(), Some(Consumer::Manual));
 }
 
 #[test]
