@@ -618,7 +618,7 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             name: "D3D_BlockOnTime",
             convention: "2 stack args; ret 8 (no-op: the host GPU is synchronous)",
             call: |d, m, _| {
-                d.kick_off(m)?;
+                d.block_on_time(m)?;
                 Ok(Outcome::pop(8))
             },
         },

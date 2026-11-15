@@ -25,12 +25,20 @@
 //!   as `0x14850` builds for its two 64x64 targets with the native
 //!   `0x3fb7a0`) gets its own host surface: a colour surface, or a
 //!   depth/stencil surface when the level is bound as `pNewZStencil`
-//!   (`D16`/`D24S8`, swizzled or linear: shadow maps). When the guest can next observe
-//!   the texels (the target changes, `Swap`, `KickOff`/`BlockOn*`, the
-//!   busy check `0x3fb710`, or a draw samples that texture), the device
-//!   reads the surface back in the level's format and layout and writes it
-//!   into the level's guest memory, then reports the write to its own
-//!   tracker so cached uploads of that texture are refreshed.
+//!   (`D16`/`D24S8`, swizzled or linear: shadow maps). Lazily (the default, on a
+//!   backend that samples surfaces), draws that sample the texture read
+//!   that surface in place ([`Backend::surface_texture`]), and its pixels
+//!   reach guest memory only when the guest is about to read them: a wait
+//!   or busy check on the resource (`BlockOnResource`, `0x3fb710`), a
+//!   fence wait, a push-buffer callback, a sample that cannot read the
+//!   surface in place, a destroy, `PersistDisplay` or teardown. Guest
+//!   writes into a level held on the host are merged in when it is next
+//!   used. Eagerly ([`Device::set_rtt_direct`] off), the write-back also
+//!   runs when the target changes, at `Swap` and `KickOff`, and before
+//!   every sample. A write-back reads the surface back in the level's
+//!   format and layout, writes it into the level's guest memory and
+//!   reports the write to the device's own tracker so cached uploads of
+//!   that texture are refreshed.
 
 use super::*;
 use crate::backend::{ChannelMask, GuestLayoutKind, PixelRect, RectClear};
@@ -426,7 +434,7 @@ impl<B: Backend> Device<B> {
     /// use; remade if the header's identity changed).
     pub(super) fn rtt_surface(
         &mut self,
-        mem: &dyn GuestMemory,
+        mem: &mut dyn GuestMemory,
         entry: &'static str,
         header: u32,
         h: &SurfaceHeader,
@@ -447,7 +455,8 @@ impl<B: Backend> Device<B> {
                     ),
                 ));
             }
-            self.refresh_rtt(mem, header, t)?;
+            self.write_back_overlapping(mem, header)?;
+            self.refresh_rtt(mem, header)?;
             return Ok(t.surface);
         }
         let desc = TextureDesc::from_header(h.pixels.format, h.pixels.size)
@@ -496,19 +505,24 @@ impl<B: Backend> Device<B> {
                 ));
             }
         };
-        // The header was rewritten: its old surface goes. Content not yet
-        // written back would be lost, which cannot happen through D3D (the
-        // write-back runs when the target changes), so it is an error.
+        // The header was rewritten: its old surface goes. Eagerly, content
+        // not yet written back cannot exist here through D3D (the
+        // write-back runs when the target changes), so it is an error;
+        // lazily, the old level's pixels go to its memory first.
         if let Some(old) = self.rtt.get(&header).copied() {
             if old.dirty {
-                return Err(D3dError::invalid(
-                    entry,
-                    format!(
-                        "render target {header:#010x} was rewritten while it held unwritten pixels"
-                    ),
-                ));
+                if !self.rtt_lazy() {
+                    return Err(D3dError::invalid(
+                        entry,
+                        format!(
+                            "render target {header:#010x} was rewritten while it held unwritten pixels"
+                        ),
+                    ));
+                }
+                self.write_back(mem, header)?;
             }
             self.rtt.remove(&header);
+            self.rtt_synced.remove(&header);
             self.backend
                 .destroy_surface(old.surface)
                 .map_err(D3dError::Backend)?;
@@ -537,17 +551,177 @@ impl<B: Backend> Device<B> {
         };
         self.tracker.watch(target.data, target.len());
         self.rtt.insert(header, target);
+        self.write_back_overlapping(mem, header)?;
         // The level's current texels, so draws that do not cover it all
         // leave the rest as the guest had it.
         let bytes = mem.read_vec(target.data, target.len() as usize)?;
-        self.fill_rtt(header, &bytes)?;
+        self.fill_rtt(header, bytes)?;
         Ok(surface)
+    }
+
+    /// Whether render-to-texture pixels stay on the host until the guest
+    /// is about to read them, and draws sample the surfaces directly: on
+    /// ([`Device::set_rtt_direct`]) and the backend can
+    /// ([`Backend::can_sample_surfaces`]).
+    pub(super) fn rtt_lazy(&self) -> bool {
+        self.rtt_direct && self.backend.can_sample_surfaces()
+    }
+
+    /// Lazy render-to-texture (the default): draws sample a level's host
+    /// surface in place and its pixels reach guest memory only when the
+    /// guest is about to read them (`docs/d3d.md`). Off: every target
+    /// change, `Swap`, `KickOff` and sample writes back, as before. Lazy
+    /// needs a backend that samples surfaces
+    /// ([`Backend::can_sample_surfaces`]); without one it stays off.
+    pub fn set_rtt_direct(&mut self, on: bool) {
+        self.rtt_direct = on;
+    }
+
+    /// Writes back the other levels drawn into whose memory overlaps
+    /// `header`'s, before `header`'s surface is filled from or matched
+    /// against that memory (two surface headers over one level).
+    fn write_back_overlapping(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+    ) -> Result<(), D3dError> {
+        let Some(t) = self.rtt.get(&header).copied() else {
+            return Ok(());
+        };
+        let (start, end) = (t.data as u64, t.data as u64 + t.len() as u64);
+        let others: Vec<u32> = self
+            .rtt
+            .iter()
+            .filter(|(h, o)| {
+                **h != header
+                    && o.dirty
+                    && (o.data as u64) < end
+                    && start < o.data as u64 + o.len() as u64
+            })
+            .map(|(h, _)| *h)
+            .collect();
+        for h in others {
+            self.write_back(mem, h)?;
+        }
+        Ok(())
+    }
+
+    /// The level's guest bytes if the guest changed them since the host
+    /// surface and memory last matched (by the upload policy, as
+    /// [`refresh_rtt`](Self::refresh_rtt)); `None` if not. A reported write
+    /// that left the bytes as they were (the runtime may report the
+    /// device's own write-backs again) only moves the match forward.
+    fn rtt_guest_changed(
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+    ) -> Result<Option<Vec<u8>>, D3dError> {
+        let t = *self.rtt.get(&header).expect("cached");
+        let len = t.len();
+        let written = self.tracker.dirty_since(t.data, len, t.generation);
+        if self.cfg.upload == UploadPolicy::Tracked && !written {
+            return Ok(None);
+        }
+        let bytes = mem.read_vec(t.data, len as usize)?;
+        if self.rtt_synced.get(&header) == Some(&bytes) {
+            let generation = self.tracker.generation();
+            self.rtt.get_mut(&header).expect("cached").generation = generation;
+            return Ok(None);
+        }
+        if !written && self.cfg.upload == UploadPolicy::Verify {
+            self.events.push(Event::MissedInvalidation {
+                header,
+                addr: t.data,
+                len,
+            });
+        }
+        Ok(Some(bytes))
+    }
+
+    /// A draw samples texture `header`. When its memory is a
+    /// render-to-texture level the backend can sample in place (lazy
+    /// render-to-texture, the whole single-level `A8R8G8B8` texture over
+    /// the level, no `COLORSIGN`, not the target being drawn), the level's
+    /// own surface: no write-back, no upload. `None`: the texture goes
+    /// through the write-back and the texture cache as before.
+    pub(super) fn rtt_texture(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        header: u32,
+        color_sign: u32,
+    ) -> Result<Option<(TextureInfo, B::Texture)>, D3dError> {
+        if self.rtt.is_empty() || !self.rtt_lazy() || color_sign & COLOR_SIGN_MASK != 0 {
+            return Ok(None);
+        }
+        let pc = PixelContainer::read(mem, header)?;
+        if pc.resource.kind() != ResourceType::Texture {
+            return Ok(None);
+        }
+        let Ok(desc) = TextureDesc::from_header(pc.format, pc.size) else {
+            return Ok(None);
+        };
+        // Texels that read back unchanged: what the surface holds is what
+        // an upload of the written-back level would hold.
+        if desc.kind != gfx::texture::TextureKind::D2
+            || desc.levels != 1
+            || !matches!(desc.format, D3DFormat::A8R8G8B8 | D3DFormat::LinA8R8G8B8)
+        {
+            return Ok(None);
+        }
+        let data = self.cfg.address_map.to_virtual(pc.resource.data);
+        // The colour level over these bytes, preferring one drawn into
+        // (depth levels go through guest memory).
+        let mut found: Option<(u32, RttTarget<B::Surface>)> = None;
+        for (h, t) in &self.rtt {
+            if !t.depth && t.data == data && found.is_none_or(|(_, f)| !f.dirty && t.dirty) {
+                found = Some((*h, *t));
+            }
+        }
+        let Some((h, t)) = found else {
+            return Ok(None);
+        };
+        let pitch = desc.pitch.max(desc.width * 4);
+        let layout = match desc.format.layout() {
+            gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
+            _ => GuestLayoutKind::Linear { pitch },
+        };
+        // Sampling the target being drawn reads what it held before the
+        // draw: a copy through guest memory, as before.
+        if h == self.render_target
+            || t.format != desc.format
+            || (t.width, t.height) != (desc.width, desc.height)
+            || t.layout != layout
+        {
+            return Ok(None);
+        }
+        self.refresh_rtt(mem, h)?;
+        let Some(texture) = self
+            .backend
+            .surface_texture(t.surface)
+            .map_err(D3dError::Backend)?
+        else {
+            return Ok(None);
+        };
+        self.stats.rtt_direct_samples += 1;
+        Ok(Some((
+            TextureInfo {
+                header,
+                palette: 0,
+                format: desc.format,
+                kind: desc.kind,
+                width: desc.width,
+                height: desc.height,
+                depth: desc.depth,
+                levels: desc.levels,
+            },
+            texture,
+        )))
     }
 
     /// Copies `bytes` (the level's guest texels) into its host surface and
     /// records that they match. A backend that cannot (`Ok(false)`) leaves
     /// the surface as it was.
-    fn fill_rtt(&mut self, header: u32, bytes: &[u8]) -> Result<(), D3dError> {
+    fn fill_rtt(&mut self, header: u32, bytes: Vec<u8>) -> Result<(), D3dError> {
         let t = *self.rtt.get(&header).expect("cached");
         let mut desc = TextureDesc::new(
             t.format,
@@ -561,11 +735,11 @@ impl<B: Backend> Device<B> {
             desc.pitch = pitch;
         }
         self.backend
-            .write_surface(t.surface, &desc, bytes)
+            .write_surface(t.surface, &desc, &bytes)
             .map_err(D3dError::Backend)?;
         self.stats.rtt_uploads += 1;
         let hash = if self.cfg.upload == UploadPolicy::Verify {
-            hash_bytes(bytes)
+            hash_bytes(&bytes)
         } else {
             0
         };
@@ -573,6 +747,7 @@ impl<B: Backend> Device<B> {
         let t = self.rtt.get_mut(&header).expect("cached");
         t.generation = generation;
         t.hash = hash;
+        self.rtt_synced.insert(header, bytes);
         Ok(())
     }
 
@@ -582,14 +757,14 @@ impl<B: Backend> Device<B> {
     /// `Always` refills every time, `Tracked` when the tracker saw a write,
     /// `Verify` when the hash differs (an unreported write is
     /// `Event::MissedInvalidation`). A level drawn into and not yet written
-    /// back holds newer pixels than memory and is kept.
-    fn refresh_rtt(
-        &mut self,
-        mem: &dyn GuestMemory,
-        header: u32,
-        t: RttTarget<B::Surface>,
-    ) -> Result<(), D3dError> {
+    /// back holds newer pixels than memory and is kept; lazily, guest
+    /// bytes changed under it since are merged in ([`Device::write_back`]).
+    fn refresh_rtt(&mut self, mem: &mut dyn GuestMemory, header: u32) -> Result<(), D3dError> {
+        let t = *self.rtt.get(&header).expect("cached");
         if t.dirty {
+            if self.rtt_lazy() && self.rtt_guest_changed(mem, header)?.is_some() {
+                self.write_back(mem, header)?;
+            }
             return Ok(());
         }
         let len = t.len();
@@ -608,12 +783,12 @@ impl<B: Backend> Device<B> {
                         len,
                     });
                 }
-                return self.fill_rtt(header, &bytes);
+                return self.fill_rtt(header, bytes);
             }
             _ => {}
         }
         let bytes = mem.read_vec(t.data, len as usize)?;
-        self.fill_rtt(header, &bytes)
+        self.fill_rtt(header, bytes)
     }
 
     /// A draw or clear has written the current colour target and, with
@@ -667,7 +842,10 @@ impl<B: Backend> Device<B> {
     }
 
     /// Writes one render-to-texture target back into guest memory if it
-    /// was drawn into.
+    /// was drawn into. Lazily, the guest may have written into the level
+    /// since its pixels went to the host only: where its bytes changed
+    /// from what both last held, they win, and the surface is filled with
+    /// the merged level.
     pub(super) fn write_back(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -679,7 +857,7 @@ impl<B: Backend> Device<B> {
         if !t.dirty {
             return Ok(());
         }
-        let bytes = if t.depth {
+        let mut bytes = if t.depth {
             self.backend
                 .read_depth(t.surface, t.format, t.width, t.height, t.layout)
                 .map_err(D3dError::Backend)?
@@ -701,11 +879,24 @@ impl<B: Backend> Device<B> {
                 bytes.len()
             )));
         }
-        mem.write(t.data, &bytes[..len])?;
+        bytes.truncate(len);
+        let merged = match self.rtt_lazy() {
+            true => self.rtt_guest_changed(mem, header)?,
+            false => None,
+        };
+        if let Some(guest) = &merged {
+            let synced = self.rtt_synced.get(&header).expect("filled when made");
+            for (i, b) in bytes.iter_mut().enumerate() {
+                if guest[i] != synced[i] {
+                    *b = guest[i];
+                }
+            }
+        }
+        mem.write(t.data, &bytes)?;
         self.tracker.note_write(t.data, len as u32);
         self.stats.rtt_writebacks += 1;
         let hash = if self.cfg.upload == UploadPolicy::Verify {
-            hash_bytes(&bytes[..len])
+            hash_bytes(&bytes)
         } else {
             0
         };
@@ -715,11 +906,30 @@ impl<B: Backend> Device<B> {
             t.generation = generation;
             t.hash = hash;
         }
+        if merged.is_some() {
+            self.fill_rtt(header, bytes)?;
+        } else {
+            self.rtt_synced.insert(header, bytes);
+        }
         Ok(())
     }
 
+    /// A point where, eagerly, the guest could look at memory (`Swap`,
+    /// `KickOff`): writes back every dirty target unless render-to-texture
+    /// is lazy, where only a wait or busy check on the resource, a generic
+    /// wait (`BlockOnTime`), a push-buffer callback, `PersistDisplay`,
+    /// teardown, or a sample that cannot read the surface in place does.
+    pub(super) fn flush_at_sync(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        if self.rtt_lazy() {
+            return Ok(());
+        }
+        self.flush_render_targets(mem)
+    }
+
     /// Writes back every dirty render-to-texture target (the guest is about
-    /// to look at memory: `Swap`, `KickOff`, `BlockOn*`, the busy check).
+    /// to look at memory: `BlockOnTime`, push-buffer callbacks, teardown,
+    /// and eagerly also `Swap`, `KickOff`, `BlockOnResource` and the busy
+    /// check).
     pub fn flush_render_targets(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         let headers: Vec<u32> = self
             .rtt
@@ -733,8 +943,10 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// Writes back the targets that are levels of `texture` (by `Parent`, or
-    /// by texel address), before it is sampled.
+    /// Writes back the targets that are `texture`, or levels of it (by
+    /// `Parent`, or by texel address): before it is sampled through guest
+    /// memory, or, lazily, before the guest waits on it or checks it is
+    /// busy (`texture` is then any resource).
     pub(super) fn flush_for_texture(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -750,7 +962,7 @@ impl<B: Backend> Device<B> {
         let headers: Vec<u32> = self
             .rtt
             .iter()
-            .filter(|(_, t)| t.dirty && (t.parent == texture || t.data == data))
+            .filter(|(h, t)| t.dirty && (**h == texture || t.parent == texture || t.data == data))
             .map(|(h, _)| *h)
             .collect();
         for h in headers {
@@ -766,6 +978,7 @@ impl<B: Backend> Device<B> {
         mem: &mut dyn GuestMemory,
     ) -> Result<(), D3dError> {
         self.flush_render_targets(mem)?;
+        self.rtt_synced.clear();
         for (_, t) in self.rtt.drain().collect::<Vec<_>>() {
             self.backend
                 .destroy_surface(t.surface)
@@ -774,8 +987,12 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// The colour target is about to change.
+    /// The colour target is about to change: eagerly, its pixels go to
+    /// guest memory; lazily they stay on the host.
     pub(super) fn leave_target(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        if self.rtt_lazy() {
+            return Ok(());
+        }
         let h = self.render_target;
         self.write_back(mem, h)
     }

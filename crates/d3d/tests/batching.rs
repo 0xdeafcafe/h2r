@@ -106,7 +106,9 @@ fn a_draw_after_a_target_switch_keeps_its_uniforms() {
             .iter()
             .all(|e| !matches!(e, d3d::Event::DrawSkipped { .. } | d3d::Event::BadState(_)))
     );
-    // Written back to guest memory (A8R8G8B8: B, G, R, A).
+    // Written back to guest memory when the guest waits on the texture
+    // (A8R8G8B8: B, G, R, A).
+    d.block_on_resource(&mut m, TEX_HEADER).unwrap();
     let texel = |m: &SparseMemory, x: u32, y: u32| {
         m.read_u32(0x8000_0000 | (TEX_DATA + 64 * y + 4 * x))
             .unwrap()

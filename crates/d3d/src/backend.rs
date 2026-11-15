@@ -394,6 +394,23 @@ pub trait Backend: Send {
     ) -> Result<Self::Surface, String> {
         self.create_surface(format, width, height, false)
     }
+    /// Whether [`surface_texture`](Self::surface_texture) works. A device
+    /// on a backend that can sample its render-to-texture surfaces keeps
+    /// their pixels on the host and writes them back to guest memory only
+    /// when the guest is about to read them (`docs/d3d.md`).
+    fn can_sample_surfaces(&self) -> bool {
+        false
+    }
+    /// A texture that samples [`create_texture_target`](Self::create_texture_target)
+    /// surface `surface` itself, not a copy: draws recorded later see what
+    /// was drawn into it before them. Sampled exactly as a texture uploaded
+    /// from the surface's read-back texels would be (formats whose texels
+    /// read back unchanged only). `Ok(None)`: the backend cannot (the
+    /// default).
+    fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+        let _ = surface;
+        Ok(None)
+    }
 }
 
 /// What [`RecordingBackend`] saw.
@@ -468,6 +485,13 @@ pub enum Recorded {
         /// Destination.
         dst: u32,
     },
+    /// `surface_texture`.
+    SurfaceTexture {
+        /// Surface sampled.
+        surface: u32,
+        /// The texture handle returned.
+        id: u32,
+    },
     /// `snapshot_surface`.
     Snapshot {
         /// Surface copied.
@@ -529,6 +553,9 @@ pub struct RecordingBackend {
     next_ticket: u64,
     /// `copy_surface` answers `Ok(false)` (a backend that cannot copy).
     pub no_copies: bool,
+    /// Whether it claims to sample surfaces directly
+    /// ([`Backend::can_sample_surfaces`]; default false).
+    pub sample_surfaces: bool,
 }
 
 impl RecordingBackend {
@@ -681,6 +708,20 @@ impl Backend for RecordingBackend {
         }
         self.calls.push(Recorded::CopySurface { src, dst });
         Ok(true)
+    }
+    fn can_sample_surfaces(&self) -> bool {
+        self.sample_surfaces
+    }
+    fn surface_texture(&mut self, surface: u32) -> Result<Option<u32>, String> {
+        if !self.sample_surfaces {
+            return Ok(None);
+        }
+        self.next += 1;
+        self.calls.push(Recorded::SurfaceTexture {
+            surface,
+            id: self.next,
+        });
+        Ok(Some(self.next))
     }
     fn snapshot_surface(&mut self, surface: u32, opaque: bool) -> Result<Option<u32>, String> {
         self.next += 1;

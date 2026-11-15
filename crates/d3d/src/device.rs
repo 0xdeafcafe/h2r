@@ -338,6 +338,9 @@ pub struct Stats {
     /// Host textures made from those readbacks (one per aliasing header
     /// and depth-buffer change).
     pub depth_alias_uploads: u64,
+    /// Texture stages that sampled a render-to-texture surface in place
+    /// (lazy render-to-texture, [`Device::set_rtt_direct`]).
+    pub rtt_direct_samples: u64,
     /// Vertical blanks counted ([`Device::vblank`]).
     pub vblanks: u64,
     /// Push-buffer callbacks handed out for delivery
@@ -580,6 +583,11 @@ pub struct Device<B: Backend> {
     depth_copy: Option<(u64, Vec<u8>)>,
     /// Textures over the depth buffer, made from `depth_copy`, by header.
     depth_alias: HashMap<u32, raster::DepthAlias<B::Texture>>,
+    /// Each target's level bytes when its host surface and guest memory
+    /// last matched (filled from, or written back into, memory).
+    rtt_synced: HashMap<u32, Vec<u8>>,
+    /// Lazy render-to-texture is wanted ([`Device::set_rtt_direct`]).
+    rtt_direct: bool,
     /// The push-buffer callback being delivered, between
     /// [`Device::begin_push_callback`] and [`Device::end_push_callback`].
     active_callback: Option<PushCallback>,
@@ -678,6 +686,8 @@ impl<B: Backend> Device<B> {
             depth_generation: 0,
             depth_copy: None,
             depth_alias: HashMap::new(),
+            rtt_synced: HashMap::new(),
+            rtt_direct: true,
             active_callback: None,
             undelivered: None,
             visibility: HashMap::new(),
@@ -1453,16 +1463,29 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         self.live("D3D_BlockOnResource")?;
-        self.kick_off(mem)
+        self.kick_off(mem)?;
+        // The caller is about to touch the resource: lazily kept
+        // render-to-texture pixels of it go to guest memory now.
+        self.flush_for_texture(mem, resource)
+    }
+
+    /// `D3D_BlockOnTime`: what [`kick_off`](Self::kick_off) does, and every
+    /// render-to-texture target goes to guest memory (after a wait for a
+    /// fence the guest may read anything drawn before it).
+    pub fn block_on_time(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        self.kick_off(mem)?;
+        self.flush_render_targets(mem)
     }
 
     /// `CDevice_KickOff`, `D3D_BlockOnTime`, `D3D_BlockOnResource`: execute
     /// pending words (the host GPU is synchronous, so nothing waits).
+    /// Render-to-texture targets are written back unless that is lazy
+    /// ([`Device::set_rtt_direct`]).
     pub fn kick_off(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "KickOff");
         self.live("CDevice_KickOff")?;
         self.sync_push_buffer(mem)?;
-        self.flush_render_targets(mem)?;
+        self.flush_at_sync(mem)?;
         self.sync_registers(mem)
     }
 
@@ -1750,6 +1773,7 @@ impl<B: Backend> Device<B> {
         }
         // A level drawn into keeps its pixels in the parent's texels.
         self.write_back(mem, header)?;
+        self.rtt_synced.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
             self.backend
                 .destroy_surface(t.surface)
@@ -1763,6 +1787,7 @@ impl<B: Backend> Device<B> {
             .collect::<Vec<_>>()
         {
             self.write_back(mem, h)?;
+            self.rtt_synced.remove(&h);
             let t = self.rtt.remove(&h).expect("listed");
             self.backend
                 .destroy_surface(t.surface)
@@ -2362,7 +2387,7 @@ impl<B: Backend> Device<B> {
 
     fn surface_for(
         &mut self,
-        mem: &dyn GuestMemory,
+        mem: &mut dyn GuestMemory,
         entry: &'static str,
         header: u32,
         depth: bool,
@@ -2667,7 +2692,7 @@ impl<B: Backend> Device<B> {
 
     fn current_targets(
         &mut self,
-        mem: &dyn GuestMemory,
+        mem: &mut dyn GuestMemory,
         entry: &'static str,
     ) -> Result<(B::Surface, Option<B::Surface>), D3dError> {
         let c = self.surface_for(mem, entry, self.render_target, false)?;
@@ -2736,7 +2761,7 @@ impl<B: Backend> Device<B> {
             if !finish {
                 return Ok(self.swap_count);
             }
-            self.flush_render_targets(mem)?;
+            self.flush_at_sync(mem)?;
             self.set_fence(mem)?;
             self.count_swap(mem)?;
             let sw = self.swap.as_mut().expect("created");
@@ -2753,7 +2778,7 @@ impl<B: Backend> Device<B> {
         }
         let three = self.frame_headers.len() > 1;
         if flags & 3 != 0 {
-            self.flush_render_targets(mem)?;
+            self.flush_at_sync(mem)?;
             self.set_fence(mem)?;
             self.count_swap(mem)?;
             if three {
@@ -3223,6 +3248,11 @@ impl<B: Backend> Device<B> {
                         bound[stage] = 0;
                         continue;
                     }
+                }
+                if let Some((info, t)) = self.rtt_texture(mem, header, extras[stage].color_sign)? {
+                    texture_info[stage] = Some(info);
+                    snapshots[stage] = Some(t);
+                    continue;
                 }
                 self.flush_for_texture(mem, header)?;
                 let (k, i) = self.resolve_texture(

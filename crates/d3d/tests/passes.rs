@@ -863,55 +863,61 @@ fn gpu_texture_over_the_back_buffer_samples_what_was_drawn() {
     finish(scope);
 }
 
+/// The level drawn into, then sampled: eagerly through a write-back and an
+/// upload, lazily from the surface itself; the same pixels.
 #[test]
 fn gpu_render_to_texture_then_sample_it() {
-    let Some((mut d, mut m, scope)) = gpu() else {
-        return;
-    };
-    set_states(&mut d, &mut m);
-    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
-    // The 16x4 LIN_A8R8G8B8 test texture, its level bound as the target.
-    texture(&mut m, 0x55);
-    let level = MISC + 0x7300;
-    let mut h =
-        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
-    h.parent = TEX_HEADER;
-    h.write(&mut m, level).unwrap();
-    let back = m.read_u32(L.device + f::RENDER_TARGET).unwrap();
-    d.set_render_target(&mut m, level, 0).unwrap();
-    // Green everywhere, then an alpha-only clear of the right half to 0x40.
-    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
-    m.write(RECTS, &[8u32, 0, 16, 4].map(u32::to_le_bytes).concat())
-        .unwrap();
-    d.clear(&mut m, 1, RECTS, 0x80, 0x4000_0000, 1.0, 0)
-        .unwrap();
-    d.set_render_target(&mut m, back, 0).unwrap();
-    // Sample the texture across the back buffer (texel coordinates).
-    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
-    let mut vb = Vec::new();
-    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
-        for v in [W as f32 * x, H as f32 * y, 0.5, 1.0] {
-            vb.extend_from_slice(&v.to_le_bytes());
+    for lazy in [false, true] {
+        let Some((mut d, mut m, scope)) = gpu() else {
+            return;
+        };
+        d.set_rtt_direct(lazy);
+        set_states(&mut d, &mut m);
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+        // The 16x4 LIN_A8R8G8B8 test texture, its level bound as the target.
+        texture(&mut m, 0x55);
+        let level = MISC + 0x7300;
+        let mut h =
+            d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+        h.parent = TEX_HEADER;
+        h.write(&mut m, level).unwrap();
+        let back = m.read_u32(L.device + f::RENDER_TARGET).unwrap();
+        d.set_render_target(&mut m, level, 0).unwrap();
+        // Green everywhere, then an alpha-only clear of the right half to 0x40.
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+        m.write(RECTS, &[8u32, 0, 16, 4].map(u32::to_le_bytes).concat())
+            .unwrap();
+        d.clear(&mut m, 1, RECTS, 0x80, 0x4000_0000, 1.0, 0)
+            .unwrap();
+        d.set_render_target(&mut m, back, 0).unwrap();
+        // Sample the texture across the back buffer (texel coordinates).
+        d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
+        let mut vb = Vec::new();
+        for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+            for v in [W as f32 * x, H as f32 * y, 0.5, 1.0] {
+                vb.extend_from_slice(&v.to_le_bytes());
+            }
+            vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            for v in [16.0 * x, 4.0 * y] {
+                vb.extend_from_slice(&v.to_le_bytes());
+            }
         }
-        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-        for v in [16.0 * x, 4.0 * y] {
-            vb.extend_from_slice(&v.to_le_bytes());
-        }
+        m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+        m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+        m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+        m.write_u32(VB_HEADER + 8, 0).unwrap();
+        d.set_vertex_shader(&mut m, fvf::XYZRHW | fvf::DIFFUSE | 0x100)
+            .unwrap();
+        d.set_stream_source(&mut m, 0, VB_HEADER, 28).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        no_skips(&mut d);
+        assert_eq!(d.stats().rtt_writebacks, u64::from(!lazy));
+        assert_eq!(d.stats().rtt_direct_samples, u64::from(lazy));
+        let px = back_buffer(&mut d);
+        assert_eq!(px(8, 32), [0, 0xFF, 0, 0xFF], "lazy {lazy}");
+        assert_eq!(px(56, 32), [0, 0xFF, 0, 0x40], "lazy {lazy}");
+        finish(scope);
     }
-    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
-    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
-    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
-    m.write_u32(VB_HEADER + 8, 0).unwrap();
-    d.set_vertex_shader(&mut m, fvf::XYZRHW | fvf::DIFFUSE | 0x100)
-        .unwrap();
-    d.set_stream_source(&mut m, 0, VB_HEADER, 28).unwrap();
-    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    no_skips(&mut d);
-    assert_eq!(d.stats().rtt_writebacks, 1);
-    let px = back_buffer(&mut d);
-    assert_eq!(px(8, 32), [0, 0xFF, 0, 0xFF]);
-    assert_eq!(px(56, 32), [0, 0xFF, 0, 0x40]);
-    finish(scope);
 }
 
 fn small_viewport<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory) {

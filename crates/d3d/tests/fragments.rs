@@ -597,27 +597,43 @@ fn gpu_alpha_only_clear_keeps_the_colour_channels() {
     assert_eq!(pixel(&px, W - 1, H - 1), [0x30, 0x20, 0x10, 0]);
 }
 
+/// Eagerly the level reaches guest memory when the target changes; lazily
+/// when the guest waits on the texture (`BlockOnResource`), and not before.
 #[test]
 fn gpu_render_to_texture_reaches_guest_memory() {
-    let Some((mut d, mut m)) = gpu() else {
-        return;
-    };
-    texture(&mut m, 0);
-    let surf = MISC + 0x7200;
-    let mut h =
-        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
-    h.parent = TEX_HEADER;
-    h.write(&mut m, surf).unwrap();
-    let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
-    d.set_render_target(&mut m, surf, 0).unwrap();
-    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
-    d.set_render_target(&mut m, back, 0).unwrap();
-    // A8R8G8B8 in memory: B, G, R, A.
-    for i in [0u32, 63] {
-        let a = 0x8000_0000 | (TEX_DATA + 4 * i);
-        assert_eq!(m.read_u32(a).unwrap(), 0xFFFF_0000, "texel {i}");
+    for lazy in [false, true] {
+        let Some((mut d, mut m)) = gpu() else {
+            return;
+        };
+        d.set_rtt_direct(lazy);
+        texture(&mut m, 0);
+        let surf = MISC + 0x7200;
+        let mut h =
+            d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+        h.parent = TEX_HEADER;
+        h.write(&mut m, surf).unwrap();
+        let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
+        d.set_render_target(&mut m, surf, 0).unwrap();
+        d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+        d.set_render_target(&mut m, back, 0).unwrap();
+        if lazy {
+            d.swap(&mut m, 0).unwrap();
+            d.kick_off(&mut m).unwrap();
+            assert_eq!(d.stats().rtt_writebacks, 0, "kept on the host");
+            assert_eq!(m.read_u32(0x8000_0000 | TEX_DATA).unwrap(), 0);
+            d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+        }
+        // A8R8G8B8 in memory: B, G, R, A.
+        for i in [0u32, 63] {
+            let a = 0x8000_0000 | (TEX_DATA + 4 * i);
+            assert_eq!(
+                m.read_u32(a).unwrap(),
+                0xFFFF_0000,
+                "texel {i}, lazy {lazy}"
+            );
+        }
+        assert_eq!(d.stats().rtt_writebacks, 1);
     }
-    assert_eq!(d.stats().rtt_writebacks, 1);
 }
 
 /// A 16x4 level of the test texture (texels 0x11) bound as the target.
@@ -802,6 +818,7 @@ fn gpu_render_to_texture_starts_from_the_guest_texels() {
     }
     d.clear(&mut m, 1, rect, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
     d.set_render_target(&mut m, back, 0).unwrap();
+    d.block_on_resource(&mut m, TEX_HEADER).unwrap();
     let texel = |m: &SparseMemory, x: u32, y: u32| {
         m.read_u32(0x8000_0000 | (TEX_DATA + 64 * y + 4 * x))
             .unwrap()

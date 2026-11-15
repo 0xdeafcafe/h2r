@@ -721,6 +721,31 @@ impl Backend for GfxBackend {
             .map_err(|e| e.to_string())
     }
 
+    fn can_sample_surfaces(&self) -> bool {
+        true
+    }
+
+    fn surface_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {
+        // No flush: the draw that binds the view submits a pending pass
+        // into `surface` before it records anything (another target).
+        let s = self.store.get(surface).map_err(|e| e.to_string())?;
+        let texture = s.texture();
+        if !texture
+            .usage()
+            .contains(wgpu::TextureUsages::TEXTURE_BINDING)
+        {
+            return Ok(None);
+        }
+        // The surface's own view, the same every time, so the texture
+        // groups that hold it stay cached.
+        let view = gfx::program::filterable(texture.format(), self.ctx.device.features())
+            .then(|| s.view().clone());
+        Ok(Some(HostTexture {
+            texture: texture.clone(),
+            view,
+        }))
+    }
+
     fn read_surface(
         &mut self,
         surface: SurfaceId,

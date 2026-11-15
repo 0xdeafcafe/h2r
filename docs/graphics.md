@@ -236,7 +236,10 @@ surface with a mip chain that is both an attachment and a texture;
 `write_color(ctx, id, &TextureDesc, bytes)` fills level 0 of a colour
 surface from guest texels laid out as the `TextureDesc` says (its format,
 and its pitch for linear formats, which may differ from the surface's own),
-so a render-to-texture level starts from its texture's memory.
+so a render-to-texture level starts from its texture's memory. The d3d
+backend binds `Surface::view` to sample a colour level in place instead of
+round-tripping it through guest memory (lazy render-to-texture,
+`docs/d3d.md`).
 Depth surfaces are made with `COPY_DST` too. `write_depth(ctx, id,
 &TextureDesc, bytes)` fills one from guest `D16`/`D24S8` texels
 (`encode::decode_depth`, the inverse of `encode_depth`): WebGPU cannot copy

@@ -275,7 +275,7 @@ impl<B: Backend> Device<B> {
     /// passed; only a `Lock` newer than every fence the device issued
     /// would be busy, and the device never stamps one. Render-to-texture
     /// targets are written back first, since the caller is about to touch
-    /// the texels.
+    /// the texels: lazily only those of `resource`.
     pub fn resource_busy(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -284,7 +284,11 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3DResource_IsBusy (0x3fb710)";
         self.live(E)?;
         self.sync_push_buffer(mem)?;
-        self.flush_render_targets(mem)?;
+        if self.rtt_lazy() {
+            self.flush_for_texture(mem, resource)?;
+        } else {
+            self.flush_render_targets(mem)?;
+        }
         let refs = common::INTREFCOUNT_MASK;
         let is_surface = |c: u32| c & common::TYPE_MASK == 0x5_0000;
         let mut r = resource;

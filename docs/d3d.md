@@ -279,7 +279,7 @@ Notes on the table:
   (`0x3f7bd6..0x3f7c6a`), and clears device flag `0x100` when the target
   is the back buffer (`0x3f7c6d`). Unlike `0x3f7870` it leaves the target
   size fields, the depth scale and the viewport alone. The device does the
-  same target switch as `0x3f7870` (render-to-texture write-back included)
+  same target switch as `0x3f7870` (eager render-to-texture write-back included)
   without the viewport reset, and does not check the size, as the original
   does not.
 - **Internal references on targets.** Both SetRenderTarget paths take an
@@ -662,17 +662,55 @@ and allocations are bounded before anything is read:
     for textures: `Always` every time, `Tracked` after a reported write,
     `Verify` when the hash differs (with `Event::MissedInvalidation` if no
     write was reported). A level drawn into and not yet written back is
-    kept as it is.
+    kept as it is (lazily, the guest's changes are merged in, below).
   - A draw or clear into it marks it dirty.
+  - Binding a level first writes back any other dirty level whose memory
+    overlaps it (two surface headers over one level), so it starts from
+    their pixels.
+  - Lazy render-to-texture is the default (`Device::set_rtt_direct`) on
+    a backend that samples surfaces (`Backend::can_sample_surfaces`;
+    `GfxBackend` does, `RecordingBackend` only with `sample_surfaces`).
+    A draw that samples a texture over a level reads the level's host
+    surface in place (`Backend::surface_texture`, `GfxBackend` binds the
+    surface's own view), with no write-back and no upload
+    (`Stats::rtt_direct_samples`), when:
+    - the texture is 2D, has one level and is `A8R8G8B8` or
+      `LIN_A8R8G8B8` (texels that read back unchanged, so the surface
+      holds what an upload of the written-back level would);
+    - a level has the same `Data`, format, size and pitch (the one drawn
+      into, if several do);
+    - the stage has no `COLORSIGN` (signed channels are stored biased);
+    - the level is not the target being drawn (that reads what the level
+      held before the draw, through guest memory, as before).
+    Otherwise the texture goes through the write-back and the texture
+    cache as before. Before the surface is used, it is refreshed from
+    guest memory like a bound target.
   - A dirty level is written back to guest memory through
-    `Backend::read_surface` and noted in the write tracker:
-    - when the target changes;
-    - before the texture is sampled;
-    - at `Swap`, `KickOff` and `PersistDisplay`;
-    - at the busy check `0x3fb710`;
-    - at teardown, which then destroys the host surfaces.
-  - A compressed format, or a header rewritten while its level holds
-    unwritten pixels, stops.
+    `Backend::read_surface` and noted in the write tracker. Lazily that is
+    when the guest is about to read it:
+    - `BlockOnResource` or the busy check `0x3fb710` on the level, its
+      texture, or a resource with the same `Data`;
+    - `BlockOnTime` (after a fence wait anything drawn before may be
+      read) and push-buffer callbacks (Halo's `0x24970` reads texels);
+    - a sample that cannot read the surface in place;
+    - `PersistDisplay`, a destroy of the level or its texture, a header
+      rewritten with another identity, and teardown, which then destroys
+      the host surfaces.
+    Not when the target changes, at `Swap` or at `KickOff`. Eagerly
+    (`set_rtt_direct(false)`, or a backend that cannot sample surfaces)
+    also at every target change, `Swap` and `KickOff`, and every busy
+    check or wait writes back all dirty levels.
+  - Lazily, the guest may write into a level whose pixels are only on the
+    host. Each level keeps its bytes from when surface and memory last
+    matched. When it is next bound, sampled or written back, a reported
+    write (or, under `Always`/`Verify`, any difference) is checked
+    against those bytes: unchanged bytes (a write report that changed
+    nothing) only move the match forward; changed ones win over the drawn
+    pixels, the merged level is written back, and the surface is filled
+    with it. A guest store of the byte the level already held there is
+    indistinguishable from no store, and takes the drawn pixel.
+  - A compressed format stops. Eagerly, a header rewritten while its
+    level holds unwritten pixels stops too.
   - **Depth levels.** A level bound as `pNewZStencil` (shadow maps; the
     first campaign level's first frame binds one at about present 4210)
     gets a host depth/stencil surface (`Backend::create_surface(..,
@@ -687,7 +725,8 @@ and allocations are bounded before anything is read:
     stencil, a non-zero `STENCILWRITEMASK` and some operation other than
     `KEEP`) and by clears of depth or stencil; a skipped draw dirties
     nothing. It is written back whenever either the colour or the
-    depth/stencil binding changes. A backend without `read_depth` stops
+    depth/stencil binding changes, lazily too (it is never sampled in
+    place). A backend without `read_depth` stops
     at the write-back.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other
@@ -1175,7 +1214,8 @@ guest code can look at it, and its time words say so.
   Releasing a binding stamps `Lock` with the current fence.
 - **The busy check** (`0x3fb710`, `D3DResource_IsBusy` inlined; `ECX` =
   resource, `EAX` = 0 or 1) runs as compiled, after draining the queue
-  and writing render-to-texture targets back:
+  and writing render-to-texture targets back (lazily only those of the
+  resource):
   1. Lock bits: busy while the resource holds an internal (binding)
      reference, `Common & 0x780000`. A surface (`Common & 0x70000 ==
      0x50000`) with a parent texture (`+0x14`) is busy if either holds
@@ -1380,7 +1420,7 @@ below:
   scissor. Partial clears render through `clear_rects`.
 - **Offscreen targets.** The `0x14850` targets are texture levels
   (`Parent` set by `0x3fb7a0`). They become render-to-texture targets
-  with write-back. `0x14bc0`'s Get2DSurfaceDesc (`0x3fdb20`) runs
+  sampled in place and written back lazily. `0x14bc0`'s Get2DSurfaceDesc (`0x3fdb20`) runs
   natively.
 - **Channels.** The wrapper `0x14b60` and the alpha-only clears
   (`0x13c3f`, when `0x4BA04C > 1`; `0x3c515`, `EAX = 0x10`, in `0x3c3c0`
@@ -1563,11 +1603,17 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   writes 1 for every sample that passes depth/stencil, so alpha test and
   `discard` are not applied to the count.
 
-- **Sampling render targets directly.** A level drawn into is written back
-  to guest memory and uploaded again as a texture. Binding the
-  `create_texture_target` surface's view (`Surface::view`) for the
-  texture would avoid the round trip. That needs the texture cache to map
-  a texture header to the surface.
+- **Sampling more render targets directly.** Only whole single-level
+  `A8R8G8B8`/`LIN_A8R8G8B8` textures read a level in place. Other formats
+  (`X8R8G8B8` reads alpha as one; 16-bit formats quantise on the way
+  back), mipmapped textures with a level drawn into, and `COLORSIGN`
+  stages still go through guest memory; each needs a view or a shader
+  path that reads the surface as the upload would.
+- **No guest read trap.** Lazy write-back trusts the guest to wait on a
+  level (`BlockOnResource`, the busy check, a fence, a callback) before
+  its CPU reads the texels, as the Xbox GPU's own asynchronous writes
+  require. A read that skips every wait sees the level as of its last
+  write-back.
 - **Depth as a texture on the GPU.** Textures over the depth buffer and
   sampled depth levels go through a CPU round trip: a readback, then a
   decode and an upload (and, for levels, guest memory). A pass that writes
