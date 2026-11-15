@@ -146,3 +146,29 @@ CPU/memory equivalence and the scheduled receipt race, repository location,
 transitive-header, new-shadow, and cross-source-directory reuse regressions.
 `cargo clippy -p cli -p emit --all-targets --release -j 2 -- -D warnings`
 was also clean with `RUSTC_WRAPPER=`.
+
+
+The second review also adds full output/cache-tree symlink rejection and
+`O_NOFOLLOW` on the transaction lock. The regression uses the review's valid
+synthetic XBE and a temporary Git repository, checking that source-directory
+and header-leaf aliases neither emit files into the repository nor overwrite
+a sentinel. ABI, pin, receipt, library, lock, external-cache and dangling
+aliases are covered too. A clean synthetic emission is the positive control.
+
+Object keys additionally fingerprint the effective `clang -###` driver
+configuration and reported configuration file contents. Real-clang probes
+cover `CCC_OVERRIDE_OPTIONS`, explicit `--config`, target-specific default
+configs, comment-only edits, and nested response-file option changes. Cached
+objects execute the new constant and match clean builds. Source-argument
+normalization leaves configuration paths and macro values unchanged. Prior
+full-image timings exclude this additional driver discovery and tree-inspection
+cost; no new full-image benchmark has been claimed.
+
+
+Second-review fixes validated after rebasing onto master `367d4ca`:
+136 tests passed, two explicitly ignored, no runtime skips, including retail
+entry CPU/memory equivalence. Commands were `cargo test -p cli -p emit
+--release -j 2 -- --test-threads=2` with `H2_XBE` set to the user's image and
+`cargo clippy -p cli -p emit --all-targets --release -j 2 -- -D warnings`.
+Both used `RUSTC_WRAPPER=` and a private target directory. The target and
+all scratch fixtures were removed after validation.

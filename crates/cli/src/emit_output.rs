@@ -2,6 +2,7 @@
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
 /// Resolve existing symlinks before interpreting `..`, including when the
@@ -42,6 +43,33 @@ pub fn location(path: &Path, allow_repo_output: bool) -> io::Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Managed output/cache trees may contain hard links, but never symlinks.
+/// Check directories and leaves, including dangling aliases, before writers
+/// can follow an existing src/header/ABI/pin/receipt/library destination.
+pub fn reject_symlinks(root: &Path) -> io::Result<()> {
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(path) = pending.pop() {
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            // A shared cache pruner can remove entries during inspection.
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(io::Error::other(format!(
+                "refusing symlinked output entry {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path)? {
+                pending.push(entry?.path());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// All writers sharing an output (including aliases) open the same lock
 /// inode. Keep it from before receipt validation until the final link/use.
 /// Closing this file releases flock, including on an error or process death.
@@ -56,16 +84,19 @@ impl OutputLock {
 
     fn acquire_with(out: &Path, operation: libc::c_int) -> io::Result<Self> {
         fs::create_dir_all(out)?;
+        let out = fs::canonicalize(out)?;
         // Never unlink this file: replacing the inode would split the lock.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(out.join(".h2-emit.lock"))?;
         loop {
             // SAFETY: file owns an open fd, and operation is a flock flag.
             if unsafe { libc::flock(file.as_raw_fd(), operation) } == 0 {
+                reject_symlinks(&out)?;
                 return Ok(Self { _file: file });
             }
             let error = io::Error::last_os_error();

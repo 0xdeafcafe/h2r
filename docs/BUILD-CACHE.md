@@ -28,7 +28,14 @@ receipt validation through emission, ABI installation, object compilation,
 pruning, linking and entry execution. Concurrent processes using the same
 output (including symlink aliases) serialize that entire transaction. The
 lock is released on return, failure or process death. The lock file stays
-in place so later writers lock the same inode.
+in place so later writers lock the same inode, and is opened with
+`O_NOFOLLOW`. After acquiring the lock, the CLI inspects every existing
+entry under the output and object-cache roots and rejects symlinks,
+including dangling links and directory aliases. This covers source/header,
+ABI, pin, receipt, library and cached-object destinations before any game
+output is written. `--allow-repo-output` permits a repository location;
+it does not permit descendant symlinks. Hard-linked cached objects remain
+supported. User-supplied root aliases are resolved before taking the lock.
 
 Rebuilding `h2` invalidates the receipt, including analyzer, IR, lifter or
 emitter edits without a crate version bump. This deliberately does not
@@ -48,7 +55,18 @@ runs again on warm builds, so new include-path shadows and conditional
 includes cannot reuse a stale dependency graph. This also covers nested
 headers and unchanged `CPATH`/`C_INCLUDE_PATH` directories whose files change.
 Output-local header names are relative in the key, preserving reuse across
-output directories. These keys supersede the earlier direct-header cache.
+output directories.
+
+Clang's expanded driver command (`-###`) is also fingerprinted for each
+translation unit with its actual flags and target. The key includes the
+contents of explicit and default configuration files reported by clang;
+expanded response-file options participate too. This detects a changed
+`--config` file even when `CCC_OVERRIDE_OPTIONS` and include dependencies
+are unchanged. Configuration comments also change the content key. Only the
+source-file operand is normalized for reuse across output locations;
+configuration options and macro values retain their full contents.
+These keys supersede earlier header-only keys, so existing objects rebuild
+once without requiring a manual cache clear.
 A change confined to one shard recompiles that shard. Sources use stable
 address buckets and oversized functions get their own file; the compiler
 schedules large sources first. Unchanged files keep their objects even
@@ -78,7 +96,7 @@ with strict floating-point behavior. `H2_OPT` also accepts `0`, `g`, `s`,
 can make guest execution slower; it is not the default.
 
 The CLI prints emission receipt validation, analysis, lift/plan, C emission,
-object dependency discovery/hash/pin work, clang wall time, archive validation/creation,
+object dependency/driver discovery, hash/pin work, clang wall time, archive validation/creation,
 host bridge compilation plus linking, and total wall time. A warm run still
 validates source and toolchain contents; `--run-entry` also rebuilds the
 small host bridge, links, loads and executes the image entry.

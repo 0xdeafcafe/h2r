@@ -26,6 +26,7 @@ impl Headers {
         src: &Path,
         root: &Path,
     ) -> Result<u64, Error> {
+        let driver = self.driver_fingerprint(cc, flags, arch, src)?;
         let output = Command::new(cc)
             .args(flags)
             .args(["-target", arch.triple(), "-M", "-MT", "h2"])
@@ -68,7 +69,8 @@ impl Headers {
         }
         dependencies.sort();
         dependencies.dedup();
-        let mut identity = b"h2-dependencies-v1\0".to_vec();
+        let mut identity = b"h2-dependencies-v2\0".to_vec();
+        identity.extend(driver.to_le_bytes());
         for (path, digest) in dependencies {
             let path = path.as_os_str().as_bytes();
             identity.extend((path.len() as u64).to_le_bytes());
@@ -77,6 +79,77 @@ impl Headers {
         }
         Ok(fnv64(&identity))
     }
+
+    /// -M lists C includes, not driver configurations. The dry run exposes
+    /// expanded options, including configuration/response-file arguments,
+    /// and identifies explicit and default configuration files that were read.
+    fn driver_fingerprint(
+        &self,
+        cc: &Path,
+        flags: &[String],
+        arch: Arch,
+        src: &Path,
+    ) -> Result<u64, Error> {
+        let output = Command::new(cc)
+            .args(flags)
+            .args(["-target", arch.triple(), "-###", "-c"])
+            .arg(src)
+            .args(["-o", "/dev/null"])
+            .output()
+            .map_err(err)?;
+        if !output.status.success() {
+            return Err(err(format!(
+                "driver configuration for {}: {}",
+                src.display(),
+                String::from_utf8_lossy(&output.stderr)
+            )));
+        }
+        let trace = [output.stdout, output.stderr].concat();
+        let mut identity = normalize(&trace, src);
+        let mut digests = self.digests.lock().unwrap();
+        for line in trace.split(|b| *b == b'\n') {
+            if let Some(name) = line.strip_prefix(b"Configuration file: ") {
+                let path = PathBuf::from(OsString::from_vec(name.to_vec()));
+                let digest = match digests.get(&path) {
+                    Some((_, digest)) => *digest,
+                    None => {
+                        let resolved = std::fs::canonicalize(&path).map_err(err)?;
+                        let digest = fnv64(&std::fs::read(&resolved).map_err(err)?);
+                        digests.insert(path, (resolved, digest));
+                        digest
+                    }
+                };
+                identity.extend(digest.to_le_bytes());
+            }
+        }
+        Ok(fnv64(&identity))
+    }
+}
+
+/// Normalize only the quoted translation-unit argument, preserving every
+/// expanded configuration option (including paths embedded in -D values).
+/// The basename is separately present in clang's -main-file-name option.
+fn normalize(trace: &[u8], source: &Path) -> Vec<u8> {
+    let mut quoted = b"\"-x\" \"c\" \"".to_vec();
+    for byte in source.as_os_str().as_bytes() {
+        if matches!(byte, b'\\' | b'"') {
+            quoted.push(b'\\');
+        }
+        quoted.push(*byte);
+    }
+    quoted.push(b'"');
+    let mut result = Vec::new();
+    let mut i = 0;
+    while i < trace.len() {
+        if trace[i..].starts_with(&quoted) {
+            result.extend(b"\"-x\" \"c\" \"<h2-source>\"");
+            i += quoted.len();
+        } else {
+            result.push(trace[i]);
+            i += 1;
+        }
+    }
+    result
 }
 
 /// The one `-MT h2` make rule produced by clang. Preserve escaped spaces,
@@ -126,6 +199,20 @@ fn parse(text: &[u8]) -> Result<Vec<PathBuf>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn driver_normalization_preserves_paths_in_configuration_options() {
+        let trace = br#"clang "-include" "/tmp/source/one.c" "-D" "LOCATION=/tmp/source/one.c" "-x" "c" "/tmp/source/one.c""#;
+        assert_eq!(
+            normalize(trace, Path::new("/tmp/source/one.c")),
+            br#"clang "-include" "/tmp/source/one.c" "-D" "LOCATION=/tmp/source/one.c" "-x" "c" "<h2-source>""#
+        );
+        let quoted = br#"clang "-x" "c" "/tmp/source \"quoted\"/one.c""#;
+        assert_eq!(
+            normalize(quoted, Path::new("/tmp/source \"quoted\"/one.c")),
+            br#"clang "-x" "c" "<h2-source>""#
+        );
+    }
 
     #[test]
     fn make_dependency_paths_preserve_escapes_and_non_utf8() {

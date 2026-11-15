@@ -953,6 +953,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn driver_configuration_contents_and_expanded_response_options_are_keyed() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED driver_configuration_contents_and_expanded_response_options_are_keyed: no clang");
+            return;
+        };
+        for mode in ["ccc", "explicit", "default"] {
+            let dir = std::env::temp_dir().join(format!("h2-driver-config-{mode}-{}", std::process::id()));
+            let src = tiny_tree(&dir.join("source \"quoted\""));
+            std::fs::create_dir_all(dir.join("configs")).unwrap();
+            let config = if mode == "default" {
+                dir.join("configs").join(format!("{}-clang.cfg", Arch::host().triple()))
+            } else {
+                dir.join("configs/flags.cfg")
+            };
+            std::fs::write(&config, "-DVALUE=1\n").unwrap();
+            std::fs::write(src.join("one.c"), "int h2_value(void) { return VALUE; }\n").unwrap();
+            let options = match mode {
+                "ccc" => format!("export CCC_OVERRIDE_OPTIONS='^--config={}'\nexec '{}' \"$@\"\n", config.display(), cc.display()),
+                "explicit" => format!("unset CCC_OVERRIDE_OPTIONS\nexec '{}' --no-default-config --config '{}' \"$@\"\n", cc.display(), config.display()),
+                _ => format!("unset CCC_OVERRIDE_OPTIONS\nexec '{}' --config-system-dir='{}' --config-user-dir='{}' \"$@\"\n", cc.display(), dir.join("configs").display(), dir.join("no-user-config").display()),
+            };
+            let wrapper = dir.join("clang");
+            std::fs::write(&wrapper, format!("#!/bin/sh\n{options}")).unwrap();
+            std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let out = dir.join("out");
+            let build = || build_with(&src, &out, Arch::host(), 1, &wrapper).unwrap();
+            let value = |build: &Build, name: &str| {
+                let dylib = dir.join(name);
+                host_dylib(build, &src, &[], &dylib).unwrap();
+                // SAFETY: the synthetic function and its signature are known,
+                // and the library remains loaded until after the call.
+                unsafe {
+                    let library = libloading::Library::new(dylib).unwrap();
+                    let function: libloading::Symbol<unsafe extern "C" fn() -> i32> = library.get(b"h2_value").unwrap();
+                    function()
+                }
+            };
+            let first = build();
+            assert_eq!((first.compiled, first.reused), (1, 0), "{mode}");
+            assert_eq!(value(&first, "first.dylib"), 1);
+            let warm = build();
+            assert_eq!((warm.compiled, warm.reused), (0, 1), "{mode}");
+            let identity = toolchain_identity(&wrapper);
+            std::fs::write(&config, "-DVALUE=2\n").unwrap();
+            assert_eq!(identity, toolchain_identity(&wrapper), "old probes miss {mode} config edits");
+            let changed = build();
+            assert_eq!((changed.compiled, changed.reused), (1, 0), "{mode}");
+            assert_ne!(first.objects, changed.objects);
+            assert_eq!(value(&changed, "changed.dylib"), 2);
+            let clean = build_in(&src, &dir.join("clean-out"), &dir.join("clean-cache"), Arch::host(), 1, &wrapper).unwrap();
+            assert_eq!(value(&clean, "clean.dylib"), 2);
+            // Even a configuration comment changes the configuration content
+            // key, while the expanded cc1 arguments remain the same.
+            std::fs::write(&config, "-DVALUE=2\n# new config comment\n").unwrap();
+            assert_eq!(build().compiled, 1, "{mode} config contents");
+            if mode == "ccc" {
+                let response = dir.join("response.rsp");
+                std::fs::write(&response, "-DVALUE=3\n").unwrap();
+                std::fs::write(&config, format!("@{}\n", response.display())).unwrap();
+                assert_eq!(value(&build(), "response-three.dylib"), 3);
+                std::fs::write(&response, "-DVALUE=4\n").unwrap();
+                let changed_response = build();
+                assert_eq!(changed_response.compiled, 1);
+                assert_eq!(value(&changed_response, "response-four.dylib"), 4);
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
     /// Another checkout pruning a shared cache to nothing between this
     /// build and its archive/link: the pins keep every input, the archive
     /// is complete, and the next build restores the cache from the pins.

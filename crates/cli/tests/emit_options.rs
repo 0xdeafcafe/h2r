@@ -147,3 +147,162 @@ fn repository_output_requires_the_explicit_override() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains("inside a git work tree"));
     assert!(sandbox.0.join("repo/generated/.h2-emit.lock").is_file());
 }
+
+/// Astra's complete synthetic image: one mov-eax-immediate/ret function,
+/// padding, and a kernel thunk. No retail image or instruction bytes.
+fn tiny_image() -> Vec<u8> {
+    fn put(image: &mut [u8], offset: usize, value: u32) {
+        image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+    let mut image = vec![0; 0x1200];
+    image[..4].copy_from_slice(b"XBEH");
+    for (offset, value) in [
+        (0x104, 0x10000),
+        (0x108, 0x1000),
+        (0x10c, 0x3000),
+        (0x118, 0x10400),
+        (0x11c, 2),
+        (0x120, 0x10200),
+        (0x128, 0x11000 ^ 0xa8fc57ab),
+        (0x158, 0x12000 ^ 0x5b6d40b6),
+    ] {
+        put(&mut image, offset, value);
+    }
+    for (at, va, name, raw, name_at) in [
+        (0x200, 0x11000, &b".text\0"[..], 0x1000, 0x280),
+        (0x238, 0x12000, &b".rdata\0"[..], 0x1100, 0x290),
+    ] {
+        for (offset, value) in [
+            (at, if va == 0x11000 { 6 } else { 2 }),
+            (at + 4, va),
+            (at + 8, 0x100),
+            (at + 12, raw),
+            (at + 16, 0x100),
+            (at + 20, 0x10000 + name_at as u32),
+        ] {
+            put(&mut image, offset, value);
+        }
+        image[name_at..name_at + name.len()].copy_from_slice(name);
+    }
+    image[0x1000..0x1100].fill(0xcc);
+    image[0x1000..0x1006].copy_from_slice(&[0xb8, 1, 0, 0, 0, 0xc3]);
+    put(&mut image, 0x1100, 0x8000005f);
+    image
+}
+
+#[test]
+fn synthetic_image_can_emit_without_repository_output() {
+    let sandbox = Sandbox::new("synthetic-control");
+    std::fs::write(sandbox.0.join("image.xbe"), tiny_image()).unwrap();
+    let out = sandbox.0.join("external");
+    let result = sandbox
+        .command()
+        .args(["--no-build", "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(out.join("src/h2gen.h").is_file());
+    assert!(out.join("src/shard_00011.c").is_file());
+}
+
+#[cfg(unix)]
+#[test]
+fn descendant_directory_and_file_symlinks_cannot_write_into_a_repository() {
+    for (relative, directory) in [
+        ("src", true),
+        ("src/h2gen.h", false),
+        ("src/h2abi.h", false),
+        ("pin", true),
+        ("pin/arm64", true),
+        ("pin/arm64/cached.o", false),
+        ("obj/cached.o", false),
+        ("emit-cache-v1", false),
+        ("libh2gen-host.dylib", false),
+        (".h2-emit.lock", false),
+    ] {
+        let sandbox = Sandbox::new("descendants");
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .arg(sandbox.0.join("repo"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(sandbox.0.join("image.xbe"), tiny_image()).unwrap();
+        let target = sandbox.0.join("repo/sentinel.h");
+        std::fs::write(&target, "sentinel\n").unwrap();
+        let target_dir = sandbox.0.join("repo/src-target");
+        std::fs::create_dir(&target_dir).unwrap();
+        let out = sandbox.0.join("external");
+        let alias = out.join(relative);
+        std::fs::create_dir_all(alias.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(if directory { &target_dir } else { &target }, &alias).unwrap();
+        let result = sandbox
+            .command()
+            .args(["--no-build", "--out"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            !result.status.success(),
+            "{relative} bypassed the output guard"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "sentinel\n",
+            "{relative}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&target_dir).unwrap().count(),
+            0,
+            "{relative}"
+        );
+        assert!(
+            !out.join("src/h2gen_registry.c").exists(),
+            "{relative}: generated before rejecting"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn external_cache_descendants_and_dangling_output_aliases_are_rejected() {
+    let sandbox = Sandbox::new("cache-descendants");
+    std::fs::write(sandbox.0.join("image.xbe"), tiny_image()).unwrap();
+    let out = sandbox.0.join("external");
+    let cache = sandbox.0.join("external-cache");
+    std::fs::create_dir(&cache).unwrap();
+    let target = sandbox.0.join("repo/sentinel.o");
+    std::fs::write(&target, "sentinel\n").unwrap();
+    std::os::unix::fs::symlink(&target, cache.join("cached.o")).unwrap();
+    let result = sandbox
+        .command()
+        .args(["--no-build", "--out"])
+        .arg(&out)
+        .env("H2_OBJ_CACHE", &cache)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("symlinked output entry"));
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "sentinel\n");
+    assert!(!out.join("src").exists());
+    std::fs::remove_file(cache.join("cached.o")).unwrap();
+    std::fs::create_dir_all(out.join("src")).unwrap();
+    let missing = sandbox.0.join("repo/missing.h");
+    std::os::unix::fs::symlink(&missing, out.join("src/h2gen.h")).unwrap();
+    let result = sandbox
+        .command()
+        .args(["--no-build", "--allow-repo-output", "--out"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("symlinked output entry"));
+    assert!(!missing.exists());
+}

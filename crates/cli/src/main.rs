@@ -633,6 +633,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     let out = emit_output::location(&out, opts.allow_repo_output)?;
     let object_cache = emit_output::location(&emit::compile::obj_dir(&out), opts.allow_repo_output)?;
     let _transaction = emit_output::OutputLock::acquire(&out)?;
+    emit_output::reject_symlinks(&object_cache)?;
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
     let src = out.join("src");

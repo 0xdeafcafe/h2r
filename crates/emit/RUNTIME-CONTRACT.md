@@ -351,7 +351,10 @@ also discovers every transitive include for each translation unit, including
 system/SDK and include-environment headers. The key includes their contents.
 Headers are hashed once per build; dependency discovery is repeated on cache
 lookup so newly added include shadows are detected. This work is reported
-in the cache stage. The toolchain identity covers the
+in the cache stage. The expanded `clang -###` invocation and the contents of
+explicit/default configuration files clang reports reading are keyed too;
+response-file option expansion is included. This handles config edits under
+unchanged environment paths. The toolchain identity covers the
 compiler executable, which is `clang` resolved on `PATH` once and then
 invoked by that path for every compile: its path, its symlink target and
 its content (size and mtime if over 64 MiB). It also covers that
@@ -392,3 +395,9 @@ The CLI serializes each complete output-directory transaction with
 installation, object/cache/pin work and final link/use. It rejects resolved
 output/cache paths inside a git work tree unless `--allow-repo-output` is
 explicitly supplied.
+
+After taking the output lock, the CLI rejects every existing descendant
+symlink in the output/cache trees, including directory, source/header, ABI,
+pin, receipt, library and object aliases. This check applies even with
+`--allow-repo-output`; the override changes only the repository-location
+policy. The lock file itself is opened with `O_NOFOLLOW`.
