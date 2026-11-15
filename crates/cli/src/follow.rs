@@ -1122,6 +1122,26 @@ impl GitCargoBuilder {
         step.run("cargo", &mut cargo)?;
         let built = target.join("release/h2");
 
+        // The web app `h2 play --live` serves from this checkout. A failure
+        // is logged and the game still runs, without it.
+        let web = checkout.join("web");
+        if web.join("package.json").is_file() {
+            let tree = crate::web_build::clean_tree(&web);
+            let bun = crate::web_build::find_bun();
+            match crate::web_build::ensure(
+                &web,
+                bun.as_deref(),
+                tree.as_deref(),
+                &mut |what, cmd| {
+                    log.line(&format!("building {short}: {what}"));
+                    step.run(what, cmd)
+                },
+            ) {
+                Ok(_) => {}
+                Err(e) => log.line(&format!("building {short}: no web app: {e}")),
+            }
+        }
+
         // The new h2 says whether the last generated game is still its own
         // (`h2 build --check`: the image, generator sources and module ABI
         // it was stamped with). An h2 too old to know --check fails it.
