@@ -233,6 +233,130 @@ fn many_draws_to_one_target_keep_their_uniforms() {
     }
 }
 
+/// Passes are merged by default, but a draw whose program can `discard`
+/// starts a render pass of its own: on Apple GPUs such a draw's
+/// implicit-LOD samples at triangle edges depend on what earlier draws in
+/// the same render pass left in the tile (docs/graphics.md, "Merged
+/// passes"). Three provider draws, the middle one alpha-tested: two render
+/// passes merged, three per draw, and the same pixels.
+#[test]
+fn a_draw_that_can_discard_starts_its_own_render_pass() {
+    let mut pixels = Vec::new();
+    for merge in [None, Some(false)] {
+        let Some((mut d, mut m)) = gpu() else {
+            return;
+        };
+        if let Some(merge) = merge {
+            d.backend.set_merge_passes(merge);
+        }
+        set_states(&mut d, &mut m);
+        tfactor_stage(&mut m);
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+        quads(
+            &mut m,
+            &[
+                (0.0, 0.0, 8.0, 8.0),
+                (8.0, 0.0, 16.0, 8.0),
+                (16.0, 0.0, 24.0, 8.0),
+            ],
+        );
+        bind_quad(&mut d, &mut m);
+        let l = d3d::GuestLayout::HALO2;
+        let before = d.backend.batch_stats();
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFFFF_0000)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        m.write_u32(l.render_state_slot(60), 1).unwrap(); // ALPHATESTENABLE
+        m.write_u32(l.render_state_slot(58), 0x204).unwrap(); // ALPHAFUNC = GREATER
+        m.write_u32(l.render_state_slot(61), 0x80).unwrap(); // ALPHAREF
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_FF00)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 4, 4).unwrap();
+        m.write_u32(l.render_state_slot(60), 0).unwrap();
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_00FF)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 8, 4).unwrap();
+        assert!(d.take_events().is_empty());
+        let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+        let after = d.backend.batch_stats();
+        assert_eq!(after.draws - before.draws, 3);
+        assert_eq!(after.passes - before.passes, 1, "one pending pass");
+        let render_passes = if merge.is_none() { 2 } else { 3 };
+        assert_eq!(
+            after.render_passes - before.render_passes,
+            render_passes,
+            "merge {merge:?}"
+        );
+        // B, G, R, A.
+        assert_eq!(pixel(&px, 4, 4), [0, 0, 0xFF, 0xFF]);
+        assert_eq!(pixel(&px, 12, 4), [0, 0xFF, 0, 0xFF]);
+        assert_eq!(pixel(&px, 20, 4), [0xFF, 0, 0, 0xFF]);
+        pixels.push(px);
+    }
+    assert!(pixels[0] == pixels[1], "merged and per-draw pixels differ");
+}
+
+/// With merged passes, a draw after one that writes only some colour
+/// channels starts a new render pass unless it writes the same channels:
+/// on Apple GPUs a later draw's edge pixels otherwise depend on that draw
+/// (docs/graphics.md, "Merged passes"). Three provider draws, the first
+/// with alpha writes off: two render passes merged, three per draw, and the
+/// same pixels.
+#[test]
+fn a_draw_after_a_partly_masked_draw_starts_a_new_render_pass() {
+    let mut pixels = Vec::new();
+    for merge in [None, Some(false)] {
+        let Some((mut d, mut m)) = gpu() else {
+            return;
+        };
+        if let Some(merge) = merge {
+            d.backend.set_merge_passes(merge);
+        }
+        set_states(&mut d, &mut m);
+        tfactor_stage(&mut m);
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+        quads(
+            &mut m,
+            &[
+                (0.0, 0.0, 8.0, 8.0),
+                (8.0, 0.0, 16.0, 8.0),
+                (16.0, 0.0, 24.0, 8.0),
+            ],
+        );
+        bind_quad(&mut d, &mut m);
+        let l = d3d::GuestLayout::HALO2;
+        let before = d.backend.batch_stats();
+        m.write_u32(l.render_state_slot(67), 0x0001_0101).unwrap(); // COLORWRITEENABLE = RGB
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0x00FF_0000)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        m.write_u32(l.render_state_slot(67), 0x0101_0101).unwrap(); // ALL
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_FF00)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 4, 4).unwrap();
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_00FF)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 8, 4).unwrap();
+        assert!(d.take_events().is_empty());
+        let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+        let after = d.backend.batch_stats();
+        assert_eq!(after.draws - before.draws, 3);
+        assert_eq!(after.passes - before.passes, 1, "one pending pass");
+        let render_passes = if merge.is_none() { 2 } else { 3 };
+        assert_eq!(
+            after.render_passes - before.render_passes,
+            render_passes,
+            "merge {merge:?}"
+        );
+        // B, G, R, A: the first quad keeps the cleared alpha.
+        assert_eq!(pixel(&px, 4, 4), [0, 0, 0xFF, 0xFF]);
+        assert_eq!(pixel(&px, 12, 4), [0, 0xFF, 0, 0xFF]);
+        assert_eq!(pixel(&px, 20, 4), [0xFF, 0, 0, 0xFF]);
+        pixels.push(px);
+    }
+    assert!(pixels[0] == pixels[1], "merged and per-draw pixels differ");
+}
+
 /// `XYZRHW | DIFFUSE | TEX1` quad over the 16x4 texture at `TEX_HEADER`,
 /// bound to stage 0 (default stage: texture times white diffuse).
 fn textured_quad(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {

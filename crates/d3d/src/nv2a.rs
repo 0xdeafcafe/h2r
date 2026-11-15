@@ -141,6 +141,7 @@ struct ProgramKey {
 struct Compiled {
     id: ShaderId,
     dims: StageDims,
+    discards: bool,
     warnings: Vec<String>,
 }
 
@@ -879,6 +880,7 @@ impl ShaderProvider for Nv2aShaders {
         Ok(PreparedShader {
             id: compiled.id,
             bind_groups,
+            discards: compiled.discards,
         })
     }
 
@@ -1251,6 +1253,7 @@ fn compile(
     Ok(Compiled {
         id,
         dims,
+        discards: ps.discards,
         warnings: ps.warnings,
     })
 }

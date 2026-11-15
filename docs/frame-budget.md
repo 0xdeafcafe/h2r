@@ -54,6 +54,9 @@ slower on the menu. On master, `h2 play` never merged: the variable was
 only read for `H2_BOOT_GFX`'s headless backend. So the user's `h2 play`
 numbers include a submit per draw. This branch makes `h2 play` honour
 `H2_GFX_MERGE_PASSES=1` too (opt-in, because a few edge pixels differ).
+Merged passes have since become the default for both, matching one pass
+per draw on the menu (graphics.md, "Merged passes"), so
+`H2_GFX_MERGE_PASSES=1` no longer changes anything.
 
 ## What a level frame is
 

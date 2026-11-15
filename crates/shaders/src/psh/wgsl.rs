@@ -106,6 +106,11 @@ pub struct PixelShader {
     pub textures: [Option<TextureDim>; 4],
     /// Whether [`PixelOptions::flat_shading`] was set.
     pub flat_shading: bool,
+    /// Whether `fs_main` can discard: a kill source (clip-plane texture
+    /// mode, alpha kill on a bound stage, an alpha test that can fail) or
+    /// the polygon stipple. A program with nothing to kill has no
+    /// `discard` at all.
+    pub discards: bool,
     /// Things that were approximated or dropped (unsupported modes, invalid
     /// registers). Empty for a faithful translation.
     pub warnings: Vec<String>,
@@ -396,6 +401,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     }
 
     s.push_str("\nfn xps_program(i: XpsInputs) -> XpsResult {\n    var kill = false;\n");
+    let mut kills = false;
     if options.two_sided_lighting {
         s.push_str("    var v0 = clamp(select(i.b0, i.d0, i.front), vec4f(0.0), vec4f(1.0));\n");
         s.push_str("    var v1 = clamp(select(i.b1, i.d1, i.front), vec4f(0.0), vec4f(1.0));\n");
@@ -533,6 +539,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
                         "<"
                     };
                     let _ = write!(l, "\n    kill = kill || ({tc}.{comp} {op} 0.0);");
+                    kills = true;
                 }
                 l
             }
@@ -620,6 +627,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
         }
         if options.alpha_kill[i] && textures[i].is_some() {
             let _ = writeln!(s, "    kill = kill || (t{i}.a == 0.0);");
+            kills = true;
         }
     }
 
@@ -734,9 +742,13 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     }
 
     match options.alpha_test {
-        Some(AlphaFunc::Never) => s.push_str("    kill = true;\n"),
+        Some(AlphaFunc::Never) => {
+            s.push_str("    kill = true;\n");
+            kills = true;
+        }
         Some(f) => {
             if let Some(op) = f.op() {
+                kills = true;
                 let _ = writeln!(
                     s,
                     "    kill = kill || !(round(color.a * 255.0) {op} xps.alpha_ref.x);"
@@ -763,13 +775,20 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
 "#,
         );
     }
-    s.push_str("    if (r.kill) { discard; }\n    return r.color;\n}\n");
+    // A `discard` the program can never take still changes how Apple GPUs
+    // shade the draw's edges when it shares a render pass with earlier
+    // draws (docs/graphics.md, "Merged passes"), so none is emitted.
+    if kills {
+        s.push_str("    if (r.kill) { discard; }\n");
+    }
+    s.push_str("    return r.color;\n}\n");
     let mut warnings = g.warnings;
     warnings.dedup();
     PixelShader {
         body: s,
         textures,
         flat_shading: options.flat_shading,
+        discards: kills || options.stipple,
         warnings,
     }
 }

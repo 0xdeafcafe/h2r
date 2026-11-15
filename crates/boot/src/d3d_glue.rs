@@ -60,11 +60,15 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     eprintln!("boot: gfx screenshot {swaps}: {e}");
                 }
             });
-            // H2_GFX_MERGE_PASSES=1: one render pass per target run of draws
-            // (gfx-perf). About 3x faster, but not pixel-exact.
-            if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "1") {
-                backend.set_merge_passes(true);
+            // Merged render passes are the default and pixel-identical to
+            // one render pass per draw; H2_GFX_MERGE_PASSES=0 gives the
+            // latter (about 3x slower), as an escape hatch.
+            if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
+                backend.set_merge_passes(false);
             }
+            // H2_GFX_MERGE_CHECK=N: compare merged and per-draw passes in
+            // frame N and print what differs.
+            backend.set_merge_check(std::env::var("H2_GFX_MERGE_CHECK").ok().and_then(|v| v.parse().ok()));
             install_with(rt, backend)
         }
     }

@@ -581,13 +581,18 @@ and allocations are bounded before anything is read:
   - Draws are batched. Consecutive draws to the same colour and depth
     surfaces, and a whole-target clear before them, are recorded into one
     pending pass (`gfx::Renderer::record`), with their vertices, indices
-    and uniforms packed into upload rings, and submitted together. Each
-    draw still gets a render pass of its own in that submission:
-    `GfxBackend::set_merge_passes(true)` encodes the whole pending pass as
-    one render pass, which costs less (no Metal render encoder per draw,
-    no attachment store and load between draws) but on Apple GPUs leaves a
-    few edge pixels a few levels off one pass per draw (22 pixels, up to 7
-    levels, on one menu frame), so it is off until that is understood. Any other surface operation
+    and uniforms packed into upload rings, and submitted together. The
+    pending pass is encoded as one render pass (no Metal render encoder
+    per draw, no attachment store and load between draws). Two kinds of
+    draw start a render pass of their own: one whose program can `discard`
+    (`PreparedShader::discards`: alpha test, alpha kill, a clip-plane
+    stage, the polygon stipple), and one after a draw that writes only
+    some colour channels, unless it writes the same ones. With those rules
+    the main menu's frames match one render pass per draw byte for byte;
+    `GfxBackend::set_merge_passes(false)` gives one render pass per draw,
+    the exact reference (docs/graphics.md, "Merged passes"). `GfxBackend::set_merge_check(Some(frame))` renders
+    every pending pass of that frame both ways and prints what differs.
+    Any other surface operation
     (another target, a partial clear, a read, write, copy, snapshot or
     destruction of a surface, `Swap`) submits the pending pass first. The
     target switch comes before the provider stages anything for the new
@@ -596,7 +601,8 @@ and allocations are bounded before anything is read:
     pass and a sum per visibility-tested draw) is submitted before the
     next draw too, on the same target: Metal loses the device at about
     2048 render passes in one command buffer, which one pass per draw
-    reaches at about 2048 draws to one target.
+    reaches at about 2048 draws to one target (merged passes reach it only
+    with that many draws that start their own pass).
     `GfxBackend::flush` submits by hand, and `GfxBackend::read_color`
     flushes before reading. Code that reads `GfxBackend::store` directly
     must flush first. `GfxBackend::batch_stats` counts draws, pending

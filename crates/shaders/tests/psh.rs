@@ -1329,3 +1329,54 @@ fn infinite_fog_coordinate_gives_the_mode_constant() {
     };
     assert_eq!(nan_exp2.factor(0.0), 0.0, "NaN exp2 result");
 }
+
+/// `fs_main` has a `discard` only when the program can kill: on Apple GPUs
+/// even a `discard` that is never taken changes the implicit-LOD samples at
+/// a draw's triangle edges when it shares a render pass with earlier draws,
+/// and the d3d backend gives draws that can discard a render pass of their
+/// own (`PixelShader::discards`).
+#[test]
+fn discard_only_when_the_program_can_kill() {
+    let plain = def(
+        &[(inputs(REG_V0, ONE, 0, 0), outputs(REG_R0, 0, 0, 0), 0, 0)],
+        [0; 4],
+    );
+    let textured = def(
+        &[(inputs(REG_T0, ONE, 0, 0), outputs(REG_R0, 0, 0, 0), 0, 0)],
+        [TEX_PROJECT2D, 0, 0, 0],
+    );
+    let clip = def(
+        &[(inputs(REG_V0, ONE, 0, 0), outputs(REG_R0, 0, 0, 0), 0, 0)],
+        [TEX_CLIPPLANE, 0, 0, 0],
+    );
+    let cases: [(&str, &PixelShaderDef, PixelOptions, bool); 7] = [
+        ("nothing kills", &plain, PixelOptions::default(), false),
+        ("textured, no alpha kill", &textured, PixelOptions::default(), false),
+        (
+            "alpha test always passes",
+            &plain,
+            PixelOptions { alpha_test: Some(psh::AlphaFunc::Always), ..Default::default() },
+            false,
+        ),
+        (
+            "alpha test",
+            &plain,
+            PixelOptions { alpha_test: Some(psh::AlphaFunc::Greater), ..Default::default() },
+            true,
+        ),
+        (
+            "alpha kill",
+            &textured,
+            PixelOptions { alpha_kill: [true, false, false, false], ..Default::default() },
+            true,
+        ),
+        ("clip plane", &clip, PixelOptions::default(), true),
+        ("stipple", &plain, PixelOptions { stipple: true, ..Default::default() }, true),
+    ];
+    for (what, d, opts, discards) in cases {
+        let t = psh::translate(d, &opts);
+        assert_eq!(t.discards, discards, "{what}");
+        assert_eq!(t.body.contains("discard;"), discards, "{what}");
+        shaders::validate(&t.module()).unwrap_or_else(|e| panic!("{what}: {e}"));
+    }
+}

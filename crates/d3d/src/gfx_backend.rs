@@ -43,8 +43,11 @@
 //! surfaces (another target, partial clears, surface reads, writes, copies
 //! and snapshots, destruction, present) first submits the pending pass, so
 //! the GPU sees the same operations in the same order as one pass per draw
-//! would give it. Each draw is still its own render pass within the
-//! submission unless [`GfxBackend::set_merge_passes`] is on (see there).
+//! would give it. The pending pass is encoded as one render pass, except
+//! that a draw whose program can `discard`, or that follows a draw writing
+//! only some colour channels, starts a render pass of its own (see
+//! [`GfxBackend::set_merge_passes`]); with merging off every draw gets its
+//! own render pass.
 //!
 //! Visibility tests: a draw issued while `SET_ZPASS_PIXEL_COUNT_ENABLE` is
 //! set has its samples counted into a [`gfx::occlusion::PixelCounter`]
@@ -93,6 +96,9 @@ struct PendingPass {
     draws: Vec<RecordedDraw>,
     /// Passes (render and compute) its draws will be encoded as, about.
     encoded: usize,
+    /// Each draw's number in its frame (backend `draw` calls since the last
+    /// present, from 0), for the merge self-check.
+    tags: Vec<u64>,
 }
 
 /// Passes one submission may hold before the pending pass is submitted and
@@ -120,6 +126,12 @@ pub struct GfxBackend {
     counter: Option<PixelCounter>,
     reports: HashMap<u64, PixelReport>,
     next_ticket: u64,
+    /// Presents so far plus one.
+    frame: u64,
+    /// Backend `draw` calls in this frame so far.
+    frame_draw: u64,
+    /// The frame whose passes the merge self-check compares.
+    merge_check_frame: Option<u64>,
 }
 
 /// How draws were grouped into passes and submissions.
@@ -151,10 +163,13 @@ impl GfxBackend {
             present_hook: None,
             pending: None,
             stats: BatchStats::default(),
-            merge_passes: false,
+            merge_passes: true,
             counter: None,
             reports: HashMap::new(),
             next_ticket: 0,
+            frame: 1,
+            frame_draw: 0,
+            merge_check_frame: None,
         }
     }
 
@@ -163,14 +178,28 @@ impl GfxBackend {
         self.stats
     }
 
-    /// Encode the draws of a pending pass into one render pass instead of
-    /// one render pass per draw (both in one submission). Off by default:
-    /// merged passes are cheaper for the GPU (no attachment store and load
-    /// between draws) but on Apple GPUs a few edge pixels of some draws come
-    /// out a few levels different from one pass per draw, so output is not
-    /// pixel-identical to it.
+    /// Encode the draws of a pending pass into one render pass (the
+    /// default) or one render pass per draw (both in one submission).
+    /// Merged passes cost much less (no Metal render encoder per draw, no
+    /// attachment store and load between draws). A draw whose program can
+    /// `discard` (`PreparedShader::discards`), or that follows a draw
+    /// writing only some colour channels (unless it writes the same ones),
+    /// still starts a render pass of its own, because on Apple GPUs its
+    /// edge pixels otherwise depend on earlier draws in the pass. With
+    /// those rules the main menu matches one pass per draw byte for byte;
+    /// one pass per draw is the exact reference (docs/graphics.md, "Merged
+    /// passes").
     pub fn set_merge_passes(&mut self, merge: bool) {
         self.merge_passes = merge;
+    }
+
+    /// Compare merged and per-draw render passes for every pending pass of
+    /// `frame` (presents so far plus one) and print what differs to
+    /// stderr: the pixels, the first draw that shows it and a smallest set
+    /// of earlier draws it needs (draw numbers count backend `draw` calls
+    /// in the frame, as `H2_BOOT_CAPTURE` does). Slow: a diagnostic.
+    pub fn set_merge_check(&mut self, frame: Option<u64>) {
+        self.merge_check_frame = frame;
     }
 
     /// Replaces the shader translator for textured and programmable draws.
@@ -246,10 +275,16 @@ impl GfxBackend {
 
     /// Submits the pending pass, if any.
     pub fn flush(&mut self) -> Result<(), String> {
-        let Some(p) = self.pending.take() else {
+        let Some(mut p) = self.pending.take() else {
             return Ok(());
         };
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        if self.merge_check_frame == Some(self.frame)
+            && p.draws.len() > 1
+            && !p.draws.iter().any(RecordedDraw::counts_samples)
+        {
+            self.merge_check(&mut p)?;
+        }
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "flush pass")
             .arg("draws", p.draws.len() as u64);
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
@@ -279,6 +314,199 @@ impl GfxBackend {
             .map_err(|e| e.to_string())?;
         self.submit(enc);
         self.stats.passes += 1;
+        Ok(())
+    }
+
+    /// The merge self-check ([`set_merge_check`](Self::set_merge_check)):
+    /// renders `p` merged and with one render pass per draw from the same
+    /// starting attachments, reports the pixels that differ, and narrows a
+    /// difference down to the first draw that shows it and a smallest set of
+    /// earlier draws it needs. Leaves the attachments and `p` as they were.
+    fn merge_check(&mut self, p: &mut PendingPass) -> Result<(), String> {
+        let ctx = &self.ctx;
+        self.renderer.flush_uploads(&ctx.queue);
+        if let Some(s) = self.shaders.as_mut() {
+            s.flush_uploads(ctx);
+        }
+        let surface = |id| {
+            self.store
+                .get(id)
+                .map(|s| s.texture().clone())
+                .map_err(|e| format!("{e:?}"))
+        };
+        let mut attachments = vec![surface(p.color)?];
+        if let Some(d) = p.depth {
+            attachments.push(surface(d)?);
+        }
+        if attachments
+            .iter()
+            .any(|t| t.size() != attachments[0].size() || t.sample_count() > 1)
+        {
+            eprintln!("merge-check: padded or multisampled target, skipped");
+            return Ok(());
+        }
+        let backups: Vec<wgpu::Texture> = attachments
+            .iter()
+            .map(|t| {
+                ctx.device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("merge check backup"),
+                    size: t.size(),
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: t.format(),
+                    usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST,
+                    view_formats: &[],
+                })
+            })
+            .collect();
+        let copy_all = |from_backup: bool| {
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            for (t, b) in attachments.iter().zip(&backups) {
+                let (src, dst) = if from_backup { (b, t) } else { (t, b) };
+                enc.copy_texture_to_texture(src.as_image_copy(), dst.as_image_copy(), src.size());
+            }
+            ctx.queue.submit([enc.finish()]);
+        };
+        copy_all(false);
+        let merged_flags: Vec<bool> = p.draws.iter().map(RecordedDraw::starts_pass).collect();
+        let store = &self.store;
+        // Renders the draws `sel` (indices into `draws`, in order) from the
+        // backed-up attachments, merged (each draw's own flag) or one render
+        // pass per draw, and reads the colour back.
+        let render = |draws: &mut Vec<RecordedDraw>,
+                      sel: &[usize],
+                      merged: bool|
+         -> Result<Vec<u8>, String> {
+            let mut slots: Vec<Option<RecordedDraw>> = draws.drain(..).map(Some).collect();
+            let mut picked: Vec<RecordedDraw> = sel
+                .iter()
+                .map(|&i| {
+                    let mut d = slots[i].take().expect("indices are distinct");
+                    d.set_start_pass(!merged || merged_flags[i]);
+                    d
+                })
+                .collect();
+            copy_all(true);
+            let mut result = store.target(p.color, p.depth).map_err(|e| e.to_string());
+            if let Ok(target) = &result {
+                // Bounded submissions: Metal loses the device at about 2048
+                // render passes in one command buffer.
+                let mut clear = p.clear;
+                let mut encoded = Ok(());
+                for chunk in picked.chunks(MAX_ENCODED_PASSES / 2) {
+                    let mut enc = ctx.device.create_command_encoder(&Default::default());
+                    encoded = encoded.and(
+                        Renderer::encode_pass(ctx, &mut enc, target, clear, chunk, None)
+                            .map(|_| ())
+                            .map_err(|e| e.to_string()),
+                    );
+                    clear = Clear::NONE;
+                    ctx.queue.submit([enc.finish()]);
+                }
+                if let Err(e) = encoded {
+                    result = Err(e);
+                }
+            }
+            for (&i, d) in sel.iter().zip(picked.drain(..)) {
+                slots[i] = Some(d);
+            }
+            draws.extend(
+                slots
+                    .into_iter()
+                    .map(|d| d.expect("every draw is put back")),
+            );
+            result?;
+            Ok(store
+                .read_color(ctx, p.color)
+                .map_err(|e| format!("{e:?}"))?
+                .0)
+        };
+        let differs = |draws: &mut Vec<RecordedDraw>, sel: &[usize]| -> Result<bool, String> {
+            Ok(render(draws, sel, true)? != render(draws, sel, false)?)
+        };
+        let all: Vec<usize> = (0..p.draws.len()).collect();
+        let tags = p.tags.clone();
+        let width = attachments[0].width() as usize;
+        let draws = &mut p.draws;
+        let merged = render(draws, &all, true)?;
+        let split = render(draws, &all, false)?;
+        let differing: Vec<usize> = (0..merged.len() / 4)
+            .filter(|&i| merged[i * 4..i * 4 + 4] != split[i * 4..i * 4 + 4])
+            .collect();
+        let max = merged
+            .iter()
+            .zip(&split)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        eprintln!(
+            "merge-check frame {}: pass of {} draws (draws {}..={} of the frame): {} pixels differ, by up to {max}",
+            self.frame,
+            all.len(),
+            tags[0],
+            tags[all.len() - 1],
+            differing.len()
+        );
+        for &i in differing.iter().take(8) {
+            let at = |px: &[u8]| -> [u8; 4] { px[i * 4..i * 4 + 4].try_into().expect("4 bytes") };
+            eprintln!(
+                "  ({}, {}): merged {:?}, per draw {:?}",
+                i % width,
+                i / width,
+                at(&merged),
+                at(&split)
+            );
+        }
+        if !differing.is_empty() {
+            // The shortest prefix that differs ends at the first draw that
+            // shows the difference.
+            let (mut lo, mut hi) = (1, all.len());
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if differs(draws, &all[..mid])? {
+                    hi = mid;
+                } else {
+                    lo = mid + 1;
+                }
+            }
+            let last = lo - 1;
+            // Drop earlier draws, in halving chunks, while the difference
+            // stays.
+            let mut set: Vec<usize> = (0..last).collect();
+            let mut chunk = set.len().div_ceil(2).max(1);
+            loop {
+                let mut i = 0;
+                while i < set.len() {
+                    let mut trial = set.clone();
+                    trial.drain(i..(i + chunk).min(set.len()));
+                    trial.push(last);
+                    if differs(draws, &trial)? {
+                        trial.pop();
+                        set = trial;
+                    } else {
+                        i += chunk;
+                    }
+                }
+                if chunk == 1 {
+                    break;
+                }
+                chunk = chunk.div_ceil(2);
+            }
+            set.push(last);
+            eprintln!(
+                "  first differs at draw {} of the frame; smallest set that still differs: {:?}",
+                tags[last],
+                set.iter().map(|&i| tags[i]).collect::<Vec<_>>()
+            );
+            for &i in &set {
+                eprintln!("    draw {}: {}", tags[i], draws[i].describe());
+            }
+        }
+        copy_all(true);
+        for (d, on) in draws.iter_mut().zip(merged_flags) {
+            d.set_start_pass(on);
+        }
         Ok(())
     }
 
@@ -317,6 +545,7 @@ impl GfxBackend {
             clear: Clear::NONE,
             draws: Vec::new(),
             encoded: 1,
+            tags: Vec::new(),
         }))
     }
 
@@ -345,6 +574,7 @@ impl GfxBackend {
         depth: Option<SurfaceId>,
         draw: &Draw<'_>,
         first: bool,
+        discards: bool,
     ) -> Result<(), String> {
         debug_assert!(
             self.pending
@@ -357,19 +587,35 @@ impl GfxBackend {
                 .record(&self.ctx, &target, draw)
                 .map_err(|e| e.to_string())?
         };
+        // With merged passes, a draw that can discard, or that follows a
+        // draw writing only some colour channels (unless it writes the same
+        // ones), starts a render pass of its own: on Apple GPUs its edge
+        // pixels otherwise depend on earlier draws in the pass
+        // (docs/graphics.md, "Merged passes").
+        let after_masked = self
+            .pending
+            .as_ref()
+            .and_then(|p| p.draws.last())
+            .is_some_and(|prev| {
+                let mask = prev.color_writes();
+                mask != wgpu::ColorWrites::ALL && mask != recorded.color_writes()
+            });
+        let own_pass = first && (!self.merge_passes || discards || after_masked);
         // A counted draw adds its count pass and the sum, and the draws
         // after it resume in a new render pass.
         let encoded = if recorded.counts_samples() {
             3
         } else {
-            usize::from(first && !self.merge_passes)
+            usize::from(own_pass)
         };
-        if first && !self.merge_passes {
+        if own_pass {
             recorded.start_pass();
         }
+        let tag = self.frame_draw.wrapping_sub(1);
         let pending = self.pending_for(color, depth)?;
         pending.draws.push(recorded);
         pending.encoded += encoded;
+        pending.tags.push(tag);
         self.stats.draws += 1;
         Ok(())
     }
@@ -456,6 +702,7 @@ impl Backend for GfxBackend {
         {
             self.flush()?;
         }
+        self.frame_draw += 1;
         self.switch_to(color, depth)?;
         let streams: Vec<VertexStream<'_>> = d
             .streams
@@ -534,7 +781,7 @@ impl Backend for GfxBackend {
                 )
             };
             for (i, piece) in split(draw, &pieces).iter().enumerate() {
-                self.record(color, depth, piece, i == 0)?;
+                self.record(color, depth, piece, i == 0, false)?;
             }
             return Ok(DrawOutcome::Drawn);
         }
@@ -567,7 +814,7 @@ impl Backend for GfxBackend {
             )
         };
         for (i, piece) in split(draw, &pieces).iter().enumerate() {
-            self.record(color, depth, piece, i == 0)?;
+            self.record(color, depth, piece, i == 0, prepared.discards)?;
         }
         Ok(DrawOutcome::Drawn)
     }
@@ -835,6 +1082,8 @@ impl Backend for GfxBackend {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
+        self.frame += 1;
+        self.frame_draw = 0;
         if let Some(s) = self.shaders.as_mut() {
             s.end_frame();
         }

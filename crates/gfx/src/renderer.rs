@@ -392,6 +392,14 @@ pub struct RecordedDraw {
     /// [`encode_pass`](Renderer::encode_pass) opens a new render pass for
     /// this draw.
     new_pass: bool,
+    /// The pipeline's shader and fixed-function state, for
+    /// [`describe`](Self::describe).
+    state: Box<(
+        ShaderId,
+        wgpu::PrimitiveState,
+        Option<wgpu::DepthStencilState>,
+        wgpu::ColorTargetState,
+    )>,
 }
 
 impl RecordedDraw {
@@ -404,6 +412,48 @@ impl RecordedDraw {
     /// encoder) at this draw instead of continuing the previous draw's.
     pub fn start_pass(&mut self) {
         self.new_pass = true;
+    }
+
+    /// A summary of what the draw binds (vertex and index ranges, group
+    /// offsets, viewport, scissor, stencil reference, blend constant) and of
+    /// its pipeline (shader, primitive, depth and stencil, blend and write
+    /// mask), for diagnostics.
+    pub fn describe(&self) -> String {
+        let (shader, primitive, depth_stencil, color) = &*self.state;
+        format!(
+            "vb={:?} idx={:?} n={} builtin={} groups={:?} vp={:?} sc={:?} sref={} bc={:?}\n      shader={shader:?} primitive={primitive:?}\n      depth_stencil={depth_stencil:?}\n      color={color:?}",
+            self.vertex_buffers
+                .iter()
+                .map(|(b, o, l)| (b.size(), *o, *l))
+                .collect::<Vec<_>>(),
+            self.indices.as_ref().map(|(b, o, l)| (b.size(), *o, *l)),
+            self.vertices,
+            self.builtin.is_some(),
+            self.bind_groups
+                .iter()
+                .map(|g| (g.index, g.offsets.clone()))
+                .collect::<Vec<_>>(),
+            self.viewport,
+            self.scissor,
+            self.stencil_ref,
+            self.blend_constant,
+        )
+    }
+
+    /// The colour channels the draw writes.
+    pub fn color_writes(&self) -> wgpu::ColorWrites {
+        self.state.3.write_mask
+    }
+
+    /// Whether [`encode_pass`](Renderer::encode_pass) opens a new render
+    /// pass for this draw.
+    pub fn starts_pass(&self) -> bool {
+        self.new_pass
+    }
+
+    /// Sets or clears [`start_pass`](Self::start_pass).
+    pub fn set_start_pass(&mut self, on: bool) {
+        self.new_pass = on;
     }
 }
 
@@ -805,6 +855,7 @@ impl Renderer {
             stencil_ref: d.state.stencil.reference as u32,
             count,
             new_pass: false,
+            state: Box::new((d.shader, key.primitive, key.depth_stencil, key.color_target)),
         })
     }
 

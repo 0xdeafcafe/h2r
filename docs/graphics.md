@@ -315,6 +315,66 @@ submitted, so a region reused after the reset never races a draw still
 reading it. A ring that fills moves to a new, larger buffer; draws recorded
 earlier keep the old one.
 
+### Merged passes
+
+`GfxBackend` encodes a pending pass (consecutive draws to one target) as
+one render pass by default, for speed: about 6 fps at the main menu
+against about 2.5 with one render pass per draw. On Apple GPUs (Metal
+through wgpu 30) a few draws' edge pixels depend on what earlier draws in
+the same render pass left in the tile, so two kinds of draw start a
+render pass of their own:
+
+- a draw whose program can `discard`;
+- a draw after one that writes only some colour channels, unless it
+  writes the same channels.
+
+With both rules, a menu run to present 560 with a frame every 20 gives
+the same bytes merged and per draw on all 29 frames. The rules were found
+on that run and are not proven in general. `H2_GFX_MERGE_PASSES=0`
+(`GfxBackend::set_merge_passes(false)`) gives one render pass per draw,
+which is the exact reference.
+
+The first case: in the main menu (frame 480) a strip drawn additively at
+draw 594 of the frame came out up to 91 levels different on 32 edge pixels
+whenever draw 324, 270 draws earlier, was in the same render pass. Replayed
+offline, the two draws alone reproduce it. One fragment of draw 324 at
+(256, 63), which is not one of the pixels that differ, is enough, and its
+colour output does not matter. A built-in-shader quad over that pixel
+triggers it only with blending on, a passing depth test and the alpha write
+masked, the way draw 324 draws. Draw 594 sampling at an explicit level 0,
+or without its `discard`, gives none, even though its `discard` is never
+taken (its program has no kill source). Re-setting every piece of render
+pass state before each draw changes nothing, so this is not state left
+bound in wgpu or wgpu-hal.
+
+The second case (frame 460, 119 pixels, up to 110 levels): two additive
+draws of the same mesh, 635 and 636, with depth tested LessEqual and not
+written. Draw 635 writes only red, green and blue; draw 636 writes all
+four channels and has no `discard`. Starting a new render pass at 636
+makes it exact.
+
+Both cases have an earlier blended draw with the alpha write masked,
+so the alpha write mask looks like the trigger, and implicit-LOD
+sampling at triangle edges looks like what shows it. Neither shows in
+random synthetic scenes (blended triangles, D16 and D24S8 depth-equal
+tests, MSAA, a discarding textured strip after a blended triangle), so
+the regression tests pin the rules rather than the GPU behaviour:
+
+- the pixel shader generator emits `discard` only when the program can
+  kill (`PixelShader::discards`, tested in `shaders/tests/psh.rs`), so
+  most programs have none and stay merged;
+- the d3d backend gives each draw whose program can discard, and each
+  draw after a partly masked draw with a different mask, a render pass of
+  its own (`crates/d3d/tests/batching.rs`).
+
+The built-in pre-transformed shader also has a `discard` (alpha test) but
+samples no textures, so its draws stay merged. To look for another case,
+`H2_GFX_MERGE_CHECK=<frame>` (boot; `GfxBackend::set_merge_check`) renders
+each pending pass of that frame both merged and one pass per draw,
+prints the pixels that differ, and narrows them down to the first draw
+that shows the difference and a smallest set of earlier draws it needs,
+with each draw's bindings and pipeline state.
+
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 
 | D3D state | wgpu |

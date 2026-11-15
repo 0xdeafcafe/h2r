@@ -95,9 +95,9 @@ scripted run goes through the same `KeyboardMouse`, `InputManager` and XAPI
 as a person's keys. Hold keys for one present at the menu's frame rate
 (`START@f330+2,DOWN@f455+1,Enter@f475+1`): the menus autorepeat, and at one
 or two presents a second a 4-present hold moves the cursor twice.
-`H2_BOOT_GFX` is ignored: frames go to the window. `H2_GFX_MERGE_PASSES=1` merges
-consecutive draws to one target into one render pass, as for `h2 run`:
-faster, not pixel-exact.
+`H2_BOOT_GFX` is ignored: frames go to the window. As for `h2 run`,
+consecutive draws to one target share a render pass, and
+`H2_GFX_MERGE_PASSES=0` gives one render pass per draw.
 
 How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/BOOT.md
 "Hosted runs"):

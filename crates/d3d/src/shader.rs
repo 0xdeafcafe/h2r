@@ -70,6 +70,10 @@ pub struct PreparedShader {
     pub id: ShaderId,
     /// Bind groups for `Draw::bind_groups`.
     pub bind_groups: Vec<gfx::BoundGroup>,
+    /// The fragment shader can `discard`. With merged passes such a draw
+    /// starts a render pass of its own (see
+    /// [`GfxBackend::set_merge_passes`](crate::GfxBackend::set_merge_passes)).
+    pub discards: bool,
 }
 
 /// Turns a draw into a registered gfx shader.
