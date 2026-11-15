@@ -146,15 +146,30 @@ fn the_render_thread_makes_the_same_backend_calls() {
 
 #[test]
 fn the_render_thread_draws_the_same_pixels() {
-    let (ctx_a, ctx_b) = match (gfx::GfxContext::headless(), gfx::GfxContext::headless()) {
-        (Ok(a), Ok(b)) => (a, b),
-        (Err(e), _) | (_, Err(e)) => {
-            eprintln!("skipping GPU test: {e}");
-            return;
-        }
-    };
-    let (mut a, mut am, seen_a) = scenario(GfxBackend::new(ctx_a));
-    let (mut b, mut bm, seen_b) = scenario(ThreadedBackend::new(GfxBackend::new(ctx_b)).unwrap());
+    // Without and with the persistent pipeline cache, whose compile
+    // workers and per-present maintenance move to the render thread with
+    // the backend.
+    let dir = std::env::temp_dir().join(format!("d3d-threaded-pipelines-{}", std::process::id()));
+    for cache in [false, true] {
+        let (ctx_a, ctx_b) = match (gfx::GfxContext::headless(), gfx::GfxContext::headless()) {
+            (Ok(a), Ok(b)) => (a, b),
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("skipping GPU test: {e}");
+                return;
+            }
+        };
+        let make = |ctx, name: &str| {
+            let g = GfxBackend::new(ctx);
+            if cache { g.with_pipeline_cache(dir.join(name)) } else { g }
+        };
+        same_pixels(make(ctx_a, "a"), make(ctx_b, "b"));
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn same_pixels(direct: GfxBackend, queued: GfxBackend) {
+    let (mut a, mut am, seen_a) = scenario(direct);
+    let (mut b, mut bm, seen_b) = scenario(ThreadedBackend::new(queued).unwrap());
     assert_eq!(seen_a, seen_b, "what the guest observed");
     assert_eq!(a.take_events(), b.take_events());
     assert_eq!(a.stats(), b.stats());
@@ -175,6 +190,10 @@ fn the_render_thread_draws_the_same_pixels() {
     );
     let batches = b.backend.with_inner(|g| g.batch_stats()).unwrap();
     assert_eq!(a.backend.batch_stats(), batches);
+    // The same pipelines were built behind the render thread.
+    let pipelines = b.backend.with_inner(|g| g.renderer.cache().len()).unwrap();
+    assert!(pipelines > 0);
+    assert_eq!(a.backend.renderer.cache().len(), pipelines);
 }
 
 #[test]

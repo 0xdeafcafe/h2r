@@ -19,13 +19,20 @@
 //!   `surface_texture`, `report_pixel_count`) are proxies made on the
 //!   guest's side at once; the render thread maps them to the inner
 //!   backend's.
-//! - **Outcomes** (`draw`, `clear_rects`, `write_surface`, `copy_surface`,
-//!   `snapshot_surface`, `surface_texture`) are answered as the inner
-//!   backend answers when it can: drawn, `true`, `Some`. When the inner
-//!   backend later gives another answer the speculation was wrong; that is
-//!   latched as an error, so the next call stops the guest instead of
-//!   running on with device state that differs from a synchronous run.
-//!   [`ThreadedBackend::misses`] counts them.
+//! - **Draw outcomes** come from the inner backend's [`DrawJudge`]
+//!   ([`Backend::judge`]), which decides on the guest's side, from the
+//!   draw and whether each bound texture has a view, what the inner
+//!   backend's `draw` will answer: an untranslatable draw is skipped with
+//!   the same reason, as with a synchronous backend. Without a judge they
+//!   are speculated as drawn.
+//! - **Other outcomes** (`clear_rects`, `write_surface`, `copy_surface`,
+//!   `snapshot_surface`, `surface_texture`, `depth_alias_texture`) are
+//!   answered as the inner backend answers every valid call: drawn,
+//!   `true`, `Some`.
+//! - When the inner backend later gives another answer than the one
+//!   returned, that is latched as an error, so the next call stops the
+//!   guest instead of running on with device state that differs from a
+//!   synchronous run. [`ThreadedBackend::misses`] counts them.
 //! - **Errors** from the inner backend are latched the same way and
 //!   returned by the next call (a failure is a stop either way; the stop
 //!   comes at a later entry than with a synchronous backend).
@@ -48,7 +55,7 @@ use std::thread::JoinHandle;
 use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::{Clear, D3DFormat};
 
-use crate::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
+use crate::backend::{Backend, DrawJudge, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
 
 /// Presents the guest may run ahead of the render thread before `Swap`
 /// waits (wall time only). Two, like D3D's default swap throttling.
@@ -188,7 +195,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     waits: Waits,
     /// The inner backend's draw outcomes, answered here (`None`: they are
     /// speculated as drawn).
-    judge: Option<Box<dyn crate::backend::DrawJudge>>,
+    judge: Option<Box<dyn DrawJudge>>,
     /// Each live surface's format and kind (for the judge's views).
     surface_formats: HashMap<u32, (D3DFormat, bool)>,
     /// Depth-alias decodes seen: description, signs, whether it has a view.

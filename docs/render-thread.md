@@ -94,21 +94,31 @@ Each `Backend` method falls in one of three classes
    render thread maps it to the inner backend's handle when it reaches
    the command. A proxy texture freed by the device is freed on the
    render thread after the work queued before the drop.
-3. **Outcomes** (`draw`, `clear_rects`: `Drawn`; `write_surface`,
+3. **Draw outcomes** are decided on the guest's side. The device's state
+   depends on them: a drawn draw marks an RTT level dirty and bumps the
+   depth generation, a skipped one records `Event::DrawSkipped`.
+   `Backend::judge` gives a `DrawJudge`, made before the backend moves to
+   the render thread, that answers what `draw` will return from the draw
+   and whether each bound texture has a sampleable view (known from the
+   texture's host format when its proxy is made). For `GfxBackend` it
+   runs the same routing function `draw` does (`route`: built-in shader,
+   provider, or skipped), and for the provider `Nv2aJudge`, which builds
+   the same program key (`program_key`) and runs the same WGSL
+   translation and validation (`translate`), cached by key the way
+   `prepare` caches compiles. So an untranslatable draw is skipped with
+   the same reason as with the synchronous backend, and the run goes on.
+   The draw still goes to the render thread, because `GfxBackend`
+   submits a pending pass for another target before it skips.
+4. **Other outcomes** (`clear_rects`: `Drawn`; `write_surface`,
    `copy_surface`: `true`; `snapshot_surface`, `surface_texture`,
-   `report_pixel_count`: `Some`): answered at once with the answer
-   `GfxBackend` gives for every valid call. The device's state depends on
-   them: a drawn draw marks an RTT level dirty and bumps the depth
-   generation, a skipped one records `Event::DrawSkipped`. If the render
-   thread later gets another answer, the speculation was wrong; it is
-   latched, and the **next backend call fails** with a named error, so the
-   run stops instead of continuing with a device that differs from a
+   `report_pixel_count`, `depth_alias_texture`: `Some`) are answered at
+   once with the answer `GfxBackend` gives for every valid call.
+5. **Checks.** If the render thread later gets an answer other than the
+   one returned (a judge that disagrees, or one of the above), it is
+   latched and the **next backend call fails** with a named error. The run
+   then stops instead of continuing with a device that differs from a
    synchronous run. `ThreadedBackend::misses` counts them.
-   `GfxBackend` skips a draw only when the nv2a translator cannot
-   translate it (`Nv2aShaders::prepare`). Every menu run below reached
-   present 560, so no speculation was wrong there; a level that has
-   untranslatable draws would stop (see "Risks").
-4. **Device-internal reads.** A texture over the depth buffer
+6. **Device-internal reads.** A texture over the depth buffer
    (`0x509368`, `0x50936C`: the menu's fog/distortion pass) used to be
    made by the device: `read_depth`, decode, `upload_texture`. Those
    bytes never reach guest memory, but the read made the guest wait for
@@ -157,12 +167,13 @@ Against the requirements:
   that moves `B` to a thread named `d3d-render` and queues each call as
   a closure on a channel. `finish`, `with_inner` and `with_surface` run
   something after the queue and wait (tests, reports).
-- `H2_RENDER_THREAD=1` with `H2_BOOT_GFX` (boot's `d3d_glue::install`)
-  wraps the headless `GfxBackend` in it. `H2_RENDER_THREAD_STATS=1`
-  prints the waits when it is dropped. `h2 play` is not wired yet: it
-  builds its own `GfxBackend` (`crates/cli/src/play_cmd.rs`) and would
-  wrap it the same way; its present hook already only publishes into the
-  shared frame slot.
+- `H2_RENDER_THREAD=1` (only `1`; `d3d_glue::render_thread_from`) wraps
+  the `GfxBackend` in it: the headless one with `H2_BOOT_GFX`, and the
+  window's in `h2 play` (`boot::Host::render_thread`). Its present hook
+  only publishes into the shared frame slot, so it runs on the render
+  thread unchanged. The persistent pipeline cache and its compile
+  workers belong to the backend and move with it.
+  `H2_RENDER_THREAD_STATS=1` prints the waits when it is dropped.
 - `menu_cpu` (docs/BOOT.md) now also prints
   `guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time,
   which is the guest's critical path.
@@ -179,6 +190,10 @@ Against the requirements:
   - the same backend calls, device stats, events and guest memory;
   - on the GPU, the same back-buffer bytes and batch counts.
 
+  They match too with the persistent pipeline cache, which builds the
+  same pipelines behind the render thread. An untranslatable draw
+  (untransformed fixed-function vertices) between two drawn ones is
+  skipped with the same event, the same stats and the same pixels.
   They match too with the render thread lagging by seeded random
   amounts (`ThreadedBackend::with_jitter`, three seeds), which is the
   determinism check: its timing changes nothing the guest sees.
@@ -188,6 +203,8 @@ Against the requirements:
 
 ## Measurements
 
+Measured on master 9a39ed7, before the guest-side judge, the merged-pass
+default and pipeline-async; not re-run since (this lane runs no game).
 `menu_cpu` (docs/BOOT.md), exact passes, presents 480-560, fresh data,
 the same dylib (master's generator), one run at a time in the bench gate
 on a shared 10-core M-series machine. Load averages are at each run's
@@ -234,14 +251,14 @@ but still a ceiling of about 10 fps at 100 ms.
 
 ## Risks and next steps
 
-- **Speculated outcomes.** A draw that `GfxBackend` skips (an
-  untranslatable shader) stops a render-thread run where the synchronous
-  run records `DrawSkipped` and goes on. The menu has none; levels have
-  not been run with the render thread. The exact fix is to decide
-  translatability on the guest side: split `Nv2aShaders::prepare` into
-  the program key and compile cache, kept by the device, and the
-  uniforms and bind groups, kept on the render thread. Compiles are rare
-  (about 0.1 pipeline creations a frame).
+- **The judge has to stay in step with `GfxBackend::draw` and
+  `Nv2aShaders::prepare`.** Both share `route`, `program_key` and
+  `translate`, so a new skip reason added there is judged too. A new
+  failure added anywhere else would be a mismatch, which stops the run
+  with a named error rather than diverging. Translation runs twice per
+  new program (judge and compile), and the key is built on both threads
+  for every draw. That is CPU on the guest's thread that the measurements
+  above predate.
 - **Copies on the guest thread.** `draw` clones each `ResolvedDraw`
   (streams and indices) and `upload_texture` its decoded texels, because
   the trait passes references. Taking them by value would remove those
@@ -255,9 +272,8 @@ but still a ceiling of about 10 fps at 100 ms.
   gain.
 - **Memory and latency.** At most two presents in flight. Under load the
   limit is what holds the guest (6.30 fps run).
-- **`h2 play`** is not wired yet (`crates/cli/src/play_cmd.rs`). Its
-  present hook only publishes into the shared frame slot, so wrapping
-  its `GfxBackend` the same way should be enough.
+- **`h2 play`** is wired but has not been run with it (no game runs on
+  this lane); only the flag is unit-tested.
 - **Measurement noise.** These are single runs on a shared machine with
   load swinging between 7 and 100. Repeat on a quiet machine before
   quoting fps.
