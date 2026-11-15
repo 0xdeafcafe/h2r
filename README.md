@@ -190,6 +190,7 @@ Design and pipeline:
 - [LIFTER.md](docs/LIFTER.md): the lifter's original design proposal
 - [FLOAT.md](docs/FLOAT.md): floating point in the lifter: what the game uses and the correctness-first plan
 - [FLOAT-ABI.md](docs/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/x87`)
+- [x87-native.md](docs/x87-native.md): the opt-in native binary64 x87 path (`H2_X87_NATIVE=1`): range proof, status bits, fallbacks
 - [simd.md](docs/simd.md): bit-exact SSE1 reference semantics (`crates/simd`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle on Unicorn (`crates/oracle`)
 - [sse-oracle.md](docs/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/sse-oracle`)
