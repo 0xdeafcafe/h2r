@@ -318,6 +318,12 @@ impl Kernel {
             deferred: Mutex::new(Vec::new()),
         });
         kernel.lock().write_tick(&mut runtime.memory())?;
+        // rdtsc follows the logical clock. Generated code reads it holding
+        // no lock, so this is the outermost lock taken, as for a service.
+        let clock = Arc::downgrade(&kernel);
+        runtime.set_guest_clock(Some(Arc::new(move || {
+            Some(clock.upgrade()?.lock().clock.counter())
+        })));
         runtime.edit_dispatch(|dispatch| {
             for import in runtime::kernel::FUNCTION_IMPORTS {
                 if dispatch

@@ -448,3 +448,18 @@ fn a_dpc_queued_by_a_call_runs_before_the_caller_continues() {
     assert_eq!(schedule, [1, DPC_THREAD_ID, 1, DPC_THREAD_ID, 1]);
     assert_eq!(h.kernel.clock().counter(), 0, "no time had to pass");
 }
+
+#[test]
+fn the_time_stamp_counter_follows_the_logical_clock() {
+    use runtime::tsc::{TSC_HZ, TSC_MIN_STEP};
+    let h = Harness::new();
+    assert_eq!(h.runtime.read_tsc(), TSC_MIN_STEP, "logical time 0");
+    // One second of logical time is a second of the 733 MHz CPU.
+    h.kernel.advance_time(&h.runtime, 10_000_000).unwrap();
+    assert_eq!(h.runtime.read_tsc(), TSC_HZ);
+    assert_eq!(
+        h.runtime.read_tsc(),
+        TSC_HZ + TSC_MIN_STEP,
+        "time standing still"
+    );
+}
