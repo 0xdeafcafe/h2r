@@ -218,6 +218,8 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     bc: bool,
     sample_surfaces: bool,
     sample_depth: bool,
+    /// `inner.can_mirror()`.
+    mirror: bool,
     next_surface: u32,
     next_texture: u64,
     next_ticket: u64,
@@ -241,6 +243,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let judge = inner.judge();
         let sample_surfaces = inner.can_sample_surfaces();
         let sample_depth = inner.can_sample_depth_surfaces();
+        let mirror = inner.can_mirror();
         let s = Arc::clone(&shared);
         let join = std::thread::Builder::new()
             .name("d3d-render".into())
@@ -282,6 +285,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             bc,
             sample_surfaces,
             sample_depth,
+            mirror,
             next_surface: 1,
             next_texture: 1,
             next_ticket: 1,
@@ -757,6 +761,61 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn can_sample_surfaces(&self) -> bool {
         self.sample_surfaces
+    }
+
+    fn can_mirror(&self) -> bool {
+        self.mirror
+    }
+
+    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        self.check()?;
+        self.post(move |w| w.inner.mirror_reserve(len));
+        Ok(())
+    }
+
+    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        self.check()?;
+        let bytes = bytes.to_vec();
+        self.post(move |w| w.inner.mirror_write(offset, &bytes));
+        Ok(())
+    }
+
+    fn mirror_store(
+        &mut self,
+        surface: u32,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        self.check()?;
+        self.post(move |w| {
+            let s = w.surface(surface)?;
+            w.inner.mirror_store(s, format, width, height, layout, offset)
+        });
+        Ok(())
+    }
+
+    fn mirror_load(
+        &mut self,
+        surface: u32,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        self.check()?;
+        self.post(move |w| {
+            let s = w.surface(surface)?;
+            w.inner.mirror_load(s, format, width, height, layout, offset)
+        });
+        Ok(())
+    }
+
+    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.call(move |w| w.inner.mirror_read(offset, len))
     }
 
     fn can_sample_depth_surfaces(&self) -> bool {

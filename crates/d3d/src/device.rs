@@ -59,6 +59,7 @@ use crate::state::{DrawState, StateWords, Translator, slot};
 
 mod display;
 mod fragments;
+mod mirror;
 mod raster;
 mod visibility;
 
@@ -356,6 +357,14 @@ pub struct Stats {
     pub depth_level_textures: u64,
     /// [`rtt_writebacks`](Self::rtt_writebacks) by what asked for them.
     pub writeback_causes: WritebackCauses,
+    /// Levels moved into the alias mirror instead of written back to guest
+    /// memory because another level over the same memory was bound or
+    /// sampled ([`Device::set_alias_mirror`]).
+    pub mirror_stores: u64,
+    /// Levels filled from the alias mirror on the backend.
+    pub mirror_loads: u64,
+    /// Mirror bytes flushed to guest memory (one read-back each).
+    pub mirror_flushes: u64,
 }
 
 /// What made the device write a render-to-texture level back to guest
@@ -700,6 +709,14 @@ pub struct Device<B: Backend> {
     /// Exact guest stores into each lazily held level since that match,
     /// as (offset, length) in the level ([`Device::note_write`]).
     rtt_stores: HashMap<u32, Vec<(u32, u32)>>,
+    /// Overlapping levels moved through the backend's alias mirror
+    /// ([`Device::set_alias_mirror`]; `H2_D3D_ALIAS_MIRROR=0` turns it off).
+    alias_mirror: bool,
+    /// What the mirror holds newer than guest memory.
+    mirror: Option<mirror::AliasMirror>,
+    /// Clean levels whose memory the mirror took newer bytes over since
+    /// they were filled: refilled when next used.
+    mirror_stale: HashSet<u32>,
     /// Lazy render-to-texture is wanted ([`Device::set_rtt_direct`]).
     rtt_direct: bool,
     /// The push-buffer callback being delivered, between
@@ -809,6 +826,9 @@ impl<B: Backend> Device<B> {
             lazy_depth: std::env::var_os("H2_D3D_LAZY_DEPTH").is_none_or(|v| v != "0"),
             rtt_synced: HashMap::new(),
             rtt_stores: HashMap::new(),
+            alias_mirror: std::env::var_os("H2_D3D_ALIAS_MIRROR").is_none_or(|v| v != "0"),
+            mirror: None,
+            mirror_stale: HashSet::new(),
             rtt_direct: true,
             active_callback: None,
             undelivered: None,
@@ -1895,11 +1915,22 @@ impl<B: Backend> Device<B> {
                 format!("{header:#010x} is not a title resource"),
             ));
         }
-        // A level drawn into keeps its pixels in the parent's texels.
+        // A level drawn into keeps its pixels in the parent's texels, and
+        // so do the bytes the alias mirror holds over it.
+        let spans: Vec<(u64, u64)> = self
+            .rtt
+            .iter()
+            .filter(|(h, t)| **h == header || t.parent == header)
+            .map(|(_, t)| (t.data as u64, t.data as u64 + t.len() as u64))
+            .collect();
+        for (lo, hi) in spans {
+            self.mirror_flush_range(mem, lo, hi)?;
+        }
         self.write_back(mem, header, WritebackCause::Destroy)?;
         self.rtt_synced.remove(&header);
         self.rtt_stores.remove(&header);
         self.depth_level_tex.remove(&header);
+        self.mirror_stale.remove(&header);
         if let Some(t) = self.rtt.remove(&header) {
             self.backend
                 .destroy_surface(t.surface)
@@ -1916,6 +1947,7 @@ impl<B: Backend> Device<B> {
             self.rtt_synced.remove(&h);
             self.rtt_stores.remove(&h);
             let t = self.rtt.remove(&h).expect("listed");
+            self.mirror_stale.remove(&h);
             self.depth_level_tex.remove(&h);
             self.backend
                 .destroy_surface(t.surface)
@@ -2027,6 +2059,7 @@ impl<B: Backend> Device<B> {
     pub fn note_write(&mut self, addr: u32, len: u32) {
         self.tracker.note_write(addr, len);
         self.note_rtt_store(addr, len);
+        self.note_mirror_store(addr, len);
     }
 
     /// Reports pages the guest may have stored into (the runtime's

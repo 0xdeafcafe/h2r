@@ -1688,6 +1688,53 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   depth buffer, still go through a CPU round trip: a readback, then a
   decode and an upload. The shadow-map comparison itself is in
   `crates/shaders` (shaders.md, "Shadow maps").
+- **Overlapping levels on the GPU.** Two level headers over one
+  allocation (Halo's render-target pool in a level: two 160x120 and a
+  320x240 `LIN_A8R8G8B8` level over the 512x512 `LIN_D24S8` shadow map)
+  used to move pixels through guest memory: binding or sampling one wrote
+  every other dirty level over its bytes back first
+  (`WritebackCause::Overlap`, a read-back each, about 3 a frame in the
+  user's 327 s level run), then refilled it from memory. The guest's CPU
+  never reads those bytes in between. Now the backend keeps an *alias
+  mirror* (`Backend::mirror_*`; `GfxBackend` a storage buffer,
+  `gfx::guest_words`) standing for the pool's memory, and the device
+  (`src/device/mirror.rs`) moves the overlapping dirty level into it
+  (`mirror_store`: its guest texels, pitch padding as zeros, exactly what
+  the write-back would store) instead of writing it back, and fills the
+  bound level from it (`mirror_load`: what an upload of those bytes would
+  fill). No read-back. The device tracks, per byte, whether the mirror
+  holds it newer than guest memory, and memory's byte when the mirror took
+  it:
+  - a guest store into such a byte wins, as for lazy levels: an exact
+    `note_write` range whatever its value, or a byte that differs from the
+    one taken (a page report). A store into part of a word flushes that
+    range first, so the mirror's newer bytes stay whole words;
+  - a draw into a level makes the level newer over its whole range (it
+    was filled from the mirror first), so the mirror gives those bytes up;
+  - where dirty levels are written back lazily (a wait or busy check on an
+    overlapping resource, `BlockOnTime`, push-buffer callbacks, a sample
+    through guest memory, a destroy, `PersistDisplay`, teardown), the
+    newer bytes over the same span are read back (`mirror_read`) and
+    stored into guest memory, guest stores excepted;
+  - a level the mirror cannot fill on the GPU (a depth level) flushes the
+    overlap and is filled from memory as before.
+  Formats other than the 32-bit word formats and `D24S8`, unaligned
+  levels, a bound level that is itself dirty, overlapping dirty levels and
+  guest stores waiting to be merged into the moved level take the
+  write-back as before. `Stats::mirror_stores`, `mirror_loads` and
+  `mirror_flushes` count it. `H2_D3D_ALIAS_MIRROR=0`
+  (`Device::set_alias_mirror`) turns it off.
+  `crates/d3d/tests/alias_mirror.rs` runs a five-level pool (two pitches,
+  a partial overlap, a swizzled alias, `X8` with padding, a depth level)
+  through draws, in-place and through-memory samples, guest stores before
+  and after the mirror took the bytes (whole words and part of one), a
+  `BlockOnResource` and a final flush, with tracked and verified uploads,
+  on the device's thread and through the render thread, and compares the
+  back buffer and guest memory with the write-back path byte for byte. A
+  sampled level is now picked by matching format, size and layout first,
+  then by being drawn into, then by header (it was the map's order: two
+  headers over the same bytes could pick the wrong one and go through
+  guest memory).
 - **Depth aliases on the GPU.** A texture over the depth buffer's memory
   (`0x509368` `LIN_A8R8G8B8`, `0x50936C` `LIN_A8B8G8R8`: the menu's fog
   pass, one a frame) was a `read_depth` of the whole buffer, a CPU decode

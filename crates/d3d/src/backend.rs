@@ -489,6 +489,62 @@ pub trait Backend: Send {
         let _ = (depth, format, width, height, pitch, generation, offset, desc, options);
         Ok(None)
     }
+    /// Whether the backend keeps the alias mirror: a buffer on its side
+    /// standing for a range of guest memory, which render-to-texture levels
+    /// over the same memory move their pixels through without a read-back
+    /// (`mirror_*`, docs/d3d.md "Overlapping levels on the GPU"). Default
+    /// false; the device then writes overlapping levels back to guest
+    /// memory.
+    fn can_mirror(&self) -> bool {
+        false
+    }
+    /// Makes the mirror `len` bytes (a multiple of 4). Its contents are
+    /// undefined until written.
+    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        Err(format!("the backend has no alias mirror ({len} bytes)"))
+    }
+    /// Stores guest bytes into the mirror at byte `offset` (both multiples
+    /// of 4), after the work queued so far.
+    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        let _ = bytes;
+        Err(format!("the backend has no alias mirror (write at {offset:#x})"))
+    }
+    /// Encodes a render-to-texture surface into the mirror from byte
+    /// `offset` as `format` texels laid out as `layout`, exactly the bytes
+    /// [`read_surface`](Self::read_surface) (a colour surface) or
+    /// [`read_depth`](Self::read_depth) (a `D24S8` one) would give for the
+    /// texels; pitch padding is left as it was.
+    fn mirror_store(
+        &mut self,
+        surface: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        let _ = (surface, width, height, layout, offset);
+        Err(format!("the backend has no alias mirror ({format:?})"))
+    }
+    /// Fills colour surface `surface` from the mirror's bytes at `offset`
+    /// as [`write_surface`](Self::write_surface) of those bytes would.
+    fn mirror_load(
+        &mut self,
+        surface: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        let _ = (surface, width, height, layout, offset);
+        Err(format!("the backend has no alias mirror ({format:?})"))
+    }
+    /// Reads `len` mirror bytes from `offset` (multiples of 4) after the
+    /// work queued so far: a GPU round trip.
+    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        Err(format!("the backend has no alias mirror (read {len} at {offset:#x})"))
+    }
 }
 
 /// What [`RecordingBackend`] saw.

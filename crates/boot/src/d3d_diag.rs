@@ -240,6 +240,24 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
         self.inner.judge()
     }
+    fn can_mirror(&self) -> bool {
+        self.inner.can_mirror()
+    }
+    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        self.inner.mirror_reserve(len)
+    }
+    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        self.inner.mirror_write(offset, bytes)
+    }
+    fn mirror_store(&mut self, surface: Self::Surface, format: gfx::D3DFormat, width: u32, height: u32, layout: d3d::backend::GuestLayoutKind, offset: u32) -> Result<(), String> {
+        self.inner.mirror_store(surface, format, width, height, layout, offset)
+    }
+    fn mirror_load(&mut self, surface: Self::Surface, format: gfx::D3DFormat, width: u32, height: u32, layout: d3d::backend::GuestLayoutKind, offset: u32) -> Result<(), String> {
+        self.inner.mirror_load(surface, format, width, height, layout, offset)
+    }
+    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.inner.mirror_read(offset, len)
+    }
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }

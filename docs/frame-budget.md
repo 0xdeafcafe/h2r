@@ -461,19 +461,45 @@ in the level and 4.6 ms with the render thread, up to ~20 ms on the
 menu), and that whole wait goes. Both paths give byte-identical back
 buffers (`gpu_depth_aliases_draw_what_the_readback_draws`).
 
-Not done in this pass: the `Overlap` write-backs measured in The Heretic
-on ac9fb31 (4 a frame: two 160x120 colour levels, a 320x240 one and the
-512x512 `LIN_D24S8` shadow map over one allocation). The user's run
-above saw none. The GPU halves are in place and tested byte for byte
-against the CPU write-back and fill (`gfx::guest_words`: `store_color`,
-`store_depth`, `load_color` on a storage buffer standing for guest
-memory). What is left is the device's bookkeeping: which bytes the
-buffer holds newer than guest memory, merging guest stores made since,
-flushing them to guest memory at the waits that write levels back now,
-and filling a depth level that overlaps them (no GPU decode into depth
-yet: a whole depth-and-stencil clear can skip the fill, anything else
-needs the flush). Do it if a level run shows `writeback_causes.overlap`
-again.
+### Overlapping levels on the GPU (2026-11-15)
+
+The user's 327 s run, mostly in a level, counted `rtt_writebacks` 21,976,
+every one `overlap` (about 3 a frame over 7,113 presents), and
+`rtt_uploads` 38,459, at 21.75 fps. The alias mirror (docs/d3d.md,
+"Overlapping levels on the GPU") moves those levels through a GPU buffer
+instead of guest memory: no read-back, no CPU encode or decode, no upload
+from guest bytes. `H2_D3D_ALIAS_MIRROR=0` restores the write-backs.
+
+Headless microbench, `cargo test --release -p d3d --test alias_mirror --
+--ignored --nocapture`, Apple Silicon, load average 20-38 (other lanes),
+two rounds. `bench_heretic_sized_pool`: each frame 150 quads into the back
+buffer, then a 320x240 and two 160x120 `LIN_A8R8G8B8` levels over one
+1 MiB pool, each sampling the one before, and the back buffer sampling the
+last (3 overlap write-backs a frame on the old path, none with the mirror,
+no flush either):
+
+| path | round 0 ms/frame | round 1 ms/frame |
+|---|---|---|
+| sync, write-backs (`H2_D3D_ALIAS_MIRROR=0`) | 15.05 | 10.84 |
+| sync, mirror | 10.44 | 9.58 |
+| render thread, write-backs | 10.15 | 10.07 |
+| render thread, mirror | **5.24** | **3.82** |
+
+With the render thread (the default) the guest no longer waits for the
+queue at each level switch: about 5-6 ms a frame here. On the device's
+thread less goes: the copies of the level's guest bytes the device still
+makes per move and fill (the match it keeps for guest stores) remain.
+`bench_overlapping_pool_frames` (three 32x32 levels, no other work):
+7.5-7.9 against 3.4-3.9 ms a frame on the device's thread, 4.6-5.7
+against 5.1-5.3 through the render thread (too small to matter there).
+Not yet measured in the game.
+
+The shadow map's own refill still goes through memory: a depth level that
+overlaps bytes the mirror holds newer flushes them and is filled on the
+CPU (there is no GPU decode into a depth surface yet). If a level run
+shows `mirror_flushes` at one a frame, that is the next step; a whole
+depth-and-stencil clear right after binding would let the fill be
+skipped.
 
 ### The submit regression (bisected 2026-11-15)
 

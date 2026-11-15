@@ -568,6 +568,7 @@ impl<B: Backend> Device<B> {
                 self.write_back(mem, header, WritebackCause::Rewritten)?;
             }
             self.rtt.remove(&header);
+            self.mirror_stale.remove(&header);
             self.rtt_synced.remove(&header);
             self.rtt_stores.remove(&header);
             self.depth_level_tex.remove(&header);
@@ -602,8 +603,7 @@ impl<B: Backend> Device<B> {
         self.write_back_overlapping(mem, header)?;
         // The level's current texels, so draws that do not cover it all
         // leave the rest as the guest had it.
-        let bytes = mem.read_vec(target.data, target.len() as usize)?;
-        self.fill_rtt(header, bytes)?;
+        self.fill_level(mem, header)?;
         Ok(surface)
     }
 
@@ -657,6 +657,9 @@ impl<B: Backend> Device<B> {
             })
             .map(|(h, _)| *h)
             .collect();
+        if self.park_overlapping(mem, header, &others)? {
+            return Ok(());
+        }
         for h in others {
             self.write_back(mem, h, WritebackCause::Overlap)?;
         }
@@ -673,7 +676,7 @@ impl<B: Backend> Device<B> {
     /// found). A page report that left the bytes as they were (the runtime
     /// reports the device's own write-backs again) only moves the match
     /// forward.
-    fn rtt_guest_stores(
+    pub(super) fn rtt_guest_stores(
         &mut self,
         mem: &dyn GuestMemory,
         header: u32,
@@ -765,11 +768,25 @@ impl<B: Backend> Device<B> {
             return Ok(None);
         }
         let data = self.cfg.address_map.to_virtual(pc.resource.data);
-        // The colour level over these bytes, preferring one drawn into
-        // (depth levels go through guest memory).
+        // The colour level over these bytes, preferring one with the
+        // texture's format, size and layout (two headers can name the same
+        // bytes differently), then one drawn into (depth levels go through
+        // guest memory). Ties go to the lower header, so the choice does
+        // not depend on the map's order.
+        let want_layout = match desc.format.layout() {
+            gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
+            _ => GuestLayoutKind::Linear { pitch: desc.pitch.max(desc.width * 4) },
+        };
         let mut found: Option<(u32, RttTarget<B::Surface>)> = None;
+        let rank = |t: &RttTarget<B::Surface>| {
+            let same = t.format == desc.format && (t.width, t.height) == (desc.width, desc.height) && t.layout == want_layout;
+            (same, t.dirty)
+        };
         for (h, t) in &self.rtt {
-            if !t.depth && t.data == data && found.is_none_or(|(_, f)| !f.dirty && t.dirty) {
+            if !t.depth
+                && t.data == data
+                && found.is_none_or(|(fh, f)| (rank(t), std::cmp::Reverse(*h)) > (rank(&f), std::cmp::Reverse(fh)))
+            {
                 found = Some((*h, *t));
             }
         }
@@ -820,7 +837,7 @@ impl<B: Backend> Device<B> {
     /// Copies `bytes` (the level's guest texels) into its host surface and
     /// records that they match. A backend that cannot (`Ok(false)`) leaves
     /// the surface as it was.
-    fn fill_rtt(&mut self, header: u32, bytes: Vec<u8>) -> Result<(), D3dError> {
+    pub(super) fn fill_rtt(&mut self, header: u32, bytes: Vec<u8>) -> Result<(), D3dError> {
         let t = *self.rtt.get(&header).expect("cached");
         let mut desc = TextureDesc::new(
             t.format,
@@ -868,6 +885,10 @@ impl<B: Backend> Device<B> {
             }
             return Ok(());
         }
+        // The mirror took newer bytes over it since it was filled.
+        if self.mirror_stale.contains(&header) {
+            return self.fill_level(mem, header);
+        }
         let len = t.len();
         let written = self.tracker.dirty_since(t.data, len, t.generation);
         match self.cfg.upload {
@@ -884,12 +905,11 @@ impl<B: Backend> Device<B> {
                         len,
                     });
                 }
-                return self.fill_rtt(header, bytes);
+                return self.fill_level(mem, header);
             }
             _ => {}
         }
-        let bytes = mem.read_vec(t.data, len as usize)?;
-        self.fill_rtt(header, bytes)
+        self.fill_level(mem, header)
     }
 
     /// A draw or clear has written the current colour target and, with
@@ -900,11 +920,13 @@ impl<B: Backend> Device<B> {
     pub(super) fn mark_written(&mut self, writes_depth: bool) {
         if let Some(t) = self.rtt.get_mut(&self.render_target) {
             t.dirty = true;
+            self.mirror_supersede(self.render_target);
         }
         if writes_depth && self.depth_stencil != 0 {
             if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
                 t.dirty = true;
                 self.depth_level_tex.remove(&self.depth_stencil);
+                self.mirror_supersede(self.depth_stencil);
             }
             if self.depth_stencil == self.depth_header {
                 self.depth_generation += 1;
@@ -1064,7 +1086,7 @@ impl<B: Backend> Device<B> {
         for h in headers {
             self.write_back(mem, h, cause)?;
         }
-        Ok(())
+        self.mirror_flush_all(mem)
     }
 
     /// Writes back the targets that are `texture`, or levels of it (by
@@ -1077,7 +1099,7 @@ impl<B: Backend> Device<B> {
         texture: u32,
         cause: WritebackCause,
     ) -> Result<(), D3dError> {
-        if self.rtt.is_empty() {
+        if self.rtt.is_empty() && self.mirror.is_none() {
             return Ok(());
         }
         let (start, end) = self.resource_span(mem, texture)?;
@@ -1095,7 +1117,17 @@ impl<B: Backend> Device<B> {
         for h in headers {
             self.write_back(mem, h, cause)?;
         }
-        Ok(())
+        // The mirror's bytes over the resource (and over the levels just
+        // written back, as those were).
+        let mut lo = start;
+        let mut hi = end;
+        for t in self.rtt.values() {
+            if t.parent == texture {
+                lo = lo.min(t.data as u64);
+                hi = hi.max(t.data as u64 + t.len() as u64);
+            }
+        }
+        self.mirror_flush_range(mem, lo, hi)
     }
 
     /// The guest memory `resource` reads: a texture's or surface's whole
@@ -1123,6 +1155,7 @@ impl<B: Backend> Device<B> {
         mem: &mut dyn GuestMemory,
     ) -> Result<(), D3dError> {
         self.flush_render_targets_for(mem, WritebackCause::Teardown)?;
+        self.mirror_stale.clear();
         self.rtt_synced.clear();
         self.rtt_stores.clear();
         self.depth_level_tex.clear();

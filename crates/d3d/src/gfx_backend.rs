@@ -138,6 +138,8 @@ pub struct GfxBackend {
     depth_words: Option<(SurfaceId, u64, Vec<u8>)>,
     /// Surface and depth read-backs so far ([`readbacks`](Self::readbacks)).
     readbacks: u64,
+    /// The alias mirror ([`Backend::mirror_reserve`]).
+    mirror: Option<wgpu::Buffer>,
     reports: HashMap<u64, PixelReport>,
     next_ticket: u64,
     /// Presents so far plus one.
@@ -188,6 +190,7 @@ impl GfxBackend {
             gpu_depth_aliases: std::env::var_os("H2_D3D_GPU_DEPTH_ALIAS").is_none_or(|v| v != "0"),
             depth_words: None,
             readbacks: 0,
+            mirror: None,
             next_ticket: 0,
             frame: 1,
             frame_draw: 0,
@@ -693,6 +696,19 @@ impl GfxBackend {
     }
 }
 
+/// A level at mirror byte `offset` as the guest-word passes address it.
+fn word_layout(layout: GuestLayoutKind, offset: u32) -> Result<gfx::guest_words::WordLayout, String> {
+    if !offset.is_multiple_of(4) {
+        return Err(format!("mirror offset {offset:#x} is not word-aligned"));
+    }
+    let pitch_words = match layout {
+        GuestLayoutKind::Swizzled => 0,
+        GuestLayoutKind::Linear { pitch } if pitch.is_multiple_of(4) && pitch > 0 => pitch / 4,
+        GuestLayoutKind::Linear { pitch } => return Err(format!("mirror pitch {pitch} is not word-aligned")),
+    };
+    Ok(gfx::guest_words::WordLayout { base: offset / 4, pitch_words })
+}
+
 impl Backend for GfxBackend {
     type Surface = SurfaceId;
     type Texture = HostTexture;
@@ -1154,6 +1170,117 @@ impl Backend for GfxBackend {
             .and_then(|b| gfx::texture::decode_texture(desc, b, None, options).map_err(|e| e.to_string()))
             .map_err(|e| format!("depth-alias texture: {e}"))?;
         self.upload_texture(&decoded).map(Some)
+    }
+
+    fn can_mirror(&self) -> bool {
+        true
+    }
+
+    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        self.flush()?;
+        self.mirror = Some(self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("d3d alias mirror"),
+            size: (len.max(4) as u64).next_multiple_of(4),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        Ok(())
+    }
+
+    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        // After everything recorded before it (`write_buffer` runs ahead
+        // of the next submission only).
+        self.flush()?;
+        let m = self.mirror.as_ref().ok_or("mirror_write before mirror_reserve")?;
+        if !offset.is_multiple_of(4) || !bytes.len().is_multiple_of(4) || offset as u64 + bytes.len() as u64 > m.size() {
+            return Err(format!("mirror_write of {} bytes at {offset:#x} into {}", bytes.len(), m.size()));
+        }
+        if !bytes.is_empty() {
+            self.ctx.queue.write_buffer(m, offset as u64, bytes);
+        }
+        Ok(())
+    }
+
+    fn mirror_store(
+        &mut self,
+        surface: SurfaceId,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        self.flush()?;
+        let m = self.mirror.clone().ok_or("mirror_store before mirror_reserve")?;
+        let s = self.store.get(surface).map_err(|e| e.to_string())?;
+        let (texture, kind) = (s.texture().clone(), s.kind());
+        let ctx = &self.ctx;
+        let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
+        let layout = word_layout(layout, offset)?;
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        match kind {
+            SurfaceKind::Color => words.store_color(ctx, &mut enc, &texture, format, (width, height), &m, layout),
+            SurfaceKind::DepthStencil => words.store_depth(ctx, &mut enc, &texture, (width, height), &m, layout),
+        }
+        .map_err(|e| format!("mirror_store: {e}"))?;
+        self.submit(enc);
+        Ok(())
+    }
+
+    fn mirror_load(
+        &mut self,
+        surface: SurfaceId,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        offset: u32,
+    ) -> Result<(), String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        self.flush()?;
+        let m = self.mirror.clone().ok_or("mirror_load before mirror_reserve")?;
+        let texture = self.store.get(surface).map_err(|e| e.to_string())?.texture().clone();
+        let ctx = &self.ctx;
+        let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
+        let layout = word_layout(layout, offset)?;
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        words
+            .load_color(ctx, &mut enc, &texture, format, (width, height), &m, layout)
+            .map_err(|e| format!("mirror_load: {e}"))?;
+        self.submit(enc);
+        Ok(())
+    }
+
+    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.flush()?;
+        self.readbacks += 1;
+        let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
+        timeline::phase::count(timeline::phase::Counter::Readbacks, 1);
+        let m = self.mirror.as_ref().ok_or("mirror_read before mirror_reserve")?;
+        if !offset.is_multiple_of(4) || !len.is_multiple_of(4) || offset as u64 + len as u64 > m.size() {
+            return Err(format!("mirror_read of {len} bytes at {offset:#x} from {}", m.size()));
+        }
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let staging = self.ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("d3d alias mirror read"),
+            size: len as u64,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        enc.copy_buffer_to_buffer(m, offset as u64, &staging, 0, len as u64);
+        self.submit(enc);
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, |r| r.expect("map mirror read"));
+        self.ctx
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| e.to_string())?;
+        let out = slice.get_mapped_range().map_err(|e| format!("{e:?}"))?.to_vec();
+        Ok(out)
     }
 
     fn surface_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {

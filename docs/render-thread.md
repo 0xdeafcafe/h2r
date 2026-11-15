@@ -291,7 +291,8 @@ sampling one writes the others back first. None is a guest wait or read.
 Lazy depth therefore saves nothing here (the shadow map's read-back moves
 from its binding change to the overlap). Moving pixels between
 overlapping levels on the GPU, with per-byte tracking of which level
-wrote last, is the next fix.
+wrote last, was the next fix: the alias mirror (2026-11-15, docs/d3d.md
+"Overlapping levels on the GPU", `H2_D3D_ALIAS_MIRROR=0` turns it off).
 
 ## Risks and next steps
 

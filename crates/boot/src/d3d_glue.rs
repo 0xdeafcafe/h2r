@@ -263,6 +263,24 @@ impl d3d::backend::Backend for Headless {
         // Never called: the recorder does not sample surfaces.
         self.0.surface_texture(surface)
     }
+    fn can_mirror(&self) -> bool {
+        self.0.can_mirror()
+    }
+    fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        self.0.mirror_reserve(len)
+    }
+    fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        self.0.mirror_write(offset, bytes)
+    }
+    fn mirror_store(&mut self, surface: u32, format: gfx::D3DFormat, width: u32, height: u32, layout: d3d::backend::GuestLayoutKind, offset: u32) -> Result<(), String> {
+        self.0.mirror_store(surface, format, width, height, layout, offset)
+    }
+    fn mirror_load(&mut self, surface: u32, format: gfx::D3DFormat, width: u32, height: u32, layout: d3d::backend::GuestLayoutKind, offset: u32) -> Result<(), String> {
+        self.0.mirror_load(surface, format, width, height, layout, offset)
+    }
+    fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.0.mirror_read(offset, len)
+    }
     fn defers_depth_aliases(&self) -> bool {
         self.0.defers_depth_aliases()
     }
