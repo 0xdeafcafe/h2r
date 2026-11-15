@@ -5,7 +5,9 @@ use crate::{
     handler::OriginalHandler,
     tsc::{GuestClock, Tsc},
 };
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, TryLockError};
+use std::time::{Duration, Instant};
 
 pub struct Runtime {
     memory: Mutex<Guest>,
@@ -13,7 +15,24 @@ pub struct Runtime {
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
     pub(crate) words: crate::preempt::Words,
+    contention: LockContention,
 }
+
+/// Waits on the guest memory lock that found it held by another thread.
+#[derive(Debug, Default)]
+struct LockContention {
+    waits: AtomicU64,
+    nanos: AtomicU64,
+}
+
+/// What [`Runtime::memory_contention`] reports: how often taking the guest
+/// memory lock had to wait for another thread, and for how long in all.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Contention {
+    pub waits: u64,
+    pub waited: Duration,
+}
+
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
         Arc::new(Self {
@@ -22,6 +41,7 @@ impl Runtime {
             interrupts: Default::default(),
             tsc: Tsc::default(),
             words: Default::default(),
+            contention: Default::default(),
         })
     }
     /// Install (or with `None` remove) the guest-time source the
@@ -43,8 +63,40 @@ impl Runtime {
     }
     /// Compound HLE operations use this guard, including Guest::call/ret.
     /// Release it before dispatching or invoking callbacks.
+    ///
+    /// An uncontended lock costs what `lock` does. One held by another
+    /// thread is waited for on a cold path that counts the wait
+    /// ([`Runtime::memory_contention`]) and records a `memory lock wait`
+    /// span when the timeline's `lock` category is on.
+    #[inline]
     pub fn memory(&self) -> MutexGuard<'_, Guest> {
-        self.memory.lock().unwrap_or_else(|e| e.into_inner())
+        match self.memory.try_lock() {
+            Ok(g) => g,
+            Err(TryLockError::Poisoned(e)) => e.into_inner(),
+            Err(TryLockError::WouldBlock) => self.memory_contended(),
+        }
+    }
+    #[cold]
+    #[inline(never)]
+    fn memory_contended(&self) -> MutexGuard<'_, Guest> {
+        let _t = timeline::span(
+            timeline::Cat::Lock,
+            timeline::Track::Host,
+            "memory lock wait",
+        );
+        let start = Instant::now();
+        let g = self.memory.lock().unwrap_or_else(|e| e.into_inner());
+        let waited = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        self.contention.waits.fetch_add(1, Ordering::Relaxed);
+        self.contention.nanos.fetch_add(waited, Ordering::Relaxed);
+        g
+    }
+    /// Contended waits on the guest memory lock since the runtime was made.
+    pub fn memory_contention(&self) -> Contention {
+        Contention {
+            waits: self.contention.waits.load(Ordering::Relaxed),
+            waited: Duration::from_nanos(self.contention.nanos.load(Ordering::Relaxed)),
+        }
     }
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         f(&mut self.dispatch.write().unwrap_or_else(|e| e.into_inner()))

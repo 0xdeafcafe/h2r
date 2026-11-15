@@ -46,10 +46,17 @@ pub enum Cat {
     Gfx,
     /// Every HLE override call. Off in [`Config::default`]: it is frequent.
     Hle,
+    /// The kernel scheduler: one `schedule` span per `Machine::run`
+    /// iteration (slices and DPCs nest inside it), pacer waits, and the
+    /// logical clock as a counter.
+    Sched,
+    /// Contended locks: a span for each wait on a lock another thread held
+    /// (the guest memory lock). Uncontended acquisitions record nothing.
+    Lock,
 }
 
 impl Cat {
-    pub const ALL: [Cat; 7] = [
+    pub const ALL: [Cat; 9] = [
         Cat::Frame,
         Cat::Guest,
         Cat::Kernel,
@@ -57,6 +64,8 @@ impl Cat {
         Cat::D3d,
         Cat::Gfx,
         Cat::Hle,
+        Cat::Sched,
+        Cat::Lock,
     ];
     const fn bit(self) -> u32 {
         1 << self as u32
@@ -71,6 +80,8 @@ impl Cat {
             Cat::D3d => "d3d",
             Cat::Gfx => "gfx",
             Cat::Hle => "hle",
+            Cat::Sched => "sched",
+            Cat::Lock => "lock",
         }
     }
 }
@@ -878,6 +889,26 @@ mod tests {
         let c = Config::parse("frame, d3d").unwrap();
         assert!(c.has(Cat::Frame) && c.has(Cat::D3d) && !c.has(Cat::Guest));
         assert!(Config::parse("bogus").is_err());
+    }
+
+    #[test]
+    fn sched_and_lock_are_categories_of_their_own() {
+        let c = Config::parse("sched").unwrap();
+        assert!(c.has(Cat::Sched) && !c.has(Cat::Lock) && !c.has(Cat::Kernel));
+        let d = Config::default();
+        assert!(d.has(Cat::Sched) && d.has(Cat::Lock), "on by default");
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::none().with(Cat::Lock));
+        {
+            let _s = span(Cat::Sched, Track::Host, "schedule");
+            let _l = span(Cat::Lock, Track::Host, "memory lock wait");
+        }
+        let t = stop();
+        assert_eq!(t.count("schedule"), 0);
+        assert_eq!(t.count("memory lock wait"), 1);
+        let mut out = Vec::new();
+        t.write_chrome(&mut out).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains("\"cat\":\"lock\""));
     }
 
     #[test]

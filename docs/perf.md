@@ -182,6 +182,12 @@ on the row of the host thread that recorded them (process "host").
 | `d3d` | `Swap`, `KickOff`, `pushbuf drain` (arg `bytes`) | `d3d/src/device.rs` |
 | `gfx` | `queue submit`, `present` | `d3d/src/gfx_backend.rs` |
 | `hle` | `hle call` (arg `pc`) around every Rust override | `runtime/src/handler.rs` |
+| `gfx` | `draw` (one D3D draw through the backend), `shader prepare`, `render encode`, `pipeline create` (a pipeline-cache miss), `texture upload`, `surface write`, `surface snapshot` | `d3d/src/gfx_backend.rs`, `gfx/src/renderer.rs` |
+| `gfx` | GPU round trips: `surface readback`, `pixel count readback`, `GPU wait` (`D3DSWAP_FINISH`) | `d3d/src/gfx_backend.rs` |
+| `guest` | `slice` carries arg `accesses`: the guest accesses it charged to logical time | `kernel::Machine::run` |
+| `kernel` | `idle: clock to deadline` carries arg `ticks`: the logical time the advance skipped | `Machine::run` |
+| `sched` | `schedule` span per `Machine::run` iteration (the slice or DPC nests inside, so its self time is scheduler work); `pacer wait`; counter `logical us` (the logical clock, after every charge and idle advance) | `kernel/src/threads.rs` |
+| `lock` | `memory lock wait`: a wait for the guest memory lock while another thread held it, on the waiting thread's row. Uncontended locks record nothing; `Runtime::memory_contention()` counts waits and their total length whatever is recording | `runtime/src/services.rs` |
 
 `hle` is off by default because it fires on every kernel, XAPI and D3D call.
 
@@ -212,6 +218,31 @@ timeline::instant_arg(timeline::Cat::Kernel, timeline::Track::Guest(tid), "signa
 ```
 
 Names are `&'static str`; put variable data in the one numeric argument.
+
+## Frame budget
+
+```
+h2 profile budget $TMPDIR/trace.json          # table
+h2 profile budget $TMPDIR/trace.json --json   # every frame
+```
+
+`perf::budget` reads a trace back and splits the time between
+consecutive `frame` instants into the *self* time of the game thread's
+spans: each instant goes to the innermost span open then, or to
+`(no span)`, so a frame's rows add up to its wall time. The game thread
+is the host thread that recorded the frames; its spans are its own host
+events plus the guest-track `slice` and DPC spans (the scheduler records
+them on that thread). Guest-track kernel waits are left out, since they
+cover a blocked guest thread while others run. With `--cats all`, `hle
+call` spans take HLE time out of `slice`; with the default categories
+`slice` self time is guest code, the runtime's accessors and HLE
+together, and the sampler splits it.
+
+The header gives, per frame, the logical time (`logical us` counter),
+the logical/wall ratio, vblank DPCs, slices, charged accesses, and idle
+advances with the logical time they skipped. Contended memory-lock waits
+are listed per host thread. docs/perf-budget.md is the main-menu budget
+made with it.
 
 ## Benchmarks
 

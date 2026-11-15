@@ -9,6 +9,7 @@ use crate::bench::{self, BenchCtx, Plan, Prepared, Verdict};
 use crate::profile::{Render, Session, SessionConfig};
 
 pub const PROFILE_USAGE: &str = "usage: h2 profile <scenario> [options]
+       h2 profile budget <trace.json> [--json]   (see h2 profile budget --help)
 
 Run a benchmark scenario repeatedly under the sampling profiler (and,
 optionally, the timeline) and write profile.folded, profile.txt and
@@ -67,7 +68,42 @@ impl Args {
     }
 }
 
+pub const BUDGET_USAGE: &str = "usage: h2 profile budget <trace.json> [--json]
+
+Split each frame of a timeline trace (H2_TIMELINE, or --timeline) into
+the self time of the game thread's spans, with logical time, idle
+advances, slices, accesses and vblanks per frame and the contended guest
+memory lock waits (docs/perf-budget.md). Record it with the default
+categories (all but hle) or `all` to split HLE calls out of guest slices.";
+
+/// `h2 profile budget`.
+pub fn budget(args: Vec<String>) -> Result<i32> {
+    let mut path = None;
+    let mut json = false;
+    for a in args {
+        match a.as_str() {
+            "--json" => json = true,
+            "-h" | "--help" => bail!("{BUDGET_USAGE}"),
+            _ if path.is_none() => path = Some(PathBuf::from(a)),
+            _ => bail!("unexpected {a}\n\n{BUDGET_USAGE}"),
+        }
+    }
+    let path = path.context(BUDGET_USAGE)?;
+    let text =
+        std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    let b = crate::budget::Budget::from_chrome_json(&text)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&b)?);
+    } else {
+        print!("{}", b.table());
+    }
+    Ok(0)
+}
+
 pub fn profile(args: Vec<String>) -> Result<i32> {
+    if args.first().is_some_and(|a| a == "budget") {
+        return budget(args[1..].to_vec());
+    }
     let mut a = Args {
         it: args.into_iter(),
     };

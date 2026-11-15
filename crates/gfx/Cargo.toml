@@ -10,6 +10,8 @@ wgpu = "30"
 bytemuck = "1"
 pollster = "1"
 thiserror.workspace = true
+# Pipeline-creation spans (docs/perf.md); no dependencies of its own.
+timeline = { path = "../timeline" }
 
 [dev-dependencies]
 winit = "0.30"

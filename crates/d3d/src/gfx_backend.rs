@@ -255,6 +255,7 @@ impl GfxBackend {
                 .iter()
                 .any(RecordedDraw::counts_samples)
                 .then(|| self.counter.get_or_insert_with(|| PixelCounter::new(ctx)));
+            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "render encode");
             self.stats.render_passes +=
                 Renderer::encode_pass(ctx, &mut enc, &target, p.clear, &p.draws, counter)
                     .map_err(|e| e.to_string())? as u64;
@@ -379,6 +380,7 @@ impl Backend for GfxBackend {
     }
 
     fn upload_texture(&mut self, t: &DecodedTexture) -> Result<HostTexture, String> {
+        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "texture upload");
         let texture =
             gfx::upload::upload_texture(&self.ctx.device, &self.ctx.queue, t, "guest texture");
         Ok(self.host_texture(texture, t.desc.kind))
@@ -414,6 +416,7 @@ impl Backend for GfxBackend {
         d: &ResolvedDraw,
         textures: [Option<&HostTexture>; 4],
     ) -> Result<DrawOutcome, String> {
+        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "draw");
         self.switch_to(color, depth)?;
         let streams: Vec<VertexStream<'_>> = d
             .streams
@@ -504,10 +507,12 @@ impl Backend for GfxBackend {
             d.texture_info[i]?;
             textures[i]?.view.as_ref()
         });
+        let prepare = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "shader prepare");
         let prepared = match shaders.prepare(&self.ctx, &mut self.renderer, d, view_refs) {
             Ok(p) => p,
             Err(e) => return Ok(DrawOutcome::Skipped(e)),
         };
+        drop(prepare);
         let draw = Draw {
             bind_groups: &prepared.bind_groups,
             scissor,
@@ -590,6 +595,7 @@ impl Backend for GfxBackend {
         bytes: &[u8],
     ) -> Result<bool, String> {
         self.flush()?;
+        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "surface write");
         self.store
             .write_color(&self.ctx, surface, desc, bytes)
             .map_err(|e| e.to_string())?;
@@ -603,6 +609,11 @@ impl Backend for GfxBackend {
     ) -> Result<Option<HostTexture>, String> {
         // The copy holds everything drawn so far.
         self.flush()?;
+        let _t = timeline::span(
+            timeline::Cat::Gfx,
+            timeline::Track::Host,
+            "surface snapshot",
+        );
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         let t = self
             .store
@@ -660,6 +671,12 @@ impl Backend for GfxBackend {
         use gfx::encode::HostPixelOrder;
         use gfx::surface::SurfaceLayout;
         self.flush()?;
+        // A GPU round trip: submit, wait, map.
+        let _t = timeline::span(
+            timeline::Cat::Gfx,
+            timeline::Track::Host,
+            "surface readback",
+        );
         let s = self.store.get(surface).map_err(|e| e.to_string())?;
         let order = match s.wgpu_format() {
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
@@ -729,6 +746,7 @@ impl Backend for GfxBackend {
         }
         if flags & 4 != 0 {
             // D3DSWAP_FINISH: wait for the GPU.
+            let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
             let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
         }
         Ok(())
@@ -760,6 +778,12 @@ impl Backend for GfxBackend {
     }
 
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        // Waits for the GPU when the report is not yet back.
+        let _t = timeline::span(
+            timeline::Cat::Gfx,
+            timeline::Track::Host,
+            "pixel count readback",
+        );
         let report = self
             .reports
             .remove(&ticket)

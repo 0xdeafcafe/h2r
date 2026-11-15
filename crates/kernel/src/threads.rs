@@ -140,6 +140,12 @@ pub const ACCESSES_PER_TICK: u64 = 100;
 /// overrides) looks idle.
 pub const POLL_WORK: u64 = ACCESSES_PER_TICK;
 
+/// The timeline counter of logical time, in microseconds, sampled after
+/// every slice's charge and every idle advance ([`timeline::Cat::Sched`]).
+/// Its rise over a frame against the frame's wall time is the pacing
+/// ratio `h2 profile budget` reports.
+pub const LOGICAL_COUNTER: &str = "logical us";
+
 impl Record {
     /// The thread is about to poll (NtYieldExecution, Delay(0)): classify
     /// the work it did since its last poll.
@@ -366,6 +372,9 @@ impl Machine {
             return Ok(outcome.clone());
         }
         for _ in 0..max_slices {
+            // The whole iteration: what the slice and DPC spans inside it
+            // leave is scheduler work (docs/perf-budget.md).
+            let _schedule = timeline::span(timeline::Cat::Sched, timeline::Track::Host, "schedule");
             self.collect_threads()?;
             let live = {
                 let mut core = self.kernel.lock();
@@ -388,12 +397,19 @@ impl Machine {
                 {
                     let deadline = core.idle_deadline();
                     if let Some(deadline) = deadline {
-                        timeline::instant(
+                        timeline::instant_arg(
                             timeline::Cat::Kernel,
                             timeline::Track::Host,
                             "idle: clock to deadline",
+                            "ticks",
+                            deadline.saturating_sub(core.clock.counter()),
                         );
                         core.clock.advance_to(deadline)?;
+                        timeline::counter(
+                            timeline::Cat::Sched,
+                            LOGICAL_COUNTER,
+                            core.clock.counter() / 10,
+                        );
                         core.write_tick(&mut memory)?;
                         // A new instant starts a new drain: a DPC run at
                         // the last deadline (a periodic source's, say) may
@@ -418,6 +434,7 @@ impl Machine {
                 // next happens no earlier in wall time than in logical time,
                 // and a host thread reading guest memory is not held up.
                 let now = self.kernel.lock().clock.counter();
+                let _t = timeline::span(timeline::Cat::Sched, timeline::Track::Host, "pacer wait");
                 pacer.wait(now);
             }
             let tid = {
@@ -518,7 +535,9 @@ impl Machine {
             );
             let thread = self.threads.get_mut(&tid).unwrap();
             let mut resume = self.kernel.lock().threads[&tid].resume;
-            let slice = timeline::span(timeline::Cat::Guest, timeline::Track::Guest(tid), "slice");
+            let mut slice =
+                timeline::span(timeline::Cat::Guest, timeline::Track::Guest(tid), "slice");
+            let mut charged = 0u64;
             let (transfer, preempted) = loop {
                 if let Some(accesses) = self.preempt_slice {
                     thread.ctx.arm_preemption(accesses);
@@ -534,11 +553,14 @@ impl Machine {
                 // running and work never lets time leap ahead of it.
                 let kpcr = {
                     let mut core = self.kernel.lock();
-                    core.charge_work(
-                        &mut self.runtime.memory(),
-                        tid,
-                        thread.ctx.take_slice_spent(),
-                    )?;
+                    let spent = thread.ctx.take_slice_spent();
+                    charged = charged.saturating_add(spent);
+                    core.charge_work(&mut self.runtime.memory(), tid, spent)?;
+                    timeline::counter(
+                        timeline::Cat::Sched,
+                        LOGICAL_COUNTER,
+                        core.clock.counter() / 10,
+                    );
                     core.kpcr
                 };
                 thread.ctx.disarm_preemption();
@@ -552,6 +574,7 @@ impl Machine {
                 }
                 resume = next;
             };
+            slice.set_arg("accesses", charged);
             drop(slice);
             {
                 let mut core = self.kernel.lock();

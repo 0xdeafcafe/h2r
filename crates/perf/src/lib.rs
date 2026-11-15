@@ -10,10 +10,13 @@
 //!   `H2_TIMELINE`.
 //! - [`bench`]: repeatable scenarios ([`hotloop`], [`pushbuf`], [`boot`]),
 //!   results as JSON, and a regression comparison.
+//! - [`budget`]: a timeline trace split into per-frame self time per
+//!   span, with logical time and scheduler counts (`h2 profile budget`).
 //! - [`cli`]: `h2 profile` and `h2 bench`.
 
 pub mod bench;
 pub mod boot;
+pub mod budget;
 pub mod cli;
 pub mod hotloop;
 pub mod profile;

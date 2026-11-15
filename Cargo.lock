@@ -928,6 +928,7 @@ dependencies = [
  "bytemuck",
  "pollster",
  "thiserror 2.0.21",
+ "timeline",
  "wgpu",
  "winit",
 ]
