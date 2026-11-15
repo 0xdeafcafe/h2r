@@ -75,6 +75,11 @@ pub struct HostPadState {
     pub right_stick: (f32, f32),
     pub left_trigger: f32,
     pub right_trigger: f32,
+    /// Pressure 0..=1 of the six analog face/shoulder buttons in
+    /// `bAnalogButtons` order (A, B, X, Y, Black, White), for hosts whose
+    /// buttons report pressure (Apple GameController does). `None` means
+    /// digital: a press reports 255.
+    pub analog_buttons: Option<[f32; 6]>,
 }
 
 /// One connected host pad as reported by a backend.
@@ -171,6 +176,13 @@ impl HostPadState {
         digital(North, AnalogButton::Y, &mut g);
         digital(RightBumper, AnalogButton::Black, &mut g);
         digital(LeftBumper, AnalogButton::White, &mut g);
+        if let Some(p) = self.analog_buttons {
+            // Pressure wins over the digital bit; the order matches
+            // `AnalogButton` 0..=5.
+            for (i, v) in p.iter().enumerate() {
+                g.analog[i] = trigger_to_u8(*v, 0.0);
+            }
+        }
 
         let (sdz, tdz) = if apply_deadzone { (cfg.stick_deadzone, cfg.trigger_deadzone) } else { (0.0, 0.0) };
         g.analog[AnalogButton::LeftTrigger.index()] = trigger_to_u8(self.left_trigger, tdz);
@@ -287,6 +299,18 @@ mod tests {
             assert!(ConvertConfig { stick_deadzone: bad, trigger_deadzone: 0.0 }.validate().is_err());
             assert!(ConvertConfig { stick_deadzone: 0.0, trigger_deadzone: bad }.validate().is_err());
         }
+    }
+
+    #[test]
+    fn pressure_buttons_override_digital() {
+        let mut s = HostPadState { analog_buttons: Some([0.5, 0.0, 1.0, 0.0, 0.2, f32::NAN]), ..Default::default() };
+        s.buttons.set(HostButton::South, true);
+        s.buttons.set(HostButton::LeftBumper, true);
+        let g = s.to_gamepad(&cfg(), true);
+        assert_eq!(g.analog(AnalogButton::A), 128);
+        assert_eq!(g.analog(AnalogButton::X), 255);
+        assert_eq!(g.analog(AnalogButton::Black), 51);
+        assert_eq!(g.analog(AnalogButton::White), 0);
     }
 
     #[test]

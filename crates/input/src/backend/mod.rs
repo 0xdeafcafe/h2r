@@ -6,6 +6,9 @@ pub mod keyboard;
 #[cfg(feature = "gilrs")]
 pub mod gilrs_pads;
 
+#[cfg(feature = "game-controller")]
+pub mod game_controller;
+
 use crate::gamepad::Rumble;
 use crate::host::{HostPad, HostPadId};
 

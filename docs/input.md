@@ -7,7 +7,7 @@ game calls `XInitDevices`, `XGetDevices`, `XGetDeviceChanges`, `XInputOpen`,
 is emulated.
 
 ```
-host backends (gilrs pads, keyboard+mouse)
+host backends (GameController pads, gilrs pads, keyboard+mouse)
         | HostPad { HostPadState: floats }
         v
 host::to_gamepad  (deadzones, Xbox button mapping)
@@ -112,6 +112,56 @@ emulated USB poll interval) before running the guest.
 `backend/`. The trait is `HostBackend { poll() -> Vec<HostPad>, set_rumble() }`.
 Backends are platform-separated modules; a tvOS or Xbox build swaps them.
 
+### Physical pads: Apple GameController (`backend/game_controller/`, feature `game-controller`, default)
+
+The macOS pad backend. `GameControllerPads::new()` reads
+`GCController.controllers()` through `objc2-game-controller` (0.3.2, the
+maintained objc2 bindings) and the extended gamepad profile, so Xbox,
+DualShock/DualSense, Switch Pro and MFi pads all arrive in one layout.
+
+Split for testability: `game_controller/mod.rs` is portable and holds the
+`ControllerSource` trait (a list of `RawPad` plus a rumble sink), the
+`Snapshot` of floats, `map_snapshot` and `GameControllerPads<S>` (the
+`HostBackend`). `game_controller/apple.rs` (macOS only) is `AppleSource`, the
+only code that touches Objective-C. Tests drive the mapping and the
+`InputManager` through a fake source: no hardware needed.
+
+- **Ports and hot-plug.** The backend reports pads in connection order, each
+  with a never-reused key (so a replug gets a new `HostPadId`). The manager
+  assigns the first four to ports 0 to 3, a fifth waits for a free port, and
+  `device_changes()` returns the insertion and removal masks, including the
+  unplug-and-replug-between-syncs case. Tested.
+- **Axes.** Sticks are -1..1 with +Y up and go through the radial deadzone to
+  +-32767. Triggers are 0..1 pressure, rescaled to 0..=255.
+- **The eight analog buttons.** `bAnalogButtons` takes real pressure from
+  `GCControllerButtonInput.value`: A, B, X, Y, Black (right shoulder), White
+  (left shoulder) via the new `HostPadState::analog_buttons`, and the two
+  triggers. The digital bit of a button is set at pressure >= 0.5. Face
+  buttons keep their physical position (south = A).
+- **Menu / Options** are Start / Back; stick clicks are the thumb buttons.
+- **Rumble.** `GCDeviceHaptics.createEngineWithLocality:` gives one
+  CoreHaptics engine per handle: left handle for the heavy motor, right for
+  the light one. Each runs a looping 30 s continuous event whose intensity is
+  set by a dynamic parameter (`HapticIntensityControl`), 0 stops it. The
+  generated objc2 binding for `createEngineWithLocality:` is gated to
+  iOS/tvOS although macOS has the API, so `apple.rs` calls it with `msg_send!`.
+  `supports_rumble` is true when the controller exposes haptics; pads without
+  haptics (many third-party ones) report no motors, as with gilrs.
+- **Background input.** `shouldMonitorBackgroundEvents` is set so a windowless
+  host keeps receiving input.
+
+Not verified: no physical controller was available, so `AppleSource` is
+compile-checked and the mapping is unit tested but live input, haptics output
+and connect notifications without a running main run loop have not been seen on
+hardware. Controllers without an extended profile (Siri Remote and other micro
+gamepads) are skipped. tvOS uses the same framework; `apple.rs` is cfg'd to
+macOS only and would need a `target_vendor = "apple"` widening plus the
+`objc2-core-haptics` target dependency, untested.
+
+Do not attach both this backend and gilrs on macOS: they see the same pads and
+each would take a port. The `pads` example picks GameController on macOS and
+gilrs elsewhere. Disable the `game-controller` feature to keep gilrs only.
+
 ### Physical pads: gilrs (`backend/gilrs_pads.rs`, feature `gilrs`, default)
 
 Evaluation of gilrs 0.11.2 on macOS, from its README support table and by
@@ -128,12 +178,9 @@ manager then sees a removal plus an insertion and old handles go stale.
 Decision: use gilrs now. It is pure Rust with no unsafe in our code and
 covers the Mac target. Rumble is unavailable on macOS: requests return 50
 and motor capability masks are zero (`supports_rumble` is false, so the
-device model never calls the backend; on Linux and Windows it drives gilrs's effect API, left motor = strong, right = weak). If
-macOS rumble matters, add a GameController framework backend
-(`GCController` plus `CHHapticEngine`) behind the same trait. That needs
-Objective-C bindings (likely `objc2`, with some unsafe) so it is a separate
-piece of work. tvOS will probably need it anyway (gilrs's README lists no tvOS support; not
-tested).
+device model never calls the backend; on Linux and Windows it drives gilrs's effect API, left motor = strong, right = weak). On macOS prefer the GameController
+backend above, which has rumble and pressure buttons. gilrs stays for Linux
+and Windows (and tvOS has no gilrs support; not tested).
 
 ### Keyboard and mouse (`backend/keyboard.rs`)
 

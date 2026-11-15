@@ -6,12 +6,27 @@ license.workspace = true
 description = "Xbox gamepad model (XINPUT_GAMEPAD), 4-port device model and host backends for h2recomp"
 
 [features]
-default = ["gilrs"]
+default = ["gilrs", "game-controller"]
 # Physical gamepads through gilrs (IOKit HID on macOS).
 gilrs = ["dep:gilrs"]
+# Apple GameController (GCController): hot-plug, pressure buttons and rumble
+# on macOS. The platform half is compiled only on macOS; the mapping layer is
+# portable and always built with this feature.
+game-controller = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-game-controller", "dep:objc2-core-haptics"]
 
 [dependencies]
 thiserror.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 gilrs = { version = "0.11", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSSet", "NSObject", "NSEnumerator"] }
+objc2-game-controller = { version = "0.3", optional = true, default-features = false, features = [
+    "std", "GCController", "GCControllerElement", "GCControllerButtonInput", "GCControllerAxisInput",
+    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCExtendedGamepad", "GCPhysicalInputProfile",
+] }
+objc2-core-haptics = { version = "0.3", optional = true, default-features = false, features = [
+    "std", "block2", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer",
+] }

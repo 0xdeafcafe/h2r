@@ -14,12 +14,75 @@ write on a Rust struct, and a software mixer renders the result.
 | `resample` | Linear resampling (whole clip, streaming). |
 | `dsound` | `SoundBuffer` (Lock/Unlock, Play/Stop, loop region, position), `Stream` (packets), `Listener`/`Source3d`. |
 | `mixer` | `Mixer::render(&mut [f32])`: stereo f32 at the host rate. No device knowledge. |
-| `output` | The only platform code: cpal stream (`device` feature, on by default). |
+| `sink` | Device-independent output plumbing: lock-free SPSC `ring`, `AudioSink` trait, headless `NullSink`, `Pump`. |
+| `output` | The only platform code: cpal streams (`device` feature, on by default). `DeviceSink` is the ring-fed one; the older `Output` (mixer behind a `try_lock`) remains for the tone example. |
 
 `cargo run --release --example tone -p audio` plays a PCM tone and a
 synthesised ADPCM clip. Port to tvOS or another host by disabling `device`
 and calling `Mixer::render` from the platform callback (cpal also supports
 iOS/tvOS CoreAudio, untested here).
+
+## Host output (what `boot` calls)
+
+The game thread owns the `Mixer`. Mixed audio crosses to the device through
+a lock-free single-producer/single-consumer ring of interleaved stereo `f32`
+(`sink::ring`, power-of-two atomics, no locks or allocation on the device
+side). The device callback only drains the ring.
+
+```rust
+use audio::{AudioSink, Mixer, Pump, output::DeviceSink};
+
+let mut sink = DeviceSink::open_default()?;          // CoreAudio via cpal
+let mut mixer = Mixer::new(sink.sample_rate());
+let mut pump = Pump::new(audio::sink::DEFAULT_TARGET_LATENCY_MS); // 40
+// ... create/control voices on `mixer` from the DirectSound shim ...
+loop {                                               // once per game frame
+    pump.pump(&mut mixer, &mut sink);                // renders up to the target
+}
+// sink.stats() -> SinkStats { underruns, underrun_frames, played_frames }
+// sink.latency() -> LatencyReport { ring_ms, device_ms, total_ms, .. }
+```
+
+- **Underruns.** If the ring runs dry the callback emits silence for the
+  shortfall (never garbage, never blocks) and counts one underrun plus the
+  missing frames. Before the first write nothing is counted, so a slow start
+  is not an underrun. Counters are cumulative across device reopens.
+- **Latency target.** `Pump` keeps `target_latency_ms` of audio queued
+  (default 40 ms) and renders only the shortfall each call, so queued audio
+  is the latency the game adds. Call `pump` at least once per target period.
+  The callback period must fit inside the target (see measurements).
+- **Sample rate and device change.** The sink opens the system default output
+  at its native rate and the mixer renders at that rate (voices resample
+  per render). A stream error or a change of the default device id (polled
+  every 500 ms in `maintain`, which `pump` calls) rebuilds the stream; if it
+  has a new rate `Pump` calls `Mixer::set_sample_rate` before rendering, and
+  the old ring (a few ms) is dropped. With no device, reopening is retried
+  once a second and `pump` keeps going into a ring nobody drains, so the game
+  does not stall. `DeviceSink::reopen_count()` shows how often this happened.
+  The reopen path is logic-tested through `NullSink::set_rate`; a real hot
+  switch of output hardware has not been exercised.
+- **Headless.** `NullSink::new(rate, capacity)` has no device: tests call
+  `advance(frames)` to play the ring like a callback would, with optional
+  capture of everything played. CI and the tests use it.
+- **Latency measurement.** `cargo run --release --example latency -p audio --
+  [target_ms] [seconds]` pumps a tone at 60 Hz and prints mean/peak ring
+  fill, the driver-reported callback-to-DAC delay (cpal output timestamps),
+  their sum, and underruns. Measured numbers are in the table below.
+
+Measured on an Apple Silicon Mac with the built-in speakers (44.1 kHz, 4 s,
+60 Hz pump, ~512-frame/11.6 ms callbacks, driver delay 14.8 ms):
+
+| target | ring mean | total (ring + driver) | underruns |
+|---|---|---|---|
+| 40 ms | 36.0 ms | 50.8 ms | 1 (284 frames, at start) |
+| 20 ms | 16.2 ms | 31.0 ms | 111 |
+| 10 ms | 6.9 ms | 21.6 ms | 345 |
+
+So 40 ms is the lowest comfortable target with a 60 Hz feeder: a target
+below the callback period plus one game frame (~28 ms here) starves. To go
+lower, feed from a thread that wakes per device callback. The single underrun at 40 ms is
+at startup (probably a callback landing between the first and second pump;
+not confirmed).
 
 Units match the SDK so a guest shim stays a thin mapping: volume and pan in
 millibels (100 mB = 1 dB, amplitude `10^(mb/2000)`, `-10000` is silent),
@@ -123,5 +186,6 @@ is the trace source for validating the mixer later.
    stand-in).
 4. Replace linear resampling with a windowed-sinc or polyphase path for big
    downsamples.
-5. Decide the host-thread model: the output callback uses `try_lock` on the
-   mixer; a lock-free command queue would remove that.
+5. (Done: the ring-fed `DeviceSink` removes the callback lock. Remaining:
+   wire `Pump` into boot, and the mixer is still owned by one thread, so the
+   DirectSound shim must run on the game thread or behind its own lock.)

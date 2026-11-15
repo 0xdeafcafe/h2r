@@ -39,6 +39,14 @@ impl Mixer {
         self.sample_rate
     }
 
+    /// Switches the host rate (after an output device change). Voices
+    /// resample from their own format on every render, so playback carries on
+    /// seamlessly at the new rate.
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        assert!(sample_rate > 0);
+        self.sample_rate = sample_rate;
+    }
+
     /// Master volume in millibels.
     pub fn set_master_volume(&mut self, mb: i32) {
         self.master_mb = mb.clamp(-10_000, 0);

@@ -9,6 +9,7 @@
 //! - [`resample`]: linear sample-rate conversion.
 //! - [`dsound`]: buffers, streams, 3D stub: the DirectSound-shaped model.
 //! - [`mixer`]: software mixer rendering voices to a host buffer.
+//! - [`sink`]: lock-free ring, `AudioSink`, headless `NullSink`, latency-targeting `Pump`.
 //! - [`output`]: the only device-touching code (feature `device`).
 
 pub mod adpcm;
@@ -16,6 +17,7 @@ pub mod dsound;
 pub mod format;
 pub mod mixer;
 pub mod resample;
+pub mod sink;
 
 #[cfg(feature = "device")]
 pub mod output;
@@ -23,6 +25,7 @@ pub mod output;
 pub use dsound::{BufferId, SoundBuffer, Stream, StreamId};
 pub use format::{Codec, WaveFormat};
 pub use mixer::Mixer;
+pub use sink::{AudioSink, NullSink, Pump, SinkStats};
 
 /// Errors from the audio layer.
 #[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]

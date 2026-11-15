@@ -1,0 +1,408 @@
+//! Physical gamepads through Apple's GameController framework (`GCController`).
+//!
+//! Split in two so the logic is testable without hardware or even macOS:
+//!
+//! * this file: [`ControllerSource`] (what a platform supplies: a list of
+//!   [`RawPad`] snapshots and a rumble sink), [`map_snapshot`] (framework
+//!   vocabulary to [`HostPadState`]) and [`GameControllerPads`], the
+//!   [`HostBackend`] over any source;
+//! * `apple.rs` (macOS only): [`AppleSource`], the `objc2-game-controller`
+//!   implementation, including CoreHaptics rumble.
+//!
+//! Port handling, hot-plug and the insertion/removal masks live in
+//! [`InputManager`](crate::InputManager): it assigns the first four pads in
+//! the order this backend reports them (stable: connection order) to ports 0-3
+//! and raises `device_changes()` bits as pads appear and vanish. A pad that
+//! is unplugged and replugged gets a fresh [`HostPadId`], so the manager
+//! reports the removal and the insertion even when both fall between two
+//! syncs.
+//!
+//! Do not add this backend alongside [`GilrsPads`](super::gilrs_pads::GilrsPads)
+//! on macOS: both see the same physical pad and it would take two ports.
+
+use crate::backend::HostBackend;
+use crate::gamepad::Rumble;
+use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
+
+#[cfg(target_os = "macos")]
+mod apple;
+#[cfg(target_os = "macos")]
+pub use apple::AppleSource;
+
+/// A controller's inputs in GameController terms, already read out as plain
+/// numbers. Sticks are -1..=1 with +Y up (the framework's convention),
+/// triggers and buttons 0..=1.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Snapshot {
+    pub a: f32,
+    pub b: f32,
+    pub x: f32,
+    pub y: f32,
+    pub left_shoulder: f32,
+    pub right_shoulder: f32,
+    pub left_trigger: f32,
+    pub right_trigger: f32,
+    pub left_stick: (f32, f32),
+    pub right_stick: (f32, f32),
+    pub dpad_up: bool,
+    pub dpad_down: bool,
+    pub dpad_left: bool,
+    pub dpad_right: bool,
+    /// `buttonMenu`.
+    pub menu: bool,
+    /// `buttonOptions` (absent on some pads, then false).
+    pub options: bool,
+    pub left_stick_press: bool,
+    pub right_stick_press: bool,
+}
+
+/// One connected controller as a platform source reports it.
+#[derive(Clone, Debug)]
+pub struct RawPad {
+    /// Unique per connection: never reused, so a replug yields a new key.
+    pub key: u64,
+    pub name: String,
+    pub snapshot: Snapshot,
+    pub supports_rumble: bool,
+}
+
+/// A platform's controller list.
+pub trait ControllerSource: Send {
+    /// Currently connected controllers in connection order.
+    fn poll(&mut self) -> Vec<RawPad>;
+    /// Motor speeds 0..=1 (`left` is the heavy motor). 0/0 stops.
+    fn set_rumble(&mut self, key: u64, left: f32, right: f32);
+}
+
+/// Pressure at or above which a pressure-sensitive button counts as a
+/// digital press (the d-pad has no pressure; stick clicks use the framework's
+/// own pressed state).
+const PRESS_THRESHOLD: f32 = 0.5;
+
+fn unit(v: f32) -> f32 {
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+/// Maps a GameController snapshot onto the Xbox-flavoured [`HostPadState`].
+///
+/// * A/B/X/Y keep their physical position (south/east/west/north), matching
+///   the Xbox layout on Xbox-style pads.
+/// * Right shoulder is Black and left shoulder is White, as everywhere else
+///   in this crate; both are reported as pressure.
+/// * Triggers and the six analog buttons carry the framework's 0..1
+///   pressure, which `to_gamepad` rescales to 0..=255.
+/// * Menu is Start, Options is Back.
+pub fn map_snapshot(s: &Snapshot) -> HostPadState {
+    let mut st = HostPadState::default();
+    let mut digital = |hb: HostButton, down: bool| st.buttons.set(hb, down);
+    digital(HostButton::South, unit(s.a) >= PRESS_THRESHOLD);
+    digital(HostButton::East, unit(s.b) >= PRESS_THRESHOLD);
+    digital(HostButton::West, unit(s.x) >= PRESS_THRESHOLD);
+    digital(HostButton::North, unit(s.y) >= PRESS_THRESHOLD);
+    digital(
+        HostButton::RightBumper,
+        unit(s.right_shoulder) >= PRESS_THRESHOLD,
+    );
+    digital(
+        HostButton::LeftBumper,
+        unit(s.left_shoulder) >= PRESS_THRESHOLD,
+    );
+    digital(HostButton::Start, s.menu);
+    digital(HostButton::Back, s.options);
+    digital(HostButton::LeftStick, s.left_stick_press);
+    digital(HostButton::RightStick, s.right_stick_press);
+    digital(HostButton::DpadUp, s.dpad_up);
+    digital(HostButton::DpadDown, s.dpad_down);
+    digital(HostButton::DpadLeft, s.dpad_left);
+    digital(HostButton::DpadRight, s.dpad_right);
+    st.left_stick = s.left_stick;
+    st.right_stick = s.right_stick;
+    st.left_trigger = s.left_trigger;
+    st.right_trigger = s.right_trigger;
+    st.analog_buttons = Some([s.a, s.b, s.x, s.y, s.right_shoulder, s.left_shoulder].map(unit));
+    st
+}
+
+/// [`HostBackend`] over a [`ControllerSource`].
+pub struct GameControllerPads<S: ControllerSource> {
+    source: S,
+}
+
+impl<S: ControllerSource> GameControllerPads<S> {
+    pub fn with_source(source: S) -> Self {
+        Self { source }
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl GameControllerPads<AppleSource> {
+    /// The system GameController backend. Also asks the framework to keep
+    /// delivering input while the app is in the background, which a headless
+    /// or windowless recomp host needs.
+    pub fn new() -> Self {
+        Self::with_source(AppleSource::new())
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Default for GameControllerPads<AppleSource> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn to_u16_speed(v: u16) -> f32 {
+    f32::from(v) / 65535.0
+}
+
+impl<S: ControllerSource> HostBackend for GameControllerPads<S> {
+    fn name(&self) -> &str {
+        "game-controller"
+    }
+
+    fn poll(&mut self) -> Vec<HostPad> {
+        let mut pads: Vec<HostPad> = self
+            .source
+            .poll()
+            .into_iter()
+            .map(|p| HostPad {
+                id: HostPadId(p.key),
+                name: p.name,
+                state: map_snapshot(&p.snapshot),
+                physical: true,
+                supports_rumble: p.supports_rumble,
+            })
+            .collect();
+        pads.sort_by_key(|p| p.id); // keys grow with connection order
+        pads
+    }
+
+    fn set_rumble(&mut self, id: HostPadId, rumble: Rumble) {
+        self.source.set_rumble(
+            id.0,
+            to_u16_speed(rumble.left_motor),
+            to_u16_speed(rumble.right_motor),
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::device::FeedbackRequest;
+    use crate::gamepad::{AnalogButton, Buttons};
+    use crate::host::ConvertConfig;
+    use crate::{InputManager, PortIndex};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct Fake {
+        pads: Vec<RawPad>,
+        rumble: Vec<(u64, f32, f32)>,
+    }
+    #[derive(Clone, Default)]
+    struct FakeSource(Arc<Mutex<Fake>>);
+    impl ControllerSource for FakeSource {
+        fn poll(&mut self) -> Vec<RawPad> {
+            self.0.lock().unwrap().pads.clone()
+        }
+        fn set_rumble(&mut self, key: u64, l: f32, r: f32) {
+            self.0.lock().unwrap().rumble.push((key, l, r));
+        }
+    }
+    fn raw(key: u64, snapshot: Snapshot) -> RawPad {
+        RawPad {
+            key,
+            name: format!("pad{key}"),
+            snapshot,
+            supports_rumble: true,
+        }
+    }
+    fn gp(s: &Snapshot) -> crate::gamepad::Gamepad {
+        map_snapshot(s).to_gamepad(&ConvertConfig::default(), true)
+    }
+
+    #[test]
+    fn face_buttons_and_pressure() {
+        let g = gp(&Snapshot {
+            a: 1.0,
+            b: 0.25,
+            x: 0.5,
+            ..Default::default()
+        });
+        assert_eq!(g.analog(AnalogButton::A), 255);
+        assert_eq!(g.analog(AnalogButton::B), 64);
+        assert_eq!(g.analog(AnalogButton::X), 128);
+        assert_eq!(g.analog(AnalogButton::Y), 0);
+    }
+
+    #[test]
+    fn shoulders_are_black_and_white() {
+        let g = gp(&Snapshot {
+            right_shoulder: 1.0,
+            left_shoulder: 0.5,
+            ..Default::default()
+        });
+        assert_eq!(g.analog(AnalogButton::Black), 255);
+        assert_eq!(g.analog(AnalogButton::White), 128);
+    }
+
+    #[test]
+    fn triggers_span_full_range() {
+        let g = gp(&Snapshot {
+            left_trigger: 1.0,
+            right_trigger: 0.5,
+            ..Default::default()
+        });
+        assert_eq!(g.analog(AnalogButton::LeftTrigger), 255);
+        assert!((i32::from(g.analog(AnalogButton::RightTrigger)) - 128).abs() <= 5); // minus the trigger deadzone
+        let g = gp(&Snapshot::default());
+        assert_eq!(g.analog, [0; 8]);
+    }
+
+    #[test]
+    fn sticks_span_xbox_range_y_up() {
+        let g = gp(&Snapshot {
+            left_stick: (1.0, 1.0),
+            right_stick: (-1.0, -1.0),
+            ..Default::default()
+        });
+        // Full diagonal is clamped to the unit circle: ~0.707 of 32767 each.
+        assert!(g.thumb_lx > 23000 && g.thumb_ly > 23000);
+        assert!(g.thumb_rx < -23000 && g.thumb_ry < -23000);
+        let g = gp(&Snapshot {
+            left_stick: (0.0, 1.0),
+            right_stick: (-1.0, 0.0),
+            ..Default::default()
+        });
+        assert_eq!((g.thumb_ly, g.thumb_rx), (32767, -32767));
+        let g = gp(&Snapshot {
+            left_stick: (0.03, -0.03),
+            ..Default::default()
+        });
+        assert_eq!(
+            (g.thumb_lx, g.thumb_ly),
+            (0, 0),
+            "host deadzone removes noise"
+        );
+    }
+
+    #[test]
+    fn digital_buttons() {
+        let g = gp(&Snapshot {
+            menu: true,
+            options: true,
+            left_stick_press: true,
+            dpad_up: true,
+            dpad_right: true,
+            ..Default::default()
+        });
+        let want = Buttons::START
+            | Buttons::BACK
+            | Buttons::LEFT_THUMB
+            | Buttons::DPAD_UP
+            | Buttons::DPAD_RIGHT;
+        assert_eq!(g.buttons, want);
+    }
+
+    #[test]
+    fn hostile_values_do_not_poison_state() {
+        let g = gp(&Snapshot {
+            a: f32::NAN,
+            b: 7.0,
+            left_trigger: f32::INFINITY,
+            ..Default::default()
+        });
+        assert_eq!(g.analog(AnalogButton::A), 0);
+        assert_eq!(g.analog(AnalogButton::B), 255);
+        assert_eq!(g.analog(AnalogButton::LeftTrigger), 0);
+    }
+
+    fn manager(src: &FakeSource) -> InputManager {
+        let mut m = InputManager::new(ConvertConfig::default()).unwrap();
+        m.add_backend(Box::new(GameControllerPads::with_source(src.clone())));
+        m
+    }
+
+    #[test]
+    fn four_ports_hotplug_and_masks() {
+        let src = FakeSource::default();
+        let mut m = manager(&src);
+        m.sync();
+        assert_eq!(m.device_changes(), (0, 0));
+        src.0.lock().unwrap().pads = (1..=5).map(|k| raw(k, Snapshot::default())).collect();
+        m.sync();
+        assert_eq!(m.connected_mask(), 0b1111, "fifth pad has no port");
+        assert_eq!(m.device_changes(), (0b1111, 0));
+        // Pad in port 1 (key 2) vanishes; the waiting fifth pad takes the slot.
+        src.0.lock().unwrap().pads.retain(|p| p.key != 2);
+        m.sync();
+        assert_eq!(m.device_changes(), (0b0010, 0b0010));
+        assert_eq!(m.connected_mask(), 0b1111);
+        // Pull everything.
+        src.0.lock().unwrap().pads.clear();
+        m.sync();
+        assert_eq!(m.connected_mask(), 0);
+        assert_eq!(m.device_changes(), (0, 0b1111));
+    }
+
+    #[test]
+    fn replug_between_syncs_is_remove_plus_insert() {
+        let src = FakeSource::default();
+        let mut m = manager(&src);
+        src.0.lock().unwrap().pads = vec![raw(1, Snapshot::default())];
+        m.sync();
+        m.device_changes();
+        src.0.lock().unwrap().pads = vec![raw(2, Snapshot::default())]; // new connection key
+        m.sync();
+        assert_eq!(m.device_changes(), (1, 1));
+    }
+
+    #[test]
+    fn state_reaches_the_guest_struct() {
+        let src = FakeSource::default();
+        let mut m = manager(&src);
+        src.0.lock().unwrap().pads = vec![raw(
+            1,
+            Snapshot {
+                a: 1.0,
+                left_trigger: 1.0,
+                left_stick: (1.0, 0.0),
+                ..Default::default()
+            },
+        )];
+        m.sync();
+        let h = m.open(PortIndex::new(0).unwrap()).unwrap();
+        let s = m.get_state(h).unwrap();
+        assert_eq!(s.gamepad.analog(AnalogButton::A), 255);
+        assert_eq!(s.gamepad.analog(AnalogButton::LeftTrigger), 255);
+        assert_eq!(s.gamepad.thumb_lx, 32767);
+    }
+
+    #[test]
+    fn rumble_is_forwarded_as_unit_speeds() {
+        let src = FakeSource::default();
+        let mut m = manager(&src);
+        src.0.lock().unwrap().pads = vec![raw(9, Snapshot::default())];
+        m.sync();
+        let h = m.open(PortIndex::new(0).unwrap()).unwrap();
+        m.set_state(
+            h,
+            FeedbackRequest {
+                addr: 0,
+                h_event: 0,
+                rumble: Rumble {
+                    left_motor: 65535,
+                    right_motor: 0,
+                },
+            },
+        )
+        .unwrap();
+        m.sync();
+        assert_eq!(src.0.lock().unwrap().rumble, vec![(9, 1.0, 0.0)]);
+    }
+}

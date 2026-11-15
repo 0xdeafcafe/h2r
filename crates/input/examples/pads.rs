@@ -16,7 +16,11 @@ fn main() {
     let rumble = std::env::args().any(|a| a == "--rumble");
     let mut mgr = InputManager::new(ConvertConfig::default()).expect("valid config");
 
-    #[cfg(feature = "gilrs")]
+    // On macOS the GameController backend sees the same pads as gilrs (and adds
+    // pressure buttons and rumble), so use only one of them.
+    #[cfg(all(feature = "game-controller", target_os = "macos"))]
+    mgr.add_backend(Box::new(input::backend::game_controller::GameControllerPads::new()));
+    #[cfg(all(feature = "gilrs", not(all(feature = "game-controller", target_os = "macos"))))]
     match input::backend::gilrs_pads::GilrsPads::new() {
         Ok(b) => mgr.add_backend(Box::new(b)),
         Err(e) => eprintln!("gilrs unavailable: {e}"),
