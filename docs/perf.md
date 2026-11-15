@@ -93,7 +93,11 @@ Symbolisation runs in process. `dladdr` finds each PC's image, asking the
 dynamic loader at every lookup, so a dylib loaded after an earlier
 profile or lookup is seen. addr2line then reads that image's symbol table
 and DWARF line tables, including macOS debug maps that point at the
-objects; this is cached per image path and load address. It must run
+objects; this is cached per image path and load address. Lookups use
+the image's preferred (link-time) address, `pc - slide`. On Mach-O the
+slide is the image's load address minus its preferred `__TEXT` vmaddr,
+read from the mapped header: 0 for the generated dylibs, 0x100000000 for
+an executable such as `h2`. It must run
 **before the generated dylib is unloaded**: finish or drop the `Session`
 first.
 
@@ -186,9 +190,12 @@ allocates, locks or reads the clock unless a category is recording. A
 `Span` is one pointer, null when inert, and its drop is an inlined null
 check; the recording path is out of line.
 
-Each `start` and `stop` begins a new capture generation. An event keeps
-the generation that was current when its hook fired, and it is discarded
-unless that generation is still recording when the event is pushed. So a
+Each `start` and `stop` begins a new capture generation. It is stored in
+the same atomic word as the category mask, so a hook's one load gives
+both whether to record and which capture the event belongs to, before
+the clock read or anything else. The event is pushed, and a wait is
+registered, only if that capture is still recording, which is checked
+under the lock. So a
 span (or wait) opened in one capture and closed after `stop`, or after the
 next `start`, never lands in a trace.
 `timeline::frame()` always bumps a frame counter (`timeline::frames()`),

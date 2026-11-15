@@ -266,6 +266,80 @@ fn dladdr(_: u64) -> Option<Dl> {
     None
 }
 
+/// A source location: file and line.
+pub type Location = (PathBuf, u32);
+
+/// One frame of an [`ImageView`]: raw function name and location.
+pub type ViewFrame = (Option<String>, Option<Location>);
+
+/// An image's own view of a PC; see [`Symbolizer::image_view`].
+#[derive(Debug, Clone, Default)]
+pub struct ImageView {
+    pub symbol: Option<String>,
+    /// Innermost first.
+    pub frames: Vec<ViewFrame>,
+}
+
+/// The preferred (link-time) virtual address of `pc`, which is what the
+/// image's symbol and DWARF tables are written in. On Mach-O that is
+/// `pc - slide`, with the slide the load address of the header minus the
+/// preferred `__TEXT` vmaddr: 0 for a dylib, 0x100000000 for an
+/// executable. Elsewhere, `pc - base` plus addr2line's relative base
+/// (right for PIE ELF and PE).
+pub fn preferred_address(pc: u64, base: u64, relative_base: u64) -> u64 {
+    match preferred_text(base) {
+        Some(text) => pc.wrapping_sub(base.wrapping_sub(text)),
+        None => pc.wrapping_sub(base).wrapping_add(relative_base),
+    }
+}
+
+/// The preferred vmaddr of the `__TEXT` segment of the 64-bit Mach-O image
+/// whose header is mapped at `base`.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+pub fn preferred_text(base: u64) -> Option<u64> {
+    const MH_MAGIC_64: u32 = 0xfeed_facf;
+    const LC_SEGMENT_64: u32 = 0x19;
+    if base == 0 {
+        return None;
+    }
+    let at = |off: u64| base.wrapping_add(off) as *const u8;
+    // SAFETY: `base` is dladdr's `dli_fbase`, the start of a loaded image's
+    // mapped Mach-O header; the header and its load commands (sizeofcmds
+    // bytes after it) are mapped for as long as the image is loaded. Every
+    // read stays inside them.
+    unsafe {
+        let u32_at = |off: u64| std::ptr::read_unaligned(at(off) as *const u32);
+        if u32_at(0) != MH_MAGIC_64 {
+            return None;
+        }
+        let (ncmds, sizeofcmds) = (u32_at(16) as u64, u32_at(20) as u64);
+        let (mut off, end) = (32u64, 32 + sizeofcmds);
+        for _ in 0..ncmds {
+            if off + 8 > end {
+                return None;
+            }
+            let (cmd, size) = (u32_at(off), u32_at(off + 4) as u64);
+            if size < 8 || off + size > end {
+                return None;
+            }
+            if cmd == LC_SEGMENT_64 && size >= 72 {
+                let name = std::slice::from_raw_parts(at(off + 8), 16);
+                if name.starts_with(b"__TEXT\0") {
+                    return Some(std::ptr::read_unaligned(at(off + 24) as *const u64));
+                }
+            }
+            off += size;
+        }
+    }
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn preferred_text(_: u64) -> Option<u64> {
+    None
+}
+
 /// Resolves PCs and caches the answers; one per profile.
 ///
 /// Images are found with `dladdr`, which asks the dynamic loader at every
@@ -296,51 +370,63 @@ impl Symbolizer {
         frame
     }
 
-    fn lookup(&mut self, pc: u64) -> Frame {
-        let Some(dl) = dladdr(pc) else {
-            return Frame::Unknown { pc };
-        };
+    /// What the image's own tables say about `pc`, without the `dladdr`
+    /// symbol fallback: its symbol and its frames, innermost first (raw
+    /// function name, source location). For diagnostics and tests.
+    pub fn image_view(&mut self, pc: u64) -> Option<ImageView> {
+        let dl = dladdr(pc)?;
+        Some(self.view(pc, &dl))
+    }
+
+    fn view(&mut self, pc: u64, dl: &Dl) -> ImageView {
+        let mut v = ImageView::default();
         let loader = self
             .images
             .entry((dl.path.clone(), dl.base))
             .or_insert_with(|| addr2line::Loader::new(&dl.path).ok());
-        let mut symbol = dl.symbol;
-        // (innermost function name, outermost `.c` location)
-        let mut inner: Option<String> = None;
-        let mut c_line: Option<(PathBuf, u32)> = None;
-        if let Some(l) = loader {
-            let probe = pc
-                .wrapping_sub(dl.base)
-                .wrapping_add(l.relative_address_base());
-            if let Some(s) = l.find_symbol(probe) {
-                symbol = Some(s.to_owned());
-            }
-            if let Ok(mut frames) = l.find_frames(probe) {
-                while let Ok(Some(f)) = frames.next() {
-                    if inner.is_none()
-                        && let Some(n) = f.function.as_ref().and_then(|n| n.raw_name().ok())
-                    {
-                        inner = Some(n.into_owned());
-                    }
-                    if let Some(loc) = f.location
-                        && let (Some(file), Some(line)) = (loc.file, loc.line)
-                        && file.ends_with(".c")
-                    {
-                        // Later frames are outer: the handler's own line
-                        // wins over an inlined h2gen.h helper's.
-                        c_line = Some((PathBuf::from(file), line));
-                    }
-                }
+        let Some(l) = loader else {
+            return v;
+        };
+        let probe = preferred_address(pc, dl.base, l.relative_address_base());
+        v.symbol = l.find_symbol(probe).map(str::to_owned);
+        if let Ok(mut frames) = l.find_frames(probe) {
+            while let Ok(Some(f)) = frames.next() {
+                let name = f
+                    .function
+                    .as_ref()
+                    .and_then(|n| n.raw_name().ok())
+                    .map(|n| n.into_owned());
+                let loc = f
+                    .location
+                    .and_then(|loc| Some((PathBuf::from(loc.file?), loc.line?)));
+                v.frames.push((name, loc));
             }
         }
-        let Some(symbol) = symbol else {
+        v
+    }
+
+    fn lookup(&mut self, pc: u64) -> Frame {
+        let Some(dl) = dladdr(pc) else {
             return Frame::Unknown { pc };
         };
+        let v = self.view(pc, &dl);
+        let Some(symbol) = v.symbol.or(dl.symbol) else {
+            return Frame::Unknown { pc };
+        };
+        let inner = v.frames.iter().find_map(|(n, _)| n.clone());
         match guest_entry(&symbol) {
-            Some(function) => Frame::Guest {
-                function,
-                insn: c_line.and_then(|(f, l)| self.insn(&f, l, function)),
-            },
+            Some(function) => {
+                // Later frames are outer: the handler's own `.c` line wins
+                // over an inlined h2gen.h helper's.
+                let c_line = v.frames.iter().rev().find_map(|(_, loc)| {
+                    loc.clone()
+                        .filter(|(f, _)| f.extension().is_some_and(|e| e == "c"))
+                });
+                Frame::Guest {
+                    function,
+                    insn: c_line.and_then(|(f, l)| self.insn(&f, l, function)),
+                }
+            }
             None => Frame::Host {
                 name: display_name(inner.as_deref().unwrap_or(&symbol)),
             },
@@ -431,6 +517,74 @@ mod tests {
         assert_eq!(c("xapi::service_input"), Some(Category::Hle));
         assert_eq!(c("platform_memmove"), None);
         assert_eq!(c("std::sys::thread::unix::Thread::new::thread_start"), None);
+    }
+
+    /// The test binary is a Mach-O executable (preferred __TEXT at
+    /// 0x100000000, unlike a dylib's 0): its own symbol table, not just
+    /// dladdr, must find a local function, so the slide is applied right.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn executables_are_looked_up_at_their_preferred_addresses() {
+        #[inline(never)]
+        fn exe_marker() -> u64 {
+            std::hint::black_box(11)
+        }
+        let pc = exe_marker as *const () as u64 + 1;
+        let dl = dladdr(pc).unwrap();
+        assert_eq!(
+            preferred_text(dl.base),
+            Some(0x1_0000_0000),
+            "{}",
+            dl.path.display()
+        );
+        let mut s = Symbolizer::new();
+        let v = s.image_view(pc).unwrap();
+        let sym = v.symbol.as_deref().map(display_name).unwrap_or_default();
+        assert!(sym.contains("exe_marker"), "{sym:?}");
+        // With debug info (any but CARGO_PROFILE_TEST_DEBUG=0) the frame
+        // names and locations come from DWARF too.
+        if let Some((Some(name), Some((file, _)))) = v.frames.first() {
+            assert!(display_name(name).contains("exe_marker"), "{name}");
+            assert!(file.ends_with("symbolize.rs"), "{}", file.display());
+        }
+    }
+
+    /// An inlined function inside the executable resolves as the inner
+    /// frame (with DWARF): the PC comes from an `adr` in the inlined body.
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[test]
+    fn inlined_frames_in_the_executable_name_the_inner_function() {
+        #[inline(always)]
+        fn inlined_pc_marker() -> u64 {
+            let pc: u64;
+            // SAFETY: reads the address of this instruction; no side effects.
+            #[allow(unsafe_code)]
+            unsafe {
+                std::arch::asm!("adr {}, .", out(reg) pc)
+            };
+            pc
+        }
+        #[inline(never)]
+        fn outer_pc_marker() -> u64 {
+            std::hint::black_box(inlined_pc_marker())
+        }
+        let pc = outer_pc_marker();
+        let mut s = Symbolizer::new();
+        let v = s.image_view(pc).unwrap();
+        let sym = v.symbol.as_deref().map(display_name).unwrap_or_default();
+        assert!(sym.contains("outer_pc_marker"), "{sym:?}");
+        if v.frames.iter().any(|(n, _)| n.is_some()) {
+            let names: Vec<String> = v
+                .frames
+                .iter()
+                .filter_map(|(n, _)| n.as_deref().map(display_name))
+                .collect();
+            assert!(names[0].contains("inlined_pc_marker"), "{names:?}");
+            match s.resolve(pc) {
+                Frame::Host { name } => assert!(name.contains("inlined_pc_marker"), "{name}"),
+                f => panic!("{f:?}"),
+            }
+        }
     }
 
     /// A Rust function in this test binary resolves to its own name.

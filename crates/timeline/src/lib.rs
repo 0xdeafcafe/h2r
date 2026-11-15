@@ -157,7 +157,6 @@ impl Config {
     }
 }
 
-static MASK: AtomicU32 = AtomicU32::new(0);
 static FRAMES: AtomicU64 = AtomicU64::new(0);
 static NEXT_HOST: AtomicU32 = AtomicU32::new(1);
 
@@ -190,22 +189,49 @@ struct State {
     capacity: usize,
     dropped: u64,
     host_names: Vec<(u32, String)>,
-    waits: HashMap<u32, (u64, &'static str, u64)>,
-    /// The capture events are accepted for; see [`GEN`].
-    generation: u64,
+    waits: HashMap<u32, (u64, &'static str, u32)>,
+    /// The capture events are accepted for; see [`CAPTURE`].
+    generation: u32,
     active: bool,
 }
 
-/// The current capture's generation, bumped (under the state lock) by
-/// [`start`] and [`stop`]. Hooks read it when they find their category
-/// on and [`push`] keeps an event only if it still matches: a span opened
-/// in one capture and closed after the next one started is discarded,
-/// never written into the wrong trace.
-static GEN: AtomicU64 = AtomicU64::new(0);
+/// The capture: its generation in the high half, its category mask in
+/// the low half, stored together (under the state lock) by [`start`] and
+/// [`stop`], which both bump the generation. A hook makes one load: the
+/// mask says whether to record and the generation, taken by the same load
+/// before anything else happens, is the capture the event belongs to.
+/// [`push`] (and a wait's insertion) keeps an event only if that capture
+/// is still the one recording, checked under the lock. So an event begun
+/// in one capture never lands in a later one, however long its hook is
+/// held up between the load and the push.
+static CAPTURE: AtomicU64 = AtomicU64::new(0);
+
+/// The capture's generation if `cat` is recording. One relaxed load.
+#[inline(always)]
+fn token(cat: Cat) -> Option<u32> {
+    let c = CAPTURE.load(Ordering::Relaxed);
+    (c as u32 & cat.bit() != 0).then_some((c >> 32) as u32)
+}
+
+fn publish(s: &State, mask: u32) {
+    CAPTURE.store(
+        ((s.generation as u64) << 32) | mask as u64,
+        Ordering::Release,
+    );
+}
+
+// Test seam: runs on the hook's thread right after it took its token.
+#[cfg(test)]
+thread_local! {
+    static PAUSE: std::cell::RefCell<Option<Box<dyn FnMut()>>> = const { std::cell::RefCell::new(None) };
+}
 
 #[inline(always)]
-fn generation() -> u64 {
-    GEN.load(Ordering::Acquire)
+fn after_token() {
+    #[cfg(test)]
+    if let Some(mut f) = PAUSE.with(|p| p.borrow_mut().take()) {
+        f();
+    }
 }
 
 fn state() -> MutexGuard<'static, State> {
@@ -238,13 +264,13 @@ pub fn now_ns() -> u64 {
 /// True while `cat` is being recorded. One relaxed load.
 #[inline(always)]
 pub fn enabled(cat: Cat) -> bool {
-    MASK.load(Ordering::Relaxed) & cat.bit() != 0
+    token(cat).is_some()
 }
 
 /// True while anything is being recorded.
 #[inline(always)]
 pub fn recording() -> bool {
-    MASK.load(Ordering::Relaxed) != 0
+    CAPTURE.load(Ordering::Relaxed) as u32 != 0
 }
 
 fn host_tid() -> u32 {
@@ -262,7 +288,7 @@ fn host_tid() -> u32 {
 }
 
 #[cold]
-fn push(ev: Ev, generation: u64) {
+fn push(ev: Ev, generation: u32) {
     let mut s = state();
     if !s.active || s.generation != generation {
         return;
@@ -274,10 +300,21 @@ fn push(ev: Ev, generation: u64) {
     }
 }
 
-/// Push an event for the capture that is current now.
+/// Build and push an event for capture `generation`.
 #[cold]
-fn record(e: Ev) {
-    push(e, generation());
+#[inline(never)]
+fn record(
+    generation: u32,
+    cat: Cat,
+    track: Track,
+    name: &'static str,
+    phase: Phase,
+    arg: Option<(&'static str, u64)>,
+) {
+    after_token();
+    let mut e = ev(cat, track, name, phase, now_ns());
+    e.arg = arg;
+    push(e, generation);
 }
 
 fn ev(cat: Cat, track: Track, name: &'static str, phase: Phase, ts: u64) -> Ev {
@@ -302,20 +339,18 @@ pub fn start(config: Config) {
         s.capacity = config.capacity;
         s.dropped = 0;
         s.waits.clear();
-        s.generation += 1;
+        s.generation = s.generation.wrapping_add(1);
         s.active = true;
-        GEN.store(s.generation, Ordering::Release);
+        publish(&s, config.mask);
     }
-    MASK.store(config.mask, Ordering::Release);
 }
 
 /// Stop recording and take what was recorded.
 pub fn stop() -> Trace {
-    MASK.store(0, Ordering::Release);
     let mut s = state();
-    s.generation += 1;
+    s.generation = s.generation.wrapping_add(1);
     s.active = false;
-    GEN.store(s.generation, Ordering::Release);
+    publish(&s, 0);
     let mut events = std::mem::take(&mut s.events);
     events.sort_by_key(|e| e.ts);
     s.waits.clear();
@@ -329,7 +364,7 @@ pub fn stop() -> Trace {
 struct Open {
     ev: Ev,
     start: u64,
-    generation: u64,
+    generation: u32,
 }
 
 /// An open span; records a complete event when dropped. One pointer: an
@@ -376,8 +411,8 @@ fn finish(o: &Open) {
 
 #[cold]
 #[inline(never)]
-fn open(cat: Cat, track: Track, name: &'static str) -> Span {
-    let generation = generation();
+fn open(generation: u32, cat: Cat, track: Track, name: &'static str) -> Span {
+    after_token();
     let ts = now_ns();
     Span {
         open: Some(Box::new(Open {
@@ -392,28 +427,25 @@ fn open(cat: Cat, track: Track, name: &'static str) -> Span {
 /// branch, no clock read, nothing to drop) unless `cat` is recording.
 #[inline(always)]
 pub fn span(cat: Cat, track: Track, name: &'static str) -> Span {
-    if enabled(cat) {
-        open(cat, track, name)
-    } else {
-        Span { open: None }
+    match token(cat) {
+        Some(g) => open(g, cat, track, name),
+        None => Span { open: None },
     }
 }
 
 /// A zero-length event.
 #[inline]
 pub fn instant(cat: Cat, track: Track, name: &'static str) {
-    if enabled(cat) {
-        record(ev(cat, track, name, Phase::Instant, now_ns()));
+    if let Some(g) = token(cat) {
+        record(g, cat, track, name, Phase::Instant, None);
     }
 }
 
 /// A zero-length event with one argument.
 #[inline]
 pub fn instant_arg(cat: Cat, track: Track, name: &'static str, key: &'static str, value: u64) {
-    if enabled(cat) {
-        let mut e = ev(cat, track, name, Phase::Instant, now_ns());
-        e.arg = Some((key, value));
-        record(e);
+    if let Some(g) = token(cat) {
+        record(g, cat, track, name, Phase::Instant, Some((key, value)));
     }
 }
 
@@ -422,30 +454,24 @@ pub fn instant_arg(cat: Cat, track: Track, name: &'static str, key: &'static str
 /// preemption interrupts). End it with the same `name` and `id`.
 #[inline]
 pub fn async_begin(cat: Cat, track: Track, name: &'static str, id: u64) {
-    if enabled(cat) {
-        record(ev(cat, track, name, Phase::AsyncBegin { id }, now_ns()));
+    if let Some(g) = token(cat) {
+        record(g, cat, track, name, Phase::AsyncBegin { id }, None);
     }
 }
 
 /// End an [`async_begin`] span.
 #[inline]
 pub fn async_end(cat: Cat, track: Track, name: &'static str, id: u64) {
-    if enabled(cat) {
-        record(ev(cat, track, name, Phase::AsyncEnd { id }, now_ns()));
+    if let Some(g) = token(cat) {
+        record(g, cat, track, name, Phase::AsyncEnd { id }, None);
     }
 }
 
 /// A counter sample (drawn as its own track).
 #[inline]
 pub fn counter(cat: Cat, name: &'static str, value: u64) {
-    if enabled(cat) {
-        record(ev(
-            cat,
-            Track::Host,
-            name,
-            Phase::Counter { value },
-            now_ns(),
-        ));
+    if let Some(g) = token(cat) {
+        record(g, cat, Track::Host, name, Phase::Counter { value }, None);
     }
 }
 
@@ -453,23 +479,29 @@ pub fn counter(cat: Cat, name: &'static str, value: u64) {
 /// next [`wait_end`] for the thread; a second begin replaces the first.
 #[inline]
 pub fn wait_begin(thread: u32, name: &'static str) {
-    if enabled(Cat::Kernel) {
-        wait_begin_slow(thread, name);
+    if let Some(g) = token(Cat::Kernel) {
+        wait_begin_slow(g, thread, name);
     }
 }
 
 #[cold]
-fn wait_begin_slow(thread: u32, name: &'static str) {
-    let generation = generation();
+#[inline(never)]
+fn wait_begin_slow(generation: u32, thread: u32, name: &'static str) {
+    after_token();
     let ts = now_ns();
-    state().waits.insert(thread, (ts, name, generation));
+    let mut s = state();
+    // A begin from a capture that has since ended must not replace a
+    // wait the current capture recorded for the same thread.
+    if s.active && s.generation == generation {
+        s.waits.insert(thread, (ts, name, generation));
+    }
 }
 
 /// Guest thread `thread` runs again: closes its open wait, if any, as a
 /// span on the thread's track.
 #[inline]
 pub fn wait_end(thread: u32) {
-    if enabled(Cat::Kernel) {
+    if token(Cat::Kernel).is_some() {
         wait_end_slow(thread);
     }
 }
@@ -498,10 +530,15 @@ fn wait_end_slow(thread: u32) {
 #[inline]
 pub fn frame() {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
-    if enabled(Cat::Frame) {
-        let mut e = ev(Cat::Frame, Track::Host, "frame", Phase::Instant, now_ns());
-        e.arg = Some(("n", n));
-        record(e);
+    if let Some(g) = token(Cat::Frame) {
+        record(
+            g,
+            Cat::Frame,
+            Track::Host,
+            "frame",
+            Phase::Instant,
+            Some(("n", n)),
+        );
     }
 }
 
@@ -735,6 +772,65 @@ mod tests {
         drop(late);
         start(Config::all());
         assert_eq!(stop().count("late"), 0);
+    }
+
+    /// Run `hook` on a worker, held up right after it took its token while
+    /// the main thread does `between`; returns the trace of the capture
+    /// running once the worker finished.
+    fn interleave(hook: fn(), between: impl FnOnce()) {
+        use std::sync::mpsc;
+        let (at_token, paused) = mpsc::channel();
+        let (go, resume) = mpsc::channel::<()>();
+        let w = std::thread::Builder::new()
+            .name("held-up hook".into())
+            .spawn(move || {
+                PAUSE.with(|p| {
+                    *p.borrow_mut() = Some(Box::new(move || {
+                        at_token.send(()).unwrap();
+                        resume.recv().unwrap();
+                    }))
+                });
+                hook();
+            })
+            .unwrap();
+        paused.recv().unwrap();
+        between();
+        go.send(()).unwrap();
+        w.join().unwrap();
+    }
+
+    #[test]
+    fn an_event_held_up_across_a_restart_stays_out_of_the_new_capture() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::all());
+        interleave(
+            || instant(Cat::Guest, Track::Host, "old instant"),
+            || {
+                assert!(stop().is_empty());
+                start(Config::none().with(Cat::Hle));
+            },
+        );
+        let t = stop();
+        assert_eq!(t.count("old instant"), 0, "B records only hle");
+        assert!(t.is_empty());
+    }
+
+    #[test]
+    fn a_wait_begin_held_up_across_a_restart_keeps_the_new_wait() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::all());
+        interleave(
+            || wait_begin(5, "old wait"),
+            || {
+                let _ = stop();
+                start(Config::all());
+                wait_begin(5, "new wait");
+            },
+        );
+        wait_end(5);
+        let t = stop();
+        assert_eq!(t.count("new wait"), 1);
+        assert_eq!(t.count("old wait"), 0);
     }
 
     #[test]
