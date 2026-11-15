@@ -1,9 +1,10 @@
 # Expanded settings menu (design)
 
-Status: design, with one exception built: the controller speaker's on/off
-is a row on the game's own Controls screen (approach B below; see
-[playstation-audio.md](playstation-audio.md) "In-game setting"), and the
-button layouts are rows on its Button Layout screen
+Status: design, with three exceptions built: the controller speaker's
+on/off and the field of view are rows on the game's own Controls screen
+(approach B below; see [playstation-audio.md](playstation-audio.md)
+"In-game setting" and "Field of view (built)" below), and the button
+layouts are rows on its Button Layout screen
 ([controller-layouts.md](controller-layouts.md)). The rest says how an
 in-game menu for our opt-in enhancements should work, what we know about
 Halo 2's own settings screens, and in which order to build it.
@@ -291,6 +292,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | mouse capture, pause on blur | `AppConfig` | live |
 | audio, gamepads | `--no-audio`, `--no-gamepads` | restart |
 | controller speaker | **Built:** a "Controller Speaker" row on Settings, Controls, saved as `[pad_speaker] enabled` in `settings.toml` in `h2 play`'s data root. `H2_PAD_SPEAKER` (on, or a TOML file) locks it when set; `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](playstation-audio.md)) | on/off live (the router and the HID speaker path, `boot::speaker_setting`); routes and exclusive could go live the same way; device needs the output reopened |
+| field of view | **Built:** a "Field of View" row on Settings, Controls, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
 | controller mute button | `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) | restart today; could go live through the HID thread |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
@@ -316,8 +318,8 @@ Not every flag belongs in a menu. They fall in four groups.
 input and the rest of the boot runner's variables. They are for reproduction
 and measurement. The settings file has no keys for them.
 
-**New settings with no existing flag.** Resolution scale, 60 and 120 fps, E3
-lighting and FOV have no control today. Each needs its own design before the
+**New settings with no existing flag.** Resolution scale, 60 and 120 fps and
+E3 lighting have no control today (FOV is built, below). Each needs its own design before the
 menu can switch it on (see phases). Until then the menu shows them greyed out
 with a one-line reason, so the list is honest about what exists.
 
@@ -362,7 +364,114 @@ Notes on specific settings:
   it even notes that H2V's projection differs from the nominal value). For us
   the clean place is the projection we hand to the host renderer, but the guest
   also uses its camera for culling and for some effects, so a host-only FOV can
-  show geometry the game culled. Needs a trace of the camera and cull path.
+  show geometry the game culled. Built in the guest's own camera instead:
+  see "Field of view (built)".
+
+## Field of view (built)
+
+Settings, a profile, Controls has a **Field of View** row after Controller
+Speaker (row 7; row 6 when `H2_NO_SPEAKER_ROW=1` removes the speaker row).
+Its value is the first-person camera's unzoomed horizontal field of view in
+degrees. Pressing A steps it 70, 75, ... 120 and wraps back to 70. 70 is
+retail: the hook then hands the game its own number back, bit for bit.
+Left and right do nothing on this list (the Controls list's own input code
+is not traced; A is the only press we see, through the row-chosen handler).
+
+### Where the game sets it (Local, static reading of the retail XBE)
+
+| Address | Role | Evidence |
+|---|---|---|
+| `0x187130` | per-local-player field of view (`player_control_get_field_of_view` in Cartographer's H2V names). `eax` = player-control index (array `[0x4ed284]`, stride `0x94`, unit at `+0x14`), result in `xmm0`, plain `ret` | starts from the observer default `[0x54e854]`; with a unit, takes the unit definition's camera field of view (`+0xcc`, found through the object header table `[0x4e0300]+0x44` and the tag instances `[0x4e3b44]`), calls `0xc8880` for the zoom magnification of the player's zoom level (`[pc+0x2e]`), and returns `fov / magnification` when that is between `0x45e25c` and `0x45e258` (about 1.8 and 178 degrees), else the unzoomed value. So zoom divides the angle |
+| `0x23c110` | first-person camera update (director callback, [engine-map.md](engine-map.md)) | the **only** call to `0x187130` (`0x23c202`; a scan of every `call`/`jmp` rel32 in `.text` and every absolute dword finds no other reference). Multiplies by 1.0, clamps to `[0x55e484, 0x55e488]` and stores the director camera's field of view at `+0x28`; a change sets the observer's 0.18 s transition (`+0xa4`, `+0x90`) |
+| `0x55e484` / `0x55e488` | clamp globals, set by static initialisers `0x3782a0` / `0x3782c0` from `0x45dc54` / `0x45e098` | 1 and 110 degrees. `0x55e488` has one reader, `0x23c225` |
+| `0x171d90` | observer: camera result from the command | vertical FOV `+0x4c = 2 atan(tan(h/2) / aspect)` from the horizontal `+0x38`; the scale `+0x50 = h / [0x54e854]` |
+| `0x2f800` | render camera from the observer camera (called by `0x223080`, per view, from `render_game_views` `0x2234e0`) | copies position, forward, up, vertical FOV (`+0x4c` to `+0x28`) and the scale (`+0x50` to `+0x2c`), then the split-screen factors 0.5 / 0.8. The renderer's projection and its frustum come from this camera |
+| `0x54e854` and the other `70` copies | 70 degrees (`0x45e628`) copied into about 40 per-file globals by static initialisers in `0x3763b0`..`0x378894` | only `0x54e854` (camera code), `0x5234dc` (render, the no-observer fallback) and `0x557c28` are read; we change none of them |
+
+Community comparison: Cartographer (H2V) replaces the unit's camera field of
+view inside its `player_control_get_field_of_view` and keeps the same
+`[1, 110]` clamp in its first-person camera
+([`player_control.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/game/player_control.cpp),
+[`first_person_camera.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/camera/first_person_camera.cpp));
+its vehicle FOV patches the following camera's default separately
+([`following_camera.cpp`](https://github.com/pnill/cartographer/blob/master/xlive/Blam/Engine/camera/following_camera.cpp)).
+Cited for the names and the shape; nothing is copied, and H2V's addresses
+and structures differ.
+
+### What the hook does
+
+`boot::fov_row` (logic over `Gm`), registered by `layout_glue::install`:
+
+- **Camera** (`0x187130`, `fov:camera`): run the original, then
+  `result * target / unzoomed`, where `unzoomed` is the unit's camera
+  field of view read the way the function reads it (or the result itself
+  when there is no unit). Unzoomed you get the target; a 2x scope at 100
+  gives 50, so the magnification stays what the weapon's tag says. When the
+  target is above retail's 110-degree clamp, `0x55e488` is raised to the
+  target, and put back to the value of `0x45e098` when the setting drops
+  below it or goes back to retail.
+- **Row**: the Controls list (`0x45d298`) grows by one more item through
+  the datum array constructor (`0x1a480d`: retail count plus the rows we
+  add); the row text (`0x2c8548`) fills our label and the degrees as our own
+  strings (English digits; ids in `layout_glue::is_ours`'s range); the
+  row-chosen handler (`0x2c8719`) steps the value and returns.
+- **Setting** (`boot::fov_setting`): `[graphics] fov = <degrees>` in
+  `settings.toml` in `h2 play`'s data root, next to `[pad_speaker]`,
+  written atomically and keeping every other key. 0 or 70 is retail; the
+  file may hold 0 or 30 to 150. A bad file is reported, treated as retail
+  and not overwritten. `H2_FOV=<degrees>` (30 to 150) or `H2_FOV=0` locks
+  the value for the run; the row shows it and pressing it does nothing. A
+  bad `H2_FOV` is reported and ignored. Headless runs (`h2 run`) install
+  neither the row nor the camera hook.
+
+### Why culling stays right and the simulation does not change
+
+- The value is changed where the game computes it, before the director,
+  the observer and the renderer see it, so the projection, the frustum the
+  renderer culls with, the observer's FOV scale (which particles read at
+  `0x248a31`) and the LOD all follow the same camera. Nothing on the host
+  side knows about FOV.
+- `0x187130` has one caller, the first-person camera callback, which runs
+  from `director_update` in the per-frame, variable-`dt` part of the main
+  loop ([high-framerate.md](high-framerate.md), step 9), not in the 30 Hz
+  tick. Its result goes only into the director's camera.
+- Aim does not read it: the camera reads the player's yaw and pitch from
+  player control (`[0x4ed284]+0x24/0x28`) and never writes them. The zoom
+  level, the magnification and look sensitivity are not touched; only the
+  angle that results from them is. Auto-aim and aim assist are weapon and
+  unit tag values; the paths above do not lead there.
+- Readers of the observer array (`0x4e9c8c`, stride `0x358`; through
+  `0x16f3a0` and direct) were checked for reads of the FOV fields
+  (`+0x38`, `+0x4c`, `+0x50`): the render camera (`0x2f800`), the
+  particles' scale (`0x248970`) and camera code. The others read
+  position. `0xbd610` reads `+0x38` / `+0x4c` of a pointer whose origin was
+  not traced; that is the one open item.
+- Networked state: the observer and the director are per local player and
+  never serialised by the game; nothing here writes simulation memory. The
+  clamp global `0x55e488` is the one guest write, and only the camera
+  callback reads it.
+
+Unverified until played: whether the first-person weapon model, the HUD
+scope overlays and the sniper's zoom ring look right at wide values (the
+weapon is drawn with its own projection, commit 1a5aa8d), and whether the
+following camera (vehicles, `0x23bd70` stores `[0x54e854]` itself), dead
+and scripted cameras should follow too. They do not today: only the
+first-person camera changes.
+
+### What to check in game
+
+1. Settings, a profile, Controls: the last row reads "Field of View" with
+   "70". A steps it 75, 80, ... 120, then 70.
+2. In a level, at 90 or more: the view is wider at once (no restart);
+   nothing pops in or out at the screen edges while turning (culling uses
+   the same camera).
+3. Zoom with the battle rifle (2x) and the sniper (5x, 10x): each zoom
+   level is the same magnification as retail, relative to the wider view.
+4. 120: wider than 110, the old cap.
+5. Back to 70: identical to retail. Restart `h2 play`: the value is kept.
+6. `H2_FOV=100 h2 play ...`: 100, and the row does not change it.
+   `H2_FOV=0`: retail.
+7. Split screen: each player's view widens; vehicles keep retail's view.
 
 ## Opening the menu
 

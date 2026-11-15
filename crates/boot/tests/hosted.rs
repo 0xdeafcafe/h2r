@@ -86,6 +86,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
         })),
         pad_speaker: None,
         speaker_setting: None,
+        fov_setting: None,
         input: Some(input),
         keyboard: Some(keyboard),
         icons: None,
