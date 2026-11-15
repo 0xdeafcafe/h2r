@@ -749,6 +749,7 @@ dependencies = [
  "libloading",
  "lift",
  "opt",
+ "oracle",
  "runtime",
  "x87",
  "xbe",

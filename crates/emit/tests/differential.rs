@@ -95,6 +95,20 @@ fn x87_fixtures() -> Vec<(&'static str, Asm)> {
             a.fistp(qword_ptr(ebx + 8))?;
             a.ret()
         }),
+        ("x87-native-arith", |a| {
+            a.fninit()?;
+            a.mov(word_ptr(ebx), 0x027f)?;
+            a.fldcw(word_ptr(ebx))?;
+            a.fld1()?;
+            a.fld1()?;
+            a.fadd_2(st0, st1)?;
+            a.fsqrt()?;
+            a.fdiv_2(st0, st1)?;
+            a.fst(dword_ptr(edi))?;
+            a.fstp(qword_ptr(esi))?;
+            a.fnstsw(ax)?;
+            a.ret()
+        }),
         ("x87-compare", |a| {
             let mut skip = a.create_label();
             a.fld(dword_ptr(esi))?;

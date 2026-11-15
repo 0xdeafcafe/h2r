@@ -36,7 +36,8 @@ pub const BRIDGE: &str = concat!(include_str!("../c/bridge.c"), include_str!("..
 macro_rules! x87_helpers {
     ($($name:ident,)*) => {
         pub const X87_BRIDGE_SYMBOLS: [&str; 35] = [$(stringify!($name)),*];
-        fn x87_helpers() -> [*const c_void; 35] {
+        /// Reference x87 exports in the test bridge declaration order.
+        pub fn x87_helpers() -> [*const c_void; 35] {
             [$(x87::abi::ffi::$name as *const c_void),*]
         }
     };

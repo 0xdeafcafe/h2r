@@ -66,6 +66,8 @@ pub const SIMD_HEADER: &str = include_str!("../../simd/c/h2simd.h");
 /// The x87 helper declarations (`h2x87_v1_*`), included by [`PRELUDE`].
 /// The x87 helper declarations (`h2x87_v1_*`), from `crates/x87`.
 pub const X87_HEADER: &str = include_str!("../../x87/include/h2x87.h");
+/// Guarded native x87 operations; disabled unless `H2_X87_NATIVE=1`.
+pub const X87_NATIVE_HEADER: &str = include_str!("../c/h2x87_native.h");
 
 /// Entry-VA bucket size for shards (LIFTER.md §1): 4 KiB buckets. The
 /// bucket is a pure function of the entry address, so editing, adding or
@@ -321,6 +323,7 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     files.insert("h2fastmem.h".into(), FAST_MEMORY_HEADER.to_owned());
     files.insert("h2simd.h".into(), SIMD_HEADER.to_owned());
     files.insert("h2x87.h".into(), X87_HEADER.to_owned());
+    files.insert("h2x87_native.h".into(), X87_NATIVE_HEADER.to_owned());
 
     // Which file (stem) defines each owner's handler.
     let mut home: BTreeMap<u32, String> = BTreeMap::new();

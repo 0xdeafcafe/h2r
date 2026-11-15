@@ -85,6 +85,11 @@ pub fn cflags() -> Result<Vec<String>, Error> {
         Some(value) => return Err(err(format!("H2_FASTMEM={value}: expected 0 or 1"))),
     }
 
+    match env("H2_X87_NATIVE").as_deref() {
+        None | Some("0") => {},
+        Some("1") => v.push("-DH2_X87_NATIVE=1".into()),
+        Some(value) => return Err(err(format!("H2_X87_NATIVE={value}: expected 0 or 1"))),
+    }
     Ok(v)
 }
 
@@ -873,19 +878,23 @@ mod tests {
         let src = tiny_tree(&dir);
         std::fs::write(src.join("two.c"), "int h2_two(void) { return 2; }\n").unwrap();
         let out = dir.join("out");
-        let first = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+        // The first build must be cold even when a lane uses H2_OBJ_CACHE
+        // and an earlier test process already cached these synthetic files.
+        let cache = dir.join("cache");
+        let build = || build_in(&src, &out, &cache, Arch::host(), 2, &cc).unwrap();
+        let first = build();
         assert_eq!((first.compiled, first.reused), (2, 0));
-        let warm = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+        let warm = build();
         assert_eq!((warm.compiled, warm.reused), (0, 2));
         std::fs::write(src.join("one.c"), "int h2_one(void) { return 3; }\n").unwrap();
-        let changed = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+        let changed = build();
         assert_eq!((changed.compiled, changed.reused), (1, 1));
         assert_ne!(first.objects[0], changed.objects[0]);
         assert_eq!(first.objects[1], changed.objects[1]);
         assert_eq!(archive_members(&changed.library).unwrap(), member_names(&changed));
         for name in ["h2gen.h", "h2simd.h", "h2x87.h", "h2abi.h"] {
             std::fs::write(src.join(name), "/* changed support */\n").unwrap();
-            let changed = build_with(&src, &out, Arch::host(), 2, &cc).unwrap();
+            let changed = build();
             assert_eq!((changed.compiled, changed.reused), (2, 0), "{name}");
         }
         let _ = std::fs::remove_dir_all(&dir);

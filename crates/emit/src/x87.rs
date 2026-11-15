@@ -83,12 +83,12 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
             format!("H2X87_MARK({pc:#x}u, {fop:#x}u);")
         }],
         X87Op::Load(f) => vec![call(match f {
-            X87Format::F32 | X87Format::F64 => format!("h2x87_v1_ld_{}({s}, {})", f.suffix(), a(0)),
+            X87Format::F32 | X87Format::F64 => format!("h2x87n_ld_{}({s}, {})", f.suffix(), a(0)),
             X87Format::F80 | X87Format::Bcd => format!("h2x87i_ld80({s}, {}, {}u)", a(0), (f == X87Format::Bcd) as u32),
             f => format!("h2x87_v1_ld_{}({s}, ({}){})", f.suffix(), int_ptr(f).unwrap(), a(0)),
         })],
-        X87Op::LoadConst(c) => vec![call(format!("h2x87_v1_ld_const({s}, {}u)", c as u32))],
-        X87Op::LoadReg(i) => vec![call(format!("h2x87_v1_ld_st({s}, {i}u)"))],
+        X87Op::LoadConst(c) => vec![call(format!("h2x87n_ld_const({s}, {}u)", c as u32))],
+        X87Op::LoadReg(i) => vec![call(format!("h2x87n_ld_st({s}, {i}u)"))],
         X87Op::StoreConvert { to, src } => {
             let (v, sw, w) = (dsts[0].id, dsts[1].id, dsts[2].id);
             let c = match to {
@@ -97,22 +97,22 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
                 }
                 f => match int_ptr(f) {
                     Some(p) => format!("h2x87_v1_st_{}({s}, {src}u, ({p} *)&t{v}, &t{sw})", f.suffix()),
-                    None => format!("h2x87_v1_st_{}({s}, {src}u, &t{v}, &t{sw})", f.suffix()),
+                    None => format!("h2x87n_st_{}({s}, {src}u, &t{v}, &t{sw})", f.suffix()),
                 },
             };
             vec![declare(dsts), format!("H2X87_ST({pc:#x}u, t{w}, H2_PERF_X87({c}));")]
         }
         X87Op::StoreCommit { pop } => {
             let p = if pop { a(1) } else { "0u".into() };
-            vec![call(format!("h2x87_v1_store_commit({s}, {}, {p})", a(0)))]
+            vec![call(format!("h2x87n_store_commit({s}, {}, {p})", a(0)))]
         }
-        X87Op::StoreReg { dst, pop } => vec![call(format!("h2x87_v1_st_st({s}, {dst}u, {}u)", pop as u32))],
+        X87Op::StoreReg { dst, pop } => vec![call(format!("h2x87n_st_st({s}, {dst}u, {}u)", pop as u32))],
         X87Op::Arith { op, dst, src, pop } => {
             let sel = op as u32 | if pop { 0x100 } else { 0 };
             let dst = if matches!(src, X87Src::St(_)) { dst } else { 0 };
-            vec![call(format!("h2x87_v1_arith({s}, {sel:#x}u, {dst}u, {}u, {})", src.kind(), src_bits(src, args)))]
+            vec![call(format!("h2x87n_arith({s}, {sel:#x}u, {dst}u, {}u, {})", src.kind(), src_bits(src, args)))]
         }
-        X87Op::Unary(u) => vec![call(format!("h2x87_v1_unary({s}, {}u)", u as u32))],
+        X87Op::Unary(u) => vec![call(format!("h2x87n_unary({s}, {}u)", u as u32))],
         X87Op::Cmp { kind, src, pop, to_flags } => {
             let (p, sup) = (dsts[0].id, dsts[1].id);
             let c = format!(
@@ -125,7 +125,7 @@ pub fn stmt(op: X87Op, args: &[Value], dsts: &[Temp], pc: u32) -> Vec<String> {
             vec![declare(dsts), format!("H2X87_CMP({pc:#x}u, t{p}, t{sup}, H2_PERF_X87({c}));")]
         }
         X87Op::Xam => vec![call(format!("h2x87_v1_xam({s})"))],
-        X87Op::Xch(i) => vec![call(format!("h2x87_v1_xch({s}, {i}u)"))],
+        X87Op::Xch(i) => vec![call(format!("h2x87n_xch({s}, {i}u)"))],
         X87Op::Free { reg, pop } => vec![call(format!("h2x87_v1_free({s}, {reg}u, {}u)", pop as u32))],
         X87Op::IncStp => vec![call(format!("h2x87_v1_adj_top({s}, 1)"))],
         X87Op::DecStp => vec![call(format!("h2x87_v1_adj_top({s}, -1)"))],

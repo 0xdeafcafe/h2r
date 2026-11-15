@@ -20,6 +20,7 @@ typedef unsigned __int128 h2u128;
 /* x87 helpers (h2x87_v1_*), implemented by crates/x87 and linked from the
  * runtime; the header is written next to this one by crates/emit. */
 #include "h2x87.h"
+#include "h2x87_native.h"
 
 /* ---- Emitter shims: things the v1 ABI does not provide yet. -------------
  * Named h2shim_* so they are easy to find and replace once the runtime grows

@@ -43,9 +43,17 @@ fn hot_loops_run_through_generated_code() {
     // LEAF adds one to EAX per call.
     let cpu = m.call(hotloop::CALL, 5).unwrap();
     assert_eq!(cpu.ecx, 0);
+    let cpu = m.call(hotloop::X87, 3).unwrap();
+    assert_eq!(cpu.x87.tag, 0xffff);
+    assert_eq!(
+        m.read_u32(hotloop::DATA + 32).unwrap(),
+        (((1.25f64 * 2.5 + 0.75).sqrt() / 3.0) as f32).to_bits()
+    );
     for mut s in HotLoop::all() {
         assert!(matches!(s.prepare(&ctx()).unwrap(), Prepared::Ready));
         let v = s.measure().unwrap();
+        #[cfg(unix)]
+        assert!(v.extra["cpu_ns_per_trip"] > 0.0);
         assert!(
             v.value > 0.0 && v.value.is_finite(),
             "{}: {}",

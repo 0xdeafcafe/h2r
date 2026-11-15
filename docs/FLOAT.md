@@ -11,7 +11,10 @@ to be consistently correctness-first.
   event 14 (#MF) in the runtime and headers, with the MMX and `emms` checks,
   and the lowering of every x87 instruction to the helpers in the IR,
   lifter and emitter (e5c4251).
-- **Not built:** the `double` fast path of §2.8.
+- **Built, opt-in:** a guarded native binary64 path for PC=53 arithmetic
+  (`H2_X87_NATIVE=1`, off by default); see [x87-native.md](x87-native.md) for
+  its range proof, status-bit reconstruction, fallback modes and validation.
+  The default remains the ext80 helper path described below.
 
 **Recommendation, in one paragraph.** Halo 2 is an SSE1 game with an x87
 sidecar. Scalar SSE is 53% of its floating-point instructions, packed SSE 20%,
@@ -400,7 +403,10 @@ Measured facts that `crates/simd` relies on:
 
 ### 2.8 Proof rule for a future `double` fast path
 
-There is no fast path today. A function, or a region of one, may later keep
+The optional native path in [x87-native.md](x87-native.md) applies this
+rule per operation with narrower range guards and exact PE/C1 recovery.
+It retains the architectural ext80 stack. A function, or a region of one,
+may later keep
 x87 values in host `double` locals only if, for every value, the lifter can
 prove that the `double` computation gives the same bits as the ext80 helpers.
 The rule is:

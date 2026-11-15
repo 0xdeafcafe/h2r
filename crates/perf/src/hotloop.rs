@@ -9,7 +9,8 @@
 //! - `hot-loop/call`: a call to a separate function per trip, so two
 //!   runner transfers (CALL, RETURN) and two dispatches per iteration.
 //!
-//! Each reports nanoseconds per loop trip.
+//! Each reports wall nanoseconds per loop trip and, on Unix, thread CPU
+//! nanoseconds per trip (excluding time descheduled on a busy host).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::c_char;
@@ -39,6 +40,8 @@ pub const MEMORY: u32 = CODE + 0x2000;
 /// `call(n)` (stdcall), calling `LEAF` each trip.
 pub const CALL: u32 = CODE + 0x3000;
 pub const LEAF: u32 = CODE + 0x3800;
+/// Independent x87 arithmetic and transport per trip.
+pub const X87: u32 = CODE + 0x4000;
 
 /// The runtime's ABI header, written next to the generated sources.
 const H2ABI_H: &str = include_str!("../../runtime/include/h2abi.h");
@@ -134,7 +137,21 @@ pub fn guest_functions() -> Result<Vec<ir::IrFunction>> {
         a.add(eax, 1)?;
         a.ret()
     })?;
-    Ok(vec![alu, memory, call, leaf])
+    let x87 = function(X87, |a| {
+        let mut top = a.create_label();
+        a.mov(ecx, dword_ptr(esp + 4))?;
+        a.set_label(&mut top)?;
+        a.fld(dword_ptr(DATA + 16))?;
+        a.fmul(dword_ptr(DATA + 20))?;
+        a.fadd(dword_ptr(DATA + 24))?;
+        a.fsqrt()?;
+        a.fdiv(dword_ptr(DATA + 28))?;
+        a.fstp(dword_ptr(DATA + 32))?;
+        a.dec(ecx)?;
+        a.jnz(top)?;
+        a.ret_1(4)
+    })?;
+    Ok(vec![alu, memory, call, leaf, x87])
 }
 
 /// emit's test bridge (`c/bridge.c`) forwards the ABI imports through this
@@ -234,6 +251,9 @@ pub fn build(work: &Path) -> Result<Module> {
     };
     let mut memory = runtime::Guest::new();
     memory.map_zeroed(DATA, 0x1_0000, Permissions::RW)?;
+    for (i, v) in [1.25f32, 2.5, 0.75, 3.0].into_iter().enumerate() {
+        memory.set_u32(DATA + 16 + 4 * i as u32, v.to_bits())?;
+    }
     memory.map_zeroed(CODE, 0x1_0000, Permissions::RWX)?;
     memory.map_zeroed(STACK_BOTTOM, STACK_TOP - STACK_BOTTOM, Permissions::RW)?;
     let rt = Runtime::new(memory, Dispatch::default());
@@ -255,6 +275,11 @@ pub fn build(work: &Path) -> Result<Module> {
         let install: libloading::Symbol<unsafe extern "C" fn(*const Bridge)> =
             lib.get(b"h2bridge_install")?;
         install(&bridge);
+        let install_x87: libloading::Symbol<
+            unsafe extern "C" fn(*const *const std::ffi::c_void, u32),
+        > = lib.get(b"h2x87bridge_install")?;
+        let x87 = emit::host::x87_helpers();
+        install_x87(x87.as_ptr(), x87.len() as u32);
         let module: libloading::Symbol<*const H2GenModule> = lib.get(b"h2gen_module")?;
         let version: libloading::Symbol<unsafe extern "C" fn() -> u32> =
             lib.get(b"h2gen_module_abi_version")?;
@@ -348,6 +373,12 @@ impl HotLoop {
         };
         vec![
             mk(
+                "hot-loop/x87",
+                "x87 load/mul/add/sqrt/div/store through generated code",
+                X87,
+                100_000,
+            ),
+            mk(
                 "hot-loop/alu",
                 "register arithmetic loop in generated code",
                 ALU,
@@ -367,6 +398,21 @@ impl HotLoop {
             ),
         ]
     }
+}
+
+/// Thread CPU excludes time descheduled; unlike process CPU it also leaves
+/// background workers out of these single-threaded synthetic workloads.
+fn thread_cpu_ns() -> Option<f64> {
+    #[cfg(unix)]
+    {
+        let mut time = std::mem::MaybeUninit::<libc::timespec>::uninit();
+        // SAFETY: clock_gettime initialises the timespec on success.
+        if unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, time.as_mut_ptr()) } == 0 {
+            let time = unsafe { time.assume_init() };
+            return Some(time.tv_sec as f64 * 1e9 + time.tv_nsec as f64);
+        }
+    }
+    None
 }
 
 impl Scenario for HotLoop {
@@ -394,9 +440,14 @@ impl Scenario for HotLoop {
     }
     fn measure(&mut self) -> Result<Measurement> {
         let m = self.module.as_ref().context("not prepared")?;
+        let cpu_start = thread_cpu_ns();
         let t = Instant::now();
         m.call(self.entry, self.trips)?;
         let ns = t.elapsed().as_nanos() as f64;
-        Ok(Measurement::new(ns / self.trips as f64).with("trips", self.trips as f64))
+        let mut result = Measurement::new(ns / self.trips as f64).with("trips", self.trips as f64);
+        if let (Some(start), Some(end)) = (cpu_start, thread_cpu_ns()) {
+            result = result.with("cpu_ns_per_trip", (end - start) / self.trips as f64);
+        }
+        Ok(result)
     }
 }

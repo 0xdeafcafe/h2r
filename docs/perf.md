@@ -358,6 +358,15 @@ changes on the boot side, not on master yet, wire it in.
   cache under `--work`. Nothing here measures build time yet; a
   `build/emit-shard` scenario would fit the same harness if wanted.
 
+## Native x87 comparison
+
+`hot-loop/x87` exercises generated x87 load/mul/add/sqrt/div/store code.
+Run with and without `H2_X87_NATIVE=1` in separate work directories;
+[x87-native.md](x87-native.md) describes the guards, oracle checks and
+measured limits. Hot-loop JSON results also record `cpu_ns_per_trip` on
+Unix, the mean thread CPU time per trip, excluding descheduling and
+background worker threads. The printed ns/trip statistic remains wall time.
+
 ## Device CPU cost (crates/d3d)
 
 `cargo bench -p d3d --bench pushbuf` replays a synthetic frame (1,200 draws,
