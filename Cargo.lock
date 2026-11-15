@@ -973,7 +973,9 @@ dependencies = [
  "audio",
  "iced-x86",
  "runtime",
+ "serde",
  "thiserror 2.0.21",
+ "toml",
  "wma",
 ]
 

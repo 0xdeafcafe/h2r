@@ -11,6 +11,7 @@
 //! - [`state`]: the object model and every API implementation.
 //! - [`overrides`]: address table and dispatcher for the override layer.
 //! - [`register`]: installs [`overrides`] into a runtime `Dispatch`.
+//! - [`padroute`]: recognising sounds by their bytes and routing chosen ones to a controller speaker.
 //! - [`output`]: the output thread, the one consumer that takes the mixer to a sink.
 //! - [`testing`]: a synthetic guest memory for tests.
 //! - [`xwma`]: the native WMA decoder at the game's codec boundary (`0x38a0c5`).
@@ -19,6 +20,7 @@ pub mod abi;
 pub mod host;
 pub mod output;
 pub mod overrides;
+pub mod padroute;
 pub mod register;
 pub mod state;
 pub mod testing;

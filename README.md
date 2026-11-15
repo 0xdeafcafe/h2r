@@ -243,6 +243,7 @@ Audio and movies:
 
 - [audio.md](docs/audio.md): DirectSound replacement: voices, mixer, effects, output (`crates/audio`)
 - [dsound.md](docs/dsound.md): guest-facing DirectSound shim (`crates/dsound`)
+- [playstation-audio.md](docs/playstation-audio.md): DualSense/DS4 speaker, mute button and mic: feasibility, sound-to-controller routing (`dsound::padroute`), mute HID reports (`input::dualsense`)
 - [wma.md](docs/wma.md): ASF demuxing and native WMAv2 decoding (`crates/asf`, `crates/wma`)
 - [bink-hle.md](docs/bink-hle.md): high-level Bink player replacement (`crates/bink-hle`)
 - [movies.md](docs/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)

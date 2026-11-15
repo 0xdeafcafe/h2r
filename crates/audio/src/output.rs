@@ -134,26 +134,45 @@ pub struct DeviceSink {
     reopens: u32,
     open: OpenFn,
     probe: ProbeFn,
+    /// A device-name pattern ([`crate::devices::pick_controller`]), or
+    /// `None` to follow the system default output.
+    target: Option<String>,
 }
 
 /// Keeps a running stream alive; dropping it stops playback. Boxed so tests
 /// can stand in for a device.
 type StreamHandle = Box<dyn std::any::Any>;
 type Opened = (StreamHandle, Producer, Arc<Meter>, u32, String);
-type OpenFn = fn(usize) -> Result<Opened, OutputError>;
-/// Default output device id and nominal rate, or `None` if unknown.
-type ProbeFn = fn() -> Option<(String, u32)>;
+type OpenFn = fn(usize, Option<&str>) -> Result<Opened, OutputError>;
+/// The target device's id and nominal rate (the default output when the
+/// target is `None`), or `None` if unknown or absent.
+type ProbeFn = fn(Option<&str>) -> Option<(String, u32)>;
 
 impl DeviceSink {
     /// Ring size in frames: ~0.34 s at 48 kHz, plenty over the latency target.
     const RING_FRAMES: usize = 16384;
 
     pub fn open_default() -> Result<Self, OutputError> {
-        Self::open_with(open_stream, probe_default)
+        Self::open_with(open_stream, probe_default, None)
     }
 
-    fn open_with(open: OpenFn, probe: ProbeFn) -> Result<Self, OutputError> {
-        let (stream, prod, meter, rate, device_id) = open(Self::RING_FRAMES)?;
+    /// The first output device whose name matches `pattern` (case-insensitive
+    /// substring; `auto` tries the PlayStation controller names in
+    /// [`crate::devices::CONTROLLER_NAMES`]). The sink stays on that device:
+    /// it never falls back to the default output, and if the device goes away
+    /// it retries once a second until it is back.
+    pub fn open_named(pattern: &str) -> Result<Self, OutputError> {
+        Self::open_with(open_stream, probe_default, Some(pattern.to_string()))
+    }
+
+    /// Output device names, in the host's order (for `--list-audio-devices`
+    /// style diagnostics and the controller-speaker setting).
+    pub fn output_device_names() -> Vec<String> {
+        named_outputs().into_iter().map(|(name, _)| name).collect()
+    }
+
+    fn open_with(open: OpenFn, probe: ProbeFn, target: Option<String>) -> Result<Self, OutputError> {
+        let (stream, prod, meter, rate, device_id) = open(Self::RING_FRAMES, target.as_deref())?;
         Ok(Self {
             stream: Some(stream),
             prod,
@@ -167,6 +186,7 @@ impl DeviceSink {
             reopens: 0,
             open,
             probe,
+            target,
         })
     }
 
@@ -205,7 +225,7 @@ impl DeviceSink {
             self.base_stats = self.stats();
             self.prod = ring(self.ring_frames).0;
         }
-        match (self.open)(self.ring_frames) {
+        match (self.open)(self.ring_frames, self.target.as_deref()) {
             Ok((stream, prod, meter, rate, id)) => {
                 self.stream = Some(stream);
                 self.prod = prod;
@@ -257,7 +277,7 @@ impl AudioSink for DeviceSink {
         }
         if now.duration_since(self.last_check) >= Duration::from_millis(500) {
             self.last_check = now;
-            let current = (self.probe)();
+            let current = (self.probe)(self.target.as_deref());
             if device_changed(current.as_ref(), &self.device_id, self.rate) {
                 self.reopen();
             }
@@ -265,15 +285,36 @@ impl AudioSink for DeviceSink {
     }
 }
 
-fn probe_default() -> Option<(String, u32)> {
-    let device = cpal::default_host().default_output_device()?;
+/// Every output device with its name.
+fn named_outputs() -> Vec<(String, cpal::Device)> {
+    let Ok(devices) = cpal::default_host().output_devices() else {
+        return Vec::new();
+    };
+    devices.filter_map(|d| Some((d.description().ok()?.name().to_string(), d))).collect()
+}
+
+/// The target device: the default output, or the first whose name matches.
+fn target_device(target: Option<&str>) -> Option<cpal::Device> {
+    match target {
+        None => cpal::default_host().default_output_device(),
+        Some(pattern) => {
+            let mut all = named_outputs();
+            let names: Vec<&str> = all.iter().map(|(n, _)| n.as_str()).collect();
+            let i = crate::devices::pick_controller(&names, pattern)?;
+            Some(all.swap_remove(i).1)
+        }
+    }
+}
+
+fn probe_default(target: Option<&str>) -> Option<(String, u32)> {
+    let device = target_device(target)?;
     let id = device.id().ok()?.to_string();
     let rate = device.default_output_config().ok()?.sample_rate();
     Some((id, rate))
 }
 
-fn open_stream(ring_frames: usize) -> Result<Opened, OutputError> {
-    let device = cpal::default_host().default_output_device().ok_or(OutputError::NoDevice)?;
+fn open_stream(ring_frames: usize, target: Option<&str>) -> Result<Opened, OutputError> {
+    let device = target_device(target).ok_or(OutputError::NoDevice)?;
     let config = device.default_output_config().map_err(dev)?;
     let rate = config.sample_rate();
     let format = config.sample_format();
@@ -511,7 +552,7 @@ mod tests {
         static OPEN_OK: Cell<bool> = const { Cell::new(true) };
         static PROBE: std::cell::RefCell<Option<(String, u32)>> = const { std::cell::RefCell::new(None) };
     }
-    fn fake_open(frames: usize) -> Result<Opened, OutputError> {
+    fn fake_open(frames: usize, _: Option<&str>) -> Result<Opened, OutputError> {
         OPENS.with(|c| c.set(c.get() + 1));
         if !OPEN_OK.with(Cell::get) {
             return Err(OutputError::NoDevice);
@@ -520,14 +561,14 @@ mod tests {
         let (id, rate) = PROBE.with(|p| p.borrow().clone()).unwrap_or(("dev-a".into(), 48_000));
         Ok((Box::new(()), prod, Arc::new(Meter::default()), rate, id))
     }
-    fn fake_probe() -> Option<(String, u32)> {
+    fn fake_probe(_: Option<&str>) -> Option<(String, u32)> {
         PROBE.with(|p| p.borrow().clone())
     }
     fn setup(ok: bool, probe: Option<(&str, u32)>) -> DeviceSink {
         OPENS.with(|c| c.set(0));
         OPEN_OK.with(|c| c.set(true));
         PROBE.with(|p| *p.borrow_mut() = Some(("dev-a".into(), 48_000)));
-        let sink = DeviceSink::open_with(fake_open, fake_probe).unwrap();
+        let sink = DeviceSink::open_with(fake_open, fake_probe, None).unwrap();
         OPEN_OK.with(|c| c.set(ok));
         PROBE.with(|p| *p.borrow_mut() = probe.map(|(i, r)| (i.to_string(), r)));
         sink

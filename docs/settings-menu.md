@@ -282,6 +282,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | aspect, scaling, filter | `--aspect`, `--scaling`, `--nearest` | live |
 | mouse capture, pause on blur | `AppConfig` | live |
 | audio, gamepads | `--no-audio`, `--no-gamepads` | restart |
+| controller speaker | `H2_PAD_SPEAKER` (on, or a TOML file), `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](playstation-audio.md)) | device: restart; routes and exclusive: live once the router is wired |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
 **Graphics backend (runtime variables, read at launch).**
