@@ -171,6 +171,17 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.read_surface(surface, format, width, height, layout);
         self.forget(r)
     }
+    fn read_depth(
+        &mut self,
+        surface: u32,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        layout: d3d::backend::GuestLayoutKind,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let r = self.0.read_depth(surface, format, width, height, layout);
+        self.forget(r)
+    }
     fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
         let r = self.0.copy_surface(src, dst);
         self.forget(r)

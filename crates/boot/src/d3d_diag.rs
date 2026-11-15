@@ -443,6 +443,20 @@ impl<B: Backend> Backend for DiagBackend<B> {
         }
         self.inner.read_surface(surface, format, width, height, layout)
     }
+    fn read_depth(
+        &mut self,
+        surface: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.line(format!("read_depth {surface:?} {format:?} {width}x{height}"));
+        if let Some(c) = self.capturing() {
+            c.append("frame.txt", &format!("read_depth {surface:?} {format:?} {width}x{height}"));
+        }
+        self.inner.read_depth(surface, format, width, height, layout)
+    }
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         self.line(format!("copy_surface {src:?} -> {dst:?}"));
         if let Some(c) = self.capturing() {
