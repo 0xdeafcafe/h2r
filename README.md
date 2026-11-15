@@ -75,8 +75,10 @@ In priority order:
 4. Opt-in enhancements, off by default and later exposed in an expanded
    in-game settings menu ([docs/settings-menu.md](docs/settings-menu.md)):
    - 60 and 120 fps, decoupling rendering from the game's 30 Hz tick.
-   - 4K and other high-resolution rendering.
-   - Recovering the E3 2003 stencil-shadow lighting engine.
+   - 4K and other high-resolution rendering
+     ([docs/high-resolution.md](docs/high-resolution.md)).
+   - Recovering the E3 2003 stencil-shadow lighting engine
+     ([docs/e3-lighting.md](docs/e3-lighting.md)).
 5. Later: a map editing kit, and TV targets (see
    [docs/app.md](docs/app.md)).
 
@@ -232,6 +234,8 @@ Graphics:
 - [d3d.md](docs/d3d.md): the guest-facing Direct3D 8 replacement: entries, device model, push buffer, render targets, vblank (`crates/d3d`)
 - [graphics.md](docs/graphics.md): D3D8 state and textures on wgpu (`crates/gfx`)
 - [shaders.md](docs/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
+- [high-resolution.md](docs/high-resolution.md): design for opt-in 4K and other internal resolutions: which surfaces scale, what the guest may observe, tests, prior art (not implemented)
+- [e3-lighting.md](docs/e3-lighting.md): design for opt-in E3 2003-style stencil shadows and per-pixel lighting: the evidence, what retail kept, phases and risks (not implemented)
 
 Audio and movies:
 
