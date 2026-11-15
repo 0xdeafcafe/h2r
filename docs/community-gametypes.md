@@ -207,13 +207,14 @@ All three hooks are wrappers at function entries
    number into the string id of its decimal text with `0x19fd00`, from
    `0x2ca1fd`, and the list's `unic` holds the text under those ids
    (retail uses 0 to 38). Ours are 80 to 91. The wrapper on `0x19fd00`
-   returns our description id only for a number of ours and only when the
+   returns our description id (the number is in ECX) only for a number of ours and only when the
    return address is `0x2ca1fd`; every other caller (numbers shown as
    text) gets the original.
 
-A copy keeps the description number, so a copied community variant shows
-its description in the list while this runs, and no description in a build
-without it. Its settings are ordinary values and play anywhere.
+The description number lives in the variant (`+3`), so a copy should keep
+it: a copied community variant would show its description while this runs
+and none in a build without it (not checked in a run). Its settings are
+ordinary values and play anywhere.
 
 Tests (`cargo test -p boot --lib community_variants`) run on synthetic
 memory: the encoding of each setting, that every variant is well formed

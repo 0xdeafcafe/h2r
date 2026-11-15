@@ -35,7 +35,8 @@ const BUILTINS_LOAD: u32 = 0x0014_9f88;
 /// Localized string of a `unic` tag: EAX = tag, EDI = string id, `[esp+4]`
 /// = a 0x100-unit UTF-16 buffer. `ret 4`.
 const LOCALIZED_STRING: u32 = 0x001a_0180;
-/// Integer 0..=100 (EAX) to the string id of its decimal text. Plain `ret`.
+/// Integer 0..=100 (ECX) to the string id of its decimal text in EAX (0
+/// out of range). Plain `ret`.
 const NUMBER_STRING_ID: u32 = 0x0019_fd00;
 /// The return address of the variant list's description lookup, the one
 /// `NUMBER_STRING_ID` call we answer for.
@@ -529,6 +530,16 @@ pub fn description_for(n: u32) -> Option<u32> {
     (i < VARIANTS.len()).then(|| description_id(i))
 }
 
+/// What `0x19fd00` returns instead of the original, given its return
+/// address and number: our description id for the variant list only.
+pub fn description_answer(ret: u32, n: u32) -> Option<u32> {
+    if ret == LIST_DESCRIPTION_RETURN {
+        description_for(n)
+    } else {
+        None
+    }
+}
+
 /// The UTF-16 the lookup writes: at most 0xff units and a NUL.
 pub fn utf16_buffer(s: &str) -> Vec<u8> {
     let mut units: Vec<u16> = s.encode_utf16().take(0xff).collect();
@@ -687,11 +698,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         }
         if let Some(o) = original(rt, NUMBER_STRING_ID) {
             d.register_override(NUMBER_STRING_ID, "community:descriptions", move |cpu, ctx, _| {
-                if cpu.eax >= DESCRIPTION_BASE {
+                if cpu.ecx >= DESCRIPTION_BASE {
                     let mem = ctx.runtime().memory();
-                    if mem.u32(cpu.esp)? == LIST_DESCRIPTION_RETURN
-                        && let Some(id) = description_for(cpu.eax)
-                    {
+                    if let Some(id) = description_answer(mem.u32(cpu.esp)?, cpu.ecx) {
                         cpu.eax = id;
                         return mem.ret(cpu, 0);
                     }
