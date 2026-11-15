@@ -164,9 +164,21 @@ Rendering differences still visible on master, with what the menu frame
   the depth buffer through a colour texture (`0x7ff10000`, HILO dot
   products): d3d skips it with a reason since d3d-pass; it needs depth as
   colour (d3d) and the Hilo dot mappings (shaders);
-- dotted dark horizontal lines across the screen at a few heights (gfx,
-  not narrowed);
-- the CAMPAIGN OPTIONS highlight bar draws as coloured noise (not narrowed).
+- dotted dark horizontal lines across the screen at a few heights: the
+  menu's own scrolling glyph strips, drawn as authored. In frame 480 they
+  are draws 1439-1481 of 1578 (after the full-screen grade at 1437): 43
+  `Begin/End` quads in pairs (the second of each pair wraps the scroll),
+  each a 1024-wide DXT3 strip 4, 8 or 16 texels tall (textures `0x7fe60088`
+  to `0x7fe612a8`), `SrcAlpha/InvSrcAlpha`. Their texels are dark blue
+  (`0x3273`, `0x4aae`) at alpha 2/15 to 4/15. They show up dark because
+  the scene under them is tan; with the blue grade (master d5f82c6) they
+  sit on blue;
+- the CAMPAIGN OPTIONS highlight bar draws as horizontal stripes, not
+  noise, on master + boot: draws 985-986 of frame 570, a 200x21
+  `LinA8R8G8B8` texture (pitch 832) written once by the game when the
+  screen opens, light blue (197,227,254) with alpha alternating 52 and 36
+  every two rows. The same with `H2_BOOT_UPLOAD_ALWAYS=1`, so no CPU
+  write is missed.
 
 Unguarded switch targets the analyzer still doesn't read go through the
 fallback (blocker 1): about 45k fallback entries by the main menu.
