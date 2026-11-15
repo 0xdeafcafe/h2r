@@ -18,7 +18,7 @@ use std::{collections::BTreeMap, sync::Arc};
 
 pub const FX_SAVE_SIZE: u32 = 0x210;
 /// The title process's base priority (NORMAL_BASE_PRIORITY); every thread
-/// starts at it. Priorities are recorded, not scheduled (README.md).
+/// starts at it. The scheduler runs the highest-priority ready thread.
 pub const PROCESS_BASE_PRIORITY: i8 = 8;
 /// LOW_REALTIME_PRIORITY and HIGH_PRIORITY bound the two priority classes.
 const LOW_REALTIME_PRIORITY: i32 = 16;
@@ -60,6 +60,8 @@ pub(crate) struct Record {
     pub polling: bool,
     /// KeSetBasePriorityThread state: base priority and saturation (-1/0/1).
     pub base_priority: i8,
+    /// KTHREAD Priority, the one the scheduler orders ready threads by.
+    pub priority: i8,
     pub saturation: i8,
 }
 
@@ -97,6 +99,8 @@ pub struct Machine {
     /// Context of the most recent DPC routine, kept for stop inspection.
     dpc: Option<Thread>,
     dpc_stack_top: u32,
+    /// DPCs the current drain may still run before a ready thread's slice.
+    dpc_budget: Option<usize>,
     pub max_transfers_per_slice: u64,
 }
 
@@ -173,6 +177,7 @@ impl Machine {
                     irql: 0,
                     polling: false,
                     base_priority: PROCESS_BASE_PRIORITY,
+                    priority: PROCESS_BASE_PRIORITY,
                     saturation: 0,
                 },
             );
@@ -189,6 +194,7 @@ impl Machine {
             stopped: None,
             dpc: None,
             dpc_stack_top: 0,
+            dpc_budget: None,
             max_transfers_per_slice: 1_000_000,
         };
         machine.collect_threads()?;
@@ -327,19 +333,35 @@ impl Machine {
                     if let Some(deadline) = deadline {
                         core.clock.advance_to(deadline)?;
                         core.write_tick(&mut memory)?;
+                        // The polling threads have had their idle time: each
+                        // gets a slice before the clock may move again, so a
+                        // periodic timer cannot keep the clock (and its DPC)
+                        // ahead of a yielding thread forever.
+                        let core = &mut *core;
+                        for id in &core.ready {
+                            core.threads.get_mut(id).unwrap().polling = false;
+                        }
                         core.wake(&mut memory)?;
                     }
                 }
-                // DISPATCH_LEVEL work runs before any thread gets a slice.
-                if live && let Some(call) = core.next_dpc(&mut memory)? {
-                    drop(memory);
-                    drop(core);
-                    if let Some(outcome) = self.run_dpc(call)? {
-                        return Ok(outcome);
+                // DISPATCH_LEVEL work runs before any thread gets a slice, but
+                // only the DPCs already queued when this drain began: one that
+                // a DPC routine queues waits for a ready thread's next slice.
+                if live && !core.dpcs.is_empty() {
+                    let budget = self.dpc_budget.get_or_insert(core.dpcs.len());
+                    if *budget > 0 || core.ready.is_empty() {
+                        *budget = budget.saturating_sub(1);
+                        let call = core.next_dpc(&mut memory)?.expect("queued DPC");
+                        drop(memory);
+                        drop(core);
+                        if let Some(outcome) = self.run_dpc(call)? {
+                            return Ok(outcome);
+                        }
+                        continue;
                     }
-                    continue;
                 }
-                let Some(tid) = core.ready.pop_front() else {
+                self.dpc_budget = None;
+                let Some(tid) = core.pop_ready() else {
                     let pending: Vec<_> = core
                         .threads
                         .iter()
@@ -511,6 +533,23 @@ impl Machine {
 }
 
 impl Core {
+    /// Take the next thread to run: the highest KTHREAD priority ready,
+    /// first queued among equals (so equal priorities round-robin). A thread
+    /// that has just yielded its slice is passed over while any other thread
+    /// is ready, whatever that thread's priority (KiSelectReadyThread(1)).
+    fn pop_ready(&mut self) -> Option<u32> {
+        let yielder = self
+            .yielder
+            .take()
+            .filter(|y| self.ready.iter().any(|id| id != y));
+        let (index, _) = self
+            .ready
+            .iter()
+            .enumerate()
+            .filter(|(_, id)| Some(**id) != yielder)
+            .max_by_key(|(i, id)| (self.threads[*id].priority, std::cmp::Reverse(*i)))?;
+        self.ready.remove(index)
+    }
     fn next_deadline(&self) -> Option<u64> {
         self.threads
             .values()
@@ -676,6 +715,7 @@ impl Core {
                     -1 => low,
                     _ => base,
                 };
+                record.priority = priority as i8;
                 memory.set_u8(thread + kthread::SATURATION, record.saturation as u8)?;
                 memory.set_u8(thread + kthread::PRIORITY, priority as u8)?;
                 memory.set_u8(thread + kthread::BASE_PRIORITY, base as u8)?;
@@ -695,6 +735,11 @@ impl Core {
                 if memory.u8(self.kpcr + crate::layout::kpcr::IRQL)? != 0 {
                     return Ok(Action::Stop("yield above PASSIVE_LEVEL"));
                 }
+                // Another ready thread of any priority takes the slice
+                // (SUCCESS). Alone, the yield is a poll: with a deadline
+                // pending the scheduler may advance idle time to it, run what
+                // that delivers and then resume this thread with
+                // NO_YIELD_PERFORMED; with none it returns at once.
                 let has_other = self.ready.iter().any(|other| *other != tid);
                 if !has_other && self.next_deadline().is_none() {
                     Action::status(status::NO_YIELD_PERFORMED)
@@ -704,6 +749,9 @@ impl Core {
                     record.state = State::Ready;
                     record.polling = true;
                     self.ready.push_back(tid);
+                    if has_other {
+                        self.yielder = Some(tid);
+                    }
                     Action::Block(Value::U32(if has_other {
                         status::SUCCESS
                     } else {
@@ -888,6 +936,7 @@ impl Core {
                         irql: 0,
                         polling: false,
                         base_priority: PROCESS_BASE_PRIORITY,
+                        priority: PROCESS_BASE_PRIORITY,
                         saturation: 0,
                     },
                 );

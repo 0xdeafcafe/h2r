@@ -8,7 +8,8 @@
 //! queued; waiters are tested before each expiry (see `Core::wake`), so a
 //! WaitAny sees the earliest expiry even when time jumps past several. Timer deadlines take part in the scheduler's idle/polling time
 //! advance exactly like sleeps. `Machine::run` executes queued DPCs, one per
-//! slice and before any thread, on a kernel-owned stack at DISPATCH_LEVEL.
+//! slice and before any thread, on a kernel-owned stack at DISPATCH_LEVEL;
+//! a DPC queued by a DPC routine waits for a ready thread's next slice.
 //! A thread whose kernel call queued a DPC and returns below DISPATCH_LEVEL
 //! yields first, so the DPC runs before the caller's next instruction.
 use crate::layout::kpcr;

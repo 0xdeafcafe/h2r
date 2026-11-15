@@ -127,8 +127,51 @@ fn configured_nonvolatile_dwords_and_encoder_readout_use_the_same_profile() {
         [h.get(DATA + 40), h.get(DATA + 44), h.get(DATA + 48)],
         [0xcccccccc; 3]
     );
-    h.stopped(2, &[0, 9, 0, DATA]);
     h.stopped(2, &[0, 6, 1, DATA]);
+}
+
+/// The options Halo sends: D3D's SetFlickerFilter/SetSoftDisplayFilter
+/// (0x3f8c53, 0x3f8c9c, game code 0x14157), the unblank/blank pair around
+/// a mode set (0x3f9cb1, 0x3fc73e) and the mode-set flicker reset (0x3f9c34).
+#[test]
+fn tv_encoder_options_halo_sends_keep_state_and_write_no_result() {
+    use kernel::console::EncoderState;
+    let mut h = Harness::new();
+    const NV2A: u32 = 0xfd00_0000;
+    assert_eq!(h.kernel.encoder_state(), EncoderState::default());
+    h.set(DATA + 32, 0xcccc_cccc);
+    // Flicker filter: every documented level 0..=5, last one wins.
+    for level in 0..=5 {
+        assert_eq!(h.success(2, &[NV2A, 11, level, 0]), 0xfeedface); // VOID
+        assert_eq!(h.kernel.encoder_state().flicker_filter, Some(level));
+    }
+    // Luma (soften) filter is a BOOL, passed unnormalized.
+    h.success(2, &[NV2A, 14, 7, 0]);
+    assert_eq!(h.kernel.encoder_state().luma_filter, Some(true));
+    h.success(2, &[NV2A, 14, 0, 0]);
+    h.success(2, &[NV2A, 9, 1, 0]);
+    assert_eq!(
+        h.kernel.encoder_state(),
+        EncoderState {
+            blanked: Some(true),
+            flicker_filter: Some(5),
+            luma_filter: Some(false),
+        }
+    );
+    h.success(2, &[NV2A, 9, 0, DATA + 32]);
+    assert_eq!(h.kernel.encoder_state().blanked, Some(false));
+    // A setting option leaves Result alone.
+    assert_eq!(h.get(DATA + 32), 0xcccc_cccc);
+    // Unseen levels, Params and options stop with the frame and state intact.
+    let before = h.kernel.encoder_state();
+    h.stopped(2, &[NV2A, 11, 6, 0]);
+    h.stopped(2, &[NV2A, 9, 2, 0]);
+    // AV_OPTION_GUESS_FIELD (0x3f9c4f) has no documented result.
+    h.stopped(2, &[NV2A, 15, 0, DATA + 32]);
+    h.stopped(2, &[NV2A, 1, 0, 0]); // Macrovision
+    h.stopped(2, &[NV2A, 0x13, 1, 0]); // widescreen
+    assert_eq!(h.kernel.encoder_state(), before);
+    assert_eq!(h.get(DATA + 32), 0xcccc_cccc);
 }
 
 #[test]

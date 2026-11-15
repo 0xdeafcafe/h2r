@@ -148,6 +148,9 @@ pub(crate) struct Core {
     threads: BTreeMap<u32, threads::Record>,
     wait_order: VecDeque<u32>,
     ready: VecDeque<u32>,
+    /// The thread whose NtYieldExecution handed its slice to another ready
+    /// thread; the next pick passes it over (threads.rs `pop_ready`).
+    yielder: Option<u32>,
     yielded: BTreeMap<u32, TransferAbi>,
     next_tid: u32,
     kpcr: u32,
@@ -169,6 +172,7 @@ pub(crate) struct Core {
     title_id: Option<u32>,
     utility_partition: u8,
     console: ConsoleConfig,
+    encoder: console::EncoderState,
     launch_page: u32,
     references: BTreeMap<u32, usize>,
     files: BTreeMap<u32, files::File>,
@@ -275,6 +279,7 @@ impl Kernel {
                 threads: BTreeMap::new(),
                 wait_order: VecDeque::new(),
                 ready: VecDeque::new(),
+                yielder: None,
                 yielded: BTreeMap::new(),
                 next_tid: 1,
                 kpcr,
@@ -283,6 +288,7 @@ impl Kernel {
                 clock: Clock::new(config.epoch_100ns),
                 data,
                 console: config.console,
+                encoder: console::EncoderState::default(),
                 launch_page: 0,
                 references: BTreeMap::new(),
                 saved_av: 0,
@@ -392,6 +398,10 @@ impl Kernel {
     }
     pub fn console_config(&self) -> ConsoleConfig {
         self.lock().console.clone()
+    }
+    /// Blank/flicker/luma settings sent through AvSendTVEncoderOption (2).
+    pub fn encoder_state(&self) -> console::EncoderState {
+        self.lock().encoder
     }
     pub fn clock(&self) -> Clock {
         self.lock().clock.clone()

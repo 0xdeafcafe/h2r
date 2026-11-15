@@ -89,7 +89,7 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 178 | Persist/unpersist pages of contiguous allocations (recorded; no quick reboot). |
 | 203, 215 | Open a namespace symbolic link as a handle; query its captured target. |
 | 327, 328 | XBE section reference counts, pristine reload of on-demand sections, shared-page counts. |
-| 2 | Read configured AV encoder settings (option 6); other options stop. |
+| 2 | AV encoder: configured settings query (6); blank screen (9), flicker filter 0-5 (11) and luma filter (14) recorded in `Kernel::encoder_state()`; the field guess (15) and other options stop. |
 | 24 | Configured DWORD nonvolatile settings including XC_MISC and XC_AUDIO (9, stereo/no passthrough by default), checked buffers and unknown-index stops; XC_MAX_ALL (0xffff) is STATUS_OBJECT_NAME_NOT_FOUND (no EEPROM image). |
 | 301 | Explicit NTSTATUS-to-DOS conversion for kernel/VFS outputs; unknown status stops. |
 | 8 | DbgPrint guest cdecl varargs to an ordered byte log. |
@@ -108,7 +108,7 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 169, 170 | Kernel stacks in the internal range with an unmapped guard page; returns the top; delete unmaps. |
 | 182 | MmSetAddressProtect on contiguous or committed pages via `Guest::protect_range` (exact pages; other aliases keep theirs); queries report the new value. |
 | 184, 199, 217 | VM reserve/commit/query, MEM_TOP_DOWN placement, decommit (unmaps committed pages) and release. |
-| 143 | KeSetBasePriorityThread: NT base/saturation rules, writes KTHREAD Priority/BasePriority/Saturation, returns the old increment. The scheduler does not use priority. |
+| 143 | KeSetBasePriorityThread: NT base/saturation rules, writes KTHREAD Priority/BasePriority/Saturation, returns the old increment. The scheduler runs the highest-priority ready thread. |
 | 192, 221 | Unnamed mutants: initial owner, recursive acquire, release counts, MUTANT_NOT_OWNED, abandonment on thread exit (STATUS_ABANDONED_WAIT_0 + index). |
 | 210 | NtQueryFullAttributesFile: FILE_NETWORK_OPEN_INFORMATION by path (root 0, -3 or a directory handle) without leaving a handle open. |
 | 246, 250 | ObReferenceObjectByHandle (thread/event types, null type, current-thread pseudo-handle) and ObfDereferenceObject; references pin the object. |
@@ -200,13 +200,25 @@ Cooperative scheduling comes first because the lifter already spills canonical
 CPU state at explicit transfers, but has no validated interrupt/quantum safepoints
 or instruction-count timing. One host runner gives reproducible kernel-boundary
 schedules, atomic wait consumption and alias-coherent memory without host races.
-Blocking calls park the current thread; ready threads run FIFO. Event/semaphore
+Blocking calls park the current thread. The next thread is the highest KTHREAD
+Priority ready (as KeSetBasePriorityThread left it), FIFO among equals, so equal
+priorities round-robin; there is no preemption, so a thread made ready never
+interrupts the running one. Event/semaphore
 waiters wake FIFO, while simultaneous timed sleepers tie-break by thread ID.
+NtYieldExecution follows NT (KiSelectReadyThread with a floor of 1): if any
+other thread is ready, whatever its priority, the best of them runs next and the
+yield returns SUCCESS; the yielder goes to the back of the queue and is passed
+over once. Alone, it returns NO_YIELD_PERFORMED: at once when nothing is
+pending, otherwise as a poll (below).
 IRQL survives waits. WaitAll tests every object before consuming any signal.
 A run with no ready thread advances logical time to the next deadline; with no
 deadline it reports Deadlock. If every ready thread has just used Delay(0) or
 NtYieldExecution, advance to the next future deadline too. A newly ready thread
-gets a turn before being classified as polling. This deterministic policy lets
+gets a turn before being classified as polling, and an advance clears every
+ready thread's polling mark: each of them gets a slice before the clock can move
+again. Without that, a lone thread yielding while a periodic timer is armed
+(Halo's movie loop at 0x1639c2 calls SwitchToThread with XNet's 20 ms timer
+set) would watch the clock and its DPC run forever without a slice of its own. This deterministic policy lets
 a polling parent observe a sleeping child without tying time to host speed. Transfer/slice budgets are diagnostics, not preemption.
 
 Timers: an inserted KTIMER is held in Rust by address with its deadline in
@@ -227,7 +239,10 @@ completes with DPCs queued, the thread is put back at the head of the ready
 queue and the DPCs run first. So KeSetTimer with a reached due time has run its
 DPC by the instruction after the call (Halo's voice engine, 0x332b6d, arms its
 20 ms DPC 0x332f4c that way), and a timer that expired at raised IRQL delivers
-on the KfLowerIrql. Otherwise DPCs run one per slice before any thread, on a 16 KiB kernel stack, under
+on the KfLowerIrql. Otherwise DPCs run one per slice before any thread. A drain
+runs only the DPCs queued when it began; one that a DPC routine queues (say by
+re-arming its timer due now) waits until a ready thread has had a slice, so
+DPC delivery cannot starve a thread either. They run on a 16 KiB kernel stack, under
 ExecCtx thread `threads::DPC_THREAD_ID` (0) at DISPATCH_LEVEL; the interrupted
 IRQL is restored when the routine returns. A routine that blocks, delays,
 yields or needs a KTHREAD stops: `RunOutcome::Stopped { thread: 0, .. }`,
@@ -237,9 +252,9 @@ timer or queued DPC whose guest header changed is a guest fault.
 Mutants (192/221 and waits) keep their owner in Rust by guest KTHREAD and the
 guest KMUTANT (type 2, Size 8, OwnerThread, Abandoned, MutantListEntry) up to
 date; a terminating thread abandons what it owns. Named mutants stop.
-KeSetBasePriorityThread records priorities, but scheduling stays FIFO.
+KeSetBasePriorityThread priorities order the ready queue (above).
 
-This does not model Xbox priority boosts or preempt a guest spin loop. Code that
+This does not model Xbox priority boosts or decrements, quantum ends, or preempt a guest spin loop. Code that
 never blocks/yields can starve other threads. Kernel waits above APC_LEVEL, file
 I/O above PASSIVE_LEVEL, alertable waits/delays, APC/DPC/interrupt delivery, and
 KeSetEvent/KeReleaseSemaphore WaitNext handoffs stop. Dispatcher wait-list blocks

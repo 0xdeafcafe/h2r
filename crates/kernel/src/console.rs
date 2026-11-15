@@ -34,7 +34,25 @@ pub const AV_STANDARD_PAL_I: u32 = 0x300;
 pub const AV_FLAGS_60HZ: u32 = 0x400000;
 pub const AV_FLAGS_480P: u32 = 0x80000;
 pub const AV_PACK_HDTV: u32 = 4;
+/// AvSendTVEncoderOption options Halo passes (call sites in XAPI.md).
+/// AV_QUERY_AV_CAPABILITIES.
 pub const AV_OPTION_QUERY_SETTINGS: u32 = 6;
+pub const AV_OPTION_BLANK_SCREEN: u32 = 9;
+pub const AV_OPTION_FLICKER_FILTER: u32 = 11;
+pub const AV_OPTION_ENABLE_LUMA_FILTER: u32 = 14;
+/// AV_OPTION_GUESS_FIELD: no documented result, so it stops.
+pub const AV_OPTION_GUESS_FIELD: u32 = 15;
+/// D3DDevice_SetFlickerFilter levels: 0 (off) to 5 (AvSetDisplayMode's).
+pub const MAX_FLICKER_FILTER: u32 = 5;
+
+/// What the title has told the TV encoder. `None` until first set; the
+/// renderer may read it, nothing here programs a display.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct EncoderState {
+    pub blanked: Option<bool>,
+    pub flicker_filter: Option<u32>,
+    pub luma_filter: Option<bool>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConsoleConfig {
@@ -98,11 +116,7 @@ impl Core {
         a: &Args,
     ) -> Result<Action, GuestFault> {
         if a.export.ordinal == ord::AV_SEND_TV_ENCODER_OPTION {
-            if a.get(1) != AV_OPTION_QUERY_SETTINGS || a.get(2) != 0 {
-                return Ok(Action::Stop("unsupported video encoder option"));
-            }
-            memory.set_u32(a.get(3), self.console.encoder_settings())?;
-            return Ok(Action::Complete(Value::Void));
+            return self.encoder_option(memory, a);
         }
         // No EEPROM image is configured (and none is fabricated), so the
         // whole-EEPROM query finds nothing; nothing is written. XAPI's
@@ -145,5 +159,42 @@ impl Core {
         }
         memory.set_u32(a.get(2), value)?;
         Ok(Action::status(status::SUCCESS))
+    }
+}
+
+impl Core {
+    /// AvSendTVEncoderOption(RegisterBase, Option, Param, Result), VOID.
+    /// RegisterBase (NV2A registers, or null for the query) is not touched.
+    /// Setting options write nothing to Result; Halo passes null there.
+    fn encoder_option(&mut self, memory: &mut Guest, a: &Args) -> Result<Action, GuestFault> {
+        let param = a.get(2);
+        match a.get(1) {
+            AV_OPTION_QUERY_SETTINGS => {
+                if param != 0 {
+                    return Ok(Action::Stop("AV capabilities query with a Param"));
+                }
+                memory.set_u32(a.get(3), self.console.encoder_settings())?;
+            }
+            // Halo pushes literal 0 (unblank) or 1 (blank).
+            AV_OPTION_BLANK_SCREEN => {
+                if param > 1 {
+                    return Ok(Action::Stop("AV blank-screen Param other than 0/1"));
+                }
+                self.encoder.blanked = Some(param != 0);
+            }
+            AV_OPTION_FLICKER_FILTER => {
+                if param > MAX_FLICKER_FILTER {
+                    return Ok(Action::Stop("AV flicker filter level above 5"));
+                }
+                self.encoder.flicker_filter = Some(param);
+            }
+            // A BOOL: D3D (0x3f8c9c) passes its argument unnormalized.
+            AV_OPTION_ENABLE_LUMA_FILTER => self.encoder.luma_filter = Some(param != 0),
+            AV_OPTION_GUESS_FIELD => {
+                return Ok(Action::Stop("AV field guess has no documented result"));
+            }
+            _ => return Ok(Action::Stop("unsupported video encoder option")),
+        }
+        Ok(Action::Complete(Value::Void))
     }
 }

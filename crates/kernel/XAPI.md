@@ -54,8 +54,18 @@ buffer has its tail cleared. Invalid guest pointers fault before any output.
 
 An AV pack is not an EEPROM setting. AvSendTVEncoderOption (2), option 6 with
 Param zero, writes the configured pack | standard | factory flags | video flags
-to Result and returns VOID. Other encoder options stop: this implements profile
-readout, not display-mode changes or GPU programming. Sources are
+to Result and returns VOID. Halo also sends, with a null Result that nothing
+writes: AV_OPTION_BLANK_SCREEN (9, Param 0 or 1, around the mode set at
+0x3f9cb1 and 0x3fc73e), AV_OPTION_FLICKER_FILTER (11, level 0..5: D3D's
+SetFlickerFilter at 0x3f8c53, game code at 0x14157, and 0 when a field mode is
+set at 0x3f9c34) and AV_OPTION_ENABLE_LUMA_FILTER (14, a BOOL passed
+unnormalized by SetSoftDisplayFilter at 0x3f8c9c and 0x3fc4ff). These are
+recorded in `Kernel::encoder_state()` for the renderer; RegisterBase is not
+touched. AV_OPTION_GUESS_FIELD (15, 0x3f9c4f) has a Result but no documented
+value, so it stops, as do other options and Params (level 6, blank 2). This
+implements profile readout and recorded settings, not display-mode changes or GPU
+programming. Option numbers follow
+[Cxbx's xbox.h](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/kernel/common/xbox.h). Sources are
 [nxdk's declarations and setting indices](https://github.com/XboxDev/nxdk/blob/master/lib/xboxkrnl/xboxkrnl.h),
 [nxdk's video flags](https://github.com/XboxDev/nxdk/blob/master/lib/hal/video.h),
 and the independent
