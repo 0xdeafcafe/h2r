@@ -568,8 +568,8 @@ this document: the previous text said `true` while the crate had `false`.
   significand at RN. The series stop below 2^-520 relative, and the sign of
   the omitted tail feeds the rounding, so PE and C1 are right whenever the
   rounding is.
-  The optional `x87/fast-trans` feature first attempts guarded 256-bit
-  evaluation for FYL2X, F2XM1 and FPATAN. Its domains, per-function error
+  The optional `x87/fast-trans` feature first attempts guarded 128-bit
+  evaluation for FYL2X and F2XM1. Its domains, per-function error
   bounds and value/PE/C1 acceptance test are documented in
   [x87-transcendentals.md](x87-transcendentals.md). Other functions and
   rejected intervals retain the 512-bit reference.
@@ -602,7 +602,7 @@ this document: the previous text said `true` while the crate had `false`.
   | div | 65 ns |
 
   There are 522 inline `fsin`/`fcos` sites. Guarded lower working precision
-  is now available for the measured hot log/exp/atan subset described
+  is now available for the measured hot log/exp subset described
   above. Trigonometric argument reduction still uses the reference;
   no speed or error bound for a lower-precision trig path is claimed.
 

@@ -7,7 +7,7 @@ run: the C flags participate in the object-cache keys and the boot dylib
 stamp. Values other than `0` and `1` are rejected.
 
 The separate `x87/fast-trans` Cargo feature accelerates guarded integer
-log/exp/atan evaluation; see [x87-transcendentals.md](x87-transcendentals.md).
+log/exp evaluation; see [x87-transcendentals.md](x87-transcendentals.md).
 
 ```sh
 H2_X87_NATIVE=0 cargo run --release -p cli -- build "$H2_XBE" --out "$TMPDIR/helper-game" --jobs 4

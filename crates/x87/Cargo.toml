@@ -9,7 +9,7 @@ default = ["abi"]
 # The `#[repr(C)]` state structs and the `extern "C"` `h2x87_v1_*` surface
 # (docs/FLOAT-ABI.md §1-§4).
 abi = []
-# Guarded 256-bit evaluation for the measured hot transcendental subset.
+# Guarded 128-bit evaluation for the measured gameplay log/exp pair.
 # Ambiguous rounding and operands outside the documented domain use 512 bits.
 fast-trans = []
 

@@ -333,10 +333,6 @@ fn pi_multiple<const N: usize>(num: u64, log2_den: i32, neg: bool) -> (F80, Flag
 
 /// FPATAN: `atan2(y, x)` with the SDM's table for zeros and infinities.
 pub fn patan(y: F80, x: F80) -> (F80, Flags) {
-    #[cfg(feature = "fast-trans")]
-    if let Some(v) = fast::patan(y, x) {
-        return v;
-    }
     patan_n::<W>(y, x)
 }
 
@@ -374,30 +370,24 @@ pub(crate) fn patan_n<const N: usize>(y: F80, x: F80) -> (F80, Flags) {
         }),
         (Unp::Fin(fy), Unp::Zero(_)) => with(pi_multiple::<N>(1, 1, fy.neg)),
         (Unp::Fin(fy), Unp::Fin(fx)) => {
-            let (v, tail) = patan_finite::<N>(fy, fx);
+            let ay = Wf::<N>::from_parts(false, fy.sig, fy.exp);
+            let ax = Wf::<N>::from_parts(false, fx.sig, fx.exp);
+            let p = pi::<N>();
+            let (base, tail) = if ay.cmp_abs(&ax) == Ordering::Greater {
+                (p.scale(-1).sub(atan_pos(ax.div(ay)).0), INEXACT)
+            } else {
+                atan_pos(ay.div(ax))
+            };
+            let (v, tail) = if fx.neg {
+                (p.sub(base), INEXACT)
+            } else {
+                (base, tail)
+            };
+            let v = if fy.neg { v.neg() } else { v };
             with(v.to_f80(tail))
         }
         _ => unreachable!(),
     }
-}
-
-/// Finite, nonzero atan2 core, shared by both working precisions.
-fn patan_finite<const N: usize>(fy: Fin, fx: Fin) -> Tw<N> {
-    let ay = Wf::<N>::from_parts(false, fy.sig, fy.exp);
-    let ax = Wf::<N>::from_parts(false, fx.sig, fx.exp);
-    let p = pi::<N>();
-    let (base, tail) = if ay.cmp_abs(&ax) == Ordering::Greater {
-        (p.scale(-1).sub(atan_pos(ax.div(ay)).0), INEXACT)
-    } else {
-        atan_pos(ay.div(ax))
-    };
-    let (v, tail) = if fx.neg {
-        (p.sub(base), INEXACT)
-    } else {
-        (base, tail)
-    };
-    let v = if fy.neg { v.neg() } else { v };
-    (v, tail)
 }
 
 /// log2 of a positive wide value; `true` when the result is exact (an

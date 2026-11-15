@@ -779,8 +779,7 @@ fn unary_impl<const FAST: bool>(s: &mut X87Abi, op: u32) -> u32 {
         }
         PATAN | YL2X | YL2XP1 => {
             let (v, fl) = match op {
-                PATAN if FAST => patan(b, a),
-                PATAN => crate::trans::patan_n::<8>(b, a),
+                PATAN => patan(b, a),
                 YL2X if FAST => yl2x(b, a),
                 YL2X => crate::trans::yl2x_n::<8>(b, a),
                 _ => yl2xp1(b, a),

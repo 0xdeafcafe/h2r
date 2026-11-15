@@ -572,7 +572,7 @@ First fixtures:
   - transcendental bit patterns (the 66-bit-π reduction);
   - the `rcp` tiny-flush window;
   - C1, the undefined condition codes, and control-word bit 6 read-back.
-- **Transcendental speed.** The opt-in guarded log/exp/atan path and its
+- **Transcendental speed.** The opt-in guarded log/exp path and its
   measured costs are documented in [x87-transcendentals.md](x87-transcendentals.md).
   Lower-precision trigonometric argument reduction remains open.
 - **NaN payload bits.** Whether any game code depends on them. The design
