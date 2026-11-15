@@ -16,6 +16,7 @@ pub mod d3d_glue;
 pub mod dsound_glue;
 pub mod fallback;
 pub mod game_glue;
+pub mod layout_glue;
 pub mod live_glue;
 pub mod sha;
 pub mod shim;
@@ -492,6 +493,8 @@ pub fn run_hosted_with_live(
     }
     // Community classics in the built-in variant list (docs/community-gametypes.md).
     community_variants::install(&loaded.runtime).context("installing the community game variants")?;
+    // Extra button layouts on the Controls screen (docs/controller-layouts.md).
+    layout_glue::install(&loaded.runtime).context("installing the button layouts")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) if host.render_thread => Some(d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?),
