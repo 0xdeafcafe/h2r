@@ -245,9 +245,10 @@ previous record, as a torn one does. The bound relies on the flusher
 thread; if it cannot be spawned (logged), only the write path, flush,
 close and drop store pending metadata. Every record store holds the
 pending map's lock, so a thread's store never lands after a newer one.
-Removing a file holds that lock across retiring the record and unlinking
-the file, and drops the pending entry only once both succeed: a failed
-remove keeps the write's metadata pending.
+Removing a file holds that lock across the unlink and drops the pending
+entry only once the file is gone, so a failed remove keeps both the
+durable record and the write's pending metadata. Format clears pending
+metadata only once the volume is empty.
 
 Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
 mounts. Each lowercase path component is hex encoded as a metadata-directory
@@ -256,12 +257,12 @@ four little-endian u64 times, 40 bytes total. Missing/truncated/invalid records
 fall back to host defaults; a later successful metadata write repairs them.
 Updates write and fsync a staging file, rename it over the record, and fsync
 the containing directory. New metadata directories are synced through their
-parents. Regular-file removal retires metadata before unlinking the payload.
-Directory removal instead removes known litter and attempts the host rmdir
-**before** retiring metadata. ENOTEMPTY, permission errors, or litter cleanup
-failure therefore leave the directory's attributes/timestamps intact. If a
-successful rmdir is followed by a metadata retirement error, the deletion
-succeeds and logs a warning. Creation clears any orphaned metadata subtree
+parents. Removal unlinks the file (or, after removing known litter, rmdirs
+the directory) **before** retiring metadata. ENOTEMPTY, permission errors,
+or litter cleanup failure therefore leave the entry's attributes/timestamps
+intact, durable record and pending write metadata alike. If a successful
+unlink or rmdir is followed by a metadata retirement error, the deletion
+succeeds and logs a warning; the orphan record is never read. Creation clears any orphaned metadata subtree
 before adding a new host entry, so later recreation cannot inherit stale
 attributes or child records. Post-removal parent-sync errors are also logged
 without undoing a successful namespace operation. Preserve both `disk/` and `metadata/` when

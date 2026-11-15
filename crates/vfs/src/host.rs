@@ -217,6 +217,8 @@ pub struct HostBackend {
     next_metadata_retire_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
     next_unlink_error: std::cell::Cell<Option<Error>>,
+    #[cfg(test)]
+    next_format_error: std::cell::Cell<Option<Error>>,
 }
 
 fn host_litter(name: &str) -> bool {
@@ -308,6 +310,8 @@ impl HostBackend {
             next_metadata_retire_error: std::cell::Cell::new(None),
             #[cfg(test)]
             next_unlink_error: std::cell::Cell::new(None),
+            #[cfg(test)]
+            next_format_error: std::cell::Cell::new(None),
         })
     }
     pub fn with_volume(mut self, label: impl Into<String>, serial: u32, capacity: u64) -> Self {
@@ -897,12 +901,19 @@ impl Backend for HostBackend {
     /// ancestor path is never consulted.
     #[cfg(unix)]
     fn format(&mut self) -> Result<()> {
+        // Held throughout so no flusher stores a record mid-format; cleared
+        // only once the volume is empty, so a failed format keeps the
+        // pending metadata of the files that survive it.
         let mut written = self.written.lock();
-        written.clear();
         for fd in &self.anchors {
+            #[cfg(test)]
+            if let Some(error) = self.next_format_error.take() {
+                return Err(error);
+            }
             anchor::empty(fd)?;
             rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
         }
+        written.clear();
         *self.cache.borrow_mut() = Cache::default();
         Ok(())
     }
@@ -919,9 +930,11 @@ impl Backend for HostBackend {
         if info.is_directory() && !self.read_directory(path)?.is_empty() {
             return Err(Error::DirectoryNotEmpty);
         }
-        // Held until the entry is gone: no flusher stores a record between
-        // retirement and unlink. The pending entry is dropped only once both
-        // succeed, so a failed remove keeps the write's metadata pending.
+        // The host entry goes first and the record after, for files as for
+        // directories: a failed unlink or rmdir leaves both the durable
+        // record and any pending write metadata in place. The pending entry
+        // is dropped, under the lock a flusher stores with, only once the
+        // host entry is gone, so no flusher stores the record again.
         let mut pending = self.written.lock();
         if info.is_directory() {
             self.remove_litter(&host)?;
@@ -929,7 +942,6 @@ impl Backend for HostBackend {
             fs::remove_dir(&host)?;
             self.cache.borrow_mut().directories.remove(&host);
         } else {
-            self.retire_metadata(path)?;
             #[cfg(test)]
             if let Some(error) = self.next_unlink_error.take() {
                 return Err(error);
@@ -952,10 +964,10 @@ impl Backend for HostBackend {
             .reservations
             .remove(&path.to_ascii_lowercase());
         self.update_parent(&host, false)?;
-        if info.is_directory()
-            && let Err(error) = self.retire_metadata(path)
-        {
-            eprintln!("vfs: removed directory, but metadata cleanup failed: {error}");
+        // A record left by a failed retirement is never read: nothing is
+        // there to describe, and creation clears it before a new entry.
+        if let Err(error) = self.retire_metadata(path) {
+            eprintln!("vfs: removed entry, but metadata cleanup failed: {error}");
         }
         if let Err(error) = sync_directory(host.parent().unwrap()) {
             eprintln!("vfs: removed entry, but parent directory sync failed: {error}");
@@ -1219,7 +1231,7 @@ mod tests {
     fn write_metadata_pending_past_the_stale_window_is_stored_without_a_flush() {
         let temp = Temp::new();
         let mut backend = temp.backend();
-        backend.set_stale(Duration::from_millis(50));
+        backend.set_stale(Duration::from_secs(3600));
         backend.create("data", false, 0).unwrap();
         backend.flush("data").unwrap();
         // An old record, so storing a write's times changes its bytes.
@@ -1229,27 +1241,27 @@ mod tests {
         basic.change_time = basic.last_write_time;
         backend.set_basic_info("data", basic).unwrap();
         let record = backend.metadata_path("data");
-        let before = fs::read(&record).unwrap();
+        let old = fs::read(&record).unwrap();
+        // The write path: with no window, the write that makes the entry
+        // finds it stale and stores it.
+        backend.set_stale(Duration::ZERO);
         backend.write_at("data", 0, b"x").unwrap();
-        assert_eq!(backend.pending_written(), 1);
-        // The write path stores it once it is stale (the thread may get
-        // there first; either way it is stored without a flush).
-        std::thread::sleep(Duration::from_millis(80));
+        assert_eq!(backend.pending_written(), 0);
+        assert_ne!(fs::read(&record).unwrap(), old, "stored by the write");
+        // The flusher thread: an entry made under a long window, with no
+        // write after the window shrinks, is stored by the thread alone.
+        backend.set_basic_info("data", basic).unwrap();
+        backend.set_stale(Duration::from_secs(3600));
         backend.write_at("data", 1, b"y").unwrap();
-        assert_ne!(
-            fs::read(&record).unwrap(),
-            before,
-            "stored by the write path"
-        );
-        // The flusher thread stores it when no write comes.
-        std::thread::sleep(Duration::from_millis(20));
-        backend.write_at("data", 2, b"z").unwrap();
         assert_eq!(backend.pending_written(), 1);
-        let deadline = Instant::now() + Duration::from_secs(5);
+        assert_eq!(fs::read(&record).unwrap(), old);
+        backend.set_stale(Duration::from_millis(50));
+        let deadline = Instant::now() + Duration::from_secs(10);
         while backend.pending_written() != 0 && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(backend.pending_written(), 0, "the flusher stored it");
+        assert_ne!(fs::read(&record).unwrap(), old);
     }
 
     /// `cargo test -p vfs --release bench_write_metadata -- --ignored --nocapture`:
@@ -1350,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_retirement_failure_preserves_host_data_and_recreation_has_fresh_attributes() {
+    fn metadata_retirement_failure_after_unlink_leaves_an_orphan_recreation_clears() {
         let temp = Temp::new();
         let mut backend = temp.backend();
         backend.create("save", false, ATTR_HIDDEN).unwrap();
@@ -1360,12 +1372,13 @@ mod tests {
         let moved = temp.0.join("old-state");
         fs::rename(state, &moved).unwrap();
         fs::write(state, b"blocked metadata directory").unwrap();
-        assert!(backend.remove("save").is_err());
-        assert_eq!(fs::read(backend.root.join("save")).unwrap(), b"payload");
+        // The file goes first; the record's retirement then fails, which is
+        // logged, not an error: the remove happened.
+        assert_eq!(backend.remove("save"), Ok(()));
+        assert!(!backend.root.join("save").exists());
         fs::remove_file(state).unwrap();
         fs::rename(moved, state).unwrap();
-        backend.remove("save").unwrap();
-        assert!(!state.exists());
+        assert!(record.exists(), "an orphan record");
         backend.create("save", false, 0).unwrap();
         assert_eq!(backend.stat("save").unwrap().basic.attributes, ATTR_ARCHIVE);
         let bytes = fs::read(&record).unwrap();
@@ -1472,32 +1485,57 @@ mod tests {
         backend.write_at("data", 0, b"x").unwrap();
         let written = backend.stat("data").unwrap().basic;
         assert!(written.last_write_time > basic.last_write_time);
-        // Retirement fails: nothing is removed and the write stays pending.
-        backend
-            .next_metadata_retire_error
-            .set(Some(Error::IoDeviceError));
-        assert_eq!(backend.remove("data"), Err(Error::IoDeviceError));
-        assert_eq!(backend.pending_written(), 1);
-        assert_eq!(backend.stat("data").unwrap().basic, written);
-        // Unlink fails after the record was retired: still pending, and a
-        // flush stores it again.
+        let record = fs::read(backend.metadata_path("data")).unwrap();
+        // Unlink fails: the file, its durable record and the pending write
+        // all stay.
         backend.next_unlink_error.set(Some(Error::AccessDenied));
         assert_eq!(backend.remove("data"), Err(Error::AccessDenied));
         assert!(backend.root.join("data").exists());
-        assert!(!backend.metadata_path("data").exists(), "retired");
+        assert_eq!(fs::read(backend.metadata_path("data")).unwrap(), record);
         assert_eq!(backend.pending_written(), 1);
         assert_eq!(backend.stat("data").unwrap().basic, written);
-        backend.flush("data").unwrap();
-        assert_eq!(backend.pending_written(), 0);
-        drop(backend);
+        // An exit right then (no drop, no flush) keeps the old record: the
+        // reopened file has its old times, not host defaults.
+        std::mem::forget(backend);
         let mut reopened = temp.backend();
-        assert_eq!(reopened.stat("data").unwrap().basic, written);
-        // A remove that succeeds drops the entry with the file.
+        assert_eq!(reopened.stat("data").unwrap().basic, basic);
+        // A remove that succeeds drops the entry and the record with the
+        // file; a retirement that fails after the unlink only leaves an
+        // orphan record, cleared when the name is created again.
         reopened.set_stale(Duration::from_secs(3600));
         reopened.write_at("data", 0, b"y").unwrap();
         assert_eq!(reopened.remove("data"), Ok(()));
         assert_eq!(reopened.pending_written(), 0);
         assert!(!reopened.metadata_path("data").exists());
+        reopened.create("data", false, ATTR_HIDDEN).unwrap();
+        reopened
+            .next_metadata_retire_error
+            .set(Some(Error::IoDeviceError));
+        assert_eq!(reopened.remove("data"), Ok(()));
+        assert!(!reopened.root.join("data").exists());
+        assert!(reopened.metadata_path("data").exists(), "orphan");
+        reopened.create("data", false, 0).unwrap();
+        assert_eq!(
+            reopened.stat("data").unwrap().basic.attributes,
+            ATTR_ARCHIVE
+        );
+    }
+
+    #[test]
+    fn a_failed_format_keeps_pending_metadata() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.set_stale(Duration::from_secs(3600));
+        backend.create("data", false, 0).unwrap();
+        backend.write_at("data", 0, b"x").unwrap();
+        assert_eq!(backend.pending_written(), 1);
+        backend.next_format_error.set(Some(Error::IoDeviceError));
+        assert_eq!(backend.format(), Err(Error::IoDeviceError));
+        assert!(backend.root.join("data").exists());
+        assert_eq!(backend.pending_written(), 1);
+        backend.format().unwrap();
+        assert_eq!(backend.pending_written(), 0);
+        assert!(!backend.root.join("data").exists());
     }
 
     #[test]
