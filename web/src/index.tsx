@@ -5,6 +5,7 @@ import "./styles/app.css";
 import "./styles/dash.css";
 import "./styles/stats.css";
 import Dashboard from "./dash/Dashboard";
+import Veil from "./dash/Veil";
 import StatsLayout, { Title } from "./stats/Layout";
 import Game from "./stats/Game";
 import Games from "./stats/Games";
@@ -28,7 +29,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 
 render(
   () => (
-    <Router>
+    <Router root={Veil}>
       <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
         <Route path="/" component={Games} />
