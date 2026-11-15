@@ -3,14 +3,17 @@
 #![forbid(unsafe_code)]
 
 pub mod adapter;
+pub mod cache;
 pub mod config;
 mod controllers;
 mod launch;
 pub mod memory;
 pub mod register;
 pub mod storage;
+pub mod vfs_storage;
 
-pub use config::{Config, DeviceTypes};
+pub use cache::CacheSelection;
+pub use config::{CacheDrive, CacheGlobals, CachePartition, Config, DeviceTypes};
 pub use controllers::{Events, PendingSignal, SignalBatch, SignalReport};
 pub use launch::{LAUNCH_DATA_SIZE, LaunchRequest};
 pub use memory::{GuestMemory, MemoryFault};
@@ -18,7 +21,8 @@ pub use register::{
     CacheRow, Conflict, GuestLayout, RegisterError, Registration, register, service_input,
     unregister,
 };
-pub use storage::Storage;
+pub use storage::{CACHE_DATABASE_SIZE, Storage};
+pub use vfs_storage::VfsStorage;
 
 use controllers::{DeviceChanges, OpenInput};
 use input::{InputManager, device::Completion};
@@ -68,6 +72,11 @@ pub struct Xapi<StorageBackend> {
 impl<StorageBackend: Storage> Xapi<StorageBackend> {
     pub fn new(config: Config, input: InputManager, storage: StorageBackend) -> Result<Self> {
         if config.devices.gamepad == 0 || !(3..=5).contains(&config.utility_partition) {
+            return Err(Error::INVALID_PARAMETER);
+        }
+        if let CachePartition::Fixed(partition) = config.cache_drive.partition
+            && (!(3..=5).contains(&partition) || partition == config.utility_partition)
+        {
             return Err(Error::INVALID_PARAMETER);
         }
         Ok(Self {

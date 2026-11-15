@@ -13,12 +13,19 @@
 //!   `sensitivity` for the sync rate you use (60 Hz default).
 //! * The virtual pad is not "physical": no deadzone is applied, so tiny mouse
 //!   deltas still register.
+//! * Rumble is off by default (`XInputSetState` returns 50, like a pad without
+//!   motors). [`KeyboardMouse::set_rumble_supported`] makes the pad advertise both
+//!   motors and accept feedback like a standard controller; requests then
+//!   complete and the newest motor speeds are readable from
+//!   [`KeyboardMouse::rumble`]. Set it before the manager's first `sync`: a
+//!   pad's capabilities are fixed when it is inserted.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::backend::HostBackend;
 use crate::bindings::{Bindings, Control, Input, MouseButton, canonical_key};
+use crate::gamepad::Rumble;
 use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
 
 /// Cloneable handle to one virtual keyboard+mouse pad. Clone it before
@@ -36,6 +43,8 @@ struct Inner {
     mouse: HashSet<MouseButton>,
     delta: (f64, f64),
     enabled: bool,
+    rumble_supported: bool,
+    rumble: Rumble,
 }
 
 impl Inner {
@@ -62,6 +71,8 @@ impl KeyboardMouse {
                 mouse: HashSet::new(),
                 delta: (0.0, 0.0),
                 enabled: true,
+                rumble_supported: false,
+                rumble: Rumble::default(),
             })),
         }
     }
@@ -83,13 +94,28 @@ impl KeyboardMouse {
         }
     }
 
+    /// Advertise motors and accept rumble feedback (see the module docs).
+    /// Takes effect for the next insertion of the pad.
+    pub fn set_rumble_supported(&self, supported: bool) {
+        self.lock().rumble_supported = supported;
+    }
+
+    /// Newest motor speeds the guest asked for (zero until then).
+    pub fn rumble(&self) -> Rumble {
+        self.lock().rumble
+    }
+
     /// Key pressed. Returns false if the name is not a known key.
     pub fn key_down(&self, name: &str) -> bool {
-        canonical_key(name).map(|k| self.lock().keys.insert(k)).is_some()
+        canonical_key(name)
+            .map(|k| self.lock().keys.insert(k))
+            .is_some()
     }
 
     pub fn key_up(&self, name: &str) -> bool {
-        canonical_key(name).map(|k| self.lock().keys.remove(&k)).is_some()
+        canonical_key(name)
+            .map(|k| self.lock().keys.remove(&k))
+            .is_some()
     }
 
     pub fn mouse_button(&self, b: MouseButton, down: bool) {
@@ -143,15 +169,21 @@ impl KeyboardMouse {
         let axis = |neg: bool, pos: bool| f32::from(u8::from(pos)) - f32::from(u8::from(neg));
         s.left_trigger = f32::from(u8::from(i.held(LeftTrigger)));
         s.right_trigger = f32::from(u8::from(i.held(RightTrigger)));
-        s.left_stick = (axis(i.held(LeftStickLeft), i.held(LeftStickRight)), axis(i.held(LeftStickDown), i.held(LeftStickUp)));
-        s.right_stick =
-            (axis(i.held(RightStickLeft), i.held(RightStickRight)), axis(i.held(RightStickDown), i.held(RightStickUp)));
+        s.left_stick = (
+            axis(i.held(LeftStickLeft), i.held(LeftStickRight)),
+            axis(i.held(LeftStickDown), i.held(LeftStickUp)),
+        );
+        s.right_stick = (
+            axis(i.held(RightStickLeft), i.held(RightStickRight)),
+            axis(i.held(RightStickDown), i.held(RightStickUp)),
+        );
         let m = i.bindings.mouse;
         if m.look {
             let sign = if m.invert_y { 1.0 } else { -1.0 }; // mouse up (dy < 0) looks up
             let k = f64::from(m.sensitivity);
             s.right_stick.0 = (f64::from(s.right_stick.0) + i.delta.0 * k).clamp(-1.0, 1.0) as f32;
-            s.right_stick.1 = (f64::from(s.right_stick.1) + sign * i.delta.1 * k).clamp(-1.0, 1.0) as f32;
+            s.right_stick.1 =
+                (f64::from(s.right_stick.1) + sign * i.delta.1 * k).clamp(-1.0, 1.0) as f32;
         }
         i.delta = (0.0, 0.0);
         s
@@ -172,8 +204,12 @@ impl HostBackend for KeyboardMouse {
             name: "Keyboard + Mouse".into(),
             state: self.state(),
             physical: false,
-            supports_rumble: false,
+            supports_rumble: self.lock().rumble_supported,
         }]
+    }
+
+    fn set_rumble(&mut self, _id: HostPadId, rumble: Rumble) {
+        self.lock().rumble = rumble;
     }
 }
 
@@ -237,7 +273,10 @@ mod tests {
         k.set_enabled(false);
         assert!(k.poll().is_empty());
         k.set_enabled(true);
-        assert!(!gp(&k).buttons.contains(Buttons::START), "released on disable");
+        assert!(
+            !gp(&k).buttons.contains(Buttons::START),
+            "released on disable"
+        );
     }
 
     #[test]

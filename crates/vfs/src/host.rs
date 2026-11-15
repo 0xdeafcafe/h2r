@@ -44,6 +44,11 @@ struct Cache {
 pub struct HostBackend {
     root: PathBuf,
     metadata_root: PathBuf,
+    /// The two roots as opened at construction (no symlink followed). Format
+    /// traverses from these, so renaming or replacing a root or an ancestor
+    /// later cannot redirect its deletions.
+    #[cfg(unix)]
+    anchors: [rustix::fd::OwnedFd; 2],
     capacity: u64,
     label: String,
     serial: u32,
@@ -113,9 +118,16 @@ impl HostBackend {
         if metadata_root.starts_with(&root) || root.starts_with(&metadata_root) {
             return Err(Error::InvalidParameter);
         }
+        #[cfg(unix)]
+        let anchors = [
+            anchor::open_root(&root)?,
+            anchor::open_root(&metadata_root)?,
+        ];
         Ok(Self {
             root,
             metadata_root,
+            #[cfg(unix)]
+            anchors,
             capacity: 5 * 1024 * 1024 * 1024,
             label: "Xbox Data".into(),
             serial: 1,
@@ -650,6 +662,25 @@ impl Backend for HostBackend {
         basic.attributes &= FATX_ATTRIBUTES;
         self.store_basic(path, basic)
     }
+    /// Empty the volume directory and its metadata directory, keeping both
+    /// roots. Traversal starts from the directory handles opened at
+    /// construction and never follows a symlink: entries are opened with
+    /// O_NOFOLLOW|O_DIRECTORY relative to their parent's handle and removed
+    /// with unlinkat, so a symlink is removed itself and a replaced root or
+    /// ancestor path is never consulted.
+    #[cfg(unix)]
+    fn format(&mut self) -> Result<()> {
+        for fd in &self.anchors {
+            anchor::empty(fd)?;
+            rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
+        }
+        *self.cache.borrow_mut() = Cache::default();
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    fn format(&mut self) -> Result<()> {
+        Err(Error::NotSupported)
+    }
     fn remove(&mut self, path: &str) -> Result<()> {
         if path.is_empty() {
             return Err(Error::AccessDenied);
@@ -731,6 +762,53 @@ impl Backend for HostBackend {
         })
     }
 }
+#[cfg(unix)]
+mod anchor {
+    use crate::{Error, Result};
+    use rustix::fd::{AsFd, OwnedFd};
+    use rustix::fs::{AtFlags, Dir, FileType, Mode, OFlags, openat, statat, unlinkat};
+    use std::path::Path;
+
+    const DIRECTORY: OFlags = OFlags::RDONLY
+        .union(OFlags::DIRECTORY)
+        .union(OFlags::NOFOLLOW)
+        .union(OFlags::CLOEXEC);
+
+    fn io(e: rustix::io::Errno) -> Error {
+        std::io::Error::from(e).into()
+    }
+
+    /// Open a root directory without following a final symlink.
+    pub(super) fn open_root(path: &Path) -> Result<OwnedFd> {
+        rustix::fs::open(path, DIRECTORY, Mode::empty()).map_err(io)
+    }
+
+    /// Remove every entry below `dir`, keeping `dir` itself.
+    pub(super) fn empty(dir: &impl AsFd) -> Result<()> {
+        let mut names = Vec::new();
+        for entry in Dir::read_from(dir).map_err(io)? {
+            let entry = entry.map_err(io)?;
+            let name = entry.file_name();
+            if name.to_bytes() != b"." && name.to_bytes() != b".." {
+                names.push(name.to_owned());
+            }
+        }
+        for name in names {
+            let stat = statat(dir, &name, AtFlags::SYMLINK_NOFOLLOW).map_err(io)?;
+            if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
+                // Fails (ELOOP/ENOTDIR) if the entry was swapped for a
+                // symlink after the stat, instead of following it.
+                let child = openat(dir, &name, DIRECTORY, Mode::empty()).map_err(io)?;
+                empty(&child)?;
+                unlinkat(dir, &name, AtFlags::REMOVEDIR).map_err(io)?;
+            } else {
+                unlinkat(dir, &name, AtFlags::empty()).map_err(io)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Drop for HostBackend {
     fn drop(&mut self) {
         let paths: BTreeSet<_> = self

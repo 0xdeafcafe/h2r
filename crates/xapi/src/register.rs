@@ -28,6 +28,9 @@ pub mod addr {
     pub const XLAUNCH_NEW_IMAGE_A: u32 = 0x002d_07f2;
     pub const XMOUNT_UTILITY_DRIVE: u32 = 0x002d_5b77;
     pub const XFORMAT_UTILITY_DRIVE: u32 = 0x002d_5c7c;
+    /// The second cache volume, N: (inferred name). stdcall, no arguments,
+    /// plain `ret` at `0x2d5f64`, BOOL; called once, from `0x12003`.
+    pub const XMOUNT_CACHE_DRIVE: u32 = 0x002d_5d0a;
     pub const XAUTO_POWER_DOWN_RESET_TIMER: u32 = 0x002d_6004;
     pub const XAPI_INIT_AUTO_POWER_DOWN: u32 = 0x002d_6031;
     pub const XINIT_DEVICES: u32 = 0x0040_8c57;
@@ -53,6 +56,14 @@ pub mod addr {
     /// re-reads the database and indexes it by this row, failing with
     /// STATUS_UNSUCCESSFUL while it is still -1.
     pub const CACHE_ROW: u32 = 0x0046_1d80;
+    /// N:'s cache-database row (`[0x461d84]`), stored by `0x2d5d0a` at
+    /// `0x2d5e38` and set to -1 on its failure paths (`0x2d5f44`, `0x2d5f52`).
+    pub const CACHE_DRIVE_ROW: u32 = 0x0046_1d84;
+    /// Kernel import slot for HalDiskCachePartitionCount (ordinal 40),
+    /// dereferenced at `0x2d5dab`.
+    pub const HAL_DISK_CACHE_PARTITION_COUNT_IMPORT: u32 = 0x0041_1610;
+    /// XBE header certificate address (base + 0x118), read at `0x2d5d13`.
+    pub const XBE_CERTIFICATE_POINTER: u32 = 0x0001_0118;
 }
 
 /// One override: XBE address, adapter, dispatch name. Every entry is stdcall;
@@ -72,9 +83,9 @@ const fn entry(addr: u32, function: Function, name: &'static str) -> Override {
     }
 }
 
-/// The 15 verified override addresses. XGetDevices and XInputPoll have no
+/// The 16 verified override addresses. XGetDevices and XInputPoll have no
 /// verified out-of-line address and are deliberately absent.
-pub const OVERRIDES: [Override; 15] = {
+pub const OVERRIDES: [Override; 16] = {
     use Function::*;
     use addr::*;
     [
@@ -92,6 +103,11 @@ pub const OVERRIDES: [Override; 15] = {
             XFORMAT_UTILITY_DRIVE,
             XFormatUtilityDrive,
             "xapi::XFormatUtilityDrive",
+        ),
+        entry(
+            XMOUNT_CACHE_DRIVE,
+            XMountCacheDrive,
+            "xapi::XMountCacheDrive",
         ),
         entry(
             XAUTO_POWER_DOWN_RESET_TIMER,
@@ -267,6 +283,7 @@ fn sets_last_error(function: Function) -> bool {
             | XInputClose
             | XMountUtilityDrive
             | XFormatUtilityDrive
+            | XMountCacheDrive
     )
 }
 

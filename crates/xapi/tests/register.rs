@@ -21,12 +21,13 @@ use xapi::{
     unregister,
 };
 
-/// The 15 override addresses and their `ret N` sizes, written out here
+/// The 16 override addresses and their `ret N` sizes, written out here
 /// independently of `xapi::register::OVERRIDES` and `stack_words()`.
-const PINNED: [(u32, u32); 15] = [
+const PINNED: [(u32, u32); 16] = [
     (0x002d07f2, 8),  // XLaunchNewImageA
     (0x002d5b77, 4),  // XMountUtilityDrive
     (0x002d5c7c, 0),  // XFormatUtilityDrive
+    (0x002d5d0a, 0),  // XMountCacheDrive (N:)
     (0x002d6004, 0),  // XAutoPowerDownResetTimer
     (0x002d6031, 0),  // XapiInitAutoPowerDown
     (0x00408c57, 8),  // XInitDevices
@@ -217,7 +218,7 @@ fn registering_twice_is_reported_and_changes_nothing() {
     else {
         panic!("second registration was accepted");
     };
-    assert_eq!(conflicts.len(), 15);
+    assert_eq!(conflicts.len(), 16);
     assert!(conflicts.iter().all(|c| c.existing == c.ours));
 }
 

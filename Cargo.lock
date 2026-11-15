@@ -2697,6 +2697,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 name = "vfs"
 version = "0.1.0"
 dependencies = [
+ "rustix 1.1.6",
  "thiserror 2.0.21",
  "xiso",
 ]
@@ -3424,7 +3425,9 @@ version = "0.1.0"
 dependencies = [
  "iced-x86",
  "input",
+ "kernel",
  "runtime",
+ "vfs",
 ]
 
 [[package]]

@@ -34,9 +34,11 @@
 use std::collections::HashMap;
 
 use crate::backend::HostBackend;
+use crate::backend::keyboard::KeyboardMouse;
+use crate::bindings::Bindings;
 use crate::gamepad::{
-    Capabilities, ERROR_DEVICE_NOT_CONNECTED, ERROR_IO_PENDING, ERROR_SUCCESS, Gamepad, PollingParameters,
-    Rumble, State,
+    Capabilities, ERROR_DEVICE_NOT_CONNECTED, ERROR_IO_PENDING, ERROR_SUCCESS, Gamepad,
+    PollingParameters, Rumble, State,
 };
 use crate::host::{ConfigError, ConvertConfig, HostPadId};
 
@@ -122,7 +124,11 @@ pub struct Completion {
 
 impl Device {
     fn complete_all(&mut self, status: u32, out: &mut Vec<Completion>) {
-        out.extend(self.pending.drain(..).map(|r| Completion { addr: r.addr, h_event: r.h_event, status }));
+        out.extend(self.pending.drain(..).map(|r| Completion {
+            addr: r.addr,
+            h_event: r.h_event,
+            status,
+        }));
     }
 }
 
@@ -157,6 +163,19 @@ impl InputManager {
         })
     }
 
+    /// The default host input: the keyboard+mouse pad as the first backend,
+    /// so it takes port 0 and is connected from the first `sync`, with
+    /// rumble accepted like a standard controller. Keep the returned handle
+    /// in the platform layer and feed it key/mouse events; add physical pads
+    /// after it. Deadzones come from `bindings.convert`.
+    pub fn with_keyboard_pad(bindings: Bindings) -> Result<(Self, KeyboardMouse), ConfigError> {
+        let mut manager = Self::new(bindings.convert)?;
+        let pad = KeyboardMouse::new(bindings);
+        pad.set_rumble_supported(true);
+        manager.add_backend(Box::new(pad.clone()));
+        Ok((manager, pad))
+    }
+
     pub fn add_backend(&mut self, b: Box<dyn HostBackend>) {
         self.backends.push(b);
     }
@@ -176,7 +195,11 @@ impl InputManager {
 
         // Removals.
         for (i, port) in self.ports.iter_mut().enumerate() {
-            if port.device.as_ref().is_some_and(|d| !seen.contains_key(&d.host)) {
+            if port
+                .device
+                .as_ref()
+                .is_some_and(|d| !seen.contains_key(&d.host))
+            {
                 let mut d = port.device.take().expect("checked");
                 d.complete_all(ERROR_DEVICE_NOT_CONNECTED, &mut self.completions);
                 self.changes_rem |= 1 << i;
@@ -184,7 +207,11 @@ impl InputManager {
         }
         // Insertions, in backend order, lowest free port.
         for key in &order {
-            if self.ports.iter().any(|p| p.device.as_ref().is_some_and(|d| d.host == *key)) {
+            if self
+                .ports
+                .iter()
+                .any(|p| p.device.as_ref().is_some_and(|d| d.host == *key))
+            {
                 continue;
             }
             let Some(i) = self.ports.iter().position(|p| p.device.is_none()) else {
@@ -228,14 +255,19 @@ impl InputManager {
 
     /// `XGetDevices(XDEVICE_TYPE_GAMEPAD)`: bitmask of connected ports.
     pub fn connected_mask(&self) -> u32 {
-        (0..PORT_COUNT).filter(|&i| self.ports[i].device.is_some()).fold(0, |m, i| m | 1 << i)
+        (0..PORT_COUNT)
+            .filter(|&i| self.ports[i].device.is_some())
+            .fold(0, |m, i| m | 1 << i)
     }
 
     /// Raw host `(insertions, removals)` since the previous drain. XAPI applies
     /// the retail Cur/Prev/Chg formulas (guest 0x004098c5) to these edges; an
     /// insert/remove with Prev=Cur=0 must not become a guest insertion.
     pub fn device_changes(&mut self) -> (u32, u32) {
-        (std::mem::take(&mut self.changes_ins), std::mem::take(&mut self.changes_rem))
+        (
+            std::mem::take(&mut self.changes_ins),
+            std::mem::take(&mut self.changes_rem),
+        )
     }
 
     /// Drain finished feedback requests.
@@ -246,7 +278,13 @@ impl InputManager {
     /// `XInputOpen`.
     pub fn open(&self, port: PortIndex) -> Result<Handle, InputError> {
         let p = &self.ports[port.get()];
-        p.device.as_ref().map(|_| Handle { port, generation: p.generation }).ok_or(InputError::NotConnected)
+        p.device
+            .as_ref()
+            .map(|_| Handle {
+                port,
+                generation: p.generation,
+            })
+            .ok_or(InputError::NotConnected)
     }
 
     /// `XInputClose`. Handles carry no resources here; kept for symmetry.
@@ -285,7 +323,10 @@ impl InputManager {
         self.device(handle).map(|device| {
             let mut capabilities = Capabilities::standard();
             if device.supports_rumble {
-                capabilities.output = Rumble { left_motor: u16::MAX, right_motor: u16::MAX };
+                capabilities.output = Rumble {
+                    left_motor: u16::MAX,
+                    right_motor: u16::MAX,
+                };
             }
             capabilities
         })
@@ -296,7 +337,11 @@ impl InputManager {
     }
 
     /// `XInputSetPollingParameters`.
-    pub fn set_polling_parameters(&mut self, h: Handle, p: PollingParameters) -> Result<(), InputError> {
+    pub fn set_polling_parameters(
+        &mut self,
+        h: Handle,
+        p: PollingParameters,
+    ) -> Result<(), InputError> {
         self.device_mut(h)?.polling = p;
         Ok(())
     }
@@ -305,7 +350,11 @@ impl InputManager {
     /// return NotSupported (Win32 50). Returns `ERROR_IO_PENDING` on submission
     /// (the value for the call and the initial `dwStatus`); the request later
     /// appears in [`take_completions`](Self::take_completions).
-    pub fn set_state(&mut self, handle: Handle, request: FeedbackRequest) -> Result<u32, InputError> {
+    pub fn set_state(
+        &mut self,
+        handle: Handle,
+        request: FeedbackRequest,
+    ) -> Result<u32, InputError> {
         let device = self.device_mut(handle)?;
         if !device.supports_rumble {
             return Err(InputError::NotSupported);
@@ -350,7 +399,13 @@ mod tests {
     fn pad(id: u64, south: bool) -> HostPad {
         let mut state = HostPadState::default();
         state.buttons.set(HostButton::South, south);
-        HostPad { id: HostPadId(id), name: "p".into(), state, physical: false, supports_rumble: true }
+        HostPad {
+            id: HostPadId(id),
+            name: "p".into(),
+            state,
+            physical: false,
+            supports_rumble: true,
+        }
     }
 
     fn setup() -> (InputManager, Arc<Mutex<Shared>>) {
@@ -452,7 +507,14 @@ mod tests {
     }
 
     fn req(addr: u32, l: u16, r: u16) -> FeedbackRequest {
-        FeedbackRequest { addr, h_event: addr + 1, rumble: Rumble { left_motor: l, right_motor: r } }
+        FeedbackRequest {
+            addr,
+            h_event: addr + 1,
+            rumble: Rumble {
+                left_motor: l,
+                right_motor: r,
+            },
+        }
     }
 
     #[test]
@@ -461,7 +523,10 @@ mod tests {
         sh.lock().unwrap().pads = vec![pad(7, false)];
         m.sync();
         let h = m.open(p(0)).unwrap();
-        assert_eq!(m.set_state(h, req(0x1000, 1000, 0)).unwrap(), ERROR_IO_PENDING);
+        assert_eq!(
+            m.set_state(h, req(0x1000, 1000, 0)).unwrap(),
+            ERROR_IO_PENDING
+        );
         assert_eq!(m.set_state(h, req(0x2000, 5, 6)).unwrap(), ERROR_IO_PENDING);
         assert!(m.take_completions().is_empty());
         m.sync();
@@ -470,12 +535,29 @@ mod tests {
         assert_eq!(
             c,
             vec![
-                Completion { addr: 0x1000, h_event: 0x1001, status: ERROR_SUCCESS },
-                Completion { addr: 0x2000, h_event: 0x2001, status: ERROR_SUCCESS },
+                Completion {
+                    addr: 0x1000,
+                    h_event: 0x1001,
+                    status: ERROR_SUCCESS
+                },
+                Completion {
+                    addr: 0x2000,
+                    h_event: 0x2001,
+                    status: ERROR_SUCCESS
+                },
             ]
         );
         assert!(m.take_completions().is_empty());
-        assert_eq!(sh.lock().unwrap().rumble, vec![(HostPadId(7), Rumble { left_motor: 5, right_motor: 6 })]);
+        assert_eq!(
+            sh.lock().unwrap().rumble,
+            vec![(
+                HostPadId(7),
+                Rumble {
+                    left_motor: 5,
+                    right_motor: 6
+                }
+            )]
+        );
     }
 
     #[test]
@@ -489,10 +571,17 @@ mod tests {
         m.sync();
         assert_eq!(
             m.take_completions(),
-            vec![Completion { addr: 0x3000, h_event: 0x3001, status: ERROR_DEVICE_NOT_CONNECTED }]
+            vec![Completion {
+                addr: 0x3000,
+                h_event: 0x3001,
+                status: ERROR_DEVICE_NOT_CONNECTED
+            }]
         );
         assert!(sh.lock().unwrap().rumble.is_empty());
-        assert_eq!(m.set_state(h, req(0x4000, 1, 1)), Err(InputError::NotConnected));
+        assert_eq!(
+            m.set_state(h, req(0x4000, 1, 1)),
+            Err(InputError::NotConnected)
+        );
     }
 
     #[test]
@@ -525,7 +614,10 @@ mod tests {
 
     #[test]
     fn invalid_convert_config_is_rejected() {
-        let bad = ConvertConfig { stick_deadzone: f32::NAN, trigger_deadzone: 0.0 };
+        let bad = ConvertConfig {
+            stick_deadzone: f32::NAN,
+            trigger_deadzone: 0.0,
+        };
         assert!(InputManager::new(bad).is_err());
     }
 
@@ -550,6 +642,64 @@ mod tests {
         feed.key_up("Space");
         m.sync();
         assert_eq!(m.get_state(h).unwrap().gamepad.analog[0], 0);
+    }
+
+    #[test]
+    fn default_keyboard_pad_is_port_zero_and_completes_rumble() {
+        let (mut m, feed) = InputManager::with_keyboard_pad(Bindings::default()).unwrap();
+        assert_eq!(m.connected_mask(), 0, "nothing before the first sync");
+        m.sync();
+        assert_eq!(m.connected_mask(), 1);
+        assert_eq!(m.device_changes(), (1, 0));
+        let h = m.open(p(0)).unwrap();
+        let caps = m.capabilities(h).unwrap();
+        assert_eq!(
+            caps.output,
+            Rumble {
+                left_motor: u16::MAX,
+                right_motor: u16::MAX
+            }
+        );
+        feed.key_down("Escape");
+        m.sync();
+        assert!(
+            m.get_state(h)
+                .unwrap()
+                .gamepad
+                .buttons
+                .contains(Buttons::START)
+        );
+        assert_eq!(
+            m.set_state(h, req(0x5000, 0x8000, 0x10)).unwrap(),
+            ERROR_IO_PENDING
+        );
+        m.sync();
+        assert_eq!(
+            m.take_completions(),
+            vec![Completion {
+                addr: 0x5000,
+                h_event: 0x5001,
+                status: ERROR_SUCCESS
+            }]
+        );
+        assert_eq!(
+            feed.rumble(),
+            Rumble {
+                left_motor: 0x8000,
+                right_motor: 0x10
+            }
+        );
+        // A plain KeyboardMouse keeps the old policy: no motors, 50.
+        let kb = KeyboardMouse::new(Bindings::default());
+        let mut plain = InputManager::new(ConvertConfig::default()).unwrap();
+        plain.add_backend(Box::new(kb));
+        plain.sync();
+        let h = plain.open(p(0)).unwrap();
+        assert_eq!(plain.capabilities(h).unwrap().output, Rumble::default());
+        assert_eq!(
+            plain.set_state(h, req(0x6000, 1, 1)),
+            Err(InputError::NotSupported)
+        );
     }
 
     #[test]

@@ -29,6 +29,11 @@ pub trait Backend: Send {
     fn flush(&mut self, _path: &str) -> Result<()> {
         Ok(())
     }
+    /// Quick format: leave an empty volume. Only [`crate::Vfs::format_device`]
+    /// calls this, and only while no file object is open on the volume.
+    fn format(&mut self) -> Result<()> {
+        Err(Error::MediaWriteProtected)
+    }
     /// Final file-object cleanup. Read-only opens need no data sync by default;
     /// backends with deferred timestamps or dirty data can override this hook.
     fn cleanup(&mut self, path: &str, write_access: bool) -> Result<()> {

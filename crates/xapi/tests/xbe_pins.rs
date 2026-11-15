@@ -67,7 +67,7 @@ fn image() -> runtime::LoadedImage {
 }
 
 /// Literal copy of `tests/routing.rs::VERIFIED_RET_SIZES`' addresses.
-const PINNED_ABI: [(u32, u16); 31] = [
+const PINNED_ABI: [(u32, u16); 32] = [
     (0x002d07f2, 8),
     (0x002d0915, 8),
     (0x002d1d3e, 0),
@@ -76,6 +76,7 @@ const PINNED_ABI: [(u32, u16); 31] = [
     (0x002d5838, 16),
     (0x002d5b77, 4),
     (0x002d5c7c, 0),
+    (0x002d5d0a, 0),
     (0x002d5f65, 4),
     (0x002d6004, 0),
     (0x002d6031, 0),
@@ -234,4 +235,81 @@ fn thunk_gamepad_type_tls_index_and_cache_row_match_the_retail_image() {
     assert_eq!(i.mnemonic(), Mnemonic::Cmp);
     assert_eq!(absolute(&i, 0), Some(row));
     assert_eq!(i.immediate(1) as u32 as i32, -1);
+}
+
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn cache_drive_globals_and_checks_match_the_retail_image() {
+    use xapi::cache;
+    let image = image();
+    let mem = image.runtime.memory();
+    let at = |va| insn(&mem, va);
+
+    // 0x12003: game bootstrap calls the N: mount directly.
+    let i = at(0x0001_2003);
+    assert_eq!(i.mnemonic(), Mnemonic::Call);
+    assert_eq!(i.near_branch_target() as u32, addr::XMOUNT_CACHE_DRIVE);
+
+    // Title ID: eax = [certificate pointer]; eax = [eax+8].
+    let i = at(0x002d_5d13);
+    assert_eq!(absolute(&i, 1), Some(addr::XBE_CERTIFICATE_POINTER));
+    let i = at(0x002d_5d18);
+    assert_eq!(
+        (i.memory_base(), i.memory_displacement32()),
+        (Register::EAX, 8)
+    );
+
+    // Z: row == -1 fails with STATUS_UNSUCCESSFUL before anything else.
+    let i = at(0x002d_5d2d);
+    assert_eq!(i.mnemonic(), Mnemonic::Push);
+    assert_eq!(i.immediate32(), 0xc000_0001);
+
+    // Partition count: eax = [import]; esi = [eax]; clamp to 41 rows.
+    let i = at(0x002d_5dab);
+    assert_eq!(
+        absolute(&i, 1),
+        Some(addr::HAL_DISK_CACHE_PARTITION_COUNT_IMPORT)
+    );
+    let i = at(0x002d_5db0);
+    assert_eq!(
+        (i.op0_register(), i.memory_base()),
+        (Register::ESI, Register::EAX)
+    );
+    let i = at(0x002d_5db2);
+    assert_eq!(i.mnemonic(), Mnemonic::Cmp);
+    assert_eq!(i.immediate(1) as usize, cache::CACHE_DB_ROWS);
+
+    // Database checks: signature, marker, version.
+    assert_eq!(
+        at(0x002d_5dc0).immediate(1) as u32,
+        cache::CACHE_DB_SIGNATURE
+    );
+    assert_eq!(at(0x002d_5dd0).immediate(1) as u32, cache::CACHE_DB_MARKER);
+    assert_eq!(at(0x002d_5ddd).immediate(1) as u32, cache::CACHE_DB_VERSION);
+    // A failed check is STATUS_INTERNAL_DB_CORRUPTION.
+    assert_eq!(at(0x002d_5ea0).immediate(1) as u32, 0xc000_00e4);
+
+    // N:'s row is stored once, and set to -1 on both failure paths.
+    let i = at(0x002d_5e38);
+    assert_eq!(
+        (i.mnemonic(), i.op1_register()),
+        (Mnemonic::Mov, Register::EAX)
+    );
+    assert_eq!(absolute(&i, 0), Some(addr::CACHE_DRIVE_ROW));
+    for va in [0x002d_5f44, 0x002d_5f52] {
+        let i = at(va);
+        assert_eq!(i.mnemonic(), Mnemonic::Or, "{va:#x}");
+        assert_eq!(absolute(&i, 0), Some(addr::CACHE_DRIVE_ROW), "{va:#x}");
+        assert_eq!(i.immediate(1) as u32 as i32, -1, "{va:#x}");
+    }
+    // The format call and the \??\N: link creation through an import slot.
+    let i = at(0x002d_5f07);
+    assert_eq!(i.mnemonic(), Mnemonic::Call);
+    assert_eq!(i.near_branch_target(), 0x002d_6c04);
+    let i = at(0x002d_5f2a);
+    assert_eq!(i.mnemonic(), Mnemonic::Call);
+    assert!(absolute(&i, 0).is_some());
+    // Plain ret: no argument bytes.
+    let i = at(0x002d_5f64);
+    assert_eq!((i.mnemonic(), i.op_count()), (Mnemonic::Ret, 0));
 }

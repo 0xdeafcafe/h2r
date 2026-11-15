@@ -3,8 +3,9 @@
 `crates/xapi` overrides services that need native host integration. Ordinary
 XAPI routines stay generated over the kernel HLE. VFS is committed at
 `50f4a95`; [storage.md](storage.md) describes its shared namespace and ownership.
-The input lint was fixed at `983437d`. This lane rebased onto `f01debc`, later
-than the requested `8e4dc8c`, and remains uncommitted.
+The input lint was fixed at `983437d`. The N: mount, `VfsStorage` and the
+default keyboard pad were added on master `097c0e6` (lane `xapi-r2`,
+uncommitted).
 
 No game bytes, executable excerpts, keys, signature patterns or assets are
 included. `adapter.rs` is runtime-neutral. `register.rs` binds it to the
@@ -46,7 +47,7 @@ All guest pointers/handles/stack slots are 32 bits; WCHAR is UTF-16LE. `S<n>`
 is the x86 stack convention whose public return removes `n` argument bytes,
 plus the four-byte return PC. Counts are decimal bytes. Results use EAX (or AL
 for BOOLEAN); void results are unspecified. Internal register conventions are
-explicit. `tests/routing.rs::VERIFIED_RET_SIZES` pins the **31 reviewed hook
+explicit. `tests/routing.rs::VERIFIED_RET_SIZES` pins the **32 reviewed hook
 address/ret-size pairs**, including the init thunk, independently of the adapter's
 `stack_words()` calculation. It includes routines now routed to generated code.
 
@@ -54,7 +55,7 @@ address/ret-size pairs**, including the init thunk, independently of the adapter
 
 `Function::is_replacement()` is the executable policy. Generated routes return
 `Outcome::Original` before reading even the guest stack and leave CPU, memory
-and last error untouched. There are **15 identified override addresses**;
+and last error untouched. There are **16 identified override addresses**;
 XGetDevices and XInputPoll remain unbound adapters until an address is verified.
 
 | Addresses | Keep in Rust | Why the kernel path is insufficient |
@@ -65,6 +66,7 @@ XGetDevices and XInputPoll remain unbound adapters until an address is verified.
 | `00409994`, `00409b6c`, `00409bdf` | Capabilities, GetState, SetState | Translate packed reports, disconnected snapshots and asynchronous host feedback. |
 | `0041136f` | XReadMUMetaData | No memory units are exposed; return 1167 without entering the guest MU driver. |
 | `002d5b77`, `002d5c7c` | Mount/format utility drive | Retail cache selection/formatting goes below ordinary files; delegate explicit utility-volume operations to the shared VFS. |
+| `002d5d0a` | Mount the second cache volume, N: (inferred name XMountCacheDrive) | Retail formats a raw partition through disk IOCTLs and FATX sector writes (`002d6c04`); the native override keeps the database selection, slot and BOOL contract and empties a host-backed volume instead. See [The second cache volume](#the-second-cache-volume-n). |
 | `002d6031`, `002d6004` | Power-down init/reset | Native application policy disables the SMC timer/DPC. Install/remove both hooks in one dispatch-table edit using POWER_DOWN_OVERRIDES. |
 | `002d07f2` | XLaunchNewImageA | A successful title transition must stop/reload the host runner; a kernel wrapper alone cannot arrange that transition. |
 
@@ -135,6 +137,21 @@ Header.dwStatus; a disconnected open handle writes 1167 (`0040aa0a`). Halo's
 rumble loop at `00124f31` reads that status and ignores EAX. This models host capability at the
 `00409bdf` service boundary; macOS gilrs rumble is unavailable.
 
+**Host source.** `InputManager::with_keyboard_pad(bindings)` is the default:
+the keyboard+mouse pad is the first backend, so it is on port 0 and connected
+from the first sync. It returns the `KeyboardMouse` handle the platform layer
+feeds (crates/app's window does the same with its own pad). That pad
+advertises both motors and accepts feedback like a standard controller.
+Requests complete with status 0, and `KeyboardMouse::rumble()` holds the
+newest motor speeds. A plain `KeyboardMouse::new` keeps the no-motor policy
+(50). `set_rumble_supported(true)` on app's handle enables rumble too; call it
+before the first sync, because a pad's capabilities are fixed at insertion.
+Halo's loop at `00124f31` submits with `hEvent = 0` whenever the status is 0,
+skips while it is 997 and clears any other status, so a pad without motors
+alternates 50/0 every frame. Halo accepts capabilities SubType 1 or 2
+(`00124b3d`). No memory units are ever reported: changes/peek for
+`004087a8` are zero and XReadMUMetaData returns 1167.
+
 Feedback accepted through `00409bdf` writes pending status 997. sync_input
 writes completion statuses under the memory guard and queues owed event
 signals; take_signals returns them as a SignalBatch that holds no guard, which
@@ -203,7 +220,10 @@ Utility mounting at `002d5b77` and formatting at `002d5c7c` use the Storage
 interface over the same committed VFS as kernel file operations. Native policy
 selects partition 3..5 from Config instead of reproducing retail cache LRU.
 Nonformatting mounts preserve data; formatting can clear only the selected
-utility volume/current Z:, never U:/T: or an arbitrary host path.
+utility volume/current Z:, never U:/T: or an arbitrary host path. Halo's
+XapiInitProcess passes `fFormatClean = FALSE`: the XBE init flags are
+`0x80000005`, and `002d1c3c` pushes `flags & 2`. Retail then formats only when
+the database has no valid row for the title, and the kernel seeds one.
 
 XapiInitProcess (`002d1b4e`), mainCRTStartup (`002d0aee`), mainXapiStartup
 (`002d0a7a`), XapiThreadStartup (`002d212e`), `_rtinit` (`002d1d15`) and `_cinit`
@@ -224,6 +244,82 @@ The public launch request does not replace that contract. No multimedia timer
 or fiber API was identified; GetTickCount (`003314b0`), performance counters
 (`00331d2b` / `00331d3c`), Sleep/Ex (`002d6426` / `002d63a8`), ordinary waits,
 timezone queries (`003317d9`) and audio flags (`003739fa`) remain generated.
+
+## The second cache volume, N:
+
+Halo has two HDD cache volumes. XapiInitProcess mounts Z: (`002d1c40 ->
+002d5b77`). Game bootstrap then mounts N: with `0x00012003 -> 002d5d0a`,
+whose result it ignores. `cache%03d.map` slots 0-1 live on Z: and slots 2-5
+on N:. Slot 2 is the mainmenu resource source (`00214cc0`), so the menu needs
+a writable N:. `002d5d0a` is stdcall with no arguments. It ends in a plain
+`ret` at `002d5f64` and returns BOOL in EAX. These are its steps, read from
+the instructions with `h2 disasm`; the import ordinals come from the XBE's
+kernel thunk table:
+
+1. `[00461d80]` is Z:'s database row. If it is -1, it calls
+   XapiSetLastNTError(STATUS_UNSUCCESSFUL) and returns FALSE (`002d5d21`).
+   N:'s row `[00461d84]` is not written.
+2. It opens `\Device\Harddisk0\partition0` (NtOpenFile 202) and reads 512
+   bytes at 0x800 (NtReadFile 219). The signature `97315286` at +0, version 2
+   at +4 and marker `aa550000` at +0x1f8 are all checked. If any fails, the
+   status is STATUS_INTERNAL_DB_CORRUPTION.
+3. Rows are 12 bytes at +8: title, partition index (`partition - 3`) and a
+   valid flag. `n = min([[00411610]], 41)`, where `00411610` is the import
+   slot of HalDiskCachePartitionCount (ordinal 40). The candidate is the
+   highest index below `n` that is not Z:'s and that no valid row holds
+   (`002d5e01..002d5e2a`).
+4. N:'s row is `count - 1`, or `count - 2` if that row is Z:'s. It is stored
+   at `002d5e38`. If no partition was free, N: takes the partition that row
+   already names. Otherwise the row gets the candidate. The row's title
+   becomes the certificate title (`[[00010118] + 8]`) and its valid flag 0.
+   The sector is written back (NtWriteFile 236), and the status is ignored.
+5. It formats `\Device\Harddisk0\Partition<n>` through `002d6c04`, which uses
+   NtDeviceIoControlFile 196 via ESI with `0x70000` and `0x74004`, then
+   NtFsControlFile 200 with `0x90020`, and sets the last error itself on
+   failure. The cluster size comes from init flags bits 30-31: 64 KiB for
+   Halo. `002d15f0` verifies it, and then IoCreateSymbolicLink 67 creates
+   `\??\N:` at `002d5f2a`.
+6. Any failure after step 1 stores -1 at `00461d84` (`002d5f44`, `002d5f52`),
+   sets the last error and returns FALSE.
+
+`00461d84` is referenced only inside this function. The native override
+(`Function::XMountCacheDrive`, `crates/xapi/src/cache.rs`) keeps steps 1-4
+and 6 exactly. The `Storage` trait supplies the database and the volume:
+
+- `read_cache_database` / `write_cache_database` operate on the kernel's raw
+  disk. `crates/kernel/src/rawdisk.rs` owns that disk and is only read here.
+- `mount_cache(partition)` stands in for step 5. "Format" means emptying the
+  partition's host directories (`vfs::Vfs::format_device`), and then N: is
+  linked to the partition. The cluster check is skipped, because host volumes
+  report 16 KiB clusters.
+- `Config::cache_drive.partition` is `CachePartition::Select` (the retail
+  rule above) or `Fixed(3..=5)`. With the kernel's seed (this title on
+  Partition5, row 0, count 3), Select gives Partition4, row 2.
+- `Config::cache_drive.globals` (`CacheGlobals`) holds the four guest
+  addresses. Its defaults are the retail values in `register::addr`.
+
+Native bounds that differ from retail: a partition count below 2 or above 41,
+a Z: row outside the table, or a choice equal to Z:'s partition (from the
+database or `Config::utility_partition`) fails with ERROR_GEN_FAILURE (31)
+and the -1 slot, where retail would index past the table. Last errors are
+31 (STATUS_UNSUCCESSFUL), 1358 (STATUS_INTERNAL_DB_CORRUPTION) and the
+storage's own Win32 code. The kernel's `dos.rs` table has neither of those
+two NTSTATUS values. The generated original would stop in
+RtlNtStatusToDosError on these failure paths; the override does not call it.
+A storage without the new methods (their defaults return 50) gets FALSE and
+-1, and N: is missing.
+
+`xapi::VfsStorage` (`crates/xapi/src/vfs_storage.rs`) implements the whole
+`Storage` trait over the kernel's one `Arc<Mutex<vfs::Vfs>>`. Z: and N: are
+links to `\Device\Harddisk0\Partition<n>`, and a remount replaces the link.
+Neither letter can be put on, or format, the volume the other resolves to.
+Volumes are compared with `Vfs::device_of`, so an alias chain or a link
+into a subdirectory counts. Either format fails with 32 while a file on that
+volume is open. So N:'s format cannot empty Z:, and XFormatUtilityDrive
+cannot empty N:. `HostBackend::format` walks from directory handles opened
+when the volume was created, with O_NOFOLLOW openat/unlinkat. A root or
+ancestor path swapped for a symlink later, or a symlink inside the volume,
+cannot redirect its deletions.
 
 ## Kernel API requests
 
@@ -251,7 +347,7 @@ ThreadState only mirrors that guest cell for native BOOL/handle failures.
 
 ## Runtime registration
 
-`xapi::register` (`crates/xapi/src/register.rs`) installs all 15 override
+`xapi::register` (`crates/xapi/src/register.rs`) installs all 16 override
 addresses in one dispatch edit, or none of them:
 
 ```rust
@@ -272,13 +368,14 @@ pub fn service_input<S: Storage>(
   name (`xapi::<name>`). Each entry is stdcall, and the adapter pops
   `4 * stack_words()`, which equals the `ret N` pinned in
   `VERIFIED_RET_SIZES`. Both XInitDevices entries (`00408c57` and the
-  `004098c0` thunk) are installed, and so are both power-down hooks.
+  `004098c0` thunk) are installed, and so are both power-down hooks and
+  the N: mount at `002d5d0a`.
   XGetDevices and XInputPoll are not installed because they have no
   verified address.
-- **Conflicts.** If any of the 15 addresses already has an override,
+- **Conflicts.** If any of the 16 addresses already has an override,
   `register` installs nothing and returns `RegisterError::Occupied` with
   every conflict (`addr`, `existing`, `ours`). Calling `register` twice gives
-  15 conflicts with `existing == ours`. `Dispatch` cannot remove an override,
+  16 conflicts with `existing == ours`. `Dispatch` cannot remove an override,
   so `unregister` only disables the entries, and a later `register` reports
   them too.
 - **One call.** The adapter takes `ctx.memory()` first and the XAPI mutex
@@ -293,7 +390,8 @@ pub fn service_input<S: Storage>(
   guard. (The runtime has no HLE-specific event yet. Use `ctx.report(id)` to
   render the stop.)
 - **Last error.** The adapters that can set it (XInitDevices,
-  XGetDeviceChanges, XPeekDevices, XInputOpen, XInputClose, Mount/Format)
+  XGetDeviceChanges, XPeekDevices, XInputOpen, XInputClose, Mount/Format,
+  the N: mount)
   resolve the guest cell the same way GetLastError at `002d1d3e` does:
   `[[fs:4] + 4 * [_tls_index]] + 8`, with `_tls_index` at `00480100`. The
   cell is write-checked before the service runs and written only when the
@@ -310,7 +408,9 @@ pub fn service_input<S: Storage>(
   the title. `kernel::rawdisk` (master `715b5ec`) seeds exactly one entry,
   the title with the kernel's `utility_partition`, in row 0, so the default
   is row 0. Keep `Config::utility_partition` equal to the kernel's. Set
-  `cache_row = None` to skip publishing the row.
+  `cache_row = None` to skip publishing the row. The N: mount reads this
+  row and never writes it. It publishes its own row at `00461d84`, and its
+  addresses come from `Config::cache_drive.globals`, not from GuestLayout.
 - **Input pump.** `service_input` runs the deferred signal flow:
   `sync_input` under the memory guard, `take_signals`, drop both guards,
   `SignalBatch::deliver(events)`, then lock XAPI again for
@@ -325,80 +425,76 @@ held.
 
 ### Boot integration
 
-For `.claude/worktrees/boot`, this replaces `xapi_glue::install`. Remove that
-override first, or `register` reports `002d5b77` as occupied. The kernel
-must already be attached with its VFS set:
+These are the steps for `.claude/worktrees/boot` (`crates/boot/src/xapi_glue.rs`
+and `lib.rs`). The kernel must be attached with its VFS set first
+(`k.set_vfs(v)`, which also mounts the raw disk).
+
+1. **Remove the boot override at `0x2d5d0a`.** `xapi_glue::install`
+   registers `boot:XFormatUtilityDrive` there (it emptied Z:'s partition and
+   never created N:). Delete that `register_override` call and
+   `X_FORMAT_UTILITY_DRIVE`. If it stays, `xapi::register` refuses
+   everything with `Occupied` at `0x002d5d0a`. Keep the `0x2d5b77` override
+   for `--no-xapi`, as today. It still writes the Z: row, so keep that store,
+   with `xapi::register::addr::CACHE_ROW` (`0x461d80`) in place of the local
+   `CACHE_SLOT`. `empty_dir` can go once `BootStorage` is replaced (step 2).
+2. **Replace `BootStorage` with `xapi::VfsStorage`.** It formats through
+   `Vfs::format_device`, not by deleting host directories under a live
+   `HostBackend`. Capture the VFS once, with no guard held:
+   `xapi::VfsStorage::new(k.vfs().context("VFS not attached")?)`. Never call
+   `Kernel::vfs()` from inside an override.
+3. **Give the InputManager a host source.**
+   - Headless boot: `let (input, keyboard) =
+     input::InputManager::with_keyboard_pad(input::bindings::Bindings::default())?;`
+     Keep `keyboard` for scripted input (`key_down("Escape")` is START,
+     `key_down("Space")` is A).
+   - Under crates/app: `let input = host.take_input().unwrap();` and, before
+     the first pump, `host.keyboard().map(|k| k.set_rumble_supported(true));`.
+     app's pad is already on port 0. Without the call, rumble returns 50,
+     which Halo tolerates.
+4. **Register** (replaces the body of `xapi_glue::register`):
 
 ```rust
-use std::sync::{Arc, Mutex};
+pub type Shared = Arc<Mutex<xapi::Xapi<xapi::VfsStorage>>>;
 
-/// xapi::Events over the kernel. Kernel::signal_event takes kernel state
-/// and then guest memory, so it is only safe here, where service_input has
-/// already dropped every guard.
-struct KernelEvents(Arc<kernel::Kernel>);
-impl xapi::Events for KernelEvents {
-    fn signal(&mut self, handle: u32) -> xapi::Result<()> {
-        self.0.signal_event(handle).map(drop).map_err(|e| match e {
-            kernel::Error::Fault(f) => xapi::Error::Memory(xapi::MemoryFault {
-                address: f.addr,
-                length: f.len,
-                write: true,
-            }),
-            _ => xapi::Error::INVALID_HANDLE,
-        })
-    }
+pub fn register(
+    rt: &runtime::Runtime,
+    k: &Arc<kernel::Kernel>,
+    input: input::InputManager,
+) -> anyhow::Result<Shared> {
+    let storage = xapi::VfsStorage::new(k.vfs().context("VFS not attached")?);
+    // utility_partition 5 = the kernel's; cache_drive = Select (N: on
+    // Partition4 with the kernel's seed) and the retail globals.
+    let config = xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD);
+    let x = xapi::Xapi::new(config, input, storage).map_err(|e| anyhow::anyhow!("xapi: {e}"))?;
+    let x = Arc::new(Mutex::new(x));
+    let mut r = None;
+    rt.edit_dispatch(|d| r = Some(xapi::register(d, &x, xapi::GuestLayout::default())));
+    r.unwrap().map_err(|e| anyhow::anyhow!("xapi::register: {e}"))?;
+    Ok(x)
 }
-
-/// xapi::Storage over the kernel's one VFS (never a second instance).
-/// It is called with the guest memory and XAPI guards held, so it must not
-/// touch kernel state: the kernel's order is kernel state, then guest memory,
-/// then VFS, and `Kernel::vfs()` locks kernel state. Capture the shared VFS
-/// `Arc` once at setup and take only its lock (memory, XAPI, VFS).
-struct KernelStorage(Arc<Mutex<vfs::Vfs>>);
-impl xapi::Storage for KernelStorage {
-    fn mount_utility(&mut self, partition: u8, format: bool) -> xapi::Result<()> {
-        let mut v = self.0.lock().unwrap();
-        let _ = v.namespace.delete_symbolic_link("\\??\\Z:");
-        v.namespace
-            .create_symbolic_link("\\??\\Z:", &format!("\\Device\\Harddisk0\\Partition{partition}"))
-            .map_err(|_| xapi::Error::Win32(31))?;
-        if format {
-            // Boot policy today: keep the cache. The Storage contract wants
-            // only Z: cleared here; do that through the VFS when it can.
-        }
-        Ok(())
-    }
-    fn format_utility(&mut self) -> xapi::Result<()> {
-        Ok(()) // same policy as above
-    }
-}
-
-// After Kernel::for_image + set_vfs, before Machine::new:
-let mut input = input::InputManager::new(input::host::ConvertConfig::default())?;
-// input.add_backend(Box::new(...));   // gilrs/keyboard backend of choice
-let xapi = Arc::new(Mutex::new(
-    xapi::Xapi::new(
-        xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD),
-        input,
-        // Captured here, with no guest guard held; never Kernel::vfs() later.
-        KernelStorage(k.vfs().context("VFS not attached")?),
-    )
-    .map_err(|e| anyhow::anyhow!("xapi: {e}"))?,
-));
-loaded
-    .runtime
-    .edit_dispatch(|d| xapi::register(d, &xapi, xapi::GuestLayout::default()))?;
-
-// Between Machine::run slices (no guard held, no runner active):
-let mut events = KernelEvents(Arc::clone(&k));
-xapi::service_input(&loaded.runtime, &xapi, &mut events)?;
-
-// On a stop whose event is Unsupported with mnemonic "xapi::XLaunchNewImageA":
-if let Some(request) = xapi.lock().unwrap().take_launch_request() { /* reload */ }
 ```
 
-`Config::utility_partition` defaults to 5, which matches the boot glue.
-Keep it equal to the kernel's `utility_partition`.
+5. **Pump between slices.** Keep the existing loop, with no guard held and
+   no runner active:
+   `xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k)))`.
+   It runs the same sequence as `app::pump_input`. Use `service_input` with
+   `runtime::Runtime`: `app::pump_input` needs a `GuestMemory` that owns its
+   guard, and `register::RuntimeMemory` only borrows one, so the guard would
+   still be held during delivery.
+6. **Launch stop.** On `Event::Unsupported` with mnemonic
+   `xapi::XLaunchNewImageA`, call `x.lock().unwrap().take_launch_request()`
+   outside every guard.
+
+What to expect: `0x2d5b77` returns 1 with `[0x461d80] = 0`. `0x2d5d0a`
+returns 1 with `[0x461d84] = 2`, `\??\N:` linked to Partition4 (emptied),
+and database row 2 = (title, 1, 0). The `n:\` savegame probes and the cache
+slot 2-5 copies then go to a real volume. If `[0x461d84]` is -1 after
+`0x12003`, read the guest last error: 31 means Z: is not mounted or the table
+geometry is wrong, 1358 means the raw disk database is missing or corrupt,
+and 32 means a file was open on the target volume.
+
+`Config::utility_partition` defaults to 5, which matches the kernel default.
+Keep the two equal.
 
 ### Remaining integration
 
@@ -410,6 +506,9 @@ Keep it equal to the kernel's `utility_partition`.
   only the kernel page.
 - No real boot, controller replug or title relaunch was run against these
   registrations. The synthetic Runner tests are described below.
+- N: is formatted on every boot (as retail). Its 64 KiB retail cluster size
+  is not reproduced. If a generated `002d5f65` query on `n:\` must report
+  64 KiB, the VFS volume needs a per-partition cluster size.
 
 ## Inventory
 
@@ -513,6 +612,7 @@ its observed register convention.
 | `002d5809` | XGetSectionSize | S4 | G | 3/0/1 |
 | `002d5813` | XGetParentalControlSetting | S0 | K | 2/0/1 |
 | `002d5838` | DiskFreeSpaceEx (inferred) | S16 | K | 5/0/0 |
+| `002d5d0a` | XMountCacheDrive, the N: mount (inferred) | S0 | R | 1/0/0 |
 | `002d5f65` | DiskClusterSize (inferred) | S4 | K | 1/0/0 |
 | `002d6031` | XapiInitAutoPowerDown (inferred) | S0 | R | 1/0/0 |
 | `002d61cb` | SetEvent | S4 | K | 57/0/1 |
@@ -577,15 +677,35 @@ its observed register convention.
 ## Validation
 
 `cargo test -p xapi` uses synthetic guest memory and host pads. It covers the
-31 pinned ABIs, every retained adapter's return cleanup, generated routing with
+32 pinned ABIs, every retained adapter's return cleanup, generated routing with
 an invalid stack, Cur/Prev/Chg transitions, peek semantics, final disconnected
 reports, generation lifetime, packed layouts, manual polling, unsupported
 rumble, feedback completion/retry without head-of-line blocking, utility
 forwarding, outgoing launch ownership, and prevalidation before effects.
 
+`tests/cache.rs` tests the N: adapter. It checks the S0/BOOL ABI, row 2 and
+Partition4 from the kernel seed, and that Z:'s row and database row are
+unchanged. It checks the -1-untouched path while Z: is unmounted, and the
+-1 path for a read failure, a bad version or marker, a format failure (after
+the database write), an out-of-table Z: row and a single partition. It also
+covers faults leaving the slot alone, the selection rule, the Fixed
+conflicts, and a Storage without the new methods.
+
+`tests/host_boot.rs` runs on the real Runner with the kernel's own
+`rawdisk::RawDisk` and a VFS on host directories in `$TMPDIR`. It mounts Z:
+then N:, checks the slots and links, that N: was emptied while Z:'s file
+survived, the rewritten database row, a sharing-violation failure, a corrupt
+database, and that XFormatUtilityDrive never empties N:. The default
+keyboard pad appears through XInitDevices / XGetDeviceChanges / XInputOpen
+on port 0 (port 1 fails with 1167) with SubType 1 and motor masks. Key
+presses reach XInputGetState only after a pump, with a higher packet number.
+Halo-style rumble (`hEvent = 0`) goes 997 then 0 with the motors forwarded,
+and an evented request is signalled. There are no MU changes, and unplugging
+gives 1167 plus a removal.
+
 `tests/register.rs` goes through the real `runtime::Runner` and `Dispatch`:
 
-- The installed set equals 15 literal address/ret-size pairs, written
+- The installed set equals 16 literal address/ret-size pairs, written
   independently of `OVERRIDES` and `stack_words()`.
 - Each address is called with HARNESS_EXIT as its return. The test checks
   argument decoding (output pointers, port/handle/format arguments, the last
@@ -605,13 +725,17 @@ forwarding, outgoing launch ownership, and prevalidation before effects.
 - Registering twice, registering over a foreign override, and registering
   after `unregister` are all reported, and nothing is installed.
 
-`tests/xbe_pins.rs` is ignored by default. It walks each of the 15 override
-addresses and each of the 31 pinned addresses in the real XBE (iced-x86,
+`tests/xbe_pins.rs` is ignored by default. It walks each of the 16 override
+addresses and each of the 32 pinned addresses in the real XBE (iced-x86,
 following direct jumps and the `004098c0` thunk). It requires the reachable
 `ret` immediates to be exactly the pinned size. It also checks the thunk
 target, the `push 004086f8` / `call XGetDeviceChanges` at `00124aae`, the
 `_tls_index` and `fs:[4]` / `+8` reads in GetLastError, and the cache-row
-store, its `row * 12` use for the partition index, and the -1 check. All of
+store, its `row * 12` use for the partition index, and the -1 check. For
+`002d5d0a` it checks the `0x12003` call, the title, count-import and
+certificate reads, the 41-row clamp, the signature/marker/version constants,
+STATUS_INTERNAL_DB_CORRUPTION, the store to `00461d84` and both -1 stores, the
+formatter call, the link call and the plain `ret`. All of
 these are checked as decoded mnemonics and operands. The repository holds
 no instruction bytes copied from the XBE:
 

@@ -145,6 +145,15 @@ is no window dependency: the platform layer calls `key_down("KeyW")`,
 loss. Key names are W3C `KeyboardEvent.code` style, case-insensitive; the
 `Key`/`Digit` prefixes are optional.
 
+`InputManager::with_keyboard_pad(bindings)` builds the default host input. The
+keyboard pad is the first backend, so it is on port 0 and connected from the
+first `sync`, and the call returns the handle to feed. That pad accepts rumble
+like a standard controller: it advertises both motors, its requests complete
+with status 0, and `KeyboardMouse::rumble()` holds the newest speeds. A plain
+`KeyboardMouse::new` has no motors, so requests return 50.
+`set_rumble_supported(true)` changes that; call it before the pad's first
+`sync`, because capabilities are fixed at insertion.
+
 Bindings are a TOML table (`bindings.rs`, `Bindings::from_toml`), layered on
 the defaults, one list of inputs per control:
 

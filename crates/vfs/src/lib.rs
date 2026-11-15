@@ -179,6 +179,30 @@ impl Vfs {
         });
         Ok(())
     }
+    /// Quick-format one mounted device (`\Device\Harddisk0\PartitionN`, exact name). For XAPI's
+    /// cache volumes, which retail formats from raw sectors; here the backend empties itself.
+    /// Fails with `SharingViolation`, changing nothing, while any file object on the volume is open.
+    /// Symbolic links are left alone.
+    pub fn format_device(&mut self, device: &str) -> Result<()> {
+        let device = path::object_name(device)?;
+        let index = self
+            .mounts
+            .iter()
+            .position(|m| m.device.eq_ignore_ascii_case(&device))
+            .ok_or(Error::ObjectPathNotFound)?;
+        if self.objects.values().any(|f| f.mount == index)
+            || self.pending.iter().any(|(m, _)| *m == index)
+        {
+            return Err(Error::SharingViolation);
+        }
+        self.mounts[index].backend.format()
+    }
+    /// The mounted device `name` resolves into, after every symbolic link (including links into
+    /// a subdirectory of a volume). Identifies the volume a drive letter really names.
+    pub fn device_of(&self, name: &str) -> Result<&str> {
+        let (index, _) = self.resolve(name)?;
+        Ok(&self.mounts[index].device)
+    }
     fn resolve(&self, name: &str) -> Result<(usize, String)> {
         let resolved = self.namespace.resolve(name)?;
         for (index, mount) in self.mounts.iter().enumerate() {

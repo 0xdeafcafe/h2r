@@ -1460,3 +1460,116 @@ fn close_sync_is_conditional_and_sync_errors_do_not_fail_a_closed_handle() {
     vfs.close(next).unwrap();
     assert_eq!(flushes.load(Ordering::Relaxed), 2);
 }
+
+#[test]
+fn format_device_empties_one_volume_only_when_nothing_is_open() {
+    let temp = TempDir::new();
+    let mut fs = temp.storage();
+    // X: is Partition3, Y: Partition4, Z: Partition5 (the utility volume).
+    let dir = directory(&mut fs, "\\??\\Y:\\dir");
+    fs.close(dir).unwrap();
+    let file = create(&mut fs, "\\??\\Y:\\dir\\cache002.map");
+    fs.write(file, Offset::Absolute(0), b"stale").unwrap();
+    let keep = create(&mut fs, "\\??\\Z:\\cache000.map");
+    fs.write(keep, Offset::Absolute(0), b"keep").unwrap();
+    fs.close(keep).unwrap();
+
+    // An open object on the volume refuses the format and changes nothing.
+    assert_eq!(
+        fs.format_device("\\Device\\Harddisk0\\Partition4"),
+        Err(Error::SharingViolation)
+    );
+    assert!(fs.query_path("\\??\\Y:\\dir\\cache002.map").is_ok());
+    fs.close(file).unwrap();
+
+    fs.format_device("\\device\\harddisk0\\partition4").unwrap();
+    assert_eq!(
+        fs.query_path("\\??\\Y:\\dir").err(),
+        Some(Error::ObjectNameNotFound)
+    );
+    let root = fs
+        .open(
+            "\\??\\Y:\\",
+            OpenOptions {
+                directory: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .handle;
+    assert_eq!(
+        fs.query_directory(root, None, true).err(),
+        Some(Error::NoSuchFile)
+    );
+    fs.close(root).unwrap();
+    // The volume is usable again, the link survives and Z: is untouched.
+    let fresh = create(&mut fs, "\\??\\Y:\\cache002.map");
+    fs.close(fresh).unwrap();
+    let keep = fs
+        .open("\\??\\Z:\\cache000.map", OpenOptions::default())
+        .unwrap()
+        .handle;
+    assert_eq!(read_all(&mut fs, keep), b"keep");
+    fs.close(keep).unwrap();
+
+    assert_eq!(
+        fs.format_device("\\Device\\Harddisk0\\Partition9"),
+        Err(Error::ObjectPathNotFound)
+    );
+    // Not a device name: only exact mounted devices are formatted.
+    assert_eq!(
+        fs.format_device("\\Device\\Harddisk0\\Partition4\\dir"),
+        Err(Error::ObjectPathNotFound)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn format_device_stays_inside_the_volume_after_root_or_ancestor_swaps() {
+    use std::os::unix::fs::symlink;
+    for swap_ancestor in [false, true] {
+        let temp = TempDir::new();
+        let mut fs = Vfs::with_storage(Config::new(&temp.0, 0x4D530064)).unwrap();
+        let file = create(&mut fs, "\\Device\\Harddisk0\\Partition4\\cache002.map");
+        fs.close(file).unwrap();
+        // Outside trees that must survive, shaped like the swapped paths.
+        let outside = temp.0.join("outside");
+        for sub in ["disk", "metadata"] {
+            fs::create_dir_all(outside.join(sub).join("Partition4")).unwrap();
+            fs::write(outside.join(sub).join("Partition4").join("victim"), b"x").unwrap();
+        }
+        let escape = temp.0.join("escape");
+        fs::create_dir_all(&escape).unwrap();
+        fs::write(escape.join("victim"), b"x").unwrap();
+        // A symlink inside the volume pointing out of it.
+        symlink(&escape, temp.0.join("disk").join("Partition4").join("link")).unwrap();
+        let mut moved = Vec::new();
+        for sub in ["disk", "metadata"] {
+            if swap_ancestor {
+                let from = temp.0.join(sub);
+                let to = temp.0.join(format!("{sub}.moved"));
+                fs::rename(&from, &to).unwrap();
+                symlink(outside.join(sub), &from).unwrap();
+                moved.push(to.join("Partition4"));
+            } else {
+                let from = temp.0.join(sub).join("Partition4");
+                let to = temp.0.join(sub).join("Partition4.moved");
+                fs::rename(&from, &to).unwrap();
+                symlink(outside.join(sub).join("Partition4"), &from).unwrap();
+                moved.push(to);
+            }
+        }
+        fs.format_device("\\Device\\Harddisk0\\Partition4").unwrap();
+        for sub in ["disk", "metadata"] {
+            assert!(
+                outside.join(sub).join("Partition4").join("victim").exists(),
+                "{sub} (ancestor {swap_ancestor}): followed a swapped path"
+            );
+        }
+        assert!(escape.join("victim").exists(), "followed an inner symlink");
+        // The real volume (wherever it was moved) is the one emptied.
+        for dir in moved {
+            assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "{}", dir.display());
+        }
+    }
+}

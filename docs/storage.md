@@ -80,6 +80,16 @@ are trusted primitives: their write/resize/remove methods do not recheck a
 file's READONLY attribute; permission decisions belong to the VFS open and
 disposition paths. Host OS permissions still apply.
 
+`Vfs::format_device(device)` quick-formats one mounted device by exact name
+through `Backend::format` (default `MediaWriteProtected`). `HostBackend`
+empties its root and metadata directories and drops its caches. It traverses
+from directory handles opened at construction (openat/unlinkat with
+O_NOFOLLOW, via rustix), so host symlinks are removed, not followed, and a
+root or ancestor path replaced later cannot redirect it. `Vfs::device_of(name)`
+gives the mounted device a name finally resolves into. It fails with `SharingViolation`, changing nothing,
+while any file object or pending delete exists on that volume. XAPI uses it for
+the Z: and N: cache volumes (docs/xapi.md).
+
 `DiscBackend<R: Read + Seek + Send>` uses `xiso::Xiso` to discover the game
 partition and index directory records. `DiscBackend::open(path)` uses a
 read-only host file; `new(Cursor<Vec<u8>>)` works for synthetic tests. Both

@@ -19,6 +19,7 @@ const VERIFIED_RET_SIZES: &[(u32, Function, u32)] = &[
     (0x002d5838, Function::DiskFreeSpaceEx, 16),
     (0x002d5b77, Function::XMountUtilityDrive, 4),
     (0x002d5c7c, Function::XFormatUtilityDrive, 0),
+    (0x002d5d0a, Function::XMountCacheDrive, 0),
     (0x002d5f65, Function::DiskClusterSize, 4),
     (0x002d6004, Function::XAutoPowerDownResetTimer, 0),
     (0x002d6031, Function::XapiInitAutoPowerDown, 0),
@@ -45,7 +46,7 @@ const VERIFIED_RET_SIZES: &[(u32, Function, u32)] = &[
 ];
 
 #[test]
-fn stack_abis_match_the_31_pinned_ret_sizes() {
+fn stack_abis_match_the_32_pinned_ret_sizes() {
     for &(address, function, cleanup_bytes) in VERIFIED_RET_SIZES {
         assert_eq!(
             function.stack_words() as u32 * 4,
@@ -102,6 +103,8 @@ fn every_retained_adapter_uses_its_pinned_cleanup() {
     let (mut xapi, mut memory, _) = initialized();
     let mut thread = ThreadState::default();
     let handle = open(&mut xapi, &memory);
+    // Z: not mounted: the N: override fails early (FALSE) without storage.
+    memory.put(UTILITY_ROW, &u32::MAX.to_le_bytes());
     for &(address, function, cleanup_bytes) in VERIFIED_RET_SIZES {
         if !function.is_replacement() || function == Function::XLaunchNewImage {
             continue;

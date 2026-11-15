@@ -8,6 +8,9 @@ description = "Guest XAPI service replacements for Halo 2"
 [dependencies]
 input = { path = "../input", default-features = false }
 runtime.workspace = true
+vfs = { path = "../vfs" }
 
 [dev-dependencies]
+# The real raw-disk cache database, for tests/host_boot.rs only.
+kernel = { path = "../kernel" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

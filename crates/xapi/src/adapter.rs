@@ -33,6 +33,8 @@ pub enum Function {
     XGetLaunchInfo,
     XMountUtilityDrive,
     XFormatUtilityDrive,
+    /// The second cache volume, N: (`0x002d5d0a`, inferred name).
+    XMountCacheDrive,
     GetLastError,
     SetLastError,
     XReadMUMetaData,
@@ -58,6 +60,7 @@ impl Function {
             | XGetGameRegion
             | XGetParentalControlSetting
             | XFormatUtilityDrive
+            | XMountCacheDrive
             | GetLastError
             | XAutoPowerDownResetTimer
             | XapiInitAutoPowerDown => 0,
@@ -97,6 +100,7 @@ impl Function {
                 | XLaunchNewImage
                 | XMountUtilityDrive
                 | XFormatUtilityDrive
+                | XMountCacheDrive
                 | XReadMUMetaData
                 | XAutoPowerDownResetTimer
                 | XapiInitAutoPowerDown
@@ -232,6 +236,10 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             }
             XFormatUtilityDrive => {
                 self.format_utility_drive()?;
+                Ok(1)
+            }
+            XMountCacheDrive => {
+                self.mount_cache_drive(memory)?;
                 Ok(1)
             }
             XReadMUMetaData => Err(Error::Win32(1167)),
