@@ -29,7 +29,9 @@ use serde::{Deserialize, Serialize};
 
 /// File name under the cache directory. Bump the version when a record
 /// changes meaning without failing to parse.
-pub const FILE_NAME: &str = "pipelines-v1.jsonl";
+/// v2: v1 files from 1a5aa8d can pair a depth-writing (W-buffered) program
+/// with a depth-less pipeline, which fails validation.
+pub const FILE_NAME: &str = "pipelines-v2.jsonl";
 
 /// Where the cache lives: `H2_PIPELINE_CACHE` (a file path, or `off`),
 /// else `~/Library/Caches/h2recomp/` on macOS and `$XDG_CACHE_HOME/h2recomp/`

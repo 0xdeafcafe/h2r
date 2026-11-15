@@ -779,3 +779,28 @@ fn w_buffered_programs_depth_test_w_not_z() {
     let err = pollster::block_on(scope.pop());
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
+
+/// A W-buffered program drawn to a colour target without a depth surface
+/// (Ascension draws some): the program must not write depth, since a
+/// pipeline whose fragment writes depth without a depth attachment fails
+/// validation and wgpu panicked on it in `set_pipeline`. It still draws,
+/// clipped by w.
+#[test]
+fn w_buffered_program_to_a_colour_only_target_draws() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[2]).unwrap();
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let px = depth_quads(&mut d, &mut m, &[(0.0, 32.0, 0.5 * 16_777_215.0, 1.0, red)]);
+    assert_eq!(px(16, 32), [255, 0, 0, 255]);
+    assert_eq!(px(48, 32), [0, 0, 0, 255]);
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}
