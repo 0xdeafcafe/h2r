@@ -14,6 +14,7 @@ mod scripts;
 mod safe_out;
 mod sound;
 mod strings;
+mod ui;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 
@@ -37,6 +38,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
   hs <map> [--script name] [--builtins] [--disc iso]
   hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
+  ui <map> <screen tag>   print a wgit screen's widget tree (no localized text);
+                          --all <map|all> validates every UI tag (option --disc <iso>)
   extract [out-dir]       copy every file off the disc (default disc/extracted)
   extract-xbe [out]       just default.xbe (default disc/default.xbe)
   disasm <addr> [count]   decode instructions at a virtual address
@@ -75,6 +78,9 @@ fn main() -> Result<()> {
     }
     if cmd == "hs" {
         return scripts::run(args.collect());
+    }
+    if cmd == "ui" {
+        return ui::run(args.collect());
     }
     let mut positional = Vec::new();
     let mut functions_out = None;

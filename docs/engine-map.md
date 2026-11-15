@@ -526,3 +526,55 @@ passes around. Names are assigned descriptions. No executable bytes are quoted.
 | `0x001eaf30` shape reference resolver | Confirmed | Switch on shape type with the element stride and the offset of the Havok object inside it: 0 sphere (0x80, +0x30), 1 pill (0x50, +0x20), 2 box (0x90, +0x40), 3 triangle (0x60, +0x20), 4 polyhedron (0x100, +0x20), 5 (0xb0, +0x20), 6 (0x20), 0xe list (0x38, +0), 0xf mopp (0x14, +0). |
 | `0x001ef070` rigid-body transform fetch | Confirmed | Rigid body = `index * 0x90 + [phmo+0x3c]`; `i16` at `+0` is the node (-1 = none, otherwise a 0x34-byte node matrix), the pointer at `+0x38` is the resolved shape (reference count at its `+6`). |
 | Havok class names, `.rdata` `0x0040de98`-`0x00410178` | Confirmed | `hkSphereShape` `0x40e000`, `hkCapsuleShape` `0x40dfd8`, `hkBoxShape` `0x40ef2c`, `hkTriangleShape` `0x40ed64`, `hkConvexVerticesShape` `0x40edc8` (member `planeEquations` `0x40edac`), `hkListShape` `0x40ee40`, `hkMoppBvTreeShape` `0x40ee8c`, `hkMultiSphereShape` `0x40ecfc`, `hkTransformShape` `0x40e054`, `hkRigidBody` `0x40fde4` with `mass` `0x40fc60`, `centerOfMass` `0x40fc68`, `inertiaTensor` `0x40fc78`. These are class names only; no Havok SDK layout was consulted. |
+
+## UI tag walkers (2026-11-15)
+
+Appended by the UI tag survey. Found with an `iced-x86` sweep of analyzer
+function starts and checked against the disc; field layouts are in
+[ui.md](ui.md). No UI group FourCC appears as an immediate in the XBE: these
+functions reach tags through the inline `(datum & 0xffff) * 16` index on
+`[0x004e3b44]+8`. Labels are descriptive, not recovered symbols.
+
+| Address | Role | Confidence |
+|---|---|---|
+| `0x001482e8` | `wgtz` for the current scenario: `matg +0x110` interface element, `+0x84`/`+0x8c`/`+0x94` by `scnr +0x10` type (main menu / 0 / 1) | Confirmed |
+| `0x00148350` | `wigl` from `wgtz +0` | Confirmed |
+| `0x00236a7f` | `wgtz +0x10` variant-settings tag | Likely |
+| `0x00148098` | screen lookup by ID: walks `wgtz +8` (stride 8), compares `wgit +4`; wrappers `0x001480ed`, `0x001480ff` | Confirmed |
+| `0x0013e615` | `matg` interface tag reference by index | Likely |
+| `0x0014837a` | list skin by index (`wigl +0x138`) | Confirmed |
+| `0x0022e27b` | widget base constructor (type in `eax`) | Confirmed |
+| `0x001a47fd` | UI widget allocation | Likely |
+| `0x0022eb18` | attach widget to parent | Likely |
+| `0x0022f5ca` | screen widget constructor (type 0, vtable `0x00458840`) | Confirmed |
+| `0x0022f871` | screen widget to `wgit` (screen ID at widget `+0x70`) | Confirmed |
+| `0x0022f899` | current pane (`+0x5f0` index, stride `0x4c`) | Confirmed |
+| `0x0022f8df` | screen init: flags 0x20 and 2, shape group | Confirmed |
+| `0x0022facd` | shape-group widgets (`wigl +0x128`, stride `0x18`) | Confirmed |
+| `0x0022fc08` | pane builder: bitmaps, shader bitmaps, tables, text, model scenes | Confirmed |
+| `0x0022f6ca` | pane runtime state and buttons | Likely |
+| `0x0022fda6` | screen header text (`wigl +0x160` fonts, `+0x168` colour, `+0x178` layouts) | Confirmed |
+| `0x0022ff53` | secondary header rectangle | Likely |
+| `0x00230134` | widget string ID through the screen's `unic` (calls `0x001a0180`) | Confirmed |
+| `0x00230195`, `0x00253c3a` | screen string lists (`wgit +0x30`) | Confirmed |
+| `0x0022f28c`, `0x0022f672` | preloaded bitmaps (`wgit +0x38`) | Likely |
+| `0x0022fa30`, `0x0022fa5b`, `0x0022fa7d`, `0x0022f9bf`, `0x002baf38` | allocate bitmap (`0x90`), model scene (`0x74`), table (`0x78`), text (`0xf8`/`0x2b8`), shader bitmap (`0x88`) widgets | Confirmed |
+| `0x0024bb00` | list widget (type 1, vtable `0x0045a030`); definition `0x0024bbf3`, layout `0x0024bc12` | Confirmed |
+| `0x0024bd3b` | skin per-item animation (stride `0x10`) | Likely |
+| `0x00253c8b` | list item / button (type 3, vtable `0x0045a628`); `0x00253cc8`, `0x00253cff`, `0x00253ea8`, `0x00254173` read the `0x3c` button | Confirmed |
+| `0x00253746`, `0x00253765` | text widget (type 6, vtable `0x0045a5e0`) and init | Confirmed |
+| `0x002b01eb` | bitmap widget (type 8, vtable `0x0045ad60`); update `0x002b0328`, draw `0x002b0565`/`0x002b07e2`, meter test `0x002b0a68`, image `0x002b0b19` | Confirmed |
+| `0x002b0b5e`, `0x002b0baa` | model scene widget (type 7, vtable `0x0045ada8`) and draw | Confirmed |
+| `0x002b1111`, `0x002b11c9` | shader bitmap widget (type 9, vtable `0x0045adf0`) and draw | Confirmed |
+| `0x002afd97`, `0x002bac82` | table widget (type 10, vtable `0x0045ad18`); cell layout `0x002afdbc`, skin widgets `0x002bacbc`, bounding box `0x002bafa4` | Confirmed |
+| `0x002b41bc` | widget type 5 constructor, role not traced | Tentative |
+| `0x0022e65e` | transition track selection (`wigl +0x120`, `0x2c` collections) | Confirmed |
+| `0x0022e957` | apply a transition recursively to children | Likely |
+| `0x0022e89c` | copy animation state into widget `+0x34` | Likely |
+| `0x0022e3cd` | keyframe interpolation (`0x14` keyframes, alpha and offset) | Confirmed |
+| `0x002353a5`, `0x002356d8` | draw-list collection and comparator (depth, bias, type) | Confirmed |
+| `0x00236299` | UI sound by index (`wigl +0x90 + i*8`) | Confirmed |
+| `0x00236235`, `0x0023620d`, `0x0022d456`, `0x00149ead`, `0x0023661f`, `0x00235b46` | read `wigl +0x110`, `+0x118`, `+0x148`, `+0x158`, `+0x88`, `+0x1b8` | Likely |
+
+Constants used by these paths: `0x0045dc70` = 0.001, `0x0045dccc` = 1000.0,
+`0x0045dbc0` = 1.0. The UI clock at `0x0054d5b8` counts milliseconds.

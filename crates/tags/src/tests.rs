@@ -202,7 +202,7 @@ fn bitmap_depth_is_one_byte_separate_from_flags() {
 }
 
 // This cache is invented in memory. No fixture or string comes from a game file.
-fn bitmap_map() -> Vec<u8> {
+pub(crate) fn bitmap_map() -> Vec<u8> {
     let mut b = vec![0; 0x2000];
     b[..4].copy_from_slice(b"daeh");
     b[0x7fc..0x800].copy_from_slice(b"toof");

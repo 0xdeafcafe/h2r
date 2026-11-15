@@ -14,6 +14,8 @@ pub mod wire;
 pub mod collision;
 /// Sound tags (`snd!`, `ugh!`); self-contained, see `docs/sound.md`.
 pub mod sound;
+/// User-interface tags (`wgit`, `wgtz`, `wigl`, `skin`); self-contained, see `docs/ui.md`.
+pub mod ui;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }
@@ -45,6 +47,10 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+    /// A decode followed more data than its source holds (aliased blocks
+    /// counted every time they are followed).
+    #[error("decoded {kind} exceed the budget of {limit}")]
+    Budget { kind: &'static str, limit: u64 },
     #[error("range {address:#x} + {size:#x} is outside this tag's payload")]
     Bounds { address: u32, size: u64 },
     #[error("resource file {0:?} size was not supplied")]

@@ -58,5 +58,6 @@ up as structured Rust.
 - [shaders.md](docs/shaders.md): NV2A vertex microcode and register combiners to WGSL (`crates/shaders`)
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
+- [ui.md](docs/ui.md): user-interface tags (wgit, wgtz, wigl, skin) (`crates/tags`)
 - [xapi.md](docs/xapi.md): guest XAPI service replacements (`crates/xapi`)
 - [xdk-libraries.md](docs/xdk-libraries.md): XDK library identification
