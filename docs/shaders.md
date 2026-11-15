@@ -16,7 +16,7 @@ written for NV2A features (vertex microcode, register combiners, texture-stage
 ## What Halo 2 stores
 
 Everything here was checked against the retail disc (cache build
-`02.09.27.09809`, all 30 maps). `examples/extract_corpus.rs` reproduces it,
+`02.09.27.09809`, all 30 maps). `h2 extract-shaders` (`crates/cli/src/extract_shaders.rs`) reproduces it,
 reading the maps with `crates/map`. It
 reads your own disc image at run time and writes the corpus, a manifest
 and a provenance record to a directory you choose (keep it in `$TMPDIR`; no
@@ -110,10 +110,11 @@ combiners decode as combiner programs. The other 1,235 have a count of 0
 To reproduce the corpus checks:
 
 ```sh
-cargo run --release -p shaders --example extract_corpus -- disc/halo2.iso $TMPDIR/h2-shaders
+cargo run --release -p cli -- extract-shaders --out $TMPDIR/h2-shaders     # disc: $H2_DISC or disc/*.iso, or --disc
 cargo run -p shaders --example corpus -- $TMPDIR/h2-shaders                 # stats + validation
 cargo run -p shaders --example corpus -- $TMPDIR/h2-shaders --dump <file>   # disassembly + WGSL
 H2_SHADER_CORPUS=$TMPDIR/h2-shaders cargo test -p shaders --test corpus     # also GPU vs interpreter
+H2_SHADER_CORPUS=$TMPDIR/h2-shaders cargo test -p d3d --test shader_corpus -- --ignored   # every shader drawn through GfxBackend
 ```
 
 Each blob is the bytes of a `vrtx` classification's compiled shader

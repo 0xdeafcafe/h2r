@@ -1,7 +1,7 @@
 //! Optional: every shader extracted from your own disc.
 //!
 //! Set `H2_SHADER_CORPUS` to a directory written by
-//! `examples/extract_corpus.rs`: `*.xvu` (vrtx compiled-shader bytes) and
+//! `h2 extract-shaders`: `*.xvu` (vrtx compiled-shader bytes) and
 //! `*.psdef` (spas implementation bytes 6..0xF6) files plus `manifest.tsv`.
 //! Without the variable the test passes trivially, so no game data is needed
 //! to build or test the crate. With it, the directory must hold exactly the
@@ -22,7 +22,7 @@ use std::path::Path;
 fn manifest_files(dir: &Path) -> Vec<std::path::PathBuf> {
     let manifest = std::fs::read_to_string(dir.join("manifest.tsv")).unwrap_or_else(|e| {
         panic!(
-            "{}: no manifest.tsv ({e}); extract with examples/extract_corpus.rs",
+            "{}: no manifest.tsv ({e}); extract with `h2 extract-shaders --out DIR`",
             dir.display()
         )
     });

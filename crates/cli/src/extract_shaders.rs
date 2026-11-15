@@ -1,8 +1,12 @@
-//! Extract the shader corpus from your own Halo 2 disc image.
+//! `h2 extract-shaders`: extract the shader corpus from your own Halo 2 disc
+//! image.
 //!
 //! ```sh
-//! cargo run --release -p shaders --example extract_corpus -- <halo2.iso> <out-dir> [--force]
+//! cargo run --release -p cli -- extract-shaders --out <out-dir> [--disc <halo2.iso>] [--force]
 //! ```
+//!
+//! The disc defaults like every other `h2` command (`$H2_DISC`, else the
+//! first `.iso` in `disc/`).
 //!
 //! Reads every `.map` on the disc and writes, into `<out-dir>` (use a
 //! scratch directory such as `$TMPDIR`; nothing here belongs in the repo):
@@ -17,7 +21,7 @@
 //!   the counts `docs/shaders.md` quotes, and the PSDEF candidate-offset
 //!   check.
 //!
-//! `tests/corpus.rs` checks a directory against its manifest. Maps are read
+//! `crates/shaders/tests/corpus.rs` checks a directory against its manifest. Maps are read
 //! with `crates/map`.
 //!
 //! The PSDEF offset check: every implementation (0x132 bytes) is parsed as
@@ -36,6 +40,15 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::fs::File;
 use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+
+const USAGE: &str = "usage: h2 extract-shaders --out <dir> [--disc <halo2.iso>] [--force]
+
+Writes every distinct vertex program (*.xvu) and pixel shader definition
+(*.psdef) from the disc's maps, plus manifest.tsv and provenance.txt, into
+<dir>. Keep <dir> outside the repo: it is game data. Existing files are not
+replaced without --force; the disc is never written.";
 
 const HEADER_SIZE: usize = 0x800;
 const VRTX_CLASSIFICATION: u32 = 0x1C;
@@ -360,14 +373,30 @@ fn guarded_write(dir: &Path, name: &str, bytes: &[u8], disc: &Path, force: bool)
     f.write_all(bytes).map_err(|e| e.to_string())
 }
 
-fn main() -> Result<(), String> {
-    let args: Vec<String> = std::env::args().collect();
-    let (Some(iso), Some(out)) = (args.get(1), args.get(2)) else {
-        return Err("usage: extract_corpus <halo2.iso> <out-dir> [--force]".into());
+pub(super) fn run(args: Vec<String>) -> Result<()> {
+    let mut args = args.into_iter();
+    let (mut out, mut disc, mut force) = (None, None, false);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--out" => out = Some(PathBuf::from(args.next().context("--out needs a directory")?)),
+            "--disc" => disc = Some(PathBuf::from(args.next().context("--disc needs an ISO path")?)),
+            "--force" => force = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ => bail!("unexpected argument {a}\n{USAGE}"),
+        }
+    }
+    let Some(out) = out else { bail!("--out <dir> is required\n{USAGE}") };
+    let iso_path = match disc {
+        Some(d) => d,
+        None => super::default_disc()?,
     };
-    let out = PathBuf::from(out);
-    let force = args.iter().skip(3).any(|a| a == "--force");
-    let iso_path = Path::new(iso);
+    extract(&iso_path, &out, force).map_err(anyhow::Error::msg)
+}
+
+fn extract(iso_path: &Path, out: &Path, force: bool) -> Result<(), String> {
     let iso_len = std::fs::metadata(iso_path)
         .map_err(|e| e.to_string())?
         .len();
@@ -375,7 +404,7 @@ fn main() -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     let entries = x.entries().map_err(|e| e.to_string())?;
     let mut prov = String::new();
-    let _ = writeln!(prov, "tool\tshaders/examples/extract_corpus.rs");
+    let _ = writeln!(prov, "tool\tcli/src/extract_shaders.rs");
     let _ = writeln!(prov, "iso_size\t{iso_len}");
     let _ = writeln!(prov, "iso_partition_offset\t{:#x}", x.partition_offset());
     if let Some(xbe) = entries
@@ -481,7 +510,7 @@ fn main() -> Result<(), String> {
         ));
     }
 
-    write_outputs(&out, &corpus.files, &mut prov, iso_path, force)?;
+    write_outputs(out, &corpus.files, &mut prov, iso_path, force)?;
     print!("{prov}");
     Ok(())
 }

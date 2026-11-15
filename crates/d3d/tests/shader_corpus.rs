@@ -3,14 +3,16 @@
 //! `Nv2aShaders` provider (translation, naga validation, the program
 //! layouts, pipeline creation and a draw, under a wgpu validation scope).
 //!
-//! The corpus is the directory `crates/shaders/examples/extract_corpus.rs`
-//! writes from the disc image (`*.xvu`, `*.psdef`); nothing from it is in
-//! the repository. Give it as an absolute path:
+//! The corpus is the directory `h2 extract-shaders` writes from the disc
+//! image (`*.xvu`, `*.psdef`); nothing from it is in the repository. Give it
+//! as an absolute path:
 //!
 //! ```text
-//! cargo run --release -p shaders --example extract_corpus -- /abs/disc/halo2.iso $TMPDIR/h2-shaders
+//! cargo run --release -p cli -- extract-shaders --out $TMPDIR/h2-shaders
 //! H2_SHADER_CORPUS=$TMPDIR/h2-shaders cargo test -p d3d --test shader_corpus -- --ignored
 //! ```
+//!
+//! See `docs/shaders.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -29,12 +31,14 @@ use shaders::vsh::encode::{Inst, Operand, program};
 use shaders::vsh::{self, MacOp, OutReg};
 
 fn corpus() -> PathBuf {
-    let dir = PathBuf::from(
-        std::env::var("H2_SHADER_CORPUS").expect("set H2_SHADER_CORPUS to the corpus directory"),
-    );
+    let dir = PathBuf::from(std::env::var("H2_SHADER_CORPUS").expect(
+        "H2_SHADER_CORPUS is not set. Build the corpus from your disc with \
+         `cargo run --release -p cli -- extract-shaders --out $TMPDIR/h2-shaders`, \
+         then set H2_SHADER_CORPUS to that absolute path (docs/shaders.md)",
+    ));
     assert!(
         dir.is_absolute(),
-        "H2_SHADER_CORPUS must be an absolute path"
+        "H2_SHADER_CORPUS must be an absolute path (made by `h2 extract-shaders --out DIR`)"
     );
     dir
 }

@@ -9,6 +9,7 @@ mod anim;
 mod bitmap;
 mod collision;
 mod effects;
+mod extract_shaders;
 mod fonts;
 mod lighting;
 mod maps;
@@ -58,6 +59,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --json PATH to dump sampled transforms; --all validates the disc
   extract [disc] [out-dir] [--force]
                           copy every file off the disc (default disc/extracted)
+  extract-shaders --out DIR [--disc iso] [--force]
+                          write every distinct vertex program (*.xvu) and pixel shader
+                          definition (*.psdef) from the disc's maps to DIR, the corpus
+                          for the shaders and d3d ignored tests (keep it out of the repo)
   extract-xbe [disc] [out] [--force]
                           just default.xbe (default disc/default.xbe). With two
                           arguments it is <disc> <out>: the output comes LAST
@@ -125,6 +130,9 @@ fn main() -> Result<()> {
     }
     if cmd == "shader" {
         return shader::run(args.collect());
+    }
+    if cmd == "extract-shaders" {
+        return extract_shaders::run(args.collect());
     }
     if cmd == "hs" {
         return scripts::run(args.collect());

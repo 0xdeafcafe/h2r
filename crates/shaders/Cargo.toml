@@ -13,7 +13,5 @@ naga = { version = "30", features = ["wgsl-in"] }
 naga = { version = "30", features = ["wgsl-in", "msl-out"] }
 wgpu = { version = "30", default-features = false, features = ["std", "parking_lot", "metal", "vulkan", "wgsl"] }
 pollster = "1"
-# Corpus extractor (examples/extract_corpus.rs) and manifest check.
+# Corpus manifest check (tests/corpus.rs); `h2 extract-shaders` writes the corpus.
 sha2 = "0.10"
-xiso.workspace = true
-map.workspace = true

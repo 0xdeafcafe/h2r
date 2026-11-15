@@ -409,6 +409,7 @@ dependencies = [
  "lift",
  "map",
  "movies",
+ "sha2",
  "shaders",
  "symbols",
  "tags",
@@ -2361,13 +2362,11 @@ dependencies = [
 name = "shaders"
 version = "0.1.0"
 dependencies = [
- "map",
  "naga",
  "pollster",
  "sha2",
  "thiserror 2.0.21",
  "wgpu",
- "xiso",
 ]
 
 [[package]]
