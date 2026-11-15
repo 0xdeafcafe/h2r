@@ -10,6 +10,7 @@
 //! * [`device`]: the four-port device model that the `XInput*` API replacement
 //!   sits on top of.
 //! * [`bindings`]: the TOML binding table for the keyboard+mouse backend.
+//! * [`layouts`]: Halo 2 button layouts (retail and added) as action tables.
 //!
 //! See `docs/input.md`.
 
@@ -18,6 +19,7 @@ pub mod bindings;
 pub mod device;
 pub mod gamepad;
 pub mod host;
+pub mod layouts;
 
 pub use backend::HostBackend;
 pub use device::{InputManager, PortIndex};
