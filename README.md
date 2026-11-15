@@ -213,6 +213,7 @@ Running the game:
 - [BOOT.md](docs/BOOT.md): `h2 build` and `h2 run`, the boot runner's flags and environment, current state and blockers
 - [app.md](docs/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`)
 - [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
+- [community-gametypes.md](docs/community-gametypes.md): community classics (Zombies, SWAT, Jousting and more) as extra built-in game variants with their own icon: how Halo 2 keeps its variants, sources, mappings and hooks
 - [settings-menu.md](docs/settings-menu.md): design for an expanded in-game settings menu for the opt-in enhancements (not built)
 - [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
 - [map-pack.md](docs/map-pack.md): the Multiplayer Map Pack disc: its content packages, the title update it carries, and `h2 import-mappack` (the maps need the update, which doesn't run yet)

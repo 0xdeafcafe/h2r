@@ -10,6 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub mod community_variants;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
@@ -489,6 +490,8 @@ pub fn run_hosted_with_live(
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
     }
+    // Community classics in the built-in variant list (docs/community-gametypes.md).
+    community_variants::install(&loaded.runtime).context("installing the community game variants")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) if host.render_thread => Some(d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?),
