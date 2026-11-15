@@ -10,6 +10,8 @@
 //!   cache index.
 //! - [`datum`]: datum arrays (allocation, salts, lookup, iteration).
 //! - [`locale`]: localized-string lookup by packed StringID.
+//! - [`render`]: read-only views of the live lights and scene layers
+//!   (`docs/e3-lighting.md`, phase 0).
 //! - [`abi`]: per-function calling-convention adapters and the table of
 //!   overridable addresses.
 //!
@@ -21,6 +23,7 @@ pub mod datum;
 pub mod handle;
 pub mod locale;
 pub mod memory;
+pub mod render;
 pub mod tags;
 
 #[cfg(feature = "runtime-glue")]
