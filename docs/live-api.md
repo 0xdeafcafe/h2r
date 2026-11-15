@@ -2,8 +2,10 @@
 
 Status: contract, being implemented. The service is `crates/live-server`
 ([live.md](live.md)). Everything here is JSON over HTTP on one port
-(default `127.0.0.1:8074`), plus two WebSockets. No auth yet: the service
-is meant for localhost and a trusted LAN.
+(default `127.0.0.1:8074`), plus two WebSockets. Identity, signing, tokens
+and discovery are in [live-security.md](live-security.md); this page refers
+to it as §n. Every client is given a base URL and finds the rest from
+`GET /.well-known/h2live.json`.
 
 Three kinds of client use it:
 
@@ -29,8 +31,13 @@ form, used by `/v1/events` and the stream:
 ```json
 { "position": 1042, "stream": "game-7f3c...", "version": 12,
   "type": "PlayerKilled", "at": "2026-11-15T20:14:03.120Z",
-  "data": { ... } }
+  "data": { ... },
+  "author": "acct:0009a1b2c3d4e5f6@live.example.net", "kid": "...",
+  "jws": "<compact JWS of the signed body>", "hash": "<hex sha256>" }
 ```
+
+`data`, `type`, `stream` and `at` are copies of what the JWS signs, for
+convenience; a verifying reader uses the JWS (security §2).
 
 Event types so far (payload fields):
 
@@ -67,6 +74,8 @@ up to 15 Hz and are not stored.
 | method and path | returns |
 |---|---|
 | `GET /healthz` | `{ "ok": true, "position": <head> }` |
+| `GET /.well-known/h2live.json` | server id, API base, server keys (security §4) |
+| `GET /v1/accounts/{gamertag}/keys` | account public keys with validity ranges |
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
@@ -79,9 +88,13 @@ up to 15 Hz and are not stored.
 
 ## Write endpoints
 
+Every write needs `Authorization: Bearer <self-issued JWT>` (security §3)
+except account creation. Event bodies are signed JWS (security §2):
+`POST /v1/games/{id}/events` takes one JWS over the array.
+
 | method and path | body | does |
 |---|---|---|
-| `POST /v1/accounts` | `{gamertag}` | create; 201, 409 if taken |
+| `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id}`, 409 if taken |
 | `PUT /v1/titles/{title}/files/{name}` | raw bytes | publish a title file |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
@@ -102,7 +115,8 @@ as they are appended, then interleaves live frames:
 `?games=<id>,<id>` limits frames to those games (events are always sent; they
 are small). Without it, frames for every live game are sent.
 
-**`GET /v1/ingest`** for the game. The client sends
+**`GET /v1/ingest`** for the game. The first message is
+`{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
 `{ "kind": "frame", "frame": {...} }` and
 `{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. The
 server fans frames out to readers, records one per second per game as a
