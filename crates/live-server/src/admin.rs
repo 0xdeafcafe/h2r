@@ -197,7 +197,7 @@ impl Admins {
             .iter()
             .map(|(x, t)| (*x, t.clone()))
             .collect();
-        v.sort_by(|a, b| a.1.to_lowercase().cmp(&b.1.to_lowercase()));
+        v.sort_by_key(|a| a.1.to_lowercase());
         v
     }
 }
