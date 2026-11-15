@@ -8,6 +8,8 @@ use ir::{Control, Target};
 use runtime::{CpuAbi, Event, ExecCtx, GuestFault, H2GenModule, Runner, TransferAbi};
 use std::{
     collections::BTreeSet,
+    fs::File,
+    io,
     io::{Read, Seek, SeekFrom},
     path::PathBuf,
     sync::{Arc, Mutex},
@@ -411,6 +413,173 @@ fn disk_checksum(path: &PathBuf, bytes: u32) -> u32 {
     checksum
 }
 
+const COMPARE_CHUNK: usize = 64 * 1024;
+
+/// Compare the source's physical payload extent, not the preallocated cache
+/// capacity. Report offsets only: assertion failures must not dump game bytes.
+fn compare_payload(
+    cache: &mut (impl Read + Seek),
+    source_eof: u64,
+    mut read_source: impl FnMut(u64, &mut [u8]) -> io::Result<usize>,
+) -> io::Result<()> {
+    if source_eof < 0x800 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "source has no complete header",
+        ));
+    }
+    cache.seek(SeekFrom::Start(0x800))?;
+    let mut expected = vec![0; COMPARE_CHUNK];
+    let mut actual = vec![0; COMPARE_CHUNK];
+    let mut offset = 0x800;
+    while offset < source_eof {
+        let n = (source_eof - offset).min(COMPARE_CHUNK as u64) as usize;
+        let mut filled = 0;
+        while filled < n {
+            let read = read_source(offset + filled as u64, &mut expected[filled..n])?;
+            if read == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "source payload truncated",
+                ));
+            }
+            filled += read;
+        }
+        cache.read_exact(&mut actual[..n])?;
+        if let Some(index) = expected[..n]
+            .iter()
+            .zip(&actual[..n])
+            .position(|(a, b)| a != b)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "payload differs at file offset {:#x}",
+                    offset + index as u64
+                ),
+            ));
+        }
+        offset += n as u64;
+    }
+    Ok(())
+}
+
+struct PayloadOracle {
+    disc: vfs::DiscBackend<File>,
+    cache_root: PathBuf,
+}
+impl PayloadOracle {
+    fn path(&self, slot: u32) -> PathBuf {
+        self.cache_root
+            .join(if slot < 2 { "Z" } else { "N" })
+            .join(format!("cache{slot:03}.map"))
+    }
+    fn assert_payload(&mut self, slot: u32, name: &str) {
+        let source = format!("maps\\{name}.map");
+        let source_eof = self.disc.stat(&source).unwrap().end_of_file;
+        let mut cache = File::open(self.path(slot)).unwrap();
+        // This independent ISO handle bypasses Audited, guest completion counts,
+        // fault injection, and the guest's already-closed source file object.
+        compare_payload(&mut cache, source_eof, |offset, out| {
+            self.disc
+                .read_at(&source, offset, out)
+                .map_err(io::Error::other)
+        })
+        .unwrap_or_else(|e| panic!("{name}, slot {slot}: {e}"));
+    }
+}
+
+#[test]
+fn payload_comparison_streams_short_reads_and_ignores_cache_capacity() {
+    use io::Cursor;
+    let source: Vec<u8> = (0..0x800 + 2 * COMPARE_CHUNK + 13)
+        .map(|i| (i * 19 + 7) as u8)
+        .collect();
+    let mut cache = source.clone();
+    cache[..0x800].fill(0); // Header edits are validated separately.
+    cache.extend_from_slice(&[0xcc; 256]); // Cache capacity exceeds source EOF.
+    let mut reader = Cursor::new(&source);
+    let mut requests = 0;
+    compare_payload(
+        &mut Cursor::new(cache),
+        source.len() as u64,
+        |offset, out| {
+            assert!(offset >= 0x800 && offset + out.len() as u64 <= source.len() as u64);
+            assert!(out.len() <= COMPARE_CHUNK);
+            requests += 1;
+            reader.seek(SeekFrom::Start(offset))?;
+            let n = out.len().min(997);
+            reader.read(&mut out[..n])
+        },
+    )
+    .unwrap();
+    assert!(requests > 3);
+}
+
+#[test]
+fn payload_comparison_rejects_checksum_preserving_corruption() {
+    use io::Cursor;
+    let source = vec![0; 0x800 + 2 * COMPARE_CHUNK + 13];
+    let mut corrupt = source.clone();
+    let first = 0x800 + COMPARE_CHUNK + 32;
+    corrupt[first] ^= 1;
+    corrupt[first + 4] ^= 1;
+    let xor = |bytes: &[u8]| {
+        bytes[0x800..]
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .fold(0u64, |sum, word| sum ^ u64::from_le_bytes(*word))
+    };
+    // Two matching bit flips in separate dwords preserve the folded retail
+    // XOR, lengths, and router sample, but must fail the byte oracle.
+    let fold = |value: u64| value as u32 ^ (value >> 32) as u32;
+    assert_eq!(fold(xor(&source)), fold(xor(&corrupt)));
+    assert_eq!(&source[0x800..0x840], &corrupt[0x800..0x840]);
+    let mut reader = Cursor::new(&source);
+    let error = compare_payload(
+        &mut Cursor::new(corrupt),
+        source.len() as u64,
+        |offset, out| {
+            reader.seek(SeekFrom::Start(offset))?;
+            reader.read(out)
+        },
+    )
+    .unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains(&format!("{first:#x}")));
+}
+
+#[test]
+fn payload_comparison_checks_tail_and_rejects_truncated_streams() {
+    use io::Cursor;
+    let source = vec![0; 0x800 + COMPARE_CHUNK + 3];
+    for (tail_flip, short_source, short_cache, expected) in [
+        (true, false, false, io::ErrorKind::InvalidData),
+        (false, true, false, io::ErrorKind::UnexpectedEof),
+        (false, false, true, io::ErrorKind::UnexpectedEof),
+    ] {
+        let mut cache = source.clone();
+        if tail_flip {
+            *cache.last_mut().unwrap() ^= 1;
+        }
+        if short_cache {
+            cache.pop();
+        }
+        let mut reader = Cursor::new(&source[..source.len() - usize::from(short_source)]);
+        let error = compare_payload(
+            &mut Cursor::new(cache),
+            source.len() as u64,
+            |offset, out| {
+                reader.seek(SeekFrom::Start(offset))?;
+                reader.read(out)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), expected);
+    }
+}
+
 fn warm_slot(h: &mut Harness, name: &str) -> u32 {
     let path = format!("d:\\maps\\{name}.map\0");
     h.bytes(SCRATCH + 0x500, path.as_bytes());
@@ -522,6 +691,7 @@ fn failed_copies(
     handles: &mut [u32],
     audit: &Arc<Mutex<Audit>>,
     base: &[runtime::guest::Mapping],
+    payloads: &mut PayloadOracle,
 ) {
     let name = "01a_tutorial";
     let survivor = read(h, handles[4], 0, 0x800);
@@ -561,6 +731,7 @@ fn failed_copies(
             survivor,
             "current slot damaged"
         );
+        payloads.assert_payload(4, "01b_spacestation");
         assert!(
             !audit
                 .lock()
@@ -602,6 +773,9 @@ fn failed_copies(
     assert_eq!(warm_slot(h, name), 5);
     assert_eq!(h.get(BUFFER), 0);
     assert_baseline(h, base, "recovery");
+    payloads.assert_payload(5, name);
+    payloads.assert_payload(4, "01b_spacestation");
+    eprintln!("recovery: tutorial and active Cairo payloads byte-exact against ISO");
 }
 
 fn start(h: &mut Harness, source: u32, name: &str) {
@@ -667,6 +841,10 @@ fn campaign_cold_warm_cache_slots() {
     let disc_path = std::env::var_os("H2_DISC")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("../../disc/halo2.iso"));
+    let mut payloads = PayloadOracle {
+        disc: vfs::DiscBackend::open(&disc_path).unwrap(),
+        cache_root: scratch.0.clone(),
+    };
     let bytes = std::fs::read(xbe_path).unwrap();
     let xbe = xbe::Xbe::parse(&bytes).unwrap();
     assert_eq!(xbe.entry, 0x2d0aee, "retail address contract");
@@ -844,16 +1022,12 @@ fn campaign_cold_warm_cache_slots() {
                 .zip(&expected_header)
                 .position(|(a, b)| a != b)
         );
-        let drive = if expected_slot < 2 { "Z" } else { "N" };
-        let path = scratch
-            .0
-            .join(drive)
-            .join(format!("cache{expected_slot:03}.map"));
         assert_eq!(
-            disk_checksum(&path, size),
+            disk_checksum(&payloads.path(expected_slot), size),
             h.get(CHECKSUM),
             "persisted payload checksum"
         );
+        payloads.assert_payload(expected_slot, name);
         let mut in_memory = vec![0; 0x800];
         h.runtime
             .memory()
@@ -924,7 +1098,7 @@ fn campaign_cold_warm_cache_slots() {
     for (selector, slot) in [(0, 4), (1, 2), (2, 0), (3, 1)] {
         routed_sample(&mut h, handles[slot], selector);
     }
-    failed_copies(&mut h, &mut handles, &audit, &base);
+    failed_copies(&mut h, &mut handles, &audit, &base, &mut payloads);
     assert_baseline(&h, &base, "shutdown");
     for handle in handles {
         assert_eq!(h.success(187, &[handle]), 0);

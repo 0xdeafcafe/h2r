@@ -49,12 +49,22 @@ with files exceeding each map type's capacity.
 
 For every file, assertions cover exact payload completion counts and final
 header count, the retail accumulated checksum, an independent scalar checksum
-of the persisted payload, invalidation before copying, a payload flush before
-valid-header publication, and byte-for-byte disk/resident header agreement.
+of the persisted payload, a streaming byte comparison against the read-only ISO
+from offset 0x800 through physical source EOF, invalidation before copying, a
+payload flush before valid-header publication, and byte-for-byte disk/resident
+header agreement.
 The expected header preserves the source fields with only the retail path and
 timestamp edits. Reopening the cache handle, discarding/reloading its header
 through the generated read worker, and submitting a warm request must cause
 neither disc I/O nor payload writes.
+
+The byte oracle uses a separate, unaudited `DiscBackend` and two 64 KiB buffers;
+its reads do not change the guest I/O counts or consume injected failures. Cache
+capacity beyond source EOF is excluded, and source/cache truncation is an error.
+Synthetic regressions cover checksum-preserving corruption beyond the router
+sample, short reads, a final partial-qword byte, and truncated streams. XOR
+checksums remain checked as part of the retail publication contract, but do not
+serve as evidence of byte-exact copying.
 
 After each campaign transition a generated raw-resource read uses a separately
 allocated kernel buffer; freeing it must unmap it. At the end, all four resource
@@ -68,4 +78,6 @@ One-shot short read, short write, disk-full, and corrupted-payload injections
 must leave slot 5 invalid, preserve active Cairo in slot 4, close the source,
 and free staging. A pause after the invalidation flush and a destination reopen
 must expose an invalid cache; resuming the retail copy must recover normally.
+The full active Cairo payload is compared against the ISO after every injected
+failure and after recovery; the recovered tutorial payload is also compared.
 This pause/reopen test does not terminate and relaunch the whole runner.
