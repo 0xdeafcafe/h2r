@@ -1,6 +1,7 @@
 //! Teams guest ABI over the owned, deterministic store in live-proto::team.
 //! Task snapshots survive later mutations. The store survives local sign-out.
 use crate::{
+    client::{Pending, Reply, Service, Session, TeamRequest},
     outbox::Outbox,
     state::{Error, Storage},
     status::*,
@@ -44,6 +45,8 @@ pub(crate) struct Context<'a> {
     pub outbox: &'a mut Outbox,
     pub actor: Option<Identity>,
     pub known: &'a [Identity],
+    pub service: Option<&'a Service>,
+    pub session: Option<&'a Session>,
 }
 #[derive(Clone)]
 enum View {
@@ -55,6 +58,7 @@ struct Task {
     status: u32,
     viewer: Xuid,
     view: View,
+    remote: Option<(Pending, TeamRequest, u32)>,
 }
 #[derive(Default)]
 pub(crate) struct Teams {
@@ -86,8 +90,58 @@ impl Teams {
             false
         }
     }
-    pub fn poll(&self, h: u32) -> Option<u32> {
-        self.tasks.get(&h).map(|t| t.status)
+    pub fn poll(&mut self, h: u32) -> Option<u32> {
+        let task = self.tasks.get_mut(&h)?;
+        let Some((pending, _, _)) = &task.remote else {
+            return Some(task.status);
+        };
+        let Some(reply) = pending.take() else {
+            return Some(0);
+        };
+        let (_, request, flags) = task.remote.take().unwrap();
+        let teams = match reply {
+            Ok(Reply::Teams(v)) => v,
+            Err(e) => {
+                task.status = e;
+                return Some(e);
+            }
+            _ => {
+                task.status = INVALID_ARGUMENT;
+                return Some(task.status);
+            }
+        };
+        match &request {
+            TeamRequest::User(user) => {
+                for cached in self.store.teams.values_mut() {
+                    if !teams.iter().any(|t| t.id == cached.id) {
+                        cached.members.remove(user);
+                        cached.recruits.remove(user);
+                    }
+                }
+                task.view = View::Teams(teams.clone());
+            }
+            TeamRequest::Team(_) => {
+                let mut members = Vec::new();
+                for t in &teams {
+                    members.extend(t.members.values().cloned().map(|v| (v, false)));
+                    if flags & 1 != 0 {
+                        members.extend(t.recruits.values().cloned().map(|v| (v, true)));
+                    }
+                }
+                task.view = View::Members(members);
+            }
+            TeamRequest::Change(action) => {
+                if matches!(action, Action::Delete { .. }) {
+                    self.store.teams.remove(&action.id());
+                }
+                task.view = View::Done;
+            }
+        }
+        for team in teams {
+            self.store.teams.insert(team.id, team);
+        }
+        task.status = TASK_SUCCESS;
+        Some(TASK_SUCCESS)
     }
     pub fn invoke(
         &mut self,
@@ -106,7 +160,7 @@ impl Teams {
         if !op.starts() {
             return self.results(op, a, m);
         }
-        let actor = ctx.actor.as_ref().ok_or(Failure::Hr(NO_USER))?;
+        let actor = ctx.actor.clone().ok_or(Failure::Hr(NO_USER))?;
         let (event, out) = match op {
             Op::Create | Op::Delete | Op::ByUser => (a[4], a[5]),
             Op::Members | Op::Answer => (a[5], a[6]),
@@ -126,12 +180,25 @@ impl Teams {
         let action = match op {
             Op::ByUser => {
                 let viewer = xuid(&a[1..4]);
+                if ctx.service.is_some() {
+                    return self.remote(m, ctx, out, viewer, TeamRequest::User(viewer), 0);
+                }
                 let view = View::Teams(self.store.of(viewer));
                 return self.task(m, ctx.storage, out, viewer, Ok(view));
             }
             Op::Members => {
                 if a[4] & !3 != 0 {
                     return hr(INVALID_ARGUMENT);
+                }
+                if ctx.service.is_some() {
+                    return self.remote(
+                        m,
+                        ctx,
+                        out,
+                        actor.xuid,
+                        TeamRequest::Team(xuid(&a[1..4])),
+                        a[4],
+                    );
                 }
                 let result = self.store.get(xuid(&a[1..4])).map(|t| {
                     let mut members: Vec<_> =
@@ -170,12 +237,29 @@ impl Teams {
             }
             Op::Recruit | Op::RecruitName => {
                 let target = if op == Op::Recruit {
-                    ctx.known.iter().find(|i| i.xuid == xuid(&a[4..7]))
+                    let uid = xuid(&a[4..7]);
+                    ctx.known
+                        .iter()
+                        .find(|i| i.xuid == uid)
+                        .cloned()
+                        .or_else(|| {
+                            ctx.service.map(|_| Identity {
+                                xuid: uid,
+                                gamertag: String::new(),
+                            })
+                        })
                 } else {
                     let name = ansi(m, a[4])?;
                     ctx.known
                         .iter()
                         .find(|i| i.gamertag.eq_ignore_ascii_case(&name))
+                        .cloned()
+                        .or_else(|| {
+                            ctx.service.map(|_| Identity {
+                                xuid: Xuid(0),
+                                gamertag: name,
+                            })
+                        })
                 };
                 let Some(target) = target else {
                     return self.task(
@@ -188,14 +272,23 @@ impl Teams {
                 };
                 Action::Recruit {
                     id: xuid(&a[1..4]),
-                    target: target.clone(),
+                    target,
                     properties: member_properties(m, if op == Op::Recruit { a[7] } else { a[5] })?,
                 }
             }
             _ => unreachable!(),
         };
+        if ctx.service.is_some() {
+            if matches!(op, Op::Recruit | Op::RecruitName) {
+                let handle = if op == Op::Recruit { a[8] } else { a[6] };
+                if !ctx.outbox.accepts(handle, 4) {
+                    return hr(INVALID_ARGUMENT);
+                }
+            }
+            return self.remote(m, ctx, out, actor.xuid, TeamRequest::Change(action), 0);
+        }
         let mut next = self.store.clone();
-        let result = next.apply(actor, &action, &now);
+        let result = next.apply(&actor, &action, &now);
         if let Err(error) = result {
             return self.task(m, ctx.storage, out, actor.xuid, Err(error));
         }
@@ -226,6 +319,7 @@ impl Teams {
                 status: TASK_SUCCESS,
                 viewer: actor.xuid,
                 view: View::Done,
+                remote: None,
             },
         );
         if std::env::var_os("H2_BOOT_VERBOSE").is_some() {
@@ -253,11 +347,43 @@ impl Teams {
                 status,
                 viewer,
                 view,
+                remote: None,
             },
         );
         Ok(0)
     }
-    fn results(&self, op: Op, a: &[u32], m: &mut Guest) -> Result<u32> {
+    fn remote(
+        &mut self,
+        m: &mut Guest,
+        ctx: Context<'_>,
+        out: u32,
+        viewer: Xuid,
+        request: TeamRequest,
+        flags: u32,
+    ) -> Result<u32> {
+        let actor = ctx.actor.as_ref().ok_or(Failure::Hr(NO_USER))?;
+        let service = ctx.service.ok_or(Failure::Hr(NO_SESSION))?;
+        let session = ctx.session.ok_or(Failure::Hr(NO_SESSION))?;
+        let h = ctx.storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+        let pending = service
+            .teams(session, actor.xuid.0, request.clone())
+            .map_err(Failure::Hr)?;
+        m.set_u32(out, h)?;
+        self.tasks.insert(
+            h,
+            Task {
+                status: 0,
+                viewer,
+                view: View::Done,
+                remote: Some((pending, request, flags)),
+            },
+        );
+        Ok(0)
+    }
+    fn results(&mut self, op: Op, a: &[u32], m: &mut Guest) -> Result<u32> {
+        if self.poll(a[0]) == Some(0) {
+            return hr(TASK_BUSY);
+        }
         let Some(task) = self.tasks.get(&a[0]) else {
             return hr(INVALID_ARGUMENT);
         };

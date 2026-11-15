@@ -28,6 +28,8 @@ const USAGE: &str = "usage: h2 live q <what> [--server URL] [--json|--jsonl]
                           type, at, data, author, kid, jws, jws_index?, hash}];
                           --follow then streams new ones as JSON lines
   keys <gamertag>         {keys: [{kid, jwk, valid_from, valid_to}], position}
+  teams [gamertag]       open teams, or one account's teams and pending recruits
+  team <id>              one team with members, properties and permissions
   friends <gamertag>      one account's friends, with presence, and pending
                           requests in and out: {friends: [{xuid, gamertag,
                           friends_since, presence?}], requests_in, requests_out}
@@ -125,6 +127,25 @@ pub fn run(mut args: Args) -> Result<()> {
             let keys: Value = client.get(&format!("/accounts/{}/keys", path_part(&tag)), &[])?;
             emit(&mut out, format, Output::One(keys), &[])
         }
+        "teams" => {
+            let args = args.positional()?;
+            let path = match args.as_slice() {
+                [] => "/teams".to_string(),
+                [tag] => format!("/accounts/{}/teams", path_part(tag)),
+                _ => bail!("teams takes zero or one gamertag"),
+            };
+            emit(
+                &mut out,
+                format,
+                Output::List(pages(&client, &path, &[("limit", "100".into())])?),
+                TEAMS,
+            )
+        }
+        "team" => {
+            let id = one(args, "team takes an id")?;
+            let value: Value = client.get(&format!("/teams/{}", path_part(&id)), &[])?;
+            emit(&mut out, format, Output::One(value), &[])
+        }
         "friends" => {
             let tag = one(args, "friends takes a gamertag")?;
             let friends: Value =
@@ -193,7 +214,9 @@ fn pages(client: &Client, path: &str, query: &[(&str, String)]) -> Result<Vec<Va
     let mut cursor: Option<String> = None;
     loop {
         let mut q = query.to_vec();
-        q.push(("limit", "1000".into()));
+        if !q.iter().any(|(key, _)| *key == "limit") {
+            q.push(("limit", "1000".into()));
+        }
         if let Some(c) = cursor.take() {
             q.push(("cursor", c));
         }
@@ -370,6 +393,12 @@ const FRAMES: Columns = &[
     ("players", "/players"),
     ("source", "/source"),
 ];
+const TEAMS: Columns = &[
+    ("id", "/id"),
+    ("name", "/properties/name"),
+    ("leader", "/creator"),
+    ("limit", "/max_members"),
+];
 const EVENTS: Columns = &[
     ("pos", "/position"),
     ("type", "/type"),
@@ -496,6 +525,81 @@ fn fields(v: &Value) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn teams_query_pages_and_table_include_the_published_clan() {
+        use live_proto::{
+            lxm,
+            sign::{EventBody, issue_token},
+            team::{Action, MemberProperties, Properties},
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "h2-live-team-query-{}",
+            live_proto::sign::random_id()
+        ));
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir,
+            Default::default(),
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        let (a, key) = client.create_account("Alpha", None).unwrap();
+        for n in 1..=2 {
+            let id = live_proto::Xuid(0x000a000000000000 + n);
+            let action = Action::Create {
+                id,
+                properties: Properties {
+                    name: format!("Clan{n}"),
+                    ..Default::default()
+                },
+                member: MemberProperties::default(),
+                max_members: 100,
+            };
+            let body = EventBody::at_unix(
+                &key,
+                &a.id,
+                &format!("team-{id}"),
+                action.kind(),
+                serde_json::to_value(action).unwrap(),
+                crate::live_cmd::now(),
+            )
+            .sign(&key);
+            let token = issue_token(
+                &key,
+                &a.id,
+                &client.discovery.id,
+                lxm::EVENTS_WRITE,
+                crate::live_cmd::now(),
+            );
+            let request = client
+                .authorized(
+                    client
+                        .agent
+                        .post(&client.url("/events"))
+                        .set("content-type", "application/jose"),
+                    token,
+                )
+                .unwrap();
+            call(request, Some(body.as_bytes())).unwrap();
+        }
+        let all = pages(&client, "/teams", &[("limit", "1".into())]).unwrap();
+        assert_eq!(all.len(), 2, "query follows the team ID cursor");
+        assert_eq!(pages(&client, "/accounts/Alpha/teams", &[]).unwrap(), all);
+        let mut output = Vec::new();
+        emit(&mut output, Format::Table, Output::List(all.clone()), TEAMS).unwrap();
+        let table = String::from_utf8(output).unwrap();
+        assert!(table.contains("Clan1") && table.contains("Clan2"));
+        assert!(table.contains("000a000000000001") && table.contains("leader"));
+        let mut output = Vec::new();
+        emit(&mut output, Format::Json, Output::List(all.clone()), TEAMS).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).unwrap(),
+            Value::Array(all)
+        );
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn queries_and_verify_against_a_server() {
         use live_proto::lxm;

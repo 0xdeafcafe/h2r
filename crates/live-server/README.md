@@ -25,8 +25,12 @@ h2 play disc.iso --live                         # an embedded server, signed in
 `h2 live serve` also serves the web app from `web/dist` (`H2_LIVE_WEB`
 overrides) at `/`, falling back to `index.html` for client routes.
 `start_embedded` is the same server on a background runtime for `h2 play
---live`: Postgres if reachable (database created if missing), else
-in-memory with a warning.
+--live`: Postgres if reachable (database created if missing), else the
+file store (`filestore.rs`: an append-only `events.jsonl`, a `blobs/`
+directory and `checkpoints.json` under `<data>/log`, replayed into memory
+on open), else in-memory with a warning if that directory is held by
+another server. Unless the store is in-memory it publishes a default
+message of the day (`default_motd.rs`) when none was ever published.
 
 The database URL comes from `--db`, then `H2_LIVE_DB`, then the default; it
 is only ever printed without credentials. The schema is created at startup

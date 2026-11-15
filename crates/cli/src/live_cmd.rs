@@ -52,6 +52,13 @@ const USAGE: &str = "usage: h2 live <command> [options]
   account export <gamertag> [--file PATH] [--server URL]
   admin grant|revoke <gamertag> [--server URL] [--data DIR]
   hopper import <file> [--title ID] [--server URL] [--data DIR]
+  team create <name> [--as GAMERTAG] [--server URL]
+  team edit <id> [--name NAME] [--description TEXT] [--motto TEXT] [--url URL]
+  team delete|accept|decline|leave|show <id> [--as GAMERTAG] [--server URL]
+  team recruit|remove <id> <gamertag> [--privileges MASK] [--as GAMERTAG]
+  team member <id> <gamertag> --privileges MASK [--as GAMERTAG]
+  team list [--as GAMERTAG] [--server URL]
+                          signed team events, permissions and membership
   friend add <gamertag> [--as GAMERTAG] [--server URL]
   friend accept <gamertag> [--as GAMERTAG] [--server URL]
   friend decline <gamertag> [--as GAMERTAG] [--server URL]
@@ -100,6 +107,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("friend", Some("decline")) => friend(rest.shift(), FriendAction::Decline),
         ("friend", Some("remove")) => friend(rest.shift(), FriendAction::Remove),
         ("friend", Some("list")) => friend(rest.shift(), FriendAction::List),
+        ("team", _) => team_command(rest),
         ("q", _) => crate::live_query::run(rest),
         ("assets", Some("extract")) => assets_extract(rest.shift()),
         ("motd", Some("set")) => motd_set(rest.shift()),
@@ -689,6 +697,207 @@ pub(crate) fn friend_run(
     Ok(())
 }
 
+/// Parsed team command; exposed within the crate so tests exercise the same
+/// signed read/write path without changing the process-wide accounts location.
+#[derive(Debug)]
+pub(crate) struct TeamCommand {
+    pub verb: String,
+    pub args: Vec<String>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub motto: Option<String>,
+    pub url: Option<String>,
+    pub privileges: Option<u32>,
+}
+fn team_command(mut args: Args) -> Result<()> {
+    let server = args.take("--server")?;
+    let as_tag = args.take("--as")?;
+    let command = parse_team(args)?;
+    let client = Client::connect(server)?;
+    let value = team_run(&client, &accounts_path()?, as_tag.as_deref(), command)?;
+    println!("{}", serde_json::to_string_pretty(&value)?);
+    Ok(())
+}
+fn parse_team(mut args: Args) -> Result<TeamCommand> {
+    let name = args.take("--name")?;
+    let description = args.take("--description")?;
+    let motto = args.take("--motto")?;
+    let url = args.take("--url")?;
+    let privileges = args
+        .take("--privileges")?
+        .map(|s| {
+            if let Some(hex) = s.strip_prefix("0x") {
+                u32::from_str_radix(hex, 16)
+            } else {
+                s.parse()
+            }
+        })
+        .transpose()
+        .context("privileges must be a u32 or 0x mask")?;
+    let mut args = args.positional()?;
+    if args.is_empty() {
+        bail!("team needs a command\n{USAGE}")
+    }
+    let verb = args.remove(0);
+    let expected = match verb.as_str() {
+        "list" => 0,
+        "create" | "edit" | "delete" | "accept" | "decline" | "leave" | "show" => 1,
+        "recruit" | "remove" | "member" => 2,
+        _ => bail!("unknown team command {verb}"),
+    };
+    if args.len() != expected {
+        bail!("team {verb} takes {expected} argument(s)")
+    }
+    if verb == "member" && privileges.is_none() {
+        bail!("team member requires --privileges")
+    }
+    if verb != "edit"
+        && (name.is_some() || description.is_some() || motto.is_some() || url.is_some())
+    {
+        bail!("team property flags require team edit")
+    }
+    if !matches!(verb.as_str(), "recruit" | "member") && privileges.is_some() {
+        bail!("--privileges is for recruit/member")
+    }
+    Ok(TeamCommand {
+        verb,
+        args,
+        name,
+        description,
+        motto,
+        url,
+        privileges,
+    })
+}
+pub(crate) fn team_run(
+    client: &Client,
+    accounts: &Path,
+    as_tag: Option<&str>,
+    c: TeamCommand,
+) -> Result<serde_json::Value> {
+    use live_proto::team::{Action, Identity, MemberProperties, Properties};
+    let me = pick_account(client, accounts, as_tag)?;
+    let key = me.key_pair()?;
+    let author = me
+        .id
+        .clone()
+        .unwrap_or_else(|| live_accounts::author_id(me.xuid, &client.discovery.id));
+    let get = |path: &str| -> Result<serde_json::Value> {
+        let token = issue_token(&key, &author, &client.discovery.id, lxm::READ, now());
+        let req = client.authorized(client.agent.get(&client.url(path)), token)?;
+        Ok(serde_json::from_str(&call(req, None)?)?)
+    };
+    if c.verb == "list" {
+        return get(&format!("/accounts/{}/teams", path_part(&me.gamertag)));
+    }
+    let id = if c.verb == "create" {
+        live_proto::team::random_id()
+            .map_err(|_| anyhow::anyhow!("host random source unavailable"))?
+    } else {
+        Xuid::parse(&c.args[0])?
+    };
+    if c.verb == "show" {
+        return get(&format!("/teams/{id}"));
+    }
+    let target = || -> Result<Identity> {
+        let raw = &c.args[1];
+        let value = get(&format!("/accounts/{}", path_part(raw)))?;
+        let account: AccountDetail = serde_json::from_value(value)?;
+        Ok(Identity {
+            xuid: account.summary.xuid,
+            gamertag: account.summary.gamertag.to_string(),
+        })
+    };
+    let action = match c.verb.as_str() {
+        "create" => Action::Create {
+            id,
+            properties: Properties {
+                name: c.args[0].clone(),
+                ..Default::default()
+            },
+            member: MemberProperties {
+                privileges: u32::MAX,
+                data: vec![],
+            },
+            max_members: 100,
+        },
+        "edit" => {
+            let value = get(&format!("/teams/{id}"))?;
+            let mut p: Properties = serde_json::from_value(value["team"]["properties"].clone())?;
+            if let Some(v) = c.name {
+                p.name = v
+            }
+            if let Some(v) = c.description {
+                p.description = v
+            }
+            if let Some(v) = c.motto {
+                p.motto = v
+            }
+            if let Some(v) = c.url {
+                p.url = v
+            }
+            Action::Properties { id, properties: p }
+        }
+        "delete" => Action::Delete { id },
+        "accept" | "decline" => Action::Answer {
+            id,
+            accept: c.verb == "accept",
+        },
+        "leave" => Action::Remove { id, user: me.xuid },
+        "remove" => Action::Remove {
+            id,
+            user: target()?.xuid,
+        },
+        "recruit" => Action::Recruit {
+            id,
+            target: target()?,
+            properties: MemberProperties {
+                privileges: c.privileges.unwrap_or(0x10),
+                data: vec![],
+            },
+        },
+        "member" => {
+            let user = target()?.xuid;
+            let team = get(&format!("/teams/{id}"))?;
+            let mut properties: MemberProperties = serde_json::from_value(
+                team["team"]["members"][user.to_string()]["properties"].clone(),
+            )
+            .context("no such member")?;
+            properties.privileges = c.privileges.context("member privileges")?;
+            Action::MemberProperties {
+                id,
+                user,
+                properties,
+            }
+        }
+        _ => bail!("unknown team command"),
+    };
+    let body = EventBody::at_unix(
+        &key,
+        &author,
+        &format!("team-{id}"),
+        action.kind(),
+        serde_json::to_value(&action)?,
+        now(),
+    )
+    .sign(&key);
+    let token = issue_token(
+        &key,
+        &author,
+        &client.discovery.id,
+        lxm::EVENTS_WRITE,
+        now(),
+    );
+    let req = client.authorized(
+        client
+            .agent
+            .post(&client.url("/events"))
+            .set("content-type", "application/jose"),
+        token,
+    )?;
+    Ok(serde_json::from_str(&call(req, Some(body.as_bytes()))?)?)
+}
+
 /// The local account to act as on `client`'s server: the one named by
 /// `as_tag`, or the only one there.
 fn pick_account(client: &Client, accounts: &Path, as_tag: Option<&str>) -> Result<LocalAccount> {
@@ -1061,5 +1270,77 @@ mod tests {
             resolve("http://a", "https://b.example/api/"),
             "https://b.example/api"
         );
+    }
+    #[test]
+    fn team_commands_sign_create_recruit_edit_membership_and_delete() {
+        let dir =
+            std::env::temp_dir().join(format!("h2-live-teams-{}", live_proto::sign::random_id()));
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir.join("server"),
+            Default::default(),
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        let (alpha, ak) = client.create_account("Alpha", None).unwrap();
+        let (bravo, bk) = client.create_account("Bravo", None).unwrap();
+        let accounts = dir.join("accounts.json");
+        live_accounts::save(
+            &accounts,
+            &[
+                LocalAccount::new(alpha.xuid, "Alpha", &server.url, &client.discovery, &ak),
+                LocalAccount::new(bravo.xuid, "Bravo", &server.url, &client.discovery, &bk),
+            ],
+        )
+        .unwrap();
+        let run = |who: &str, words: &[&str]| {
+            team_run(
+                &client,
+                &accounts,
+                Some(who),
+                parse_team(args(words)).unwrap(),
+            )
+        };
+        assert!(
+            team_run(
+                &client,
+                &accounts,
+                None,
+                parse_team(args(&["list"])).unwrap()
+            )
+            .is_err()
+        );
+        let event = run("Alpha", &["create", "CLI Clan"]).unwrap();
+        let id = event["data"]["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            run("Alpha", &["list"]).unwrap()["items"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        run("Alpha", &["recruit", &id, "Bravo"]).unwrap();
+        run("Bravo", &["accept", &id]).unwrap();
+        assert_eq!(
+            status_of(&run("Bravo", &["delete", &id]).unwrap_err()),
+            Some(403)
+        );
+        run("Alpha", &["member", &id, "Bravo", "--privileges", "0x1c"]).unwrap();
+        run("Alpha", &["edit", &id, "--motto", "Updated"]).unwrap();
+        assert_eq!(
+            run("Alpha", &["show", &id]).unwrap()["team"]["properties"]["motto"],
+            "Updated"
+        );
+        run("Bravo", &["leave", &id]).unwrap();
+        run("Alpha", &["delete", &id]).unwrap();
+        assert_eq!(
+            run("Alpha", &["list"]).unwrap()["items"],
+            serde_json::json!([])
+        );
+        assert!(parse_team(args(&["member", &id, "Bravo"])).is_err());
+        assert!(parse_team(args(&["create", "Clan", "--privileges", "0x1c"])).is_err());
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

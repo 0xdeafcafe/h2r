@@ -135,6 +135,7 @@ pub struct Live {
     jtis: ReplayGuard,
     writes: RateLimiter,
     creates: RateLimiter,
+    team_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
     dispatcher: tokio::task::AbortHandle,
 }
@@ -172,6 +173,9 @@ fn parse_data<'a, T: Deserialize<'a>>(data: &'a Value) -> Result<T, ApiError> {
 /// writes through its own endpoints, and the friend events, which are the
 /// accounts' own. Games come with the game endpoints.
 fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
+    if live_proto::team::Action::is_kind(kind) {
+        return matches!(author, Author::Account { .. }) && stream.starts_with("team-");
+    }
     match author {
         Author::Server(_) => !matches!(
             kind,
@@ -219,6 +223,9 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
         xuid: Xuid,
         state: Option<String>,
         game_id: Option<String>,
+    }
+    if live_proto::team::Action::is_kind(&body.kind) {
+        return crate::teams::validate(state, body);
     }
     let xuid = stream_xuid(&body.stream);
     match body.kind.as_str() {
@@ -354,6 +361,7 @@ impl Live {
             jtis: ReplayGuard::default(),
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
+            team_writes: Default::default(),
             local_signin: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
@@ -637,6 +645,11 @@ impl Live {
                 body.kind, body.stream
             )));
         }
+        let _team_guard = if live_proto::team::Action::is_kind(&body.kind) {
+            Some(self.team_writes.lock().await)
+        } else {
+            None
+        };
         validate(&self.model.read(), body)?;
         if !self.model.nonces.insert_new(
             nonce_key(&body.author, &body.nonce),
@@ -650,7 +663,20 @@ impl Live {
             jws_index: None,
             body: event.body,
         };
-        let recorded = self.store.append(vec![new], &[]).await?;
+        let mut writes = vec![new];
+        if writes[0].body.kind == "TeamMemberRecruited"
+            && let Ok(live_proto::team::Action::Recruit { id, target, .. }) =
+                serde_json::from_value(writes[0].body.data.clone())
+        {
+            writes.push(self.server_event(
+                streams::account(target.xuid),
+                "TeamRecruitReceived",
+                json!({"team_id":id,"to":target.xuid,"from":author.to_string()}),
+            ));
+        }
+        let recorded = self.store.append(writes, &[]).await?;
+        let end = recorded.last().expect("at least one append").position;
+        self.wait_applied(end).await?;
         let event = recorded.into_iter().next().expect("one appended");
         self.wait_applied(event.position).await?;
         Ok(event.to_wire())

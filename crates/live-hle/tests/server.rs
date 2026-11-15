@@ -554,14 +554,12 @@ fn title_files_flow_from_server_messages_to_the_guest_download_buffer() {
     assert_eq!(w.messages(), vec![1, 4]);
     assert_eq!(w.bytes(DATA + 12, 1), vec![1]);
     assert_eq!(w.u32(DATA + 40), 0x4d530064);
-    assert_eq!(w.call("XOnlineGetNotificationEx", &[0, DATA, OUT]), 1);
-    assert_eq!(w.bytes(DATA, 1), vec![1]);
-    assert_eq!(w.u32(DATA + 1), 1);
-    assert_eq!(w.u32(OUT), 1);
-    assert_eq!(w.call("XOnlineGetNotificationEx", &[0, DATA, OUT]), 1);
-    assert_eq!(w.u32(DATA + 1), 4);
-    assert_eq!(w.u32(OUT), 0);
+    // Title files are never player notifications (no "new message" toast).
+    w.put(DATA, &[0xcc; 9]);
+    w.word(OUT, 0xdeadbeef);
     assert_eq!(w.call("XOnlineGetNotificationEx", &[0, DATA, OUT]), 0);
+    assert_eq!(w.bytes(DATA, 9), vec![0; 9]);
+    assert_eq!(w.u32(OUT), 0);
     let details = w.details(1);
     for (tag, size, expected) in [
         (0x3c2, 2, Some(1)),
@@ -1035,4 +1033,219 @@ fn attachment_replacement_is_fetched_and_overflow_never_copies_a_prefix() {
         BUFFER_TOO_SMALL
     );
     assert_eq!(w.bytes(OUT, 12), vec![0xdd; 12]);
+}
+
+fn clan_properties(w: &World, name: &str) {
+    let mut b = vec![0; 1670];
+    for (p, u) in b[..32]
+        .as_chunks_mut::<2>()
+        .0
+        .iter_mut()
+        .zip(name.encode_utf16())
+    {
+        p.copy_from_slice(&u.to_le_bytes());
+    }
+    w.put(DATA + 0x4000, &b);
+    w.put(DATA + 0x4800, &[0; 106]);
+    w.word(DATA + 0x4800, u32::MAX);
+}
+#[test]
+fn teams_two_guests_create_recruit_accept_list_edit_member_leave_and_delete_on_the_server() {
+    let server = Server::new();
+    let alpha = server.account("Alpha");
+    let bravo = server.account("Bravo");
+    let mut a = World::new(&server.embedded.url, &[&alpha]);
+    let mut b = World::new(&server.embedded.url, &[&bravo]);
+    a.logon();
+    b.logon();
+    clan_properties(&a, "HLE Clan");
+    assert_eq!(
+        a.call(
+            "XOnlineTeamCreate",
+            &[0, DATA + 0x4000, DATA + 0x4800, 100, 0, OUT]
+        ),
+        0
+    );
+    let task = a.u32(OUT);
+    assert_eq!(a.wait(task), TASK_SUCCESS);
+    let id = a.hle.local_teams().of(alpha.xuid)[0].id;
+    let lo = id.0 as u32;
+    let hi = (id.0 >> 32) as u32;
+    a.word(DATA + 0x4800, 0x10);
+    a.put(DATA + 0x4900, b"Bravo\0");
+    // Bravo is not in Alpha's host accounts file: worker resolves the name.
+    assert_eq!(
+        a.call(
+            "XOnlineTeamMemberRecruitByName",
+            &[0, lo, hi, 0, DATA + 0x4900, DATA + 0x4800, 0, 0, OUT]
+        ),
+        0
+    );
+    assert_eq!(a.wait(a.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(
+        b.call(
+            "XOnlineTeamEnumerateByUserXUID",
+            &[
+                0,
+                bravo.xuid.0 as u32,
+                (bravo.xuid.0 >> 32) as u32,
+                0,
+                0,
+                OUT
+            ]
+        ),
+        0
+    );
+    let list = b.u32(OUT);
+    assert_eq!(b.wait(list), TASK_SUCCESS);
+    assert_eq!(
+        b.call(
+            "XOnlineTeamEnumerateGetResults",
+            &[list, OUT, DATA + 0x5000]
+        ),
+        0
+    );
+    assert_eq!(b.u32(OUT), 1);
+    assert_eq!(
+        b.call("XOnlineTeamGetDetails", &[list, lo, hi, 0, BUFFER]),
+        0
+    );
+    assert_eq!(b.u32(BUFFER + 1682), 1);
+    assert_eq!(
+        b.call("XOnlineTeamMemberAnswerRecruit", &[0, lo, hi, 0, 0, 0, OUT]),
+        0
+    );
+    assert_eq!(b.wait(b.u32(OUT)), TASK_SUCCESS);
+    // The same remote recruit path also resolves a XUID absent from our file.
+    assert_eq!(
+        a.call(
+            "XOnlineTeamMemberRecruit",
+            &[
+                0,
+                lo,
+                hi,
+                0,
+                bravo.xuid.0 as u32,
+                (bravo.xuid.0 >> 32) as u32,
+                0,
+                DATA + 0x4800,
+                0,
+                0,
+                OUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(a.wait(a.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(
+        a.call(
+            "XOnlineTeamMemberRecruit",
+            &[0, lo, hi, 0, 0x777, 0x0009, 0, DATA + 0x4800, 0, 0, OUT]
+        ),
+        0
+    );
+    assert_eq!(
+        a.wait(a.u32(OUT)),
+        live_proto::team::TeamError::UserNotFound.hresult()
+    );
+    assert_eq!(
+        b.call("XOnlineTeamMemberAnswerRecruit", &[0, lo, hi, 0, 1, 0, OUT]),
+        0
+    );
+    assert_eq!(b.wait(b.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(b.call("XOnlineTeamDelete", &[0, lo, hi, 0, 0, OUT]), 0);
+    assert_eq!(
+        b.wait(b.u32(OUT)),
+        live_proto::team::TeamError::Privileges.hresult()
+    );
+    a.word(DATA + 0x4800, 0x1c);
+    assert_eq!(
+        a.call(
+            "XOnlineTeamMemberSetProperties",
+            &[
+                0,
+                lo,
+                hi,
+                0,
+                bravo.xuid.0 as u32,
+                (bravo.xuid.0 >> 32) as u32,
+                0,
+                DATA + 0x4800,
+                0,
+                OUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(a.wait(a.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(
+        b.call("XOnlineTeamMembersEnumerate", &[0, lo, hi, 0, 1, 0, OUT]),
+        0
+    );
+    let members = b.u32(OUT);
+    assert_eq!(b.wait(members), TASK_SUCCESS);
+    assert_eq!(
+        b.call(
+            "XOnlineTeamMembersEnumerateGetResults",
+            &[members, OUT, DATA + 0x5000]
+        ),
+        0
+    );
+    assert_eq!(b.u32(OUT), 2);
+    assert_eq!(
+        b.call(
+            "XOnlineTeamMemberGetDetails",
+            &[
+                members,
+                bravo.xuid.0 as u32,
+                (bravo.xuid.0 >> 32) as u32,
+                0,
+                BUFFER
+            ]
+        ),
+        0
+    );
+    assert_eq!(b.u32(BUFFER + 28), 0x1c);
+    assert_eq!(
+        b.call(
+            "XOnlineTeamMemberRemove",
+            &[
+                0,
+                lo,
+                hi,
+                0,
+                bravo.xuid.0 as u32,
+                (bravo.xuid.0 >> 32) as u32,
+                0,
+                0,
+                OUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(b.wait(b.u32(OUT)), TASK_SUCCESS);
+    assert_eq!(a.call("XOnlineTeamDelete", &[0, lo, hi, 0, 0, OUT]), 0);
+    assert_eq!(a.wait(a.u32(OUT)), TASK_SUCCESS);
+    let events = server.events();
+    assert!(events.iter().any(|e| e.kind == "TeamCreated"));
+    assert!(events.iter().any(|e| e.kind == "TeamRecruitReceived"));
+    assert!(events.iter().any(|e| e.kind == "TeamDeleted"));
+}
+#[test]
+fn teams_server_failure_finishes_a_task_without_mutating_the_local_cache() {
+    let server = Server::new();
+    let account = server.account("Alpha");
+    let mut w = World::timed(&server.embedded.url, &[&account], Duration::from_secs(3600));
+    w.logon();
+    drop(server);
+    clan_properties(&w, "Unavailable");
+    assert_eq!(
+        w.call(
+            "XOnlineTeamCreate",
+            &[0, DATA + 0x4000, DATA + 0x4800, 100, 0, OUT]
+        ),
+        0
+    );
+    assert_eq!(w.wait(w.u32(OUT)), CANNOT_ACCESS_SERVICE);
+    assert!(w.hle.local_teams().teams.is_empty());
 }

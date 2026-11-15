@@ -1,10 +1,11 @@
 // Pieces the stats pages share in their menu column: the pill menu, the
-// People Finder, the Recent Games carousel, and map thumbnails.
+// People Finder, the Recent Games carousel, the Did You Know? box, and map
+// thumbnails.
 
 import GametypeIcon from "../components/GametypeIcon";
 import { mapKey } from "../lib/gameart";
 import { gameImage } from "../state/gameart";
-import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, on, onCleanup, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
 import { standings, teamStandings, type GameState } from "../state/reducer";
@@ -14,6 +15,7 @@ import { ago, titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { Panel } from "./Layout";
+import { randomStart, stepIndex } from "../lib/motd";
 
 export interface PillDef { label: JSX.Element; href: string; end?: boolean }
 
@@ -163,5 +165,46 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
         <div class="s-recent-well">{n() ? `${Math.min(at(), n() - 1) + 1} of ${n()}` : ""}</div>
       </div>
     </section>
+  );
+}
+
+/** The Did You Know? box: the server's message-of-the-day messages, one at
+ *  a time from a random start, moving on every `everyMs` (not under
+ *  reduced motion, nor while hovered or focused) and stepped with the
+ *  arrows. Nothing when there are no messages. */
+export function DidYouKnow(props: { messages: string[]; everyMs?: number }) {
+  const n = () => props.messages.length;
+  const [at, setAt] = createSignal(0);
+  const [held, setHeld] = createSignal(false);
+  const [tick, setTick] = createSignal(0);
+  createEffect(on(n, (len) => setAt(randomStart(len))));
+  const i = () => stepIndex(at(), 0, n());
+  const step = (d: number) => { setAt(stepIndex(at(), d, n())); setTick(tick() + 1); };
+  const still = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  createEffect(on([n, held, tick], ([len, h]) => {
+    if (still || h || len < 2) return;
+    const t = setInterval(() => setAt((a) => stepIndex(a, 1, n())), props.everyMs ?? 12_000);
+    onCleanup(() => clearInterval(t));
+  }));
+  return (
+    <Show when={n() > 0}>
+      <section
+        class="s-box s-recent s-dyk"
+        onMouseEnter={() => setHeld(true)}
+        onMouseLeave={() => setHeld(false)}
+        onFocusIn={() => setHeld(true)}
+        onFocusOut={() => setHeld(false)}
+      >
+        <header class="s-box-head s-recent-head">
+          <button class="s-arrow" onClick={() => step(-1)} disabled={n() < 2} aria-label="Previous tip">◄</button>
+          <h3>Did You Know?</h3>
+          <button class="s-arrow" onClick={() => step(1)} disabled={n() < 2} aria-label="Next tip">►</button>
+        </header>
+        <div class="s-box-body">
+          <Show when={props.messages[i()]} keyed>{(m) => <p class="s-dyk-text">{m}</p>}</Show>
+          <div class="s-recent-well">{n() > 1 ? `${i() + 1} of ${n()}` : ""}</div>
+        </div>
+      </section>
+    </Show>
   );
 }

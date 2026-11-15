@@ -171,6 +171,77 @@ document with `h2 live q friends <gamertag>`. Friend events reach
 `FriendAccepted` for the toast), and a client that misses some resumes
 from the snapshot's `position`.
 
+## Teams
+
+Teams use signed account events on `team-<id>` streams. IDs are sixteen hex
+digits; clients generate an ID before creation (our clients use a random
+48-bit value under `000a`). The server applies the shared `live-proto::team`
+rules before appending, then derives the roster from the event log on replay.
+Writes use `POST /v1/events`, `lxm: events.write`, the account's token and its
+signed event, as friends do. The event's author is the acting member; callers
+cannot choose another actor in the data. The stream ID, data ID, event type
+and operation must agree.
+
+| type | data (`id` is the team ID) |
+|---|---|
+| `TeamCreated` | `{operation:"create", id, properties, member, max_members}` |
+| `TeamPropertiesChanged` | `{operation:"properties", id, properties}` |
+| `TeamDeleted` | `{operation:"delete", id}` |
+| `TeamMemberRecruited` | `{operation:"recruit", id, target:{xuid,gamertag}, properties}` |
+| `TeamRecruitAccepted` | `{operation:"answer", id, accept:true}` |
+| `TeamRecruitDeclined` | `{operation:"answer", id, accept:false}` |
+| `TeamMemberPropertiesChanged` | `{operation:"member_properties", id, user, properties}` |
+| `TeamMemberRemoved` | `{operation:"remove", id, user}` (also used for leaving) |
+
+Team properties are `{name,description,motto,url,data}`; omitted strings and
+data default to empty. Names must be nonblank and fit 15 UTF-16 units; the
+other strings fit 255 units, and custom data is an array of at most 100 bytes.
+Member properties are `{privileges,data}` with the same byte limit. A team
+contains `id`, `creator`, `properties`, `max_members`, `created_at`, `members`,
+`recruits` and `deleted`; rosters map XUIDs to
+`{identity:{xuid,gamertag},properties,joined_at}`. Times are RFC 3339.
+
+The creator is the one leader (`0xffffffff`). Permission bits are delete=1,
+modify-team=2, modify-member=4, remove-member=8 and recruit=16. Halo 2 uses
+`0x1c` for officers and `0x10` or zero for lower ranks. Members cannot grant
+rights they do not have, create a second leader, demote/remove the creator,
+or delete a team they do not lead. Members can leave; the leader must delete
+the team. Names are unique ignoring case, a team reserves at most 100 active
+and recruited places, and an account may have eight teams including pending
+recruits. A deleted ID remains reserved, but its name becomes available.
+Team writes are serialized through validation and projection to enforce these
+limits across streams.
+
+Recruit targets must be registered accounts with matching XUID/gamertag.
+Recruitment atomically appends a server-signed `TeamRecruitReceived` event to
+`account-<recruit-xuid>` with `{team_id,to,from}` (`from` is the recruiting
+author). It appears on the ordinary event feed. The pending roster is the
+current invitation state: only its recipient can accept or decline; a member
+with remove permission can cancel it. Acceptance moves the recruit into the
+member roster, decline removes it, and deletion ends all memberships.
+
+| read | response |
+|---|---|
+| `GET /v1/teams?limit=50&cursor=<id>` | `Page<Team>`, active teams in ID order, limit 1..100 |
+| `GET /v1/teams/{id}` | `{team,position}`, or 404 for missing/deleted |
+| `GET /v1/accounts/{gamertag}/teams` | `Page<Team>` including pending recruits, at most eight, no next page |
+| `GET /v1/accounts/by-xuid/{xuid}/teams` | same account list by XUID |
+| `GET /v1/accounts/by-xuid/{xuid}` | `{xuid,gamertag}` for canonical recruit lookup |
+
+Reads use the normal public/private read policy (`lxm: read` on a private
+server). Team failures add a `team_error` enum to the ordinary error body,
+which the HLE maps to the corresponding XDK HRESULT. Invalid data is 400,
+missing teams/users 404, membership/permission failures 403, and conflicts or
+limits 409. Rejected writes append nothing.
+
+CLI commands take `--server <base-url>` and `--as <local-gamertag>`:
+`h2 live team create <name>`, `list`, `show <id>`, `edit <id>` with
+`--name`, `--description`, `--motto` or `--url`, `delete <id>`,
+`recruit <id> <gamertag>` (optional `--privileges`), `accept <id>`,
+`decline <id>`, `member <id> <gamertag> --privileges <mask>`,
+`remove <id> <gamertag>` and `leave <id>`. Masks accept decimal or `0x` hex.
+`h2 live q teams [gamertag]` and `h2 live q team <id>` read the same views.
+
 ## Streams (WebSocket)
 
 **`GET /v1/stream?from=<position>`** for readers. The server first replays

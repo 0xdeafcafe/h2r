@@ -41,7 +41,10 @@ export default function MotdEditor() {
     setStatus("");
     try {
       const reply = await putMotd(current);
-      setStatus(`published ${reply.published.size} bytes (sha256 ${reply.published.sha256.slice(0, 12)}…)`);
+      setStatus(
+        `published ${reply.published.size} bytes (sha256 ${reply.published.sha256.slice(0, 12)}…). ` +
+          "The game picks it up at its next Xbox Live sign-in (sign out and back in, or restart the game), not mid-session.",
+      );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -55,7 +58,7 @@ export default function MotdEditor() {
         <div class="adm-motd">
           <Panel
             title="Message of the Day"
-            sub={`the header and up to ${MOTD_MAX_MESSAGES} messages; the game picks one at random`}
+            sub={`the header shows on the Live main menu; one of up to ${MOTD_MAX_MESSAGES} messages, picked at random, on the matchmaking screen every 15 s`}
             right={
               <button class="s-btn" disabled={busy() || !!bad()} onClick={() => void save()}>
                 {busy() ? "…" : "Publish"}
@@ -128,6 +131,10 @@ export default function MotdEditor() {
               <p class="adm-preview-note">
                 the matchmaking screen re-picks from {d().messages.length}{" "}
                 {d().messages.length === 1 ? "message" : "messages"} every 15 seconds
+              </p>
+              <p class="adm-preview-note">
+                a published change reaches a console at its next Xbox Live sign-in (sign out and
+                back in, or restart the game), not mid-session
               </p>
             </div>
           </Block>

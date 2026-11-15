@@ -1,7 +1,8 @@
 //! The event store: one append-only log of signed events, ordered by a
 //! global `position`, with per-stream versions, optimistic concurrency and
 //! a per-stream hash chain (docs/live-security.md §2). Postgres in
-//! production ([`crate::pg`]), [`MemoryStore`] for tests.
+//! production ([`crate::pg`]), a directory for the embedded server without
+//! one ([`crate::filestore`]), [`MemoryStore`] for tests.
 //!
 //! The store keeps each author's JWS untouched; everything a reader needs
 //! is decoded from it, so the other columns are only indexes.
@@ -78,6 +79,10 @@ pub enum StoreError {
     },
     #[error("database: {0}")]
     Db(#[from] sqlx::Error),
+    /// The file-backed store ([`crate::filestore`]) could not read or
+    /// write its directory.
+    #[error("store files: {0}")]
+    Io(std::io::Error),
     /// A stored row that no longer decodes: corruption, not a request
     /// problem.
     #[error("stored event at position {position} does not decode: {reason}")]
@@ -177,6 +182,11 @@ impl Default for MemoryStore {
 impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Every saved checkpoint, for a store that persists them.
+    pub(crate) fn checkpoints(&self) -> HashMap<String, u64> {
+        self.inner.lock().unwrap().checkpoints.clone()
     }
 }
 

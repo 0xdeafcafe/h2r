@@ -47,8 +47,18 @@ impl IntoResponse for ApiError {
             ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
             ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
         };
-        let mut resp =
-            (status, axum::Json(ErrorBody::new(self.code, self.message))).into_response();
+        let team_error = self.message.strip_prefix("team:").and_then(|s| {
+            serde_json::from_value::<live_proto::team::TeamError>(serde_json::Value::String(
+                s.into(),
+            ))
+            .ok()
+        });
+        let mut body = serde_json::to_value(ErrorBody::new(self.code, self.message))
+            .expect("error serializes");
+        if let Some(error) = team_error {
+            body["team_error"] = serde_json::to_value(error).expect("team error serializes");
+        }
+        let mut resp = (status, axum::Json(body)).into_response();
         if status == StatusCode::UNAUTHORIZED {
             resp.headers_mut()
                 .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
@@ -59,7 +69,7 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = Result<T, ApiError>;
 
-fn json<T: serde::Serialize>(status: StatusCode, body: &T) -> Response {
+pub(crate) fn json<T: serde::Serialize>(status: StatusCode, body: &T) -> Response {
     (status, axum::Json(body)).into_response()
 }
 
@@ -67,7 +77,7 @@ fn invalid(m: impl Into<String>) -> ApiError {
     ApiError::new(ErrorCode::Invalid, m)
 }
 
-fn bearer(headers: &HeaderMap) -> Option<&str> {
+pub(crate) fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
         .get(header::AUTHORIZATION)?
         .to_str()
@@ -162,6 +172,20 @@ fn api_router(live: Arc<Live>) -> Router {
         .route("/.well-known/h2live.json", get(well_known))
         .route("/v1/accounts", get(list_accounts).post(create_account))
         .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
+        .route(
+            "/v1/accounts/by-xuid/{xuid}",
+            get(crate::teams::account_identity),
+        )
+        .route(
+            "/v1/accounts/by-xuid/{xuid}/teams",
+            get(crate::teams::account_teams_by_id),
+        )
+        .route(
+            "/v1/accounts/{gamertag}/teams",
+            get(crate::teams::account_teams),
+        )
+        .route("/v1/teams", get(crate::teams::list))
+        .route("/v1/teams/{id}", get(crate::teams::detail))
         .route("/v1/accounts/{gamertag}", get(account))
         .route("/v1/accounts/{gamertag}/keys", get(keys_by_tag))
         .route("/v1/accounts/{gamertag}/friends", get(account_friends))

@@ -30,6 +30,8 @@ import { approach, ringPlace } from "./shape";
 import { sideOf } from "./cross";
 import { inputMode, keyAction, watchGamepads, watchInput, type Action } from "./input";
 import { crossTo, crossing } from "./Veil";
+import { useMotd } from "../state/motd";
+import { motdHeader } from "../lib/motd";
 import "../styles/dash-pages.css";
 
 type SectionId = "live" | "friends" | "players" | "history" | "settings" | "signup" | "server";
@@ -322,6 +324,9 @@ export default function Dashboard() {
     onCleanup(() => { stopInput(); stopPads(); });
   });
   onMount(() => document.addEventListener("keydown", onKey));
+  // The server's message-of-the-day header, under the orb's count, as the
+  // game shows it on its Live main menu. Hidden when there is none.
+  const motd = useMotd();
   onCleanup(() => document.removeEventListener("keydown", onKey));
 
   const aim = createMemo((): TunnelAim => {
@@ -419,6 +424,7 @@ export default function Dashboard() {
             <div class="dx-screen dx-menu" onWheel={onWheel}>
               <Orb turn={-turn() * RING_STEP_DEG} />
               <div class="dx-orb-count"><b>{liveGames(live.state).length}</b> live <i /> <b>{online().length}</b> online</div>
+              <Show when={motdHeader(motd())}>{(h) => <p class="dx-motd">{h()}</p>}</Show>
               <nav class="dx-arc" aria-label="Dashboard" style={{ "--n": String(items().length) }}>
                 <For each={items()}>
                   {(id, i) => {

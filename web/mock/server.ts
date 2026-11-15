@@ -41,6 +41,18 @@ type WsData = StreamData | IngestData;
 
 const readers = new Set<ServerWebSocket<WsData>>();
 
+// The message of the day (GET/PUT /v1/titles/4D530064/motd), a sample.
+let motd = {
+  header: "Welcome to h2 live on the mock server",
+  messages: [
+    "The stats site updates as games are played: open a live game to watch it on the map.",
+    "Every event on this server is signed. The Signed Event Log shows each one and checks it.",
+    "Melee from behind is an instant kill. Watch your back in close quarters.",
+    "Grenades bounce. Bank a plasma grenade off a wall to reach round a corner.",
+    "You can dual wield most small arms. Hold Y over a second one to pick it up in your other hand.",
+  ],
+};
+
 world.listeners.add({
   onEvent(ev: WireEvent) {
     const msg = JSON.stringify({ kind: "event", event: ev });
@@ -186,6 +198,17 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
       items.push(ev);
     }
     return list(items, next);
+  }
+  if ((m = path.match(/^\/v1\/titles\/([^/]+)\/motd$/))) {
+    // Mock only: no token check on PUT; the doc is kept in memory.
+    if (req.method === "PUT") {
+      const b = (await req.json().catch(() => null)) as typeof motd | null;
+      if (!b || typeof b.header !== "string" || !Array.isArray(b.messages)) return err(400, "invalid", "{header, messages} expected");
+      motd = { header: b.header, messages: b.messages.map(String) };
+      const bytes = JSON.stringify(motd);
+      return json({ published: { name: "message_of_the_day.dat", sha256: createHash("sha256").update(bytes).digest("hex"), size: bytes.length }, motd });
+    }
+    return m[1]!.toUpperCase() === "4D530064" ? json(motd) : err(404, "not_found", "no message of the day");
   }
   if ((m = path.match(/^\/v1\/titles\/([^/]+)\/files\/([^/]+)$/))) {
     const key = `${m[1]!.toLowerCase()}/${m[2]}`;
