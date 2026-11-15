@@ -26,7 +26,7 @@ use analyze::Analysis;
 use ir::{CallKind, Control, DescentError, IrBlock, IrFunction, IrInsn, StopReason, Target};
 use xbe::Xbe;
 
-pub use lower::{Env, Site, lower, mnemonic_name};
+pub use lower::{Env, Site, lower, lower_encoded, mnemonic_name};
 
 /// Lifts functions found by discovery.
 pub struct Lifter<'a> {
@@ -75,7 +75,8 @@ impl<'a> Lifter<'a> {
                 };
                 let last = i + 1 == block.insns.len();
                 let site = if last { self.site(block) } else { Site::Plain };
-                let mut ir = lower(&insn, &self.env, site);
+                let bytes = self.cfgs.code().bytes_from(va).unwrap_or(&[]);
+                let mut ir = lower_encoded(&insn, bytes, &self.env, site);
                 if last {
                     apply_edges(&mut ir, block);
                 }

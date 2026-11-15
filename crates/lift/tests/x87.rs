@@ -19,7 +19,7 @@ use iced_x86::{Decoder, DecoderOptions, Instruction};
 use ir::interp::{self, Cpu, Exit, SparseMemory};
 use ir::x87::{X87Arith, X87CmpKind, X87Env, X87Format, X87Op, X87Src};
 use ir::{Control, Fault, Flag, Gpr, Intrinsic, IrInsn, Slice, Stmt, Width};
-use lift::{Env, Site, lower};
+use lift::{Env, Site, lower, lower_encoded};
 
 const CODE: u32 = 0x1000;
 const DATA: u32 = 0x4000;
@@ -32,7 +32,7 @@ fn decode(code: &[u8]) -> Instruction {
 }
 
 fn lowered(code: &[u8]) -> IrInsn {
-    let ir = lower(&decode(code), &Env::default(), Site::Plain);
+    let ir = lower_encoded(&decode(code), code, &Env::default(), Site::Plain);
     ir.validate().unwrap_or_else(|e| panic!("{code:02x?}: {e}\n{ir}"));
     ir
 }
@@ -389,12 +389,23 @@ fn fop_rebuilds_modrm_for_every_addressing_form() {
     assert_eq!(fop(&[0xDD, 0x1C, 0x24]), 0x51c, "fstp qword [esp]");
     assert_eq!(fop(&[0xDE, 0xC9]), 0x6c9, "fmulp st(1)");
     assert_eq!(fop(&[0xD9, 0xE8]), 0x1e8, "fld1");
-    // Redundant SIB bytes (no index) keep the encoded rm = 4.
+    // From the encoding: a redundant SIB byte keeps its rm = 4, and an
+    // ignored prefix changes nothing.
     assert_eq!(fop(&[0xD9, 0x04, 0x20]), 0x104, "fld [eax] through a SIB");
     assert_eq!(fop(&[0xD9, 0x44, 0x20, 0x08]), 0x144, "fld [eax+8] through a SIB");
     assert_eq!(fop(&[0xD9, 0x04, 0x25, 0, 0x40, 0, 0]), 0x104, "fld [disp32] through a SIB");
-    // An unexplained extra byte (a redundant REP prefix) is refused.
-    assert!(!lowered(&[0xF3, 0xD9, 0x00]).is_supported());
+    assert_eq!(fop(&[0x66, 0xD9, 0x00]), 0x100, "fld [eax], ignored operand-size prefix");
+    assert_eq!(fop(&[0xF3, 0xD9, 0x00]), 0x100, "fld [eax], ignored REP prefix");
+    assert_eq!(fop(&[0x3E, 0x3E, 0xD9, 0x04, 0x20]), 0x104, "repeated DS prefix and a SIB");
+    // Without the bytes, only the canonical memory forms are exact; the
+    // rest, where a SIB and a prefix cannot be told apart, are refused.
+    let bare = |code: &[u8]| lower(&decode(code), &Env::default(), Site::Plain);
+    assert!(bare(&[0xD9, 0x00]).is_supported());
+    assert!(bare(&[0xD9, 0x44, 0x24, 0x10]).is_supported());
+    assert!(bare(&[0xDE, 0xC9]).is_supported());
+    for code in [&[0x66, 0xD9, 0x00][..], &[0xD9, 0x04, 0x20]] {
+        assert!(!bare(code).is_supported(), "{code:02x?}");
+    }
 }
 
 #[test]

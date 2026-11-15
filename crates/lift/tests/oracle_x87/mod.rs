@@ -28,11 +28,13 @@
 //!   not update.
 //!
 //! A mask follows the value it covers and ends when that value is
-//! overwritten: status bits read into AX by `fnstsw ax` (and from AH into
-//! EFLAGS by `sahf` or `test ah`) or into memory (`fnstsw m16`, `fnstcw`,
-//! the `fnstenv`/`fnsave` image) stay masked until an instruction writes
-//! those register bits, flags or bytes outright; a tag stays masked until
-//! the register is pushed onto, popped, freed or initialised.
+//! overwritten: status bits read into AX by `fnstsw ax` or into memory
+//! (`fnstsw m16`, `fnstcw`, the `fnstenv`/`fnsave` image) stay masked until
+//! an instruction writes those register bits or bytes outright or fully
+//! determines them (`mov`, `and` with 0 bits, `or` with 1 bits); flags
+//! computed from masked bits (`sahf`, `test ah`, `and ax, imm`, ...) stay
+//! masked until something writes the flags; a tag stays masked until the
+//! register is pushed onto, popped, freed or initialised.
 //!
 //! **Stack faults.** Unicorn has no tag checks, so it runs an overflowing
 //! or underflowing operation as an ordinary one. Whether an instruction
@@ -306,22 +308,62 @@ impl X87Check {
         };
         let ea =
             || ea_of(insn.memory_base(), insn.memory_index(), insn.memory_index_scale(), insn.memory_displacement32());
-        // Overwrites end masks: the flags it writes, the EAX bits it writes
-        // outright, the bytes it stores.
+        // Overwrites end masks: the flags it writes, the EAX bits and bytes
+        // it writes outright or fully determines, the bytes it stores.
         let ah = (self.eax >> 8) & 0xff;
         let modified = eflags_of(insn.rflags_modified());
         self.flags &= !modified;
+        // `and`/`or`/`test` with an immediate: the destination bits the
+        // immediate decides (0 for and, 1 for or), and those the result
+        // still takes from the destination.
+        let imm = (insn.op_count() == 2
+            && matches!(
+                insn.op1_kind(),
+                OpKind::Immediate8
+                    | OpKind::Immediate16
+                    | OpKind::Immediate32
+                    | OpKind::Immediate8to16
+                    | OpKind::Immediate8to32
+            ))
+        .then(|| insn.immediate(1) as u32);
+        let (decided, kept) = match (m, imm) {
+            (M::And, Some(i)) => (!i, i),
+            (M::Or, Some(i)) => (i, !i),
+            (M::Test, Some(i)) => (0, i),
+            _ => (0, !0),
+        };
+        // What the destination's masked bits contribute to the result, for
+        // the flags computed from it.
+        let mut read_masked = false;
+        // `xor r, r` / `sub r, r`: zero whatever r held.
+        let zeroing = matches!(m, M::Xor | M::Sub)
+            && insn.op0_kind() == OpKind::Register
+            && insn.op1_kind() == OpKind::Register
+            && insn.op0_register() == insn.op1_register();
         let info = InstructionInfoFactory::new().info(insn).clone();
         for u in info.used_registers() {
-            let bits = match u.register() {
-                Register::EAX => !0,
-                Register::AX => 0xffff,
-                Register::AL => 0xff,
-                Register::AH => 0xff00,
+            let (bits, shift) = match u.register() {
+                Register::EAX => (!0u32, 0),
+                Register::AX => (0xffff, 0),
+                Register::AL => (0xff, 0),
+                Register::AH => (0xff00, 8),
                 _ => continue,
             };
+            let dest = insn.op0_kind() == OpKind::Register && insn.op0_register() == u.register();
+            let (decided, kept) = if dest { ((decided << shift) & bits, (kept << shift) & bits) } else { (0, bits) };
+            if !zeroing
+                && matches!(u.access(), OpAccess::Read | OpAccess::ReadWrite | OpAccess::ReadCondWrite)
+                && self.eax & kept != 0
+            {
+                read_masked = true;
+            }
+            if zeroing && dest {
+                self.eax &= !bits;
+                continue;
+            }
             match u.access() {
                 OpAccess::Write => self.eax &= !bits,
+                OpAccess::ReadWrite if dest && imm.is_some() => self.eax &= !decided,
                 // Masked bits flow on into whatever the operation makes of
                 // the register.
                 OpAccess::ReadWrite | OpAccess::CondWrite | OpAccess::ReadCondWrite if self.eax & bits != 0 => {
@@ -331,26 +373,35 @@ impl X87Check {
             }
         }
         for u in info.used_memory() {
-            if u.access() == OpAccess::Write {
-                let a = ea_of(u.base(), u.index(), u.scale(), u.displacement() as u32);
-                let n = u.memory_size().size() as u32;
-                self.mem.retain(|&(b, _)| b.wrapping_sub(a) >= n);
+            let a = ea_of(u.base(), u.index(), u.scale(), u.displacement() as u32);
+            let n = u.memory_size().size() as u32;
+            match u.access() {
+                OpAccess::Write => self.mem.retain(|&(b, _)| b.wrapping_sub(a) >= n),
+                OpAccess::ReadWrite | OpAccess::Read if imm.is_some() && insn.op0_kind() == OpKind::Memory => {
+                    for (b, bits) in self.mem.iter_mut() {
+                        let k = b.wrapping_sub(a);
+                        if k < n {
+                            if *bits & (kept >> (8 * k)) as u8 != 0 {
+                                read_masked = true;
+                            }
+                            if u.access() == OpAccess::ReadWrite {
+                                *bits &= !((decided >> (8 * k)) as u8);
+                            }
+                        }
+                    }
+                    self.mem.retain(|&(_, bits)| bits != 0);
+                }
+                _ => {}
             }
         }
-        // AH holding masked bits, read back into EFLAGS.
-        match m {
-            M::Sahf if ah != 0 => {
-                let map = [(0x01, 0x001), (0x04, 0x004), (0x10, 0x010), (0x40, 0x040), (0x80, 0x080)];
-                self.flags |= map.iter().filter(|(b, _)| ah & b != 0).map(|(_, f)| f).sum::<u32>();
-            }
-            M::Test
-                if insn.op0_kind() == OpKind::Register
-                    && insn.op0_register() == Register::AH
-                    && insn.immediate8() as u32 & ah != 0 =>
-            {
-                self.flags |= 0x0c4; // ZF SF PF
-            }
-            _ => {}
+        // Flags computed from masked bits: `sahf` from AH bit for bit,
+        // anything else that reads them wholesale.
+        if m == M::Sahf {
+            let map = [(0x01, 0x001), (0x04, 0x004), (0x10, 0x010), (0x40, 0x040), (0x80, 0x080)];
+            self.flags |= map.iter().filter(|(b, _)| ah & b != 0).map(|(_, f)| f).sum::<u32>();
+        } else if read_masked {
+            let logic = matches!(m, M::And | M::Or | M::Xor | M::Test);
+            self.flags |= if logic { modified & 0x00c4 } else { modified }; // SF ZF PF
         }
         self.predicted = None;
         if !lift_x87(m) {

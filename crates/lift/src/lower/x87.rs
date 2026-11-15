@@ -147,13 +147,39 @@ pub(super) fn is_x87(m: Mnemonic) -> bool {
     )
 }
 
-/// How a memory operand's ModR/M was encoded, recovered from the decoded
-/// operand and the instruction length: (mod, rm). A SIB byte the operand
-/// does not need (no index, base not ESP: `D9 04 20` for `fld [eax]`)
-/// shows only as one byte more than the canonical form, and gives rm = 4.
-/// `None` when the length cannot be explained (other redundant prefixes),
-/// so FOP would not be exact.
-fn modrm_form(insn: &Instruction) -> Option<(u32, u32)> {
+/// FOP from the encoding itself: past the legacy prefixes, the low three
+/// bits of the `D8`-`DF` opcode byte, then the ModR/M byte, exactly as
+/// encoded (a redundant SIB byte or an ignored prefix changes nothing).
+fn fop_of_bytes(b: &[u8]) -> Option<u16> {
+    let i = b
+        .iter()
+        .position(|x| !matches!(x, 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65 | 0x66 | 0x67 | 0xf0 | 0xf2 | 0xf3))?;
+    let (op, modrm) = (*b.get(i)?, *b.get(i + 1)?);
+    (op & 0xf8 == 0xd8).then_some(((op as u16 & 7) << 8) | modrm as u16)
+}
+
+/// FOP rebuilt from the decoded instruction when its bytes are not at
+/// hand. Register forms come straight from the opcode (`D8 C0+i`); memory
+/// forms rebuild ModR/M from the addressing mode, which is exact only for
+/// the canonical encoding: when the length says there is more (a redundant
+/// SIB byte, an ignored prefix), which of them cannot be told, and `None`.
+fn fop_of_decode(insn: &Instruction) -> Option<u16> {
+    let oc = insn.op_code();
+    let v = oc.op_code();
+    if v > 0xff {
+        let i = (0..insn.op_count())
+            .filter(|&k| insn.op_kind(k) == OpKind::Register)
+            .map(|k| insn.op_register(k))
+            .filter(|r| (Register::ST0..=Register::ST7).contains(r))
+            .map(|r| r as u32 - Register::ST0 as u32)
+            .max()
+            .unwrap_or(0);
+        let plus = if oc.op_code_string().ends_with("+i") { i } else { 0 };
+        return Some((((v >> 8) & 7) << 8 | ((v & 0xff) + plus)) as u16);
+    }
+    if !(0..insn.op_count()).any(|k| insn.op_kind(k) == OpKind::Memory) {
+        return None;
+    }
     let base = insn.memory_base();
     let index = insn.memory_index();
     let num = |r: Register| (r as u32 - Register::EAX as u32) & 7;
@@ -170,49 +196,18 @@ fn modrm_form(insn: &Instruction) -> Option<(u32, u32)> {
         }
     };
     let prefixes = (insn.segment_prefix() != Register::None) as u32;
-    if insn.has_rep_prefix() || insn.has_repne_prefix() || insn.has_lock_prefix() {
-        return None;
-    }
-    let sib = (rm == 4) as u32;
-    let canonical = prefixes + 2 + sib + disp;
-    match insn.len() as u32 {
-        n if n == canonical => Some((md, rm)),
-        // A redundant SIB: no index (100), the base in its base field; with
-        // no base, mod 00 and SIB base 101 (disp32) in place of rm 101.
-        n if n == canonical + 1 && rm != 4 => Some((md, 4)),
-        _ => None,
-    }
+    let canonical = prefixes + 2 + (rm == 4) as u32 + disp;
+    let reg = oc.group_index().max(0) as u32;
+    (insn.len() as u32 == canonical).then_some((((v & 7) << 8) | (md << 6) | (reg << 3) | rm) as u16)
 }
 
-/// Whether [`fop`] is exact for `insn`: forms without a memory operand
-/// always are, memory forms when [`modrm_form`] explains the encoding.
-pub(super) fn fop_exact(insn: &Instruction) -> bool {
-    let mem = (0..insn.op_count()).any(|k| insn.op_kind(k) == OpKind::Memory);
-    !mem || insn.op_code().op_code() > 0xff || modrm_form(insn).is_some()
-}
-
-/// FOP: the low three bits of the first opcode byte, then the ModR/M byte.
-/// Register forms come straight from the opcode (`D8 C0+i`); memory forms
-/// rebuild ModR/M from the addressing mode and the instruction length
-/// ([`modrm_form`]), which recovers a redundant SIB byte too. Forms whose
-/// length it cannot explain are refused by the lowering ([`fop_exact`]).
-pub fn fop(insn: &Instruction) -> u16 {
-    let oc = insn.op_code();
-    let v = oc.op_code();
-    if v > 0xff {
-        let i = (0..insn.op_count())
-            .filter(|&k| insn.op_kind(k) == OpKind::Register)
-            .map(|k| insn.op_register(k))
-            .filter(|r| (Register::ST0..=Register::ST7).contains(r))
-            .map(|r| r as u32 - Register::ST0 as u32)
-            .max()
-            .unwrap_or(0);
-        let plus = if oc.op_code_string().ends_with("+i") { i } else { 0 };
-        (((v >> 8) & 7) << 8 | ((v & 0xff) + plus)) as u16
-    } else {
-        let reg = oc.group_index().max(0) as u32;
-        let (md, rm) = modrm_form(insn).unwrap_or((0, 0));
-        (((v & 7) << 8) | (md << 6) | (reg << 3) | rm) as u16
+/// FOP for `insn`: from its encoding `bytes` when the lowering has them
+/// ([`super::lower_encoded`]), else rebuilt from the decode. `None` when
+/// it cannot be known exactly, which the lowering refuses.
+pub fn fop(insn: &Instruction, bytes: Option<&[u8]>) -> Option<u16> {
+    match bytes {
+        Some(b) => fop_of_bytes(&b[..b.len().min(insn.len())]),
+        None => fop_of_decode(insn),
     }
 }
 
@@ -254,7 +249,8 @@ impl Lower<'_> {
     }
 
     fn mark(&mut self, a: Option<Addr>) {
-        let fop = fop(self.insn);
+        // Checked on entry to `x87`.
+        let fop = fop(self.insn, self.bytes).unwrap_or(0);
         match a {
             Some(a) => self.x87_op(X87Op::Mark { fop, mem: true }, vec![a.offset]),
             None => self.x87_op(X87Op::Mark { fop, mem: false }, vec![]),
@@ -288,8 +284,8 @@ impl Lower<'_> {
     pub(super) fn x87(&mut self) -> R {
         use Mnemonic as M;
         let insn = self.insn;
-        if !fop_exact(insn) {
-            return Err("x87 memory operand with an encoding FOP cannot be rebuilt from".into());
+        if insn.mnemonic() != M::Wait && fop(insn, self.bytes).is_none() {
+            return Err("x87 encoding whose FOP cannot be rebuilt from the decode (pass its bytes)".into());
         }
         match insn.mnemonic() {
             // ---- control: no FIP/FOP update ------------------------------

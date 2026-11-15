@@ -280,7 +280,7 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
         }
         let at = (cpu.eip - start) as usize;
         let insn = Decoder::with_ip(32, &code[at..], cpu.eip as u64, DecoderOptions::NONE).decode();
-        let ir = lift::lower(&insn, &lift::Env::default(), lift::Site::Plain);
+        let ir = lift::lower_encoded(&insn, &code[at..], &lift::Env::default(), lift::Site::Plain);
         ir.validate().map_err(|e| format!("invalid IR: {e}"))?;
         if let Some((_, detail)) = ir.unsupported() {
             return Ok(Err(skip_class(&insn, detail)));
@@ -698,7 +698,7 @@ mod harness {
         while cpu.eip < end {
             let at = (cpu.eip - CODE_ADDRESS) as usize;
             let insn = Decoder::with_ip(32, &bytes[at..], cpu.eip as u64, DecoderOptions::NONE).decode();
-            let ir = lift::lower(&insn, &lift::Env::default(), lift::Site::Plain);
+            let ir = lift::lower_encoded(&insn, &bytes[at..], &lift::Env::default(), lift::Site::Plain);
             interp::step(&mut cpu, &mut mem, &ir).unwrap();
         }
         let top = (cpu.x87.status >> 11) & 7;
@@ -748,6 +748,36 @@ mod harness {
         assert_eq!(outcome(&f), Ok(Ok(())));
         f["outcome"]["state"]["eax"] = json!(0x1235);
         assert!(outcome(&f).unwrap_err().contains("Eax"));
+
+        // fnstsw ax, then and eax, 0 / or eax, -1 / xor eax, eax: EAX is
+        // fully determined and compared; and ax, 0xff00 keeps the masked
+        // bits it lets through (and the flags made from them).
+        for (tail, name) in
+            [(&[0x83, 0xe0, 0x00][..], "and-0"), (&[0x83, 0xc8, 0xff], "or-ones"), (&[0x31, 0xc0], "xor-self")]
+        {
+            let code = [&FLD1[..], &[0xdf, 0xe0], tail].concat();
+            let mut f = agreeing(name, &code, start.clone(), &[0; 64]);
+            assert_eq!(outcome(&f), Ok(Ok(())), "{name}");
+            f["outcome"]["state"]["eax"] = json!(0xdead_beefu32);
+            assert!(outcome(&f).unwrap_err().contains("Eax"), "{name}");
+        }
+        let code = [&FLD1[..], &[0xdf, 0xe0, 0x66, 0x25, 0x00, 0x45]].concat(); // and ax, 0x4500
+        let mut f = agreeing("and-c-bits", &code, start.clone(), &[0; 64]);
+        assert_eq!(outcome(&f), Ok(Ok(())));
+        let e = &mut f["outcome"]["state"]["eax"];
+        *e = json!(u32_of(e) ^ 0x0100); // C0: masked after fld1, let through
+        let fl = &mut f["outcome"]["state"]["eflags"];
+        *fl = json!(u32_of(fl) ^ 0x40);
+        assert_eq!(outcome(&f), Ok(Ok(())), "C0 and ZF from it stay masked");
+        f["outcome"]["state"]["eax"] = json!(0x1234_0000);
+        assert!(outcome(&f).unwrap_err().contains("Eax"), "the high half is compared");
+
+        // fnstsw [esi], then and word [esi], 0: the bytes are compared.
+        let code = [&FLD1[..], &[0xdd, 0x3e, 0x66, 0x83, 0x26, 0x00]].concat();
+        let mut f = agreeing("fnstsw-and-mem", &code, start.clone(), &[0; 64]);
+        assert_eq!(outcome(&f), Ok(Ok(())));
+        f["outcome"]["writes"][0]["bytes"][1] = json!(0x38);
+        assert!(outcome(&f).unwrap_err().contains("mem["));
 
         // fnstsw [esi], then mov word [esi], 0x55: the bytes are compared.
         let code = [&FLD1[..], &[0xdd, 0x3e, 0x66, 0xc7, 0x06, 0x55, 0x00]].concat();

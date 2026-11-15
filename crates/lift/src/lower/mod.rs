@@ -87,9 +87,26 @@ impl Env {
 }
 
 /// Lower one decoded instruction.
+///
+/// Without its bytes, the few facts only the encoding holds are rebuilt
+/// from the decode where that is exact, and the instruction is refused
+/// where it is not (an x87 memory form with a redundant SIB byte or an
+/// ignored prefix, whose FOP needs the encoded ModR/M); see
+/// [`lower_encoded`].
 pub fn lower(insn: &Instruction, env: &Env, site: Site<'_>) -> IrInsn {
+    lower_with(insn, None, env, site)
+}
+
+/// [`lower`], with the instruction's encoding (`bytes` starts at it; any
+/// bytes past its length are ignored).
+pub fn lower_encoded(insn: &Instruction, bytes: &[u8], env: &Env, site: Site<'_>) -> IrInsn {
+    lower_with(insn, Some(bytes), env, site)
+}
+
+fn lower_with(insn: &Instruction, bytes: Option<&[u8]>, env: &Env, site: Site<'_>) -> IrInsn {
     let mut l = Lower {
         insn,
+        bytes,
         env,
         site,
         b: Builder::new(),
@@ -196,6 +213,8 @@ enum Shift {
 
 struct Lower<'a> {
     insn: &'a Instruction,
+    /// The instruction's encoding, when the caller has it.
+    bytes: Option<&'a [u8]>,
     env: &'a Env,
     site: Site<'a>,
     b: Builder,
