@@ -567,8 +567,9 @@ and allocations are bounded before anything is read:
   - `Renderer::set_pretransformed_z_max` is renderer-wide, so it is set
     before every built-in draw from that draw's depth format.
 - Each draw also carries:
-  - `clip`: the pixel rectangle it may touch. That is the viewport
-    intersected with the target and with the scissor area. SetViewport
+  - `clip`: the pixel rectangle it may touch. With no scissors that is the
+    viewport intersected with the target; with scissors it is the scissor
+    area on the target, and the viewport does not clip (below). SetViewport
     clips to the target and resets the scissors (exclusive mode
     included), as the original does; a null viewport keeps the current
     one.
@@ -579,9 +580,12 @@ and allocations are bounded before anything is read:
     makes one inclusive rectangle the surface clip (`0x3f886c`), and
     otherwise programs the NV2A window clip (`0x3f8928`: clip type =
     `Exclusive`, rectangle `i` in `SET_WINDOW_CLIP_HORIZONTAL/VERTICAL(i)`
-    with inclusive maxima). Inclusive keeps pixels inside any rectangle,
-    exclusive keeps pixels outside all of them; an exclusive rectangle
-    over the whole viewport draws nothing. Counted in
+    with inclusive maxima, surface clip = the whole target). The device
+    follows those three branches: the viewport, the one rectangle, or the
+    target cut by the window rectangles. The viewport is not a clip in the
+    last two, so window rectangles outside it still draw. Inclusive keeps
+    pixels inside any rectangle, exclusive keeps pixels outside all of
+    them; an exclusive rectangle over the whole target draws nothing. Counted in
     `Stats::scissor_split_draws`. `Clear` ignores the scissors, as before
     (not checked against hardware).
   - `hw`: the NV2A register state (`d3d::hw::HwState`) as last pushed.
@@ -657,13 +661,17 @@ and allocations are bounded before anything is read:
     the back buffer made for the draw (`Backend::snapshot_surface`;
     `GfxBackend` uses `gfx::SurfaceStore::snapshot`). That holds while the
     back buffer is the target too: the draw reads what was there before
-    it. Counted in `Stats::frame_snapshots`. An `X8` texture keeps the
-    stored alpha.
+    it. Counted in `Stats::frame_snapshots`. An `X8` texture reads alpha
+    as one: the copy's alpha is cleared to one with an alpha-only masked
+    clear, as uploads of `X8` texels force it to 255.
   - Any other texture inside either buffer's `FRAME_DATA_SPAN` (another
     format or size, an offset into it, or anything over the depth buffer)
-    skips the draw with `Event::DrawSkipped` saying why. Depth bits read as
-    colour are not modelled. A backend without `snapshot_surface` skips
-    too.
+    skips the draw with `Event::DrawSkipped` saying why, when the draw
+    reads that stage: a pixel shader's `PSTEXTUREMODES` gives the stage a
+    mode, or, fixed function, the stage comes before the first `COLOROP =
+    DISABLE`. On a stage the draw does not read, it is left unbound and
+    the draw goes ahead. Depth bits read as colour are not modelled. A
+    backend without `snapshot_surface` skips too.
   - Guest memory at those addresses is never read or written by the
     device. A CPU read of the frame buffer through `Data` faults instead
     of returning stale bytes.

@@ -2732,20 +2732,29 @@ impl<B: Backend> Device<B> {
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
+        let mut bound = self.textures;
+        let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
+        let state = parts.words.translate(&self.table);
+        let sampled = sampled_stages(&shader, &parts.words, &state);
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
-                match self.frame_texture(mem, header)? {
+                match self.frame_texture(mem, header, sampled[stage])? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
                         texture_info[stage] = Some(info);
                         snapshots[stage] = Some(t);
                         continue;
                     }
-                    FrameTexture::Skip(reason) => {
+                    FrameTexture::Skip(reason) if sampled[stage] => {
                         self.stats.draws += 1;
                         self.events.push(Event::DrawSkipped { entry, reason });
                         return Ok(());
+                    }
+                    // A stage the draw does not read: left unbound.
+                    FrameTexture::Skip(_) => {
+                        bound[stage] = 0;
+                        continue;
                     }
                 }
                 self.flush_for_texture(mem, header)?;
@@ -2757,8 +2766,6 @@ impl<B: Backend> Device<B> {
         let target = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
         self.touch_target(color)?;
-        let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
-        let state = parts.words.translate(&self.table);
         for b in &state.bad {
             self.events.push(Event::BadState(b.clone()));
         }
@@ -2778,7 +2785,7 @@ impl<B: Backend> Device<B> {
             clip_rects,
             hw: self.hw,
             target,
-            textures: self.textures.map(|t| (t != 0).then_some(t)),
+            textures: bound.map(|t| (t != 0).then_some(t)),
             texture_info,
         };
         let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
@@ -3288,4 +3295,24 @@ fn linear_twin(f: D3DFormat) -> D3DFormat {
         D3DFormat::F16 => D3DFormat::LinF16,
         other => other,
     }
+}
+
+/// The texture stages a draw reads: with a pixel shader, the stages its
+/// `PSTEXTUREMODES` (slot 136, five bits a stage) gives a mode; for the
+/// fixed-function combiner, the stages before the first `COLOROP =
+/// DISABLE` (where [`crate::nv2a::fixed_function_def`] stops).
+fn sampled_stages(
+    shader: &ShaderInputs,
+    words: &StateWords,
+    state: &crate::state::DrawState,
+) -> [bool; 4] {
+    if shader.pixel_shader.is_some() {
+        let modes = words.render[slot::PS_TEXTURE_MODES as usize];
+        return std::array::from_fn(|n| (modes >> (5 * n)) & 0x1F != 0);
+    }
+    let mut on = true;
+    std::array::from_fn(|n| {
+        on &= state.stages[n].color_op != gfx::state::TextureOp::Disable;
+        on
+    })
 }

@@ -681,7 +681,8 @@ impl SurfaceStore {
 
     /// A sampleable copy of colour surface `id` as it is now: a new
     /// single-sample texture of the surface's size and host format
-    /// (`TEXTURE_BINDING | COPY_DST`), filled by a copy recorded in
+    /// (`TEXTURE_BINDING | COPY_DST | COPY_SRC | RENDER_ATTACHMENT`, so it
+    /// can be drawn over, e.g. to force alpha), filled by a copy recorded in
     /// `encoder` (MSAA surfaces are resolved first). For sampling a surface
     /// that is not a render-to-texture target, such as the back buffer read
     /// through a texture header that aliases its memory, also while it is
@@ -702,7 +703,10 @@ impl SurfaceStore {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: s.wgpu_format,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let info = |t| wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All };

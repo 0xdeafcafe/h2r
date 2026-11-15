@@ -321,13 +321,16 @@ pub trait Backend: Send {
     /// A texture holding colour surface `surface` as it is now (a copy:
     /// later drawing into the surface does not reach it). For a texture
     /// header whose memory is a surface that has no guest copy, such as the
-    /// back buffer read through a texture that aliases it. `Ok(None)`: the
-    /// backend cannot (the default), and the draw is skipped.
+    /// back buffer read through a texture that aliases it. With `opaque`
+    /// the copy's alpha is one (an `X8` texture over the surface).
+    /// `Ok(None)`: the backend cannot (the default), and the draw is
+    /// skipped.
     fn snapshot_surface(
         &mut self,
         surface: Self::Surface,
+        opaque: bool,
     ) -> Result<Option<Self::Texture>, String> {
-        let _ = surface;
+        let _ = (surface, opaque);
         Ok(None)
     }
     /// A colour surface that is also a texture, for a render-to-texture
@@ -409,6 +412,8 @@ pub enum Recorded {
     Snapshot {
         /// Surface copied.
         surface: u32,
+        /// Alpha forced to one.
+        opaque: bool,
         /// The texture handle returned.
         id: u32,
     },
@@ -566,10 +571,11 @@ impl Backend for RecordingBackend {
         self.calls.push(Recorded::CopySurface { src, dst });
         Ok(true)
     }
-    fn snapshot_surface(&mut self, surface: u32) -> Result<Option<u32>, String> {
+    fn snapshot_surface(&mut self, surface: u32, opaque: bool) -> Result<Option<u32>, String> {
         self.next += 1;
         self.calls.push(Recorded::Snapshot {
             surface,
+            opaque,
             id: self.next,
         });
         Ok(Some(self.next))

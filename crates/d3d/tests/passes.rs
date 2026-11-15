@@ -228,7 +228,7 @@ fn textures_over_the_frame_buffers_sample_a_back_buffer_copy_or_skip() {
         .calls
         .iter()
         .find_map(|c| match c {
-            Recorded::Snapshot { surface, id } => Some((*surface, *id)),
+            Recorded::Snapshot { surface, id, .. } => Some((*surface, *id)),
             _ => None,
         })
         .expect("snapshot");
@@ -476,5 +476,125 @@ fn gpu_render_to_texture_then_sample_it() {
     let px = back_buffer(&d);
     assert_eq!(px(8, 32), [0, 0xFF, 0, 0xFF]);
     assert_eq!(px(56, 32), [0, 0xFF, 0, 0x40]);
+    finish(scope);
+}
+
+fn small_viewport<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
+    for (i, w) in [0, 0, 32, 32, 0.0f32.to_bits(), 1.0f32.to_bits()]
+        .iter()
+        .enumerate()
+    {
+        m.write_u32(VIEWPORT + 4 * i as u32, *w).unwrap();
+    }
+    d.set_viewport(m, VIEWPORT).unwrap();
+}
+
+/// Review P2: with scissors set, the window clip replaces the viewport
+/// (`0x3f8928` sets the surface clip to the whole target).
+#[test]
+fn window_scissors_are_not_clipped_by_the_viewport() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    small_viewport(&mut d, &mut m);
+    // No scissors: the 32x32 viewport.
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let c = last_clip(&d).0.unwrap();
+    assert_eq!((c.x, c.y, c.width, c.height), (0, 0, 32, 32));
+    // Two inclusive rectangles outside the viewport still draw.
+    rects(&mut m, &[[40, 0, 48, 8], [0, 40, 8, 48]]);
+    d.set_scissors(&mut m, 2, 0, RECTS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let (_, pieces) = last_clip(&d);
+    assert_eq!(tuples(&pieces), [(40, 0, 8, 8), (0, 40, 8, 8)]);
+    // One inclusive rectangle is the surface clip (0x3f886c).
+    rects(&mut m, &[[40, 40, 60, 60]]);
+    d.set_scissors(&mut m, 1, 0, RECTS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let (c, pieces) = last_clip(&d);
+    let c = c.unwrap();
+    assert_eq!((c.x, c.y, c.width, c.height), (40, 40, 20, 20));
+    assert!(pieces.is_empty());
+    // Exclusive: everything on the target outside the rectangle.
+    rects(&mut m, &[[8, 8, 16, 16]]);
+    d.set_scissors(&mut m, 1, 1, RECTS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let (c, pieces) = last_clip(&d);
+    let c = c.unwrap();
+    assert_eq!((c.x, c.y, c.width, c.height), (0, 0, W, H));
+    let hit = covered(&pieces, W, H);
+    assert!(hit[40] && hit[(63 * W + 63) as usize] && !hit[(10 * W + 10) as usize]);
+}
+
+#[test]
+fn gpu_window_scissors_draw_outside_a_small_viewport() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    quad(&mut d, &mut m, 0xFFFF_0000);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    small_viewport(&mut d, &mut m);
+    rects(&mut m, &[[40, 0, 48, 8], [0, 40, 8, 48]]);
+    d.set_scissors(&mut m, 2, 0, RECTS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    let px = back_buffer(&d);
+    let (red, blue) = ([0xFF, 0, 0, 0xFF], [0, 0, 0xFF, 0xFF]);
+    assert_eq!(px(44, 4), red);
+    assert_eq!(px(4, 44), red);
+    assert_eq!(px(16, 16), blue, "inside the viewport, outside the windows");
+    finish(scope);
+}
+
+/// Review P2: an unsupported frame-buffer texture on a stage the draw does
+/// not read leaves the draw alone.
+#[test]
+fn gpu_unused_depth_texture_stage_does_not_cancel_the_draw() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    quad(&mut d, &mut m, 0xFFFF_0000);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    // Stage 1 is disabled by default, so stage 3 is never read.
+    frame_texture(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H);
+    d.set_texture(&mut m, 3, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    assert_eq!(back_buffer(&d)(32, 32), [0xFF, 0, 0, 0xFF]);
+    // Read on stage 0 it is still skipped.
+    d.set_texture(&mut m, 3, 0).unwrap();
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert!(
+        d.take_events()
+            .iter()
+            .any(|e| matches!(e, Event::DrawSkipped { .. }))
+    );
+    finish(scope);
+}
+
+/// Review P2: an X8 texture over the back buffer reads alpha as one.
+#[test]
+fn gpu_x8_texture_over_the_back_buffer_reads_opaque_alpha() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0x4011_2233, 1.0, 0).unwrap();
+    let back = data_of(&m, f::BACK_BUFFER);
+    for (format, alpha) in [(0x1E, 0xFF), (0x12, 0x40)] {
+        // LIN_X8R8G8B8 (0x1E): opaque; LIN_A8R8G8B8: the stored alpha.
+        frame_texture(&mut m, back, format, W, H);
+        d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+        mirrored_textured_quad(&mut d, &mut m);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        no_skips(&mut d);
+        assert_eq!(
+            back_buffer(&d)(20, 20),
+            [0x11, 0x22, 0x33, alpha],
+            "format {format:#x}"
+        );
+        // Reset for the next round.
+        d.clear(&mut m, 0, 0, 0xF0, 0x4011_2233, 1.0, 0).unwrap();
+    }
     finish(scope);
 }

@@ -379,12 +379,42 @@ impl Backend for GfxBackend {
         Ok(true)
     }
 
-    fn snapshot_surface(&mut self, surface: SurfaceId) -> Result<Option<wgpu::Texture>, String> {
+    fn snapshot_surface(
+        &mut self,
+        surface: SurfaceId,
+        opaque: bool,
+    ) -> Result<Option<wgpu::Texture>, String> {
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         let t = self
             .store
             .snapshot(&self.ctx, &mut enc, surface)
             .map_err(|e| e.to_string())?;
+        if opaque {
+            // Alpha to one: an alpha-only masked clear of the copy.
+            let view = t.create_view(&Default::default());
+            let target = gfx::RenderTarget {
+                color: &view,
+                color_format: t.format(),
+                depth: None,
+                depth_format: None,
+                size: (t.width(), t.height()),
+                samples: 1,
+            };
+            let clear = MaskedClear {
+                color: Some([0.0, 0.0, 0.0, 1.0]),
+                channels: wgpu::ColorWrites::ALPHA,
+                depth: None,
+                stencil: None,
+            };
+            let all = ScissorRect {
+                x: 0,
+                y: 0,
+                width: t.width(),
+                height: t.height(),
+            };
+            self.renderer
+                .clear_rects(&self.ctx, &mut enc, &target, clear, &[all]);
+        }
         self.ctx.queue.submit([enc.finish()]);
         Ok(Some(t))
     }

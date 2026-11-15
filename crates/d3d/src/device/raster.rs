@@ -7,11 +7,11 @@
 //!   clear goes to [`Backend::clear`]; anything else to
 //!   [`Backend::clear_rects`].
 //! * **Clip.** Draws carry the area they may write
-//!   ([`ResolvedDraw::clip`], [`ResolvedDraw::clip_rects`]): the viewport
-//!   (SetViewport resets the window clip to it, `0x3f82e8` -> `0x3f8760`)
-//!   and the target, narrowed to the union of inclusive scissor rectangles
-//!   or to what exclusive ones leave, as disjoint pieces
-//!   ([`scissor_region`]).
+//!   ([`ResolvedDraw::clip`], [`ResolvedDraw::clip_rects`]): with no
+//!   scissors the viewport (SetViewport resets the scissors, `0x3f82e8` ->
+//!   `0x3f8760`); with scissors the target narrowed to the union of
+//!   inclusive rectangles or to what exclusive ones leave, as disjoint
+//!   pieces ([`scissor_region`]), with no viewport clip.
 //! * **Frame buffer as a texture.** A texture whose `Data` is the back
 //!   buffer's ([`BACK_BUFFER_DATA`]) is sampled from a copy of the back
 //!   buffer ([`Backend::snapshot_surface`]); one over the depth buffer
@@ -170,11 +170,13 @@ pub fn scissor_region(base: Edges, rects: &[Rect], exclusive: bool) -> Vec<Pixel
 impl<B: Backend> Device<B> {
     /// Whether texture `header` reads one of the device's own frame
     /// buffers ([`BACK_BUFFER_DATA`], [`DEPTH_BUFFER_DATA`]), and if so how
-    /// a draw samples it.
+    /// a draw samples it. A stage the draw does not read (`sampled` false)
+    /// is not copied; the caller leaves it unbound.
     pub(super) fn frame_texture(
         &mut self,
         mem: &dyn GuestMemory,
         header: u32,
+        sampled: bool,
     ) -> Result<FrameTexture<B::Texture>, D3dError> {
         let pc = PixelContainer::read(mem, header)?;
         if pc.resource.kind() != ResourceType::Texture {
@@ -221,9 +223,16 @@ impl<B: Backend> Device<B> {
                 sw.format
             )));
         }
+        if !sampled {
+            return Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} over the back buffer on a stage the draw does not read"
+            )));
+        }
+        // X8: the texel's alpha reads as one, whatever the buffer holds.
+        let opaque = desc.format == D3DFormat::LinX8R8G8B8;
         let Some(t) = self
             .backend
-            .snapshot_surface(back)
+            .snapshot_surface(back, opaque)
             .map_err(D3dError::Backend)?
         else {
             return Ok(FrameTexture::Skip(format!(
@@ -551,14 +560,27 @@ impl<B: Backend> Device<B> {
     /// disjoint pieces ([`ResolvedDraw::clip_rects`]). `None`: nothing.
     pub(super) fn draw_clip(&self, mem: &dyn GuestMemory) -> Result<Option<ClipArea>, D3dError> {
         let (w, h) = self.target_size(mem)?;
-        let v = self.viewport;
-        let base = (
-            v.x.min(w) as i64,
-            v.y.min(h) as i64,
-            (v.x as i64 + v.width as i64).min(w as i64),
-            (v.y as i64 + v.height as i64).min(h as i64),
-        );
-        let mut pieces = scissor_region(base, &self.scissors, self.scissor_exclusive);
+        // The surface clip as `SetScissors` sets it (`0x3f8760`): the
+        // viewport with no rectangles (`0x3f87a7`), the rectangle itself
+        // for one inclusive rectangle (`0x3f886c`), and otherwise the whole
+        // target, cut by the window clip (`0x3f8928`). The viewport is no
+        // clip of its own in the last two.
+        let target = (0, 0, w as i64, h as i64);
+        let (base, windows): (Edges, &[Rect]) = match self.scissors.as_slice() {
+            [] => {
+                let v = self.viewport;
+                let vp = (
+                    v.x.min(w) as i64,
+                    v.y.min(h) as i64,
+                    (v.x as i64 + v.width as i64).min(w as i64),
+                    (v.y as i64 + v.height as i64).min(h as i64),
+                );
+                (vp, &[])
+            }
+            [one] if !self.scissor_exclusive => (target, std::slice::from_ref(one)),
+            all => (target, all),
+        };
+        let mut pieces = scissor_region(base, windows, self.scissor_exclusive);
         if pieces.len() <= 1 {
             return Ok(pieces.pop().map(|p| (p, Vec::new())));
         }
