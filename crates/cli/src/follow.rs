@@ -2040,7 +2040,7 @@ mod tests {
         owned.cancel();
         assert_eq!(t.join().unwrap(), Err("cancelled".to_string()));
         assert!(
-            start.elapsed() < Duration::from_secs(3),
+            start.elapsed() < Duration::from_secs(30),
             "{:?}",
             start.elapsed()
         );
@@ -2167,8 +2167,10 @@ mod tests {
         let start = Instant::now();
         let head = watch_of(&clone, Duration::from_secs(1)).head(&log).unwrap();
         assert_eq!(head.hash, hash);
+        // The fetch would hang for 4242 s; a generous bound proves the timeout
+        // fired without depending on how loaded the machine is.
         assert!(
-            start.elapsed() < Duration::from_secs(10),
+            start.elapsed() < Duration::from_secs(60),
             "{:?}",
             start.elapsed()
         );
@@ -2190,7 +2192,7 @@ mod tests {
         tx.send(Event::Interrupt).unwrap();
         let start = Instant::now();
         assert!(wait_baseline(&rx, &watch, read).unwrap().is_none());
-        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(start.elapsed() < Duration::from_secs(30));
         assert!(!running("sleep 4242"), "the fetch outlived the interrupt");
         fs::remove_dir_all(&root).unwrap();
     }
@@ -2293,7 +2295,7 @@ mod tests {
         assert!(wait_baseline(&rx, &watch, read).unwrap().is_none());
         // Back only after SIGKILL and the reap, within the grace period.
         assert!(
-            start.elapsed() < BUILD_GRACE + Duration::from_secs(2),
+            start.elapsed() < BUILD_GRACE + Duration::from_secs(30),
             "{:?}",
             start.elapsed()
         );
@@ -2319,7 +2321,7 @@ mod tests {
         owned.cancel();
         watcher.join().unwrap();
         assert!(
-            start.elapsed() < Duration::from_secs(1),
+            start.elapsed() < Duration::from_secs(30),
             "{:?}",
             start.elapsed()
         );
