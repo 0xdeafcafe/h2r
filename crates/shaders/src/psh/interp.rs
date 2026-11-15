@@ -86,7 +86,15 @@ impl Sampler for NoTextures {
 fn fog_factor(u: &Uniforms, f: f32) -> f32 {
     let mode = u.fog[0] as u32;
     let r = match mode {
-        1 => (u.fog[2] - f) / (u.fog[2] - u.fog[1]),
+        1 => {
+            // D3D's scale: 1/(end - start), or 8192 when they are equal.
+            let k = if u.fog[2] == u.fog[1] {
+                8192.0
+            } else {
+                1.0 / (u.fog[2] - u.fog[1])
+            };
+            (u.fog[2] - f) * k
+        }
         2 => (-u.fog[3] * f).exp(),
         3 => {
             let d = u.fog[3] * f;
@@ -115,6 +123,19 @@ fn sign_nv(x: f32) -> f32 {
     } else {
         b / 127.0
     }
+}
+
+/// `D3DTSS_COLORSIGN`: the masked channels as signed bytes.
+fn signed(v: Vec4, mask: u8) -> Vec4 {
+    let bit = [bits::SIGN_R, bits::SIGN_G, bits::SIGN_B, bits::SIGN_A];
+    std::array::from_fn(|j| {
+        if mask & bit[j] == 0 {
+            return v[j];
+        }
+        let b = (v[j].clamp(0.0, 1.0) * 255.0).round_ties_even();
+        let s = if b >= 128.0 { b - 256.0 } else { b };
+        (s / 127.0).max(-1.0)
+    })
 }
 
 fn dot_map(m: DotMap, c: Vec4) -> [f32; 3] {
@@ -274,10 +295,12 @@ pub fn run(
         let mapped = dot_map(c.dot_mapping[i], src);
         let t = tc[i];
         let scale = u.tex_scale[i];
+        let sign = options.color_sign[i];
         let s2 = |uv: [f32; 2]| {
-            sampler.sample(i, TextureDim::D2, [uv[0] * scale[0], uv[1] * scale[1], 0.0])
+            let v = sampler.sample(i, TextureDim::D2, [uv[0] * scale[0], uv[1] * scale[1], 0.0]);
+            signed(v, sign)
         };
-        let s3 = |d: TextureDim, v: [f32; 3]| sampler.sample(i, d, v);
+        let s3 = |d: TextureDim, v: [f32; 3]| signed(sampler.sample(i, d, v), sign);
         use TexMode::*;
         let valid = match mode {
             BumpEnvMap | BumpEnvMapLum | DependentAr | DependentGb => i >= 1,

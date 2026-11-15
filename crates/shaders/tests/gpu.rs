@@ -555,6 +555,13 @@ fn random_combiners_match_interpreter() {
             alpha_test: rng.pick(&funcs),
             two_sided_lighting: rng.below(2) == 0,
             alpha_kill: std::array::from_fn(|_| rng.below(4) == 0),
+            color_sign: std::array::from_fn(|_| {
+                if rng.below(3) == 0 {
+                    rng.below(16) as u8
+                } else {
+                    0
+                }
+            }),
             explicit_lod: true,
             ..Default::default()
         };
@@ -570,6 +577,14 @@ fn random_combiners_match_interpreter() {
         }
         u.fog_color = std::array::from_fn(|_| rng.f(0.0, 1.0));
         u.alpha_ref = [rng.below(256) as f32, 0.0, 0.0, 0.0];
+        // Fog: from the vertex, linear (also with start == end), exp, exp2.
+        u.fog = match rng.below(5) {
+            0 => [1.0, 0.25, 0.75, 0.0],
+            1 => [1.0, 0.5, 0.5, 0.0],
+            2 => [2.0, 0.0, 0.0, rng.f(0.0, 2.0)],
+            3 => [3.0, 0.0, 0.0, rng.f(0.0, 2.0)],
+            _ => [0.0; 4],
+        };
         for s in 0..4 {
             u.bump_mat[s] = std::array::from_fn(|_| rng.f(-1.0, 1.0));
             u.bump_lum[s] = [rng.f(0.0, 2.0), rng.f(-0.5, 0.5), 0.0, 0.0];

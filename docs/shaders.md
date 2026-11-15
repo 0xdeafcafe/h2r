@@ -277,7 +277,23 @@ register file. `psh::bits` has the `PS_*` encodings.
   registers start at zero, and textures in mode NONE read (0, 0, 0, 1).
 - **Final combiner.** When either inputs dword is non-zero, rgb =
   A·B + (1−A)·C + D and alpha = G, both clamped to [0, 1]. Without a final
-  combiner the output is `clamp(r0)`.
+  combiner the output is `clamp(r0)`. That is the translator's own
+  default; the hardware always runs one. When a definition has none,
+  Xbox D3D's `SetPixelShader` (`0x3fa3d0`) skips
+  `SET_COMBINER_SPECULAR_FOG_CW0/1` and marks the fog/specular state dirty.
+  The lazy commit (`0x00400000`) then programs the final combiner it also
+  uses for the fixed-function path: with `FOGENABLE`, `A = fog.a`, `B = r0`
+  (`v1+r0` with `SPECULARENABLE`), `C = fog.rgb`; without it, `D = r0`
+  (or `v1+r0`); always `G = r0.a` and the clamp-sum flag (`0x130C0300`,
+  `+0x20000` for specular, `0x0C`/`0x0E`, and `0x1C80`).
+  `psh::d3d_default_final_combiner` returns those words, and
+  `PixelShaderDef::with_default_final_combiner` fills them in. `d3d::nv2a`
+  applies it to every guest definition. All 140 retail definitions with
+  general combiners carry their own final combiner. The other 9 are
+  variant shells whose combiners the engine builds at run time, and those
+  always get one too (ABCD `0xc`, EFG `0x2000`; see shader-instances.md).
+  So this only changes draws whose pixel shader the game builds without
+  one.
 - **`v1+r0` (V1R0_SUM)** unsigned-maps each operand before adding: each is
   clamped to [0, 1], and inverted (1 − clamp) when its complement flag is
   set. The clamp-sum flag then clamps the sum. So r0 = −0.5 and v1 = 0.75
@@ -290,7 +306,68 @@ register file. `psh::bits` has the `PS_*` encodings.
   for the behaviour only, and nothing was transcribed.
 - **Fog** reads (fog colour rgb, factor). The factor is the interpolated
   `oFog.x`, or a linear, exp or exp2 table mode from `XpsUniforms.fog`.
-  Applying fog is up to the shader's final combiner, as on the Xbox.
+  Applying fog is up to the final combiner, as on the Xbox. The modes
+  match what Halo 2's D3D pushes (`0x00400000`). With no table mode it
+  programs `LINEAR` with bias 1 and scale 1, so the factor is `oFog.x`.
+  `LINEAR` uses scale `−1/(end − start)` and bias `1 + end/(end − start)`,
+  which gives `(end − d)/(end − start)`, with scale 8192 when
+  `start == end`. `EXP` uses scale `density · −1/(16 ln 2)` and
+  `EXP2` uses `density · −1/√(32 ln 2)`. Both have bias 1.5, which gives
+  `exp(−density·d)` and `exp(−(density·d)²)`. The constants are read from
+  the XBE. `D3DRS_FOGCOLOR` stays a `D3DCOLOR` (ARGB) in the render-state
+  array. `SetRenderState_FogColor` (`0x3f5370`) swaps red and blue only
+  in the `SET_FOG_COLOR` method it pushes. The factor is computed per
+  fragment from the interpolated coordinate. That is exact for linear fog
+  and from the vertex, and an approximation for the exp modes, which the
+  NV2A may evaluate per vertex.
+
+### What the retail definitions use
+
+The extracted corpus (149 definitions) gives this tally. Counts are per
+input or output slot that names a register, RGB portion first, then alpha.
+
+- **Input mappings:** unsigned identity 1,032 / 503, invert 99 / 47,
+  expand 71 / 51, expand-negate 5 / 3, half-bias 3 / 0, half-bias-negate
+  12 / 19, signed identity 10 / 35, signed negate 2 / 8.
+- **Output mappings:** identity 428 / 458, ×2 55 / 10, ×4 1 / 16, ÷2
+  2 / 2. No definition uses the −½ bias.
+- **Flags:** AB dot 64, CD dot 37, mux 8 (RGB) and 49 (alpha), and no
+  blue-to-alpha.
+- **Final combiner:** inputs only use the identity and invert mappings.
+  `E·F` is read 36 times (9 as A, 24 as B, 3 as D). `v1+r0` and the
+  complement flags are never read. `G` is mostly `r0.a` (47) or `t0.a`
+  (24), with 10 blue reads.
+- **Fog:** 5 definitions read the fog register, only in the final
+  combiner: `1 − fog.a` as F (2) and as A (2), `fog.a` as B (1) and
+  `fog.rgb` as C (2).
+  64 of the 353 vertex programs write `oFog`, mostly
+  `dph oFog.xw, rN, c[35]` or `mad oFog.w, rN.w, c.x, c.y`.
+- No definition reads a texture register of a `NONE` stage before writing
+  it. Only one reads `r0.rgb` before writing it (zero on both sides), and
+  only one reads the initial `r0.a`, with stage 0 textured.
+
+`h2 shader --all all` over the resolved materials adds the stage and blend
+states. `COLORSIGN` is set 30 times, always to `0xE0000000` on stage 0.
+`COLORKEYOP` is never set. `BLENDOP` is always `ADD`. `SRCBLEND` is
+`CONSTANTCOLOR` in 50,046 implementations and `DESTALPHA` in 41,525.
+`DESTBLEND` uses `CONSTANTCOLOR`/`INVCONSTANTCOLOR` 10,359 times, and
+`BLENDCOLOR` is mostly `0x00FFFFFF`. That last pair writes RGB and leaves
+alpha to the constant's zero.
+
+### Signed texture channels (`COLORSIGN`)
+
+`D3DTSS_COLORSIGN` sets the NV2A texture unit's per-channel sign bits
+(`D3DTSIGN_ASIGNED` bit 28, `RSIGNED` 29, `GSIGNED` 30, `BSIGNED` 31; the
+same bits as `SET_TEXTURE_FILTER`). A signed channel is the texel byte read
+as two's complement: 0x7F gives 1, 0x00 gives 0, 0x80 and 0x81 give −1,
+0xFF gives −1/127. nouveau programs signed-normalised formats the same way,
+as the unsigned format plus these filter bits. `PixelOptions::color_sign`
+holds `COLORSIGN >> 28` per stage (`bits::color_sign`), and the generated
+code converts the channel right after the fetch, before bump-env, dot
+products, alpha kill or the combiners see it. The conversion runs after
+filtering, so a bilinear blend across 0x7F/0x80 differs from the hardware,
+which converts per texel. Retail Halo 2 sets it in 30 resolved
+implementations, all on stage 0 with RGB signed (`0xE0000000`).
 
 ### Texture modes
 
@@ -329,7 +406,7 @@ textures.
 
 The other per-pipeline state the combiners need comes in through
 `PixelOptions`: `D3DTSS_ALPHAKILL` per stage (kill when the fetched alpha is
-0), the alpha test (wgpu has none, so it's emulated with `discard` against
+0), `D3DTSS_COLORSIGN` per stage, the alpha test (wgpu has none, so it's emulated with `discard` against
 `alpha_ref` in 0 to 255), two-sided lighting (back faces read `oB0`/`oB1`),
 and flat shading.
 
@@ -414,6 +491,18 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   checks the pixels.
 - The GPU tests pass trivially when no adapter is present. Set
   `SHADERS_NO_GPU` to force that.
+- `crates/d3d/tests/nv2a_conformance.rs` is the end-to-end conformance
+  suite. It renders small synthetic combiner programs, fixed-function
+  stages and pipeline states through `GfxBackend` and `Nv2aShaders` into an
+  `A8R8G8B8` target and checks known pixel values. It covers per-stage and
+  global `c0`/`c1` and the final constants (ARGB order), all eight input
+  mappings on positive and negative values, output scale/bias with the
+  register clamp, mux, AB/CD dots and blue-to-alpha, the final combiner's
+  lerp, `v1+r0` flags, `E·F` and `G`, every fog mode with D3D's default
+  final combiner and fog colour order, texture formats (`A8R8G8B8`,
+  `X8R8G8B8`, `A8B8G8R8`, 16-bit, `L8`, `A8L8`, DXT1, P8), `COLORSIGN`,
+  `BLENDCOLOR` with constant blend factors, `TFACTOR` and `D3DCOLOR` vertex
+  diffuse, and `FRONTFACE`/`CULLMODE` with two-sided lighting.
 - `tests/corpus.rs` is optional. With `H2_SHADER_CORPUS` set it checks the
   directory against its manifest, validates the disc's shaders and runs
   every vertex program on the GPU against the interpreter. On the retail
@@ -439,6 +528,15 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
 - **Colour key, convolution filters, shadow-map compare (PROJECT2D/3D on
   depth textures) and texture border adjustment** are sampler and texture
   state outside the PSDEF. They're left to the renderer and not implemented.
+  No retail material sets `COLORKEYOP` (all 809,233 resolved stage states
+  are 0).
+- **Signed blend equations.** `BLENDOP = ADDSIGNED/REVSUBTRACTSIGNED` have
+  no wgpu equivalent and fall back to the unsigned ones. Retail materials
+  only use `ADD`.
+- **Blue-to-alpha against an alpha-portion write.** When a stage both
+  copies AB/CD blue to alpha and writes the same register from its alpha
+  portion, the alpha portion wins here (xemu's order). This is unverified on
+  hardware, and no retail definition does it.
 - **Bump-env channel and sign conventions** rely on the renderer decoding
   V8U8/L6V5U5 as signed `.rg` (and `.b` for luminance).
 - **What the `vrtx` u16 block and the `spas` index fields mean**, and how the

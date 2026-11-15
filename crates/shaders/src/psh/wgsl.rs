@@ -61,6 +61,11 @@ pub struct PixelOptions {
     pub texture_dims: [Option<TextureDim>; 4],
     /// `D3DTSS_ALPHAKILL` per stage: kill when the fetched alpha is 0.
     pub alpha_kill: [bool; 4],
+    /// `D3DTSS_COLORSIGN` per stage as [`bits::color_sign`] masks
+    /// ([`bits::SIGN_R`] ...): the channels the texture unit reads as
+    /// signed bytes (two's complement, `max(s / 127, -1)`) instead of
+    /// unsigned ones.
+    pub color_sign: [u8; 4],
     /// Alpha test; `None` disables it.
     pub alpha_test: Option<AlphaFunc>,
     /// Two-sided lighting: back faces read `oB0`/`oB1` as `v0`/`v1`.
@@ -131,7 +136,11 @@ struct XpsResult { color: vec4f, kill: bool, }
 
 fn xps_fog_factor(f: f32) -> f32 {
     let mode = u32(xps.fog.x);
-    if (mode == 1u) { return clamp((xps.fog.z - f) / (xps.fog.z - xps.fog.y), 0.0, 1.0); }
+    if (mode == 1u) {
+        // D3D programs scale 1/(end - start), or 8192 when start == end.
+        let k = select(1.0 / (xps.fog.z - xps.fog.y), 8192.0, xps.fog.z == xps.fog.y);
+        return clamp((xps.fog.z - f) * k, 0.0, 1.0);
+    }
     if (mode == 2u) { return clamp(exp(-xps.fog.w * f), 0.0, 1.0); }
     if (mode == 3u) { let d = xps.fog.w * f; return clamp(exp(-d * d), 0.0, 1.0); }
     return clamp(f, 0.0, 1.0);
@@ -146,6 +155,12 @@ fn xps_sign_gl(x: vec3f) -> vec3f {
 fn xps_sign_nv(x: vec3f) -> vec3f {
     let b = x * 255.0;
     return select(b / 127.0, (b - 256.0) / 127.0, b >= vec3f(128.0));
+}
+// A texel channel the texture unit reads as a signed byte (COLORSIGN).
+fn xps_signed(v: vec4f, m: vec4<bool>) -> vec4f {
+    let b = round(clamp(v, vec4f(0.0), vec4f(1.0)) * 255.0);
+    let s = select(b, b - 256.0, b >= vec4f(128.0));
+    return select(v, max(s / 127.0, vec4f(-1.0)), m);
 }
 fn xps_mux_lsb(a: f32) -> bool { return (u32(a * 255.0) & 1u) == 1u; }
 "#;
@@ -359,10 +374,28 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
         } else {
             ("textureSample", "")
         };
-        let sample2 = |uv: &str| {
-            format!("{func}(xps_tex{i}, xps_samp{i}, ({uv}) * xps.tex_scale[{i}].xy{lod})")
+        // Signed channels are converted as the texel leaves the texture
+        // unit, before anything else in the stage uses it.
+        let sign = options.color_sign[i] & 0xF;
+        let signed = |e: String| {
+            if sign == 0 || textures[i].is_none() {
+                return e;
+            }
+            let b = |m: u8| sign & m != 0;
+            format!(
+                "xps_signed({e}, vec4<bool>({}, {}, {}, {}))",
+                b(bits::SIGN_R),
+                b(bits::SIGN_G),
+                b(bits::SIGN_B),
+                b(bits::SIGN_A)
+            )
         };
-        let sample = |coord: &str| format!("{func}(xps_tex{i}, xps_samp{i}, {coord}{lod})");
+        let sample2 = |uv: &str| {
+            signed(format!(
+                "{func}(xps_tex{i}, xps_samp{i}, ({uv}) * xps.tex_scale[{i}].xy{lod})"
+            ))
+        };
+        let sample = |coord: &str| signed(format!("{func}(xps_tex{i}, xps_samp{i}, {coord}{lod})"));
         let _ = writeln!(s, "    // texture stage {i}: {}", mode.name());
         let valid_stage = match mode {
             TexMode::BumpEnvMap

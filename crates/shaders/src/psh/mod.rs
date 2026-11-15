@@ -138,6 +138,29 @@ impl PixelShaderDef {
         (c0, c1)
     }
 
+    /// Whether the definition programs the final combiner (either inputs
+    /// dword non-zero). D3D keeps this in device `+0x788`.
+    pub fn has_final_combiner(&self) -> bool {
+        self.final_inputs_abcd != 0 || self.final_inputs_efg != 0
+    }
+
+    /// The definition as the NV2A runs it under the given render states.
+    ///
+    /// When the definition has no final combiner, `SetPixelShader` does not
+    /// push one. It marks the specular/fog state dirty instead, and the
+    /// lazy commit (`0x00400000`, after the fog methods) programs the
+    /// final combiner D3D also uses for the fixed-function path; see
+    /// [`d3d_default_final_combiner`]. With a final combiner the
+    /// definition is returned unchanged.
+    pub fn with_default_final_combiner(&self, fog: bool, specular: bool) -> Self {
+        let mut def = self.clone();
+        if !def.has_final_combiner() {
+            (def.final_inputs_abcd, def.final_inputs_efg) =
+                d3d_default_final_combiner(fog, specular);
+        }
+        def
+    }
+
     /// Structured view.
     pub fn decode(&self) -> Combiners {
         let count = (self.combiner_count & 0xFF).clamp(0, 8) as usize;
@@ -235,6 +258,36 @@ impl TexMode {
                 | DotStrCube
         )
     }
+}
+
+/// The final combiner (`PSFinalCombinerInputsABCD`, `...EFG`) Xbox D3D
+/// programs when the pixel shader has none, or for the fixed-function
+/// path, from `D3DRS_FOGENABLE` and `D3DRS_SPECULARENABLE`. Read from
+/// Halo 2's D3D (`0x00400146` and `0x004001b8` push
+/// `NV097_SET_COMBINER_SPECULAR_FOG_CW0/1`):
+///
+/// * fog: `A = fog.a, B = r0 (v1+r0 with specular), C = fog.rgb, D = 0`,
+///   so `rgb = fog.a * color + (1 - fog.a) * fog.rgb`;
+/// * no fog: `D = r0` (or `v1+r0`), `A = B = C = 0`;
+/// * always `G = r0.a` with the clamp-sum flag.
+pub fn d3d_default_final_combiner(fog: bool, specular: bool) -> (u32, u32) {
+    let color = if specular {
+        bits::REG_V1R0_SUM
+    } else {
+        bits::REG_R0
+    };
+    let abcd = if fog {
+        bits::inputs(
+            bits::REG_FOG | bits::CHAN_ALPHA,
+            color,
+            bits::REG_FOG,
+            bits::REG_ZERO,
+        )
+    } else {
+        bits::inputs(0, 0, 0, color)
+    };
+    let efg = bits::final_efg(0, 0, bits::REG_R0 | bits::CHAN_ALPHA, bits::FINAL_CLAMP_SUM);
+    (abcd, efg)
 }
 
 /// `D3DCOLOR` (ARGB) to RGBA floats.

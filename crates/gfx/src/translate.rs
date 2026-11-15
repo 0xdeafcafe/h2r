@@ -255,20 +255,28 @@ pub fn depth_stencil_state(
 
 /// Translates cull mode, front face and fill mode.
 ///
-/// D3D's `CULL_CW` removes triangles that appear clockwise on screen; in
-/// wgpu terms that is `front_face = Ccw, cull = Back`. The Xbox
-/// `D3DRS_FRONTFACE` only affects two-sided lighting/stencil, which wgpu
-/// pipelines here do not use, so it is not part of the primitive state.
+/// D3D's `CULL_CW` removes triangles that appear clockwise on screen. Xbox
+/// D3D programs the NV2A the same way (`SetRenderState_CullMode`,
+/// `0x3f53d0`): `FRONT_FACE` is `D3DRS_FRONTFACE` and `CULL_FACE` is
+/// `FRONT` when `CULLMODE == FRONTFACE`, else `BACK`. Both cull the
+/// `CULLMODE` winding whatever `FRONTFACE` says, but the front face also
+/// decides `@builtin(front_facing)` (two-sided lighting reads `oB0`/`oB1`
+/// on back faces), so it is carried over too. Window y points down on the
+/// NV2A and in wgpu's framebuffer, so windings match.
 /// Only the front fill mode is honoured (wgpu has one polygon mode).
 pub fn primitive_state(
     rs: &RenderState,
     topology: wgpu::PrimitiveTopology,
     caps: Capabilities,
 ) -> wgpu::PrimitiveState {
-    let (front_face, cull_mode) = match rs.cull_mode {
-        CullMode::None => (wgpu::FrontFace::Ccw, None),
-        CullMode::Cw => (wgpu::FrontFace::Ccw, Some(wgpu::Face::Back)),
-        CullMode::Ccw => (wgpu::FrontFace::Cw, Some(wgpu::Face::Back)),
+    let front_face = match rs.front_face {
+        FrontFace::Cw => wgpu::FrontFace::Cw,
+        FrontFace::Ccw => wgpu::FrontFace::Ccw,
+    };
+    let cull_mode = match (rs.cull_mode, rs.front_face) {
+        (CullMode::None, _) => None,
+        (CullMode::Cw, FrontFace::Cw) | (CullMode::Ccw, FrontFace::Ccw) => Some(wgpu::Face::Front),
+        _ => Some(wgpu::Face::Back),
     };
     let polygon_mode = match rs.fill_mode {
         FillMode::Solid => wgpu::PolygonMode::Fill,
@@ -551,18 +559,48 @@ mod tests {
         assert_eq!(d.bias.constant, -1);
     }
 
+    /// The winding a primitive state removes.
+    fn culled_winding(p: &wgpu::PrimitiveState) -> Option<wgpu::FrontFace> {
+        let other = match p.front_face {
+            wgpu::FrontFace::Cw => wgpu::FrontFace::Ccw,
+            wgpu::FrontFace::Ccw => wgpu::FrontFace::Cw,
+        };
+        match p.cull_mode? {
+            wgpu::Face::Front => Some(p.front_face),
+            wgpu::Face::Back => Some(other),
+        }
+    }
+
     #[test]
     fn cull_and_front_face() {
         let topo = wgpu::PrimitiveTopology::TriangleList;
         let mut s = rs();
         s.cull_mode = CullMode::None;
         assert_eq!(primitive_state(&s, topo, Capabilities::ALL).cull_mode, None);
+        // CULLMODE alone picks the culled winding; FRONTFACE only says which
+        // winding is the front (for front_facing), as on the NV2A.
+        for front in [FrontFace::Cw, FrontFace::Ccw] {
+            s.front_face = front;
+            let want_front = match front {
+                FrontFace::Cw => wgpu::FrontFace::Cw,
+                FrontFace::Ccw => wgpu::FrontFace::Ccw,
+            };
+            s.cull_mode = CullMode::None;
+            assert_eq!(primitive_state(&s, topo, Capabilities::ALL).front_face, want_front);
+            s.cull_mode = CullMode::Cw;
+            let p = primitive_state(&s, topo, Capabilities::ALL);
+            assert_eq!(p.front_face, want_front);
+            assert_eq!(culled_winding(&p), Some(wgpu::FrontFace::Cw));
+            s.cull_mode = CullMode::Ccw;
+            let p = primitive_state(&s, topo, Capabilities::ALL);
+            assert_eq!(culled_winding(&p), Some(wgpu::FrontFace::Ccw));
+        }
+        // CULL_FACE is FRONT exactly when CULLMODE == FRONTFACE.
+        s.front_face = FrontFace::Cw;
         s.cull_mode = CullMode::Cw;
-        let p = primitive_state(&s, topo, Capabilities::ALL);
-        assert_eq!((p.front_face, p.cull_mode), (wgpu::FrontFace::Ccw, Some(wgpu::Face::Back)));
+        assert_eq!(primitive_state(&s, topo, Capabilities::ALL).cull_mode, Some(wgpu::Face::Front));
         s.cull_mode = CullMode::Ccw;
-        let p = primitive_state(&s, topo, Capabilities::ALL);
-        assert_eq!((p.front_face, p.cull_mode), (wgpu::FrontFace::Cw, Some(wgpu::Face::Back)));
+        assert_eq!(primitive_state(&s, topo, Capabilities::ALL).cull_mode, Some(wgpu::Face::Back));
     }
 
     #[test]

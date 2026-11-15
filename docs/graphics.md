@@ -270,9 +270,9 @@ and registers one program per distinct translation.
 | `ZENABLE`, `ZWRITEENABLE`, `ZFUNC` | `DepthStencilState`; disabled = `Always`, no write; W-buffer treated as Z |
 | `STENCIL*` | front = back `StencilFaceState`, masks; `STENCILREF` is a draw-time `set_stencil_reference`; ignored on depth-only formats |
 | `POLYGONOFFSET*` | `DepthBiasState`; the constant is scaled by `2^depth_bits`, approximate and unvalidated |
-| `CULLMODE` | `CULL_CW` = `front_face Ccw, cull Back`; `CULL_CCW` = `front_face Cw, cull Back` |
+| `CULLMODE`, `FRONTFACE` | as D3D programs the NV2A (`SetRenderState_CullMode`, `0x3f53d0`): `front_face` is `FRONTFACE`, `cull` is `Front` when `CULLMODE == FRONTFACE`, else `Back`. Culling depends on `CULLMODE` alone; `FRONTFACE` decides `front_facing` (two-sided lighting) |
 | `FILLMODE` | `PolygonMode` (`Line`/`Point` need `POLYGON_MODE_LINE/POINT`; falls back to `Fill`) |
-| `BACKFILLMODE`, `FRONTFACE` | not expressible in a pipeline; ignored |
+| `BACKFILLMODE` | not expressible in a pipeline; ignored |
 | `ALPHATEST*` | built-in shader: per-draw uniform and `discard`; translated programs: `PixelOptions::alpha_test` |
 | `FOG*`, `SHADEMODE`, `TEXTUREFACTOR` | shader inputs (`d3d::nv2a` feeds them to the translated programs) |
 | stage address/filter/mip/aniso | `SamplerKey` -> `SamplerDescriptor` (hashable; `MIPMAPLODBIAS` not representable); Border address needs `ADDRESS_MODE_CLAMP_TO_BORDER` and the colour snaps to one of wgpu's three presets; quincunx and gaussian-cubic filters approximate to linear |
@@ -401,8 +401,10 @@ renderer, not polish.
 * Push-buffer/NV2A method-stream paths: out of scope by design. Inlined D3D
   fast paths must be intercepted at the call/region level (LIFTER.md section 7;
   Cxbx's `XbPushBuffer.cpp` shows what a draw submission has to preserve).
-* Texture border colour sources and `D3DTSS_COLORKEY*`, `ALPHAKILL`, signed
-  colour channels (`COLORSIGN`) are not modelled.
+* Texture border colour sources and `D3DTSS_COLORKEY*` are not modelled
+  (no retail Halo 2 material sets `COLORKEYOP`). `ALPHAKILL` and signed
+  colour channels (`COLORSIGN`) are handled in the translated pixel
+  programs (docs/shaders.md).
 
 ## References (pinned)
 

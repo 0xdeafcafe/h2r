@@ -781,3 +781,115 @@ fn link_makes_one_module() {
         Err(shaders::LinkError::FlatMismatch)
     );
 }
+
+/// `D3DTSS_COLORSIGN`: masked channels are two's-complement bytes, so
+/// 0x7F reads 1, 0x80 reads -1 and 0xFF reads -1/127; unmasked channels
+/// stay unsigned. Read through r0 = 0.5 * t0 + 0.5 so negatives survive the
+/// output clamp.
+#[test]
+fn color_sign_reads_signed_bytes() {
+    let d = def(
+        &[(
+            inputs(REG_T0 | MAP_SIGNED_IDENTITY, REG_C0, ONE, REG_C0),
+            outputs(0, 0, REG_R0, 0),
+            inputs(REG_T0 | CHAN_ALPHA | MAP_SIGNED_IDENTITY, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [TEX_PROJECT2D, 0, 0, 0],
+    );
+    let mut u = PixelUniforms::default();
+    u.c0[0] = [0.5; 4];
+    let texel = [0x7F as f32 / 255.0, 0x80 as f32 / 255.0, 1.0, 0x40 as f32 / 255.0];
+    let tex = Flat([texel; 4]);
+    let mut inp = Inputs::default();
+    inp.t[0] = [0.5, 0.5, 0.0, 1.0];
+    let opts = PixelOptions {
+        color_sign: [color_sign(0xE000_0000), 0, 0, 0],
+        ..Default::default()
+    };
+    assert_eq!(opts.color_sign[0], SIGN_R | SIGN_G | SIGN_B);
+    let out = interp::run(&d, &opts, &inp, &u, &tex).unwrap();
+    approx(out, [1.0, 0.0, 0.5 - 0.5 / 127.0, 0x40 as f32 / 255.0]);
+    // Unsigned without the flag.
+    let out = interp::run(&d, &Default::default(), &inp, &u, &tex).unwrap();
+    approx(
+        out,
+        [
+            1.0f32.min(0.5 * texel[0] + 0.5),
+            0.5 * texel[1] + 0.5,
+            1.0,
+            texel[3],
+        ],
+    );
+    // Signed alpha.
+    let opts = PixelOptions {
+        color_sign: [SIGN_A, 0, 0, 0],
+        ..Default::default()
+    };
+    let t = [0.0, 0.0, 0.0, 0xC0 as f32 / 255.0];
+    let out = interp::run(&d, &opts, &inp, &u, &Flat([t; 4])).unwrap();
+    approx(out, [0.5, 0.5, 0.5, 0.0]); // -64/127 clamps to 0 in r0's output
+    let w = psh::translate(&d, &opts);
+    assert!(w.body.contains("xps_signed("), "{}", w.body);
+    common::check(&w.module());
+}
+
+/// Linear fog with `FOGSTART == FOGEND`: D3D programs a scale of 8192
+/// instead of dividing by zero (`0x0040008e`).
+#[test]
+fn linear_fog_with_equal_start_and_end() {
+    let mut d = PixelShaderDef::default();
+    d.combiner_count = 1;
+    d.rgb_inputs[0] = inputs(REG_FOG | CHAN_ALPHA, ONE, 0, 0);
+    d.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    let mut u = PixelUniforms::default();
+    u.fog = [1.0, 10.0, 10.0, 0.0];
+    let mut inp = Inputs::default();
+    for (f, want) in [(9.0, 1.0), (10.0, 0.0), (11.0, 0.0), (10.0 - 1.0 / 16384.0, 0.5)] {
+        inp.fog = f;
+        let out = interp::run(&d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap();
+        assert!((out[0] - want).abs() < 1e-3, "fog {f}: {out:?}");
+    }
+}
+
+/// The final combiner D3D programs when a definition has none, from
+/// FOGENABLE and SPECULARENABLE: the words Halo 2's D3D pushes
+/// (`0x130C0300 + 0x20000` with specular, `0x0C`/`0x0E` without fog, and
+/// `0x1C80`).
+#[test]
+fn default_final_combiner_matches_d3d() {
+    use psh::d3d_default_final_combiner as dfc;
+    assert_eq!(dfc(true, false), (0x130C_0300, 0x1C80));
+    assert_eq!(dfc(true, true), (0x130E_0300, 0x1C80));
+    assert_eq!(dfc(false, false), (0x0C, 0x1C80));
+    assert_eq!(dfc(false, true), (0x0E, 0x1C80));
+
+    let mut d = def(
+        &[(
+            inputs(REG_V0, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+            inputs(REG_V0 | CHAN_ALPHA, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [0, 0, 0, 0],
+    );
+    assert!(!d.has_final_combiner());
+    let mut u = PixelUniforms::default();
+    u.fog_color = [0.0, 0.0, 1.0, 0.0];
+    let mut inp = Inputs::default();
+    inp.d0 = [1.0, 0.0, 0.0, 0.5];
+    inp.d1 = [0.0, 0.5, 0.0, 0.0];
+    inp.fog = 0.25;
+    let run = |d: &PixelShaderDef| {
+        interp::run(d, &Default::default(), &inp, &u, &interp::NoTextures).unwrap()
+    };
+    approx(run(&d.with_default_final_combiner(false, false)), [1.0, 0.0, 0.0, 0.5]);
+    approx(run(&d.with_default_final_combiner(false, true)), [1.0, 0.5, 0.0, 0.5]);
+    // 0.25 * diffuse + 0.75 * blue fog.
+    approx(run(&d.with_default_final_combiner(true, false)), [0.25, 0.0, 0.75, 0.5]);
+    approx(run(&d.with_default_final_combiner(true, true)), [0.25, 0.125, 0.75, 0.5]);
+    // A definition with its own final combiner is left alone.
+    d.final_inputs_abcd = inputs(0, 0, 0, REG_V0);
+    d.final_inputs_efg = final_efg(0, 0, ONE, 0);
+    assert_eq!(d.with_default_final_combiner(true, true), d);
+}

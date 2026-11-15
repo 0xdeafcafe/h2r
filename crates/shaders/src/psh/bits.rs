@@ -102,3 +102,16 @@ pub fn input_texture(t2: u32, t3: u32) -> u32 {
 pub fn final_efg(e: u8, f: u8, g: u8, flags: u32) -> u32 {
     (e as u32) << 24 | (f as u32) << 16 | (g as u32) << 8 | flags
 }
+
+/// [`crate::psh::PixelOptions::color_sign`] bits: `D3DTSS_COLORSIGN >> 28`
+/// (`D3DTSIGN_ASIGNED` is bit 28, `RSIGNED` 29, `GSIGNED` 30, `BSIGNED` 31,
+/// the NV2A `SET_TEXTURE_FILTER` sign bits).
+pub const SIGN_A: u8 = 0x1;
+pub const SIGN_R: u8 = 0x2;
+pub const SIGN_G: u8 = 0x4;
+pub const SIGN_B: u8 = 0x8;
+
+/// The per-channel sign mask of a `D3DTSS_COLORSIGN` value.
+pub fn color_sign(colorsign: u32) -> u8 {
+    (colorsign >> 28) as u8
+}

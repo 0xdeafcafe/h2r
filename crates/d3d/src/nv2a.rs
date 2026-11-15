@@ -23,13 +23,16 @@
 //!   copies the definition there and later constant or combiner writes land
 //!   there too), `PSTEXTUREMODES` from slot 136, and the three trailing
 //!   dwords from the definition.
+//!   A definition without a final combiner gets the one D3D programs from
+//!   `FOGENABLE` and `SPECULARENABLE` (`psh::d3d_default_final_combiner`).
 //! * Without one, the texture-stage states are turned into a combiner
 //!   program the way D3D's fixed-function path does it on the NV2A (see
 //!   [`fixed_function_def`]): one general combiner stage per enabled texture
-//!   stage, plus a final combiner for specular add and fog.
+//!   stage, plus the same final combiner for specular add and fog.
 //!
 //! Per-pipeline state that changes the generated code (texture dimensions,
-//! alpha kill, alpha test function, two-sided lighting, flat shading) is
+//! alpha kill, `COLORSIGN`, alpha test function, two-sided lighting, flat
+//! shading) is
 //! part of the cache key, as is everything the synthesized programs are
 //! built from (texture-stage ops and arguments, `SPECULARENABLE`,
 //! `FOGENABLE`, texture-coordinate indices); the alpha reference, combiner
@@ -593,16 +596,9 @@ pub fn fixed_function_def(ff: &FixedFunction<'_>) -> Result<PixelShaderDef, Stri
     def.combiner_count = count as u32 | COUNT_MUX_MSB | COUNT_UNIQUE_C0;
     def.texture_modes = texture_modes(modes);
     def.final_constant0 = ff.texture_factor;
-    if ff.specular || ff.fog {
-        let color = if ff.specular { REG_V1R0_SUM } else { REG_R0 };
-        def.final_inputs_abcd = if ff.fog {
-            // fog.a * color + (1 - fog.a) * fog.rgb
-            inputs(REG_FOG | CHAN_ALPHA, color, REG_FOG, REG_ZERO)
-        } else {
-            inputs(ONE.encode(false), color, REG_ZERO, REG_ZERO)
-        };
-        def.final_inputs_efg = final_efg(0, 0, REG_R0 | CHAN_ALPHA, FINAL_CLAMP_SUM);
-    }
+    // The final combiner D3D programs for specular add and fog.
+    (def.final_inputs_abcd, def.final_inputs_efg) =
+        psh::d3d_default_final_combiner(ff.fog, ff.specular);
     Ok(def)
 }
 
@@ -649,17 +645,21 @@ impl ShaderProvider for Nv2aShaders {
         };
 
         // Pixel side.
+        let specular = raw(&self.table, draw, rs::SPECULARENABLE) != 0;
         let def = match &draw.shader.pixel_shader {
+            // A definition without a final combiner gets the one D3D's
+            // lazy commit programs from FOGENABLE and SPECULARENABLE.
             Some(ps) => guest_def(
                 ps,
                 &draw.shader.combiner_state,
                 draw.raw.render[slot::PS_TEXTURE_MODES as usize],
-            ),
+            )
+            .with_default_final_combiner(fog_enable, specular),
             None => fixed_function_def(&FixedFunction {
                 stages: &draw.state.stages,
                 bound,
                 texture_factor: render.texture_factor,
-                specular: raw(&self.table, draw, rs::SPECULARENABLE) != 0,
+                specular,
                 fog: fog_enable,
             })?,
         };
@@ -677,6 +677,7 @@ impl ShaderProvider for Nv2aShaders {
         let pixel_options = PixelOptions {
             texture_dims: bound.map(|k| k.map(texture_dim)),
             alpha_kill: std::array::from_fn(|n| draw.extras[n].alpha_kill & ALPHAKILL_ENABLE != 0),
+            color_sign: std::array::from_fn(|n| color_sign(draw.extras[n].color_sign)),
             alpha_test: render
                 .alpha_test_enable
                 .then(|| alpha_func(render.alpha_func)),
