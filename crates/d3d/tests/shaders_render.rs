@@ -471,3 +471,130 @@ fn program_reads_set_vertex_data_and_fog_follows_fogenable() {
     let err = pollster::block_on(scope.pop());
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
+
+/// Whether the final combiner runs comes from device `+0x788`, latched by
+/// `SetPixelShader` from the definition it binds, not from the definition's
+/// buffer at the draw. These set up a red `r0 = v0` quad for them.
+fn latch_setup(d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory) {
+    set_states(d, m);
+    // oPos = v0 (window coordinates), oD0 = v3 (SetVertexData: red).
+    let code = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None)
+            .to_out(false, OutReg::D0, 0xF)
+            .last(),
+    ]);
+    m.write(FUNCTION, &code).unwrap();
+    d.load_vertex_shader_program(m, FUNCTION, 0).unwrap();
+    d.set_vertex_data(m, 3, [1.0, 0.0, 0.0, 1.0]).unwrap();
+    for reg in 0..16u32 {
+        let format = if reg == 0 { 0x42 } else { 0x02 };
+        for (j, w) in [0, 0, format, 0].iter().enumerate() {
+            m.write_u32(VAF + 16 * reg + 4 * j as u32, *w).unwrap();
+        }
+    }
+    d.select_vertex_shader_direct(m, VAF, 0).unwrap();
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for f in [W as f32 * x, H as f32 * y, 0.0, 1.0] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    for (i, w) in [VB_HEADER, 16, 0].iter().enumerate() {
+        m.write_u32(STREAM_INPUTS + 4 * i as u32, *w).unwrap();
+    }
+    let handle = d3d::GuestLayout::HALO2.static_vertex_shader | 1;
+    d.set_vertex_shader_input(m, handle, 1, STREAM_INPUTS)
+        .unwrap();
+    for (i, w) in [1, 0, PSDEF].iter().enumerate() {
+        m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
+    }
+}
+
+/// `r0 = v0`; with `final_combiner`, rgb = D = r0 and alpha = G = r0.a.
+fn latch_def(final_combiner: bool) -> PixelShaderDef {
+    let mut def = PixelShaderDef {
+        combiner_count: 1,
+        ..PixelShaderDef::default()
+    };
+    def.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
+    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
+    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    if final_combiner {
+        def.final_inputs_abcd = inputs(0, 0, 0, REG_R0);
+        def.final_inputs_efg = final_efg(0, 0, REG_R0 | CHAN_ALPHA, 0);
+    }
+    def
+}
+
+/// Zero in both final-combiner slots of the render-state mirror (what
+/// pushing zero to `SET_COMBINER_SPECULAR_FOG_CW0/1` leaves there).
+fn zero_final_slots(m: &mut SparseMemory) {
+    for slot in [8u32, 9] {
+        m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(slot), 0)
+            .unwrap();
+    }
+}
+
+fn latch(m: &SparseMemory) -> u32 {
+    m.read_u32(d3d::GuestLayout::HALO2.device + 0x788).unwrap()
+}
+
+fn latch_draw(d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory) -> [u8; 4] {
+    d.clear(m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
+    d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(d);
+    back_buffer(d)(20, 20)
+}
+
+/// Bound with a final combiner, then zero in both final slots: the
+/// hardware runs an all-zero final combiner (black, alpha 0). Clearing the
+/// buffer's final words afterwards, without rebinding, keeps it so.
+#[test]
+fn final_combiner_latched_present_survives_zero_pushes_and_buffer_reuse() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    latch_setup(&mut d, &mut m);
+    m.write(PSDEF, &latch_def(true).to_bytes()).unwrap();
+    d.set_pixel_shader(&mut m, PS_OBJECT).unwrap();
+    assert_eq!(latch_draw(&mut d, &mut m), [255, 0, 0, 255]);
+    zero_final_slots(&mut m);
+    assert_eq!(
+        latch_draw(&mut d, &mut m),
+        [0, 0, 0, 0],
+        "explicit zero final"
+    );
+    m.write(PSDEF, &latch_def(false).to_bytes()).unwrap();
+    assert_ne!(latch(&m), 0);
+    assert_eq!(latch_draw(&mut d, &mut m), [0, 0, 0, 0], "latch kept");
+    assert!(pollster::block_on(scope.pop()).is_none());
+}
+
+/// Bound without a final combiner: D3D's default one (`r0`, no fog), even
+/// after the buffer is given a final combiner without rebinding.
+#[test]
+fn final_combiner_latched_absent_ignores_buffer_reuse() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    latch_setup(&mut d, &mut m);
+    m.write(PSDEF, &latch_def(false).to_bytes()).unwrap();
+    d.set_pixel_shader(&mut m, PS_OBJECT).unwrap();
+    assert_eq!(latch(&m), 0);
+    assert_eq!(latch_draw(&mut d, &mut m), [255, 0, 0, 255]);
+    m.write(PSDEF, &latch_def(true).to_bytes()).unwrap();
+    zero_final_slots(&mut m);
+    assert_eq!(latch(&m), 0);
+    assert_eq!(
+        latch_draw(&mut d, &mut m),
+        [255, 0, 0, 255],
+        "default final"
+    );
+    assert!(pollster::block_on(scope.pop()).is_none());
+}

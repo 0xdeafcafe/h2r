@@ -53,6 +53,11 @@ pub struct ShaderInputs {
     /// Render-state slots 0..57 (`PS*`: combiner inputs/outputs/constants as
     /// the guest last wrote them; constants can change without a new PSDEF).
     pub combiner_state: Box<[u32; 57]>,
+    /// Device `+0x788` at the draw: whether the definition bound by
+    /// `SetPixelShader` had a final combiner (`PSDEF[8] | PSDEF[9]`, latched
+    /// at bind). The lazy commit reads this, not the definition, so it
+    /// survives later zero pushes and reuse of the definition's buffer.
+    pub final_combiner_latch: bool,
 }
 
 /// A compiled program plus the per-draw resources it reads.

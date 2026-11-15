@@ -219,20 +219,26 @@ fn alpha_func(f: CompareFunc) -> AlphaFunc {
 /// from slot 136, the last three dwords from the definition.
 ///
 /// Whether there is a final combiner comes from the definition itself, as
-/// D3D latches it at `SetPixelShader` (`0x3fa452`, device `+0x788`): a
-/// definition with one keeps it even when zero is later pushed to both
-/// final-combiner methods ([`PixelShaderDef::explicit_final`]).
+/// D3D latches it at `SetPixelShader` (`0x3fa452`, device `+0x788`) and the
+/// lazy commit reads the latch, not the definition: `final_latch` is that
+/// value ([`ShaderInputs::final_combiner_latch`]). A definition bound with
+/// a final combiner keeps it even when zero is later pushed to both
+/// final-combiner methods ([`PixelShaderDef::explicit_final`]), and editing
+/// the definition's buffer without rebinding changes neither way.
+///
+/// [`ShaderInputs::final_combiner_latch`]: crate::shader::ShaderInputs::final_combiner_latch
 pub fn guest_def(
     psdef: &[u32; 60],
     combiner_state: &[u32; 57],
     texture_modes: u32,
+    final_latch: bool,
 ) -> PixelShaderDef {
     let mut words = *psdef;
     words[..57].copy_from_slice(combiner_state);
     words[54] = texture_modes;
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     let mut def = PixelShaderDef::from_bytes(&bytes).expect("60 dwords");
-    def.explicit_final = psdef[8] | psdef[9] != 0;
+    def.explicit_final = final_latch;
     def
 }
 
@@ -665,6 +671,7 @@ impl ShaderProvider for Nv2aShaders {
                 ps,
                 &draw.shader.combiner_state,
                 draw.raw.render[slot::PS_TEXTURE_MODES as usize],
+                draw.shader.final_combiner_latch,
             )
             .with_default_final_combiner(fog_enable, specular),
             None => fixed_function_def(&FixedFunction {

@@ -2710,6 +2710,7 @@ impl<B: Backend> Device<B> {
             constants: Box::new(std::array::from_fn(|r| self.constant(r))),
             pixel_shader,
             combiner_state: Box::new(words.render[..57].try_into().expect("57 slots")),
+            final_combiner_latch: mem.read_u32(self.cfg.layout.device + 0x788)? != 0,
         })
     }
 
