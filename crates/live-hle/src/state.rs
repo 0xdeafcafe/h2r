@@ -145,6 +145,7 @@ pub(crate) struct State {
     stats: crate::stats::Stats,
     outbox: crate::outbox::Outbox,
     sessions: crate::sessions::Sessions,
+    teams: crate::teams::Teams,
     user_ids: [u64; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
@@ -169,6 +170,7 @@ impl State {
             stats: crate::stats::Stats::default(),
             outbox: crate::outbox::Outbox::default(),
             sessions: crate::sessions::Sessions::default(),
+            teams: crate::teams::Teams::default(),
             user_ids: [0; 4],
             state_flags: [1; 4],
             game_id: None,
@@ -222,6 +224,7 @@ impl State {
         self.stats.clear_tasks();
         self.outbox.clear_session();
         self.sessions.clear();
+        self.teams.clear_tasks();
         if let Some(base) = self.storage.base {
             m.write_bytes(base, &[0; USERS_SIZE], 1)?;
         }
@@ -385,8 +388,68 @@ impl State {
     pub fn local_sessions(&self) -> Vec<crate::sessions::LocalSession> {
         self.sessions.snapshot()
     }
+    pub fn local_teams(&self) -> live_proto::team::Store {
+        self.teams.store.clone()
+    }
+    pub fn local_team_action(
+        &mut self,
+        actor: u64,
+        action: &live_proto::team::Action,
+    ) -> std::result::Result<(), live_proto::team::TeamError> {
+        let account = self
+            .accounts
+            .iter()
+            .find(|a| a.xuid == actor)
+            .ok_or(live_proto::team::TeamError::UserNotFound)?;
+        let actor = live_proto::team::Identity {
+            xuid: live_proto::Xuid(actor),
+            gamertag: account.gamertag.clone(),
+        };
+        let now = time::OffsetDateTime::now_utc()
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap();
+        self.teams.store.apply(&actor, action, &now)
+    }
     pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest) -> Result<u32> {
         use Operation::*;
+        if let Teams(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if op.starts() && !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            let known: Vec<_> = self
+                .accounts
+                .iter()
+                .map(|a| live_proto::team::Identity {
+                    xuid: live_proto::Xuid(a.xuid),
+                    gamertag: a.gamertag.clone(),
+                })
+                .collect();
+            let actor = if op.starts() {
+                if a[0] >= 4 {
+                    return Ok(INVALID_ARGUMENT);
+                }
+                known
+                    .iter()
+                    .find(|v| v.xuid.0 == self.user_ids[a[0] as usize])
+                    .cloned()
+            } else {
+                None
+            };
+            return self.teams.invoke(
+                op,
+                a,
+                m,
+                crate::teams::Context {
+                    storage: &mut self.storage,
+                    outbox: &mut self.outbox,
+                    actor,
+                    known: &known,
+                },
+            );
+        }
         if let Sessions(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -650,6 +713,9 @@ impl State {
                 Ok(OK)
             }
             Continue => {
+                if let Some(status) = self.teams.poll(a[0]) {
+                    return Ok(status);
+                }
                 if let Some(status) = self.sessions.poll(a[0]) {
                     return Ok(status);
                 }
@@ -792,6 +858,9 @@ impl State {
                 Ok(OK)
             }
             Close => {
+                if self.teams.close(a[0], &mut self.outbox) {
+                    return Ok(OK);
+                }
                 if self.sessions.close(a[0]) {
                     return Ok(OK);
                 }
