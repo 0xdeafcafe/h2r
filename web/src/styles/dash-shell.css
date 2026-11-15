@@ -79,7 +79,7 @@
 @keyframes dx-orb-out { to { transform: scale(1.7); filter: brightness(1.6); } }
 
 /* ---- the orb ---- */
-.dx-orb { position: absolute; left: calc(var(--u) * 444); top: calc(var(--u) * 318); width: calc(var(--u) * 284); height: calc(var(--u) * 284); margin: calc(var(--u) * -142) 0 0 calc(var(--u) * -142); }
+.dx-orb { position: absolute; left: calc(var(--u) * 444); top: calc(var(--u) * 318); width: calc(var(--u) * 268); height: calc(var(--u) * 268); margin: calc(var(--u) * -134) 0 0 calc(var(--u) * -134); }
 .dx-orb i { position: absolute; border-radius: 50%; }
 .dx-orb-halo { inset: -44%; background: radial-gradient(circle, rgba(170, 245, 60, .32) 0, rgba(110, 215, 40, .16) 38%, rgba(70, 180, 30, .06) 58%, transparent 70%); animation: dx-pulse 6s ease-in-out infinite; }
 /* The drawing is 340 units across with the ball 200 of them. */
@@ -110,85 +110,72 @@
 @keyframes dx-ribbon { from { transform: rotate(-3deg); } to { transform: rotate(4deg); } }
 @keyframes dx-pulse { 50% { transform: scale(1.08); opacity: .78; } }
 
-.dx-orb-count { position: absolute; left: calc(var(--u) * 244); top: calc(var(--u) * 532); width: calc(var(--u) * 300); display: flex; justify-content: center; align-items: center; gap: calc(var(--u) * 8); font-size: calc(var(--u) * 10.5); letter-spacing: .18em; color: var(--g-ink-soft); text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; }
+.dx-orb-count { position: absolute; left: calc(var(--u) * 196); top: calc(var(--u) * 536); width: calc(var(--u) * 300); display: flex; justify-content: center; align-items: center; gap: calc(var(--u) * 8); font-size: calc(var(--u) * 10.5); letter-spacing: .18em; color: var(--g-ink-soft); text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 2) #000; }
 .dx-orb-count b { color: var(--g-pale); font-weight: 700; }
 .dx-orb-count i { width: calc(var(--u) * 4); height: calc(var(--u) * 4); border-radius: 50%; background: var(--g-lime); }
 
-/* ---- the menu ring: ring pods round the orb, a bar hung off each ----
+/* ---- the menu ring: jelly pods round the orb, a bar hung off each ----
    Dashboard.tsx places every item (--x, --y: the pod's centre on the stage;
-   --s its scale; --o its opacity; --lit how far into the focus it is). */
-.dx-arc {
-  position: absolute; inset: 0;
-  --pod: calc(var(--u) * 82); --wire: calc(var(--u) * 24); --drop: calc(var(--u) * 15);
-  --bw: calc(var(--u) * 340); --bh: calc(var(--u) * 41);
-  --tab: calc(var(--u) * 7); --tw: 30%; --c: calc(var(--u) * 5);
-  --bar-shape: polygon(0 0, var(--tw) 0, calc(var(--tw) + var(--tab)) var(--tab), calc(100% - var(--c)) var(--tab), 100% calc(var(--tab) + var(--c)), 100% calc(100% - var(--c)), calc(100% - var(--c)) 100%, calc(var(--c) * 1.8) 100%, 0 calc(100% - var(--c) * 1.8));
-}
+   --s its scale; --o its opacity; --dr how far its bar hangs below the pod;
+   --lit how far into the focus it is). An item's own origin is its pod's centre. */
+.dx-arc { position: absolute; inset: 0; --bx: calc(var(--u) * 64); --bw: calc(var(--u) * 335); --bh: calc(var(--u) * 35); }
 .dx-item {
-  position: absolute; left: 0; top: 0; z-index: calc(10 + var(--lit) * 10);
-  display: flex; align-items: center; height: var(--pod); margin: calc(var(--pod) / -2) 0 0 calc(var(--pod) / -2); outline: none;
-  transform-origin: calc(var(--pod) / 2) 50%;
+  position: absolute; left: 0; top: 0; width: 0; height: 0; z-index: calc(10 + var(--lit) * 10); outline: none;
+  transform-origin: 0 0;
   transform: translate(calc(var(--u) * var(--x)), calc(var(--u) * var(--y))) scale(var(--s));
   opacity: var(--o); will-change: transform, opacity;
 }
 .dx-item--far { pointer-events: none; }
-/* A pod is a dark lens in a thick ring of pale glass. */
-.dx-pod {
-  position: relative; flex: none; width: var(--pod); height: var(--pod); border-radius: 50%;
-  background:
-    radial-gradient(circle at 35% 28%, rgba(226, 255, 196, .34) 0, rgba(226, 255, 196, 0) 18%),
-    radial-gradient(circle at 62% 68%, rgba(90, 200, 50, .22) 0, rgba(90, 200, 50, 0) 24%),
-    radial-gradient(circle closest-side, #020f02 0, #041a05 36%, #0a3608 47%, #2a8418 55%, #7cc848 62%, #b9e88a 70%, #d4f4b0 76%, #a6dc72 82%, #62b836 87%, rgba(84, 180, 50, .45) 91%, rgba(70, 180, 34, .12) 96%, rgba(70, 180, 34, 0) 100%);
-  filter: drop-shadow(0 0 calc(var(--u) * 4) rgba(110, 230, 40, .34));
-  transition: filter .2s;
-}
-/* A faint swirl inside the lens. */
-.dx-pod::before { content: ""; position: absolute; inset: 31%; border-radius: 50%; border: calc(var(--u) * 1.2) solid rgba(110, 210, 60, .34); border-left-color: transparent; border-bottom-color: transparent; transform: rotate(28deg); }
-.dx-pod::after { content: ""; position: absolute; inset: 40%; border-radius: 50%; border: calc(var(--u) * 1) solid rgba(110, 210, 60, .26); border-right-color: transparent; border-top-color: transparent; transform: rotate(-20deg); }
-/* The lens filled with pale light: the item in focus. */
-.dx-pod i {
-  position: absolute; inset: 0; border-radius: 50%; opacity: var(--lit);
-  background:
-    radial-gradient(circle at 40% 34%, rgba(255, 255, 244, .6) 0, rgba(255, 255, 244, 0) 20%),
-    radial-gradient(circle closest-side, rgba(226, 232, 204, .92) 0, rgba(204, 216, 168, .84) 34%, rgba(160, 188, 104, .6) 50%, rgba(150, 200, 70, 0) 59%, rgba(240, 255, 170, .5) 70%, rgba(250, 255, 200, .55) 77%, rgba(200, 250, 80, 0) 86%);
-}
-.dx-item.hov .dx-pod { filter: brightness(1.2) drop-shadow(0 0 calc(var(--u) * 7) rgba(150, 255, 60, .6)); }
-.dx-item.on .dx-pod { filter: drop-shadow(0 0 calc(var(--u) * 9) rgba(214, 255, 90, .7)); }
-.dx-item.on .dx-pod i { animation: dx-podpulse 1.8s ease-in-out infinite; }
-/* The fine line from a pod over to its bar's tab, with a bead where it meets the pod. */
-.dx-wire { position: relative; flex: none; width: var(--wire); height: calc(var(--u) * 11); margin: calc(var(--u) * 2) 0 0 calc(var(--u) * -5); border: solid rgba(150, 232, 96, .62); border-width: calc(var(--u) * 1.1) calc(var(--u) * 1.1) 0 0; border-radius: 0 calc(var(--u) * 7) 0 0; }
-.dx-wire::before { content: ""; position: absolute; left: calc(var(--u) * -2); top: calc(var(--u) * -3); width: calc(var(--u) * 5); height: calc(var(--u) * 5); border-radius: 50%; background: #b9f66e; box-shadow: 0 0 calc(var(--u) * 4) var(--glow); }
-.dx-wire::after { content: ""; position: absolute; left: calc(var(--u) * 5); right: calc(var(--u) * 5); top: calc(var(--u) * 3); height: calc(var(--u) * 1); background: rgba(150, 232, 96, .3); }
+/* The pod (parts.tsx draws it): 100 units square round the item's origin, the ring 70 across. */
+.dx-pod { position: absolute; left: calc(var(--u) * -50); top: calc(var(--u) * -50); width: calc(var(--u) * 100); height: calc(var(--u) * 100); border-radius: 50%; transition: filter .2s; }
+.dx-pod svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.dx-pod-bloom { fill: none; stroke: #4aa824; stroke-width: 13; opacity: .3; }
+.dx-pod-swirl { fill: none; stroke: #3c8a22; stroke-width: 2.2; stroke-linecap: round; opacity: .55; }
+.dx-pod-bud { fill: #86c250; opacity: .8; }
+.dx-pod-shine { fill: none; stroke: #e0f4bc; stroke-width: 3; stroke-linecap: round; opacity: .5; }
+.dx-pod-lit { opacity: var(--lit); }
+.dx-item.hov .dx-pod { filter: brightness(1.22); }
+.dx-item.on .dx-pod-lit { animation: dx-podpulse 1.8s ease-in-out infinite; }
+/* The tendril: its wandering part, then a drop as long as the bar hangs, with a foot onto the bracket. */
+.dx-vine { position: absolute; left: calc(var(--u) * 22); top: calc(var(--u) * -38); width: calc(var(--u) * 36); height: calc(var(--u) * 26); opacity: .62; }
+.dx-vine svg { display: block; width: 100%; height: 100%; overflow: visible; fill: none; stroke: #8fd060; stroke-width: 1; stroke-linejoin: round; }
+.dx-vine svg path + path { stroke-width: .7; opacity: .7; }
+.dx-vine .dx-vine-node { fill: rgba(143, 208, 96, .35); stroke-width: .6; }
+.dx-vine i { position: absolute; left: calc(var(--u) * 27.5); top: calc(var(--u) * 14); width: calc(var(--u) * 8); height: calc(var(--u) * (var(--dr) - 1.5)); border: solid #8fd060; border-width: 0 0 calc(var(--u) * 1) calc(var(--u) * 1); border-radius: 0 0 0 calc(var(--u) * 3); }
 
-/* The bar: dark green glass in a hairline frame, with a raised tab along
-   the top left. In focus a yellow-green plate lights up over it. */
-.dx-bar { position: relative; top: var(--drop); flex: none; display: flex; align-items: center; width: var(--bw); height: var(--bh); margin-left: calc(var(--u) * -7); padding: var(--tab) calc(var(--u) * 20) 0 calc(var(--u) * 22); }
-.dx-bar::before, .dx-bar::after, .dx-bar-lit::before, .dx-bar-lit::after { content: ""; position: absolute; clip-path: var(--bar-shape); }
-.dx-bar::before, .dx-bar-lit::before { inset: 0; }
-.dx-bar::after, .dx-bar-lit::after { inset: calc(var(--u) * 1.3); }
-.dx-bar::before { background: linear-gradient(180deg, rgba(170, 236, 116, .74), rgba(96, 188, 56, .56)); transition: filter .16s; }
-.dx-bar::after {
+/* The bar: long dark green glass in a pale hairline, its right end rounded,
+   an outline bracket behind its top left corner. In focus a yellow-green
+   plate lights up over it. */
+.dx-bar {
+  position: absolute; left: var(--bx); top: calc(var(--u) * var(--dr) - var(--bh) / 2); width: var(--bw); height: var(--bh);
+  display: flex; align-items: center; padding: 0 calc(var(--u) * 16) calc(var(--u) * 2) calc(var(--u) * 15);
+  border: calc(var(--u) * 1) solid rgba(140, 206, 92, .46); border-radius: calc(var(--u) * 2) calc(var(--u) * 8) calc(var(--u) * 8) calc(var(--u) * 5);
   background:
-    linear-gradient(180deg, rgba(4, 30, 4, .5) 0, rgba(4, 30, 4, .5) calc(var(--tab) - var(--u) * 1.3), rgba(4, 30, 4, 0) calc(var(--tab) - var(--u) * 1.3)),
-    linear-gradient(90deg, rgba(30, 118, 20, .78) 0, rgba(20, 92, 14, .7) 55%, rgba(36, 124, 24, .66) 100%),
-    linear-gradient(180deg, rgba(10, 52, 8, .92), rgba(6, 40, 6, .92));
+    linear-gradient(180deg, rgba(110, 190, 70, .1) 0, rgba(110, 190, 70, 0) 30%, rgba(0, 20, 0, .2) 100%),
+    linear-gradient(90deg, rgba(40, 112, 26, .88) 0, rgba(28, 90, 18, .84) 45%, rgba(20, 72, 14, .8) 100%);
   transition: filter .16s;
 }
-.dx-item.hov .dx-bar::before, .dx-item.hov .dx-bar::after { filter: brightness(1.3); }
-.dx-bar-lit { position: absolute; z-index: 1; inset: 0; opacity: var(--lit); filter: drop-shadow(0 0 calc(var(--u) * 7) rgba(226, 255, 90, .5)); }
-.dx-bar-lit::before { background: linear-gradient(180deg, #fbffb4, #d6e456); }
-.dx-bar-lit::after { background: linear-gradient(180deg, #eef45e 0, #d6e038 36%, #b9c922 72%, #a3b61a 100%); }
+.dx-item.hov .dx-bar { filter: brightness(1.28); }
+.dx-bracket { position: absolute; left: calc(var(--u) * -13); top: calc(var(--u) * -14); width: calc(var(--u) * 124); height: calc(var(--u) * 56); overflow: visible; fill: none; stroke: rgba(150, 214, 100, .5); stroke-width: 1; stroke-linejoin: round; opacity: calc(1 - var(--lit) * .35); }
+.dx-bracket-in { stroke-width: .7; opacity: .55; }
+.dx-bar-lit {
+  position: absolute; z-index: 1; inset: calc(var(--u) * -1); opacity: var(--lit); border-radius: inherit;
+  border: calc(var(--u) * 1) solid rgba(232, 244, 150, .7);
+  background: linear-gradient(180deg, rgba(240, 250, 150, .35) 0, rgba(240, 250, 150, 0) 30%), linear-gradient(90deg, #a2c034 0, #b8d040 30%, #c6dc4a 100%);
+  box-shadow: 0 0 calc(var(--u) * 10) rgba(200, 235, 80, .3);
+}
 .dx-bar-text {
-  position: relative; z-index: 2; font-weight: 800; font-size: calc(var(--u) * 21); letter-spacing: .14em; text-transform: uppercase; white-space: nowrap;
-  color: color-mix(in srgb, #2f4a08 calc(var(--lit) * 100%), #b9ee78);
-  text-shadow: 0 calc(var(--u) * 1.5) 0 rgba(4, 44, 2, calc(.9 - var(--lit) * .9)), 0 0 calc(var(--u) * 8) rgba(140, 255, 60, calc(.32 - var(--lit) * .32)), 0 calc(var(--u) * 1) 0 rgba(250, 255, 190, calc(var(--lit) * .5));
+  position: relative; z-index: 2; font-family: "Michroma", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17.5); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+  color: color-mix(in srgb, #2c4a12 calc(var(--lit) * 100%), #cfe9a0);
+  -webkit-text-stroke: calc(var(--u) * .7) currentColor;
+  text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.7 - var(--lit) * .7));
 }
 
 /* ---- a / b prompts: a lettered ring pod and a thin label ---- */
 .dx-prompt { position: absolute; z-index: 4; display: flex; align-items: center; gap: calc(var(--u) * 11); outline: none; }
 .dx-prompt--a { left: calc(var(--u) * 1018); top: calc(var(--u) * 632); }
 .dx-prompt--b { left: calc(var(--u) * 118); top: calc(var(--u) * 632); flex-direction: row-reverse; }
-.dx-menu .dx-prompt--a { left: calc(var(--u) * 934); top: calc(var(--u) * 608); }
+.dx-menu .dx-prompt--a { left: calc(var(--u) * 824); top: calc(var(--u) * 590); }
 .dx-btn {
   position: relative; flex: none; display: grid; place-items: center; width: calc(var(--u) * 54); height: calc(var(--u) * 54); border-radius: 50%;
   background:
@@ -227,9 +214,11 @@
   .dx-screen.dx-menu { transform-origin: calc(var(--u) * 200) calc(var(--u) * 176); }
   .dx-orb { left: calc(var(--u) * 200); top: calc(var(--u) * 176); width: calc(var(--u) * 196); height: calc(var(--u) * 196); margin: calc(var(--u) * -98) 0 0 calc(var(--u) * -98); }
   .dx-orb-count { left: calc(var(--u) * 50); top: calc(var(--u) * 306); }
-  .dx-arc { --pod: calc(var(--u) * 54); --wire: calc(var(--u) * 18); --drop: calc(var(--u) * 11); --bw: calc(var(--u) * 262); --bh: calc(var(--u) * 38); --pitch: calc(var(--u) * min(66, 320 / var(--n))); }
-  .dx-item { opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 48 + var(--u) * 26 * cos((var(--i) - (var(--n) - 1) / 2) * 14deg) - var(--u) * 26), calc(var(--u) * 384 + var(--i) * var(--pitch))); }
-  .dx-bar-text { font-size: calc(var(--u) * 18); }
+  .dx-arc { --bx: calc(var(--u) * 48); --bw: calc(var(--u) * 272); --bh: calc(var(--u) * 36); --pitch: calc(var(--u) * min(68, 320 / var(--n))); }
+  .dx-item { --dr: 12 !important; opacity: 1; pointer-events: auto; transform: translate(calc(var(--u) * 44 + var(--u) * 22 * cos((var(--i) - (var(--n) - 1) / 2) * 14deg) - var(--u) * 22), calc(var(--u) * 392 + var(--i) * var(--pitch))); }
+  .dx-pod { left: calc(var(--u) * -40); top: calc(var(--u) * -40); width: calc(var(--u) * 80); height: calc(var(--u) * 80); }
+  .dx-vine { left: calc(var(--u) * 14); top: calc(var(--u) * -34); transform: scale(.82); transform-origin: 0 100%; }
+  .dx-bar-text { font-size: calc(var(--u) * 16.5); }
   .dx-prompt--a, .dx-menu .dx-prompt--a { left: auto; right: calc(var(--u) * 16); top: calc(var(--u) * 700); z-index: 6; }
   .dx-prompt--b { left: calc(var(--u) * 16); top: calc(var(--u) * 700); flex-direction: row; z-index: 6; }
   .dx-menu .dx-prompt--a::after { display: none; }
