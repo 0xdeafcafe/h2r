@@ -206,16 +206,79 @@ and `CMcpx*` class) are not reached by the game.
   `Process` tests `GetStatus` bit 0 and substitutes that code). The shim
   reports "not ready" once `dwMaxAttachedPackets` are outstanding.
 - **Who runs it.** The real library completes packets from the APU
-  interrupt/DPC. The shim has no thread of its own: completions are written
-  by `DirectSoundDoWork`, and also straight after `Process` (zero-length
-  packets) and `Flush`. The host should call `DirectSound::do_work` after
-  each mixer render it drives if it wants completions on the audio clock.
-  Events are `EventSink::signal_event(handle)`, and callbacks are queued
+  interrupt/DPC. The shim has no thread of its own by default, so a
+  completion is written wherever the game can observe it: `Process` and
+  stream `GetStatus` collect first (a game that polls capacity or status sees
+  the interrupt's result), `Flush`/`FlushEx` and zero-length packets complete
+  at once, and `DirectSoundDoWork` collects everything. The mixer is
+  what consumes packets, so something must render it. See "Audio clock".
+  Events are `EventSink::signal_event(handle, token)`, and callbacks are queued
   with `EventSink::stream_callback(StreamCallback)`. Through `register`,
   events reach the kernel after the guards drop. Callbacks run as guest
   calls before the override returns (see "Runtime registration").
+- **Order of effects (verified, `0x37f3a8`).** Completed size and status are
+  written to guest memory first, then the event is signalled or the callback
+  queued. Completion order is submission order. Neither happens while a guest
+  memory or `DirectSound` guard is held.
+- **Event references.** A packet queued with an event (stream without a
+  callback) calls `EventSink::retain_event(handle, token)`, where `token` is unique to
+  the packet. Through `register` that
+  becomes `Events::reference(handle)`, which a kernel sink implements with
+  `Kernel::reference_dispatcher` so the completion still reaches the event if
+  the guest closes its handle first. Exactly one `signal_event` follows per
+  retained packet, or one `release_event` if the stream is released with the
+  packet still pending (the library drops those silently, leaving the status
+  `E_PENDING`). Pins are matched by packet token, not by handle or queue
+  position, so a packet whose `reference` failed (it has no pin) can never
+  consume or drop another packet's pin: it falls back to `Events::signal(handle)`,
+  as does any sink that does not pin.
+- **Delivery order.** The shim collects each call's event operations
+  (retain, signal, release) as one batch and `register` publishes the batch to
+  an ordered outbox while the `DirectSound` lock is still held, so batches
+  are ordered like the state changes that produced them. They are drained after
+  every guard is dropped, one drainer at a time (the pump cannot signal a
+  packet before the `Process` that queued it has pinned it, and a concurrent
+  close cannot lose a notification).
+- **Completion writes are retried, not lost.** A packet stays at the head of
+  its stream until its size and status writes succeed. A guest fault in either
+  write leaves the packet (and its pin) queued; the next `Process`,
+  `GetStatus` or `DoWork` completes it.
 - **Buffers have no notifications in Halo 2.** `SetNotificationPositions`,
   `SetPlayRegion` and `SetLoopRegion` are not matched and have no call sites.
+
+## Audio clock
+
+Buffers only finish, and stream packets only complete, when the mixer is
+rendered. There are three ways to drive it, and exactly one of them should
+consume a given mixer:
+
+| consumer | who renders | who reports completions to the game |
+|---|---|---|
+| a device, or `crates/app`'s `AudioOut` (its `DiscardRenderer` thread renders in real time when there is no device) | the app | `Hle::spawn_pump(runtime, period, false)` or the game's own `DoWork`/`GetStatus`/`Process` |
+| nothing (headless boot, tests) | `Hle::spawn_pump(runtime, period, true)`, or `DirectSound::set_frames_per_do_work`, or `Hle::tick`/`advance_audio` by hand | the same call |
+
+- `DirectSound::advance_audio(host, frames)` renders `frames` output frames,
+  discards them (in chunks of at most 1024) and completes whatever that
+  finished. `Hle::advance_audio(runtime, frames)` is the host-driven form.
+- `AudioClock::new(rate, max_catch_up)` turns elapsed host time into whole
+  frames, carrying the fraction and capping a stall (a stuck host does not
+  owe seconds of audio at once). It holds no clock: callers pass the time.
+  `Hle::tick(runtime, &mut clock, elapsed)` does both.
+- `DirectSound::set_frames_per_do_work(Some(n))` advances `n` frames on every
+  game `DirectSoundDoWork` (for example `rate / 60`): audio time follows the
+  game's own call rate, deterministic and with no host clock.
+- `Hle::spawn_pump(runtime, period, render)` runs a thread that every
+  `period` calls `Hle::do_work`, or with `render` first advances by the real
+  time elapsed (an `AudioClock` capped at 250 ms). It is for the case where
+  the game blocks waiting on a stream event: the completion and event
+  delivery do not depend on the game calling `DoWork`. Guest callbacks cannot
+  run on a host thread, so they wait for the next override call on a guest
+  thread, as for any host-driven `do_work`. Dropping the `Pump` stops and
+  joins it; a `Stop` ends the thread and is recorded by `take_stops` as
+  `Hle::pump`.
+
+Never combine a render pump with a device or the app's discard renderer: time
+would run twice. `frames_rendered()` counts what the shim itself rendered.
 
 ## Memory model
 
@@ -241,12 +304,14 @@ shim keeps that contract:
 | `DirectSoundCreate`, `DirectSoundCreateBuffer/Stream`, `CreateSoundBuffer/Stream`, refcounts, `Release` freeing | real |
 | `SetBufferData`, `Lock`, `Unlock`, `Play` (looping, from-start), `Stop`, `StopEx` (immediate), `Pause`, `GetStatus`, `Get/SetCurrentPosition` | real, mapped to `audio::SoundBuffer` |
 | `SetVolume`, `SetFrequency`, stream `SetPitch` (1/4096 octave about 48 kHz), 3D position/min/max distance, listener position/orientation/factors | real, applied to `audio` |
-| stream `Process`, `GetStatus`, `Flush`, `FlushEx(0)`, `Pause`, `SetVolume`, `Discontinuity` (counted, no mixer state to reset), `DirectSoundDoWork` | real |
+| stream `Process`, `GetStatus`, `GetInfo`, `Flush`, `FlushEx` (any flags, timestamp 0), `Pause`, `SetVolume`, `Discontinuity` (counted, no mixer state to reset), `DirectSoundDoWork` | real (see "Effects, voice entries and FlushEx") |
 | `SetMixBins`, `SetMixBinVolumes`, `SetHeadroom`, `SetMixBinHeadroom`, `SetFilter`, `SetLFO`, `SetEG`, `SetOutputBuffer`, `SetCone*`, `SetDoppler/RolloffFactor` (buffer), `SetI3DL2Source`, `SetEffectData`, `UseLightHRTF4Channel` | stored; counted by name in `DirectSound::ignored()` (timbre and routing only) |
 | `GetCaps`, `GetSpeakerConfig` | answered (`DSCAPS` layout from memory: free 2D/3D voices 64, SGEs `0x7fff`, 0; stereo speakers) |
 | mix-in/FX buffers | created and `Play` accepted (silent, counted); no DSP |
 | `XAudioDownloadEffectsImage` (flags 1, name `"DSPImage"`, dry image), `Get/SetEffectData` | real, against the dry image (see "Dry effects image") |
-| `XAudioSetEffectData`, `XAudioDownloadEffectsImage` with another name, `GetVoiceProperties`, `GetInfo`, `StopEx` with a timestamp, `FlushEx` with any non-zero flags or timestamp, `Pause(3)` on an inactive voice, `Lock(FROMWRITECURSOR)`, data buffer without a format, `XAudioDownloadEffectsImage` with flags other than 1 | **stop** (`Stop::Unimplemented`) |
+| `XAudioSetEffectData` | real, dry (see "Effects, voice entries and FlushEx") |
+| buffer and stream `GetVoiceProperties` | real: mix-bin routing; **stop** is gone |
+| `XAudioDownloadEffectsImage` with another name, `StopEx` or `FlushEx` with a timestamp, `Pause(3)` on an inactive voice, `Lock(FROMWRITECURSOR)`, data buffer without a format, `XAudioDownloadEffectsImage` with flags other than 1 | **stop** (`Stop::Unimplemented`) |
 | `SynchPlayback` | real: `Play(SYNCHPLAYBACK)` and `Pause(2)` hold the voice (`Gate::Held`) until `SynchPlayback` releases it; `CommitDeferredSettings` is immediate |
 
 ### Pause, synch and status
@@ -277,10 +342,22 @@ internals, which are unmatched):
 - **Descriptor layout.** After the call Halo reads the first dword of `*ppDesc`
   and proceeds down the effect-state path only if it equals 15 (check at
   `0x19142f`; the disassembly at `0x191420..0x19142f` shows only this). That
-  first dword is the only part of the layout the evidence supports. The shim
-  also allocates 15 zero-filled 16-byte entries after it
-  (`EFFECT_IMAGE_DESC_SIZE = 4 + 15*16`): that is placeholder padding we
-  chose, not a derived layout.
+  first dword is the only part of the layout the evidence supports. The rest of
+  the layout is read elsewhere: `0x37e39e` computes the map for effect `i`
+  as `desc + 8 + i * 32` (maps are 32 bytes, bounds-checked against the
+  count at `+0`), `GetEffectData` copies from `[map + 8] + offset`
+  (`0x37e5f2`) and the XHV voice engine (`XHVEngineCreate`, `0x333055`, its
+  callee `0x333330`) dereferences `[map + 8]` and reads the dword at `+0x14`
+  of that state (`0x33337a`, `0x33337d`) for the effects at its start index
+  (`0xb`) onwards. The shim therefore builds `8 + 15 * 32` descriptor bytes
+  with `lpvStateSegment` (map `+8`) pointing into a separate zeroed
+  `15 * 0x1000` byte state block in guest memory; the other map fields are
+  not read by anything found and stay zero. The block is the effect state
+  itself: `GetEffectData`, `SetEffectData` and `XAudioSetEffectData` read and
+  write it, so a guest read through the pointer and the API agree. The
+  dword at state `+0x14` is set to `0x1400`, which XHV turns into a zero
+  index (`(v - 0x1400) >> 5`); that value is invented, as the real one is a
+  DSP address.
 - **`pImageLoc`.** The caller passes `{ reverbIndex = 9, crosstalkIndex = 10 }`
   (two dwords). Both must be below the count of 15; otherwise `E_INVALIDARG`.
 - **Flags and name.** Halo always passes flags 1 and the name `"DSPImage"`.
@@ -291,22 +368,134 @@ internals, which are unmatched):
 - **Effect indices read.** `GetEffectData(ds, effect, offset, buf, size)` is
   called for effects 4..7 at offset `0x20`, size 8 (`0x1913d0..0x191411`),
   and effects 1 and `0xb..0xe` at offset 0, size `0x3c` (`0x191451`). The
-  shim keeps a per-effect byte range (up to `0x1000` bytes), returns zeros for
-  never-written ranges, and round-trips `SetEffectData` writes (Halo writes
-  back at `0x19128f`). Index at or above 15, or offset+size beyond `0x1000`,
-  is `E_INVALIDARG`; any use before the download is `DSERR_INVALIDCALL`.
+  shim backs each effect with `0x1000` bytes of guest memory, zero
+  except for the dword above, and round-trips `SetEffectData` writes (Halo
+  writes back at `0x19128f`). An index at or above the count is
+  `DSERR_INVALIDCALL` (`0x37e39e`); offset+size beyond `0x1000` is
+  `E_INVALIDARG` (this model's own limit, the library has none); any use
+  before the download is `DSERR_INVALIDCALL`.
 - **Zero initial effect state is an assumption.** The real initial state
   lives in the DSP image, which is not available (the section is zeros on
   disc). Zero is not derived from evidence; revisit it if sound init
   misbehaves.
-- **`XAudioSetEffectData` is a stop.** It takes 3 arguments; the binary reads
-  the descriptor, converts parameters, updates effect state and arg 3 is an
-  output pointer it may write. None of this is modelled, so it returns
-  `Stop::Unimplemented` rather than success.
+- **`XAudioSetEffectData` is dry too.** See the next section.
 
 This is enough for the init path to proceed. What the game then does with
 reverb and crosstalk (routing through DSP effects) is not modelled; the audio
 output is dry.
+
+## Effects, voice entries and FlushEx
+
+Everything here was read from the retail disassembly (`h2 disasm`), not from
+headers. Halo's reach into each entry is given so the model is no wider than
+the use.
+
+### `XAudioSetEffectData(index, pDesc, pRaw)` (`0x37ba6f`, `ret 0Ch`)
+
+Callers: `0x21ee6f` (from `0x21ece0`, which `0x21ee80` runs once per effect
+whose dirty byte at sound globals `+0x2a08 + i` is set, clearing it
+afterwards) and `0x21fa07` (a per-effect record, index from a bit scan).
+Both pass `pRaw = 0`. `0x21ece0` builds a `DSI3DL2LISTENER` for index 9 on
+its stack and sets its first dword (the type) to 12 at `0x21ece3`.
+
+Contract, in the order the binary does it:
+
+1. `[0x387198]` is the live `CDirectSound` (set at `0x37a144`, cleared at
+   `0x37a19f`). With none, the result is `DSERR_INVALIDCALL` before the
+   descriptor is read. The shim tests for the root object.
+2. `*pDesc` is the type. `4`, `10` and `12` are handled; anything else is
+   `DSERR_INVALIDCALL` (`0x37baca`).
+3. Parameters follow the type: type 4 reads 7 dwords (`+4..+0x1c`), type 10
+   reads 3 (`+4..+0xc`), type 12 copies the 12 dwords of `DSI3DL2LISTENER`.
+4. An effect index at or above the image's effect count fails inside
+   `0x37e39e`. Type 12 does this before touching the parameters (its first
+   call is the state read `0x37a34f`) and the failed read jumps to the
+   epilogue with the return local still 0 (`0x37ba78`, `0x37baef`): the call
+   returns **`S_OK`** and reads, writes and outputs nothing. Types 4 and 10
+   read their floats first (an unreadable descriptor faults), store the
+   failed write's `DSERR_INVALIDCALL` (`0x37bc4b`) and still copy their
+   converted buffer to a non-null `pRaw` (the type word, then zeros here).
+5. Type 12 reads the effect's first `0x118` state bytes, ORs `4` into the
+   dword at `+0x10`, writes that dword back (apply = 1) and writes `0x108`
+   converted bytes at `+0x118` (the I3DL2 converter, `0x3838a4`). Types 4
+   and 10 write `0x2c` and `0x14` converted bytes at `+0x1c` (biquad
+   coefficients, `0x37a032`, with `fsin`/`fcos`).
+6. A non-null `pRaw` receives the type and then the converted bytes
+   (`0x108`, `0x2c` or `0x14`).
+
+The dry model keeps the observable parts: the checks and error codes above,
+the `+0x10 |= 4` flag, and the descriptor (`DirectSound::effect_desc(index)`).
+The converted DSP words are **not** computed: the converter and the biquad
+generator need the DSP image's constants and floating-point behaviour, and
+the dry image is zeros. So the destination range is left as the effect state
+holds it (zeros unless the game wrote it with `SetEffectData`), and `pRaw`
+receives exactly that range. This keeps one invariant: after the call,
+`*pRaw` equals `GetEffectData(index, dest_offset, dest_len)`. Do not take
+`pRaw` as real coefficients; Halo never asks for it.
+
+`GetEffectData`/`SetEffectData` with an index past the image now return
+`DSERR_INVALIDCALL` (the same `0x37e39e` check) instead of `E_INVALIDARG`.
+The real code has no offset or size check; the `0x1000` cap stays as this
+model's own limit (`E_INVALIDARG`).
+
+### `GetVoiceProperties` (`0x37b7e3` buffer, `0x37b83f` stream)
+
+Both reach `0x3818e5` with the voice client. Halo's readers are
+`0x21fb38` (stream, once) and `0x21ff51`/`0x21ff62` (two voices of a
+stereo pair); they hand the output to `0x2215d0`/`0x2216f0`, which compare
+the count and every `{bin, volume}` pair with what Halo wants and call
+`SetMixBins`/`SetMixBinVolumes` when they differ. Halo ignores the result,
+so a failed call leaves uninitialised stack in its comparison.
+
+- State bit 0 of the voice word at `+0x12` clear (never started, stopped,
+  flushed) is `DSERR_INVALIDCALL` and nothing is written. The shim: a stream
+  is active from its first `Process` until a flush; a buffer while playing or
+  paused; a mix-in buffer while "played".
+- Output, `0x5c` bytes: `+0x00` mix-bin count; `+0x04` eight pairs
+  `{dwMixBin, lVolume}` (volume is `-((hw * 100) >> 6)`), unused slots are
+  `{0xffffffff, 0xffffd8f0}`; `+0x44` a signed 16-bit voice word from voice
+  RAM `+0x7c` (written as 0, not modelled); `+0x48..+0x5b` five dwords from
+  the 3D/LFO state object (0 unless the voice has one; not modelled).
+- The shim reports the routing the game set, in millibels. The hardware
+  quantises to 1/64 dB steps; that is not reproduced.
+- Default routing, now materialised when a voice is created or `SetMixBins`
+  is called with a null `DSMIXBINS` (default tables read at `0x38590c`..
+  `0x38595c`, chosen at `0x37bc89`): mono and stereo `{0, 1}`, 4 channels
+  `{0, 1, 4, 5}`, 6 channels `{0..5}`, all volume 0; a voice with
+  `flags & 0x200010` (3D) gets `{6, 8, 7, 9, 10}`; mix-in buffers get none.
+
+### `GetInfo` (`0x37abd5`)
+
+`XMEDIAINFO { dwFlags, dwInputSize, dwOutputSize, dwMaxLookahead }`: flags 5,
+input size the low byte of `nBlockAlign`, output 0, lookahead
+`2 * max(nBlockAlign, ((bits * channels) >> 3) << 5)` (`0x379eeb`), with 4
+bits for ADPCM (tag `0x69`). No call site in the XBE reaches it: the
+`[reg+8]` virtual calls in the stream users (`0x33400b`, `0x33446e`) are on
+Halo's own objects. It is implemented because the vtable slot is overridden
+and the derivation is short.
+
+### `FlushEx` and `StopEx`
+
+`FlushEx(this, tsLo, tsHi, flags)` is reached from five sites, all with a zero
+timestamp: `0x2ae4e2` (flags 3), `0x333ef6`, `0x335744`, `0x335d13` (flags 1)
+and `0x33598d` (flags 1, taken from `cmp edi, 1`). The old shim stopped on
+flags 1 and 3, so streams could not even be shut down.
+
+With flags 0 the library takes the plain flush (`0x37fbfe`). Otherwise it
+runs `CMcpxStream_Stop` (`0x37f51f`), which tests only bits 2 and 4
+(`ENVELOPE`, `IMMEDIATE`): they pick an envelope release or an immediate
+voice stop, and (without `IMMEDIATE`) queue a "complete" command through
+schedule slot `0x37f8dc`. `ASYNC` (1) is not tested. The shim has no envelope
+and no scheduler, so **every flags value flushes at once**: packets complete
+with `XMEDIAPACKET_STATUS_FLUSHED` before the call returns, statuses and
+sizes first, then events or callbacks. The call is counted as
+`FlushEx(flags)` in `ignored()`. A non-zero timestamp is scheduled on the DSP
+clock by the library (`0x37f9ee`); nothing in the XBE passes one, and it
+stays a stop.
+
+`StopEx(this, tsLo, tsHi, flags)` has a single call site, `0x220052`, which
+pushes `ebp` three times with `ebp` zeroed at `0x21ff35`: timestamp 0, flags
+0. A timestamp stays a stop for the same reason.
 
 ## Overrides
 
@@ -321,12 +510,21 @@ addresses, not at the vtable.
 dispatch edit, or none of them:
 
 ```rust
+pub trait EventRef: Send {
+    fn signal(&mut self) -> Result<(), String>;      // drop releases the pin
+}
 pub trait Events: Send {
     fn signal(&mut self, guest_handle: u32) -> Result<(), String>;
+    /// Default: no pinning.
+    fn reference(&mut self, guest_handle: u32) -> Option<Result<Box<dyn EventRef>, String>> { None }
 }
 impl Hle {
     pub fn new(ds: DirectSound, events: Box<dyn Events>) -> Arc<Hle>;
     pub fn do_work(&self, runtime: &runtime::Runtime) -> Result<(), Stop>;
+    pub fn advance_audio(&self, runtime: &runtime::Runtime, frames: u64) -> Result<(), Stop>;
+    pub fn tick(&self, runtime: &runtime::Runtime, clock: &mut AudioClock, elapsed: Duration) -> Result<u64, Stop>;
+    pub fn spawn_pump(self: &Arc<Self>, runtime: Arc<Runtime>, period: Duration, render: bool) -> Pump;
+    pub fn pinned_events(&self) -> usize;
     pub fn take_stops(&self) -> Vec<StopRecord>;
     pub fn take_signal_failures(&self) -> Vec<SignalFailure>;
     pub fn direct_sound(&self) -> MutexGuard<'_, DirectSound>;
@@ -374,33 +572,81 @@ pub fn unregister(dispatch: &mut runtime::Dispatch, registration: &Registration)
 For `.claude/worktrees/boot`, this replaces `dsound_glue::install`. Don't
 install both: `register` reports every address the glue owns as occupied.
 The glue's heap at `0xa080_0000` is not needed, because the arena maps its
-own pages and skips existing ones.
+own pages and skips existing ones. This is the exact wiring, including the
+audio clock and event pinning:
 
 ```rust
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-/// dsound::register::Events over the kernel. Called with no guest memory
-/// or DirectSound guard held, so Kernel::signal_event may relock memory.
+/// dsound::Events over the kernel. Every method runs with no guest memory
+/// or DirectSound guard held, so the kernel may relock memory.
 struct KernelEvents(Arc<kernel::Kernel>);
+
+/// A kernel event pinned by `Kernel::reference_dispatcher`. It signals even
+/// if the guest has closed the handle; dropping it releases the pin.
+struct Pin(kernel::DispatcherReference);
+
+impl dsound::EventRef for Pin {
+    fn signal(&mut self) -> Result<(), String> {
+        self.0.signal_event().map(drop).map_err(|e| e.to_string())
+    }
+}
+
 impl dsound::Events for KernelEvents {
     fn signal(&mut self, handle: u32) -> Result<(), String> {
         self.0.signal_event(handle).map(drop).map_err(|e| e.to_string())
     }
+    fn reference(&mut self, handle: u32) -> Option<Result<Box<dyn dsound::EventRef>, String>> {
+        Some(
+            self.0
+                .reference_dispatcher(handle)
+                .map(|r| Box::new(Pin(r)) as Box<dyn dsound::EventRef>)
+                .map_err(|e| e.to_string()),
+        )
+    }
 }
 
-// After Kernel::for_image, before Machine::new:
-let mixer = Arc::new(Mutex::new(audio::Mixer::new(48_000)));
-let ds = dsound::DirectSound::new(Arc::clone(&mixer), dsound::Layout::default());
+// After Kernel::for_image, before Machine::new. `host` is the app's
+// GuestHost (or take mixer and rate from AudioOut): its mixer is already
+// consumed in real time by a device or by the DiscardRenderer.
+let ds = dsound::DirectSound::new(host.mixer(), dsound::Layout::default());
 let hle = dsound::Hle::new(ds, Box::new(KernelEvents(Arc::clone(&k))));
 loaded.runtime.edit_dispatch(|d| dsound::register(d, &hle))?;
+
+// Report finished packets without waiting for the game's DoWork (a stream
+// wait on an event). render=false because the app's renderer owns the mixer.
+let _pump = hle.spawn_pump(Arc::clone(&loaded.runtime), Duration::from_millis(5), false);
 
 // On a stop whose event is Unsupported with a "dsound::" mnemonic:
 for s in hle.take_stops() {
     eprintln!("dsound stop at {:#010x} {}{:x?}: {}", s.addr, s.name, s.args, s.stop);
 }
-// Optional, after each host mix and between slices (no guard held):
-hle.do_work(&loaded.runtime)?;
+for f in hle.take_signal_failures() {
+    eprintln!("dsound event {:#x}: {}", f.handle, f.error);
+}
 ```
+
+Without the app's mixer consumer (a test harness, or a boot that builds its
+own `Mixer`), nothing renders the mixer, so use one of these instead of the
+pump above (pick one, never together with a device or the discard renderer):
+
+```rust
+// Real time, own thread: renders the mixer and reports completions.
+let _pump = hle.spawn_pump(Arc::clone(&loaded.runtime), Duration::from_millis(5), true);
+// or deterministic, tied to the game's own calls (48 kHz at 60 DoWork/s):
+hle.direct_sound().set_frames_per_do_work(Some(800));
+// or by hand between slices:
+let mut clock = dsound::AudioClock::new(48_000, Duration::from_millis(250));
+hle.tick(&loaded.runtime, &mut clock, elapsed)?;
+```
+
+`do_work`, `advance_audio` and `tick` take the guest memory guard themselves:
+call them from a host thread or between runner slices, never from inside an
+override. Stream callbacks are guest calls, so they run at the next override
+call on a guest thread (see "Runtime registration"). A game that waits on a
+stream callback while calling no DirectSound entry would not see it; Halo's
+streams use events or poll `GetStatus`/`Process`.
 
 ## Tests
 
@@ -410,7 +656,25 @@ through `invoke` with the real addresses: ADPCM blob to `SetBufferData` to
 `Play` to mixed frames (hand-decoded samples 1000, 1011, 981), `Lock` wrap
 and `Unlock`, pause/resume/position, stream packets completing in order with
 status, completed size and events, callbacks, flush and capacity, release
-freeing, 3D panning, stored-state setters and every stop path.
+freeing, 3D panning, stored-state setters and every stop path. It also
+covers, with synthetic data only (no disc bytes):
+
+- XAudioSetEffectData: type 12 flag OR and the `pRaw == GetEffectData`
+  invariant, types 4 and 10, unknown types, the index-before-read ordering
+  per type, no-DirectSound and no-image errors, and a `pRaw` fault after
+  the state changed.
+- GetVoiceProperties on buffers and streams: inactive voices write nothing,
+  the `0x5c`-byte layout, unused slots, explicit and default routing
+  (stereo, 3D), `SetMixBins(NULL)`, pause, stop and flush transitions.
+- GetInfo for PCM mono/stereo, Xbox ADPCM mono/stereo.
+- FlushEx with flags 1, 3, 2, 4, 7 completes packets as flushed, and a
+  timestamp stays a stop.
+- Progress: polling `GetStatus` or `Process` collects completions without
+  `DoWork`; `advance_audio` finishes a buffer and two packets with no sink;
+  `set_frames_per_do_work`; `AudioClock` rounding and the stall cap.
+- Notification contract: event references taken per packet and returned when
+  a stream is released with packets pending; status and size are final in
+  guest memory at the moment of each event and callback.
 
 `tests/register.rs` goes through the real `runtime::Runner` and `Dispatch`:
 
@@ -422,9 +686,10 @@ freeing, 3D panning, stored-state setters and every stop path.
   Lock wrap pointers and sizes, GetCaps, GetSpeakerConfig, Set/GetEffectData
   round trip, listener position and orientation, mix-bin headroom,
   Set/GetCurrentPosition, GetStatus bits, AddRef/Release counts, packet
-  status and size, the Discontinuity count. The documented stop paths
-  (XAudioSetEffectData, both GetVoiceProperties, GetInfo, StopEx with a
-  timestamp in arg 3) leave the frame untouched and record their arguments.
+  status and size, the Discontinuity count, XAudioSetEffectData (type 12,
+  index 9, no pOut), both GetVoiceProperties and GetInfo, FlushEx flags 1
+  and 3. The documented stop paths (StopEx and FlushEx with a timestamp)
+  leave the frame untouched and record their arguments.
   The test fails if any address is left unexercised.
 - A completion event is delivered after the guards drop. The test's
   `Events` relocks guest memory on another thread with a timeout, and
@@ -440,6 +705,19 @@ freeing, 3D panning, stored-state setters and every stop path.
   (UnsupportedTarget) without touching the stack.
 - Registering twice, registering over a foreign override, and registering
   after `unregister` are all reported, and nothing is installed.
+- Event references (`PinEvents`, which also relocks memory from `reference`
+  and `EventRef::signal`): a pinned event signals after the guest closed its
+  handle and the pin is then dropped; pins are per packet in queue order; a
+  zero-length packet retains then signals in one call; releasing a stream
+  drops its pins; a sink that does not pin gets the handle signal; a failed
+  `reference` never steals or drops another packet's pin; a faulting
+  completion write keeps the packet and its pin and completes on retry; a
+  concurrent pump and `Process` never signal a packet before it is pinned.
+- Host-driven clock: `Hle::tick` completes packets, delivers the event and
+  leaves the callback owed to the next override call. `spawn_pump` with
+  `render: true` completes a packet on a sinkless mixer, and with
+  `render: false` reports what an external consumer rendered, without
+  rendering anything.
 
 `tests/xbe_pins.rs` is ignored by default. In the real XBE it walks each of
 the 66 addresses (iced-x86, following direct jumps, so the flat `jmp`
@@ -463,9 +741,17 @@ distinct tests in `CMcpxBuffer_Play`, 1 is assumed to be looping),
 `GetStatus` bit names (decoded from `CMcpxBuffer_GetStatus`: 1 playing, 2
 paused, 4 looping), the `Pause` mode 3 semantics, the stream status bits
 `0x10000`/`0x40000`/`0x80000`, and the dry effects image's default effect
-state (zeros assumed; the image descriptor beyond its count is unread by Halo
-and left zero). The packet completion rule and the pause/synch voice bits are
-verified.
+state (zeros assumed, apart from the invented `+0x14` dword; the map fields
+other than `lpvStateSegment` are unread by anything found and left zero). The packet completion rule and the pause/synch voice bits are
+verified. Also not reproduced, though the binary defines them: the I3DL2
+converter (`0x3838a4`) and biquad generator (`0x37a032`) behind
+`XAudioSetEffectData`'s DSP words, the voice level word and 3D/LFO state in
+`GetVoiceProperties`, hardware volume quantisation, envelope release and
+timestamp scheduling for `FlushEx`/`StopEx`, and a stream's "active" state
+after its queue drains naturally (the shim keeps it active). Whether
+`GetInfo` is ever called is unproven; no site was found. The `pRaw` and
+default-routing facts above come from small constants read at the cited
+addresses.
 
 ## Wanted in `crates/audio`
 

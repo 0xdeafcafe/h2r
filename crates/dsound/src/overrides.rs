@@ -122,15 +122,29 @@ pub fn entry(va: u32) -> Option<&'static Entry> {
 
 /// Runs the replacement for the function at `va` with the stack arguments
 /// `args` (`args.len()` must equal the entry's `argc`).
-pub fn invoke(ds: &mut DirectSound, h: &mut dyn Host, va: u32, args: &[u32]) -> Result<Return, Stop> {
-    let e = entry(va).ok_or(Stop::Unimplemented { what: "guest address with no DirectSound override" })?;
-    assert_eq!(args.len() as u32, e.argc, "{}: wrong argument count", e.name);
+pub fn invoke(
+    ds: &mut DirectSound,
+    h: &mut dyn Host,
+    va: u32,
+    args: &[u32],
+) -> Result<Return, Stop> {
+    let e = entry(va).ok_or(Stop::Unimplemented {
+        what: "guest address with no DirectSound override",
+    })?;
+    assert_eq!(
+        args.len() as u32,
+        e.argc,
+        "{}: wrong argument count",
+        e.name
+    );
     let a = |i: usize| args[i];
     let r: R = match e.name {
         "DirectSoundCreate" => ds.direct_sound_create(h, a(1)),
         "DirectSoundCreateBuffer" => ds.direct_sound_create_buffer(h, a(0), a(1)),
         "DirectSoundCreateStream" => ds.direct_sound_create_stream(h, a(0), a(1)),
-        "IDirectSound_Release" | "IDirectSoundBuffer_Release" | "CDirectSoundStream_Release" => ds.release(h, a(0)),
+        "IDirectSound_Release" | "IDirectSoundBuffer_Release" | "CDirectSoundStream_Release" => {
+            ds.release(h, a(0))
+        }
         "CDirectSoundStream_AddRef" => ds.add_ref(a(0)),
         "IDirectSound_CreateSoundBuffer" => ds.create_sound_buffer(h, a(0), a(1), a(2), a(3)),
         "IDirectSound_CreateSoundStream" => ds.create_sound_stream(h, a(0), a(1), a(2), a(3)),
@@ -151,15 +165,20 @@ pub fn invoke(ds: &mut DirectSound, h: &mut dyn Host, va: u32, args: &[u32]) -> 
         "DirectSoundUseLightHRTF4Channel" => ds.use_light_hrtf_4_channel(),
         "DirectSoundDoWork" => ds.do_work(h),
         "XAudioDownloadEffectsImage" => ds.download_effects_image(h, a(0), a(1), a(2), a(3)),
-        "XAudioSetEffectData" => ds.xaudio_set_effect_data(a(0)),
+        "XAudioSetEffectData" => ds.xaudio_set_effect_data(h, a(0), a(1), a(2)),
         "IDirectSoundBuffer_Unlock" => ds.unlock(h, a(0)),
         "IDirectSoundBuffer_SetBufferData" => ds.set_buffer_data(h, a(0), a(1), a(2)),
         "IDirectSoundBuffer_Lock" => ds.lock(h, a(0), a(1), a(2), a(3), a(4), a(5), a(6), a(7)),
         "IDirectSoundBuffer_Play" => ds.play(h, a(0), a(1), a(2), a(3)),
         "IDirectSoundBuffer_Stop" => ds.stop(a(0), 0),
+        // Halo's only call site (0x220052) pushes ebp three times with ebp
+        // zeroed at 0x21ff35: timestamp 0, flags 0. A timestamp is scheduled
+        // on the DSP clock in the original and stays a stop.
         "IDirectSoundBuffer_StopEx" => {
             if a(1) != 0 || a(2) != 0 {
-                Err(Stop::Unimplemented { what: "StopEx with a future timestamp" })
+                Err(Stop::Unimplemented {
+                    what: "StopEx with a future timestamp",
+                })
             } else {
                 ds.stop(a(0), a(3))
             }
@@ -177,13 +196,14 @@ pub fn invoke(ds: &mut DirectSound, h: &mut dyn Host, va: u32, args: &[u32]) -> 
         "IDirectSoundBuffer_SetPosition" => ds.buffer_set_position(a(0), a(1), a(2), a(3)),
         "IDirectSoundBuffer_SetMinDistance" => ds.buffer_set_min_distance(a(0), a(1)),
         "IDirectSoundBuffer_SetMaxDistance" => ds.buffer_set_max_distance(a(0), a(1)),
-        "IDirectSoundBuffer_SetConeOutsideVolume" => ds.buffer_set_3d_extra(a(0), "SetConeOutsideVolume"),
+        "IDirectSoundBuffer_SetConeOutsideVolume" => {
+            ds.buffer_set_3d_extra(a(0), "SetConeOutsideVolume")
+        }
         "IDirectSoundBuffer_SetDopplerFactor" => ds.buffer_set_3d_extra(a(0), "SetDopplerFactor"),
         "IDirectSoundBuffer_SetRolloffFactor" => ds.buffer_set_3d_extra(a(0), "SetRolloffFactor"),
         "IDirectSoundBuffer_SetI3DL2Source" => ds.buffer_set_3d_extra(a(0), "SetI3DL2Source"),
-        "IDirectSoundBuffer_GetVoiceProperties" | "IDirectSoundStream_GetVoiceProperties" => {
-            Err(Stop::Unimplemented { what: "GetVoiceProperties (hardware voice state)" })
-        }
+        "IDirectSoundBuffer_GetVoiceProperties" => ds.buffer_get_voice_properties(h, a(0), a(1)),
+        "IDirectSoundStream_GetVoiceProperties" => ds.stream_get_voice_properties(h, a(0), a(1)),
         "IDirectSoundStream_SetVolume" => ds.stream_set_volume(a(0), a(1) as i32),
         "IDirectSoundStream_SetPitch" => ds.stream_set_pitch(a(0), a(1) as i32),
         "IDirectSoundStream_SetLFO" => ds.stream_set_timbre(a(0), "SetLFO"),
@@ -194,13 +214,18 @@ pub fn invoke(ds: &mut DirectSound, h: &mut dyn Host, va: u32, args: &[u32]) -> 
         "IDirectSoundStream_SetMixBinVolumes" => ds.stream_set_mix_bin_volumes(h, a(0), a(1)),
         "IDirectSoundStream_SetMixBins" => ds.stream_set_mix_bins(h, a(0), a(1)),
         "IDirectSoundStream_Pause" => ds.stream_pause(a(0), a(1)),
-        "IDirectSoundStream_FlushEx" => ds.stream_flush(h, a(0), (a(2) as u64) << 32 | a(1) as u64, a(3)),
-        "CDirectSoundStream_GetInfo" => Err(Stop::Unimplemented { what: "IDirectSoundStream::GetInfo" }),
+        "IDirectSoundStream_FlushEx" => {
+            ds.stream_flush(h, a(0), (a(2) as u64) << 32 | a(1) as u64, a(3))
+        }
+        "CDirectSoundStream_GetInfo" => ds.stream_get_info(h, a(0), a(1)),
         "CDirectSoundStream_GetStatus" => ds.stream_get_status(h, a(0), a(1)),
         "CDirectSoundStream_Process" => ds.stream_process(h, a(0), a(1), a(2)),
         "CDirectSoundStream_Discontinuity" => ds.stream_discontinuity(a(0)),
         "CDirectSoundStream_Flush" => ds.stream_flush(h, a(0), 0, 0),
         other => unreachable!("{other} has an entry but no handler"),
     };
-    Ok(Return { eax: r?, pop_bytes: 4 * e.argc })
+    Ok(Return {
+        eax: r?,
+        pop_bytes: 4 * e.argc,
+    })
 }

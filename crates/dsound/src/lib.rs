@@ -21,5 +21,7 @@ pub mod state;
 pub mod testing;
 
 pub use host::{EventSink, GuestMemory, Host, MemFault, StreamCallback};
-pub use register::{Events, Hle, RegisterError, Registration, register, unregister};
-pub use state::{DirectSound, Layout, R, Stop};
+pub use register::{
+    EventRef, Events, Hle, Pump, RegisterError, Registration, register, unregister,
+};
+pub use state::{AudioClock, DirectSound, EffectDesc, Layout, R, Stop};

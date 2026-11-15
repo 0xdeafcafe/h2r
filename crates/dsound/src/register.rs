@@ -15,17 +15,38 @@
 //!    A guest memory fault is a runtime FAULT instead.
 use crate::host::{EventSink, GuestMemory, MemFault, StreamCallback};
 use crate::overrides::{ENTRIES, Entry, invoke};
-use crate::state::{DirectSound, Stop};
+use crate::state::{AudioClock, DirectSound, Stop};
 use runtime::guest::{Access, FaultReason, MapError, Permissions};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, GuestFault, Runtime, TransferAbi};
 use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, Instant};
+
+/// A kernel event pinned independently of its guest handle. Dropping it
+/// releases the pin. Called and dropped with no guest memory or DirectSound
+/// guard held.
+pub trait EventRef: Send {
+    /// Signals the event even if the guest has since closed its handle.
+    fn signal(&mut self) -> Result<(), String>;
+}
 
 /// Kernel event signalling for `XMEDIAPACKET.hCompletionEvent`. Called with
 /// no guest memory or DirectSound guard held.
 pub trait Events: Send {
+    /// Signals by guest handle. Used when the event was not pinned, or the
+    /// pin failed.
     fn signal(&mut self, guest_handle: u32) -> Result<(), String>;
+    /// Pins the event behind `guest_handle` when a packet carrying it is
+    /// queued, so the completion still reaches it if the guest closes the
+    /// handle first. `None` (the default) means this sink does not pin and
+    /// completions go through [`signal`](Self::signal). A pin is used for
+    /// exactly one completion, in queue order per handle, then dropped; a
+    /// packet that never completes drops its pin when its stream is released.
+    fn reference(&mut self, _guest_handle: u32) -> Option<Result<Box<dyn EventRef>, String>> {
+        None
+    }
 }
 
 /// Guest addresses this crate maps its allocations in: the upper half of the
@@ -153,6 +174,14 @@ pub struct Hle {
     /// Callbacks produced outside an override (host-driven `do_work`); the
     /// next override call runs them before returning to its caller.
     callbacks: Mutex<VecDeque<StreamCallback>>,
+    /// Pinned events by guest handle, one per queued packet, oldest first.
+    pins: Mutex<HashMap<u64, Box<dyn EventRef>>>,
+    /// Event operation batches in the order the state produced them. A batch
+    /// is published while the `DirectSound` lock is held, so batch order is
+    /// state order whatever thread delivers.
+    outbox: Mutex<VecDeque<Vec<EventOp>>>,
+    /// Held while draining `outbox`, so batches reach the sink in order.
+    delivering: Mutex<()>,
     stops: Mutex<Vec<StopRecord>>,
     signal_failures: Mutex<Vec<SignalFailure>>,
 }
@@ -168,6 +197,9 @@ impl Hle {
             arena: Mutex::new(Arena::default()),
             events: Mutex::new(events),
             callbacks: Mutex::new(VecDeque::new()),
+            pins: Mutex::new(HashMap::new()),
+            outbox: Mutex::new(VecDeque::new()),
+            delivering: Mutex::new(()),
             stops: Mutex::new(Vec::new()),
             signal_failures: Mutex::new(Vec::new()),
         })
@@ -192,38 +224,204 @@ impl Hle {
         lock(&self.callbacks).len()
     }
 
-    /// Host-driven `DirectSound::do_work` (after a mixer render). Call with no
-    /// guest guard held and no runner on this thread. Events are delivered
-    /// here; callbacks wait for the next override call on a guest thread.
+    /// Host-driven `DirectSound::do_work`: completes whatever the mixer has
+    /// finished (a host render, the app's discard renderer) without waiting
+    /// for the game's next `DirectSoundDoWork`. Call with no guest guard held
+    /// and no runner on this thread. Events are delivered here; callbacks
+    /// wait for the next override call on a guest thread.
     pub fn do_work(&self, runtime: &Runtime) -> Result<(), Stop> {
-        let (result, bridge) = {
+        self.host_call(runtime, |ds, bridge| ds.do_work(bridge).map(|_| ()))
+    }
+
+    /// Controlled audio clock for hosts with no mixer sink: renders `frames`
+    /// output frames (discarded), then completes what that finished. See
+    /// [`DirectSound::advance_audio`]; the same single-consumer rule applies.
+    pub fn advance_audio(&self, runtime: &Runtime, frames: u64) -> Result<(), Stop> {
+        self.host_call(runtime, |ds, bridge| {
+            ds.advance_audio(bridge, frames).map(|_| ())
+        })
+    }
+
+    /// [`advance_audio`](Self::advance_audio) for the time `clock` owes after
+    /// `elapsed` more host time. The caller owns the clock and the time source.
+    pub fn tick(
+        &self,
+        runtime: &Runtime,
+        clock: &mut AudioClock,
+        elapsed: Duration,
+    ) -> Result<u64, Stop> {
+        let frames = clock.advance(elapsed);
+        self.advance_audio(runtime, frames)?;
+        Ok(frames)
+    }
+
+    fn host_call(
+        &self,
+        runtime: &Runtime,
+        f: impl FnOnce(&mut DirectSound, &mut Bridge<'_>) -> Result<(), Stop>,
+    ) -> Result<(), Stop> {
+        let (result, finished) = {
             let mut guard = runtime.memory();
             let mut ds = lock(&self.ds);
             let mut arena = lock(&self.arena);
             let mut bridge = Bridge::new(&mut guard, &mut arena);
-            let r = ds.do_work(&mut bridge);
-            (r, bridge.finish())
+            let r = f(&mut ds, &mut bridge);
+            let mut finished = bridge.finish();
+            self.publish(std::mem::take(&mut finished.ops));
+            (r, finished)
         };
-        self.deliver(bridge.signals);
-        lock(&self.callbacks).extend(bridge.callbacks);
-        result.map(|_| ())
+        self.drain();
+        lock(&self.callbacks).extend(finished.callbacks);
+        result
     }
 
-    fn deliver(&self, signals: Vec<u32>) {
-        if signals.is_empty() {
-            return;
+    /// Queues one call's event operations. Call with the `DirectSound` lock
+    /// still held: that is what orders batches like the state changes that
+    /// produced them.
+    fn publish(&self, ops: Vec<EventOp>) {
+        if !ops.is_empty() {
+            lock(&self.outbox).push_back(ops);
         }
-        let mut events = lock(&self.events);
-        for handle in signals {
-            if let Err(error) = events.signal(handle) {
-                lock(&self.signal_failures).push(SignalFailure { handle, error });
+    }
+
+    /// Delivers every published batch in order. Runs with no guest or
+    /// DirectSound guard held; one drainer at a time, so a concurrent pump
+    /// cannot signal a packet before the call that queued it has pinned it.
+    fn drain(&self) {
+        let _order = lock(&self.delivering);
+        loop {
+            let batch = lock(&self.outbox).pop_front();
+            let Some(batch) = batch else { break };
+            self.deliver(batch);
+        }
+    }
+
+    /// Delivers one batch in the order the shim produced it. Pins are
+    /// tracked by packet token, so a failed `reference` for one packet can
+    /// never hand another packet's pin to a signal or release.
+    fn deliver(&self, ops: Vec<EventOp>) {
+        for op in ops {
+            match op {
+                EventOp::Retain(handle, token) => {
+                    let pinned = lock(&self.events).reference(handle);
+                    match pinned {
+                        Some(Ok(pin)) => {
+                            lock(&self.pins).insert(token, pin);
+                        }
+                        Some(Err(error)) => {
+                            lock(&self.signal_failures).push(SignalFailure { handle, error })
+                        }
+                        None => {}
+                    }
+                }
+                EventOp::Signal(handle, token) => {
+                    let pin = lock(&self.pins).remove(&token);
+                    let result = match pin {
+                        Some(mut pin) => pin.signal(),
+                        None => lock(&self.events).signal(handle),
+                    };
+                    if let Err(error) = result {
+                        lock(&self.signal_failures).push(SignalFailure { handle, error });
+                    }
+                }
+                EventOp::Release(_, token) => drop(lock(&self.pins).remove(&token)),
             }
+        }
+    }
+
+    /// Event pins currently held (one per queued packet with an event).
+    pub fn pinned_events(&self) -> usize {
+        lock(&self.pins).len()
+    }
+
+    /// Starts a thread that drives the audio side from outside the game:
+    /// every `period` it completes finished packets ([`Hle::do_work`]), or,
+    /// with `render`, first advances the mixer by the real time elapsed
+    /// (through an [`AudioClock`] capped at 250 ms) so a host with no sink
+    /// still plays buffers out and completes packets. Use `render: false`
+    /// when the app's `AudioOut` (a device or its discard renderer) already
+    /// consumes the mixer. Stops and joins when the [`Pump`] drops. A
+    /// [`Stop`] it hits is recorded in [`Hle::take_stops`] (address 0, name
+    /// `"Hle::pump"`) and ends the thread.
+    pub fn spawn_pump(
+        self: &Arc<Self>,
+        runtime: Arc<Runtime>,
+        period: Duration,
+        render: bool,
+    ) -> Pump {
+        let stop = Arc::new(AtomicBool::new(false));
+        let hle = Arc::clone(self);
+        let flag = Arc::clone(&stop);
+        let rate = lock(&hle.ds)
+            .mixer()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .sample_rate();
+        let join = std::thread::Builder::new()
+            .name("dsound-pump".into())
+            .spawn(move || {
+                let mut clock = AudioClock::new(rate, Duration::from_millis(250));
+                let mut last = Instant::now();
+                while !flag.load(Ordering::Acquire) {
+                    std::thread::sleep(period);
+                    let now = Instant::now();
+                    let result = if render {
+                        hle.tick(&runtime, &mut clock, now - last).map(|_| ())
+                    } else {
+                        hle.do_work(&runtime)
+                    };
+                    last = now;
+                    if let Err(stop) = result {
+                        lock(&hle.stops).push(StopRecord {
+                            addr: 0,
+                            name: "Hle::pump",
+                            args: Vec::new(),
+                            stop,
+                        });
+                        return;
+                    }
+                }
+            })
+            .expect("spawning the dsound pump thread");
+        Pump {
+            stop,
+            join: Some(join),
         }
     }
 }
 
+/// The thread [`Hle::spawn_pump`] started. Dropping it stops and joins.
+pub struct Pump {
+    stop: Arc<AtomicBool>,
+    join: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Pump {
+    /// The thread has exited (dropped, or it hit a [`Stop`]).
+    pub fn is_finished(&self) -> bool {
+        self.join.as_ref().is_none_or(|j| j.is_finished())
+    }
+}
+
+impl Drop for Pump {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(j) = self.join.take() {
+            let _ = j.join();
+        }
+    }
+}
+
+/// One event operation, in the order the shim produced it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EventOp {
+    Retain(u32, u64),
+    Signal(u32, u64),
+    Release(u32, u64),
+}
+
 struct Finished {
-    signals: Vec<u32>,
+    ops: Vec<EventOp>,
     callbacks: Vec<StreamCallback>,
     fault: Option<GuestFault>,
 }
@@ -232,7 +430,7 @@ struct Finished {
 struct Bridge<'a> {
     guest: &'a mut Guest,
     arena: &'a mut Arena,
-    signals: Vec<u32>,
+    ops: Vec<EventOp>,
     callbacks: Vec<StreamCallback>,
     fault: Cell<Option<GuestFault>>,
 }
@@ -242,7 +440,7 @@ impl<'a> Bridge<'a> {
         Self {
             guest,
             arena,
-            signals: Vec::new(),
+            ops: Vec::new(),
             callbacks: Vec::new(),
             fault: Cell::new(None),
         }
@@ -257,7 +455,7 @@ impl<'a> Bridge<'a> {
     }
     fn finish(self) -> Finished {
         Finished {
-            signals: self.signals,
+            ops: self.ops,
             callbacks: self.callbacks,
             fault: self.fault.take(),
         }
@@ -284,8 +482,14 @@ impl GuestMemory for Bridge<'_> {
 }
 
 impl EventSink for Bridge<'_> {
-    fn signal_event(&mut self, handle: u32) {
-        self.signals.push(handle);
+    fn signal_event(&mut self, handle: u32, token: u64) {
+        self.ops.push(EventOp::Signal(handle, token));
+    }
+    fn retain_event(&mut self, handle: u32, token: u64) {
+        self.ops.push(EventOp::Retain(handle, token));
+    }
+    fn release_event(&mut self, handle: u32, token: u64) {
+        self.ops.push(EventOp::Release(handle, token));
     }
     fn stream_callback(&mut self, cb: StreamCallback) {
         self.callbacks.push(cb);
@@ -394,9 +598,12 @@ fn call(
         let mut arena = lock(&hle.arena);
         let mut bridge = Bridge::new(&mut guard, &mut arena);
         let result = invoke(&mut ds, &mut bridge, e.va, &args);
-        (ret_pc, args, result, bridge.finish())
+        let mut finished = bridge.finish();
+        // Published under the DirectSound lock: batch order is state order.
+        hle.publish(std::mem::take(&mut finished.ops));
+        (ret_pc, args, result, finished)
     };
-    hle.deliver(finished.signals);
+    hle.drain();
     match result {
         Ok(r) => {
             cpu.eax = r.eax;

@@ -76,8 +76,18 @@ pub struct StreamCallback {
 
 /// Completion notification, owned by the kernel agent.
 pub trait EventSink {
-    /// `SetEvent(handle)` for an `XMEDIAPACKET.hCompletionEvent`.
-    fn signal_event(&mut self, handle: u32);
+    /// `SetEvent(handle)` for an `XMEDIAPACKET.hCompletionEvent`. Exactly
+    /// one call per packet that was queued with [`retain_event`](Self::retain_event).
+    fn signal_event(&mut self, handle: u32, token: u64);
+    /// A packet carrying `handle` was queued. `token` identifies the packet
+    /// (unique per stream packet, shared by its retain and its signal or release): keep the event alive until the
+    /// matching [`signal_event`](Self::signal_event) or
+    /// [`release_event`](Self::release_event), even if the guest closes the
+    /// handle in between. Calls are delivered in order with the signals.
+    fn retain_event(&mut self, _handle: u32, _token: u64) {}
+    /// A packet queued with `handle` will never complete (its stream was
+    /// released). Drops the reference taken by [`retain_event`](Self::retain_event).
+    fn release_event(&mut self, _handle: u32, _token: u64) {}
     /// Queue a guest completion callback (see [`StreamCallback`]).
     fn stream_callback(&mut self, cb: StreamCallback);
 }

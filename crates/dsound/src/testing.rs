@@ -9,6 +9,8 @@ pub struct TestHost {
     mem: Vec<u8>,
     next_alloc: u32,
     pub signalled: Vec<u32>,
+    /// Retain/release/signal calls in arrival order.
+    pub event_log: Vec<EventLog>,
     pub callbacks: Vec<StreamCallback>,
     pub freed: Vec<u32>,
     /// When `Some(n)`, only the next `n` allocations succeed.
@@ -19,6 +21,14 @@ pub struct TestHost {
     /// (`HIGH_BASE..=0xffff_ffff`), for overflow tests.
     high: Vec<u8>,
     low: Vec<u8>,
+}
+
+/// One event call seen by [`TestHost`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventLog {
+    Retain(u32),
+    Signal(u32),
+    Release(u32),
 }
 
 /// End of the readable page at address 0 (see `HIGH_BASE`).
@@ -36,6 +46,7 @@ impl TestHost {
             mem: vec![0; size],
             next_alloc: base + size as u32 / 2,
             signalled: Vec::new(),
+            event_log: Vec::new(),
             callbacks: Vec::new(),
             freed: Vec::new(),
             allocs_left: None,
@@ -51,7 +62,10 @@ impl TestHost {
     }
 
     fn range(&self, addr: u32, len: usize) -> Result<std::ops::Range<usize>, MemFault> {
-        let fault = MemFault { addr, len: len as u32 };
+        let fault = MemFault {
+            addr,
+            len: len as u32,
+        };
         let off = addr.checked_sub(self.base).ok_or(fault)? as usize;
         let end = off.checked_add(len).ok_or(fault)?;
         if end > self.mem.len() {
@@ -71,7 +85,10 @@ impl GuestMemory for TestHost {
     fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), MemFault> {
         if addr >= HIGH_BASE {
             let off = (addr - HIGH_BASE) as usize;
-            let fault = MemFault { addr, len: out.len() as u32 };
+            let fault = MemFault {
+                addr,
+                len: out.len() as u32,
+            };
             let src = self.high.get(off..off + out.len()).ok_or(fault)?;
             out.copy_from_slice(src);
             return Ok(());
@@ -79,8 +96,14 @@ impl GuestMemory for TestHost {
         if addr < LOW_END {
             // Readable page at address 0, so an address that wrapped past
             // 2^32 would be read successfully instead of faulting.
-            let fault = MemFault { addr, len: out.len() as u32 };
-            let src = self.low.get(addr as usize..addr as usize + out.len()).ok_or(fault)?;
+            let fault = MemFault {
+                addr,
+                len: out.len() as u32,
+            };
+            let src = self
+                .low
+                .get(addr as usize..addr as usize + out.len())
+                .ok_or(fault)?;
             out.copy_from_slice(src);
             return Ok(());
         }
@@ -90,14 +113,23 @@ impl GuestMemory for TestHost {
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), MemFault> {
         if addr >= HIGH_BASE {
             let off = (addr - HIGH_BASE) as usize;
-            let fault = MemFault { addr, len: data.len() as u32 };
+            let fault = MemFault {
+                addr,
+                len: data.len() as u32,
+            };
             let dst = self.high.get_mut(off..off + data.len()).ok_or(fault)?;
             dst.copy_from_slice(data);
             return Ok(());
         }
         if addr < LOW_END {
-            let fault = MemFault { addr, len: data.len() as u32 };
-            let dst = self.low.get_mut(addr as usize..addr as usize + data.len()).ok_or(fault)?;
+            let fault = MemFault {
+                addr,
+                len: data.len() as u32,
+            };
+            let dst = self
+                .low
+                .get_mut(addr as usize..addr as usize + data.len())
+                .ok_or(fault)?;
             dst.copy_from_slice(data);
             return Ok(());
         }
@@ -125,8 +157,15 @@ impl GuestMemory for TestHost {
 }
 
 impl EventSink for TestHost {
-    fn signal_event(&mut self, handle: u32) {
+    fn signal_event(&mut self, handle: u32, _token: u64) {
         self.signalled.push(handle);
+        self.event_log.push(EventLog::Signal(handle));
+    }
+    fn retain_event(&mut self, handle: u32, _token: u64) {
+        self.event_log.push(EventLog::Retain(handle));
+    }
+    fn release_event(&mut self, handle: u32, _token: u64) {
+        self.event_log.push(EventLog::Release(handle));
     }
     fn stream_callback(&mut self, cb: StreamCallback) {
         self.callbacks.push(cb);

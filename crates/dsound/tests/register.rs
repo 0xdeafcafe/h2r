@@ -139,6 +139,14 @@ struct World {
 }
 
 fn world() -> World {
+    world_with(None)
+}
+
+/// A world whose `Events` is `custom` (built from the runtime slot) instead of
+/// the default `KernelLike`.
+type EventsFactory = Box<dyn FnOnce(RuntimeSlot) -> Box<dyn Events>>;
+
+fn world_with(custom: Option<EventsFactory>) -> World {
     let mut g = Guest::new();
     // The DSOUND section; the runner checks Execute on override targets.
     g.map_zeroed(0x0037_9000, 0xf000, Permissions::RWX).unwrap();
@@ -148,7 +156,18 @@ fn world() -> World {
     g.map_zeroed(SCRATCH, 0x1_0000, Permissions::RW).unwrap();
     g.map_zeroed(GUARDED, 0x1000, Permissions::RW).unwrap();
     let runtime = Runtime::new(g, Dispatch::default());
-    let (hle, slot, signals) = hle();
+    let (hle, slot, signals) = match custom {
+        None => hle(),
+        Some(make) => {
+            let slot: RuntimeSlot = Arc::new(Mutex::new(None));
+            let ds = DirectSound::new(Arc::new(Mutex::new(Mixer::new(8000))), Layout::default());
+            (
+                Hle::new(ds, make(Arc::clone(&slot))),
+                slot,
+                Arc::new(Mutex::new(Vec::new())),
+            )
+        }
+    };
     *slot.lock().unwrap() = Some(Arc::clone(&runtime));
     runtime.edit_dispatch(|d| register(d, &hle)).unwrap();
     // A guest stream callback: records its three stdcall args, `ret 12`.
@@ -410,11 +429,25 @@ fn callbacks_survive_a_fault_on_a_later_packet() {
     assert_eq!(fault.addr, GUARDED);
     assert!(w.callbacks.lock().unwrap().is_empty());
     assert_eq!(w.hle.pending_callbacks(), 1, "A's callback was dropped");
-    // The next override call on a guest thread runs it.
+    // B stays queued after its faulting write (its record is kept, not
+    // dropped), so DoWork would retry it and fault again.
+    let t = w.run(0x0037_b844, &[]);
+    assert_eq!(t.kind, abi::FAULT);
+    // Once the page is writable the retry completes B, and the next override
+    // call on a guest thread runs A's owed callback first, then B's.
+    w.runtime
+        .memory()
+        .protect(GUARDED, Permissions::RW)
+        .unwrap();
     w.ok(0x0037_b844, &[]);
+    let cbs = w.callbacks.lock().unwrap().clone();
+    assert_eq!(cbs.len(), 2, "{cbs:x?}");
+    assert_eq!(cbs[0], [0xc0c0, 1, XMEDIAPACKET_STATUS_FLUSHED]);
+    assert_eq!(cbs[1][1], 2);
     assert_eq!(
-        *w.callbacks.lock().unwrap(),
-        [[0xc0c0, 1, XMEDIAPACKET_STATUS_FLUSHED]]
+        w.u32(GUARDED),
+        cbs[1][2],
+        "status written before the callback"
     );
 }
 
@@ -459,7 +492,14 @@ fn every_override_decodes_its_frame_and_pops_its_arguments() {
     let back = w.scratch(8);
     w.ok(0x0037_b5e6, &[ds, 4, 0x20, back, 8]);
     assert_eq!((w.u32(back), w.u32(back + 4)), (0x1111_2222, 0x3333_4444));
-    w.stop(0x0037_ba6f, &[1, 2, 3]);
+    // XAudioSetEffectData: Halo's I3DL2 call (type 12, index 9, no pOut),
+    // then an unknown type, which is a guest-visible error, not a stop.
+    let i3dl2 = w.words(&[12, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    w.ok(0x0037_ba6f, &[9, i3dl2, 0]);
+    w.ok(0x0037_b5e6, &[ds, 9, 0x10, back, 4]);
+    assert_eq!(w.u32(back), 4, "flags ORed with 4");
+    let junk = w.words(&[99, 0, 0]);
+    assert_eq!(w.ret(0x0037_ba6f, &[9, junk, 0]), DSERR_INVALIDCALL);
 
     w.ok(0x0037_b637, &[ds, 1, 3]);
     assert_eq!(w.hle.direct_sound().mix_bin_headroom(1), Some(3));
@@ -531,7 +571,23 @@ fn every_override_decodes_its_frame_and_pops_its_arguments() {
     w.ok(0x0037_c69d, &[buf, bits(1.0), 0]);
     w.ok(0x0037_c6c1, &[buf, bits(1.0), 0]);
     w.ok(0x0037_c6e5, &[buf, SCRATCH, 0]);
-    w.stop(0x0037_b7e3, &[buf, out]);
+    // The buffer was stopped above: its voice is inactive.
+    assert_eq!(w.ret(0x0037_b7e3, &[buf, out]), DSERR_INVALIDCALL);
+    w.ok(0x0037_b6df, &[buf, 0, 0, DSBPLAY_LOOPING]);
+    let props = w.scratch(0x5c);
+    w.ok(0x0037_b7e3, &[buf, props]);
+    assert_eq!(
+        (w.u32(props), w.u32(props + 4), w.u32(props + 8)),
+        (2, 0, 0),
+        "default bins 0 and 1"
+    );
+    assert_eq!(w.u32(props + 12), 1);
+    assert_eq!(
+        (w.u32(props + 0x14), w.u32(props + 0x18)),
+        (0xffff_ffff, 0xffff_d8f0),
+        "unused slot"
+    );
+    w.ok(0x0037_b703, &[buf]);
     // StopEx with a timestamp is a stop; the high timestamp word is arg 3.
     w.stop(0x0037_b71b, &[buf, 0, 1, 0]);
 
@@ -547,10 +603,29 @@ fn every_override_decodes_its_frame_and_pops_its_arguments() {
     w.ok(0x0037_c705, &[stream, 0]);
     w.ok(0x0037_b822, &[stream, 0]);
     w.ok(0x0037_b827, &[stream, 0, 0, 0]);
-    w.stop(0x0037_b83f, &[stream, out]);
+    // Halo's flags: ASYNC (1) and ASYNC | ENVELOPE (3), timestamp 0.
+    w.ok(0x0037_b827, &[stream, 0, 0, 1]);
+    w.ok(0x0037_b827, &[stream, 0, 0, 3]);
+    // A timestamped FlushEx is a stop.
+    w.stop(0x0037_b827, &[stream, 5, 0, 1]);
+    assert_eq!(
+        w.ret(0x0037_b83f, &[stream, out]),
+        DSERR_INVALIDCALL,
+        "not started"
+    );
     assert_eq!(w.ret(0x0037_ab40, &[stream]), 2, "AddRef");
     assert_eq!(w.ret(0x0037_ab87, &[stream]), 1, "Release");
-    w.stop(0x0037_abd5, &[stream, out]);
+    let info = w.scratch(16);
+    w.ok(0x0037_abd5, &[stream, info]);
+    assert_eq!(
+        (
+            w.u32(info),
+            w.u32(info + 4),
+            w.u32(info + 8),
+            w.u32(info + 12)
+        ),
+        (5, 2, 0, 128)
+    );
     w.ok(0x0037_acd4, &[stream, out]);
     assert_eq!(w.u32(out) & XMO_STATUSF_ACCEPT_INPUT_DATA, 1);
     let (pkt, status, done) = w.packet(0x40, 0);
@@ -559,6 +634,8 @@ fn every_override_decodes_its_frame_and_pops_its_arguments() {
         (w.u32(status), w.u32(done)),
         (XMEDIAPACKET_STATUS_PENDING, 0)
     );
+    w.ok(0x0037_b83f, &[stream, props]);
+    assert_eq!(w.u32(props), 2, "stream voice properties once it has data");
     w.ok(0x0037_ac3c, &[stream]);
     assert_eq!(
         w.hle.direct_sound().stream_discontinuity_count(stream),
@@ -668,4 +745,441 @@ fn freed_objects_are_reused_zeroed() {
     w.ok(0x0037_d4be, &[ds, desc, out, 0]);
     assert_eq!(w.hle.arena().live(), live);
     assert_eq!(w.hle.arena().mapped().len(), 1);
+}
+
+// ---- event references -----------------------------------------------------
+
+/// Pins events like `Kernel::reference_dispatcher`: a pinned event signals
+/// even after the guest closed its handle, a plain handle signal does not.
+struct PinEvents {
+    runtime: RuntimeSlot,
+    log: Arc<Mutex<Vec<String>>>,
+    closed: Arc<Mutex<BTreeSet<u32>>>,
+    /// Handles whose `reference` fails (no pin is made for them).
+    failing: BTreeSet<u32>,
+}
+
+struct Pin {
+    handle: u32,
+    runtime: RuntimeSlot,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+fn relock(runtime: &RuntimeSlot) -> Result<(), String> {
+    let runtime = runtime.lock().unwrap().clone().unwrap();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _guard = runtime.memory();
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(Duration::from_secs(2))
+        .map_err(|_| "called under the memory guard".to_owned())
+}
+
+impl dsound::EventRef for Pin {
+    fn signal(&mut self) -> Result<(), String> {
+        relock(&self.runtime)?;
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("pin-signal {:#x}", self.handle));
+        Ok(())
+    }
+}
+
+impl Drop for Pin {
+    fn drop(&mut self) {
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("unpin {:#x}", self.handle));
+    }
+}
+
+impl Events for PinEvents {
+    fn signal(&mut self, handle: u32) -> Result<(), String> {
+        if self.closed.lock().unwrap().contains(&handle) {
+            return Err(format!("handle {handle:#x} is closed"));
+        }
+        self.log
+            .lock()
+            .unwrap()
+            .push(format!("handle-signal {handle:#x}"));
+        Ok(())
+    }
+    fn reference(&mut self, handle: u32) -> Option<Result<Box<dyn dsound::EventRef>, String>> {
+        relock(&self.runtime).ok()?;
+        if self.failing.contains(&handle) {
+            return Some(Err(format!("reference {handle:#x} failed")));
+        }
+        self.log.lock().unwrap().push(format!("ref {handle:#x}"));
+        Some(Ok(Box::new(Pin {
+            handle,
+            runtime: Arc::clone(&self.runtime),
+            log: Arc::clone(&self.log),
+        })))
+    }
+}
+
+type PinLog = Arc<Mutex<Vec<String>>>;
+
+fn pin_world() -> (World, PinLog, Arc<Mutex<BTreeSet<u32>>>) {
+    pin_world_failing(&[])
+}
+
+fn pin_world_failing(failing: &[u32]) -> (World, PinLog, Arc<Mutex<BTreeSet<u32>>>) {
+    let failing: BTreeSet<u32> = failing.iter().copied().collect();
+    let log: PinLog = Arc::new(Mutex::new(Vec::new()));
+    let closed = Arc::new(Mutex::new(BTreeSet::new()));
+    let (l, c) = (Arc::clone(&log), Arc::clone(&closed));
+    let w = world_with(Some(Box::new(move |runtime| {
+        Box::new(PinEvents {
+            runtime,
+            log: l,
+            closed: c,
+            failing,
+        })
+    })));
+    (w, log, closed)
+}
+
+fn stream_of(w: &mut World, max_packets: u32) -> u32 {
+    let out = w.scratch(4);
+    w.ok(0x0037_d797, &[0, out, 0]);
+    let ds = w.u32(out);
+    let fmt = w.pcm16_format();
+    let sdesc = w.words(&[0, max_packets, fmt, 0, 0, 0]);
+    w.ok(0x0037_d4e2, &[ds, sdesc, out, 0]);
+    w.u32(out)
+}
+
+#[test]
+fn a_queued_packet_pins_its_event_and_the_pin_survives_closing_the_handle() {
+    let (mut w, log, closed) = pin_world();
+    let stream = stream_of(&mut w, 4);
+    let (pkt, status, done) = w.packet(0x40, 0x91);
+    w.ok(0x0037_ad25, &[stream, pkt, 0]);
+    assert_eq!(*log.lock().unwrap(), ["ref 0x91"]);
+    assert_eq!(w.hle.pinned_events(), 1);
+    // The guest closes its handle before the packet completes.
+    closed.lock().unwrap().insert(0x91);
+    w.ok(0x0037_ac89, &[stream]);
+    assert_eq!(
+        (w.u32(status), w.u32(done)),
+        (XMEDIAPACKET_STATUS_FLUSHED, 0x40)
+    );
+    // The signal went through the pin, then the pin was dropped.
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["ref 0x91", "pin-signal 0x91", "unpin 0x91"]
+    );
+    assert_eq!(w.hle.pinned_events(), 0);
+    assert!(w.hle.take_signal_failures().is_empty());
+}
+
+#[test]
+fn pins_are_per_packet_in_order_and_a_zero_length_packet_signals_inside_process() {
+    let (mut w, log, _) = pin_world();
+    let stream = stream_of(&mut w, 4);
+    let (a, _, _) = w.packet(0x40, 0x92);
+    let (b, _, _) = w.packet(0x40, 0x92);
+    w.ok(0x0037_ad25, &[stream, a, 0]);
+    w.ok(0x0037_ad25, &[stream, b, 0]);
+    assert_eq!(w.hle.pinned_events(), 2);
+    w.ok(0x0037_ac89, &[stream]);
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            "ref 0x92",
+            "ref 0x92",
+            "pin-signal 0x92",
+            "unpin 0x92",
+            "pin-signal 0x92",
+            "unpin 0x92"
+        ]
+    );
+    log.lock().unwrap().clear();
+    // Retain and signal come from one call and are delivered in that order.
+    let (z, status, _) = w.packet(0, 0x93);
+    w.ok(0x0037_ad25, &[stream, z, 0]);
+    assert_eq!(w.u32(status), XMEDIAPACKET_STATUS_SUCCESS);
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["ref 0x93", "pin-signal 0x93", "unpin 0x93"]
+    );
+    assert_eq!(w.hle.pinned_events(), 0);
+}
+
+#[test]
+fn releasing_a_stream_drops_the_pins_of_packets_that_never_complete() {
+    let (mut w, log, _) = pin_world();
+    let stream = stream_of(&mut w, 4);
+    let (a, status, _) = w.packet(0x40, 0x94);
+    w.ok(0x0037_ad25, &[stream, a, 0]);
+    assert_eq!(w.hle.pinned_events(), 1);
+    assert_eq!(w.ret(0x0037_ab87, &[stream]), 0);
+    assert_eq!(w.hle.pinned_events(), 0);
+    assert_eq!(*log.lock().unwrap(), ["ref 0x94", "unpin 0x94"]);
+    assert_eq!(
+        w.u32(status),
+        XMEDIAPACKET_STATUS_PENDING,
+        "dropped packets stay pending, as in the library"
+    );
+}
+
+#[test]
+fn a_failed_reference_never_steals_another_packets_pin() {
+    // A pins; its handle is closed; B's reference fails. B's completion must
+    // fall back to its handle and must not consume (or drop) A's pin.
+    let (mut w, log, closed) = pin_world_failing(&[0x97]);
+    let stream = stream_of(&mut w, 4);
+    let (a, _, _) = w.packet(0x40, 0x96);
+    let (b, _, _) = w.packet(0x40, 0x97);
+    w.ok(0x0037_ad25, &[stream, a, 0]);
+    w.ok(0x0037_ad25, &[stream, b, 0]);
+    assert_eq!(w.hle.pinned_events(), 1);
+    assert_eq!(
+        w.hle.take_signal_failures().len(),
+        1,
+        "B's reference failure"
+    );
+    closed.lock().unwrap().insert(0x96);
+    // Releasing the stream with only B completing is not what happens here:
+    // flush completes both in order.
+    w.ok(0x0037_ac89, &[stream]);
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            "ref 0x96",
+            "pin-signal 0x96",
+            "unpin 0x96",
+            "handle-signal 0x97"
+        ]
+    );
+    assert_eq!(w.hle.pinned_events(), 0);
+    assert!(w.hle.take_signal_failures().is_empty());
+}
+
+#[test]
+fn releasing_a_stream_after_a_failed_reference_keeps_the_other_packets_pin_accounting() {
+    let (mut w, log, _) = pin_world_failing(&[0x9a]);
+    let s1 = stream_of(&mut w, 4);
+    let (a, _, _) = w.packet(0x40, 0x99);
+    w.ok(0x0037_ad25, &[s1, a, 0]);
+    let s2 = stream_of(&mut w, 4);
+    let (b, _, _) = w.packet(0x40, 0x9a);
+    w.ok(0x0037_ad25, &[s2, b, 0]);
+    assert_eq!(w.hle.pinned_events(), 1);
+    // B has no pin: releasing its stream must not drop A's.
+    assert_eq!(w.ret(0x0037_ab87, &[s2]), 0);
+    assert_eq!(w.hle.pinned_events(), 1, "A's pin survives B's release");
+    assert_eq!(*log.lock().unwrap(), ["ref 0x99"]);
+}
+
+#[test]
+fn a_faulting_completion_write_keeps_the_packet_and_its_pin() {
+    let (mut w, log, _) = pin_world();
+    let stream = stream_of(&mut w, 4);
+    let (a, _, _) = w.packet(0x40, 0x9b);
+    let done = w.words(&[0]);
+    let b = w.words(&[SCRATCH, 0, done, GUARDED, 0x9c, 0]);
+    w.ok(0x0037_ad25, &[stream, a, 0]);
+    w.ok(0x0037_ad25, &[stream, b, 0]);
+    w.runtime
+        .memory()
+        .protect(GUARDED, Permissions::READ)
+        .unwrap();
+    let t = w.run(0x0037_ac89, &[stream]);
+    assert_eq!(t.kind, abi::FAULT);
+    // B's pin is still held and was not released on the failure.
+    assert_eq!(w.hle.pinned_events(), 1);
+    assert!(!log.lock().unwrap().iter().any(|l| l == "unpin 0x9c"));
+    // Once the page is writable the packet completes and signals through it.
+    w.runtime
+        .memory()
+        .protect(GUARDED, Permissions::RW)
+        .unwrap();
+    w.ok(0x0037_b844, &[]);
+    assert_eq!(w.u32(GUARDED), XMEDIAPACKET_STATUS_FLUSHED);
+    assert_eq!(w.hle.pinned_events(), 0);
+    let log = log.lock().unwrap();
+    let sig = log.iter().position(|l| l == "pin-signal 0x9c").unwrap();
+    assert!(log[sig + 1] == "unpin 0x9c");
+}
+
+#[test]
+fn concurrent_pump_and_process_deliver_every_pin_in_order() {
+    let (mut w, log, _) = pin_world();
+    let stream = stream_of(&mut w, 64);
+    let pump = w
+        .hle
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true);
+    for i in 0..48u32 {
+        let (pkt, _, _) = w.packet(16, 0x200 + i);
+        w.ok(0x0037_ad25, &[stream, pkt, 0]);
+    }
+    assert!(wait_for(Duration::from_secs(10), || {
+        w.hle.pinned_events() == 0
+            && log
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|l| l.starts_with("unpin"))
+                .count()
+                == 48
+    }));
+    drop(pump);
+    let log = log.lock().unwrap();
+    assert!(
+        !log.iter().any(|l| l.starts_with("handle-signal")),
+        "a completion raced ahead of its retain and fell back: {log:?}"
+    );
+    for i in 0..48u32 {
+        let pos = |what: &str| {
+            log.iter()
+                .position(|l| *l == format!("{what} {:#x}", 0x200 + i))
+                .unwrap()
+        };
+        assert!(pos("ref") < pos("pin-signal"));
+        assert!(pos("pin-signal") < pos("unpin"));
+    }
+    assert!(w.hle.take_signal_failures().is_empty());
+}
+
+#[test]
+fn unpinned_sinks_fall_back_to_signalling_the_handle() {
+    // `KernelLike` does not override `reference`: the handle path is used.
+    let mut w = world();
+    let stream = stream_of(&mut w, 4);
+    let (pkt, _, _) = w.packet(0x40, 0x95);
+    w.ok(0x0037_ad25, &[stream, pkt, 0]);
+    assert_eq!(w.hle.pinned_events(), 0);
+    w.ok(0x0037_ac89, &[stream]);
+    assert_eq!(*w.signals.lock().unwrap(), [0x95]);
+}
+
+// ---- audio clock and pump --------------------------------------------------
+
+#[test]
+fn host_driven_clock_completes_packets_and_defers_callbacks() {
+    let mut w = world();
+    let out = w.scratch(4);
+    w.ok(0x0037_d797, &[0, out, 0]);
+    let ds = w.u32(out);
+    let fmt = w.pcm16_format();
+    let ev = w.words(&[0, 4, fmt, 0, 0, 0]);
+    w.ok(0x0037_d4e2, &[ds, ev, out, 0]);
+    let s_event = w.u32(out);
+    let cb = w.words(&[0, 4, fmt, CALLBACK, 0xc0c0, 0]);
+    w.ok(0x0037_d4e2, &[ds, cb, out, 0]);
+    let s_cb = w.u32(out);
+    // 100 frames at 8 kHz each (200 bytes of 16-bit mono).
+    let (a, a_status, a_done) = w.packet(200, 0xa1);
+    let (b, b_status, _) = w.packet(200, 0xb2);
+    w.ok(0x0037_ad25, &[s_event, a, 0]);
+    w.ok(0x0037_ad25, &[s_cb, b, 0]);
+    // Nothing consumes the mixer, so nothing finishes.
+    w.hle.do_work(&w.runtime).unwrap();
+    assert_eq!(w.u32(a_status), XMEDIAPACKET_STATUS_PENDING);
+    // 12.5 ms at 8 kHz is exactly 100 frames.
+    let mut clock = dsound::AudioClock::new(8000, Duration::from_millis(250));
+    let frames = w
+        .hle
+        .tick(&w.runtime, &mut clock, Duration::from_micros(12_500))
+        .unwrap();
+    assert_eq!(frames, 100);
+    assert_eq!(
+        (w.u32(a_status), w.u32(a_done)),
+        (XMEDIAPACKET_STATUS_SUCCESS, 200)
+    );
+    assert_eq!(w.u32(b_status), XMEDIAPACKET_STATUS_SUCCESS);
+    // The event is delivered by the host call; the callback must run on a
+    // guest thread, so it waits for the next override call.
+    assert_eq!(*w.signals.lock().unwrap(), [0xa1]);
+    assert_eq!(w.hle.pending_callbacks(), 1);
+    assert!(w.callbacks.lock().unwrap().is_empty());
+    w.ok(0x0037_b844, &[]);
+    assert_eq!(
+        *w.callbacks.lock().unwrap(),
+        [[0xc0c0, 0xb2, XMEDIAPACKET_STATUS_SUCCESS]]
+    );
+    assert!(w.hle.take_signal_failures().is_empty());
+}
+
+fn wait_for(limit: Duration, mut f: impl FnMut() -> bool) -> bool {
+    let start = std::time::Instant::now();
+    while start.elapsed() < limit {
+        if f() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(2));
+    }
+    f()
+}
+
+#[test]
+fn the_pump_renders_a_sinkless_mixer_and_completes_packets_on_its_own() {
+    let mut w = world();
+    let stream = stream_of(&mut w, 4);
+    // 1600 frames = 200 ms of audio.
+    let (pkt, status, _) = w.packet(3200, 0xc1);
+    w.ok(0x0037_ad25, &[stream, pkt, 0]);
+    let pump = w
+        .hle
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(2), true);
+    let runtime = Arc::clone(&w.runtime);
+    // The status is written first, the event is signalled after the guards drop.
+    let signals = Arc::clone(&w.signals);
+    assert!(
+        wait_for(Duration::from_secs(5), || !signals
+            .lock()
+            .unwrap()
+            .is_empty()),
+        "the packet completed with no game DoWork and no external sink"
+    );
+    assert_eq!(
+        runtime.memory().u32(status).unwrap(),
+        XMEDIAPACKET_STATUS_SUCCESS
+    );
+    assert_eq!(*w.signals.lock().unwrap(), [0xc1]);
+    assert!(!pump.is_finished());
+    drop(pump);
+    assert!(w.hle.take_stops().is_empty());
+}
+
+#[test]
+fn a_service_only_pump_completes_what_an_external_sink_consumed() {
+    let mut w = world();
+    let stream = stream_of(&mut w, 4);
+    let (pkt, status, _) = w.packet(200, 0xd1);
+    w.ok(0x0037_ad25, &[stream, pkt, 0]);
+    // The app's renderer (or a device callback) consumes the mixer...
+    let mixer = Arc::clone(w.hle.direct_sound().mixer());
+    mixer.lock().unwrap().render(&mut vec![0.0; 2 * 128]);
+    assert_eq!(
+        w.u32(status),
+        XMEDIAPACKET_STATUS_PENDING,
+        "consumed, not yet reported"
+    );
+    // ...and the pump (render: false) reports it without waiting for the game.
+    let pump = w
+        .hle
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(2), false);
+    let runtime = Arc::clone(&w.runtime);
+    let signals = Arc::clone(&w.signals);
+    assert!(wait_for(Duration::from_secs(5), || !signals
+        .lock()
+        .unwrap()
+        .is_empty()));
+    assert_eq!(
+        runtime.memory().u32(status).unwrap(),
+        XMEDIAPACKET_STATUS_SUCCESS
+    );
+    assert_eq!(*w.signals.lock().unwrap(), [0xd1]);
+    assert_eq!(
+        w.hle.direct_sound().frames_rendered(),
+        0,
+        "the service-only pump never renders"
+    );
+    drop(pump);
 }

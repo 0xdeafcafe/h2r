@@ -49,23 +49,68 @@ pub struct Layout {
     pub effect_count: u32,
 }
 
-/// Bytes allocated for the returned `DSEFFECTIMAGEDESC`. Only the leading
-/// `dwEffectCount` is evidenced as read; the rest (the effect maps) is zero
-/// padding sized for 15 entries of up to 16 bytes.
-const EFFECT_IMAGE_DESC_SIZE: u32 = 4 + 15 * 16;
-/// Per-effect parameter bytes the dry model keeps (offsets and sizes
-/// beyond are `E_INVALIDARG`).
+/// Offset of the first `DSEFFECTMAP` in the returned `DSEFFECTIMAGEDESC`
+/// (`0x37e39e`: `desc + 8 + index * 32`; the dword at `+0` is the effect
+/// count).
+const EFFECT_MAPS_OFFSET: u32 = 8;
+/// Size of one `DSEFFECTMAP` (`0x37e3b3`: `index << 5`).
+const EFFECT_MAP_SIZE: u32 = 32;
+/// Offset of `lpvStateSegment` in a map: `GetEffectData` copies from
+/// `[map + 8] + offset` (`0x37e5f2`) and the XHV engine dereferences it
+/// (`0x33337a`).
+const EFFECT_MAP_STATE: u32 = 8;
+/// Bytes of parameter state backing each effect in the dry model (offsets and
+/// sizes beyond are `E_INVALIDARG`).
 const EFFECT_STATE_MAX: u32 = 0x1000;
+/// The dword at state `+0x14` the XHV engine reads for its effects
+/// (`0x333380`: `(value - 0x1400) >> 5`). The real value is the DSP address of
+/// the effect's parameter block, which a dry image has no equivalent of; the
+/// base makes the derived index 0. Invented, not evidenced.
+const EFFECT_STATE_DSP_BASE_FIELD: u32 = 0x14;
+const EFFECT_STATE_DSP_BASE: u32 = 0x1400;
+
+/// `XAudioSetEffectData` descriptor types (the switch at 0x37bab1).
+const EFFECT_TYPE_4: u32 = 4;
+const EFFECT_TYPE_10: u32 = 10;
+/// `DSI3DL2LISTENER` reverb parameters.
+const EFFECT_TYPE_I3DL2: u32 = 12;
+/// State bytes the I3DL2 path reads before converting (0x37bad6), and the
+/// converted block it writes after them.
+const EFFECT_I3DL2_READ: u32 = 0x118;
+const EFFECT_I3DL2_BLOCK: u32 = 0x118;
+const EFFECT_I3DL2_BLOCK_LEN: u32 = 0x108;
+
+/// A descriptor `XAudioSetEffectData` accepted: its type and parameter
+/// dwords (floats as bit patterns), after the type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EffectDesc {
+    pub ty: u32,
+    pub words: Vec<u32>,
+}
 
 #[derive(Clone, Copy, Debug)]
 struct EffectsImage {
     desc: u32,
     count: u32,
+    /// Base of the `count * EFFECT_STATE_MAX` bytes of effect state in guest
+    /// memory; effect `i` is at `state + i * EFFECT_STATE_MAX` and is what its
+    /// map's `lpvStateSegment` points at.
+    state: u32,
+}
+
+impl EffectsImage {
+    fn state_of(&self, index: u32) -> u32 {
+        self.state
+            .wrapping_add(index.wrapping_mul(EFFECT_STATE_MAX))
+    }
 }
 
 impl Default for Layout {
     fn default() -> Self {
-        Self { stream_vtable: 0x0041_7170, effect_count: 15 }
+        Self {
+            stream_vtable: 0x0041_7170,
+            effect_count: 15,
+        }
     }
 }
 
@@ -123,8 +168,10 @@ struct BufferObj {
     max_distance: f32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct PacketRecord {
+    /// Identity of the packet's event reference (0: none).
+    token: u64,
     size: u32,
     completed_size_ptr: u32,
     status_ptr: u32,
@@ -157,6 +204,65 @@ struct StreamObj {
     headroom: i32,
     mix_bins: Vec<(u32, i32)>,
     discontinuities: u32,
+    /// Voice state bit 0 (`+0x12`): set by `Process`, cleared by a flush.
+    /// `GetVoiceProperties` fails while it is clear.
+    voice_active: bool,
+    flags: u32,
+    /// The fields `GetInfo` derives from the creation format.
+    info: StreamInfoFormat,
+}
+
+/// What `CDirectSoundStream::GetInfo` reads out of the voice's flattened
+/// format (0x37da87: PCM `0x37d9ee`, Xbox ADPCM `0x37da17`): channels and bits
+/// per sample as bytes, and the low byte of `nBlockAlign`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StreamInfoFormat {
+    channels: u8,
+    bits: u8,
+    block_align: u8,
+}
+
+impl StreamInfoFormat {
+    /// From the 16 leading `WAVEFORMATEX` bytes. ADPCM (tag `0x69`) reports
+    /// 4 bits regardless of `wBitsPerSample`.
+    fn from_wfx(b: &[u8]) -> Self {
+        let tag = u16::from_le_bytes([b[0], b[1]]);
+        Self {
+            channels: b[2],
+            bits: if tag == 0x69 { 4 } else { b[14] },
+            block_align: b[12],
+        }
+    }
+    /// `dwMaxLookahead` (0x379eeb): twice the larger of `nBlockAlign` and
+    /// 32 sample frames, in bytes.
+    fn max_lookahead(self) -> u32 {
+        let frames32 = ((u32::from(self.bits) * u32::from(self.channels)) >> 3) << 5;
+        frames32.max(u32::from(self.block_align)) * 2
+    }
+}
+
+/// `DSMIXBINS` slots in a voice (hardware limit): `GetVoiceProperties`
+/// reports at most this many pairs.
+const VOICE_MIX_BIN_SLOTS: usize = 8;
+/// Bytes `GetVoiceProperties` writes (`0x3818e5`: fields up to `+0x58`).
+const VOICE_PROPS_SIZE: u32 = 0x5c;
+/// Unused `GetVoiceProperties` slot: bin `-1`, volume `-10000` (`0xFFFFD8F0`).
+const VOICE_PROPS_UNUSED: (u32, u32) = (0xffff_ffff, 0xffff_d8f0);
+
+/// The routing a voice gets when it is created, or `SetMixBins`, without a
+/// `DSMIXBINS` (default tables at `0x38590c`..`0x38595c`, picked by `0x37bc89`
+/// from the voice's flags and `channels >> 1`). Volumes are 0.
+fn default_mix_bins(flags: u32, channels: usize) -> Vec<(u32, i32)> {
+    let bins: &[u32] = if flags & 0x0020_0010 != 0 {
+        &[6, 8, 7, 9, 10]
+    } else {
+        match channels >> 1 {
+            0 | 1 => &[0, 1],
+            2 => &[0, 1, 4, 5],
+            _ => &[0, 1, 2, 3, 4, 5],
+        }
+    };
+    bins.iter().map(|&b| (b, 0)).collect()
 }
 
 #[derive(Debug)]
@@ -198,10 +304,13 @@ pub struct DirectSound {
     objects: HashMap<u32, Object>,
     root: Option<u32>,
     mix_bin_headroom: [u32; 32],
-    effect_data: BTreeMap<u32, Vec<u8>>,
+    effect_desc: BTreeMap<u32, EffectDesc>,
     effects: Option<EffectsImage>,
     listener: Listener3d,
     light_hrtf_4_channel: bool,
+    frames_per_do_work: Option<u64>,
+    frames_rendered: u64,
+    next_token: u64,
     ignored: BTreeMap<&'static str, u64>,
 }
 
@@ -217,10 +326,13 @@ impl DirectSound {
             objects: HashMap::new(),
             root: None,
             mix_bin_headroom: [0; 32],
-            effect_data: BTreeMap::new(),
+            effect_desc: BTreeMap::new(),
             effects: None,
             listener: Listener3d::default(),
             light_hrtf_4_channel: false,
+            frames_per_do_work: None,
+            frames_rendered: 0,
+            next_token: 0,
             ignored: BTreeMap::new(),
         }
     }
@@ -256,8 +368,11 @@ impl DirectSound {
     }
 
     fn alloc_object(&mut self, h: &mut dyn Host, obj: Object) -> Result<u32, u32> {
-        let Some(ptr) = h.alloc(OBJECT_SIZE, 16) else { return Err(E_OUTOFMEMORY) };
-        if matches!(obj, Object::Stream(_)) && h.write_u32(ptr, self.layout.stream_vtable).is_err() {
+        let Some(ptr) = h.alloc(OBJECT_SIZE, 16) else {
+            return Err(E_OUTOFMEMORY);
+        };
+        if matches!(obj, Object::Stream(_)) && h.write_u32(ptr, self.layout.stream_vtable).is_err()
+        {
             h.free(ptr);
             return Err(E_FAIL);
         }
@@ -268,21 +383,30 @@ impl DirectSound {
     fn buf(&mut self, ptr: u32) -> Result<&mut BufferObj, Stop> {
         match self.objects.get_mut(&ptr) {
             Some(Object::Buffer(b)) => Ok(b),
-            _ => Err(Stop::BadHandle { ptr, expected: "IDirectSoundBuffer" }),
+            _ => Err(Stop::BadHandle {
+                ptr,
+                expected: "IDirectSoundBuffer",
+            }),
         }
     }
 
     fn stream(&mut self, ptr: u32) -> Result<&mut StreamObj, Stop> {
         match self.objects.get_mut(&ptr) {
             Some(Object::Stream(s)) => Ok(s),
-            _ => Err(Stop::BadHandle { ptr, expected: "IDirectSoundStream" }),
+            _ => Err(Stop::BadHandle {
+                ptr,
+                expected: "IDirectSoundStream",
+            }),
         }
     }
 
     fn check_root(&self, ptr: u32) -> Result<(), Stop> {
         match self.objects.get(&ptr) {
             Some(Object::Root(_)) => Ok(()),
-            _ => Err(Stop::BadHandle { ptr, expected: "IDirectSound" }),
+            _ => Err(Stop::BadHandle {
+                ptr,
+                expected: "IDirectSound",
+            }),
         }
     }
 
@@ -325,7 +449,10 @@ impl DirectSound {
                 s.refs += 1;
                 Ok(s.refs)
             }
-            None => Err(Stop::BadHandle { ptr, expected: "DirectSound object" }),
+            None => Err(Stop::BadHandle {
+                ptr,
+                expected: "DirectSound object",
+            }),
         }
     }
 
@@ -344,7 +471,12 @@ impl DirectSound {
                 s.refs -= 1;
                 s.refs
             }
-            None => return Err(Stop::BadHandle { ptr, expected: "DirectSound object" }),
+            None => {
+                return Err(Stop::BadHandle {
+                    ptr,
+                    expected: "DirectSound object",
+                });
+            }
         };
         if refs == 0 {
             match self.objects.remove(&ptr) {
@@ -361,6 +493,15 @@ impl DirectSound {
                     self.mixer.lock().unwrap().remove_stream(s.audio);
                     // Packets still attached never complete: the real stream
                     // drops them the same way. Their status stays PENDING.
+                    // Their events are never signalled either, so the
+                    // references taken at `Process` go back.
+                    if s.callback == 0 {
+                        for slot in &s.packets {
+                            if slot.rec.event_or_context != 0 {
+                                h.release_event(slot.rec.event_or_context, slot.rec.token);
+                            }
+                        }
+                    }
                 }
                 None => {}
             }
@@ -443,7 +584,9 @@ impl DirectSound {
     fn release_buffer_gate(&mut self, ptr: u32) -> Result<(), Stop> {
         let b = self.buf(ptr)?;
         b.gate = Gate::Open;
-        let Some(r) = b.resume.take() else { return Ok(()) };
+        let Some(r) = b.resume.take() else {
+            return Ok(());
+        };
         b.looping = r.looping;
         self.with_audio(ptr, |_, sb| {
             if r.from_start {
@@ -513,18 +656,32 @@ impl DirectSound {
 
     /// `SetEffectData(dwEffectIndex, dwOffset, pvData, dwDataSize, dwApply)`:
     /// the DSP image is not run, so the bytes are only kept for `GetEffectData`.
-    pub fn set_effect_data(&mut self, h: &mut dyn Host, ds: u32, index: u32, offset: u32, data: u32, size: u32) -> R {
+    pub fn set_effect_data(
+        &mut self,
+        h: &mut dyn Host,
+        ds: u32,
+        index: u32,
+        offset: u32,
+        data: u32,
+        size: u32,
+    ) -> R {
         self.check_root(ds)?;
-        let Some(img) = self.effects else { return Ok(DSERR_INVALIDCALL) };
-        let Some(end) = offset.checked_add(size).filter(|&e| index < img.count && e <= EFFECT_STATE_MAX) else {
-            return Ok(E_INVALIDARG);
+        let Some(img) = self.effects else {
+            return Ok(DSERR_INVALIDCALL);
         };
-        let bytes = h.read_vec(data, size)?;
-        let state = self.effect_data.entry(index).or_default();
-        if state.len() < end as usize {
-            state.resize(end as usize, 0);
+        // Verified (0x37e39e): an index past the image's effect count is
+        // DSERR_INVALIDCALL. The offset/size cap is this model's own limit.
+        if index >= img.count {
+            return Ok(DSERR_INVALIDCALL);
         }
-        state[offset as usize..end as usize].copy_from_slice(&bytes);
+        if offset
+            .checked_add(size)
+            .is_none_or(|e| e > EFFECT_STATE_MAX)
+        {
+            return Ok(E_INVALIDARG);
+        }
+        let bytes = h.read_vec(data, size)?;
+        h.write(at(img.state_of(index), offset)?, &bytes)?;
         self.note("SetEffectData");
         Ok(S_OK)
     }
@@ -532,21 +689,50 @@ impl DirectSound {
     /// `GetEffectData`: bytes the game stored, and zeros elsewhere. The
     /// zeros stand in for the DSP image's initial parameter RAM, which is
     /// not reproduced (see `docs/dsound.md`, "Dry effects image").
-    pub fn get_effect_data(&mut self, h: &mut dyn Host, ds: u32, index: u32, offset: u32, out: u32, size: u32) -> R {
+    pub fn get_effect_data(
+        &mut self,
+        h: &mut dyn Host,
+        ds: u32,
+        index: u32,
+        offset: u32,
+        out: u32,
+        size: u32,
+    ) -> R {
         self.check_root(ds)?;
-        let Some(img) = self.effects else { return Ok(DSERR_INVALIDCALL) };
-        let Some(end) = offset.checked_add(size).filter(|&e| index < img.count && e <= EFFECT_STATE_MAX) else {
-            return Ok(E_INVALIDARG);
+        let Some(img) = self.effects else {
+            return Ok(DSERR_INVALIDCALL);
         };
-        let mut bytes = vec![0u8; size as usize];
-        if let Some(state) = self.effect_data.get(&index) {
-            let have = state.len().min(end as usize);
-            if have > offset as usize {
-                bytes[..have - offset as usize].copy_from_slice(&state[offset as usize..have]);
-            }
+        // Verified (0x37e39e): an index past the image's effect count is
+        // DSERR_INVALIDCALL. The offset/size cap is this model's own limit.
+        if index >= img.count {
+            return Ok(DSERR_INVALIDCALL);
         }
+        if offset
+            .checked_add(size)
+            .is_none_or(|e| e > EFFECT_STATE_MAX)
+        {
+            return Ok(E_INVALIDARG);
+        }
+        let bytes = h.read_vec(at(img.state_of(index), offset)?, size)?;
         h.write(out, &bytes)?;
         Ok(S_OK)
+    }
+
+    /// Writes the `DSEFFECTIMAGEDESC` and the state it points at. Every
+    /// field the library or Halo reads is laid out as the binary reads it
+    /// (count at `+0`; 32-byte maps from `+8`; `lpvStateSegment` at map
+    /// `+8`); the unread fields are zero.
+    fn build_effects_image(&self, h: &mut dyn Host, img: &EffectsImage) -> Result<(), MemFault> {
+        h.write_u32(img.desc, img.count)?;
+        for i in 0..img.count {
+            let map = at(img.desc, EFFECT_MAPS_OFFSET + i * EFFECT_MAP_SIZE)?;
+            h.write_u32(at(map, EFFECT_MAP_STATE)?, img.state_of(i))?;
+            h.write_u32(
+                at(img.state_of(i), EFFECT_STATE_DSP_BASE_FIELD)?,
+                EFFECT_STATE_DSP_BASE,
+            )?;
+        }
+        Ok(())
     }
 
     /// `XAudioDownloadEffectsImage(pszImageName, pImageLoc, dwFlags,
@@ -557,9 +743,18 @@ impl DirectSound {
     ///
     /// `pImageLoc` is `{ dwI3DL2ReverbIndex, dwCrosstalkIndex }` (Halo passes
     /// 9 and 10); both must name effects in the image.
-    pub fn download_effects_image(&mut self, h: &mut dyn Host, name: u32, loc: u32, flags: u32, pp_desc: u32) -> R {
+    pub fn download_effects_image(
+        &mut self,
+        h: &mut dyn Host,
+        name: u32,
+        loc: u32,
+        flags: u32,
+        pp_desc: u32,
+    ) -> R {
         if flags != 1 {
-            return Err(unimpl("XAudioDownloadEffectsImage from a file (only the XBE-section form is modelled)"));
+            return Err(unimpl(
+                "XAudioDownloadEffectsImage from a file (only the XBE-section form is modelled)",
+            ));
         }
         if name == 0 || loc == 0 || pp_desc == 0 {
             return Ok(E_INVALIDARG);
@@ -567,7 +762,9 @@ impl DirectSound {
         let mut got = [0u8; 9];
         h.read(name, &mut got)?;
         if &got != b"DSPImage\0" {
-            return Err(unimpl("XAudioDownloadEffectsImage with an image name other than \"DSPImage\""));
+            return Err(unimpl(
+                "XAudioDownloadEffectsImage with an image name other than \"DSPImage\"",
+            ));
         }
         let reverb = h.read_u32(loc)?;
         let crosstalk = h.read_u32(at(loc, 4)?)?;
@@ -578,12 +775,21 @@ impl DirectSound {
         let desc = match self.effects {
             Some(img) => img.desc,
             None => {
-                let Some(desc) = h.alloc(EFFECT_IMAGE_DESC_SIZE, 16) else { return Ok(E_OUTOFMEMORY) };
-                if let Err(e) = h.write_u32(desc, count) {
+                let desc_size = EFFECT_MAPS_OFFSET + count * EFFECT_MAP_SIZE;
+                let Some(desc) = h.alloc(desc_size, 16) else {
+                    return Ok(E_OUTOFMEMORY);
+                };
+                let Some(state) = h.alloc(count * EFFECT_STATE_MAX, 16) else {
+                    h.free(desc);
+                    return Ok(E_OUTOFMEMORY);
+                };
+                let img = EffectsImage { desc, count, state };
+                if let Err(e) = self.build_effects_image(h, &img) {
+                    h.free(state);
                     h.free(desc);
                     return Err(e.into());
                 }
-                self.effects = Some(EffectsImage { desc, count });
+                self.effects = Some(img);
                 desc
             }
         };
@@ -592,18 +798,109 @@ impl DirectSound {
         Ok(S_OK)
     }
 
-    /// `XAudioSetEffectData(dwEffectIndex, pDesc, pOut)`. The binary reads
-    /// the descriptor, converts its parameters, updates effect state and may
-    /// write through the third argument (an output pointer, not `dwApply`).
-    /// None of that is modelled, so this is a stop rather than a fake success.
-    pub fn xaudio_set_effect_data(&mut self, _index: u32) -> R {
-        Err(unimpl("XAudioSetEffectData (descriptor conversion and output pointer not modelled)"))
+    /// `XAudioSetEffectData(dwEffectIndex, pDesc, pRawDesc)` (0x37ba6f, `ret
+    /// 0Ch`), dry model. Verified against the binary:
+    ///
+    /// - With no `CDirectSound` (global `0x387198` clear) it returns
+    ///   `DSERR_INVALIDCALL` before reading `pDesc`.
+    /// - `*pDesc` is the effect type, and only 4, 10 and 12 are known; any
+    ///   other type is `DSERR_INVALIDCALL`. The parameters follow it:
+    ///   4: 7 dwords (floats), 10: 3 floats, 12: the 12 dwords of
+    ///   `DSI3DL2LISTENER` (Halo's `0x21ece0` builds that, index 9).
+    /// - An index at or above the image's effect count is
+    ///   `DSERR_INVALIDCALL` (0x37e39e). Type 12 checks it before reading the
+    ///   parameters; 4 and 10 read them first.
+    /// - Type 12 reads the effect's first `0x118` state bytes, ORs 4 into the
+    ///   dword at `+0x10` and writes it back; the converted DSP block
+    ///   (`0x108` bytes at `+0x118`) comes from the I3DL2 converter
+    ///   (0x3838a4), which is not reproduced. Types 4 and 10 write `0x2c` and
+    ///   `0x14` converted bytes at `+0x1c` (biquad coefficients from
+    ///   0x37a032), also not reproduced.
+    /// - A non-null `pRawDesc` receives the type and then exactly the bytes
+    ///   written to DSP state (4: 11 dwords, 10: 5 dwords, 12: `0x108`
+    ///   bytes). Dry model: they are the effect state at the destination
+    ///   range, so the output always equals `GetEffectData` of that range
+    ///   afterwards. The DSP image is zeros here, so unwritten bytes are
+    ///   zero. Halo passes null at both call sites (0x21ee6f, 0x21fa07).
+    ///
+    /// The input descriptor is kept for [`DirectSound::effect_desc`].
+    pub fn xaudio_set_effect_data(
+        &mut self,
+        h: &mut dyn Host,
+        index: u32,
+        desc: u32,
+        out: u32,
+    ) -> R {
+        if self.root.is_none() {
+            return Ok(DSERR_INVALIDCALL);
+        }
+        let ty = h.read_u32(desc)?;
+        let (in_dwords, dest_off, dest_len) = match ty {
+            EFFECT_TYPE_4 => (7u32, 0x1c_u32, 0x2c_u32),
+            EFFECT_TYPE_10 => (3, 0x1c, 0x14),
+            EFFECT_TYPE_I3DL2 => (12, EFFECT_I3DL2_BLOCK, EFFECT_I3DL2_BLOCK_LEN),
+            _ => return Ok(DSERR_INVALIDCALL),
+        };
+        let in_range = self.effects.is_some_and(|img| index < img.count);
+        // Verified (0x37ba78, 0x37baef): the return local starts at 0 and a
+        // failed state read in the type 12 path jumps straight to the
+        // epilogue without storing the error. Invalid index, S_OK, nothing
+        // read, written or output.
+        if ty == EFFECT_TYPE_I3DL2 && !in_range {
+            return Ok(S_OK);
+        }
+        let mut words = Vec::with_capacity(in_dwords as usize);
+        for i in 0..in_dwords {
+            words.push(h.read_u32(at(desc, 4 + 4 * i)?)?);
+        }
+        if !in_range {
+            // Types 4 and 10 store the failed write's code (0x37bc4b) and
+            // still copy their converted buffer to a non-null pRaw. The
+            // buffer is never written to DSP state; the dry model has no
+            // converted words, so it is zeros.
+            if out != 0 {
+                h.write_u32(out, ty)?;
+                h.write(at(out, 4)?, &vec![0u8; dest_len as usize])?;
+            }
+            return Ok(DSERR_INVALIDCALL);
+        }
+        let base = self
+            .effects
+            .map(|img| img.state_of(index))
+            .expect("in_range implies an image");
+        if ty == EFFECT_TYPE_I3DL2 {
+            // The first EFFECT_I3DL2_READ bytes are read (0x37bad6); the
+            // flags dword at +0x10 gets 4 ORed in and is written back.
+            let state = h.read_vec(base, EFFECT_I3DL2_READ)?;
+            let flags = u32::from_le_bytes(state[0x10..0x14].try_into().expect("4 bytes")) | 4;
+            h.write_u32(at(base, 0x10)?, flags)?;
+        }
+        let raw = h.read_vec(at(base, dest_off)?, dest_len)?;
+        self.effect_desc.insert(index, EffectDesc { ty, words });
+        self.note("XAudioSetEffectData (dry)");
+        if out != 0 {
+            h.write_u32(out, ty)?;
+            h.write(at(out, 4)?, &raw)?;
+        }
+        Ok(S_OK)
+    }
+
+    /// The last descriptor `XAudioSetEffectData` accepted for an effect.
+    pub fn effect_desc(&self, index: u32) -> Option<&EffectDesc> {
+        self.effect_desc.get(&index)
     }
 
     // ---- creation --------------------------------------------------------
 
     /// `IDirectSound::CreateSoundBuffer(pdsbd, ppBuffer, pOuter)`.
-    pub fn create_sound_buffer(&mut self, h: &mut dyn Host, ds: u32, desc: u32, pp: u32, outer: u32) -> R {
+    pub fn create_sound_buffer(
+        &mut self,
+        h: &mut dyn Host,
+        ds: u32,
+        desc: u32,
+        pp: u32,
+        outer: u32,
+    ) -> R {
         self.check_root(ds)?;
         if outer != 0 {
             return Ok(E_INVALIDARG);
@@ -613,7 +910,11 @@ impl DirectSound {
             return Ok(E_INVALIDARG);
         }
         let mix_in = d.flags & DSBCAPS_MIXIN_LIKE_MASK != 0;
-        let mix_bins = if d.mix_bins_ptr != 0 { read_mix_bins(h, d.mix_bins_ptr)? } else { Vec::new() };
+        let given_bins = if d.mix_bins_ptr != 0 {
+            Some(read_mix_bins(h, d.mix_bins_ptr)?)
+        } else {
+            None
+        };
         let format = if d.format_ptr != 0 {
             match read_wave_format(h, d.format_ptr)? {
                 Ok(f) => Some(f),
@@ -626,8 +927,15 @@ impl DirectSound {
             return Err(unimpl("mix-in buffer with sample data or format"));
         }
         if !mix_in && format.is_none() {
-            return Err(unimpl("data buffer created without a format (needs SetFormat)"));
+            return Err(unimpl(
+                "data buffer created without a format (needs SetFormat)",
+            ));
         }
+        let mix_bins = match (given_bins, mix_in) {
+            (Some(v), _) => v,
+            (None, true) => Vec::new(),
+            (None, false) => default_mix_bins(d.flags, format.map_or(2, |f| f.channels() as usize)),
+        };
         let mut obj = BufferObj {
             refs: 1,
             flags: d.flags,
@@ -653,7 +961,9 @@ impl DirectSound {
             if d.buffer_bytes % align != 0 || d.buffer_bytes > MAX_GUEST_COPY {
                 return Ok(E_INVALIDARG);
             }
-            let Some(p) = h.alloc(d.buffer_bytes, 16) else { return Ok(E_OUTOFMEMORY) };
+            let Some(p) = h.alloc(d.buffer_bytes, 16) else {
+                return Ok(E_OUTOFMEMORY);
+            };
             // Pcm8 silence is 0x80, not 0.
             if fmt.codec() == audio::Codec::Pcm8
                 && let Err(e) = h.write(p, &vec![0x80; d.buffer_bytes as usize])
@@ -669,7 +979,11 @@ impl DirectSound {
                 }
             };
             obj.audio = Some(self.mixer.lock().unwrap().add_buffer(sb));
-            obj.data = Some(GuestData { ptr: p, size: d.buffer_bytes, alloc: Some((p, d.buffer_bytes)) });
+            obj.data = Some(GuestData {
+                ptr: p,
+                size: d.buffer_bytes,
+                alloc: Some((p, d.buffer_bytes)),
+            });
         }
         let (audio, data) = (obj.audio, obj.data.as_ref().and_then(|d| d.alloc));
         let rollback = |this: &mut Self, h: &mut dyn Host| {
@@ -716,7 +1030,14 @@ impl DirectSound {
     }
 
     /// `IDirectSound::CreateSoundStream(pdssd, ppStream, pOuter)`.
-    pub fn create_sound_stream(&mut self, h: &mut dyn Host, ds: u32, desc: u32, pp: u32, outer: u32) -> R {
+    pub fn create_sound_stream(
+        &mut self,
+        h: &mut dyn Host,
+        ds: u32,
+        desc: u32,
+        pp: u32,
+        outer: u32,
+    ) -> R {
         self.check_root(ds)?;
         if outer != 0 {
             return Ok(E_INVALIDARG);
@@ -729,7 +1050,12 @@ impl DirectSound {
             Ok(f) => f,
             Err(_) => return Ok(0x8878_0064),
         };
-        let mix_bins = if d.mix_bins_ptr != 0 { read_mix_bins(h, d.mix_bins_ptr)? } else { Vec::new() };
+        let info = StreamInfoFormat::from_wfx(&h.read_vec(d.format_ptr, 16)?);
+        let mix_bins = if d.mix_bins_ptr != 0 {
+            read_mix_bins(h, d.mix_bins_ptr)?
+        } else {
+            default_mix_bins(d.flags, format.channels() as usize)
+        };
         let stream = Stream::new(format).map_err(|_| unimpl("stream format"))?;
         let audio = self.mixer.lock().unwrap().add_stream(stream);
         let obj = StreamObj {
@@ -745,6 +1071,9 @@ impl DirectSound {
             headroom: 0,
             mix_bins,
             discontinuities: 0,
+            voice_active: false,
+            flags: d.flags,
+            info,
         };
         match self.alloc_object(h, Object::Stream(obj)) {
             Ok(p) => match h.write_u32(pp, p) {
@@ -796,7 +1125,11 @@ impl DirectSound {
         });
     }
 
-    fn with_audio<T>(&mut self, ptr: u32, op: impl FnOnce(&BufferObj, &mut SoundBuffer) -> T) -> Result<Option<T>, Stop> {
+    fn with_audio<T>(
+        &mut self,
+        ptr: u32,
+        op: impl FnOnce(&BufferObj, &mut SoundBuffer) -> T,
+    ) -> Result<Option<T>, Stop> {
         let mixer = Arc::clone(&self.mixer);
         let b = self.buf(ptr)?;
         let Some(id) = b.audio else { return Ok(None) };
@@ -810,8 +1143,16 @@ impl DirectSound {
     pub fn set_buffer_data(&mut self, h: &mut dyn Host, ptr: u32, pv: u32, bytes: u32) -> R {
         let mixer = Arc::clone(&self.mixer);
         let b = self.buf(ptr)?;
-        let Some(fmt) = b.format else { return Err(unimpl("SetBufferData on a mix-in buffer")) };
-        if b.audio.is_some_and(|id| mixer.lock().unwrap().buffer(id).is_some_and(|s| s.is_playing())) {
+        let Some(fmt) = b.format else {
+            return Err(unimpl("SetBufferData on a mix-in buffer"));
+        };
+        if b.audio.is_some_and(|id| {
+            mixer
+                .lock()
+                .unwrap()
+                .buffer(id)
+                .is_some_and(|s| s.is_playing())
+        }) {
             return Ok(DSERR_INVALIDCALL);
         }
         if bytes == 0 || !bytes.is_multiple_of(fmt.block_align() as u32) {
@@ -819,7 +1160,10 @@ impl DirectSound {
         }
         // Same pointer and size: the original does nothing. (Replacing would
         // free an owned allocation that the buffer then keeps using.)
-        if b.data.as_ref().is_some_and(|d| d.ptr == pv && d.size == bytes) {
+        if b.data
+            .as_ref()
+            .is_some_and(|d| d.ptr == pv && d.size == bytes)
+        {
             return Ok(S_OK);
         }
         let data = h.read_vec(pv, bytes)?;
@@ -835,7 +1179,9 @@ impl DirectSound {
         // Keep an owned allocation alive if the new range lies inside it;
         // otherwise free it now.
         let alloc = match b.data.take().and_then(|d| d.alloc) {
-            Some((base, len)) if pv >= base && pv.checked_add(bytes).is_some_and(|e| e <= base + len) => {
+            Some((base, len))
+                if pv >= base && pv.checked_add(bytes).is_some_and(|e| e <= base + len) =>
+            {
                 Some((base, len))
             }
             Some((base, _)) => {
@@ -844,7 +1190,11 @@ impl DirectSound {
             }
             None => None,
         };
-        b.data = Some(GuestData { ptr: pv, size: bytes, alloc });
+        b.data = Some(GuestData {
+            ptr: pv,
+            size: bytes,
+            alloc,
+        });
         Ok(S_OK)
     }
 
@@ -852,10 +1202,14 @@ impl DirectSound {
     fn resync(&mut self, h: &dyn crate::host::GuestMemory, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
         let b = self.buf(ptr)?;
-        let (Some(d), Some(id)) = (&b.data, b.audio) else { return Ok(()) };
+        let (Some(d), Some(id)) = (&b.data, b.audio) else {
+            return Ok(());
+        };
         let bytes = h.read_vec(d.ptr, d.size)?;
         if let Some(sb) = mixer.lock().unwrap().buffer_mut(id) {
-            sb.lock_all().write(&bytes).map_err(|_| unimpl("buffer resync size"))?;
+            sb.lock_all()
+                .write(&bytes)
+                .map_err(|_| unimpl("buffer resync size"))?;
         }
         Ok(())
     }
@@ -863,14 +1217,31 @@ impl DirectSound {
     /// `Lock(dwOffset, dwBytes, ppv1, pcb1, ppv2, pcb2, dwFlags)`. Returns
     /// pointers into the buffer's guest memory, as the hardware does.
     #[allow(clippy::too_many_arguments)]
-    pub fn lock(&mut self, h: &mut dyn Host, ptr: u32, offset: u32, bytes: u32, pp1: u32, pcb1: u32, pp2: u32, pcb2: u32, flags: u32) -> R {
+    pub fn lock(
+        &mut self,
+        h: &mut dyn Host,
+        ptr: u32,
+        offset: u32,
+        bytes: u32,
+        pp1: u32,
+        pcb1: u32,
+        pp2: u32,
+        pcb2: u32,
+        flags: u32,
+    ) -> R {
         let b = self.buf(ptr)?;
-        let (Some(fmt), Some(d)) = (b.format, &b.data) else { return Ok(DSERR_INVALIDCALL) };
+        let (Some(fmt), Some(d)) = (b.format, &b.data) else {
+            return Ok(DSERR_INVALIDCALL);
+        };
         if flags & !(DSBLOCK_FROMWRITECURSOR | DSBLOCK_ENTIREBUFFER) != 0 {
             return Err(unimpl("Lock with undocumented flags"));
         }
         let (base, size) = (d.ptr, d.size);
-        let (offset, bytes) = if flags & DSBLOCK_ENTIREBUFFER != 0 { (0, size) } else { (offset, bytes) };
+        let (offset, bytes) = if flags & DSBLOCK_ENTIREBUFFER != 0 {
+            (0, size)
+        } else {
+            (offset, bytes)
+        };
         let align = fmt.block_align() as u32;
         if flags & DSBLOCK_FROMWRITECURSOR != 0 {
             return Err(unimpl("Lock FROMWRITECURSOR"));
@@ -927,7 +1298,10 @@ impl DirectSound {
             // Verified (0x382d4f): a synchronised Play on an idle voice sets
             // the "held" bit instead of starting; SynchPlayback starts it.
             b.gate = Gate::Held;
-            b.resume = Some(Resume { looping, from_start });
+            b.resume = Some(Resume {
+                looping,
+                from_start,
+            });
             return Ok(S_OK);
         }
         b.gate = Gate::Open;
@@ -969,7 +1343,9 @@ impl DirectSound {
                 if mode == 3 && b.gate == Gate::Open && !b.mix_in {
                     let playing = self.with_audio(ptr, |_, sb| sb.is_playing())?;
                     if playing != Some(true) {
-                        return Err(unimpl("Pause(3) on a voice that is not active (deferred start)"));
+                        return Err(unimpl(
+                            "Pause(3) on a voice that is not active (deferred start)",
+                        ));
                     }
                 }
                 self.release_buffer_gate(ptr)?;
@@ -984,7 +1360,10 @@ impl DirectSound {
                         p
                     })?;
                     let b = self.buf(ptr)?;
-                    b.resume = (was_playing == Some(true)).then_some(Resume { looping, from_start: false });
+                    b.resume = (was_playing == Some(true)).then_some(Resume {
+                        looping,
+                        from_start: false,
+                    });
                 }
                 self.buf(ptr)?.gate = want;
             }
@@ -1016,7 +1395,9 @@ impl DirectSound {
     /// cursor (the model has no write-ahead).
     pub fn get_current_position(&mut self, h: &mut dyn Host, ptr: u32, play: u32, write: u32) -> R {
         let pos = self.with_audio(ptr, |_, sb| sb.current_position())?;
-        let Some(pos) = pos else { return Ok(DSERR_INVALIDCALL) };
+        let Some(pos) = pos else {
+            return Ok(DSERR_INVALIDCALL);
+        };
         if play != 0 {
             h.write_u32(play, pos as u32)?;
         }
@@ -1070,8 +1451,17 @@ impl DirectSound {
     }
 
     pub fn buffer_set_mix_bins(&mut self, h: &mut dyn Host, ptr: u32, bins: u32) -> R {
-        let v = if bins != 0 { read_mix_bins(h, bins)? } else { Vec::new() };
-        self.buf(ptr)?.mix_bins = v;
+        let given = if bins != 0 {
+            Some(read_mix_bins(h, bins)?)
+        } else {
+            None
+        };
+        let b = self.buf(ptr)?;
+        b.mix_bins = match given {
+            Some(v) => v,
+            None if b.mix_in => Vec::new(),
+            None => default_mix_bins(b.flags, b.format.map_or(2, |f| f.channels() as usize)),
+        };
         self.note("SetMixBins");
         Ok(S_OK)
     }
@@ -1130,6 +1520,9 @@ impl DirectSound {
     /// `Process(pSrc, pDst)`: queues one packet. `pDst` is unused by
     /// DirectSound streams (verified: the real `Process` never touches it).
     pub fn stream_process(&mut self, h: &mut dyn Host, ptr: u32, src: u32, _dst: u32) -> R {
+        // The real library completes packets from the APU interrupt, so a
+        // game that polls status or capacity sees them without `DoWork`.
+        self.service_stream(h, ptr)?;
         let mixer = Arc::clone(&self.mixer);
         let s = self.stream(ptr)?;
         let pkt = MediaPacket::read(h, src)?;
@@ -1141,7 +1534,10 @@ impl DirectSound {
         let bytes = h.read_vec(pkt.buffer, pkt.max_size)?;
         let align = {
             let mut m = mixer.lock().unwrap();
-            let st = m.stream_mut(audio).ok_or(Stop::BadHandle { ptr, expected: "IDirectSoundStream" })?;
+            let st = m.stream_mut(audio).ok_or(Stop::BadHandle {
+                ptr,
+                expected: "IDirectSoundStream",
+            })?;
             st.format().block_align()
         };
         if bytes.len() % align != 0 {
@@ -1161,17 +1557,31 @@ impl DirectSound {
             None
         } else {
             let mut m = mixer.lock().unwrap();
-            let st = m.stream_mut(audio).ok_or(Stop::BadHandle { ptr, expected: "IDirectSoundStream" })?;
+            let st = m.stream_mut(audio).ok_or(Stop::BadHandle {
+                ptr,
+                expected: "IDirectSoundStream",
+            })?;
             match st.submit(&bytes) {
                 Ok(id) => Some(id),
                 Err(_) => return Ok(E_INVALIDARG),
             }
         };
+        self.next_token += 1;
+        let token = self.next_token;
         let s = self.stream(ptr)?;
         s.started = true;
+        s.voice_active = true;
+        // Keep the kernel event alive until the packet completes. The signal
+        // comes after every status write, whatever the guest does with the
+        // handle meanwhile.
+        let event_packet = s.callback == 0 && pkt.event_or_context != 0;
+        if event_packet {
+            h.retain_event(pkt.event_or_context, token);
+        }
         s.packets.push_back(Slot {
             audio: id,
             rec: PacketRecord {
+                token: if event_packet { token } else { 0 },
                 size: pkt.max_size,
                 completed_size_ptr: pkt.completed_size_ptr,
                 status_ptr: pkt.status_ptr,
@@ -1189,9 +1599,14 @@ impl DirectSound {
     /// (0x2ae4c4) before calling `Pause(0)`. Bits 16, 18 and 19 (starved,
     /// hardware-paused, and the `0x2000` state flag) are not produced.
     pub fn stream_get_status(&mut self, h: &mut dyn Host, ptr: u32, out: u32) -> R {
+        self.service_stream(h, ptr)?;
         let s = self.stream(ptr)?;
         let ready = s.max_packets == 0 || (s.packets.len() as u32) < s.max_packets;
-        let mut st = if ready { XMO_STATUSF_ACCEPT_INPUT_DATA } else { 0 };
+        let mut st = if ready {
+            XMO_STATUSF_ACCEPT_INPUT_DATA
+        } else {
+            0
+        };
         if s.started && s.gate != Gate::Open {
             st |= XMO_STATUSF_PAUSED;
         }
@@ -1199,31 +1614,66 @@ impl DirectSound {
         Ok(S_OK)
     }
 
-    /// `Flush` / `FlushEx(rtTimestamp, dwFlags)`: pending packets complete
-    /// with `XMEDIAPACKET_STATUS_FLUSHED`. Deferred (timestamped) flushes
-    /// are not modelled.
+    /// `Flush` / `FlushEx(rtTimestamp, dwFlags)` (0x37aded): pending packets
+    /// complete with `XMEDIAPACKET_STATUS_FLUSHED`.
+    ///
+    /// Flags 0 take the plain flush (0x37fbfe). Non-zero flags take
+    /// `CMcpxStream_Stop` (0x37f51f), which only tests bits 2 and 4
+    /// (`DSSTREAMFLUSHEX_ENVELOPE`, `_IMMEDIATE`): they choose how the voice
+    /// is released (envelope, then a deferred "complete" command through the
+    /// stream's schedule slot 7 at 0x37f8dc). `_ASYNC` (1) is not tested at
+    /// all. The shim has no envelope and no deferral, so every flag value
+    /// flushes at once, the same as flags 0; the packets complete before the
+    /// call returns. Halo uses flags 1 and 3 with timestamp 0 (0x2ae4e2,
+    /// 0x333ef6, 0x335744, 0x33598d, 0x335d13).
+    ///
+    /// A non-zero timestamp is scheduled by the real library
+    /// (`[vtable+0x1c](4, lo, hi, flags)`, 0x37f9ee) against the DSP clock;
+    /// no call site in the XBE passes one, so it stays a stop.
     pub fn stream_flush(&mut self, h: &mut dyn Host, ptr: u32, timestamp: u64, flags: u32) -> R {
         if timestamp != 0 {
-            return Err(unimpl("FlushEx with a future timestamp"));
+            return Err(unimpl(
+                "FlushEx with a future timestamp (scheduled on the DSP clock)",
+            ));
         }
         if flags != 0 {
-            // Verified (0x37adED): non-zero flags leave the plain flush
-            // (0x37fbfe) for CMcpxStream_Stop (0x37f51f), whose bits 2/4
-            // select envelope-release and sync-stop paths. Not modelled.
-            return Err(unimpl("FlushEx with flags (envelope/async stop path)"));
+            self.note("FlushEx(flags)");
         }
         let mixer = Arc::clone(&self.mixer);
         let s = self.stream(ptr)?;
         // Empty packets behind a playing one never reached the audio crate:
         // abort them here so the flush covers them too.
-        for slot in s.packets.iter_mut().filter(|p| p.audio.is_none() && p.done.is_none()) {
+        for slot in s
+            .packets
+            .iter_mut()
+            .filter(|p| p.audio.is_none() && p.done.is_none())
+        {
             slot.done = Some(XMEDIAPACKET_STATUS_FLUSHED);
         }
+        // A flush stops the voice (0x381ef8 clears state bit 0); the next
+        // `Process` starts it again.
+        s.voice_active = false;
         let audio = s.audio;
         if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
             st.flush();
         }
         self.service_stream(h, ptr)?;
+        Ok(S_OK)
+    }
+
+    /// `GetInfo(XMEDIAINFO*)` (0x37abd5): `{ dwFlags, dwInputSize,
+    /// dwOutputSize, dwMaxLookahead }`. Flags are always 5
+    /// (`XMO_STREAMF_FIXED_SAMPLE_SIZE | XMO_STREAMF_INPUT_ASYNC`); the input
+    /// size is the low byte of `nBlockAlign` (the unit `Process` accepts),
+    /// the output size 0 and the lookahead twice the larger of that and 32
+    /// sample frames (0x379eeb). Nothing in the XBE reaches this slot (the
+    /// `[reg+8]` virtual calls near the stream users belong to Halo's own
+    /// objects); it is here because the flat vtable slot is overridden.
+    pub fn stream_get_info(&mut self, h: &mut dyn Host, ptr: u32, out: u32) -> R {
+        let info = self.stream(ptr)?.info;
+        let words = [5, u32::from(info.block_align), 0, info.max_lookahead()];
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        h.write(out, &bytes)?;
         Ok(S_OK)
     }
 
@@ -1245,7 +1695,9 @@ impl DirectSound {
         match mode {
             0 | 3 => {
                 if mode == 3 && s.gate == Gate::Open && !s.started {
-                    return Err(unimpl("Pause(3) on a stream that is not active (deferred start)"));
+                    return Err(unimpl(
+                        "Pause(3) on a stream that is not active (deferred start)",
+                    ));
                 }
                 self.release_stream_gate(ptr)?;
             }
@@ -1291,8 +1743,16 @@ impl DirectSound {
     }
 
     pub fn stream_set_mix_bins(&mut self, h: &mut dyn Host, ptr: u32, bins: u32) -> R {
-        let v = if bins != 0 { read_mix_bins(h, bins)? } else { Vec::new() };
-        self.stream(ptr)?.mix_bins = v;
+        let given = if bins != 0 {
+            Some(read_mix_bins(h, bins)?)
+        } else {
+            None
+        };
+        let s = self.stream(ptr)?;
+        s.mix_bins = match given {
+            Some(v) => v,
+            None => default_mix_bins(s.flags, usize::from(s.info.channels)),
+        };
         self.note("SetMixBins");
         Ok(S_OK)
     }
@@ -1321,6 +1781,73 @@ impl DirectSound {
         Ok(self.stream(ptr)?.discontinuities)
     }
 
+    // ---- voice properties ------------------------------------------------
+
+    /// `GetVoiceProperties` on a buffer or stream (0x3818e5), the output
+    /// Halo reads back to diff mix-bin routing (`0x2215d0` compares the count
+    /// and every pair with what it wants and calls `SetMixBins` or
+    /// `SetMixBinVolumes` on a mismatch):
+    ///
+    /// ```text
+    /// +0x00 dwMixBinCount
+    /// +0x04 8 pairs { dwMixBin, lVolume }; unused slots are { -1, -10000 }
+    /// +0x44 voice level word (hardware, not modelled: 0)
+    /// +0x48 five dwords of the 3D/LFO state (0 unless set; not modelled)
+    /// ```
+    ///
+    /// `0x5c` bytes in all. A voice that is not active (state bit 0 of
+    /// `+0x12`, set by start and cleared by stop) is `DSERR_INVALIDCALL` and
+    /// nothing is written, as in the library; Halo ignores the result and
+    /// reads uninitialised stack in that case. The volumes are what the game
+    /// set, in millibels; the hardware quantises them to 1/64 dB steps and
+    /// that is not reproduced.
+    fn write_voice_props(
+        &self,
+        h: &mut dyn Host,
+        out: u32,
+        bins: &[(u32, i32)],
+    ) -> Result<(), Stop> {
+        let mut words = [0u32; (VOICE_PROPS_SIZE / 4) as usize];
+        let n = bins.len().min(VOICE_MIX_BIN_SLOTS);
+        words[0] = n as u32;
+        for i in 0..VOICE_MIX_BIN_SLOTS {
+            let (bin, vol) = bins
+                .get(i)
+                .map_or(VOICE_PROPS_UNUSED, |&(b, v)| (b, v as u32));
+            words[1 + 2 * i] = bin;
+            words[2 + 2 * i] = vol;
+        }
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        h.write(out, &bytes)?;
+        Ok(())
+    }
+
+    pub fn buffer_get_voice_properties(&mut self, h: &mut dyn Host, ptr: u32, out: u32) -> R {
+        let playing = self.with_audio(ptr, |_, sb| sb.is_playing())?;
+        let b = self.buf(ptr)?;
+        let active = if b.mix_in {
+            b.mix_in_playing
+        } else {
+            playing == Some(true) || (b.gate != Gate::Open && b.resume.is_some())
+        };
+        if !active {
+            return Ok(DSERR_INVALIDCALL);
+        }
+        let bins = b.mix_bins.clone();
+        self.write_voice_props(h, out, &bins)?;
+        Ok(S_OK)
+    }
+
+    pub fn stream_get_voice_properties(&mut self, h: &mut dyn Host, ptr: u32, out: u32) -> R {
+        let s = self.stream(ptr)?;
+        if !s.voice_active {
+            return Ok(DSERR_INVALIDCALL);
+        }
+        let bins = s.mix_bins.clone();
+        self.write_voice_props(h, out, &bins)?;
+        Ok(S_OK)
+    }
+
     // ---- completion ------------------------------------------------------
 
     /// Completes finished packets of one stream: status and completed size
@@ -1339,7 +1866,12 @@ impl DirectSound {
                 PacketStatus::Success => XMEDIAPACKET_STATUS_SUCCESS,
                 PacketStatus::Flushed => XMEDIAPACKET_STATUS_FLUSHED,
             };
-            if let Some(slot) = self.stream(ptr)?.packets.iter_mut().find(|p| p.audio == Some(id)) {
+            if let Some(slot) = self
+                .stream(ptr)?
+                .packets
+                .iter_mut()
+                .find(|p| p.audio == Some(id))
+            {
                 slot.done = Some(code);
             }
         }
@@ -1347,12 +1879,17 @@ impl DirectSound {
         // order even when an empty packet sits behind a playing one.
         loop {
             let s = self.stream(ptr)?;
-            let Some(front) = s.packets.front_mut() else { break };
+            let Some(front) = s.packets.front_mut() else {
+                break;
+            };
             if front.audio.is_none() && front.done.is_none() {
                 front.done = Some(XMEDIAPACKET_STATUS_SUCCESS);
             }
             let Some(code) = front.done else { break };
-            let Some(Slot { rec, .. }) = s.packets.pop_front() else { break };
+            // The record stays queued until both writes succeed: a fault
+            // leaves the packet (and its event reference) pending, and the
+            // next service retries the idempotent writes.
+            let rec = front.rec;
             // Verified (0x37f850 -> 0x37f3a8): the completed size written is
             // always the packet's dwMaxSize, flushed or not.
             let size = rec.size;
@@ -1363,6 +1900,7 @@ impl DirectSound {
                 h.write_u32(rec.status_ptr, code)?;
             }
             let (callback, ctx) = (s.callback, s.callback_context);
+            s.packets.pop_front();
             if callback != 0 {
                 h.stream_callback(StreamCallback {
                     function: callback,
@@ -1371,7 +1909,7 @@ impl DirectSound {
                     status: code,
                 });
             } else if rec.event_or_context != 0 {
-                h.signal_event(rec.event_or_context);
+                h.signal_event(rec.event_or_context, rec.token);
             }
         }
         Ok(())
@@ -1380,7 +1918,17 @@ impl DirectSound {
     /// `DirectSoundDoWork`: services every stream's completions. Call it
     /// from the override and also after each host mix if completions should
     /// not wait for the game's next `DoWork`.
+    ///
+    /// With [`DirectSound::set_frames_per_do_work`] set it first advances the
+    /// audio clock by that many frames, for a host with no mixer sink.
     pub fn do_work(&mut self, h: &mut dyn Host) -> R {
+        if let Some(frames) = self.frames_per_do_work {
+            self.render_discard(frames);
+        }
+        self.service_all(h)
+    }
+
+    fn service_all(&mut self, h: &mut dyn Host) -> R {
         let mut streams: Vec<u32> = self
             .objects
             .iter()
@@ -1391,5 +1939,85 @@ impl DirectSound {
             self.service_stream(h, p)?;
         }
         Ok(S_OK)
+    }
+
+    /// Controlled audio clock for a host that has no mixer sink (headless
+    /// runs, tests): renders `frames` output frames of the mixer, throws the
+    /// samples away, then completes whatever that finished. Buffers play and
+    /// stream packets complete exactly as a device would have driven them.
+    /// Never call this while something else (a device callback, the app's
+    /// discard renderer) also consumes the mixer: time would run twice.
+    /// Returns the frames rendered.
+    pub fn advance_audio(&mut self, h: &mut dyn Host, frames: u64) -> Result<u64, Stop> {
+        self.render_discard(frames);
+        self.service_all(h)?;
+        Ok(frames)
+    }
+
+    /// Makes every `DirectSoundDoWork` advance the clock by `frames` output
+    /// frames (for example `rate / 60` for a game that calls it once per
+    /// frame). `None`, the default, leaves the mixer to its sink.
+    pub fn set_frames_per_do_work(&mut self, frames: Option<u64>) {
+        self.frames_per_do_work = frames;
+    }
+
+    fn render_discard(&mut self, frames: u64) {
+        let mut scratch = vec![0.0f32; 2 * RENDER_CHUNK as usize];
+        let mut left = frames;
+        let mut mixer = self.mixer.lock().unwrap_or_else(|e| e.into_inner());
+        while left > 0 {
+            let n = left.min(RENDER_CHUNK);
+            mixer.render(&mut scratch[..2 * n as usize]);
+            left -= n;
+        }
+        self.frames_rendered += frames;
+    }
+
+    /// Frames the shim itself has rendered through [`DirectSound::advance_audio`]
+    /// or `set_frames_per_do_work`.
+    pub fn frames_rendered(&self) -> u64 {
+        self.frames_rendered
+    }
+}
+
+/// Largest single `Mixer::render` the discard clock asks for, in frames.
+const RENDER_CHUNK: u64 = 1024;
+
+/// Turns elapsed host time into whole audio frames at a fixed rate, carrying
+/// the fraction, and caps a long stall so a stuck host does not owe seconds of
+/// audio in one go. It holds no clock of its own: the caller supplies time, so
+/// a test or a deterministic host controls it exactly.
+#[derive(Clone, Debug)]
+pub struct AudioClock {
+    rate: u64,
+    /// Nanoseconds not yet converted to a whole frame, scaled by `rate`.
+    carry: u128,
+    max_frames: u64,
+}
+
+impl AudioClock {
+    /// `rate` frames per second, with at most `max_catch_up` of audio owed per
+    /// call to [`advance`](Self::advance).
+    pub fn new(rate: u32, max_catch_up: std::time::Duration) -> Self {
+        let rate = u64::from(rate.max(1));
+        let max_frames = ((u128::from(rate) * max_catch_up.as_nanos()) / 1_000_000_000) as u64;
+        Self {
+            rate,
+            carry: 0,
+            max_frames: max_frames.max(1),
+        }
+    }
+
+    /// The frames due after `elapsed` more host time.
+    pub fn advance(&mut self, elapsed: std::time::Duration) -> u64 {
+        self.carry += elapsed.as_nanos() * u128::from(self.rate);
+        let frames = (self.carry / 1_000_000_000) as u64;
+        self.carry %= 1_000_000_000;
+        if frames > self.max_frames {
+            self.carry = 0;
+            self.max_frames
+        } else {
+            frames
+        }
     }
 }

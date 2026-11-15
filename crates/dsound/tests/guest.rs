@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use audio::Mixer;
 use dsound::abi::*;
-use dsound::overrides::{invoke, Return};
+use dsound::overrides::{Return, invoke};
 use dsound::testing::TestHost;
 use dsound::{DirectSound, GuestMemory, Layout, Stop};
 
@@ -120,7 +120,10 @@ impl Rig {
         }
         let desc = self.put(&b);
         let out = self.scratch(4);
-        assert_eq!(self.call(CREATE_STREAM, &[self.ds_ptr, desc, out, 0]).eax, S_OK);
+        assert_eq!(
+            self.call(CREATE_STREAM, &[self.ds_ptr, desc, out, 0]).eax,
+            S_OK
+        );
         self.h.read_u32(out).unwrap()
     }
 
@@ -229,7 +232,12 @@ fn lock_returns_guest_pointers_and_unlock_publishes_writes() {
     let mut rig = Rig::new();
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let buf = rig.create_buffer(0x80, 16, wfx); // 8 samples, owned guest memory
-    let (p1, c1, p2, c2) = (rig.scratch(4), rig.scratch(4), rig.scratch(4), rig.scratch(4));
+    let (p1, c1, p2, c2) = (
+        rig.scratch(4),
+        rig.scratch(4),
+        rig.scratch(4),
+        rig.scratch(4),
+    );
 
     // Lock the last 4 bytes plus a wrapped 4 bytes from the start.
     assert_eq!(rig.call(LOCK, &[buf, 12, 8, p1, c1, p2, c2, 0]).eax, S_OK);
@@ -239,7 +247,11 @@ fn lock_returns_guest_pointers_and_unlock_publishes_writes() {
     assert_eq!(a - b, 12, "second region is the buffer start, first is +12");
 
     // Whole buffer via DSBLOCK_ENTIREBUFFER, then write 8 samples of 16384.
-    assert_eq!(rig.call(LOCK, &[buf, 0, 0, p1, c1, 0, 0, DSBLOCK_ENTIREBUFFER]).eax, S_OK);
+    assert_eq!(
+        rig.call(LOCK, &[buf, 0, 0, p1, c1, 0, 0, DSBLOCK_ENTIREBUFFER])
+            .eax,
+        S_OK
+    );
     let base = rig.h.read_u32(p1).unwrap();
     assert_eq!(base, b);
     rig.h.write(base, &pcm16(&[16384; 8])).unwrap();
@@ -248,7 +260,10 @@ fn lock_returns_guest_pointers_and_unlock_publishes_writes() {
 
     rig.call(PLAY, &[buf, 0, 0, DSBPLAY_LOOPING]);
     let out = rig.render(16);
-    assert!(out.iter().all(|&v| v == 0.5), "looping buffer fills all 16 frames");
+    assert!(
+        out.iter().all(|&v| v == 0.5),
+        "looping buffer fills all 16 frames"
+    );
     assert_eq!(rig.status(buf), DSBSTATUS_PLAYING | DSBSTATUS_LOOPING);
 
     // Position, stop, restart from a position.
@@ -278,7 +293,10 @@ fn bad_calls_return_hresults_not_stops() {
     // No data yet: Play and Lock are invalid calls.
     assert_eq!(rig.call(PLAY, &[buf, 0, 0, 0]).eax, DSERR_INVALIDCALL);
     let sink = rig.scratch(4);
-    assert_eq!(rig.call(LOCK, &[buf, 0, 4, sink, sink, 0, 0, 0]).eax, DSERR_INVALIDCALL);
+    assert_eq!(
+        rig.call(LOCK, &[buf, 0, 4, sink, sink, 0, 0, 0]).eax,
+        DSERR_INVALIDCALL
+    );
     // Odd length and reserved flags.
     let pv = rig.put(&[0; 8]);
     assert_eq!(rig.call(SET_BUFFER_DATA, &[buf, pv, 3]).eax, E_INVALIDARG);
@@ -301,13 +319,23 @@ fn unimplemented_is_a_stop_never_success() {
         rig.stop_of(0x0037b86d, &[name, loc, 0, pp]),
         Stop::Unimplemented { .. }
     ));
-    assert!(matches!(rig.stop_of(0x0037b7e3, &[buf, 0]), Stop::Unimplemented { .. }));
+    // A timestamped StopEx is scheduled on the DSP clock: still a stop.
     assert!(matches!(
-        rig.stop_of(LOCK, &[buf, 0, 4, sink, sink, 0, 0, DSBLOCK_FROMWRITECURSOR]),
+        rig.stop_of(0x0037b71b, &[buf, 1, 0, 0]),
+        Stop::Unimplemented { .. }
+    ));
+    assert!(matches!(
+        rig.stop_of(
+            LOCK,
+            &[buf, 0, 4, sink, sink, 0, 0, DSBLOCK_FROMWRITECURSOR]
+        ),
         Stop::Unimplemented { .. }
     ));
     // A garbage handle is a stop, not a guest-visible error.
-    assert!(matches!(rig.stop_of(PLAY, &[0xdead0000, 0, 0, 0]), Stop::BadHandle { .. }));
+    assert!(matches!(
+        rig.stop_of(PLAY, &[0xdead0000, 0, 0, 0]),
+        Stop::BadHandle { .. }
+    ));
     // A format-less data buffer needs SetFormat, which is not implemented.
     let desc = rig.buffer_desc(0x80, 0, 0);
     let out = rig.scratch(4);
@@ -324,7 +352,10 @@ fn mix_in_buffers_are_accepted_but_reported() {
     let buf = rig.create_buffer(0x0010_0000, 0, 0);
     assert_eq!(rig.call(PLAY, &[buf, 0, 0, 0]).eax, S_OK);
     assert_eq!(rig.status(buf), DSBSTATUS_PLAYING | DSBSTATUS_LOOPING);
-    assert_eq!(rig.ds.ignored().get("mix-in buffer Play (no DSP, silent)"), Some(&1));
+    assert_eq!(
+        rig.ds.ignored().get("mix-in buffer Play (no DSP, silent)"),
+        Some(&1)
+    );
     assert!(rig.render(4).iter().all(|&v| v == 0.0));
 }
 
@@ -334,11 +365,17 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let stream = rig.create_stream(wfx, 8, 0, 0);
     // The guest's virtual calls land on the override addresses.
-    assert_eq!(rig.h.read_u32(stream).unwrap(), Layout::default().stream_vtable);
+    assert_eq!(
+        rig.h.read_u32(stream).unwrap(),
+        Layout::default().stream_vtable
+    );
 
     let mut ready = rig.scratch(4);
     assert_eq!(rig.call(STREAM_STATUS, &[stream, ready]).eax, S_OK);
-    assert_eq!(rig.h.read_u32(ready).unwrap(), XMO_STATUSF_ACCEPT_INPUT_DATA);
+    assert_eq!(
+        rig.h.read_u32(ready).unwrap(),
+        XMO_STATUSF_ACCEPT_INPUT_DATA
+    );
     ready = 0;
     let _ = ready;
 
@@ -350,7 +387,10 @@ fn stream_packets_complete_in_order_with_status_and_events() {
         slots.push(rig.process(stream, &data, 0x101 + i as u32));
     }
     for (status, done) in &slots {
-        assert_eq!(rig.h.read_u32(*status).unwrap(), XMEDIAPACKET_STATUS_PENDING);
+        assert_eq!(
+            rig.h.read_u32(*status).unwrap(),
+            XMEDIAPACKET_STATUS_PENDING
+        );
         assert_eq!(rig.h.read_u32(*done).unwrap(), 0);
     }
     assert!(rig.h.signalled.is_empty());
@@ -359,9 +399,15 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     let out = rig.render(5);
     assert_eq!(out[0], 0.25);
     rig.call(DO_WORK, &[]);
-    assert_eq!(rig.h.read_u32(slots[0].0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+    assert_eq!(
+        rig.h.read_u32(slots[0].0).unwrap(),
+        XMEDIAPACKET_STATUS_SUCCESS
+    );
     assert_eq!(rig.h.read_u32(slots[0].1).unwrap(), 8);
-    assert_eq!(rig.h.read_u32(slots[1].0).unwrap(), XMEDIAPACKET_STATUS_PENDING);
+    assert_eq!(
+        rig.h.read_u32(slots[1].0).unwrap(),
+        XMEDIAPACKET_STATUS_PENDING
+    );
     assert_eq!(rig.h.signalled, vec![0x101]);
 
     // Finish the rest: completion order is submission order.
@@ -369,7 +415,10 @@ fn stream_packets_complete_in_order_with_status_and_events() {
     rig.call(DO_WORK, &[]);
     assert_eq!(rig.h.signalled, vec![0x101, 0x102, 0x103]);
     for (i, (status, done)) in slots.iter().enumerate() {
-        assert_eq!(rig.h.read_u32(*status).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+        assert_eq!(
+            rig.h.read_u32(*status).unwrap(),
+            XMEDIAPACKET_STATUS_SUCCESS
+        );
         assert_eq!(rig.h.read_u32(*done).unwrap(), 2 * sizes[i] as u32);
     }
     // A second DoWork does not re-signal.
@@ -428,7 +477,10 @@ fn stream_flush_pause_and_capacity() {
 
     // FlushEx(timestamp = 0) is the same; a future timestamp is a stop.
     assert_eq!(rig.call(FLUSH_EX, &[stream, 0, 0, 0]).eax, S_OK);
-    assert!(matches!(rig.stop_of(FLUSH_EX, &[stream, 5, 0, 0]), Stop::Unimplemented { .. }));
+    assert!(matches!(
+        rig.stop_of(FLUSH_EX, &[stream, 5, 0, 0]),
+        Stop::Unimplemented { .. }
+    ));
 }
 
 #[test]
@@ -459,17 +511,27 @@ fn three_d_state_is_stored_and_pans_ctrl3d_buffers() {
 
     let f = |v: f32| v.to_bits();
     // Listener at the origin; source to the right.
-    assert_eq!(rig.call(0x0037d598, &[rig.ds_ptr, f(1.0), f(2.0), f(3.0), 0]).eax, S_OK);
+    assert_eq!(
+        rig.call(0x0037d598, &[rig.ds_ptr, f(1.0), f(2.0), f(3.0), 0])
+            .eax,
+        S_OK
+    );
     assert_eq!(rig.ds.listener().position, [1.0, 2.0, 3.0]);
     rig.call(0x0037d598, &[rig.ds_ptr, f(0.0), f(0.0), f(0.0), 0]);
     assert_eq!(rig.call(0x0037d506, &[rig.ds_ptr, f(3.048), 0]).eax, S_OK);
     assert_eq!(rig.ds.listener().distance_factor, 3.048);
-    assert_eq!(rig.call(0x0037c668, &[buf, f(5.0), f(0.0), f(0.0), 0]).eax, S_OK);
+    assert_eq!(
+        rig.call(0x0037c668, &[buf, f(5.0), f(0.0), f(0.0), 0]).eax,
+        S_OK
+    );
     rig.call(0x0037c620, &[buf, f(1.0e9), 1]);
     rig.call(0x0037c644, &[buf, f(1.0), 1]);
     rig.call(PLAY, &[buf, 0, 0, DSBPLAY_LOOPING]);
     let out = rig.render(2);
-    assert!(out[1] > out[0], "source on the right is louder on the right: {out:?}");
+    assert!(
+        out[1] > out[0],
+        "source on the right is louder on the right: {out:?}"
+    );
     // Cone, doppler etc. are accepted but counted.
     rig.call(0x0037c600, &[buf, 0, 1]);
     assert_eq!(rig.ds.ignored().get("SetConeOutsideVolume"), Some(&1));
@@ -491,8 +553,14 @@ fn stored_state_setters() {
     let data = rig.put(&[1, 2, 3, 4, 5, 6, 7, 8]);
     rig.call(0x0037b60d, &[rig.ds_ptr, 4, 0x20, data, 8, 0]);
     let back = rig.scratch(8);
-    assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0x20, back, 8]).eax, S_OK);
-    assert_eq!(rig.h.read_vec(back, 8).unwrap(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0x20, back, 8]).eax,
+        S_OK
+    );
+    assert_eq!(
+        rig.h.read_vec(back, 8).unwrap(),
+        vec![1, 2, 3, 4, 5, 6, 7, 8]
+    );
 }
 
 #[test]
@@ -524,14 +592,19 @@ fn fill(rig: &mut Rig, buf: u32, sample: i16) {
 fn r01_xaudio_set_effect_data_has_three_args_and_does_not_panic() {
     assert_eq!(dsound::overrides::entry(SET_EFFECT_DATA_X).unwrap().argc, 3);
     let mut rig = Rig::new();
-    // The binary reads the descriptor, updates state and may write through
-    // arg 3 (an output pointer). None of that is modelled, so it must stop,
-    // with or without an image, and whatever the (even unreadable) pointers.
-    for args in [[1, 2, 0], [3, 0x1000, 0x2000], [15, 2, 0]] {
-        assert!(matches!(rig.stop_of(SET_EFFECT_DATA_X, &args), Stop::Unimplemented { .. }));
-    }
-    rig.download_dry_image();
-    assert!(matches!(rig.stop_of(SET_EFFECT_DATA_X, &[3, 2, 0]), Stop::Unimplemented { .. }));
+    // Hostile pointers never panic: the type is the first read and faults.
+    assert!(matches!(
+        rig.stop_of(SET_EFFECT_DATA_X, &[3, 0x1000, 0x2000]),
+        Stop::Memory(_)
+    ));
+    // Verified order (0x37ba6f): no CDirectSound means DSERR_INVALIDCALL
+    // before the descriptor is touched.
+    let ds = rig.ds_ptr;
+    assert_eq!(rig.call(DS_RELEASE, &[ds]).eax, 0);
+    assert_eq!(
+        rig.call(SET_EFFECT_DATA_X, &[1, 0x1000, 0]).eax,
+        DSERR_INVALIDCALL
+    );
 }
 
 #[test]
@@ -539,34 +612,69 @@ fn dry_effects_image_satisfies_halos_init_reads() {
     let mut rig = Rig::new();
     let sink = rig.scratch(8);
     // Before the download there is no image to read from.
-    assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0x20, sink, 8]).eax, DSERR_INVALIDCALL);
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0x20, sink, 8]).eax,
+        DSERR_INVALIDCALL
+    );
     let desc = rig.download_dry_image();
-    assert_ne!(desc, 0, "Halo's 0x55787 treats a null descriptor as 'no effects'");
+    assert_ne!(
+        desc, 0,
+        "Halo's 0x55787 treats a null descriptor as 'no effects'"
+    );
     // 0x19142f: the effect-state path is only taken when desc[0] == 0xF.
     assert_eq!(rig.h.read_u32(desc).unwrap(), 15);
     // The snapshot reads at 0x1913d0..0x191411: effects 4..7, offset 0x20, 8 bytes.
     rig.h.write(sink, &[0xAA; 8]).unwrap();
     for fx in 4..=7 {
-        assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, fx, 0x20, sink, 8]).eax, S_OK);
-        assert_eq!(rig.h.read_vec(sink, 8).unwrap(), vec![0; 8], "dry default is zeros");
+        assert_eq!(
+            rig.call(0x0037b5e6, &[rig.ds_ptr, fx, 0x20, sink, 8]).eax,
+            S_OK
+        );
+        assert_eq!(
+            rig.h.read_vec(sink, 8).unwrap(),
+            vec![0; 8],
+            "dry default is zeros"
+        );
     }
     // 0x191451: 0x3c bytes at offset 0 of effects 1 and 0xb..0xe; word 1 is a
     // DSP address Halo range-checks, and zero maps to "no mix bin".
     let big = rig.scratch(0x40);
     for fx in [1, 0xb, 0xc, 0xd, 0xe] {
-        assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, fx, 0, big, 0x3c]).eax, S_OK);
+        assert_eq!(
+            rig.call(0x0037b5e6, &[rig.ds_ptr, fx, 0, big, 0x3c]).eax,
+            S_OK
+        );
         assert_eq!(rig.h.read_u32(big + 4).unwrap(), 0);
     }
     // The write-back at 0x19128f round-trips; partial reads see it.
     let data = rig.put(&[1, 2, 3, 4, 5, 6, 7, 8]);
-    assert_eq!(rig.call(0x0037b60d, &[rig.ds_ptr, 4, 0x20, data, 8, 0]).eax, S_OK);
+    assert_eq!(
+        rig.call(0x0037b60d, &[rig.ds_ptr, 4, 0x20, data, 8, 0]).eax,
+        S_OK
+    );
     rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0x24, sink, 4]);
     assert_eq!(rig.h.read_vec(sink, 4).unwrap(), vec![5, 6, 7, 8]);
     rig.call(0x0037b5e6, &[rig.ds_ptr, 5, 0x20, sink, 8]);
-    assert_eq!(rig.h.read_vec(sink, 8).unwrap(), vec![0; 8], "effects are independent");
-    // Out-of-range effect or offset is E_INVALIDARG, not a panic.
-    assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, 15, 0, sink, 4]).eax, E_INVALIDARG);
-    assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0xffff_fffc, sink, 8]).eax, E_INVALIDARG);
+    assert_eq!(
+        rig.h.read_vec(sink, 8).unwrap(),
+        vec![0; 8],
+        "effects are independent"
+    );
+    // An effect past the image is DSERR_INVALIDCALL (0x37e39e); a runaway
+    // offset is this model's E_INVALIDARG. Neither panics.
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, 15, 0, sink, 4]).eax,
+        DSERR_INVALIDCALL
+    );
+    assert_eq!(
+        rig.call(0x0037b60d, &[rig.ds_ptr, 15, 0, sink, 4, 0]).eax,
+        DSERR_INVALIDCALL
+    );
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0xffff_fffc, sink, 8])
+            .eax,
+        E_INVALIDARG
+    );
     // A second download returns the same descriptor.
     assert_eq!(rig.download_dry_image(), desc);
 }
@@ -583,15 +691,31 @@ fn effects_image_argument_checks() {
     let loc = rig.put(&[9, 0, 0, 0, 10, 0, 0, 0]);
     assert_eq!(rig.call(0x0037b86d, &[name, loc, 1, 0]).eax, E_INVALIDARG);
     // Descriptor location at the top of the address space faults.
-    assert!(matches!(rig.stop_of(0x0037b86d, &[name, FAR, 1, pp]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(0x0037b86d, &[name, FAR, 1, pp]),
+        Stop::Memory(_)
+    ));
     // An unmapped name faults and installs nothing.
-    assert!(matches!(rig.stop_of(0x0037b86d, &[0x2000, loc, 1, pp]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(0x0037b86d, &[0x2000, loc, 1, pp]),
+        Stop::Memory(_)
+    ));
     let sink = rig.scratch(8);
-    assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0, sink, 4]).eax, DSERR_INVALIDCALL, "no image installed");
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0, sink, 4]).eax,
+        DSERR_INVALIDCALL,
+        "no image installed"
+    );
     // Any other name is a stop, not a silent success.
     let other = rig.put(b"Other\0\0\0\0");
-    assert!(matches!(rig.stop_of(0x0037b86d, &[other, loc, 1, pp]), Stop::Unimplemented { .. }));
-    assert_eq!(rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0, sink, 4]).eax, DSERR_INVALIDCALL);
+    assert!(matches!(
+        rig.stop_of(0x0037b86d, &[other, loc, 1, pp]),
+        Stop::Unimplemented { .. }
+    ));
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, 4, 0, sink, 4]).eax,
+        DSERR_INVALIDCALL
+    );
 }
 
 #[test]
@@ -601,15 +725,30 @@ fn r02_struct_readers_do_not_wrap_or_panic() {
     // The first dword at FAR is readable, so the readers get as far as the
     // `addr + 4` step that used to overflow.
     assert!(rig.h.read_u32(FAR).is_ok());
-    assert!(matches!(rig.stop_of(CREATE_BUFFER, &[rig.ds_ptr, FAR, out, 0]), Stop::Memory(_)));
-    assert!(matches!(rig.stop_of(CREATE_STREAM, &[rig.ds_ptr, FAR, out, 0]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(CREATE_BUFFER, &[rig.ds_ptr, FAR, out, 0]),
+        Stop::Memory(_)
+    ));
+    assert!(matches!(
+        rig.stop_of(CREATE_STREAM, &[rig.ds_ptr, FAR, out, 0]),
+        Stop::Memory(_)
+    ));
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let stream = rig.create_stream(wfx, 0, 0, 0);
-    assert!(matches!(rig.stop_of(PROCESS, &[stream, FAR, 0]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(PROCESS, &[stream, FAR, 0]),
+        Stop::Memory(_)
+    ));
     // Mix-bin pairs that run off the end of the address space.
     let bins = rig.put(&[1, 0, 0, 0, 0xfc, 0xff, 0xff, 0xff]);
-    assert!(matches!(rig.stop_of(0x0037c70a, &[stream, bins]), Stop::Memory(_)));
-    assert!(matches!(rig.stop_of(0x0037b5ae, &[rig.ds_ptr, FAR]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(0x0037c70a, &[stream, bins]),
+        Stop::Memory(_)
+    ));
+    assert!(matches!(
+        rig.stop_of(0x0037b5ae, &[rig.ds_ptr, FAR]),
+        Stop::Memory(_)
+    ));
 }
 
 #[test]
@@ -626,13 +765,29 @@ fn r03_hostile_lengths_fault_before_allocating() {
         p.extend(v.to_le_bytes());
     }
     let pkt = rig.put(&p);
-    assert!(matches!(rig.stop_of(PROCESS, &[stream, pkt, 0]), Stop::Memory(_)));
-    assert_eq!(rig.h.read_u32(status).unwrap(), 0, "nothing was queued or written");
-    assert!(matches!(rig.stop_of(SET_BUFFER_DATA, &[b, buf, 0xffff_fffe]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(PROCESS, &[stream, pkt, 0]),
+        Stop::Memory(_)
+    ));
+    assert_eq!(
+        rig.h.read_u32(status).unwrap(),
+        0,
+        "nothing was queued or written"
+    );
+    assert!(matches!(
+        rig.stop_of(SET_BUFFER_DATA, &[b, buf, 0xffff_fffe]),
+        Stop::Memory(_)
+    ));
     let desc = rig.buffer_desc(0x80, 0xffff_fffe, wfx);
     let out = rig.scratch(4);
-    assert_eq!(rig.call(CREATE_BUFFER, &[rig.ds_ptr, desc, out, 0]).eax, E_INVALIDARG);
-    assert_eq!(rig.h.alloc_calls, allocs, "nothing was allocated before validation");
+    assert_eq!(
+        rig.call(CREATE_BUFFER, &[rig.ds_ptr, desc, out, 0]).eax,
+        E_INVALIDARG
+    );
+    assert_eq!(
+        rig.h.alloc_calls, allocs,
+        "nothing was allocated before validation"
+    );
 }
 
 #[test]
@@ -645,7 +800,10 @@ fn r04_set_buffer_data_with_same_pointer_is_a_noop() {
     let base = rig.h.read_u32(p1).unwrap();
     rig.h.write(base, &pcm16(&[16384; 8])).unwrap();
     assert_eq!(rig.call(SET_BUFFER_DATA, &[buf, base, 16]).eax, S_OK);
-    assert!(!rig.h.freed.contains(&base), "the owned allocation must not be freed");
+    assert!(
+        !rig.h.freed.contains(&base),
+        "the owned allocation must not be freed"
+    );
     // A sub-range of the owned allocation keeps it alive too.
     assert_eq!(rig.call(SET_BUFFER_DATA, &[buf, base, 8]).eax, S_OK);
     assert!(!rig.h.freed.contains(&base));
@@ -662,7 +820,11 @@ fn r05_empty_packet_completes_after_the_packet_before_it() {
     let stream = rig.create_stream(wfx, 0, 0, 0);
     let a = rig.process(stream, &pcm16(&[8192; 8]), 0x1);
     let b = rig.process(stream, &[], 0x2);
-    assert_eq!(rig.h.read_u32(b.0).unwrap(), XMEDIAPACKET_STATUS_PENDING, "B waits behind A");
+    assert_eq!(
+        rig.h.read_u32(b.0).unwrap(),
+        XMEDIAPACKET_STATUS_PENDING,
+        "B waits behind A"
+    );
     assert!(rig.h.signalled.is_empty());
     rig.render(8);
     rig.call(DO_WORK, &[]);
@@ -696,7 +858,10 @@ fn r06_stream_status_reports_paused_bit() {
     assert_eq!(rig.h.read_u32(out).unwrap(), XMO_STATUSF_ACCEPT_INPUT_DATA);
     rig.call(STREAM_PAUSE, &[stream, 1]);
     rig.call(STREAM_STATUS, &[stream, out]);
-    assert_eq!(rig.h.read_u32(out).unwrap(), XMO_STATUSF_ACCEPT_INPUT_DATA | 0x20000);
+    assert_eq!(
+        rig.h.read_u32(out).unwrap(),
+        XMO_STATUSF_ACCEPT_INPUT_DATA | 0x20000
+    );
     rig.call(STREAM_PAUSE, &[stream, 0]);
     rig.call(STREAM_STATUS, &[stream, out]);
     assert_eq!(rig.h.read_u32(out).unwrap() & 0x20000, 0);
@@ -734,7 +899,10 @@ fn r08_synch_playback_releases_held_voices() {
     let stream = rig.create_stream(wfx, 0, 0, 0);
     rig.process(stream, &pcm16(&[8192; 16]), 0);
     rig.call(STREAM_PAUSE, &[stream, 2]);
-    assert!(rig.render(4).iter().all(|&v| v == 0.0), "everything is held");
+    assert!(
+        rig.render(4).iter().all(|&v| v == 0.0),
+        "everything is held"
+    );
 
     assert_eq!(rig.call(SYNCH_PLAYBACK, &[rig.ds_ptr]).eax, S_OK);
     let out = rig.render(4);
@@ -745,7 +913,10 @@ fn r08_synch_playback_releases_held_voices() {
 
     // Pause(3) on a voice that was never active is a stop, not a no-op.
     let idle = rig.create_buffer(0x80, 16, wfx);
-    assert!(matches!(rig.stop_of(PAUSE, &[idle, 3]), Stop::Unimplemented { .. }));
+    assert!(matches!(
+        rig.stop_of(PAUSE, &[idle, 3]),
+        Stop::Unimplemented { .. }
+    ));
 }
 
 #[test]
@@ -760,7 +931,10 @@ fn r08_synch_playback_releases_the_group_atomically() {
         rig.call(PLAY, &[buf, 0, 0, DSBPLAY_LOOPING | DSBPLAY_SYNCHPLAYBACK]);
     }
     let full = VOICES as f32 * 0.5;
-    let (started, stop) = (Arc::new(AtomicBool::new(false)), Arc::new(AtomicBool::new(false)));
+    let (started, stop) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
     let mixer = Arc::clone(&rig.mixer);
     let (s2, p2) = (Arc::clone(&started), Arc::clone(&stop));
     // Stands in for the audio callback: renders one frame at a time and
@@ -784,19 +958,65 @@ fn r08_synch_playback_releases_the_group_atomically() {
     stop.store(true, Ordering::Relaxed);
     let seen = t.join().unwrap();
     for v in &seen {
-        assert!(*v == 0.0 || (v - full).abs() < 1e-2, "half-released group: {v} of {full}");
+        assert!(
+            *v == 0.0 || (v - full).abs() < 1e-2,
+            "half-released group: {v} of {full}"
+        );
     }
-    assert!(seen.iter().any(|v| (v - full).abs() < 1e-2), "voices were released");
+    assert!(
+        seen.iter().any(|v| (v - full).abs() < 1e-2),
+        "voices were released"
+    );
 }
 
 #[test]
-fn r09_flush_ex_with_flags_stops_and_keeps_packets() {
+fn r09_flush_ex_with_flags_flushes_like_flush() {
+    // Halo's call sites pass flags 1 (ASYNC) and 3 (ASYNC | ENVELOPE) with a
+    // zero timestamp (0x2ae4e2, 0x333ef6, 0x335744, 0x33598d, 0x335d13). The
+    // shim has no envelope and no deferral, so every flag value flushes at
+    // once, as the plain Flush does.
+    for flags in [1u32, 3, 2, 4, 7] {
+        let mut rig = Rig::new();
+        let wfx = rig.wfx(1, 1, RATE, 16, 2);
+        let stream = rig.create_stream(wfx, 0, 0, 0);
+        let a = rig.process(stream, &pcm16(&[8192; 8]), 0x9);
+        let b = rig.process(stream, &pcm16(&[8192; 4]), 0xA);
+        assert_eq!(
+            rig.call(FLUSH_EX, &[stream, 0, 0, flags]).eax,
+            S_OK,
+            "flags {flags}"
+        );
+        assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_FLUSHED);
+        assert_eq!(
+            rig.h.read_u32(a.1).unwrap(),
+            16,
+            "the original size, flushed or not"
+        );
+        assert_eq!(rig.h.read_u32(b.0).unwrap(), XMEDIAPACKET_STATUS_FLUSHED);
+        assert_eq!(rig.h.signalled, vec![0x9, 0xA]);
+        assert_eq!(rig.ds.ignored().get("FlushEx(flags)"), Some(&1));
+        // The mixer is empty afterwards and the stream takes new packets.
+        assert!(rig.render(4).iter().all(|&v| v == 0.0));
+        let c = rig.process(stream, &pcm16(&[8192; 2]), 0xB);
+        assert_eq!(rig.h.read_u32(c.0).unwrap(), XMEDIAPACKET_STATUS_PENDING);
+    }
+}
+
+#[test]
+fn flush_ex_with_a_timestamp_is_still_a_stop() {
     let mut rig = Rig::new();
     let wfx = rig.wfx(1, 1, RATE, 16, 2);
     let stream = rig.create_stream(wfx, 0, 0, 0);
     let a = rig.process(stream, &pcm16(&[8192; 8]), 0x9);
-    // Halo's call at 0x2ae4e2: FlushEx(0, 0, 3).
-    assert!(matches!(rig.stop_of(FLUSH_EX, &[stream, 0, 0, 3]), Stop::Unimplemented { .. }));
+    // Timestamp low word, then high word (arg 2), then flags.
+    assert!(matches!(
+        rig.stop_of(FLUSH_EX, &[stream, 5, 0, 1]),
+        Stop::Unimplemented { .. }
+    ));
+    assert!(matches!(
+        rig.stop_of(FLUSH_EX, &[stream, 0, 1, 0]),
+        Stop::Unimplemented { .. }
+    ));
     assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_PENDING);
     assert!(rig.h.signalled.is_empty());
 }
@@ -823,13 +1043,19 @@ fn r11_failed_creation_rolls_back_samples_and_voice() {
     let out = rig.scratch(4);
     // The sample allocation succeeds, the object allocation fails.
     rig.h.allocs_left = Some(1);
-    assert_eq!(rig.call(CREATE_BUFFER, &[rig.ds_ptr, desc, out, 0]).eax, E_OUTOFMEMORY);
+    assert_eq!(
+        rig.call(CREATE_BUFFER, &[rig.ds_ptr, desc, out, 0]).eax,
+        E_OUTOFMEMORY
+    );
     rig.h.allocs_left = None;
     assert_eq!(rig.h.freed.len(), 1, "the sample memory was returned");
     assert_eq!(rig.ds.live_objects(), 1);
     // A fault writing the result pointer undoes both allocations too.
     rig.h.freed.clear();
-    assert!(matches!(rig.stop_of(CREATE_BUFFER, &[rig.ds_ptr, desc, 0x2000, 0]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(CREATE_BUFFER, &[rig.ds_ptr, desc, 0x2000, 0]),
+        Stop::Memory(_)
+    ));
     assert_eq!(rig.h.freed.len(), 2, "object and samples both freed");
     assert_eq!(rig.ds.live_objects(), 1);
     // Same for streams.
@@ -838,10 +1064,733 @@ fn r11_failed_creation_rolls_back_samples_and_voice() {
         b.extend(v.to_le_bytes());
     }
     let sd = rig.put(&b);
-    assert!(matches!(rig.stop_of(CREATE_STREAM, &[rig.ds_ptr, sd, 0x2000, 0]), Stop::Memory(_)));
+    assert!(matches!(
+        rig.stop_of(CREATE_STREAM, &[rig.ds_ptr, sd, 0x2000, 0]),
+        Stop::Memory(_)
+    ));
     assert_eq!(rig.ds.live_objects(), 1);
     assert_eq!(rig.mixer.lock().unwrap().active_voices(), 0);
     // active_voices() misses a stopped voice that leaked; the counts do not.
     let m = rig.mixer.lock().unwrap();
-    assert_eq!((m.buffer_count(), m.stream_count()), (0, 0), "mixer objects leaked");
+    assert_eq!(
+        (m.buffer_count(), m.stream_count()),
+        (0, 0),
+        "mixer objects leaked"
+    );
+}
+
+// ---- XAudioSetEffectData ----------------------------------------------
+
+/// `DSI3DL2LISTENER`-shaped parameters: the type word 12 then 12 dwords.
+fn i3dl2_desc(rig: &mut Rig) -> u32 {
+    let mut words = vec![12u32];
+    words.extend((1..=12).map(|i| 0x4000_0000 + i));
+    let b: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+    rig.put(&b)
+}
+
+fn get_effect(rig: &mut Rig, index: u32, offset: u32, len: u32) -> Vec<u8> {
+    let out = rig.scratch(len);
+    assert_eq!(
+        rig.call(0x0037b5e6, &[rig.ds_ptr, index, offset, out, len])
+            .eax,
+        S_OK
+    );
+    rig.h.read_vec(out, len).unwrap()
+}
+
+#[test]
+fn xaudio_set_effect_data_i3dl2_updates_flags_and_returns_the_written_block() {
+    let mut rig = Rig::new();
+    let desc = i3dl2_desc(&mut rig);
+    // No image yet: type 12's failed state read jumps to the epilogue with
+    // the return local still 0 (0x37baef): S_OK, no pOut write.
+    let guard = rig.put(&[0xEE; 8]);
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[9, desc, guard]).eax, S_OK);
+    assert_eq!(rig.h.read_vec(guard, 8).unwrap(), vec![0xEE; 8]);
+    rig.download_dry_image();
+    // Seed the dword the call ORs 4 into (state +0x10).
+    let seed = rig.put(&0x30u32.to_le_bytes());
+    assert_eq!(
+        rig.call(0x0037b60d, &[rig.ds_ptr, 9, 0x10, seed, 4, 0]).eax,
+        S_OK
+    );
+
+    let out = rig.scratch(4 + 0x108 + 8);
+    rig.h.write(out, &[0xEE; 4 + 0x108 + 8]).unwrap();
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[9, desc, out]).eax, S_OK);
+    assert_eq!(
+        get_effect(&mut rig, 9, 0x10, 4),
+        0x34u32.to_le_bytes(),
+        "4 ORed into the flags"
+    );
+    // pOut is the type then exactly the 0x108 bytes written at +0x118; the
+    // bytes after it are untouched.
+    assert_eq!(rig.h.read_u32(out).unwrap(), 12);
+    assert_eq!(
+        rig.h.read_vec(out + 4, 0x108).unwrap(),
+        get_effect(&mut rig, 9, 0x118, 0x108)
+    );
+    assert_eq!(rig.h.read_vec(out + 4 + 0x108, 8).unwrap(), vec![0xEE; 8]);
+    // The descriptor is kept for inspection.
+    let kept = rig.ds.effect_desc(9).unwrap();
+    assert_eq!(kept.ty, 12);
+    assert_eq!(kept.words.len(), 12);
+    assert_eq!((kept.words[0], kept.words[11]), (0x4000_0001, 0x4000_000C));
+    // A null pOut is what Halo passes (0x21ee6f, 0x21fa07).
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[9, desc, 0]).eax, S_OK);
+    assert_eq!(
+        get_effect(&mut rig, 9, 0x10, 4),
+        0x34u32.to_le_bytes(),
+        "OR is idempotent"
+    );
+    // Other effects are independent.
+    assert_eq!(get_effect(&mut rig, 8, 0x10, 4), vec![0; 4]);
+}
+
+#[test]
+fn xaudio_set_effect_data_types_4_and_10_and_unknown_types() {
+    let mut rig = Rig::new();
+    rig.download_dry_image();
+    let words = |rig: &mut Rig, w: &[u32]| {
+        let b: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+        rig.put(&b)
+    };
+    // Type 4 reads 7 parameter dwords and returns 11 converted dwords.
+    let d4 = words(&mut rig, &[4, 1, 2, 3, 4, 5, 6, 7]);
+    let out = rig.scratch(4 + 0x2c);
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[3, d4, out]).eax, S_OK);
+    assert_eq!(rig.h.read_u32(out).unwrap(), 4);
+    assert_eq!(
+        rig.h.read_vec(out + 4, 0x2c).unwrap(),
+        get_effect(&mut rig, 3, 0x1c, 0x2c)
+    );
+    assert_eq!(
+        rig.ds.effect_desc(3).unwrap().words,
+        vec![1, 2, 3, 4, 5, 6, 7]
+    );
+    // Type 10 reads 3 and returns 5 dwords.
+    let d10 = words(&mut rig, &[10, 0x3f80_0000, 0x4000_0000, 0x4040_0000]);
+    let out = rig.scratch(4 + 0x14);
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[2, d10, out]).eax, S_OK);
+    assert_eq!(rig.h.read_u32(out).unwrap(), 10);
+    assert_eq!(rig.ds.effect_desc(2).unwrap().words.len(), 3);
+    // Any other type is DSERR_INVALIDCALL and records nothing.
+    for ty in [0u32, 1, 5, 11, 13, 0xffff_ffff] {
+        let d = words(&mut rig, &[ty, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            rig.call(SET_EFFECT_DATA_X, &[1, d, 0]).eax,
+            DSERR_INVALIDCALL,
+            "type {ty}"
+        );
+    }
+    assert!(rig.ds.effect_desc(1).is_none());
+}
+
+#[test]
+fn xaudio_set_effect_data_checks_the_index_before_or_after_the_read_as_the_binary_does() {
+    let mut rig = Rig::new();
+    rig.download_dry_image();
+    // The type word is readable and the parameters are not: the last dword
+    // of the address space, then nothing.
+    let edge = FAR;
+    rig.h.write(edge, &12u32.to_le_bytes()).unwrap();
+    // Type 12 checks the index first (0x37a34f before the copy at 0x37baf5);
+    // an invalid index is S_OK, not an error (0x37ba78, 0x37baef).
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[15, edge, 0]).eax, S_OK);
+    assert!(matches!(
+        rig.stop_of(SET_EFFECT_DATA_X, &[9, edge, 0]),
+        Stop::Memory(_)
+    ));
+    // Types 4 and 10 read the floats first.
+    for ty in [4u32, 10] {
+        rig.h.write(edge, &ty.to_le_bytes()).unwrap();
+        assert!(
+            matches!(
+                rig.stop_of(SET_EFFECT_DATA_X, &[15, edge, 0]),
+                Stop::Memory(_)
+            ),
+            "type {ty}"
+        );
+    }
+    // Types 4 and 10 report the failed state write but still copy their
+    // buffer to a non-null pRaw: type word, then zeros.
+    for (ty, len) in [(4u32, 0x2c_usize), (10, 0x14)] {
+        let mut w = vec![ty];
+        w.extend([0u32; 7]);
+        let b: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+        let d = rig.put(&b);
+        let out = rig.scratch(8 + len as u32);
+        rig.h.write(out, &vec![0xEE; 8 + len]).unwrap();
+        assert_eq!(
+            rig.call(SET_EFFECT_DATA_X, &[15, d, out]).eax,
+            DSERR_INVALIDCALL,
+            "type {ty}"
+        );
+        assert_eq!(rig.h.read_u32(out).unwrap(), ty);
+        assert_eq!(rig.h.read_vec(out + 4, len as u32).unwrap(), vec![0; len]);
+        assert_eq!(
+            rig.h.read_vec(out + 4 + len as u32, 4).unwrap(),
+            vec![0xEE; 4]
+        );
+    }
+    // Type 12 with a bad index and a pOut leaves the pOut alone.
+    let d12 = i3dl2_desc(&mut rig);
+    let out = rig.put(&[0xEE; 8]);
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[15, d12, out]).eax, S_OK);
+    assert_eq!(rig.h.read_vec(out, 8).unwrap(), vec![0xEE; 8]);
+    // A bad pOut faults after the state changed, as in the binary.
+    let desc = i3dl2_desc(&mut rig);
+    assert!(matches!(
+        rig.stop_of(SET_EFFECT_DATA_X, &[9, desc, 0x2000]),
+        Stop::Memory(_)
+    ));
+    assert_eq!(get_effect(&mut rig, 9, 0x10, 4), 4u32.to_le_bytes());
+}
+
+// ---- GetVoiceProperties -------------------------------------------------
+
+const GET_VOICE_PROPS_BUF: u32 = 0x0037b7e3;
+const GET_VOICE_PROPS_STREAM: u32 = 0x0037b83f;
+const GET_INFO: u32 = 0x0037abd5;
+const SET_MIX_BINS_BUF: u32 = 0x0037c5e4;
+const SET_MIX_BIN_VOLUMES_BUF: u32 = 0x0037b6c3;
+const STREAM_SET_MIX_BINS: u32 = 0x0037c70a;
+
+fn mix_bins(rig: &mut Rig, pairs: &[(u32, i32)]) -> u32 {
+    let b: Vec<u8> = pairs
+        .iter()
+        .flat_map(|&(bin, v)| [bin.to_le_bytes(), v.to_le_bytes()])
+        .flatten()
+        .collect();
+    let p = rig.put(&b);
+    let d: Vec<u8> = [pairs.len() as u32, p]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    rig.put(&d)
+}
+
+/// The 0x5c-byte output as dwords: count, 8 pairs, then the rest.
+fn voice_props(rig: &Rig, out: u32) -> Vec<u32> {
+    rig.h
+        .read_vec(out, 0x5c)
+        .unwrap()
+        .chunks(4)
+        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+        .collect()
+}
+
+const UNUSED: [u32; 2] = [0xffff_ffff, 0xffff_d8f0];
+
+#[test]
+fn buffer_get_voice_properties_reports_mix_bin_routing() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let buf = rig.create_buffer(0x80, 16, wfx);
+    let out = rig.scratch(0x5c);
+    rig.h.write(out, &[0xCC; 0x5c]).unwrap();
+    // Inactive voice (state bit 0 clear): DSERR_INVALIDCALL, nothing written.
+    assert_eq!(
+        rig.call(GET_VOICE_PROPS_BUF, &[buf, out]).eax,
+        DSERR_INVALIDCALL
+    );
+    assert_eq!(rig.h.read_vec(out, 0x5c).unwrap(), vec![0xCC; 0x5c]);
+    fill(&mut rig, buf, 1000);
+    rig.call(PLAY, &[buf, 0, 0, DSBPLAY_LOOPING]);
+    let r = rig.call(GET_VOICE_PROPS_BUF, &[buf, out]);
+    assert_eq!((r.eax, r.pop_bytes), (S_OK, 8));
+    let w = voice_props(&rig, out);
+    // No DSMIXBINS at creation: the stereo default routes to bins 0 and 1
+    // (the default table at 0x38595c), volumes 0.
+    assert_eq!(&w[..5], &[2, 0, 0, 1, 0]);
+    for slot in 2..8 {
+        assert_eq!(&w[1 + 2 * slot..3 + 2 * slot], &UNUSED, "slot {slot}");
+    }
+    assert_eq!(
+        &w[17..],
+        &[0; 6],
+        "level word and 3D/LFO state are not modelled"
+    );
+    // Explicit routing replaces it; SetMixBinVolumes edits a pair.
+    let bins = mix_bins(&mut rig, &[(5, -100), (6, -200), (7, 0)]);
+    assert_eq!(rig.call(SET_MIX_BINS_BUF, &[buf, bins]).eax, S_OK);
+    let upd = mix_bins(&mut rig, &[(6, -300)]);
+    assert_eq!(rig.call(SET_MIX_BIN_VOLUMES_BUF, &[buf, upd]).eax, S_OK);
+    rig.call(GET_VOICE_PROPS_BUF, &[buf, out]);
+    let w = voice_props(&rig, out);
+    assert_eq!(
+        &w[..7],
+        &[3, 5, (-100i32) as u32, 6, (-300i32) as u32, 7, 0]
+    );
+    assert_eq!(&w[7..9], &UNUSED);
+    // SetMixBins(NULL) restores the default.
+    assert_eq!(rig.call(SET_MIX_BINS_BUF, &[buf, 0]).eax, S_OK);
+    rig.call(GET_VOICE_PROPS_BUF, &[buf, out]);
+    assert_eq!(&voice_props(&rig, out)[..5], &[2, 0, 0, 1, 0]);
+    // A paused voice is still active; a stopped one is not.
+    rig.call(PAUSE, &[buf, 1]);
+    assert_eq!(rig.call(GET_VOICE_PROPS_BUF, &[buf, out]).eax, S_OK);
+    rig.call(PAUSE, &[buf, 0]);
+    rig.call(STOP, &[buf]);
+    assert_eq!(
+        rig.call(GET_VOICE_PROPS_BUF, &[buf, out]).eax,
+        DSERR_INVALIDCALL
+    );
+}
+
+#[test]
+fn buffer_voice_properties_use_the_documented_default_tables() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    // A CTRL3D buffer with no DSMIXBINS takes the 3D table (bins 6 8 7 9 10).
+    let b3d = rig.create_buffer(0x90, 16, wfx);
+    fill(&mut rig, b3d, 1);
+    rig.call(PLAY, &[b3d, 0, 0, DSBPLAY_LOOPING]);
+    let out = rig.scratch(0x5c);
+    assert_eq!(rig.call(GET_VOICE_PROPS_BUF, &[b3d, out]).eax, S_OK);
+    let w = voice_props(&rig, out);
+    assert_eq!(w[0], 5);
+    assert_eq!(
+        (1..=5).map(|i| w[2 * i - 1]).collect::<Vec<_>>(),
+        vec![6, 8, 7, 9, 10]
+    );
+    // Out pointer faults are guest faults, not stops of another kind.
+    assert!(matches!(
+        rig.stop_of(GET_VOICE_PROPS_BUF, &[b3d, 0x2000]),
+        Stop::Memory(_)
+    ));
+    // A garbage handle is a stop.
+    assert!(matches!(
+        rig.stop_of(GET_VOICE_PROPS_BUF, &[0xdead_0000, out]),
+        Stop::BadHandle { .. }
+    ));
+}
+
+#[test]
+fn stream_get_voice_properties_follows_the_voice_state() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let mut b = Vec::new();
+    let bins = mix_bins(&mut rig, &[(2, -50), (3, -60)]);
+    for v in [0u32, 0, wfx, 0, 0, bins] {
+        b.extend(v.to_le_bytes());
+    }
+    let desc = rig.put(&b);
+    let pp = rig.scratch(4);
+    assert_eq!(
+        rig.call(CREATE_STREAM, &[rig.ds_ptr, desc, pp, 0]).eax,
+        S_OK
+    );
+    let stream = rig.h.read_u32(pp).unwrap();
+    let out = rig.scratch(0x5c);
+    // Not started yet.
+    assert_eq!(
+        rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]).eax,
+        DSERR_INVALIDCALL
+    );
+    rig.process(stream, &pcm16(&[100; 64]), 0);
+    assert_eq!(rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]).eax, S_OK);
+    let w = voice_props(&rig, out);
+    assert_eq!(&w[..5], &[2, 2, (-50i32) as u32, 3, (-60i32) as u32]);
+    assert_eq!(&w[5..7], &UNUSED);
+    // Pause keeps the voice active; the stream-side SetMixBins is seen.
+    rig.call(STREAM_PAUSE, &[stream, 1]);
+    assert_eq!(rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]).eax, S_OK);
+    let nb = mix_bins(&mut rig, &[(9, -1)]);
+    assert_eq!(rig.call(STREAM_SET_MIX_BINS, &[stream, nb]).eax, S_OK);
+    rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]);
+    assert_eq!(&voice_props(&rig, out)[..3], &[1, 9, (-1i32) as u32]);
+    // A flush stops the voice; the next Process starts it again.
+    rig.call(FLUSH_EX, &[stream, 0, 0, 3]);
+    assert_eq!(
+        rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]).eax,
+        DSERR_INVALIDCALL
+    );
+    rig.process(stream, &pcm16(&[100; 4]), 0);
+    assert_eq!(rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]).eax, S_OK);
+    // NULL SetMixBins restores the default routing for the format.
+    rig.call(STREAM_SET_MIX_BINS, &[stream, 0]);
+    rig.call(GET_VOICE_PROPS_STREAM, &[stream, out]);
+    assert_eq!(&voice_props(&rig, out)[..5], &[2, 0, 0, 1, 0]);
+}
+
+// ---- GetInfo ------------------------------------------------------------
+
+#[test]
+fn stream_get_info_reports_the_packet_unit_and_lookahead() {
+    let mut rig = Rig::new();
+    let out = rig.scratch(16);
+    // 16-bit mono PCM: unit 2 bytes; lookahead 2 * max(2, (16*1/8)*32 = 64).
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let s = rig.create_stream(wfx, 0, 0, 0);
+    let r = rig.call(GET_INFO, &[s, out]);
+    assert_eq!((r.eax, r.pop_bytes), (S_OK, 8));
+    let info: Vec<u32> = (0..4)
+        .map(|i| rig.h.read_u32(out + 4 * i).unwrap())
+        .collect();
+    assert_eq!(info, vec![5, 2, 0, 128]);
+    // 16-bit stereo PCM: unit 4; lookahead 2 * (16*2/8)*32 = 256.
+    let wfx = rig.wfx(1, 2, RATE, 16, 4);
+    let s = rig.create_stream(wfx, 0, 0, 0);
+    rig.call(GET_INFO, &[s, out]);
+    let info: Vec<u32> = (0..4)
+        .map(|i| rig.h.read_u32(out + 4 * i).unwrap())
+        .collect();
+    assert_eq!(info, vec![5, 4, 0, 256]);
+    // Xbox ADPCM is 4 bits whatever the header says: stereo unit 72 beats
+    // 32 frames (4*2/8)*32 = 32, so the lookahead is 2 * 72.
+    let wfx = rig.wfx(0x69, 2, RATE, 4, 72);
+    let s = rig.create_stream(wfx, 0, 0, 0);
+    rig.call(GET_INFO, &[s, out]);
+    let info: Vec<u32> = (0..4)
+        .map(|i| rig.h.read_u32(out + 4 * i).unwrap())
+        .collect();
+    assert_eq!(info, vec![5, 72, 0, 144]);
+    // Mono ADPCM: (4*1/8) = 0 frames bytes, so only the unit counts.
+    let wfx = rig.wfx(0x69, 1, RATE, 4, 36);
+    let s = rig.create_stream(wfx, 0, 0, 0);
+    rig.call(GET_INFO, &[s, out]);
+    assert_eq!(rig.h.read_u32(out + 12).unwrap(), 72);
+    assert!(matches!(
+        rig.stop_of(GET_INFO, &[0xdead_0000, out]),
+        Stop::BadHandle { .. }
+    ));
+    assert!(matches!(
+        rig.stop_of(GET_INFO, &[s, 0x2000]),
+        Stop::Memory(_)
+    ));
+}
+
+// ---- playback progress ---------------------------------------------------
+
+#[test]
+fn polling_status_or_process_completes_packets_without_do_work() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let stream = rig.create_stream(wfx, 1, 0, 0);
+    let a = rig.process(stream, &pcm16(&[8192; 4]), 0x31);
+    // Full: no input accepted.
+    let st = rig.scratch(4);
+    rig.call(STREAM_STATUS, &[stream, st]);
+    assert_eq!(
+        rig.h.read_u32(st).unwrap() & XMO_STATUSF_ACCEPT_INPUT_DATA,
+        0
+    );
+    // The mixer consumes it; the real library completes from the interrupt,
+    // so a game polling GetStatus (no DoWork) sees the slot free again.
+    rig.render(8);
+    rig.call(STREAM_STATUS, &[stream, st]);
+    assert_eq!(rig.h.read_u32(st).unwrap() & XMEDIAPACKET_STATUS_SUCCESS, 0);
+    assert_eq!(
+        rig.h.read_u32(st).unwrap() & XMO_STATUSF_ACCEPT_INPUT_DATA,
+        1
+    );
+    assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+    assert_eq!(rig.h.signalled, vec![0x31]);
+    // Process on a full stream also collects first.
+    let b = rig.process(stream, &pcm16(&[8192; 4]), 0x32);
+    rig.render(8);
+    let c_buf = rig.put(&pcm16(&[1; 2]));
+    let pkt = rig.put(
+        &[c_buf, 4, 0, 0, 0x33, 0]
+            .iter()
+            .flat_map(|w: &u32| w.to_le_bytes())
+            .collect::<Vec<u8>>(),
+    );
+    assert_eq!(
+        rig.call(PROCESS, &[stream, pkt, 0]).eax,
+        S_OK,
+        "capacity was freed by the poll inside Process"
+    );
+    assert_eq!(rig.h.read_u32(b.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+}
+
+#[test]
+fn advance_audio_is_a_controlled_clock_without_any_sink() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    // A non-looping buffer of 16 frames and a stream with two packets.
+    let buf = rig.create_buffer(0x80, 32, wfx);
+    fill(&mut rig, buf, 1000);
+    rig.call(PLAY, &[buf, 0, 0, 0]);
+    let stream = rig.create_stream(wfx, 0, 0, 0);
+    let a = rig.process(stream, &pcm16(&[8192; 100]), 0x41);
+    let b = rig.process(stream, &pcm16(&[8192; 100]), 0x42);
+    assert_eq!(rig.status(buf) & DSBSTATUS_PLAYING, DSBSTATUS_PLAYING);
+
+    // Nothing consumes the mixer, nothing progresses.
+    rig.call(DO_WORK, &[]);
+    assert!(rig.h.signalled.is_empty());
+    // 50 frames: the buffer (16) is done, packet a (100) is half way.
+    assert_eq!(rig.ds.advance_audio(&mut rig.h, 50).unwrap(), 50);
+    assert_eq!(rig.status(buf) & DSBSTATUS_PLAYING, 0);
+    assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_PENDING);
+    assert_eq!(rig.ds.frames_rendered(), 50);
+    // 50 more finish a and signal it after its status and size are written.
+    rig.ds.advance_audio(&mut rig.h, 50).unwrap();
+    assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+    assert_eq!(rig.h.read_u32(a.1).unwrap(), 200);
+    assert_eq!(rig.h.signalled, vec![0x41]);
+    // A long advance renders in bounded chunks and finishes b.
+    rig.ds.advance_audio(&mut rig.h, 10_000).unwrap();
+    assert_eq!(rig.h.read_u32(b.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+    assert_eq!(rig.h.signalled, vec![0x41, 0x42]);
+}
+
+#[test]
+fn frames_per_do_work_ties_the_clock_to_the_games_own_calls() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let stream = rig.create_stream(wfx, 0, 0, 0);
+    let a = rig.process(stream, &pcm16(&[8192; 100]), 0x51);
+    rig.ds.set_frames_per_do_work(Some(40));
+    // The game's DirectSoundDoWork (0x37b844) is the only caller: 40 frames each.
+    rig.call(DO_WORK, &[]);
+    rig.call(DO_WORK, &[]);
+    assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_PENDING);
+    rig.call(DO_WORK, &[]);
+    assert_eq!(rig.h.read_u32(a.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+    assert_eq!(rig.h.signalled, vec![0x51]);
+    assert_eq!(rig.ds.frames_rendered(), 120);
+    rig.ds.set_frames_per_do_work(None);
+    rig.call(DO_WORK, &[]);
+    assert_eq!(rig.ds.frames_rendered(), 120);
+}
+
+#[test]
+fn audio_clock_converts_host_time_to_whole_frames() {
+    use std::time::Duration;
+    let mut c = dsound::AudioClock::new(48_000, Duration::from_millis(250));
+    assert_eq!(c.advance(Duration::from_millis(10)), 480);
+    let mut c = dsound::AudioClock::new(1000, Duration::from_secs(1));
+    let sum: u64 = (0..10)
+        .map(|_| c.advance(Duration::from_micros(2500)))
+        .sum();
+    assert_eq!(sum, 25, "no frame is lost to rounding");
+    // A capped stall discards its fraction instead of paying it later.
+    let mut c = dsound::AudioClock::new(1000, Duration::from_millis(10));
+    assert_eq!(c.advance(Duration::from_micros(1600)), 1); // 0.6 frame carried
+    assert_eq!(c.advance(Duration::from_secs(5)), 10);
+    assert_eq!(
+        c.advance(Duration::from_micros(450)),
+        0,
+        "the 0.6 carried before the stall is gone"
+    );
+    assert_eq!(
+        c.advance(Duration::from_micros(550)),
+        1,
+        "only post-stall fractions add"
+    );
+    let mut c = dsound::AudioClock::new(1000, Duration::from_millis(10));
+    assert_eq!(c.advance(Duration::from_micros(11_900)), 10);
+    assert_eq!(
+        c.advance(Duration::from_micros(100)),
+        0,
+        "overshoot is dropped"
+    );
+    // A stall is capped, and the debt is not paid later.
+    let mut c = dsound::AudioClock::new(48_000, Duration::from_millis(250));
+    assert_eq!(c.advance(Duration::from_secs(30)), 12_000);
+    assert_eq!(c.advance(Duration::ZERO), 0);
+}
+
+// ---- notification contract ----------------------------------------------
+
+use dsound::testing::EventLog;
+
+#[test]
+fn event_references_follow_each_packet_and_status_precedes_the_signal() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let stream = rig.create_stream(wfx, 0, 0, 0);
+    let a = rig.process(stream, &pcm16(&[8192; 4]), 0x61);
+    let z = rig.process(stream, &[], 0x62);
+    let cb_stream = rig.create_stream(wfx, 0, 0x0040_1000, 7);
+    rig.process(cb_stream, &pcm16(&[8192; 4]), 0x63);
+    // One reference per packet with an event. A callback stream's packet
+    // carries a context, not an event, so it takes none. The empty packet
+    // is queued behind a, so its reference comes after a's and is not yet signalled.
+    assert_eq!(
+        rig.h.event_log,
+        vec![EventLog::Retain(0x61), EventLog::Retain(0x62)]
+    );
+    assert_eq!(rig.h.read_u32(z.0).unwrap(), XMEDIAPACKET_STATUS_PENDING);
+    rig.render(8);
+    rig.call(DO_WORK, &[]);
+    // Order is submission order: signals come after the references, and by
+    // then both statuses and sizes are in guest memory.
+    assert_eq!(
+        rig.h.event_log,
+        vec![
+            EventLog::Retain(0x61),
+            EventLog::Retain(0x62),
+            EventLog::Signal(0x61),
+            EventLog::Signal(0x62)
+        ]
+    );
+    for p in [a, z] {
+        assert_eq!(rig.h.read_u32(p.0).unwrap(), XMEDIAPACKET_STATUS_SUCCESS);
+    }
+    assert_eq!(rig.h.read_u32(a.1).unwrap(), 8);
+}
+
+#[test]
+fn packets_that_never_complete_return_their_event_reference() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let stream = rig.create_stream(wfx, 0, 0, 0);
+    rig.process(stream, &pcm16(&[8192; 64]), 0x71);
+    rig.process(stream, &pcm16(&[8192; 64]), 0x72);
+    assert_eq!(rig.call(STREAM_RELEASE, &[stream]).eax, 0);
+    // No completion for the dropped packets (their status stays pending), so
+    // the references are given back instead of leaking.
+    assert_eq!(
+        rig.h.event_log,
+        vec![
+            EventLog::Retain(0x71),
+            EventLog::Retain(0x72),
+            EventLog::Release(0x71),
+            EventLog::Release(0x72)
+        ]
+    );
+    assert!(rig.h.signalled.is_empty());
+}
+
+/// Wraps [`TestHost`] and records guest memory at the moment of each signal.
+struct Watch {
+    inner: TestHost,
+    watch: Vec<(u32, u32)>,
+    seen: Vec<(u32, Vec<u32>)>,
+}
+
+impl GuestMemory for Watch {
+    fn read(&self, a: u32, o: &mut [u8]) -> Result<(), dsound::MemFault> {
+        self.inner.read(a, o)
+    }
+    fn write(&mut self, a: u32, d: &[u8]) -> Result<(), dsound::MemFault> {
+        self.inner.write(a, d)
+    }
+    fn alloc(&mut self, s: u32, a: u32) -> Option<u32> {
+        self.inner.alloc(s, a)
+    }
+    fn free(&mut self, a: u32) {
+        self.inner.free(a)
+    }
+}
+
+impl dsound::EventSink for Watch {
+    fn signal_event(&mut self, handle: u32, token: u64) {
+        let snap = self
+            .watch
+            .iter()
+            .map(|&(p, _)| self.inner.read_u32(p).unwrap())
+            .collect();
+        self.seen.push((handle, snap));
+        self.inner.signal_event(handle, token);
+    }
+    fn stream_callback(&mut self, cb: dsound::StreamCallback) {
+        let snap = self
+            .watch
+            .iter()
+            .map(|&(p, _)| self.inner.read_u32(p).unwrap())
+            .collect();
+        self.seen.push((cb.packet_context, snap));
+        self.inner.stream_callback(cb);
+    }
+}
+
+#[test]
+fn packet_status_and_size_are_written_before_the_notification() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let events = rig.create_stream(wfx, 0, 0, 0);
+    let calls = rig.create_stream(wfx, 0, 0x0040_1000, 1);
+    let e = rig.process(events, &pcm16(&[8192; 4]), 0x81);
+    let c = rig.process(calls, &pcm16(&[8192; 4]), 0x82);
+    rig.render(16);
+    // Move the rig's host into the watcher (statuses are in its memory).
+    let mut w = Watch {
+        inner: std::mem::take(&mut rig.h),
+        watch: vec![e, c]
+            .into_iter()
+            .flat_map(|(s, d)| [(s, 0), (d, 0)])
+            .collect(),
+        seen: Vec::new(),
+    };
+    invoke(&mut rig.ds, &mut w, DO_WORK, &[]).unwrap();
+    assert_eq!(w.seen.len(), 2);
+    // Snapshot layout: [event status, event size, callback status, callback size].
+    // Each notification goes out only after its own packet's status and size.
+    for (id, snap) in &w.seen {
+        let (status, size) = match *id {
+            0x81 => (snap[0], snap[1]),
+            0x82 => (snap[2], snap[3]),
+            other => panic!("unexpected notification {other:#x}"),
+        };
+        assert_eq!(
+            (status, size),
+            (XMEDIAPACKET_STATUS_SUCCESS, 8),
+            "notification {id:#x}"
+        );
+    }
+    assert_eq!(
+        w.seen.iter().map(|s| s.0).collect::<Vec<_>>(),
+        vec![0x81, 0x82]
+    );
+}
+
+// ---- effects image descriptor layout ---------------------------------------
+
+#[test]
+fn effects_image_descriptor_walks_like_the_xhv_engine_and_the_library_do() {
+    let mut rig = Rig::new();
+    let desc = rig.download_dry_image();
+    let count = rig.h.read_u32(desc).unwrap();
+    assert_eq!(count, 15);
+    // XHVEngineCreate's callee (0x332706 then 0x33337a): the map for effect
+    // `start + i` is at desc + 8 + (start + i) * 32 with start = 0xb; its
+    // lpvStateSegment (map + 8) is dereferenced and the dword at +0x14 read,
+    // then `(v - 0x1400) >> 5` taken (0x333380..0x33338a).
+    let mut segments = Vec::new();
+    for index in 0..count {
+        let map = desc + 8 + index * 32;
+        let seg = rig.h.read_u32(map + 8).unwrap();
+        assert!(
+            seg != 0 && seg.is_multiple_of(4),
+            "effect {index} segment {seg:#x}"
+        );
+        let v = rig.h.read_u32(seg + 0x14).unwrap();
+        assert_eq!(v.wrapping_sub(0x1400) >> 5, 0, "effect {index}");
+        // The same bytes through GetEffectData (0x37e5f2: [map + 8] + offset).
+        assert_eq!(
+            get_effect(&mut rig, index, 0x14, 4),
+            v.to_le_bytes(),
+            "effect {index}"
+        );
+        segments.push(seg);
+    }
+    // 0xb..=0xe are the four the engine reads.
+    assert!((0xb..=0xe).all(|i| i < count));
+    // Segments do not overlap and the state is as large as the model allows.
+    segments.sort_unstable();
+    assert!(segments.windows(2).all(|w| w[1] - w[0] >= 0x1000));
+    // SetEffectData lands in the memory the segment pointer reaches.
+    let seg = rig.h.read_u32(desc + 8 + 0xb * 32 + 8).unwrap();
+    let data = rig.put(&[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(
+        rig.call(0x0037b60d, &[rig.ds_ptr, 0xb, 0x30, data, 8, 0])
+            .eax,
+        S_OK
+    );
+    assert_eq!(
+        rig.h.read_vec(seg + 0x30, 8).unwrap(),
+        [1, 2, 3, 4, 5, 6, 7, 8]
+    );
+    // ...and a direct write through the pointer is what GetEffectData sees.
+    rig.h.write(seg + 0x40, &[9, 9, 9, 9]).unwrap();
+    assert_eq!(get_effect(&mut rig, 0xb, 0x40, 4), [9, 9, 9, 9]);
+    // A second download returns the same descriptor, unchanged.
+    assert_eq!(rig.download_dry_image(), desc);
+    assert_eq!(rig.h.read_u32(desc + 8 + 0xb * 32 + 8).unwrap(), seg);
 }
