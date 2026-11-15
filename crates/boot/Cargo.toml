@@ -1,0 +1,26 @@
+[package]
+name = "boot"
+description = "Boot glue: lift, emit and compile the whole XBE, then run it on the runtime with kernel HLE"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+xbe.workspace = true
+xiso.workspace = true
+analyze.workspace = true
+lift.workspace = true
+emit.workspace = true
+ir.workspace = true
+runtime.workspace = true
+kernel.workspace = true
+vfs.workspace = true
+anyhow.workspace = true
+libloading = "0.8"
+d3d = { path = "../d3d" }
+dsound = { path = "../dsound" }
+audio = { path = "../audio", default-features = false }
+bink-hle = { path = "../bink-hle" }
+xapi = { path = "../xapi" }
+input = { path = "../input", default-features = false }
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

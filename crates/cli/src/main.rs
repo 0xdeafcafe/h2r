@@ -7,6 +7,7 @@ use xiso::Xiso;
 
 mod anim;
 mod bitmap;
+mod boot_cmd;
 mod collision;
 mod effects;
 mod emit_cache;
@@ -26,6 +27,8 @@ mod ui;
 
 const USAGE: &str = "usage: h2 <command> [disc]
 
+  build <disc>            lift, emit and compile the whole XBE (docs/BOOT.md)
+  run <disc>              build if needed, then boot it natively on the kernel HLE
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc
@@ -146,6 +149,9 @@ fn main() -> Result<()> {
     }
     if cmd == "anim" {
         return anim::run(args.collect());
+    }
+    if matches!(cmd.as_str(), "build" | "run") {
+        return boot_cmd::run(&cmd, args.collect());
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());

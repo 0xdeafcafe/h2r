@@ -302,6 +302,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot"
+version = "0.1.0"
+dependencies = [
+ "analyze",
+ "anyhow",
+ "audio",
+ "bink-hle",
+ "d3d",
+ "dsound",
+ "emit",
+ "iced-x86",
+ "input",
+ "ir",
+ "kernel",
+ "libloading",
+ "lift",
+ "runtime",
+ "vfs",
+ "xapi",
+ "xbe",
+ "xiso",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -412,6 +436,7 @@ dependencies = [
  "asf",
  "assets",
  "audio",
+ "boot",
  "emit",
  "font",
  "hs",

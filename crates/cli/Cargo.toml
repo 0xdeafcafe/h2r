@@ -26,6 +26,7 @@ ir.workspace = true
 anyhow.workspace = true
 # Enable runtime-detected ARM SHA instructions for full-image cache validation.
 sha2 = { version = "0.10", features = ["asm"] }
+boot.workspace = true
 audio = { path = "../audio", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }
 asf = { path = "../asf" }

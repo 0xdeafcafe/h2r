@@ -24,6 +24,9 @@ lift = { path = "crates/lift" }
 emit = { path = "crates/emit" }
 simd = { path = "crates/simd" }
 x87 = { path = "crates/x87" }
+kernel = { path = "crates/kernel" }
+vfs = { path = "crates/vfs" }
+boot = { path = "crates/boot" }
 thiserror = "2"
 anyhow = "1"
 
