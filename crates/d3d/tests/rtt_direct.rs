@@ -533,3 +533,139 @@ fn lazily_only_reads_of_the_level_write_it_back() {
     draw_again(&mut d, &mut m);
     assert_eq!(d.stats().rtt_writebacks, 4);
 }
+
+/// A store made while a depth/stencil level is bound is overwritten when
+/// the target changes, just like a store into the active colour target.
+fn active_depth_store<B: d3d::Backend>(backend: B, lazy: bool) -> Vec<u8> {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.set_rtt_direct(lazy);
+    let texture = MISC + 0x7800;
+    let level = MISC + 0x7820;
+    let color = MISC + 0x7840;
+    let data = 0x0032_0000;
+    let addr = 0x8000_0000 | data;
+    m.map(addr, 0x1000);
+    m.write(addr, &[0x11; 1024]).unwrap();
+    let mut h = d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinD24S8, 16, 16, 64, data);
+    h.parent = texture;
+    h.write(&mut m, level).unwrap();
+    let pc = h.pixels;
+    m.write(
+        texture,
+        &[0x0004_0001u32, data, 0, pc.format, pc.size]
+            .map(u32::to_le_bytes)
+            .concat(),
+    )
+    .unwrap();
+    d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 16, 64, 0x0033_0000)
+        .write(&mut m, color)
+        .unwrap();
+    let back = m
+        .read_u32(d3d::GuestLayout::HALO2.device + d3d::layout::device_field::RENDER_TARGET)
+        .unwrap();
+    d.set_render_target(&mut m, color, level).unwrap();
+    d.clear(&mut m, 0, 0, 0x03, 0, 0.5, 0xAB).unwrap();
+    // Equal to the upload baseline: this must not become an exact-store
+    // override of the pending depth/stencil clear.
+    m.write(addr, &[0x11; 4]).unwrap();
+    d.note_write(addr, 4);
+    d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(d.take_events(), []);
+    m.read_vec(addr, 8).unwrap()
+}
+
+#[test]
+fn stores_into_the_active_depth_target_are_overwritten() {
+    // D24S8: depth 0.5 in the high 24 bits, stencil 0xAB in the low byte.
+    let expected = [0xAB, 0, 0, 0x80].repeat(2);
+    for lazy in [false, true] {
+        let mut backend = RecordingBackend::new();
+        backend.sample_surfaces = true;
+        backend.depth_readback = Some(expected.clone());
+        assert_eq!(active_depth_store(backend, lazy), expected, "lazy {lazy}");
+    }
+    for lazy in [false, true] {
+        let ctx = match gfx::GfxContext::headless() {
+            Ok(ctx) => ctx,
+            Err(e) => {
+                eprintln!("skipping GPU depth test: {e}");
+                return;
+            }
+        };
+        assert_eq!(
+            active_depth_store(GfxBackend::new(ctx), lazy),
+            expected,
+            "GPU, lazy {lazy}"
+        );
+    }
+}
+
+#[test]
+fn waits_and_busy_checks_accept_twelve_byte_resource_headers() {
+    for busy in [false, true] {
+        let (mut d, mut m, _) = recorded();
+        let page = 0x0500_0000;
+        m.map(page, 0x1000);
+        let header = page + 0x1000 - d3d::resource::ResourceHeader::SIZE;
+        // Vertex buffer: Common, Data and Lock. The next page is unmapped.
+        m.write(header, &[1u32, VB_DATA, 0].map(u32::to_le_bytes).concat())
+            .unwrap();
+        if busy {
+            assert_eq!(d.resource_busy(&mut m, header).unwrap(), 0);
+        } else {
+            d.block_on_resource(&mut m, header).unwrap();
+        }
+        assert_eq!(d.stats().rtt_writebacks, 0, "unrelated resource");
+    }
+}
+
+/// Fails the first write of the level, leaving device bookkeeping writable.
+struct FailLevelWrite {
+    inner: SparseMemory,
+    fail: bool,
+}
+
+impl GuestMemory for FailLevelWrite {
+    fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
+        self.inner.read(addr, out)
+    }
+
+    fn write(&mut self, addr: u32, bytes: &[u8]) -> Result<(), d3d::GuestError> {
+        if self.fail && addr == (0x8000_0000 | TEX_DATA) && bytes.len() == 256 {
+            self.fail = false;
+            return Err(d3d::GuestError {
+                addr,
+                len: bytes.len() as u32,
+            });
+        }
+        self.inner.write(addr, bytes)
+    }
+}
+
+#[test]
+fn failed_writeback_keeps_exact_guest_stores_for_retry() {
+    for guest in [[0x11, 0x5A, 0x11, 0x5A], [0x11; 4]] {
+        let (mut d, mut m, _) = recorded();
+        d.backend.readback_fill = 0xCC;
+        let addr = 0x8000_0000 | TEX_DATA;
+        m.write(addr, &guest).unwrap();
+        d.note_write(addr, 4);
+        let mut m = FailLevelWrite {
+            inner: m,
+            fail: true,
+        };
+        assert!(matches!(
+            d.block_on_resource(&mut m, TEX_HEADER),
+            Err(d3d::D3dError::Guest(_))
+        ));
+        assert_eq!(d.fault(), None, "the write-back can be retried");
+        assert_eq!(d.stats().rtt_writebacks, 0);
+        assert_eq!(m.read_vec(addr, 4).unwrap(), guest);
+        d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+        assert_eq!(m.read_vec(addr, 4).unwrap(), guest, "guest stores win");
+        assert_eq!(m.read_vec(addr + 4, 4).unwrap(), [0xCC; 4], "drawn pixels");
+        assert_eq!(d.stats().rtt_writebacks, 1);
+        d.block_on_resource(&mut m, TEX_HEADER).unwrap();
+        assert_eq!(d.stats().rtt_writebacks, 1, "the retry committed the level");
+    }
+}

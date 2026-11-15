@@ -656,9 +656,9 @@ impl<B: Backend> Device<B> {
     }
 
     /// An exact guest store (`addr`, `len` bytes) into the levels it
-    /// overlaps that hold pixels only on the host (lazily, not the target
-    /// being drawn, whose write-back overwrites the whole level as the
-    /// eager one at the target change does).
+    /// overlaps that hold pixels only on the host (lazily, neither active
+    /// colour nor depth/stencil target, whose write-back overwrites the
+    /// whole level as the eager one at the target change does).
     pub(super) fn note_rtt_store(&mut self, addr: u32, len: u32) {
         if self.rtt.is_empty() || !self.rtt_lazy() {
             return;
@@ -666,7 +666,12 @@ impl<B: Backend> Device<B> {
         let (start, end) = (addr as u64, addr as u64 + len as u64);
         for (h, t) in &self.rtt {
             let (a, b) = (t.data as u64, t.data as u64 + t.len() as u64);
-            if !t.dirty || *h == self.render_target || end <= a || b <= start {
+            if !t.dirty
+                || *h == self.render_target
+                || *h == self.depth_stencil
+                || end <= a
+                || b <= start
+            {
                 continue;
             }
             let (lo, hi) = (start.max(a), end.min(b));
@@ -934,8 +939,8 @@ impl<B: Backend> Device<B> {
                 }
             }
         }
-        self.rtt_stores.remove(&header);
         mem.write(t.data, &bytes)?;
+        self.rtt_stores.remove(&header);
         self.tracker.note_write(t.data, len as u32);
         self.stats.rtt_writebacks += 1;
         let hash = if self.cfg.upload == UploadPolicy::Verify {
@@ -1019,10 +1024,11 @@ impl<B: Backend> Device<B> {
     /// The guest memory `resource` reads: a texture's or surface's whole
     /// layout from `Data`, any other resource's first byte.
     fn resource_span(&self, mem: &dyn GuestMemory, resource: u32) -> Result<(u64, u64), D3dError> {
-        let pc = PixelContainer::read(mem, resource)?;
-        let start = self.cfg.address_map.to_virtual(pc.resource.data) as u64;
-        let len = match pc.resource.kind() {
+        let header = ResourceHeader::read(mem, resource)?;
+        let start = self.cfg.address_map.to_virtual(header.data) as u64;
+        let len = match header.kind() {
             ResourceType::Texture | ResourceType::Surface => {
+                let pc = PixelContainer::read(mem, resource)?;
                 TextureDesc::from_header(pc.format, pc.size)
                     .ok()
                     .and_then(|d| d.layout().ok())

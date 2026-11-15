@@ -691,7 +691,8 @@ and allocations are bounded before anything is read:
     when the guest is about to read it:
     - `BlockOnResource` or the busy check `0x3fb710` on the level, its
       texture, or a resource whose memory overlaps it (a texture or
-      surface by its whole layout, another resource by its first byte);
+      surface by its whole layout, another resource by its first byte,
+      reading only its 12-byte resource header);
     - `BlockOnTime` (after a fence wait anything drawn before may be
       read) and push-buffer callbacks (Halo's `0x24970` reads texels);
     - a sample that cannot read the surface in place, of a texture whose
@@ -711,7 +712,10 @@ and allocations are bounded before anything is read:
     bound, sampled or written back, the guest's stores since win over the
     drawn pixels, the merged level is written back, and the surface is
     filled with it. A store reported exactly (`Device::note_write`) owns
-    every byte it covers, whatever its value. Page reports
+    every byte it covers, whatever its value. Exact overrides are recorded
+    only while the level is neither the active colour target nor the
+    active depth/stencil target. A failed write to guest memory keeps
+    those overrides for the retry. Page reports
     (`Device::note_written_pages`) and changes the upload policy finds
     own only the bytes that differ from the match: a store of the value
     memory already held is not seen there and takes the drawn pixel, and
