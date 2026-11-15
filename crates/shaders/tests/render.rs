@@ -555,7 +555,14 @@ fn quad_at_exactly_z_max_is_not_clipped() {
             16,
             "z = 0, z_max = {z_max}, w = {w}"
         );
-        // Past the maximum by a few ulps of the f32 z_max, and well past.
+        // The very next float above the maximum (the division may round it
+        // to exactly 1), a few ulps past, and well past.
+        let next = f32::from_bits(z_max.to_bits() + 1);
+        assert_eq!(
+            covered_pixels(&gpu, next, w, z_max),
+            0,
+            "z = next float {next}, z_max = {z_max}, w = {w}"
+        );
         let beyond = z_max * (1.0 + 8.0 * f32::EPSILON);
         assert_eq!(
             covered_pixels(&gpu, beyond, w, z_max),

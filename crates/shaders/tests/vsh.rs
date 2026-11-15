@@ -258,6 +258,15 @@ fn fixup_keeps_z_max_inside_and_clips_past_it() {
     // Past the maximum it stays beyond w, so the GPU clips it.
     let clip = interp::fixup([0.0, 0.0, m + 32.0, 1.0], [640.0, 480.0], m);
     assert!(clip[2] > clip[3]);
+    // The next float above the maximum divides to exactly 1 (or rounds
+    // there); it must still land past w.
+    for z_max in [m, 65_535.0, 1.0] {
+        let next = f32::from_bits(z_max.to_bits() + 1);
+        for w in [1.0, z_max] {
+            let clip = interp::fixup([0.0, 0.0, next, w], [640.0, 480.0], z_max);
+            assert!(clip[2] > clip[3], "z_max {z_max} w {w}: {clip:?}");
+        }
+    }
 }
 
 #[test]

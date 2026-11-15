@@ -260,11 +260,12 @@ pub fn fixup(pos: Vec4, surface: [f32; 2], z_max: f32) -> Vec4 {
     let w = clamp_away(pos[3]);
     let nx = 2.0 * x / surface[0] - 1.0;
     let ny = 1.0 - 2.0 * y / surface[1];
-    // The depth clip range is inclusive: z == z_max stays at 1, past it clips.
-    let nz = if pos[2] <= z_max {
-        (pos[2] / z_max).min(1.0)
+    // The depth clip range is inclusive: z == z_max stays at 1, and anything
+    // past it stays above 1 (at least the float after 1) so it clips.
+    let nz = if pos[2] > z_max {
+        (pos[2] / z_max).max(f32::from_bits(0x3f80_0001))
     } else {
-        pos[2] / z_max
+        (pos[2] / z_max).min(1.0)
     };
     [nx * w, ny * w, nz * w, w]
 }

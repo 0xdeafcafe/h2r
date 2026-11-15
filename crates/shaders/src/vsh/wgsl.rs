@@ -185,12 +185,17 @@ fn xvs_lit(s: vec4f) -> vec4f {
 // perspective) to wgpu clip space. The rasterizer keeps 4 fractional bits
 // and truncates. The NV2A's depth clip range is inclusive, so z exactly at
 // the depth maximum is inside; z / Zmax can round above 1 (Metal divides
-// through a reciprocal), so it is held to 1 there. Anything past Zmax clips.
+// through a reciprocal), so it is held to 1 there. Anything past Zmax must
+// still clip, but the division can also round down to 1 there, so such z is
+// pushed to at least the float after 1. The comparison is on the bits
+// (Zmax > 0, so for non-NaN z, int order is float order above it): a float
+// compare lets fast math fold the select into a bare min(zn, 1).
 fn xvs_fixup(p: vec4f) -> vec4f {
     let xy = trunc(p.xy * 16.0) / 16.0;
     let w = xvs_clamp_away(p.w);
     let zn = p.z / xvs.viewport.z;
-    let z = select(zn, min(zn, 1.0), p.z <= xvs.viewport.z);
+    let over = bitcast<i32>(p.z) > bitcast<i32>(xvs.viewport.z);
+    let z = select(min(zn, 1.0), max(zn, bitcast<f32>(0x3f800001u)), over);
     let n = vec3f(2.0 * xy.x / xvs.viewport.x - 1.0, 1.0 - 2.0 * xy.y / xvs.viewport.y, z);
     return vec4f(n * w, w);
 }

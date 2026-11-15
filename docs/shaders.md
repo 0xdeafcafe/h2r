@@ -228,7 +228,8 @@ wgpu clip space:
 x, y  ← trunc(x·16)/16, trunc(y·16)/16      (rasterizer keeps 4 fractional bits, truncates)
 w     ← clamp_away(w)                       (as rcc: never 0 or inf)
 ndc   = (2x/W − 1,  1 − 2y/H,  z/Zmax)      (wgpu y is up; NV2A window y is down)
-        z/Zmax held to 1 when z <= Zmax     (the depth clip range is inclusive)
+        z/Zmax held to 1 when z <= Zmax,    (the depth clip range is inclusive)
+        and to at least 1 + 2^-23 when z > Zmax
 clip  = (ndc·w, w)                          (the GPU's divide by w restores the window position)
 ```
 
@@ -240,9 +241,16 @@ main menu's blue tint draws its quad at z = w = 0xFFFFFF, the D24 maximum.
 On Metal `z / Zmax` divides through a reciprocal and 0xFFFFFF / 0xFFFFFF
 comes out just above 1, so the quad was clipped and the tint was missing.
 The fixup therefore clamps to 1 whenever `z <= Zmax`. Since `1·w` is exact,
-clip z then equals w. Anything past `Zmax`, and anything below 0, still
+clip z then equals w. The division can also round the next float above
+`Zmax` down to exactly 1 (D16: 65535.0039 / 65535), so z past `Zmax` is
+raised to at least the float after 1, and `(1 + 2^-23)·w` is always above
+w. The test is a comparison of the bit patterns (`Zmax` is positive, so
+integer order is float order there). With a float comparison, Metal's fast
+math folded the select into a plain `min(z/Zmax, 1)` and drew the D16 quad
+at the next float. Anything past `Zmax`, and anything below 0, still
 clips. `tests/render.rs` (`quad_at_exactly_z_max_is_not_clipped`) draws
-quads at z = 0, exactly `Zmax`, a few ulps past it, 1.5·`Zmax` and −1, for
+quads at z = 0, exactly `Zmax`, the next float above it, a few ulps past
+it, 1.5·`Zmax` and −1, for
 D24, D16 and float depth, with w = 1 and w = z. Without the clamp the D24
 case fails on Metal. The clip range is taken as `[0, Zmax]`: the
 `CLIP_MIN`/`CLIP_MAX` the game pushes (`d3d::hw::HwState`) are not applied,
