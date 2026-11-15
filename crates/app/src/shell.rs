@@ -20,6 +20,7 @@ use crate::lifecycle::Lifecycle;
 use crate::overlay::OverlayRenderer;
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::scale;
+use crate::watermark::{LiveStats, WatermarkRenderer};
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
 
@@ -114,7 +115,21 @@ struct Gpu {
     surface: WindowSurface,
     compositor: Compositor,
     overlay: OverlayRenderer,
+    watermark: WatermarkRenderer,
+    /// The adapter's backend, lower case (`metal`), for the watermark.
+    backend: String,
     source: FrameSource,
+}
+
+/// How often the watermark's numbers change.
+const WATERMARK_REFRESH: Duration = Duration::from_millis(250);
+
+/// The watermark's text and when it was made.
+struct WatermarkText {
+    at: Instant,
+    /// Presents published by then, for the fps without frame stats.
+    published: u64,
+    lines: [String; 2],
 }
 
 /// The title's rates average this long: the guest can present slower than
@@ -151,6 +166,7 @@ struct Shell {
     /// The banner generation last drawn.
     banner_drawn: u64,
     restart_requested: bool,
+    watermark_text: Option<WatermarkText>,
 }
 
 pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitReport> {
@@ -184,6 +200,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         frames_at_exit: FrameStats::default(),
         banner_drawn: 0,
         restart_requested: false,
+        watermark_text: None,
     };
     if let Some(c) = &shell.config.closer {
         let proxy = shell.proxy.clone();
@@ -287,6 +304,8 @@ impl Shell {
             window,
             compositor: Compositor::new(&ctx.device),
             overlay: OverlayRenderer::new(&ctx.device),
+            watermark: WatermarkRenderer::new(&ctx.device),
+            backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
             surface,
             source,
@@ -328,6 +347,43 @@ impl Shell {
             self.config.filter,
             wgpu::Color::BLACK,
         );
+        if let Some(wm) = &self.config.watermark
+            && wm.visible()
+        {
+            let published = g.source.stats().published;
+            let stale = self
+                .watermark_text
+                .as_ref()
+                .is_none_or(|t| t.at.elapsed() >= WATERMARK_REFRESH);
+            if stale {
+                let stats = timeline::phase::window_summary()
+                    .map(|s| LiveStats::from_summary(&s))
+                    .or_else(|| {
+                        let t = self.watermark_text.as_ref()?;
+                        LiveStats::from_rate(
+                            published.saturating_sub(t.published),
+                            t.at.elapsed().as_secs_f64(),
+                        )
+                    });
+                self.watermark_text = Some(WatermarkText {
+                    at: Instant::now(),
+                    published,
+                    lines: wm.lines(stats.as_ref(), &g.backend),
+                });
+            }
+            if let Some(t) = &self.watermark_text {
+                g.watermark.draw(
+                    &g.ctx.device,
+                    &g.ctx.queue,
+                    &mut enc,
+                    &t.lines,
+                    &view,
+                    g.surface.config.format,
+                    g.surface.size(),
+                    viewport,
+                );
+            }
+        }
         if let Some(banner) = &self.config.banner {
             self.banner_drawn = banner.generation();
             if let Some(notice) = banner.visible() {
@@ -558,6 +614,17 @@ impl ApplicationHandler<UserEvent> for Shell {
                         return;
                     }
                 }
+                if let Some(wm) = &self.config.watermark
+                    && code == KeyCode::F3
+                {
+                    if down && !event.repeat {
+                        wm.toggle();
+                        if let Some(g) = &self.gpu {
+                            g.window.request_redraw();
+                        }
+                    }
+                    return;
+                }
                 if let Some(banner) = self.config.banner.clone()
                     && matches!(code, KeyCode::F5 | KeyCode::F6)
                 {
@@ -620,6 +687,16 @@ impl ApplicationHandler<UserEvent> for Shell {
         // A banner change shows without waiting for the guest's next present.
         if let (Some(banner), Some(g)) = (&self.config.banner, &self.gpu)
             && banner.generation() != self.banner_drawn
+        {
+            g.window.request_redraw();
+        }
+        // Fresh numbers while the guest presents slower than the refresh.
+        if let (Some(wm), Some(g)) = (&self.config.watermark, &self.gpu)
+            && wm.visible()
+            && self
+                .watermark_text
+                .as_ref()
+                .is_some_and(|t| t.at.elapsed() >= Duration::from_secs(1))
         {
             g.window.request_redraw();
         }

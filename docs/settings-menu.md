@@ -182,8 +182,10 @@ owns it. The guest thread never sees it.
 - It stays out of the simulation by construction, provided opening it pauses
   the guest the same way Cmd+P does. `host.tick` already blocks while paused,
   and guest time is logical, so a pause does not change what the guest sees.
-- The shell already intercepts keys (F5, F6, Cmd+F, Cmd+P), so a chord and a
-  hotkey have a precedent.
+- The shell already intercepts keys (F3, F5, F6, Cmd+F, Cmd+P), so a chord
+  and a hotkey have a precedent. The development-build watermark (F3) is a
+  small instance of this design: host text drawn over the game image after
+  the compositor, never in guest memory.
 
 ### Trade-offs
 
@@ -294,6 +296,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | pipeline cache | `H2_PIPELINE_CACHE` (path or `off`) | restart |
 | shader compile threads | `H2_GFX_COMPILE_THREADS` | restart |
 | frame stats | `H2_FRAME_STATS`, `--frame-stats` | live (a HUD or log toggle) |
+| watermark | on; `--no-watermark`, `H2_WATERMARK=0`, F3 ([app.md](app.md) "Watermark") | live: `app::Watermark::set_visible` |
 
 **Build-time (change generated C).**
 

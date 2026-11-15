@@ -15,6 +15,7 @@ gfx = { path = "../gfx" }
 input = { path = "../input", default-features = false }
 audio = { path = "../audio" }
 xapi = { path = "../xapi" }
+timeline = { path = "../timeline" }
 wgpu = "30"
 winit = "0.30"
 cpal = "0.18"

@@ -27,6 +27,7 @@ pub mod overlay;
 pub mod pacing;
 pub mod scale;
 mod shell;
+pub mod watermark;
 pub mod worker;
 
 use std::sync::{Arc, Mutex};
@@ -45,6 +46,7 @@ pub use lifecycle::{Control, Lifecycle};
 pub use overlay::{Banner, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
 pub use scale::{DisplayAspect, Scaling, Viewport};
+pub use watermark::{BuildInfo, LiveStats, Watermark};
 
 /// Shell settings.
 #[derive(Clone, Debug)]
@@ -93,6 +95,10 @@ pub struct AppConfig {
     /// while it offers a restart. Neither key reaches the guest while a
     /// banner is configured.
     pub banner: Option<Banner>,
+    /// The development-build watermark along the bottom of the game image
+    /// (docs/app.md "Watermark"). F3 toggles it; F3 does not reach the
+    /// guest while one is configured.
+    pub watermark: Option<Watermark>,
 }
 
 impl Default for AppConfig {
@@ -118,6 +124,7 @@ impl Default for AppConfig {
             log_status: false,
             closer: None,
             banner: None,
+            watermark: None,
         }
     }
 }
@@ -270,7 +277,8 @@ impl GuestHost {
     /// sink on the same channel.
     pub fn present_hook(
         &self,
-    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static {
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
         self.sink.another().into_present_hook()
     }
 

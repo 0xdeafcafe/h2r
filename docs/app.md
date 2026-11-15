@@ -70,7 +70,8 @@ FrameSource, Compositor}`, `pacing::{Pacer, PacePolicy, VBlank}`,
 (false), `mouse_capture` (true), `gamepads` (true), `keyboard` (true),
 `bindings` (`input::bindings::Bindings`, from the TOML in docs/input.md),
 `audio` (true), `pacing` (`PacePolicy::REAL_TIME`), `keep_open_on_guest_exit`
-(true), `shutdown_timeout` (3 s), `log_status` (false).
+(true), `shutdown_timeout` (3 s), `log_status` (false), `banner` (none),
+`watermark` (none; `h2 play` sets one, see "Watermark" below).
 
 ## Playing: `h2 play`
 
@@ -196,6 +197,51 @@ and counted in the exit report. See [frame-budget.md](frame-budget.md).
 Cost: one clock read per phase switch, about six per draw. At 300 draws
 that is under 0.1 ms of a 75 ms level frame. Add one short lock per frame. Off, each hook is a relaxed
 load and a branch.
+
+### Watermark
+
+`h2 play` draws a development-build watermark: two lines of small text
+along the bottom-left of the game image, in the spirit of a pre-release
+build's stamp (our own wording and layout, not a copy of any real one):
+
+```
+h2recomp  ·  development build  ·  a1987da master  ·  built 2026-11-15 14:02 UTC
+fps 28.4  ·  35.2 ms (cpu 24 / gfx 5 / wait 6)  ·  draws 1104  ·  map 01a_tutorial  ·  metal, render thread on
+```
+
+- Line one is baked at compile time by `crates/app/build.rs`: the short
+  commit, the branch (`detached` off a branch, `unknown` without git) and
+  the time the build script last ran (it reruns when HEAD moves or
+  `crates/app/src` changes). `H2_BUILD_SHA`, `H2_BUILD_BRANCH` and
+  `SOURCE_DATE_EPOCH` override them.
+- Line two comes from the frame stats' rolling window
+  (`timeline::phase::window_summary`): fps, the mean frame time, then in
+  ms per frame the game thread's `cpu`, `gfx` (decode + encode + submit +
+  `gpu-wait`, on whichever thread does them; with the render thread on it
+  overlaps `cpu`) and `wait` (`render-wait`: the game thread waiting for
+  the render thread, 0 with it off), and draws per frame (the render
+  thread's included, joined to their frame by `timeline::phase::WorkerFrame`). The map is the level map the game
+  opened last (`kernel::level::last_map`: `maps\<name>.map`, the shared
+  maps left out). Then the wgpu backend and whether the render thread is
+  on. With `--frame-stats` the window is its 5 s one; otherwise `h2 play`
+  starts frame stats itself with a quiet 2 s window
+  (`timeline::phase::Config::live`: no log, no CSV, no exit report). An
+  embedder without frame stats gets fps and frame time from the shell's
+  present count.
+- Drawing is host-side only, at present time, over the scaled game image
+  (inside any letterbox or pillarbox), never in guest memory. The text
+  changes at most four times a second; only then is it rasterised on the
+  CPU (`font8x8`, the banner's public-domain letters, with a soft
+  one-pixel shadow) into one texture. Every present draws that texture as
+  one alpha-blended quad. Glyphs are 8x8 font pixels, 2x from a target
+  1600 pixels tall (Retina), and lines too long for the image are cut with
+  `..`.
+- On by default. `--no-watermark` or `H2_WATERMARK=0` turns it off; F3
+  toggles it while playing (F3 then never reaches the guest).
+- In code: `app::Watermark` (shared on/off, note, map callback) on
+  `AppConfig::watermark`; `app::watermark` has the formatting, layout and
+  rasteriser, and `WatermarkRenderer` the pass. The banner and the
+  watermark share `overlay::Sprite`.
 
 ## Following a branch: `h2 play --follow`
 
@@ -482,6 +528,12 @@ it. A one-second window read 0.0 for a game presenting 1.4 times a second.
 - `overlay.rs`: F6 hides a notice until a different one arrives, only a
   ready notice offers F5 (also when hidden), glyphs on the plate, long text
   cut, and (GPU) the banner blended over a frame in the top-left only.
+- `watermark.rs`: UTC dates, the build line, the stats line with and
+  without frame stats, the note and map, F3's shared toggle, cutting to the
+  image width, bottom-left placement and scale, light text over a soft
+  shadow, the middle dot glyph, and (GPU) the watermark drawn twice over a
+  gradient frame changes only the bottom rows, and stays inside a
+  pillarboxed image.
 - `keymap.rs`: every mapped key is accepted by `input::bindings`, names match
   the W3C spelling, Cmd is not forwarded, default bindings through the map,
   mouse routing (a Cmd-click neither recaptures nor forwards).
@@ -542,6 +594,8 @@ mouse capture were not exercised in that check.
 - HiDPI: the surface is in physical pixels and the frame is scaled into it;
   nothing is done about the backing scale beyond that.
 - Pacing granularity is the chunk size (see Pacing).
-- The only on-screen stats are `--frame-stats`, drawn in the banner's
-  corner; rates are also in the title bar.
+- On-screen stats are the watermark's line and `--frame-stats`, drawn in
+  the banner's corner; rates are also in the title bar.
+- The watermark's map is the last level map opened, which is what is
+  loaded only as long as the game opens each level's map when it loads it.
 - Window position, size and fullscreen are not remembered between runs.

@@ -14,6 +14,7 @@ pub mod handles;
 pub mod image;
 pub mod launch;
 pub mod layout;
+pub mod level;
 pub mod memory;
 pub mod net;
 mod objects;

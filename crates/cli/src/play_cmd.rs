@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
-          [--input-timeline FILE] [--frame-stats]
+          [--input-timeline FILE] [--frame-stats] [--no-watermark]
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
           [--icons auto|xbox|xbox360|playstation|keyboard]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
@@ -32,7 +32,10 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
 CPU, push-buffer decode, wgpu encode, submit, GPU wait and pacing over the
 last 5 s, in the window and once a second on stderr, and the worst frames at
-exit (docs/frame-budget.md). --input-timeline plays an
+exit (docs/frame-budget.md). A two-line development-build watermark (commit,
+branch, build time, fps, frame time, draws, map, renderer) runs along the
+bottom of the picture; F3 toggles it, --no-watermark or H2_WATERMARK=0 turns
+it off. --input-timeline plays an
 input crate timeline (docs/input.md) on guest time instead of live input.
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
@@ -46,7 +49,7 @@ your user; either is made on the server and kept in accounts.json if needed.
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
-Cmd+F fullscreen, Cmd+P pause. With --follow, F5 restarts into a ready update
+Cmd+F fullscreen, Cmd+P pause, F3 the watermark. With --follow, F5 restarts into a ready update
 and F6 hides the banner. --bindings reads a TOML table (docs/input.md).
 --icons (or H2_ICONS) picks the button pictures in prompts: auto, the default,
 follows the device last used (docs/button-icons.md).";
@@ -257,6 +260,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut follow_status = None;
     let mut icons: Option<font::icons::IconChoice> = None;
     let mut frame_stats = timeline::phase::Config::from_env();
+    let mut no_watermark = false;
     let mut live = crate::play_live::LiveOpts::default();
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
@@ -303,6 +307,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--no-vsync" => config.vsync = false,
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
+            "--no-watermark" => no_watermark = true,
             "--frame-stats" => {
                 frame_stats.get_or_insert(timeline::phase::Config {
                     log_every_ns: Some(1_000_000_000),
@@ -392,15 +397,32 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     #[cfg(not(unix))]
     let _ = follow_status;
+    let watermark = watermark_on(no_watermark, std::env::var("H2_WATERMARK").ok().as_deref());
+    if watermark {
+        config.watermark = Some(play_watermark(render_thread(
+            std::env::var("H2_RENDER_THREAD").ok().as_deref(),
+        )));
+    }
     if let Some(c) = frame_stats {
         timeline::phase::start(c).context("starting frame stats")?;
         // The follow banner wins the corner; the stats still log.
         if config.banner.is_none() {
             config.banner = Some(stats_banner());
         }
+    } else if watermark {
+        // The watermark's numbers: a short window, no log and no report.
+        timeline::phase::start(timeline::phase::Config::live(WATERMARK_WINDOW_NS))
+            .context("starting frame stats")?;
     }
     let report = app::run(config, move |host| {
-        let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted), icons);
+        let host = hosted(
+            host,
+            audio,
+            status,
+            timeline,
+            Arc::clone(&interrupted),
+            icons,
+        );
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
         // drop), so store its pending write metadata at a normal exit, whether
@@ -497,6 +519,27 @@ fn start_live(
     Ok(session)
 }
 
+/// The watermark's rolling window when `--frame-stats` is off: short, so
+/// the numbers follow what is on screen.
+const WATERMARK_WINDOW_NS: u64 = 2_000_000_000;
+
+/// The watermark is on unless `--no-watermark` or `H2_WATERMARK=0`.
+fn watermark_on(no_flag: bool, env: Option<&str>) -> bool {
+    !no_flag && env != Some("0")
+}
+
+/// `h2 play`'s watermark: how the renderer runs, and the level map the
+/// game opened last.
+fn play_watermark(render_thread: bool) -> app::Watermark {
+    app::Watermark::new()
+        .with_note(if render_thread {
+            "render thread on"
+        } else {
+            "render thread off"
+        })
+        .with_map(kernel::level::last_map)
+}
+
 /// A banner showing the frame stats' rolling window, refreshed once a
 /// second (`--frame-stats`).
 fn stats_banner() -> app::Banner {
@@ -564,6 +607,30 @@ mod tests {
     }
 
     #[test]
+    fn the_watermark_is_on_unless_turned_off() {
+        assert!(watermark_on(false, None));
+        assert!(watermark_on(false, Some("1")));
+        assert!(watermark_on(false, Some("")));
+        assert!(!watermark_on(false, Some("0")));
+        assert!(!watermark_on(true, None));
+        assert!(!watermark_on(true, Some("1")));
+    }
+
+    #[test]
+    fn the_play_watermark_names_the_render_thread() {
+        let wm = play_watermark(true);
+        assert!(wm.visible());
+        let [top, bottom] = wm.lines(None, "metal");
+        assert!(
+            top.starts_with("h2recomp  \u{b7}  development build"),
+            "{top}"
+        );
+        assert!(bottom.ends_with("metal, render thread on"), "{bottom}");
+        let [_, off] = play_watermark(false).lines(None, "metal");
+        assert!(off.ends_with("render thread off"), "{off}");
+    }
+
+    #[test]
     fn the_first_signal_closes_the_window_and_a_second_exits() {
         let flag = AtomicBool::new(false);
         let closer = app::Closer::new();
@@ -582,6 +649,7 @@ mod tests {
             p99_ms: 998.4,
             max_ms: 1402.0,
             phase_ms: [40.1, 3.2, 8.4, 2.0, 5.5, 0.0, 6.4],
+            count_mean: [0.0; timeline::phase::COUNTERS],
         };
         let n = stats_notice(Some(s)).unwrap();
         assert_eq!(n.kind, app::NoticeKind::Info);

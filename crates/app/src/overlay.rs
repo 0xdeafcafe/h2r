@@ -184,25 +184,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 }
 "#;
 
-/// Draws the banner's notice over an already composited target.
-pub struct OverlayRenderer {
+/// A straight-alpha RGBA image drawn 1:1 into a rectangle of an already
+/// composited target, alpha blended: one quad, one draw. Shared by the
+/// banner and the watermark.
+pub(crate) struct Sprite {
     module: wgpu::ShaderModule,
     bgl: wgpu::BindGroupLayout,
     layout: wgpu::PipelineLayout,
     sampler: wgpu::Sampler,
     pipelines: Vec<(wgpu::TextureFormat, wgpu::RenderPipeline)>,
-    /// The last notice rasterised, its bind group and size.
-    cached: Option<(Notice, wgpu::BindGroup, (u32, u32))>,
+    /// The uploaded image: texture, bind group and size.
+    image: Option<(wgpu::Texture, wgpu::BindGroup, (u32, u32))>,
 }
 
-impl OverlayRenderer {
-    pub fn new(device: &wgpu::Device) -> Self {
+impl Sprite {
+    pub(crate) fn new(device: &wgpu::Device, label: &'static str) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("app overlay"),
+            label: Some(label),
             source: wgpu::ShaderSource::Wgsl(OVERLAY_WGSL.into()),
         });
         let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("app overlay"),
+            label: Some(label),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
@@ -223,12 +225,13 @@ impl OverlayRenderer {
             ],
         });
         let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("app overlay"),
+            label: Some(label),
             bind_group_layouts: &[Some(&bgl)],
             immediate_size: 0,
         });
+        // Nearest (the default): the image is drawn at its own size.
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("app overlay"),
+            label: Some(label),
             ..Default::default()
         });
         Self {
@@ -237,7 +240,7 @@ impl OverlayRenderer {
             layout,
             sampler,
             pipelines: Vec::new(),
-            cached: None,
+            image: None,
         }
     }
 
@@ -278,28 +281,33 @@ impl OverlayRenderer {
         p
     }
 
-    /// Records a pass drawing `notice` in the top-left of `dst` (size
-    /// `dst_size`), over what is there.
-    #[allow(clippy::too_many_arguments)]
-    pub fn draw(
+    /// The uploaded image's size, if any.
+    pub(crate) fn size(&self) -> Option<(u32, u32)> {
+        self.image.as_ref().map(|(_, _, s)| *s)
+    }
+
+    /// Replaces the image with `px` (`w` x `h` straight-alpha RGBA). The
+    /// texture is kept while the size stays the same.
+    pub(crate) fn upload(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        encoder: &mut wgpu::CommandEncoder,
-        notice: &Notice,
-        dst: &wgpu::TextureView,
-        dst_format: wgpu::TextureFormat,
-        dst_size: (u32, u32),
+        (w, h): (u32, u32),
+        px: &[u8],
     ) {
-        if self.cached.as_ref().is_none_or(|(n, _, _)| n != notice) {
-            let (w, h, px) = rasterize(notice);
+        if w == 0 || h == 0 {
+            self.image = None;
+            return;
+        }
+        let extent = wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        };
+        if self.size() != Some((w, h)) {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("app overlay"),
-                size: wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
+                size: extent,
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
@@ -307,20 +315,6 @@ impl OverlayRenderer {
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             });
-            queue.write_texture(
-                tex.as_image_copy(),
-                &px,
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(w * 4),
-                    rows_per_image: Some(h),
-                },
-                wgpu::Extent3d {
-                    width: w,
-                    height: h,
-                    depth_or_array_layers: 1,
-                },
-            );
             let view = tex.create_view(&Default::default());
             let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("app overlay"),
@@ -336,20 +330,43 @@ impl OverlayRenderer {
                     },
                 ],
             });
-            self.cached = Some((notice.clone(), bind, (w, h)));
+            self.image = Some((tex, bind, (w, h)));
         }
+        let (tex, _, _) = self.image.as_ref().expect("just set");
+        queue.write_texture(
+            tex.as_image_copy(),
+            px,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(w * 4),
+                rows_per_image: Some(h),
+            },
+            extent,
+        );
+    }
+
+    /// Records a pass drawing the image with its top-left at `at`, within
+    /// `dst_size`, over what is there.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        dst_size: (u32, u32),
+        at: (u32, u32),
+    ) {
         let pipeline = self.pipeline(device, dst_format);
-        let Some((_, bind, (w, h))) = &self.cached else {
+        let Some((_, bind, (w, h))) = &self.image else {
             return;
         };
-        let margin = 12u32;
-        let (w, h) = (
-            (*w).min(dst_size.0.saturating_sub(margin)),
-            (*h).min(dst_size.1.saturating_sub(margin)),
-        );
-        if w == 0 || h == 0 {
+        // The viewport may not leave the target: an image that does not
+        // fit is squashed into what is left (callers size theirs to fit).
+        if at.0 >= dst_size.0 || at.1 >= dst_size.1 {
             return;
         }
+        let vis = ((*w).min(dst_size.0 - at.0), (*h).min(dst_size.1 - at.1));
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("app overlay"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -366,10 +383,56 @@ impl OverlayRenderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        pass.set_viewport(margin as f32, margin as f32, w as f32, h as f32, 0.0, 1.0);
+        pass.set_viewport(
+            at.0 as f32,
+            at.1 as f32,
+            vis.0 as f32,
+            vis.1 as f32,
+            0.0,
+            1.0,
+        );
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+}
+
+/// Draws the banner's notice over an already composited target.
+pub struct OverlayRenderer {
+    sprite: Sprite,
+    /// The last notice rasterised.
+    cached: Option<Notice>,
+}
+
+impl OverlayRenderer {
+    pub fn new(device: &wgpu::Device) -> Self {
+        Self {
+            sprite: Sprite::new(device, "app overlay"),
+            cached: None,
+        }
+    }
+
+    /// Records a pass drawing `notice` in the top-left of `dst` (size
+    /// `dst_size`), over what is there.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        notice: &Notice,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        dst_size: (u32, u32),
+    ) {
+        if self.cached.as_ref() != Some(notice) {
+            let (w, h, px) = rasterize(notice);
+            self.sprite.upload(device, queue, (w, h), &px);
+            self.cached = Some(notice.clone());
+        }
+        let margin = 12u32;
+        self.sprite
+            .draw(device, encoder, dst, dst_format, dst_size, (margin, margin));
     }
 }
 

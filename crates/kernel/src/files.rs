@@ -663,6 +663,7 @@ impl Core {
                     }
                 };
                 self.file_handles.insert(handle, opened.handle);
+                crate::level::note_open(&path);
                 self.files.insert(
                     object,
                     File {

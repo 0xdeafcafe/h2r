@@ -389,6 +389,9 @@ pub struct Config {
     pub window_ns: u64,
     /// How many worst frames the run report keeps.
     pub worst: usize,
+    /// Collect for a live display only (`h2 play`'s watermark): [`stop`]
+    /// returns no report, and nothing is kept for one.
+    pub quiet: bool,
 }
 
 impl Config {
@@ -412,7 +415,20 @@ impl Config {
                 .unwrap_or(0),
             window_ns: Self::DEFAULT_WINDOW_NS,
             worst: 10,
+            quiet: false,
         })
+    }
+
+    /// Collection for a live display: a `window_ns` rolling window, no
+    /// log, no CSV and no run report.
+    pub fn live(window_ns: u64) -> Config {
+        Config {
+            report_from: u64::MAX,
+            window_ns,
+            worst: 1,
+            quiet: true,
+            ..Default::default()
+        }
     }
 }
 
@@ -468,6 +484,9 @@ pub fn stop() -> Option<String> {
     drop(g);
     if let Some(f) = r.csv.as_mut() {
         let _ = f.flush();
+    }
+    if r.config.quiet {
+        return None;
     }
     let mut report = r.report();
     let pending = r.pending.values().filter(|p| p.game.is_some()).count();
@@ -682,6 +701,8 @@ pub struct Summary {
     pub max_ms: f64,
     /// Mean ms per frame in each phase.
     pub phase_ms: [f64; PHASES],
+    /// Mean per frame of each [`Counter`].
+    pub count_mean: [f64; COUNTERS],
 }
 
 impl Summary {
@@ -695,9 +716,13 @@ impl Summary {
         let wall: u64 = totals.iter().sum();
         let n = frames.len() as f64;
         let mut phase_ms = [0.0; PHASES];
+        let mut count_mean = [0.0; COUNTERS];
         for f in &frames {
             for (a, b) in phase_ms.iter_mut().zip(f.phase_ns) {
                 *a += b as f64 / 1e6 / n;
+            }
+            for (a, b) in count_mean.iter_mut().zip(f.counts) {
+                *a += b as f64 / n;
             }
         }
         Some(Summary {
@@ -707,6 +732,7 @@ impl Summary {
             p99_ms: percentile(&totals, 99.0) as f64 / 1e6,
             max_ms: *totals.last().unwrap() as f64 / 1e6,
             phase_ms,
+            count_mean,
         })
     }
 
@@ -937,6 +963,7 @@ mod tests {
             w.max_ms
         );
         assert!(report.contains("draws 2 submits 1"), "{report}");
+        assert_eq!(w.count_mean[Counter::Draws as usize], 2.0);
         let text = std::fs::read_to_string(&csv).unwrap();
         let _ = std::fs::remove_file(&csv);
         let lines: Vec<&str> = text.lines().collect();
@@ -946,5 +973,16 @@ mod tests {
         // Off again: guards are inert and nothing is counted.
         let g = enter(Phase::Wait);
         assert_eq!(g.prev, INERT);
+        drop(g);
+        // A live collection (the watermark) keeps a window but no report.
+        start(Config::live(1_000_000_000)).unwrap();
+        frame_end(2); // a new collection restarts this thread's clock
+        count(Counter::Draws, 7);
+        frame_end(3);
+        let w = window_summary().unwrap();
+        assert_eq!(w.frames, 1);
+        assert_eq!(w.count_mean[Counter::Draws as usize], 7.0);
+        assert_eq!(stop(), None);
+        assert!(!enabled());
     }
 }
