@@ -53,32 +53,51 @@ Retail image, `h2 emit --no-build`:
 
 | passes | flag writes removed | made lazy | C size |
 |---|---:|---:|---:|
-| none | 0 of 1,476,706 | 0 | 417.4 MB |
-| `dead-flags` | 371,560 (25.2%) | 0 | 373.1 MB |
-| `lazy-flags` | 0 | 1,058,370 (71.7%) | 538.3 MB |
-| all | 336,041 (22.8%) | 1,058,370 | 505.2 MB |
+| none | 0 of 1,476,772 | 0 | 417.4 MB |
+| `dead-flags` | 371,608 (25.2%) | 0 | 373.1 MB |
+| `lazy-flags` | 0 | 1,045,207 (70.8%) | 538.9 MB |
+| all | 336,097 (22.8%) | 1,045,207 | 504.5 MB |
 
-Clang at `-O1` on every 25th shard (40 files, CPU seconds, on a loaded
-machine): none 46.4 s and 8.49 MB of objects; all 43.4 s and 8.86 MB
-(+4.4%: the exit-path settles and each handler's `h2lz_` switch). The C is
-larger but cheaper to compile, because the flag code that is left is
-mostly on cold paths.
+Full `h2 build` (clang `-O1`, arm64, every object compiled, on a shared
+machine): none 214.2 MB of objects, a 128.5 MB dylib, 1229 s of clang CPU;
+all 223.5 MB (+4.3%: the exit-path settles and each handler's `h2lz_`
+switch), 138.8 MB, 1336 s (+9%, within the machine's noise).
 
-Hot loops (`opt_bench`, `--release`, ns per iteration, thread CPU time,
+Hot loops, ns per iteration (`opt_bench`, `--release`, thread CPU time,
 best of 61):
 
 | loop | none | `dead-flags` | `lazy-flags` | all |
 |---|---:|---:|---:|---:|
-| alu | 2.95 | 3.03 | 2.08 (1.42x) | 2.07 (1.42x) |
-| sum | 11.28 | 11.39 | 10.94 (1.03x) | 11.02 (1.02x) |
-| copy | 17.58 | 17.74 | 17.02 (1.03x) | 16.99 (1.04x) |
-| strcmp | 13.43 | 12.60 | 12.19 (1.10x) | 12.16 (1.10x) |
+| alu | 2.78 | 2.78 | 1.97 (1.41x) | 1.96 (1.41x) |
+| sum | 11.58 | 11.57 | 11.30 (1.02x) | 11.26 (1.03x) |
+| copy | 17.91 | 17.95 | 17.48 (1.02x) | 17.42 (1.03x) |
+| strcmp | 13.90 | 13.35 | 13.37 (1.04x) | 12.82 (1.08x) |
+
+`h2 bench --only hot-loop` (crates/perf, the real runtime): `alu` 2.97 to
+1.04 ns per trip (2.85x); `memory` and `call` unchanged (their minimums,
+111-116 and 175-180 ns, are the accessor calls and the runner's round trip).
+
+The main menu idle (docs/BOOT.md, presents 440-560, the same 25,271 slices
+either way), second runs: none 1.86 fps, 501 ms median frame, 139 s user
+CPU; all 2.44 fps, 376 ms, 129 s. First runs, under heavier load: none
+0.96 fps (153 s), all 1.95 fps (138 s). Wall-clock frame rate moves with
+the machine's load more than with the passes; user CPU is 7-10% lower with
+them. The menu's frame time is mostly not in flag arithmetic.
 
 The memory loops are dominated by the calls to the memory accessors, which
 no IR pass removes.
 
 `dead-flags` does not make the hot loops faster at `-O1`: clang already
 deletes flag updates no exit can see. What it removes is the C clang would
-have parsed and optimised away, so its gain is size and compile time.
-Flags observed only by a possible fault or a poll were the bulk of what it
-left; `lazy-flags` moves those to the exit path.
+have parsed and optimised away, so its gain is size. Flags observed only by
+a possible fault or a poll were the bulk of what it left; `lazy-flags`
+moves those to the exit path.
+
+Two things decide whether `lazy-flags` pays: where paths meet with
+different formulas pending (a loop header reached from before the loop and
+from its back edge), the C settles in place with a `switch` on `lzk` over
+the few formulas that can be pending rather than calling `h2lz_`; and an
+instruction whose only lazy candidates are CF/OF (a rotate, `bt`) stays
+eager, because deferring a bit the instruction computes anyway only forces
+the next lazy instruction to settle the flags it leaves pending. Without
+those two, the perf crate's `alu` loop was 1.6x *slower*.
