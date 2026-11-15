@@ -492,7 +492,7 @@ fn an_embedded_server_falls_back_to_memory() {
         "postgres://127.0.0.1:1/h2live",
         "127.0.0.1:0".parse().unwrap(),
         &dir,
-        None,
+        Default::default(),
     )
     .unwrap();
     assert_eq!(server.store, "memory");
@@ -600,4 +600,100 @@ async fn postgres_games() {
         h.get(&format!("/v1/accounts/{tag}")).await.json()["recent_games"][0]["game_id"],
         id.as_str()
     );
+}
+
+fn http_get(addr: &str, path: &str) -> String {
+    use std::io::{Read, Write};
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    write!(s, "GET {path} HTTP/1.0\r\nHost: x\r\n\r\n").unwrap();
+    let mut reply = String::new();
+    s.read_to_string(&mut reply).unwrap();
+    reply
+}
+
+/// Game art: served from its directory to this machine, refused (as a 404,
+/// so the web app falls back) to anyone else unless shared, and a 404 when
+/// there is none.
+#[tokio::test]
+async fn game_art_is_loopback_only_unless_shared() {
+    use axum::extract::ConnectInfo;
+    use live_server::art::GameArt;
+    use live_server::http::Site;
+    use tower::ServiceExt;
+
+    let art = temp_dir();
+    std::fs::create_dir_all(art.join("rank")).unwrap();
+    std::fs::write(art.join("manifest.json"), r#"{"version":1}"#).unwrap();
+    std::fs::write(art.join("rank/1.png"), b"png").unwrap();
+    let h = harness().await;
+    let get = |share: bool, peer: Option<&str>, path: &str| {
+        let site = Site {
+            web: None,
+            game_art: GameArt::found(&art, share),
+        };
+        let app = http::router_with_site(h.live.clone(), &site);
+        let mut req = axum::http::Request::get(path).body(Body::empty()).unwrap();
+        if let Some(p) = peer {
+            req.extensions_mut()
+                .insert(ConnectInfo(p.parse::<std::net::SocketAddr>().unwrap()));
+        }
+        async move { app.oneshot(req).await.unwrap().status() }
+    };
+    assert_eq!(
+        get(false, Some("127.0.0.1:9"), "/art/game/manifest.json").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(false, Some("127.0.0.1:9"), "/art/game/rank/1.png").await,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(false, Some("127.0.0.1:9"), "/art/game/rank/2.png").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(false, Some("10.0.0.7:9"), "/art/game/manifest.json").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(false, None, "/art/game/manifest.json").await,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        get(true, Some("10.0.0.7:9"), "/art/game/rank/1.png").await,
+        StatusCode::OK
+    );
+    // No art at all.
+    let r = h.get("/art/game/manifest.json").await;
+    assert_eq!(
+        (r.status, r.error().as_str()),
+        (StatusCode::NOT_FOUND, "not_found")
+    );
+
+    // A real socket carries the peer address through.
+    let data = temp_dir();
+    let site = Site {
+        web: None,
+        game_art: GameArt::found(&art, false),
+    };
+    let server = tokio::task::spawn_blocking(move || {
+        live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &data,
+            site,
+        )
+        .unwrap()
+    })
+    .await
+    .unwrap();
+    let addr = server.url.strip_prefix("http://").unwrap().to_string();
+    let reply = tokio::task::spawn_blocking(move || http_get(&addr, "/art/game/manifest.json"))
+        .await
+        .unwrap();
+    assert!(reply.ends_with(r#"{"version":1}"#), "{reply}");
+    tokio::task::spawn_blocking(move || drop(server))
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(&art).unwrap();
 }

@@ -176,12 +176,40 @@ fn api_router(live: Arc<Live>) -> Router {
         .with_state(live)
 }
 
+/// What is served beside the API.
+#[derive(Debug, Clone, Default)]
+pub struct Site {
+    /// The built web app, at `/`.
+    pub web: Option<std::path::PathBuf>,
+    /// Art from the owner's disc, at `/art/game/` ([`crate::art`]).
+    pub game_art: Option<crate::art::GameArt>,
+}
+
 /// [`router`] plus the built web app at `/`: files from `dir`, and
 /// `index.html` for any other path (the app routes in the browser). API
 /// paths keep their JSON 404s.
 pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router {
-    let api = api_router(live);
-    let Some(dir) = dir else {
+    router_with_site(
+        live,
+        &Site {
+            web: dir.map(std::path::Path::to_path_buf),
+            game_art: None,
+        },
+    )
+}
+
+/// The API plus everything in `site`. `/art/game/*` answers a JSON 404
+/// when there is no game art.
+pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
+    let mut api = api_router(live);
+    api = match &site.game_art {
+        Some(art) => api.merge(crate::art::routes(art)),
+        None => api.route(
+            &format!("{}/{{*rest}}", crate::art::PREFIX),
+            get(|| async { not_found("no game art on this server") }),
+        ),
+    };
+    let Some(dir) = &site.web else {
         return api.fallback(|| async { not_found("no such endpoint") });
     };
     let index = tower_http::services::ServeFile::new(dir.join("index.html"));

@@ -195,6 +195,34 @@ when the game does.
 Planned, not built: `h2 live friend add <gamertag> <gamertag>` (with
 friends).
 
+#### Game art
+
+`h2 live assets extract [--disc PATH] [--out DIR]` decodes the stats
+site's art from your own disc into PNGs and a `manifest.json`. The default
+`--out` is `game-art/` in the server directory. It covers emblem layers, rank
+icons, Live icons, game-type icons, weapon silhouettes and every multiplayer
+map's preview. Keys and emblem colouring are in
+[live-api.md](live-api.md#optional-game-art).
+
+- **How the art is found.** No asset is named in the code (CONTRIBUTING.md,
+  [bitmaps.md](bitmaps.md)). Each category is the bitmap tag in the main menu
+  or shared map with a known image count and image shape. Where several
+  sizes of the same set exist, the largest wins. A map preview is the one
+  single-image UI picture a multiplayer map has that the shared map does
+  not.
+- **Output.** It is deterministic for a disc. Anything not found or not
+  decoded is listed under `skipped`. The manifest's `source` is a SHA-256
+  over the extractor version and every map file's path, size, sector and
+  first 2 KiB; this is the cache key.
+- **Serving.** `h2 live serve` serves the art at `/art/game/` from
+  `--game-art DIR`, or from `game-art/` in `--data` when it is there. By
+  default it goes only to clients on the same machine, since it is your copy
+  of the game's files. `--share-game-art` serves it to everyone and says at
+  startup that this redistributes them.
+- **`h2 play --live`** extracts the art once per disc (on first run, or when
+  the cache key changes) and serves it from the embedded server. Without
+  art, `/art/game/manifest.json` is a 404 and the web app uses its own art.
+
 #### For agents: `h2 live q`
 
 Read-only queries. Output is JSON when stdout is not a terminal (or with

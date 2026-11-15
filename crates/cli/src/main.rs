@@ -16,6 +16,7 @@ mod extract_shaders;
 mod fonts;
 mod lighting;
 mod live_accounts;
+mod live_art;
 mod live_cmd;
 mod live_query;
 mod maps;
@@ -119,6 +120,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   live account list [--server URL]
   live motd set <line>... [--header TEXT] | --file PATH
   live invite create [--days N]
+  live assets extract [--disc PATH] [--out DIR]
+                          decode the stats site's art from your disc
   live q <what> [--json|--jsonl]
                           query it: accounts, account, presence, games, game,
                           events [--follow], keys, verify, health
