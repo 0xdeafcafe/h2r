@@ -88,7 +88,7 @@ Status "done" means the crate exists on master and does what its row says;
 | `analyze` | Disassembly (iced-x86), function discovery, coverage report | done |
 | `symbols` | Identifies statically linked XDK library functions by OOVPA signature ([xdk-libraries.md](xdk-libraries.md)) | done |
 | `map`     | Reader for retail cache v8 `.map` files, with no game data ([map-format.md](map-format.md)) | done |
-| `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](sound.md)) and localized text ([localization.md](localization.md)) | done |
+| `tags`    | Reviewed tag definitions, fixed-record codecs and owned domain types, including sound ([sound.md](sound.md)), localized text ([localization.md](localization.md)) and the effects family ([effects.md](effects.md)) | done |
 | `gfx`     | Direct3D 8 replacement on wgpu, plus the texture decoder ([graphics.md](graphics.md)) | done, foundation only |
 | `assets`  | Glue from decoded tags to `gfx`; bitmap tags to RGBA/PNG ([bitmaps.md](bitmaps.md)) | done |
 | `font`    | Halo 2 packed bitmap font parser and CPU text rasteriser ([fonts.md](fonts.md)) | done |
@@ -103,7 +103,7 @@ Status "done" means the crate exists on master and does what its row says;
 | `vfs`     | Xbox object-manager storage, independent of guest memory ([storage.md](storage.md)) | done |
 | `oracle`  | Independent synthetic x86-32 oracle for checking the lifter ([oracle.md](oracle.md)) | done |
 | `runtime` | Guest memory, CPU state, dispatch/override table; nothing runs yet | in progress |
-| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings`, `font`, `movies`, `hs` and more | done |
+| `cli`     | `h2` binary: `info`, `ls`, `extract`, `analyze`, `symbols`, `bitmap`, `sound`, `strings`, `font`, `movies`, `hs`, `effect` and more | done |
 
 Planned crates, not on master yet and in progress elsewhere:
 

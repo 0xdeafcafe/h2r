@@ -1,0 +1,449 @@
+# Halo 2 effects family (`effe`, `prt3`, `pmov`, `jpt!`, `cont`, `deca`, `ligh`, `lens`)
+
+Implementation: `crates/tags/src/effects/` (hand-written fixed codecs, not in
+`schema.rs`, like [sound.md](sound.md)). Tool: `h2 effect` in
+`crates/cli/src/effects.rs`. Evidence labels as in [map-format.md](map-format.md):
+**V** verified on the owner's retail disc, **E** corroborated by the engine's own
+code (XBE disassembly, addresses in [engine-map.md](engine-map.md)), **S** public-source
+description only. No map bytes, tag names, tag dumps or extracted assets are
+committed; tests are synthetic.
+
+## Provenance rules used here
+
+Layouts are derived from the disc and from the engine's own code. Scalar sizes,
+block strides, and tag-reference positions were established by (1) the engine
+instructions that read each field (recorded as addresses, never as listings),
+and (2) structural checks over every instance on the disc: pointers resolve,
+strides tile the data, references hit the expected classes. Community
+documentation was used only as a vocabulary hint for names; nothing is
+transcribed. A field with no engine or disc evidence for its meaning stays
+`unknown_<offset>` (or an opaque span) and round-trips as bytes. Field meaning
+labelled **S** is a name only.
+
+## Shared conventions
+
+(See `crates/tags/src/effects/mem.rs`.)
+
+- **Addressing.** Every type is decoded from the virtual address of its root
+  record (`EffectTag::decode_at`), through the whole ordinary metadata space of
+  the map, not from the tag's recorded payload. **V:** 590 `effe`, 8 `pmov`
+  and some `jpt!` tags record size 0 (a tag sharing another tag's data keeps the
+  same address), and 531 `effe` payloads hold only the 0x30-byte root while every
+  child block points elsewhere in the map. Decoding from the payload would fail
+  on these.
+- **Aliasing.** The cache builder de-duplicates identical child blocks and
+  function blobs, so a block pointer may land in another tag's memory, and two
+  properties may share one blob. Each followed block is charged to a
+  [`Budget`] (default 4 MiB and 65,536 elements per tag, counted with
+  multiplicity), so hostile counts or aliasing cannot expand without bound.
+  A block with count 0 never has its address read.
+- **Tag references** are `{class, datum}` (8 bytes, class stored as its
+  little-endian FourCC). A null reference has datum `0xffffffff` and a class that
+  is whatever the author left (`lsnd`, or all `0xff` for emitters with no
+  movement); both are preserved.
+- **Properties** (`Property`, 16 bytes): `i16 input`, `i16 range_input`,
+  `u16 output_modifier` (1 add, 2 multiply), `i16 modifier_input`, then a data
+  reference `{size, address}` to the function bytes. **E:** `0x00246cd0` reads
+  exactly these fields. **V:** every property of every `effe` emitter decodes
+  and its function size matches its type byte.
+- **Layout tiling check (V).** Cache blocks are packed depth-first: an element's
+  array, then each of its child blocks in field order, element by element.
+  Where a tag's payload is not aliased this is exact, so a layout hypothesis can
+  be checked by walking it and requiring the visited blocks to tile the payload
+  with no gap, overlap or tail (identical shared blobs counted once). All
+  14,195 `effe` instances with a recorded payload tile exactly under the layout
+  below; that is the evidence for every stride in the `effe` section.
+
+## Function (curve) data
+
+Implementation: `effects/function.rs`. Evidence: **E** engine evaluator
+(`0x0013b390`, helpers `0x0013bec0`, `0x0017c900`, `0x0017ca10`, property
+wrapper `0x00246cd0`; table in [engine-map.md](engine-map.md)), **V** disc,
+**S** vocabulary only. A *property* (16 bytes: `i16 input`, `i16 range input`,
+`u16 modifier mode`, `i16 modifier input`, data reference) points at a
+*function blob*.
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0` | type byte (0..=10 evaluated, see below) | E; V: only 0,1,2,3,4,5,7,10 occur |
+| `+1` | flags: bit 0 ranged (use set 1, blend by range input); any of `0xf0` = output used raw, not mapped onto the header range | E; V: bits `0x01`, `0x10`, `0x20` observed |
+| `+2`, `+3` | wave / shape selector for set 0 and set 1 (types 2 and 3 only) | E; V |
+| `+4`, `+8` | output range (min, max), mapped when `flags & 0xf0 == 0` | E (`0x00246cd0`); V |
+| `+0xc..+0x14` | not read by the engine (kept as `unknown_0c`; observed zero, `ffffffff`, or stale bytes) | E |
+| `+0x14` | two sets of `T[type]` words each | E, V |
+
+Blob length is exactly `0x14 + 8 * T[type]` words-per-set: 20, 28, 36, 52, 68,
+180, 116 (types 7 and 10), 44 (type 9, engine-derived only, never on disc). **V:**
+all 3,600 distinct blobs reachable from `effe` emitters on the disc (399,177
+property uses over the 30 maps) have exactly this length and parse and round-trip
+through `Function::parse`/`to_bytes`; types 6, 8, 9 and above 10 do not occur.
+
+| Type (names **S**) | Set layout (word index into payload, per set) | Evaluation (**E**) |
+|---|---|---|
+| 0 identity | none | `x` |
+| 1 constant | 1 unused word | 0, or `r` when ranged |
+| 2 transition | `a, b` | `a + (b - a) * shape[sub](x)` |
+| 3 periodic | `freq, phase, lo, hi` | `lo + (hi - lo) * wave[sub](freq * x + phase)` |
+| 4 linear | words 0..3 unread; `a, b` at words 4, 5; set 1 `a, b` at words 10, 11 | `a * x + b` |
+| 5 linear key | words 9..11 key positions, 13..15 inverse spans, 16 base, 17..19 deltas (set 1 is 20 words later; words 0..8, 12 unread) | `base + sum(delta_k * clamp01((x - key_k) * span_k))` |
+| 6 / 8 | no evaluator | 0 |
+| 7 spline | words 0..7 unread; words 8..11 = cubic `c3, c2, c1, c0` (set 1 at word 20) | `c3 t^3 + c2 t^2 + c1 t + c0`, `t = x` |
+| 9 exponent | `lo, hi, power` | `lo + (hi - lo) * x^power`, 1 if `|power| < 1e-4` (or power < 0 and `|x| < 1e-4`) |
+| 10 spline2 | as 7, with words 0..7 = four points `(x, y)` (set 1 at words 12..19) | cubic with `t = clamp(x^(|p0p1| / |p2p3|))` |
+
+Evaluation order: the function value (clamped to `[0, 1]`) for the property's
+input and range input; if `flags & 0xf0 == 0` clamp and `lo + (hi - lo) * v`;
+then the modifier (mode 1 add, mode 2 multiply, input `modifier input`, ignored
+when negative). `Property::evaluate` does the last two steps. An input index
+outside the supplied table reads 0.
+
+**Tables.** Waves (12 slots) and shapes (6 slots) are 1024-byte engine tables.
+All shapes (linear, `sqrt`, `x^0.25`, `x^2`, `x^4`, cosine ease; names **S**) and waves
+1 (zero), 2 (cosine), 4 (triangle) and 6 (sawtooth) are generated procedurally and
+match the engine bytes exactly (**V**, all 1024 entries each; only the f32 phase
+step of the triangle/sawtooth matters). Waves 3, 5, 7, 8, 9, 10, 11
+(variable-period and noise-like ones) are baked data that cannot be derived:
+`Tables::with_engine_slab` takes the 18,432 bytes at `0x00468d48` read from the
+user's own executable; without them such a wave evaluates as 0. Of the 638 periodic uses in effect emitters, 29 use the procedural
+cosine and 609 use the engine-only noise waves 8, 9 and 10, so consumers that
+need them must supply the slab at run time.
+
+**Known approximations / open items.** (1) The spline2 remap uses the engine's
+exponent-halving square-root trick exactly but an exact reciprocal square root
+instead of hardware `rsqrtss` (relative error up to 3.7e-4 on the exponent).
+(2) x87 `fistp` rounding is assumed nearest-even (default control word); the
+engine's shape lookup relies on it and subtracts 0.1 before rounding (a faithful
+quirk). (3) `pow` is computed in f64 and rounded; the engine uses the CRT in
+extended precision. (4) Types 6 and 8 are accepted with the sizes the engine's
+table implies (276 and 52 bytes) but never occur on the disc. (5) Only the effect
+emitter properties were scanned for blobs; `prt3`/`pmov` properties reuse the same
+record and evaluator but are validated by their own sections. (6) Names `lo`/`hi`
+at header `+4/+8` are the engine's use; the semantics of flag bits `0x10` and
+`0x20` beyond "raw output" are unknown.
+
+## effe (effect)
+
+Source for engine claims: addresses in [engine-map.md](engine-map.md), "Effects:
+effect" subsection. Counts below are over all 30 maps (14,785 tags, shared
+tags counted per map); every one decodes, every non-null reference resolves to
+a tag of the stated class (114,750 references, 27,293 null).
+
+### Root (0x30)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | u32 flags (`flags`; bits up to 0x1a observed) | Meaning unknown. |
+| `+0x04` | i16 `loop_start_event` (-1, 0 or 1) | **V** range; name **S**. |
+| `+0x06` | u16 `unknown_06` (0..15) | Not an event index (can exceed the event count). |
+| `+0x08` | f32 `unknown_08` | Zero on all but 20 tags. |
+| `+0x0c` | block of `locations`, stride 4 | **V**; **E**: parts and particle systems index it (`0x0017a380` checks the part location against the count at `+0xc`). Element: a string ID (marker name). |
+| `+0x14` | block of `events`, stride 0x38 | **E** (`imul 0x38` in `0x0017a380`, `0x00178eb0`); **V** tiling. |
+| `+0x1c` | tag reference `looping_sound` (`lsnd`, null on 13,870) | **V** class. |
+| `+0x24` | i16 `unknown_24` (-1, 0, 1, 2, 4) | |
+| `+0x26` | u16 always 0 | |
+| `+0x28`, `+0x2c` | f32, f32 (0,0 or 10.0, 50.0) | Meaning unknown. |
+
+### Event (0x38)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | u32, always 0 | |
+| `+0x04` | f32 `skip_fraction` | name **S**. |
+| `+0x08`, `+0x0c` | f32 pair `delay_bounds` | name **S**. |
+| `+0x10`, `+0x14` | f32 pair `duration_bounds` (1/30 s on 15,531 of 20,330) | name **S**. |
+| `+0x18` | block of `parts`, stride 0x38 | **E**: the event processor `0x0017a380` reads count at event `+0x18` and the array at `+0x1c`; **V** tiling. |
+| `+0x20` | block of `beams`, stride 0x3c | **V** tiling only (3 tags use it); no engine consumer traced. |
+| `+0x28` | block of `accelerations`, stride 0x14 | **V** tiling (1,253 elements); consumer not traced. |
+| `+0x30` | block of `particle_systems`, stride 0x38 | **E**: `0x00178eb0` reads the array at event `+0x34`; **V**. |
+
+### Part (0x38)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | u16 `disposition` (always 0 on the disc) | **E**: a four-way switch (jump table at `0x0017a888`) decides creation. |
+| `+0x02` | u16 `create_in` (0, 1) | **E**: compared with the effect's underwater flag (1 skips the part underwater, 2 skips it above water). |
+| `+0x04` | i16 `location` | **E**: negative or `>=` the location count skips the part. **V**: always in range. |
+| `+0x06` | u16 `flags` | **E**: bit 0 selects a world axis as direction, bit 1 randomises an offset between the two floats at `+0x28`, bits 2 and 4 alter orientation/spawn handling. |
+| `+0x08` | FourCC `type_group` | **E**: `0x0017a8a0` dispatches on it. **V**: `deca` 7,451, `snd!` 2,842, `obje` 1,160, `ligh` 834, `lens` 379, `jpt!` 156, `MGS2` 23, `tdtl` 6. |
+| `+0x0c` | tag reference `reference` | **E**: datum at `+0x10` is tested for null. **V**: equals `type_group` except `obje`, where it names a concrete object class. |
+| `+0x14`, `+0x18` | f32 pair `velocity_bounds` | name **S**. |
+| `+0x1c` | f32 `velocity_cone_angle` | name **S**. |
+| `+0x20`, `+0x24` | f32 pair `angular_velocity_bounds` | name **S**. |
+| `+0x28`, `+0x2c` | f32 pair `radius_modifier_bounds` | **E**: passed to the two-bound random helper at `0x000259d0`. |
+| `+0x30` | u32 `a_scalars` (0 or 0x20) | **E**: bit 5 scales by the effect's first scalar. |
+| `+0x34` | u32 `b_scalars` (0 on the disc) | **E**: bit 5 scales by the second scalar. |
+
+### Beam (0x3c), acceleration (0x14)
+
+A beam is a `shad` tag reference at `+0`, a u32 at `+8`, and six bare data
+references (function blobs) at `+0x0c`..`+0x3c`; it has no per-function input
+header, unlike a property. **V**: stride 0x3c from the first function blob
+following exactly one element. Acceleration: u16 `create_in` `+0`, u16
+`disposition` `+2`, i16 `location` `+4`, `+6` zero, f32 `acceleration` `+8`, f32
+`inner_cone_angle` `+0xc`, f32 `outer_cone_angle` `+0x10` (0, 2.0, 180.0 are
+typical). Field names **S**; stride and tiling **V**.
+
+### Particle system (0x38)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | tag reference `particle` | **E**: the engine (`0x00173cb0`) accepts only `prt3` and `PRTM`. **V**: `prt3` 41,973, `PRTM` 782. |
+| `+0x08` | i32 `location` | **E**: read as a 32-bit value; -1 means none. |
+| `+0x0c`, `+0x0e`, `+0x10`, `+0x12` | u16 each (`unknown_0c/0e/10/12`) | **E**: `+0xc != 0` is passed as a flag, `+0xe` to a compatibility check, `+0x12` to the location lookup. Values 0..3. |
+| `+0x14` | i16 `unknown_14` (-10..6) | |
+| `+0x16` | u16, always 0 | |
+| `+0x18..+0x24` | three f32 `fade` | **V**: on every instance `(a, b, 1/b)`. |
+| `+0x24..+0x30` | three f32 `lod` | **V**: on every instance `(distance, range, 1/range)`. |
+| `+0x30` | block of `emitters`, stride 0xb8 | **V** tiling. |
+
+### Emitter (0xb8)
+
+`+0x00` `pmov` tag reference (null on some). Nine `Property` records at `+0x08,
++0x18, +0x28, +0x38, +0x48, +0x58, +0x68, +0x7c, +0x8c` (**V**: all decode on
+all 44,353 emitters). At `+0x78` a u32 `emission_shape` (0, 2, 3, 4, 5 on the
+disc; **E**: the emitter initialiser `0x00249170` switches on it through a jump
+table at `0x00249a74`). The property at `+0x18` (`properties[1]`) is the
+particle lifespan (**E**: the engine takes `1 / max(value, minimum)`), and the
+properties at `+0x7c` and `+0x8c` (`properties[7]`, `[8]`) are the shape and
+velocity inputs (**E**, same function). The remaining slots are unnamed. Then
+five f32 (`+0x9c..+0xb0`, `unknown_9c`) and two u32 (`+0xb0`, `+0xb4`).
+`prt3` tags embed the same particle-system and emitter records (`prt3` block at
+`+0x84`), decoded with the same types.
+
+### Open items (effe)
+
+- Root `flags`, `unknown_06/24/28/2c`; event `unknown_00`.
+- `beams` and `accelerations` have no traced consumer; the names are **S**.
+- Particle-system `unknown_0c..16` and the emitter scalars; the roles of
+  properties 0 and 2..6.
+- `disposition` has only the value 0 on the disc; its other cases are known from
+  the engine switch, not observed.
+- The part's `create_in` value 2 and the `type_group` `tdtl`/`MGS2` creation paths.
+
+## prt3 (particle) and pmov (particle movement)
+
+Code: `effects/particle.rs` (`Particle`), `effects/movement.rs`
+(`ParticleMovement`). Both implement `EffectTag`; decoding starts at the tag's
+root address (recorded payload size is 0 for tags that share another tag's
+data), and every child block is read through the map's metadata space, so
+aliased blocks that live in another tag's bytes work. Validated over all 30
+maps: 4,988 `prt3` and 1,791 `pmov` instances decode with no failure, and every
+non-null reference resolves to the expected class (below).
+
+### Property (shared, 16 bytes)
+
+`i16 input` (+0), `i16 range_input` (+2), `u16 output_modifier` (+4: 1 add,
+2 multiply), `i16 modifier_input` (+6), data reference (+8 size, +0xc address)
+holding function bytes. **E**: the property evaluator (`0x00246cd0`) reads
+exactly these fields: it evaluates the function (`0x0013b390`) at
+`inputs[input]`, `inputs[range_input]`, then applies the modifier with
+`inputs[modifier_input]`. Function bytes are decoded in "Function data".
+The input table those indices select is built by the particle input provider
+(`0x00248df0`, 17 selectors, a jump table): particle age, per-particle random
+values, system/effect scalars and the camera-relative value among them. The
+table is not decoded further here.
+
+### prt3 root (0xbc bytes)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | `flags: u16` (observed 0, 4, 6, 7, 8, 0xe, 0x10, 0x17, 0x18, 0xc0 ...) | **V** values only; meaning unknown |
+| `+0x02` | `unknown_02: u16` (0 or 1) | V values only |
+| `+0x04` | `unknown_04: u32` (0, 1, 2) | V values only |
+| `+0x08` | `unknown_08: [u16; 2]` (0..=4, 0..=8) | V values only |
+| `+0x0c` | `shader_template: TagRef` (class `stem`) | **V**: 4,988/4,988 resolve to `stem` |
+| `+0x14` | parameters block, stride `0x28` | **V**: 5,415 elements tile the data; stride from pointer spacing |
+| `+0x1c` | five 16-byte properties (`+0x1c, +0x2c, +0x3c, +0x4c, +0x5c`) | **V** stride/refs; **E** field layout (above) |
+| `+0x6c` | `ref_6c: TagRef` (observed `foot`, `snd!`, `effe`, or null) | V classes |
+| `+0x74` | `ref_74: TagRef` (observed `snd!`, `effe`, or null) | V classes |
+| `+0x7c` | block of 4-byte records (0 or 1 on the disc) | V stride (adjacent allocation); content unknown |
+| `+0x84` | nested particle systems, stride `0x38` (85 instances) | **V**: each starts with a `prt3` reference; 56 have no emitters, the rest `0xb8`-byte emitters starting with a `pmov` reference |
+| `+0x8c` | embedded shader post-process, stride `0x7c`, count 1 | **V**: stride from the first nested block pointer, its own nested blocks are not followed |
+| `+0x94` | `unknown_94: u32` (always 0) | V |
+| `+0x98` | `flags_98: u32` (bits 1, 4, 8, 0x800 seen) | V values only |
+| `+0x9c` | `quad: [f32; 4]` | V values: (-0.5,-0.5,0.5,0.5) in 2,348 of 4,981 distinct, (-1,-1,2,2) in 1,789 |
+| `+0xac` | `uv: [f32; 4]` | V values: (0,1,0,1) in 3,500+, otherwise sub-ranges within 0..1 |
+
+Shader parameter (0x28): `+0` string ID name (**V**: nonzero length and index
+resolve), `+4` u32 (0/1), `+8` `bitm` reference (class **V** on all 4,970
+non-null), `+0x10` f32 value, `+0x14` three f32 (colour-like), `+0x20` an
+8-byte block descriptor that is empty everywhere on the disc (kept raw).
+
+Property slots: slot 0's functions carry flag byte `0x10`. **E**: the
+evaluator at `0x00246cd0` only shows that a nonzero high nibble bypasses the
+scalar range mapping (`0x00246cfc` jumps to the modifier step at
+`0x00246d33`). That slot 0 is therefore a colour is a **hypothesis**, not
+established: no consumer of the prt3 root was found to confirm it. Which
+scalar is which (size, rotation, alpha, frame, ...) is likewise not
+established: no engine reader of the prt3 root was located, so the slots are
+`properties[0..5]` and unnamed. Slot 3 is the one that usually uses a nonzero
+input (11) with an add modifier.
+
+Names that exist only as **S** (skip/delay/duration, velocity and cone
+bounds, beam, acceleration) are vocabulary, not findings: they label fields
+whose layout is **V**/**E** but whose meaning is unconfirmed.
+
+### pmov root (0x14 bytes)
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `+0x00` | `template: TagRef` (class `pmov`, null on 30 instances) | **V** 1,761/1,761 non-null resolve to `pmov` |
+| `+0x08` | `flags: u32` (0, 1, 3, 7, 0xf, 0x1f, 0x87, 0xc3 seen) | V values only |
+| `+0x0c` | movements block, stride `0x14` | **V**: 1,652 packed directly after the root, 26 aliased, none out of range |
+
+Movement (0x14): `+0` kind u32 (0, 1, 2, 3 seen; 1,677 / 469 / 30 / 33),
+`+4` parameters block (stride `0x14`), `+0xc` u32, `+0x10` u32 (both
+uninterpreted; kind 0 usually `7, 0`, kind 1 `3, 0`, kind 2 `0x1ff, 0`,
+kind 3 `5, 8`). Parameter (0x14): `+0` id u32, `+4` property. Observed id sets:
+kind 0 `{0,1,2}` (and `{0,1,1,2}` once per 30 instances of the default physics
+tag), kind 1 `{0,1}`, kind 2 `{0..8}`, kind 3 `{0,1,2}`. **E** for the
+property side only; the meaning of kinds and ids (gravity, drag, collision,
+turbulence, ...) is not decoded. A movement-stage executor (`0x00247470`
+region) was not read far enough to name them.
+
+### Simulating and drawing a particle: what is and is not known
+
+Known: the particle instance record is 0x40 bytes (**E**, array
+`particles` at `[0x51EC84]`: next-index at `+4`, age fraction `+8`,
+1/lifespan `+0xc`, position `+0x1c`, velocity `+0x28`), a particle's age
+advances by `rate * dt` and it dies at age >= 1 (**E** `0x00247140`), and each
+property is evaluated per frame from the input table via the evaluator. The
+emitter record (in `effe`, stride `0xb8`) supplies lifespan (property at
+emitter `+0x18`, the engine takes `1 / max(value, minimum)`), an emission
+shape selector at `+0x78` (eight shapes, jump table `0x00249a74`) and the
+shape/velocity properties at `+0x7c` and `+0x8c` (**E** `0x00249170`).
+Not known: which prt3 property slot drives which attribute, the meaning of
+`flags`, `flags_98`, `quad` and `uv` (presumably sprite extent and texture
+window), and the movement kinds. A drawable sprite quad (bitmap from the first
+shader parameter with a bitmap, size/colour/alpha from the properties) therefore
+cannot be asserted yet; there is no `step` helper for that reason.
+
+### Open items
+
+- Roles of the five prt3 property slots and the root flag fields.
+- Contents of the `+0x7c` 4-byte records (8 distinct values in 50 instances).
+- The embedded post-process record's nested blocks (bitmaps referenced there
+  are not in `references()`).
+- Movement kinds/ids; movement `+0xc`/`+0x10`.
+- The nested system/emitter records are kept raw here; the `effe` decoder owns
+  their field decoding (the same 0x38/0xb8 records).
+
+
+## jpt!, cont, deca, ligh, lens
+
+Common to these five: each is decoded from the root record's virtual address
+(`EffectTag::decode_at`); the recorded tag size is not used (it is 0 for tags
+that share another tag's data). Child blocks are read through the map's whole
+ordinary metadata space and charged to a budget, because the cache aliases
+identical blocks and function bytes into other tags' memory. Every record also
+keeps its raw bytes, so unnamed spans round-trip. Reference classes were
+checked over all 30 maps: 1,571 `deca`, 1,596 `ligh`, 1,286 `lens`, 562 `cont`
+and 2,722 `jpt!` records decode, and every non-null reference resolves to a tag
+of the expected class (counts below).
+
+Function data seen in embedded blocks has first byte (type) and length
+`0:20, 1:28, 2:36, 3:52, 4:68, 5:180, 7:116, 9:44` (**V**, all lens/jpt!/ligh
+instances); bytes are left to [function.rs](#function-curve-data).
+
+### deca (decal), root 0xac, no blocks
+
+| Offset | Field | Evidence |
+|---|---|---|
+| +0 u16 | `flags` (0, 1, 8, 0x100, 0x108, 0x148, 0x168 ...) | V values; meaning unreviewed |
+| +2 u16 | `kind` 0..=3 | V range |
+| +4 u16 | `layer` 1..=5 | V range |
+| +6 u16 | `max_overlapping` (8 on 1,419 of 1,570) | E: placement code (`0x0017ef10`) skips the decal when zero |
+| +8 tag ref | `next_decal`, class `deca` (null on 1,172 of 1,571) | V |
+| +0x10/+0x14 f32 | `radius` pair | E: `+0x14` scales the placement test (`0x0017e670`) |
+| +0x18 f32 | `unknown_18` (0.75 on 1,543) | E: read as a scale in `0x0017ef10` |
+| +0x1c..+0x34 | two RGB triples | S |
+| +0x34..+0x44 | four f32 (180/180/20/20 on 773) | unreviewed |
+| +0x88 tag ref | `bitmap`, class `bitm` | V, 1,970 refs resolve across `next_decal` and `bitmap` |
+| other bytes | zero on every instance (+0x44..+0x88, +0x90..+0xa4, +0xa8) except +0xa4 f32 = 16.0 | V |
+
+### ligh (light), root 0xe4, three function blocks
+
+| Offset | Field | Evidence |
+|---|---|---|
+| +0 u32 | `flags` (0xa, 0x80a, 0x900a, 0x100a, 0x40008e ...) | V values only |
+| +0x78 | `bitmap` (`bitm`; null on 1,358 of 1,596) | V |
+| +0x90 | `lens_flare` (`lens`; null on 944) | V |
+| +0x9c | `mgs2` (`MGS2`; null on 1,566): the engine's part switch creates this class at `0x0017a8db` | V |
+| +0xdc | `shader` (`shad`; null on 1,593) | V |
+| +0xc4, +0xcc, +0xd4 | three blocks, stride 8, each element a data reference to function bytes | V (sizes match types, all instances) |
+| remaining scalars | opaque in `raw` | unreviewed |
+
+Blocks are mostly empty: of 1,590 distinct records, 115 use the first block, 32 the second, 1 the third.
+
+### lens (lens flare), root 0x64
+
+| Offset | Field | Evidence |
+|---|---|---|
+| +0/+4 f32 | `angles` radians | V: +8/+0xc equal their cosines on every record (2,570/2,570) |
+| +0x20 | `bitmap` (`bitm`) | V, all 1,286 resolve |
+| +0x40 | `reflections`, stride 0x30 (`flags` u16 +0, `index` u32 +4; rest raw) | V stride (size = 0x64 + n*0x30 + function data) |
+| +0x4c, +0x54, +0x5c | function blocks, stride 8 | V |
+
+### cont (contrail), root 0xf0
+
+| Offset | Field | Evidence |
+|---|---|---|
+| +0 u32 | `flags` (0, 1, 3, 0x40) | V values |
+| +0x30 | `bitmap` (`bitm`) | V |
+| +0x88 | second bitmap slot, datum null on every disc record | V |
+| +0xe8 | `points`, stride 0x40; point +0x10 `physics` (`pphy`) | V: sizes are 0xf0 + n*0x40, n = 2..4; refs resolve (1,510 resolved) |
+
+Engine: arrays "contrail" and "contrail point" are created at `0x0017b7cb`.
+
+### jpt! (damage effect), root 0xc8
+
+| Offset | Field | Evidence |
+|---|---|---|
+| +0xa8 | `sound` (`snd!`); non-null on only 14 of 2,722 records | V |
+| +0x6c | `responses`, stride 0x4c, 0..=2 elements | V |
+| response +0/+2 u16 | `kind` (0, 1, 2), `unknown_02` | V values |
+| response +0x24, +0x30 f32 and +0x28, +0x34 data refs | scalar plus function (sizes 20, 36, 52, 116, 44) | V |
+| response +0x44 data ref | function (20 bytes, 44 once) | V |
+
+Engine: case `jpt!` of the part-creation switch (`0x0017a97f`) calls
+`0x000d6660` then `0x000d6c80`; controller feedback is serviced in `0x00222a70`.
+
+### Open items for these groups
+
+- Scalar meanings (flags, ranges, colours, responses) are unreviewed;
+  decal, light and lens flare need their creation and render code traced
+  (`0x0017e670`/`0x0017ef10` for decals; light and lens render not located).
+- `MGS2` is the class the engine creates; its role is unconfirmed.
+- Reference counts (all 30 maps, shared tags counted per map): deca 1,970 resolved,
+  ligh 923, lens 1,286, cont 1,510, jpt! 14.
+
+## Validation
+
+Command: `h2 effect --all <map|all> [--disc iso]` decodes every tag of the eight
+groups in the map (or in all 30 disc maps), follows every outgoing reference
+(non-null references must resolve to a tag of the stated class, or one derived
+from it in the map's group hierarchy), parses every non-empty function blob and
+evaluates it at four inputs (the output must be finite), prints one row per
+group and exits non-zero on any failure. An empty function blob is an absent
+function: the engine's evaluator returns 0 for it (`0x0013b3aa`).
+
+All 30 disc maps, shared tags counted once per map:
+
+| group | tags | decoded | failed | refs | null refs | unresolved | wrong class | function blobs | bad functions |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| `effe` | 14,785 | 14,785 | 0 | 114,750 | 27,293 | 0 | 0 | 399,207 | 0 |
+| `prt3` | 4,988 | 4,988 | 0 | 20,545 | 9,899 | 0 | 0 | 22,967 | 0 |
+| `pmov` | 1,791 | 1,791 | 0 | 1,791 | 30 | 0 | 0 | 6,373 | 0 |
+| `jpt!` | 2,722 | 2,722 | 0 | 2,722 | 2,708 | 0 | 0 | 12,078 | 0 |
+| `cont` | 562 | 562 | 0 | 2,449 | 939 | 0 | 0 | 0 | 0 |
+| `deca` | 1,571 | 1,571 | 0 | 3,142 | 1,172 | 0 | 0 | 0 | 0 |
+| `ligh` | 1,596 | 1,596 | 0 | 6,384 | 5,461 | 0 | 0 | 148 | 0 |
+| `lens` | 1,286 | 1,286 | 0 | 1,286 | 0 | 0 | 0 | 370 | 0 |
+
+The unique-tag counts (915, 253, 89, 161, 34, 158, 192, 161) are the distinct
+datum/data identities across maps; the `effe` layout also tiles its payload
+exactly for all 14,195 instances with a recorded payload (see "Shared
+conventions"). `cargo test -p tags effects` runs 48 synthetic tests (valid
+decode, empty blocks, aliased pointers, truncated and out-of-bounds blocks,
+over-budget counts, unknown values preserved, per-type function evaluation); none
+needs the disc.

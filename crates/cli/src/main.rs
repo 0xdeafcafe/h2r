@@ -8,6 +8,7 @@ use xiso::Xiso;
 mod anim;
 mod bitmap;
 mod collision;
+mod effects;
 mod fonts;
 mod maps;
 mod movies_cmd;
@@ -37,6 +38,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   movies <iso> --out DIR [--ffmpeg PATH] [--force]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
+  effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family
+                          (option --disc <iso>)
   hs <map> [--script name] [--builtins] [--disc iso]
   hs --all [--disc iso]   verify all disc maps (codec symmetry and node counts)
   ui <map> <screen tag>   print a wgit screen's widget tree (no localized text);
@@ -81,6 +84,9 @@ fn main() -> Result<()> {
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());
+    }
+    if cmd == "effect" {
+        return effects::run(args.collect());
     }
     if cmd == "hs" {
         return scripts::run(args.collect());

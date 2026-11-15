@@ -46,6 +46,7 @@ up as structured Rust.
 - [bink-hle.md](docs/bink-hle.md): high-level Bink player replacement (`crates/bink-hle`)
 - [collision.md](docs/collision.md): collision and physics model tags (`crates/tags`)
 - [dsound.md](docs/dsound.md): guest-facing DirectSound shim (`crates/dsound`)
+- [effects.md](docs/effects.md): effects-family tags (effe, prt3, pmov and more) (`crates/tags`)
 - [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
 - [fonts.md](docs/fonts.md): packed bitmap fonts and text rasteriser (`crates/font`)
 - [graphics.md](docs/graphics.md): D3D8 on wgpu (`crates/gfx`)

@@ -9,6 +9,8 @@
 //! `docs/map-format.md` for evidence.
 #![forbid(unsafe_code)]
 
+/// The effects family (`effe`, `prt3`, `pmov`, ...); see `docs/effects.md`.
+pub mod effects;
 pub mod wire;
 /// Object collision and physics models (`coll`, `phmo`); see `docs/collision.md`.
 pub mod collision;

@@ -645,3 +645,65 @@ evidence are in [bink-hle.md](bink-hle.md). Calling convention is stdcall.
 | `0x00156090` MovieStart `(path, flags)`, `0x00156040` tick, `0x001568d0` decode and blit, `0x00156960` draw, `0x00155f80` service, `0x00155f60` IsPlaying, `0x001565a0` stop, `0x00156ab0` skip-button poll, `0x001564e0` remaining ms, `0x00155ea0` / `0x00155ed0` init / dispose | The engine's movie wrapper, state block at `0x004e9188` (handle at `0x004e9194`, finished flag `0x004e918c`, flags `0x004e9190`) | Confirmed by reading the code |
 | `0x00223aa8` | Builds `d:\bink\%s_%d.bik` (`0x4575d0`) from a name; names `attract` `0x4575e4`, `credits` `0x4575ec`, `intro` `0x4575f4` | Confirmed |
 | Callers: `0x0012bf90` intro (flags `0x1c6`), `0x00163890` intro on entry (`0x3c6`), `0x00223a21` attract from idle timer `0x00223976` (`0xe`), `0x002ab8c0` credits (`0x40c`) | End of movie and skip-on-button are both inside the wrapper (service `0x155f80`, input `0x156ab0`) | Confirmed |
+
+## Effects: damage, contrail, decal, light, lens flare
+
+Static analysis only; names are assigned descriptions. Layouts and evidence are
+in [effects.md](effects.md).
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x0017a8a0` part creation switch | Confirmed | Dispatches on the effect part's type class at part `+8`: `lens`, `MGS2`, `deca`, `jpt!`, `ligh`, `obje`, `snd!`, `char` and others. |
+| `0x0017a97f` `jpt!` case -> `0x000d6660`, `0x000d6c80` | Likely | Builds an origin/direction pair from the effect instance and applies the damage effect. |
+| `0x0017aa5c` `deca` case -> `0x00177d10`, `0x0017e670` | Likely | Resolves part transform then places a decal on the first-hit surface. |
+| `0x0017e670` decal placement | Likely | Reads decal `+0x14` as radius; traces six directions (`0x001697c0`) to find surfaces; calls `0x0017ee20`. |
+| `0x0017ee20` / `0x0017ef10` decal add | Likely | Walks a chain of decal tags (`next_decal`), reads `+6` (skip if zero), `+0x14`, `+0x18`. |
+| `0x0017b7cb` contrail arrays init | Confirmed | Creates "contrail" and "contrail point" data arrays. |
+| `0x0017d23c` decal array init | Confirmed | "decals" data array. |
+| `0x0017ab2e` `ligh` case, `0x0017a8bd` `lens` case | Confirmed (dispatch only) | Light and lens flare creation; render code not traced. |
+
+## Effects: function evaluator
+
+Static analysis only; names are assigned descriptions. Layout, evidence and the
+Rust port (`crates/tags/src/effects/function.rs`) are in [effects.md](effects.md).
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x0013b390` `function_evaluate` | Confirmed | Takes the data reference in EDI and two floats (input, range input); switches on the first data byte through the 11-entry table at `0x0013bb14`; every path ends in a clamp to `[0, 1]` (`0x0013b5f2`). Types 6, 8 and above 10 return 0. Header flag bit 0 selects a second set and a `(1 - r) * a + r * b` blend. |
+| `0x0013bec0` `function_point_fetch` | Confirmed | Returns a pointer to point `k` of set `s`: data `+0x14 + (T[type] * s + 2 * k) * 4`, with `T` the byte table at `0x0044178c`. The same table gives every type's per-set size, hence the blob lengths `0x14 + 8 * T`. |
+| `0x0017c900` `function_wave` | Confirmed | Periodic wave: sub-type 0 returns 1; else scales by 36.57143 (1024 / 28), indexes a 1024-byte table at `0x00468d48 + sub * 0x400`, lerps neighbours; sub-types 6 and 7 wrap across the seam. |
+| `0x0017ca10` `function_shape` | Confirmed | Eased transition: clamps to `[0, 1]`; sub-type 0 is linear; else indexes a 1024-byte table at `0x0046bd48 + sub * 0x400` using round-to-nearest of `x * 1023 - 0.1`. |
+| `0x00246cd0` `property_evaluate` | Confirmed | Reads the 16-byte property `{input, range input, modifier mode, modifier input, data reference}`; evaluates the function; if `(flags & 0xf0) == 0` clamps and maps onto the header floats at data `+4/+8`; then adds (mode 1) or multiplies (mode 2) the modifier input. |
+| `0x00372d48` / `0x00373b6a` CRT `pow` / `fmod` | Likely | Used with `x`, exponent and with `1.0` for the fractional part. |
+
+## Effects: particles and particle movement
+
+Static analysis only (no boot). Names are assigned descriptions. Details and
+the tag layouts they support are in [effects.md](effects.md).
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x00173de0` `particle_data_initialize` | Confirmed | Allocates four arrays with their string names: `particle_system` stride `0x54` max `0x80` at `[0x510c74]`, `particles` stride `0x40` max `0x400` at `[0x51ec84]`, `particle_emitter` `0x4c`/`0x100` at `[0x51ec88]`, `particle_location` `0x34`/`0x100` at `[0x51ec8c]`. `0x00175b50` does the same for `effect` (`0x190`/`0x100`, `[0x4ea93c]`) and `effect location` (`0x3c`/`0x200`). |
+| `0x00246cd0` `property_evaluate` | Confirmed | Reads a 16-byte property: input, range input, output modifier (1 add, 2 multiply), modifier input, data reference; evaluates the function and applies the modifier. Shared by particles, emitters and movement. |
+| `0x0013b390` `function_evaluate` | Confirmed | Switch over function type 0..=10 on the first byte of the function data; flags byte bit 0 selects the ranged variant. Full port in `effects/function.rs`. |
+| `0x00248df0` `particle_input_value` | Confirmed | Jump table of 17 input selectors (particle age, per-particle randoms, system and effect scalars, camera-relative value). |
+| `0x00247140` `particle_system_update` | Likely | Walks a system's particle list, advances age by rate, frees finished particles, integrates position/velocity, and calls the draw submission `0x002ba3a0`. |
+| `0x00249170` `particle_initialize_from_emitter` | Likely | Evaluates emitter properties into a new particle: lifespan as `1 / max(value, minimum)`, a scaled value into the particle's `+0x34`, then an emission-shape switch (jump table `0x00249a74`) that picks position/velocity direction using the game's random state at `[0x4e7408]`. |
+| `0x00247fd0` `particle_allocate` | Likely | Takes a slot from the particle array, links it into the system list, seeds per-particle random words. |
+| `0x00248450`..`0x00248d90` | Guess | Particle/emitter/location array helpers (new, delete, iterate); referenced from `[0x51ec88]`/`[0x51ec8c]`. |
+| `0x002b8e10`, `0x002b9060`, `0x002b9b10`, `0x002ba100` | Likely | Per-system renderers selected by a 4-way type switch at `0x002b8da0`. Not read in depth; the prt3 fields they consume were not identified. |
+
+## Effects: effects, events, parts, particle systems
+
+Static analysis only; names are assigned descriptions. Layouts and evidence are
+in [effects.md](effects.md).
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x00173de0` effect-family arrays initialise | Confirmed | Allocates the `particle_system` (stride 0x54, max 0x80, pointer `0x00510c74`), `particles` (0x40, 0x400, `0x0051ec84`), `particle_emitter` (0x4c, 0x100, `0x0051ec88`) and `particle_location` (0x34, 0x100, `0x0051ec8c`) arrays; names from the string pool at `0x00453b24`/`0x00459e50`. |
+| `0x00175b50` effect arrays initialise | Confirmed | Allocates `effect` (stride 0x190, max 0x100, pointer `0x004ea93c`) and `effect location` (0x3c, 0x200). |
+| `0x0017a380` `effect_event_process` | Likely | Walks one event's parts: event stride 0x38, part count at event `+0x18`, array at `+0x1c`, part stride 0x38; skips by location, create-in vs underwater flag and the disposition switch (jump table `0x0017a888`), then calls the part-creation switch. |
+| `0x0017a8a0` part creation switch | Confirmed | Dispatches on the part's class at part `+8` (see the damage/decal/light subsection). |
+| `0x00178eb0` `particle_system_new_from_event` | Likely | Reads the event's particle-system array at event `+0x34`, record stride 0x38, resolves the location (`0x0017ae50`), allocates a `particle_system` entry and sets its fields. |
+| `0x00173cb0` particle tag class check | Confirmed | Accepts exactly `prt3` and `PRTM` for a particle system's particle reference (compares `0x70727433`, `0x5052544d`). |
+| `0x00174180` `particle_system_delete` | Likely | Frees a `particle_system` entry and walks its child chain. |
