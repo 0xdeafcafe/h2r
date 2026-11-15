@@ -699,6 +699,13 @@ and allocations are bounded before anything is read:
     yet, so `Nv2aShaders` skips a draw that samples a depth-format
     texture with `Event::DrawSkipped` (naming the stage, format and
     `SHADOWFUNC`); the texture is uploaded all the same.
+  - In the boot (boot plus this device, `maps\00a_introduction.map`
+    through the scripted click-through) the first level no longer stops
+    at about present 4210: it ran to 8164 presents with no stop, drawing
+    into 512x512 and 128x128 targets as well as the back buffer. Its one
+    shadow map is a `LIN_D24S8` texture (`0x004b50b4`) sampled on stage 0
+    with `D3DRS_SHADOWFUNC` `0x204` (`GREATER`); those draws (136,667 over the
+    run) are the only skips left, until the comparison is translated.
 - **Swap** (`Device::swap`, `0x3f9d00`). CreateDevice sets device flag
   `0x4000` (`device::COPY_SWAP_FLAG`) for a multisampled device (type bits
   `0x3000`) or `D3DSWAPEFFECT_COPY` (`0x3fc9a2..0x3fc9c0`), and stores the
