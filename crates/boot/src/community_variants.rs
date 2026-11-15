@@ -663,8 +663,15 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
     }
     rt.memory()
         .map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
+    // Resolve the originals first: `resolve_original` takes the dispatch
+    // read lock, which `edit_dispatch` holds for writing.
+    let (load, strings, numbers) = (
+        original(rt, BUILTINS_LOAD),
+        original(rt, LOCALIZED_STRING),
+        original(rt, NUMBER_STRING_ID),
+    );
     rt.edit_dispatch(|d| {
-        if let Some(o) = original(rt, BUILTINS_LOAD) {
+        if let Some(o) = load {
             d.register_override(BUILTINS_LOAD, "community:builtins", move |cpu, ctx, _| {
                 {
                     let mut mem = ctx.runtime().memory();
@@ -685,7 +692,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                 Ok(o.invoke(cpu, ctx, BUILTINS_LOAD))
             });
         }
-        if let Some(o) = original(rt, LOCALIZED_STRING) {
+        if let Some(o) = strings {
             d.register_override(LOCALIZED_STRING, "community:strings", move |cpu, ctx, _| {
                 if let Some(t) = text(cpu.edi) {
                     let mut mem = ctx.runtime().memory();
@@ -696,7 +703,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                 Ok(o.invoke(cpu, ctx, LOCALIZED_STRING))
             });
         }
-        if let Some(o) = original(rt, NUMBER_STRING_ID) {
+        if let Some(o) = numbers {
             d.register_override(NUMBER_STRING_ID, "community:descriptions", move |cpu, ctx, _| {
                 if cpu.ecx >= DESCRIPTION_BASE {
                     let mem = ctx.runtime().memory();
