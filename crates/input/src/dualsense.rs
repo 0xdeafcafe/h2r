@@ -36,8 +36,11 @@ const BUTTONS2: usize = 9;
 const BUTTONS2_MIC_MUTE: u8 = 1 << 2;
 
 const USB_OUTPUT_ID: u8 = 0x02;
-/// USB output report length, report ID included.
-pub const USB_OUTPUT_LEN: usize = 63;
+/// USB output report length, report ID included: the report descriptor
+/// declares report 0x02 as 47 bytes (macOS reports `MaxOutputReportSize`
+/// 48). Linux's driver sends 63 bytes, which a descriptor-checking host may
+/// refuse; everything we set sits in the first 47.
+pub const USB_OUTPUT_LEN: usize = 48;
 const BT_OUTPUT_ID: u8 = 0x31;
 /// Bluetooth output report length, report ID and CRC included.
 pub const BT_OUTPUT_LEN: usize = 78;
@@ -265,7 +268,7 @@ mod tests {
             },
             0,
         );
-        assert_eq!(r.len(), 63);
+        assert_eq!(r.len(), USB_OUTPUT_LEN);
         assert_eq!(r[0], 0x02);
         assert_eq!(r[1], 0, "flag0 untouched");
         assert_eq!(r[2], 0x03, "mute LED + power save valid");

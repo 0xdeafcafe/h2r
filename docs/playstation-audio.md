@@ -14,7 +14,7 @@ Three things were asked for, on a DualSense (and a DualShock 4 where it can):
 |---|---|---|---|
 | Speaker | Yes, as a CoreAudio output, once an HID report moves the output path to the speaker | Only with our own Opus encoder speaking a reverse-engineered HID protocol; not attempted | All of it: the sound index from the maps the game opens, the split mix into a second sink, the speaker-path report. Not checked on hardware. |
 | Mute button + LED | Yes, raw HID | Yes, raw HID (78-byte reports with CRC) | All of it: IOKit in shared mode, the toggle, the LED report (`H2_PAD_MUTE`). Not checked on hardware. |
-| Mic as Communicator | Mic capture maybe (unverified on macOS); the game side needs XHV and Communicator HLE first | Opus over HID; not attempted | Design only (below) |
+| Mic as Communicator | Mic capture works (CoreAudio lists a 2-channel 48 kHz input over USB); the game side needs XHV and Communicator HLE first | Opus over HID; not attempted | Design only (below) |
 
 No PlayStation controller was connected when this was written
 (`system_profiler SPUSBDataType SPBluetoothDataType` listed only an Xbox
@@ -47,7 +47,13 @@ the code; sound tags are matched against the player's own maps at run time.
 - **The microphone.** One blog says macOS lists a "Wireless Controller"
   input and asks for mic permission ([pitch-midi]); the Mac guide above says
   "0 ins". Sony says the built-in mic and speaker are not supported on a
-  Mac, and the headset jack works wired ([sony-mac]). **Hardware.**
+  Mac, and the headset jack works wired ([sony-mac]). **Seen on a real pad
+  (2026-11-15, macOS, USB):** CoreAudio lists "DualSense Wireless
+  Controller" twice, once with 4 output channels and once with **2 input
+  channels**, both at 48 kHz. So the mic is capturable on macOS over USB.
+  The same pad's HID descriptor declares output report 0x02 as 47 bytes
+  (48 with the ID; `MaxOutputReportSize` 48, input report 0x01 63 bytes),
+  shorter than the 63 bytes Linux sends, so we send 48.
 - **DualShock 4.** USB audio is the headset jack (Windows calls it "Headset
   Earphone (Wireless Controller)"); psdevwiki says v2 audio is 2 channels at
   32 kHz and that a feature report (0xE0) routes it to the speaker
