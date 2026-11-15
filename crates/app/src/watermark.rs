@@ -42,14 +42,12 @@ impl BuildInfo {
         }
     }
 
-    /// The watermark's first line.
-    pub fn line(&self) -> String {
-        format!(
-            "h2recomp{SEP}development build{SEP}{} {}{SEP}built {}",
-            self.sha,
-            self.branch,
-            utc_minute(self.unix)
-        )
+    /// The centred build label: name, then commit, branch and build time.
+    pub fn label(&self) -> Vec<String> {
+        vec![
+            "h2recomp development build".into(),
+            format!("{} {}{SEP}{}", self.sha, self.branch, utc_minute(self.unix)),
+        ]
     }
 }
 
@@ -125,22 +123,21 @@ impl LiveStats {
     }
 }
 
-/// The watermark's second line. `renderer` is the backend and how it runs
-/// (`metal, render thread on`).
-pub fn stats_line(stats: Option<&LiveStats>, map: Option<&str>, renderer: &str) -> String {
+/// The live-run panel, one fact a line. `renderer` is the backend and how
+/// it runs (`metal, render thread on`).
+pub fn stats_lines(stats: Option<&LiveStats>, map: Option<&str>, renderer: &str) -> Vec<String> {
     let mut f: Vec<String> = Vec::new();
     match stats {
         Some(s) => {
-            let mut t = format!("fps {:.1}{SEP}{:.1} ms", s.fps, s.frame_ms);
+            f.push(format!("{:.1} fps{SEP}{:.1} ms", s.fps, s.frame_ms));
             if let (Some(c), Some(g), Some(w)) = (s.cpu_ms, s.gfx_ms, s.wait_ms) {
-                t += &format!(" (cpu {c:.0} / gfx {g:.0} / wait {w:.0})");
+                f.push(format!("cpu {c:.0}{SEP}gfx {g:.0}{SEP}wait {w:.0}"));
             }
-            f.push(t);
             if let Some(d) = s.draws {
                 f.push(format!("draws {d:.0}"));
             }
         }
-        None => f.push("fps --".into()),
+        None => f.push("-- fps".into()),
     }
     if let Some(m) = map {
         f.push(format!("map {m}"));
@@ -148,7 +145,7 @@ pub fn stats_line(stats: Option<&LiveStats>, map: Option<&str>, renderer: &str) 
     if !renderer.is_empty() {
         f.push(renderer.into());
     }
-    f.join(SEP)
+    f
 }
 
 /// `text` cut to `max` characters, ending in `..` when cut.
@@ -231,19 +228,36 @@ impl Watermark {
         !self.visible.fetch_xor(true, Ordering::Relaxed)
     }
 
-    /// Both lines, with `backend` (`metal`) as the renderer.
-    pub fn lines(&self, stats: Option<&LiveStats>, backend: &str) -> [String; 2] {
+    /// Both panels, with `backend` (`metal`) as the renderer.
+    pub fn panels(&self, stats: Option<&LiveStats>, backend: &str) -> Panels {
         let map = self.map.as_ref().and_then(|m| m());
         let renderer = match (backend.is_empty(), self.note.is_empty()) {
             (false, false) => format!("{backend}, {}", self.note),
             (false, true) => backend.into(),
             (true, _) => self.note.clone(),
         };
-        [
-            self.build.line(),
-            stats_line(stats, map.as_deref(), &renderer),
-        ]
+        Panels {
+            label: self.build.label(),
+            live: stats_lines(stats, map.as_deref(), &renderer),
+        }
     }
+}
+
+/// What the watermark shows: a small build label centred near the bottom of
+/// the image, and the live run's numbers in its lower right.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Panels {
+    pub label: Vec<String>,
+    pub live: Vec<String>,
+}
+
+/// How a panel's lines line up, and where the panel sits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Align {
+    /// Centred, near the bottom edge.
+    Centre,
+    /// Right-aligned, in the lower right corner.
+    Right,
 }
 
 /// Pixels per font pixel for a target `height` pixels tall: 1 up to 1599,
@@ -278,8 +292,24 @@ fn glyph(c: char) -> [u8; 8] {
 /// Light text, mostly opaque, over a soft dark shadow one font pixel down
 /// and right; transparent elsewhere.
 pub fn rasterize(lines: &[String], scale: u32) -> (u32, u32, Vec<u8>) {
+    rasterize_aligned(lines, scale, None)
+}
+
+/// [`rasterize`] with each line lined up inside the block: `None` is left.
+pub fn rasterize_aligned(lines: &[String], scale: u32, align: Option<Align>) -> (u32, u32, Vec<u8>) {
     let s = scale.max(1);
     let cols = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u32;
+    let lines: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            let gap = cols as usize - l.chars().count();
+            match align {
+                None => l.clone(),
+                Some(Align::Right) => " ".repeat(gap) + l,
+                Some(Align::Centre) => " ".repeat(gap / 2) + l,
+            }
+        })
+        .collect();
     let rows = lines.len() as u32;
     if cols == 0 || rows == 0 {
         return (0, 0, Vec::new());
@@ -351,48 +381,99 @@ pub struct Placement {
     pub at: (u32, u32),
 }
 
-/// Bottom-left of `area`, [`MARGIN`] font pixels in.
-pub fn place(lines: &[String], area: Viewport) -> Placement {
+/// Where a panel of `lines` goes inside `area` (the game image), lined up
+/// as `align`, [`MARGIN`] font pixels from the bottom (and right) edge;
+/// lines are cut to the panel's third of the image (the middle third for
+/// the label, the right third for the live panel).
+pub fn place(lines: &[String], area: Viewport, align: Align) -> Placement {
     let scale = scale_for(area.height);
     let margin = MARGIN * scale;
-    let room = area.width.saturating_sub(2 * margin) / scale;
+    // Each panel keeps to its third of the image, so they never overlap.
+    let share = area.width / 3;
+    let room = share.saturating_sub(2 * margin) / scale;
     let cols = (room.saturating_sub(2 * PAD) / CELL) as usize;
     let lines: Vec<String> = lines.iter().map(|l| fit(l, cols)).collect();
     let rows = lines.len() as u32;
+    let widest = lines.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u32;
+    let w = (widest * CELL + 2 * PAD) * scale;
     let h = (rows.saturating_sub(1) * PITCH + CELL + 2 * PAD) * scale;
-    let x = area.x + margin.saturating_sub(PAD * scale);
+    let x = match align {
+        Align::Centre => area.x + area.width.saturating_sub(w) / 2,
+        Align::Right => (area.x + area.width).saturating_sub(margin.saturating_sub(PAD * scale) + w),
+    };
     let y = (area.y + area.height).saturating_sub(margin.saturating_sub(PAD * scale) + h);
     Placement {
         lines,
         scale,
-        at: (x, y.max(area.y)),
+        at: (x.max(area.x), y.max(area.y)),
     }
 }
 
-/// Draws the watermark over an already composited target.
+/// Draws the watermark over an already composited target: one sprite a
+/// panel.
 pub struct WatermarkRenderer {
+    label: PanelSprite,
+    live: PanelSprite,
+}
+
+struct PanelSprite {
     sprite: Sprite,
     /// The text and scale last rasterised.
     drawn: Option<(Vec<String>, u32)>,
 }
 
+impl PanelSprite {
+    #[allow(clippy::too_many_arguments)]
+    fn draw(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        lines: &[String],
+        align: Align,
+        dst: &wgpu::TextureView,
+        dst_format: wgpu::TextureFormat,
+        dst_size: (u32, u32),
+        area: Viewport,
+    ) {
+        if lines.is_empty() {
+            return;
+        }
+        let p = place(lines, area, align);
+        let key = (p.lines, p.scale);
+        if self.drawn.as_ref() != Some(&key) {
+            let (w, h, px) = rasterize_aligned(&key.0, key.1, Some(align));
+            self.sprite.upload(device, queue, (w, h), &px);
+            self.drawn = Some(key);
+        }
+        self.sprite
+            .draw(device, encoder, dst, dst_format, dst_size, p.at);
+    }
+}
+
 impl WatermarkRenderer {
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
-            sprite: Sprite::new(device, "app watermark"),
-            drawn: None,
+            label: PanelSprite {
+                sprite: Sprite::new(device, "app watermark label"),
+                drawn: None,
+            },
+            live: PanelSprite {
+                sprite: Sprite::new(device, "app watermark live"),
+                drawn: None,
+            },
         }
     }
 
-    /// Records one pass drawing `lines` along the bottom of `area` (the
-    /// game image) in `dst`. Re-rasterises only when the text changed.
+    /// Records the passes drawing `panels` over `area` (the game image) in
+    /// `dst`. Re-rasterises a panel only when its text changed.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
-        lines: &[String],
+        panels: &Panels,
         dst: &wgpu::TextureView,
         dst_format: wgpu::TextureFormat,
         dst_size: (u32, u32),
@@ -408,15 +489,12 @@ impl WatermarkRenderer {
         } else {
             area
         };
-        let p = place(lines, area);
-        let key = (p.lines, p.scale);
-        if self.drawn.as_ref() != Some(&key) {
-            let (w, h, px) = rasterize(&key.0, key.1);
-            self.sprite.upload(device, queue, (w, h), &px);
-            self.drawn = Some(key);
-        }
-        self.sprite
-            .draw(device, encoder, dst, dst_format, dst_size, p.at);
+        self.label.draw(
+            device, queue, encoder, &panels.label, Align::Centre, dst, dst_format, dst_size, area,
+        );
+        self.live.draw(
+            device, queue, encoder, &panels.live, Align::Right, dst, dst_format, dst_size, area,
+        );
     }
 }
 
@@ -439,10 +517,13 @@ mod tests {
     }
 
     #[test]
-    fn the_build_line_names_the_commit_branch_and_time() {
+    fn the_build_label_names_the_commit_branch_and_time() {
         assert_eq!(
-            BUILD.line(),
-            "h2recomp  \u{b7}  development build  \u{b7}  a1987da debug-watermark  \u{b7}  built 2026-11-15 14:22 UTC"
+            BUILD.label(),
+            vec![
+                "h2recomp development build".to_string(),
+                "a1987da debug-watermark  \u{b7}  2026-11-15 14:22 UTC".to_string()
+            ]
         );
         let baked = BuildInfo::baked();
         assert!(!baked.sha.is_empty() && !baked.branch.is_empty());
@@ -465,26 +546,29 @@ mod tests {
     }
 
     #[test]
-    fn the_stats_line_with_frame_stats() {
+    fn the_live_panel_with_frame_stats() {
         let s = LiveStats::from_summary(&summary());
         assert_eq!(
-            stats_line(Some(&s), Some("01a_tutorial"), "metal, render thread on"),
-            "fps 28.4  \u{b7}  35.2 ms (cpu 24 / gfx 5 / wait 6)  \u{b7}  draws 1104  \u{b7}  map 01a_tutorial  \u{b7}  metal, render thread on"
+            stats_lines(Some(&s), Some("01a_tutorial"), "metal, render thread on"),
+            vec![
+                "28.4 fps  \u{b7}  35.2 ms",
+                "cpu 24  \u{b7}  gfx 5  \u{b7}  wait 6",
+                "draws 1104",
+                "map 01a_tutorial",
+                "metal, render thread on",
+            ]
         );
     }
 
     #[test]
-    fn the_stats_line_without_frame_stats_or_frames() {
+    fn the_live_panel_without_frame_stats_or_frames() {
         let s = LiveStats::from_rate(5, 2.5).unwrap();
         assert_eq!(
-            stats_line(Some(&s), None, "metal"),
-            "fps 2.0  \u{b7}  500.0 ms  \u{b7}  metal"
+            stats_lines(Some(&s), None, "metal"),
+            vec!["2.0 fps  \u{b7}  500.0 ms", "metal"]
         );
         assert_eq!(LiveStats::from_rate(0, 1.0), None);
-        assert_eq!(
-            stats_line(None, Some("mainmenu"), ""),
-            "fps --  \u{b7}  map mainmenu"
-        );
+        assert_eq!(stats_lines(None, Some("mainmenu"), ""), vec!["-- fps", "map mainmenu"]);
     }
 
     #[test]
@@ -493,12 +577,9 @@ mod tests {
             .with_build(BUILD)
             .with_note("render thread off")
             .with_map(|| Some("mainmenu".into()));
-        let [top, bottom] = wm.lines(None, "metal");
-        assert_eq!(top, BUILD.line());
-        assert_eq!(
-            bottom,
-            "fps --  \u{b7}  map mainmenu  \u{b7}  metal, render thread off"
-        );
+        let p = wm.panels(None, "metal");
+        assert_eq!(p.label, BUILD.label());
+        assert_eq!(p.live, vec!["-- fps", "map mainmenu", "metal, render thread off"]);
         assert!(wm.visible());
         let shared = wm.clone();
         assert!(!shared.toggle());
@@ -507,31 +588,29 @@ mod tests {
     }
 
     #[test]
-    fn long_lines_are_cut_to_the_image_width() {
+    fn long_lines_are_cut_to_the_panel_width() {
         assert_eq!(fit("abcdef", 6), "abcdef");
         assert_eq!(fit("abcdefg", 6), "abcd..");
         assert_eq!(fit("abc", 1), ".");
         let lines = vec!["x".repeat(200), "short".into()];
-        // 640 wide at scale 1: (640 - 8) / 8 - ... = 78 columns.
-        let p = place(
-            &lines,
-            Viewport {
-                x: 0,
-                y: 0,
-                width: 640,
-                height: 480,
-            },
-        );
+        let area = Viewport {
+            x: 0,
+            y: 0,
+            width: 640,
+            height: 480,
+        };
+        let p = place(&lines, area, Align::Right);
         assert_eq!(p.scale, 1);
-        let cols = (640 - 2 * MARGIN - 2 * PAD) / CELL;
+        // A panel takes at most a third of the image.
+        let cols = (640 / 3 - 2 * MARGIN - 2 * PAD) / CELL;
         assert_eq!(p.lines[0].chars().count(), cols as usize);
         assert!(p.lines[0].ends_with(".."));
         assert_eq!(p.lines[1], "short");
     }
 
     #[test]
-    fn it_sits_at_the_bottom_left_of_the_image() {
-        let lines = vec!["a".to_string(), "b".to_string()];
+    fn the_label_is_centred_and_the_live_panel_sits_lower_right() {
+        let lines = vec!["abcd".to_string(), "ab".to_string()];
         // A pillarboxed 4:3 image in a 2560x1600 window: scale 2.
         let area = Viewport {
             x: 213,
@@ -539,18 +618,37 @@ mod tests {
             width: 2133,
             height: 1600,
         };
-        let p = place(&lines, area);
-        assert_eq!(p.scale, 2);
-        let (w, h, _) = rasterize(&p.lines, p.scale);
+        let c = place(&lines, area, Align::Centre);
+        assert_eq!(c.scale, 2);
+        let (w, h, _) = rasterize_aligned(&c.lines, c.scale, Some(Align::Centre));
         assert_eq!(h, (PITCH + CELL + 2 * PAD) * 2);
-        // Text starts MARGIN font pixels in from the left and bottom edges
+        let mid = c.at.0 + w / 2;
+        assert!(mid.abs_diff(area.x + area.width / 2) <= 1, "centre {mid}");
+        assert_eq!(c.at.1 + h - PAD * 2, area.height - MARGIN * 2);
+        let r = place(&lines, area, Align::Right);
+        let (w, h, _) = rasterize_aligned(&r.lines, r.scale, Some(Align::Right));
+        // Text ends MARGIN font pixels in from the right and bottom edges
         // (the texture's PAD of shadow room sits outside that).
-        assert_eq!(p.at.0 + PAD * 2, area.x + MARGIN * 2);
-        assert_eq!(p.at.1 + h - PAD * 2, area.height - MARGIN * 2);
-        assert!(p.at.0 + w <= area.x + area.width);
+        assert_eq!(r.at.0 + w - PAD * 2, area.x + area.width - MARGIN * 2);
+        assert_eq!(r.at.1 + h - PAD * 2, area.height - MARGIN * 2);
         assert_eq!(scale_for(960), 1);
         assert_eq!(scale_for(1920), 2);
         assert_eq!(scale_for(10_000), 4);
+    }
+
+    #[test]
+    fn short_lines_line_up_right_or_centre() {
+        let lines = vec!["IIII".to_string(), "I".to_string()];
+        let col_lit = |align, col: u32| {
+            let (w, h, px) = rasterize_aligned(&lines, 1, Some(align));
+            // The second line's row band.
+            (PAD + PITCH..(PAD + PITCH + CELL).min(h)).any(|y| {
+                (PAD + col * CELL..PAD + (col + 1) * CELL)
+                    .any(|x| px[((y * w + x) * 4 + 3) as usize] as f32 >= TEXT_ALPHA * 255.0 - 1.0)
+            })
+        };
+        assert!(col_lit(Align::Right, 3) && !col_lit(Align::Right, 0));
+        assert!(col_lit(Align::Centre, 1) && !col_lit(Align::Centre, 3));
     }
 
     #[test]
@@ -591,7 +689,7 @@ mod tests {
 
     /// Renders a frame of a known pattern, draws the watermark over it,
     /// and reads the target back.
-    fn render(size: (u32, u32), area: Viewport, lines: &[String]) -> Option<Vec<u8>> {
+    fn render(size: (u32, u32), area: Viewport, panels: &Panels) -> Option<Vec<u8>> {
         let Ok(ctx) = gfx::GfxContext::headless() else {
             eprintln!("no GPU adapter; skipping");
             return None;
@@ -642,7 +740,7 @@ mod tests {
                 &ctx.device,
                 &ctx.queue,
                 &mut enc,
-                lines,
+                panels,
                 &view,
                 format,
                 size,
@@ -657,30 +755,25 @@ mod tests {
     #[test]
     fn draws_along_the_bottom_and_leaves_the_rest_of_the_frame_alone() {
         let (w, h) = (640u32, 480u32);
-        let lines = Watermark::new()
+        let panels = Watermark::new()
             .with_build(BUILD)
-            .lines(LiveStats::from_rate(30, 1.0).as_ref(), "metal")
-            .to_vec();
-        let Some(diff) = render((w, h), Viewport::default(), &lines) else {
+            .panels(LiveStats::from_rate(30, 1.0).as_ref(), "metal");
+        let Some(diff) = render((w, h), Viewport::default(), &panels) else {
             return;
         };
-        let changed = |y: u32| (0..w).any(|x| diff[((y * w + x) * 4) as usize..][..4] != [0; 4]);
-        let rows: Vec<u32> = (0..h).filter(|&y| changed(y)).collect();
+        let changed = |x: u32, y: u32| diff[((y * w + x) * 4) as usize..][..4] != [0; 4];
+        let rows: Vec<u32> = (0..h).filter(|&y| (0..w).any(|x| changed(x, y))).collect();
         assert!(!rows.is_empty(), "nothing drawn");
-        // Two lines plus their shadow, within the bottom margin's reach.
+        // Two lines a panel plus their shadow, within the bottom margin's reach.
         let block = (PITCH + CELL + 2 * PAD) + MARGIN;
-        let top = *rows.first().unwrap();
-        let bottom = *rows.last().unwrap();
-        assert!(top >= h - block, "drawn from row {top}");
-        assert!(bottom < h - MARGIN + PAD, "drawn down to row {bottom}");
-        // Both lines: a row of each has text.
-        assert!(rows.len() >= 2 * 6, "{} rows", rows.len());
-        // Left edge: nothing in the first two columns (MARGIN - PAD).
-        for y in 0..h {
-            for x in 0..MARGIN - PAD {
-                assert_eq!(&diff[((y * w + x) * 4) as usize..][..4], &[0; 4]);
-            }
-        }
+        assert!(rows[0] >= h - block, "drawn from row {}", rows[0]);
+        assert!(*rows.last().unwrap() < h - MARGIN + PAD);
+        // The label around the middle, the live panel at the right, nothing
+        // at the left edge.
+        let cols: Vec<u32> = (0..w).filter(|&x| (0..h).any(|y| changed(x, y))).collect();
+        assert!(cols[0] > w / 4, "drawn from column {}", cols[0]);
+        assert!(cols.iter().any(|&x| x.abs_diff(w / 2) < 8), "nothing centred");
+        assert!(*cols.last().unwrap() >= w - MARGIN - PAD, "nothing at the right");
     }
 
     #[test]
@@ -693,8 +786,11 @@ mod tests {
             width: 640,
             height: 480,
         };
-        let lines = vec!["x".repeat(300), "y".repeat(300)];
-        let Some(diff) = render((w, h), area, &lines) else {
+        let panels = Panels {
+            label: vec!["x".repeat(300), "y".repeat(300)],
+            live: vec!["z".repeat(300); 5],
+        };
+        let Some(diff) = render((w, h), area, &panels) else {
             return;
         };
         let changed = |x: u32, y: u32| diff[((y * w + x) * 4) as usize..][..4] != [0; 4];
@@ -704,7 +800,7 @@ mod tests {
                 if changed(x, y) {
                     any = true;
                     assert!(
-                        x >= area.x && x < area.x + area.width && y >= h - 40,
+                        x >= area.x && x < area.x + area.width && y >= h - 80,
                         "pixel ({x}, {y}) outside the image's bottom"
                     );
                 }
@@ -712,4 +808,5 @@ mod tests {
         }
         assert!(any);
     }
+
 }

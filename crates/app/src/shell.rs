@@ -20,7 +20,7 @@ use crate::lifecycle::Lifecycle;
 use crate::overlay::OverlayRenderer;
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::scale;
-use crate::watermark::{LiveStats, WatermarkRenderer};
+use crate::watermark::{LiveStats, Panels, WatermarkRenderer};
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
 
@@ -129,7 +129,7 @@ struct WatermarkText {
     at: Instant,
     /// Presents published by then, for the fps without frame stats.
     published: u64,
-    lines: [String; 2],
+    panels: Panels,
 }
 
 /// The title's rates average this long: the guest can present slower than
@@ -368,7 +368,7 @@ impl Shell {
                 self.watermark_text = Some(WatermarkText {
                     at: Instant::now(),
                     published,
-                    lines: wm.lines(stats.as_ref(), &g.backend),
+                    panels: wm.panels(stats.as_ref(), &g.backend),
                 });
             }
             if let Some(t) = &self.watermark_text {
@@ -376,7 +376,7 @@ impl Shell {
                     &g.ctx.device,
                     &g.ctx.queue,
                     &mut enc,
-                    &t.lines,
+                    &t.panels,
                     &view,
                     g.surface.config.format,
                     g.surface.size(),

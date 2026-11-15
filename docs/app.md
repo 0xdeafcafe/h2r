@@ -200,21 +200,29 @@ load and a branch.
 
 ### Watermark
 
-`h2 play` draws a development-build watermark: two lines of small text
-along the bottom-left of the game image, in the spirit of a pre-release
-build's stamp (our own wording and layout, not a copy of any real one):
+`h2 play` draws a development-build watermark in two small panels over
+the game image, laid out the way pre-release builds of console shooters
+often were (our own wording, not a copy of any real one): a build label
+centred near the bottom, and the live run's numbers right-aligned in the
+lower right corner. Each keeps to its third of the image width, so they
+never overlap.
 
 ```
-h2recomp  ·  development build  ·  a1987da master  ·  built 2026-11-15 14:02 UTC
-fps 28.4  ·  35.2 ms (cpu 24 / gfx 5 / wait 6)  ·  draws 1104  ·  map 01a_tutorial  ·  metal, render thread on
+                                                            28.4 fps  ·  35.2 ms
+                                                        cpu 24  ·  gfx 5  ·  wait 6
+                                                                      draws 1104
+                    h2recomp development build                  map 01a_tutorial
+               a1987da master  ·  2026-11-15 14:02 UTC   metal, render thread on
 ```
 
-- Line one is baked at compile time by `crates/app/build.rs`: the short
+Both panels sit on the same bottom margin; the live panel grows upwards.
+
+- The label is baked at compile time by `crates/app/build.rs`: the short
   commit, the branch (`detached` off a branch, `unknown` without git) and
   the time the build script last ran (it reruns when HEAD moves or
   `crates/app/src` changes). `H2_BUILD_SHA`, `H2_BUILD_BRANCH` and
   `SOURCE_DATE_EPOCH` override them.
-- Line two comes from the frame stats' rolling window
+- The live panel comes from the frame stats' rolling window
   (`timeline::phase::window_summary`): fps, the mean frame time, then in
   ms per frame the game thread's `cpu`, `gfx` (decode + encode + submit +
   `gpu-wait`, on whichever thread does them; with the render thread on it
@@ -232,10 +240,10 @@ fps 28.4  ·  35.2 ms (cpu 24 / gfx 5 / wait 6)  ·  draws 1104  ·  map 01a_tut
   (inside any letterbox or pillarbox), never in guest memory. The text
   changes at most four times a second; only then is it rasterised on the
   CPU (`font8x8`, the banner's public-domain letters, with a soft
-  one-pixel shadow) into one texture. Every present draws that texture as
+  one-pixel shadow) into one texture a panel. Every present draws each as
   one alpha-blended quad. Glyphs are 8x8 font pixels, 2x from a target
-  1600 pixels tall (Retina), and lines too long for the image are cut with
-  `..`.
+  1600 pixels tall (Retina), and lines too long for their panel are cut
+  with `..`.
 - On by default. `--no-watermark` or `H2_WATERMARK=0` turns it off; F3
   toggles it while playing (F3 then never reaches the guest).
 - In code: `app::Watermark` (shared on/off, note, map callback) on
