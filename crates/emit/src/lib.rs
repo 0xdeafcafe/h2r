@@ -47,6 +47,7 @@ pub mod compile;
 pub mod host;
 mod lazy;
 pub mod output;
+pub mod par;
 mod x87;
 
 /// The IR passes [`plan`] runs, re-exported for callers choosing them.
@@ -225,10 +226,11 @@ pub fn plan_with(funcs: Vec<IrFunction>, passes: opt::Passes) -> Vec<Owner> {
     }
     // The passes need the final shape: every selector (an entry point
     // whose state comes from CpuAbi) and every polled header (an exit).
-    for o in &mut owners {
+    // Each owner on its own: spread over the cores.
+    par::for_each_mut(&mut owners, |o| {
         let shape = opt::Shape { selectors: &o.selectors, polled: &o.loops.headers };
         o.opt = opt::optimize(&mut o.func, &shape, passes);
-    }
+    });
     owners
 }
 
@@ -239,7 +241,8 @@ pub fn plan_image(
     passes: opt::Passes,
 ) -> Result<Vec<Owner>, xbe::Error> {
     let lifter = lift::Lifter::new(analysis, xbe)?;
-    let funcs = analysis.functions.keys().filter_map(|&e| lifter.lift(e)).collect();
+    let entries: Vec<u32> = analysis.functions.keys().copied().collect();
+    let funcs = par::map(&entries, |&e| lifter.lift(e)).into_iter().flatten().collect();
     Ok(plan_with(funcs, passes))
 }
 
@@ -327,9 +330,13 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
 
     // Which file (stem) defines each owner's handler.
     let mut home: BTreeMap<u32, String> = BTreeMap::new();
-    for o in owners {
+    // Each owner's C is independent of the others': generate it on every
+    // core, then lay it out in owner order as before.
+    let texts = par::map(owners, |o| {
         let shape = c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: codegen.accounting };
-        let text = c::function(&o.func, &shape);
+        c::function(&o.func, &shape)
+    });
+    for (o, text) in owners.iter().zip(texts) {
         let stem = if text.len() > OVERSIZED {
             format!("fn_{:08x}", o.func.entry)
         } else {
@@ -360,11 +367,15 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
         }
     }
     let mut manifest = String::new();
-    for (name, text) in &files {
-        if write_if_changed(&dir.join(name), text)? {
+    let files_list: Vec<(&String, &String)> = files.iter().collect();
+    let written = par::map(&files_list, |(name, text)| {
+        write_if_changed(&dir.join(name), text).map(|w| (w, fnv64(text.as_bytes())))
+    });
+    for ((name, text), w) in files_list.into_iter().zip(written) {
+        let (changed, h) = w?;
+        if changed {
             report.written += 1;
         }
-        let h = fnv64(text.as_bytes());
         manifest.push_str(&format!("{name}\t{h:016x}\n"));
         report.bytes += text.len();
         report.files.insert(name.clone(), h);
