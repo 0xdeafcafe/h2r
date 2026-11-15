@@ -296,7 +296,7 @@ fn title_xnaddr_contains_host_ipv4_network_order_port_and_static_bit() {
         w.bytes(DATA, 10),
         vec![192, 168, 1, 42, 192, 168, 1, 42, 12, 2]
     );
-    assert_eq!(w.bytes(DATA + 10, 6), vec![2, 0, 0, 0, 0, 1]);
+    assert_eq!(w.bytes(DATA + 10, 6), vec![2, 104, 1, 42, 12, 2]);
     assert_eq!(w.bytes(DATA + 36, 4), vec![0xaa; 4]);
 }
 #[test]
@@ -492,7 +492,8 @@ fn winsock_cleanup_is_reference_counted() {
     w.call("WSAStartup", &[2, DATA]);
     assert_eq!(w.call("WSACleanup", &[]), OK);
     assert_eq!(w.call("WSACleanup", &[]), OK);
-    assert_eq!(w.call("WSACleanup", &[]), WSA_NOT_INITIALIZED);
+    assert_eq!(w.call("WSACleanup", &[]), u32::MAX);
+    assert_eq!(w.call("WSAGetLastError", &[]), WSA_NOT_INITIALIZED);
 }
 #[test]
 fn friends_startup_completes_then_idles_for_the_disposal_pump() {
@@ -591,6 +592,34 @@ fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library()
         "XOnlinePresenceSubmit",
         "XOnlineMutelistStartup",
         "XOnlineMutelistGet",
+        "XNetRandom",
+        "XNetCreateKey",
+        "XNetRegisterKey",
+        "XNetUnregisterKey",
+        "XNetXnAddrToInAddr",
+        "XNetInAddrToXnAddr",
+        "XNetUnregisterInAddr",
+        "XNetConnect",
+        "XNetGetConnectStatus",
+        "XNetQosListen",
+        "XNetQosLookup",
+        "socket",
+        "closesocket",
+        "shutdown",
+        "ioctlsocket",
+        "setsockopt",
+        "getsockopt",
+        "bind",
+        "connect",
+        "select",
+        "recv",
+        "recvfrom",
+        "send",
+        "sendto",
+        "WSAGetLastError",
+        "__WSAFDIsSet",
+        "htonl/ntohl",
+        "htons/ntohs",
     ];
     for e in ENTRIES.iter().filter(|e| !implemented.contains(&e.name)) {
         w.cpu = CpuAbi {

@@ -5,7 +5,13 @@
 
 mod config;
 pub mod entries;
+mod host;
+mod network;
+mod network_config;
+mod qos;
+mod qos_memory;
 mod state;
+pub use network_config::NetworkConfig;
 
 pub use config::{ConfigError, LiveConfig};
 use entries::{Entry, Operation};
@@ -45,6 +51,7 @@ pub mod status {
 pub struct Hle {
     config: LiveConfig,
     state: Mutex<state::State>,
+    network: network::Network,
 }
 impl Hle {
     /// Loads account identities once; does not connect to the server. Disabled
@@ -62,11 +69,25 @@ impl Hle {
         config: LiveConfig,
         address: SocketAddrV4,
     ) -> Result<Arc<Self>, ConfigError> {
+        Self::with_network(config, NetworkConfig::new(address))
+    }
+    /// Explicit channel base and loopback discovery peers. No sockets bind until
+    /// the guest calls bind or QosListen. The server URL remains service-only.
+    pub fn with_network(
+        config: LiveConfig,
+        network: NetworkConfig,
+    ) -> Result<Arc<Self>, ConfigError> {
+        network.validate().map_err(ConfigError::Network)?;
+        let address = network.address;
         let accounts = config.accounts()?;
         Ok(Arc::new(Self {
             config,
             state: Mutex::new(state::State::new(accounts, address)),
+            network: network::Network::new(network),
         }))
+    }
+    pub fn network_config(&self) -> &NetworkConfig {
+        &self.network.config
     }
     pub fn config(&self) -> &LiveConfig {
         &self.config
@@ -132,26 +153,50 @@ fn invoke(
             format!("unimplemented Live API {}", e.name),
         ));
     }
-    let result = {
-        let mut m = ctx.memory();
-        // Validate the complete frame before touching service state or outputs.
+    let args = {
+        let m = ctx.memory();
         m.check(
             cpu.esp,
             (e.stack_words as usize + 1) * 4,
             runtime::guest::Access::Read,
             1,
         )?;
-        let args = (0..e.stack_words)
+        (0..e.stack_words)
             .map(|i| m.u32(cpu.esp.wrapping_add(4 + i * 4)))
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()?
+    };
+    if let Operation::Net(op) = e.operation {
+        let value = hle.network.invoke(op, &args, ctx.thread_id, ctx.runtime());
+        cpu.eax = value;
+        return ctx.memory().ret(cpu, e.stack_words * 4);
+    }
+    if e.operation == Operation::QosRelease && hle.network.release_qos(args[0]) {
+        cpu.eax = 0;
+        return ctx.memory().ret(cpu, e.stack_words * 4);
+    }
+    let (result, cleanup) = {
+        let mut m = ctx.memory();
         let mut state = hle.state.lock().unwrap_or_else(|e| e.into_inner());
-        match state.invoke(e.operation, &args, &mut m) {
-            Ok(value) => {
-                cpu.eax = value;
-                return m.ret(cpu, e.stack_words * 4);
-            }
-            Err(e) => e,
+        let result = state.invoke(e.operation, &args, &mut m);
+        let cleanup = if matches!(result, Ok(0)) {
+            hle.network.lifecycle(e.operation)
+        } else {
+            None
+        };
+        (result, cleanup)
+    };
+    drop(cleanup); // Socket wakeups and QoS responder join run without locks.
+    let result = match result {
+        Ok(value) => {
+            cpu.eax = if e.operation == Operation::WsaCleanup && value != 0 {
+                hle.network.set_error(ctx.thread_id, value);
+                u32::MAX
+            } else {
+                value
+            };
+            return ctx.memory().ret(cpu, e.stack_words * 4);
         }
+        Err(error) => error,
     };
     match result {
         state::Error::Fault(f) => Err(f),

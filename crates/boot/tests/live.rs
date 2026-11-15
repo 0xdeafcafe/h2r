@@ -116,3 +116,57 @@ fn enabled_live_reaches_the_kernel_phy_boundary() {
         assert_eq!(cpu.eax, expected);
     }
 }
+
+#[test]
+fn explicit_network_settings_reach_hle_without_changing_live_config_contract() {
+    let (rt, k) = world();
+    let before = rt.memory().mappings().to_vec();
+    let config = LiveConfig {
+        enabled: true,
+        accounts_path: None,
+        server_url: Some("https://service.example/base".into()),
+    };
+    let network = live_hle::NetworkConfig::from_values(
+        Some("192.168.1.50:31000"),
+        Some("192.168.1.50:31010"),
+    )
+    .unwrap();
+    let hle = live_glue::install_with_network(&rt, &k, &config, network.clone())
+        .unwrap()
+        .unwrap();
+    assert_eq!(hle.network_config(), &network);
+    assert_eq!(hle.config(), &config);
+    assert_eq!(k.console_config().phy_link, 0xd);
+    // Installing the HLE does not bind any of the title's channels.
+    assert_eq!(rt.memory().mappings(), before);
+}
+#[test]
+fn invalid_network_configuration_leaves_phy_and_dispatch_unchanged() {
+    let (rt, k) = world();
+    let config = LiveConfig {
+        enabled: true,
+        ..LiveConfig::default()
+    };
+    let network = live_hle::NetworkConfig::new("0.0.0.0:0".parse().unwrap());
+    assert!(live_glue::install_with_network(&rt, &k, &config, network).is_err());
+    assert_eq!(k.console_config().phy_link, 0);
+    rt.edit_dispatch(|d| assert!(d.override_name(0x3cd188).is_none()));
+}
+#[test]
+fn disabled_explicit_network_install_ignores_invalid_network_and_accounts() {
+    let (rt, k) = world();
+    let before = rt.memory().mappings().to_vec();
+    let config = LiveConfig {
+        enabled: false,
+        accounts_path: Some("/nonexistent/live-hle.json".into()),
+        server_url: None,
+    };
+    let network = live_hle::NetworkConfig::new("0.0.0.0:0".parse().unwrap());
+    assert!(
+        live_glue::install_with_network(&rt, &k, &config, network)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(k.console_config().phy_link, 0);
+    assert_eq!(rt.memory().mappings(), before);
+}

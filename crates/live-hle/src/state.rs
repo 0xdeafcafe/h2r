@@ -47,12 +47,24 @@ enum Task {
 /// A single mapped allocation in the shared HLE window, using Guest's physical
 /// allocator/claim machinery. Tokens advance without reuse, including across
 /// cleanup, so a stale handle can never alias a new task. Exhaustion fails.
-#[derive(Default)]
-struct Storage {
+pub(crate) struct Storage {
     base: Option<u32>,
     cursor: u32,
+    size: u32,
+}
+impl Default for Storage {
+    fn default() -> Self {
+        Self::with_size(STORAGE_SIZE)
+    }
 }
 impl Storage {
+    pub(crate) fn with_size(size: u32) -> Self {
+        Self {
+            base: None,
+            cursor: 0,
+            size,
+        }
+    }
     fn ensure(&mut self, m: &mut Guest) -> std::result::Result<u32, MapError> {
         if let Some(base) = self.base {
             return Ok(base);
@@ -60,7 +72,7 @@ impl Storage {
         let mut base = 0xa000_0000u32;
         loop {
             let end = base
-                .checked_add(STORAGE_SIZE)
+                .checked_add(self.size)
                 .filter(|e| *e <= 0xa100_0000)
                 .ok_or(MapError::OutOfMemory)?;
             let occupied = m
@@ -77,18 +89,18 @@ impl Storage {
                     & !0xfff;
                 continue;
             }
-            m.map_zeroed(base, STORAGE_SIZE, Permissions::RW)?;
+            m.map_zeroed(base, self.size, Permissions::RW)?;
             // No overlapping claim or mapping remains after the search above.
-            m.claim_virtual(base, STORAGE_SIZE, "Live HLE")?;
+            m.claim_virtual(base, self.size, "Live HLE")?;
             self.base = Some(base);
             self.cursor = FIRST_TOKEN;
             return Ok(base);
         }
     }
-    fn alloc(&mut self, m: &mut Guest, bytes: u32) -> Option<u32> {
+    pub(crate) fn alloc(&mut self, m: &mut Guest, bytes: u32) -> Option<u32> {
         let base = self.ensure(m).ok()?;
         let end = self.cursor.checked_add(bytes)?.checked_add(7)? & !7;
-        if end > STORAGE_SIZE {
+        if end > self.size {
             return None;
         }
         let p = base + self.cursor;
@@ -212,15 +224,11 @@ impl State {
             }
             TitleAddress => {
                 writable(m, a[0], 36)?;
-                let mut address = [0; 36];
-                if self.net_refs != 0 {
-                    // XNADDR: ina[0..4], inaOnline[4..8], wPortOnline[8..10].
-                    address[..4].copy_from_slice(&self.address.ip().octets());
-                    address[4..8].copy_from_slice(&self.address.ip().octets());
-                    address[8..10].copy_from_slice(&self.address.port().to_be_bytes());
-                    // Locally administered synthetic Ethernet identity, not a console secret.
-                    address[10..16].copy_from_slice(&[2, 0, 0, 0, 0, 1]);
-                }
+                let address = if self.net_refs != 0 {
+                    crate::network::xnaddr(self.address)
+                } else {
+                    [0; 36]
+                };
                 m.write_bytes(a[0], &address, 1)?;
                 return Ok(if self.net_refs == 0 { 1 } else { 4 });
             }

@@ -13,7 +13,21 @@ pub fn install(
     if !config.enabled {
         return Ok(None);
     }
-    let hle = Hle::new(config.clone()).context("configuring Live client")?;
+    let network = live_hle::NetworkConfig::from_env().map_err(anyhow::Error::msg)?;
+    install_with_network(rt, k, config, network)
+}
+
+/// Explicit network settings for embedding/tests; install() reads the host env.
+pub fn install_with_network(
+    rt: &runtime::Runtime,
+    k: &kernel::Kernel,
+    config: &LiveConfig,
+    network: live_hle::NetworkConfig,
+) -> anyhow::Result<Option<Arc<Hle>>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+    let hle = Hle::with_network(config.clone(), network).context("configuring Live client")?;
     rt.edit_dispatch(|d| live_hle::register(d, &hle))
         .context("registering Live boundary")?;
     let mut console = k.console_config();

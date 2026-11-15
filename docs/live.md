@@ -361,13 +361,14 @@ payload without publishing presence to a server.
 
 XNetGetTitleXnAddr returns the static-IP bit (`4`), rather than pending. Its
 36-byte XNADDR packs the host's default-route LAN IPv4 into `ina` and `inaOnline`
-(offsets 0 and 4), in network byte order. `wPortOnline` at offset 8 is port 3074,
-also in network byte order. The Ethernet identity is synthetic; the remaining
+(offsets 0 and 4), in network byte order. `wPortOnline` at offset 8 is the configured host base port
+(default 3074), also in network byte order. The Ethernet identity is synthetic; the remaining
 online identity bytes are zero. Service endpoints use the same IP and port.
 The host address comes from an OS route lookup using a UDP socket without sending
-a datagram; a host with no IPv4 route falls back to loopback. The port is an
-address convention here, not a socket listener. Embedders and tests can pass an
-explicit endpoint to `live_hle::Hle::with_address`.
+a datagram; a host with no IPv4 route falls back to loopback. Socket channel
+translation uses that base port, as described below. Embedders and tests can pass
+an explicit endpoint to `live_hle::Hle::with_address`, or channel and discovery
+settings to `Hle::with_network`.
 
 The sign-in screen also starts a QoS service lookup. The HLE supplies an XNQOS
 header with one complete, uncontacted result and pending count zero, so polling
@@ -397,16 +398,171 @@ stable user array, task handles and QoS headers. Tokens advance without reuse,
 even after cleanup, so stale handles cannot name later tasks. Exhaustion returns
 out-of-memory rather than growing indefinitely.
 
-All 130 named boundary targets are registered when enabled. The 27 entries above
-and in the sign-in/transport path are implemented. Each of the other 103 entries,
-including sockets, matchmaking, storage, stats and the remaining friend helpers,
+All 130 named boundary targets are registered when enabled. Sign-in and the
+sockets/System Link entries below implement 55 of them. Each of the other 75,
+including matchmaking, storage, stats and the remaining friend helpers,
 stops with `unimplemented Live API <name>` before reading arguments or executing
 the linked library. There is no silent fallback to XONLINES. Those stops are the
-next milestones' boundaries; this change does not claim that later online screens
-or gameplay work.
+next milestones' boundaries. The tests establish the public API contracts and
+host transport; the game has not been run to establish a playable session.
 
 Synthetic tests call every implemented entry through the real runtime Runner
 with guest stack arguments. They cover the packed records, stable pointers,
 connection and change-user task lifetimes, requested service results, empty tasks,
 QoS completion, invalid inputs, disabled registration, named stops and boot PHY
 configuration. They require neither an XBE nor a built game image.
+
+## Client HLE: sockets and System Link
+
+The XNet boundary now uses host IPv4 sockets on macOS and Linux. Socket handles
+are increasing guest integers, not host descriptors. `socket` accepts UDP,
+TCP and Xbox VDP (protocol 254). VDP uses a UDP socket and carries the title's
+payload unchanged. The host does not implement Xbox IPsec, VDP encryption,
+Xbox broadcast authentication or interoperability with retail consoles.
+Two HLE clients use the same plaintext transport.
+
+The implemented socket entries are socket, bind, connect, send, sendto, recv,
+recvfrom, select, __WSAFDIsSet, ioctlsocket, setsockopt, getsockopt, shutdown,
+closesocket, WSAGetLastError, htonl and htons (including their inverse aliases).
+TCP is a client transport here; the verified boundary has no listen/accept
+entry. Sockets start blocking. FIONBIO (`0x8004667e`) switches modes, including
+back to blocking. FIONREAD (`0x4004667f`) reports available TCP bytes or the next
+UDP payload's size. A zero-length datagram remains readable. A short UDP receive
+copies the prefix, consumes the datagram and returns WSAEMSGSIZE (`10040`).
+MSG_PEEK leaves the datagram queued. Unsupported message flags and options
+return their Winsock errors.
+
+Socket failures, including an unpaired WSACleanup, return SOCKET_ERROR/INVALID_SOCKET (`0xffffffff`) and save a
+translated WSA error under `ExecCtx::thread_id`. WSAGetLastError does not consume
+it; successful calls leave it alone. Pointer errors return WSAEFAULT (`10014`).
+Secure-address APIs return their error code directly. The full stdcall frame is
+checked before execution, and malformed frames still use the runtime fault path.
+Guest sockaddr_in is 16 bytes: little-endian AF_INET (`2`), network-order port,
+four IPv4 octets and eight padding bytes. Guest fd_set is a 32-bit count followed
+by up to 64 32-bit handles; it is unrelated to the host's bitmap representation.
+select ignores nfds, filters the three guest sets and leaves timeval unchanged.
+A failed nonblocking TCP connect appears in exceptfds; SO_ERROR returns the
+translated error. Host waits release guest memory and HLE state locks. Close and
+final transport cleanup wake pending operations and invalidate guest handles.
+
+The title's socket path was checked at `0x00092bf0` (channel creation),
+`0x00092ae0` (bind, FIONBIO and broadcast), `0x000b53e0` (protocol selection),
+`0x000b4da0`/`0x000b4e70` (options), `0x000b52b0` (select),
+`0x000b5060` (recvfrom) and `0x00093730`/`0x000b5110` (sendto).
+The four transport channels are:
+
+| Channel | Guest port | Protocol | Default host port |
+|---|---:|---|---:|
+| Main game data | 1000 | VDP / UDP | 3074 |
+| System Link discovery | 1001 | UDP, SO_BROADCAST | 3075 |
+| Additional game data | 1005 | VDP / UDP | 3079 |
+| Additional game data | 1006 | VDP / UDP | 3080 |
+
+The option wrapper maps the game's options to SO_REUSEADDR (`4`), SO_LINGER
+(`0x80`), SO_BROADCAST (`0x20`), SO_SNDBUF (`0x1001`), SO_RCVBUF (`0x1002`) and
+Xbox's security option `0x4001`. Linger is a pair of guest 16-bit values,
+translated to the host layout. Buffer sizes, broadcast, reuse and TCP_NODELAY affect the host
+socket. The security option is accepted on UDP/TCP and retained for getsockopt;
+VDP rejects it, matching the library's protocol check at `0x003ce4d7`. The game
+sets it before TCP connects at `0x000b5205`. It does not change the HLE's plaintext
+transport. Socket type, SO_ERROR, keepalive, timeout and exclusive-address/disable-linger
+variants also have explicit handling. Unknown
+options return WSAENOPROTOOPT (`10042`). These option and QoS layouts follow the
+[public Winsock/XNet API declarations](https://github.com/Team-Resurgent/RXDK-SDK/blob/1dc30011768cf75366428f23380e099afa4dce0d/include/winsockx.h),
+checked against the retail call sites.
+
+Discovery sends the title's `broadcast-search` and `broadcast-reply` messages
+through the UDP channel at guest port 1001, using INADDR_BROADCAST
+(`255.255.255.255`) for both. `0x000b2ea0` sends search message 2 about every
+1500 ms through the call at `0x000b2f29`; the reply call at `0x00094097` sends
+message 3 to the same broadcast address and port. The message serializers are registered at `0x000ac800`; their payload encoding stays in the
+recompiled game. `0x00093730` chooses port 1001 for transport channel 3, then
+calls sendto. Receive polling drains the same channel with recvfrom. The HLE
+does not decode or alter these title packets. It replaces XNet's secure-address
+bookkeeping and console-specific broadcast wire format with host UDP. In LAN
+mode, SO_BROADCAST enables a real limited broadcast to base+1. Hosts should use
+the same base port and share a broadcast domain.
+
+XNADDR keeps the 36-byte layout described above: both IPv4 fields contain the
+host LAN address, wPortOnline contains the actual host base in network order,
+and the synthetic Ethernet identity includes the IP and both port bytes so
+local instances differ. The default base is 3074; guest ports 1000..1006 map to
+base plus their offset from 1000. Other ports pass through. XNetXnAddrToInAddr
+requires a registered XNKID and returns the peer's real IPv4, while retaining
+its full XNADDR, key ID and host base for later routing. XNetInAddrToXnAddr
+returns that record and optional key ID. recvfrom also learns a sender's base
+from the channel's source port before secure registration. Incoming channel
+ports are translated back to the guest's virtual port. A single IP can identify
+one remote endpoint in an HLE at a time; registering another base on that IP
+fails with WSAEADDRINUSE, instead of redirecting an existing peer.
+
+XNetCreateKey fills an 8-byte system-link ID and a 16-byte key from host OS
+randomness; XNetRandom fills the requested buffer. Register/unregister maintain
+a bounded key table. Unregistering a key removes its address associations and
+QoS listener. XNetConnect marks a known address connected immediately; status
+is IDLE (`0`) before it, CONNECTED (`2`) afterwards and LOST (`3`) for an unknown
+address. This is local address bookkeeping, not a handshake or reachability
+claim. No encryption or NAT traversal is attempted.
+
+For two instances on one machine, keep `LiveConfig.enabled = true` and use
+base ports at least seven apart. Accounts may be absent for System Link.
+Boot reads `H2_XNET_ADDR` and `H2_XNET_LOOPBACK_PEERS` only when Live is enabled;
+the latter is a comma-separated list of peer base endpoints on this host IPv4.
+With that list set, broadcast sends fan out to the listed endpoints, excluding
+the sender, rather than emitting a LAN broadcast. Unicast uses learned peer
+bases. The host routes these packets locally.
+
+Use the machine's LAN IPv4 in this recipe, illustrated with `192.168.1.50`.
+Halo treats `127.0.0.1` as an in-process loopback endpoint at `0x00093218` and
+changes channel routing for it; it is suitable for synthetic HLE tests, not
+for this title's two-instance setup. In the first instance's environment:
+
+```sh
+export H2_XNET_ADDR=192.168.1.50:31000
+export H2_XNET_LOOPBACK_PEERS=192.168.1.50:31010
+```
+
+In the second instance's environment:
+
+```sh
+export H2_XNET_ADDR=192.168.1.50:31010
+export H2_XNET_LOOPBACK_PEERS=192.168.1.50:31000
+```
+
+Launch each through a host that passes enabled LiveConfig to the boot entry
+points above. The environment variables select transport settings; they do not
+enable Live by themselves. The CLI client enable flag is outside this change.
+Choose System Link, host on one instance and search on the other. No server URL
+or account signing key participates in LAN traffic. An embedding host can avoid
+environment variables by passing `live_hle::NetworkConfig` to
+`Hle::with_network` or `boot::live_glue::install_with_network`.
+
+XNetQosListen retains enabled/disabled state, up to 1020 bytes of listener data
+and advertised bandwidth per key. It answers HLE-only UDP queries on base+2
+(default 3076). XNetQosLookup copies all guest inputs before issuing bounded
+queries, then returns an XNQOS header and 24-byte XNQOSINFO entries in guest
+memory. Pending count is zero. Responding peers have COMPLETE, TARGET_CONTACTED
+and, when present, DATA_RECEIVED flags. The actual listener data follows the
+array with guest pointers; no host pointer escapes. RTT is a fixed 5 ms and
+bandwidth defaults to 10 Mbit/s. Disabled listeners report TARGET_DISABLED.
+An unreachable peer completes as uncontacted with no invented data, after at
+most 50 ms per query. This is a compact HLE side protocol, not an implementation
+of the encrypted Xbox QoS protocol. Non-null work events and unknown flags
+return WSAEINVAL. Service QoS keeps its sign-in behavior from above.
+
+Peer QoS allocations use a claimed 1 MiB guest arena. QosRelease returns blocks
+to a coalescing free list; cleanup releases every outstanding record. Those
+pointers have a C allocation lifetime and must not be used after release. Task
+handles and service QoS keep the earlier monotonic 64 KiB allocation policy.
+Tests cover full 64-peer data records and repeated lookup/release without
+growing guest mappings.
+
+Real loopback tests drive these APIs through synthetic guest stacks and the
+runtime Runner. They exchange datagrams between two guests, discover and reply
+through broadcast fan-out, verify TCP connect/data/EOF/error paths, FIONBIO,
+FIONREAD, select, per-thread WSA errors, guest memory bounds, keys/address round
+trips, QoS listener data, cleanup and disabled boot wiring. These tests need
+permission to bind localhost sockets. No test builds or launches the game.
+The 75 remaining boundary entries still stop by name, including
+XNetTsAddrToInAddr, online matchmaking, stats, storage, messages and most friend
+operations. Actual lobby/gameplay progression has not been exercised.

@@ -17,6 +17,8 @@ pub struct LiveConfig {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("invalid Live network configuration: {0}")]
+    Network(String),
     #[error("reading Live accounts: {0}")]
     Read(#[from] std::io::Error),
     // Never format serde's input/type errors: the file may contain private keys.
@@ -92,7 +94,7 @@ pub(crate) fn parse_accounts(json: &[u8]) -> Result<Vec<Account>, ConfigError> {
 
 /// Ask the host routing table for its default-route IPv4 without sending a
 /// datagram. With no IPv4 route, an offline host uses loopback. Port 3074 is
-/// an address convention, not a bound listener in this milestone.
+/// the default host base for the title's virtual datagram channels.
 pub(crate) fn lan_address() -> SocketAddrV4 {
     let ip = (|| {
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
