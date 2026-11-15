@@ -501,7 +501,7 @@ impl<'a> Analyzer<'a> {
                     && guard.bounds(f.unguarded[i].1.memory_index().full_register32())
                 {
                     let (_, insn) = f.unguarded.swap_remove(i);
-                    self.jump_table(f, va, &insn, guard);
+                    self.jump_table(f, fstart, va, &insn, guard);
                 }
                 return;
             }
@@ -571,7 +571,7 @@ impl<'a> Analyzer<'a> {
                         f.returns |= !NORETURN_KERNEL.contains(&ord);
                     } else if is_table_jump(&insn) {
                         if guard.bounds(insn.memory_index().full_register32()) {
-                            self.jump_table(f, va, &insn, guard);
+                            self.jump_table(f, fstart, va, &insn, guard);
                         } else {
                             f.unguarded.push((va, insn));
                         }
@@ -638,12 +638,12 @@ impl<'a> Analyzer<'a> {
                 return;
             }
             for (va, insn) in std::mem::take(&mut f.unguarded) {
-                self.jump_table(f, va, &insn, Guard::default());
+                self.jump_table(f, start, va, &insn, Guard::default());
             }
         }
     }
 
-    fn jump_table(&mut self, f: &mut FuncWork, at: u32, insn: &Instruction, guard: Guard) {
+    fn jump_table(&mut self, f: &mut FuncWork, fstart: u32, at: u32, insn: &Instruction, guard: Guard) {
         let index = insn.memory_index().full_register32();
         let table = insn.memory_displacement32();
         let region = self.image.region(at);
@@ -696,6 +696,15 @@ impl<'a> Analyzer<'a> {
             if kind == SwitchKind::Unbounded && target == Some(0) && ok_slot && pending.len() < MAX_SWITCH_HOLES {
                 pending.push(i);
                 continue;
+            }
+            // Past a null, a word that only looks like a code address may
+            // be the next table or function, so the table goes on only for
+            // a case of its own: in this function's code before the table,
+            // and not a known start. Otherwise the table ends at the first
+            // null and the rest stays unclaimed.
+            let past_null = !holes.is_empty() || !pending.is_empty();
+            if past_null && !ok_target.is_some_and(|t| self.own_case(fstart, table, t)) {
+                break;
             }
             match (kind, ok_target, ok_slot) {
                 (_, Some(t), true) => {
@@ -1121,6 +1130,16 @@ impl<'a> Analyzer<'a> {
         self.scanned = scanned;
         self.scanned.extend(self.funcs.keys().copied());
         out.into_iter().collect()
+    }
+
+    /// Whether `t` can be a case of a switch in the function at `fstart`
+    /// with its table at `table`: compilers put the cases between the two,
+    /// and no function or label starts there. (Data words that hold it are
+    /// no evidence either way: one in DOLBY holds a case at 0x5a449.)
+    fn own_case(&self, fstart: u32, table: u32, t: u32) -> bool {
+        (fstart < t && t < table)
+            && !self.funcs.contains_key(&t)
+            && !self.labels.contains(&t)
     }
 
     /// Aligned words in data sections that point into code. Runs of two or

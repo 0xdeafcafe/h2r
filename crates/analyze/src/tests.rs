@@ -256,6 +256,10 @@ fn code_past_the_raw_data_is_zero_filled() {
     assert_eq!((text.size, text.code, text.unknown), (0x100, 3, 0));
     let insn = a.function_cfg(&x, TEXT).unwrap();
     assert_eq!(insn.blocks[&TEXT].end, TEXT + 3);
+    let mapped = image::mapped_bytes(&x, &x.sections[0]).unwrap();
+    assert_eq!(mapped.len(), 0x100);
+    assert_eq!(mapped[..2], [0xC2, 0x04]);
+    assert!(mapped[2..].iter().all(|b| *b == 0), "the tail past the file's bytes is zero");
 }
 
 #[test]
@@ -347,6 +351,87 @@ fn an_unguarded_table_skips_null_entries() {
         })
         .collect();
     assert_eq!(indices, [0, 1, 4]);
+}
+
+/// An unguarded `jmp [eax*4+0x11020]` at `TEXT` with `table` there and
+/// three small cases at 0x11008, 0x1100B and 0x1100E.
+fn unguarded_table(table: &[u32]) -> Analysis {
+    let words: Vec<u8> = table.iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]),
+        (0x11008, &[0x33, 0xC0, 0xC3]),
+        (0x1100B, &[0x40, 0x40, 0xC3]),
+        (0x1100E, &[0x48, 0x48, 0xC3]),
+        (0x11020, &words),
+    ]);
+    cfgs_of(code).0
+}
+
+#[test]
+fn an_unguarded_table_skips_at_most_four_nulls() {
+    let a = unguarded_table(&[0x11008, 0, 0, 0, 0, 0x1100B]);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (6, &vec![0x11008, 0x1100B], &vec![1, 2, 3, 4]));
+    let a = unguarded_table(&[0x11008, 0, 0, 0, 0, 0, 0x1100B]);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x11008], &vec![]));
+    assert_eq!(a.claim(0x11024).map(|c| c.0), Some('?'), "five nulls end the table");
+}
+
+#[test]
+fn a_null_does_not_lead_into_a_function_after_the_table() {
+    // A one-entry table, a null, then a function known from `.rdata` whose
+    // first word, 0x11068, happens to be a code address after the table.
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]),
+        (0x11008, &[0xC3]),
+        (0x11020, &0x11008u32.to_le_bytes()),
+        (0x11024, &[0; 4]),
+        (0x11028, &[0x68, 0x10, 0x01, 0x00, 0x00, 0x58, 0xC3]), // push 0x110; pop eax; ret
+        (0x11068, &[0xC3]),
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x11028]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.holes), (1, &vec![]));
+    assert!(a.functions.contains_key(&0x11028));
+    assert_eq!(a.claim(0x1102D), Some(('I', Some(0x11028))), "pop eax is code, not a table entry");
+    assert_eq!(a.claim(0x11024).map(|c| c.0), Some('?'));
+}
+
+#[test]
+fn a_null_does_not_join_two_tables() {
+    // Two tables one null apart; the second's case is after both.
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]),
+        (0x11008, &[0xC3]),
+        (0x11020, &0x11008u32.to_le_bytes()),
+        (0x11024, &[0; 4]),
+        (0x11028, &0x11060u32.to_le_bytes()),
+        (0x11060, &[0x33, 0xC0, 0xC3]),
+    ]);
+    let (a, _) = cfgs_of(code);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x11008], &vec![]));
+}
+
+#[test]
+fn a_null_does_not_lead_to_a_function_before_the_table() {
+    // The word after the null is between the code and the table, where
+    // cases go, but it is a function this one calls.
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x0B, 0x00, 0x00, 0x00]),             // call 0x11010
+        (0x11005, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x1100C, &[0xC3]),
+        (0x11010, &[0x33, 0xC0, 0xC3]),
+        (0x11020, &0x1100Cu32.to_le_bytes()),
+        (0x11024, &[0; 4]),
+        (0x11028, &0x11010u32.to_le_bytes()),
+    ]);
+    let (a, _) = cfgs_of(code);
+    let jt = &a.jump_tables[&0x11005];
+    assert_eq!((jt.count, &jt.holes), (1, &vec![]));
+    assert_eq!(a.functions.get(&0x11010).map(|f| f.source), Some(Source::Call));
 }
 
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
