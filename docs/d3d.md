@@ -583,15 +583,16 @@ and allocations are bounded before anything is read:
     pending pass (`gfx::Renderer::record`), with their vertices, indices
     and uniforms packed into upload rings, and submitted together. The
     pending pass is encoded as one render pass (no Metal render encoder
-    per draw, no attachment store and load between draws). Two kinds of
-    draw start a render pass of their own: one whose program can `discard`
+    per draw, no attachment store and load between draws). A draw after
+    one that writes only some colour channels starts a render pass of its
+    own, unless it writes the same ones and cannot `discard`
     (`PreparedShader::discards`: alpha test, alpha kill, a clip-plane
-    stage, the polygon stipple), and one after a draw that writes only
-    some colour channels, unless it writes the same ones. With those rules
-    the main menu's frames match one render pass per draw byte for byte;
-    `H2_GFX_MERGE_PASSES=fast` (`GfxBackend::set_merge_discards`)
-    keeps discarding draws merged except after a partly masked draw:
-    much cheaper in a level, a few edge pixels off.
+    stage, the polygon stipple). That is the fast rule, the default
+    (`GfxBackend::set_merge_discards`): much cheaper in a level, where a
+    few edge pixels can differ. The exact rule
+    (`H2_GFX_MERGE_PASSES=exact`) also gives every discarding draw a
+    render pass of its own; with it the main menu's frames match one
+    render pass per draw byte for byte.
     `GfxBackend::set_merge_passes(false)` gives one render pass per draw,
     the exact reference (docs/graphics.md, "Merged passes"). `GfxBackend::set_merge_check(Some(frame))` renders
     every pending pass of that frame both ways and prints what differs.

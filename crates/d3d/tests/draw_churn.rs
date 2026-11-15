@@ -56,12 +56,12 @@ struct Churn {
     masked_every: Option<u32>,
 }
 
-/// Merged passes (the default), merged in the fast mode, or one render
-/// pass per draw.
+/// Merged passes under the fast rule (the default) or the exact rule
+/// (`H2_GFX_MERGE_PASSES=exact`), or one render pass per draw.
 #[derive(Clone, Copy, PartialEq)]
 enum Mode {
-    Merged,
     Fast,
+    Exact,
     PerDraw,
 }
 
@@ -70,7 +70,7 @@ fn device(mode: Mode) -> Option<(Device<GfxBackend>, SparseMemory)> {
         Ok(ctx) => {
             let mut b = GfxBackend::new(ctx);
             b.set_merge_passes(mode != Mode::PerDraw);
-            b.set_merge_discards(mode == Mode::Fast);
+            b.set_merge_discards(mode != Mode::Exact);
             Some(create(b, UploadPolicy::Tracked))
         }
         Err(e) => {
@@ -218,10 +218,10 @@ fn draw_churn() {
         masked_every: Some(20),
         ..level
     };
-    run("merged, uniforms + textures", Mode::Merged, plain);
-    run("merged, level churn", Mode::Merged, level);
-    run("merged, level churn + masked", Mode::Merged, masked);
+    run("fast, uniforms + textures", Mode::Fast, plain);
     run("fast, level churn", Mode::Fast, level);
     run("fast, level churn + masked", Mode::Fast, masked);
+    run("exact, level churn", Mode::Exact, level);
+    run("exact, level churn + masked", Mode::Exact, masked);
     run("pass per draw, level churn", Mode::PerDraw, level);
 }

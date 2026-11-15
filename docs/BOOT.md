@@ -45,8 +45,8 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
-| `H2_GFX_MERGE_PASSES=0` | with `H2_BOOT_GFX` or in `h2 play`, one render pass per draw instead of the default merged passes (`GfxBackend::set_merge_passes`); about 2.5x slower; the exact reference, which merged passes matched on every menu frame checked |
-| `H2_GFX_MERGE_PASSES=fast` | merged passes where an alpha-tested (discarding) draw stays in the render pass unless the draw before it wrote only some colour channels (`GfxBackend::set_merge_discards`); far fewer render passes in a level, but not exact: a few edge pixels off by up to 4 levels after additive draws (docs/graphics.md, "Merged passes") |
+| `H2_GFX_MERGE_PASSES=0` | with `H2_BOOT_GFX` or in `h2 play`, one render pass per draw instead of the default merged passes (`GfxBackend::set_merge_passes`); about 2.5x slower; the exact reference |
+| `H2_GFX_MERGE_PASSES=exact` | merged passes under the exact rule: every alpha-tested (discarding) draw starts a render pass of its own (`GfxBackend::set_merge_discards(false)`). Matched one pass per draw on every menu frame checked, but a level frame has ~200 more render passes, ~40-75 us of CPU each. The default is the fast rule, which keeps a discarding draw merged unless the draw before it wrote only some colour channels; a few edge pixels in a level can differ by up to 4 levels (docs/graphics.md, "Merged passes"). `fast` names the default |
 | `H2_GFX_MERGE_CHECK=N` | with `H2_BOOT_GFX`, render each pending pass of frame N both merged and one pass per draw and print what differs, down to the draws involved (`GfxBackend::set_merge_check`; slow) |
 | `H2_RENDER_THREAD=0` | **On by default; `0` turns it off.** With `H2_BOOT_GFX` or in `h2 play`, run the `GfxBackend`'s work (shader preparation, encoding, uploads, submission, present, the `D3DSWAP_FINISH` wait) on a `d3d-render` thread (`d3d::ThreadedBackend`); the guest waits only for read-backs. Same frames and guest-visible state; see [render-thread.md](render-thread.md) |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
@@ -312,8 +312,9 @@ not CPU time. Samples are taken between scheduler slices at those presents,
 so boundaries can differ slightly from the backend's frame timestamps.
 Compare CPU as well as FPS when shared-machine load changes. Pixel-fidelity
 acceptance tests can set `H2_GFX_MERGE_PASSES=0` for the exact per-draw
-reference; merged passes matched it on every menu frame checked
-(docs/graphics.md, "Merged passes").
+reference, or `=exact` for merged passes under the exact rule, which
+matched it on every menu frame checked (docs/graphics.md, "Merged
+passes").
 
 ### Ranked blockers
 

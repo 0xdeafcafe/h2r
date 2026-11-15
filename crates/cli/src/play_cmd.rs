@@ -116,8 +116,10 @@ fn hosted(
     interrupted: Arc<AtomicBool>,
 ) -> boot::Host {
     let mut gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
-    // As for `h2 run`: passes are merged by default, and
-    // H2_GFX_MERGE_PASSES=0 gives one render pass per draw (docs/BOOT.md).
+    // As for `h2 run`: passes are merged by default (the fast rule;
+    // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the exact
+    // one), and H2_GFX_MERGE_PASSES=0 gives one render pass per draw
+    // (docs/BOOT.md).
     if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
         gfx.set_merge_passes(false);
     }

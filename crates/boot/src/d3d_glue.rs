@@ -60,9 +60,11 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     eprintln!("boot: gfx screenshot {swaps}: {e}");
                 }
             });
-            // Merged render passes are the default and pixel-identical to
-            // one render pass per draw; H2_GFX_MERGE_PASSES=0 gives the
-            // latter (about 3x slower), as an escape hatch.
+            // Merged render passes are the default, with the fast rule
+            // (alpha-tested draws merged too; a few edge pixels can differ
+            // from one render pass per draw). H2_GFX_MERGE_PASSES=exact
+            // gives the exact rule (read by GfxBackend::new) and =0 one
+            // render pass per draw (about 3x slower), as escape hatches.
             if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
                 backend.set_merge_passes(false);
             }

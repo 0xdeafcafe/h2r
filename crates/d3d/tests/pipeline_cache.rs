@@ -125,8 +125,8 @@ fn draws() -> Vec<ResolvedDraw> {
         }
     }
     // The second one alpha-tests, so its program discards: merged passes
-    // give it a render pass of its own, which must hold when its program
-    // comes from the cache too.
+    // under the exact rule give it a render pass of its own, which must
+    // hold when its program comes from the cache too.
     [(REG_V0, false), (REG_V1, true), (REG_V0, false)]
         .into_iter()
         .map(|(src, kills)| {
@@ -155,6 +155,12 @@ fn scratch() -> PathBuf {
     dir.join(d3d::pipeline_store::FILE_NAME)
 }
 
+/// `b` with the exact merge rule: every discarding draw starts a render pass.
+fn exact(mut b: GfxBackend) -> GfxBackend {
+    b.set_merge_discards(false);
+    b
+}
+
 /// Draws everything, presents, and returns the pixels.
 fn frame(b: &mut GfxBackend, draws: &[ResolvedDraw]) -> Vec<u8> {
     let color = b
@@ -181,7 +187,7 @@ fn second_run_builds_nothing_on_the_drawing_thread() {
     let me = std::thread::current().id();
 
     // First run: cold. Every pipeline is a miss and gets recorded.
-    let mut b = GfxBackend::new(ctx()).with_pipeline_cache(path.clone());
+    let mut b = exact(GfxBackend::new(ctx())).with_pipeline_cache(path.clone());
     let want = frame(&mut b, &draws);
     assert!(
         want.chunks(4).any(|p| p != [0, 0, 0, 0]),
@@ -208,7 +214,7 @@ fn second_run_builds_nothing_on_the_drawing_thread() {
 
     // Second run: warm. Prewarming finishes before the frame (presents
     // drive it, as frames do in the game).
-    let mut b = GfxBackend::new(ctx()).with_pipeline_cache(path.clone());
+    let mut b = exact(GfxBackend::new(ctx())).with_pipeline_cache(path.clone());
     let warm = b.create_surface(D3DFormat::A8R8G8B8, 8, 8, false).unwrap();
     let start = Instant::now();
     while b.renderer.cache().len() < built || b.renderer.cache().iter().any(|(_, p)| !p.is_ready())
@@ -239,7 +245,7 @@ fn second_run_builds_nothing_on_the_drawing_thread() {
 
     // Without the cache: same pixels, built at draw time, and the same as
     // one render pass per draw.
-    let mut b = GfxBackend::new(ctx());
+    let mut b = exact(GfxBackend::new(ctx()));
     assert_eq!(frame(&mut b, &draws), want);
     assert_eq!(b.batch_stats().render_passes, passes);
     let mut b = GfxBackend::new(ctx());

@@ -454,9 +454,11 @@ draw, all in):
 | fast mode, churn + an RGB-only draw every 20 (31 render passes) | - | 12.7-13.8 |
 | one render pass per draw (600) | 109-122 | 105-118 |
 
-The fast mode (`H2_GFX_MERGE_PASSES=fast`) splits a discarding draw only
-after a partly masked draw. It is off by default because the merge
-self-check finds a few edge pixels off in a level frame (graphics.md).
+The fast rule (`H2_GFX_MERGE_PASSES=fast`) splits a discarding draw only
+after a partly masked draw. It was off by default at first because the
+merge self-check finds a few edge pixels off in a level frame
+(graphics.md); it is now the default, and `H2_GFX_MERGE_PASSES=exact`
+restores the rule measured as "merged" above.
 One run of The Heretic with it on (presents 4220-4520, cold pipeline
 cache, `H2_GFX_MERGE_CHECK=4216`, otherwise the command above) met a load
 average of 100-160 from other lanes, so it does not compare with the

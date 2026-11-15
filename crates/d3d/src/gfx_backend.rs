@@ -44,10 +44,11 @@
 //! and snapshots, destruction, present) first submits the pending pass, so
 //! the GPU sees the same operations in the same order as one pass per draw
 //! would give it. The pending pass is encoded as one render pass, except
-//! that a draw whose program can `discard`, or that follows a draw writing
-//! only some colour channels, starts a render pass of its own (see
-//! [`GfxBackend::set_merge_passes`]); with merging off every draw gets its
-//! own render pass.
+//! that a draw that follows a draw writing only some colour channels starts
+//! a render pass of its own, and under the exact rule so does every draw
+//! whose program can `discard` (see [`GfxBackend::set_merge_passes`] and
+//! [`GfxBackend::set_merge_discards`]); with merging off every draw gets
+//! its own render pass.
 //!
 //! Visibility tests: a draw issued while `SET_ZPASS_PIXEL_COUNT_ENABLE` is
 //! set has its samples counted into a [`gfx::occlusion::PixelCounter`]
@@ -168,7 +169,9 @@ impl GfxBackend {
             pending: None,
             stats: BatchStats::default(),
             merge_passes: true,
-            merge_discards: std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "fast"),
+            merge_discards: merge_discards_from_env(
+                std::env::var("H2_GFX_MERGE_PASSES").ok().as_deref(),
+            ),
             counter: None,
             reports: HashMap::new(),
             depth_bits: None,
@@ -187,27 +190,30 @@ impl GfxBackend {
     /// Encode the draws of a pending pass into one render pass (the
     /// default) or one render pass per draw (both in one submission).
     /// Merged passes cost much less (no Metal render encoder per draw, no
-    /// attachment store and load between draws). A draw whose program can
-    /// `discard` (`PreparedShader::discards`), or that follows a draw
-    /// writing only some colour channels (unless it writes the same ones),
-    /// still starts a render pass of its own, because on Apple GPUs its
-    /// edge pixels otherwise depend on earlier draws in the pass. With
-    /// those rules the main menu matches one pass per draw byte for byte;
-    /// one pass per draw is the exact reference (docs/graphics.md, "Merged
-    /// passes").
+    /// attachment store and load between draws). A draw that follows a
+    /// draw writing only some colour channels (unless it writes the same
+    /// ones, and cannot `discard`) still starts a render pass of its own,
+    /// because on Apple GPUs its edge pixels otherwise depend on earlier
+    /// draws in the pass; under the exact rule
+    /// ([`set_merge_discards`](Self::set_merge_discards) off) so does every
+    /// draw whose program can `discard` (`PreparedShader::discards`). With
+    /// the exact rule the main menu matches one pass per draw byte for
+    /// byte; one pass per draw is the exact reference (docs/graphics.md,
+    /// "Merged passes").
     pub fn set_merge_passes(&mut self, merge: bool) {
         self.merge_passes = merge;
     }
 
-    /// Faster, inexact merged passes: a draw whose program can `discard`
-    /// starts a render pass of its own only after a draw that writes some
-    /// colour channels and not others ([`merge_split`]), instead of always.
-    /// In a level that is most of the render passes (every alpha-tested
-    /// draw had one), and each costs about 40-75 us of CPU in wgpu and
-    /// Metal. Not exact: at The Heretic's frame 4216 the merge self-check
+    /// The fast merge rule (the default): a draw whose program can
+    /// `discard` starts a render pass of its own only after a draw that
+    /// writes some colour channels and not others ([`merge_split`]),
+    /// instead of always (the exact rule, `false`). In a level that is most
+    /// of the render passes (every alpha-tested draw had one under the
+    /// exact rule), and each costs about 40-75 us of CPU in wgpu and Metal.
+    /// Not proven exact: at The Heretic's frame 4216 the merge self-check
     /// finds 61 edge pixels in two passes off by up to 4 levels, after
-    /// additive draws (docs/graphics.md, "Merged passes"). Off by default;
-    /// `H2_GFX_MERGE_PASSES=fast` turns it on when the backend is made.
+    /// additive draws (docs/graphics.md, "Merged passes").
+    /// `H2_GFX_MERGE_PASSES=exact` turns it off when the backend is made.
     pub fn set_merge_discards(&mut self, on: bool) {
         self.merge_discards = on;
     }
@@ -618,12 +624,12 @@ impl GfxBackend {
                 .record(&self.ctx, &target, draw)
                 .map_err(|e| e.to_string())?
         };
-        // With merged passes, a draw that can discard, or that follows a
-        // draw writing only some colour channels (unless it writes the same
-        // ones), starts a render pass of its own: on Apple GPUs its edge
-        // pixels otherwise depend on earlier draws in the pass
-        // (docs/graphics.md, "Merged passes"). The inexact fast mode splits
-        // a discarding draw only after a partly masked one.
+        // With merged passes, a draw that follows a draw writing only some
+        // colour channels (unless it writes the same ones) starts a render
+        // pass of its own: on Apple GPUs its edge pixels otherwise depend
+        // on earlier draws in the pass (docs/graphics.md, "Merged passes").
+        // The fast rule (the default) splits a discarding draw only after a
+        // partly masked one; the exact rule splits every discarding draw.
         let prev_mask = self
             .pending
             .as_ref()
@@ -1226,6 +1232,14 @@ impl Backend for GfxBackend {
     }
 }
 
+/// The fast merge rule ([`GfxBackend::set_merge_discards`]) for a value
+/// of `H2_GFX_MERGE_PASSES`: on unless it is `exact`. (`0`, one render
+/// pass per draw, is applied by the embedder through
+/// [`GfxBackend::set_merge_passes`] and needs no rule.)
+fn merge_discards_from_env(value: Option<&str>) -> bool {
+    value != Some("exact")
+}
+
 /// Whether a merged draw writing `mask` starts a render pass of its own
 /// after a draw in the same pending pass that wrote `prev` (`None` for the
 /// first draw): after a partly masked draw, unless it writes the same
@@ -1319,8 +1333,17 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
 
 #[cfg(test)]
 mod tests {
-    use super::merge_split;
+    use super::{merge_discards_from_env, merge_split};
     use wgpu::ColorWrites as W;
+
+    #[test]
+    fn the_fast_merge_rule_is_the_default_and_exact_turns_it_off() {
+        assert!(merge_discards_from_env(None));
+        for v in ["fast", "1", "0", ""] {
+            assert!(merge_discards_from_env(Some(v)), "{v:?}");
+        }
+        assert!(!merge_discards_from_env(Some("exact")));
+    }
 
     #[test]
     fn merged_draws_split_only_after_a_partly_masked_draw() {
