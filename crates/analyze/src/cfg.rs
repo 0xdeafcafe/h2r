@@ -58,7 +58,7 @@ pub struct JumpTable {
     /// Address of entry 0 (the displacement of the `jmp`'s memory operand).
     pub table: u32,
     pub kind: SwitchKind,
-    /// Entries read, i.e. `targets.len()`.
+    /// Entries read, holes included: `targets.len() + holes.len()`.
     pub count: u32,
     /// The guard's bound on the value indexing the table the code reads
     /// first: entries for [`SwitchKind::Bounded`], byte-table entries for
@@ -68,9 +68,21 @@ pub struct JumpTable {
     /// the code indexes it. A bit-flag switch may aim this base before the
     /// real table data; the length is the guard's bound.
     pub index_table: Option<(u32, u32)>,
-    /// One target per entry, in table order, duplicates kept, so
-    /// `targets[i]` is where index `i` goes.
+    /// One target per entry that is not a hole, in table order, duplicates
+    /// kept. [`JumpTable::cases`] pairs them with their indices.
     pub targets: Vec<u32>,
+    /// Indices of null entries between targets, ascending. Only an
+    /// [`SwitchKind::Unbounded`] table has them: an enum switch with no
+    /// range check fills the values it never sees with 0. The guest
+    /// jumping through one is an unknown target.
+    pub holes: Vec<u32>,
+}
+
+impl JumpTable {
+    /// `(index, target)` for every entry that is not a hole.
+    pub fn cases(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        (0..self.count).filter(|i| self.holes.binary_search(i).is_err()).zip(self.targets.iter().copied())
+    }
 }
 
 /// One function's control flow.
@@ -477,10 +489,7 @@ impl<'a> CfgBuilder<'a> {
             Flow::TailIndirect => vec![out(EdgeKind::TailIndirect, None)],
             Flow::Switch => {
                 let jt = &self.analysis.jump_tables[&va];
-                (0..)
-                    .zip(&jt.targets)
-                    .map(|(index, &t)| to(EdgeKind::Switch { site: va, table: jt.table, index }, t))
-                    .collect()
+                jt.cases().map(|(index, t)| to(EdgeKind::Switch { site: va, table: jt.table, index }, t)).collect()
             }
             Flow::Call(_, true) => vec![to(EdgeKind::CallContinuation, next)],
             Flow::Call(CallTarget::Kernel { ordinal, .. }, false) => {

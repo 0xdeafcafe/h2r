@@ -967,6 +967,7 @@ fn switch_records_its_shape_and_whether_the_table_is_read_only() {
         bound: Some(2),
         index_table: None,
         targets: vec![0x1100, 0x1200],
+        holes: vec![],
     };
     let ro = Env { readonly: vec![(0x2000, 0x3000)], ..Default::default() };
     let ir = lower_one(&code, &ro, Site::Switch(&bounded));

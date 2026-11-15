@@ -312,6 +312,43 @@ fn data_that_decodes_is_not_a_function() {
     assert_eq!(a.rejected.get(&(Source::DataPointer, ConflictKind::Implausible)), Some(&3), "{:?}", a.rejected);
 }
 
+#[test]
+fn an_unguarded_table_skips_null_entries() {
+    // `dec eax; jmp [eax*4+table]` with no range check: the values the
+    // enum never takes are null entries, with cases after them. The table
+    // ends at the int3 fill, and the trailing null is not a hole.
+    let mut table = Vec::new();
+    for t in [0x11008u32, 0x1100B, 0, 0, 0x1100E, 0] {
+        table.extend_from_slice(&t.to_le_bytes());
+    }
+    let code = pieces(&[
+        (0x11000, &[0x48]),                                     // dec eax
+        (0x11001, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x11008, &[0x33, 0xC0, 0xC3]),                         // xor eax, eax; ret
+        (0x1100B, &[0x40, 0x40, 0xC3]),
+        (0x1100E, &[0x48, 0x48, 0xC3]),
+        (0x11020, &table),
+    ]);
+    let (a, cfgs) = cfgs_of(code);
+    let jt = &a.jump_tables[&0x11001];
+    assert_eq!((jt.kind, jt.count), (SwitchKind::Unbounded, 5));
+    assert_eq!(jt.targets, [0x11008, 0x1100B, 0x1100E]);
+    assert_eq!(jt.holes, [2, 3]);
+    assert_eq!(jt.cases().collect::<Vec<_>>(), [(0, 0x11008), (1, 0x1100B), (4, 0x1100E)]);
+    assert_eq!(a.claim(0x11033), Some(('d', Some(TEXT))));
+    assert_eq!(a.claim(0x11034).map(|c| c.0), Some('?'), "the trailing null is not claimed");
+    assert!(!a.functions.contains_key(&0x1100E), "the case after the holes is not a function of its own");
+    let indices: Vec<u32> = cfgs[&TEXT].blocks[&TEXT]
+        .edges
+        .iter()
+        .filter_map(|e| match e.kind {
+            cfg::EdgeKind::Switch { index, .. } => Some(index),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(indices, [0, 1, 4]);
+}
+
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
 fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
     let data = xbe_with(&code);
@@ -376,6 +413,7 @@ fn cfg_switch_lists_every_table_entry() {
             bound: Some(3),
             index_table: None,
             targets: vec![0x11040, 0x11041, 0x11042],
+            holes: vec![],
         }
     );
     let f = &cfgs[&0x11020];

@@ -44,6 +44,8 @@ const TRIAL_LIMIT: usize = 50_000;
 const MAX_SWITCH: u32 = 4096;
 /// Entries read from a jump table with no recognisable guard.
 const MAX_UNBOUNDED_SWITCH: u32 = 512;
+/// Consecutive null entries an unguarded table may skip over.
+const MAX_SWITCH_HOLES: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Source {
@@ -680,17 +682,31 @@ impl<'a> Analyzer<'a> {
 
         let mut read = 0;
         let mut targets = Vec::new();
+        let mut holes = Vec::new();
+        // Null entries of an unguarded table not yet followed by a target.
+        let mut pending = Vec::new();
         for i in 0..count {
             let slot = table + i * 4;
             let target = self.xbe.read_u32(slot).ok();
             let ok_target = target.filter(|t| self.image.region(*t) == region);
             let ok_slot = self.image.check_data(slot, 4, self.overlay()).is_ok();
+            // An enum switch with no range check leaves values it never
+            // sees as null entries, with targets after them. A short run
+            // of nulls is a hole only if a target follows it.
+            if kind == SwitchKind::Unbounded && target == Some(0) && ok_slot && pending.len() < MAX_SWITCH_HOLES {
+                pending.push(i);
+                continue;
+            }
             match (kind, ok_target, ok_slot) {
                 (_, Some(t), true) => {
+                    for h in pending.drain(..) {
+                        self.claim_data(table + h * 4, 4);
+                        holes.push(h);
+                    }
                     self.claim_data(slot, 4);
                     f.todo.push(t);
                     targets.push(t);
-                    read += 1;
+                    read = i + 1;
                 }
                 (SwitchKind::Unbounded, _, _) => break,
                 _ => {
@@ -712,7 +728,7 @@ impl<'a> Analyzer<'a> {
                 SwitchKind::Bounded => Some(count),
             };
             self.jump_tables
-                .insert(at, JumpTable { site: at, table, kind, count: read, bound, index_table, targets });
+                .insert(at, JumpTable { site: at, table, kind, count: read, bound, index_table, targets, holes });
         }
     }
 
