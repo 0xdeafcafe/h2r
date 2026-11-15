@@ -212,6 +212,13 @@ impl d3d::backend::Backend for Headless {
     fn create_texture_target(&mut self, format: gfx::D3DFormat, width: u32, height: u32) -> Result<u32, String> {
         self.0.create_texture_target(format, width, height)
     }
+    fn can_sample_surfaces(&self) -> bool {
+        self.0.can_sample_surfaces()
+    }
+    fn surface_texture(&mut self, surface: u32) -> Result<Option<u32>, String> {
+        // Never called: the recorder does not sample surfaces.
+        self.0.surface_texture(surface)
+    }
 }
 
 /// [`install`] on the caller's backend (a host window's `GfxBackend`, with

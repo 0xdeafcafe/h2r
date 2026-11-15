@@ -237,6 +237,20 @@ impl<B: Backend> Backend for DiagBackend<B> {
             Tracked { id, inner }
         }))
     }
+    fn can_sample_surfaces(&self) -> bool {
+        self.inner.can_sample_surfaces()
+    }
+    fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.surface_texture(surface)?;
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            if let Some(c) = self.capturing() {
+                c.append("frame.txt", &format!("surface_texture {surface:?} -> tex {id}"));
+            }
+            Tracked { id, inner }
+        }))
+    }
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.inner.clear_pixel_count()
     }
