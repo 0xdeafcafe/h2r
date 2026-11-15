@@ -10,13 +10,14 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{DeviceEvent, DeviceId, ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::PhysicalKey;
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::audio_out::{AudioOut, FALLBACK_RATE};
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
+use crate::overlay::OverlayRenderer;
 use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::scale;
 use crate::worker::{GuestFn, GuestWorker};
@@ -112,6 +113,7 @@ struct Gpu {
     ctx: GfxContext,
     surface: WindowSurface,
     compositor: Compositor,
+    overlay: OverlayRenderer,
     source: FrameSource,
 }
 
@@ -146,6 +148,9 @@ struct Shell {
     closing: bool,
     status: Status,
     frames_at_exit: FrameStats,
+    /// The banner generation last drawn.
+    banner_drawn: u64,
+    restart_requested: bool,
 }
 
 pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitReport> {
@@ -177,6 +182,8 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
             epoch: now,
         },
         frames_at_exit: FrameStats::default(),
+        banner_drawn: 0,
+        restart_requested: false,
     };
     if let Some(c) = &shell.config.closer {
         let proxy = shell.proxy.clone();
@@ -199,6 +206,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         guest: shell.exit.take().unwrap_or(GuestExit::NotStarted),
         frames: shell.frames_at_exit,
         pacing: *shell.pace_stats.lock().unwrap_or_else(|e| e.into_inner()),
+        restart_requested: shell.restart_requested,
     })
 }
 
@@ -278,6 +286,7 @@ impl Shell {
         self.gpu = Some(Gpu {
             window,
             compositor: Compositor::new(&ctx.device),
+            overlay: OverlayRenderer::new(&ctx.device),
             ctx,
             surface,
             source,
@@ -319,6 +328,20 @@ impl Shell {
             self.config.filter,
             wgpu::Color::BLACK,
         );
+        if let Some(banner) = &self.config.banner {
+            self.banner_drawn = banner.generation();
+            if let Some(notice) = banner.visible() {
+                g.overlay.draw(
+                    &g.ctx.device,
+                    &g.ctx.queue,
+                    &mut enc,
+                    &notice,
+                    &view,
+                    g.surface.config.format,
+                    g.surface.size(),
+                );
+            }
+        }
         g.ctx.queue.submit([enc.finish()]);
         g.window.pre_present_notify();
         g.ctx.queue.present(target);
@@ -535,6 +558,22 @@ impl ApplicationHandler<UserEvent> for Shell {
                         return;
                     }
                 }
+                if let Some(banner) = self.config.banner.clone()
+                    && matches!(code, KeyCode::F5 | KeyCode::F6)
+                {
+                    if down && !event.repeat {
+                        if code == KeyCode::F6 {
+                            banner.dismiss();
+                            if let Some(g) = &self.gpu {
+                                g.window.request_redraw();
+                            }
+                        } else if banner.restart_offered() {
+                            self.restart_requested = true;
+                            self.close(event_loop, "F5: restart for update");
+                        }
+                    }
+                    return;
+                }
                 if let (Some(kb), Some(name)) = (&self.keyboard, keymap::key_name(code)) {
                     if down {
                         kb.key_down(name);
@@ -578,6 +617,12 @@ impl ApplicationHandler<UserEvent> for Shell {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.update_status();
+        // A banner change shows without waiting for the guest's next present.
+        if let (Some(banner), Some(g)) = (&self.config.banner, &self.gpu)
+            && banner.generation() != self.banner_drawn
+        {
+            g.window.request_redraw();
+        }
         if !self.closing {
             event_loop.set_control_flow(ControlFlow::WaitUntil(
                 self.status.last + Duration::from_secs(1),

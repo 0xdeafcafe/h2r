@@ -19,6 +19,7 @@ wgpu = "30"
 winit = "0.30"
 cpal = "0.18"
 pollster = "1"
+font8x8 = { version = "0.3", default-features = false, features = ["unicode"] }
 thiserror.workspace = true
 anyhow.workspace = true
 

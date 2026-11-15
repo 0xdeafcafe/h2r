@@ -23,6 +23,7 @@ pub mod input_pump;
 pub mod keymap;
 pub mod lifecycle;
 pub mod mailbox;
+pub mod overlay;
 pub mod pacing;
 pub mod scale;
 mod shell;
@@ -41,6 +42,7 @@ use input::bindings::Bindings;
 pub use frame::{Compositor, Filter, FrameError, FrameSink, FrameSource, FrameStats, ShownFrame};
 pub use input_pump::{PumpReport, pump_input};
 pub use lifecycle::{Control, Lifecycle};
+pub use overlay::{Banner, Notice, NoticeKind};
 pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
 pub use scale::{DisplayAspect, Scaling, Viewport};
 
@@ -86,6 +88,11 @@ pub struct AppConfig {
     pub log_status: bool,
     /// Lets another thread (a signal watcher) close the window.
     pub closer: Option<Closer>,
+    /// A notice drawn over the game frame (`h2 play --follow`). F6 hides
+    /// it; F5 closes the window with [`ExitReport::restart_requested`] set
+    /// while it offers a restart. Neither key reaches the guest while a
+    /// banner is configured.
+    pub banner: Option<Banner>,
 }
 
 impl Default for AppConfig {
@@ -110,6 +117,7 @@ impl Default for AppConfig {
             shutdown_timeout: Duration::from_secs(3),
             log_status: false,
             closer: None,
+            banner: None,
         }
     }
 }
@@ -197,6 +205,8 @@ pub struct ExitReport {
     pub guest: GuestExit,
     pub frames: FrameStats,
     pub pacing: PaceStats,
+    /// The window closed because F5 accepted the banner's restart offer.
+    pub restart_requested: bool,
 }
 
 /// The guest thread's view of the host. `Send`; moved into the guest thread.
