@@ -82,6 +82,7 @@ fn save_png(
 }
 
 fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime, backend: B) -> anyhow::Result<Installed> {
+    let (backend, draw_stats) = crate::d3d_diag::DiagBackend::new(backend);
     // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
     // goes back to re-reading every resource on every use.
     let upload = if std::env::var_os("H2_BOOT_UPLOAD_ALWAYS").is_some() {
@@ -115,11 +116,25 @@ fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime
     let r = out.unwrap();
     let entries: Vec<u32> = r.implemented.iter().chain(&r.stopping).map(|e| e.0).collect();
     install_write_barrier(rt, &device, &entries)?;
-    let dev: Arc<Mutex<d3d::Device<B>>> = device;
+    let dev = device;
     Ok(Installed {
         report: Box::new(move || {
-            let d = dev.lock().unwrap();
-            format!("stats {:?}; last stop {:?}", d.stats(), d.last_stop())
+            let mut d = dev.lock().unwrap();
+            // Device events by kind and reason, most frequent first.
+            let mut ev: std::collections::BTreeMap<String, u64> = Default::default();
+            for e in d.take_events() {
+                let k = match e {
+                    d3d::Event::DrawSkipped { entry, reason } => format!("draw skipped in {entry}: {reason}"),
+                    d3d::Event::BadState(b) => format!("bad state {b:?}"),
+                    other => format!("{other:?}"),
+                };
+                let k: String = k.chars().take(200).collect();
+                *ev.entry(k).or_default() += 1;
+            }
+            let mut ev: Vec<_> = ev.into_iter().collect();
+            ev.sort_by_key(|e| std::cmp::Reverse(e.1));
+            let ev: String = ev.iter().take(40).map(|(k, n)| format!("\n  event {n:>8}  {k}")).collect();
+            format!("stats {:?}; last stop {:?}{ev}\n{}", d.stats(), d.last_stop(), draw_stats.lock().unwrap().report())
         }),
         implemented: r.implemented.len(),
         stopping: r.stopping.len(),

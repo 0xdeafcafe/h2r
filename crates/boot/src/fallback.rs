@@ -216,6 +216,19 @@ fn resume_jump(target: u32) -> TransferAbi {
 
 const MAX_STEPS: u64 = 50_000_000;
 
+/// The interpreter counted `reads` rdtsc values up from a seed it took
+/// from the runtime; read the runtime counter until it is past all of
+/// them. Each runtime read moves at least `TSC_MIN_STEP`, so this is
+/// about `reads / 64` reads, and none when there were no interpreted reads
+/// past the seed's own step.
+fn publish_tsc(reads: u64, mut read: impl FnMut() -> u64) {
+    if reads < runtime::tsc::TSC_MIN_STEP {
+        return;
+    }
+    let target = read().wrapping_add(reads);
+    while read() < target {}
+}
+
 /// Interpret from `cpu.eip`.
 fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     let tables = TABLES.get().unwrap();
@@ -224,7 +237,8 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     let mut icpu = to_interp(cpu);
     // rdtsc in the interpreter counts up from here; seed it from the
     // runtime's guest TSC (kernel clock) before taking the memory lock.
-    icpu.tsc = rt.read_tsc();
+    let seed = rt.read_tsc();
+    icpu.tsc = seed;
     let mut steps = 0u64;
     let (mut x87n, mut mn): (u64, HashMap<String, u64>) = (0, HashMap::new());
     let result = {
@@ -288,6 +302,10 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
         }
     };
     drop(st);
+    // Hand the interpreted reads back (the memory lock is released, so the
+    // clock may be read): the next generated rdtsc must not repeat or go
+    // back on a value the interpreter returned.
+    publish_tsc(icpu.tsc.wrapping_sub(seed), || rt.read_tsc());
     {
         let mut s = STATS.lock().unwrap();
         let s = s.get_or_insert_default();
@@ -389,6 +407,24 @@ mod tests {
 
     unsafe extern "C" fn one(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
         TransferAbi::ret(0)
+    }
+
+    #[test]
+    fn interpreted_tsc_reads_are_published() {
+        // Runtime counter at 1000, stepping by 64; the interpreter used 300.
+        let mut last = 1000u64;
+        let mut read = || {
+            last += runtime::tsc::TSC_MIN_STEP;
+            last
+        };
+        publish_tsc(300, &mut read);
+        assert!(read() > 1000 + 300);
+        let mut n = 0;
+        publish_tsc(10, || {
+            n += 1;
+            0
+        });
+        assert_eq!(n, 0, "fewer reads than one step need nothing");
     }
 
     #[test]

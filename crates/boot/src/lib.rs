@@ -10,6 +10,7 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
 pub mod fallback;
