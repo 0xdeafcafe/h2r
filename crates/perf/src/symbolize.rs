@@ -280,13 +280,14 @@ pub struct ImageView {
     pub frames: Vec<ViewFrame>,
 }
 
-/// The preferred (link-time) virtual address of `pc`, which is what the
+/// The preferred (link-time) virtual address of `pc`, for a `base` that
+/// came from `dladdr`, which is what the
 /// image's symbol and DWARF tables are written in. On Mach-O that is
 /// `pc - slide`, with the slide the load address of the header minus the
 /// preferred `__TEXT` vmaddr: 0 for a dylib, 0x100000000 for an
 /// executable. Elsewhere, `pc - base` plus addr2line's relative base
 /// (right for PIE ELF and PE).
-pub fn preferred_address(pc: u64, base: u64, relative_base: u64) -> u64 {
+fn preferred_address(pc: u64, base: u64, relative_base: u64) -> u64 {
     match preferred_text(base) {
         Some(text) => pc.wrapping_sub(base.wrapping_sub(text)),
         None => pc.wrapping_sub(base).wrapping_add(relative_base),
@@ -294,10 +295,12 @@ pub fn preferred_address(pc: u64, base: u64, relative_base: u64) -> u64 {
 }
 
 /// The preferred vmaddr of the `__TEXT` segment of the 64-bit Mach-O image
-/// whose header is mapped at `base`.
+/// whose header is mapped at `base`. Private on purpose: `base` must be a
+/// loaded image's header, so the only callers pass `dladdr`'s
+/// `dli_fbase` (through [`preferred_address`] from [`Symbolizer`]).
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
-pub fn preferred_text(base: u64) -> Option<u64> {
+fn preferred_text(base: u64) -> Option<u64> {
     const MH_MAGIC_64: u32 = 0xfeed_facf;
     const LC_SEGMENT_64: u32 = 0x19;
     if base == 0 {
@@ -336,7 +339,7 @@ pub fn preferred_text(base: u64) -> Option<u64> {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn preferred_text(_: u64) -> Option<u64> {
+fn preferred_text(_: u64) -> Option<u64> {
     None
 }
 
@@ -347,6 +350,17 @@ pub fn preferred_text(_: u64) -> Option<u64> {
 /// lookup) is seen. Each image's symbol table and line tables (including
 /// macOS debug maps, which point at the objects) are read with addr2line
 /// on first use and cached by path and load address.
+///
+/// Header parsing reads raw memory, so it is not public: it only ever sees
+/// image bases `dladdr` returned.
+///
+/// ```compile_fail
+/// perf::symbolize::preferred_text(1);
+/// ```
+///
+/// ```compile_fail
+/// perf::symbolize::preferred_address(0, 1, 0);
+/// ```
 #[derive(Default)]
 pub struct Symbolizer {
     pcs: HashMap<u64, Frame>,

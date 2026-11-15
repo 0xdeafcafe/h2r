@@ -501,15 +501,25 @@ fn wait_begin_slow(generation: u32, thread: u32, name: &'static str) {
 /// span on the thread's track.
 #[inline]
 pub fn wait_end(thread: u32) {
-    if token(Cat::Kernel).is_some() {
-        wait_end_slow(thread);
+    if let Some(g) = token(Cat::Kernel) {
+        wait_end_slow(g, thread);
     }
 }
 
 #[cold]
-fn wait_end_slow(thread: u32) {
-    let Some((start, name, generation)) = state().waits.remove(&thread) else {
-        return;
+fn wait_end_slow(generation: u32, thread: u32) {
+    after_token();
+    let (start, name) = {
+        let mut s = state();
+        // An end from a capture that has since ended must not take a wait
+        // the current capture recorded for the same thread.
+        if !s.active || s.generation != generation {
+            return;
+        }
+        match s.waits.remove(&thread) {
+            Some((start, name, _)) => (start, name),
+            None => return,
+        }
     };
     let mut e = ev(
         Cat::Kernel,
@@ -830,6 +840,29 @@ mod tests {
         wait_end(5);
         let t = stop();
         assert_eq!(t.count("new wait"), 1);
+        assert_eq!(t.count("old wait"), 0);
+    }
+
+    #[test]
+    fn a_wait_end_held_up_across_a_restart_leaves_the_new_wait() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::all());
+        wait_begin(6, "old wait");
+        interleave(
+            || wait_end(6),
+            || {
+                let _ = stop();
+                start(Config::all());
+                wait_begin(6, "new wait");
+            },
+        );
+        wait_end(6);
+        let t = stop();
+        assert_eq!(
+            t.count("new wait"),
+            1,
+            "the late end must not take B's wait"
+        );
         assert_eq!(t.count("old wait"), 0);
     }
 
