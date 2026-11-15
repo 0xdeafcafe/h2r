@@ -216,6 +216,71 @@ fn a_callback_stops_the_drain_right_after_itself() {
     ));
 }
 
+/// Guest memory that refuses writes to one range (the level's texels).
+struct DenyWrites<'a> {
+    inner: &'a mut SparseMemory,
+    from: u32,
+    len: u32,
+}
+
+impl GuestMemory for DenyWrites<'_> {
+    fn read(&self, addr: u32, out: &mut [u8]) -> Result<(), d3d::GuestError> {
+        self.inner.read(addr, out)
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), d3d::GuestError> {
+        let end = addr as u64 + data.len() as u64;
+        if addr < self.from + self.len && end > self.from as u64 {
+            return Err(d3d::GuestError {
+                addr,
+                len: data.len() as u32,
+            });
+        }
+        self.inner.write(addr, data)
+    }
+}
+
+/// Review recheck P2: a write-back that fails at the callback boundary
+/// must not lose the callback. The error is returned unlatched (as for any
+/// write-back), and the retry writes back and hands out the same callback
+/// before the work queued after it runs.
+#[test]
+fn a_failed_write_back_keeps_the_callback_for_the_retry() {
+    let (mut d, mut m) = rec();
+    texture(&mut m, 0);
+    let surf = MISC + 0x7200;
+    let mut l =
+        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+    l.parent = TEX_HEADER;
+    l.write(&mut m, surf).unwrap();
+    d.backend.readback_fill = 0x5A;
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    insert_callback(&mut m, 0x003F_0100, 0x1234, 7);
+    stipple_row0(&mut m, 9);
+    let texels = 0x8000_0000 | TEX_DATA;
+    let e = d
+        .drain_until_callback(&mut DenyWrites {
+            inner: &mut m,
+            from: texels,
+            len: 256,
+        })
+        .unwrap_err();
+    assert!(matches!(e, D3dError::Guest(_)), "{e}");
+    assert_eq!(d.fault(), None, "not latched, like other write-backs");
+    // Direct draining cannot deliver it, and does not skip past it.
+    assert!(d.commit(&mut m).is_err());
+    assert_eq!(d.stipple_pattern()[0], 0);
+    // Memory works again: the same callback, written back first, and the
+    // work after it still waits.
+    let cb = d.drain_until_callback(&mut m).unwrap().unwrap();
+    assert_eq!((cb.function, cb.context), (0x003F_0100, 0x1234));
+    assert_eq!(m.read_u32(texels).unwrap(), 0x5A5A_5A5A);
+    assert_eq!(d.stipple_pattern()[0], 0);
+    assert_eq!(d.drain_until_callback(&mut m).unwrap(), None);
+    assert_eq!(d.stipple_pattern()[0], 9);
+    assert_eq!(d.stats().push_callbacks, 1);
+}
+
 #[test]
 fn a_callback_outside_the_glue_stops_and_latches() {
     let (mut d, mut m) = rec();

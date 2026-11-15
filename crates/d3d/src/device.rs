@@ -424,6 +424,9 @@ pub struct Device<B: Backend> {
     /// The push-buffer callback being delivered, between
     /// [`Device::begin_push_callback`] and [`Device::end_push_callback`].
     active_callback: Option<PushCallback>,
+    /// A callback the drain reached whose write-back failed: handed out by
+    /// the next [`Device::drain_until_callback`] once the write-back works.
+    undelivered: Option<PushCallback>,
 }
 
 fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
@@ -500,6 +503,7 @@ impl<B: Backend> Device<B> {
             display: display::Display::default(),
             rtt: HashMap::new(),
             active_callback: None,
+            undelivered: None,
         }
     }
 
@@ -908,6 +912,15 @@ impl<B: Backend> Device<B> {
         if let Some(f) = &self.fault {
             return Err(D3dError::Faulted(f.clone()));
         }
+        if let Some(cb) = self.undelivered {
+            return Err(D3dError::unimplemented(
+                "push buffer",
+                format!(
+                    "callback {:#010x}({:#x}) at {:#010x} is waiting for delivery: only the runtime glue can call the guest (Device::drain_until_callback)",
+                    cb.function, cb.context, cb.at
+                ),
+            ));
+        }
         match self.drain(mem, false) {
             Ok(_) => Ok(()),
             Err(e) => {
@@ -942,6 +955,11 @@ impl<B: Backend> Device<B> {
     /// before it produced (Halo's `0x24970` reads a target's texels through
     /// `0x24a70`).
     ///
+    /// If that write-back fails, the error is returned and the callback is
+    /// kept, not lost: like other write-back failures it is not latched,
+    /// and the next call retries the write-back and then returns the same
+    /// callback, before anything queued after it runs.
+    ///
     /// While a callback is being delivered ([`Device::begin_push_callback`])
     /// this fails with [`D3dError::Invalid`] and drains nothing: the work
     /// after the callback must not run until it returns, and the device
@@ -966,10 +984,23 @@ impl<B: Backend> Device<B> {
         if let Some(f) = &self.fault {
             return Err(D3dError::Faulted(f.clone()));
         }
+        // A callback whose write-back failed last time: retry the write-back
+        // and hand it out before draining anything after it.
+        if let Some(cb) = self.undelivered {
+            self.flush_render_targets(mem)?;
+            self.undelivered = None;
+            return Ok(Some(cb));
+        }
         match self.drain(mem, true) {
             Ok(Some(cb)) => {
                 self.stats.push_callbacks += 1;
-                self.flush_render_targets(mem)?;
+                // Like any other write-back failure (KickOff, Swap, ...),
+                // not latched: the targets stay dirty and the next call
+                // tries again. The callback waits with them.
+                if let Err(e) = self.flush_render_targets(mem) {
+                    self.undelivered = Some(cb);
+                    return Err(e);
+                }
                 Ok(Some(cb))
             }
             Ok(None) => Ok(None),
