@@ -73,10 +73,12 @@ In priority order:
    [docs/perf.md](docs/perf.md) for the tools.
 3. More campaign levels.
 4. Opt-in enhancements, off by default and later exposed in an expanded
-   in-game settings menu:
+   in-game settings menu ([docs/settings-menu.md](docs/settings-menu.md)):
    - 60 and 120 fps, decoupling rendering from the game's 30 Hz tick.
-   - 4K and other high-resolution rendering.
-   - Recovering the E3 2003 stencil-shadow lighting engine.
+   - 4K and other high-resolution rendering
+     ([docs/high-resolution.md](docs/high-resolution.md)).
+   - Recovering the E3 2003 stencil-shadow lighting engine
+     ([docs/e3-lighting.md](docs/e3-lighting.md)).
 5. Later: a map editing kit, and TV targets (see
    [docs/app.md](docs/app.md)).
 
@@ -211,6 +213,7 @@ Running the game:
 - [BOOT.md](docs/BOOT.md): `h2 build` and `h2 run`, the boot runner's flags and environment, current state and blockers
 - [app.md](docs/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`)
 - [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
+- [settings-menu.md](docs/settings-menu.md): design for an expanded in-game settings menu for the opt-in enhancements (not built)
 - [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
 - [kernel-imports.md](docs/kernel-imports.md): work list of every kernel import Halo 2 uses
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
@@ -223,6 +226,7 @@ Running the game:
 - [fastmem-4k.md](docs/fastmem-4k.md): measured 4 KiB guest translation and write-bit variants; slower than phase-1 inline access, so not adopted
 - [perf-budget.md](docs/perf-budget.md): where a main-menu frame's time goes, and the plan to 30 fps
 - [frame-budget.md](docs/frame-budget.md): an in-level frame budget, the worst frames and their causes, and what a worst frame under 33 ms needs
+- [high-framerate.md](docs/high-framerate.md): design for opt-in 60 and 120 fps that keeps the 30 Hz tick exact (super bounces included): host-side interpolated replay, prior art, determinism test (not built)
 - [performance.md](docs/performance.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default) and runtime counters
 
 Graphics:
@@ -230,6 +234,8 @@ Graphics:
 - [d3d.md](docs/d3d.md): the guest-facing Direct3D 8 replacement: entries, device model, push buffer, render targets, vblank (`crates/d3d`)
 - [graphics.md](docs/graphics.md): D3D8 state and textures on wgpu (`crates/gfx`)
 - [shaders.md](docs/shaders.md): NV2A vertex microcode, register combiners, fog and shadow maps to WGSL (`crates/shaders`)
+- [high-resolution.md](docs/high-resolution.md): design for opt-in 4K and other internal resolutions: which surfaces scale, what the guest may observe, tests, prior art (not implemented)
+- [e3-lighting.md](docs/e3-lighting.md): design for opt-in E3 2003-style stencil shadows and per-pixel lighting: the evidence, what retail kept, phases and risks (not implemented)
 
 Audio and movies:
 
@@ -255,6 +261,7 @@ Data formats and tags:
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [structure-bsp.md](docs/structure-bsp.md): render models and structure BSP geometry, and the viewer (`crates/tags`, `crates/viewer`)
 - [ui.md](docs/ui.md): user-interface tags (wgit, wgtz, wigl, skin) (`crates/tags`)
+- [keyboard-charset.md](docs/keyboard-charset.md): the on-screen keyboard's characters, what players use, and a design for extending them (not built)
 
 Engine:
 
