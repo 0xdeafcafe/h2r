@@ -302,7 +302,7 @@ fn bumpers_are_a_monochrome_pair_with_the_pressed_one_lit() {
     let keys = KeyLabels::new();
     let right = icon(IconSet::Xbox360, Button::Black, 18, &keys).unwrap();
     let left = icon(IconSet::Xbox360, Button::White, 18, &keys).unwrap();
-    assert_eq!((right.width, right.height), (37, 18));
+    assert_eq!((right.width, right.height), (45, 18));
     for icon in [&right, &left] {
         // White at run levels only, like the retail trigger and stick pairs,
         // so the game tints it with the text and the stream needs no literals.
@@ -320,20 +320,16 @@ fn bumpers_are_a_monochrome_pair_with_the_pressed_one_lit() {
             .map(|p| u32::from(p >> 12))
             .sum()
     };
-    assert!(weight(&right, 20..37) > 2 * weight(&right, 0..17));
-    assert!(weight(&left, 0..17) > 2 * weight(&left, 20..37));
-    // Both bumpers are drawn in both pictures, and one is the other mirrored.
-    assert!(weight(&right, 0..17) > 0 && weight(&left, 20..37) > 0);
-    let w = usize::from(left.width);
-    for (l, r) in left.pixels.chunks(w).zip(right.pixels.chunks(w)) {
-        assert_eq!(l, r.iter().rev().copied().collect::<Vec<u16>>());
-    }
-    // A PlayStation pad's L1 and R1 are the same pictures.
-    assert_eq!(
+    assert!(weight(&right, 24..45) > 2 * weight(&right, 0..21));
+    assert!(weight(&left, 0..21) > 2 * weight(&left, 24..45));
+    // Both bumpers are drawn. Labels stay readable when the lit side changes;
+    // they are not mirrored, and PlayStation uses its own L1/R1 names.
+    assert!(weight(&right, 0..21) > 0 && weight(&left, 24..45) > 0);
+    assert_ne!(
         icon(IconSet::PlayStation, Button::Black, 18, &keys).unwrap(),
         right
     );
-    assert_eq!(
+    assert_ne!(
         icon(IconSet::PlayStation, Button::White, 18, &keys).unwrap(),
         left
     );
@@ -420,7 +416,18 @@ fn sets_replace_only_what_differs_from_the_xbox_pad() {
     assert_eq!(replaced(IconSet::Xbox360), [Black, White]);
     assert_eq!(
         replaced(IconSet::PlayStation),
-        [A, B, X, Y, Black, White, Start, Back]
+        [
+            A,
+            B,
+            X,
+            Y,
+            Black,
+            White,
+            LeftTrigger,
+            RightTrigger,
+            Start,
+            Back
+        ]
     );
     assert_eq!(replaced(IconSet::Keyboard).len(), BUTTON_UNITS.len());
     // `replaces` and `icon` agree for every set and button.
@@ -457,7 +464,7 @@ fn each_set_has_its_own_code_units_inside_the_icon_range() {
     assert_eq!(shown_unit(IconSet::Xbox360, 0xe104, &keys), 0xe204);
     assert_eq!(shown_unit(IconSet::Xbox360, 0xe100, &keys), 0xe100);
     assert_eq!(shown_unit(IconSet::PlayStation, 0xe100, &keys), 0xe220);
-    assert_eq!(shown_unit(IconSet::PlayStation, 0xe106, &keys), 0xe106);
+    assert_eq!(shown_unit(IconSet::PlayStation, 0xe106, &keys), 0xe226);
     assert_eq!(shown_unit(IconSet::Keyboard, 0xe111, &keys), 0xe251);
     assert_eq!(
         shown_unit(IconSet::Keyboard, 0xe100, &KeyLabels::new()),
@@ -555,8 +562,8 @@ fn choice_parses_and_resolves() {
         auto.resolve(Some("Generic Gamepad"), true, false),
         IconSet::Xbox360
     );
-    // No pad name: pads enabled wins over the keyboard; neither keeps retail.
-    assert_eq!(auto.resolve(None, true, true), IconSet::Xbox360);
+    // Before discovery prefer the keyboard; neither keeps retail.
+    assert_eq!(auto.resolve(None, true, true), IconSet::Keyboard);
     assert_eq!(auto.resolve(None, false, true), IconSet::Keyboard);
     assert_eq!(auto.resolve(None, false, false), IconSet::Xbox);
     // A fixed set ignores the devices.
@@ -612,7 +619,7 @@ fn button_font() -> Vec<u8> {
     }
     let mut f = build(19, 5, 0, &glyphs, &[]);
     // As on the disc: unused private-use units all point at one filler record.
-    for unit in 0xe200..=0xe3ffusize {
+    for unit in (0xe200..=0xe3ffusize).chain([0xffff]) {
         let o = crate::CHARMAP_OFFSET + unit * 4;
         f[o..o + 4].copy_from_slice(&2u32.to_le_bytes());
     }
@@ -627,7 +634,7 @@ fn replacements_add_every_set_beside_the_retail_glyphs() {
     assert!(alias_range_free(&font));
     let reps = replacements(&font, &keys);
     // Two bumpers, eight PlayStation pictures, every keyboard button.
-    assert_eq!(reps.len(), 2 + 8 + BUTTON_UNITS.len());
+    assert_eq!(reps.len(), 2 + 10 + BUTTON_UNITS.len());
     let out = apply(&data, &reps).unwrap();
     let patched = Font::parse(&out).unwrap();
     assert_eq!(
@@ -758,4 +765,37 @@ fn a_font_that_uses_the_sets_code_units_is_left_alone() {
     let font = Font::parse(&data).unwrap();
     assert!(!alias_range_free(&font));
     assert!(replacements(&font, &keys()).is_empty());
+}
+
+#[test]
+fn shared_real_aliases_are_not_mistaken_for_filler() {
+    let mut data = button_font();
+    let real = Font::parse(&data)
+        .unwrap()
+        .glyph_index(0xe100)
+        .to_le_bytes();
+    for unit in [0xe220, 0xe221] {
+        let offset = crate::CHARMAP_OFFSET + unit * 4;
+        data[offset..offset + 4].copy_from_slice(&real);
+    }
+    let font = Font::parse(&data).unwrap();
+    assert!(!alias_range_free(&font));
+    assert!(replacements(&font, &keys()).is_empty());
+}
+
+#[test]
+fn face_footprint_and_bevel_fit_the_original_cell() {
+    let face = icon(IconSet::PlayStation, Button::B, 18, &KeyLabels::new()).unwrap();
+    // The visible ball occupies rows 2..18 of an 18-pixel cell.
+    assert!(face.pixels[..32].iter().all(|p| p >> 12 == 0));
+    assert!(face.pixels[32..48].iter().any(|p| p >> 12 > 0));
+    assert!(face.pixels[17 * 16..].iter().any(|p| p >> 12 > 0));
+    let brightness = |x: usize, y: usize| {
+        let p = face.pixels[y * 16 + x];
+        ((p >> 8) & 15) + ((p >> 4) & 15) + (p & 15)
+    };
+    assert!(
+        brightness(3, 5) > brightness(12, 14),
+        "upper-left bevel must catch the light"
+    );
 }

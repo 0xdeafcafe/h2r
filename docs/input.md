@@ -338,7 +338,9 @@ can only control player two. The same primary pad is retained until unplugged.
 
 The combined pad also records which half the player used last
 (`input::active::ActiveDevice`, from `KeyboardMouse::active_device`): the
-keyboard and mouse, an Xbox-style pad or a PlayStation pad (by its name). The
+keyboard and mouse, an Xbox-style pad or a PlayStation pad (by its name).
+Fresh presses and motion select the device; held buttons, key autorepeat and
+small pad jitter do not take the selection back. Slow mouse look counts too. The
 runner uses it to pick the button icons ([button-icons.md](button-icons.md)).
 
 The combined virtual pad remains connected when hardware disappears and

@@ -7,6 +7,7 @@
 //! The glyph cache is keyed by code unit, so changing set needs no flush: the
 //! next string drawn looks up the other units.
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use font::icons::{
     BUTTON_UNITS, Button, IconChoice, IconSet, KeyIcon, KeyLabels, MouseIcon, key_label,
@@ -27,7 +28,7 @@ pub const GLYPH_LOOKUP_CALLBACK: u32 = 0x0001_f490;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IconOptions {
     pub choice: IconChoice,
-    /// Physical pads are enabled, so `auto` starts on pad icons.
+    /// Physical pads are enabled (fallback when no keyboard is available).
     pub gamepads: bool,
 }
 
@@ -46,8 +47,8 @@ pub fn choice_from_env() -> anyhow::Result<Option<IconChoice>> {
 /// What the keyboard set shows for each button, from the bindings: the first
 /// input bound to the control. A stick shows its four keys together when
 /// each has a one-character label ("WASD"), otherwise its "up" key; the right
-/// stick shows the mouse when mouse look drives it. An unbound control has no
-/// entry and keeps its retail glyph.
+/// stick shows the mouse when mouse look drives it. An unbound control
+/// draws a dash cap instead of suggesting a nonexistent button.
 pub fn key_labels(bindings: &Bindings) -> KeyLabels {
     use Control as C;
     let first = |c: Control| -> Option<KeyIcon> {
@@ -77,9 +78,7 @@ pub fn key_labels(bindings: &Bindings) -> KeyLabels {
     };
     let mut out = KeyLabels::new();
     let mut put = |b: Button, icon: Option<KeyIcon>| {
-        if let Some(icon) = icon {
-            out.insert(b, icon);
-        }
+        out.insert(b, icon.unwrap_or_else(|| KeyIcon::Key("-".into())));
     };
     for (b, c) in [
         (Button::A, C::A),
@@ -136,6 +135,7 @@ pub struct Icons {
     initial: IconSet,
     active: Option<ActiveDevice>,
     keys: KeyLabels,
+    available: Arc<AtomicU64>,
 }
 
 impl Icons {
@@ -164,6 +164,7 @@ impl Icons {
                 .resolve(None, options.gamepads, bindings.is_some()),
             active,
             keys: bindings.map(key_labels).unwrap_or_default(),
+            available: Arc::new(AtomicU64::new(u64::MAX)),
         }
     }
 
@@ -190,35 +191,75 @@ impl Icons {
 
     /// The code unit to draw for `unit` right now.
     pub fn shown(&self, unit: u16) -> u16 {
-        shown_unit(self.current(), unit, &self.keys)
+        let shown = shown_unit(self.current(), unit, &self.keys);
+        if alias_bit(shown).is_some_and(|bit| self.available.load(Ordering::Relaxed) & bit == 0) {
+            unit
+        } else {
+            shown
+        }
     }
 
     pub fn font_rewrite(&self) -> FontRewrite {
         FontRewrite {
             keys: self.keys.clone(),
+            available: Arc::clone(&self.available),
         }
     }
+}
+
+fn alias_bit(unit: u16) -> Option<u64> {
+    font::icons::ALIAS_BASES
+        .iter()
+        .enumerate()
+        .find_map(|(set, (_, base))| {
+            let offset = unit.checked_sub(*base)?;
+            (offset < BUTTON_UNITS.len() as u16)
+                .then(|| 1u64 << (set * BUTTON_UNITS.len() + usize::from(offset)))
+        })
 }
 
 /// Adds the icon sets to every font file under `maps\fonts`.
 pub struct FontRewrite {
     keys: KeyLabels,
+    available: Arc<AtomicU64>,
 }
 
 impl FontRewrite {
     /// The font with the icon sets added, or `None` if it is not a font or
     /// has nothing to add.
     pub fn patch(&self, original: &[u8]) -> Option<Vec<u8>> {
-        let font = font::Font::parse(original).ok()?;
-        let new = replacements(&font, &self.keys);
-        if new.is_empty() {
-            return None;
-        }
-        font::patch::apply(original, &new).ok()
+        let patched = (|| {
+            let font = font::Font::parse(original).ok()?;
+            let new = replacements(&font, &self.keys);
+            if new.is_empty() {
+                return None;
+            }
+            let out = font::patch::apply(original, &new).ok()?;
+            font::Font::parse(&out).ok()?.validate().ok()?;
+            let mask = new
+                .iter()
+                .filter_map(|r| alias_bit(r.unit))
+                .fold(0, |mask, bit| mask | bit);
+            Some((out, mask))
+        })();
+        // Every opened font must support a substitution. A missing glyph or
+        // declined rewrite disables it globally; never draw a filler or a
+        // mod's unrelated glyph. Existing original code points remain intact.
+        self.available.fetch_and(
+            patched.as_ref().map_or(0, |(_, mask)| *mask),
+            Ordering::Relaxed,
+        );
+        patched.map(|(out, _)| out)
     }
 }
 
 impl vfs::Rewrite for FontRewrite {
+    fn skipped(&mut self, path: &str) {
+        self.available.store(0, Ordering::Relaxed);
+        crate::log::note(&format!(
+            "icons: {path} exceeds the rewrite limit; keeping original prompts"
+        ));
+    }
     fn wants(&self, path: &str) -> bool {
         let p = path.to_ascii_lowercase();
         p.starts_with("maps\\fonts\\") && !p.ends_with(".txt")
@@ -317,14 +358,17 @@ mod tests {
         let k = key_labels(&b);
         // The first input listed is the one shown.
         assert_eq!(k[&Button::A], KeyIcon::Mouse(MouseIcon::Forward));
-        // Unbound: no entry, so the retail glyph stays.
-        assert!(!k.contains_key(&Button::B));
+        // Unbound: show a dash instead of a nonexistent physical button.
+        assert_eq!(k[&Button::B], KeyIcon::Key("-".into()));
         // A stick with a long-named key shows its up key alone.
         assert_eq!(k[&Button::LeftStick], KeyIcon::Key("\u{2191}".into()));
         assert_eq!(k[&Button::RightStick], KeyIcon::Key("IJKL".into()));
-        // No keys and no mouse look: nothing to show for the right stick.
+        // No keys and no mouse look: the right stick is unbound.
         let none = Bindings::from_toml("[mouse]\nlook = false").unwrap();
-        assert!(!key_labels(&none).contains_key(&Button::RightStick));
+        assert_eq!(
+            key_labels(&none)[&Button::RightStick],
+            KeyIcon::Key("-".into())
+        );
     }
 
     #[test]
@@ -336,8 +380,8 @@ mod tests {
         assert!(ps.enabled());
         assert_eq!(ps.current(), IconSet::PlayStation);
         assert_eq!(ps.shown(0xe100), 0xe220);
-        // Triggers keep the retail picture on a PlayStation pad.
-        assert_eq!(ps.shown(0xe106), 0xe106);
+        // The trigger pair is labelled L2/R2 on a PlayStation pad.
+        assert_eq!(ps.shown(0xe106), 0xe226);
         let xbox = Icons::with_parts(options("xbox", true), Some(&b), Some(active));
         assert!(!xbox.enabled());
         assert_eq!(xbox.shown(0xe100), 0xe100);
@@ -349,9 +393,9 @@ mod tests {
         let b = Bindings::default();
         let icons = Icons::with_parts(options("auto", true), Some(&b), Some(active.clone()));
         assert!(icons.enabled());
-        // Before any input: pads are enabled, so pad icons.
-        assert_eq!(icons.current(), IconSet::Xbox360);
-        assert_eq!((icons.shown(0xe104), icons.shown(0xe100)), (0xe204, 0xe100));
+        // Until device discovery runs, show the available keyboard.
+        assert_eq!(icons.current(), IconSet::Keyboard);
+        assert_eq!((icons.shown(0xe104), icons.shown(0xe100)), (0xe244, 0xe240));
         active.set(DeviceKind::Keyboard);
         assert_eq!((icons.shown(0xe104), icons.shown(0xe100)), (0xe244, 0xe240));
         active.set(DeviceKind::PlayStation);
@@ -384,5 +428,162 @@ mod tests {
         let mut r = Icons::with_parts(options("auto", true), None, None).font_rewrite();
         assert_eq!(r.rewrite("maps\\fonts\\junk", b"not a font"), None);
         assert_eq!(r.rewrite("maps\\fonts\\empty", &[]), None);
+    }
+    // A synthetic font, with blank record 0 and solid button records. No
+    // disc data is used by the rewrite/hook contract tests.
+    fn synthetic_font(units: &[u16]) -> Vec<u8> {
+        let end = font::RECORDS_OFFSET + (units.len() + 1) * font::RECORD_LEN;
+        let mut data = vec![0; end];
+        let put = |data: &mut Vec<u8>, at: usize, n: u32| {
+            data[at..at + 4].copy_from_slice(&n.to_le_bytes())
+        };
+        put(&mut data, font::HEADER_OFFSET, font::MAGIC);
+        put(&mut data, font::HEADER_OFFSET + 4, 18);
+        put(
+            &mut data,
+            font::HEADER_OFFSET + 0xc,
+            (units.len() + 1) as u32,
+        );
+        for (i, unit) in units.iter().enumerate() {
+            put(
+                &mut data,
+                font::CHARMAP_OFFSET + usize::from(*unit) * 4,
+                (i + 1) as u32,
+            );
+            let at = font::RECORDS_OFFSET + (i + 1) * font::RECORD_LEN;
+            let stream = font::encode::encode_pixels(&[0xffff; 16 * 18]);
+            for (off, n) in [
+                (0, 16u16),
+                (2, stream.len() as u16),
+                (4, 16),
+                (6, 18),
+                (10, 18),
+            ] {
+                data[at + off..at + off + 2].copy_from_slice(&n.to_le_bytes());
+            }
+            let offset = data.len() as u32;
+            put(&mut data, at + 12, offset);
+            data.extend(stream);
+        }
+        let size = (data.len() - end) as u32;
+        put(&mut data, font::HEADER_OFFSET + 0x18, size);
+        data
+    }
+
+    #[test]
+    fn failed_rewrite_disables_alias_lookup() {
+        let icons = Icons::with_parts(options("playstation", false), None, None);
+        let rewrite = icons.font_rewrite();
+        assert_eq!(icons.shown(0xe100), 0xe220);
+        assert!(rewrite.patch(b"invalid font").is_none());
+        assert_eq!(icons.shown(0xe100), 0xe100);
+    }
+
+    #[test]
+    fn only_successfully_written_aliases_are_selected() {
+        let icons = Icons::with_parts(options("playstation", false), None, None);
+        let rewrite = icons.font_rewrite();
+        let bytes = rewrite.patch(&synthetic_font(&[0xe100])).unwrap();
+        let f = font::Font::parse(&bytes).unwrap();
+        f.validate().unwrap();
+        assert_eq!(icons.shown(0xe100), 0xe220);
+        assert_ne!(f.glyph_index(icons.shown(0xe100)), 0);
+        assert_eq!(icons.shown(0xe101), 0xe101);
+        // A later font must not re-enable an alias absent from an earlier one.
+        rewrite.patch(&synthetic_font(&[0xe100, 0xe101])).unwrap();
+        assert_eq!(icons.shown(0xe101), 0xe101);
+    }
+
+    #[test]
+    fn occupied_alias_keeps_original_lookup_and_file() {
+        let icons = Icons::with_parts(options("playstation", false), None, None);
+        let bytes = synthetic_font(&[0xe100, 0xe220]);
+        assert!(icons.font_rewrite().patch(&bytes).is_none());
+        assert_eq!(icons.shown(0xe100), 0xe100);
+    }
+
+    #[test]
+    fn hooks_rewrite_only_the_code_unit_and_delegate_to_the_original() {
+        use runtime::guest::Permissions;
+        use runtime::{
+            CpuAbi, Dispatch, ExecCtx, ExecCtxOpaque, Guest, Runner, Runtime, TransferAbi,
+        };
+        unsafe extern "C" fn original(
+            cpu: *mut CpuAbi,
+            _: *mut ExecCtxOpaque,
+            selector: u32,
+        ) -> TransferAbi {
+            // SAFETY: the runtime supplies its live CPU for the call.
+            unsafe {
+                (*cpu).ecx = selector;
+            }
+            TransferAbi::stop(0)
+        }
+        let mut guest = Guest::new();
+        guest.map_zeroed(0x1000, 0x1000, Permissions::RW).unwrap();
+        guest.map_zeroed(0x140000, 0x1000, Permissions::RX).unwrap();
+        guest.map_zeroed(0x1f000, 0x1000, Permissions::RX).unwrap();
+        let mut dispatch = Dispatch::default();
+        for addr in [GLYPH_LOOKUP, GLYPH_LOOKUP_CALLBACK] {
+            // SAFETY: the synthetic original follows the generated-handler ABI.
+            unsafe { dispatch.register_generated(addr, runtime::cpu::ABI_VERSION, original) }
+                .unwrap();
+        }
+        let rt = Runtime::new(guest, dispatch);
+        let active = ActiveDevice::default();
+        let icons = Arc::new(Icons::with_parts(
+            options("auto", true),
+            Some(&Bindings::default()),
+            Some(active.clone()),
+        ));
+        install(&rt, icons).unwrap();
+        for kind in [
+            DeviceKind::PlayStation,
+            DeviceKind::Keyboard,
+            DeviceKind::Xbox,
+        ] {
+            active.set(kind);
+            let expected = match kind {
+                DeviceKind::PlayStation => 0xe220,
+                DeviceKind::Keyboard => 0xe240,
+                DeviceKind::Xbox => 0xe100,
+            };
+            for (addr, arg) in [(GLYPH_LOOKUP, 4), (GLYPH_LOOKUP_CALLBACK, 12)] {
+                for unit in [0xe100, 0x41] {
+                    for offset in [4, 8, 12, 16] {
+                        rt.memory().set_u32(0x1800 + offset, 0x1234).unwrap();
+                    }
+                    rt.memory()
+                        .set_u32(0x1800 + arg, 0xabcd0000 | unit)
+                        .unwrap();
+                    let mut cpu = CpuAbi {
+                        esp: 0x1800,
+                        eax: 7,
+                        ..Default::default()
+                    };
+                    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+                    Runner::default().run(&mut cpu, &mut ctx, addr);
+                    assert_eq!(
+                        cpu.ecx, addr,
+                        "original must execute with its entry selector"
+                    );
+                    assert_eq!((cpu.eax, cpu.esp), (7, 0x1800));
+                    for offset in [4, 8, 12, 16] {
+                        let want = if offset == arg {
+                            0xabcd0000 | if unit == 0xe100 { expected } else { unit }
+                        } else {
+                            0x1234
+                        };
+                        assert_eq!(rt.memory().u32(0x1800 + offset).unwrap(), want);
+                    }
+                }
+            }
+        }
+    }
+    #[test]
+    fn an_oversized_font_disables_aliases_too() {
+        let icons = Icons::with_parts(options("playstation", false), None, None);
+        icons.font_rewrite().skipped("maps\\fonts\\large");
+        assert_eq!(icons.shown(0xe100), 0xe100);
     }
 }

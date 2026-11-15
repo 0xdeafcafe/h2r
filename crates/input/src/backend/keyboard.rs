@@ -58,6 +58,7 @@ pub struct KeyboardMouse {
 
 struct Inner {
     bindings: Bindings,
+    activity: u64,
     keys: HashSet<String>,
     mouse: HashSet<MouseButton>,
     /// Mouse motion the guest has not read yet.
@@ -103,6 +104,7 @@ impl KeyboardMouse {
         KeyboardMouse {
             inner: Arc::new(Mutex::new(Inner {
                 bindings,
+                activity: 0,
                 keys: HashSet::new(),
                 mouse: HashSet::new(),
                 delta: (0.0, 0.0),
@@ -118,10 +120,14 @@ impl KeyboardMouse {
     }
 
     /// The last-used device of the pad this keyboard belongs to. The combined
-    /// player-one pad (`KeyboardFallback`) keeps it current; on its own a
-    /// keyboard pad never sets it.
+    /// player-one pad (`KeyboardFallback`) tracks the physical pad; the
+    /// keyboard itself records fresh bound key and mouse events.
     pub fn active_device(&self) -> crate::active::ActiveDevice {
         self.active.clone()
+    }
+
+    pub(crate) fn activity_serial(&self) -> u64 {
+        self.lock().activity
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -154,9 +160,20 @@ impl KeyboardMouse {
 
     /// Key pressed. Returns false if the name is not a known key.
     pub fn key_down(&self, name: &str) -> bool {
-        canonical_key(name)
-            .map(|k| self.lock().keys.insert(k))
-            .is_some()
+        let Some(key) = canonical_key(name) else {
+            return false;
+        };
+        let mut i = self.lock();
+        let bound = i
+            .bindings
+            .bind
+            .values()
+            .any(|inputs| inputs.contains(&Input::Key(key.clone())));
+        if i.keys.insert(key) && i.enabled && bound {
+            i.activity = i.activity.wrapping_add(1);
+            self.active.set(crate::active::DeviceKind::Keyboard);
+        }
+        true
     }
 
     pub fn key_up(&self, name: &str) -> bool {
@@ -168,7 +185,15 @@ impl KeyboardMouse {
     pub fn mouse_button(&self, b: MouseButton, down: bool) {
         let mut i = self.lock();
         if down {
-            i.mouse.insert(b);
+            let bound = i
+                .bindings
+                .bind
+                .values()
+                .any(|inputs| inputs.contains(&Input::Mouse(b)));
+            if i.mouse.insert(b) && i.enabled && bound {
+                i.activity = i.activity.wrapping_add(1);
+                self.active.set(crate::active::DeviceKind::Keyboard);
+            }
         } else {
             i.mouse.remove(&b);
         }
@@ -185,6 +210,14 @@ impl KeyboardMouse {
             {
                 i.drop_motion();
                 i.since = Some(now);
+            }
+            if i.enabled
+                && i.bindings.mouse.look
+                && i.bindings.mouse.sensitivity > 0.0
+                && (dx != 0.0 || dy != 0.0)
+            {
+                i.activity = i.activity.wrapping_add(1);
+                self.active.set(crate::active::DeviceKind::Keyboard);
             }
             i.delta.0 += dx;
             i.delta.1 += dy;

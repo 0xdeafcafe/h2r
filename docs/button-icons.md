@@ -81,7 +81,7 @@ is.
 | A, B, X, Y | retail (same colours and letters) | cross, circle, square, triangle | the bound key or mouse button |
 | Black | right bumper | R1 | bound key |
 | White | left bumper | L1 | bound key |
-| Triggers | retail pair | retail pair (L2, R2) | bound key or mouse button |
+| Triggers | retail pair | labelled L2/R2 pair | bound key or mouse button |
 | Start, Back | retail (triangles) | Options, Share | bound key |
 | Sticks | retail pair | retail pair | "WASD"-style cap, or the mouse for look |
 | Stick clicks | retail | retail (L3, R3) | bound key or mouse button |
@@ -90,13 +90,16 @@ is.
 Style rules, taken from the retail glyphs:
 
 - **Face buttons** (PlayStation): a ball shaded like the retail A, B, X and Y,
-  lit from above with a darker rim and a gloss, in the button's colour (blue,
+  with a thin bevel and a small upper-left highlight, in the button's colour (blue,
   red, pink, green), 16 pixels wide, with the symbol in a light tint as the
   retail letters are. Options and Share are dark balls with a white mark, as
   the retail Start and Back are.
 - **Bumpers** (360 and PlayStation): both bumpers side by side with the one
-  meant lit, exactly as the retail glyphs show triggers and sticks, in white at
-  the same alpha levels, so they take the text colour.
+  meant lit, as the retail glyphs show triggers and sticks, in white at
+  the same alpha levels, so they take the text colour. The pair is 45 pixels
+  wide and carries LB/RB or L1/R1 labels; PlayStation triggers carry L2/R2.
+  The inactive side stays faint. Labels keep their orientation when the
+  active side changes.
 - **Keys**: a light cap shaded like the retail White button, with a dark rim,
   a lip along the bottom and the key's name in a 5 x 7 letter set drawn for
   this project. **Mouse buttons**: a mouse from above in the same shading with
@@ -111,11 +114,12 @@ means them.
 
 ### Which button a prompt shows
 
-The game chooses the code point. Each action reads its button from the
-player's action table ([controller-layouts.md](controller-layouts.md), on the
-`input-layouts` branch), and prompts name that button, so a layout such as
-Bumper Jumper already makes "jump" print White's code point. The runner then
-draws the physical control that drives that Xbox button on the host:
+The game chooses the button code point before the font lookup. The runner
+maps that virtual Xbox control to the physical input driving it. It does not
+change the game's action table or add controller layouts. A layout change
+that updates the game's prompt code point therefore gets the corresponding
+host icon; hardcoded guest prompts would still need fixing where emitted.
+The mapping is:
 
 - pads: `crates/input` maps the right bumper to Black and the left to White,
   so Black draws the right bumper (RB, R1) and White the left;
@@ -123,7 +127,8 @@ draws the physical control that drives that Xbox button on the host:
   ([input.md](input.md), `--bindings`). A stick shows its four keys as one cap
   when each has a one-character name ("WASD", "IJKL"), otherwise its "up" key.
   With no keys on the right stick and mouse look on, it shows the mouse. A
-  control with nothing bound keeps the retail picture.
+  control with nothing bound shows a dash cap, rather than suggesting a
+  physical button that cannot be pressed.
 
 ## How it works
 
@@ -144,10 +149,24 @@ own, in the unused part of the icon range:
 
 `apply` gives each new code point a new record at the end of the record
 table, moves the pixel data up by the size of those records, fixes every
-offset and the header's totals, and appends the new streams. The result passes
+offset and the header's totals, and appends the new streams. The maximum
+stream length and pixel total are recomputed from the final records, including
+when a replacement shrinks. Splitting a shared record retains its placement.
+The result passes
 `Font::validate`, and every retail glyph decodes as before. A font that
-already had a glyph of its own in those ranges would be left alone (none on
-the disc does). `font::encode` is the compressor: runs for transparent and
+already had a glyph of its own in those ranges is left alone (none on
+the disc does). A shared record is accepted as filler only when it also
+matches the missing-character record at U+FFFF and the uniform U+E300..E3FF
+tail. Sharing an ordinary symbol between two code points is not enough.
+The resulting font is fully validated before it is served.
+
+If any opened font fails to patch, substitutions are disabled. If a font
+lacks a source button, that substitution is disabled across all fonts for
+the rest of the run. This conservative fallback keeps prompts on their
+original code points instead of showing a missing glyph or a mod's unrelated
+artwork. The original code points always remain available.
+
+`font::encode` is the compressor: runs for transparent and
 opaque pixels, pair and single bytes for the eight run alphas, and a literal
 word wherever the colour changes or the alpha is not a run level.
 
@@ -166,38 +185,43 @@ next string drawn asks for other code units; the old glyphs age out. So the
 icons can follow the device live.
 
 **Following the device.** The player-one pad that combines the keyboard with
-the first physical controller (`KeyboardFallback`) notes on every poll which
-half is in use, in `input::active::ActiveDevice`: a button down, a trigger or
-face button past a light touch, or a stick well off centre counts; drift does
-not. If both or neither are busy the last answer stands. A pad whose name says
+the first physical controller (`KeyboardFallback`) notes fresh input in `input::active::ActiveDevice`. Bound key presses,
+mouse buttons and mouse-look motion count as keyboard activity, even slow
+motion below a controller's drift threshold. A new pad button press, pressure
+increase or deliberate stick deflection selects the pad. Held controls,
+key autorepeat, releases and small stick jitter do not steal the selection.
+If both devices produce new input in one poll, keyboard input wins. A pad whose name says
 Sony, DualShock, DualSense or PlayStation is a PlayStation pad; any other pad
 gets the 360 set.
 
 | `icons` | Shows |
 |---|---|
-| `auto` | the last-used device's set, changing as the player switches. Before any input: the 360 set if physical pads are enabled, else the keyboard set, else retail |
+| `auto` | the last-used device's set. The first poll identifies an attached pad; otherwise keyboard. Before discovery it prefers an available keyboard. Disconnecting the pad returns to keyboard. |
 | `xbox` | retail; nothing is installed |
 | `xbox360`, `playstation`, `keyboard` | that set, always |
 
 ## Limits and open questions
 
-- `auto` needs the combined player-one pad, so it works in `h2 play` with the
-  keyboard enabled. With the keyboard off, or under `h2 run`, there is no
-  last-used device and `auto` stays on its starting set. Pads on ports two to
-  four do not change the icons.
+- Automatic physical-pad discovery needs the combined player-one pad, as
+  used by `h2 play`. With the keyboard off there is no pad-kind tracking;
+  use a fixed set. Headless `h2 run` uses its default keyboard bindings,
+  including for forced keyboard icons. Pads on ports two to four do not
+  change the icons.
 - The pad's kind comes from its name only. A pad that reports a generic name
   gets the 360 set; pass `--icons playstation` then.
 - Text that the game measured before a switch is not measured again until the
-  game lays it out again. The menus and HUD lay text out as they draw, so this
-  was not seen, but it has only been looked at on the screens in "Checked".
+  game lays it out again. Retained layouts may keep earlier advances until
+  refreshed.
+  Live switching on every screen has not been verified.
 - The hooks add a host call to every glyph lookup. The cost was not measured;
   `icons = xbox` installs nothing.
 - U+E12C to U+E130 (more stick pictures) are not identified and not replaced.
 - The hook addresses are for the 1.0 image; a title update that moves the font
   code needs them found again ([title-updates.md](title-updates.md)).
 - Keyboard labels are English key names. A long label is cut at 12 characters.
-- The sets are added to the Asian font files too (same code points); those
-  were not run.
+- All 32 fonts, including the Asian fonts, were patched and fully decoded
+  offline; every original glyph's pixels were checked unchanged. Asian
+  language screens have not been run.
 
 ## Tests
 
@@ -218,14 +242,37 @@ All use synthetic fonts and in-memory files.
   patched font validates and still draws the retail glyphs.
 - `vfs::rewrite`: rewritten size in `stat` and listings, reads at and past the
   end, pass-through for other files, a declined file asked once.
-- `input::active` and the fallback pad: last-used device from keyboard and pad
-  activity, pad kind by name, drift ignored.
+- `input::active` and the fallback pad: fresh keyboard/pad activity, slow
+  mouse motion, held controls, autorepeat, pad kind by name and drift ignored.
 - `boot::icons`: labels from the default and from custom bindings; `auto`
   follows the device; a fixed set ignores it; only font files are rewritten.
+  Synthetic generated handlers verify both hook argument offsets, preserve
+  the high word and neighbouring arguments, and execute the original handler.
+
+## Offline previews
+
+`h2 font` uses the same binding labels, patcher and substitution rules:
+
+```sh
+h2 font disc.iso conduit-16 '<button code points>' --icons playstation --glyph-colors --out "$TMPDIR/buttons.png"
+h2 font disc.iso conduit-16 '<button code points>' --icons keyboard --bindings keys.toml --glyph-colors --out "$TMPDIR/keys.png"
+```
+
+Supply actual U+E100..E111 characters as the text. Omit `--icons` for the
+original glyphs. Previewing requires a fixed set: `auto` needs live input.
+`--all` validates original fonts and cannot be combined with preview options.
+Output stays outside the repository, as do all visual comparisons.
 
 ## Checked
 
-One game run, `H2_ICONS=playstation h2 run`, to the profile-name keyboard
-screen. A run was needed because the tests cannot show that the game's own
-text path reaches the hooks, accepts the longer font files and draws the new
-records.
+The independent review of `0ecfacc` kept the font overlay and glyph-cache
+approach, refined the authored artwork and added regression coverage for
+alias collisions, missing glyphs, shrinking records, shared-record placement,
+headless bindings, guest argument preservation and device switching.
+The synthetic tests do not need disc data. The offline all-font audit and
+visual comparison read the user's disc at runtime and commit no pixels.
+
+The final game proof is recorded in the review report outside the repository.
+A run is needed to show that the game's own text path reaches the hooks,
+accepts the longer font files and displays the new records; CPU font renders
+and synthetic dispatch tests cannot establish that integration.

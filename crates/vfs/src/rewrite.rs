@@ -23,6 +23,9 @@ pub trait Rewrite: Send {
     /// New contents for `path`, or `None` to serve `original` unchanged.
     /// Called at most once per file.
     fn rewrite(&mut self, path: &str, original: &[u8]) -> Option<Vec<u8>>;
+    /// A wanted file exceeded the size limit and will be served unchanged.
+    /// Called once, just like `rewrite`, so dependent substitutions can stop.
+    fn skipped(&mut self, _path: &str) {}
 }
 
 pub struct RewriteBackend<B, R> {
@@ -51,7 +54,10 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
         let key = path.to_ascii_lowercase();
         if !self.files.contains_key(&key) {
             let meta = self.inner.stat(path)?;
-            let new = if meta.is_directory() || meta.end_of_file > MAX_REWRITE_BYTES {
+            let new = if meta.is_directory() {
+                None
+            } else if meta.end_of_file > MAX_REWRITE_BYTES {
+                self.rewrite.skipped(path);
                 None
             } else {
                 let mut original = vec![0u8; meta.end_of_file as usize];
@@ -61,11 +67,10 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
                         .inner
                         .read_at(path, done as u64, &mut original[done..])?
                     {
-                        0 => break,
+                        0 => return Err(Error::FileCorrupt),
                         n => done += n,
                     }
                 }
-                original.truncate(done);
                 self.rewrite.rewrite(path, &original)
             };
             self.files.insert(key.clone(), new);
@@ -293,5 +298,48 @@ mod tests {
             b.write_at("fonts\\a", 0, b"x"),
             Err(Error::MediaWriteProtected)
         );
+    }
+    #[test]
+    fn short_source_is_not_rewritten_and_oversized_source_notifies_once() {
+        struct Source(u64);
+        impl Backend for Source {
+            fn read_only(&self) -> bool {
+                true
+            }
+            fn stat(&mut self, _: &str) -> Result<Metadata> {
+                Ok(meta(self.0, false))
+            }
+            fn read_at(&mut self, _: &str, _: u64, _: &mut [u8]) -> Result<usize> {
+                Ok(0)
+            }
+            fn read_directory(&mut self, _: &str) -> Result<Vec<DirectoryEntry>> {
+                Ok(vec![])
+            }
+            fn volume_info(&mut self) -> Result<VolumeInfo> {
+                Err(Error::NotSupported)
+            }
+        }
+        struct Notices(usize);
+        impl Rewrite for Notices {
+            fn wants(&self, _: &str) -> bool {
+                true
+            }
+            fn rewrite(&mut self, _: &str, _: &[u8]) -> Option<Vec<u8>> {
+                panic!("incomplete source must not reach the rewrite")
+            }
+            fn skipped(&mut self, _: &str) {
+                self.0 += 1;
+            }
+        }
+        let mut short = RewriteBackend::new(Source(5), Notices(0));
+        assert_eq!(short.stat("font"), Err(Error::FileCorrupt));
+        let mut large = RewriteBackend::new(Source(MAX_REWRITE_BYTES + 1), Notices(0));
+        for _ in 0..2 {
+            assert_eq!(
+                large.stat("font").unwrap().end_of_file,
+                MAX_REWRITE_BYTES + 1
+            );
+        }
+        assert_eq!(large.rewrite.0, 1);
     }
 }

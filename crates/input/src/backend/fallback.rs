@@ -17,6 +17,8 @@ pub struct KeyboardFallback {
     ids: HashMap<HostPadId, HostPadId>,
     next_id: u64,
     rumble: Rumble,
+    previous_pad: Gamepad,
+    keyboard_activity: u64,
 }
 
 impl KeyboardFallback {
@@ -33,6 +35,8 @@ impl KeyboardFallback {
             ids: HashMap::new(),
             next_id: 1,
             rumble: Rumble::default(),
+            previous_pad: Gamepad::default(),
+            keyboard_activity: 0,
         }
     }
 }
@@ -67,7 +71,8 @@ impl HostBackend for KeyboardFallback {
             .or_else(|| (!pads.is_empty()).then_some(0));
         let primary = selected.map(|i| pads.remove(i));
         let new_id = primary.as_ref().map(|p| p.id);
-        if self.primary != new_id {
+        let primary_changed = self.primary != new_id;
+        if primary_changed {
             if let Some(backend) = &mut self.physical {
                 if let Some(old) = self.primary {
                     backend.set_rumble(old, Rumble::default());
@@ -92,22 +97,24 @@ impl HostBackend for KeyboardFallback {
         let gamepad = primary.as_ref().map_or_else(Gamepad::default, |p| {
             p.state.to_gamepad(&self.convert, p.physical)
         });
-        // Whichever half the player is using decides the button icons. With
-        // both or neither busy the last answer stands.
-        let pad_busy = primary.is_some() && crate::active::is_active(&gamepad);
-        match (crate::active::is_active(&keyboard), pad_busy) {
-            (true, false) => self
-                .keyboard
-                .active_device()
-                .set(crate::active::DeviceKind::Keyboard),
-            (false, true) => {
-                let name = primary.as_ref().map_or("", |p| p.name.as_str());
-                self.keyboard
-                    .active_device()
-                    .set(crate::active::pad_kind(name));
-            }
-            _ => {}
+        let active = self.keyboard.active_device();
+        let activity = self.keyboard.activity_serial();
+        if activity != self.keyboard_activity {
+            active.set(crate::active::DeviceKind::Keyboard);
+        } else if primary_changed
+            || active.get().is_none()
+            || crate::active::new_activity(&self.previous_pad, &gamepad)
+        {
+            active.set(
+                primary
+                    .as_ref()
+                    .map_or(crate::active::DeviceKind::Keyboard, |p| {
+                        crate::active::pad_kind(&p.name)
+                    }),
+            );
         }
+        self.keyboard_activity = activity;
+        self.previous_pad = gamepad;
         let mut out = vec![HostPad {
             id: HostPadId(0),
             name: "Player one (pad + keyboard/mouse)".into(),
@@ -347,9 +354,9 @@ mod tests {
             Some(Box::new(Physical(Arc::clone(&pad)))),
             Default::default(),
         );
-        // Nothing touched yet.
+        // Before use, identify the attached pad.
         both.poll();
-        assert_eq!(active.get(), None);
+        assert_eq!(active.get(), Some(DeviceKind::PlayStation));
         // A key press claims the keyboard, and releasing it changes nothing.
         keyboard.key_down("Space");
         both.poll();
@@ -361,10 +368,10 @@ mod tests {
         pad.lock().unwrap().1.analog[0] = 255;
         both.poll();
         assert_eq!(active.get(), Some(DeviceKind::PlayStation));
-        // Both busy at once: the last answer stands.
+        // A fresh key press wins even while the pad button is held.
         keyboard.key_down("Space");
         both.poll();
-        assert_eq!(active.get(), Some(DeviceKind::PlayStation));
+        assert_eq!(active.get(), Some(DeviceKind::Keyboard));
         // The pad goes idle while the key is still held: keyboard again.
         pad.lock().unwrap().1 = Gamepad::default();
         both.poll();
@@ -378,6 +385,23 @@ mod tests {
                 ..Default::default()
             },
         );
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Xbox));
+        // Slow mouse movement must switch too, despite being below a pad's
+        // drift threshold. The still-held physical stick must not steal it.
+        keyboard.mouse_motion(0.25, 0.0);
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Keyboard));
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Keyboard));
+        // A fresh pad button works even with a key still held.
+        keyboard.key_down("Space");
+        both.poll();
+        pad.lock().unwrap().1.analog[1] = 255;
+        both.poll();
+        assert_eq!(active.get(), Some(DeviceKind::Xbox));
+        // OS autorepeat of the same held key is not new activity.
+        keyboard.key_down("Space");
         both.poll();
         assert_eq!(active.get(), Some(DeviceKind::Xbox));
     }

@@ -51,6 +51,10 @@ fn get32(f: &[u8], o: usize) -> u32 {
 /// bytes), its pixel count is wrong, or a unit appears twice.
 pub fn apply(data: &[u8], replacements: &[Replacement]) -> Result<Vec<u8>> {
     let font = Font::parse(data)?;
+    if replacements.is_empty() {
+        return Ok(data.to_vec());
+    }
+    font.validate()?;
     let count = font.header.glyph_count as usize;
     let data_start = RECORDS_OFFSET + count * RECORD_LEN;
 
@@ -124,17 +128,10 @@ pub fn apply(data: &[u8], replacements: &[Replacement]) -> Result<Vec<u8>> {
     }
 
     let mut next_record = count;
-    let mut max_bytes = font.header.max_glyph_bytes;
-    let mut total_pixels = font.header.total_pixels;
     for (r, stream) in replacements.iter().zip(&streams) {
         let old = font.glyph_index(r.unit);
         let (index, y_offset) = if in_place(r) {
             let o = RECORDS_OFFSET + old as usize * RECORD_LEN;
-            let (w, h) = (
-                u16::from_le_bytes([out[o + 4], out[o + 5]]),
-                u16::from_le_bytes([out[o + 6], out[o + 7]]),
-            );
-            total_pixels = total_pixels.wrapping_sub(u32::from(w) * u32::from(h));
             (old as usize, i16::from_le_bytes([out[o + 10], out[o + 11]]))
         } else {
             let index = next_record;
@@ -144,7 +141,12 @@ pub fn apply(data: &[u8], replacements: &[Replacement]) -> Result<Vec<u8>> {
                 CHARMAP_OFFSET + usize::from(r.unit) * 4,
                 index as u32,
             );
-            (index, font.header.ascent)
+            let y = if old != 0 {
+                font.record(old)?.y_offset
+            } else {
+                font.header.ascent
+            };
+            (index, y)
         };
         let o = RECORDS_OFFSET + index * RECORD_LEN;
         put16(&mut out, o, r.advance as u16);
@@ -156,10 +158,20 @@ pub fn apply(data: &[u8], replacements: &[Replacement]) -> Result<Vec<u8>> {
         let at = out.len() as u32;
         put32(&mut out, o + 12, at);
         out.extend_from_slice(stream);
-        max_bytes = max_bytes.max(stream.len() as u32);
-        total_pixels = total_pixels.wrapping_add(u32::from(r.width) * u32::from(r.height));
     }
 
+    // Recompute from the resulting records: replacing the largest glyph can
+    // shrink the maximum, and input totals are advisory, not trusted sums.
+    let mut max_bytes = 0u32;
+    let mut total_pixels = 0u32;
+    for i in 0..next_record {
+        let o = RECORDS_OFFSET + i * RECORD_LEN;
+        let word = |at| u16::from_le_bytes([out[at], out[at + 1]]);
+        max_bytes = max_bytes.max(u32::from(word(o + 2)));
+        total_pixels = total_pixels
+            .checked_add(u32::from(word(o + 4)) * u32::from(word(o + 6)))
+            .ok_or(Error::Invalid("patched pixel count overflows"))?;
+    }
     let h = HEADER_OFFSET;
     put32(&mut out, h + 0xc, next_record as u32);
     put32(&mut out, h + 0x10, max_bytes);
@@ -303,8 +315,16 @@ mod tests {
         let old = after.glyph(0xe201).unwrap();
         assert_eq!((old.record.width, old.record.height), (2, 2));
         assert_eq!(old.pixels, vec![0xffff; 4]);
-        // A new record takes the font's ascent as its vertical offset.
-        assert_eq!(after.glyph(0xe200).unwrap().record.y_offset, 10);
+        // A shared glyph retains its placement when split into a new record.
+        assert_eq!(
+            after.glyph(0xe200).unwrap().record.y_offset,
+            Font::parse(&f)
+                .unwrap()
+                .glyph(0xe200)
+                .unwrap()
+                .record
+                .y_offset
+        );
         after.validate().unwrap();
     }
 
@@ -369,5 +389,26 @@ mod tests {
             apply(&f[..0x300], &[]),
             Err(Error::Truncated { .. })
         ));
+    }
+    #[test]
+    fn shrinking_largest_record_recomputes_header_totals() {
+        let data = font();
+        let large = apply(&data, &[rep(0xe100, 20, 10, 0x5abc)]).unwrap();
+        let small = apply(&large, &[rep(0xe100, 1, 1, 0xffff)]).unwrap();
+        let parsed = Font::parse(&small).unwrap();
+        assert_eq!(parsed.header.max_glyph_bytes, 1);
+        assert_eq!(parsed.header.total_pixels, 9);
+        parsed.validate().unwrap();
+    }
+
+    #[test]
+    fn splitting_shared_record_keeps_its_vertical_offset() {
+        let mut data = font();
+        let at = RECORDS_OFFSET + 3 * RECORD_LEN + 10;
+        data[at..at + 2].copy_from_slice(&(-3i16).to_le_bytes());
+        let out = apply(&data, &[rep(0xe200, 2, 2, 0xffff)]).unwrap();
+        let f = Font::parse(&out).unwrap();
+        assert_eq!(f.glyph(0xe200).unwrap().record.y_offset, -3);
+        assert_eq!(f.glyph(0xe201).unwrap().record.y_offset, -3);
     }
 }

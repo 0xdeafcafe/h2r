@@ -7,7 +7,7 @@ use font::{Font, RenderOptions};
 
 use crate::safe_out::OutDir;
 
-const USAGE: &str = "usage: h2 font [disc.iso] <font> <text> --out <file.png> [--color RRGGBB[AA]] [--bg RRGGBB[AA]] [--glyph-colors] [--force] [--disc disc.iso]\n       h2 font --all [disc.iso]\n\n<font> is a file under /maps/fonts, e.g. conduit-13 or jpn_DFGHSMGoth_anti_con-13.\n<text> is UTF-8 on the command line and laid out as UTF-16; \\r or \\n start a new line.\nThe PNG has a transparent background; existing files are not replaced unless --force.\n--all parses and fully validates every font file and exits non-zero on any failure.";
+const USAGE: &str = "usage: h2 font [disc.iso] <font> <text> --out <file.png> [--color RRGGBB[AA]] [--bg RRGGBB[AA]] [--glyph-colors] [--icons xbox|xbox360|playstation|keyboard] [--bindings FILE] [--force] [--disc disc.iso]\n       h2 font --all [disc.iso]\n\n<font> is a file under /maps/fonts, e.g. conduit-13 or jpn_DFGHSMGoth_anti_con-13.\n<text> is UTF-8 on the command line and laid out as UTF-16; \\r or \\n start a new line.\nThe PNG has a transparent background; existing files are not replaced unless --force.\n--all parses and fully validates every font file and exits non-zero on any failure.";
 
 fn read_fonts(
     disc: &std::path::Path,
@@ -41,6 +41,8 @@ struct Args {
     all: bool,
     force: bool,
     glyph_colors: bool,
+    icons: Option<font::icons::IconChoice>,
+    bindings: Option<PathBuf>,
     color: [u8; 4],
     bg: [u8; 4],
     help: bool,
@@ -55,6 +57,8 @@ fn parse_args(args: Vec<String>) -> Result<Args> {
         all: false,
         force: false,
         glyph_colors: false,
+        icons: None,
+        bindings: None,
         color: [255, 255, 255, 255],
         bg: [0, 0, 0, 0],
         help: false,
@@ -64,6 +68,20 @@ fn parse_args(args: Vec<String>) -> Result<Args> {
             "--all" => r.all = true,
             "--force" => r.force = true,
             "--glyph-colors" => r.glyph_colors = true,
+            "--icons" => {
+                let choice = args
+                    .next()
+                    .context("--icons needs a set")?
+                    .parse::<font::icons::IconChoice>()
+                    .map_err(anyhow::Error::msg)?;
+                if choice == font::icons::IconChoice::Auto {
+                    bail!("font previews need a fixed icon set; auto requires live input");
+                }
+                r.icons = Some(choice);
+            }
+            "--bindings" => {
+                r.bindings = Some(args.next().context("--bindings needs a file")?.into())
+            }
             "--out" => r.out = Some(args.next().context("--out needs a file name")?.into()),
             "--disc" => r.disc = Some(args.next().context("--disc needs an ISO path")?.into()),
             "--color" => r.color = parse_color(&args.next().context("--color needs a value")?)?,
@@ -119,6 +137,8 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         all,
         force,
         glyph_colors,
+        icons,
+        bindings,
         color,
         bg,
         help,
@@ -126,6 +146,12 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
     if help {
         println!("{USAGE}");
         return Ok(());
+    }
+    if all && (icons.is_some() || bindings.is_some()) {
+        bail!("--all validates original disc fonts; choose a font to preview icons");
+    }
+    if bindings.is_some() && icons.is_none() {
+        bail!("--bindings requires --icons");
     }
     let want = if all { 0 } else { 2 };
     // A leading existing .iso/.xbe is the disc (so `h2 font <iso> <font> <text>` works).
@@ -195,9 +221,33 @@ pub(super) fn run(args: Vec<String>) -> Result<()> {
         Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
         _ => PathBuf::from("."),
     };
-    let bytes = iso.read(entry)?;
+    let mut bytes = iso.read(entry)?;
+    let mut units: Vec<u16> = unescape(text).encode_utf16().collect();
+    if let Some(choice) = icons {
+        let bindings = match bindings {
+            Some(path) => input::bindings::Bindings::from_toml(
+                &std::fs::read_to_string(&path)
+                    .with_context(|| format!("reading {}", path.display()))?,
+            )?,
+            None => input::bindings::Bindings::default(),
+        };
+        let icons = boot::icons::Icons::with_parts(
+            boot::icons::IconOptions {
+                choice,
+                gamepads: false,
+            },
+            Some(&bindings),
+            None,
+        );
+        if icons.enabled() {
+            bytes = icons
+                .font_rewrite()
+                .patch(&bytes)
+                .context("font cannot safely accept the icon sets")?;
+            units.iter_mut().for_each(|u| *u = icons.shown(*u));
+        }
+    }
     let font = Font::parse(&bytes).with_context(|| format!("parsing {}", entry.path))?;
-    let units: Vec<u16> = unescape(text).encode_utf16().collect();
     let bmp = font::render(
         &font,
         &units,
@@ -300,5 +350,21 @@ mod tests {
         let mut t = vec![1, 2, 3, 0];
         fill_background(&mut t, [9, 9, 9, 0]);
         assert_eq!(t, vec![1, 2, 3, 0]);
+    }
+    #[test]
+    fn preview_requires_a_fixed_set_and_accepts_bindings() {
+        for set in ["xbox", "xbox360", "playstation", "keyboard"] {
+            let args = parse_args(v(&["--icons", set, "--bindings", "keys.toml"])).unwrap();
+            assert!(args.icons.is_some());
+            assert_eq!(args.bindings, Some(PathBuf::from("keys.toml")));
+        }
+        for flags in [
+            v(&["--icons"]),
+            v(&["--icons", "auto"]),
+            v(&["--icons", "unknown"]),
+            v(&["--bindings"]),
+        ] {
+            assert!(parse_args(flags).is_err());
+        }
     }
 }

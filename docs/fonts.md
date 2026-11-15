@@ -6,6 +6,7 @@ rasterises UTF-16 text to RGBA on the CPU. `h2 font` drives it:
 
 ```sh
 h2 font <iso> conduit-16 'Halo 2' --out text.png [--color RRGGBB[AA]] [--glyph-colors] [--force]
+h2 font <iso> conduit-16 <button-text> --icons keyboard --glyph-colors --out "$TMPDIR/keys.png"
 h2 font --all <iso>      # parse + fully validate every font; non-zero exit on failure
 ```
 

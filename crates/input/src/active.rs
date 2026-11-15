@@ -72,6 +72,41 @@ pub fn is_active(pad: &Gamepad) -> bool {
         || stick(pad.thumb_rx, pad.thumb_ry)
 }
 
+/// Fresh deliberate pad activity. Held buttons and small stick jitter do not
+/// take the prompts back after a keyboard or mouse event.
+pub fn new_activity(previous: &Gamepad, now: &Gamepad) -> bool {
+    if !is_active(now) {
+        return false;
+    }
+    if !is_active(previous) || now.buttons.0 & !previous.buttons.0 != 0 {
+        return true;
+    }
+    if now
+        .analog
+        .iter()
+        .zip(previous.analog)
+        .any(|(n, p)| i16::from(*n) - i16::from(p) > 32)
+    {
+        return true;
+    }
+    [
+        (
+            (now.thumb_lx, now.thumb_ly),
+            (previous.thumb_lx, previous.thumb_ly),
+        ),
+        (
+            (now.thumb_rx, now.thumb_ry),
+            (previous.thumb_rx, previous.thumb_ry),
+        ),
+    ]
+    .into_iter()
+    .any(|((x, y), (px, py))| {
+        (i32::from(x).abs() > 12_000 || i32::from(y).abs() > 12_000)
+            && ((i32::from(x) - i32::from(px)).abs() > 8_000
+                || (i32::from(y) - i32::from(py)).abs() > 8_000)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

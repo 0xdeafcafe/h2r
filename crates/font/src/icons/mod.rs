@@ -109,9 +109,8 @@ impl FromStr for IconChoice {
 impl IconChoice {
     /// The set to use, decided once. `Auto` goes by the first physical pad's
     /// name when the host knows it (a Sony pad gets PlayStation icons, any
-    /// other pad Xbox 360). Without a name it assumes a modern pad if
-    /// physical pads are enabled at all, the keyboard if only that drives
-    /// player one, and otherwise keeps the retail glyphs.
+    /// other pad Xbox 360). Without a name it starts on the keyboard when
+    /// present, then a modern pad if enabled, otherwise the retail glyphs.
     pub fn resolve(self, pad_name: Option<&str>, gamepads: bool, keyboard: bool) -> IconSet {
         match (self, pad_name) {
             (IconChoice::Set(set), _) => set,
@@ -131,8 +130,8 @@ impl IconChoice {
                     IconSet::Xbox360
                 }
             }
-            (IconChoice::Auto, None) if gamepads => IconSet::Xbox360,
             (IconChoice::Auto, None) if keyboard => IconSet::Keyboard,
+            (IconChoice::Auto, None) if gamepads => IconSet::Xbox360,
             (IconChoice::Auto, None) => IconSet::Xbox,
         }
     }
@@ -249,8 +248,11 @@ pub fn replaces(set: IconSet, button: Button, keys: &KeyLabels) -> bool {
         // The rest of a 360 pad matches the retail pictures: coloured A, B,
         // X and Y, a trigger pair, sticks, and Start and Back as triangles.
         IconSet::Xbox360 => matches!(button, Black | White),
-        // Triggers, sticks and the d-pad are the retail pictures here too.
-        IconSet::PlayStation => matches!(button, A | B | X | Y | Black | White | Start | Back),
+        // Sticks and the d-pad retain their device-independent pictures.
+        IconSet::PlayStation => matches!(
+            button,
+            A | B | X | Y | Black | White | LeftTrigger | RightTrigger | Start | Back
+        ),
         IconSet::Keyboard => keys.contains_key(&button),
     }
 }
@@ -274,8 +276,16 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
     let h = usize::from(height.clamp(MIN_HEIGHT, MAX_HEIGHT));
     let (canvas, mono) = match (set, button) {
         // Right bumper is Black and left is White, as crates/input maps them.
-        (IconSet::Xbox360 | IconSet::PlayStation, Black) => (bumper_pair(h, Side::Right), true),
-        (IconSet::Xbox360 | IconSet::PlayStation, White) => (bumper_pair(h, Side::Left), true),
+        (IconSet::Xbox360, Black) => (shoulder_pair(h, Side::Right, ["LB", "RB"], false), true),
+        (IconSet::Xbox360, White) => (shoulder_pair(h, Side::Left, ["LB", "RB"], false), true),
+        (IconSet::PlayStation, Black) => (shoulder_pair(h, Side::Right, ["L1", "R1"], false), true),
+        (IconSet::PlayStation, White) => (shoulder_pair(h, Side::Left, ["L1", "R1"], false), true),
+        (IconSet::PlayStation, LeftTrigger) => {
+            (shoulder_pair(h, Side::Left, ["L2", "R2"], true), true)
+        }
+        (IconSet::PlayStation, RightTrigger) => {
+            (shoulder_pair(h, Side::Right, ["L2", "R2"], true), true)
+        }
         (IconSet::PlayStation, A) => (face(h, Symbol::Cross), false),
         (IconSet::PlayStation, B) => (face(h, Symbol::Circle), false),
         (IconSet::PlayStation, X) => (face(h, Symbol::Square), false),
@@ -305,15 +315,19 @@ pub fn icon(set: IconSet, button: Button, height: u16, keys: &KeyLabels) -> Opti
 /// Whether the code units the sets use are unused in `font`: unmapped, a
 /// record with no bitmap, or the filler record many private-use units share.
 pub fn alias_range_free(font: &Font<'_>) -> bool {
-    let mut users = std::collections::HashMap::new();
-    for unit in 0xe000..=0xe3ffu16 {
-        *users.entry(font.glyph_index(unit)).or_insert(0u32) += 1;
-    }
+    // The retail icon range ends in a uniform filler tail. Merely sharing a
+    // record is not enough: a real symbol can have several Unicode aliases.
+    let filler = font.glyph_index(0xe3ff);
+    let uniform_tail = filler == font.glyph_index(0xffff)
+        && (0xe300..=0xe3ff).all(|u| font.glyph_index(u) == filler);
+    let button_filler = BUTTON_UNITS
+        .iter()
+        .any(|(u, _)| font.glyph_index(*u) == filler);
     ALIAS_BASES.iter().all(|(_, base)| {
         (*base..*base + BUTTON_UNITS.len() as u16).all(|unit| {
             let index = font.glyph_index(unit);
             index == 0
-                || users[&index] > 1
+                || (uniform_tail && !button_filler && index == filler)
                 || font
                     .record(index)
                     .is_ok_and(|r| r.width == 0 || r.height == 0)
@@ -373,10 +387,10 @@ enum Side {
 
 /// Both bumpers side by side with one lit, the way the retail glyphs show the
 /// two triggers and the two sticks. Monochrome, so it takes the text colour.
-fn bumper_pair(h: usize, lit: Side) -> Canvas {
-    const BW: f32 = 17.0;
+fn shoulder_pair(h: usize, lit: Side, labels: [&str; 2], trigger: bool) -> Canvas {
+    const BW: f32 = 21.0;
     const GAP: f32 = 3.0;
-    let bh = if h >= 14 { 9.0 } else { 7.0 };
+    let bh = (if trigger { 15.0f32 } else { 12.0f32 }).min(h as f32);
     let w = (BW * 2.0 + GAP) as usize;
     let y0 = ((h as f32 - bh) / 2.0).floor();
     let mut c = Canvas::new(w, h);
@@ -396,6 +410,10 @@ fn bumper_pair(h: usize, lit: Side) -> Canvas {
         };
         c.fill_flat(&shape, white(body));
         c.fill_flat(inner_outline(&shape, 1.0), white(edge));
+        let text = labels[usize::from(side == Side::Right)];
+        let tx = x0 as i32 + (BW as i32 - label::width(text)) / 2;
+        let ty = y0 as i32 + (bh as i32 - label::GLYPH_H) / 2;
+        label::draw(text, tx, ty, |x, y| c.plot(x, y, white(edge)));
     }
     c
 }
@@ -433,7 +451,7 @@ fn keycap(h: usize, text: &str) -> Canvas {
     let cap_h = if h >= 16 { h - 2 } else { h };
     let tw = label::width(text) as usize;
     let w = (tw + 8).max(cap_h);
-    let (y0, y1) = (((h - cap_h) / 2) as f32, ((h - cap_h) / 2 + cap_h) as f32);
+    let (y0, y1) = ((h - cap_h) as f32, h as f32);
     let wf = w as f32;
     let shape = round_rect(0.0, y0, wf, y1, 3.0);
     let lip = cap_h >= 14;
@@ -524,7 +542,10 @@ enum Symbol {
 /// with a white symbol, as the retail Start and Back are.
 fn face(h: usize, symbol: Symbol) -> Canvas {
     const W: usize = 16;
-    let (cx, cy) = (W as f32 / 2.0, h as f32 / 2.0);
+    let (cx, cy) = (
+        W as f32 / 2.0,
+        h as f32 / 2.0 + if h >= 18 { 1.0 } else { 0.0 },
+    );
     let r = W.min(h) as f32 / 2.0 - 0.5;
     let base: [f32; 3] = match symbol {
         Symbol::Cross => [0.22, 0.42, 0.90],
@@ -535,27 +556,19 @@ fn face(h: usize, symbol: Symbol) -> Canvas {
     };
     let ball = circle(cx, cy, r);
     let mut c = Canvas::new(W, h);
-    // Lit from above: brighter towards the top, falling off to the edge.
+    // A bevel and a small upper-left highlight, rather than a broad gloss
+    // stripe. All geometry and lighting are authored here; no sampled pixels.
     c.fill(&ball, |x, y| {
         let (nx, ny) = ((x - cx) / r, (y - cy) / r);
-        let light = (1.15 - 0.5 * (nx * nx + ny * ny) - 0.35 * ny).clamp(0.0, 1.6);
-        opaque(base.map(|v| (v * light).min(1.0)))
+        let z = (1.0 - nx * nx - ny * ny).max(0.0).sqrt();
+        let diffuse = (-0.35 * nx - 0.50 * ny + 0.78 * z).max(0.0);
+        let light = 0.36 + 0.76 * diffuse;
+        let shine = ((-(nx + 0.32).powi(2) - (ny + 0.48).powi(2)) / 0.055).exp() * 0.38;
+        opaque(base.map(|v| (v * light + shine).min(1.0)))
     });
-    c.fill_flat(inner_outline(&ball, 1.0), {
-        let d = base.map(|v| v * 0.45);
-        [d[0], d[1], d[2], 0.9]
-    });
-    let gloss = move |x: f32, y: f32| {
-        let (gx, gy) = ((x - cx) / (r * 0.62), (y - (cy - r * 0.48)) / (r * 0.34));
-        (gx.hypot(gy) - 1.0) * r * 0.34
-    };
-    c.fill(gloss, |_, y| {
-        [
-            1.0,
-            1.0,
-            1.0,
-            (0.36 - 0.05 * (y - (cy - r))).clamp(0.0, 0.36),
-        ]
+    c.fill(inner_outline(&ball, 0.85), |x, y| {
+        let light = (0.50 - 0.32 * ((x - cx) + (y - cy)) / r).clamp(0.18, 0.88);
+        [light, light, light, 0.75]
     });
 
     let s = r * 0.5;

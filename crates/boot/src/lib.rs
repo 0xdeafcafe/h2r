@@ -463,6 +463,11 @@ pub fn run_hosted_with_live(
     let _telemetry = telemetry::TelemetryConfig::from_live(live.enabled, live.accounts_path.as_deref(), live.server_url.as_deref()).and_then(|config| telemetry::install(&loaded.runtime, &config)).unwrap_or_else(|error| { eprintln!("live telemetry disabled: {error}"); None });
     std::fs::create_dir_all(&opts.data_root)?;
     let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
+    if opts.xapi && host.input.is_none() {
+        let (input, keyboard) = input::InputManager::with_keyboard_pad(Default::default())?;
+        host.input = Some(input);
+        host.keyboard = Some(keyboard);
+    }
     let icon_options = match host.icons {
         Some(o) => Some(o),
         None => icons::choice_from_env()?.map(|choice| icons::IconOptions { choice, gamepads: false }),
