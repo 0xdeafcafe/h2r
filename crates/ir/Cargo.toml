@@ -1,0 +1,8 @@
+[package]
+name = "ir"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+simd.workspace = true
