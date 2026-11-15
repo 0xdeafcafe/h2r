@@ -69,23 +69,30 @@ The same shape, admin-only. The server writes the same text into all nine
 language slots (as `motd set` does) and answers
 `{"published": {name, sha256, size}, "motd": …}`. Limits as the format
 requires: 1..=32 messages, at most 255 UTF-16 units each, and a built file
-of at most 18,842 bytes (`0x499a`, the game's one attachment buffer,
-[live-motd-fetch.md §5](live-motd-fetch.md); a larger file would fail the
-game's download and show nothing). A refused PUT leaves the published file
-as it was.
+of at most 32,768 bytes (`0x8000`, the MOTD channel's download buffer,
+[live-motd.md §2.2](live-motd.md); a larger file would fail the game's
+download and show nothing). The server writes the 16-byte header the game
+validates (CRC, version 1, size; `live_proto::title_file`). A refused PUT
+leaves the published file as it was. The hopper PUT is the same with
+version 4 and a 131,072-byte (`0x20000`) cap.
 
 ### When the game shows it
 
-The game fetches the MOTD once per Xbox Live sign-in
-([live-motd.md §2.1, §4](live-motd.md)): its message manager enumerates
-the title messages after sign-in, downloads the attachment, and only then
-sets the flag the two screens check. The HLE fetches the current bytes on
-every details/download call, but the title does not repeat that fetch
-mid-session (not observed; no screen re-arms it), so **a MOTD published
-while the game is signed in shows after the next sign-in** (sign out and
-back in, or restart the game). The editor says so after a publish. The
-Live main menu shows the header once per screen visit; the matchmaking
-screen shows a random message, re-picked every 15 s.
+The game fetches the MOTD from title storage once per Xbox Live sign-in
+([live-motd.md §2](live-motd.md)): sign-in arms the channel, the resource
+manager downloads `9809/message_of_the_day.dat`, validates the header and
+only then sets the flag the two screens check. Nothing re-arms the channel
+mid-session, so **a MOTD published while the game is signed in shows
+after the next sign-in** (sign out and back in, or restart the game). The
+editor says so after a publish. The Live main menu shows the header once
+per screen visit; the matchmaking screen shows a random message,
+re-picked every 15 s.
+
+Files published before the header was traced carry 16 zero bytes there,
+which the game rejects. On start, the server (`h2 live serve` and the
+embedded one) republishes such a MOTD or hopper with a real header and the
+same body (`crates/live-server/src/title_headers.rs`); reads through the
+admin API accept them meanwhile.
 
 ### The default MOTD and keeping what you publish
 

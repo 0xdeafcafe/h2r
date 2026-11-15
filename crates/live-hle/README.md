@@ -4,8 +4,8 @@ Opt-in public API overrides for Halo 2 retail XONLINES/XNet 5849. `entries.rs`
 is the address/name/stack-word inventory from `docs/live-boundary.md`. Sign-in
 operations live in `state.rs`; `network.rs` implements host sockets, keys and
 address routing, with platform FFI confined to `host.rs`. `client.rs` owns the
-HTTP worker, `messages.rs` implements the title inbox, `ui.rs` the empty menu
-views, and `storage_api.rs` the legacy path formatter and unavailable transfers.
+HTTP worker, `messages.rs` implements the empty player inbox, `ui.rs` the empty menu
+views, and `storage_api.rs` the path formatter and asynchronous title-resource downloads.
 QoS listener traffic
 and guest result allocation live in `qos.rs` and `qos_memory.rs`. Every remaining
 boundary is a named runtime stop. No executable bytes or lookup tables are embedded.

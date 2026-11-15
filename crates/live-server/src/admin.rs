@@ -444,7 +444,7 @@ pub async fn get_motd(
     live.authorize_read(bearer(&headers))?;
     let title = title_id(&title)?;
     let (_, bytes) = published_file(&live, title, HALO_2_MOTD_FILE).await?;
-    let motd = Motd::parse(&bytes).map_err(|e| {
+    let motd = Motd::parse_legacy(&bytes).map_err(|e| {
         invalid(format!(
             "the published file does not parse ({e}); republish it"
         ))
@@ -739,7 +739,7 @@ pub async fn get_hopper(
                 e
             }
         })?;
-    let file = HopperFile::parse(&bytes).map_err(|e| {
+    let file = HopperFile::parse_legacy(&bytes).map_err(|e| {
         invalid(format!(
             "the published {HALO_2_HOPPER_FILE} does not parse ({e}); import a base image"
         ))
@@ -773,12 +773,13 @@ pub async fn put_hopper(
                 e
             }
         })?;
-    let mut file = HopperFile::parse(&current)
+    let mut file = HopperFile::parse_legacy(&current)
         .map_err(|e| invalid(format!("the published file does not parse ({e})")))?;
     let patch: HoppersPatch =
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("hopper: {e}")))?;
     apply_patch(&mut file, &patch)?;
-    let published = publish(&live, title, HALO_2_HOPPER_FILE, &file.build()).await?;
+    let built = file.build_checked().map_err(|e| invalid(e.to_string()))?;
+    let published = publish(&live, title, HALO_2_HOPPER_FILE, &built).await?;
     let doc = hoppers_doc(&live, &file)?;
     Ok(json(
         StatusCode::OK,

@@ -1,10 +1,11 @@
-//! Legacy Xbox storage path ABI and deliberately unavailable remote storage.
-//! Title attachments use messages.rs instead; no guest path reaches the host FS.
+//! Checked storage path ABI and asynchronous per-title resource downloads.
+//! Only the verified title paths reach the HTTP worker; none reach the host FS.
 use crate::{
+    client::{FILES, File, Pending, Reply, Service, Session},
     state::{Error, Storage},
     status::*,
 };
-use runtime::{Guest, guest::Access};
+use runtime::{Guest, GuestFault, guest::Access};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,22 +32,26 @@ enum Kind {
     DownloadMemory,
     Upload,
 }
-#[derive(Clone, Copy)]
+struct Receive {
+    buffer: u32,
+    capacity: u32,
+    id: u32,
+}
 struct Task {
     kind: Kind,
-}
-impl Task {
-    fn result(self) -> u32 {
-        if self.kind == Kind::Upload {
-            STORAGE_ACCESS_DENIED
-        } else {
-            STORAGE_FILE_NOT_FOUND
-        }
-    }
+    status: u32,
+    receive: Option<Receive>,
+    pending: Option<Pending>,
+    received: u32,
 }
 #[derive(Default)]
 pub(crate) struct Files {
     tasks: BTreeMap<u32, Task>,
+}
+pub(crate) struct Context<'a> {
+    pub storage: &'a mut Storage,
+    pub service: Option<&'a Service>,
+    pub session: Option<&'a Session>,
 }
 type Result<T> = std::result::Result<T, Error>;
 impl Files {
@@ -56,49 +61,106 @@ impl Files {
     pub fn close(&mut self, h: u32) -> bool {
         self.tasks.remove(&h).is_some()
     }
-    pub fn poll(&self, h: u32) -> Option<u32> {
-        self.tasks.get(&h).map(|t| t.result())
+    pub fn poll(&mut self, h: u32, m: &mut Guest) -> std::result::Result<Option<u32>, GuestFault> {
+        let Some(task) = self.tasks.get_mut(&h) else {
+            return Ok(None);
+        };
+        if task.status != 0 {
+            return Ok(Some(task.status));
+        }
+        // Revalidate before consuming the completion, so a guest fault cannot
+        // discard it or partially copy the file. No worker sees guest memory.
+        let receive = task.receive.as_ref().expect("pending memory download");
+        m.check(receive.buffer, receive.capacity as usize, Access::Write, 1)?;
+        let Some(reply) = task.pending.as_ref().and_then(Pending::take) else {
+            return Ok(Some(0));
+        };
+        task.status = match reply {
+            Ok(Reply::File(File { id, bytes })) if id == receive.id => {
+                if bytes.len() > receive.capacity as usize {
+                    BUFFER_TOO_SMALL
+                } else {
+                    m.write_bytes(receive.buffer, &bytes, 1)?;
+                    task.received = bytes.len() as u32;
+                    TASK_SUCCESS
+                }
+            }
+            Err(e) => e,
+            _ => INVALID_ARGUMENT,
+        };
+        task.pending = None;
+        Ok(Some(task.status))
     }
-    pub fn invoke(
-        &mut self,
-        op: Op,
-        a: &[u32],
-        m: &mut Guest,
-        storage: &mut Storage,
-    ) -> Result<u32> {
+    pub fn invoke(&mut self, op: Op, a: &[u32], m: &mut Guest, ctx: Context<'_>) -> Result<u32> {
         use Op::*;
         match op {
             CreatePath => return create_path(a, m),
             DownloadResults => {
-                return Ok(match self.tasks.get(&a[0]) {
-                    Some(t) if t.kind == Kind::DownloadMemory => t.result(),
-                    _ => INVALID_ARGUMENT,
-                });
+                if !self
+                    .tasks
+                    .get(&a[0])
+                    .is_some_and(|t| t.kind == Kind::DownloadMemory)
+                {
+                    return Ok(INVALID_ARGUMENT);
+                }
+                // Optional outputs: buffer, received, total, owner PUID, FILETIME.
+                for (p, size) in [(a[1], 4), (a[2], 4), (a[3], 4), (a[4], 8), (a[5], 8)] {
+                    if p != 0 {
+                        m.check(p, size, Access::Write, 1)?;
+                    }
+                }
+                let status = self.poll(a[0], m)?.unwrap();
+                if status == 0 {
+                    return Ok(TASK_BUSY);
+                }
+                if status & 0x80000000 != 0 {
+                    return Ok(status);
+                }
+                let task = &self.tasks[&a[0]];
+                let buffer = task.receive.as_ref().unwrap().buffer;
+                for (p, value) in [(a[1], buffer), (a[2], task.received), (a[3], task.received)] {
+                    if p != 0 {
+                        m.set_u32(p, value)?;
+                    }
+                }
+                // Shared title storage has no account owner. The file endpoint
+                // supplies no creation timestamp; return unknown (zero).
+                for p in [a[4], a[5]] {
+                    if p != 0 {
+                        m.write_bytes(p, &[0; 8], 1)?;
+                    }
+                }
+                return Ok(0);
             }
             Progress => {
-                let Some(t) = self.tasks.get(&a[0]) else {
+                if !self.tasks.contains_key(&a[0]) {
                     return Ok(INVALID_ARGUMENT);
-                };
+                }
                 for (p, size) in [(a[1], 4), (a[2], 8), (a[3], 8)] {
                     if p != 0 {
                         m.check(p, size, Access::Write, 1)?;
                     }
                 }
-                for (p, size) in [(a[1], 4), (a[2], 8), (a[3], 8)] {
+                let status = self.poll(a[0], m)?.unwrap();
+                let bytes = u64::from(self.tasks[&a[0]].received);
+                if a[1] != 0 {
+                    m.set_u32(a[1], if status == TASK_SUCCESS { 100 } else { 0 })?;
+                }
+                for p in [a[2], a[3]] {
                     if p != 0 {
-                        m.write_bytes(p, &[0; 8][..size], 1)?;
+                        m.write_bytes(p, &bytes.to_le_bytes(), 1)?;
                     }
                 }
-                return Ok(t.result());
+                return Ok(status);
             }
             _ => {}
         }
         if !(1..=5).contains(&a[0]) {
             return Ok(STORAGE_INVALID_FACILITY);
         }
-        if wide(m, a[2])?.is_none() {
+        let Some(path) = wide(m, a[2])? else {
             return Ok(STORAGE_INVALID_PATH);
-        }
+        };
         let (event, out, kind) = match op {
             Download => (a[5], a[6], Kind::Download),
             DownloadMemory => {
@@ -116,13 +178,50 @@ impl Files {
             return Err(Error::Unverified("nonzero work event"));
         }
         m.check(out, 4, Access::Write, 1)?;
-        let Some(handle) = storage.alloc(m, 8) else {
+        let Some(handle) = ctx.storage.alloc(m, 8) else {
             return Ok(OUT_OF_MEMORY);
         };
+        let mut task = Task {
+            kind,
+            status: if kind == Kind::Upload {
+                STORAGE_ACCESS_DENIED
+            } else {
+                STORAGE_FILE_NOT_FOUND
+            },
+            receive: None,
+            pending: None,
+            received: 0,
+        };
+        if op == DownloadMemory
+            && let Some((id, name)) = title_file(a[0], &path)
+            && let (Some(service), Some(session)) = (ctx.service, ctx.session)
+        {
+            task.pending = Some(match service.file(session, name, id) {
+                Ok(pending) => pending,
+                Err(e) => return Ok(e),
+            });
+            task.receive = Some(Receive {
+                buffer: a[3],
+                capacity: a[4],
+                id,
+            });
+            task.status = 0;
+        }
         m.set_u32(out, handle)?;
-        self.tasks.insert(handle, Task { kind });
+        self.tasks.insert(handle, task);
         Ok(0)
     }
+}
+fn title_file(facility: u32, path: &[u16]) -> Option<(u32, &'static str)> {
+    if facility != 4 {
+        return None;
+    }
+    let text = String::from_utf16(path).ok()?;
+    let relative = text.strip_prefix("//title.4d530064/t:4d530064/")?;
+    let name = relative
+        .strip_prefix("9809/")
+        .or_else(|| relative.strip_prefix("test/"))?;
+    FILES.into_iter().find(|(_, file)| *file == name)
 }
 fn wide(m: &Guest, p: u32) -> Result<Option<Vec<u16>>> {
     let mut units = Vec::new();

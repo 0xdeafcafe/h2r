@@ -103,7 +103,7 @@ pub fn read_hopper(bytes: &[u8]) -> Result<HopperFile> {
     if bytes.len() == INFLATED_SIZE {
         HopperFile::from_image(bytes).map_err(|e| anyhow::anyhow!("{e}"))
     } else {
-        HopperFile::parse(bytes).map_err(|e| anyhow::anyhow!("{e}"))
+        HopperFile::parse_legacy(bytes).map_err(|e| anyhow::anyhow!("{e}"))
     }
 }
 
@@ -136,7 +136,8 @@ pub fn hopper_import(mut args: Args) -> Result<()> {
             );
         }
     }
-    publish_title_file(&file.build(), title, HALO_2_HOPPER_FILE, server, data)
+    let built = file.build_checked().map_err(|e| anyhow::anyhow!("{e}"))?;
+    publish_title_file(&built, title, HALO_2_HOPPER_FILE, server, data)
 }
 
 /// The shared tail of the operator file-publishing commands (`motd set`,
