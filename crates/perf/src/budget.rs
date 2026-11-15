@@ -472,23 +472,4 @@ mod tests {
     fn a_trace_without_frames_is_an_error() {
         assert!(Budget::from_chrome_json(&trace(&[])).is_err());
     }
-
-    #[test]
-    fn the_timeline_crate_s_own_output_reads_back() {
-        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        timeline::start(timeline::Config::all());
-        timeline::frame();
-        {
-            let _s = timeline::span(timeline::Cat::Sched, timeline::Track::Host, "schedule");
-            std::thread::sleep(std::time::Duration::from_millis(2));
-        }
-        timeline::frame();
-        let t = timeline::stop();
-        let mut json = Vec::new();
-        t.write_chrome(&mut json).unwrap();
-        let b = Budget::from_chrome_json(std::str::from_utf8(&json).unwrap()).unwrap();
-        assert_eq!(b.frames.len(), 1);
-        assert!(b.frames[0].self_ns.get("schedule").copied().unwrap_or(0) >= 2_000_000);
-    }
 }

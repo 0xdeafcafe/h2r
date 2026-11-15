@@ -32,6 +32,7 @@ d3d = { path = "../d3d" }
 kernel.workspace = true
 input = { path = "../input", default-features = false }
 audio = { path = "../audio" }
+vfs.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }
 asf = { path = "../asf" }
 wma = { path = "../wma" }

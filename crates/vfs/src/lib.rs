@@ -12,7 +12,7 @@ mod types;
 
 pub use backend::Backend;
 pub use disc::DiscBackend;
-pub use host::HostBackend;
+pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
 pub use types::*;

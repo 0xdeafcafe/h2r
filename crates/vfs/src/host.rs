@@ -11,8 +11,8 @@ use std::{
     fs::{self, File, OpenOptions},
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::Arc,
-    time::SystemTime,
+    sync::{Arc, Mutex, MutexGuard, Weak},
+    time::{Duration, Instant, SystemTime},
 };
 
 #[derive(Clone)]
@@ -34,10 +34,6 @@ struct Cache {
     directories: BTreeMap<PathBuf, DirectoryIndex>,
     used_bytes: Option<u64>,
     atimes: BTreeMap<String, Timestamp>,
-    // Basic info a write or truncation changed (write and change times, the
-    // archive bit), kept until the next flush, close or drop as `atimes`
-    // is: storing it durably on every write cost two syncs per guest write.
-    written: BTreeMap<String, BasicInfo>,
     dirty_data: BTreeSet<String>,
     // Logical FATX preallocation, trimmed only by its owning file object's close.
     reservations: BTreeMap<String, Reservation>,
@@ -49,6 +45,155 @@ struct Cache {
     data_syncs: usize,
     #[cfg(test)]
     metadata_stores: usize,
+}
+
+/// How long write metadata may stay unstored: a crash or an exit that
+/// skips the backend's drop loses at most this much (plus one
+/// [`FLUSH_TICK`]) of write/change-time and archive-bit updates, never
+/// file data. docs/storage.md "Write metadata".
+pub const METADATA_STALE: Duration = Duration::from_secs(1);
+/// How often the flusher thread looks for stale write metadata.
+const FLUSH_TICK: Duration = Duration::from_millis(250);
+
+/// Basic info that writes and truncations changed (write and change times,
+/// the archive bit), not yet stored. Storing the record durably on every
+/// write cost two syncs per guest write; instead it is stored at the next
+/// flush, close or drop, by the write path once the oldest entry is
+/// [`METADATA_STALE`], by the backend's flusher thread when no write comes,
+/// and by [`flush_pending_metadata`]. Every record store holds `entries`,
+/// so a flusher's store and the backend's own are never reordered.
+struct Written {
+    metadata_root: PathBuf,
+    /// [`METADATA_STALE`]; longer in tests that count stores.
+    stale: Mutex<Duration>,
+    /// Lowercase path: the info and when it first became pending.
+    entries: Mutex<BTreeMap<String, (BasicInfo, Instant)>>,
+}
+
+impl Written {
+    fn lock(&self) -> MutexGuard<'_, BTreeMap<String, (BasicInfo, Instant)>> {
+        self.entries.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Store every entry pending since before `older_than` (all with
+    /// `None`); failed ones stay pending. Returns the first error.
+    fn flush(&self, older_than: Option<Instant>) -> Result<()> {
+        let mut entries = self.lock();
+        let due: Vec<String> = entries
+            .iter()
+            .filter(|(_, (_, since))| older_than.is_none_or(|t| *since <= t))
+            .map(|(k, _)| k.clone())
+            .collect();
+        let mut first = Ok(());
+        for key in due {
+            let (info, _) = entries[&key];
+            match write_record(&record_path(&self.metadata_root, &key), info) {
+                Ok(()) => {
+                    entries.remove(&key);
+                }
+                Err(e) => {
+                    if first.is_ok() {
+                        first = Err(e);
+                    }
+                }
+            }
+        }
+        first
+    }
+    fn flush_stale(&self) -> Result<()> {
+        let stale = *self.stale.lock().unwrap_or_else(|e| e.into_inner());
+        match Instant::now().checked_sub(stale) {
+            Some(t) => self.flush(Some(t)),
+            None => Ok(()),
+        }
+    }
+}
+
+/// Every live backend's pending write metadata, for [`flush_pending_metadata`].
+static LIVE: Mutex<Vec<Weak<Written>>> = Mutex::new(Vec::new());
+
+/// Store the pending write metadata of every live [`HostBackend`] now,
+/// including backends that were leaked and will never be dropped. For
+/// exit paths: call it before `process::exit` or from a signal-handling
+/// thread. Errors are reported on stderr.
+pub fn flush_pending_metadata() {
+    let live: Vec<Arc<Written>> = {
+        let mut l = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+        l.retain(|w| w.strong_count() > 0);
+        l.iter().filter_map(Weak::upgrade).collect()
+    };
+    for w in live {
+        if let Err(e) = w.flush(None) {
+            eprintln!("vfs: storing pending write metadata failed: {e:?}");
+        }
+    }
+}
+
+/// Run until `written` is dropped, storing what has been pending for
+/// [`METADATA_STALE`] every [`FLUSH_TICK`].
+fn spawn_flusher(written: Weak<Written>) {
+    let spawned = std::thread::Builder::new()
+        .name("vfs-metadata".into())
+        .spawn(move || {
+            let mut failed = false;
+            loop {
+                std::thread::sleep(FLUSH_TICK);
+                let Some(w) = written.upgrade() else { return };
+                match w.flush_stale() {
+                    Err(e) if !failed => {
+                        eprintln!("vfs: storing write metadata failed (retrying): {e:?}");
+                        failed = true;
+                    }
+                    Err(_) => {}
+                    Ok(()) => failed = false,
+                }
+            }
+        });
+    if let Err(e) = spawned {
+        // The write path still stores stale entries itself.
+        eprintln!("vfs: no metadata flusher thread: {e}");
+    }
+}
+
+fn record_path(metadata_root: &Path, path: &str) -> PathBuf {
+    let mut result = metadata_root.to_owned();
+    for part in path.split('\\').filter(|p| !p.is_empty()) {
+        result.push(
+            part.to_ascii_lowercase()
+                .bytes()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+        );
+    }
+    result.push("record");
+    result
+}
+
+/// Write the 40-byte record durably: a staged file, synced, renamed over
+/// the record, then the directory synced.
+fn write_record(target: &Path, info: BasicInfo) -> Result<()> {
+    let mut bytes = Vec::with_capacity(40);
+    bytes.extend_from_slice(b"HVF1");
+    bytes.extend_from_slice(&info.attributes.to_le_bytes());
+    for time in [
+        info.creation_time,
+        info.last_access_time,
+        info.last_write_time,
+        info.change_time,
+    ] {
+        bytes.extend_from_slice(&time.fatx().0.to_le_bytes());
+    }
+    let parent = target.parent().unwrap();
+    durable_create_dirs(parent)?;
+    let staged = target.with_extension("new");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&staged)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    fs::rename(staged, target)?;
+    sync_directory(parent)
 }
 
 /// FATX view of a private host directory. Metadata is outside the mounted tree.
@@ -65,6 +210,7 @@ pub struct HostBackend {
     label: String,
     serial: u32,
     cache: RefCell<Cache>,
+    written: Arc<Written>,
     #[cfg(test)]
     next_create_sync_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
@@ -135,7 +281,17 @@ impl HostBackend {
             anchor::open_root(&root)?,
             anchor::open_root(&metadata_root)?,
         ];
+        let written = Arc::new(Written {
+            metadata_root: metadata_root.clone(),
+            stale: Mutex::new(METADATA_STALE),
+            entries: Mutex::new(BTreeMap::new()),
+        });
+        LIVE.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Arc::downgrade(&written));
+        spawn_flusher(Arc::downgrade(&written));
         Ok(Self {
+            written,
             root,
             metadata_root,
             #[cfg(unix)]
@@ -270,17 +426,7 @@ impl HostBackend {
         Ok(host)
     }
     fn metadata_path(&self, path: &str) -> PathBuf {
-        let mut result = self.metadata_root.clone();
-        for part in path.split('\\').filter(|p| !p.is_empty()) {
-            result.push(
-                part.to_ascii_lowercase()
-                    .bytes()
-                    .map(|b| format!("{b:02x}"))
-                    .collect::<String>(),
-            );
-        }
-        result.push("record");
-        result
+        record_path(&self.metadata_root, path)
     }
     fn retire_metadata(&self, path: &str) -> Result<()> {
         #[cfg(test)]
@@ -343,7 +489,7 @@ impl HostBackend {
     }
     fn load_basic(&self, path: &str, host: &fs::Metadata) -> Result<BasicInfo> {
         let key = path.to_ascii_lowercase();
-        let written = self.cache.borrow().written.get(&key).copied();
+        let written = self.written.lock().get(&key).map(|(b, _)| *b);
         let read = match written {
             Some(basic) => Ok(Ok(basic)),
             None => fs::read(self.metadata_path(path)).map(Err),
@@ -379,33 +525,15 @@ impl HostBackend {
         Ok(info)
     }
     fn store_basic(&self, path: &str, info: BasicInfo) -> Result<()> {
-        let mut bytes = Vec::with_capacity(40);
-        bytes.extend_from_slice(b"HVF1");
-        bytes.extend_from_slice(&info.attributes.to_le_bytes());
-        for time in [
-            info.creation_time,
-            info.last_access_time,
-            info.last_write_time,
-            info.change_time,
-        ] {
-            bytes.extend_from_slice(&time.fatx().0.to_le_bytes());
-        }
-        let target = self.metadata_path(path);
-        let parent = target.parent().unwrap();
-        durable_create_dirs(parent)?;
-        let staged = target.with_extension("new");
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&staged)?;
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        fs::rename(staged, &target)?;
-        sync_directory(parent)?;
+        let key = path.to_ascii_lowercase();
+        // Held across the store: a flusher's store of older info for the
+        // same path cannot land after this one.
+        let mut written = self.written.lock();
+        write_record(&self.metadata_path(path), info)?;
+        written.remove(&key);
+        drop(written);
         let mut cache = self.cache.borrow_mut();
-        cache.atimes.remove(&path.to_ascii_lowercase());
-        cache.written.remove(&path.to_ascii_lowercase());
+        cache.atimes.remove(&key);
         #[cfg(test)]
         {
             cache.metadata_stores += 1;
@@ -415,11 +543,10 @@ impl HostBackend {
     /// Store the access time and written basic info kept in the cache.
     fn flush_metadata(&self, path: &str) -> Result<()> {
         let key = path.to_ascii_lowercase();
-        let cache = self.cache.borrow();
-        if !cache.atimes.contains_key(&key) && !cache.written.contains_key(&key) {
+        if !self.cache.borrow().atimes.contains_key(&key) && !self.written.lock().contains_key(&key)
+        {
             return Ok(());
         }
-        drop(cache);
         let host = self.resolve(path, false)?;
         let metadata = fs::symlink_metadata(host)?;
         self.store_basic(path, self.load_basic(path, &metadata)?)
@@ -505,18 +632,31 @@ impl HostBackend {
         Ok(())
     }
     /// A write or truncation: new write and change times and the archive
-    /// bit, stored at the next flush, close or drop (`Cache::written`).
+    /// bit, pending in [`Written`] rather than stored now. Stores whatever
+    /// has been pending for [`METADATA_STALE`].
     fn touch(&self, path: &str, mut basic: BasicInfo) -> Result<()> {
         // As a stored and reloaded record would read.
         let now = Timestamp::now().fatx();
         basic.last_write_time = now;
         basic.change_time = now;
         basic.attributes |= ATTR_ARCHIVE;
-        self.cache
-            .borrow_mut()
-            .written
-            .insert(path.to_ascii_lowercase(), basic);
-        Ok(())
+        let at = Instant::now();
+        self.written
+            .lock()
+            .entry(path.to_ascii_lowercase())
+            .and_modify(|e| e.0 = basic)
+            .or_insert((basic, at));
+        self.written.flush_stale()
+    }
+    /// Pending write metadata, for tests.
+    #[cfg(test)]
+    fn pending_written(&self) -> usize {
+        self.written.lock().len()
+    }
+    /// Keep write metadata pending for `stale` instead of [`METADATA_STALE`].
+    #[cfg(test)]
+    fn set_stale(&self, stale: Duration) {
+        *self.written.stale.lock().unwrap() = stale;
     }
 }
 impl Backend for HostBackend {
@@ -753,6 +893,8 @@ impl Backend for HostBackend {
     /// ancestor path is never consulted.
     #[cfg(unix)]
     fn format(&mut self) -> Result<()> {
+        let mut written = self.written.lock();
+        written.clear();
         for fd in &self.anchors {
             anchor::empty(fd)?;
             rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
@@ -773,6 +915,8 @@ impl Backend for HostBackend {
         if info.is_directory() && !self.read_directory(path)?.is_empty() {
             return Err(Error::DirectoryNotEmpty);
         }
+        // Before the record is retired, so no flusher stores it again.
+        self.written.lock().remove(&path.to_ascii_lowercase());
         if info.is_directory() {
             self.remove_litter(&host)?;
             // ENOTEMPTY or another host error must preserve the directory's metadata.
@@ -785,10 +929,6 @@ impl Backend for HostBackend {
         self.cache
             .borrow_mut()
             .atimes
-            .remove(&path.to_ascii_lowercase());
-        self.cache
-            .borrow_mut()
-            .written
             .remove(&path.to_ascii_lowercase());
         self.cache
             .borrow_mut()
@@ -932,7 +1072,7 @@ impl Drop for HostBackend {
             .atimes
             .keys()
             .cloned()
-            .chain(self.cache.borrow().written.keys().cloned())
+            .chain(self.written.lock().keys().cloned())
             .chain(self.cache.borrow().dirty_data.iter().cloned())
             .collect();
         for path in paths {
@@ -1018,6 +1158,8 @@ mod tests {
     fn writes_keep_their_metadata_until_flush_close_or_drop() {
         let temp = Temp::new();
         let mut backend = temp.backend();
+        // Nothing goes stale while this test counts stores.
+        backend.set_stale(Duration::from_secs(3600));
         backend.create("data", false, 0).unwrap();
         backend.flush("data").unwrap();
         let mut basic = backend.stat("data").unwrap().basic;
@@ -1041,12 +1183,12 @@ mod tests {
         backend.flush("data").unwrap();
         assert_eq!(backend.cache.borrow().metadata_stores, stores + 1);
         assert_ne!(fs::read(&record).unwrap(), before);
-        assert!(backend.cache.borrow().written.is_empty());
+        assert!(backend.pending_written() == 0);
         assert_eq!(backend.stat("data").unwrap().basic, seen);
         // Close (cleanup) stores what a later write left; so does drop.
         backend.write_at("data", 0, b"y").unwrap();
         backend.cleanup("data", false).unwrap();
-        assert!(backend.cache.borrow().written.is_empty());
+        assert!(backend.pending_written() == 0);
         backend.write_at("data", 0, b"z").unwrap();
         let pending = backend.stat("data").unwrap().basic;
         drop(backend);
@@ -1058,7 +1200,77 @@ mod tests {
         // A removed file's pending metadata goes with it.
         reopened.write_at("data", 0, b"w").unwrap();
         reopened.remove("data").unwrap();
-        assert!(reopened.cache.borrow().written.is_empty());
+        assert!(reopened.pending_written() == 0);
+    }
+
+    #[test]
+    fn write_metadata_pending_past_the_stale_window_is_stored_without_a_flush() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.set_stale(Duration::from_millis(50));
+        backend.create("data", false, 0).unwrap();
+        backend.flush("data").unwrap();
+        // An old record, so storing a write's times changes its bytes.
+        let mut basic = backend.stat("data").unwrap().basic;
+        basic.attributes = 0;
+        basic.last_write_time = Timestamp(125_911_584_000_000_000);
+        basic.change_time = basic.last_write_time;
+        backend.set_basic_info("data", basic).unwrap();
+        let record = backend.metadata_path("data");
+        let before = fs::read(&record).unwrap();
+        backend.write_at("data", 0, b"x").unwrap();
+        assert_eq!(backend.pending_written(), 1);
+        // The write path stores it once it is stale (the thread may get
+        // there first; either way it is stored without a flush).
+        std::thread::sleep(Duration::from_millis(80));
+        backend.write_at("data", 1, b"y").unwrap();
+        assert_ne!(
+            fs::read(&record).unwrap(),
+            before,
+            "stored by the write path"
+        );
+        // The flusher thread stores it when no write comes.
+        std::thread::sleep(Duration::from_millis(20));
+        backend.write_at("data", 2, b"z").unwrap();
+        assert_eq!(backend.pending_written(), 1);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while backend.pending_written() != 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(backend.pending_written(), 0, "the flusher stored it");
+        // flush_pending_metadata reaches a backend that will never drop.
+        backend.set_stale(Duration::from_secs(3600));
+        backend.write_at("data", 3, b"w").unwrap();
+        assert_eq!(backend.pending_written(), 1);
+        let leaked = Box::leak(Box::new(backend));
+        crate::flush_pending_metadata();
+        assert_eq!(leaked.pending_written(), 0);
+    }
+
+    /// `cargo test -p vfs --release bench_write_metadata -- --ignored --nocapture`:
+    /// a write with its metadata pending against a write followed by the
+    /// durable record store every write used to make.
+    #[test]
+    #[ignore]
+    fn bench_write_metadata() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("data", false, 0).unwrap();
+        let n = 200u64;
+        let t = Instant::now();
+        for i in 0..n {
+            backend.write_at("data", i * 512, &[1; 512]).unwrap();
+        }
+        let deferred = t.elapsed() / n as u32;
+        let t = Instant::now();
+        for i in 0..n {
+            backend.write_at("data", i * 512, &[2; 512]).unwrap();
+            let basic = backend.stat("data").unwrap().basic;
+            backend.store_basic("data", basic).unwrap();
+        }
+        let stored = t.elapsed() / n as u32;
+        eprintln!("write_at, metadata pending: {deferred:?}; stored every write: {stored:?}");
+        assert!(deferred < stored);
     }
 
     #[test]

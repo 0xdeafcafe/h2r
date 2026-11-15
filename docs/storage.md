@@ -211,13 +211,38 @@ change time is an additional emulated field. Reads update access time in
 memory and coalesce it per path; the record is persisted on explicit flush,
 file-object cleanup/close, a later metadata write, or backend drop. This
 avoids a write+fsync per read. Write/truncation updates write/change times
-and sets the archive bit the same way: in memory, per path, persisted at the
-same points (until then `stat` sees the new times). Storing the record on
-every write cost two fsyncs per guest write; while Halo 2 fills its cache
-partition on the main menu that was about a tenth of each frame
-(docs/perf-budget.md). Imported host files start
+and sets the archive bit. Those stay pending in memory too ("Write
+metadata" below); `stat` sees them at once. Imported host files start
 from host timestamps; subsequent VFS timestamps are logical, not a promise
 to rewrite host birthtime or mtime.
+
+### Write metadata
+
+A write or truncation does not store the metadata record on the spot.
+Storing it durably cost two fsyncs per guest write: while Halo 2 fills
+its cache partition on the main menu, that was about a tenth of each
+frame (docs/perf-budget.md). A synthetic bench put it at 16 ms per write
+against 0.09 ms (`cargo test -p vfs --release bench_write_metadata --
+--ignored --nocapture`). The new write and change times and the archive
+bit are stored:
+
+- at `flush` (NtFlushBuffersFile), final cleanup (close), and backend
+  drop, as access times are;
+- by the write path, once the oldest pending entry is older than
+  `vfs::METADATA_STALE` (1 s);
+- by the backend's `vfs-metadata` thread, which checks every 250 ms for
+  entries that old when no write comes;
+- by `vfs::flush_pending_metadata()`, which reaches every live backend,
+  leaked ones included. `h2 run` calls it when the run ends and on
+  SIGINT/SIGTERM.
+
+**Guarantee:** a crash, `process::exit`, an aborting panic, or a kill
+loses at most about 1.25 s of write-time, change-time and archive-bit
+updates. It never loses file data: data writes were never synced per
+write, and only `flush` syncs them. A record lost that way falls back to
+the previous record, as a torn one does. Every record store holds the
+pending map's lock, so a thread's store never lands after a newer one.
+Removing a file drops its pending entry before the record is retired.
 
 Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
 mounts. Each lowercase path component is hex encoded as a metadata-directory

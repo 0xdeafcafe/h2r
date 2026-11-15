@@ -78,6 +78,11 @@ categories (all but hle) or `all` to split HLE calls out of guest slices.";
 
 /// `h2 profile budget`.
 pub fn budget(args: Vec<String>) -> Result<i32> {
+    budget_to(args, &mut std::io::stdout().lock())
+}
+
+/// `h2 profile budget`, printing to `out`.
+pub fn budget_to(args: Vec<String>, out: &mut impl std::io::Write) -> Result<i32> {
     let mut path = None;
     let mut json = false;
     for a in args {
@@ -93,9 +98,9 @@ pub fn budget(args: Vec<String>) -> Result<i32> {
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
     let b = crate::budget::Budget::from_chrome_json(&text)?;
     if json {
-        println!("{}", serde_json::to_string_pretty(&b)?);
+        writeln!(out, "{}", serde_json::to_string_pretty(&b)?)?;
     } else {
-        print!("{}", b.table());
+        write!(out, "{}", b.table())?;
     }
     Ok(0)
 }

@@ -459,6 +459,7 @@ dependencies = [
  "shaders",
  "symbols",
  "tags",
+ "vfs",
  "wma",
  "xbe",
  "xiso",
