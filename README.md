@@ -73,7 +73,7 @@ In priority order:
    [docs/perf.md](docs/perf.md) for the tools.
 3. More campaign levels.
 4. Opt-in enhancements, off by default and later exposed in an expanded
-   in-game settings menu:
+   in-game settings menu ([docs/settings-menu.md](docs/settings-menu.md)):
    - 60 and 120 fps, decoupling rendering from the game's 30 Hz tick.
    - 4K and other high-resolution rendering.
    - Recovering the E3 2003 stencil-shadow lighting engine.
@@ -211,6 +211,7 @@ Running the game:
 - [BOOT.md](docs/BOOT.md): `h2 build` and `h2 run`, the boot runner's flags and environment, current state and blockers
 - [app.md](docs/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`)
 - [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
+- [settings-menu.md](docs/settings-menu.md): design for an expanded in-game settings menu for the opt-in enhancements (not built)
 - [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
 - [kernel-imports.md](docs/kernel-imports.md): work list of every kernel import Halo 2 uses
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
@@ -255,6 +256,7 @@ Data formats and tags:
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [structure-bsp.md](docs/structure-bsp.md): render models and structure BSP geometry, and the viewer (`crates/tags`, `crates/viewer`)
 - [ui.md](docs/ui.md): user-interface tags (wgit, wgtz, wigl, skin) (`crates/tags`)
+- [keyboard-charset.md](docs/keyboard-charset.md): the on-screen keyboard's characters, what players use, and a design for extending them (not built)
 
 Engine:
 
