@@ -9,7 +9,9 @@ mod controllers;
 mod launch;
 pub mod memory;
 pub mod register;
+pub mod saves;
 pub mod storage;
+mod vfs_saves;
 pub mod vfs_storage;
 
 pub use cache::CacheSelection;
@@ -21,6 +23,7 @@ pub use register::{
     CacheRow, Conflict, GuestLayout, RegisterError, Registration, register, service_input,
     unregister,
 };
+pub use saves::{PendingSearch, SaveDirectory, SaveStore};
 pub use storage::{CACHE_DATABASE_SIZE, Storage};
 pub use vfs_storage::VfsStorage;
 
@@ -67,6 +70,7 @@ pub struct Xapi<StorageBackend> {
     signals: VecDeque<PendingSignal>,
     changes: DeviceChanges,
     launch_request: Option<LaunchRequest>,
+    pending_search: Option<PendingSearch>,
 }
 
 impl<StorageBackend: Storage> Xapi<StorageBackend> {
@@ -90,6 +94,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             signals: VecDeque::new(),
             changes: DeviceChanges::default(),
             launch_request: None,
+            pending_search: None,
         })
     }
 

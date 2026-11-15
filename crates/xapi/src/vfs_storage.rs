@@ -67,7 +67,7 @@ impl VfsStorage {
         Self { vfs }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Vfs> {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Vfs> {
         self.vfs.lock().unwrap_or_else(|e| e.into_inner())
     }
 
@@ -173,5 +173,9 @@ impl Storage for VfsStorage {
 
     fn mount_cache(&mut self, partition: u8) -> Result<()> {
         self.mount(CACHE_LINK, UTILITY_LINK, partition, true)
+    }
+
+    fn saves(&mut self) -> Option<&mut dyn crate::SaveStore> {
+        Some(self)
     }
 }

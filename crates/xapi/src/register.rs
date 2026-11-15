@@ -10,8 +10,9 @@
 //! guard, `take_signals`, drop every guard, deliver the batch to the kernel
 //! through [`Events`], then `acknowledge_signals`.
 use crate::{
-    Error, Events, GuestMemory, MemoryFault, Result, Storage, ThreadState, Xapi,
+    Error, Events, GuestMemory, MemoryFault, PendingSearch, Result, Storage, ThreadState, Xapi,
     adapter::{Frame, Function, Outcome},
+    saves,
 };
 use runtime::{
     CpuAbi, Dispatch, Event, ExecCtx, Guest, GuestFault, Runtime, TransferAbi,
@@ -44,6 +45,19 @@ pub mod addr {
     pub const XINPUT_GET_STATE: u32 = 0x0040_9b6c;
     pub const XINPUT_SET_STATE: u32 = 0x0040_9bdf;
     pub const XREAD_MU_META_DATA: u32 = 0x0041_136f;
+    /// The save-game family, statically linked XDK code. Called from the
+    /// save/load UI (`0x215cde`..`0x2175e8`) and the profile code
+    /// (`0x2ad0eb`, `0x2ad4ff`, `0x2ad58a`). stdcall: `ret 18h`, `ret 8`,
+    /// `ret 8`, `ret 8`, `ret 4`.
+    pub const XCREATE_SAVE_GAME: u32 = 0x0033_0df2;
+    pub const XDELETE_SAVE_GAME: u32 = 0x0033_1055;
+    pub const XFIND_FIRST_SAVE_GAME: u32 = 0x0033_1125;
+    pub const XFIND_NEXT_SAVE_GAME: u32 = 0x0033_122f;
+    /// Shared by every find family; stays generated, it frees the save search.
+    pub const XFIND_CLOSE: u32 = 0x0033_1276;
+    /// The game's tagged allocator, `(size, tag)` stdcall (`ret 8`), as
+    /// XFindFirstSaveGame calls it at `0x3311ea` with `0x110`, `0x24830000`.
+    pub const GAME_ALLOCATE: u32 = 0x0001_2280;
 
     /// The gamepad `XPP_DEVICE_TYPE` object (`push 4086f8h` at `0x124aae`).
     /// Pass it to `Config::for_gamepad`.
@@ -144,6 +158,27 @@ pub const OVERRIDES: [Override; 16] = {
     ]
 };
 
+/// The opt-in save-game overrides, installed by [`register`] only when
+/// `Config::save_games` is set. XFindClose is deliberately absent.
+pub const SAVE_OVERRIDES: [Override; 4] = {
+    use Function::*;
+    use addr::*;
+    [
+        entry(XCREATE_SAVE_GAME, XCreateSaveGame, "xapi::XCreateSaveGame"),
+        entry(XDELETE_SAVE_GAME, XDeleteSaveGame, "xapi::XDeleteSaveGame"),
+        entry(
+            XFIND_FIRST_SAVE_GAME,
+            XFindFirstSaveGame,
+            "xapi::XFindFirstSaveGame",
+        ),
+        entry(
+            XFIND_NEXT_SAVE_GAME,
+            XFindNextSaveGame,
+            "xapi::XFindNextSaveGame",
+        ),
+    ]
+};
+
 /// Guest state the overrides keep coherent with the generated XAPI code.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GuestLayout {
@@ -232,7 +267,12 @@ pub fn register<S: Storage + Send + 'static>(
     xapi: &Arc<Mutex<Xapi<S>>>,
     layout: GuestLayout,
 ) -> std::result::Result<Registration, RegisterError> {
-    let conflicts: Vec<_> = OVERRIDES
+    let overrides: Vec<Override> = if lock(xapi).config.save_games {
+        OVERRIDES.iter().chain(&SAVE_OVERRIDES).copied().collect()
+    } else {
+        OVERRIDES.to_vec()
+    };
+    let conflicts: Vec<_> = overrides
         .iter()
         .filter_map(|o| {
             dispatch.override_name(o.addr).map(|existing| Conflict {
@@ -245,7 +285,7 @@ pub fn register<S: Storage + Send + 'static>(
     if !conflicts.is_empty() {
         return Err(RegisterError::Occupied(conflicts));
     }
-    for o in OVERRIDES {
+    for &o in &overrides {
         let xapi = Arc::clone(xapi);
         let previous = dispatch.register_override(o.addr, o.name, move |cpu, ctx, _| {
             call(&xapi, layout, o, cpu, ctx)
@@ -253,7 +293,7 @@ pub fn register<S: Storage + Send + 'static>(
         debug_assert!(previous.is_none(), "checked above");
     }
     Ok(Registration {
-        installed: OVERRIDES.to_vec(),
+        installed: overrides,
     })
 }
 
@@ -284,6 +324,8 @@ fn sets_last_error(function: Function) -> bool {
             | XMountUtilityDrive
             | XFormatUtilityDrive
             | XMountCacheDrive
+            | XFindFirstSaveGame
+            | XFindNextSaveGame
     )
 }
 
@@ -303,6 +345,11 @@ fn last_error_cell(
 enum Leave {
     Return(u32),
     Launch,
+    /// Allocate a save search block, fill it, return its address to `pc`.
+    Search {
+        pc: u32,
+        search: PendingSearch,
+    },
 }
 
 fn call<S: Storage>(
@@ -349,11 +396,19 @@ fn call<S: Storage>(
                 Leave::Return(pc)
             }
             Outcome::Launch => Leave::Launch,
+            Outcome::NewSearch { pc } => {
+                let search = lock(xapi)
+                    .take_pending_search()
+                    .expect("NewSearch leaves a pending search");
+                cpu.esp = frame.esp;
+                Leave::Search { pc, search }
+            }
             Outcome::Original => unreachable!("only replacements are registered"),
         }
     };
     Ok(match leave {
         Leave::Return(pc) => TransferAbi::ret(pc),
+        Leave::Search { pc, search } => allocate_search(cpu, ctx, layout, pc, search)?,
         // CPU and stack are untouched: the host consumes
         // Xapi::take_launch_request and reloads outside every guard.
         Leave::Launch => TransferAbi::stop(hle_stop(
@@ -362,6 +417,40 @@ fn call<S: Storage>(
             o.name,
             "title launch requested; consume Xapi::take_launch_request".into(),
         )),
+    })
+}
+
+/// Allocate the save search block with the game's own allocator, as the
+/// original does at `0x3311ea`, so the generated XFindClose can free it. The
+/// frame is already popped; the allocation runs as a stdcall from the
+/// caller's return site and the continuation returns the block to `pc`.
+fn allocate_search(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    layout: GuestLayout,
+    pc: u32,
+    search: PendingSearch,
+) -> std::result::Result<TransferAbi, GuestFault> {
+    let runtime = Arc::clone(ctx.runtime());
+    let mut guard = runtime.memory();
+    let esp = cpu.esp.wrapping_sub(8);
+    guard.set_u32(esp, saves::SEARCH_SIZE)?;
+    guard.set_u32(esp.wrapping_add(4), saves::SEARCH_HEAP_TAG)?;
+    cpu.esp = esp;
+    ctx.call_guest(cpu, &mut guard, addr::GAME_ALLOCATE, move |cpu, ctx| {
+        let block = cpu.eax;
+        let runtime = Arc::clone(ctx.runtime());
+        let mut guard = runtime.memory();
+        if block == 0 {
+            // ERROR_NOT_ENOUGH_MEMORY, as the original's 0x3311d6 path.
+            let cell = last_error_cell(&guard, cpu.fs_base, layout)?;
+            guard.set_u32(cell, 8)?;
+            cpu.eax = u32::MAX;
+        } else {
+            guard.write_bytes(block, &search.object(), 1)?;
+            cpu.eax = block;
+        }
+        Ok(TransferAbi::ret(pc))
     })
 }
 

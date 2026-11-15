@@ -442,7 +442,10 @@ old metadata until it is explicitly removed.
 ## XAPI save containers
 
 The filesystem permits XAPI's save layout without implementing XCreateSaveGame,
-XFindFirstSaveGame, XDeleteSaveGame or save signing. T: maps title data such as
+XFindFirstSaveGame, XDeleteSaveGame or save signing. The `xapi` crate's opt-in
+native save games (docs/xapi.md, "Opt-in native save games") do implement
+them over this VFS: a save directory is the 12-hex-digit name hash holding
+`SaveMeta.xbx`, in the host `UDATA` title directory. T: maps title data such as
 configuration/DLC, and U: maps user saves. Each title owns an eight-hex-digit
 directory in both areas. A representative layout is:
 

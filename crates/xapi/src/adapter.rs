@@ -82,7 +82,20 @@ impl Function {
         }
     }
 
-    /// Keep kernel-capable originals generated, including save/config APIs.
+    /// The save-game functions `Config::save_games` replaces. XFindClose is
+    /// not one: the generated one frees the search object.
+    pub const fn is_save_game(self) -> bool {
+        matches!(
+            self,
+            Self::XCreateSaveGame
+                | Self::XDeleteSaveGame
+                | Self::XFindFirstSaveGame
+                | Self::XFindNextSaveGame
+        )
+    }
+
+    /// Keep kernel-capable originals generated, including save/config APIs
+    /// (unless `Config::save_games`, see [`Function::is_save_game`]).
     pub const fn is_replacement(self) -> bool {
         use Function::*;
         matches!(
@@ -124,7 +137,14 @@ impl Function {
             | Self::XInputPoll
             | Self::XInputGetCapabilities
             | Self::XLaunchNewImage
-            | Self::XReadMUMetaData => code,
+            | Self::XReadMUMetaData
+            // The save family returns its Win32 error directly.
+            | Self::XCreateSaveGame
+            | Self::XDeleteSaveGame => code,
+            Self::XFindFirstSaveGame => {
+                thread.last_error = code;
+                u32::MAX
+            }
             _ => {
                 thread.last_error = code;
                 0
@@ -145,6 +165,10 @@ pub enum Outcome {
     Return { pc: u32 },
     /// Runner must stop and consume Xapi::take_launch_request().
     Launch,
+    /// XFindFirstSaveGame found a save. The frame is popped but EAX is not
+    /// set: the host allocates the search object and returns it, see
+    /// `Xapi::take_pending_search`.
+    NewSearch { pc: u32 },
     /// Invoke the generated original without modifying CPU, memory or stack.
     Original,
 }
@@ -157,7 +181,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         memory: &mut impl GuestMemory,
         thread: &mut ThreadState,
     ) -> Result<Outcome> {
-        if !function.is_replacement() {
+        if !function.is_replacement() && !(self.config.save_games && function.is_save_game()) {
             return Ok(Outcome::Original);
         }
         let words = function.stack_words();
@@ -178,10 +202,13 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         if function == Function::XLaunchNewImage && result.is_ok() {
             return Ok(Outcome::Launch);
         }
+        frame.esp = new_esp;
+        if function == Function::XFindFirstSaveGame && result.is_ok() {
+            return Ok(Outcome::NewSearch { pc: return_pc });
+        }
         if !function.is_void() {
             frame.eax = value;
         }
-        frame.esp = new_esp;
         Ok(Outcome::Return { pc: return_pc })
     }
 
@@ -242,6 +269,16 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
                 self.mount_cache_drive(memory)?;
                 Ok(1)
             }
+            XCreateSaveGame => self.create_save_game(memory, arguments).map(|()| 0),
+            XDeleteSaveGame => self
+                .delete_save_game(memory, arguments[0], arguments[1])
+                .map(|()| 0),
+            XFindFirstSaveGame => self
+                .find_first_save_game(memory, arguments[0], arguments[1])
+                .map(|()| 0),
+            XFindNextSaveGame => self
+                .find_next_save_game(memory, arguments[0], arguments[1])
+                .map(|()| 1),
             XReadMUMetaData => Err(Error::Win32(1167)),
             XAutoPowerDownResetTimer | XapiInitAutoPowerDown => Ok(0),
             // Unreachable through invoke: originals return before reading memory.

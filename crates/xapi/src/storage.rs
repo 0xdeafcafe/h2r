@@ -36,4 +36,10 @@ pub trait Storage {
     fn mount_cache(&mut self, _partition: u8) -> Result<()> {
         Err(Error::NOT_SUPPORTED)
     }
+
+    /// File access for the opt-in native save games (`Config::save_games`).
+    /// The default has none, so those calls fail with 50.
+    fn saves(&mut self) -> Option<&mut dyn crate::SaveStore> {
+        None
+    }
 }

@@ -70,7 +70,8 @@ XGetDevices and XInputPoll remain unbound adapters until an address is verified.
 | `002d6031`, `002d6004` | Power-down init/reset | Native application policy disables the SMC timer/DPC. Install/remove both hooks in one dispatch-table edit using POWER_DOWN_OVERRIDES. |
 | `002d07f2` | XLaunchNewImageA | A successful title transition must stop/reload the host runner; a kernel wrapper alone cannot arrange that transition. |
 
-No save or config replacement is retained. This removes SaveRecord,
+By default no save or config replacement is retained (the opt-in native save
+games below are the exception). This removes SaveRecord,
 Disposition, DiskSpace, save cursors, Rust metadata packing, and the duplicate
 incoming LaunchInfo store. The Storage contract now contains only utility
 mount/format. XFindClose therefore always remains generated: there is no token
@@ -199,6 +200,78 @@ otherwise apply `flags & ~0x0e`. XGetAVPack at `003321bd` dereferences imported
 HalBootSMCVideoMode; XGetGameRegion at `00331385` queries index 0x104 and
 XGetParentalControlSetting at `002d5813` queries index 10. These derivations
 remain in the generated originals; Config has no competing locale/video fields.
+
+## Opt-in native save games
+
+`Config::save_games` (default false) makes `register` also install four
+overrides, `register::SAVE_OVERRIDES`. With it off nothing changes: the five
+generated routines run, `Xapi::invoke` answers `Outcome::Original`, and
+`OVERRIDES` stays the 16 above. They exist so saves can be exercised and
+inspected without the generated scanner, and as a reference for the format.
+
+Call sites (found by scanning the image for `call rel32`): XCreateSaveGame
+`0x215cde`, `0x216018`, `0x2161ad`, `0x2ad0eb`; XDeleteSaveGame `0x215e29`,
+`0x215f20`, `0x2ad4ff`, `0x2ad58a`; XFindFirstSaveGame `0x216537`, `0x2175e8`;
+XFindNextSaveGame `0x216736`, `0x2175fb`; XFindClose `0x08d677`, `0x216748`,
+`0x217605`. XDK 5849 statically links these, so there is no import slot.
+
+| Address | Function | Frame | Override |
+| --- | --- | --- | --- |
+| `00330df2` | XCreateSaveGame(root, name, disposition, flags, path, path_len) | S24 | yes, returns the Win32 error (0 = success) |
+| `00331055` | XDeleteSaveGame(root, name) | S8 | yes, same return |
+| `00331125` | XFindFirstSaveGame(root, XGAME_FIND_DATA*) | S8 | yes: search block, or -1 with last error |
+| `0033122f` | XFindNextSaveGame(search, XGAME_FIND_DATA*) | S8 | yes: BOOL, last error 18 at the end |
+| `00331276` | XFindClose(handle) | S4 | no: shared with every find family |
+
+What the original does, which the overrides reproduce:
+
+- The save directory is `root` + 12 uppercase hex digits (`003309b8`):
+  `h = (h * 0x10000 + unit) % 0xFFFFFFFFFFC5` over the UTF-16 name units,
+  printed as the 48-bit value. `root` is the caller's string, normally `U:\`;
+  no separator is added. Names over 127 units are rejected (87) where the
+  original overruns its buffers.
+- `SaveMeta.xbx` is `FEFF`, `Name=<name>` CR LF and, when flags bit 0 is set,
+  `NoCopy=1` CR LF, in UTF-16LE (`00330f8f`). The reader (`00330a92`)
+  discards the first two bytes, reads `key=value` lines and compares `Name`
+  to the requested name exactly (`00330d16`: the open error, or 0x491 on a
+  mismatch).
+- Create: OPEN_EXISTING (3) only checks the name. Otherwise it creates the
+  directory, then the meta file; a failure removes the directory again
+  (`00331042`). An existing directory whose meta names this save has its
+  last-write time touched (`00330d96`) and gives 183 for CREATE_NEW (1),
+  success otherwise; one that does not gives 0x52. On success `path` gets
+  `root + hash + "\"`, at most `path_len` bytes (backslash only if it fits).
+- Delete checks the name, removes the directory tree (`002d6989`) and returns
+  the Win32 mapping of the result.
+- Find: the scanner (`00330c15`) accepts a directory whose `SaveMeta.xbx` has
+  a `Name`, and fills XGAME_FIND_DATA: attributes 0x10, the times and
+  cFileName in the WIN32_FIND_DATAA prefix, `root + dir + "\"` at +320 and
+  the UTF-16 name at +580. Entries come in the VFS's name order. A first
+  search with no hit returns -1 with last error 18.
+- The search object XFindFirstSaveGame returns is a 0x110-byte block from the
+  game's allocator (`00012280(0x110, 0x24830000)`): signature `EVBS`
+  (`0x53425645`) at +0, a handle word at +4, root length at +8, root string
+  at +0xC. The generated XFindClose frees it (and passes the handle word to
+  CloseHandle), so XFindClose is not overridden. The override reaches the
+  allocator with `ExecCtx::call_guest` and writes the block in the
+  continuation; an allocation failure gives -1 and last error 8. Retail keeps
+  a live FindFirstFile handle at +4; here the word is 0 and the search is
+  stateless (a cursor in the block's last word, +0x10C, and the root is
+  re-listed on every call), so a save deleted between calls is skipped.
+
+Not reproduced: the original's substring key search (a `TitleName=` line would
+match `Name`), and FATX timestamp details beyond what the VFS applies. The
+original calls no XCalculateSignature for saves, so there is no signature or
+hash check beyond the name hash above.
+
+Storage: `Storage::saves` returns an optional `SaveStore`; `VfsStorage`
+implements it over the shared `Vfs`, so `U:\` is the host directory
+`<data root>/disk/Partition1/UDATA/<title id>` (the VFS `Config::data_root`,
+by default `~/Library/Application Support/h2recomp`, never the repository).
+A `Storage` without it makes the four calls fail with 50. Tests:
+`crates/xapi/tests/saves.rs` (helpers, the adapter over a private temp-dir
+VFS, registration, the runner with a stand-in allocator) and
+`tests/save_pins.rs` (`H2_XBE`, ignored: decoded instructions only).
 
 ## Launch, utility and startup
 
