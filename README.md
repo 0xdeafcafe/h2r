@@ -34,20 +34,14 @@ is 30 fps.
 
 ### What is on master
 
-Not all of the above has landed. Master has the analyser, lifter, emitter
-(`h2 emit`), runtime, kernel, xapi, D3D and DirectSound crates, the tag and
-map readers, the `app` host shell crate, logical-time scheduling,
-checkpoints, and the profiler and benchmarks (`h2 profile`, `h2 bench`).
+Master has the analyser, lifter, emitter (`h2 emit`), runtime, kernel,
+xapi, D3D and DirectSound crates, the tag and map readers, the boot runner
+(`h2 build`, `h2 run`), the windowed player (`h2 play`, below),
+logical-time scheduling, checkpoints, and the profiler and benchmarks
+(`h2 profile`, `h2 bench`).
 
-In review, landing soon:
-
-- the boot runner (`boot` branch), which drives the game to the menu and
-  the first level;
-- the windowed player `h2 play` (`app-play` branch);
-- depth-texture support in the D3D layer (`d3d-r8` branch).
-
-Until those land, master has no command that boots the game; the CLI has no
-`run`, `boot` or `play` yet.
+In review, landing soon: depth-texture support in the D3D layer (`d3d-r8`
+branch).
 
 ## Proof
 
@@ -60,15 +54,13 @@ Screenshots are kept in issue threads, not in the repo:
 
 In priority order:
 
-1. Land the boot runner and `h2 play` (including `--follow`, which
-   auto-updates) on master.
-2. Fidelity gaps: shadow maps, fog and the like.
-3. 30 fps. The planned levers are runtime fast paths, GPU batching (a branch
+1. Fidelity gaps: shadow maps and the like.
+2. 30 fps. The planned levers are runtime fast paths, GPU batching (a branch
    already roughly halves CPU time per frame), IR optimisation, native
    overrides of hot functions, and D3D decode cost. See
    [docs/perf.md](docs/perf.md).
-4. More campaign levels.
-5. Later: a map editing kit, and TV targets (see
+3. More campaign levels.
+4. Later: a map editing kit, and TV targets (see
    [docs/app.md](docs/app.md)).
 
 ## Requirements
@@ -125,15 +117,40 @@ cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 
 
 See [docs/perf.md](docs/perf.md).
 
-### Coming soon: the player
-
-Arrives with the `app-play` branch and is not on master yet:
+## Play
 
 ```sh
-cargo run --release -p cli -- play disc/halo2.iso
+cargo h2 play disc/halo2.iso
 ```
 
-`play --follow` (auto-update) comes with it.
+This opens a window and runs the game with sound, keyboard, mouse and
+controllers. The first run generates the game library into `$TMPDIR/h2boot`
+(slow; later runs reuse it). Close the window, press Cmd+Q or press Ctrl-C in
+the terminal to quit.
+
+| Key | Pad |
+| --- | --- |
+| Enter or Space | A |
+| Backspace or V | B |
+| E / Q | X / Y |
+| Escape / Tab | Start / Back |
+| Arrows | D-pad |
+| WASD, mouse (click to capture) | Left stick, look |
+
+Cmd+F toggles fullscreen and Cmd+P pauses. `--bindings FILE` remaps keys
+([docs/input.md](docs/input.md)).
+
+To keep playing while master moves, add `--follow`:
+
+```sh
+cargo h2 play --follow disc/halo2.iso
+```
+
+It fetches `origin/master` every 45 s and builds each new commit in the
+background under `~/Library/Caches/h2recomp/follow`; your checkout is never
+touched. A banner in the window shows progress. Press F5 on "Update ready"
+to restart into the new build, or F6 to hide the banner. See
+[docs/app.md](docs/app.md) for every flag.
 
 ## Ghidra
 
