@@ -1,10 +1,8 @@
-//! TODO-register: override adapters for Halo 2 (retail 5849, `default.xbe`).
+//! Override adapters for Halo 2 (retail 5849, `default.xbe`).
 //!
-//! This module is deliberately independent of `crates/runtime`: its override
-//! API is still moving (see the main checkout's `API-CHANGES.md`). It exposes
-//! a table of guest addresses and one dispatcher; the registration glue is a
-//! loop that, for each [`ENTRIES`] item, calls
-//! `Dispatch::register_override(entry.va, ...)` with a handler that
+//! This module is independent of `crates/runtime`: it exposes a table of
+//! guest addresses and one dispatcher. [`crate::register`] binds them: for
+//! each [`ENTRIES`] item it registers a handler that
 //!
 //! 1. reads `entry.argc` dwords from `[esp+4 ..]` (every entry is `stdcall`,
 //!    `this` first; floats arrive as their 32-bit pattern),
@@ -12,7 +10,7 @@
 //! 3. writes `eax` (`Return::eax`), pops the return address plus
 //!    `Return::pop_bytes` and resumes at the caller.
 //!
-//! A [`Stop`] must be raised as a harness stop, never turned into `S_OK`.
+//! A [`Stop`] is raised as a harness stop, never turned into `S_OK`.
 //!
 //! Nothing here depends on LTCG register conventions: all 66 entries below
 //! were disassembled and are plain `stdcall` with stack arguments (the

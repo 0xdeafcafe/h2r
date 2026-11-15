@@ -7,7 +7,8 @@ The input lint was fixed at `983437d`. This lane rebased onto `f01debc`, later
 than the requested `8e4dc8c`, and remains uncommitted.
 
 No game bytes, executable excerpts, keys, signature patterns or assets are
-included. Adapters are runtime-neutral and marked **TODO-register**.
+included. `adapter.rs` is runtime-neutral. `register.rs` binds it to the
+runtime (see [Runtime registration](#runtime-registration)).
 
 ## Evidence and ABI
 
@@ -248,36 +249,167 @@ removed save/config overrides. GetLastError/SetLastError at `002d1d3e` /
 `002d1d66` use guest FS:[4], `_tls_index`, then +8: the native adapter's per-thread
 ThreadState only mirrors that guest cell for native BOOL/handle failures.
 
-## TODO-register integration
+## Runtime registration
 
-1. Integrate crates/xapi, the targeted input capability changes, docs and the
-   small Cargo.lock entry. Workspace members are crates/*; no new member list
-   is needed. This lane edits no kernel/runtime files.
-2. Register only verified R entries below, using safe runtime closures and the
-   image's device descriptor address. `is_replacement()` rejects generated
-   entries before touching their stack. Keep displaced handlers for rollback.
-   Install/remove POWER_DOWN_OVERRIDES as one group in the same dispatch edit.
-3. Bridge GuestMemory over one current runtime Guest guard with check/read_bytes/
-   write_bytes (alignment 1), preserving original faults. Read the current
-   guest thread's last-error cell and validate its write access before invoking
-   any service. Synchronize changes back to that cell. Follow the main checkout's
-   crates/runtime/API-CHANGES.md; avoid removed ExecCtx read/write/call/ret helpers.
-4. For Outcome::Return, copy Frame EAX/ESP back and emit TransferAbi::ret(pc).
-   The adapter already popped the return PC and stdcall arguments; do not call
-   Guest::ret again. For Original, leave CpuAbi intact, drop all memory/service
-   guards, and invoke the handler from runtime.resolve_original(pc). Do not
-   disable overrides globally to reach an original.
-5. Call sync_input under the memory guard before guest frames, take_signals,
-   release the memory and XAPI guards, deliver the batch, then lock XAPI again
-   for acknowledge_signals. Reference the kernel event before submitting
-   feedback, release it on rejected submission, and signal/release it on
-   completion. Process each completion once per sync and report failures
-   after unrelated requests make progress. Use one lock order: guest memory,
-   XAPI state, shared VFS. Never dispatch/reenter a guest with these guards held.
-6. Consume outgoing LaunchRequest on Outcome::Launch and stop/reload outside the
-   memory lock. Incoming launch info is only the kernel page. Validate real boot,
-   generated saves/config, controller unplug/replug and title relaunch after the
-   requested kernel surface is ready; synthetic tests do not claim those ran.
+`xapi::register` (`crates/xapi/src/register.rs`) installs all 15 override
+addresses in one dispatch edit, or none of them:
+
+```rust
+pub fn register<S: Storage + Send + 'static>(
+    dispatch: &mut runtime::Dispatch,
+    xapi: &Arc<Mutex<Xapi<S>>>,
+    layout: GuestLayout,            // GuestLayout::default() for retail 5849
+) -> Result<Registration, RegisterError>;
+pub fn unregister(dispatch: &mut runtime::Dispatch, registration: &Registration);
+pub fn service_input<S: Storage>(
+    runtime: &runtime::Runtime,
+    xapi: &Mutex<Xapi<S>>,
+    events: &mut impl Events,
+) -> xapi::Result<()>;
+```
+
+- **Addresses.** `register::OVERRIDES` lists address, `Function` and dispatch
+  name (`xapi::<name>`). Each entry is stdcall, and the adapter pops
+  `4 * stack_words()`, which equals the `ret N` pinned in
+  `VERIFIED_RET_SIZES`. Both XInitDevices entries (`00408c57` and the
+  `004098c0` thunk) are installed, and so are both power-down hooks.
+  XGetDevices and XInputPoll are not installed because they have no
+  verified address.
+- **Conflicts.** If any of the 15 addresses already has an override,
+  `register` installs nothing and returns `RegisterError::Occupied` with
+  every conflict (`addr`, `existing`, `ours`). Calling `register` twice gives
+  15 conflicts with `existing == ours`. `Dispatch` cannot remove an override,
+  so `unregister` only disables the entries, and a later `register` reports
+  them too.
+- **One call.** The adapter takes `ctx.memory()` first and the XAPI mutex
+  second, then runs `Xapi::invoke` over `register::RuntimeMemory`. That
+  wrapper is a `GuestMemory` over the held guard. It uses alignment 1 and
+  keeps the runtime's `GuestFault`, so a bad guest pointer becomes a runtime
+  FAULT with its real reason. On `Outcome::Return` the adapter copies
+  EAX/ESP back and returns `TransferAbi::ret(pc)`. On `Outcome::Launch` the
+  CPU and stack stay untouched and the runner stops on an
+  `Event::Unsupported { mnemonic: "xapi::XLaunchNewImageA", detail: "hle: ..." }`.
+  The host then calls `Xapi::take_launch_request` and reloads outside every
+  guard. (The runtime has no HLE-specific event yet. Use `ctx.report(id)` to
+  render the stop.)
+- **Last error.** The adapters that can set it (XInitDevices,
+  XGetDeviceChanges, XPeekDevices, XInputOpen, XInputClose, Mount/Format)
+  resolve the guest cell the same way GetLastError at `002d1d3e` does:
+  `[[fs:4] + 4 * [_tls_index]] + 8`, with `_tls_index` at `00480100`. The
+  cell is write-checked before the service runs and written only when the
+  value changes. The status-returning APIs never touch it.
+- **Cache row.** `00461d80` holds a row index into the utility-cache
+  database (`\Device\Harddisk0\Partition0` + 0x800, 12-byte rows). It is
+  not a partition number. The retail mount path stores the row at
+  `002d5ac8`, then from `002d5b22` writes the partition index
+  (`partition - 3`) into that row. `002d5d0a` re-reads the database and
+  indexes it with the row, and fails with STATUS_UNSUCCESSFUL while the row
+  is still -1. After a successful XMountUtilityDrive the adapter publishes
+  `GuestLayout::cache_row` (`CacheRow { global, row }`) and does not rewrite
+  the database. The row must name the entry the kernel already holds for
+  the title. `kernel::rawdisk` (master `715b5ec`) seeds exactly one entry,
+  the title with the kernel's `utility_partition`, in row 0, so the default
+  is row 0. Keep `Config::utility_partition` equal to the kernel's. Set
+  `cache_row = None` to skip publishing the row.
+- **Input pump.** `service_input` runs the deferred signal flow:
+  `sync_input` under the memory guard, `take_signals`, drop both guards,
+  `SignalBatch::deliver(events)`, then lock XAPI again for
+  `acknowledge_signals`. It returns the first error only after every step
+  has run. Call it between guest slices, with no guard held and no runner
+  active on the calling thread.
+
+`Events` is the trait boundary to the kernel, and this crate does not
+depend on `crates/kernel`. `fn signal(&mut self, guest_handle: u32) ->
+xapi::Result<()>` is only ever called with no guest memory or XAPI guard
+held.
+
+### Boot integration
+
+For `.claude/worktrees/boot`, this replaces `xapi_glue::install`. Remove that
+override first, or `register` reports `002d5b77` as occupied. The kernel
+must already be attached with its VFS set:
+
+```rust
+use std::sync::{Arc, Mutex};
+
+/// xapi::Events over the kernel. Kernel::signal_event takes kernel state
+/// and then guest memory, so it is only safe here, where service_input has
+/// already dropped every guard.
+struct KernelEvents(Arc<kernel::Kernel>);
+impl xapi::Events for KernelEvents {
+    fn signal(&mut self, handle: u32) -> xapi::Result<()> {
+        self.0.signal_event(handle).map(drop).map_err(|e| match e {
+            kernel::Error::Fault(f) => xapi::Error::Memory(xapi::MemoryFault {
+                address: f.addr,
+                length: f.len,
+                write: true,
+            }),
+            _ => xapi::Error::INVALID_HANDLE,
+        })
+    }
+}
+
+/// xapi::Storage over the kernel's one VFS (never a second instance).
+/// It is called with the guest memory and XAPI guards held, so it must not
+/// touch kernel state: the kernel's order is kernel state, then guest memory,
+/// then VFS, and `Kernel::vfs()` locks kernel state. Capture the shared VFS
+/// `Arc` once at setup and take only its lock (memory, XAPI, VFS).
+struct KernelStorage(Arc<Mutex<vfs::Vfs>>);
+impl xapi::Storage for KernelStorage {
+    fn mount_utility(&mut self, partition: u8, format: bool) -> xapi::Result<()> {
+        let mut v = self.0.lock().unwrap();
+        let _ = v.namespace.delete_symbolic_link("\\??\\Z:");
+        v.namespace
+            .create_symbolic_link("\\??\\Z:", &format!("\\Device\\Harddisk0\\Partition{partition}"))
+            .map_err(|_| xapi::Error::Win32(31))?;
+        if format {
+            // Boot policy today: keep the cache. The Storage contract wants
+            // only Z: cleared here; do that through the VFS when it can.
+        }
+        Ok(())
+    }
+    fn format_utility(&mut self) -> xapi::Result<()> {
+        Ok(()) // same policy as above
+    }
+}
+
+// After Kernel::for_image + set_vfs, before Machine::new:
+let mut input = input::InputManager::new(input::host::ConvertConfig::default())?;
+// input.add_backend(Box::new(...));   // gilrs/keyboard backend of choice
+let xapi = Arc::new(Mutex::new(
+    xapi::Xapi::new(
+        xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD),
+        input,
+        // Captured here, with no guest guard held; never Kernel::vfs() later.
+        KernelStorage(k.vfs().context("VFS not attached")?),
+    )
+    .map_err(|e| anyhow::anyhow!("xapi: {e}"))?,
+));
+loaded
+    .runtime
+    .edit_dispatch(|d| xapi::register(d, &xapi, xapi::GuestLayout::default()))?;
+
+// Between Machine::run slices (no guard held, no runner active):
+let mut events = KernelEvents(Arc::clone(&k));
+xapi::service_input(&loaded.runtime, &xapi, &mut events)?;
+
+// On a stop whose event is Unsupported with mnemonic "xapi::XLaunchNewImageA":
+if let Some(request) = xapi.lock().unwrap().take_launch_request() { /* reload */ }
+```
+
+`Config::utility_partition` defaults to 5, which matches the boot glue.
+Keep it equal to the kernel's `utility_partition`.
+
+### Remaining integration
+
+- Pinning the kernel event when feedback is submitted (`00409bdf`), with
+  `Kernel::reference_dispatcher`, is not wired. `Events::signal` resolves
+  the handle at completion, so a handle that the guest closes in between
+  fails the signal. The failure is requeued, not lost.
+- Outgoing `LaunchRequest` and reload are host work. Incoming launch info is
+  only the kernel page.
+- No real boot, controller replug or title relaunch was run against these
+  registrations. The synthetic Runner tests are described below.
 
 ## Inventory
 
@@ -451,11 +583,45 @@ reports, generation lifetime, packed layouts, manual polling, unsupported
 rumble, feedback completion/retry without head-of-line blocking, utility
 forwarding, outgoing launch ownership, and prevalidation before effects.
 
+`tests/register.rs` goes through the real `runtime::Runner` and `Dispatch`:
+
+- The installed set equals 15 literal address/ret-size pairs, written
+  independently of `OVERRIDES` and `stack_words()`.
+- Each address is called with HARNESS_EXIT as its return. The test checks
+  argument decoding (output pointers, port/handle/format arguments, the last
+  error written to a mapped TLS cell, the cache row) and that ESP rises by
+  exactly `4 + ret N`.
+- XLaunchNewImageA stops with the whole stack mapping byte-identical and
+  CPU unchanged, and leaves the request queued.
+- After `unregister`, every address goes to the runner's fallback
+  (UnsupportedTarget, since no generated original exists) without touching
+  the stack or the services.
+- The cache row follows `GuestLayout::cache_row`.
+- A guest memory fault becomes a runtime FAULT with its real reason. An
+  unmapped TLS block faults before the service runs.
+- `service_input` delivers the event with no guard held. The test's `Events`
+  relocks guest memory on another thread with a timeout. Moving delivery
+  inside the guard makes it fail.
+- Registering twice, registering over a foreign override, and registering
+  after `unregister` are all reported, and nothing is installed.
+
+`tests/xbe_pins.rs` is ignored by default. It walks each of the 15 override
+addresses and each of the 31 pinned addresses in the real XBE (iced-x86,
+following direct jumps and the `004098c0` thunk). It requires the reachable
+`ret` immediates to be exactly the pinned size. It also checks the thunk
+target, the `push 004086f8` / `call XGetDeviceChanges` at `00124aae`, the
+`_tls_index` and `fs:[4]` / `+8` reads in GetLastError, and the cache-row
+store, its `row * 12` use for the partition index, and the -1 check. All of
+these are checked as decoded mnemonics and operands. The repository holds
+no instruction bytes copied from the XBE:
+
+```sh
+H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
+  cargo test -p xapi --test xbe_pins -- --ignored
+```
+
 Run `cargo clippy -p xapi --no-deps --all-targets -- -D warnings` and
-`cargo fmt -p xapi --check`. The input crate's existing lint fix is inherited;
-there is no stale dependency lint blocker. Input's no-default-feature suite
-also verifies its changed capability/error behavior. No disc, physical pad or
-kernel/runtime/VFS integration is required by these tests.
+`cargo fmt -p xapi --check`.
 
 ## References
 

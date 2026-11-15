@@ -1,18 +1,23 @@
 //! Xbox service overrides that cannot run through the generated kernel path.
-//! See docs/xapi.md and todo_register for the pending integration boundary.
+//! See docs/xapi.md. `register` installs them into a runtime `Dispatch`.
 #![forbid(unsafe_code)]
 
+pub mod adapter;
 pub mod config;
 mod controllers;
 mod launch;
 pub mod memory;
+pub mod register;
 pub mod storage;
-pub mod todo_register;
 
 pub use config::{Config, DeviceTypes};
 pub use controllers::{Events, PendingSignal, SignalBatch, SignalReport};
 pub use launch::{LAUNCH_DATA_SIZE, LaunchRequest};
 pub use memory::{GuestMemory, MemoryFault};
+pub use register::{
+    CacheRow, Conflict, GuestLayout, RegisterError, Registration, register, service_input,
+    unregister,
+};
 pub use storage::Storage;
 
 use controllers::{DeviceChanges, OpenInput};

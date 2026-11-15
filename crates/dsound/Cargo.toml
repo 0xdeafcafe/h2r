@@ -9,3 +9,7 @@ description = "Guest-facing DirectSound replacement for h2recomp: guest memory i
 # The device (cpal) feature is the host's business, not the shim's.
 audio = { path = "../audio", default-features = false }
 thiserror.workspace = true
+runtime.workspace = true
+
+[dev-dependencies]
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

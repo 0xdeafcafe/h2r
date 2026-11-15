@@ -8,7 +8,7 @@ use std::{
     thread,
     time::Duration,
 };
-use xapi::{Error, Events, GuestMemory, Result, ThreadState, memory, todo_register::Function};
+use xapi::{Error, Events, GuestMemory, Result, ThreadState, adapter::Function, memory};
 
 #[test]
 fn initialization_changes_and_descriptor_are_coherent() {

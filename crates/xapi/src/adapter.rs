@@ -1,7 +1,6 @@
-//! TODO-register: runtime-neutral override adapters. Intentionally no automatic
-//! addresses/registration while runtime/API-CHANGES.md is changing. Safe runtime
-//! closures must hold one ctx.memory() guard, bridge Frame/ThreadState, propagate
-//! Error::Memory as GuestFault, and translate Outcome. See docs/xapi.md.
+//! Runtime-neutral override adapters: decode a guest stdcall frame, run the
+//! service and report how to leave. `crate::register` binds them to the
+//! runtime's dispatch at their XBE addresses. See docs/xapi.md.
 use crate::{Error, GuestMemory, Result, Storage, ThreadState, Xapi, memory};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,7 +40,7 @@ pub enum Function {
     XapiInitAutoPowerDown,
 }
 
-/// TODO-register: install or remove both in the same dispatch-table edit.
+/// `crate::register` installs and `crate::unregister` removes both together.
 /// The reset call must never touch the timer bypassed by the startup hook.
 pub const POWER_DOWN_OVERRIDES: [Function; 2] = [
     Function::XapiInitAutoPowerDown,

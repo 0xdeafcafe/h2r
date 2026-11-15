@@ -632,6 +632,8 @@ name = "dsound"
 version = "0.1.0"
 dependencies = [
  "audio",
+ "iced-x86",
+ "runtime",
  "thiserror 2.0.21",
 ]
 
@@ -3365,7 +3367,9 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 name = "xapi"
 version = "0.1.0"
 dependencies = [
+ "iced-x86",
  "input",
+ "runtime",
 ]
 
 [[package]]

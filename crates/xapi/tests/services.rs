@@ -3,7 +3,7 @@ mod common;
 use common::*;
 use xapi::{
     Error, LAUNCH_DATA_SIZE, ThreadState,
-    todo_register::{Function, Outcome},
+    adapter::{Function, Outcome},
 };
 
 #[test]

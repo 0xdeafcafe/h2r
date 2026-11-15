@@ -4,8 +4,9 @@
 makes into its statically linked Xbox DirectSound (`DSOUND` section,
 `0x00379c60`..`0x00387374`, XDK 5849) and answers them from Rust. It reads
 and writes guest memory through a small trait and drives `crates/audio`
-(ADPCM, mixer, cpal), which is described in [audio.md](audio.md). It has no
-dependency on `crates/runtime` or the kernel layer.
+(ADPCM, mixer, cpal), which is described in [audio.md](audio.md). Only
+`register.rs` depends on `crates/runtime`. Nothing depends on the kernel,
+which is reached through the `register::Events` trait.
 
 All addresses below are for the retail 5849 `default.xbe`. The call-site
 survey was done on the disassembly (`h2 disasm`, `h2 analyze --functions`,
@@ -209,9 +210,10 @@ and `CMcpx*` class) are not reached by the game.
   by `DirectSoundDoWork`, and also straight after `Process` (zero-length
   packets) and `Flush`. The host should call `DirectSound::do_work` after
   each mixer render it drives if it wants completions on the audio clock.
-  Events are `EventSink::signal_event(handle)`; callbacks are queued with
-  `EventSink::stream_callback(StreamCallback)` and run by the kernel agent as
-  a guest call at a safe point.
+  Events are `EventSink::signal_event(handle)`, and callbacks are queued
+  with `EventSink::stream_callback(StreamCallback)`. Through `register`,
+  events reach the kernel after the guards drop. Callbacks run as guest
+  calls before the override returns (see "Runtime registration").
 - **Buffers have no notifications in Halo 2.** `SetNotificationPositions`,
   `SetPlayRegion` and `SetLoopRegion` are not matched and have no call sites.
 
@@ -308,13 +310,97 @@ output is dry.
 
 ## Overrides
 
-`overrides.rs` is marked `TODO-register`: it holds `ENTRIES` (address, name,
-argument count) and `invoke(ds, host, va, args) -> Result<Return, Stop>`.
-The registration glue is: for each entry, register a handler that reads
-`argc` dwords above the return address, calls `invoke`, writes `Return::eax`,
-pops `Return::pop_bytes` and returns. The 7 stream-vtable entries use the
-same table and are registered at their slot target addresses, not at the
-vtable. A `Stop` must surface as a harness stop.
+`overrides.rs` holds `ENTRIES` (address, name, argument count) and
+`invoke(ds, host, va, args) -> Result<Return, Stop>`. It does not depend on
+the runtime. The 7 stream-vtable entries are registered at their slot target
+addresses, not at the vtable.
+
+### Runtime registration
+
+`dsound::register` (`src/register.rs`) installs all 66 entries in one
+dispatch edit, or none of them:
+
+```rust
+pub trait Events: Send {
+    fn signal(&mut self, guest_handle: u32) -> Result<(), String>;
+}
+impl Hle {
+    pub fn new(ds: DirectSound, events: Box<dyn Events>) -> Arc<Hle>;
+    pub fn do_work(&self, runtime: &runtime::Runtime) -> Result<(), Stop>;
+    pub fn take_stops(&self) -> Vec<StopRecord>;
+    pub fn take_signal_failures(&self) -> Vec<SignalFailure>;
+    pub fn direct_sound(&self) -> MutexGuard<'_, DirectSound>;
+}
+pub fn register(dispatch: &mut runtime::Dispatch, hle: &Arc<Hle>)
+    -> Result<Registration, RegisterError>;
+pub fn unregister(dispatch: &mut runtime::Dispatch, registration: &Registration);
+```
+
+- **Conflicts.** If any address already has an override, `register`
+  installs nothing and returns `RegisterError::Occupied` with every conflict.
+  Registering twice reports all 66 with `existing == ours`. `unregister`
+  disables the entries, because `Dispatch` cannot remove them, and a later
+  `register` reports them. Override names are `dsound::<name>`.
+- **One call.** Locks are taken in a fixed order: guest memory (`ctx.memory()`),
+  then `DirectSound`, then the arena. The adapter reads the return PC and
+  `argc` dwords above it and runs `invoke` over a bridge `Host`. The bridge
+  queues events and callbacks instead of delivering them. Then it drops every
+  guard and delivers the queued events through `Events::signal`, which may
+  relock guest memory as the kernel does. A refused signal is kept in
+  `take_signal_failures`; it does not stop the game.
+- **Leaving.** On success the adapter writes EAX and sets
+  `ESP += 4 + 4 * argc`. If stream callbacks are queued, it then runs each
+  one as a guest stdcall `callback(stream_context, packet_context, status)`
+  through `ExecCtx::call_guest`. The callbacks run in order, as if called
+  from the original return site, and EAX is restored before the final
+  `TransferAbi::ret`. Callbacks produced by a host-driven `Hle::do_work` wait
+  and run at the next override call.
+- **Stops and faults.** On a `Stop` the CPU and stack stay untouched. The
+  stop is recorded in `take_stops` (address, name, args, `Stop`) and the
+  runner stops on `Event::Unsupported { mnemonic: "dsound::<name>",
+  detail: "hle: <Stop>" }`. The runtime has no HLE-specific event yet. A
+  guest memory fault (`Stop::Memory`) is a runtime FAULT instead, and keeps
+  the runtime's `GuestFault` and reason. Callbacks already owed by
+  packets that completed before a stop or fault are queued, and they run at
+  the next override call.
+- **Guest memory.** `register::Arena` maps zeroed RW chunks of at least
+  64 KiB on demand, inside `ARENA = 0xa080_0000..0xa100_0000`. That is the
+  upper half of the HLE window that `bink-hle` documents as `HLE_RESERVED`.
+  It skips existing mappings and never adopts one. Freed blocks are reused
+  first-fit and zeroed again.
+
+### Boot integration
+
+For `.claude/worktrees/boot`, this replaces `dsound_glue::install`. Don't
+install both: `register` reports every address the glue owns as occupied.
+The glue's heap at `0xa080_0000` is not needed, because the arena maps its
+own pages and skips existing ones.
+
+```rust
+use std::sync::{Arc, Mutex};
+
+/// dsound::register::Events over the kernel. Called with no guest memory
+/// or DirectSound guard held, so Kernel::signal_event may relock memory.
+struct KernelEvents(Arc<kernel::Kernel>);
+impl dsound::Events for KernelEvents {
+    fn signal(&mut self, handle: u32) -> Result<(), String> {
+        self.0.signal_event(handle).map(drop).map_err(|e| e.to_string())
+    }
+}
+
+// After Kernel::for_image, before Machine::new:
+let mixer = Arc::new(Mutex::new(audio::Mixer::new(48_000)));
+let ds = dsound::DirectSound::new(Arc::clone(&mixer), dsound::Layout::default());
+let hle = dsound::Hle::new(ds, Box::new(KernelEvents(Arc::clone(&k))));
+loaded.runtime.edit_dispatch(|d| dsound::register(d, &hle))?;
+
+// On a stop whose event is Unsupported with a "dsound::" mnemonic:
+for s in hle.take_stops() {
+    eprintln!("dsound stop at {:#010x} {}{:x?}: {}", s.addr, s.name, s.args, s.stop);
+}
+// Optional, after each host mix and between slices (no guard held):
+hle.do_work(&loaded.runtime)?;
+```
 
 ## Tests
 
@@ -325,6 +411,47 @@ through `invoke` with the real addresses: ADPCM blob to `SetBufferData` to
 and `Unlock`, pause/resume/position, stream packets completing in order with
 status, completed size and events, callbacks, flush and capacity, release
 freeing, 3D panning, stored-state setters and every stop path.
+
+`tests/register.rs` goes through the real `runtime::Runner` and `Dispatch`:
+
+- The installed set equals 66 literal address/argc pairs, written
+  independently of `ENTRIES`.
+- Every address is called with HARNESS_EXIT as its return, against objects
+  that were themselves created through the runner. Calls that return check
+  ESP rising by exactly `4 + 4 * argc` and observable argument decoding: the
+  Lock wrap pointers and sizes, GetCaps, GetSpeakerConfig, Set/GetEffectData
+  round trip, listener position and orientation, mix-bin headroom,
+  Set/GetCurrentPosition, GetStatus bits, AddRef/Release counts, packet
+  status and size, the Discontinuity count. The documented stop paths
+  (XAudioSetEffectData, both GetVoiceProperties, GetInfo, StopEx with a
+  timestamp in arg 3) leave the frame untouched and record their arguments.
+  The test fails if any address is left unexercised.
+- A completion event is delivered after the guards drop. The test's
+  `Events` relocks guest memory on another thread with a timeout, and
+  delivering under the guard makes it fail.
+- Stream callbacks run as guest calls in order, with their three
+  arguments, and EAX is restored.
+- Guest memory faults are runtime FAULTs, not stops. Callbacks owed by
+  packets that completed before the fault are kept and run at the next
+  override call (two packets: the first completes, the second's status
+  write faults). Freed objects are reused.
+- Stops leave the whole stack mapping byte-identical.
+- After `unregister`, every address goes to the runner's fallback
+  (UnsupportedTarget) without touching the stack.
+- Registering twice, registering over a foreign override, and registering
+  after `unregister` are all reported, and nothing is installed.
+
+`tests/xbe_pins.rs` is ignored by default. In the real XBE it walks each of
+the 66 addresses (iced-x86, following direct jumps, so the flat `jmp`
+thunks reach their `CDirectSoundStream_*` bodies). It requires the
+reachable `ret` immediates to be exactly `4 * argc` and the address to lie
+in `DSOUND`. It also checks that the 7 words of the stream vtable at
+`Layout::default().stream_vtable` (`0x417170`) are the 7 vtable entries:
+
+```sh
+H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
+  cargo test -p dsound --test xbe_pins -- --ignored
+```
 
 ## Not verified
 

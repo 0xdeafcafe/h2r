@@ -6,8 +6,9 @@ use input::{
 };
 use std::sync::{Arc, Mutex};
 use xapi::{
-    Config, Error, Events, GuestMemory, MemoryFault, Result, Storage, ThreadState, Xapi, memory,
-    todo_register::{Frame, Function, Outcome},
+    Config, Error, Events, GuestMemory, MemoryFault, Result, Storage, ThreadState, Xapi,
+    adapter::{Frame, Function, Outcome},
+    memory,
 };
 
 pub struct Memory {

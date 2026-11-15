@@ -2,8 +2,9 @@ mod common;
 
 use common::*;
 use xapi::{
-    Error, ThreadState, memory,
-    todo_register::{Frame, Function, Outcome, POWER_DOWN_OVERRIDES},
+    Error, ThreadState,
+    adapter::{Frame, Function, Outcome, POWER_DOWN_OVERRIDES},
+    memory,
 };
 
 // Pinned retail disassembly ret sizes, independently confirmed by the Opus review.
