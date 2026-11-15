@@ -232,8 +232,10 @@ with `Machine::preempt_slice` guest memory accesses (default
 `runtime::preempt::DEFAULT_SLICE`, 65536). Once they are spent, or when the
 host calls `Runtime::request_preempt(REQUEST)`, the thread stops at its next
 loop header or transfer, goes to the back of the ready queue as if it had
-called NtYieldExecution (polling, so a machine of spinners advances time to
-the next deadline), and resumes exactly there on its next slice. At
+called NtYieldExecution (passed over once while any other thread is ready,
+whatever its priority, so a spinner cannot starve a lower-priority thread
+it waits on; polling, so a machine of spinners advances time to the next
+deadline), and resumes exactly there on its next slice. At
 DISPATCH_LEVEL or above it keeps the CPU and starts a fresh slice instead.
 The count is of accesses, not host time, so schedules stay reproducible;
 `Machine::preemptions()` counts these switches and `preempt_slice = None`

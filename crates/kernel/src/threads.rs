@@ -472,14 +472,19 @@ impl Machine {
                 record.irql = memory.u8(kpcr + kpcr::IRQL)?;
                 memory.set_u32(record.object + kthread::KERNEL_STACK, thread.cpu.esp)?;
                 if let Some(resume) = preempted {
-                    // Preempted at a safe point: back of the ready queue, as
-                    // NtYieldExecution does. It counts as polling, so with
-                    // every ready thread spinning the clock moves on to the
-                    // next timer instead of the spinners starving it.
+                    // Preempted at a safe point: treated as NtYieldExecution.
+                    // Back of the ready queue, and passed over once while
+                    // another thread of any priority is ready, so a spinner
+                    // cannot starve the lower-priority thread it waits on.
+                    // It counts as polling, so with every ready thread
+                    // spinning the clock moves on to the next timer.
                     memory.set_u8(record.object + kthread::STATE, 1)?;
                     record.resume = resume;
                     record.state = State::Ready;
                     record.polling = true;
+                    if core.ready.iter().any(|other| *other != tid) {
+                        core.yielder = Some(tid);
+                    }
                     core.ready.push_back(tid);
                     self.preemptions += 1;
                     continue;
