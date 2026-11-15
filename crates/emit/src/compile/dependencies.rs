@@ -10,11 +10,73 @@ use std::sync::Mutex;
 use super::{Arch, Error, err};
 use crate::fnv64;
 
+/// One clang probe's result, shared by every translation unit that can use
+/// it. The first thread to need it runs the probe; the others wait.
+type Shared<T> = std::sync::Arc<std::sync::OnceLock<Result<T, String>>>;
+/// Probe results by key, each computed once.
+type Probes<K, T> = Mutex<HashMap<K, Shared<T>>>;
+
 #[derive(Default)]
 pub(super) struct Headers {
     // Many translation units include the same SDK/support headers. Read and
     // hash each resolved dependency only once in this build.
     digests: Mutex<HashMap<PathBuf, (PathBuf, u64)>>,
+    // Driver traces (`-###`) by source directory and extension, with the
+    // source's names abstracted (see `driver_fingerprint`).
+    drivers: Probes<(PathBuf, OsString), Option<u64>>,
+    // `-M` dependency lists by preprocessor skeleton (see `skeleton`),
+    // without the source that was scanned.
+    scans: Probes<(PathBuf, u64), Vec<PathBuf>>,
+    // Whether the build's headers can change between translation units
+    // with the same skeleton (they use `__BASE_FILE__` or save and restore
+    // macros); then every unit is scanned on its own.
+    unshareable: std::sync::atomic::AtomicBool,
+}
+
+/// Run `probe` once per `key` in `map`; every caller gets its result.
+fn once<K: std::hash::Hash + Eq, T: Clone>(
+    map: &Probes<K, T>,
+    key: K,
+    probe: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    let cell = map.lock().unwrap().entry(key).or_default().clone();
+    cell.get_or_init(|| probe().map_err(|e| e.0)).clone().map_err(Error)
+}
+
+/// What decides which files preprocessing a source reads, as far as the
+/// source's own text goes: every line that holds a directive or could
+/// (anything with `#`, or the `%:` digraph, or the `??=` trigraph), with its
+/// line number, since `__LINE__` is visible to `#if`. `None` when the text
+/// can change preprocessor state outside directives (`_Pragma`,
+/// `__COUNTER__`) or names itself (`__FILE__` and relatives): such a source
+/// is always scanned on its own.
+///
+/// Two sources in one directory with the same skeleton, under the same
+/// flags, include exactly the same files: the text between those lines is
+/// ordinary tokens, which can't define macros or include anything.
+pub(super) fn skeleton(text: &[u8]) -> Option<u64> {
+    const SELF_AWARE: &[&[u8]] = &[b"_Pragma", b"__COUNTER__", b"__FILE__", b"__FILE_NAME__", b"__BASE_FILE__"];
+    if SELF_AWARE.iter().any(|n| text.windows(n.len()).any(|w| w == *n)) {
+        return None;
+    }
+    let mut s = b"h2-skeleton-v1\0".to_vec();
+    for (n, line) in text.split(|b| *b == b'\n').enumerate() {
+        let directive = line.contains(&b'#') || line.windows(2).any(|w| w == b"%:") || line.windows(3).any(|w| w == b"??=");
+        if directive {
+            s.extend((n as u64).to_le_bytes());
+            s.extend((line.len() as u64).to_le_bytes());
+            s.extend(line);
+        }
+    }
+    Some(fnv64(&s))
+}
+
+/// Header text that makes what a source includes depend on more than its
+/// skeleton.
+fn defeats_sharing(header: &[u8]) -> bool {
+    [&b"__BASE_FILE__"[..], b"push_macro", b"pop_macro", b"include_alias"]
+        .iter()
+        .any(|n| header.windows(n.len()).any(|w| w == *n))
 }
 
 impl Headers {
@@ -24,26 +86,59 @@ impl Headers {
         flags: &[String],
         arch: Arch,
         src: &Path,
+        text: &[u8],
+        root: &Path,
+    ) -> Result<u64, Error> {
+        let share = skeleton(text);
+        self.fingerprint_with(cc, flags, arch, src, share, root)
+    }
+
+    fn fingerprint_with(
+        &self,
+        cc: &Path,
+        flags: &[String],
+        arch: Arch,
+        src: &Path,
+        skeleton: Option<u64>,
         root: &Path,
     ) -> Result<u64, Error> {
         let driver = self.driver_fingerprint(cc, flags, arch, src)?;
-        let output = Command::new(cc)
-            .args(flags)
-            .args(["-target", arch.triple(), "-M", "-MT", "h2"])
-            .arg(src)
-            .output()
-            .map_err(err)?;
-        if !output.status.success() {
-            return Err(err(format!(
-                "dependencies for {}: {}",
-                src.display(),
-                String::from_utf8_lossy(&output.stderr)
-            )));
-        }
         let source = std::fs::canonicalize(src).map_err(err)?;
+        let dir = source.parent().unwrap_or(Path::new("/")).to_path_buf();
+        let scan = |src: &Path| -> Result<Vec<PathBuf>, Error> {
+            let output = Command::new(cc)
+                .args(flags)
+                .args(["-target", arch.triple(), "-M", "-MT", "h2"])
+                .arg(src)
+                .output()
+                .map_err(err)?;
+            if !output.status.success() {
+                return Err(err(format!(
+                    "dependencies for {}: {}",
+                    src.display(),
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            parse(&output.stdout)
+        };
+        let shared = skeleton.filter(|_| !self.unshareable.load(std::sync::atomic::Ordering::Relaxed));
+        let paths = match shared {
+            // The scanned source itself is dropped: each user hashes its own.
+            Some(k) => once(&self.scans, (dir, k), || {
+                let found = scan(src)?;
+                let mut kept = Vec::new();
+                for p in found {
+                    if std::fs::canonicalize(&p).map_err(err)? != source {
+                        kept.push(p);
+                    }
+                }
+                Ok(kept)
+            })?,
+            None => scan(src)?,
+        };
         let mut dependencies = Vec::new();
         let mut digests = self.digests.lock().unwrap();
-        for path in parse(&output.stdout)? {
+        for path in paths {
             let (resolved, digest) = match digests.get(&path) {
                 Some(value) => value.clone(),
                 None => {
@@ -52,7 +147,11 @@ impl Headers {
                     if resolved == source {
                         continue;
                     }
-                    let digest = fnv64(&std::fs::read(&resolved).map_err(err)?);
+                    let bytes = std::fs::read(&resolved).map_err(err)?;
+                    if defeats_sharing(&bytes) {
+                        self.unshareable.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    let digest = fnv64(&bytes);
                     digests.insert(path, (resolved.clone(), digest));
                     (resolved, digest)
                 }
@@ -66,6 +165,12 @@ impl Headers {
                     .to_path_buf();
                 dependencies.push((name, digest));
             }
+        }
+        drop(digests);
+        if shared.is_some() && self.unshareable.load(std::sync::atomic::Ordering::Relaxed) {
+            // A header seen just now rules sharing out: scan this source
+            // on its own after all (later ones won't share either).
+            return self.fingerprint_with(cc, flags, arch, src, None, root);
         }
         dependencies.sort();
         dependencies.dedup();
@@ -83,13 +188,33 @@ impl Headers {
     /// -M lists C includes, not driver configurations. The dry run exposes
     /// expanded options, including configuration/response-file arguments,
     /// and identifies explicit and default configuration files that were read.
-    fn driver_fingerprint(
-        &self,
-        cc: &Path,
-        flags: &[String],
-        arch: Arch,
-        src: &Path,
-    ) -> Result<u64, Error> {
+    ///
+    /// The driver sees a source only as its path, so one dry run serves a
+    /// directory of sources with one extension: the trace is kept with the
+    /// path and `-main-file-name` abstracted, and each source's own name is
+    /// added back. If the probe's name shows up anywhere else in its trace,
+    /// each source is probed on its own.
+    fn driver_fingerprint(&self, cc: &Path, flags: &[String], arch: Arch, src: &Path) -> Result<u64, Error> {
+        let name = src.file_name().unwrap_or_default().to_owned();
+        let dir = std::fs::canonicalize(src.parent().unwrap_or(Path::new("."))).map_err(err)?;
+        let ext = src.extension().unwrap_or_default().to_owned();
+        let shared = once(&self.drivers, (dir, ext), || {
+            let (trace, abstracted) = self.driver_trace(cc, flags, arch, src)?;
+            Ok(abstracted.then(|| fnv64(&trace)))
+        })?;
+        let trace = match shared {
+            Some(h) => h.to_le_bytes().to_vec(),
+            None => self.driver_trace(cc, flags, arch, src)?.0,
+        };
+        let mut identity = b"h2-driver-v2\0".to_vec();
+        identity.extend(trace);
+        identity.extend(name.as_bytes());
+        Ok(fnv64(&identity))
+    }
+
+    /// `src`'s normalized driver trace, and whether its name was fully
+    /// abstracted (appears nowhere else in it).
+    fn driver_trace(&self, cc: &Path, flags: &[String], arch: Arch, src: &Path) -> Result<(Vec<u8>, bool), Error> {
         let output = Command::new(cc)
             .args(flags)
             .args(["-target", arch.triple(), "-###", "-c"])
@@ -106,6 +231,12 @@ impl Headers {
         }
         let trace = [output.stdout, output.stderr].concat();
         let mut identity = normalize(&trace, src);
+        let name = src.file_name().unwrap_or_default().as_bytes();
+        let mut main = b"\"-main-file-name\" \"".to_vec();
+        main.extend(name);
+        main.push(b'"');
+        identity = replace(&identity, &main, b"\"-main-file-name\" \"<h2-name>\"");
+        let abstracted = !name.is_empty() && !identity.windows(name.len()).any(|w| w == name);
         let mut digests = self.digests.lock().unwrap();
         for line in trace.split(|b| *b == b'\n') {
             if let Some(name) = line.strip_prefix(b"Configuration file: ") {
@@ -122,8 +253,24 @@ impl Headers {
                 identity.extend(digest.to_le_bytes());
             }
         }
-        Ok(fnv64(&identity))
+        Ok((identity, abstracted))
     }
+}
+
+/// `text` with every `from` replaced by `to`.
+fn replace(text: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if text[i..].starts_with(from) {
+            result.extend(to);
+            i += from.len();
+        } else {
+            result.push(text[i]);
+            i += 1;
+        }
+    }
+    result
 }
 
 /// Normalize only the quoted translation-unit argument, preserving every
@@ -199,6 +346,27 @@ fn parse(text: &[u8]) -> Result<Vec<PathBuf>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_skeleton_is_the_directive_lines_and_where_they_are() {
+        let a = skeleton(b"/* banner */\n#include \"h2gen.h\"\n\nint f(void) { return 1; }\n").unwrap();
+        let b = skeleton(b"/* banner */\n#include \"h2gen.h\"\n\nint g(void) { return 2 + 3; }\nint h;\n").unwrap();
+        assert_eq!(a, b, "only the text between directives differs");
+        let moved = skeleton(b"\n/* banner */\n#include \"h2gen.h\"\n\nint f(void) { return 1; }\n").unwrap();
+        assert_ne!(a, moved, "__LINE__ can see where a directive is");
+        let other = skeleton(b"/* banner */\n#include \"h2abi.h\"\n\nint f(void) { return 1; }\n").unwrap();
+        assert_ne!(a, other);
+        // Directives hiding behind a comment, a digraph or a trigraph count.
+        for hidden in [&b"/* x */ #include \"y.h\"\n"[..], b"%:include \"y.h\"\n", b"??=include \"y.h\"\n"] {
+            let text = [&b"/* banner */\n#include \"h2gen.h\"\n\nint f(void) { return 1; }\n"[..], hidden].concat();
+            assert_ne!(Some(a), skeleton(&text), "{}", String::from_utf8_lossy(hidden));
+        }
+        // Text that can change the preprocessor's state or names the file
+        // is never shared.
+        for own in ["_Pragma(\"x\")", "__COUNTER__", "__FILE__", "__FILE_NAME__", "__BASE_FILE__"] {
+            assert_eq!(skeleton(format!("#include \"h2gen.h\"\nint x = {own};\n").as_bytes()), None, "{own}");
+        }
+    }
 
     #[test]
     fn driver_normalization_preserves_paths_in_configuration_options() {

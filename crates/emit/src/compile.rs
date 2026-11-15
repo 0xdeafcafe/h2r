@@ -546,7 +546,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                     let i = cursor.fetch_add(1, Ordering::Relaxed);
                     let Some(src) = sources.get(i) else { break };
                     let r = std::fs::read(src).map_err(err).and_then(|text| {
-                        let dependencies = headers.fingerprint(cc, &flags, arch, src, &source_root)?;
+                        let dependencies = headers.fingerprint(cc, &flags, arch, src, &text, &source_root)?;
                         let key = fnv64(&[&common.to_le_bytes()[..], &dependencies.to_le_bytes()[..], &text].concat());
                         let stem = src.file_stem().unwrap().to_string_lossy();
                         let name = format!("{stem}.{}.{key:016x}.o", arch.name());
@@ -890,6 +890,72 @@ mod tests {
 
     fn member_names(b: &Build) -> Vec<String> {
         b.objects.iter().map(|o| o.file_name().unwrap().to_string_lossy().into_owned()).collect()
+    }
+
+    /// Sources with the same preprocessor skeleton share one dependency
+    /// scan, and still each get exactly their own includes: a header only
+    /// one includes, a conditional include, a directive moved to another
+    /// line or a header that saves and restores macros each key
+    /// correctly, and the scanned source never becomes a dependency of the
+    /// others.
+    #[test]
+    fn shared_dependency_scans_key_each_source_by_its_own_includes() {
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED shared_dependency_scans_key_each_source_by_its_own_includes: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-shared-scan-{}", std::process::id()));
+        let src = tiny_tree(&dir);
+        let out = dir.join("out");
+        let common = "#include \"h2abi.h\"\n";
+        std::fs::write(src.join("only.h"), "#define ONLY 1\n").unwrap();
+        std::fs::write(src.join("other.h"), "#define OTHER 1\n").unwrap();
+        // Same skeleton: a, b and c. d includes only.h too; e includes it
+        // under a condition another header controls; f has its include on a
+        // later line, so `__LINE__` could tell them apart.
+        for (name, text) in [
+            ("a.c", format!("{common}int h2_a(void) {{ return 1; }}\n")),
+            ("b.c", format!("{common}int h2_b(void) {{ return 2; }}\n")),
+            ("c.c", format!("{common}int h2_c(void) {{ return 3; }}\n")),
+            ("d.c", format!("{common}#include \"only.h\"\nint h2_d(void) {{ return ONLY; }}\n")),
+            ("e.c", format!("{common}#ifdef WANT_OTHER\n#include \"other.h\"\n#endif\nint h2_e(void) {{ return 5; }}\n")),
+            ("f.c", format!("\n{common}int h2_f(void) {{ return 6; }}\n")),
+        ] {
+            std::fs::write(src.join(name), text).unwrap();
+        }
+        let names = |b: &Build| -> Vec<String> { member_names(b) };
+        let first = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!((first.compiled, first.reused), (7, 0));
+        // The scanned source (whichever of a, b, c) is no dependency of the
+        // others: changing one recompiles only it.
+        std::fs::write(src.join("b.c"), format!("{common}int h2_b(void) {{ return 22; }}\n")).unwrap();
+        let b = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!((b.compiled, b.reused), (1, 6));
+        // A header only d includes recompiles only d.
+        std::fs::write(src.join("only.h"), "#define ONLY 2\n").unwrap();
+        let only = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!((only.compiled, only.reused), (1, 6));
+        let changed: Vec<_> = names(&only).into_iter().filter(|n| !names(&b).contains(n)).collect();
+        assert!(changed[0].starts_with("d."), "{changed:?}");
+        // Turning e's conditional include on (from a header everyone
+        // includes) recompiles everyone; then other.h is e's alone.
+        std::fs::write(src.join("h2abi.h"), "#define WANT_OTHER 1\n").unwrap();
+        let on = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!(on.reused, 0, "h2abi.h is in every key");
+        std::fs::write(src.join("other.h"), "#define OTHER 2\n").unwrap();
+        let other = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!((other.compiled, other.reused), (1, 6));
+        let changed: Vec<_> = names(&other).into_iter().filter(|n| !names(&on).contains(n)).collect();
+        assert!(changed[0].starts_with("e."), "{changed:?}");
+        // A header that saves and restores macros turns sharing off; every
+        // source still keys (and builds) correctly.
+        std::fs::write(src.join("h2abi.h"), "#pragma push_macro(\"X\")\n#pragma pop_macro(\"X\")\n").unwrap();
+        let unshared = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!(unshared.reused, 0);
+        std::fs::write(src.join("only.h"), "#define ONLY 3\n").unwrap();
+        let again = build_in(&src, &out, &dir.join("cache"), Arch::host(), 4, &cc).unwrap();
+        assert_eq!((again.compiled, again.reused), (1, 6));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Changing one function recompiles only its source; changing any
