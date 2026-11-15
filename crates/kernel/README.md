@@ -225,6 +225,20 @@ again. Without that, a lone thread yielding while a periodic timer is armed
 set) would watch the clock and its DPC run forever without a slice of its own. This deterministic policy lets
 a polling parent observe a sleeping child without tying time to host speed. Transfer/slice budgets are diagnostics, not preemption.
 
+Generated code adds one preemption point, so a guest spin-wait on another
+thread cannot hang this schedule (`runtime::preempt`, and "Loop safe points"
+in `crates/emit/RUNTIME-CONTRACT.md`). Each slice arms the thread's context
+with `Machine::preempt_slice` guest memory accesses (default
+`runtime::preempt::DEFAULT_SLICE`, 65536). Once they are spent, or when the
+host calls `Runtime::request_preempt(REQUEST)`, the thread stops at its next
+loop header or transfer, goes to the back of the ready queue as if it had
+called NtYieldExecution (polling, so a machine of spinners advances time to
+the next deadline), and resumes exactly there on its next slice. At
+DISPATCH_LEVEL or above it keeps the CPU and starts a fresh slice instead.
+The count is of accesses, not host time, so schedules stay reproducible;
+`Machine::preemptions()` counts these switches and `preempt_slice = None`
+restores the purely cooperative schedule.
+
 Timers: an inserted KTIMER is held in Rust by address with its deadline in
 clock ticks; the guest object keeps Header (type 8/9, Size 10, Inserted,
 SignalState), DueTime, Dpc and Period. Each wake pass expires due timers one

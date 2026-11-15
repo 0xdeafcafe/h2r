@@ -15,7 +15,13 @@ pub(crate) use crate::continuation::{
     BASE as CONTINUATION_BASE, Continuation, END as CONTINUATION_END,
 };
 
+/// `repr(C)` for its first field only: generated code reads `preempt`
+/// through the `ExecCtxOpaque *` it is given (`preempt.rs`). Every other
+/// field stays private to Rust.
+#[repr(C)]
 pub struct ExecCtx {
+    /// Must stay first (RUNTIME-CONTRACT.md, "Loop safe points").
+    preempt: crate::preempt::WordPtr,
     runtime: Arc<Runtime>,
     pub thread_id: u32,
     events: Vec<Event>,
@@ -27,10 +33,15 @@ pub struct ExecCtx {
     pub(crate) interrupts_masked: bool,
     /// Return token of the delivered interrupt callback, if one is running.
     pub(crate) interrupt_token: Option<u32>,
+    pub(crate) slice: crate::preempt::Slice,
+    /// The transfer a preemption interrupted (`take_preempted`).
+    pub(crate) preempted: Option<TransferAbi>,
 }
+const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
         Self {
+            preempt: crate::preempt::WordPtr::of(&runtime),
             runtime,
             thread_id,
             events: Vec::new(),
@@ -41,6 +52,8 @@ impl ExecCtx {
             frames: Default::default(),
             interrupts_masked: false,
             interrupt_token: None,
+            slice: Default::default(),
+            preempted: None,
         }
     }
     pub fn runtime(&self) -> &Arc<Runtime> {

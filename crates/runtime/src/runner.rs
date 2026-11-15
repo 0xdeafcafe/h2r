@@ -77,6 +77,12 @@ impl Runner {
                 transfer = call;
                 continue;
             }
+            // Safe point: CPU state is canonical and `transfer` is still
+            // undispatched, so a preempted context resumes with it as is
+            // (preempt.rs). One relaxed load while nothing is pending.
+            if let Some(stop) = ctx.preempt_point(transfer) {
+                return stop;
+            }
             // Diagnostic call chain only; the guest stack decides control.
             // Every transfer first drops the records whose return slots ESP
             // has passed, so returns, `ret n` and longjmp-style ESP restores

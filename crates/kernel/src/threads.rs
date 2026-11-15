@@ -105,6 +105,13 @@ pub struct Machine {
     /// KDPCs already run in the current drain (since the last thread slice).
     drained: BTreeSet<u32>,
     pub max_transfers_per_slice: u64,
+    /// Guest memory accesses a thread may make before generated code gives
+    /// up its slice at a loop header or transfer (`runtime::preempt`).
+    /// `None` keeps the purely cooperative schedule: threads switch only
+    /// in blocking kernel calls.
+    pub preempt_slice: Option<u64>,
+    /// Slices that ended in preemption rather than a kernel call.
+    preemptions: u64,
 }
 
 impl Machine {
@@ -199,6 +206,8 @@ impl Machine {
             dpc_stack_top: 0,
             drained: BTreeSet::new(),
             max_transfers_per_slice: 1_000_000,
+            preempt_slice: Some(runtime::preempt::DEFAULT_SLICE),
+            preemptions: 0,
         };
         machine.collect_threads()?;
         Ok(machine)
@@ -231,6 +240,10 @@ impl Machine {
     /// Scheduled entries dropped from the front of `schedule()` by its budget.
     pub fn dropped_schedule(&self) -> u64 {
         self.dropped_schedule
+    }
+    /// How many slices ended because the thread was preempted.
+    pub fn preemptions(&self) -> u64 {
+        self.preemptions
     }
     /// After installing a missing HLE handler, retry the stopped kernel frame.
     /// Faults, bugchecks and firmware exits retain their terminal diagnostics.
@@ -427,11 +440,27 @@ impl Machine {
                 tid,
             );
             let thread = self.threads.get_mut(&tid).unwrap();
-            let resume = self.kernel.lock().threads[&tid].resume;
-            let transfer = Runner {
-                max_transfers: self.max_transfers_per_slice,
-            }
-            .run_from(&mut thread.cpu, &mut thread.ctx, resume);
+            let mut resume = self.kernel.lock().threads[&tid].resume;
+            let (transfer, preempted) = loop {
+                if let Some(accesses) = self.preempt_slice {
+                    thread.ctx.arm_preemption(accesses);
+                }
+                let transfer = Runner {
+                    max_transfers: self.max_transfers_per_slice,
+                }
+                .run_from(&mut thread.cpu, &mut thread.ctx, resume);
+                thread.ctx.disarm_preemption();
+                let Some(next) = thread.ctx.take_preempted() else {
+                    break (transfer, None);
+                };
+                // At DISPATCH_LEVEL or above nothing else may run on the
+                // one Xbox CPU: the thread carries on with a fresh slice.
+                let kpcr = self.kernel.lock().kpcr;
+                if self.runtime.memory().u8(kpcr + kpcr::IRQL)? < 2 {
+                    break (transfer, Some(next));
+                }
+                resume = next;
+            };
             {
                 let mut core = self.kernel.lock();
                 let mut memory = self.runtime.memory();
@@ -442,6 +471,19 @@ impl Machine {
                 }
                 record.irql = memory.u8(kpcr + kpcr::IRQL)?;
                 memory.set_u32(record.object + kthread::KERNEL_STACK, thread.cpu.esp)?;
+                if let Some(resume) = preempted {
+                    // Preempted at a safe point: back of the ready queue, as
+                    // NtYieldExecution does. It counts as polling, so with
+                    // every ready thread spinning the clock moves on to the
+                    // next timer instead of the spinners starving it.
+                    memory.set_u8(record.object + kthread::STATE, 1)?;
+                    record.resume = resume;
+                    record.state = State::Ready;
+                    record.polling = true;
+                    core.ready.push_back(tid);
+                    self.preemptions += 1;
+                    continue;
+                }
                 let yielded = core.yielded.remove(&tid);
                 if transfer.kind == runtime::abi::STOP
                     && let Some(resume) = yielded

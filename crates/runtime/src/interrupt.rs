@@ -98,6 +98,11 @@ impl Runtime {
         self.interrupts
             .pending
             .store(queue.len(), Ordering::Release);
+        drop(queue);
+        // Bring a generated loop that calls nothing back to the runner's
+        // safe point, where `deliver` runs (preempt.rs). Set after queueing,
+        // so the safe point that takes the bit sees the interrupt.
+        self.request_preempt(crate::preempt::INTERRUPT);
         Raise::Queued
     }
     /// Interrupts queued and not yet delivered.

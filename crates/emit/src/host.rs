@@ -276,7 +276,12 @@ pub enum HostEvent {
 }
 
 /// Execution context handed to generated code as `ExecCtxOpaque *`.
+/// `preempt` must stay first: generated loops read the word it points to
+/// (RUNTIME-CONTRACT.md, "Loop safe points"). Set it and the next loop
+/// back-edge leaves with `JUMP`/`RESUME` to its header.
+#[repr(C)]
 pub struct Ctx {
+    pub preempt: Box<std::sync::atomic::AtomicU32>,
     pub mem: FlatMemory,
     pub events: Vec<HostEvent>,
     /// Calls to the atomic accessors, by `H2_ATOMIC_*` tag (`xchg` is 15,
@@ -294,9 +299,12 @@ pub struct Ctx {
     cpu: *const CpuAbi,
 }
 
+const _: () = assert!(std::mem::offset_of!(Ctx, preempt) == 0);
+
 impl Ctx {
     pub fn new(mem: FlatMemory) -> Self {
         Ctx {
+            preempt: Box::default(),
             mem,
             events: Vec::new(),
             atomics: Vec::new(),

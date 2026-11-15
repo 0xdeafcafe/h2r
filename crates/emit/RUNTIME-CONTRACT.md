@@ -175,7 +175,8 @@ returns the counter and adds one), so differential tests are exact.
 
 ### 1.6 Nothing else
 
-Handlers call no other runtime symbol. x87, MMX and MXCSR state are read
+Handlers call no other runtime symbol. The one other thing they read is
+the preempt word through the context pointer (§4, "Loop safe points"). x87, MMX and MXCSR state are read
 and written directly in `CpuAbi` by `static inline` helpers in `h2gen.h`,
 and SSE floating point by the `h2s_*` functions of `h2simd.h` (copied next
 to `h2gen.h`, which includes it). Those helpers mirror
@@ -216,6 +217,8 @@ typedef struct H2GenModule {
   continuation that is another function's first instruction (A calls,
   and B starts right after the call). It is then registered as a resume of
   B, and B's entry row stays as it is.
+- Every loop header is also a resume of its owner (§4, "Loop safe
+  points"), with `start` = the header.
 
 ## 3. Registration adapter (**new**)
 
@@ -293,6 +296,32 @@ Its semantics:
   faulting instruction. If that turns out to matter, the planned extension
   is on demand: a list of PCs (from a run's fault log) that the emitter
   registers as extra resumes, not a selector for every memory access.
+- **Loop safe points** (**new**). A loop that calls nothing never returns
+  to the runner, so the runner's own safe point (every transfer) cannot
+  stop it, and a guest spin-wait on another thread would hang the
+  cooperative scheduler. Generated code therefore polls at every loop
+  header (`crates/emit/src/backedge.rs` finds them: the targets of the
+  retreating edges of a DFS over local edges, so every cycle has one):
+  - The object behind `ExecCtxOpaque *` starts with a `const uint32_t *`,
+    the preempt word, fixed for the context's lifetime. A handler that has
+    loops reads it once on entry (`H2_PREEMPT_LOCALS`). Each arrival at a
+    header is one relaxed load of the word and a branch (`H2_LOOP_POLL`;
+    clang rotates it onto the back-edge).
+  - While the word is non-zero, arriving at the header returns
+    `JUMP`/`RESUME` with `target_pc` = `eip` = the header, state canonical
+    as at the top of the header. Nothing of the header has run.
+  - The header is registered as a resume of the owner. Entering with that
+    selector skips the poll, so every handler call makes at least one trip
+    round the loop whatever the word says: a word that stays set slows a
+    loop down but cannot stop it.
+  - The runtime sets the word and reads it back at its safe point
+    (`crates/runtime/src/preempt.rs`): that is where it delivers pending
+    interrupts and where a time-sliced thread gives way. Resuming the
+    `JUMP`/`RESUME` it returned continues the loop. A runtime that never
+    sets the word sees no change at all; the test host's `Ctx` has the
+    pointer first too.
+  - No shim event code is used for this: the exit is an ordinary
+    resumable transfer, so it records no event.
 - **Exclusivity.** Handler pointers are synchronous and do not retain
   `cpu` or `ctx`. One `CpuAbi` is used by one thread at a time. C never
   unwinds.

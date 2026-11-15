@@ -312,10 +312,55 @@ Delivery:
   (`cancel_continuation`, `clear_continuations`) ends the service without a
   restore.
 - **Latency.** A safe point comes at every call, return and cross-function
-  jump. A loop inside one generated function that calls nothing never
-  reaches one, so a guest spinning on a vblank counter inside one function
-  would wait forever. HLE that blocks on vblank has to deliver the
-  callback itself or return to the runner.
+  jump, and, through the preempt word, at the next loop header: a raise
+  sets `preempt::INTERRUPT` after queueing, so a guest spinning on a vblank
+  counter inside one generated function leaves its loop within one trip
+  and the interrupt is delivered (see "Preemption"). Rust override code
+  that loops without returning to the runner still has to deliver it
+  itself.
+
+## Preemption
+
+`preempt.rs` lets the host take the CPU from a guest loop that calls
+nothing. The `Runtime` owns one preempt word; every `ExecCtx` starts with a
+pointer to it (`#[repr(C)]`, offset asserted), which generated code reads
+once per handler and polls at each loop header. While the word is set a
+loop leaves with `JUMP`/`RESUME` to its header (registered as a resume),
+which reaches the runner's safe point like any other transfer.
+
+```rust
+pub const SLICE: u32 = 1;     // the armed context spent its accesses
+pub const INTERRUPT: u32 = 2; // an interrupt is queued
+pub const REQUEST: u32 = 4;   // the host wants the running thread to yield
+impl Runtime {
+    pub fn request_preempt(&self, reasons: u32); // any host thread
+    pub fn preempt_pending(&self) -> u32;
+}
+impl ExecCtx {
+    pub fn arm_preemption(&mut self, accesses: u64);
+    pub fn disarm_preemption(&mut self);
+    pub fn preemption_armed(&self) -> bool;
+    pub fn take_preempted(&mut self) -> Option<TransferAbi>;
+}
+```
+
+- **Safe point.** At the top of the runner loop, once a valid CALL, JUMP or
+  RETURN is in hand and before it is dispatched. With the word clear this
+  is one relaxed load. Otherwise the runner takes every bit (one swap).
+- **Armed.** If the context is armed and SLICE or REQUEST was set, the
+  runner keeps the undispatched transfer (`take_preempted`) and returns
+  `STOP` with event 0. `run_from` with that transfer continues exactly
+  where the thread was. `kernel::Machine` arms each thread slice.
+- **Unarmed** (the default, a DPC, tests): the bits are dropped and the run
+  carries on. INTERRUPT alone never takes the thread away.
+- **Slice.** Counted in calls to the generated-code accessors (`h2abi_v1_read`,
+  `_write` and the atomics) by an armed context: reproducible, and a
+  spin-wait always reads memory. Rust overrides do not count. A loop that
+  touches no memory at all stops only for INTERRUPT or REQUEST.
+- **Interrupts.** `raise_interrupt` sets INTERRUPT after queueing, so a
+  spinning generated loop returns to the runner within one trip. The
+  runner delivers the interrupt first, then takes the bits; INTERRUPT alone
+  never takes the thread away.
 
 ## Generated modules
 

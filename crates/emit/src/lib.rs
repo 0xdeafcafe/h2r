@@ -41,6 +41,7 @@
 //! What the runtime must provide for generated modules (imports, the
 //! atomic contract, a registration adapter) is in `RUNTIME-CONTRACT.md`.
 
+pub mod backedge;
 pub mod c;
 pub mod compile;
 pub mod host;
@@ -94,6 +95,9 @@ pub struct Owner {
     /// (branch sides, fall-throughs, switch cases): code the CFG keeps out
     /// of this handler so it runs, once, in the target's.
     pub entry_exits: usize,
+    /// Loop back-edges, each a preemption safe point, and their headers,
+    /// which are registered as resumes ([`backedge`]).
+    pub loops: backedge::Loops,
 }
 
 /// Branch sides, switch cases and fall-throughs of a block's last
@@ -115,7 +119,8 @@ pub fn plan(funcs: Vec<IrFunction>) -> Vec<Owner> {
         .map(|f| {
             let entry_exits = f.blocks.values().filter_map(|b| b.insns.last()).map(entry_exits).sum();
             let selectors = BTreeSet::from([f.entry]);
-            Owner { func: f, selectors, entries: Vec::new(), resumes: Vec::new(), entry_exits }
+            let loops = backedge::find(&f);
+            Owner { func: f, selectors, entries: Vec::new(), resumes: Vec::new(), entry_exits, loops }
         })
         .collect();
     owners.sort_by_key(|o| o.func.entry);
@@ -169,6 +174,17 @@ pub fn plan(funcs: Vec<IrFunction>) -> Vec<Owner> {
             }
         }
     }
+    // A loop header is where a preempted loop resumes (`backedge`): a
+    // resume of every owner that holds the loop, registered once against
+    // the canonical one like any continuation.
+    for o in &owners {
+        for &h in &o.loops.headers {
+            let holders = continuations.entry(h).or_default();
+            if !holders.contains(&o.func.entry) {
+                holders.push(o.func.entry);
+            }
+        }
+    }
     for o in &mut owners {
         o.entries.push((o.func.entry, EntryKind::Function));
     }
@@ -215,6 +231,8 @@ pub struct WriteReport {
     /// Branch sides, fall-throughs and switch cases emitted as entry-routed
     /// transfers because they land on another function's entry.
     pub entry_exits: usize,
+    /// Loop back-edges, each with a preemption check ([`backedge`]).
+    pub back_edges: usize,
 }
 
 /// Write `content` unless the file already holds exactly that, so build
@@ -241,7 +259,7 @@ pub fn write_module(owners: &[Owner], dir: &Path) -> io::Result<WriteReport> {
     // Which file (stem) defines each owner's handler.
     let mut home: BTreeMap<u32, String> = BTreeMap::new();
     for o in owners {
-        let shape = c::OwnerShape { selectors: &o.selectors };
+        let shape = c::OwnerShape { selectors: &o.selectors, loops: &o.loops };
         let text = c::function(&o.func, &shape);
         let stem = if text.len() > OVERSIZED {
             format!("fn_{:08x}", o.func.entry)
@@ -259,6 +277,7 @@ pub fn write_module(owners: &[Owner], dir: &Path) -> io::Result<WriteReport> {
         report.entries += o.entries.len();
         report.resumes += o.resumes.len();
         report.entry_exits += o.entry_exits;
+        report.back_edges += o.loops.back_edges.len();
     }
     files.insert("h2gen_registry.c".into(), registry(owners, &home));
 

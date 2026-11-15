@@ -586,7 +586,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     let t = Instant::now();
     let w = emit::write_module(&owners, &src)?;
     println!(
-        "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries",
+        "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries, {} loop back-edges",
         t.elapsed().as_secs_f64(),
         w.owners,
         w.files.len(),
@@ -594,7 +594,8 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         w.bytes as f64 / 1e6,
         w.entries,
         w.resumes,
-        w.entry_exits
+        w.entry_exits,
+        w.back_edges
     );
     if opts.no_build {
         return Ok(());

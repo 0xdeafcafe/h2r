@@ -57,6 +57,8 @@ pub struct OwnerShape<'a> {
     /// Start selectors the handler accepts: its entry, and the interior
     /// entries and call continuations it is the canonical owner of.
     pub selectors: &'a BTreeSet<u32>,
+    /// Loops: each header polls for preemption ([`crate::backedge`]).
+    pub loops: &'a crate::backedge::Loops,
 }
 
 /// The C symbol of an owner's handler.
@@ -224,15 +226,27 @@ impl Emitter<'_> {
         if x87 {
             self.line(1, "H2X87_LOCALS();");
         }
+        let headers = &self.shape.loops.headers;
+        if !headers.is_empty() {
+            self.line(1, "H2_PREEMPT_LOCALS();");
+        }
         self.line(1, "switch (start) {");
         for s in self.shape.selectors {
-            self.line(1, format!("case {s:#010x}u: goto L_{s:08x};"));
+            // Entered from the runner, which is a safe point: skip the poll.
+            let label = if headers.contains(s) { "P" } else { "L" };
+            self.line(1, format!("case {s:#010x}u: goto {label}_{s:08x};"));
         }
         self.line(1, "default: break;");
         self.line(1, "}");
         self.line(1, "{ uint32_t e_ = h2shim_v1_event(ctx, start, start, H2SHIM_BAD_ENTRY, start); H2_STOP_EVENT(start, e_); }");
         for b in f.blocks.values() {
             self.line(0, format!("L_{:08x}:;", b.start));
+            if headers.contains(&b.start) {
+                // Every way round the loop passes here. clang rotates the
+                // poll onto the back-edge: one load and a branch per trip.
+                self.line(1, format!("H2_LOOP_POLL({:#x}u);", b.start));
+                self.line(0, format!("P_{:08x}:;", b.start));
+            }
             for (i, insn) in b.insns.iter().enumerate() {
                 let last = i + 1 == b.insns.len();
                 // A selector inside a block (a REP restart point): every

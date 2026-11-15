@@ -20,6 +20,7 @@ mod handler;
 pub mod interrupt;
 pub mod kernel;
 pub mod loader;
+pub mod preempt;
 pub mod runner;
 pub mod services;
 pub mod tsc;

@@ -92,6 +92,7 @@ pub unsafe extern "C" fn h2abi_v1_read(
 ) -> u32 {
     // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
     let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    ctx.spend_access();
     if !matches!(width, 1 | 2 | 4 | 8 | 10 | 16) {
         return invalid(
             ctx,
@@ -144,6 +145,7 @@ pub unsafe extern "C" fn h2abi_v1_write(
 ) -> u32 {
     // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
     let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    ctx.spend_access();
     if !matches!(width, 1 | 2 | 4 | 8 | 10 | 16) {
         return invalid(
             ctx,
@@ -292,7 +294,12 @@ unsafe fn atomic_output(
     }
     // SAFETY: the caller supplies the exclusive invocation pair. The closure
     // returns an owned result, so no reference to CPU/context escapes this call.
-    let result = unsafe { with_context(cpu, exec, operation) };
+    let result = unsafe {
+        with_context(cpu, exec, |cpu, ctx| {
+            ctx.spend_access();
+            operation(cpu, ctx)
+        })
+    };
     match result {
         Ok(old) => {
             // SAFETY: out is writable, disjoint from ExecCtx, and may alias CPU
@@ -399,6 +406,7 @@ pub unsafe extern "C" fn h2abi_v1_cmpxchg8b(
     // SAFETY: caller provides the exclusive invocation pair.
     unsafe {
         with_context(cpu, exec, |cpu, ctx| {
+            ctx.spend_access();
             let result = ctx.memory().atomic_cmpxchg8b(cpu, addr);
             status(ctx, pc, result)
         })

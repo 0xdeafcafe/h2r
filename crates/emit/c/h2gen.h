@@ -457,4 +457,24 @@ static inline uint32_t h2x87i_st80(X87Abi *s, uint32_t i, uint32_t bcd, h2u128 *
         fd &= ~(1u << (bit));                                                   \
     } while (0)
 
+/* ---- Loop safe points (RUNTIME-CONTRACT.md, "Loop safe points"). --------
+ * The object behind ExecCtxOpaque * starts with a pointer to the runtime's
+ * preempt word, fixed for the context's lifetime. A handler with loops reads
+ * that pointer once, and each loop header polls the word with one relaxed
+ * load and a branch. While it is non-zero, arriving at the header leaves
+ * with JUMP/RESUME to it, state canonical as at the top of the header. The
+ * header is a resume of its owner; resuming enters just past the poll, so
+ * every handler call makes at least one trip round the loop. */
+static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
+    const uint32_t *p;
+    memcpy(&p, (const void *)ctx, sizeof p);
+    return p;
+}
+#define H2_PREEMPT_LOCALS() const uint32_t *const h2_pre_ = h2_preempt_word(ctx)
+#define H2_LOOP_POLL(header)                                                    \
+    do {                                                                        \
+        if (__builtin_expect(__atomic_load_n(h2_pre_, __ATOMIC_RELAXED) != 0u, 0)) \
+            H2_XFER(H2_JUMP, H2_RESUME, (header), 0u);                          \
+    } while (0)
+
 #endif

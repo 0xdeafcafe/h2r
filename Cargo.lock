@@ -1173,7 +1173,11 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "emit",
  "iced-x86",
+ "ir",
+ "libloading",
+ "lift",
  "runtime",
  "thiserror 2.0.21",
  "vfs",

@@ -399,3 +399,22 @@ ignored benchmarks) and `tests/interrupts.rs` (restore of the whole CPU at
 the first safe point, Stdcall, imbalance, no nesting, masking and thread
 filters, coalescing and the bound, an unpushable frame, and a raise from
 another host thread during a run).
+
+## Follow-up: preemption at loop safe points
+
+ABI_VERSION remains 1. Added `runtime::preempt` (`SLICE`, `INTERRUPT`,
+`REQUEST`, `DEFAULT_SLICE`, `PreemptWord`), `Runtime::{request_preempt,
+preempt_pending}` and `ExecCtx::{arm_preemption, disarm_preemption,
+preemption_armed, take_preempted}`.
+
+- `ExecCtx` is now `#[repr(C)]` with a private first field: the pointer to
+  its runtime's preempt word that generated code reads. The C contract is
+  "Loop safe points" in `crates/emit/RUNTIME-CONTRACT.md`. Other fields are
+  unchanged and private.
+- `Runner::run_from` has a safe point before each dispatch. It changes
+  nothing until a word is set; an armed context then returns `STOP` with
+  event 0 and `take_preempted` holds the transfer to resume with.
+- The generated-code accessors spend one unit of an armed context's slice
+  per call.
+- `kernel::Machine` gained `preempt_slice: Option<u64>` (default
+  `Some(DEFAULT_SLICE)`) and `preemptions()`.
