@@ -28,6 +28,8 @@ enum UserEvent {
     Frame,
     /// The guest thread finished.
     GuestExited,
+    /// A [`crate::Closer`] asked to close.
+    Close,
 }
 
 /// The window's swapchain. gfx's `Presenter` always uses `AutoVsync` and
@@ -176,6 +178,15 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         },
         frames_at_exit: FrameStats::default(),
     };
+    if let Some(c) = &shell.config.closer {
+        let proxy = shell.proxy.clone();
+        c.attach(
+            shell.life.clone(),
+            Box::new(move || {
+                let _ = proxy.send_event(UserEvent::Close);
+            }),
+        );
+    }
     event_loop.run_app(&mut shell)?;
     if let Some(e) = shell.init_error.take() {
         return Err(e);
@@ -461,6 +472,7 @@ impl ApplicationHandler<UserEvent> for Shell {
                     g.window.request_redraw();
                 }
             }
+            UserEvent::Close => self.close(event_loop, "close requested"),
             UserEvent::GuestExited => {
                 if let Some(e) = self.worker.as_mut().and_then(|w| w.try_finish()).cloned() {
                     eprintln!("app: guest thread exited: {e:?}");

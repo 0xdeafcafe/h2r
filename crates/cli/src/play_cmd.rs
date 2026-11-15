@@ -128,13 +128,38 @@ fn hosted(
     }
 }
 
-/// Ctrl-C or SIGTERM in the terminal: the first ends the run like a window
-/// close (the report prints, then the process exits); a second exits at
-/// once. Must run before any thread exists, so every thread inherits the
-/// blocked mask and only the watcher sees the signals. A signal the parent
-/// set to ignore (a shell's `&` ignores SIGINT) stays ignored.
+/// How long after the first signal the process exits regardless (the
+/// guest's report gets `shutdown_timeout`, 10 s, of this).
+const SIGNAL_DEADLINE: Duration = Duration::from_secs(20);
+
+/// What a terminal signal does.
+#[derive(Debug, PartialEq, Eq)]
+enum OnSignal {
+    /// The first: the run is stopping and the window closing.
+    Stopping,
+    /// A second: exit now.
+    ExitNow,
+}
+
+/// The first signal ends the run like a window close: the guest is asked to
+/// stop (waking it from a pause), and the window closes even if the guest
+/// has already exited and the window only shows its outcome. A second
+/// exits at once.
+fn on_signal(interrupted: &AtomicBool, closer: &app::Closer) -> OnSignal {
+    if interrupted.swap(true, Ordering::Relaxed) {
+        return OnSignal::ExitNow;
+    }
+    closer.close();
+    OnSignal::Stopping
+}
+
+/// Ctrl-C or SIGTERM in the terminal: see [`on_signal`]; if the process is
+/// still alive [`SIGNAL_DEADLINE`] after the first, it exits anyway. Must
+/// run before any thread exists, so every thread inherits the blocked mask
+/// and only the watcher sees the signals. A signal the parent set to ignore
+/// (a shell's `&` ignores SIGINT) stays ignored.
 #[cfg(unix)]
-fn watch_signals() -> Arc<AtomicBool> {
+fn watch_signals(closer: app::Closer) -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
     // SAFETY: plain libc signal-mask calls on a local, initialised set.
     let set = unsafe {
@@ -155,10 +180,17 @@ fn watch_signals() -> Arc<AtomicBool> {
                 if unsafe { libc::sigwait(&set, &mut sig) } != 0 {
                     return;
                 }
-                if f.swap(true, Ordering::Relaxed) {
-                    std::process::exit(130);
+                match on_signal(&f, &closer) {
+                    OnSignal::ExitNow => std::process::exit(130),
+                    OnSignal::Stopping => {
+                        eprintln!("play: interrupted; stopping the run (again to exit now)");
+                        let _ = std::thread::Builder::new().name("signal-deadline".into()).spawn(|| {
+                            std::thread::sleep(SIGNAL_DEADLINE);
+                            eprintln!("play: still running {SIGNAL_DEADLINE:?} after the signal; exiting");
+                            std::process::exit(130);
+                        });
+                    }
                 }
-                eprintln!("play: interrupted; stopping the run (again to exit now)");
             }
         })
         .expect("spawning the signal watcher");
@@ -166,7 +198,7 @@ fn watch_signals() -> Arc<AtomicBool> {
 }
 
 #[cfg(not(unix))]
-fn watch_signals() -> Arc<AtomicBool> {
+fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
@@ -263,7 +295,9 @@ pub fn run(args: Vec<String>) -> Result<()> {
     };
     let status = config.log_status;
     let timeline = config.scripted_input.clone();
-    let interrupted = watch_signals();
+    let closer = app::Closer::new();
+    config.closer = Some(closer.clone());
+    let interrupted = watch_signals(closer);
     let report = app::run(config, move |host| {
         let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted));
         let r = boot::run_hosted(&xbe, &lib, &opts, host)?;
@@ -276,10 +310,6 @@ pub fn run(args: Vec<String>) -> Result<()> {
         );
         println!("stop: {}", r.stop);
         println!("last eip: {:#010x}", r.eip);
-        if interrupted.load(Ordering::Relaxed) {
-            // The window has nothing left to show; end like Cmd+Q would.
-            std::process::exit(0);
-        }
         Ok(())
     })?;
     println!(
@@ -297,6 +327,15 @@ pub fn run(args: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_signal_closes_the_window_and_a_second_exits() {
+        let flag = AtomicBool::new(false);
+        let closer = app::Closer::new();
+        assert_eq!(on_signal(&flag, &closer), OnSignal::Stopping);
+        assert!(closer.requested() && flag.load(Ordering::Relaxed));
+        assert_eq!(on_signal(&flag, &closer), OnSignal::ExitNow);
+    }
 
     #[test]
     fn a_stale_or_missing_dylib_is_rebuilt() {

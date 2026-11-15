@@ -84,6 +84,8 @@ pub struct AppConfig {
     pub shutdown_timeout: Duration,
     /// Print the window's status line to stderr once a second.
     pub log_status: bool,
+    /// Lets another thread (a signal watcher) close the window.
+    pub closer: Option<Closer>,
 }
 
 impl Default for AppConfig {
@@ -107,7 +109,69 @@ impl Default for AppConfig {
             keep_open_on_guest_exit: true,
             shutdown_timeout: Duration::from_secs(3),
             log_status: false,
+            closer: None,
         }
+    }
+}
+
+/// Closes the window from another thread, the way Cmd+Q does: the guest is
+/// asked to stop (which wakes it from a pause or a pacing sleep), then the
+/// window closes, also when the guest has already exited and the window is
+/// only showing its outcome. A close requested before the window is up
+/// takes effect as soon as it is. Cloning shares it.
+#[derive(Clone, Default)]
+pub struct Closer(Arc<Mutex<CloserState>>);
+
+type Wake = Box<dyn Fn() + Send>;
+
+#[derive(Default)]
+struct CloserState {
+    requested: bool,
+    life: Option<Lifecycle>,
+    wake: Option<Wake>,
+}
+
+impl std::fmt::Debug for Closer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Closer").field(&self.requested()).finish()
+    }
+}
+
+impl Closer {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn state(&self) -> std::sync::MutexGuard<'_, CloserState> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Request the close. Repeats are harmless.
+    pub fn close(&self) {
+        let mut s = self.state();
+        s.requested = true;
+        if let Some(l) = &s.life {
+            l.request_stop();
+        }
+        if let Some(w) = &s.wake {
+            w();
+        }
+    }
+
+    pub fn requested(&self) -> bool {
+        self.state().requested
+    }
+
+    /// Connects the shell: `life` is the guest's lifecycle, `wake` asks the
+    /// event loop to close.
+    pub(crate) fn attach(&self, life: Lifecycle, wake: Wake) {
+        let mut s = self.state();
+        if s.requested {
+            life.request_stop();
+            wake();
+        }
+        s.life = Some(life);
+        s.wake = Some(wake);
     }
 }
 
@@ -421,5 +485,54 @@ mod input_tests {
         input.sync();
         assert_eq!(input.get_state(h).unwrap().gamepad, Default::default());
         assert_eq!(input.capabilities(h).unwrap().output.left_motor, u16::MAX);
+    }
+}
+
+#[cfg(test)]
+mod closer_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn counting() -> (Arc<AtomicUsize>, Wake) {
+        let n = Arc::new(AtomicUsize::new(0));
+        let m = Arc::clone(&n);
+        (
+            n,
+            Box::new(move || {
+                m.fetch_add(1, Ordering::SeqCst);
+            }),
+        )
+    }
+
+    #[test]
+    fn a_close_wakes_a_paused_guest_and_the_window() {
+        let c = Closer::new();
+        let life = Lifecycle::new();
+        let (wakes, wake) = counting();
+        c.attach(life.clone(), wake);
+        life.set_paused(true);
+        let l = life.clone();
+        let guest = std::thread::spawn(move || l.wait_while_paused());
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(!guest.is_finished(), "paused");
+        c.close();
+        assert_eq!(guest.join().unwrap(), (true, Control::Stop));
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
+        // Again (a guest that already exited leaves only the window): the
+        // window is still asked to close.
+        c.close();
+        assert_eq!(wakes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_close_before_the_window_is_up_applies_when_it_attaches() {
+        let c = Closer::new();
+        c.clone().close();
+        assert!(c.requested());
+        let life = Lifecycle::new();
+        let (wakes, wake) = counting();
+        c.attach(life.clone(), wake);
+        assert!(life.should_stop());
+        assert_eq!(wakes.load(Ordering::SeqCst), 1);
     }
 }

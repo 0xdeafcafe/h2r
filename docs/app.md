@@ -141,8 +141,10 @@ menus work with arrows and Enter. Escape is START.
 Quitting: Cmd+Q or the close button stop the guest through the lifecycle
 (the run ends as `HostStop` and prints the boot report), then the window
 closes. Ctrl-C or SIGTERM in the terminal does the same from outside the
-window and exits the process once the report is out; a second exits at
-once. (A job started with a shell's `&` has SIGINT ignored; use SIGTERM.)
+window through an `app::Closer`: it stops the guest (waking it from a
+pause) and closes the window, also when the guest has already exited and
+the window only shows its outcome. A second signal exits at once, and 20 s
+after the first the process exits regardless. (A job started with a shell's `&` has SIGINT ignored; use SIGTERM.)
 
 Where the input pump runs: after every slice, not once per guest frame. Mouse
 look sensitivity therefore depends on the slice rate.
