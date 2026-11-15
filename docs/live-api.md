@@ -217,6 +217,9 @@ extract`; nothing of it is in this repo). Clients must work without it.
   `Forwarded`/`X-Forwarded-For`); an operator's `--share-game-art` serves
   it to everyone. A 404 means "use your own art".
 - `GET /art/game/<file>`: a PNG named by the manifest, 404 likewise.
+- `GET /art/game/catalog.json`: the playlist builder's catalog of the
+  game's maps, playlist texts and built-in variants
+  ([live-admin.md](live-admin.md), "The catalog"), 404 likewise.
 
 ```json
 { "version": 1,

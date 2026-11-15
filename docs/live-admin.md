@@ -76,19 +76,43 @@ within the hopper, the first `record_count` of them):
 ```json
 { "hoppers": [ {
     "index": 0, "type": 4, "status": 1, "record_count": 2,
-    "name": "Big Team Battle", "ranges": [1, 8, 6],
+    "name": "", "title": "Big Team Battle",
+    "description": "Join alone or as a party…", "ranges": [1, 8, 6],
     "dwords": [ …18 numbers… ],
-    "records": [ { "id": 1, "string": "one", "flags": 0, "dwords": [0, 0] } ]
+    "records": [ { "id": 1, "string": "", "flags": 1, "dwords": [1, 0],
+                   "variant": { "name": "Team Slayer", "engine": 2, "team": true } } ]
   }, … ], "position": 1042 }
 ```
 
-404 until a base image is imported. The fields are the ones
-[live-motd.md §5.2](live-motd.md) names: `type` 1..5, `status` 0..2,
-`name` ASCII, the three `ranges` (the party-size limits the session setup
-reads), the descriptor's dword array; per record the id (which must resolve
-to a `matchmaking_hopper_descriptions` tag record or the game marks the
-slot as an error), the string, flags and two dwords. Every other byte of
-the file is unknown to us and preserved.
+404 until a base image is imported. What the fields are
+([live-motd.md §5.2](live-motd.md), corrected in §5.2.1 there):
+
+- `title` / `description`: what the playlist list shows, the English one
+  of nine per-language UTF-8 slots (`+0x0c`, 16 bytes each; `+0x9c`, 128
+  bytes each). A write puts the text in all nine. At most 15 and 127 bytes.
+- `type` 1..5, `status`, the three `ranges` (for the free-for-all default
+  the first two are the minimum and maximum players, 4 and 8; for the clan
+  defaults they are 2, 3, 4 and ?, 6, 8 — the third's meaning, and the
+  type's, are unconfirmed), the descriptor's dword array.
+- `name`: the raw ASCII field at `+0x51b`. It overlaps a 128-byte table at
+  `+0x51c` that the game validates (`0x00193560`: each byte `i..=0x7f`), so
+  it normally reads empty and must not be changed; the server writes it
+  only when it differs from what is there.
+- Per record: `id` is a **map**: a multiplayer level id from the globals
+  tag (`matg +0x178`, the lookup `0x0019c5f0`); an id that is not one
+  marks the hopper as an error. `dwords[0]` (`+0x248`) is the record's
+  **weight**: session setup (`0x00192eb0`) picks a record at random with
+  probability weight / total, clamped to 1..1000. The rest of the slot from
+  `+0x24c` is the record's **game variant**, 0x130 bytes that session setup
+  copies out whole; `variant` decodes its name, game-engine index (1 CTF,
+  2 Slayer, 3 Oddball, 4 King, 7 Juggernaut, 8 Territories, 9 Assault) and
+  team flag, read-only. `string`, `flags` and `dwords[1]` lie inside the
+  variant (`string` over its first 0x48 bytes, name and engine included;
+  `flags` is its engine flags; `dwords[1]` its join-in-progress setting);
+  the server writes `string` only when it changes, so a round trip keeps
+  the variant whole.
+
+Every other byte of the file is unknown to us and preserved.
 
 ### `PUT /v1/titles/{title}/hopper`
 
@@ -100,7 +124,8 @@ the fields given change:
     "records": [
       { "id": 2, "string": "two first", "flags": 0, "dwords": [0, 0], "from": 1 },
       { "id": 1, "string": "one",     "flags": 0, "dwords": [0, 0] },
-      { "id": 3, "string": "a copy",  "flags": 0, "dwords": [0, 0], "from": 1 }
+      { "id": 3, "string": "a copy",  "flags": 0, "dwords": [0, 0], "from": 1 },
+      { "id": 4, "string": "",        "flags": 1, "dwords": [1, 0], "from": 0, "from_hopper": 5 }
     ] } ] }
 ```
 
@@ -110,7 +135,10 @@ unknown bytes — the template blobs the game fills in — from the slot named
 by `from`: the entry's position in the hopper as it stands now. Absent
 means "this position", so an edit in place needs nothing; a reorder names
 where the entry came from, a copy names its source, a removal is simply a
-shorter list. Nothing the builder cannot edit is ever lost, and the
+shorter list. `from_hopper` makes `from` name a slot of another hopper (as
+the file stood before this patch): that is how an entry, game variant and
+all, is copied between playlists. `title` and `description` are optional
+like every other field. Nothing the builder cannot edit is ever lost, and the
 published file re-inflates to the same 0x162cc0 image with the edits
 applied. The reply is `{"published": …, "hoppers": …, "position": …}`, the
 fresh state.
@@ -134,23 +162,142 @@ browser account is an admin (the `admin` field above). Three sections:
 - **Message of the Day** — the header and the message blocks, with a
   preview in the stats site's style and the game's limits enforced in the
   form (255 UTF-16 units, 32 messages).
-- **Playlists** — the 16 hoppers: pick one, edit its name, type, status and
-  party-size ranges, and reorder, duplicate, add or remove its entries with
-  the same validation the server applies (ASCII names ≤ 132, strings ≤ 71,
-  1..100 entries, ids and dwords whole 32-bit numbers). Entries remember
-  where their bytes come from, so reorders and copies carry the template
-  blobs whole.
+- **Playlists** — the 16 hoppers: pick one, edit its title and
+  description, and per entry its map (a picker of the game's maps, by
+  name, when the server has a catalog) and weight; each entry shows its
+  game variant. Reorder, duplicate, add or remove entries with the same
+  validation the server applies (title ≤ 15 bytes, description ≤ 127,
+  1..100 entries). Entries remember where their bytes come from, so
+  reorders and copies carry the game variant whole. **Advanced: raw
+  fields** keeps the type, status, ranges, raw name and every record word
+  editable as numbers. **Start from preset** fills the playlist from a
+  historical lineup (below).
 - **Import account** — below.
 
 Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI
 signs its requests, and sends it as a bearer header.
 
+### The catalog
+
+`h2 live assets extract` (and `h2 play --live`, which runs it) writes
+`catalog.json` beside the art manifest, from the owner's own disc; it is
+served the same way, `GET /art/game/catalog.json`, to this machine only
+unless `--share-game-art`. Nothing of it is in the repo. Its `version` (1)
+changes only when a client could no longer read it; the extractor version
+(part of the art cache key) was bumped so an existing art directory is
+re-extracted once.
+
+```json
+{ "version": 1, "source": "<the art manifest's source>",
+  "maps": [ { "id": 1, "name": "…", "description": "…", "key": "<map file stem>" } ],
+  "playlists": [ { "key": "ffa", "title": "…", "description": "…" } ],
+  "variants": [ { "name": "Team Slayer", "game_type": "slayer", "engine": 2 } ],
+  "skipped": { "<list>": "why it is missing" } }
+```
+
+All three lists come from the main menu map (code:
+`crates/cli/src/live_catalog.rs`):
+
+- `maps`: the globals tag's multiplayer levels (`matg +0x178` element 0,
+  block at `+0x10`, `0xc64`-byte entries: `+0` id, `+0xc` nine 32-unit
+  UTF-16 names, `+0x24c` nine 128-unit descriptions, `+0xb4c` the scenario
+  path, whose last part is `key`). These are exactly the ids a record may
+  name. On the retail disc: the twelve shipped maps; the Map Pack's maps
+  are not in this list, so presets naming them show them as unavailable.
+- `playlists`: the `matchmaking_hopper_descriptions` strings, paired
+  `<key>_title` / `<key>_description` (the seven compiled-in playlists,
+  Rumble Pit to Training Ground).
+- `variants`: the 39 built-in game variants of the variant-settings tag
+  (name, game type, engine index; docs/community-gametypes.md).
+
+Not in it, because nothing reads them reliably yet: the per-game-type
+"max teams" bytes after a level's path (`+0xc54`, plausible but
+unconfirmed), and anything about a variant beyond its name and type.
+
+### Presets
+
+`web/src/admin/presets.ts` holds the lineups: the seven launch playlists
+(Rumble Pit, Team Skirmish, Head to Head, Big Team Battle, Minor and Major
+Clanmatch, Training Ground) and later ones (Team Slayer, Double Team, Team
+Snipers, Team Hardcore, Big Team Battle with the map packs, Shotty
+Snipers, the later Rumble Pit). Each is a title and description (or the
+catalog playlist whose text to use), optional range values, and its games
+as descriptive references: game type, a built-in variant name to prefer,
+team or not, map display names and a weight. They are written from
+public knowledge; rotations and weights are approximate, and each preset
+says what is uncertain.
+
+A preset resolves in the browser against the catalog and the published
+file. A map resolves by display name to its id. A game variant cannot be
+authored (its 0x130 bytes are settings the builder does not model), so
+each entry copies a whole published entry that plays the same game type
+— preferring the named variant, then the same team play — with
+`from`/`from_hopper`. Whatever does not resolve (a map the game does not
+have, a game type no published entry plays, no catalog at all) is listed
+as unavailable and left out; a preset with nothing resolved changes
+nothing. So a preset can set: the title and description, the range
+values it names, which maps, how often each comes up, and which existing
+variant each plays. It cannot set the hopper type, the matchmaking
+timeouts, or a variant's rules (Hardcore's or Snipers' settings come from
+the source entry, not the preset).
+
 ## 4. Signing the browser in as an existing CLI account
 
 The browser can only sign *up* (a new key, a new account); the owner's
-admin account was made by the CLI, whose key the browser never saw. The
-smallest safe bridge is an export:
+admin account was made by the CLI, whose key the browser never saw. There
+are two bridges: a link `h2 play --live` prints, for the browser on the
+same machine, and an export, for anything else.
+
+### The `h2 play --live` link
+
+When `h2 play --live` runs the embedded server (not with `--live-server`)
+and has the web app, it prints, next to the web app's address:
+
+```
+live: web app at http://127.0.0.1:50123/
+live: sign this browser in as afr (one use, this machine only): http://127.0.0.1:50123/signin#once=…
+```
+
+Opening it signs the browser in as the account the game plays as, which
+the embedded server has made an admin (§1), and lands on `/stats/admin`
+(or the dashboard if that account is not an admin). How it works:
+
+- The CLI builds the same browser entry `account export` writes and hands
+  it to the running server, in memory, under a token of 256 random bits
+  (`Live::offer_local_signin`, `crates/live-server/src/local_signin.rs`).
+  Nothing is logged or written to the event log; a restart forgets it.
+- `POST /v1/local/signin` `{"once": token}` answers the entry once and
+  forgets it. An offer lasts ten minutes; at most four are outstanding.
+  An unknown, used or expired token all get the same 404; the response is
+  `Cache-Control: no-store`; tokens are compared by SHA-256 digest without
+  an early exit; attempts are rate-limited (a burst of 10, then one a
+  second).
+- The endpoint answers only a loopback TCP peer, with no `Forwarded` /
+  `X-Forwarded-For` header (a local proxy forwarding someone else), a
+  loopback `Host` (no DNS rebinding) and, when the browser sends one, an
+  `Origin` naming that same host; it requires `application/json`, which a
+  page of another origin cannot send without a CORS preflight the server
+  refuses. To anyone else, and on a server that never made an offer, it is
+  the API's ordinary "no such endpoint".
+- The token rides in the URL fragment, which browsers send to no server
+  and put in no `Referer`. The `/signin` page removes it from the address
+  bar and history (`history.replaceState`) before redeeming it, then checks
+  the key against the server, as the import below does, and keeps the
+  entry in this browser's IndexedDB. If the browser is already signed in
+  as someone else, it asks before switching.
+
+What is left: the link is a bearer secret for its ten minutes. Anything
+that can read the terminal (scrollback, a shared screen, a recorded
+session) or any local process that can reach the loopback port in that
+window can redeem it first; after that it is dead, and the page says to
+run `h2 play --live` again. Once redeemed, the private key is in this
+browser's storage exactly as after sign-up or an import: anyone with the
+browser profile can read it.
+
+### `h2 live account export`
+
+For a browser on another machine, or a server the CLI did not start:
 
 ```
 h2 live account export <gamertag> --file afr.json
@@ -161,19 +308,13 @@ The CLI checks with the server that the key it holds is still the
 account's current key — the same check `account import` makes in the other
 direction — and writes the browser's account entry (`{xuid, gamertag, id,
 server, server_id, kid, key, x}`, the key the base64url seed) to a 0600
-file, since it is a private key. On the server's machine with the web app
-open, go to `/stats/admin` → **Import account**, paste the JSON or choose
-the file: the page checks the key against the server again and keeps it in
-this browser's IndexedDB (the same warning as sign-up applies: anyone with
-the browser profile can read it). One exported account signs in one
-browser; the file is as sensitive as `accounts.json`, which is why there is
-no link and no QR — nothing that puts the key anywhere but the terminals
-and files you choose.
-
-(A one-time login link would have to carry the private key to be worth
-anything — the server never holds it — so it would be this same secret in
-a URL, remembered by the browser. The file/paste is the same ceremony with
-fewer leftovers.)
+file, since it is a private key. With the web app open, go to
+`/stats/admin` → **Import account**, paste the JSON or choose the file:
+the page checks the key against the server again and keeps it in this
+browser's IndexedDB (the same warning as sign-up applies). The file is as
+sensitive as `accounts.json`. There is no remote link or QR for this: a
+link that works from another machine would have to carry the key itself
+(the server never holds it) through whatever channel moved the link.
 
 ## Wiring
 
@@ -198,3 +339,6 @@ and the embedded server's runtime grant.
   gamertags are unique per server, so they name exactly one account.
 - The exported account file is a private key on disk, mode 0600; treat it
   like `accounts.json`.
+- The `h2 play --live` sign-in link (§4) is a ten-minute, one-use bearer
+  secret for that account, honoured only from this machine; treat the
+  terminal it is printed in accordingly.

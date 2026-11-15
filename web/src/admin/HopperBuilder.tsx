@@ -1,17 +1,26 @@
 // The playlist builder: the 16 hoppers of multiplayer_hopper.dat. Edits the
-// fields the format documents (name, type, the party-size ranges, each
-// entry's id/string/flags/dwords) and reorders, copies, adds and removes
-// entries — each kept entry remembering which published slot its unknown
-// bytes (the game's template blobs) come from, so nothing the builder
-// cannot edit is ever lost. 404 until a base image is imported.
+// fields the format documents (title, description, the range fields, each
+// entry's map and weight; the raw words behind an "Advanced" disclosure)
+// and reorders, copies, adds and removes entries — each kept entry
+// remembering which published slot its unknown bytes (its game variant)
+// come from, so nothing the builder cannot edit is ever lost. A preset
+// fills a playlist from a historical lineup, resolved against the server's
+// catalog of the owner's maps and variants (./catalog.ts, ./presets.ts).
+// 404 until a base image is imported.
 
-import { For, Show, createSignal, onMount } from "solid-js";
+import { For, Show, createMemo, createSignal, onMount } from "solid-js";
 import { Panel } from "../stats/Layout";
+import { live } from "../state/live";
 import { getHopper, putHopper } from "./api";
+import { ENGINES, loadCatalog, mapById, type Catalog } from "./catalog";
+import { PRESETS, applyPreset, resolvePreset } from "./presets";
 import {
+  MAX_DESCRIPTION,
   MAX_NAME,
   MAX_RECORDS,
   MAX_STRING,
+  MAX_TITLE,
+  MAX_WEIGHT,
   buildPatch,
   hopperErrors,
   toEditable,
@@ -46,8 +55,36 @@ export default function HopperBuilder() {
   const [error, setError] = createSignal("");
   const [status, setStatus] = createSignal("");
   const [busy, setBusy] = createSignal(false);
+  const [catalog, setCatalog] = createSignal<Catalog | null>(null);
+  const [presetKey, setPresetKey] = createSignal("");
 
-  onMount(() => void load());
+  onMount(() => {
+    void load();
+    void loadCatalog(live.server().base).then(setCatalog);
+  });
+
+  const preset = () => PRESETS.find((p) => p.key === presetKey()) ?? null;
+  const resolution = createMemo(() => {
+    const p = preset();
+    return p ? resolvePreset(p, catalog(), original()) : null;
+  });
+
+  function usePreset(): void {
+    const h = current();
+    const r = resolution();
+    if (!h || !r || r.records.length === 0) return;
+    const next = [...hoppers()];
+    next[sel()] = applyPreset(h, r);
+    setHoppers(next);
+    setPresetKey("");
+  }
+
+  const variantLabel = (r: EditRecord): string => {
+    const v = r.variant;
+    if (!v) return "—";
+    const type = ENGINES[v.engine]?.name ?? `engine ${v.engine}`;
+    return `${v.name || "(unnamed)"} · ${type}${v.team ? " · teams" : ""}`;
+  };
 
   async function load(): Promise<void> {
     setBusy(true);
@@ -188,7 +225,7 @@ export default function HopperBuilder() {
                       onClick={() => setSel(h.index)}
                     >
                       <span class="adm-list-idx">{h.index + 1}</span>
-                      <span class="adm-list-name">{h.name || "(unnamed)"}</span>
+                      <span class="adm-list-name">{h.title || h.name || "(untitled)"}</span>
                       <span class="adm-list-meta">
                         t{h.type} · {h.records.length}
                       </span>
@@ -200,9 +237,161 @@ export default function HopperBuilder() {
             <Show when={current()}>
               {(h) => (
                 <div class="adm-editor">
+                  <div class="adm-preset">
+                    <label class="adm-field adm-grow">
+                      <span>Start from preset</span>
+                      <select value={presetKey()} onChange={(e) => setPresetKey(e.currentTarget.value)}>
+                        <option value="">Choose a historical playlist…</option>
+                        <For each={PRESETS}>
+                          {(p) => (
+                            <option value={p.key} selected={p.key === presetKey()}>
+                              {p.label} · {p.era}
+                            </option>
+                          )}
+                        </For>
+                      </select>
+                    </label>
+                    <Show when={resolution()}>
+                      {(r) => (
+                        <div class="adm-preset-preview">
+                          <p class="adm-preset-title">
+                            {r().title} <span>{r().description}</span>
+                          </p>
+                          <Show when={preset()?.uncertain}>
+                            <p class="adm-preset-note">From memory: {preset()?.uncertain}.</p>
+                          </Show>
+                          <ul class="adm-preset-games">
+                            <For each={r().games}>
+                              {(g) => (
+                                <li classList={{ off: !g.record }}>
+                                  {g.label}
+                                  <Show when={g.missing}>
+                                    <span> · unavailable: {g.missing}</span>
+                                  </Show>
+                                </li>
+                              )}
+                            </For>
+                          </ul>
+                          <button class="s-btn" disabled={r().records.length === 0} onClick={usePreset}>
+                            Fill playlist {h().index + 1} with {r().records.length} entries
+                          </button>
+                        </div>
+                      )}
+                    </Show>
+                    <Show when={!catalog()}>
+                      <p class="adm-preset-note">
+                        No catalog from this server (run h2 live assets extract on its machine): maps show as numbers and presets cannot resolve.
+                      </p>
+                    </Show>
+                  </div>
+                  <div class="adm-row">
+                    <label class="adm-field">
+                      <span>Title</span>
+                      <input
+                        value={h().title}
+                        maxLength={MAX_TITLE}
+                        onInput={(e) => edit({ title: e.currentTarget.value })}
+                      />
+                    </label>
+                    <label class="adm-field adm-grow">
+                      <span>Description</span>
+                      <input
+                        value={h().description}
+                        maxLength={MAX_DESCRIPTION}
+                        onInput={(e) => edit({ description: e.currentTarget.value })}
+                      />
+                    </label>
+                  </div>
+                  <table class="adm-records">
+                    <thead>
+                      <tr>
+                        <th />
+                        <th class="adm-grow">Map</th>
+                        <th>Game variant</th>
+                        <th>Weight</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <For each={h().records}>
+                        {(r, i) => (
+                          <tr>
+                            <td class="adm-rec-idx">{i() + 1}</td>
+                            <td>
+                              <Show
+                                when={catalog()}
+                                fallback={<span class="adm-mono">map id {r.id}</span>}
+                              >
+                                {(c) => (
+                                  <select
+                                    value={String(r.id)}
+                                    onChange={(e) => editRecord(i(), { id: Number(e.currentTarget.value) })}
+                                  >
+                                    <Show when={!mapById(c(), r.id)}>
+                                      <option value={r.id} selected>
+                                        id {r.id} (not a map in this game)
+                                      </option>
+                                    </Show>
+                                    <For each={c().maps}>
+                                      {(m) => (
+                                        <option value={m.id} selected={m.id === r.id}>
+                                          {m.name}
+                                        </option>
+                                      )}
+                                    </For>
+                                  </select>
+                                )}
+                              </Show>
+                            </td>
+                            <td class="adm-variant">{variantLabel(r)}</td>
+                            <td>
+                              <input
+                                class="adm-num"
+                                type="number"
+                                min={1}
+                                max={MAX_WEIGHT}
+                                value={r.dwords[0]}
+                                onInput={(e) => {
+                                  const n = num(e.currentTarget.value);
+                                  if (n !== null) editRecord(i(), { dwords: [n, r.dwords[1]] });
+                                }}
+                              />
+                            </td>
+                            <td class="adm-rec-btns">
+                              <button aria-label="Move up" disabled={i() === 0} onClick={() => moveRecord(i(), -1)}>
+                                ↑
+                              </button>
+                              <button
+                                aria-label="Move down"
+                                disabled={i() === h().records.length - 1}
+                                onClick={() => moveRecord(i(), 1)}
+                              >
+                                ↓
+                              </button>
+                              <button aria-label="Duplicate" onClick={() => copyRecord(i())}>
+                                ⧉
+                              </button>
+                              <button
+                                aria-label="Remove"
+                                disabled={h().records.length <= 1}
+                                onClick={() => removeRecord(i())}
+                              >
+                                ×
+                              </button>
+                            </td>
+                          </tr>
+                        )}
+                      </For>
+                    </tbody>
+                  </table>
+                  <details class="adm-hint adm-advanced">
+                    <summary>Advanced: raw fields</summary>
+                    <p class="adm-preset-note">
+                      The entry string, flags and second dword lie inside the entry's game variant, and the name field overlaps a table the game validates: change them only if you know the bytes.
+                    </p>
                   <div class="adm-row">
                     <label class="adm-field adm-grow">
-                      <span>Name (ASCII)</span>
+                      <span>Name (raw, ASCII)</span>
                       <input
                         value={h().name}
                         maxLength={MAX_NAME}
@@ -237,7 +426,7 @@ export default function HopperBuilder() {
                     </label>
                   </div>
                   <div class="adm-row">
-                    <span class="adm-field-label">Party size ranges</span>
+                    <span class="adm-field-label">Range fields</span>
                     <For each={h().ranges}>
                       {(r, i) => (
                         <input
@@ -261,10 +450,10 @@ export default function HopperBuilder() {
                     <thead>
                       <tr>
                         <th />
-                        <th>id</th>
+                        <th>map id</th>
                         <th class="adm-grow">string</th>
                         <th>flags</th>
-                        <th>dword 1</th>
+                        <th>weight</th>
                         <th>dword 2</th>
                         <th />
                       </tr>
@@ -352,6 +541,7 @@ export default function HopperBuilder() {
                       </For>
                     </tbody>
                   </table>
+                  </details>
                   <button class="s-btn" disabled={h().records.length >= MAX_RECORDS} onClick={addRecord}>
                     Add an entry (copies the last)
                   </button>
