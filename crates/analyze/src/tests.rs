@@ -814,9 +814,10 @@ fn a_borrow_on_sub_bounds_a_negative_index() {
 }
 
 #[test]
-fn a_switch_reached_again_unguarded_keeps_its_table() {
+fn a_switch_reached_again_unguarded_keeps_its_cases() {
     // Case 0 calls a function that jumps back to the table jump, with no
-    // guard on the way; the table the guard sized stands.
+    // guard on the way. Its read stops at the int3 fill and adds no case,
+    // so the table keeps the guard's shape.
     let words: Vec<u8> = [0x11040u32, 0x11046, 0x11047, 0x11048].iter().flat_map(|t| t.to_le_bytes()).collect();
     let code = pieces(&[
         (0x11000, &[0x83, 0xF8, 0x03]),                         // cmp eax, 3
@@ -830,7 +831,7 @@ fn a_switch_reached_again_unguarded_keeps_its_table() {
     ]);
     let (a, _) = cfgs_of(code);
     let jt = &a.jump_tables[&0x11005];
-    assert_eq!((jt.kind, jt.bound, jt.count), (SwitchKind::Bounded, Some(4), 4));
+    assert_eq!((jt.kind, jt.count, &jt.targets), (SwitchKind::Bounded, 4, &vec![0x11040, 0x11046, 0x11047, 0x11048]));
     assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
 }
 
@@ -866,7 +867,7 @@ fn a_borrow_is_forgotten_when_its_register_is_rewritten() {
     let jb = Decoder::with_ip(32, &[0x72, 0], TEXT as u64, DecoderOptions::NONE).decode();
     for write in [&[0xB9, 0, 0, 0, 0][..], &[0xB1, 0]] {
         let g = guard_after(&[&[0x83, 0xE9, 4][..], write].concat());
-        assert!(g.taken(&jb).is_none(), "{write:x?}");
+        assert_eq!(g.taken(&jb).window, None, "{write:x?}");
     }
     // The table it would have shifted is read from its displacement.
     let words: Vec<u8> = (0x11040u32..0x11045).flat_map(u32::to_le_bytes).collect();
@@ -1011,6 +1012,143 @@ fn jb_after_cmp_with_zero_or_all_ones_is_no_bound() {
         let a = switch_after(prefix);
         assert_ne!(a.jump_tables.get(&0x11006).map(|j| j.kind), Some(SwitchKind::Bounded));
     }
+}
+
+/// Eight cases: 0x11080, then 0x11090..0x11096.
+fn eight_words() -> Vec<u8> {
+    [0x11080u32, 0x11090, 0x11091, 0x11092, 0x11093, 0x11094, 0x11095, 0x11096]
+        .into_iter()
+        .flat_map(u32::to_le_bytes)
+        .collect()
+}
+
+fn assert_has_case(a: &Analysis, site: u32, case: u32) {
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+    let jt = &a.jump_tables[&site];
+    assert!(jt.targets.contains(&case), "{case:#x} missing: {jt:x?}");
+}
+
+#[test]
+fn a_mask_is_dropped_when_a_later_path_bypasses_it() {
+    // test edx, edx; jz late; and eax, 3; dispatch: jmp [eax*4+0x11040]
+    // late: mov eax, 4; jmp dispatch
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x85, 0xD2, 0x74, 0x0C, 0x83, 0xE0, 3, 0xFF, 0x24, 0x85, 0x40, 0x10, 1, 0]),
+        (0x11010, &[0xB8, 4, 0, 0, 0, 0xEB, 0xF0]),
+        (0x11040, &words),
+        (0x11080, &[0xC3; 8]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11007, 0x11084);
+}
+
+#[test]
+fn an_entry_guard_is_dropped_when_a_later_path_joins_the_run() {
+    // The taken `jb` guards the run from 0x11020; a later path sets
+    // eax = 4 and joins it at the jump, past its start.
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x85, 0xD2, 0x74, 0x0C, 0x83, 0xF8, 4, 0x72, 0x17, 0xC3]),
+        (0x11010, &[0xB8, 4, 0, 0, 0, 0xEB, 0x0B]),
+        (0x11020, &[0x90, 0x90, 0xFF, 0x24, 0x85, 0x40, 0x10, 1, 0]),
+        (0x11040, &words),
+        (0x11080, &[0xC3; 8]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11022, 0x11084);
+}
+
+#[test]
+fn a_later_bounded_read_does_not_shrink_a_table() {
+    // The entry jumps to the shared dispatch with eax = 7; case 0 calls a
+    // function that reaches it with eax <= 3.
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0xB8, 7, 0, 0, 0, 0xEB, 0x1E]), // mov eax, 7; jmp 0x11025
+        (0x11020, &[0x83, 0xF8, 3, 0x77, 7, 0xFF, 0x24, 0x85, 0x40, 0x10, 1, 0, 0xC3]),
+        (0x11040, &eight_words()),
+        (0x11080, &[0xE8, 0x9B, 0xFF, 0xFF, 0xFF, 0xC3]), // call 0x11020; ret
+        (0x11090, &[0xC3; 7]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11025, 0x11096);
+}
+
+#[test]
+fn a_table_keeps_both_negative_and_nonnegative_reads() {
+    // cmp ecx, 4; jb; neg ecx reads below the displacement; a function
+    // case 0 calls reaches the jump with ecx = 2.
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x83, 0xF9, 4, 0x72, 3, 0xC3]),
+        (0x11008, &[0xF7, 0xD9, 0xFF, 0x24, 0x8D, 0x4C, 0x10, 1, 0]), // neg ecx; jmp [ecx*4+0x1104C]
+        (0x11040, &eight_words()),
+        (0x11080, &[0xE8, 0x3B, 0, 0, 0, 0xC3]), // call 0x110C0; ret
+        (0x11090, &[0xC3; 7]),
+        (0x110C0, &[0xB9, 2, 0, 0, 0, 0xE9, 0x40, 0xFF, 0xFF, 0xFF]), // mov ecx, 2; jmp 0x1100A
+    ]))
+    .0;
+    assert_has_case(&a, 0x1100A, 0x11080);
+    assert_has_case(&a, 0x1100A, 0x11095);
+}
+
+#[test]
+fn a_speculative_visitor_adds_its_cases() {
+    // The entry masks eax to 3; a function found from an immediate in
+    // case 0 reaches the jump with eax = 7.
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x83, 0xE0, 3, 0xFF, 0x24, 0x85, 0x40, 0x10, 1, 0]),
+        (0x11040, &eight_words()),
+        (0x11080, &[0x68, 0xA0, 0x10, 1, 0, 0x5A, 0xC3]), // push 0x110A0; pop edx; ret
+        (0x11090, &[0xC3; 7]),
+        // mov eax, 7; and eax, 7; jmp 0x11003
+        (0x110A0, &[0xB8, 7, 0, 0, 0, 0x83, 0xE0, 7, 0xE9, 0x56, 0xFF, 0xFF, 0xFF]),
+    ]))
+    .0;
+    assert_eq!(a.functions.get(&0x110A0).map(|f| f.source), Some(Source::CodeRef));
+    assert_has_case(&a, 0x11003, 0x11096);
+}
+
+#[test]
+fn cyclic_taken_edges_terminate() {
+    let words: Vec<u8> = [0x11010u32, 0x11080, 0x11081, 0x11082].into_iter().flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x83, 0xF8, 4, 0x72, 0x0B, 0xC3]),
+        (0x11010, &[0x83, 0xF8, 4, 0x72, 0x0B, 0xC3]),
+        (0x11020, &[0xFF, 0x24, 0x85, 0x40, 0x10, 1, 0]),
+        (0x11040, &words),
+        (0x11080, &[0xC3; 3]),
+    ]))
+    .0;
+    assert!(a.converged);
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
+#[test]
+fn a_shared_table_is_the_same_whatever_order_it_is_visited_in() {
+    // A root and a function its case 0 calls reach one jump, each bounded
+    // (jb at 8 or 4) or with eax = 7, in both orders: always eight cases.
+    let mut counts = Vec::new();
+    for (first, last) in [(Some(8), 4u8), (Some(4), 8), (None, 4), (Some(4), 0)] {
+        let root = first.map_or(vec![0xB8, 7, 0, 0, 0, 0xEB, 0x29], |n| vec![0x83, 0xF8, n, 0x72, 0x2B, 0xC3]);
+        let visitor = match last {
+            0 => vec![0xB8, 7, 0, 0, 0, 0xEB, 9],
+            n => vec![0x83, 0xF8, n, 0x72, 0x0B, 0xC3],
+        };
+        let words = [0x11080u32, 0x11090, 0x11091, 0x11092, 0x11093, 0x11094, 0x11095, 0x11096];
+        let words: Vec<u8> = words.into_iter().flat_map(u32::to_le_bytes).collect();
+        let a = cfgs_of(pieces(&[
+            (TEXT, &root),
+            (0x11020, &visitor),
+            (0x11030, &[0xFF, 0x24, 0x85, 0x60, 0x10, 1, 0]), // jmp [eax*4+0x11060]
+            (0x11060, &words),
+            (0x11080, &[0xE8, 0x9B, 0xFF, 0xFF, 0xFF, 0xC3]), // call 0x11020; ret
+            (0x11090, &[0xC3; 7]),
+        ]))
+        .0;
+        assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+        counts.push(a.jump_tables[&0x11030].count);
+    }
+    assert_eq!(counts, [8, 8, 8, 8]);
 }
 
 /// Discovery plus the CFG of every function, for `.text` holding `code`.

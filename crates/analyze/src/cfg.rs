@@ -89,6 +89,36 @@ impl JumpTable {
     pub fn cases(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
         (0..self.count).filter(|i| self.holes.binary_search(i).is_err()).zip(self.targets.iter().copied())
     }
+
+    /// The table two visits to the same site read between them: every
+    /// case either read, from the lowest entry either read. The shape
+    /// (kind, bound) is that of a table holding every case, or shared by
+    /// both; otherwise the table is unguarded.
+    pub(crate) fn join(&self, other: &JumpTable) -> JumpTable {
+        let mut slots = BTreeMap::new();
+        for t in [self, other] {
+            slots.extend(t.cases().map(|(i, target)| (u64::from(t.table) + 4 * u64::from(i), target)));
+        }
+        let table = self.table.min(other.table);
+        let last = slots.keys().next_back().map_or(0, |s| (s - u64::from(table)) / 4);
+        let count = last as u32 + 1;
+        let holes = (0..count).filter(|i| !slots.contains_key(&(u64::from(table) + 4 * u64::from(*i)))).collect();
+        let targets = slots.values().copied().collect();
+        // A read that adds no case keeps the other's shape.
+        let shape = |t: &JumpTable| (t.kind, t.bound, t.index_table);
+        let covers = |t: &JumpTable| t.table == table && t.targets.len() == slots.len();
+        let same = self.kind == other.kind && self.table == other.table && self.index_table == other.index_table;
+        let (kind, bound, index_table) = if covers(self) {
+            shape(self)
+        } else if covers(other) {
+            shape(other)
+        } else if same {
+            (self.kind, self.bound.max(other.bound), self.index_table)
+        } else {
+            (SwitchKind::Unbounded, None, None)
+        };
+        JumpTable { site: self.site, table, kind, count, bound, index_table, targets, holes }
+    }
 }
 
 /// One function's control flow.

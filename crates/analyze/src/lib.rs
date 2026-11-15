@@ -186,37 +186,30 @@ struct FuncWork {
     /// Table jumps first reached with no guard, read only once every other
     /// path has been explored, in case one of those reaches them guarded.
     unguarded: Vec<(u32, Instruction)>,
-    /// What every way into a block seen so far knows on arrival (`cmp r,
-    /// n; jb target`), or `None` once two disagree. The function's entry,
-    /// table cases and unconditional jumps know nothing.
-    entry_guards: HashMap<u32, Option<Guard>>,
+    /// What the branches to each address seen so far all know on arrival,
+    /// joined ([`Guard::join`]): `cmp r, n; jb t` bounds `r` at `t`, a
+    /// `jmp` carries what it knows, and the entry and table cases know
+    /// nothing. Also the ways into the middle of a straight run.
+    arrivals: BTreeMap<u32, Guard>,
     /// Addresses reached by falling through from the instruction before.
     fell_into: HashSet<u32>,
-    /// Table jumps in blocks entered with a guard from [`entry_guards`],
-    /// read once the function is explored and read again unguarded if a
-    /// way in that knows less turns up.
-    entry_sized: Vec<EntrySized>,
+    /// Addresses whose arrivals changed since the guarded jumps were last
+    /// checked.
+    dirty: BTreeSet<u32>,
+    /// Table jumps read with a guard built along a straight run, read again
+    /// (joining their tables) if what the run knows at the jump weakens as
+    /// more ways into it turn up.
+    guarded: Vec<GuardedJump>,
 }
 
-/// A table jump sized (or to be sized) from its block's entry guard.
+/// A table jump read with the guard built along the straight run from
+/// `start`.
 #[derive(Clone, Copy)]
-struct EntrySized {
-    /// The block it is in.
+struct GuardedJump {
     start: u32,
     at: u32,
     insn: Instruction,
-    /// The guard at the jump, entry guard included.
     guard: Guard,
-    state: EntryState,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum EntryState {
-    Unread,
-    /// Read with the entry guard, which still has to hold.
-    Guarded,
-    /// Read without it: final.
-    Unguarded,
 }
 
 impl FuncWork {
@@ -231,32 +224,40 @@ impl FuncWork {
             done: false,
             insns: 0,
             unguarded: Vec::new(),
-            entry_guards: HashMap::from([(start, None)]),
+            arrivals: BTreeMap::from([(start, Guard::default())]),
             fell_into: HashSet::new(),
-            entry_sized: Vec::new(),
+            dirty: BTreeSet::new(),
+            guarded: Vec::new(),
         }
     }
 
-    /// Note a branch to block `t` that knows `guard` on arrival.
-    fn arrive(&mut self, t: u32, guard: Option<Guard>) {
-        let guard = guard.filter(|_| !self.fell_into.contains(&t));
-        let known = self.entry_guards.entry(t).or_insert(guard);
-        if *known != guard {
-            *known = None;
+    /// Note a branch to `t` that knows `guard` on arrival.
+    fn arrive(&mut self, t: u32, guard: Guard) {
+        let joined = self.arrivals.get(&t).map_or(guard, |g| g.join(&guard));
+        if self.arrivals.insert(t, joined) != Some(joined) {
+            self.dirty.insert(t);
         }
+    }
+
+    /// Note a table jump read with a guard built along its run, which
+    /// didn't join the ways into the run already known: check it.
+    fn guard_jump(&mut self, j: GuardedJump) {
+        self.dirty.insert(j.at);
+        self.guarded.push(j);
     }
 
     /// Note control falling through to `next`.
     fn fall(&mut self, next: u32) {
-        self.fell_into.insert(next);
-        if let Some(g) = self.entry_guards.get_mut(&next) {
-            *g = None;
+        if self.fell_into.insert(next) && self.arrivals.contains_key(&next) {
+            self.dirty.insert(next);
         }
     }
 
-    /// Whether every way into block `start` seen so far brings its guard.
-    fn entry_holds(&self, start: u32) -> bool {
-        self.entry_guards.get(&start).is_some_and(Option::is_some)
+    /// What is known on arriving at block `start`: what its branches know,
+    /// unless something also falls into it.
+    fn entry(&self, start: u32) -> Guard {
+        let fell = self.fell_into.contains(&start);
+        self.arrivals.get(&start).copied().filter(|_| !fell).unwrap_or_default()
     }
 }
 
@@ -277,6 +278,8 @@ struct Guard {
     cmp: Option<(Register, u32)>,
     /// `sub r, k` set the flags last: (r, k).
     sub: Option<(Register, u32)>,
+    /// `test r, r` set the flags last.
+    test: Option<Register>,
     bound: Option<(Register, u32)>,
     /// A negative index: (r, k, n) for `r` in `-k..-k+n`. The CRT copy
     /// routines index a table from its end: `cmp ecx, 8; jb` then `neg ecx`
@@ -309,21 +312,69 @@ impl Guard {
             || self.window.is_some_and(|(r, _, _)| r == index)
     }
 
-    /// What the taken side of conditional branch `insn` knows: `jb`/`jbe`
-    /// after `cmp r, n` bound `r` as `ja`/`jae` do on the fall-through,
-    /// and `jb` after `sub r, k` leaves `r` in `-k..=-1`.
-    fn taken(&self, insn: &Instruction) -> Option<Guard> {
+    /// What the taken side of conditional branch `insn` knows, from the
+    /// guard before it: all of it, plus that `jb`/`jbe` after `cmp r, n`
+    /// bounds `r` as `ja`/`jae` do on the fall-through, `jb` after `sub r,
+    /// k` leaves `r` in `-k..=-1`, and `je` after `test r, r` leaves 0.
+    fn taken(&self, insn: &Instruction) -> Guard {
+        let mut g = *self;
         let extra = match insn.mnemonic() {
             Mnemonic::Jb => 0,
             Mnemonic::Jbe => 1,
-            _ => return None,
+            Mnemonic::Je => {
+                if let Some(i) = self.test.and_then(gpr) {
+                    g.consts[i] = Some(0);
+                }
+                return g;
+            }
+            _ => return g,
         };
         if let Some((r, n)) = self.cmp {
             let n = n.saturating_add(extra);
-            return (n > 0).then_some(Guard { bound: Some((r, n)), ..Guard::default() });
+            if n > 0 {
+                g.bound = Some((r, n));
+            }
+        } else if let Some((r, k)) = self.sub.filter(|(_, k)| extra == 0 && (1..=MAX_SWITCH).contains(k)) {
+            g.window = Some((r, k, k));
         }
-        let (r, k) = self.sub.filter(|(_, k)| extra == 0 && (1..=MAX_SWITCH).contains(k))?;
-        Some(Guard { window: Some((r, k, k)), ..Guard::default() })
+        g
+    }
+
+    /// The most entries `r` can index: from a bound, a mask or a constant.
+    fn limit(&self, r: Register) -> Option<u32> {
+        let i = gpr(r)?;
+        let known = self.bound.filter(|(b, _)| *b == r).map(|(_, n)| n);
+        known.or((self.masks[i] != 0).then_some(self.masks[i])).or(self.consts[i].map(|c| c.saturating_add(1)))
+    }
+
+    /// What is known where two paths meet: what both know, a bound or mask
+    /// on the same register widened to the larger.
+    fn join(&self, other: &Guard) -> Guard {
+        fn same<T: PartialEq>(a: Option<T>, b: Option<T>) -> Option<T> {
+            if a == b { a } else { None }
+        }
+        let bound = [self.bound, other.bound]
+            .into_iter()
+            .flatten()
+            .find_map(|(r, _)| Some((r, self.limit(r)?.max(other.limit(r)?))));
+        let mut masks = [0; 8];
+        let mut consts = [None; 8];
+        for i in 0..8 {
+            if self.masks[i] != 0 && other.masks[i] != 0 {
+                masks[i] = self.masks[i].max(other.masks[i]);
+            }
+            consts[i] = same(self.consts[i], other.consts[i]);
+        }
+        Guard {
+            cmp: same(self.cmp, other.cmp),
+            sub: same(self.sub, other.sub),
+            test: same(self.test, other.test),
+            bound,
+            window: same(self.window, other.window),
+            byte_index: same(self.byte_index, other.byte_index),
+            masks,
+            consts,
+        }
     }
 
     /// Entries a mask leaves a table indexed by `index`, if one does.
@@ -338,7 +389,7 @@ impl Guard {
         // The bound on the register a byte is loaded through, before the
         // load overwrites it.
         let bound_before = self.bound;
-        let (masks_before, consts_before) = (self.masks, self.consts);
+        let (masks_before, consts_before, test_before) = (self.masks, self.consts, self.test);
         let written: Vec<Register> = info
             .info(insn)
             .used_registers()
@@ -352,6 +403,9 @@ impl Guard {
         }
         if insn.rflags_modified() != 0 || self.sub.is_some_and(|(r, _)| writes(r)) {
             self.sub = None;
+        }
+        if insn.rflags_modified() != 0 || self.test.is_some_and(writes) {
+            self.test = None;
         }
         if self.bound.is_some_and(|(r, _)| writes(r)) {
             self.bound = None;
@@ -377,6 +431,7 @@ impl Guard {
             }
             self.cmp = None;
             self.sub = None;
+            self.test = None;
             if self.bound.is_some_and(|(r, _)| clobbered(r)) {
                 self.bound = None;
             }
@@ -465,6 +520,13 @@ impl Guard {
             }
             Mnemonic::Movzx if insn.code() == Code::Movzx_r32_rm8 => set_mask(self, op0, 0xFF),
             Mnemonic::Sub if reg_imm => self.sub = Some((op0, insn.immediate(1) as u32)),
+            Mnemonic::Test if reg_reg && op0 == op1 => self.test = Some(op0),
+            // `jne` after `test r, r` falls through with `r` = 0.
+            Mnemonic::Jne => {
+                if let Some(i) = test_before.and_then(gpr) {
+                    self.consts[i] = Some(0);
+                }
+            }
             // `neg r` with `r` in 0..=m leaves it in -m..=0.
             Mnemonic::Neg if insn.op0_kind() == OpKind::Register && op0.is_gpr32() => {
                 let bounded = bound_before.filter(|(r, n)| *r == op0 && *n > 0).map(|(_, n)| n - 1);
@@ -690,8 +752,7 @@ impl<'a> Analyzer<'a> {
 
     fn run_block(&mut self, f: &mut FuncWork, fstart: u32, start: u32) {
         let mut va = start;
-        let entry = f.entry_guards.get(&start).copied().flatten();
-        let mut guard = entry.unwrap_or_default();
+        let mut guard = f.entry(start);
         let mut info = InstructionInfoFactory::new();
         loop {
             if self.failed() {
@@ -704,7 +765,8 @@ impl<'a> Analyzer<'a> {
                     && guard.bounds(f.unguarded[i].1.memory_index().full_register32())
                 {
                     let (_, insn) = f.unguarded.swap_remove(i);
-                    self.jump_table(f, fstart, va, &insn, guard, false);
+                    self.jump_table(f, fstart, va, &insn, guard);
+                    f.guard_jump(GuardedJump { start, at: va, insn, guard });
                 }
                 return;
             }
@@ -746,13 +808,14 @@ impl<'a> Analyzer<'a> {
                 self.conflict(va, ConflictKind::Implausible);
                 return;
             }
+            let before = guard;
             guard.observe(&insn, &mut info);
 
             match insn.flow_control() {
                 FlowControl::Next => {}
                 FlowControl::ConditionalBranch => {
                     let t = insn.near_branch32();
-                    f.arrive(t, guard.taken(&insn));
+                    f.arrive(t, before.taken(&insn));
                     f.todo.push(t);
                 }
                 FlowControl::UnconditionalBranch => {
@@ -766,7 +829,7 @@ impl<'a> Analyzer<'a> {
                             }
                             f.tails.push(t);
                         } else {
-                            f.arrive(t, None);
+                            f.arrive(t, guard);
                             f.todo.push(t);
                         }
                     }
@@ -777,12 +840,9 @@ impl<'a> Analyzer<'a> {
                         self.note_kernel_call(ord, fresh);
                         f.returns |= !NORETURN_KERNEL.contains(&ord);
                     } else if is_table_jump(&insn) {
-                        if entry.is_some() {
-                            // Other ways into the block may turn up yet.
-                            let state = EntryState::Unread;
-                            f.entry_sized.push(EntrySized { start, at: va, insn, guard, state });
-                        } else if guard.bounds(insn.memory_index().full_register32()) {
-                            self.jump_table(f, fstart, va, &insn, guard, false);
+                        if guard.bounds(insn.memory_index().full_register32()) {
+                            self.jump_table(f, fstart, va, &insn, guard);
+                            f.guard_jump(GuardedJump { start, at: va, insn, guard });
                         } else {
                             f.unguarded.push((va, insn));
                         }
@@ -847,39 +907,35 @@ impl<'a> Analyzer<'a> {
                     return;
                 }
             }
-            if self.entry_sized_tables(f, start) {
+            if self.recheck_guarded(f, start) {
                 continue;
             }
             if f.unguarded.is_empty() {
                 return;
             }
             for (va, insn) in std::mem::take(&mut f.unguarded) {
-                self.jump_table(f, start, va, &insn, Guard::default(), false);
+                self.jump_table(f, start, va, &insn, Guard::default());
             }
         }
     }
 
-    /// Read the table jumps sized from an entry guard: with it while every
-    /// way into the block brings it, else (again) with what the block
-    /// itself says. Whether any was read.
-    fn entry_sized_tables(&mut self, f: &mut FuncWork, fstart: u32) -> bool {
+    /// Read the table jumps whose run knows less at the jump than when
+    /// they were read, now that more ways into it are known; what they read
+    /// joins their tables. Whether any was read.
+    fn recheck_guarded(&mut self, f: &mut FuncWork, fstart: u32) -> bool {
         let mut any = false;
-        for i in 0..f.entry_sized.len() {
-            let e = f.entry_sized[i];
-            let holds = f.entry_holds(e.start);
-            let state = match (e.state, holds) {
-                (EntryState::Unread, true) => {
-                    self.jump_table(f, fstart, e.at, &e.insn, e.guard, false);
-                    EntryState::Guarded
-                }
-                (EntryState::Unread, false) | (EntryState::Guarded, false) => {
-                    let guard = self.guard_from(e.start, e.at);
-                    self.jump_table(f, fstart, e.at, &e.insn, guard, e.state == EntryState::Guarded);
-                    EntryState::Unguarded
-                }
-                _ => continue,
-            };
-            f.entry_sized[i].state = state;
+        let dirty = std::mem::take(&mut f.dirty);
+        for i in 0..f.guarded.len() {
+            let j = f.guarded[i];
+            if dirty.range(j.start..=j.at).next().is_none() {
+                continue;
+            }
+            let guard = self.guard_along(f, j.start, j.at);
+            if guard == j.guard {
+                continue;
+            }
+            f.guarded[i].guard = guard;
+            self.jump_table(f, fstart, j.at, &j.insn, guard);
             any = true;
             if self.failed() {
                 break;
@@ -888,14 +944,20 @@ impl<'a> Analyzer<'a> {
         any
     }
 
-    /// The guard straight-line code from block start `start` builds up to
-    /// `at`, knowing nothing on arrival.
-    fn guard_from(&self, start: u32, at: u32) -> Guard {
-        let mut guard = Guard::default();
+    /// What the straight run from block `start` knows at `at`, joining
+    /// what every way into it brings.
+    fn guard_along(&self, f: &FuncWork, start: u32, at: u32) -> Guard {
+        let mut guard = f.entry(start);
         let mut info = InstructionInfoFactory::new();
         let Some(bytes) = self.image.bytes_from(start) else { return guard };
         for insn in Decoder::with_ip(32, bytes, start as u64, DecoderOptions::NONE) {
-            if insn.ip32() >= at || insn.code() == Code::INVALID {
+            let va = insn.ip32();
+            if va != start
+                && let Some(g) = f.arrivals.get(&va)
+            {
+                guard = guard.join(g);
+            }
+            if va >= at || insn.code() == Code::INVALID {
                 break;
             }
             guard.observe(&insn, &mut info);
@@ -903,32 +965,16 @@ impl<'a> Analyzer<'a> {
         guard
     }
 
-    /// Size and read the table of the jump at `at`. `replace` drops what
-    /// this function read there before with a guard that no longer holds.
-    fn jump_table(&mut self, f: &mut FuncWork, fstart: u32, at: u32, insn: &Instruction, guard: Guard, replace: bool) {
+    /// Size and read the table of the jump at `at`. What is read joins
+    /// whatever any visit read there before: a table only grows.
+    fn jump_table(&mut self, f: &mut FuncWork, fstart: u32, at: u32, insn: &Instruction, guard: Guard) {
         let index = insn.memory_index().full_register32();
         let mut table = insn.memory_displacement32();
         let region = self.image.region(at);
 
-        // A speculative function that shares this code (one found in a gap
-        // that falls into it, say) knows nothing of how the code got here.
-        // A table a guard sized already stands; the cases are its too.
-        let speculative =
-            self.trial.is_some() || matches!(f.source, Source::CodeRef | Source::DataPointer | Source::GapScan);
-        if !replace
-            && speculative
-            && let Some(jt) = self.jump_tables.get(&at).filter(|j| j.kind != SwitchKind::Unbounded)
-        {
-            for t in jt.targets.clone() {
-                f.arrive(t, None);
-                f.todo.push(t);
-            }
-            return;
-        }
-
         if trace_enabled(at) {
             eprintln!(
-                "table at {at:#x}: cmp {:?} bound {:?} byte_index {:?} mask {:?} window {:?} trial {}",
+                "table at {at:#x} in {fstart:#x}: cmp {:?} bound {:?} byte_index {:?} mask {:?} window {:?} trial {}",
                 guard.cmp,
                 guard.bound,
                 guard.byte_index,
@@ -1001,7 +1047,7 @@ impl<'a> Analyzer<'a> {
                         holes.push(h);
                     }
                     self.claim_data(table + i as u32 * 4, 4);
-                    f.arrive(t, None);
+                    f.arrive(t, Guard::default());
                     f.todo.push(t);
                     targets.push(t);
                     read = i as u32 + 1;
@@ -1047,7 +1093,7 @@ impl<'a> Analyzer<'a> {
                         holes.push(h);
                     }
                     self.claim_data(slot, 4);
-                    f.arrive(t, None);
+                    f.arrive(t, Guard::default());
                     f.todo.push(t);
                     targets.push(t);
                     read = i + 1;
@@ -1064,28 +1110,18 @@ impl<'a> Analyzer<'a> {
         if kind == SwitchKind::Unbounded {
             f.returns = true;
         }
-        if replace && read == 0 && self.trial.is_none() {
-            self.switches.remove(&at);
-            self.jump_tables.remove(&at);
-        }
-        // Another path may allow fewer entries than one read before: the
-        // table that covers the other's entries stands.
-        let span = |t: u32, n: u32| (u64::from(t), u64::from(t) + 4 * u64::from(n));
-        let (lo, hi) = span(table, read);
-        let covered = !replace
-            && self.jump_tables.get(&at).is_some_and(|j| {
-                let (jlo, jhi) = span(j.table, j.count);
-                j.kind != SwitchKind::Unbounded && jlo <= lo && hi <= jhi
-            });
-        if read > 0 && self.trial.is_none() && !covered {
-            self.switches.insert(at, kind);
+        if read > 0 && self.trial.is_none() {
             let bound = match kind {
                 SwitchKind::Unbounded => None,
                 SwitchKind::Indexed => index_table.map(|(_, n)| n),
                 SwitchKind::Bounded => Some(count),
             };
-            self.jump_tables
-                .insert(at, JumpTable { site: at, table, kind, count: read, bound, index_table, targets, holes });
+            let mut jt = JumpTable { site: at, table, kind, count: read, bound, index_table, targets, holes };
+            if let Some(old) = self.jump_tables.remove(&at) {
+                jt = old.join(&jt);
+            }
+            self.switches.insert(at, jt.kind);
+            self.jump_tables.insert(at, jt);
         }
     }
 
