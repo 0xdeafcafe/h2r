@@ -733,8 +733,8 @@ fn print_friends(friends: &Friends) {
     }
     if !friends.friends.is_empty() {
         println!(
-            "{:<18} {:<16} {:<8} {:<12} {}",
-            "xuid", "gamertag", "state", "game", "friends since"
+            "{:<18} {:<16} {:<8} {:<12} friends since",
+            "xuid", "gamertag", "state", "game"
         );
         for f in &friends.friends {
             let (state, game) = match &f.presence {
