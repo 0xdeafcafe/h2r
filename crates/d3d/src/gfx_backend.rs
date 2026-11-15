@@ -122,6 +122,8 @@ pub struct GfxBackend {
     pending: Option<PendingPass>,
     stats: BatchStats,
     merge_passes: bool,
+    /// [`set_merge_discards`](Self::set_merge_discards).
+    merge_discards: bool,
     /// Made at the first counted draw.
     counter: Option<PixelCounter>,
     /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
@@ -166,6 +168,7 @@ impl GfxBackend {
             pending: None,
             stats: BatchStats::default(),
             merge_passes: true,
+            merge_discards: std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "fast"),
             counter: None,
             reports: HashMap::new(),
             depth_bits: None,
@@ -194,6 +197,19 @@ impl GfxBackend {
     /// passes").
     pub fn set_merge_passes(&mut self, merge: bool) {
         self.merge_passes = merge;
+    }
+
+    /// Faster, inexact merged passes: a draw whose program can `discard`
+    /// starts a render pass of its own only after a draw that writes some
+    /// colour channels and not others ([`merge_split`]), instead of always.
+    /// In a level that is most of the render passes (every alpha-tested
+    /// draw had one), and each costs about 40-75 us of CPU in wgpu and
+    /// Metal. Not exact: at The Heretic's frame 4216 the merge self-check
+    /// finds 61 edge pixels in two passes off by up to 4 levels, after
+    /// additive draws (docs/graphics.md, "Merged passes"). Off by default;
+    /// `H2_GFX_MERGE_PASSES=fast` turns it on when the backend is made.
+    pub fn set_merge_discards(&mut self, on: bool) {
+        self.merge_discards = on;
     }
 
     /// Compare merged and per-draw render passes for every pending pass of
@@ -606,16 +622,20 @@ impl GfxBackend {
         // draw writing only some colour channels (unless it writes the same
         // ones), starts a render pass of its own: on Apple GPUs its edge
         // pixels otherwise depend on earlier draws in the pass
-        // (docs/graphics.md, "Merged passes").
-        let after_masked = self
+        // (docs/graphics.md, "Merged passes"). The inexact fast mode splits
+        // a discarding draw only after a partly masked one.
+        let prev_mask = self
             .pending
             .as_ref()
             .and_then(|p| p.draws.last())
-            .is_some_and(|prev| {
-                let mask = prev.color_writes();
-                mask != wgpu::ColorWrites::ALL && mask != recorded.color_writes()
-            });
-        let own_pass = first && (!self.merge_passes || discards || after_masked);
+            .map(RecordedDraw::color_writes);
+        let mask = recorded.color_writes();
+        let split = if self.merge_discards {
+            merge_split(prev_mask, mask, discards)
+        } else {
+            discards || merge_split(prev_mask, mask, false)
+        };
+        let own_pass = first && (!self.merge_passes || split);
         // A counted draw adds its count pass and the sum, and the draws
         // after it resume in a new render pass.
         let encoded = if recorded.counts_samples() {
@@ -1206,6 +1226,20 @@ impl Backend for GfxBackend {
     }
 }
 
+/// Whether a merged draw writing `mask` starts a render pass of its own
+/// after a draw in the same pending pass that wrote `prev` (`None` for the
+/// first draw): after a partly masked draw, unless it writes the same
+/// channels and (`discards`) its program cannot `discard`.
+///
+/// With `discards` false this is the exact mode's second rule. In the fast
+/// mode ([`GfxBackend::set_merge_discards`]) it is the whole rule: because
+/// a draw with another mask always splits after a partly masked one, a
+/// render pass holds a partly masked draw only while its last draw is one,
+/// so checking the previous draw covers every earlier draw in the pass.
+fn merge_split(prev: Option<wgpu::ColorWrites>, mask: wgpu::ColorWrites, discards: bool) -> bool {
+    prev.is_some_and(|prev| prev != wgpu::ColorWrites::ALL && (prev != mask || discards))
+}
+
 /// Which shader a draw takes: `Ok(true)` gfx's built-in one, `Ok(false)`
 /// the provider's, `Err` the reason it is skipped. With a provider the
 /// built-in shader only takes draws it renders exactly; without one it
@@ -1281,4 +1315,29 @@ fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
             ..draw.clone()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::merge_split;
+    use wgpu::ColorWrites as W;
+
+    #[test]
+    fn merged_draws_split_only_after_a_partly_masked_draw() {
+        // The first draw of a pending pass, and any draw after a fully
+        // written one, stay in the pass, discard or not.
+        for discards in [false, true] {
+            assert!(!merge_split(None, W::COLOR, discards));
+            for mask in [W::ALL, W::COLOR, W::ALPHA] {
+                assert!(!merge_split(Some(W::ALL), mask, discards));
+            }
+        }
+        // After a partly masked draw: the same mask stays unless it can
+        // discard; any other mask splits.
+        assert!(!merge_split(Some(W::COLOR), W::COLOR, false));
+        assert!(merge_split(Some(W::COLOR), W::COLOR, true));
+        assert!(merge_split(Some(W::COLOR), W::ALL, false));
+        assert!(merge_split(Some(W::COLOR), W::ALPHA, false));
+        assert!(merge_split(Some(W::empty()), W::ALL, true));
+    }
 }

@@ -97,7 +97,9 @@ as a person's keys. Hold keys for one present at the menu's frame rate
 or two presents a second a 4-present hold moves the cursor twice.
 `H2_BOOT_GFX` is ignored: frames go to the window. As for `h2 run`,
 consecutive draws to one target share a render pass, and
-`H2_GFX_MERGE_PASSES=0` gives one render pass per draw.
+`H2_GFX_MERGE_PASSES=0` gives one render pass per draw, and
+`H2_GFX_MERGE_PASSES=fast` merges alpha-tested draws too (faster in a
+level, a few edge pixels off; docs/BOOT.md).
 
 How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/BOOT.md
 "Hosted runs"):

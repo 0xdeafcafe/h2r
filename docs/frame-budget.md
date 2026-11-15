@@ -426,6 +426,45 @@ Not new, still true: the host-contention tail is the p99 (the loaded
 render-thread runs reached p99 509 ms at load 65), and with the
 render thread the game thread and the render thread compete for cores.
 
+### The submit regression (bisected 2026-11-15)
+
+`queue submit` went from 2.1 ms a frame (9a39ed7, merged passes opt-in)
+to 7.1 ms (1a5aa8d). `crates/d3d/tests/draw_churn.rs` replays 600
+textured draws a frame with level-like churn (two textures, new pixel
+uniforms every draw, alpha test on every third draw, blending on every
+fifth) at every d3d/gfx commit in the range. The render-pass count is
+the signal that does not depend on load: 1 a frame at 9a39ed7 and
+b9c05ec with merged passes, 200 from 38cd3f7 on. 38cd3f7 made merged
+passes the default and gave each draw that can `discard` (every
+alpha-tested draw) a render pass of its own, for exactness on Apple GPUs
+(graphics.md, "Merged passes"). Each render pass is two Metal command
+buffers and a render encoder in wgpu 30: about 40-75 us of CPU a pass,
+in Metal's encoder setup and command-buffer commit and teardown. The
+compile workers (6f95526), the render thread and the W-buffer change
+leave both the count and the cost alone.
+
+Same machine, master and this branch alternated, load 49-61 (us per
+draw, all in):
+
+| scenario | master | branch |
+|---|---|---|
+| merged, no alpha test (1 render pass) | 7.8-8.3 | 7.7-8.6 |
+| merged, level churn (200 render passes) | 41-53 | 39-43 |
+| fast mode, level churn (1 render pass) | - | 9.0-10.5 |
+| fast mode, churn + an RGB-only draw every 20 (31 render passes) | - | 12.7-13.8 |
+| one render pass per draw (600) | 109-122 | 105-118 |
+
+The fast mode (`H2_GFX_MERGE_PASSES=fast`) splits a discarding draw only
+after a partly masked draw. It is off by default because the merge
+self-check finds a few edge pixels off in a level frame (graphics.md).
+One run of The Heretic with it on (presents 4220-4520, cold pipeline
+cache, `H2_GFX_MERGE_CHECK=4216`, otherwise the command above) met a load
+average of 100-160 from other lanes, so it does not compare with the
+runs above: 8.56 fps, frame mean 117 ms, median 105; `submit` mean 7.6 ms
+and median 4.4 ms a frame (1a5aa8d at load 3-4: mean 7.1), `encode`
+20.4, `gpu-wait` 13.2. The schedule matched the earlier runs exactly
+(56,572 slices, 94,097 preemptions).
+
 ## Reading these numbers on another machine
 
 `h2 play --frame-stats` (or `H2_FRAME_STATS=1`) prints the same split
