@@ -228,8 +228,26 @@ wgpu clip space:
 x, y  ← trunc(x·16)/16, trunc(y·16)/16      (rasterizer keeps 4 fractional bits, truncates)
 w     ← clamp_away(w)                       (as rcc: never 0 or inf)
 ndc   = (2x/W − 1,  1 − 2y/H,  z/Zmax)      (wgpu y is up; NV2A window y is down)
+        z/Zmax held to 1 when z <= Zmax     (the depth clip range is inclusive)
 clip  = (ndc·w, w)                          (the GPU's divide by w restores the window position)
 ```
+
+The NV2A clips depth against `[CLIP_MIN, CLIP_MAX]` inclusively (xemu
+discards only when `z < clipRange.z || clipRange.w < z`, in
+`glsl/psh.c`), and D3D sets the clip max to the depth full scale. So z
+exactly at `Zmax` is inside. Halo's full-screen passes rely on this: the
+main menu's blue tint draws its quad at z = w = 0xFFFFFF, the D24 maximum.
+On Metal `z / Zmax` divides through a reciprocal and 0xFFFFFF / 0xFFFFFF
+comes out just above 1, so the quad was clipped and the tint was missing.
+The fixup therefore clamps to 1 whenever `z <= Zmax`. Since `1·w` is exact,
+clip z then equals w. Anything past `Zmax`, and anything below 0, still
+clips. `tests/render.rs` (`quad_at_exactly_z_max_is_not_clipped`) draws
+quads at z = 0, exactly `Zmax`, a few ulps past it, 1.5·`Zmax` and −1, for
+D24, D16 and float depth, with w = 1 and w = z. Without the clamp the D24
+case fails on Metal. The clip range is taken as `[0, Zmax]`: the
+`CLIP_MIN`/`CLIP_MAX` the game pushes (`d3d::hw::HwState`) are not applied,
+and neither is the NV2A's clamp mode (`ZCLAMP_EN`), where out-of-range z is
+clamped instead of culled.
 
 `W` and `H` are the guest render-target size in the units the game's
 viewport constants use, so they include any supersampling scale the game

@@ -301,3 +301,276 @@ fn linked_pipeline_renders() {
     assert_eq!(px(0, 3), [0, 0, 255, 255]);
     assert_eq!(px(3, 3), [255, 128, 255, 255]);
 }
+
+/// Draws a quad covering a 4x4 target at window depth `z` and perspective
+/// `w` (the same at every corner), with the given depth full scale, and
+/// returns how many of the 16 pixels it covered.
+fn covered_pixels(gpu: &common::Gpu, z: f32, w: f32, z_max: f32) -> usize {
+    let d = &gpu.device;
+    // mov oPos, v0 ; mov oD0, v3
+    let bytes = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 15),
+        Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None).to_out(false, OutReg::D0, 15),
+    ]);
+    let vs = vsh::translate(&vsh::Program::parse(&bytes).unwrap(), &Default::default()).unwrap();
+    // r0 = v0, no textures.
+    let mut def = PixelShaderDef::default();
+    def.combiner_count = 1;
+    def.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
+    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE, 0, 0);
+    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    let ps = psh::translate(&def, &Default::default());
+    let source = shaders::link(&vs, &ps).unwrap();
+    common::check(&source);
+    let module = d.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("zmax"),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    });
+    let ub = |binding, vis| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: vis,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let bgl0 = d.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: None,
+        entries: &[
+            ub(0, wgpu::ShaderStages::VERTEX),
+            ub(1, wgpu::ShaderStages::FRAGMENT),
+        ],
+    });
+    let layout = d.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: None,
+        bind_group_layouts: &[Some(&bgl0)],
+        immediate_size: 0,
+    });
+    let attrs = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 16,
+            shader_location: 3,
+        },
+    ];
+    let format = wgpu::TextureFormat::Rgba8Unorm;
+    let depth_format = wgpu::TextureFormat::Depth24PlusStencil8;
+    let pipeline = d.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: None,
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(wgpu::VertexBufferLayout {
+                array_stride: 32,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &attrs,
+            })],
+        },
+        primitive: wgpu::PrimitiveState::default(),
+        // As a full-screen pass draws: depth test off (always), no writes.
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: depth_format,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(format.into())],
+        }),
+        multiview_mask: None,
+        cache: None,
+    });
+    // NV2A window coordinates: x, y in pixels, z in [0, z_max], w as given.
+    let corner = |x: f32, y: f32| [x * 4.0, y * 4.0, z, w, 1.0, 1.0, 1.0, 1.0];
+    let verts: Vec<f32> = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (0.0, 1.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+    ]
+    .iter()
+    .flat_map(|&(x, y)| corner(x, y))
+    .collect();
+    let vbuf = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: &verts
+            .iter()
+            .flat_map(|f| f.to_le_bytes())
+            .collect::<Vec<u8>>(),
+        usage: wgpu::BufferUsages::VERTEX,
+    });
+    let mut vu = VertexUniforms::default();
+    vu.surface = [4.0, 4.0];
+    vu.z_max = z_max;
+    let vs_uniforms = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: &vu.to_bytes(),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let ps_uniforms = d.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: None,
+        contents: &PixelUniforms::default().to_bytes(),
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bg0 = d.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: None,
+        layout: &bgl0,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: vs_uniforms.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: ps_uniforms.as_entire_binding(),
+            },
+        ],
+    });
+    let size = wgpu::Extent3d {
+        width: 4,
+        height: 4,
+        depth_or_array_layers: 1,
+    };
+    let target = d.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let depth = d.create_texture(&wgpu::TextureDescriptor {
+        label: None,
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: depth_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    let tview = target.create_view(&Default::default());
+    let dview = depth.create_view(&Default::default());
+    let readback = d.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: 256 * 4,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = d.create_command_encoder(&Default::default());
+    {
+        let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: None,
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &tview,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &dview,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bg0, &[]);
+        pass.set_vertex_buffer(0, vbuf.slice(..));
+        pass.draw(0..6, 0..1);
+    }
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &target,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(256),
+                rows_per_image: Some(4),
+            },
+        },
+        size,
+    );
+    gpu.queue.submit([enc.finish()]);
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |r| r.expect("map"));
+    d.poll(wgpu::PollType::wait_indefinitely()).expect("poll");
+    let data = slice.get_mapped_range().expect("mapped");
+    (0..16)
+        .filter(|i| data[(i / 4) * 256 + (i % 4) * 4] == 255)
+        .count()
+}
+
+/// Full-screen passes (the main menu's tint) put z = w = 0xFFFFFF, exactly
+/// the D24 maximum. The NV2A's depth clip range is inclusive, so the quad
+/// must draw, and anything past the maximum must clip.
+#[test]
+fn quad_at_exactly_z_max_is_not_clipped() {
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    const D24: f32 = 16_777_215.0;
+    const D16: f32 = 65_535.0;
+    for (z_max, w) in [(D24, D24), (D24, 1.0), (D16, D16), (D16, 1.0), (1.0, 1.0)] {
+        assert_eq!(
+            covered_pixels(&gpu, z_max, w, z_max),
+            16,
+            "z = z_max = {z_max}, w = {w}"
+        );
+        assert_eq!(
+            covered_pixels(&gpu, 0.0, w, z_max),
+            16,
+            "z = 0, z_max = {z_max}, w = {w}"
+        );
+        // Past the maximum by a few ulps of the f32 z_max, and well past.
+        let beyond = z_max * (1.0 + 8.0 * f32::EPSILON);
+        assert_eq!(
+            covered_pixels(&gpu, beyond, w, z_max),
+            0,
+            "z = {beyond}, z_max = {z_max}, w = {w}"
+        );
+        assert_eq!(
+            covered_pixels(&gpu, z_max * 1.5, w, z_max),
+            0,
+            "z = 1.5 z_max = {z_max}, w = {w}"
+        );
+        assert_eq!(
+            covered_pixels(&gpu, -1.0, w, z_max),
+            0,
+            "z = -1, z_max = {z_max}, w = {w}"
+        );
+    }
+}

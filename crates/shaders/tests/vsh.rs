@@ -248,6 +248,19 @@ fn transform_and_viewport_fixup() {
 }
 
 #[test]
+fn fixup_keeps_z_max_inside_and_clips_past_it() {
+    // z = w = the D24 maximum (full-screen passes): clip z is exactly w.
+    let m = 16_777_215.0f32;
+    let clip = interp::fixup([0.0, 0.0, m, m], [640.0, 480.0], m);
+    assert_eq!(clip[2], clip[3]);
+    let clip = interp::fixup([0.0, 0.0, 65_535.0, 1.0], [640.0, 480.0], 65_535.0);
+    assert_eq!(clip[2], 1.0);
+    // Past the maximum it stays beyond w, so the GPU clips it.
+    let clip = interp::fixup([0.0, 0.0, m + 32.0, 1.0], [640.0, 480.0], m);
+    assert!(clip[2] > clip[3]);
+}
+
+#[test]
 fn paired_ilu_owns_r1_and_reads_happen_first() {
     // mov r1, v0 : rcp r1.x, v0.y  -- the MAC's r1 write is dropped; the ILU
     // writes r1.x. Then mov r0, r1 to observe.

@@ -183,11 +183,15 @@ fn xvs_lit(s: vec4f) -> vec4f {
 
 // NV2A window coordinates (pixels, depth in [0, z full scale], w kept for
 // perspective) to wgpu clip space. The rasterizer keeps 4 fractional bits
-// and truncates.
+// and truncates. The NV2A's depth clip range is inclusive, so z exactly at
+// the depth maximum is inside; z / Zmax can round above 1 (Metal divides
+// through a reciprocal), so it is held to 1 there. Anything past Zmax clips.
 fn xvs_fixup(p: vec4f) -> vec4f {
     let xy = trunc(p.xy * 16.0) / 16.0;
     let w = xvs_clamp_away(p.w);
-    let n = vec3f(2.0 * xy.x / xvs.viewport.x - 1.0, 1.0 - 2.0 * xy.y / xvs.viewport.y, p.z / xvs.viewport.z);
+    let zn = p.z / xvs.viewport.z;
+    let z = select(zn, min(zn, 1.0), p.z <= xvs.viewport.z);
+    let n = vec3f(2.0 * xy.x / xvs.viewport.x - 1.0, 1.0 - 2.0 * xy.y / xvs.viewport.y, z);
     return vec4f(n * w, w);
 }
 "#;
