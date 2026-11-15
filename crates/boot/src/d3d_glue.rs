@@ -233,8 +233,19 @@ impl d3d::backend::Backend for Headless {
         let r = self.0.read_pixel_count(ticket);
         self.forget(r)
     }
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        let r = self.0.try_pixel_count(ticket);
+        self.forget(r)
+    }
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.0.drop_pixel_count(ticket)
+    }
+    fn can_sample_depth_surfaces(&self) -> bool {
+        self.0.can_sample_depth_surfaces()
+    }
+    fn depth_level_texture(&mut self, surface: u32) -> Result<Option<u32>, String> {
+        // Never called: the recorder does not sample depth surfaces.
+        self.0.depth_level_texture(surface)
     }
     fn create_texture_target(&mut self, format: gfx::D3DFormat, width: u32, height: u32) -> Result<u32, String> {
         self.0.create_texture_target(format, width, height)
