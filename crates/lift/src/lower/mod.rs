@@ -14,8 +14,8 @@
 //! at run time with an [`ir::Stmt::If`].
 //!
 //! This module holds the entry point, operand access and the shared flag
-//! helpers; the instruction families are in `integer`, `string`, `sse`
-//! (with the FP control intrinsics dispatched here) and `control`.
+//! helpers; the instruction families are in `integer`, `string`, `sse`,
+//! `mmx`, `x87` and `control`.
 
 use iced_x86::{Code, ConditionCode, Instruction, Mnemonic, OpKind, Register};
 use ir::{
@@ -32,6 +32,7 @@ mod mmx;
 mod sse;
 mod string;
 mod system;
+mod x87;
 
 pub use system::XBOX_CPUID;
 
@@ -258,32 +259,9 @@ impl Lower<'_> {
         let insn = self.insn;
         use Mnemonic as M;
         match insn.mnemonic() {
-            // `fnop` is an x87 no-op: it touches no state this IR models
-            // (it would update FPU last-instruction pointers, which nothing
-            // reads before x87 arithmetic is lowered).
-            M::Nop | M::Pause | M::Fnop => {}
-            // `wait`/`fwait` raises a pending unmasked x87 exception. None
-            // can be pending until x87 arithmetic is lowered (it will go
-            // through intrinsics that can raise them), so it does nothing.
-            M::Wait => {}
-            M::Fninit | M::Finit => {
-                self.intrinsic(Intrinsic::X87Init, vec![]);
-            }
-            M::Fnclex | M::Fclex => {
-                self.intrinsic(Intrinsic::X87ClearExceptions, vec![]);
-            }
-            M::Fnstcw | M::Fstcw => {
-                let cw = self.intrinsic(Intrinsic::X87ReadControl, vec![]);
-                self.write(0, cw[0])?;
-            }
-            M::Fldcw => {
-                let v = self.read(0)?;
-                self.intrinsic(Intrinsic::X87WriteControl, vec![v]);
-            }
-            M::Fnstsw | M::Fstsw => {
-                let sw = self.intrinsic(Intrinsic::X87ReadStatus, vec![]);
-                self.write(0, sw[0])?;
-            }
+            M::Nop | M::Pause => {}
+            // x87 floating point, through Intrinsic::X87 (and `wait`).
+            m if x87::is_x87(m) => self.x87()?,
             M::Stmxcsr => {
                 let v = self.intrinsic(Intrinsic::MxcsrRead, vec![]);
                 self.write(0, v[0])?;

@@ -44,6 +44,7 @@
 pub mod c;
 pub mod compile;
 pub mod host;
+mod x87;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -55,6 +56,9 @@ use ir::{Control, IrFunction, Target};
 pub const PRELUDE: &str = include_str!("../c/h2gen.h");
 /// The SSE reference semantics in C (`h2s_*`), included by [`PRELUDE`].
 pub const SIMD_HEADER: &str = include_str!("../../simd/c/h2simd.h");
+/// The x87 helper declarations (`h2x87_v1_*`), included by [`PRELUDE`].
+/// The x87 helper declarations (`h2x87_v1_*`), from `crates/x87`.
+pub const X87_HEADER: &str = include_str!("../../x87/include/h2x87.h");
 
 /// Entry-VA bucket size for shards (LIFTER.md §1): 4 KiB buckets. The
 /// bucket is a pure function of the entry address, so editing, adding or
@@ -232,6 +236,7 @@ pub fn write_module(owners: &[Owner], dir: &Path) -> io::Result<WriteReport> {
     let mut files: BTreeMap<String, String> = BTreeMap::new();
     files.insert("h2gen.h".into(), PRELUDE.to_owned());
     files.insert("h2simd.h".into(), SIMD_HEADER.to_owned());
+    files.insert("h2x87.h".into(), X87_HEADER.to_owned());
 
     // Which file (stem) defines each owner's handler.
     let mut home: BTreeMap<u32, String> = BTreeMap::new();

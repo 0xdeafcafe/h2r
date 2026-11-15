@@ -16,6 +16,9 @@ typedef unsigned __int128 h2u128;
 /* SSE floating-point reference semantics (h2s_*), written next to this
  * header by crates/emit. */
 #include "h2simd.h"
+/* x87 helpers (h2x87_v1_*), implemented by crates/x87 and linked from the
+ * runtime; the header is written next to this one by crates/emit. */
+#include "h2x87.h"
 
 /* ---- Emitter shims: things the v1 ABI does not provide yet. -------------
  * Named h2shim_* so they are easy to find and replace once the runtime grows
@@ -147,16 +150,10 @@ static inline h2u128 h2_bswap128(h2u128 a) {
  * raises #MF instead of running. */
 static inline int h2_x87_pending(const CpuAbi *cpu) { return (cpu->x87.status & 0x0080u) != 0; }
 
-static inline uint32_t h2i_x87_init(CpuAbi *cpu) {
-    cpu->x87.control = 0x037f; cpu->x87.status = 0; cpu->x87.tag = 0xffff; cpu->x87.opcode = 0;
-    cpu->x87.instruction_pointer = 0; cpu->x87.data_pointer = 0;
-    cpu->x87.instruction_selector = 0; cpu->x87.data_selector = 0;
-    return 0;
-}
+/* fnstcw/fnstsw are plain field reads (TOP is in the status word); every
+ * other x87 operation is an h2x87_v1_* call, see the H2X87 macros. */
 static inline uint32_t h2i_x87_read_control(CpuAbi *cpu, uint16_t *out) { *out = cpu->x87.control; return 0; }
-static inline uint32_t h2i_x87_write_control(CpuAbi *cpu, uint16_t v) { cpu->x87.control = v; return 0; }
 static inline uint32_t h2i_x87_read_status(CpuAbi *cpu, uint16_t *out) { *out = cpu->x87.status; return 0; }
-static inline uint32_t h2i_x87_clear_exceptions(CpuAbi *cpu) { cpu->x87.status &= 0x7f00u; return 0; }
 static inline uint32_t h2i_mxcsr_read(CpuAbi *cpu, uint32_t *out) { *out = cpu->mxcsr; return 0; }
 /* The guest's Pentium III implements MXCSR bits 0-15 except DAZ (bit 6);
  * ir::interp::MXCSR_MASK. */
@@ -266,6 +263,8 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
  * what keeps the generated objects small. */
 #define H2_EPILOGUE()                                                           \
     h2_exit:                                                                    \
+    H2_EPILOGUE_BODY()
+#define H2_EPILOGUE_BODY()                                                      \
     cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;             \
     cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;             \
     cpu->eflags = fl | 2u; cpu->eflags_defined = fd; cpu->eip = x_eip;          \
@@ -353,6 +352,96 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         if (st_) H2_FAULT_EVENT(pc, st_);                                       \
         H2_SYNC_IN();                                                           \
     } while (0)
+
+/* ---- x87 (ir::Intrinsic::X87): h2x87_v1_* calls on cpu->x87. --------
+ * A handler with x87 code holds FIP/FDP/FOP/FCS/FDS in locals: each
+ * non-control instruction sets them (H2X87_MARK, usually dead-store
+ * eliminated within a block), and the epilogue writes them back, so
+ * X87Abi has them at every exit. They are spilled before a helper that
+ * reads them (save_image) and reloaded after one that writes them (init,
+ * load_env, fnsave's commit). A failing helper leaves with x_st and x_eip
+ * set through the one h2_x87_fail block: H2X87_MF raises #MF (event 14,
+ * saved EIP = this waiting instruction, arg = FSW; the pointer locals
+ * still describe the raiser), H2X87_UNMODELLED stops with code 12. */
+#define H2X87_GUEST_CS 0x0008u
+#define H2X87_GUEST_DS 0x0010u
+#define H2X87_LOCALS()                                                          \
+    uint32_t xfip_ = cpu->x87.instruction_pointer, xfdp_ = cpu->x87.data_pointer, x_st = 0; \
+    uint16_t xfop_ = cpu->x87.opcode, xfcs_ = cpu->x87.instruction_selector;   \
+    uint16_t xfds_ = cpu->x87.data_selector
+#define H2X87_SPILL()                                                           \
+    do {                                                                        \
+        cpu->x87.instruction_pointer = xfip_; cpu->x87.data_pointer = xfdp_;    \
+        cpu->x87.opcode = xfop_; cpu->x87.instruction_selector = xfcs_;         \
+        cpu->x87.data_selector = xfds_;                                         \
+    } while (0)
+#define H2X87_RELOAD()                                                          \
+    do {                                                                        \
+        xfip_ = cpu->x87.instruction_pointer; xfdp_ = cpu->x87.data_pointer;    \
+        xfop_ = cpu->x87.opcode; xfcs_ = cpu->x87.instruction_selector;         \
+        xfds_ = cpu->x87.data_selector;                                         \
+    } while (0)
+#define H2X87_EPILOGUE()                                                        \
+    h2_exit:                                                                    \
+    H2X87_SPILL();                                                              \
+    H2_EPILOGUE_BODY()
+#define H2X87_FAIL()                                                            \
+    h2_x87_fail:                                                                \
+    if ((x_st & H2X87_STATUS_MASK) == H2X87_MF) {                               \
+        uint32_t e_ = h2shim_v1_event(ctx, x_eip, x_eip, H2SHIM_FP_ERROR, cpu->x87.status); \
+        H2_FAULT_EVENT(x_eip, e_);                                              \
+    } else {                                                                    \
+        uint32_t e_ = h2shim_v1_event(ctx, x_eip, x_eip, H2SHIM_UNMODELLED, 0u); \
+        H2_STOP_EVENT(x_eip, e_);                                               \
+    }
+/* FIP = pc, FOP = fop (FCS the guest's); the M form also sets FDP = ea. */
+#define H2X87_MARK(pc, fop) (xfip_ = (pc), xfop_ = (uint16_t)(fop), xfcs_ = H2X87_GUEST_CS)
+#define H2X87_MARKM(pc, fop, ea) (H2X87_MARK(pc, fop), xfdp_ = (ea), xfds_ = H2X87_GUEST_DS)
+/* A helper call whose status is not OK leaves through h2_x87_fail. */
+#define H2X87(pc, call)                                                         \
+    do {                                                                        \
+        uint32_t xs_ = (call);                                                  \
+        if (__builtin_expect((xs_ & H2X87_STATUS_MASK) != 0, 0)) {              \
+            x_st = xs_; x_eip = (pc); goto h2_x87_fail;                         \
+        }                                                                       \
+    } while (0)
+/* X87Wait in a handler with x87 code: h2i_x87_wait through the shared
+ * fail block. */
+#define H2X87_WAIT(pc)                                                          \
+    do {                                                                        \
+        if (__builtin_expect((cpu->x87.status & H2X87_SW_ES) != 0, 0)) {        \
+            x_st = H2X87_MF; x_eip = (pc); goto h2_x87_fail;                    \
+        }                                                                       \
+    } while (0)
+/* Store phase 1: w = 1 to write (OK), 0 on SUPPRESS. */
+#define H2X87_ST(pc, w, call)                                                   \
+    do {                                                                        \
+        uint32_t ys_ = (call);                                                  \
+        if ((ys_ & H2X87_STATUS_MASK) == H2X87_SUPPRESS) (w) = 0;               \
+        else { H2X87(pc, ys_); (w) = 1; }                                       \
+    } while (0)
+/* A compare: the payload (on OK and on SUPPRESS), and supp = 1 for
+ * SUPPRESS (an unmasked exception; nothing compared or popped). */
+#define H2X87_CMP(pc, payload, supp, call)                                      \
+    do {                                                                        \
+        uint32_t ys_ = (call);                                                  \
+        (supp) = (uint8_t)((ys_ & H2X87_STATUS_MASK) == H2X87_SUPPRESS);         \
+        if (!(supp)) H2X87(pc, ys_);                                            \
+        (payload) = ys_ & 0x00ffffffu;                                          \
+    } while (0)
+/* 80-bit operands (F80, BCD) travel in h2u128 values, low 10 bytes. */
+static inline uint32_t h2x87i_ld80(X87Abi *s, h2u128 v, uint32_t bcd) {
+    uint8_t b[10];
+    memcpy(b, &v, 10);
+    return bcd ? h2x87_v1_ld_bcd(s, b) : h2x87_v1_ld_f80(s, b);
+}
+static inline uint32_t h2x87i_st80(X87Abi *s, uint32_t i, uint32_t bcd, h2u128 *v, uint16_t *sw) {
+    uint8_t b[10] = {0};
+    uint32_t r = bcd ? h2x87_v1_st_bcd(s, i, b, sw) : h2x87_v1_st_f80(s, i, b, sw);
+    *v = 0;
+    memcpy(v, b, 10);
+    return r;
+}
 
 #define H2_FLAG(bit) ((uint8_t)((fl >> (bit)) & 1u))
 #define H2_SETF(bit, v)                                                         \

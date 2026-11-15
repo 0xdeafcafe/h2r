@@ -352,8 +352,8 @@ pub fn install_header(src_dir: &Path, h2abi: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-/// Compile every `.c` in `src_dir` (which must hold `h2gen.h`, `h2simd.h` and
-/// `h2abi.h`) for `arch`, and archive them into `out_dir/libh2gen-<arch>.a`.
+/// Compile every `.c` in `src_dir` (which must hold `h2gen.h`, `h2simd.h`,
+/// `h2x87.h` and `h2abi.h`) for `arch`, and archive them into `out_dir/libh2gen-<arch>.a`.
 /// Objects go to [`obj_dir`] and are pinned under `out_dir` (see
 /// [`build_in`]).
 pub fn build(src_dir: &Path, out_dir: &Path, arch: Arch, jobs: usize) -> Result<Build, Error> {
@@ -462,8 +462,9 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
         std::fs::create_dir_all(d).map_err(err)?;
     }
     let read = |name: &str| std::fs::read(src_dir.join(name)).map_err(|e| err(format!("{name}: {e}")));
-    // h2gen.h includes h2simd.h: both are the support headers' identity.
-    let support = [read("h2gen.h")?, read("h2simd.h")?].concat();
+    // h2gen.h includes h2simd.h and h2x87.h: all three are the support
+    // headers' identity.
+    let support = [read("h2gen.h")?, read("h2simd.h")?, read("h2x87.h")?].concat();
     let flags = cflags()?;
     let common = common_key(&support, &read("h2abi.h")?, arch, &flags, &toolchain_identity(cc));
 
@@ -793,7 +794,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
-        for h in ["h2gen.h", "h2simd.h", "h2abi.h"] {
+        for h in ["h2gen.h", "h2simd.h", "h2x87.h", "h2abi.h"] {
             std::fs::write(src.join(h), "/* support */\n").unwrap();
         }
         std::fs::write(src.join("one.c"), "int h2_one(void) { return 1; }\n").unwrap();
@@ -891,7 +892,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
-        for h in ["h2gen.h", "h2simd.h", "h2abi.h"] {
+        for h in ["h2gen.h", "h2simd.h", "h2x87.h", "h2abi.h"] {
             std::fs::write(src.join(h), "/* support */\n").unwrap();
         }
         std::fs::write(src.join("one.c"), "int h2_one(void) { return 1; }\n").unwrap();
@@ -940,7 +941,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let src = dir.join("src");
         std::fs::create_dir_all(&src).unwrap();
-        for h in ["h2gen.h", "h2simd.h", "h2abi.h"] {
+        for h in ["h2gen.h", "h2simd.h", "h2x87.h", "h2abi.h"] {
             std::fs::write(src.join(h), "/* support */\n").unwrap();
         }
         std::fs::write(src.join("mark.c"), "int h2_mark(void) { return TOOLCHAIN_MARK; }\n").unwrap();

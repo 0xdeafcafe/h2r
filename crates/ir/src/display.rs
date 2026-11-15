@@ -132,7 +132,11 @@ fn stmts(f: &mut Formatter<'_>, list: &[Stmt], depth: usize) -> fmt::Result {
             Stmt::Intrinsic { op, args, dsts } => {
                 let d: Vec<String> = dsts.iter().map(|t| format!("{t}:{}", t.width)).collect();
                 let a: Vec<String> = args.iter().map(|v| v.to_string()).collect();
-                writeln!(f, "({}) = intrinsic {}({})", d.join(", "), op.name(), a.join(", "))?
+                let name = match op {
+                    crate::Intrinsic::X87(x) => format!("x87 {x:?}"),
+                    op => op.name().to_owned(),
+                };
+                writeln!(f, "({}) = intrinsic {name}({})", d.join(", "), a.join(", "))?
             }
             Stmt::Repeat { kind, body } => {
                 writeln!(f, "{} {{", lower(kind))?;

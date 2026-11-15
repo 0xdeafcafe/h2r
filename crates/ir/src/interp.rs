@@ -217,25 +217,15 @@ impl Default for Cpu {
 
 /// Execute one [`Intrinsic`] on `cpu`'s FP state (or its TSC). The C
 /// helpers in the emitter's support header implement exactly this, except
-/// [`Intrinsic::ReadTsc`], which the runtime answers.
+/// [`Intrinsic::ReadTsc`], which the runtime answers. [`Intrinsic::X87`] ops
+/// need the instruction's PC and can stop as well as fault: [`step`] runs
+/// them, and this function panics on one.
 pub fn intrinsic(cpu: &mut Cpu, op: Intrinsic, args: &[u128]) -> Result<Vec<u128>, Fault> {
     use Intrinsic::*;
     Ok(match op {
-        X87Init => {
-            let st = cpu.x87.st;
-            cpu.x87 = X87 { st, ..X87::default() };
-            vec![]
-        }
         X87ReadControl => vec![cpu.x87.control as u128],
-        X87WriteControl => {
-            cpu.x87.control = args[0] as u16;
-            vec![]
-        }
         X87ReadStatus => vec![cpu.x87.status as u128],
-        X87ClearExceptions => {
-            cpu.x87.status &= 0x7F00;
-            vec![]
-        }
+        X87(op) => panic!("interp::intrinsic({op:?}): x87 ops run through step"),
         MxcsrRead => vec![cpu.mxcsr as u128],
         MxcsrWrite => {
             let v = args[0] as u32;
@@ -626,6 +616,19 @@ impl<M: Memory> Exec<'_, M> {
                         self.run(otherwise)?;
                     }
                 }
+                Stmt::Intrinsic { op: Intrinsic::X87(op), args, dsts } => {
+                    use crate::x87_exec::Outcome;
+                    let args: Vec<u128> = args.iter().map(|a| self.val(a)).collect();
+                    match crate::x87_exec::exec(self.cpu, self.pc, *op, &args) {
+                        Ok(out) => {
+                            for (d, v) in dsts.iter().zip(out) {
+                                self.temps.set(*d, v);
+                            }
+                        }
+                        Err(Outcome::Fault(fault)) => return Err(Exit::Fault { pc: self.pc, fault, next: None }),
+                        Err(Outcome::Stop(reason)) => return Err(Exit::Stop { pc: self.pc, reason }),
+                    }
+                }
                 Stmt::Intrinsic { op, args, dsts } => {
                     let args: Vec<u128> = args.iter().map(|a| self.val(a)).collect();
                     match intrinsic(self.cpu, *op, &args) {
@@ -913,11 +916,58 @@ mod tests {
     #[test]
     fn intrinsics_act_on_fp_state() {
         let mut cpu = Cpu::default();
-        cpu.x87.control = 0;
-        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87Init, &[]), Ok(vec![]));
-        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87ReadControl, &[]), Ok(vec![0x037F]));
+        cpu.x87.control = 0x027F;
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87ReadControl, &[]), Ok(vec![0x027F]));
         assert_eq!(intrinsic(&mut cpu, Intrinsic::MxcsrWrite, &[0x1_0000]), Err(Fault::GeneralProtection));
         assert_eq!(cpu.mxcsr, MXCSR_DEFAULT);
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87Wait, &[]), Ok(vec![]));
+        cpu.x87.status = 0x0081; // IE pending, ES
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87Wait, &[]), Err(Fault::FpError));
+    }
+
+    /// `Mark` is IR state, not a helper: it runs without crates/x87.
+    #[test]
+    fn x87_mark_records_the_last_instruction() {
+        use crate::x87::{GUEST_CS, GUEST_DS, X87Op};
+        let mut cpu = Cpu::default();
+        let mut mem = SparseMemory::new();
+        let mark = |mem: bool| Stmt::Intrinsic {
+            op: Intrinsic::X87(X87Op::Mark { fop: 0x0d9 | 0xf800, mem }),
+            args: if mem { vec![Value::u32(0x1234)] } else { vec![] },
+            dsts: vec![],
+        };
+        let i = insn(vec![mark(true)]);
+        i.validate().unwrap();
+        step(&mut cpu, &mut mem, &i).unwrap();
+        let x = &cpu.x87;
+        assert_eq!((x.instruction_pointer, x.opcode, x.data_pointer), (0x1000, 0x0d9, 0x1234));
+        assert_eq!((x.instruction_selector, x.data_selector), (GUEST_CS, GUEST_DS));
+        // A register form keeps FDP.
+        let mut i = insn(vec![mark(false)]);
+        i.pc = 0x2000;
+        step(&mut cpu, &mut mem, &i).unwrap();
+        assert_eq!((cpu.x87.instruction_pointer, cpu.x87.data_pointer), (0x2000, 0x1234));
+    }
+
+    /// Helper-backed ops run through crates/x87: fxam of an empty ST(0)
+    /// classifies it (C3|C0), and a pending exception is #MF at a waiting op.
+    #[test]
+    fn x87_ops_run_through_the_helpers() {
+        use crate::x87::{X87Const, X87Op};
+        let mut cpu = Cpu::default();
+        let mut mem = SparseMemory::new();
+        let i = insn(vec![Stmt::Intrinsic { op: Intrinsic::X87(X87Op::Xam), args: vec![], dsts: vec![] }]);
+        step(&mut cpu, &mut mem, &i).unwrap();
+        assert_eq!(cpu.x87.status & 0x4500, 0x4100);
+        cpu.x87.status = 0x8081;
+        let before = cpu.x87.clone();
+        let i = insn(vec![Stmt::Intrinsic {
+            op: Intrinsic::X87(X87Op::LoadConst(X87Const::One)),
+            args: vec![],
+            dsts: vec![],
+        }]);
+        assert!(matches!(step(&mut cpu, &mut mem, &i), Err(Exit::Fault { pc: 0x1000, fault: Fault::FpError, .. })));
+        assert_eq!(cpu.x87, before);
     }
 
     #[test]

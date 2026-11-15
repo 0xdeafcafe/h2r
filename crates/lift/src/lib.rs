@@ -15,6 +15,7 @@
 //! counts them.
 
 mod builder;
+pub mod crt;
 pub mod harness;
 pub mod lower;
 
@@ -32,11 +33,18 @@ pub struct Lifter<'a> {
     analysis: &'a Analysis,
     cfgs: CfgBuilder<'a>,
     env: Env,
+    /// Functions whose IR is written by hand (`crt`), not lowered.
+    crt: crt::Replacements,
 }
 
 impl<'a> Lifter<'a> {
     pub fn new(analysis: &'a Analysis, xbe: &Xbe<'a>) -> Result<Self, xbe::Error> {
-        Ok(Lifter { analysis, cfgs: CfgBuilder::new(analysis, xbe), env: Env::of(xbe)? })
+        Ok(Lifter {
+            analysis,
+            cfgs: CfgBuilder::new(analysis, xbe),
+            env: Env::of(xbe)?,
+            crt: crt::Replacements::of(xbe),
+        })
     }
 
     pub fn env(&self) -> &Env {
@@ -51,6 +59,9 @@ impl<'a> Lifter<'a> {
     /// no function there.
     pub fn lift(&self, entry: u32) -> Option<IrFunction> {
         let cfg = self.cfgs.build(entry)?;
+        if let Some(f) = self.crt.function(entry) {
+            return Some(f);
+        }
         let mut blocks = BTreeMap::new();
         for block in cfg.blocks.values() {
             let mut insns = Vec::with_capacity(block.insns.len());

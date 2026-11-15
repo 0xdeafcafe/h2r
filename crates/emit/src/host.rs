@@ -26,8 +26,58 @@ use std::path::Path;
 
 use ir::interp::{FlatMemory, MemFault, Memory};
 
-/// The C bridge source; see `c/bridge.c`.
-pub const BRIDGE: &str = include_str!("../c/bridge.c");
+/// The C bridge source; see `c/bridge.c` and, for the `h2x87_v1_*`
+/// symbols, `c/bridge_x87.c`.
+pub const BRIDGE: &str = concat!(include_str!("../c/bridge.c"), include_str!("../c/bridge_x87.c"));
+
+/// The x87 helpers the bridge forwards, in `h2x87bridge_install` index
+/// order (`h2x87.h`'s declaration order): their names, and `crates/x87`'s
+/// implementations, which [`Generated::load`] installs.
+macro_rules! x87_helpers {
+    ($($name:ident,)*) => {
+        pub const X87_BRIDGE_SYMBOLS: [&str; 35] = [$(stringify!($name)),*];
+        fn x87_helpers() -> [*const c_void; 35] {
+            [$(x87::abi::ffi::$name as *const c_void),*]
+        }
+    };
+}
+x87_helpers! {
+    h2x87_v1_ld_f32,
+    h2x87_v1_ld_f64,
+    h2x87_v1_ld_f80,
+    h2x87_v1_ld_i16,
+    h2x87_v1_ld_i32,
+    h2x87_v1_ld_i64,
+    h2x87_v1_ld_bcd,
+    h2x87_v1_ld_const,
+    h2x87_v1_ld_st,
+    h2x87_v1_st_f32,
+    h2x87_v1_st_f64,
+    h2x87_v1_st_f80,
+    h2x87_v1_st_i16,
+    h2x87_v1_st_i32,
+    h2x87_v1_st_i64,
+    h2x87_v1_st_bcd,
+    h2x87_v1_st_i32_trunc,
+    h2x87_v1_store_commit,
+    h2x87_v1_st_st,
+    h2x87_v1_ftol2,
+    h2x87_v1_arith,
+    h2x87_v1_unary,
+    h2x87_v1_cmp,
+    h2x87_v1_xam,
+    h2x87_v1_xch,
+    h2x87_v1_free,
+    h2x87_v1_adj_top,
+    h2x87_v1_cmov,
+    h2x87_v1_ldcw,
+    h2x87_v1_wait,
+    h2x87_v1_clex,
+    h2x87_v1_init,
+    h2x87_v1_save_image,
+    h2x87_v1_save_commit,
+    h2x87_v1_load_env,
+}
 
 pub const ABI_VERSION: u32 = 1;
 pub const CALL: u32 = 1;
@@ -529,6 +579,10 @@ impl Generated {
                 cmpxchg: cb_cmpxchg,
             };
             install(&bridge);
+            let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const c_void, u32)> =
+                lib.get(b"h2x87bridge_install").map_err(|e| e.to_string())?;
+            let fns = x87_helpers();
+            install_x87(fns.as_ptr(), fns.len() as u32);
             let module: libloading::Symbol<*const GenModule> =
                 lib.get(b"h2gen_module").map_err(|e| e.to_string())?;
             let m = &**module;

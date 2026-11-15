@@ -66,7 +66,7 @@ pub fn symbol(entry: u32) -> String {
 
 /// Emit one owner as a C function definition.
 pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
-    let mut e = Emitter { out: String::new(), shape, in_repeat: false };
+    let mut e = Emitter { out: String::new(), shape, in_repeat: false, x87: crate::x87::uses_x87(f) };
     e.function(f);
     e.out
 }
@@ -76,6 +76,8 @@ struct Emitter<'a> {
     shape: &'a OwnerShape<'a>,
     /// Emitting a `Repeat` body: exits restore the saved EFLAGS first.
     in_repeat: bool,
+    /// The handler has x87 ops: it has the x87 locals and fail block.
+    x87: bool,
 }
 
 /// C for `reg[slice] = v` (a partial-register merge below `Full`); `v` is
@@ -91,7 +93,7 @@ fn write_reg(g: Gpr, slice: Slice, v: &str) -> String {
 }
 
 /// C storage type for a width. `W1` values are `uint8_t` holding 0 or 1.
-fn ty(w: Width) -> &'static str {
+pub(crate) fn ty(w: Width) -> &'static str {
     match w {
         Width::W1 | Width::W8 => "uint8_t",
         Width::W16 => "uint16_t",
@@ -145,7 +147,7 @@ fn ulit(w: Width, bits: u128) -> String {
     }
 }
 
-fn val(v: &Value) -> String {
+pub(crate) fn val(v: &Value) -> String {
     match v {
         Value::Temp(t) => format!("t{}", t.id),
         Value::Const { width, bits } => lit(*width, *bits),
@@ -218,6 +220,10 @@ impl Emitter<'_> {
         let name = symbol(f.entry);
         self.line(0, format!("TransferAbi {name}(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {{"));
         self.line(1, "H2_LOCALS();");
+        let x87 = self.x87;
+        if x87 {
+            self.line(1, "H2X87_LOCALS();");
+        }
         self.line(1, "switch (start) {");
         for s in self.shape.selectors {
             self.line(1, format!("case {s:#010x}u: goto L_{s:08x};"));
@@ -237,7 +243,12 @@ impl Emitter<'_> {
                 self.insn(insn, last);
             }
         }
-        self.line(1, "H2_EPILOGUE();");
+        if x87 {
+            self.line(1, "H2X87_FAIL();");
+            self.line(1, "H2X87_EPILOGUE();");
+        } else {
+            self.line(1, "H2_EPILOGUE();");
+        }
         self.line(0, "}");
     }
 
@@ -443,6 +454,16 @@ impl Emitter<'_> {
                 Stmt::Intrinsic { op: Intrinsic::ReadTsc, dsts, .. } => {
                     // The counter is the runtime's; it cannot fail.
                     self.line(d, format!("uint64_t t{} = h2shim_v1_rdtsc(ctx, {pc:#x}u);", dsts[0].id));
+                }
+                // In an x87 handler the wait shares the fail block: #MF
+                // there is the same event 14 with the status word.
+                Stmt::Intrinsic { op: Intrinsic::X87Wait, .. } if self.x87 && !self.in_repeat => {
+                    self.line(d, format!("H2X87_WAIT({pc:#x}u);"));
+                }
+                Stmt::Intrinsic { op: Intrinsic::X87(op), args, dsts } => {
+                    for l in crate::x87::stmt(*op, args, dsts, pc) {
+                        self.line(d, l);
+                    }
                 }
                 Stmt::Intrinsic { op, args, dsts } => {
                     // Results are locals of the instruction; the helper

@@ -8,7 +8,7 @@ license.workspace = true
 ir.workspace = true
 analyze.workspace = true
 xbe.workspace = true
-iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "op_code_info"] }
 
 [features]
 # Cross-check against oracle fixture files (tests/oracle.rs).

@@ -826,10 +826,10 @@ fn traps() {
 
 #[test]
 fn unsupported_is_explicit() {
-    // fld dword [eax] (d9 00): x87 is not lowered yet.
-    let insn = Decoder::with_ip(32, &[0xD9, 0x00], CODE as u64, DecoderOptions::NONE).decode();
+    // fldenv m14 (66 d9 20): the 16-bit environment layout is not lowered.
+    let insn = Decoder::with_ip(32, &[0x66, 0xD9, 0x20], CODE as u64, DecoderOptions::NONE).decode();
     let ir = lower(&insn, &Env::default(), Site::Plain);
-    assert_eq!(ir.unsupported().map(|u| u.0), Some("fld"));
+    assert_eq!(ir.unsupported().map(|u| u.0), Some("fldenv"));
     let mut c = cpu();
     assert!(matches!(interp::step(&mut c, &mut mem(), &ir), Err(Exit::Unsupported { .. })));
 }
@@ -1243,17 +1243,15 @@ fn rep_fault_mid_iteration_keeps_completed_iterations() {
 
 #[test]
 fn fp_control_goes_through_intrinsics() {
-    // fninit (db e3); fnstcw [0x4000] (d9 3d 00 40 00 00);
-    // stmxcsr [0x4004] (0f ae 1d 04 40 00 00).
-    let code = [0xDB, 0xE3, 0xD9, 0x3D, 0x00, 0x40, 0x00, 0x00, 0x0F, 0xAE, 0x1D, 0x04, 0x40, 0x00, 0x00];
-    let (c, m) = run(&code, |c, _| {
-        c.x87.control = 0;
-        c.x87.status = 0xFFFF;
+    // fnstcw [0x4000] (d9 3d 00 40 00 00); stmxcsr [0x4004]
+    // (0f ae 1d 04 40 00 00). fninit is a helper call: tests/x87.rs.
+    let code = [0xD9, 0x3D, 0x00, 0x40, 0x00, 0x00, 0x0F, 0xAE, 0x1D, 0x04, 0x40, 0x00, 0x00];
+    let (_, m) = run(&code, |c, _| {
+        c.x87.control = 0x027F;
         c.mxcsr = 0x1F81;
     });
-    assert_eq!(m.read_u32(DATA).map(|v| v as u16), Some(0x037F));
+    assert_eq!(m.read_u32(DATA).map(|v| v as u16), Some(0x027F));
     assert_eq!(m.read_u32(DATA + 4), Some(0x1F81));
-    assert_eq!((c.x87.status, c.x87.tag), (0, 0xFFFF));
     // ldmxcsr [0x4000] (0f ae 15 00 40 00 00) with a reserved bit: #GP,
     // MXCSR unchanged.
     let mut c = cpu();

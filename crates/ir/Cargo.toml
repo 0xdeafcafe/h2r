@@ -6,3 +6,4 @@ license.workspace = true
 
 [dependencies]
 simd.workspace = true
+x87.workspace = true

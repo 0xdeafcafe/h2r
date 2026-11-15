@@ -18,7 +18,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use iced_x86::{Decoder, DecoderOptions};
+use iced_x86::{Decoder, DecoderOptions, MemorySize};
 use ir::interp::{self, Cpu, Exit, MemFault, Memory};
 use ir::{Fault, Gpr};
 use serde_json::Value;
@@ -201,6 +201,256 @@ fn unicorn_mmx(ours: &interp::X87, want: &mut interp::X87, initial: &interp::X87
     }
 }
 
+/// What Unicorn cannot answer about x87 state, masked by mnemonic as
+/// docs/FLOAT.md §2.9 and docs/FLOAT-ABI.md §6.3 set out; `crates/x87` is
+/// the authority for these bits, and they are taken from our side:
+///
+/// - the sticky exception flags but ZE (IE/DE/OE/UE/PE/SF), which Unicorn
+///   mostly does not set, from the first x87 operation until something
+///   defines them again (`fninit`, `fnclex`, `fnsave`; `fldenv`/`frstor`
+///   load whatever was masked in the image they read);
+/// - C1, and C0/C2/C3 after an instruction that leaves them undefined
+///   (loads, stores, arithmetic, stack ops, `fldcw`), until one defines
+///   them (the compares, `ftst`, `fxam`, the initialising ones);
+/// - control-word bit 6 after `fldcw`/`fldenv`/`frstor` (a P6 forces it to
+///   1, Unicorn stores the raw word; `needs-hardware`);
+/// - FOP, FCS and FDS, which Unicorn does not keep. FIP and FDP it keeps
+///   for the data instructions, and they are compared, but it also moves
+///   FIP on the control instructions (`fnstsw`, `fwait`, ...), not on
+///   `fnop`, and `frstor`/`fldenv` do not load them: after one of those
+///   they are masked until the next data instruction;
+/// - the reserved upper halves of the `fnstenv`/`fnsave` control, status,
+///   tag and FDS words: the crate writes 0xffff as a P6 does, Unicorn 0
+///   (`needs-hardware`), and the sign of an `fbstp` result that may round
+///   to a BCD -0, which Unicorn drops;
+/// - OF/SF/AF after `fcomi` and its forms, which Unicorn leaves alone
+///   where the SDM clears them;
+/// - the tag of the destination of `fst`/`fstp st(i)`, which Unicorn does
+///   not update.
+///
+/// Masked status bits also mask what reads them: `fnstsw ax` (and the
+/// flags `sahf` or `test ah` then make), `fnstsw m16`, `fnstcw m16` and the
+/// `fnstenv`/`fnsave` image. Fixtures with transcendentals (Unicorn uses
+/// host libm), a stack fault (Unicorn has no tag checks), an `fld` of a
+/// signalling NaN (Unicorn does not quiet it) or an out-of-range `fbstp`
+/// (Unicorn stores garbage digits, not the BCD indefinite) are skipped by
+/// class instead.
+#[derive(Default)]
+struct X87Masks {
+    /// Status-word bits not compared.
+    status: u16,
+    /// Control-word bit 6 not compared.
+    cw6: bool,
+    /// Any x87 instruction ran (FOP/FCS/FDS not compared).
+    any: bool,
+    /// FIP/FDP not compared (a control instruction ran last).
+    fip: bool,
+    /// Tag-word bits not compared.
+    tag: u16,
+    /// `status` when the last `fnstenv`/`fnsave` image was written: what
+    /// `fldenv`/`frstor` load back from it.
+    saved: u16,
+    /// Bits of EAX that hold masked status bits (`fnstsw ax`).
+    eax: u32,
+    /// EFLAGS bits computed from masked status bits.
+    flags: u32,
+    /// Memory bytes holding masked bits: (address, bit mask).
+    mem: Vec<(u32, u8)>,
+}
+
+const SW_STICKY: u16 = 0x007b; // IE DE OE UE PE SF
+const SW_C1: u16 = 0x0200;
+const SW_C023: u16 = 0x4500;
+
+impl X87Masks {
+    /// Account for `insn`, about to run on `cpu`. `Err(class)` skips the
+    /// fixture.
+    fn before(&mut self, insn: &iced_x86::Instruction, cpu: &Cpu, memory: &mut PageMem) -> Result<(), String> {
+        use iced_x86::Mnemonic as M;
+        let m = insn.mnemonic();
+        // AH holding masked bits, read back into EFLAGS.
+        let ah = (self.eax >> 8) & 0xff;
+        match m {
+            M::Sahf if ah != 0 => {
+                let map = [(0x01, 0x001), (0x04, 0x004), (0x10, 0x010), (0x40, 0x040), (0x80, 0x080)];
+                self.flags |= map.iter().filter(|(b, _)| ah & b != 0).map(|(_, f)| f).sum::<u32>();
+            }
+            M::Test
+                if insn.op0_kind() == iced_x86::OpKind::Register
+                    && insn.op0_register() == iced_x86::Register::AH
+                    && insn.immediate8() as u32 & ah != 0 =>
+            {
+                self.flags |= 0x0c4; // ZF SF PF
+            }
+            _ => {}
+        }
+        if !lift_x87(m) {
+            return Ok(());
+        }
+        let name = format!("{m:?}").to_ascii_lowercase();
+        if matches!(
+            m,
+            M::Fsin
+                | M::Fcos
+                | M::Fsincos
+                | M::Fptan
+                | M::Fpatan
+                | M::F2xm1
+                | M::Fyl2x
+                | M::Fyl2xp1
+                | M::Fprem
+                | M::Fprem1
+        ) {
+            return Err(format!("x87: {name} is host libm in Unicorn (needs-hardware)"));
+        }
+        self.any = true;
+        let ea = || {
+            let r = |reg: iced_x86::Register| {
+                if reg == iced_x86::Register::None { 0 } else { cpu.reg(gpr_of(reg)) }
+            };
+            r(insn.memory_base())
+                .wrapping_add(r(insn.memory_index()).wrapping_mul(insn.memory_index_scale()))
+                .wrapping_add(insn.memory_displacement32())
+        };
+        let lo = self.status as u8;
+        let hi = (self.status >> 8) as u8;
+        let cw = if self.cw6 { 0x40 } else { 0 };
+        let mem = insn.op_count() > 0 && insn.op0_kind() == iced_x86::OpKind::Memory;
+        match m {
+            M::Fnstsw if mem => self.mem.extend([(ea(), lo), (ea() + 1, hi)]),
+            M::Fnstsw => self.eax |= self.status as u32,
+            M::Fnstcw => self.mem.push((ea(), cw)),
+            M::Fnstenv | M::Fnsave => {
+                self.saved = self.status;
+                let a = ea();
+                self.mem.extend([(a, cw), (a + 4, lo), (a + 5, hi)]);
+                self.mem.extend([2, 3, 6, 7, 10, 11, 16, 17, 18, 19, 24, 25, 26, 27].map(|o| (a + o, 0xff)));
+                if self.fip {
+                    self.mem.extend([12, 13, 14, 15, 20, 21, 22, 23].map(|o| (a + o, 0xff)));
+                }
+            }
+            M::Fld if mem && matches!(insn.memory_size(), MemorySize::Float32 | MemorySize::Float64) => {
+                let n = insn.memory_size().size();
+                let mut b = [0u8; 8];
+                if memory.read(ea(), &mut b[..n]).is_ok() {
+                    let v = u64::from_le_bytes(b);
+                    let snan = if n == 4 {
+                        (v >> 23) & 0xff == 0xff && v & 0x7f_ffff != 0 && v & 0x40_0000 == 0
+                    } else {
+                        (v >> 52) & 0x7ff == 0x7ff && v & ((1 << 52) - 1) != 0 && v & (1 << 51) == 0
+                    };
+                    if snan {
+                        return Err("x87: fld of a signalling NaN, which Unicorn does not quiet".into());
+                    }
+                }
+            }
+            M::Fbstp => {
+                // |ST(0)| >= 10^18 (exponent 2^59 and up is always out of
+                // range; the check is conservative below it), NaN or
+                // infinity: the BCD indefinite on a P6, garbage in Unicorn.
+                let top = ((cpu.x87.status >> 11) & 7) as usize;
+                let r = cpu.x87.st[top];
+                let exp = u16::from_le_bytes([r[8], r[9]]) & 0x7fff;
+                if exp >= 0x3fff + 59 {
+                    return Err("x87: fbstp out of range, where Unicorn stores garbage digits".into());
+                }
+                // A negative value under 1 may round to a BCD -0, whose
+                // sign Unicorn drops (needs-hardware).
+                if r[9] & 0x80 != 0 && exp < 0x3fff {
+                    self.mem.push((ea() + 9, 0x80));
+                }
+            }
+            M::Fst | M::Fstp if insn.op0_kind() == iced_x86::OpKind::Register => {
+                let top = (cpu.x87.status >> 11) & 7;
+                let i = insn.op0_register().number() as u16;
+                self.tag |= 3 << (2 * ((top + i) & 7));
+            }
+            _ => {}
+        }
+        if matches!(m, M::Fcomi | M::Fcomip | M::Fucomi | M::Fucomip) {
+            self.flags |= 0x890; // OF SF AF
+        }
+        self.fip = matches!(
+            m,
+            M::Fnstsw | M::Fnstcw | M::Fnstenv | M::Wait | M::Fnop | M::Fldcw | M::Fnclex | M::Fldenv | M::Frstor
+        ) || (self.fip && matches!(m, M::Fninit | M::Fnsave));
+        match m {
+            // Status reads and stores, waits: nothing changes.
+            M::Fnstsw | M::Fnstcw | M::Fnstenv | M::Wait | M::Fnop => {}
+            // The whole status word is defined again.
+            M::Fninit | M::Fnsave => self.status = 0,
+            M::Fldenv | M::Frstor => self.status = self.saved,
+            M::Fnclex => self.status = (self.status & !SW_STICKY) | SW_C1 | SW_C023,
+            // C0..C3 defined (C1 = 0 or the sign).
+            M::Fcom
+            | M::Fcomp
+            | M::Fcompp
+            | M::Fucom
+            | M::Fucomp
+            | M::Fucompp
+            | M::Ficom
+            | M::Ficomp
+            | M::Ftst
+            | M::Fxam => {
+                self.status = (self.status & !(SW_C023 | SW_C1)) | SW_STICKY;
+            }
+            // The EFLAGS compares leave C0/C2/C3 alone.
+            M::Fcomi | M::Fcomip | M::Fucomi | M::Fucomip => self.status |= SW_STICKY | SW_C1,
+            _ => self.status |= SW_STICKY | SW_C1 | SW_C023,
+        }
+        if matches!(m, M::Fldcw | M::Fldenv | M::Frstor) {
+            self.cw6 = true;
+        }
+        if m == M::Fninit || m == M::Fnsave {
+            self.cw6 = false;
+        }
+        Ok(())
+    }
+
+    /// Take the masked bits of the expected state from ours.
+    fn apply(&self, ours: &Cpu, want: &mut interp::X87, want_eax: &mut u32, want_flags: &mut u32) {
+        if !self.any {
+            return;
+        }
+        let o = &ours.x87;
+        want.status = (want.status & !self.status) | (o.status & self.status);
+        if self.cw6 {
+            want.control = (want.control & !0x40) | (o.control & 0x40);
+        }
+        want.opcode = o.opcode;
+        if self.fip {
+            want.instruction_pointer = o.instruction_pointer;
+            want.data_pointer = o.data_pointer;
+        }
+        want.tag = (want.tag & !self.tag) | (o.tag & self.tag);
+        want.instruction_selector = o.instruction_selector;
+        want.data_selector = o.data_selector;
+        *want_eax = (*want_eax & !self.eax) | (ours.gpr[0] & self.eax);
+        *want_flags = (*want_flags & !self.flags) | (ours.eflags & self.flags);
+    }
+}
+
+/// Whether the lifter lowers `m` as x87 (`lift`'s own list is private).
+fn lift_x87(m: iced_x86::Mnemonic) -> bool {
+    let n = format!("{m:?}");
+    n.starts_with('F') || n == "Wait"
+}
+
+fn gpr_of(r: iced_x86::Register) -> Gpr {
+    use iced_x86::Register as R;
+    match r {
+        R::EAX => Gpr::Eax,
+        R::ECX => Gpr::Ecx,
+        R::EDX => Gpr::Edx,
+        R::EBX => Gpr::Ebx,
+        R::ESP => Gpr::Esp,
+        R::EBP => Gpr::Ebp,
+        R::ESI => Gpr::Esi,
+        R::EDI => Gpr::Edi,
+        r => panic!("x87 operand addressed through {r:?}"),
+    }
+}
+
 /// Why a fixture was skipped, for the summary.
 fn skip_class(insn: &iced_x86::Instruction, detail: &str) -> String {
     let m = format!("{:?}", insn.mnemonic()).to_ascii_lowercase();
@@ -271,6 +521,7 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
     let mut mmx = false;
     let mut sse_fp = false;
     let mut approx: Option<Approx> = None;
+    let mut x87 = X87Masks::default();
     for _ in 0..64 {
         if cpu.eip < start || cpu.eip >= end {
             break;
@@ -289,10 +540,16 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
         if let Some(a) = Approx::of(&insn, &cpu, &mut mem) {
             approx = Some(a);
         }
+        if let Err(class) = x87.before(&insn, &cpu, &mut mem) {
+            return Ok(Err(class));
+        }
         if let Err(e) = interp::step(&mut cpu, &mut mem, &ir) {
             result = Err(e);
             break;
         }
+    }
+    if x87.any && cpu.x87.status & 0x0040 != 0 {
+        return Ok(Err("x87: stack fault, which Unicorn does not model (no tag checks)".into()));
     }
     let ours = match &result {
         Ok(()) => "completed".to_string(),
@@ -307,7 +564,10 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
     }
     let o = &f["outcome"];
     let e = &o["state"];
-    let want = gprs(e);
+    let mut want = gprs(e);
+    let mut want_x87 = x87_of(e);
+    let mut want_eflags = u32_of(&e["eflags"]);
+    x87.apply(&cpu, &mut want_x87, &mut want[0], &mut want_eflags);
     let masks: Vec<u32> = o["defined_gprs"].as_array().unwrap().iter().map(u32_of).collect();
     for (i, g) in Gpr::ALL.iter().enumerate() {
         if (cpu.gpr[i] ^ want[i]) & masks[i] != 0 {
@@ -319,12 +579,8 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
     }
     // Values: every status flag the oracle defines, whatever we claim.
     let theirs_defined = u32_of(&o["defined_flags"]) & STATUS_FLAGS;
-    if (cpu.eflags ^ u32_of(&e["eflags"])) & theirs_defined != 0 {
-        errs.push(format!(
-            "eflags: ours {:#x}, oracle {:#x}, compared {theirs_defined:#x}",
-            cpu.eflags,
-            u32_of(&e["eflags"])
-        ));
+    if (cpu.eflags ^ want_eflags) & theirs_defined != 0 {
+        errs.push(format!("eflags: ours {:#x}, oracle {want_eflags:#x}, compared {theirs_defined:#x}", cpu.eflags));
     }
     // Validity, independently: the same status flags defined on both sides.
     let ours_defined = cpu.flags_valid & STATUS_FLAGS;
@@ -338,7 +594,6 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
     if (cpu.mxcsr ^ u32_of(&e["mxcsr"])) & !flags_unmodelled != 0 {
         errs.push(format!("mxcsr: ours {:#x}, oracle {:#x}", cpu.mxcsr, u32_of(&e["mxcsr"])));
     }
-    let mut want_x87 = x87_of(e);
     if mmx {
         unicorn_mmx(&cpu.x87, &mut want_x87, &initial_x87);
     }
@@ -363,6 +618,12 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
             if let Some(p) = want_pages.get_mut(&(a & !0xfff)) {
                 p[(a & 0xfff) as usize] = *b;
             }
+        }
+    }
+    for &(a, bits) in &x87.mem {
+        if let Some(p) = want_pages.get_mut(&(a & !0xfff)) {
+            let i = (a & 0xfff) as usize;
+            p[i] = (p[i] & !bits) | (mem.pages[&(a & !0xfff)][i] & bits);
         }
     }
     for (base, page) in &want_pages {

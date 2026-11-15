@@ -33,6 +33,85 @@ type Asm = fn(&mut CodeAssembler) -> Result<(), IcedError>;
 
 /// (name, body). Every body ends in `ret`; nothing follows it.
 fn fixtures() -> Vec<(&'static str, Asm)> {
+    let mut v = base_fixtures();
+    v.extend(x87_fixtures());
+    v
+}
+
+/// x87 through the helpers: loads, arithmetic, stores (which fault some
+/// of the time), compares into EFLAGS and through `fnstsw`, control words
+/// (the random control word unmasks exceptions, so #MF and UNMODELLED
+/// happen too), and the environment image.
+fn x87_fixtures() -> Vec<(&'static str, Asm)> {
+    use iced_x86::code_asm::*;
+    vec![
+        ("fp-control", |a| {
+            a.fnstcw(word_ptr(esi))?;
+            a.fninit()?;
+            a.fldcw(word_ptr(edi))?;
+            a.fnstsw(ax)?;
+            a.fnclex()?;
+            a.fnstsw(word_ptr(esi + 2))?;
+            a.stmxcsr(dword_ptr(esi + 4))?;
+            a.and(dword_ptr(edi + 8), 0xffff)?;
+            a.ldmxcsr(dword_ptr(edi + 8))?;
+            a.ldmxcsr(dword_ptr(ebx))?; // random: reserved bits give #GP
+            a.wait()?;
+            a.ret()
+        }),
+        ("x87-arith", |a| {
+            a.fld(dword_ptr(esi))?;
+            a.fld(qword_ptr(edi))?;
+            a.fmul_2(st0, st1)?;
+            a.fadd(dword_ptr(esi + 4))?;
+            a.fsubr(qword_ptr(edi + 8))?;
+            a.fdivp(st1, st0)?;
+            a.fild(dword_ptr(esi + 8))?;
+            a.fimul(word_ptr(edi + 16))?;
+            a.fxch(st0, st1)?;
+            a.fsqrt()?;
+            a.fabs()?;
+            a.fchs()?;
+            a.fstp(dword_ptr(ebx))?;
+            a.fistp(qword_ptr(ebx + 8))?;
+            a.ret()
+        }),
+        ("x87-compare", |a| {
+            let mut skip = a.create_label();
+            a.fld(dword_ptr(esi))?;
+            a.fld(dword_ptr(edi))?;
+            a.fcomip(st0, st1)?;
+            a.seta(al)?;
+            a.setp(ah)?;
+            a.fcom(dword_ptr(esi + 4))?;
+            a.fnstsw(ax)?;
+            a.test(ah, 0x41)?;
+            a.jz(skip)?;
+            a.fucompp()?;
+            a.fnstsw(ax)?;
+            a.sahf()?;
+            a.set_label(&mut skip)?;
+            a.ftst()?;
+            a.fxam()?;
+            a.fnstsw(word_ptr(ebx))?;
+            a.ret()
+        }),
+        ("x87-store-env", |a| {
+            a.fldpi()?;
+            a.fld1()?;
+            a.fst(qword_ptr(ebx))?;
+            a.fist(word_ptr(ebx + 8))?;
+            a.fstp(tword_ptr(ebx + 16))?;
+            a.fnsave(ptr(edi))?;
+            a.frstor(ptr(edi))?;
+            a.fnstenv(ptr(esi))?;
+            a.fldenv(ptr(esi))?;
+            a.ret()
+        }),
+    ]
+}
+
+fn base_fixtures() -> Vec<(&'static str, Asm)> {
     use iced_x86::code_asm::*;
     vec![
         ("alu-reg", |a| {
@@ -428,20 +507,6 @@ fn fixtures() -> Vec<(&'static str, Asm)> {
             a.set_label(&mut skip)?;
             a.ret()
         }),
-        ("fp-control", |a| {
-            a.fnstcw(word_ptr(esi))?;
-            a.fninit()?;
-            a.fldcw(word_ptr(edi))?;
-            a.fnstsw(ax)?;
-            a.fnclex()?;
-            a.fnstsw(word_ptr(esi + 2))?;
-            a.stmxcsr(dword_ptr(esi + 4))?;
-            a.and(dword_ptr(edi + 8), 0xffff)?;
-            a.ldmxcsr(dword_ptr(edi + 8))?;
-            a.ldmxcsr(dword_ptr(ebx))?; // random: reserved bits give #GP
-            a.wait()?;
-            a.ret()
-        }),
         ("processor", |a| {
             a.rdtsc()?;
             a.mov(esi, eax)?;
@@ -526,10 +591,23 @@ enum End {
     Returned,
     /// Left the function for an address it doesn't contain.
     Left(u32),
-    Memory { pc: u32, addr: u32, write: bool },
-    Fault { pc: u32, code: u32, saved_eip: u32 },
-    Stop { pc: u32, code: u32 },
-    Unsupported { pc: u32 },
+    Memory {
+        pc: u32,
+        addr: u32,
+        write: bool,
+    },
+    Fault {
+        pc: u32,
+        code: u32,
+        saved_eip: u32,
+    },
+    Stop {
+        pc: u32,
+        code: u32,
+    },
+    Unsupported {
+        pc: u32,
+    },
 }
 
 fn shim_code(f: Fault) -> u32 {
@@ -584,9 +662,7 @@ fn run_c(g: &emit::host::Generated, entry: u32, cpu: &mut CpuAbi, ctx: &mut Ctx)
         RETURN if t.target_pc == HARNESS_EXIT => End::Returned,
         FAULT | STOP => match ctx.event(t.event_id).cloned() {
             Some(HostEvent::Memory { pc, fault }) => End::Memory { pc, addr: fault.addr, write: fault.write },
-            Some(HostEvent::Guest { pc, saved_eip, code, .. }) if t.kind == FAULT => {
-                End::Fault { pc, code, saved_eip }
-            }
+            Some(HostEvent::Guest { pc, saved_eip, code, .. }) if t.kind == FAULT => End::Fault { pc, code, saved_eip },
             Some(HostEvent::Guest { pc, code, .. }) => End::Stop { pc, code },
             Some(HostEvent::Unsupported { pc, .. }) => End::Unsupported { pc },
             None => panic!("transfer without an event: {t:x?}"),
@@ -645,8 +721,18 @@ fn random_state(rng: &mut Rng) -> (Cpu, FlatMemory) {
     // XMM lanes: a quarter special values (zeros, infinities, NaNs,
     // denormals, conversion bounds), the rest random bits.
     const SPECIAL: [u32; 12] = [
-        0, 0x8000_0000, 0x7f80_0000, 0xff80_0000, 0x7fc0_0000, 0x7f80_0001, 0xffc0_0000, 1, 0x3f80_0000,
-        0xbf80_0000, 0x4f00_0000, 0xcf00_0000,
+        0,
+        0x8000_0000,
+        0x7f80_0000,
+        0xff80_0000,
+        0x7fc0_0000,
+        0x7f80_0001,
+        0xffc0_0000,
+        1,
+        0x3f80_0000,
+        0xbf80_0000,
+        0x4f00_0000,
+        0xcf00_0000,
     ];
     for x in cpu.xmm.iter_mut() {
         *x = 0;
@@ -678,16 +764,28 @@ fn random_state(rng: &mut Rng) -> (Cpu, FlatMemory) {
 
 #[test]
 fn generated_c_matches_the_interpreter() {
-    const NAME: &str = "generated_c_matches_the_interpreter";
+    let ends = differential("generated_c_matches_the_interpreter", &fixtures());
+    let Some(ends) = ends else { return };
+    let all: BTreeSet<&String> = ends.values().flat_map(|m| m.keys()).collect();
+    for k in ["Returned", "Left", "Memory", "Fault", "Stop"] {
+        assert!(all.contains(&k.to_string()), "no fixture ended with {k}: {ends:?}");
+    }
+}
+
+/// Run every fixture through both backends from the same random states;
+/// panics on any mismatch. `None` if skipped.
+fn differential(name: &str, fixtures: &[(&'static str, Asm)]) -> Option<BTreeMap<&'static str, BTreeMap<String, usize>>> {
     let Some(header) = common::abi_header() else {
-        common::skip(NAME, "needs h2abi.h (H2ABI_HEADER)");
-        return;
+        common::skip(name, "needs h2abi.h (H2ABI_HEADER)");
+        return None;
     };
-    let fixtures = fixtures();
-    let funcs: Vec<(&str, IrFunction)> =
-        fixtures.iter().enumerate().map(|(i, (n, body))| (*n, function(CODE_BASE + 0x1000 * i as u32, *body))).collect();
+    let funcs: Vec<(&str, IrFunction)> = fixtures
+        .iter()
+        .enumerate()
+        .map(|(i, (n, body))| (*n, function(CODE_BASE + 0x1000 * i as u32, *body)))
+        .collect();
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
-    let g = common::build(&owners, &header, "differential");
+    let g = common::build(&owners, &header, name);
 
     let mut ends: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut failures = Vec::new();
@@ -722,8 +820,5 @@ fn generated_c_matches_the_interpreter() {
     // Each fixture should exercise more than one outcome where it can.
     eprintln!("outcomes: {ends:#?}");
     assert!(failures.is_empty(), "{} mismatches:\n{}", failures.len(), failures.join("\n"));
-    let all: BTreeSet<&String> = ends.values().flat_map(|m| m.keys()).collect();
-    for k in ["Returned", "Left", "Memory", "Fault", "Stop"] {
-        assert!(all.contains(&k.to_string()), "no fixture ended with {k}: {ends:?}");
-    }
+    Some(ends)
 }

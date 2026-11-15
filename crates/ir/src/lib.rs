@@ -86,23 +86,25 @@
 //!
 //! # Floating-point state and intrinsics
 //!
-//! x87 and SSE arithmetic will not be spelled out in integer statements.
-//! The plan (`docs/LIFTER.md` §3): FP state is architectural state like
-//! the GPRs, held in the CPU in the same shape as the runtime's `X87Abi`
-//! (eight 80-bit registers in physical order, control/status/tag words with
-//! TOP in status bits 11-13, last-instruction pointers) plus MXCSR. It is
-//! read and changed only through [`Stmt::Intrinsic`]: a named helper with
-//! explicit value operands and results that may also read and write the FP
-//! state, and may raise a fault. Each [`Intrinsic`] has one definition in
-//! the interpreter and one C helper in the emitter's support header; the
-//! differential tests hold the two together. The first intrinsics are the
-//! control/status operations (`fninit`, `fldcw`, `fnstsw`, `ldmxcsr`, ...);
-//! arithmetic (`fadd`, `addss`, conversions) joins the same list, with
-//! stack-relative operands resolved against TOP inside the helper.
+//! x87 and SSE arithmetic are not spelled out in integer statements.
+//! FP state is architectural state like the GPRs, held in the CPU in the
+//! same shape as the runtime's `X87Abi` (eight 80-bit registers in physical
+//! order, control/status/tag words with TOP in status bits 11-13,
+//! last-instruction pointers) plus MXCSR. It is read and changed only
+//! through [`Stmt::Intrinsic`]: a named helper with explicit value operands
+//! and results that may also read and write the FP state, and may raise a
+//! fault. SSE goes through [`Intrinsic::Sse`] (the `simd` crate and its C
+//! twin `h2simd.h`); x87 through [`Intrinsic::X87`], one op per helper of
+//! `crates/x87` (`h2x87.h`), with stack-relative operands resolved against
+//! TOP inside the helper. The [`x87`] module has the op set and its
+//! outcome rules. Each intrinsic has one definition in the interpreter and
+//! one in the emitter; the differential tests hold the two together.
 
 pub mod interp;
 mod display;
 mod validate;
+pub mod x87;
+mod x87_exec;
 
 pub use validate::ValidateError;
 
@@ -634,17 +636,10 @@ impl SseOp {
 /// `args`/`dsts` widths are given by [`Intrinsic::signature`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Intrinsic {
-    /// `fninit`: control word 0x037F, status 0, all tags empty, pointers
-    /// and opcode cleared. Register contents are kept.
-    X87Init,
     /// `fnstcw`: `dsts[0]` (`W16`) = control word.
     X87ReadControl,
-    /// `fldcw`: control word = `args[0]` (`W16`).
-    X87WriteControl,
-    /// `fnstsw`: `dsts[0]` (`W16`) = status word.
+    /// `fnstsw`: `dsts[0]` (`W16`) = status word (TOP is in it).
     X87ReadStatus,
-    /// `fnclex`: clear the exception flags, ES and B (status bits 0-7, 15).
-    X87ClearExceptions,
     /// `stmxcsr`: `dsts[0]` (`W32`) = MXCSR.
     MxcsrRead,
     /// `ldmxcsr`: MXCSR = `args[0]` (`W32`); `#GP` if a bit the guest's
@@ -659,9 +654,10 @@ pub enum Intrinsic {
     /// `emms`: [`Fault::FpError`] if an x87 exception is pending, else
     /// every tag empty (tag word 0xFFFF).
     Emms,
-    /// `fwait`, and the check every MMX instruction makes before anything
-    /// else: [`Fault::FpError`] if an unmasked x87 exception is pending
-    /// (status word ES, bit 7). Changes nothing.
+    /// `fwait`, the check every MMX instruction makes before anything
+    /// else, and the one every waiting x87 instruction makes before reading
+    /// a memory source: [`Fault::FpError`] if an unmasked x87 exception is
+    /// pending (status word ES, bit 7). Changes nothing.
     X87Wait,
     /// An SSE floating-point operation; see [`SseOp`].
     Sse(SseOp),
@@ -671,6 +667,10 @@ pub enum Intrinsic {
     /// at the Xbox CPU's clock and never returns the same value twice. The
     /// interpreter's [`interp::Cpu::tsc`] is a stand-in that counts reads.
     ReadTsc,
+    /// An x87 operation through the `crates/x87` helpers; see [`x87`].
+    /// `fninit`, `fnclex` and `fldcw` are here too (their helpers keep the
+    /// control word normalised and ES/B consistent).
+    X87(x87::X87Op),
 }
 
 impl Intrinsic {
@@ -678,18 +678,18 @@ impl Intrinsic {
     pub fn signature(self) -> (&'static [Width], &'static [Width]) {
         use Intrinsic::*;
         match self {
-            X87Init | X87ClearExceptions => (&[], &[]),
             X87ReadControl | X87ReadStatus => (&[], &[Width::W16]),
-            X87WriteControl => (&[Width::W16], &[]),
             MxcsrRead => (&[], &[Width::W32]),
             MxcsrWrite => (&[Width::W32], &[]),
             MmxEnter | Emms | X87Wait => (&[], &[]),
             Sse(op) => op.signature(),
             ReadTsc => (&[], &[Width::W64]),
+            X87(op) => op.signature(),
         }
     }
 
-    /// Lower-case name; the emitter's C helper is `h2i_<name>`.
+    /// Lower-case name; the emitter's C helper is `h2i_<name>`, except for
+    /// [`Intrinsic::X87`], which the emitter lowers to `h2x87_v1_*` calls.
     pub fn name(self) -> &'static str {
         use Intrinsic::*;
         match self {
@@ -726,11 +726,9 @@ impl Intrinsic {
                 SseOp::Cvtps2pi => "sse_cvtps2pi",
                 SseOp::Cvttps2pi => "sse_cvttps2pi",
             },
-            X87Init => "x87_init",
             X87ReadControl => "x87_read_control",
-            X87WriteControl => "x87_write_control",
             X87ReadStatus => "x87_read_status",
-            X87ClearExceptions => "x87_clear_exceptions",
+            X87(_) => "x87",
             MxcsrRead => "mxcsr_read",
             MxcsrWrite => "mxcsr_write",
             ReadTsc => "read_tsc",

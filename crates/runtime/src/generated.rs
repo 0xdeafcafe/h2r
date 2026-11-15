@@ -11,6 +11,11 @@ use crate::{
 };
 use std::{collections::HashMap, os::raw::c_char};
 
+/// The `h2x87_v1_*` helpers generated x87 code calls (`h2x87.h`) are
+/// `crates/x87`'s `#[no_mangle]` entry points; naming the crate links them
+/// into every binary that has the runtime.
+pub use x87::abi::ffi as x87_helpers;
+
 /// Record a non-memory guest exception (codes 1-7, 13) or a generated stop
 /// (codes 8-12) and return its event id, which is never zero. Generated
 /// code returns FAULT (exceptions) or STOP (stops) with that id and

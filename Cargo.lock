@@ -690,6 +690,7 @@ dependencies = [
  "ir",
  "libloading",
  "lift",
+ "x87",
  "xbe",
 ]
 
@@ -1071,6 +1072,7 @@ name = "ir"
 version = "0.1.0"
 dependencies = [
  "simd",
+ "x87",
 ]
 
 [[package]]
@@ -2180,6 +2182,7 @@ dependencies = [
  "iced-x86",
  "runtime-test-probe",
  "thiserror 2.0.21",
+ "x87",
  "xbe",
 ]
 
