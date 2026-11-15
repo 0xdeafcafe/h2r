@@ -401,3 +401,12 @@ symlink in the output/cache trees, including directory, source/header, ABI,
 pin, receipt, library and object aliases. This check applies even with
 `--allow-repo-output`; the override changes only the repository-location
 policy. The lock file itself is opened with `O_NOFOLLOW`.
+
+
+Mutable files are published through new sibling inodes and atomic rename:
+generated C, support/ABI headers, manifests, receipts, bridge sources and
+native tool outputs never truncate an existing destination. This detaches
+pre-existing hard links without changing the file at another link name.
+Temporary paths are reserved with exclusive creation; unfinished output is
+removed on failure. Cached objects keep their immutable hard links/pins,
+and host dylibs retain their final install name after publication.

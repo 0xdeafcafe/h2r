@@ -172,3 +172,22 @@ entry CPU/memory equivalence. Commands were `cargo test -p cli -p emit
 `cargo clippy -p cli -p emit --all-targets --release -j 2 -- -D warnings`.
 Both used `RUSTC_WRAPPER=` and a private target directory. The target and
 all scratch fixtures were removed after validation.
+
+
+The final hard-link correction replaces mutable output through fresh sibling
+temporaries and rename, including C/headers, ABI installation, manifests,
+receipts, bridge source/object files, static archives and host dylibs.
+Astra's hard-linked repository-sentinel probe is a CLI regression test for
+all generated C/support/manifest destinations. Native-output tests cover
+ABI, bridge, archive and dylib links, execute the linked synthetic functions,
+and verify the dylib's final install name. Cached objects and pins still
+share an inode and an unchanged warm build reuses the same object.
+No full-image performance timings have been repeated for these publication
+changes.
+
+Hard-link fixes validated against reviewed parent `0413935`: 139 tests passed,
+two explicitly ignored, no runtime skips, including retail entry CPU/memory
+equivalence. Commands were `cargo test -p cli -p emit --release -j 2 --
+--test-threads=2` with `H2_XBE` set to the user's image, and
+`cargo clippy -p cli -p emit --all-targets --release -j 2 -- -D warnings`.
+Both used `RUSTC_WRAPPER=` and a private target directory.

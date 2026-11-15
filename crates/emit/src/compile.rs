@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 use crate::fnv64;
+use crate::output::{self, Temporary};
 
 mod dependencies;
 
@@ -365,7 +366,7 @@ pub fn install_header(src_dir: &Path, h2abi: &Path) -> Result<(), Error> {
     let text = std::fs::read(h2abi).map_err(|e| err(format!("reading {}: {e}", h2abi.display())))?;
     let dst = src_dir.join("h2abi.h");
     if std::fs::read(&dst).ok().as_deref() != Some(&text[..]) {
-        std::fs::write(&dst, text).map_err(err)?;
+        output::replace(&dst, &text).map_err(err)?;
     }
     Ok(())
 }
@@ -395,10 +396,9 @@ fn pin_object(obj: &Path, pin: &Path) -> std::io::Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(e),
         Err(_) => {
-            let tmp = pin.with_extension(format!("o.{}.tmp", std::process::id()));
-            std::fs::copy(obj, &tmp).and_then(|_| std::fs::rename(&tmp, pin)).inspect_err(|_| {
-                let _ = std::fs::remove_file(&tmp);
-            })
+            let tmp = Temporary::new(pin)?;
+            std::fs::copy(obj, tmp.path())?;
+            tmp.publish(pin)
         }
     }
 }
@@ -441,29 +441,21 @@ pub fn archive(library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
     if let Some(o) = objects.iter().find(|o| !o.is_file()) {
         return Err(Error(format!("archiving {}: {} is missing", library.display(), o.display())));
     }
-    let tmp = library.with_extension(format!("a.{}.tmp", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
+    let tmp = Temporary::new(library).map_err(err)?;
     let out = Command::new("libtool")
         .args(["-static", "-no_warning_for_no_symbols", "-o"])
-        .arg(&tmp)
+        .arg(tmp.path())
         .args(objects)
         .output()
         .map_err(|e| err(format!("running libtool: {e}")))?;
     let stderr = String::from_utf8_lossy(&out.stderr);
-    let fail = if !out.status.success() || !stderr.trim().is_empty() {
-        Some(format!("libtool: {stderr}"))
-    } else if !archive_matches(&tmp, &names) {
-        Some(format!("libtool: {} does not hold exactly the {} objects given", tmp.display(), names.len()))
-    } else {
-        std::fs::rename(&tmp, library).err().map(|e| format!("{}: {e}", library.display()))
-    };
-    match fail {
-        Some(e) => {
-            let _ = std::fs::remove_file(&tmp);
-            Err(Error(e))
-        }
-        None => Ok(()),
+    if !out.status.success() || !stderr.trim().is_empty() {
+        return Err(err(format!("libtool: {stderr}")));
     }
+    if !archive_matches(tmp.path(), &names) {
+        return Err(err(format!("libtool: {} does not hold exactly the {} objects given", tmp.path().display(), names.len())));
+    }
+    tmp.publish(library).map_err(err)
 }
 
 /// [`build_with`] keeping objects in `obj_dir`.
@@ -570,22 +562,25 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(&j) = order.get(i) else { break };
                     let (src, obj, pin, _) = todo[j];
-                    // Per process: another checkout sharing the cache may be
-                    // compiling the same object.
-                    let tmp = obj.with_extension(format!("o.{}.tmp", std::process::id()));
+                    let tmp = match Temporary::new(obj) {
+                        Ok(tmp) => tmp,
+                        Err(e) => {
+                            failures.lock().unwrap().push(format!("{}: {e}", obj.display()));
+                            continue;
+                        }
+                    };
                     let out = Command::new(cc)
                         .args(&flags)
                         .args(["-target", arch.triple(), "-c"])
                         .arg(src)
                         .arg("-o")
-                        .arg(&tmp)
+                        .arg(tmp.path())
                         .output();
                     match out {
                         Ok(o) if o.status.success() => {
                             // Pin before publishing, so a pruner never sees
                             // the object unpinned.
-                            if let Err(e) = pin_object(&tmp, pin).and_then(|()| std::fs::rename(&tmp, obj)) {
-                                let _ = std::fs::remove_file(&tmp);
+                            if let Err(e) = tmp.require_nonempty().and_then(|()| pin_object(tmp.path(), pin)).and_then(|()| tmp.publish(obj)) {
                                 failures.lock().unwrap().push(format!("{}: {e}", obj.display()));
                             }
                         }
@@ -648,33 +643,40 @@ pub fn host_dylib(build: &Build, src_dir: &Path, extra: &[(&str, &str)], out: &P
     let mut args: Vec<PathBuf> = build.objects.clone();
     for (name, text) in extra {
         let src = src_dir.join(name);
-        std::fs::write(&src, text).map_err(err)?;
+        output::replace(&src, text.as_bytes()).map_err(err)?;
         let obj = src.with_extension("o");
+        let temporary = Temporary::new(&obj).map_err(err)?;
         let o = Command::new(&cc)
             .args(&flags)
             .args(["-target", build.arch.triple(), "-c"])
             .arg(&src)
             .arg("-o")
-            .arg(&obj)
-            .output()
-            .map_err(err)?;
+            .arg(temporary.path())
+            .output();
         // The bridge is not a generated shard: keep it out of later builds.
         let _ = std::fs::remove_file(&src);
+        let o = o.map_err(err)?;
         if !o.status.success() {
             return Err(Error(format!("{name}: {}", String::from_utf8_lossy(&o.stderr))));
         }
+        temporary.require_nonempty().map_err(err)?;
+        temporary.publish(&obj).map_err(err)?;
         args.push(obj);
     }
+    let temporary = Temporary::new(out).map_err(err)?;
     let o = Command::new(&cc)
-        .args(["-target", build.arch.triple(), "-dynamiclib", "-o"])
+        .args(["-target", build.arch.triple(), "-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
         .arg(out)
+        .arg("-o")
+        .arg(temporary.path())
         .args(&args)
         .output()
         .map_err(err)?;
     if !o.status.success() {
         return Err(Error(format!("linking dylib: {}", String::from_utf8_lossy(&o.stderr))));
     }
-    Ok(())
+    temporary.require_nonempty().map_err(err)?;
+    temporary.publish(out).map_err(err)
 }
 
 #[cfg(test)]
@@ -1022,6 +1024,69 @@ mod tests {
             }
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    #[test]
+    fn mutable_abi_bridge_and_libraries_detach_links_but_cached_objects_keep_them() {
+        use std::os::unix::fs::MetadataExt;
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED mutable_abi_bridge_and_libraries_detach_links_but_cached_objects_keep_them: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-hard-linked-native-{}", std::process::id()));
+        let src = tiny_tree(&dir);
+        let alias = |name: &str, destination: &Path| {
+            let sentinel = dir.join(format!("sentinel-{name}"));
+            std::fs::write(&sentinel, "sentinel\n").unwrap();
+            let _ = std::fs::remove_file(destination);
+            std::fs::hard_link(&sentinel, destination).unwrap();
+            sentinel
+        };
+        let intact = |sentinel: &Path, destination: &Path| {
+            assert_eq!(std::fs::read(sentinel).unwrap(), b"sentinel\n");
+            assert_ne!(std::fs::metadata(sentinel).unwrap().ino(), std::fs::metadata(destination).unwrap().ino());
+        };
+        let abi = alias("abi", &src.join("h2abi.h"));
+        let input = dir.join("input-abi.h");
+        std::fs::write(&input, "/* installed ABI */\n").unwrap();
+        install_header(&src, &input).unwrap();
+        intact(&abi, &src.join("h2abi.h"));
+        let out = dir.join("out");
+        std::fs::create_dir(&out).unwrap();
+        let archive = out.join(format!("libh2gen-{}.a", Arch::host().name()));
+        let archive_sentinel = alias("archive", &archive);
+        let first = build_with(&src, &out, Arch::host(), 1, &cc).unwrap();
+        intact(&archive_sentinel, &archive);
+        let object = std::fs::metadata(&first.objects[0]).unwrap();
+        let cached = std::fs::metadata(&first.cache_objects[0]).unwrap();
+        assert_eq!((object.dev(), object.ino()), (cached.dev(), cached.ino()));
+        assert!(object.nlink() >= 2, "object pins must remain hard links");
+        let source_sentinel = alias("bridge-source", &src.join("bridge.c"));
+        let object_sentinel = alias("bridge-object", &src.join("bridge.o"));
+        let dylib = out.join("host.dylib");
+        let dylib_sentinel = alias("dylib", &dylib);
+        host_dylib(&first, &src, &[("bridge.c", "int bridge_marker(void) { return 23; }\n")], &dylib).unwrap();
+        assert_eq!(std::fs::read(&source_sentinel).unwrap(), b"sentinel\n");
+        assert!(!src.join("bridge.c").exists());
+        intact(&object_sentinel, &src.join("bridge.o"));
+        intact(&dylib_sentinel, &dylib);
+        let identity = Command::new("otool").arg("-D").arg(&dylib).output().unwrap();
+        assert!(identity.status.success());
+        assert!(String::from_utf8_lossy(&identity.stdout).lines().any(|line| line == dylib.to_string_lossy()), "dylib install name must remain the final output path");
+        // SAFETY: both signatures and the linked synthetic definitions are
+        // known; all calls finish before the library is unloaded.
+        unsafe {
+            let library = libloading::Library::new(&dylib).unwrap();
+            let function: libloading::Symbol<unsafe extern "C" fn() -> i32> = library.get(b"h2_one").unwrap();
+            assert_eq!(function(), 1);
+            let bridge: libloading::Symbol<unsafe extern "C" fn() -> i32> = library.get(b"bridge_marker").unwrap();
+            assert_eq!(bridge(), 23);
+        }
+        let warm = build_with(&src, &out, Arch::host(), 1, &cc).unwrap();
+        assert_eq!((warm.compiled, warm.reused), (0, 1));
+        assert_eq!(warm.objects, first.objects);
+        assert_eq!(std::fs::metadata(&warm.cache_objects[0]).unwrap().ino(), object.ino());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// Another checkout pruning a shared cache to nothing between this

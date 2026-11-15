@@ -87,6 +87,26 @@ keep disk space alive until replaced by the next build, or `<out>` is
 removed. The size cap spares the current build even if it exceeds the cap.
 Delete completed output directories when disk space is tight.
 
+## Mutable files and hard links
+
+Changed generated C, support/ABI headers, manifests, receipts and bridge
+sources are written to an exclusively created sibling temporary, then
+renamed over the destination. This publishes a new inode rather than
+truncating an existing one, so an output hard-linked into a repository
+cannot change that repository file. Unchanged generated files keep their
+existing bytes and timestamps.
+
+Compiler objects, bridge objects, static archives and host dylibs are also
+produced at fresh reserved temporary paths before publication. Failed writes
+or tools leave the old destination intact and remove unfinished temporaries.
+A successful compiler action must produce nonempty output before it can be
+pinned or cached. Host dylibs retain the final output's install name.
+
+Content-keyed cached objects remain immutable after publication, with the
+existing hard links for pins and shared-cache reuse. Those links are not
+rejected or rewritten in place. Copy fallback across filesystems also uses
+a fresh temporary at its destination.
+
 ## Profiles and timing
 
 The default remains `H2_OPT=1 H2_DEBUG=lines`: `-O1 -gline-tables-only`,

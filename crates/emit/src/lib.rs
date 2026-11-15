@@ -45,6 +45,7 @@ pub mod backedge;
 pub mod c;
 pub mod compile;
 pub mod host;
+pub mod output;
 mod x87;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -241,7 +242,7 @@ fn write_if_changed(path: &Path, content: &str) -> io::Result<bool> {
     if std::fs::read(path).is_ok_and(|old| old == content.as_bytes()) {
         return Ok(false);
     }
-    std::fs::write(path, content)?;
+    output::replace(path, content.as_bytes())?;
     Ok(true)
 }
 

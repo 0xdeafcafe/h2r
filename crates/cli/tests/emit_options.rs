@@ -306,3 +306,72 @@ fn external_cache_descendants_and_dangling_output_aliases_are_rejected() {
     assert!(String::from_utf8_lossy(&result.stderr).contains("symlinked output entry"));
     assert!(!missing.exists());
 }
+
+#[cfg(unix)]
+#[test]
+fn mutable_generated_files_detach_hard_links_without_modifying_repository_files() {
+    use std::os::unix::fs::MetadataExt;
+    for relative in [
+        "src/h2gen.h",
+        "src/h2simd.h",
+        "src/h2x87.h",
+        "src/h2gen_registry.c",
+        "src/shard_00011.c",
+        "src/manifest.tsv",
+        "emit-cache-v1",
+    ] {
+        let sandbox = Sandbox::new("hard-linked-output");
+        assert!(
+            Command::new("git")
+                .args(["init", "-q"])
+                .arg(sandbox.0.join("repo"))
+                .status()
+                .unwrap()
+                .success()
+        );
+        std::fs::write(sandbox.0.join("image.xbe"), tiny_image()).unwrap();
+        let sentinel = sandbox.0.join("repo/sentinel.h");
+        std::fs::write(&sentinel, "sentinel\n").unwrap();
+        let out = sandbox.0.join("external");
+        let destination = out.join(relative);
+        std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+        std::fs::hard_link(&sentinel, &destination).unwrap();
+        assert_eq!(std::fs::metadata(&sentinel).unwrap().nlink(), 2);
+        let result = sandbox
+            .command()
+            .args(["--no-build", "--out"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{relative}: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "sentinel\n",
+            "{relative}"
+        );
+        assert_ne!(
+            std::fs::metadata(&sentinel).unwrap().ino(),
+            std::fs::metadata(&destination).unwrap().ino(),
+            "{relative}"
+        );
+        assert_ne!(
+            std::fs::read(&destination).unwrap(),
+            b"sentinel\n",
+            "{relative}"
+        );
+        // The newly detached tree also remains a normal warm emission hit.
+        let warm = sandbox
+            .command()
+            .args(["--no-build", "--out"])
+            .arg(&out)
+            .output()
+            .unwrap();
+        assert!(warm.status.success());
+        assert!(String::from_utf8_lossy(&warm.stdout).contains(", hit"));
+        assert_eq!(std::fs::read_to_string(&sentinel).unwrap(), "sentinel\n");
+    }
+}

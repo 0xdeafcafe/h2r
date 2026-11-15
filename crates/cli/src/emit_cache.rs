@@ -82,11 +82,7 @@ pub fn invalidate(out: &Path) -> io::Result<()> {
 /// Publish only after every generated file is written successfully.
 pub fn record(out: &Path, key: &str) -> io::Result<()> {
     let text = format!("{key}{}", snapshot(&out.join("src"))?);
-    let tmp = out.join(format!("{RECEIPT}.{}.tmp", std::process::id()));
-    fs::write(&tmp, text)?;
-    fs::rename(&tmp, out.join(RECEIPT)).inspect_err(|_| {
-        let _ = fs::remove_file(&tmp);
-    })
+    emit::output::replace(&out.join(RECEIPT), text.as_bytes())
 }
 
 #[cfg(test)]
