@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
-  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N]
+  h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N] [--check]
   h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
@@ -15,7 +15,8 @@ const USAGE: &str = "usage:
   for frame need it (and must not share a data directory while running).
   It refuses to when the disc, image or --out lies inside what it would empty.
 `run` builds first when the dylib is missing or was built from another
-image or generator (its .stamp).";
+image or generator (its .stamp). `build --check` builds nothing: it exits 0
+when --out's dylib is current for this h2 and the image, 3 otherwise.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -31,6 +32,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut dsound = true;
     let mut xapi = true;
     let mut fresh = false;
+    let mut check = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -39,6 +41,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--data" => data = PathBuf::from(val()?),
             "--jobs" => jobs = val()?.parse()?,
             "--fresh-data" => fresh = true,
+            "--check" if cmd == "build" => check = true,
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
@@ -54,6 +57,11 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let disc = disc.or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from)).context(USAGE)?;
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
+    if check {
+        let current = boot::dylib_current(&xbe, &lib);
+        eprintln!("h2 build --check: {} is {}", lib.display(), if current { "current" } else { "out of date" });
+        std::process::exit(if current { 0 } else { 3 });
+    }
     if cmd == "build" || !boot::dylib_current(&xbe, &lib) {
         if cmd != "build" && lib.exists() {
             eprintln!("h2 run: {} was built from another image or generator; rebuilding", lib.display());

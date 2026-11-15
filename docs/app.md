@@ -175,25 +175,46 @@ How it works (crates/cli `follow.rs`):
   with the same arguments, plus `--out`, `--data` and the hidden
   `--follow-status FILE`). The first child is the `h2` you started, and the
   branch's head at startup is taken to be what it runs, so the first
-  update is the next commit. The child sits in its own process group: a
-  Ctrl-C in the terminal reaches only the supervisor, which stops the child
-  once with SIGTERM, cancels any build, and exits with the child's code.
+  update is the next commit. Every process the supervisor starts (the game,
+  build steps, git) runs in its own process group with SIGINT and SIGTERM
+  unblocked (the supervisor blocks them for its signal thread, and a
+  child would inherit that). A Ctrl-C in the terminal reaches only the
+  supervisor, which asks the game to stop with one SIGTERM, cancels any
+  build, and exits with the game's code. A second Ctrl-C sends the game's
+  group a second SIGTERM (`h2 play` then exits at once) and SIGKILL after
+  15 s. Nothing it started outlives it: the build's group gets SIGKILL 3 s
+  after its SIGTERM, and both are reaped before the supervisor exits and
+  drops its lock.
 - **Watching.** Every `--poll` seconds: `git fetch <remote> <branch>`, which
   only moves the remote-tracking ref, then `rev-parse`. With `--no-fetch` it
-  reads the local branch. A failed fetch is logged and the last fetched ref
-  is used.
+  reads the local branch. A failed fetch, or one with no answer in 2
+  minutes (prompts are off: `GIT_TERMINAL_PROMPT=0`), is logged and the
+  last fetched ref is used. The startup read runs on a thread too, so a
+  Ctrl-C during a hanging first fetch stops it and exits at once.
 - **Building.** One commit at a time. Heads that arrive mid-build queue, and
   the latest one wins. A commit that failed is not retried until the head
-  moves again. Each build runs in a detached worktree the supervisor owns
-  (`<cache>/checkout`, added with `git worktree add`, then `checkout
-  --force` and `clean` for later commits). It runs `nice -n 15 cargo build
+  moves again. If the branch rolls back (a force-push) to the running or the
+  ready build, the queue is dropped, the build in flight is discarded when
+  it finishes, and rolling back to the running build withdraws the offer.
+  A build the branch merely moved forward from is still offered while the
+  newer one builds. Each build runs in a detached worktree the supervisor
+  owns (`<cache>/checkout`, added with `git worktree add --force --detach`,
+  which only re-adds that path's own entry if its directory went missing;
+  there is no global `worktree prune`). Before reusing it (`checkout
+  --force`, then `clean`) it must be a real directory, not a symlink, at
+  exactly `<cache>/checkout`, the top of its work tree, registered in the
+  repository's `git worktree list` at that path as a linked worktree (not
+  the main checkout), with the repository's git dir. Anything else there is
+  refused and left alone. It runs `nice -n 15 cargo build
   --release -p cli` with `CARGO_TARGET_DIR=<cache>/target`, and
   `CARGO_BUILD_JOBS` set to half the cores unless you have set it.
   `RUSTC_WRAPPER` (sccache) and the rest of your environment pass through.
-  The generated game is rebuilt (`nice h2 build <disc> --out
-  <cache>/gen/<hash>`) only when the commit touches the generator (xbe,
-  analyze, lift, ir, emit, x87, simd, or `runtime/include`; `GEN_INPUTS`).
-  Otherwise the previous dylib is reused, starting with the first child's
+  The new `h2` decides whether the newest generated game is still its own:
+  `h2 build <disc> --out <previous> --check` compares the dylib's `.stamp`
+  (image hash, generator sources hash including the boot bridge, module
+  ABI: `boot::build_stamp`) with its own. If not (or the `h2` is too old to
+  know `--check`), the game is generated again with `nice h2 build <disc>
+  --out <cache>/gen/<hash>`. The first previous game is the first child's
   `--out`. Objects go to `H2_OBJ_CACHE`, which defaults to
   `<cache>/objcache` and persists, so an emit only compiles C that changed.
   The finished `h2` is copied to `<cache>/builds/<hash>/`. Builds and gen
@@ -221,12 +242,29 @@ How it works (crates/cli `follow.rs`):
   ref and the cache worktree's entry under `.git/worktrees`. Generated code,
   builds and logs stay in the cache: `logs/follow.log` holds the
   supervisor's events, and `logs/build-<hash>.log` holds each build's cargo
-  and emit output. A lock file allows only one follower per cache. To
+  and emit output. A lock file allows only one follower per cache. Pruning
+  only touches `<cache>/builds` and `<cache>/gen` when they are plain
+  directories, and unlinks (never follows) symlinks inside them. To
   remove it all: `git worktree remove --force <cache>/checkout`, then
   delete the cache dir.
 
 Tests: `follow.rs` unit-tests the state machine (idle, building, ready,
-failed, restart, queueing, close and interrupt). It also runs the event
+failed, restart, queueing, rollbacks, close and interrupt). Against scratch
+repositories and plain shell processes (no game, no cargo), it checks:
+
+- a checkout symlinked to the user's checkout, the user's main checkout at
+  the cache path, and a foreign repository there are all refused, with the
+  user's edits, untracked files and branch intact;
+- the first build leaves another worktree's missing entry alone, and
+  re-adds its own;
+- a build step started from a thread with the signals blocked still dies
+  of SIGTERM;
+- a cancel stops a step that ignores SIGTERM, and its background children,
+  within the grace period, and a cancel before the spawn starts nothing;
+- a second interrupt kills and reaps a game child that ignores SIGTERM
+  before `drive` returns;
+- a hanging fetch times out to the last fetched ref, and an interrupt
+  during the startup fetch ends it at once. It also runs the event
 loop with a fake builder and a fake child: build, F5, failure, fix, F5,
 close. The status file format, the first-error pick and the argument split
 are covered too. An ignored test (`cargo test -p cli --bin h2 -- --ignored
@@ -234,12 +272,14 @@ real_builder`) drives the real git, cargo, worktree and child code against
 a scratch repository whose `cli` crate is a stand-in `h2`:
 
 - the branch moves;
-- the build regenerates because `crates/emit` changed;
+- the build generates the game because the previous one's stamp is not the
+  new `h2`'s;
 - a script child waits for "ready" and exits 75;
 - the new build runs with the expected arguments;
 - the user checkout stays clean;
 - a broken commit reports `error[E0308]`;
-- an h2-only commit reuses the generated game;
+- an h2-only commit reuses the generated game (`--check` passes);
+- a bridge-only commit, whose `h2` sources are unchanged, generates it again;
 - a clone follows its origin by fetching.
 
 `app::overlay` tests dismissal, the restart offer and rasterising. A GPU test
