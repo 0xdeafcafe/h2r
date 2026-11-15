@@ -68,8 +68,15 @@ configuration options and macro values retain their full contents.
 The compiler's working directory is pinned too (`-fdebug-compilation-dir=.`
 and `-fcoverage-compilation-dir=.`). Clang otherwise puts its cwd in the `-###`
 command, so a build started from another checkout or shell directory keyed
-every object differently and reused none of a shared `H2_OBJ_CACHE`. Debug
-line tables still name the generating output's source path.
+every object differently and reused none of a shared `H2_OBJ_CACHE`.
+Debug info names sources relative to their directory
+(`-fdebug-prefix-map=<abs src>=.`, so `./shard_NNNNN.c`). Before, an
+object a shared cache handed to another output still named the absolute
+source path of the output that first compiled it, and once that output
+was deleted the profiler lost every instruction (`perf::symbolize` reads
+the shard sources for its markers). The flag is left out of the key on
+purpose, since every tree maps to the same `.`; a constant in the key
+retires objects built under the old naming.
 These keys supersede earlier header-only keys, so existing objects rebuild
 once without requiring a manual cache clear.
 A change confined to one shard recompiles that shard. Sources use stable

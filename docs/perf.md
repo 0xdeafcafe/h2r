@@ -74,7 +74,11 @@ so a PC whose symbol has that name belongs to the guest function at
 default `H2_DEBUG=lines`. The PC gives a C source line, and the nearest
 `/* 0x........ */` marker at or above that line in the same shard is the
 instruction (emit's `c.rs` writes one before every instruction's block). So
-no sidecar map is needed. With `H2_DEBUG=none`, or once the shard sources
+no sidecar map is needed. Line tables name the shard relative to its source
+directory (`./shard_NNNNN.c`, docs/BUILD-CACHE.md), which the symbolizer
+reads from `src/` beside the dylib: the layout `h2 emit`, boot and the hot
+loops all use. Objects shared through `H2_OBJ_CACHE` therefore resolve
+against the output that loaded them, not the one that compiled them. With `H2_DEBUG=none`, or once the shard sources
 or objects are deleted, samples still resolve to the guest function but not
 to the instruction.
 

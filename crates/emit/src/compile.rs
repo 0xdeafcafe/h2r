@@ -273,10 +273,18 @@ pub fn toolchain_identity_with(
     s
 }
 
+/// How [`build_in`] names sources in objects' debug info. Part of every
+/// key, so objects written under an older scheme are never reused. 2:
+/// relative to the source directory ([`source_prefix_map`]); before, the
+/// generating output's absolute path, which a shared cache handed to every
+/// other output.
+const DEBUG_PATHS: &[u8] = b"debug paths 2: source-relative";
+
 /// The part of every object's cache key shared by all sources of one
 /// build: support headers, flags, target, toolchain.
 pub fn common_key(h2gen: &[u8], h2abi: &[u8], arch: Arch, flags: &[String], toolchain: &str) -> u64 {
-    let mut common = h2gen.to_vec();
+    let mut common = DEBUG_PATHS.to_vec();
+    common.extend(h2gen);
     common.extend(h2abi);
     common.extend(flags.join(" ").as_bytes());
     common.extend(arch.triple().as_bytes());
@@ -480,6 +488,21 @@ pub fn archive(library: &Path, objects: &[PathBuf]) -> Result<(), Error> {
     tmp.publish(library).map_err(err)
 }
 
+/// The absolute source directory and the clang flag that names it `.` in
+/// debug info. An object's line tables then name `./shard_NNNNN.c`, the
+/// same from every output directory, so an object a shared `H2_OBJ_CACHE`
+/// hands to another output does not point at the output that compiled it
+/// (which may since be deleted or regenerated). Consumers resolve the name
+/// against the source directory they built from: `perf::symbolize` uses
+/// `src/` beside the dylib.
+fn source_prefix_map(src_dir: &Path) -> Result<(PathBuf, OsString), Error> {
+    let abs = std::path::absolute(src_dir).map_err(|e| err(format!("{}: {e}", src_dir.display())))?;
+    let mut flag = OsString::from("-fdebug-prefix-map=");
+    flag.push(abs.as_os_str());
+    flag.push("=.");
+    Ok((abs, flag))
+}
+
 /// [`build_with`] keeping objects in `obj_dir`.
 ///
 /// Every object of the build is pinned in `out_dir/pin/<arch>` (a hard
@@ -500,6 +523,7 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
     let support = [read("h2gen.h")?, read("h2simd.h")?, read("h2x87.h")?, read("h2fastmem.h")?].concat();
     let flags = cflags()?;
     let common = common_key(&support, &read("h2abi.h")?, arch, &flags, &toolchain_identity(cc));
+    let (src_abs, prefix_map) = source_prefix_map(src_dir)?;
 
     let mut sources: Vec<PathBuf> = std::fs::read_dir(src_dir)
         .map_err(err)?
@@ -591,10 +615,12 @@ pub fn build_in(src_dir: &Path, out_dir: &Path, obj_dir: &Path, arch: Arch, jobs
                             continue;
                         }
                     };
+                    // Not in the key: every tree maps to the same `.`.
                     let out = Command::new(cc)
                         .args(&flags)
+                        .arg(&prefix_map)
                         .args(["-target", arch.triple(), "-c"])
-                        .arg(src)
+                        .arg(src_abs.join(src.file_name().unwrap()))
                         .arg("-o")
                         .arg(tmp.path())
                         .output();
@@ -1013,6 +1039,34 @@ mod tests {
         std::fs::write(dir.join("cwd"), cwd_b.to_str().unwrap()).unwrap();
         let second = build_in(&b, &dir.join("out-b"), &cache, Arch::host(), 1, &wrapper).unwrap();
         assert_eq!((second.compiled, second.reused), (0, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shared cache hands one output's objects to another, so an object
+    /// must not name the directory it was compiled from: its line tables
+    /// name sources relative to the source directory. Otherwise the second
+    /// output's profiler reads the first output's sources, or none once
+    /// they are deleted.
+    #[test]
+    fn objects_do_not_name_the_source_directory_they_were_built_from() {
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED objects_do_not_name_the_source_directory_they_were_built_from: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-debug-paths-{}", std::process::id()));
+        let src = tiny_tree(&dir.join("first-output"));
+        let b = build_in(&src, &dir.join("out"), &dir.join("cache"), Arch::host(), 1, &cc).unwrap();
+        let object = std::fs::read(&b.objects[0]).unwrap();
+        let has = |needle: &[u8]| object.windows(needle.len()).any(|w| w == needle);
+        if !has(b"one.c") {
+            eprintln!("SKIPPED objects_do_not_name_the_source_directory_they_were_built_from: no debug info (H2_DEBUG=none?)");
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+        for d in [src.clone(), std::fs::canonicalize(&src).unwrap()] {
+            let d = d.to_string_lossy().into_owned();
+            assert!(!has(d.as_bytes()), "{} names {d}", b.objects[0].display());
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

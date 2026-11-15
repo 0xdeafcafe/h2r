@@ -5,7 +5,8 @@
 //! function at `<entry>`. The instruction comes from the line tables the
 //! default `H2_DEBUG=lines` build keeps: the PC's C source line, then the
 //! nearest `/* 0x........ */` instruction marker at or above that line in
-//! the same shard (emit's `c.rs` writes one before every instruction). No
+//! the same shard (emit's `c.rs` writes one before every instruction),
+//! read from `src/` beside the dylib (see [`source_path`]). No
 //! sidecar is needed while the shard sources and objects exist; with
 //! `H2_DEBUG=none`, or once they are deleted, samples still resolve to the
 //! guest function, just not the instruction.
@@ -209,6 +210,22 @@ pub fn insn_at(markers: &[Marker], line: u32, function: u32) -> Option<u32> {
     let i = markers.partition_point(|m| m.line <= line);
     let m = markers.get(i.checked_sub(1)?)?;
     (m.function == function).then_some(m.pc)
+}
+
+/// Where the C source a generated image's line tables name lives. emit
+/// names sources relative to their source directory (`./shard_NNNNN.c`),
+/// so an object shared through `H2_OBJ_CACHE` never points at the output
+/// that first compiled it; every builder (`h2 emit`, boot, the perf hot
+/// loops) keeps that directory as `src/` beside the dylib. An absolute
+/// name (an object from an older emit) is taken as it is.
+pub fn source_path(image: &Path, file: &Path) -> PathBuf {
+    if file.is_absolute() {
+        return file.to_path_buf();
+    }
+    let dir = image.parent().unwrap_or(Path::new("")).join("src");
+    file.components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .fold(dir, |p, c| p.join(c))
 }
 
 /// Strip the Mach-O underscore and demangle a Rust symbol (no hash).
@@ -438,7 +455,8 @@ impl Symbolizer {
                 });
                 Frame::Guest {
                     function,
-                    insn: c_line.and_then(|(f, l)| self.insn(&f, l, function)),
+                    insn: c_line
+                        .and_then(|(f, l)| self.insn(&source_path(&dl.path, &f), l, function)),
                 }
             }
             None => Frame::Host {
@@ -504,6 +522,18 @@ mod tests {
         assert_eq!(insn_at(&m, 13, 0x2000), Some(0x2000));
         // A line attributed to the wrong function gives nothing.
         assert_eq!(insn_at(&m, 13, 0x1000), None);
+    }
+
+    #[test]
+    fn relative_sources_resolve_beside_the_image() {
+        let lib = Path::new("/out/libh2gen-host.dylib");
+        let want = PathBuf::from("/out/src/shard_00401.c");
+        assert_eq!(source_path(lib, Path::new("./shard_00401.c")), want);
+        assert_eq!(source_path(lib, Path::new("shard_00401.c")), want);
+        assert_eq!(
+            source_path(lib, Path::new("/elsewhere/src/shard_00401.c")),
+            PathBuf::from("/elsewhere/src/shard_00401.c")
+        );
     }
 
     #[test]

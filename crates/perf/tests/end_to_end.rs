@@ -188,6 +188,46 @@ fn modules_loaded_later_resolve_and_rebuild_safely() {
     }
 }
 
+/// Objects from a shared cache still give instructions after the work
+/// directory that first compiled them is gone: line tables name sources
+/// relative to their directory, and the symbolizer reads this build's.
+#[cfg(target_os = "macos")]
+#[test]
+fn instructions_resolve_from_objects_another_output_compiled() {
+    if !have_clang() {
+        return;
+    }
+    let root = Path::new(env!("CARGO_TARGET_TMPDIR")).join("perf-e2e-shared-cache");
+    let _ = std::fs::remove_dir_all(&root);
+    let cache = root.join("cache");
+    let first = root.join("first");
+    drop(hotloop::build_in(&first, &cache).unwrap());
+    std::fs::remove_dir_all(&first).unwrap();
+    let m = hotloop::build_in(&root.join("second"), &cache).unwrap();
+    m.call(hotloop::ALU, 3).unwrap();
+    let base = m.handler_address(hotloop::ALU).unwrap();
+    let mut s = Symbolizer::new();
+    let insns: Vec<u32> = (0..256)
+        .step_by(4)
+        .filter_map(|off| match s.resolve(base + off) {
+            Frame::Guest {
+                function,
+                insn: Some(i),
+            } if function == hotloop::ALU => Some(i),
+            _ => None,
+        })
+        .collect();
+    assert!(!insns.is_empty(), "no instructions in {:#x}", hotloop::ALU);
+    assert!(
+        insns
+            .iter()
+            .all(|&i| (hotloop::ALU..hotloop::ALU + 0x40).contains(&i)),
+        "{insns:x?}"
+    );
+    drop(m);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// The first bytes of a handler (prologue, selector switch) never take the
 /// previous function's last instruction from the line tables.
 #[cfg(target_os = "macos")]

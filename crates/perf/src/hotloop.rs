@@ -215,7 +215,13 @@ pub struct Module {
 
 /// Build (or reuse, through emit's object cache) the loops under `work`.
 pub fn build(work: &Path) -> Result<Module> {
-    emit::compile::compiler().map_err(|e| anyhow!("no C compiler: {e}"))?;
+    build_in(work, &emit::compile::obj_dir(&work.join("hot-loop")))
+}
+
+/// [`build`] with emit's objects kept in `objects` (a cache that may be
+/// shared with other work directories, like `H2_OBJ_CACHE`).
+pub fn build_in(work: &Path, objects: &Path) -> Result<Module> {
+    let cc = emit::compile::compiler().map_err(|e| anyhow!("no C compiler: {e}"))?;
     let dir = work.join("hot-loop");
     let src = dir.join("src");
     let owners = emit::plan(guest_functions()?);
@@ -225,8 +231,15 @@ pub fn build(work: &Path) -> Result<Module> {
     std::fs::write(&header, H2ABI_H)?;
     emit::compile::install_header(&src, &header).map_err(|e| anyhow!("{e}"))?;
     let arch = emit::compile::Arch::host();
-    let b = emit::compile::build(&src, &dir, arch, emit::compile::default_jobs())
-        .map_err(|e| anyhow!("{e}"))?;
+    let b = emit::compile::build_in(
+        &src,
+        &dir,
+        objects,
+        arch,
+        emit::compile::default_jobs(),
+        &cc,
+    )
+    .map_err(|e| anyhow!("{e}"))?;
     // A new name per build: rewriting a dylib another Module still has
     // mapped would corrupt that one's code pages.
     static BUILDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
