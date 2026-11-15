@@ -38,6 +38,21 @@ const QUERY_WAIT: u32 = CODE + 0x7000;
 /// `sleep_set(flag)` (stdcall, a Rust override): sleep for the machine's
 /// delay of logical time, then `*flag = 1`.
 const SLEEP_SET: u32 = CODE + 0x300;
+/// `vblank_callback(record)` (cdecl), the shape of Halo's `0x12b2a0` ->
+/// `0x14280`: count the vblank in `VCOUNT`; when the record's Swap differs
+/// from `LAST_SWAP`, keep it there and note the count in `SWAP_AT`.
+const VBLANK_CALLBACK: u32 = CODE + 0x8000;
+/// `vblank_wait(n)` (stdcall): spin, calling nothing, until `VCOUNT >= n`
+/// (the frame wait's loop at `0x12b330`); return `VCOUNT`.
+const VBLANK_WAIT: u32 = CODE + 0x9000;
+/// `swap_wait(n)` (stdcall): spin until `LAST_SWAP >= n`; return `SWAP_AT`.
+const SWAP_WAIT: u32 = CODE + 0xA000;
+/// `yield_wait(n)` (stdcall): as `vblank_wait`, calling NtYieldExecution
+/// every trip.
+const YIELD_WAIT: u32 = CODE + 0xB000;
+const VCOUNT: u32 = DATA + 0x200;
+const LAST_SWAP: u32 = DATA + 0x204;
+const SWAP_AT: u32 = DATA + 0x208;
 const FLAG: u32 = DATA + 0x40;
 const COUNTER: u32 = DATA + 0x80;
 const DELAY: u32 = DATA + 0x120;
@@ -176,7 +191,66 @@ fn guest_functions() -> Vec<ir::IrFunction> {
         a.mov(eax, 1)?;
         a.ret()
     });
-    vec![spin, set, wait, count_wait, tsc_wait, count_up, query_wait]
+    let vblank_callback = function(VBLANK_CALLBACK, |a| {
+        let mut done = a.create_label();
+        a.mov(eax, dword_ptr(esp + 4))?;
+        a.inc(dword_ptr(VCOUNT))?;
+        a.mov(ecx, dword_ptr(eax + 4))?;
+        a.cmp(ecx, dword_ptr(LAST_SWAP))?;
+        a.je(done)?;
+        a.mov(dword_ptr(LAST_SWAP), ecx)?;
+        a.mov(edx, dword_ptr(VCOUNT))?;
+        a.mov(dword_ptr(SWAP_AT), edx)?;
+        a.set_label(&mut done)?;
+        a.ret()
+    });
+    let vblank_wait = function(VBLANK_WAIT, |a| {
+        let mut poll = a.create_label();
+        a.mov(ecx, dword_ptr(esp + 4))?;
+        a.set_label(&mut poll)?;
+        a.cmp(dword_ptr(VCOUNT), ecx)?;
+        a.jb(poll)?;
+        a.mov(eax, dword_ptr(VCOUNT))?;
+        a.ret_1(4)
+    });
+    let swap_wait = function(SWAP_WAIT, |a| {
+        let mut poll = a.create_label();
+        a.mov(ecx, dword_ptr(esp + 4))?;
+        a.set_label(&mut poll)?;
+        a.cmp(dword_ptr(LAST_SWAP), ecx)?;
+        a.jb(poll)?;
+        a.mov(eax, dword_ptr(SWAP_AT))?;
+        a.ret_1(4)
+    });
+    let yield_wait = function(YIELD_WAIT, |a| {
+        let mut poll = a.create_label();
+        let mut done = a.create_label();
+        a.push(ebx)?;
+        a.mov(ebx, dword_ptr(esp + 8))?;
+        a.cmp(dword_ptr(VCOUNT), ebx)?;
+        a.jae(done)?;
+        a.set_label(&mut poll)?;
+        a.call(runtime::kernel::function_token(238) as u64)?; // NtYieldExecution
+        a.cmp(dword_ptr(VCOUNT), ebx)?;
+        a.jb(poll)?;
+        a.set_label(&mut done)?;
+        a.mov(eax, dword_ptr(VCOUNT))?;
+        a.pop(ebx)?;
+        a.ret_1(4)
+    });
+    vec![
+        spin,
+        set,
+        wait,
+        count_wait,
+        tsc_wait,
+        count_up,
+        query_wait,
+        vblank_callback,
+        vblank_wait,
+        swap_wait,
+        yield_wait,
+    ]
 }
 
 /// emit's test bridge (`c/bridge.c`) forwards the ABI imports through this
@@ -628,4 +702,179 @@ fn charges_coalesce_only_until_another_advance() {
     clock.charge(4);
     assert_eq!(clock.advances(), [5, 10, 15]);
     assert_eq!(clock.counter(), 15);
+}
+
+/// Deadline `n` of a source at `hz`: `ceil(n * 10 MHz / hz)` ticks.
+fn deadline_at(hz: u64, n: u64) -> u64 {
+    (n * 10_000_000).div_ceil(hz)
+}
+
+fn vblank_deadline(n: u64) -> u64 {
+    deadline_at(60, n)
+}
+
+/// The spin tests run their "display" at 6 kHz: a spin works its way to
+/// every deadline at `ACCESSES_PER_TICK`, 16.7 million accesses for one
+/// 60 Hz vblank, which an unoptimised test runtime takes seconds over.
+/// The shape is the same at any rate.
+const FAST: u64 = 6_000;
+
+/// Swaps so far (the `swap` override bumps it) and the `missed` count each
+/// delivery saw.
+#[derive(Clone, Default)]
+struct Display {
+    swaps: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    missed: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+}
+
+/// A 60 Hz source standing in for D3D's: `{VBlank, Swap, Flags}` in the
+/// scratch area, `VBLANK_CALLBACK(&record)` (cdecl).
+fn vblank_source(display: &Display, max_catch_up: u32) -> kernel::periodic::Source {
+    vblank_source_at(display, max_catch_up, kernel::periodic::Rate::HZ_60)
+}
+
+fn vblank_source_at(
+    display: &Display,
+    max_catch_up: u32,
+    rate: kernel::periodic::Rate,
+) -> kernel::periodic::Source {
+    let display = display.clone();
+    let (mut vblanks, mut last_swap) = (0u32, 0u32);
+    kernel::periodic::Source {
+        name: "test vblank",
+        rate,
+        max_catch_up,
+        handler: Box::new(move |guest, scratch, missed| {
+            vblanks += 1 + missed as u32;
+            let swap = display.swaps.load(std::sync::atomic::Ordering::SeqCst);
+            let flags = (swap != last_swap) as u32;
+            last_swap = swap;
+            guest.set_u32(scratch, vblanks)?;
+            guest.set_u32(scratch + 4, swap)?;
+            guest.set_u32(scratch + 8, flags)?;
+            display.missed.lock().unwrap().push(missed);
+            Ok(Some(runtime::GuestInterrupt {
+                target: VBLANK_CALLBACK,
+                args: vec![scratch],
+                convention: runtime::CallConvention::Cdecl,
+                thread: None,
+                coalesce: false,
+                name: "test vblank",
+            }))
+        }),
+    }
+}
+
+#[test]
+fn a_spin_on_the_vblank_count_ends_at_that_vblank_on_the_logical_clock() {
+    let Some(lib) = module() else { return };
+    // The frame wait's shape: a loop that calls nothing, waiting for the
+    // callback to count three vblanks. Its own work carries the clock to
+    // each deadline, and the callback runs at the next slice boundary.
+    let h = alone(lib, VBLANK_WAIT, vec![3], 0);
+    let display = Display::default();
+    let rate = kernel::periodic::Rate { num: FAST, den: 1 };
+    let id = h
+        .kernel
+        .add_periodic(vblank_source_at(&display, 4, rate))
+        .unwrap();
+    let mut m = machine_of(&h);
+    m.preempt_slice = Some(4096);
+    assert_eq!(
+        m.run(100_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 3)].into()
+        }
+    );
+    let ticks = m.kernel.clock().counter();
+    let slice = 4096 / kernel::threads::ACCESSES_PER_TICK + 1;
+    assert!(
+        (deadline_at(FAST, 3)..deadline_at(FAST, 3) + slice).contains(&ticks),
+        "{ticks}"
+    );
+    let stats = m.kernel.periodic_stats(id).unwrap();
+    assert_eq!((stats.delivered, stats.dropped), (3, 0));
+    assert_eq!(stats.next_deadline, deadline_at(FAST, 4));
+    assert_eq!(*display.missed.lock().unwrap(), [0, 0, 0]);
+    assert!(m.preemptions() > 100, "{}", m.preemptions());
+    // DPCs ran on their own context, between the spinner's slices.
+    assert!(m.schedule().contains(&kernel::threads::DPC_THREAD_ID));
+}
+
+#[test]
+fn a_yielding_vblank_wait_jumps_straight_to_each_deadline() {
+    let Some(lib) = module() else { return };
+    // Alone and yielding, the thread is polling: the clock jumps to the
+    // next vblank instead of being worked through, and lands exactly on it.
+    let h = alone(lib, YIELD_WAIT, vec![3], 0);
+    let display = Display::default();
+    h.kernel.add_periodic(vblank_source(&display, 4)).unwrap();
+    let mut m = machine_of(&h);
+    assert_eq!(
+        m.run(1_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 3)].into()
+        }
+    );
+    assert_eq!(m.kernel.clock().counter(), vblank_deadline(3));
+    assert_eq!(m.preemptions(), 0);
+    assert_eq!(*display.missed.lock().unwrap(), [0, 0, 0]);
+}
+
+#[test]
+fn a_wait_for_a_swap_sees_it_at_the_next_vblank() {
+    let Some(lib) = module() else { return };
+    // Wait two vblanks, swap, then spin until the callback has seen the
+    // swap: it does at the third vblank, whose record says SWAPDONE.
+    let h = alone(lib, VBLANK_WAIT, vec![2], 0);
+    let display = Display::default();
+    let rate = kernel::periodic::Rate { num: FAST, den: 1 };
+    h.kernel
+        .add_periodic(vblank_source_at(&display, 4, rate))
+        .unwrap();
+    let swaps = display.swaps.clone();
+    h.code(0x110, move |cpu, ctx, _| {
+        swaps.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        guest_call(cpu, ctx, SWAP_WAIT, &[1], CODE + 0x120)
+    });
+    h.code(0x120, |cpu, ctx, _| ctx.memory().ret(cpu, 0));
+    let mut m = machine_of(&h);
+    m.preempt_slice = Some(4096);
+    assert_eq!(
+        m.run(100_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 3)].into()
+        }
+    );
+    assert_eq!(m.runtime.memory().u32(LAST_SWAP).unwrap(), 1);
+    let ticks = m.kernel.clock().counter();
+    assert!(
+        (deadline_at(FAST, 3)..deadline_at(FAST, 4)).contains(&ticks),
+        "{ticks}"
+    );
+}
+
+#[test]
+fn a_clock_jump_delivers_a_bounded_catch_up_and_reports_the_rest() {
+    let Some(lib) = module() else { return };
+    // A second passes with no wake pass in between: 60 periods due. Four
+    // are delivered back to back, the other 56 are dropped and reported to
+    // the first, and the spin for four vblanks ends at once.
+    let h = alone(lib, VBLANK_WAIT, vec![4], 0);
+    let display = Display::default();
+    let id = h.kernel.add_periodic(vblank_source(&display, 4)).unwrap();
+    h.kernel.advance_time(&h.runtime, 10_000_000).unwrap();
+    let mut m = machine_of(&h);
+    assert_eq!(
+        m.run(100).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 4)].into()
+        }
+    );
+    let stats = m.kernel.periodic_stats(id).unwrap();
+    assert_eq!((stats.delivered, stats.dropped), (4, 56));
+    assert_eq!(*display.missed.lock().unwrap(), [56, 0, 0, 0]);
+    assert_eq!(stats.next_deadline, vblank_deadline(61));
+    assert!(m.kernel.clock().counter() < 10_000_000 + 10);
+    assert_eq!(m.preemptions(), 0);
 }

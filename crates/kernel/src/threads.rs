@@ -6,7 +6,7 @@ use crate::{
     Action, Core, Error, Kernel,
     abi::{Args, Value},
     memory::round_up,
-    status,
+    periodic, status,
     sync::{self, Object, Wait},
     timers,
 };
@@ -102,8 +102,8 @@ pub struct Machine {
     /// Context of the most recent DPC routine, kept for stop inspection.
     dpc: Option<Thread>,
     dpc_stack_top: u32,
-    /// KDPCs already run in the current drain (since the last thread slice).
-    drained: BTreeSet<u32>,
+    /// DPCs already run in the current drain (since the last thread slice).
+    drained: BTreeSet<timers::Queued>,
     pub max_transfers_per_slice: u64,
     /// Guest memory accesses a thread may make before generated code gives
     /// up its slice at a loop header or transfer (`runtime::preempt`).
@@ -114,6 +114,9 @@ pub struct Machine {
     pub preempt_slice: Option<u64>,
     /// Slices that ended in preemption rather than a kernel call.
     preemptions: u64,
+    /// Holds the host back so logical time does not run ahead of wall time
+    /// (`crate::pacer`). None, the default, runs as fast as the host can.
+    pub pacer: Option<crate::pacer::Pacer>,
 }
 
 /// The rate at which executed guest work moves logical time: accesses by
@@ -218,6 +221,7 @@ impl Machine {
             max_transfers_per_slice: 1_000_000,
             preempt_slice: Some(runtime::preempt::DEFAULT_SLICE),
             preemptions: 0,
+            pacer: None,
         };
         machine.collect_threads()?;
         Ok(machine)
@@ -338,6 +342,12 @@ impl Machine {
         }
         for _ in 0..max_slices {
             self.collect_threads()?;
+            if let Some(pacer) = &mut self.pacer {
+                // Before any lock is taken: a host thread reading guest
+                // memory is not held up by the wait.
+                let now = self.kernel.lock().clock.counter();
+                pacer.wait(now);
+            }
             let tid = {
                 let mut core = self.kernel.lock();
                 let mut memory = self.runtime.memory();
@@ -351,10 +361,14 @@ impl Machine {
                     .values()
                     .any(|r| !matches!(r.state, State::Terminated(_)));
                 if live && core.dpcs.is_empty() && core.idle() {
-                    let deadline = core.next_deadline();
+                    let deadline = core.idle_deadline();
                     if let Some(deadline) = deadline {
                         core.clock.advance_to(deadline)?;
                         core.write_tick(&mut memory)?;
+                        // A new instant starts a new drain: a DPC run at
+                        // the last deadline (a periodic source's, say) may
+                        // run again for this one before any thread.
+                        self.drained.clear();
                         // The polling threads have had their idle time: each
                         // gets a slice before the clock may move again, so a
                         // periodic timer cannot keep the clock (and its DPC)
@@ -379,11 +393,20 @@ impl Machine {
                     core.dpcs.iter().position(|d| !self.drained.contains(d))
                 };
                 if live && let Some(index) = next {
-                    let call = core.take_dpc(&mut memory, index)?.expect("queued DPC");
-                    self.drained.insert(call.arguments[0]);
+                    let work = core.take_dpc(&mut memory, index)?.expect("queued DPC");
                     drop(memory);
                     drop(core);
-                    if let Some(outcome) = self.run_dpc(call)? {
+                    let outcome = match work {
+                        timers::DpcWork::Guest(call) => {
+                            self.drained.insert(timers::Queued::Kdpc(call.arguments[0]));
+                            self.run_dpc(call)?
+                        }
+                        timers::DpcWork::Host(id) => {
+                            self.drained.insert(timers::Queued::Host(id));
+                            self.run_periodic(id)?
+                        }
+                    };
+                    if let Some(outcome) = outcome {
                         return Ok(outcome);
                     }
                     continue;
@@ -536,27 +559,98 @@ impl Machine {
     /// restore the interrupted IRQL. Returns a stop outcome if the routine
     /// does not return.
     fn run_dpc(&mut self, call: timers::DpcCall) -> Result<Option<RunOutcome>, Error> {
+        self.run_on_dpc_stack(call.routine, &call.arguments, None, "DPC")
+    }
+    /// Deliver the periods periodic source `id` owes, one guest call each
+    /// (`crate::periodic`). The source's handler builds each call, with the
+    /// scratch area just above the arguments on the DPC stack.
+    fn run_periodic(&mut self, id: u32) -> Result<Option<RunOutcome>, Error> {
+        loop {
+            let (mut handler, missed, name) = {
+                let mut core = self.kernel.lock();
+                let Some(source) = core.periodic.get_mut(&id) else {
+                    return Ok(None);
+                };
+                if source.owed == 0 {
+                    return Ok(None);
+                }
+                let Some(handler) = source.handler.take() else {
+                    return Err(Error::Invalid("periodic handler re-entered"));
+                };
+                source.owed -= 1;
+                source.stats.delivered += 1;
+                (handler, std::mem::take(&mut source.missed), source.name)
+            };
+            let top = self.dpc_stack()?;
+            let scratch = top - periodic::SCRATCH_SIZE;
+            let built = handler(&mut self.runtime.memory(), scratch, missed);
+            if let Some(source) = self.kernel.lock().periodic.get_mut(&id) {
+                source.handler = Some(handler);
+            }
+            let Some(call) = built? else {
+                continue;
+            };
+            let words = call.args.len() as u32 * 4;
+            let esp = scratch - words;
+            let expected = match call.convention {
+                runtime::CallConvention::Cdecl => esp,
+                runtime::CallConvention::Stdcall => scratch,
+            };
+            let outcome = self.run_on_dpc_stack(call.target, &call.args, Some(expected), name)?;
+            if outcome.is_some() {
+                return Ok(outcome);
+            }
+        }
+    }
+    /// The DPC stack's top, allocated on first use.
+    fn dpc_stack(&mut self) -> Result<u32, Error> {
+        if self.dpc_stack_top == 0 {
+            let mut core = self.kernel.lock();
+            let base = core
+                .memory
+                .internal(&mut self.runtime.memory(), DPC_STACK_SIZE)
+                .map_err(Error::Resource)?;
+            self.dpc_stack_top = base + DPC_STACK_SIZE;
+        }
+        Ok(self.dpc_stack_top)
+    }
+    /// Call `routine(arguments)` on the DPC stack at DISPATCH_LEVEL, below
+    /// [`periodic::SCRATCH_SIZE`] bytes of scratch, then restore the
+    /// interrupted IRQL. With `expected_esp`, the routine must return with
+    /// that ESP: a mismatch faults with `Event::InterruptImbalance` naming
+    /// `name`. Returns a stop outcome if the routine does not return.
+    fn run_on_dpc_stack(
+        &mut self,
+        routine: u32,
+        arguments: &[u32],
+        expected_esp: Option<u32>,
+        name: &'static str,
+    ) -> Result<Option<RunOutcome>, Error> {
         let mut cpu = CpuAbi::xbox_thread();
         let mut ctx = ExecCtx::new(Arc::clone(&self.runtime), DPC_THREAD_ID);
+        let top = self.dpc_stack()?;
         let (resume, old_irql) = {
             let mut core = self.kernel.lock();
             let mut memory = self.runtime.memory();
-            if self.dpc_stack_top == 0 {
-                let base = core
-                    .memory
-                    .internal(&mut memory, DPC_STACK_SIZE)
-                    .map_err(Error::Resource)?;
-                self.dpc_stack_top = base + DPC_STACK_SIZE;
-            }
             cpu.fs_base = core.kpcr;
-            cpu.esp = self.dpc_stack_top - 16;
-            for (i, argument) in call.arguments.iter().enumerate() {
+            cpu.esp = top - periodic::SCRATCH_SIZE - arguments.len() as u32 * 4;
+            for (i, argument) in arguments.iter().enumerate() {
                 memory.set_u32(cpu.esp + i as u32 * 4, *argument)?;
             }
             core.dpc_complete = false;
             let old_irql = core.dispatch_level(&mut memory)?;
             let kernel = Arc::clone(&self.kernel);
-            let resume = ctx.call_guest(&mut cpu, &mut memory, call.routine, move |_, _| {
+            let resume = ctx.call_guest(&mut cpu, &mut memory, routine, move |cpu, ctx| {
+                if let Some(expected_esp) = expected_esp
+                    && cpu.esp != expected_esp
+                {
+                    return Ok(TransferAbi::fault(ctx.emit(Event::InterruptImbalance {
+                        name,
+                        target: routine,
+                        expected_esp,
+                        actual_esp: cpu.esp,
+                    })));
+                }
                 kernel.lock().dpc_complete = true;
                 Ok(TransferAbi::stop(0))
             })?;
@@ -637,6 +731,20 @@ impl Core {
             .map(|id| &self.threads[id])
             .filter(|r| r.priority >= floor)
             .all(|r| r.polling)
+    }
+    /// Where an idle advance goes: the next sleep, wait or timer deadline,
+    /// or a periodic deadline before it. A periodic source alone moves the
+    /// clock only for ready (polling) threads: with none ready and no other
+    /// deadline the machine still reports Deadlock rather than ticking
+    /// vblanks forever.
+    fn idle_deadline(&self) -> Option<u64> {
+        let now = self.clock.counter();
+        let periodic = self.next_periodic_deadline().filter(|d| *d > now);
+        match self.next_deadline() {
+            Some(d) => Some(periodic.map_or(d, |p| p.min(d))),
+            None if !self.ready.is_empty() => periodic,
+            None => None,
+        }
     }
     fn next_deadline(&self) -> Option<u64> {
         self.threads
@@ -829,7 +937,10 @@ impl Core {
                 // that delivers and then resume this thread with
                 // NO_YIELD_PERFORMED; with none it returns at once.
                 let has_other = self.ready.iter().any(|other| *other != tid);
-                if !has_other && self.next_deadline().is_none() {
+                if !has_other
+                    && self.next_deadline().is_none()
+                    && self.next_periodic_deadline().is_none()
+                {
                     Action::status(status::NO_YIELD_PERFORMED)
                 } else {
                     memory.set_u8(self.threads[&tid].object + kthread::STATE, 1)?;

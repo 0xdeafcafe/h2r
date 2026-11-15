@@ -435,6 +435,9 @@ impl Core {
             self.wake_waiters(memory, |d| d < deadline)?;
             self.expire_next_timer(memory, now)?;
         }
+        // Periodic host sources signal nothing; their periods queue behind
+        // the timer DPCs above (`crate::periodic`).
+        self.fire_periodic(now);
         self.wake_waiters(memory, |d| d <= now)?;
         self.collect_objects();
         Ok(())

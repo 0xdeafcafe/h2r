@@ -101,11 +101,31 @@ impl Clock {
         self.epoch_100ns.checked_add(deadline).ok_or(ClockError)?;
         Ok(deadline)
     }
+    /// Whether the last history entry came from [`Clock::charge`], so the
+    /// next charge moves it instead of adding one. Record it with
+    /// [`Clock::advances`] to continue a replayed clock exactly
+    /// ([`Clock::resume`]).
+    pub fn charging(&self) -> bool {
+        self.charging
+    }
+    /// The clock `advances` leads to, every entry treated as an explicit
+    /// advance: the time is exact, but a later charge starts a new entry.
+    /// The timestamps alone cannot tell an explicit advance from a charge;
+    /// [`Clock::resume`] takes that bit too.
     pub fn replay(epoch: u64, advances: &[u64]) -> Result<Self, ClockError> {
         let mut clock = Self::new(epoch);
         for &ticks in advances {
             clock.advance_to(ticks)?;
         }
+        Ok(clock)
+    }
+    /// [`Clock::replay`], then restore the coalescing mode the original had
+    /// ([`Clock::charging`]), so later charges group into history entries
+    /// exactly as they would have on the original. Ignored for an empty
+    /// history, which has no entry to move.
+    pub fn resume(epoch: u64, advances: &[u64], charging: bool) -> Result<Self, ClockError> {
+        let mut clock = Self::replay(epoch, advances)?;
+        clock.charging = charging && !advances.is_empty();
         Ok(clock)
     }
 }

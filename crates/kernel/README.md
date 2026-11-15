@@ -285,7 +285,10 @@ runs until the queue is empty, so a DPC that queues a different DPC has it run
 before any thread continues. Only a DPC that comes round again in the same drain
 (say by re-arming its own timer due now) stays queued until a ready thread has
 had a slice; DPCs queued behind it still run first, in order. So DPC delivery
-cannot starve a thread either. They run on a 16 KiB kernel stack, under
+cannot starve a thread either. An idle advance starts a new drain: a DPC
+that ran at the previous deadline runs again at the next one before the
+thread that deadline wakes (a periodic timer or vblank landing on a sleeper's
+deadline). They run on a 16 KiB kernel stack, under
 ExecCtx thread `threads::DPC_THREAD_ID` (0) at DISPATCH_LEVEL; the interrupted
 IRQL is restored when the routine returns. A routine that blocks, delays,
 yields or needs a KTHREAD stops: `RunOutcome::Stopped { thread: 0, .. }`,
@@ -306,6 +309,83 @@ KeSetEvent/KeReleaseSemaphore WaitNext handoffs stop. Dispatcher wait-list block
 are held in Rust; only the documented guest header/state fields are maintained.
 SEH chain storage works, but exception dispatch/unwind stays stopped.
 
+## Periodic host interrupts and pacing
+
+`kernel::periodic` delivers a host device's periodic interrupt on logical
+time; the display's vertical blank is the one that matters. On the Xbox the
+GPU interrupt's DPC calls the D3D vblank callback 60 times a second, and
+Halo's frame time comes from counting them (`0x12b0e0` divides the vblanks
+since the last frame by the word at `0x485AC0`, 60 when unset), so the
+count has to follow the same clock as KeTickCount and the timers.
+
+```rust,ignore
+let id = kernel.add_periodic(kernel::periodic::Source {
+    name: "vblank",
+    rate: kernel::periodic::Rate::HZ_60,           // or NTSC (59.94), PAL
+    max_catch_up: 4,
+    handler: Box::new(d3d::vblank::clocked_vblanks(device.clone())),
+})?;
+kernel.periodic_stats(id);  // delivered, dropped, next_deadline
+kernel.remove_periodic(id);
+```
+
+- **Deadlines.** Period `n` is due at `origin + ceil(n * 10 MHz / rate)`,
+  `origin` being the time of `add_periodic`, so the count of periods always
+  matches elapsed logical time (no drift from rounding one period).
+- **Delivery.** The wake pass queues a due source on the DPC queue behind
+  the timer DPCs, once however many periods it owes. `Machine::run` drains
+  it like a KDPC, before the next thread slice: for each period the Rust
+  handler gets `(guest, scratch, missed)` and returns the guest call
+  (`runtime::GuestInterrupt`: target, arguments, cdecl or stdcall), which
+  runs on the DPC stack under `DPC_THREAD_ID` at DISPATCH_LEVEL with the
+  interrupted IRQL restored afterwards. `scratch` is 64 bytes on that stack
+  above the arguments, for a record the call points at (D3D's
+  `D3DVBLANKDATA`). A callback that returns with the wrong ESP for its
+  convention stops the DPC with `Event::InterruptImbalance`. The handler
+  runs with guest memory locked and kernel state unlocked and must not call
+  the kernel. A thread at DISPATCH_LEVEL or above holds delivery off, as on
+  the one Xbox CPU.
+- **Bounded catch-up.** Periods that come due between two wake passes (a
+  long slice kept at DISPATCH_LEVEL, `Kernel::advance_time`) are delivered
+  back to back up to `max_catch_up` (at least 1); the rest are dropped,
+  counted in `Stats::dropped`, and reported to the next delivery as
+  `missed` so a hardware-style counter can still count them. A stall never
+  becomes a burst of callbacks.
+- **Idle time.** A source's next deadline takes part in the idle advance
+  and in NtYieldExecution's poll, so a thread that waits by yielding (or
+  every thread polling) jumps straight to the next vblank, and a sleeping
+  machine steps through each vblank on the way to its wake-up. On its own
+  it never keeps a machine alive: with no ready thread and no other
+  deadline, `run` still reports Deadlock instead of ticking vblanks
+  forever.
+- **A spin on the count.** A generated loop that waits for the callback to
+  bump a counter (Halo's frame wait spins at `0x12b330`) gets there by
+  running: its charged work carries the clock to the deadline, the next
+  slice boundary runs the callback, and the loop sees it. That is exact
+  but costs a period's worth of charged accesses (16.7 million per 60 Hz
+  vblank), which is why D3D's frame-wait override yields instead
+  (`FrameWait::HALO2_CLOCKED`, docs/d3d.md "Vertical blank").
+
+Halo registers no swap callback: in device `+0x1DA0..+0x1E00` game code
+touches only `+0x1DB8`, and `+0x1DBC` is a KEVENT that only D3D's replaced
+display-mode path (`0x3f9b80`) waits on. Swaps reach the callback through the record's `Swap` count and
+`D3DVBLANK_SWAPDONE`, which `0x14280` records at `0x485AB8`/`0x55E6B8`.
+
+`kernel::pacer::Pacer` (`Machine::pacer`, default None) holds logical time
+to wall time for a machine being watched: before each slice it sleeps until
+as much wall time has passed as logical time, so idle advances and fast
+guest work cannot run the game ahead of real time. It never hurries the
+clock: a host that falls more than `max_lag` (100 ms) behind starts counting
+again from the present (`reanchors()`). It only makes the host wait, so
+schedule, history and guest state are the same paced or not.
+
+One time base, then: KeTickCount, the performance counter, the TSC, timer
+and sleep deadlines and the vblank count all read the one logical clock.
+Script sleeps and physics take their time from frame time (vblanks), the
+loading loop (`0x163890`, which yields through SwitchToThread) moves the
+clock to the next vblank or timer when it is the only runnable work, and
+nothing advances one of them without the others.
+
 ## Clock and replay
 
 `Clock` measures 100 ns ticks at a configured virtual frequency of 10 MHz, not a
@@ -322,7 +402,13 @@ Replaying a retained suffix recovers current time, but a full long-run replay
 requires capturing advances externally before truncation. Charged work
 (`Clock::charge`) does not fill the history: consecutive charges share one
 entry, moved to the latest time, since the steps between them follow from
-replaying the execution; any other advance starts a new entry.
+replaying the execution; any other advance starts a new entry. The
+timestamps alone cannot tell the two kinds apart, so `Clock::replay`
+recovers the time but treats every entry as an explicit advance: a charge
+after it starts a new entry where the original would have moved its last
+one. Record `Clock::charging()` with the history and continue with
+`Clock::resume(epoch, advances, charging)` to get the original's grouping
+(and an equal `Clock`) back.
 Overflow or backwards
 replay fails explicitly.
 

@@ -18,6 +18,8 @@ pub mod memory;
 pub mod net;
 mod objects;
 pub mod ord;
+pub mod pacer;
+pub mod periodic;
 pub mod rawdisk;
 mod rtl;
 mod sections;
@@ -187,7 +189,10 @@ pub(crate) struct Core {
     /// ObReferenceObjectByHandle counts not yet released by ObfDereferenceObject
     /// (also counted in `references`).
     guest_references: BTreeMap<u32, usize>,
-    dpcs: VecDeque<u32>,
+    dpcs: VecDeque<timers::Queued>,
+    /// Periodic host interrupt sources by ID ([`Kernel::add_periodic`]).
+    periodic: BTreeMap<u32, periodic::Periodic>,
+    next_periodic: u32,
     /// Set by a DPC routine's return continuation.
     dpc_complete: bool,
     /// HalRegisterShutdownNotification records, highest priority first.
@@ -313,6 +318,8 @@ impl Kernel {
                 mutant_owners: BTreeMap::new(),
                 guest_references: BTreeMap::new(),
                 dpcs: VecDeque::new(),
+                periodic: BTreeMap::new(),
+                next_periodic: 1,
                 dpc_complete: false,
                 shutdown: Vec::new(),
                 persistent: BTreeSet::new(),
@@ -494,6 +501,30 @@ impl Kernel {
         } else {
             self.lock().bridge + 4 + ordinal * 4
         })
+    }
+    /// Add a periodic host interrupt (`periodic`): its first deadline is one
+    /// period from now. Returns its ID.
+    pub fn add_periodic(&self, source: periodic::Source) -> Result<u32, Error> {
+        let mut core = self.lock();
+        let now = core.clock.counter();
+        let source = periodic::Periodic::new(source, now).ok_or(Error::Invalid(
+            "periodic rate must be nonzero and under 10 MHz",
+        ))?;
+        let id = core.next_periodic;
+        core.next_periodic = id
+            .checked_add(1)
+            .ok_or(Error::Invalid("periodic source IDs exhausted"))?;
+        core.periodic.insert(id, source);
+        Ok(id)
+    }
+    /// Remove a periodic source; periods it still owed are not delivered.
+    pub fn remove_periodic(&self, id: u32) -> bool {
+        let mut core = self.lock();
+        core.dpcs.retain(|q| *q != timers::Queued::Host(id));
+        core.periodic.remove(&id).is_some()
+    }
+    pub fn periodic_stats(&self, id: u32) -> Option<periodic::Stats> {
+        self.lock().periodic.get(&id).map(|p| p.stats)
     }
     pub fn advance_time(&self, runtime: &Runtime, ticks_100ns: u64) -> Result<(), Error> {
         let mut core = self.lock();

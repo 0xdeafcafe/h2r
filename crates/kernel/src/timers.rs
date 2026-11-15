@@ -56,6 +56,21 @@ pub(crate) struct DpcCall {
     pub arguments: [u32; 4],
 }
 
+/// One entry of the DPC queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Queued {
+    /// A guest KDPC, by address.
+    Kdpc(u32),
+    /// A periodic host source's due periods, by ID (`crate::periodic`).
+    Host(u32),
+}
+
+/// What `Core::take_dpc` hands `Machine::run`.
+pub(crate) enum DpcWork {
+    Guest(DpcCall),
+    Host(u32),
+}
+
 impl Core {
     pub(crate) fn timer_call(
         &mut self,
@@ -65,7 +80,7 @@ impl Core {
         match a.export.ordinal {
             ord::KE_INITIALIZE_DPC => {
                 let dpc = a.get(0);
-                if self.dpcs.contains(&dpc) {
+                if self.dpcs.contains(&Queued::Kdpc(dpc)) {
                     return Ok(Action::Stop("reinitializing a queued DPC"));
                 }
                 memory.check(dpc, KDPC_SIZE as usize, Access::Write, 1)?;
@@ -245,7 +260,7 @@ impl Core {
         memory.set_u32(dpc + DPC_ARGUMENT1, argument1)?;
         memory.set_u32(dpc + DPC_ARGUMENT2, argument2)?;
         memory.set_u8(dpc + DPC_INSERTED, 1)?;
-        self.dpcs.push_back(dpc);
+        self.dpcs.push_back(Queued::Kdpc(dpc));
         Ok(true)
     }
     /// Remove the queued DPC at `index` (clearing Inserted, as KiRetireDpcList
@@ -254,9 +269,16 @@ impl Core {
         &mut self,
         memory: &mut Guest,
         index: usize,
-    ) -> Result<Option<DpcCall>, GuestFault> {
-        let Some(dpc) = self.dpcs.remove(index) else {
-            return Ok(None);
+    ) -> Result<Option<DpcWork>, GuestFault> {
+        let dpc = match self.dpcs.remove(index) {
+            None => return Ok(None),
+            Some(Queued::Host(id)) => {
+                if let Some(source) = self.periodic.get_mut(&id) {
+                    source.queued = false;
+                }
+                return Ok(Some(DpcWork::Host(id)));
+            }
+            Some(Queued::Kdpc(dpc)) => dpc,
         };
         let bytes = memory.read::<{ KDPC_SIZE as usize }>(dpc)?;
         let word = |at: u32| u32::from_le_bytes(bytes[at as usize..][..4].try_into().unwrap());
@@ -269,7 +291,7 @@ impl Core {
             });
         }
         memory.set_u8(dpc + DPC_INSERTED, 0)?;
-        Ok(Some(DpcCall {
+        Ok(Some(DpcWork::Guest(DpcCall {
             routine: word(DPC_ROUTINE),
             arguments: [
                 dpc,
@@ -277,7 +299,21 @@ impl Core {
                 word(DPC_ARGUMENT1),
                 word(DPC_ARGUMENT2),
             ],
-        }))
+        })))
+    }
+    /// Account for every periodic period due by `now` and queue each
+    /// source with periods owed (once: a queued source collects more).
+    pub(crate) fn fire_periodic(&mut self, now: u64) {
+        for (&id, source) in &mut self.periodic {
+            if source.fire(now) && !source.queued && source.owed > 0 {
+                source.queued = true;
+                self.dpcs.push_back(Queued::Host(id));
+            }
+        }
+    }
+    /// The earliest periodic deadline not yet accounted for, due or not.
+    pub(crate) fn next_periodic_deadline(&self) -> Option<u64> {
+        self.periodic.values().map(|p| p.deadline()).min()
     }
     pub(crate) fn next_timer_deadline(&self) -> Option<u64> {
         self.timers.values().map(|t| t.deadline).min()
