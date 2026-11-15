@@ -45,7 +45,7 @@ export default function Players() {
     <>
       <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Players"]]} />
       <Strip kind="players" />
-      <div class="s-cols">
+      <div class="s-cols s-cols--over">
         <aside class="s-left">
           <Title>Players</Title>
           <Pills label="Players" items={[
@@ -65,7 +65,7 @@ export default function Players() {
           </Panel>
         </aside>
         <div class="s-right">
-          <Title help="From the games this page has loaded, not the server's whole history; derived in your browser.">Leaderboards</Title>
+          <Title class="s-title--cap" help="From the games this page has loaded, not the server's whole history; derived in your browser.">Leaderboards</Title>
           <div id="boards">
             <Tabs label="Leaderboards" active={board()} onPick={(id) => setBoard(id as Board)} tabs={BOARDS.map(([id, label]) => ({ id, label }))} />
             <div class="s-matte" style={{ "padding-bottom": "8px" }}>
@@ -100,7 +100,7 @@ export default function Players() {
               </div>
             </div>
           </div>
-          <Title>All Players</Title>
+          <Title class="s-title--tabs">All Players</Title>
           <div id="directory" class="s-matte" style={{ padding: "8px" }}>
             <form class="s-toolbar" onSubmit={(e) => e.preventDefault()}>
               <label for="s-dir">find a gamertag</label>
