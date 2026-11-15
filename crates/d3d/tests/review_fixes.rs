@@ -393,6 +393,10 @@ fn p1_8_verify_hashes_palette_contents() {
 fn p1_9_raster_state_gfx_cannot_express_stops() {
     let (mut d, mut m) = rec();
     quad(&mut d, &mut m);
+    let clip = |d: &d3d::Device<RecordingBackend>| {
+        let c = d.backend.draws().last().unwrap().clip.unwrap();
+        (c.x, c.y, c.width, c.height)
+    };
     // A 32x32 viewport.
     let vp = MISC + 0x7000;
     for (i, w) in [0, 0, 32, 32, 0.0f32.to_bits(), 1.0f32.to_bits()]
@@ -402,36 +406,60 @@ fn p1_9_raster_state_gfx_cannot_express_stops() {
         m.write_u32(vp + 4 * i as u32, *w).unwrap();
     }
     d.set_viewport(&mut m, vp).unwrap();
-    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    // The device hands the viewport rectangle to the backend as the clip
+    // (whether it can apply it is the backend's call; GfxBackend's is
+    // checked in the GPU test below).
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(clip(&d), (0, 0, 32, 32));
     // A null viewport keeps it (0x3f8110); a full one (clipped from
-    // oversize, as the original does) draws.
+    // oversize, as the original does) draws everywhere.
     d.set_viewport(&mut m, 0).unwrap();
-    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(clip(&d), (0, 0, 32, 32));
     m.write_u32(vp + 8, 1000).unwrap();
     m.write_u32(vp + 12, 1000).unwrap();
     d.set_viewport(&mut m, vp).unwrap();
     assert_eq!((d.viewport().width, d.viewport().height), (W, H));
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(clip(&d), (0, 0, W, H));
 
-    // A partial scissor stops; one covering the target does not.
+    // A partial scissor narrows the clip; one covering the target does not.
     let rect = MISC + 0x7100;
     for (i, w) in [0u32, 0, 16, 16].iter().enumerate() {
         m.write_u32(rect + 4 * i as u32, *w).unwrap();
     }
     d.set_scissors(&mut m, 1, 0, rect).unwrap();
-    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(clip(&d), (0, 0, 16, 16));
     for (i, w) in [0u32, 0, 64, 64].iter().enumerate() {
         m.write_u32(rect + 4 * i as u32, *w).unwrap();
     }
     d.set_scissors(&mut m, 1, 0, rect).unwrap();
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(clip(&d), (0, 0, W, H));
     d.set_scissors(&mut m, 0, 0, 0).unwrap();
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    // Two partial scissors cannot be one clip rectangle: that stops.
+    for (i, w) in [0u32, 0, 16, 16, 32, 32, 48, 48].iter().enumerate() {
+        m.write_u32(rect + 4 * i as u32, *w).unwrap();
+    }
+    d.set_scissors(&mut m, 2, 0, rect).unwrap();
+    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    d.set_scissors(&mut m, 0, 0, 0).unwrap();
 
-    // Back-buffer scaling and partial channel clears.
+    // Back-buffer scaling stops; a channel-masked clear goes to the
+    // backend's clear_rects with the mask.
     assert!(is_unimplemented(d.set_back_buffer_scale(&mut m, 0.5, 1.0)));
     d.set_back_buffer_scale(&mut m, 1.0, 1.0).unwrap();
-    assert!(is_unimplemented(d.clear(&mut m, 0, 0, 0x10, 0, 1.0, 0)));
+    d.clear(&mut m, 0, 0, 0x80, 0x8000_0000, 1.0, 0).unwrap();
+    match d.backend.calls.last() {
+        Some(d3d::Recorded::ClearRects { clear, .. }) => {
+            let (_, mask) = clear.color.unwrap();
+            assert!(mask.alpha && !mask.red && !mask.green && !mask.blue);
+            assert_eq!(clear.depth, None);
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -466,21 +494,66 @@ fn p1_9_alpha_test_with_the_builtin_shader_discards() {
         [255, 255, 255, 0xC0],
         "alpha 0xC0 is drawn"
     );
+    // A partial viewport clips: a full-target quad fills only 32x32.
+    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(60), 0)
+        .unwrap();
+    let vp = MISC + 0x7000;
+    for (i, w) in [0, 0, 32, 32, 0.0f32.to_bits(), 1.0f32.to_bits()]
+        .iter()
+        .enumerate()
+    {
+        m.write_u32(vp + 4 * i as u32, *w).unwrap();
+    }
+    d.set_viewport(&mut m, vp).unwrap();
+    quad_vb(&mut m, 0.0, 0.0, 64.0, 64.0, 0xFF00_FF00);
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    assert_eq!(pixel(&px, 20, 20), [0, 255, 0, 255], "inside the viewport");
+    assert_eq!(pixel(&px, 40, 40), [0, 0, 0, 255], "outside the viewport");
 }
 
 // 10 -----------------------------------------------------------------------
 
 #[test]
-fn p1_10_render_to_texture_stops() {
+fn p1_10_render_to_texture_writes_back() {
     let (mut d, mut m) = rec();
     texture(&mut m, 0);
+    d.backend.readback_fill = 0x5A;
     let surf = MISC + 0x7200;
     let mut h = SurfaceHeader::linear(D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
     h.parent = TEX_HEADER;
     h.write(&mut m, surf).unwrap();
-    let e = d.set_render_target(&mut m, surf, 0);
+    let back = m.read_u32(DEV + 0x1A04).unwrap();
+    m.write(0x8000_0000 | TEX_DATA, &[0x11; 256]).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    // The host surface starts from the level's texels.
+    assert!(d.backend.calls.iter().any(
+        |c| matches!(c, d3d::Recorded::WriteSurface { bytes, .. } if bytes.len() == 256 && bytes.iter().all(|b| *b == 0x11))
+    ));
+    m.write(0x8000_0000 | TEX_DATA, &[0; 256]).unwrap();
+    // Nothing drawn yet: leaving the target writes nothing back.
+    d.set_render_target(&mut m, back, 0).unwrap();
+    assert_eq!(m.read_u32(0x8000_0000 | TEX_DATA).unwrap(), 0);
+    // Drawn into, then left: the level's memory gets the surface's pixels.
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
     assert!(
-        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("render-to-texture")),
+        d.backend
+            .calls
+            .iter()
+            .any(|c| matches!(c, d3d::Recorded::ReadSurface { len: 256, .. }))
+    );
+    assert_eq!(m.read_u32(0x8000_0000 | TEX_DATA).unwrap(), 0x5A5A_5A5A);
+    assert_eq!(
+        m.read_u32(0x8000_0000 | (TEX_DATA + 252)).unwrap(),
+        0x5A5A_5A5A
+    );
+    assert_eq!(d.stats().rtt_writebacks, 1);
+    // A depth level is not supported.
+    let e = d.set_render_target(&mut m, back, surf);
+    assert!(
+        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("depth render-to-texture")),
         "{e:?}"
     );
     // A free-standing surface is still fine.
@@ -507,13 +580,13 @@ fn p2_11_a_push_buffer_failure_latches_instead_of_skipping() {
     bind_quad(&mut d, &mut m);
     inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
     let bad = m.read_u32(DEV).unwrap();
-    push_words(&mut m, &[(1 << 18) | 0x0B00, 0]);
+    push_words(&mut m, &[(1 << 18) | 0x1710, 0]);
     inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [0, 255, 0, 255]);
     let e = d.commit(&mut m).unwrap_err();
     assert!(
         matches!(
             e,
-            D3dError::Push(PushError::UnknownMethod { method: 0x0B00, .. })
+            D3dError::Push(PushError::UnknownMethod { method: 0x1710, .. })
         ),
         "{e}"
     );

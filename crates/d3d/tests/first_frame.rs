@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use d3d::abi::Regs;
 use d3d::backend::Recorded;
-use d3d::{D3dError, Event, GfxBackend, GuestMemory, RecordingBackend, UploadPolicy};
+use d3d::{Event, GfxBackend, GuestMemory, RecordingBackend, UploadPolicy};
 use gfx::GfxContext;
 
 #[test]
@@ -244,45 +244,40 @@ fn make_requested_space_executes_and_rewinds() {
 #[test]
 fn unsupported_paths_stop_with_clear_errors() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Tracked);
-    // Partial clear.
+    // A partial clear goes to the backend's clear_rects; a backend without
+    // one stops (the trait default).
     let rect = MISC + 0x4000;
     for (i, v) in [0u32, 0, 16, 16].iter().enumerate() {
         m.write_u32(rect + 4 * i as u32, *v).unwrap();
     }
-    let e = call(
+    call(
         &mut d,
         &mut m,
         0x3f9fc0,
         Regs::default(),
         &[1, rect, 0xF0, 0, 0, 0],
     )
-    .unwrap_err();
-    assert!(
-        matches!(
-            e,
-            D3dError::Unimplemented {
-                entry: "D3DDevice_Clear",
-                ..
-            }
-        ),
-        "{e}"
-    );
+    .unwrap();
+    assert!(matches!(
+        d.backend.calls.last(),
+        Some(Recorded::ClearRects { .. })
+    ));
 
     // An NV2A method the device does not know, written inline.
     let dev = d3d::GuestLayout::HALO2.device;
     let put = m.read_u32(dev).unwrap();
-    m.write_u32(put, (1 << 18) | 0x0B00).unwrap();
+    m.write_u32(put, (1 << 18) | 0x1710).unwrap();
     m.write_u32(put + 4, 0).unwrap();
     m.write_u32(dev, put + 8).unwrap();
     let e = d.commit(&mut m).unwrap_err();
     assert!(
-        e.to_string().contains("unimplemented NV2A method 0x0b00"),
+        e.to_string().contains("unimplemented NV2A method 0x1710"),
         "{e}"
     );
 
     // An entry with no implementation.
-    let e = call(&mut d, &mut m, 0x3f8ad0, Regs::default(), &[]).unwrap_err();
-    assert!(e.to_string().contains("D3DDevice_PersistDisplay"), "{e}");
+    let e = call(&mut d, &mut m, 0x3f77c0, Regs::default(), &[]).unwrap_err();
+    assert!(e.to_string().contains("D3DDevice_Reset"), "{e}");
 }
 
 #[test]

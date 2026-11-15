@@ -30,6 +30,7 @@ pub mod dirty;
 pub mod events;
 pub mod gfx_backend;
 pub mod guest;
+pub mod hw;
 pub mod layout;
 pub mod nv2a;
 pub mod pushbuf;
@@ -37,9 +38,11 @@ pub mod resource;
 pub mod runtime_glue;
 pub mod shader;
 pub mod state;
+pub mod vblank;
 
 pub use backend::{
-    Backend, DrawOutcome, Recorded, RecordingBackend, ResolvedDraw, StreamBytes, Viewport,
+    Backend, ChannelMask, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
+    RectClear, ResolvedDraw, StreamBytes, Viewport,
 };
 pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats};
 pub use dirty::{UploadPolicy, WriteTracker};
@@ -51,3 +54,4 @@ pub use nv2a::Nv2aShaders;
 pub use resource::AddressMap;
 pub use runtime_glue::register;
 pub use shader::{ShaderInputs, ShaderProvider};
+pub use vblank::{FrameWait, register_frame_wait};

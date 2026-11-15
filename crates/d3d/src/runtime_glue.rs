@@ -186,7 +186,25 @@ where
                 match result {
                     Ok(o) => {
                         apply(cpu, o);
-                        return guest.ret(cpu, o.cleanup);
+                        let pending = dev
+                            .lock()
+                            .map(|mut d| d.take_pending_vblanks())
+                            .unwrap_or_default();
+                        if pending.is_empty() {
+                            return guest.ret(cpu, o.cleanup);
+                        }
+                        // Vblanks counted by Swap: run the callback for each
+                        // before returning to the caller (crate::vblank).
+                        let ret = guest.ret(cpu, o.cleanup)?;
+                        drop(guest);
+                        let saved = *cpu;
+                        return crate::vblank::deliver_then_return(
+                            cpu,
+                            ctx,
+                            pending.into(),
+                            saved,
+                            ret.target_pc,
+                        );
                     }
                     // A guest access failed, directly or while draining
                     // the push buffer: the runtime's own fault.

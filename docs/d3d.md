@@ -21,12 +21,12 @@ included here.
 - **91** D3D functions are reached from outside the section. **26** of those
   have no signature match and are named below from evidence: which state
   slot they store, what they push, and who calls them.
-- Of those 91, **70** are implemented (adapter plus device method), **18**
+- Of those 91, **78** are implemented (adapter plus device method), **9**
   stop with `D3dError::Unimplemented` (which carries the entry name and
-  its convention), and **3** are pure helpers left to the original code
+  its convention), and **4** are pure helpers left to the original code
   (`d3d::abi::NATIVE`).
-- `d3d::register` installs **89** overrides in a `runtime::Dispatch`
-  (see "Integration"): **71** implemented and **18** stopping. The extra
+- `d3d::register` installs **88** overrides in a `runtime::Dispatch`
+  (see "Integration"): **79** implemented and **9** stopping. The extra
   implemented one is `SetRenderState_PSTextureModes` (`0x3f5cc0`). It is
   matched by signature and has an adapter, but no code outside the `D3D`
   section calls it (game code writes the `PSTEXTUREMODES` slot and device
@@ -87,13 +87,13 @@ overridden; the original runs).
 | `0x3f5e30` | `D3DDevice_SetTextureState_BumpEnv` | yes | EAX = stage, stack (Type, Value); ret 8 | 15 / 4 | yes |
 | `0x3f5ea0` | `D3DDevice_SetTextureState_BorderColor` | yes | EAX = stage, EBX = value; ret | 10 / 5 | yes |
 | `0x3f5ef0` | `D3DDevice_SetTextureState_ColorKeyColor` | yes | EAX = stage, EBX = value; ret | 8 / 4 | yes |
-| `0x3f6190` | `D3D viewport push fragment` | no | EAX = put, ESI = device; returns EAX | 22 / 22 | stop |
-| `0x3f6390` | `D3D push fragment (0x3f6390)` | no | EDX = put, [esp+4] = device; returns EDX; ret 4 | 18 / 18 | stop |
-| `0x3f6840` | `D3D_UpdateProjectionViewportTransform` | yes | no args | 18 / 18 | stop |
+| `0x3f6190` | `D3D viewport push fragment` | no | EAX = put, ESI = device; returns EAX = new put | 22 / 22 | yes |
+| `0x3f6390` | `D3D push fragment (0x3f6390)` | no | EDX = put, [esp+4] = device; returns EAX = put + 8; ret 4 | 18 / 18 | yes |
+| `0x3f6840` | `D3D_UpdateProjectionViewportTransform` | yes | no args | 18 / 18 | yes |
 | `0x3f6c60` | `D3DDevice_LoadVertexShaderProgram` | yes | stdcall(pFunction, Address); ret 8 | 1 / 1 | yes |
 | `0x3f6cf0` | `D3DDevice_SelectVertexShaderDirect` | yes | EAX = Address, ECX = pVAF; ret | 1 / 1 | yes |
 | `0x3f6e10` | `D3DDevice_SetShaderConstantMode` | yes | EAX = mode; ret | 1 / 1 | yes (mode 0 stops) |
-| `0x3f6f40` | `D3D transform/viewport push (0x3f6f40)` | no | ESI = device | 18 / 18 | stop |
+| `0x3f6f40` | `D3D transform/viewport push (0x3f6f40)` | no | ESI = device; returns EAX = new put only when it pushes | 18 / 18 | yes |
 | `0x3f71d0` | `D3DDevice_SetVertexShaderConstant1` | yes | ECX = Register + 96, EDX = pConstantData; ret | 12 / 5 | yes |
 | `0x3f7230` | `D3DDevice_SetVertexShaderConstant1Fast` | yes | ECX = Register + 96, EDX = pConstantData; ret | 6 / 6 | yes |
 | `0x3f7280` | `D3DDevice_SetVertexShaderConstant4` | yes | ECX = Register + 96, EDX = pConstantData; ret | 2 / 2 | yes |
@@ -109,9 +109,9 @@ overridden; the original runs).
 | `0x3f85d0` | `D3DDevice_EndVisibilityTest` | yes | register (unrecovered) | 1 / 1 | stop |
 | `0x3f8630` | `D3DDevice_GetVisibilityTestResult (assumed)` | no | EAX = index; ret 4 | 2 / 2 | stop |
 | `0x3f8760` | `D3DDevice_SetScissors` | yes | stdcall(Count, Exclusive, pRects); ret 0xC | 3 / 3 | yes |
-| `0x3f8ad0` | `D3DDevice_PersistDisplay` | yes | no args | 1 / 1 | stop |
-| `0x3f8c70` | `D3D display/flicker filter (0x3f8c70)` | no | ESI | 1 / 1 | stop |
-| `0x3f8cc0` | `D3D gamma/display ramp (0x3f8cc0)` | no | stdcall 1 arg, copies 32 dwords to device+0x197C; ret 4 | 9 / 9 | stop |
+| `0x3f8ad0` | `D3DDevice_PersistDisplay` | yes | no args; returns EAX = HRESULT | 1 / 1 | yes |
+| `0x3f8c70` | `D3D display/flicker filter (0x3f8c70)` | no | ESI = filter | 1 / 1 | yes |
+| `0x3f8cc0` | `D3D gamma/display ramp (0x3f8cc0)` | no | stdcall 1 arg, copies 32 dwords to device+0x197C, pushes method 0x1480; ret 4 | 9 / 9 | yes |
 | `0x3f9d00` | `D3DDevice_Swap` | yes | EAX = Flags (0 = COPY \| FINISH); returns EAX = swap count; ret | 2 / 2 | yes |
 | `0x3f9df0` | `D3DDevice_SetBackBufferScale` | yes | stdcall(x, y); ret 8 | 2 / 1 | yes |
 | `0x3f9fc0` | `D3DDevice_Clear` | yes | stdcall(Count, pRects, Flags, Color, Z, Stencil); ret 0x18 | 7 / 7 | yes |
@@ -134,10 +134,10 @@ overridden; the original runs).
 | `0x3fb520` | `D3D_DestroyResource` | yes | register (unrecovered) | 1 / 1 | stop |
 | `0x3fb600` | `D3DResource_AddRef` | yes | stdcall(this); returns EAX = new count; ret 4 | 6 / 3 | yes |
 | `0x3fb640` | `D3DResource_Release` | yes | stdcall(this); returns EAX = new count; ret 4 | 14 / 7 | yes |
-| `0x3fb710` | `D3D surface helper (0x3fb710)` | no | ECX | 7 / 5 | stop |
+| `0x3fb710` | `D3D surface helper (0x3fb710)` | no | ECX = resource; returns EAX = busy (0/1) | 7 / 5 | yes |
 | `0x3fb7a0` | `D3D surface-object allocator (0x3fb7a0)` | no | EAX = data, EDI = parent, 2 stack args; ret 8 | 2 / 1 | native |
 | `0x3fc530` | `D3D device teardown (0x3fc530)` | no | EAX = device; ret | 2 / 2 | yes |
-| `0x3fdb20` | `Get2DSurfaceDesc` | yes | register (unrecovered) | 4 / 4 | stop |
+| `0x3fdb20` | `Get2DSurfaceDesc` | yes | EDI = container, EBX = level, ESI = out desc | 4 / 4 | native |
 | `0x3fdbc0` | `D3D surface level layout (0x3fdbc0)` | no | stdcall 8 args; ret 0x20 | 12 / 9 | native |
 | `0x3fde00` | `D3D texture header setup (0x3fde00)` | no | stdcall 8 args; ret 0x20 | 3 / 3 | native |
 | `0x3ff5c6` | `D3D miniport (0x3ff5c6)` | no | unrecovered | 1 / 1 | stop |
@@ -194,20 +194,29 @@ Notes on the table:
   `PSDEF[54]` into slot 136. The device does the same.
 - **`MakeRequestedSpace`** takes the request in `EAX` and half the kick-off
   size on the stack. It returns the new put in `EAX`.
-- **Stops that are likely to be hit first.** These are called from many game
-  functions:
-  - `0x3f6190`, `0x3f6390`, `0x3f6f40` and
-    `D3D_UpdateProjectionViewportTransform` (18–22 callers each). They
-    are viewport/transform push fragments called from render setup.
-  - `0x3f8cc0` (9 callers).
-
-  They are next in line after the first frame. See "Boot path" for the
-  order the game reaches them in.
+- **Fragments** (`src/device/fragments.rs`). Halo's inlined `ZEnable`
+  (18 sites such as `0x1eb94`, reached at boot through `ZEnable(2)` at
+  `0x1267a`) calls `0x3f6840`, `0x3f6f40`, `0x3f6390` and `0x3f6190`
+  directly when the old value was `D3DZB_USEW`. Each one reproduces the
+  original's reads, device-field writes and push-buffer words. The device
+  also runs them where D3D does: CreateDevice, SetViewport,
+  SetRenderTarget, the ZEnable setter and a shader-kind change in
+  SetVertexShader (`0x3f6d50`). See "Fragments and NV2A registers" below.
+- **Display entries** (`src/device/display.rs`). `0x3f8c70` and
+  PersistDisplay change the guest globals the way the original does,
+  without the AV-encoder kernel calls (there is no TV encoder). `0x3f8cc0`
+  copies the ramp and pushes it. `0x3fb710` is the busy check: busy while
+  the resource, or its parent texture, holds an internal reference;
+  otherwise not busy (the host GPU is synchronous), and the `Lock` word is
+  cleared as the original does at `0x3fb78d`.
 - **Native helpers** (`d3d::abi::NATIVE`). `0x3fdbc0`, `0x3fde00` and
   `0x3fb7a0` compute surface/texture headers from their arguments and the
   read-only format table at `0x00403A50` (plus `XMemAlloc` and the
-  overridden `D3DResource_AddRef` for `0x3fb7a0`). Their callees touch no
-  device global, NV2A register or push buffer, so the original code runs.
+  overridden `D3DResource_AddRef` for `0x3fb7a0`). `Get2DSurfaceDesc`
+  (`0x3fdb20`) also reads device `+0x1A14` (the back buffer) and `+0x196C`
+  (the multisample type, which CreateDevice writes). Their callees touch
+  no device global, NV2A register or push buffer, so the original code
+  runs.
 
 ## Guest structures
 
@@ -240,7 +249,18 @@ Device fields with evidence (offsets into the device object):
 | `+0x924..+0x92C` | embedded pixel-shader object `{RefCount, Flags, pPSDef}` | 23 game functions fill it in and pass `device+0x924` to SetPixelShader |
 | `+0xB04` / `+0xB08` | stream-input count / `D3DSTREAM_INPUT[]` | SetVertexShaderInput |
 | `+0xF88` | textures[4] | SetTexture |
+| `+0x93C` / `+0x940` / `+0x944` | W near, W far, 1/W far (from the projection) | SetTransform `0x3f802c..0x3f80eb` |
+| `+0x948` | depth scale for the depth format (`D24S8` 16777215, `F24S8` 1e30, `D16` 65535, `F16` 511.9375) | `0x3fd970` |
+| `+0x954` / `+0x958` | render-target size | SetRenderTarget `0x3f6741` |
+| `+0x95C` / `+0x960` | super-sample scale | CreateDevice |
+| `+0x96C` / `+0x970` | back-buffer scale | CreateDevice, SetBackBufferScale |
+| `+0x980` | composite: projection x viewport | `0x3f6840` |
+| `+0xC60` / `+0xCA0` | transforms (10 matrices) / projection | CreateDevice, SetTransform |
+| `+0xEF8` / `+0xEFC` | screen offsets (0.53125) | CreateDevice |
+| `+0x196C` | multisample type (0 stored as `0x11`) | CreateDevice; read by Get2DSurfaceDesc |
 | `+0x197C` | 32-dword ramp copied by `0x3f8cc0` | `0x3f8cc0` |
+| `+0x1C08` / `+0x1C10` / `+0x1C18` | depth-clip shadow (fixed function / program) and game-owned flags | `0x3f6190` |
+| `+0x1DB8` | vertical-blank callback | game stores it at `0x12b093` |
 | `+0x1A04` / `+0x1A08` | render target / depth surface | SetRenderTarget, game reads |
 | `+0x1A14` / `+0x1A18` | back buffer / display surface | CreateDevice, viewport code |
 | `+0x2478` | swap count, also returned by Swap | game reads |
@@ -327,7 +347,7 @@ inline, with site/function counts:
 | `0x030C`, `0x1D78` | state mirrors (also stored in the arrays) | 18 / 18 each | payload applied |
 | `0x0100`, `0x0110` | NOP, WAIT_FOR_IDLE | 1 / 1 | yes |
 | `0x1D8C` | clear values, two words (inline clear) | 1 / 1 | **stops** |
-| `0x1480` | a 32-word block (`0x0001e370`; the same data `0x3f8cc0` copies to device `+0x197C`) | 1 / 1 | **stops** |
+| `0x1480` | a 32-word block (`0x0001e370`; the same data `0x3f8cc0` copies to device `+0x197C`) | 1 / 1 | yes (register state) |
 | `0x1710` | one word, value 0 | 1 / 1 | **stops** |
 | `0x17C8` | two words (report / pixel-count methods) | 1 / 1 | **stops** |
 
@@ -382,8 +402,9 @@ guest push buffer (`DeviceConfig::push_buffer`).
 - Every entry point first decodes the words written since the last entry,
   so inline draws run in program order relative to API calls.
 - `MakeRequestedSpace` executes the words and rewinds put.
-- Only the method subset in the table above is understood. Anything else is
-  a `PushError::UnknownMethod` stop. Headers with reserved bits (bit 31,
+- Only the method subset in the table above, plus the register methods
+  D3D's own fragments push (see "Fragments and NV2A registers"), is
+  understood. Anything else is a `PushError::UnknownMethod` stop. Headers with reserved bits (bit 31,
   bits 17–16), control words (jump, call, return), other subchannels, a put
   that is not on a word boundary, and commands running past put are
   rejected too.
@@ -457,18 +478,55 @@ and allocations are bounded before anything is read:
   `crates/shaders` (TODO(shaders)). Its `prepare` receives the whole
   `ResolvedDraw`. Until one is installed they are skipped with an
   `Event::DrawSkipped` that gives the reason.
-- State gfx cannot express **stops** with `D3dError::Unimplemented` rather
-  than rendering wrongly:
-  - a viewport that is not the whole target, or scissors that do not cover
-    it (SetViewport clips to the target and resets the scissors, as the
-    original; a null viewport keeps the current one);
+- Each draw also carries:
+  - `clip`: the pixel rectangle it may touch. That is the viewport
+    intersected with the target and with the scissor rectangle when one is
+    set and does not cover the target. SetViewport clips to the target and
+    resets the scissors, as the original does; a null viewport keeps the
+    current one.
+  - `hw`: the NV2A register state (`d3d::hw::HwState`) as last pushed.
+- State that cannot be expressed **stops** with `D3dError::Unimplemented`
+  rather than rendering wrongly:
+  - several scissor rectangles, none covering the target (one clip
+    rectangle cannot hold them);
   - a back-buffer scale other than 1 x 1;
   - alpha test on the built-in shader path (it never discards);
-  - partial clears: `Clear` intersects every rectangle with the viewport
-    and uses the viewport when Count is 0 (`0x3fa1a0..0x3fa247`), skips
-    empty intersections, and stops if what is left is not the whole target;
-  - partial-channel clears;
-  - render-to-texture (a surface whose `Parent` is a texture).
+  - a backend that returns `DrawOutcome::Unsupported`. `GfxBackend` does
+    this today for a clip smaller than the target: `gfx::Draw` has no
+    scissor (see "gfx changes this wants").
+- **Clears** (`Device::clear`, `src/device/raster.rs`). `Clear` intersects
+  every rectangle with the viewport, or uses the viewport when Count is 0
+  (`0x3fa1a0..0x3fa247`), clips to the target and skips empty
+  intersections.
+  - The whole target with all colour channels (or no colour) goes to
+    `Backend::clear`.
+  - Anything else goes to `Backend::clear_rects` with a `RectClear`: the
+    rectangles, the colour plus a `ChannelMask` (`D3DCLEAR` `0x10` red,
+    `0x20` green, `0x40` blue, `0x80` alpha), depth and stencil.
+  - Halo's wrapper `0x14b60` turns `EAX` into flags as
+    `(eax & 1 ? 0xF0 : 0) | (eax & 0x1E) << 3 | (eax >> 5) & 3`. The
+    alpha-only clears are `0x3c515` (`EAX = 0x10` -> `0x80`, colour
+    `0x00FFFFFF`, Z 0) and `0x13c3f` (`Clear(0, 0, 0x80, 0, 1.0, 0)`).
+  - `GfxBackend::clear_rects` draws one quad per rectangle through the
+    built-in `XYZRHW | DIFFUSE` shader, with the channel write mask,
+    depth Always and stencil Replace.
+- **Render-to-texture** (`src/device/raster.rs`). A target or texture
+  surface whose `Parent` is a texture gets its own host surface (an
+  `RttTarget`). The `0x14850` 64x64 targets are such levels, and `0x14bc0`
+  selects them.
+  - On creation the host surface is filled from the level's guest texels
+    through `Backend::write_surface`. A backend that cannot do this
+    returns `Ok(false)`, and the surface starts as created; that is
+    `GfxBackend` today.
+  - A draw or clear into it marks it dirty.
+  - A dirty level is written back to guest memory through
+    `Backend::read_surface` and noted in the write tracker:
+    - when the target changes;
+    - before the texture is sampled;
+    - at `Swap`, `KickOff` and `PersistDisplay`;
+    - at the busy check `0x3fb710`.
+  - A depth level, a compressed format, or a header rewritten while its
+    level holds unwritten pixels stops.
 
 ### Textures: lazy upload, dirty tracking
 
@@ -511,6 +569,8 @@ Fallbacks:
   `Unimplemented`, `Invalid`, `Push`, `Faulted`, `NoDevice`, `Guest` and
   `Backend`. A backend reports state it cannot render as
   `DrawOutcome::Unsupported`, which the device turns into `Unimplemented`.
+- A frame-wait stop (see "Vertical blank") uses the same hook, with the
+  engine address `0x12b2e0`.
 - `Event` means something is worth knowing but execution continues:
   `DrawSkipped`, `BadState` and `MissedInvalidation`.
 - Nothing is skipped silently.
@@ -553,13 +613,136 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    - `abi::NATIVE` addresses get no override.
    `tests/registration.rs` runs Halo's boot device sequence through
    `runtime::Runner` with these overrides.
-3. **Write barrier.** Forward every guest store D3D did not make to
-   `Device::note_write`. Until that exists, run with `UploadPolicy::Always`
-   (or `Verify` to find the misses).
-4. **Present.** `GfxBackend::on_present` receives the surface on every
+3. **Write barrier.** `UploadPolicy::Always` (or `Verify`, to find the
+   misses) stays the bring-up default; `DeviceConfig::halo2` alone gives
+   `Tracked`, so set `upload` as above. `Tracked` is only correct once the
+   runtime keeps the invalidation contract above:
+   - Forward every guest store D3D did not make to
+     `Device::note_write(addr, len)`. That covers stores from lifted code,
+     the interpreter, kernel calls (`NtReadFile`, `memcpy`-like HLE
+     helpers) and DMA-like copies.
+   - Fold aliases to the `0x80000000 | pa` view first.
+   - Report before the next D3D override runs.
+   
+   A cheap form is a check against `WriteTracker::watched_bitmap` in the
+   store path, deferring the `note_write` calls to the next override
+   entry. The device's own stores (render-to-texture write-back included)
+   are already noted.
+4. **Vertical blank.** See "Vertical blank" below:
+   `Device::set_vblanks_per_swap(n)` and/or `d3d::register_frame_wait`.
+5. **Present.** `GfxBackend::on_present` receives the surface on every
    `Swap`. Blit it with `gfx::surface::present_surface`.
-5. **Shaders.** Implement `ShaderProvider` over `shaders::link` once
+6. **Shaders.** Implement `ShaderProvider` over `shaders::link` once
    `crates/shaders` lands, and install it with `GfxBackend::with_shaders`.
+
+## Fragments and NV2A registers
+
+`src/device/fragments.rs` reproduces D3D's viewport and transform
+fragments. Each doc comment there cites the addresses it was checked
+against with `h2 disasm`. Intermediates are `f64` and stores round to
+`f32` where the x87 code stores; the `0x3fd080` matrix product is `f32` in
+the SSE accumulation order.
+
+- `0x3f6190`: the viewport push.
+  - For a program or pass-through shader (`[vs+4] & 0x12`), it pushes
+    `VIEWPORT_OFFSET` and `VIEWPORT_SCALE` from `0x3f6060` (skipped with
+    device flag `0x200`), then `CLIP_MIN/MAX` from `+0x1C10`.
+  - For fixed function, it pushes `VIEWPORT_OFFSET = [x + ox, y + oy, 0,
+    0]`, then the clip from `+0x1C08`.
+  - The clip shadow is refreshed unless the game owns it (`+0x1C18` bits
+    0/1). W-buffered (`ZENABLE` = 2), it is `[944 * 93C * 948, 948]`;
+    otherwise `[0, 948]` for programs and `[minZ * 948, maxZ * 948]` for
+    fixed function.
+- `0x3f6390`: `SET_CONTROL0`. The base is `0x100001`; `0x10000000` with
+  YUV, `0x10000` when w-buffered, `0x1000` for a float depth format.
+- `0x3f6840`: the viewport matrix (scaled by `944 * 948` when
+  w-buffered), multiplied by the projection, into `+0x980`; dirty bit
+  `0x200`.
+- `0x3f6f40`: for a pass-through shader, constants 0–1 (`[ssx, ssy, zs,
+  w]` and `[ox, oy, 0, 0]`) and the pass-through program, chunked 32 words
+  per header (`0x3f6b70`). The program is read from the image: `0x403E40`
+  (48 words, no fog table), `0x403D90` (44, affine projection) or
+  `0x403CD0` (48). Space is reserved as the original does.
+- CreateDevice sets up what they read (`0x3fc421..0x3fc462`, `0x3fba30`):
+  - identity transforms and the W parameters;
+  - the default FVF object `0x408340` at `+0x794`;
+  - the static programmable object `0x408518`, cleared, with flags `0x10`;
+  - the multisample type and scales, depth scale and target size;
+  - the 0.53125 offsets;
+  - then the composite, the pass-through program and the viewport push.
+- SetRenderTarget resets the viewport to the whole target
+  (`SetViewport({0, 0, 0x7FFFFFFF, 0x7FFFFFFF, 0, 1})` from `0x403B88`),
+  updates the target fields and pushes the viewport.
+
+The drain applies these register methods to `d3d::hw::HwState`
+(`Device::hw`, and `ResolvedDraw::hw`):
+
+- `0x0290` CONTROL0;
+- `0x0394`/`0x0398` CLIP_MIN/MAX;
+- `0x0A20` VIEWPORT_OFFSET and `0x0AF0` VIEWPORT_SCALE, also mirrored into
+  constant registers 59 and 58, where vertex programs read them (the xemu
+  model);
+- `0x0B00..` the transform program and `0x0B80..` transform constant
+  words, through the hardware cursors (`0x1E9C`/`0x1EA4`);
+- `0x1E94`/`0x1E98` execution mode and context write enable;
+- `0x1EA0` program start;
+- `0x1480` the 32-word block.
+
+## Vertical blank
+
+Halo stores a callback at device `+0x1DB8` (`0x12b093`, the inlined
+`SetVerticalBlankCallback`). On the Xbox the GPU interrupt calls it once
+per vblank as `cdecl callback(D3DVBLANKDATA *)`, where `D3DVBLANKDATA` is
+`{VBlank, Swap, Flags}` (`Flags` 1 = `D3DVBLANK_SWAPDONE`).
+
+- Halo's callback `0x12b2a0` calls `0x14280`. That function increments
+  the 64-bit counter at `0x485AB0`, and when `Swap` changed (compared with
+  `[0x55E6B8]`) it records the counter and the swap at
+  `0x485AB8`/`0x55E6B8`.
+- The frame wait `0x12b2e0` spins at `0x12b330..0x12b342` until the
+  counter reaches `[0x4E6398] - 1`. Nothing but the callback advances it,
+  so without an interrupt the spin never ends.
+
+`Device::vblank` counts a vblank and builds the record.
+`src/vblank.rs` calls the guest, at a safe point that is always an
+override's return, never mid-instruction:
+
+- **After `Swap`** (installed by `d3d::register`). `Swap` counts
+  `Device::set_vblanks_per_swap(n)` vblanks (default 0, which leaves boot
+  unchanged). When the `Swap` override returns, the glue calls the
+  callback once for each:
+  - the record goes below the caller's `ESP` and its address is pushed as
+    the cdecl argument;
+  - the callback is entered through `ExecCtx::call_guest`;
+  - after the last one, every register is restored to its value at
+    `Swap`'s return (`EAX` = the swap count) and execution returns to
+    `Swap`'s caller.
+
+  With `n` at least the frame interval Halo waits for, the spin falls
+  through at once.
+- **In the frame wait** (opt-in: `d3d::register_frame_wait(&mut dispatch,
+  device, FrameWait::HALO2, hook)`). An override of `0x12b2e0` delivers
+  callbacks until the counter reaches the target, optionally paced
+  (`FrameWait::pace`, for example `FrameWait::NTSC_VBLANK`). It then has
+  the original's exit effects:
+  - `[0x4E63A8] = counter at entry + 1`;
+  - `[0x4E63B0] = n = counter + 1`;
+  - `EAX = 0` if `n - target < 0`, else `min(n - target, 0x7FFF)`;
+  - `ECX` = the high word of `n - target`; `EDX` = the counter's low
+    word; `EBX`, `ESI`, `EDI` and `EBP` preserved;
+  - byte `[0x4E63BC] = (word [0x4E63B8] > 0 && AX == 0)`.
+
+  It stops with a named error instead of spinning forever when no
+  callback is registered, when a callback returns without advancing the
+  counter, or after `max_vblanks` (600) in one wait.
+- **Runtime seam.** Neither needs a runtime change. A real vblank
+  interrupt would need a runtime hook that fires at a guest safe point
+  (an override return or a block boundary) every 1/60 s of host time and
+  can push a `call_guest` frame there. With it, the glue would call
+  `Device::vblank` and `deliver_then_return` from that hook instead.
+
+Tests: `tests/vblank.rs` (through `runtime::Runner`, with Rust stand-ins
+for the callback).
 
 The conventions in `abi.rs` are marked TODO-register. Each one should get a
 differential check, running the original under the interpreter against the
@@ -594,38 +777,87 @@ listed under "Stops on the way to the menu" below.
 No boot trace exists yet, so this is static. Conditional stops that normal
 view rendering (`0x223240 -> 0x2232a0 -> 0x2c8a0 -> 0x132d0`) can reach:
 
+Of the 18 entries that stopped before, 9 remain (`abi::UNIMPLEMENTED`). The
+fragments, the display entries, `0x3fb710` and Get2DSurfaceDesc are done
+(see the inventory), and so are the cases below:
+
 - **Viewport.** `0x14bc0` selects a render target by index and calls
-  SetViewport with its extents. For the back buffer at 640x480 that is the
-  whole target. Any smaller viewport (split screen, letterboxing, the
-  offscreen targets) stops at the next draw, and at any Count=0 clear,
-  since every game clear passes Count=0 and so clears the viewport.
-- **Offscreen targets.** The targets `0x14850` builds are texture levels
-  (`Parent` set by `0x3fb7a0`): SetRenderTarget stops on them
-  (render-to-texture). `0x14bc0` also calls Get2DSurfaceDesc (`0x3fdb20`,
-  a stop) for targets other than indices 0, 1, 2 and `0x12` that are not
-  the current one.
-- **Channels.** The clear wrapper `0x14b60` builds the flags from `EAX`:
-  bit 0 is all colour, bits 1–4 single channels (`0x10..0x80`), bits 5–6
-  depth/stencil. Alpha-only clears: `0x13c3f` (when `0x4BA04C > 1`, that
-  is, more than one view) and `0x3c515` (`EAX = 0x10`, in `0x3c3c0`, from
-  `0x2bcd0`). Callers passing a register (`0x132d0`, `0x2bcd0`, `0x3fdf0`,
-  `0x41cc0`, `0x44370`) depend on the view. The full-screen helper
-  `0x14ac0` clears with `0xF0`, which is fine.
-- **Fragments.** `0x3f6840`, `0x3f6f40`, `0x3f6190`, `0x3f6390` are reached
-  from render setup (`0x35b90`) and also from the inlined ZEnable when the
-  old value was `D3DZB_USEW` (`0x1eb94`).
+  SetViewport with its extents. A smaller viewport (split screen,
+  letterboxing, the offscreen targets) now gives each draw and each
+  Count=0 clear a clip rectangle. `RecordingBackend` takes it. On
+  `GfxBackend` a draw with a partial clip still stops, until `gfx::Draw`
+  has a scissor. Partial clears render through `clear_rects`.
+- **Offscreen targets.** The `0x14850` targets are texture levels
+  (`Parent` set by `0x3fb7a0`). They become render-to-texture targets
+  with write-back. `0x14bc0`'s Get2DSurfaceDesc (`0x3fdb20`) runs
+  natively.
+- **Channels.** The wrapper `0x14b60` and the alpha-only clears
+  (`0x13c3f`, when `0x4BA04C > 1`; `0x3c515`, `EAX = 0x10`, in `0x3c3c0`
+  from `0x2bcd0`) go through `clear_rects` with an alpha-only mask.
+  Callers that pass a register (`0x132d0`, `0x2bcd0`, `0x3fdf0`,
+  `0x41cc0`, `0x44370`) are covered the same way.
+- **Frame wait.** `0x12b2e0` spins forever without vblanks (see "Vertical
+  blank").
+
+The 9 that still stop, and where the menu path reaches them:
+
+- `0x3f7410` `SetVertexShaderConstantNotInline` (1 caller).
+- `0x3f77c0` Reset. It is reached only if the game's device pointer is
+  still set at `0x128c0`; it is not, after boot step 1.
+- `0x3f7b30`, the SetRenderTarget variant (1 caller).
+- `0x3f85d0` / `0x3f8630`: visibility tests (occlusion queries).
+- `0x3fae10`, the inline UP draw (1 caller).
+- `0x3fb520` `D3D_DestroyResource` (1 caller).
+- `0x3ff5c6`, the miniport (1 caller).
+- `0x401030` `CDevice_SetStateVB` (1 caller).
+
+None of them is on the static boot path above; which of them the menu
+reaches needs a boot trace.
 
 ## gfx changes this wants
 
 These were not made here, since gfx is its own lane.
 
-- **Per-draw viewport and scissor** in `gfx::Draw`. The renderer always
-  uses the full target, so non-full viewports and scissors stop today.
+- **Per-draw clip.** `gfx::Draw` needs `scissor: Option<[u32; 4]>`
+  (`x, y, width, height` in target pixels; `None` = the whole target),
+  applied with `set_scissor_rect`. A viewport rectangle
+  (`viewport: Option<[f32; 6]>`, `x, y, w, h, min_z, max_z`) would also
+  let programmable draws use the guest viewport directly. `GfxBackend`
+  would pass `ResolvedDraw::clip` through and drop its Unsupported check.
+  The gfx-shaders lane adds `Draw::viewport` / `Draw::scissor`; once that
+  lands, the hookup is in `gfx_backend.rs` only.
+- **Rectangle and channel-masked clears.** `GfxBackend::clear_rects` draws
+  quads today. A renderer-level `clear_rects(target, depth, &[rect],
+  color, mask, depth, stencil)` (the gfx-shaders `MaskedClear`) would
+  replace that.
+- **Render-to-texture surfaces.** Two things are needed:
+  - A texture-level target whose view the texture cache samples, so a
+    write-back and re-upload is not needed (gfx-shaders
+    `create_texture_target` / `level_target`).
+  - **A surface upload**, so a target starts from the guest's texels:
+
+    ```rust
+    impl SurfaceStore {
+        /// Replaces a colour surface's contents with guest-format texels
+        /// (`desc` gives format, size, pitch and layout: swizzled or
+        /// linear), decoded as texture uploads are.
+        pub fn write_color(
+            &mut self,
+            ctx: &GfxContext,
+            id: SurfaceId,
+            desc: &TextureDesc,
+            bytes: &[u8],
+        ) -> Result<(), GfxError>;
+    }
+    ```
+
+    `GfxBackend::write_surface` would call it and return `Ok(true)`. It is
+    the inverse of `gfx::readback::read_texture` plus
+    `gfx::encode::encode_color`, which `read_surface` already uses.
 - **Alpha test in the built-in pre-transformed shader.** Alpha-tested draws
   on that path stop today.
 - **Indexed draws.** The device de-indexes on the CPU.
 - **Batching several draws into one pass.** The backend opens one pass per
   draw. That is correct but slow.
-- **Partial-rectangle and channel-masked clears.** Both stop today.
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
   `gfx::encode::HostPixelOrder`.

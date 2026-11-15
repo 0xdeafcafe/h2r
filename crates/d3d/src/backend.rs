@@ -74,6 +74,89 @@ pub struct Viewport {
     pub max_z: f32,
 }
 
+/// A rectangle in target pixels, `[x, x + width) x [y, y + height)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct PixelRect {
+    /// Left edge.
+    pub x: u32,
+    /// Top edge.
+    pub y: u32,
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+}
+
+impl PixelRect {
+    /// Whether this is the whole `w x h` target.
+    pub fn is_whole(&self, w: u32, h: u32) -> bool {
+        self.x == 0 && self.y == 0 && self.width == w && self.height == h
+    }
+}
+
+/// Colour channels a clear writes (`D3DCLEAR_TARGET_R/G/B/A`, Xbox bits
+/// `0x10`/`0x20`/`0x40`/`0x80`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct ChannelMask {
+    /// Red (`0x10`).
+    pub red: bool,
+    /// Green (`0x20`).
+    pub green: bool,
+    /// Blue (`0x40`).
+    pub blue: bool,
+    /// Alpha (`0x80`).
+    pub alpha: bool,
+}
+
+impl ChannelMask {
+    /// From the `D3DCLEAR` flags.
+    pub fn from_flags(flags: u32) -> Self {
+        Self {
+            red: flags & 0x10 != 0,
+            green: flags & 0x20 != 0,
+            blue: flags & 0x40 != 0,
+            alpha: flags & 0x80 != 0,
+        }
+    }
+
+    /// Any channel at all.
+    pub fn any(&self) -> bool {
+        self.red || self.green || self.blue || self.alpha
+    }
+
+    /// All four.
+    pub fn all(&self) -> bool {
+        self.red && self.green && self.blue && self.alpha
+    }
+}
+
+/// A clear that is not one whole-attachment clear: some rectangles, or
+/// only some colour channels. The values are the same as [`Clear`]'s.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RectClear {
+    /// Rectangles, already clipped to the viewport and the target, none
+    /// empty.
+    pub rects: Vec<PixelRect>,
+    /// Colour and the channels to write (`None`: colour untouched).
+    pub color: Option<([f32; 4], ChannelMask)>,
+    /// Depth (0..1).
+    pub depth: Option<f32>,
+    /// Stencil.
+    pub stencil: Option<u8>,
+}
+
+/// How a colour surface's bytes are laid out in guest memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuestLayoutKind {
+    /// Morton order (a swizzled texture level).
+    Swizzled,
+    /// Rows `pitch` bytes apart.
+    Linear {
+        /// Row pitch in bytes.
+        pitch: u32,
+    },
+}
+
 /// A fully resolved draw: nothing in it refers to guest memory.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ResolvedDraw {
@@ -104,6 +187,17 @@ pub struct ResolvedDraw {
     pub shader: ShaderInputs,
     /// Current viewport.
     pub viewport: Viewport,
+    /// Where the draw may write: the viewport intersected with the
+    /// (inclusive) scissor rectangles and the target. On the Xbox,
+    /// `SetViewport` resets the scissors to the viewport rectangle
+    /// (`SetScissors(0, 0, 0)` at `0x3f82e8`), so pre-transformed geometry is
+    /// clipped to it. `None`: the scissors keep nothing.
+    pub clip: Option<PixelRect>,
+    /// NV2A register state when the draw was issued (viewport offset and
+    /// scale, depth clip range, `SET_CONTROL0`; see [`crate::hw`]). The
+    /// viewport transform of programmable and pass-through shaders lives
+    /// here (and in constants 58/59), not in `viewport`.
+    pub hw: crate::hw::HwState,
     /// Header addresses of the bound textures (identity for the backend's
     /// own bookkeeping; the resolved host textures are passed separately).
     pub textures: [Option<u32>; 4],
@@ -162,6 +256,54 @@ pub trait Backend: Send {
     ) -> Result<DrawOutcome, String>;
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
+    /// Clears rectangles of the attachments, or only some colour channels.
+    /// `Unsupported` stops the device (the default: no backend support).
+    fn clear_rects(
+        &mut self,
+        color: Self::Surface,
+        depth: Option<Self::Surface>,
+        clear: &RectClear,
+    ) -> Result<DrawOutcome, String> {
+        let _ = (color, depth);
+        Ok(DrawOutcome::Unsupported(format!(
+            "partial clear ({} rectangle(s), channels {:?}): the backend has no clear_rects",
+            clear.rects.len(),
+            clear.color.map(|c| c.1)
+        )))
+    }
+    /// Reads a colour surface back as guest bytes: `format` texels of a
+    /// `width x height` level laid out as `layout` (render-to-texture
+    /// write-back). The default cannot.
+    fn read_surface(
+        &mut self,
+        surface: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Vec<u8>, String> {
+        let _ = (surface, width, height, layout);
+        Err(format!(
+            "the backend cannot read surfaces back ({format:?})"
+        ))
+    }
+    /// Fills a colour surface from guest bytes laid out like
+    /// [`read_surface`](Self::read_surface)'s, so a render-to-texture target
+    /// starts with the level's current texels. `Ok(false)`: the backend
+    /// cannot, and the surface keeps whatever it was created with (the
+    /// default; `docs/d3d.md` gives the gfx API this needs).
+    fn write_surface(
+        &mut self,
+        surface: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+        bytes: &[u8],
+    ) -> Result<bool, String> {
+        let _ = (surface, format, width, height, layout, bytes);
+        Ok(false)
+    }
 }
 
 /// What [`RecordingBackend`] saw.
@@ -206,6 +348,27 @@ pub enum Recorded {
         /// Handle.
         id: u32,
     },
+    /// `clear_rects`.
+    ClearRects {
+        /// Target.
+        color: u32,
+        /// What.
+        clear: RectClear,
+    },
+    /// `read_surface`.
+    ReadSurface {
+        /// Surface.
+        surface: u32,
+        /// Bytes returned.
+        len: usize,
+    },
+    /// `write_surface`.
+    WriteSurface {
+        /// Surface.
+        surface: u32,
+        /// The bytes written.
+        bytes: Vec<u8>,
+    },
     /// `present`.
     Present {
         /// Surface shown.
@@ -221,6 +384,8 @@ pub struct RecordingBackend {
     /// Calls in order.
     pub calls: Vec<Recorded>,
     next: u32,
+    /// The byte `read_surface` returns.
+    pub readback_fill: u8,
 }
 
 impl RecordingBackend {
@@ -334,5 +499,52 @@ impl Backend for RecordingBackend {
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.calls.push(Recorded::Present { surface, flags });
         Ok(())
+    }
+    fn clear_rects(
+        &mut self,
+        color: u32,
+        _depth: Option<u32>,
+        clear: &RectClear,
+    ) -> Result<DrawOutcome, String> {
+        self.calls.push(Recorded::ClearRects {
+            color,
+            clear: clear.clone(),
+        });
+        Ok(DrawOutcome::Drawn)
+    }
+    /// Records the bytes.
+    fn write_surface(
+        &mut self,
+        surface: u32,
+        _format: D3DFormat,
+        _width: u32,
+        _height: u32,
+        _layout: GuestLayoutKind,
+        bytes: &[u8],
+    ) -> Result<bool, String> {
+        self.calls.push(Recorded::WriteSurface {
+            surface,
+            bytes: bytes.to_vec(),
+        });
+        Ok(true)
+    }
+    /// Returns `readback_fill` repeated to the level's size.
+    fn read_surface(
+        &mut self,
+        surface: u32,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Vec<u8>, String> {
+        let bpp = format
+            .bytes_per_texel()
+            .ok_or_else(|| format!("{format:?} has no texel size"))?;
+        let len = match layout {
+            GuestLayoutKind::Swizzled => (width * height * bpp) as usize,
+            GuestLayoutKind::Linear { pitch } => (pitch * height) as usize,
+        };
+        self.calls.push(Recorded::ReadSurface { surface, len });
+        Ok(vec![self.readback_fill; len])
     }
 }

@@ -151,22 +151,6 @@ render_state_setters! {
 /// one stops with `D3dError::Unimplemented`.
 pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
     (
-        0x3f6190,
-        "D3D viewport push fragment",
-        "EAX = put, ESI = device; returns EAX",
-    ),
-    (
-        0x3f6390,
-        "D3D push fragment (0x3f6390)",
-        "EDX = put, [esp+4] = device; returns EDX; ret 4",
-    ),
-    (0x3f6840, "D3D_UpdateProjectionViewportTransform", "no args"),
-    (
-        0x3f6f40,
-        "D3D transform/viewport push (0x3f6f40)",
-        "ESI = device",
-    ),
-    (
         0x3f7410,
         "D3DDevice_SetVertexShaderConstantNotInline",
         "register (unrecovered)",
@@ -187,17 +171,8 @@ pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
         "D3DDevice_GetVisibilityTestResult (assumed)",
         "EAX = index; ret 4",
     ),
-    (0x3f8ad0, "D3DDevice_PersistDisplay", "no args"),
-    (0x3f8c70, "D3D display/flicker filter (0x3f8c70)", "ESI"),
-    (
-        0x3f8cc0,
-        "D3D gamma/display ramp (0x3f8cc0)",
-        "stdcall 1 arg, copies 32 dwords to device+0x197C; ret 4",
-    ),
     (0x3fae10, "D3D inline UP draw (0x3fae10)", "unrecovered"),
     (0x3fb520, "D3D_DestroyResource", "register (unrecovered)"),
-    (0x3fb710, "D3D surface helper (0x3fb710)", "ECX"),
-    (0x3fdb20, "Get2DSurfaceDesc", "register (unrecovered)"),
     (0x3ff5c6, "D3D miniport (0x3ff5c6)", "unrecovered"),
     (
         0x401030,
@@ -221,6 +196,11 @@ pub const NATIVE: &[(u32, &str, &str)] = &[
         0x3fdbc0,
         "D3D surface level layout (0x3fdbc0)",
         "stdcall 8 args; reads the header and the format table 0x403a50; ret 0x20",
+    ),
+    (
+        0x3fdb20,
+        "Get2DSurfaceDesc",
+        "EDI = pixel container, EBX = level, ESI = D3DSURFACE_DESC out; reads the format table 0x403a50, device +0x1A14 (back buffer Data) and +0x196C (multisample type, written by CreateDevice); callees 0x3fb690, 0x3fd9c0 are pure",
     ),
     (
         0x3fde00,
@@ -689,6 +669,72 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
                 let a = args::<1>(m, r)?;
                 Ok(Outcome::eax(d.resource_release(m, a[0])?, 4))
             },
+        },
+        Entry {
+            addr: 0x3f6190,
+            name: "D3D viewport push fragment",
+            convention: "EAX = put, ESI = device; returns EAX = new put; ret",
+            call: |d, m, r| Ok(Outcome::eax(d.push_viewport(m, r.eax, r.esi)?, 0)),
+        },
+        Entry {
+            addr: 0x3f6390,
+            name: "D3D push fragment (0x3f6390)",
+            convention: "EDX = put, [esp+4] = device; returns EAX = put + 8; ret 4",
+            call: |d, m, r| {
+                let a = args::<1>(m, r)?;
+                Ok(Outcome::eax(d.push_control0(m, r.edx, a[0])?, 4))
+            },
+        },
+        Entry {
+            addr: 0x3f6840,
+            name: "D3D_UpdateProjectionViewportTransform",
+            convention: "no args; ret",
+            call: |d, m, _| {
+                d.update_projection_viewport(m)?;
+                Ok(Outcome::pop(0))
+            },
+        },
+        Entry {
+            addr: 0x3f6f40,
+            name: "D3D transform/viewport push (0x3f6f40)",
+            convention: "ESI = device; stores and returns EAX = new put when it pushes; ret",
+            call: |d, m, r| {
+                Ok(match d.load_passthrough(m, r.esi)? {
+                    Some(put) => Outcome::eax(put, 0),
+                    None => Outcome::pop(0),
+                })
+            },
+        },
+        Entry {
+            addr: 0x3f8ad0,
+            name: "D3DDevice_PersistDisplay",
+            convention: "no args; returns EAX = HRESULT; ret",
+            call: |d, m, _| Ok(Outcome::eax(d.persist_display(m)?, 0)),
+        },
+        Entry {
+            addr: 0x3f8c70,
+            name: "D3D display/flicker filter (0x3f8c70)",
+            convention: "ESI = filter; ret",
+            call: |d, m, r| {
+                d.set_flicker_filter(m, r.esi)?;
+                Ok(Outcome::pop(0))
+            },
+        },
+        Entry {
+            addr: 0x3f8cc0,
+            name: "D3D gamma/display ramp (0x3f8cc0)",
+            convention: "stdcall(pBlock): 32 dwords to device +0x197C and method 0x1480; ret 4",
+            call: |d, m, r| {
+                let a = args::<1>(m, r)?;
+                d.set_ramp_block(m, a[0])?;
+                Ok(Outcome::pop(4))
+            },
+        },
+        Entry {
+            addr: 0x3fb710,
+            name: "D3D surface helper (0x3fb710)",
+            convention: "ECX = resource; returns EAX = busy (0/1); ret",
+            call: |d, m, r| Ok(Outcome::eax(d.resource_busy(m, r.ecx)?, 0)),
         },
         Entry {
             addr: 0x400fa0,

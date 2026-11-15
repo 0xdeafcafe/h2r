@@ -13,25 +13,28 @@
 //!   combiners). A draw the provider cannot translate is skipped with the
 //!   reason.
 //!
-//! Every draw is clipped to the viewport rectangle with a scissor: vertex
-//! positions are already window coordinates (pre-transformed vertices, and
-//! NV2A programs apply the viewport themselves), so the wgpu viewport stays
-//! the whole target.
+//! Every draw is clipped with a scissor to [`ResolvedDraw::clip`] (the
+//! viewport narrowed by the target and the guest scissor). The wgpu
+//! viewport stays the whole target: vertex positions are already window
+//! coordinates (pre-transformed vertices, and NV2A programs apply the
+//! viewport themselves), so a `gfx::DrawViewport` would transform them
+//! twice.
 //!
-//! Not used yet (the device does not hand these over): gfx's partial and
-//! channel-masked clears (`gfx::Renderer::clear_rects`), indexed draws
-//! (`gfx::Draw::indices`; the device de-indexes on the CPU), scissor
-//! rectangles beyond the viewport, and render-to-texture surfaces
-//! (`gfx::surface::SurfaceStore::create_texture_target`). The backend
-//! opens one pass per draw, correct but slow.
+//! Partial and channel-masked clears ([`Backend::clear_rects`]) go to
+//! `gfx::Renderer::clear_rects`. Render-to-texture levels are
+//! `SurfaceStore::create_texture_target` surfaces, filled from guest memory
+//! with `SurfaceStore::write_color` and read back with `gfx::readback` and
+//! `gfx::encode`. `set_pretransformed_z_max` is renderer-wide, so it is set
+//! before every built-in draw. The backend opens one pass per draw,
+//! correct but slow.
 
 use gfx::renderer::{SHADER_XYZRHW_DIFFUSE, d3dz_max};
 use gfx::surface::{SurfaceDesc, SurfaceId, SurfaceKind, SurfaceStore};
 use gfx::texture::DecodedTexture;
 use gfx::texture::TextureKind;
-use gfx::{Clear, D3DFormat, Draw, GfxContext, Renderer, ScissorRect, VertexStream};
+use gfx::{Clear, D3DFormat, Draw, GfxContext, MaskedClear, Renderer, ScissorRect, VertexStream};
 
-use crate::backend::{Backend, DrawOutcome, ResolvedDraw};
+use crate::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
 use crate::nv2a::{Nv2aShaders, builtin_equivalent};
 use crate::shader::{ShaderProvider, VertexProcessing};
 
@@ -187,14 +190,24 @@ impl Backend for GfxBackend {
                 stride: s.stride,
             })
             .collect();
-        // Window-coordinate geometry: the viewport only clips.
-        let v = d.viewport;
-        let scissor = Some(ScissorRect::from_edges(
-            v.x as i64,
-            v.y as i64,
-            v.x as i64 + v.width as i64,
-            v.y as i64 + v.height as i64,
-        ));
+        // Window-coordinate geometry: the clip rectangle only scissors.
+        let scissor = Some(match d.clip {
+            Some(c) => ScissorRect {
+                x: c.x,
+                y: c.y,
+                width: c.width,
+                height: c.height,
+            },
+            None => {
+                let v = d.viewport;
+                ScissorRect::from_edges(
+                    v.x as i64,
+                    v.y as i64,
+                    v.x as i64 + v.width as i64,
+                    v.y as i64 + v.height as i64,
+                )
+            }
+        });
         let fixed = matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. });
         let textured = textures.iter().any(Option::is_some);
         let readable = fixed && Renderer::builtin_supports(&d.layout);
@@ -278,6 +291,95 @@ impl Backend for GfxBackend {
         };
         self.pass(color, depth, Clear::NONE, &[draw])?;
         Ok(DrawOutcome::Drawn)
+    }
+
+    fn clear_rects(
+        &mut self,
+        color: SurfaceId,
+        depth: Option<SurfaceId>,
+        c: &RectClear,
+    ) -> Result<DrawOutcome, String> {
+        let (rgba, mask) = c.color.unzip();
+        let mut channels = wgpu::ColorWrites::empty();
+        if let Some(m) = mask {
+            for (on, w) in [
+                (m.red, wgpu::ColorWrites::RED),
+                (m.green, wgpu::ColorWrites::GREEN),
+                (m.blue, wgpu::ColorWrites::BLUE),
+                (m.alpha, wgpu::ColorWrites::ALPHA),
+            ] {
+                if on {
+                    channels |= w;
+                }
+            }
+        }
+        let clear = MaskedClear {
+            color: rgba,
+            channels,
+            depth: c.depth,
+            stencil: c.stencil,
+        };
+        let rects: Vec<ScissorRect> = c
+            .rects
+            .iter()
+            .map(|r| ScissorRect {
+                x: r.x,
+                y: r.y,
+                width: r.width,
+                height: r.height,
+            })
+            .collect();
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        if let Some(d) = depth {
+            self.store
+                .prepare_target(&self.ctx, &mut enc, color, d)
+                .map_err(|e| e.to_string())?;
+        }
+        {
+            let target = self.store.target(color, depth).map_err(|e| e.to_string())?;
+            self.renderer
+                .clear_rects(&self.ctx, &mut enc, &target, clear, &rects);
+        }
+        self.store
+            .finish_target(&mut enc, color)
+            .map_err(|e| e.to_string())?;
+        self.ctx.queue.submit([enc.finish()]);
+        Ok(DrawOutcome::Drawn)
+    }
+
+    fn read_surface(
+        &mut self,
+        surface: SurfaceId,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Vec<u8>, String> {
+        use gfx::encode::HostPixelOrder;
+        use gfx::surface::SurfaceLayout;
+        let s = self.store.get(surface).map_err(|e| e.to_string())?;
+        let order = match s.wgpu_format() {
+            wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
+                HostPixelOrder::Bgra8
+            }
+            wgpu::TextureFormat::Rgba8Unorm | wgpu::TextureFormat::Rgba8UnormSrgb => {
+                HostPixelOrder::Rgba8
+            }
+            f => return Err(format!("cannot read back a {f:?} surface")),
+        };
+        let pixels = gfx::readback::read_texture(
+            &self.ctx,
+            s.texture(),
+            wgpu::TextureAspect::All,
+            4,
+            (width, height),
+        );
+        let layout = match layout {
+            GuestLayoutKind::Swizzled => SurfaceLayout::Swizzled,
+            GuestLayoutKind::Linear { pitch } => SurfaceLayout::Linear { pitch },
+        };
+        gfx::encode::encode_color(format, order, &pixels, width, height, &layout)
+            .map_err(|e| e.to_string())
     }
 
     fn present(&mut self, surface: SurfaceId, flags: u32) -> Result<(), String> {

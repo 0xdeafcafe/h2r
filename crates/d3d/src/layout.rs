@@ -38,6 +38,19 @@ pub struct GuestLayout {
     /// `D3DSIMPLERENDERSTATEENCODE[92]`, read-only data in the image; the
     /// device reads it at creation ([`crate::pushbuf::SimpleEncode`]).
     pub simple_encode: u32,
+    /// D3D's default (FVF) vertex-shader object, which CreateDevice makes
+    /// current at device `+0x794` (`0x3fc421`).
+    pub default_vertex_shader: u32,
+    /// The three screen-space pass-through vertex programs `0x3f6f40`
+    /// loads (read from the image, never copied into the crate):
+    /// `[fog table mode off, w-buffered, z-buffered]` with 0x30, 0x2C and
+    /// 0x30 dwords (`0x3f6f5e`, `0x3f6f70`, `0x3f6f77`).
+    pub passthrough_programs: [(u32, u32); 3],
+    /// Display globals of the flicker-filter setter `0x3f8c70`: the last
+    /// value (`0x408630`) and its "sent" flag (`0x40863C`).
+    pub flicker_filter: (u32, u32),
+    /// The word `PersistDisplay` clears with the flicker flag (`0x3f8bf2`).
+    pub persist_word: u32,
 }
 
 /// Number of guest render-state slots in build 5849.
@@ -100,6 +113,53 @@ pub mod device_field {
     pub const DISPLAY_SURFACE: u32 = 0x1A18;
     /// Swap counter returned by `Swap`.
     pub const SWAP_COUNT: u32 = 0x2478;
+    /// W-buffer parameters derived from the projection by `SetTransform`
+    /// (`0x3f7ff0`): `+0x93C`, `+0x940` and `+0x944 = 1 / +0x940`.
+    pub const W_NEAR: u32 = 0x93C;
+    /// See [`W_NEAR`].
+    pub const W_FAR: u32 = 0x940;
+    /// See [`W_NEAR`].
+    pub const INV_W_FAR: u32 = 0x944;
+    /// Depth-buffer full-scale value for the depth format (`0x3fd970`):
+    /// 16777215 (D24S8), 65535 (D16), 1e30 (F24S8), 511.9375 (F16).
+    pub const Z_SCALE: u32 = 0x948;
+    /// Target width and height in pixels (`0x3f6741`/`0x3f6747`).
+    pub const TARGET_WIDTH: u32 = 0x954;
+    /// See [`TARGET_WIDTH`].
+    pub const TARGET_HEIGHT: u32 = 0x958;
+    /// Super-sample scale x and y (`0x3f6739`/`0x3f672f`).
+    pub const SUPERSAMPLE_X: u32 = 0x95C;
+    /// See [`SUPERSAMPLE_X`].
+    pub const SUPERSAMPLE_Y: u32 = 0x960;
+    /// Back-buffer scale from the multisample type (`0x3fc9f6`/`0x3fca0f`).
+    pub const BACK_BUFFER_SCALE_X: u32 = 0x96C;
+    /// See [`BACK_BUFFER_SCALE_X`].
+    pub const BACK_BUFFER_SCALE_Y: u32 = 0x970;
+    /// Composite matrix `projection * viewport` (`0x3f6840`).
+    pub const COMPOSITE: u32 = 0x980;
+    /// `SetTransform` matrices, 64 bytes each (`0x3f7ffe`).
+    pub const TRANSFORMS: u32 = 0xC60;
+    /// The projection matrix (`TRANSFORMS + 64`).
+    pub const PROJECTION: u32 = 0xCA0;
+    /// Screen-space offset x and y, 0.53125 (`0x3fbbd8`).
+    pub const SCREEN_OFFSET_X: u32 = 0xEF8;
+    /// See [`SCREEN_OFFSET_X`].
+    pub const SCREEN_OFFSET_Y: u32 = 0xEFC;
+    /// Multisample type of the back buffer (`0x3fc9e6`; 0 is stored as 0x11).
+    pub const MULTISAMPLE_TYPE: u32 = 0x196C;
+    /// 32-dword copy of the `0x3f8cc0` block.
+    pub const RAMP: u32 = 0x197C;
+    /// Depth clip range: fixed-function `{min, max}` at `+0x1C08`,
+    /// programmable `{min, max}` at `+0x1C10`.
+    pub const CLIP_FIXED: u32 = 0x1C08;
+    /// See [`CLIP_FIXED`].
+    pub const CLIP_PROGRAM: u32 = 0x1C10;
+    /// Bit 0: game owns the fixed-function clip range; bit 1: the
+    /// programmable one (game code sets these, `0x12da9`).
+    pub const CLIP_FLAGS: u32 = 0x1C18;
+    /// Vertical-blank callback (`D3DDevice_SetVerticalBlankCallback`,
+    /// inlined at `0x12b093`).
+    pub const VBLANK_CALLBACK: u32 = 0x1DB8;
 }
 
 impl GuestLayout {
@@ -117,6 +177,14 @@ impl GuestLayout {
         game_device_pointer: 0x0050_93B0,
         static_vertex_shader: 0x0040_8518,
         simple_encode: 0x0043_E6F0,
+        default_vertex_shader: 0x0040_8340,
+        passthrough_programs: [
+            (0x0040_3E40, 0x30),
+            (0x0040_3D90, 0x2C),
+            (0x0040_3CD0, 0x30),
+        ],
+        flicker_filter: (0x0040_8630, 0x0040_863C),
+        persist_word: 0x0040_8640,
     };
 
     /// Address of render-state slot `slot` (guest numbering).

@@ -215,9 +215,29 @@ fn r2_set_viewport_resets_scissors() {
         m.write_u32(rect + 4 * i as u32, *w).unwrap();
     }
     d.set_scissors(&mut m, 1, 0, rect).unwrap();
-    assert!(is_unimplemented(&d.draw_vertices(&mut m, 6, 0, 4)));
+    // The draw carries the scissor as its clip rectangle.
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    let clip = |d: &d3d::Device<RecordingBackend>| d.backend.draws().last().unwrap().clip;
+    assert_eq!(
+        clip(&d),
+        Some(d3d::PixelRect {
+            x: 8,
+            y: 8,
+            width: 8,
+            height: 8
+        })
+    );
     d.set_viewport(&mut m, VP).unwrap();
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(
+        clip(&d),
+        Some(d3d::PixelRect {
+            x: 0,
+            y: 0,
+            width: W,
+            height: H
+        })
+    );
     // Null too (0x3f8110 jumps to the SetScissors call).
     d.set_scissors(&mut m, 1, 0, rect).unwrap();
     d.set_viewport(&mut m, 0).unwrap();
@@ -236,17 +256,34 @@ fn r3_clear_clips_to_the_viewport() {
             .filter(|c| matches!(c, d3d::Recorded::Clear { .. }))
             .count()
     };
+    let rect_clears = |d: &d3d::Device<RecordingBackend>| -> Vec<Vec<d3d::PixelRect>> {
+        d.backend
+            .calls
+            .iter()
+            .filter_map(|c| match c {
+                d3d::Recorded::ClearRects { clear, .. } => Some(clear.rects.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let vp_rect = d3d::PixelRect {
+        x: 8,
+        y: 8,
+        width: 16,
+        height: 16,
+    };
     viewport(&mut m, VP, [8, 8, 16, 16], [0.0, 1.0]);
     d.set_viewport(&mut m, VP).unwrap();
-    // Count = 0 means the viewport: partial, so it stops before clearing.
-    let r = d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0);
-    assert!(is_unimplemented(&r), "{r:?}");
+    // Count = 0 means the viewport: a rectangle clear of the viewport.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    assert_eq!(rect_clears(&d), vec![vec![vp_rect]]);
     // A full-target rectangle is clipped to the viewport too.
     let rect = VP + 0x100;
     for (i, w) in [0u32, 0, W, H].iter().enumerate() {
         m.write_u32(rect + 4 * i as u32, *w).unwrap();
     }
-    assert!(is_unimplemented(&d.clear(&mut m, 1, rect, 0xF0, 0, 1.0, 0)));
+    d.clear(&mut m, 1, rect, 0xF0, 0, 1.0, 0).unwrap();
+    assert_eq!(rect_clears(&d).last(), Some(&vec![vp_rect]));
     // A rectangle outside the viewport clears nothing (and does not stop).
     for (i, w) in [40u32, 40, 60, 60].iter().enumerate() {
         m.write_u32(rect + 4 * i as u32, *w).unwrap();
@@ -274,8 +311,7 @@ fn r3_gpu_clear_never_touches_pixels_outside_the_viewport() {
     d.clear(&mut m, 0, 0, 0xF0, 0xFF00_00FF, 1.0, 0).unwrap();
     viewport(&mut m, VP, [8, 8, 16, 16], [0.0, 1.0]);
     d.set_viewport(&mut m, VP).unwrap();
-    let r = d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0);
-    assert!(is_unimplemented(&r), "{r:?}");
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
     let (px, order) = d
         .backend
         .store
@@ -287,6 +323,26 @@ fn r3_gpu_clear_never_touches_pixels_outside_the_viewport() {
         _ => p,
     };
     assert_eq!(p, [0, 0, 255, 255], "pixel outside the viewport stays blue");
+    let q = pixel(&px, 8, 8);
+    let q = match order {
+        gfx::encode::HostPixelOrder::Bgra8 => [q[2], q[1], q[0], q[3]],
+        _ => q,
+    };
+    assert_eq!(
+        q,
+        [255, 0, 0, 255],
+        "pixel inside the viewport is cleared red"
+    );
+    let r = pixel(&px, 24, 24);
+    let r = match order {
+        gfx::encode::HostPixelOrder::Bgra8 => [r[2], r[1], r[0], r[3]],
+        _ => r,
+    };
+    assert_eq!(
+        r,
+        [0, 0, 255, 255],
+        "first pixel past the viewport stays blue"
+    );
 }
 
 // r4: inline vertex cap ----------------------------------------------------------
@@ -383,12 +439,17 @@ fn doc_inline_method_table_has_no_psdef_stores() {
         );
     }
     assert!(doc.contains("`0x00052b89`") && doc.contains("PSDEF"));
+    // Pushed, 0x0A20 is NV097_SET_VIEWPORT_OFFSET (D3D's 0x3f6190 pushes
+    // it); it lands in the register state, not in a PSDEF.
     let (mut d, mut m) = rec();
-    push_words(&mut m, &[(1 << 18) | 0x0A20, 0]);
+    push_words(&mut m, &[(1 << 18) | 0x0A20, 2.0f32.to_bits()]);
+    d.commit(&mut m).unwrap();
+    assert_eq!(d.hw().viewport_offset[0], 2.0);
+    push_words(&mut m, &[(1 << 18) | 0x1D8C, 0]);
     assert!(matches!(
         d.commit(&mut m),
         Err(D3dError::Push(PushError::UnknownMethod {
-            method: 0x0A20,
+            method: 0x1D8C,
             ..
         }))
     ));

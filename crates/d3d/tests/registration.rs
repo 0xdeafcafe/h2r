@@ -147,10 +147,10 @@ fn register_installs_every_entry_but_the_native_helpers() {
     let entries = abi::entries::<RecordingBackend>();
     assert_eq!(r.implemented.len() + r.stopping.len(), entries.len());
     assert_eq!(r.stopping.len(), abi::UNIMPLEMENTED.len());
-    // The counts docs/d3d.md gives: 89 overrides (71 + 18) and 3 native.
+    // The counts docs/d3d.md gives: 88 overrides (79 + 9) and 4 native.
     assert_eq!(
         (r.implemented.len(), r.stopping.len(), r.native.len()),
-        (71, 18, 3)
+        (79, 9, 4)
     );
     assert!(r.implemented.iter().any(|e| e.0 == 0x3f5cc0));
     for e in &entries {
@@ -259,10 +259,9 @@ fn guest_faults_inside_d3d_are_runtime_memory_faults() {
 #[test]
 fn push_buffer_faults_are_runtime_memory_faults() {
     let mut h = harness_with(None, false);
-    h.ok(0x3f5240, regs(0x40, PP_DEVICE), &[PARAMS]);
-    // Game code "wrote" two words: put moves, the memory is not there.
-    h.ctx.memory().set_u32(DEV, PB.addr + 8).unwrap();
-    let (t, _) = h.call(0x3f9d00, regs(0, 0), &[]);
+    // CreateDevice pushes the viewport registers (as `0x3fbc02` does), and
+    // the push buffer is not mapped.
+    let (t, _) = h.call(0x3f5240, regs(0x40, PP_DEVICE), &[PARAMS]);
     assert_eq!(t.kind, rt::FAULT, "{t:?}");
     assert!(
         matches!(h.ctx.event(t.event_id), Some(Event::MemoryFault { fault, .. }) if fault.addr == PB.addr),

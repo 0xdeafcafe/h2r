@@ -47,6 +47,7 @@ use crate::backend::{
 use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};
 use crate::events::{D3dError, Event, HleStop};
 use crate::guest::GuestMemory;
+use crate::hw::{HwState, Memories};
 use crate::layout::{GuestLayout, RENDER_STATE_SLOTS, device_field as field};
 use crate::pushbuf::{self, Effect, Immediate, ImmediateDraw, PushError, SimpleEncode};
 use crate::resource::{
@@ -54,6 +55,13 @@ use crate::resource::{
 };
 use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
 use crate::state::{StateWords, slot};
+
+mod display;
+mod fragments;
+mod raster;
+
+pub use display::{VBLANK_SWAPDONE, VBlank};
+pub use raster::RttTarget;
 
 /// A range of guest virtual memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -251,6 +259,15 @@ pub struct Stats {
     pub texture_uploads: u64,
     /// Texture cache hits.
     pub texture_hits: u64,
+    /// NV2A register methods applied from the push buffer ([`crate::hw`]).
+    pub hw_methods: u64,
+    /// Clears that were not one whole-attachment clear (rectangles or
+    /// channel masks), handed to [`Backend::clear_rects`].
+    pub partial_clears: u64,
+    /// Render-to-texture write-backs into guest memory.
+    pub rtt_writebacks: u64,
+    /// Vertical blanks counted ([`Device::vblank`]).
+    pub vblanks: u64,
 }
 
 /// Cache key: texture header plus, for P8 textures, the palette header
@@ -361,6 +378,12 @@ pub struct Device<B: Backend> {
     stats: Stats,
     /// `D3DSIMPLERENDERSTATEENCODE`, read from the image at creation.
     encode: Option<SimpleEncode>,
+    /// NV2A register state the push buffer has set ([`crate::hw`]).
+    hw: HwState,
+    /// Display state: flicker filter, persisted surface, vertical blank.
+    display: display::Display<B::Surface>,
+    /// Render-to-texture targets, by surface header ([`RttTarget`]).
+    rtt: HashMap<u32, RttTarget<B::Surface>>,
 }
 
 fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
@@ -431,6 +454,9 @@ impl<B: Backend> Device<B> {
             last_stop: None,
             stats: Stats::default(),
             encode: None,
+            hw: HwState::default(),
+            display: display::Display::default(),
+            rtt: HashMap::new(),
         }
     }
 
@@ -639,6 +665,7 @@ impl<B: Backend> Device<B> {
         self.consumed = pb.addr;
         self.params = Some(p);
         self.created = true;
+        self.init_transform_state(mem)?;
         Ok(0)
     }
 
@@ -834,6 +861,11 @@ impl<B: Backend> Device<B> {
         }
     }
 
+    /// NV2A register state the push buffer has set so far.
+    pub fn hw(&self) -> &HwState {
+        &self.hw
+    }
+
     /// The latched fault, if any.
     pub fn fault(&self) -> Option<&str> {
         self.fault.as_deref()
@@ -875,11 +907,25 @@ impl<B: Backend> Device<B> {
                             self.push_slot(mem, slot, w)?;
                         }
                         None => {
-                            return Err(PushError::UnknownMethod {
-                                method: m,
-                                at: c.at,
+                            let mut mems = Memories {
+                                constants: &mut self.constants,
+                                program: &mut self.program,
+                            };
+                            let known = self
+                                .hw
+                                .apply(m, w, &mut mems)
+                                .map_err(|e| D3dError::invalid("push buffer", e.to_string()))?;
+                            if !known {
+                                return Err(PushError::UnknownMethod {
+                                    method: m,
+                                    at: c.at,
+                                }
+                                .into());
                             }
-                            .into());
+                            if m == crate::hw::method::PROGRAM_START {
+                                self.program_start = w;
+                            }
+                            self.stats.hw_methods += 1;
                         }
                     }
                 }
@@ -918,7 +964,8 @@ impl<B: Backend> Device<B> {
     /// pending words (the host GPU is synchronous, so nothing waits).
     pub fn kick_off(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         self.live("CDevice_KickOff")?;
-        self.sync_push_buffer(mem)
+        self.sync_push_buffer(mem)?;
+        self.flush_render_targets(mem)
     }
 
     /// The deferred-state commit (`0x400fa0`): executes pending words, makes
@@ -988,6 +1035,16 @@ impl<B: Backend> Device<B> {
         }
         if guest_slot == slot::ZBIAS {
             return self.apply_zbias(mem, value);
+        }
+        if guest_slot == slot::ZENABLE {
+            // `0x3f5546..0x3f5588`: entering or leaving w-buffering redoes
+            // the transform fragments.
+            let old = mem.read_u32(self.cfg.layout.render_state_slot(guest_slot))?;
+            self.store_rs(mem, guest_slot, value)?;
+            if old == 2 || value == 2 {
+                self.refresh_transform(mem, true, true)?;
+            }
+            return Ok(());
         }
         self.store_rs(mem, guest_slot, value)
     }
@@ -1284,6 +1341,9 @@ impl<B: Backend> Device<B> {
         if handle != 0 {
             self.vertex_shader = handle;
             self.stream_inputs = Some(new);
+            if handle & 1 != 0 {
+                self.select_shader_object(mem, handle)?;
+            }
         }
         Ok(())
     }
@@ -1339,7 +1399,18 @@ impl<B: Backend> Device<B> {
                 mem.write_u32(obj + 0x14 + 4 * i as u32, w)?;
             }
             self.vertex_shader = obj | 1;
+            self.select_shader_object(mem, obj | 1)?;
         }
+        // `0x3f6d34`: SET_TRANSFORM_PROGRAM_START, mirrored at `+0x79C`.
+        let dev = self.cfg.layout.device;
+        let put = self.reserve(mem)?;
+        Self::write_words(
+            mem,
+            put,
+            &[0x0004_0000 | crate::hw::method::PROGRAM_START, address],
+        )?;
+        mem.write_u32(dev + 0x79C, address)?;
+        mem.write_u32(dev + field::PUT, put + 8)?;
         Ok(())
     }
 
@@ -1508,7 +1579,13 @@ impl<B: Backend> Device<B> {
             let d = mem.read_u32(dirty)?;
             mem.write_u32(dirty, d | 0x100)?;
         }
+        // `0x3f82e2..0x3f830d`, also for a null viewport: SetScissors(0,
+        // 0, 0), the composite update and the viewport push.
         self.scissors.clear();
+        self.update_projection_viewport(mem)?;
+        let put = self.reserve(mem)?;
+        let put = self.push_viewport(mem, put, self.cfg.layout.device)?;
+        mem.write_u32(self.cfg.layout.device + field::PUT, put)?;
         Ok(())
     }
 
@@ -1614,15 +1691,9 @@ impl<B: Backend> Device<B> {
             ));
         }
         if h.parent != 0 {
-            // A level of a texture: drawing into a separate host surface
-            // would leave the texture's bytes stale for later sampling.
-            return Err(D3dError::unimplemented(
-                entry,
-                format!(
-                    "render target {header:#010x} is a level of texture {:#010x} (render-to-texture)",
-                    h.parent
-                ),
-            ));
+            // A level of a texture: its own host surface, written back into
+            // the level's memory when the guest can look (`raster.rs`).
+            return self.rtt_surface(mem, entry, header, &h, depth);
         }
         let id = h.pixels.identity();
         if let Some((i, s)) = self.other_surfaces.get(&header)
@@ -1695,11 +1766,40 @@ impl<B: Backend> Device<B> {
         if z_stencil != 0 {
             self.surface_for(mem, E, z_stencil, true)?;
         }
+        if target != self.render_target {
+            self.leave_target(mem)?;
+        }
         self.render_target = target;
         self.depth_stencil = z_stencil;
         let dev = self.cfg.layout.device;
         mem.write_u32(dev + field::RENDER_TARGET, target)?;
         mem.write_u32(dev + field::DEPTH_STENCIL, z_stencil)?;
+        // `0x3f793f` (depth scale), `0x3f6741` (target size), `0x3f682a`
+        // (pass-through reload), then `0x3f6836` tail-calls SetViewport
+        // with `{0, 0, 0x7FFFFFFF, 0x7FFFFFFF, 0, 1}` (`0x403B88`), which
+        // clips to the whole new target.
+        self.store_target_fields(mem)?;
+        self.load_passthrough(mem, dev)?;
+        let (w, h) = self.target_size(mem)?;
+        self.store_viewport(
+            mem,
+            Viewport {
+                x: 0,
+                y: 0,
+                width: w,
+                height: h,
+                min_z: 0.0,
+                max_z: 1.0,
+            },
+        )?;
+        let dirty = self.cfg.layout.dirty_flags;
+        let d = mem.read_u32(dirty)?;
+        mem.write_u32(dirty, d | 0x100)?;
+        self.scissors.clear();
+        self.update_projection_viewport(mem)?;
+        let put = self.reserve(mem)?;
+        let put = self.push_viewport(mem, put, dev)?;
+        mem.write_u32(dev + field::PUT, put)?;
         Ok(())
     }
 
@@ -1717,86 +1817,6 @@ impl<B: Backend> Device<B> {
         Ok((c, d))
     }
 
-    /// `D3DDevice_Clear` (`0x3f9fc0`, stdcall `Count, pRects, Flags, Color,
-    /// Z, Stencil`). Partial rectangles and partial colour-channel masks
-    /// stop.
-    #[allow(clippy::too_many_arguments)] // the D3D signature
-    pub fn clear(
-        &mut self,
-        mem: &mut dyn GuestMemory,
-        count: u32,
-        rects: u32,
-        flags: u32,
-        color: u32,
-        z: f32,
-        stencil: u32,
-    ) -> Result<(), D3dError> {
-        const E: &str = "D3DDevice_Clear";
-        self.live(E)?;
-        self.sync_push_buffer(mem)?;
-        let (w, h) = self.target_size(mem)?;
-        // As `0x3fa1a0..0x3fa247`: the viewport is the default rectangle
-        // (Count = 0), and every rectangle is intersected with it; empty
-        // intersections are skipped. The backend only clears whole
-        // attachments, so anything left that is not the whole target stops.
-        let v = self.viewport;
-        let vp = Rect {
-            x1: v.x as i32,
-            y1: v.y as i32,
-            x2: (v.x as i64 + v.width as i64).min(i32::MAX as i64) as i32,
-            y2: (v.y as i64 + v.height as i64).min(i32::MAX as i64) as i32,
-        };
-        let mut effective = Vec::new();
-        if count == 0 {
-            effective.push(vp);
-        } else {
-            if count > MAX_CLEAR_RECTS {
-                return Err(D3dError::invalid(E, format!("{count} rectangles")));
-            }
-            for i in 0..count {
-                let r = mem.read_words(at(rects, 16 * i as u64)?, 4)?;
-                effective.push(Rect {
-                    x1: (r[0] as i32).max(vp.x1),
-                    y1: (r[1] as i32).max(vp.y1),
-                    x2: (r[2] as i32).min(vp.x2),
-                    y2: (r[3] as i32).min(vp.y2),
-                });
-            }
-        }
-        effective.retain(|r| r.x1 < r.x2 && r.y1 < r.y2);
-        if effective.is_empty() {
-            return Ok(());
-        }
-        if !effective.iter().any(|r| r.covers(w, h)) {
-            let r = effective[0];
-            return Err(D3dError::unimplemented(
-                E,
-                format!(
-                    "partial clear of ({}, {})-({}, {}) on a {w}x{h} target ({} rectangle(s) after clipping to the viewport; gfx clears whole attachments)",
-                    r.x1,
-                    r.y1,
-                    r.x2,
-                    r.y2,
-                    effective.len()
-                ),
-            ));
-        }
-        let target_bits = flags & clear_flags::TARGET;
-        if target_bits != 0 && target_bits != clear_flags::TARGET {
-            return Err(D3dError::unimplemented(
-                E,
-                format!("partial colour-channel clear {target_bits:#x}"),
-            ));
-        }
-        let (c, d) = self.current_targets(mem, E)?;
-        let clear = Clear {
-            color: (target_bits != 0).then(|| d3dcolor_to_rgba(color)),
-            depth: (flags & clear_flags::ZBUFFER != 0 && d.is_some()).then_some(z),
-            stencil: (flags & clear_flags::STENCIL != 0 && d.is_some()).then_some(stencil as u8),
-        };
-        self.backend.clear(c, d, clear).map_err(D3dError::Backend)
-    }
-
     /// `D3DDevice_Swap` (`0x3f9d00`, `EAX` = flags). As compiled, flags 0 is
     /// replaced by 5 (`COPY | FINISH`). Returns the swap count, which is also
     /// stored at device `+0x2478` where game code reads it.
@@ -1808,6 +1828,8 @@ impl<B: Backend> Device<B> {
             return Err(D3dError::invalid(E, "Swap inside Begin/End"));
         }
         let flags = if flags == 0 { 5 } else { flags };
+        self.flush_render_targets(mem)?;
+        self.display.swapped = true;
         let sw = self.swap.as_mut().expect("created");
         let shown = sw.back[0];
         self.backend
@@ -1824,6 +1846,7 @@ impl<B: Backend> Device<B> {
         // not move (the backend presents `shown` directly).
         self.swap_count = self.swap_count.wrapping_add(1);
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
+        self.vblanks_after_swap(mem)?;
         Ok(self.swap_count)
     }
 
@@ -2147,24 +2170,15 @@ impl<B: Backend> Device<B> {
     }
 
     /// Raster state gfx cannot express yet: stop instead of rendering wrong.
+    /// What [`ResolvedDraw::clip`] cannot express: several scissor
+    /// rectangles of which none covers the target (gfx has one scissor).
     fn check_raster(&self, mem: &dyn GuestMemory, entry: &'static str) -> Result<(), D3dError> {
         let (w, h) = self.target_size(mem)?;
-        let v = self.viewport;
-        if v.x != 0 || v.y != 0 || v.width != w || v.height != h || v.min_z != 0.0 || v.max_z != 1.0
-        {
+        if self.scissors.len() > 1 && !self.scissors.iter().any(|r| r.covers(w, h)) {
             return Err(D3dError::unimplemented(
                 entry,
                 format!(
-                    "viewport {}x{} at ({}, {}) z [{}, {}] on a {w}x{h} target (gfx draws the whole target)",
-                    v.width, v.height, v.x, v.y, v.min_z, v.max_z
-                ),
-            ));
-        }
-        if !self.scissors.is_empty() && !self.scissors.iter().any(|r| r.covers(w, h)) {
-            return Err(D3dError::unimplemented(
-                entry,
-                format!(
-                    "{} scissor rectangle(s) not covering the {w}x{h} target",
+                    "{} scissor rectangles not covering the {w}x{h} target (one clip rectangle per draw)",
                     self.scissors.len()
                 ),
             ));
@@ -2172,17 +2186,22 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    fn submit(&mut self, mem: &dyn GuestMemory, parts: DrawParts) -> Result<(), D3dError> {
+    fn submit(&mut self, mem: &mut dyn GuestMemory, parts: DrawParts) -> Result<(), D3dError> {
         let entry = parts.entry;
         if parts.vertex_count == 0 {
             return Ok(());
         }
         self.check_raster(mem, entry)?;
+        let Some(clip) = self.draw_clip(mem)? else {
+            // The viewport and scissors leave nothing to draw into.
+            return Ok(());
+        };
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
+                self.flush_for_texture(mem, header)?;
                 let (k, i) = self.resolve_texture(mem, entry, header, self.palettes[stage])?;
                 keys[stage] = Some(k);
                 texture_info[stage] = Some(i);
@@ -2190,6 +2209,7 @@ impl<B: Backend> Device<B> {
         }
         let target = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
+        self.touch_target();
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = parts.words.translate(&self.table);
         for b in &state.bad {
@@ -2206,6 +2226,8 @@ impl<B: Backend> Device<B> {
             raw: Box::new(parts.words),
             shader,
             viewport: self.viewport,
+            clip: Some(clip),
+            hw: self.hw,
             target,
             textures: self.textures.map(|t| (t != 0).then_some(t)),
             texture_info,
@@ -2436,7 +2458,7 @@ impl<B: Backend> Device<B> {
     /// pushed state.
     fn immediate_draw(
         &mut self,
-        mem: &dyn GuestMemory,
+        mem: &mut dyn GuestMemory,
         entry: &'static str,
         d: ImmediateDraw,
     ) -> Result<(), D3dError> {
