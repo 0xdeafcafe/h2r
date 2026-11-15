@@ -90,7 +90,7 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 203, 215 | Open a namespace symbolic link as a handle; query its captured target. |
 | 327, 328 | XBE section reference counts, pristine reload of on-demand sections, shared-page counts. |
 | 2 | AV encoder: configured settings query (6); blank screen (9), flicker filter 0-5 (11) and luma filter (14) recorded in `Kernel::encoder_state()`; the field guess (15) and other options stop. |
-| 24 | Configured DWORD nonvolatile settings including XC_MISC and XC_AUDIO (9, stereo/no passthrough by default), checked buffers and unknown-index stops; XC_MAX_ALL (0xffff) is STATUS_OBJECT_NAME_NOT_FOUND (no EEPROM image). |
+| 24 | Configured DWORD nonvolatile settings including XC_MISC and XC_AUDIO (9, stereo/no passthrough by default), checked buffers and unknown-index stops; XC_MAX_ALL (0xffff) and XC_MAX_OS (0xff) are STATUS_OBJECT_NAME_NOT_FOUND (no EEPROM image). |
 | 301 | Explicit NTSTATUS-to-DOS conversion for kernel/VFS outputs; unknown status stops. |
 | 8 | DbgPrint guest cdecl varargs to an ordered byte log. |
 | 14, 15, 17, 23 | Aligned pool allocation, size/tag tracking, free/reuse, actual block size. |

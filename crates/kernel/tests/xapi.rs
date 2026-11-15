@@ -130,6 +130,28 @@ fn configured_nonvolatile_dwords_and_encoder_readout_use_the_same_profile() {
     h.stopped(2, &[0, 6, 1, DATA]);
 }
 
+/// XC_MAX_OS (0xff), the whole user section: Halo's GetTimeZoneInformation
+/// helper (0x331406) asks with a 0x100-byte buffer. No EEPROM image exists, so
+/// it is NOT_FOUND for every buffer shape and nothing is written.
+#[test]
+fn xc_max_os_is_not_found_and_writes_nothing() {
+    use kernel::console::XC_MAX_OS;
+    let mut h = Harness::new();
+    for (len, result_length) in [(0x100, DATA + 8), (4, DATA + 8), (0x100, 0), (4, 0)] {
+        h.bytes(DATA, &[0xcc; 0x120]);
+        assert_eq!(
+            h.success(24, &[XC_MAX_OS, DATA, DATA + 16, len, result_length]),
+            status::OBJECT_NAME_NOT_FOUND,
+            "len {len:#x} result_length {result_length:#x}"
+        );
+        for off in (0..0x120).step_by(4) {
+            assert_eq!(h.get(DATA + off), 0xcccccccc, "offset {off:#x}");
+        }
+    }
+    // Other indices still stop rather than guess.
+    h.stopped(24, &[0xfe, DATA, DATA + 16, 0x100, DATA + 8]);
+}
+
 /// The options Halo sends: D3D's SetFlickerFilter/SetSoftDisplayFilter
 /// (0x3f8c53, 0x3f8c9c, game code 0x14157), the unblank/blank pair around
 /// a mode set (0x3f9cb1, 0x3fc73e) and the mode-set flicker reset (0x3f9c34).

@@ -27,6 +27,12 @@ pub const XC_MISC_FLAG_DISABLE_DST: u32 = 0x02;
 pub const XC_FACTORY_AV_REGION: u32 = 0x103;
 /// XC_MAX_ALL: the whole 256-byte EEPROM image.
 pub const XC_MAX_ALL: u32 = 0xffff;
+/// XC_MAX_OS: the whole OS/user settings section (EEPROM 0x60..0xFF). Halo's
+/// XAPI GetTimeZoneInformation helper (0x331406) queries it with a 0x100-byte
+/// buffer; its field offsets (bias +4, names +8/+0xC, dates +0x18/+0x1C,
+/// biases +0x28/+0x2C, misc flags +0x58) are the documented user-section
+/// layout (xboxdevwiki "EEPROM", 0x60 onward) rebased to the section start.
+pub const XC_MAX_OS: u32 = 0xff;
 pub const XC_FACTORY_GAME_REGION: u32 = 0x104;
 pub const AV_STANDARD_NTSC_M: u32 = 0x100;
 pub const AV_STANDARD_NTSC_J: u32 = 0x200;
@@ -119,9 +125,16 @@ impl Core {
             return self.encoder_option(memory, a);
         }
         // No EEPROM image is configured (and none is fabricated), so the
-        // whole-EEPROM query finds nothing; nothing is written. XAPI's
-        // XQueryValue (0x2d6f62) converts this to ERROR_FILE_NOT_FOUND.
-        if a.get(0) == XC_MAX_ALL {
+        // whole-EEPROM and whole-user-section queries find nothing; nothing
+        // is written. XAPI's XQueryValue (0x2d6f62) converts this to
+        // ERROR_FILE_NOT_FOUND. XC_MAX_OS is answered the same way rather
+        // than synthesised: the section layout and checksum (CRC over
+        // 0x64..0xBF) are documented, but how the retail kernel sizes and
+        // types a XC_MAX_OS reply is not, and the only consumer
+        // (GetTimeZoneInformation, 0x331406) fails soft on an error: it
+        // returns TIME_ZONE_ID_INVALID and GetLocalTime (0x33198b) then uses
+        // a zero bias, the same result as a synthesised UTC section.
+        if matches!(a.get(0), XC_MAX_ALL | XC_MAX_OS) {
             return Ok(Action::status(status::OBJECT_NAME_NOT_FOUND));
         }
         let Some(value) = self.console.setting(a.get(0)) else {
