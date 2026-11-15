@@ -2,7 +2,6 @@ use crate::{
     client::{self, Pending, Reply, Service, Session},
     config::Account,
     entries::Operation,
-    messages::Messages,
     status::*,
 };
 use runtime::{
@@ -139,7 +138,6 @@ pub(crate) struct State {
     logon: Option<u32>,
     services: BTreeSet<u32>,
     service: Option<Service>,
-    messages: Messages,
     menu: crate::ui::Menu,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
@@ -164,7 +162,6 @@ impl State {
             logon: None,
             services: BTreeSet::new(),
             service,
-            messages: Messages::default(),
             menu: crate::ui::Menu::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
@@ -218,7 +215,6 @@ impl State {
         self.user_ids = [0; 4];
         self.state_flags = [1; 4];
         self.game_id = None;
-        self.messages.clear();
         self.menu.clear();
         self.files.clear();
         self.stats.clear_tasks();
@@ -287,9 +283,8 @@ impl State {
             && let Some(reply) = request.take()
         {
             status = match reply {
-                Ok(Reply::Logon { files, files_error }) => {
+                Ok(Reply::Logon) => {
                     self.publish_users(m, &users)?;
-                    self.messages.set_files(files, files_error);
                     CONNECTED
                 }
                 Err(e) => {
@@ -513,7 +508,17 @@ impl State {
                     return Ok(NO_USER);
                 }
             }
-            return self.files.invoke(op, a, m, &mut self.storage);
+            let session = self.session();
+            return self.files.invoke(
+                op,
+                a,
+                m,
+                crate::storage_api::Context {
+                    storage: &mut self.storage,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                },
+            );
         }
         if let Ui(op) = op {
             let connected = self.connected();
@@ -729,13 +734,10 @@ impl State {
                 if let Some(status) = self.stats.poll(a[0]) {
                     return Ok(status);
                 }
-                if let Some(status) = self.files.poll(a[0]) {
+                if let Some(status) = self.files.poll(a[0], m)? {
                     return Ok(status);
                 }
                 if let Some(status) = self.menu.poll(a[0]) {
-                    return Ok(status);
-                }
-                if let Some(status) = self.messages.poll(a[0], m)? {
                     return Ok(status);
                 }
                 let Some(task) = self.tasks.get(&a[0]).cloned() else {
@@ -878,9 +880,6 @@ impl State {
                     return Ok(OK);
                 }
                 if self.menu.close(a[0]) {
-                    return Ok(OK);
-                }
-                if self.messages.close(a[0]) {
                     return Ok(OK);
                 }
                 if !self.tasks.contains_key(&a[0]) {
@@ -1123,15 +1122,7 @@ impl State {
                 {
                     return Ok(INVALID_USER);
                 }
-                let session = self.session();
-                self.messages.invoke(
-                    op,
-                    a,
-                    m,
-                    &mut self.storage,
-                    self.service.as_ref(),
-                    session.as_ref(),
-                )
+                crate::messages::invoke(op, a, m)
             }
             _ => unreachable!("registration routes only implemented operations here"),
         }

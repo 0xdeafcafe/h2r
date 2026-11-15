@@ -2,7 +2,7 @@
 //! §3.1):
 //!
 //! ```text
-//! +0x00  16 bytes   header (zeros; the game skips it)
+//! +0x00  16 bytes   header: CRC, version 1, size ([`crate::title_file`])
 //! +0x10  u32 BE     inflated size, 0x25224
 //! +0x14  zlib stream inflating to:
 //!          9 x 512 bytes      per-language header strings
@@ -21,10 +21,12 @@ pub const LANGUAGES: usize = 9;
 pub const MAX_MESSAGES: usize = 32;
 /// Longest string, in UTF-16 code units (one 512-byte slot minus the NUL).
 pub const MAX_UNITS: usize = 255;
-/// The largest file the game takes: its one attachment download passes a
-/// 0x499a-byte buffer (docs/live-motd-fetch.md §5). A larger file fails
-/// that download and the game silently shows no message of the day.
-pub const MAX_FILE: usize = 0x499a;
+/// The largest file the game takes: the MOTD channel's title-storage
+/// download buffer is 0x8000 bytes (docs/live-motd.md §2.2). A larger file
+/// fails that download and the game silently shows no message of the day.
+pub const MAX_FILE: usize = 0x8000;
+/// The MOTD file class's version in the header; the game wants exactly 1.
+pub const VERSION: u32 = 1;
 
 const SLOT: usize = 512;
 const BLOCK: usize = 4 + MAX_MESSAGES * SLOT;
@@ -39,8 +41,10 @@ pub enum MotdError {
     TooLong(String),
     #[error("{0:?} contains a NUL")]
     Nul(String),
-    #[error("the file is {0} bytes; the game downloads at most 18842 (0x499a)")]
+    #[error("the file is {0} bytes; the game downloads at most 32768 (0x8000)")]
     TooLarge(usize),
+    #[error("not a message_of_the_day.dat: {0}")]
+    Header(#[from] crate::title_file::HeaderError),
     #[error("not a message_of_the_day.dat: {0}")]
     Format(&'static str),
 }
@@ -93,20 +97,32 @@ impl Motd {
                 put_string(&mut block[4 + i * SLOT..][..SLOT], m)?;
             }
         }
-        let mut out = vec![0u8; PREFIX];
-        out.extend_from_slice(&(INFLATED_SIZE as u32).to_be_bytes());
-        let mut z = flate2::write::ZlibEncoder::new(out, flate2::Compression::best());
+        let mut body = (INFLATED_SIZE as u32).to_be_bytes().to_vec();
+        let mut z = flate2::write::ZlibEncoder::new(&mut body, flate2::Compression::best());
         z.write_all(&raw).expect("writing to a Vec");
-        let file = z.finish().expect("writing to a Vec");
+        z.finish().expect("writing to a Vec");
+        let file = crate::title_file::seal(VERSION, &body);
         if file.len() > MAX_FILE {
             return Err(MotdError::TooLarge(file.len()));
         }
         Ok(file)
     }
 
-    /// Reads a file the way the game does, returning the first language's
-    /// text.
+    /// Reads a file the way the game does (header, then body), returning
+    /// the first language's text.
     pub fn parse(file: &[u8]) -> Result<Self, MotdError> {
+        crate::title_file::check(file, VERSION, MAX_FILE)?;
+        Self::parse_body(file)
+    }
+
+    /// [`Motd::parse`], also accepting the zero header of files built
+    /// before the header was known, so they can be republished.
+    pub fn parse_legacy(file: &[u8]) -> Result<Self, MotdError> {
+        crate::title_file::check_or_legacy(file, VERSION, MAX_FILE)?;
+        Self::parse_body(file)
+    }
+
+    fn parse_body(file: &[u8]) -> Result<Self, MotdError> {
         let size = file
             .get(PREFIX..PREFIX + 4)
             .ok_or(MotdError::Format("too short"))?;
@@ -152,7 +168,16 @@ mod tests {
     fn layout_matches_the_game() {
         assert_eq!(BLOCKS_AT + LANGUAGES * BLOCK, INFLATED_SIZE);
         let file = motd().build().unwrap();
-        assert_eq!(&file[..16], &[0u8; 16]);
+        assert_eq!(
+            crate::title_file::check(&file, 1, 0x8000).map(<[u8]>::len),
+            Ok(file.len() - 16)
+        );
+        assert_eq!(&file[4..8], &1u32.to_le_bytes(), "version 1");
+        assert_eq!(&file[8..12], &(file.len() as u32).to_le_bytes(), "size");
+        assert_eq!(
+            &file[0..4],
+            &crate::title_file::crc_register(&file[4..]).to_le_bytes()
+        );
         assert_eq!(&file[16..20], &[0x00, 0x02, 0x52, 0x24]);
 
         let mut raw = Vec::new();
@@ -246,5 +271,25 @@ mod tests {
         let mut file = motd().build().unwrap();
         file[19] ^= 1;
         assert!(Motd::parse(&file).is_err());
+        // A corrupted body fails the header's CRC first.
+        assert!(matches!(
+            Motd::parse(&file),
+            Err(MotdError::Header(
+                crate::title_file::HeaderError::Crc { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn legacy_zero_headers_read_only_for_migration() {
+        let m = motd();
+        let mut old = m.build().unwrap();
+        old[..16].fill(0);
+        assert!(matches!(
+            Motd::parse(&old),
+            Err(MotdError::Header(crate::title_file::HeaderError::Legacy))
+        ));
+        assert_eq!(Motd::parse_legacy(&old).unwrap(), m);
+        assert_eq!(Motd::parse_legacy(&m.build().unwrap()).unwrap(), m);
     }
 }

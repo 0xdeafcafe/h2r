@@ -22,12 +22,18 @@
 //! same Controls row text function and serve text through the same string
 //! lookup, and a function entry takes one override.
 //!
+//! It also registers the "Field of View" row after it and the first-person
+//! camera hook that applies it (`crate::fov_row`, `H2_NO_FOV_ROW=1` skips
+//! both), through the same entries.
+//!
 //! Each hook says once on stderr when it first runs ("layouts: <name>
 //! active"), so one run shows which hooks the game reaches.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use crate::fov_row;
+use crate::fov_setting::FovSetting;
 use crate::speaker_row;
 use crate::speaker_setting::SpeakerSetting;
 
@@ -382,21 +388,32 @@ fn announce(seen: &AtomicBool, name: &str) {
 }
 
 /// Install every hook: the button layouts unless `H2_NO_LAYOUTS` is set,
-/// and the Controller Speaker row when `speaker` is given and
-/// `H2_NO_SPEAKER_ROW` is not set. A missing original (an image with other
-/// entries) skips that hook and says so.
-pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> anyhow::Result<()> {
+/// the Controller Speaker row when `speaker` is given and
+/// `H2_NO_SPEAKER_ROW` is not set, and the Field of View row and camera
+/// hook when `fov` is given and `H2_NO_FOV_ROW` is not set. A missing
+/// original (an image with other entries) skips that hook and says so.
+pub fn install(
+    rt: &runtime::Runtime,
+    speaker: Option<Arc<SpeakerSetting>>,
+    fov: Option<Arc<FovSetting>>,
+) -> anyhow::Result<()> {
     let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
     let speaker = speaker.filter(|_| std::env::var_os("H2_NO_SPEAKER_ROW").is_none());
-    if !layouts && speaker.is_none() {
+    let fov = fov.filter(|_| std::env::var_os("H2_NO_FOV_ROW").is_none());
+    if !layouts && speaker.is_none() && fov.is_none() {
         return Ok(());
     }
     let with_speaker = speaker.is_some();
+    let with_fov = fov.is_some();
+    let fov_index = fov_row::row(with_speaker);
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
         mem.map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
-        let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served_strings(layouts, with_speaker))
+        let mut served = served_strings(layouts, with_speaker);
+        let fov_strings = if fov.is_some() { fov_row::strings() } else { Vec::new() };
+        served.extend(fov_strings.iter().map(|(i, t)| (*i, t.as_str())));
+        let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
@@ -409,6 +426,7 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
     let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, SCREEN_TAG, TEXT_SET, PROFILE_ROWS];
     let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, LOCALE_FIND];
     let speaker_hooks = [speaker_row::ROW_CHOSEN];
+    let fov_hooks = [speaker_row::ROW_CHOSEN, fov_row::PLAYER_FOV];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -416,6 +434,7 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         .into_iter()
         .chain(layout_hooks.into_iter().filter(|_| layouts))
         .chain(speaker_hooks.into_iter().filter(|_| with_speaker))
+        .chain(fov_hooks.into_iter().filter(|_| fov.is_some()))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> =
         wanted.into_iter().filter_map(|a| original(rt, a).map(|o| (a, o))).collect();
@@ -445,6 +464,7 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                     let mem = ctx.runtime().memory();
                     (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
+                let n = if with_fov { fov_row::list_count(name, cpu.eax, n) } else { n };
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {
@@ -596,10 +616,22 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
             let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
             let speaker = speaker.clone();
+            let fov = fov.clone();
             let seen = AtomicBool::new(false);
             let drawn = AtomicBool::new(false);
+            let fov_drawn = AtomicBool::new(false);
             d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
                 announce(&seen, "layouts: controls row text");
+                if let Some(s) = &fov {
+                    let shown = s.shown();
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    if let Some(texts) = fov_row::row_texts(&*mem, cpu.esp, fov_index, shown) {
+                        announce(&fov_drawn, "fov row: row text");
+                        let item = mem.u32(cpu.esp + 4)?;
+                        return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
+                    }
+                }
                 if let Some(s) = &speaker {
                     // The setting's lock is never taken with guest memory held.
                     let on = s.enabled();
@@ -623,7 +655,9 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         }
         // The Controls row chosen: ours toggles in place; the original would
         // open the vibration dialog for it.
-        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::ROW_CHOSEN), speaker.clone()) {
+        if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
+            let speaker = speaker.clone();
+            let fov = fov.clone();
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: row chosen");
@@ -633,11 +667,36 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 };
                 // Guest memory is not held here: the toggle takes DirectSound's
                 // lock, which the audio output takes with guest memory.
-                if speaker_row::chosen(row, &s) {
+                if let Some(s) = &speaker
+                    && speaker_row::chosen(row, s)
+                {
                     eprintln!("pad speaker: {}", if s.enabled() { "on" } else { "off" });
                     return ctx.runtime().memory().ret(cpu, 8);
                 }
+                if let Some(s) = &fov
+                    && fov_row::chosen(row, fov_index, s)
+                {
+                    eprintln!("fov: {} degrees", s.shown());
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
+            });
+        }
+        // The first-person camera's field of view: the original, then ours.
+        if let (Some(o), Some(s)) = (originals.remove(&fov_row::PLAYER_FOV), fov.clone()) {
+            let sh = alias(d, &mut next_shadow, &o, fov_row::PLAYER_FOV);
+            let seen = AtomicBool::new(false);
+            d.register_override(fov_row::PLAYER_FOV, "fov:camera", move |cpu, ctx, _| {
+                announce(&seen, "fov: camera");
+                let user = cpu.eax;
+                let target = s.target();
+                call_then(cpu, ctx, sh, move |cpu, ctx| {
+                    let lo: [u8; 4] = cpu.xmm[0][..4].try_into().unwrap_or_default();
+                    let result = f32::from_bits(u32::from_le_bytes(lo));
+                    let out = fov_row::apply(&mut *ctx.runtime().memory(), user, result, target);
+                    cpu.xmm[0][..4].copy_from_slice(&out.to_bits().to_le_bytes());
+                    Ok(())
+                })
             });
         }
         // Our strings.
@@ -1014,7 +1073,8 @@ mod tests {
         let r = Arc::clone(&rt);
         std::thread::spawn(move || {
             let s = Arc::new(SpeakerSetting::new(None, None));
-            tx.send(install(&r, Some(s)).is_ok()).ok();
+            let fov = Arc::new(FovSetting::new(None, None));
+            tx.send(install(&r, Some(s), Some(fov)).is_ok()).ok();
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)), Ok(true));
         // Nothing generated, so every hook was skipped and ours own no entry.

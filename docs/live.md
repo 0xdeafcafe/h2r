@@ -728,7 +728,7 @@ XNetTsAddrToInAddr and online matchmaking. Actual lobby/gameplay progression has
 not been exercised.
 
 
-## Client HLE: service logon and messages
+## Client HLE: service logon and title resources
 
 The existing boot configuration is sufficient: set `enabled = true`, pass the
 CLI's accounts JSON path, and set `server_url` to the service base URL. Account
@@ -768,61 +768,28 @@ coalesced by the worker. `Hle::server_status` exposes acknowledged ping count an
 the last HRESULT without any account key data. The telemetry caller is not wired
 in this slice.
 
-After SignedIn, the worker checks these two files:
+Logon does not download title files or build a message catalog. The title's
+resource manager requests MOTD and hopper files through title storage after
+sign-in; the HTTP worker serves those requests as described below.
 
-| Server path under `/v1/titles/4D530064/files/` | Message ID / file class |
-|---|---:|
-| `message_of_the_day.dat` | 1 |
-| `multiplayer_hopper.dat` | 4 |
+MessageEnumerate reports count zero without writing summaries. No title file
+is presented as a player message. MessageDetails and MessageDelete return
+MESSAGE_INVALID_ID; property/attachment getters have no valid inbox task and
+return INVALID_ARGUMENT. Outgoing message capture is separate and unchanged.
+GetNotificationEx continues to return FALSE and clear its optional outputs:
+the poller at `0x002359ce` would otherwise raise an unopenable "message from
+Live service" toast. The voice/text playback screen at `0x002c7410` selects
+messages whose sender matches a player; its attachment and language properties
+are not the title-resource mechanism.
 
-A 404 produces no message. Other fetch failures remain errors rather than an
-invented empty file. Enumeration uses a logon-time catalog; publishing a previously
-absent file requires another logon. With the default MOTD always published,
-the MOTD is in every logon catalog; a replacement reaches the game at its
-next sign-in. Details and downloads fetch current bytes
-again, so replacements and removals are observed. No legacy Xbox storage endpoint
-is contacted.
-
-> Caution (2026-11-16): static RE indicates `0x2c7410`'s class is the
-> voice/text message playback screen and the tags below are standard message
-> properties (VOICE_DATA `0x9c1`, TEXT_LANGUAGE `0x4c5`); retail MOTD delivery
-> is being re-traced through title storage (`0x0008e240` →
-> StorageDownloadToMemory).
-
-MessageEnumerate fills 64-byte XONLINE_MSG_SUMMARY records, with type 1, title ID
-`0x4d530064` and message ID at offset `0x20`. The count is output-only. GetNotificationEx reports nothing for title
-files: a pending notification makes the poller `0x002359ce` show a "new
-message" toast from the sender name and light the menu indicator, and no
-screen opens a title message from XUID 0. MessageDetails
-creates an asynchronous task and supports the flags the title supplies.
-DetailsGetResultsProperty returns:
-
-| Tag | Result |
-|---|---|
-| `0x3c2` | 16-bit 1: title-custom message |
-| `0x4c3` | 32-bit 1 |
-| `0x6c4` | UTF-16 filename, including terminator |
-| `0x4c5` | 32-bit file class: 1 or 4 |
-| `0x581` | Stable nonzero 64-bit content version |
-| `0x9c1` | DOWNLOAD_REQUIRED (`0x80155a02`), byte length and attachment flags 0 |
-
-DownloadAttachmentToMemory creates a second asynchronous task. Its result getter
-returns the guest buffer pointer, received size and total size. Downloads enforce
-the caller's capacity and the game's `0x499a` cap, even if the caller provides a
-larger buffer. Oversize returns `XONLINE_E_OVERFLOW` (`0x80150001`) without copying
-a partial attachment. Unknown IDs/properties and closed or wrong-kind handles
-return their XDK errors. MessageDelete acknowledges the title message for that
-controller during this logon; it does not delete the operator's shared file.
-Unobserved flag masks and non-null work events retain the unverified-contract
-stop convention.
-
-Synthetic guest tests use the real memory-backed `live_server::start_embedded`.
-They prove signed logon, unknown/mismatched/missing keys, unavailable and delayed
-servers, multi-user changes, presence, ping acknowledgements, connection loss and
-sign-out. The message test publishes a `live_proto::motd::Motd` file through the
-operator API, follows enumeration, details, property probes and download, then
-inflates the received payload to exactly `0x25224` bytes. Canary buffers and the
-oversize cases check the guest-memory boundaries. No test runs the title.
+Synthetic guest tests use the real embedded service to prove signed logon,
+identity failures, unavailable/delayed servers, user changes, presence/pings,
+connection loss and sign-out. Storage tests publish files and drive the actual
+boundary calls, check returned buffers and lengths, validate their headers,
+then inflate the MOTD/hopper payloads to exactly `0x25224`/`0x162cc0`.
+A file-backed embedded-server test publishes a MOTD through the web-admin
+endpoint, reads it through storage and repeats after a restart. No test runs
+the title.
 
 ## Client HLE: menu polling and remaining stops
 
@@ -847,7 +814,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0008d3d0`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
 | `0x00092220` through `0x00092450`, manager `0x00074aa0` | StatWrite/GetResult accepts an owned local capture and completes successfully without attachments. StatRead/GetResult completes with missing (`NONE`) stats and zero values in the caller's arrays. See the local stats section below. |
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
-| `0x0008e750`, manager `0x002c7410` | Message polling uses the server-backed title inbox above, or count 0 without a server. |
+| `0x0008e750`, manager `0x002c7410` | Message polling returns count 0; title files use storage and never enter the player inbox. |
 
 These 14 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
@@ -868,14 +835,55 @@ and remote friend presence are future work. The HTTP worker does not turn these 
 successful operations. The current proof covers the API boundary and local host
 transport; it does not establish an end-to-end online match.
 
-## Client HLE: legacy storage fallback
+## Client HLE: title storage and profile fallback
 
 The signed-in resource manager `0x0008e240`, called each network update by
-`0x0008df50`, also fetches per-user/title storage. This is separate from the
-MOTD/hopper attachment path. The observed chain is `0x0008e3f5` → `0x000b4450`
-→ `0x000b4120` → StorageCreateServerPath, then `0x000b4511` →
-StorageDownloadToMemory. There is no StorageEnumerate call in the verified
-boundary inventory.
+`0x0008df50`, downloads the MOTD and hopper. The verified chain is
+`0x0008e3f5` → `0x000b4450` → `0x000b4120` →
+StorageCreateServerPath, then `0x000b4511` → StorageDownloadToMemory.
+There is no StorageEnumerate call in the boundary inventory.
+
+At sign-in, `0x0006bff0` arms the MOTD channel `0x00479780` and hopper
+channel `0x0047d8f4` in slot table `0x004d8c28`. Requests use facility 4
+(per-title), user/team XUID zero, controller index zero, flags zero and no work
+event. The filename is the UTF-16 relative path `9809/<filename>`; console
+check `0x0006bfa0` selects `test/<filename>` when byte `0x0050944e` is set.
+
+| Formatted guest path | Caller buffer capacity | Server file under `/v1/titles/4D530064/files/` |
+|---|---:|---|
+| `//title.4d530064/t:4d530064/9809/message_of_the_day.dat` | `0x8000` | `message_of_the_day.dat` |
+| `//title.4d530064/t:4d530064/9809/multiplayer_hopper.dat` | `0x20000` | `multiplayer_hopper.dat` |
+
+The same two paths with `test/` in place of `9809/` are accepted. Only
+these four complete paths, with facility 4, reach Service::file on the HTTP
+worker. The guest call returns a running task; Continue polls the owned reply
+and copies a complete file into checked guest memory. Oversize returns
+XONLINE_E_OVERFLOW (`0x80150001`) without a partial copy. There is no
+`0x499a` attachment limit on these requests: that cap belongs to the
+unrelated playback screen.
+
+StorageDownloadToMemoryGetResults has six arguments: task, optional buffer
+pointer output, received count, total count, owner PUID and creation FILETIME.
+On success it returns S_OK, the original caller buffer, and received == total.
+Shared title owner is zero; creation time is zero because the endpoint does not
+supply one. While pending it returns TASK_BUSY without publishing outputs.
+GetProgress reports 100 percent and the completed byte counts after success.
+Close/cleanup invalidate tasks; the worker never accesses guest pointers.
+HTTP 404 becomes STORAGE_FILE_NOT_FOUND (`0x8015c004`); transport failures
+remain service errors. Every fresh explicit request fetches current bytes.
+
+The game completion chain is `0x0006c4a0` → `0x0008e5e0` → GetResults.
+It requires equal received/total counts within the channel cap, then validator
+`0x00081230` checks the file header. Completion `0x0008e0f0` →
+`0x00081050` sets flags |= 2 and invokes `0x0008c790` (MOTD) or
+`0x00194260` (hopper). The header and payload formats are in live-motd.md.
+
+Channels arm on the signed-in transition and user-change completion
+(`0x001513f1`), skipping channels that already contain data. Sign-out clears
+them. There is no mid-session re-arm for a new publication or inbox event:
+publish before sign-in, or sign out and back in to request the new files.
+Errors, including FILE_NOT_FOUND and `0x8015c007`, use the existing fallback
+without retry. Only received != total re-queues the transfer.
 
 StorageCreateServerPath implements the retail formatter at `0x003c79f2`, without
 any network request. It needs XOnlineStartup but not a signed-in user. The three
@@ -896,22 +904,20 @@ filename fits; the HLE preserves this behavior. Other facilities return
 STORAGE_INVALID_FACILITY (`0x8015c009`) without changing outputs. The formatter
 does not enforce the public 256-character path limit.
 
-StorageDownload and DownloadToMemory return tasks that complete with
-STORAGE_FILE_NOT_FOUND (`0x8015c004`); no receive bytes are written. The memory
-result getter returns the same error and leaves its optional outputs untouched.
-UploadByServerPath and UploadFromMemory return tasks that complete with
-STORAGE_ACCESS_DENIED (`0x8015c002`). No upload is claimed to be saved locally or
-on the server. GetProgress reports zero bytes and zero percent with the task's
-error. Close and cleanup invalidate these handles. Guest paths never reach the
-host filesystem.
+Other paths/facilities and package StorageDownload return tasks completing with
+STORAGE_FILE_NOT_FOUND; receive/result buffers are untouched. This includes
+profile storage, which remains future work. With no server configured even
+the known title files are unavailable. UploadByServerPath and UploadFromMemory
+complete with STORAGE_ACCESS_DENIED (`0x8015c002`); no upload is claimed to be
+saved. Failed GetProgress reports zero bytes/percent with the task's error.
+Guest paths never reach the host filesystem or become arbitrary HTTP paths.
 
-These are errors the title already classifies. `0x0006c4a0` maps FILE_NOT_FOUND
-to resource result 5 and ACCESS_DENIED to result 3; `0x0008e0f0` releases the
-resource/task after completion. The synchronous starter wrappers also handle
-negative HRESULTs. Real profile storage remains future work. Tests drive every
-storage entry through the synthetic guest ABI, including split 64-bit IDs,
-exact-size buffers, Unicode, size queries, prefix-only overflow, untouched result
-buffers and task cleanup.
+The title classifies these errors: `0x0006c4a0` maps FILE_NOT_FOUND to
+resource result 5 and ACCESS_DENIED to result 3. Tests cover both path prefixes,
+both channel capacities, publication after logon followed by an explicit
+request, missing/unknown paths, exact-capacity and oversized replies, packed
+optional results, progress and task cleanup. The path formatter tests also
+cover split IDs, UTF-16 size queries, Unicode and prefix-only overflow.
 
 ## Client HLE: local stats
 

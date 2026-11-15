@@ -96,6 +96,39 @@ int main(void) {
                    p53.value.sig, p53.value.se, p53.flags, p24.value.sig, p24.value.se, p24.flags);
         }
     }
+    /* Trig (2 sin, 3 cos, 4 tan of x) and atan2 (5, y then x). MPFR reduces
+     * by the exact pi, as the 512-bit reference does. y is unused by trig. */
+    for (unsigned op = 2; op < 6; ++op) {
+        for (unsigned i = 0; i < 256; ++i) {
+            f80 a = input(-20, 20), b = input(-32, 12);
+            if (op == 5) {
+                if (i % 4 == 1) { a = input(-1074, 1023); b = input(-1074, 1023); }
+            } else if (i % 8 == 1) {
+                b = input(13, 62);                    /* large reductions */
+            } else if (i % 8 == 2) {
+                b = input(-480, -33);  /* tiny guard; 1024 bits resolve x^3 */
+            } else if (i % 8 == 3 || i % 8 == 4) {
+                /* binary64/binary32 roundings of k*pi/2 and k*pi/4. */
+                mpfr_const_pi(reference, MPFR_RNDN);
+                mpfr_mul_si(reference, reference, (long)(next() % 4000) - 2000, MPFR_RNDN);
+                mpfr_div_2ui(reference, reference, 1 + (i % 16 >= 8), MPFR_RNDN);
+                if (!mpfr_regular_p(reference)) mpfr_set_ui(reference, 3, MPFR_RNDN);
+                b = rounded(reference, i % 8 == 3 ? 53 : 24).value;
+            }
+            set(y, a); set(x, b);
+            if (op == 2) { mpfr_sin(lo, x, MPFR_RNDD); mpfr_sin(hi, x, MPFR_RNDU); }
+            if (op == 3) { mpfr_cos(lo, x, MPFR_RNDD); mpfr_cos(hi, x, MPFR_RNDU); }
+            if (op == 4) { mpfr_tan(lo, x, MPFR_RNDD); mpfr_tan(hi, x, MPFR_RNDU); }
+            if (op == 5) { mpfr_atan2(lo, y, x, MPFR_RNDD); mpfr_atan2(hi, y, x, MPFR_RNDU); }
+            result l = rounded(lo, 64), h = rounded(hi, 64);
+            assert(l.value.sig == h.value.sig && l.value.se == h.value.se && l.flags == h.flags);
+            set(reference, l.value);
+            result p53 = rounded(reference, 53), p24 = rounded(reference, 24);
+            printf("%u %016" PRIx64 " %04x %016" PRIx64 " %04x %016" PRIx64 " %04x %04x %016" PRIx64 " %04x %04x %016" PRIx64 " %04x %04x\n",
+                   op, a.sig, a.se, b.sig, b.se, l.value.sig, l.value.se, l.flags,
+                   p53.value.sig, p53.value.se, p53.flags, p24.value.sig, p24.value.se, p24.flags);
+        }
+    }
     mpfr_clears(y, x, lo, hi, reference, (mpfr_ptr)0);
     return 0;
 }

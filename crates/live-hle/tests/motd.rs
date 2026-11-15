@@ -1,11 +1,10 @@
 //! The message of the day end to end, as the owner uses it: the embedded
 //! server on its file store, the web admin's `PUT /v1/titles/{title}/motd`,
-//! and the guest calls the game's message manager makes to fetch it
-//! (docs/live-motd-fetch.md §2). Guest frames are synthetic; no XBE, image
+//! and the title-storage resource manager's requests. Guest frames are
+//! synthetic; no XBE, image
 //! build or game execution.
 use live_hle::{
-    ATTACHMENT_CAP, Hle, LiveConfig, NetworkConfig, SUMMARY_SIZE, ServerOptions, entries::ENTRIES,
-    status::*,
+    Hle, LiveConfig, NetworkConfig, SUMMARY_SIZE, ServerOptions, entries::ENTRIES, status::*,
 };
 use live_proto::{
     CreatedAccount, Discovery, Xuid, lxm,
@@ -28,7 +27,6 @@ const OUT: u32 = DATA + 0x1000;
 const USERS: u32 = DATA + 0x2000;
 const BUFFER: u32 = DATA + 0x6000;
 const FRAME: u32 = 0x600f00;
-const MOTD_ID: u32 = 1;
 
 struct Server {
     embedded: live_server::Embedded,
@@ -239,60 +237,45 @@ impl World {
             .map(|i| self.u32(DATA + i * SUMMARY_SIZE as u32 + 32))
             .collect()
     }
-    /// The summary `messages` just enumerated, and the notification poll,
-    /// as the game's player-facing UI sees them: XONLINE_MSG_SUMMARY
-    /// (`xonline.h`, pack 8: XUID +0..12, type +12, context +16, sent time
-    /// +24, id +32, flags +36, sender title +40, expiry +44, details size
-    /// +46, sender name +48). Every per-player screen matches on a nonzero
-    /// sender XUID, so XUID 0 is never listed or opened; GetNotificationEx
-    /// reports nothing, so no "new message" toast or indicator
-    /// (`0x002359ce`, `0x0023591a`).
-    fn assert_hidden_title_message(&mut self) {
-        let summary = self.bytes(DATA, SUMMARY_SIZE);
-        assert_eq!(&summary[0..12], &[0; 12], "sender XUID 0");
-        assert_eq!(summary[12], 1, "TITLE_CUSTOM");
-        assert_eq!(&summary[32..36], &MOTD_ID.to_le_bytes());
-        assert_eq!(&summary[40..44], &0x4d530064u32.to_le_bytes());
+    /// Title resources must not raise the unopenable XUID-0 message toast.
+    fn assert_no_title_messages(&mut self) {
+        self.put(DATA, &[0xcc; SUMMARY_SIZE]);
+        assert!(self.messages().is_empty());
+        assert_eq!(self.bytes(DATA, SUMMARY_SIZE), vec![0xcc; SUMMARY_SIZE]);
         self.put(DATA, &[0xcc; 9]);
         self.word(OUT, 0xdeadbeef);
         assert_eq!(self.call("XOnlineGetNotificationEx", &[0, DATA, OUT]), 0);
         assert_eq!(self.bytes(DATA, 9), vec![0; 9]);
         assert_eq!(self.u32(OUT), 0);
     }
-    /// The game's message manager for one file (docs/live-motd-fetch.md
-    /// §2-§3): details, the file-class property, the attachment probe,
-    /// then the download into its 0x499a-byte buffer.
-    fn download(&mut self, id: u32) -> Vec<u8> {
-        assert_eq!(
-            self.call("XOnlineMessageDetails", &[0, id, 0x10, 0, 0, OUT]),
-            0
-        );
-        let details = self.u32(OUT);
-        assert_eq!(self.wait(details), TASK_SUCCESS);
+    /// Resource manager 0x8e3f5 -> 0xb4450: per-title path, then a
+    /// download into the MOTD channel's 0x8000-byte receive buffer.
+    fn download(&mut self) -> Vec<u8> {
+        let relative = "9809/message_of_the_day.dat";
+        let wide = |s: &str| {
+            s.encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        };
+        self.put(DATA + 0x4000, &wide(relative));
+        self.word(OUT, 256);
         assert_eq!(
             self.call(
-                "XOnlineMessageDetailsGetResultsProperty",
-                &[details, 0x4c5, 4, DATA, OUT, OUT + 4]
+                "XOnlineStorageCreateServerPath",
+                &[4, 0, 0, 0, 0, DATA + 0x4000, DATA + 0x4200, OUT]
             ),
             0
         );
-        assert_eq!(self.u32(DATA), id, "the file class routes it to the MOTD");
+        assert_eq!(
+            self.bytes(DATA + 0x4200, self.u32(OUT) as usize * 2),
+            wide("//title.4d530064/t:4d530064/9809/message_of_the_day.dat")
+        );
+        self.put(BUFFER, &vec![0xcc; 0x8004]);
         assert_eq!(
             self.call(
-                "XOnlineMessageDetailsGetResultsProperty",
-                &[details, 0x9c1, 2048, DATA, OUT, OUT + 4]
-            ),
-            MESSAGE_DOWNLOAD_REQUIRED
-        );
-        let size = self.u32(OUT);
-        assert!(
-            size <= ATTACHMENT_CAP,
-            "{size} bytes overflow the game's buffer"
-        );
-        assert_eq!(
-            self.call(
-                "XOnlineMessageDownloadAttachmentToMemory",
-                &[details, 0x9c1, BUFFER, ATTACHMENT_CAP, 0, OUT]
+                "XOnlineStorageDownloadToMemory",
+                &[4, 0, DATA + 0x4200, BUFFER, 0x8000, 0, 0, OUT]
             ),
             0
         );
@@ -300,16 +283,19 @@ impl World {
         assert_eq!(self.wait(download), TASK_SUCCESS);
         assert_eq!(
             self.call(
-                "XOnlineMessageDownloadAttachmentToMemoryGetResults",
-                &[download, OUT, OUT + 4, OUT + 8]
+                "XOnlineStorageDownloadToMemoryGetResults",
+                &[download, OUT, OUT + 4, OUT + 8, 0, 0]
             ),
             0
         );
+        let ptr = self.u32(OUT);
         let received = self.u32(OUT + 4);
+        assert_eq!(ptr, BUFFER);
         assert_eq!(received, self.u32(OUT + 8));
+        assert!(received <= 0x8000);
+        assert_eq!(self.bytes(BUFFER + received, 4), vec![0xcc; 4]);
         assert_eq!(self.call("XOnlineTaskClose", &[download]), 0);
-        assert_eq!(self.call("XOnlineTaskClose", &[details]), 0);
-        self.bytes(BUFFER, received as usize)
+        self.bytes(ptr, received as usize)
     }
 }
 
@@ -318,7 +304,7 @@ impl World {
 /// +0x10, a zlib stream from +0x14 inflating to exactly that, then the
 /// console language's header and its message block.
 fn as_the_game_reads(file: &[u8]) -> (String, Vec<String>) {
-    assert!(file.len() > 0x10);
+    live_proto::title_file::check(file, 1, 0x8000).unwrap();
     assert_eq!(
         u32::from_be_bytes(file[0x10..0x14].try_into().unwrap()),
         0x25224
@@ -371,10 +357,10 @@ fn a_motd_published_from_the_web_editor_reaches_the_game_and_survives_a_restart(
         let (xuid, key) = server.account("Owner");
         let mut w = World::new(&server.embedded.url, xuid, &key);
         w.logon();
-        assert_eq!(w.messages(), vec![MOTD_ID]);
-        w.assert_hidden_title_message();
+        assert!(w.messages().is_empty());
+        w.assert_no_title_messages();
         assert_eq!(
-            as_the_game_reads(&w.download(MOTD_ID)),
+            as_the_game_reads(&w.download()),
             (default.header.clone(), default.messages.clone())
         );
 
@@ -385,12 +371,12 @@ fn a_motd_published_from_the_web_editor_reaches_the_game_and_survives_a_restart(
         server.put_motd(xuid, &key, &published).unwrap();
         assert_eq!(server.motd(), published);
 
-        // In the same session the catalog still lists the MOTD (it was
-        // there at sign-in) and a fresh download is the new file: the game
-        // gets it the next time its manager fetches, i.e. its next sign-in.
-        assert_eq!(w.messages(), vec![MOTD_ID]);
+        // An explicit new storage request reads the replacement in this
+        // session. The game itself re-arms only on the next eligible
+        // sign-in/user change, not on an inbox notification.
+        assert!(w.messages().is_empty());
         assert_eq!(
-            as_the_game_reads(&w.download(MOTD_ID)),
+            as_the_game_reads(&w.download()),
             (
                 "Owner's header".to_string(),
                 vec![
@@ -409,8 +395,8 @@ fn a_motd_published_from_the_web_editor_reaches_the_game_and_survives_a_restart(
     assert_eq!(server.motd(), published);
     let mut w = World::new(&server.embedded.url, xuid, &key);
     w.logon();
-    assert_eq!(w.messages(), vec![MOTD_ID]);
-    let (header, messages) = as_the_game_reads(&w.download(MOTD_ID));
+    assert!(w.messages().is_empty());
+    let (header, messages) = as_the_game_reads(&w.download());
     assert_eq!(header, "Owner's header");
     assert_eq!(messages.len(), 2);
     drop(w);

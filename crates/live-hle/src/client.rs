@@ -49,19 +49,11 @@ struct Metrics {
 #[derive(Clone)]
 pub(crate) struct File {
     pub id: u32,
-    pub name: &'static str,
     pub bytes: Arc<[u8]>,
-    pub sent_time: u64,
-    version: u64,
-}
-impl File {
-    pub fn version(&self) -> u64 {
-        self.version
-    }
 }
 #[derive(Clone)]
 pub(crate) enum Reply {
-    Logon { files: Vec<File>, files_error: u32 },
+    Logon,
     File(File),
     Done,
     Teams(Vec<live_proto::team::Team>),
@@ -429,33 +421,10 @@ impl Worker {
             None,
             MAX_FILE,
         )?;
-        // Compute metadata here, not in the game's enumeration/property loop.
-        let version = bytes
-            .iter()
-            .fold(0xcbf29ce484222325u64, |v, b| {
-                (v ^ *b as u64).wrapping_mul(0x100000001b3)
-            })
-            .max(1);
-        let sent_time = (now() + 11644473600) as u64 * 10000000;
         Ok(File {
             id,
-            name,
             bytes: bytes.into(),
-            sent_time,
-            version,
         })
-    }
-    fn files(&self, user: &Identity) -> (Vec<File>, u32) {
-        let mut files = Vec::new();
-        let mut error = 0;
-        for (id, name) in FILES {
-            match self.fetch(user, name, id) {
-                Ok(file) => files.push(file),
-                Err(Error::Status(404)) => {}
-                Err(e) => error = e.result(),
-            }
-        }
-        (files, error)
     }
     fn team_json<T: DeserializeOwned>(&self, user: &Identity, path: &str) -> Result<T, Error> {
         serde_json::from_slice(&self.response(
@@ -596,18 +565,13 @@ impl Worker {
                     }
                     return Err(NO_SESSION);
                 }
-                let (files, files_error) = users
-                    .values()
-                    .next()
-                    .map(|u| self.files(u))
-                    .unwrap_or_default();
                 self.active = Some(Active {
                     session: c.session.clone(),
                     presence: users.keys().map(|u| (*u, Presence::default())).collect(),
                     users,
                 });
                 c.session.status.store(CONNECTED, Ordering::Release);
-                Ok(Reply::Logon { files, files_error })
+                Ok(Reply::Logon)
             }
             Work::Change(accounts) => {
                 if self
@@ -699,7 +663,7 @@ impl Worker {
                 self.fetch(user, name, *id)
                     .map(Reply::File)
                     .map_err(|e| match e {
-                        Error::Status(404) => MESSAGE_INVALID_ID,
+                        Error::Status(404) => STORAGE_FILE_NOT_FOUND,
                         _ => e.result(),
                     })
             }

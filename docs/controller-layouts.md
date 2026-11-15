@@ -251,7 +251,8 @@ retail panes byte for byte, and ignores other screens and odd tags; and
    traced for a layout byte of 4 and up; check it does not show garbage or crash.
 7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
    layouts off (the Controller Speaker row on the Controls screen has its own
-   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md).
+   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md, and so has the
+   Field of View row after it, `H2_NO_FOV_ROW=1`; docs/settings-menu.md).
 8. The hooks install with no stall at boot.
 
 ## Known gaps

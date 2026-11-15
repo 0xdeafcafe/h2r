@@ -279,6 +279,10 @@ work is unnecessary.
 | `0x0003d270` `object_render_cache_initialize` | Confirmed | Cached-object-render-state diagnostic xref at `0x004508c0`, data-array initialization. |
 | `0x001554b0` `director_update` | Confirmed | Dispatches camera callbacks per local player; explicitly recognizes scripted and first-person callback addresses. |
 | `0x0016c840` / `0x0023c110` `scripted_camera_update` / `first_person_camera_update` | Confirmed | Local director references plus exact names in [OpenSauce camera layout][os-game]. Following/dead cameras have public anchors `0x0023cbb0`/`0x0023de50` (likely here; not deeply inspected). |
+| `0x00187130` `player_control_get_field_of_view` | Confirmed | Observer default `[0x54e854]`, else the unit definition's camera FOV (`+0xcc`) divided by the zoom magnification (`0xc8880`). Only caller `0x23c202`; hooked for the FOV setting ([settings-menu.md](settings-menu.md) "Field of view"). |
+| `0x0023bd70` | Likely | Following (vehicle) camera: sets its FOV from `[0x54e854]`. |
+| `0x00171d90` | Likely | Observer camera result: vertical FOV `+0x4c` from horizontal `+0x38` and aspect, scale `+0x50`. |
+| `0x0002f800` | Likely | Render camera from observer camera (FOV `+0x4c` to `+0x28`, split-screen factors). |
 | `0x0016f280` `observer_update` | Likely | Called after director with frame delta; observer/camera state feeds view records. |
 | `0x00147af1` `ui_render_layers` | Confirmed | Draws several UI object layers via virtual callbacks, screen overlays/fades; called by both world-view and fallback rendering. |
 | `0x001a474c` `ui_memory_initialize` | Confirmed | UI-pool diagnostic at `0x00454a94`; configures shared memory-pool allocator. `0x001a480d` creates UI data arrays. |
