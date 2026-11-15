@@ -9,15 +9,12 @@ Abbreviations: filo = the game's 0x110-byte file-request struct (signature
 dword `0x66696c6f` at +0x00, flags at +0x04, ASCII path at +0x08).
 
 
-> **Disputed (2026-11-15).** The file formats (§3, §5) are game-side and
-> self-consistent. The fetch chain in §2 is not settled: it names the
-> download entry `0x3a9d74` and the task entry `0x3a07a3`, which
-> [live-boundary.md](live-boundary.md) identifies as
-> `XOnlineMessageDownloadAttachmentToMemory` and `XOnlineFriendsStartup`,
-> and that inventory has `XOnlineStorageDownloadToMemory` at `0x3ab6ea`
-> (called from `0x000b4450`). Treat §2 as unverified until the storage
-> path is traced from the completion handlers `0x0008c790` and `0x00194260`
-> back to the API that delivered their buffers.
+> **Settled (2026-11-15).** §2's fetch chain is wrong: both files arrive as
+> Live message attachments (`XOnlineMessageEnumerate` → `XOnlineMessageDetails`
+> → `XOnlineMessageDetailsGetResultsProperty` → `XOnlineMessageDownloadAttachmentToMemory`,
+> property tag `0x9c1`, file selected by property `0x4c5`: 1 = MOTD, 4 = hopper,
+> compressed size at most 18,842 bytes). See [live-motd-fetch.md](live-motd-fetch.md).
+> The file formats in §3 and §5 stand.
 
 ## 1. The .data descriptors
 
