@@ -246,8 +246,9 @@ DPC by the instruction after the call (Halo's voice engine, 0x332b6d, arms its
 on the KfLowerIrql. Otherwise DPCs run one per slice before any thread. A drain
 runs until the queue is empty, so a DPC that queues a different DPC has it run
 before any thread continues. Only a DPC that comes round again in the same drain
-(say by re-arming its own timer due now) waits until a ready thread has had a
-slice, so DPC delivery cannot starve a thread either. They run on a 16 KiB kernel stack, under
+(say by re-arming its own timer due now) stays queued until a ready thread has
+had a slice; DPCs queued behind it still run first, in order. So DPC delivery
+cannot starve a thread either. They run on a 16 KiB kernel stack, under
 ExecCtx thread `threads::DPC_THREAD_ID` (0) at DISPATCH_LEVEL; the interrupted
 IRQL is restored when the routine returns. A routine that blocks, delays,
 yields or needs a KTHREAD stops: `RunOutcome::Stopped { thread: 0, .. }`,

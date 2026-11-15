@@ -9,8 +9,8 @@
 //! WaitAny sees the earliest expiry even when time jumps past several. Timer deadlines take part in the scheduler's idle/polling time
 //! advance exactly like sleeps. `Machine::run` executes queued DPCs, one per
 //! slice and before any thread, on a kernel-owned stack at DISPATCH_LEVEL;
-//! a drain runs to empty, except that a DPC already run in it waits for a
-//! ready thread's next slice.
+//! a drain runs every queued DPC in order, except that one already run in
+//! it stays queued until a ready thread's next slice.
 //! A thread whose kernel call queued a DPC and returns below DISPATCH_LEVEL
 //! yields first, so the DPC runs before the caller's next instruction.
 use crate::layout::kpcr;
@@ -248,10 +248,14 @@ impl Core {
         self.dpcs.push_back(dpc);
         Ok(true)
     }
-    /// Remove the next queued DPC (clearing Inserted, as KiRetireDpcList does
-    /// before calling it) and return its call.
-    pub(crate) fn next_dpc(&mut self, memory: &mut Guest) -> Result<Option<DpcCall>, GuestFault> {
-        let Some(dpc) = self.dpcs.pop_front() else {
+    /// Remove the queued DPC at `index` (clearing Inserted, as KiRetireDpcList
+    /// does before calling it) and return its call.
+    pub(crate) fn take_dpc(
+        &mut self,
+        memory: &mut Guest,
+        index: usize,
+    ) -> Result<Option<DpcCall>, GuestFault> {
+        let Some(dpc) = self.dpcs.remove(index) else {
             return Ok(None);
         };
         let bytes = memory.read::<{ KDPC_SIZE as usize }>(dpc)?;

@@ -344,16 +344,20 @@ impl Machine {
                     }
                 }
                 // DISPATCH_LEVEL work runs before any thread gets a slice, and
-                // a drain runs to empty, chains of distinct DPCs included. Only
-                // a DPC that comes round again in the same drain (one that
-                // re-arms its own timer due now, say) waits for a ready
-                // thread's next slice, so a DPC cycle cannot starve threads.
-                if live
-                    && let Some(&dpc) = core.dpcs.front()
-                    && (core.ready.is_empty() || !self.drained.contains(&dpc))
-                {
-                    self.drained.insert(dpc);
-                    let call = core.next_dpc(&mut memory)?.expect("queued DPC");
+                // a drain runs every queued DPC, chains of distinct DPCs
+                // included, in queue order. Only a DPC that comes round again
+                // in the same drain (one that re-arms its own timer due now,
+                // say) stays queued until a ready thread's next slice; DPCs
+                // queued behind it still run now. So a DPC cycle cannot
+                // starve threads, and finite DPC work still precedes them.
+                let next = if core.ready.is_empty() {
+                    (!core.dpcs.is_empty()).then_some(0)
+                } else {
+                    core.dpcs.iter().position(|d| !self.drained.contains(d))
+                };
+                if live && let Some(index) = next {
+                    let call = core.take_dpc(&mut memory, index)?.expect("queued DPC");
+                    self.drained.insert(call.arguments[0]);
                     drop(memory);
                     drop(core);
                     if let Some(outcome) = self.run_dpc(call)? {

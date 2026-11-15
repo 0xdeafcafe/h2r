@@ -617,3 +617,246 @@ fn review_alertable_boundaries_stop_explicitly() {
     h.stopped(159, &[TIMER, 0, 0, 1, 0]);
     h.stopped(99, &[0, 1, DATA + 0x300]);
 }
+
+// Recheck probes (kernel-r5): priority boundaries for the idle advance, and
+// DPC cycles mixed with finite DPC work.
+fn recheck_priority(h: &mut Harness, slot: u32, increment: i32) {
+    let handle = h.get(HANDLES + slot * 4);
+    h.success(246, &[handle, 0, OBJECT]);
+    let object = h.get(OBJECT);
+    h.success(143, &[object, increment as u32]);
+}
+fn recheck_boundary(kind: u32) {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.success(113, &[TIMER, 1]);
+    let (lo, hi) = relative(20);
+    h.success(149, &[TIMER, lo, hi, 0]);
+    h.code(0, |cpu, ctx, _| {
+        create(cpu, ctx, 0, CODE + 0x1000, CODE + 0x10)
+    });
+    set_priority(&h, 0x10, 0, 2, CODE + 0x1000);
+    h.code(0x1000, |cpu, ctx, _| {
+        if ctx.memory().u32(DPC_COUNT)? != 0 {
+            cpu.eax = 0;
+            return ctx.memory().ret(cpu, 0);
+        }
+        guest_call(cpu, ctx, token(238), &[], CODE + 0x1000)
+    });
+    let clock_kernel = h.kernel.clone();
+    h.code(0x2000, move |cpu, ctx, _| {
+        assert_eq!(
+            clock_kernel.clock().counter(),
+            0,
+            "real work must precede timer expiry"
+        );
+        assert_eq!(ctx.runtime().memory().u32(DPC_COUNT)?, 0);
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    assert_eq!(machine.run(2).unwrap(), RunOutcome::SliceLimit);
+    assert_eq!(machine.schedule(), &[1, 2]);
+    assert_eq!(h.kernel.clock().counter(), 0);
+    // Both existing threads are now marked polling. Introduce real work.
+    let suspended = u32::from(kind == 2);
+    h.success(
+        255,
+        &[
+            HANDLES + 4,
+            0,
+            0x4000,
+            0,
+            0,
+            CODE + 0x2000,
+            0,
+            suspended,
+            0,
+            0,
+        ],
+    );
+    match kind {
+        0 => recheck_priority(&mut h, 1, 2), // same priority as high poller
+        1 => recheck_priority(&mut h, 1, 4), // newly created higher priority
+        2 => {
+            recheck_priority(&mut h, 1, 4);
+            let handle = h.get(HANDLES + 4);
+            h.success(224, &[handle, 0]);
+        }
+        3 => {
+            // boost ready work from below the old scheduling floor
+            recheck_priority(&mut h, 1, -2);
+            recheck_priority(&mut h, 1, 4);
+        }
+        4 => {
+            // lowering the high poller changes the next pick/floor
+            recheck_priority(&mut h, 0, -4);
+        }
+        5 => {}
+        _ => unreachable!(),
+    }
+    if kind == 5 {
+        assert_eq!(machine.run(1).unwrap(), RunOutcome::SliceLimit);
+        assert_eq!(
+            h.kernel.clock().counter(),
+            0,
+            "next pick floor must include its peers"
+        );
+        return;
+    }
+    assert!(matches!(
+        machine.run(30).unwrap(),
+        RunOutcome::Complete { .. }
+    ));
+}
+#[test]
+fn recheck_same_priority_real_work() {
+    recheck_boundary(0);
+}
+#[test]
+fn recheck_new_higher_priority_real_work() {
+    recheck_boundary(1);
+}
+#[test]
+fn recheck_resumed_higher_priority_real_work() {
+    recheck_boundary(2);
+}
+#[test]
+fn recheck_mid_poll_priority_boost() {
+    recheck_boundary(3);
+}
+#[test]
+fn recheck_mid_poll_priority_drop() {
+    recheck_boundary(4);
+}
+
+fn recheck_cycle(ready: bool) {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.success(113, &[TIMER, 0]);
+    h.success(113, &[TIMER + 0x400, 0]);
+    h.success(107, &[DPC, CODE + 0x300, 0]);
+    h.success(107, &[DPC + 0x400, CODE + 0x400, 0]);
+    h.code(0x300, |cpu, ctx, _| {
+        log(ctx, 10)?;
+        guest_call(
+            cpu,
+            ctx,
+            token(149),
+            &[TIMER + 0x400, 0, 0, DPC + 0x400],
+            CODE + 0x340,
+        )
+    });
+    h.code(0x340, |cpu, ctx, _| ctx.memory().ret(cpu, 16));
+    h.code(0x400, |cpu, ctx, _| {
+        log(ctx, 20)?;
+        if ctx.memory().u32(LOG)? >= 4 {
+            return ctx.memory().ret(cpu, 16);
+        }
+        guest_call(cpu, ctx, token(149), &[TIMER, 0, 0, DPC], CODE + 0x440)
+    });
+    h.code(0x440, |cpu, ctx, _| ctx.memory().ret(cpu, 16));
+    if ready {
+        h.code(0, |cpu, ctx, _| {
+            guest_call(cpu, ctx, token(149), &[TIMER, 0, 0, DPC], CODE + 0x10)
+        });
+        h.code(0x10, |cpu, ctx, _| {
+            assert_eq!(ctx.memory().u32(LOG)?, 2);
+            log(ctx, 1)?;
+            guest_call(cpu, ctx, token(238), &[], CODE + 0x20)
+        });
+        h.code(0x20, |cpu, ctx, _| {
+            assert_eq!(ctx.memory().u32(LOG)?, 5);
+            cpu.eax = 0;
+            ctx.memory().ret(cpu, 0)
+        });
+    } else {
+        h.success(108, &[DATA + 0x600, 0, 0]);
+        h.code(0, |cpu, ctx, _| {
+            guest_call(
+                cpu,
+                ctx,
+                token(159),
+                &[DATA + 0x600, 0, 0, 0, 0],
+                CODE + 0x10,
+            )
+        });
+        h.code(0x10, |cpu, ctx, _| {
+            cpu.eax = 0;
+            ctx.memory().ret(cpu, 0)
+        });
+        assert_eq!(machine.run(1).unwrap(), RunOutcome::SliceLimit);
+        h.success(149, &[TIMER, 0, 0, DPC]);
+    }
+    let outcome = machine.run(20).unwrap();
+    if ready {
+        assert!(
+            matches!(outcome, RunOutcome::Complete { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(logged(&h), [10, 20, 1, 10, 20]);
+    } else {
+        assert!(
+            matches!(outcome, RunOutcome::Deadlock { .. }),
+            "{outcome:?}"
+        );
+        assert_eq!(logged(&h), [10, 20, 10, 20]);
+    }
+}
+#[test]
+fn recheck_dpc_cycle_with_ready_thread() {
+    recheck_cycle(true);
+}
+#[test]
+fn recheck_dpc_cycle_without_ready_thread() {
+    recheck_cycle(false);
+}
+
+#[test]
+fn recheck_recurrent_head_must_not_defer_distinct_dpc() {
+    let mut h = Harness::new();
+    let mut machine = machine(&h);
+    h.success(113, &[TIMER, 0]);
+    h.success(113, &[TIMER + 0x400, 0]);
+    h.success(107, &[DPC, CODE + 0x300, 0]);
+    h.success(107, &[DPC + 0x400, CODE + 0x400, 0]);
+    h.code(0, |cpu, ctx, _| {
+        guest_call(cpu, ctx, token(149), &[TIMER, 0, 0, DPC], CODE + 0x10)
+    });
+    h.code(0x10, |cpu, ctx, _| {
+        assert_eq!(
+            ctx.memory().u32(DPC_COUNT)?,
+            1,
+            "distinct DPC B was deferred behind recurring A"
+        );
+        cpu.eax = 0;
+        ctx.memory().ret(cpu, 0)
+    });
+    h.code(0x300, |cpu, ctx, _| {
+        // Requeue A first, then enqueue distinct finite work B behind it.
+        guest_call(cpu, ctx, token(149), &[TIMER, 0, 0, DPC], CODE + 0x310)
+    });
+    h.code(0x310, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            token(149),
+            &[TIMER + 0x400, 0, 0, DPC + 0x400],
+            CODE + 0x340,
+        )
+    });
+    h.code(0x340, |cpu, ctx, _| ctx.memory().ret(cpu, 16));
+    h.code(0x400, |cpu, ctx, _| {
+        ctx.memory().set_u32(DPC_COUNT, 1)?;
+        ctx.memory().ret(cpu, 16)
+    });
+    assert!(matches!(
+        machine.run(20).unwrap(),
+        RunOutcome::Complete { .. }
+    ));
+}
+
+#[test]
+fn recheck_yielder_exclusion_floor() {
+    recheck_boundary(5);
+}
