@@ -557,3 +557,33 @@ fn write_color_takes_the_guest_pitch_and_layout() {
     let dxt = TextureDesc::new(D3DFormat::Dxt1, TextureKind::D2, 16, 4, 1, 1);
     assert!(store.write_color(&ctx, s, &dxt, &guest).is_err());
 }
+
+#[test]
+fn snapshot_copies_a_surface_into_a_texture_that_can_be_sampled() {
+    let Some(ctx) = context() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    let fmt = D3DFormat::LinA8R8G8B8;
+    let s = store.create(&ctx, SurfaceDesc::new(fmt, 8, 4).with_samples(4), SurfaceKind::Color).unwrap();
+    let mut renderer = Renderer::new(&ctx);
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    {
+        let t = store.target(s, None).unwrap();
+        renderer.render(&ctx, &mut enc, &t, Clear { color: Some([0.0, 0.0, 1.0, 0.5]), ..Clear::NONE }, &[]).unwrap();
+    }
+    let copy = store.snapshot(&ctx, &mut enc, s).unwrap();
+    // Later rendering into the surface does not reach the snapshot.
+    {
+        let t = store.target(s, None).unwrap();
+        renderer.render(&ctx, &mut enc, &t, Clear { color: Some([1.0, 0.0, 0.0, 1.0]), ..Clear::NONE }, &[]).unwrap();
+    }
+    ctx.queue.submit([enc.finish()]);
+    assert_eq!(copy.format(), store.get(s).unwrap().wgpu_format());
+    assert!(copy.usage().contains(wgpu::TextureUsages::TEXTURE_BINDING));
+    assert_eq!((copy.width(), copy.height()), (8, 4));
+    let px = gfx::readback::read_texture(&ctx, &copy, wgpu::TextureAspect::All, 4, (8, 4));
+    assert_eq!(pixel(&px, 8, 7, 3), [255, 0, 0, 128]); // BGRA blue, alpha 0.5
+    // Depth surfaces cannot be snapshotted as colour.
+    let d = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinD24S8, 8, 4), SurfaceKind::DepthStencil).unwrap();
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    assert!(store.snapshot(&ctx, &mut enc, d).is_err());
+}

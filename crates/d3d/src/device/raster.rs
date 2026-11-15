@@ -6,9 +6,16 @@
 //!   `0x14b60` builds from `EAX` bits 1..4). One whole-target, all-channel
 //!   clear goes to [`Backend::clear`]; anything else to
 //!   [`Backend::clear_rects`].
-//! * **Clip.** Draws carry the rectangle they may write
-//!   ([`ResolvedDraw::clip`]): the viewport (SetViewport resets the window
-//!   clip to it, `0x3f82e8` -> `0x3f8760`) narrowed by inclusive scissors.
+//! * **Clip.** Draws carry the area they may write
+//!   ([`ResolvedDraw::clip`], [`ResolvedDraw::clip_rects`]): the viewport
+//!   (SetViewport resets the window clip to it, `0x3f82e8` -> `0x3f8760`)
+//!   and the target, narrowed to the union of inclusive scissor rectangles
+//!   or to what exclusive ones leave, as disjoint pieces
+//!   ([`scissor_region`]).
+//! * **Frame buffer as a texture.** A texture whose `Data` is the back
+//!   buffer's ([`BACK_BUFFER_DATA`]) is sampled from a copy of the back
+//!   buffer ([`Backend::snapshot_surface`]); one over the depth buffer
+//!   ([`DEPTH_BUFFER_DATA`]) skips the draw.
 //! * **Render to texture.** A surface whose `Parent` is a texture (a level,
 //!   as `0x14850` builds for its two 64x64 targets with the native
 //!   `0x3fb7a0`) gets its own host surface. When the guest can next observe
@@ -65,7 +72,180 @@ impl<S> RttTarget<S> {
     }
 }
 
+/// What a bound texture header is, as far as the frame buffers go.
+pub(super) enum FrameTexture<T> {
+    /// Ordinary guest texture memory.
+    No,
+    /// The back buffer, copied for this draw.
+    Snapshot(TextureInfo, T),
+    /// The draw cannot sample it: skip with this reason.
+    Skip(String),
+}
+
+/// Left, top, right, bottom (right and bottom exclusive).
+type Edges = (i64, i64, i64, i64);
+
+/// A draw's clip: the bounding rectangle and, when it is not one
+/// rectangle, the pieces.
+type ClipArea = (PixelRect, Vec<PixelRect>);
+
+/// The pieces of `base` (left, top, right, bottom; right and bottom
+/// exclusive) that scissor rectangles `rects` keep: inside any of them, or,
+/// with `exclusive`, outside all of them. The pieces are disjoint and
+/// cover the kept area exactly: each band between consecutive edges is cut
+/// into maximal runs, and runs that continue a piece of the band above
+/// extend it. No rectangles keeps `base` whole.
+pub fn scissor_region(base: Edges, rects: &[Rect], exclusive: bool) -> Vec<PixelRect> {
+    let (bx1, by1, bx2, by2) = base;
+    if bx1 >= bx2 || by1 >= by2 {
+        return Vec::new();
+    }
+    if rects.is_empty() {
+        return vec![PixelRect {
+            x: bx1 as u32,
+            y: by1 as u32,
+            width: (bx2 - bx1) as u32,
+            height: (by2 - by1) as u32,
+        }];
+    }
+    let rects: Vec<Edges> = rects
+        .iter()
+        .map(|r| {
+            (
+                (r.x1 as i64).clamp(bx1, bx2),
+                (r.y1 as i64).clamp(by1, by2),
+                (r.x2 as i64).clamp(bx1, bx2),
+                (r.y2 as i64).clamp(by1, by2),
+            )
+        })
+        .filter(|r| r.0 < r.2 && r.1 < r.3)
+        .collect();
+    let edges = |a: i64, b: i64, f: &dyn Fn(&Edges) -> [i64; 2]| {
+        let mut e = vec![a, b];
+        e.extend(rects.iter().flat_map(f));
+        e.sort_unstable();
+        e.dedup();
+        e
+    };
+    let xs = edges(bx1, bx2, &|r| [r.0, r.2]);
+    let ys = edges(by1, by2, &|r| [r.1, r.3]);
+    let mut out: Vec<PixelRect> = Vec::new();
+    // Pieces open at the band above: (x1, x2) -> index in `out`.
+    let mut open: Vec<((i64, i64), usize)> = Vec::new();
+    for band in ys.windows(2) {
+        let (y1, y2) = (band[0], band[1]);
+        let mut runs: Vec<(i64, i64)> = Vec::new();
+        for col in xs.windows(2) {
+            let (x1, x2) = (col[0], col[1]);
+            let inside = rects
+                .iter()
+                .any(|r| r.0 <= x1 && x2 <= r.2 && r.1 <= y1 && y2 <= r.3);
+            if inside != exclusive {
+                match runs.last_mut() {
+                    Some(last) if last.1 == x1 => last.1 = x2,
+                    _ => runs.push((x1, x2)),
+                }
+            }
+        }
+        let mut next = Vec::with_capacity(runs.len());
+        for run in runs {
+            if let Some(&(_, i)) = open.iter().find(|(r, _)| *r == run) {
+                out[i].height = (y2 - out[i].y as i64) as u32;
+                next.push((run, i));
+            } else {
+                out.push(PixelRect {
+                    x: run.0 as u32,
+                    y: y1 as u32,
+                    width: (run.1 - run.0) as u32,
+                    height: (y2 - y1) as u32,
+                });
+                next.push((run, out.len() - 1));
+            }
+        }
+        open = next;
+    }
+    out
+}
+
 impl<B: Backend> Device<B> {
+    /// Whether texture `header` reads one of the device's own frame
+    /// buffers ([`BACK_BUFFER_DATA`], [`DEPTH_BUFFER_DATA`]), and if so how
+    /// a draw samples it.
+    pub(super) fn frame_texture(
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+    ) -> Result<FrameTexture<B::Texture>, D3dError> {
+        let pc = PixelContainer::read(mem, header)?;
+        if pc.resource.kind() != ResourceType::Texture {
+            return Ok(FrameTexture::No);
+        }
+        let map = self.cfg.address_map;
+        let data = map.to_virtual(pc.resource.data);
+        let within = |base: u32| data.wrapping_sub(map.to_virtual(base)) < FRAME_DATA_SPAN;
+        let Some(sw) = self.swap.as_ref() else {
+            return Ok(FrameTexture::No);
+        };
+        if self.depth.is_some() && within(DEPTH_BUFFER_DATA) {
+            return Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} reads the depth buffer's memory (format word {:#x}): depth bits sampled as colour are not modelled",
+                pc.format
+            )));
+        }
+        if !within(BACK_BUFFER_DATA) {
+            return Ok(FrameTexture::No);
+        }
+        let (back, (bw, bh)) = (sw.back[0], sw.size);
+        let desc = match TextureDesc::from_header(pc.format, pc.size) {
+            Ok(d) => d,
+            Err(e) => {
+                return Ok(FrameTexture::Skip(format!(
+                    "texture {header:#010x} over the back buffer: {e}"
+                )));
+            }
+        };
+        let exact = data == map.to_virtual(BACK_BUFFER_DATA);
+        let format_ok = matches!(desc.format, D3DFormat::LinA8R8G8B8 | D3DFormat::LinX8R8G8B8)
+            && sw.format.bytes_per_texel() == Some(4);
+        if !exact
+            || !format_ok
+            || desc.kind != gfx::texture::TextureKind::D2
+            || (desc.width, desc.height) != (bw, bh)
+        {
+            return Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} over the back buffer ({:?} {}x{} at +{:#x}) is not the whole {bw}x{bh} {:?} image as a linear 32-bit texture",
+                desc.format,
+                desc.width,
+                desc.height,
+                data.wrapping_sub(map.to_virtual(BACK_BUFFER_DATA)),
+                sw.format
+            )));
+        }
+        let Some(t) = self
+            .backend
+            .snapshot_surface(back)
+            .map_err(D3dError::Backend)?
+        else {
+            return Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} reads the back buffer and the backend cannot copy surfaces into textures"
+            )));
+        };
+        self.stats.frame_snapshots += 1;
+        Ok(FrameTexture::Snapshot(
+            TextureInfo {
+                header,
+                palette: 0,
+                format: desc.format,
+                kind: desc.kind,
+                width: desc.width,
+                height: desc.height,
+                depth: desc.depth,
+                levels: desc.levels,
+            },
+            t,
+        ))
+    }
+
     /// The host surface for a texture-level render target (made on first
     /// use; remade if the header's identity changed).
     pub(super) fn rtt_surface(
@@ -366,36 +546,37 @@ impl<B: Backend> Device<B> {
         self.write_back(mem, h)
     }
 
-    /// The rectangle a draw may write ([`ResolvedDraw::clip`]).
-    pub(super) fn draw_clip(&self, mem: &dyn GuestMemory) -> Result<Option<PixelRect>, D3dError> {
+    /// The area a draw may write: its bounding rectangle
+    /// ([`ResolvedDraw::clip`]) and, when it is not one rectangle, its
+    /// disjoint pieces ([`ResolvedDraw::clip_rects`]). `None`: nothing.
+    pub(super) fn draw_clip(&self, mem: &dyn GuestMemory) -> Result<Option<ClipArea>, D3dError> {
         let (w, h) = self.target_size(mem)?;
         let v = self.viewport;
-        let mut x1 = v.x.min(w) as i64;
-        let mut y1 = v.y.min(h) as i64;
-        let mut x2 = (v.x as i64 + v.width as i64).min(w as i64);
-        let mut y2 = (v.y as i64 + v.height as i64).min(h as i64);
-        // Inclusive scissors: a rectangle covering the target changes
-        // nothing; otherwise there is exactly one (`check_raster` stops on
-        // more), and the draw is clipped to it.
-        if let Some(r) = self
-            .scissors
-            .first()
-            .filter(|_| !self.scissors.iter().any(|r| r.covers(w, h)))
-        {
-            x1 = x1.max(r.x1 as i64);
-            y1 = y1.max(r.y1 as i64);
-            x2 = x2.min(r.x2 as i64);
-            y2 = y2.min(r.y2 as i64);
+        let base = (
+            v.x.min(w) as i64,
+            v.y.min(h) as i64,
+            (v.x as i64 + v.width as i64).min(w as i64),
+            (v.y as i64 + v.height as i64).min(h as i64),
+        );
+        let mut pieces = scissor_region(base, &self.scissors, self.scissor_exclusive);
+        if pieces.len() <= 1 {
+            return Ok(pieces.pop().map(|p| (p, Vec::new())));
         }
-        if x1 >= x2 || y1 >= y2 {
-            return Ok(None);
-        }
-        Ok(Some(PixelRect {
-            x: x1 as u32,
-            y: y1 as u32,
-            width: (x2 - x1) as u32,
-            height: (y2 - y1) as u32,
-        }))
+        let x1 = pieces.iter().map(|p| p.x).min().expect("several");
+        let y1 = pieces.iter().map(|p| p.y).min().expect("several");
+        let x2 = pieces.iter().map(|p| p.x + p.width).max().expect("several");
+        let y2 = pieces
+            .iter()
+            .map(|p| p.y + p.height)
+            .max()
+            .expect("several");
+        let bound = PixelRect {
+            x: x1,
+            y: y1,
+            width: x2 - x1,
+            height: y2 - y1,
+        };
+        Ok(Some((bound, pieces)))
     }
 
     /// `D3DDevice_Clear` (`0x3f9fc0`, stdcall `Count, pRects, Flags, Color,

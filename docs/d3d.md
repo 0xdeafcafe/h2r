@@ -556,7 +556,10 @@ and allocations are bounded before anything is read:
   through a `ShaderProvider` (`Nv2aShaders` over `crates/shaders` by
   default). A draw the provider cannot translate is skipped with an
   `Event::DrawSkipped` that gives the reason.
-  - Each draw is scissored to `clip`. The wgpu viewport stays the whole
+  - Each draw is scissored to `clip`, or, when the scissors leave several
+    pieces (`clip_rects`), recorded once per piece in the same pass with
+    that piece as its scissor. The pieces are disjoint, so blending touches
+    every pixel once. The wgpu viewport stays the whole
     target, because positions are already window coordinates
     (pre-transformed vertices; NV2A programs apply the viewport
     themselves), so a `gfx::DrawViewport` would transform them twice.
@@ -565,15 +568,25 @@ and allocations are bounded before anything is read:
     before every built-in draw from that draw's depth format.
 - Each draw also carries:
   - `clip`: the pixel rectangle it may touch. That is the viewport
-    intersected with the target and with the scissor rectangle when one is
-    set and does not cover the target. SetViewport clips to the target and
-    resets the scissors, as the original does; a null viewport keeps the
-    current one.
+    intersected with the target and with the scissor area. SetViewport
+    clips to the target and resets the scissors (exclusive mode
+    included), as the original does; a null viewport keeps the current
+    one.
+  - `clip_rects`: the scissor area's disjoint pieces when it is not one
+    rectangle (`clip` is then their bounding box), from
+    `d3d::device::scissor_region`. As compiled, `SetScissors`
+    (`0x3f8760`) clips to the viewport with no rectangles (`0x3f87a7`),
+    makes one inclusive rectangle the surface clip (`0x3f886c`), and
+    otherwise programs the NV2A window clip (`0x3f8928`: clip type =
+    `Exclusive`, rectangle `i` in `SET_WINDOW_CLIP_HORIZONTAL/VERTICAL(i)`
+    with inclusive maxima). Inclusive keeps pixels inside any rectangle,
+    exclusive keeps pixels outside all of them; an exclusive rectangle
+    over the whole viewport draws nothing. Counted in
+    `Stats::scissor_split_draws`. `Clear` ignores the scissors, as before
+    (not checked against hardware).
   - `hw`: the NV2A register state (`d3d::hw::HwState`) as last pushed.
 - State that cannot be expressed **stops** with `D3dError::Unimplemented`
   rather than rendering wrongly:
-  - several scissor rectangles, none covering the target (one clip
-    rectangle cannot hold them);
   - a back-buffer scale other than 1 x 1;
   - a backend that returns `DrawOutcome::Unsupported`.
 - **Clears** (`Device::clear`, `src/device/raster.rs`). `Clear` intersects
@@ -617,6 +630,43 @@ and allocations are bounded before anything is read:
     - at teardown, which then destroys the host surfaces.
   - A depth level, a compressed format, or a header rewritten while its
     level holds unwritten pixels stops.
+- **Frame buffers as textures** (`src/device/raster.rs`). The back buffer
+  and depth buffer exist only on the host. Their headers carry `Data`
+  values above any Xbox RAM that name them: `d3d::device::BACK_BUFFER_DATA`
+  (`0x0C000000`) and `DEPTH_BUFFER_DATA` (`0x0D000000`). Before they had
+  `Data` 0, so a texture over them read whatever guest memory was at
+  `0x80000000`, with no event.
+  - Halo builds such textures at `0x14600`, called at boot (`0x127c1`, just
+    before `0x14850`) and again from `0x12b9e` and `0x137f2e`: `LIN_A8R8G8B8`
+    640x480 headers (`Common` `0x40001`, format `0x11229`, size
+    `0x271DF27F`) over the back-buffer (`+0x1A14`) and display-surface
+    (`+0x1A18`) `Data`, kept at `0x509354`/`0x509358`. It also builds two
+    colour textures over the depth surface's `Data` (`0x509368`,
+    `LIN_A8R8G8B8`; `0x50936C`, format `0x3F` `LIN_A8B8G8R8`) and a colour
+    surface over it (`0x509370`, a copy of the back-buffer header with the
+    depth `Data`, selected as a target by `0x14bc0`). Its global texture
+    switch (`0x14f80`, table `0x15114`, results in `0x51F3D8`) binds them:
+    `0x509354[frame & 1]` at `0x14fe9`, `0x509354[(frame - 1) & 1]` at
+    `0x14fc1` and `0x150a7` (frame counter `0x485AA0`), `0x509368` at
+    `0x15020` and `0x50936C` at `0x15032`. The device sets both
+    `+0x1A14` and `+0x1A18` to the one back-buffer header, so both parities
+    read the current back buffer; a "previous frame" read gets this
+    frame's image so far.
+  - A texture whose `Data` is the back buffer's, `LIN_A8R8G8B8` or
+    `LIN_X8R8G8B8`, 2D, the back buffer's size, is sampled from a copy of
+    the back buffer made for the draw (`Backend::snapshot_surface`;
+    `GfxBackend` uses `gfx::SurfaceStore::snapshot`). That holds while the
+    back buffer is the target too: the draw reads what was there before
+    it. Counted in `Stats::frame_snapshots`. An `X8` texture keeps the
+    stored alpha.
+  - Any other texture inside either buffer's `FRAME_DATA_SPAN` (another
+    format or size, an offset into it, or anything over the depth buffer)
+    skips the draw with `Event::DrawSkipped` saying why. Depth bits read as
+    colour are not modelled. A backend without `snapshot_surface` skips
+    too.
+  - Guest memory at those addresses is never read or written by the
+    device. A CPU read of the frame buffer through `Data` faults instead
+    of returning stale bytes.
 
 ### Textures: lazy upload, dirty tracking
 
@@ -1147,7 +1197,9 @@ reaches needs a boot trace.
 
 ## gfx changes this wants
 
-Done since the last revision: per-draw scissor and viewport
+Done since the last revision: `SurfaceStore::snapshot` (a sampleable
+copy of a colour surface, for the back buffer read as a texture),
+`Draw: Clone` (one draw repeated per scissor piece), per-draw scissor and viewport
 (`gfx::Draw::scissor`/`viewport`), rectangle and channel-masked clears
 (`Renderer::clear_rects`), render-to-texture surfaces
 (`SurfaceStore::create_texture_target`), the surface upload
@@ -1160,6 +1212,9 @@ change), alpha test in the built-in shader, and indexed draws
   `create_texture_target` surface's view (`Surface::view`) for the
   texture would avoid the round trip. That needs the texture cache to map
   a texture header to the surface.
+- **Depth as a texture.** The depth-buffer textures above need a pass
+  that converts depth/stencil bits into the colour format they are read
+  as.
 - **Batching several draws into one pass.** The backend opens one pass per
   draw. That is correct but slow.
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as

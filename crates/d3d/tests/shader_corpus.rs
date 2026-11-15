@@ -119,6 +119,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60]) -> ResolvedDraw {
         },
         textures: [None; 4],
         clip: None,
+        clip_rects: Vec::new(),
         hw: d3d::hw::HwState::default(),
     }
 }

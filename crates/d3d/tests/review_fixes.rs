@@ -390,7 +390,7 @@ fn p1_8_verify_hashes_palette_contents() {
 // 9 ------------------------------------------------------------------------
 
 #[test]
-fn p1_9_raster_state_gfx_cannot_express_stops() {
+fn p1_9_raster_state_clip_and_back_buffer_scale() {
     let (mut d, mut m) = rec();
     quad(&mut d, &mut m);
     let clip = |d: &d3d::Device<RecordingBackend>| {
@@ -439,12 +439,18 @@ fn p1_9_raster_state_gfx_cannot_express_stops() {
     assert_eq!(clip(&d), (0, 0, W, H));
     d.set_scissors(&mut m, 0, 0, 0).unwrap();
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    // Two partial scissors cannot be one clip rectangle: that stops.
+    // Two partial scissors are one clip area in two pieces (bounding box in
+    // `clip`, the pieces in `clip_rects`).
     for (i, w) in [0u32, 0, 16, 16, 32, 32, 48, 48].iter().enumerate() {
         m.write_u32(rect + 4 * i as u32, *w).unwrap();
     }
     d.set_scissors(&mut m, 2, 0, rect).unwrap();
-    assert!(is_unimplemented(d.draw_vertices(&mut m, 6, 0, 4)));
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(clip(&d), (0, 0, 48, 48));
+    let pieces: Vec<_> = d.backend.draws().last().unwrap().clip_rects.iter()
+        .map(|p| (p.x, p.y, p.width, p.height))
+        .collect();
+    assert_eq!(pieces, vec![(0, 0, 16, 16), (32, 32, 16, 16)]);
     d.set_scissors(&mut m, 0, 0, 0).unwrap();
 
     // Back-buffer scaling stops; a channel-masked clear goes to the

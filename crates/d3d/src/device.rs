@@ -62,7 +62,8 @@ mod fragments;
 mod raster;
 
 pub use display::{VBLANK_SWAPDONE, VBlank};
-pub use raster::RttTarget;
+use raster::FrameTexture;
+pub use raster::{RttTarget, scissor_region};
 
 /// A range of guest virtual memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,6 +93,25 @@ pub const MAX_VERTICES: u32 = 1 << 20;
 pub const MAX_SPAN: u64 = 64 << 20;
 /// `D3DDevice_SetScissors` accepts at most this many rectangles.
 pub const MAX_SCISSORS: u32 = 8;
+/// Guest `Data` (a physical address) of the back-buffer header the device
+/// creates. The back buffer lives on the host only; this address, above
+/// any Xbox RAM, names it. At boot (`0x14600`, from `0x127c1`) Halo builds
+/// `LIN_A8R8G8B8` texture headers over the back and display surfaces'
+/// `Data` (kept at `0x509354` and `0x509358`) and binds them through its
+/// global texture switch (`0x14fc1`, `0x14fe9`, `0x150a7`): a draw sampling
+/// such a texture gets a copy of the back buffer
+/// ([`Backend::snapshot_surface`]). Guest memory at this address is never
+/// read or written.
+pub const BACK_BUFFER_DATA: u32 = 0x0C00_0000;
+/// Guest `Data` of the depth/stencil header the device creates (see
+/// [`BACK_BUFFER_DATA`]). Halo builds colour textures over it too
+/// (`0x509368`, `0x50936C`): draws sampling them are skipped, depth bits
+/// read as colour are not modelled.
+pub const DEPTH_BUFFER_DATA: u32 = 0x0D00_0000;
+/// Bytes from [`BACK_BUFFER_DATA`] or [`DEPTH_BUFFER_DATA`] that belong to
+/// that buffer: a texture whose `Data` falls inside but not at the start is
+/// skipped.
+pub const FRAME_DATA_SPAN: u32 = 0x0100_0000;
 /// Host bound on `D3DDevice_Clear` rectangles (the original loops over any
 /// count; this only keeps a guest count from spinning the host).
 pub const MAX_CLEAR_RECTS: u32 = 4096;
@@ -243,12 +263,6 @@ pub struct Rect {
     pub y2: i32,
 }
 
-impl Rect {
-    fn covers(&self, w: u32, h: u32) -> bool {
-        self.x1 <= 0 && self.y1 <= 0 && self.x2 as i64 >= w as i64 && self.y2 as i64 >= h as i64
-    }
-}
-
 /// `D3DCLEAR_*` flags.
 pub mod clear_flags {
     /// Depth.
@@ -281,6 +295,12 @@ pub struct Stats {
     /// Clears that were not one whole-attachment clear (rectangles or
     /// channel masks), handed to [`Backend::clear_rects`].
     pub partial_clears: u64,
+    /// Back-buffer copies made for draws that sample a texture over it
+    /// ([`BACK_BUFFER_DATA`]).
+    pub frame_snapshots: u64,
+    /// Draws split into several pieces by scissor rectangles
+    /// ([`ResolvedDraw::clip_rects`]).
+    pub scissor_split_draws: u64,
     /// Render-to-texture write-backs into guest memory.
     pub rtt_writebacks: u64,
     /// Render-to-texture host surfaces filled from guest memory.
@@ -443,6 +463,8 @@ pub struct Device<B: Backend> {
     viewport: Viewport,
     transforms: HashMap<u32, [f32; 16]>,
     scissors: Vec<Rect>,
+    /// `SetScissors`' `Exclusive`: draw outside the rectangles.
+    scissor_exclusive: bool,
     immediate: Immediate,
     consumed: u32,
     /// State as the GPU has seen it (see the module docs).
@@ -535,6 +557,7 @@ impl<B: Backend> Device<B> {
             },
             transforms: HashMap::new(),
             scissors: Vec::new(),
+            scissor_exclusive: false,
             immediate: Immediate::default(),
             consumed: cfg.push_buffer.addr,
             pushed: None,
@@ -712,7 +735,7 @@ impl<B: Backend> Device<B> {
         let scratch = self.cfg.scratch.addr;
         self.back_header = scratch;
         let bpp = host_fmt.bytes_per_texel().unwrap_or(4);
-        SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, 0)
+        SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, BACK_BUFFER_DATA)
             .write(mem, self.back_header)?;
         if p.enable_auto_depth_stencil {
             let dfmt = D3DFormat::from_raw(p.auto_depth_stencil_format)
@@ -731,7 +754,7 @@ impl<B: Backend> Device<B> {
             );
             self.depth_header = at(scratch, SurfaceHeader::SIZE as u64)?;
             let dbpp = dlin.bytes_per_texel().unwrap_or(4);
-            SurfaceHeader::linear(dlin, p.width, p.height, p.width * dbpp, 0)
+            SurfaceHeader::linear(dlin, p.width, p.height, p.width * dbpp, DEPTH_BUFFER_DATA)
                 .write(mem, self.depth_header)?;
         }
         self.render_target = self.back_header;
@@ -862,6 +885,7 @@ impl<B: Backend> Device<B> {
         };
         self.transforms.clear();
         self.scissors.clear();
+        self.scissor_exclusive = false;
         self.immediate = Immediate::default();
         self.consumed = self.cfg.push_buffer.addr;
         self.pushed = None;
@@ -1944,6 +1968,7 @@ impl<B: Backend> Device<B> {
         // `0x3f82e2..0x3f830d`, also for a null viewport: SetScissors(0,
         // 0, 0), the composite update and the viewport push.
         self.scissors.clear();
+        self.scissor_exclusive = false;
         self.update_projection_viewport(mem)?;
         let put = self.reserve(mem)?;
         let put = self.push_viewport(mem, put, self.cfg.layout.device)?;
@@ -1975,8 +2000,13 @@ impl<B: Backend> Device<B> {
     }
 
     /// `D3DDevice_SetScissors` (`0x3f8760`, stdcall `Count, Exclusive,
-    /// pRects`). Recorded; a draw with scissors that do not cover the whole
-    /// target stops (gfx cannot apply them yet).
+    /// pRects`). Recorded for the draws' clip area
+    /// ([`ResolvedDraw::clip`], [`ResolvedDraw::clip_rects`]). As compiled,
+    /// no rectangles clips to the viewport (`0x3f87a7`); one inclusive
+    /// rectangle becomes the surface clip (`0x3f886c`); anything else sets
+    /// the NV2A window clip (`0x3f8928`: type = `Exclusive`, rectangle `i`
+    /// in `SET_WINDOW_CLIP_HORIZONTAL/VERTICAL(i)` with inclusive maxima),
+    /// which keeps pixels inside any rectangle, or outside all of them.
     pub fn set_scissors(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -1987,13 +2017,11 @@ impl<B: Backend> Device<B> {
         const E: &str = "D3DDevice_SetScissors";
         self.live(E)?;
         self.sync_push_buffer(mem)?;
-        if exclusive != 0 {
-            return Err(D3dError::unimplemented(E, "exclusive scissor rectangles"));
-        }
         if count > MAX_SCISSORS {
             return Err(D3dError::invalid(E, format!("{count} rectangles")));
         }
         self.scissors.clear();
+        self.scissor_exclusive = exclusive != 0;
         for i in 0..count {
             let w = mem.read_words(at(rects, 16 * i as u64)?, 4)?;
             self.scissors.push(Rect {
@@ -2148,6 +2176,7 @@ impl<B: Backend> Device<B> {
         let d = mem.read_u32(dirty)?;
         mem.write_u32(dirty, d | 0x100)?;
         self.scissors.clear();
+        self.scissor_exclusive = false;
         self.update_projection_viewport(mem)?;
         let put = self.reserve(mem)?;
         let put = self.push_viewport(mem, put, dev)?;
@@ -2688,38 +2717,37 @@ impl<B: Backend> Device<B> {
         })
     }
 
-    /// Raster state gfx cannot express yet: stop instead of rendering wrong.
-    /// What [`ResolvedDraw::clip`] cannot express: several scissor
-    /// rectangles of which none covers the target (gfx has one scissor).
-    fn check_raster(&self, mem: &dyn GuestMemory, entry: &'static str) -> Result<(), D3dError> {
-        let (w, h) = self.target_size(mem)?;
-        if self.scissors.len() > 1 && !self.scissors.iter().any(|r| r.covers(w, h)) {
-            return Err(D3dError::unimplemented(
-                entry,
-                format!(
-                    "{} scissor rectangles not covering the {w}x{h} target (one clip rectangle per draw)",
-                    self.scissors.len()
-                ),
-            ));
-        }
-        Ok(())
-    }
-
     fn submit(&mut self, mem: &mut dyn GuestMemory, parts: DrawParts) -> Result<(), D3dError> {
         let entry = parts.entry;
         if parts.vertex_count == 0 {
             return Ok(());
         }
-        self.check_raster(mem, entry)?;
-        let Some(clip) = self.draw_clip(mem)? else {
+        let Some((clip, clip_rects)) = self.draw_clip(mem)? else {
             // The viewport and scissors leave nothing to draw into.
             return Ok(());
         };
+        if !clip_rects.is_empty() {
+            self.stats.scissor_split_draws += 1;
+        }
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
+        let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
+                match self.frame_texture(mem, header)? {
+                    FrameTexture::No => {}
+                    FrameTexture::Snapshot(info, t) => {
+                        texture_info[stage] = Some(info);
+                        snapshots[stage] = Some(t);
+                        continue;
+                    }
+                    FrameTexture::Skip(reason) => {
+                        self.stats.draws += 1;
+                        self.events.push(Event::DrawSkipped { entry, reason });
+                        return Ok(());
+                    }
+                }
                 self.flush_for_texture(mem, header)?;
                 let (k, i) = self.resolve_texture(mem, entry, header, self.palettes[stage])?;
                 keys[stage] = Some(k);
@@ -2747,13 +2775,17 @@ impl<B: Backend> Device<B> {
             shader,
             viewport: self.viewport,
             clip: Some(clip),
+            clip_rects,
             hw: self.hw,
             target,
             textures: self.textures.map(|t| (t != 0).then_some(t)),
             texture_info,
         };
-        let textures: [Option<&B::Texture>; 4] =
-            std::array::from_fn(|i| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host));
+        let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
+            snapshots[i]
+                .as_ref()
+                .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
+        });
         self.stats.draws += 1;
         match self
             .backend

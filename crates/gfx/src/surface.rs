@@ -679,6 +679,37 @@ impl SurfaceStore {
         Ok(())
     }
 
+    /// A sampleable copy of colour surface `id` as it is now: a new
+    /// single-sample texture of the surface's size and host format
+    /// (`TEXTURE_BINDING | COPY_DST`), filled by a copy recorded in
+    /// `encoder` (MSAA surfaces are resolved first). For sampling a surface
+    /// that is not a render-to-texture target, such as the back buffer read
+    /// through a texture header that aliases its memory, also while it is
+    /// the current target (a pass cannot sample its own attachment).
+    pub fn snapshot(
+        &self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        id: SurfaceId,
+    ) -> Result<wgpu::Texture, SurfaceError> {
+        self.resolve_msaa(encoder, id)?;
+        let s = self.typed(id, SurfaceKind::Color)?;
+        let size = wgpu::Extent3d { width: s.desc.width, height: s.desc.height, depth_or_array_layers: 1 };
+        let copy = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface snapshot"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: s.wgpu_format,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let info = |t| wgpu::TexelCopyTextureInfo { texture: t, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All };
+        encoder.copy_texture_to_texture(info(&s.texture), info(&copy), size);
+        Ok(copy)
+    }
+
     /// `CopyRects` when sizes or formats differ: a filtered blit of `src`
     /// (optionally a sub-rectangle) over the whole of `dst`.
     #[allow(clippy::too_many_arguments)] // mirrors the D3D CopyRects parameter list

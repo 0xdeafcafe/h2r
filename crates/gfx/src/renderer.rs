@@ -227,7 +227,9 @@ pub struct VertexStream<'a> {
     pub stride: u32,
 }
 
-/// One draw call.
+/// One draw call. Cloning it copies the borrows (a draw repeated with another
+/// scissor, for example).
+#[derive(Clone)]
 pub struct Draw<'a> {
     /// Shader program ([`SHADER_XYZRHW_DIFFUSE`] or a registered one).
     pub shader: ShaderId,

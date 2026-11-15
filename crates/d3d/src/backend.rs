@@ -194,8 +194,16 @@ pub struct ResolvedDraw {
     /// (inclusive) scissor rectangles and the target. On the Xbox,
     /// `SetViewport` resets the scissors to the viewport rectangle
     /// (`SetScissors(0, 0, 0)` at `0x3f82e8`), so pre-transformed geometry is
-    /// clipped to it. `None`: the scissors keep nothing.
+    /// clipped to it. `None`: the scissors keep nothing. With several
+    /// inclusive scissor rectangles, or exclusive ones, this is the bounding
+    /// box of the area and [`clip_rects`](Self::clip_rects) holds its pieces.
     pub clip: Option<PixelRect>,
+    /// The writable area as disjoint rectangles inside `clip`, when it is
+    /// not one rectangle: the union of several inclusive scissor
+    /// rectangles, or what exclusive ones leave of the viewport. Empty when
+    /// `clip` alone describes it. A backend draws once per piece (disjoint,
+    /// so blending touches every pixel once).
+    pub clip_rects: Vec<PixelRect>,
     /// NV2A register state when the draw was issued (viewport offset and
     /// scale, depth clip range, `SET_CONTROL0`; see [`crate::hw`]). The
     /// viewport transform of programmable and pass-through shaders lives
@@ -310,6 +318,18 @@ pub trait Backend: Send {
         let _ = (surface, desc, bytes);
         Ok(false)
     }
+    /// A texture holding colour surface `surface` as it is now (a copy:
+    /// later drawing into the surface does not reach it). For a texture
+    /// header whose memory is a surface that has no guest copy, such as the
+    /// back buffer read through a texture that aliases it. `Ok(None)`: the
+    /// backend cannot (the default), and the draw is skipped.
+    fn snapshot_surface(
+        &mut self,
+        surface: Self::Surface,
+    ) -> Result<Option<Self::Texture>, String> {
+        let _ = surface;
+        Ok(None)
+    }
     /// A colour surface that is also a texture, for a render-to-texture
     /// level. The default is [`create_surface`](Self::create_surface).
     fn create_texture_target(
@@ -384,6 +404,13 @@ pub enum Recorded {
         src: u32,
         /// Destination.
         dst: u32,
+    },
+    /// `snapshot_surface`.
+    Snapshot {
+        /// Surface copied.
+        surface: u32,
+        /// The texture handle returned.
+        id: u32,
     },
     /// `write_surface`.
     WriteSurface {
@@ -538,6 +565,14 @@ impl Backend for RecordingBackend {
     fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
         self.calls.push(Recorded::CopySurface { src, dst });
         Ok(true)
+    }
+    fn snapshot_surface(&mut self, surface: u32) -> Result<Option<u32>, String> {
+        self.next += 1;
+        self.calls.push(Recorded::Snapshot {
+            surface,
+            id: self.next,
+        });
+        Ok(Some(self.next))
     }
     /// Records the bytes.
     fn write_surface(

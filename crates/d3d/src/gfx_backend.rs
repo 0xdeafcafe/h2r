@@ -14,7 +14,10 @@
 //!   reason.
 //!
 //! Every draw is clipped with a scissor to [`ResolvedDraw::clip`] (the
-//! viewport narrowed by the target and the guest scissor). The wgpu
+//! viewport narrowed by the target and the guest scissor); when the guest
+//! scissors leave several pieces ([`ResolvedDraw::clip_rects`]) the draw is
+//! recorded once per piece in the same pass, each with its own scissor
+//! (the pieces are disjoint, so blending sees every pixel once). The wgpu
 //! viewport stays the whole target: vertex positions are already window
 //! coordinates (pre-transformed vertices, and NV2A programs apply the
 //! viewport themselves), so a `gfx::DrawViewport` would transform them
@@ -24,7 +27,9 @@
 //! `gfx::Renderer::clear_rects`. Render-to-texture levels are
 //! `SurfaceStore::create_texture_target` surfaces, filled from guest memory
 //! with `SurfaceStore::write_color` and read back with `gfx::readback` and
-//! `gfx::encode`. `set_pretransformed_z_max` is renderer-wide, so it is set
+//! `gfx::encode`. A texture over the back buffer is sampled from a
+//! `SurfaceStore::snapshot` copy ([`Backend::snapshot_surface`]).
+//! `set_pretransformed_z_max` is renderer-wide, so it is set
 //! before every built-in draw. The backend opens one pass per draw,
 //! correct but slow.
 
@@ -191,6 +196,18 @@ impl Backend for GfxBackend {
             })
             .collect();
         // Window-coordinate geometry: the clip rectangle only scissors.
+        let pieces: Vec<Option<ScissorRect>> = d
+            .clip_rects
+            .iter()
+            .map(|c| {
+                Some(ScissorRect {
+                    x: c.x,
+                    y: c.y,
+                    width: c.width,
+                    height: c.height,
+                })
+            })
+            .collect();
         let scissor = Some(match d.clip {
             Some(c) => ScissorRect {
                 x: c.x,
@@ -245,7 +262,7 @@ impl Backend for GfxBackend {
                     d.state.render,
                 )
             };
-            self.pass(color, depth, Clear::NONE, &[draw])?;
+            self.pass(color, depth, Clear::NONE, &split(draw, &pieces))?;
             return Ok(DrawOutcome::Drawn);
         }
         let shaders = self.shaders.as_mut().expect("checked above");
@@ -292,7 +309,7 @@ impl Backend for GfxBackend {
                 d.state.render,
             )
         };
-        self.pass(color, depth, Clear::NONE, &[draw])?;
+        self.pass(color, depth, Clear::NONE, &split(draw, &pieces))?;
         Ok(DrawOutcome::Drawn)
     }
 
@@ -360,6 +377,16 @@ impl Backend for GfxBackend {
             .write_color(&self.ctx, surface, desc, bytes)
             .map_err(|e| e.to_string())?;
         Ok(true)
+    }
+
+    fn snapshot_surface(&mut self, surface: SurfaceId) -> Result<Option<wgpu::Texture>, String> {
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        let t = self
+            .store
+            .snapshot(&self.ctx, &mut enc, surface)
+            .map_err(|e| e.to_string())?;
+        self.ctx.queue.submit([enc.finish()]);
+        Ok(Some(t))
     }
 
     fn create_texture_target(
@@ -441,4 +468,18 @@ impl Backend for GfxBackend {
         }
         Ok(())
     }
+}
+
+/// `draw` once per scissor piece, or alone when there are none.
+fn split<'a>(draw: Draw<'a>, pieces: &[Option<ScissorRect>]) -> Vec<Draw<'a>> {
+    if pieces.is_empty() {
+        return vec![draw];
+    }
+    pieces
+        .iter()
+        .map(|&scissor| Draw {
+            scissor,
+            ..draw.clone()
+        })
+        .collect()
 }
