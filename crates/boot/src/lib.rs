@@ -368,7 +368,7 @@ pub struct Host {
     /// backend; `H2_BOOT_GFX` is then ignored.
     pub gfx: Option<d3d::GfxBackend>,
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
-    /// docs/render-thread.md); off by default. Hosts set it from
+    /// docs/render-thread.md); off in `Host::default()`. Hosts set it from
     /// [`d3d_glue::render_thread_requested`].
     pub render_thread: bool,
     /// Where the logical-time audio output plays (an audio device), instead

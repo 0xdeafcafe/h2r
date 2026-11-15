@@ -5,8 +5,9 @@ the next frame. Here every part of rendering ran on the guest's runner
 thread, between guest instructions, so guest CPU work and host rendering
 added up instead of overlapping. This page says where that work ran,
 what a render thread may and may not take off the guest's thread without
-changing anything the guest can see, what the opt-in prototype
-(`H2_RENDER_THREAD=1`, `d3d::ThreadedBackend`) does, and what it measured.
+changing anything the guest can see, what the render thread
+(`d3d::ThreadedBackend`, on by default since 2026-11-15,
+`H2_RENDER_THREAD=0` turns it off) does, and what it measured.
 
 ## Where the work runs today
 
@@ -155,8 +156,7 @@ Against the requirements:
   the logical clock or the scheduler. The guest sees the same values in
   the same order whatever the render thread's timing, so slices,
   preemption and logical time are reproducible as before. The
-  synchronous path stays the default and is the fallback: with
-  `H2_RENDER_THREAD` unset nothing changes.
+  synchronous path is the fallback: `H2_RENDER_THREAD=0` gives it.
 - **Errors.** A backend error now stops at the next backend call (or the
   next read), not at the call that caused it. Every backend error is a
   stop either way; only the reported entry differs.
@@ -167,7 +167,8 @@ Against the requirements:
   that moves `B` to a thread named `d3d-render` and queues each call as
   a closure on a channel. `finish`, `with_inner` and `with_surface` run
   something after the queue and wait (tests, reports).
-- `H2_RENDER_THREAD=1` (only `1`; `d3d_glue::render_thread_from`) wraps
+- On unless `H2_RENDER_THREAD=0` (only `0` turns it off;
+  `d3d_glue::render_thread_from`), it wraps
   the `GfxBackend` in it: the headless one with `H2_BOOT_GFX`, and the
   window's in `h2 play` (`boot::Host::render_thread`). Its present hook
   only publishes into the shared frame slot, so it runs on the render
@@ -248,6 +249,38 @@ ms, so 30 fps needs both sides cut about 4x. The guest side is the
 runtime, generated code, x87 and kernel work in docs/perf-budget.md. The
 render side is gfx-perf's encode and submit, now off the guest's thread
 but still a ceiling of about 10 fps at 100 ms.
+
+### The Heretic, master ac9fb31 plus the boot forwarding fix (2026-11-15)
+
+`h2 run`, presents 4220-4520, warm pipeline cache, frame stats over the
+window, one run at a time in the bench gate on the shared machine. Load
+is the 1-minute load average at the end of each run (the window is its
+last ~25 s).
+
+| run | load | fps | p50 / p90 / p99 / max ms |
+|---|---|---|---|
+| sync, `H2_D3D_LAZY_DEPTH=0` | 31 | 12.88 | 76.2 / 86.9 / 123.0 / 165.1 |
+| sync, defaults | 88 | 10.58 | 83.3 / 137.5 / 213.7 / 270.7 (loaded) |
+| render thread, `H2_D3D_LAZY_DEPTH=0` | 18 | 14.78 | 59.1 / 81.4 / 178.6 / 265.0 |
+| render thread, defaults | 9 | **17.07** | **57.0** / 67.4 / 75.6 / 77.0 |
+
+Every run has the same schedule (56,572 slices) and the same frame-4215
+PNG (`md5` equal across all five runs); the render thread latched no
+error or wrong speculation. The render thread answered 27,300 pixel-count
+reads from reports already back (`landed_counts`) and still waited
+4,700-5,200 times (42-56 s over the run), for the read-backs below.
+menu-fps measured the menu flyover at 15.48 fps against 11.84 with it
+off, 29 PNGs byte-identical (docs/perf-budget.md). So the render thread
+is now the default.
+
+The Heretic's remaining read-backs (`H2_D3D_WRITEBACK_TRACE=1`): 4 a
+frame, every one `Overlap`. Two 160x120 colour levels, a 320x240 one and
+the 512x512 `LIN_D24S8` shadow map share guest memory, so binding or
+sampling one writes the others back first. None is a guest wait or read.
+Lazy depth therefore saves nothing here (the shadow map's read-back moves
+from its binding change to the overlap). Moving pixels between
+overlapping levels on the GPU, with per-byte tracking of which level
+wrote last, is the next fix.
 
 ## Risks and next steps
 

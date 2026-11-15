@@ -74,9 +74,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             if let Some(path) = d3d::pipeline_store::default_path() {
                 backend = backend.with_pipeline_cache(path);
             }
-            // H2_RENDER_THREAD=1: backend work (shader preparation, encoding,
-            // uploads, submission, present) on a render thread of its own
-            // (docs/render-thread.md). Off by default.
+            // Backend work (shader preparation, encoding, uploads,
+            // submission, present) on a render thread of its own
+            // (docs/render-thread.md), unless H2_RENDER_THREAD=0.
             if render_thread_requested() {
                 return install_with(rt, d3d::ThreadedBackend::new(backend)?);
             }
@@ -85,16 +85,17 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     }
 }
 
-/// `H2_RENDER_THREAD=1`: run the GPU backend's work on a render thread
-/// (`h2 run` with `H2_BOOT_GFX`, and `h2 play`). Off by default.
+/// The GPU backend's work runs on a render thread (`h2 run` with
+/// `H2_BOOT_GFX`, and `h2 play`) unless `H2_RENDER_THREAD=0`. On by
+/// default (docs/render-thread.md, "Measurements").
 pub fn render_thread_requested() -> bool {
     render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
 }
 
 /// [`render_thread_requested`] for a given value of the variable: only
-/// `1` turns it on.
+/// `0` turns it off.
 pub fn render_thread_from(value: Option<&str>) -> bool {
-    value == Some("1")
+    value != Some("0")
 }
 
 fn save_png(
@@ -528,11 +529,12 @@ mod tests {
     use d3d::backend::Backend;
 
     #[test]
-    fn the_render_thread_is_opt_in() {
-        assert!(!render_thread_from(None));
+    fn the_render_thread_is_on_unless_zero() {
+        assert!(render_thread_from(None), "on when unset");
         assert!(render_thread_from(Some("1")));
         assert!(!render_thread_from(Some("0")));
-        assert!(!render_thread_from(Some("true")));
+        assert!(render_thread_from(Some("true")));
+        assert!(render_thread_from(Some("")));
         // Hosts default to the synchronous backend.
         assert!(!crate::Host::default().render_thread);
     }

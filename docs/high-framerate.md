@@ -122,7 +122,7 @@ Three things to take from this:
   paced or not"). A slow host plays in slow motion.
 - **Presentation never blocks the guest.** Swap goes through the present
   hook into a 3-slot mailbox; the window shows the newest frame
-  ([app.md](app.md), "Presentation"). With `H2_RENDER_THREAD=1` every
+  ([app.md](app.md), "Presentation"). With the render thread (the default; `H2_RENDER_THREAD=0` turns it off) every
   `d3d::Backend` call runs on a render thread, after the device has resolved
   the draw on the guest's thread ([render-thread.md](render-thread.md)).
   The only wall-time effect on the guest is the frame-in-flight limit, and

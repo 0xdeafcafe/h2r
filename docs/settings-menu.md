@@ -289,7 +289,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | Setting | Variable | Applies |
 |---|---|---|
 | merged passes | `H2_GFX_MERGE_PASSES=0` turns off | `GfxBackend::set_merge_passes` exists, so live |
-| render thread | `H2_RENDER_THREAD=1` | restart; it moves the backend to another thread ([render-thread.md](render-thread.md)) |
+| render thread | `H2_RENDER_THREAD=0` (off; on by default) | restart; it moves the backend to another thread ([render-thread.md](render-thread.md)) |
 | pipeline cache | `H2_PIPELINE_CACHE` (path or `off`) | restart |
 | shader compile threads | `H2_GFX_COMPILE_THREADS` | restart |
 | frame stats | `H2_FRAME_STATS`, `--frame-stats` | live (a HUD or log toggle) |

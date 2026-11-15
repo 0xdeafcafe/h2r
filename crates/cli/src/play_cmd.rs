@@ -129,7 +129,7 @@ fn hosted(
     let keyboard = host.keyboard().cloned();
     boot::Host {
         gfx: Some(gfx),
-        // H2_RENDER_THREAD=1: the backend's work on a render thread, as
+        // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
@@ -495,11 +495,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn h2_render_thread_is_opt_in() {
-        assert!(!render_thread(None), "off when unset");
-        assert!(render_thread(Some("1")));
-        for v in ["0", "", "true", "yes", "2", " 1"] {
-            assert!(!render_thread(Some(v)), "{v:?}");
+    fn h2_render_thread_is_on_unless_zero() {
+        assert!(render_thread(None), "on when unset");
+        assert!(!render_thread(Some("0")), "H2_RENDER_THREAD=0 turns it off");
+        for v in ["1", "", "true", "yes", "2", " 0"] {
+            assert!(render_thread(Some(v)), "{v:?}");
         }
     }
 

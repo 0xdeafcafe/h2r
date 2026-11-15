@@ -198,7 +198,7 @@ Design and pipeline:
 - [FLOAT.md](docs/FLOAT.md): floating point in the lifter: what the game uses and the correctness-first plan
 - [FLOAT-ABI.md](docs/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/x87`)
 - [x87-native.md](docs/x87-native.md): the native binary64 x87 path, on by default (`H2_X87_NATIVE=0` disables it): range proof, status bits, fallbacks
-- [render-thread.md](docs/render-thread.md): the opt-in render thread (`H2_RENDER_THREAD=1`): which thread renders, what the guest can observe, measured gain
+- [render-thread.md](docs/render-thread.md): the render thread (on by default, `H2_RENDER_THREAD=0` turns it off): which thread renders, what the guest can observe, measured gain
 - [simd.md](docs/simd.md): bit-exact SSE1 reference semantics (`crates/simd`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle on Unicorn (`crates/oracle`)
 - [sse-oracle.md](docs/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/sse-oracle`)
