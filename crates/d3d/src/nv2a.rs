@@ -522,8 +522,8 @@ pub struct FixedFunction<'a> {
 /// combiner `n` writing `r0` (or `r1` for `D3DTA_TEMP` results), with
 /// `TFACTOR` in `c0`; `CURRENT` is diffuse until a stage writes it; an
 /// operation reading an unbound texture passes `CURRENT` through (see
-/// [`effective`]). Stage results saturate to [0, 1] (see
-/// [`stage_op`]). Specular is added and fog applied in the final combiner.
+/// `effective`). Stage results saturate to [0, 1] (see
+/// `stage_op`). Specular is added and fog applied in the final combiner.
 pub fn fixed_function_def(ff: &FixedFunction<'_>) -> Result<PixelShaderDef, String> {
     let mut def = PixelShaderDef::default();
     let mut count = 0usize;

@@ -206,8 +206,11 @@ Notes on the table:
   PersistDisplay change the guest globals the way the original does,
   without the AV-encoder kernel calls (there is no TV encoder).
   PersistDisplay copies the image last presented into a surface of its own
-  (`Backend::copy_surface`). After a `COPY` swap that image is back0, not the
-  front. The copy outlives teardown. `0x3f8cc0`
+  (`Backend::copy_surface`). The copy outlives teardown. After a `COPY`
+  swap the image is in back0, which the title keeps drawing into: the
+  device copies back0 to the front before the first write into it (as the
+  hardware's copy would have), so a later PersistDisplay still gets the
+  image shown, and a frame nothing draws over costs no copy. `0x3f8cc0`
   copies the ramp and pushes it. `0x3fb710` is the busy check: busy while
   the resource, or its parent texture, holds an internal reference;
   otherwise not busy (the host GPU is synchronous), and the `Lock` word is
@@ -637,7 +640,7 @@ let runtime = runtime::Runtime::new(guest, dispatch);
      helpers) and DMA-like copies.
    - Fold aliases to the `0x80000000 | pa` view first.
    - Report before the next D3D override runs.
-   
+
    A cheap form is a check against `WriteTracker::watched_bitmap` in the
    store path, deferring the `note_write` calls to the next override
    entry. The device's own stores (render-to-texture write-back included)

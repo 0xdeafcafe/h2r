@@ -4,7 +4,7 @@
 //! What renders:
 //! * pre-transformed (`XYZRHW | DIFFUSE`) fixed-function draws whose whole
 //!   state the built-in shader reproduces (see
-//!   [`builtin_equivalent`](crate::nv2a::builtin_equivalent): no texture,
+//!   [`crate::nv2a::builtin_equivalent`]: no texture,
 //!   fog or specular, stages passing diffuse through) through gfx's built-in
 //!   shader (alpha test included), with the depth format's z full scale;
 //! * everything else through the installed [`ShaderProvider`]:

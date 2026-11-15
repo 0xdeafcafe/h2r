@@ -824,3 +824,48 @@ fn gpu_indexed_draw_renders_through_the_index_list() {
     assert_eq!(pixel(&px, 6, 2), [255, 0, 0, 255]);
     assert_eq!(pixel(&px, 12, 12), [0, 0, 0, 255], "outside");
 }
+
+#[test]
+fn gpu_persist_display_keeps_a_copy_swap_image_drawn_over_later() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    d.swap(&mut m, 0).unwrap(); // COPY | FINISH: red is on screen
+    // The next frame starts in the same back buffer, without a Swap.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.persist_display(&mut m).unwrap();
+    let saved = d.persisted_surface().unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, saved).unwrap();
+    assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "the red image shown");
+    let back = d.back_buffer().unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    assert_eq!(pixel(&px, 0, 0), [0, 255, 0, 255], "back0 keeps drawing");
+}
+
+#[test]
+fn copy_swap_preserves_the_shown_image_once_on_the_first_write() {
+    let (mut d, mut m) = rec();
+    let back = d.back_buffer().unwrap();
+    let front = d.front_buffer().unwrap();
+    let copies = |d: &Device<RecordingBackend>| {
+        d.backend
+            .calls
+            .iter()
+            .filter(|c| matches!(c, Recorded::CopySurface { src, dst } if *src == back && *dst == front))
+            .count()
+    };
+    d.swap(&mut m, 0).unwrap(); // COPY
+    // Swaps that nothing draws over between cost nothing.
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(copies(&d), 0);
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    assert_eq!(copies(&d), 1, "once, before the first write");
+    // PersistDisplay now copies the front, which holds the shown image.
+    d.persist_display(&mut m).unwrap();
+    assert!(matches!(
+        d.backend.calls.last(),
+        Some(Recorded::CopySurface { src, .. }) if *src == front
+    ));
+}

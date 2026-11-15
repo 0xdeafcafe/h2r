@@ -37,6 +37,9 @@ pub(crate) struct Display<S> {
     pub vblanks: u32,
     /// A swap happened since the last vblank.
     pub swapped: bool,
+    /// The image last presented was drawn over and could not be kept (no
+    /// [`Backend::copy_surface`]); cleared by the next `Swap`.
+    pub shown_lost: bool,
     /// Vertical blanks each `Swap` produces ([`Device::set_vblanks_per_swap`]).
     pub per_swap: u32,
     /// Vertical blanks counted at a `Swap` and not yet delivered.
@@ -50,6 +53,7 @@ impl<S> Default for Display<S> {
             persisted: None,
             vblanks: 0,
             swapped: false,
+            shown_lost: false,
             per_swap: 0,
             pending: Vec::new(),
         }
@@ -140,6 +144,12 @@ impl<B: Backend> Device<B> {
         self.flush_render_targets(mem)?;
         // An independent copy of what is on screen: the swap ring goes with
         // the device at teardown, the persisted image must not.
+        if self.display.shown_lost {
+            return Err(D3dError::unimplemented(
+                E,
+                "the image last presented was drawn over: the backend cannot copy surfaces to keep it",
+            ));
+        }
         let sw = self.swap.as_ref().expect("created");
         let (src, format, (w, h)) = (sw.shown, sw.format, sw.size);
         let copy = self

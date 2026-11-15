@@ -228,11 +228,39 @@ impl<B: Backend> Device<B> {
         self.fill_rtt(header, &bytes)
     }
 
-    /// Marks the current colour target drawn into, if it is a texture level.
-    pub(super) fn touch_target(&mut self) {
+    /// About to write into `color`, the current colour target: marks a
+    /// texture level dirty, and preserves the presented image if `color` is
+    /// the back buffer a `COPY` swap showed.
+    pub(super) fn touch_target(&mut self, color: B::Surface) -> Result<(), D3dError> {
         if let Some(t) = self.rtt.get_mut(&self.render_target) {
             t.dirty = true;
         }
+        self.before_target_write(color)
+    }
+
+    /// The deferred half of a `COPY` swap: before back0 is drawn over, its
+    /// presented contents go to the front, which then holds the displayed
+    /// image (what `PersistDisplay` keeps). A backend without
+    /// [`Backend::copy_surface`] cannot keep it; `PersistDisplay` then stops.
+    pub(super) fn before_target_write(&mut self, color: B::Surface) -> Result<(), D3dError> {
+        let Some(sw) = self.swap.as_mut() else {
+            return Ok(());
+        };
+        if !sw.shown_in_back || sw.shown != color {
+            return Ok(());
+        }
+        let (src, dst) = (sw.shown, sw.front);
+        sw.shown_in_back = false;
+        if self
+            .backend
+            .copy_surface(src, dst)
+            .map_err(D3dError::Backend)?
+        {
+            self.swap.as_mut().expect("checked").shown = dst;
+        } else {
+            self.display.shown_lost = true;
+        }
+        Ok(())
     }
 
     /// Writes one render-to-texture target back into guest memory if it
@@ -437,7 +465,7 @@ impl<B: Backend> Device<B> {
         if !mask.any() && depth.is_none() && stencil.is_none() {
             return Ok(());
         }
-        self.touch_target();
+        self.touch_target(c)?;
         let whole = pixels.iter().any(|r| r.is_whole(w, h));
         if whole && (mask.all() || !mask.any()) {
             let clear = Clear {

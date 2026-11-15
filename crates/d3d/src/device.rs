@@ -303,9 +303,12 @@ struct Swap<S> {
     /// `[back0, back1, ..]`: back0 is what the back-buffer header means now.
     back: Vec<S>,
     front: S,
-    /// The surface last presented: the front after a flip, back0 after a
-    /// `COPY` swap (whose ring does not move).
+    /// The surface holding the image last presented: the front after a
+    /// flip; after a `COPY` swap back0 until something writes to it, when
+    /// its contents are copied to the front first (`shown_in_back`).
     shown: S,
+    /// `shown` is back0 (a `COPY` swap), which the title keeps drawing into.
+    shown_in_back: bool,
     /// Host format and size of the ring's surfaces.
     format: D3DFormat,
     size: (u32, u32),
@@ -617,6 +620,7 @@ impl<B: Backend> Device<B> {
             back,
             front,
             shown: front,
+            shown_in_back: false,
             format: host_fmt,
             size: (p.width, p.height),
         });
@@ -1863,8 +1867,13 @@ impl<B: Backend> Device<B> {
             sw.back.push(old_front);
         }
         // COPY: the back buffer's contents are what is shown; the ring does
-        // not move (the backend presents `shown` directly).
+        // not move (the backend presents `shown` directly). The hardware
+        // copies them to the front; here that copy is deferred to the first
+        // write into back0 (`Device::before_target_write`), so a frame that
+        // is never drawn over costs nothing.
         sw.shown = shown;
+        sw.shown_in_back = flags & 1 != 0;
+        self.display.shown_lost = false;
         self.swap_count = self.swap_count.wrapping_add(1);
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
         self.vblanks_after_swap(mem)?;
@@ -2230,7 +2239,7 @@ impl<B: Backend> Device<B> {
         }
         let target = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
-        self.touch_target();
+        self.touch_target(color)?;
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = parts.words.translate(&self.table);
         for b in &state.bad {
