@@ -43,9 +43,8 @@ xapi, D3D and DirectSound crates, the tag and map readers, the boot runner
 logical-time scheduling, checkpoints, and the profiler and benchmarks
 (`h2 profile`, `h2 bench`).
 
-In progress for 30 fps: the rest of fast guest memory access,
-sampling render-to-texture levels in place instead of through guest
-memory, merged render passes by default, and native x87.
+In progress for 30 fps: the rest of fast guest memory access, merged
+render passes by default, and native x87.
 
 ## Proof
 
@@ -63,9 +62,9 @@ In priority order:
    ("Gaps").
 2. 30 fps. The levers, measured in
    [docs/perf-budget.md](docs/perf-budget.md): faster guest memory access
-   (the first step is in, opt-in), fewer GPU round trips for
-   render-to-texture, merged render passes, native x87, IR optimisation and
-   push-buffer decode cost. Draw batching and upload rings have landed. See
+   (the first step is in, opt-in), merged render passes, native x87 and
+   push-buffer decode cost. Draw batching, upload rings, IR optimisation and
+   sampling render-to-texture levels in place have landed. See
    [docs/perf.md](docs/perf.md) for the tools.
 3. More campaign levels.
 4. Opt-in enhancements, off by default and later exposed in an expanded
