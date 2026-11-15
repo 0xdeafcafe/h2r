@@ -17,6 +17,7 @@ use crate::{
 use runtime::{
     CpuAbi, Dispatch, Event, ExecCtx, Guest, GuestFault, Runtime, TransferAbi,
     guest::{Access, FaultReason},
+    kernel,
 };
 use std::{
     cell::Cell,
@@ -352,8 +353,8 @@ enum Leave {
     },
 }
 
-fn call<S: Storage>(
-    xapi: &Mutex<Xapi<S>>,
+fn call<S: Storage + Send + 'static>(
+    xapi: &Arc<Mutex<Xapi<S>>>,
     layout: GuestLayout,
     o: Override,
     cpu: &mut CpuAbi,
@@ -408,7 +409,7 @@ fn call<S: Storage>(
     };
     Ok(match leave {
         Leave::Return(pc) => TransferAbi::ret(pc),
-        Leave::Search { pc, search } => allocate_search(cpu, ctx, layout, pc, search)?,
+        Leave::Search { pc, search } => allocate_search(xapi, cpu, ctx, layout, pc, search)?,
         // CPU and stack are untouched: the host consumes
         // Xapi::take_launch_request and reloads outside every guard.
         Leave::Launch => TransferAbi::stop(hle_stop(
@@ -421,16 +422,20 @@ fn call<S: Storage>(
 }
 
 /// Allocate the save search block with the game's own allocator, as the
-/// original does at `0x3311ea`, so the generated XFindClose can free it. The
-/// frame is already popped; the allocation runs as a stdcall from the
-/// caller's return site and the continuation returns the block to `pc`.
-fn allocate_search(
+/// original does at `0x3311ea`, so the generated XFindClose can free it, then
+/// make the kernel handle its +4 word holds (a real object, so the generated
+/// CloseHandle succeeds). The frame is already popped; both run as stdcalls
+/// from the caller's return site and the last continuation returns the block
+/// to `pc`.
+fn allocate_search<S: Storage + Send + 'static>(
+    xapi: &Arc<Mutex<Xapi<S>>>,
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     layout: GuestLayout,
     pc: u32,
     search: PendingSearch,
 ) -> std::result::Result<TransferAbi, GuestFault> {
+    let xapi = Arc::clone(xapi);
     let runtime = Arc::clone(ctx.runtime());
     let mut guard = runtime.memory();
     let esp = cpu.esp.wrapping_sub(8);
@@ -446,13 +451,46 @@ fn allocate_search(
             let cell = last_error_cell(&guard, cpu.fs_base, layout)?;
             guard.set_u32(cell, 8)?;
             cpu.eax = u32::MAX;
-        } else {
-            guard.write_bytes(block, &search.object(), 1)?;
-            cpu.eax = block;
+            return Ok(TransferAbi::ret(pc));
         }
-        Ok(TransferAbi::ret(pc))
+        // NtCreateEvent(&handle, NULL, NotificationEvent, FALSE) with the
+        // handle cell just below the caller's stack.
+        let top = cpu.esp;
+        let cell = top.wrapping_sub(4);
+        let args = cell.wrapping_sub(16);
+        guard.set_u32(cell, 0)?;
+        guard.set_u32(args, cell)?;
+        guard.set_u32(args.wrapping_add(4), 0)?;
+        guard.set_u32(args.wrapping_add(8), 0)?;
+        guard.set_u32(args.wrapping_add(12), 0)?;
+        cpu.esp = args;
+        ctx.call_guest(
+            cpu,
+            &mut guard,
+            kernel::function_token(NT_CREATE_EVENT),
+            move |cpu, ctx| {
+                let status = cpu.eax as i32;
+                let runtime = Arc::clone(ctx.runtime());
+                let mut guard = runtime.memory();
+                let handle = guard.u32(cell)?;
+                cpu.esp = top;
+                if status < 0 || handle == 0 {
+                    let last = last_error_cell(&guard, cpu.fs_base, layout)?;
+                    guard.set_u32(last, 8)?;
+                    cpu.eax = u32::MAX;
+                } else {
+                    guard.write_bytes(block, &search.object(handle), 1)?;
+                    lock(&xapi).adopt_search(handle, search);
+                    cpu.eax = block;
+                }
+                Ok(TransferAbi::ret(pc))
+            },
+        )
     })
 }
+
+/// Kernel export ordinal of NtCreateEvent.
+const NT_CREATE_EVENT: u32 = 189;
 
 /// Record an HLE stop. The runtime has no HLE-specific event yet, so this uses
 /// `Event::Unsupported` with an `hle:` detail and the override name as the

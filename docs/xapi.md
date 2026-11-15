@@ -75,7 +75,8 @@ games below are the exception). This removes SaveRecord,
 Disposition, DiskSpace, save cursors, Rust metadata packing, and the duplicate
 incoming LaunchInfo store. The Storage contract now contains only utility
 mount/format. XFindClose therefore always remains generated: there is no token
-range heuristic or Rust `searches` table. Error 18 and name termination belong
+range heuristic (the opt-in save games keep a small host table keyed by the
+search's kernel handle, below). Error 18 and name termination belong
 to the generated save/file path, not to a second implementation.
 
 | Addresses | Generated route | Required kernel behavior |
@@ -253,11 +254,18 @@ What the original does, which the overrides reproduce:
   (`0x53425645`) at +0, a handle word at +4, root length at +8, root string
   at +0xC. The generated XFindClose frees it (and passes the handle word to
   CloseHandle), so XFindClose is not overridden. The override reaches the
-  allocator with `ExecCtx::call_guest` and writes the block in the
-  continuation; an allocation failure gives -1 and last error 8. Retail keeps
-  a live FindFirstFile handle at +4; here the word is 0 and the search is
-  stateless (a cursor in the block's last word, +0x10C, and the root is
-  re-listed on every call), so a save deleted between calls is skipped.
+  allocator with `ExecCtx::call_guest`, then makes the handle word with a
+  guest call to NtCreateEvent (a real kernel handle, so the generated
+  CloseHandle succeeds), and writes the block in the continuation; a failure
+  of either gives -1 and last error 8. Retail keeps a live FindFirstFile
+  handle at +4; here a host table (`Xapi::adopt_search`, at most 64, oldest
+  dropped) maps that handle to the listing snapshot taken at
+  XFindFirstSaveGame and a cursor, so saves created or deleted mid-search
+  neither repeat nor skip entries. A deleted save in the snapshot is skipped
+  when its meta no longer reads.
+- Output path: the guest's bounded copy (`002d1404`) always NUL-terminates; a
+  directory that fills `path_len` loses its last byte to the NUL. A failed
+  timestamp touch is ignored (`00330d96` is void).
 
 Not reproduced: the original's substring key search (a `TitleName=` line would
 match `Name`), and FATX timestamp details beyond what the VFS applies. The

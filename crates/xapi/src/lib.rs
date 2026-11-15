@@ -71,6 +71,7 @@ pub struct Xapi<StorageBackend> {
     changes: DeviceChanges,
     launch_request: Option<LaunchRequest>,
     pending_search: Option<PendingSearch>,
+    searches: std::collections::BTreeMap<u32, PendingSearch>,
 }
 
 impl<StorageBackend: Storage> Xapi<StorageBackend> {
@@ -95,6 +96,7 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
             changes: DeviceChanges::default(),
             launch_request: None,
             pending_search: None,
+            searches: Default::default(),
         })
     }
 

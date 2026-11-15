@@ -69,9 +69,10 @@ pub const SEARCH_HEAP_TAG: u32 = 0x2483_0000;
 pub const SEARCH_OFFSET_HANDLE: u32 = 4;
 pub const SEARCH_OFFSET_ROOT_LEN: u32 = 8;
 pub const SEARCH_OFFSET_ROOT: u32 = 0xc;
-/// Longest root a search keeps; the cursor lives in the block's last word.
+/// Longest root a search keeps in the block.
 pub const SEARCH_MAX_ROOT: usize = 0xf0;
-pub const SEARCH_OFFSET_CURSOR: u32 = 0x10c;
+/// Searches the host remembers at once; the oldest is forgotten beyond this.
+pub const MAX_OPEN_SEARCHES: usize = 64;
 
 /// The save directory name for `name`: 12 uppercase hex digits of
 /// `h = (h * 0x10000 + unit) % HASH_MODULUS` over the UTF-16 units
@@ -154,24 +155,29 @@ pub trait SaveStore {
 /// What `XFindFirstSaveGame` leaves for the host after a hit. The block is
 /// allocated in guest memory by the guest's own allocator (`register`), so the
 /// generated `XFindClose` frees it; [`PendingSearch::object`] is its content.
-/// Its [`SEARCH_OFFSET_HANDLE`] word is 0: `XFindClose` passes it to
-/// CloseHandle, and 0 is never a live handle.
+/// Its [`SEARCH_OFFSET_HANDLE`] word is a real kernel handle the host makes
+/// for the search: the generated `XFindClose` passes it to CloseHandle, which
+/// closes it. The host then hands the search to [`Xapi::adopt_search`] under
+/// that handle, so the listing snapshot taken by `XFindFirstSaveGame` and the
+/// position in it stay stable while the directory changes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PendingSearch {
     root: String,
-    cursor: u32,
+    entries: Vec<SaveDirectory>,
+    /// Index into `entries` of the next one to look at.
+    cursor: usize,
 }
 
 impl PendingSearch {
-    pub fn object(&self) -> [u8; SEARCH_SIZE as usize] {
+    pub fn object(&self, handle: u32) -> [u8; SEARCH_SIZE as usize] {
         let mut block = [0u8; SEARCH_SIZE as usize];
         block[..4].copy_from_slice(&SEARCH_SIGNATURE.to_le_bytes());
+        let at = SEARCH_OFFSET_HANDLE as usize;
+        block[at..at + 4].copy_from_slice(&handle.to_le_bytes());
         let at = SEARCH_OFFSET_ROOT_LEN as usize;
         block[at..at + 4].copy_from_slice(&(self.root.len() as u32).to_le_bytes());
         let at = SEARCH_OFFSET_ROOT as usize;
         block[at..at + self.root.len()].copy_from_slice(self.root.as_bytes());
-        let at = SEARCH_OFFSET_CURSOR as usize;
-        block[at..at + 4].copy_from_slice(&self.cursor.to_le_bytes());
         block
     }
 }
@@ -262,7 +268,9 @@ impl<S: Storage> Xapi<S> {
                     if check_name(store, &directory, &name).is_err() {
                         return Err(Error::Win32(ERROR_CANNOT_MAKE));
                     }
-                    store.touch_directory(&directory)?;
+                    // The original ignores timestamp failures (`0x330d96` is
+                    // void); the save is usable either way.
+                    let _ = store.touch_directory(&directory);
                     if disposition == CREATE_NEW {
                         return Err(Error::Win32(ERROR_ALREADY_EXISTS));
                     }
@@ -279,12 +287,18 @@ impl<S: Storage> Xapi<S> {
             }
         }
         if out != 0 && out_len != 0 {
+            // The guest's bounded copy (`0x2d1404`) always NUL-terminates:
+            // a directory that fills the buffer loses its last byte to the
+            // NUL. The backslash follows only if it and a NUL still fit.
             let mut path = directory.into_bytes();
             let limit = out_len as usize;
             if path.len() + 1 < limit {
                 path.extend_from_slice(b"\\\0");
+            } else if path.len() < limit {
+                path.push(0);
             } else {
-                path.truncate(limit);
+                path.truncate(limit - 1);
+                path.push(0);
             }
             memory.write(out, &path)?;
         }
@@ -315,9 +329,15 @@ impl<S: Storage> Xapi<S> {
         data: u32,
     ) -> Result<()> {
         let root = memory::ansi(memory, root, SEARCH_MAX_ROOT)?;
-        let (cursor, block) = Self::next_save(store(&mut self.storage)?, &root, 0)?;
+        let store = store(&mut self.storage)?;
+        let mut search = PendingSearch {
+            entries: store.list_directories(&root)?,
+            root,
+            cursor: 0,
+        };
+        let block = Self::next_save(store, &mut search)?;
         memory.write(data, &block)?;
-        self.pending_search = Some(PendingSearch { root, cursor });
+        self.pending_search = Some(search);
         Ok(())
     }
 
@@ -331,28 +351,38 @@ impl<S: Storage> Xapi<S> {
         if memory::u32_at(memory, search)? != SEARCH_SIGNATURE {
             return Err(Error::Win32(ERROR_INVALID_HANDLE));
         }
-        let cursor_at = memory::offset(search, SEARCH_OFFSET_CURSOR as usize)?;
-        let cursor = memory::u32_at(memory, cursor_at)?;
-        let root = memory::ansi(
+        let handle = memory::u32_at(
             memory,
-            memory::offset(search, SEARCH_OFFSET_ROOT as usize)?,
-            SEARCH_MAX_ROOT,
+            memory::offset(search, SEARCH_OFFSET_HANDLE as usize)?,
         )?;
-        let (next, block) = Self::next_save(store(&mut self.storage)?, &root, cursor)?;
-        memory.write(data, &block)?;
-        memory.write(cursor_at, &next.to_le_bytes())
+        let Some(open) = self.searches.get_mut(&handle) else {
+            return Err(Error::Win32(ERROR_INVALID_HANDLE));
+        };
+        let block = Self::next_save(store(&mut self.storage)?, open)?;
+        memory.write(data, &block)
     }
 
-    /// The first valid save at or after listing index `from`, and the index
-    /// after it. Error 18 if none.
-    fn next_save(store: &mut dyn SaveStore, root: &str, from: u32) -> Result<(u32, Vec<u8>)> {
-        let entries = store.list_directories(root)?;
-        for (index, entry) in entries.iter().enumerate().skip(from as usize) {
-            if let Some(data) = scan(store, root, entry) {
-                return Ok((index as u32 + 1, data));
+    /// The first valid save at or after the search's cursor; advances the
+    /// cursor past it. Error 18 if none.
+    fn next_save(store: &mut dyn SaveStore, search: &mut PendingSearch) -> Result<Vec<u8>> {
+        while let Some(entry) = search.entries.get(search.cursor) {
+            search.cursor += 1;
+            if let Some(data) = scan(store, &search.root, entry) {
+                return Ok(data);
             }
         }
         Err(Error::Win32(ERROR_NO_MORE_FILES))
+    }
+
+    /// Keep `search` under the kernel `handle` the host made for it, so
+    /// `XFindNextSaveGame` finds it from the block's handle word. The oldest
+    /// search is forgotten past [`MAX_OPEN_SEARCHES`] (handles never repeat,
+    /// so a forgotten or closed one only ever fails with 6).
+    pub fn adopt_search(&mut self, handle: u32, search: PendingSearch) {
+        self.searches.insert(handle, search);
+        while self.searches.len() > MAX_OPEN_SEARCHES {
+            self.searches.pop_first();
+        }
     }
 
     /// The search `XFindFirstSaveGame` just found, once. The host allocates

@@ -361,27 +361,56 @@ fn create_reports_bad_arguments_and_short_output() {
             .0,
         87
     );
-    // A null output pointer is allowed; a short buffer truncates without NUL
-    // room for the backslash, as strncpy does.
+    // A null output pointer is allowed.
     h.put_name("Short");
     assert_eq!(
         h.call(Function::XCreateSaveGame, &[ROOT, NAME, 1, 0, 0, 0])
             .0,
         0
     );
-    h.memory.write(OUT, &[0x55; 32]).unwrap();
+}
+
+/// The guest's bounded copy (`0x2d1404`) always NUL-terminates a nonzero
+/// buffer; the backslash follows only when it and the NUL still fit.
+#[test]
+fn create_output_is_always_nul_terminated_at_every_boundary() {
+    let mut h = Harness::new();
+    h.put_root("U:\\");
+    h.put_name("Short");
     assert_eq!(
-        h.call(Function::XCreateSaveGame, &[ROOT, NAME, 3, 0, OUT, 15])
+        h.call(Function::XCreateSaveGame, &[ROOT, NAME, 1, 0, 0, 0])
             .0,
         0
     );
-    let mut got = [0u8; 16];
-    h.memory.read(OUT, &mut got).unwrap();
-    assert_eq!(
-        &got[..15],
-        format!("U:\\{}", saves::directory_name(&utf16("Short"))).as_bytes()
-    );
-    assert_eq!(got[15], 0x55);
+    let dir = format!("U:\\{}", saves::directory_name(&utf16("Short")));
+    assert_eq!(dir.len(), 15);
+    for (len, expected) in [
+        (0usize, String::new()),
+        (1, "\0".to_owned()),
+        (2, format!("{}\0", &dir[..1])),
+        (14, format!("{}\0", &dir[..13])),
+        (15, format!("{}\0", &dir[..14])),
+        (16, format!("{dir}\0")),
+        (17, format!("{dir}\\\0")),
+        (18, format!("{dir}\\\0")),
+    ] {
+        h.memory.write(OUT, &[0x55; 32]).unwrap();
+        assert_eq!(
+            h.call(
+                Function::XCreateSaveGame,
+                &[ROOT, NAME, 3, 0, OUT, len as u32]
+            )
+            .0,
+            0,
+            "{len}"
+        );
+        let mut got = [0u8; 32];
+        h.memory.read(OUT, &mut got).unwrap();
+        let written = expected.len();
+        assert_eq!(&got[..written], expected.as_bytes(), "{len}");
+        // Nothing past what the guest copy writes is touched.
+        assert!(got[written..].iter().all(|&b| b == 0x55), "{len}");
+    }
 }
 
 #[test]
@@ -436,9 +465,9 @@ fn find_first_and_next_walk_the_saves_in_name_order() {
     };
     assert_eq!(attributes & 0x10, 0x10);
     // Install the object as the allocator would.
-    h.memory.write(OBJECT, &search.object()).unwrap();
+    h.install_search(search);
     assert_eq!(h.memory_u32(OBJECT), saves::SEARCH_SIGNATURE);
-    assert_eq!(h.memory_u32(OBJECT + 4), 0, "CloseHandle(0) in XFindClose");
+    assert_eq!(h.memory_u32(OBJECT + 4), SEARCH_HANDLE);
     assert_eq!(h.memory_u32(OBJECT + 8), 3);
     for _ in 0..2 {
         h.memory.write(DATA, &[0; saves::FIND_DATA_SIZE]).unwrap();
@@ -458,7 +487,18 @@ fn find_first_and_next_walk_the_saves_in_name_order() {
     }
 }
 
+const SEARCH_HANDLE: u32 = 0x1c8;
+
 impl Harness {
+    /// Install a pending search as the host does: its block with a kernel
+    /// handle in it, and the search adopted under that handle.
+    fn install_search(&mut self, search: xapi::PendingSearch) {
+        self.memory
+            .write(OBJECT, &search.object(SEARCH_HANDLE))
+            .unwrap();
+        self.xapi.adopt_search(SEARCH_HANDLE, search);
+    }
+
     fn memory_u32(&self, at: u32) -> u32 {
         let mut b = [0; 4];
         self.memory.read(at, &mut b).unwrap();
@@ -493,7 +533,7 @@ fn deleting_during_a_search_skips_the_removed_save() {
     h.put_root("U:\\");
     h.call(Function::XFindFirstSaveGame, &[ROOT, DATA]);
     let search = h.xapi.take_pending_search().unwrap();
-    h.memory.write(OBJECT, &search.object()).unwrap();
+    h.install_search(search);
     let first = h.found_name();
     for name in ["A", "B", "C"] {
         if name != first {
@@ -604,7 +644,12 @@ struct World {
     /// (size, tag) of each request the stand-in allocator served.
     allocations: Arc<Mutex<Vec<(u32, u32)>>>,
     fail_allocation: Arc<AtomicU32>,
+    /// (attributes, type, initial state) of each NtCreateEvent served.
+    events: Arc<Mutex<Vec<(u32, u32, u32)>>>,
+    fail_event: Arc<AtomicU32>,
 }
+
+const EVENT_HANDLE: u32 = 0x1a4;
 
 fn world(save_games: bool) -> World {
     let dir = TempDir::new();
@@ -632,6 +677,32 @@ fn world(save_games: bool) -> World {
             guard.ret(cpu, 8)
         });
     }
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let fail_event = Arc::new(AtomicU32::new(0));
+    {
+        let (events, fail) = (Arc::clone(&events), Arc::clone(&fail_event));
+        // The kernel's NtCreateEvent (ordinal 189, four words).
+        dispatch.register_override(
+            runtime::kernel::function_token(189),
+            "test::NtCreateEvent",
+            move |cpu, ctx, _| {
+                let mut guard = ctx.memory();
+                let out = guard.u32(cpu.esp + 4)?;
+                events.lock().unwrap().push((
+                    guard.u32(cpu.esp + 8)?,
+                    guard.u32(cpu.esp + 12)?,
+                    guard.u32(cpu.esp + 16)?,
+                ));
+                if fail.load(Ordering::Relaxed) != 0 {
+                    cpu.eax = 0xc000_009a;
+                } else {
+                    guard.set_u32(out, EVENT_HANDLE)?;
+                    cpu.eax = 0;
+                }
+                guard.ret(cpu, 16)
+            },
+        );
+    }
     let mut g = Guest::new();
     g.map_zeroed(0x0001_0000, 0x3000, Permissions::RWX).unwrap();
     g.map_zeroed(0x0033_0000, 0x2000, Permissions::RWX).unwrap();
@@ -658,6 +729,8 @@ fn world(save_games: bool) -> World {
         registration,
         allocations,
         fail_allocation,
+        events,
+        fail_event,
     }
 }
 
@@ -772,7 +845,10 @@ fn save_calls_run_through_the_runner_with_the_pinned_cleanup() {
     assert_eq!(*w.allocations.lock().unwrap(), vec![(0x110, 0x2483_0000)]);
     assert_eq!(first, HEAP);
     assert_eq!(w.u32(first), saves::SEARCH_SIGNATURE);
-    assert_eq!(w.u32(first + 4), 0);
+    // The handle word is the kernel handle the stand-in NtCreateEvent made,
+    // with the pinned arguments.
+    assert_eq!(w.u32(first + 4), EVENT_HANDLE);
+    assert_eq!(*w.events.lock().unwrap(), vec![(0, 0, 0)]);
     assert_eq!(w.u32(first + 8), 3);
     let mut name = vec![0u8; 28];
     w.runtime
@@ -826,4 +902,250 @@ fn a_failed_search_allocation_is_not_enough_memory() {
         u32::MAX
     );
     assert_eq!(w.u32(LAST_ERROR), 8);
+}
+
+#[test]
+fn a_failed_search_handle_is_not_enough_memory() {
+    let mut w = world(true);
+    w.put(SCRATCH, b"U:\\\0");
+    w.put_wide(SCRATCH + 0x100, "Only");
+    assert_eq!(
+        w.call(
+            addr::XCREATE_SAVE_GAME,
+            &[SCRATCH, SCRATCH + 0x100, 1, 0, 0, 0]
+        ),
+        0
+    );
+    w.fail_event.store(1, Ordering::Relaxed);
+    assert_eq!(
+        w.call(addr::XFIND_FIRST_SAVE_GAME, &[SCRATCH, SCRATCH + 0x1000]),
+        u32::MAX
+    );
+    assert_eq!(w.u32(LAST_ERROR), 8);
+}
+
+#[test]
+fn next_through_the_runner_follows_the_handle_in_the_block() {
+    let mut w = world(true);
+    w.put(SCRATCH, b"U:\\\0");
+    for (i, name) in ["One", "Two"].iter().enumerate() {
+        w.put_wide(SCRATCH + 0x100 + 0x40 * i as u32, name);
+        assert_eq!(
+            w.call(
+                addr::XCREATE_SAVE_GAME,
+                &[SCRATCH, SCRATCH + 0x100 + 0x40 * i as u32, 1, 0, 0, 0]
+            ),
+            0
+        );
+    }
+    let block = w.call(addr::XFIND_FIRST_SAVE_GAME, &[SCRATCH, SCRATCH + 0x1000]);
+    assert_eq!(
+        w.call(addr::XFIND_NEXT_SAVE_GAME, &[block, SCRATCH + 0x1000]),
+        1
+    );
+    // A block whose handle word names no open search is not a search.
+    w.runtime.memory().set_u32(block + 4, 0x999).unwrap();
+    assert_eq!(
+        w.call(addr::XFIND_NEXT_SAVE_GAME, &[block, SCRATCH + 0x1000]),
+        0
+    );
+    assert_eq!(w.u32(LAST_ERROR), 6);
+}
+
+// ---- mid-search changes, layout and failure injection -------------------
+
+fn start_search(h: &mut Harness) -> String {
+    h.put_root("U:\\");
+    h.call(Function::XFindFirstSaveGame, &[ROOT, DATA]);
+    let search = h.xapi.take_pending_search().unwrap();
+    h.install_search(search);
+    h.found_name()
+}
+
+fn next_name(h: &mut Harness) -> Option<String> {
+    h.memory.write(DATA, &[0; saves::FIND_DATA_SIZE]).unwrap();
+    let (found, _) = h.call(Function::XFindNextSaveGame, &[OBJECT, DATA]);
+    (found == 1).then(|| h.found_name())
+}
+
+/// Names in the order the search yields them for `names`.
+fn hash_order(names: &[&str]) -> Vec<String> {
+    let mut sorted: Vec<String> = names.iter().map(|n| (*n).to_owned()).collect();
+    sorted.sort_by_key(|n| saves::directory_name(&utf16(n)));
+    sorted
+}
+
+#[test]
+fn deleting_an_already_returned_save_does_not_skip_the_next() {
+    let mut h = Harness::new();
+    let names = ["A", "B", "C", "D"];
+    for name in names {
+        assert_eq!(h.create(name, saves::CREATE_NEW, 0), 0);
+    }
+    let order = hash_order(&names);
+    assert_eq!(start_search(&mut h), order[0]);
+    assert_eq!(h.delete(&order[0]), 0);
+    assert_eq!(next_name(&mut h).as_deref(), Some(order[1].as_str()));
+    assert_eq!(next_name(&mut h).as_deref(), Some(order[2].as_str()));
+    assert_eq!(next_name(&mut h).as_deref(), Some(order[3].as_str()));
+    assert_eq!(next_name(&mut h), None);
+}
+
+#[test]
+fn creating_a_save_before_the_cursor_does_not_repeat_one() {
+    let mut h = Harness::new();
+    // Three names in hash order: `earlier` sorts before `first`.
+    let sorted = hash_order(&["S0", "S1", "S2"]);
+    let (earlier, first, other) = (sorted[0].clone(), sorted[1].clone(), sorted[2].clone());
+    assert_eq!(h.create(&first, saves::CREATE_NEW, 0), 0);
+    assert_eq!(h.create(&other, saves::CREATE_NEW, 0), 0);
+    assert_eq!(start_search(&mut h), first);
+    assert_eq!(h.create(&earlier, saves::CREATE_NEW, 0), 0);
+    assert_eq!(next_name(&mut h).as_deref(), Some(other.as_str()));
+    assert_eq!(next_name(&mut h), None);
+}
+
+#[test]
+fn find_data_has_the_abi_offsets_for_path_and_name() {
+    let mut h = Harness::new();
+    assert_eq!(h.create("Layout", saves::CREATE_NEW, 0), 0);
+    h.put_root("U:\\");
+    h.memory
+        .write(DATA, &[0x77; saves::FIND_DATA_SIZE])
+        .unwrap();
+    h.call(Function::XFindFirstSaveGame, &[ROOT, DATA]);
+    let mut raw = vec![0u8; 836];
+    h.memory.read(DATA, &mut raw).unwrap();
+    let path = format!("U:\\{}\\", saves::directory_name(&utf16("Layout")));
+    assert_eq!(&raw[320..320 + path.len()], path.as_bytes());
+    assert_eq!(raw[320 + path.len()], 0);
+    let name: Vec<u8> = "Layout\0"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    assert_eq!(&raw[580..580 + name.len()], name.as_slice());
+    assert_eq!(u32::from_le_bytes(raw[0..4].try_into().unwrap()), 0x10);
+}
+
+/// A [`VfsStorage`] that can fail chosen operations and records removals.
+struct Faulty {
+    inner: VfsStorage,
+    touch_error: Option<u32>,
+    create_file_error: Option<u32>,
+    removed: Vec<String>,
+}
+
+impl xapi::Storage for Faulty {
+    fn mount_utility(&mut self, partition: u8, format: bool) -> Result<()> {
+        self.inner.mount_utility(partition, format)
+    }
+    fn format_utility(&mut self) -> Result<()> {
+        self.inner.format_utility()
+    }
+    fn saves(&mut self) -> Option<&mut dyn xapi::SaveStore> {
+        Some(self)
+    }
+}
+
+impl xapi::SaveStore for Faulty {
+    fn create_directory(&mut self, path: &str) -> Result<()> {
+        self.inner.create_directory(path)
+    }
+    fn read_file(&mut self, path: &str, limit: usize) -> Result<Vec<u8>> {
+        self.inner.read_file(path, limit)
+    }
+    fn create_file(&mut self, path: &str, contents: &[u8]) -> Result<()> {
+        match self.create_file_error {
+            Some(code) => Err(xapi::Error::Win32(code)),
+            None => self.inner.create_file(path, contents),
+        }
+    }
+    fn touch_directory(&mut self, path: &str) -> Result<()> {
+        match self.touch_error {
+            Some(code) => Err(xapi::Error::Win32(code)),
+            None => self.inner.touch_directory(path),
+        }
+    }
+    fn remove_tree(&mut self, path: &str) -> Result<()> {
+        self.removed.push(path.to_owned());
+        self.inner.remove_tree(path)
+    }
+    fn list_directories(&mut self, path: &str) -> Result<Vec<xapi::SaveDirectory>> {
+        self.inner.list_directories(path)
+    }
+}
+
+fn faulty(dir: &TempDir) -> (Xapi<Faulty>, Memory) {
+    let real = xapi_over(dir, true);
+    let mut config = Config::for_gamepad(0x100);
+    config.save_games = true;
+    let xapi = Xapi::new(
+        config,
+        InputManager::new(ConvertConfig::default()).unwrap(),
+        Faulty {
+            inner: real.storage,
+            touch_error: None,
+            create_file_error: None,
+            removed: Vec::new(),
+        },
+    )
+    .unwrap();
+    let mut memory = Memory(vec![0; 0x8000]);
+    memory.write(ROOT, b"U:\\\0").unwrap();
+    memory.write(NAME, &[b'F', 0, 0, 0]).unwrap();
+    (xapi, memory)
+}
+
+fn create_faulty(xapi: &mut Xapi<Faulty>, memory: &mut Memory, disposition: u32) -> u32 {
+    memory.write(STACK, &1u32.to_le_bytes()).unwrap();
+    for (i, a) in [ROOT, NAME, disposition, 0, OUT, 0x100].iter().enumerate() {
+        memory
+            .write(STACK + 4 + 4 * i as u32, &a.to_le_bytes())
+            .unwrap();
+    }
+    let mut frame = Frame { eax: 0, esp: STACK };
+    let mut thread = ThreadState::default();
+    xapi.invoke(Function::XCreateSaveGame, &mut frame, memory, &mut thread)
+        .unwrap();
+    frame.eax
+}
+
+#[test]
+fn a_timestamp_failure_does_not_change_the_disposition_result() {
+    let dir = TempDir::new();
+    let (mut xapi, mut memory) = faulty(&dir);
+    assert_eq!(create_faulty(&mut xapi, &mut memory, saves::CREATE_NEW), 0);
+    xapi.storage.touch_error = Some(5);
+    // CREATE_NEW over the existing save is still 183, others still succeed.
+    assert_eq!(
+        create_faulty(&mut xapi, &mut memory, saves::CREATE_NEW),
+        saves::ERROR_ALREADY_EXISTS
+    );
+    assert_eq!(create_faulty(&mut xapi, &mut memory, 2), 0);
+    assert_eq!(
+        create_faulty(&mut xapi, &mut memory, saves::OPEN_EXISTING),
+        0
+    );
+}
+
+#[test]
+fn a_failed_meta_write_rolls_the_new_directory_back() {
+    let dir = TempDir::new();
+    let (mut xapi, mut memory) = faulty(&dir);
+    xapi.storage.create_file_error = Some(112);
+    assert_eq!(
+        create_faulty(&mut xapi, &mut memory, saves::CREATE_NEW),
+        112
+    );
+    let directory = format!("U:\\{}", saves::directory_name(&utf16("F")));
+    assert_eq!(xapi.storage.removed, vec![directory]);
+    let host = dir
+        .0
+        .join("disk/Partition1/UDATA")
+        .join(format!("{TITLE_ID:08X}"))
+        .join(saves::directory_name(&utf16("F")));
+    assert!(!host.exists(), "{host:?}");
+    // And the name is free again once the fault clears.
+    xapi.storage.create_file_error = None;
+    assert_eq!(create_faulty(&mut xapi, &mut memory, saves::CREATE_NEW), 0);
 }
