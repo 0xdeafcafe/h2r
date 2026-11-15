@@ -77,12 +77,24 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             // H2_RENDER_THREAD=1: backend work (shader preparation, encoding,
             // uploads, submission, present) on a render thread of its own
             // (docs/render-thread.md). Off by default.
-            if std::env::var("H2_RENDER_THREAD").is_ok_and(|v| v == "1") {
+            if render_thread_requested() {
                 return install_with(rt, d3d::ThreadedBackend::new(backend)?);
             }
             install_with(rt, backend)
         }
     }
+}
+
+/// `H2_RENDER_THREAD=1`: run the GPU backend's work on a render thread
+/// (`h2 run` with `H2_BOOT_GFX`, and `h2 play`). Off by default.
+pub fn render_thread_requested() -> bool {
+    render_thread_from(std::env::var("H2_RENDER_THREAD").ok().as_deref())
+}
+
+/// [`render_thread_requested`] for a given value of the variable: only
+/// `1` turns it on.
+pub fn render_thread_from(value: Option<&str>) -> bool {
+    value == Some("1")
 }
 
 fn save_png(
@@ -503,6 +515,16 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
 mod tests {
     use super::*;
     use d3d::backend::Backend;
+
+    #[test]
+    fn the_render_thread_is_opt_in() {
+        assert!(!render_thread_from(None));
+        assert!(render_thread_from(Some("1")));
+        assert!(!render_thread_from(Some("0")));
+        assert!(!render_thread_from(Some("true")));
+        // Hosts default to the synchronous backend.
+        assert!(!crate::Host::default().render_thread);
+    }
 
     #[test]
     fn headless_keeps_only_surface_lifetimes() {

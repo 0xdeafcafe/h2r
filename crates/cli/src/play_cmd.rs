@@ -121,6 +121,9 @@ fn hosted(
     let keyboard = host.keyboard().cloned();
     boot::Host {
         gfx: Some(gfx),
+        // H2_RENDER_THREAD=1: the backend's work on a render thread, as
+        // for `h2 run` (docs/render-thread.md).
+        render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
         trace_limit: Some(TRACE_LIMIT),
         input,
@@ -432,9 +435,24 @@ fn follow_banner(path: PathBuf) -> app::Banner {
     banner
 }
 
+/// Whether `h2 play` renders on a render thread, from `H2_RENDER_THREAD`
+/// (the same rule as `h2 run`'s).
+fn render_thread(value: Option<&str>) -> bool {
+    boot::d3d_glue::render_thread_from(value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn h2_render_thread_is_opt_in() {
+        assert!(!render_thread(None), "off when unset");
+        assert!(render_thread(Some("1")));
+        for v in ["0", "", "true", "yes", "2", " 1"] {
+            assert!(!render_thread(Some(v)), "{v:?}");
+        }
+    }
 
     #[test]
     fn the_first_signal_closes_the_window_and_a_second_exits() {

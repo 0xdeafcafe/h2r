@@ -365,6 +365,10 @@ pub struct Host {
     /// D3D renders here (present hook attached) instead of the headless
     /// backend; `H2_BOOT_GFX` is then ignored.
     pub gfx: Option<d3d::GfxBackend>,
+    /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
+    /// docs/render-thread.md); off by default. Hosts set it from
+    /// [`d3d_glue::render_thread_requested`].
+    pub render_thread: bool,
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
     pub audio_sink: Option<dsound_glue::SinkOpener>,
@@ -471,6 +475,7 @@ pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host
     }
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
+        (true, Some(b)) if host.render_thread => Some(d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?),
         (true, Some(b)) => Some(d3d_glue::install_with(&loaded.runtime, b)?),
         (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
     };
