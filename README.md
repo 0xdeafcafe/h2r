@@ -205,6 +205,7 @@ Running the game:
 - [BOOT.md](docs/BOOT.md): `h2 build` and `h2 run`, the boot runner's flags and environment, current state and blockers
 - [app.md](docs/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`)
 - [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
+- [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
 - [kernel-imports.md](docs/kernel-imports.md): work list of every kernel import Halo 2 uses
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
 - [xapi.md](docs/xapi.md): guest XAPI service replacements (`crates/xapi`)
