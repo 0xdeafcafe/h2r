@@ -166,8 +166,19 @@ impl GfxBackend {
         self
     }
 
-    /// Called on every `Swap` with the surface to show (the platform layer
-    /// blits it to its window with `gfx::surface::present_surface`).
+    /// Called on every `Swap` with the surface, flags and borrowed RGB gamma
+    /// ramp. `app::FrameSink` applies the ramp during its handoff; custom
+    /// hooks must apply it themselves. `gfx::surface::present_surface` is
+    /// a raw presentation helper and does not apply the ramp.
+    ///
+    /// ```no_run
+    /// fn install(backend: d3d::GfxBackend) -> d3d::GfxBackend {
+    ///     backend.on_present(|_ctx, _store, _surface, _flags, gamma| {
+    ///         let _options = gfx::blit::BlitOptions { gamma, ..Default::default() };
+    ///         // Pass these options to the blit that publishes the frame.
+    ///     })
+    /// }
+    /// ```
     pub fn on_present(
         mut self,
         hook: impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>)

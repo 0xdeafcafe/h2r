@@ -99,6 +99,7 @@ struct Case {
     pushed: Vec<(usize, u32)>,
     stipple: [u32; 32],
     varying_t0: bool,
+    small_triangle: bool,
 }
 
 #[derive(Clone)]
@@ -164,6 +165,7 @@ impl Default for Case {
             pushed: Vec::new(),
             stipple: [0; 32],
             varying_t0: false,
+            small_triangle: false,
         }
     }
 }
@@ -171,9 +173,14 @@ impl Default for Case {
 struct Gpu {
     b: GfxBackend,
     color: SurfaceId,
+    size: u32,
 }
 
 fn gpu() -> Option<Gpu> {
+    gpu_with_size(SIZE)
+}
+
+fn gpu_with_size(size: u32) -> Option<Gpu> {
     if std::env::var_os("SHADERS_NO_GPU").is_some() {
         return None;
     }
@@ -186,9 +193,9 @@ fn gpu() -> Option<Gpu> {
     };
     let mut b = GfxBackend::new(ctx);
     let color = b
-        .create_surface(D3DFormat::A8R8G8B8, SIZE, SIZE, false)
+        .create_surface(D3DFormat::A8R8G8B8, size, size, false)
         .unwrap();
-    Some(Gpu { b, color })
+    Some(Gpu { b, color, size })
 }
 
 /// Pass-through vertex program: `oPos = v0` (window coordinates),
@@ -217,6 +224,11 @@ fn psdef_words(def: &PixelShaderDef) -> [u32; 60] {
 impl Gpu {
     /// Draws `c` and returns the RGBA bytes at [`AT`].
     fn run(&mut self, c: &Case) -> [u8; 4] {
+        self.run_at(c, AT)
+    }
+
+    fn run_at(&mut self, c: &Case, at: (u32, u32)) -> [u8; 4] {
+        let size = self.size;
         let b = &mut self.b;
         b.clear(
             self.color,
@@ -238,10 +250,13 @@ impl Gpu {
             words.stages[0][i] = v;
         }
 
-        let corners: [(f32, f32); 3] = if c.ccw {
-            [(0.0, 0.0), (0.0, 48.0), (48.0, 0.0)]
+        let extent = size as f32 * 3.0;
+        let corners: [(f32, f32); 3] = if c.small_triangle {
+            [(2.0, 2.0), (14.0, 2.0), (2.0, 14.0)]
+        } else if c.ccw {
+            [(0.0, 0.0), (0.0, extent), (extent, 0.0)]
         } else {
-            [(0.0, 0.0), (48.0, 0.0), (0.0, 48.0)]
+            [(0.0, 0.0), (extent, 0.0), (0.0, extent)]
         };
         let fixed = c.def.is_none();
         // Registers and types in stream order.
@@ -364,8 +379,8 @@ impl Gpu {
             state: words.translate(&RenderStateTable::default()),
             extras: words.stage_extras(),
             target: TargetInfo {
-                width: SIZE,
-                height: SIZE,
+                width: size,
+                height: size,
                 format: D3DFormat::A8R8G8B8,
                 depth_format: None,
             },
@@ -384,8 +399,8 @@ impl Gpu {
             viewport: Viewport {
                 x: 0,
                 y: 0,
-                width: SIZE,
-                height: SIZE,
+                width: size,
+                height: size,
                 min_z: 0.0,
                 max_z: 1.0,
             },
@@ -407,7 +422,7 @@ impl Gpu {
         assert!(err.is_none(), "{err:?}");
 
         let (px, order) = b.read_color(self.color).unwrap();
-        let i = 4 * (AT.1 * SIZE + AT.0) as usize;
+        let i = 4 * (at.1 * size + at.0) as usize;
         let p = [px[i], px[i + 1], px[i + 2], px[i + 3]];
         match order {
             HostPixelOrder::Bgra8 => [p[2], p[1], p[0], p[3]],
@@ -1210,21 +1225,65 @@ fn front_face_drives_two_sided_lighting_and_culling() {
 }
 
 #[test]
-fn polygon_stipple_masks_fragments_when_enabled() {
-    let Some(mut g) = gpu() else { return };
+fn polygon_stipple_orientation_and_wraparound() {
+    let Some(mut g) = gpu_with_size(64) else {
+        return;
+    };
     let mut c = Case {
         d0: RED,
         clear: BLUE,
         render: vec![(83, 1)],
         ..Case::default()
     };
-    expect(g.run(&c), BLUE, "zero mask");
-    c.stipple[4] = 1 << 4;
-    expect(g.run(&c), RED, "enabled mask bit");
-    c.stipple[4] = 1 << 5;
-    expect(g.run(&c), BLUE, "adjacent mask bit");
+    // Independent asymmetric pattern: row 27 bit 3 corresponds to (4,4).
+    // It repeats at both 32-pixel boundaries; neighbours remain clear.
+    c.stipple[27] = 0x0100_8008;
+    c.stipple[26] = 0x0000_0004;
+    for at in [(4, 4), (8, 4), (31, 4), (36, 4), (4, 36), (36, 36), (5, 5)] {
+        expect(g.run_at(&c, at), RED, &format!("covered {at:?}"));
+    }
+    for at in [(5, 4), (4, 5), (35, 4), (4, 35)] {
+        expect(g.run_at(&c, at), BLUE, &format!("uncovered {at:?}"));
+    }
     c.render.clear();
-    expect(g.run(&c), RED, "stipple disabled");
+    expect(g.run_at(&c, (5, 4)), RED, "stipple disabled");
+}
+
+#[test]
+fn polygon_stipple_does_not_mask_wireframe_or_point_fill() {
+    let Some(mut g) = gpu() else { return };
+    for (mode, supported) in [
+        (0x1b01, g.b.ctx.caps.polygon_mode_line),
+        (0x1b00, g.b.ctx.caps.polygon_mode_point),
+    ] {
+        if !supported {
+            continue;
+        }
+        let mut c = Case {
+            d0: RED,
+            clear: BLUE,
+            small_triangle: true,
+            render: vec![(139, mode)],
+            ..Case::default()
+        };
+        g.run(&c);
+        let (before, order) = g.b.store.read_color(&g.b.ctx, g.color).unwrap();
+        let blue = match order {
+            HostPixelOrder::Bgra8 => [255, 0, 0, 255],
+            HostPixelOrder::Rgba8 => [0, 0, 255, 255],
+        };
+        assert!(
+            before.as_chunks::<4>().0.iter().any(|p| *p != blue),
+            "mode {mode:#x} draws pixels"
+        );
+        c.render.push((83, 1));
+        g.run(&c);
+        let (after, _) = g.b.store.read_color(&g.b.ctx, g.color).unwrap();
+        assert_eq!(
+            after, before,
+            "zero stipple mask must not change mode {mode:#x}"
+        );
+    }
 }
 
 #[test]

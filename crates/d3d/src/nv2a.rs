@@ -900,19 +900,25 @@ fn fog_uniform(table: &RenderStateTable, draw: &ResolvedDraw) -> [f32; 4] {
     [mode, f(rs::FOGSTART), f(rs::FOGEND), f(rs::FOGDENSITY)]
 }
 
-fn polygon_stipple(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
+fn stipple_eligible(primitive: gfx::vertex::PrimitiveType, fill: gfx::state::FillMode) -> bool {
     use gfx::vertex::PrimitiveType;
-    !matches!(
-        draw.primitive,
-        PrimitiveType::PointList
-            | PrimitiveType::LineList
-            | PrimitiveType::LineLoop
-            | PrimitiveType::LineStrip
-    ) && draw
-        .hw
-        .stipple_control
-        .unwrap_or_else(|| raw(table, draw, rs::STIPPLEENABLE))
-        != 0
+    fill == gfx::state::FillMode::Solid
+        && !matches!(
+            primitive,
+            PrimitiveType::PointList
+                | PrimitiveType::LineList
+                | PrimitiveType::LineLoop
+                | PrimitiveType::LineStrip
+        )
+}
+
+fn polygon_stipple(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
+    stipple_eligible(draw.primitive, draw.state.render.fill_mode)
+        && draw
+            .hw
+            .stipple_control
+            .unwrap_or_else(|| raw(table, draw, rs::STIPPLEENABLE))
+            != 0
 }
 
 /// Whether gfx's built-in `XYZRHW | DIFFUSE` shader draws `draw` exactly as
@@ -1019,6 +1025,33 @@ fn compile(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn stipple_only_applies_to_filled_polygon_primitives() {
+        use super::stipple_eligible;
+        use gfx::state::FillMode;
+        use gfx::vertex::PrimitiveType;
+        for p in [
+            PrimitiveType::TriangleList,
+            PrimitiveType::TriangleStrip,
+            PrimitiveType::TriangleFan,
+            PrimitiveType::QuadList,
+            PrimitiveType::QuadStrip,
+            PrimitiveType::Polygon,
+        ] {
+            assert!(stipple_eligible(p, FillMode::Solid));
+            assert!(!stipple_eligible(p, FillMode::Wireframe));
+            assert!(!stipple_eligible(p, FillMode::Point));
+        }
+        for p in [
+            PrimitiveType::PointList,
+            PrimitiveType::LineList,
+            PrimitiveType::LineLoop,
+            PrimitiveType::LineStrip,
+        ] {
+            assert!(!stipple_eligible(p, FillMode::Solid));
+        }
+    }
+
     use super::*;
     use shaders::psh::interp::{self, Inputs, NoTextures};
 

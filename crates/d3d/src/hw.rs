@@ -139,9 +139,10 @@ pub struct HwState {
     /// `SET_STIPPLE_CONTROL`, if it arrived as a plain method (see
     /// [`method::STIPPLE_CONTROL`]).
     pub stipple_control: Option<u32>,
-    /// `SET_STIPPLE_PATTERN`: 32 rows of 32 pixels, bit `x` of row `y` set
-    /// where pixel `(x mod 32, y mod 32)` is drawn while stippling is
-    /// enabled. Halo picks one of 17 dither levels (the table at `0x487288`,
+    /// `SET_STIPPLE_PATTERN`: 32 raw rows. At 640x480, framebuffer pixel
+    /// `(x, y)` uses row `31 - (y mod 32)` and bit `(x mod 32) XOR 7`.
+    /// Vertical anchoring at other heights has not been verified on hardware.
+    /// Halo picks one of 17 dither levels (the table at `0x487288`,
     /// selected by `0x1c290` from an opacity) for screen-door fades.
     pub stipple_pattern: [u32; 32],
     /// `SET_ZSTENCIL_CLEAR_VALUE` as last pushed.

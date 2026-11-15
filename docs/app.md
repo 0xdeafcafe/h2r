@@ -51,7 +51,7 @@ frame counters and pacing counters.
 |---|---|
 | `GuestHost::headless(&AppConfig)` | Same interface with no window: own headless device, frames accepted and counted, a 48 kHz mixer consumed in real time by a `DiscardRenderer`. Use for `--headless` and tests so the guest-side code has one path. |
 | `gfx_context() -> GfxContext` | The shared device. `d3d::GfxBackend::new(host.gfx_context())`. |
-| `present_hook()` | `impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static`, exactly what `GfxBackend::on_present` takes. Copies the swapped surface into the handoff (resolving MSAA, forcing alpha opaque for X8/R5G6B5 formats like `gfx::surface::present_surface`) and returns at once. Errors are printed, never returned to the guest. |
+| `present_hook()` | `impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static`, exactly what `GfxBackend::on_present` takes. The last argument borrows the current RGB gamma ramp for this present. The handoff applies it once when copying the swapped surface (resolving MSAA and forcing alpha opaque for X8/R5G6B5 formats). Errors are printed, never returned to the guest. Custom hooks must apply the ramp themselves; `gfx::surface::present_surface` is a raw helper and does not apply it. |
 | `frame_sink() -> FrameSink` | For frames that are not gfx surfaces: `submit_rgba(size, &pixels)`, `submit_view(&view, size, opaque)`, `submit_surface(&store, id)`. |
 | `take_input() -> Option<InputManager>` | Once. Player one combines keyboard/mouse with the first physical pad; scripts replace live sources. Build `xapi::Xapi` on it. |
 | `keyboard() -> Option<&KeyboardMouse>` | The handle the window feeds; absent in timeline mode. |

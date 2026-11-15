@@ -734,8 +734,9 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
     if options.stipple {
         s.push_str(
             r#"    let xy = vec2u(v.position.xy) & vec2u(31u);
-    let row = xps.stipple[xy.y / 4u][xy.y % 4u];
-    if ((row & (1u << xy.x)) == 0u) { discard; }
+    let y = 31u - xy.y;
+    let row = xps.stipple[y / 4u][y % 4u];
+    if ((row & (1u << (xy.x ^ 7u))) == 0u) { discard; }
 "#,
         );
     }
