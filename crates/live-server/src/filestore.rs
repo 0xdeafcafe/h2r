@@ -62,12 +62,20 @@ impl FileStore {
             .write(true)
             .open(dir.join("lock"))
             .map_err(io)?;
-        lock.try_lock().map_err(|e| {
-            io(io::Error::new(
-                io::ErrorKind::WouldBlock,
-                format!("{} is in use by another server ({e})", dir.display()),
-            ))
-        })?;
+        // A server that just stopped (a quick relaunch, or a restart within
+        // one process, whose runtime shuts down in the background) may still
+        // hold the lock for a moment: wait up to two seconds before giving up.
+        let mut tries = 0;
+        while let Err(e) = lock.try_lock() {
+            tries += 1;
+            if tries > 40 {
+                return Err(io(io::Error::new(
+                    io::ErrorKind::WouldBlock,
+                    format!("{} is in use by another server ({e})", dir.display()),
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
         let mut log = OpenOptions::new()
             .create(true)
             .truncate(false)

@@ -1,21 +1,23 @@
-# Guarded FYL2X and F2XM1
+# Guarded transcendentals
 
-`x87/fast-trans` adds a 128-bit integer first pass for **FYL2X and
-F2XM1 only**. It is a default feature of the `x87` crate (build with
-`--no-default-features --features abi` to drop it) and independent of
-`H2_X87_NATIVE`.
-Other transcendentals use the original helpers. An accepted result has
+`x87/fast-trans` adds a 128-bit integer first pass for **FYL2X, F2XM1,
+FSIN, FCOS, FSINCOS, FPTAN and FPATAN**. It is a default feature of the
+`x87` crate (build with `--no-default-features --features abi` to drop
+it) and independent of `H2_X87_NATIVE`.
+FYL2XP1 uses the original helper. An accepted result has
 exactly the same ext80 bytes and flags as the 512-bit helper; ambiguous
 rounding and operands outside the guards use that helper.
 
 The gameplay profile in `frame-budget` identifies FYL2X and F2XM1 as
-14.3% and 3.7% of all samples. It does not contain an operand census.
+14.3% and 3.7% of all samples. A later main-menu profile put 12.8% of the
+game thread in the remaining trig helpers (FCOS 258 samples, FSIN 244,
+FPATAN 200, FPTAN 15); see [Trig and atan2](#trig-and-atan2). It does not contain an operand census.
 The domains below cover the full binary32/binary64 value ranges and the
 fractional reduction used by pow/exp, rather than assuming a narrow
 observed distribution. Validation uses synthetic sweeps and an independent
 MPFR oracle. No game image build or frame capture is needed for this proof.
 
-## Argument ranges
+## Argument ranges (FYL2X, F2XM1)
 
 E is the exponent of an operand's leading bit. All admitted operands are
 canonical normal ext80, with their **entire 64-bit significands** retained.
@@ -130,8 +132,15 @@ bounds. Both bounds must agree on the 64-bit result and rounding flags;
 otherwise fixture generation fails. It then independently rounds that
 ext80 result to PC=53 and PC=24, including halfway cases made from exact
 log identities. Tests check those results and their rounding flags.
-The 1,024 public fixtures are entirely synthetic and require no installed
-MPFR to execute: 1,024 ext80 checks plus 2,048 PC-rounding checks.
+The 2,048 public fixtures are entirely synthetic and require no installed
+MPFR to execute: 2,048 ext80 checks plus 4,096 PC-rounding checks. The
+first 1,024 cover FYL2X/F2XM1; the rest add 256 each of sin, cos and tan
+(MPFR reduces by the exact pi, as the reference does) and atan2. The trig
+lines include binary64/binary32 roundings of k\*pi/2 and k\*pi/4 (|k| up
+to 2000), reductions up to 2^63, and the tiny guard down to 2^-480;
+below that, 1024-bit intervals cannot resolve `x^3/6` and the unit tests
+check against the reference instead. The FSIN/FCOS lines also check
+FSINCOS's two values.
 
 Unit tests additionally cover:
 
@@ -164,26 +173,170 @@ cc -Wall -Wextra -Werror scripts/x87-trans-oracle.c $(pkg-config --cflags --libs
 "$TMPDIR/x87-trans-oracle" > crates/x87/tests/data/trans_oracle.txt
 ```
 
+## Trig and atan2
+
+### Domains
+
+| Function | Guarded domain |
+| --- | --- |
+| FSIN, FCOS, FSINCOS, FPTAN | Normal a with E in [-16000,62], subject to the reduction guard |
+| FPATAN `atan2(y,x)` | Normal y and x, each with E in [-4096,4096] |
+
+Zeros, NaNs, infinities, unsupported encodings and ext80 denormals keep
+the reference, as does |a| >= 2^63 (C2 set, operand unchanged). The trig
+domain is every finite exponent below the C2 limit except the bottom 382
+binades, where a result "just below x" could be tiny. Every binary32 and
+binary64 angle with |a| < 2^63, including subnormals widened exactly, is
+inside it. The FPATAN domain includes every binary32/binary64 pair; its
+quotient exponent stays above -8194, so a nonzero result is normal.
+
+### Reduction (the reference's semantics)
+
+The reference reduces by the **exact** pi: `|a| = r + k*pi/2` with
+`|r| <= pi/4`, computed from a 512-bit `2/pi`. Its own accuracy note
+(trans.rs) bounds the unrounded result within about 2^-280 relative of
+the mathematical sin/cos/tan of the ext80 operand. Real x87 hardware uses
+a 66-bit pi, so for large |a| neither path reproduces hardware; the fast
+path reproduces the reference.
+
+The fast pass forms `y = |a|*2/pi` with a 192-bit `2/pi` (`Wf<3>`), in a
+192-bit product. Both truncations give `|y|` an absolute error below
+`2^(Ey-189)`, with Ey the leading exponent of y. Splitting y into the integer k and the fraction f is
+exact, as is moving f from [1/2,1) to [-1/2,0) with k+1. The guard
+requires f nonzero with `Ef >= Ey - 80`, so f has relative error below
+2^-109. f is then truncated to 128 bits (2^-127) and multiplied by a
+128-bit pi/2 (two more 2^-127 terms): r's relative error is below
+**2^-108**. For |a| < 2^13, `Ey <= 12` and f is rejected only when
+|f| < 2^-68, that is, a within about 2^-67 of a multiple of pi/2. The closest binary64 multiple of pi/2 there
+is far outside that, so all game angles pass; even the ext80 values nearest
+k\*pi/4 pass (below). At |a| near 2^62 the
+guard rejects f below 2^-18, a 2^-17 fraction of operands. When f is
+near 1/2, the fast pass and reference may choose k and k+1 differently.
+Both are valid reductions of the same angle, and the series below
+tolerate `|r|` slightly above pi/4.
+
+### Error budget
+
+With p=128 and `u=2^-127`:
+
+* **sin r, cos r:** for `|r| <= pi/4`, the term ratios are below 0.11
+  (sin) and 0.31 (cos). The series stop after fewer than 20 terms at their
+  2^-136 threshold, and the tail is below twice the first omitted term.
+  Each term carries less than `2^7*u` of recurrence error. The alternating
+  sums' conditioning `sinh r/sin r` and `cosh r/cos r` is below 1.9.
+  Sensitivities `r*cot r <= 1` and `r*tan r < 0.8` turn r's 2^-108 into
+  below 2^-108 relative. Total: **below 2^-106**. Quadrant swaps and sign
+  changes are exact.
+* **tan:** sin/cos or -cos/sin adds one division: **below 2^-105**.
+* **atan2:** let `a <= b` be the operand magnitudes (swapped exactly as the
+  reference does when |y| > |x|). An integer quotient of the significands
+  picks `j = round(64*a/b)`, so `c=j/64` has `|a/b - c| <= 1/128`. Then
+  `atan(a/b) = atan(c) + atan(u)` with `u = (a - c*b)/(b + c*a)`.
+  `c*b` and `c*a` are exact 71-bit products. Numerator and denominator are
+  exact too: the operands lie within 2^9 of each other, so each sum spans
+  under 128 bits. That leaves one division (u) and `|u| <= 1/128`. The
+  series ratio is below 2^-14, so it stops within 10 terms with
+  error below `2^7*u`. `atan(c)` is a 65-entry table of floor(atan(j/64)*2^128)
+  (absolute error below 2^-128). It is checked against the 768-bit helper
+  and, independently, a Python integer evaluation. For j >= 1 the sum
+  exceeds atan(1/128) > 2^-7.01, so its relative error is below 2^-112.
+  For j = 0, `u = a/b` and the error is below 2^-119. `pi/2 - v` (v <= pi/4)
+  and `pi - v` (v <= pi/2) each at most double the relative error and add
+  one pi truncation. Total: **below 2^-105**.
+
+Against the reference's own 2^-280, the fast value is within 2^-104 of
+the unrounded reference. The certify radius 2^(T-80) used by FYL2X/F2XM1
+exceeds that by 2^24, so the acceptance rule and its proof carry over
+unchanged: equal endpoint values and equal PE/C1, with PE set. The
+2,000-case unrounded test checks 2^-100 against 768 bits.
+
+### Exact-neighbour rules
+
+The certify interval necessarily rejects a result within 2^-81 of a
+representable value. Three such cases are common and have a known
+direction, so they are rounded by the same packer (`Wf::to_f80` with a
+tail) as the reference's own series tails:
+
+* `2^-16000 <= |a| < 2^-32`: `sin a` lies strictly below a in magnitude,
+  by less than `|a|^3/6`, and `tan a` strictly above, by less than
+  `|a|^3/3 * 1.01`. Both gaps are below 2^-65 relative, inside a half-ulp
+  even at a power of two. `cos a` lies within 2^-65 below one (FCOS uses
+  this for every normal |a| < 2^-32, as its result is one). They are a with
+  tail -1, a with tail +1, and one with tail -1.
+* After reduction, `|r| < 2^-33`, so the true |r| is below 2^-32 and
+  nonzero (no nonzero ext80 value is a multiple of pi/2). Then cos r lies
+  in (1 - 2^-65, 1), and the cosine branch (FSIN at odd k, FCOS at even
+  k) is ±1 with tail -1. This covers `sin(float(pi/2))`,
+  `cos(double(pi))` and the like, which are the values a game uses.
+
+FSINCOS accepts only when both results are accepted. It merges flags with
+the reference's own `sincos_flags` (both results' exceptions, the
+cosine's C1). FPATAN has no such rule: an exactly representable ratio
+below 2^-33 (for example y = 2^-4096, x = 1) falls back.
+
+### Acceptance (synthetic, release sweeps)
+
+| Sweep | sin | cos | tan | sincos |
+| --- | ---: | ---: | ---: | ---: |
+| 6,000 random a, E in [-32,12] | 5,999 | 6,000 | 6,000 | 5,999 |
+| 6,000 random a, E in [-32,62] | 6,000 | 5,999 | 6,000 | 5,999 |
+| 6,000 random a, E in [-16382,62] | 5,850 | 6,000 | 5,850 | 5,850 |
+| 41,000 ext80 nearest k\*pi/4 ±2 ulps, k <= 4096 and four huge k | 40,998 | 41,000 | 41,000 | 40,998 |
+| 32,008 binary64/binary32 k\*pi/2 \* {1, 1/2, 1/4, 1/3}, \|k\| <= 2000 | 32,000 | 32,000 | 32,000 | 32,000 |
+
+The 150 misses in the third row are the exponents below -16000. The eight
+in the last row are the zero operands, which the reference already
+handles as specials.
+
+| FPATAN sweep (random signs, all quadrants) | Accepted |
+| --- | ---: |
+| 6,000 pairs, E in [-20,20] | 5,998 |
+| 3,000 pairs, E in [-1074,1023] | 3,000 |
+| 3,000 pairs, E in [-4200,4200] | 2,844 (the misses are outside the guard) |
+
+Every accepted result in every sweep equals both the 512- and 768-bit
+helpers in bytes and flags. Rejected results and the public dispatch
+equal the 512-bit helper. Further tests cover every exponent from
+-16382 to 62 (stride 23 in the middle) with four significands, C2 at
+2^63 and above, NaN/inf/zero/denormal/pseudo-denormal/unnormal operands,
+the atan2 sign/quadrant table (all four sign pairs, |y| = |x|,
+|y| on both sides of |x|), each atan table cell's neighbourhood, and the
+FPATAN exponent guard edges. The ABI test runs FSIN/FCOS/FPTAN/FSINCOS/
+FPATAN through the full state comparison across all TOPs and control
+words.
+
 ## Focused measurements
 
 A paired release benchmark uses 31 batches of the same 256 synthetic
 inputs, alternating the first implementation each batch after five
-warmup pairs. Inputs have multiplier exponents [-3,3] and fractional
-argument exponents [-3,-1]. Times include guards and fallback.
+warmup pairs. FYL2X/F2XM1 inputs have multiplier exponents [-3,3] and
+fractional argument exponents [-3,-1]. Trig angles have E in [-4,3]
+(|a| < 16), and atan2 operands have E in [-3,3]. Times include guards
+and fallback, in ns per operation:
 
-| Function | Reference median (MAD), microseconds | Guarded median (MAD), microseconds | Ratio |
+| Function | Reference median (MAD) | Guarded median (MAD) | Ratio |
 | --- | ---: | ---: | ---: |
-| FYL2X | 22.846 (0.060) | 1.969 (0.021) | 11.60x |
-| F2XM1 | 16.396 (0.136) | 1.472 (0.012) | 11.14x |
+| FYL2X | 22,014 (68) | 1,913 (12) | 11.5x |
+| F2XM1 | 15,305 (23) | 1,370 (6) | 11.2x |
+| FSIN | 16,571 (22) | 815 (2) | 20.3x |
+| FCOS | 16,553 (22) | 817 (2) | 20.3x |
+| FPTAN | 20,310 (16) | 1,964 (12) | 10.3x |
+| FSINCOS | 16,963 (228) | 1,648 (25) | 10.3x |
+| FPATAN | 92,960 (734) | 1,098 (25) | 84.6x |
 
 These measure helpers on the shared Apple Silicon host. They do not
 measure a gameplay frame saving or establish the distribution of operands
-in a level. The requested validation is entirely synthetic; the partial
-operand census was stopped when the no-game-run rule arrived and supplies
-no validation data.
+in a level. The requested validation is entirely synthetic; no game build
+or run supplies validation data.
 
-Final checks: 79 passing tests (4 ignored) in `x87` with the feature off,
-79 (4 ignored) with it on, two emitter differential tests with it on,
-and two more with both the fast feature and native C arithmetic.
-Strict clippy for `x87`/`emit` and formatting for `x87` pass. The MPFR
-fixture generator reproduces the committed synthetic corpus byte-for-byte.
+Run the benchmark with
+`cargo test -p x87 --release --lib benchmark_hot -- --ignored --nocapture --test-threads=1`.
+The sweeps print their acceptance counts with `-- --nocapture ACCEPT`.
+Unoptimised test builds run an eighth of each new sweep. The rates above
+are from release.
+
+Final checks: 22 passing library tests (4 ignored) in `x87` with the
+feature on and off, plus the ABI, spec and oracle integration tests.
+Strict clippy for `x87` passes with the feature on and off, and so does
+formatting of the touched files. The MPFR fixture generator reproduces the committed synthetic
+corpus byte-for-byte, and its first 1,024 lines are unchanged.

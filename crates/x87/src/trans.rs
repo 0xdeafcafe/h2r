@@ -183,15 +183,19 @@ fn reduce<const N: usize>(f: Fin) -> (Wf<N>, u64) {
 /// (sin x, cos x) for finite |x| < 2^63.
 fn sin_cos_wf<const N: usize>(f: Fin) -> (Tw<N>, Tw<N>) {
     let (r, k) = reduce::<N>(f);
-    let s = sin_series(r);
-    let c = cos_series(r);
+    quadrant(sin_series(r), cos_series(r), k, f.neg)
+}
+
+/// (sin x, cos x) from (sin r, cos r), where `|x| = r + k*pi/2` and `neg`
+/// is x's sign.
+fn quadrant<const N: usize>(s: Tw<N>, c: Tw<N>, k: u64, neg: bool) -> (Tw<N>, Tw<N>) {
     let (sn, cs) = match k & 3 {
         0 => (s, c),
         1 => (c, neg_t(s)),
         2 => (neg_t(s), neg_t(c)),
         _ => (neg_t(c), s),
     };
-    (if f.neg { neg_t(sn) } else { sn }, cs)
+    (if neg { neg_t(sn) } else { sn }, cs)
 }
 
 fn tan_wf<const N: usize>(f: Fin) -> Tw<N> {
@@ -286,17 +290,29 @@ pub(crate) fn tan_n<const N: usize>(a: F80) -> Transcendental {
 
 /// FSIN.
 pub fn sin(a: F80) -> Transcendental {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::sin(a) {
+        return v;
+    }
     sin_n::<W>(a)
 }
 
 /// FCOS.
 pub fn cos(a: F80) -> Transcendental {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::cos(a) {
+        return v;
+    }
     cos_n::<W>(a)
 }
 
 /// FPTAN's ST(0) result (the instruction then pushes 1.0, which the ABI
 /// layer does).
 pub fn tan(a: F80) -> Transcendental {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::tan(a) {
+        return v;
+    }
     tan_n::<W>(a)
 }
 
@@ -305,6 +321,19 @@ pub fn tan(a: F80) -> Transcendental {
 /// out-of-range operand both values are the unchanged operand; for a NaN
 /// or invalid operand both are the NaN result.
 pub fn sincos(a: F80) -> (Transcendental, F80) {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::sincos(a) {
+        return v;
+    }
+    sincos_n::<W>(a)
+}
+
+/// FSINCOS's flags: both results' exceptions, and the cosine's C1.
+fn sincos_flags(sf: Flags, cf: Flags) -> Flags {
+    (sf | cf).without(Flags::C1) | Flags(cf.0 & Flags::C1.0)
+}
+
+pub(crate) fn sincos_n<const N: usize>(a: F80) -> (Transcendental, F80) {
     match trig_pre(a, false) {
         Err(t) => {
             let c = if t.out_of_range || a.classify() != crate::Class::Zero {
@@ -315,11 +344,10 @@ pub fn sincos(a: F80) -> (Transcendental, F80) {
             (t, c)
         }
         Ok(f) => {
-            let (s, c) = sin_cos_wf::<W>(f);
+            let (s, c) = sin_cos_wf::<N>(f);
             let (sv, sf) = finish(s, f.denorm);
             let (cv, cf) = finish(c, f.denorm);
-            let flags = (sf | cf).without(Flags::C1) | Flags(cf.0 & Flags::C1.0);
-            (done(sv, flags), cv)
+            (done(sv, sincos_flags(sf, cf)), cv)
         }
     }
 }
@@ -333,6 +361,10 @@ fn pi_multiple<const N: usize>(num: u64, log2_den: i32, neg: bool) -> (F80, Flag
 
 /// FPATAN: `atan2(y, x)` with the SDM's table for zeros and infinities.
 pub fn patan(y: F80, x: F80) -> (F80, Flags) {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::patan(y, x) {
+        return v;
+    }
     patan_n::<W>(y, x)
 }
 
@@ -369,25 +401,27 @@ pub(crate) fn patan_n<const N: usize>(y: F80, x: F80) -> (F80, Flags) {
             (zero(fy.neg), Flags::NONE)
         }),
         (Unp::Fin(fy), Unp::Zero(_)) => with(pi_multiple::<N>(1, 1, fy.neg)),
-        (Unp::Fin(fy), Unp::Fin(fx)) => {
-            let ay = Wf::<N>::from_parts(false, fy.sig, fy.exp);
-            let ax = Wf::<N>::from_parts(false, fx.sig, fx.exp);
-            let p = pi::<N>();
-            let (base, tail) = if ay.cmp_abs(&ax) == Ordering::Greater {
-                (p.scale(-1).sub(atan_pos(ax.div(ay)).0), INEXACT)
-            } else {
-                atan_pos(ay.div(ax))
-            };
-            let (v, tail) = if fx.neg {
-                (p.sub(base), INEXACT)
-            } else {
-                (base, tail)
-            };
-            let v = if fy.neg { v.neg() } else { v };
-            with(v.to_f80(tail))
-        }
+        (Unp::Fin(fy), Unp::Fin(fx)) => with(patan_wf::<N>(fy, fx).to_f80_pair()),
         _ => unreachable!(),
     }
+}
+
+/// atan2(y, x) for finite nonzero operands.
+fn patan_wf<const N: usize>(fy: Fin, fx: Fin) -> Tw<N> {
+    let ay = Wf::<N>::from_parts(false, fy.sig, fy.exp);
+    let ax = Wf::<N>::from_parts(false, fx.sig, fx.exp);
+    let p = pi::<N>();
+    let (base, tail) = if ay.cmp_abs(&ax) == Ordering::Greater {
+        (p.scale(-1).sub(atan_pos(ax.div(ay)).0), INEXACT)
+    } else {
+        atan_pos(ay.div(ax))
+    };
+    let (v, tail) = if fx.neg {
+        (p.sub(base), INEXACT)
+    } else {
+        (base, tail)
+    };
+    (if fy.neg { v.neg() } else { v }, tail)
 }
 
 /// log2 of a positive wide value; `true` when the result is exact (an

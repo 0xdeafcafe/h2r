@@ -1,8 +1,7 @@
 //! Signed requests against the real embedded memory-backed service. Guest
 //! frames and all files are synthetic; no XBE, image build, or game execution.
 use live_hle::{
-    ATTACHMENT_CAP, Hle, LiveConfig, NetworkConfig, SUMMARY_SIZE, ServerOptions, entries::ENTRIES,
-    status::*,
+    Hle, LiveConfig, NetworkConfig, SUMMARY_SIZE, ServerOptions, entries::ENTRIES, status::*,
 };
 use live_proto::{
     CreatedAccount, Discovery, Page, Presence, WireEvent, Xuid, lxm,
@@ -191,7 +190,7 @@ impl World {
             .map_zeroed(0x3a0000, 0x40000, Permissions::RX)
             .unwrap();
         guest.map_zeroed(0x600000, 0x1000, Permissions::RW).unwrap();
-        guest.map_zeroed(DATA, 0x10000, Permissions::RW).unwrap();
+        guest.map_zeroed(DATA, 0x40000, Permissions::RW).unwrap();
         let mut dispatch = Dispatch::default();
         live_hle::register(&mut dispatch, &hle).unwrap();
         let rt = Runtime::new(guest, dispatch);
@@ -203,7 +202,7 @@ impl World {
             hle,
         }
     }
-    fn call(&mut self, name: &str, args: &[u32]) -> u32 {
+    fn raw_call(&mut self, name: &str, args: &[u32]) -> runtime::TransferAbi {
         let e = ENTRIES.iter().find(|e| e.name == name).unwrap();
         assert_eq!(e.stack_words as usize, args.len(), "{name}");
         {
@@ -224,7 +223,10 @@ impl World {
             edx: 6,
             ..CpuAbi::default()
         };
-        let t = Runner::default().run(&mut self.cpu, &mut self.ctx, e.va);
+        Runner::default().run(&mut self.cpu, &mut self.ctx, e.va)
+    }
+    fn call(&mut self, name: &str, args: &[u32]) -> u32 {
+        let t = self.raw_call(name, args);
         assert!(
             matches!(self.ctx.event(t.event_id), Some(Event::HarnessExit)),
             "{name}: {:?}",
@@ -299,21 +301,49 @@ impl World {
             .map(|i| self.u32(DATA + i * SUMMARY_SIZE as u32 + 32))
             .collect()
     }
-    fn details(&mut self, id: u32) -> u32 {
+    fn storage_path(&mut self, prefix: &str, file: &str) -> u32 {
+        let relative = format!("{prefix}/{file}");
+        self.put(
+            DATA + 0x4000,
+            &relative
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        self.word(OUT, 256);
         assert_eq!(
-            self.call("XOnlineMessageDetails", &[0, id, 0x10, 0, 0, OUT]),
+            self.call(
+                "XOnlineStorageCreateServerPath",
+                &[4, 0, 0, 0, 0, DATA + 0x4000, DATA + 0x4200, OUT]
+            ),
             0
         );
-        let h = self.u32(OUT);
-        assert_eq!(self.wait(h), TASK_SUCCESS);
-        h
+        let expected = format!("//title.4d530064/t:4d530064/{relative}");
+        assert_eq!(
+            self.bytes(DATA + 0x4200, self.u32(OUT) as usize * 2),
+            expected
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>()
+        );
+        DATA + 0x4200
     }
-    fn property(&mut self, h: u32, tag: u32) -> u32 {
-        self.word(OUT, 0xdeadbeef);
-        self.word(OUT + 4, u32::MAX);
+    fn storage_start(&mut self, path: u32, capacity: u32) -> u32 {
+        assert_eq!(
+            self.call(
+                "XOnlineStorageDownloadToMemory",
+                &[4, 0, path, BUFFER, capacity, 0, 0, OUT]
+            ),
+            0
+        );
+        self.u32(OUT)
+    }
+    fn storage_results(&mut self, task: u32) -> u32 {
         self.call(
-            "XOnlineMessageDetailsGetResultsProperty",
-            &[h, tag, 2048, DATA, OUT, OUT + 4],
+            "XOnlineStorageDownloadToMemoryGetResults",
+            &[task, OUT, OUT + 4, OUT + 8, OUT + 12, OUT + 20],
         )
     }
 }
@@ -543,171 +573,184 @@ fn signout_cleanup_and_user_change_remove_only_the_selected_accounts() {
     assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
 }
 #[test]
-fn title_files_flow_from_server_messages_to_the_guest_download_buffer() {
+fn title_storage_files_reach_both_completion_handlers_with_their_real_caps() {
     let server = Server::new();
     let a = server.account("Reader");
-    let file = motd();
-    server.publish("message_of_the_day.dat", &file);
-    server.publish("multiplayer_hopper.dat", b"synthetic hopper envelope");
+    let motd_file = motd();
+    let hopper_file = live_proto::hopper::HopperFile::blank().build();
+    server.publish("message_of_the_day.dat", &motd_file);
+    server.publish("multiplayer_hopper.dat", &hopper_file);
     let mut w = World::new(&server.embedded.url, &[&a]);
     w.logon();
-    assert_eq!(w.messages(), vec![1, 4]);
-    assert_eq!(w.bytes(DATA + 12, 1), vec![1]);
-    assert_eq!(w.u32(DATA + 40), 0x4d530064);
-    // Title files are never player notifications (no "new message" toast).
-    w.put(DATA, &[0xcc; 9]);
-    w.word(OUT, 0xdeadbeef);
-    assert_eq!(w.call("XOnlineGetNotificationEx", &[0, DATA, OUT]), 0);
-    assert_eq!(w.bytes(DATA, 9), vec![0; 9]);
-    assert_eq!(w.u32(OUT), 0);
-    let details = w.details(1);
-    for (tag, size, expected) in [
-        (0x3c2, 2, Some(1)),
-        (0x4c3, 4, Some(1)),
-        (0x4c5, 4, Some(1)),
-        (0x581, 8, None),
-        (0x6c4, 46, None),
+    assert!(
+        w.messages().is_empty(),
+        "title resources are not player messages"
+    );
+    for (name, file, cap, inflated_size) in [
+        ("message_of_the_day.dat", &motd_file, 0x8000u32, 0x25224),
+        ("multiplayer_hopper.dat", &hopper_file, 0x20000u32, 0x162cc0),
     ] {
-        assert_eq!(w.property(details, tag), 0);
-        assert_eq!(w.u32(OUT), size);
-        assert_eq!(w.u32(OUT + 4), 0);
-        if let Some(n) = expected {
+        for prefix in ["9809", "test"] {
+            let path = w.storage_path(prefix, name);
+            w.put(BUFFER, &vec![0xcc; cap as usize + 4]);
+            let task = w.storage_start(path, cap);
+            assert_eq!(w.wait(task), TASK_SUCCESS);
+            w.put(OUT, &[0xdd; 32]);
+            assert_eq!(w.storage_results(task), 0);
+            let ptr = w.u32(OUT);
+            let received = w.u32(OUT + 4);
+            assert_eq!(ptr, BUFFER);
+            assert_eq!(received, file.len() as u32);
+            assert_eq!(received, w.u32(OUT + 8));
             assert_eq!(
-                w.bytes(DATA, size as usize),
-                if size == 2 {
-                    (n as u16).to_le_bytes().to_vec()
-                } else {
-                    (n as u32).to_le_bytes().to_vec()
-                }
+                w.bytes(OUT + 12, 16),
+                vec![0; 16],
+                "shared title owner and unknown creation date"
+            );
+            assert_eq!(w.bytes(OUT + 28, 4), vec![0xdd; 4]);
+            let bytes = w.bytes(ptr, received as usize);
+            assert_eq!(&bytes, file);
+            assert_eq!(w.bytes(BUFFER + received, 4), vec![0xcc; 4]);
+            assert_eq!(
+                u32::from_be_bytes(bytes[16..20].try_into().unwrap()),
+                inflated_size
+            );
+            let mut inflated = Vec::new();
+            flate2::read::ZlibDecoder::new(&bytes[20..])
+                .read_to_end(&mut inflated)
+                .unwrap();
+            assert_eq!(inflated.len(), inflated_size as usize);
+            if name == "message_of_the_day.dat" {
+                assert_eq!(Motd::parse(&bytes).unwrap().header, "Welcome");
+            } else {
+                live_proto::hopper::HopperFile::parse(&bytes).unwrap();
+            }
+            assert_eq!(
+                w.call("XOnlineStorageGetProgress", &[task, OUT, OUT + 4, OUT + 12]),
+                TASK_SUCCESS
+            );
+            assert_eq!(w.u32(OUT), 100);
+            assert_eq!(w.bytes(OUT + 4, 8), u64::from(received).to_le_bytes());
+            assert_eq!(w.bytes(OUT + 12, 8), u64::from(received).to_le_bytes());
+            assert_eq!(
+                w.call(
+                    "XOnlineStorageDownloadToMemoryGetResults",
+                    &[task, 0, 0, 0, 0, 0]
+                ),
+                0
+            );
+            // A repeated pump/result read does not copy again into reused memory.
+            w.put(BUFFER, &[0x12; 4]);
+            assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+            assert_eq!(w.bytes(BUFFER, 4), vec![0x12; 4]);
+            assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+            assert_eq!(
+                w.call(
+                    "XOnlineStorageDownloadToMemoryGetResults",
+                    &[task, 0, 0, 0, 0, 0]
+                ),
+                INVALID_ARGUMENT
             );
         }
     }
-    w.put(DATA, &[0xcc; 32]);
-    assert_eq!(w.property(details, 0x9c1), MESSAGE_DOWNLOAD_REQUIRED);
-    assert_eq!(w.u32(OUT), file.len() as u32);
-    assert_eq!(w.bytes(DATA, 32), vec![0xcc; 32]);
-    w.put(BUFFER, &vec![0xcc; ATTACHMENT_CAP as usize + 4]);
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDownloadAttachmentToMemory",
-            &[details, 0x9c1, BUFFER, ATTACHMENT_CAP, 0, OUT]
+    assert!(w.messages().is_empty());
+    w.put(DATA, &[0xcc; 9]);
+    w.word(OUT, u32::MAX);
+    assert_eq!(w.call("XOnlineGetNotificationEx", &[0, DATA, OUT]), 0);
+    assert_eq!(w.bytes(DATA, 9), vec![0; 9]);
+    assert_eq!(w.u32(OUT), 0);
+}
+#[test]
+fn storage_404_and_unrecognized_paths_preserve_buffers_and_optional_results() {
+    let server = Server::new();
+    let account = server.account("MissingFile");
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    let task = w.storage_start(path, 32);
+    assert_eq!(w.wait(task), STORAGE_FILE_NOT_FOUND);
+    w.put(OUT, &[0xdd; 32]);
+    assert_eq!(w.storage_results(task), STORAGE_FILE_NOT_FOUND);
+    assert_eq!(w.bytes(OUT, 32), vec![0xdd; 32]);
+
+    server.publish("message_of_the_day.dat", &motd());
+    for (facility, path) in [
+        (4, "//title.4d530064/t:4d530064/message_of_the_day.dat"),
+        (4, "//title.4d530064/t:4d530064/9810/message_of_the_day.dat"),
+        (
+            4,
+            "//title.4d530064/t:4d530064/9809/../message_of_the_day.dat",
         ),
-        0
-    );
-    let download = w.u32(OUT);
-    assert_eq!(w.wait(download), TASK_SUCCESS);
+        (
+            4,
+            "//title.4d530064/t:4d530064/9809/message_of_the_day.dat/extra",
+        ),
+        (4, "//title.ffffffff/t:4d530064/9809/message_of_the_day.dat"),
+        (4, "//title.4d530064/t:4d530064/test/other.dat"),
+        (5, "//title.4d530064/t:4d530064/9809/message_of_the_day.dat"),
+    ] {
+        w.put(
+            DATA + 0x4200,
+            &path
+                .encode_utf16()
+                .chain([0])
+                .flat_map(u16::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+        w.put(BUFFER, &[0xcc; 32]);
+        assert_eq!(
+            w.call(
+                "XOnlineStorageDownloadToMemory",
+                &[facility, 0, DATA + 0x4200, BUFFER, 32, 0, 0, OUT]
+            ),
+            0
+        );
+        let h = w.u32(OUT);
+        assert_eq!(w.wait(h), STORAGE_FILE_NOT_FOUND);
+        assert_eq!(w.bytes(BUFFER, 32), vec![0xcc; 32]);
+        w.put(OUT, &[0xdd; 32]);
+        assert_eq!(w.storage_results(h), STORAGE_FILE_NOT_FOUND);
+        assert_eq!(w.bytes(OUT, 32), vec![0xdd; 32]);
+    }
+}
+#[test]
+fn title_files_are_never_inbox_messages_and_stale_message_handles_are_invalid() {
+    let server = Server::new();
+    let account = server.account("NotMail");
+    server.publish("message_of_the_day.dat", &motd());
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    w.put(DATA, &[0xcc; 64]);
+    assert!(w.messages().is_empty());
+    assert_eq!(w.bytes(DATA, 64), vec![0xcc; 64]);
+    for id in [1, 4] {
+        w.word(OUT, 0xdeadbeef);
+        assert_eq!(
+            w.call("XOnlineMessageDetails", &[0, id, 0x10, 0, 0, OUT]),
+            MESSAGE_INVALID_ID
+        );
+        assert_eq!(w.u32(OUT), 0xdeadbeef);
+        assert_eq!(
+            w.call("XOnlineMessageDelete", &[0, id, 0]),
+            MESSAGE_INVALID_ID
+        );
+    }
+    for name in [
+        "XOnlineMessageDetailsGetResultsProperty",
+        "XOnlineMessageDownloadAttachmentToMemory",
+    ] {
+        assert_eq!(
+            w.call(name, &[0x7fff0000, 0x9c1, 2048, DATA, OUT, 0]),
+            INVALID_ARGUMENT
+        );
+    }
     assert_eq!(
         w.call(
             "XOnlineMessageDownloadAttachmentToMemoryGetResults",
-            &[download, OUT, OUT + 4, OUT + 8]
+            &[0x7fff0000, OUT, OUT + 4, OUT + 8]
         ),
-        0
+        INVALID_ARGUMENT
     );
-    assert_eq!(w.u32(OUT), BUFFER);
-    assert_eq!(w.u32(OUT + 4), file.len() as u32);
-    assert_eq!(w.u32(OUT + 8), file.len() as u32);
-    let received = w.bytes(BUFFER, file.len());
-    assert_eq!(received, file);
-    assert_eq!(w.bytes(BUFFER + file.len() as u32, 4), vec![0xcc; 4]);
-    assert_eq!(Motd::parse(&received).unwrap().header, "Welcome");
-    let mut inflated = Vec::new();
-    flate2::read::ZlibDecoder::new(&received[20..])
-        .read_to_end(&mut inflated)
-        .unwrap();
-    assert_eq!(inflated.len(), 0x25224);
-    assert_eq!(
-        u32::from_be_bytes(received[16..20].try_into().unwrap()),
-        0x25224
-    );
-    assert_eq!(w.call("XOnlineMessageDelete", &[0, 1, 0]), 0);
-    assert_eq!(w.messages(), vec![4]);
-    assert_eq!(
-        w.call("XOnlineMessageDelete", &[0, 1, 0]),
-        MESSAGE_INVALID_ID
-    );
-    let hopper = w.details(4);
-    assert_eq!(w.property(hopper, 0x4c5), 0);
-    assert_eq!(w.u32(DATA), 4);
-    assert_eq!(w.call("XOnlineTaskClose", &[download]), 0);
-    assert_eq!(w.call("XOnlineTaskContinue", &[download]), INVALID_ARGUMENT);
-}
-#[test]
-fn absent_files_are_not_messages_and_large_attachments_fail_without_buffer_writes() {
-    let server = Server::new();
-    let a = server.account("Empty");
-    let mut w = World::new(&server.embedded.url, &[&a]);
-    let logon = w.logon();
-    assert!(w.messages().is_empty());
-    assert_eq!(
-        w.call("XOnlineMessageDetails", &[0, 1, 0, 0, 0, OUT]),
-        MESSAGE_INVALID_ID
-    );
-    assert_eq!(w.call("XOnlineTaskClose", &[logon]), 0);
-    server.until(|| server.presence().is_empty());
-    server.publish(
-        "message_of_the_day.dat",
-        &vec![0x5a; ATTACHMENT_CAP as usize + 1],
-    );
-    assert_eq!(w.call("XOnlineLogon", &[USERS, 0, 0, 0, OUT]), 0);
-    let logon = w.u32(OUT);
-    assert_eq!(w.wait(logon), CONNECTED);
-    assert_eq!(w.messages(), vec![1]);
-    let details = w.details(1);
-    w.word(OUT, 0xdeadbeef);
-    w.put(BUFFER, &[0xcc; 32]);
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDownloadAttachmentToMemory",
-            &[details, 0x9c1, BUFFER, ATTACHMENT_CAP, 0, OUT]
-        ),
-        BUFFER_TOO_SMALL
-    );
-    assert_eq!(w.u32(OUT), 0xdeadbeef);
-    assert_eq!(w.bytes(BUFFER, 32), vec![0xcc; 32]);
-    // A larger caller buffer must not bypass the title's attachment cap.
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDownloadAttachmentToMemory",
-            &[details, 0x9c1, BUFFER, ATTACHMENT_CAP + 1, 0, OUT]
-        ),
-        BUFFER_TOO_SMALL
-    );
-}
-#[test]
-fn stale_and_wrong_message_tasks_and_property_buffers_return_xdk_errors() {
-    let server = Server::new();
-    let a = server.account("Bounds");
-    server.publish("message_of_the_day.dat", &motd());
-    let mut w = World::new(&server.embedded.url, &[&a]);
-    w.logon();
-    let d = w.details(1);
-    assert_eq!(w.property(d, 0xffff), MESSAGE_PROPERTY_NOT_FOUND);
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDetailsGetResultsProperty",
-            &[d, 0x4c5, 0, 0, OUT, OUT + 4]
-        ),
-        BUFFER_TOO_SMALL
-    );
-    assert_eq!(w.u32(OUT), 4);
-    w.put(DATA, &[0xcc; 8]);
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDetailsGetResultsProperty",
-            &[d, 0x4c5, 2, DATA, OUT, 0]
-        ),
-        BUFFER_TOO_SMALL
-    );
-    assert_eq!(w.bytes(DATA, 8), vec![0xcc; 8]);
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDownloadAttachmentToMemory",
-            &[d, 0x4c5, BUFFER, ATTACHMENT_CAP, 0, OUT]
-        ),
-        MESSAGE_PROPERTY_NOT_FOUND
-    );
-    assert_eq!(w.call("XOnlineTaskClose", &[d]), 0);
-    assert_eq!(w.property(d, 0x4c5), INVALID_ARGUMENT);
 }
 
 #[test]
@@ -999,40 +1042,194 @@ fn final_transport_cleanup_and_hle_drop_send_signed_out() {
 }
 
 #[test]
-fn attachment_replacement_is_fetched_and_overflow_never_copies_a_prefix() {
+fn storage_reads_current_publications_without_logon_and_obeys_each_callers_capacity() {
     let server = Server::new();
-    let account = server.account("ChangedFile");
-    server.publish("message_of_the_day.dat", &motd());
+    let account = server.account("UpdatedFile");
     let mut w = World::new(&server.embedded.url, &[&account]);
     w.logon();
-    let details = w.details(1);
-    server.publish(
-        "message_of_the_day.dat",
-        &vec![0x5a; ATTACHMENT_CAP as usize + 1],
+    // Publishing after sign-in is visible to a new explicit storage request:
+    // logon no longer caches a message catalog.
+    let file = vec![0x5a; 0x8000];
+    server.publish("message_of_the_day.dat", &file);
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    w.put(BUFFER, &vec![0xcc; 0x8004]);
+    let h = w.storage_start(path, 0x8000);
+    assert_eq!(w.wait(h), TASK_SUCCESS);
+    assert_eq!(w.storage_results(h), 0);
+    assert_eq!(w.bytes(BUFFER, file.len()), file);
+    assert_eq!(w.bytes(BUFFER + 0x8000, 4), vec![0xcc; 4]);
+    server.publish("message_of_the_day.dat", &vec![0x12; 0x8001]);
+    for cap in [0, 32, 0x8000] {
+        w.put(BUFFER, &vec![0xcc; 0x8004]);
+        let h = w.storage_start(path, cap);
+        assert_eq!(w.wait(h), BUFFER_TOO_SMALL);
+        assert_eq!(w.bytes(BUFFER, 0x8004), vec![0xcc; 0x8004]);
+        w.put(OUT, &[0xdd; 32]);
+        assert_eq!(w.storage_results(h), BUFFER_TOO_SMALL);
+        assert_eq!(w.bytes(OUT, 32), vec![0xdd; 32]);
+    }
+    server.publish("multiplayer_hopper.dat", &vec![0x34; 0x20000]);
+    let path = w.storage_path("test", "multiplayer_hopper.dat");
+    let h = w.storage_start(path, 0x20000);
+    assert_eq!(w.wait(h), TASK_SUCCESS);
+    assert_eq!(w.storage_results(h), 0);
+    assert_eq!(w.u32(OUT + 4), 0x20000);
+    assert_eq!(w.bytes(BUFFER, 0x20000), vec![0x34; 0x20000]);
+    server.publish("multiplayer_hopper.dat", &vec![0x56; 0x20001]);
+    w.put(BUFFER, &vec![0xcc; 0x20004]);
+    let h = w.storage_start(path, 0x20000);
+    assert_eq!(w.wait(h), BUFFER_TOO_SMALL);
+    assert_eq!(w.bytes(BUFFER, 0x20004), vec![0xcc; 0x20004]);
+}
+#[test]
+fn storage_transport_failures_complete_as_service_errors_and_cleanup_invalidates_handles() {
+    let server = Server::new();
+    let account = server.account("OfflineStorage");
+    let mut w = World::timed(&server.embedded.url, &[&account], Duration::from_secs(3600));
+    w.logon();
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    drop(server);
+    w.put(BUFFER, &[0xcc; 32]);
+    let h = w.storage_start(path, 32);
+    assert_eq!(w.wait(h), CANNOT_ACCESS_SERVICE);
+    assert_eq!(w.bytes(BUFFER, 32), vec![0xcc; 32]);
+    assert_eq!(w.call("XOnlineCleanup", &[]), 0);
+    assert_eq!(w.call("XOnlineStartup", &[0]), 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), INVALID_ARGUMENT);
+}
+
+#[test]
+fn storage_poll_rechecks_guest_memory_and_result_outputs_are_atomic() {
+    let server = Server::new();
+    let account = server.account("CheckedBuffers");
+    let file = motd();
+    server.publish("message_of_the_day.dat", &file);
+    let mut w = World::new(&server.embedded.url, &[&account]);
+    w.logon();
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    let h = w.storage_start(path, 0x8000);
+    w.rt.memory().unmap(BUFFER, 0x1000).unwrap();
+    let t = w.raw_call("XOnlineTaskContinue", &[h]);
+    assert!(matches!(
+        w.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    w.rt.memory()
+        .map_zeroed(BUFFER, 0x1000, Permissions::RW)
+        .unwrap();
+    assert_eq!(w.wait(h), TASK_SUCCESS);
+    assert_eq!(w.bytes(BUFFER, file.len()), file);
+    w.put(OUT, &[0xdd; 32]);
+    let t = w.raw_call(
+        "XOnlineStorageDownloadToMemoryGetResults",
+        &[h, OUT, OUT + 4, 0xdead0000, OUT + 12, OUT + 20],
     );
-    w.put(BUFFER, &vec![0xcc; ATTACHMENT_CAP as usize + 4]);
+    assert!(matches!(
+        w.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    assert_eq!(w.bytes(OUT, 32), vec![0xdd; 32]);
+    assert_eq!(w.storage_results(h), 0);
+    assert_eq!(w.u32(OUT), BUFFER);
+    assert_eq!(w.u32(OUT + 4), file.len() as u32);
+}
+#[test]
+fn storage_pending_pumps_results_and_close_never_wait_for_http() {
+    let server = Server::new();
+    let account = server.account("SlowStorage");
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let upstream = server.embedded.url.clone();
+    let mut discovery = serde_json::to_value(&server.discovery).unwrap();
+    discovery["api"] = json!(format!("{url}/v1"));
+    let (entered, seen) = mpsc::channel();
+    let (release, wait) = mpsc::channel();
+    // Forward the three logon requests, then deliberately hold the file GET.
+    let proxy = std::thread::spawn(move || {
+        let agent = ureq::AgentBuilder::new()
+            .timeout(Duration::from_secs(3))
+            .build();
+        for _ in 0..4 {
+            let (mut socket, _) = listener.accept().unwrap();
+            let header = String::from_utf8(receive_headers(&mut socket)).unwrap();
+            let mut lines = header.lines();
+            let first = lines.next().unwrap().split_whitespace().collect::<Vec<_>>();
+            let method = first[0];
+            let path = first[1];
+            let fields = lines
+                .filter_map(|s| s.split_once(':'))
+                .map(|(k, v)| (k.to_ascii_lowercase(), v.trim().to_string()))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let mut body = vec![
+                0;
+                fields
+                    .get("content-length")
+                    .map_or(0, |s| s.parse::<usize>().unwrap())
+            ];
+            socket.read_exact(&mut body).unwrap();
+            if path == "/.well-known/h2live.json" {
+                http_response(
+                    &mut socket,
+                    "200 OK",
+                    "Content-Type: application/json\r\n",
+                    &serde_json::to_vec(&discovery).unwrap(),
+                );
+            } else if path.contains("/titles/4D530064/files/") {
+                entered.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(5)).unwrap();
+                http_response(&mut socket, "503 Service Unavailable", "", b"");
+            } else {
+                let mut req = agent.request(method, &format!("{upstream}{path}"));
+                for key in ["authorization", "content-type"] {
+                    if let Some(v) = fields.get(key) {
+                        req = req.set(key, v);
+                    }
+                }
+                let response = if body.is_empty() {
+                    req.call()
+                } else {
+                    req.send_bytes(&body)
+                }
+                .unwrap();
+                let mut result = Vec::new();
+                response.into_reader().read_to_end(&mut result).unwrap();
+                http_response(
+                    &mut socket,
+                    "200 OK",
+                    "Content-Type: application/json\r\n",
+                    &result,
+                );
+            }
+        }
+    });
+    let mut w = World::timed(&url, &[&account], Duration::from_secs(3600));
+    w.logon();
+    let path = w.storage_path("9809", "message_of_the_day.dat");
+    w.put(BUFFER, &[0xcc; 32]);
+    let start = Instant::now();
+    let h = w.storage_start(path, 32);
+    assert!(start.elapsed() < Duration::from_millis(200));
+    seen.recv_timeout(Duration::from_secs(2)).unwrap();
+    for _ in 0..3 {
+        w.put(OUT, &[0xdd; 32]);
+        let start = Instant::now();
+        assert_eq!(w.call("XOnlineTaskContinue", &[h]), 0);
+        assert_eq!(w.storage_results(h), TASK_BUSY);
+        assert!(start.elapsed() < Duration::from_millis(100));
+        assert_eq!(w.bytes(OUT, 32), vec![0xdd; 32]);
+        assert_eq!(w.bytes(BUFFER, 32), vec![0xcc; 32]);
+    }
+    let start = Instant::now();
+    assert_eq!(w.call("XOnlineTaskClose", &[h]), 0);
+    assert!(start.elapsed() < Duration::from_millis(100));
+    release.send(()).unwrap();
+    proxy.join().unwrap();
+    assert_eq!(w.call("XOnlineTaskContinue", &[h]), INVALID_ARGUMENT);
     assert_eq!(
-        w.call(
-            "XOnlineMessageDownloadAttachmentToMemory",
-            &[details, 0x9c1, BUFFER, ATTACHMENT_CAP, 0, OUT]
-        ),
-        0
+        w.bytes(BUFFER, 32),
+        vec![0xcc; 32],
+        "a closed request cannot copy late"
     );
-    let download = w.u32(OUT);
-    assert_eq!(w.wait(download), BUFFER_TOO_SMALL);
-    assert_eq!(
-        w.bytes(BUFFER, ATTACHMENT_CAP as usize + 4),
-        vec![0xcc; ATTACHMENT_CAP as usize + 4]
-    );
-    w.put(OUT, &[0xdd; 12]);
-    assert_eq!(
-        w.call(
-            "XOnlineMessageDownloadAttachmentToMemoryGetResults",
-            &[download, OUT, OUT + 4, OUT + 8]
-        ),
-        BUFFER_TOO_SMALL
-    );
-    assert_eq!(w.bytes(OUT, 12), vec![0xdd; 12]);
 }
 
 fn clan_properties(w: &World, name: &str) {

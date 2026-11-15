@@ -29,6 +29,7 @@ pub mod model;
 pub mod pg;
 pub mod store;
 mod teams;
+pub mod title_headers;
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -121,6 +122,9 @@ pub async fn serve(config: Config) -> Result<()> {
     let id = identity.id.clone();
     let private = config.policy.private;
     let live = Live::start(Arc::new(store), identity, config.policy).await?;
+    for name in title_headers::reseal_legacy(&live).await? {
+        println!("h2 live: republished {name} with the game's header");
+    }
     let app = http::router_with_site(live.clone(), &config.site);
     let reads = if private { "private" } else { "public" };
     let scheme = if config.tls.is_some() {
@@ -263,6 +267,14 @@ pub fn start_embedded(
         };
         let live = Live::start(store, identity, policy).await?;
         if kind != "memory" {
+            match title_headers::reseal_legacy(&live).await {
+                Ok(names) => {
+                    for name in names {
+                        eprintln!("live: republished {name} with the game's header");
+                    }
+                }
+                Err(e) => eprintln!("live: {e:#}"),
+            }
             match default_motd::ensure(&live).await {
                 Ok(true) => eprintln!("live: published the default message of the day"),
                 Ok(false) => {}
