@@ -42,6 +42,7 @@ up as structured Rust.
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md): goals, the two-stage plan, crate table, milestones
 - [audio.md](docs/audio.md): DirectSound replacement (`crates/audio`)
 - [bitmaps.md](docs/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`)
+- [collision.md](docs/collision.md): collision and physics model tags (`crates/tags`)
 - [dsound.md](docs/dsound.md): guest-facing DirectSound shim (`crates/dsound`)
 - [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
 - [fonts.md](docs/fonts.md): packed bitmap fonts and text rasteriser (`crates/font`)

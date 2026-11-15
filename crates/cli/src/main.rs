@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 use xiso::Xiso;
 
 mod bitmap;
+mod collision;
 mod fonts;
 mod maps;
 mod movies_cmd;
@@ -23,6 +24,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   tag <map> <tag name>    decode one tag; optional group and --disc <iso>
   bitmap <map> <tag>      decode a bitmap tag to PNG (--image N --out DIR --mips)
   bitmap --all <map>      bulk decode check of every bitmap in a map
+  collision <map> <tag>   summarise a coll/phmo tag; --obj FILE exports geometry
+  collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
   strings <map>           localized text; --lang en, --tag name, --all, --disc iso
@@ -63,6 +66,9 @@ fn main() -> Result<()> {
     }
     if cmd == "movies" {
         std::process::exit(movies_cmd::run(args.collect()));
+    }
+    if cmd == "collision" {
+        return collision::run(args.collect());
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());

@@ -10,6 +10,8 @@
 #![forbid(unsafe_code)]
 
 pub mod wire;
+/// Object collision and physics models (`coll`, `phmo`); see `docs/collision.md`.
+pub mod collision;
 /// Sound tags (`snd!`, `ugh!`); self-contained, see `docs/sound.md`.
 pub mod sound;
 pub mod records {
