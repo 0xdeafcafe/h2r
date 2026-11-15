@@ -17,7 +17,7 @@ use crate::audio_out::{AudioOut, FALLBACK_RATE};
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
-use crate::pacing::{PaceStats, Pacer, RateMeter};
+use crate::pacing::{PaceStats, Pacer, WindowedRate};
 use crate::scale;
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
@@ -113,11 +113,15 @@ struct Gpu {
     source: FrameSource,
 }
 
+/// The title's rates average this long: the guest can present slower than
+/// once a second, where a one-second window reads 0.
+const STATUS_WINDOW: Duration = Duration::from_secs(5);
+
 struct Status {
     last: Instant,
-    published: u64,
-    dropped: u64,
-    display: RateMeter,
+    guest: WindowedRate,
+    shown: WindowedRate,
+    dropped: WindowedRate,
     epoch: Instant,
 }
 
@@ -165,9 +169,9 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         closing: false,
         status: Status {
             last: now,
-            published: 0,
-            dropped: 0,
-            display: RateMeter::default(),
+            guest: WindowedRate::new(STATUS_WINDOW),
+            shown: WindowedRate::new(STATUS_WINDOW),
+            dropped: WindowedRate::new(STATUS_WINDOW),
             epoch: now,
         },
         frames_at_exit: FrameStats::default(),
@@ -307,10 +311,6 @@ impl Shell {
         g.ctx.queue.submit([enc.finish()]);
         g.window.pre_present_notify();
         g.ctx.queue.present(target);
-        if frame.is_some_and(|f| f.new) {
-            let now = self.status.epoch.elapsed();
-            self.status.display.tick(now, Duration::from_secs(1));
-        }
     }
 
     fn update_status(&mut self) {
@@ -320,20 +320,18 @@ impl Shell {
             return;
         }
         let stats = g.source.stats();
-        let guest_fps = (stats.published - self.status.published) as f64 / dt.as_secs_f64();
-        let dropped = stats.dropped - self.status.dropped;
-        self.status
-            .display
-            .sample(self.status.epoch.elapsed(), Duration::from_secs(1));
+        let now = self.status.epoch.elapsed();
+        let guest_fps = self.status.guest.record(now, stats.published);
+        let shown_fps = self.status.shown.record(now, stats.shown);
+        self.status.dropped.record(now, stats.dropped);
         self.status.last = Instant::now();
-        self.status.published = stats.published;
-        self.status.dropped = stats.dropped;
         let mut line = format!(
-            "{} | guest {:.1} fps | shown {:.1} fps | dropped {}",
+            "{} | guest {:.1} fps | shown {:.1} fps | dropped {} (last {}s)",
             self.config.title,
             guest_fps,
-            self.status.display.rate(),
-            dropped
+            shown_fps,
+            self.status.dropped.count(),
+            STATUS_WINDOW.as_secs()
         );
         if self.life.is_paused() {
             line.push_str(" | paused");

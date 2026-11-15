@@ -232,9 +232,83 @@ impl RateMeter {
     }
 }
 
+/// A rate over a sliding window of the last `span`, from a running total
+/// sampled at irregular times. Meant for slow producers: at 1.4 frames a
+/// second, a one-second window reads 0, 1 or 2; five seconds reads 1.4.
+#[derive(Clone, Debug)]
+pub struct WindowedRate {
+    span: Duration,
+    /// (time, running total), oldest first.
+    samples: std::collections::VecDeque<(Duration, u64)>,
+}
+
+impl WindowedRate {
+    pub fn new(span: Duration) -> Self {
+        Self {
+            span,
+            samples: Default::default(),
+        }
+    }
+
+    /// Records the running `total` at `now` and returns the rate over the
+    /// last `span` (or since the first sample, if that is shorter). 0 until
+    /// two samples are apart in time.
+    pub fn record(&mut self, now: Duration, total: u64) -> f64 {
+        self.samples.push_back((now, total));
+        // Keep one sample at or before the window start as the reference.
+        while self.samples.len() > 2 && self.samples[1].0 + self.span <= now {
+            self.samples.pop_front();
+        }
+        let (t0, n0) = self.samples[0];
+        let dt = now.saturating_sub(t0);
+        if dt.is_zero() {
+            return 0.0;
+        }
+        total.saturating_sub(n0) as f64 / dt.as_secs_f64()
+    }
+
+    /// Events in the window (for counters such as dropped frames).
+    pub fn count(&self) -> u64 {
+        match (self.samples.front(), self.samples.back()) {
+            (Some(a), Some(b)) => b.1.saturating_sub(a.1),
+            _ => 0,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn windowed_rate_reads_slow_producers_steadily() {
+        // 1.4 events a second, sampled once a second: a 1 s window would
+        // read 1 or 2 (or 0 when an event takes longer); 5 s reads 1.4.
+        let mut w = WindowedRate::new(Duration::from_secs(5));
+        let mut readings = Vec::new();
+        for sec in 0..=20u64 {
+            let total = sec * 14 / 10;
+            readings.push(w.record(Duration::from_secs(sec), total));
+        }
+        for r in &readings[6..] {
+            assert!((r - 1.4).abs() < 0.25, "{readings:?}");
+        }
+        assert_eq!(readings[0], 0.0);
+    }
+
+    #[test]
+    fn windowed_rate_forgets_old_bursts_and_counts_the_window() {
+        let mut w = WindowedRate::new(Duration::from_secs(5));
+        w.record(Duration::from_secs(0), 0);
+        w.record(Duration::from_secs(1), 300); // a burst
+        for sec in 2..=12u64 {
+            w.record(Duration::from_secs(sec), 300);
+        }
+        assert_eq!(w.record(Duration::from_secs(13), 300), 0.0);
+        assert_eq!(w.count(), 0);
+        w.record(Duration::from_secs(14), 303);
+        assert_eq!(w.count(), 3);
+    }
 
     const MS: u64 = 10_000; // ticks per millisecond
 

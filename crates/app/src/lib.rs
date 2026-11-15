@@ -41,7 +41,7 @@ use input::bindings::Bindings;
 pub use frame::{Compositor, Filter, FrameError, FrameSink, FrameSource, FrameStats, ShownFrame};
 pub use input_pump::{PumpReport, pump_input};
 pub use lifecycle::{Control, Lifecycle};
-pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank};
+pub use pacing::{PaceAction, PacePolicy, PaceStats, Pacer, VBlank, WindowedRate};
 pub use scale::{DisplayAspect, Scaling, Viewport};
 
 /// Shell settings.

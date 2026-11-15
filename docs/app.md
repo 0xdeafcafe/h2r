@@ -259,8 +259,10 @@ stays on the main thread.
   and the window stays up with the last frame (`keep_open_on_guest_exit`),
   or the window closes.
 
-The title bar shows guest presents per second, frames shown per second, and
-frames dropped in the last second (`log_status` also prints it).
+The title bar shows guest presents per second, frames shown per second
+(one decimal), and frames dropped, all over the last 5 seconds
+(`pacing::WindowedRate`), refreshed once a second; `log_status` also prints
+it. A one-second window read 0.0 for a game presenting 1.4 times a second.
 
 ## Tests
 
@@ -270,7 +272,8 @@ frames dropped in the last second (`log_status` also prints it).
   degenerate sizes.
 - `pacing.rs`: tick conversions, NTSC/60/50 Hz vblank arithmetic and round
   trips, sleep on lead, lead allowance, rebase on lag, reset, a simulated
-  10 s 60 Hz loop staying within the allowance, the rate meter.
+  10 s 60 Hz loop staying within the allowance, the rate meter, and the
+  windowed rate (a 1.4 fps producer reads 1.4; old bursts age out).
 - `mailbox.rs`: handoff order, newest wins, drop counting, and a randomised
   interleaving checking the producer never writes the slot on screen.
 - `lifecycle.rs`: stop interrupts sleeps and pauses; a pause ends a sleep;
