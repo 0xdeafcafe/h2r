@@ -11,7 +11,7 @@ import { accountByGamertag, liveGames } from "../state/reducer";
 import { playedWith } from "../state/derive";
 import Emblem from "../components/Emblem";
 import { VerifyMark } from "../components/bits";
-import Wordmark, { type WordmarkVariant } from "./Wordmark";
+import Wordmark from "./Wordmark";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -36,7 +36,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
     <div class="stats">
       <div class="s-column">
         <header class="s-top">
-          <A href="/stats" class="s-logo" aria-label="h2 live stats home"><Wordmark height={40} variant={(new URLSearchParams(location.search).get("wm") as WordmarkVariant | null) ?? undefined} /></A>
+          <A href="/stats" class="s-logo" aria-label="h2 live stats home"><Wordmark height={40} /></A>
           <div class="s-welcome">
             <Show
               when={identity.me()}
