@@ -1,6 +1,7 @@
 # Public API changes from the independent runtime review
 
-ABI_VERSION remains 1. CpuAbi, X87Abi, TransferAbi, GuestFn and all existing C
+The original review below used ABI_VERSION 1; the current generated-code
+contract is ABI v2 (see emit/RUNTIME-CONTRACT.md). CpuAbi, X87Abi, TransferAbi, GuestFn and all existing C
 accessor signatures retain their layouts and calling convention. Existing root
 exports and paths under runtime::exec remain available except the aliases named
 below. No files in crates/kernel were changed by this work.
@@ -435,3 +436,18 @@ take_preempted}`.
   on entry to each kernel call and after each run; a preempted thread
   never counts as polling. `kernel::clock::Clock::charge` coalesces
   consecutive charges into one history entry.
+
+## Optional inline RAM access (ABI v2)
+
+`Runtime::memory` and `ExecCtx::memory` now return `ffi::MemoryGuard<'_>`,
+whose deref target is `Guest`. Replace explicit `std::sync::MutexGuard<'_, Guest>` return
+annotations with that type. Inferred callers and Guest methods are unchanged.
+The guard remains non-Send and synchronizes compound Rust operations with
+optional inline C accesses. Drop every guard before invoking guest code.
+
+`H2_FASTMEM=1` requires the named `h2abi_v1_fast_acquire` and
+`h2abi_v1_fast_release` extensions. Their invocation-scoped view is separate
+from the architectural ABI v2 layouts. The default compile mode remains off;
+a loading bridge must explicitly forward the extensions before enabling it.
+`ExecCtx::enable_fast_memory(false)` keeps a compatible generated module on
+the checked Rust accessor path for diagnostic comparisons.
