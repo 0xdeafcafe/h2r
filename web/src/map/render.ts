@@ -22,6 +22,11 @@ export interface Scene {
   layer: number | null;
   mini: boolean;
   highlight?: number | null;
+  /** The flat style (stats side): small solid dots with a dark hairline,
+   *  no facing wedge, and labels only for the hovered or selected player. */
+  flat?: boolean;
+  /** Player index under the pointer, when the canvas is tracking one. */
+  hover?: number | null;
 }
 
 export interface View { cx: number; cy: number; scale: number; ready: boolean }
@@ -111,7 +116,7 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     const x = sx(m.x), y = sy(m.y);
     ctx.globalAlpha = Math.max(0, Math.min(1, m.alpha));
     ctx.strokeStyle = m.colour;
-    ctx.lineWidth = s.mini ? 1.5 : 2.5;
+    ctx.lineWidth = s.flat ? (s.mini ? 1 : 1.5) : (s.mini ? 1.5 : 2.5);
     ctx.lineCap = "round";
     ctx.beginPath();
     ctx.moveTo(x - mr, y - mr); ctx.lineTo(x + mr, y + mr);
@@ -121,7 +126,7 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   ctx.globalAlpha = 1;
 
   // Players.
-  const r = s.mini ? 3.5 : 8;
+  const r = s.flat ? (s.mini ? 3 : 5) : s.mini ? 3.5 : 8;
   const sorted = s.players.slice().sort((a, b) => a.z - b.z);
   for (const p of sorted) {
     if (!p.alive) continue;
@@ -132,6 +137,20 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     ctx.globalAlpha = off ? 0.35 : 1;
     // Facing: a soft wedge ahead of the dot. Yaw 0 = +x, counter-clockwise.
     const a = -p.yaw;
+    const picked = s.highlight === p.index || s.hover === p.index;
+    if (s.flat) {
+      // Flat style: a small solid dot with a dark hairline, no wedge or
+      // nose; the label only for the hovered or selected player.
+      ctx.fillStyle = colour;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(x, y, picked ? r * 1.4 : r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      if (!s.mini && info && picked) drawLabel(ctx, pal, x, y, r, info.name);
+      continue;
+    }
     if (!s.mini) {
       ctx.fillStyle = colour;
       ctx.globalAlpha = (off ? 0.35 : 1) * 0.28;
@@ -156,20 +175,23 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
     ctx.lineTo(x + Math.cos(a - 0.6) * r, y + Math.sin(a - 0.6) * r);
     ctx.closePath();
     ctx.fill();
-    if (!s.mini && info) {
-      ctx.font = "600 12px " + pal.font;
-      const tw = ctx.measureText(info.name).width;
-      const ly = y - r - 10;
-      ctx.fillStyle = pal.labelBg;
-      roundRect(ctx, x - tw / 2 - 6, ly - 9, tw + 12, 18, 9);
-      ctx.fill();
-      ctx.fillStyle = pal.label;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText(info.name, x, ly + 0.5);
-    }
+    if (!s.mini && info) drawLabel(ctx, pal, x, y, r, info.name);
   }
   ctx.globalAlpha = 1;
+}
+
+/** A player's name in a small dark pill above their dot. */
+function drawLabel(ctx: CanvasRenderingContext2D, pal: MapPalette, x: number, y: number, r: number, name: string) {
+  ctx.font = "600 12px " + pal.font;
+  const tw = ctx.measureText(name).width;
+  const ly = y - r - 10;
+  ctx.fillStyle = pal.labelBg;
+  roundRect(ctx, x - tw / 2 - 6, ly - 9, tw + 12, 18, 9);
+  ctx.fill();
+  ctx.fillStyle = pal.label;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(name, x, ly + 0.5);
 }
 
 function tracePoly(ctx: CanvasRenderingContext2D, poly: [number, number][], sx: (x: number) => number, sy: (y: number) => number) {

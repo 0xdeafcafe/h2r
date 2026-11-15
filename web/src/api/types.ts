@@ -25,6 +25,8 @@ export interface GamePlayer {
   xuid?: Xuid | null;
   team: number;
   local?: boolean;
+  /** Emblem and colours read from the game (palette indices), when known. */
+  appearance?: import("../lib/gameart").Appearance | null;
 }
 
 export interface FramePlayer {

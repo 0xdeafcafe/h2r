@@ -31,12 +31,18 @@ export default function MapCanvas(props: {
   let visible = true;
   let w = 0, h = 0, dpr = 1;
   let drawnAt = -Infinity;
+  // Inside the stats site the map draws flat (plain dots, labels only for
+  // the player under the pointer or the selected one).
+  let flat = false;
+  let mx: number | null = null, my: number | null = null;
+  let hover: number | null = null;
 
   // Re-fit from scratch when the map outline changes.
   createEffect(() => { props.outline(); view.ready = false; });
 
   onMount(() => {
     pal = readPalette(wrap);
+    flat = !!wrap.closest(".stats");
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const resize = () => {
@@ -55,12 +61,37 @@ export default function MapCanvas(props: {
     ro.observe(wrap);
     const io = new IntersectionObserver((es) => { visible = es.some((e) => e.isIntersecting); });
     io.observe(wrap);
+    const move = (e: PointerEvent) => {
+      const r = wrap.getBoundingClientRect();
+      mx = e.clientX - r.left;
+      my = e.clientY - r.top;
+    };
+    const leave = () => { mx = null; my = null; };
+    wrap.addEventListener("pointermove", move);
+    wrap.addEventListener("pointerleave", leave);
     const stop = onAnimationFrame((now) => {
       // Off screen: draw once so there is a picture, then wait to be seen.
       if ((!visible && view.ready && drawnAt > 0) || document.hidden) return;
       if (props.still && now - drawnAt < 500 && view.ready) return;
       drawnAt = now;
       const f = props.frame(now);
+      // In flat style, hovering a dot is how a name shows: find the nearest
+      // player to the pointer in canvas pixels.
+      if (flat) {
+        let found: number | null = null;
+        if (mx !== null && my !== null && view.ready) {
+          let best = 14;
+          for (const p of f.players) {
+            if (!p.alive) continue;
+            const dx = w / 2 + (p.x - view.cx) * view.scale - mx;
+            const dy = h / 2 - (p.y - view.cy) * view.scale - my;
+            const d = Math.hypot(dx, dy);
+            if (d <= best) { best = d; found = p.index; }
+          }
+        }
+        hover = found;
+        canvas.style.cursor = found === null ? "default" : "pointer";
+      }
       const scene = {
         players: f.players,
         markers: f.markers,
@@ -70,12 +101,18 @@ export default function MapCanvas(props: {
         layer: props.layer?.() ?? null,
         mini: !!props.mini,
         highlight: props.highlight?.() ?? null,
+        flat,
+        hover,
       };
       fitView(view, sceneBounds(scene), w, h, props.mini ? 8 : 36);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       draw(ctx, w, h, scene, view, pal);
     });
-    onCleanup(() => { stop(); ro.disconnect(); io.disconnect(); });
+    onCleanup(() => {
+      stop(); ro.disconnect(); io.disconnect();
+      wrap.removeEventListener("pointermove", move);
+      wrap.removeEventListener("pointerleave", leave);
+    });
   });
 
   return (
