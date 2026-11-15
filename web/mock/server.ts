@@ -7,6 +7,26 @@ import type { ServerWebSocket } from "bun";
 import type { Frame, WireEvent } from "../src/api/types";
 import { World, HOST } from "./world";
 import { createHash } from "node:crypto";
+import { b64urlDecode, canonicalJson, jwkThumbprint, parseJws } from "../src/state/verify";
+
+type OpenedAccount = { gamertag: string; jwk: { kty: "OKP"; crv: "Ed25519"; x: string; kid: string } } | { error: string };
+
+async function openAccountRequest(compact: string): Promise<OpenedAccount> {
+  const jws = parseJws(compact.trim());
+  if (!jws) return { error: "malformed JWS" };
+  const h = jws.header as { alg?: string; kid?: string; typ?: string };
+  if (h.alg !== "EdDSA") return { error: "alg must be EdDSA" };
+  if (h.typ !== "h2live-account") return { error: "typ must be h2live-account" };
+  const raw = new TextDecoder().decode(b64urlDecode(compact.split(".")[1]!));
+  if (canonicalJson(JSON.parse(raw)) !== raw) return { error: "payload is not canonical JSON" };
+  const body = jws.payload as { gamertag?: unknown; jwk?: { kty?: string; crv?: string; x?: string; kid?: string } };
+  if (typeof body.gamertag !== "string" || !body.jwk?.x || body.jwk.kty !== "OKP" || body.jwk.crv !== "Ed25519") return { error: "bad body" };
+  const kid = await jwkThumbprint({ kty: "OKP", crv: "Ed25519", x: body.jwk.x });
+  if ((body.jwk.kid && body.jwk.kid !== kid) || h.kid !== kid) return { error: "kid does not match the key" };
+  const key = await crypto.subtle.importKey("jwk", { kty: "OKP", crv: "Ed25519", x: body.jwk.x }, { name: "Ed25519" }, false, ["verify"]);
+  if (!(await crypto.subtle.verify({ name: "Ed25519" }, key, jws.signature, jws.signingInput))) return { error: "signature does not verify" };
+  return { gamertag: body.gamertag, jwk: { kty: "OKP", crv: "Ed25519", x: body.jwk.x, kid } };
+}
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -52,7 +72,7 @@ world.listeners.add({
 
 const CORS = {
   "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, HEAD, OPTIONS",
+  "access-control-allow-methods": "GET, HEAD, POST, OPTIONS",
   "access-control-allow-headers": "content-type, authorization",
 };
 
@@ -93,11 +113,14 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     return list([...world.accounts.values()].map((a) => world.publicAccount(a)).slice(0, limitOf(u)));
   }
   if (path === "/v1/accounts" && req.method === "POST") {
-    const b = (await req.json().catch(() => null)) as { gamertag?: string } | null;
-    const tag = b?.gamertag?.trim();
-    if (!tag || !/^[A-Za-z][A-Za-z0-9]*( [A-Za-z0-9]+)*$/.test(tag) || tag.length > 15) return err(400, "invalid", "bad gamertag");
+    // A JWS signed by the new key over {gamertag, jwk, invite?} (live-proto
+    // AccountRequest), sent as application/jose.
+    const opened = await openAccountRequest(await req.text());
+    if ("error" in opened) return err(400, "invalid", opened.error);
+    const tag = opened.gamertag;
+    if (!/^[A-Za-z][A-Za-z0-9]*( [A-Za-z0-9]+)*$/.test(tag) || tag.length > 15) return err(400, "invalid", "that gamertag isn't valid");
     if (world.accountByTag(tag)) return err(409, "conflict", "gamertag taken");
-    const a = world.createAccount(tag);
+    const a = world.createExternalAccount(tag, opened.jwk);
     return json({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}` }, 201);
   }
   if ((m = path.match(/^\/v1\/accounts\/by-xuid\/([0-9a-fA-F]{16})\/keys$/))) {

@@ -21,7 +21,7 @@ function keysFor(world: World) {
 
 function smallWorld() {
   const w = new World();
-  w.seed(90_000); // 90 s of simulated history
+  w.seed(240_000); // 4 min of simulated history, so there are kills
   return w;
 }
 

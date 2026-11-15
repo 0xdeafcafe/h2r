@@ -13,7 +13,7 @@ export default function GameCard(props: { game: GameState }) {
   const outline = outlineFor(() => props.game.map);
   const frame = liveFrameSource(props.game.game_id, roster);
   return (
-    <A href={`/games/${props.game.game_id}`} class="game-card" classList={{ "game-card--live": props.game.status === "live" }}>
+    <A href={`/stats/games/${props.game.game_id}`} class="game-card" classList={{ "game-card--live": props.game.status === "live" }}>
       <div class="game-card__map">
         <Show when={props.game.status === "live"} fallback={<div class="game-card__ended">ended {ago(props.game.ended_at, now())}</div>}>
           <MapCanvas mini frame={frame} roster={roster} outline={outline} label={`Live map of ${props.game.map}`} />

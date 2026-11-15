@@ -25,15 +25,13 @@ export function between(a: string, b: string | null, now = Date.now()): number {
   return ((b ? Date.parse(b) : now) - Date.parse(a)) / 1000;
 }
 
-const VERBS = ["bonked", "booped", "zapped", "squished", "tagged", "popped", "flattened", "outplayed"];
-
-/** A friendly, stable verb for a kill. */
-export function killVerb(kind: string, seed: number): string {
+/** The kill feed's wording for a knockout. */
+export function killVerb(kind: string, _seed: number): string {
   switch (kind) {
-    case "suicide": return "had an oopsie";
+    case "suicide": return "committed suicide";
     case "betrayal": return "betrayed";
-    case "world": return "fell off the world";
-    default: return VERBS[Math.abs(seed) % VERBS.length]!;
+    case "world": return "died";
+    default: return "killed";
   }
 }
 

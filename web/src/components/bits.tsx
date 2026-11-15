@@ -1,24 +1,10 @@
-// Small shared pieces: avatar, presence badge, verify mark, mascot, empty state.
+// Small shared pieces: presence badge, verify marks.
 
-import { Show, type JSX } from "solid-js";
+import { Show } from "solid-js";
 import { A } from "@solidjs/router";
-import { hueFor, initials } from "../lib/format";
 import type { AccountState } from "../state/reducer";
 import type { VerifyResult } from "../state/verify";
 import { live } from "../state/live";
-
-export function Avatar(props: { name: string; size?: "s" | "m" | "l"; online?: boolean }) {
-  return (
-    <span
-      class={`avatar avatar--${props.size ?? "m"}`}
-      classList={{ "avatar--online": !!props.online }}
-      style={{ "--avatar-hue": String(hueFor(props.name)) }}
-      aria-hidden="true"
-    >
-      {initials(props.name)}
-    </span>
-  );
-}
 
 export type PresenceKind = "playing" | "online" | "away" | "offline";
 
@@ -44,7 +30,7 @@ export function PresenceBadge(props: { account: AccountState | undefined }) {
     <span class={`presence presence--${kind()}`}>
       <span class="presence__dot" />
       <Show when={kind() === "playing" && props.account?.presence?.game_id} fallback={PRESENCE_LABEL[kind()]}>
-        {(gid) => <A href={`/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
+        {(gid) => <A href={`/stats/games/${gid()}`}>{PRESENCE_LABEL.playing}</A>}
       </Show>
     </span>
   );
@@ -99,44 +85,5 @@ export function VerifySummary(props: { positions: () => number[] }) {
         <Show when={counts().other}> · {counts().other} unchecked</Show>
       </Show>
     </span>
-  );
-}
-
-/** The mascot: a small round friend. Pure CSS/SVG, ours. */
-export function Mascot(props: { mood?: "happy" | "sleepy" | "wow"; size?: number }) {
-  const s = () => props.size ?? 96;
-  return (
-    <svg class={`mascot mascot--${props.mood ?? "happy"}`} width={s()} height={s()} viewBox="0 0 100 100" aria-hidden="true">
-      <ellipse cx="50" cy="92" rx="26" ry="5" class="mascot__shadow" />
-      <path class="mascot__body" d="M50 12c22 0 36 16 36 38s-14 36-36 36S14 72 14 50 28 12 50 12z" />
-      <g class="mascot__eyes">
-        {props.mood === "sleepy" ? (
-          <>
-            <path d="M33 50q5 4 10 0" class="mascot__line" />
-            <path d="M57 50q5 4 10 0" class="mascot__line" />
-          </>
-        ) : (
-          <>
-            <circle cx="38" cy="48" r="5" class="mascot__eye" />
-            <circle cx="62" cy="48" r="5" class="mascot__eye" />
-          </>
-        )}
-      </g>
-      <circle cx="30" cy="60" r="5" class="mascot__cheek" />
-      <circle cx="70" cy="60" r="5" class="mascot__cheek" />
-      {props.mood === "wow"
-        ? <ellipse cx="50" cy="64" rx="5" ry="6" class="mascot__eye" />
-        : <path d="M43 62q7 6 14 0" class="mascot__line" />}
-    </svg>
-  );
-}
-
-export function Empty(props: { title: string; children?: JSX.Element; mood?: "happy" | "sleepy" | "wow" }) {
-  return (
-    <div class="empty">
-      <Mascot mood={props.mood ?? "sleepy"} />
-      <h3>{props.title}</h3>
-      <Show when={props.children}><p>{props.children}</p></Show>
-    </div>
   );
 }

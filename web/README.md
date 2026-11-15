@@ -25,7 +25,7 @@ Vite proxies `/v1` (including the WebSockets), `/healthz` and
 |---|---|
 | `bun run mock` | the mock server alone (`H2_MOCK_PORT`, default 8075) |
 | `bun run build` | production build into `web/dist` |
-| `bun test` | unit tests (reducer, interpolation, replay, reconnect, signatures) |
+| `bun test` | unit tests (reducer, interpolation, replay, reconnect, signatures, derived stats, sign-up JWS) |
 | `bun run typecheck` | `tsc --noEmit`, strict |
 
 Mock knobs: `H2_MOCK_HISTORY_MIN` (minutes of simulated history at boot,
@@ -37,9 +37,53 @@ app with SPA fallback, the way the Rust server will:
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
 server instead of the mock, run `H2_LIVE_URL=http://127.0.0.1:8074 bunx vite`.
-You can also point any running copy of the app at any server with the
-server picker in the top right, or with a deep link: `?server=https://live.example.net`.
+You can also point any running copy of the app at any server from the
+dashboard's "server" item, or with a deep link: `?server=https://live.example.net`.
 The choice and recent servers are kept in localStorage.
+
+## Two sides
+
+**The dashboard** (`/`, `/dash/:section`, `src/dash/`) is the "live" side:
+a glowing orb, a wireframe tunnel and an arc of menu bars (live now,
+friends, players, game history, sign up / profile, server), each opening a
+bezelled list panel. Keyboard: arrows move, Enter (or `a`) selects,
+Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
+
+**The stats site** (`/stats/...`, `src/stats/`) is the record: games
+(`/stats`), a game's carnage report with the live map or the replay
+(`/stats/games/:id`), players and leaderboards (`/stats/players`), a
+player's service record, game history and career stats
+(`/stats/players/:tag`, `/history`, `/career?compare=<tag>`), and the event
+log (`/stats/events`). The old `/games/:id`, `/players/...` and `/events`
+paths redirect.
+
+**Derived stats.** Medals, sprees, places, the weapon breakdown ("Tool of
+Destruction"), EXP and rank are computed in the browser from the games'
+events (`src/state/derive.ts`); the API does not serve them. They are
+marked with a `*` and a tooltip. They only cover games this browser has
+loaded, and a game's snapshot carries at most its recent kills, so they are
+estimates for long histories. Medals (all original names and SVG icons in
+`components/MedalIcon.tsx`): Opening Act (first kill of a game), Last Word
+(last kill), Payback (kill your last killer within 10 s), Twofer / Hat
+Trick / Full House / Encore (2 / 3 / 4 / 5+ kills, each within 4 s of the
+last), Hot Streak / Wildfire / Untouchable (5 / 10 / 15 kills without
+dying). EXP is games completed plus two per win.
+
+**Sign up in the browser.** The dashboard's "sign up" makes a new Ed25519
+key with WebCrypto, signs the same account request `h2 live account create`
+sends (compact JWS, header `{alg: "EdDSA", kid, typ: "h2live-account"}`,
+payload the canonical JSON of `{gamertag, jwk, invite?}`) and POSTs it as
+`application/jose` to `/v1/accounts` (`src/state/account.ts`). The private
+key is kept as a JWK (its `d`) in this browser's IndexedDB (`h2live` /
+`accounts`), so anyone with access to the browser profile can read it; the
+UI says so. "Download for h2" saves an `accounts.json`-style file for
+`h2 live account import <file>`. "Friends" are the people you have played
+with.
+
+**Fonts and artwork.** The dashboard uses Michroma (SIL Open Font Licence,
+`src/assets/fonts/Michroma-OFL.txt`); the stats site uses system fonts.
+Emblems, medals, the orb and everything else are drawn here; no third-party
+logos or artwork.
 
 ## Architecture
 
@@ -82,10 +126,10 @@ consecutive versions. Keys come from `/.well-known/h2live.json` (server) and
 `/v1/accounts/by-xuid/{xuid}/keys` (accounts, valid between log positions), cached by `kid`. Results land in
 a separate store keyed by position, so rendering never waits on crypto.
 
-**Styling.** `src/styles/theme.css` holds every colour, font, radius and
-shadow as custom properties (the map renderer reads its colours from them
-too); `src/styles/app.css` only consumes tokens. Restyle by replacing the
-theme.
+**Styling.** `src/styles/theme.css` holds the tokens: `--s-*` for the
+stats site, `--d-*` for the dashboard, and the map palette (the renderer
+reads its colours from them; `.dash` swaps in a green map). `app.css` has
+the shared pieces, `stats.css` and `dash.css` the two sides.
 
 **Mock.** `mock/` is a Bun server implementing the read and write
 endpoints, both WebSockets, discovery and real Ed25519 signing (server key

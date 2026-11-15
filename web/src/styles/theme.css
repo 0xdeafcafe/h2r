@@ -1,54 +1,97 @@
-/* Theme layer: every colour, font, radius and shadow the app uses.
-   Restyle the app by replacing this file; app.css only reads tokens. */
+/* Theme layer. Two looks share the app:
+   - the dashboard ("Live" side): green light on black, glass orbs, bezelled panels;
+   - the stats site: navy page, fixed centre column, blue title bars, dense tables.
+   Every colour, font and size either side uses is a token here. */
+
+@font-face {
+  font-family: "Michroma";
+  src: url("../assets/fonts/Michroma-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-display: swap;
+}
+
 :root {
-  --font-ui: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Nunito", "Segoe UI", system-ui, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /* Stats site */
+  --font-ui: Tahoma, Verdana, "Segoe UI", "DejaVu Sans", sans-serif;
+  --font-mono: ui-monospace, Menlo, Consolas, monospace;
+  --font-tech: "Michroma", "Eurostile", "Arial Black", sans-serif;
 
-  --bg: #fff4e6;
-  --bg-deep: #ffe9d2;
-  --surface: #ffffff;
-  --surface-2: #fff9f2;
-  --ink: #3b2a3a;
-  --ink-soft: #7a6470;
-  --line: #f1dcc8;
-  --accent: #ff7a6b;
-  --accent-ink: #ffffff;
-  --accent-2: #6cb8ff;
-  --good: #2fb47c;
-  --warn: #e0832a;
-  --bad: #e2445c;
-  --live: #ff5a6e;
+  --s-page: #0b2140;
+  --s-page-2: #1b4677;
+  --s-column: #141516;
+  --s-column-edge: #000;
+  --s-ink: #d9dde3;
+  --s-ink-soft: #9aa3ad;
+  --s-ink-dim: #6c747d;
+  --s-link: #7fc0ff;
+  --s-link-hover: #b9ddff;
+  --s-gold: #f0b429;
+  --s-gold-2: #a8750c;
+  --s-bar-1: #4f86c9;
+  --s-bar-2: #1c3f73;
+  --s-bar-edge: #6d9edb;
+  --s-panel: #1d1f22;
+  --s-panel-2: #24272b;
+  --s-panel-edge: #34404f;
+  --s-row: #1b1c1e;
+  --s-row-alt: #232528;
+  --s-row-hover: #2c3b50;
+  --s-row-sel: #31465f;
+  --s-top-1: #0f2b52;
+  --s-top-2: #06152b;
+  --s-nav-1: #2a2b2d;
+  --s-nav-2: #0b0b0c;
+  --s-pill-1: #284c7a;
+  --s-pill-2: #13284a;
+  --s-pill-edge: #5683bb;
+  --s-good: #8fdc5d;
+  --s-bad: #ff6b5e;
+  --s-warn: #ffc857;
+  --s-size: 12px;
+  --s-width: 1000px;
 
-  --presence-playing: #ff7a6b;
-  --presence-online: #2fb47c;
-  --presence-away: #f2b134;
-  --presence-offline: #c9b8bd;
+  /* Dashboard */
+  --d-black: #010501;
+  --d-deep: #031203;
+  --d-green: #7dff2a;
+  --d-green-2: #3fbf10;
+  --d-green-3: #1d6b06;
+  --d-glow: rgba(125, 255, 42, 0.55);
+  --d-line: rgba(125, 255, 42, 0.22);
+  --d-ink: #c9ff9a;
+  --d-ink-soft: #7fcf4f;
+  --d-sel-1: #f4ff9c;
+  --d-sel-2: #b8f53a;
+  --d-sel-ink: #082000;
+  --d-panel: rgba(4, 30, 2, 0.82);
+  --d-panel-edge: #8dff3c;
 
-  --radius-s: 8px;
-  --radius-m: 14px;
-  --radius-l: 22px;
-  --shadow-1: 0 2px 0 rgba(59, 42, 58, 0.06), 0 6px 18px rgba(255, 138, 101, 0.12);
-  --shadow-2: 0 3px 0 rgba(59, 42, 58, 0.08), 0 14px 32px rgba(255, 138, 101, 0.2);
+  /* Map (the canvas reads these; the dashboard overrides them in its scope) */
+  --map-bg: #0a1424;
+  --map-grid: rgba(120, 170, 230, 0.10);
+  --map-floor: #1b3556;
+  --map-floor-edge: #6c9fd8;
+  --map-floor-other: rgba(108, 159, 216, 0.16);
+  --map-label: #f2f6fb;
+  --map-label-bg: rgba(6, 14, 28, 0.85);
+  --map-death: #ffffff;
 
-  /* Map (read by the canvas renderer). */
-  --map-bg: #fffaf3;
-  --map-grid: rgba(122, 100, 112, 0.12);
-  --map-floor: #ffe3c8;
-  --map-floor-edge: #eab18c;
-  --map-floor-other: rgba(234, 177, 140, 0.22);
-  --map-label: #3b2a3a;
-  --map-label-bg: rgba(255, 255, 255, 0.9);
-  --map-death: #3b2a3a;
+  /* Teams (index n => --team-n) and FFA slots */
+  --team-0: #e2503f; --team-1: #3f8cf0; --team-2: #49c06a; --team-3: #f2c230;
+  --team-4: #a36cf0; --team-5: #f07ab8; --team-6: #39c6d6; --team-7: #b58a5c;
+  --ffa-0: #e2503f; --ffa-1: #3f8cf0; --ffa-2: #49c06a; --ffa-3: #f2c230;
+  --ffa-4: #a36cf0; --ffa-5: #f07ab8; --ffa-6: #39c6d6; --ffa-7: #d98a4a;
+  --ffa-8: #e8e8e8; --ffa-9: #7aa6ff; --ffa-10: #9be05a; --ffa-11: #ff9a52;
+  --ffa-12: #8c7cff; --ffa-13: #40c4aa; --ffa-14: #d4b24a; --ffa-15: #c06cd9;
+}
 
-  /* Team colours (team index n => --team-n), FFA colours per player slot. */
-  --team-0: #ff6f61; --team-1: #4aa3ff; --team-2: #35c08a; --team-3: #ffb627;
-  --team-4: #a07cff; --team-5: #ff8fc7; --team-6: #45c9da; --team-7: #9b8a7a;
-  --ffa-0: #ff6f61; --ffa-1: #4aa3ff; --ffa-2: #35c08a; --ffa-3: #ffb627;
-  --ffa-4: #a07cff; --ffa-5: #ff8fc7; --ffa-6: #45c9da; --ffa-7: #c98b5c;
-  --ffa-8: #e85d9b; --ffa-9: #6b8cff; --ffa-10: #8bd450; --ffa-11: #ff9152;
-  --ffa-12: #7a6cff; --ffa-13: #40c4aa; --ffa-14: #d4a24a; --ffa-15: #b06cd9;
-
-  --mascot-body: #ff8a7a;
-  --mascot-ink: #402a3a;
-  --mascot-cheek: #ffc2b8;
+.dash {
+  --map-bg: #020c02;
+  --map-grid: rgba(125, 255, 42, 0.10);
+  --map-floor: rgba(60, 170, 20, 0.28);
+  --map-floor-edge: #8dff3c;
+  --map-floor-other: rgba(125, 255, 42, 0.08);
+  --map-label: #eaffd4;
+  --map-label-bg: rgba(0, 20, 0, 0.85);
+  --map-death: #eaffd4;
 }

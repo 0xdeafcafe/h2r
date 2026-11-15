@@ -28,6 +28,9 @@ interface Account {
   state: string;
   game_id: string | null;
   since: string;
+  /** Made by a real client (the web sign-up): the mock has no private key,
+   *  so the simulation leaves it alone. */
+  external?: boolean;
 }
 
 interface SimPlayer {
@@ -125,6 +128,21 @@ export class World {
 
   // ---------- accounts and presence ----------
 
+  /** An account registered by a client with its own key (POST /v1/accounts). */
+  createExternalAccount(gamertag: string, jwk: { kty: "OKP"; crv: "Ed25519"; x: string; kid: string }): Account {
+    const xuid = "0009" + hex(12);
+    const at = new Date(this.now).toISOString();
+    const a: Account = {
+      xuid, gamertag, key: { kid: jwk.kid, jwk, privateKey: undefined as never }, keyFrom: this.log.length + 1,
+      created_at: at, online: false, state: "offline", game_id: null, since: at, external: true,
+    };
+    this.accounts.set(xuid, a);
+    // The mock can't sign as the new key, so it records the creation itself.
+    this.append(`account-${xuid}`, [{ type: "AccountCreated", data: { xuid, gamertag } }], null);
+    this.append(`gamertag-${gamertag.toLowerCase()}`, [{ type: "GamertagReserved", data: { xuid } }], null);
+    return a;
+  }
+
   createAccount(gamertag: string, createdAt = this.now): Account {
     const xuid = "0009" + hex(12);
     const a: Account = {
@@ -152,7 +170,7 @@ export class World {
   }
 
   private presenceChurn() {
-    const all = [...this.accounts.values()];
+    const all = [...this.accounts.values()].filter((a) => !a.external);
     const offline = all.filter((a) => !a.online);
     const idle = all.filter((a) => a.online && !a.game_id);
     const r = rand();
@@ -171,7 +189,7 @@ export class World {
   // ---------- games ----------
 
   startGame(): SimGame | null {
-    const free = [...this.accounts.values()].filter((a) => !a.game_id);
+    const free = [...this.accounts.values()].filter((a) => !a.game_id && !a.external);
     if (free.length < 2) return null;
     const map = pick(MAPS);
     const team_play = rand() < 0.5;

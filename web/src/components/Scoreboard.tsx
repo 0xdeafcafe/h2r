@@ -16,7 +16,7 @@ function Row(props: { g: GameState; s: Standing; rank: number; onHover?: (i: num
       <td class="score-name">
         <span class="swatch" style={{ background: colourFor(props.g, props.s.team, props.s.index) }} />
         <Show when={props.s.xuid} fallback={props.s.name}>
-          {(x) => <A href={`/players/${encodeURIComponent(props.s.name)}`} title={x()}>{props.s.name}</A>}
+          {(x) => <A href={`/stats/players/${encodeURIComponent(props.s.name)}`} title={x()}>{props.s.name}</A>}
         </Show>
         <Show when={props.s.left}> <small>(left)</small></Show>
       </td>

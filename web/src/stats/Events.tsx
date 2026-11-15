@@ -2,6 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { live } from "../state/live";
 import type { WireEvent } from "../api/types";
 import { VerifyMark } from "../components/bits";
+import { Crumbs, Panel } from "./Layout";
 
 const CATEGORY: Record<string, string> = {
   AccountCreated: "account", GamertagReserved: "account", TitleFilePublished: "file",
@@ -45,15 +46,17 @@ export default function Events() {
   }
 
   return (
-    <div class="page events-page">
-      <h1>Event log</h1>
-      <p class="muted">
+    <div class="events-page">
+      <Crumbs trail={[["Home", "/stats"], ["Event Log"]]} />
+      <h1 class="s-h1">Event Log</h1>
+      <p class="s-intro">
         Every change on the server is an event. {live.state.eventCount} seen this session, head at position {live.state.position}.{" "}
         Signatures: {live.verifySummary.verified} verified
         <Show when={live.verifySummary.bad}>, <span class="warn">{live.verifySummary.bad} bad</span></Show>
         <Show when={live.verifySummary.unknown}>, {live.verifySummary.unknown} unchecked</Show>
         <Show when={live.verifySummary.unsigned}>, {live.verifySummary.unsigned} unsigned</Show>.
       </p>
+      <Panel title="Signed Event Stream" right={paused() ? "paused" : live.state.caughtUp ? `caught up to #${live.state.position}` : "catching up"}>
       <div class="toolbar">
         <select value={type()} onChange={(e) => setType(e.currentTarget.value)} aria-label="Event type">
           <option value="">all types</option>
@@ -84,6 +87,7 @@ export default function Events() {
           )}
         </For>
       </ol>
+      </Panel>
     </div>
   );
 }
