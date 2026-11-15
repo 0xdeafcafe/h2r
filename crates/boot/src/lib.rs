@@ -267,6 +267,8 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     let t = Instant::now();
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
+    let unread = fallback::install_unread_targets(&loaded.runtime);
+    crate::log::note(&format!("fallback: {unread} unread jump-table targets registered"));
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
     std::fs::create_dir_all(&opts.data_root)?;

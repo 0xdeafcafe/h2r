@@ -79,7 +79,18 @@ fn state() -> &'static Mutex<State> {
         let bytes = *XBE.get().unwrap();
         let t = std::time::Instant::now();
         let x: &'static xbe::Xbe<'static> = Box::leak(Box::new(xbe::Xbe::parse(bytes).unwrap()));
-        let a: &'static analyze::Analysis = Box::leak(Box::new(analyze::analyze(x).unwrap()));
+        let mut analysis = analyze::analyze(x).unwrap();
+        // The interpreter's own copy: unread jump-table targets become
+        // entries so the lazy lifter can reach them.
+        for &addr in UNREAD_TABLE_TARGETS {
+            analysis.functions.entry(addr).or_insert(analyze::Function {
+                start: addr,
+                source: analyze::Source::CodeRef,
+                section: ".text".into(),
+                returns: true,
+            });
+        }
+        let a: &'static analyze::Analysis = Box::leak(Box::new(analysis));
         let lifter = lift::Lifter::new(a, x).unwrap();
         let functions = a.functions.keys().copied().collect();
         eprintln!("fallback: analyzed the image for the interpreter in {:.1}s", t.elapsed().as_secs_f64());
@@ -308,4 +319,52 @@ pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, s
         return t;
     }
     run(cpu, ctx)
+}
+
+/// Code addresses reached only through a jump table the analyzer did not
+/// read, so no generated entry or resume exists for them and the runtime
+/// reports `UnsupportedTarget`. The fallback interprets from each one.
+///
+/// Both are CRT copy dispatches masked with `and r, 3`, whose slot 0 (an
+/// impossible index) overlaps code bytes; the analyzer sizes switches only
+/// from a `cmp`/`ja` guard, so it reads these as unbounded and stops at
+/// slot 0 (`crates/analyze` `jump_table`). Owner: analyze.
+///
+/// - memcpy `0x3208dd`: `jmp [eax*4+0x3208f0]`, slots 1-3 the leading
+///   1/2/3-byte copies. `0x32092c` was hit first (destination 2 bytes off).
+/// - memmove backward `0x320a71`: `jmp [eax*4+0x320a7c]`, slots 1-3.
+///
+/// These are the CRT memcpy (0x320880) and memmove-backward tables. Their
+/// index is `and r,3`, not a cmp/ja guard, so analyze's `jump_table` reads
+/// them as unbounded and stops at slot 0, which overlaps code. Remove this
+/// list when analyze sizes masked tables.
+pub const UNREAD_TABLE_TARGETS: &[u32] = &[
+    // memcpy: align head [0x3208f0], dword tail [0x320970], byte tail [0x3209dc]
+    0x0032_0900, 0x0032_092c, 0x0032_0950,
+    0x0032_0990, 0x0032_0998, 0x0032_09a0, 0x0032_09a8, 0x0032_09b0, 0x0032_09b8, 0x0032_09c0, 0x0032_09d3,
+    0x0032_09ec, 0x0032_09f4, 0x0032_0a00, 0x0032_0a14,
+    // memmove backward: align head [0x320a7c], dword tail [0x320b0c], byte tail [0x320b78]
+    0x0032_0a8c, 0x0032_0ab0, 0x0032_0ad8,
+    0x0032_0b2c, 0x0032_0b34, 0x0032_0b3c, 0x0032_0b44, 0x0032_0b4c, 0x0032_0b54, 0x0032_0b5c, 0x0032_0b6f,
+    0x0032_0b88, 0x0032_0b90, 0x0032_0ba0, 0x0032_0bb4,
+];
+
+/// Register [`UNREAD_TABLE_TARGETS`] that have no generated entry or resume
+/// as fallback entry points. Returns how many were registered.
+pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
+    let tables = TABLES.get().unwrap();
+    let mut n = 0;
+    rt.edit_dispatch(|d| {
+        for &addr in UNREAD_TABLE_TARGETS {
+            if tables.entries.contains(&addr) || tables.resumes.contains(&addr) {
+                continue;
+            }
+            d.register_override(addr, "boot:fallback from an unread jump-table target", move |cpu, ctx, _| {
+                cpu.eip = addr;
+                Ok(run(cpu, ctx))
+            });
+            n += 1;
+        }
+    });
+    n
 }
