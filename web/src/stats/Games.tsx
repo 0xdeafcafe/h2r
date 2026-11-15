@@ -79,21 +79,33 @@ function winnerName(g: GameState): string {
 /** The big picture at the top of the page: the busiest live game, as it happens. */
 function Featured(props: { game: GameState | undefined; online: number }) {
   return (
-    <div class="s-world">
-      <Show when={props.game} keyed fallback={<div class="s-world-empty">No live games on this server right now.</div>}>
-        {(g) => {
-          const roster = createMemo(() => rosterFor(g));
-          const outline = outlineFor(() => g.map);
-          return (
-            <A href={`/stats/games/${g.game_id}`} class="s-world-map" aria-label={`Watch ${gameTitle(g)} on ${titleCase(g.map)} live`}>
-              <MapCanvas frame={liveFrameSource(g.game_id, roster)} roster={roster} outline={outline} label={`Live map of ${g.map}`} />
-              <span class="s-world-label"><span class="s-live-tag">LIVE</span> {gameTitle(g)} on {titleCase(g.map)} <em><ScoreLine game={g} /></em></span>
-            </A>
-          );
-        }}
-      </Show>
-      <span class="s-world-count">{props.online} players online</span>
-    </div>
+    <>
+      <div class="s-capbar">
+        <Show when={props.game} fallback={<span class="s-dim">Nothing live right now</span>}>
+          {(g) => (
+            <>
+              <span class="s-live-tag">LIVE</span>
+              <A href={`/stats/games/${g().game_id}`}>{gameTitle(g())} on {titleCase(g().map)}</A>
+              <span class="s-capbar-right"><ScoreLine game={g()} /></span>
+            </>
+          )}
+        </Show>
+      </div>
+      <div class="s-world">
+        <Show when={props.game} keyed fallback={<div class="s-world-empty">No live games on this server right now.</div>}>
+          {(g) => {
+            const roster = createMemo(() => rosterFor(g));
+            const outline = outlineFor(() => g.map);
+            return (
+              <A href={`/stats/games/${g.game_id}`} class="s-world-map" aria-label={`Watch ${gameTitle(g)} on ${titleCase(g.map)} live`}>
+                <MapCanvas frame={liveFrameSource(g.game_id, roster)} roster={roster} outline={outline} label={`Live map of ${g.map}`} />
+              </A>
+            );
+          }}
+        </Show>
+        <span class="s-world-count">{props.online} players online</span>
+      </div>
+    </>
   );
 }
 
@@ -133,7 +145,7 @@ export default function Games() {
     <>
       <Crumbs trail={[["Home", "/"], ["h2 live Online"]]} />
       <Strip kind="home" />
-      <div class="s-cols">
+      <div class="s-cols s-cols--over">
         <aside class="s-left">
           <Title>h2 live Online</Title>
           <Pills label="h2 live Online" items={[

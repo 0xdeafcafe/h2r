@@ -321,3 +321,71 @@ unit and oracle tests establish exactness without one. Whole-frame savings
 remain to be measured after integration on presents 4220–4520 with a warm
 pipeline cache and recorded load. Build-target disk headroom limited this
 lane to focused tests and microbenchmarks.
+
+## Inline RAM: one gate hold per run of accesses (2026-11-15)
+
+After FASTMEM, the "generated guest code" row of the level frame (14.9 ms,
+[frame-budget.md](frame-budget.md)) is mostly the inline RAM path itself.
+Each access took the memory gate with a compare-and-swap and released it
+with an ordered store, and that pair is most of an access's 6-7 ns: the
+`read` loop below spends 7.1 ns a trip on one load, against 0.8 ns for the
+same loop on registers. At 1.45 M accesses a frame that is about 9-10 ms.
+
+A handler now keeps the gate across consecutive accesses, with the page
+table and RAM pointers it read when it took it. It drops the gate before
+anything that takes the context, on every way out, and after 32 loop
+headers or REP trips. A Rust memory guard that finds the gate held marks it
+wanted; the handler gives way at its next loop header and cannot retake the
+gate ahead of that guard. `crates/emit/RUNTIME-CONTRACT.md` has the rules.
+An access under a held gate is a page-table load, a permission check and
+the copy. Access accounting, the slice boundary, dirty bits and fault order
+are unchanged: `held_gate_matches_the_helper_path_at_every_stop_and_fault`
+runs a synthetic handler (runs of accesses, loops, a REP, x87, calls, a
+page-crossing read, a store to a read-only page) against the same module on
+the helper path, for seven slice lengths, with and without accounting.
+
+Synthetic loops through the real runtime (`crates/emit/tests/perf.rs`,
+accounting on as in the image, clang `-O1`, Apple Silicon, best of 15, load
+average 41-70):
+
+| loop | accesses a trip | before | after |
+|---|---:|---:|---:|
+| `read` (one load) | 1 | 7.06 ns | 3.14 ns |
+| `write` (one store) | 1 | 7.09 ns | 2.50 ns |
+| `frame` (two pushes, two loads, a store, two pops) | 7 | 50.55 ns | 11.15 ns |
+
+So an access that shares a hold costs about 1.5 ns instead of 7.1, and a
+one-access loop about 2 ns (it pays the header check, and the gate once in
+32 trips).
+
+Over the lifted image (`image_gate_holds`, all passes): 707,377 accesses in
+196,764 blocks. Taking a hold to end with its block, which undercounts
+(holds last across blocks until a call, an exit or a loop header), 509,970
+accesses (72.1%) follow another under the same hold: 3.58 accesses a hold.
+
+Estimate for the level frame, not measured in the game: 1.45 M accesses at
+about 7 ns is 10 ms today. With 72% of them at 1.5 ns and the rest
+unchanged it is 4.4 ms; with holds lasting across blocks and loop trips, as
+they do, nearer 3 ms. That is **5.5 to 7 ms a frame** off the guest-code
+row, weighted by static counts and synthetic costs. The dynamic mix is
+unknown until the game is run, on presents 4220-4520 with a warm pipeline
+cache. No game image was built for this.
+
+The city flyover (render thread on, 2026-11-15 frame stats) spends 70-75 ms
+of an 80-86 ms frame in the game thread's `cpu` phase. Its access count was
+not recorded. If its mix is The Heretic's (the gate is about 10 of 44 ms of
+`cpu` there), this change is worth 9 to 12 ms of the 75; the saving is
+about 5 ns for every access the frame makes, so a run with frame stats'
+access count settles it.
+
+```sh
+RUSTC_WRAPPER= H2_ACCESS_COUNT=1 cargo test -p emit --release --test perf generated_runtime_benchmark -- --ignored --nocapture
+RUSTC_WRAPPER= cargo test -p emit --release --test perf image_gate_holds -- --ignored --nocapture
+```
+
+Not done here, in the order the code suggests: the runner's transfer path
+(`call` is about 180 ns for a call and return, two `HashMap` resolves with
+SipHash and a shadow-stack update per transfer; an address-indexed table
+and direct calls between generated handlers are the next step, about 5 ms),
+then cross-block dead stores and register promotion, which a flat profile
+at `-O1` does not point at.

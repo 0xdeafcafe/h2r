@@ -44,7 +44,9 @@ factory flags), and 0x104 (game region). XC_MISC is `ConsoleConfig::misc_flags`,
 default zero: auto power-down off (0x01, XC_MISC_FLAG_AUTOPOWERDOWN) and DST
 adjustment on (0x02 disables it). XAPI's auto power-down setup reads it at
 0x2d6f79. Unknown/unconfigured indices stop. XC_MAX_ALL (0xffff, the whole
-EEPROM image) returns STATUS_OBJECT_NAME_NOT_FOUND and writes nothing, because
+EEPROM image) and XC_MAX_OS (0xff, the user section; GetTimeZoneInformation's
+0x331406 asks with a 0x100 buffer and fails soft to a zero bias) return
+STATUS_OBJECT_NAME_NOT_FOUND and writes nothing, because
 no EEPROM image is configured or fabricated; XQueryValue (0x2d6f62) turns that
 into ERROR_FILE_NOT_FOUND.
 It returns REG_DWORD and four-byte ResultLength; ResultLength may be null.

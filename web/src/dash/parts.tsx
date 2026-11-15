@@ -1,25 +1,80 @@
 // The dashboard's furniture: the orb, the big glass pod, info plates,
 // the a/b prompts, the tubes in the corners and the small line glyphs.
-// All of it is drawn here or comes from /art (original artwork).
+// All of it is drawn here or comes from /art (original artwork). The
+// shell's styles (background, orb, menu, prompts, transitions) are in
+// styles/dash-shell.css.
 
 import { For, Show, type JSX } from "solid-js";
+import { blobPath } from "./shape";
+import "../styles/dash-shell.css";
 
-/** The orb: a glowing core inside drifting jelly shells. It carries no mark. */
+/** Jelly outlines for the orb, the same on every load. */
+const MEMBRANES = {
+  back1: blobPath(11, 5, 121, 0.17),
+  back2: blobPath(23, 7, 117, 0.13),
+  front1: blobPath(5, 6, 107, 0.09),
+  front2: blobPath(42, 9, 108, 0.07),
+  cell1: blobPath(8, 6, 37, 0.16),
+  cell2: blobPath(19, 6, 26, 0.18),
+};
+
+/** The orb: a soft yellow-green ball wrapped in drifting jelly. It carries no mark. */
 export function Orb() {
   return (
     <div class="dx-orb" aria-hidden="true">
-      <i class="dx-wisp dx-wisp--1" />
-      <i class="dx-wisp dx-wisp--2" />
       <i class="dx-orb-halo" />
-      <i class="dx-orb-shell dx-orb-shell--1" />
-      <i class="dx-orb-shell dx-orb-shell--2" />
-      <i class="dx-orb-shell dx-orb-shell--3" />
-      <i class="dx-orb-art" />
-      <i class="dx-orb-art dx-orb-art--swirl" />
-      <i class="dx-orb-art dx-orb-art--swirl dx-orb-art--swirl2" />
-      <i class="dx-orb-core" />
-      <i class="dx-orb-gloss" />
-      <i class="dx-wisp dx-wisp--3" />
+      <svg class="dx-orb-svg" viewBox="-170 -170 340 340">
+        <defs>
+          <radialGradient id="dxo-body" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="104" fx="16" fy="26">
+            <stop offset="0" stop-color="#fffc92" />
+            <stop offset=".24" stop-color="#f7f44c" />
+            <stop offset=".5" stop-color="#e1eb35" />
+            <stop offset=".7" stop-color="#b6df2a" />
+            <stop offset=".87" stop-color="#6fc81f" />
+            <stop offset="1" stop-color="#3a9c14" />
+          </radialGradient>
+          <radialGradient id="dxo-back" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="128">
+            <stop offset=".5" stop-color="#0c4a08" stop-opacity=".5" />
+            <stop offset=".8" stop-color="#17720f" stop-opacity=".8" />
+            <stop offset="1" stop-color="#3aa822" stop-opacity=".62" />
+          </radialGradient>
+          <radialGradient id="dxo-front" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="120">
+            <stop offset=".6" stop-color="#7fe040" stop-opacity="0" />
+            <stop offset=".82" stop-color="#58c82c" stop-opacity=".18" />
+            <stop offset=".94" stop-color="#7fe644" stop-opacity=".36" />
+            <stop offset="1" stop-color="#c8ff90" stop-opacity=".2" />
+          </radialGradient>
+          <radialGradient id="dxo-shade" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="100" fx="10" fy="14">
+            <stop offset=".72" stop-color="#0d4a06" stop-opacity="0" />
+            <stop offset="1" stop-color="#0d4a06" stop-opacity=".5" />
+          </radialGradient>
+          <linearGradient id="dxo-ribbon" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#6fd838" stop-opacity=".34" />
+            <stop offset="1" stop-color="#1c6f10" stop-opacity="0" />
+          </linearGradient>
+          <clipPath id="dxo-clip"><circle r="100" /></clipPath>
+          <filter id="dxo-blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" /></filter>
+        </defs>
+        <g class="dx-orb-ribbons">
+          <path d="M-64 78C-120 150 -150 200 -128 268C-96 214 -40 170 30 112Z" fill="url(#dxo-ribbon)" />
+          <path d="M40 -98C96 -150 150 -160 214 -128" />
+        </g>
+        <g class="dx-mem dx-mem--back1"><path d={MEMBRANES.back1} fill="url(#dxo-back)" /><path class="dx-mem-fold" d={MEMBRANES.back1} /></g>
+        <g class="dx-mem dx-mem--back2"><path d={MEMBRANES.back2} fill="url(#dxo-back)" /><path class="dx-mem-fold" d={MEMBRANES.back2} /></g>
+        <circle class="dx-orb-body" r="100" fill="url(#dxo-body)" />
+        <g clip-path="url(#dxo-clip)">
+          <g class="dx-orb-cells">
+            <path d={MEMBRANES.cell1} transform="translate(-44 -46)" />
+            <path d={MEMBRANES.cell2} transform="translate(52 -58)" />
+          </g>
+          <circle r="100" fill="url(#dxo-shade)" />
+          <ellipse class="dx-orb-sheen" cx="-34" cy="-52" rx="50" ry="26" transform="rotate(-32 -34 -52)" filter="url(#dxo-blur)" />
+        </g>
+        <circle class="dx-orb-rim" r="99.4" />
+        <g class="dx-mem dx-mem--front1"><path d={MEMBRANES.front1} fill="url(#dxo-front)" /><path class="dx-mem-fold" d={MEMBRANES.front1} /></g>
+        <g class="dx-mem dx-mem--front2"><path d={MEMBRANES.front2} fill="url(#dxo-front)" /></g>
+        <circle class="dx-orb-glint" cx="-52" cy="-56" r="3.2" />
+      </svg>
     </div>
   );
 }
@@ -66,10 +121,10 @@ export function Prompts(props: { onA?: () => void; onB?: () => void; aLabel?: st
   return (
     <>
       <Show when={props.onB}>
-        <button class="dx-prompt dx-prompt--b" onClick={() => props.onB?.()}><span class="dx-btn dx-btn--b" aria-hidden="true">b</span><span class="dx-prompt-label">back</span></button>
+        <button class="dx-prompt dx-prompt--b" onClick={() => props.onB?.()}><span class="dx-btn dx-btn--b" aria-hidden="true"><b>b</b></span><span class="dx-prompt-label">back</span></button>
       </Show>
       <Show when={props.onA}>
-        <button class="dx-prompt dx-prompt--a" onClick={() => props.onA?.()}><span class="dx-btn dx-btn--a" aria-hidden="true">a</span><span class="dx-prompt-label">{props.aLabel ?? "select"}</span></button>
+        <button class="dx-prompt dx-prompt--a" onClick={() => props.onA?.()}><span class="dx-btn dx-btn--a" aria-hidden="true"><b>a</b></span><span class="dx-prompt-label">{props.aLabel ?? "select"}</span></button>
       </Show>
     </>
   );

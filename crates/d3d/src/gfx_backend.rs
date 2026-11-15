@@ -129,6 +129,15 @@ pub struct GfxBackend {
     counter: Option<PixelCounter>,
     /// The depth-bits pass ([`Backend::depth_level_texture`]), made on first use.
     depth_bits: Option<gfx::depth_bits::DepthBits>,
+    /// Guest-word passes ([`Backend::depth_alias_texture`]), made on first use.
+    guest_words: Option<gfx::guest_words::GuestWords>,
+    /// [`set_gpu_depth_aliases`](Self::set_gpu_depth_aliases).
+    gpu_depth_aliases: bool,
+    /// The depth buffer's words for aliases the GPU pass cannot make: the
+    /// surface, the device's depth generation, and the bytes.
+    depth_words: Option<(SurfaceId, u64, Vec<u8>)>,
+    /// Surface and depth read-backs so far ([`readbacks`](Self::readbacks)).
+    readbacks: u64,
     reports: HashMap<u64, PixelReport>,
     next_ticket: u64,
     /// Presents so far plus one.
@@ -175,11 +184,33 @@ impl GfxBackend {
             counter: None,
             reports: HashMap::new(),
             depth_bits: None,
+            guest_words: None,
+            gpu_depth_aliases: std::env::var_os("H2_D3D_GPU_DEPTH_ALIAS").is_none_or(|v| v != "0"),
+            depth_words: None,
+            readbacks: 0,
             next_ticket: 0,
             frame: 1,
             frame_draw: 0,
             merge_check_frame: None,
         }
+    }
+
+    /// Textures over the depth buffer's memory made on the GPU (on by
+    /// default; `H2_D3D_GPU_DEPTH_ALIAS=0` turns it off): the device hands
+    /// them to [`Backend::depth_alias_texture`], which decodes the depth
+    /// buffer's `D24S8` words as the texture's format in a compute pass
+    /// ([`gfx::guest_words::GuestWords::depth_alias`]) instead of reading
+    /// the buffer back, decoding on the CPU and uploading. Formats the pass
+    /// does not cover still read back here, once per depth generation. Off:
+    /// the device reads back and decodes itself, as before.
+    pub fn set_gpu_depth_aliases(&mut self, on: bool) {
+        self.gpu_depth_aliases = on;
+    }
+
+    /// Surface and depth read-backs so far (`read_surface`, `read_depth`):
+    /// each one waits for the GPU.
+    pub fn readbacks(&self) -> u64 {
+        self.readbacks
     }
 
     /// Pass and submission counts so far.
@@ -946,6 +977,7 @@ impl Backend for GfxBackend {
         use gfx::surface::{SurfaceError, SurfaceLayout};
         // The bits include everything drawn so far.
         self.flush()?;
+        self.readbacks += 1;
         let layout = match layout {
             GuestLayoutKind::Swizzled => SurfaceLayout::Swizzled,
             GuestLayoutKind::Linear { pitch } => SurfaceLayout::Linear { pitch },
@@ -1048,6 +1080,82 @@ impl Backend for GfxBackend {
         Ok(Some(self.host_texture(out, TextureKind::D2)))
     }
 
+    fn defers_depth_aliases(&self) -> bool {
+        // Depth24Plus cannot be read at all (nor by `read_depth`).
+        self.gpu_depth_aliases && self.ctx.caps.depth32_stencil8
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn depth_alias_texture(
+        &mut self,
+        depth: SurfaceId,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        generation: u64,
+        offset: usize,
+        desc: &gfx::TextureDesc,
+        options: gfx::texture::DecodeOptions,
+    ) -> Result<Option<HostTexture>, String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        // The words as the draws so far left them.
+        self.flush()?;
+        let s = self.store.get(depth).map_err(|e| e.to_string())?;
+        let texture = s.texture().clone();
+        let d = *s.desc();
+        let word_layout = match desc.format.layout() {
+            gfx::format::Layout::Swizzled => Some(0),
+            gfx::format::Layout::Linear if desc.pitch.is_multiple_of(4) => Some(desc.pitch / 4),
+            _ => None,
+        };
+        // The pass reads `D24S8` words in rows of the surface's width.
+        let gpu = format == D3DFormat::LinD24S8
+            && pitch == width * 4
+            && (d.width, d.height) == (width, height)
+            && d.samples == 1
+            && texture.format() == wgpu::TextureFormat::Depth32FloatStencil8
+            && offset.is_multiple_of(4)
+            && desc.kind == TextureKind::D2
+            && desc.levels == 1
+            && gfx::guest_words::WordFormat::of(desc.format).is_some();
+        if let (true, Some(pitch_words)) = (gpu, word_layout) {
+            let ctx = &self.ctx;
+            let words = self.guest_words.get_or_insert_with(|| gfx::guest_words::GuestWords::new(ctx));
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            let layout = gfx::guest_words::WordLayout { base: (offset / 4) as u32, pitch_words };
+            let flip = gfx::guest_words::sign_flip(options.signed);
+            match words.depth_alias(ctx, &mut enc, &texture, desc.format, (desc.width, desc.height), layout, flip) {
+                Ok(out) => {
+                    self.submit(enc);
+                    return Ok(Some(self.host_texture(out, TextureKind::D2)));
+                }
+                // Out of bounds or an odd swizzle: the CPU path says why.
+                Err(_) => drop(enc),
+            }
+        }
+        // The CPU path, as the device runs it: one read-back per depth
+        // generation, decoded per texture.
+        if self
+            .depth_words
+            .as_ref()
+            .is_none_or(|(s, g, _)| (*s, *g) != (depth, generation))
+        {
+            let layout = GuestLayoutKind::Linear { pitch };
+            let Some(bytes) = self.read_depth(depth, format, width, height, layout)? else {
+                return Err(format!("depth-alias texture: the {format:?} depth buffer cannot be read back"));
+            };
+            self.depth_words = Some((depth, generation, bytes));
+        }
+        let bytes = &self.depth_words.as_ref().expect("read above").2;
+        let decoded = bytes
+            .get(offset..)
+            .ok_or_else(|| format!("read_depth returned {} bytes, offset {offset}", bytes.len()))
+            .and_then(|b| gfx::texture::decode_texture(desc, b, None, options).map_err(|e| e.to_string()))
+            .map_err(|e| format!("depth-alias texture: {e}"))?;
+        self.upload_texture(&decoded).map(Some)
+    }
+
     fn surface_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {
         // No flush: the draw that binds the view submits a pending pass
         // into `surface` before it records anything (another target).
@@ -1080,6 +1188,7 @@ impl Backend for GfxBackend {
         use gfx::encode::HostPixelOrder;
         use gfx::surface::SurfaceLayout;
         self.flush()?;
+        self.readbacks += 1;
         // A GPU round trip: submit, wait, map.
         let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
         timeline::phase::count(timeline::phase::Counter::Readbacks, 1);

@@ -46,8 +46,9 @@ runner):
   (`NV_PFIFO_CACHE1_DMA_PUT/GET` equal, `NV_PGRAPH_STATUS` idle).
 - **Push-buffer callbacks** (`0x24970`): drain, write back, call.
 - **Pixel counters**: `read_pixel_count` waits for its report.
-- **Depth aliases** (`0x509368`, the menu's fog pass): `read_depth` of the
-  depth buffer, cached by depth generation.
+- **Depth aliases** (`0x509368`, the menu's fog pass): decoded from the
+  depth buffer on the GPU (`GfxBackend`, 2026-11-15); before that
+  `read_depth` of the depth buffer, cached by depth generation.
 - **`Swap`**: present, then the full GPU wait for `D3DSWAP_FINISH`.
 - **Vblank and the frame wait** (`0x12b2e0`) wait on the logical clock,
   never on the GPU or wall time (docs/d3d.md, "Vertical blank").
@@ -128,7 +129,12 @@ Each `Backend` method falls in one of three classes
    decode and upload at that point in the queue, once per depth
    generation as the device did. Whether a description decodes depends
    only on the description, so the device checks it once per description
-   on zero bytes and skips exactly where it skipped before.
+   on zero bytes and skips exactly where it skipped before. Since
+   2026-11-15 `GfxBackend` makes the texture itself, on the GPU
+   (`gfx::guest_words::GuestWords::depth_alias`, docs/d3d.md "Depth
+   aliases on the GPU"), so neither thread reads the depth buffer back
+   for the formats that pass covers; `H2_D3D_GPU_DEPTH_ALIAS=0` restores
+   the read-back.
 
 Against the requirements:
 

@@ -426,6 +426,55 @@ Not new, still true: the host-contention tail is the p99 (the loaded
 render-thread runs reached p99 509 ms at load 65), and with the
 render thread the game thread and the render thread compete for cores.
 
+### Depth aliases on the GPU (2026-11-15)
+
+Item 1's depth half. The user's own `h2 play` run on master (1,897
+presents, mostly the menu and some level, ~1,100 draws a present)
+counted `rtt_writebacks` 0, every write-back cause 0, and `depth_reads`
+1,763 with `depth_alias_uploads` 1,763: about one depth-alias read-back
+a frame (the fog pass, `0x509368`), and no render-to-texture write-back
+at all. So the depth alias went first: `GfxBackend` now decodes the
+depth buffer as the alias's format on the GPU
+(`Backend::depth_alias_texture`, docs/d3d.md "Depth aliases on the
+GPU"). No read-back, no CPU decode, no upload; with the render thread
+it no longer drains the render thread's queue either.
+`H2_D3D_GPU_DEPTH_ALIAS=0` restores the read-back.
+
+Headless microbench, `cargo test --release -p d3d --test gpu_depth_alias
+-- --ignored --nocapture`: a 640x480 frame that clears colour and depth,
+draws 200 depth-writing quads, samples the whole depth buffer through a
+`LIN_A8R8G8B8` header in one full-screen quad, draws 100 more quads and
+swaps. 60 frames after a warm-up, then one read-back drains the queue.
+Apple Silicon, load average 9 (other lanes running), two rounds:
+
+| path | round 0 ms/frame | round 1 ms/frame |
+|---|---|---|
+| sync, read-back (`H2_D3D_GPU_DEPTH_ALIAS=0`) | 3.44 | 3.31 |
+| sync, GPU alias | **1.31** | **1.41** |
+| render thread, read-back | 3.37 | 3.53 |
+| render thread, GPU alias | **1.21** | **1.28** |
+
+About 2.1 ms a frame here, where the queue ahead of the read-back is 200
+small draws. In the game the read-back waits for everything queued
+before the fog pass (the measured `read_depth` share was 2.1 ms a frame
+in the level and 4.6 ms with the render thread, up to ~20 ms on the
+menu), and that whole wait goes. Both paths give byte-identical back
+buffers (`gpu_depth_aliases_draw_what_the_readback_draws`).
+
+Not done in this pass: the `Overlap` write-backs measured in The Heretic
+on ac9fb31 (4 a frame: two 160x120 colour levels, a 320x240 one and the
+512x512 `LIN_D24S8` shadow map over one allocation). The user's run
+above saw none. The GPU halves are in place and tested byte for byte
+against the CPU write-back and fill (`gfx::guest_words`: `store_color`,
+`store_depth`, `load_color` on a storage buffer standing for guest
+memory). What is left is the device's bookkeeping: which bytes the
+buffer holds newer than guest memory, merging guest stores made since,
+flushing them to guest memory at the waits that write levels back now,
+and filling a depth level that overlaps them (no GPU decode into depth
+yet: a whole depth-and-stencil clear can skip the fill, anything else
+needs the flush). Do it if a level run shows `writeback_causes.overlap`
+again.
+
 ### The submit regression (bisected 2026-11-15)
 
 `queue submit` went from 2.1 ms a frame (9a39ed7, merged passes opt-in)

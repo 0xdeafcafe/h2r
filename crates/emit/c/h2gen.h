@@ -274,7 +274,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_ACC_ONE() (h2acc += 1u)
 #define H2_ACC_FLUSH()                                                          \
     do {                                                                        \
-        if (h2acc) { h2abi_v1_charge(ctx, h2acc); h2acc = 0; }                  \
+        if (h2acc) { H2_GATE_DROP(); h2abi_v1_charge(ctx, h2acc); h2acc = 0; }  \
     } while (0)
 /* The budget left after this handler's own count, cached for the polls. */
 #define H2_ACC_BUDGET_LOCALS() uint64_t h2left = h2abi_v1_budget(ctx)
@@ -325,6 +325,11 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     uint32_t x_kind, x_route, x_target, x_resume, x_event, x_eip;               \
     H2_PERF_LOCALS(); H2_FAST_LOCALS(); H2_ACC_LOCALS(); (void)ctx
 
+/* The handler's hold on the inline RAM gate (h2fastmem.h): dropped before
+ * anything that takes the context, and on every way out. Helpers that get
+ * only CpuAbi or X87Abi cannot reach guest memory and may run under it. */
+#define H2_GATE_DROP() h2_gate_drop(h2_mem_, &h2g_)
+
 /* Every way out of a handler sets the x_* locals and jumps to the one
  * shared epilogue, which commits canonical state and returns. Keeping a
  * single spill per handler (instead of one per possible fault) is most of
@@ -333,6 +338,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     h2_exit:                                                                    \
     H2_EPILOGUE_BODY()
 #define H2_EPILOGUE_BODY()                                                      \
+    H2_GATE_DROP();                                                             \
     H2_ACC_FLUSH();                                                             \
     cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;             \
     cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;             \
@@ -342,6 +348,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 
 #define H2_EXIT_(kind, route, target, resume, event, eip)                       \
     do {                                                                        \
+        H2_GATE_DROP();                                                         \
         x_kind = (kind); x_route = (route); x_target = (target);                \
         x_resume = (resume); x_event = (event); x_eip = (eip);                  \
         goto h2_exit;                                                           \
@@ -362,9 +369,13 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     T dst = 0;                                                                  \
     do {                                                                        \
         uint8_t b_[16];                                                         \
+        uint32_t a_ = (addr);                                                   \
         H2_ACC_ONE();                                                           \
-        uint32_t st_ = h2_mem_read(h2_mem_, ctx, (pc), (addr), (n), 1u, b_);           \
-        if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                          \
+        if (!h2_held_read(h2_mem_, &h2g_, a_, (n), b_)) {                       \
+            H2_GATE_DROP();                                                     \
+            uint32_t st_ = H2_MEM_READ_SLOW(ctx, (pc), a_, (n), 1u, b_);        \
+            if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                      \
+        }                                                                       \
         memcpy(&dst, b_, (n));                                                  \
     } while (0)
 #define H2_LD(T, n, dst, pc, addr) H2_LD_(T, n, dst, pc, addr, (void)0)
@@ -375,11 +386,13 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 /* A guest exception or stop recorded through h2shim_v1_event. */
 #define H2_RAISE(pc, saved, code, arg)                                          \
     do {                                                                        \
+        H2_GATE_DROP();                                                         \
         uint32_t e_ = h2shim_v1_event(ctx, (pc), (saved), (code), (arg));      \
         H2_FAULT_EVENT(pc, e_);                                                 \
     } while (0)
 #define H2_HALT(pc, code, arg)                                                  \
     do {                                                                        \
+        H2_GATE_DROP();                                                         \
         uint32_t e_ = h2shim_v1_event(ctx, (pc), (pc), (code), (arg));         \
         H2_STOP_EVENT(pc, e_);                                                  \
     } while (0)
@@ -388,10 +401,14 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     do {                                                                        \
         T v_ = (value);                                                         \
         uint8_t b_[16];                                                         \
+        uint32_t a_ = (addr);                                                   \
         memcpy(b_, &v_, (n));                                                   \
         H2_ACC_ONE();                                                           \
-        uint32_t st_ = h2_mem_write(h2_mem_, ctx, (pc), (addr), (n), 1u, b_);          \
-        if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                          \
+        if (!h2_held_write(h2_mem_, &h2g_, a_, (n), b_)) {                      \
+            H2_GATE_DROP();                                                     \
+            uint32_t st_ = H2_MEM_WRITE_SLOW(ctx, (pc), a_, (n), 1u, b_);       \
+            if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                      \
+        }                                                                       \
     } while (0)
 #define H2_ST(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (void)0)
 #define H2_STR(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (fl = rfl_, fd = rfd_))
@@ -419,6 +436,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_ATOMIC(pc, call)                                                     \
     uint32_t o_ = 0;                                                            \
     do {                                                                        \
+        H2_GATE_DROP();                                                         \
         H2_SYNC_OUT();                                                          \
         uint32_t st_ = (call);                                                  \
         if (st_) H2_FAULT_EVENT(pc, st_);                                       \
@@ -460,6 +478,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     H2_EPILOGUE_BODY()
 #define H2X87_FAIL()                                                            \
     h2_x87_fail:                                                                \
+    H2_GATE_DROP();                                                             \
     H2X87_SPILL();                                                              \
     if ((x_st & H2X87_STATUS_MASK) == H2X87_MF) {                               \
         uint32_t e_ = h2shim_v1_event(ctx, x_eip, x_eip, H2SHIM_FP_ERROR, cpu->x87.status); \
@@ -549,6 +568,7 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
 #define H2_LOOP_POLL(header)                                                    \
     do {                                                                        \
         H2_PERF_LOOP();                                                         \
+        h2_gate_tick(h2_mem_, &h2g_);                                           \
         if (__builtin_expect(H2_POLLED(), 0))                                   \
             H2_XFER(H2_JUMP, H2_RESUME, (header), 0u);                          \
     } while (0)

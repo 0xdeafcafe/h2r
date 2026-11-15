@@ -813,6 +813,18 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         let desc = desc.clone();
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
+            // A backend that makes the texture itself (`GfxBackend` decodes
+            // the words on the GPU) does, with no read-back here.
+            if w.inner.defers_depth_aliases() {
+                let s = w.surface(depth)?;
+                if let Some(h) = w
+                    .inner
+                    .depth_alias_texture(s, format, width, height, pitch, generation, offset, &desc, options)?
+                {
+                    w.textures.insert(id, h);
+                    return Ok(());
+                }
+            }
             // One read-back per depth generation, as the device does it.
             if w
                 .depth_words
