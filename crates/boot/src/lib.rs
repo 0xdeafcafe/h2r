@@ -94,20 +94,70 @@ pub fn dylib_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
     dylib.exists() && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp(xbe_bytes))
 }
 
+/// Where [`build`] (and the fallback interpreter at run time) keep
+/// discovery's result for `xbe_bytes`: in the boot cache directory
+/// (`H2_BOOT_CACHE`, default `$TMPDIR/h2boot-cache`; `off` disables it),
+/// shared by every output directory, named by the image's hash and size
+/// and by everything discovery's code is made of (`ANALYSIS_SOURCE_HASH`:
+/// the xbe and analyze sources, Cargo.lock and the rustc version). `None`
+/// when caching is off, or `H2_TRACE` asks discovery for diagnostics.
+pub fn analysis_cache(xbe_bytes: &[u8]) -> Option<PathBuf> {
+    if std::env::var_os("H2_TRACE").is_some_and(|v| !v.is_empty()) {
+        return None;
+    }
+    Some(analysis_cache_in(xbe_bytes, &fallback::boot_cache_dir()?, env!("ANALYSIS_SOURCE_HASH")))
+}
+
+fn analysis_cache_in(xbe_bytes: &[u8], dir: &Path, analyzer: &str) -> PathBuf {
+    dir.join(format!("analysis-{:016x}-{:x}-{analyzer}.h2a", fallback::fnv64(xbe_bytes), xbe_bytes.len()))
+}
+
+/// Discovery's result for the image: read from `cache` when an earlier
+/// build by the same analyzer left it there, otherwise computed and saved
+/// there. With no `cache`, always computed. Returns whether the cache
+/// served it.
+pub(crate) fn analyze_cached(x: &xbe::Xbe, cache: Option<&Path>) -> Result<(analyze::Analysis, bool)> {
+    if let Some(cache) = cache
+        && let Ok(bytes) = std::fs::read(cache)
+        && let Some(a) = analyze::Analysis::decode(&bytes)
+    {
+        // Pruning by modification time drops the least recently used.
+        let _ = std::fs::File::options().append(true).open(cache).and_then(|f| f.set_modified(std::time::SystemTime::now()));
+        return Ok((a, true));
+    }
+    let a = analyze::analyze(x)?;
+    // Best effort: a failed write only costs the next build the analysis.
+    if let Some(cache) = cache
+        && let Some(dir) = cache.parent()
+        && let Err(e) = std::fs::create_dir_all(dir).and_then(|()| emit::output::replace(cache, &a.encode()))
+    {
+        eprintln!("analyze: not cached ({}: {e})", cache.display());
+    }
+    Ok((a, false))
+}
+
 /// Lift, emit and compile the image into `out/libh2game.dylib`.
 pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
+    let total = Instant::now();
     let x = xbe::Xbe::parse(xbe_bytes)?;
     // A failed build must not leave an old stamp vouching for a new dylib.
     let _ = std::fs::remove_file(stamp_path(&out.join(DYLIB)));
     let t = Instant::now();
-    let a = analyze::analyze(&x)?;
-    eprintln!("analyze: {:.1}s, {} functions", t.elapsed().as_secs_f64(), a.functions.len());
+    let (a, cached) = analyze_cached(&x, analysis_cache(xbe_bytes).as_deref())?;
+    eprintln!(
+        "analyze: {:.1}s, {} functions{}",
+        t.elapsed().as_secs_f64(),
+        a.functions.len(),
+        if cached { " (cached)" } else { "" }
+    );
     let t = Instant::now();
     let lifter = lift::Lifter::new(&a, &x)?;
+    let entries: Vec<u32> = a.functions.keys().copied().collect();
+    let lifted = emit::par::map(&entries, |&e| lifter.lift(e));
     let mut funcs = Vec::new();
     let mut unlifted = Vec::new();
-    for &e in a.functions.keys() {
-        match lifter.lift(e) {
+    for (&e, f) in entries.iter().zip(lifted) {
+        match f {
             Some(f) => funcs.push(f),
             None => unlifted.push(e),
         }
@@ -123,7 +173,9 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
             format!(" (first: {:x?})", &unlifted[..unlifted.len().min(8)])
         }
     );
+    let t = Instant::now();
     let owners = emit::plan(funcs);
+    eprintln!("plan: {:.1}s (IR passes and owner shapes)", t.elapsed().as_secs_f64());
     let src = out.join("src");
     let t = Instant::now();
     let w = emit::write_module(&owners, &src)?;
@@ -137,15 +189,18 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
         w.entries,
         w.resumes
     );
+    drop(owners);
     emit::compile::install_header(&src, Path::new(H2ABI_H)).map_err(anyhow::Error::msg)?;
     let arch = emit::compile::Arch::host();
     let b = emit::compile::build(&src, out, arch, jobs).map_err(anyhow::Error::msg)?;
     eprintln!(
-        "clang ({}): {} compiled, {} reused, {:.1}s, {:.1} MB of objects",
+        "clang ({}): {} compiled, {} reused, {:.1}s keying (dependency scans, hashing, pins), {:.1}s compiling, {:.1}s archive, {:.1} MB of objects",
         arch.name(),
         b.compiled,
         b.reused,
+        b.cache_secs,
         b.compile_secs,
+        b.archive_secs,
         b.object_bytes as f64 / 1e6
     );
     let lib = out.join(DYLIB);
@@ -153,6 +208,7 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     emit::compile::host_dylib(&b, &src, &[("h2boot_bridge.c", BRIDGE), ("h2boot_bridge_x87.c", BRIDGE_X87)], &lib).map_err(anyhow::Error::msg)?;
     eprintln!("link: {:.1}s -> {}", t.elapsed().as_secs_f64(), lib.display());
     std::fs::write(stamp_path(&lib), build_stamp(xbe_bytes)).with_context(|| format!("stamping {}", lib.display()))?;
+    eprintln!("build: {:.1}s", total.elapsed().as_secs_f64());
     Ok(lib)
 }
 
@@ -675,6 +731,95 @@ pub(crate) static SHIM_EVENTS: Mutex<Vec<(u32, u32, String)>> = Mutex::new(Vec::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A minimal XBE: `.text` at 0x11000 holding `code` (int3-filled to
+    /// 0x100 bytes), and `.rdata` at 0x12000 holding a kernel thunk table
+    /// importing KeBugCheck. Synthetic bytes, like analyze's own tests.
+    fn synthetic_xbe(code: &[u8]) -> Vec<u8> {
+        const BASE: u32 = 0x10000;
+        let mut d = vec![0u8; 0x1200];
+        let put = |d: &mut Vec<u8>, o: usize, v: u32| d[o..o + 4].copy_from_slice(&v.to_le_bytes());
+        d[..4].copy_from_slice(b"XBEH");
+        put(&mut d, 0x104, BASE);
+        put(&mut d, 0x108, 0x1000);
+        put(&mut d, 0x10C, 0x3000);
+        put(&mut d, 0x118, BASE + 0x400);
+        put(&mut d, 0x11C, 2);
+        put(&mut d, 0x120, BASE + 0x200);
+        put(&mut d, 0x128, 0x11000 ^ 0xA8FC_57AB);
+        put(&mut d, 0x158, 0x12000 ^ 0x5B6D_40B6);
+        for (o, flags, va, raw_at, name_at, name) in
+            [(0x200, 0x06, 0x11000, 0x1000, 0x280, &b".text\0"[..]), (0x238, 0x02, 0x12000, 0x1100, 0x290, b".rdata\0")]
+        {
+            put(&mut d, o, flags);
+            put(&mut d, o + 4, va);
+            put(&mut d, o + 8, 0x100);
+            put(&mut d, o + 12, raw_at);
+            put(&mut d, o + 16, 0x100);
+            put(&mut d, o + 20, BASE + name_at as u32);
+            d[name_at..name_at + name.len()].copy_from_slice(name);
+        }
+        d[0x1000..0x1100].fill(0xCC);
+        d[0x1000..0x1000 + code.len()].copy_from_slice(code);
+        put(&mut d, 0x1100, 0x8000_0000 | 95);
+        d
+    }
+
+    /// The cached analysis is keyed by the image and the analyzer, served
+    /// whole when both match, recomputed (and rewritten) when the file is
+    /// damaged, and bypassed entirely when there is no cache.
+    #[test]
+    fn the_analysis_cache_serves_only_its_image_and_analyzer() {
+        let dir = std::env::temp_dir().join(format!("h2boot-analysis-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // call 0x11010; ret / 0x11010: ret
+        let one = synthetic_xbe(&[0xE8, 0x0B, 0, 0, 0, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xC3]);
+        let two = synthetic_xbe(&[0xC3]);
+        let x1 = xbe::Xbe::parse(&one).unwrap();
+        let x2 = xbe::Xbe::parse(&two).unwrap();
+        let fresh = analyze::analyze(&x1).unwrap().encode();
+        assert_ne!(fresh, analyze::analyze(&x2).unwrap().encode(), "the two images analyze differently");
+
+        let path = analysis_cache_in(&one, &dir, "analyzer-a");
+        let (a, hit) = analyze_cached(&x1, Some(&path)).unwrap();
+        assert!(!hit, "nothing cached yet");
+        assert_eq!(a.encode(), fresh);
+        let (a, hit) = analyze_cached(&x1, Some(&path)).unwrap();
+        assert!(hit);
+        assert_eq!(a.encode(), fresh, "the cache serves the same analysis");
+
+        // Another image or another analyzer is another file.
+        assert_ne!(path, analysis_cache_in(&two, &dir, "analyzer-a"));
+        assert_ne!(path, analysis_cache_in(&one, &dir, "analyzer-b"));
+        let (b, hit) = analyze_cached(&x2, Some(&analysis_cache_in(&two, &dir, "analyzer-a"))).unwrap();
+        assert!(!hit);
+        assert_eq!(b.encode(), analyze::analyze(&x2).unwrap().encode());
+        assert!(!analyze_cached(&x1, Some(&analysis_cache_in(&one, &dir, "analyzer-b"))).unwrap().1);
+
+        // A damaged file is recomputed and replaced.
+        std::fs::write(&path, b"not an analysis").unwrap();
+        let (a, hit) = analyze_cached(&x1, Some(&path)).unwrap();
+        assert!(!hit);
+        assert_eq!(a.encode(), fresh);
+        assert_eq!(std::fs::read(&path).unwrap(), fresh);
+
+        // No cache (H2_TRACE): computed, and nothing read or written.
+        let other = dir.join("unused.h2a");
+        assert!(!analyze_cached(&x1, None).unwrap().1);
+        assert!(!other.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The real cache name carries the analyzer's source hash, so editing
+    /// the analyzer (or its dependencies or compiler) misses.
+    #[test]
+    fn the_analysis_cache_is_named_by_the_analyzer_source() {
+        let p = analysis_cache_in(b"XBEH image", Path::new("/cache"), env!("ANALYSIS_SOURCE_HASH"));
+        assert!(p.to_string_lossy().contains(env!("ANALYSIS_SOURCE_HASH")), "{}", p.display());
+        if std::env::var_os("H2_TRACE").is_none() && std::env::var_os("H2_BOOT_CACHE").is_none() {
+            assert_eq!(analysis_cache(b"XBEH image").unwrap().parent(), Some(&*std::env::temp_dir().join("h2boot-cache")));
+        }
+    }
 
     #[test]
     fn generated_flags_are_part_of_the_dylib_stamp() {

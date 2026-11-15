@@ -3,6 +3,8 @@
 //!
 //! - `UNREAD_SOURCE_HASH`: the analyze crate and the boot's fallback, for
 //!   the cached unread-target set (fallback.rs).
+//! - `ANALYSIS_SOURCE_HASH`: xbe, analyze, Cargo.lock and the rustc
+//!   version, for the cached analysis (lib.rs, `analysis_cache`).
 //! - `GENERATOR_SOURCE_HASH`: everything that turns an XBE into the native
 //!   module (xbe, analyze, ir, lift, the IR passes, emit and its C, x87, the
 //!   runtime ABI header and the boot's bridge C), for the dylib's build stamp
@@ -43,7 +45,26 @@ fn hash(dirs: &[&str], exts: &[&str], extra: &[&str]) -> u64 {
     h
 }
 
+/// The compiler's version line: a new rustc may compile the analyzer
+/// differently, so it is part of the analysis cache's key.
+fn rustc_version() -> String {
+    let rustc = std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into());
+    std::process::Command::new(rustc)
+        .arg("-vV")
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default()
+}
+
 fn main() {
+    // What discovery's result depends on: the image parser and the
+    // analyzer, their dependencies' versions (Cargo.lock) and the compiler.
+    let mut analysis = hash(&["../xbe/src", "../analyze/src"], &["rs"], &["../../Cargo.lock"]);
+    for b in rustc_version().bytes() {
+        analysis ^= b as u64;
+        analysis = analysis.wrapping_mul(0x100_0000_01b3);
+    }
+    println!("cargo:rustc-env=ANALYSIS_SOURCE_HASH={analysis:016x}");
     let unread = hash(&["../analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
     let generator = hash(

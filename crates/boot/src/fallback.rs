@@ -119,7 +119,9 @@ fn build_state() -> &'static Mutex<State> {
         let bytes = *XBE.get().unwrap();
         let t = std::time::Instant::now();
         let x: &'static xbe::Xbe<'static> = Box::leak(Box::new(xbe::Xbe::parse(bytes).unwrap()));
-        let mut analysis = analyze::analyze(x).unwrap();
+        // The build left this image's analysis in the cache, if it ran
+        // since the analyzer last changed.
+        let (mut analysis, _) = crate::analyze_cached(x, crate::analysis_cache(bytes).as_deref()).unwrap();
         // The interpreter's own copy: with the stopgap, unread jump-table
         // targets become entries so the lazy lifter can reach them.
         let unread = UNREAD_ENABLED
@@ -500,16 +502,22 @@ pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
     n
 }
 
+/// The boot's cache directory (`H2_BOOT_CACHE`, or `$TMPDIR/h2boot-cache`),
+/// or `None` for `H2_BOOT_CACHE=off`. Holds the unread-target sets and
+/// the cached analyses ([`crate::analysis_cache`]).
+pub(crate) fn boot_cache_dir() -> Option<std::path::PathBuf> {
+    match std::env::var_os("H2_BOOT_CACHE") {
+        Some(d) if d == "off" => None,
+        Some(d) => Some(std::path::PathBuf::from(d)),
+        None => Some(std::env::temp_dir().join("h2boot-cache")),
+    }
+}
+
 /// Where the unread-target set for this image is cached: `H2_BOOT_CACHE`
 /// or `$TMPDIR/h2boot-cache`, keyed on the XBE bytes and on the analyze
 /// and fallback sources (`build.rs`). `H2_BOOT_CACHE=off` disables it.
 fn unread_cache_path(xbe: &[u8]) -> Option<std::path::PathBuf> {
-    let dir = match std::env::var_os("H2_BOOT_CACHE") {
-        Some(d) if d == "off" => return None,
-        Some(d) => std::path::PathBuf::from(d),
-        None => std::env::temp_dir().join("h2boot-cache"),
-    };
-    Some(dir.join(format!("unread-{:016x}-{}.txt", fnv64(xbe), env!("UNREAD_SOURCE_HASH"))))
+    Some(boot_cache_dir()?.join(format!("unread-{:016x}-{}.txt", fnv64(xbe), env!("UNREAD_SOURCE_HASH"))))
 }
 
 pub(crate) fn fnv64(bytes: &[u8]) -> u64 {
