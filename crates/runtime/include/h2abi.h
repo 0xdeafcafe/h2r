@@ -1,10 +1,15 @@
 #ifndef H2ABI_H
 #define H2ABI_H
-/* ABI v1. Generated files are disposable C11; never use native long double,
- * host pointers, host enums, or bools as guest architectural state. */
+/* ABI v2. Generated files are disposable C11; never use native long double,
+ * host pointers, host enums, or bools as guest architectural state.
+ * v2 adds one requirement on the host: the object behind ExecCtxOpaque *
+ * starts with a `const uint32_t *` to the context's preempt word, which
+ * generated loops poll (crates/emit/RUNTIME-CONTRACT.md, "Loop safe
+ * points"). A v1 host has no such prefix, so v2 code must be rejected by it.
+ * Accessor symbol names keep their v1 spelling. */
 #include <stdint.h>
 #include <stddef.h>
-#define H2_ABI_VERSION UINT32_C(1)
+#define H2_ABI_VERSION UINT32_C(2)
 #define H2_CALL UINT32_C(1)
 #define H2_JUMP UINT32_C(2)
 #define H2_RETURN UINT32_C(3)

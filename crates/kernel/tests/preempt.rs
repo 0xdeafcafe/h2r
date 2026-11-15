@@ -4,6 +4,8 @@
 //! run by the real runtime under `Machine`. With preemption the spinner
 //! gives up its slice at the loop's back-edge, the setter runs, and the
 //! spinner sees the flag; with `preempt_slice = None` it never does.
+//! Also: interrupts reaching a spinning loop, and which preemptions may let
+//! logical time advance.
 mod common;
 use common::*;
 use iced_x86::code_asm::*;
@@ -19,7 +21,14 @@ use std::path::Path;
 const SPIN: u32 = CODE + 0x1000;
 /// `set(flag)` (stdcall): `*flag = 1`.
 const SET: u32 = CODE + 0x2000;
+/// `wait(flag)` (stdcall): spin until `*flag != 0`, then return 1. Its
+/// state at the loop header is the same every trip.
+const WAIT: u32 = CODE + 0x3000;
+/// `sleep_set(flag)` (stdcall, a Rust override): sleep an hour of logical
+/// time, then `*flag = 1`.
+const SLEEP_SET: u32 = CODE + 0x300;
 const FLAG: u32 = DATA + 0x40;
+const HOUR: u32 = DATA + 0x120;
 const BOUND: u32 = 2_000_000;
 
 /// Assemble at `base`, lower, and split into blocks at every branch target
@@ -95,7 +104,16 @@ fn guest_functions() -> Vec<ir::IrFunction> {
         a.mov(dword_ptr(eax), 1)?;
         a.ret_1(4)
     });
-    vec![spin, set]
+    let wait = function(WAIT, |a| {
+        let mut poll = a.create_label();
+        a.mov(eax, dword_ptr(esp + 4))?;
+        a.set_label(&mut poll)?;
+        a.cmp(dword_ptr(eax), 0)?;
+        a.je(poll)?;
+        a.mov(eax, 1)?;
+        a.ret_1(4)
+    });
+    vec![spin, set, wait]
 }
 
 /// emit's test bridge (`c/bridge.c`) forwards the ABI imports through this
@@ -171,8 +189,18 @@ fn build() -> Option<libloading::Library> {
 /// Thread 1 creates thread 2 (which will run `set(FLAG)`), then calls
 /// `spin(FLAG, bound)` and exits with its result.
 fn machine(lib: &libloading::Library, bound: u32) -> Machine {
+    machine_with(lib, SET, SPIN, vec![FLAG, bound])
+}
+
+/// Thread 1 creates thread 2 running `start(FLAG)`, then calls
+/// `spinner(args)` (stdcall) and exits with its result.
+fn machine_with(lib: &libloading::Library, start: u32, spinner: u32, args: Vec<u32>) -> Machine {
     let h = Harness::new();
-    // SAFETY: the module's tables and probes follow ABI v1 and live as long
+    h.runtime
+        .memory()
+        .set_u64(HOUR, (-36_000_000_000i64) as u64)
+        .unwrap();
+    // SAFETY: the module's tables and probes follow the current ABI and live as long
     // as `lib`, which the caller keeps loaded for the whole run.
     unsafe {
         let module: libloading::Symbol<*const H2GenModule> = lib.get(b"h2gen_module").unwrap();
@@ -183,18 +211,29 @@ fn machine(lib: &libloading::Library, bound: u32) -> Machine {
             .edit_dispatch(|d| d.register_generated_module(module, version))
             .unwrap();
     }
-    h.code(0, |cpu, ctx, _| {
+    h.code(0, move |cpu, ctx, _| {
         guest_call(
             cpu,
             ctx,
             runtime::kernel::function_token(255), // PsCreateSystemThreadEx
-            &[DATA, 0, 0x4000, 0, DATA + 4, SET, FLAG, 0, 0, CODE + 0x200],
+            &[
+                DATA,
+                0,
+                0x4000,
+                0,
+                DATA + 4,
+                start,
+                FLAG,
+                0,
+                0,
+                CODE + 0x200,
+            ],
             CODE + 0x100,
         )
     });
     h.code(0x100, move |cpu, ctx, _| {
         assert_eq!(cpu.eax, kernel::status::SUCCESS);
-        guest_call(cpu, ctx, SPIN, &[FLAG, bound], CODE + 0x110)
+        guest_call(cpu, ctx, spinner, &args, CODE + 0x110)
     });
     // Exit code = spin's result.
     h.code(0x110, |cpu, ctx, _| ctx.memory().ret(cpu, 0));
@@ -207,6 +246,21 @@ fn machine(lib: &libloading::Library, bound: u32) -> Machine {
         guest_call(cpu, ctx, start, &[context], CODE + 0x210)
     });
     h.code(0x210, |cpu, ctx, _| ctx.memory().ret(cpu, 8));
+    // sleep_set(flag): KeDelayExecutionThread for an hour, then set it.
+    h.code(0x300, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(99),
+            &[0, 0, HOUR],
+            CODE + 0x310,
+        )
+    });
+    h.code(0x310, |cpu, ctx, _| {
+        let flag = ctx.memory().u32(cpu.esp + 4)?;
+        ctx.memory().set_u32(flag, 1)?;
+        ctx.memory().ret(cpu, 4)
+    });
     Machine::new(
         h.runtime.clone(),
         h.kernel.clone(),
@@ -261,7 +315,7 @@ fn an_interrupt_raised_from_another_host_thread_reaches_a_spinning_loop() {
             args: vec![FLAG],
             convention: runtime::CallConvention::Stdcall,
             thread: Some(1),
-            coalesce: false,
+            coalesce: true,
             name: "test vblank",
         })
     });
@@ -282,4 +336,37 @@ fn an_interrupt_raised_from_another_host_thread_reaches_a_spinning_loop() {
 
 fn runtime_pending(m: &Machine) -> usize {
     m.runtime.pending_interrupts()
+}
+
+#[test]
+fn work_that_runs_out_of_slices_does_not_move_logical_time() {
+    let Some(lib) = module() else { return };
+    // Thread 1 counts down 100000 polls while thread 2 sleeps an hour. Its
+    // registers change every slice, so it is never taken for a spinner and
+    // the hour does not pass under it: it finishes first, flag unseen.
+    let mut m = machine_with(lib, SLEEP_SET, SPIN, vec![FLAG, 100_000]);
+    m.preempt_slice = Some(64);
+    assert_eq!(
+        m.run(10_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 0), (2, 0)].into()
+        }
+    );
+    assert!(m.preemptions() > 1000, "{}", m.preemptions());
+}
+
+#[test]
+fn a_spinner_waiting_on_a_sleeper_lets_logical_time_reach_it() {
+    let Some(lib) = module() else { return };
+    // The same wait with nothing changing between preemptions: the second
+    // identical preemption marks it polling, the hour passes, the sleeper
+    // sets the flag and the spinner sees it.
+    let mut m = machine_with(lib, SLEEP_SET, WAIT, vec![FLAG]);
+    m.preempt_slice = Some(64);
+    assert_eq!(
+        m.run(100).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 1), (2, 0)].into()
+        }
+    );
 }

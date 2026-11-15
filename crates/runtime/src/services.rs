@@ -12,7 +12,7 @@ pub struct Runtime {
     dispatch: RwLock<Dispatch>,
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
-    pub(crate) preempt: crate::preempt::PreemptWord,
+    pub(crate) words: crate::preempt::Words,
 }
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
@@ -21,7 +21,7 @@ impl Runtime {
             dispatch: RwLock::new(dispatch),
             interrupts: Default::default(),
             tsc: Tsc::default(),
-            preempt: Default::default(),
+            words: Default::default(),
         })
     }
     /// Install (or with `None` remove) the guest-time source the

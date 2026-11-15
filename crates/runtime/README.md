@@ -1,4 +1,4 @@
-# Runtime ABI v1
+# Runtime ABI v2
 
 Generated C11 includes `include/h2abi.h` and returns explicit transfers to the
 Rust runner. Registers and memory addresses keep their guest widths. Ext80
@@ -322,9 +322,11 @@ Delivery:
 ## Preemption
 
 `preempt.rs` lets the host take the CPU from a guest loop that calls
-nothing. The `Runtime` owns one preempt word; every `ExecCtx` starts with a
-pointer to it (`#[repr(C)]`, offset asserted), which generated code reads
-once per handler and polls at each loop header. While the word is set a
+nothing. Every `ExecCtx` owns a preempt word and starts with a pointer to
+it (`#[repr(C)]`, offset asserted; the reason for ABI v2), which generated
+code reads once per handler and polls at each loop header. The `Runtime`
+keeps weak references to the words so a request from any host thread can
+reach them all. While the word is set a
 loop leaves with `JUMP`/`RESUME` to its header (registered as a resume),
 which reaches the runner's safe point like any other transfer.
 
@@ -333,34 +335,46 @@ pub const SLICE: u32 = 1;     // the armed context spent its accesses
 pub const INTERRUPT: u32 = 2; // an interrupt is queued
 pub const REQUEST: u32 = 4;   // the host wants the running thread to yield
 impl Runtime {
-    pub fn request_preempt(&self, reasons: u32); // any host thread
-    pub fn preempt_pending(&self) -> u32;
+    pub fn request_preempt(&self, reasons: u32); // every context, any host thread
+    pub fn preempt_pending(&self) -> u32;         // OR over every context
 }
 impl ExecCtx {
     pub fn arm_preemption(&mut self, accesses: u64);
     pub fn disarm_preemption(&mut self);
     pub fn preemption_armed(&self) -> bool;
+    pub fn preempt_pending(&self) -> u32; // this context's word
     pub fn take_preempted(&mut self) -> Option<TransferAbi>;
 }
 ```
 
 - **Safe point.** At the top of the runner loop, once a valid CALL, JUMP or
   RETURN is in hand and before it is dispatched. With the word clear this
-  is one relaxed load. Otherwise the runner takes every bit (one swap).
-- **Armed.** If the context is armed and SLICE or REQUEST was set, the
+  is one relaxed load. Otherwise the runner takes the context's bits (one
+  swap), then delivers a pending interrupt if it can. If it delivered one
+  it puts back every bit but INTERRUPT and dispatches the interrupt call,
+  so the next safe point decides the slice. Taking before delivering means
+  a raise that lands in between leaves its bit set rather than lost.
+- **Armed.** If the context is armed and its slice ran out or REQUEST was set, the
   runner keeps the undispatched transfer (`take_preempted`) and returns
   `STOP` with event 0. `run_from` with that transfer continues exactly
   where the thread was. `kernel::Machine` arms each thread slice.
 - **Unarmed** (the default, a DPC, tests): the bits are dropped and the run
   carries on. INTERRUPT alone never takes the thread away.
-- **Slice.** Counted in calls to the generated-code accessors (`h2abi_v1_read`,
+- **Slice.** Per context: the armed context that runs out sets SLICE on its
+  own word, and only it acts on it. Counted in calls to the generated-code accessors (`h2abi_v1_read`,
   `_write` and the atomics) by an armed context: reproducible, and a
   spin-wait always reads memory. Rust overrides do not count. A loop that
-  touches no memory at all stops only for INTERRUPT or REQUEST.
-- **Interrupts.** `raise_interrupt` sets INTERRUPT after queueing, so a
-  spinning generated loop returns to the runner within one trip. The
-  runner delivers the interrupt first, then takes the bits; INTERRUPT alone
-  never takes the thread away.
+  touches no memory at all stops only for INTERRUPT or REQUEST; this is
+  not instruction-count or wall-clock preemption, and a busy register-only
+  loop can keep the CPU until one of those arrives.
+- **Limits.** A REP string instruction (`Stmt::Repeat`) runs its own inner
+  C loop with no poll: it is finite, but a long one yields only at the next
+  loop header or transfer after it. Rust override loops are not polled.
+- **Interrupts.** `raise_interrupt` sets INTERRUPT on every word after
+  queueing, and again on a coalesced raise; unmasking with interrupts
+  queued sets it on the context's own word. So a spinning generated loop
+  returns to the runner within one trip of an interrupt becoming
+  deliverable. INTERRUPT alone never takes the thread away.
 
 ## Generated modules
 

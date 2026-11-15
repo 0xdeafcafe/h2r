@@ -79,7 +79,8 @@ x87_helpers! {
     h2x87_v1_load_env,
 }
 
-pub const ABI_VERSION: u32 = 1;
+/// `H2_ABI_VERSION`: 2 since `Ctx` carries the preempt-word prefix.
+pub const ABI_VERSION: u32 = 2;
 pub const CALL: u32 = 1;
 pub const JUMP: u32 = 2;
 pub const RETURN: u32 = 3;

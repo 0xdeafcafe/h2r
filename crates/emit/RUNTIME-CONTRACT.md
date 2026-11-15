@@ -3,7 +3,8 @@
 This is the contract between the C the emitter writes (`crates/emit`) and
 the runtime that loads it (`crates/runtime`). It covers what a generated
 module imports, what it exports, and how the runtime has to register and
-drive it. It is written against `h2abi.h` ABI v1. The layouts there
+drive it. It is written against `h2abi.h` ABI v2 (v2 adds the preempt
+word prefix of "Loop safe points"; a v1 host must reject v2 code). The layouts there
 (`CpuAbi`, `X87Abi`, `TransferAbi`) and the named version probes are used
 as they are. The emitter's support header is `crates/emit/c/h2gen.h`. It
 is copied next to every generated module and declares everything below.

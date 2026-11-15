@@ -4,7 +4,8 @@
 //! their guest bits on both Macs. TOP lives in status bits 11..13; `st` stores
 //! physical x87 registers (and therefore also the MMX aliases).
 
-pub const ABI_VERSION: u32 = 1;
+/// 2: the ExecCtx preempt-word prefix generated loops read (preempt.rs).
+pub const ABI_VERSION: u32 = 2;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -453,9 +453,9 @@ fn a_bad_module_registers_nothing_and_names_the_row() {
     assert_eq!(
         r,
         Err(RegistrationError::ModuleAbiVersion {
-            probe: 2,
-            table: 1,
-            runtime: 1
+            probe: runtime::cpu::ABI_VERSION + 1,
+            table: runtime::cpu::ABI_VERSION,
+            runtime: runtime::cpu::ABI_VERSION
         })
     );
     assert!(!d.has_generated(0x1000));
@@ -464,7 +464,11 @@ fn a_bad_module_registers_nothing_and_names_the_row() {
         (
             vec![ok(), entry(0x2000, 0, stale_probe)],
             vec![],
-            row_error(ModuleTable::Entries, 1, RegistrationError::AbiVersion(2)),
+            row_error(
+                ModuleTable::Entries,
+                1,
+                RegistrationError::AbiVersion(runtime::cpu::ABI_VERSION + 1),
+            ),
         ),
         (
             vec![ok(), entry(0x1000, 1, good_probe)],
@@ -530,7 +534,7 @@ fn a_bad_module_registers_nothing_and_names_the_row() {
     // A count that runs past the table's end, and a null table.
     let rows = [ok(), ok()];
     let module = H2GenModule {
-        abi_version: 1,
+        abi_version: runtime::cpu::ABI_VERSION,
         entry_count: 1,
         resume_count: 3,
         reserved: 0,
@@ -608,9 +612,9 @@ fn the_table_header_version_is_checked_on_its_own() {
     assert_eq!(
         r,
         Err(RegistrationError::ModuleAbiVersion {
-            probe: 1,
-            table: 2,
-            runtime: 1
+            probe: runtime::cpu::ABI_VERSION,
+            table: runtime::cpu::ABI_VERSION + 1,
+            runtime: runtime::cpu::ABI_VERSION
         })
     );
     assert_untouched(&d);
@@ -621,7 +625,7 @@ fn a_resume_owner_from_outside_the_module_is_rejected() {
     let mut d = preloaded();
     let r = register_raw(
         &mut d,
-        1,
+        runtime::cpu::ABI_VERSION,
         &[entry(0x1000, 0, good_probe), ZERO_ENTRY],
         1,
         &[
@@ -658,7 +662,7 @@ fn zero_addresses_are_rejected_in_both_tables() {
     // is not mistaken for the terminator).
     let r = register_raw(
         &mut d,
-        1,
+        runtime::cpu::ABI_VERSION,
         &[
             entry(0x1000, 0, good_probe),
             entry(0, 0, good_probe),
@@ -679,7 +683,7 @@ fn zero_addresses_are_rejected_in_both_tables() {
     assert_untouched(&d);
     let r = register_raw(
         &mut d,
-        1,
+        runtime::cpu::ABI_VERSION,
         &[entry(0x1000, 0, good_probe), ZERO_ENTRY],
         1,
         &[
@@ -713,7 +717,7 @@ fn a_resume_count_short_of_the_table_is_a_missing_terminator() {
     };
     let r = register_raw(
         &mut d,
-        1,
+        runtime::cpu::ABI_VERSION,
         &[entry(0x1000, 0, good_probe), ZERO_ENTRY],
         1,
         &[row, row, ZERO_RESUME],
@@ -728,7 +732,7 @@ fn a_resume_count_short_of_the_table_is_a_missing_terminator() {
     // that they are duplicates, which names the second row.
     let r = register_raw(
         &mut d,
-        1,
+        runtime::cpu::ABI_VERSION,
         &[entry(0x1000, 0, good_probe), ZERO_ENTRY],
         1,
         &[row, row, ZERO_RESUME],

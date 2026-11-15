@@ -402,18 +402,29 @@ another host thread during a run).
 
 ## Follow-up: preemption at loop safe points
 
-ABI_VERSION remains 1. Added `runtime::preempt` (`SLICE`, `INTERRUPT`,
+ABI_VERSION is now 2 (`cpu::ABI_VERSION`, `H2_ABI_VERSION`). No layout
+changed; v2 adds the context prefix below, which v2 generated loops read,
+so a v1 runtime must not load v2 code and this runtime rejects v1 objects,
+modules and transfers. Added `runtime::preempt` (`SLICE`, `INTERRUPT`,
 `REQUEST`, `DEFAULT_SLICE`, `PreemptWord`), `Runtime::{request_preempt,
 preempt_pending}` and `ExecCtx::{arm_preemption, disarm_preemption,
-preemption_armed, take_preempted}`.
+preemption_armed, preempt_pending, take_preempted}`.
 
 - `ExecCtx` is now `#[repr(C)]` with a private first field: the pointer to
-  its runtime's preempt word that generated code reads. The C contract is
-  "Loop safe points" in `crates/emit/RUNTIME-CONTRACT.md`. Other fields are
-  unchanged and private.
+  its own preempt word, which generated code reads. Each context has its
+  own word, so one context's slice expiry or safe point never consumes
+  another's. The C contract is "Loop safe points" in
+  `crates/emit/RUNTIME-CONTRACT.md`. Other fields are unchanged and
+  private.
+- `Runtime::request_preempt` sets the bits on every live context's word;
+  `Runtime::preempt_pending` is the OR over them.
 - `Runner::run_from` has a safe point before each dispatch. It changes
-  nothing until a word is set; an armed context then returns `STOP` with
+  nothing until the word is set; an armed context then returns `STOP` with
   event 0 and `take_preempted` holds the transfer to resume with.
+- `raise_interrupt` wakes the words after queueing, also when the raise is
+  coalesced, and unmasking with interrupts queued wakes the context's own
+  word, so a spinning loop always gets back to the runner once an
+  interrupt is deliverable.
 - The generated-code accessors spend one unit of an armed context's slice
   per call.
 - `kernel::Machine` gained `preempt_slice: Option<u64>` (default

@@ -233,9 +233,13 @@ with `Machine::preempt_slice` guest memory accesses (default
 host calls `Runtime::request_preempt(REQUEST)`, the thread stops at its next
 loop header or transfer, goes to the back of the ready queue as if it had
 called NtYieldExecution (passed over once while any other thread is ready,
-whatever its priority, so a spinner cannot starve a lower-priority thread
-it waits on; polling, so a machine of spinners advances time to the next
-deadline), and resumes exactly there on its next slice. At
+whatever its priority; like NtYieldExecution this does not stop two
+higher-priority spinners alternating while a lower-priority thread waits),
+and resumes exactly there on its next slice. It counts as polling, which
+lets idle time advance to the next deadline, only when it is preempted at
+the same transfer with the same CPU state as at its previous preemption:
+a spin-wait repeats itself, real work changes its registers, so an
+exhausted slice alone never moves logical time. At
 DISPATCH_LEVEL or above it keeps the CPU and starts a fresh slice instead.
 The count is of accesses, not host time, so schedules stay reproducible;
 `Machine::preemptions()` counts these switches and `preempt_slice = None`

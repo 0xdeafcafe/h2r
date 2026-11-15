@@ -33,6 +33,8 @@ pub struct ExecCtx {
     pub(crate) interrupts_masked: bool,
     /// Return token of the delivered interrupt callback, if one is running.
     pub(crate) interrupt_token: Option<u32>,
+    /// This context's own preempt word, which `preempt` points into.
+    pub(crate) word: Arc<crate::preempt::PreemptWord>,
     pub(crate) slice: crate::preempt::Slice,
     /// The transfer a preemption interrupted (`take_preempted`).
     pub(crate) preempted: Option<TransferAbi>,
@@ -40,8 +42,10 @@ pub struct ExecCtx {
 const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
+        let (preempt, word) = crate::preempt::new_word(&runtime);
         Self {
-            preempt: crate::preempt::WordPtr::of(&runtime),
+            preempt,
+            word,
             runtime,
             thread_id,
             events: Vec::new(),

@@ -66,6 +66,9 @@ pub(crate) struct Record {
     /// KTHREAD Priority, the one the scheduler orders ready threads by.
     pub priority: i8,
     pub saturation: i8,
+    /// Where and in what CPU state the thread was last preempted, if its
+    /// last slice ended that way: the evidence that it is spinning.
+    pub spin_mark: Option<(TransferAbi, CpuAbi)>,
 }
 
 pub struct Thread {
@@ -189,6 +192,7 @@ impl Machine {
                     base_priority: PROCESS_BASE_PRIORITY,
                     priority: PROCESS_BASE_PRIORITY,
                     saturation: 0,
+                    spin_mark: None,
                 },
             );
             core.objects.insert(object, Object::Thread { tid: 1 });
@@ -472,16 +476,21 @@ impl Machine {
                 record.irql = memory.u8(kpcr + kpcr::IRQL)?;
                 memory.set_u32(record.object + kthread::KERNEL_STACK, thread.cpu.esp)?;
                 if let Some(resume) = preempted {
-                    // Preempted at a safe point: treated as NtYieldExecution.
-                    // Back of the ready queue, and passed over once while
-                    // another thread of any priority is ready, so a spinner
-                    // cannot starve the lower-priority thread it waits on.
-                    // It counts as polling, so with every ready thread
-                    // spinning the clock moves on to the next timer.
+                    // Preempted at a safe point: back of the ready queue,
+                    // passed over once while another thread is ready, as
+                    // NtYieldExecution does. It counts as polling (letting
+                    // idle time advance to the next deadline) only with
+                    // evidence that it is spinning: it was preempted at
+                    // the same transfer with the same CPU state last time.
+                    // A thread doing real work changes its registers, so an
+                    // exhausted slice alone never moves logical time.
+                    let mark = (resume, thread.cpu);
+                    let spinning = record.spin_mark == Some(mark);
+                    record.spin_mark = Some(mark);
                     memory.set_u8(record.object + kthread::STATE, 1)?;
                     record.resume = resume;
                     record.state = State::Ready;
-                    record.polling = true;
+                    record.polling = spinning;
                     if core.ready.iter().any(|other| *other != tid) {
                         core.yielder = Some(tid);
                     }
@@ -489,6 +498,7 @@ impl Machine {
                     self.preemptions += 1;
                     continue;
                 }
+                record.spin_mark = None;
                 let yielded = core.yielded.remove(&tid);
                 if transfer.kind == runtime::abi::STOP
                     && let Some(resume) = yielded
@@ -1008,6 +1018,7 @@ impl Core {
                         base_priority: PROCESS_BASE_PRIORITY,
                         priority: PROCESS_BASE_PRIORITY,
                         saturation: 0,
+                        spin_mark: None,
                     },
                 );
                 self.objects.insert(object, Object::Thread { tid: id });

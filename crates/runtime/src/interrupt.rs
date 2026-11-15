@@ -89,6 +89,10 @@ impl Runtime {
                 .iter()
                 .any(|i| i.target == interrupt.target && i.thread == interrupt.thread)
         {
+            drop(queue);
+            // The queued one may have lost its wake to a context that
+            // could not take it; wake again.
+            self.request_preempt(crate::preempt::INTERRUPT);
             return Raise::Coalesced;
         }
         if queue.len() >= MAX_PENDING {
@@ -125,6 +129,9 @@ impl ExecCtx {
     /// interrupts wait; nothing is dropped.
     pub fn set_interrupts_masked(&mut self, masked: bool) {
         self.interrupts_masked = masked;
+        if !masked && self.runtime().pending_interrupts() > 0 {
+            self.wake(crate::preempt::INTERRUPT);
+        }
     }
     pub fn interrupts_masked(&self) -> bool {
         self.interrupts_masked

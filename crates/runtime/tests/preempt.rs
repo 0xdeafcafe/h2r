@@ -151,7 +151,8 @@ fn the_slice_is_spent_by_generated_memory_accesses() {
 #[test]
 fn raising_an_interrupt_asks_generated_loops_for_a_safe_point() {
     let (rt, _) = setup();
-    assert_eq!(rt.preempt_pending(), 0);
+    let ctx = ExecCtx::new(rt.clone(), 1);
+    assert_eq!(ctx.preempt_pending(), 0);
     let raise = rt.raise_interrupt(runtime::GuestInterrupt {
         target: LOOP,
         args: vec![],
@@ -161,5 +162,99 @@ fn raising_an_interrupt_asks_generated_loops_for_a_safe_point() {
         name: "vblank",
     });
     assert_eq!(raise, runtime::Raise::Queued);
-    assert_eq!(rt.preempt_pending(), preempt::INTERRUPT);
+    assert_eq!(ctx.preempt_pending(), preempt::INTERRUPT);
+}
+
+#[test]
+fn one_contexts_slice_expiry_cannot_be_taken_by_another() {
+    let (rt, mut cpu) = setup();
+    let mut a = ExecCtx::new(rt.clone(), 1);
+    a.arm_preemption(1);
+    let mut out = [0u8; 4];
+    // SAFETY: an exclusive live context and a 4-byte output buffer.
+    let st = unsafe {
+        ffi::h2abi_v1_read(
+            (&mut a as *mut ExecCtx).cast::<ExecCtxOpaque>(),
+            0,
+            DATA,
+            4,
+            1,
+            out.as_mut_ptr(),
+        )
+    };
+    assert_eq!(st, 0);
+    assert_eq!(a.preempt_pending(), preempt::SLICE);
+    // An unarmed context on the same runtime passes safe points meanwhile.
+    let mut b = ExecCtx::new(rt.clone(), 2);
+    let mut b_cpu = cpu;
+    let t = Runner { max_transfers: 3 }.run(&mut b_cpu, &mut b, LOOP);
+    assert_eq!(t.kind, abi::FAULT, "B ran to its transfer limit");
+    assert_eq!(a.preempt_pending(), preempt::SLICE, "A's bit is A's");
+    // A still gives up its thread at its next safe point.
+    let t = Runner { max_transfers: 10 }.run(&mut cpu, &mut a, LOOP);
+    assert_eq!((t.kind, t.event_id), (abi::STOP, 0));
+    assert_eq!(a.take_preempted(), Some(TransferAbi::jump(LOOP)));
+}
+
+#[test]
+fn an_interrupt_another_context_cannot_take_still_wakes_its_target() {
+    let (rt, mut cpu) = setup();
+    let a = ExecCtx::new(rt.clone(), 1);
+    let mut b = ExecCtx::new(rt.clone(), 2);
+    let raise = || {
+        rt.raise_interrupt(runtime::GuestInterrupt {
+            target: LOOP,
+            args: vec![],
+            convention: runtime::CallConvention::Cdecl,
+            thread: Some(1),
+            coalesce: true,
+            name: "vblank",
+        })
+    };
+    assert_eq!(raise(), runtime::Raise::Queued);
+    assert_eq!(a.preempt_pending(), preempt::INTERRUPT);
+    // B takes its own bit at a safe point and cannot deliver.
+    rt.memory().set_u32(DATA, 1).unwrap();
+    let t = Runner::default().run(&mut cpu, &mut b, LOOP);
+    assert_eq!(t.kind, abi::STOP);
+    assert_eq!(b.preempt_pending(), 0);
+    assert_eq!(rt.pending_interrupts(), 1);
+    assert_eq!(a.preempt_pending(), preempt::INTERRUPT, "A is still woken");
+    // A coalesced raise wakes again rather than returning silently.
+    assert_eq!(raise(), runtime::Raise::Coalesced);
+    assert_eq!(b.preempt_pending(), preempt::INTERRUPT);
+}
+
+#[test]
+fn unmasking_with_an_interrupt_queued_wakes_the_context() {
+    let (rt, mut cpu) = setup();
+    let mut a = ExecCtx::new(rt.clone(), 1);
+    a.set_interrupts_masked(true);
+    rt.raise_interrupt(runtime::GuestInterrupt {
+        target: LOOP,
+        args: vec![],
+        convention: runtime::CallConvention::Cdecl,
+        thread: None,
+        coalesce: false,
+        name: "vblank",
+    });
+    // Its bit is consumed at a safe point while it cannot deliver.
+    rt.memory().set_u32(DATA, 1).unwrap();
+    let t = Runner::default().run(&mut cpu, &mut a, LOOP);
+    assert_eq!(t.kind, abi::STOP);
+    assert_eq!((a.preempt_pending(), rt.pending_interrupts()), (0, 1));
+    a.set_interrupts_masked(false);
+    assert_eq!(a.preempt_pending(), preempt::INTERRUPT);
+}
+
+#[test]
+fn a_v1_object_is_rejected_by_the_v2_runtime() {
+    assert_eq!(runtime::cpu::ABI_VERSION, 2);
+    unsafe extern "C" fn never(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
+        unreachable!()
+    }
+    let mut d = Dispatch::default();
+    // SAFETY: rejected before the handler could ever be called.
+    assert!(unsafe { d.register_generated(LOOP, 1, never) }.is_err());
+    assert!(!d.has_generated(LOOP));
 }

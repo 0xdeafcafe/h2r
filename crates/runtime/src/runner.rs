@@ -71,16 +71,18 @@ impl Runner {
                 return TransferAbi::fault(ctx.emit(Event::InvalidTransfer));
             }
             // Safe point: the last handler has returned and CPU state is
-            // canonical. A due interrupt runs first, as a call that resumes
-            // this transfer when it returns.
+            // canonical. The wake bits are taken before the queue is looked
+            // at, so a raise in between is never lost (preempt.rs). A due
+            // interrupt runs first, as a call that resumes this transfer
+            // when it returns. Then a preempted context stops with
+            // `transfer` still undispatched and resumes with it as is.
+            let reasons = ctx.take_preempt();
             if let Some(call) = crate::interrupt::deliver(cpu, ctx, transfer) {
+                ctx.defer_preempt(reasons);
                 transfer = call;
                 continue;
             }
-            // Safe point: CPU state is canonical and `transfer` is still
-            // undispatched, so a preempted context resumes with it as is
-            // (preempt.rs). One relaxed load while nothing is pending.
-            if let Some(stop) = ctx.preempt_point(transfer) {
+            if let Some(stop) = ctx.preempt_decide(reasons, transfer) {
                 return stop;
             }
             // Diagnostic call chain only; the guest stack decides control.

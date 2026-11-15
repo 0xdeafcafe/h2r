@@ -72,7 +72,7 @@ fn c_header_matches_every_rust_field_on_both_macs() {
         event_id
     );
     for (name, actual, expected) in [
-        ("H2_ABI_VERSION", runtime::cpu::ABI_VERSION, 1),
+        ("H2_ABI_VERSION", runtime::cpu::ABI_VERSION, 2),
         ("H2_CALL", runtime::abi::CALL, 1),
         ("H2_JUMP", runtime::abi::JUMP, 2),
         ("H2_RETURN", runtime::abi::RETURN, 3),
