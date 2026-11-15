@@ -60,7 +60,12 @@ In priority order:
    overrides of hot functions, and D3D decode cost. See
    [docs/perf.md](docs/perf.md).
 3. More campaign levels.
-4. Later: a map editing kit, and TV targets (see
+4. Opt-in enhancements, off by default and later exposed in an expanded
+   in-game settings menu:
+   - 60 and 120 fps, decoupling rendering from the game's 30 Hz tick.
+   - 4K and other high-resolution rendering.
+   - Recovering the E3 2003 stencil-shadow lighting engine.
+5. Later: a map editing kit, and TV targets (see
    [docs/app.md](docs/app.md)).
 
 ## Requirements
