@@ -16,6 +16,62 @@ target into one submission, upload rings and cached texture bind groups,
 rows 2, 3, 4 and 6 of the budget. The main menu now runs at about 5-6 fps
 on an unloaded M-series Mac. Re-measure before acting on any row.
 
+## The city flyover at menu start (re-measured)
+
+Measured on master 064a955 and ac9fb31. `h2 run` with `H2_BOOT_GFX` (no
+PNGs, merged passes, fastmem, native x87), input
+`START@f310,DOWN@f408,A@f419`, fresh data, frame stats per 100 presents
+(`H2_FRAME_STATS_CSV`), runs one at a time in the bench gate. The load
+average is given for each run.
+
+**Why the menu starts slow and speeds up later.** It is the scene, not a
+warm-up. Presents 200-500 (the title, then the main menu fading in) show
+the 3D city flyover at 1400-1700 draws a frame. From about present 500
+the view has 850-1100 draws, and fps rises with it. Nothing grows from
+frame to frame.
+
+Quiet machine (load 3-6), 064a955, warm pipeline cache, fps per 100 presents:
+
+| presents | draws/frame | render thread off | `H2_RENDER_THREAD=1` |
+|---|---:|---:|---:|
+| 101-200 | 755 | 11.8 | 18.3 |
+| 201-300 | 1521 | 7.5 | 12.5 |
+| 301-400 | 1704 | 7.3 | 11.4 |
+| 401-500 | 1435 | 9.1 | 12.6 |
+| 501-600 | 1132 | 12.1 | 15.9 |
+| 601-700 | 1072 | 13.3 | 16.7 |
+
+A repeat pair gave 11.31 and 15.38 fps over presents 440-700, with all 29
+sampled PNGs byte-identical. On ac9fb31 (load 14-67) the pair gave 5.70
+and 10.69 fps over the same window: the same order, with more noise.
+
+The ranked costs on the flyover with the render thread off, from a 500 Hz
+sample plus the timeline of presents 250-330 (064a955; load 120-170, so
+read the shares, not the ms):
+
+| # | cost | share | notes |
+|---|---|---:|---|
+| 1 | guest `slice`: generated code, accessors, x87 helpers, dispatch | 51% | the remaining floor: 55-80 ms a frame on a quiet machine, with the render thread on or off |
+| 2 | the fog pass's depth-alias texture (`Device::depth_texture`, then `read_depth`, then `poll(wait)`): one full GPU sync a frame | ~13% | counted as `decode` in frame stats, not `gpu-wait`, because it happens inside the push-buffer drain. The render thread does it on its side (`reads: 0`) |
+| 3 | `queue submit` (18-28 a frame), mostly Metal's `commit` ending render encoders | 12% | on the render thread when it is on |
+| 4 | `hle call` self (the D3D entry wrappers) | 9% | |
+| 5 | shader prepare, draw recording, pass encode | ~9% | on the render thread when it is on |
+
+Ruled out on this evidence:
+
+- **frag_depth (1a5aa8d) and other GPU fill.** cae8a4a and 1a5aa8d give
+  the same menu fps within the noise (12.8-14.9 against 10.7-13.6 at
+  presents 601-900, load 23-41). The `D3DSWAP_FINISH` wait stays under 1
+  ms a frame, so the GPU keeps up at 640x480. GPU time shows only through
+  row 2's sync.
+- **Pipeline compiles and the prewarm.** Cold against warm cache, render
+  thread off, presents 101-200 on a quiet machine: 11.4 against 11.8 fps.
+  A cold cache costs 7-31 frames that wait on a pipeline, all before
+  present 400, and later frames match. With `H2_PIPELINE_CACHE=off
+  H2_GFX_COMPILE_THREADS=1` (load ~100) 13 frames wait, all before
+  present 400.
+- **Bink.** No movie is decoded during the menu (none in the profile).
+
 ## Method
 
 The scenario is the menu-idle recipe in docs/BOOT.md. It uses fresh data
