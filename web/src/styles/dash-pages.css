@@ -1,0 +1,188 @@
+/* Section furniture only. The shell, pods and tunnel belong to dash.css.
+   Original CSS geometry: no reference images or console assets. */
+.dx-pages {
+  --page-edge: #80b747;
+  --page-cut: polygon(0 16px, 22px 0, calc(100% - 32px) 0, 100% 24px, 100% calc(100% - 22px), calc(100% - 22px) 100%, 18px 100%, 0 calc(100% - 18px));
+}
+
+/* A shallow solid bevel with a dark recessed face, rather than an image border. */
+.dx-pages .dx-panel {
+  left: calc(var(--u) * 146);
+  top: calc(var(--u) * 78);
+  width: calc(var(--u) * 500);
+  height: calc(var(--u) * 498);
+  padding: calc(var(--u) * 72) calc(var(--u) * 28) calc(var(--u) * 40) calc(var(--u) * 32);
+  transform: perspective(calc(var(--u) * 1400)) rotateY(-8deg) rotateX(2deg) rotateZ(1deg);
+  filter: drop-shadow(0 0 calc(var(--u) * 3) #4f7f2f) drop-shadow(calc(var(--u) * 10) calc(var(--u) * 18) calc(var(--u) * 18) #0009);
+}
+.dx-pages .dx-panel-side { display: none; }
+.dx-pages .dx-panel-frame,
+.dx-pages .dx-plate-frame { pointer-events: none; }
+.dx-pages .dx-panel-frame::before,
+.dx-pages .dx-plate-frame::before {
+  inset: 0;
+  clip-path: var(--page-cut);
+  background: linear-gradient(126deg, #b5d77a 0, #5c9335 3%, #203f12 5%, #588734 47%, #101f0b 76%, #83b54d 98%, #d1e9a4);
+  box-shadow: none;
+}
+.dx-pages .dx-panel-frame::after,
+.dx-pages .dx-plate-frame::after {
+  inset: calc(var(--u) * 5);
+  border: 0;
+  border-image: none;
+  clip-path: var(--page-cut);
+  background:
+    linear-gradient(115deg, transparent 68%, #11280e99 68.3%, transparent 69%) 0 0 / 100% calc(var(--u) * 65) no-repeat,
+    linear-gradient(180deg, #548f30 0, #396e21 calc(var(--u) * 66), #a0c86b calc(var(--u) * 67), #163a0e calc(var(--u) * 71), #245518 calc(var(--u) * 74), #163d10 70%, #102d0a 100%);
+  filter: none;
+  box-shadow: inset 0 0 calc(var(--u) * 20) #06180288;
+}
+.dx-pages .dx-panel-head { height: calc(var(--u) * 12); margin-bottom: calc(var(--u) * 12); }
+.dx-pages .dx-panel-head small {
+  top: calc(var(--u) * -54); left: 0; width: auto; height: auto;
+  font-size: calc(var(--u) * 13); letter-spacing: .12em; color: #d7efb0;
+}
+.dx-pages .dx-panel-head h1 {
+  position: absolute; top: calc(var(--u) * -35); left: 0;
+  font-size: calc(var(--u) * 25); line-height: calc(var(--u) * 34);
+  font-weight: 600; letter-spacing: .035em; text-transform: uppercase;
+  color: #d6fb92; text-shadow: 0 0 calc(var(--u) * 9) #a5ff5777, 0 1px 1px #122309;
+}
+.dx-pages .dx-rows {
+  height: calc(var(--u) * 350); margin: 0; padding: calc(var(--u) * 3) calc(var(--u) * 24) calc(var(--u) * 3) calc(var(--u) * 4);
+  scrollbar-width: none;
+}
+.dx-pages .dx-rows:focus-visible { outline: 1px solid #ceef87; outline-offset: calc(var(--u) * 5); }
+.dx-pages .dx-row {
+  height: calc(var(--u) * 44); margin: 0 0 calc(var(--u) * 6);
+  padding: 0 calc(var(--u) * 15); gap: calc(var(--u) * 10);
+  border: 1px solid #507e35; border-top-color: #0c2809; border-left-color: #12350b;
+  border-radius: calc(var(--u) * 2); background: linear-gradient(180deg, #122e0b, #204914);
+  box-shadow: inset 0 calc(var(--u) * 2) calc(var(--u) * 4) #00130066;
+  font-size: calc(var(--u) * 24); line-height: 1.1; font-weight: 500; letter-spacing: .055em;
+  color: #b9e28a; text-shadow: 0 0 calc(var(--u) * 6) #99e76144;
+}
+.dx-pages .dx-row:hover { background: linear-gradient(180deg, #244b15, #315e1c); }
+.dx-pages .dx-row.on {
+  color: #234408; border-color: #edff8b;
+  border-radius: calc(var(--u) * 3) calc(var(--u) * 12) calc(var(--u) * 3) calc(var(--u) * 3);
+  background: linear-gradient(180deg, #edff96, #d4ed55 20%, #b4d62e 58%, #d7f25e 100%);
+  box-shadow: inset 0 1px 0 #f8ffc8, 0 0 calc(var(--u) * 9) #d7ff5977;
+  text-shadow: 0 1px #e8ff8e; font-weight: 600;
+}
+.dx-pages .dx-row-label { flex: 1; min-width: 0; }
+.dx-pages .dx-row-meta {
+  flex: 0 1 43%; margin-left: auto; font-size: calc(var(--u) * 15);
+  text-align: right; letter-spacing: .035em; opacity: 1;
+}
+.dx-pages .dx-row--empty { height: auto; min-height: calc(var(--u) * 88); white-space: normal; border-style: dashed; line-height: 1.4; padding: calc(var(--u) * 14); }
+.dx-pages .dx-arrow { right: calc(var(--u) * 18); border-left-width: calc(var(--u) * 7); border-right-width: calc(var(--u) * 7); }
+.dx-pages .dx-arrow--up { top: calc(var(--u) * 102); }
+.dx-pages .dx-arrow--down { top: calc(var(--u) * 422); }
+.dx-list-foot {
+  position: absolute; left: calc(var(--u) * 36); right: calc(var(--u) * 34); bottom: calc(var(--u) * 18);
+  display: flex; justify-content: space-between; gap: 12px;
+  font: 500 calc(var(--u) * 13) var(--f-cond); letter-spacing: .14em; text-transform: uppercase; color: #b6d48b;
+  border-top: 1px solid #67924866; padding-top: calc(var(--u) * 10);
+}
+
+.dx-pages .dx-preview { left: calc(var(--u) * 752); top: calc(var(--u) * 86); width: calc(var(--u) * 328); height: calc(var(--u) * 328); }
+
+/* Detail plates repeat the list's folded edge at a smaller scale. */
+.dx-pages .dx-plate {
+  left: calc(var(--u) * 724); top: calc(var(--u) * 410); width: calc(var(--u) * 412);
+  min-height: calc(var(--u) * 194); padding: calc(var(--u) * 38) calc(var(--u) * 28) calc(var(--u) * 24);
+  transform: perspective(calc(var(--u) * 1400)) rotateY(12deg) rotateZ(-1deg);
+  filter: drop-shadow(0 0 calc(var(--u) * 2) #6c973b99) drop-shadow(0 calc(var(--u) * 12) calc(var(--u) * 18) #0008);
+}
+.dx-pages .dx-plate-frame::after {
+  background: linear-gradient(135deg, #346820ee, #163b0fed 60%, #1b450f);
+}
+.dx-pages .dx-plate > small {
+  left: calc(var(--u) * 28); top: calc(var(--u) * 17); width: auto; height: auto;
+  font-size: calc(var(--u) * 12); letter-spacing: .14em; color: #abd27d;
+}
+.dx-pages .dx-plate > h2 {
+  font-size: calc(var(--u) * 25); line-height: 1.3; font-weight: 600;
+  letter-spacing: .025em; text-transform: uppercase; color: #ddffa0;
+  margin-bottom: calc(var(--u) * 12); text-shadow: 0 0 calc(var(--u) * 8) #a6ed5c66;
+}
+.dx-pages .dx-plate-body { font-size: calc(var(--u) * 17); letter-spacing: .06em; }
+.dx-pages .dx-plate dl { column-gap: calc(var(--u) * 12); row-gap: calc(var(--u) * 3); line-height: calc(var(--u) * 20); }
+.dx-pages .dx-plate dt { color: #a5ce78; text-align: left; }
+.dx-pages .dx-plate dd { color: #e1edc7; }
+.dx-pages .dx-plate dd span { color: #acc88d; }
+.dx-pages .dx-plate--main {
+  left: calc(var(--u) * 390); top: calc(var(--u) * 414); width: calc(var(--u) * 500); transform: none;
+}
+.dx-pages .dx-prompt:focus-visible { outline: 1px solid #dbff91; outline-offset: calc(var(--u) * 6); border-radius: 4px; }
+
+/* Sign-up keeps all instructions and validation inside one usable plate. */
+.dx-pages.dx-pods--form .dx-plate--main {
+  left: calc(var(--u) * 352); top: calc(var(--u) * 286); width: calc(var(--u) * 576);
+  padding-bottom: calc(var(--u) * 30);
+}
+.dx-signup-intro { margin: 0 0 calc(var(--u) * 16); color: #d3eab4; text-transform: none; letter-spacing: .02em; font-size: calc(var(--u) * 19); }
+.dx-pages .dx-form { gap: calc(var(--u) * 10) calc(var(--u) * 14); }
+.dx-pages .dx-form label { text-align: left; color: #c0e18c; }
+.dx-pages .dx-form input {
+  height: calc(var(--u) * 38); border-radius: 2px; border: 1px solid #64983f;
+  background: linear-gradient(#0a2307, #13300a); font-size: max(16px, calc(var(--u) * 19));
+  box-shadow: inset 0 2px 5px #0008; letter-spacing: .025em;
+}
+.dx-pages .dx-form input::placeholder { color: #a8c487; text-transform: none; letter-spacing: .015em; }
+.dx-pages .dx-form input:focus { border-color: #e6fa85; box-shadow: 0 0 0 1px #e6fa8555, inset 0 2px 5px #0008; }
+.dx .dx-pages .dx-go {
+  height: calc(var(--u) * 38); margin: calc(var(--u) * 3) 0 calc(var(--u) * 6);
+  padding: 0 calc(var(--u) * 20); font: 600 calc(var(--u) * 19) var(--f-cond);
+  text-transform: uppercase; letter-spacing: .08em; border-radius: 2px 10px 2px 2px;
+  background: linear-gradient(#ecff96, #bedc38 60%, #d8ee6b); box-shadow: 0 0 0 1px #e8fa9b, 0 0 10px #cafa5433;
+}
+.dx-pages .dx-note { border-top: 1px solid #67924866; padding-top: calc(var(--u) * 12); color: #bfd49d; font-size: max(14px, calc(var(--u) * 16)); line-height: 1.35; }
+.dx-pages .dx-error { padding: calc(var(--u) * 8) calc(var(--u) * 10); border-left: 2px solid #f5e87d; background: #101f07; color: #fff0a3; font-size: max(14px, calc(var(--u) * 16)); }
+
+/* The panel stays readable on portrait screens; the preview is a small inset. */
+@media (max-aspect-ratio: 4/5) {
+  .dx-pages .dx-panel {
+    left: calc(var(--u) * 10); top: calc(var(--u) * 62); width: calc(var(--u) * 380); height: calc(var(--u) * 382);
+    transform: none; padding: calc(var(--u) * 72) calc(var(--u) * 20) calc(var(--u) * 34);
+  }
+  .dx-pages .dx-panel-head { height: calc(var(--u) * 26); margin-bottom: calc(var(--u) * 8); }
+  .dx-pages .dx-panel-head h1 { font-size: calc(var(--u) * 22); }
+  .dx-pages .dx-rows { height: calc(var(--u) * 230); padding-right: calc(var(--u) * 16); }
+  .dx-pages .dx-row { height: calc(var(--u) * 40); font-size: calc(var(--u) * 22); padding: 0 calc(var(--u) * 10); }
+  .dx-pages .dx-row-meta { flex-basis: 38%; font-size: calc(var(--u) * 14); }
+  .dx-pages .dx-arrow { right: calc(var(--u) * 12); border-left-width: calc(var(--u) * 5); border-right-width: calc(var(--u) * 5); }
+  .dx-pages .dx-arrow--up { top: calc(var(--u) * 112); }
+  .dx-pages .dx-arrow--down { top: calc(var(--u) * 314); }
+  .dx-list-foot { left: calc(var(--u) * 24); right: calc(var(--u) * 24); bottom: calc(var(--u) * 15); font-size: calc(var(--u) * 12); }
+  .dx-pages .dx-preview { left: calc(var(--u) * 310); top: calc(var(--u) * 442); width: calc(var(--u) * 64); height: calc(var(--u) * 64); }
+  .dx-pages .dx-plate {
+    left: calc(var(--u) * 10); top: calc(var(--u) * 474); width: calc(var(--u) * 380); min-height: 0;
+    padding: calc(var(--u) * 38) calc(var(--u) * 24) calc(var(--u) * 22); transform: none;
+  }
+  .dx-pages .dx-plate > small { left: calc(var(--u) * 24); }
+  .dx-pages .dx-plate > h2 { font-size: calc(var(--u) * 22); }
+  .dx-pages .dx-plate-body { font-size: calc(var(--u) * 16); }
+  .dx-pages .dx-plate dl { line-height: calc(var(--u) * 18); }
+  .dx-pages .dx-plate--main { top: calc(var(--u) * 454); }
+  .dx-pages.dx-pods--form .dx-plate--main { left: calc(var(--u) * 10); top: calc(var(--u) * 182); width: calc(var(--u) * 380); }
+  .dx-pages .dx-form { grid-template-columns: 1fr; gap: calc(var(--u) * 7); }
+  .dx-pages .dx-form label::after { content: none; }
+  .dx-pages .dx-form input { height: calc(var(--u) * 42); margin-bottom: calc(var(--u) * 5); }
+  .dx .dx-pages .dx-go { grid-column: 1; height: calc(var(--u) * 42); margin-top: calc(var(--u) * 10); }
+  .dx-signup-intro { font-size: calc(var(--u) * 18); }
+  .dx-pages .dx-note { font-size: max(14px, calc(var(--u) * 15)); }
+}
+
+/* Small landscape viewports need scrolling instead of unreadably tiny fields. */
+@media (max-height: 540px) and (min-aspect-ratio: 4/5) {
+  .dx:has(.dx-pages) { position: absolute; min-height: 640px; overflow: auto; --u: min(100vw / 1060, 1px); }
+  .dx:has(.dx-pages) .dx-stage { top: 320px; }
+}
+
+@media (max-height: 740px) and (max-aspect-ratio: 4/5) {
+  .dx:has(.dx-pages) { position: absolute; --u: min(100vw / 400, 1px); min-height: calc(var(--u) * 860); overflow: auto; }
+  .dx:has(.dx-pages) .dx-stage { top: calc(var(--u) * 430); }
+  .dx-pages .dx-prompt--a, .dx-pages .dx-prompt--b { top: calc(var(--u) * 760); }
+}
