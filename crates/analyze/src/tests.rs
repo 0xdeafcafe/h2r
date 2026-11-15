@@ -533,6 +533,121 @@ fn a_null_leads_to_a_case_shared_with_another_function() {
     assert!(a.function_cfg(&x, 0x11010).unwrap().blocks.contains_key(&0x11053));
 }
 
+/// An unguarded `jmp [eax*4+0x11020]` at `TEXT` with the table
+/// `[0x11008, 0, 0x1100B]` and its two cases, and `words` in `.rdata`.
+fn table_with_rdata(words: &[u32]) -> (Analysis, cfg::FunctionCfg) {
+    let table: Vec<u8> = [0x11008u32, 0, 0x1100B].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x11008, &[0x40, 0xC3]),                               // inc eax; ret
+        (0x1100B, &[0x48, 0xC3]),                               // dec eax; ret
+        (0x11020, &table),
+    ]);
+    let data = xbe_full(&code, 0x100, words);
+    let x = Xbe::parse(&data).unwrap();
+    let a = analyze(&x).unwrap();
+    let cfg = a.function_cfg(&x, TEXT).unwrap();
+    (a, cfg)
+}
+
+#[test]
+fn a_data_pointer_to_a_table_slot_does_not_end_the_table() {
+    // `.rdata` holds the address of the table's third entry, which reads
+    // as no function, so it says nothing about where the table ends.
+    let (a, cfg) = table_with_rdata(&[0x11028]);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (3, &vec![0x11008, 0x1100B], &vec![1]));
+    assert!(cfg.blocks.contains_key(&0x1100B));
+    assert!(!a.functions.contains_key(&0x11028));
+}
+
+#[test]
+fn a_data_pointer_to_a_case_does_not_end_the_table() {
+    let (a, cfg) = table_with_rdata(&[0x1100B]);
+    assert_eq!((a.jump_tables[&TEXT].count, &a.jump_tables[&TEXT].holes), (3, &vec![1]));
+    assert!(cfg.blocks.contains_key(&0x1100B));
+}
+
+#[test]
+fn a_null_does_not_join_a_known_table_with_cases_after_it() {
+    // The callee's switch is read first; its table follows the caller's
+    // one-entry table and null, and both tables' cases are after them.
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x3B, 0x00, 0x00, 0x00]),             // call 0x11040
+        (0x11005, &[0xFF, 0x24, 0x85, 0x80, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11080]
+        (0x11040, &[0xFF, 0x24, 0x85, 0x88, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11088]
+        (0x11080, &0x110B0u32.to_le_bytes()),
+        (0x11084, &[0; 4]),
+        (0x11088, &0x110C0u32.to_le_bytes()),
+        (0x110B0, &[0x40, 0xC3]),
+        (0x110C0, &[0x48, 0xC3]),
+    ]);
+    let (a, cfgs) = cfgs_of(code);
+    assert_eq!(a.jump_tables[&0x11040].count, 1);
+    let jt = &a.jump_tables[&0x11005];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x110B0], &vec![]));
+    assert!(!cfgs[&TEXT].blocks.contains_key(&0x110C0));
+    assert_eq!(a.claim(0x11088), Some(('d', Some(0x11040))), "the callee keeps its table");
+}
+
+#[test]
+fn a_null_does_not_join_a_known_table_whose_case_is_a_label() {
+    // 0x11040 takes the address of its own case 0x11053 and switches to
+    // it from the table at 0x11088. The switch at 0x11010, known only from
+    // `.rdata`, has a one-entry table and a null just before that one.
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x3B, 0x00, 0x00, 0x00, 0xC3]),       // call 0x11040; ret
+        (0x11010, &[0xFF, 0x24, 0x85, 0x80, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11080]
+        (0x11030, &[0xC3]),
+        (0x11040, &[0xB8, 0x53, 0x10, 0x01, 0x00]),             // mov eax, 0x11053
+        (0x11045, &[0xFF, 0x24, 0x85, 0x88, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11088]
+        (0x11053, &[0x40, 0xC3]),
+        (0x11080, &0x11030u32.to_le_bytes()),
+        (0x11084, &[0; 4]),
+        (0x11088, &0x11053u32.to_le_bytes()),
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x11010]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    assert!(a.labels.contains(&0x11053));
+    assert_eq!(a.jump_tables[&0x11045].count, 1);
+    let jt = &a.jump_tables[&0x11010];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x11030], &vec![]));
+}
+
+#[test]
+fn a_null_does_not_lead_into_the_middle_of_an_instruction() {
+    // The word after the null is inside the callee's `mov eax, imm32`.
+    let words: Vec<u8> = [0x1100Cu32, 0, 0x11011].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x0B, 0x00, 0x00, 0x00]),             // call 0x11010
+        (0x11005, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x1100C, &[0xC3]),
+        (0x11010, &[0xB8, 0x40, 0x40, 0x40, 0x40, 0xC3]), // mov eax, 0x40404040; ret
+        (0x11020, &words),
+    ]);
+    let (a, _) = cfgs_of(code);
+    assert_eq!(a.jump_tables[&0x11005].count, 1);
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
+#[test]
+fn a_null_does_not_lead_into_known_data() {
+    // The word after the null is another switch's table.
+    let words: Vec<u8> = [0x1100Cu32, 0, 0x11080].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x3B, 0x00, 0x00, 0x00]),             // call 0x11040
+        (0x11005, &[0xFF, 0x24, 0x85, 0x90, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11090]
+        (0x1100C, &[0xC3]),
+        (0x11040, &[0xFF, 0x24, 0x85, 0x80, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11080]
+        (0x11060, &[0xC3]),
+        (0x11080, &0x11060u32.to_le_bytes()),
+        (0x11090, &words),
+    ]);
+    let (a, _) = cfgs_of(code);
+    assert_eq!(a.jump_tables[&0x11005].count, 1);
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
 fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
     let data = xbe_with(&code);

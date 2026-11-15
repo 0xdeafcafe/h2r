@@ -697,18 +697,24 @@ impl<'a> Analyzer<'a> {
             // An enum switch with no range check leaves values it never
             // sees as null entries, with targets after them. A short run
             // of nulls is a hole only if a target follows it.
-            if kind == SwitchKind::Unbounded && target == Some(0) && ok_slot && pending.len() < MAX_SWITCH_HOLES {
+            // A null may already be the next table's.
+            let null = kind == SwitchKind::Unbounded && target == Some(0);
+            if null && i > 0 && self.in_other_table(at, slot) {
+                break;
+            }
+            if null && ok_slot && pending.len() < MAX_SWITCH_HOLES {
                 pending.push(i);
                 continue;
             }
             // Past a null, a word that only looks like a code address may
             // be the next table or function, so the table goes on only for
-            // a case of its own, in a slot nothing else points at.
-            // Otherwise the table ends at the first null and the rest stays
-            // unclaimed.
+            // a case of its own, in a slot no other table holds and nothing
+            // else points at. Otherwise the table ends at the first null and
+            // the rest stays unclaimed.
             let past_null = !holes.is_empty() || !pending.is_empty();
             if past_null
-                && (self.evidenced_start(slot)
+                && (self.in_other_table(at, slot)
+                    || self.evidenced_start(slot)
                     || !ok_target.is_some_and(|t| self.own_case(fstart, table, slot, &targets, t)))
             {
                 break;
@@ -1155,11 +1161,47 @@ impl<'a> Analyzer<'a> {
         placed && !self.funcs.contains_key(&t) && matches!(self.image.state(t), Some(Byte::Unknown | Byte::InsnStart))
     }
 
-    /// Whether something other than a table points at `va` as code: a data
-    /// word, or a known function or label. Such a slot starts a function,
-    /// whatever its bytes look like as a table entry.
+    /// Whether `slot` is in a table already read for a switch other than
+    /// the one at `at`: it bounds the table being read.
+    fn in_other_table(&self, at: u32, slot: u32) -> bool {
+        self.jump_tables.values().any(|j| j.site != at && j.table <= slot && slot - j.table < j.count * 4)
+    }
+
+    /// Whether something other than a table points at `va` as code: a known
+    /// function or label, or a data word, if what it points at reads as
+    /// code. Such a slot starts a function, whatever its bytes look like as
+    /// a table entry. (A data word alone is no proof: tables are in code
+    /// sections too, and metadata may point into one.)
     fn evidenced_start(&self, va: u32) -> bool {
-        self.data_words.contains(&va) || self.funcs.contains_key(&va) || self.labels.contains(&va)
+        self.funcs.contains_key(&va)
+            || self.labels.contains(&va)
+            || (self.data_words.contains(&va) && self.runs_to_an_exit(va))
+    }
+
+    /// Whether straight-line decoding from `va` reaches a `ret` or `jmp`
+    /// within a few instructions with nothing a speculative function
+    /// couldn't hold on the way: no invalid opcode, `int3`, zero fill or
+    /// instruction only data decodes to. Table words (code addresses, so
+    /// `xx xx 01 00` and the like) rarely do.
+    fn runs_to_an_exit(&self, va: u32) -> bool {
+        let Some(bytes) = self.image.bytes_from(va) else { return false };
+        let mut decoder = Decoder::with_ip(32, bytes, va as u64, DecoderOptions::NONE);
+        for _ in 0..16 {
+            let at = decoder.ip() as u32;
+            if self.image.bytes_from(at).is_none_or(|b| b.starts_with(&[0, 0])) {
+                return false;
+            }
+            let insn = decoder.decode();
+            if insn.code() == Code::INVALID || implausible(&insn) || matches!(insn.mnemonic(), Mnemonic::Int3) {
+                return false;
+            }
+            match insn.flow_control() {
+                FlowControl::Return | FlowControl::UnconditionalBranch | FlowControl::IndirectBranch => return true,
+                FlowControl::Interrupt | FlowControl::Exception => return false,
+                _ => {}
+            }
+        }
+        false
     }
 
     /// Every aligned word in a data section that is a code address.
