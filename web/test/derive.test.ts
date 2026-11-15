@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { Kill } from "../src/state/reducer";
 import { applyEvents, initialState } from "../src/state/reducer";
 import {
-  bestSprees, countMedals, gameHistory, gameMedals, places, playedWith, rankFor, serviceRecord, weaponBreakdown,
+  bestSprees, countMedals, gameHistory, gameMedals, nextRankAt, places, playedWith, rankFor, rankIndex, serviceRecord,
+  weaponBreakdown, weaponsAgainst,
 } from "../src/state/derive";
 import { ev, resetPos } from "./helpers";
 
@@ -106,5 +107,26 @@ describe("history, places and service record", () => {
     expect(rankFor(0)).toBe("Newcomer");
     expect(rankFor(16)).toBe("Contender");
     expect(playedWith(s, A)).toEqual([{ xuid: B, games: 2, lastPlayed: "2026-11-15T11:00:00.000Z" }]);
+  });
+
+  test("a record can be narrowed to some games", () => {
+    const s = world();
+    const ffa = serviceRecord(s, A, (g) => g.game_id === "f");
+    expect(ffa).toMatchObject({ games: 1, completed: 1, wins: 1, kills: 2 });
+    expect(serviceRecord(s, A, () => false)).toMatchObject({ games: 0, kills: 0, exp: 0, rank: "Newcomer" });
+  });
+
+  test("rank ladder positions", () => {
+    expect(rankIndex(0)).toBe(0);
+    expect(rankIndex(16)).toBe(2);
+    expect(nextRankAt(16)).toBe(30);
+    expect(nextRankAt(100000)).toBeNull();
+  });
+});
+
+describe("weapons against", () => {
+  test("counts what knocked a slot out, ignoring suicides", () => {
+    const kills = [k(0, 1, 0, "sniper"), k(10, 2, 0, "sniper"), k(20, 1, 0, "sword"), k(30, 0, 0, null, "suicide"), k(40, 0, 1, "rifle")];
+    expect(weaponsAgainst(kills, new Set([0])).map((r) => [r.weapon, r.kills])).toEqual([["sniper", 2], ["sword", 1]]);
   });
 });

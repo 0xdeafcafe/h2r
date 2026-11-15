@@ -41,6 +41,8 @@ export interface GamePlayerState extends GamePlayer {
 export interface GameState {
   game_id: GameId;
   console: string | null;
+  /** Who started the game: `acct:<xuid>@<server>`, when the server said. */
+  host: string | null;
   map: string;
   mode: string;
   variant: string | null;
@@ -172,6 +174,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const g: GameState = {
         game_id: id,
         console: d.console ?? null,
+        host: d.host ?? null,
         map: d.map,
         mode: d.mode,
         variant: d.variant ?? null,
@@ -442,6 +445,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
     g = {
       game_id: d.game_id,
       console: det.console ?? null,
+      host: det.host ?? null,
       map: d.map,
       mode: d.mode,
       variant: d.variant ?? null,
@@ -469,6 +473,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
     if (det.score_limit !== undefined) g.score_limit = det.score_limit ?? null;
     if (det.time_limit_s !== undefined) g.time_limit_s = det.time_limit_s ?? null;
     if (det.console !== undefined) g.console = det.console ?? null;
+    if (det.host != null) g.host = det.host;
     if (det.end_reason !== undefined) g.end_reason = det.end_reason ?? null;
     if (det.winner !== undefined) g.winner = normalizeWinner(det.winner);
     if (d.ended_at) { g.ended_at = d.ended_at; g.status = "ended"; }

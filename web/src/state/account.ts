@@ -1,7 +1,10 @@
 // Account creation in the browser, matching live-proto's `AccountRequest`
 // (crates/live-proto/src/sign.rs): a fresh Ed25519 key signs a compact JWS
 // with header {alg: "EdDSA", kid, typ: "h2live-account"} over the RFC 8785
-// canonical JSON of {gamertag, jwk, invite?}, POSTed as application/jose.
+// canonical JSON of {gamertag, jwk, invite?, aud, iat}, POSTed as
+// application/jose. `aud` is the server id from its well-known document
+// and `iat` the time in seconds; the server wants it within 5 minutes of
+// its own clock. `account_request_vector` in sign.rs is the fixed vector.
 //
 // The private key has to be exportable so it can be downloaded for `h2`,
 // so it is kept as a JWK (its `d`) in IndexedDB, not as a non-extractable
@@ -48,11 +51,12 @@ export async function signCompact(key: CryptoKey, header: { alg: "EdDSA"; kid?: 
   return input + "." + b64urlEncode(sig);
 }
 
-export interface AccountRequestBody { gamertag: string; jwk: PublicJwk; invite?: string }
+export interface AccountRequestBody { gamertag: string; jwk: PublicJwk; invite?: string; aud: string; iat: number }
 
-/** The signed `POST /v1/accounts` body. */
-export async function signAccountRequest(key: NewKey, gamertag: string, invite?: string): Promise<string> {
-  const body: AccountRequestBody = { gamertag, jwk: key.publicJwk };
+/** The signed `POST /v1/accounts` body, for the server whose id is `aud`,
+ *  made at `iat` (seconds since the epoch). */
+export async function signAccountRequest(key: NewKey, gamertag: string, aud: string, iat: number, invite?: string): Promise<string> {
+  const body: AccountRequestBody = { gamertag, jwk: key.publicJwk, aud, iat };
   if (invite) body.invite = invite;
   return signCompact(key.privateKey, { alg: "EdDSA", kid: key.publicJwk.kid, typ: TYP_ACCOUNT }, canonicalJson(body));
 }
@@ -81,12 +85,12 @@ export class SignUpError extends Error {
 
 export async function createAccount(
   apiRoot: string, serverBase: string, serverId: string, gamertag: string, invite?: string,
-  fetchFn: typeof fetch = fetch,
+  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
 ): Promise<LocalAccount> {
   const bad = gamertagError(gamertag);
   if (bad) throw new SignUpError("invalid", `That gamertag won't work: ${bad}.`);
   const key = await generateKey();
-  const jws = await signAccountRequest(key, gamertag, invite || undefined);
+  const jws = await signAccountRequest(key, gamertag, serverId, Math.floor(nowMs / 1000), invite || undefined);
   const r = await fetchFn(apiRoot + "/accounts", { method: "POST", headers: { "content-type": "application/jose" }, body: jws });
   if (!r.ok) {
     let code = "http_" + r.status, message = r.statusText;
@@ -101,10 +105,11 @@ export async function createAccount(
   };
 }
 
-/** The file `h2 live account import` reads: an array like accounts.json. */
+/** The file `h2 live account import` reads: an array like accounts.json,
+ *  with the key as a private JWK (the form `h2` writes itself). */
 export function accountsFile(a: LocalAccount): string {
-  const { x: _x, ...entry } = a;
-  void _x;
+  const { x, key, ...rest } = a;
+  const entry = { ...rest, key: { kty: "OKP", crv: "Ed25519", x, d: key } };
   return JSON.stringify([entry], null, 2) + "\n";
 }
 

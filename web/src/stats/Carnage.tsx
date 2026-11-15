@@ -1,78 +1,222 @@
-// The carnage report table under a game: places, scores, sprees, medals and
-// weapons for every player, derived from the game's events.
+// The post game carnage report under a game: places, scores, the kill
+// breakdown, medals and weapons for every player, derived from its events.
 
-import { For, Show, createMemo } from "solid-js";
+import { For, Show, createMemo, createSignal } from "solid-js";
 import { A } from "@solidjs/router";
-import type { GameState } from "../state/reducer";
-import { standings } from "../state/reducer";
-import { bestSprees, countMedals, gameMedals, ordinal, places, weaponBreakdown } from "../state/derive";
+import type { GameState, Standing } from "../state/reducer";
+import { standings, teamStandings } from "../state/reducer";
+import { bestSprees, countMedals, gameMedals, ordinal, places, weaponBreakdown, type MedalId } from "../state/derive";
 import Emblem from "../components/Emblem";
 import MedalIcon from "../components/MedalIcon";
+import WeaponIcon from "../components/WeaponIcon";
 import { colourFor, teamName } from "../lib/game";
 import { titleCase } from "../lib/format";
-import { Derived, Panel } from "./Layout";
+import { Derived, Tabs, Title, playerHref } from "./Layout";
+
+interface Row {
+  s: Standing;
+  place: number;
+  spree: number;
+  suicides: number;
+  betrayals: number;
+  medals: Array<[MedalId, number]>;
+}
+
+const spread = (n: number) => (n > 0 ? `+${n}` : String(n));
 
 export default function Carnage(props: { game: GameState }) {
+  const [tab, setTab] = createSignal("overview");
   const rows = createMemo(() => {
     const g = props.game;
     const pl = places(g);
     const sprees = bestSprees(g.kills);
     const medals = gameMedals(g.kills);
-    return standings(g)
-      .map((s) => ({ s, place: pl.get(s.index) ?? 0, spree: sprees.get(s.index) ?? 0, medals: [...countMedals(medals, new Set([s.index])).entries()] }))
-      .sort((a, b) => a.place - b.place || b.s.score.score - a.s.score.score || a.s.index - b.s.index);
+    const by = new Map<number, Row>();
+    for (const s of standings(g)) {
+      by.set(s.index, {
+        s, place: pl.get(s.index) ?? 0, spree: sprees.get(s.index) ?? 0, suicides: 0, betrayals: 0,
+        medals: [...countMedals(medals, new Set([s.index])).entries()],
+      });
+    }
+    for (const k of g.kills) {
+      if (k.kind === "suicide") { const r = by.get(k.victim); if (r) r.suicides++; }
+      if (k.kind === "betrayal" && k.killer !== null) { const r = by.get(k.killer); if (r) r.betrayals++; }
+    }
+    return by;
   });
+  // Teams (or one unnamed group for free-for-all), each with its players in place order.
+  const groups = createMemo(() => {
+    const g = props.game;
+    const order = (a: Row, b: Row) => a.place - b.place || b.s.score.score - a.s.score.score || a.s.index - b.s.index;
+    if (!g.team_play) return [{ team: null as number | null, score: 0, place: 0, players: [...rows().values()].sort(order) }];
+    return teamStandings(g).map((t) => {
+      const players = t.players.map((p) => rows().get(p.index)!).filter(Boolean).sort((a, b) => b.s.score.score - a.s.score.score);
+      return { team: t.team as number | null, score: t.score, place: players[0]?.place ?? 0, players };
+    });
+  });
+  const totalMedals = createMemo(() => [...countMedals(gameMedals(props.game.kills)).entries()].sort((a, b) => b[1] - a[1]));
   const weapons = createMemo(() => weaponBreakdown(props.game.kills));
-  const max = () => Math.max(1, ...weapons().map((w) => w.kills));
+  const max = () => Math.max(0.0001, ...weapons().map((w) => w.share));
+  const ended = () => props.game.status === "ended";
+
+  const Who = (p: { r: Row }) => (
+    <td>
+      <span class="who">
+        <Show when={p.r.s.xuid} fallback={<><Emblem seed={p.r.s.name} size={19} /><span>{p.r.s.name}</span></>}>
+          {(x) => <><Emblem seed={x()} size={19} /><A href={playerHref(p.r.s.name)}>{p.r.s.name}</A></>}
+        </Show>
+        <Show when={p.r.s.left}><small>(left)</small></Show>
+      </span>
+    </td>
+  );
+  const rowStyle = (r: Row) => ({ "--row": colourFor(props.game, r.s.team, r.s.index) });
+  const teamStyle = (team: number) => ({ "--row": colourFor(props.game, team, 0) });
+  const sum = (rs: Row[], f: (r: Row) => number) => rs.reduce((n, r) => n + f(r), 0);
+
   return (
-    <div class="s-carnage">
-      <Panel title={props.game.status === "ended" ? "Carnage Report" : "Carnage So Far"} right={<Derived note="Places, sprees and medals are derived in your browser from the game's events. Snapshots carry each game's last 50 knockouts." />}>
-        <div class="s-scroll" tabindex="0" role="region" aria-label="Carnage report">
-          <table class="s-table s-table--carnage">
-            <thead>
-              <tr><th>Place</th><th>Player</th><th>Team</th><th class="num">Score</th><th class="num">Kills</th><th class="num">Deaths</th><th class="num">Assists</th><th class="num">K/D</th><th class="num">Best Spree</th><th>Medals</th></tr>
-            </thead>
-            <tbody>
-              <For each={rows()}>
-                {(r) => (
-                  <tr classList={{ left: r.s.left }}>
-                    <td>{props.game.status === "ended" ? ordinal(r.place) : r.place}</td>
-                    <td class="s-player-cell">
-                      <span class="swatch" style={{ background: colourFor(props.game, r.s.team, r.s.index) }} />
-                      <Show when={r.s.xuid} fallback={<span>{r.s.name}</span>}>
-                        {(x) => <><Emblem seed={x()} size={18} /><A href={`/stats/players/${encodeURIComponent(r.s.name)}`}>{r.s.name}</A></>}
+    <>
+      <Title right={<Derived note="Places, sprees, medals and weapon counts are derived in your browser from the game's events. Snapshots carry each game's last 50 knockouts." />}>
+        {ended() ? "Post Game Carnage Report" : "Carnage Report So Far"}
+      </Title>
+      <Tabs small label="Carnage report" active={tab()} onPick={setTab} tabs={[
+        { id: "overview", label: "Overview" }, { id: "carnage", label: "Carnage" }, { id: "medals", label: "Medals" }, { id: "weapons", label: "Weapons" },
+      ]} />
+      <div class="s-carnage">
+        <Show when={tab() === "overview"}>
+          <div class="s-carnage-cols">
+            <table class="s-stats">
+              <colgroup><col /><col style={{ width: "70px" }} /><col style={{ width: "70px" }} /></colgroup>
+              <thead><tr><th>Players</th><th>Place</th><th>Score</th></tr></thead>
+              <tbody>
+                <For each={groups()}>
+                  {(grp) => (
+                    <>
+                      <Show when={grp.team !== null}>
+                        <tr class="team" style={teamStyle(grp.team!)}><td>{teamName(grp.team!)} Team</td><td>{ended() ? ordinal(grp.place) : grp.place}</td><td>{grp.score}</td></tr>
                       </Show>
-                      <Show when={r.s.left}> <small class="s-dim">(left)</small></Show>
-                    </td>
-                    <td>{props.game.team_play ? teamName(r.s.team) : "–"}</td>
-                    <td class="num">{r.s.score.score}</td>
-                    <td class="num">{r.s.score.kills}</td>
-                    <td class="num">{r.s.score.deaths}</td>
-                    <td class="num">{r.s.score.assists}</td>
-                    <td class="num">{r.s.score.deaths ? (r.s.score.kills / r.s.score.deaths).toFixed(2) : r.s.score.kills.toFixed(2)}</td>
-                    <td class="num">{r.spree}</td>
-                    <td class="s-medal-cell"><For each={r.medals}>{([id, n]) => <span class="s-medal-mini"><MedalIcon id={id} size={20} />{n > 1 ? <small>{n}</small> : null}</span>}</For></td>
-                  </tr>
+                      <For each={grp.players}>
+                        {(r) => (
+                          <tr classList={{ gone: r.s.left }} style={rowStyle(r)}>
+                            <Who r={r} />
+                            <td>{grp.team !== null ? "-" : ended() ? ordinal(r.place) : r.place}</td>
+                            <td>{r.s.score.score}</td>
+                          </tr>
+                        )}
+                      </For>
+                    </>
+                  )}
+                </For>
+              </tbody>
+            </table>
+            <div>
+              <section class="s-sec">
+                <header><span>Total Game Medals</span><Derived /></header>
+                <div class="s-chest s-chest--squares" style={{ padding: "5px" }}>
+                  <div class="s-chest-group">
+                    <For each={totalMedals()} fallback={<p class="s-dim" style={{ "grid-column": "1 / -1", padding: "8px 2px" }}>No medals yet.</p>}>
+                      {([id, n]) => <div class="s-square"><span><MedalIcon id={id} size={26} /></span><b>{n}</b></div>}
+                    </For>
+                  </div>
+                </div>
+              </section>
+              <section class="s-sec" style={{ "margin-top": "8px" }}>
+                <header><span>Tool of Destruction</span><Derived /></header>
+                <div class="s-tod" style={{ "padding-top": "4px" }}>
+                  <For each={weapons().slice(0, 4)} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
+                    {(w, i) => (
+                      <div class="s-tod-row" classList={{ "s-tod-row--top": i() === 0 }}>
+                        <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
+                        <div class="s-tod-bars"><div class="s-tod-bar" style={{ "margin-top": "7px" }}><span style={{ width: `${(w.share / max()) * 74}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
+                        <div class="s-tod-nums" style={{ "line-height": "30px" }}>{w.kills}</div>
+                      </div>
+                    )}
+                  </For>
+                </div>
+              </section>
+            </div>
+          </div>
+        </Show>
+        <Show when={tab() === "carnage"}>
+          <div class="s-scroll" tabindex="0" role="region" aria-label="Carnage">
+            <table class="s-stats" style={{ "min-width": "640px" }}>
+              <colgroup><col /><col span="7" style={{ width: "76px" }} /></colgroup>
+              <thead><tr><th>Players</th><th>Kills</th><th>Assists</th><th>Deaths</th><th>K/D Spread</th><th>Suicides</th><th>Betrayals</th><th>Score</th></tr></thead>
+              <tbody>
+                <For each={groups()}>
+                  {(grp) => (
+                    <>
+                      <Show when={grp.team !== null}>
+                        <tr class="team" style={teamStyle(grp.team!)}>
+                          <td>{teamName(grp.team!)} Team</td>
+                          <td>{sum(grp.players, (r) => r.s.score.kills)}</td><td>{sum(grp.players, (r) => r.s.score.assists)}</td><td>{sum(grp.players, (r) => r.s.score.deaths)}</td>
+                          <td>{spread(sum(grp.players, (r) => r.s.score.kills - r.s.score.deaths))}</td>
+                          <td>{sum(grp.players, (r) => r.suicides)}</td><td>{sum(grp.players, (r) => r.betrayals)}</td><td>{grp.score}</td>
+                        </tr>
+                      </Show>
+                      <For each={grp.players}>
+                        {(r) => (
+                          <tr classList={{ gone: r.s.left }} style={rowStyle(r)}>
+                            <Who r={r} />
+                            <td>{r.s.score.kills}</td><td>{r.s.score.assists}</td><td>{r.s.score.deaths}</td>
+                            <td>{spread(r.s.score.kills - r.s.score.deaths)}</td>
+                            <td>{r.suicides}</td><td>{r.betrayals}</td><td>{r.s.score.score}</td>
+                          </tr>
+                        )}
+                      </For>
+                    </>
+                  )}
+                </For>
+              </tbody>
+            </table>
+          </div>
+        </Show>
+        <Show when={tab() === "medals"}>
+          <table class="s-stats">
+            <colgroup><col style={{ width: "250px" }} /><col style={{ width: "90px" }} /><col /></colgroup>
+            <thead><tr><th>Players</th><th>Best Spree</th><th style={{ "text-align": "left" }}>Medals</th></tr></thead>
+            <tbody>
+              <For each={groups()}>
+                {(grp) => (
+                  <>
+                    <Show when={grp.team !== null}>
+                      <tr class="team" style={teamStyle(grp.team!)}><td>{teamName(grp.team!)} Team</td><td>{Math.max(0, ...grp.players.map((r) => r.spree))}</td><td style={{ "text-align": "left" }}>{sum(grp.players, (r) => sum2(r.medals))} medals</td></tr>
+                    </Show>
+                    <For each={grp.players}>
+                      {(r) => (
+                        <tr classList={{ gone: r.s.left }} style={rowStyle(r)}>
+                          <Who r={r} />
+                          <td>{r.spree}</td>
+                          <td class="medals"><For each={r.medals}>{([id, n]) => <span><MedalIcon id={id} size={21} />{n > 1 ? <small>{n}</small> : null}</span>}</For></td>
+                        </tr>
+                      )}
+                    </For>
+                  </>
                 )}
               </For>
             </tbody>
           </table>
-        </div>
-      </Panel>
-      <Panel title="Tool of Destruction" right={<Derived />}>
-        <table class="s-tod">
-          <tbody>
-            <For each={weapons()} fallback={<tr><td class="s-dim">No knockouts yet.</td></tr>}>
-              {(w) => (
-                <tr>
-                  <td><span class="s-tod-name">{titleCase(w.weapon)}</span><span class="s-tod-bar"><span style={{ width: `${(w.kills / max()) * 100}%` }} /></span></td>
-                  <td class="num">{w.kills} ({(w.share * 100).toFixed(1)}%)</td>
-                </tr>
-              )}
-            </For>
-          </tbody>
-        </table>
-      </Panel>
-    </div>
+        </Show>
+        <Show when={tab() === "weapons"}>
+          <section class="s-sec">
+            <header><span>Tool of Destruction</span><small>Count (share of knockouts)</small></header>
+            <div class="s-tod" style={{ "padding-top": "4px" }}>
+              <For each={weapons()} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
+                {(w, i) => (
+                  <div class="s-tod-row" classList={{ "s-tod-row--top": i() === 0 }}>
+                    <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
+                    <div class="s-tod-bars"><div class="s-tod-bar" style={{ "margin-top": "7px" }}><span style={{ width: `${(w.share / max()) * 86}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
+                    <div class="s-tod-nums" style={{ "line-height": "30px" }}>{w.kills}</div>
+                  </div>
+                )}
+              </For>
+            </div>
+          </section>
+        </Show>
+      </div>
+    </>
   );
+}
+
+function sum2(m: Array<[MedalId, number]>): number {
+  return m.reduce((n, [, x]) => n + x, 0);
 }

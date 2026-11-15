@@ -10,15 +10,24 @@ const RFC = {
   jws: "eyJhbGciOiJFZERTQSJ9.RXhhbXBsZSBvZiBFZDI1NTE5IHNpZ25pbmc.hgyY0il_MGCjP0JzlnLWG1PPOt7-09PGcvMg3AIbQR6dWbhijcNR4ki4iylGjg5BhVsPt9g7sVvpAr_MuM0KAg",
 };
 
+// `ACCOUNT_VECTOR` in crates/live-proto/src/sign.rs: the RFC 8037 key signing
+// {gamertag: "Sneaky Pete", aud: "localhost", iat: 1800000000}.
+const ACCOUNT_VECTOR =
+  "eyJhbGciOiJFZERTQSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJ0eXAiOiJoMmxpdmUtYWNjb3VudCJ9." +
+  "eyJhdWQiOiJsb2NhbGhvc3QiLCJnYW1lcnRhZyI6IlNuZWFreSBQZXRlIiwiaWF0IjoxODAwMDAwMDAwLCJqd2siOnsiY3J2IjoiRWQyNTUxOSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJrdHkiOiJPS1AiLCJ4IjoiMTFxWUFZS3hDcmZWU183VHlXUUhPZzdoY3ZQYXBpTWxyd0lhYVBjSFVSbyJ9fQ." +
+  "CAbhCapHV4aPxyp0SgMosKYqEXCVZvD5fOSx8sUQo9IpOUII91YGE75JFkE2QN0aojf0I5zQH1lZN3ehfQOGBg";
+
 /** live-proto's AccountRequest::open, reimplemented: typ, canonical
- *  payload, kid = thumbprint of the carried key, signature by that key. */
+ *  payload with aud and iat, kid = thumbprint of the carried key,
+ *  signature by that key. */
 async function openAccountRequest(jws: string) {
   const p = parseJws(jws)!;
   if (p.header.alg !== "EdDSA") throw new Error("alg");
   if ((p.header as { typ?: string }).typ !== TYP_ACCOUNT) throw new Error("typ");
   const raw = new TextDecoder().decode(b64urlDecode(jws.split(".")[1]!));
   if (canonicalJson(JSON.parse(raw)) !== raw) throw new Error("not canonical");
-  const body = p.payload as { gamertag: string; jwk: { kty: string; crv: string; x: string; kid?: string }; invite?: string };
+  const body = p.payload as { gamertag: string; jwk: { kty: string; crv: string; x: string; kid?: string }; invite?: string; aud?: string; iat?: number };
+  if (typeof body.aud !== "string" || !Number.isInteger(body.iat)) throw new Error("payload has the wrong shape");
   const kid = await jwkThumbprint(body.jwk);
   if (body.jwk.kid && body.jwk.kid !== kid) throw new Error("jwk kid");
   if (p.header.kid !== kid) throw new Error("header kid");
@@ -35,25 +44,32 @@ describe("sign-up crypto", () => {
     expect(jws).toBe(RFC.jws);
   });
 
-  test("account request matches live-proto's rules, byte for byte", async () => {
+  test("account request is live-proto's account_request_vector, byte for byte", async () => {
     const k = await importSeed(RFC.d, RFC.x);
-    const jws = await signAccountRequest(k, "Sneaky Pete", "inv");
+    const jws = await signAccountRequest(k, "Sneaky Pete", "localhost", 1_800_000_000);
     const [h, p] = jws.split(".");
     expect(new TextDecoder().decode(b64urlDecode(h!))).toBe(`{"alg":"EdDSA","kid":"${RFC.kid}","typ":"h2live-account"}`);
     expect(new TextDecoder().decode(b64urlDecode(p!))).toBe(
-      `{"gamertag":"Sneaky Pete","invite":"inv","jwk":{"crv":"Ed25519","kid":"${RFC.kid}","kty":"OKP","x":"${RFC.x}"}}`);
+      `{"aud":"localhost","gamertag":"Sneaky Pete","iat":1800000000,"jwk":{"crv":"Ed25519","kid":"${RFC.kid}","kty":"OKP","x":"${RFC.x}"}}`);
+    expect(jws).toBe(ACCOUNT_VECTOR);
     const body = await openAccountRequest(jws);
     expect(body.gamertag).toBe("Sneaky Pete");
-    // No invite: the field is left out, not null.
-    const plain = await signAccountRequest(k, "Mochi");
+  });
+
+  test("an invite goes in the payload, and is left out (not null) without one", async () => {
+    const k = await importSeed(RFC.d, RFC.x);
+    const withInvite = await signAccountRequest(k, "Sneaky Pete", "live.example", 1_800_000_000, "inv");
+    expect(new TextDecoder().decode(b64urlDecode(withInvite.split(".")[1]!))).toBe(
+      `{"aud":"live.example","gamertag":"Sneaky Pete","iat":1800000000,"invite":"inv","jwk":{"crv":"Ed25519","kid":"${RFC.kid}","kty":"OKP","x":"${RFC.x}"}}`);
+    const plain = await signAccountRequest(k, "Mochi", "live.example", 1_800_000_000);
     expect(new TextDecoder().decode(b64urlDecode(plain.split(".")[1]!))).not.toContain("invite");
   });
 
   test("a tampered request fails the check", async () => {
     const k = await generateKey();
-    const jws = await signAccountRequest(k, "Mochi");
+    const jws = await signAccountRequest(k, "Mochi", "h", 1_800_000_000);
     const [h, , s] = jws.split(".");
-    const forged = btoa(canonicalJson({ gamertag: "Not Mochi", jwk: k.publicJwk })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    const forged = btoa(canonicalJson({ gamertag: "Not Mochi", jwk: k.publicJwk, aud: "h", iat: 1_800_000_000 })).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     await expect(openAccountRequest(`${h}.${forged}.${s}`)).rejects.toThrow("signature");
   });
 
@@ -66,17 +82,20 @@ describe("sign-up crypto", () => {
   });
 
   test("createAccount posts application/jose and builds an accounts.json entry", async () => {
-    let seen: { url: string; type: string | null; body: string } | null = null;
+    let seen: { url: string; type: string | null; body: string; aud?: string; iat?: number } | null = null;
     const fakeFetch = (async (url: string, init: RequestInit) => {
-      seen = { url, type: new Headers(init.headers).get("content-type"), body: String(init.body) };
       const body = await openAccountRequest(String(init.body));
+      seen = { url, type: new Headers(init.headers).get("content-type"), body: String(init.body), aud: body.aud, iat: body.iat };
       return new Response(JSON.stringify({ xuid: "0009aaaaaaaaaaaa", gamertag: body.gamertag, id: "acct:0009aaaaaaaaaaaa@h" }), { status: 201 });
     }) as unknown as typeof fetch;
-    const a = await createAccount("http://h/v1", "http://h", "h", "Mochi", undefined, fakeFetch);
+    const a = await createAccount("http://h/v1", "http://h", "h", "Mochi", undefined, fakeFetch, 1_800_000_123_456);
     expect(seen!.url).toBe("http://h/v1/accounts");
     expect(seen!.type).toBe("application/jose");
+    // The request names the server (its well-known id) and the time in seconds.
+    expect(seen!.aud).toBe("h");
+    expect(seen!.iat).toBe(1_800_000_123);
     const file = JSON.parse(accountsFile(a));
-    expect(file).toEqual([{ xuid: "0009aaaaaaaaaaaa", gamertag: "Mochi", id: "acct:0009aaaaaaaaaaaa@h", server: "http://h", server_id: "h", kid: a.kid, key: a.key }]);
+    expect(file).toEqual([{ xuid: "0009aaaaaaaaaaaa", gamertag: "Mochi", id: "acct:0009aaaaaaaaaaaa@h", server: "http://h", server_id: "h", kid: a.kid, key: { kty: "OKP", crv: "Ed25519", x: a.x, d: a.key } }]);
     // The stored seed really is the key that signed.
     expect((await importSeed(a.key, a.x)).publicJwk.kid).toBe(a.kid);
   });

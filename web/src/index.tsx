@@ -5,7 +5,7 @@ import "./styles/app.css";
 import "./styles/dash.css";
 import "./styles/stats.css";
 import Dashboard from "./dash/Dashboard";
-import StatsLayout, { Panel } from "./stats/Layout";
+import StatsLayout, { Title } from "./stats/Layout";
 import Game from "./stats/Game";
 import Games from "./stats/Games";
 import Players from "./stats/Players";
@@ -16,7 +16,7 @@ import { live } from "./state/live";
 live.start();
 
 function NotFound() {
-  return <Panel title="Page not found"><p class="s-pad">That page isn't here. Try the links above.</p></Panel>;
+  return <div class="s-full"><Title class="s-title--bar">Page Not Found</Title><p class="s-pad">That page isn't here. Try the links above.</p></div>;
 }
 
 const OldGame = () => <Navigate href={`/stats/games/${useParams().id}`} />;

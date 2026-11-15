@@ -63,6 +63,9 @@ export interface TitleFilePublished { title_id: string; name: string; sha256: st
 export interface PresenceData { xuid: Xuid; state?: string; game_id?: GameId | null }
 export interface GameStarted {
   game_id: GameId;
+  /** The author who started the game, `acct:<xuid>@<server>` (written by the server). */
+  host?: string;
+  /** The console's own name for itself, if it gave one. */
   console?: string;
   map: string;
   mode: "campaign" | "multiplayer" | string;
@@ -134,6 +137,7 @@ export interface GameDetail extends GameSummary {
   score_limit?: number | null;
   time_limit_s?: number | null;
   console?: string | null;
+  host?: string | null;
   tick?: number | null;
   last_tick?: number | null;
   winner?: Winner | null;

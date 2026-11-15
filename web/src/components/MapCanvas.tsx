@@ -18,6 +18,8 @@ export default function MapCanvas(props: {
   outline: () => MapOutline | null;
   layer?: () => number | null;
   mini?: boolean;
+  /** A picture that rarely changes (a finished game): redraw twice a second. */
+  still?: boolean;
   highlight?: () => number | null;
   class?: string;
   label?: string;
@@ -28,13 +30,14 @@ export default function MapCanvas(props: {
   let pal: MapPalette = readPalette();
   let visible = true;
   let w = 0, h = 0, dpr = 1;
+  let drawnAt = -Infinity;
 
   // Re-fit from scratch when the map outline changes.
   createEffect(() => { props.outline(); view.ready = false; });
 
   onMount(() => {
     pal = readPalette(wrap);
-    const ctx = canvas.getContext("2d", { alpha: false });
+    const ctx = canvas.getContext("2d");
     if (!ctx) return;
     const resize = () => {
       dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -45,6 +48,7 @@ export default function MapCanvas(props: {
       canvas.height = Math.round(h * dpr);
       canvas.style.width = w + "px";
       canvas.style.height = h + "px";
+      drawnAt = -Infinity;
     };
     resize();
     const ro = new ResizeObserver(resize);
@@ -52,7 +56,10 @@ export default function MapCanvas(props: {
     const io = new IntersectionObserver((es) => { visible = es.some((e) => e.isIntersecting); });
     io.observe(wrap);
     const stop = onAnimationFrame((now) => {
-      if (!visible || document.hidden) return;
+      // Off screen: draw once so there is a picture, then wait to be seen.
+      if ((!visible && view.ready && drawnAt > 0) || document.hidden) return;
+      if (props.still && now - drawnAt < 500 && view.ready) return;
+      drawnAt = now;
       const f = props.frame(now);
       const scene = {
         players: f.players,

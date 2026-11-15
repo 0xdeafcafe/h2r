@@ -49,21 +49,32 @@ friends, players, game history, sign up / profile, server), each opening a
 bezelled list panel. Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
-**The stats site** (`/stats/...`, `src/stats/`) is the record: games
-(`/stats`), a game's carnage report with the live map or the replay
-(`/stats/games/:id`), players and leaderboards (`/stats/players`), a
-player's service record, game history and career stats
-(`/stats/players/:tag`, `/history`, `/career?compare=<tag>`), and the event
-log (`/stats/events`). The old `/games/:id`, `/players/...` and `/events`
-paths redirect.
+**The stats site** (`/stats/...`, `src/stats/`) is the record, laid out like
+a mid-2000s game stats site: a fixed 902px column on a navy page, a header
+with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
+290px menu column (pill menu, People Finder, reports, Recent Games) beside
+the content. Pages: "h2 live Online" (`/stats`: the featured live map and
+the games spotlight), game details (`/stats/games/:id`: overview, the Game
+Viewer with the live tactical map or the replay, and the post game carnage
+report with Overview / Carnage / Medals / Weapons tabs), players and
+leaderboards (`/stats/players`), a player's service record, game history
+with its preview pane, and career stats with Tool of Destruction, the Medal
+Chest and compare (`/stats/players/:tag`, `/history`,
+`/career?compare=<tag>`), and the event log (`/stats/events`). The old
+`/games/:id`, `/players/...` and `/events` paths redirect. The shell and
+shared chrome are in `stats/Layout.tsx`, the menu-column pieces and map
+thumbnails in `stats/Side.tsx`. Below 760px the column goes full width and
+the menu column drops under the content.
 
 **Derived stats.** Medals, sprees, places, the weapon breakdown ("Tool of
 Destruction"), EXP and rank are computed in the browser from the games'
 events (`src/state/derive.ts`); the API does not serve them. They are
 marked with a `*` and a tooltip. They only cover games this browser has
 loaded, and a game's snapshot carries at most its recent kills, so they are
-estimates for long histories. Medals (all original names and SVG icons in
-`components/MedalIcon.tsx`): Opening Act (first kill of a game), Last Word
+estimates for long histories. The Tool of Destruction pairs each weapon's
+"kills with" (gold bar) with "killed by" (blue bar). Medals (original names;
+the badges are raster art from `public/art/medals`, named after the medal
+ids): Opening Act (first kill of a game), Last Word
 (last kill), Payback (kill your last killer within 10 s), Twofer / Hat
 Trick / Full House / Encore (2 / 3 / 4 / 5+ kills, each within 4 s of the
 last), Hot Streak / Wildfire / Untouchable (5 / 10 / 15 kills without
@@ -81,9 +92,13 @@ UI says so. "Download for h2" saves an `accounts.json`-style file for
 with.
 
 **Fonts and artwork.** The dashboard uses Michroma (SIL Open Font Licence,
-`src/assets/fonts/Michroma-OFL.txt`); the stats site uses system fonts.
-Emblems, medals, the orb and everything else are drawn here; no third-party
-logos or artwork.
+`src/assets/fonts/Michroma-OFL.txt`); the stats site sets its name in it and
+otherwise uses system fonts (Arial for copy and headings, Verdana for the
+nav strip). Raster artwork (banner strips, page and map textures, 24 player
+emblems, medals, rank badges) is original and lives in `public/art`,
+documented in `public/art/ART.md`; `src/lib/art.ts` maps emblems, medal ids
+and rank names to its files. Weapon silhouettes are small SVGs in
+`components/WeaponIcon.tsx`. No third-party logos or artwork.
 
 ## Architecture
 
@@ -112,7 +127,11 @@ yaw (short way round) between the two frames around the render tick and
 snapping on respawns. All canvases share one `requestAnimationFrame` loop
 (`map/scheduler.ts`), skip drawing when off screen, and the draw code
 (`map/render.ts`) uses the uploaded map outline when there is one, or an
-auto-fitted grid from the bounds seen so far.
+auto-fitted grid from the bounds seen so far. A map without an outline
+answers 404 by design; the miss is remembered for five minutes
+(`state/outlines.ts`) so pages don't keep asking. On the stats site the
+canvas is transparent over a tiled map texture, and finished games get a
+still thumbnail of where their knockouts fell.
 
 **Replays** fetch `/v1/games/{id}/frames` (1 Hz, following cursors) and the game stream's
 events from `/v1/events?stream=game-<id>`; `ReplayTimeline` samples

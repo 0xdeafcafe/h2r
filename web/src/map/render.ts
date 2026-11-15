@@ -68,9 +68,12 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
   const sx = (x: number) => w / 2 + (x - v.cx) * v.scale;
   const sy = (y: number) => h / 2 - (y - v.cy) * v.scale;
 
+  // A transparent background lets the page's map texture show through.
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = pal.bg;
-  ctx.fillRect(0, 0, w, h);
+  if (pal.bg !== "transparent") {
+    ctx.fillStyle = pal.bg;
+    ctx.fillRect(0, 0, w, h);
+  }
 
   // Grid: one line every "nice" world step.
   const step = niceStep(60 / Math.max(v.scale, 1e-6));

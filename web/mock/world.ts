@@ -15,6 +15,7 @@ const TAGS = [
   "Tofu Tank", "Lemon Drop", "Grumbles", "Sprinkles", "Bean Machine", "Moss", "Pancake Pal",
 ];
 const WEAPONS = ["blaster", "rifle", "sniper", "shotgun", "rocket", "sword", "grenade", "pistol", "smg"];
+const CONSOLES = ["Den", "Basement", "Lounge", "Bedroom"];
 const VARIANTS_FFA = ["Free for All", "Rumble", "Snowball Fight", "Oddball Party"];
 const VARIANTS_TEAM = ["Team Tag", "Team Rumble", "Capture the Cushion", "Big Team Picnic"];
 
@@ -55,6 +56,7 @@ interface SimGame {
   players: SimPlayer[];
   teams: Map<number, number>;
   host: Account;
+  console: string;
   started_at: string;
   ended_at: string | null;
   kills: Array<Record<string, unknown>>;
@@ -206,7 +208,7 @@ export class World {
     const host = humans[0]!;
     const g: SimGame = {
       id, map, team_play, variant: pick(team_play ? VARIANTS_TEAM : VARIANTS_FFA),
-      score_limit: team_play ? 40 : 15, time_limit_s: 300, tick: 0, host,
+      score_limit: team_play ? 40 : 15, time_limit_s: 300, tick: 0, host, console: CONSOLES[this.games.size % CONSOLES.length]!,
       players: players.map((p) => {
         const w = pick(map.waypoints);
         return {
@@ -225,7 +227,7 @@ export class World {
     this.append(`game-${id}`, [{
       type: "GameStarted",
       data: {
-        game_id: id, console: host.xuid, map: map.name, mode: "multiplayer", variant: g.variant, team_play,
+        game_id: id, host: `acct:${host.xuid}@${HOST}`, console: g.console, map: map.name, mode: "multiplayer", variant: g.variant, team_play,
         score_limit: g.score_limit, time_limit_s: g.time_limit_s, tick: 0, players,
       },
     }], host);
@@ -417,7 +419,7 @@ export class World {
 
   gameDetail(g: SimGame) {
     return {
-      ...this.gameSummary(g), console: g.host.xuid, team_play: g.team_play, score_limit: g.score_limit,
+      ...this.gameSummary(g), host: `acct:${g.host.xuid}@${HOST}`, console: g.console, team_play: g.team_play, score_limit: g.score_limit,
       time_limit_s: g.time_limit_s, tick: 0, last_tick: g.tick, winner: g.winner, end_reason: g.end_reason,
       scoreboard: g.players.map((p) => ({ ...p.score })), kills: g.kills.slice(-50), position: this.log.length,
     };
