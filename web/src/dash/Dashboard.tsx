@@ -25,6 +25,7 @@ import { outlineFor } from "../state/outlines";
 import { now } from "../lib/now";
 import Tunnel, { type TunnelAim } from "./Tunnel";
 import { BigPod, Glyph, Orb, Plate, Prompts, Tubes, type GlyphName } from "./parts";
+import "../styles/dash-pages.css";
 
 type SectionId = "live" | "friends" | "players" | "history" | "signup" | "server";
 type ScreenId = "menu" | "list" | "player" | "signup" | "server";
@@ -335,7 +336,7 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "list"}>
-            <div class="dx-screen dx-list">
+            <div class="dx-screen dx-list dx-pages">
               <ListPanel title={title()} rows={rows()} sel={sel()} onSel={setSel} onAct={openRow} empty={emptyText(section())} />
               <div class="dx-preview">
                 <BigPod>
@@ -357,7 +358,7 @@ export default function Dashboard() {
 
           <Match when={screen() === "player" && viewed()} keyed>
             {(a) => (
-              <div class="dx-screen dx-pods">
+              <div class="dx-screen dx-pods dx-pages">
                 <div class="dx-centre"><BigPod wire><Emblem seed={a.xuid} size={220} class="dx-emblem" /></BigPod></div>
                 <Sats sats={sats()} sel={sat()} onSel={setSat} />
                 <PlayerPlate account={a} main mine={identity.me()?.xuid === a.xuid} />
@@ -367,7 +368,7 @@ export default function Dashboard() {
           </Match>
 
           <Match when={screen() === "signup"}>
-            <div class="dx-screen dx-pods dx-pods--form">
+            <div class="dx-screen dx-pods dx-pods--form dx-pages">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={-1} onSel={() => {}} />
               <SignUpPlate />
@@ -438,8 +439,7 @@ function ListPanel(props: { title: string; rows: Row[]; sel: number; onSel: (i: 
         <h1>{props.title}</h1>
       </header>
       <i class="dx-arrow dx-arrow--up" classList={{ on: first() > 0 }} aria-hidden="true" />
-      <div class="dx-rows" ref={box} role="listbox" aria-activedescendant={`dash-item-${props.sel}`} onScroll={measure} style={{ "--sel": String(props.sel) }}>
-        <Show when={props.rows.length}><i class="dx-rowsel" aria-hidden="true" /></Show>
+      <div class="dx-rows" ref={box} role="listbox" tabindex="0" aria-label={props.title} aria-activedescendant={props.rows.length ? `dash-item-${props.sel}` : undefined} onScroll={measure}>
         <For each={props.rows} fallback={<div class="dx-row dx-row--empty">{props.empty}</div>}>
           {(r, i) => (
             <div
@@ -458,6 +458,7 @@ function ListPanel(props: { title: string; rows: Row[]; sel: number; onSel: (i: 
         </For>
       </div>
       <i class="dx-arrow dx-arrow--down" classList={{ on: first() + shown() < props.rows.length }} aria-hidden="true" />
+      <div class="dx-list-foot"><span>h2 live</span><span>↑ ↓ browse</span></div>
     </section>
   );
 }
@@ -547,16 +548,17 @@ function SignUpPlate() {
   onMount(() => { if (matchMedia("(pointer: fine)").matches) document.getElementById("dash-gamertag")?.focus({ preventScroll: true }); });
   return (
     <Plate small="new account" title="sign up" main>
+      <p class="dx-signup-intro">Choose your name. Join the game.</p>
       <form id="dash-signup" class="dx-form" onSubmit={submit}>
         <label for="dash-gamertag">gamertag</label>
-        <input id="dash-gamertag" value={tag()} maxLength={15} onInput={(e) => setTag(e.currentTarget.value)} autocomplete="off" spellcheck={false} aria-describedby="dash-signup-note" />
+        <input id="dash-gamertag" value={tag()} maxLength={15} onInput={(e) => setTag(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="your name, up to 15 characters" aria-describedby="dash-signup-note" />
         <label for="dash-invite">invite code</label>
         <input id="dash-invite" value={invite()} onInput={(e) => setInvite(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="if the server needs one" />
         <button type="submit" class="dx-go" disabled={busy()}>{busy() ? "signing up" : "create account"}</button>
         <Show when={err()}><p class="dx-error" role="alert">{err()}</p></Show>
         <p id="dash-signup-note" class="dx-note">
-          a new key is made here and signs your request. the private key is stored in this browser (IndexedDB, as a JWK, so it can be
-          downloaded) for {live.wellKnown()?.id ?? "this server"}.
+          Your account key is saved in this browser for {live.wellKnown()?.id ?? "this server"}. Anyone with access to this browser profile can use it.
+          After signing up, choose “download for h2” to take your account into the game.
         </p>
       </form>
     </Plate>
