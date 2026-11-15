@@ -113,6 +113,23 @@ fn runtime_zero_fills_report() {
 }
 
 #[test]
+fn reusing_a_freed_physical_page_reports_its_zeroing() {
+    let mut g = Guest::new();
+    g.map(VA, PAGE_SIZE, 0, Permissions::RW).unwrap();
+    g.set_u32(VA, 0xdead_beef).unwrap();
+    g.unmap(VA, PAGE_SIZE).unwrap();
+    // Use the last page, so map_zeroed finds no fresh RAM and reuses page 0.
+    let top = runtime::guest::RAM_SIZE as u32 - PAGE_SIZE;
+    g.map(ALIAS, PAGE_SIZE, top, Permissions::RW).unwrap();
+    let id = g.subscribe_writes("test");
+    g.watch_writes(id, CONTIGUOUS_BASE, PAGE_SIZE).unwrap();
+    g.map_zeroed(VA, PAGE_SIZE, Permissions::RW).unwrap();
+    assert_eq!(g.fold_address(VA), Some(CONTIGUOUS_BASE));
+    assert_eq!(g.u32(VA).unwrap(), 0);
+    assert_eq!(g.take_dirty(id).unwrap(), vec![range(0, 1)]);
+}
+
+#[test]
 fn subscribers_are_independent_and_muting_hides_only_the_muted_one() {
     let mut g = aliased();
     let d3d = g.subscribe_writes("d3d");

@@ -11,6 +11,7 @@ const ISR: u32 = CODE + 0x100;
 const ISR_STD: u32 = CODE + 0x200;
 const ISR_BAD: u32 = CODE + 0x300;
 const ISR_RAISE: u32 = CODE + 0x400;
+const ISR_TAIL: u32 = CODE + 0x500;
 const STACK: u32 = 0x20000;
 const STACK_TOP: u32 = STACK + 0x4000;
 /// Main's loop counter, then its limit.
@@ -66,6 +67,10 @@ fn setup(limit: u32) -> (Arc<Runtime>, CpuAbi) {
         (cpu.ebp, cpu.esi, cpu.edi) = (5, 6, 7);
         cpu.eflags |= 0x8d5;
         cpu.xmm[0] = [0xee; 16];
+        cpu.x87.st[3] = [0x5a; 10];
+        (cpu.x87.control, cpu.x87.status, cpu.x87.tag) = (0x0c7f, 0x3800, 0);
+        cpu.x87.data_pointer = 0x1234;
+        cpu.mxcsr = 0x9fc0;
     }
     let _ = d.register_override(ISR, "isr", |cpu, ctx, _| {
         log(cpu, ctx, ISR)?;
@@ -87,6 +92,11 @@ fn setup(limit: u32) -> (Arc<Runtime>, CpuAbi) {
         let raised = ctx.runtime().raise_interrupt(irq(ISR, &[2]));
         assert_eq!(raised, Raise::Queued);
         assert!(ctx.in_interrupt());
+        // A safe point inside the callback: the new one must not enter here.
+        Ok(TransferAbi::jump(ISR_TAIL))
+    });
+    let _ = d.register_override(ISR_TAIL, "isr tail", |cpu, ctx, _| {
+        log(cpu, ctx, ISR_TAIL)?;
         ctx.memory().ret(cpu, 0)
     });
     let rt = Runtime::new(g, d);
@@ -94,6 +104,8 @@ fn setup(limit: u32) -> (Arc<Runtime>, CpuAbi) {
     cpu.esp = STACK_TOP - 4;
     (cpu.eax, cpu.ebx, cpu.esi) = (0x1111, 0x2222, 0x3333);
     cpu.eflags |= DF;
+    cpu.x87.st[0] = [0x11; 10];
+    cpu.mxcsr = 0x1fa0;
     (rt, cpu)
 }
 fn irq(target: u32, args: &[u32]) -> GuestInterrupt {
@@ -177,9 +189,13 @@ fn delivery_does_not_nest() {
     let mut ctx = ExecCtx::new(rt.clone(), 1);
     let t = run(&mut cpu, &mut ctx);
     assert!(exited(&ctx, t), "{:?}", ctx.events());
-    // The second callback ran only after the first returned, still before
-    // MAIN's first step.
-    assert_eq!(entries(&rt), vec![[ISR_RAISE, 1, 0, 0], [ISR, 2, 0, 0]]);
+    // The JUMP inside the first callback was a safe point, but the second
+    // callback ran only after the first returned, still before MAIN's first
+    // step.
+    assert_eq!(
+        entries(&rt),
+        vec![[ISR_RAISE, 1, 0, 0], [ISR_TAIL, 1, 0, 0], [ISR, 2, 0, 0]]
+    );
 }
 
 #[test]
