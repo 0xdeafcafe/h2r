@@ -147,11 +147,55 @@ pub(super) fn is_x87(m: Mnemonic) -> bool {
     )
 }
 
+/// How a memory operand's ModR/M was encoded, recovered from the decoded
+/// operand and the instruction length: (mod, rm). A SIB byte the operand
+/// does not need (no index, base not ESP: `D9 04 20` for `fld [eax]`)
+/// shows only as one byte more than the canonical form, and gives rm = 4.
+/// `None` when the length cannot be explained (other redundant prefixes),
+/// so FOP would not be exact.
+fn modrm_form(insn: &Instruction) -> Option<(u32, u32)> {
+    let base = insn.memory_base();
+    let index = insn.memory_index();
+    let num = |r: Register| (r as u32 - Register::EAX as u32) & 7;
+    let (md, rm, disp) = if base == Register::None && index == Register::None {
+        (0, 5, 4)
+    } else if base == Register::None {
+        (0, 4, 4) // SIB with no base: disp32
+    } else {
+        let rm = if index != Register::None || base == Register::ESP { 4 } else { num(base) };
+        match insn.memory_displ_size() {
+            0 => (0, rm, 0),
+            1 => (1, rm, 1),
+            _ => (2, rm, 4),
+        }
+    };
+    let prefixes = (insn.segment_prefix() != Register::None) as u32;
+    if insn.has_rep_prefix() || insn.has_repne_prefix() || insn.has_lock_prefix() {
+        return None;
+    }
+    let sib = (rm == 4) as u32;
+    let canonical = prefixes + 2 + sib + disp;
+    match insn.len() as u32 {
+        n if n == canonical => Some((md, rm)),
+        // A redundant SIB: no index (100), the base in its base field; with
+        // no base, mod 00 and SIB base 101 (disp32) in place of rm 101.
+        n if n == canonical + 1 && rm != 4 => Some((md, 4)),
+        _ => None,
+    }
+}
+
+/// Whether [`fop`] is exact for `insn`: forms without a memory operand
+/// always are, memory forms when [`modrm_form`] explains the encoding.
+pub(super) fn fop_exact(insn: &Instruction) -> bool {
+    let mem = (0..insn.op_count()).any(|k| insn.op_kind(k) == OpKind::Memory);
+    !mem || insn.op_code().op_code() > 0xff || modrm_form(insn).is_some()
+}
+
 /// FOP: the low three bits of the first opcode byte, then the ModR/M byte.
 /// Register forms come straight from the opcode (`D8 C0+i`); memory forms
-/// rebuild ModR/M from the addressing mode, which is exact for every
-/// canonical encoding (a redundant SIB byte with no index, which compilers
-/// do not emit, would read back as the plain form).
+/// rebuild ModR/M from the addressing mode and the instruction length
+/// ([`modrm_form`]), which recovers a redundant SIB byte too. Forms whose
+/// length it cannot explain are refused by the lowering ([`fop_exact`]).
 pub fn fop(insn: &Instruction) -> u16 {
     let oc = insn.op_code();
     let v = oc.op_code();
@@ -167,23 +211,7 @@ pub fn fop(insn: &Instruction) -> u16 {
         (((v >> 8) & 7) << 8 | ((v & 0xff) + plus)) as u16
     } else {
         let reg = oc.group_index().max(0) as u32;
-        let base = insn.memory_base();
-        let index = insn.memory_index();
-        let disp = insn.memory_displ_size();
-        let num = |r: Register| (r as u32 - Register::EAX as u32) & 7;
-        let (md, rm) = if base == Register::None && index == Register::None {
-            (0, 5)
-        } else if base == Register::None {
-            (0, 4) // SIB with no base: disp32
-        } else {
-            let rm = if index != Register::None || base == Register::ESP { 4 } else { num(base) };
-            let md = match disp {
-                0 => 0,
-                1 => 1,
-                _ => 2,
-            };
-            (md, rm)
-        };
+        let (md, rm) = modrm_form(insn).unwrap_or((0, 0));
         (((v & 7) << 8) | (md << 6) | (reg << 3) | rm) as u16
     }
 }
@@ -260,6 +288,9 @@ impl Lower<'_> {
     pub(super) fn x87(&mut self) -> R {
         use Mnemonic as M;
         let insn = self.insn;
+        if !fop_exact(insn) {
+            return Err("x87 memory operand with an encoding FOP cannot be rebuilt from".into());
+        }
         match insn.mnemonic() {
             // ---- control: no FIP/FOP update ------------------------------
             M::Wait => {

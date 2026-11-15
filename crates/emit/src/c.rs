@@ -479,9 +479,12 @@ impl Emitter<'_> {
                     for t in dsts {
                         call.push_str(&format!(", &t{}", t.id));
                     }
+                    // In an x87 handler the pointer locals reach CpuAbi before
+                    // the event (an #MF from emms reports the raiser).
+                    let spill = if self.x87 { "H2X87_SPILL(); " } else { "" };
                     self.line(
                         d,
-                        format!("{{ uint32_t s_ = {call}); if (s_) {{ {}H2_RAISE({pc:#x}u, {pc:#x}u, s_, H2_INTRINSIC_ARG(s_)); }} }}", self.restore()),
+                        format!("{{ uint32_t s_ = {call}); if (s_) {{ {}{spill}H2_RAISE({pc:#x}u, {pc:#x}u, s_, H2_INTRINSIC_ARG(s_)); }} }}", self.restore()),
                     );
                 }
                 Stmt::Repeat { kind, body } => {

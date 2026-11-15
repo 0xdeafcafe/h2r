@@ -285,11 +285,25 @@ pub struct Ctx {
     /// What `h2shim_v1_rdtsc` returns next; counts up like the
     /// interpreter's [`ir::interp::Cpu::tsc`].
     pub tsc: u64,
+    /// The x87 state the CPU held when each #MF (event 14) was reported,
+    /// as the callback saw it: FLOAT-ABI.md §2.4 has the raiser's
+    /// FIP/FOP/FDP materialised before the event is raised.
+    pub fp_error_x87: Vec<X87Abi>,
+    /// The CPU of the running handler ([`Generated::run`]), for
+    /// [`Ctx::fp_error_x87`].
+    cpu: *const CpuAbi,
 }
 
 impl Ctx {
     pub fn new(mem: FlatMemory) -> Self {
-        Ctx { mem, events: Vec::new(), atomics: Vec::new(), tsc: 0 }
+        Ctx {
+            mem,
+            events: Vec::new(),
+            atomics: Vec::new(),
+            tsc: 0,
+            fp_error_x87: Vec::new(),
+            cpu: std::ptr::null(),
+        }
     }
 
     fn emit(&mut self, e: HostEvent) -> u32 {
@@ -347,6 +361,11 @@ unsafe extern "C" fn cb_write(c: *mut c_void, pc: u32, addr: u32, width: u32, al
 
 unsafe extern "C" fn cb_event(c: *mut c_void, pc: u32, saved_eip: u32, code: u32, arg: u32) -> u32 {
     let ctx = unsafe { &mut *c.cast::<Ctx>() };
+    if code == 14 && !ctx.cpu.is_null() {
+        // SAFETY: set by `Generated::run` to the CPU the handler is using;
+        // only read, during the handler's own callback.
+        ctx.fp_error_x87.push(unsafe { (*ctx.cpu).x87 });
+    }
     ctx.emit(HostEvent::Guest { pc, saved_eip, code, arg })
 }
 
@@ -622,8 +641,10 @@ impl Generated {
             };
             let Some((h, selector)) = resolved else { return (t, calls) };
             cpu.eip = target;
+            ctx.cpu = cpu;
             // SAFETY: generated handlers follow the ABI; ctx outlives the call.
             t = unsafe { h(cpu, (ctx as *mut Ctx).cast(), selector) };
+            ctx.cpu = std::ptr::null();
         }
         (t, max)
     }

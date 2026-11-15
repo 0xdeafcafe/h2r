@@ -389,6 +389,12 @@ fn fop_rebuilds_modrm_for_every_addressing_form() {
     assert_eq!(fop(&[0xDD, 0x1C, 0x24]), 0x51c, "fstp qword [esp]");
     assert_eq!(fop(&[0xDE, 0xC9]), 0x6c9, "fmulp st(1)");
     assert_eq!(fop(&[0xD9, 0xE8]), 0x1e8, "fld1");
+    // Redundant SIB bytes (no index) keep the encoded rm = 4.
+    assert_eq!(fop(&[0xD9, 0x04, 0x20]), 0x104, "fld [eax] through a SIB");
+    assert_eq!(fop(&[0xD9, 0x44, 0x20, 0x08]), 0x144, "fld [eax+8] through a SIB");
+    assert_eq!(fop(&[0xD9, 0x04, 0x25, 0, 0x40, 0, 0]), 0x104, "fld [disp32] through a SIB");
+    // An unexplained extra byte (a redundant REP prefix) is refused.
+    assert!(!lowered(&[0xF3, 0xD9, 0x00]).is_supported());
 }
 
 #[test]

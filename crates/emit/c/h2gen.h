@@ -362,7 +362,8 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
  * load_env, fnsave's commit). A failing helper leaves with x_st and x_eip
  * set through the one h2_x87_fail block: H2X87_MF raises #MF (event 14,
  * saved EIP = this waiting instruction, arg = FSW; the pointer locals
- * still describe the raiser), H2X87_UNMODELLED stops with code 12. */
+ * still describe the raiser and are spilled before the event is reported,
+ * FLOAT-ABI.md §2.4), H2X87_UNMODELLED stops with code 12. */
 #define H2X87_GUEST_CS 0x0008u
 #define H2X87_GUEST_DS 0x0010u
 #define H2X87_LOCALS()                                                          \
@@ -387,6 +388,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     H2_EPILOGUE_BODY()
 #define H2X87_FAIL()                                                            \
     h2_x87_fail:                                                                \
+    H2X87_SPILL();                                                              \
     if ((x_st & H2X87_STATUS_MASK) == H2X87_MF) {                               \
         uint32_t e_ = h2shim_v1_event(ctx, x_eip, x_eip, H2SHIM_FP_ERROR, cpu->x87.status); \
         H2_FAULT_EVENT(x_eip, e_);                                              \

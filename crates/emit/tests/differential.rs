@@ -45,6 +45,8 @@ fn fixtures() -> Vec<(&'static str, Asm)> {
 fn x87_fixtures() -> Vec<(&'static str, Asm)> {
     use iced_x86::code_asm::*;
     vec![
+        // Completes from every state: the MXCSR it loads is valid (bits
+        // 0-15 but DAZ), and fnclex leaves nothing pending for the fwait.
         ("fp-control", |a| {
             a.fnstcw(word_ptr(esi))?;
             a.fninit()?;
@@ -53,9 +55,26 @@ fn x87_fixtures() -> Vec<(&'static str, Asm)> {
             a.fnclex()?;
             a.fnstsw(word_ptr(esi + 2))?;
             a.stmxcsr(dword_ptr(esi + 4))?;
-            a.and(dword_ptr(edi + 8), 0xffff)?;
+            a.and(dword_ptr(edi + 8), 0xffbf)?;
             a.ldmxcsr(dword_ptr(edi + 8))?;
-            a.ldmxcsr(dword_ptr(ebx))?; // random: reserved bits give #GP
+            a.wait()?;
+            a.ret()
+        }),
+        // Random MXCSR bits 0-16: reserved bit 16 or DAZ (6) give #GP in
+        // about three states in four, the rest load.
+        ("mxcsr-load", |a| {
+            a.and(dword_ptr(ebx), 0x1ffff)?;
+            a.ldmxcsr(dword_ptr(ebx))?;
+            a.ret()
+        }),
+        // #MF at the fwait from every state: fld st(0) of an empty stack
+        // with IE unmasked leaves IE+SF pending; the event must already see
+        // the fld as the last instruction (FIP/FOP), FLOAT-ABI.md §2.4.
+        ("x87-mf-at-fwait", |a| {
+            a.mov(word_ptr(ebx), 0x037e)?;
+            a.fninit()?;
+            a.fldcw(word_ptr(ebx))?;
+            a.fld(st0)?;
             a.wait()?;
             a.ret()
         }),
@@ -770,11 +789,21 @@ fn generated_c_matches_the_interpreter() {
     for k in ["Returned", "Left", "Memory", "Fault", "Stop"] {
         assert!(all.contains(&k.to_string()), "no fixture ended with {k}: {ends:?}");
     }
+    // The deterministic fixtures end one way from every state.
+    for (name, kind) in [("fp-control", "Returned"), ("x87-mf-at-fwait", "Fault")] {
+        assert_eq!(ends[name].get(kind), Some(&STATES), "{name}: {:?}", ends[name]);
+    }
+    for kind in ["Returned", "Fault"] {
+        assert!(ends["mxcsr-load"].contains_key(kind), "mxcsr-load: {:?}", ends["mxcsr-load"]);
+    }
 }
 
 /// Run every fixture through both backends from the same random states;
 /// panics on any mismatch. `None` if skipped.
-fn differential(name: &str, fixtures: &[(&'static str, Asm)]) -> Option<BTreeMap<&'static str, BTreeMap<String, usize>>> {
+fn differential(
+    name: &str,
+    fixtures: &[(&'static str, Asm)],
+) -> Option<BTreeMap<&'static str, BTreeMap<String, usize>>> {
     let Some(header) = common::abi_header() else {
         common::skip(name, "needs h2abi.h (H2ABI_HEADER)");
         return None;
@@ -811,6 +840,15 @@ fn differential(name: &str, fixtures: &[(&'static str, Asm)]) -> Option<BTreeMap
             }
             if let Some(i) = ctx.mem.bytes.iter().zip(&mem.bytes).position(|(a, b)| a != b) {
                 why.push(format!("memory differs first at {:#x}", MEM_BASE + i as u32));
+            }
+            // An #MF callback sees the raiser's pointers, as returned.
+            if let (End::Fault { code: 14, .. }, Some(seen)) = (&got, ctx.fp_error_x87.last()) {
+                let ptrs = |x: &emit::host::X87Abi| {
+                    (x.instruction_pointer, x.opcode, x.instruction_selector, x.data_pointer, x.data_selector)
+                };
+                if ptrs(seen) != ptrs(&abi.x87) {
+                    why.push(format!("#MF callback saw {:x?}, returned {:x?}", ptrs(seen), ptrs(&abi.x87)));
+                }
             }
             if !why.is_empty() {
                 failures.push(format!("{name} state {s}: {}", why.join("; ")));
