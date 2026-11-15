@@ -197,7 +197,9 @@ a separate store keyed by position, so rendering never waits on crypto.
 **Styling.** `src/styles/theme.css` holds the tokens: `--s-*` for the
 stats site, `--d-*` for the dashboard, and the map palette (the renderer
 reads its colours from them; `.dash` swaps in a green map). `app.css` has
-the shared pieces, `stats.css` and `dash.css` the two sides.
+the shared pieces, `stats.css` and `dash.css` the two sides. The dashboard's
+shell (tunnel, orb, menu, prompts, transitions) is in `dash-shell.css`; the
+orb, pods, bars and prompts are drawn in CSS and SVG, not images.
 
 **Mock.** `mock/` is a Bun server implementing the read and write
 endpoints, both WebSockets, discovery and real Ed25519 signing (server key
