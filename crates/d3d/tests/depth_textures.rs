@@ -443,12 +443,10 @@ fn textured_quad(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {
     d.set_stream_source(m, 0, VB_HEADER, 28).unwrap();
 }
 
-fn back_pixel(d: &Device<GfxBackend>, x: u32, y: u32) -> [u8; 4] {
-    let (px, order) = d
-        .backend
-        .store
-        .read_color(&d.backend.ctx, d.back_buffer().unwrap())
-        .unwrap();
+fn back_pixel(d: &mut Device<GfxBackend>, x: u32, y: u32) -> [u8; 4] {
+    let back = d.back_buffer().unwrap();
+    // `GfxBackend::read_color` submits the pending pass first.
+    let (px, order) = d.backend.read_color(back).unwrap();
     let p = pixel(&px, x, y);
     match order {
         HostPixelOrder::Bgra8 => [p[2], p[1], p[0], p[3]],
@@ -474,11 +472,11 @@ fn gpu_depth_buffer_sampled_as_colour_shows_its_bits() {
     let ev = d.take_events();
     assert!(ev.is_empty(), "{ev:?}");
     // A8R8G8B8 of 0x1234_565A: a = 0x12, r = 0x34, g = 0x56, b = 0x5A.
-    assert_eq!(back_pixel(&d, 20, 30), [0x34, 0x56, 0x5A, 0x12]);
+    assert_eq!(back_pixel(&mut d, 20, 30), [0x34, 0x56, 0x5A, 0x12]);
     // A8B8G8R8 of the same word: r = 0x5A, g = 0x56, b = 0x34.
     alias(&mut m, DEPTH_BUFFER_DATA, 0x3F, W, H, W * 4);
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    assert_eq!(back_pixel(&d, 5, 60), [0x5A, 0x56, 0x34, 0x12]);
+    assert_eq!(back_pixel(&mut d, 5, 60), [0x5A, 0x56, 0x34, 0x12]);
     assert_eq!(d.stats().depth_reads, 1);
     finish(scope);
 }
@@ -597,7 +595,7 @@ fn gpu_shadow_maps_compare_stored_depth_with_r_over_q() {
             assert!(ev.is_empty(), "format {format:#x}: {ev:?}");
             for (x, v) in [(4, left), (W - 4, right)] {
                 assert_eq!(
-                    back_pixel(&d, x, 30),
+                    back_pixel(&mut d, x, 30),
                     [v; 4],
                     "format {format:#x} func {func:#x} x {x}"
                 );
@@ -629,7 +627,7 @@ fn gpu_shadow_map_project2d_compares_with_zero() {
             .unwrap();
         d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
         assert_eq!(d.take_events(), []);
-        assert_eq!(back_pixel(&d, 30, 30), [want; 4], "func {func:#x}");
+        assert_eq!(back_pixel(&mut d, 30, 30), [want; 4], "func {func:#x}");
     }
     finish(scope);
 }
