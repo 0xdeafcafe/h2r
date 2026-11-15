@@ -6,7 +6,7 @@
 import { createUniqueId, type JSX } from "solid-js";
 
 export type WordmarkVariant = "chrome" | "split" | "plate";
-export const WORDMARK: WordmarkVariant = "chrome";
+export const WORDMARK: WordmarkVariant = "split";
 
 // Centre lines on a grid: ascender 4, x-height 14, baseline 30.
 const H = "M3 4V30M3 18Q3 14 7 14H13Q17 14 17 18V30";
