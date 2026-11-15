@@ -17,10 +17,15 @@
 //!   sampled from a copy of that buffer ([`Backend::snapshot_surface`]):
 //!   the image being drawn while it is the back buffer, the image last
 //!   presented while it is the front. One over the depth buffer
-//!   ([`DEPTH_BUFFER_DATA`]) skips the draw.
+//!   ([`DEPTH_BUFFER_DATA`]) reads the depth/stencil bits as the colour
+//!   format it names: the depth buffer is read back as guest bytes
+//!   ([`Backend::read_depth`]) once per change, and those bytes are decoded
+//!   as the texture, exactly as if the guest memory held them.
 //! * **Render to texture.** A surface whose `Parent` is a texture (a level,
 //!   as `0x14850` builds for its two 64x64 targets with the native
-//!   `0x3fb7a0`) gets its own host surface. When the guest can next observe
+//!   `0x3fb7a0`) gets its own host surface: a colour surface, or a
+//!   depth/stencil surface when the level is bound as `pNewZStencil`
+//!   (`D16`/`D24S8`, swizzled or linear: shadow maps). When the guest can next observe
 //!   the texels (the target changes, `Swap`, `KickOff`/`BlockOn*`, the
 //!   busy check `0x3fb710`, or a draw samples that texture), the device
 //!   reads the surface back in the level's format and layout and writes it
@@ -49,6 +54,8 @@ pub struct RttTarget<S> {
     pub height: u32,
     /// Guest layout of the texels.
     pub layout: GuestLayoutKind,
+    /// A depth/stencil level (bound as `pNewZStencil`), not a colour one.
+    pub depth: bool,
     /// Drawn into since the last write-back.
     pub dirty: bool,
     /// Write-tracker generation when the host surface last matched guest
@@ -74,12 +81,26 @@ impl<S> RttTarget<S> {
     }
 }
 
+/// A texture header over the depth buffer, decoded from a readback.
+pub(crate) struct DepthAlias<T> {
+    /// [`Device::depth_generation`] of the bytes it was made from.
+    generation: u64,
+    /// The header's identity words then (`Data`, `Format`, `Size`).
+    identity: [u32; 3],
+    info: TextureInfo,
+    /// The host texture.
+    pub(crate) texture: T,
+}
+
 /// What a bound texture header is, as far as the frame buffers go.
 pub(super) enum FrameTexture<T> {
     /// Ordinary guest texture memory.
     No,
     /// A frame buffer, copied for this draw.
     Snapshot(TextureInfo, T),
+    /// The depth buffer's bits as this texture's format: the host texture
+    /// is `Device::depth_alias[header]`.
+    DepthAlias(TextureInfo),
     /// The draw cannot sample it: skip with this reason.
     Skip(String),
 }
@@ -194,10 +215,8 @@ impl<B: Backend> Device<B> {
             return Ok(FrameTexture::No);
         };
         if self.depth.is_some() && within(DEPTH_BUFFER_DATA) {
-            return Ok(FrameTexture::Skip(format!(
-                "texture {header:#010x} reads the depth buffer's memory (format word {:#x}): depth bits sampled as colour are not modelled",
-                pc.format
-            )));
+            let offset = data.wrapping_sub(map.to_virtual(DEPTH_BUFFER_DATA));
+            return self.depth_texture(header, &pc, offset, sampled);
         }
         let Some(&(base, buffer)) = sw.buffers.iter().find(|b| within(b.0)) else {
             return Ok(FrameTexture::No);
@@ -280,6 +299,129 @@ impl<B: Backend> Device<B> {
         ))
     }
 
+    /// Texture `header` (`pc`) reads the depth buffer's memory from byte
+    /// `offset`: its texels are the depth/stencil words as the guest would
+    /// see them in memory (`D24S8`: `z << 8 | stencil` per pixel, rows of
+    /// `width * 4` bytes), decoded as the texture's own format. Halo's
+    /// `0x509368` (`LIN_A8R8G8B8`) therefore samples the depth's top byte as
+    /// alpha, its middle and low bytes as red and green and the stencil as
+    /// blue, and `0x50936C` (`LIN_A8B8G8R8`) the same bytes with red and
+    /// blue swapped. The depth buffer is read back once per change
+    /// (`depth_generation`), and each header decoded once per readback.
+    /// The draw sees the buffer as it was before the draw, as for the back
+    /// buffer.
+    fn depth_texture(
+        &mut self,
+        header: u32,
+        pc: &PixelContainer,
+        offset: u32,
+        sampled: bool,
+    ) -> Result<FrameTexture<B::Texture>, D3dError> {
+        if !sampled {
+            return Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} over the depth buffer on a stage the draw does not read"
+            )));
+        }
+        let skip = |why: String| {
+            Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} over the depth buffer: {why}"
+            )))
+        };
+        let desc = match TextureDesc::from_header(pc.format, pc.size) {
+            Ok(d) => d,
+            Err(e) => return skip(e.to_string()),
+        };
+        let total = match desc.layout() {
+            Ok(l) => l.total_size as u64,
+            Err(e) => return skip(e.to_string()),
+        };
+        let (Some(depth), Some(p)) = (self.depth, self.params) else {
+            return Ok(FrameTexture::No);
+        };
+        let dfmt = D3DFormat::from_raw(p.auto_depth_stencil_format)
+            .map(linear_twin)
+            .unwrap_or(D3DFormat::LinD24S8);
+        let bpp = dfmt.bytes_per_texel().unwrap_or(4);
+        let pitch = p.width * bpp;
+        let len = pitch as u64 * p.height as u64;
+        if offset as u64 + total > len {
+            return skip(format!(
+                "{:?} {}x{} at +{offset:#x} ({total} bytes) runs past the {len}-byte {dfmt:?} buffer",
+                desc.format, desc.width, desc.height
+            ));
+        }
+        let info = TextureInfo {
+            header,
+            palette: 0,
+            format: desc.format,
+            kind: desc.kind,
+            width: desc.width,
+            height: desc.height,
+            depth: desc.depth,
+            levels: desc.levels,
+        };
+        let generation = self.depth_generation;
+        let identity = pc.identity();
+        if let Some(a) = self.depth_alias.get(&header)
+            && a.generation == generation
+            && a.identity == identity
+        {
+            return Ok(FrameTexture::DepthAlias(a.info));
+        }
+        if self
+            .depth_copy
+            .as_ref()
+            .is_none_or(|(g, _)| *g != generation)
+        {
+            let layout = GuestLayoutKind::Linear { pitch };
+            let Some(bytes) = self
+                .backend
+                .read_depth(depth, dfmt, p.width, p.height, layout)
+                .map_err(D3dError::Backend)?
+            else {
+                return skip("the backend cannot read depth back".into());
+            };
+            if (bytes.len() as u64) < len {
+                return Err(D3dError::Backend(format!(
+                    "read_depth returned {} bytes for a {len}-byte depth buffer",
+                    bytes.len()
+                )));
+            }
+            self.stats.depth_reads += 1;
+            self.depth_copy = Some((generation, bytes));
+        }
+        let bytes = &self.depth_copy.as_ref().expect("read above").1;
+        let decoded = match decode_texture(
+            &desc,
+            &bytes[offset as usize..],
+            None,
+            DecodeOptions {
+                bc_supported: self.backend.bc_supported(),
+                // Raw bits: a COLORSIGN stage over the depth buffer is not
+                // applied (none is known).
+                ..DecodeOptions::default()
+            },
+        ) {
+            Ok(d) => d,
+            Err(e) => return skip(e.to_string()),
+        };
+        let texture = self
+            .backend
+            .upload_texture(&decoded)
+            .map_err(D3dError::Backend)?;
+        self.stats.depth_alias_uploads += 1;
+        self.depth_alias.insert(
+            header,
+            DepthAlias {
+                generation,
+                identity,
+                info,
+                texture,
+            },
+        );
+        Ok(FrameTexture::DepthAlias(info))
+    }
+
     /// The host surface for a texture-level render target (made on first
     /// use; remade if the header's identity changed).
     pub(super) fn rtt_surface(
@@ -290,26 +432,53 @@ impl<B: Backend> Device<B> {
         h: &SurfaceHeader,
         depth: bool,
     ) -> Result<B::Surface, D3dError> {
-        // Checked before the cache: a level already used as a colour target
-        // must still stop when bound as depth.
-        if depth {
-            return Err(D3dError::unimplemented(
-                entry,
-                format!(
-                    "depth/stencil surface {header:#010x} is a level of texture {:#010x} (depth render-to-texture)",
-                    h.parent
-                ),
-            ));
-        }
         let id = h.pixels.identity();
         if let Some(t) = self.rtt.get(&header).copied()
             && t.identity == id
         {
+            if t.depth != depth {
+                return Err(D3dError::unimplemented(
+                    entry,
+                    format!(
+                        "level {header:#010x} of texture {:#010x} is bound as {} after being a {} target",
+                        h.parent,
+                        if depth { "depth/stencil" } else { "colour" },
+                        if t.depth { "depth/stencil" } else { "colour" },
+                    ),
+                ));
+            }
             self.refresh_rtt(mem, header, t)?;
             return Ok(t.surface);
         }
         let desc = TextureDesc::from_header(h.pixels.format, h.pixels.size)
             .map_err(|e| D3dError::unimplemented(entry, format!("surface header: {e}")))?;
+        if depth != desc.format.is_depth() {
+            return Err(D3dError::invalid(
+                entry,
+                format!(
+                    "level {header:#010x} of texture {:#010x} has format {:?} but is bound as a {} target",
+                    h.parent,
+                    desc.format,
+                    if depth { "depth/stencil" } else { "colour" }
+                ),
+            ));
+        }
+        if depth
+            && !matches!(
+                desc.format,
+                D3DFormat::D24S8 | D3DFormat::LinD24S8 | D3DFormat::D16 | D3DFormat::LinD16
+            )
+        {
+            // Float depth stores a non-linear value the host depth surface
+            // does not hold; its guest bits cannot be filled or written back.
+            return Err(D3dError::unimplemented(
+                entry,
+                format!(
+                    "depth/stencil level {header:#010x} of texture {:#010x} has float depth format {:?}",
+                    h.parent, desc.format
+                ),
+            ));
+        }
         let layout = match desc.format.layout() {
             gfx::format::Layout::Swizzled => GuestLayoutKind::Swizzled,
             gfx::format::Layout::Linear => GuestLayoutKind::Linear {
@@ -344,10 +513,14 @@ impl<B: Backend> Device<B> {
                 .destroy_surface(old.surface)
                 .map_err(D3dError::Backend)?;
         }
-        let surface = self
-            .backend
-            .create_texture_target(desc.format, desc.width, desc.height)
-            .map_err(D3dError::Backend)?;
+        let surface = if depth {
+            self.backend
+                .create_surface(desc.format, desc.width, desc.height, true)
+        } else {
+            self.backend
+                .create_texture_target(desc.format, desc.width, desc.height)
+        }
+        .map_err(D3dError::Backend)?;
         let target = RttTarget {
             surface,
             parent: h.parent,
@@ -357,6 +530,7 @@ impl<B: Backend> Device<B> {
             width: desc.width,
             height: desc.height,
             layout,
+            depth,
             dirty: false,
             generation: 0,
             hash: 0,
@@ -442,12 +616,26 @@ impl<B: Backend> Device<B> {
         self.fill_rtt(header, &bytes)
     }
 
-    /// About to write into `color`, the current colour target: marks a
-    /// texture level dirty, and preserves the presented image if `color` is
-    /// the back buffer a `COPY` swap showed.
-    pub(super) fn touch_target(&mut self, color: B::Surface) -> Result<(), D3dError> {
+    /// About to write into `color`, the current colour target, and, with
+    /// `writes_depth`, into the depth/stencil surface: marks texture levels
+    /// dirty, notes a change of the device's depth buffer (textures over it
+    /// are read again), and preserves the presented image if `color` is the
+    /// back buffer a `COPY` swap showed.
+    pub(super) fn touch_target(
+        &mut self,
+        color: B::Surface,
+        writes_depth: bool,
+    ) -> Result<(), D3dError> {
         if let Some(t) = self.rtt.get_mut(&self.render_target) {
             t.dirty = true;
+        }
+        if writes_depth && self.depth_stencil != 0 {
+            if let Some(t) = self.rtt.get_mut(&self.depth_stencil) {
+                t.dirty = true;
+            }
+            if self.depth_stencil == self.depth_header {
+                self.depth_generation += 1;
+            }
         }
         self.before_target_write(color)
     }
@@ -496,10 +684,21 @@ impl<B: Backend> Device<B> {
         if !t.dirty {
             return Ok(());
         }
-        let bytes = self
-            .backend
-            .read_surface(t.surface, t.format, t.width, t.height, t.layout)
-            .map_err(D3dError::Backend)?;
+        let bytes = if t.depth {
+            self.backend
+                .read_depth(t.surface, t.format, t.width, t.height, t.layout)
+                .map_err(D3dError::Backend)?
+                .ok_or_else(|| {
+                    D3dError::Backend(format!(
+                        "the backend cannot read depth level {header:#010x} ({:?}) back",
+                        t.format
+                    ))
+                })?
+        } else {
+            self.backend
+                .read_surface(t.surface, t.format, t.width, t.height, t.layout)
+                .map_err(D3dError::Backend)?
+        };
         let len = t.len() as usize;
         if bytes.len() < len {
             return Err(D3dError::Backend(format!(
@@ -699,7 +898,7 @@ impl<B: Backend> Device<B> {
         if !mask.any() && depth.is_none() && stencil.is_none() {
             return Ok(());
         }
-        self.touch_target(c)?;
+        self.touch_target(c, depth.is_some() || stencil.is_some())?;
         let whole = pixels.iter().any(|r| r.is_whole(w, h));
         if whole && (mask.all() || !mask.any()) {
             let clear = Clear {

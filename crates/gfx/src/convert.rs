@@ -14,8 +14,18 @@
 //! | `G8B8` | `(b0, b1, b0, b1)`: raw bytes 0 and 1 |
 //! | `R8B8` | `(b1, b0, b0, b1)` |
 //!
+//! | `D24S8`, `F24S8` | `(z[23:16], z[15:8], z[7:0], stencil)` (raw bits) |
+//! | `D16`, `F16` | `(z[15:8], z[7:0], 0, 0)` (raw bits) |
+//!
 //! Everything is expanded to RGBA8 except `A8R8G8B8`, which is passed
 //! through as BGRA8.
+//!
+//! Depth formats have no colour meaning: the NV2A samples them as shadow
+//! maps, comparing the stored depth with the texture coordinate (xemu's
+//! `psh_append_shadowmap`, with `SHADOWCTL`'s function). They are handed
+//! to the shader as their raw bits, most significant depth byte in red, so
+//! a shader that compares can rebuild the stored value exactly
+//! ([`depth_channels`]); float depth (`F24S8`, `F16`) is left as its bits.
 
 use crate::format::TexelFormat;
 
@@ -82,6 +92,11 @@ pub fn to_rgba8(
     palette: Option<&[u32]>,
 ) -> Result<Vec<u8>, ConvertError> {
     use TexelFormat::*;
+    if let Unsupported(f) = fmt
+        && f.is_depth()
+    {
+        return depth_channels(f, src, texels);
+    }
     let bpt = match fmt {
         Unsupported(_) | Dxt1 | Dxt3 | Dxt5 => return Err(ConvertError::Unsupported(fmt)),
         _ => fmt.bytes_per_texel().expect("uncompressed"),
@@ -156,6 +171,29 @@ pub fn to_rgba8(
             }
         };
         out.extend_from_slice(&px);
+    }
+    Ok(out)
+}
+
+/// A depth texture's raw bits as RGBA8: for 32-bit formats (`D24S8`,
+/// `F24S8`, word = `z << 8 | stencil`) red, green and blue are the depth
+/// bytes from most to least significant and alpha the stencil; for 16-bit
+/// formats (`D16`, `F16`) red and green are the depth bytes and blue and
+/// alpha zero. Sampled with point filtering, `round(c * 255)` gives the
+/// bytes back. `format` must be a depth format.
+pub fn depth_channels(format: crate::format::D3DFormat, src: &[u8], texels: usize) -> Result<Vec<u8>, ConvertError> {
+    let bpt = if format.bytes_per_texel() == Some(2) { 2 } else { 4 };
+    let need = texels * bpt;
+    if src.len() < need {
+        return Err(ConvertError::TooShort { need, have: src.len() });
+    }
+    let mut out = Vec::with_capacity(texels * 4);
+    for t in src[..need].chunks_exact(bpt) {
+        out.extend_from_slice(&match t {
+            [lo, hi] => [*hi, *lo, 0, 0],
+            [s, z0, z1, z2] => [*z2, *z1, *z0, *s],
+            _ => unreachable!("chunks of {bpt}"),
+        });
     }
     Ok(out)
 }
@@ -265,5 +303,21 @@ mod tests {
     fn l16_uses_xemu_y16_swizzle() {
         let px = to_rgba8(TexelFormat::L16, &[0x34, 0x12], 1, None).unwrap();
         assert_eq!(px, vec![255, 0x12, 0x34, 255]);
+    }
+
+    #[test]
+    fn depth_formats_give_their_raw_bits() {
+        use crate::format::D3DFormat as F;
+        // D24S8 word 0xABCDEF_5A: depth 0xABCDEF, stencil 0x5A.
+        let word = 0xABCD_EF5Au32.to_le_bytes();
+        for f in [F::D24S8, F::LinD24S8, F::F24S8, F::LinF24S8] {
+            assert_eq!(one(Unsupported(f), &word), [0xAB, 0xCD, 0xEF, 0x5A], "{f:?}");
+        }
+        for f in [F::D16, F::LinD16, F::F16, F::LinF16] {
+            assert_eq!(one(Unsupported(f), &0x1234u16.to_le_bytes()), [0x12, 0x34, 0, 0], "{f:?}");
+        }
+        assert!(matches!(depth_channels(F::D24S8, &[0; 3], 1), Err(ConvertError::TooShort { need: 4, have: 3 })));
+        // Not depth: still unsupported.
+        assert!(to_rgba8(Unsupported(F::V16U16), &[0; 4], 1, None).is_err());
     }
 }

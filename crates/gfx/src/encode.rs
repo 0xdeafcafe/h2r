@@ -148,6 +148,45 @@ pub fn encode_depth(
     apply_layout(out, bpt, w, h, layout)
 }
 
+/// The inverse of [`encode_depth`]: guest `D16`/`D24S8` texels (swizzled,
+/// or rows `pitch` bytes apart) as normalised depth plus stencil (`D24S8`
+/// only), for filling a host depth surface from guest memory. Float-depth
+/// formats are not supported, as for encoding.
+pub fn decode_depth(format: D3DFormat, guest: &[u8], w: u32, h: u32, layout: &SurfaceLayout) -> Result<DepthPlane, EncodeError> {
+    let bpt = match format {
+        D3DFormat::D16 | D3DFormat::LinD16 => 2,
+        D3DFormat::D24S8 | D3DFormat::LinD24S8 => 4,
+        _ => return Err(EncodeError::Unsupported(format)),
+    };
+    let (n, row) = (w as usize * h as usize, w as usize * bpt);
+    let tight = match layout {
+        SurfaceLayout::Swizzled => {
+            if guest.len() < n * bpt {
+                return Err(EncodeError::TooShort { need: n * bpt, have: guest.len() });
+            }
+            swizzle::unswizzle(&guest[..n * bpt], w, h, 1, bpt)?
+        }
+        SurfaceLayout::Linear { pitch } | SurfaceLayout::Tiled { pitch, .. } => {
+            let pitch = (*pitch as usize).max(row);
+            let need = if h == 0 { 0 } else { pitch * (h as usize - 1) + row };
+            if guest.len() < need {
+                return Err(EncodeError::TooShort { need, have: guest.len() });
+            }
+            (0..h as usize).flat_map(|y| guest[y * pitch..y * pitch + row].iter().copied()).collect()
+        }
+    };
+    Ok(if bpt == 2 {
+        let depth = tight.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes(*c) as f32 / 65535.0).collect();
+        DepthPlane { depth, stencil: None }
+    } else {
+        let words: Vec<u32> = tight.as_chunks::<4>().0.iter().map(|c| u32::from_le_bytes(*c)).collect();
+        DepthPlane {
+            depth: words.iter().map(|w| (w >> 8) as f32 / 16_777_215.0).collect(),
+            stencil: Some(words.iter().map(|w| *w as u8).collect()),
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +285,23 @@ mod tests {
         ));
         let plane = DepthPlane { depth: vec![0.0], stencil: None };
         assert!(encode_depth(D3DFormat::F24S8, &plane, 1, 1, &lin).is_err());
+    }
+
+    #[test]
+    fn depth_decodes_back_to_its_encoding() {
+        let plane = DepthPlane { depth: vec![0.0, 1.0, 0.5, 0.25], stencil: Some(vec![0, 1, 2, 255]) };
+        for layout in [SurfaceLayout::Swizzled, SurfaceLayout::Linear { pitch: 64 }] {
+            for f in [D3DFormat::D24S8, D3DFormat::LinD24S8, D3DFormat::D16] {
+                let bytes = encode_depth(f, &plane, 2, 2, &layout).unwrap();
+                let back = decode_depth(f, &bytes, 2, 2, &layout).unwrap();
+                assert_eq!(encode_depth(f, &back, 2, 2, &layout).unwrap(), bytes, "{f:?} {layout:?}");
+                assert_eq!(back.stencil.is_some(), f != D3DFormat::D16);
+            }
+        }
+        assert!(decode_depth(D3DFormat::F24S8, &[0; 16], 2, 2, &SurfaceLayout::Swizzled).is_err());
+        assert!(matches!(
+            decode_depth(D3DFormat::D16, &[0; 6], 2, 2, &SurfaceLayout::Linear { pitch: 4 }),
+            Err(EncodeError::TooShort { need: 8, have: 6 })
+        ));
     }
 }

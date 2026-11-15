@@ -80,6 +80,9 @@ pub mod slot {
     pub const SOLID_OFFSET_ENABLE: u32 = 81;
     /// `D3DRS_ZBIAS`.
     pub const ZBIAS: u32 = 149;
+    /// `D3DRS_SHADOWFUNC` (a `D3DCMP_*` value; `SetRenderState_ShadowFunc`
+    /// `0x3f5330`): the shadow-map comparison for depth-format textures.
+    pub const SHADOWFUNC: u32 = 156;
     /// Slots 0..57 mirror the first 57 dwords of a `D3DPIXELSHADERDEF`
     /// (`PSALPHAINPUTS0` .. `PSINPUTTEXTURE`).
     pub const PS_DEF_SLOTS: u32 = 57;

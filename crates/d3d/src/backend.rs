@@ -307,15 +307,33 @@ pub trait Backend: Send {
             "the backend cannot read surfaces back ({format:?})"
         ))
     }
+    /// Reads a depth/stencil surface back as guest bytes: `format` (`D16`
+    /// or `D24S8`, as `z << 8 | stencil`) texels of a `width x height`
+    /// image laid out as `layout`. For a render-to-texture depth level's
+    /// write-back, and for textures that alias the depth buffer's memory.
+    /// `Ok(None)`: the backend cannot (the default); a write-back then
+    /// stops and an aliasing texture skips its draw.
+    fn read_depth(
+        &mut self,
+        surface: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let _ = (surface, format, width, height, layout);
+        Ok(None)
+    }
     /// Copies the whole of colour surface `src` into `dst` (same format and
     /// size). `Ok(false)`: the backend cannot (the default).
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         let _ = (src, dst);
         Ok(false)
     }
-    /// Fills a colour surface from guest texels: `desc` is the level as the
-    /// guest lays it out (format, size, and the pitch of a linear level), so
-    /// a render-to-texture target starts with the level's current texels.
+    /// Fills a colour or depth/stencil surface from guest texels: `desc` is
+    /// the level as the guest lays it out (format, size, and the pitch of a
+    /// linear level), so a render-to-texture target starts with the level's
+    /// current texels (`D16`/`D24S8` for a depth level).
     /// `Ok(false)`: the backend cannot, and the surface keeps whatever it
     /// was created with (the default).
     fn write_surface(
@@ -434,6 +452,15 @@ pub enum Recorded {
         /// Bytes returned.
         len: usize,
     },
+    /// `read_depth`.
+    ReadDepth {
+        /// Surface.
+        surface: u32,
+        /// Format asked for.
+        format: D3DFormat,
+        /// Bytes returned.
+        len: usize,
+    },
     /// `copy_surface`.
     CopySurface {
         /// Source.
@@ -490,6 +517,9 @@ pub struct RecordingBackend {
     pub readback_fill: u8,
     /// The DAC ramp passed at the most recent present.
     pub present_gamma: Option<Box<[u8; 768]>>,
+    /// What `read_depth` returns (repeated or cut to the image's length);
+    /// `None` returns `readback_fill` bytes.
+    pub depth_readback: Option<Vec<u8>>,
     /// Samples counted since the last `clear_pixel_count`: each counted
     /// draw adds the area of its clip rectangle (every pixel it may touch
     /// passes; nothing is rasterised here).
@@ -697,6 +727,33 @@ impl Backend for RecordingBackend {
             bytes: bytes.to_vec(),
         });
         Ok(true)
+    }
+    /// Returns `depth_readback` (cycled to the image's length) or
+    /// `readback_fill` bytes.
+    fn read_depth(
+        &mut self,
+        surface: u32,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Option<Vec<u8>>, String> {
+        let bpp = format
+            .bytes_per_texel()
+            .ok_or_else(|| format!("{format:?} has no texel size"))?;
+        let len = match layout {
+            GuestLayoutKind::Swizzled => (width * height * bpp) as usize,
+            GuestLayoutKind::Linear { pitch } => (pitch * height) as usize,
+        };
+        self.calls.push(Recorded::ReadDepth {
+            surface,
+            format,
+            len,
+        });
+        Ok(Some(match &self.depth_readback {
+            Some(b) if !b.is_empty() => b.iter().copied().cycle().take(len).collect(),
+            _ => vec![self.readback_fill; len],
+        }))
     }
     /// Returns `readback_fill` repeated to the level's size.
     fn read_surface(

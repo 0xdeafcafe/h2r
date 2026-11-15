@@ -27,8 +27,12 @@
 //! `gfx::Renderer::clear_rects`. Render-to-texture levels are
 //! `SurfaceStore::create_texture_target` surfaces, filled from guest memory
 //! with `SurfaceStore::write_color` and read back with `gfx::readback` and
-//! `gfx::encode`. A texture over the back buffer is sampled from a
-//! `SurfaceStore::snapshot` copy ([`Backend::snapshot_surface`]).
+//! `gfx::encode`; depth levels are `SurfaceStore` depth surfaces, filled
+//! with `SurfaceStore::write_depth` and read back with
+//! `SurfaceStore::read_depth_as` (which also serves textures over the depth
+//! buffer, [`Backend::read_depth`]). A texture over the back buffer is
+//! sampled from a `SurfaceStore::snapshot` copy
+//! ([`Backend::snapshot_surface`]).
 //! `set_pretransformed_z_max` is renderer-wide, so it is set
 //! before every built-in draw.
 //!
@@ -596,10 +600,39 @@ impl Backend for GfxBackend {
     ) -> Result<bool, String> {
         self.flush()?;
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "surface write");
-        self.store
-            .write_color(&self.ctx, surface, desc, bytes)
-            .map_err(|e| e.to_string())?;
+        let kind = self.store.get(surface).map_err(|e| e.to_string())?.kind();
+        match kind {
+            SurfaceKind::Color => self.store.write_color(&self.ctx, surface, desc, bytes),
+            SurfaceKind::DepthStencil => self.store.write_depth(&self.ctx, surface, desc, bytes),
+        }
+        .map_err(|e| e.to_string())?;
         Ok(true)
+    }
+
+    fn read_depth(
+        &mut self,
+        surface: SurfaceId,
+        format: D3DFormat,
+        _width: u32,
+        _height: u32,
+        layout: GuestLayoutKind,
+    ) -> Result<Option<Vec<u8>>, String> {
+        use gfx::surface::{SurfaceError, SurfaceLayout};
+        // The bits include everything drawn so far.
+        self.flush()?;
+        let layout = match layout {
+            GuestLayoutKind::Swizzled => SurfaceLayout::Swizzled,
+            GuestLayoutKind::Linear { pitch } => SurfaceLayout::Linear { pitch },
+        };
+        match self
+            .store
+            .read_depth_as(&self.ctx, surface, format, &layout)
+        {
+            Ok(b) => Ok(Some(b)),
+            // Depth24Plus (no DEPTH32FLOAT_STENCIL8) or multisampled.
+            Err(SurfaceError::NotReadable(..)) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     fn snapshot_surface(

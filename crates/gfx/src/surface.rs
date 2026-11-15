@@ -311,6 +311,8 @@ pub struct SurfaceStore {
     surfaces: HashMap<SurfaceId, Surface>,
     next: u32,
     caps: Capabilities,
+    /// Made at the first [`SurfaceStore::write_depth`].
+    depth_fill: Option<crate::depth_fill::DepthFill>,
 }
 
 fn supported_samples(ctx: &GfxContext, format: wgpu::TextureFormat, wanted: u32) -> u32 {
@@ -325,7 +327,7 @@ fn supported_samples(ctx: &GfxContext, format: wgpu::TextureFormat, wanted: u32)
 impl SurfaceStore {
     /// An empty store.
     pub fn new(caps: Capabilities) -> Self {
-        Self { surfaces: HashMap::new(), next: 1, caps }
+        Self { surfaces: HashMap::new(), next: 1, caps, depth_fill: None }
     }
 
     /// Creates a surface. Requested MSAA is lowered to what the device
@@ -376,7 +378,10 @@ impl SurfaceStore {
                 make(
                     "surface depth",
                     desc.samples,
-                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT
+                        | wgpu::TextureUsages::TEXTURE_BINDING
+                        | wgpu::TextureUsages::COPY_SRC
+                        | wgpu::TextureUsages::COPY_DST,
                 ),
                 None,
             ),
@@ -800,6 +805,41 @@ impl SurfaceStore {
         let plane = self.read_depth(ctx, id)?;
         let d = self.get(id)?.desc;
         Ok(encode::encode_depth(d.format, &plane, d.width, d.height, &d.layout)?)
+    }
+
+    /// Reads a depth surface and encodes it as `format` texels laid out as
+    /// `layout` (the guest memory of a depth level, or of the depth buffer a
+    /// texture aliases), whatever the surface's own description says.
+    pub fn read_depth_as(&self, ctx: &GfxContext, id: SurfaceId, format: D3DFormat, layout: &SurfaceLayout) -> Result<Vec<u8>, SurfaceError> {
+        let plane = self.read_depth(ctx, id)?;
+        let d = self.get(id)?.desc;
+        Ok(encode::encode_depth(format, &plane, d.width, d.height, layout)?)
+    }
+
+    /// Replaces a depth surface's depth (and stencil) with guest texels
+    /// described by `desc`: `D16` or `D24S8`, one 2D level of the surface's
+    /// size, swizzled, or rows `desc.pitch` bytes apart when linear (a
+    /// render-to-texture depth level filled from its texture's memory).
+    /// Depth is drawn (see [`crate::depth_fill`]); stencil is copied. The
+    /// surface must be single-sample.
+    pub fn write_depth(&mut self, ctx: &GfxContext, id: SurfaceId, desc: &crate::texture::TextureDesc, guest: &[u8]) -> Result<(), SurfaceError> {
+        let s = self.typed(id, SurfaceKind::DepthStencil)?;
+        let d = s.desc;
+        if desc.kind != crate::texture::TextureKind::D2 || desc.depth != 1 || (desc.width, desc.height) != (d.width, d.height) {
+            return Err(SurfaceError::TargetMismatch("texel description is not one 2D level of the surface's size"));
+        }
+        if d.samples != 1 {
+            return Err(SurfaceError::TargetMismatch("a multisampled depth surface cannot be filled"));
+        }
+        let layout = match desc.format.layout() {
+            Layout::Swizzled => SurfaceLayout::Swizzled,
+            _ => SurfaceLayout::Linear { pitch: desc.pitch },
+        };
+        let plane = encode::decode_depth(desc.format, guest, d.width, d.height, &layout)?;
+        let (format, texture) = (s.wgpu_format, s.texture.clone());
+        let fill = self.depth_fill.get_or_insert_with(|| crate::depth_fill::DepthFill::new(&ctx.device));
+        fill.fill(ctx, &texture, format, (d.width, d.height), &plane.depth, plane.stencil.as_deref());
+        Ok(())
     }
 
     /// Replaces a colour surface's contents from guest memory in its own

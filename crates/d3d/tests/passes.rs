@@ -291,18 +291,18 @@ fn textures_over_the_frame_buffers_sample_a_back_buffer_copy_or_skip() {
             "{ev:?}"
         );
     }
-    // Colour over the depth buffer (0x509368, 0x50936C): skipped.
+    assert_eq!(d.backend.draws().len(), draws);
+    assert_eq!(d.backend.uploads(), 0);
+    // Colour over the depth buffer (0x509368, 0x50936C): drawn, from the
+    // depth buffer's bits (tests/depth_textures.rs has the details).
     for format in [0x12, 0x3F] {
         frame_texture(&mut m, DEPTH_BUFFER_DATA, format, W, H);
         d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
         let ev = d.take_events();
-        assert!(
-            ev.iter().any(|e| matches!(e, Event::DrawSkipped { reason, .. } if reason.contains("depth buffer"))),
-            "{ev:?}"
-        );
+        assert!(ev.is_empty(), "{ev:?}");
     }
-    assert_eq!(d.backend.draws().len(), draws);
-    assert_eq!(d.backend.uploads(), 0);
+    assert_eq!(d.backend.draws().len(), draws + 2);
+    assert_eq!(d.stats().depth_alias_uploads, 2);
 }
 
 fn snapshots(d: &Device<RecordingBackend>) -> Vec<u32> {
@@ -980,8 +980,8 @@ fn gpu_window_scissors_draw_outside_a_small_viewport() {
     finish(scope);
 }
 
-/// Review P2: an unsupported frame-buffer texture on a stage the draw does
-/// not read leaves the draw alone.
+/// Review P2: a frame-buffer texture on a stage the draw does not read
+/// leaves the draw alone (and is not read back).
 #[test]
 fn gpu_unused_depth_texture_stage_does_not_cancel_the_draw() {
     let Some((mut d, mut m, scope)) = gpu() else {
@@ -995,15 +995,12 @@ fn gpu_unused_depth_texture_stage_does_not_cancel_the_draw() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
     assert_eq!(back_buffer(&mut d)(32, 32), [0xFF, 0, 0, 0xFF]);
-    // Read on stage 0 it is still skipped.
+    // Read on stage 0 it is sampled from a depth readback.
     d.set_texture(&mut m, 3, 0).unwrap();
     d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    assert!(
-        d.take_events()
-            .iter()
-            .any(|e| matches!(e, Event::DrawSkipped { .. }))
-    );
+    no_skips(&mut d);
+    assert_eq!(d.stats().depth_reads, 1);
     finish(scope);
 }
 
@@ -1035,8 +1032,8 @@ fn gpu_x8_texture_over_the_back_buffer_reads_opaque_alpha() {
 }
 
 /// Review P2 (re-check): a pixel-shader stage whose mode fetches no texel
-/// (CLIPPLANE, PASSTHRU, dot-only) does not read the bound image, so an
-/// unsupported depth alias on it leaves the draw alone.
+/// (CLIPPLANE, PASSTHRU, dot-only) does not read the bound image, so a
+/// depth alias on it is neither read back nor bound.
 #[test]
 fn gpu_clipplane_stage_over_a_depth_alias_does_not_cancel_the_draw() {
     use shaders::psh::PixelShaderDef;
@@ -1070,16 +1067,18 @@ fn gpu_clipplane_stage_over_a_depth_alias_does_not_cancel_the_draw() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
     assert_eq!(back_buffer(&mut d)(32, 32), [0xFF, 0, 0, 0xFF]);
-    // The same alias on a PROJECT2D stage is read: skipped.
+    assert_eq!(
+        d.stats().depth_reads,
+        0,
+        "a stage that is not read is not read back"
+    );
+    // The same alias on a PROJECT2D stage is read, from a depth readback.
     def.texture_modes = texture_modes([0, 0, 0, TEX_PROJECT2D]);
     m.write(PSDEF, &def.to_bytes()).unwrap();
     d.set_pixel_shader(&mut m, PS_OBJECT).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
-    assert!(
-        d.take_events()
-            .iter()
-            .any(|e| matches!(e, Event::DrawSkipped { .. }))
-    );
+    no_skips(&mut d);
+    assert_eq!(d.stats().depth_reads, 1);
     finish(scope);
 }
 

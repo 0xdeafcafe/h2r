@@ -20,6 +20,7 @@ pub mod blit;
 pub mod clear;
 pub mod context;
 pub mod convert;
+pub(crate) mod depth_fill;
 pub mod dxt;
 pub mod encode;
 pub mod format;

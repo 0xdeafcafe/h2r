@@ -321,6 +321,8 @@ pub fn decode_texture(
             BcKind::Bc3 => HostFormat::Bc3RgbaUnorm,
         },
         (TexelFormat::A8R8G8B8 | TexelFormat::X8R8G8B8, _) => HostFormat::Bgra8Unorm,
+        // Depth formats: their raw bits (see `convert::depth_channels`).
+        (TexelFormat::Unsupported(f), _) if f.is_depth() => HostFormat::Rgba8Unorm,
         (TexelFormat::Unsupported(f), _) => return Err(convert::ConvertError::Unsupported(TexelFormat::Unsupported(f)).into()),
         _ => HostFormat::Rgba8Unorm,
     };
@@ -614,9 +616,17 @@ mod tests {
     }
 
     #[test]
-    fn depth_formats_are_rejected_as_textures() {
+    fn depth_formats_decode_to_their_raw_bits() {
+        // Swizzled 2x2 D24S8: Morton order is also row order at 2x2.
         let d = TextureDesc::new(D3DFormat::D24S8, TextureKind::D2, 2, 2, 1, 1);
-        assert!(decode_texture(&d, &[0u8; 64], None, DecodeOptions::default()).is_err());
+        let words = [0x1122_3344u32, 0xAABB_CCDD, 0, 0xFFFF_FF00];
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let t = decode_texture(&d, &bytes, None, DecodeOptions::default()).unwrap();
+        assert_eq!(t.host, HostFormat::Rgba8Unorm);
+        assert_eq!(&t.levels[0].data[..8], &[0x11, 0x22, 0x33, 0x44, 0xAA, 0xBB, 0xCC, 0xDD]);
+        // V16U16 has no conversion yet.
+        let v = TextureDesc::new(D3DFormat::V16U16, TextureKind::D2, 2, 2, 1, 1);
+        assert!(decode_texture(&v, &[0u8; 64], None, DecodeOptions::default()).is_err());
     }
 
     #[test]

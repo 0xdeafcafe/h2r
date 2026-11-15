@@ -331,6 +331,13 @@ pub struct Stats {
     pub rtt_writebacks: u64,
     /// Render-to-texture host surfaces filled from guest memory.
     pub rtt_uploads: u64,
+    /// Depth-buffer readbacks for textures that alias its memory
+    /// ([`DEPTH_BUFFER_DATA`]): one per change of the depth buffer that a
+    /// draw then samples.
+    pub depth_reads: u64,
+    /// Host textures made from those readbacks (one per aliasing header
+    /// and depth-buffer change).
+    pub depth_alias_uploads: u64,
     /// Vertical blanks counted ([`Device::vblank`]).
     pub vblanks: u64,
     /// Push-buffer callbacks handed out for delivery
@@ -565,6 +572,14 @@ pub struct Device<B: Backend> {
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
     rtt: HashMap<u32, RttTarget<B::Surface>>,
+    /// Bumped by every draw or clear that may write the device's own depth
+    /// buffer (`raster.rs`, textures over [`DEPTH_BUFFER_DATA`]).
+    depth_generation: u64,
+    /// The depth buffer as guest bytes, and the generation they were read
+    /// at.
+    depth_copy: Option<(u64, Vec<u8>)>,
+    /// Textures over the depth buffer, made from `depth_copy`, by header.
+    depth_alias: HashMap<u32, raster::DepthAlias<B::Texture>>,
     /// The push-buffer callback being delivered, between
     /// [`Device::begin_push_callback`] and [`Device::end_push_callback`].
     active_callback: Option<PushCallback>,
@@ -660,6 +675,9 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             display: display::Display::default(),
             rtt: HashMap::new(),
+            depth_generation: 0,
+            depth_copy: None,
+            depth_alias: HashMap::new(),
             active_callback: None,
             undelivered: None,
             visibility: HashMap::new(),
@@ -1011,6 +1029,8 @@ impl<B: Backend> Device<B> {
         self.swap_count = 0;
         self.fence = 0;
         self.cache.clear();
+        self.depth_copy = None;
+        self.depth_alias.clear();
         self.drop_visibility_tests();
         self.hw.zpass_count_enable = false;
         // The original D3D_DestroyResource runs for these after this returns
@@ -2529,6 +2549,10 @@ impl<B: Backend> Device<B> {
         if target != self.render_target {
             self.leave_target(mem)?;
         }
+        if z_stencil != self.depth_stencil {
+            let old = self.depth_stencil;
+            self.write_back(mem, old)?;
+        }
         let destroys = refs.commit(mem)?;
         self.destroy_resources(mem, destroys)?;
         self.render_target = target;
@@ -3159,6 +3183,7 @@ impl<B: Backend> Device<B> {
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
+        let mut aliases: [Option<u32>; 4] = [None; 4];
         let mut bound = self.textures;
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = self.translate_state(&parts.words);
@@ -3175,6 +3200,11 @@ impl<B: Backend> Device<B> {
                         extras[stage].color_sign = 0;
                         texture_info[stage] = Some(info);
                         snapshots[stage] = Some(t);
+                        continue;
+                    }
+                    FrameTexture::DepthAlias(info) => {
+                        texture_info[stage] = Some(info);
+                        aliases[stage] = Some(header);
                         continue;
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
@@ -3202,7 +3232,10 @@ impl<B: Backend> Device<B> {
         }
         let target = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
-        self.touch_target(color)?;
+        let r = &state.render;
+        let writes_depth = (r.depth_mode != gfx::state::DepthBufferMode::Disabled && r.depth_write)
+            || r.stencil.enable;
+        self.touch_target(color, writes_depth)?;
         for b in &state.bad {
             self.events.push(Event::BadState(b.clone()));
         }
@@ -3228,6 +3261,11 @@ impl<B: Backend> Device<B> {
         let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
             snapshots[i]
                 .as_ref()
+                .or_else(|| {
+                    aliases[i]
+                        .and_then(|h| self.depth_alias.get(&h))
+                        .map(|a| &a.texture)
+                })
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
         });
         self.stats.draws += 1;
@@ -3760,7 +3798,7 @@ fn linear_twin(f: D3DFormat) -> D3DFormat {
 /// samples a texture (`TexMode::texture_dim`); for the
 /// fixed-function combiner, the stages before the first `COLOROP =
 /// DISABLE` (where [`crate::nv2a::fixed_function_def`] stops).
-fn sampled_stages(
+pub(crate) fn sampled_stages(
     shader: &ShaderInputs,
     words: &StateWords,
     state: &crate::state::DrawState,

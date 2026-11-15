@@ -675,6 +675,28 @@ impl ShaderProvider for Nv2aShaders {
         let bound: [Option<TextureKind>; 4] =
             std::array::from_fn(|n| textures[n].and(draw.texture_info[n]).map(|i| i.kind));
         let fog_enable = render.fog_enable;
+        // A depth-format texture is a shadow map: the NV2A compares its
+        // stored depth with the texture coordinate under `SHADOWCTL`'s
+        // function (D3D's `D3DRS_SHADOWFUNC`) and returns 1 or 0 in every
+        // channel (xemu `psh_append_shadowmap`: PROJECT2D compares with 0,
+        // PROJECT3D with r/q clamped to the format's depth range). The
+        // translated programs do not compare yet, and sampling the raw
+        // depth bits as colour would draw garbage.
+        let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
+        for n in 0..4 {
+            if let Some(info) = draw.texture_info[n]
+                && sampled[n]
+                && textures[n].is_some()
+                && info.format.is_depth()
+            {
+                return Err(format!(
+                    "stage {n} samples {:?} texture {:#010x} as a shadow map (D3DRS_SHADOWFUNC {:#x}): depth comparison is not translated",
+                    info.format,
+                    info.header,
+                    draw.raw.render[slot::SHADOWFUNC as usize]
+                ));
+            }
+        }
 
         // Vertex side.
         let vertex = match &draw.shader.vertex {

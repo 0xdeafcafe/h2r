@@ -583,10 +583,11 @@ fn p1_10_render_to_texture_writes_back() {
         0x5A5A_5A5A
     );
     assert_eq!(d.stats().rtt_writebacks, 1);
-    // A depth level is not supported.
+    // A colour level bound as depth is refused (depth levels are covered
+    // in tests/depth_textures.rs).
     let e = d.set_render_target(&mut m, back, surf);
     assert!(
-        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("depth render-to-texture")),
+        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("bound as depth/stencil after being a colour target")),
         "{e:?}"
     );
     // A free-standing surface is still fine.
