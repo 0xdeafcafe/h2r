@@ -572,7 +572,8 @@ First fixtures:
   - transcendental bit patterns (the 66-bit-π reduction);
   - the `rcp` tiny-flush window;
   - C1, the undefined condition codes, and control-word bit 6 read-back.
-- **Transcendental speed.** Whether the 512-bit transcendentals (18–150 µs
-  per call) are hot enough to need the 128-bit Ziv path (FLOAT-ABI.md §6.2).
+- **Transcendental speed.** The opt-in guarded log/exp/atan path and its
+  measured costs are documented in [x87-transcendentals.md](x87-transcendentals.md).
+  Lower-precision trigonometric argument reduction remains open.
 - **NaN payload bits.** Whether any game code depends on them. The design
   preserves them regardless.

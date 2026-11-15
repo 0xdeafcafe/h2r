@@ -109,6 +109,21 @@ fn x87_fixtures() -> Vec<(&'static str, Asm)> {
             a.fnstsw(ax)?;
             a.ret()
         }),
+        ("x87-hot-transcendentals", |a| {
+            a.fninit()?;
+            // Synthetic finite operands enter all three guarded evaluators.
+            // Random mapped/faulting addresses also cover the store boundary.
+            a.mov(dword_ptr(ebx), 0x3fc0_0000)?; // 1.5
+            a.fldln2()?;
+            a.fld(dword_ptr(ebx))?;
+            a.fyl2x()?;
+            a.f2xm1()?;
+            a.fld1()?;
+            a.fpatan()?;
+            a.fstp(qword_ptr(edi))?;
+            a.fnstsw(ax)?;
+            a.ret()
+        }),
         ("x87-compare", |a| {
             let mut skip = a.create_label();
             a.fld(dword_ptr(esi))?;

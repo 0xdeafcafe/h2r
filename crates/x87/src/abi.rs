@@ -690,6 +690,15 @@ pub fn arith(s: &mut X87Abi, op: u32, dst_i: u32, kind: u32, src: u64) -> u32 {
 /// # Panics
 /// On an unknown `op`.
 pub fn unary(s: &mut X87Abi, op: u32) -> u32 {
+    unary_impl::<{ cfg!(feature = "fast-trans") }>(s, op)
+}
+
+#[cfg(test)]
+pub(crate) fn unary_reference(s: &mut X87Abi, op: u32) -> u32 {
+    unary_impl::<false>(s, op)
+}
+
+fn unary_impl<const FAST: bool>(s: &mut X87Abi, op: u32) -> u32 {
     use unary_op::*;
     assert!(op <= PREM1, "h2x87: bad unary op {op}");
     waiting!(s);
@@ -770,8 +779,10 @@ pub fn unary(s: &mut X87Abi, op: u32) -> u32 {
         }
         PATAN | YL2X | YL2XP1 => {
             let (v, fl) = match op {
-                PATAN => patan(b, a),
-                YL2X => yl2x(b, a),
+                PATAN if FAST => patan(b, a),
+                PATAN => crate::trans::patan_n::<8>(b, a),
+                YL2X if FAST => yl2x(b, a),
+                YL2X => crate::trans::yl2x_n::<8>(b, a),
                 _ => yl2xp1(b, a),
             };
             finish(s, fl, None, Cc::round(fl), move |s| {
@@ -780,7 +791,11 @@ pub fn unary(s: &mut X87Abi, op: u32) -> u32 {
             })
         }
         X2M1 => {
-            let (v, fl) = x2m1(a);
+            let (v, fl) = if FAST {
+                x2m1(a)
+            } else {
+                crate::trans::x2m1_n::<8>(a)
+            };
             finish(s, fl, None, Cc::round(fl), set0(v))
         }
         SCALE => {

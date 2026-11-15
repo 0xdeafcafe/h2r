@@ -568,6 +568,11 @@ this document: the previous text said `true` while the crate had `false`.
   significand at RN. The series stop below 2^-520 relative, and the sign of
   the omitted tail feeds the rounding, so PE and C1 are right whenever the
   rounding is.
+  The optional `x87/fast-trans` feature first attempts guarded 256-bit
+  evaluation for FYL2X, F2XM1 and FPATAN. Its domains, per-function error
+  bounds and value/PE/C1 acceptance test are documented in
+  [x87-transcendentals.md](x87-transcendentals.md). Other functions and
+  rejected intervals retain the 512-bit reference.
 - **Evidence.** A test evaluates every function at 512 and at 768 bits and
   checks that both round to the same ext80 result:
   - 1,350 random arguments agree in the default test run;
@@ -596,11 +601,10 @@ this document: the previous text said `true` while the crate had `false`.
   | x2m1 | 127 µs |
   | div | 65 ns |
 
-  There are 522 inline `fsin`/`fcos` sites. If traces show them hot, the
-  planned speed-up is a 128-bit evaluation with a Ziv rounding test. It falls
-  back to the 512-bit path only when the 128-bit result is within its error
-  bound of a rounding boundary. That keeps the same results and costs a few
-  hundred ns. It is not done yet.
+  There are 522 inline `fsin`/`fcos` sites. Guarded lower working precision
+  is now available for the measured hot log/exp/atan subset described
+  above. Trigonometric argument reduction still uses the reference;
+  no speed or error bound for a lower-precision trig path is claimed.
 
 ### 6.3 The oracle and Unicorn
 

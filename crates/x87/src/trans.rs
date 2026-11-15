@@ -38,6 +38,10 @@ use crate::{F80, Flags, Rc, Transcendental};
 /// Working precision in 64-bit limbs.
 pub(crate) const W: usize = 8;
 
+#[cfg(any(feature = "fast-trans", test))]
+#[path = "trans_fast.rs"]
+mod fast;
+
 /// Tail for a result known to be irrational whose error direction is not
 /// tracked: treated as a sticky bit.
 const INEXACT: i8 = 1;
@@ -329,6 +333,10 @@ fn pi_multiple<const N: usize>(num: u64, log2_den: i32, neg: bool) -> (F80, Flag
 
 /// FPATAN: `atan2(y, x)` with the SDM's table for zeros and infinities.
 pub fn patan(y: F80, x: F80) -> (F80, Flags) {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::patan(y, x) {
+        return v;
+    }
     patan_n::<W>(y, x)
 }
 
@@ -366,24 +374,30 @@ pub(crate) fn patan_n<const N: usize>(y: F80, x: F80) -> (F80, Flags) {
         }),
         (Unp::Fin(fy), Unp::Zero(_)) => with(pi_multiple::<N>(1, 1, fy.neg)),
         (Unp::Fin(fy), Unp::Fin(fx)) => {
-            let ay = Wf::<N>::from_parts(false, fy.sig, fy.exp);
-            let ax = Wf::<N>::from_parts(false, fx.sig, fx.exp);
-            let p = pi::<N>();
-            let (base, tail) = if ay.cmp_abs(&ax) == Ordering::Greater {
-                (p.scale(-1).sub(atan_pos(ax.div(ay)).0), INEXACT)
-            } else {
-                atan_pos(ay.div(ax))
-            };
-            let (v, tail) = if fx.neg {
-                (p.sub(base), INEXACT)
-            } else {
-                (base, tail)
-            };
-            let v = if fy.neg { v.neg() } else { v };
+            let (v, tail) = patan_finite::<N>(fy, fx);
             with(v.to_f80(tail))
         }
         _ => unreachable!(),
     }
+}
+
+/// Finite, nonzero atan2 core, shared by both working precisions.
+fn patan_finite<const N: usize>(fy: Fin, fx: Fin) -> Tw<N> {
+    let ay = Wf::<N>::from_parts(false, fy.sig, fy.exp);
+    let ax = Wf::<N>::from_parts(false, fx.sig, fx.exp);
+    let p = pi::<N>();
+    let (base, tail) = if ay.cmp_abs(&ax) == Ordering::Greater {
+        (p.scale(-1).sub(atan_pos(ax.div(ay)).0), INEXACT)
+    } else {
+        atan_pos(ay.div(ax))
+    };
+    let (v, tail) = if fx.neg {
+        (p.sub(base), INEXACT)
+    } else {
+        (base, tail)
+    };
+    let v = if fy.neg { v.neg() } else { v };
+    (v, tail)
 }
 
 /// log2 of a positive wide value; `true` when the result is exact (an
@@ -408,6 +422,10 @@ fn log2_wf<const N: usize>(u: Wf<N>) -> (Wf<N>, bool) {
 
 /// FYL2X: `y * log2(x)`.
 pub fn yl2x(y: F80, x: F80) -> (F80, Flags) {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::yl2x(y, x) {
+        return v;
+    }
     yl2x_n::<W>(y, x)
 }
 
@@ -543,6 +561,10 @@ fn log2p1<const N: usize>(fx: Fin) -> (Wf<N>, bool) {
 /// (overflowing to +inf with OE for large `a`, approaching -1 with PE for
 /// very negative `a`), `-1` for `-inf` and `+inf` for `+inf`.
 pub fn x2m1(a: F80) -> (F80, Flags) {
+    #[cfg(feature = "fast-trans")]
+    if let Some(v) = fast::x2m1(a) {
+        return v;
+    }
     x2m1_n::<W>(a)
 }
 
@@ -630,16 +652,16 @@ mod tests {
     use super::*;
 
     /// xorshift64*, deterministic.
-    struct Rng(u64);
+    pub(super) struct Rng(pub(super) u64);
     impl Rng {
-        fn next(&mut self) -> u64 {
+        pub(super) fn next(&mut self) -> u64 {
             self.0 ^= self.0 >> 12;
             self.0 ^= self.0 << 25;
             self.0 ^= self.0 >> 27;
             self.0.wrapping_mul(0x2545_f491_4f6c_dd1d)
         }
         /// A normal F80 with exponent (unbiased) in `lo..=hi`, random sign.
-        fn f80(&mut self, lo: i32, hi: i32) -> F80 {
+        pub(super) fn f80(&mut self, lo: i32, hi: i32) -> F80 {
             let r = self.next();
             let span = (hi - lo + 1) as u64;
             let e = lo + (r % span) as i32;

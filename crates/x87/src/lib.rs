@@ -11,7 +11,10 @@
 //! * `rndint`, `scale`, `xtract`, `prem`, `prem1`, `compare` and every
 //!   conversion are exact (correctly rounded where they round).
 //! * The transcendentals compute in a 512-bit software float and round once
-//!   to 64 bits under round-to-nearest. See [`TRANSCENDENTAL_IS_CORRECTLY_ROUNDED`].
+//!   to 64 bits under round-to-nearest. The optional `fast-trans` feature
+//!   first tries guarded 256-bit evaluation for FYL2X, F2XM1 and FPATAN;
+//!   ambiguous cases retain 512 bits. See docs/x87-transcendentals.md and
+//!   [`TRANSCENDENTAL_IS_CORRECTLY_ROUNDED`].
 //!
 //! Status flags are returned as [`Flags`] using status-word bit positions.
 //! They describe the *masked* response; the `abi` module decides what an
@@ -42,11 +45,12 @@ pub use trans::{cos, patan, sin, sincos, tan, x2m1, yl2x, yl2xp1};
 
 /// Whether the transcendentals are *proven* correctly rounded.
 ///
-/// They are computed with roughly 500 bits of working precision (error
-/// bound well under 2^-400 relative) and rounded once, so a result can only
-/// be misrounded if the exact value lies within that distance of a rounding
-/// boundary. No worst-case search has been done for the 64-bit format, so
-/// correct rounding is not proven, and this is `false`. See `trans.rs`.
+/// The reference computes with roughly 500 bits of working precision and
+/// rounds once. The optional `fast-trans` path certifies unambiguous
+/// rounding cells before accepting a lower working precision. Ambiguous
+/// cases fall back to the reference, whose 64-bit worst cases have not
+/// been exhaustively searched. Correct rounding of the total interface
+/// remains unproven, and this is `false`. See `trans.rs`.
 pub const TRANSCENDENTAL_IS_CORRECTLY_ROUNDED: bool = false;
 
 /// An 80-bit extended value: explicit-integer-bit significand, then sign and
