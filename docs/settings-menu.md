@@ -1,6 +1,10 @@
 # Expanded settings menu (design)
 
-Status: design only. Nothing in this document is built. It says how an
+Status: design, with one exception built: the controller speaker's on/off
+is a row on the game's own Controls screen (approach B below; see
+[playstation-audio.md](playstation-audio.md) "In-game setting"), and the
+button layouts are rows on its Button Layout screen
+([controller-layouts.md](controller-layouts.md)). The rest says how an
 in-game menu for our opt-in enhancements should work, what we know about
 Halo 2's own settings screens, and in which order to build it.
 
@@ -218,10 +222,12 @@ owns it. The guest thread never sees it.
 
 A host-side file, not the guest profile.
 
-- Path: next to the existing data root,
-  `~/Library/Application Support/h2recomp/settings.toml`, from the same
-  `vfs::Config::for_title` root ([storage.md](storage.md)). It is not under
-  `disk/Partition1/UDATA`, which is the guest's.
+- Path: `settings.toml` in the data root the run uses (`h2 play --data`,
+  default `$TMPDIR/h2boot-data`; `vfs::Config::for_title` would give
+  `~/Library/Application Support/h2recomp`, [storage.md](storage.md)). It is
+  not under `disk/`, which is the guest's. The controller speaker's row
+  already writes its `[pad_speaker]` table there
+  (`boot::speaker_setting`), keeping other keys.
 - Reasons: the guest profile is signed and sized by the game, and writes to it
   go through retail code we should not perturb. Enhancements are per install,
   not per gamertag. A host file is easy to edit, diff, delete and share, and it
@@ -284,7 +290,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | aspect, scaling, filter | `--aspect`, `--scaling`, `--nearest` | live |
 | mouse capture, pause on blur | `AppConfig` | live |
 | audio, gamepads | `--no-audio`, `--no-gamepads` | restart |
-| controller speaker | `H2_PAD_SPEAKER` (on, or a TOML file), `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](playstation-audio.md)) | restart today; routes and exclusive could go live by installing a new router (`DirectSound::set_pad_router`), device needs the output reopened |
+| controller speaker | **Built:** a "Controller Speaker" row on Settings, Controls, saved as `[pad_speaker] enabled` in `settings.toml` in `h2 play`'s data root. `H2_PAD_SPEAKER` (on, or a TOML file) locks it when set; `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](playstation-audio.md)) | on/off live (the router and the HID speaker path, `boot::speaker_setting`); routes and exclusive could go live the same way; device needs the output reopened |
 | controller mute button | `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) | restart today; could go live through the HID thread |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 

@@ -189,7 +189,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`) | on |
+| `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`). Set, it locks the in-game row (below) | unset: the in-game row decides, on until turned off |
 | `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4 | `auto` |
 | `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both | `1` |
 | `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone | `1` (acts once a DualSense is found) |
@@ -212,7 +212,8 @@ plays the sound. These are generic words,
 not tag paths from the disc: check them against your maps with `h2 tags
 <map>` (filter `snd!`) and narrow them. Globs ignore case and treat `/` as `\`.
 In the settings menu this belongs with the restart-only audio settings
-(device) and the live ones (routes, exclusive).
+(device) and the live ones (routes, exclusive). On and off is already in the
+game's own Controls screen (below).
 
 ### The sound index (built)
 
@@ -272,6 +273,76 @@ output.
 
 Left for a pad in the game: the channel roles, the latency, and whether the
 labels follow Halo's packets (below).
+
+### In-game setting (built)
+
+Settings, a profile, Controls has a seventh row, **Controller Speaker**,
+under the vibration row, with the game's own on and off text (the strings
+the vibration row uses) as its value. Pressing A on it flips the setting in
+place; there is no dialog.
+
+Why there: it is a per-controller hardware option like vibration, the
+Controls list already has the label-and-value skin a toggle needs, and the
+Controls row text function is already wrapped for the button layouts
+(docs/controller-layouts.md). A new dialog screen would need a screen class
+we do not have (docs/settings-menu.md).
+
+Hook points (retail XBE, all function entries in our analysis):
+
+| Address | Role | What we do |
+|---|---|---|
+| `0x2c84b8` | Controls list handler constructor: datum array `0x45d298`, element size 4, count 6 in EAX, six embedded item widgets | nothing; it shows the convention |
+| `0x1a480d` | datum array constructor | for the name `0x45d298` and EAX 6, EAX becomes 7 |
+| `0x2c8548` | row text (`ret 8`, item at `[esp+4]`, row at `[item+0x70]`): label text 0 and value text 1 of the row | row 6: label is our "Controller Speaker" (our string id, English only), value is the retail on/off ids `0x02000181` / `0x03000182`, the ones the vibration row uses, so the value is localized. Rows 0 to 5 run the original |
+| `0x2c8719` | row chosen (thiscall, `ret 8`, row pointer at `[esp+8]`); rows past 4 open the vibration dialog | row 6: toggle and return; rows 0 to 5 run the original |
+| `0x1a02d0` | string lookup | our id returns our text |
+
+The row text is redrawn every update (the item's update method `0x24abe0`
+calls the screen's row text slot), so the value changes as soon as the row
+is pressed. Code: `crates/boot/src/speaker_row.rs` (logic over the `Gm`
+trait), registered by `layout_glue::install` because both features share
+those entries.
+
+What a toggle does (`boot::speaker_setting::SpeakerSetting`, one switch shared
+by the row, the sound index thread and the output thread):
+
+- **Off:** `DirectSound::set_pad_router(None)`, so no voice is labelled for
+  the controller and every new sound plays on the main output, and the HID
+  speaker path goes back to the jack (`SpeakerSwitch::set(false)`). New
+  routers from the sound index are kept, not installed. A sound already
+  labelled for the controller when you turn it off (a long loop) finishes
+  where it started; the next one plays on the main output.
+- **On:** the newest router is installed again and, if the controller's
+  output is live, the speaker path is switched on.
+- No PlayStation controller: the row still shows and toggles. With no live
+  side output a routed voice plays on the main mix anyway, and nothing is
+  sent to a HID device that is not there.
+
+**Persistence.** The choice is saved in `settings.toml` in `h2 play`'s data
+root (`--data`, default `$TMPDIR/h2boot-data`), the directory that already
+holds the guest's `disk/` tree, but outside that tree:
+
+```toml
+[pad_speaker]
+enabled = false
+```
+
+Written atomically (temporary file, rename), keeping any other keys. A file
+that is not TOML, or a value that is not a boolean, is reported on stderr,
+treated as absent (on) and never overwritten. The guest profile is not
+touched. `--fresh-data` starts from a new data root, so it forgets the
+choice along with the saves.
+
+**The environment wins.** With `H2_PAD_SPEAKER` unset (or empty) the row and
+the file decide. With it set, its value (`0` off, `1` on, a TOML file's
+`enabled`) is used, the row shows that value, pressing it does nothing and
+the file is left alone. Audio off (`--no-audio`) or a bad speaker setting
+locks the row off. With `H2_PAD_SPEAKER=0` the controller output is not
+opened at all, so the speaker cannot be turned on during that run.
+
+`H2_NO_SPEAKER_ROW=1` leaves the Controls screen as retail (the setting
+still applies from the file); `H2_NO_LAYOUTS=1` turns off only the button
+layouts. Headless runs (`h2 run`) never add the row.
 
 ## Mute button and LED (built)
 
@@ -363,6 +434,15 @@ who owns the voice transport. This document owns the device and capture side.
   index, gestalt and sample bytes) indexed from whole files, from regions
   of an image, with a chunk in the shared map, with the shared map missing,
   and through a VFS open.
+- `cargo test -p boot --lib speaker_setting speaker_row layout_glue`: on by
+  default, a router installed once it arrives, toggling off, on, off live
+  (router removed and restored, HID path off and on), routers held back while
+  off, toggling with no controller, the file round trip across "runs",
+  other keys kept, bad files reported and not overwritten, the environment
+  locking the row both ways; the Controls list growing by exactly one row
+  (through EAX), row 6's label and value following the setting, rows 0 to 5
+  and unreadable memory going to the original, a locked row swallowing the
+  press, and the row read from the handler's second argument.
 - `cargo test -p input --lib dualsense pad_hid` (mute bit, toggle, USB and
   Bluetooth reports, the CRC check value; `PadLink` report bytes and the
   thread over a fake HID device, including an unplug).
@@ -393,6 +473,20 @@ play` with the pad plugged in, and check:
 Also worth noting: the latency between the two outputs, and what happens
 when the pad is unplugged mid-sound (the sound should move to the main
 output).
+
+The in-game row:
+
+5. Settings, a profile, Controls: a seventh row "Controller Speaker" under
+   the vibration row, showing the game's "on" value (scroll down; six rows
+   are visible). stderr says `layouts: list 0x45d298 grows from 6 to 7 rows` and
+   `speaker row: row text active`.
+6. A on it: the value flips to the "off" text at once, no dialog opens, stderr
+   says `pad speaker: off`. Reload sounds now come from the TV. A again:
+   back to "on", they come from the pad. Vibration and the other five rows
+   open their usual dialogs.
+7. Quit and start again: the row shows the last value, and `settings.toml`
+   in the data root has it. With `H2_PAD_SPEAKER=0` the row shows off
+   and A does nothing; with `H2_NO_SPEAKER_ROW=1` the screen has six rows.
 
 ## Sources
 

@@ -15,9 +15,21 @@
 //! the generated original untouched. Set `H2_NO_LAYOUTS=1` to skip all of it.
 //! The logic is written over the small [`Gm`] trait so it is tested without
 //! a guest.
+//!
+//! The same install also registers the "Controller Speaker" row on the
+//! Controls screen (`crate::speaker_row`, `H2_NO_SPEAKER_ROW=1` to skip it):
+//! both features grow a list through the same constructor, fill rows of the
+//! same Controls row text function and serve text through the same string
+//! lookup, and a function entry takes one override.
+//!
+//! Each hook says once on stderr when it first runs ("layouts: <name>
+//! active"), so one run shows which hooks the game reaches.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+use crate::speaker_row;
+use crate::speaker_setting::SpeakerSetting;
 
 use input::layouts::{Action, Button, Layout};
 use runtime::dispatch::Dispatch;
@@ -51,7 +63,7 @@ const TABLE_SLOTS: u32 = 8;
 /// The Controls edit buffer's layout byte.
 const EDIT_LAYOUT: u32 = 0x0054_e6d8;
 /// Name of the list's item array, which marks it as the layout list.
-const LIST_NAME: u32 = 0x0045_ce18;
+pub const LIST_NAME: u32 = 0x0045_ce18;
 const VANILLA_ROWS: u32 = 4;
 const SCREEN_ID: i16 = 40;
 const VANILLA_PANES: u32 = 8;
@@ -114,6 +126,33 @@ pub fn list_count(name: u32, count: u32) -> u32 {
     if name == LIST_NAME && count == VANILLA_ROWS { count + ADDED.len() as u32 } else { count }
 }
 
+/// The datum array constructor (`0x1a480d`) with the stack at `esp` and the
+/// count in `eax`: the count to build with. The constructor takes the array
+/// name at `[esp+4]` and the element size at `[esp+8]`; the count is EAX
+/// (it reaches `0x16b570` in EAX, which multiplies it by the element size).
+/// Both list screens push element size 4; the layout list's count happens to
+/// be 4 as well, which is how an earlier version came to grow the element
+/// size instead and left the list at four rows.
+pub fn grown_count<M: Gm>(m: &M, esp: u32, eax: u32, layouts: bool, speaker: bool) -> u32 {
+    let Some(name) = m.u32(esp.wrapping_add(4)) else { return eax };
+    let mut n = eax;
+    if layouts {
+        n = list_count(name, n);
+    }
+    if speaker {
+        n = speaker_row::list_count(name, n);
+    }
+    n
+}
+
+/// The row of a list's row-chosen handler (thiscall, `ret 8`): a pointer to
+/// the row's word is the second argument, `[esp+8]`. Both the layout list
+/// (`0x2c6567`) and the Controls list (`0x2c8719`) read it there.
+pub fn chosen_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
+    let p = m.u32(esp.wrapping_add(8))?;
+    m.u16(p).map(|v| v as i16)
+}
+
 /// After the original built player `player`'s action table: overwrite it for
 /// an added layout. Retail bytes (and bytes nothing knows) are left alone.
 pub fn apply_action_table<M: Gm>(m: &mut M, player: u32) -> bool {
@@ -160,26 +199,35 @@ pub fn help_text(l: Layout) -> &'static str {
     }
 }
 
-/// Every string we serve, as `(id, text)`.
+/// The layout strings, as `(id, text)`.
 pub fn strings() -> Vec<(u32, &'static str)> {
     ADDED.iter().flat_map(|l| [(name_id(*l), name_text(*l)), (help_id(*l), help_text(*l))]).collect()
 }
 
-/// Write the strings (NUL-terminated UTF-8, as the locale blob stores them)
-/// at `base`; returns the address of each id.
-pub fn write_strings<M: Gm>(m: &mut M, base: u32) -> Option<Vec<(u32, u32)>> {
+/// Every string served with these features on.
+pub fn served_strings(layouts: bool, speaker: bool) -> Vec<(u32, &'static str)> {
+    let mut v = if layouts { strings() } else { Vec::new() };
+    if speaker {
+        v.push((speaker_row::LABEL_ID, speaker_row::LABEL_TEXT));
+    }
+    v
+}
+
+/// Write `strings` (NUL-terminated UTF-8, as the locale blob stores them)
+/// at `base`; returns the address of each id and the first free address.
+pub fn write_strings<M: Gm>(m: &mut M, base: u32, strings: &[(u32, &str)]) -> Option<(Vec<(u32, u32)>, u32)> {
     let mut at = base;
     let mut out = Vec::new();
-    for (id, text) in strings() {
+    for (id, text) in strings {
         let mut b = text.as_bytes().to_vec();
         b.push(0);
         if !m.wr(at, &b) {
             return None;
         }
-        out.push((id, at));
+        out.push((*id, at));
         at += b.len() as u32;
     }
-    Some(out)
+    Some((out, at))
 }
 
 /// Text block order of the default pane: the help text, then twelve labels.
@@ -326,18 +374,30 @@ fn push(mem: &mut Guest, cpu: &mut CpuAbi, v: u32) -> Result<(), GuestFault> {
     mem.set_u32(cpu.esp, v)
 }
 
-/// Install every hook. A missing original (an image with other entries) skips
-/// that hook and says so.
-pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
-    if std::env::var_os("H2_NO_LAYOUTS").is_some() {
+/// Says `<name> active` on stderr the first time it is called with `seen`.
+fn announce(seen: &AtomicBool, name: &str) {
+    if !seen.load(Ordering::Relaxed) && !seen.swap(true, Ordering::Relaxed) {
+        eprintln!("{name} active");
+    }
+}
+
+/// Install every hook: the button layouts unless `H2_NO_LAYOUTS` is set,
+/// and the Controller Speaker row when `speaker` is given and
+/// `H2_NO_SPEAKER_ROW` is not set. A missing original (an image with other
+/// entries) skips that hook and says so.
+pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> anyhow::Result<()> {
+    let layouts = std::env::var_os("H2_NO_LAYOUTS").is_none();
+    let speaker = speaker.filter(|_| std::env::var_os("H2_NO_SPEAKER_ROW").is_none());
+    if !layouts && speaker.is_none() {
         return Ok(());
     }
+    let with_speaker = speaker.is_some();
     {
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
         mem.map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
-        let addrs = write_strings(&mut *mem, DATA_BASE).ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
-        let used = addrs.last().map_or(0, |(id, a)| a + strings().iter().find(|(i, _)| i == id).map_or(0, |(_, t)| t.len() as u32 + 1));
+        let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served_strings(layouts, with_speaker))
+            .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
         let _ = STRING_ADDRS.set(addrs);
     }
@@ -346,30 +406,26 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         shadow += 4;
         shadow - 4
     };
+    let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, SCREEN_TAG, TEXT_SET, PROFILE_ROWS];
+    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, LOCALE_FIND];
+    let speaker_hooks = [speaker_row::ROW_CHOSEN];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
-    let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> = [
-        ACTION_TABLE_BUILD,
-        LIST_DATA_NEW,
-        ROW_TEXT,
-        ROW_SELECTED,
-        INITIAL_ROW,
-        PANE_SET,
-        SCREEN_TAG,
-        TEXT_SET,
-        LOCALE_FIND,
-        PROFILE_ROWS,
-        CONTROLS_ROW_TEXT,
-    ]
-    .into_iter()
-    .filter_map(|a| original(rt, a).map(|o| (a, o)))
-    .collect();
+    let wanted: Vec<u32> = shared_hooks
+        .into_iter()
+        .chain(layout_hooks.into_iter().filter(|_| layouts))
+        .chain(speaker_hooks.into_iter().filter(|_| with_speaker))
+        .collect();
+    let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> =
+        wanted.into_iter().filter_map(|a| original(rt, a).map(|o| (a, o))).collect();
     rt.edit_dispatch(|d| {
         // Layout table: original, then ours for bytes 4 to 6.
         if let Some(o) = originals.remove(&ACTION_TABLE_BUILD) {
             let sh = alias(d, &mut next_shadow, &o, ACTION_TABLE_BUILD);
+            let seen = AtomicBool::new(false);
             d.register_override(ACTION_TABLE_BUILD, "layouts:table", move |cpu, ctx, _| {
+                announce(&seen, "layouts: action table");
                 let player = cpu.eax;
                 call_then(cpu, ctx, sh, move |_, ctx| {
                     let mut mem = ctx.runtime().memory();
@@ -378,23 +434,32 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                 })
             });
         }
-        // List size.
+        // List size: the count is EAX (see `grown_count`).
         if let Some(o) = originals.remove(&LIST_DATA_NEW) {
+            let seen = AtomicBool::new(false);
+            let grew_layouts = AtomicBool::new(false);
+            let grew_controls = AtomicBool::new(false);
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
-                {
-                    let mut mem = ctx.runtime().memory();
-                    let (name, count) = (mem.u32(cpu.esp + 4)?, mem.u32(cpu.esp + 8)?);
-                    let n = list_count(name, count);
-                    if n != count {
-                        mem.set_u32(cpu.esp + 8, n)?;
+                announce(&seen, "layouts: list constructor");
+                let (n, name) = {
+                    let mem = ctx.runtime().memory();
+                    (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
+                };
+                if n != cpu.eax {
+                    let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
+                    if !flag.swap(true, Ordering::Relaxed) {
+                        eprintln!("layouts: list {name:#x} grows from {} to {n} rows", cpu.eax);
                     }
+                    cpu.eax = n;
                 }
                 Ok(o.invoke(cpu, ctx, LIST_DATA_NEW))
             });
         }
         // Row text.
         if let Some(o) = originals.remove(&ROW_TEXT) {
+            let seen = AtomicBool::new(false);
             d.register_override(ROW_TEXT, "layouts:row-text", move |cpu, ctx, _| {
+                announce(&seen, "layouts: row text");
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let widget = mem.u32(cpu.esp + 4)?;
@@ -403,17 +468,18 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, ROW_TEXT));
                 };
-                row_text(cpu, ctx, &mut mem, widget, name_id(l))
+                row_texts(cpu, ctx, &mut mem, widget, vec![(0, name_id(l))])
             });
         }
         // Row chosen.
         if let Some(o) = originals.remove(&ROW_SELECTED) {
             let sh = alias(d, &mut next_shadow, &o, ROW_SELECTED);
+            let seen = AtomicBool::new(false);
             d.register_override(ROW_SELECTED, "layouts:row-selected", move |cpu, ctx, _| {
+                announce(&seen, "layouts: row chosen");
                 let row = {
                     let mem = ctx.runtime().memory();
-                    let p = mem.u32(cpu.esp + 4)?;
-                    mem.u16(p).map_or(0, |v| v as i16)
+                    chosen_row(&*mem, cpu.esp).unwrap_or(0)
                 };
                 call_then(cpu, ctx, sh, move |_, ctx| {
                     if let Some(l) = layout_of_row(row) {
@@ -425,7 +491,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         }
         // Initial row.
         if let Some(o) = originals.remove(&INITIAL_ROW) {
+            let seen = AtomicBool::new(false);
             d.register_override(INITIAL_ROW, "layouts:initial-row", move |cpu, ctx, _| {
+                announce(&seen, "layouts: initial row");
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let byte = mem.u8(EDIT_LAYOUT)?;
@@ -444,7 +512,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         }
         // Pane for a row.
         if let Some(o) = originals.remove(&PANE_SET) {
+            let seen = AtomicBool::new(false);
             d.register_override(PANE_SET, "layouts:pane", move |cpu, ctx, _| {
+                announce(&seen, "layouts: pane");
                 {
                     let mut mem = ctx.runtime().memory();
                     if mem.u16(cpu.ecx + 0x70)? as i16 == SCREEN_ID {
@@ -463,7 +533,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         if let Some(o) = originals.remove(&SCREEN_TAG) {
             let sh = alias(d, &mut next_shadow, &o, SCREEN_TAG);
             let o2 = Arc::clone(&o);
+            let seen = AtomicBool::new(false);
             d.register_override(SCREEN_TAG, "layouts:panes", move |cpu, ctx, _| {
+                announce(&seen, "layouts: screen tag");
                 let is_ours = {
                     let mem = ctx.runtime().memory();
                     mem.u16(cpu.eax + 0x70).is_ok_and(|v| v as i16 == SCREEN_ID)
@@ -476,7 +548,10 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                         let mut mem = ctx.runtime().memory();
                         let mut alloc = ALLOC.load(Ordering::SeqCst);
                         match extend_panes(&mut *mem, cpu.eax, &mut alloc) {
-                            Some(true) => ALLOC.store(alloc, Ordering::SeqCst),
+                            Some(true) => {
+                                ALLOC.store(alloc, Ordering::SeqCst);
+                                eprintln!("layouts: button layout panes extended");
+                            }
                             Some(false) => {}
                             None => eprintln!("layouts: could not extend the layout panes"),
                         }
@@ -488,7 +563,9 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         // Value text on the Controls list and the Edit Profile screen: the
         // game gives a layout byte it does not know the empty id 0.
         if let Some(o) = originals.remove(&TEXT_SET) {
+            let seen = AtomicBool::new(false);
             d.register_override(TEXT_SET, "layouts:text", move |cpu, ctx, _| {
+                announce(&seen, "layouts: text set");
                 let pending = PENDING_VALUE.load(Ordering::Relaxed);
                 if pending != 0 {
                     let mut mem = ctx.runtime().memory();
@@ -502,25 +579,75 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
                 Ok(o.invoke(cpu, ctx, TEXT_SET))
             });
         }
-        for (addr, name) in [(PROFILE_ROWS, "layouts:profile-rows"), (CONTROLS_ROW_TEXT, "layouts:controls-row")] {
-            if let Some(o) = originals.remove(&addr) {
-                let sh = alias(d, &mut next_shadow, &o, addr);
-                d.register_override(addr, name, move |cpu, ctx, _| {
-                    let at = if addr == PROFILE_ROWS { cpu.ecx + PROFILE_COPY_LAYOUT } else { EDIT_LAYOUT };
-                    PENDING_VALUE.store(at, Ordering::Relaxed);
-                    call_then(cpu, ctx, sh, |_, _| {
-                        PENDING_VALUE.store(0, Ordering::Relaxed);
-                        Ok(())
-                    })
-                });
-            }
+        if let Some(o) = originals.remove(&PROFILE_ROWS) {
+            let sh = alias(d, &mut next_shadow, &o, PROFILE_ROWS);
+            let seen = AtomicBool::new(false);
+            d.register_override(PROFILE_ROWS, "layouts:profile-rows", move |cpu, ctx, _| {
+                announce(&seen, "layouts: profile rows");
+                PENDING_VALUE.store(cpu.ecx + PROFILE_COPY_LAYOUT, Ordering::Relaxed);
+                call_then(cpu, ctx, sh, |_, _| {
+                    PENDING_VALUE.store(0, Ordering::Relaxed);
+                    Ok(())
+                })
+            });
+        }
+        // The Controls row text: our speaker row, else the layout value
+        // (layouts on), else the original.
+        if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
+            let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
+            let speaker = speaker.clone();
+            let seen = AtomicBool::new(false);
+            let drawn = AtomicBool::new(false);
+            d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
+                announce(&seen, "layouts: controls row text");
+                if let Some(s) = &speaker {
+                    // The setting's lock is never taken with guest memory held.
+                    let on = s.enabled();
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    if let Some(texts) = speaker_row::row_texts(&*mem, cpu.esp, on) {
+                        announce(&drawn, "speaker row: row text");
+                        let item = mem.u32(cpu.esp + 4)?;
+                        return row_texts(cpu, ctx, &mut mem, item, texts.to_vec());
+                    }
+                }
+                if !layouts {
+                    return Ok(o.invoke(cpu, ctx, CONTROLS_ROW_TEXT));
+                }
+                PENDING_VALUE.store(EDIT_LAYOUT, Ordering::Relaxed);
+                call_then(cpu, ctx, sh, |_, _| {
+                    PENDING_VALUE.store(0, Ordering::Relaxed);
+                    Ok(())
+                })
+            });
+        }
+        // The Controls row chosen: ours toggles in place; the original would
+        // open the vibration dialog for it.
+        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::ROW_CHOSEN), speaker.clone()) {
+            let seen = AtomicBool::new(false);
+            d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
+                announce(&seen, "speaker row: row chosen");
+                let row = {
+                    let mem = ctx.runtime().memory();
+                    chosen_row(&*mem, cpu.esp)
+                };
+                // Guest memory is not held here: the toggle takes DirectSound's
+                // lock, which the audio output takes with guest memory.
+                if speaker_row::chosen(row, &s) {
+                    eprintln!("pad speaker: {}", if s.enabled() { "on" } else { "off" });
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
+                Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
+            });
         }
         // Our strings.
         if let Some(o) = originals.remove(&LOCALE_FIND) {
+            let seen = AtomicBool::new(false);
             d.register_override(LOCALE_FIND, "layouts:strings", move |cpu, ctx, _| {
                 if is_ours(cpu.edi)
                     && let Some((_, a)) = STRING_ADDRS.get().and_then(|v| v.iter().find(|(i, _)| *i == cpu.edi))
                 {
+                    announce(&seen, "layouts: our strings");
                     cpu.eax = *a;
                     return ctx.runtime().memory().ret(cpu, 0);
                 }
@@ -539,40 +666,63 @@ fn alias(d: &mut Dispatch, next: &mut impl FnMut() -> u32, o: &Arc<OriginalHandl
     sh
 }
 
-/// Set a row's text to `id` by the same two calls the game makes: find the
-/// item's text widget (this = item, arguments 0, 0, 6), then set its text.
-/// Registers the original preserves (ESI, EDI) are restored at the end.
-fn row_text(
+type Finish = Box<dyn FnOnce(&mut CpuAbi) -> Result<TransferAbi, GuestFault> + Send>;
+
+/// In place of a row text function (`ret 8`, item widget first): set each
+/// `(text index, string id)` of the item by the same two calls the game
+/// makes: find the item's text widget (this = item, arguments 6, index, 0),
+/// then set its text. Registers the original preserves (ESI, EDI) are
+/// restored at the end.
+fn row_texts(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
     mem: &mut Guest,
     widget: u32,
-    id: u32,
+    texts: Vec<(u32, u32)>,
 ) -> Result<TransferAbi, GuestFault> {
     let ret_pc = mem.u32(cpu.esp)?;
     cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
     let (esi, edi) = (cpu.esi, cpu.edi);
-    // The game pushes 0, 0, 6, so 6 is on top.
-    for v in [0, 0, 6] {
+    let finish: Finish = Box::new(move |cpu| {
+        cpu.esi = esi;
+        cpu.edi = edi;
+        Ok(TransferAbi::ret(ret_pc))
+    });
+    next_text(cpu, ctx, mem, widget, texts, finish)
+}
+
+fn next_text(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    mem: &mut Guest,
+    widget: u32,
+    mut texts: Vec<(u32, u32)>,
+    finish: Finish,
+) -> Result<TransferAbi, GuestFault> {
+    if texts.is_empty() {
+        return finish(cpu);
+    }
+    let (index, id) = texts.remove(0);
+    // The game pushes 0, index, 6, so 6 is on top.
+    for v in [0, index, 6] {
         push(mem, cpu, v)?;
     }
     cpu.ecx = widget;
     ctx.call_guest(cpu, mem, TEXT_WIDGET_GET, move |cpu, ctx| {
         let text = cpu.eax;
-        let finish = move |cpu: &mut CpuAbi| {
-            cpu.esi = esi;
-            cpu.edi = edi;
-            Ok(TransferAbi::ret(ret_pc))
-        };
-        if text == 0 {
-            return finish(cpu);
-        }
         let rt = Arc::clone(ctx.runtime());
         let mut mem = rt.memory();
+        if text == 0 {
+            return next_text(cpu, ctx, &mut mem, widget, texts, finish);
+        }
         cpu.edi = text;
         cpu.esi = widget;
         push(&mut mem, cpu, id)?;
-        ctx.call_guest(cpu, &mut mem, TEXT_SET, move |cpu, _| finish(cpu))
+        ctx.call_guest(cpu, &mut mem, TEXT_SET, move |cpu, ctx| {
+            let rt = Arc::clone(ctx.runtime());
+            let mut mem = rt.memory();
+            next_text(cpu, ctx, &mut mem, widget, texts, finish)
+        })
     })
 }
 
@@ -689,16 +839,71 @@ mod tests {
 
     #[test]
     fn strings_are_written_nul_terminated_and_addressable() {
-        let mut f = Fake::default();
-        let addrs = write_strings(&mut f, 0x1000).unwrap();
-        assert_eq!(addrs.len(), strings().len());
-        for (id, a) in addrs {
-            let text = strings().into_iter().find(|(i, _)| *i == id).unwrap().1;
-            let mut b = vec![0; text.len() + 1];
-            assert!(f.rd(a, &mut b));
-            assert_eq!(&b[..text.len()], text.as_bytes());
-            assert_eq!(b[text.len()], 0);
+        for (layouts, speaker) in [(true, true), (true, false), (false, true)] {
+            let mut f = Fake::default();
+            let all = served_strings(layouts, speaker);
+            let (addrs, end) = write_strings(&mut f, 0x1000, &all).unwrap();
+            assert_eq!(addrs.len(), all.len());
+            assert_eq!(end - 0x1000, all.iter().map(|(_, t)| t.len() as u32 + 1).sum::<u32>());
+            for (id, a) in addrs {
+                assert!(is_ours(id));
+                let text = all.iter().find(|(i, _)| *i == id).unwrap().1;
+                let mut b = vec![0; text.len() + 1];
+                assert!(f.rd(a, &mut b));
+                assert_eq!(&b[..text.len()], text.as_bytes());
+                assert_eq!(b[text.len()], 0);
+            }
         }
+        assert_eq!(served_strings(true, false).len(), 6);
+        assert_eq!(served_strings(false, true), [(speaker_row::LABEL_ID, speaker_row::LABEL_TEXT)]);
+        let mut ids: Vec<u32> = served_strings(true, true).iter().map(|(i, _)| *i).collect();
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 7);
+    }
+
+    /// A datum array constructor call: name at [esp+4], element size 4 at
+    /// [esp+8] (both list screens push 4).
+    fn list_call(name: u32) -> Fake {
+        let mut f = Fake::default();
+        put(&mut f, 0x1004, &name.to_le_bytes());
+        put(&mut f, 0x1008, &4u32.to_le_bytes());
+        f
+    }
+
+    #[test]
+    fn the_list_count_is_eax_not_the_element_size() {
+        // The layout list: count 4 in EAX, element size 4 at [esp+8]. Only
+        // EAX grows, so the element size stays as the game set it.
+        let f = list_call(LIST_NAME);
+        assert_eq!(grown_count(&f, 0x1000, 4, true, true), 7);
+        assert_eq!(f.u32(0x1008), Some(4));
+        // The Controls list: count 6, one more for the speaker row.
+        let f = list_call(speaker_row::LIST_NAME);
+        assert_eq!(grown_count(&f, 0x1000, 6, true, true), 7);
+        assert_eq!(grown_count(&f, 0x1000, 6, true, false), 6);
+        assert_eq!(grown_count(&list_call(LIST_NAME), 0x1000, 4, false, true), 4);
+        // An element size that happens to match does not count.
+        let f = list_call(speaker_row::LIST_NAME);
+        assert_eq!(grown_count(&f, 0x1000, 4, true, true), 4);
+        // Any other list, or unreadable memory: unchanged.
+        assert_eq!(grown_count(&list_call(0x1234), 0x1000, 4, true, true), 4);
+        assert_eq!(grown_count(&list_call(0x1234), 0x1000, 6, true, true), 6);
+        assert_eq!(grown_count(&Fake::default(), 0x1000, 4, true, true), 4);
+    }
+
+    #[test]
+    fn the_chosen_row_is_the_second_argument() {
+        // 0x2c6567 reads `[esp+8]` at entry; the first argument is an
+        // unrelated pointer.
+        let mut f = Fake::default();
+        put(&mut f, 0x1004, &0x3000u32.to_le_bytes());
+        put(&mut f, 0x3000, &1u16.to_le_bytes());
+        put(&mut f, 0x1008, &0x4000u32.to_le_bytes());
+        put(&mut f, 0x4000, &5u16.to_le_bytes());
+        assert_eq!(chosen_row(&f, 0x1000), Some(5));
+        assert_eq!(layout_of_row(chosen_row(&f, 0x1000).unwrap()), Some(Layout::Recon));
+        assert_eq!(chosen_row(&Fake::default(), 0x1000), None);
     }
 
     #[test]
@@ -808,7 +1013,8 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let r = Arc::clone(&rt);
         std::thread::spawn(move || {
-            tx.send(install(&r).is_ok()).ok();
+            let s = Arc::new(SpeakerSetting::new(None, None));
+            tx.send(install(&r, Some(s)).is_ok()).ok();
         });
         assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)), Ok(true));
         // Nothing generated, so every hook was skipped and ours own no entry.

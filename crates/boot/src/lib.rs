@@ -24,6 +24,8 @@ pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
+pub mod speaker_row;
+pub mod speaker_setting;
 pub mod sse;
 pub mod stopgaps;
 pub mod trace;
@@ -385,6 +387,10 @@ pub struct Host {
     /// map the game opens. Needs `audio_sink`'s logical output; ignored
     /// without DirectSound.
     pub pad_speaker: Option<dsound_glue::PadSpeaker>,
+    /// The controller-speaker on/off switch behind the Controls screen's
+    /// "Controller Speaker" row (`speaker_row`). `None` (headless runs)
+    /// leaves the Controls screen as retail.
+    pub speaker_setting: Option<Arc<speaker_setting::SpeakerSetting>>,
     /// XAPI's input manager (`xapi_glue::register_with`).
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
@@ -531,8 +537,9 @@ pub fn run_hosted_with_live(
     }
     // Community classics in the built-in variant list (docs/community-gametypes.md).
     community_variants::install(&loaded.runtime).context("installing the community game variants")?;
-    // Extra button layouts on the Controls screen (docs/controller-layouts.md).
-    layout_glue::install(&loaded.runtime).context("installing the button layouts")?;
+    // Extra button layouts and the Controller Speaker row on the Controls
+    // screen (docs/controller-layouts.md, docs/playstation-audio.md).
+    layout_glue::install(&loaded.runtime, host.speaker_setting.clone()).context("installing the button layouts")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) if host.render_thread => Some(d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?),

@@ -48,10 +48,11 @@ pub struct Audio {
 }
 
 /// The controller speaker for [`install_with_sinks`]: its settings (routes,
-/// exclusive) and its output.
+/// exclusive), its output and the on/off switch every router goes through.
 pub struct PadSpeaker {
     pub config: dsound::padroute::PadSpeakerConfig,
     pub side: dsound::SideOutput,
+    pub setting: Arc<crate::speaker_setting::SpeakerSetting>,
 }
 
 /// The mixer rate [`install`] uses.
@@ -163,10 +164,14 @@ pub fn install_with_sinks(
     let mut r = None;
     rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
     r.unwrap().map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
-    let (config, side) = match pad {
-        Some(p) => (Some(p.config), Some(p.side)),
-        None => (None, None),
+    let (config, side, setting) = match pad {
+        Some(p) => (Some(p.config), Some(p.side), Some(p.setting)),
+        None => (None, None, None),
     };
+    if let Some(s) = &setting {
+        let hle = Arc::clone(&hle);
+        s.attach_router_sink(move |router| hle.direct_sound().set_pad_router(router));
+    }
     let output = hle
         .spawn_output(
             Arc::clone(rt),
@@ -179,7 +184,7 @@ pub fn install_with_sinks(
             },
         )
         .map_err(|e| anyhow::anyhow!("dsound output: {e:?}"))?;
-    let _pad_index = config.and_then(|c| crate::pad_speaker::install(k, &hle, &c));
+    let _pad_index = config.zip(setting).and_then(|(c, s)| crate::pad_speaker::install(k, &c, s));
     Ok(Audio { hle, output, mixer, _pad_index })
 }
 

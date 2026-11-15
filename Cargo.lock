@@ -456,6 +456,7 @@ dependencies = [
  "runtime-test-probe",
  "tags",
  "timeline",
+ "toml",
  "vfs",
  "x87",
  "xapi",

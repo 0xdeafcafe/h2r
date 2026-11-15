@@ -277,22 +277,20 @@ pub fn spawn(
     }
 }
 
-/// [`spawn`] on the kernel's VFS, installing each router in DirectSound.
-/// `None` when the kernel has no VFS.
+/// [`spawn`] on the kernel's VFS, offering each router to `setting`, which
+/// installs it in DirectSound while the controller speaker is on. `None`
+/// when the kernel has no VFS.
 pub fn install(
     k: &kernel::Kernel,
-    hle: &Arc<dsound::Hle>,
     config: &PadSpeakerConfig,
+    setting: Arc<crate::speaker_setting::SpeakerSetting>,
 ) -> Option<PadIndex> {
     let vfs = k.vfs()?;
-    let hle = Arc::clone(hle);
     Some(spawn(
         vfs,
         config,
         SHARED_MAPS.map(|(_, name)| name),
-        move |router| {
-            hle.direct_sound().set_pad_router(Some(router));
-        },
+        move |router| setting.offer_router(router),
     ))
 }
 

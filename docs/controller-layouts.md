@@ -1,8 +1,9 @@
 # Controller button layouts
 
-Status: built and unit tested. Not run in the game (the project rule is tests
-only), so the in-game behaviour is unverified; "To check in the game" lists
-what to look at. The symbolic tables are in `crates/input/src/layouts.rs`; the hooks are
+Status: built and unit tested. The first version's rows did not appear in
+the game; the cause was found statically and fixed (see "Why the rows did
+not show"), but the fix is not yet seen in the game; "To check in the game"
+lists what to look at. The symbolic tables are in `crates/input/src/layouts.rs`; the hooks are
 in `crates/boot/src/layout_glue.rs`, installed by `boot::run` unless
 `H2_NO_LAYOUTS=1`. This page records how the retail game implements layouts
 and what the hooks touch.
@@ -122,14 +123,21 @@ and `d3d_glue.rs` runs the original and then continues in Rust through
 `ctx.call_guest`. There is no way to patch inside a function, so a site that
 is a switch inside a big function needs the whole function wrapped.
 
-1. List size: wrap `0x1a480d`. When the name pointer is the button list's name
-   string (the address `0x45ce18`) and the count is 4, make it 4 plus the number
-   of added layouts. The list then builds that many rows.
+1. List size: wrap `0x1a480d`. Its arguments are the array's name pointer at
+   `[esp+4]` and the element size at `[esp+8]`; the count is **EAX** (it
+   reaches `0x16b570` in EAX, which multiplies it by the element size and
+   creates that many datums). When the name is the button list's (the address
+   `0x45ce18`) and EAX is 4, make EAX 4 plus the number of added layouts. The
+   list then builds that many rows. The screen constructor pushes element
+   size 4 and loads count 4, so the two look alike; see "Why the rows did not
+   show" below.
 2. Row text: replace `0x2c6512`. For rows 4 and up call `0x22edb8` (this =
    widget, args 0, 0, 6) and `0x253b1a` with our string id, through
    `call_guest`; otherwise run the original.
-3. Selection: wrap `0x2c6567`. Run the original, then write the chosen number
-   to `0x54e6d8` ourselves (the original writes 0 for rows 4 and up).
+3. Selection: wrap `0x2c6567` (thiscall, `ret 8`; the pointer to the chosen
+   row's word is the **second** argument, `[esp+8]`). Run the original, then
+   write the chosen number to `0x54e6d8` ourselves (the original writes 0 for
+   rows 4 and up).
 4. Initial row: wrap `0x2b463d` the same way so a saved layout 4 and up
    selects its own row.
 5. Value text on the other screens: `0x24a978` and `0x2c866d` are inside
@@ -162,6 +170,40 @@ is a switch inside a big function needs the whole function wrapped.
 10. Retail behaviour of 0 to 3: every hook above must pass those through to the
     original, and a test must prove it.
 
+## Why the rows did not show (fixed 2026-11-15)
+
+The rows were reported missing in the game. Read statically, with no run:
+
+- **Every hook resolves.** All fifteen addresses are function entries in our
+  own analysis (the generated registry of the last `h2 play` build lists an
+  `h2fn_` entry for each), and calls to them go through the dispatcher
+  (`H2_XFER`), so the overrides are reached. `0x2c6567`, `0x2b463d` and
+  `0x24a886` are missing from the Ghidra export only because they are
+  reached through vtables (`0x2c64d4` stores `0x2c6567` as the list's press
+  handler; `0x45b88c` and `0x45b0c4` hold the other two); the byte before
+  each is a `ret` or `int3`.
+- **The list-size hook changed the wrong number.** It rewrote `[esp+8]`, the
+  element size, from 4 to 7, and left the count in EAX at 4. The list kept
+  four rows, so nothing else in this module ever had a row 4 to 6 to act on.
+  The Controls screen's constructor (`0x2c84b8`: element size 4, count 6)
+  shows the two apart. Now the hook sets EAX (`layout_glue::grown_count`,
+  test `the_list_count_is_eax_not_the_element_size`).
+- **The row-chosen hook read the wrong argument.** It took the row from
+  `[esp+4]`; `0x2c6567` reads `[esp+8]`. Choosing an added row would have
+  saved the wrong layout, and a retail row could have been overwritten if
+  the first argument's word happened to be 4 to 6. Now `chosen_row` reads
+  `[esp+8]` (test `the_chosen_row_is_the_second_argument`).
+- **Seven rows fit.** The list embeds only four item widgets (the vector
+  constructor `0x20670` at `0x2c64a3`), but each item holds a datum handle
+  at `+0x70` and steps to the next or previous datum (`0x16bcc0`,
+  `0x16bbc0`, from `0x24c63e`), so the extra rows are reached by scrolling.
+
+Each hook now prints `layouts: <name> active` the first time it runs, and
+the list hook prints `layouts: list 0x45ce18 grows from 4 to 7 rows` once.
+A run that opens Settings, Controls, Button Layout should print the list,
+row text, pane and screen tag lines; any of them missing names the next
+place to look.
+
 ## Risks
 
 - The profile is a signed save. A profile saved with layout 4 and up and then
@@ -179,7 +221,8 @@ Default, the three added layouts, one button per action, fixed menu
 buttons, the 16-slot encoding, preset numbers).
 
 `crates/boot/src/layout_glue.rs`, over a fake guest: only rows 4 to 6 are
-ours; only the layout list grows; for every layout byte 0 to 255 the action
+ours; only the layout list grows, through EAX and not the element size; the
+chosen row is the second argument; for every layout byte 0 to 255 the action
 table is rewritten for 4 to 6 and left exactly as the original made it
 otherwise (so retail 0 to 3 give the original table); pane rows leave retail
 rows alone and land ours on panes 8 to 13; our string ids do not collide; the
@@ -206,7 +249,9 @@ retail panes byte for byte, and ignores other screens and odd tags; and
 6. Save, quit, reload: the layout is kept (needs a named profile; the Default
    profile cannot save). The profile select dialog's summary has not been
    traced for a layout byte of 4 and up; check it does not show garbage or crash.
-7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns it all off.
+7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
+   layouts off (the Controller Speaker row on the Controls screen has its own
+   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md).
 8. The hooks install with no stall at boot.
 
 ## Known gaps

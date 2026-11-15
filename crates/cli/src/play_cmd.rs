@@ -113,25 +113,47 @@ fn audio_sink(audio: bool) -> boot::dsound_glue::SinkOpener {
     })
 }
 
+/// What [`pad_speaker`] sets up: the output, the HID thread and the switch.
+type PadParts = (
+    Option<boot::dsound_glue::PadSpeaker>,
+    Option<input::pad_hid::PadHid>,
+    Arc<boot::speaker_setting::SpeakerSetting>,
+);
+
 /// The DualSense HID thread (mute button and LED, `H2_PAD_MUTE`, on by
-/// default; the speaker path) and, unless `H2_PAD_SPEAKER=0` or audio is off,
-/// the controller-speaker output (docs/playstation-audio.md). A bad
+/// default; the speaker path), the on/off switch behind the Controls
+/// screen's Controller Speaker row (saved in `<data>/settings.toml`;
+/// `H2_PAD_SPEAKER`, when set, wins) and, unless `H2_PAD_SPEAKER=0` or audio
+/// is off, the controller-speaker output (docs/playstation-audio.md). A bad
 /// setting is reported and that part stays off.
-fn pad_speaker(audio: bool) -> (Option<boot::dsound_glue::PadSpeaker>, Option<input::pad_hid::PadHid>) {
+fn pad_speaker(audio: bool, data: &std::path::Path) -> PadParts {
     let env = |k: &str| std::env::var(k).ok();
     let config = dsound::padroute::PadSpeakerConfig::from_env(env)
         .map_err(|e| eprintln!("play: controller speaker off: {e}"))
-        .ok()
-        .filter(|c| c.enabled && audio);
+        .ok();
+    let forced = boot::speaker_setting::forced_by_env(env("H2_PAD_SPEAKER").as_deref(), config.as_ref(), audio);
+    let setting = Arc::new(boot::speaker_setting::SpeakerSetting::new(
+        forced,
+        Some(data.join(boot::speaker_setting::SETTINGS_FILE)),
+    ));
+    // The output is opened whenever the variable allows it, so the row can
+    // turn the speaker on during the run; the setting decides what reaches it.
+    let config = config.filter(|c| c.enabled && audio);
     let hid_config = input::pad_hid::PadHidConfig::from_env(env)
         .map_err(|e| eprintln!("play: {e}"))
         .unwrap_or(input::pad_hid::PadHidConfig { mute: false });
     let hid = pad_hid(hid_config, config.is_some());
     let Some(config) = config else {
-        return (None, hid);
+        return (None, hid, setting);
     };
+    if !setting.enabled() {
+        eprintln!("play: controller speaker off (Settings > Controls > Controller Speaker turns it on)");
+    }
+    if let Some(switch) = hid.as_ref().map(input::pad_hid::PadHid::speaker_switch) {
+        setting.attach_hid(move |on| switch.set(on));
+    }
     let device = config.device.clone();
-    let switch = hid.as_ref().map(input::pad_hid::PadHid::speaker_switch);
+    let live = Arc::clone(&setting);
     let side = dsound::SideOutput {
         open: Box::new(move || match audio::output::DeviceSink::open_named(&device) {
             Ok(d) => {
@@ -143,9 +165,14 @@ fn pad_speaker(audio: bool) -> (Option<boot::dsound_glue::PadSpeaker>, Option<in
                 None
             }
         }),
-        on_live: switch.map(|s| Box::new(move |live| s.set(live)) as Box<dyn FnMut(bool) + Send>),
+        on_live: Some(Box::new(move |on| live.side_live(on))),
     };
-    (Some(boot::dsound_glue::PadSpeaker { config, side }), hid)
+    let pad = boot::dsound_glue::PadSpeaker {
+        config,
+        side,
+        setting: Arc::clone(&setting),
+    };
+    (Some(pad), hid, setting)
 }
 
 /// The HID thread, when it has something to do and can run here.
@@ -165,6 +192,7 @@ fn hosted(
     timeline: Option<ScriptedInput>,
     interrupted: Arc<AtomicBool>,
     icons: boot::icons::IconOptions,
+    data: &std::path::Path,
 ) -> boot::Host {
     let mut gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
     // As for `h2 run`: passes are merged by default (the fast rule;
@@ -180,7 +208,7 @@ fn hosted(
     }
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
-    let (pad_speaker, pad_hid) = pad_speaker(audio);
+    let (pad_speaker, pad_hid, speaker_setting) = pad_speaker(audio, data);
     boot::Host {
         gfx: Some(gfx),
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
@@ -188,6 +216,7 @@ fn hosted(
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
         pad_speaker,
+        speaker_setting: Some(speaker_setting),
         trace_limit: Some(TRACE_LIMIT),
         input,
         keyboard,
@@ -476,6 +505,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             timeline,
             Arc::clone(&interrupted),
             icons,
+            &opts.data_root,
         );
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never
