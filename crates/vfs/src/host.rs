@@ -215,6 +215,8 @@ pub struct HostBackend {
     next_create_sync_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
     next_metadata_retire_error: std::cell::Cell<Option<Error>>,
+    #[cfg(test)]
+    next_unlink_error: std::cell::Cell<Option<Error>>,
 }
 
 fn host_litter(name: &str) -> bool {
@@ -304,6 +306,8 @@ impl HostBackend {
             next_create_sync_error: std::cell::Cell::new(None),
             #[cfg(test)]
             next_metadata_retire_error: std::cell::Cell::new(None),
+            #[cfg(test)]
+            next_unlink_error: std::cell::Cell::new(None),
         })
     }
     pub fn with_volume(mut self, label: impl Into<String>, serial: u32, capacity: u64) -> Self {
@@ -915,8 +919,10 @@ impl Backend for HostBackend {
         if info.is_directory() && !self.read_directory(path)?.is_empty() {
             return Err(Error::DirectoryNotEmpty);
         }
-        // Before the record is retired, so no flusher stores it again.
-        self.written.lock().remove(&path.to_ascii_lowercase());
+        // Held until the entry is gone: no flusher stores a record between
+        // retirement and unlink. The pending entry is dropped only once both
+        // succeed, so a failed remove keeps the write's metadata pending.
+        let mut pending = self.written.lock();
         if info.is_directory() {
             self.remove_litter(&host)?;
             // ENOTEMPTY or another host error must preserve the directory's metadata.
@@ -924,8 +930,14 @@ impl Backend for HostBackend {
             self.cache.borrow_mut().directories.remove(&host);
         } else {
             self.retire_metadata(path)?;
+            #[cfg(test)]
+            if let Some(error) = self.next_unlink_error.take() {
+                return Err(error);
+            }
             fs::remove_file(&host)?;
         }
+        pending.remove(&path.to_ascii_lowercase());
+        drop(pending);
         self.cache
             .borrow_mut()
             .atimes
@@ -1238,13 +1250,6 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(backend.pending_written(), 0, "the flusher stored it");
-        // flush_pending_metadata reaches a backend that will never drop.
-        backend.set_stale(Duration::from_secs(3600));
-        backend.write_at("data", 3, b"w").unwrap();
-        assert_eq!(backend.pending_written(), 1);
-        let leaked = Box::leak(Box::new(backend));
-        crate::flush_pending_metadata();
-        assert_eq!(leaked.pending_written(), 0);
     }
 
     /// `cargo test -p vfs --release bench_write_metadata -- --ignored --nocapture`:
@@ -1451,6 +1456,48 @@ mod tests {
             volume.total_allocation_units - volume.available_allocation_units,
             1
         );
+    }
+
+    #[test]
+    fn a_failed_remove_keeps_the_writes_pending_metadata() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.set_stale(Duration::from_secs(3600));
+        backend.create("data", false, 0).unwrap();
+        backend.flush("data").unwrap();
+        let mut basic = backend.stat("data").unwrap().basic;
+        basic.attributes = 0;
+        basic.last_write_time = Timestamp(125_911_584_000_000_000);
+        backend.set_basic_info("data", basic).unwrap();
+        backend.write_at("data", 0, b"x").unwrap();
+        let written = backend.stat("data").unwrap().basic;
+        assert!(written.last_write_time > basic.last_write_time);
+        // Retirement fails: nothing is removed and the write stays pending.
+        backend
+            .next_metadata_retire_error
+            .set(Some(Error::IoDeviceError));
+        assert_eq!(backend.remove("data"), Err(Error::IoDeviceError));
+        assert_eq!(backend.pending_written(), 1);
+        assert_eq!(backend.stat("data").unwrap().basic, written);
+        // Unlink fails after the record was retired: still pending, and a
+        // flush stores it again.
+        backend.next_unlink_error.set(Some(Error::AccessDenied));
+        assert_eq!(backend.remove("data"), Err(Error::AccessDenied));
+        assert!(backend.root.join("data").exists());
+        assert!(!backend.metadata_path("data").exists(), "retired");
+        assert_eq!(backend.pending_written(), 1);
+        assert_eq!(backend.stat("data").unwrap().basic, written);
+        backend.flush("data").unwrap();
+        assert_eq!(backend.pending_written(), 0);
+        drop(backend);
+        let mut reopened = temp.backend();
+        assert_eq!(reopened.stat("data").unwrap().basic, written);
+        // A remove that succeeds drops the entry with the file.
+        reopened.set_stale(Duration::from_secs(3600));
+        reopened.write_at("data", 0, b"y").unwrap();
+        assert_eq!(reopened.remove("data"), Ok(()));
+        assert_eq!(reopened.pending_written(), 0);
+        assert!(!reopened.metadata_path("data").exists());
     }
 
     #[test]

@@ -221,8 +221,8 @@ of run A in `store_basic`/`sync_directory`; B's `hle call` for
 basic info in memory per path, the same way access times already were,
 and stores it at the next flush, close (cleanup) or drop. It is also
 stored once it has been pending for 1 s, by the write path or by a
-flusher thread, and by `vfs::flush_pending_metadata()` at `h2 run`'s exit
-and on SIGINT/SIGTERM. So a crash loses at most ~1 s of timestamp and
+flusher thread, and by `vfs::flush_pending_metadata()` at `h2 run`'s
+normal exit. So a crash loses at most ~1 s of timestamp and
 archive-bit updates, never data (docs/storage.md "Write metadata").
 `stat` sees the pending info at once. Synthetic bench: 0.09 ms per
 `write_at` against 16.3 ms when the record is stored every write.

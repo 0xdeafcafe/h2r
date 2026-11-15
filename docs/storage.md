@@ -233,16 +233,21 @@ bit are stored:
 - by the backend's `vfs-metadata` thread, which checks every 250 ms for
   entries that old when no write comes;
 - by `vfs::flush_pending_metadata()`, which reaches every live backend,
-  leaked ones included. `h2 run` calls it when the run ends and on
-  SIGINT/SIGTERM.
+  leaked ones included. `h2 run` calls it when the run ends normally.
 
-**Guarantee:** a crash, `process::exit`, an aborting panic, or a kill
+**Guarantee:** a crash, `process::exit`, an aborting panic, or a signal
+(SIGINT, SIGTERM, a kill; nothing flushes on a signal)
 loses at most about 1.25 s of write-time, change-time and archive-bit
-updates. It never loses file data: data writes were never synced per
-write, and only `flush` syncs them. A record lost that way falls back to
-the previous record, as a torn one does. Every record store holds the
+updates. It never loses file data a process exit can lose: the data
+went to the host with the write. A host power loss is different: only
+`flush` syncs data, as before. A record lost that way falls back to the
+previous record, as a torn one does. The bound relies on the flusher
+thread; if it cannot be spawned (logged), only the write path, flush,
+close and drop store pending metadata. Every record store holds the
 pending map's lock, so a thread's store never lands after a newer one.
-Removing a file drops its pending entry before the record is retired.
+Removing a file holds that lock across retiring the record and unlinking
+the file, and drops the pending entry only once both succeed: a failed
+remove keeps the write's metadata pending.
 
 Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
 mounts. Each lowercase path component is hex encoded as a metadata-directory

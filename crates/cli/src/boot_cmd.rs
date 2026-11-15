@@ -76,14 +76,14 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
     }
-    flush_storage_on_signal();
     let r = boot::run(
         &xbe,
         &lib,
         &boot::RunOpts { disc, data_root: data, max_slices: slices, transfers_per_slice: transfers, stopgaps, trace: Some(out.join("kernel-trace.tsv")), d3d, bink, dsound, xapi },
     );
     // The kernel's storage may outlive the run (or never drop): store its
-    // pending write metadata now (docs/storage.md "Write metadata").
+    // pending write metadata now. Signals and other abnormal exits fall
+    // under the bounded loss in docs/storage.md "Write metadata".
     vfs::flush_pending_metadata();
     let r = r?;
     for l in &r.kernel_log {
@@ -94,42 +94,6 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     println!("last eip: {:#010x}", r.eip);
     Ok(())
 }
-
-/// On SIGINT or SIGTERM, store the VFS's pending write metadata, then exit
-/// 130. The handler only writes a byte to a pipe; a thread waiting on the
-/// pipe does the storing, outside signal context.
-#[cfg(unix)]
-fn flush_storage_on_signal() {
-    use std::sync::atomic::{AtomicI32, Ordering};
-    static WRITE_FD: AtomicI32 = AtomicI32::new(-1);
-    extern "C" fn on_signal(_: libc::c_int) {
-        let fd = WRITE_FD.load(Ordering::Relaxed);
-        // SAFETY: write(2) is async-signal-safe; the buffer is a static byte.
-        unsafe { libc::write(fd, b"x".as_ptr().cast(), 1) };
-    }
-    let mut fds = [0 as libc::c_int; 2];
-    // SAFETY: fds has room for the two descriptors pipe(2) returns.
-    if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 || WRITE_FD.swap(fds[1], Ordering::Relaxed) != -1 {
-        return;
-    }
-    let read_fd = fds[0];
-    let spawned = std::thread::Builder::new().name("exit-flush".into()).spawn(move || {
-        let mut b = 0u8;
-        // SAFETY: read(2) into a one-byte local buffer.
-        while unsafe { libc::read(read_fd, (&mut b as *mut u8).cast(), 1) } != 1 {}
-        vfs::flush_pending_metadata();
-        eprintln!("h2 run: interrupted; stored pending storage metadata");
-        std::process::exit(130);
-    });
-    if spawned.is_ok() {
-        for sig in [libc::SIGINT, libc::SIGTERM] {
-            // SAFETY: the handler only performs an async-signal-safe write.
-            unsafe { libc::signal(sig, on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t) };
-        }
-    }
-}
-#[cfg(not(unix))]
-fn flush_storage_on_signal() {}
 
 /// The directories `--fresh-data` empties (`<data>/disk`, `<data>/metadata`,
 /// those that exist), or an error, deleting nothing, when one of them is or
