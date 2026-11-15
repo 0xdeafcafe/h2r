@@ -2152,6 +2152,25 @@ impl DirectSound {
         Ok(frames)
     }
 
+    /// Renders `out.len() / 2` stereo frames into `out` for the holder of
+    /// `lease`, then completes what that finished, as `DirectSoundDoWork`
+    /// does. The logical output path ([`crate::Output::advance_to`]).
+    pub fn render_leased(
+        &mut self,
+        h: &mut dyn Host,
+        out: &mut [f32],
+        lease: &Lease,
+    ) -> Result<(), Stop> {
+        if !self.holds(lease) {
+            return Err(Stop::Consumer(self.conflict(lease.who)));
+        }
+        self.mixer
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .render(out);
+        self.service_all(h).map(|_| ())
+    }
+
     /// Makes every `DirectSoundDoWork` advance the clock by `frames` output
     /// frames (for example `rate / 60` for a game that calls it once per
     /// frame). `None`, the default, leaves the mixer to its sink. Claims the

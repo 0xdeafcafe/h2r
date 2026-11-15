@@ -258,6 +258,17 @@ impl Hle {
         Ok(frames)
     }
 
+    /// [`DirectSound::render_leased`] from the host, with events delivered
+    /// and callbacks owed as for [`Hle::do_work`].
+    pub(crate) fn render_leased(
+        &self,
+        runtime: &Runtime,
+        out: &mut [f32],
+        lease: &Lease,
+    ) -> Result<(), Stop> {
+        self.host_call(runtime, |ds, bridge| ds.render_leased(bridge, out, lease))
+    }
+
     fn host_call(
         &self,
         runtime: &Runtime,

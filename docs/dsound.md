@@ -290,7 +290,8 @@ an `audio::Pump` of the caller's own): pick one.
 
 | consumer | who renders | who reports completions to the game |
 |---|---|---|
-| `Hle::spawn_output` (the default for a runner, see below) | its thread, into a sink (a device) | the same thread, each wake, and the game's own `DoWork`/`GetStatus`/`Process` |
+| `Hle::spawn_output`, device pacing (the default for a runner, see below) | its thread, into a sink (a device) | the same thread, each wake, and the game's own `DoWork`/`GetStatus`/`Process` |
+| `Hle::spawn_output`, logical pacing (deterministic runs) | `Output::advance_to`, called by the runner at its scheduler points; its thread only plays the result | `advance_to`, and the game's own calls |
 | `crates/app`'s `AudioOut` (legacy) | the app | `Hle::spawn_pump(runtime, period, false)` or the game's calls |
 | nothing (headless boot, tests) | `Hle::spawn_pump(runtime, period, true)`, or `DirectSound::set_frames_per_do_work`, or `Hle::tick`/`advance_audio` by hand | the same call |
 
@@ -299,56 +300,63 @@ an `audio::Pump` of the caller's own): pick one.
 `Hle::spawn_output(runtime, open, OutputConfig) -> Result<Output,
 ConsumerConflict>` leases the mixer as `Consumer::Output` and starts a
 thread. `open` runs on it (a `DeviceSink` is not `Send` on macOS) and
-returns the `audio::AudioSink` to render into. Each wake
-(`OutputConfig::period`, default 5 ms):
+returns the `audio::AudioSink` to play into. Who renders depends on
+`Pacing`; completion order does not: each completed packet's size and
+status reach guest memory, in submission order, before its event is
+published, events are delivered with no guard held, and stream callbacks
+(guest calls) run at the next override call on a guest thread, in order.
 
-1. render under the mixer lock alone, and write to the sink (with logical
-   pacing, one 256-frame quantum at a time, steps 2 and 3 following each);
-2. `Hle::do_work`: each completed packet's size and status reach guest
-   memory, in submission order, before its event is published;
-3. deliver the events with no guard held. Stream callbacks, being guest
-   calls, run at the next override call on a guest thread, in order.
-
-The frames owed depend on `Pacing`:
-
-- `Device { target_latency_ms }` (default 40): keep that much queued in the
-  sink (`audio::Pump`); audio time is the device's, which is real time.
-  The mixer follows the sink's rate, including after a device change.
-- `Logical { now, max_per_wake }`: `now()` returns logical time in 100 ns
-  ticks (the kernel's `Clock::counter`). Frame `n` is due `n / rate` after
-  the logical time of the `spawn_output` call, and the mixer is rendered in
-  whole quanta (`output::QUANTUM`, 256 frames) on that fixed grid, with
-  completions collected after each. The audio rendered, and the quantum in
-  which each packet completes, depend only on logical time, not on when the
-  thread wakes: two 100 ms steps render exactly what one 200 ms step does.
-  Nothing owed is discarded; `max_per_wake` only bounds one wake's work and
-  the rest carries over. Not ordered: a guest submission made after logical
-  time passed a quantum but before the thread rendered it (that needs the
-  guest scheduler to drive the mixer). Rendered audio the sink has no room for is dropped and
-  counted (`OutputStats::dropped_frames`); if logical time runs slower than
-  real time the device underruns. Audio time stands still while logical time
-  does, so a game whose every thread waited on a stream event with no
-  timeout would hang; use `Device` when a device is present.
+- `Device { target_latency_ms }` (default 40). Each wake
+  (`OutputConfig::period`, default 5 ms) the thread renders enough to keep
+  that much queued in the sink (`audio::Pump`), under the mixer lock alone,
+  then runs `Hle::do_work`. Audio time is the device's, which is real time,
+  and the mixer follows the sink's rate, including after a device change.
+  When a packet completes relative to the game's own operations depends on
+  host scheduling, so this is not for deterministic runs.
+- `Logical { origin, max_queued }`. The runner drives audio time:
+  `Output::advance_to(logical)` at its scheduler points (each logical tick,
+  vblank, or before a guest thread resumes), with logical time in 100 ns
+  ticks (the kernel's `Clock::counter`; `origin` is the same clock's value
+  at spawn). Frame `n` is due `n / rate` after `origin`, at the mixer's rate
+  at spawn, and `advance_to` renders every whole quantum now due
+  (`output::QUANTUM`, 256 frames) and completes packets after each, before
+  it returns. It takes the guest memory and `DirectSound` locks exactly as
+  an override call does, so rendering and completion are ordered with the
+  game's DirectSound calls by the guest's own execution, and the result
+  depends only on the order of guest operations and `advance_to` calls: a
+  packet submitted at 32 ms is pending after a 32 ms `advance_to` that came
+  first, and complete after one that came second, whatever the host
+  threads did. The thread never touches the mixer, guest memory or events:
+  it plays the rendered PCM, resampling if the sink's rate differs. At most
+  `max_queued` of rendered audio waits for it; older audio beyond that is
+  dropped and counted (`OutputStats::dropped_frames`), so a runner ahead of
+  real time does not grow the queue. Audio time stands still between
+  `advance_to` calls, so a runner that stops calling it while the game
+  waits on a stream event with no timeout would hang the game.
 
 `Output::stats()` reports rendered and dropped frames, wakes, the rate,
 whether it halted, and the sink's counters. Dropping the `Output` stops and
-joins the thread, drops the sink and releases the lease. A `Stop` from
-`do_work` ends the thread and is recorded by `take_stops` as `Hle::output`.
+joins the thread, drops the sink and releases the lease. With device
+pacing a `Stop` from `do_work` ends the thread and is recorded by
+`take_stops` as `Hle::output`; with logical pacing `advance_to` returns it.
 
 The thread does not know when the runner faults or stops (the runtime has
-no shared terminal state), and left alone it would keep writing packet
-statuses and signalling events. `Output::halt()` stops that: it waits for a
-completion step in progress, and once it returns the thread touches neither
-guest memory nor events again (it exits at its next wake; the mixer stays
+no shared terminal state), and with device pacing left alone it would keep
+writing packet statuses and signalling events. `Output::halt()` stops
+that: it waits for a completion step in progress, and once it returns
+neither the thread nor `advance_to` touches guest memory or events again
+(the thread exits at its next wake; `advance_to` returns 0; the mixer stays
 leased until the `Output` drops). `OutputConfig::halt_when`, polled before
 every completion step, does the same from a runner's own "faulted or
 stopped" flag. Call `halt` before taking a frozen snapshot or tearing down
 the event bridge, and not while holding the guest memory guard.
 
-Streaming during loading: the output thread completes stream packets and
-signals their events whether or not the game calls any DirectSound entry,
-so music keeps flowing while the game sits in a loading loop that waits on
-those events (Halo's streams use events and poll `GetStatus`/`Process`).
+Streaming during loading: stream packets complete and their events are
+signalled whether or not the game calls any DirectSound entry (by the
+output thread with device pacing, by the runner's `advance_to` with logical
+pacing), so music keeps flowing while the game sits in a loading loop that
+waits on those events (Halo's streams use events and poll
+`GetStatus`/`Process`).
 
 - `DirectSound::advance_audio(host, frames)` renders `frames` output frames,
   discards them (in chunks of at most 1024) and completes whatever that
@@ -730,16 +738,19 @@ let output = hle.spawn_output(
 )?;
 // When the runner faults or stops, before collecting diagnostics:
 // output.halt();   (or set OutputConfig::halt_when to the runner's flag)
-// Headless, or to tie audio to guest time: Pacing::Logical over the kernel
-// clock, into any sink (audio::NullSink when there is no device):
-// dsound::OutputConfig {
+// Deterministic runs (headless, replays): logical pacing, into any sink
+// (audio::NullSink when there is no device), driven by the scheduler:
+// let output = hle.spawn_output(runtime, open, dsound::OutputConfig {
 //     period: Duration::from_millis(5),
 //     pacing: dsound::Pacing::Logical {
-//         now: Box::new({ let k = Arc::clone(&k); move || k.clock().counter() }),
-//         max_per_wake: Duration::from_millis(250),
+//         origin: k.clock().counter(),
+//         max_queued: Duration::from_millis(250),
 //     },
 //     halt_when: None,
-// }
+// })?;
+// ... and at every scheduler point (logical tick or vblank), with no guest
+// memory guard held:
+// output.advance_to(k.clock().counter())?;
 
 // On a stop whose event is Unsupported with a "dsound::" mnemonic:
 for s in hle.take_stops() {
@@ -842,14 +853,17 @@ covers, with synthetic data only (no disc bytes):
   and manual `advance_audio` may hold the mixer; dropping the holder frees it.
   A second output thread or render pump is refused, and a stale lease
   releases nothing.
-- Output thread (`CaptureSink`): it plays a stream and completes packets in
-  order with status final at each event, on the logical clock, in whole
-  quanta; logical pacing keeps time when the sink is full (512 frames
-  rendered, 448 dropped); one, two or four host-visible steps to the same
-  logical time give identical audio and completions; device pacing follows
-  the sink's fill and rate; callbacks it completes run at the next override
-  call; once halted (by hand or by `halt_when`) it writes no status and
-  signals nothing.
+- Output (`CaptureSink`): `advance_to` completes packets in order, in whole
+  quanta, with status final at each event and before it returns, and the
+  thread plays them; a full sink bounds the queue (512 frames rendered, 256
+  dropped at a 32 ms bound) without delaying completions; one, two or four
+  steps to the same logical time give identical audio and completions; the
+  same guest history (a packet submitted at 32 ms, the runner's 32 ms point
+  before or after it) gives identical statuses, events and audio whether
+  the output thread ran freely or could not run at all; device pacing
+  follows the sink's fill and rate; callbacks it completes run at the next
+  override call; once halted (by hand or by `halt_when`) nothing renders,
+  no status is written and nothing is signalled.
 - Host-driven clock: `Hle::tick` completes packets, delivers the event and
   leaves the callback owed to the next override call. `spawn_pump` with
   `render: true` completes a packet on a sinkless mixer, and with
