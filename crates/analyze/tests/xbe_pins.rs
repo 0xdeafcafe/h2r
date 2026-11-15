@@ -49,7 +49,9 @@ fn crt_copy_routines_resolve_every_jump_table() {
         [0x0032_0b2c, 0x0032_0b34, 0x0032_0b3c, 0x0032_0b44, 0x0032_0b4c, 0x0032_0b54, 0x0032_0b5c, 0x0032_0b6f];
     // (site, kind, first entry read, holes, targets). The `and edx, ecx`
     // sites mask with a constant set in another block, so they stay
-    // unguarded; their reads still stop at the table's end.
+    // unguarded; their reads still stop at the table's end. 0x320a56 is
+    // also reached, unguarded, by the gap-scan function at 0x320a52, so
+    // its table is unguarded too, but keeps the negated read below it.
     let sites: [(u32, _, u32, &[u32], &[u32]); 16] = [
         (0x0032_08c5, Bounded, 0x0032_09dc, &[], &BYTES),
         (0x0032_08dd, Bounded, 0x0032_08f0, &[0], &LEAD),
@@ -60,7 +62,7 @@ fn crt_copy_routines_resolve_every_jump_table() {
         (0x0032_0966, Unbounded, 0x0032_09dc, &[], &BYTES),
         (0x0032_09d3, Unbounded, 0x0032_09dc, &[], &BYTES),
         (0x0032_0a4b, Bounded, 0x0032_0b78, &[], &BACK_BYTES),
-        (0x0032_0a56, Bounded, 0x0032_0b0c, &[], &BACK_DWORDS),
+        (0x0032_0a56, Unbounded, 0x0032_0b0c, &[], &BACK_DWORDS),
         (0x0032_0a71, Bounded, 0x0032_0a7c, &[0], &BACK_LEAD),
         (0x0032_0a78, Bounded, 0x0032_0b78, &[], &BACK_BYTES),
         (0x0032_0aa6, Unbounded, 0x0032_0b78, &[], &BACK_BYTES),

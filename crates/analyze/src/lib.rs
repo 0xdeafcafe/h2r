@@ -200,6 +200,9 @@ struct FuncWork {
     /// (joining their tables) if what the run knows at the jump weakens as
     /// more ways into it turn up.
     guarded: Vec<GuardedJump>,
+    /// Local branches, with the straight run each ends, so what they carry
+    /// to their targets can be worked out again when that run knows less.
+    branches: Vec<(u32, Instruction)>,
 }
 
 /// A table jump read with the guard built along the straight run from
@@ -228,6 +231,7 @@ impl FuncWork {
             fell_into: HashSet::new(),
             dirty: BTreeSet::new(),
             guarded: Vec::new(),
+            branches: Vec::new(),
         }
     }
 
@@ -816,6 +820,7 @@ impl<'a> Analyzer<'a> {
                 FlowControl::ConditionalBranch => {
                     let t = insn.near_branch32();
                     f.arrive(t, before.taken(&insn));
+                    f.branches.push((start, insn));
                     f.todo.push(t);
                 }
                 FlowControl::UnconditionalBranch => {
@@ -830,6 +835,7 @@ impl<'a> Analyzer<'a> {
                             f.tails.push(t);
                         } else {
                             f.arrive(t, guard);
+                            f.branches.push((start, insn));
                             f.todo.push(t);
                         }
                     }
@@ -923,8 +929,27 @@ impl<'a> Analyzer<'a> {
     /// they were read, now that more ways into it are known; what they read
     /// joins their tables. Whether any was read.
     fn recheck_guarded(&mut self, f: &mut FuncWork, fstart: u32) -> bool {
+        // What weakens at a block weakens what its branches carry on, to a
+        // fixed point: arrivals only ever join.
+        let mut dirty = BTreeSet::new();
+        while !f.dirty.is_empty() {
+            let changed = std::mem::take(&mut f.dirty);
+            for i in 0..f.branches.len() {
+                let (start, insn) = f.branches[i];
+                let at = insn.ip32();
+                if changed.range(start..=at).next().is_none() {
+                    continue;
+                }
+                let guard = self.guard_along(f, start, at);
+                let carried = match insn.flow_control() {
+                    FlowControl::ConditionalBranch => guard.taken(&insn),
+                    _ => guard,
+                };
+                f.arrive(insn.near_branch32(), carried);
+            }
+            dirty.extend(changed);
+        }
         let mut any = false;
-        let dirty = std::mem::take(&mut f.dirty);
         for i in 0..f.guarded.len() {
             let j = f.guarded[i];
             if dirty.range(j.start..=j.at).next().is_none() {

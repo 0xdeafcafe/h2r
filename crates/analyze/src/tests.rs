@@ -816,8 +816,8 @@ fn a_borrow_on_sub_bounds_a_negative_index() {
 #[test]
 fn a_switch_reached_again_unguarded_keeps_its_cases() {
     // Case 0 calls a function that jumps back to the table jump, with no
-    // guard on the way. Its read stops at the int3 fill and adds no case,
-    // so the table keeps the guard's shape.
+    // guard on the way. Its read stops at the int3 fill: the four cases
+    // stay, and as a path with no bound reaches it the table is unguarded.
     let words: Vec<u8> = [0x11040u32, 0x11046, 0x11047, 0x11048].iter().flat_map(|t| t.to_le_bytes()).collect();
     let code = pieces(&[
         (0x11000, &[0x83, 0xF8, 0x03]),                         // cmp eax, 3
@@ -831,7 +831,7 @@ fn a_switch_reached_again_unguarded_keeps_its_cases() {
     ]);
     let (a, _) = cfgs_of(code);
     let jt = &a.jump_tables[&0x11005];
-    assert_eq!((jt.kind, jt.count, &jt.targets), (SwitchKind::Bounded, 4, &vec![0x11040, 0x11046, 0x11047, 0x11048]));
+    assert_eq!((jt.kind, jt.count, &jt.targets), (SwitchKind::Unbounded, 4, &vec![0x11040, 0x11046, 0x11047, 0x11048]));
     assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
 }
 
@@ -1149,6 +1149,177 @@ fn a_shared_table_is_the_same_whatever_order_it_is_visited_in() {
         counts.push(a.jump_tables[&0x11030].count);
     }
     assert_eq!(counts, [8, 8, 8, 8]);
+}
+
+#[test]
+fn a_late_weakening_carries_through_a_jump_already_explored() {
+    // test edx, edx; jz late; and eax, 3; jmp a / late: mov eax, 7; jmp a
+    // a: nop; nop; jmp b / b: nop; jmp [eax*4+0x11060]
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x85, 0xD2, 0x74, 0x0C, 0x83, 0xE0, 3, 0xEB, 0x17]),
+        (0x11010, &[0xB8, 7, 0, 0, 0, 0xEB, 9]),
+        (0x1101F, &[0x90, 0x90, 0xEB, 0x0D]),
+        (0x1102F, &[0x90, 0xFF, 0x24, 0x85, 0x60, 0x10, 1, 0]),
+        (0x11060, &words),
+        (0x11080, &[0xC3; 8]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11030, 0x11087);
+}
+
+#[test]
+fn a_late_weakening_carries_through_a_conditional_branch() {
+    // As above, with a: nop; test ebx, ebx; jz b; ret
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x85, 0xD2, 0x74, 0x0C, 0x83, 0xE0, 3, 0xEB, 0x17]),
+        (0x11010, &[0xB8, 7, 0, 0, 0, 0xEB, 9]),
+        (0x1101F, &[0x90, 0x85, 0xDB, 0x74, 0x0C, 0xC3]),
+        (0x1102F, &[0x90, 0xFF, 0x24, 0x85, 0x60, 0x10, 1, 0]),
+        (0x11060, &words),
+        (0x11080, &[0xC3; 8]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11030, 0x11087);
+}
+
+#[test]
+fn a_late_weakening_of_a_callee_saved_register_carries_on() {
+    // As the first, masking esi instead.
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x85, 0xD2, 0x74, 0x0C, 0x83, 0xE6, 3, 0xEB, 0x17]),
+        (0x11010, &[0xBE, 7, 0, 0, 0, 0xEB, 9]),
+        (0x1101F, &[0x90, 0x90, 0xEB, 0x0D]),
+        (0x1102F, &[0x90, 0xFF, 0x24, 0xB5, 0x60, 0x10, 1, 0]),
+        (0x11060, &words),
+        (0x11080, &[0xC3; 8]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11030, 0x11087);
+}
+
+#[test]
+fn a_late_weakening_after_a_returning_call_carries_on() {
+    // call 0x110A0; test edx, edx; jz late; and esi, 3; call 0x110A0;
+    // jmp a / late: mov esi, 7; jmp a / a: nop; nop; jmp b / b: switch
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0xE8, 0x9B, 0, 0, 0, 0x85, 0xD2, 0x74, 0x17, 0x83, 0xE6, 3, 0xE8, 0x8F, 0, 0, 0, 0xEB, 0x2D]),
+        (0x11020, &[0xBE, 7, 0, 0, 0, 0xEB, 0x19]),
+        (0x1103F, &[0x90, 0x90, 0xEB, 0x0D]),
+        (0x1104F, &[0x90, 0xFF, 0x24, 0xB5, 0x60, 0x10, 1, 0]),
+        (0x11060, &words),
+        (0x11080, &[0xC3; 8]),
+        (0x110A0, &[0xC3]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11050, 0x11087);
+}
+
+/// A four-case table at 0x11040 read with `bound`.
+fn shaped(bound: u32) -> JumpTable {
+    JumpTable {
+        site: 0x11000,
+        table: 0x11040,
+        kind: SwitchKind::Bounded,
+        count: 4,
+        bound: Some(bound),
+        index_table: None,
+        targets: vec![0x11080, 0x11081, 0x11082, 0x11083],
+        holes: vec![],
+    }
+}
+
+#[test]
+fn joining_equal_cases_keeps_the_widest_shape_in_either_order() {
+    let (small, wide) = (shaped(4), shaped(8));
+    let unguarded = JumpTable { kind: SwitchKind::Unbounded, bound: None, ..shaped(4) };
+    for (a, b) in [(&small, &wide), (&wide, &small)] {
+        assert_eq!(a.join(b).bound, Some(8));
+    }
+    assert_eq!(small.join(&unguarded).kind, SwitchKind::Unbounded, "a path with no bound reaches it");
+    let all = [small, wide, unguarded];
+    for a in &all {
+        for b in &all {
+            assert_eq!(a.join(b), b.join(a));
+        }
+    }
+    let idx = JumpTable { kind: SwitchKind::Indexed, index_table: Some((0x11060, 4)), ..shaped(4) };
+    let wide_idx = JumpTable { bound: Some(8), index_table: Some((0x11060, 8)), ..idx.clone() };
+    assert_eq!(idx.join(&wide_idx).index_table, Some((0x11060, 8)));
+}
+
+#[test]
+fn a_wider_byte_index_from_another_function_is_kept() {
+    // The root allows selectors 0..3, a function its case 0 calls 0..7;
+    // selectors 4..7 alias the first four cases.
+    let words: Vec<u8> = [0x11080u32, 0x11090, 0x11091, 0x11092].into_iter().flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x83, 0xF8, 4, 0x72, 0x2B, 0xC3]),     // cmp eax, 4; jb 0x11030; ret
+        (0x11020, &[0x83, 0xF8, 8, 0x72, 0x0B, 0xC3]), // cmp eax, 8; jb 0x11030; ret
+        // movzx eax, byte [eax+0x11058]; jmp [eax*4+0x11040]
+        (0x11030, &[0x0F, 0xB6, 0x80, 0x58, 0x10, 1, 0, 0xFF, 0x24, 0x85, 0x40, 0x10, 1, 0]),
+        (0x11040, &words),
+        (0x11058, &[0, 1, 2, 3, 0, 1, 2, 3]),
+        (0x11080, &[0xE8, 0x9B, 0xFF, 0xFF, 0xFF, 0xC3]), // call 0x11020; ret
+        (0x11090, &[0xC3; 3]),
+    ]))
+    .0;
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+    let jt = &a.jump_tables[&0x11037];
+    assert!(jt.kind == SwitchKind::Unbounded || jt.index_table.is_some_and(|(_, n)| n >= 8), "{jt:x?}");
+}
+
+#[test]
+fn je_and_jne_after_test_know_zero_on_the_right_edge() {
+    for (branch, zero_taken) in [(0x74, true), (0x75, false)] {
+        let mut info = InstructionInfoFactory::new();
+        let mut g = Guard::default();
+        // test eax, eax; je/jne +1
+        let code = [0x85, 0xC0, branch, 1];
+        let insns: Vec<_> = Decoder::with_ip(32, &code, TEXT as u64, DecoderOptions::NONE).into_iter().collect();
+        g.observe(&insns[0], &mut info);
+        let taken = g.taken(&insns[1]);
+        g.observe(&insns[1], &mut info);
+        let i = gpr(Register::EAX).unwrap();
+        assert_eq!(taken.consts[i], zero_taken.then_some(0));
+        assert_eq!(g.consts[i], (!zero_taken).then_some(0));
+    }
+}
+
+#[test]
+fn joining_keeps_every_case_of_overlapping_and_disjoint_reads() {
+    let mut tables = Vec::new();
+    for base in [0x11040u32, 0x11044, 0x11050] {
+        for bits in 1u32..16 {
+            let count = 32 - bits.leading_zeros();
+            let (mut targets, mut holes) = (Vec::new(), Vec::new());
+            for i in 0..count {
+                if bits & (1 << i) != 0 {
+                    targets.push(0x11080 + (base - 0x11040) / 4 + i);
+                } else {
+                    holes.push(i);
+                }
+            }
+            tables.push(JumpTable { table: base, count, targets, holes, ..shaped(4) });
+        }
+    }
+    let slots = |t: &JumpTable| t.cases().map(|(i, v)| (t.table + 4 * i, v)).collect::<BTreeMap<_, _>>();
+    for a in &tables {
+        for b in &tables {
+            let j = a.join(b);
+            let merged = slots(&j);
+            for t in [a, b] {
+                for (s, v) in slots(t) {
+                    assert_eq!(merged.get(&s), Some(&v));
+                }
+            }
+            assert_eq!(merged, slots(&b.join(a)));
+            assert_eq!(j.count as usize, j.targets.len() + j.holes.len());
+        }
+    }
 }
 
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
