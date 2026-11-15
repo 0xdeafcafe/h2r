@@ -25,8 +25,81 @@ impl TempDir {
         Self(path)
     }
     fn storage(&self) -> Vfs {
-        Vfs::with_storage(Config::new(&self.0, 0x4D530064)).unwrap()
+        linked(Config::new(&self.0, 0x4D530064))
     }
+}
+/// Storage plus the host-tool links, and extra letters the tests use for the partitions.
+fn linked(config: Config) -> Vfs {
+    let mut vfs = Vfs::with_storage(config.clone()).unwrap();
+    vfs.create_standard_links(&config).unwrap();
+    for (drive, n) in [('E', 1), ('C', 2), ('X', 3), ('Y', 4)] {
+        vfs.namespace
+            .create_symbolic_link(
+                &format!("\\??\\{drive}:"),
+                &format!("\\Device\\Harddisk0\\Partition{n}"),
+            )
+            .unwrap();
+    }
+    vfs
+}
+
+#[test]
+fn with_storage_creates_no_links() {
+    let temp = TempDir::new();
+    let mut vfs = Vfs::with_storage(Config::new(&temp.0, 0x4D530064)).unwrap();
+    for drive in ['C', 'D', 'E', 'T', 'U', 'X', 'Y', 'Z'] {
+        assert!(
+            vfs.namespace
+                .query_symbolic_link(&format!("\\??\\{drive}:"))
+                .is_err(),
+            "{drive}: must not exist"
+        );
+    }
+    assert!(
+        vfs.query_path("\\Device\\Harddisk0\\Partition1\\UDATA")
+            .is_ok()
+    );
+}
+
+#[test]
+fn create_standard_links_rejects_bad_utility_partition() {
+    let temp = TempDir::new();
+    let mut vfs = Vfs::with_storage(Config::new(&temp.0, 0x4D530064)).unwrap();
+    for partition in [0, 1, 2, 6] {
+        let mut config = Config::new(&temp.0, 0x4D530064);
+        config.utility_partition = partition;
+        assert_eq!(
+            vfs.create_standard_links(&config),
+            Err(Error::InvalidParameter)
+        );
+    }
+    assert!(vfs.namespace.query_symbolic_link("\\??\\D:").is_err());
+}
+
+#[test]
+fn create_standard_links_creates_exactly_four() {
+    let temp = TempDir::new();
+    let config = Config::new(&temp.0, 0x4D530064);
+    let mut vfs = Vfs::with_storage(config.clone()).unwrap();
+    vfs.create_standard_links(&config).unwrap();
+    let target = |d: char| vfs.namespace.query_symbolic_link(&format!("\\??\\{d}:"));
+    assert_eq!(target('D'), Ok("\\Device\\CdRom0"));
+    assert_eq!(
+        target('T'),
+        Ok("\\Device\\Harddisk0\\Partition1\\TDATA\\4D530064")
+    );
+    assert_eq!(
+        target('U'),
+        Ok("\\Device\\Harddisk0\\Partition1\\UDATA\\4D530064")
+    );
+    assert_eq!(target('Z'), Ok("\\Device\\Harddisk0\\Partition5"));
+    for drive in ['C', 'E', 'X', 'Y'] {
+        assert!(target(drive).is_err(), "{drive}: must not exist");
+    }
+    assert_eq!(
+        vfs.create_standard_links(&config),
+        Err(Error::ObjectNameCollision)
+    );
 }
 impl Drop for TempDir {
     fn drop(&mut self) {
@@ -154,7 +227,7 @@ fn title_roots_alias_identity_and_separate_titles() {
     vfs.close(t).unwrap();
     vfs.close(z).unwrap();
     vfs.close(handle).unwrap();
-    let mut other = Vfs::with_storage(Config::new(&temp.0, 0x11111111)).unwrap();
+    let mut other = linked(Config::new(&temp.0, 0x11111111));
     assert_eq!(
         other.query_path("U:\\Profile"),
         Err(Error::ObjectNameNotFound)

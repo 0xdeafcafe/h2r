@@ -15,10 +15,21 @@ Partition2 is the dashboard partition, and Partition3–5 are utility/cache
 partitions. These names and the T/U/Z roles are documented in the
 [Cxbx storage implementation](https://github.com/Cxbx-Reloaded/Cxbx-Reloaded/blob/master/src/core/kernel/support/EmuFile.cpp).
 
-`Vfs::with_storage(Config)` installs these links. `Config::for_title` chooses
-`~/Library/Application Support/h2recomp`; `Config::new(root, title_id)` selects
-an explicit root. Missing or empty HOME is a configuration error (`InvalidParameter`),
-not a guest path error. Halo 2's title ID is `0x4D530064`.
+`Vfs::with_storage(Config)` mounts the device objects only and creates no
+links: the kernel provides devices, while XAPI creates the drive letters itself
+and treats an existing T: as a fatal collision. Neither the boot path nor
+`with_disc` creates links.
+
+Host tools without XAPI call `Vfs::create_standard_links(&Config)` afterwards,
+which creates exactly D:, T:, U: and Z:. It does not roll back: if it fails
+partway (for example `ObjectNameCollision` on a link that already exists), the
+links created before the failure remain. The E:/C:/X:/Y: rows below are the
+reference mapping and are not created by either call.
+
+`Config::for_title` chooses `~/Library/Application Support/h2recomp`;
+`Config::new(root, title_id)` selects an explicit root. Missing or empty HOME is
+a configuration error (`InvalidParameter`), not a guest path error. Halo 2's
+title ID is `0x4D530064`.
 
 | Link | Resolved device path | Host path relative to data root |
 | --- | --- | --- |
@@ -341,7 +352,9 @@ existing crate has been wired up by this lane. Basic setup:
 ```rust
 use vfs::{Config, OpenOptions, Offset, Vfs};
 
-let mut storage = Vfs::with_disc(Config::for_title(0x4D530064)?, "disc/halo2.iso")?;
+let config = Config::for_title(0x4D530064)?;
+let mut storage = Vfs::with_disc(config.clone(), "disc/halo2.iso")?;
+storage.create_standard_links(&config)?; // host tool only; on the boot path XAPI creates D:
 let opened = storage.open(r"D:\default.xbe", OpenOptions::default())?;
 let mut header = [0u8; 64];
 let transferred = storage.read(opened.handle, Offset::Current, &mut header)?;

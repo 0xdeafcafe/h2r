@@ -88,7 +88,10 @@ impl Vfs {
         Self::default()
     }
 
-    /// Standard hard disk layout; callers may mount CDROM_DEVICE separately for a disc-less session.
+    /// Standard hard disk layout: mounts the device objects only (`\\Device\\Harddisk0\\PartitionN`)
+    /// and creates no drive-letter links. The kernel provides devices; XAPI creates D:/T:/U:/Z: itself
+    /// and treats an existing T: as a fatal collision. Host tools that want the links call
+    /// [`Vfs::create_standard_links`]. Callers may mount CDROM_DEVICE separately for a disc-less session.
     pub fn with_storage(config: Config) -> Result<Self> {
         if !(3..=5).contains(&config.utility_partition) {
             return Err(Error::InvalidParameter);
@@ -123,12 +126,18 @@ impl Vfs {
             }
             vfs.mount(&format!("\\Device\\Harddisk0\\{name}"), backend)?;
         }
+        Ok(vfs)
+    }
+    /// Creates D:, T:, U: and Z: for host tools that have no XAPI. Not for the boot or game path:
+    /// XAPI creates these links and fails if T: already exists. Pass the `Config` given to
+    /// `with_storage`; errors with `ObjectNameCollision` if any link exists already. Not atomic: links
+    /// created before a failure are not rolled back.
+    pub fn create_standard_links(&mut self, config: &Config) -> Result<()> {
+        if !(3..=5).contains(&config.utility_partition) {
+            return Err(Error::InvalidParameter);
+        }
         for (drive, target) in [
             ('D', CDROM_DEVICE.to_owned()),
-            ('E', DATA_DEVICE.to_owned()),
-            ('C', "\\Device\\Harddisk0\\Partition2".to_owned()),
-            ('X', "\\Device\\Harddisk0\\Partition3".to_owned()),
-            ('Y', "\\Device\\Harddisk0\\Partition4".to_owned()),
             (
                 'Z',
                 format!("\\Device\\Harddisk0\\Partition{}", config.utility_partition),
@@ -142,10 +151,10 @@ impl Vfs {
                 format!("{DATA_DEVICE}\\UDATA\\{:08X}", config.title_id),
             ),
         ] {
-            vfs.namespace
+            self.namespace
                 .create_symbolic_link(&format!("\\??\\{drive}:"), &target)?;
         }
-        Ok(vfs)
+        Ok(())
     }
     pub fn with_disc(config: Config, disc: impl AsRef<std::path::Path>) -> Result<Self> {
         // Fail a bad image before creating persistent storage directories.
