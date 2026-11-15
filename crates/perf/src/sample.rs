@@ -83,6 +83,12 @@ impl Sampler {
                 "the sampling profiler is macOS-only (thread_get_state)",
             ));
         }
+        if targets.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "no threads to sample",
+            ));
+        }
         let hz = hz.clamp(1, 10_000);
         let stop = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&stop);

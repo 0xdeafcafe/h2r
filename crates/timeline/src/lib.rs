@@ -190,7 +190,22 @@ struct State {
     capacity: usize,
     dropped: u64,
     host_names: Vec<(u32, String)>,
-    waits: HashMap<u32, (u64, &'static str)>,
+    waits: HashMap<u32, (u64, &'static str, u64)>,
+    /// The capture events are accepted for; see [`GEN`].
+    generation: u64,
+    active: bool,
+}
+
+/// The current capture's generation, bumped (under the state lock) by
+/// [`start`] and [`stop`]. Hooks read it when they find their category
+/// on and [`push`] keeps an event only if it still matches: a span opened
+/// in one capture and closed after the next one started is discarded,
+/// never written into the wrong trace.
+static GEN: AtomicU64 = AtomicU64::new(0);
+
+#[inline(always)]
+fn generation() -> u64 {
+    GEN.load(Ordering::Acquire)
 }
 
 fn state() -> MutexGuard<'static, State> {
@@ -202,6 +217,8 @@ fn state() -> MutexGuard<'static, State> {
             dropped: 0,
             host_names: Vec::new(),
             waits: HashMap::new(),
+            generation: 0,
+            active: false,
         })
     })
     .lock()
@@ -245,13 +262,22 @@ fn host_tid() -> u32 {
 }
 
 #[cold]
-fn push(ev: Ev) {
+fn push(ev: Ev, generation: u64) {
     let mut s = state();
+    if !s.active || s.generation != generation {
+        return;
+    }
     if s.events.len() < s.capacity {
         s.events.push(ev);
     } else {
         s.dropped += 1;
     }
+}
+
+/// Push an event for the capture that is current now.
+#[cold]
+fn record(e: Ev) {
+    push(e, generation());
 }
 
 fn ev(cat: Cat, track: Track, name: &'static str, phase: Phase, ts: u64) -> Ev {
@@ -276,6 +302,9 @@ pub fn start(config: Config) {
         s.capacity = config.capacity;
         s.dropped = 0;
         s.waits.clear();
+        s.generation += 1;
+        s.active = true;
+        GEN.store(s.generation, Ordering::Release);
     }
     MASK.store(config.mask, Ordering::Release);
 }
@@ -284,6 +313,9 @@ pub fn start(config: Config) {
 pub fn stop() -> Trace {
     MASK.store(0, Ordering::Release);
     let mut s = state();
+    s.generation += 1;
+    s.active = false;
+    GEN.store(s.generation, Ordering::Release);
     let mut events = std::mem::take(&mut s.events);
     events.sort_by_key(|e| e.ts);
     s.waits.clear();
@@ -294,49 +326,76 @@ pub fn stop() -> Trace {
     }
 }
 
-/// An open span; records a complete event when dropped.
+struct Open {
+    ev: Ev,
+    start: u64,
+    generation: u64,
+}
+
+/// An open span; records a complete event when dropped. One pointer: an
+/// inert span (category off) is a null check to make and to drop.
 #[must_use = "a span ends when this is dropped"]
 pub struct Span {
-    open: Option<(Ev, u64)>,
+    open: Option<Box<Open>>,
 }
 
 impl Span {
     /// Attach one numeric argument (shown in the event's details).
+    #[inline(always)]
     pub fn arg(mut self, key: &'static str, value: u64) -> Self {
-        if let Some((e, _)) = &mut self.open {
-            e.arg = Some((key, value));
-        }
+        self.set_arg(key, value);
         self
     }
     /// Set or replace the argument after the span started.
+    #[inline(always)]
     pub fn set_arg(&mut self, key: &'static str, value: u64) {
-        if let Some((e, _)) = &mut self.open {
-            e.arg = Some((key, value));
+        if let Some(o) = &mut self.open {
+            o.ev.arg = Some((key, value));
         }
     }
 }
 
 impl Drop for Span {
+    #[inline(always)]
     fn drop(&mut self) {
-        if let Some((mut e, start)) = self.open.take() {
-            e.phase = Phase::Complete {
-                dur: now_ns().saturating_sub(start),
-            };
-            push(e);
+        if let Some(o) = self.open.take() {
+            finish(&o);
         }
     }
 }
 
-/// A span from now until the returned guard drops. Inert (no clock read)
-/// unless `cat` is recording.
-#[inline]
-pub fn span(cat: Cat, track: Track, name: &'static str) -> Span {
-    if !enabled(cat) {
-        return Span { open: None };
-    }
+#[cold]
+#[inline(never)]
+fn finish(o: &Open) {
+    let mut e = o.ev;
+    e.phase = Phase::Complete {
+        dur: now_ns().saturating_sub(o.start),
+    };
+    push(e, o.generation);
+}
+
+#[cold]
+#[inline(never)]
+fn open(cat: Cat, track: Track, name: &'static str) -> Span {
+    let generation = generation();
     let ts = now_ns();
     Span {
-        open: Some((ev(cat, track, name, Phase::Instant, ts), ts)),
+        open: Some(Box::new(Open {
+            ev: ev(cat, track, name, Phase::Instant, ts),
+            start: ts,
+            generation,
+        })),
+    }
+}
+
+/// A span from now until the returned guard drops. Inert (one load and a
+/// branch, no clock read, nothing to drop) unless `cat` is recording.
+#[inline(always)]
+pub fn span(cat: Cat, track: Track, name: &'static str) -> Span {
+    if enabled(cat) {
+        open(cat, track, name)
+    } else {
+        Span { open: None }
     }
 }
 
@@ -344,7 +403,7 @@ pub fn span(cat: Cat, track: Track, name: &'static str) -> Span {
 #[inline]
 pub fn instant(cat: Cat, track: Track, name: &'static str) {
     if enabled(cat) {
-        push(ev(cat, track, name, Phase::Instant, now_ns()));
+        record(ev(cat, track, name, Phase::Instant, now_ns()));
     }
 }
 
@@ -354,7 +413,7 @@ pub fn instant_arg(cat: Cat, track: Track, name: &'static str, key: &'static str
     if enabled(cat) {
         let mut e = ev(cat, track, name, Phase::Instant, now_ns());
         e.arg = Some((key, value));
-        push(e);
+        record(e);
     }
 }
 
@@ -364,7 +423,7 @@ pub fn instant_arg(cat: Cat, track: Track, name: &'static str, key: &'static str
 #[inline]
 pub fn async_begin(cat: Cat, track: Track, name: &'static str, id: u64) {
     if enabled(cat) {
-        push(ev(cat, track, name, Phase::AsyncBegin { id }, now_ns()));
+        record(ev(cat, track, name, Phase::AsyncBegin { id }, now_ns()));
     }
 }
 
@@ -372,7 +431,7 @@ pub fn async_begin(cat: Cat, track: Track, name: &'static str, id: u64) {
 #[inline]
 pub fn async_end(cat: Cat, track: Track, name: &'static str, id: u64) {
     if enabled(cat) {
-        push(ev(cat, track, name, Phase::AsyncEnd { id }, now_ns()));
+        record(ev(cat, track, name, Phase::AsyncEnd { id }, now_ns()));
     }
 }
 
@@ -380,7 +439,7 @@ pub fn async_end(cat: Cat, track: Track, name: &'static str, id: u64) {
 #[inline]
 pub fn counter(cat: Cat, name: &'static str, value: u64) {
     if enabled(cat) {
-        push(ev(
+        record(ev(
             cat,
             Track::Host,
             name,
@@ -401,8 +460,9 @@ pub fn wait_begin(thread: u32, name: &'static str) {
 
 #[cold]
 fn wait_begin_slow(thread: u32, name: &'static str) {
+    let generation = generation();
     let ts = now_ns();
-    state().waits.insert(thread, (ts, name));
+    state().waits.insert(thread, (ts, name, generation));
 }
 
 /// Guest thread `thread` runs again: closes its open wait, if any, as a
@@ -416,7 +476,7 @@ pub fn wait_end(thread: u32) {
 
 #[cold]
 fn wait_end_slow(thread: u32) {
-    let Some((start, name)) = state().waits.remove(&thread) else {
+    let Some((start, name, generation)) = state().waits.remove(&thread) else {
         return;
     };
     let mut e = ev(
@@ -429,7 +489,7 @@ fn wait_end_slow(thread: u32) {
     e.phase = Phase::Complete {
         dur: now_ns().saturating_sub(start),
     };
-    push(e);
+    push(e, generation);
 }
 
 /// One guest frame was presented (Swap). Always counted, so [`frames`]
@@ -441,7 +501,7 @@ pub fn frame() {
     if enabled(Cat::Frame) {
         let mut e = ev(Cat::Frame, Track::Host, "frame", Phase::Instant, now_ns());
         e.arg = Some(("n", n));
-        push(e);
+        record(e);
     }
 }
 
@@ -649,6 +709,37 @@ mod tests {
         assert_eq!(t.count("submit"), 0);
         assert_eq!(t.len(), 2);
         assert_eq!(t.dropped, 3);
+    }
+
+    #[test]
+    fn a_span_from_an_earlier_capture_is_not_written_into_a_later_one() {
+        let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+        start(Config::all());
+        let old = span(Cat::Guest, Track::Guest(1), "old");
+        wait_begin(2, "old wait");
+        assert!(stop().is_empty());
+        start(Config::all());
+        drop(old);
+        wait_end(2);
+        {
+            let _new = span(Cat::Guest, Track::Guest(1), "new");
+        }
+        let t = stop();
+        assert_eq!(t.count("old"), 0);
+        assert_eq!(t.count("old wait"), 0);
+        assert_eq!(t.count("new"), 1);
+        // Closed after recording stopped: dropped, not buffered.
+        start(Config::all());
+        let late = span(Cat::Guest, Track::Guest(1), "late");
+        let _ = stop();
+        drop(late);
+        start(Config::all());
+        assert_eq!(stop().count("late"), 0);
+    }
+
+    #[test]
+    fn an_inert_span_is_one_pointer() {
+        assert_eq!(size_of::<Span>(), size_of::<usize>());
     }
 
     #[test]

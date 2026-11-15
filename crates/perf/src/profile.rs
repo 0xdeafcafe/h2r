@@ -447,14 +447,17 @@ impl Session {
     }
 
     /// Sample `targets`.
+    /// The sampler, which can fail (unsupported host, no targets, no
+    /// thread), starts first: on error nothing is left running, the
+    /// timeline included.
     pub fn start_with(config: SessionConfig, targets: Vec<ThreadTarget>) -> io::Result<Session> {
-        if config.timeline.is_some() {
-            timeline::start(config.timeline_config);
-        }
         let sampler = match config.profile {
             Some(_) => Some(Sampler::start(targets, config.hz)?),
             None => None,
         };
+        if config.timeline.is_some() {
+            timeline::start(config.timeline_config);
+        }
         Ok(Session {
             config,
             sampler,
@@ -691,6 +694,20 @@ mod tests {
             p.folded(&Render::default()),
             "main;runtime::runner::Runner::run_from;guest 0x00001000 1\n"
         );
+    }
+
+    /// A sampler that cannot start leaves no timeline recording behind.
+    #[test]
+    fn a_failed_start_does_not_leave_the_timeline_on() {
+        let dir = std::env::temp_dir().join(format!("perf-session-fail-{}", std::process::id()));
+        let config = SessionConfig {
+            profile: Some(dir.clone()),
+            timeline: Some(dir.join("t.json")),
+            ..SessionConfig::default()
+        };
+        assert!(Session::start_with(config, vec![]).is_err());
+        assert!(!timeline::recording());
+        assert!(!dir.exists());
     }
 
     #[test]

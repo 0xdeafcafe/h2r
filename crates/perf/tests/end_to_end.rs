@@ -38,7 +38,7 @@ fn hot_loops_run_through_generated_code() {
     let cpu = m.call(hotloop::ALU, 10).unwrap();
     assert_eq!(cpu.ecx, 0);
     m.call(hotloop::MEMORY, 7).unwrap();
-    let counter = m.runtime.memory().u32(hotloop::DATA).unwrap();
+    let counter = m.read_u32(hotloop::DATA).unwrap();
     assert!(counter >= 7, "{counter}");
     // LEAF adds one to EAX per call.
     let cpu = m.call(hotloop::CALL, 5).unwrap();
@@ -144,4 +144,70 @@ fn profiles_attribute_samples_to_guest_functions_and_instructions() {
         folded.contains(&format!("guest {:#010x};@0x", hotloop::ALU)),
         "{folded}"
     );
+}
+
+/// A module loaded after a symbolizer has already resolved something is
+/// still seen (by that symbolizer and a new one), and a module can be
+/// dropped and rebuilt in the same process.
+#[cfg(target_os = "macos")]
+#[test]
+fn modules_loaded_later_resolve_and_rebuild_safely() {
+    if !have_clang() {
+        return;
+    }
+    let mut early = Symbolizer::new();
+    #[inline(never)]
+    fn host_marker() -> u64 {
+        std::hint::black_box(3)
+    }
+    assert!(matches!(
+        early.resolve(host_marker as *const () as u64),
+        Frame::Host { .. }
+    ));
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join("perf-e2e-late");
+    let first = hotloop::build(&dir).unwrap();
+    first.call(hotloop::ALU, 3).unwrap();
+    drop(first);
+    let m = hotloop::build(&dir).unwrap();
+    m.call(hotloop::ALU, 3).unwrap();
+    let pc = m.handler_address(hotloop::ALU).expect("h2fn symbol");
+    for s in [&mut early, &mut Symbolizer::new()] {
+        match s.resolve(pc) {
+            Frame::Guest { function, .. } => assert_eq!(function, hotloop::ALU),
+            f => panic!("{f:?}"),
+        }
+    }
+}
+
+/// The first bytes of a handler (prologue, selector switch) never take the
+/// previous function's last instruction from the line tables.
+#[cfg(target_os = "macos")]
+#[test]
+fn instructions_stay_inside_their_generated_function() {
+    if !have_clang() {
+        return;
+    }
+    let m = hotloop::shared(&work()).unwrap();
+    let mut s = Symbolizer::new();
+    for (entry, len) in [
+        (hotloop::LEAF, 0x10),
+        (hotloop::CALL, 0x20),
+        (hotloop::MEMORY, 0x20),
+    ] {
+        let base = m.handler_address(entry).unwrap();
+        for off in (0..64).step_by(4) {
+            match s.resolve(base + off) {
+                Frame::Guest { function, insn } => {
+                    assert_eq!(function, entry);
+                    if let Some(i) = insn {
+                        assert!(
+                            (entry..entry + len).contains(&i),
+                            "{entry:#x}+{off}: insn {i:#x}"
+                        );
+                    }
+                }
+                f => panic!("{entry:#x}+{off}: {f:?}"),
+            }
+        }
+    }
 }

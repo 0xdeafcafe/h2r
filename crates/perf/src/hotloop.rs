@@ -177,10 +177,23 @@ impl Bridge {
 }
 
 /// The loops built and loaded, with a runtime they are registered in.
+///
+/// The runtime's dispatch table holds raw pointers into the dylib, so
+/// the runtime never leaves this struct: callers get bounded operations
+/// ([`Module::call`], [`Module::read_u32`]), not the `Arc<Runtime>`, and
+/// fields drop in order (runtime, then library). Every `ExecCtx` made
+/// from the runtime lives inside one `call`.
+///
+/// ```compile_fail
+/// // The runtime field is private: it cannot be cloned out.
+/// fn escape(m: &perf::hotloop::Module) {
+///     let _ = &m.runtime;
+/// }
+/// ```
 pub struct Module {
     pub dir: PathBuf,
-    pub runtime: Arc<Runtime>,
-    _lib: libloading::Library,
+    runtime: Arc<Runtime>,
+    lib: libloading::Library,
 }
 
 /// Build (or reuse, through emit's object cache) the loops under `work`.
@@ -197,7 +210,14 @@ pub fn build(work: &Path) -> Result<Module> {
     let arch = emit::compile::Arch::host();
     let b = emit::compile::build(&src, &dir, arch, emit::compile::default_jobs())
         .map_err(|e| anyhow!("{e}"))?;
-    let dylib = dir.join("libh2perf_hotloop.dylib");
+    // A new name per build: rewriting a dylib another Module still has
+    // mapped would corrupt that one's code pages.
+    static BUILDS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dylib = dir.join(format!(
+        "libh2perf_hotloop_{}_{n}.dylib",
+        std::process::id()
+    ));
     emit::compile::host_dylib(&b, &src, &[("bridge.c", emit::host::BRIDGE)], &dylib)
         .map_err(|e| anyhow!("{e}"))?;
     // SAFETY: built just now by emit for this host.
@@ -245,7 +265,7 @@ pub fn build(work: &Path) -> Result<Module> {
     Ok(Module {
         dir,
         runtime: rt,
-        _lib: lib,
+        lib,
     })
 }
 
@@ -265,6 +285,25 @@ pub fn shared(work: &Path) -> Result<Arc<Module>> {
 }
 
 impl Module {
+    /// A guest word, for checking what a loop wrote.
+    pub fn read_u32(&self, addr: u32) -> Result<u32> {
+        Ok(self.runtime.memory().u32(addr)?)
+    }
+
+    /// Host address of the generated handler for guest function `entry`
+    /// (`h2fn_<entry>`), for symbolizer tests.
+    pub fn handler_address(&self, entry: u32) -> Option<u64> {
+        let name = format!("{}\0", emit::c::symbol(entry));
+        // SAFETY: only the symbol's address is taken; nothing is called.
+        // (A `Symbol<*const ()>` derefs to the symbol's address itself.)
+        unsafe {
+            self.lib
+                .get::<*const ()>(name.as_bytes())
+                .ok()
+                .map(|s| *s as u64)
+        }
+    }
+
     /// Run stdcall `entry(n)` to its return; the transfers it took.
     pub fn call(&self, entry: u32, n: u32) -> Result<CpuAbi> {
         let mut cpu = CpuAbi {

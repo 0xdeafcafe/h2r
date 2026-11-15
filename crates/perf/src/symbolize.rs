@@ -10,8 +10,9 @@
 //! `H2_DEBUG=none`, or once they are deleted, samples still resolve to the
 //! guest function, just not the instruction.
 //!
-//! Resolution must happen while the dylib is loaded: it goes through the
-//! loaded images (backtrace's in-process symbolizer).
+//! Resolution must happen while the dylib is loaded: images are found
+//! with `dladdr` and read with addr2line (see [`Symbolizer`]). The marker
+//! search is clamped to the generated function the PC is in.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -155,36 +156,128 @@ pub fn guest_entry(symbol: &str) -> Option<u32> {
     (hex.len() == 8).then(|| u32::from_str_radix(&hex, 16).ok())?
 }
 
-/// Instruction markers of one C file: `(line, guest pc)`, ascending.
-pub fn markers(text: &str) -> Vec<(u32, u32)> {
+/// One instruction marker of a C file: the 1-based source line, the guest
+/// instruction, and the generated function (`h2fn_<entry>`) whose body
+/// holds it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Marker {
+    pub line: u32,
+    pub pc: u32,
+    pub function: u32,
+}
+
+/// The instruction markers of one C file, ascending by line. A marker
+/// belongs to the last `h2fn_<entry>(` definition line above it; markers
+/// before any definition are dropped.
+pub fn markers(text: &str) -> Vec<Marker> {
     let mut out = Vec::new();
+    let mut function = None;
     for (i, l) in text.lines().enumerate() {
+        if !l.starts_with([' ', '\t'])
+            && let Some(at) = l.find("h2fn_")
+            && let Some(entry) = guest_entry(&l[at..])
+            && l[at + 13..].starts_with('(')
+        {
+            function = Some(entry);
+            continue;
+        }
         let t = l.trim_start();
         let Some(rest) = t.strip_prefix("/* 0x") else {
             continue;
         };
         let hex = &rest[..rest.len().min(8)];
-        if hex.len() == 8
+        if let Some(function) = function
+            && hex.len() == 8
             && rest[8..].starts_with(" */")
             && let Ok(pc) = u32::from_str_radix(hex, 16)
         {
-            out.push((i as u32 + 1, pc));
+            out.push(Marker {
+                line: i as u32 + 1,
+                pc,
+                function,
+            });
         }
     }
     out
 }
 
-/// The instruction a source line belongs to: the last marker at or above it.
-pub fn insn_at(markers: &[(u32, u32)], line: u32) -> Option<u32> {
-    let i = markers.partition_point(|&(l, _)| l <= line);
-    i.checked_sub(1).map(|i| markers[i].1)
+/// The instruction `line` belongs to in generated function `function`:
+/// the last marker at or above it, provided it is that function's. A line
+/// before the function's first marker (its prologue, the selector switch)
+/// has none; it never inherits the previous function's last instruction.
+pub fn insn_at(markers: &[Marker], line: u32, function: u32) -> Option<u32> {
+    let i = markers.partition_point(|m| m.line <= line);
+    let m = markers.get(i.checked_sub(1)?)?;
+    (m.function == function).then_some(m.pc)
 }
 
-/// Caches resolutions; one per profile.
+/// Strip the Mach-O underscore and demangle a Rust symbol (no hash).
+fn display_name(raw: &str) -> String {
+    let n = raw.strip_prefix('_').unwrap_or(raw);
+    match rustc_demangle::try_demangle(n) {
+        Ok(d) => format!("{d:#}"),
+        Err(_) => n.to_owned(),
+    }
+}
+
+/// What `dladdr` says about a PC: the image's path and load address, and
+/// the nearest exported symbol.
+struct Dl {
+    path: PathBuf,
+    base: u64,
+    symbol: Option<String>,
+}
+
+#[cfg(unix)]
+#[allow(unsafe_code)]
+fn dladdr(pc: u64) -> Option<Dl> {
+    use std::ffi::CStr;
+    use std::os::unix::ffi::OsStrExt;
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: dladdr only reads the loader's image list; `info` is ours.
+    if unsafe { libc::dladdr(pc as *const libc::c_void, &mut info) } == 0
+        || info.dli_fname.is_null()
+    {
+        return None;
+    }
+    // SAFETY: non-null C strings owned by the loader, valid while the image
+    // stays loaded, which it does for this call.
+    let (path, symbol) = unsafe {
+        (
+            PathBuf::from(std::ffi::OsStr::from_bytes(
+                CStr::from_ptr(info.dli_fname).to_bytes(),
+            )),
+            (!info.dli_sname.is_null()).then(|| {
+                CStr::from_ptr(info.dli_sname)
+                    .to_string_lossy()
+                    .into_owned()
+            }),
+        )
+    };
+    Some(Dl {
+        path,
+        base: info.dli_fbase as u64,
+        symbol,
+    })
+}
+
+#[cfg(not(unix))]
+fn dladdr(_: u64) -> Option<Dl> {
+    None
+}
+
+/// Resolves PCs and caches the answers; one per profile.
+///
+/// Images are found with `dladdr`, which asks the dynamic loader at every
+/// call, so a dylib loaded after another symbolizer (or after an earlier
+/// lookup) is seen. Each image's symbol table and line tables (including
+/// macOS debug maps, which point at the objects) are read with addr2line
+/// on first use and cached by path and load address.
 #[derive(Default)]
 pub struct Symbolizer {
     pcs: HashMap<u64, Frame>,
-    files: HashMap<PathBuf, Vec<(u32, u32)>>,
+    images: HashMap<(PathBuf, u64), Option<addr2line::Loader>>,
+    files: HashMap<PathBuf, Vec<Marker>>,
 }
 
 impl Symbolizer {
@@ -198,46 +291,69 @@ impl Symbolizer {
         if let Some(f) = self.pcs.get(&pc) {
             return f.clone();
         }
-        let mut name = None;
-        let mut file: Option<(PathBuf, u32)> = None;
-        // backtrace treats every address as a return address and looks up
-        // the byte before it; `pc + 1` makes that byte `pc` itself.
-        backtrace::resolve(pc.wrapping_add(1) as *mut std::ffi::c_void, |s| {
-            if name.is_none()
-                && let Some(n) = s.name()
-            {
-                name = Some(format!("{n:#}"));
-            }
-            if file.is_none()
-                && let (Some(f), Some(l)) = (s.filename(), s.lineno())
-            {
-                file = Some((f.to_path_buf(), l));
-            }
-        });
-        let frame = match name {
-            Some(n) => match guest_entry(&n) {
-                Some(function) => Frame::Guest {
-                    function,
-                    insn: file.and_then(|(f, l)| self.insn(&f, l)),
-                },
-                None => Frame::Host { name: n },
-            },
-            None => Frame::Unknown { pc },
-        };
+        let frame = self.lookup(pc);
         self.pcs.insert(pc, frame.clone());
         frame
     }
 
-    fn insn(&mut self, file: &Path, line: u32) -> Option<u32> {
-        if file.extension().is_none_or(|e| e != "c") {
-            return None;
+    fn lookup(&mut self, pc: u64) -> Frame {
+        let Some(dl) = dladdr(pc) else {
+            return Frame::Unknown { pc };
+        };
+        let loader = self
+            .images
+            .entry((dl.path.clone(), dl.base))
+            .or_insert_with(|| addr2line::Loader::new(&dl.path).ok());
+        let mut symbol = dl.symbol;
+        // (innermost function name, outermost `.c` location)
+        let mut inner: Option<String> = None;
+        let mut c_line: Option<(PathBuf, u32)> = None;
+        if let Some(l) = loader {
+            let probe = pc
+                .wrapping_sub(dl.base)
+                .wrapping_add(l.relative_address_base());
+            if let Some(s) = l.find_symbol(probe) {
+                symbol = Some(s.to_owned());
+            }
+            if let Ok(mut frames) = l.find_frames(probe) {
+                while let Ok(Some(f)) = frames.next() {
+                    if inner.is_none()
+                        && let Some(n) = f.function.as_ref().and_then(|n| n.raw_name().ok())
+                    {
+                        inner = Some(n.into_owned());
+                    }
+                    if let Some(loc) = f.location
+                        && let (Some(file), Some(line)) = (loc.file, loc.line)
+                        && file.ends_with(".c")
+                    {
+                        // Later frames are outer: the handler's own line
+                        // wins over an inlined h2gen.h helper's.
+                        c_line = Some((PathBuf::from(file), line));
+                    }
+                }
+            }
         }
+        let Some(symbol) = symbol else {
+            return Frame::Unknown { pc };
+        };
+        match guest_entry(&symbol) {
+            Some(function) => Frame::Guest {
+                function,
+                insn: c_line.and_then(|(f, l)| self.insn(&f, l, function)),
+            },
+            None => Frame::Host {
+                name: display_name(inner.as_deref().unwrap_or(&symbol)),
+            },
+        }
+    }
+
+    fn insn(&mut self, file: &Path, line: u32, function: u32) -> Option<u32> {
         let m = self.files.entry(file.to_path_buf()).or_insert_with(|| {
             std::fs::read_to_string(file)
                 .map(|t| markers(&t))
                 .unwrap_or_default()
         });
-        insn_at(m, line)
+        insn_at(m, line, function)
     }
 }
 
@@ -262,13 +378,32 @@ mod tests {
                  \x20   }\n\
                  \x20   /* 0x00001003 */ {\n\
                  \x20       H2_XFER(H2_JUMP, H2_ENTRY, 0x2000u, 0);\n\
+                 \x20   }\n\
+                 }\n\
+                 TransferAbi h2fn_00002000(CpuAbi *cpu) {\n\
+                 \x20   H2_LOCALS();\n\
+                 \x20   /* 0x00002000 */ {\n\
                  \x20   }\n";
         let m = markers(c);
-        assert_eq!(m, vec![(3, 0x1000), (6, 0x1003)]);
-        assert_eq!(insn_at(&m, 1), None);
-        assert_eq!(insn_at(&m, 3), Some(0x1000));
-        assert_eq!(insn_at(&m, 4), Some(0x1000));
-        assert_eq!(insn_at(&m, 7), Some(0x1003));
+        let mk = |line, pc, function| Marker { line, pc, function };
+        assert_eq!(
+            m,
+            vec![
+                mk(3, 0x1000, 0x1000),
+                mk(6, 0x1003, 0x1000),
+                mk(12, 0x2000, 0x2000)
+            ]
+        );
+        assert_eq!(insn_at(&m, 1, 0x1000), None);
+        assert_eq!(insn_at(&m, 3, 0x1000), Some(0x1000));
+        assert_eq!(insn_at(&m, 4, 0x1000), Some(0x1000));
+        assert_eq!(insn_at(&m, 7, 0x1000), Some(0x1003));
+        // The second function's prologue does not inherit 0x1003.
+        assert_eq!(insn_at(&m, 10, 0x2000), None);
+        assert_eq!(insn_at(&m, 11, 0x2000), None);
+        assert_eq!(insn_at(&m, 13, 0x2000), Some(0x2000));
+        // A line attributed to the wrong function gives nothing.
+        assert_eq!(insn_at(&m, 13, 0x1000), None);
     }
 
     #[test]
@@ -294,7 +429,7 @@ mod tests {
         assert_eq!(c("boot::fallback::trampoline"), Some(Category::Fallback));
         assert_eq!(c("ir::interp::Interp::step"), Some(Category::Fallback));
         assert_eq!(c("xapi::service_input"), Some(Category::Hle));
-        assert_eq!(c("_platform_memmove"), None);
+        assert_eq!(c("platform_memmove"), None);
         assert_eq!(c("std::sys::thread::unix::Thread::new::thread_start"), None);
     }
 

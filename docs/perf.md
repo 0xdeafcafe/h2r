@@ -8,7 +8,13 @@ Three tools for finding out where time goes, in two crates:
   a timeline capture around any run), and the benchmark harness. Behind
   `h2 profile` and `h2 bench`.
 
-Measure release builds (`cargo run --release -p cli -- ...`). Debug builds
+The commands are behind the CLI's `perf` cargo feature, off by default so
+ordinary `h2` builds skip the profiler's dependencies:
+`cargo run --release -p cli --features perf -- bench`. Without it,
+`h2 profile` and `h2 bench` say how to rebuild. The runtime, kernel and
+d3d always depend on `timeline`, which has no dependencies of its own.
+
+Measure release builds. Debug builds
 of the runtime are 10-100x slower and spend their time in different places.
 Generated code is compiled with emit's own flags (`H2_OPT`, default `-O1`)
 whatever the Cargo profile.
@@ -77,10 +83,19 @@ so time in them counts as guest code. Calls that leave the handler count
 against whatever they call (`h2abi_v1_read` is runtime, a kernel export is
 kernel, and so on).
 
-Symbolisation runs in process, through the `backtrace` crate: symbol
-tables, DWARF line tables, and macOS debug maps that point at the objects.
-It must run **before the generated dylib is unloaded**: finish or drop the
-`Session` first.
+The search for a marker is clamped to the PC's own function. Markers
+belong to the `h2fn_<entry>(` definition above them, so a line in a
+handler's prologue or selector switch, which comes before its first
+marker, has no instruction. It does not inherit the last instruction of
+the previous function in the shard.
+
+Symbolisation runs in process. `dladdr` finds each PC's image, asking the
+dynamic loader at every lookup, so a dylib loaded after an earlier
+profile or lookup is seen. addr2line then reads that image's symbol table
+and DWARF line tables, including macOS debug maps that point at the
+objects; this is cached per image path and load address. It must run
+**before the generated dylib is unloaded**: finish or drop the `Session`
+first.
 
 ### Attribution
 
@@ -135,6 +150,9 @@ let _perf = perf::Session::from_env();
 | `H2_TIMELINE=<file.json>` | record a timeline and write it there |
 | `H2_TIMELINE_CATS` | categories, e.g. `all`, `default`, `frame,d3d,gfx`, `all,-hle` |
 
+A session starts its sampler before its timeline. If the sampler cannot
+start (on a host other than macOS, with no target threads, or when the
+thread cannot spawn), `start` fails and leaves nothing recording.
 `Session::start_with(config, targets)` samples other threads too. Make each
 `perf::sample::ThreadTarget::current(name)` on the thread itself.
 
@@ -164,7 +182,15 @@ on the row of the host thread that recorded them (process "host").
 `hle` is off by default because it fires on every kernel, XAPI and D3D call.
 
 Cost when off: every hook is one relaxed atomic load and a branch. Nothing
-allocates, locks or reads the clock unless a category is recording.
+allocates, locks or reads the clock unless a category is recording. A
+`Span` is one pointer, null when inert, and its drop is an inlined null
+check; the recording path is out of line.
+
+Each `start` and `stop` begins a new capture generation. An event keeps
+the generation that was current when its hook fired, and it is discarded
+unless that generation is still recording when the event is pushed. So a
+span (or wait) opened in one capture and closed after `stop`, or after the
+next `start`, never lands in a trace.
 `timeline::frame()` always bumps a frame counter (`timeline::frames()`),
 one relaxed `fetch_add` per Swap, so fps is available without recording.
 When on, an event is a clock read and a push under one mutex. The buffer
@@ -287,8 +313,9 @@ The boot driver (crates/boot, on the `boot` branch) is not a dependency of
   rebuild through emit, so the pass applies). The "guest instructions"
   table and the `@0x...` folded leaves show which instructions the time
   goes to.
-- **build-perf** (build times): `perf` brings in `backtrace` (and with it
-  `addr2line`, `gimli`, `object`), `serde_json` and `iced-x86` (code_asm).
-  `timeline` has no dependencies. The hot-loop scenarios use emit's object
+- **build-perf** (build times): `perf` brings in `addr2line` (with its loader:
+  `gimli`, `object`, `memmap2`, `typed-arena`), `rustc-demangle`,
+  `serde_json` and `iced-x86` (code_asm), but only into `cli` builds with
+  `--features perf`. `timeline` has no dependencies. The hot-loop scenarios use emit's object
   cache under `--work`. Nothing here measures build time yet; a
   `build/emit-shard` scenario would fit the same harness if wanted.

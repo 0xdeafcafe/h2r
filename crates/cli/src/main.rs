@@ -89,14 +89,28 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
                           caps it, dropping least recently used; H2_OPT, H2_DEBUG)
 
-  profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...
+  profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...   (--features perf)
                           sample a benchmark scenario: guest-aware folded stacks,
                           top-N table, optional Chrome/Perfetto timeline (docs/perf.md)
-  bench [run|list|compare] [--out DIR] [--only PATTERN] ...
+  bench [run|list|compare] [--out DIR] [--only PATTERN] ...   (--features perf)
                           repeatable benchmarks as JSON; compare flags regressions
 
 [disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
 first .iso in the repo's disc/ folder.";
+
+#[cfg(feature = "perf")]
+fn perf_cmd(cmd: &str, args: Vec<String>) -> Result<()> {
+    let code = match cmd {
+        "profile" => perf::cli::profile(args)?,
+        _ => perf::cli::bench(args)?,
+    };
+    std::process::exit(code);
+}
+
+#[cfg(not(feature = "perf"))]
+fn perf_cmd(cmd: &str, _: Vec<String>) -> Result<()> {
+    bail!("h2 {cmd} needs the perf feature: cargo run --release -p cli --features perf -- {cmd} ...")
+}
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
@@ -146,11 +160,8 @@ fn main() -> Result<()> {
     if cmd == "ui" {
         return ui::run(args.collect());
     }
-    if cmd == "profile" {
-        std::process::exit(perf::cli::profile(args.collect())?);
-    }
-    if cmd == "bench" {
-        std::process::exit(perf::cli::bench(args.collect())?);
+    if cmd == "profile" || cmd == "bench" {
+        return perf_cmd(&cmd, args.collect());
     }
     let mut positional = Vec::new();
     let mut functions_out = None;

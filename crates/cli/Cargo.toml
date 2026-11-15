@@ -29,7 +29,12 @@ audio = { path = "../audio", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }
 asf = { path = "../asf" }
 wma = { path = "../wma" }
-perf = { path = "../perf" }
+# `h2 profile` and `h2 bench` (docs/perf.md): off by default so ordinary
+# builds skip the profiler's dependencies. `cargo run -p cli --features perf`.
+perf = { path = "../perf", optional = true }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[features]
+perf = ["dep:perf"]

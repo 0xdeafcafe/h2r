@@ -18,8 +18,10 @@ anyhow.workspace = true
 libloading = "0.8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# Host-PC symbolization (symbol tables, DWARF line tables, macOS debug maps).
-backtrace = "0.3"
+# Host-PC symbolization: per-image symbol and DWARF line tables, macOS
+# debug maps (images are found with dladdr, so late-loaded dylibs resolve).
+addr2line = { version = "0.27", default-features = false, features = ["loader"] }
+rustc-demangle = "0.1"
 # Assembling the synthetic guest loops of the hot-loop benchmarks.
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "code_asm"] }
 
