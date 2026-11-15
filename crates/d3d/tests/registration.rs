@@ -146,12 +146,20 @@ fn register_installs_every_entry_but_the_native_helpers() {
     let r = d3d::register(&mut dispatch, device);
     let entries = abi::entries::<RecordingBackend>();
     assert_eq!(r.implemented.len() + r.stopping.len(), entries.len());
-    assert_eq!(r.stopping.len(), abi::UNIMPLEMENTED.len());
-    // The counts docs/d3d.md gives: 88 overrides (79 + 9) and 4 native.
+    // The unimplemented entries plus the two port-I/O guards that stop.
+    assert_eq!(r.stopping.len(), abi::UNIMPLEMENTED.len() + 2);
+    // The counts docs/d3d.md gives: 91 overrides (81 + 10) and 4 native.
     assert_eq!(
         (r.implemented.len(), r.stopping.len(), r.native.len()),
-        (79, 9, 4)
+        (81, 10, 4)
     );
+    // The functions holding the GPIO port I/O (0x3fe131, 0x3feb3c,
+    // 0x3fee0d) never run: 0x3fe005 and 0x3fed90 stop, the ISR 0x3feac0
+    // answers "not mine".
+    for addr in [0x3fe005, 0x3fed90] {
+        assert!(r.stopping.iter().any(|e| e.0 == addr), "{addr:#x}");
+    }
+    assert!(r.implemented.iter().any(|e| e.0 == 0x3feac0));
     assert!(r.implemented.iter().any(|e| e.0 == 0x3f5cc0));
     for e in &entries {
         assert_eq!(dispatch.override_name(e.addr), Some(e.name));

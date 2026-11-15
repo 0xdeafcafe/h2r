@@ -1,11 +1,14 @@
 //! NV2A register state that D3D's internal fragments push and the device
 //! keeps: viewport scale and offset, depth clip range, `SET_CONTROL0`,
-//! transform-constant and transform-program loads, and the 32-word block
-//! at `0x1480`.
+//! transform-constant and transform-program loads, the polygon stipple
+//! pattern at `0x1480`, and the two clear-value registers D3D also uses as
+//! software-method operands.
 //!
 //! These methods reach the push buffer from D3D code the game calls directly
 //! (the viewport/transform fragments `0x3f6190`, `0x3f6390`, `0x3f6f40` and
-//! the ramp `0x3f8cc0`) and from the device's own copies of them (see
+//! `SetStipple` `0x3f8cc0`), from game code (the stipple pattern inline at
+//! `0x1e4ae`, an inlined `InsertCallback` at `0x2460e`, the vertex-cache
+//! break at `0x43a1a`) and from the device's own copies of them (see
 //! `device/fragments.rs`). The decoder applies each one in program order
 //! when the push buffer drains, like the inline state methods.
 //!
@@ -37,8 +40,26 @@ pub mod method {
     pub const TRANSFORM_PROGRAM: u32 = 0x0B00;
     /// `NV097_SET_TRANSFORM_CONSTANT` (32 words).
     pub const TRANSFORM_CONSTANT: u32 = 0x0B80;
-    /// The 32-word block `0x3f8cc0` pushes (`0x1480..0x14FC`).
-    pub const BLOCK_1480: u32 = 0x1480;
+    /// `NV097_SET_STIPPLE_CONTROL` (polygon stipple on/off). D3D pushes it
+    /// for `D3DRS_STIPPLEENABLE` through `D3DSIMPLERENDERSTATEENCODE`, so
+    /// it normally drains as a render-state mirror; this is the fallback.
+    pub const STIPPLE_CONTROL: u32 = 0x147C;
+    /// `NV097_SET_STIPPLE_PATTERN` (32 words, one 32-pixel row each):
+    /// `SetStipple` `0x3f8cc0` and inline at `0x1e4ae`.
+    pub const STIPPLE_PATTERN: u32 = 0x1480;
+    /// `NV097_BREAK_VERTEX_BUFFER_CACHE`. Game code pushes it (value 0, at
+    /// `0x43a1a`) after writing vertices the GPU may have cached. The
+    /// device reads vertex data from guest memory at every draw, so it has
+    /// no cache to break.
+    pub const BREAK_VERTEX_BUFFER_CACHE: u32 = 0x1710;
+    /// `NV097_SET_ZSTENCIL_CLEAR_VALUE`. D3D (and the inlined
+    /// `InsertCallback` at `0x2460e`) also loads it with a software-method
+    /// operand: the callback function, or a register offset.
+    pub const ZSTENCIL_CLEAR_VALUE: u32 = 0x1D8C;
+    /// `NV097_SET_COLOR_CLEAR_VALUE`. The second software-method operand
+    /// (the callback context, or a register value). It is also the
+    /// placeholder method of the unused `D3DSIMPLERENDERSTATEENCODE` slots.
+    pub const COLOR_CLEAR_VALUE: u32 = 0x1D90;
     /// `NV097_SET_TRANSFORM_EXECUTION_MODE`.
     pub const EXECUTION_MODE: u32 = 0x1E94;
     /// `NV097_SET_TRANSFORM_PROGRAM_CXT_WRITE_EN`.
@@ -81,8 +102,18 @@ pub struct HwState {
     pub execution_mode: u32,
     /// `SET_TRANSFORM_PROGRAM_CXT_WRITE_EN`.
     pub cxt_write_enable: u32,
-    /// The 32 words at `0x1480` (`0x3f8cc0`, also inline at `0x1e370`).
-    pub block_1480: [u32; 32],
+    /// `SET_STIPPLE_CONTROL`, if it arrived as a plain method (see
+    /// [`method::STIPPLE_CONTROL`]).
+    pub stipple_control: Option<u32>,
+    /// `SET_STIPPLE_PATTERN`: 32 rows of 32 pixels, bit `x` of row `y` set
+    /// where pixel `(x mod 32, y mod 32)` is drawn while stippling is
+    /// enabled. Halo picks one of 17 dither levels (the table at `0x487288`,
+    /// selected by `0x1c290` from an opacity) for screen-door fades.
+    pub stipple_pattern: [u32; 32],
+    /// `SET_ZSTENCIL_CLEAR_VALUE` as last pushed.
+    pub zstencil_clear_value: u32,
+    /// `SET_COLOR_CLEAR_VALUE` as last pushed.
+    pub color_clear_value: u32,
 }
 
 impl Default for HwState {
@@ -98,7 +129,10 @@ impl Default for HwState {
             program_start: None,
             execution_mode: 0,
             cxt_write_enable: 0,
-            block_1480: [0; 32],
+            stipple_control: None,
+            stipple_pattern: [0; 32],
+            zstencil_clear_value: 0,
+            color_clear_value: 0,
         }
     }
 }
@@ -169,9 +203,13 @@ impl HwState {
                     self.constant_load += 1;
                 }
             }
-            _ if (BLOCK_1480..BLOCK_1480 + 0x80).contains(&m) => {
-                self.block_1480[((m - BLOCK_1480) / 4) as usize] = w;
+            STIPPLE_CONTROL => self.stipple_control = Some(w),
+            _ if (STIPPLE_PATTERN..STIPPLE_PATTERN + 0x80).contains(&m) => {
+                self.stipple_pattern[((m - STIPPLE_PATTERN) / 4) as usize] = w;
             }
+            BREAK_VERTEX_BUFFER_CACHE => {}
+            ZSTENCIL_CLEAR_VALUE => self.zstencil_clear_value = w,
+            COLOR_CLEAR_VALUE => self.color_clear_value = w,
             EXECUTION_MODE => self.execution_mode = w,
             CXT_WRITE_EN => self.cxt_write_enable = w,
             PROGRAM_LOAD => self.program_load = w,

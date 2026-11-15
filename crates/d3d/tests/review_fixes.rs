@@ -580,13 +580,13 @@ fn p2_11_a_push_buffer_failure_latches_instead_of_skipping() {
     bind_quad(&mut d, &mut m);
     inline_quad(&mut m, 0.0, 0.0, 8.0, 8.0, [255, 0, 0, 255]);
     let bad = m.read_u32(DEV).unwrap();
-    push_words(&mut m, &[(1 << 18) | 0x1710, 0]);
+    push_words(&mut m, &[(1 << 18) | 0x1D70, 0]);
     inline_quad(&mut m, 8.0, 8.0, 16.0, 16.0, [0, 255, 0, 255]);
     let e = d.commit(&mut m).unwrap_err();
     assert!(
         matches!(
             e,
-            D3dError::Push(PushError::UnknownMethod { method: 0x1710, .. })
+            D3dError::Push(PushError::UnknownMethod { method: 0x1D70, .. })
         ),
         "{e}"
     );

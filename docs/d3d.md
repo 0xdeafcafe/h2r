@@ -21,16 +21,20 @@ included here.
 - **91** D3D functions are reached from outside the section. **26** of those
   have no signature match and are named below from evidence: which state
   slot they store, what they push, and who calls them.
-- Of those 91, **78** are implemented (adapter plus device method), **9**
+- Of those 91, **79** are implemented (adapter plus device method), **8**
   stop with `D3dError::Unimplemented` (which carries the entry name and
   its convention), and **4** are pure helpers left to the original code
   (`d3d::abi::NATIVE`).
-- `d3d::register` installs **88** overrides in a `runtime::Dispatch`
-  (see "Integration"): **79** implemented and **9** stopping. The extra
-  implemented one is `SetRenderState_PSTextureModes` (`0x3f5cc0`). It is
-  matched by signature and has an adapter, but no code outside the `D3D`
-  section calls it (game code writes the `PSTEXTUREMODES` slot and device
-  `+0x790` itself), so it is not part of the 91-function census.
+- `d3d::register` installs **91** overrides in a `runtime::Dispatch`
+  (see "Integration"): **81** implemented and **10** stopping. Beyond the
+  census:
+  - `SetRenderState_PSTextureModes` (`0x3f5cc0`, implemented). It is
+    matched by signature and has an adapter, but no code outside the
+    `D3D` section calls it (game code writes the `PSTEXTUREMODES` slot and
+    device `+0x790` itself).
+  - The three D3D-internal functions that execute GPIO port I/O
+    (`d3d::abi::PORT_IO`, see "Port I/O guards"): one implemented, two
+    stopping. No game code calls them.
 - Game code also does a lot of D3D's work inline, which no override can
   intercept:
   - it stores into the render-state and texture-state arrays (386 and 432
@@ -98,7 +102,7 @@ overridden; the original runs).
 | `0x3f7230` | `D3DDevice_SetVertexShaderConstant1Fast` | yes | ECX = Register + 96, EDX = pConstantData; ret | 6 / 6 | yes |
 | `0x3f7280` | `D3DDevice_SetVertexShaderConstant4` | yes | ECX = Register + 96, EDX = pConstantData; ret | 2 / 2 | yes |
 | `0x3f7330` | `D3DDevice_SetVertexShaderConstantNotInlineFast` | yes | ECX = Register + 96, EDX = pConstantData, [esp+4] = DWORD count (pushed in batches of 16, may end mid-register); ret 4 | 30 / 24 | yes |
-| `0x3f7410` | `D3DDevice_SetVertexShaderConstantNotInline` | yes | register (unrecovered) | 1 / 1 | stop |
+| `0x3f7410` | `D3DDevice_SetVertexShaderConstantNotInline` | yes | EBX = Register + 96, EDX = pConstantData, EAX = DWORD count; ret | 1 / 1 | yes |
 | `0x3f7440` | `D3DDevice_SetVertexShaderInput` | yes | stdcall(Handle, StreamCount, pStreamInputs); ret 0xC | 2 / 1 | yes |
 | `0x3f77c0` | `D3DDevice_Reset` | yes | EBX = pPresentationParameters | 1 / 1 | stop |
 | `0x3f7870` | `D3DDevice_SetRenderTarget` | yes | stdcall(pRenderTarget, pNewZStencil); ret 8 | 1 / 1 | yes |
@@ -111,7 +115,7 @@ overridden; the original runs).
 | `0x3f8760` | `D3DDevice_SetScissors` | yes | stdcall(Count, Exclusive, pRects); ret 0xC | 3 / 3 | yes |
 | `0x3f8ad0` | `D3DDevice_PersistDisplay` | yes | no args; returns EAX = HRESULT | 1 / 1 | yes |
 | `0x3f8c70` | `D3D display/flicker filter (0x3f8c70)` | no | ESI = filter | 1 / 1 | yes |
-| `0x3f8cc0` | `D3D gamma/display ramp (0x3f8cc0)` | no | stdcall 1 arg, copies 32 dwords to device+0x197C, pushes method 0x1480; ret 4 | 9 / 9 | yes |
+| `0x3f8cc0` | `D3DDevice_SetStipple` | no | stdcall(pPattern), copies 32 dwords to device+0x197C, pushes method 0x1480; ret 4 | 9 / 9 | yes |
 | `0x3f9d00` | `D3DDevice_Swap` | yes | EAX = Flags (0 = COPY \| FINISH); returns EAX = swap count; ret | 2 / 2 | yes |
 | `0x3f9df0` | `D3DDevice_SetBackBufferScale` | yes | stdcall(x, y); ret 8 | 2 / 1 | yes |
 | `0x3f9fc0` | `D3DDevice_Clear` | yes | stdcall(Count, pRects, Flags, Color, Z, Stencil); ret 0x18 | 7 / 7 | yes |
@@ -134,7 +138,7 @@ overridden; the original runs).
 | `0x3fb520` | `D3D_DestroyResource` | yes | register (unrecovered) | 1 / 1 | stop |
 | `0x3fb600` | `D3DResource_AddRef` | yes | stdcall(this); returns EAX = new count; ret 4 | 6 / 3 | yes |
 | `0x3fb640` | `D3DResource_Release` | yes | stdcall(this); returns EAX = new count; ret 4 | 14 / 7 | yes |
-| `0x3fb710` | `D3D surface helper (0x3fb710)` | no | ECX = resource; returns EAX = busy (0/1) | 7 / 5 | yes |
+| `0x3fb710` | `D3DResource_IsBusy (0x3fb710)` | no | ECX = resource; returns EAX = busy (0/1) | 7 / 5 | yes |
 | `0x3fb7a0` | `D3D surface-object allocator (0x3fb7a0)` | no | EAX = data, EDI = parent, 2 stack args; ret 8 | 2 / 1 | native |
 | `0x3fc530` | `D3D device teardown (0x3fc530)` | no | EAX = device; ret | 2 / 2 | yes |
 | `0x3fdb20` | `Get2DSurfaceDesc` | yes | EDI = container, EBX = level, ESI = out desc | 4 / 4 | native |
@@ -186,6 +190,10 @@ Notes on the table:
 - **Vertex-shader constants.** `Constant1` and `Constant4` also update the
   guest shadow at `0x00407738`; `Constant1Fast` and `NotInlineFast` only
   push. `NotInlineFast` takes a DWORD count, not a register count.
+  `NotInline` (`0x3f7410`, one caller at `0x40d01`: 20 dwords for register
+  81) copies the dwords into the shadow at `0x407738 + 16 * EBX` unless
+  device flag `0x10` is set (`0x3f7410..0x3f742a`), then tail-calls
+  `NotInlineFast`.
 - **`SetPixelShader`**, as compiled, stores the handle at device `+0x784`,
   `PSDEF[8] | PSDEF[9]` at `+0x788`, `PSDEF[59] & 0x100` at `+0x78C` and
   `PSDEF[54]` (PSTextureModes) at `+0x790`. Unless device flag `0x10` is
@@ -210,11 +218,22 @@ Notes on the table:
   swap the image is in back0, which the title keeps drawing into: the
   device copies back0 to the front before the first write into it (as the
   hardware's copy would have), so a later PersistDisplay still gets the
-  image shown, and a frame nothing draws over costs no copy. `0x3f8cc0`
-  copies the ramp and pushes it. `0x3fb710` is the busy check: busy while
-  the resource, or its parent texture, holds an internal reference;
-  otherwise not busy (the host GPU is synchronous), and the `Lock` word is
-  cleared as the original does at `0x3fb78d`.
+  image shown, and a frame nothing draws over costs no copy.
+- **`SetStipple`** (`0x3f8cc0`). Method `0x1480` is
+  `NV097_SET_STIPPLE_PATTERN`, 32 rows of a 32x32 polygon-stipple mask,
+  not a gamma ramp. All nine of Halo's calls (`0x2dd86`, `0x2df56`,
+  `0x3531c`, `0x445f8`, ...) pass the result of `0x1c290`: one of 17
+  dither patterns from the table at `0x487288`, chosen from an opacity
+  (screen-door fades). Stippling is
+  switched on with `D3DRS_STIPPLEENABLE` (`SET_STIPPLE_CONTROL`, `0x147C`).
+  The entry copies the pattern to device `+0x197C` (unless flag `0x10`)
+  and pushes it; the drain records it in `HwState::stipple_pattern`
+  (`Device::stipple_pattern`, also in every `ResolvedDraw::hw`). Nothing
+  applies it yet: a backend would mask rasterised pixels with it while
+  `STIPPLEENABLE` is set. It has no place at present time.
+- **`D3DResource_IsBusy`** (`0x3fb710`, called from `0x1db90`/`0x1de50`
+  among others while render resources are set up). See "GPU model:
+  fences and the busy check".
 - **Native helpers** (`d3d::abi::NATIVE`). `0x3fdbc0`, `0x3fde00` and
   `0x3fb7a0` compute surface/texture headers from their arguments and the
   read-only format table at `0x00403A50` (plus `XMemAlloc` and the
@@ -264,7 +283,7 @@ Device fields with evidence (offsets into the device object):
 | `+0xC60` / `+0xCA0` | transforms (10 matrices) / projection | CreateDevice, SetTransform |
 | `+0xEF8` / `+0xEFC` | screen offsets (0.53125) | CreateDevice |
 | `+0x196C` | multisample type (0 stored as `0x11`) | CreateDevice; read by Get2DSurfaceDesc |
-| `+0x197C` | 32-dword ramp copied by `0x3f8cc0` | `0x3f8cc0` |
+| `+0x197C` | 32-dword stipple pattern copied by `SetStipple` (`0x3f8cc0`) | `0x3f8cc0` |
 | `+0x1C08` / `+0x1C10` / `+0x1C18` | depth-clip shadow (fixed function / program) and game-owned flags | `0x3f6190` |
 | `+0x1DB8` | vertical-blank callback | game stores it at `0x12b093` |
 | `+0x1A04` / `+0x1A08` | render target / depth surface | SetRenderTarget, game reads |
@@ -351,11 +370,11 @@ inline, with site/function counts:
 | `0x1900` / `0x1940 + 4r` | `VERTEX_DATA2S` / `VERTEX_DATA4UB` | about 17 | yes |
 | `0x1518` | `VERTEX4F` (position) | 8 / 3 | yes |
 | `0x030C`, `0x1D78` | state mirrors (also stored in the arrays) | 18 / 18 each | payload applied |
-| `0x0100`, `0x0110` | NOP, WAIT_FOR_IDLE | 1 / 1 | yes |
-| `0x1D8C` | clear values, two words (inline clear) | 1 / 1 | **stops** |
-| `0x1480` | a 32-word block (`0x0001e370`; the same data `0x3f8cc0` copies to device `+0x197C`) | 1 / 1 | yes (register state) |
-| `0x1710` | one word, value 0 | 1 / 1 | **stops** |
-| `0x17C8` | two words (report / pixel-count methods) | 1 / 1 | **stops** |
+| `0x0100`, `0x0110` | NO_OPERATION (with a software method, see below), WAIT_FOR_IDLE | 1 / 1 | yes |
+| `0x1D8C` | `SET_ZSTENCIL_CLEAR_VALUE`/`SET_COLOR_CLEAR_VALUE`, two words: an inlined `InsertCallback` at `0x0002460e` (function `0x24970`, context), then NO_OPERATION 7 | 1 / 1 | yes (push callback) |
+| `0x1480` | `SET_STIPPLE_PATTERN`, 32 words (`0x0001e4ae`, in `0x0001e370`; what `SetStipple` pushes) | 1 / 1 | yes (register state) |
+| `0x1710` | `BREAK_VERTEX_BUFFER_CACHE`, value 0 (`0x00043a1a`) | 1 / 1 | yes (no-op: vertices are read at every draw) |
+| `0x17C8` | `CLEAR_REPORT_VALUE`/`SET_ZPASS_PIXEL_COUNT_ENABLE` (an inlined `BeginVisibilityTest`, `0x00020cec`) | 1 / 1 | **stops** |
 
 An earlier version of this table also listed `0x0A20` and a 1800-word
 `0x1A20`, both at `0x00052b89`. Those are not push-buffer headers: they are
@@ -444,7 +463,10 @@ snapshot of both arrays:
   the image's encode table inverted, plus `0x030C` (depth-test enable),
   which Halo's inlined ZEnable pushes with the new `D3DRS_ZENABLE` (slot
   143) value at 19 sites (`0x1eb66`, ...). A method several slots share
-  (`0x1D90`) is not invertible and is rejected, as is any other method;
+  is not invertible. The only one is `0x1D90`, the placeholder of the
+  unused slots; it is `SET_COLOR_CLEAR_VALUE`, so it lands in the register
+  state as on the hardware and changes no render state. Any other
+  unknown method is rejected;
 - queued inline draws are drained against the snapshot.
 
 ### Bounds
@@ -627,6 +649,9 @@ let runtime = runtime::Runtime::new(guest, dispatch);
      HleStop text, backtrace: ctx.backtrace(entry) }`, so
      `ExecCtx::report` shows it like any other stop. `register_with` takes
      a different hook.
+   - Before the adapter runs, the handler drains the push buffer up to
+     the next push-buffer callback and, if there is one, calls it and
+     enters the entry again (see "Push-buffer callbacks").
    - `abi::NATIVE` addresses get no override.
    `tests/registration.rs` runs Halo's boot device sequence through
    `runtime::Runner` with these overrides.
@@ -703,7 +728,22 @@ The drain applies these register methods to `d3d::hw::HwState`
   words, through the hardware cursors (`0x1E9C`/`0x1EA4`);
 - `0x1E94`/`0x1E98` execution mode and context write enable;
 - `0x1EA0` program start;
-- `0x1480` the 32-word block.
+- `0x147C`/`0x1480` stipple control and pattern;
+- `0x1710` vertex-cache break (no effect);
+- `0x1D8C`/`0x1D90` the clear values, which are also the operands of
+  software methods.
+
+`NO_OPERATION` (`0x0100`) with a non-zero parameter is a software method:
+the GPU interrupts and D3D's handler (`0x3ff240`) dispatches on the low
+five bits through the table at `0x3ff454`. The drain handles:
+
+- 6 and 7, a callback (`0x3ff3c5`: `function(context)`, cdecl, with the
+  two clear values as operands). See "Push-buffer callbacks".
+- 11, which does nothing in the original either.
+
+The others (flip bookkeeping, events, register writes) only come from
+D3D's own code, which the overrides replace; they stop with a named
+error.
 
 ## Vertical blank
 
@@ -765,6 +805,90 @@ The conventions in `abi.rs` are marked TODO-register. Each one should get a
 differential check, running the original under the interpreter against the
 adapter, at its recorded call sites before it is trusted.
 
+## GPU model: fences and the busy check
+
+The device executes the push buffer synchronously: every entry drains
+what was queued before it does anything else. So the GPU is idle whenever
+guest code can look at it, and its time words say so.
+
+- **Words.** Device `+0x2C` is the GPU time, the stamp D3D puts in a
+  resource's `Lock` word (`+8`) when the GPU last uses it. `[+0x30]` points
+  at the word the GPU writes each completed fence time to (on the Xbox a
+  semaphore release, method `0x1D70`, pushed by `D3D_SetFence`).
+  `D3D_BlockOnTime` (`0x3fa977`) and the busy check (`0x3fb770`) read it.
+- **Here.** CreateDevice points `+0x30` at a word in the scratch range
+  (`GPU_COMPLETED_OFFSET`). `SetFence` drains the queue, bumps the fence
+  and writes it to both words: everything before the fence has executed
+  by the time it is returned. `Device::gpu_completed` is that time.
+  Releasing a binding stamps `Lock` with the current fence.
+- **The busy check** (`0x3fb710`, `D3DResource_IsBusy` inlined; `ECX` =
+  resource, `EAX` = 0 or 1) runs as compiled, after draining the queue
+  and writing render-to-texture targets back:
+  1. Lock bits: busy while the resource holds an internal (binding)
+     reference, `Common & 0x780000`. A surface (`Common & 0x70000 ==
+     0x50000`) with a parent texture (`+0x14`) is busy if either holds
+     one, and the parent is tested from then on.
+  2. Fence: with `Lock` non-zero, busy while `GPU_TIME - Lock < GPU_TIME
+     - completed` (unsigned), i.e. the last use is newer than the last
+     completed fence.
+  3. Otherwise not busy, and the tested resource's `Lock` is cleared
+     (`0x3fb78d`).
+
+  Against this model the fence test only reports busy for a `Lock` newer
+  than every fence the device has issued, which the device never stamps.
+  Halo's own inline wait (`0x1d434`) passes the GPU time to
+  `BlockOnTime`, which returns at once for the same reason.
+
+## Push-buffer callbacks
+
+Halo inlines one `D3DDevice_InsertCallback` (`0x2460e`, in `0x245c0`,
+reached from view rendering through `0x13870`): `SET_ZSTENCIL_CLEAR_VALUE`
+= `0x24970`, `SET_COLOR_CLEAR_VALUE` = a context, `WAIT_FOR_IDLE`, then
+`NO_OPERATION` 7. On the Xbox the GPU interrupts when it reaches the
+method and D3D calls `0x24970(context)` (cdecl). The callback reads a
+render target back, so it must run after the work queued before it and
+before the work queued after it.
+
+- `Device::drain_until_callback` drains up to and including the first
+  callback method and returns it as a `PushCallback` (`function`,
+  `context`, `kind` 6 or 7, `at`).
+- The runtime glue calls it before every entry. With a callback pending it
+  calls the guest function the way D3D's handler does (the argument just
+  below the entry's `ESP`, direction flag clear, through
+  `ExecCtx::call_guest`), then restores every register and jumps to the
+  entry again, which drains on (more callbacks are delivered the same way)
+  and runs (`runtime_glue::deliver_push_callback`).
+- Draining outside the glue (`sync_push_buffer`, for example a test
+  calling the device directly) cannot call the guest: a callback there is
+  a named error that latches the device.
+- A D3D entry called from inside the callback drains past it. Halo's
+  `0x24970` only calls the native helper `0x3fdbc0`.
+
+Tests: `tests/round5.rs` (`through_the_runtime`, with a Rust stand-in for
+`0x24970`).
+
+## Port I/O guards
+
+Three D3D-internal functions execute port I/O on the GPIO port `0x80C0`
+(the encoder's field bit): `out` at `0x3fe131`, `in` at `0x3feb3c` and
+`0x3fee0d`. No game code calls them. They are reached only from the
+original CreateDevice (`0x3fbc10 -> 0x3fe005`), the teardown and Reset
+paths (`0x3fc530`, `0x3f77c0` through `0x3fe4cb`, `0x3fe67f`, `0x3fe86a`),
+and the GPU interrupt service routine and DPC that `0x3fe005` connects.
+All of those are overridden, but the three are overridden too
+(`d3d::abi::PORT_IO`) so generated code can never execute the port
+instructions:
+
+| address | function | override |
+|---|---|---|
+| `0x3fe005` | miniport hardware init (`EAX` = miniport): connects the interrupt (`0x3fe0a4`, ISR `0x3feac0`, DPC `0x3febe0`), maps the NV2A, writes GPIO | stops |
+| `0x3feac0` | GPU interrupt service routine, stdcall `(Interrupt, ServiceContext)`, `ret 8`, `AL` = handled | `AL` = FALSE (the device raises no interrupts; the original's answer when nothing is pending, `0x3febd0`) |
+| `0x3fed90` | vertical-blank service (`EAX` = miniport): field bit, flip, vblank callback; from the DPC and the flip paths | stops (vblanks come from `Device::vblank`, see "Vertical blank") |
+
+The ignored test in `tests/round5.rs` decodes the retail image
+(`$H2_XBE`) to check that each port instruction lies in the function its
+guard overrides, after `mov dx, 80C0h`.
+
 ## Boot path
 
 The original CreateDevice reaches the NV2A through `0x3fbc10 -> 0x3fe005
@@ -794,9 +918,11 @@ listed under "Stops on the way to the menu" below.
 No boot trace exists yet, so this is static. Conditional stops that normal
 view rendering (`0x223240 -> 0x2232a0 -> 0x2c8a0 -> 0x132d0`) can reach:
 
-Of the 18 entries that stopped before, 9 remain (`abi::UNIMPLEMENTED`). The
-fragments, the display entries, `0x3fb710` and Get2DSurfaceDesc are done
-(see the inventory), and so are the cases below:
+Of the 18 entries that stopped before, 8 remain (`abi::UNIMPLEMENTED`).
+The fragments, the display entries, `SetStipple` (`0x3f8cc0`), the busy
+check (`0x3fb710`), `SetVertexShaderConstantNotInline` (`0x3f7410`) and
+Get2DSurfaceDesc are done (see the inventory), and so are the cases
+below:
 
 - **Viewport.** `0x14bc0` selects a render target by index and calls
   SetViewport with its extents. A smaller viewport (split screen,
@@ -814,15 +940,33 @@ fragments, the display entries, `0x3fb710` and Get2DSurfaceDesc are done
   `0x41cc0`, `0x44370`) are covered the same way.
 - **Frame wait.** `0x12b2e0` spins forever without vblanks (see "Vertical
   blank").
+- **Inline methods.** The view-rendering paths push the stipple pattern
+  (`0x1e4ae`), an `InsertCallback` (`0x2460e`, see "Push-buffer
+  callbacks") and the vertex-cache break (`0x43a1a`); all three drain now.
+  The inline `BeginVisibilityTest` (`0x17C8`, `0x20cec`) still stops, with
+  the visibility entries below.
 
-The 9 that still stop, and where the menu path reaches them:
+The 8 that still stop, and where the menu path reaches them:
 
-- `0x3f7410` `SetVertexShaderConstantNotInline` (1 caller).
 - `0x3f77c0` Reset. It is reached only if the game's device pointer is
   still set at `0x128c0`; it is not, after boot step 1.
 - `0x3f7b30`, the SetRenderTarget variant (1 caller).
 - `0x3f85d0` / `0x3f8630`: visibility tests (occlusion queries).
-- `0x3fae10`, the inline UP draw (1 caller).
+  `EndVisibilityTest` (`EAX` = index; `ret`) stamps a 16-byte report slot
+  (pages at device `+0x7D4`) with the GPU time and pushes
+  `SET_ZPASS_PIXEL_COUNT_ENABLE` 0 and `GET_REPORT`;
+  `GetVisibilityTestResult` (`EAX` = index, `EDX` = optional 64-bit
+  timestamp out, `[esp+4]` = pixel count out; `ret 4`) returns
+  `D3DERR_TESTINCOMPLETE` (`0x88760828`) until the report is written.
+  Halo divides the count by an expected pixel count (`0x20840`), so a
+  constant answer is wrong somewhere; a faithful one needs counting
+  occlusion queries from gfx, which it does not have yet.
+- `0x3fae10`, the inline UP draw (1 caller, `0x4b24b` in `0x4b220`). It
+  calls `SetStateVB(device, 0)` (`0x401030`, the vertex-array formats and
+  offsets) and reserves space; the caller then pushes `BEGIN_END`, an
+  `INLINE_ARRAY` (`0x1818`, non-incrementing) filled by a callback, and
+  `END`. Needs `SetStateVB` and inline arrays decoded with the current
+  vertex-array formats.
 - `0x3fb520` `D3D_DestroyResource` (1 caller).
 - `0x3ff5c6`, the miniport (1 caller).
 - `0x401030` `CDevice_SetStateVB` (1 caller).

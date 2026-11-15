@@ -18,6 +18,8 @@
 //! * every implemented entry in [`abi::entries`];
 //! * every entry in [`abi::UNIMPLEMENTED`]: calling one stops the guest
 //!   with a named error rather than running into the NV2A;
+//! * the D3D-internal functions that execute GPIO port I/O
+//!   ([`abi::PORT_IO`]), so generated code never runs those instructions;
 //! * not [`abi::NATIVE`]: pure helpers whose original code is safe to run.
 //!
 //! Each handler copies `CpuAbi` into [`Regs`], runs the adapter against the
@@ -168,7 +170,7 @@ where
     let mut out = Registration::default();
     for e in abi::entries::<B>() {
         let (addr, name) = (e.addr, e.name);
-        if abi::UNIMPLEMENTED.iter().any(|u| u.0 == addr) {
+        if abi::stops(addr) {
             out.stopping.push((addr, name));
         } else {
             out.implemented.push((addr, name));
@@ -178,43 +180,60 @@ where
         let hook = on_stop.clone();
         let _ = dispatch.register_override(addr, name, move |cpu, ctx, _selector| {
             let regs = regs(cpu);
-            let error = {
+            let (result, fault) = {
                 let mut guest = ctx.memory();
                 let mut mem = GuestAdapter::new(&mut guest);
-                let result = h(&regs, &mut mem);
-                let fault = mem.take_fault();
-                match result {
-                    Ok(o) => {
-                        apply(cpu, o);
-                        let pending = dev
-                            .lock()
-                            .map(|mut d| d.take_pending_vblanks())
-                            .unwrap_or_default();
-                        if pending.is_empty() {
-                            return guest.ret(cpu, o.cleanup);
-                        }
-                        // Vblanks counted by Swap: run the callback for each
-                        // before returning to the caller (crate::vblank).
-                        let ret = guest.ret(cpu, o.cleanup)?;
+                // Push-buffer callbacks queued before this call run first,
+                // where the GPU would have run them; the entry itself runs
+                // again afterwards (see `deliver_push_callback`).
+                let pending = match dev.lock() {
+                    Ok(mut d) => d.drain_until_callback(&mut mem),
+                    Err(_) => Err(D3dError::Faulted(
+                        "D3D device mutex poisoned by an earlier panic".into(),
+                    )),
+                };
+                match pending {
+                    Ok(Some(cb)) => {
                         drop(guest);
-                        let saved = *cpu;
-                        return crate::vblank::deliver_then_return(
-                            cpu,
-                            ctx,
-                            pending.into(),
-                            saved,
-                            ret.target_pc,
-                        );
+                        return deliver_push_callback(cpu, ctx, cb, addr);
                     }
-                    // A guest access failed, directly or while draining
-                    // the push buffer: the runtime's own fault.
-                    Err(D3dError::Guest(_) | D3dError::Push(PushError::Guest(_)))
-                        if fault.is_some() =>
-                    {
-                        return Err(fault.expect("checked"));
+                    Ok(None) => {
+                        let result = h(&regs, &mut mem);
+                        (result, mem.take_fault())
                     }
-                    Err(e) => e,
+                    Err(e) => (Err(e), mem.take_fault()),
                 }
+            };
+            let error = match (result, fault) {
+                (Ok(o), _) => {
+                    apply(cpu, o);
+                    let pending = dev
+                        .lock()
+                        .map(|mut d| d.take_pending_vblanks())
+                        .unwrap_or_default();
+                    let guest = ctx.memory();
+                    if pending.is_empty() {
+                        return guest.ret(cpu, o.cleanup);
+                    }
+                    // Vblanks counted by Swap: run the callback for each
+                    // before returning to the caller (crate::vblank).
+                    let ret = guest.ret(cpu, o.cleanup)?;
+                    drop(guest);
+                    let saved = *cpu;
+                    return crate::vblank::deliver_then_return(
+                        cpu,
+                        ctx,
+                        pending.into(),
+                        saved,
+                        ret.target_pc,
+                    );
+                }
+                // A guest access failed, directly or while draining the
+                // push buffer: the runtime's own fault.
+                (Err(D3dError::Guest(_) | D3dError::Push(PushError::Guest(_))), Some(fault)) => {
+                    return Err(fault);
+                }
+                (Err(e), _) => e,
             };
             let detail = error.to_string();
             if let Ok(mut d) = dev.lock() {
@@ -238,6 +257,35 @@ where
     }
     out.native = abi::NATIVE.iter().map(|n| (n.0, n.1)).collect();
     out
+}
+
+/// Calls a push-buffer callback ([`crate::device::PushCallback`]) the way
+/// D3D's interrupt handler does (`0x3ff3c5`: `function(context)`, cdecl),
+/// then enters `entry` again with every register as it was, so the entry
+/// drains the rest of the queue and runs.
+///
+/// The argument goes just below the entry's `ESP` (above it are the
+/// caller's return address and arguments, untouched) and the callback
+/// starts with the direction flag clear.
+pub fn deliver_push_callback(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    cb: crate::device::PushCallback,
+    entry: u32,
+) -> Result<TransferAbi, GuestFault> {
+    const DIRECTION_FLAG: u32 = 1 << 10;
+    let saved = *cpu;
+    let runtime = Arc::clone(ctx.runtime());
+    let mut guest = runtime.memory();
+    let esp = saved.esp.wrapping_sub(4);
+    guest.set_u32(esp, cb.context)?;
+    cpu.esp = esp;
+    cpu.eflags &= !DIRECTION_FLAG;
+    ctx.call_guest(cpu, &mut guest, cb.function, move |cpu, _ctx| {
+        // cdecl: the callback leaves its argument; the restore drops it.
+        *cpu = saved;
+        Ok(TransferAbi::jump(entry))
+    })
 }
 
 fn regs(cpu: &CpuAbi) -> Regs {

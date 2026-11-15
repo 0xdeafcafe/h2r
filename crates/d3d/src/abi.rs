@@ -150,11 +150,6 @@ render_state_setters! {
 /// Entry points reached from game code that are not implemented: calling
 /// one stops with `D3dError::Unimplemented`.
 pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
-    (
-        0x3f7410,
-        "D3DDevice_SetVertexShaderConstantNotInline",
-        "register (unrecovered)",
-    ),
     (0x3f77c0, "D3DDevice_Reset", "EBX = pPresentationParameters"),
     (
         0x3f7b30,
@@ -180,6 +175,52 @@ pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
         "stdcall(device, base); ret 8",
     ),
 ];
+
+/// D3D-internal functions that execute port I/O: `in al, dx` / `out dx, al`
+/// on the GPIO port `0x80C0` (the field/encoder bit) at `0x3fe131`,
+/// `0x3feb3c` and `0x3fee0d`. No game code calls them. Their only ways in
+/// are the original CreateDevice (`0x3fbc10`), the teardown and Reset paths
+/// (`0x3fc530`, `0x3f77c0`), and the GPU interrupt service routine and DPC
+/// that `0x3fe005` connects, all of which the overrides replace. They are
+/// overridden anyway, so generated code never executes the port
+/// instructions, even through a stray call.
+///
+/// * `0x3fe005`: the miniport hardware bring-up (from `0x3fbc8f` under
+///   `0x3fbc10`): connects the interrupt (`KeInitializeInterrupt` with the
+///   ISR `0x3feac0`, DPC `0x3febe0`), maps the NV2A and writes GPIO.
+///   Stops: the device is created by [`crate::Device::create_device`].
+/// * `0x3feac0`: the GPU interrupt service routine, stdcall `(Interrupt,
+///   ServiceContext)`, `ret 8`, `AL` = handled. Implemented: the device
+///   raises no interrupts, so it is never this device's interrupt (`AL` =
+///   FALSE, the original's return when nothing is pending, `0x3febd0`).
+/// * `0x3fed90`: the vertical-blank service (`EAX` = miniport), from the
+///   DPC and the flip paths: reads the field bit, flips, calls the vblank
+///   callback. Stops: vblanks come from [`crate::Device::vblank`] and
+///   [`crate::vblank`].
+pub const PORT_IO: &[(u32, &str, &str)] = &[
+    (
+        0x3fe005,
+        "D3D miniport hardware init (0x3fe005)",
+        "EAX = miniport; returns EAX = success",
+    ),
+    (
+        0x3feac0,
+        "D3D GPU interrupt service routine (0x3feac0)",
+        "stdcall(Interrupt, ServiceContext); returns AL = handled; ret 8",
+    ),
+    (
+        0x3fed90,
+        "D3D miniport vertical-blank service (0x3fed90)",
+        "EAX = miniport; returns EAX",
+    ),
+];
+
+/// Overrides that always stop: [`UNIMPLEMENTED`] plus the port-I/O
+/// functions in [`PORT_IO`] that have no meaning without the original
+/// device.
+pub fn stops(addr: u32) -> bool {
+    UNIMPLEMENTED.iter().any(|u| u.0 == addr) || matches!(addr, 0x3fe005 | 0x3fed90)
+}
 
 /// D3D-section functions game code calls that are deliberately not
 /// overridden: they only compute from their arguments and read-only D3D
@@ -255,6 +296,20 @@ mod tss {
     pub const TEXCOORDINDEX: u32 = 28;
     pub const BORDERCOLOR: u32 = 29;
     pub const COLORKEYCOLOR: u32 = 30;
+}
+
+fn port_io_stop<B: Backend>(
+    _: &mut Device<B>,
+    _: &mut dyn GuestMemory,
+    r: &Regs,
+) -> Result<Outcome, D3dError> {
+    Err(D3dError::Unimplemented {
+        entry: "D3D entry",
+        detail: format!(
+            "reached with EAX={:#x}: only the original device bring-up, interrupt and teardown paths call it, and the device replaces them (it would run GPIO port I/O on 0x80C0)",
+            r.eax
+        ),
+    })
 }
 
 fn unimplemented<B: Backend>(
@@ -405,6 +460,15 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
                 let a = args::<1>(m, r)?;
                 d.set_vertex_shader_constant_dwords(m, r.ecx, r.edx, a[0])?;
                 Ok(Outcome::pop(4))
+            },
+        },
+        Entry {
+            addr: 0x3f7410,
+            name: "D3DDevice_SetVertexShaderConstantNotInline",
+            convention: "EBX = Register + 96, EDX = pConstantData, EAX = DWORD count; shadows at 0x407738 unless device flag 0x10, then NotInlineFast; ret",
+            call: |d, m, r| {
+                d.set_vertex_shader_constant_not_inline(m, r.ebx, r.edx, r.eax)?;
+                Ok(Outcome::pop(0))
             },
         },
         Entry {
@@ -729,17 +793,17 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
         },
         Entry {
             addr: 0x3f8cc0,
-            name: "D3D gamma/display ramp (0x3f8cc0)",
-            convention: "stdcall(pBlock): 32 dwords to device +0x197C and method 0x1480; ret 4",
+            name: "D3DDevice_SetStipple",
+            convention: "stdcall(pPattern): 32 dwords to device +0x197C and method 0x1480; ret 4",
             call: |d, m, r| {
                 let a = args::<1>(m, r)?;
-                d.set_ramp_block(m, a[0])?;
+                d.set_stipple(m, a[0])?;
                 Ok(Outcome::pop(4))
             },
         },
         Entry {
             addr: 0x3fb710,
-            name: "D3D surface helper (0x3fb710)",
+            name: "D3DResource_IsBusy (0x3fb710)",
             convention: "ECX = resource; returns EAX = busy (0/1); ret",
             call: |d, m, r| Ok(Outcome::eax(d.resource_busy(m, r.ecx)?, 0)),
         },
@@ -760,6 +824,19 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             name,
             convention,
             call: unimplemented::<B>,
+        });
+    }
+    for &(addr, name, convention) in PORT_IO {
+        v.push(Entry {
+            addr,
+            name,
+            convention,
+            call: if stops(addr) {
+                port_io_stop::<B>
+            } else {
+                // 0x3feac0: not this device's interrupt (AL = FALSE).
+                |_, _, r| Ok(Outcome::eax(r.eax & !0xFF, 8))
+            },
         });
     }
     v.sort_by_key(|e| e.addr);
@@ -845,13 +922,16 @@ mod tests {
         }
         // Every D3D-section function reached from game code has an entry or
         // is deliberately left native (plus SetRenderState_PSTextureModes,
-        // matched but not called).
+        // matched but not called, and the port-I/O guards).
         for a in REACHED {
             let entry = v.iter().any(|e| e.addr == *a);
             let native = NATIVE.iter().any(|n| n.0 == *a);
             assert!(entry != native, "{a:#x}: entry {entry}, native {native}");
         }
-        assert_eq!(v.len() + NATIVE.len(), REACHED.len() + 1);
+        for p in PORT_IO {
+            assert!(!REACHED.contains(&p.0) && v.iter().any(|e| e.addr == p.0));
+        }
+        assert_eq!(v.len() + NATIVE.len(), REACHED.len() + 1 + PORT_IO.len());
     }
 
     #[test]

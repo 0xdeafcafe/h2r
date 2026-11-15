@@ -445,11 +445,11 @@ fn doc_inline_method_table_has_no_psdef_stores() {
     push_words(&mut m, &[(1 << 18) | 0x0A20, 2.0f32.to_bits()]);
     d.commit(&mut m).unwrap();
     assert_eq!(d.hw().viewport_offset[0], 2.0);
-    push_words(&mut m, &[(1 << 18) | 0x1D8C, 0]);
+    push_words(&mut m, &[(1 << 18) | 0x1D70, 0]);
     assert!(matches!(
         d.commit(&mut m),
         Err(D3dError::Push(PushError::UnknownMethod {
-            method: 0x1D8C,
+            method: 0x1D70,
             ..
         }))
     ));

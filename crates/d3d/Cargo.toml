@@ -18,3 +18,5 @@ pollster = "1"
 # The windowed example (examples/window.rs) presents through the host shell.
 app = { path = "../app" }
 anyhow.workspace = true
+# Decoding the retail image in the ignored $H2_XBE tests.
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

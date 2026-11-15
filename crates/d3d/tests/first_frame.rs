@@ -274,12 +274,12 @@ fn unsupported_paths_stop_with_clear_errors() {
     // An NV2A method the device does not know, written inline.
     let dev = d3d::GuestLayout::HALO2.device;
     let put = m.read_u32(dev).unwrap();
-    m.write_u32(put, (1 << 18) | 0x1710).unwrap();
+    m.write_u32(put, (1 << 18) | 0x1D70).unwrap();
     m.write_u32(put + 4, 0).unwrap();
     m.write_u32(dev, put + 8).unwrap();
     let e = d.commit(&mut m).unwrap_err();
     assert!(
-        e.to_string().contains("unimplemented NV2A method 0x1710"),
+        e.to_string().contains("unimplemented NV2A method 0x1d70"),
         "{e}"
     );
 

@@ -78,6 +78,12 @@ pub mod device_field {
     pub const BASE_VERTEX: u32 = 0x1C;
     /// GPU time stamp used as the "last used" tag in resource `Lock` words.
     pub const GPU_TIME: u32 = 0x2C;
+    /// Pointer to the word the GPU writes each completed fence time to (a
+    /// semaphore release, method `0x1D70`, that `D3D_SetFence` pushes). D3D
+    /// compares against `[[+0x30]]` in `D3D_BlockOnTime` (`0x3fa977`) and
+    /// the busy check (`0x3fb770`). CreateDevice points it at a word in the
+    /// device's scratch range.
+    pub const GPU_COMPLETED: u32 = 0x30;
     /// Current vertex shader object (`+4` flags, `+0x14` attribute formats).
     pub const VERTEX_SHADER: u32 = 0x794;
     /// Mirror of `PSTEXTUREMODES` written by game code alongside the array.
@@ -147,8 +153,9 @@ pub mod device_field {
     pub const SCREEN_OFFSET_Y: u32 = 0xEFC;
     /// Multisample type of the back buffer (`0x3fc9e6`; 0 is stored as 0x11).
     pub const MULTISAMPLE_TYPE: u32 = 0x196C;
-    /// 32-dword copy of the `0x3f8cc0` block.
-    pub const RAMP: u32 = 0x197C;
+    /// The stipple pattern `SetStipple` (`0x3f8cc0`) last set, 32 dwords
+    /// (kept so D3D can push it again).
+    pub const STIPPLE: u32 = 0x197C;
     /// Depth clip range: fixed-function `{min, max}` at `+0x1C08`,
     /// programmable `{min, max}` at `+0x1C10`.
     pub const CLIP_FIXED: u32 = 0x1C08;

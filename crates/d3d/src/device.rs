@@ -78,6 +78,10 @@ pub struct GuestRange {
 pub const PUSH_MARGIN: u32 = 0x4000;
 /// Scratch bytes the device needs for headers it creates.
 pub const SCRATCH_BYTES: u32 = 0x100;
+/// Offset in the scratch range of the GPU completion word device `+0x30`
+/// points at ([`Device::gpu_completed`]), after the back and depth headers.
+pub const GPU_COMPLETED_OFFSET: u32 = 2 * SurfaceHeader::SIZE;
+const _: () = assert!(GPU_COMPLETED_OFFSET + 4 <= SCRATCH_BYTES);
 /// Most vertices one draw may use (the NV2A index range is 2^20).
 pub const MAX_VERTICES: u32 = 1 << 20;
 /// Most bytes the device reads from guest memory for one stream or index
@@ -270,6 +274,28 @@ pub struct Stats {
     pub rtt_uploads: u64,
     /// Vertical blanks counted ([`Device::vblank`]).
     pub vblanks: u64,
+    /// Push-buffer callbacks handed out for delivery
+    /// ([`Device::drain_until_callback`]).
+    pub push_callbacks: u64,
+}
+
+/// A guest callback the push buffer asks for: `NV097_NO_OPERATION` with
+/// software method 6 or 7 (`D3DDevice_InsertCallback`, inlined at
+/// `0x2460e`). On the Xbox the GPU raises an interrupt when it reaches the
+/// method and D3D's handler (`0x3ff3c5`) calls `function(context)`, cdecl,
+/// with the two operands it loaded into `SET_ZSTENCIL_CLEAR_VALUE` and
+/// `SET_COLOR_CLEAR_VALUE`. Everything pushed before it has executed by
+/// then, and nothing after it has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PushCallback {
+    /// Guest function (`0x1D8C`).
+    pub function: u32,
+    /// Its one argument (`0x1D90`).
+    pub context: u32,
+    /// Software method: 6 (`D3DCALLBACK_READ`) or 7 (`D3DCALLBACK_WRITE`).
+    pub kind: u32,
+    /// Address of the `NO_OPERATION` header.
+    pub at: u32,
 }
 
 /// Cache key: texture header plus, for P8 textures, the palette header
@@ -674,6 +700,11 @@ impl<B: Backend> Device<B> {
         mem.write_u32(dev + field::BACK_BUFFER, self.back_header)?;
         mem.write_u32(dev + field::DISPLAY_SURFACE, self.back_header)?;
         mem.write_u32(dev + field::SWAP_COUNT, 0)?;
+        // The GPU's completion word: every fence handed out has passed.
+        let completed = at(scratch, GPU_COMPLETED_OFFSET as u64)?;
+        mem.write_u32(completed, self.fence)?;
+        mem.write_u32(dev + field::GPU_COMPLETED, completed)?;
+        mem.write_u32(dev + field::GPU_TIME, self.fence)?;
         mem.write_u32(l.p_device, dev)?;
         mem.write_u32(l.dirty_flags, 0)?;
         let defaults = StateWords::defaults(p.enable_auto_depth_stencil);
@@ -873,8 +904,8 @@ impl<B: Backend> Device<B> {
         if let Some(f) = &self.fault {
             return Err(D3dError::Faulted(f.clone()));
         }
-        match self.drain(mem) {
-            Ok(()) => Ok(()),
+        match self.drain(mem, false) {
+            Ok(_) => Ok(()),
             Err(e) => {
                 self.fault = Some(format!(
                     "{e} (push-buffer command at {:#010x})",
@@ -895,12 +926,83 @@ impl<B: Backend> Device<B> {
         self.fault.as_deref()
     }
 
-    fn drain(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+    /// Like [`Device::sync_push_buffer`], but stops right after a
+    /// push-buffer callback ([`PushCallback`]) and returns it: the caller
+    /// runs the guest function, then calls this again to go on. The runtime
+    /// glue does this before every entry, so a callback runs exactly where
+    /// the GPU would have called it, after the work queued before it and
+    /// before the work queued after it.
+    pub fn drain_until_callback(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+    ) -> Result<Option<PushCallback>, D3dError> {
+        if !self.created {
+            return Ok(None);
+        }
+        if let Some(f) = &self.fault {
+            return Err(D3dError::Faulted(f.clone()));
+        }
+        match self.drain(mem, true) {
+            Ok(cb) => {
+                if cb.is_some() {
+                    self.stats.push_callbacks += 1;
+                }
+                Ok(cb)
+            }
+            Err(e) => {
+                self.fault = Some(format!(
+                    "{e} (push-buffer command at {:#010x})",
+                    self.consumed
+                ));
+                Err(e)
+            }
+        }
+    }
+
+    /// `NV097_NO_OPERATION` with a non-zero parameter: on the Xbox the GPU
+    /// interrupts and D3D's handler (`0x3ff240`) dispatches on the low five
+    /// bits through the table at `0x3ff454`. The operands are the two clear
+    /// values. Returns the callback for 6 and 7; 11 does nothing in the
+    /// original either. The others drive the swap queue, events and
+    /// register writes, which only D3D's own (overridden) code pushes.
+    fn software_method(&self, at: u32, data: u32) -> Result<Option<PushCallback>, D3dError> {
+        match data & 0x1F {
+            6 | 7 => {
+                let function = self.hw.zstencil_clear_value;
+                if function == 0 {
+                    return Err(D3dError::invalid(
+                        "push buffer",
+                        format!("callback at {at:#010x} with no function"),
+                    ));
+                }
+                Ok(Some(PushCallback {
+                    function,
+                    context: self.hw.color_clear_value,
+                    kind: data & 0x1F,
+                    at,
+                }))
+            }
+            11 => Ok(None),
+            op => Err(D3dError::unimplemented(
+                "push buffer",
+                format!("software method {op} (NO_OPERATION {data:#x} at {at:#010x})"),
+            )),
+        }
+    }
+
+    /// Executes queued words. With `stop_at_callback`, returns after the
+    /// first push-buffer callback; without, a callback is an error (nothing
+    /// could deliver it) and is left unconsumed.
+    fn drain(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        stop_at_callback: bool,
+    ) -> Result<Option<PushCallback>, D3dError> {
         let pb = self.cfg.push_buffer;
         let end = pb.addr as u64 + pb.len as u64;
         let put = mem.read_u32(self.cfg.layout.device + field::PUT)?;
         if put == self.consumed {
-            return Ok(());
+            return Ok(None);
         }
         if put < self.consumed || put as u64 > end || !(put - self.consumed).is_multiple_of(4) {
             return Err(D3dError::invalid(
@@ -913,9 +1015,32 @@ impl<B: Backend> Device<B> {
         }
         while self.consumed < put {
             let (next, call) = pushbuf::decode_one(mem, self.consumed, put)?;
-            if let Some(c) = call {
-                self.stats.push_words += 1 + c.data.len() as u64;
-                for (m, w) in c.writes() {
+            if let Some(c) = &call {
+                let words = c.data.len();
+                for (i, (m, w)) in c.writes().enumerate() {
+                    if m == pushbuf::method::NOP && w != 0 {
+                        let Some(cb) = self.software_method(c.at, w)? else {
+                            continue;
+                        };
+                        if i + 1 != words {
+                            return Err(D3dError::unimplemented(
+                                "push buffer",
+                                format!("callback at {:#010x} inside a multi-word command", c.at),
+                            ));
+                        }
+                        if !stop_at_callback {
+                            return Err(D3dError::unimplemented(
+                                "push buffer",
+                                format!(
+                                    "callback {:#010x}({:#x}) at {:#010x}: only the runtime glue can call the guest (Device::drain_until_callback)",
+                                    cb.function, cb.context, cb.at
+                                ),
+                            ));
+                        }
+                        self.stats.push_words += 1 + words as u64;
+                        self.consumed = next;
+                        return Ok(Some(cb));
+                    }
                     match self.immediate.apply(c.at, m, w)? {
                         Some(Effect::Draw(d)) => {
                             self.stats.inline_draws += 1;
@@ -955,9 +1080,12 @@ impl<B: Backend> Device<B> {
                 }
             }
             // Consumed only once fully executed.
+            if let Some(c) = &call {
+                self.stats.push_words += 1 + c.data.len() as u64;
+            }
             self.consumed = next;
         }
-        Ok(())
+        Ok(None)
     }
 
     /// `D3D_MakeRequestedSpace` (`0x3faae0`): called by inline writers when
@@ -1003,13 +1131,29 @@ impl<B: Backend> Device<B> {
     }
 
     /// `D3D_SetFence`: the GPU is synchronous here, so every fence has
-    /// passed by the time it is returned.
+    /// passed by the time it is returned. The GPU time (`+0x2C`) and the
+    /// completion word (`[+0x30]`, [`Device::gpu_completed`]) both become
+    /// the new fence.
     pub fn set_fence(&mut self, mem: &mut dyn GuestMemory) -> Result<u32, D3dError> {
         self.live("D3D_SetFence")?;
         self.sync_push_buffer(mem)?;
         self.fence = self.fence.wrapping_add(1);
-        mem.write_u32(self.cfg.layout.device + field::GPU_TIME, self.fence)?;
+        let dev = self.cfg.layout.device;
+        mem.write_u32(dev + field::GPU_TIME, self.fence)?;
+        mem.write_u32(self.gpu_completed_word()?, self.fence)?;
         Ok(self.fence)
+    }
+
+    /// The GPU's completion time: the last fence whose work has executed.
+    /// The device executes the push buffer synchronously at every entry, so
+    /// once the queued words are drained this is the last fence handed out.
+    /// The guest sees it at `[device + 0x30]`.
+    pub fn gpu_completed(&self) -> u32 {
+        self.fence
+    }
+
+    fn gpu_completed_word(&self) -> Result<u32, D3dError> {
+        at(self.cfg.scratch.addr, GPU_COMPLETED_OFFSET as u64)
     }
 
     // ---------------------------------------------------------------------
@@ -1476,6 +1620,25 @@ impl<B: Backend> Device<B> {
             dwords,
             false,
         )
+    }
+
+    /// `SetVertexShaderConstantNotInline` (`0x3f7410`; `EBX` = register +
+    /// 96, `EDX` = data, `EAX` = DWORD count). Unless device flag `0x10` is
+    /// set, it copies the dwords into the guest shadow at `0x407738` (`rep
+    /// movsd` to `0x407738 + 16 * EBX`, `0x3f741b..0x3f742a`), then pushes
+    /// them through `NotInlineFast` (`0x3f7431`). Halo calls it once, at
+    /// `0x40d01`, with 20 dwords for register 81.
+    pub fn set_vertex_shader_constant_not_inline(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        register: u32,
+        data: u32,
+        dwords: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetVertexShaderConstantNotInline";
+        self.live(E)?;
+        let shadow = mem.read_u32(self.cfg.layout.device + field::FLAGS)? & 0x10 == 0;
+        self.constants_dwords(mem, E, register, data, dwords, shadow)
     }
 
     fn constants_dwords(

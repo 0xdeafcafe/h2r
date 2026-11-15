@@ -593,6 +593,7 @@ dependencies = [
  "anyhow",
  "app",
  "gfx",
+ "iced-x86",
  "pollster",
  "runtime",
  "shaders",

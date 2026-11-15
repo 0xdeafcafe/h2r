@@ -415,7 +415,7 @@ fn flicker_filter_updates_the_globals() {
 }
 
 #[test]
-fn ramp_block_is_copied_and_pushed() {
+fn set_stipple_copies_and_pushes_the_pattern() {
     let (mut d, mut m) = rec();
     let block = MISC + 0x6200;
     let words_in: Vec<u32> = (0..32).map(|i| 0x0101_0101 * i).collect();
@@ -427,17 +427,17 @@ fn ramp_block_is_copied_and_pushed() {
     assert_eq!(m.read_u32(at).unwrap(), 0x0080_1480);
     assert_eq!(words(&m, at + 4, 32), words_in);
     assert_eq!(put(&m), at + 33 * 4);
-    assert_eq!(words(&m, DEV + f::RAMP, 32), words_in);
+    assert_eq!(words(&m, DEV + f::STIPPLE, 32), words_in);
     d.commit(&mut m).unwrap();
-    assert_eq!(d.hw().block_1480.to_vec(), words_in);
+    assert_eq!(d.stipple_pattern().to_vec(), words_in);
     // Device flag 0x10: pushed, not copied.
     let flags = m.read_u32(DEV + f::FLAGS).unwrap();
     m.write_u32(DEV + f::FLAGS, flags | 0x10).unwrap();
     m.write_u32(block, 0xFFFF).unwrap();
     call(&mut d, &mut m, 0x3f8cc0, Regs::default(), &[block]).unwrap();
-    assert_eq!(m.read_u32(DEV + f::RAMP).unwrap(), 0);
+    assert_eq!(m.read_u32(DEV + f::STIPPLE).unwrap(), 0);
     d.commit(&mut m).unwrap();
-    assert_eq!(d.hw().block_1480[0], 0xFFFF);
+    assert_eq!(d.stipple_pattern()[0], 0xFFFF);
 }
 
 #[test]

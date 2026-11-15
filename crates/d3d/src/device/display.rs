@@ -1,9 +1,10 @@
 //! Display-side entries and the vertical-blank callback.
 //!
-//! * `0x3f8c70` (flicker filter), `0x3f8cc0` (the 32-word block at
-//!   `0x1480`), `PersistDisplay` (`0x3f8ad0`) and the resource busy check
-//!   `0x3fb710`: their guest-visible effects, without the AV-encoder kernel
-//!   calls (there is no TV encoder; the value is kept on the device).
+//! * `0x3f8c70` (flicker filter), `SetStipple` (`0x3f8cc0`, the polygon
+//!   stipple pattern at method `0x1480`), `PersistDisplay` (`0x3f8ad0`) and
+//!   the resource busy check `0x3fb710`: their guest-visible effects,
+//!   without the AV-encoder kernel calls (there is no TV encoder; the value
+//!   is kept on the device).
 //! * The vertical blank: Halo stores a callback at device `+0x1DB8`
 //!   (`0x12b093`, the inlined `SetVerticalBlankCallback`). On the Xbox the
 //!   GPU interrupt calls it once per vblank with a `D3DVBLANKDATA`
@@ -91,24 +92,29 @@ impl<B: Backend> Device<B> {
         self.display.flicker
     }
 
-    /// `0x3f8cc0` (stdcall `pBlock`, `ret 4`): copies 32 dwords to device
-    /// `+0x197C` unless device flag `0x10`, and pushes them as method
-    /// `0x1480` (`0x801480`, 33 words).
-    pub fn set_ramp_block(
-        &mut self,
-        mem: &mut dyn GuestMemory,
-        block: u32,
-    ) -> Result<(), D3dError> {
-        const E: &str = "D3D gamma/display ramp (0x3f8cc0)";
+    /// `D3DDevice_SetStipple` (`0x3f8cc0`, stdcall `pPattern`, `ret 4`):
+    /// copies 32 dwords to device `+0x197C` unless device flag `0x10`, and
+    /// pushes them as `NV097_SET_STIPPLE_PATTERN` (`0x801480`, 33 words).
+    /// The pattern lands in [`crate::hw::HwState::stipple_pattern`] when the
+    /// push buffer drains ([`Device::stipple_pattern`]).
+    ///
+    /// This is the polygon stipple (a 32x32 screen-door mask applied to
+    /// rasterised pixels while `D3DRS_STIPPLEENABLE` is set), not a gamma
+    /// ramp: all nine of Halo's calls (`0x2dd86`, `0x2df56`, `0x3531c`, ...)
+    /// pass one of 17 dither patterns from `0x487288`, chosen by `0x1c290`
+    /// from an opacity.
+    pub fn set_stipple(&mut self, mem: &mut dyn GuestMemory, pattern: u32) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetStipple";
+        let block = pattern;
         self.live(E)?;
         self.sync_push_buffer(mem)?;
         let dev = self.cfg.layout.device;
         let put = self.reserve(mem)?;
         let words = mem.read_words(block, 32)?;
         if mem.read_u32(dev + field::FLAGS)? & 0x10 == 0 {
-            Self::write_words(mem, dev + field::RAMP, &words)?;
+            Self::write_words(mem, dev + field::STIPPLE, &words)?;
         }
-        let mut out = vec![0x0080_0000 | crate::hw::method::BLOCK_1480];
+        let mut out = vec![0x0080_0000 | crate::hw::method::STIPPLE_PATTERN];
         out.extend_from_slice(&words);
         let pb = self.cfg.push_buffer;
         if put < pb.addr || put as u64 + 4 * out.len() as u64 > pb.addr as u64 + pb.len as u64 {
@@ -187,21 +193,47 @@ impl<B: Backend> Device<B> {
         self.display.persisted
     }
 
-    /// The busy check `0x3fb710` (`ECX` = resource; returns `EAX`). Busy (1)
-    /// while the resource, or for a surface its parent texture, holds an
-    /// internal (binding) reference (`Common & 0x780000`); otherwise the GPU
-    /// time test `GPU_TIME - Lock >= GPU_TIME - completed`
-    /// (`0x3fb770..0x3fb782`). The host GPU is synchronous, so every fence has
-    /// passed: not busy, and like the original the `Lock` word of the
-    /// resource tested (the parent for a surface level) is cleared
-    /// (`0x3fb78d`). Render-to-texture targets are written back first, since
-    /// the caller is about to touch the texels.
+    /// The polygon stipple pattern the push buffer last set
+    /// (`SET_STIPPLE_PATTERN`, from [`Device::set_stipple`] or inline game
+    /// code). Not applied yet: a backend that wants it reads it here or from
+    /// [`crate::backend::ResolvedDraw::hw`], and masks pixels while
+    /// `D3DRS_STIPPLEENABLE` is set.
+    pub fn stipple_pattern(&self) -> &[u32; 32] {
+        &self.hw.stipple_pattern
+    }
+
+    /// `D3DResource_IsBusy`, inlined as `0x3fb710` (`ECX` = resource;
+    /// returns `EAX` = 0 or 1; `ret`). Called before the CPU touches a
+    /// resource, e.g. from `0x1db90`/`0x1de50` while render resources are
+    /// set up. As compiled:
+    ///
+    /// 1. The lock bits. Busy while the resource holds an internal (binding)
+    ///    reference, `Common & 0x780000`. For a surface (`Common & 0x70000
+    ///    == 0x50000`) with a parent texture (`+0x14`), busy if either holds
+    ///    one, and the parent is tested from here on (`0x3fb729..0x3fb743`);
+    ///    a surface whose own parent holds one is busy too (`0x3fb74e`).
+    /// 2. The fence. `Lock` (`+8`) is the GPU time the resource was last
+    ///    used at; 0 means never. With `GPU_TIME = [device + 0x2C]` and
+    ///    `completed = [[device + 0x30]]`, busy while `GPU_TIME - Lock <
+    ///    GPU_TIME - completed` (unsigned, `0x3fb770..0x3fb782`), i.e. the
+    ///    use is newer than the last completed fence.
+    /// 3. Otherwise not busy, and `Lock` of the resource tested (the parent,
+    ///    for a surface level) is cleared (`0x3fb78d`).
+    ///
+    /// The fence test runs against this device's GPU model: the queued push
+    /// buffer is executed first, and the device executes everything
+    /// synchronously, so the completion time is the last fence handed out
+    /// ([`Device::gpu_completed`]). A use stamped no later than that has
+    /// passed; only a `Lock` newer than every fence the device issued
+    /// would be busy, and the device never stamps one. Render-to-texture
+    /// targets are written back first, since the caller is about to touch
+    /// the texels.
     pub fn resource_busy(
         &mut self,
         mem: &mut dyn GuestMemory,
         resource: u32,
     ) -> Result<u32, D3dError> {
-        const E: &str = "D3D surface helper (0x3fb710)";
+        const E: &str = "D3DResource_IsBusy (0x3fb710)";
         self.live(E)?;
         self.sync_push_buffer(mem)?;
         self.flush_render_targets(mem)?;
@@ -225,6 +257,14 @@ impl<B: Backend> Device<B> {
         if is_surface(c) {
             let parent = mem.read_u32(at(r, 0x14)?)?;
             if parent != 0 && mem.read_u32(parent)? & refs != 0 {
+                return Ok(1);
+            }
+        }
+        let lock = mem.read_u32(at(r, 8)?)?;
+        if lock != 0 {
+            let gpu_time = mem.read_u32(self.cfg.layout.device + field::GPU_TIME)?;
+            let completed = self.gpu_completed();
+            if gpu_time.wrapping_sub(lock) < gpu_time.wrapping_sub(completed) {
                 return Ok(1);
             }
         }
