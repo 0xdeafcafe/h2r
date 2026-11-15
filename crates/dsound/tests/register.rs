@@ -1286,6 +1286,7 @@ fn logical(max_queued: Duration) -> dsound::OutputConfig {
             max_queued,
         },
         halt_when: None,
+        side: None,
     }
 }
 
@@ -1427,6 +1428,7 @@ fn device_pacing_follows_the_sink_and_its_rate() {
                     target_latency_ms: 20,
                 },
                 halt_when: None,
+                side: None,
             },
         )
         .unwrap();
@@ -1533,6 +1535,7 @@ fn callbacks_completed_by_the_output_thread_run_at_the_next_override_call() {
                     target_latency_ms: 40,
                 },
                 halt_when: None,
+                side: None,
             },
         )
         .unwrap();
@@ -1838,4 +1841,244 @@ fn an_unbounded_sink_at_another_rate_is_resampled() {
     let played = played.lock().unwrap();
     assert!(played.len() <= 2 * 512);
     assert!(played[20..1000].iter().all(|&v| v == 0.25));
+}
+
+// The controller-speaker side output (docs/playstation-audio.md): a second
+// fake sink for the voices the pad router labels. Synthetic PCM only.
+
+/// A side sink whose device can be unplugged by the test.
+struct SideSink {
+    inner: CaptureSink,
+    connected: Arc<AtomicBool>,
+}
+
+impl audio::AudioSink for SideSink {
+    fn sample_rate(&self) -> u32 {
+        self.inner.sample_rate()
+    }
+    fn queued_frames(&self) -> usize {
+        0
+    }
+    fn free_frames(&self) -> usize {
+        self.inner.free_frames()
+    }
+    fn write(&mut self, samples: &[f32]) -> usize {
+        self.inner.write(samples)
+    }
+    fn stats(&self) -> audio::SinkStats {
+        audio::SinkStats::default()
+    }
+    fn connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
+    }
+}
+
+/// The bytes `tone_packet` queues.
+fn tone_bytes(frames: usize, value: i16) -> Vec<u8> {
+    std::iter::repeat_n(value, frames)
+        .flat_map(|s| s.to_le_bytes())
+        .collect()
+}
+
+/// Installs a router that sends the tone of `value` (a 256-frame packet) to
+/// the controller, exclusively or not.
+fn route_tone(w: &World, value: i16, exclusive: bool) {
+    use dsound::padroute::{PadRouter, PadSpeakerConfig, RouteTable, SoundIndex};
+    let mut index = SoundIndex::new();
+    index.insert(r"fx\player\shield_down", &tone_bytes(256, value));
+    index.insert(r"music\theme", &tone_bytes(256, value / 2));
+    let config = PadSpeakerConfig {
+        enabled: true,
+        exclusive,
+        ..PadSpeakerConfig::default()
+    };
+    w.hle
+        .direct_sound()
+        .set_pad_router(Some(PadRouter::new(&index, &RouteTable::new(&config))));
+}
+
+struct SideRig {
+    main: Arc<Mutex<Vec<f32>>>,
+    side: Arc<Mutex<Vec<f32>>>,
+    connected: Arc<AtomicBool>,
+    live: Arc<Mutex<Vec<bool>>>,
+}
+
+impl SideRig {
+    fn new() -> Self {
+        SideRig {
+            main: Arc::default(),
+            side: Arc::default(),
+            connected: Arc::new(AtomicBool::new(true)),
+            live: Arc::default(),
+        }
+    }
+    /// A side output whose sink is there (`present`) or absent.
+    fn side(&self, present: bool) -> dsound::SideOutput {
+        let (side, connected, live) = (
+            Arc::clone(&self.side),
+            Arc::clone(&self.connected),
+            Arc::clone(&self.live),
+        );
+        dsound::SideOutput {
+            open: Box::new(move || {
+                present.then(|| {
+                    Box::new(SideSink {
+                        inner: CaptureSink {
+                            rate: 8000,
+                            room: usize::MAX,
+                            played: side,
+                        },
+                        connected,
+                    }) as Box<dyn audio::AudioSink>
+                })
+            }),
+            on_live: Some(Box::new(move |l| live.lock().unwrap().push(l))),
+        }
+    }
+    fn config(&self, present: bool) -> dsound::OutputConfig {
+        dsound::OutputConfig {
+            side: Some(self.side(present)),
+            ..logical(Duration::from_secs(1))
+        }
+    }
+    fn live_was(&self, want: &[bool]) -> bool {
+        wait_for(Duration::from_secs(10), || *self.live.lock().unwrap() == want)
+    }
+}
+
+fn left(v: &[f32]) -> Vec<f32> {
+    v.iter().step_by(2).copied().collect()
+}
+
+#[test]
+fn routed_sounds_play_only_on_the_controller_when_exclusive() {
+    let (mut w, _, _) = status_world();
+    route_tone(&w, 8192, true);
+    let stream = stream_of(&mut w, 8);
+    let rig = SideRig::new();
+    let output = w
+        .hle
+        .spawn_output(Arc::clone(&w.runtime), capture(&rig.main, usize::MAX), rig.config(true))
+        .unwrap();
+    assert!(rig.live_was(&[true]), "the side output went live at open");
+    // A routed packet, then (once it has played: the label is the
+    // stream's) an unrouted one, indexed for the main mix.
+    let _ = tone_packet(&mut w, stream, 256, 8192, 0x71);
+    assert_eq!(output.advance_to(320_000).unwrap(), 256);
+    let _ = tone_packet(&mut w, stream, 256, 4096, 0x72);
+    assert_eq!(output.advance_to(640_000).unwrap(), 256);
+    assert!(wait_for(Duration::from_secs(10), || {
+        rig.main.lock().unwrap().len() == 2 * 512 && rig.side.lock().unwrap().len() == 2 * 512
+    }));
+    let (main, side) = (left(&rig.main.lock().unwrap()), left(&rig.side.lock().unwrap()));
+    // The routed tone: on the controller, silent on the main mix.
+    assert!(main[..255].iter().all(|&v| v == 0.0), "{:?}", &main[..4]);
+    assert!(side[..255].iter().all(|&v| v > 0.2), "{:?}", &side[..4]);
+    // The unrouted one: the other way round.
+    assert!(main[257..511].iter().all(|&v| v == 0.125));
+    assert!(side[257..511].iter().all(|&v| v == 0.0));
+    let stats = output.stats().side.unwrap();
+    assert!(stats.live);
+    assert_eq!((stats.rendered_frames, stats.dropped_frames, stats.sample_rate), (512, 0, 8000));
+    drop(output);
+    assert_eq!(*rig.live.lock().unwrap(), [true, false], "back off on drop");
+}
+
+#[test]
+fn routed_sounds_play_on_both_when_not_exclusive() {
+    let (mut w, _, _) = status_world();
+    route_tone(&w, 8192, false);
+    let stream = stream_of(&mut w, 8);
+    let rig = SideRig::new();
+    let output = w
+        .hle
+        .spawn_output(Arc::clone(&w.runtime), capture(&rig.main, usize::MAX), rig.config(true))
+        .unwrap();
+    assert!(rig.live_was(&[true]));
+    let _ = tone_packet(&mut w, stream, 256, 8192, 0x71);
+    assert_eq!(output.advance_to(320_000).unwrap(), 256);
+    assert!(wait_for(Duration::from_secs(10), || {
+        rig.main.lock().unwrap().len() == 2 * 256 && rig.side.lock().unwrap().len() == 2 * 256
+    }));
+    assert!(left(&rig.main.lock().unwrap())[..255].iter().all(|&v| v == 0.25));
+    assert!(left(&rig.side.lock().unwrap())[..255].iter().all(|&v| v > 0.2));
+}
+
+#[test]
+fn without_the_controller_device_routed_sounds_stay_on_the_main_mix() {
+    let (mut w, _, _) = status_world();
+    route_tone(&w, 8192, true);
+    let stream = stream_of(&mut w, 8);
+    let rig = SideRig::new();
+    let output = w
+        .hle
+        .spawn_output(Arc::clone(&w.runtime), capture(&rig.main, usize::MAX), rig.config(false))
+        .unwrap();
+    let _ = tone_packet(&mut w, stream, 256, 8192, 0x71);
+    assert_eq!(output.advance_to(320_000).unwrap(), 256);
+    assert!(wait_for(Duration::from_secs(10), || rig.main.lock().unwrap().len() == 2 * 256));
+    assert!(left(&rig.main.lock().unwrap())[..255].iter().all(|&v| v == 0.25));
+    let stats = output.stats().side.unwrap();
+    assert!(!stats.live);
+    assert_eq!(stats.rendered_frames, 0);
+    drop(output);
+    assert!(rig.live.lock().unwrap().is_empty(), "never live, never switched");
+}
+
+#[test]
+fn an_unplugged_controller_hands_its_sounds_back_to_the_main_mix() {
+    let (mut w, _, _) = status_world();
+    route_tone(&w, 8192, true);
+    let stream = stream_of(&mut w, 8);
+    let rig = SideRig::new();
+    let output = w
+        .hle
+        .spawn_output(Arc::clone(&w.runtime), capture(&rig.main, usize::MAX), rig.config(true))
+        .unwrap();
+    assert!(rig.live_was(&[true]));
+    rig.connected.store(false, Ordering::Release);
+    assert!(rig.live_was(&[true, false]));
+    assert!(!output.stats().side.unwrap().live);
+    let _ = tone_packet(&mut w, stream, 256, 8192, 0x71);
+    assert_eq!(output.advance_to(320_000).unwrap(), 256);
+    assert!(wait_for(Duration::from_secs(10), || rig.main.lock().unwrap().len() == 2 * 256));
+    assert!(left(&rig.main.lock().unwrap())[..255].iter().all(|&v| v == 0.25));
+    assert!(rig.side.lock().unwrap().is_empty());
+    // Plugged back in: live again, and the next routed sound goes there.
+    rig.connected.store(true, Ordering::Release);
+    assert!(rig.live_was(&[true, false, true]));
+    let _ = tone_packet(&mut w, stream, 256, 8192, 0x72);
+    assert_eq!(output.advance_to(640_000).unwrap(), 256);
+    assert!(wait_for(Duration::from_secs(10), || rig.side.lock().unwrap().len() == 2 * 256));
+    assert!(left(&rig.side.lock().unwrap())[..255].iter().all(|&v| v > 0.2));
+}
+
+#[test]
+fn device_pacing_feeds_the_side_output_too() {
+    let (mut w, _, _) = status_world();
+    route_tone(&w, 8192, true);
+    let stream = stream_of(&mut w, 8);
+    let _ = tone_packet(&mut w, stream, 256, 8192, 0x71);
+    let rig = SideRig::new();
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            capture(&rig.main, 256),
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Device {
+                    target_latency_ms: 40,
+                },
+                halt_when: None,
+                side: Some(rig.side(true)),
+            },
+        )
+        .unwrap();
+    assert!(wait_for(Duration::from_secs(10), || rig.side.lock().unwrap().len() >= 2 * 256));
+    drop(output);
+    let (main, side) = (left(&rig.main.lock().unwrap()), left(&rig.side.lock().unwrap()));
+    assert!(main.iter().all(|&v| v == 0.0), "the routed tone stays off the main mix");
+    assert!(side[..255].iter().all(|&v| v > 0.2));
 }

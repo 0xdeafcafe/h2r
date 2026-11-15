@@ -266,6 +266,11 @@ impl AudioSink for DeviceSink {
             played_frames: self.base_stats.played_frames + s.played_frames,
         }
     }
+    /// False while the stream is gone or errored (the device was unplugged)
+    /// and not yet reopened.
+    fn connected(&self) -> bool {
+        self.stream.is_some() && !self.meter.lost.load(Ordering::Relaxed)
+    }
     fn maintain(&mut self) {
         let now = Instant::now();
         if self.stream.is_none() || self.meter.lost.load(Ordering::Relaxed) {
@@ -618,16 +623,20 @@ mod tests {
     #[test]
     fn maintain_retries_a_failed_reopen_at_most_once_a_second() {
         let mut sink = setup(false, Some(("dev-a", 48_000)));
+        assert!(sink.connected());
         sink.meter.lost.store(true, Ordering::Relaxed);
+        assert!(!sink.connected(), "a lost stream is not connected");
         sink.maintain();
         sink.maintain();
         assert_eq!(OPENS.with(Cell::get), 2, "initial open + one failed retry");
         assert!(sink.stream.is_none());
+        assert!(!sink.connected());
         sink.reopen_failed_at = Instant::now().checked_sub(Duration::from_secs(2));
         OPEN_OK.with(|c| c.set(true));
         sink.maintain();
         assert_eq!((OPENS.with(Cell::get), sink.reopen_count()), (3, 1));
         assert!(sink.stream.is_some());
+        assert!(sink.connected(), "back once reopened");
     }
 
     #[test]

@@ -2365,13 +2365,27 @@ impl DirectSound {
         out: &mut [f32],
         lease: &Lease,
     ) -> Result<(), Stop> {
+        self.render_leased_split(h, out, None, lease)
+    }
+
+    /// [`render_leased`](Self::render_leased) with a side output (the
+    /// controller speaker, `audio::Mixer::render_split`): voices the pad
+    /// router labelled go to `side` as well as, or instead of, `out`. With
+    /// `side` `None` every voice plays on `out`.
+    pub fn render_leased_split(
+        &mut self,
+        h: &mut dyn Host,
+        out: &mut [f32],
+        side: Option<&mut [f32]>,
+        lease: &Lease,
+    ) -> Result<(), Stop> {
         if !self.holds(lease) {
             return Err(Stop::Consumer(self.conflict(lease.who)));
         }
         self.mixer
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .render(out);
+            .render_split(out, side);
         self.service_all(h).map(|_| ())
     }
 

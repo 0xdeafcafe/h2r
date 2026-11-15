@@ -264,9 +264,12 @@ impl Hle {
         &self,
         runtime: &Runtime,
         out: &mut [f32],
+        side: Option<&mut [f32]>,
         lease: &Lease,
     ) -> Result<(), Stop> {
-        self.host_call(runtime, |ds, bridge| ds.render_leased(bridge, out, lease))
+        self.host_call(runtime, |ds, bridge| {
+            ds.render_leased_split(bridge, out, side, lease)
+        })
     }
 
     fn host_call(

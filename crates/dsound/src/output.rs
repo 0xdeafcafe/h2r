@@ -28,6 +28,14 @@
 //! macOS) and dropped there. [`Output::halt`] (or [`OutputConfig::halt_when`])
 //! stops all further guest memory and event work, for a runner that has
 //! faulted or stopped.
+//!
+//! A second sink, the controller speaker ([`SideOutput`],
+//! `docs/playstation-audio.md`), plays the voices the pad router labelled.
+//! The mixer renders both from the same frames (`Mixer::render_split`), on
+//! the same clock; the side sink only has its own queue and resampler, so it
+//! can underrun on its own. While the side sink is absent or has lost its
+//! device the mixer renders one output and every voice stays on the main
+//! mix: a routed sound is never lost.
 use crate::register::{Hle, StopRecord};
 use crate::state::{Consumer, Lease, Stop};
 use audio::resample::LinearResampler;
@@ -73,6 +81,23 @@ pub struct OutputConfig {
     /// [`Output::halt`]. For a runner that keeps a flag for "faulted or
     /// stopped".
     pub halt_when: Option<Box<dyn FnMut() -> bool + Send>>,
+    /// The controller speaker, if one was asked for.
+    pub side: Option<SideOutput>,
+}
+
+/// Opens the side sink on the output thread; `None` when its device is not
+/// there (the main mix then keeps every voice).
+pub type SideOpener = Box<dyn FnOnce() -> Option<Box<dyn AudioSink>> + Send>;
+
+/// The controller-speaker output: a second sink for voices labelled
+/// [`audio::VoiceOutput::Side`] or `Both`.
+pub struct SideOutput {
+    pub open: SideOpener,
+    /// Called on the output thread with `true` when the side sink starts
+    /// taking the routed voices and `false` when it stops (its device went
+    /// away, or the output is dropped): the place to switch the controller's
+    /// audio path to its speaker and back.
+    pub on_live: Option<Box<dyn FnMut(bool) + Send>>,
 }
 
 impl Default for OutputConfig {
@@ -84,8 +109,23 @@ impl Default for OutputConfig {
                 target_latency_ms: audio::sink::DEFAULT_TARGET_LATENCY_MS,
             },
             halt_when: None,
+            side: None,
         }
     }
+}
+
+/// Counters of the side (controller speaker) output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SideStats {
+    /// The side sink is open and connected: routed voices play there.
+    pub live: bool,
+    /// Frames of side mix rendered (only while live).
+    pub rendered_frames: u64,
+    /// Side frames never played: no room, or its queue overflowed.
+    pub dropped_frames: u64,
+    /// The side sink's rate (0 before it opens or if it is absent).
+    pub sample_rate: u32,
+    pub sink: SinkStats,
 }
 
 /// Counters of a running [`Output`].
@@ -106,6 +146,8 @@ pub struct OutputStats {
     pub sample_rate: u32,
     /// The sink's own counters (underruns, frames played).
     pub sink: SinkStats,
+    /// The controller speaker, when [`OutputConfig::side`] asked for one.
+    pub side: Option<SideStats>,
 }
 
 /// Held across every guest-memory step; `halted` once halted.
@@ -134,11 +176,34 @@ struct Shared {
     sink: Mutex<SinkStats>,
     /// Logical pacing: rendered interleaved stereo waiting to be played.
     queue: Mutex<VecDeque<f32>>,
+    /// A side output was configured.
+    side_wanted: bool,
+    /// The side sink takes the routed voices: render with a side output.
+    side_live: AtomicBool,
+    /// Rendered side mix waiting to be played (both pacings).
+    side_queue: Mutex<VecDeque<f32>>,
+    side_rendered: AtomicU64,
+    side_dropped: AtomicU64,
+    side_rate: AtomicU32,
+    side_sink: Mutex<SinkStats>,
 }
 
 impl Shared {
     fn gate(&self) -> MutexGuard<'_, Gate> {
         self.gate.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Queues rendered side mix (clamped), keeping at most `max` frames.
+    fn push_side(&self, block: &[f32], max: usize) {
+        let mut q = self.side_queue.lock().unwrap_or_else(|e| e.into_inner());
+        q.extend(block.iter().map(|v| v.clamp(-1.0, 1.0)));
+        let over = (q.len() / 2).saturating_sub(max);
+        if over > 0 {
+            q.drain(..2 * over);
+            self.side_dropped.fetch_add(over as u64, Ordering::AcqRel);
+        }
+        self.side_rendered
+            .fetch_add((block.len() / 2) as u64, Ordering::AcqRel);
     }
 }
 
@@ -173,6 +238,13 @@ impl Output {
             halted: s.gate().halted,
             sample_rate: s.rate.load(Ordering::Acquire),
             sink: *s.sink.lock().unwrap_or_else(|e| e.into_inner()),
+            side: s.side_wanted.then(|| SideStats {
+                live: s.side_live.load(Ordering::Acquire),
+                rendered_frames: s.side_rendered.load(Ordering::Acquire),
+                dropped_frames: s.side_dropped.load(Ordering::Acquire),
+                sample_rate: s.side_rate.load(Ordering::Acquire),
+                sink: *s.side_sink.lock().unwrap_or_else(|e| e.into_inner()),
+            }),
         }
     }
 
@@ -202,15 +274,24 @@ impl Output {
         let due = due_frames(logical.saturating_sub(g.origin), g.rate);
         let mut rendered = 0;
         let mut block = vec![0.0f32; 2 * QUANTUM as usize];
+        let mut side = vec![0.0f32; 2 * QUANTUM as usize];
         while g.done + QUANTUM <= due {
             let mut gate = self.shared.gate();
             if !gate.open() {
                 break;
             }
             block.fill(0.0);
-            self.hle
-                .render_leased(&self.runtime, &mut block, &self.lease)?;
+            let side_live = self.shared.side_live.load(Ordering::Acquire);
+            self.hle.render_leased(
+                &self.runtime,
+                &mut block,
+                side_live.then_some(&mut side[..]),
+                &self.lease,
+            )?;
             drop(gate);
+            if side_live {
+                self.shared.push_side(&side, g.max_queued);
+            }
             g.done += QUANTUM;
             rendered += QUANTUM;
             self.shared.rendered.fetch_add(QUANTUM, Ordering::AcqRel);
@@ -287,6 +368,7 @@ impl Hle {
             period,
             pacing,
             halt_when,
+            side,
         } = config;
         let shared = Arc::new(Shared {
             stop: AtomicBool::new(false),
@@ -300,6 +382,13 @@ impl Hle {
             rate: AtomicU32::new(0),
             sink: Mutex::new(SinkStats::default()),
             queue: Mutex::new(VecDeque::new()),
+            side_wanted: side.is_some(),
+            side_live: AtomicBool::new(false),
+            side_queue: Mutex::new(VecDeque::new()),
+            side_rendered: AtomicU64::new(0),
+            side_dropped: AtomicU64::new(0),
+            side_rate: AtomicU32::new(0),
+            side_sink: Mutex::new(SinkStats::default()),
         });
         let (mode, grid) = match pacing {
             Pacing::Device { target_latency_ms } => (Mode::Device(target_latency_ms), None),
@@ -323,9 +412,10 @@ impl Hle {
             .name("dsound-output".into())
             .spawn(move || {
                 let sink = open();
+                let side = side.map(|s| Side::open(s, Arc::clone(&sh)));
                 match mode {
-                    Mode::Device(ms) => run_device(hle, rt, sink, period, ms, sh),
-                    Mode::Logical(rate) => run_logical(sink, period, rate, sh),
+                    Mode::Device(ms) => run_device(hle, rt, sink, side, period, ms, sh),
+                    Mode::Logical(rate) => run_logical(sink, side, period, rate, sh),
                 }
             })
             .expect("spawning the dsound output thread");
@@ -356,19 +446,35 @@ fn run_device<S: AudioSink>(
     hle: Arc<Hle>,
     runtime: Arc<Runtime>,
     mut sink: S,
+    mut side: Option<Side>,
     period: Duration,
     target_latency_ms: u32,
     shared: Arc<Shared>,
 ) {
     let mixer = Arc::clone(hle.direct_sound().mixer());
     let mut pump = RingPump::new(target_latency_ms);
+    let mut side_block = Vec::new();
+    // The side queue holds a few latency targets: it only bridges the two
+    // devices' callback timing.
+    let side_max = |rate: u32| (u64::from(rate) * u64::from(target_latency_ms) * 4 / 1000) as usize;
     while !shared.stop.load(Ordering::Acquire) {
         std::thread::sleep(period);
-        let rendered = {
+        if let Some(s) = side.as_mut() {
+            s.maintain();
+        }
+        let side_live = shared.side_live.load(Ordering::Acquire);
+        let (rendered, rate) = {
             let mut m = mixer.lock().unwrap_or_else(|e| e.into_inner());
-            pump.pump(&mut m, &mut sink) as u64
+            let n = pump.pump_split(&mut m, &mut sink, side_live.then_some(&mut side_block));
+            (n as u64, m.sample_rate())
         };
         shared.rendered.fetch_add(rendered, Ordering::AcqRel);
+        if side_live && !side_block.is_empty() {
+            shared.push_side(&side_block, side_max(rate).max(QUANTUM as usize));
+        }
+        if let Some(s) = side.as_mut() {
+            s.play(rate);
+        }
         publish_sink(&shared, &sink);
         let result = {
             let mut gate = shared.gate();
@@ -391,15 +497,42 @@ fn run_device<S: AudioSink>(
 }
 
 /// Logical pacing: play what `advance_to` rendered; nothing else.
-fn run_logical<S: AudioSink>(mut sink: S, period: Duration, rate: u32, shared: Arc<Shared>) {
-    let mut resampler: Option<(u32, LinearResampler)> = None;
-    let mut out = Vec::new();
+fn run_logical<S: AudioSink>(
+    mut sink: S,
+    mut side: Option<Side>,
+    period: Duration,
+    rate: u32,
+    shared: Arc<Shared>,
+) {
+    let mut feed = Feed::default();
     while !shared.stop.load(Ordering::Acquire) {
         std::thread::sleep(period);
         if !shared.gate().open() {
             return;
         }
         sink.maintain();
+        let short = feed.play(&mut sink, &shared.queue, rate);
+        shared.dropped.fetch_add(short, Ordering::AcqRel);
+        if let Some(s) = side.as_mut() {
+            s.maintain();
+            s.play(rate);
+        }
+        publish_sink(&shared, &sink);
+        shared.wakes.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Moves queued interleaved stereo at one rate into a sink at its own.
+#[derive(Default)]
+struct Feed {
+    resampler: Option<(u32, LinearResampler)>,
+    out: Vec<f32>,
+}
+
+impl Feed {
+    /// Plays as much of `queue` (frames at `rate`) as fits the sink's free
+    /// space; returns the frames the sink refused.
+    fn play(&mut self, sink: &mut dyn AudioSink, queue: &Mutex<VecDeque<f32>>, rate: u32) -> u64 {
         let to = sink.sample_rate();
         let free = sink.free_frames();
         // Source frames that fit the sink's free space at its rate (u128:
@@ -411,28 +544,106 @@ fn run_logical<S: AudioSink>(mut sink: S, period: Duration, rate: u32, shared: A
             usize::try_from(frames).unwrap_or(usize::MAX)
         };
         let input: Vec<f32> = {
-            let mut q = shared.queue.lock().unwrap_or_else(|e| e.into_inner());
+            let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
             let n = take.min(q.len() / 2);
             q.drain(..2 * n).collect()
         };
-        if !input.is_empty() {
-            out.clear();
-            let samples: &[f32] = if to == rate {
-                resampler = None;
-                &input
-            } else {
-                if resampler.as_ref().is_none_or(|(r, _)| *r != to) {
-                    resampler = Some((to, LinearResampler::new(2, rate, to)));
-                }
-                resampler.as_mut().unwrap().1.process(&input, &mut out);
-                &out
-            };
-            let taken = sink.write(samples);
-            let short = (samples.len() / 2).saturating_sub(taken);
-            shared.dropped.fetch_add(short as u64, Ordering::AcqRel);
+        if input.is_empty() {
+            return 0;
         }
-        publish_sink(&shared, &sink);
-        shared.wakes.fetch_add(1, Ordering::AcqRel);
+        self.out.clear();
+        let samples: &[f32] = if to == rate {
+            self.resampler = None;
+            &input
+        } else {
+            if self.resampler.as_ref().is_none_or(|(r, _)| *r != to) {
+                self.resampler = Some((to, LinearResampler::new(2, rate, to)));
+            }
+            self.resampler
+                .as_mut()
+                .unwrap()
+                .1
+                .process(&input, &mut self.out);
+            &self.out
+        };
+        let taken = sink.write(samples);
+        (samples.len() / 2).saturating_sub(taken) as u64
+    }
+}
+
+/// The side sink on the output thread, and whether it is live.
+struct Side {
+    sink: Option<Box<dyn AudioSink>>,
+    on_live: Option<Box<dyn FnMut(bool) + Send>>,
+    live: bool,
+    feed: Feed,
+    shared: Arc<Shared>,
+}
+
+impl Side {
+    fn open(config: SideOutput, shared: Arc<Shared>) -> Self {
+        let mut side = Side {
+            sink: (config.open)(),
+            on_live: config.on_live,
+            live: false,
+            feed: Feed::default(),
+            shared,
+        };
+        side.maintain();
+        side
+    }
+
+    /// Services the sink and follows its device: live while it is
+    /// connected. Going down drops the side mix still queued, since the
+    /// voices it held are back on the main mix from the next render.
+    fn maintain(&mut self) {
+        let Some(sink) = self.sink.as_mut() else {
+            return;
+        };
+        sink.maintain();
+        let (live, rate) = (sink.connected(), sink.sample_rate());
+        self.shared.side_rate.store(rate, Ordering::Release);
+        self.set_live(live);
+    }
+
+    fn set_live(&mut self, live: bool) {
+        if live == self.live {
+            return;
+        }
+        self.live = live;
+        self.shared.side_live.store(live, Ordering::Release);
+        if !live {
+            self.shared
+                .side_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clear();
+        }
+        if let Some(f) = self.on_live.as_mut() {
+            f(live);
+        }
+    }
+
+    /// Plays the queued side mix (rendered at `rate`).
+    fn play(&mut self, rate: u32) {
+        let Some(sink) = self.sink.as_mut() else {
+            return;
+        };
+        if self.live {
+            let short = self.feed.play(sink.as_mut(), &self.shared.side_queue, rate);
+            self.shared.side_dropped.fetch_add(short, Ordering::AcqRel);
+        }
+        *self
+            .shared
+            .side_sink
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = sink.stats();
+    }
+}
+
+impl Drop for Side {
+    fn drop(&mut self) {
+        self.set_live(false);
     }
 }
 

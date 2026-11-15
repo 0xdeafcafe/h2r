@@ -193,6 +193,36 @@ pub trait AudioSink {
     fn stats(&self) -> SinkStats;
     /// Called once per pump so a sink can service device changes. Default: nothing.
     fn maintain(&mut self) {}
+    /// Whether a device is playing what is written. A sink that lost its
+    /// device (unplugged, and not yet back) says false, so a caller with a
+    /// fallback can mix elsewhere. Default: true.
+    fn connected(&self) -> bool {
+        true
+    }
+}
+
+impl<T: AudioSink + ?Sized> AudioSink for Box<T> {
+    fn sample_rate(&self) -> u32 {
+        (**self).sample_rate()
+    }
+    fn queued_frames(&self) -> usize {
+        (**self).queued_frames()
+    }
+    fn free_frames(&self) -> usize {
+        (**self).free_frames()
+    }
+    fn write(&mut self, samples: &[f32]) -> usize {
+        (**self).write(samples)
+    }
+    fn stats(&self) -> SinkStats {
+        (**self).stats()
+    }
+    fn maintain(&mut self) {
+        (**self).maintain()
+    }
+    fn connected(&self) -> bool {
+        (**self).connected()
+    }
 }
 
 /// Headless sink for tests and CI. Time only advances when the test calls
@@ -284,6 +314,19 @@ impl Pump {
     /// rendered. Call at least every `target_latency_ms` (a 60 Hz game frame
     /// is fine with the default 40 ms).
     pub fn pump(&mut self, mixer: &mut Mixer, sink: &mut dyn AudioSink) -> usize {
+        self.pump_split(mixer, sink, None)
+    }
+
+    /// [`Pump::pump`] with a side output ([`Mixer::render_split`]): `side`
+    /// is overwritten with the side mix of the frames rendered (interleaved
+    /// stereo at the sink's rate, clamped), whether or not the sink took
+    /// them all. With `None` every voice plays on the sink.
+    pub fn pump_split(
+        &mut self,
+        mixer: &mut Mixer,
+        sink: &mut dyn AudioSink,
+        side: Option<&mut Vec<f32>>,
+    ) -> usize {
         sink.maintain();
         let rate = sink.sample_rate();
         if mixer.sample_rate() != rate {
@@ -294,10 +337,22 @@ impl Pump {
             .saturating_sub(sink.queued_frames())
             .min(sink.free_frames());
         if want == 0 {
+            if let Some(side) = side {
+                side.clear();
+            }
             return 0;
         }
         self.scratch.resize(want * 2, 0.0);
-        mixer.render(&mut self.scratch);
+        match side {
+            Some(side) => {
+                side.resize(want * 2, 0.0);
+                mixer.render_split(&mut self.scratch, Some(side));
+                for v in side.iter_mut() {
+                    *v = v.clamp(-1.0, 1.0);
+                }
+            }
+            None => mixer.render(&mut self.scratch),
+        }
         // Clamp here so every sink gets device-ready samples.
         for v in &mut self.scratch {
             *v = v.clamp(-1.0, 1.0);
@@ -462,6 +517,39 @@ mod tests {
         Pump::new(40).pump(&mut m, &mut sink);
         sink.advance(320);
         assert!(sink.captured().iter().all(|&v| v == 1.0));
+    }
+
+    #[test]
+    fn pump_split_fills_the_side_output_for_the_frames_it_renders() {
+        let mut m = Mixer::new(8000);
+        let bytes: Vec<u8> = (0..8000).flat_map(|_| 8192i16.to_le_bytes()).collect();
+        let id = m.add_buffer(
+            SoundBuffer::from_data(WaveFormat::pcm16(1, 8000).unwrap(), bytes).unwrap(),
+        );
+        let b = m.buffer_mut(id).unwrap();
+        b.play(true);
+        // Routed to the side output only.
+        b.set_output(crate::VoiceOutput::Side);
+        let mut sink = NullSink::new(8000, 4096).capture();
+        let mut side = Vec::new();
+        let n = Pump::new(40).pump_split(&mut m, &mut sink, Some(&mut side));
+        assert_eq!(n, 320);
+        assert_eq!(side.len(), 2 * 320);
+        assert!(side.iter().all(|&v| v > 0.2), "the tone is on the side mix");
+        // The queue is at its target, so nothing is wanted: the side block
+        // is empty, not stale.
+        assert_eq!(Pump::new(40).pump_split(&mut m, &mut sink, Some(&mut side)), 0);
+        assert!(side.is_empty());
+        sink.advance(320);
+        assert!(sink.captured().iter().all(|&v| v == 0.0), "and not on the main mix");
+    }
+
+    #[test]
+    fn boxed_sinks_forward_and_connect_by_default() {
+        let mut b: Box<dyn AudioSink> = Box::new(NullSink::new(8000, 16));
+        assert!(b.connected());
+        assert_eq!(b.write(&[0.5; 4]), 2);
+        assert_eq!((b.queued_frames(), b.sample_rate()), (2, 8000));
     }
 
     #[test]
