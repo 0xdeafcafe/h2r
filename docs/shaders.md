@@ -490,10 +490,36 @@ at least 32 compared dot stages per mapping.
 Texture dimensions follow the mode. `PixelOptions::texture_dims` overrides
 project2d, project3d and cubemap the way D3D's `TEXMODE_ADJUST` would, but
 Halo 2 never sets that flag. For bump mapping the generated code reads du/dv
-as `.rg` and luminance as `.b` of the source stage, already signed, so the
-renderer should decode V8U8/L6V5U5 to match. 2D coordinates are multiplied by
+as `.rg` and luminance as `.b` of the source stage as the texture unit
+delivered them. They are signed only through `COLORSIGN` (see "Signed
+texture formats" below). 2D coordinates are multiplied by
 `XpsUniforms.tex_scale[n].xy`, which covers linear (texel-addressed)
 textures.
+
+#### Signed texture formats
+
+`D3DFMT_V8U8`, `Q8W8V8U8` and `L6V5U5` aren't formats of their own on the
+Xbox. They are the same NV2A format codes as `G8B8` (0x28, linear 0x17),
+`A8B8G8R8` (0x3A) and `R6G5B5` (0x27), and `gfx::format::D3DFormat` gives
+each pair one variant. Nothing in the texture header says that a texel is
+signed, so neither the device nor gfx can decode one of these formats as
+signed from the format alone. The NV2A takes signedness from the texture
+unit's per-channel sign bits, `D3DTSS_COLORSIGN`. The dot mappings
+(`minus1_to_1_*`) convert inside the dot product instead.
+
+Halo 2 sets `COLORSIGN` exactly where it needs signed texels. An
+`h2 shader --all all` tally of the 307,944 resolved material
+implementations finds 30 implementations with bump-env stages, each of
+them reading stage 0 from stages 1, 2 and 3, and stage 0 is the only stage
+with `COLORSIGN`, always `0xE0000000` (RGB signed), in exactly those 30. No
+dot-product source stage is signed, and they all use `minus1_to_1_d3d`. So
+signed V8U8 data reaches bump-env through the `COLORSIGN` path (see
+"Signed texture channels"). That path stores the signed byte `s` as
+`s + 128` (`gfx::texture::DecodeOptions::signed`) so host filtering stays
+linear, and converts the filtered value to `2s/255` at the fetch, before
+bump-env reads `.rg`. No format-based signed decode is needed, and one
+would be wrong: a `G8B8` texture without `COLORSIGN` reads unsigned on
+the NV2A too.
 
 The other per-pipeline state the combiners need comes in through
 `PixelOptions`: `D3DTSS_ALPHAKILL` per stage (kill when the fetched alpha is
@@ -629,8 +655,10 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   copies AB/CD blue to alpha and writes the same register from its alpha
   portion, the alpha portion wins here (xemu's order). This is unverified on
   hardware, and no retail definition does it.
-- **Bump-env channel and sign conventions** rely on the renderer decoding
-  V8U8/L6V5U5 as signed `.rg` (and `.b` for luminance).
+- **Bump-env channel and sign conventions** rely on `COLORSIGN` on the
+  source stage (see "Signed texture formats"). Bump-env from a source
+  without it reads du/dv unsigned, in [0, 1]. Whether the hardware does
+  the same hasn't been checked.
 - **What the `vrtx` u16 block and the `spas` index fields mean**, and how the
   `spas` constant blocks feed `c0`/`c1`, belongs to the tag and renderer
   work. The translator only takes ready constant values.

@@ -127,6 +127,12 @@ swizzle uniform).
 | 2E-31 | LIN_ depth twins | linear | | depth | as above | surfaces only |
 | 33, 36 | V16U16, LIN_V16U16 | | 4 | signed bump | none | rejected (`Unsupported`) |
 
+`V8U8`, `Q8W8V8U8` and `L6V5U5` share their codes with `G8B8`, `A8B8G8R8`
+and `R6G5B5`, so they decode unsigned like their twins. Signed reads come
+from `D3DTSS_COLORSIGN` (biased upload plus a conversion in the pixel
+shader), not from the format; see `docs/shaders.md`, "Signed texture
+formats".
+
 Unknown or unverified details, flagged so nobody trusts them blindly:
 
 * `YUY2`/`UYVY` byte order and BT.601 limited range are inferred from the
