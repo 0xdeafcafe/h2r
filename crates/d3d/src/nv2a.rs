@@ -838,28 +838,36 @@ impl ShaderProvider for Nv2aShaders {
         }
         let render = &draw.state.render;
         let (c0, c1) = def.embedded_constants();
-        if !self.programs.contains_key(&key) {
-            // Being translated ahead of time: take that one.
-            self.install_warm(ctx, renderer, Some(&key));
-        }
+        // One lookup on the common path (the program is known): the key
+        // holds the whole microcode, so each hash and compare is not free.
+        let compiled = match self.programs.get(&key) {
+            Some(r) => r.clone()?,
+            None => {
+                // Being translated ahead of time: take that one.
+                self.install_warm(ctx, renderer, Some(&key));
+                if !self.programs.contains_key(&key) {
+                    let bindings = self
+                        .bindings
+                        .get_or_insert_with(|| ProgramBindings::new(&ctx.device));
+                    let r = compile(ctx, renderer, bindings, &key, SHADER_ID_BASE + self.next);
+                    match &r {
+                        Ok(c) => {
+                            self.next += 1;
+                            self.stats.translated += 1;
+                            if let Some(p) = self.persist.as_mut() {
+                                p.ids.insert(c.id, (program_id(&key), key.clone()));
+                            }
+                        }
+                        Err(_) => self.stats.failed += 1,
+                    }
+                    self.programs.insert(key.clone(), r);
+                }
+                self.programs[&key].clone()?
+            }
+        };
         let bindings = self
             .bindings
             .get_or_insert_with(|| ProgramBindings::new(&ctx.device));
-        if !self.programs.contains_key(&key) {
-            let r = compile(ctx, renderer, bindings, &key, SHADER_ID_BASE + self.next);
-            match &r {
-                Ok(c) => {
-                    self.next += 1;
-                    self.stats.translated += 1;
-                    if let Some(p) = self.persist.as_mut() {
-                        p.ids.insert(c.id, (program_id(&key), key.clone()));
-                    }
-                }
-                Err(_) => self.stats.failed += 1,
-            }
-            self.programs.insert(key.clone(), r);
-        }
-        let compiled = self.programs[&key].clone()?;
         self.stats.draws += 1;
 
         // Uniforms.

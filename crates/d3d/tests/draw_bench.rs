@@ -18,6 +18,10 @@ use d3d::abi::Regs;
 use d3d::{Device, GfxBackend, GuestMemory, SparseMemory, UploadPolicy};
 use gfx::GfxContext;
 use gfx::vertex::fvf;
+use shaders::psh::PixelShaderDef;
+use shaders::psh::bits::*;
+use shaders::vsh::encode::{Inst, Operand, program};
+use shaders::vsh::{MacOp, OutReg};
 
 /// Draws per frame (Halo's menu draws about 600).
 const DRAWS: u32 = 600;
@@ -147,4 +151,119 @@ fn draw_throughput() {
             call(d, m, 0x3faae0, regs, &[0x4000]).unwrap();
         });
     }
+
+    // Halo-like object draws: a vertex program reading constants, a
+    // register-combiner pixel shader and a texture, with what objects change
+    // between draws: 8 constant registers, the texture (two alternate) and a
+    // render state.
+    if let Some((mut d, mut m)) = device() {
+        set_states(&mut d, &mut m);
+        programmable(&mut d, &mut m);
+        texture(&mut m, 0x80);
+        let second = TEX_HEADER + 0x40;
+        for i in 0..5u32 {
+            let w = m.read_u32(TEX_HEADER + 4 * i).unwrap();
+            m.write_u32(second + 4 * i, w).unwrap();
+        }
+        let mut n = 0u32;
+        time("programmable, per-draw churn", &mut d, &mut m, |d, m| {
+            d.clear(m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+            for i in 0..DRAWS {
+                n = n.wrapping_add(1);
+                for r in 0..32u32 {
+                    let v = ((n + r) % 7) as f32 * 0.001;
+                    m.write_u32(CONSTS + 32 + 4 * r, v.to_bits()).unwrap();
+                }
+                d.set_vertex_shader_constant(m, 98, CONSTS + 32, 8, true).unwrap();
+                d.set_texture(m, 0, if i % 2 == 0 { TEX_HEADER } else { second }).unwrap();
+                d.set_render_state(m, 61, (i % 4) * 8).unwrap(); // ALPHAREF
+                d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+            }
+        });
+    }
+}
+
+const VAF: u32 = MISC + 0x3000;
+const STREAM_INPUTS: u32 = MISC + 0x3200;
+const FUNCTION: u32 = MISC + 0x3400;
+const PSDEF: u32 = MISC + 0x3800;
+const PS_OBJECT: u32 = MISC + 0x3900;
+const CONSTS: u32 = MISC + 0x3A00;
+
+/// A vertex program (oPos = v0 * c96 + c97 plus terms reading c98..c105,
+/// oT0 = v9, oD0 = v3) with its stream, and a one-stage combiner shader.
+fn programmable(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {
+    let mut insts = vec![
+        Inst::mac(MacOp::Mul, Some(Operand::v(0)), Some(Operand::c(96)), None).to_temp(0, 0xF),
+    ];
+    // Eight constant reads folded in at zero weight-ish values.
+    for c in 98..106 {
+        insts.push(
+            Inst::mac(MacOp::Add, Some(Operand::r(0)), None, Some(Operand::c(c))).to_temp(0, 0xF),
+        );
+    }
+    insts.push(
+        Inst::mac(MacOp::Add, Some(Operand::r(0)), None, Some(Operand::c(97))).to_out(
+            false,
+            OutReg::Pos,
+            0xF,
+        ),
+    );
+    insts.push(Inst::mac(MacOp::Mov, Some(Operand::v(9)), None, None).to_out(false, OutReg::T(0), 0xF));
+    insts.push(
+        Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None)
+            .to_out(false, OutReg::D0, 0xF)
+            .last(),
+    );
+    m.write(FUNCTION, &program(&insts)).unwrap();
+    d.load_vertex_shader_program(m, FUNCTION, 0).unwrap();
+    for (i, v) in [8.0f32, 8.0, 0.0, 0.0, 0.0, 16.0, 0.0, 1.0]
+        .iter()
+        .enumerate()
+    {
+        m.write_u32(CONSTS + 4 * i as u32, v.to_bits()).unwrap();
+    }
+    d.set_vertex_shader_constant(m, 96, CONSTS, 2, true).unwrap();
+    d.set_vertex_data(m, 3, [1.0, 1.0, 1.0, 1.0]).unwrap();
+    for reg in 0..16u32 {
+        let (offset, format) = match reg {
+            0 => (0, 0x42),
+            9 => (16, 0x22),
+            _ => (0, 0x02),
+        };
+        for (j, w) in [0, offset, format, 0].iter().enumerate() {
+            m.write_u32(VAF + 16 * reg + 4 * j as u32, *w).unwrap();
+        }
+    }
+    d.select_vertex_shader_direct(m, VAF, 0).unwrap();
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for f in [x, y, 0.0, 1.0, 16.0 * x, 4.0 * y] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    for (i, w) in [VB_HEADER, 24, 0].iter().enumerate() {
+        m.write_u32(STREAM_INPUTS + 4 * i as u32, *w).unwrap();
+    }
+    let handle = d3d::GuestLayout::HALO2.static_vertex_shader | 1;
+    d.set_vertex_shader_input(m, handle, 1, STREAM_INPUTS).unwrap();
+    let mut def = PixelShaderDef {
+        combiner_count: 1,
+        texture_modes: texture_modes([TEX_PROJECT2D, 0, 0, 0]),
+        ..PixelShaderDef::default()
+    };
+    def.rgb_inputs[0] = inputs(REG_T0, REG_C0, 0, 0);
+    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.alpha_inputs[0] = inputs(REG_T0 | CHAN_ALPHA, REG_V0 | CHAN_ALPHA, 0, 0);
+    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.constant0[0] = 0xFFFF_80FF;
+    m.write(PSDEF, &def.to_bytes()).unwrap();
+    for (i, w) in [1, 0, PSDEF].iter().enumerate() {
+        m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
+    }
+    d.set_pixel_shader(m, PS_OBJECT).unwrap();
 }
