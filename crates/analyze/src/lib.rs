@@ -21,6 +21,7 @@ pub mod cfg;
 pub mod compare;
 pub mod dispatch;
 pub mod fpstats;
+mod codec;
 mod image;
 mod pointer_seeds;
 

@@ -1484,3 +1484,61 @@ fn cfg_branches_and_fallthrough_into_another_entry_exit() {
     assert_eq!(f.blocks[&0x11009].edges, [Edge { kind: EdgeKind::Fallthrough, target: Some(0x11010), exits: true }]);
     assert_eq!(f.blocks[&0x11009].end, 0x11010);
 }
+
+/// Every field, so a cached analysis is compared whole.
+fn fields(a: &Analysis) -> String {
+    let mut tails: Vec<_> = a.tail_sites.iter().collect();
+    tails.sort();
+    format!(
+        "{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{:?}\n{}\n{:?}\n{:?}\n{} {} {}\n{:?}\n{:?}\n{tails:?}\n{:?}",
+        a.functions.iter().map(|(v, f)| (v, f.start, f.source, &f.section, f.returns)).collect::<Vec<_>>(),
+        a.sections.iter().map(|s| (&s.name, s.size, s.code, s.data, s.padding, s.unknown, s.functions)).collect::<Vec<_>>(),
+        a.switches,
+        a.jump_tables,
+        a.conflicts,
+        a.rejected,
+        a.labels,
+        a.kernel_calls,
+        a.kernel_imports,
+        a.gaps,
+        a.ranges,
+        a.blacklisted,
+        a.rounds,
+        a.converged,
+        a.claims,
+        a.losers,
+        a.pointers,
+    )
+}
+
+#[test]
+fn an_encoded_analysis_decodes_to_the_same_analysis() {
+    let mut cases = vec![analysed()];
+    // A conflict, a gap, and a data pointer, so those fields aren't empty.
+    let data = xbe_full(&[0xE8, 0x0B, 0, 0, 0, 0xC3, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0x55, 0xFF, 0xFF], 0x100, &[TEXT + 6]);
+    cases.push(analyze(&Xbe::parse(&data).unwrap()).unwrap());
+    cases[1].losers.push(0x1234);
+    cases[1].rejected.insert((Source::GapScan, ConflictKind::Implausible), 3);
+    cases[1].kernel_calls.insert(95, 2);
+    for a in &cases {
+        let bytes = a.encode();
+        let b = Analysis::decode(&bytes).expect("decodes");
+        assert_eq!(fields(a), fields(&b));
+        assert_eq!(bytes, b.encode(), "encoding is deterministic");
+    }
+}
+
+#[test]
+fn a_damaged_analysis_encoding_is_refused() {
+    let bytes = analysed().encode();
+    assert!(Analysis::decode(&bytes[..bytes.len() - 1]).is_none(), "truncated");
+    assert!(Analysis::decode(&[&bytes[..], &[0]].concat()).is_none(), "trailing bytes");
+    let mut magic = bytes.clone();
+    magic[7] ^= 1;
+    assert!(Analysis::decode(&magic).is_none(), "another format version");
+    assert!(Analysis::decode(&[]).is_none());
+    // No truncation anywhere decodes, nor panics.
+    for n in 0..bytes.len() {
+        assert!(Analysis::decode(&bytes[..n]).is_none(), "prefix of {n} bytes");
+    }
+}
