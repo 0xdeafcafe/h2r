@@ -5,6 +5,20 @@
 //!
 //! Frame N is the draws after the (N-1)th present, so it matches
 //! `frame-N.png` from `H2_BOOT_GFX`.
+//!
+//! `H2_BOOT_CAPTURE=<dir>` records what a backend needs to redraw frame
+//! `H2_BOOT_CAPTURE_FRAME` (default 480) offline:
+//!
+//! - `textures.txt` and `tex-ID-L.bin`: every texture uploaded in the run
+//!   (descriptor, host format, and each decoded level's bytes), by ID;
+//! - `surfaces.txt`: every surface created and its handle;
+//! - `writes.txt` and `write-N.bin`: guest texels written into surfaces;
+//! - `frame.txt`: the frame's backend calls in order. A draw is the full
+//!   `ResolvedDraw` (`{:#?}`) with its vertex streams and indices moved to
+//!   `draw-K-sI.bin` and `draw-K-idx.bin` (u32 LE), and its textures as
+//!   the IDs above.
+//!
+//! The format is Rust `Debug` text: d3d and gfx types have no serde.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
@@ -43,6 +57,33 @@ pub struct DiagBackend<B> {
     log: Option<std::io::BufWriter<std::fs::File>>,
     frames: BTreeSet<u64>,
     in_frame: u64,
+    capture: Option<Capture>,
+    next_texture: u64,
+}
+
+/// A host texture with the ID the capture names it by.
+pub struct Tracked<T> {
+    pub id: u64,
+    pub inner: T,
+}
+
+struct Capture {
+    dir: std::path::PathBuf,
+    frame: u64,
+    draws: u64,
+    writes: u64,
+}
+
+impl Capture {
+    fn append(&self, file: &str, s: &str) {
+        let path = self.dir.join(file);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{s}");
+        }
+    }
+    fn blob(&self, file: &str, bytes: &[u8]) {
+        let _ = std::fs::write(self.dir.join(file), bytes);
+    }
 }
 
 impl<B> DiagBackend<B> {
@@ -60,7 +101,19 @@ impl<B> DiagBackend<B> {
             .split(',')
             .filter_map(|f| f.trim().parse().ok())
             .collect();
-        (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1 }, stats)
+        let capture = std::env::var_os("H2_BOOT_CAPTURE").and_then(|d| {
+            let dir = std::path::PathBuf::from(d);
+            std::fs::create_dir_all(&dir).map_err(|e| eprintln!("boot: H2_BOOT_CAPTURE {}: {e}", dir.display())).ok()?;
+            let frame = std::env::var("H2_BOOT_CAPTURE_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(480);
+            Some(Capture { dir, frame, draws: 0, writes: 0 })
+        });
+        (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0 }, stats)
+    }
+
+    /// The capture, while frame `H2_BOOT_CAPTURE_FRAME` is being drawn.
+    fn capturing(&mut self) -> Option<&mut Capture> {
+        let f = self.in_frame;
+        self.capture.as_mut().filter(|c| c.frame == f)
     }
 
     fn logging(&self) -> bool {
@@ -87,11 +140,14 @@ fn outcome_name(r: &Result<DrawOutcome, String>) -> String {
 
 impl<B: Backend> Backend for DiagBackend<B> {
     type Surface = B::Surface;
-    type Texture = B::Texture;
+    type Texture = Tracked<B::Texture>;
 
     fn create_surface(&mut self, format: D3DFormat, width: u32, height: u32, depth: bool) -> Result<Self::Surface, String> {
         let r = self.inner.create_surface(format, width, height, depth);
         self.line(format!("create_surface {format:?} {width}x{height} depth={depth} -> {r:?}"));
+        if let Some(c) = &self.capture {
+            c.append("surfaces.txt", &format!("frame {} create_surface {format:?} {width}x{height} depth={depth} -> {r:?}", self.in_frame));
+        }
         r
     }
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
@@ -102,13 +158,33 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Err(e) = &r {
             self.line(format!("upload_texture failed: {e}"));
         }
-        r
+        let id = self.next_texture;
+        self.next_texture += 1;
+        if let Some(c) = &self.capture {
+            let levels: Vec<String> = texture
+                .levels
+                .iter()
+                .enumerate()
+                .map(|(i, l)| {
+                    c.blob(&format!("tex-{id}-{i}.bin"), &l.data);
+                    format!("face {} level {} {}x{}x{} {} bytes", l.face, l.level, l.width, l.height, l.depth, l.data.len())
+                })
+                .collect();
+            c.append(
+                "textures.txt",
+                &format!("tex {id} frame {} host {:?} desc {:?} ok={} levels [{}]", self.in_frame, texture.host, texture.desc, r.is_ok(), levels.join("; ")),
+            );
+        }
+        r.map(|inner| Tracked { id, inner })
     }
     fn bc_supported(&self) -> bool {
         self.inner.bc_supported()
     }
     fn clear(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: Clear) -> Result<(), String> {
         self.line(format!("clear {color:?} depth={depth:?} {clear:?}"));
+        if let Some(c) = self.capturing() {
+            c.append("frame.txt", &format!("clear color={color:?} depth={depth:?} {clear:?}"));
+        }
         self.inner.clear(color, depth, clear)
     }
     fn draw(
@@ -118,7 +194,22 @@ impl<B: Backend> Backend for DiagBackend<B> {
         draw: &ResolvedDraw,
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
-        let r = self.inner.draw(color, depth, draw, textures);
+        let ids: Vec<Option<u64>> = textures.iter().map(|t| t.map(|t| t.id)).collect();
+        if let Some(c) = self.capturing() {
+            let k = c.draws;
+            c.draws += 1;
+            let mut d = draw.clone();
+            for (i, st) in d.streams.iter_mut().enumerate() {
+                c.blob(&format!("draw-{k}-s{i}.bin"), &std::mem::take(&mut st.data));
+            }
+            if let Some(idx) = d.indices.take() {
+                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
+                c.blob(&format!("draw-{k}-idx.bin"), &bytes);
+            }
+            c.append("frame.txt", &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"));
+        }
+        let inner: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &t.inner));
+        let r = self.inner.draw(color, depth, draw, inner);
         let out = outcome_name(&r);
         let t = &draw.target;
         let target = format!("{}x{} {:?}", t.width, t.height, t.format);
@@ -186,6 +277,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));
+        if let Some(c) = self.capturing() {
+            c.append("frame.txt", &format!("present {surface:?} flags={flags:#x}"));
+        }
         self.stats.lock().unwrap().presents += 1;
         self.in_frame += 1;
         if let Some(l) = &mut self.log {
@@ -194,6 +288,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         self.inner.present(surface, flags)
     }
     fn clear_rects(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: &RectClear) -> Result<DrawOutcome, String> {
+        if let Some(c) = self.capturing() {
+            c.append("frame.txt", &format!("clear_rects color={color:?} depth={depth:?} {clear:#?}"));
+        }
         let r = self.inner.clear_rects(color, depth, clear);
         self.line(format!("clear_rects {color:?} {} rects -> {}", clear.rects.len(), outcome_name(&r)));
         r
@@ -207,19 +304,34 @@ impl<B: Backend> Backend for DiagBackend<B> {
         layout: GuestLayoutKind,
     ) -> Result<Vec<u8>, String> {
         self.line(format!("read_surface {surface:?} {format:?} {width}x{height}"));
+        if let Some(c) = self.capturing() {
+            c.append("frame.txt", &format!("read_surface {surface:?} {format:?} {width}x{height}"));
+        }
         self.inner.read_surface(surface, format, width, height, layout)
     }
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         self.line(format!("copy_surface {src:?} -> {dst:?}"));
+        if let Some(c) = self.capturing() {
+            c.append("frame.txt", &format!("copy_surface {src:?} -> {dst:?}"));
+        }
         self.inner.copy_surface(src, dst)
     }
     fn write_surface(&mut self, surface: Self::Surface, desc: &TextureDesc, bytes: &[u8]) -> Result<bool, String> {
         self.line(format!("write_surface {surface:?}"));
+        if let Some(c) = &mut self.capture {
+            let n = c.writes;
+            c.writes += 1;
+            c.blob(&format!("write-{n}.bin"), bytes);
+            c.append("writes.txt", &format!("write {n} frame {} {surface:?} {desc:?}", self.in_frame));
+        }
         self.inner.write_surface(surface, desc, bytes)
     }
     fn create_texture_target(&mut self, format: D3DFormat, width: u32, height: u32) -> Result<Self::Surface, String> {
         let r = self.inner.create_texture_target(format, width, height);
         self.line(format!("create_texture_target {format:?} {width}x{height} -> {r:?}"));
+        if let Some(c) = &self.capture {
+            c.append("surfaces.txt", &format!("frame {} create_texture_target {format:?} {width}x{height} -> {r:?}", self.in_frame));
+        }
         r
     }
 }
