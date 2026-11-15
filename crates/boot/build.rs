@@ -1,39 +1,54 @@
-//! `UNREAD_SOURCE_HASH`: FNV-1a over the analyze crate's sources and the
-//! boot's fallback, so a cached unread-target set (fallback.rs) is dropped
-//! whenever the analysis or the reading of tables can have changed.
+//! Source hashes (FNV-1a over file names and contents), so cached results
+//! are dropped whenever what produced them can have changed:
+//!
+//! - `UNREAD_SOURCE_HASH`: the analyze crate and the boot's fallback, for
+//!   the cached unread-target set (fallback.rs).
+//! - `GENERATOR_SOURCE_HASH`: everything that turns an XBE into the native
+//!   module (xbe, analyze, ir, lift, emit and its C, x87, the runtime ABI
+//!   header and the boot's bridge C), for the dylib's build stamp (lib.rs).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-fn fnv(h: &mut u64, bytes: &[u8]) {
-    for &b in bytes {
-        *h ^= b as u64;
-        *h = h.wrapping_mul(0x100_0000_01b3);
-    }
-}
-
-fn walk(dir: &Path, files: &mut Vec<std::path::PathBuf>) {
+fn walk(dir: &Path, exts: &[&str], files: &mut Vec<PathBuf>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let p = e.path();
         if p.is_dir() {
-            walk(&p, files);
-        } else if p.extension().is_some_and(|x| x == "rs") {
+            walk(&p, exts, files);
+        } else if p.extension().is_some_and(|x| exts.iter().any(|e| x == *e)) {
             files.push(p);
         }
     }
 }
 
-fn main() {
+/// Hash every file with one of `exts` under `dirs`, plus `extra` files.
+fn hash(dirs: &[&str], exts: &[&str], extra: &[&str]) -> u64 {
     let mut files = Vec::new();
-    walk(Path::new("../analyze/src"), &mut files);
-    files.push("src/fallback.rs".into());
+    for d in dirs {
+        println!("cargo:rerun-if-changed={d}");
+        walk(Path::new(d), exts, &mut files);
+    }
+    files.extend(extra.iter().map(PathBuf::from));
     files.sort();
+    files.dedup();
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for f in &files {
         println!("cargo:rerun-if-changed={}", f.display());
-        fnv(&mut h, f.to_string_lossy().as_bytes());
-        fnv(&mut h, &std::fs::read(f).unwrap_or_default());
+        for &b in f.to_string_lossy().as_bytes().iter().chain(&std::fs::read(f).unwrap_or_default()) {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        }
     }
-    println!("cargo:rerun-if-changed=../analyze/src");
-    println!("cargo:rustc-env=UNREAD_SOURCE_HASH={h:016x}");
+    h
+}
+
+fn main() {
+    let unread = hash(&["../analyze/src"], &["rs"], &["src/fallback.rs"]);
+    println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
+    let generator = hash(
+        &["../xbe/src", "../analyze/src", "../ir/src", "../lift/src", "../emit/src", "../emit/c", "../x87/src", "../runtime/include", "c"],
+        &["rs", "c", "h"],
+        &[],
+    );
+    println!("cargo:rustc-env=GENERATOR_SOURCE_HASH={generator:016x}");
 }

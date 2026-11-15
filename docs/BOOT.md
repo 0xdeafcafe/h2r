@@ -24,12 +24,13 @@ copies. Nothing is ever written next to it.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib`, `kernel-trace.tsv` |
+| `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, ABI: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
 | `--data DIR` | `$TMPDIR/h2boot-data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
 | `--slices N` | 100000 | cooperative scheduler slices before giving up |
 | `--transfers N` | 50M | runner transfers per slice |
-| `--no-stopgaps` | | run on the bare kernel: no boot stopgaps or wrappers |
+| `--no-stopgaps` | | run on the bare kernel: no boot stopgaps or wrappers, and no fallback interpreter (an unsupported instruction stops the run where generated code reported it) |
+| `--fresh-data` | | empty `<data>/disk` and `<data>/metadata` first; refused, deleting nothing, if the disc, image or `--out` is inside either |
 | `--no-d3d`, `--no-dsound`, `--no-bink`, `--no-xapi` | | leave that HLE crate unregistered |
 
 | Environment | Effect |
@@ -52,6 +53,7 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_CAPTURE_SNAP=K[-L],...` | with a capture, read the colour target back after those draws of frame N (`snap-K.bin`, guest BGRA bytes) |
 | `H2_BOOT_CAPTURE_SKIP=K[-L],...` | with a capture, drop those draws of frame N |
 | `H2_BOOT_CAPTURE_LITE=1` | with a capture, record only the frame's draws, surfaces and snapshots (no uploads or guest writes); for snapshots |
+| `H2_BOOT_CAPTURE_TEX=K[-L],...` | with a lite capture, still keep these texture uploads' bytes (`tex-K-L.bin`; ids from `textures.txt` and `frame.txt`, stable across `--fresh-data` runs) |
 | `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
 | `H2_BOOT_DUMP=addr:len,...` | print guest words at the end of the run (hex) |
@@ -85,7 +87,8 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   does all of its arithmetic, conversions and transcendentals in
   crates/x87 (exact ext80).
   - When generated code stops on an instruction the lifter doesn't lower,
-    the trampoline interprets from there with `ir::interp`.
+    the trampoline interprets from there with `ir::interp`. This is a
+    stopgap like the others: `--no-stopgaps` turns it off.
   - x87 and leftover SSE instructions go to the emulators in `x87.rs`
     (a decoder over crates/x87's `abi` state machine, so stack faults,
     source-format exceptions and condition codes match what generated
@@ -165,9 +168,8 @@ Rendering differences still visible on master, with what the menu frame
   not narrowed);
 - the CAMPAIGN OPTIONS highlight bar draws as coloured noise (not narrowed).
 
-Until the analyzer fix lands, the CRT copy and unguarded switch targets
-go through the fallback (blocker 1): about 33k fallback entries by the
-profile screen.
+Unguarded switch targets the analyzer still doesn't read go through the
+fallback (blocker 1): about 45k fallback entries by the main menu.
 
 ### Milestones, from the entry point
 
@@ -224,7 +226,10 @@ Frame rate on master fd3e969 + boot, one run alone, with `H2_BOOT_GFX`
 every 60 presents: 532 presents in 307 s; the last 100 (main menu) at
 1.9 fps, 484 ms median frame. Audio runs on logical time through a
 `NullSink` (its frames are counted as dropped, by design), vblanks on
-the 60 Hz logical clock.
+the 60 Hz logical clock. When every thread waits with nothing timed but
+audio is still playing, the runner moves logical time on one audio
+quantum (5.3 ms) at a time (`dsound_glue::wake_idle`, at most 10 s with
+no thread running) instead of stopping with a deadlock.
 
 ### Menu idle benchmark
 
@@ -268,7 +273,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 
 | # | Blocker | Owner | What's needed | Size |
 | --- | --- | --- | --- | --- |
-| 1 | **Masked and holed jump tables** | analyze (1254e53 in review) | `jump_table()` sizes a switch only from a cmp/ja guard. The CRT copy (`0x320890`) indexes its tables with `and r,3` (slot 0 overlaps code) or a negated count (entries below the base), and `0x336f0`'s table (caller-checked index) has zero entries for impossible cases, where an unguarded read stops. The boot reads these tables from the image and interprets from their targets meanwhile. | S |
+| 1 | **Holed jump tables** | analyze | The CRT copy's masked and negative-index tables are read on master (bceed11), and the boot no longer scans them. Still unread: tables with zero entries for impossible cases, where an unguarded read stops (`0x336f0`, caller-checked index; `0x33980`; `0x22dcd9`: 65 site/target pairs on master). The boot reads these from the image and interprets from their targets meanwhile. | S |
 | 2 | **Fog and sky on the title scene** | gfx / shaders | Brown fog over everything, no sky colour, 8x8 blocky patterns. Not yet narrowed to a shader or texture format. | ? |
 | 3 | **RTT write-back replayed as a CPU write** | d3d (runtime_glue) or runtime | The barrier reports the device's own write-back pages at the next entry, so an unchanged render texture uploads again. Boot cannot tell them apart from other contexts' stores during the call: d3d's handlers would need to run under `Guest::writes_unreported(id)` for the boot's watch, or the device would need to report its own write ranges. Performance only. | S |
 | 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (377b675). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
@@ -278,7 +283,8 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
 | Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
-| Fallback from unread jump-table targets (the CRT copy's and every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1) |
+| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1) |
+| Interpreting past instructions the lifter doesn't lower (x87 and SSE leftovers) | fallback.rs `trampoline`, `set_recovery` | lift |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired

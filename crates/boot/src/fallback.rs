@@ -50,6 +50,16 @@ struct State {
     cache: HashMap<u32, ir::IrInsn>,
 }
 
+/// Whether an unsupported-instruction STOP from generated code is
+/// interpreted (a boot stopgap). Off until [`set_recovery`]: `--no-stopgaps`
+/// leaves the STOP as the module reported it.
+static RECOVERY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Turn the interpreter's recovery from generated-code STOPs on or off.
+pub fn set_recovery(on: bool) {
+    RECOVERY.store(on, std::sync::atomic::Ordering::SeqCst);
+}
+
 /// Set by the first [`init`]; never cleared.
 static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -364,7 +374,7 @@ pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, s
     };
     // SAFETY: the real handler has the same contract.
     let t = unsafe { f(cpu, ctx, sel) };
-    if t.kind != abi::STOP {
+    if t.kind != abi::STOP || !RECOVERY.load(std::sync::atomic::Ordering::SeqCst) {
         return t;
     }
     // SAFETY: the handler has returned; the pair is ours again.
@@ -382,12 +392,6 @@ pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, s
     run(cpu, ctx)
 }
 
-/// The CRT copy routine (memcpy and memmove share one body), whose
-/// dispatch tables the analyzer cannot read; see [`copy_targets`].
-pub const CRT_COPY: u32 = 0x0032_0890;
-/// How far past [`CRT_COPY`] its code and tables reach.
-const CRT_COPY_LEN: u32 = 0x400;
-
 /// Jump-table targets the analyzer did not read; see [`unread_targets`].
 pub struct Unread {
     /// `jmp` site to the targets its table holds.
@@ -401,60 +405,26 @@ static UNREAD: OnceLock<Unread> = OnceLock::new();
 /// analysis is built.
 static UNREAD_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Every jump-table target of the CRT copy routine, read from the image.
-///
-/// Its dispatches are `jmp [r*4+table]` with the index masked by `and r,3`
-/// or negated (the backward dword tail indexes below its base), not
-/// bounded by a cmp/ja guard. The analyzer reads such tables as unbounded,
-/// stops at slot 0 (which overlaps code) or misses the negative slots, and
-/// emits the switch with too few cases. Every `jmp [r*4+disp32]` in the
-/// routine names a table, and the 8 dwords on either side of it that point
-/// back into the routine are its targets.
-pub fn copy_targets(xbe_bytes: &[u8]) -> Vec<u32> {
-    copy_sites(xbe_bytes).into_values().flatten().collect::<std::collections::BTreeSet<_>>().into_iter().collect()
-}
-
-fn copy_sites(xbe_bytes: &[u8]) -> HashMap<u32, Vec<u32>> {
-    let mut out = HashMap::new();
-    let Ok(x) = xbe::Xbe::parse(xbe_bytes) else { return out };
-    let (lo, hi) = (CRT_COPY, CRT_COPY + CRT_COPY_LEN);
-    let Ok(code) = x.bytes_at(lo, CRT_COPY_LEN as usize) else { return out };
-    let inside = |v: u32| (lo..hi).contains(&v) && v != lo;
-    for i in 0..code.len().saturating_sub(7) {
-        let Some(table) = table_of(&code[i..]) else { continue };
-        if !(lo..hi).contains(&table) {
-            continue;
-        }
-        let targets: Vec<u32> = (-8i32..8)
-            .filter_map(|k| x.read_u32(table.wrapping_add_signed(4 * k)).ok())
-            .filter(|&v| inside(v))
-            .collect();
-        out.insert(lo + i as u32, targets);
-    }
-    out
-}
-
 /// The table of a `jmp [index*4+disp32]` (FF /4, SIB scale 4, no base).
 fn table_of(code: &[u8]) -> Option<u32> {
     (code.len() >= 7 && code[0] == 0xff && code[1] == 0x24 && code[2] & 0xc7 == 0x85)
         .then(|| u32::from_le_bytes(code[3..7].try_into().unwrap()))
 }
 
-/// Jump-table targets the analyzer emitted no case for:
-///
-/// - the CRT copy routine's ([`copy_targets`]);
-/// - every switch the analyzer found unguarded (`SwitchKind::Unbounded`):
-///   its table is read from the image until an entry is neither zero nor
-///   code in the site's section, skipping zeros. The analyzer stops at the
-///   first zero, which some tables use for impossible cases (`0x336f0`,
-///   indexed by a caller-checked value). Up to 256 entries.
+/// Jump-table targets the analyzer emitted no case for: every switch it
+/// found unguarded (`SwitchKind::Unbounded`) has its table read from the
+/// image until an entry is neither zero nor code in the site's section,
+/// skipping zeros. The analyzer stops at the first zero, which some tables
+/// use for impossible cases (`0x336f0`, indexed by a caller-checked value).
+/// Up to 256 entries. (The CRT copy routine's masked and negative-index
+/// tables, once read here too, are read by analyze on master, bceed11.)
 ///
 /// Owner: analyze (`jump_table`).
 pub fn unread_targets(xbe_bytes: &[u8], analysis: &analyze::Analysis) -> Unread {
-    let mut by_site = copy_sites(xbe_bytes);
+    let mut by_site = HashMap::new();
     if let Ok(x) = xbe::Xbe::parse(xbe_bytes) {
         for (&site, kind) in &analysis.switches {
-            if *kind != analyze::SwitchKind::Unbounded || by_site.contains_key(&site) {
+            if *kind != analyze::SwitchKind::Unbounded {
                 continue;
             }
             let (Some(sec), Ok(code)) = (x.section_containing(site), x.bytes_at(site, 7)) else { continue };
@@ -541,7 +511,7 @@ fn unread_cache_path(xbe: &[u8]) -> Option<std::path::PathBuf> {
     Some(dir.join(format!("unread-{:016x}-{}.txt", fnv64(xbe), env!("UNREAD_SOURCE_HASH"))))
 }
 
-fn fnv64(bytes: &[u8]) -> u64 {
+pub(crate) fn fnv64(bytes: &[u8]) -> u64 {
     let mut h = 0xcbf2_9ce4_8422_2325u64;
     for &b in bytes {
         h ^= b as u64;
@@ -593,6 +563,30 @@ mod tests {
         TransferAbi::ret(0)
     }
 
+    unsafe extern "C" fn stops(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
+        TransferAbi::stop(7)
+    }
+
+    /// The process-wide tables, once: 0x1000 returns, 0x3000 stops.
+    fn tables() -> &'static Tables {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            init(&[], &[(0x1000, one as GuestFn), (0x3000, stops as GuestFn)], &[]).unwrap();
+        });
+        TABLES.get().unwrap()
+    }
+
+    #[test]
+    fn no_stopgaps_keeps_the_generated_stop() {
+        tables();
+        set_recovery(false);
+        let mut cpu = CpuAbi { eip: 0x3000, ..Default::default() };
+        // With recovery off the trampoline returns before it touches ctx.
+        let t = unsafe { trampoline(&mut cpu, std::ptr::null_mut(), 0x3000) };
+        assert_eq!((t.kind, t.event_id), (abi::STOP, 7));
+        assert_eq!(cpu.eip, 0x3000);
+    }
+
     #[test]
     fn unread_cache_round_trips() {
         let dir = std::env::temp_dir().join(format!("h2boot-unread-test-{}", std::process::id()));
@@ -625,9 +619,8 @@ mod tests {
 
     #[test]
     fn a_second_module_is_refused() {
-        assert_eq!(init(&[], &[(0x1000, one as GuestFn)], &[]), Ok(0));
+        let t = tables();
         assert!(init(&[], &[(0x2000, one as GuestFn)], &[]).is_err());
-        let t = TABLES.get().unwrap();
         assert!(t.entries.contains(&0x1000) && !t.entries.contains(&0x2000));
     }
 }

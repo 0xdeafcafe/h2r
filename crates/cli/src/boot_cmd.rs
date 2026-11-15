@@ -1,6 +1,6 @@
 //! `h2 build` and `h2 run`: the boot tracer (crates/boot, docs/BOOT.md).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -13,7 +13,9 @@ const USAGE: &str = "usage:
 --fresh-data empties it first: the cache partitions, profiles and saves a
   run leaves behind change what the next run does, so runs compared frame
   for frame need it (and must not share a data directory while running).
-`run` builds first when the dylib is missing.";
+  It refuses to when the disc, image or --out lies inside what it would empty.
+`run` builds first when the dylib is missing or was built from another
+image or generator (its .stamp).";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let tmp = std::env::temp_dir();
@@ -52,18 +54,18 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let disc = disc.or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from)).context(USAGE)?;
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
-    if cmd == "build" || !lib.exists() {
+    if cmd == "build" || !boot::dylib_current(&xbe, &lib) {
+        if cmd != "build" && lib.exists() {
+            eprintln!("h2 run: {} was built from another image or generator; rebuilding", lib.display());
+        }
         boot::build(&xbe, &out, jobs)?;
     }
     if cmd == "build" {
         return Ok(());
     }
     if fresh {
-        for sub in ["disk", "metadata"] {
-            let d = data.join(sub);
-            if d.exists() {
-                std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
-            }
+        for d in fresh_data_dirs(&data, &[&disc, &out])? {
+            std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
         }
     }
     let r = boot::run(
@@ -78,4 +80,77 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     println!("stop: {}", r.stop);
     println!("last eip: {:#010x}", r.eip);
     Ok(())
+}
+
+/// The directories `--fresh-data` empties (`<data>/disk`, `<data>/metadata`,
+/// those that exist), or an error, deleting nothing, when one of them is or
+/// contains a path in `keep` (the disc or image, the build output).
+fn fresh_data_dirs(data: &Path, keep: &[&Path]) -> Result<Vec<PathBuf>> {
+    // Both spellings: as given (made absolute) and with links resolved.
+    let forms = |p: &Path| -> Vec<PathBuf> {
+        let mut v = Vec::new();
+        if let Ok(a) = std::path::absolute(p) {
+            v.push(a);
+        }
+        if let Ok(c) = p.canonicalize() {
+            v.push(c);
+        }
+        v
+    };
+    let mut out = Vec::new();
+    for sub in ["disk", "metadata"] {
+        let d = data.join(sub);
+        if !d.exists() {
+            continue;
+        }
+        for k in keep {
+            if forms(&d).iter().any(|d| forms(k).iter().any(|k| k.starts_with(d))) {
+                bail!("--fresh-data would delete {} with {} in it; use another --data", d.display(), k.display());
+            }
+        }
+        out.push(d);
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("h2-boot-cmd-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn fresh_data_does_not_delete_its_input() {
+        let root = scratch("input");
+        let data = root.join("data");
+        let image = data.join("disk/Partition1/synthetic.xbe");
+        std::fs::create_dir_all(image.parent().unwrap()).unwrap();
+        std::fs::write(&image, b"XBEH").unwrap();
+        std::fs::create_dir_all(data.join("metadata")).unwrap();
+        let out = root.join("out");
+        assert!(fresh_data_dirs(&data, &[&image, &out]).is_err());
+        // The image inside metadata, or the data dir's partitions as --out.
+        assert!(fresh_data_dirs(&data, &[&data.join("metadata/x.iso")]).is_err(), "inside metadata, by its spelling");
+        assert!(fresh_data_dirs(&data, &[&data.join("disk")]).is_err(), "equal");
+        // Spelled with `..` it is still inside.
+        assert!(fresh_data_dirs(&data, &[&data.join("metadata/../disk/Partition1/synthetic.xbe")]).is_err());
+        assert!(image.exists(), "nothing was deleted");
+        let elsewhere = root.join("halo2.iso");
+        std::fs::write(&elsewhere, b"").unwrap();
+        let dirs = fresh_data_dirs(&data, &[&elsewhere, &out]).unwrap();
+        assert_eq!(dirs, [data.join("disk"), data.join("metadata")]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn fresh_data_skips_what_is_not_there() {
+        let root = scratch("empty");
+        assert!(fresh_data_dirs(&root.join("data"), &[&root.join("halo2.iso")]).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

@@ -484,5 +484,8 @@ mod tests {
         let ours = methods(include_str!("d3d_diag.rs"), "impl<B: Backend> Backend for DiagBackend<B>");
         let missing: Vec<_> = tr.difference(&ours).collect();
         assert!(missing.is_empty(), "DiagBackend does not forward {missing:?}");
+        let headless = methods(include_str!("d3d_glue.rs"), "impl d3d::backend::Backend for Headless");
+        let missing: Vec<_> = tr.difference(&headless).collect();
+        assert!(missing.is_empty(), "Headless does not forward {missing:?}");
     }
 }

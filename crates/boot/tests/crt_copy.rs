@@ -1,13 +1,15 @@
-//! The CRT copy routine through the fallback interpreter, with the boot's
-//! table-target stopgap: every size, alignment and overlap direction must
-//! copy as memmove does, including the switches the analyzer emits with
-//! too few cases.
+//! The CRT copy routine through the fallback interpreter: every size,
+//! alignment and overlap direction must copy as memmove does, through the
+//! masked and negative-index jump tables analyze now reads (bceed11), with
+//! the boot's remaining unread-table stopgap installed.
 //!
 //! `H2_XBE=/path/default.xbe cargo test -p boot --test crt_copy -- --ignored`
 
 use runtime::guest::Permissions;
 use runtime::{CpuAbi, Event, ExecCtx, Runner};
 
+/// The CRT copy routine (memcpy and memmove share one body).
+const CRT_COPY: u32 = 0x0032_0890;
 const BUF: u32 = 0x3000_0000;
 const STACK: u32 = 0x3010_0000;
 
@@ -19,13 +21,11 @@ fn memmove_sweep_through_the_fallback() {
     let loaded = runtime::load_xbe_with(&bytes, &runtime::loader::LoadOptions::halo2()).unwrap();
     let rt = loaded.runtime;
     boot::fallback::init(&bytes, &[], &[]).unwrap();
-    let targets = boot::fallback::copy_targets(&bytes);
-    // The backward dword tail's targets sit below its table base.
-    assert!(targets.contains(&0x0032_0b5c) && targets.contains(&0x0032_092c), "{targets:x?}");
-    assert!(boot::fallback::install_unread_targets(&rt) > 0);
+    boot::fallback::set_recovery(true);
+    boot::fallback::install_unread_targets(&rt);
     rt.edit_dispatch(|d| {
-        d.register_override(boot::fallback::CRT_COPY, "test: CRT copy in the fallback", |cpu, ctx, _| {
-            cpu.eip = boot::fallback::CRT_COPY;
+        d.register_override(CRT_COPY, "test: CRT copy in the fallback", |cpu, ctx, _| {
+            cpu.eip = CRT_COPY;
             Ok(boot::fallback::interpret(cpu, ctx))
         });
     });
@@ -63,7 +63,7 @@ fn memmove_sweep_through_the_fallback() {
                 m.set_u32(cpu.esp + 4 * k as u32, w).unwrap();
             }
         }
-        let t = Runner::default().run(&mut cpu, &mut ctx, boot::fallback::CRT_COPY);
+        let t = Runner::default().run(&mut cpu, &mut ctx, CRT_COPY);
         let mut got = vec![0u8; 0x4000];
         rt.memory().read_bytes(BUF, &mut got, 1).unwrap();
         let ok = ctx.event(t.event_id) == Some(&Event::HarnessExit)

@@ -1,5 +1,6 @@
 //! Installs crates/d3d through its own registration (`d3d::register`,
-//! docs/d3d.md "Integration") on a headless RecordingBackend, so the boot
+//! docs/d3d.md "Integration") on a headless RecordingBackend that keeps no
+//! history ([`Headless`]), so the boot
 //! tracer gets past device creation without a window (or on a headless
 //! GfxBackend with `H2_BOOT_GFX`). Uploads are `UploadPolicy::Tracked`,
 //! fed by the write barrier below.
@@ -39,7 +40,7 @@ impl Installed {
 /// `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
     match std::env::var_os("H2_BOOT_GFX") {
-        None => install_with(rt, RecordingBackend::new()),
+        None => install_with(rt, Headless::default()),
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir)?;
@@ -86,6 +87,111 @@ fn save_png(
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header()?.write_image_data(&px)?;
     Ok(())
+}
+
+/// The headless default: a `RecordingBackend` that forgets every call once
+/// it returns, except the surface creations and destructions its
+/// `destroy_surface` checks against. Without this the recorder would hold
+/// a copy of every draw (streams included) for the whole run; the report's
+/// draw counts come from `DiagBackend`.
+#[derive(Default)]
+pub struct Headless(RecordingBackend);
+
+impl Headless {
+    fn forget<T>(&mut self, r: T) -> T {
+        use d3d::backend::Recorded;
+        if self.0.calls.last().is_some_and(|c| !matches!(c, Recorded::Surface { .. } | Recorded::DestroySurface { .. })) {
+            self.0.calls.pop();
+        }
+        r
+    }
+
+    /// Calls still held (surface lifetimes only).
+    pub fn held(&self) -> usize {
+        self.0.calls.len()
+    }
+}
+
+impl d3d::backend::Backend for Headless {
+    type Surface = u32;
+    type Texture = u32;
+
+    fn create_surface(&mut self, format: gfx::D3DFormat, width: u32, height: u32, depth: bool) -> Result<u32, String> {
+        self.0.create_surface(format, width, height, depth)
+    }
+    fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
+        self.0.destroy_surface(surface)
+    }
+    fn upload_texture(&mut self, texture: &gfx::texture::DecodedTexture) -> Result<u32, String> {
+        let r = self.0.upload_texture(texture);
+        self.forget(r)
+    }
+    fn bc_supported(&self) -> bool {
+        self.0.bc_supported()
+    }
+    fn clear(&mut self, color: u32, depth: Option<u32>, clear: gfx::Clear) -> Result<(), String> {
+        let r = self.0.clear(color, depth, clear);
+        self.forget(r)
+    }
+    fn draw(
+        &mut self,
+        color: u32,
+        depth: Option<u32>,
+        draw: &d3d::backend::ResolvedDraw,
+        textures: [Option<&u32>; 4],
+    ) -> Result<d3d::backend::DrawOutcome, String> {
+        let r = self.0.draw(color, depth, draw, textures);
+        self.forget(r)
+    }
+    fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
+        let r = self.0.present(surface, flags);
+        self.forget(r)
+    }
+    fn clear_rects(&mut self, color: u32, depth: Option<u32>, clear: &d3d::backend::RectClear) -> Result<d3d::backend::DrawOutcome, String> {
+        let r = self.0.clear_rects(color, depth, clear);
+        self.forget(r)
+    }
+    fn read_surface(
+        &mut self,
+        surface: u32,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        layout: d3d::backend::GuestLayoutKind,
+    ) -> Result<Vec<u8>, String> {
+        let r = self.0.read_surface(surface, format, width, height, layout);
+        self.forget(r)
+    }
+    fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
+        let r = self.0.copy_surface(src, dst);
+        self.forget(r)
+    }
+    fn write_surface(&mut self, surface: u32, desc: &gfx::texture::TextureDesc, bytes: &[u8]) -> Result<bool, String> {
+        let r = self.0.write_surface(surface, desc, bytes);
+        self.forget(r)
+    }
+    fn snapshot_surface(&mut self, surface: u32, opaque: bool) -> Result<Option<u32>, String> {
+        let r = self.0.snapshot_surface(surface, opaque);
+        self.forget(r)
+    }
+    fn clear_pixel_count(&mut self) -> Result<(), String> {
+        let r = self.0.clear_pixel_count();
+        self.forget(r)
+    }
+    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        let r = self.0.report_pixel_count();
+        self.forget(r)
+    }
+    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        let r = self.0.read_pixel_count(ticket);
+        self.forget(r)
+    }
+    fn drop_pixel_count(&mut self, ticket: u64) {
+        self.0.drop_pixel_count(ticket)
+    }
+    fn create_texture_target(&mut self, format: gfx::D3DFormat, width: u32, height: u32) -> Result<u32, String> {
+        self.0.create_texture_target(format, width, height)
+    }
 }
 
 fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime, backend: B) -> anyhow::Result<Installed> {
@@ -326,4 +432,35 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d3d::backend::Backend;
+
+    #[test]
+    fn headless_keeps_only_surface_lifetimes() {
+        let mut b = Headless::default();
+        let s = b.create_surface(gfx::D3DFormat::LinA8R8G8B8, 64, 64, false).unwrap();
+        let desc = gfx::texture::TextureDesc {
+            format: gfx::D3DFormat::LinA8R8G8B8,
+            kind: gfx::texture::TextureKind::D2,
+            width: 64,
+            height: 64,
+            depth: 1,
+            levels: 1,
+            pitch: 256,
+        };
+        let bytes = vec![0u8; 64 * 64 * 4];
+        for _ in 0..1000 {
+            b.write_surface(s, &desc, &bytes).unwrap();
+            b.clear(s, None, gfx::Clear { color: Some([0.0; 4]), depth: None, stencil: None }).unwrap();
+            b.present(s, 0).unwrap();
+        }
+        assert_eq!(b.held(), 1, "only the surface creation is held");
+        b.destroy_surface(s).unwrap();
+        assert!(b.destroy_surface(s).is_err(), "destroy is still checked");
+        assert_eq!(b.held(), 2);
+    }
 }

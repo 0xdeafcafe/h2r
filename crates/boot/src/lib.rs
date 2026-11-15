@@ -56,9 +56,35 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
     Ok(iso.read(&entry)?)
 }
 
+/// What a module is built from: the image's hash, the generator sources'
+/// hash (build.rs) and the module ABI. [`build`] writes it next to the dylib
+/// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
+/// differs, and `h2 run` rebuilds instead.
+pub fn build_stamp(xbe_bytes: &[u8]) -> String {
+    format!(
+        "xbe {:016x} generator {} abi {}\n",
+        fallback::fnv64(xbe_bytes),
+        env!("GENERATOR_SOURCE_HASH"),
+        runtime::cpu::ABI_VERSION
+    )
+}
+
+fn stamp_path(dylib: &Path) -> PathBuf {
+    let mut p = dylib.as_os_str().to_owned();
+    p.push(".stamp");
+    PathBuf::from(p)
+}
+
+/// Whether `dylib` exists and was built from this image by this generator.
+pub fn dylib_current(xbe_bytes: &[u8], dylib: &Path) -> bool {
+    dylib.exists() && std::fs::read_to_string(stamp_path(dylib)).is_ok_and(|s| s == build_stamp(xbe_bytes))
+}
+
 /// Lift, emit and compile the image into `out/libh2game.dylib`.
 pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
+    // A failed build must not leave an old stamp vouching for a new dylib.
+    let _ = std::fs::remove_file(stamp_path(&out.join(DYLIB)));
     let t = Instant::now();
     let a = analyze::analyze(&x)?;
     eprintln!("analyze: {:.1}s, {} functions", t.elapsed().as_secs_f64(), a.functions.len());
@@ -112,6 +138,7 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     let t = Instant::now();
     emit::compile::host_dylib(&b, &src, &[("h2boot_bridge.c", BRIDGE), ("h2boot_bridge_x87.c", BRIDGE_X87)], &lib).map_err(anyhow::Error::msg)?;
     eprintln!("link: {:.1}s -> {}", t.elapsed().as_secs_f64(), lib.display());
+    std::fs::write(stamp_path(&lib), build_stamp(xbe_bytes)).with_context(|| format!("stamping {}", lib.display()))?;
     Ok(lib)
 }
 
@@ -259,6 +286,14 @@ pub struct RunReport {
 /// the entry thread.
 pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
+    if !dylib_current(xbe_bytes, dylib) {
+        bail!(
+            "{} was not built from this image by this generator (stamp {} wants {:?}); rebuild it with `h2 build`",
+            dylib.display(),
+            stamp_path(dylib).display(),
+            build_stamp(xbe_bytes).trim()
+        );
+    }
     // Keep Halo's fixed arena, physical [0x61000, 0x3145000), free, with its
     // contiguous window at 0x80061000 and (boot addition) its write-combined
     // window at 0xf0061000, so MmAllocateContiguousMemoryEx can return
@@ -280,9 +315,11 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     let t = Instant::now();
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
+    // Interpreting past unsupported instructions is a stopgap too.
+    fallback::set_recovery(opts.stopgaps);
     if opts.stopgaps {
         let unread = fallback::install_unread_targets(&loaded.runtime);
-        crate::log::note(&format!("fallback: {unread} CRT copy table targets registered"));
+        crate::log::note(&format!("fallback: {unread} unread jump-table targets registered"));
     }
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
@@ -370,6 +407,8 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut input_errors = 0u64;
     let mut audio_errors: Vec<String> = Vec::new();
+    // Logical time added for pending audio alone since a thread last ran.
+    let mut audio_idle = 0u64;
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
     for slice in 0..opts.max_slices {
@@ -380,9 +419,21 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             script.step(slice, pad);
         }
         outcome = m.run(1).context("machine run")?;
+        // Every thread waits and nothing is timed: pending audio is a wake
+        // source the scheduler does not know about (dsound_glue::wake_idle).
+        if matches!(outcome, kernel::RunOutcome::Deadlock { .. })
+            && let Some(a) = &ds
+        {
+            match dsound_glue::wake_idle(a, &k, &loaded.runtime, &mut audio_idle) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(e) => audio_errors.push(format!("slice {slice}: {e}")),
+            }
+        }
         if !matches!(outcome, kernel::RunOutcome::SliceLimit) {
             break;
         }
+        audio_idle = 0;
         if let Some(x) = &xa
             && xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))).is_err()
         {
@@ -547,3 +598,25 @@ pub mod log {
 
 /// Collected shim diagnostics.
 pub(crate) static SHIM_EVENTS: Mutex<Vec<(u32, u32, String)>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dylib_is_current_only_for_its_image_and_generator() {
+        let dir = std::env::temp_dir().join(format!("h2boot-stamp-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = dir.join(DYLIB);
+        let (a, b) = (b"XBEH image a".as_slice(), b"XBEH image b".as_slice());
+        assert!(!dylib_current(a, &lib), "missing");
+        std::fs::write(&lib, b"").unwrap();
+        assert!(!dylib_current(a, &lib), "no stamp: built before stamps, or the build failed");
+        std::fs::write(stamp_path(&lib), build_stamp(a)).unwrap();
+        assert!(dylib_current(a, &lib));
+        assert!(!dylib_current(b, &lib), "another image");
+        std::fs::write(stamp_path(&lib), build_stamp(a).replace(env!("GENERATOR_SOURCE_HASH"), "0000000000000000")).unwrap();
+        assert!(!dylib_current(a, &lib), "another generator");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

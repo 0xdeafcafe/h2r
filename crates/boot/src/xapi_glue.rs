@@ -49,8 +49,12 @@ pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Resul
 ///
 /// Example, title to main menu: `START@f300,DOWN@f420,A@f440`.
 ///
+/// Holds combine: a physical input stays down while any entry holding it
+/// (directly or through a binding) is active, whatever the entry order.
+/// An endpoint past `u64::MAX` is a parse error.
+///
 /// Minimal on purpose: the input-full lane's scripted source replaces it.
-pub struct InputScript(Vec<Entry>);
+pub struct InputScript(Vec<Entry>, Mutex<Vec<input::bindings::Input>>);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum When {
@@ -121,24 +125,19 @@ fn parse_when(t: &str, frame_default: bool) -> Option<When> {
 fn parse_entry(item: &str) -> Option<Entry> {
     let (buttons, when) = item.trim().split_once('@')?;
     let controls = buttons.split('|').map(|b| control(b.trim()).map_or_else(|| Hold::Key(b.trim().to_string()), Hold::Control)).collect();
+    let later = |down: When, d: u64| match down {
+        When::Slice(s) => s.checked_add(d).map(When::Slice),
+        When::Frame(f) => f.checked_add(d).map(When::Frame),
+    };
     let (down, up) = if let Some((a, d)) = when.split_once('+') {
         let down = parse_when(a, false)?;
-        let d: u64 = d.trim().parse().ok()?;
-        let up = match down {
-            When::Slice(s) => When::Slice(s + d),
-            When::Frame(f) => When::Frame(f + d),
-        };
-        (down, up)
+        (down, later(down, d.trim().parse().ok()?)?)
     } else if let Some((a, b)) = when.split_once('-') {
         let down = parse_when(a, false)?;
         (down, parse_when(b, matches!(down, When::Frame(_)))?)
     } else {
         let down = parse_when(when, false)?;
-        let up = match down {
-            When::Slice(s) => When::Slice(s + 100),
-            When::Frame(f) => When::Frame(f + 4),
-        };
-        (down, up)
+        (down, later(down, if matches!(down, When::Frame(_)) { 4 } else { 100 })?)
     };
     Some(Entry { text: item.trim().to_string(), controls, down, up, state: Default::default() })
 }
@@ -157,7 +156,7 @@ impl InputScript {
                 }
             }
         }
-        InputScript(entries)
+        InputScript(entries, Mutex::new(Vec::new()))
     }
 
     pub fn from_env() -> Self {
@@ -178,15 +177,20 @@ impl InputScript {
         self.0.is_empty()
     }
 
-    fn press(pad: &input::backend::keyboard::KeyboardMouse, hold: &Hold, down: bool) {
-        let inputs = match hold {
-            Hold::Control(c) => pad.bindings().inputs(*c).to_vec(),
-            Hold::Key(k) => vec![input::bindings::Input::Key(k.clone())],
+    /// The physical input a hold presses: a control's first binding, or
+    /// the key (canonical, so `Space` and `space` are one input).
+    fn physical(pad: &input::backend::keyboard::KeyboardMouse, hold: &Hold) -> Option<input::bindings::Input> {
+        let i = match hold {
+            Hold::Control(c) => pad.bindings().inputs(*c).first().cloned(),
+            Hold::Key(k) => Some(input::bindings::Input::Key(input::bindings::canonical_key(k).unwrap_or_else(|| k.clone()))),
         };
-        let Some(i) = inputs.first() else {
+        if i.is_none() {
             crate::log::note(&format!("input: {hold:?} has no keyboard binding"));
-            return;
-        };
+        }
+        i
+    }
+
+    fn press(pad: &input::backend::keyboard::KeyboardMouse, i: &input::bindings::Input, down: bool) {
         match i {
             input::bindings::Input::Key(k) if down => drop(pad.key_down(k)),
             input::bindings::Input::Key(k) => drop(pad.key_up(k)),
@@ -196,19 +200,38 @@ impl InputScript {
 
     /// Apply the script before `slice`, at the current present count.
     pub fn step(&self, slice: u64, pad: &input::backend::keyboard::KeyboardMouse) {
+        self.step_at(slice, crate::d3d_diag::presents(), pad);
+    }
+
+    fn step_at(&self, slice: u64, frame: u64, pad: &input::backend::keyboard::KeyboardMouse) {
         use std::sync::atomic::Ordering::Relaxed;
-        let frame = crate::d3d_diag::presents();
+        let mut want: Vec<input::bindings::Input> = Vec::new();
         for e in &self.0 {
             let st = e.state.load(Relaxed);
             if st == 0 && e.down.reached(slice, frame) {
-                e.controls.iter().for_each(|h| Self::press(pad, h, true));
                 e.state.store(1, Relaxed);
                 eprintln!("input: `{}` down at slice {slice}, present {frame}", e.text);
             } else if st == 1 && e.up.reached(slice, frame) {
-                e.controls.iter().for_each(|h| Self::press(pad, h, false));
                 e.state.store(2, Relaxed);
             }
+            if e.state.load(Relaxed) == 1 {
+                for i in e.controls.iter().filter_map(|h| Self::physical(pad, h)) {
+                    if !want.contains(&i) {
+                        want.push(i);
+                    }
+                }
+            }
         }
+        // Transitions from the previous aggregate: overlapping, adjacent and
+        // aliased holds of one input never release it early.
+        let mut held = self.1.lock().unwrap();
+        for i in held.iter().filter(|i| !want.contains(i)) {
+            Self::press(pad, i, false);
+        }
+        for i in want.iter().filter(|i| !held.contains(i)) {
+            Self::press(pad, i, true);
+        }
+        *held = want;
     }
 }
 
@@ -264,6 +287,56 @@ mod tests {
             ]
         );
         assert_eq!(parse_entry("A@f10-12").map(|e| e.up), Some(When::Frame(12)));
+    }
+
+    #[test]
+    fn overflowing_endpoints_are_parse_errors() {
+        for bad in ["A@18446744073709551615", "A@f18446744073709551615", "A@18446744073709551600+100", "A@f5+18446744073709551615"] {
+            assert!(parse_entry(bad).is_none(), "{bad}");
+        }
+        assert!(InputScript::parse("A@18446744073709551615").is_empty());
+        assert!(parse_entry("A@18446744073709551515").is_some());
+    }
+
+    /// Slices 0..20: whether A is down before each.
+    fn a_timeline(spec: &str) -> Vec<bool> {
+        let pad = input::backend::keyboard::KeyboardMouse::new(input::bindings::Bindings::default());
+        let idle = format!("{:?}", pad.state());
+        let s = InputScript::parse(spec);
+        (0..20)
+            .map(|slice| {
+                s.step_at(slice, 0, &pad);
+                format!("{:?}", pad.state()) != idle
+            })
+            .collect()
+    }
+
+    fn held(from: u64, to: u64) -> Vec<bool> {
+        (0..20).map(|t| (from..to).contains(&t)).collect()
+    }
+
+    #[test]
+    fn overlapping_holds_keep_the_button_down() {
+        assert_eq!(a_timeline("A@0-10,A@5-15"), held(0, 15));
+        assert_eq!(a_timeline("A@5-15,A@0-10"), held(0, 15));
+        assert_eq!(a_timeline("A@0-15,A@5-10"), held(0, 15));
+    }
+
+    #[test]
+    fn adjacent_holds_do_not_depend_on_entry_order() {
+        assert_eq!(a_timeline("A@0-5,A@5-10"), held(0, 10));
+        assert_eq!(a_timeline("A@5-10,A@0-5"), held(0, 10));
+    }
+
+    #[test]
+    fn aliased_holds_share_one_key() {
+        let pad = input::backend::keyboard::KeyboardMouse::new(input::bindings::Bindings::default());
+        let Some(input::bindings::Input::Key(k)) = InputScript::physical(&pad, &Hold::Control(input::bindings::Control::A)) else {
+            panic!("A is bound to a key")
+        };
+        let upper = k.to_ascii_uppercase();
+        assert_eq!(a_timeline(&format!("A@0-10,{upper}@5-15")), held(0, 15));
+        assert_eq!(a_timeline(&format!("{upper}@5-15,A@0-10")), held(0, 15));
     }
 
     #[test]
