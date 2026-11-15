@@ -1,0 +1,54 @@
+/* Theme layer: every colour, font, radius and shadow the app uses.
+   Restyle the app by replacing this file; app.css only reads tokens. */
+:root {
+  --font-ui: ui-rounded, "SF Pro Rounded", "Hiragino Maru Gothic ProN", "Nunito", "Segoe UI", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --bg: #fff4e6;
+  --bg-deep: #ffe9d2;
+  --surface: #ffffff;
+  --surface-2: #fff9f2;
+  --ink: #3b2a3a;
+  --ink-soft: #7a6470;
+  --line: #f1dcc8;
+  --accent: #ff7a6b;
+  --accent-ink: #ffffff;
+  --accent-2: #6cb8ff;
+  --good: #2fb47c;
+  --warn: #e0832a;
+  --bad: #e2445c;
+  --live: #ff5a6e;
+
+  --presence-playing: #ff7a6b;
+  --presence-online: #2fb47c;
+  --presence-away: #f2b134;
+  --presence-offline: #c9b8bd;
+
+  --radius-s: 8px;
+  --radius-m: 14px;
+  --radius-l: 22px;
+  --shadow-1: 0 2px 0 rgba(59, 42, 58, 0.06), 0 6px 18px rgba(255, 138, 101, 0.12);
+  --shadow-2: 0 3px 0 rgba(59, 42, 58, 0.08), 0 14px 32px rgba(255, 138, 101, 0.2);
+
+  /* Map (read by the canvas renderer). */
+  --map-bg: #fffaf3;
+  --map-grid: rgba(122, 100, 112, 0.12);
+  --map-floor: #ffe3c8;
+  --map-floor-edge: #eab18c;
+  --map-floor-other: rgba(234, 177, 140, 0.22);
+  --map-label: #3b2a3a;
+  --map-label-bg: rgba(255, 255, 255, 0.9);
+  --map-death: #3b2a3a;
+
+  /* Team colours (team index n => --team-n), FFA colours per player slot. */
+  --team-0: #ff6f61; --team-1: #4aa3ff; --team-2: #35c08a; --team-3: #ffb627;
+  --team-4: #a07cff; --team-5: #ff8fc7; --team-6: #45c9da; --team-7: #9b8a7a;
+  --ffa-0: #ff6f61; --ffa-1: #4aa3ff; --ffa-2: #35c08a; --ffa-3: #ffb627;
+  --ffa-4: #a07cff; --ffa-5: #ff8fc7; --ffa-6: #45c9da; --ffa-7: #c98b5c;
+  --ffa-8: #e85d9b; --ffa-9: #6b8cff; --ffa-10: #8bd450; --ffa-11: #ff9152;
+  --ffa-12: #7a6cff; --ffa-13: #40c4aa; --ffa-14: #d4a24a; --ffa-15: #b06cd9;
+
+  --mascot-body: #ff8a7a;
+  --mascot-ink: #402a3a;
+  --mascot-cheek: #ffc2b8;
+}

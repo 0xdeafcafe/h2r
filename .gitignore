@@ -11,3 +11,5 @@
 /disc/
 /.tools/
 /.claude/worktrees/
+/web/node_modules
+/web/dist
