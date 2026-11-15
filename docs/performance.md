@@ -150,17 +150,96 @@ original profile attributed 28% and 24% to those functions. Inline checks and
 copies now reside in generated code: their cost has moved, not vanished, and
 must not be attributed to IR optimization work.
 
-The synthetic read object grew from 2824 to 3240 bytes (about 15%); its tiny
-clang compile rose from approximately 0.06 to 0.09 seconds. Whole-image
-compile and menu FPS effects are still pending. The support-header change
-invalidates C objects once; the two prior runtime-only fixes did not.
+## Whole-menu profile
 
-The current external baseline is master `4330dfb` plus boot: **1.91 menu FPS,
-484 ms median frame**, supplied by the boot lane. Older perf measurements on
-an earlier master under changing contention are not a causal FPS comparison.
-At 1.91 FPS the mean wall budget is 523.56 ms: reaching 30 FPS requires
-removing about 490.23 ms per frame (93.6%). A new paired menu run and sample
-must allocate that gap among owners; the synthetic gain alone cannot do so.
+A scratch overlay combined perf code through `c3f422a`, master `4330dfb`,
+boot's menu driver and perf-tooling `e5d6cc7`. Input was
+`START@f310,DOWN@f408,A@f419`, with fresh data and a PNG every 40 presents.
+Frame 480 was visually verified as the main menu. Both modes used the same
+module compiled with `H2_FASTMEM=1 H2_PERF=1`; the control disabled fast
+memory on each execution context. This is not an unmodified-master control.
+
+| Mode | Presents | FPS | Median ms (MAD) |
+|---|---:|---:|---:|
+| Checked access | 480–560 | 1.133 | 735.03 (209.39) |
+| Inline RAM | 560–640 | 1.993 | 505.62 (110.18) |
+| Inline RAM | 640–720 | 2.208 | 411.50 (106.27) |
+| Checked access | 720–800 | 1.379 | 716.13 (213.62) |
+
+Other lanes' game processes overlapped this run. Camera progression and
+changing contention prevent treating the ratios as causal accessor speedups.
+The second control also retains the initialized memory gate and execute-page
+cache. The external master-plus-boot reference supplied by the boot lane is
+**1.91 FPS, 484 ms median frame**. A fresh-data, same-frame pair is queued
+through the shared game gate to reduce these confounders.
+
+A separate diagnostic interval, presents 800–880, took **366.97 ms/frame**.
+The 500 Hz sampler collected 11,423 samples without misses, with a 35 us mean
+sampling pause. Samples include waiting and runnable time: the sampler's
+`on_cpu` label is not a CPU-utilization measurement. Scoped timers and
+identified stack categories give the following approximate owner budget.
+They are different measurements and must not be summed as an exact ledger.
+
+| Owner / work | Approximate ms/frame | Evidence |
+|---|---:|---|
+| runtime/emit memory | 14.1 | 3.9% of disjoint samples, including identifiable inline checks |
+| runtime/emit runner and safe points | 10.8 | 2.9% of samples |
+| x87 helpers | 21.2 | 5.8% of samples, mainly wide arithmetic rather than call boundaries |
+| codegen-opt generated operations | 21.0 | 5.7% of samples after separating identifiable inline-memory PCs |
+| gfx-perf backend work | 169.3 | Timed backend calls; about 48% of samples |
+| D3D parsing/state/resource preparation | 6.8–11.7 | Drain excluding backend calls; all D3D minus backend is an upper bound |
+| kernel/VFS | about 100 | 27% of samples; inclusive kernel timer 97.6 ms |
+| boot tracing | 18.1 | 4.9% of samples |
+| fallback interpreter | 0.027 | 720 entries, 2.137 ms total |
+
+Over these 80 frames, 135,021,296 of 135,022,668 generated memory accesses
+completed inline (99.999%). There were about 133,406 runner transfers,
+1.69 million memory accesses and 97,087 x87 helper calls per frame.
+The interpreter is not a material cost in this interval.
+
+Backend draw handling takes 116.4 ms/frame, including nested queue submission
+at 55.3 ms/frame; surface readback takes another 40.2 ms/frame. Do not add
+nested submission time to draw time. The capture shows about 840 draws,
+843 submissions and seven readbacks per frame. Gfx-perf owns submission and
+upload batching; D3D/gfx should examine readbacks while preserving guest
+coherence. Kernel/VFS samples predominantly follow `Vfs::write` through
+`HostBackend::write_at`, `store_basic` and directory synchronization.
+
+**30 FPS requires 33.33 ms/frame.** This diagnostic window needs about
+333.6 ms/frame removed (90.9%); the unprofiled inline windows need roughly
+13.6–15.1 times their observed throughput. Runtime/emit alone cannot close
+that gap. Memory checks and runner dispatch remain this lane's targets;
+codegen-opt owns the generated-operation budget, gfx-perf owns the largest
+backend budget, and kernel/VFS persistence requires its owning lane.
+Most x87 cost is arithmetic and needs work beyond helper-call overhead.
+Disable boot debug tracing for production acceptance measurements.
+
+## Generated-image build cost
+
+The runtime-only copy and mapping-hint changes leave generated C and cache
+keys unchanged. The inline support header invalidates C objects once.
+The synthetic read object grew from 2824 to 3240 bytes (about 15%); its tiny
+clang compile rose from approximately 0.06 to 0.09 seconds.
+
+The full image contains 18,691 lifted functions, 418.1 MB of emitted C and
+1001 objects. Its first build segment used one clang job under heavy
+contention for 698.11 s wall / 270.96 s user. The resumed four-job segment
+reused 112 objects, compiled 889 in 712.9 s and linked in 0.7 s. Including
+analysis and emission, that segment took 753.40 s wall / 1220.53 s user.
+This mixed, contended run does not establish a compile-time delta against
+the historical roughly eight-minute parallel build.
+
+Across 354 unchanged generated-C shards, object bytes grew from 67,633,024
+to 108,415,832 (**60.3%**), and executable text from 40,250,060 to 55,107,324
+(**36.9%**). The after side enables both profiling and inline memory; the
+comparison does not isolate either flag. This footprint tradeoff belongs
+in build-perf and codegen-opt planning.
+
+All further game/menu runs use the shared `game` gate, and full-image
+compiles use the `emit` gate, with `CARGO_BUILD_JOBS=4`, empty `RUSTC_WRAPPER`
+and `H2_OBJ_CACHE=$TMPDIR/shared-objcache`. This lane needs its own generated
+image because the emitter support code changes. Runtime-only follow-ups
+reuse that image rather than triggering another full emit.
 
 ## Ownership
 
