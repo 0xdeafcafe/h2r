@@ -181,3 +181,28 @@ Settled after the first client was built against this page.
     use the same axes.
 14. **`console`** is a free display string (the console's name); clients
     may show it or not.
+
+## As built (2026-11-15)
+
+Decisions made while building the games slice; they override the tables
+above where they differ.
+
+- **`POST /v1/games`** returns `{game_id}`; the server picks the id (32 hex)
+  and writes `GameStarted` itself, signed by the server key, with an extra
+  `host` field naming the token's author. Later game events are written by
+  the host or a player in the game.
+- **Ingest `events`** messages are `{ "kind": "events", "game_id": "...",
+  "jws": "<one batch JWS>" }`, answered with `{kind: "appended", position}`
+  or `{kind: "error", ...}`. `{kind: "ping"}` refreshes presence.
+- **`POST /v1/events`** returns the stored wire event (a superset of
+  `{position}`).
+- **Map outlines**: the first upload for a map wins; the operator can replace
+  it.
+- **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
+  the caller isn't signed in. Presence expires 90 s after the last event or
+  ping; a game with no events or frames for 5 minutes ends as `lost`.
+- **`recent_games`** on an account is the latest 10.
+- **Account creation** payload is `{gamertag, jwk, invite?, aud, iat}`;
+  `aud` is the server id from the well-known document and `iat` must be
+  within 5 minutes of the server's clock. The fixed test vector is
+  `account_request_vector` in `crates/live-proto/src/sign.rs`.
