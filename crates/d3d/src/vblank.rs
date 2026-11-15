@@ -279,8 +279,12 @@ struct Wait {
 /// The wait stops (rather than spinning forever) when:
 ///
 /// * no callback is registered (the device is not created or `+0x1DB8` is 0);
-/// * a callback returned without advancing the counter (inline), or
-///   [`MAX_IDLE_YIELDS`] yields passed without a vblank (clocked);
+/// * a callback returned without advancing the counter (inline);
+/// * no vblank arrives (clocked): [`MAX_IDLE_YIELDS`] yields in a row with
+///   the logical clock standing still, or [`MAX_VBLANK_GAP`] of logical
+///   time since the counter last moved. Yields while other threads' work
+///   moves the clock do not count, so a busy machine is never stopped
+///   short of a healthy source's next deadline;
 /// * more than `max_vblanks` vblanks would be needed.
 pub fn register_frame_wait<B>(
     dispatch: &mut Dispatch,
