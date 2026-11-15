@@ -18,7 +18,7 @@
 //! | 3 | LFE | dropped |
 //! | 6, 8 | crosstalk front/back left | left; a 3D voice is panned and split front/back |
 //! | 7, 9 | crosstalk front/back right | right; likewise |
-//! | 10 | I3DL2 reverb send | dropped (reverb is not modelled) |
+//! | 10 | I3DL2 reverb send | the mixer's [`Reverb`](crate::reverb::Reverb) when an environment has been set; otherwise dropped |
 //! | 11..=30 | FX sends 0..19 | every playing [`MixIn`](crate::dsound::MixIn) whose input bin it is; otherwise dropped (DSP effects) |
 //!
 //! Channels: the pairs of a mono voice all carry its one channel. For a
@@ -56,7 +56,9 @@ pub enum Dest {
     Crosstalk { left: bool, front: bool },
     /// An FX send, read by mix-ins with this input bin.
     Send(u32),
-    /// Not modelled (LFE, reverb, unknown).
+    /// The I3DL2 reverb send.
+    Reverb,
+    /// Not modelled (LFE, unknown).
     Dropped,
 }
 
@@ -70,6 +72,7 @@ pub fn dest(bin: u32) -> Dest {
         XTLK_FRONT_RIGHT => Dest::Crosstalk { left: false, front: true },
         XTLK_BACK_LEFT => Dest::Crosstalk { left: true, front: false },
         XTLK_BACK_RIGHT => Dest::Crosstalk { left: false, front: false },
+        I3DL2 => Dest::Reverb,
         FXSEND_FIRST..=FXSEND_LAST => Dest::Send(bin),
         _ => Dest::Dropped,
     }
@@ -92,7 +95,7 @@ mod tests {
         assert_eq!(dest(2), Dest::Out { left: CENTER_GAIN, right: CENTER_GAIN });
         assert_eq!(dest(3), Dest::Dropped);
         assert_eq!(dest(8), Dest::Crosstalk { left: true, front: false });
-        assert_eq!(dest(10), Dest::Dropped);
+        assert_eq!(dest(10), Dest::Reverb);
         assert_eq!(dest(0x17), Dest::Send(0x17));
         assert_eq!(dest(31), Dest::Dropped);
         assert_eq!((channel_of(3, 1), channel_of(3, 2), channel_of(5, 6)), (0, 1, 1));

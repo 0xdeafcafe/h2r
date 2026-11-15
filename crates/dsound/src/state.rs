@@ -5,15 +5,19 @@
 //! Every method returns `Result<u32, Stop>`: `Ok` carries the guest's `EAX`
 //! (an HRESULT, or a count for `Release`), `Err` is a stop that must reach
 //! the harness. Unimplemented behaviour is always a [`Stop::Unimplemented`],
-//! never a quiet `S_OK`. The few settings that only change timbre or routing
-//! (filters, LFO/EG, mix bins, headroom, effect data) are stored and counted
-//! in [`DirectSound::ignored`] so a run can report exactly what was dropped.
+//! never a quiet `S_OK`. Settings the mixer cannot honour (see `docs/dsound.md`,
+//! "Voice effects") are stored and counted in [`DirectSound::ignored`] so a
+//! run can report exactly what was dropped. Filters, LFOs, envelopes,
+//! headroom, I3DL2 source and listener settings, Doppler and output buffers
+//! reach `audio`.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use audio::dsound::{BufferId, MixIn, Mode3d, PacketId, PacketStatus, Source3d, StreamId, Vec3};
+use audio::fx::{EnvSpec, FilterSpec, I3dl2Source, LfoSpec, VoiceFx};
 use audio::mixer::MixInId;
+use audio::reverb::I3dl2Listener;
 use audio::{Mixer, SoundBuffer, Stream, WaveFormat};
 
 use crate::abi::*;
@@ -209,7 +213,8 @@ struct BufferObj {
     audio: Option<BufferId>,
     volume_mb: i32,
     frequency: Option<u32>,
-    headroom: i32,
+    /// Filter, headroom and I3DL2 source, pushed to the voice or mix-in.
+    fx: VoiceFx,
     mix_bins: Vec<(u32, i32)>,
     input_mix_bin: u32,
     gate: Gate,
@@ -220,7 +225,7 @@ struct BufferObj {
     max_distance: f32,
     /// `SetRolloffFactor` on the buffer (multiplies the listener's).
     rolloff: f32,
-    /// `SetDopplerFactor` on the buffer: stored, Doppler is not modelled.
+    /// `SetDopplerFactor` on the buffer (multiplies the listener's).
     doppler: f32,
     /// `SetConeOutsideVolume`, millibels.
     cone_outside_mb: i32,
@@ -261,8 +266,10 @@ struct StreamObj {
     /// the status word's pause bit depends on.
     started: bool,
     volume_mb: i32,
-    headroom: i32,
     mix_bins: Vec<(u32, i32)>,
+    /// `SetOutputBuffer`: the mix-in buffer this stream feeds instead of its
+    /// mix bins (guest pointer).
+    output_buffer: Option<u32>,
     discontinuities: u32,
     /// Voice state bit 0 (`+0x12`): set by `Process`, cleared by a flush.
     /// `GetVoiceProperties` fails while it is clear.
@@ -374,6 +381,26 @@ pub struct DirectSound {
     next_lease: u64,
     next_token: u64,
     ignored: BTreeMap<&'static str, u64>,
+    /// The effect index the game gave the I3DL2 reverb at download time.
+    reverb_index: Option<u32>,
+}
+
+/// Reads a `DSFILTERDESC` (`dwMode`, `dwQCoefficient`, four coefficient
+/// words) at `desc`. A null pointer is a bypass, which is how a title turns a
+/// filter off.
+fn read_filter(h: &mut dyn Host, desc: u32) -> Result<FilterSpec, Stop> {
+    if desc == 0 {
+        return Ok(FilterSpec::default());
+    }
+    let mut w = [0u32; 6];
+    for (i, slot) in w.iter_mut().enumerate() {
+        *slot = h.read_u32(at(desc, 4 * i as u32)?)?;
+    }
+    Ok(FilterSpec::from_dsfilter(
+        w[0],
+        w[1],
+        [w[2], w[3], w[4], w[5]],
+    ))
 }
 
 fn f(bits: u32) -> f32 {
@@ -398,6 +425,7 @@ impl DirectSound {
             next_lease: 1,
             next_token: 0,
             ignored: BTreeMap::new(),
+            reverb_index: None,
         }
     }
 
@@ -842,6 +870,7 @@ impl DirectSound {
         if reverb >= count || crosstalk >= count {
             return Ok(E_INVALIDARG);
         }
+        self.reverb_index = Some(reverb);
         let desc = match self.effects {
             Some(img) => img.desc,
             None => {
@@ -946,8 +975,19 @@ impl DirectSound {
             h.write_u32(at(base, 0x10)?, flags)?;
         }
         let raw = h.read_vec(at(base, dest_off)?, dest_len)?;
+        if ty == EFFECT_TYPE_I3DL2 && self.reverb_index == Some(index) {
+            // The game's environment for the I3DL2 send (Halo: effect 9).
+            let mut w = [0u32; 12];
+            w.copy_from_slice(&words);
+            self.mixer
+                .lock()
+                .unwrap()
+                .set_reverb(Some(I3dl2Listener::from_words(w)));
+            self.note("XAudioSetEffectData (I3DL2 reverb applied)");
+        } else {
+            self.note("XAudioSetEffectData (dry)");
+        }
         self.effect_desc.insert(index, EffectDesc { ty, words });
-        self.note("XAudioSetEffectData (dry)");
         if out != 0 {
             h.write_u32(out, ty)?;
             h.write(at(out, 4)?, &raw)?;
@@ -1016,7 +1056,7 @@ impl DirectSound {
             audio: None,
             volume_mb: 0,
             frequency: None,
-            headroom: 0,
+            fx: VoiceFx::default(),
             mix_bins,
             input_mix_bin: d.input_mix_bin,
             gate: Gate::Open,
@@ -1163,8 +1203,8 @@ impl DirectSound {
             gate: Gate::Open,
             started: false,
             volume_mb: 0,
-            headroom: 0,
             mix_bins,
+            output_buffer: None,
             discontinuities: 0,
             voice_active: false,
             flags: d.flags,
@@ -1210,6 +1250,7 @@ impl DirectSound {
         }
         sb.set_source_3d(Self::source_3d(b));
         sb.set_mix_bins(Some(b.mix_bins.clone()));
+        sb.set_fx(b.fx.clone());
     }
 
     /// The mixer submix of a mix-in buffer: volume, routing, 3D and whether
@@ -1218,6 +1259,7 @@ impl DirectSound {
         mi.set_volume(b.volume_mb);
         mi.set_source_3d(Self::source_3d(b));
         mi.set_mix_bins(Some(b.mix_bins.clone()));
+        mi.set_fx(b.fx.clone());
         if b.mix_in_playing && b.gate == Gate::Open {
             mi.play();
         } else {
@@ -1259,9 +1301,21 @@ impl DirectSound {
     /// Pushes a stream's routing to its mixer voice.
     fn sync_stream_bins(&mut self, ptr: u32) -> Result<(), Stop> {
         let mixer = Arc::clone(&self.mixer);
+        // An output buffer that is a live mix-in takes the whole stream.
+        let target = match self.stream(ptr)?.output_buffer {
+            Some(out) => match self.objects.get(&out) {
+                Some(Object::Buffer(b)) if b.mix_in => Some(b.input_mix_bin),
+                _ => None,
+            },
+            None => None,
+        };
         let s = self.stream(ptr)?;
+        let bins = match target {
+            Some(bin) => vec![(bin, 0)],
+            None => s.mix_bins.clone(),
+        };
         if let Some(st) = mixer.lock().unwrap().stream_mut(s.audio) {
-            st.set_mix_bins(Some(s.mix_bins.clone()));
+            st.set_mix_bins(Some(bins));
         }
         Ok(())
     }
@@ -1588,9 +1642,11 @@ impl DirectSound {
         Ok(self.buf(ptr)?.input_mix_bin)
     }
 
+    /// `SetHeadroom(dwHeadroom)`, millibels: attenuates the voice.
     pub fn buffer_set_headroom(&mut self, ptr: u32, headroom: u32) -> R {
-        self.buf(ptr)?.headroom = headroom as i32;
-        self.note("SetHeadroom");
+        self.buf(ptr)?.fx.headroom_mb =
+            (headroom as i32).clamp(0, audio::fx::MAX_VOICE_HEADROOM_MB);
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1625,10 +1681,12 @@ impl DirectSound {
         Ok(S_OK)
     }
 
-    /// Filters, LFO and EG shape timbre only: accepted and counted.
-    pub fn buffer_set_filter(&mut self, ptr: u32) -> R {
+    /// `SetFilter(pFilterDesc)` on a buffer.
+    pub fn buffer_set_filter(&mut self, h: &mut dyn Host, ptr: u32, desc: u32) -> R {
         self.buf(ptr)?;
-        self.note("SetFilter");
+        let spec = read_filter(h, desc)?;
+        self.buf(ptr)?.fx.filter = spec;
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1662,19 +1720,29 @@ impl DirectSound {
         self.refresh_3d(ptr)
     }
 
-    /// `SetDopplerFactor(flDopplerFactor, dwApply)`: stored and counted;
-    /// Doppler shift is not modelled.
+    /// `SetDopplerFactor(flDopplerFactor, dwApply)`: scales the Doppler
+    /// pitch shift of this source (the game never sets a velocity, so the
+    /// shift is 1 until something moves a source or the listener).
     pub fn buffer_set_doppler(&mut self, ptr: u32, v: u32) -> R {
         self.buf(ptr)?.doppler = f(v);
-        self.note("SetDopplerFactor");
         self.refresh_3d(ptr)
     }
 
-    /// I3DL2 source settings (reverb, occlusion) are accepted and counted:
-    /// reverb is not modelled.
-    pub fn buffer_set_3d_extra(&mut self, ptr: u32, what: &'static str) -> R {
+    /// `SetI3DL2Source(pds3db, dwApply)`: the nine dwords of a
+    /// `DSI3DL2BUFFER` (direct and room levels, obstruction, occlusion)
+    /// shape the voice's direct path and its reverb send. A null descriptor
+    /// is `E_INVALIDARG`.
+    pub fn buffer_set_i3dl2_source(&mut self, h: &mut dyn Host, ptr: u32, desc: u32) -> R {
         self.buf(ptr)?;
-        self.note(what);
+        if desc == 0 {
+            return Ok(E_INVALIDARG);
+        }
+        let mut w = [0u32; 9];
+        for (i, slot) in w.iter_mut().enumerate() {
+            *slot = h.read_u32(at(desc, 4 * i as u32)?)?;
+        }
+        self.buf(ptr)?.fx.i3dl2 = Some(I3dl2Source::from_words(w));
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1904,9 +1972,13 @@ impl DirectSound {
         Ok(S_OK)
     }
 
+    /// `SetHeadroom(dwHeadroom)`, millibels: attenuates the voice.
     pub fn stream_set_headroom(&mut self, ptr: u32, headroom: u32) -> R {
-        self.stream(ptr)?.headroom = headroom as i32;
-        self.note("SetHeadroom");
+        let mixer = Arc::clone(&self.mixer);
+        let audio = self.stream(ptr)?.audio;
+        if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
+            st.set_headroom(headroom as i32);
+        }
         Ok(S_OK)
     }
 
@@ -1940,10 +2012,84 @@ impl DirectSound {
         Ok(S_OK)
     }
 
-    /// Filter, LFO and EG on a stream: accepted and counted.
-    pub fn stream_set_timbre(&mut self, ptr: u32, what: &'static str) -> R {
-        self.stream(ptr)?;
-        self.note(what);
+    /// `SetFilter(pFilterDesc)` on a stream.
+    pub fn stream_set_filter(&mut self, h: &mut dyn Host, ptr: u32, desc: u32) -> R {
+        let mixer = Arc::clone(&self.mixer);
+        let audio = self.stream(ptr)?.audio;
+        let spec = read_filter(h, desc)?;
+        if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
+            st.set_filter(spec);
+        }
+        Ok(S_OK)
+    }
+
+    /// `SetLFO(pLFODesc)` on a stream: `{ dwLFO, dwDelay, dwDelta,
+    /// lPitchModulation, lFilterCutOffRange, lAmplitudeModulation }`.
+    /// `dwLFO` 1 is the pitch LFO and anything else the filter/amplitude
+    /// one, as Halo fills them (`0x220404`, `0x220512`). A null descriptor
+    /// is `E_INVALIDARG`.
+    pub fn stream_set_lfo(&mut self, h: &mut dyn Host, ptr: u32, desc: u32) -> R {
+        let mixer = Arc::clone(&self.mixer);
+        let audio = self.stream(ptr)?.audio;
+        if desc == 0 {
+            return Ok(E_INVALIDARG);
+        }
+        let mut w = [0u32; 6];
+        for (i, slot) in w.iter_mut().enumerate() {
+            *slot = h.read_u32(at(desc, 4 * i as u32)?)?;
+        }
+        let lfo = LfoSpec::from_dslfo(w[1], w[2], w[3] as i32, w[4] as i32, w[5] as i32);
+        if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
+            st.set_lfo(usize::from(w[0] == 1), Some(lfo));
+        }
+        Ok(S_OK)
+    }
+
+    /// `SetEG(pEnvelopeDesc)` on a stream: `{ dwEG, dwMode, dwDelay,
+    /// dwAttack, dwHold, dwDecay, dwRelease, dwSustain, lPitchScale,
+    /// lFilterCutOff }` (ten dwords, read from Halo's fade at `0x2ae7a0`).
+    /// Generator 1 is the amplitude envelope and is modelled; generator 0
+    /// (pitch and filter scaling, which Halo zeroes) is accepted and
+    /// counted. Mode 0 is bypass. A null descriptor is `E_INVALIDARG`.
+    pub fn stream_set_eg(&mut self, h: &mut dyn Host, ptr: u32, desc: u32) -> R {
+        let mixer = Arc::clone(&self.mixer);
+        let audio = self.stream(ptr)?.audio;
+        if desc == 0 {
+            return Ok(E_INVALIDARG);
+        }
+        let mut w = [0u32; 10];
+        for (i, slot) in w.iter_mut().enumerate() {
+            *slot = h.read_u32(at(desc, 4 * i as u32)?)?;
+        }
+        if w[0] != 1 {
+            self.note("SetEG (generator 0: pitch and filter envelope)");
+            return Ok(S_OK);
+        }
+        let env = (w[1] != 0).then_some(EnvSpec {
+            start_stage: w[1],
+            delay: w[2],
+            attack: w[3],
+            hold: w[4],
+            decay: w[5],
+            release: w[6],
+            sustain: w[7],
+        });
+        if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
+            st.set_envelope(env);
+        }
+        Ok(S_OK)
+    }
+
+    /// `SetOutputBuffer(pOutputBuffer)`: a stream with an output buffer
+    /// feeds that mix-in buffer (at its input mix bin, full level) instead of
+    /// its own mix bins; null restores the mix bins. A buffer that is not a
+    /// mix-in leaves the mix bins in charge and is counted.
+    pub fn stream_set_output_buffer(&mut self, ptr: u32, out: u32) -> R {
+        self.stream(ptr)?.output_buffer = (out != 0).then_some(out);
+        if out != 0 && !matches!(self.objects.get(&out), Some(Object::Buffer(b)) if b.mix_in) {
+            self.note("SetOutputBuffer (not a mix-in buffer)");
+        }
+        self.sync_stream_bins(ptr)?;
         Ok(S_OK)
     }
 

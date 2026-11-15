@@ -408,9 +408,10 @@ shim keeps that contract:
 | `SetVolume`, `SetFrequency`, stream `SetPitch` (1/4096 octave about 48 kHz), 3D position/min/max distance, cone angles/orientation/outside volume, rolloff factor (buffer and listener), listener position/orientation | real, applied to `audio` |
 | `SetMixBins`, `SetMixBinVolumes` (buffer and stream) | real: routing through `audio::route`, FX sends into mix-ins |
 | stream `Process`, `GetStatus`, `GetInfo`, `Flush`, `FlushEx` (any flags, timestamp 0), `Pause`, `SetVolume`, `Discontinuity` (counted, no mixer state to reset), `DirectSoundDoWork` | real (see "Effects, voice entries and FlushEx") |
-| `SetHeadroom`, `SetMixBinHeadroom`, `SetFilter`, `SetLFO`, `SetEG`, `SetOutputBuffer`, `SetDopplerFactor` (buffer and listener), distance factor, `SetI3DL2Source`, `SetEffectData`, `UseLightHRTF4Channel` | stored; counted by name in `DirectSound::ignored()` (timbre only) |
+| buffer and stream `SetFilter`, stream `SetLFO` and `SetEG` (amplitude generator), `SetHeadroom`, buffer `SetI3DL2Source`, `SetDopplerFactor` (buffer and listener), `SetOutputBuffer`, `XAudioSetEffectData` type 12 on the reverb index | real, applied to `audio` (see "Voice effects") |
+| `SetMixBinHeadroom`, `SetEffectData`, distance factor, `UseLightHRTF4Channel`, `SetEG` generator 0 (pitch/filter envelope) | stored; counted by name in `DirectSound::ignored()` where counted |
 | `GetCaps`, `GetSpeakerConfig` | answered (`DSCAPS` layout from memory: free 2D/3D voices 64, SGEs `0x7fff`, 0; stereo speakers) |
-| mix-in/FX buffers | real buses (`audio::MixIn`, see "Positioned sound"); `Play` counted as `mix-in buffer Play`; no DSP effects |
+| mix-in/FX buffers | real buses (`audio::MixIn`, see "Positioned sound"); `Play` counted as `mix-in buffer Play`; I3DL2 source and headroom apply |
 | the game's WMA codec (`0x38a0c5`..`0x38a1cc`) | native, `dsound::xwma` over `wma::boundary` (see `docs/wma.md`, "Runtime boundary") |
 | `XAudioDownloadEffectsImage` (flags 1, name `"DSPImage"`, dry image), `Get/SetEffectData` | real, against the dry image (see "Dry effects image") |
 | `XAudioSetEffectData` | real, dry (see "Effects, voice entries and FlushEx") |
@@ -484,9 +485,13 @@ internals, which are unmatched):
   misbehaves.
 - **`XAudioSetEffectData` is dry too.** See the next section.
 
-This is enough for the init path to proceed. What the game then does with
-reverb and crosstalk (routing through DSP effects) is not modelled; the audio
-output is dry.
+This is enough for the init path to proceed. The guest-visible image stays
+dry: the DSP program is never run and the converted DSP words are not
+computed. The reverb is a host-side stand-in instead: an
+`XAudioSetEffectData` type 12 (`DSI3DL2LISTENER`) on the effect index the
+game passed as `reverbIndex` configures `audio::Mixer::set_reverb`, and
+mix bin 10 (the I3DL2 send) feeds it (see "Voice effects"). Crosstalk
+routing through the DSP is not modelled.
 
 ## Effects, voice entries and FlushEx
 
@@ -600,6 +605,66 @@ stays a stop.
 `StopEx(this, tsLo, tsHi, flags)` has a single call site, `0x220052`, which
 pushes `ebp` three times with `ebp` zeroed at `0x21ff35`: timestamp 0, flags
 0. A timestamp stays a stop for the same reason.
+
+## Voice effects
+
+What reaches `audio` (`crates/audio/src/fx.rs`, `reverb.rs`), where the layouts
+came from, and what is assumed. Descriptor layouts were read from how Halo
+builds them (`h2 disasm`; constants read from the retail image and reduced to
+the scalar meanings below, none copied). Halo's sites: the stream sound
+builder (`0x220200..0x220700`) fills `SetFilter` (`0x2203e9`) and two
+`SetLFO` calls (`0x220508`, `0x22065f`..); the fade helper `0x2ae7a0` fills
+`SetEG` (`0x2ae812`); the occlusion code at `0x221300..0x221422` fills
+`SetI3DL2Source`; `0x21f8f0` calls `SetOutputBuffer` with a mix-in or null.
+
+| call | descriptor | model |
+|---|---|---|
+| `SetFilter(pDesc)` | `DSFILTERDESC`: `dwMode`, `dwQCoefficient`, 4 coefficient dwords; null = bypass | mode 1 (DLS2): low pass, cutoff word `c0`, damping word `c1` (`c2`, `c3`, a second pair Halo also fills, ignored). Mode 2 (PARAMEQ): two peaking bands `(c0, c1)`, `(c2, c3)` = (cutoff word, gain word), Q index `dwQCoefficient` 0..7. Mode 3 (MULTI): cutoff `c0`, damping `c1`, **response chosen by `dwQCoefficient` bits (1 low, 2 band, 4 high; 5 notch; others approximate or bypass)**. Mode 0 bypass |
+| `SetLFO(pDesc)` | `dwLFO`, `dwDelay`, `dwDelta`, `lPitchModulation`, `lFilterCutOffRange`, `lAmplitudeModulation` | `dwLFO` 1 = pitch LFO (Halo's first call, pitch only), otherwise the filter/amplitude LFO (second call). Delay `/1500` s, rate `delta·1500/65536` Hz, triangle from 0 after the delay. Depth units **assumed**: pitch 1/128 octave, cutoff 1/16 octave, amplitude 1/16 dB (Halo scales its tag floats by 128, 16, 16 and clamps to a signed byte) |
+| `SetEG(pDesc)` | `dwEG`, `dwMode`, `dwDelay`, `dwAttack`, `dwHold`, `dwDecay`, `dwRelease`, `dwSustain`, `lPitchScale`, `lFilterCutOff` | generator 1 = amplitude (Halo's fade: mode 2, attack and release set, sustain `0xff`); modes 1..5 pick the start stage, 0 bypasses. Times in 1/93.75 s (Halo multiplies seconds by 93.75). Release not entered. Generator 0 (pitch/filter) counted, not applied |
+| `SetHeadroom(mB)` | scalar | the voice is attenuated by `mB` (0..6000); Halo passes 0 |
+| `SetI3DL2Source(pDesc, apply)` | `DSI3DL2BUFFER`, 9 dwords: direct, directHF, room, roomHF, roomRolloff, obstruction (HF, LF ratio), occlusion (HF, LF ratio) | direct level = `direct + Σ HF·LFratio` (broadband gain), HF level = `direct + directHF + obstruction + occlusion` as a one-pole high-frequency shelf referenced to 5 kHz; room send gain = `room + occlusion·LFratio`. `roomHF`, `roomRolloff` unused |
+| `SetOutputBuffer(pBuffer)` | guest pointer or null | the stream feeds that mix-in at its input bin at unity instead of its own mix bins; null restores them; a non-mix-in is counted |
+| `SetDopplerFactor` (buffer, listener) | float | scales the Doppler shift (see `docs/audio.md`). No guest call sets a velocity (Halo never calls `SetVelocity`), so the shift is 1 for Halo; the machinery is tested in `audio` |
+| `XAudioSetEffectData(9, type 12)` | `DSI3DL2LISTENER`, 12 dwords | `Mixer::set_reverb` (index = the `reverbIndex` of the last `XAudioDownloadEffectsImage`) |
+
+Determinism and timing. Each voice's effects advance on a frame clock that
+the voice itself counts (stream clocks do not advance while starved, a
+`Flush` or a buffer `Play` from position 0 starts them over), so the output
+is the same for any `Output::advance_to` slicing and any render block size
+(`audio` tests render the same stream in blocks of 97, 512 and 24000
+frames). Nothing changes how many frames a voice consumes, so packet
+completion order and timing are the same with every effect on (tests
+`effects_leave_packet_completion_alone`, `fx_do_not_change_packet_completion`).
+The pitch LFO and Doppler change the playback rate and so move completion,
+as `SetPitch` does.
+
+Left out, on purpose:
+
+- **Envelope release** (`FlushEx`/`StopEx` with the envelope flag): Halo's
+  `FlushEx(.., 3)` at `0x2ae4e2` asks the hardware to fade out first. Fading
+  asynchronously would hold packets pending and change completion timing, so
+  stops stay immediate. The fade-in is audible; the fade-out is a cut.
+- **Mix-bin headroom** (`SetMixBinHeadroom`): stored (`mix_bin_headroom`) but
+  without a level effect; on the MCPX the bin gives back what it takes, and
+  the float mix does not clip until the output stage.
+- **Pitch and filter envelope**, **second DLS2 cutoff/damping pair**, **LFO
+  waveforms other than triangle**, **room rolloff** and **`roomHF`** of a
+  source, **crosstalk-cancellation**, **HRTF**.
+- **Doppler on mix-ins**: a mix-in has no samples to resample.
+
+Assumptions to check against hardware or xemu: the MULTI selector bits,
+the PARAMEQ Q table (`0.5..8`), the LFO depth units, the `dwEG` generator
+numbering, the `DSEG_MODE` stage numbers beyond attack (2), triangle LFO
+shape and the 5 kHz default I3DL2 HF reference for a source. The coefficient
+word encodings (cutoff, damping, gain, EG and LFO time units) are read from
+Halo's converters and are not assumptions.
+
+The reverb is a clean-room approximation from the published I3DL2 parameter
+semantics (see the `audio::reverb` module docs); the Xbox DSP image and its
+converter (`0x3838a4`) are not used. Tests check decay time (Schroeder RT60
+within 20%), first-reflection and late-onset timing, levels in millibels,
+HF damping, block-size independence and stability.
 
 ## Overrides
 
@@ -913,9 +978,11 @@ state (zeros assumed, apart from the invented `+0x14` dword; the map fields
 other than `lpvStateSegment` are unread by anything found and left zero). The packet completion rule and the pause/synch voice bits are
 verified. Also not reproduced, though the binary defines them: the I3DL2
 converter (`0x3838a4`) and biquad generator (`0x37a032`) behind
-`XAudioSetEffectData`'s DSP words, the voice level word and 3D/LFO state in
-`GetVoiceProperties`, hardware volume quantisation, envelope release and
-timestamp scheduling for `FlushEx`/`StopEx`, and a stream's "active" state
+`XAudioSetEffectData`'s DSP words (the host reverb and filters are
+approximations from public semantics instead, see "Voice effects"), the voice
+level word and 3D/LFO state in `GetVoiceProperties`, hardware volume
+quantisation, envelope release and timestamp scheduling for
+`FlushEx`/`StopEx`, and a stream's "active" state
 after its queue drains naturally (the shim keeps it active). Whether
 `GetInfo` is ever called is unproven; no site was found. The `pRaw` and
 default-routing facts above come from small constants read at the cited
@@ -932,8 +999,8 @@ addresses.
    `*pdwCompletedSize` can be exact for a half-played flushed packet.
 4. `SoundBuffer::pause` that preserves the playing/looping intent, and a
    `stopped_at_end` flag so `GetStatus` can distinguish a finished buffer.
-5. (Done: mix-bin routing and mix-in buses.) Headroom, and reverb on the
-   I3DL2 send.
+5. (Done: mix-bin routing, mix-in buses, voice headroom and a reverb on the
+   I3DL2 send.) Mix-bin headroom clipping.
 6. Loop and play regions and buffer position notifications if another title
    path needs them (Halo 2 does not call them).
 7. Wrap-around reads for streams of non-block-aligned PCM. (WMA: done, in

@@ -9,7 +9,11 @@
 
 use std::collections::VecDeque;
 
-use crate::{AudioError, format::{Codec, WaveFormat}};
+use crate::{
+    AudioError,
+    format::{Codec, WaveFormat},
+    fx::{EnvSpec, FilterSpec, FxState, I3dl2Source, LfoSpec, VoiceFx},
+};
 
 /// `DSBVOLUME_MIN`. At or below this the voice is silent.
 pub const VOLUME_MIN_MB: i32 = -10_000;
@@ -50,6 +54,8 @@ pub struct VoiceParams {
     /// `None` mixes the voice straight to stereo with `volume_mb` and `pan_mb`
     /// (and the 3D panning, if any), as a plain DirectSound voice.
     pub mix_bins: Option<Vec<(u32, i32)>>,
+    /// Filter, LFOs, envelope, headroom and I3DL2 source; see [`crate::fx`].
+    pub fx: VoiceFx,
 }
 
 impl VoiceParams {
@@ -58,7 +64,7 @@ impl VoiceParams {
     }
 
     fn with_frequency(frequency: u32) -> Self {
-        Self { frequency, volume_mb: 0, pan_mb: 0, spatial: None, mix_bins: None }
+        Self { frequency, volume_mb: 0, pan_mb: 0, spatial: None, mix_bins: None, fx: VoiceFx::default() }
     }
 
     /// Left and right linear gains from volume and pan (no 3D).
@@ -97,6 +103,45 @@ macro_rules! voice_setters {
         pub fn params(&self) -> &VoiceParams {
             &self.params
         }
+        /// Replaces every effect setting at once (the shim re-applies its
+        /// stored copy this way); the voice's clock and memory are kept.
+        pub fn set_fx(&mut self, fx: VoiceFx) {
+            self.params.fx = fx;
+        }
+        /// `SetFilter`.
+        pub fn set_filter(&mut self, filter: FilterSpec) {
+            self.params.fx.filter = filter;
+        }
+        /// `SetLFO`: `index` 0 is the filter/amplitude LFO, 1 the pitch LFO.
+        pub fn set_lfo(&mut self, index: usize, lfo: Option<LfoSpec>) {
+            self.params.fx.lfo[index & 1] = lfo;
+        }
+        /// `SetEG` for the amplitude envelope; it starts from now.
+        pub fn set_envelope(&mut self, env: Option<EnvSpec>) {
+            self.params.fx.env = env;
+            self.fx_state.restart_envelope();
+        }
+        /// `SetHeadroom`, millibels (see [`crate::fx::headroom_gain`]).
+        pub fn set_headroom(&mut self, mb: i32) {
+            self.params.fx.headroom_mb = mb.clamp(0, crate::fx::MAX_VOICE_HEADROOM_MB);
+        }
+        /// `SetI3DL2Source`: occlusion, obstruction and the room send level.
+        pub fn set_i3dl2_source(&mut self, src: Option<I3dl2Source>) {
+            self.params.fx.i3dl2 = src;
+        }
+        /// Frames this voice has produced since it (re)started.
+        pub(crate) fn fx_clock(&self) -> u64 {
+            self.fx_state.clock
+        }
+        /// Sets the Doppler pitch ratio for the next render.
+        #[allow(dead_code)]
+        pub(crate) fn set_doppler_pitch(&mut self, ratio: f64) {
+            self.fx_state.doppler = ratio;
+        }
+        /// Filters and envelopes `buf` (frames rendered at clocks `c0..`).
+        pub(crate) fn apply_fx(&mut self, buf: &mut [f32], c0: u64, rate: u32) {
+            self.fx_state.process(&self.params.fx, buf, c0, rate);
+        }
     };
 }
 
@@ -118,6 +163,7 @@ pub struct SoundBuffer {
     loop_region: Option<(usize, usize)>,
     /// Play cursor in frames.
     pos: f64,
+    fx_state: FxState,
 }
 
 impl SoundBuffer {
@@ -142,6 +188,7 @@ impl SoundBuffer {
             looping: false,
             loop_region: None,
             pos: 0.0,
+            fx_state: FxState::default(),
         })
     }
 
@@ -213,6 +260,10 @@ impl SoundBuffer {
 
     /// `Play`. With `looping` the loop region repeats until [`stop`](Self::stop).
     pub fn play(&mut self, looping: bool) {
+        if !self.playing && self.pos == 0.0 {
+            // A sound starting from its beginning starts its effects over.
+            self.fx_state.reset();
+        }
         self.playing = self.frames > 0;
         self.looping = looping;
     }
@@ -248,7 +299,7 @@ impl SoundBuffer {
         if !self.playing {
             return;
         }
-        let step = self.params.frequency as f64 / host_rate as f64;
+        let base_step = self.params.frequency as f64 / host_rate as f64;
         let ch = self.format.channels() as usize;
         let (loop_start, loop_end) = if self.looping { self.region() } else { (0, self.frames) };
         let end = loop_end.max(1);
@@ -266,12 +317,14 @@ impl SoundBuffer {
             }
         };
         for frame in out.as_chunks_mut::<2>().0 {
+            let step = base_step * self.fx_state.pitch_mult(&self.params.fx, host_rate);
             let i = self.pos.floor() as usize;
             let t = (self.pos - i as f64) as f32;
             let a = fetch(i, self.looping);
             let b = fetch(i + 1, self.looping);
             frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
             frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
+            self.fx_state.clock += 1;
             self.pos += step;
             if self.pos >= end as f64 {
                 if self.looping {
@@ -301,11 +354,12 @@ pub struct MixIn {
     input_bin: u32,
     params: VoiceParams,
     playing: bool,
+    fx_state: FxState,
 }
 
 impl MixIn {
     pub fn new(input_bin: u32) -> Self {
-        Self { input_bin, params: VoiceParams::with_frequency(0), playing: false }
+        Self { input_bin, params: VoiceParams::with_frequency(0), playing: false, fx_state: FxState::default() }
     }
 
     voice_setters!();
@@ -314,7 +368,14 @@ impl MixIn {
         self.input_bin
     }
     pub fn play(&mut self) {
+        if !self.playing {
+            self.fx_state.reset();
+        }
         self.playing = true;
+    }
+    /// Advances the effect clock by `frames` the mix-in passed audio for.
+    pub(crate) fn advance_clock(&mut self, frames: u64) {
+        self.fx_state.clock += frames;
     }
     pub fn stop(&mut self) {
         self.playing = false;
@@ -395,6 +456,7 @@ pub struct Stream {
     paused: bool,
     next_id: u64,
     completed: Vec<(PacketId, PacketStatus)>,
+    fx_state: FxState,
 }
 
 impl Stream {
@@ -407,6 +469,7 @@ impl Stream {
             paused: false,
             next_id: 1,
             completed: Vec::new(),
+            fx_state: FxState::default(),
         })
     }
 
@@ -440,6 +503,8 @@ impl Stream {
             self.completed.push((p.id, PacketStatus::Flushed));
         }
         self.pos = 0.0;
+        // What plays next is a new sound: effects start over.
+        self.fx_state.reset();
     }
 
     pub fn is_paused(&self) -> bool {
@@ -474,12 +539,13 @@ impl Stream {
         if self.paused {
             return;
         }
-        let step = self.params.frequency as f64 / host_rate as f64;
+        let base_step = self.params.frequency as f64 / host_rate as f64;
         let ch = self.format.channels() as usize;
         for frame in out.as_chunks_mut::<2>().0 {
             if self.queue.is_empty() {
                 break;
             }
+            let step = base_step * self.fx_state.pitch_mult(&self.params.fx, host_rate);
             let i = self.pos.floor() as usize;
             let t = (self.pos - i as f64) as f32;
             let a = self.frame(0, i).unwrap_or([0.0; 2]);
@@ -488,6 +554,7 @@ impl Stream {
             let b = self.frame(0, i + 1).or_else(|| self.frame(1, 0)).unwrap_or(a);
             frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
             frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
+            self.fx_state.clock += 1;
             self.pos += step;
             // Consume every packet boundary crossed (downsampling can cross
             // several per output frame), keeping the fractional position.
@@ -565,7 +632,8 @@ pub const CONE_ANGLE_NONE: u32 = 360;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source3d {
     pub position: Vec3,
-    /// Stored; Doppler shift is not modelled.
+    /// Units per second; with the doppler factors it sets the pitch shift
+    /// (see [`Listener::spatial`]).
     pub velocity: Vec3,
     /// Inside this distance the source is at full volume.
     pub min_distance: f32,
@@ -574,7 +642,7 @@ pub struct Source3d {
     /// Per-source rolloff, multiplied with the listener's. 0 turns distance
     /// attenuation off (Halo 2 does its own and passes 0).
     pub rolloff_factor: f32,
-    /// Stored; Doppler shift is not modelled.
+    /// Per-source Doppler scale, multiplied with the listener's.
     pub doppler_factor: f32,
     /// Inside and outside cone angles in degrees (`SetConeAngles`).
     pub cone_inside: u32,
@@ -615,12 +683,18 @@ pub struct Spatial {
     /// 1 straight ahead, 0 straight behind, 0.5 to the side: how much of the
     /// voice goes to the front crosstalk mix bins rather than the back ones.
     pub front: f32,
+    /// Doppler playback-rate ratio (1 for a source at rest relative to the
+    /// listener); see [`Listener::spatial`].
+    pub pitch: f64,
 }
 
 impl Spatial {
     /// No 3D processing.
-    pub const DRY: Self = Self { gain: 1.0, left: 1.0, right: 1.0, front: 1.0 };
+    pub const DRY: Self = Self { gain: 1.0, left: 1.0, right: 1.0, front: 1.0, pitch: 1.0 };
 }
+
+/// The speed of sound Doppler uses, metres per second.
+pub const SPEED_OF_SOUND: f32 = 343.0;
 
 /// How much of a hard-left or hard-right source still reaches the far ear:
 /// the pan position is scaled by this before the pan law, so a lateral source
@@ -632,10 +706,10 @@ pub const PAN_WIDTH: f32 = 0.8;
 ///
 /// The Xbox ran HRTF and crosstalk cancellation for 3D voices on the MCPX
 /// DSP. That is not emulated; [`spatial`](Self::spatial) is a simple,
-/// documented stand-in. Not modelled: Doppler shift (velocities and factors
-/// are stored, never used), HRTF elevation and front/back colouring,
-/// occlusion and obstruction, reverb sends, and the SDK's
-/// `DS3D_DEFERRED` commit semantics (every change is immediate).
+/// documented stand-in. Not modelled: HRTF elevation and front/back colouring,
+/// and the SDK's `DS3D_DEFERRED` commit semantics (every change is
+/// immediate). Occlusion, obstruction and reverb sends are per-voice
+/// ([`crate::fx::I3dl2Source`]) and per-mixer ([`crate::reverb`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listener {
     pub position: Vec3,
@@ -643,11 +717,12 @@ pub struct Listener {
     pub top: Vec3,
     pub velocity: Vec3,
     /// Metres per world unit. In DirectSound 3D this only scales velocities
-    /// for Doppler, which is not modelled, so it is stored only.
+    /// for Doppler.
     pub distance_factor: f32,
     /// Global rolloff, multiplied with each source's. 0 disables attenuation.
     pub rolloff_factor: f32,
-    /// Stored for the shim; unused.
+    /// Global Doppler scale, multiplied with each source's. 0 turns the
+    /// shift off.
     pub doppler_factor: f32,
 }
 
@@ -699,6 +774,13 @@ impl Listener {
     ///   360 degree inner angle (the default) or a zero orientation means no
     ///   cone; a 360 degree outer angle with a narrower inner one fades all
     ///   the way round, reaching the outside volume directly behind.
+    /// - **Doppler.** With `u` the unit vector from the source to the
+    ///   listener, `vl` and `vs` the listener's and the source's velocities
+    ///   along `u` converted to metres per second (times `distance_factor`)
+    ///   and `k = listener.doppler_factor * source.doppler_factor`, the
+    ///   playback-rate ratio is `(c - k vl) / (c - k vs)` with `c` =
+    ///   [`SPEED_OF_SOUND`]; speeds are limited to `0.9 c / k` so the ratio
+    ///   stays finite. A head-relative or 3D-disabled source has none.
     pub fn spatial(&self, src: &Source3d) -> Spatial {
         if src.mode == Mode3d::Disabled {
             return Spatial::DRY;
@@ -723,7 +805,25 @@ impl Listener {
         let rolloff = (self.rolloff_factor * src.rolloff_factor).max(0.0);
         let distance_gain = if d <= min { 1.0 } else { min / (min + rolloff * (d - min)) };
 
-        Spatial { gain: distance_gain * cone_gain(src, rel), left, right, front: front.clamp(0.0, 1.0) }
+        let pitch = self.doppler(src, rel);
+        Spatial { gain: distance_gain * cone_gain(src, rel), left, right, front: front.clamp(0.0, 1.0), pitch }
+    }
+}
+
+impl Listener {
+    /// The Doppler term of [`Listener::spatial`]; `rel` points from the
+    /// listener to the source.
+    fn doppler(&self, src: &Source3d, rel: Vec3) -> f64 {
+        let k = (self.doppler_factor * src.doppler_factor).max(0.0);
+        if k == 0.0 || src.mode != Mode3d::Normal {
+            return 1.0;
+        }
+        let Some(to_listener) = rel.scale(-1.0).unit() else { return 1.0 };
+        let limit = 0.9 * SPEED_OF_SOUND / k;
+        let metres = self.distance_factor.max(0.0);
+        let vl = (self.velocity.dot(to_listener) * metres).clamp(-limit, limit);
+        let vs = (src.velocity.dot(to_listener) * metres).clamp(-limit, limit);
+        f64::from((SPEED_OF_SOUND - k * vl) / (SPEED_OF_SOUND - k * vs))
     }
 }
 

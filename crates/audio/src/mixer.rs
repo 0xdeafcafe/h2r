@@ -10,12 +10,21 @@
 //! mixed after every buffer and stream, in dependency order, so a chain of
 //! submixes lands in the same render. A send into a mix-in that is already
 //! mixed (only possible in a routing cycle) is dropped.
+//!
+//! Each voice's effects ([`crate::fx`]: filter, LFOs, envelope) run on its
+//! own rendered frames before routing, voice headroom scales its sends, and
+//! the I3DL2 send bin feeds one [`Reverb`] whose output joins the stereo
+//! mix after every voice and mix-in. Effects are functions of voice-local
+//! frame counts and mixer state only, so a render's output does not depend on
+//! how the frames are split across calls.
 
 use std::collections::BTreeMap;
 
 use crate::dsound::{
     BufferId, Listener, MixIn, SoundBuffer, Spatial, Stream, StreamId, VoiceParams, mb_to_gain,
 };
+use crate::fx::headroom_gain;
+use crate::reverb::{I3dl2Listener, Reverb};
 use crate::route::{self, Dest};
 
 /// Identifies a mix-in inside a [`Mixer`].
@@ -34,6 +43,8 @@ pub struct Mixer {
     next_id: u32,
     /// One voice rendered at unity gain, reused across renders.
     scratch: Vec<f32>,
+    /// The environment behind the I3DL2 send bin, once the game sets one.
+    reverb: Option<Reverb>,
 }
 
 impl Mixer {
@@ -49,6 +60,7 @@ impl Mixer {
             mix_ins: BTreeMap::new(),
             next_id: 1,
             scratch: Vec::new(),
+            reverb: None,
         }
     }
 
@@ -62,6 +74,23 @@ impl Mixer {
     pub fn set_sample_rate(&mut self, sample_rate: u32) {
         assert!(sample_rate > 0);
         self.sample_rate = sample_rate;
+        if let Some(r) = &self.reverb {
+            self.reverb = Some(Reverb::new(sample_rate, *r.params()));
+        }
+    }
+
+    /// Sets the environment of the I3DL2 reverb send (`None` removes it and
+    /// its tail). Levels and decay change in place; new delays clear the tail.
+    pub fn set_reverb(&mut self, env: Option<I3dl2Listener>) {
+        match (env, &mut self.reverb) {
+            (Some(e), Some(r)) => r.configure(e),
+            (Some(e), None) => self.reverb = Some(Reverb::new(self.sample_rate, e)),
+            (None, _) => self.reverb = None,
+        }
+    }
+
+    pub fn reverb(&self) -> Option<&I3dl2Listener> {
+        self.reverb.as_ref().map(Reverb::params)
     }
 
     /// Master volume in millibels.
@@ -161,24 +190,36 @@ impl Mixer {
             .iter()
             .map(|&id| Bus { id, bin: self.mix_ins[&id].input_bin(), input: vec![0.0; frames], done: false })
             .collect();
+        let reverb_live = self.reverb.as_ref().is_some_and(|r| !r.params().is_silent());
+        let mut reverb_in: Option<Vec<f32>> = reverb_live.then(|| vec![0.0; frames]);
 
         let ids: Vec<BufferId> = self.buffers.iter().filter(|(_, b)| b.is_playing()).map(|(&id, _)| id).collect();
         for id in ids {
             scratch.fill(0.0);
             let b = self.buffers.get_mut(&id).expect("listed above");
-            b.render(&mut scratch, rate, (1.0, 1.0));
-            let channels = b.format().channels() as usize;
             let params = b.params().clone();
-            route_voice(&self.listener, master, &params, channels, &scratch, out, &mut buses);
+            b.set_doppler_pitch(params.spatial.as_ref().map_or(1.0, |s| self.listener.spatial(s).pitch));
+            let c0 = b.fx_clock();
+            b.render(&mut scratch, rate, (1.0, 1.0));
+            let produced = (b.fx_clock() - c0) as usize;
+            b.apply_fx(&mut scratch[..produced * 2], c0, rate);
+            let channels = b.format().channels() as usize;
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_in.as_mut() };
+            route_voice(&mut cx, &params, channels, &scratch, out);
         }
         let ids: Vec<StreamId> = self.streams.iter().filter(|(_, s)| s.is_audible()).map(|(&id, _)| id).collect();
         for id in ids {
             scratch.fill(0.0);
             let s = self.streams.get_mut(&id).expect("listed above");
-            s.render(&mut scratch, rate, (1.0, 1.0));
-            let channels = s.format().channels() as usize;
             let params = s.params().clone();
-            route_voice(&self.listener, master, &params, channels, &scratch, out, &mut buses);
+            s.set_doppler_pitch(params.spatial.as_ref().map_or(1.0, |sp| self.listener.spatial(sp).pitch));
+            let c0 = s.fx_clock();
+            s.render(&mut scratch, rate, (1.0, 1.0));
+            let produced = (s.fx_clock() - c0) as usize;
+            s.apply_fx(&mut scratch[..produced * 2], c0, rate);
+            let channels = s.format().channels() as usize;
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_in.as_mut() };
+            route_voice(&mut cx, &params, channels, &scratch, out);
         }
         for i in 0..buses.len() {
             buses[i].done = true;
@@ -186,8 +227,20 @@ impl Mixer {
             for (frame, v) in scratch.as_chunks_mut::<2>().0.iter_mut().zip(&input) {
                 *frame = [*v, *v];
             }
-            let params = self.mix_ins[&buses[i].id].params().clone();
-            route_voice(&self.listener, master, &params, 1, &scratch, out, &mut buses);
+            let mix = self.mix_ins.get_mut(&buses[i].id).expect("listed above");
+            let params = mix.params().clone();
+            let c0 = mix.fx_clock();
+            mix.apply_fx(&mut scratch, c0, rate);
+            mix.advance_clock(frames as u64);
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_in.as_mut() };
+            route_voice(&mut cx, &params, 1, &scratch, out);
+        }
+        if let (Some(r), Some(input)) = (self.reverb.as_mut(), reverb_in.as_ref()) {
+            scratch.fill(0.0);
+            r.process(input, &mut scratch);
+            for (o, w) in out.iter_mut().zip(&scratch) {
+                *o += w * master;
+            }
         }
         self.scratch = scratch;
     }
@@ -221,49 +274,63 @@ struct Bus {
     done: bool,
 }
 
-/// Mixes one voice, rendered at unity gain into `src` (interleaved stereo; a
-/// mono voice is in both channels), into `out` and the mix-in `buses`.
-fn route_voice(
-    listener: &Listener,
+/// What routing a voice needs from the mixer.
+struct Route<'a> {
+    listener: &'a Listener,
     master: f32,
-    p: &VoiceParams,
-    channels: usize,
-    src: &[f32],
-    out: &mut [f32],
-    buses: &mut [Bus],
-) {
+    buses: &'a mut [Bus],
+    /// The reverb's mono input, when an audible environment is set.
+    reverb_in: Option<&'a mut Vec<f32>>,
+}
+
+/// Mixes one voice, rendered at unity gain into `src` (interleaved stereo; a
+/// mono voice is in both channels), into `out`, the mix-in buses and the
+/// reverb send.
+fn route_voice(cx: &mut Route<'_>, p: &VoiceParams, channels: usize, src: &[f32], out: &mut [f32]) {
+    let (listener, master) = (cx.listener, cx.master);
     let spatial = p.spatial.as_ref().map(|s| listener.spatial(s));
+    // I3DL2 source shaping: the direct level applies to everything but the
+    // reverb send, the room level to the reverb send alone.
+    let (direct, room) = p.fx.i3dl2.map_or((1.0, 1.0), |i| (i.direct_gain(), i.room_gain()));
+    let hr = headroom_gain(p.fx.headroom_mb);
     let Some(bins) = &p.mix_bins else {
         // A plain DirectSound voice: volume and pan, then the 3D panning.
         let s = spatial.unwrap_or(Spatial::DRY);
         let (l, r) = p.gains();
-        add(out, src, 0, 0, l * s.gain * s.left * master);
-        add(out, src, 1, 1, r * s.gain * s.right * master);
+        add(out, src, 0, 0, l * s.gain * s.left * master * direct * hr);
+        add(out, src, 1, 1, r * s.gain * s.right * master * direct * hr);
         return;
     };
     let volume = mb_to_gain(p.volume_mb);
     for (i, &(bin, mb)) in bins.iter().enumerate() {
-        let g = volume * mb_to_gain(mb);
+        let g = volume * mb_to_gain(mb) * hr;
         if g == 0.0 {
             continue;
         }
         let ch = route::channel_of(i, channels);
         match route::dest(bin) {
             Dest::Out { left, right } => {
-                add(out, src, ch, 0, g * left * master);
-                add(out, src, ch, 1, g * right * master);
+                add(out, src, ch, 0, g * left * master * direct);
+                add(out, src, ch, 1, g * right * master * direct);
             }
             Dest::Crosstalk { left, front } => {
                 let w = match spatial {
                     Some(s) => s.gain * if left { s.left } else { s.right } * if front { s.front } else { 1.0 - s.front },
                     None => 1.0,
                 };
-                add(out, src, ch, if left { 0 } else { 1 }, g * w * master);
+                add(out, src, ch, if left { 0 } else { 1 }, g * w * master * direct);
             }
             Dest::Send(bin) => {
-                for bus in buses.iter_mut().filter(|b| b.bin == bin && !b.done) {
+                for bus in cx.buses.iter_mut().filter(|b| b.bin == bin && !b.done) {
                     for (acc, frame) in bus.input.iter_mut().zip(src.as_chunks::<2>().0) {
-                        *acc += frame[ch] * g;
+                        *acc += frame[ch] * g * direct;
+                    }
+                }
+            }
+            Dest::Reverb => {
+                if let Some(input) = cx.reverb_in.as_deref_mut() {
+                    for (acc, frame) in input.iter_mut().zip(src.as_chunks::<2>().0) {
+                        *acc += frame[ch] * g * room;
                     }
                 }
             }
@@ -485,6 +552,292 @@ mod tests {
         b.play(true);
         assert_eq!(first(&mut m, 2), (1.0, 0.0), "0x17 then 0x18, both to the left");
         assert_eq!(m.mix_in_count(), 2);
+    }
+
+    use crate::fx::{self, EnvSpec, FilterSpec, I3dl2Source, LfoSpec};
+    use crate::reverb::I3dl2Listener;
+
+    /// A 1 s mono 16-bit sine at `hz` and 48 kHz, half amplitude.
+    fn sine_pcm(hz: f64, secs: f64) -> Vec<u8> {
+        (0..(48_000.0 * secs) as usize)
+            .flat_map(|i| (((2.0 * std::f64::consts::PI * hz * i as f64 / 48_000.0).sin() * 16384.0) as i16).to_le_bytes())
+            .collect()
+    }
+
+    fn sine_stream(hz: f64, secs: f64) -> (Mixer, StreamId, crate::dsound::PacketId) {
+        let mut m = Mixer::new(48_000);
+        let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+        let pkt = m.stream_mut(sid).unwrap().submit(&sine_pcm(hz, secs)).unwrap();
+        (m, sid, pkt)
+    }
+
+    /// Left-channel RMS of the second half of a 1 s render, as a gain against
+    /// the half-amplitude input.
+    fn tone_gain(m: &mut Mixer) -> f64 {
+        let mut out = vec![0.0f32; 48_000 * 2];
+        m.render(&mut out);
+        let tail: Vec<f64> = out.chunks(2).skip(24_000).map(|f| f64::from(f[0])).collect();
+        let rms = (tail.iter().map(|v| v * v).sum::<f64>() / tail.len() as f64).sqrt();
+        rms * 2.0 * std::f64::consts::SQRT_2
+    }
+
+    #[test]
+    fn stream_filter_shapes_the_tone() {
+        let lp = FilterSpec::from_dsfilter(fx::FILTER_DLS2, 0, [fx::hz_to_coeff(1000.0), 46341, 0, 0]);
+        for (hz, expect_db) in [(100.0, 0.0), (1000.0, -3.0), (4000.0, -24.0)] {
+            let (mut m, sid, _) = sine_stream(hz, 1.0);
+            m.stream_mut(sid).unwrap().set_filter(lp);
+            let g = 20.0 * tone_gain(&mut m).log10();
+            assert!((g - expect_db).abs() < 2.5, "{hz} Hz: {g} dB, want {expect_db}");
+        }
+        // High-pass through MULTI.
+        let hp = FilterSpec::from_dsfilter(fx::FILTER_MULTI, 4, [fx::hz_to_coeff(2000.0), 46341, 0, 0]);
+        let (mut m, sid, _) = sine_stream(200.0, 1.0);
+        m.stream_mut(sid).unwrap().set_filter(hp);
+        assert!(20.0 * tone_gain(&mut m).log10() < -30.0);
+        // Removing the filter restores the signal.
+        let (mut m, sid, _) = sine_stream(4000.0, 1.0);
+        m.stream_mut(sid).unwrap().set_filter(lp);
+        m.stream_mut(sid).unwrap().set_filter(FilterSpec::default());
+        assert!((tone_gain(&mut m) - 1.0).abs() < 0.02);
+    }
+
+    #[test]
+    fn buffer_filter_and_mix_in_occlusion() {
+        let lp = FilterSpec::from_dsfilter(fx::FILTER_DLS2, 0, [fx::hz_to_coeff(500.0), 46341, 0, 0]);
+        let mut m = Mixer::new(48_000);
+        let id = m.add_buffer(SoundBuffer::from_data(WaveFormat::pcm16(1, 48_000).unwrap(), sine_pcm(3000.0, 1.0)).unwrap());
+        let b = m.buffer_mut(id).unwrap();
+        b.set_filter(lp);
+        b.play(true);
+        assert!(20.0 * tone_gain(&mut m).log10() < -30.0);
+        // An occluded 3D mix-in: highs gone and the whole thing 5 dB down.
+        let mut m = Mixer::new(48_000);
+        let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+        m.stream_mut(sid).unwrap().set_mix_bins(Some(vec![(0x17, 0)]));
+        let mut mix = MixIn::new(0x17);
+        mix.set_mix_bins(Some(vec![(0, 0), (1, 0)]));
+        mix.set_i3dl2_source(Some(I3dl2Source { occlusion_hf: -2000, occlusion_lf_ratio: 0.25, ..Default::default() }));
+        mix.play();
+        m.add_mix_in(mix);
+        m.stream_mut(sid).unwrap().submit(&sine_pcm(100.0, 1.0)).unwrap();
+        let low = 20.0 * tone_gain(&mut m).log10();
+        assert!((low + 5.0).abs() < 0.6, "LF level: {low}");
+    }
+
+    #[test]
+    fn fx_do_not_change_packet_completion() {
+        // Two identical streams, one with every effect on: the packets
+        // complete on the same render, in the same order.
+        let run = |fx_on: bool| {
+            let mut m = Mixer::new(48_000);
+            let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+            if fx_on {
+                let s = m.stream_mut(sid).unwrap();
+                s.set_filter(FilterSpec::from_dsfilter(fx::FILTER_DLS2, 0, [fx::hz_to_coeff(500.0), 46341, 0, 0]));
+                s.set_lfo(0, Some(LfoSpec::from_dslfo(0, 200, 0, 32, 64)));
+                s.set_envelope(Some(EnvSpec { start_stage: 2, delay: 10, attack: 100, hold: 0, decay: 0, release: 50, sustain: 255 }));
+                s.set_headroom(600);
+            }
+            let ids: Vec<_> = (0..4).map(|_| m.stream_mut(sid).unwrap().submit(&sine_pcm(440.0, 0.1)).unwrap()).collect();
+            let mut done = Vec::new();
+            for step in 0..22 {
+                let mut out = vec![0.0f32; 2 * 1000];
+                m.render(&mut out);
+                for (id, st) in m.stream_mut(sid).unwrap().take_completed() {
+                    done.push((step, ids.iter().position(|&i| i == id).unwrap(), st));
+                }
+            }
+            done
+        };
+        let plain = run(false);
+        assert_eq!(plain.len(), 4);
+        assert_eq!(plain, run(true));
+    }
+
+    #[test]
+    fn envelope_restarts_with_a_new_sound() {
+        let (mut m, sid, _) = sine_stream(1000.0, 1.0);
+        m.stream_mut(sid).unwrap().set_envelope(Some(EnvSpec { start_stage: 2, delay: 0, attack: 94, hold: 0, decay: 0, release: 0, sustain: 255 }));
+        let mut out = vec![0.0f32; 2 * 4800];
+        m.render(&mut out);
+        let early = out.iter().step_by(2).take(200).map(|v| v.abs()).fold(0.0f32, f32::max);
+        assert!(early < 0.1, "fading in: {early}");
+        // Flush and start a second sound: the fade begins again.
+        m.stream_mut(sid).unwrap().flush();
+        m.stream_mut(sid).unwrap().submit(&sine_pcm(1000.0, 1.0)).unwrap();
+        m.render(&mut out);
+        let early2 = out.iter().step_by(2).take(200).map(|v| v.abs()).fold(0.0f32, f32::max);
+        assert!(early2 < 0.1, "second fade-in: {early2}");
+    }
+
+    #[test]
+    fn effects_do_not_depend_on_render_block_size() {
+        let run = |block: usize| {
+            let (mut m, sid, _) = sine_stream(700.0, 0.5);
+            let s = m.stream_mut(sid).unwrap();
+            s.set_filter(FilterSpec::from_dsfilter(fx::FILTER_DLS2, 0, [fx::hz_to_coeff(900.0), 20000, 0, 0]));
+            s.set_lfo(0, Some(LfoSpec::from_dslfo(10, 300, 0, 24, 48)));
+            s.set_lfo(1, Some(LfoSpec::from_dslfo(0, 120, 20, 0, 0)));
+            s.set_envelope(Some(EnvSpec { start_stage: 2, delay: 0, attack: 20, hold: 0, decay: 20, release: 0, sustain: 128 }));
+            s.set_mix_bins(Some(vec![(0, 0), (route::I3DL2, 0)]));
+            m.set_reverb(Some(I3dl2Listener { reflections: -300, ..env_params() }));
+            let mut all = Vec::new();
+            while all.len() < 2 * 24_000 {
+                let mut out = vec![0.0f32; 2 * block];
+                m.render(&mut out);
+                all.extend(out);
+            }
+            all.truncate(2 * 24_000);
+            all
+        };
+        assert_eq!(run(24_000), run(97));
+        assert_eq!(run(512), run(24_000));
+    }
+
+    fn env_params() -> I3dl2Listener {
+        I3dl2Listener {
+            room: 0,
+            room_hf: 0,
+            room_rolloff: 0.0,
+            decay_time: 1.5,
+            decay_hf_ratio: 0.8,
+            reflections: -1000,
+            reflections_delay: 0.01,
+            reverb: -500,
+            reverb_delay: 0.02,
+            diffusion: 100.0,
+            density: 100.0,
+            hf_reference: 5000.0,
+        }
+    }
+
+    #[test]
+    fn voice_headroom_attenuates_every_send() {
+        let level = |voice_mb: i32| {
+            let mut m = Mixer::new(8000);
+            let id = m.add_buffer(buf(&[16384; 4], 8000));
+            let b = m.buffer_mut(id).unwrap();
+            b.set_mix_bins(Some(vec![(0, 0)]));
+            b.set_headroom(voice_mb);
+            b.play(true);
+            first(&mut m, 2).0
+        };
+        assert_eq!(level(0), 0.5, "Halo's setting: no change");
+        assert!((level(600) - 0.25).abs() < 0.002, "-6 dB");
+        assert!(level(6000) < 0.03);
+        // A plain (no mix bins) voice is attenuated too.
+        let mut m = Mixer::new(8000);
+        let id = m.add_buffer(buf(&[16384; 4], 8000));
+        let b = m.buffer_mut(id).unwrap();
+        b.set_headroom(600);
+        b.play(true);
+        assert!((first(&mut m, 2).0 - 0.25).abs() < 0.002);
+    }
+
+    #[test]
+    fn reverb_send_adds_a_tail_that_outlives_the_voice() {
+        let render_tail = |env: Option<I3dl2Listener>| {
+            let mut m = Mixer::new(48_000);
+            m.set_reverb(env);
+            let id = m.add_buffer(buf(&[16384; 480], 48_000));
+            let b = m.buffer_mut(id).unwrap();
+            b.set_mix_bins(Some(vec![(route::I3DL2, 0)])); // wet only
+            b.play(false);
+            let mut out = vec![0.0f32; 2 * 24_000];
+            m.render(&mut out);
+            assert!(!m.buffer(id).unwrap().is_playing(), "voice has finished");
+            out
+        };
+        let dry = render_tail(None);
+        assert!(dry.iter().all(|&v| v == 0.0), "no environment: the send is dropped");
+        let wet = render_tail(Some(env_params()));
+        assert!(wet.iter().any(|&v| v != 0.0));
+        let late = wet[2 * 12_000..].iter().map(|v| f64::from(*v).powi(2)).sum::<f64>();
+        assert!(late > 0.0, "the tail is still sounding half a second after the voice ended");
+        assert_eq!(wet, render_tail(Some(env_params())), "deterministic");
+        // An inaudible environment passes nothing, and a source's room level scales the send.
+        assert!(render_tail(Some(I3dl2Listener { room: -10_000, ..env_params() })).iter().all(|&v| v == 0.0));
+        let quiet = {
+            let mut m = Mixer::new(48_000);
+            m.set_reverb(Some(env_params()));
+            let id = m.add_buffer(buf(&[16384; 480], 48_000));
+            let b = m.buffer_mut(id).unwrap();
+            b.set_mix_bins(Some(vec![(route::I3DL2, 0)]));
+            b.set_i3dl2_source(Some(I3dl2Source { room: -2000, ..Default::default() }));
+            b.play(false);
+            let mut out = vec![0.0f32; 2 * 24_000];
+            m.render(&mut out);
+            out
+        };
+        let e = |v: &[f32]| v.iter().map(|x| f64::from(*x).powi(2)).sum::<f64>();
+        assert!((10.0 * (e(&quiet) / e(&wet)).log10() + 20.0).abs() < 0.2);
+        // Master volume scales the wet signal too.
+        let mut m = Mixer::new(48_000);
+        m.set_reverb(Some(env_params()));
+        m.set_master_volume(-10_000);
+        let id = m.add_buffer(buf(&[16384; 480], 48_000));
+        m.buffer_mut(id).unwrap().set_mix_bins(Some(vec![(route::I3DL2, 0)]));
+        m.buffer_mut(id).unwrap().play(false);
+        let mut out = vec![0.0f32; 2 * 4800];
+        m.render(&mut out);
+        assert!(out.iter().all(|&v| v == 0.0));
+        // Removing the environment drops the tail.
+        m.set_reverb(None);
+        assert!(m.reverb().is_none());
+    }
+
+    #[test]
+    fn doppler_shifts_pitch_and_respects_factors() {
+        // A tone approaching the listener at 20% of the speed of sound is
+        // heard 1 / (1 - 0.2) = 1.25 times higher.
+        let zero_crossings = |velocity: f32, factor: f32, listener_factor: f32| {
+            let mut m = Mixer::new(48_000);
+            m.listener_mut().doppler_factor = listener_factor;
+            let id = m.add_buffer(SoundBuffer::from_data(WaveFormat::pcm16(1, 48_000).unwrap(), sine_pcm(1000.0, 1.0)).unwrap());
+            let b = m.buffer_mut(id).unwrap();
+            b.set_source_3d(Some(Source3d {
+                position: Vec3::new(0.0, 0.0, 50.0),
+                velocity: Vec3::new(0.0, 0.0, -velocity),
+                rolloff_factor: 0.0,
+                doppler_factor: factor,
+                ..Default::default()
+            }));
+            b.play(true);
+            let mut out = vec![0.0f32; 2 * 24_000];
+            m.render(&mut out);
+            out.chunks(2).map(|f| f[0]).collect::<Vec<_>>().windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count()
+        };
+        let still = zero_crossings(0.0, 1.0, 1.0);
+        assert!((499..=500).contains(&still), "1 kHz for half a second: {still}");
+        let fast = zero_crossings(68.6, 1.0, 1.0);
+        assert!((fast as f64 / still as f64 - 1.25).abs() < 0.01, "{fast}");
+        assert_eq!(zero_crossings(68.6, 0.0, 1.0), still, "source factor 0 turns it off");
+        assert_eq!(zero_crossings(68.6, 1.0, 0.0), still, "listener factor 0 turns it off");
+        let half = zero_crossings(68.6, 0.5, 1.0);
+        assert!(half > still && half < fast);
+    }
+
+    #[test]
+    fn doppler_ratio_formula() {
+        let l = Listener::default();
+        let src = |vel: Vec3| Source3d { position: Vec3::new(0.0, 0.0, 10.0), velocity: vel, ..Default::default() };
+        // Source receding from the listener at 10% c: 1 / 1.1.
+        let away = l.spatial(&src(Vec3::new(0.0, 0.0, 34.3))).pitch;
+        assert!((away - 1.0 / 1.1).abs() < 1e-4, "{away}");
+        // The listener moving toward the source at 10% c: 1.1.
+        let mut l2 = Listener { velocity: Vec3::new(0.0, 0.0, 34.3), ..Default::default() };
+        assert!((l2.spatial(&src(Vec3::default())).pitch - 1.1).abs() < 1e-4);
+        // Distance factor converts world units to metres.
+        l2.distance_factor = 0.5;
+        assert!((l2.spatial(&src(Vec3::default())).pitch - 1.05).abs() < 1e-4);
+        // Sideways motion has no radial component; absurd speeds stay finite.
+        assert_eq!(l.spatial(&src(Vec3::new(100.0, 0.0, 0.0))).pitch, 1.0);
+        let wild = l.spatial(&src(Vec3::new(0.0, 0.0, -1.0e9))).pitch;
+        assert!(wild.is_finite() && wild < 11.0, "{wild}");
+        // Head-relative sources have none.
+        let hr = Source3d { mode: crate::dsound::Mode3d::HeadRelative, velocity: Vec3::new(0.0, 0.0, -100.0), ..src(Vec3::default()) };
+        assert_eq!(l.spatial(&hr).pitch, 1.0);
     }
 
     #[test]

@@ -6,6 +6,8 @@
 //! Layout:
 //! - [`adpcm`]: Xbox ADPCM decoder (pure, no I/O).
 //! - [`format`]: wave formats and decoding of every format DirectSound takes.
+//! - [`fx`]: per-voice filters, LFOs, envelopes, headroom and I3DL2 source shaping.
+//! - [`reverb`]: the I3DL2-style environmental reverb behind the effects send.
 //! - [`resample`]: linear sample-rate conversion.
 //! - [`dsound`]: buffers, streams, 3D stub: the DirectSound-shaped model.
 //! - [`mixer`]: software mixer rendering voices to a host buffer.
@@ -16,8 +18,10 @@
 pub mod adpcm;
 pub mod dsound;
 pub mod format;
+pub mod fx;
 pub mod mixer;
 pub mod resample;
+pub mod reverb;
 pub mod route;
 pub mod sink;
 
@@ -26,6 +30,7 @@ pub mod output;
 
 pub use dsound::{BufferId, MixIn, SoundBuffer, Stream, StreamId};
 pub use format::{Codec, WaveFormat};
+pub use reverb::{I3dl2Listener, Reverb};
 pub use mixer::{MixInId, Mixer};
 pub use sink::{AudioSink, NullSink, Pump, SinkStats};
 

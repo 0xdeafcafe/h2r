@@ -137,8 +137,9 @@ involved.
   plays silence. `flush` completes everything as `Flushed`.
 - Not modelled: `SetPlayRegion`, `SetBufferData` hand-off semantics, the
   notification (`SetNotificationPositions`) events, `GetStatus` flags beyond
-  playing, `SetHeadroom`, `SetI3DL2Source`, pitch envelopes, `SetFilter`,
-  LFO, and `DSSTREAMCAPS` details.
+  playing, the pitch/filter envelope generator, envelope release, and
+  `DSSTREAMCAPS` details. Filters, LFOs, the amplitude envelope, headroom,
+  I3DL2 sources and the reverb are modelled: see "Voice effects" below.
 
 ### Mix bins and mix-ins
 
@@ -150,7 +151,8 @@ voices nobody routed). `route` folds the 32 MCPX bins to stereo:
 |---|---|
 | 0, 4 / 1, 5 | left / right |
 | 2 (centre) | both at -3 dB |
-| 3 (LFE), 10 (I3DL2 send), 31+ | dropped |
+| 3 (LFE), 31+ | dropped |
+| 10 (I3DL2 send) | the mixer's reverb once an environment is set (`Mixer::set_reverb`); else dropped |
 | 6, 8 / 7, 9 (crosstalk front/back) | left / right; a 3D voice is panned here, front pairs weighted by `Spatial::front`, back by `1 - front` |
 | 11..=30 (FX sends) | every playing `MixIn` whose input bin it is; else dropped |
 
@@ -188,20 +190,59 @@ Documented and deliberately simple; it is not the MCPX HRTF.
   360° outer angle with a narrower inner one fades all the way round to the
   outside volume directly behind.
 - **Head-relative** sources take their position as the direction itself.
-- Not modelled: doppler (factors stored), distance factor (stored),
-  occlusion/obstruction, HRTF filtering, reverb.
+- **Doppler**: `Spatial::pitch = (c − k·vl)/(c − k·vs)` with `c` = 343 m/s,
+  `vl`/`vs` the listener's and source's velocities along the source-to-
+  listener direction times the distance factor, and `k` the product of the
+  listener's and source's Doppler factors. It scales the playback rate of a
+  buffer or stream that has its own 3D source (a mix-in has no samples to
+  resample, so a positioned mix-in does not shift its inputs). Speeds are
+  capped at `0.9 c / k`.
+- Not modelled: HRTF filtering. Occlusion and reverb are per-voice effects
+  below.
+
+### Voice effects
+
+`crate::fx` (per-voice) and `crate::reverb` (one per mixer). Every effect is
+a function of the voice's own *clock*, the number of frames it has produced
+since it (re)started, so output does not depend on render block sizes and a
+starved stream does not advance its envelope. Effects run after the voice is
+rendered at unity gain and before routing; none changes how many frames a
+voice consumes, so packet completion is untouched (the pitch LFO and Doppler
+change playback rate by design).
+
+- **Filter** (`SetFilter`, `FilterSpec::from_dsfilter`): up to two cascaded
+  RBJ biquads (low, high, band, notch, peaking) at the host rate. Hardware
+  coefficient words decode as `4096·log2(2 sin(π f / 48000))` (cutoff),
+  `32768 / Q` (damping), `8192·(10^(dB/20) − 1)` (parametric gain).
+- **LFO** (`SetLFO`): two per voice, triangle, delay in 1/1500 s, rate
+  `delta·1500/65536` Hz, depths for pitch, cutoff and amplitude.
+- **Envelope** (`SetEG`): amplitude delay, attack, hold, decay, sustain in
+  512-sample (1/93.75 s) units; release is not entered because stops and
+  flushes are immediate.
+- **Headroom** (`SetHeadroom`): attenuates the voice by its millibels.
+- **I3DL2 source** (`SetI3DL2Source`): direct-path level, obstruction and
+  occlusion (low-frequency share = HF level × LF ratio) as a gain plus a
+  one-pole high-frequency shelf at 5 kHz, and the room send level.
+- **Reverb** (`Reverb`, `I3dl2Listener`): early-reflection taps, a
+  four-line feedback delay network with per-line decay for the requested
+  RT60, HF decay ratio via an in-loop one-pole, diffusion allpasses, room
+  HF low-pass. See the module docs for the exact structure.
+
+`docs/dsound.md`, "Voice effects", has the descriptor layouts and which
+parts are assumptions.
 
 ## Unsupported: the MCPX DSP
 
 The retail APU had a Motorola 56300 "GP" DSP running Microsoft's default
 effect image and the SDK's effect images. These are skipped:
 
-- **SFX/EP processing**: I3DL2 reverb, reverb sends, and effects on mix bins.
-  Halo 2 uses reverb, so environments will sound dry. This is the largest
-  audible gap.
+- **SFX/EP processing**: the DSP effect images themselves. The I3DL2 reverb
+  is replaced by a clean-room approximation (`crate::reverb`); the
+  crosstalk-cancellation effect and generic effects on mix bins are not
+  modelled.
 - **3D/HRTF**: the DSP implemented positional audio with HRTF and XTalk.
   We pan, attenuate and apply cones with the simple model above; HRTF
-  filtering, doppler and occlusion are missing.
+  filtering is missing.
 - **Dolby Digital / DTS encoding** for the S/PDIF output and 5.1 mixing:
   output is stereo.
 - **WMA**: not a DSP feature, but noted here: the game's own codec is
@@ -232,8 +273,7 @@ is the trace source for validating the mixer later.
 1. (Done: 64 confirmed, docs/sound.md.)
 2. A guest-facing shim crate mapping `IDirectSound*` vtable calls onto this
    model (owned by the runtime).
-3. Notifications and play regions, then reverb (a simple FDN as an I3DL2
-   stand-in).
+3. Notifications and play regions. (Done: the I3DL2 reverb, as an FDN.)
 4. Replace linear resampling with a windowed-sinc or polyphase path for big
    downsamples.
 5. (Done: the ring-fed `DeviceSink` removes the callback lock, and

@@ -529,10 +529,11 @@ fn three_d_state_is_stored_and_pans_ctrl3d_buffers() {
         out[1] > out[0],
         "source on the right is louder on the right: {out:?}"
     );
-    // Doppler is stored and counted (not modelled); the cone outside volume
-    // is applied but the default 360 degree cone never reaches it.
+    // Doppler is applied (a source with no velocity is unshifted); the cone
+    // outside volume is applied but the default 360 degree cone never
+    // reaches it.
     rig.call(0x0037c69d, &[buf, f(0.0), 1]);
-    assert_eq!(rig.ds.ignored().get("SetDopplerFactor"), Some(&1));
+    assert!(rig.ds.ignored().get("SetDopplerFactor").is_none());
     rig.call(0x0037c600, &[buf, (-10_000i32) as u32, 1]);
     assert_eq!(rig.render(2), out);
     // Rolloff: 5 units out with min distance 1 is 1 / (1 + 4); 0 turns the
@@ -1914,4 +1915,464 @@ fn effects_image_descriptor_walks_like_the_xhv_engine_and_the_library_do() {
     // A second download returns the same descriptor, unchanged.
     assert_eq!(rig.download_dry_image(), desc);
     assert_eq!(rig.h.read_u32(desc + 8 + 0xb * 32 + 8).unwrap(), seg);
+}
+
+// ---- Voice effects -------------------------------------------------------
+//
+// Descriptors are built the way Halo's conversions build them (docs/dsound.md,
+// "Voice effects"); the signal is a synthetic sine at the mixer's 8 kHz.
+
+const STREAM_SET_FILTER: u32 = 0x0037b813;
+const STREAM_SET_LFO: u32 = 0x0037b809;
+const STREAM_SET_EG: u32 = 0x0037b80e;
+const STREAM_SET_HEADROOM: u32 = 0x0037b818;
+const STREAM_SET_OUTPUT_BUFFER: u32 = 0x0037c705;
+const BUF_SET_FILTER: u32 = 0x0037b68b;
+const BUF_SET_HEADROOM: u32 = 0x0037b6a7;
+const BUF_SET_I3DL2: u32 = 0x0037c6e5;
+const BUF_SET_DOPPLER: u32 = 0x0037c69d;
+
+fn dwords(rig: &mut Rig, w: &[u32]) -> u32 {
+    let b: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
+    rig.put(&b)
+}
+
+fn sine16(hz: f64, frames: usize) -> Vec<u8> {
+    let s: Vec<i16> = (0..frames)
+        .map(|i| {
+            ((2.0 * std::f64::consts::PI * hz * i as f64 / f64::from(RATE)).sin() * 16384.0) as i16
+        })
+        .collect();
+    pcm16(&s)
+}
+
+/// RMS over both channels of `out[from..]` (frames), against the half-scale
+/// input: 1.0 means the tone came through at the level it went in.
+fn tone_level(out: &[f32], from: usize) -> f64 {
+    let t = &out[from * 2..];
+    let ms = t.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / t.len() as f64;
+    // Per-channel RMS of a half-scale sine is 0.5 / sqrt(2); a mono voice
+    // with the default routing (or on both speaker bins) fills both channels.
+    ms.sqrt() / (0.5 / std::f64::consts::SQRT_2)
+}
+
+fn mono_stream(rig: &mut Rig) -> u32 {
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    rig.create_stream(wfx, 0, 0, 0)
+}
+
+fn db(g: f64) -> f64 {
+    20.0 * g.log10()
+}
+
+/// A level through a stream with `setup` applied first.
+fn stream_tone(hz: f64, setup: impl FnOnce(&mut Rig, u32)) -> f64 {
+    let mut rig = Rig::new();
+    let s = mono_stream(&mut rig);
+    setup(&mut rig, s);
+    rig.process(s, &sine16(hz, RATE as usize), 0);
+    let out = rig.render(RATE as usize);
+    tone_level(&out, RATE as usize / 2)
+}
+
+#[test]
+fn stream_set_filter_low_pass_from_a_halo_descriptor() {
+    // DLS2 (mode 1), Q coefficient 0, cutoff word, damping word for Q 0.7071,
+    // and the second pair Halo also fills.
+    let lp = |rig: &mut Rig, s: u32| {
+        let d = dwords(
+            rig,
+            &[
+                1,
+                0,
+                audio::fx::hz_to_coeff(500.0),
+                46341,
+                audio::fx::hz_to_coeff(500.0),
+                46341,
+            ],
+        );
+        assert_eq!(rig.call(STREAM_SET_FILTER, &[s, d]).eax, S_OK);
+    };
+    let dry = stream_tone(2000.0, |_, _| {});
+    let wet = stream_tone(2000.0, lp);
+    assert!((dry - 1.0).abs() < 0.05, "unfiltered tone: {dry}");
+    // 2 kHz is two octaves above the cutoff: about -24 dB at 12 dB/oct (a bit
+    // more at the 8 kHz test rate, where the bilinear warp bends it).
+    assert!((db(wet) + 26.0).abs() < 4.0, "{} dB", db(wet));
+    // A tone in the pass band is untouched.
+    assert!((db(stream_tone(100.0, lp))).abs() < 0.5);
+}
+
+#[test]
+fn stream_set_filter_multi_high_pass_and_bypass() {
+    let hp = |rig: &mut Rig, s: u32| {
+        // MULTI, selector 4 (high pass), 1 kHz.
+        let d = dwords(rig, &[3, 4, audio::fx::hz_to_coeff(1000.0), 46341, 0, 0]);
+        assert_eq!(rig.call(STREAM_SET_FILTER, &[s, d]).eax, S_OK);
+    };
+    assert!(db(stream_tone(100.0, hp)) < -30.0, "lows removed");
+    assert!(db(stream_tone(3000.0, hp)).abs() < 0.5, "highs kept");
+    // Mode 0 and a null descriptor both bypass.
+    let off = |rig: &mut Rig, s: u32| {
+        let d = dwords(rig, &[1, 0, audio::fx::hz_to_coeff(200.0), 46341, 0, 0]);
+        rig.call(STREAM_SET_FILTER, &[s, d]);
+        let bypass = dwords(rig, &[0, 0, 0, 0, 0, 0]);
+        assert_eq!(rig.call(STREAM_SET_FILTER, &[s, bypass]).eax, S_OK);
+    };
+    assert!((stream_tone(1500.0, off) - 1.0).abs() < 0.05);
+    let null = |rig: &mut Rig, s: u32| {
+        let d = dwords(rig, &[1, 0, audio::fx::hz_to_coeff(200.0), 46341, 0, 0]);
+        rig.call(STREAM_SET_FILTER, &[s, d]);
+        assert_eq!(rig.call(STREAM_SET_FILTER, &[s, 0]).eax, S_OK);
+    };
+    assert!((stream_tone(1500.0, null) - 1.0).abs() < 0.05);
+    // An unreadable descriptor faults rather than being ignored.
+    let mut rig = Rig::new();
+    let s = mono_stream(&mut rig);
+    assert!(matches!(
+        invoke(
+            &mut rig.ds,
+            &mut rig.h,
+            STREAM_SET_FILTER,
+            &[s, 0xDEAD_0000]
+        ),
+        Err(Stop::Memory(_))
+    ));
+}
+
+#[test]
+fn buffer_set_filter_applies_to_a_playing_buffer() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let buf = rig.create_buffer(0, 16_000, wfx);
+    let data = rig.put(&sine16(2000.0, 8000));
+    rig.call(SET_BUFFER_DATA, &[buf, data, 16_000]);
+    let d = dwords(
+        &mut rig,
+        &[1, 0, audio::fx::hz_to_coeff(500.0), 46341, 0, 0],
+    );
+    assert_eq!(rig.call(BUF_SET_FILTER, &[buf, d]).eax, S_OK);
+    rig.call(PLAY, &[buf, 0, 0, DSBPLAY_LOOPING]);
+    let out = rig.render(8000);
+    assert!(db(tone_level(&out, 4000)) < -18.0);
+    assert!(
+        rig.ds.ignored().get("SetFilter").is_none(),
+        "no longer dropped"
+    );
+}
+
+#[test]
+fn stream_set_eg_fade_in_from_halos_descriptor() {
+    // The shape Halo builds at 0x2ae7a0: generator 1, mode 2 (attack), no
+    // delay, attack 94 units (~1 s), release 50, sustain 0xff.
+    let mut rig = Rig::new();
+    let s = mono_stream(&mut rig);
+    let d = dwords(&mut rig, &[1, 2, 0, 94, 0, 0, 50, 0xFF, 0, 0]);
+    assert_eq!(rig.call(STREAM_SET_EG, &[s, d]).eax, S_OK);
+    rig.process(s, &sine16(500.0, 16_000), 0);
+    let out = rig.render(16_000);
+    let peak = |from: usize, to: usize| {
+        out[from * 2..to * 2]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    assert!(peak(0, 400) < 0.07, "starts silent: {}", peak(0, 400));
+    let mid = peak(3900, 4300);
+    assert!((mid - 0.25).abs() < 0.04, "half way up at ~0.5 s: {mid}");
+    assert!(
+        (peak(9000, 9500) - 0.5).abs() < 0.01,
+        "full level after the attack"
+    );
+    // The envelope is bypassed with mode 0, and generator 0 is counted.
+    let mut rig = Rig::new();
+    let s = mono_stream(&mut rig);
+    let on = dwords(&mut rig, &[1, 2, 0, 94, 0, 0, 0, 0xFF, 0, 0]);
+    rig.call(STREAM_SET_EG, &[s, on]);
+    let off = dwords(&mut rig, &[1, 0, 0, 94, 0, 0, 0, 0xFF, 0, 0]);
+    rig.call(STREAM_SET_EG, &[s, off]);
+    rig.process(s, &sine16(500.0, 800), 0);
+    let out = rig.render(800);
+    assert!(out.iter().fold(0.0f32, |m, v| m.max(v.abs())) > 0.45);
+    let zero = dwords(&mut rig, &[0, 2, 0, 94, 0, 0, 0, 0xFF, 0, 0]);
+    assert_eq!(rig.call(STREAM_SET_EG, &[s, zero]).eax, S_OK);
+    assert_eq!(
+        rig.ds
+            .ignored()
+            .get("SetEG (generator 0: pitch and filter envelope)"),
+        Some(&1)
+    );
+    assert_eq!(rig.call(STREAM_SET_EG, &[s, 0]).eax, E_INVALIDARG);
+}
+
+#[test]
+fn stream_set_lfo_tremolo_from_a_halo_descriptor() {
+    // dwLFO 0 (filter/amplitude), delay 0, delta 175 (~4 Hz), amplitude 128
+    // (8 dB).
+    let mut rig = Rig::new();
+    let s = mono_stream(&mut rig);
+    let d = dwords(&mut rig, &[0, 0, 175, 0, 0, 128]);
+    assert_eq!(rig.call(STREAM_SET_LFO, &[s, d]).eax, S_OK);
+    rig.process(s, &sine16(500.0, 8000), 0);
+    let out = rig.render(8000);
+    let peak = |from: usize| {
+        out[from * 2..from * 2 + 40]
+            .iter()
+            .fold(0.0f32, |m, v| m.max(v.abs()))
+    };
+    // 4.005 Hz: the triangle peaks a quarter cycle in (~499 frames), bottoms
+    // out at three quarters.
+    let loud = peak(499);
+    let quiet = peak(1498);
+    assert!(
+        (db(f64::from(loud / quiet)) - 16.0).abs() < 1.5,
+        "{loud} vs {quiet}"
+    );
+    // Pitch LFO is accepted (dwLFO 1) and null is E_INVALIDARG.
+    let p = dwords(&mut rig, &[1, 0, 100, 64, 0, 0]);
+    assert_eq!(rig.call(STREAM_SET_LFO, &[s, p]).eax, S_OK);
+    assert_eq!(rig.call(STREAM_SET_LFO, &[s, 0]).eax, E_INVALIDARG);
+}
+
+#[test]
+fn effects_leave_packet_completion_alone() {
+    let run = |fx: bool| {
+        let mut rig = Rig::new();
+        let s = mono_stream(&mut rig);
+        if fx {
+            let f = dwords(
+                &mut rig,
+                &[1, 0, audio::fx::hz_to_coeff(500.0), 46341, 0, 0],
+            );
+            rig.call(STREAM_SET_FILTER, &[s, f]);
+            let l = dwords(&mut rig, &[0, 20, 175, 0, 32, 64]);
+            rig.call(STREAM_SET_LFO, &[s, l]);
+            let e = dwords(&mut rig, &[1, 2, 0, 20, 0, 0, 50, 0xFF, 0, 0]);
+            rig.call(STREAM_SET_EG, &[s, e]);
+            rig.call(STREAM_SET_HEADROOM, &[s, 600]);
+        }
+        let mut pkts = Vec::new();
+        for _ in 0..3 {
+            pkts.push(rig.process(s, &sine16(300.0, 1000), 0));
+        }
+        let mut done = Vec::new();
+        for step in 0..8 {
+            rig.render(500);
+            let state: Vec<(u32, u32)> = pkts
+                .iter()
+                .map(|&(st, c)| (rig.h.read_u32(st).unwrap(), rig.h.read_u32(c).unwrap()))
+                .collect();
+            done.push((step, state));
+        }
+        done
+    };
+    assert_eq!(run(false), run(true));
+}
+
+#[test]
+fn set_headroom_attenuates_buffers_and_streams() {
+    let gain = |mb: u32| {
+        let mut rig = Rig::new();
+        let s = mono_stream(&mut rig);
+        assert_eq!(rig.call(STREAM_SET_HEADROOM, &[s, mb]).eax, S_OK);
+        rig.process(s, &sine16(300.0, 4000), 0);
+        let out = rig.render(4000);
+        tone_level(&out, 2000)
+    };
+    assert!((gain(0) - 1.0).abs() < 0.05, "Halo's value changes nothing");
+    assert!((db(gain(600)) + 6.0).abs() < 0.5);
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let buf = rig.create_buffer(0, 16_000, wfx);
+    let data = rig.put(&sine16(300.0, 8000));
+    rig.call(SET_BUFFER_DATA, &[buf, data, 16_000]);
+    assert_eq!(rig.call(BUF_SET_HEADROOM, &[buf, 600]).eax, S_OK);
+    rig.call(PLAY, &[buf, 0, 0, DSBPLAY_LOOPING]);
+    let out = rig.render(4000);
+    assert!((db(tone_level(&out, 2000)) + 6.0).abs() < 0.5);
+    assert!(rig.ds.ignored().get("SetHeadroom").is_none());
+}
+
+/// Creates a CTRL3D mix-in on FX send `bin` (Halo's `0x220b90` shape), routed
+/// to the stereo speaker bins, and plays it.
+fn mix_in(rig: &mut Rig, bin: u32) -> u32 {
+    let b: Vec<u8> = [BufferDesc::SIZE, 0x80010, 0, 0, 0, bin]
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let desc = rig.put(&b);
+    let out = rig.scratch(4);
+    assert_eq!(
+        rig.call(CREATE_BUFFER, &[rig.ds_ptr, desc, out, 0]).eax,
+        S_OK
+    );
+    let mix = rig.h.read_u32(out).unwrap();
+    let bins = mix_bins(rig, &[(0, 0), (1, 0)]);
+    assert_eq!(rig.call(SET_MIX_BINS_BUF, &[mix, bins]).eax, S_OK);
+    rig.call(PLAY, &[mix, 0, 0, 0]);
+    mix
+}
+
+#[test]
+fn set_output_buffer_routes_a_stream_into_a_mix_in() {
+    let mut rig = Rig::new();
+    let mix = mix_in(&mut rig, 0x17);
+    let s = mono_stream(&mut rig);
+    // A stream with no send to the mix-in's bin is silent...
+    let dead = mix_bins(&mut rig, &[(0x19, 0)]);
+    rig.call(STREAM_SET_MIX_BINS, &[s, dead]);
+    rig.process(s, &sine16(300.0, 8000), 0);
+    assert!(rig.render(400).iter().all(|&v| v == 0.0));
+    // ...until it is given the mix-in as its output buffer.
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    assert!(rig.render(400).iter().any(|&v| v.abs() > 0.1));
+    // Null restores the mix bins.
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, 0]).eax, S_OK);
+    assert!(rig.render(400).iter().all(|&v| v == 0.0));
+    // A buffer that is not a mix-in is counted and changes nothing.
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let plain = rig.create_buffer(0, 16_000, wfx);
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, plain]).eax, S_OK);
+    assert_eq!(
+        rig.ds
+            .ignored()
+            .get("SetOutputBuffer (not a mix-in buffer)"),
+        Some(&1)
+    );
+    assert!(rig.render(400).iter().all(|&v| v == 0.0));
+}
+
+#[test]
+fn set_i3dl2_source_occlusion_on_a_mix_in() {
+    let level = |occlusion_hf: i32, direct: i32| {
+        let mut rig = Rig::new();
+        let mix = mix_in(&mut rig, 0x17);
+        let s = mono_stream(&mut rig);
+        let bins = mix_bins(&mut rig, &[(0x17, 0)]);
+        rig.call(STREAM_SET_MIX_BINS, &[s, bins]);
+        // DSI3DL2BUFFER: direct, directHF, room, roomHF, roomRolloff,
+        // obstruction (HF, LF ratio), occlusion (HF, LF ratio).
+        let d = dwords(
+            &mut rig,
+            &[
+                direct as u32,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                occlusion_hf as u32,
+                0.25f32.to_bits(),
+            ],
+        );
+        assert_eq!(rig.call(BUF_SET_I3DL2, &[mix, d, 1]).eax, S_OK);
+        rig.process(s, &sine16(50.0, 4000), 0);
+        let out = rig.render(4000);
+        tone_level(&out, 2000)
+    };
+    // The mix-in's default 3D routing is not used here; the speaker bins give
+    // a centred mono signal at the level it went in (both channels).
+    let open = level(0, 0);
+    assert!(open > 0.9, "{open}");
+    // Occlusion -2000 mB with LF ratio 0.25 lowers low frequencies by 5 dB.
+    assert!((db(level(-2000, 0) / open) + 5.0).abs() < 0.5);
+    // The direct level is a plain attenuation.
+    assert!((db(level(0, -600) / open) + 6.0).abs() < 0.3);
+    // Null is rejected; an unreadable pointer faults.
+    let mut rig = Rig::new();
+    let mix = mix_in(&mut rig, 0x17);
+    assert_eq!(rig.call(BUF_SET_I3DL2, &[mix, 0, 1]).eax, E_INVALIDARG);
+    assert!(matches!(
+        invoke(
+            &mut rig.ds,
+            &mut rig.h,
+            BUF_SET_I3DL2,
+            &[mix, 0xDEAD_0000, 1]
+        ),
+        Err(Stop::Memory(_))
+    ));
+}
+
+#[test]
+fn i3dl2_reverb_environment_reaches_the_mixer_send() {
+    let mut rig = Rig::new();
+    // Before an image and an environment, the send is dropped.
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let buf = rig.create_buffer(0, 2000, wfx);
+    let data = rig.put(&pcm16(&[16384; 1000]));
+    rig.call(SET_BUFFER_DATA, &[buf, data, 2000]);
+    let wet = mix_bins(&mut rig, &[(10, 0)]);
+    rig.call(SET_MIX_BINS_BUF, &[buf, wet]);
+    rig.call(PLAY, &[buf, 0, 0, 0]);
+    assert!(rig.render(4000).iter().all(|&v| v == 0.0));
+    // Halo's DSI3DL2LISTENER for effect 9 (type word 12 first).
+    rig.download_dry_image();
+    let f = |x: f32| x.to_bits();
+    let env = dwords(
+        &mut rig,
+        &[
+            12,
+            0,
+            0,
+            f(0.0),
+            f(1.5),
+            f(0.8),
+            (-1000i32) as u32,
+            f(0.01),
+            (-500i32) as u32,
+            f(0.02),
+            f(100.0),
+            f(100.0),
+            f(5000.0),
+        ],
+    );
+    assert_eq!(rig.call(SET_EFFECT_DATA_X, &[9, env, 0]).eax, S_OK);
+    assert_eq!(
+        rig.ds
+            .ignored()
+            .get("XAudioSetEffectData (I3DL2 reverb applied)"),
+        Some(&1)
+    );
+    assert!(rig.mixer.lock().unwrap().reverb().is_some());
+    rig.call(PLAY, &[buf, 0, 0, 0]);
+    let out = rig.render(4000);
+    assert!(
+        out.iter().any(|&v| v != 0.0),
+        "reverb tail from the I3DL2 bin"
+    );
+    // Another effect index with the same type does not touch the mixer's reverb.
+    let mut other = Rig::new();
+    other.download_dry_image();
+    let env2 = dwords(
+        &mut other,
+        &[
+            12,
+            0,
+            0,
+            f(0.0),
+            f(1.5),
+            f(0.8),
+            0,
+            f(0.01),
+            0,
+            f(0.02),
+            f(100.0),
+            f(100.0),
+            f(5000.0),
+        ],
+    );
+    assert_eq!(other.call(SET_EFFECT_DATA_X, &[3, env2, 0]).eax, S_OK);
+    assert!(other.mixer.lock().unwrap().reverb().is_none());
+}
+
+#[test]
+fn buffer_doppler_factor_is_applied_not_counted() {
+    let mut rig = Rig::new();
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let buf = rig.create_buffer(0x10, 2000, wfx);
+    assert_eq!(
+        rig.call(BUF_SET_DOPPLER, &[buf, 0.5f32.to_bits(), 1]).eax,
+        S_OK
+    );
+    assert!(rig.ds.ignored().get("SetDopplerFactor").is_none());
 }
