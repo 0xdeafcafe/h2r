@@ -685,6 +685,27 @@ fn draw_pass(
     zfunc: u32,
     zwrite: bool,
 ) {
+    let mut def = PixelShaderDef {
+        combiner_count: 1,
+        ..PixelShaderDef::default()
+    };
+    def.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
+    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
+    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    draw_pass_with(d, m, code, verts, zfunc, zwrite, &def);
+}
+
+/// [`draw_pass`] with pixel shader `def`.
+fn draw_pass_with(
+    d: &mut d3d::Device<GfxBackend>,
+    m: &mut SparseMemory,
+    code: &[u8],
+    verts: &[[f32; 8]],
+    zfunc: u32,
+    zwrite: bool,
+    def: &PixelShaderDef,
+) {
     m.write(FUNCTION, code).unwrap();
     d.load_vertex_shader_program(m, FUNCTION, 0).unwrap();
     for reg in 0..16u32 {
@@ -708,14 +729,6 @@ fn draw_pass(
     }
     let handle = d3d::GuestLayout::HALO2.static_vertex_shader | 1;
     d.set_vertex_shader_input(m, handle, 1, STREAM_INPUTS).unwrap();
-    let mut def = PixelShaderDef {
-        combiner_count: 1,
-        ..PixelShaderDef::default()
-    };
-    def.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
-    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
-    def.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
-    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
     m.write(PSDEF, &def.to_bytes()).unwrap();
     for (i, w) in [1, 0, PSDEF].iter().enumerate() {
         m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
@@ -994,15 +1007,28 @@ fn skinned_program() -> Vec<u8> {
         insts.push(
             Inst::mac(MacOp::Dp4, Some(Operand::v(0)), Some(Operand::r(r)), None).to_temp(0, mask),
         );
+        // The blended rows also turn a direction into texture coordinates,
+        // as the intro's later passes do for their tangent frame.
+        insts.push(
+            Inst::mac(MacOp::Dp3, Some(Operand::v(3)), Some(Operand::r(r)), None)
+                .to_out(false, OutReg::T(1), mask),
+        );
     }
     skin_tail(&mut insts);
     program(&insts)
 }
 
-/// Loads the skinning constants: a perspective view-projection, the
+/// Loads the skinning constants: a perspective view-projection with its
+/// rows scaled by `w_scale` (the same picture, w times `w_scale`), the
 /// viewport scale and offset for the 64x64 target, three bones with
 /// awkward (non-dyadic) rotations and translations, and `colour`.
-fn skin_constants(d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory, z_max: f32, colour: [f32; 4]) {
+fn skin_constants(
+    d: &mut d3d::Device<GfxBackend>,
+    m: &mut SparseMemory,
+    z_max: f32,
+    w_scale: f32,
+    colour: [f32; 4],
+) {
     let mut c = [[0.0f32; 4]; 17];
     let (f, near, far) = (1.37f32, 0.0731f32, 913.7f32);
     let q = far / (far - near);
@@ -1010,6 +1036,9 @@ fn skin_constants(d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory, z_max: 
     c[1] = [0.0071, f, 0.0, 0.0];
     c[2] = [0.0, 0.0, q, -q * near];
     c[3] = [0.0, 0.0, 1.0, 0.0];
+    for row in &mut c[..4] {
+        *row = row.map(|v| v * w_scale);
+    }
     let h = W as f32 / 2.0;
     c[SK_SCALE as usize] = [h, -h, z_max, 0.0];
     c[SK_OFFSET as usize] = [h + 0.531, h + 0.531, 0.0, 0.0];
@@ -1056,9 +1085,16 @@ fn skin_mesh() -> Vec<[f32; 8]> {
 /// later pass covers every pixel of the first, W-buffered and Z-buffered.
 /// A guard: if the host compiler (Metal compiles with fast math) ever fused
 /// or reassociated the two programs differently, Equal would fail along
-/// iso-depth lines. It does not on the Apple GPU this was written on, with
-/// these programs or with the retail pair from the campaign intro's walls,
-/// so the intro's contour bands are not explained by this.
+/// iso-depth lines.
+///
+/// W-buffered depth is stored in whole steps of w, so a divergence only
+/// shows where w crosses a whole number. Near w = 4 a 64x64 target barely
+/// crosses any; the campaign intro's walls (frame 4450) span w = 10,000
+/// to 22,000, crossing one every few pixels. Hence the second scale: the
+/// same picture with w times 3913.3. The later pass also writes more
+/// outputs and runs another pixel shader than the base pass, as the
+/// intro's do. It holds on the Apple GPU this was written on, also with
+/// `@invariant` taken off the position.
 #[test]
 fn rigid_and_skinned_passes_store_identical_depth() {
     let Some((mut d, mut m, scope)) = gpu() else {
@@ -1068,13 +1104,26 @@ fn rigid_and_skinned_passes_store_identical_depth() {
     let verts = skin_mesh();
     // More vertex memory than the common layout maps (VB_DATA..TEX_DATA).
     m.map(0x8000_1000 | VB_DATA, 0xF000);
-    for zenable in [2u32, 1] {
+    // The later pass's pixel shader: r0 = v0, then r0 = r0 + t1 * 0.
+    let mut later = PixelShaderDef {
+        combiner_count: 2,
+        ..PixelShaderDef::default()
+    };
+    later.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
+    later.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    later.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
+    later.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    later.rgb_inputs[1] = inputs(REG_R0, ONE, REG_V1, REG_ZERO);
+    later.rgb_outputs[1] = outputs(0, 0, REG_R0, 0);
+    later.alpha_inputs[1] = inputs(REG_R0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
+    later.alpha_outputs[1] = outputs(REG_R0, 0, 0, 0);
+    for (zenable, w_scale) in [(2u32, 1.0), (2, 3913.3), (1, 1.0)] {
         call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[zenable]).unwrap();
         d.clear(&mut m, 0, 0, 0xF3, 0xFF00_0000, 1.0, 0).unwrap();
-        skin_constants(&mut d, &mut m, 16_777_215.0, [1.0, 0.0, 0.0, 1.0]);
+        skin_constants(&mut d, &mut m, 16_777_215.0, w_scale, [1.0, 0.0, 0.0, 1.0]);
         draw_pass(&mut d, &mut m, &rigid_program(), &verts, 0x203, true); // LESSEQUAL
-        skin_constants(&mut d, &mut m, 16_777_215.0, [0.0, 1.0, 0.0, 1.0]);
-        draw_pass(&mut d, &mut m, &skinned_program(), &verts, 0x202, false); // EQUAL
+        skin_constants(&mut d, &mut m, 16_777_215.0, w_scale, [0.0, 1.0, 0.0, 1.0]);
+        draw_pass_with(&mut d, &mut m, &skinned_program(), &verts, 0x202, false, &later); // EQUAL
         let px = back_buffer(&mut d);
         let (mut red, mut green) = (0, 0);
         for y in 0..H {
@@ -1086,9 +1135,11 @@ fn rigid_and_skinned_passes_store_identical_depth() {
                 }
             }
         }
-        assert!(red + green > 1000, "ZENABLE {zenable}: {} pixels drawn", red + green);
-        assert_eq!(red, 0, "ZENABLE {zenable}: {red} of {} pixels failed the Equal pass", red + green);
+        let at = format!("ZENABLE {zenable}, w x {w_scale}");
+        assert!(red + green > 1000, "{at}: {} pixels drawn", red + green);
+        assert_eq!(red, 0, "{at}: {red} of {} pixels failed the Equal pass", red + green);
     }
     let err = pollster::block_on(scope.pop());
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
+
