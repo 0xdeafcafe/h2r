@@ -140,7 +140,8 @@ fn glob(pattern: &str, name: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PadSpeakerConfig {
-    /// Off unless set.
+    /// On unless turned off (`H2_PAD_SPEAKER=0`). With no PlayStation
+    /// controller attached every sound stays on the main output.
     pub enabled: bool,
     /// Output device name pattern; `auto` finds a DualSense, then a DS4.
     pub device: String,
@@ -152,10 +153,16 @@ pub struct PadSpeakerConfig {
     pub exclude: Vec<String>,
 }
 
-/// Starting patterns for the sounds the request names: shields, reloads,
-/// the empty-magazine click, skulls, and the round-start cues. These are
-/// generic words, not tag paths read from the disc; check them against your
-/// own maps with `h2 tags <map>` and adjust (`docs/playstation-audio.md`).
+/// Starting patterns: the player's own sounds. Shields, reloads, the
+/// empty-magazine click, skulls and the round-start cues; the player
+/// character's own sounds (pain, death, boarding, melee), jumps and
+/// landings; and first-person weapon handling: melee, raising a weapon
+/// (the sword opening is its raise), inspection poses, dry fire, grenade
+/// throws, zoom and overheating. Walking and running footsteps and gunfire
+/// stay on the main output. Routing is by sound name, not by who plays it,
+/// so an enemy playing one of these sounds is routed too. These are generic
+/// words, not tag paths read from the disc; check them against your own
+/// maps with `h2 tags <map> snd!` and adjust (`docs/playstation-audio.md`).
 pub const DEFAULT_ROUTES: &[&str] = &[
     "*shield*",
     "*reload*",
@@ -163,12 +170,23 @@ pub const DEFAULT_ROUTES: &[&str] = &[
     "*skull*",
     "*countdown*",
     "*game_start*",
+    "*masterchief*",
+    "*chief*jump*",
+    "*chief*land*",
+    "*weapons*melee*",
+    "*weapons*ready*",
+    "*weapons*pos*",
+    "*sword*melee*",
+    "*dryfire*",
+    "*throwgren*",
+    "*weapons*zoom*",
+    "*overheat*",
 ];
 
 impl Default for PadSpeakerConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             device: "auto".to_string(),
             exclusive: true,
             routes: DEFAULT_ROUTES.iter().map(|s| s.to_string()).collect(),
@@ -196,18 +214,18 @@ impl PadSpeakerConfig {
     /// The settings from the environment, through `var` (so tests need not
     /// touch the process environment):
     ///
-    /// - `H2_PAD_SPEAKER`: `1` turns it on with the defaults, `0` off, any
-    ///   other value is a TOML file of these settings (and turns it on unless
-    ///   the file says `enabled = false`);
+    /// - `H2_PAD_SPEAKER`: unset or `1` is on with the defaults, `0` off,
+    ///   any other value is a TOML file of these settings (on unless the
+    ///   file says `enabled = false`);
     /// - `H2_PAD_SPEAKER_DEVICE`: the device pattern;
     /// - `H2_PAD_SPEAKER_EXCLUSIVE`: `0` plays routed sounds on both outputs.
     ///
     /// Environment beats file, file beats default.
     pub fn from_env(var: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
         let mut c = match var("H2_PAD_SPEAKER").as_deref().map(str::trim) {
-            None | Some("" | "0") => Self::default(),
-            Some("1") => Self {
-                enabled: true,
+            None | Some("" | "1") => Self::default(),
+            Some("0") => Self {
+                enabled: false,
                 ..Self::default()
             },
             Some(path) => {
@@ -215,12 +233,7 @@ impl PadSpeakerConfig {
                     path: path.to_string(),
                     err,
                 })?;
-                let enabled_given = text.lines().any(|l| l.trim_start().starts_with("enabled"));
-                let mut c = Self::from_toml(&text)?;
-                if !enabled_given {
-                    c.enabled = true;
-                }
-                c
+                Self::from_toml(&text)?
             }
         };
         if let Some(d) = var("H2_PAD_SPEAKER_DEVICE").filter(|d| !d.trim().is_empty()) {
@@ -480,7 +493,9 @@ mod tests {
             PadSpeakerConfig::from_env(none).unwrap(),
             PadSpeakerConfig::default()
         );
-        assert!(!PadSpeakerConfig::default().enabled);
+        assert!(PadSpeakerConfig::default().enabled, "on by default");
+        let off = PadSpeakerConfig::from_env(|k| (k == "H2_PAD_SPEAKER").then(|| "0".into())).unwrap();
+        assert!(!off.enabled);
         let on = PadSpeakerConfig::from_env(|k| match k {
             "H2_PAD_SPEAKER" => Some("1".into()),
             "H2_PAD_SPEAKER_DEVICE" => Some("Wireless Controller".into()),

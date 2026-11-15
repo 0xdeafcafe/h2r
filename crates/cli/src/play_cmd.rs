@@ -114,7 +114,7 @@ fn audio_sink(audio: bool) -> boot::dsound_glue::SinkOpener {
 }
 
 /// The DualSense HID thread (mute button and LED, `H2_PAD_MUTE`, on by
-/// default; the speaker path) and, with `H2_PAD_SPEAKER` on and audio on,
+/// default; the speaker path) and, unless `H2_PAD_SPEAKER=0` or audio is off,
 /// the controller-speaker output (docs/playstation-audio.md). A bad
 /// setting is reported and that part stays off.
 fn pad_speaker(audio: bool) -> (Option<boot::dsound_glue::PadSpeaker>, Option<input::pad_hid::PadHid>) {
