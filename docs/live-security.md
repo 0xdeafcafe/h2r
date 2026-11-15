@@ -51,7 +51,19 @@ The client signs what it means; the server orders it.
    event in a stream is detectable. The stored record is the author's JWS
    untouched plus those fields.
 
-The wire event in live-api.md gains `author`, `kid`, `jws` and `hash`.
+Exact rules:
+
+- **Hash chain.** `hash = hex(sha256(prev || utf8(jws)))`, where `prev` is
+  the raw 32 bytes of the previous event's hash in the same stream, and
+  empty for the stream's first event.
+- **Batches.** A batch is one JWS whose payload is a JSON array of event
+  bodies. Each stored event keeps the batch `jws` plus `jws_index`, its
+  element in that array; its hash uses the batch JWS string.
+- **Time.** The body's `at` is the author's clock; the wire `at` is the same
+  value, copied. The server's append time is not part of the event.
+
+The wire event in live-api.md gains `author`, `kid`, `jws`, `jws_index`
+(batches only) and `hash`.
 Readers that don't care ignore them; readers that do verify the JWS with the
 author's public key from §4.
 
@@ -67,7 +79,7 @@ key, in batches: one JWS over an array of events, verified once.
 No passwords. Clients prove they hold an account key by signing a short
 JWT themselves, the way AT Protocol service auth works.
 
-- **Self-issued token.** For each request (or each minute, reused), the
+- **Self-issued token.** For each request (single use: a `jti` is accepted once), the
   client signs a JWT with its account key: `iss` = author id, `aud` = the
   server's id (§4), `iat`, `exp` at most 60 s later, `jti` random, and
   `lxm` naming the method (`games.write`, `accounts.read`, ...). Sent as
@@ -82,11 +94,20 @@ JWT themselves, the way AT Protocol service auth works.
   log needs no token, which is what the web app does. A server can switch
   that off (`--private`), and then readers need a token too.
 - **Account creation** is the one write without a token. The request carries
-  the new public key and is signed by it (proof of possession). Servers can
+  the new public key and is signed by it (proof of possession), with `aud`
+  (the server id) and `iat` so it can't be replayed to another server. Servers can
   require an invite code (`--invite-only`).
 
-Server-issued tokens (signed by the server key) are used only between
-servers (§5).
+Server-issued tokens (signed by the server key) are used between servers
+(§5) and by the operator: publishing title files and creating invites need a
+token signed by the server key, so they run on the server's machine.
+
+`lxm` values: `events.write`, `games.write` (game events and ingest),
+`titles.write` (operator), `invites.write` (operator), and `read` (every
+read, including the stream, on a `--private` server).
+
+The server id is fixed on first start and stored with the server key,
+because every author id contains it.
 
 ## 4. Base URL and discovery
 
@@ -129,7 +150,8 @@ Not built yet; the formats above are chosen so it can be.
 - The server binds to loopback by default. Binding anywhere else requires TLS
   (`--tls-cert` and `--tls-key`, rustls) or an explicit `--insecure-http`,
   and clients refuse to send tokens over plain HTTP to a non-loopback host.
-- Request bodies are capped (64 KiB normally, title files 64 KiB, ingest
+- Request bodies are capped (64 KiB normally, title files 2 MiB because the
+  playlist file inflates to about 1.46 MB, ingest
   messages 16 KiB), and each author is rate-limited per method in memory.
 - CORS: public reads allow any origin, so a web app served elsewhere can
   read any server; writes allow none.

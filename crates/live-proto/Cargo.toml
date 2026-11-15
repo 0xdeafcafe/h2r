@@ -1,0 +1,19 @@
+[package]
+name = "live-proto"
+description = "Wire types, signing and verification shared by the Xbox Live replacement's clients and server (docs/live-api.md, docs/live-security.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+# Exact float parsing: the canonical-payload check re-serialises numbers.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+ed25519-dalek = "2"
+sha2 = "0.10"
+base64 = "0.22"
+getrandom = "0.3"
+time = { version = "0.3", features = ["formatting", "parsing"] }
+flate2 = "1"

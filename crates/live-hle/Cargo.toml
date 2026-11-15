@@ -1,0 +1,12 @@
+[package]
+name = "live-hle"
+description = "Opt-in Xbox Live public API HLE for Halo 2 retail 5849"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

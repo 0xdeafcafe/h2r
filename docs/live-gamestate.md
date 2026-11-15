@@ -1,0 +1,447 @@
+# Halo 2 retail Xbox live game-state map
+
+Static-analysis deliverable for a live scoreboard and top-down player map. All addresses are **guest virtual addresses** in the retail 1.0 XBE, not host pointers. All integer fields are little-endian. Function and field names are assigned descriptions unless a community name is explicitly linked.
+
+- XBE SHA-256: `03215919bb7163259257d361f4c7bf802a7ab12aa85e2689436369b5c427935d` (recomputed for this survey).
+- **confirmed**: directly supported by inspected retail-XBE code, by the repository's recovered engine code, or by the documented whole-disc structural checks.
+- **likely**: strong matching-build/community and call-context evidence, but the named semantics are not completely established.
+- No game or image build was run. Ghidra's current project did not contain the required function bodies, so direct XBE checks used the existing `h2 disasm`. No Ghidra names, types, or project data were changed.
+- Community material was used only as a guide. The main corroborating source was `kirklandsig/halo2-decompiled` at `69217dcac48cffad7624f884d3a76cd7eb01d7c2`, whose target is the same XBE hash; pinned Xbox 1.00 OpenSauce layouts supplied additional leads. Vista/Cartographer layouts were not treated as Xbox evidence.
+
+## 1. Address model and shared datum arrays
+
+Define these after successful map activation, checking each pointer for nonzero before use:
+
+```text
+G  = read_u32(0x004e6948)       // game globals
+O  = G + 0x8                    // active game options, inline, 0x1118 bytes
+V  = O + 0x134 = G + 0x13c      // active multiplayer variant, inline, 0x130 bytes
+T  = read_u32(0x00510c54)       // game-time globals
+E  = read_u32(0x004e9ae8)       // game-engine globals, 0xc9c bytes
+P  = read_u32(0x004e8c24)       // players datum-array header
+H  = read_u32(0x004e0300)       // object-header datum-array header
+```
+
+The pending options at `0x004ed3a8` are not the active match. `0x00137dd0` copies exactly `0x1118` bytes into `G+8`; the pending object becomes useful only after `0x0018f000` succeeds.
+
+### Generic datum-array header (used by players and objects)
+
+Recovered in `crates/engine/src/datum.rs` and `docs/engine/datum_new.md`.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| capacity | `+0x20` | `i32` | confirmed | Generic recovered datum constructor |
+| element size | `+0x24` | `i32` | confirmed | Generic addressing and lookups |
+| valid | `+0x29` | `u8` | confirmed | Generic array lifecycle |
+| high-water slot | `+0x38` | `i32` | confirmed | Iteration/lookup upper bound |
+| active count | `+0x3c` | `i32` | confirmed | Allocation bookkeeping |
+| element storage pointer | `+0x44` | `u32` | confirmed | All player/object access |
+| occupancy bitmap pointer | `+0x48` | `u32` | confirmed | Generic iterator |
+| total header size | `0x4c` | bytes | confirmed | Generic initializer |
+
+A salted datum is `(salt << 16) | absolute_slot`; `0xffffffff` is none. For players and objects, the first `u16` of each element is its salt and zero means free. Statborg rows and BSP indices use the **absolute slot**, not the full salted datum.
+
+## 2. Lifecycle and hook points
+
+### Recommended hooks
+
+| Event | Entry VA and ABI | Hook timing and confidence |
+|---|---|---|
+| Map activation / `GameStarted` | `0x0018f000`; custom `EAX = options`; no stack args; success in `AL` | **confirmed.** Call the original and emit only when it returns `AL != 0`. It copies active options, runs new-map callbacks, selects the initial BSP, and sets the ready flag. Entry alone is too early. The successful return tail is `0x0018f086`/`0x0018f08a`. |
+| Higher-level successful start | `0x0018e8b0`; one stack arg `options` at `[esp+4]`, `ret 4`; success in `AL` | **confirmed.** Alternative wrapper around cache acquisition plus activation. Caller site `0x0018e91e` is after successful activation. Do not emit from `0x0018eaa0`: that is cache/resource acquisition only. |
+| Completed simulation tick | `0x00137fe0`; no args; void | **confirmed.** Call the original, then sample only if `T+8` changed. `0x001380f3` immediately precedes the increment; `0x001380fb` is a common tail also reached without an increment, so an exit hook must compare the counter. |
+| Game-ended latch | `0x001389c0`; no args; void | **confirmed.** Idempotently sets `G+0x1128` and initializes `G+0x112c`. Emit on return or on a `0 -> 1` transition at the completed-tick hook. Final score/winner resolution has run; quit/normal-end reason is not encoded in this function. |
+| Post-game carnage report built | `0x00232d77`; no args; void; common return `0x002331a0` | **confirmed.** Optional hook for a finalized PGCR snapshot. `0x00196390` tail-jumps here from the game-end path. At entry the source stats exist but report construction is unfinished; use return or caller site `0x0015cb8d`. |
+| Winner/round resolution (optional) | `0x0015b3a0`; custom `EBX = prospective winner`; one unknown stack arg, `ret 4`; void | **confirmed ABI; limited use.** Team index in team games, player datum in FFA, `-1` for none/tie. Also handles rounds, so this is not a standalone match-ended event. Correlate it with the later end latch if winner capture is needed. |
+| Player death/kill credit | `0x0015ce70`; four stack args, `ret 0x10`; void | **confirmed.** See section 7 for arguments and score-update timing. |
+
+`0x0018e8b0` uses ordinary stack argument order. `0x0018f000` and several simulation functions use LTCG register ABIs; do not infer their prototypes from a generic decompiler.
+
+### Simulation lifecycle and tick envelope refinement
+
+The addresses in `docs/engine-map.md` are real, but `0x00067e30` is initialization, not match start.
+
+| Function | ABI | Role | Confidence |
+|---|---|---|---|
+| `0x00067e30` | no args; void | Simulation/network-global initialization callback | confirmed |
+| `0x00067ee0` | no args; void | Simulation new-map callback; useful only as an additional lifecycle signal | confirmed |
+| `0x00067f60` | no args; void | Simulation disposal callback | confirmed |
+| `0x00137f70` | custom `EAX = requested tick count`, `EBX = float *remainder` (read/write); void | May execute zero, one, or multiple `0x00137fe0` ticks | confirmed |
+| `0x000682e0` | custom `EAX = 0x4048-byte simulation-state *`; void | Initializes per-tick simulation state | confirmed |
+| `0x000683a0` | one stack arg `state *`, `ret 4` | Pre-simulation processing inside `game_tick` | confirmed |
+| `0x000684e0` | custom `ESI = state *`; void | Post-simulation processing inside `game_tick` | confirmed |
+
+The main game-engine update is called at `0x0013803c` (`0x0015c150`), and end/post-game orchestration at `0x00138073` (`0x0015ca10`). `0x0015c550` is the no-arg post-game state transition helper; requested state is `E+0xc04`, published state is the `i16` at `E+0x6c`, and state `2` follows the post-game path.
+
+## 3. Current map, mode, variant, teams, and limits
+
+### Game and time globals
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| map-active flag | `G+0x01` | `u8` | confirmed | New-map lifecycle |
+| active structure-BSP index | `G+0x02` | `i16` | confirmed | `0x0011c1b0` / `0x00137d40`; indexes the scenario BSP block |
+| simulation mode | `G+0x0c` | `u8` | confirmed | Simulation/tick gates |
+| game/simulation ready | `G+0x1120` | `u8` | confirmed | Set during successful `0x0018f000` |
+| game-ended latch | `G+0x1128` | `u8` | confirmed | Set by `0x001389c0`, cleared by new-map setup |
+| end-delay countdown | `G+0x112c` | `i32` | confirmed | Initialized from tick rate by `0x001389c0` |
+| tick rate | `T+0x02` | `i16` | confirmed | Read from active options by `0x001465b0` |
+| seconds per tick | `T+0x04` | `f32` | confirmed | Recovered game-time initialization |
+| elapsed simulation ticks | `T+0x08` | `u32` | confirmed | Incremented at the end of eligible `game_tick` calls |
+| game speed | `T+0x0c` | `f32` | confirmed | Recovered game-time layout |
+| round/start tick for elapsed-match calculations | `E+0x70` | `u32` | likely | Death/round code computes `T+8 - (E+0x70)`; validate across rounds |
+
+### Active options `O = G+8`
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| scenario type | `O+0x00` | `i32` | confirmed | `1` campaign, `2` multiplayer, `3` main menu; other accepted values unresolved |
+| tick rate | `O+0x06` | `i16` | confirmed | Copied to `T+0x02` |
+| scenario path | `O+0x1c` | `char[256]` | confirmed | Consumed by cache acquisition at `0x0018eaa0` |
+| initial BSP index | `O+0x120` | `i16` | confirmed | Read by `0x0018f000` |
+| inline variant | `O+0x134` | 0x130 bytes | confirmed | Multiplayer construction and sanitizer at `0x0019d650` |
+
+Use `O+0x00`, not the cache type, to exclude the main menu. For reference, cache-header type `0x00547840` is an `i16` with `0` campaign, `1` multiplayer, `2` menu, `3` shared, `4` campaign-shared; scenario tag `scnr+0x10` uses `0` campaign, `1` multiplayer, `2` main menu.
+
+### Variant `V = O+0x134 = G+0x13c`
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| custom variant name | `V+0x04` | UTF-16LE `[32]` | confirmed | 0x40-byte area; sanitizer terminates its final code unit |
+| game-engine index | `V+0x44` | `i32` | confirmed | Copied to `E+0xc14` by `0x001574c0` |
+| engine flags | `V+0x48` | `u32` | confirmed | Bit 0 is team play; used by scoring and post-game code |
+| round setting | `V+0x4c` | `i32` | confirmed | Sanitized to `0..6` |
+| score limit | `V+0x50` | `i32` | confirmed | Compared with player/team scores; zero bypasses limit checks |
+| time limit, seconds | `V+0x54` | `i32` | confirmed | `0x00162470` multiplies it by tick rate to compute remaining ticks |
+| join-in-progress setting | `V+0x58` | `i32` | confirmed | Sanitized to `0..2` |
+| maximum players | `V+0x74` | `i32` | confirmed | Sanitized to `0..16` |
+| team-score aggregation mode | `V+0xa4` | `i32` | confirmed | Sanitized to `0..2`; used by team score updates |
+| maximum teams | `V+0xb4` | `i32` | confirmed | Sanitized to `0..8` |
+
+`team_play = ((read_u32(V+0x48) & 1) != 0)`. The active engine-index mirror is `read_i32(E+0xc14)`.
+
+Engine indices, verified against the retail dispatch and matching Xbox engine implementations:
+
+| Index | Variant |
+|---:|---|
+| 0 | none / campaign |
+| 1 | Capture the Flag |
+| 2 | Slayer |
+| 3 | Oddball |
+| 4 | King of the Hill |
+| 5 | Race (deprecated) |
+| 6 | Headhunter (deprecated) |
+| 7 | Juggernaut |
+| 8 | Territories |
+| 9 | Assault |
+
+### Cache identity (inline header at `0x00547700`)
+
+| Field | Address / offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| cache type | `0x00547840` (`header+0x140`) | `i16` | confirmed | Cache-header validation |
+| short map name | `0x00547898` (`header+0x198`) | `char[32]` | confirmed | Terminated-length validation at `0x00122870` |
+| cache scenario path | `0x005478bc` (`header+0x1bc`) | `char[256]` | confirmed | Recovered cache header |
+| scenario tag pointer | `0x004e0350` | `u32` | confirmed | Cache loader publication |
+| active BSP tag pointer | `0x004e0348` | `u32` | confirmed | `0x0011c1b0` / `0x00122b40` |
+
+For the web API, use the short map name plus the scenario path for disambiguation, and send `G+0x02` with every map/BSP change.
+
+## 4. Players datum array
+
+`players_initialize` at `0x0014b4b0` allocates **16 entries of stride `0x21c`** and publishes `P` at `0x004e8c24`. Element `i` is at `read_u32(P+0x44) + i*0x21c`. Iterate only below `P+0x38`, using the bitmap at `P+0x48` or the nonzero salt, and compose the current salted player datum from the salt and slot.
+
+`player_iterator_next` at `0x0019f240` additionally skips records with flag bit 1 at `+0x02`; this is a useful “active player” filter for the scoreboard.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| datum salt | `+0x00` | `u16` | confirmed | Datum contract and player iterators |
+| player flags | `+0x02` | `u16` | confirmed | Bit 0 connection state; bit 1 records are skipped by the engine iterator |
+| originating machine address | `+0x14` | 6 bytes | confirmed | Creation at `0x0014c090` |
+| originating machine index | `+0x1a` | `i16` | confirmed | `-1` for none |
+| originating machine user | `+0x1c` | `i16` | confirmed | Creation/rebinding code |
+| originating machine controller | `+0x20` | `i32` | confirmed | Creation/rebinding code |
+| local controller index | `+0x24` | `i32` | confirmed | `-1` for remote/unbound |
+| local user index | `+0x28` | `i16` | confirmed | `0..3` for local, `-1` for remote/unbound; maintained by `0x0014f190` |
+| current unit object datum | `+0x2c` | `u32` | confirmed | Maintained by `0x0014cad0`; `0xffffffff` for no current unit |
+| previous/deleted unit datum | `+0x30` | `u32` | confirmed | Not a substitute for `+0x2c` |
+| active player name | `+0x44` | UTF-16LE `[32]` (64 bytes) | confirmed | Active configuration starts here; `0x0014be90` compares `0x20` code units |
+| active team | `+0xc0` | `i8` | confirmed | `-1` for none; configuration/team bookkeeping |
+| shadow/original configuration | `+0xd4` | 0x90 bytes | confirmed | `0x0014be90` copies the source here before verification |
+| respawn delay | `+0x164` | `i32` | confirmed | Respawn update `0x0015dd40` |
+| lives remaining | `+0x1ac` | `i16` | confirmed | `-1` means unlimited; death/round handling |
+
+Read the name as exactly 32 code units and append a local terminator; do not rely on a terminator beyond the field. Actual names normally terminate earlier.
+
+Derived values:
+
+```text
+local        = read_i16(player+0x28) != -1
+has_unit     = read_u32(player+0x2c) != 0xffffffff
+waiting/dead = read_u32(player+0x2c) == 0xffffffff
+player_datum = (read_u16(player+0) << 16) | slot
+```
+
+There is no separate player-datum alive boolean to substitute for `+0x2c`. For object-level death state, object `+0x10a` bit 2 is body-depleted, but it can differ transiently from the current-unit link.
+
+The local-user map is at `read_u32(0x004e8c20)+0x0c`: four `i32` salted player datums. The four local-controller mappings begin at `+0x1c`; local machine index is `+0x98`.
+
+## 5. Game-engine statborg and scores
+
+The stats are separate from the player datum. `E` points to a 0xc9c-byte game-engine global block. The inline statborg begins at `E+0x304` and is 0x254 bytes. It is usable only when the selected object at `0x0055e4d0[engine_index]` is nonnull and its valid field is set; campaign should not be assumed to have multiplayer stats.
+
+```text
+player_stat(i) = E + 0x308 + i*0x1c   // absolute player slot, 0..15
+team_stat(t)   = E + 0x4c8 + t*0x12   // team index, 0..7
+```
+
+### Per-player stat row
+
+All nine networked counters through `+0x10` are signed 16-bit values. Update helpers clamp them to `[-30000,30000]`.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| current-round score | `+0x00` | `i16` | confirmed | Raw score accessor `0x001587b0` |
+| cumulative/multi-round score | `+0x02` | `i16` | confirmed | Round-boundary folding at `0x001e97b0` |
+| kills | `+0x04` | `i16` | confirmed | `0x001ea5b0` updates field 2 |
+| deaths | `+0x06` | `i16` | confirmed | `0x001ea770` updates field 3 |
+| suicides | `+0x08` | `i16` | confirmed | `0x001ea770` updates field 4 |
+| betrayals | `+0x0a` | `i16` | confirmed | `0x001ea770` updates field 5 |
+| assists | `+0x0c` | `i16` | confirmed | `0x001e9fa0` updates field 6 after assist attribution |
+| rounds won | `+0x0e` | `i16` | confirmed | Winner/round path `0x0015b3a0` |
+| ninth networked stat | `+0x10` | `i16` | likely | Layout confirmed; semantics unresolved and not needed |
+| consecutive-kill count | `+0x12` | `i16` | confirmed | `0x001ea5b0` / reset at `0x001ea770` |
+| multiple-kill counter | `+0x14` | `i16` | likely | Layout and update confirmed; exact medal semantics are not needed |
+| last-kill tick | `+0x18` | `u32` | confirmed | Written from `T+0x08` at `0x001ea5b0` |
+
+For an individual score, read row `+0x00` directly. `0x0019fc70` deliberately returns the team score in a team game. Use `+0x02` if the UI wants a cumulative multi-round score.
+
+### Per-team stat row
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| current-round team score | `+0x00` | `i16` | confirmed | `0x001587f0` and `0x0015b650` |
+| cumulative team score | `+0x02` | `i16` | confirmed | Same round folding as players |
+| team kills | `+0x04` | `i16` | confirmed | Same field-2 update helper |
+| team deaths | `+0x06` | `i16` | confirmed | Same field-3 update helper |
+| team suicides | `+0x08` | `i16` | confirmed | Same field-4 update helper |
+| team betrayals | `+0x0a` | `i16` | confirmed | Same field-5 update helper |
+| team assists | `+0x0c` | `i16` | confirmed | Same field-6 update helper |
+| team rounds won | `+0x0e` | `i16` | confirmed | Winner/round path |
+| ninth team stat | `+0x10` | `i16` | likely | Layout confirmed; semantics unresolved |
+
+Useful team masks in `E`: present teams `+0x04`, playing teams `+0x0c`, team-active mask `+0x0e`, all `u16`. These are optional; player `+0xc0` is sufficient to group the scoreboard.
+
+## 6. Objects, positions, facing, and vehicles
+
+### Object-header array
+
+`objects_initialize` at `0x000b67c0` creates **2,048 twelve-byte headers** and publishes `H` at `0x004e0300`. Header `i` is at `read_u32(H+0x44) + i*0x0c`.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| datum salt | `+0x00` | `u16` | confirmed | Generic datum contract and `0x000badc0` |
+| header flags | `+0x02` | `u8` | likely | Xbox header layout and iterators; individual flag meanings are not needed |
+| concrete object type | `+0x03` | `u8` | confirmed | Read by `0x000badc0` for its type mask |
+| cluster/location index | `+0x04` | `i16` | likely | Matching Xbox layout; not needed for player markers |
+| body size | `+0x06` | `u16` | confirmed | Stored by allocator `0x000bc280` |
+| object-body pointer | `+0x08` | `u32` | confirmed | Allocation and every typed lookup |
+
+Safe unit lookup, equivalent to the relevant checks in `0x000badc0`:
+
+```text
+reject datum == 0xffffffff
+slot = datum & 0xffff
+reject slot >= read_i32(H+0x38)
+header = read_u32(H+0x44) + slot*0x0c
+reject read_u16(header+0) == 0
+reject read_u16(header+0) != (datum >> 16)
+reject ((1 << read_u8(header+3)) & 0x3) == 0   // biped or vehicle
+body = read_u32(header+8)
+reject body == 0
+```
+
+`0x000badc0` itself has custom `EAX = object datum`, one stack type-mask argument, `ret 4`, and returns the body pointer or zero in `EAX`. Unit mask is `0x3` (`0` biped, `1` vehicle).
+
+Do not cache body pointers between snapshots: the object memory pool can compact and rewrite the header's pointer (`docs/engine/memory_pool.md`). Never scan the one-MiB object pool for players; follow only player unit datums and, optionally, their parents.
+
+### Common object/unit body
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| definition tag datum | `+0x00` | `u32` | confirmed | Object creation and tag consumers |
+| parent object datum | `+0x14` | `u32` | confirmed | Transform composition and parent walks |
+| bounding center | `+0x30` | `f32[3]` | confirmed | Not the scoreboard origin |
+| object origin | `+0x64` | `f32[3]` | confirmed | Written by transform setter `0x000b7430` |
+| forward/facing vector | `+0x70` | `f32[3]` | confirmed | Written by `0x000b7430`; used by `0x000ba160` |
+| up vector | `+0x7c` | `f32[3]` | confirmed | Written by `0x000b7430` |
+| translational velocity | `+0x88` | `f32[3]` | confirmed | Recovered velocity writer |
+| concrete object type | `+0xaa` | `u8` | confirmed | HaloScript/object type tests |
+| damage flags | `+0x10a` | `u16` | confirmed | Bit 2 is body-depleted, set by `0x000d6800` |
+| unit's player datum | `+0x13c` | `u32` | confirmed | `0x0014de90`; retail Xbox differs from Vista's `+0x140` |
+| previous player datum | `+0x140` | `u32` | confirmed | Unlink path `0x0014cad0` |
+| vehicle seat index | `+0x1fc` | `i16` | likely | Unit/vehicle death and seat consumers; optional |
+
+For an unparented unit, marker position is `body+0x64`, and heading is `atan2(forward.y, forward.x)`; the world is Z-up. `0x000ba160` shows that parented objects compose their local transform with a parent node matrix. Therefore, for a player in a vehicle, the cheap robust path is:
+
+1. Read the unit's parent datum at `+0x14`.
+2. Salt-check that object and require concrete type `1` (vehicle).
+3. Use the vehicle body's `+0x64` origin and `+0x70` forward, and optionally the unit's `+0x1fc` seat.
+4. If drawing a parented biped rather than its vehicle, compose the full object matrix instead of assuming `+0x64` is world-space.
+
+## 7. Kill/death and damage hooks
+
+### Best player-facing event: `0x0015ce70`
+
+Standard four-argument stack convention, callee pops 16 bytes:
+
+| Argument | Stack offset at entry | Type | Meaning |
+|---|---:|---|---|
+| attacker player datum | `[esp+0x04]` | `u32` | Finally attributed killer; `0xffffffff` for none |
+| victim player datum | `[esp+0x08]` | `u32` | Victim player |
+| betrayal flag | `[esp+0x0c]` | `u32`/`bool` | Friendly-fire/betrayal classification |
+| packed damage code | `[esp+0x10]` | `u8` in low byte | Low 6 bits damage type, high 2 bits modifier |
+
+The direct call is at `0x001ea460` inside attribution routine `0x001e9fa0`. It follows recent-damage attribution, so the killer is final. It is not universal for campaign AI or arbitrary units: a game engine/statborg and a victim player index are required.
+
+Timing matters:
+
+- At entry, an enemy killer's kill counter has already been incremented, but the engine's score callback near the end of `0x0015ce70` has not necessarily run.
+- After `0x0015ce70` returns, the victim death/suicide/betrayal and assist accounting can still be pending in `0x001e9fa0`.
+- Recommended: emit the event arguments immediately, then publish the authoritative stat rows at the next completed-tick sample. If a hook must see all death stats complete, wrap `0x001e9fa0` and emit after its return.
+
+`0x001e9fa0` has five stack args, `ret 0x14`: statborg pointer, victim object datum, reported player datum, reported team (`i16` in the arg slot), and packed damage code. It performs final killer/assist attribution and all associated stat updates.
+
+### Damage-aware alternative: `0x000d9640`
+
+Custom ABI: `EDI = damage_report *`, one stack arg victim object datum, `ret 4`; void. Filter `(report.flags & 1) != 0` for the body-depleted transition.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| packed damage code | `+0x00` | `u8` | confirmed | Low 6 bits type, high 2 bits modifier |
+| report flags | `+0x04` | `u32` | confirmed | Bit 0 body-depleted/death transition |
+| damage-effect (`jpt!`) tag datum | `+0x08` | `u32` | confirmed | Resolved through the tag-entry table |
+| reported owner player datum | `+0x0c` | `u32` | confirmed | Copied to unit owner state |
+| reported owner object datum | `+0x10` | `u32` | confirmed | Used for owner/current-weapon paths |
+| reported owner team | `+0x14` | `i16` | confirmed | Team/hostility handling |
+| direction | `+0x18` | `f32[3]` | confirmed | Damage report consumers |
+| origin | `+0x24` | `f32[3]` | confirmed | Damage report consumers |
+| body-damage amount | `+0x44` | `f32` | likely | Body-vitality update path |
+| shield-damage amount | `+0x48` | `f32` | likely | Shield-vitality update path |
+| distance | `+0x4c` | `f32` | confirmed | Damage report layout |
+
+The `jpt!` datum is the most precise damage identity here; it is not a weapon tag. Current-weapon lookup through the reported owner is only corroboration and is not reliable for grenades, delayed projectiles, vehicles, melee, or recent-damage attribution. Use `0x0015ce70` for final killer identity.
+
+For arbitrary object death without player attribution, `0x000d6800` is the body-depleted transition. It takes four stack args (`object datum`, `damage_owner *`, `notify_parent`, additional flag), `ret 0x10`. The owner is player datum `+0`, object datum `+4`, team `i16 +8`; it has no damage code or damage tag.
+
+## 8. Structure BSP and a web top-down map
+
+### Scenario BSP selection
+
+The scenario's structure-BSP block is at `scnr+0x210` (count/pointer), with records of stride `0x44`.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| scenario BSP block count | `scnr+0x210` | `u32` | confirmed | `0x0011c1b0` and viewer decoder |
+| scenario BSP block pointer | `scnr+0x214` | `u32` | confirmed | Same |
+| BSP tag datum in record | `record+0x14` | `u32` | confirmed | Loaded by `0x00122b40` |
+| lightmap tag datum in record | `record+0x1c` | `u32` | confirmed | Loaded by the same switch |
+
+Use `G+0x02` to select the active record. Do not assume BSP zero; campaign maps switch BSPs. `0x004e0348` is the active resolved BSP tag pointer and can be used as a consistency check.
+
+### Geometry needed for bounds and rendering
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|---|
+| cluster block | `sbsp+0x9c` | block, stride `0xb0` | confirmed | Engine `0x00041040` and `StructureRender` |
+| material block | `sbsp+0xa4` | block | confirmed | Part material validation |
+| instanced definitions | `sbsp+0x138` | block, stride `0xc8` | confirmed | Engine and decoder |
+| instanced placements | `sbsp+0x140` | block, stride `0x58` | confirmed | Engine and decoder |
+| cluster world bounds | `cluster+0x54` | `f32[6]` | confirmed | `[xmin,xmax,ymin,ymax,zmin,zmax]`; whole-disc vertex checks |
+| instance uniform scale | `placement+0x00` | `f32` | confirmed | Whole-disc placement validation |
+| instance forward/left/up basis | `placement+0x04/+0x10/+0x1c` | three `f32[3]` | confirmed | Orthonormal/right-handed checks |
+| instance translation | `placement+0x28` | `f32[3]` | confirmed | World placement checks |
+| instance definition index | `placement+0x34` | `i16` | confirmed | Engine `0x000410c5` |
+
+Instance transform: `world = translation + scale * (x*forward + y*left + z*up)`.
+
+There is no single decoded BSP world AABB in the repository. For exact bounds, reduce every vertex of every world-space triangle, including transformed instances. Cluster bounds are useful per-cluster approximations, not a substitute for that reduction.
+
+### Reusing the viewer for the web
+
+`crates/viewer/src/bin/bsp.rs:591` already has `world_triangles`, which builds all world-space triangles for one BSP:
+
+- cluster positions are already world-space (`:613-616`);
+- definitions are loaded once and transformed per placement (`:618-626`);
+- drawn-part filtering and triangle expansion are already implemented (`:600-610`).
+
+The public lower-level APIs are:
+
+- `StructureRender::read` — `crates/tags/src/structure.rs:288`;
+- `GeometryHeader::load` — `crates/tags/src/structure.rs:135`;
+- `Section::vertices(None)` — `crates/tags/src/geometry.rs:928`;
+- `Section::part_triangles` — `crates/tags/src/geometry.rs:917`;
+- `InstancedGeometryInstance::transform` — `crates/tags/src/structure.rs:213`.
+
+Two practical export routes:
+
+1. **Lowest effort:** run the existing `bsp --render` path offline and ship its top-down PNG plus the world-to-image scale/offset. The renderer looks down Z and culls faces with `normal.z <= 0` (`crates/viewer/src/bin/bsp.rs:728-746`). Its framing is the 1st–99th percentile of triangle centroids, not exact world bounds (`:707-725`), so export those computed framing values rather than recomputing an AABB on the server.
+2. **Vector/interactive:** refactor the private `world_triangles` logic into an offline exporter, project drawn triangles to XY, and emit quantized triangles, an occupancy raster, or boundary edges as SVG/JSON. This currently has no triangle/SVG/GeoJSON/outline CLI. Use exact vertex bounds if the vector output should include everything; optionally retain the renderer's back-face/percentile policy to hide the enclosing shell.
+
+Precompute every scenario BSP offline. Runtime traffic then needs only `{map, bsp_index}` and player XY/heading, not live BSP geometry.
+
+## 9. Recommended sampling plan
+
+### Hook and publication cadence
+
+1. On successful `0x0018f000`, create a session and read `O`, `V`, cache identity, `G+0x02`, and `T`. Start only options types `1` and `2`.
+2. On every `0x00137fe0` return, check `T+0x08`. If unchanged, do nothing. If changed:
+   - read `G+0x02`, `G+0x1120`, and `G+0x1128`;
+   - sample player/stat rows every tick if desired, or every 2–3 ticks for the web;
+   - resolve each live player's current unit and optional vehicle parent;
+   - detect map/BSP changes and publish them with the next snapshot.
+3. Hook `0x0015ce70` for immediate attributed kill events. Reconcile event scores from the next completed-tick stat snapshot.
+4. On the `G+0x1128` transition, publish final scores and stop movement updates. Use `0x00232d77` return only if a separate finalized-PGCR message is wanted.
+5. Treat pointer loss, a new activation, or options type `3` as session teardown; do not continue using cached `P`, `H`, `E`, or object-body pointers.
+
+A good default is **positions at 15 Hz, scoreboard at 10 Hz, kill events immediate**, while retaining the completed-tick hook so no event is lost. Sampling every tick is also inexpensive locally.
+
+### Per-tick reads and approximate cost
+
+Read only live players and their units:
+
+| Data | Read size / work |
+|---|---|
+| time and lifecycle | A few words from `G`, `T`, and `E` |
+| player table metadata | High-water/data/bitmap; 16-slot bitmap is tiny |
+| player identity/state | `+0x02`, `+0x24..+0x30`, name at `+0x44`, team at `+0xc0`; names can be sent only on change |
+| player and team stats | At most 16×0x1c + 8×0x12 = 592 bytes |
+| one unit per player | 12-byte header, parent datum, origin/forward/up, type, and optional damage flags; re-read body pointer each time |
+| one vehicle per occupied player | Another 12-byte header and transform, only when parent type is vehicle |
+
+Selective contiguous reads are roughly **2–4 KiB per full 16-player snapshot**, or about **12 KiB** if all 16 complete `0x21c` player records are read unnecessarily. This is a few hundred scalar reads, negligible beside a game tick. Avoid reading all 2,048 headers or the one-MiB object pool. Quantize positions/headings for transport and send names/options only when changed.
+
+Consistency rules:
+
+- Use datum high-water and salt checks; never use only a nonzero body pointer.
+- Statborg rows use absolute player slots; event arguments carry salted player datums.
+- Use current-round score `+0x00` for the ordinary live scoreboard and cumulative score `+0x02` only when wanted.
+- For team games, send both individual and team scores; do not substitute the team-aware score accessor for individual stats.
+- Campaign may lack a valid statborg; player identity, current unit, and positions still work.
+- Publish kill events with tick number and let the next stat snapshot be authoritative if an event arrives during stat mutation.
+
+## 10. Open items / first runtime checks
+
+- All findings here are static. Validate one local Slayer match and one campaign map before enabling the service by default; then check system-link/Live sessions, whose runtime paths were not traced.
+- Confirm the name field against real gamertags and variant names; storage is confirmed as 32 UTF-16 code units, not the smaller Vista layout some sources use.
+- Check vehicle-passenger transforms against gameplay. Generic parented-object composition is known, but only the cheap vehicle-parent path is recommended here.
+- Persistent winner storage and normal-end/quit reason are not recovered. `0x0015b3a0` supplies a transient prospective winner, while `0x001389c0` supplies only the end latch.
+- PGCR's detailed output structure was not mapped; only its construction hook is included.
+- A direct causative weapon tag is not available at `0x0015ce70`. Correlate `0x000d9640`'s `jpt!` damage datum if damage-effect identity is sufficient.
+- Options types other than `1`, `2`, and `3`, the ninth stat counter, and exact original names for game-engine state values remain unresolved and are not needed for the initial scoreboard.
+
+## References
+
+- Local anchors and layouts: `docs/engine-map.md`, `docs/engine/datum_new.md`, `docs/engine/memory_pool.md`, `docs/structure-bsp.md`, `crates/engine/src/datum.rs`, `crates/tags/src/structure.rs`, `crates/tags/src/geometry.rs`, `crates/viewer/src/bin/bsp.rs`.
+- [Same-hash retail decompilation, pinned commit](https://github.com/kirklandsig/halo2-decompiled/tree/69217dcac48cffad7624f884d3a76cd7eb01d7c2), used as corroboration and for semantic leads.
+- [OpenSauce Xbox 1.00 tree, pinned commit](https://github.com/MirisWisdom/OpenSauce/tree/d200c970c918921d40e9fb376ec685c77797c8b7/OpenSauce/Halo2/Halo2_Xbox), used as a matching-build layout lead.

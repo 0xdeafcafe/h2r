@@ -79,7 +79,7 @@ up to 15 Hz and are not stored.
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, started_at, ended_at?, players, teams?}` |
+| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, team_play, started_at, ended_at?, players, teams?}` |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
@@ -89,13 +89,16 @@ up to 15 Hz and are not stored.
 ## Write endpoints
 
 Every write needs `Authorization: Bearer <self-issued JWT>` (security §3)
-except account creation. Event bodies are signed JWS (security §2):
+except account creation. Signed bodies are sent raw as a compact JWS with
+`Content-Type: application/jose`. Event bodies are signed JWS (security §2):
 `POST /v1/games/{id}/events` takes one JWS over the array.
 
 | method and path | body | does |
 |---|---|---|
 | `POST /v1/accounts` | JWS signed by the new key over `{gamertag, jwk, invite?}` | create; 201 `{xuid, gamertag, id}`, 409 if taken |
-| `PUT /v1/titles/{title}/files/{name}` | raw bytes | publish a title file |
+| `PUT /v1/titles/{title}/files/{name}` | raw bytes, operator token | publish a title file (max 2 MiB) |
+| `POST /v1/events` | one compact JWS (an event on a stream the author may write) | append; 201 `{position}` |
+| `POST /v1/invites` | (operator token) | create a single-use invite |
 | `POST /v1/games` | `GameStarted` data without `game_id` | starts a game; returns `{game_id}` |
 | `POST /v1/games/{id}/events` | `[{type, data}]` | append game events in order |
 | `PUT /v1/maps/{map}/outline` | outline JSON | store a map outline |
@@ -135,3 +138,71 @@ there:
 
 Polygons are top-down projections of floor surfaces, grouped into height
 layers so multi-storey maps can be drawn one floor at a time.
+
+## Clarifications (2026-11-15)
+
+Settled after the first client was built against this page.
+
+1. **Positions.** The log starts at position 1. `?from=N` is exclusive:
+   the stream and `/v1/events` return events with `position > N`, so
+   `from=0` is the whole log and a client resumes with the last position it
+   applied.
+2. **Snapshots join the stream.** Every read response carries
+   `"position": <head when it was read>`, so a client can load a snapshot
+   and open the stream with `?from=<that position>`. The stream also takes
+   `?exclude=GameFrame` (comma-separated types to leave out) and
+   `?types=` (only these types).
+3. **Lists** are `{ "items": [...], "next": <string or null>, "position": n }`
+   everywhere. `next` is opaque; pass it back as `?cursor=`. For
+   `/v1/events` it happens to be the next `from`.
+4. **Errors** are exactly `{ "error": "<code>", "message": "..." }` with the
+   codes in Conventions (plus `unauthorized`, `forbidden`, `rate_limited`,
+   `too_large`, `unimplemented`).
+5. **Presence states** are `online`, `away` and `playing` (`game_id` set);
+   `SignedOut` and `PresenceExpired` mean offline.
+6. **`GameEnded.winner`** is `{ "team": n }` in team games,
+   `{ "player": index }` otherwise, or null for a draw or quit.
+7. **`GameEnded.players`** is the final scoreboard: `[{index, score, kills,
+   deaths, assists}]`.
+8. **Frames** are `GET /v1/games/{id}/frames?from_tick=&to_tick=&cursor=`
+   returning a list (item 3) of frames, at most 600 per page, oldest first.
+   `GameFrame.data` is the frame plus `source` (the ingesting author id).
+9. **`PlayerKilled`** carries `pos`, the victim's position.
+10. **`GameStarted`** carries `tick`, the game tick it started at.
+11. **Keys.** `GET /v1/accounts/{gamertag}/keys` and
+    `GET /v1/accounts/by-xuid/{xuid}/keys` both return
+    `{ "keys": [ { "kid", "jwk", "valid_from": <position>,
+    "valid_to": <position or null> } ] }`. The hash chain, batch JWS and
+    `at` rules are in [live-security.md §2](live-security.md).
+12. **Well-known `api`** may be relative (`"/v1"`); resolve it against the
+    well-known document's URL.
+13. **Axes.** World coordinates are the game's: x and y horizontal, z up,
+    in world units. `yaw` is radians counter-clockwise from +x. Map outlines
+    use the same axes.
+14. **`console`** is a free display string (the console's name); clients
+    may show it or not.
+
+## As built (2026-11-15)
+
+Decisions made while building the games slice; they override the tables
+above where they differ.
+
+- **`POST /v1/games`** returns `{game_id}`; the server picks the id (32 hex)
+  and writes `GameStarted` itself, signed by the server key, with an extra
+  `host` field naming the token's author. Later game events are written by
+  the host or a player in the game.
+- **Ingest `events`** messages are `{ "kind": "events", "game_id": "...",
+  "jws": "<one batch JWS>" }`, answered with `{kind: "appended", position}`
+  or `{kind: "error", ...}`. `{kind: "ping"}` refreshes presence.
+- **`POST /v1/events`** returns the stored wire event (a superset of
+  `{position}`).
+- **Map outlines**: the first upload for a map wins; the operator can replace
+  it.
+- **`POST /v1/presence/ping`** needs `lxm: events.write` and returns 404 if
+  the caller isn't signed in. Presence expires 90 s after the last event or
+  ping; a game with no events or frames for 5 minutes ends as `lost`.
+- **`recent_games`** on an account is the latest 10.
+- **Account creation** payload is `{gamertag, jwk, invite?, aud, iat}`;
+  `aud` is the server id from the well-known document and `iat` must be
+  within 5 minutes of the server's clock. The fixed test vector is
+  `account_request_vector` in `crates/live-proto/src/sign.rs`.

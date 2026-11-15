@@ -27,8 +27,13 @@ x87 = { path = "crates/x87" }
 kernel = { path = "crates/kernel" }
 vfs = { path = "crates/vfs" }
 boot = { path = "crates/boot" }
+live-proto = { path = "crates/live-proto" }
+live-server = { path = "crates/live-server" }
 thiserror = "2"
 anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
 
 # The fixture tests decode ~5M rows; keep them quick in debug builds.
 [profile.dev.package.sse-oracle]
