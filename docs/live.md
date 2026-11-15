@@ -68,7 +68,7 @@ both files is unknown and is the first thing to decode.
 
 ## 3. Where to cut
 
-Three places are possible. The recommendation is the API boundary.
+Three places are possible. Decided (2026-11-15): C, the API boundary.
 
 **A. The wire (what the Insignia revival does).** Leave `XONLINE` and `XNET`
 as generated code, give XNet a real host socket, and write a server that
@@ -128,7 +128,9 @@ h2 play --live [http://localhost:...]      # boot with link up, signed in
 
 ### 4.3 Service
 
-A new crate (`crates/live-server`, axum + sqlx) on Postgres, event sourced:
+A new crate in this repo (`crates/live-server`, axum + sqlx), run as
+`h2 live serve`, on Postgres, event sourced. Protocol types shared with the
+client HLE live in a small `crates/live-proto`.
 
 - One append-only `events` table: `stream_id`, `version`, `type`,
   `payload jsonb`, `at`. Unique on `(stream_id, version)` for optimistic
@@ -139,11 +141,24 @@ A new crate (`crates/live-server`, axum + sqlx) on Postgres, event sourced:
 - Projections rebuilt from events into ordinary tables for reads (accounts by
   gamertag, friend lists).
 
-Not everything belongs in the event log. Presence and matchmaking sessions
-change every few seconds and nobody needs their history, so they live in
-memory with a TTL and are pushed to clients over a WebSocket. Events where
-history matters (accounts, friends, clans, match results, stats); memory
-where it doesn't.
+Everything is an event, presence and matchmaking sessions included
+(decided 2026-11-15), so the log is the full history of who was online,
+where and with whom. To keep that from flooding the log:
+
+- **Changes, not pings.** A presence stream records `SignedIn`,
+  `PresenceChanged` (title, state, session), `SignedOut`. Keep-alive pings
+  only refresh an in-memory deadline and are never written.
+- **Expiry is an event.** When a deadline passes, the server appends
+  `PresenceExpired` (or `SessionExpired`), so a crashed client still ends
+  its stream and a replay gives the same answer.
+- **Session streams** per matchmaking session: `SessionCreated`,
+  `SessionUpdated` (attributes, open slots), `PlayerJoined`, `PlayerLeft`,
+  `SessionDeleted`. `XOnlineMatchSessionUpdate` calls that change nothing
+  are dropped.
+- **Projections in memory** for the hot reads (who is online, open
+  sessions by attribute), rebuilt from the log on start and updated as events
+  are appended. Pushes to clients go out over a WebSocket from the same
+  append path.
 
 Postgres rather than Mongo: an event store needs ordered append with a
 uniqueness check per stream, which is one table and one constraint in
