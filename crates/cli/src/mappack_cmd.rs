@@ -1,9 +1,11 @@
 //! `h2 import-mappack`: install the Halo 2 Multiplayer Map Pack disc's
 //! content into the emulated hard disk, and keep its title update aside.
 //!
-//! Nothing is read from the game here beyond the disc's directory tree and,
-//! for the update, the XBE certificate. The layout and what the game does
-//! with it are in docs/map-pack.md.
+//! Nothing is read from the game here beyond the disc's directory tree,
+//! each package's `ContentMeta.xbx` header (which is signed for this
+//! console, as the disc's installer does on a real one) and, for the
+//! update, the XBE certificate. The layout and what the game does with it
+//! are in docs/map-pack.md.
 use std::io::{Read, Seek};
 use std::path::{Path, PathBuf};
 
@@ -20,6 +22,10 @@ const UPDATE_DIR: &str = "/demos/update/Updates/";
 const UPDATE_STEM: &str = "default.xbe.";
 /// FATX allows 42 bytes per name (docs/storage.md).
 const FATX_NAME_MAX: usize = 42;
+const CONTENT_META: &str = "contentmeta.xbx";
+/// ContentMeta.xbx is a header, names and a file table: about 1 KB on the
+/// map pack. Anything far bigger is not one.
+const CONTENT_META_MAX: u32 = 1 << 20;
 
 const USAGE: &str = "usage: h2 import-mappack <mappack.iso> [--data DIR] [--disc <halo2.iso|default.xbe>]
                        [--no-update] [--force] [--dry-run]
@@ -121,7 +127,7 @@ impl Plan {
             bail!("no content packages under {DLC_DIR}: is this the Multiplayer Map Pack disc?");
         }
         for p in &packages {
-            let has_meta = p.files.iter().any(|f| f.path.to_ascii_lowercase().ends_with("/contentmeta.xbx"));
+            let has_meta = p.files.iter().any(is_content_meta);
             if !has_meta {
                 bail!("package {} has no ContentMeta.xbx", p.dir);
             }
@@ -134,6 +140,22 @@ impl Plan {
     pub fn update_for(&self, base_version: u32) -> Option<&Entry> {
         self.updates.iter().find(|(n, _)| *n == base_version & 0xff).map(|(_, e)| e)
     }
+}
+
+fn is_content_meta(file: &Entry) -> bool {
+    file.path.rsplit('/').next().is_some_and(|n| n.eq_ignore_ascii_case(CONTENT_META))
+}
+
+/// A package's ContentMeta.xbx as this console's installer writes it: the
+/// disc's copy carries an all-zero signature and XAPI refuses it until it
+/// is signed with the console's hard disk key (`kernel::content`).
+fn signed_content_meta<R: Read + Seek>(iso: &mut Xiso<R>, file: &Entry) -> Result<Vec<u8>> {
+    if file.size > CONTENT_META_MAX {
+        bail!("{} is {} bytes, too big for a content header", file.path, file.size);
+    }
+    let mut meta = iso.read(file)?;
+    kernel::content::sign(&mut meta, HALO2_TITLE).with_context(|| file.path.clone())?;
+    Ok(meta)
 }
 
 fn check_fatx_name(name: &str, path: &str) -> Result<()> {
@@ -190,6 +212,12 @@ pub fn install<R: Read + Seek>(
     dry_run: bool,
 ) -> Result<Vec<PathBuf>> {
     let mut written = Vec::new();
+    // Every header is signed before anything is written, so a bad one
+    // leaves the data dir as it was.
+    let mut metas = std::collections::HashMap::new();
+    for f in plan.packages.iter().flat_map(|p| &p.files).filter(|f| is_content_meta(f)) {
+        metas.insert(f.path.clone(), signed_content_meta(iso, f)?);
+    }
     for p in &plan.packages {
         for f in &p.files {
             let comps = package_components(p, f);
@@ -197,9 +225,12 @@ pub fn install<R: Read + Seek>(
                 written.push(comps.iter().fold(data_root.to_path_buf(), |a, c| a.join(c)));
                 continue;
             }
-            let path = out
-                .write_with(&comps, |w| iso.copy_to(f, w).map(drop).map_err(|e| std::io::Error::other(e.to_string())))
-                .with_context(|| format!("writing {}", f.path))?;
+            let path = if let Some(meta) = metas.get(&f.path) {
+                out.write(&comps, meta).with_context(|| format!("writing {}", f.path))?
+            } else {
+                out.write_with(&comps, |w| iso.copy_to(f, w).map(drop).map_err(|e| std::io::Error::other(e.to_string())))
+                    .with_context(|| format!("writing {}", f.path))?
+            };
             written.push(path);
         }
     }
@@ -276,6 +307,10 @@ const AUTO_NAME: &str = "mappack.iso";
 /// Beside the data root's own directories: what was installed, from which
 /// file, for which base disc.
 const STAMP: &str = "mappack.stamp";
+/// Bumped when an older import's files are wrong and must be written again.
+/// 2: ContentMeta.xbx is signed for this console (1, unversioned, copied it
+/// unsigned, and the game called the content damaged).
+const STAMP_VERSION: u32 = 2;
 
 /// Whether the automatic install runs: not with `--no-mappack`, and not with
 /// `H2_MAPPACK` set to `0`, `false`, `no` or `off`.
@@ -325,7 +360,7 @@ pub fn discover(game_disc: &Path) -> Option<PathBuf> {
 fn stamp_text(iso: &Path, base_version: u32) -> Result<String> {
     let m = std::fs::metadata(iso)?;
     let mtime = m.modified()?.duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    Ok(format!("size={} mtime={mtime} base={base_version:#x}\n", m.len()))
+    Ok(format!("v={STAMP_VERSION} size={} mtime={mtime} base={base_version:#x}\n", m.len()))
 }
 
 /// Whether this disc, in this state, was already installed into `data`.
@@ -441,6 +476,36 @@ mod tests {
         d
     }
 
+    const META_LEN: u32 = 0xa0;
+
+    /// A synthetic ContentMeta.xbx as a disc carries it: XCSF, header size
+    /// 0x88, Halo 2's title and the package's offer, a body past the header,
+    /// and an all-zero signature with the installed flag clear.
+    fn meta(package: u32) -> Vec<u8> {
+        let mut m = vec![0u8; META_LEN as usize];
+        m[0x14..0x18].copy_from_slice(b"XCSF");
+        m[0x18..0x1c].copy_from_slice(&0x88u32.to_le_bytes());
+        m[0x1c..0x20].copy_from_slice(&1u32.to_le_bytes());
+        m[0x24..0x28].copy_from_slice(&HALO2_TITLE.to_le_bytes());
+        m[0x28..0x30].copy_from_slice(&vfs::offer_id(HALO2_TITLE, package).to_le_bytes());
+        for (i, b) in m[0x30..].iter_mut().enumerate() {
+            *b = (i as u32 * 5 + package) as u8;
+        }
+        m
+    }
+
+    /// `written` is `meta(package)` signed for this console: the signature
+    /// the kernel's key gives, the installed flag, nothing else changed.
+    fn assert_signed(written: &[u8], package: u32) {
+        let disc = meta(package);
+        assert_eq!(written.len(), disc.len());
+        assert_eq!(written[..20], kernel::content::signature(written, HALO2_TITLE).unwrap());
+        assert_ne!(written[..20], [0; 20]);
+        assert_eq!(written[0x20] & 1, 1);
+        let changed: Vec<usize> = (0..disc.len()).filter(|&i| written[i] != disc[i]).collect();
+        assert!(changed.iter().all(|&i| i < 20 || i == 0x20), "{changed:x?}");
+    }
+
     /// A map pack shaped disc: two packages, a stray file beside them,
     /// one empty directory written as a zeroed sector, and two updates.
     fn disc() -> Vec<u8> {
@@ -457,12 +522,12 @@ mod tests {
             (
                 36,
                 table(&[
-                    ("ContentMeta.xbx", 62, 5, false),
+                    ("ContentMeta.xbx", 62, META_LEN, false),
                     ("alpha.map", 63, 2000, false),
                     ("patch.lvl", 64, 1, false),
                 ]),
             ),
-            (37, table(&[("beta.map", 65, 7, false), ("ContentMeta.xbx", 66, 6, false)])),
+            (37, table(&[("beta.map", 65, 7, false), ("ContentMeta.xbx", 66, META_LEN, false)])),
             (38, table(&[("Updates", 39, s, true), ("updater.xbe", 61, 3, false)])),
             (
                 39,
@@ -480,11 +545,11 @@ mod tests {
         }
         let mut fill =
             |sector: usize, bytes: &[u8]| img[sector * SECTOR..sector * SECTOR + bytes.len()].copy_from_slice(bytes);
-        fill(62, b"meta1");
+        fill(62, &meta(1));
         fill(63, &[0xA5; 2000]);
         fill(64, b"p");
         fill(65, b"betamap");
-        fill(66, b"meta03");
+        fill(66, &meta(3));
         fill(67, &xbe(HALO2_TITLE, 0x303));
         fill(70, &xbe(HALO2_TITLE, 0x304));
         img
@@ -547,11 +612,12 @@ mod tests {
 
         let cfg = vfs::Config::new(&data, HALO2_TITLE);
         let one = cfg.content_dir(0x4D53_0064_0000_0001);
-        assert_eq!(fs::read(one.join("ContentMeta.xbx")).unwrap(), b"meta1");
+        assert_signed(&fs::read(one.join("ContentMeta.xbx")).unwrap(), 1);
         assert_eq!(fs::read(one.join("alpha.map")).unwrap(), vec![0xA5; 2000]);
         assert_eq!(fs::read(one.join("patch.lvl")).unwrap(), b"p");
         let three = cfg.content_dir(0x4D53_0064_0000_0003);
         assert_eq!(fs::read(three.join("beta.map")).unwrap(), b"betamap");
+        assert_signed(&fs::read(three.join("ContentMeta.xbx")).unwrap(), 3);
         // The update matching base version 3, under its own version, not in TDATA.
         let up = data.join("updates/4D530064/00000303/default.xbe");
         assert_eq!(fs::read(&up).unwrap(), xbe(HALO2_TITLE, 0x303));
@@ -561,6 +627,21 @@ mod tests {
         assert!(install(&mut iso, &plan, &out, &data, None, false).is_err());
         let forced = OutDir::new(&data, true).unwrap();
         install(&mut iso, &plan, &forced, &data, Some(&base(3)), false).unwrap();
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    #[test]
+    fn install_refuses_a_malformed_content_meta_before_writing() {
+        let d = scratch("badmeta");
+        let data = d.join("data");
+        let mut img = disc();
+        img[66 * SECTOR + 0x14] = b'Y'; // package 3's magic
+        let mut iso = Xiso::open(Cursor::new(img)).unwrap();
+        let plan = Plan::from_entries(&iso.entries().unwrap()).unwrap();
+        let out = OutDir::new(&data, false).unwrap();
+        let err = install(&mut iso, &plan, &out, &data, None, false).unwrap_err();
+        assert!(format!("{err:#}").contains("00000003/ContentMeta.xbx: ContentMeta.xbx has no XCSF magic"), "{err:#}");
+        assert!(!data.join("disk").exists());
         fs::remove_dir_all(d).unwrap();
     }
 
@@ -699,6 +780,15 @@ mod tests {
         bigger.extend([0u8; SECTOR]);
         fs::write(d.join("MAPPACK.ISO"), bigger).unwrap();
         assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed"));
+        assert_eq!(try_auto(&g, &data).unwrap().unwrap(), "already installed");
+
+        // An import from before signing (unversioned stamp, unsigned header)
+        // is written again, signed.
+        let stamp = fs::read_to_string(data.join(STAMP)).unwrap();
+        fs::write(data.join(STAMP), stamp.strip_prefix(&format!("v={STAMP_VERSION} ")).unwrap()).unwrap();
+        fs::write(one.join("ContentMeta.xbx"), meta(1)).unwrap();
+        assert!(try_auto(&g, &data).unwrap().unwrap().starts_with("installed 2 maps"));
+        assert_signed(&fs::read(one.join("ContentMeta.xbx")).unwrap(), 1);
         assert_eq!(try_auto(&g, &data).unwrap().unwrap(), "already installed");
 
         // Another base disc version needs its own update.

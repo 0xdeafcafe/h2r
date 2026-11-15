@@ -4,7 +4,9 @@ To install it: put the map pack ISO next to `halo2.iso` as `mappack.iso`.
 `h2 play` and `h2 run` do the rest at start-up ([section 4](#4-automatic-install)).
 
 Status: `h2 import-mappack` installs the disc's content into the emulated
-hard disk and keeps its title update aside. **The new maps won't show up in
+hard disk, signs each package for this console as the disc's installer
+would ([section 7](#7-why-the-game-said-the-content-was-damaged)), and keeps
+its title update aside. **The new maps won't show up in
 the game yet.** Only the title update reads their map list, and we can't run
 the update yet ([title-updates.md](title-updates.md)).
 
@@ -37,9 +39,10 @@ It's an XDVDFS image, about 5.5 GB. The parts that matter:
 | `/demos/dlc/maps.png` | a picture for the installer |
 | `/movies/`, `/cdxmedia/` | bonus videos with their own players, the menu's media |
 
-Each content package also holds `ContentMeta.xbx` (the signed package
-metadata: title, content number, localized names and a list of the files in
-the package), `ContentImage.xbx` (its icon), `patch.lvl` and `patch_v3.lvl`.
+Each content package also holds `ContentMeta.xbx` (the package metadata:
+title, offer ID, localized names and a list of the files in the package with
+their SHA-1 digests; on the disc its console signature is still blank, see
+[section 7](#7-why-the-game-said-the-content-was-damaged)), `ContentImage.xbx` (its icon), `patch.lvl` and `patch_v3.lvl`.
 The nine maps are 39-58 MB each, about 430 MB in total.
 
 The image has no `TDATA` or `UDATA` tree. The installer builds those on the
@@ -121,14 +124,14 @@ yet, so this is a reading of the files, not an observation.
 To be confirmed once the update runs:
 
 - the offer ID. We use the title ID in the high half and the package number
-  in the low half (`4d53006400000001`), the usual convention. The package's
-  `ContentMeta.xbx` carries both numbers, but we haven't decoded its
-  layout;
+  in the low half (`4d53006400000001`), the usual convention. The offer ID
+  field of each package's `ContentMeta.xbx` (offset `0x28`) agrees for all
+  three packages;
 - which drive the game enumerates. The format takes a drive letter; `T:` is
   where installed content lives;
-- whether the update checks the `ContentMeta.xbx` signature and the per-file
-  hashes in it. If it does, the files have to be copied byte for byte, which
-  is what we do.
+- whether the update checks the per-file hashes in `ContentMeta.xbx`. The
+  maps and the other files are copied byte for byte, so they match if it
+  does. 1.0's checks are in [section 7](#7-why-the-game-said-the-content-was-damaged).
 
 ## 4. Automatic install
 
@@ -149,11 +152,15 @@ import) and prints one line, such as
 disc's version has no update on the map pack, only the maps are installed
 and the line says so. Otherwise it prints `map pack: already installed`.
 
-"Installed" means `<data>/mappack.stamp` records the ISO's size, its
-modification time and the base disc's certificate version, and
+"Installed" means `<data>/mappack.stamp` records the import's format
+version, the ISO's size, its modification time and the base disc's
+certificate version, and
 `<data>/disk/Partition1/TDATA/4D530064/$c` still exists. Replace the ISO, change
 the game disc version, or empty the data dir (`--fresh-data`), and the next
-start installs again.
+start installs again. The format version is bumped when older imports wrote
+something wrong: version 2 signs `ContentMeta.xbx`, so an install made
+before it (an unversioned stamp) is written again, signed, at the next
+start.
 
 It never stops the game from starting: a problem is printed as
 `map pack: not installed: <why>` and the game runs on. `--no-mappack` or
@@ -208,7 +215,10 @@ It checks:
 - the map pack ISO itself is never written to (`safe_out`).
 
 Every file is published whole or not at all. Nothing is read from inside
-the files except the update's certificate. Import before starting the game:
+the files except each `ContentMeta.xbx` header, which is signed (all of them
+before anything is written, so a malformed one leaves the data dir as it
+was), and the update's certificate. Every other file is copied byte for
+byte. Import before starting the game:
 `vfs`'s host backend caches directory listings, so a running game won't see
 files added under it.
 
@@ -217,11 +227,15 @@ copied, about 440 MB. The videos and the installer stay on the disc.
 
 ### Tests
 
-- `cli` `mappack_cmd::tests` (synthetic XDVDFS image and XBE headers):
-  the package and update plan, refusals (no packages, a package without
-  metadata, no update for the base version, the wrong title or version),
-  the written layout checked against `vfs::Config::content_dir`, that
-  nothing goes to `$u`, `--force`, and `--dry-run`.
+- `cli` `mappack_cmd::tests` (synthetic XDVDFS image, XBE headers and
+  ContentMeta headers): the package and update plan, refusals (no
+  packages, a package without metadata, a malformed metadata header, no
+  update for the base version, the wrong title or version), the written
+  layout checked against `vfs::Config::content_dir`, that each
+  `ContentMeta.xbx` is signed and otherwise unchanged, that nothing goes to
+  `$u`, `--force`, `--dry-run`, and that an install with an unversioned
+  stamp is redone and signed.
+- `kernel`: see section 7.
 - `vfs` `installed_content_appears_under_t_content_dir`: files put on the
   host there open and list through `T:\$c\<offer ID>\` (case-insensitive).
 - `xiso` `zero_filled_directory_is_empty`: see below.
@@ -255,3 +269,107 @@ records are now skipped.
 Until then the import is groundwork. It costs nothing at run time. 1.0
 should find nothing new in the packages, since it reads only `patch.lvl`,
 but that hasn't been run either.
+
+## 7. Why the game said the content was damaged
+
+With the packages copied byte for byte, Halo 2 listed them at the main menu
+and then said **FILE DAMAGED**. Each package's `ContentMeta.xbx` on the disc
+is unsigned: its first 20 bytes are zero and its "installed" flag is clear.
+On an Xbox the disc's installer signs each one for the console it installs
+on. Our import didn't, and our kernel couldn't have checked a signature
+anyway: `XcHMAC` (kernel ordinal 340) was an unimplemented export.
+
+Everything here was read from Halo 2 1.0's own XAPI and XONLINE code with
+`h2 disasm` and `h2 analyze`. No public description of the `ContentMeta.xbx`
+layout was found, so the field names are ours. Public references for the
+pieces: the kernel exports `XcHMAC`, `XboxHDKey`, `XboxSignatureKey` and
+`XboxAlternateSignatureKeys` in the [xboxdevwiki kernel export
+list](https://xboxdevwiki.net/Kernel); the per-console hard disk key in the
+[EEPROM](https://xboxdevwiki.net/EEPROM) page; HMAC in RFC 2104, with the
+test vectors in RFC 2202.
+
+### The header
+
+| offset | size | field |
+|---|---|---|
+| `0x00` | 20 | HMAC-SHA1 signature |
+| `0x14` | 4 | magic `XCSF` |
+| `0x18` | 4 | header size, `0x88` in all three packages |
+| `0x20` | 4 | flags. Bit 0 is the "installed" flag |
+| `0x24` | 4 | title ID |
+| `0x28` | 8 | offer ID |
+| `0x34`... | | offset, size and SHA-1 of the localized names, then of the file table (which holds a SHA-1 of every file) |
+
+The SHA-1 digests are plain hashes, and on the disc they are already right.
+Only the signature and the flag are left for the installer.
+
+### The check
+
+- **Halo 2's content list** (`0x19c120`, which calls `0x8d5a0` and
+  `0x8d620`, which call `0x33080a`/`0x33095a`, which call `0x330659`) opens
+  `T:\$c\<16-digit offer ID>\ContentMeta.xbx` and reads 0x88 bytes. It
+  checks the `XCSF` magic, takes the offer ID, and treats the package as
+  usable only if **flags bit 0** is set. A package with the flag clear is
+  still listed, but as unusable. That fits what we saw: listed, then
+  "damaged".
+- **XAPI's readers** (`0x2d2f6d` and `0x2d0f25`) read the header through
+  `0x2d2a1d` with verification on, then require the same flag bit:
+  - `0x2d2a1d` reads 0x1c bytes, then the rest up to `min(header size,
+    0x88)`, and checks the magic. It calls `0x2d2938` and compares that
+    digest with bytes `0..20`.
+  - `0x2d2938` makes the per-title key with `0x2d2919`, which is
+    `XcHMAC(XboxHDKey, 16, &title ID, 4, NULL, 0)`. The title is the
+    caller's, or the header's own when that is 0. Then it computes
+    HMAC-SHA1 with that 20-byte key over header bytes `0x14..header size`.
+    XAPI's own HMAC (`0x2d6459`, `0x2d64bb`, `0x2d64c0`) is RFC 2104 built
+    on `XcSHAInit/Update/Final`, with pads `0x36`/`0x5c`.
+  - After that, `0x2d2afe` checks the file table against its digest in the
+    header.
+- **XAPI's installer** (`0x2d2ce1`) is the other half. It copies a
+  `ContentMeta.xbx`, writes the title ID, sets or clears flag bit 0 as its
+  caller asks, and writes a new signature with the same `0x2d2938`. A disc
+  installer does exactly this.
+
+`XboxSignatureKey` and `XboxAlternateSignatureKeys` are not part of this
+check. They key `XCalculateSignatureBegin` (`0x2d65a7`), which signs saves.
+The content key comes from `XboxHDKey`, the per-console key. That is why
+the signature can't ship on the disc: it would differ on every console.
+This is the "non-roamable" signature.
+
+### The fix
+
+We do what the installer does, with the keys our kernel gives the guest:
+
+- `kernel::crypto::XBOX_HD_KEY` is this console's hard disk key. It is all
+  zero: there is no EEPROM, and no real console's key is in the repo. The
+  kernel writes it into the `XboxHDKey` DATA export at start-up, so the
+  guest and the importer always use the same key.
+- The kernel now implements `XcHMAC`: HMAC-SHA1 over both input spans. A
+  key longer than 64 bytes stops, since nothing here needs that case.
+- `kernel::content::sign` sets flags bit 0 and writes
+  `HMAC-SHA1(HMAC-SHA1(XBOX_HD_KEY, title ID), bytes 0x14..header size)`
+  into bytes `0..20`. `h2 import-mappack` and the automatic install run it
+  on every package's `ContentMeta.xbx` and copy everything else byte for
+  byte.
+
+We don't patch the guest's check. We don't fake the original console
+signature either: no console signature ships on the disc.
+
+### Tests
+
+- `kernel` `crypto::tests::rfc_2202_hmac_sha1_vectors`, and `misc`
+  `xc_hmac_macs_both_guest_spans`: `XcHMAC` through the guest ABI, split
+  inputs, a NULL second input, a stop for a long key, and faults before any
+  write.
+- `kernel` `misc` `xbox_hd_key_export_holds_the_console_key`.
+- `kernel` `misc` `signed_content_meta_passes_the_guest_signature_check`:
+  a synthetic header signed by `content::sign` is checked the way the
+  guest checks it. It reads the key from the DATA export, derives the title
+  key with `XcHMAC`, and runs the HMAC on `XcSHA*`. The disc's unsigned
+  form fails. So do another title, a changed header byte, and a good
+  signature without the flag.
+- `boot` `content_sign` (ignored, needs `$H2_XBE`): runs the game's own
+  `0x2d2938` on the fallback interpreter, with the kernel HLE behind it, on
+  a synthetic header. It computes exactly the signature the import writes,
+  and rejects the unsigned header.
+  `H2_XBE=disc/default.xbe cargo test -p boot --test content_sign -- --ignored`
