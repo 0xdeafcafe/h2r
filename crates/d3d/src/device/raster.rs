@@ -616,16 +616,12 @@ impl<B: Backend> Device<B> {
         self.fill_rtt(header, &bytes)
     }
 
-    /// About to write into `color`, the current colour target, and, with
-    /// `writes_depth`, into the depth/stencil surface: marks texture levels
-    /// dirty, notes a change of the device's depth buffer (textures over it
-    /// are read again), and preserves the presented image if `color` is the
-    /// back buffer a `COPY` swap showed.
-    pub(super) fn touch_target(
-        &mut self,
-        color: B::Surface,
-        writes_depth: bool,
-    ) -> Result<(), D3dError> {
+    /// A draw or clear has written the current colour target and, with
+    /// `writes_depth`, possibly the depth/stencil surface: marks texture
+    /// levels dirty and notes a change of the device's depth buffer
+    /// (textures over it are read again). Called only once the backend has
+    /// drawn: a skipped draw dirties nothing.
+    pub(super) fn mark_written(&mut self, writes_depth: bool) {
         if let Some(t) = self.rtt.get_mut(&self.render_target) {
             t.dirty = true;
         }
@@ -637,7 +633,6 @@ impl<B: Backend> Device<B> {
                 self.depth_generation += 1;
             }
         }
-        self.before_target_write(color)
     }
 
     /// The deferred half of a `COPY` swap: before back0 is drawn over, its
@@ -898,7 +893,8 @@ impl<B: Backend> Device<B> {
         if !mask.any() && depth.is_none() && stencil.is_none() {
             return Ok(());
         }
-        self.touch_target(c, depth.is_some() || stencil.is_some())?;
+        self.before_target_write(c)?;
+        let writes_depth = depth.is_some() || stencil.is_some();
         let whole = pixels.iter().any(|r| r.is_whole(w, h));
         if whole && (mask.all() || !mask.any()) {
             let clear = Clear {
@@ -906,7 +902,9 @@ impl<B: Backend> Device<B> {
                 depth,
                 stencil,
             };
-            return self.backend.clear(c, d, clear).map_err(D3dError::Backend);
+            self.backend.clear(c, d, clear).map_err(D3dError::Backend)?;
+            self.mark_written(writes_depth);
+            return Ok(());
         }
         let rc = RectClear {
             rects: if whole {
@@ -929,7 +927,10 @@ impl<B: Backend> Device<B> {
             .clear_rects(c, d, &rc)
             .map_err(D3dError::Backend)?
         {
-            DrawOutcome::Drawn => Ok(()),
+            DrawOutcome::Drawn => {
+                self.mark_written(writes_depth);
+                Ok(())
+            }
             DrawOutcome::Skipped(reason) => {
                 self.events.push(Event::DrawSkipped { entry: E, reason });
                 Ok(())

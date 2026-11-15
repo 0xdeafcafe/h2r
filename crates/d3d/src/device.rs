@@ -1772,6 +1772,8 @@ impl<B: Backend> Device<B> {
             self.backend.destroy_surface(s).map_err(D3dError::Backend)?;
         }
         self.cache.retain(|k, _| k.0 != header && k.1 != header);
+        // A texture over the depth buffer holds a host copy of it.
+        self.depth_alias.remove(&header);
         if !self.pending_destroys.contains(&header) {
             self.pending_destroys.push(header);
         }
@@ -2550,7 +2552,10 @@ impl<B: Backend> Device<B> {
         if target != self.render_target {
             self.leave_target(mem)?;
         }
-        if z_stencil != self.depth_stencil {
+        // A depth level is written back whenever either binding changes,
+        // as the colour level is (a target change is a point where the
+        // guest may look), after the colour level.
+        if target != self.render_target || z_stencil != self.depth_stencil {
             let old = self.depth_stencil;
             self.write_back(mem, old)?;
         }
@@ -3233,10 +3238,10 @@ impl<B: Backend> Device<B> {
         }
         let target = self.target_info(mem)?;
         let (color, depth) = self.current_targets(mem, entry)?;
-        let r = &state.render;
-        let writes_depth = (r.depth_mode != gfx::state::DepthBufferMode::Disabled && r.depth_write)
-            || r.stencil.enable;
-        self.touch_target(color, writes_depth)?;
+        let writes_depth = writes_depth_or_stencil(&state.render, target.depth_format);
+        // The presented image is kept before anything draws over it; what
+        // the draw dirties is noted only once it has drawn.
+        self.before_target_write(color)?;
         for b in &state.bad {
             self.events.push(Event::BadState(b.clone()));
         }
@@ -3275,7 +3280,7 @@ impl<B: Backend> Device<B> {
             .draw(color, depth, &draw, textures)
             .map_err(D3dError::Backend)?
         {
-            DrawOutcome::Drawn => {}
+            DrawOutcome::Drawn => self.mark_written(writes_depth),
             DrawOutcome::Skipped(reason) => self.events.push(Event::DrawSkipped { entry, reason }),
             DrawOutcome::Unsupported(detail) => {
                 return Err(D3dError::Unimplemented { entry, detail });
@@ -3777,6 +3782,31 @@ pub(crate) fn inline_array_layout(
     Ok((attributes, offset))
 }
 
+/// Whether a draw with render state `r` can change the bound depth/stencil
+/// surface (of format `depth`): depth writes with the depth test on, or a
+/// stencil test that can store something (the format has stencil, the
+/// write mask is not zero, and some outcome's operation is not `KEEP`). A
+/// read-only test changes nothing.
+fn writes_depth_or_stencil(r: &gfx::RenderState, depth: Option<D3DFormat>) -> bool {
+    use gfx::state::{DepthBufferMode, StencilOp};
+    let Some(f) = depth else {
+        return false;
+    };
+    let z = r.depth_mode != DepthBufferMode::Disabled && r.depth_write;
+    let s = &r.stencil;
+    let has_stencil = matches!(
+        f,
+        D3DFormat::D24S8 | D3DFormat::LinD24S8 | D3DFormat::F24S8 | D3DFormat::LinF24S8
+    );
+    let stencil = s.enable
+        && has_stencil
+        && s.write_mask != 0
+        && [s.fail, s.depth_fail, s.pass]
+            .iter()
+            .any(|op| *op != StencilOp::Keep);
+    z || stencil
+}
+
 /// The linear twin of a swizzled surface format (render targets are linear).
 fn linear_twin(f: D3DFormat) -> D3DFormat {
     match f {
@@ -3819,4 +3849,41 @@ pub(crate) fn sampled_stages(
         on &= state.stages[n].color_op != gfx::state::TextureOp::Disable;
         on
     })
+}
+
+#[cfg(test)]
+mod depth_write_tests {
+    use super::*;
+    use gfx::state::{DepthBufferMode, StencilOp};
+
+    /// Review P3: a stencil test that can store nothing does not change the
+    /// depth/stencil surface.
+    #[test]
+    fn only_storing_stencil_tests_and_depth_writes_count() {
+        let d24 = Some(D3DFormat::LinD24S8);
+        let mut r = gfx::RenderState {
+            depth_mode: DepthBufferMode::Z,
+            depth_write: false,
+            ..Default::default()
+        };
+        assert!(!writes_depth_or_stencil(&r, d24));
+        r.depth_write = true;
+        assert!(writes_depth_or_stencil(&r, d24));
+        assert!(!writes_depth_or_stencil(&r, None), "nothing bound");
+        r.depth_mode = DepthBufferMode::Disabled;
+        assert!(!writes_depth_or_stencil(&r, d24), "no test, no write");
+        // Stencil on with every operation KEEP: read-only.
+        r.stencil.enable = true;
+        assert!(!writes_depth_or_stencil(&r, d24));
+        r.stencil.pass = StencilOp::Replace;
+        assert!(writes_depth_or_stencil(&r, d24));
+        // A zero write mask, or a format without stencil, stores nothing.
+        r.stencil.write_mask = 0;
+        assert!(!writes_depth_or_stencil(&r, d24));
+        r.stencil.write_mask = 0xFF;
+        assert!(!writes_depth_or_stencil(&r, Some(D3DFormat::LinD16)));
+        r.stencil.pass = StencilOp::Keep;
+        r.stencil.depth_fail = StencilOp::Zero;
+        assert!(writes_depth_or_stencil(&r, Some(D3DFormat::F24S8)));
+    }
 }

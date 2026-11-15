@@ -539,3 +539,174 @@ fn gpu_sampling_a_depth_format_texture_is_skipped_as_a_shadow_map() {
     assert_eq!(d.stats().texture_uploads, 1);
     finish(scope);
 }
+
+/// Review P2: changing only the colour target is a write-back point for
+/// the depth level that stays bound too.
+#[test]
+fn a_colour_only_switch_writes_the_kept_depth_level_back() {
+    let (mut d, mut m) = mem();
+    depth_texture(&mut m, 0x2A, None);
+    let back = m.read_u32(L.device + 0x1A04).unwrap();
+    d.set_render_target(&mut m, CSURF, DLEVEL).unwrap();
+    d.clear(&mut m, 0, 0, 0x01, 0, 1.0, 0).unwrap();
+    d.backend.depth_readback = Some(vec![0x5A]);
+    // Back buffer is 64x64, the level 16x16: the recording backend does
+    // not check sizes, which is all this needs.
+    d.set_render_target(&mut m, back, DLEVEL).unwrap();
+    assert_eq!(depth_reads(&d).len(), 1);
+    assert_eq!(m.read_u32(0x8000_0000 | DDATA).unwrap(), 0x5A5A_5A5A);
+    // Clean now: switching again reads nothing.
+    d.set_render_target(&mut m, CSURF, DLEVEL).unwrap();
+    assert_eq!(depth_reads(&d).len(), 1);
+}
+
+/// A recording backend whose draws are skipped, and whose textures count
+/// as live while the device holds them.
+struct Skipping {
+    inner: RecordingBackend,
+    skip: bool,
+    live: Vec<std::sync::Arc<()>>,
+}
+
+impl Skipping {
+    fn new(skip: bool) -> Self {
+        Self {
+            inner: RecordingBackend::new(),
+            skip,
+            live: Vec::new(),
+        }
+    }
+
+    /// Host textures the device still holds.
+    fn held(&self) -> usize {
+        self.live
+            .iter()
+            .filter(|a| std::sync::Arc::strong_count(a) > 1)
+            .count()
+    }
+}
+
+impl d3d::Backend for Skipping {
+    type Surface = u32;
+    type Texture = (u32, std::sync::Arc<()>);
+    fn create_surface(&mut self, f: D3DFormat, w: u32, h: u32, depth: bool) -> Result<u32, String> {
+        self.inner.create_surface(f, w, h, depth)
+    }
+    fn destroy_surface(&mut self, s: u32) -> Result<(), String> {
+        self.inner.destroy_surface(s)
+    }
+    fn upload_texture(
+        &mut self,
+        t: &gfx::texture::DecodedTexture,
+    ) -> Result<Self::Texture, String> {
+        let a = std::sync::Arc::new(());
+        self.live.push(a.clone());
+        Ok((self.inner.upload_texture(t)?, a))
+    }
+    fn bc_supported(&self) -> bool {
+        false
+    }
+    fn clear(&mut self, c: u32, d: Option<u32>, clear: gfx::Clear) -> Result<(), String> {
+        self.inner.clear(c, d, clear)
+    }
+    fn draw(
+        &mut self,
+        c: u32,
+        d: Option<u32>,
+        draw: &d3d::ResolvedDraw,
+        t: [Option<&Self::Texture>; 4],
+    ) -> Result<d3d::DrawOutcome, String> {
+        if self.skip {
+            return Ok(d3d::DrawOutcome::Skipped("test skip".into()));
+        }
+        self.inner.draw(c, d, draw, t.map(|t| t.map(|t| &t.0)))
+    }
+    fn present(&mut self, s: u32, flags: u32) -> Result<(), String> {
+        self.inner.present(s, flags)
+    }
+    fn write_surface(&mut self, s: u32, desc: &gfx::TextureDesc, b: &[u8]) -> Result<bool, String> {
+        self.inner.write_surface(s, desc, b)
+    }
+    fn read_depth(
+        &mut self,
+        s: u32,
+        f: D3DFormat,
+        w: u32,
+        h: u32,
+        l: d3d::GuestLayoutKind,
+    ) -> Result<Option<Vec<u8>>, String> {
+        self.inner.read_depth(s, f, w, h, l)
+    }
+}
+
+fn skipping_reads(d: &Device<Skipping>) -> usize {
+    d.backend
+        .inner
+        .calls
+        .iter()
+        .filter(|c| matches!(c, Recorded::ReadDepth { .. }))
+        .count()
+}
+
+/// Review P2: a skipped draw dirties nothing, so skipped shadow-map draws
+/// cause no write-backs of the depth level and no readbacks of the depth
+/// buffer.
+#[test]
+fn skipped_draws_dirty_neither_depth_levels_nor_the_depth_buffer() {
+    let (mut d, mut m) = create(Skipping::new(true), UploadPolicy::Tracked);
+    let depth = m.read_u32(L.device + 0x1A08).unwrap();
+    let back = m.read_u32(L.device + 0x1A04).unwrap();
+    m.map(0x8000_0000 | DDATA, 0x1000);
+    color_target(&mut m);
+    depth_texture(&mut m, 0x2A, None);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, S as f32, S as f32, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    z_writes(&mut m, true);
+    // The level bound as depth and sampled, as the first level's shadow
+    // draws are.
+    d.set_render_target(&mut m, CSURF, DLEVEL).unwrap();
+    d.set_texture(&mut m, 0, DTEX).unwrap();
+    for _ in 0..3 {
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    }
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(
+        skipping_reads(&d),
+        0,
+        "nothing was drawn, nothing written back"
+    );
+    // The device's depth buffer through a colour alias: read once.
+    d.set_render_target(&mut m, back, depth).unwrap();
+    d.set_texture(&mut m, 0, 0).unwrap();
+    quad_vb(&mut m, 0.0, 0.0, W as f32, H as f32, 0xFFFF_FFFF);
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    for _ in 0..3 {
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    }
+    assert_eq!(d.stats().depth_reads, 1);
+    // The same draws drawn do change the buffer each time.
+    d.backend.skip = false;
+    for _ in 0..3 {
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    }
+    assert_eq!(d.stats().depth_reads, 3);
+}
+
+/// Review P2: destroying a texture over the depth buffer frees its host
+/// copy.
+#[test]
+fn destroying_a_depth_alias_frees_its_host_texture() {
+    let (mut d, mut m) = create(Skipping::new(false), UploadPolicy::Tracked);
+    set_states(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, W as f32, H as f32, 0xFFFF_FFFF);
+    bind_quad(&mut d, &mut m);
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.held(), 1);
+    d.set_texture(&mut m, 0, 0).unwrap();
+    d.destroy_resource(&mut m, ALIAS).unwrap();
+    assert_eq!(d.backend.held(), 0);
+}

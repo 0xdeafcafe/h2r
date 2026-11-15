@@ -677,10 +677,13 @@ and allocations are bounded before anything is read:
     `Backend::read_depth` (guest words `z << 8 | stencil` for `D24S8`,
     `z` for `D16`, in the level's layout; `GfxBackend` uses
     `SurfaceStore::write_depth` and `read_depth_as`). It is marked dirty
-    only by draws that may write depth or stencil (`ZENABLE` with
-    `ZWRITEENABLE`, or `STENCILENABLE`) and by clears of depth or
-    stencil, and written back also when the depth/stencil binding
-    changes. A backend without `read_depth` stops at the write-back.
+    only by draws the backend drew that can write depth or stencil
+    (`ZENABLE` with `ZWRITEENABLE`; or `STENCILENABLE` on a format with
+    stencil, a non-zero `STENCILWRITEMASK` and some operation other than
+    `KEEP`) and by clears of depth or stencil; a skipped draw dirties
+    nothing. It is written back whenever either the colour or the
+    depth/stencil binding changes. A backend without `read_depth` stops
+    at the write-back.
     Float depth levels (`F24S8`, `F16`) stop: the host surface does not
     hold their bits. A level bound as colour after depth (or the other
     way), or whose format does not match how it is bound, stops too.
@@ -802,12 +805,13 @@ and allocations are bounded before anything is read:
     swapped. The main menu's depth-based fog/distortion pass (about 400
     draws a frame, `HILO` dot mappings) reads it this way; the `HILO`
     modes themselves are the shader translator's.
-    - The readback is cached by a depth generation, bumped by every draw
-      that may write depth or stencil into the device's depth buffer
-      (`ZENABLE` with `ZWRITEENABLE`, or `STENCILENABLE`) and by every
-      depth or stencil clear of it; each header is decoded once per
-      readback. A run of draws that test depth without writing it costs
-      one readback. Like the back-buffer copy, a draw sees the buffer as
+    - The readback is cached by a depth generation, bumped by every drawn
+      draw that can write depth or stencil into the device's depth buffer
+      (the same test as for depth levels: read-only stencil tests and
+      skipped draws do not count) and by every depth or stencil clear of
+      it; each header is decoded once per readback, and its host texture
+      is freed when the header is destroyed. A run of draws that test
+      depth without writing it costs one readback. Like the back-buffer copy, a draw sees the buffer as
       it was before the draw. Counted in `Stats::depth_reads` and
       `Stats::depth_alias_uploads`.
     - A texture that runs past the end of the buffer, or whose header
