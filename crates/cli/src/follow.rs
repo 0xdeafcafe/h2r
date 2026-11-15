@@ -2259,7 +2259,10 @@ mod tests {
             ],
         );
         sh(&clone, &["config", "protocol.ext.allow", "always"]);
-        sh(&clone, &["remote", "set-url", "origin", &format!("ext::sleep {secs}")]);
+        sh(
+            &clone,
+            &["remote", "set-url", "origin", &format!("ext::sleep {secs}")],
+        );
         (clone, hash)
     }
 
