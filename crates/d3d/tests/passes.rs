@@ -8,7 +8,10 @@
 mod common;
 
 use common::*;
-use d3d::device::{BACK_BUFFER_DATA, DEPTH_BUFFER_DATA, Rect, scissor_region};
+use d3d::abi::Regs;
+use d3d::device::{
+    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect, scissor_region,
+};
 use d3d::layout::device_field as f;
 use d3d::{
     Device, Event, GfxBackend, GuestLayout, GuestMemory, PixelRect, Recorded, RecordingBackend,
@@ -192,17 +195,41 @@ fn several_and_exclusive_scissors_reach_the_backend_as_pieces() {
 /// A texture header over `data` as Halo's `0x14600` builds them:
 /// `Common` 0x40001, linear 2D, one level, `format` at `w x h`.
 fn frame_texture(m: &mut SparseMemory, data: u32, format: u32, w: u32, h: u32) {
+    frame_texture_at(m, FRAME_TEX, data, format, w, h);
+}
+
+fn frame_texture_at(m: &mut SparseMemory, at: u32, data: u32, format: u32, w: u32, h: u32) {
     let pitch = w * 4;
-    m.write_u32(FRAME_TEX, 0x0004_0001).unwrap();
-    m.write_u32(FRAME_TEX + 4, data).unwrap();
-    m.write_u32(FRAME_TEX + 8, 0).unwrap();
-    m.write_u32(FRAME_TEX + 12, 1 | (2 << 4) | (format << 8) | (1 << 16))
+    m.write_u32(at, 0x0004_0001).unwrap();
+    m.write_u32(at + 4, data).unwrap();
+    m.write_u32(at + 8, 0).unwrap();
+    m.write_u32(at + 12, 1 | (2 << 4) | (format << 8) | (1 << 16))
         .unwrap();
     m.write_u32(
-        FRAME_TEX + 16,
+        at + 16,
         (w - 1) | ((h - 1) << 12) | ((pitch / 64 - 1) << 24),
     )
     .unwrap();
+}
+
+/// Halo's pair of frame textures (`0x509354`, `0x509358`): built once by
+/// `0x14600` over the back and display surfaces' `Data` as they are then.
+const PARITY_TEX: [u32; 2] = [FRAME_TEX + 0x40, FRAME_TEX + 0x60];
+
+fn parity_textures(m: &mut SparseMemory) {
+    for (at, field) in PARITY_TEX
+        .into_iter()
+        .zip([f::BACK_BUFFER, f::DISPLAY_SURFACE])
+    {
+        let data = data_of(m, field);
+        frame_texture_at(m, at, data, 0x12, W, H);
+    }
+}
+
+/// The texture switch `0x14f80` for frame `frame`: the current parity
+/// (`0x14fe9`) or the previous one (`0x14fc1`, `0x150a7`).
+fn parity(frame: u32, previous: bool) -> u32 {
+    PARITY_TEX[(frame.wrapping_sub(previous as u32) & 1) as usize]
 }
 
 fn data_of(m: &SparseMemory, header_field: u32) -> u32 {
@@ -215,7 +242,7 @@ fn textures_over_the_frame_buffers_sample_a_back_buffer_copy_or_skip() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
     // The headers the device creates name their buffers.
     assert_eq!(data_of(&m, f::BACK_BUFFER), BACK_BUFFER_DATA);
-    assert_eq!(data_of(&m, f::DISPLAY_SURFACE), BACK_BUFFER_DATA);
+    assert_eq!(data_of(&m, f::DISPLAY_SURFACE), DISPLAY_BUFFER_DATA);
     assert_eq!(data_of(&m, f::DEPTH_STENCIL), DEPTH_BUFFER_DATA);
     quad(&mut d, &mut m, 0xFFFF_FFFF);
 
@@ -275,6 +302,171 @@ fn textures_over_the_frame_buffers_sample_a_back_buffer_copy_or_skip() {
     }
     assert_eq!(d.backend.draws().len(), draws);
     assert_eq!(d.backend.uploads(), 0);
+}
+
+fn snapshots(d: &Device<RecordingBackend>) -> Vec<u32> {
+    d.backend
+        .calls
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Snapshot { surface, .. } => Some(*surface),
+            _ => None,
+        })
+        .collect()
+}
+
+fn header_words(m: &SparseMemory, field: u32) -> (u32, u32) {
+    let header = m.read_u32(L.device + field).unwrap();
+    (
+        m.read_u32(header + 4).unwrap(),
+        m.read_u32(header + 8).unwrap(),
+    )
+}
+
+#[test]
+fn back_and_display_surfaces_are_distinct_and_swap_rotates_their_data() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    let (back, display) = (
+        m.read_u32(L.device + f::BACK_BUFFER).unwrap(),
+        m.read_u32(L.device + f::DISPLAY_SURFACE).unwrap(),
+    );
+    assert_ne!(back, display, "two headers");
+    assert_eq!(m.read_u32(L.device + f::FRAME_BUFFER_COUNT).unwrap(), 2);
+    assert_eq!(m.read_u32(L.device + f::FLAGS).unwrap() & COPY_SWAP_FLAG, 0);
+    assert_ne!(d.back_buffer(), d.front_buffer());
+    // Lock words travel with Data (0x3f9a70).
+    m.write_u32(back + 8, 0x1111).unwrap();
+    m.write_u32(display + 8, 0x2222).unwrap();
+    let (b0, f0) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
+    // Swap(0) is COPY | FINISH, and on this device it flips (0x3f9d75).
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(
+        header_words(&m, f::BACK_BUFFER),
+        (DISPLAY_BUFFER_DATA, 0x2222)
+    );
+    assert_eq!(
+        header_words(&m, f::DISPLAY_SURFACE),
+        (BACK_BUFFER_DATA, 0x1111)
+    );
+    assert_eq!((d.back_buffer(), d.front_buffer()), (Some(f0), Some(b0)));
+    // The headers themselves stay where they are.
+    assert_eq!(m.read_u32(L.device + f::BACK_BUFFER).unwrap(), back);
+    assert_eq!(m.read_u32(L.device + f::DISPLAY_SURFACE).unwrap(), display);
+    assert_eq!(
+        d.backend.calls.iter().rev().find_map(|c| match c {
+            Recorded::Present { surface, .. } => Some(*surface),
+            _ => None,
+        }),
+        Some(b0)
+    );
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(header_words(&m, f::BACK_BUFFER), (BACK_BUFFER_DATA, 0x1111));
+    assert_eq!((d.back_buffer(), d.front_buffer()), (Some(b0), Some(f0)));
+    // Drawing into the back buffer never copies into the front: it holds
+    // the image presented until the next flip.
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    assert!(
+        !d.backend
+            .calls
+            .iter()
+            .any(|c| matches!(c, Recorded::CopySurface { .. }))
+    );
+}
+
+#[test]
+fn parity_textures_read_the_frame_drawn_and_the_frame_presented() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    parity_textures(&mut m);
+    for frame in 0..4u32 {
+        for previous in [false, true] {
+            d.set_texture(&mut m, 0, parity(frame, previous)).unwrap();
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+            let want = if previous {
+                d.front_buffer()
+            } else {
+                d.back_buffer()
+            };
+            assert_eq!(
+                snapshots(&d).last().copied(),
+                want,
+                "frame {frame}, previous {previous}"
+            );
+        }
+        d.swap(&mut m, 0).unwrap();
+    }
+    assert!(d.take_events().is_empty());
+    assert_eq!(d.stats().frame_snapshots, 8);
+    assert_eq!(d.stats().previous_frame_snapshots, 4);
+    assert_eq!(d.backend.uploads(), 0, "guest memory is not read");
+}
+
+#[test]
+fn copy_swap_device_keeps_its_back_buffer_and_shows_a_copy() {
+    let (mut d, mut m) = create_copy_swap(RecordingBackend::new(), UploadPolicy::Always);
+    assert_ne!(m.read_u32(L.device + f::FLAGS).unwrap() & COPY_SWAP_FLAG, 0);
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    let (back, front) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(header_words(&m, f::BACK_BUFFER).0, BACK_BUFFER_DATA);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, DISPLAY_BUFFER_DATA);
+    assert_eq!(d.back_buffer(), Some(back));
+    // The display surface's image is still in back0 until a write.
+    frame_texture(&mut m, DISPLAY_BUFFER_DATA, 0x12, W, H);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    // The draw read back0 before writing it; the write then copies it to
+    // the front, which later reads use.
+    assert_eq!(snapshots(&d), [back]);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(snapshots(&d), [back, front]);
+    assert!(d.take_events().is_empty());
+}
+
+#[test]
+fn a_new_device_starts_its_frame_buffers_afresh() {
+    let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Always);
+    let old = [d.back_buffer().unwrap(), d.front_buffer().unwrap()];
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(header_words(&m, f::BACK_BUFFER).0, DISPLAY_BUFFER_DATA);
+    d.release_device(&mut m, L.device).unwrap();
+    for s in old {
+        assert!(
+            d.backend
+                .calls
+                .iter()
+                .any(|c| matches!(c, Recorded::DestroySurface { id } if *id == s))
+        );
+    }
+    recreate(&mut d, &mut m);
+    // The headers name their first buffers again, and the display
+    // surface is a new, never presented surface.
+    assert_eq!(header_words(&m, f::BACK_BUFFER).0, BACK_BUFFER_DATA);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, DISPLAY_BUFFER_DATA);
+    let front = d.front_buffer().unwrap();
+    assert!(!old.contains(&front));
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    parity_textures(&mut m);
+    d.set_texture(&mut m, 0, parity(0, true)).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(snapshots(&d).last().copied(), Some(front));
+}
+
+/// CreateDevice again after a teardown, with the same parameters.
+fn recreate<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
+    let out = call(
+        d,
+        m,
+        0x3f5240,
+        Regs {
+            eax: 0x40,
+            ecx: PP_DEVICE,
+            ..Regs::default()
+        },
+        &[PARAMS],
+    )
+    .unwrap();
+    assert_eq!(out.eax, Some(0));
 }
 
 // GPU ---------------------------------------------------------------------
@@ -641,5 +833,108 @@ fn gpu_clipplane_stage_over_a_depth_alias_does_not_cancel_the_draw() {
             .iter()
             .any(|e| matches!(e, Event::DrawSkipped { .. }))
     );
+    finish(scope);
+}
+
+/// Whole-target clip to `rect` (`[x1, y1, x2, y2]`), or none.
+fn scissor(d: &mut Device<GfxBackend>, m: &mut SparseMemory, rect: Option<[u32; 4]>) {
+    match rect {
+        Some(r) => {
+            rects(m, &[r]);
+            d.set_scissors(m, 1, 0, RECTS).unwrap();
+        }
+        None => d.set_scissors(m, 0, 0, RECTS).unwrap(),
+    }
+}
+
+#[test]
+fn gpu_previous_frame_reads_the_image_presented_and_current_reads_this_frame() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    parity_textures(&mut m);
+    let (red, green, blue) = ([0xFF, 0, 0, 0xFF], [0, 0xFF, 0, 0xFF], [0, 0, 0xFF, 0xFF]);
+    // Frame 0: red.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    d.swap(&mut m, 0).unwrap();
+    // Frame 1: green, the right half blue.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    m.write(RECTS, &[32u32, 0, 64, 64].map(u32::to_le_bytes).concat())
+        .unwrap();
+    d.clear(&mut m, 1, RECTS, 0xF0, 0xFF00_00FF, 1.0, 0)
+        .unwrap();
+    assert_eq!(back_buffer(&d)(10, 10), green);
+    // The previous parity over the left half: frame 0's red, not this
+    // frame's green.
+    mirrored_textured_quad(&mut d, &mut m);
+    d.set_texture(&mut m, 0, parity(1, true)).unwrap();
+    scissor(&mut d, &mut m, Some([0, 0, 32, 64]));
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    let px = back_buffer(&d);
+    assert_eq!(px(10, 10), red, "previous frame");
+    assert_eq!(px(50, 10), blue);
+    // The current parity, mirrored over everything: what this frame has
+    // drawn so far, the previous-frame draw included (same-frame feedback).
+    d.set_texture(&mut m, 0, parity(1, false)).unwrap();
+    scissor(&mut d, &mut m, None);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    let px = back_buffer(&d);
+    assert_eq!(px(10, 10), blue, "current frame, mirrored");
+    assert_eq!(px(50, 10), red);
+    // The front still holds frame 0: drawing frame 1 did not reach it.
+    let (front, order) = d
+        .backend
+        .store
+        .read_color(&d.backend.ctx, d.front_buffer().unwrap())
+        .unwrap();
+    let p = pixel(&front, 10, 10);
+    let p = match order {
+        HostPixelOrder::Bgra8 => [p[2], p[1], p[0], p[3]],
+        _ => p,
+    };
+    assert_eq!(p, red);
+    d.swap(&mut m, 0).unwrap();
+    // Frame 2: the parities have turned over. Previous is frame 1's final
+    // image (left blue, right red), mirrored.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.set_texture(&mut m, 0, parity(2, true)).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    let px = back_buffer(&d);
+    assert_eq!(px(10, 10), red);
+    assert_eq!(px(50, 10), blue);
+    // And current is this frame again.
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.set_texture(&mut m, 0, parity(2, false)).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    assert_eq!(back_buffer(&d)(10, 10), green);
+    assert_eq!(d.stats().previous_frame_snapshots, 2);
+    finish(scope);
+}
+
+#[test]
+fn gpu_previous_frame_is_empty_after_the_device_is_recreated() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    d.swap(&mut m, 0).unwrap();
+    d.release_device(&mut m, L.device).unwrap();
+    recreate(&mut d, &mut m);
+    set_states(&mut d, &mut m);
+    // Halo rebuilds its textures from the new headers (0x12b9e).
+    parity_textures(&mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_FFFF, 1.0, 0).unwrap();
+    mirrored_textured_quad(&mut d, &mut m);
+    d.set_texture(&mut m, 0, parity(0, true)).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    no_skips(&mut d);
+    // Nothing was presented on this device: the old red does not leak in.
+    assert_eq!(back_buffer(&d)(10, 10), [0, 0, 0, 0]);
     finish(scope);
 }

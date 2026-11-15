@@ -121,10 +121,16 @@ pub mod device_field {
     pub const RENDER_TARGET: u32 = 0x1A04;
     /// Current depth/stencil surface header.
     pub const DEPTH_STENCIL: u32 = 0x1A08;
-    /// Back buffer surface header.
+    /// Frame buffers (back buffers + 1, `0x3fc990`): the number of header
+    /// pointers from [`BACK_BUFFER`] that a flipping `Swap` rotates
+    /// (`0x3f9a70`).
+    pub const FRAME_BUFFER_COUNT: u32 = 0x1A10;
+    /// Back buffer surface header (the frame being drawn).
     pub const BACK_BUFFER: u32 = 0x1A14;
-    /// Display surface used for viewport sizing when the target is the back
-    /// buffer (same header unless back-buffer scaling is active).
+    /// Display surface (front buffer) header: the image last presented. A
+    /// flipping `Swap` gives it the back buffer's `Data` and the back buffer
+    /// the last header's (`0x3f9a70`); the CRTC scans out its `Data`. With
+    /// two back buffers the second one's header follows at `+0x1A1C`.
     pub const DISPLAY_SURFACE: u32 = 0x1A18;
     /// Swap counter returned by `Swap`.
     pub const SWAP_COUNT: u32 = 0x2478;

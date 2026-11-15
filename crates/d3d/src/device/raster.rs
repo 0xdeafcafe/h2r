@@ -12,9 +12,11 @@
 //!   `0x3f8760`); with scissors the target narrowed to the union of
 //!   inclusive rectangles or to what exclusive ones leave, as disjoint
 //!   pieces ([`scissor_region`]), with no viewport clip.
-//! * **Frame buffer as a texture.** A texture whose `Data` is the back
-//!   buffer's ([`BACK_BUFFER_DATA`]) is sampled from a copy of the back
-//!   buffer ([`Backend::snapshot_surface`]); one over the depth buffer
+//! * **Frame buffer as a texture.** A texture whose `Data` is a frame
+//!   buffer's ([`BACK_BUFFER_DATA`], [`DISPLAY_BUFFER_DATA`], ...) is
+//!   sampled from a copy of that buffer ([`Backend::snapshot_surface`]):
+//!   the image being drawn while it is the back buffer, the image last
+//!   presented while it is the front. One over the depth buffer
 //!   ([`DEPTH_BUFFER_DATA`]) skips the draw.
 //! * **Render to texture.** A surface whose `Parent` is a texture (a level,
 //!   as `0x14850` builds for its two 64x64 targets with the native
@@ -76,7 +78,7 @@ impl<S> RttTarget<S> {
 pub(super) enum FrameTexture<T> {
     /// Ordinary guest texture memory.
     No,
-    /// The back buffer, copied for this draw.
+    /// A frame buffer, copied for this draw.
     Snapshot(TextureInfo, T),
     /// The draw cannot sample it: skip with this reason.
     Skip(String),
@@ -169,9 +171,12 @@ pub fn scissor_region(base: Edges, rects: &[Rect], exclusive: bool) -> Vec<Pixel
 
 impl<B: Backend> Device<B> {
     /// Whether texture `header` reads one of the device's own frame
-    /// buffers ([`BACK_BUFFER_DATA`], [`DEPTH_BUFFER_DATA`]), and if so how
-    /// a draw samples it. A stage the draw does not read (`sampled` false)
-    /// is not copied; the caller leaves it unbound.
+    /// buffers (a frame buffer's `Data`, or [`DEPTH_BUFFER_DATA`]),
+    /// and if so how a draw samples it. The frame buffer is found by its
+    /// own `Data`, not by which header names it now: over the back buffer
+    /// the draw reads the image being drawn, over the display surface the
+    /// image last presented. A stage the draw does not read (`sampled`
+    /// false) is not copied; the caller leaves it unbound.
     pub(super) fn frame_texture(
         &mut self,
         mem: &dyn GuestMemory,
@@ -194,19 +199,36 @@ impl<B: Backend> Device<B> {
                 pc.format
             )));
         }
-        if !within(BACK_BUFFER_DATA) {
+        let Some(&(base, buffer)) = sw.buffers.iter().find(|b| within(b.0)) else {
             return Ok(FrameTexture::No);
+        };
+        // The front after a COPY swap that nothing has drawn over since is
+        // still in back0 (`Device::before_target_write`).
+        let front = buffer == sw.front;
+        let (source, which) = if buffer == sw.back[0] {
+            (buffer, "the back buffer")
+        } else if front && sw.shown_in_back {
+            (sw.shown, "the display surface")
+        } else if front {
+            (buffer, "the display surface")
+        } else {
+            (buffer, "the second back buffer")
+        };
+        if front && self.display.shown_lost {
+            return Ok(FrameTexture::Skip(format!(
+                "texture {header:#010x} reads {which}, which was drawn over: the backend cannot copy surfaces to keep it"
+            )));
         }
-        let (back, (bw, bh)) = (sw.back[0], sw.size);
+        let (bw, bh) = sw.size;
         let desc = match TextureDesc::from_header(pc.format, pc.size) {
             Ok(d) => d,
             Err(e) => {
                 return Ok(FrameTexture::Skip(format!(
-                    "texture {header:#010x} over the back buffer: {e}"
+                    "texture {header:#010x} over {which}: {e}"
                 )));
             }
         };
-        let exact = data == map.to_virtual(BACK_BUFFER_DATA);
+        let exact = data == map.to_virtual(base);
         let format_ok = matches!(desc.format, D3DFormat::LinA8R8G8B8 | D3DFormat::LinX8R8G8B8)
             && sw.format.bytes_per_texel() == Some(4);
         if !exact
@@ -215,31 +237,34 @@ impl<B: Backend> Device<B> {
             || (desc.width, desc.height) != (bw, bh)
         {
             return Ok(FrameTexture::Skip(format!(
-                "texture {header:#010x} over the back buffer ({:?} {}x{} at +{:#x}) is not the whole {bw}x{bh} {:?} image as a linear 32-bit texture",
+                "texture {header:#010x} over {which} ({:?} {}x{} at +{:#x}) is not the whole {bw}x{bh} {:?} image as a linear 32-bit texture",
                 desc.format,
                 desc.width,
                 desc.height,
-                data.wrapping_sub(map.to_virtual(BACK_BUFFER_DATA)),
+                data.wrapping_sub(map.to_virtual(base)),
                 sw.format
             )));
         }
         if !sampled {
             return Ok(FrameTexture::Skip(format!(
-                "texture {header:#010x} over the back buffer on a stage the draw does not read"
+                "texture {header:#010x} over {which} on a stage the draw does not read"
             )));
         }
         // X8: the texel's alpha reads as one, whatever the buffer holds.
         let opaque = desc.format == D3DFormat::LinX8R8G8B8;
         let Some(t) = self
             .backend
-            .snapshot_surface(back, opaque)
+            .snapshot_surface(source, opaque)
             .map_err(D3dError::Backend)?
         else {
             return Ok(FrameTexture::Skip(format!(
-                "texture {header:#010x} reads the back buffer and the backend cannot copy surfaces into textures"
+                "texture {header:#010x} reads {which} and the backend cannot copy surfaces into textures"
             )));
         };
         self.stats.frame_snapshots += 1;
+        if source != self.swap.as_ref().expect("created").back[0] {
+            self.stats.previous_frame_snapshots += 1;
+        }
         Ok(FrameTexture::Snapshot(
             TextureInfo {
                 header,

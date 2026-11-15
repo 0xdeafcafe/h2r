@@ -86,6 +86,17 @@ pub const SCRATCH_BYTES: u32 = 0x100;
 /// points at ([`Device::gpu_completed`]), after the back and depth headers.
 pub const GPU_COMPLETED_OFFSET: u32 = 2 * SurfaceHeader::SIZE;
 const _: () = assert!(GPU_COMPLETED_OFFSET + 4 <= SCRATCH_BYTES);
+/// Offset in the scratch range of the display-surface header (device
+/// `+0x1A18`) and, with two back buffers, the third frame-buffer header
+/// (`+0x1A1C`), one [`SurfaceHeader::SIZE`] apart.
+pub const FRAME_HEADERS_OFFSET: u32 = 0x40;
+const _: () = assert!(FRAME_HEADERS_OFFSET >= GPU_COMPLETED_OFFSET + 4);
+const _: () = assert!(FRAME_HEADERS_OFFSET + 2 * SurfaceHeader::SIZE <= SCRATCH_BYTES);
+/// Device flag (`+0x8`) CreateDevice sets for a copy-swap device
+/// (`0x3fc9b7`: multisample type bits `0x3000`, or `D3DSWAPEFFECT_COPY`).
+/// Without it, `Swap` flips: it rotates the frame buffers' `Data` through
+/// the headers at `+0x1A14..` (`0x3f9a70`).
+pub const COPY_SWAP_FLAG: u32 = 0x4000;
 /// Dirty bits the deferred-state commit leaves set (`0x401013`).
 pub const COMMIT_KEEPS: u32 = 0xC000_0070;
 /// Most vertices one draw may use (the NV2A index range is 2^20).
@@ -95,24 +106,33 @@ pub const MAX_VERTICES: u32 = 1 << 20;
 pub const MAX_SPAN: u64 = 64 << 20;
 /// `D3DDevice_SetScissors` accepts at most this many rectangles.
 pub const MAX_SCISSORS: u32 = 8;
-/// Guest `Data` (a physical address) of the back-buffer header the device
-/// creates. The back buffer lives on the host only; this address, above
-/// any Xbox RAM, names it. At boot (`0x14600`, from `0x127c1`) Halo builds
-/// `LIN_A8R8G8B8` texture headers over the back and display surfaces'
-/// `Data` (kept at `0x509354` and `0x509358`) and binds them through its
-/// global texture switch (`0x14fc1`, `0x14fe9`, `0x150a7`): a draw sampling
-/// such a texture gets a copy of the back buffer
-/// ([`Backend::snapshot_surface`]). Guest memory at this address is never
-/// read or written.
+/// Guest `Data` (a physical address) of the first frame buffer, which the
+/// back-buffer header names when the device is created. Frame buffers live
+/// on the host only; this address, above any Xbox RAM, names one. Each
+/// frame buffer keeps its `Data` for its life: a flipping `Swap` moves the
+/// `Data` values through the headers (`0x3f9a70`), not the pixels. At boot
+/// (`0x14600`, from `0x127c1`) Halo builds `LIN_A8R8G8B8` texture headers
+/// over the back and display surfaces' `Data` (kept at `0x509354` and
+/// `0x509358`) and binds them by frame parity through its global texture
+/// switch (`0x14fc1`, `0x14fe9`, `0x150a7`): a draw sampling such a texture
+/// gets a copy of the frame buffer with that `Data`
+/// ([`Backend::snapshot_surface`]), the image being drawn or the one last
+/// presented. Guest memory at these addresses is never read or written.
 pub const BACK_BUFFER_DATA: u32 = 0x0C00_0000;
+/// Guest `Data` of the second frame buffer: the display surface (front
+/// buffer) when the device is created. See [`BACK_BUFFER_DATA`].
+pub const DISPLAY_BUFFER_DATA: u32 = 0x0E00_0000;
+/// Guest `Data` of the third frame buffer (two back buffers).
+pub const THIRD_BUFFER_DATA: u32 = 0x0F00_0000;
 /// Guest `Data` of the depth/stencil header the device creates (see
 /// [`BACK_BUFFER_DATA`]). Halo builds colour textures over it too
 /// (`0x509368`, `0x50936C`): draws sampling them are skipped, depth bits
 /// read as colour are not modelled.
 pub const DEPTH_BUFFER_DATA: u32 = 0x0D00_0000;
-/// Bytes from [`BACK_BUFFER_DATA`] or [`DEPTH_BUFFER_DATA`] that belong to
-/// that buffer: a texture whose `Data` falls inside but not at the start is
-/// skipped.
+/// Bytes from a frame buffer's `Data` ([`BACK_BUFFER_DATA`],
+/// [`DISPLAY_BUFFER_DATA`], [`THIRD_BUFFER_DATA`]) or [`DEPTH_BUFFER_DATA`]
+/// that belong to that buffer: a texture whose `Data` falls inside but not
+/// at the start is skipped.
 pub const FRAME_DATA_SPAN: u32 = 0x0100_0000;
 /// Host bound on `D3DDevice_Clear` rectangles (the original loops over any
 /// count; this only keeps a guest count from spinning the host).
@@ -297,9 +317,13 @@ pub struct Stats {
     /// Clears that were not one whole-attachment clear (rectangles or
     /// channel masks), handed to [`Backend::clear_rects`].
     pub partial_clears: u64,
-    /// Back-buffer copies made for draws that sample a texture over it
-    /// ([`BACK_BUFFER_DATA`]).
+    /// Frame-buffer copies made for draws that sample a texture over one
+    /// ([`BACK_BUFFER_DATA`], [`DISPLAY_BUFFER_DATA`]).
     pub frame_snapshots: u64,
+    /// Of those, copies of the image last presented: a texture over the
+    /// display surface's `Data` ([`DISPLAY_BUFFER_DATA`] at creation),
+    /// Halo's previous-parity frame texture.
+    pub previous_frame_snapshots: u64,
     /// Draws split into several pieces by scissor rectangles
     /// ([`ResolvedDraw::clip_rects`]).
     pub scissor_split_draws: u64,
@@ -382,6 +406,23 @@ struct Swap<S> {
     /// Host format and size of the ring's surfaces.
     format: D3DFormat,
     size: (u32, u32),
+    /// Every frame buffer as (`Data`, surface). A buffer's `Data` is fixed
+    /// for its life; which header names it changes when `Swap` flips.
+    buffers: Vec<(u32, S)>,
+    /// `Swap` flips (device flag [`COPY_SWAP_FLAG`] clear), whatever its
+    /// `COPY` bit; otherwise it copies and the ring never moves.
+    flip: bool,
+}
+
+impl<S: Copy> Swap<S> {
+    /// The surfaces the frame-buffer headers name, in header order
+    /// (`+0x1A14` back, `+0x1A18` display, `+0x1A1C` the second back
+    /// buffer).
+    fn header_order(&self) -> Vec<S> {
+        let mut v = vec![self.back[0], self.front];
+        v.extend(self.back.iter().skip(1).copied());
+        v
+    }
 }
 
 /// `base + offset` as a guest address, or an error if it leaves the 32-bit
@@ -471,6 +512,9 @@ pub struct Device<B: Backend> {
     swap: Option<Swap<B::Surface>>,
     depth: Option<B::Surface>,
     back_header: u32,
+    /// Frame-buffer headers after the back buffer's: the display surface
+    /// (`+0x1A18`), then `+0x1A1C` with two back buffers.
+    frame_headers: Vec<u32>,
     depth_header: u32,
     other_surfaces: HashMap<u32, ([u32; 3], B::Surface)>,
     render_target: u32,
@@ -569,6 +613,7 @@ impl<B: Backend> Device<B> {
             swap: None,
             depth: None,
             back_header: 0,
+            frame_headers: Vec::new(),
             depth_header: 0,
             other_surfaces: HashMap::new(),
             render_target: 0,
@@ -761,6 +806,13 @@ impl<B: Backend> Device<B> {
             .backend
             .create_surface(host_fmt, p.width, p.height, false)
             .map_err(D3dError::Backend)?;
+        // `0x3fc9a2..0x3fc9c0`: multisampling or D3DSWAPEFFECT_COPY makes a
+        // copy-swap device; anything else flips.
+        let copy_swap = p.multisample_type & 0x3000 != 0 || p.swap_effect == 3;
+        // Frame buffers in header order (back, display, second back), each
+        // with a `Data` of its own.
+        let mut buffers = vec![(BACK_BUFFER_DATA, back[0]), (DISPLAY_BUFFER_DATA, front)];
+        buffers.extend(back.get(1).map(|&s| (THIRD_BUFFER_DATA, s)));
         self.swap = Some(Swap {
             back,
             front,
@@ -768,13 +820,26 @@ impl<B: Backend> Device<B> {
             shown_in_back: false,
             format: host_fmt,
             size: (p.width, p.height),
+            buffers: buffers.clone(),
+            flip: !copy_swap,
         });
 
         let scratch = self.cfg.scratch.addr;
         self.back_header = scratch;
+        self.frame_headers = (0..buffers.len() as u64 - 1)
+            .map(|i| {
+                at(
+                    scratch,
+                    FRAME_HEADERS_OFFSET as u64 + i * SurfaceHeader::SIZE as u64,
+                )
+            })
+            .collect::<Result<_, _>>()?;
         let bpp = host_fmt.bytes_per_texel().unwrap_or(4);
-        SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, BACK_BUFFER_DATA)
-            .write(mem, self.back_header)?;
+        let headers = std::iter::once(self.back_header).chain(self.frame_headers.iter().copied());
+        for (header, &(data, _)) in headers.zip(&buffers) {
+            SurfaceHeader::linear(host_fmt, p.width, p.height, p.width * bpp, data)
+                .write(mem, header)?;
+        }
         if p.enable_auto_depth_stencil {
             let dfmt = D3DFormat::from_raw(p.auto_depth_stencil_format)
                 .filter(|f| f.is_depth())
@@ -813,11 +878,17 @@ impl<B: Backend> Device<B> {
         mem.write_u32(dev + field::REF_COUNT, 1)?;
         mem.write_u32(dev + field::PUT, pb.addr)?;
         mem.write_u32(dev + field::THRESHOLD, pb.addr + pb.len - PUSH_MARGIN)?;
-        mem.write_u32(dev + field::FLAGS, behavior_flags & 0x10)?;
+        let copy_flag = if copy_swap { COPY_SWAP_FLAG } else { 0 };
+        mem.write_u32(dev + field::FLAGS, behavior_flags & 0x10 | copy_flag)?;
         mem.write_u32(dev + field::RENDER_TARGET, self.back_header)?;
         mem.write_u32(dev + field::DEPTH_STENCIL, self.depth_header)?;
+        // `+0x1A10`: frame buffers (back buffers + 1, `0x3fc990`); the
+        // header pointers follow from `+0x1A14`.
+        mem.write_u32(dev + field::FRAME_BUFFER_COUNT, buffers.len() as u32)?;
         mem.write_u32(dev + field::BACK_BUFFER, self.back_header)?;
-        mem.write_u32(dev + field::DISPLAY_SURFACE, self.back_header)?;
+        for (i, &h) in self.frame_headers.iter().enumerate() {
+            mem.write_u32(dev + field::DISPLAY_SURFACE + 4 * i as u32, h)?;
+        }
         mem.write_u32(dev + field::SWAP_COUNT, 0)?;
         // The GPU's completion word: every fence handed out has passed.
         let completed = at(scratch, GPU_COMPLETED_OFFSET as u64)?;
@@ -901,6 +972,7 @@ impl<B: Backend> Device<B> {
         self.swap = None;
         self.depth = None;
         self.back_header = 0;
+        self.frame_headers.clear();
         self.depth_header = 0;
         self.other_surfaces.clear();
         self.render_target = 0;
@@ -2268,6 +2340,13 @@ impl<B: Backend> Device<B> {
         if header == self.back_header && !depth {
             return Ok(self.swap.as_ref().expect("created").back[0]);
         }
+        if let Some(i) = self.frame_headers.iter().position(|&h| h == header)
+            && !depth
+        {
+            // The display surface (or the second back buffer) as a target:
+            // the frame buffer that header names now.
+            return Ok(self.swap.as_ref().expect("created").header_order()[i + 1]);
+        }
         if header == self.depth_header && depth {
             return self
                 .depth
@@ -2455,7 +2534,10 @@ impl<B: Backend> Device<B> {
     /// Whether `header` is a surface the title owns (not the device's own
     /// back and depth headers, which hold no references).
     fn title_surface(&self, header: u32) -> bool {
-        header != 0 && header != self.back_header && header != self.depth_header
+        header != 0
+            && header != self.back_header
+            && header != self.depth_header
+            && !self.frame_headers.contains(&header)
     }
 
     /// The parent texture of surface `header`, if it is a texture level.
@@ -2559,9 +2641,39 @@ impl<B: Backend> Device<B> {
         Ok((c, d))
     }
 
+    /// `0x3f9a70`: each frame-buffer header takes the `Data` and `Lock` of
+    /// the one before it, and the back buffer's header those of the last.
+    fn rotate_frame_headers(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        let headers: Vec<u32> = std::iter::once(self.back_header)
+            .chain(self.frame_headers.iter().copied())
+            .collect();
+        let words = headers
+            .iter()
+            .map(|&h| Ok((mem.read_u32(at(h, 4)?)?, mem.read_u32(at(h, 8)?)?)))
+            .collect::<Result<Vec<_>, D3dError>>()?;
+        for (i, &h) in headers.iter().enumerate() {
+            let (data, lock) = words[(i + words.len() - 1) % words.len()];
+            mem.write_u32(at(h, 4)?, data)?;
+            mem.write_u32(at(h, 8)?, lock)?;
+        }
+        Ok(())
+    }
+
     /// `D3DDevice_Swap` (`0x3f9d00`, `EAX` = flags). As compiled, flags 0 is
     /// replaced by 5 (`COPY | FINISH`). Returns the swap count, which is also
     /// stored at device `+0x2478` where game code reads it.
+    ///
+    /// The device's kind decides how, not the `COPY` bit: a device created
+    /// without [`COPY_SWAP_FLAG`] (Halo's: no multisampling, swap effect not
+    /// `COPY`) flips on every swap, `Swap(0)` included (`0x3f9d75` ->
+    /// `0x3f9a70`). The flip rotates `Data` and `Lock` through the
+    /// frame-buffer headers: the display surface (`+0x1A18`) gets the back
+    /// buffer's, the back buffer (`+0x1A14`) the last header's. The image
+    /// just drawn is then the front, and the old front is drawn into next.
+    /// A copy-swap device keeps its back buffer and shows a copy of it.
+    /// The original does nothing on a flipping device when `FINISH` is
+    /// clear (`0x3f9d7a`); Halo never does that (its one per-frame call,
+    /// `0x140fc`, passes 0), and here such a swap flips too.
     pub fn swap(&mut self, mem: &mut dyn GuestMemory, flags: u32) -> Result<u32, D3dError> {
         const E: &str = "D3DDevice_Swap";
         let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "Swap");
@@ -2579,20 +2691,22 @@ impl<B: Backend> Device<B> {
         self.backend
             .present_with_gamma(shown, flags, self.display.gamma.as_deref())
             .map_err(D3dError::Backend)?;
-        if flags & 1 == 0 {
+        if sw.flip {
             // Flip: the shown buffer becomes the front, the old front the
             // last back buffer.
             let old_front = std::mem::replace(&mut sw.front, shown);
             sw.back.remove(0);
             sw.back.push(old_front);
+            self.rotate_frame_headers(mem)?;
         }
         // COPY: the back buffer's contents are what is shown; the ring does
         // not move (the backend presents `shown` directly). The hardware
         // copies them to the front; here that copy is deferred to the first
         // write into back0 (`Device::before_target_write`), so a frame that
         // is never drawn over costs nothing.
+        let sw = self.swap.as_mut().expect("created");
         sw.shown = shown;
-        sw.shown_in_back = flags & 1 != 0;
+        sw.shown_in_back = !sw.flip;
         self.display.shown_lost = false;
         self.swap_count = self.swap_count.wrapping_add(1);
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;

@@ -291,7 +291,7 @@ fn unsupported_paths_stop_with_clear_errors() {
 #[test]
 fn swap_flips_the_ring_and_reports_presents() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Tracked);
-    let back = d.back_buffer().unwrap();
+    let (back, front) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
     // Flags 0 means COPY | FINISH as compiled.
     assert_eq!(
         call(&mut d, &mut m, 0x3f9d00, Regs::default(), &[])
@@ -303,8 +303,12 @@ fn swap_flips_the_ring_and_reports_presents() {
         surface: back,
         flags: 5
     }));
-    assert_eq!(d.back_buffer(), Some(back), "COPY keeps the back buffer");
-    // FLIP (2) rotates.
+    // A device made without multisampling or D3DSWAPEFFECT_COPY flips
+    // whatever the COPY bit says (0x3f9d75 -> 0x3f9a70).
+    assert_eq!(d.front_buffer(), Some(back), "the image shown is the front");
+    assert_eq!(d.back_buffer(), Some(front));
+    let back = front;
+    // Flags 2 flip too.
     assert_eq!(
         call(
             &mut d,

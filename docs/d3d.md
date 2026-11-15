@@ -216,11 +216,12 @@ Notes on the table:
   PersistDisplay change the guest globals the way the original does,
   without the AV-encoder kernel calls (there is no TV encoder).
   PersistDisplay copies the image last presented into a surface of its own
-  (`Backend::copy_surface`). The copy outlives teardown. After a `COPY`
-  swap the image is in back0, which the title keeps drawing into: the
-  device copies back0 to the front before the first write into it (as the
-  hardware's copy would have), so a later PersistDisplay still gets the
-  image shown, and a frame nothing draws over costs no copy.
+  (`Backend::copy_surface`). The copy outlives teardown. On a copy-swap
+  device (see "Swap" under Draws) the image is in back0 after a swap, and
+  the title keeps drawing into it: the device copies back0 to the front
+  before the first write into it (as the hardware's copy would have), so
+  a later PersistDisplay still gets the image shown, and a frame nothing
+  draws over costs no copy.
 - **`SetStipple`** (`0x3f8cc0`). Method `0x1480` is
   `NV097_SET_STIPPLE_PATTERN`, 32 rows of a 32x32 polygon-stipple mask,
   not a gamma ramp. All nine of Halo's calls (`0x2dd86`, `0x2df56`,
@@ -349,7 +350,8 @@ Device fields with evidence (offsets into the device object):
 | `+0x1C08` / `+0x1C10` / `+0x1C18` | depth-clip shadow (fixed function / program) and game-owned flags | `0x3f6190` |
 | `+0x1DB8` | vertical-blank callback | game stores it at `0x12b093` |
 | `+0x1A04` / `+0x1A08` | render target / depth surface | SetRenderTarget, game reads |
-| `+0x1A14` / `+0x1A18` | back buffer / display surface | CreateDevice, viewport code |
+| `+0x1A10` | frame buffers (back buffers + 1, `0x3fc990`) | CreateDevice; Swap's rotation |
+| `+0x1A14` / `+0x1A18` (/ `+0x1A1C`) | back buffer / display surface (/ second back buffer) headers; Swap rotates their `Data` | CreateDevice, Swap, viewport code |
 | `+0x2478` | swap count, also returned by Swap | game reads |
 
 Resource headers follow the documented XDK layout:
@@ -666,37 +668,70 @@ and allocations are bounded before anything is read:
     - at teardown, which then destroys the host surfaces.
   - A depth level, a compressed format, or a header rewritten while its
     level holds unwritten pixels stops.
-- **Frame buffers as textures** (`src/device/raster.rs`). The back buffer
-  and depth buffer exist only on the host. Their headers carry `Data`
-  values above any Xbox RAM that name them: `d3d::device::BACK_BUFFER_DATA`
-  (`0x0C000000`) and `DEPTH_BUFFER_DATA` (`0x0D000000`). Before they had
-  `Data` 0, so a texture over them read whatever guest memory was at
-  `0x80000000`, with no event.
+- **Swap** (`Device::swap`, `0x3f9d00`). CreateDevice sets device flag
+  `0x4000` (`device::COPY_SWAP_FLAG`) for a multisampled device (type bits
+  `0x3000`) or `D3DSWAPEFFECT_COPY` (`0x3fc9a2..0x3fc9c0`), and stores the
+  frame-buffer count, back buffers + 1, at `+0x1A10`. That flag, not the
+  swap flags' `COPY` bit, decides what Swap does:
+  - **Flip** (flag clear; Halo's device: no multisampling, swap effect 1
+    or 2 from `0x128c0`). Every `Swap(0)` (`COPY | FINISH`, Halo's one
+    per-frame call at `0x140fc`) takes `0x3f9d75` to `0x3f9a70`, which
+    rotates `Data` and `Lock` through the headers from `+0x1A14`: the
+    display surface (`+0x1A18`) gets the back buffer's, the back buffer
+    the last header's; the CRTC then scans out the display surface's
+    `Data`. The headers stay put; the buffers they name trade places. The
+    device does the same: its host ring rotates, and the guest headers'
+    words rotate as `0x3f9a70` rotates them. The original does nothing
+    on this path when `FINISH` is clear (`0x3f9d7a`); Halo never does
+    that, and here such a swap flips too.
+  - **Copy** (flag set). The back buffer stays; its image is shown and
+    copied to the front lazily (see "Display entries").
+- **Frame buffers as textures** (`src/device/raster.rs`). The frame
+  buffers and the depth buffer exist only on the host. Their headers
+  carry `Data` values above any Xbox RAM that name them. Each frame
+  buffer keeps one `Data` for its life, whichever header names it:
+  `d3d::device::BACK_BUFFER_DATA` (`0x0C000000`, the back buffer at
+  creation), `DISPLAY_BUFFER_DATA` (`0x0E000000`, the display surface at
+  creation), `THIRD_BUFFER_DATA` (`0x0F000000`, two back buffers only);
+  the depth buffer has `DEPTH_BUFFER_DATA` (`0x0D000000`). The back and
+  display headers are distinct (the display header and a third live at
+  `device::FRAME_HEADERS_OFFSET` in the scratch range).
   - Halo builds such textures at `0x14600`, called at boot (`0x127c1`, just
     before `0x14850`) and again from `0x12b9e` and `0x137f2e`: `LIN_A8R8G8B8`
     640x480 headers (`Common` `0x40001`, format `0x11229`, size
     `0x271DF27F`) over the back-buffer (`+0x1A14`) and display-surface
-    (`+0x1A18`) `Data`, kept at `0x509354`/`0x509358`. It also builds two
-    colour textures over the depth surface's `Data` (`0x509368`,
-    `LIN_A8R8G8B8`; `0x50936C`, format `0x3F` `LIN_A8B8G8R8`) and a colour
-    surface over it (`0x509370`, a copy of the back-buffer header with the
-    depth `Data`, selected as a target by `0x14bc0`). Its global texture
-    switch (`0x14f80`, table `0x15114`, results in `0x51F3D8`) binds them:
-    `0x509354[frame & 1]` at `0x14fe9`, `0x509354[(frame - 1) & 1]` at
-    `0x14fc1` and `0x150a7` (frame counter `0x485AA0`), `0x509368` at
-    `0x15020` and `0x50936C` at `0x15032`. The device sets both
-    `+0x1A14` and `+0x1A18` to the one back-buffer header, so both parities
-    read the current back buffer; a "previous frame" read gets this
-    frame's image so far.
-  - A texture whose `Data` is the back buffer's, `LIN_A8R8G8B8` or
-    `LIN_X8R8G8B8`, 2D, the back buffer's size, is sampled from a copy of
-    the back buffer made for the draw (`Backend::snapshot_surface`;
-    `GfxBackend` uses `gfx::SurfaceStore::snapshot`). That holds while the
-    back buffer is the target too: the draw reads what was there before
-    it. Counted in `Stats::frame_snapshots`. An `X8` texture reads alpha
-    as one: the copy's alpha is cleared to one with an alpha-only masked
+    (`+0x1A18`) `Data` as they are then, kept at `0x509354`/`0x509358`. It
+    also builds two colour textures over the depth surface's `Data`
+    (`0x509368`, `LIN_A8R8G8B8`; `0x50936C`, format `0x3F`
+    `LIN_A8B8G8R8`) and a colour surface over it (`0x509370`, a copy of
+    the back-buffer header with the depth `Data`, selected as a target by
+    `0x14bc0`). Its global texture switch (`0x14f80`, table `0x15114`,
+    results in `0x51F3D8`) binds them: `0x509354[frame & 1]` (current) at
+    `0x14fe9`, `0x509354[(frame - 1) & 1]` (previous) at `0x14fc1` and
+    `0x150a7` (frame counter `0x485AA0`), `0x509368` at `0x15020` and
+    `0x50936C` at `0x15032`. Because every swap flips, the two textures
+    name the buffer being drawn and the buffer last presented in turn,
+    and the frame parity picks between them. The intro reaches the
+    crossfade evaluator `0x002ab270`, which reads the previous parity.
+  - A texture whose `Data` is a frame buffer's, `LIN_A8R8G8B8` or
+    `LIN_X8R8G8B8`, 2D, the buffer's size, is sampled from a copy of that
+    buffer made for the draw (`Backend::snapshot_surface`; `GfxBackend`
+    uses `gfx::SurfaceStore::snapshot`). Over the back buffer it reads the
+    image being drawn, also while it is the target: the draw reads what
+    was there before it (same-frame feedback). Over the display surface
+    it reads the image last presented, which nothing draws into until the
+    next flip makes it the back buffer. On a copy-swap device whose shown
+    image still waits in back0, that is back0; if the copy to the front
+    was lost (`copy_surface` unsupported), the draw is skipped. All are
+    counted in `Stats::frame_snapshots`, the display-surface ones also in
+    `Stats::previous_frame_snapshots`. An `X8` texture reads alpha as
+    one: the copy's alpha is cleared to one with an alpha-only masked
     clear, as uploads of `X8` texels force it to 255.
-  - Any other texture inside either buffer's `FRAME_DATA_SPAN` (another
+  - A new device (CreateDevice after teardown) starts with new, cleared
+    frame buffers and the headers back at their first `Data`: nothing
+    presented by the old device can be read as the previous frame. Halo
+    rebuilds its textures from the new headers (`0x12b9e`).
+  - Any other texture inside a buffer's `FRAME_DATA_SPAN` (another
     format or size, an offset into it, or anything over the depth buffer)
     skips the draw with `Event::DrawSkipped` saying why, when the draw
     reads that stage's image: a pixel shader's `PSTEXTUREMODES` gives the

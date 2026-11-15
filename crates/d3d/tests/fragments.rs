@@ -559,8 +559,19 @@ fn alpha_only_clears_from_the_wrapper_and_0x13c3f() {
 }
 
 fn gpu() -> Option<(Device<d3d::GfxBackend>, SparseMemory)> {
+    gpu_with(create)
+}
+
+/// A copy-swap device on the GPU.
+fn gpu_copy_swap() -> Option<(Device<d3d::GfxBackend>, SparseMemory)> {
+    gpu_with(create_copy_swap)
+}
+
+fn gpu_with(
+    make: fn(d3d::GfxBackend, UploadPolicy) -> (Device<d3d::GfxBackend>, SparseMemory),
+) -> Option<(Device<d3d::GfxBackend>, SparseMemory)> {
     match gfx::GfxContext::headless() {
-        Ok(ctx) => Some(create(d3d::GfxBackend::new(ctx), UploadPolicy::Always)),
+        Ok(ctx) => Some(make(d3d::GfxBackend::new(ctx), UploadPolicy::Always)),
         Err(e) => {
             eprintln!("skipping GPU test: {e}");
             None
@@ -734,7 +745,7 @@ fn passthrough_fragment_without_a_push_returns_the_shader_object() {
 
 #[test]
 fn gpu_persist_display_keeps_what_a_copy_swap_showed() {
-    let Some((mut d, mut m)) = gpu() else {
+    let Some((mut d, mut m)) = gpu_copy_swap() else {
         return;
     };
     d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
@@ -827,7 +838,7 @@ fn gpu_indexed_draw_renders_through_the_index_list() {
 
 #[test]
 fn gpu_persist_display_keeps_a_copy_swap_image_drawn_over_later() {
-    let Some((mut d, mut m)) = gpu() else {
+    let Some((mut d, mut m)) = gpu_copy_swap() else {
         return;
     };
     d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
@@ -845,7 +856,7 @@ fn gpu_persist_display_keeps_a_copy_swap_image_drawn_over_later() {
 
 #[test]
 fn copy_swap_preserves_the_shown_image_once_on_the_first_write() {
-    let (mut d, mut m) = rec();
+    let (mut d, mut m) = create_copy_swap(RecordingBackend::new(), UploadPolicy::Always);
     let back = d.back_buffer().unwrap();
     let front = d.front_buffer().unwrap();
     let copies = |d: &Device<RecordingBackend>| {

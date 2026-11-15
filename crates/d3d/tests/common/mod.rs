@@ -105,8 +105,26 @@ pub fn call<B: Backend>(
 }
 
 pub fn create<B: Backend>(backend: B, upload: UploadPolicy) -> (Device<B>, SparseMemory) {
+    create_with(backend, upload, |_| {})
+}
+
+/// A copy-swap device (`D3DSWAPEFFECT_COPY`): `Swap` keeps the back buffer
+/// and shows a copy of it, where the default device flips.
+pub fn create_copy_swap<B: Backend>(backend: B, upload: UploadPolicy) -> (Device<B>, SparseMemory) {
+    create_with(backend, upload, |p| p.swap_effect = 3)
+}
+
+/// [`create`] with the present parameters changed by `edit`.
+pub fn create_with<B: Backend>(
+    backend: B,
+    upload: UploadPolicy,
+    edit: impl FnOnce(&mut PresentParameters),
+) -> (Device<B>, SparseMemory) {
     let mut m = memory();
     write_params(&mut m);
+    let mut p = PresentParameters::read(&m, PARAMS).unwrap();
+    edit(&mut p);
+    p.write(&mut m, PARAMS).unwrap();
     let mut d = Device::new(
         DeviceConfig {
             upload,
