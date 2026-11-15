@@ -106,6 +106,22 @@ impl<B: Backend> Backend for Audited<B> {
     fn create(&mut self, p: &str, d: bool, a: u32) -> vfs::Result<()> {
         self.inner.create(p, d, a)
     }
+    fn create_allocated(
+        &mut self,
+        p: &str,
+        d: bool,
+        a: u32,
+        allocation: u64,
+        owner: u64,
+    ) -> vfs::Result<()> {
+        self.inner.create_allocated(p, d, a, allocation, owner)
+    }
+    fn overwrite_allocated(&mut self, p: &str, allocation: u64, owner: u64) -> vfs::Result<()> {
+        self.inner.overwrite_allocated(p, allocation, owner)
+    }
+    fn release_allocation(&mut self, p: &str, owner: u64) -> vfs::Result<()> {
+        self.inner.release_allocation(p, owner)
+    }
     fn write_at(&mut self, path: &str, offset: u64, bytes: &[u8]) -> vfs::Result<usize> {
         let mut audit = self.audit.lock().unwrap();
         if offset >= 0x800 && std::mem::take(&mut audit.full) {

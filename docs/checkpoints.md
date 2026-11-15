@@ -85,8 +85,9 @@ Ordinary cleanup still flushes data/timestamps independently. Unwritten
 reservations are session state, while file bytes and metadata persist.
 Capacity checks precede create/overwrite so disk-full failures
 do not truncate an older file. Existing ordinary opens ignore the allocation
-hint; directories ignore it too. Backends without reservation support stop
-before nonzero create/overwrite reservations change data.
+hint; directories ignore it too. Backends without reservation support (the
+`Backend` default) ignore the hint and create or overwrite an empty file; EOF
+is never affected.
 
 The NT initial-allocation contract is documented in
 [Microsoft's NtCreateFile reference](https://learn.microsoft.com/windows/win32/api/winternl/nf-winternl-ntcreatefile).
