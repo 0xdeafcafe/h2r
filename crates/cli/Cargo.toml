@@ -32,6 +32,8 @@ app = { path = "../app" }
 d3d = { path = "../d3d" }
 kernel.workspace = true
 input = { path = "../input", default-features = false }
+# The controller-speaker settings and side output (play_cmd).
+dsound = { path = "../dsound" }
 audio = { path = "../audio" }
 vfs.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }

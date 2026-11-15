@@ -1039,5 +1039,8 @@ addresses.
 `dsound::padroute` labels buffers (at `SetBufferData`) and streams (at
 `Process`, cleared by `Flush`) from the opening bytes of their data, and
 marks chosen sounds for a second host output with `audio::VoiceOutput`. Off
-unless `DirectSound::set_pad_router` is given a router. See
+unless `DirectSound::set_pad_router` is given a router (`boot::pad_speaker`
+installs one per map the game opens). The output thread plays those voices
+into a second sink (`OutputConfig::side`, `Mixer::render_split`) while it is
+connected, and keeps them on the main mix otherwise. See
 [playstation-audio.md](playstation-audio.md).

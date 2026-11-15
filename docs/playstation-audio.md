@@ -1,7 +1,9 @@
 # PlayStation controller audio: speaker, mute button, microphone
 
-Status: feasibility study, plus the parts that unit tests can prove. Three
-things were asked for, on a DualSense (and a DualShock 4 where it can):
+Status: the speaker routing and the mute button are built and unit tested
+end to end, up to the device; they are not yet checked with a real pad
+(see "Checking with a real pad" below). The microphone is a design only.
+Three things were asked for, on a DualSense (and a DualShock 4 where it can):
 
 1. the controller's microphone as the Xbox Communicator's;
 2. the mute button toggling mic mute, with its LED showing the state;
@@ -10,8 +12,8 @@ things were asked for, on a DualSense (and a DualShock 4 where it can):
 
 | Part | Over USB | Over Bluetooth | Built here |
 |---|---|---|---|
-| Speaker | Yes, as a CoreAudio output, once an HID report moves the output path to the speaker | Only with our own Opus encoder speaking a reverse-engineered HID protocol; not attempted | Routing (tag matching, a split mix, picking the device). Not yet wired into the output thread. |
-| Mute button + LED | Yes, raw HID | Yes, raw HID (78-byte reports with CRC) | Report parsing, the toggle, report building. No HID device I/O yet. |
+| Speaker | Yes, as a CoreAudio output, once an HID report moves the output path to the speaker | Only with our own Opus encoder speaking a reverse-engineered HID protocol; not attempted | All of it: the sound index from the maps the game opens, the split mix into a second sink, the speaker-path report. Not checked on hardware. |
+| Mute button + LED | Yes, raw HID | Yes, raw HID (78-byte reports with CRC) | All of it: IOKit in shared mode, the toggle, the LED report (`H2_PAD_MUTE`). Not checked on hardware. |
 | Mic as Communicator | Mic capture maybe (unverified on macOS); the game side needs XHV and Communicator HLE first | Opus over HID; not attempted | Design only (below) |
 
 No PlayStation controller was connected when this was written
@@ -184,6 +186,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 | `H2_PAD_SPEAKER` | `1` on with defaults, `0` off, otherwise a TOML file of the keys below (on unless it says `enabled = false`) | off |
 | `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4 | `auto` |
 | `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both | `1` |
+| `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone | `1` (acts once a DualSense is found) |
 
 ```toml
 # H2_PAD_SPEAKER=~/pad-speaker.toml
@@ -199,24 +202,65 @@ not tag paths from the disc: check them against your maps with `h2 tags
 In the settings menu this belongs with the restart-only audio settings
 (device) and the live ones (routes, exclusive).
 
-### What is left for the speaker
+### The sound index (built)
 
-1. **Build the index.** For each map the game opens (and `shared`,
-   `single_player_shared`, `mainmenu`), walk `tags::sound::Gestalt` and each
-   `snd!` tag's permutations, read the first chunk's first 576 bytes with
-   `ResourceReader`, and `SoundIndex::insert(tag name, bytes)`. Then call
-   `DirectSound::set_pad_router`. This needs a hook on map load (the VFS sees
-   the file open) or an index of every map built once at start-up.
-2. **The output thread** (`crates/dsound/src/output.rs`) renders with
-   `render` into one sink. It needs a second sink and `render_split`, both
-   paced by the same logical clock (the side ring may underrun separately).
-3. **The speaker path report:** send `OutputRequest { speaker: Some(true) }`
-   when the side device opens, and `Some(false)` on exit (see below for the
-   HID side).
-4. A check with a pad in the game: the channel roles, the latency, and
-   whether the labels follow Halo's packets.
+`boot::pad_speaker` builds the index at run time from the player's own
+files:
 
-## Mute button and LED (built: the report logic)
+- **Where maps load.** The VFS calls an open observer
+  (`vfs::Vfs::set_open_observer`) after every file it opens, with the file's
+  host bytes (`vfs::HostFile`: the image path and the entry's offset and
+  length for the DVD, the host file for the hard disk and installed map
+  packs; `None` for a rewritten file). A `.map` with host bytes is queued
+  for the indexer thread; the observer does nothing else under the VFS lock.
+- **What is read.** The thread opens the region read-only with
+  `map::Map::from_region`, reads the `ugh!` gestalt and each named `snd!`
+  tag, resolves its permutations and reads only the first `PREFIX_BYTES`
+  (or all of a shorter permutation) across its chunks, from the map itself
+  or from `mainmenu.map`, `shared.map` and `single_player_shared.map`
+  (located once through the VFS at `\Device\CdRom0\maps\`). A bad tag or
+  chunk is skipped and counted; a file that is not a map is reported once.
+- **When.** The shared maps are indexed at start, then each map once, the
+  first time the game opens it. The index only grows. After each map the
+  thread builds a `PadRouter` and installs it with
+  `DirectSound::set_pad_router`. A router only decides which host output
+  hears a voice, so installing it from another thread changes nothing the
+  guest sees.
+
+It runs only when the controller speaker is on (`H2_PAD_SPEAKER`) and the
+host gives an audio sink (`h2 play`); headless runs never read the maps.
+
+### The two outputs (built)
+
+`dsound::OutputConfig::side` takes a `dsound::SideOutput`: an opener run on
+the output thread that returns the controller's sink, or `None` when the
+device is absent, and an `on_live` callback.
+
+- While the side sink is open and `AudioSink::connected` (a `DeviceSink`
+  says false once its stream errors, until it is reopened), the mixer renders
+  with `render_split`: logical pacing in `Output::advance_to`, device pacing
+  through `audio::Pump::pump_split`. The side mix goes to a queue of its own
+  and a resampler to the side device's rate, played by the output thread.
+  Both are rendered from the same frames, so they share one clock; the side
+  sink can underrun on its own.
+- Absent or unplugged, the mixer renders one output and every voice plays on
+  the main mix. The side queue is dropped when the side goes down.
+- With `H2_PAD_SPEAKER_EXCLUSIVE=1` (the default) the routes label voices
+  `Side`, left out of the main mix; with `0` they are `Both`.
+- `on_live(true)` when the side goes live, `on_live(false)` when it goes down
+  or the output is dropped. `h2 play` wires it to the HID thread, which sends
+  `OutputRequest { speaker: Some(true) }` (path 3, volume, preamp) and later
+  `Some(false)`.
+- `OutputStats::side` counts what the side output rendered and dropped.
+
+`h2 play` opens the side sink with `DeviceSink::open_named(device)` and says
+on stderr which device it found, or that every sound stays on the main
+output.
+
+Left for a pad in the game: the channel roles, the latency, and whether the
+labels follow Halo's packets (below).
+
+## Mute button and LED (built)
 
 `input::dualsense`:
 
@@ -228,13 +272,31 @@ In the settings menu this belongs with the restart-only audio settings
   hardware mic mute, as Linux does. Fields left `None` keep their
   valid-flag bits clear, so rumble, lightbar and player LEDs are untouched.
 
-Left: the HID device itself. Neither gilrs nor GameController.framework
-passes raw reports, so this needs IOKit (`IOHIDManager` matching
-`054c:0ce6`/`0df2`, input report callback, `IOHIDDeviceSetReport`) or hidapi
-in shared mode, on a thread of its own next to the existing backends
-(`docs/input.md`). Proposed setting `H2_PAD_MUTE=1`, off by default. The mute
-state then feeds the voice design below; with no Communicator it only lights
-the LED.
+`input::pad_hid` opens the pad over raw HID, next to the gamepad backends:
+
+- **IOKit, not hidapi.** An `IOHIDManager` matching `054c:0ce6`/`0df2`,
+  opened with `kIOHIDOptionsTypeNone`. That does not seize the device, and
+  gilrs opens it the same way, so GameController.framework and gilrs keep
+  reading the buttons. It needs no new library: `objc2-io-kit` is already in
+  the tree through gilrs. Input reports arrive through the manager's
+  callback on the HID thread's run loop; output reports go out with
+  `IOHIDDeviceSetReport`. Transport (USB or Bluetooth) comes from the
+  device's `Transport` property. This part (`pad_hid_iokit.rs`) is thin and
+  untested without hardware.
+- **`PadLink`**, the state machine: on open it sends one report with the
+  speaker path (if the controller output is playing) and the LED for the
+  current mute state (if mute is on); a press of the mute button flips the
+  state and sends the LED; `set_speaker` sends the path only when it changes.
+  Only those valid-flag bits are set.
+- **The thread** (`pad_hid::spawn`) looks for a pad once a second, follows
+  the button and the `SpeakerSwitch` from `on_live`, and keeps the mute and
+  speaker state across an unplug. Dropping it puts the path back to the jack.
+- **`H2_PAD_MUTE`**: `1` (default) or `0`. On does nothing until a DualSense
+  is found. With no Communicator the toggle only lights the LED and mutes the
+  mic in the controller; the mute state is there for the voice design below.
+
+If macOS refuses the open (`kIOReturnNotPermitted`, Input Monitoring), the
+thread keeps retrying and input is unaffected.
 
 ## Microphone as the Communicator (design, not built)
 
@@ -271,13 +333,52 @@ who owns the voice transport. This document owns the device and capture side.
 ## Tests
 
 - `cargo test -p audio --lib`: `mixer::tests::side_output_*` (split mix,
-  fallback without a side, volume and master), `devices::tests`, and the
-  `DeviceSink` tests with the named-target opener.
+  fallback without a side, volume and master), `sink::tests::pump_split_*`
+  and `boxed_sinks_*`, `devices::tests`, and the `DeviceSink` tests with the
+  named-target opener (including `connected` across a lost stream).
 - `cargo test -p dsound --lib padroute` (fingerprints, globs, shared
   openings, labels, settings) and `cargo test -p dsound --test padroute`
   (streams and buffers through the guest calls, synthetic PCM).
-- `cargo test -p input --lib dualsense` (mute bit, toggle, USB and
-  Bluetooth reports, the CRC check value).
+- `cargo test -p dsound --test register`: the side output with fake sinks:
+  `routed_sounds_play_only_on_the_controller_when_exclusive`, `..._on_both_
+  when_not_exclusive`, `without_the_controller_device_...`,
+  `an_unplugged_controller_hands_its_sounds_back_...` and
+  `device_pacing_feeds_the_side_output_too`.
+- `cargo test -p vfs --test storage opens_are_observed rewritten_files`: the
+  open observer and host-file lookups on a synthetic XISO and host files.
+- `cargo test -p boot --lib pad_speaker`: synthetic map files (invented tag
+  index, gestalt and sample bytes) indexed from whole files, from regions
+  of an image, with a chunk in the shared map, with the shared map missing,
+  and through a VFS open.
+- `cargo test -p input --lib dualsense pad_hid` (mute bit, toggle, USB and
+  Bluetooth reports, the CRC check value; `PadLink` report bytes and the
+  thread over a fake HID device, including an unplug).
+
+## Checking with a real pad
+
+Nothing above has met a DualSense. Over USB, with `H2_PAD_SPEAKER=1 h2
+play`, check:
+
+1. **The speaker plays the chosen sounds.** stderr says `controller speaker
+   on <device>`. Shields, reloads, the empty click and the other default
+   routes come out of the pad. If the speaker is silent but the jack plays
+   them, the speaker-path report is not reaching the pad; if nothing plays,
+   check the channel roles (the side mix is mono on channels 1 and 2) and
+   the device's format in Audio MIDI Setup.
+2. **The main speakers do not also play them** (the default
+   `H2_PAD_SPEAKER_EXCLUSIVE=1`), and with `H2_PAD_SPEAKER_EXCLUSIVE=0` they
+   do. A routed sound that still plays on the main output means its label
+   did not follow Halo's packets (trace `Process` with `H2_TRACE`).
+3. **The mute LED toggles** on each press of the mute button (lit while
+   muted), and `H2_PAD_MUTE=0` leaves it alone. If macOS asks for Input
+   Monitoring, say so here.
+4. **Normal input still works**: sticks, buttons, triggers and rumble through
+   GameController.framework, with the HID thread running, and after
+   unplugging and replugging the pad.
+
+Also worth noting: the latency between the two outputs, and what happens
+when the pad is unplugged mid-sound (the sound should move to the main
+output).
 
 ## Sources
 

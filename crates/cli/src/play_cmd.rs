@@ -113,6 +113,47 @@ fn audio_sink(audio: bool) -> boot::dsound_glue::SinkOpener {
     })
 }
 
+/// The DualSense HID thread (mute button and LED, `H2_PAD_MUTE`, on by
+/// default; the speaker path) and, with `H2_PAD_SPEAKER` on and audio on,
+/// the controller-speaker output (docs/playstation-audio.md). A bad
+/// setting is reported and that part stays off.
+fn pad_speaker(audio: bool) -> (Option<boot::dsound_glue::PadSpeaker>, Option<input::pad_hid::PadHid>) {
+    let env = |k: &str| std::env::var(k).ok();
+    let config = dsound::padroute::PadSpeakerConfig::from_env(env)
+        .map_err(|e| eprintln!("play: controller speaker off: {e}"))
+        .ok()
+        .filter(|c| c.enabled && audio);
+    let hid_config = input::pad_hid::PadHidConfig::from_env(env)
+        .map_err(|e| eprintln!("play: {e}"))
+        .unwrap_or(input::pad_hid::PadHidConfig { mute: false });
+    let hid = pad_hid(hid_config, config.is_some());
+    let Some(config) = config else {
+        return (None, hid);
+    };
+    let device = config.device.clone();
+    let switch = hid.as_ref().map(input::pad_hid::PadHid::speaker_switch);
+    let side = dsound::SideOutput {
+        open: Box::new(move || match audio::output::DeviceSink::open_named(&device) {
+            Ok(d) => {
+                eprintln!("play: controller speaker on {} at {} Hz", d.device_id(), audio::AudioSink::sample_rate(&d));
+                Some(Box::new(d) as Box<dyn audio::AudioSink>)
+            }
+            Err(e) => {
+                eprintln!("play: no controller speaker matching {device:?} ({e}); every sound stays on the main output");
+                None
+            }
+        }),
+        on_live: switch.map(|s| Box::new(move |live| s.set(live)) as Box<dyn FnMut(bool) + Send>),
+    };
+    (Some(boot::dsound_glue::PadSpeaker { config, side }), hid)
+}
+
+/// The HID thread, when it has something to do and can run here.
+fn pad_hid(config: input::pad_hid::PadHidConfig, speaker: bool) -> Option<input::pad_hid::PadHid> {
+    let open = input::pad_hid::platform_opener().filter(|_| config.mute || speaker)?;
+    Some(input::pad_hid::spawn(open, config, Default::default()))
+}
+
 /// The boot `Host` for one shell guest thread: D3D presents into the
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
@@ -139,19 +180,24 @@ fn hosted(
     }
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
+    let (pad_speaker, pad_hid) = pad_speaker(audio);
     boot::Host {
         gfx: Some(gfx),
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
         audio_sink: Some(audio_sink(audio)),
+        pad_speaker,
         trace_limit: Some(TRACE_LIMIT),
         input,
         keyboard,
         icons: Some(icons),
         between_slices: Some(Box::new({
             let mut slices = 0u64;
+            // The HID thread lives as long as the run.
+            let _pad_hid = pad_hid;
             move |k: &kernel::Kernel| {
+                let _ = &_pad_hid;
                 slices += 1;
                 let now = k.clock().counter();
                 // A timeline plays on guest time; the next pump sees it.

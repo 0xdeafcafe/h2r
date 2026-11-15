@@ -119,6 +119,14 @@ emulated USB poll interval) before running the guest.
 `state_read` and `set_rumble` default to doing nothing.
 Backends are platform-separated modules; a tvOS or Xbox build swaps them.
 
+### DualSense raw HID (`pad_hid`, feature `hid`, default)
+
+Not a `HostBackend`: a thread of its own that opens a DualSense over IOKit
+without seizing it, so the backends below keep reading its buttons. It reads
+only the mute button and writes only the mute LED and the speaker path
+(`H2_PAD_MUTE`, `H2_PAD_SPEAKER`). See
+[playstation-audio.md](playstation-audio.md).
+
 ### Physical pads: Apple GameController (`backend/game_controller/`, feature `game-controller`, default)
 
 The macOS pad backend. `GameControllerPads::new()` reads

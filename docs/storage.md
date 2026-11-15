@@ -425,7 +425,14 @@ final file still returns NotADirectory).
 ## Kernel integration
 
 The kernel depends on `vfs` and translates the NT file exports onto it; the
-boot runner configures it (docs/BOOT.md, `--data`). Basic setup:
+boot runner configures it (docs/BOOT.md, `--data`).
+
+`Vfs::set_open_observer` is told about every file (not directory) opened,
+under the VFS lock, with `OpenedFile::host`: where its bytes sit on the host
+(`Backend::host_file`: an entry's region of the disc image, a hard-disk file,
+`None` for a rewritten one). `Vfs::host_file(name)` answers the same for any
+name. The controller-speaker sound index uses both to read the maps the game
+loads ([playstation-audio.md](playstation-audio.md)). Basic setup:
 
 ```rust
 use vfs::{Config, OpenOptions, Offset, Vfs};

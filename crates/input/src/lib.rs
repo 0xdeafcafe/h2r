@@ -13,6 +13,8 @@
 //! * [`layouts`]: Halo 2 button layouts (retail and added) as action tables.
 //! * [`dualsense`]: DualSense HID reports for the mute button, mute LED and
 //!   speaker path (`docs/playstation-audio.md`).
+//! * [`pad_hid`]: the DualSense opened over raw HID next to the gamepad
+//!   backends, sending those reports (IOKit on macOS).
 //!
 //! See `docs/input.md`.
 
@@ -24,6 +26,7 @@ pub mod dualsense;
 pub mod gamepad;
 pub mod host;
 pub mod layouts;
+pub mod pad_hid;
 
 pub use backend::HostBackend;
 pub use device::{InputManager, PortIndex};
