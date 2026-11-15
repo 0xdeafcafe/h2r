@@ -51,6 +51,12 @@ fn once<K: std::hash::Hash + Eq, T: Clone>(
 /// `__COUNTER__`) or names itself (`__FILE__` and relatives): such a source
 /// is always scanned on its own.
 ///
+/// Lines joined to their neighbours count too: a line spliced to the next
+/// by a final backslash (or `??/`), the line after it, and every line that
+/// starts or ends inside a block comment. Those can carry a directive's
+/// text, or decide whether a `#` line is a directive at all. A comment that
+/// opens and closes on one line changes neither.
+///
 /// Two sources in one directory with the same skeleton, under the same
 /// flags, include exactly the same files: the text between those lines is
 /// ordinary tokens, which can't define macros or include anything.
@@ -59,10 +65,28 @@ pub(super) fn skeleton(text: &[u8]) -> Option<u64> {
     if SELF_AWARE.iter().any(|n| text.windows(n.len()).any(|w| w == *n)) {
         return None;
     }
-    let mut s = b"h2-skeleton-v1\0".to_vec();
+    let mut s = b"h2-skeleton-v2\0".to_vec();
+    // Comment state ignores string literals: a `/*` inside one only makes
+    // more lines count, which is the safe direction.
+    let mut in_comment = false;
+    let mut spliced = false;
     for (n, line) in text.split(|b| *b == b'\n').enumerate() {
+        let starts_in_comment = in_comment;
+        let mut i = 0;
+        while i + 1 < line.len() {
+            match (in_comment, &line[i..i + 2]) {
+                (false, b"/*") | (true, b"*/") => {
+                    in_comment = !in_comment;
+                    i += 2;
+                }
+                _ => i += 1,
+            }
+        }
+        let body = line.strip_suffix(b"\r").unwrap_or(line);
+        let splices = body.ends_with(b"\\") || body.ends_with(b"??/");
+        let joined = std::mem::replace(&mut spliced, splices) || splices || starts_in_comment || in_comment;
         let directive = line.contains(&b'#') || line.windows(2).any(|w| w == b"%:") || line.windows(3).any(|w| w == b"??=");
-        if directive {
+        if directive || joined {
             s.extend((n as u64).to_le_bytes());
             s.extend((line.len() as u64).to_le_bytes());
             s.extend(line);
@@ -361,6 +385,31 @@ mod tests {
             let text = [&b"/* banner */\n#include \"h2gen.h\"\n\nint f(void) { return 1; }\n"[..], hidden].concat();
             assert_ne!(Some(a), skeleton(&text), "{}", String::from_utf8_lossy(hidden));
         }
+        // Lines joined to a directive, or that decide whether a `#` line is
+        // one, count.
+        let base = b"/* banner */\n#include \"h2gen.h\"\n".to_vec();
+        for (x, y) in [
+            (&b"#define X \\\n1\n"[..], &b"#define X \\\n0\n"[..]),
+            (b"#define X ??/\n1\n", b"#define X ??/\n0\n"),
+            (b"#define X \\\r\n1\n", b"#define X \\\r\n0\n"),
+            (b"#define X /*\n*/ 1\n", b"#define X /*\n*/ 0\n"),
+            (b"#define X /*\n\n*/ 1\n", b"#define X /*\n\n*/ 0\n"),
+            (b"int a; \\\n#define X 1\n", b"int a;\n#define X 1\n"),
+            (b"int a; /*\n*/ #define X 1\n", b"int a;\n */ #define X 1\n"),
+            (b"int a; /*\nb */ #define X 1\n", b"int a; /*\nc */ #define X 1\n"),
+        ] {
+            assert_ne!(
+                skeleton(&[&base[..], x].concat()),
+                skeleton(&[&base[..], y].concat()),
+                "{}",
+                String::from_utf8_lossy(x)
+            );
+        }
+        // A comment within one line joins nothing: generated code is full of them.
+        assert_eq!(
+            skeleton(&[&base[..], b"int f(void) { /* 0x10 */ return 1; }\n"].concat()),
+            skeleton(&[&base[..], b"int f(void) { /* 0x20 */ return 2; }\n"].concat())
+        );
         // Text that can change the preprocessor's state or names the file
         // is never shared.
         for own in ["_Pragma(\"x\")", "__COUNTER__", "__FILE__", "__FILE_NAME__", "__BASE_FILE__"] {
