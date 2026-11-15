@@ -34,6 +34,10 @@ struct Cache {
     directories: BTreeMap<PathBuf, DirectoryIndex>,
     used_bytes: Option<u64>,
     atimes: BTreeMap<String, Timestamp>,
+    // Basic info a write or truncation changed (write and change times, the
+    // archive bit), kept until the next flush, close or drop as `atimes`
+    // is: storing it durably on every write cost two syncs per guest write.
+    written: BTreeMap<String, BasicInfo>,
     dirty_data: BTreeSet<String>,
     // Logical FATX preallocation, trimmed only by its owning file object's close.
     reservations: BTreeMap<String, Reservation>,
@@ -43,6 +47,8 @@ struct Cache {
     usage_scans: usize,
     #[cfg(test)]
     data_syncs: usize,
+    #[cfg(test)]
+    metadata_stores: usize,
 }
 
 /// FATX view of a private host directory. Metadata is outside the mounted tree.
@@ -336,8 +342,15 @@ impl HostBackend {
         })
     }
     fn load_basic(&self, path: &str, host: &fs::Metadata) -> Result<BasicInfo> {
-        let mut info = match fs::read(self.metadata_path(path)) {
-            Ok(bytes)
+        let key = path.to_ascii_lowercase();
+        let written = self.cache.borrow().written.get(&key).copied();
+        let read = match written {
+            Some(basic) => Ok(Ok(basic)),
+            None => fs::read(self.metadata_path(path)).map(Err),
+        };
+        let mut info = match read {
+            Ok(Ok(basic)) => basic,
+            Ok(Err(bytes))
                 if bytes.len() == 40
                     && &bytes[..4] == b"HVF1"
                     && u32::from_le_bytes(bytes[4..8].try_into().unwrap()) & !FATX_ATTRIBUTES
@@ -354,13 +367,13 @@ impl HostBackend {
                     change_time: time(32),
                 }
             }
-            Ok(_) => Self::host_basic(host)?, // Torn/old metadata must never hide intact game data.
+            Ok(Err(_)) => Self::host_basic(host)?, // Torn/old metadata must never hide intact game data.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Self::host_basic(host)?,
             Err(e) => return Err(e.into()),
         };
         info.attributes =
             (info.attributes & !ATTR_DIRECTORY) | if host.is_dir() { ATTR_DIRECTORY } else { 0 };
-        if let Some(atime) = self.cache.borrow().atimes.get(&path.to_ascii_lowercase()) {
+        if let Some(atime) = self.cache.borrow().atimes.get(&key) {
             info.last_access_time = *atime;
         }
         Ok(info)
@@ -390,21 +403,23 @@ impl HostBackend {
         file.sync_all()?;
         fs::rename(staged, &target)?;
         sync_directory(parent)?;
-        self.cache
-            .borrow_mut()
-            .atimes
-            .remove(&path.to_ascii_lowercase());
+        let mut cache = self.cache.borrow_mut();
+        cache.atimes.remove(&path.to_ascii_lowercase());
+        cache.written.remove(&path.to_ascii_lowercase());
+        #[cfg(test)]
+        {
+            cache.metadata_stores += 1;
+        }
         Ok(())
     }
-    fn flush_atime(&self, path: &str) -> Result<()> {
-        if !self
-            .cache
-            .borrow()
-            .atimes
-            .contains_key(&path.to_ascii_lowercase())
-        {
+    /// Store the access time and written basic info kept in the cache.
+    fn flush_metadata(&self, path: &str) -> Result<()> {
+        let key = path.to_ascii_lowercase();
+        let cache = self.cache.borrow();
+        if !cache.atimes.contains_key(&key) && !cache.written.contains_key(&key) {
             return Ok(());
         }
+        drop(cache);
         let host = self.resolve(path, false)?;
         let metadata = fs::symlink_metadata(host)?;
         self.store_basic(path, self.load_basic(path, &metadata)?)
@@ -489,12 +504,19 @@ impl HostBackend {
         }
         Ok(())
     }
+    /// A write or truncation: new write and change times and the archive
+    /// bit, stored at the next flush, close or drop (`Cache::written`).
     fn touch(&self, path: &str, mut basic: BasicInfo) -> Result<()> {
-        let now = Timestamp::now();
+        // As a stored and reloaded record would read.
+        let now = Timestamp::now().fatx();
         basic.last_write_time = now;
         basic.change_time = now;
         basic.attributes |= ATTR_ARCHIVE;
-        self.store_basic(path, basic)
+        self.cache
+            .borrow_mut()
+            .written
+            .insert(path.to_ascii_lowercase(), basic);
+        Ok(())
     }
 }
 impl Backend for HostBackend {
@@ -766,6 +788,10 @@ impl Backend for HostBackend {
             .remove(&path.to_ascii_lowercase());
         self.cache
             .borrow_mut()
+            .written
+            .remove(&path.to_ascii_lowercase());
+        self.cache
+            .borrow_mut()
             .dirty_data
             .remove(&path.to_ascii_lowercase());
         self.update_usage(info.allocation_size, 0);
@@ -785,7 +811,7 @@ impl Backend for HostBackend {
         Ok(())
     }
     fn flush(&mut self, path: &str) -> Result<()> {
-        self.flush_atime(path)?;
+        self.flush_metadata(path)?;
         let host = self.resolve(path, false)?;
         File::open(host)?.sync_all()?;
         #[cfg(test)]
@@ -808,7 +834,7 @@ impl Backend for HostBackend {
         {
             self.flush(path)?;
         } else {
-            self.flush_atime(path)?;
+            self.flush_metadata(path)?;
         }
         Ok(())
     }
@@ -906,6 +932,7 @@ impl Drop for HostBackend {
             .atimes
             .keys()
             .cloned()
+            .chain(self.cache.borrow().written.keys().cloned())
             .chain(self.cache.borrow().dirty_data.iter().cloned())
             .collect();
         for path in paths {
@@ -985,6 +1012,53 @@ mod tests {
             FATX_CLUSTER_SIZE + 1
         );
         assert_eq!(backend.volume_info().unwrap().available_allocation_units, 1);
+    }
+
+    #[test]
+    fn writes_keep_their_metadata_until_flush_close_or_drop() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.create("data", false, 0).unwrap();
+        backend.flush("data").unwrap();
+        let mut basic = backend.stat("data").unwrap().basic;
+        basic.attributes = 0;
+        basic.last_write_time = Timestamp(125_911_584_000_000_000);
+        backend.set_basic_info("data", basic).unwrap();
+        let record = backend.metadata_path("data");
+        let before = fs::read(&record).unwrap();
+        let stores = backend.cache.borrow().metadata_stores;
+        for i in 0..50u64 {
+            assert_eq!(backend.write_at("data", i, b"x"), Ok(1));
+        }
+        backend.set_len("data", 64).unwrap();
+        // No record was stored for any of them, but stat sees the change.
+        assert_eq!(backend.cache.borrow().metadata_stores, stores);
+        assert_eq!(fs::read(&record).unwrap(), before);
+        let seen = backend.stat("data").unwrap().basic;
+        assert!(seen.last_write_time > basic.last_write_time);
+        assert_ne!(seen.attributes & ATTR_ARCHIVE, 0);
+        // Flush stores it once.
+        backend.flush("data").unwrap();
+        assert_eq!(backend.cache.borrow().metadata_stores, stores + 1);
+        assert_ne!(fs::read(&record).unwrap(), before);
+        assert!(backend.cache.borrow().written.is_empty());
+        assert_eq!(backend.stat("data").unwrap().basic, seen);
+        // Close (cleanup) stores what a later write left; so does drop.
+        backend.write_at("data", 0, b"y").unwrap();
+        backend.cleanup("data", false).unwrap();
+        assert!(backend.cache.borrow().written.is_empty());
+        backend.write_at("data", 0, b"z").unwrap();
+        let pending = backend.stat("data").unwrap().basic;
+        drop(backend);
+        let mut reopened = temp.backend();
+        assert_eq!(
+            reopened.stat("data").unwrap().basic.last_write_time,
+            pending.last_write_time
+        );
+        // A removed file's pending metadata goes with it.
+        reopened.write_at("data", 0, b"w").unwrap();
+        reopened.remove("data").unwrap();
+        assert!(reopened.cache.borrow().written.is_empty());
     }
 
     #[test]

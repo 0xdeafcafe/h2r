@@ -210,7 +210,12 @@ is deterministic across host timezones. Creation/access/write times persist;
 change time is an additional emulated field. Reads update access time in
 memory and coalesce it per path; the record is persisted on explicit flush,
 file-object cleanup/close, a later metadata write, or backend drop. This
-avoids a write+fsync per read. Write/truncation updates write/change times. Imported host files start
+avoids a write+fsync per read. Write/truncation updates write/change times
+and sets the archive bit the same way: in memory, per path, persisted at the
+same points (until then `stat` sees the new times). Storing the record on
+every write cost two fsyncs per guest write; while Halo 2 fills its cache
+partition on the main menu that was about a tenth of each frame
+(docs/perf-budget.md). Imported host files start
 from host timestamps; subsequent VFS timestamps are logical, not a promise
 to rewrite host birthtime or mtime.
 
@@ -328,7 +333,8 @@ The last close removes the host entry. Final-object cleanup uses
 file objects opened with WRITE/APPEND; directory and read-only opens avoid
 unconditional sync. HostBackend additionally tracks dirty data and deferred
 atime: atime-only cleanup persists its record without syncing file data;
-write-capable or data-dirty cleanup syncs file data. Duplicate-handle closes
+write-capable or data-dirty cleanup syncs file data and persists the record
+any write left. Duplicate-handle closes
 do not trigger cleanup until the last reference closes. A cleanup-sync
 failure is logged to stderr with a `vfs:` prefix and does not turn an already
 closed handle into a failed close. Actual removal errors still propagate.
