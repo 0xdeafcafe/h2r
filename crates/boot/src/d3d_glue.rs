@@ -51,7 +51,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             };
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             let mut swaps = 0u64;
-            let backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags| {
+            let mut backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags| {
                 swaps += 1;
                 if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
                     return;
@@ -60,6 +60,11 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
                     eprintln!("boot: gfx screenshot {swaps}: {e}");
                 }
             });
+            // H2_GFX_MERGE_PASSES=1: one render pass per target run of draws
+            // (gfx-perf). About 3x faster, but not pixel-exact.
+            if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "1") {
+                backend.set_merge_passes(true);
+            }
             install_with(rt, backend)
         }
     }

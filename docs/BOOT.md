@@ -43,6 +43,7 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
 
+| `H2_GFX_MERGE_PASSES=1` | with `H2_BOOT_GFX`, merge consecutive draws to one target into one render pass (`GfxBackend::set_merge_passes`): about 3x faster, but a few edge pixels differ from one pass per draw, so not for fidelity checks or pixel comparisons |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
 | `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
 | `H2_BOOT_REALTIME=1` | pace the scheduler to wall-clock time (`Pacer::real_time`); off by default, so runs go as fast as the host allows |
