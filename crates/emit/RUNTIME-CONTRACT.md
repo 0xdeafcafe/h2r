@@ -47,6 +47,8 @@ The emitted ordinary-access helpers try the shared atomic gate with acquire
 ordering. While holding it they validate the one-page span, access permission
 and physical RAM bounds, then copy bytes. Stores mark physical dirty bits.
 The gate is released before every Rust helper and on every fast-path exit.
+Only full virtual pages with aligned physical backing enter the fast table;
+partial mappings and shifted physical backing retain the Rust path.
 A failed fast check performs no access and falls back to the ordinary helper,
 which preserves precise fault ordering and whole-span failure semantics.
 Atomics always use their operation-wide Rust helper.

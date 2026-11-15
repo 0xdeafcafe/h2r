@@ -247,9 +247,11 @@ Guarantees:
    `write_bytes` (so every typed setter, `Guest::call`, the atomics,
    `h2abi_v1_write` and the atomic imports, the loader, and every kernel or
    HLE copy, since they all write through a `Guest`), the zeroing of a
-   reused gap in `map_zeroed`, and the zeroing in `reserve_physical`. There
-   is no raw pointer into RAM. A future interpreter binding or DMA engine
-   has to write through `Guest` too, and then reports for free.
+   reused gap in `map_zeroed`, and the zeroing in `reserve_physical`. The
+   optional generated-C RAM view also records physical dirty pages under
+   the memory gate; the next Rust guard publishes them before exposing
+   Guest. A future interpreter binding or DMA engine must use a reported
+   path too.
 2. **Aliases folded.** Bits are per physical page, so a store through any
    virtual alias marks the same page and is reported once, as
    `0x80000000 | pa`.
@@ -268,11 +270,9 @@ Guarantees:
    consumer's own stores. Other subscribers still see them. The mute is
    lifted even if `f` panics.
 
-Why a bitmap and not host page protection: generated code never touches
-host memory. Every guest store in the ~40k lifted functions is already a
-call to `h2abi_v1_write`, which takes the memory lock, binary-searches the
-mapping and copies (RUNTIME-CONTRACT.md 1.1). Adding a flag test there costs
-almost nothing. `mprotect` plus a SIGBUS handler would need RAM in its own
+Why a bitmap and not host page protection: ordinary generated stores use
+`h2abi_v1_write` or the gated inline RAM view (RUNTIME-CONTRACT.md 1.1). Both
+paths record physical pages at the store, without a host protection fault. `mprotect` plus a SIGBUS handler would need RAM in its own
 `mmap`, a signal (microseconds) on the first store to each watched page
 every frame, an `mprotect` call per drained run, and a signal handler that
 runs while the store holds the memory mutex. It would also miss nothing the

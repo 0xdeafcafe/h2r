@@ -431,6 +431,45 @@ fn inline_ram_checks_track_mapping_changes_faults_writes_and_slice_budget() {
     }
     assert_eq!(output, [0xa5; 16]);
 
+    // Byte-granular virtual mappings and shifted physical backing cannot
+    // grant access to the rest of a page or lose cross-physical-page dirt.
+    const PART: u32 = 0x500001;
+    let mut partial = Guest::new();
+    partial.map(PART, 4096, 0x1001, Permissions::RW).unwrap();
+    partial.set_u32(PART, 0x11223344).unwrap();
+    let partial_rt = Runtime::new(partial, Dispatch::default());
+    let mut partial_ctx = ExecCtx::new(partial_rt.clone(), 3);
+    partial_ctx.enable_profiling(true);
+    let partial_ptr = (&mut partial_ctx as *mut ExecCtx).cast();
+    let mut bytes = [0xa5; 4];
+    // SAFETY: the probe holds only its scoped view and uses disjoint locals.
+    unsafe {
+        assert_eq!(read(partial_ptr, PART, 4, 1, bytes.as_mut_ptr()), 0);
+        assert_eq!(bytes, 0x11223344u32.to_le_bytes());
+        assert_ne!(read(partial_ptr, PART - 1, 1, 1, bytes.as_mut_ptr()), 0);
+        assert_ne!(write(partial_ptr, PART + 4095, 4, 1, input.as_ptr()), 0);
+    }
+    assert_eq!(partial_ctx.take_profile().unwrap().fast_memory_accesses, 0);
+    partial_rt.memory().protect(PART, Permissions::READ).unwrap();
+    partial_rt.memory().protect(PART, Permissions::RW).unwrap();
+    unsafe {
+        assert_ne!(read(partial_ptr, PART - 1, 1, 1, bytes.as_mut_ptr()), 0);
+        assert_eq!(read(partial_ptr, PART, 4, 1, bytes.as_mut_ptr()), 0);
+    }
+    assert_eq!(partial_ctx.take_profile().unwrap().fast_memory_accesses, 0);
+    // Even a full virtual page falls back when its physical page is shifted.
+    const SHIFT: u32 = 0x600000;
+    partial_rt.memory().map(SHIFT, 4096, 0x4001, Permissions::RW).unwrap();
+    let w = partial_rt.memory().subscribe_writes("shift");
+    partial_rt.memory().watch_writes(w, CONTIGUOUS_BASE + 0x4000, 8192).unwrap();
+    unsafe { assert_eq!(write(partial_ptr, SHIFT + 4094, 2, 1, input.as_ptr()), 0); }
+    let dirty = partial_rt.memory().take_dirty(w).unwrap();
+    assert_eq!(dirty.len(), 1);
+    assert_eq!((dirty[0].addr, dirty[0].len), (CONTIGUOUS_BASE + 0x4000, 8192));
+    partial_rt.memory().protect_range(SHIFT, 4096, Permissions::READ).unwrap();
+    unsafe { assert_eq!(read(partial_ptr, SHIFT, 4, 1, bytes.as_mut_ptr()), 0); }
+    assert_eq!(partial_ctx.take_profile().unwrap().fast_memory_accesses, 0);
+
     // A compound Rust guard is indivisible to C, even though the host writes
     // two separate words. A C read must never observe a torn pair.
     rt.memory().set_u64(DATA, 0).unwrap();

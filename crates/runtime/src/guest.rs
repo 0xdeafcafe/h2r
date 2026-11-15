@@ -263,14 +263,7 @@ impl Guest {
             permissions,
         });
         self.mappings.sort_unstable_by_key(|m| m.virtual_start);
-        if let Some(pages) = &mut self.fast_pages {
-            for offset in (0..len).step_by(PAGE_SIZE as usize) {
-                pages[((va as u64 + offset as u64) >> 12) as usize] = FastPage {
-                    physical: physical + offset,
-                    permissions: permissions.0 as u32,
-                };
-            }
-        }
+        self.refresh_fast_range(va as u64, va as u64 + len as u64);
     }
 
     /// Allocate distinct page-aligned physical storage for a virtual range.
@@ -320,12 +313,8 @@ impl Guest {
             .find(|m| m.virtual_start == va)
             .ok_or(MapError::InvalidRange)?;
         m.permissions = permissions;
-        if let Some(pages) = &mut self.fast_pages {
-            let end = (m.virtual_start as u64 + m.len as u64) >> 12;
-            for page in &mut pages[(va >> 12) as usize..end as usize] {
-                page.permissions = permissions.0 as u32;
-            }
-        }
+        let end = m.virtual_start as u64 + m.len as u64;
+        self.refresh_fast_range(va as u64, end);
         Ok(())
     }
 
@@ -687,11 +676,7 @@ impl Guest {
                 m.permissions = permissions;
             }
         }
-        if let Some(pages) = &mut self.fast_pages {
-            for page in &mut pages[(start >> 12) as usize..(end >> 12) as usize] {
-                page.permissions = permissions.0 as u32;
-            }
-        }
+        self.refresh_fast_range(start, end);
     }
     fn apply_unmap(&mut self, start: u64, end: u64) {
         self.split_at(start);
@@ -716,17 +701,39 @@ impl Guest {
         if self.fast_pages.is_some() {
             return;
         }
-        let mut pages = vec![FastPage::default(); 1 << 20].into_boxed_slice();
+        self.fast_pages = Some(vec![FastPage::default(); 1 << 20].into_boxed_slice());
+        self.refresh_fast_range(0, 1u64 << 32);
+    }
+    // Guest::map permits byte-granular mappings. Only a whole virtual page
+    // backed by a whole aligned physical page can use the C copy/dirty-bit
+    // protocol. Partial pages and shifted backing remain on checked_start.
+    fn refresh_fast_range(&mut self, start: u64, end: u64) {
+        let Some(pages) = &mut self.fast_pages else {
+            return;
+        };
+        let first = (start >> 12) as usize;
+        let last = (page_end(end) >> 12) as usize;
+        pages[first..last].fill(FastPage::default());
         for m in &self.mappings {
-            for offset in (0..m.len).step_by(PAGE_SIZE as usize) {
-                pages[((m.virtual_start as u64 + offset as u64) >> 12) as usize] = FastPage {
-                    physical: m.physical_start + offset,
+            let lo = page_end(m.virtual_start as u64).max((first as u64) << 12);
+            let hi = ((m.virtual_start as u64 + m.len as u64) & !(PAGE_SIZE as u64 - 1))
+                .min((last as u64) << 12);
+            if lo >= hi {
+                continue;
+            }
+            let physical = m.physical_start as u64 + lo - m.virtual_start as u64;
+            if !physical.is_multiple_of(PAGE_SIZE as u64) {
+                continue;
+            }
+            for va in (lo..hi).step_by(PAGE_SIZE as usize) {
+                pages[(va >> 12) as usize] = FastPage {
+                    physical: (physical + va - lo) as u32,
                     permissions: m.permissions.0 as u32,
                 };
             }
         }
-        self.fast_pages = Some(pages);
     }
+
     pub(crate) fn fast_parts(&mut self) -> (*mut u8, *const FastPage, bool) {
         (
             self.ram.as_mut_ptr(),
