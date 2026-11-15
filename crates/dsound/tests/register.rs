@@ -1802,3 +1802,40 @@ fn a_halted_output_leaves_the_guest_alone() {
         assert_eq!(w.hle.direct_sound().consumer(), None);
     }
 }
+
+#[test]
+fn an_unbounded_sink_at_another_rate_is_resampled() {
+    // A capture sink with no limit (usize::MAX free frames) at twice the
+    // mixer's 8 kHz: the free-space conversion must not overflow.
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    let status = tone_packet(&mut w, stream, 256, 8192, 0xc1);
+    status_of.lock().unwrap().push((0xc1, status));
+    let played = Arc::new(Mutex::new(Vec::new()));
+    let sink_played = Arc::clone(&played);
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            move || CaptureSink {
+                rate: 16_000,
+                room: usize::MAX,
+                played: sink_played,
+            },
+            logical(Duration::from_secs(1)),
+        )
+        .unwrap();
+    assert_eq!(output.advance_to(320_000).unwrap(), 256);
+    assert_eq!(*seen.lock().unwrap(), [(0xc1, XMEDIAPACKET_STATUS_SUCCESS)]);
+    // About twice the frames come out (the resampler holds the last one).
+    assert!(wait_for(Duration::from_secs(5), || played
+        .lock()
+        .unwrap()
+        .len()
+        >= 2 * 510));
+    assert!(!output.is_finished(), "the output thread is still running");
+    assert_eq!(output.stats().sample_rate, 16_000);
+    let played = played.lock().unwrap();
+    assert!(played.len() <= 2 * 512);
+    assert!(played[20..1000].iter().all(|&v| v == 0.25));
+}

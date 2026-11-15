@@ -402,11 +402,13 @@ fn run_logical<S: AudioSink>(mut sink: S, period: Duration, rate: u32, shared: A
         sink.maintain();
         let to = sink.sample_rate();
         let free = sink.free_frames();
-        // Source frames that fit the sink's free space at its rate.
+        // Source frames that fit the sink's free space at its rate (u128:
+        // an unbounded sink reports usize::MAX free frames).
         let take = if to == rate {
             free
         } else {
-            (free as u64 * u64::from(rate) / u64::from(to.max(1))) as usize
+            let frames = free as u128 * u128::from(rate) / u128::from(to.max(1));
+            usize::try_from(frames).unwrap_or(usize::MAX)
         };
         let input: Vec<f32> = {
             let mut q = shared.queue.lock().unwrap_or_else(|e| e.into_inner());
