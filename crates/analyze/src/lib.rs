@@ -317,12 +317,18 @@ impl Guard {
     }
 
     /// What the taken side of conditional branch `insn` knows, from the
-    /// guard before it: all of it, plus that `jb`/`jbe` after `cmp r, n`
-    /// bounds `r` as `ja`/`jae` do on the fall-through, `jb` after `sub r,
-    /// k` leaves `r` in `-k..=-1`, and `je` after `test r, r` leaves 0.
+    /// guard before it: all of it (less what `loop` writes), plus that
+    /// `jb`/`jbe` after `cmp r, n` bounds `r` as `ja`/`jae` do on the
+    /// fall-through, `jb` after `sub r, k` leaves `r` in `-k..=-1`, and
+    /// `je` after `test r, r` leaves 0.
     fn taken(&self, insn: &Instruction) -> Guard {
         let mut g = *self;
         let extra = match insn.mnemonic() {
+            // `loop` decrements ecx before it branches.
+            Mnemonic::Loop | Mnemonic::Loope | Mnemonic::Loopne => {
+                g.observe(insn, &mut InstructionInfoFactory::new());
+                return g;
+            }
             Mnemonic::Jb => 0,
             Mnemonic::Jbe => 1,
             Mnemonic::Je => {
@@ -941,11 +947,14 @@ impl<'a> Analyzer<'a> {
                     continue;
                 }
                 let guard = self.guard_along(f, start, at);
-                let carried = match insn.flow_control() {
-                    FlowControl::ConditionalBranch => guard.taken(&insn),
-                    _ => guard,
+                // As run_block saw it: a direct jmp may be a flat far one.
+                let (target, carried) = match insn.flow_control() {
+                    FlowControl::ConditionalBranch => (Some(insn.near_branch32()), guard.taken(&insn)),
+                    _ => (direct_jump_target(&insn), guard),
                 };
-                f.arrive(insn.near_branch32(), carried);
+                if let Some(t) = target {
+                    f.arrive(t, carried);
+                }
             }
             dirty.extend(changed);
         }

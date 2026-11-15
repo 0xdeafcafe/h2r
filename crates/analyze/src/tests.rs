@@ -1322,6 +1322,40 @@ fn joining_keeps_every_case_of_overlapping_and_disjoint_reads() {
     }
 }
 
+#[test]
+fn a_late_weakening_carries_through_a_flat_far_jump() {
+    // As a_late_weakening_carries_through_a_jump_already_explored, with
+    // a: nop; nop; jmp 0x08:0x11030
+    let words: Vec<u8> = (0x11080u32..0x11088).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x85, 0xD2, 0x74, 0x0C, 0x83, 0xE0, 3, 0xEB, 0x17]),
+        (0x11010, &[0xB8, 7, 0, 0, 0, 0xEB, 9]),
+        (0x1101F, &[0x90, 0x90, 0xEA, 0x30, 0x10, 1, 0, 8, 0]),
+        (0x1102F, &[0x90, 0xFF, 0x24, 0x85, 0x60, 0x10, 1, 0]),
+        (0x11060, &words),
+        (0x11080, &[0xC3; 8]),
+    ]))
+    .0;
+    assert_has_case(&a, 0x11030, 0x11087);
+}
+
+#[test]
+fn loop_carries_no_mask_on_the_counter_it_decrements() {
+    // and ecx, 3; loop dispatch; ret / dispatch: jmp [ecx*4+0x11044]:
+    // ecx = 0 wraps to -1 and reads the entry below the displacement.
+    let words: Vec<u8> = (0x11080u32..0x11085).flat_map(u32::to_le_bytes).collect();
+    let a = cfgs_of(pieces(&[
+        (TEXT, &[0x83, 0xE1, 3, 0xE2, 0x0B, 0xC3]),
+        (0x11010, &[0xFF, 0x24, 0x8D, 0x44, 0x10, 1, 0]),
+        (0x11040, &words),
+        (0x11080, &[0xC3; 5]),
+    ]))
+    .0;
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+    let jt = &a.jump_tables[&0x11010];
+    assert_ne!(jt.kind, SwitchKind::Bounded, "{jt:x?}");
+}
+
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
 fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
     let data = xbe_with(&code);
