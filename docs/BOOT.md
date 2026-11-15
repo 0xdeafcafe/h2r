@@ -113,7 +113,7 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   target, the texture formats drawn and device events by reason, and
   `H2_BOOT_DRAWLOG` logs whole frames.
 
-## Current state (2026-11-15, origin/master a41dae4)
+## Current state (2026-11-15, origin/master fd3e969)
 
 **The main menu renders and takes input.** On plain master (backedge and
 d3d-r6 landed), with no overlay:
@@ -204,8 +204,21 @@ profile screen.
     `u:\<id>\SaveMeta.xbx` with an AllocationSize ("allocation-size
     reservation unsupported by VFS", kernel files.rs).
 
-Next: past the profile save (kernel), New Campaign, difficulty and the
-first level.
+    With fresh partitions the Default profile is accepted and no profile
+    name is asked for: `START@f310,DOWN@f408,A@f419,A@f524,A@f585,A@f632,
+    A@f700,A@f760` goes CAMPAIGN, CAMPAIGN OPTIONS, SELECT LEVEL (The
+    Heretic), difficulty, then loads `maps\00a_introduction.map`
+    (loading screen from present ~830). About present 4210 (slice
+    51700) the first level frame stops in SetRenderTarget: a depth/stencil
+    surface that is a level of a texture (depth render-to-texture, d3d).
+
+Next: depth render-to-texture (d3d), then the first level.
+
+Frame rate on master fd3e969 + boot, one run alone, with `H2_BOOT_GFX`
+every 60 presents: 532 presents in 307 s; the last 100 (main menu) at
+1.9 fps, 484 ms median frame. Audio runs on logical time through a
+`NullSink` (its frames are counted as dropped, by design), vblanks on
+the 60 Hz logical clock.
 
 Runs compare frame for frame only from the same data directory state:
 use `--fresh-data` (or a new `--data`), and never share one between two
