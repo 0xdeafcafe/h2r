@@ -102,26 +102,30 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   wait, the stream purge callback, and the retired voice-off), each with
   its ABI and the retail path it reproduces.
 
-## Current state (2026-11-15, origin/master 0775c97)
+## Current state (2026-11-15, origin/master 377b675)
 
 **Last stop:** thread 2, in `D3DDevice_SetRenderState_CullMode`
-(`0x3f53d0`, from `0x5206c`). The push-buffer sync there hits
+(`0x3f53d0`, from `0x5206c`):
 
 > push buffer: unimplemented NV2A method 0x1760
 
-which is the vertex data array format. `CDevice_SetStateVB` (`0x401030`,
-run as the retail body) pushed it for an inline draw that `0x4b220` begins
-with BeginPush (`0x3fae10`). The run takes about 10.3k kernel calls, 753
-slices and about 22 s (about 52 s on GfxBackend). With the write barrier, texture uploads drop
-from 3106 to 32 (3074 cache hits), and the frames are byte-identical.
+the vertex data array format that `CDevice_SetStateVB` pushes for an
+inline draw. x87 is lowered now, so the fallback sees no traffic before
+this stop (0 entries). About 10.3k kernel calls, 753 slices, 13 s.
 
-**First real frames.** With `H2_BOOT_GFX`, the loading screen renders
-through `GfxBackend` and the nv2a shaders: Halo's own "LOADING 36%" ...
-"LOADING 89%" over its dark blue background. There are 2986 draws (2889
-inline), 110k push words and 3106 texture uploads, and render-to-texture
-writes back 6 times. Screenshots are kept outside the repo, as
-`boot-loading-36.png` and `boot-loading-89.png` in the session's keep
-directory.
+**With d3d-r6 overlaid (38daa6c, not landed)** there is no stop within
+the default 753 slices: the run ends on `TransferLimit` after 13.9k
+kernel calls and 60 s (92 s on GfxBackend), with 316k draws (272k
+inline-array draws), 14.2M push words, 2405 texture uploads against 617k
+cache hits, 2352 render-target writebacks and 781 vblanks. The fallback
+handles 16k entries, mostly the memcpy/memmove targets (blocker 1).
+
+**Main menu backdrop** (r6 overlay, `H2_BOOT_GFX`): after the loading
+screen, the frames show drifting nebula particles over a dark field and
+the horizontal menu band, with no text yet. Screenshots are kept outside
+the repo as `boot-menu-240.png` and `boot-menu-480.png` in the session's
+keep directory (the loading screen is `boot-loading-36.png` and
+`boot-loading-89.png`).
 
 ### Milestones, from the entry point
 
@@ -150,13 +154,13 @@ directory.
     and `u:\` are probed.
 15. Offscreen render targets: render-to-texture through crates/d3d, and
     the same-size SetRenderTarget fast path `0x3f7b30` (stopgap).
-16. An inline draw through BeginPush and SetStateVB, then the `0x1760`
-    stop.
+16. Inline draws through BeginPush and SetStateVB, then the `0x1760`
+    stop. With d3d-r6:
+17. unaligned memcpy/memmove through the fallback (blocker 1);
+18. the main menu backdrop renders, and the run reaches the slice limit.
 
-The main menu still needs, past this point:
-
-- the vertex array methods in the push parser;
-- whatever the menu's UI draws reach next.
+The main menu still needs, past this point: its text and widgets, and a
+longer run (`--slices`) to see what stops next.
 
 ### Ranked blockers
 
@@ -164,12 +168,13 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 
 | # | Blocker | Owner | What's needed | Size |
 | --- | --- | --- | --- | --- |
-| 1 | **NV2A vertex array methods** | d3d | The push parser must decode `0x1760..0x179c` (`SET_VERTEX_DATA_ARRAY_FORMAT`) and the matching offsets (`0x1720..`). `CDevice_SetStateVB` pushes them before inline and indexed draws. This is the current stop. | S-M |
+| 1 | **Masked jump tables** | analyze | `jump_table()` sizes a switch only from a cmp/ja guard. The CRT memcpy and memmove index theirs with `and r,3`, so they read as unbounded, and slot 0 overlaps code, so the loop stops before any target is read. Tables `0x3208f0`, `0x3209dc`, `0x320a7c`, `0x320b78`. Fix: bound `and r,2^k-1` at 2^k and treat impossible slots as holes. The boot interprets from the targets meanwhile. | S |
+| 1b | **NV2A vertex array methods** | d3d (r6, 38daa6c) | Decode `0x1760..0x179c` and the offsets. The current stop on master; r6 clears it. | S-M |
 | 2 | **SetRenderTarget fast path** `0x3f7b30` | d3d (r6) | `[esp+4]` = target, EBX = depth, `ret 4`. It is the same as `0x3f7870` without the viewport reset. The boot forwards it to `0x3f7870`. | S |
 | 3 | **BeginPush `0x3fae10`, SetStateVB `0x401030`, Get2DSurfaceDesc `0x3fdb20`** | d3d | Stopping entries that the boot runs as retail bodies (`RUN_NATIVE`). Move them to `abi::NATIVE` or implement them. | S |
 | 4 | **NV2A register base** device+0x934, back/depth surface backing, `0xf0000000` alias | d3d (r6) / runtime | Boot glue at CreateDevice (`install_gpu_registers`). | S-M |
 | 5 | **Spin-waits in generated code** | backedge lane (8f72ddb, in review) | Retires the `0x213fa0` override. Preemptions use `Machine::run` slices, so `--slices` may need raising. | in review |
-| 6 | **x87 not lowered** | lift / emit | About 13.4k fallback entries and 95k x87 instructions by the loading screen. The fallback now computes them with crates/x87. | L |
+| 6 | ~~x87 not lowered~~ | lift / emit | Lowered on master (377b675). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
 
 ### Boot stopgaps in force
 
@@ -179,6 +184,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | SetRenderTarget fast path `0x3f7b30` via `0x3f7870` | d3d_glue.rs `install_render_target_fast` | d3d (#2) |
 | Get2DSurfaceDesc, BeginPush and SetStateVB as retail bodies | d3d_glue.rs `RUN_NATIVE` | d3d (#3) |
 | device+0x934 NV2A stand-in, back/depth backing, `0xf0000000` alias | d3d_glue.rs `install_gpu_registers`, lib.rs | d3d-r6 (#4) |
+| Fallback from the memcpy/memmove table targets | fallback.rs `UNREAD_TABLE_TARGETS` | analyze (#1) |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired
