@@ -10,7 +10,17 @@
 //! (`0x12b330..0x12b342`) until it reaches `[0x4E6398] - 1`. Nothing else
 //! advances it, so without an interrupt the spin never ends.
 //!
-//! There is no interrupt here. The callback runs at one of two safe points,
+//! Delivery on the logical clock (the faithful one): [`clocked_vblanks`]
+//! is a handler for a kernel periodic source (`kernel::periodic`, 60 Hz).
+//! The kernel runs it like the GPU interrupt's DPC, at DISPATCH_LEVEL on
+//! its DPC stack between thread slices, so the vblank count follows logical
+//! time and a guest spinning on the counter (`0x12b330`) sees it advance
+//! once its work has carried the clock to the next deadline. With it, the
+//! frame wait override in [`Delivery::Clock`] mode yields until the count
+//! arrives instead of synthesising vblanks, so the wait costs no work and
+//! the clock jumps to the vblank when nothing else is runnable.
+//!
+//! Without a clock source the callback runs at one of two safe points,
 //! both guest-visible returns from an override, so no guest code is
 //! interrupted mid-instruction:
 //!
@@ -22,17 +32,21 @@
 //!   callback is entered through `ExecCtx::call_guest`. After the last one,
 //!   every register is restored to its value at `Swap`'s return (`EAX` =
 //!   `Swap`'s result), and execution returns to `Swap`'s caller.
-//! * **In the frame wait** (opt-in, [`register_frame_wait`]): an override of
-//!   `0x12b2e0` delivers vblanks until the counter reaches the target and then
-//!   produces the original's exit effects ([`FrameWait`]). Pacing to real
-//!   time is optional.
+//! * **In the frame wait** (opt-in, [`register_frame_wait`] with
+//!   [`Delivery::Inline`]): an override of `0x12b2e0` delivers vblanks until
+//!   the counter reaches the target and then produces the original's exit
+//!   effects ([`FrameWait`]). No logical time passes for them, so frame time
+//!   (`0x12b0e0` divides the vblanks since the last frame by 60) and the
+//!   kernel clock drift apart; pacing to real time is optional.
 //!
 //! [`Device::set_vblanks_per_swap`]: crate::Device::set_vblanks_per_swap
 
 use std::collections::VecDeque;
 use std::time::Duration;
 
-use runtime::{CpuAbi, Dispatch, ExecCtx, GuestFault, TransferAbi};
+use runtime::{
+    CallConvention, CpuAbi, Dispatch, ExecCtx, Guest, GuestFault, GuestInterrupt, TransferAbi,
+};
 
 use crate::abi::SharedDevice;
 use crate::backend::Backend;
@@ -121,8 +135,91 @@ pub struct FrameWait {
     /// target far ahead of the counter).
     pub max_vblanks: u32,
     /// Real time per delivered vblank (`None`: no pacing, as fast as the
-    /// guest runs).
+    /// guest runs). [`Delivery::Inline`] only.
     pub pace: Option<Duration>,
+    /// Where the vblanks the wait needs come from.
+    pub delivery: Delivery,
+}
+
+/// Where [`register_frame_wait`] gets its vblanks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Delivery {
+    /// The override calls the callback itself, at once, with no logical
+    /// time passing.
+    Inline,
+    /// A clocked source ([`clocked_vblanks`] on a kernel periodic source)
+    /// delivers them; the override calls `NtYieldExecution` until the
+    /// counter arrives. It stops after [`MAX_IDLE_YIELDS`] yields in a row
+    /// see no vblank (no source installed).
+    Clock,
+}
+
+/// Yields in a row without a vblank after which a [`Delivery::Clock`] wait
+/// stops. Each yield gives every other ready thread a slice first, or lets
+/// the clock jump to the next deadline, so a running source delivers well
+/// within this.
+pub const MAX_IDLE_YIELDS: u32 = 100_000;
+
+/// `NtYieldExecution`, the kernel export the clocked frame wait calls.
+const NT_YIELD_EXECUTION: u32 = 238;
+
+/// Diagnostic name of the clocked vblank call.
+pub const VBLANK_SOURCE: &str = "D3D vertical-blank callback";
+
+/// A kernel periodic-source handler (`kernel::periodic::Handler`, boxed by
+/// the caller) that delivers the vertical blank on logical time: it counts
+/// the vblank ([`crate::Device::vblank`], plus any `missed` periods the
+/// source's catch-up bound dropped, [`crate::Device::skip_vblanks`]), writes
+/// `D3DVBLANKDATA` `{VBlank, Swap, Flags}` into the kernel's scratch area
+/// and returns the cdecl call `callback(&record)` for the callback at
+/// `+0x1DB8`. No callback registered (or no device yet): nothing to call,
+/// but the vblank is still counted.
+///
+/// ```ignore
+/// kernel.add_periodic(kernel::periodic::Source {
+///     name: "vblank",
+///     rate: kernel::periodic::Rate::HZ_60,
+///     max_catch_up: 4,
+///     handler: Box::new(d3d::vblank::clocked_vblanks(device.clone())),
+/// })?;
+/// ```
+pub fn clocked_vblanks<B>(
+    device: SharedDevice<B>,
+) -> impl FnMut(&mut Guest, u32, u64) -> Result<Option<GuestInterrupt>, GuestFault> + Send + 'static
+where
+    B: Backend + Send + 'static,
+{
+    move |guest, scratch, missed| {
+        let poisoned = GuestFault {
+            addr: scratch,
+            len: 12,
+            access: runtime::guest::Access::Write,
+            reason: runtime::guest::FaultReason::InvalidOperation,
+        };
+        let v = {
+            let mem = crate::runtime_glue::GuestAdapter::new(guest);
+            let mut d = device.lock().map_err(|_| poisoned.clone())?;
+            d.skip_vblanks(u32::try_from(missed).unwrap_or(u32::MAX));
+            match d.vblank(&mem) {
+                Ok(v) => v,
+                Err(_) => return Err(mem.take_fault().unwrap_or(poisoned)),
+            }
+        };
+        let Some(v) = v else {
+            return Ok(None);
+        };
+        for (i, w) in v.record.iter().enumerate() {
+            guest.set_u32(scratch.wrapping_add(4 * i as u32), *w)?;
+        }
+        Ok(Some(GuestInterrupt {
+            target: v.callback,
+            args: vec![scratch],
+            convention: CallConvention::Cdecl,
+            thread: None,
+            coalesce: false,
+            name: VBLANK_SOURCE,
+        }))
+    }
 }
 
 impl FrameWait {
@@ -137,6 +234,13 @@ impl FrameWait {
         late_flag: 0x004E_63BC,
         max_vblanks: 600,
         pace: None,
+        delivery: Delivery::Inline,
+    };
+
+    /// [`FrameWait::HALO2`] waiting for a clocked source instead.
+    pub const HALO2_CLOCKED: FrameWait = FrameWait {
+        delivery: Delivery::Clock,
+        ..FrameWait::HALO2
     };
 
     /// NTSC pacing: one vblank every 1/60 s.
@@ -152,6 +256,8 @@ struct Wait {
     ret_pc: u32,
     delivered: u32,
     last: Option<i64>,
+    /// Clocked: yields since the counter last moved.
+    idle: u32,
 }
 
 /// Installs the opt-in frame-wait override at `fw.entry`. Stops go through
@@ -160,7 +266,8 @@ struct Wait {
 /// The wait stops (rather than spinning forever) when:
 ///
 /// * no callback is registered (the device is not created or `+0x1DB8` is 0);
-/// * a callback returned without advancing the counter;
+/// * a callback returned without advancing the counter (inline), or
+///   [`MAX_IDLE_YIELDS`] yields passed without a vblank (clocked);
 /// * more than `max_vblanks` vblanks would be needed.
 pub fn register_frame_wait<B>(
     dispatch: &mut Dispatch,
@@ -183,6 +290,7 @@ pub fn register_frame_wait<B>(
             ret_pc,
             delivered: 0,
             last: None,
+            idle: 0,
         };
         step(cpu, ctx, wait, device.clone(), on_stop.clone(), NAME)
     });
@@ -226,6 +334,63 @@ where
         );
         Ok(TransferAbi::stop(id))
     };
+    if fw.delivery == Delivery::Clock {
+        let short = target.wrapping_sub(1).wrapping_sub(counter);
+        if w.last.is_none() && short > fw.max_vblanks as i64 {
+            return stop(
+                ctx,
+                format!(
+                    "the counter ({counter}) is {short} vblanks short of {}, more than {} in one wait",
+                    target.wrapping_sub(1),
+                    fw.max_vblanks
+                ),
+            );
+        }
+        if w.last == Some(counter) {
+            w.idle += 1;
+        } else {
+            w.idle = 0;
+            w.last = Some(counter);
+        }
+        if w.idle >= MAX_IDLE_YIELDS {
+            return stop(
+                ctx,
+                format!(
+                    "{MAX_IDLE_YIELDS} yields without a vblank (counter {counter}, waiting for {}): is a clocked vblank source installed?",
+                    target.wrapping_sub(1)
+                ),
+            );
+        }
+        let callback = {
+            let runtime = std::sync::Arc::clone(ctx.runtime());
+            let mut guard = runtime.memory();
+            let mem = crate::runtime_glue::GuestAdapter::new(&mut guard);
+            device.lock().expect("device lock").vblank_callback(&mem)
+        };
+        match callback {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return stop(
+                    ctx,
+                    format!(
+                        "the frame wait would spin forever: no vblank callback is registered (counter {counter}, waiting for {})",
+                        target.wrapping_sub(1)
+                    ),
+                );
+            }
+            Err(e) => return stop(ctx, e.to_string()),
+        }
+        // Give the CPU up: other threads run, or the clock moves to the
+        // next deadline, whose vblank the kernel delivers before this
+        // thread's next slice.
+        let runtime = std::sync::Arc::clone(ctx.runtime());
+        let mut guard = runtime.memory();
+        *cpu = w.saved;
+        let token = runtime::kernel::function_token(NT_YIELD_EXECUTION);
+        return ctx.call_guest(cpu, &mut guard, token, move |cpu, ctx| {
+            step(cpu, ctx, w, device, on_stop, name)
+        });
+    }
     if w.last == Some(counter) {
         return stop(
             ctx,

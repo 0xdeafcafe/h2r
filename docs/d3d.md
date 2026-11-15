@@ -794,8 +794,10 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    store path, deferring the `note_write` calls to the next override
    entry. The device's own stores (render-to-texture write-back included)
    are already noted.
-4. **Vertical blank.** See "Vertical blank" below:
-   `Device::set_vblanks_per_swap(n)` and/or `d3d::register_frame_wait`.
+4. **Vertical blank.** See "Vertical blank" below: on the logical clock,
+   `kernel.add_periodic(..)` with `d3d::vblank::clocked_vblanks` and
+   `d3d::register_frame_wait(.., FrameWait::HALO2_CLOCKED, ..)`; without a
+   kernel, `Device::set_vblanks_per_swap(n)` and/or the inline frame wait.
 5. **Present.** `GfxBackend::on_present` receives the surface on every
    `Swap`. Blit it with `gfx::surface::present_surface`.
 6. **Shaders.** `GfxBackend::new` installs `Nv2aShaders`; replace it with
@@ -889,9 +891,56 @@ per vblank as `cdecl callback(D3DVBLANKDATA *)`, where `D3DVBLANKDATA` is
   counter reaches `[0x4E6398] - 1`. Nothing but the callback advances it,
   so without an interrupt the spin never ends.
 
-`Device::vblank` counts a vblank and builds the record.
-`src/vblank.rs` calls the guest, at a safe point that is always an
-override's return, never mid-instruction:
+`Device::vblank` counts a vblank and builds the record. Frame time is
+built from the count: `0x12b0e0` divides the vblanks since the last frame
+by the refresh word at `0x485AC0` (60 when unset), and that becomes the
+dt the tick budget `0x146660` and so physics and script sleeps get. So
+vblanks have to follow the kernel's logical clock, or the game's time
+and the kernel's (KeTickCount, timers) drift apart.
+
+**On the logical clock** (the faithful delivery). `d3d::vblank::clocked_vblanks(device)`
+is a handler for a kernel periodic source (`kernel::periodic`, see
+crates/kernel/README.md "Periodic host interrupts and pacing"):
+
+```rust,ignore
+kernel.add_periodic(kernel::periodic::Source {
+    name: "vblank",
+    rate: kernel::periodic::Rate::HZ_60,
+    max_catch_up: 4,
+    handler: Box::new(d3d::vblank::clocked_vblanks(device.clone())),
+})?;
+d3d::register_frame_wait(&mut dispatch, device.clone(), FrameWait::HALO2_CLOCKED, hook);
+```
+
+- At each 60 Hz deadline the kernel runs it the way the GPU interrupt's
+  DPC would: between thread slices, on the kernel DPC stack at
+  DISPATCH_LEVEL. It counts the vblank (plus any periods the source's
+  catch-up bound dropped, `Device::skip_vblanks`), writes
+  `{VBlank, Swap, Flags}` into the kernel's scratch area on that stack and
+  returns the cdecl call `callback(&record)`. No device or no callback:
+  counted, nothing called.
+- A guest spinning on the counter (the original `0x12b330` loop, with no
+  override) sees it advance once its own charged work has carried the
+  clock to the deadline: exact, but a period's worth of work (16.7 million
+  charged accesses per vblank).
+- `FrameWait::HALO2_CLOCKED` (`Delivery::Clock`) makes the override wait
+  instead: until the counter reaches `[0x4E6398] - 1` it calls the
+  kernel's `NtYieldExecution` (through its import token), so other threads
+  run, or with nothing else runnable the clock jumps straight to the next
+  vblank. Exit effects are the original's (below). It stops with a named
+  error when no callback is registered, when the target is more than
+  `max_vblanks` ahead, or after `vblank::MAX_IDLE_YIELDS` (100000) yields
+  in a row bring no vblank (no source installed).
+- `set_vblanks_per_swap` stays 0 with a clocked source, or vblanks would
+  be counted twice.
+- Halo registers no swap callback: in device `+0x1DA0..+0x1E00` game code
+  touches only `+0x1DB8`. A swap reaches the game through the next
+  record: `Swap` is the swap count and `Flags` has `D3DVBLANK_SWAPDONE`,
+  which `0x14280` records.
+
+Without a kernel clock, `src/vblank.rs` calls the guest at a safe point
+that is always an override's return, never mid-instruction. No logical
+time passes for these vblanks:
 
 - **After `Swap`** (installed by `d3d::register`). `Swap` counts
   `Device::set_vblanks_per_swap(n)` vblanks (default 0, which leaves boot
@@ -907,7 +956,7 @@ override's return, never mid-instruction:
   With `n` at least the frame interval Halo waits for, the spin falls
   through at once.
 - **In the frame wait** (opt-in: `d3d::register_frame_wait(&mut dispatch,
-  device, FrameWait::HALO2, hook)`). An override of `0x12b2e0` delivers
+  device, FrameWait::HALO2, hook)`, `Delivery::Inline`). An override of `0x12b2e0` delivers
   callbacks until the counter reaches the target, optionally paced
   (`FrameWait::pace`, for example `FrameWait::NTSC_VBLANK`). It then has
   the original's exit effects:
@@ -921,14 +970,13 @@ override's return, never mid-instruction:
   It stops with a named error instead of spinning forever when no
   callback is registered, when a callback returns without advancing the
   counter, or after `max_vblanks` (600) in one wait.
-- **Runtime seam.** Neither needs a runtime change. A real vblank
-  interrupt would need a runtime hook that fires at a guest safe point
-  (an override return or a block boundary) every 1/60 s of host time and
-  can push a `call_guest` frame there. With it, the glue would call
-  `Device::vblank` and `deliver_then_return` from that hook instead.
 
 Tests: `tests/vblank.rs` (through `runtime::Runner`, with Rust stand-ins
-for the callback).
+for the callback and, for the clocked wait, for NtYieldExecution);
+`tests/vblank_clock.rs` (the clocked source and frame wait under
+`kernel::Machine`, the clock ending exactly on the fourth vblank); the
+kernel's `tests/preempt.rs` (generated code spinning on a vblank counter
+and on a swap) and `tests/pacing.rs`.
 
 The conventions in `abi.rs` are marked TODO-register. Each one should get a
 differential check, running the original under the interpreter against the
@@ -1164,7 +1212,7 @@ below:
   Callers that pass a register (`0x132d0`, `0x2bcd0`, `0x3fdf0`,
   `0x41cc0`, `0x44370`) are covered the same way.
 - **Frame wait.** `0x12b2e0` spins forever without vblanks (see "Vertical
-  blank").
+  blank"; with a clocked source it ends at the next vblank).
 - **Inline methods.** The view-rendering paths push the stipple pattern
   (`0x1e4ae`), an `InsertCallback` (`0x2460e`, see "Push-buffer
   callbacks") and the vertex-cache break (`0x43a1a`); all three drain now.

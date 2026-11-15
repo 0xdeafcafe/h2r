@@ -361,3 +361,148 @@ fn callbacks_can_reenter_d3d_and_leave_the_caller_stack_alone() {
         "the caller's live stack is untouched"
     );
 }
+
+/// Yields the clocked frame wait made (see `clocked_harness`).
+const YIELDS: u32 = MISC + 0x7000;
+/// Where the stand-in kernel puts the record (the DPC stack's scratch).
+const VSCRATCH: u32 = MISC + 0x7100;
+const CLOCKED: FrameWait = FrameWait::HALO2_CLOCKED;
+const STATUS_NO_YIELD_PERFORMED: u32 = 0x4000_0024;
+
+type Handler = Box<
+    dyn FnMut(&mut Guest, u32, u64) -> Result<Option<runtime::GuestInterrupt>, runtime::GuestFault>
+        + Send,
+>;
+
+/// The frame wait in `Delivery::Clock` mode, with `NtYieldExecution`
+/// standing in for the kernel: when `delivers`, each yield is one period of
+/// a clocked source, `d3d::vblank::clocked_vblanks` building the call and
+/// the callback run as the kernel's DPC would (cdecl, record pointer).
+fn clocked_harness(delivers: bool) -> Harness {
+    let cfg = DeviceConfig::halo2(PB, SCRATCH);
+    let g = guest(&cfg);
+    let device = runtime_glue::shared(cfg, RecordingBackend::new());
+    let mut dispatch = Dispatch::default();
+    d3d::register(&mut dispatch, device.clone());
+    d3d::register_frame_wait(
+        &mut dispatch,
+        device.clone(),
+        CLOCKED,
+        std::sync::Arc::new(runtime_glue::default_stop),
+    );
+    let _ = dispatch.register_override(CALLBACK, "test vblank callback", |cpu, ctx, _| {
+        callback(cpu, ctx, true)
+    });
+    let handler: std::sync::Mutex<Handler> =
+        std::sync::Mutex::new(Box::new(d3d::vblank::clocked_vblanks(device.clone())));
+    let token = runtime::kernel::function_token(238);
+    let _ = dispatch.register_override(token, "test NtYieldExecution", move |cpu, ctx, _| {
+        let runtime = std::sync::Arc::clone(ctx.runtime());
+        let mut m = runtime.memory();
+        let n = m.u32(YIELDS)?;
+        m.set_u32(YIELDS, n + 1)?;
+        let call = if delivers {
+            (handler.lock().unwrap())(&mut m, VSCRATCH, 0)?
+        } else {
+            None
+        };
+        let Some(call) = call else {
+            cpu.eax = STATUS_NO_YIELD_PERFORMED;
+            return m.ret(cpu, 0);
+        };
+        assert_eq!(call.args, [VSCRATCH]);
+        assert_eq!(call.convention, runtime::CallConvention::Cdecl);
+        cpu.esp -= 4;
+        m.set_u32(cpu.esp, VSCRATCH)?;
+        ctx.call_guest(cpu, &mut m, call.target, |cpu, ctx| {
+            cpu.esp += 4;
+            cpu.eax = STATUS_NO_YIELD_PERFORMED;
+            ctx.memory().ret(cpu, 0)
+        })
+    });
+    Harness {
+        ctx: ExecCtx::new(Runtime::new(g, dispatch), 1),
+        device,
+    }
+}
+
+#[test]
+fn clocked_vblanks_build_the_record_and_the_cdecl_call() {
+    let mut h = harness(false);
+    let mut deliver = d3d::vblank::clocked_vblanks(h.device.clone());
+    // No device yet: counted, nothing to call.
+    assert_eq!(deliver(&mut h.ctx.memory(), VSCRATCH, 0).unwrap(), None);
+    h.create();
+    h.set(DEV + 0x1DB8, CALLBACK);
+    let call = deliver(&mut h.ctx.memory(), VSCRATCH, 0).unwrap().unwrap();
+    assert_eq!(call.target, CALLBACK);
+    assert_eq!(call.args, [VSCRATCH]);
+    assert_eq!(call.convention, runtime::CallConvention::Cdecl);
+    assert_eq!(call.name, d3d::vblank::VBLANK_SOURCE);
+    let record = |h: &mut Harness| [h.u32(VSCRATCH), h.u32(VSCRATCH + 4), h.u32(VSCRATCH + 8)];
+    assert_eq!(record(&mut h), [2, 0, 0]);
+    // A swap: SWAPDONE on the next one. Three dropped periods: VBlank
+    // still counts them.
+    h.ok(0x3f9d00, saved_regs(), &[]);
+    deliver(&mut h.ctx.memory(), VSCRATCH, 3).unwrap().unwrap();
+    assert_eq!(record(&mut h), [6, 1, d3d::device::VBLANK_SWAPDONE]);
+    deliver(&mut h.ctx.memory(), VSCRATCH, 0).unwrap().unwrap();
+    assert_eq!(record(&mut h), [7, 1, 0]);
+    assert_eq!(h.device.lock().unwrap().stats().vblanks, 7);
+    // Unregistered again: nothing to call.
+    h.set(DEV + 0x1DB8, 0);
+    assert_eq!(deliver(&mut h.ctx.memory(), VSCRATCH, 0).unwrap(), None);
+}
+
+#[test]
+fn clocked_frame_wait_yields_until_the_source_delivers() {
+    let mut h = clocked_harness(true);
+    h.create();
+    h.set(DEV + 0x1DB8, CALLBACK);
+    h.set64(FW.counter, 5);
+    h.set64(FW.target, 8);
+    h.set(FW.frame_gate, 1);
+    let cpu = h.ok(FW.entry, saved_regs(), &[]);
+    // Two yields, one vblank each, then the original's exit effects.
+    assert_eq!(h.u32(YIELDS), 2);
+    assert_eq!(h.log(), vec![[1, 0, 0], [2, 0, 0]]);
+    assert_eq!(h.u64(FW.counter), 7);
+    assert_eq!(h.u64(FW.entry_count), 6);
+    assert_eq!(h.u64(FW.exit_count), 8);
+    assert_eq!((cpu.eax, cpu.ecx, cpu.edx), (0, 0, 7));
+    assert_eq!(h.u32(FW.late_flag) & 0xFF, 1);
+    assert_eq!(
+        (cpu.ebx, cpu.ebp, cpu.esi, cpu.edi),
+        (0x1111, 0x2222, 0x3333, 0x4444)
+    );
+    // Already there: no yield.
+    h.ok(FW.entry, saved_regs(), &[]);
+    assert_eq!(h.u32(YIELDS), 2);
+}
+
+#[test]
+fn clocked_frame_wait_stops_instead_of_yielding_forever() {
+    // No device, so no callback.
+    let mut h = clocked_harness(true);
+    h.set64(FW.target, 8);
+    let (t, _) = h.call(FW.entry, saved_regs(), &[]);
+    assert!(h.unsupported(t).contains("spin forever"));
+    assert_eq!(h.u32(YIELDS), 0);
+    // A target out of reach.
+    let mut h = clocked_harness(true);
+    h.create();
+    h.set(DEV + 0x1DB8, CALLBACK);
+    h.set64(FW.target, 10_000);
+    let (t, _) = h.call(FW.entry, saved_regs(), &[]);
+    assert!(h.unsupported(t).contains("more than 600"));
+    assert_eq!(h.u32(YIELDS), 0);
+    // A callback but no source: the yields never bring a vblank.
+    let mut h = clocked_harness(false);
+    h.create();
+    h.set(DEV + 0x1DB8, CALLBACK);
+    h.set64(FW.target, 8);
+    let (t, _) = h.call(FW.entry, saved_regs(), &[]);
+    assert!(h.unsupported(t).contains("yields without a vblank"));
+    assert_eq!(h.u32(YIELDS), d3d::vblank::MAX_IDLE_YIELDS);
+    assert!(h.log().is_empty());
+}

@@ -344,6 +344,25 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
+    /// Counts `n` vertical blanks that passed without a delivery of their
+    /// own (a clocked source's catch-up bound dropped them,
+    /// [`crate::vblank::clocked_vblanks`]): `VBlank` in the next record
+    /// still counts them, as the hardware counter would.
+    pub fn skip_vblanks(&mut self, n: u32) {
+        self.display.vblanks = self.display.vblanks.wrapping_add(n);
+        self.stats.vblanks += n as u64;
+    }
+
+    /// The vertical-blank callback registered at `+0x1DB8`, if the device
+    /// exists and one is set. Counts nothing.
+    pub fn vblank_callback(&self, mem: &dyn GuestMemory) -> Result<Option<u32>, D3dError> {
+        if !self.created {
+            return Ok(None);
+        }
+        let callback = mem.read_u32(self.cfg.layout.device + field::VBLANK_CALLBACK)?;
+        Ok((callback != 0).then_some(callback))
+    }
+
     /// Counts one vertical blank and returns what to deliver: the callback
     /// at `+0x1DB8` with `{VBlank, Swap, Flags}` (`Flags` =
     /// [`VBLANK_SWAPDONE`] for the first vblank after a `Swap`), or `None`
@@ -356,11 +375,7 @@ impl<B: Backend> Device<B> {
         } else {
             0
         };
-        if !self.created {
-            return Ok(None);
-        }
-        let callback = mem.read_u32(self.cfg.layout.device + field::VBLANK_CALLBACK)?;
-        Ok((callback != 0).then_some(VBlank {
+        Ok(self.vblank_callback(mem)?.map(|callback| VBlank {
             callback,
             record: [self.display.vblanks, self.swap_count, flags],
         }))

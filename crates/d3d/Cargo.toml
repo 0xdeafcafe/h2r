@@ -26,3 +26,6 @@ analyze.workspace = true
 xbe.workspace = true
 lift.workspace = true
 ir.workspace = true
+# The clocked vertical blank end to end: a kernel periodic source and the
+# kernel's NtYieldExecution under Machine (tests/vblank_clock.rs).
+kernel = { path = "../kernel" }
