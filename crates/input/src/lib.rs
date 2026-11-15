@@ -10,14 +10,19 @@
 //! * [`device`]: the four-port device model that the `XInput*` API replacement
 //!   sits on top of.
 //! * [`bindings`]: the TOML binding table for the keyboard+mouse backend.
+//! * [`layouts`]: Halo 2 button layouts (retail and added) as action tables.
+//! * [`dualsense`]: DualSense HID reports for the mute button, mute LED and
+//!   speaker path (`docs/playstation-audio.md`).
 //!
 //! See `docs/input.md`.
 
 pub mod backend;
 pub mod bindings;
 pub mod device;
+pub mod dualsense;
 pub mod gamepad;
 pub mod host;
+pub mod layouts;
 
 pub use backend::HostBackend;
 pub use device::{InputManager, PortIndex};

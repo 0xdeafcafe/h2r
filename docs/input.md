@@ -272,6 +272,14 @@ aim-by-position scheme. Gentler options if it feels bad: smoothing across
 frames, or an acceleration curve. Neither is implemented. There is also no "walk" modifier for half stick
 deflection yet.
 
+## Button layouts
+
+Halo 2's retail layouts (Default, Southpaw, Boxer, Green Thumb), the added
+ones (Bumper Jumper, Recon, Walkie Talkie), how the game implements them and
+what an in-game menu entry needs are in [controller-layouts.md](controller-layouts.md).
+`input::layouts` holds the symbolic tables. The host does not remap for
+layouts: menu confirm and cancel would move with them.
+
 ## Analog mapping and deadzones
 
 `host.rs`.

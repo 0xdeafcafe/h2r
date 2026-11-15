@@ -1033,3 +1033,11 @@ addresses.
    path needs them (Halo 2 does not call them).
 7. Wrap-around reads for streams of non-block-aligned PCM. (WMA: done, in
    `dsound::xwma`.)
+
+## Controller-speaker routing
+
+`dsound::padroute` labels buffers (at `SetBufferData`) and streams (at
+`Process`, cleared by `Flush`) from the opening bytes of their data, and
+marks chosen sounds for a second host output with `audio::VoiceOutput`. Off
+unless `DirectSound::set_pad_router` is given a router. See
+[playstation-audio.md](playstation-audio.md).

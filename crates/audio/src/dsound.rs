@@ -56,6 +56,24 @@ pub struct VoiceParams {
     pub mix_bins: Option<Vec<(u32, i32)>>,
     /// Filter, LFOs, envelope, headroom and I3DL2 source; see [`crate::fx`].
     pub fx: VoiceFx,
+    /// Which host output hears the voice: the main mix, a second "side"
+    /// device (a controller speaker), or both. See [`VoiceOutput`].
+    pub output: VoiceOutput,
+}
+
+/// Where a voice is heard when the mixer renders a side output (see
+/// `Mixer::render_split`). Without a side output every voice is heard on the
+/// main mix, whatever this says, so a sound routed to an absent controller
+/// is never lost.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum VoiceOutput {
+    /// The main mix only (the default).
+    #[default]
+    Main,
+    /// The main mix and, as mono, the side output.
+    Both,
+    /// The side output only, as mono.
+    Side,
 }
 
 impl VoiceParams {
@@ -64,7 +82,15 @@ impl VoiceParams {
     }
 
     fn with_frequency(frequency: u32) -> Self {
-        Self { frequency, volume_mb: 0, pan_mb: 0, spatial: None, mix_bins: None, fx: VoiceFx::default() }
+        Self {
+            frequency,
+            volume_mb: 0,
+            pan_mb: 0,
+            spatial: None,
+            mix_bins: None,
+            fx: VoiceFx::default(),
+            output: VoiceOutput::Main,
+        }
     }
 
     /// Left and right linear gains from volume and pan (no 3D).
@@ -102,6 +128,10 @@ macro_rules! voice_setters {
         }
         pub fn params(&self) -> &VoiceParams {
             &self.params
+        }
+        /// Chooses the host output that hears this voice ([`VoiceOutput`]).
+        pub fn set_output(&mut self, output: VoiceOutput) {
+            self.params.output = output;
         }
         /// Replaces every effect setting at once (the shim re-applies its
         /// stored copy this way); the voice's clock and memory are kept.

@@ -9,6 +9,7 @@
 //! - [`fx`]: per-voice filters, LFOs, envelopes, headroom and I3DL2 source shaping.
 //! - [`reverb`]: the I3DL2-style environmental reverb behind the effects send.
 //! - [`resample`]: linear sample-rate conversion.
+//! - [`devices`]: picking a host output device by name (the controller speaker).
 //! - [`dsound`]: buffers, streams, 3D stub: the DirectSound-shaped model.
 //! - [`mixer`]: software mixer rendering voices to a host buffer.
 //! - [`route`]: Xbox mix bins folded down to stereo.
@@ -16,6 +17,7 @@
 //! - [`output`]: the only device-touching code (feature `device`).
 
 pub mod adpcm;
+pub mod devices;
 pub mod dsound;
 pub mod format;
 pub mod fx;
@@ -28,7 +30,7 @@ pub mod sink;
 #[cfg(feature = "device")]
 pub mod output;
 
-pub use dsound::{BufferId, MixIn, SoundBuffer, Stream, StreamId};
+pub use dsound::{BufferId, MixIn, SoundBuffer, Stream, StreamId, VoiceOutput};
 pub use format::{Codec, WaveFormat};
 pub use reverb::{I3dl2Listener, Reverb};
 pub use mixer::{MixInId, Mixer};

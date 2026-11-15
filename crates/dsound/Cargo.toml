@@ -12,6 +12,9 @@ thiserror.workspace = true
 runtime.workspace = true
 # The clean-room WMA decoder registered at the game's codec boundary (xwma).
 wma = { path = "../wma" }
+# The controller-speaker settings (padroute), in the input bindings' style.
+serde = { workspace = true }
+toml = "0.9"
 
 [dev-dependencies]
 wma = { path = "../wma", features = ["synthetic"] }

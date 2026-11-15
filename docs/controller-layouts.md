@@ -1,0 +1,219 @@
+# Controller button layouts
+
+Status: built and unit tested. Not run in the game (the project rule is tests
+only), so the in-game behaviour is unverified; "To check in the game" lists
+what to look at. The symbolic tables are in `crates/input/src/layouts.rs`; the hooks are
+in `crates/boot/src/layout_glue.rs`, installed by `boot::run` unless
+`H2_NO_LAYOUTS=1`. This page records how the retail game implements layouts
+and what the hooks touch.
+
+No game data is here. Addresses are guest virtual addresses of the retail XBE
+(SHA-256 `03215919…935d`), named only as hook points. Strings were read with
+`h2 strings` and are described in words.
+
+## What the retail game offers
+
+The Settings, Edit Profile, Controls screen has a "Button Layout" row. The
+screen offers four layouts: Default, Southpaw, Boxer and Green Thumb. A fifth
+name, "Jumpy" (jump on the left trigger), exists in the string tables and in
+the profile summary strings but no code path implements it. It is dead data.
+The thumbstick layouts (Default, Southpaw, Legacy, Legacy Southpaw) are a
+separate setting. Halopedia lists the same four button layouts and their
+mappings: <https://www.halopedia.org/H2:Control_schemes>.
+
+| Layout | What it changes against Default |
+|---|---|
+| Default | A jump, B melee, X action/reload, Y switch weapons, LT grenade, RT fire, Black switch grenades, White flashlight, left stick click crouch, right stick click zoom |
+| Southpaw | LT and RT swap |
+| Boxer | Melee on LT, grenade on B |
+| Green Thumb | Melee on right stick click, zoom on B |
+
+## What it lacks
+
+Not in Halo 2 on Xbox, wanted by players, and defined by later Halo games:
+
+- Bumper Jumper: Halo 3 has jump on LB, melee on RB, B action/reload
+  (<https://www.halopedia.org/H3:Control_schemes>). Reach has A switch
+  grenades, B action/reload, X armor ability, LB jump, RB melee
+  (<https://www.halopedia.org/Reach:Control_schemes>).
+- Recon: Reach has RB action/reload, LB armor ability, X switch grenades,
+  B melee, A jump (same page). MCC Halo 2 Anniversary calls its default
+  "Universal Default (Recon)" (<https://www.halopedia.org/MCC:Control_schemes>).
+- Walkie Talkie: Halo 3 only. A jump, B action/reload, X swap grenades,
+  RB melee, LB flashlight/team chat.
+
+Halo 2 has no armor ability or equipment, so Flashlight takes that role. The
+Xbox pad has no bumpers; the host already maps right bumper to Black and left
+bumper to White (`docs/input.md`). The three layouts, as `Layout` in
+`layouts.rs`, with preset numbers 4, 5 and 6 after the retail 0 to 3:
+
+| Layout | Jump | Melee | Switch grenades | Action/reload | Flashlight |
+|---|---|---|---|---|---|
+| Bumper Jumper (4) | White (LB) | Black (RB) | A | B | X |
+| Recon (5) | A | B | X | Black (RB) | White (LB) |
+| Walkie Talkie (6) | A | Black (RB) | X | B | White (LB) |
+
+Everything else (triggers, sticks, Y, Start, Back) stays as Default.
+
+## Why not remap on the host
+
+A host remap of the physical pad into the guest pad was the first plan. It
+cannot work for menus: menu confirm and cancel are A and B, so a host that
+moves Jump off A also moves "accept". The layout belongs inside the game,
+which keeps confirm and cancel fixed (slots 14 and 15 below). Presets could
+still be a stopgap for the sticks-and-triggers-only case, but it is not
+built.
+
+## How the retail game implements a layout (read from the XBE)
+
+### The action table (`Local`)
+
+Each local player has a 0x1c-byte input settings record at `0x51ea18 + 0x1c *
+player`. Bytes 8 to 0x17 are sixteen action slots; slot `i` holds the index of
+the physical button that drives action `i`. Indices are the analog buttons
+0 to 7 (A, B, X, Y, Black, White, LT, RT) then the digital bits 8 to 15
+(d-pad up, down, left, right, Start, Back, left thumb, right thumb). The
+record's `+0x18` is the thumbstick layout.
+
+- The record is initialised by `0x218420` (Default table).
+- `0x217c40` (the input phase, after `0x124c00` reads XInput) uses the slots:
+  for each of the sixteen it copies the physical button's pressure and hold
+  time into the action's slot. All gameplay reads the action slots, never the
+  physical buttons.
+- `0x190c34` (EAX = player) builds the record from the player's profile
+  settings (at `0x54e9f4 + 0xc70 * player`: `+0` flags, `+4` button layout
+  byte, `+5` thumbstick layout, `+6` look sensitivity) and copies it to
+  `0x51ea18`. The layout byte is a three-way switch: 1 swaps the trigger
+  slots, 2 is Boxer, 3 is Green Thumb, and any other value (0, or 4 and up)
+  falls through unchanged, which is Default. The thumbstick byte is clamped
+  to 3 in the same function; the layout byte is not clamped.
+
+So a layout is data: sixteen bytes. Adding one means adding a case here.
+
+### The screen
+
+`ui\screens\game_shell\settings_screen\player_profile\button_settings`
+(screen id 40, `h2 ui`). It has eight panes: four layouts, then the same four
+again for the Legacy thumbstick diagram (pane base 4, set from the thumbstick
+layout by `0x2c65bf`). Each pane has a help text, a list, a diagram bitmap and
+twelve text labels placed at the diagram's button lines, which is how a layout
+is "drawn". The list rows are not in the tag. Code fills them:
+
+| Address | Role |
+|---|---|
+| `0x2c647d` | screen constructor. Pushes the list size 4 and the data array name for the list |
+| `0x1a480d` | datum array constructor the list's item array goes through (name pointer `[esp+4]`, count `[esp+8]`) |
+| `0x2c6512` | per-row text: row index (word at `[widget+0x70]`) to the string id of Default, Southpaw, Boxer, Green Thumb; anything else gives the null id |
+| `0x2c6567` | row chosen: writes the layout byte to the edit buffer global `0x54e6d8` (0 to 3, anything else is 0), then refreshes |
+| `0x2b463d` | initial row from `0x54e6d8` (0 to 3, else 0) |
+| `0x2c65bf` | pane base from the thumbstick layout |
+| `0x24a978` | Controls row value text on the Edit Profile screen: layout byte at profile `+0x104` to a string id |
+| `0x2c866d` | the same on the profile summary and Controls list (from `0x54e6d8`) |
+| `0x253b1a` | set a text widget's string id (EDI = widget, id on the stack) |
+| `0x1a02d0` | `locale_string_id_find`, which resolves every string id (`docs/engine/locale_string_id_find.md`) |
+
+## What the in-game entry does (`layout_glue.rs`)
+
+Every change is at a function entry, because the game is statically
+recompiled: `rt.edit_dispatch(|d| d.register_override(addr, name, closure))`
+replaces a function at its entry, `rt.resolve_original(addr)` runs the
+generated original, and the shadow-page pattern in `crates/boot/src/wrappers.rs`
+and `d3d_glue.rs` runs the original and then continues in Rust through
+`ctx.call_guest`. There is no way to patch inside a function, so a site that
+is a switch inside a big function needs the whole function wrapped.
+
+1. List size: wrap `0x1a480d`. When the name pointer is the button list's name
+   string (the address `0x45ce18`) and the count is 4, make it 4 plus the number
+   of added layouts. The list then builds that many rows.
+2. Row text: replace `0x2c6512`. For rows 4 and up call `0x22edb8` (this =
+   widget, args 0, 0, 6) and `0x253b1a` with our string id, through
+   `call_guest`; otherwise run the original.
+3. Selection: wrap `0x2c6567`. Run the original, then write the chosen number
+   to `0x54e6d8` ourselves (the original writes 0 for rows 4 and up).
+4. Initial row: wrap `0x2b463d` the same way so a saved layout 4 and up
+   selects its own row.
+5. Value text on the other screens: `0x24a978` and `0x2c866d` are inside
+   larger functions, so wrap the string id consumer `0x253b1a` for those, or
+   wrap the containing functions. Needs a decision after tracing the callers.
+6. Strings: wrap `0x1a02d0`. Our own ids (a private range that cannot collide
+   with the 24-bit index of any real id) return the address of our UTF-8 text in
+   a guest page we map once. Strings are English only at first, which the game
+   renders as it does any other; the other eight languages need their own text
+   and the fonts' glyph coverage (`docs/fonts.md`, `docs/localization.md`).
+7. The action table: wrap `0x190c34`. Run the original (an unknown layout is
+   Default), then overwrite the sixteen slots with `Layout::action_map` when
+   the layout byte is 4 or more.
+8. Panes: the tag has eight panes, so rows 4 and up would show panes meant for
+   the Legacy diagram. Add panes. Clone an existing layout pane in guest
+   memory and reassign its label string ids to the layout's labels (the labels
+   exist already: jump, melee, reload, switch grenades, flashlight), give it our
+   help-text id, then point the screen's pane block at the larger array. Pane
+   and block layouts are in `docs/ui.md`. Patch at first use of screen 40 by
+   wrapping the screen finder `0x148098`; do it once.
+9. Persistence (traced as far as static reading goes). The profile record's
+   settings block is saved and loaded as one block copy (`0x215367` copies
+   0x4c dwords from the save buffer to the record at `+0x114`; the signature
+   check at `0x212f10` covers the whole blob), and no field is range-checked on
+   the way in or out. The only consumer of the layout byte is `0x190c34`, which
+   ignores unknown values. So a byte of 4 to 6 should round-trip, but the
+   Controls edit buffer (`0x54e6d4`) is never block-copied by an immediate
+   address, so the commit from it into the profile was not found. Unverified
+   in the game.
+10. Retail behaviour of 0 to 3: every hook above must pass those through to the
+    original, and a test must prove it.
+
+## Risks
+
+- The profile is a signed save. A profile saved with layout 4 and up and then
+  loaded in a build without our hooks plays as Default (the game's own
+  fall-through), which is safe. Whether the game rejects it first is item 9.
+- The Edit Profile and summary screens (item 5) show a blank label for an
+  unknown byte until they are covered.
+- Wrapping `0x253b1a` and `0x1a02d0` is on a hot path; the wrappers must test
+  the cheap condition first.
+
+## Tests
+
+`crates/input/src/layouts.rs`: the layout tables (retail diffs against
+Default, the three added layouts, one button per action, fixed menu
+buttons, the 16-slot encoding, preset numbers).
+
+`crates/boot/src/layout_glue.rs`, over a fake guest: only rows 4 to 6 are
+ours; only the layout list grows; for every layout byte 0 to 255 the action
+table is rewritten for 4 to 6 and left exactly as the original made it
+otherwise (so retail 0 to 3 give the original table); pane rows leave retail
+rows alone and land ours on panes 8 to 13; our string ids do not collide; the
+strings are written NUL-terminated; relabelling moves each label to the slot
+at its new button; the pane array grows from 8 to 14 once, leaves the eight
+retail panes byte for byte, and ignores other screens and odd tags; and
+`install` returns on a synthetic runtime (`resolve_original` must run before
+`edit_dispatch`, which holds the dispatch lock).
+
+## To check in the game
+
+1. Settings, a profile, Controls, Button Layout: seven rows, the last three
+   "Bumper Jumper", "Recon", "Walkie Talkie" (the list has five visible
+   slots in the tag; check it scrolls).
+2. Highlighting each added row shows its diagram with the labels moved (for
+   Bumper Jumper, Jump beside White, Melee beside Black, Swap Grenades beside A,
+   Reload beside B, Flashlight beside X) and its help text; both thumbstick
+   diagram variants (Default and Legacy sticks).
+3. Choosing Bumper Jumper, then playing: left bumper (White) jumps, right
+   bumper (Black) melees, A swaps grenades, B reloads, X is the flashlight.
+4. The Controls list and the Edit Profile screen show the layout's name, not
+   an empty value.
+5. Reopening the screen with the added layout set highlights its row.
+6. Save, quit, reload: the layout is kept (needs a named profile; the Default
+   profile cannot save). The profile select dialog's summary has not been
+   traced for a layout byte of 4 and up; check it does not show garbage or crash.
+7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns it all off.
+8. The hooks install with no stall at boot.
+
+## Known gaps
+
+- Strings are English only.
+- Which of the retail text widgets the Controls and Edit Profile screens
+  fill with an empty id is inferred; the value-text hook substitutes the
+  first empty text while the function runs.
+- The memory addresses we map for our data (`0xa2f00000`, `0xa2f10000`) were
+  picked to avoid the other boot mappings, which overlapped at `0xa0ff....`.

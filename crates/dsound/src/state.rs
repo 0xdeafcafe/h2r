@@ -18,10 +18,11 @@ use audio::dsound::{BufferId, MixIn, Mode3d, PacketId, PacketStatus, Source3d, S
 use audio::fx::{EnvSpec, FilterSpec, I3dl2Source, LfoSpec, VoiceFx};
 use audio::mixer::MixInId;
 use audio::reverb::I3dl2Listener;
-use audio::{Mixer, SoundBuffer, Stream, WaveFormat};
+use audio::{Mixer, SoundBuffer, Stream, VoiceOutput, WaveFormat};
 
 use crate::abi::*;
 use crate::host::{Host, MAX_GUEST_COPY, MemFault, StreamCallback, at};
+use crate::padroute::{Classified, PadRouter, next_output};
 
 /// Why the shim cannot continue. Distinct from an HRESULT failure, which the
 /// game is allowed to see and handle.
@@ -231,6 +232,8 @@ struct BufferObj {
     cone_outside_mb: i32,
     /// The mixer submix standing in for a mix-in buffer.
     bus: Option<MixInId>,
+    /// The host output chosen from the data's opening bytes (padroute).
+    output: VoiceOutput,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -383,6 +386,9 @@ pub struct DirectSound {
     ignored: BTreeMap<&'static str, u64>,
     /// The effect index the game gave the I3DL2 reverb at download time.
     reverb_index: Option<u32>,
+    /// Recognises sounds and routes chosen ones to the controller speaker;
+    /// `None` (the default) leaves every voice on the main mix.
+    pad_router: Option<PadRouter>,
 }
 
 /// Reads a `DSFILTERDESC` (`dwMode`, `dwQCoefficient`, four coefficient
@@ -426,7 +432,21 @@ impl DirectSound {
             next_token: 0,
             ignored: BTreeMap::new(),
             reverb_index: None,
+            pad_router: None,
         }
+    }
+
+    /// Installs (or with `None` removes) the controller-speaker router. Voices
+    /// are labelled as their data arrives (`SetBufferData`, `Process`); a
+    /// new router applies to sounds started after this call.
+    pub fn set_pad_router(&mut self, router: Option<PadRouter>) {
+        self.pad_router = router;
+    }
+
+    fn classify(&self, bytes: &[u8]) -> Classified {
+        self.pad_router
+            .as_ref()
+            .map_or(Classified::Unknown, |r| r.classify(bytes))
     }
 
     pub fn mixer(&self) -> &Arc<Mutex<Mixer>> {
@@ -1076,6 +1096,7 @@ impl DirectSound {
             doppler: 1.0,
             cone_outside_mb: 0,
             bus: None,
+            output: VoiceOutput::Main,
         };
         if mix_in {
             obj.bus = Some(
@@ -1258,6 +1279,7 @@ impl DirectSound {
         sb.set_source_3d(Self::source_3d(b));
         sb.set_mix_bins(Some(b.mix_bins.clone()));
         sb.set_fx(b.fx.clone());
+        sb.set_output(b.output);
     }
 
     /// The mixer submix of a mix-in buffer: volume, routing, 3D and whether
@@ -1369,8 +1391,10 @@ impl DirectSound {
             return Ok(S_OK);
         }
         let data = h.read_vec(pv, bytes)?;
+        let output = next_output(VoiceOutput::Main, self.classify(&data), true);
         let sb = SoundBuffer::from_data(fmt, data).map_err(|_| unimpl("SetBufferData contents"))?;
         let b = self.buf(ptr)?;
+        b.output = output;
         let mut m = mixer.lock().unwrap();
         if let Some(old) = b.audio.take() {
             m.remove_buffer(old);
@@ -1796,6 +1820,7 @@ impl DirectSound {
         // Zero-length packets stay out of the audio crate (it would complete
         // them ahead of earlier packets); `service_stream` releases them in
         // order.
+        let class = self.classify(&bytes);
         let id = if bytes.is_empty() {
             None
         } else {
@@ -1804,6 +1829,8 @@ impl DirectSound {
                 ptr,
                 expected: "IDirectSoundStream",
             })?;
+            let idle = st.pending() == 0;
+            st.set_output(next_output(st.params().output, class, idle));
             match st.submit(&bytes) {
                 Ok(id) => Some(id),
                 Err(_) => return Ok(E_INVALIDARG),
@@ -1899,6 +1926,7 @@ impl DirectSound {
         let audio = s.audio;
         if let Some(st) = mixer.lock().unwrap().stream_mut(audio) {
             st.flush();
+            st.set_output(VoiceOutput::Main);
         }
         self.service_stream(h, ptr)?;
         Ok(S_OK)

@@ -974,7 +974,9 @@ dependencies = [
  "audio",
  "iced-x86",
  "runtime",
+ "serde",
  "thiserror 2.0.21",
+ "toml",
  "wma",
 ]
 
@@ -1024,6 +1026,8 @@ dependencies = [
  "opt",
  "oracle",
  "runtime",
+ "simd",
+ "sse-oracle",
  "x87",
  "xbe",
 ]

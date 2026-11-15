@@ -35,7 +35,43 @@ type Asm = fn(&mut CodeAssembler) -> Result<(), IcedError>;
 fn fixtures() -> Vec<(&'static str, Asm)> {
     let mut v = base_fixtures();
     v.extend(x87_fixtures());
+    v.extend(sse_native_fixtures());
     v
+}
+
+/// Every native arithmetic form, memory-fault boundaries and observable MXCSR.
+fn sse_native_fixtures() -> Vec<(&'static str, Asm)> {
+    use iced_x86::code_asm::*;
+    vec![("sse-native-finite", |a| {
+        a.mov(dword_ptr(ebx), 0x9f80)?;
+        a.ldmxcsr(dword_ptr(ebx))?;
+        a.mov(eax, 0x3fc00000)?;
+        a.movd(xmm0, eax)?;
+        a.shufps(xmm0, xmm0, 0)?;
+        a.movaps(xmm1, xmm0)?;
+        a.addps(xmm0, xmm1)?;
+        a.mulps(xmm0, xmm1)?;
+        a.subps(xmm0, xmm1)?;
+        a.divps(xmm0, xmm1)?;
+        a.sqrtps(xmm0, xmm0)?;
+        a.stmxcsr(dword_ptr(edi))?;
+        a.movups(xmmword_ptr(esi), xmm0)?;
+        a.ret()
+    }), ("sse-native-arith", |a| {
+        a.addps(xmm0, xmm1)?;
+        a.subps(xmm2, xmm3)?;
+        a.mulps(xmm4, xmm5)?;
+        a.divps(xmm6, xmm7)?;
+        a.sqrtps(xmm0, xmm1)?;
+        a.addss(xmm2, dword_ptr(esi))?;
+        a.subss(xmm3, xmm4)?;
+        a.mulss(xmm4, xmm5)?;
+        a.divss(xmm5, xmm6)?;
+        a.sqrtss(xmm6, xmm7)?;
+        a.stmxcsr(dword_ptr(edi))?;
+        a.movups(xmmword_ptr(ebx), xmm0)?;
+        a.ret()
+    })]
 }
 
 /// x87 through the helpers: loads, arithmetic, stores (which fault some

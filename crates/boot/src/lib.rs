@@ -10,11 +10,13 @@
 //! Nothing derived from the disc is written outside the caller's output
 //! directory, which should be under `$TMPDIR` or `target/`.
 
+pub mod community_variants;
 pub mod d3d_diag;
 pub mod d3d_glue;
 pub mod dsound_glue;
 pub mod fallback;
 pub mod game_glue;
+pub mod layout_glue;
 pub mod live_glue;
 pub use live_telemetry as telemetry;
 pub mod sha;
@@ -493,6 +495,10 @@ pub fn run_hosted_with_live(
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
     }
+    // Community classics in the built-in variant list (docs/community-gametypes.md).
+    community_variants::install(&loaded.runtime).context("installing the community game variants")?;
+    // Extra button layouts on the Controls screen (docs/controller-layouts.md).
+    layout_glue::install(&loaded.runtime).context("installing the button layouts")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) if host.render_thread => Some(d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?),
@@ -882,12 +888,12 @@ mod tests {
 
     /// `h2 build`, `h2 run` and `h2 play` (and `h2 follow`, which runs
     /// `h2 play`) all stamp through here, so the stamp names the effective
-    /// defaults: inline RAM, native x87 and accounting on unless set to `0`.
+    /// defaults: inline RAM, native x87/SSE and accounting on unless set to `0`.
     #[test]
     fn the_stamp_records_the_effective_fast_path_defaults() {
         let stamp = build_stamp(b"synthetic");
         let on = |name: &str| std::env::var(name).as_deref() != Ok("0");
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE"] {
+        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE"] {
             assert_eq!(stamp.contains(&format!("\"-D{name}=1\"")), on(name), "{name}: {stamp}");
         }
         let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT") });

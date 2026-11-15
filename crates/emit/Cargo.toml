@@ -19,6 +19,8 @@ oracle = { path = "../oracle", optional = true, features = ["unicorn"] }
 oracle-tests = ["dep:oracle"]
 
 [dev-dependencies]
+simd.workspace = true
+sse-oracle = { path = "../sse-oracle" }
 libc = "0.2"
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
 runtime = { path = "../runtime" }

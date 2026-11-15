@@ -21,7 +21,8 @@
 use std::collections::BTreeMap;
 
 use crate::dsound::{
-    BufferId, Listener, MixIn, SoundBuffer, Spatial, Stream, StreamId, VoiceParams, mb_to_gain,
+    BufferId, Listener, MixIn, SoundBuffer, Spatial, Stream, StreamId, VoiceOutput, VoiceParams,
+    mb_to_gain,
 };
 use crate::fx::headroom_gain;
 use crate::reverb::{I3dl2Listener, Reverb};
@@ -192,9 +193,25 @@ impl Mixer {
     }
 
     /// Renders `out.len() / 2` stereo frames, overwriting `out`. The sum is
-    /// not clipped; the output stage clamps.
+    /// not clipped; the output stage clamps. Every voice is heard here,
+    /// whatever its [`VoiceOutput`].
     pub fn render(&mut self, out: &mut [f32]) {
+        self.render_split(out, None);
+    }
+
+    /// [`Mixer::render`] with a second output, `side` (a controller speaker;
+    /// interleaved stereo, the same frame count as `out`, overwritten).
+    /// Voices marked [`VoiceOutput::Both`] or [`VoiceOutput::Side`] are
+    /// added to `side` as mono, at their volume, headroom and the master
+    /// volume, with no pan, 3D, mix bins or reverb: a controller speaker is a
+    /// single small driver held in the hand. `Side` voices are left out of
+    /// `out`. With `side` `None` every voice goes to `out`.
+    pub fn render_split(&mut self, out: &mut [f32], mut side: Option<&mut [f32]>) {
         out.fill(0.0);
+        if let Some(s) = side.as_deref_mut() {
+            assert_eq!(s.len(), out.len(), "side output must match the main block");
+            s.fill(0.0);
+        }
         let frames = out.len() / 2;
         let rate = self.sample_rate;
         let master = mb_to_gain(self.master_mb);
@@ -229,8 +246,10 @@ impl Mixer {
             // voice's own clock, so a block's padding never leaks a tail.
             let has_direct = b.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = b.format().channels() as usize;
-            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
-            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
+            if !to_side(side.as_deref_mut(), &params, &scratch, master) {
+                let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+                route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
+            }
         }
         let ids: Vec<StreamId> = self.streams.iter().filter(|(_, s)| s.is_audible()).map(|(&id, _)| id).collect();
         for id in ids {
@@ -246,8 +265,10 @@ impl Mixer {
             // voice's own clock, so a block's padding never leaks a tail.
             let has_direct = s.direct_shelf(&scratch[..produced * 2], &mut direct[..produced * 2], rate);
             let channels = s.format().channels() as usize;
-            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
-            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
+            if !to_side(side.as_deref_mut(), &params, &scratch, master) {
+                let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+                route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..produced * 2]), out);
+            }
         }
         for i in 0..buses.len() {
             buses[i].done = true;
@@ -380,6 +401,27 @@ fn route_voice(
     }
 }
 
+/// Adds a voice rendered at unity gain (`src`, interleaved stereo) to the
+/// side output as mono, if it has one and the voice is routed there. True
+/// when the voice is heard only there, so the main mix must skip it.
+fn to_side(side: Option<&mut [f32]>, p: &VoiceParams, src: &[f32], master: f32) -> bool {
+    let Some(side) = side else {
+        return false;
+    };
+    if p.output == VoiceOutput::Main {
+        return false;
+    }
+    let g = mb_to_gain(p.volume_mb) * headroom_gain(p.fx.headroom_mb) * master * 0.5;
+    if g != 0.0 {
+        for (o, s) in side.as_chunks_mut::<2>().0.iter_mut().zip(src.as_chunks::<2>().0) {
+            let m = (s[0] + s[1]) * g;
+            o[0] += m;
+            o[1] += m;
+        }
+    }
+    p.output == VoiceOutput::Side
+}
+
 /// `out[2i + to] += src[2i + from] * g`.
 fn add(out: &mut [f32], src: &[f32], from: usize, to: usize, g: f32) {
     if g == 0.0 {
@@ -424,6 +466,60 @@ mod tests {
         let mut out = vec![0.0; 8];
         m.render(&mut out);
         assert_eq!(out, vec![0.375; 8]);
+    }
+
+    #[test]
+    fn side_output_takes_routed_voices() {
+        use crate::dsound::VoiceOutput;
+        // 0.25 on the main mix, 0.125 on the side, as mono.
+        let mut m = Mixer::new(8000);
+        let main = m.add_buffer(buf(&[8192; 8], 8000));
+        let pad = m.add_buffer(buf(&[4096; 8], 8000));
+        m.buffer_mut(main).unwrap().play(true);
+        m.buffer_mut(pad).unwrap().play(true);
+        m.buffer_mut(pad).unwrap().set_output(VoiceOutput::Side);
+        let (mut out, mut side) = (vec![9.0; 8], vec![9.0; 8]);
+        m.render_split(&mut out, Some(&mut side));
+        assert_eq!(out, vec![0.25; 8]);
+        assert_eq!(side, vec![0.125; 8]);
+
+        // Both: heard in each.
+        m.buffer_mut(pad).unwrap().set_output(VoiceOutput::Both);
+        m.render_split(&mut out, Some(&mut side));
+        assert_eq!(out, vec![0.375; 8]);
+        assert_eq!(side, vec![0.125; 8]);
+    }
+
+    #[test]
+    fn side_voices_fall_back_to_main_without_a_side_output() {
+        use crate::dsound::VoiceOutput;
+        let mut m = Mixer::new(8000);
+        let pad = m.add_buffer(buf(&[4096; 8], 8000));
+        m.buffer_mut(pad).unwrap().play(true);
+        m.buffer_mut(pad).unwrap().set_output(VoiceOutput::Side);
+        let mut out = vec![0.0; 8];
+        m.render(&mut out);
+        assert_eq!(out, vec![0.125; 8]);
+    }
+
+    #[test]
+    fn side_output_applies_volume_and_master() {
+        use crate::dsound::VoiceOutput;
+        let mut m = Mixer::new(8000);
+        m.set_master_volume(-600);
+        let id = m.add_buffer(buf(&[16384; 8], 8000));
+        let b = m.buffer_mut(id).unwrap();
+        b.play(true);
+        b.set_volume(-600);
+        b.set_pan(-10000); // pan is a main-mix property; the side ignores it
+        b.set_output(VoiceOutput::Side);
+        let (mut out, mut side) = (vec![0.0; 8], vec![0.0; 8]);
+        m.render_split(&mut out, Some(&mut side));
+        assert_eq!(out, vec![0.0; 8]);
+        let want = 0.5 * mb_to_gain(-600) * mb_to_gain(-600);
+        for v in side {
+            assert!((v - want).abs() < 1e-6, "{v} vs {want}");
+        }
     }
 
     #[test]
