@@ -687,6 +687,11 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    them read/write. Resource `Data` fields are read at `0x80000000 | pa`
    (`AddressMap::XboxContiguous`); use `AddressMap::Identity` or `Offset`
    if the runtime maps contiguous memory elsewhere.
+   Set `nv2a_window: Some(base)` to give game code the NV2A register
+   window at device `+0x934` (see "NV2A register window");
+   `map_device_memory` then also maps its two pages, `base + 0x3000` and
+   `base + 0x400000`. Without it `+0x934` stays zero and the game's
+   post-`KickOff` register reads fault.
 2. **Overrides.** Each handler copies `CpuAbi` into `abi::Regs`, runs the
    adapter on the locked guest memory, writes `EAX`/`EDX` back if set and
    returns with `Guest::ret(cpu, cleanup)`. Other registers are left as
@@ -894,6 +899,83 @@ guest code can look at it, and its time words say so.
   than every fence the device has issued, which the device never stamps.
   Halo's own inline wait (`0x1d434`) passes the GPU time to
   `BlockOnTime`, which returns at once for the same reason.
+
+## NV2A register window
+
+The original CreateDevice stores the NV2A register base (`0xFD000000`) at
+device `+0x934` (`0x3fc31d`). Game code reads it back and reads GPU
+registers through it, at 17 sites of one shape: `mov edx, [D3D__pDevice]`,
+`call 0x3fac30` (KickOff, which preserves `EDX`), `mov eax, [edx+0x934]`,
+then `mov ecx, [eax+0x3240]`, `cmp ecx, [eax+0x3244]` and, when they are
+equal, a read of `[eax+0x400700]`. The sites sit in wait loops (a timer
+compare, KickOff, the reads, a call, a jump back); the values only decide
+whether the PGRAPH read happens.
+
+| site | |
+|---|---|
+| game | `0x6a932`, `0x80eca`, `0x8638c`, `0x86448`, `0x8c892`, `0x12429d`, `0x12d0cf`, `0x12d4ee`, `0x12e0d6`, `0x12e15b`, `0x146f19`, `0x1561f6`, `0x18f31a`, `0x1941f2`, `0x194362`, `0x199646`, `0x1997d2` |
+| D3D | `0x3fa8b5` (MakeRequestedSpace helper), `0x3fa904` (BlockOnTime helper), `0x3fac6a` (KickOff), `0x3fad10` (a swap callback CreateDevice installs), `0x3fc3f2` (CreateDevice) |
+
+The D3D sites also read `0x400B10`, and run only under overrides. No site
+writes the window. The miniport (`0x3fe005` and the interrupt paths)
+reaches the NV2A through its own base, never through `+0x934`; those
+functions are overridden (see "Port I/O guards").
+
+**Registers** (`d3d::regs::reg`):
+
+| offset | register | value |
+|---|---|---|
+| `0x3240` | `NV_PFIFO_CACHE1_DMA_PUT` | the drained push-buffer position, `& 0x0FFFFFFF` (D3D's encoding, `0x3fad07`) |
+| `0x3244` | `NV_PFIFO_CACHE1_DMA_GET` | the same: the FIFO has fetched everything |
+| `0x400700` | `NV_PGRAPH_STATUS` | 0: idle |
+| `0x400B10` | the PGRAPH register D3D's fence word lands in | `(at << 5) \| (fence & 0x1F) << 2 \| ([device+0x40] & 3)` |
+
+`D3D_SetFence` (`0x3fa6a1`) pushes that fence word with method `0x0310`
+on subchannel 5, `at` being the push-buffer address of the fence.
+`BlockOnTime` waits until bits 6:2 match the completion word
+(`0x3fa910`), and `MakeRequestedSpace` reads bits 31:7 back as the address
+the GPU has fetched to (`0x3fa8bb`). Here `fence` is the device's last
+fence (the completion word) and `at` the drained position when it was
+issued, so both checks see the GPU caught up. No vblank state is read
+through `+0x934`.
+
+**Backing.** The runtime keeps the real aperture free of RAM and has no
+MMIO handlers (an access is an unsupported-device fault, by design; see
+`docs/LIFTER.md`). Adding a device hook to `Guest`'s access path would
+widen that contract for four read-only words, so the window is a
+documented substitute instead, with no runtime change:
+
+- The host picks the base (`DeviceConfig::nv2a_window`), page-aligned with
+  room for the 16 MB aperture. Only the PFIFO and PGRAPH pages are mapped,
+  as ordinary RAM, so any other register page faults, naming its address.
+- `Device::sync_registers` writes the words at CreateDevice, KickOff
+  (every game site reads right after one), SetFence and Swap. Between
+  those they hold the last values, which still describe an idle GPU.
+- At each of those points the device compares both pages with what it
+  last wrote. A guest store is reported as `Event::RegisterWrite { offset,
+  value }` and undone.
+- With a runtime MMIO hook the same `RegisterValues` could answer reads at
+  `0xFD000000` directly; nothing else would change.
+
+**Tests** (`tests/round6.rs`):
+
+- Synthetic: the field and the words after CreateDevice, KickOff and
+  SetFence; logged and undone stores; release and re-create; a misaligned
+  base; the window as mapped runtime memory read through `runtime::Runner`.
+- Ignored, needing `$H2_XBE`:
+  - `every_0x934_site_reads_only_modelled_registers` decodes the image
+    with iced-x86 over the `analyze` function map. It finds every
+    `[reg+0x934]` load whose base came from `D3D__pDevice` (and every one
+    in the D3D section), and follows the loaded register to its
+    accesses. It checks the 17 game sites and their three reads, that the
+    D3D sites run only under overrides, and that every game-code access
+    at a modelled offset belongs to a site.
+  - `game_sites_find_an_idle_gpu_through_lifted_code` loads the image
+    into the runtime with the overrides and a window and runs
+    CreateDevice through the runner. It then interprets each game site's
+    lifted IR from its `D3D__pDevice` load, with the KickOff call going to
+    the override through the runner. Every register read must execute
+    (including the PGRAPH one) without a fault.
 
 ## Push-buffer callbacks
 

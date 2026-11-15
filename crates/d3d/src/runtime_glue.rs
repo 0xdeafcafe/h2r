@@ -143,11 +143,20 @@ pub fn shared<B: Backend>(cfg: DeviceConfig, backend: B) -> SharedDevice<B> {
     Arc::new(Mutex::new(Device::new(cfg, backend)))
 }
 
-/// Maps the push buffer and scratch ranges of `cfg` as zeroed read/write
-/// guest memory (they are host-chosen; nothing else may overlap them).
+/// Maps the push buffer and scratch ranges of `cfg`, and the two pages of
+/// the NV2A register window if it has one ([`crate::regs`]), as zeroed
+/// read/write guest memory (they are host-chosen; nothing else may overlap
+/// them).
 pub fn map_device_memory(guest: &mut Guest, cfg: &DeviceConfig) -> Result<(), MapError> {
     guest.map_zeroed(cfg.push_buffer.addr, cfg.push_buffer.len, Permissions::RW)?;
-    guest.map_zeroed(cfg.scratch.addr, cfg.scratch.len, Permissions::RW)
+    guest.map_zeroed(cfg.scratch.addr, cfg.scratch.len, Permissions::RW)?;
+    if let Some(base) = cfg.nv2a_window {
+        let w = crate::regs::RegisterWindow::new(base).map_err(|_| MapError::InvalidRange)?;
+        for p in w.pages() {
+            guest.map_zeroed(p.addr, p.len, Permissions::RW)?;
+        }
+    }
+    Ok(())
 }
 
 /// Installs every D3D override with [`default_stop`].

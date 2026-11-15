@@ -50,6 +50,7 @@ use crate::guest::GuestMemory;
 use crate::hw::{HwState, Memories};
 use crate::layout::{GuestLayout, RENDER_STATE_SLOTS, device_field as field};
 use crate::pushbuf::{self, Effect, Immediate, ImmediateDraw, PushError, SimpleEncode};
+use crate::regs::{RegisterValues, RegisterWindow};
 use crate::resource::{
     AddressMap, PaletteHeader, PixelContainer, ResourceHeader, ResourceType, SurfaceHeader, common,
 };
@@ -110,6 +111,13 @@ pub struct DeviceConfig {
     pub scratch: GuestRange,
     /// Cache validation.
     pub upload: UploadPolicy,
+    /// Base of the NV2A register window CreateDevice stores at device
+    /// `+0x934`, where game code reads GPU registers after `KickOff`
+    /// ([`crate::regs`]). The host picks it: page-aligned, with the two
+    /// pages at `base + 0x3000` and `base + 0x400000` free for
+    /// [`crate::runtime_glue::map_device_memory`] to map. `None` leaves
+    /// `+0x934` alone (zero), so those reads fault.
+    pub nv2a_window: Option<u32>,
 }
 
 impl DeviceConfig {
@@ -122,6 +130,7 @@ impl DeviceConfig {
             push_buffer,
             scratch,
             upload: UploadPolicy::Tracked,
+            nv2a_window: None,
         }
     }
 }
@@ -442,6 +451,10 @@ pub struct Device<B: Backend> {
     fault: Option<String>,
     swap_count: u32,
     fence: u32,
+    /// The push-buffer position the last fence was issued at.
+    fence_at: u32,
+    /// The NV2A register window ([`DeviceConfig::nv2a_window`]).
+    regs: Option<RegisterWindow>,
     cache: HashMap<TextureKey, CachedTexture<B::Texture>>,
     /// Guest-write tracking (see [`crate::dirty`]).
     pub tracker: WriteTracker,
@@ -528,6 +541,8 @@ impl<B: Backend> Device<B> {
             fault: None,
             swap_count: 0,
             fence: 0,
+            fence_at: cfg.push_buffer.addr,
+            regs: None,
             cache: HashMap::new(),
             tracker: WriteTracker::new(),
             events: Vec::new(),
@@ -757,6 +772,18 @@ impl<B: Backend> Device<B> {
             mem.write_u32(pp_device, dev)?;
         }
         self.consumed = pb.addr;
+        self.fence_at = pb.addr;
+        if let Some(base) = self.cfg.nv2a_window {
+            // `0x3fc31d`: the register base; the original's idle wait at
+            // `0x3fc3f2` follows, which the window answers at once.
+            let w = match self.regs.take() {
+                Some(w) if w.base() == base => w,
+                _ => RegisterWindow::new(base).map_err(|e| D3dError::invalid(E, e))?,
+            };
+            self.regs = Some(w);
+            mem.write_u32(dev + field::NV2A_REGISTERS, base)?;
+            self.sync_registers(mem)?;
+        }
         self.params = Some(p);
         self.created = true;
         self.init_transform_state(mem)?;
@@ -1231,7 +1258,34 @@ impl<B: Backend> Device<B> {
     pub fn kick_off(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         self.live("CDevice_KickOff")?;
         self.sync_push_buffer(mem)?;
-        self.flush_render_targets(mem)
+        self.flush_render_targets(mem)?;
+        self.sync_registers(mem)
+    }
+
+    /// Writes the NV2A register window's words for the current state and
+    /// reports guest stores into it ([`crate::regs`]). Called where the GPU
+    /// state the window shows changes or is about to be polled: CreateDevice,
+    /// `KickOff` (every game site reads the window right after one),
+    /// `SetFence` and `Swap`. Between those the words are the last ones
+    /// written, which still describe an idle GPU.
+    fn sync_registers(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        let Some(w) = self.regs.as_mut() else {
+            return Ok(());
+        };
+        let counter = mem.read_u32(self.cfg.layout.device + field::FENCE_TAG)?;
+        let values = RegisterValues::synchronous(self.consumed, self.fence, self.fence_at, counter);
+        for write in w.sync(mem, &values)? {
+            self.events.push(Event::RegisterWrite {
+                offset: write.offset,
+                value: write.value,
+            });
+        }
+        Ok(())
+    }
+
+    /// The NV2A register window's base (device `+0x934`), if configured.
+    pub fn register_window(&self) -> Option<u32> {
+        self.regs.as_ref().map(RegisterWindow::base)
     }
 
     /// The deferred-state commit (`0x400fa0`): executes pending words, makes
@@ -1257,9 +1311,11 @@ impl<B: Backend> Device<B> {
         self.live("D3D_SetFence")?;
         self.sync_push_buffer(mem)?;
         self.fence = self.fence.wrapping_add(1);
+        self.fence_at = self.consumed;
         let dev = self.cfg.layout.device;
         mem.write_u32(dev + field::GPU_TIME, self.fence)?;
         mem.write_u32(self.gpu_completed_word()?, self.fence)?;
+        self.sync_registers(mem)?;
         Ok(self.fence)
     }
 
@@ -2308,6 +2364,7 @@ impl<B: Backend> Device<B> {
         self.display.shown_lost = false;
         self.swap_count = self.swap_count.wrapping_add(1);
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
+        self.sync_registers(mem)?;
         self.vblanks_after_swap(mem)?;
         Ok(self.swap_count)
     }

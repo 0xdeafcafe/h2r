@@ -20,3 +20,9 @@ app = { path = "../app" }
 anyhow.workspace = true
 # Decoding the retail image in the ignored $H2_XBE tests.
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+# The NV2A window tests: find every device+0x934 site in $H2_XBE (analyze,
+# xbe) and run the sites' lifted IR against the runtime (lift, ir).
+analyze.workspace = true
+xbe.workspace = true
+lift.workspace = true
+ir.workspace = true

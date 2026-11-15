@@ -16,6 +16,7 @@
 //! * [`resource`]: `D3DResource`/`D3DPixelContainer`/`D3DSurface` headers;
 //! * [`state`]: render/texture-stage state arrays to `gfx` state;
 //! * [`pushbuf`]: decoder for the push-buffer subset game code writes;
+//! * [`regs`]: the NV2A register window behind device `+0x934`;
 //! * [`dirty`]: the write-tracking contract for lazy uploads;
 //! * [`device`]: the device model and entry points;
 //! * [`abi`]: LTCG register-argument adapters (TODO-register);
@@ -34,6 +35,7 @@ pub mod hw;
 pub mod layout;
 pub mod nv2a;
 pub mod pushbuf;
+pub mod regs;
 pub mod resource;
 pub mod runtime_glue;
 pub mod shader;

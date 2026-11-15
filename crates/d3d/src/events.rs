@@ -94,4 +94,12 @@ pub enum Event {
         /// Data length.
         len: u32,
     },
+    /// Guest code stored into the NV2A register window
+    /// ([`crate::regs`]); the store was undone. No game site does this.
+    RegisterWrite {
+        /// Register offset from the window base.
+        offset: u32,
+        /// The word stored.
+        value: u32,
+    },
 }

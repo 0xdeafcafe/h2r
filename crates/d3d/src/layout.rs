@@ -84,6 +84,10 @@ pub mod device_field {
     /// the busy check (`0x3fb770`). CreateDevice points it at a word in the
     /// device's scratch range.
     pub const GPU_COMPLETED: u32 = 0x30;
+    /// The word whose low two bits `D3D_SetFence` packs into its fence word
+    /// (`0x3fa6b5`) and `MakeRequestedSpace` compares with it
+    /// (`0x3fa8b2`). The device never writes it; [`crate::regs`] reads it.
+    pub const FENCE_TAG: u32 = 0x40;
     /// Current vertex shader object (`+4` flags, `+0x14` attribute formats).
     pub const VERTEX_SHADER: u32 = 0x794;
     /// Mirror of `PSTEXTUREMODES` written by game code alongside the array.
@@ -91,6 +95,11 @@ pub mod device_field {
     /// Embedded pixel-shader object `{refcount, flags, pPSDef}` that game code
     /// fills in and passes to `SetPixelShader`.
     pub const PIXEL_SHADER_OBJECT: u32 = 0x924;
+    /// The NV2A register base (`0xFD000000` on the Xbox; `0x3fc31d`).
+    /// Game code reads it after `KickOff` and polls GPU registers through
+    /// it (17 sites, e.g. `0x12d0cf`); see [`crate::regs`]. The device
+    /// stores [`crate::DeviceConfig::nv2a_window`] here.
+    pub const NV2A_REGISTERS: u32 = 0x934;
     /// Device reference count. CreateDevice stores 1 (`0x3f528b`, absolute
     /// `0x405918`); Halo's inlined Release (`0x12448`, `0x1423a`) calls the
     /// teardown `0x3fc530` when it is 1 and decrements it otherwise.
