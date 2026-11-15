@@ -4,8 +4,6 @@
    Lengths are in units of --u (see dash.css), so the screen scales as one
    picture. The orb, pods, bars and prompts are drawn here, not images. */
 
-/* The blocky face of the menu labels and the button letters: Press Start 2P (SIL OFL 1.1, see dash/fonts). */
-@font-face { font-family: "Press Start 2P"; src: url("../dash/fonts/PressStart2P-Regular.woff2") format("woff2"); font-weight: 400; font-display: swap; }
 
 /* ---- background: a dark well lit from the orb, the mesh, a vignette ---- */
 .dx-bg { position: absolute; inset: 0; --vx: 36%; --vy: 43%; background: #010b01; }
@@ -169,10 +167,10 @@
   box-shadow: 0 0 calc(var(--u) * 10) rgba(200, 235, 80, .3);
 }
 .dx-bar-text {
-  position: relative; z-index: 2; font-family: "Press Start 2P", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 15.5); line-height: 1; letter-spacing: 0; word-spacing: -.35em; text-transform: uppercase; white-space: nowrap;
-  transform: scaleX(1.25) translateY(calc(var(--u) * 1.5)); transform-origin: 0 50%;
+  position: relative; z-index: 2; font-family: "Michroma", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17.5); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
   color: color-mix(in srgb, #2c4a12 calc(var(--lit) * 100%), #cfe9a0);
-  text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.6 - var(--lit) * .6));
+  -webkit-text-stroke: calc(var(--u) * .7) currentColor;
+  text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.7 - var(--lit) * .7));
 }
 
 /* ---- a / b prompts: a lettered ring pod and a thin label ---- */
@@ -188,7 +186,7 @@
     radial-gradient(circle closest-side, #33821f 0, #2f7a1c 58%, #3f8f28 66%, #86c452 74%, #a9d878 80%, #8cc85a 86%, rgba(96, 176, 56, .6) 91%, rgba(80, 170, 44, .16) 96%, rgba(80, 170, 44, 0) 100%);
   filter: blur(calc(var(--u) * .3)); transition: transform .15s var(--ease), filter .15s;
 }
-.dx-btn b { font-family: "Press Start 2P", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17); line-height: 1; text-transform: uppercase; color: #d4eeaa; transform: scaleX(1.15) translate(calc(var(--u) * .5), calc(var(--u) * 1)); text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .6); }
+.dx-btn b { font-family: var(--f-tech); font-weight: 800; font-size: calc(var(--u) * 19); line-height: 1; text-transform: uppercase; color: #d4eeaa; text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .6); }
 .dx-menu .dx-btn { width: calc(var(--u) * 50); height: calc(var(--u) * 50); }
 .dx-menu .dx-btn b { font-size: calc(var(--u) * 16); }
 .dx-prompt:hover .dx-btn, .dx-prompt:focus-visible .dx-btn { transform: scale(1.08); filter: brightness(1.25); }
