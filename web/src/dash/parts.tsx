@@ -114,11 +114,11 @@ export function Pod(props: { seed: number }) {
             <stop offset="1" stop-color="#14480d" />
           </radialGradient>
           <radialGradient id={`${id}-rim`} gradientUnits="userSpaceOnUse" cx="-3" cy="-4" r="38">
-            <stop offset=".58" stop-color="#1f5f12" stop-opacity=".9" />
-            <stop offset=".68" stop-color="#5fa434" stop-opacity=".92" />
-            <stop offset=".8" stop-color="#9ccc64" stop-opacity=".9" />
-            <stop offset=".9" stop-color="#7ab646" stop-opacity=".88" />
-            <stop offset="1" stop-color="#3f8a22" stop-opacity=".7" />
+            <stop offset=".58" stop-color="#1f5f12" stop-opacity=".85" />
+            <stop offset=".68" stop-color="#5fa434" stop-opacity=".82" />
+            <stop offset=".8" stop-color="#9ccc64" stop-opacity=".8" />
+            <stop offset=".9" stop-color="#7ab646" stop-opacity=".76" />
+            <stop offset="1" stop-color="#3f8a22" stop-opacity=".55" />
           </radialGradient>
           <radialGradient id={`${id}-lit`}>
             <stop offset="0" stop-color="#d2d0c6" />
@@ -137,6 +137,9 @@ export function Pod(props: { seed: number }) {
             <circle class="dx-pod-bud" cx="-33" cy="-12" r="3.2" />
           </g>
           <circle r="29.5" fill="none" stroke={u("rim")} stroke-width="11.5" />
+          <g transform={`rotate(${props.seed * 113 + 40})`}>
+            <path class="dx-pod-fold" d="M26 -8A27.5 27.5 0 0 1 18 20M-31 6A32 32 0 0 0 -18 27M4 33.5A33.5 33.5 0 0 0 20 27" />
+          </g>
           <path class="dx-pod-shine" d="M-29 -10A30.5 30.5 0 0 1 -4 -30.5" />
         </g>
         <circle class="dx-pod-lit" r="25.5" fill={u("lit")} filter={u("haze")} />
