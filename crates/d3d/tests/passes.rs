@@ -656,6 +656,32 @@ fn gpu_three_buffer_copy_then_finish_shows_the_copied_frame() {
     finish(scope);
 }
 
+/// The display buffer as a render target while a COPY is owed: the copy is
+/// made before the target is written, so FINISH shows what was drawn
+/// into it afterwards.
+#[test]
+fn gpu_owed_copy_lands_before_the_display_buffer_is_drawn_into() {
+    let Some((mut d, mut m, scope)) = gpu_with(|p| {
+        p.swap_effect = 3;
+        p.back_buffer_count = 2;
+    }) else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    let (red, green) = ([0xFF, 0, 0, 0xFF], [0, 0xFF, 0, 0xFF]);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
+    d.swap(&mut m, 1).unwrap();
+    let display = m.read_u32(L.device + f::DISPLAY_SURFACE).unwrap();
+    d.set_render_target(&mut m, display, 0).unwrap();
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.swap(&mut m, 4).unwrap();
+    let shown = d.backend.last_presented().unwrap();
+    assert_eq!(shown, d.front_buffer().unwrap());
+    assert_eq!(rgba(&mut d, shown, 10, 10), green, "drawn over the copy");
+    assert_eq!(back_buffer(&mut d)(10, 10), red, "back0 untouched");
+    finish(scope);
+}
+
 /// CreateDevice again after a teardown, with the same parameters.
 fn recreate<B: d3d::Backend>(d: &mut Device<B>, m: &mut SparseMemory) {
     let out = call(

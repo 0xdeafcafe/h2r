@@ -700,7 +700,10 @@ and allocations are bounded before anything is read:
   - **`FINISH`** on either kind ends with `0x3f9cc0`: the display
     header's `Lock` (its parent's, for a level) takes the GPU time
     (`+0x2C`), and a new fence is stored at `+0x1974[swap count & 1]`
-    (`layout::device_field::SWAP_FENCES`).
+    (`layout::device_field::SWAP_FENCES`). The order matches; the numbers
+    do not, since `SetFence` here advances the time by 1 and returns the
+    new value where retail (`0x3fa69e..0x3fa73b`) advances it by 2 and
+    returns the old one (see "GPU model").
   - A device re-created after teardown starts with no lost-image state
     (`shown_lost`, set when a backend cannot make the deferred copy).
 - **Frame buffers as textures** (`src/device/raster.rs`). The frame
@@ -1084,6 +1087,10 @@ guest code can look at it, and its time words say so.
   (`GPU_COMPLETED_OFFSET`). `SetFence` drains the queue, bumps the fence
   and writes it to both words: everything before the fence has executed
   by the time it is returned. `Device::gpu_completed` is that time.
+  Retail `D3D_SetFence` (`0x3fa69e..0x3fa73b`) instead advances `+0x2C`
+  by 2 and returns the old time, so fence and `Lock` values here are not
+  retail's numbers; only their order is. Nothing compares them across
+  that difference: every fence has completed when it is handed out.
   Releasing a binding stamps `Lock` with the current fence.
 - **The busy check** (`0x3fb710`, `D3DResource_IsBusy` inlined; `ECX` =
   resource, `EAX` = 0 or 1) runs as compiled, after draining the queue

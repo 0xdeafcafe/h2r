@@ -2788,6 +2788,14 @@ impl<B: Backend> Device<B> {
     /// `0x3f9cc0`, at the end of a `FINISH` swap: the display header's
     /// `Lock` (its parent's, for a level) takes the GPU time, and a new
     /// fence is recorded at `+0x1974[swap count & 1]`.
+    ///
+    /// The order of stamp, fence and slot matches the original, the numbers
+    /// do not: retail `D3D_SetFence` (`0x3fa69e..0x3fa73b`) returns the old
+    /// GPU time and advances `+0x2C` by 2, while [`Device::set_fence`]
+    /// advances it by 1 and returns the new time (the completion word
+    /// always equals it, so no wait can stall). From zero, a flip's
+    /// pre-flip fence plus this leave `Lock` 2, slot 2, `+0x2C` 4 on the
+    /// Xbox and `Lock` 1, slot 2, `+0x2C` 2 here.
     fn finish_swap(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
         let dev = self.cfg.layout.device;
         let display = mem.read_u32(dev + field::DISPLAY_SURFACE)?;

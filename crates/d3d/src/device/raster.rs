@@ -460,7 +460,10 @@ impl<B: Backend> Device<B> {
         let Some(sw) = self.swap.as_mut() else {
             return Ok(());
         };
-        if !sw.copy_pending || sw.back[0] != color {
+        // Owed by a `COPY` swap: made before either end is written, back0
+        // (its source) or the display buffer (its destination, which a
+        // title can bind as a target through the display header).
+        if !sw.copy_pending || (sw.back[0] != color && sw.front != color) {
             return Ok(());
         }
         let (src, dst) = (sw.back[0], sw.front);
