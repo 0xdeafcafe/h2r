@@ -234,7 +234,60 @@ against the guest decoder and requires at most 1 LSB. It reads the disc
 by absolute path:
 `cargo test -p oracle --features unicorn --release --test wma_disc -- --ignored`.
 
-Remaining gap: integration into live engine playback (only export is wired).
+Live playback goes through the runtime boundary below.
+
+## Runtime boundary
+
+The game decodes music and dialogue through the XDK's `XWMAXMO` container
+(`0x387503` is its XMO `Process`, `0x388533` steps the codec, `0x3886b0`
+drains PCM, at most `0x800` frames a call). The container is left running as
+guest code, with its own file reads and XMO packets; only the statically
+linked codec under it is replaced. `wma::boundary::Session` is the codec's
+state machine; `dsound::xwma` is the guest adapter, registered at the six
+stdcall entries:
+
+| entry | arguments | `ret` |
+|---|---|---|
+| create `0x38a0c5` | `(&handle, context, callback, version 2, samples 0x8800, rate 44100, channels 2, byte rate, block align, flags 15, 0)` | `2Ch` |
+| destroy `0x38a13f` | `(&handle)`; clears the word | `4` |
+| reset `0x38a16b` | `(handle)`; also the container's seek (`0x388463`) | `4` |
+| begin packet `0x38a189` | `(handle)` | `4` |
+| decode `0x38a1a7` | `(handle)` | `4` |
+| PCM `0x38a1cc` | `(handle, &u16 frames, buffer, bytes)`; writes LE i16 stereo and the u16 count | `10h` |
+
+The handle is opaque: it is stored at the container's `[esi+158h]` and only
+passed back to these entries, so the adapter hands out its own tokens. Input is pulled at begin by calling the game's callback `0x388777`
+`(data**, size*, context, staging)` (`ret 10h`) as a guest call with a
+128-byte staging buffer below the caller's stack; it returns 3 on a codec
+packet's first chunk and size 0 at the end of what it has.
+
+Statuses (from the container's handling, `0x388557..0x3886a5`):
+
+- create: 0, or `0x80040000` for any format but the two retail profiles
+  (the container reports 7); refusals are kept (`WmaHle::take_refusals`).
+- begin: 0 when a packet was decoded (or the end was reached and the held
+  packet is out), `0x80040004` when no data is available; the container
+  then asks its reader whether the file has ended.
+- decode: always 4 ("packet done"), so the container drains PCM and begins
+  the next packet. The native decoder needs whole packets with one of
+  lookahead, so a packet is decoded entirely at begin; the PCM is the same,
+  produced a packet earlier.
+- any entry with an unknown handle: `E_INVALIDARG`.
+
+Resynchronisation, where the guest decoder would carry on through damage:
+a sequence break (loop or seek without a reset) or input after the end
+finishes the old decoder and starts a fresh one; a malformed packet is
+counted and silent, and a fresh decoder waits for the next; a packet start
+while a packet is partial drops the partial. A fresh decoder applies the
+engine's initial suppression again, so a restart loses one frame of output,
+as a reset would.
+
+The tables are read from the XBE at runtime (`WmaHle::from_xbe`, which
+requires the verified retail image) and shared by every stream. Tests:
+`crates/wma` (`boundary` unit tests against the direct decoder) and
+`crates/dsound/tests/xwma.rs` (through the runner, plus an ignored test
+that decodes disc streams 0 and 38 through the boundary and requires PCM
+identical to `decode_asf`).
 
 ## Work record
 
@@ -249,6 +302,8 @@ Remaining gap: integration into live engine playback (only export is wired).
   passed (build/lint only, no tests or execution with Unicorn enabled).
 - Done: oracle run on 48 streams. Found and fixed the overlap tail sign.
   Native now matches within 1 LSB, apart from 4 samples at 2 LSB.
+- Done: runtime boundary (`wma::boundary`, `dsound::xwma`); live playback
+  through the game's own container.
 
 [spec]: https://exse.eyewated.com/fls/54b3ed95bbfb1a92.pdf
 [overview]: https://learn.microsoft.com/en-us/windows/win32/medfound/asf-file-structure

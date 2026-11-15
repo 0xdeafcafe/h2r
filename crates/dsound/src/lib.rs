@@ -13,6 +13,7 @@
 //! - [`register`]: installs [`overrides`] into a runtime `Dispatch`.
 //! - [`output`]: the output thread, the one consumer that takes the mixer to a sink.
 //! - [`testing`]: a synthetic guest memory for tests.
+//! - [`xwma`]: the native WMA decoder at the game's codec boundary (`0x38a0c5`).
 
 pub mod abi;
 pub mod host;
@@ -21,6 +22,7 @@ pub mod overrides;
 pub mod register;
 pub mod state;
 pub mod testing;
+pub mod xwma;
 
 pub use host::{EventSink, GuestMemory, Host, MemFault, StreamCallback};
 pub use register::{

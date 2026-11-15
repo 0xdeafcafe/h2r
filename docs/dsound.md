@@ -184,6 +184,31 @@ and `CMcpx*` class) are not reached by the game.
 - **`DSMIXBINS`**: `{ dwMixBinCount, lpMixBinVolumePairs }`, pairs
   `{ dwMixBin, lVolume }` (verified: Halo passes count 5 with bins 5..10).
 
+### Positioned sound
+
+Halo 2 positions sound through mix-in buffers, not through 3D streams. Its
+sound core (`0x220b90`, with `0x220a70`) creates a `DSBCAPS_CTRL3D` mix-in
+(flags `0x80010`, `0x100010` or `0x2010`, no data) whose `dwInputMixBin` is
+an FX send (`0x17` and up). The mix-in's own mix bins are the default 3D set
+`{6, 8, 7, 9, 10}`; its min and max distance are `FLT_MAX`, rolloff, doppler
+and cone outside volume 0. A stream (music, dialogue) is routed into the
+mix-in by `SetMixBins`/`SetMixBinVolumes` on that send bin. `SetPosition`
+at `0x220ea1` (to `IDirectSound3DBuffer_SetPosition`, `0x37c668`) moves the
+mix-in, and `SetVolume` on the mix-in (`0x21ffab`) carries Halo's own
+distance attenuation. Halo also calls `GetStatus`, `Play` and `StopEx` on
+mix-ins.
+
+The shim gives every mix-in buffer an `audio::MixIn` on its input bin
+(removed on `Release`). Every buffer and stream gets its mix bins from
+creation and from `SetMixBins`/`SetMixBinVolumes`; position, distances,
+cone, rolloff and the listener reach `audio` through `refresh_3d`. A stream
+sending to a playing mix-in is heard panned by the mix-in's position against
+the listener (the model is in `docs/audio.md`, "Positional model"); a mix-in
+that is not playing, or a send bin no mix-in owns, is silent, as an unused
+FX send was on the MCPX. With Halo's parameters (rolloff 0, `FLT_MAX`
+distances) the shim's own distance curve is unity and only Halo's
+`SetVolume` attenuates, which is what the hardware did.
+
 ### Notification and callback contracts
 
 - **Packet completion.** `Process` writes `E_PENDING` (`0x8000000A`) to
@@ -249,13 +274,59 @@ and `CMcpx*` class) are not reached by the game.
 ## Audio clock
 
 Buffers only finish, and stream packets only complete, when the mixer is
-rendered. There are three ways to drive it, and exactly one of them should
-consume a given mixer:
+rendered. Exactly one consumer may render a given mixer, or audio time runs
+twice. The shim enforces it among its own: `DirectSound::claim_consumer`
+records one `Consumer` (`Output`, `Pump`, `DoWork`, `Manual`), and every
+other way to render fails with `ConsumerConflict { held, wanted }` while it
+is held (`set_frames_per_do_work` and `spawn_pump(.., true)` return it, a
+manual `advance_audio` or `tick` is a `Stop::Consumer`). It cannot see a
+renderer outside the crate (`crates/app`'s `AudioOut`/`DiscardRenderer`, or
+an `audio::Pump` of the caller's own): pick one.
 
 | consumer | who renders | who reports completions to the game |
 |---|---|---|
-| a device, or `crates/app`'s `AudioOut` (its `DiscardRenderer` thread renders in real time when there is no device) | the app | `Hle::spawn_pump(runtime, period, false)` or the game's own `DoWork`/`GetStatus`/`Process` |
+| `Hle::spawn_output` (the default for a runner, see below) | its thread, into a sink (a device) | the same thread, each wake, and the game's own `DoWork`/`GetStatus`/`Process` |
+| `crates/app`'s `AudioOut` (legacy) | the app | `Hle::spawn_pump(runtime, period, false)` or the game's calls |
 | nothing (headless boot, tests) | `Hle::spawn_pump(runtime, period, true)`, or `DirectSound::set_frames_per_do_work`, or `Hle::tick`/`advance_audio` by hand | the same call |
+
+### Consumers and the output thread
+
+`Hle::spawn_output(runtime, open, OutputConfig) -> Result<Output,
+ConsumerConflict>` claims `Consumer::Output` and starts a thread. `open`
+runs on it (a `DeviceSink` is not `Send` on macOS) and returns the
+`audio::AudioSink` to render into. Each wake (`OutputConfig::period`,
+default 5 ms):
+
+1. render the frames owed under the mixer lock alone, and write them;
+2. `Hle::do_work`: each completed packet's size and status reach guest
+   memory, in submission order, before its event is published;
+3. deliver the events with no guard held. Stream callbacks, being guest
+   calls, run at the next override call on a guest thread, in order.
+
+The frames owed depend on `Pacing`:
+
+- `Device { target_latency_ms }` (default 40): keep that much queued in the
+  sink (`audio::Pump`); audio time is the device's, which is real time.
+  The mixer follows the sink's rate, including after a device change.
+- `Logical { now, max_catch_up }`: `now()` returns logical time in 100 ns
+  ticks (the kernel's `Clock::counter`), and the thread renders exactly the
+  elapsed frames (an `AudioClock`, capped at `max_catch_up` per wake).
+  Completions, events and callbacks then follow the time the game sees,
+  deterministically. Rendered audio the sink has no room for is dropped and
+  counted (`OutputStats::dropped_frames`); if logical time runs slower than
+  real time the device underruns. Audio time stands still while logical time
+  does, so a game whose every thread waited on a stream event with no
+  timeout would hang; use `Device` when a device is present.
+
+`Output::stats()` reports rendered and dropped frames, wakes, the rate and
+the sink's counters. Dropping the `Output` stops and joins the thread, drops
+the sink and releases the claim. A `Stop` from `do_work` ends the thread and
+is recorded by `take_stops` as `Hle::output`.
+
+Streaming during loading: the output thread completes stream packets and
+signals their events whether or not the game calls any DirectSound entry,
+so music keeps flowing while the game sits in a loading loop that waits on
+those events (Halo's streams use events and poll `GetStatus`/`Process`).
 
 - `DirectSound::advance_audio(host, frames)` renders `frames` output frames,
   discards them (in chunks of at most 1024) and completes whatever that
@@ -277,8 +348,9 @@ consume a given mixer:
   joins it; a `Stop` ends the thread and is recorded by `take_stops` as
   `Hle::pump`.
 
-Never combine a render pump with a device or the app's discard renderer: time
-would run twice. `frames_rendered()` counts what the shim itself rendered.
+Never combine a render pump with a device, the output thread or the app's
+discard renderer. `frames_rendered()` counts what the shim's manual,
+`DoWork` and pump paths rendered (not the output thread: see its stats).
 
 ## Memory model
 
@@ -303,11 +375,13 @@ shim keeps that contract:
 |---|---|
 | `DirectSoundCreate`, `DirectSoundCreateBuffer/Stream`, `CreateSoundBuffer/Stream`, refcounts, `Release` freeing | real |
 | `SetBufferData`, `Lock`, `Unlock`, `Play` (looping, from-start), `Stop`, `StopEx` (immediate), `Pause`, `GetStatus`, `Get/SetCurrentPosition` | real, mapped to `audio::SoundBuffer` |
-| `SetVolume`, `SetFrequency`, stream `SetPitch` (1/4096 octave about 48 kHz), 3D position/min/max distance, listener position/orientation/factors | real, applied to `audio` |
+| `SetVolume`, `SetFrequency`, stream `SetPitch` (1/4096 octave about 48 kHz), 3D position/min/max distance, cone angles/orientation/outside volume, rolloff factor (buffer and listener), listener position/orientation | real, applied to `audio` |
+| `SetMixBins`, `SetMixBinVolumes` (buffer and stream) | real: routing through `audio::route`, FX sends into mix-ins |
 | stream `Process`, `GetStatus`, `GetInfo`, `Flush`, `FlushEx` (any flags, timestamp 0), `Pause`, `SetVolume`, `Discontinuity` (counted, no mixer state to reset), `DirectSoundDoWork` | real (see "Effects, voice entries and FlushEx") |
-| `SetMixBins`, `SetMixBinVolumes`, `SetHeadroom`, `SetMixBinHeadroom`, `SetFilter`, `SetLFO`, `SetEG`, `SetOutputBuffer`, `SetCone*`, `SetDoppler/RolloffFactor` (buffer), `SetI3DL2Source`, `SetEffectData`, `UseLightHRTF4Channel` | stored; counted by name in `DirectSound::ignored()` (timbre and routing only) |
+| `SetHeadroom`, `SetMixBinHeadroom`, `SetFilter`, `SetLFO`, `SetEG`, `SetOutputBuffer`, `SetDopplerFactor` (buffer and listener), distance factor, `SetI3DL2Source`, `SetEffectData`, `UseLightHRTF4Channel` | stored; counted by name in `DirectSound::ignored()` (timbre only) |
 | `GetCaps`, `GetSpeakerConfig` | answered (`DSCAPS` layout from memory: free 2D/3D voices 64, SGEs `0x7fff`, 0; stereo speakers) |
-| mix-in/FX buffers | created and `Play` accepted (silent, counted); no DSP |
+| mix-in/FX buffers | real buses (`audio::MixIn`, see "Positioned sound"); `Play` counted as `mix-in buffer Play`; no DSP effects |
+| the game's WMA codec (`0x38a0c5`..`0x38a1cc`) | native, `dsound::xwma` over `wma::boundary` (see `docs/wma.md`, "Runtime boundary") |
 | `XAudioDownloadEffectsImage` (flags 1, name `"DSPImage"`, dry image), `Get/SetEffectData` | real, against the dry image (see "Dry effects image") |
 | `XAudioSetEffectData` | real, dry (see "Effects, voice entries and FlushEx") |
 | buffer and stream `GetVoiceProperties` | real: mix-bin routing; **stop** is gone |
@@ -607,16 +681,36 @@ impl dsound::Events for KernelEvents {
     }
 }
 
-// After Kernel::for_image, before Machine::new. `host` is the app's
-// GuestHost (or take mixer and rate from AudioOut): its mixer is already
-// consumed in real time by a device or by the DiscardRenderer.
-let ds = dsound::DirectSound::new(host.mixer(), dsound::Layout::default());
+// After Kernel::for_image, before Machine::new. The mixer is the shim's
+// own: the output thread below is its one consumer. Do not also start the
+// app's AudioOut/DiscardRenderer on it.
+let mixer = Arc::new(Mutex::new(audio::Mixer::new(48_000)));
+let ds = dsound::DirectSound::new(Arc::clone(&mixer), dsound::Layout::default());
 let hle = dsound::Hle::new(ds, Box::new(KernelEvents(Arc::clone(&k))));
 loaded.runtime.edit_dispatch(|d| dsound::register(d, &hle))?;
 
-// Report finished packets without waiting for the game's DoWork (a stream
-// wait on an event). render=false because the app's renderer owns the mixer.
-let _pump = hle.spawn_pump(Arc::clone(&loaded.runtime), Duration::from_millis(5), false);
+// The game's WMA codec (menu and level music), natively. Tables come from
+// the XBE bytes at runtime; a non-retail XBE fails here, and the game then
+// keeps its own codec.
+let wma = dsound::xwma::WmaHle::from_xbe(&xbe_bytes)?;
+loaded.runtime.edit_dispatch(|d| dsound::xwma::register(d, &wma))?;
+
+// Sound out: render into the default device and report completions, on its
+// own thread (keeps streams flowing through loading screens).
+let _output = hle.spawn_output(
+    Arc::clone(&loaded.runtime),
+    || audio::output::DeviceSink::open_default().expect("audio device"),
+    dsound::OutputConfig::default(),
+)?;
+// Headless, or to tie audio to guest time: Pacing::Logical over the kernel
+// clock, into any sink (audio::NullSink when there is no device):
+// dsound::OutputConfig {
+//     period: Duration::from_millis(5),
+//     pacing: dsound::Pacing::Logical {
+//         now: Box::new({ let k = Arc::clone(&k); move || k.clock().counter() }),
+//         max_catch_up: Duration::from_millis(250),
+//     },
+// }
 
 // On a stop whose event is Unsupported with a "dsound::" mnemonic:
 for s in hle.take_stops() {
@@ -627,15 +721,14 @@ for f in hle.take_signal_failures() {
 }
 ```
 
-Without the app's mixer consumer (a test harness, or a boot that builds its
-own `Mixer`), nothing renders the mixer, so use one of these instead of the
-pump above (pick one, never together with a device or the discard renderer):
+Without a sink at all (a test harness), use one of these instead of the
+output thread (pick one; the others then return `ConsumerConflict`):
 
 ```rust
 // Real time, own thread: renders the mixer and reports completions.
 let _pump = hle.spawn_pump(Arc::clone(&loaded.runtime), Duration::from_millis(5), true);
 // or deterministic, tied to the game's own calls (48 kHz at 60 DoWork/s):
-hle.direct_sound().set_frames_per_do_work(Some(800));
+hle.direct_sound().set_frames_per_do_work(Some(800))?;
 // or by hand between slices:
 let mut clock = dsound::AudioClock::new(48_000, Duration::from_millis(250));
 hle.tick(&loaded.runtime, &mut clock, elapsed)?;
@@ -713,18 +806,44 @@ covers, with synthetic data only (no disc bytes):
   `reference` never steals or drops another packet's pin; a faulting
   completion write keeps the packet and its pin and completes on retry; a
   concurrent pump and `Process` never signal a packet before it is pinned.
+- Positioned sound: a stream sent to a 3D mix-in through its FX bin is
+  panned by the mix-in's position and follows `SetPosition`; rolloff 0
+  removes the shim's distance attenuation; doppler is counted.
+- Consumers: only one of output thread, render pump, `set_frames_per_do_work`
+  and manual `advance_audio` may hold the mixer; dropping the holder frees it.
+- Output thread (`CaptureSink`): it plays a stream and completes packets in
+  order with status final at each event, on the logical clock; logical
+  pacing keeps time when the sink is full (400 frames rendered, 336
+  dropped); device pacing follows the sink's fill and rate; callbacks it
+  completes run at the next override call.
 - Host-driven clock: `Hle::tick` completes packets, delivers the event and
   leaves the callback owed to the next override call. `spawn_pump` with
   `render: true` completes a packet on a sinkless mixer, and with
   `render: false` reports what an external consumer rendered, without
   rendering anything.
 
+`tests/xwma.rs` drives the WMA boundary through the runner, with synthetic
+tables and packets and the game's input callback as a guest override
+serving 128-byte chunks: both retail profiles decode to the same PCM as
+`wma::Decoder` directly, every callback gets the container's context, a read
+stalled mid-packet resumes, `destroy` clears the handle word, unknown
+handles are `E_INVALIDARG`, other formats are refused with `0x80040000`, and
+a second registration fails closed. An ignored test decodes two real disc
+streams through the boundary and compares them with `wma::decode_asf`:
+
+```sh
+H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
+  cargo test --release -p dsound --test xwma -- --ignored
+```
+
 `tests/xbe_pins.rs` is ignored by default. In the real XBE it walks each of
 the 66 addresses (iced-x86, following direct jumps, so the flat `jmp`
 thunks reach their `CDirectSoundStream_*` bodies). It requires the
 reachable `ret` immediates to be exactly `4 * argc` and the address to lie
 in `DSOUND`. It also checks that the 7 words of the stream vtable at
-`Layout::default().stream_vtable` (`0x417170`) are the 7 vtable entries:
+`Layout::default().stream_vtable` (`0x417170`) are the 7 vtable entries,
+and pins the six `dsound::xwma::ENTRIES` the same way (`ret 2Ch`, `4`, `4`,
+`4`, `4`, `10h`):
 
 ```sh
 H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
@@ -764,9 +883,9 @@ addresses.
    `*pdwCompletedSize` can be exact for a half-played flushed packet.
 4. `SoundBuffer::pause` that preserves the playing/looping intent, and a
    `stopped_at_end` flag so `GetStatus` can distinguish a finished buffer.
-5. Per-voice gain and routing for mix bins and headroom (today stored only),
-   and a send/return for the mix-in buffers (reverb).
+5. (Done: mix-bin routing and mix-in buses.) Headroom, and reverb on the
+   I3DL2 send.
 6. Loop and play regions and buffer position notifications if another title
    path needs them (Halo 2 does not call them).
-7. Wrap-around reads for streams of non-block-aligned PCM, and WMA
-   (`WMADEC` section) if the game's music uses it.
+7. Wrap-around reads for streams of non-block-aligned PCM. (WMA: done, in
+   `dsound::xwma`.)

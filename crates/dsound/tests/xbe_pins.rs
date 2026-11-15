@@ -108,3 +108,22 @@ fn registered_addresses_have_their_ret_sizes_in_the_retail_image() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn wma_codec_entries_have_their_ret_sizes_in_the_retail_image() {
+    let Some(path) = std::env::var_os("H2_XBE") else {
+        panic!("set H2_XBE to a retail default.xbe");
+    };
+    let image = load_xbe(&std::fs::read(path).unwrap()).unwrap();
+    let mem = image.runtime.memory();
+    let mut bad = Vec::new();
+    for (va, name, argc) in dsound::xwma::ENTRIES {
+        let want = argc as u16 * 4;
+        let got = ret_sizes(&mem, va);
+        if got != BTreeSet::from([want]) {
+            bad.push(format!("{name} {va:#010x}: want ret {want}, found {got:?}"));
+        }
+    }
+    assert!(bad.is_empty(), "{}", bad.join("\n"));
+}

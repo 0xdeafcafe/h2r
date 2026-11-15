@@ -10,6 +10,10 @@ description = "Guest-facing DirectSound replacement for h2recomp: guest memory i
 audio = { path = "../audio", default-features = false }
 thiserror.workspace = true
 runtime.workspace = true
+# The clean-room WMA decoder registered at the game's codec boundary (xwma).
+wma = { path = "../wma" }
 
 [dev-dependencies]
+wma = { path = "../wma", features = ["synthetic"] }
+asf = { path = "../asf", features = ["disc"] }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
