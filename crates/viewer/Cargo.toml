@@ -1,0 +1,19 @@
+[package]
+name = "viewer"
+description = "Render-model (mode) viewer: decodes model geometry from a disc map and draws it with gfx"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+default-run = "viewer"
+
+[dependencies]
+map.workspace = true
+tags.workspace = true
+xiso.workspace = true
+gfx = { path = "../gfx" }
+anyhow.workspace = true
+assets.workspace = true
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "1"
+winit = "0.30"

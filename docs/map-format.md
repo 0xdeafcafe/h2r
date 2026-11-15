@@ -508,3 +508,155 @@ locale slots, and readable generated-code/record formatting.
 [tags-openh2-bitm]: https://github.com/ronbrogan/OpenH2/blob/d09a123b3dd16821295f380f01fb5639c697899a/src/OpenH2.Core/Tags/BitmapTag.cs
 [tags-openh2-mode]: https://github.com/ronbrogan/OpenH2/blob/d09a123b3dd16821295f380f01fb5639c697899a/src/OpenH2.Core/Tags/RenderModelTag.cs
 [tags-entity-bitm]: https://github.com/troymac1ure/Entity/blob/4b4ddc3d0869cf93773869c642dec6624a22fd36/HaloMap/RawData/ParsedBitmap.cs
+
+## Render-model geometry (`mode` sections, parts, vertices)
+
+The model reader is in `crates/tags/src/model.rs`, and its tag records are in
+the delimited "render_model geometry" section of `crates/tags/schema.rs`. Raw
+section blocks are loaded by the shared geometry decoder,
+`crates/tags/src/geometry.rs`, which structure BSPs and lightmaps also use.
+Its block info, resource, part, subpart and descriptor layouts, and the
+hostile-input rules every owner gets, are documented once in
+[structure-bsp.md](structure-bsp.md). This section covers what is
+model-specific: the `MODEL_SECTION` layout, compression, skinning and the
+model cross-checks. The root
+`RenderModelHeader` record above is unchanged: its child regions stay opaque
+there, and it keeps citing Assembly for its own root scalars.
+`ModeGeometryHeader` is a second view of the same `0x84` bytes, used only by
+the geometry decoder. **No Assembly plugin was used for any geometry record.**
+
+To display a model, run `cargo run -p viewer -- <map> <tag>`. To decode every
+`mode` tag on the disc, run `cargo run -p viewer -- --all all`. The `--all`
+run exits nonzero if any of these happen:
+
+- a map fails to open, or a tag fails to decode;
+- any zero-tolerance check fails (triangle counts, tiling, weights, material
+  references);
+- any thresholded counter exceeds its limit in `viewer/src/validate.rs`.
+
+### Evidence and names
+
+Evidence labels in this section:
+
+- **E**: the engine's own code reads the field. Addresses are in the retail XBE
+  and can be checked with `cargo h2 disasm`.
+- **D**: disc evidence, checked on all 4,222 `mode` tags in all 30 maps by
+  `viewer --all`.
+- **O**: the offset and name come from OpenH2's MIT-licensed
+  [RenderModelTag.cs][tags-openh2-mode]. That file describes Vista, so **D**
+  confirms each offset on Xbox. [ModelResourceContainerProcessor.cs][openh2-mode-proc]
+  was read only as background.
+
+Names follow three rules:
+
+1. An **O** field uses OpenH2's name, snake-cased. Examples are
+   `vertex_count`, `opaque_max_nodes_per_vertex`, `geometry_classification`,
+   `parent_index`, `first_child_index`, `next_sibling_index`,
+   `orientation`, and the compression flags `compressed_verts` and
+   `compressed_tex_coords`.
+2. Every other name describes what the evidence shows. Examples are `indices`,
+   `node_map`, the triangle-list part flag, subparts, the classification
+   labels, and the vertex types `OneNode` through `FourNodes`. Names in the
+   shared decoder follow the same rule (see structure-bsp.md).
+3. A field with no evidence for its meaning is called `unknown_<offset>`.
+
+These names were deliberately not used, because nothing cited here supports
+them:
+
+- part kind names other than "skipped by engine" (0 and 5);
+- classification names such as "rigid boned";
+- node rest-frame and scale fields;
+- the visibility block (`0x10`) and the other uninterpreted section blocks.
+
+An earlier draft claimed that node `+0x5c` held the translation length. The
+disc disproves it: 1,614 nodes disagree. That word is now part of
+`unknown_028`.
+
+### Records
+
+| Record (stride) | Evidence | Notes |
+|---|---|---|
+| `ModeGeometryHeader` (`0x84`) | Sections at `+0x24`, stride `0x5c`: **E** (`0x41076`-`0x41086` read `[tag+0x28]` + index×`0x5c`) and **O**. Compression infos `+0x14`, regions `+0x1c`, nodes `+0x48`, materials `+0x60`: **O**+**D** | Every block's count×stride fits the tag payload. `materials` is OpenH2's ModelShaderReferences. |
+| `ModeCompression` (`0x38`) | **O**+**D** | Exactly one per model. Holds position bounds (x/y/z min,max), then texcoord u/v, then a second texcoord pair. Decoded attributes stay inside the bounds: 3 of 8.4M are marginal outliers, which the threshold allows. |
+| `ModeRegion` (`0x10`), `ModePermutation` (`0x10`) | **O**+**D** | Six i16 section indices per permutation, LOD 0 (lowest) to 5 (highest). Each is `-1` or in range. Triangle counts rise with the index on the models checked. The region's `+4/+6` are unknown. |
+| `ModeSection` (`0x5c`) | Stride and `+0x34`: **E**. Counts, classification, flags: **O**+**D**. `+0x38`..`+0x5c`: the shared geometry block info (**E** `0x00223c70`) | `+0x30`/`+0x34` are the runtime section block (count, pointer); both are zero on disc. Vertex and part counts equal the raw block's. Classification 1/2/3 occurs only with no-node, one-node and weighted vertex types respectively. Compression bit 0 ⇔ s16 positions and bit 1 ⇔ s16 texcoords, on every section. The block info's owner is the tag's own ID and its runtime offset is `-8` (pointing at `+0x30`) on every section. |
+| `ModeNode` (`0x60`) | **O**+**D** | Links are in range. The 14 words from `+0x28` are not interpreted. |
+| `ModeMaterial` (`0x20`) | **D** | Two tag references. The first is always null. The second always resolves to a `shad` tag; some store group `0xffffffff` with a live ID, so only the ID is required to resolve. |
+
+The raw block, resources, parts, subparts and vertex-buffer descriptors are
+the shared layouts in [structure-bsp.md](structure-bsp.md). The pointer
+selects the local, mainmenu, shared or single-player-shared map with the usual
+top-two-bit rule; all four occur. `MODEL_SECTION`, the `0x70`-byte section
+struct:
+
+| Field | Element | Evidence |
+|---|---|---|
+| `0x00` block | Part, `0x48` | **E** (`[section_data+4]`, index×`0x48` at `0x410da`-`0x410e0`) |
+| `0x08` block | Subpart, 8 | **D**: element size 8. Every subpart names its own part and each part's run tiles the block, as in structure sections. Strip parts keep empty placeholder subparts (first 0, count 0), so here a subpart need only be empty or inside its part. |
+| `0x20` block | u16 index | **D** |
+| `0x38` block | Vertex-buffer descriptor, `0x20` | **E** `0x00223ced` |
+| `0x64` block | u8 node map | **D**: entries index the model's nodes |
+| `0x10`, `0x44`, `0x54`, `0x5c` blocks | Element sizes `0x14`, `0x44`, 4, 2 | **D** (element size only); checked like any block resource, not interpreted |
+
+Parts: kind 0 and 5 are skipped by the engine (**E** `0x410fc`-`0x41129`).
+Part flag `0x8` marks a triangle **list**. Without it, the range is a triangle
+**strip** with degenerate joins. With that rule, the triangle count derived
+from the indices exactly equals the stored count on all 27,319 sections; the
+same flag is set on every structure part, which are all lists. Part materials
+are below the model's material count, or `0xffff`.
+
+### Vertex-buffer types
+
+These are **D**: inferred from stride, section classification, compression
+flags and value checks. No engine table has been located yet.
+
+| Type | Stride | Layout | Checks |
+|---|---:|---|---|
+| `0x01` | 12 | f32×3 position | Only in sections without position compression; must be finite. |
+| `0x02` | 6 | s16×3 position | Classification 1; maps into the compression bounds. |
+| `0x04` | 8 | s16×3 position, u8 node, u8 zero | Classification 2. |
+| `0x06` | 12 | s16×3, 2 zero bytes, u8×2 nodes, u8×2 weights | Weights sum to 255. |
+| `0x08` | 12 | s16×3, u8×3 nodes, u8×3 weights | Weights sum to 255. |
+| `0x0a` | 16 | s16×3, 2 zero bytes, u8×4 nodes, u8×4 weights | Weights sum to 255. |
+| `0x18` | 8 | f32×2 texcoord | Only without texcoord compression. |
+| `0x19` | 4 | s16×2 texcoord | |
+| `0x1b` | 12 | 3 × NORMPACKED3 (11:11:10, x in the low bits) | Word 0 is the normal: its mean dot with the face normal derived from the strip is +0.88 over 19.8M corners (words 1 and 2: about 0). 99.9% are unit length. |
+| `0x2f`, `0x30` | 3, 4 | unknown | 129 sections; preserved as bytes. |
+
+### Decoding rules
+
+- Each section has exactly one position stream, and the shared decoder
+  allows at most one stream per role (texcoord, tangent frame, and so on).
+  Retail data always has a position, a texcoord and a tangent-frame stream.
+- Compressed values are `s16 / 32767`, clamped to -1, then mapped to
+  `(v+1)/2 × (max-min) + min`. Non-finite bounds or float attributes are
+  rejected.
+- Node indices index the section's node map when it has one, otherwise the
+  model's nodes. 1,399 vertices in first-person models reference nodes beyond
+  their own model's list, probably a skeleton shared at run time. These are
+  reported, and the run fails only above 0.1%.
+- Strip winding: even triangles are `(a,b,c)` and odd ones `(a,c,b)`. This
+  agrees with the decoded normals.
+- Vertices with node data are stored in model space at the rest pose. The
+  viewer draws them without node transforms, and parts land in place.
+
+### Limits
+
+The shared decoder's limits apply (structure-bsp.md, "Decoder rules"): a raw
+block is at most 16 MiB, resources are disjoint and uniquely keyed, decoded
+tables borrow the one loaded block, tag-block reads are charged to a
+payload-sized budget, and counts are only used once the bytes behind them
+have been checked.
+
+Not interpreted:
+
+- shaders, which are references only;
+- the second texcoord set;
+- the unknown raw blocks and the two unknown vertex types;
+- markers and the remaining header blocks.
+
+The verifier checks structure. Beyond the shapes inspected, it does not prove
+how models should render. Screenshots and validation output stay outside the
+repository.
+
+[openh2-mode-proc]: https://github.com/ronbrogan/OpenH2/blob/d09a123b3dd16821295f380f01fb5639c697899a/src/OpenH2.Core/Tags/Common/Models/ModelResourceContainerProcessor.cs

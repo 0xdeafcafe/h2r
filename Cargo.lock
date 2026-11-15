@@ -2608,6 +2608,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "viewer"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "assets",
+ "bytemuck",
+ "gfx",
+ "map",
+ "pollster",
+ "tags",
+ "wgpu",
+ "winit",
+ "xiso",
+]
+
+[[package]]
 name = "walkdir"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

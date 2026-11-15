@@ -95,6 +95,7 @@ Status "done" means the crate exists on master and does what its row says;
 | `movies`  | Manifest, hashing and naming for optional Bink-to-MP4 conversion with the user's ffmpeg ([movies.md](movies.md)) | done |
 | `hs`      | HaloScript scenario tables, builtin catalog and typed expression API; no VM yet ([haloscript.md](haloscript.md)) | done, decoding only |
 | `shaders` | Xbox vertex microcode and register-combiner translation to WGSL ([shaders.md](shaders.md)) | done |
+| `viewer`  | Render-model and structure BSP viewer and exporters, drawing with `gfx` ([structure-bsp.md](structure-bsp.md)) | done |
 | `audio`   | DirectSound replacement foundation ([audio.md](audio.md)) | done, foundation only |
 | `dsound`  | Guest-facing DirectSound replacement over `audio` ([dsound.md](dsound.md)) | done |
 | `xapi`    | Guest XAPI service replacements over `input` ([xapi.md](xapi.md)) | done |
@@ -112,8 +113,6 @@ Planned crates, not on master yet and in progress elsewhere:
 | `lift`, `ir`, `emit` | Lifter pipeline: x86 to IR to generated code ([LIFTER.md](LIFTER.md)) |
 | `d3d`        | D3D8 API surface over `gfx` |
 | `hs` runtime | HaloScript VM over the `hs` decoder |
-| `viewer`     | Map and tag viewer |
-| `bsp`        | Structure BSP loading and rendering |
 
 ## Milestones
 

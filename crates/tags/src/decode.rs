@@ -488,7 +488,7 @@ impl<'a> Payload<'a> {
             })?;
         self.nested(b, stats)
     }
-    fn nested<T: BinaryRecord>(&self, b: &[u8], stats: &mut Validation) -> Result<T> {
+    pub(crate) fn nested<T: BinaryRecord>(&self, b: &[u8], stats: &mut Validation) -> Result<T> {
         let value = T::decode(b)?;
         self.validate_record(T::META, b, stats)?;
         stats.records += 1;

@@ -57,6 +57,7 @@ up as structured Rust.
 - [movies.md](docs/movies.md): optional Bink movie conversion with your own ffmpeg (`h2 movies`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle
 - [shaders.md](docs/shaders.md): NV2A vertex microcode and register combiners to WGSL (`crates/shaders`)
+- [structure-bsp.md](docs/structure-bsp.md): render models and structure BSP geometry, and the viewer (`crates/tags`, `crates/viewer`)
 - [sound.md](docs/sound.md): sound tags (`snd!`, `ugh!`)
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
 - [ui.md](docs/ui.md): user-interface tags (wgit, wgtz, wigl, skin) (`crates/tags`)

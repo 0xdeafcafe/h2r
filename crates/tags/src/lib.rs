@@ -29,6 +29,18 @@ pub use wire::{StringId, StringIdParts};
 
 mod decode;
 pub use decode::*;
+// ---- geometry sections: render models, structure BSPs, lightmaps -----------
+// `geometry` is the one section decoder (block info, raw block, fixups,
+// parts, indices, vertex streams), driven by a per-owner `SectionLayout`.
+// `model` reads `mode` tags, `structure` reads `sbsp`/`ltmp` render blocks.
+// Provenance: docs/map-format.md ("Render-model geometry") and
+// docs/structure-bsp.md.
+pub mod geometry;
+pub mod model;
+pub mod structure;
+#[cfg(test)]
+mod structure_tests;
+// ---- end geometry sections -------------------------------------------------
 
 /// A malformed or unsupported record, with context added at field boundaries.
 #[derive(Debug, thiserror::Error)]
@@ -54,6 +66,12 @@ pub enum Error {
     /// counted every time they are followed).
     #[error("decoded {kind} exceed the budget of {limit}")]
     Budget { kind: &'static str, limit: u64 },
+    #[error("section {index}: {source}")]
+    Section {
+        index: usize,
+        #[source]
+        source: Box<Error>,
+    },
     #[error("range {address:#x} + {size:#x} is outside this tag's payload")]
     Bounds { address: u32, size: u64 },
     #[error("resource file {0:?} size was not supplied")]

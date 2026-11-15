@@ -254,6 +254,14 @@ draws a triangle and a blended quad, and sets all state via raw Xbox values
 (`C` cycles cull, `W` wireframe, `B` blending; `--frames N` exits after N
 frames for smoke tests).
 
+`crates/viewer` is the first consumer of real assets: it decodes a `mode` tag
+(`tags::model`, see map-format.md "Render-model geometry") and draws it with
+its own small WGSL pipeline through `GfxContext`/`Presenter`, or into an
+`OffscreenTarget` for `--png` screenshots. Flat, vertex-normal or normal-colour
+shading only; no shaders or textures yet. Its `bsp` binary validates and
+software-renders structure BSPs through the same shared geometry decoder
+(`tags::geometry`, see structure-bsp.md).
+
 ## Not supported yet (future work)
 
 ### Pixel processing: register combiners

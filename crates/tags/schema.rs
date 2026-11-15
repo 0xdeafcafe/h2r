@@ -313,7 +313,7 @@ pub fn records() -> Vec<Record> {
         &mut model,
         &[("unsupported_00c", 0xc), ("unsupported_068", 0x68)],
     );
-    vec![
+    let mut all = vec![
         bitmap,
         image,
         sequence,
@@ -323,5 +323,142 @@ pub fn records() -> Vec<Record> {
         locale,
         record("BspHeader", 0x23c, bsp),
         record("RenderModelHeader", 0x84, model),
+    ];
+    all.extend(model_geometry_records());
+    all
+}
+
+// ============================================================================
+// render_model geometry (mode header, compression, regions, sections, nodes,
+// materials). Used only by src/model.rs; raw section blocks are decoded by
+// the shared src/geometry.rs. Kept as one self-contained section so other tag
+// groups can be added above without touching it.
+//
+// Provenance (details and pinned links: docs/map-format.md, "Render-model
+// geometry"). Every field carries one or more tags:
+//   E = read by the engine's own code (XBE disassembly, address given);
+//   D = disc evidence, checked on every mode tag of every map by
+//       `viewer --all` (strides, counts, signatures, value ranges);
+//   O = offset and name taken from OpenH2's MIT-licensed RenderModelTag.cs
+//       @ d09a123b3dd16821295f380f01fb5639c697899a (Vista, not Xbox authority;
+//       Xbox offsets confirmed by D).
+// Names: an O field uses OpenH2's name (snake_cased); every other name is a
+// label describing the evidence, or `unknown_<offset>` when there is none.
+// No Assembly plugin was used for these records.
+// ============================================================================
+fn model_geometry_records() -> Vec<Record> {
+    use Kind::*;
+    vec![
+        // A second view of the 0x84-byte mode header that interprets the
+        // geometry blocks; RenderModelHeader keeps the root-only validation.
+        // sections: E (0x41076..0x41086: [tag+0x28] + index*0x5c) + O.
+        // compression_infos, regions, nodes, materials: O + D (count*stride
+        // fits the payload on every tag).
+        record(
+            "ModeGeometryHeader",
+            0x84,
+            vec![
+                f("name", 0, StringId),
+                f("compression_infos", 0x14, Block(0x38)).elements("ModeCompression"),
+                f("regions", 0x1c, Block(0x10)).elements("ModeRegion"),
+                f("sections", 0x24, Block(0x5c)).elements("ModeSection"),
+                f("nodes", 0x48, Block(0x60)).elements("ModeNode"),
+                // OpenH2: ModelShaderReferences.
+                f("materials", 0x60, Block(0x20)).elements("ModeMaterial"),
+            ],
+        ),
+        // O (min/max per axis, u, v, u2, v2) + D (exactly one per model;
+        // decoded attributes fall inside it).
+        record(
+            "ModeCompression",
+            0x38,
+            vec![
+                f("position_bounds", 0, F32s(6)),
+                f("texcoord_bounds", 0x18, F32s(4)),
+                f("texcoord2_bounds", 0x28, F32s(4)),
+            ],
+        ),
+        // name/permutations: O. +4/+6: unknown (i16 pairs, often -1/0).
+        record(
+            "ModeRegion",
+            0x10,
+            vec![
+                f("name", 0, StringId),
+                f("unknown_004", 4, I16),
+                f("unknown_006", 6, I16),
+                f("permutations", 8, Block(0x10)).elements("ModePermutation"),
+            ],
+        ),
+        // O (six piece indices, lowest to highest) + D (each -1 or a valid
+        // section; triangle counts rise with the index).
+        record(
+            "ModePermutation",
+            0x10,
+            vec![
+                f("name", 0, StringId),
+                f("lod0_section", 4, I16),
+                f("lod1_section", 6, I16),
+                f("lod2_section", 8, I16),
+                f("lod3_section", 0xa, I16),
+                f("lod4_section", 0xc, I16),
+                f("lod5_section", 0xe, I16),
+            ],
+        ),
+        // Stride and +0x34: E (+0x34 is a runtime pointer to the loaded
+        // section data, zero on disc; the engine reads its parts at [ptr+4]).
+        // Counts/classification/flags: O + D (counts equal the raw block's;
+        // classification matches the vertex types).
+        // +0x30..+0x38: the runtime section block (count, pointer) the
+        // engine's fixup fills; empty on disc (D).
+        // +0x38..+0x5c: the shared 0x24-byte geometry block info, decoded by
+        // src/geometry.rs (E 0x00223c70; see docs/structure-bsp.md). Owner =
+        // this tag and runtime offset = -8 on every section (D).
+        record(
+            "ModeSection",
+            0x5c,
+            vec![
+                f("global_geometry_classification", 0, U16),
+                f("vertex_count", 4, U16),
+                f("triangle_count", 6, U16),
+                f("part_count", 8, U16),
+                f("opaque_max_nodes_per_vertex", 0x14, U8),
+                // Labels from D: the vertex-buffer types each value occurs with.
+                f("geometry_classification", 0x18, Enum16).choices(&[
+                    (1, "no_vertex_nodes"),
+                    (2, "one_node_per_vertex"),
+                    (3, "weighted_nodes"),
+                ]),
+                // O names bits 0/1; D: they match s16 position/texcoord buffers.
+                f("compression_flags", 0x1a, Flags16)
+                    .choices(&[(1, "compressed_verts"), (2, "compressed_tex_coords")]),
+                f("runtime_section_count", 0x30, U32),
+                f("runtime_section_data", 0x34, U32),
+            ],
+        ),
+        // name/parent/first_child/next_sibling/translation/orientation: O + D
+        // (links in range). The 14 words from +0x28 are not interpreted.
+        record(
+            "ModeNode",
+            0x60,
+            vec![
+                f("name", 0, StringId),
+                f("parent_index", 4, I16),
+                f("first_child_index", 6, I16),
+                f("next_sibling_index", 8, I16),
+                f("translation", 0xc, F32s(3)),
+                f("orientation", 0x18, F32s(4)),
+                f("unknown_028", 0x28, F32s(14)),
+            ],
+        ),
+        // D: two tag references; the second resolves to `shad` tags (checked
+        // by `viewer --all`), the first is null on the disc.
+        record(
+            "ModeMaterial",
+            0x20,
+            vec![f("unknown_reference", 0, TagRef), f("shader", 8, TagRef)],
+        ),
+        // The raw section struct, parts, subparts and vertex-buffer
+        // descriptors are decoded by src/geometry.rs (MODEL_SECTION in
+        // src/model.rs), shared with structure BSPs.
     ]
 }
