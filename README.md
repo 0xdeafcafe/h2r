@@ -67,7 +67,7 @@ In priority order:
 
 - macOS with Metal. The profiler is macOS-only, and the runtime and player
   target Metal.
-- Rust (stable) and `cargo`.
+- Rust 1.98 or newer and `cargo`. With rustup, `rust-toolchain.toml` picks the right version for you; with Homebrew, `brew upgrade rust`.
 - clang on your `PATH`, for building the generated C.
 - Your own disc image (see below).
 
