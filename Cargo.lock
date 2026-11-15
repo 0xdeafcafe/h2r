@@ -327,6 +327,7 @@ dependencies = [
  "libc",
  "libloading",
  "lift",
+ "live-hle",
  "perf",
  "png",
  "runtime",
@@ -1382,6 +1383,16 @@ name = "litrs"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4744e383959f0db86ede514b809b1c53251889093803c05267acc7d4e7030d70"
+
+[[package]]
+name = "live-hle"
+version = "0.1.0"
+dependencies = [
+ "runtime",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "lock_api"

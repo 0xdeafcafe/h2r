@@ -15,6 +15,7 @@ pub mod d3d_glue;
 pub mod dsound_glue;
 pub mod fallback;
 pub mod game_glue;
+pub mod live_glue;
 pub mod sha;
 pub mod shim;
 pub mod sse;
@@ -31,6 +32,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use runtime::{Event, GuestFn};
+pub use live_hle::LiveConfig;
 
 /// The bridge source linked into the generated dylib.
 pub const BRIDGE: &str = include_str!("../c/boot_bridge.c");
@@ -395,7 +397,20 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
 
 /// [`run`] inside a host: its D3D backend, audio sink and input, and a
 /// callback between slices that paces the run and can end it.
-pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host) -> Result<RunReport> {
+pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, host: Host) -> Result<RunReport> {
+    run_hosted_with_live(xbe_bytes, dylib, opts, host, &LiveConfig::default())
+}
+
+/// [`run`] with the opt-in client configuration. Offline callers keep [`run`].
+pub fn run_with_live(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, live: &LiveConfig) -> Result<RunReport> {
+    run_hosted_with_live(xbe_bytes, dylib, opts, Host::default(), live)
+}
+
+/// [`run_hosted`] with explicit Live client settings. The host/CLI supplies
+/// the account path and server base URL; no implicit environment settings.
+pub fn run_hosted_with_live(
+    xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host, live: &LiveConfig,
+) -> Result<RunReport> {
     let x = xbe::Xbe::parse(xbe_bytes)?;
     if !dylib_current(xbe_bytes, dylib) {
         bail!(
@@ -434,6 +449,7 @@ pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host
     }
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
+    let _live = live_glue::install(&loaded.runtime, &k, live)?;
     std::fs::create_dir_all(&opts.data_root)?;
     let cfg = vfs::Config::new(&opts.data_root, x.certificate.title_id);
     let v = match vfs::Vfs::with_disc(cfg.clone(), &opts.disc) {
