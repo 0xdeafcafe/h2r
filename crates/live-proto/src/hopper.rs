@@ -428,7 +428,7 @@ mod tests {
         assert_eq!(B_RECORDS + MAX_RECORDS * RECORD, BLOCK);
         assert_eq!(D_NAME + D_NAME_LEN, 0x5a0, "the name field ends at +0x5a0");
         assert_eq!(D_DWORDS + DWORDS * 4, 0x5e8);
-        assert!(D_RANGES + 3 * 4 <= DESCRIPTOR, "ranges fit the descriptor");
+        const { assert!(D_RANGES + 3 * 4 <= DESCRIPTOR, "ranges fit the descriptor") };
         assert_eq!(R_STRING + R_STRING_LEN, R_FLAGS, "the string ends at flags");
 
         let file = HopperFile::blank().build();
