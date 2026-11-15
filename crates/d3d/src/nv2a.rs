@@ -52,7 +52,12 @@
 //! cached too, so a draw that cannot be translated costs a lookup the next
 //! time.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+
+// Program keys are large (microcode plus the combiner definition) and are
+// hashed on every draw: Fx instead of SipHash. Nothing here is keyed by
+// untrusted input.
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -158,7 +163,7 @@ struct Compiled {
 /// default for [`GfxBackend::new`](crate::GfxBackend::new)).
 pub struct Nv2aShaders {
     bindings: Option<ProgramBindings>,
-    programs: HashMap<ProgramKey, Result<Compiled, String>>,
+    programs: FxHashMap<ProgramKey, Result<Compiled, String>>,
     table: RenderStateTable,
     next: u32,
     stats: Nv2aStats,
@@ -182,7 +187,7 @@ type Translated = Result<(wgpu::ShaderModule, Translation), String>;
 struct Warm {
     rx: mpsc::Receiver<(ProgramKey, Translated)>,
     /// Sent to the thread and not installed yet.
-    waiting: HashSet<ProgramKey>,
+    waiting: FxHashSet<ProgramKey>,
     /// Recorded pipelines by program cache id, built once it is installed.
     pipelines: HashMap<u64, Vec<StoredPipeline>>,
 }
@@ -198,7 +203,7 @@ impl Nv2aShaders {
     pub fn new() -> Self {
         Self {
             bindings: None,
-            programs: HashMap::new(),
+            programs: FxHashMap::default(),
             table: RenderStateTable::default(),
             next: 0,
             stats: Nv2aStats::default(),
@@ -238,7 +243,7 @@ impl Nv2aShaders {
             }
         }
         let keys: Vec<ProgramKey> = loaded.programs.into_iter().map(|(_, k)| k).collect();
-        let waiting: HashSet<ProgramKey> = keys.iter().cloned().collect();
+        let waiting: FxHashSet<ProgramKey> = keys.iter().cloned().collect();
         let (tx, rx) = mpsc::channel();
         let device = ctx.device.clone();
         let spawned = std::thread::Builder::new()
@@ -1011,7 +1016,7 @@ impl ShaderProvider for Nv2aShaders {
         Some(Box::new(Nv2aJudge {
             table: self.table.clone(),
             caps,
-            programs: HashMap::new(),
+            programs: FxHashMap::default(),
         }))
     }
 }
@@ -1022,7 +1027,7 @@ impl ShaderProvider for Nv2aShaders {
 pub struct Nv2aJudge {
     table: RenderStateTable,
     caps: gfx::translate::Capabilities,
-    programs: HashMap<ProgramKey, Result<(), String>>,
+    programs: FxHashMap<ProgramKey, Result<(), String>>,
 }
 
 impl crate::shader::ShaderJudge for Nv2aJudge {

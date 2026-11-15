@@ -288,6 +288,20 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
         self.inner.read_pixel_count(ticket)
     }
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        self.inner.try_pixel_count(ticket)
+    }
+    fn can_sample_depth_surfaces(&self) -> bool {
+        self.inner.can_sample_depth_surfaces()
+    }
+    fn depth_level_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.depth_level_texture(surface)?;
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            Tracked { id, inner }
+        }))
+    }
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.inner.drop_pixel_count(ticket)
     }

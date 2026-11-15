@@ -17,6 +17,8 @@ shaders = { path = "../shaders" }
 # Pipeline and program keys are persisted (d3d::pipeline_store).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Per-draw program-key lookups (nv2a::Nv2aShaders).
+rustc-hash = "2"
 
 [dev-dependencies]
 pollster = "1"

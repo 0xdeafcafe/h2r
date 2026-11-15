@@ -924,3 +924,171 @@ fn w_buffered_depth_clamp_keeps_what_lies_past_the_clip_range() {
     let err = pollster::block_on(scope.pop());
     assert!(err.is_none(), "wgpu validation error: {err:?}");
 }
+
+// Hardware constant registers for the skinning programs below.
+const SK_VIEWPROJ: u8 = 0;
+const SK_SCALE: u8 = 4;
+const SK_OFFSET: u8 = 5;
+const SK_COLOUR: u8 = 6;
+const SK_BONES: u8 = 8;
+
+/// The tail both programs share: `dph` through the view-projection rows
+/// into `oPos`, the viewport epilogue, and `oD0 = c[SK_COLOUR]`.
+fn skin_tail(insts: &mut Vec<Inst>) {
+    for (i, mask) in [8u8, 4, 2, 1].into_iter().enumerate() {
+        insts.push(
+            Inst::mac(MacOp::Dph, Some(Operand::r(0)), Some(Operand::c(SK_VIEWPROJ + i as u8)), None)
+                .to_out(false, OutReg::Pos, mask),
+        );
+    }
+    insts.push(
+        Inst::mac(MacOp::Mul, Some(Operand::r(12)), Some(Operand::c(SK_SCALE)), None)
+            .to_out(false, OutReg::Pos, 0xE)
+            .with_ilu(shaders::vsh::IluOp::Rcc, Operand::r(12).swz("w"))
+            .ilu_to_temp(1, 1),
+    );
+    insts.push(
+        Inst::mac(MacOp::Mad, Some(Operand::r(12)), Some(Operand::r(1).swz("w")), Some(Operand::c(SK_OFFSET)))
+            .to_out(false, OutReg::Pos, 0xE),
+    );
+    insts.push(
+        Inst::mac(MacOp::Mov, Some(Operand::c(SK_COLOUR)), None, None)
+            .to_out(false, OutReg::D0, 0xF)
+            .last(),
+    );
+}
+
+/// Rigid: `r0.xyz` = bone 0 (three rows) times `v0`.
+fn rigid_program() -> Vec<u8> {
+    let mut insts = Vec::new();
+    for (row, mask) in [8u8, 4, 2].into_iter().enumerate() {
+        insts.push(
+            Inst::mac(MacOp::Dp4, Some(Operand::v(0)), Some(Operand::c(SK_BONES + row as u8)), None)
+                .to_temp(0, mask),
+        );
+    }
+    skin_tail(&mut insts);
+    program(&insts)
+}
+
+/// Three bones weighted by `v3.xyz`, blended as matrices the way Halo's
+/// skinning programs do: per row, `mul r5, c[bone 0 row], v3.x`, then
+/// `mad r5, c[bone 1 row], v3.y, r5` and `mad r5, c[bone 2 row], v3.z, r5`;
+/// then `dp4 r0.x, v0, r5` (and so on for y and z).
+fn skinned_program() -> Vec<u8> {
+    let mut insts = Vec::new();
+    for (row, mask) in [8u8, 4, 2].into_iter().enumerate() {
+        let r = 5 + row as u8;
+        let bone = |b: u8| Operand::c(SK_BONES + 3 * b + row as u8);
+        insts.push(
+            Inst::mac(MacOp::Mul, Some(bone(0)), Some(Operand::v(3).swz("x")), None).to_temp(r, 0xF),
+        );
+        insts.push(
+            Inst::mac(MacOp::Mad, Some(bone(1)), Some(Operand::v(3).swz("y")), Some(Operand::r(r)))
+                .to_temp(r, 0xF),
+        );
+        insts.push(
+            Inst::mac(MacOp::Mad, Some(bone(2)), Some(Operand::v(3).swz("z")), Some(Operand::r(r)))
+                .to_temp(r, 0xF),
+        );
+        insts.push(
+            Inst::mac(MacOp::Dp4, Some(Operand::v(0)), Some(Operand::r(r)), None).to_temp(0, mask),
+        );
+    }
+    skin_tail(&mut insts);
+    program(&insts)
+}
+
+/// Loads the skinning constants: a perspective view-projection, the
+/// viewport scale and offset for the 64x64 target, three bones with
+/// awkward (non-dyadic) rotations and translations, and `colour`.
+fn skin_constants(d: &mut d3d::Device<GfxBackend>, m: &mut SparseMemory, z_max: f32, colour: [f32; 4]) {
+    let mut c = [[0.0f32; 4]; 17];
+    let (f, near, far) = (1.37f32, 0.0731f32, 913.7f32);
+    let q = far / (far - near);
+    c[0] = [f, 0.0131, 0.0, 0.0];
+    c[1] = [0.0071, f, 0.0, 0.0];
+    c[2] = [0.0, 0.0, q, -q * near];
+    c[3] = [0.0, 0.0, 1.0, 0.0];
+    let h = W as f32 / 2.0;
+    c[SK_SCALE as usize] = [h, -h, z_max, 0.0];
+    c[SK_OFFSET as usize] = [h + 0.531, h + 0.531, 0.0, 0.0];
+    c[SK_COLOUR as usize] = colour;
+    for bone in 0..3usize {
+        let a = 0.3 + 0.71 * bone as f32;
+        let (s, co) = a.sin_cos();
+        let base = SK_BONES as usize + 3 * bone;
+        c[base] = [co, -s * 0.37, s * 0.93, 0.113 * bone as f32 + 0.0417];
+        c[base + 1] = [s, co * 0.37, -co * 0.93, -0.271];
+        c[base + 2] = [0.0, 0.93, 0.37, 3.1371 + bone as f32];
+    }
+    for (i, v) in c.iter().flatten().enumerate() {
+        m.write_u32(CONSTS + 4 * i as u32, v.to_bits()).unwrap();
+    }
+    d.set_vertex_shader_constant(m, 0, CONSTS, c.len() as u32, true).unwrap();
+}
+
+/// A 12x12 grid of object-space points with weights (1, 0, 0) in `v3`,
+/// as a triangle list.
+fn skin_mesh() -> Vec<[f32; 8]> {
+    let n = 12;
+    let p = |i: usize, j: usize| {
+        let x = -1.9 + 3.8 * i as f32 / n as f32 + 0.0123 * ((i * 7 + j * 3) % 5) as f32;
+        let y = -1.9 + 3.8 * j as f32 / n as f32 + 0.0171 * ((i * 3 + j * 5) % 7) as f32;
+        let z = 0.37 * ((i as f32 * 0.61).sin() + (j as f32 * 0.43).cos());
+        [x, y, z, 1.0, 1.0, 0.0, 0.0, 1.0]
+    };
+    let mut out = Vec::new();
+    for j in 0..n {
+        for i in 0..n {
+            for (a, b) in [(0, 0), (1, 0), (0, 1), (1, 0), (1, 1), (0, 1)] {
+                out.push(p(i + a, j + b));
+            }
+        }
+    }
+    out
+}
+
+/// Halo's multipass surfaces: the base pass with a rigid one-bone program
+/// (depth LessEqual, written), later passes with a three-bone skinning
+/// chain over the same vertices (depth Equal, not written). With weights
+/// (1, 0, 0) the NV2A computes the same position and w in both, so the
+/// later pass covers every pixel of the first, W-buffered and Z-buffered.
+/// A guard: if the host compiler (Metal compiles with fast math) ever fused
+/// or reassociated the two programs differently, Equal would fail along
+/// iso-depth lines. It does not on the Apple GPU this was written on, with
+/// these programs or with the retail pair from the campaign intro's walls,
+/// so the intro's contour bands are not explained by this.
+#[test]
+fn rigid_and_skinned_passes_store_identical_depth() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    let verts = skin_mesh();
+    // More vertex memory than the common layout maps (VB_DATA..TEX_DATA).
+    m.map(0x8000_1000 | VB_DATA, 0xF000);
+    for zenable in [2u32, 1] {
+        call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[zenable]).unwrap();
+        d.clear(&mut m, 0, 0, 0xF3, 0xFF00_0000, 1.0, 0).unwrap();
+        skin_constants(&mut d, &mut m, 16_777_215.0, [1.0, 0.0, 0.0, 1.0]);
+        draw_pass(&mut d, &mut m, &rigid_program(), &verts, 0x203, true); // LESSEQUAL
+        skin_constants(&mut d, &mut m, 16_777_215.0, [0.0, 1.0, 0.0, 1.0]);
+        draw_pass(&mut d, &mut m, &skinned_program(), &verts, 0x202, false); // EQUAL
+        let px = back_buffer(&mut d);
+        let (mut red, mut green) = (0, 0);
+        for y in 0..H {
+            for x in 0..W {
+                match px(x, y) {
+                    [255, 0, 0, 255] => red += 1,
+                    [0, 255, 0, 255] => green += 1,
+                    _ => {}
+                }
+            }
+        }
+        assert!(red + green > 1000, "ZENABLE {zenable}: {} pixels drawn", red + green);
+        assert_eq!(red, 0, "ZENABLE {zenable}: {red} of {} pixels failed the Equal pass", red + green);
+    }
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}
