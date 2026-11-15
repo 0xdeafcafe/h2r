@@ -10,6 +10,20 @@ which contains the whole 0x80155xxx error block and the exact prototypes
 cited below). Every arity claim below was verified by stack-push counts and
 callee `ret n` cleanup.
 
+
+> **Superseded (2026-11-16): this verdict is wrong.** The class at
+> `0x002c7410` / `0x002c74f9` / `0x002c788a` is the game's voice/text
+> message playback screen, and its property tags are standard XDK message
+> properties (`0x9c1` VOICE_DATA, `0x3c2` VOICE_DATA_CODEC, `0x4c3`
+> VOICE_DATA_DURATION, `0x6c4` TEXT, `0x4c5` TEXT_LANGUAGE — not a file
+> class, `0x581` SESSION_ID). It only opens messages from the targeted
+> player's XUID, and the 0x499a buffer feeds voice playback (`0x000538e0`),
+> not the MOTD descriptors. Retail fetches `message_of_the_day.dat` and
+> `multiplayer_hopper.dat` from **title storage** (facility 4,
+> `//title.4d530064/t:4d530064/9809/<name>`, buffers 0x8000 / 0x20000) and
+> validates a CRC/version/size header: see
+> [live-motd.md §2.0-§2.4](live-motd.md). Kept for its addresses only.
+
 ## 1. The verdict in one paragraph
 
 **live-boundary.md is right; live-motd.md §2 misidentified the mechanism.**

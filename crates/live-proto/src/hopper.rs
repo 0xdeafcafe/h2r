@@ -2,7 +2,7 @@
 //! (docs/live-motd.md §5). The download envelope is the MOTD's:
 //!
 //! ```text
-//! +0x00  16 bytes   header (zeros; the game skips it)
+//! +0x00  16 bytes   header: CRC, version 4, size ([`crate::title_file`])
 //! +0x10  u32 BE     inflated size, 0x162cc0
 //! +0x14  zlib stream inflating to the image below
 //! ```
@@ -44,6 +44,12 @@ pub const HALO_2_HOPPER_FILE: &str = "multiplayer_hopper.dat";
 
 /// The size the game requires the payload to inflate to (0x162cc0).
 pub const INFLATED_SIZE: usize = 0x162cc0;
+/// The hopper channel's title-storage download buffer (docs/live-motd.md
+/// §2.2): a larger file fails the download and the game keeps its
+/// compiled-in playlists.
+pub const MAX_FILE: usize = 0x20000;
+/// The hopper file class's version in the header; the game wants exactly 4.
+pub const VERSION: u32 = 4;
 /// Hopper descriptor entries, then per-hopper data blocks.
 pub const HOPPERS: usize = 16;
 /// The game's record-count validator allows 1..=100, and the block holds
@@ -125,6 +131,8 @@ pub enum HopperError {
     Nul(String),
     #[error("not a multiplayer_hopper.dat: {0}")]
     Format(&'static str),
+    #[error("not a multiplayer_hopper.dat: {0}")]
+    Header(#[from] crate::title_file::HeaderError),
 }
 
 /// The editable fields of one hopper descriptor. Everything else in the
@@ -258,9 +266,21 @@ impl HopperFile {
         &mut self.image
     }
 
-    /// Reads a download envelope the way the game does (skip 16 bytes, check
-    /// the big-endian size, inflate).
+    /// Reads a download envelope the way the game does (check the header,
+    /// then the big-endian size, inflate).
     pub fn parse(file: &[u8]) -> Result<Self, HopperError> {
+        crate::title_file::check(file, VERSION, MAX_FILE)?;
+        Self::parse_body(file)
+    }
+
+    /// [`HopperFile::parse`], also accepting the zero header of files built
+    /// before the header was known (migration and imports).
+    pub fn parse_legacy(file: &[u8]) -> Result<Self, HopperError> {
+        crate::title_file::check_or_legacy(file, VERSION, MAX_FILE)?;
+        Self::parse_body(file)
+    }
+
+    fn parse_body(file: &[u8]) -> Result<Self, HopperError> {
         let size = file
             .get(PREFIX..PREFIX + 4)
             .ok_or(HopperError::Format("too short"))?;
@@ -280,14 +300,25 @@ impl HopperFile {
         Ok(HopperFile { image: raw })
     }
 
-    /// The file the game downloads: 16 zero bytes, the big-endian inflated
-    /// size, and the zlib-compressed image. Deterministic for one image.
+    /// The file the game downloads: the header (CRC, version 4, size), the
+    /// big-endian inflated size, and the zlib-compressed image.
+    /// Deterministic for one image. Check the result against [`MAX_FILE`]
+    /// before publishing ([`HopperFile::build_checked`]).
     pub fn build(&self) -> Vec<u8> {
-        let mut out = vec![0u8; PREFIX];
-        out.extend_from_slice(&(INFLATED_SIZE as u32).to_be_bytes());
-        let mut z = flate2::write::ZlibEncoder::new(out, flate2::Compression::best());
+        let mut body = (INFLATED_SIZE as u32).to_be_bytes().to_vec();
+        let mut z = flate2::write::ZlibEncoder::new(&mut body, flate2::Compression::best());
         z.write_all(&self.image).expect("writing to a Vec");
-        z.finish().expect("writing to a Vec")
+        z.finish().expect("writing to a Vec");
+        crate::title_file::seal(VERSION, &body)
+    }
+
+    /// [`HopperFile::build`], refusing a file larger than the game's buffer.
+    pub fn build_checked(&self) -> Result<Vec<u8>, HopperError> {
+        let file = self.build();
+        if file.len() > MAX_FILE {
+            return Err(crate::title_file::HeaderError::TooLarge(file.len(), MAX_FILE).into());
+        }
+        Ok(file)
     }
 
     fn descriptor_at(&self, i: usize) -> Result<usize, HopperError> {
@@ -626,8 +657,31 @@ mod tests {
         assert_eq!(R_STRING + R_STRING_LEN, R_FLAGS, "the string ends at flags");
 
         let file = HopperFile::blank().build();
-        assert_eq!(&file[..16], &[0u8; 16]);
+        assert_eq!(&file[4..8], &4u32.to_le_bytes(), "version 4");
+        assert_eq!(&file[8..12], &(file.len() as u32).to_le_bytes(), "size");
+        assert_eq!(
+            &file[0..4],
+            &crate::title_file::crc_register(&file[4..]).to_le_bytes()
+        );
+        assert!(file.len() <= MAX_FILE);
         assert_eq!(&file[16..20], &[0x00, 0x16, 0x2c, 0xc0]);
+        assert!(HopperFile::parse(&file).is_ok());
+        // A MOTD-version header is not a hopper.
+        let mut wrong = crate::title_file::seal(1, &file[16..]);
+        assert!(matches!(
+            HopperFile::parse(&wrong),
+            Err(HopperError::Header(
+                crate::title_file::HeaderError::Version { got: 1, want: 4 }
+            ))
+        ));
+        // The zero header of early builds reads only through parse_legacy.
+        wrong = file.clone();
+        wrong[..16].fill(0);
+        assert!(HopperFile::parse(&wrong).is_err());
+        assert_eq!(
+            HopperFile::parse_legacy(&wrong).unwrap().image(),
+            HopperFile::blank().image()
+        );
         let mut raw = Vec::new();
         flate2::read::ZlibDecoder::new(&file[20..])
             .read_to_end(&mut raw)

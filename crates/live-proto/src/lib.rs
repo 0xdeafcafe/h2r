@@ -12,6 +12,7 @@ pub mod jcs;
 pub mod motd;
 pub mod sign;
 pub mod team;
+pub mod title_file;
 
 use std::fmt;
 
