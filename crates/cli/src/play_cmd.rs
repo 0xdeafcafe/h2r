@@ -19,6 +19,8 @@ const USAGE: &str = "usage:
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--input-timeline FILE]
+  h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
+          [--fresh-data] [--cache DIR] <the arguments above>
 
 Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
@@ -26,10 +28,13 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 --status prints the frame rates once a second and the slice count every
 1000 slices (the unit H2_BOOT_INPUT scripts in). --input-timeline plays an
 input crate timeline (docs/input.md) on guest time instead of live input.
+--follow keeps the game running while it builds each new commit of the
+branch, then offers a restart (`h2 play --follow --help`).
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
-Cmd+F fullscreen, Cmd+P pause. --bindings reads a TOML table (docs/input.md).";
+Cmd+F fullscreen, Cmd+P pause. With --follow, F5 restarts into a ready update
+and F6 hides the banner. --bindings reads a TOML table (docs/input.md).";
 
 /// The play bindings: input's Halo defaults, plus Enter for A and Backspace
 /// for B so the menus work the way a desktop user expects.
@@ -203,6 +208,10 @@ fn watch_signals(_: app::Closer) -> Arc<AtomicBool> {
 }
 
 pub fn run(args: Vec<String>) -> Result<()> {
+    #[cfg(unix)]
+    if args.iter().any(|a| a == "--follow") {
+        return crate::follow::run(args);
+    }
     let tmp = std::env::temp_dir();
     let mut out = tmp.join("h2boot");
     let mut data = tmp.join("h2boot-data");
@@ -210,6 +219,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut transfers = 50_000_000u64;
     let mut disc = None;
     let mut audio = true;
+    let mut follow_status = None;
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
@@ -252,6 +262,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--no-vsync" => config.vsync = false,
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
+            "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
             "--input-timeline" => {
                 let path = PathBuf::from(val()?);
                 let text = std::fs::read_to_string(&path)
@@ -298,6 +309,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let closer = app::Closer::new();
     config.closer = Some(closer.clone());
     let interrupted = watch_signals(closer);
+    // After the signal mask is set, so the reader thread inherits it.
+    #[cfg(unix)]
+    if let Some(path) = follow_status {
+        config.banner = Some(follow_banner(path));
+    }
+    #[cfg(not(unix))]
+    let _ = follow_status;
     let report = app::run(config, move |host| {
         let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted));
         let r = boot::run_hosted(&xbe, &lib, &opts, host)?;
@@ -321,7 +339,31 @@ pub fn run(args: Vec<String>) -> Result<()> {
         report.pacing.sleeps,
         report.pacing.rebases
     );
+    #[cfg(unix)]
+    if report.restart_requested {
+        println!("play: restarting into the update");
+        std::process::exit(crate::follow::RESTART_EXIT);
+    }
     Ok(())
+}
+
+/// The window's banner, kept in step with the `--follow` supervisor's
+/// status file (polled twice a second).
+#[cfg(unix)]
+fn follow_banner(path: PathBuf) -> app::Banner {
+    let banner = app::Banner::new();
+    let b = banner.clone();
+    std::thread::Builder::new()
+        .name("follow-status".into())
+        .spawn(move || {
+            loop {
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                b.set(crate::follow::parse_status(&text));
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        })
+        .expect("spawning the status reader");
+    banner
 }
 
 #[cfg(test)]

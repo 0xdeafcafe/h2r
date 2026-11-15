@@ -18,6 +18,8 @@ mod lighting;
 mod maps;
 mod movies_cmd;
 mod object;
+#[cfg(unix)]
+mod follow;
 mod play_cmd;
 mod safe_out;
 mod scripts;
@@ -31,6 +33,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   build <disc>            lift, emit and compile the whole XBE (docs/BOOT.md)
   run <disc>              build if needed, then boot it natively on the kernel HLE
   play <disc>             build if needed, then play it in a window (docs/app.md)
+  play --follow <disc>    play, rebuilding each new commit of master in the
+                          background; F5 restarts into it (docs/app.md)
   info                    title, sections, libraries
   ls                      files on the disc
   maps [disc.iso]         map headers and tag counts on the disc

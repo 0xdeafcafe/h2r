@@ -149,6 +149,102 @@ after the first the process exits regardless. (A job started with a shell's `&` 
 Where the input pump runs: after every slice, not once per guest frame. Mouse
 look sensitivity therefore depends on the slice rate.
 
+## Following a branch: `h2 play --follow`
+
+```sh
+h2 play --follow /abs/path/to/disc/halo2.iso
+```
+
+Plays as `h2 play` does, and meanwhile follows `origin/master`: when a new
+commit lands it builds it in the background, then a banner offers the
+update. F5 restarts into it; F6 hides the banner. Closing the window ends
+it. Everything after the follow flags is passed to `h2 play` as is.
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--repo PATH` | the checkout containing the current directory | Repository to follow. |
+| `--branch B`, `--remote R` | `master`, `origin` | Branch to watch. |
+| `--no-fetch` | off | Watch the local `refs/heads/B` instead of fetching. |
+| `--poll SECS` | 45 (minimum 5) | How often to fetch or look. |
+| `--fresh-data` | off | Each launch gets an empty data dir under the cache (otherwise the user's `--data`). |
+| `--cache DIR` | `~/Library/Caches/h2recomp/follow` | Where everything below lives. |
+
+How it works (crates/cli `follow.rs`):
+
+- **Supervisor.** The parent process runs the game as a child (`h2 play`
+  with the same arguments, plus `--out`, `--data` and the hidden
+  `--follow-status FILE`). The first child is the `h2` you started, and the
+  branch's head at startup is taken to be what it runs, so the first
+  update is the next commit. The child sits in its own process group: a
+  Ctrl-C in the terminal reaches only the supervisor, which stops the child
+  once with SIGTERM, cancels any build, and exits with the child's code.
+- **Watching.** Every `--poll` seconds: `git fetch <remote> <branch>`, which
+  only moves the remote-tracking ref, then `rev-parse`. With `--no-fetch` it
+  reads the local branch. A failed fetch is logged and the last fetched ref
+  is used.
+- **Building.** One commit at a time. Heads that arrive mid-build queue, and
+  the latest one wins. A commit that failed is not retried until the head
+  moves again. Each build runs in a detached worktree the supervisor owns
+  (`<cache>/checkout`, added with `git worktree add`, then `checkout
+  --force` and `clean` for later commits). It runs `nice -n 15 cargo build
+  --release -p cli` with `CARGO_TARGET_DIR=<cache>/target`, and
+  `CARGO_BUILD_JOBS` set to half the cores unless you have set it.
+  `RUSTC_WRAPPER` (sccache) and the rest of your environment pass through.
+  The generated game is rebuilt (`nice h2 build <disc> --out
+  <cache>/gen/<hash>`) only when the commit touches the generator (xbe,
+  analyze, lift, ir, emit, x87, simd, or `runtime/include`; `GEN_INPUTS`).
+  Otherwise the previous dylib is reused, starting with the first child's
+  `--out`. Objects go to `H2_OBJ_CACHE`, which defaults to
+  `<cache>/objcache` and persists, so an emit only compiles C that changed.
+  The finished `h2` is copied to `<cache>/builds/<hash>/`. Builds and gen
+  dirs no longer in use are pruned before each build.
+- **Banner.** The supervisor writes `<cache>/status` (one line,
+  `info|ready|error<TAB>text`, replaced atomically). The child reads it
+  twice a second into an `app::Banner`, which the shell draws in the
+  top-left corner of the window over the game frame. It is the 8x8
+  public-domain font at 2x on a translucent plate, a second render pass
+  with alpha blending (`app::overlay`). The messages:
+  "Building <hash>...";
+  "Update ready: <subject, or N commits> - press F5 to restart" (with
+  "(building <hash>...)" or "(<hash> failed to build)" when a newer commit
+  is in progress or failed);
+  "Update failed to build: <first error line>". After a failure the game
+  keeps running the current build.
+- **Restart.** With a banner configured, F5 and F6 never reach the game's
+  pad. F5 works only while an update is ready, even with the banner hidden.
+  It closes the window like Cmd+Q (the run ends as `HostStop` and prints
+  its report), and `h2 play` exits with code 75 (`follow::RESTART_EXIT`).
+  The supervisor then starts the new `h2` with the new `--out`, which boots
+  fresh. Any other exit code ends the supervisor.
+- **Safety.** Your checkout's working tree, index and branches are never
+  touched. The only repository-side effects are the fetch's remote-tracking
+  ref and the cache worktree's entry under `.git/worktrees`. Generated code,
+  builds and logs stay in the cache: `logs/follow.log` holds the
+  supervisor's events, and `logs/build-<hash>.log` holds each build's cargo
+  and emit output. A lock file allows only one follower per cache. To
+  remove it all: `git worktree remove --force <cache>/checkout`, then
+  delete the cache dir.
+
+Tests: `follow.rs` unit-tests the state machine (idle, building, ready,
+failed, restart, queueing, close and interrupt). It also runs the event
+loop with a fake builder and a fake child: build, F5, failure, fix, F5,
+close. The status file format, the first-error pick and the argument split
+are covered too. An ignored test (`cargo test -p cli --bin h2 -- --ignored
+real_builder`) drives the real git, cargo, worktree and child code against
+a scratch repository whose `cli` crate is a stand-in `h2`:
+
+- the branch moves;
+- the build regenerates because `crates/emit` changed;
+- a script child waits for "ready" and exits 75;
+- the new build runs with the expected arguments;
+- the user checkout stays clean;
+- a broken commit reports `error[E0308]`;
+- an h2-only commit reuses the generated game;
+- a clone follows its origin by fetching.
+
+`app::overlay` tests dismissal, the restart offer and rasterising. A GPU test
+draws the banner over a frame and reads back the blend.
+
 ## Presentation
 
 `D3DDevice_Swap` -> `GfxBackend::present` -> present hook -> `FrameSink`:
@@ -285,6 +381,9 @@ it. A one-second window read 0.0 for a game presenting 1.4 times a second.
   packet completes; the discard renderer runs at real time with no burst,
   renders nothing while paused and owes nothing afterwards, follows the
   guest's pause and stop, and stops promptly on drop.
+- `overlay.rs`: F6 hides a notice until a different one arrives, only a
+  ready notice offers F5 (also when hidden), glyphs on the plate, long text
+  cut, and (GPU) the banner blended over a frame in the top-left only.
 - `keymap.rs`: every mapped key is accepted by `input::bindings`, names match
   the W3C spelling, Cmd is not forwarded, default bindings through the map,
   mouse routing (a Cmd-click neither recaptures nor forwards).
