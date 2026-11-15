@@ -39,6 +39,12 @@ pub const CFLAGS: &[&str] = &[
     "-Wno-unused-but-set-variable",
     "-Werror=implicit-function-declaration",
     "-Werror=int-conversion",
+    // Clang records its working directory in the driver's expanded command
+    // line and in debug info. Pin it, so the same source and flags key and
+    // compile identically from any directory. Without these, running the
+    // build from another checkout missed every cached object.
+    "-fdebug-compilation-dir=.",
+    "-fcoverage-compilation-dir=.",
 ];
 
 /// The optimisation and debug-info flags for `opt` (`H2_OPT`: `0` `1` `g`
@@ -952,6 +958,41 @@ mod tests {
         let second = build_in(&b, &dir.join("out-b"), &cache, Arch::host(), 1, &cc).unwrap();
         assert_eq!((second.compiled, second.reused), (0, 1));
         assert_eq!(first.cache_objects, second.cache_objects);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The compiler's working directory must not reach the object key: the
+    /// same generated C built from another checkout or shell directory
+    /// (clang embeds its cwd as the compilation directory) reuses every
+    /// object.
+    #[test]
+    fn the_compilers_working_directory_is_not_part_of_the_object_key() {
+        use std::os::unix::fs::PermissionsExt;
+        let Ok(cc) = compiler() else {
+            eprintln!("SKIPPED the_compilers_working_directory_is_not_part_of_the_object_key: no clang");
+            return;
+        };
+        let dir = std::env::temp_dir().join(format!("h2-cwd-key-{}", std::process::id()));
+        let a = tiny_tree(&dir.join("a"));
+        let b = tiny_tree(&dir.join("b"));
+        for src in [&a, &b] {
+            std::fs::write(src.join("one.c"), "int h2_one(void) { return 1; }\n").unwrap();
+        }
+        let (cwd_a, cwd_b) = (dir.join("cwd-a"), dir.join("cwd-b"));
+        std::fs::create_dir_all(&cwd_a).unwrap();
+        std::fs::create_dir_all(&cwd_b).unwrap();
+        // One wrapper (so one compiler identity) that runs clang in the
+        // directory named by a file the test rewrites between builds.
+        let wrapper = dir.join("clang");
+        std::fs::write(&wrapper, format!("#!/bin/sh\ncd \"$(cat '{}')\"\nexec '{}' \"$@\"\n", dir.join("cwd").display(), cc.display())).unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let cache = dir.join("cache");
+        std::fs::write(dir.join("cwd"), cwd_a.to_str().unwrap()).unwrap();
+        let first = build_in(&a, &dir.join("out-a"), &cache, Arch::host(), 1, &wrapper).unwrap();
+        assert_eq!((first.compiled, first.reused), (1, 0));
+        std::fs::write(dir.join("cwd"), cwd_b.to_str().unwrap()).unwrap();
+        let second = build_in(&b, &dir.join("out-b"), &cache, Arch::host(), 1, &wrapper).unwrap();
+        assert_eq!((second.compiled, second.reused), (0, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

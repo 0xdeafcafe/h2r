@@ -65,6 +65,11 @@ expanded response-file options participate too. This detects a changed
 are unchanged. Configuration comments also change the content key. Only the
 source-file operand is normalized for reuse across output locations;
 configuration options and macro values retain their full contents.
+The compiler's working directory is pinned too (`-fdebug-compilation-dir=.`
+and `-fcoverage-compilation-dir=.`). Clang otherwise puts its cwd in the `-###`
+command, so a build started from another checkout or shell directory keyed
+every object differently and reused none of a shared `H2_OBJ_CACHE`. Debug
+line tables still name the generating output's source path.
 These keys supersede earlier header-only keys, so existing objects rebuild
 once without requiring a manual cache clear.
 A change confined to one shard recompiles that shard. Sources use stable
