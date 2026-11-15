@@ -226,9 +226,17 @@ being left out, and a failed read leaving the tag alone.
 
 ## Not done and risks
 
-- **The game run.** See the report on the branch for what the one gate run
-  showed. Choosing a community variant in a lobby and the copy flow were
-  not driven by the scripted pad.
+- **Not seen in the game yet.** The work is proven by the unit tests and the
+  disassembly above; no game run was made. To check by hand: Settings, Game
+  Variants should list the twelve after the retail ones, each ending in the
+  two-players icon, with its description; Edit on one should ask for a name
+  and save a copy; a custom game on one should play with its settings. The
+  boot log says "community variants: 12 added to the built-in list", or names
+  any variant left out.
+- **Copy and lock are the game's.** No hook decides them: an entry in the
+  `goof` block becomes a built-in through `0x217080`, as the retail ones do.
+  The tests prove our entries land in that block beside the retail ones, not
+  what the game then does with them.
 - **Other screens.** The lobby (`mp_variant_select_lobby`) and the in-game
   summary may show the description through another `0x19fd00` caller; they
   would show the number's text ("80") or nothing. Not traced.
