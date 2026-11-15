@@ -6,6 +6,22 @@ use std::io::{self, Write};
 /// (never panics) if either dimension is zero, the size overflows, or the
 /// buffer length does not equal `width * height * 4`.
 pub fn write_rgba(out: impl Write, width: u32, height: u32, rgba: &[u8]) -> io::Result<()> {
+    write(out, width, height, rgba, ::png::Compression::Balanced)
+}
+
+/// [`write_rgba`] with fast compression: several times quicker to encode,
+/// somewhat larger files. Equally deterministic.
+pub fn write_rgba_fast(out: impl Write, width: u32, height: u32, rgba: &[u8]) -> io::Result<()> {
+    write(out, width, height, rgba, ::png::Compression::Fast)
+}
+
+fn write(
+    out: impl Write,
+    width: u32,
+    height: u32,
+    rgba: &[u8],
+    compression: ::png::Compression,
+) -> io::Result<()> {
     let bad = |m: &'static str| io::Error::new(io::ErrorKind::InvalidInput, m);
     if width == 0 || height == 0 {
         return Err(bad("zero-sized image"));
@@ -20,6 +36,7 @@ pub fn write_rgba(out: impl Write, width: u32, height: u32, rgba: &[u8]) -> io::
     let mut enc = ::png::Encoder::new(out, width, height);
     enc.set_color(::png::ColorType::Rgba);
     enc.set_depth(::png::BitDepth::Eight);
+    enc.set_compression(compression);
     let mut w = enc.write_header().map_err(io::Error::other)?;
     w.write_image_data(rgba).map_err(io::Error::other)?;
     w.finish().map_err(io::Error::other)
@@ -45,7 +62,9 @@ mod tests {
     }
 
     fn pattern(n: usize) -> Vec<u8> {
-        (0..n).map(|i| (i.wrapping_mul(2654435761) >> 13) as u8).collect()
+        (0..n)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect()
     }
 
     #[test]
@@ -54,6 +73,9 @@ mod tests {
         let mut v = Vec::new();
         write_rgba(&mut v, 2, 1, &px).unwrap();
         assert_eq!(decode(&v), (2, 1, px.to_vec()));
+        let mut fast = Vec::new();
+        super::write_rgba_fast(&mut fast, 2, 1, &px).unwrap();
+        assert_eq!(decode(&fast), (2, 1, px.to_vec()));
     }
 
     #[test]

@@ -225,19 +225,19 @@ pub fn bootstrap(
 /// holds this disc's art. Any failure is a warning: the web app keeps its
 /// own art.
 pub fn game_art(disc: &Path, dir: &Path) -> Option<live_server::art::GameArt> {
-    let fresh = match crate::live_art::disc_key(disc) {
-        Ok((key, _)) => crate::live_art::cached(dir, &key).is_some(),
+    let disc = match crate::live_art::Disc::scan(disc) {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("live: no game art ({e:#})");
             return None;
         }
     };
-    if !fresh {
+    if crate::live_art::cached(dir, &disc.key).is_none() {
         eprintln!(
             "live: extracting game art from the disc into {} (once per disc)",
             dir.display()
         );
-        if let Err(e) = crate::live_art::extract(disc, dir) {
+        if let Err(e) = crate::live_art::extract(&disc, dir) {
             eprintln!("live: game art extraction failed ({e:#}); the web app keeps its own art");
             return None;
         }

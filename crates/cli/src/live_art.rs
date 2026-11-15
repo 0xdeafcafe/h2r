@@ -3,34 +3,39 @@
 //!
 //! No game asset is named here (CONTRIBUTING.md; docs/bitmaps.md: "No pixels
 //! or names of game assets are stored in the repo"). Each category is found
-//! by structure at run time: which shared map holds it, how many images the
-//! bitmap tag has, and their shape. Multiplayer map previews are the one
-//! picture-sized UI image a multiplayer map carries that the shared map
-//! does not. Everything found is decoded to PNG (RGBA) under semantic keys and
-//! listed in `manifest.json`; output is deterministic for a given disc.
+//! by structure at run time: which kind of map holds it (the map header's
+//! cache type), how many images the bitmap tag has, and their shape.
+//! Multiplayer map previews are the one picture-sized UI image a
+//! multiplayer map carries that the shared map does not. Medals and the
+//! colour palette are icon glyphs in the fonts' private-use range
+//! (docs/fonts.md). Everything found is decoded to PNG (RGBA) under semantic
+//! keys and listed in `manifest.json`; output is deterministic for a disc.
+//!
+//! Only the maps that can hold art are opened, each on its own thread, and
+//! only the bitmap tags that can match are decoded; PNGs are encoded in
+//! parallel with fast compression.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
-use std::io::{Read, Seek, SeekFrom};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs::{self, File};
+use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::ops::RangeInclusive;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use map::{CacheType, FourCC};
+use anyhow::{Context, Result, anyhow};
+use assets::{Region, ResourceFiles};
+use map::{CacheType, FourCC, Map, ResourceFile};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tags::{DecodedTag, TagData};
 
-/// Bumped when the output for a given disc would change.
-pub const EXTRACTOR_VERSION: u32 = 1;
+/// Bumped when the output for a given disc would change (part of the cache
+/// key).
+pub const EXTRACTOR_VERSION: u32 = 2;
+/// The manifest's format, bumped only for changes a client cannot read
+/// (clients check it; added fields do not count).
+pub const MANIFEST_VERSION: u32 = 1;
 
 const BITM: FourCC = FourCC(*b"bitm");
-
-/// Where a category's tag lives.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Source {
-    MainMenu,
-    Shared,
-}
 
 /// One image's shape, as the picker sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +52,12 @@ impl Shape {
     }
 }
 
-/// A category: the key prefix, where it lives, how many images its tag has,
-/// and what each image looks like. Among matching tags the one with the
-/// largest images wins (the others are smaller copies).
+/// A category: the key prefix, which kind of map holds it, how many images
+/// its tag has, and what each image looks like. Among matching tags the one
+/// with the largest images wins (the others are smaller copies).
 pub struct Category {
     pub prefix: &'static str,
-    pub source: Source,
+    pub source: CacheType,
     pub images: usize,
     pub shape: fn(&Shape) -> bool,
     /// The key for image `i`.
@@ -62,21 +67,21 @@ pub struct Category {
 pub const CATEGORIES: &[Category] = &[
     Category {
         prefix: "emblem/fg",
-        source: Source::MainMenu,
+        source: CacheType::MainMenu,
         images: 64,
         shape: Shape::square_pow2,
         key: |i| format!("emblem/fg/{i}"),
     },
     Category {
         prefix: "emblem/bg",
-        source: Source::MainMenu,
+        source: CacheType::MainMenu,
         images: 32,
         shape: Shape::square_pow2,
         key: |i| format!("emblem/bg/{i}"),
     },
     Category {
         prefix: "rank",
-        source: Source::MainMenu,
+        source: CacheType::MainMenu,
         images: 50,
         shape: |s| s.linear,
         // Ranks count from 1.
@@ -84,38 +89,81 @@ pub const CATEGORIES: &[Category] = &[
     },
     Category {
         prefix: "live",
-        source: Source::MainMenu,
+        source: CacheType::MainMenu,
         images: 32,
         shape: |s| s.linear && !s.square_pow2(),
         key: |i| format!("live/{i}"),
     },
     Category {
         prefix: "gametype",
-        source: Source::MainMenu,
+        source: CacheType::MainMenu,
         images: 11,
         shape: |s| s.linear && s.width.abs_diff(s.height) <= 2,
         key: |i| format!("gametype/{i}"),
     },
     Category {
         prefix: "weapon",
-        source: Source::Shared,
+        source: CacheType::Shared,
         images: 19,
         shape: |s| s.linear && s.width > s.height,
         key: |i| format!("weapon/{i}"),
     },
 ];
 
-/// Game-type icons identified by eye on a retail disc: the index in the
-/// game-type icon set of each game type's icon. The other indexes are left
-/// as `gametype/<i>` only.
-pub const GAMETYPE_ALIASES: &[(&str, usize)] = &[
-    ("slayer", 0),
-    ("king_of_the_hill", 1),
-    ("oddball", 3),
-    ("juggernaut", 4),
-    ("ctf", 6),
-    ("assault", 7),
-    ("territories", 8),
+/// Friendlier names for some images, identified by eye on a retail disc:
+/// `(prefix, [(name, index)])` gives `prefix/name` -> `prefix/index`. Indexes
+/// not listed stay numeric only.
+pub const ALIASES: &[(&str, &[(&str, usize)])] = &[
+    (
+        "gametype",
+        &[
+            ("slayer", 0),
+            ("king_of_the_hill", 1),
+            ("oddball", 3),
+            ("juggernaut", 4),
+            ("ctf", 6),
+            ("assault", 7),
+            ("territories", 8),
+        ],
+    ),
+    (
+        "weapon",
+        &[
+            ("energy_sword", 2),
+            ("plasma_pistol", 3),
+            ("plasma_rifle", 4),
+            ("sniper_rifle", 5),
+            ("rocket_launcher", 6),
+            ("smg", 8),
+            ("beam_rifle", 9),
+            ("sentinel_beam", 12),
+        ],
+    ),
+    (
+        "medal",
+        &[
+            ("killing_spree", 0),
+            ("running_riot", 1),
+            ("rampage", 2),
+            ("berserker", 3),
+            ("overkill", 4),
+            ("double_kill", 5),
+            ("triple_kill", 6),
+            ("killtacular", 7),
+            ("kill_frenzy", 8),
+            ("killtrocity", 9),
+            ("killimanjaro", 10),
+            ("sniper_kill", 11),
+            ("splatter", 12),
+            ("bone_cracker", 13),
+            ("assassin", 14),
+            ("stick_it", 15),
+            ("flag_carrier_kill", 16),
+            ("bomb_carrier_kill", 18),
+            ("flag_returned", 25),
+            ("bomb_returned", 26),
+        ],
+    ),
 ];
 
 /// A bitmap tag as the picker sees it.
@@ -180,6 +228,114 @@ pub fn slice(
     Some((w, h, out))
 }
 
+/// The fonts' private-use icon range (docs/fonts.md).
+const ICONS: RangeInclusive<u16> = 0xe000..=0xe3ff;
+/// Medal glyphs: 24 pixels tall, at least as wide.
+pub const MEDALS: usize = 32;
+/// Colour swatches: glyphs that are mostly one flat colour.
+pub const PALETTE: usize = 18;
+
+/// An icon glyph: its size and ARGB4444 pixels.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Icon {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u16>,
+}
+
+impl Icon {
+    fn is_medal(&self) -> bool {
+        self.height == 24 && self.width >= 24
+    }
+
+    /// The most common pixel and how many pixels have it.
+    fn dominant(&self) -> (u16, usize) {
+        let mut counts = HashMap::new();
+        for &p in &self.pixels {
+            *counts.entry(p).or_insert(0usize) += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|&(p, n)| (n, std::cmp::Reverse(p)))
+            .unwrap_or_default()
+    }
+
+    /// A swatch: at least 80% of it is one colour (medals and buttons
+    /// stay under 75%).
+    fn is_swatch(&self) -> bool {
+        !self.pixels.is_empty() && self.dominant().1 * 5 >= self.pixels.len() * 4
+    }
+
+    fn rgba(&self) -> Vec<u8> {
+        self.pixels.iter().flat_map(|&p| argb4444(p)).collect()
+    }
+}
+
+/// An ARGB4444 word as RGBA8.
+fn argb4444(p: u16) -> [u8; 4] {
+    let c = |shift: u16| (((p >> shift) & 15) * 17) as u8;
+    [c(8), c(4), c(0), c(12)]
+}
+
+/// Glyph records drawn by exactly one code unit, in code-unit order. A
+/// record shared by many units is the font's placeholder for unused ones.
+pub fn own_records(units: &[(u16, u32)]) -> Vec<u32> {
+    let mut uses: HashMap<u32, usize> = HashMap::new();
+    for &(_, r) in units {
+        *uses.entry(r).or_default() += 1;
+    }
+    units
+        .iter()
+        .map(|&(_, r)| r)
+        .filter(|r| *r != 0 && uses[r] == 1)
+        .collect()
+}
+
+fn icons(font: &font::Font) -> Vec<Icon> {
+    let units: Vec<(u16, u32)> = ICONS.map(|u| (u, font.glyph_index(u))).collect();
+    own_records(&units)
+        .into_iter()
+        .filter_map(|r| font.glyph_by_index(r).ok())
+        .filter(|g| !g.pixels.is_empty())
+        .map(|g| Icon {
+            width: g.record.width.into(),
+            height: g.record.height.into(),
+            pixels: g.pixels,
+        })
+        .collect()
+}
+
+/// The medals among a font's icons, in code-unit order, if there are
+/// exactly [`MEDALS`].
+pub fn medals(icons: &[Icon]) -> Option<Vec<Piece>> {
+    let found: Vec<Piece> = icons
+        .iter()
+        .filter(|i| i.is_medal())
+        .enumerate()
+        .map(|(n, i)| Piece {
+            key: format!("medal/{n}"),
+            width: i.width,
+            height: i.height,
+            rgba: i.rgba(),
+        })
+        .collect();
+    (found.len() == MEDALS).then_some(found)
+}
+
+/// The colour palette (`#rrggbb`, 4-bit precision) from a font's swatches,
+/// in code-unit order, if there are exactly [`PALETTE`].
+pub fn palette(icons: &[Icon]) -> Option<Vec<String>> {
+    let found: Vec<String> = icons
+        .iter()
+        .filter(|i| i.is_swatch())
+        .map(|i| {
+            let [r, g, b, _] = argb4444(i.dominant().0);
+            format!("#{r:02x}{g:02x}{b:02x}")
+        })
+        .collect();
+    (found.len() == PALETTE).then_some(found)
+}
+
 /// One picture in the manifest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Entry {
@@ -192,6 +348,7 @@ pub struct Entry {
 /// `manifest.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
+    /// [`MANIFEST_VERSION`].
     pub version: u32,
     /// The cache key of the disc it came from ([`cache_key`]).
     pub source: String,
@@ -201,6 +358,10 @@ pub struct Manifest {
     pub aliases: BTreeMap<String, String>,
     /// How to colour emblem layers.
     pub emblem: serde_json::Value,
+    /// The player colour palette (`#rrggbb`), by colour index; empty if not
+    /// found.
+    #[serde(default)]
+    pub palette: Vec<String>,
     /// What was looked for and not found or not decoded, by key or prefix.
     pub skipped: BTreeMap<String, String>,
 }
@@ -221,35 +382,42 @@ pub fn emblem_rules() -> serde_json::Value {
             "background": {"a": "background colour", "b": "secondary background colour"},
             "foreground": {"a": "primary colour", "b": "secondary colour"}
         },
+        "palette": "profile colours are indexes into the manifest's palette",
         "confidence": "the masks are measured; which profile colour fills which mask is not confirmed"
     })
 }
 
-/// Adds every category's images to `images`, and aliases.
+/// The manifest for `images`, with the aliases whose target exists.
 pub fn build_manifest(
     source: String,
     images: BTreeMap<String, Entry>,
+    palette: Vec<String>,
     skipped: BTreeMap<String, String>,
 ) -> Manifest {
-    let aliases = GAMETYPE_ALIASES
+    let aliases = ALIASES
         .iter()
-        .map(|(name, i)| (format!("gametype/{name}"), format!("gametype/{i}")))
+        .flat_map(|(prefix, names)| {
+            names
+                .iter()
+                .map(move |(name, i)| (format!("{prefix}/{name}"), format!("{prefix}/{i}")))
+        })
         .filter(|(_, target)| images.contains_key(target))
         .collect();
     Manifest {
-        version: EXTRACTOR_VERSION,
+        version: MANIFEST_VERSION,
         source,
         images,
         aliases,
         emblem: emblem_rules(),
+        palette,
         skipped,
     }
 }
 
-/// The cache key of a disc: the extractor version and, for every map file
-/// read, its path, size, sector and first 2 KiB (the map header, which
-/// carries the build and checksums). Cheap, and different for a different
-/// disc or a re-mastered map.
+/// The cache key of a disc: the extractor version and, for every map file,
+/// its path, size, sector and first 2 KiB (the map header, which carries the
+/// build and checksums). Cheap, and different for a different disc or a
+/// re-mastered map.
 pub fn cache_key(maps: &[(String, u32, u32, Vec<u8>)]) -> String {
     let mut h = Sha256::new();
     h.update(EXTRACTOR_VERSION.to_le_bytes());
@@ -266,24 +434,124 @@ pub fn cache_key(maps: &[(String, u32, u32, Vec<u8>)]) -> String {
     live_proto::sign::hex(&h.finalize())
 }
 
-/// The map files on the disc and their cache key.
-pub fn disc_key(disc: &Path) -> Result<(String, Vec<xiso::Entry>)> {
-    let mut iso = crate::open_iso(disc)?;
-    let part = iso.partition_offset();
-    let maps: Vec<xiso::Entry> = iso
-        .entries()?
-        .into_iter()
-        .filter(|e| !e.is_dir && e.path.to_ascii_lowercase().ends_with(".map"))
-        .collect();
-    let mut f = fs::File::open(disc)?;
-    let mut parts = Vec::new();
-    for e in &maps {
-        let mut head = vec![0u8; 2048.min(e.size as usize)];
-        f.seek(SeekFrom::Start(part + u64::from(e.sector) * xiso::SECTOR))?;
-        f.read_exact(&mut head)?;
-        parts.push((e.path.clone(), e.size, e.sector, head));
+/// A map's cache type from its header bytes (`0x140`, docs/map-format.md).
+pub fn cache_type(head: &[u8]) -> Option<CacheType> {
+    let word = head.get(0x140..0x144)?;
+    Some(u32::from_le_bytes(word.try_into().ok()?).into())
+}
+
+/// A map file on the disc and its cache type.
+struct MapFile {
+    entry: xiso::Entry,
+    cache_type: Option<CacheType>,
+}
+
+impl MapFile {
+    fn name(&self) -> &str {
+        let file = self
+            .entry
+            .path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&self.entry.path);
+        file.strip_suffix(".map").unwrap_or(file)
     }
-    Ok((cache_key(&parts), maps))
+}
+
+/// The disc as the extractor sees it: one directory walk, the map headers.
+pub struct Disc {
+    path: PathBuf,
+    partition: u64,
+    entries: Vec<xiso::Entry>,
+    maps: Vec<MapFile>,
+    /// [`cache_key`] of the maps.
+    pub key: String,
+}
+
+impl Disc {
+    /// Walks the disc's directory once and reads each map's header.
+    pub fn scan(path: &Path) -> Result<Self> {
+        let mut iso = crate::open_iso(path)?;
+        let partition = iso.partition_offset();
+        let entries: Vec<xiso::Entry> = iso.entries()?.into_iter().filter(|e| !e.is_dir).collect();
+        let mut f = File::open(path)?;
+        let mut parts = Vec::new();
+        let mut maps = Vec::new();
+        for e in entries
+            .iter()
+            .filter(|e| e.path.to_ascii_lowercase().ends_with(".map"))
+        {
+            let mut head = vec![0u8; 2048.min(e.size as usize)];
+            f.seek(SeekFrom::Start(
+                partition + u64::from(e.sector) * xiso::SECTOR,
+            ))?;
+            f.read_exact(&mut head)?;
+            maps.push(MapFile {
+                entry: e.clone(),
+                cache_type: cache_type(&head),
+            });
+            parts.push((e.path.clone(), e.size, e.sector, head));
+        }
+        Ok(Disc {
+            path: path.to_path_buf(),
+            partition,
+            entries,
+            maps,
+            key: cache_key(&parts),
+        })
+    }
+
+    fn base(&self, e: &xiso::Entry) -> u64 {
+        self.partition + u64::from(e.sector) * xiso::SECTOR
+    }
+
+    fn maps_of(&self, ty: CacheType) -> impl Iterator<Item = &MapFile> {
+        self.maps.iter().filter(move |m| m.cache_type == Some(ty))
+    }
+
+    /// Opens a map with its shared maps (found by cache type) for pixel data.
+    fn open(&self, m: &MapFile) -> Result<(Map<BufReader<File>>, ResourceFiles)> {
+        let region = |e: &xiso::Entry| Region {
+            path: self.path.clone(),
+            base: self.base(e),
+            length: e.size.into(),
+        };
+        let mut files = ResourceFiles::new();
+        files.set(ResourceFile::Local, region(&m.entry))?;
+        for (sel, ty) in [
+            (ResourceFile::MainMenu, CacheType::MainMenu),
+            (ResourceFile::Shared, CacheType::Shared),
+            (
+                ResourceFile::SinglePlayerShared,
+                CacheType::SinglePlayerShared,
+            ),
+        ] {
+            if let Some(s) = self.maps_of(ty).next() {
+                files.set(sel, region(&s.entry))?;
+            }
+        }
+        let map = Map::from_region(
+            BufReader::new(File::open(&self.path)?),
+            self.base(&m.entry),
+            m.entry.size.into(),
+        )
+        .with_context(|| format!("parsing {}", m.entry.path))?;
+        Ok((map, files))
+    }
+
+    /// A file's bytes, by path (case-insensitive).
+    fn read(&self, path: &str) -> Result<Vec<u8>> {
+        let e = self
+            .entries
+            .iter()
+            .find(|e| e.path.eq_ignore_ascii_case(path))
+            .with_context(|| format!("{path} is not on the disc"))?;
+        let mut f = File::open(&self.path)?;
+        f.seek(SeekFrom::Start(self.base(e)))?;
+        let mut out = vec![0u8; e.size as usize];
+        f.read_exact(&mut out)?;
+        Ok(out)
+    }
 }
 
 /// The manifest in `dir`, if it is from the disc with `key`.
@@ -292,45 +560,260 @@ pub fn cached(dir: &Path, key: &str) -> Option<Manifest> {
     (m.source == key).then_some(m)
 }
 
+/// A decoded picture waiting to be written.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Piece {
+    pub key: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+/// What one part of the extraction found.
+#[derive(Default)]
+struct Found {
+    pieces: Vec<Piece>,
+    palette: Vec<String>,
+    skipped: BTreeMap<String, String>,
+}
+
+impl Found {
+    fn skip(&mut self, key: impl Into<String>, why: impl Into<String>) {
+        self.skipped.insert(key.into(), why.into());
+    }
+}
+
 struct Tag {
-    name: String,
     id: map::TagId,
     candidate: Candidate,
 }
 
-/// The bitmap tags of one map with their shapes. Names are kept only to
-/// compare maps with each other at run time.
-fn bitmaps(map: &mut map::Map<std::io::BufReader<fs::File>>) -> Vec<Tag> {
-    let list: Vec<_> = map
+/// The bitmap tags of one map whose name passes `keep`, with their shapes.
+/// Names are used only to compare maps with each other at run time.
+fn bitmaps(map: &mut Map<BufReader<File>>, keep: impl Fn(&str) -> bool) -> Vec<Tag> {
+    let ids: Vec<_> = map
         .tags()
         .iter()
         .filter(|t| t.group == BITM && t.location.is_some())
-        .map(|t| (t.id, t.name.clone().unwrap_or_default()))
+        .filter(|t| keep(t.name.as_deref().unwrap_or_default()))
+        .map(|t| t.id)
         .collect();
-    let mut out = Vec::new();
-    for (id, name) in list {
-        let Ok(decoded) = DecodedTag::read(map, id) else {
-            continue;
-        };
-        let TagData::Bitmap(b) = decoded.data else {
-            continue;
-        };
-        let shapes = b
-            .images
-            .iter()
-            .map(|im| Shape {
-                width: im.dimensions[0].into(),
-                height: im.dimensions[1].into(),
-                linear: im.is_linear(),
+    ids.into_iter()
+        .filter_map(|id| {
+            let TagData::Bitmap(b) = DecodedTag::read(map, id).ok()?.data else {
+                return None;
+            };
+            let shapes = b
+                .images
+                .iter()
+                .map(|im| Shape {
+                    width: im.dimensions[0].into(),
+                    height: im.dimensions[1].into(),
+                    linear: im.is_linear(),
+                })
+                .collect();
+            Some(Tag {
+                id,
+                candidate: Candidate { shapes },
             })
-            .collect();
-        out.push(Tag {
-            name,
-            id,
-            candidate: Candidate { shapes },
+        })
+        .collect()
+}
+
+/// The categories held by the map of cache type `source`.
+fn category_art(disc: &Disc, source: CacheType) -> Found {
+    let mut found = Found::default();
+    let cats = CATEGORIES.iter().filter(|c| c.source == source);
+    let opened = disc
+        .maps_of(source)
+        .next()
+        .context("no such map on the disc")
+        .and_then(|m| disc.open(m));
+    let (mut map, mut files) = match opened {
+        Ok(o) => o,
+        Err(e) => {
+            for c in cats {
+                found.skip(c.prefix, format!("{e:#}"));
+            }
+            return found;
+        }
+    };
+    let tags = bitmaps(&mut map, |_| true);
+    let cands: Vec<Candidate> = tags.iter().map(|t| t.candidate.clone()).collect();
+    for cat in cats {
+        match pick(cat, &cands) {
+            Some(i) => decode_tag(&mut map, &mut files, tags[i].id, cat.key, &mut found),
+            None => found.skip(cat.prefix, "no bitmap of this shape on the disc"),
+        }
+    }
+    found
+}
+
+/// A multiplayer map's preview: the picture only that map has. (The main
+/// menu may carry one map's preview too, so only the shared map's tags,
+/// `common`, are excluded.)
+fn preview_art(disc: &Disc, m: &MapFile, common: &BTreeSet<String>) -> Found {
+    let mut found = Found::default();
+    let key = format!("map/{}/preview", m.name());
+    let (mut map, mut files) = match disc.open(m) {
+        Ok(o) => o,
+        Err(e) => {
+            found.skip(key, format!("{e:#}"));
+            return found;
+        }
+    };
+    let tags = bitmaps(&mut map, |name| !common.contains(name));
+    let cands: Vec<Candidate> = tags.iter().map(|t| t.candidate.clone()).collect();
+    match pick_preview(&cands) {
+        Some(i) => {
+            let k = key.clone();
+            decode_tag(
+                &mut map,
+                &mut files,
+                tags[i].id,
+                move |_| k.clone(),
+                &mut found,
+            );
+        }
+        None => found.skip(key, "no single preview picture in this map"),
+    }
+    found
+}
+
+/// Medals and the palette from the fonts, in the engine's font-table
+/// order; each from the first font that has the full set.
+fn font_art(disc: &Disc) -> Found {
+    let mut found = Found::default();
+    let (mut medal_set, mut colours) = (None, None);
+    let table = disc.read("/maps/fonts/font_table.txt").unwrap_or_default();
+    let mut seen = BTreeSet::new();
+    for name in String::from_utf8_lossy(&table).lines().map(str::trim) {
+        if medal_set.is_some() && colours.is_some() {
+            break;
+        }
+        if name.is_empty() || !seen.insert(name.to_string()) {
+            continue;
+        }
+        let Ok(data) = disc.read(&format!("/maps/fonts/{name}")) else {
+            continue;
+        };
+        let Ok(font) = font::Font::parse(&data) else {
+            continue;
+        };
+        let icons = icons(&font);
+        if medal_set.is_none() {
+            medal_set = medals(&icons);
+        }
+        if colours.is_none() {
+            colours = palette(&icons);
+        }
+    }
+    match medal_set {
+        Some(p) => found.pieces = p,
+        None => found.skip("medal", "no font with the medal icons"),
+    }
+    match colours {
+        Some(c) => found.palette = c,
+        None => found.skip("palette", "no font with the colour swatches"),
+    }
+    found
+}
+
+/// Decodes one tag's images (or its sprites, when it has any) under
+/// `key(i)`, recording failures as skipped.
+fn decode_tag(
+    map: &mut Map<BufReader<File>>,
+    files: &mut ResourceFiles,
+    id: map::TagId,
+    key: impl Fn(usize) -> String,
+    found: &mut Found,
+) {
+    let bitmap = match DecodedTag::read(map, id).map(|t| t.data) {
+        Ok(TagData::Bitmap(b)) => b,
+        Ok(_) => return found.skip(key(0), "not a bitmap"),
+        Err(e) => return found.skip(key(0), format!("tag read failed: {e}")),
+    };
+    let mut decoded = Vec::new();
+    for (i, im) in bitmap.images.iter().enumerate() {
+        decoded.push(match assets::decode_image(im, files) {
+            Ok(d) => {
+                let base = d.levels.into_iter().find(|l| l.level == 0 && l.face == 0);
+                if base.is_none() {
+                    found.skip(key(i), "no base level");
+                }
+                base.map(|l| (l.width, l.height, l.rgba))
+            }
+            Err(e) => {
+                found.skip(key(i), format!("decode failed: {e}"));
+                None
+            }
         });
     }
-    out
+    let sprites: Vec<_> = bitmap
+        .sequences
+        .iter()
+        .flat_map(|s| s.sprites.iter())
+        .collect();
+    let piece = |i: usize, (width, height, rgba): (u32, u32, Vec<u8>)| Piece {
+        key: key(i),
+        width,
+        height,
+        rgba,
+    };
+    if sprites.is_empty() {
+        let pieces = decoded.into_iter().enumerate();
+        found
+            .pieces
+            .extend(pieces.filter_map(|(i, d)| Some(piece(i, d?))));
+    } else {
+        found
+            .pieces
+            .extend(sprites.iter().enumerate().filter_map(|(i, s)| {
+                let (w, h, px) = decoded
+                    .get(usize::try_from(s.image_index).ok()?)?
+                    .as_ref()?;
+                Some(piece(i, slice(px, *w, *h, s.bounds)?))
+            }));
+    }
+}
+
+/// Encodes and writes every piece under `dir`, spread over the CPUs.
+pub fn write_pieces(pieces: &[Piece], dir: &Path) -> Result<BTreeMap<String, Entry>> {
+    let parents: BTreeSet<PathBuf> = pieces
+        .iter()
+        .filter_map(|p| dir.join(&p.key).parent().map(Path::to_path_buf))
+        .collect();
+    for p in parents {
+        fs::create_dir_all(&p).with_context(|| format!("creating {}", p.display()))?;
+    }
+    let write = |p: &Piece| -> Result<(String, Entry)> {
+        let file = format!("{}.png", p.key);
+        let mut png = Vec::new();
+        assets::png::write_rgba_fast(&mut png, p.width, p.height, &p.rgba)
+            .with_context(|| format!("encoding {}", p.key))?;
+        fs::write(dir.join(&file), png).with_context(|| format!("writing {file}"))?;
+        Ok((
+            p.key.clone(),
+            Entry {
+                file,
+                width: p.width,
+                height: p.height,
+            },
+        ))
+    };
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let chunk = pieces.len().div_ceil(threads).max(1);
+    std::thread::scope(|s| {
+        let workers: Vec<_> = pieces
+            .chunks(chunk)
+            .map(|c| s.spawn(move || c.iter().map(write).collect::<Result<Vec<_>>>()))
+            .collect();
+        let mut out = BTreeMap::new();
+        for w in workers {
+            out.extend(w.join().map_err(|_| anyhow!("a PNG encoder panicked"))??);
+        }
+        Ok(out)
+    })
 }
 
 /// What [`extract`] did.
@@ -342,81 +825,50 @@ pub struct Report {
 
 /// Decodes every category from `disc` into `out` (replacing what was
 /// there) and writes `manifest.json` last.
-pub fn extract(disc: &Path, out: &Path) -> Result<Report> {
-    let (key, maps) = disc_key(disc)?;
+pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
+    // The shared map's bitmap names, to tell a multiplayer map's own art.
+    let common: BTreeSet<String> = match disc.maps_of(CacheType::Shared).next() {
+        Some(m) => disc
+            .open(m)?
+            .0
+            .tags()
+            .iter()
+            .filter(|t| t.group == BITM)
+            .filter_map(|t| t.name.clone())
+            .collect(),
+        None => BTreeSet::new(),
+    };
+    let parts: Vec<Found> = std::thread::scope(|s| {
+        let common = &common;
+        let mut workers = vec![
+            s.spawn(|| category_art(disc, CacheType::MainMenu)),
+            s.spawn(|| category_art(disc, CacheType::Shared)),
+            s.spawn(|| font_art(disc)),
+        ];
+        workers.extend(
+            disc.maps_of(CacheType::Multiplayer)
+                .map(|m| s.spawn(move || preview_art(disc, m, common))),
+        );
+        workers
+            .into_iter()
+            .map(|w| {
+                w.join()
+                    .map_err(|_| anyhow!("an extractor thread panicked"))
+            })
+            .collect::<Result<_>>()
+    })?;
+    let (mut pieces, mut palette, mut skipped) = (Vec::new(), Vec::new(), BTreeMap::new());
+    for f in parts {
+        pieces.extend(f.pieces);
+        palette.extend(f.palette);
+        skipped.extend(f.skipped);
+    }
+
     let staging = out.with_extension("partial");
     let _ = fs::remove_dir_all(&staging);
     fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
-    let mut images = BTreeMap::new();
-    let mut skipped = BTreeMap::new();
-
-    let (mut mainmenu, mut mm_files) = crate::bitmap::open("mainmenu", Some(disc.to_path_buf()))?;
-    let (mut shared, mut sh_files) = crate::bitmap::open("shared", Some(disc.to_path_buf()))?;
-    let mm_tags = bitmaps(&mut mainmenu);
-    let sh_tags = bitmaps(&mut shared);
-    for cat in CATEGORIES {
-        let (tags, map, files) = match cat.source {
-            Source::MainMenu => (&mm_tags, &mut mainmenu, &mut mm_files),
-            Source::Shared => (&sh_tags, &mut shared, &mut sh_files),
-        };
-        let cands: Vec<Candidate> = tags.iter().map(|t| t.candidate.clone()).collect();
-        let Some(i) = pick(cat, &cands) else {
-            skipped.insert(
-                cat.prefix.to_string(),
-                "no bitmap of this shape on the disc".into(),
-            );
-            continue;
-        };
-        write_tag(
-            map,
-            files,
-            tags[i].id,
-            &staging,
-            cat.key,
-            &mut images,
-            &mut skipped,
-        )?;
-    }
-
-    // Multiplayer previews: the picture only that map has.
-    // (The main menu may carry one map's preview too, so only the shared
-    // map's tags are excluded.)
-    let common: BTreeSet<&str> = sh_tags.iter().map(|t| t.name.as_str()).collect();
-    for e in &maps {
-        let file = e.path.rsplit('/').next().unwrap_or(&e.path);
-        let name = file.trim_end_matches(".map");
-        let Ok((mut map, mut files)) = crate::bitmap::open(name, Some(disc.to_path_buf())) else {
-            continue;
-        };
-        if map.header().cache_type != CacheType::Multiplayer {
-            continue;
-        }
-        let tags: Vec<Tag> = bitmaps(&mut map)
-            .into_iter()
-            .filter(|t| !common.contains(t.name.as_str()))
-            .collect();
-        let cands: Vec<Candidate> = tags.iter().map(|t| t.candidate.clone()).collect();
-        let key = format!("map/{name}/preview");
-        match pick_preview(&cands) {
-            Some(i) => {
-                let one = |_: usize| key.clone();
-                write_tag(
-                    &mut map,
-                    &mut files,
-                    tags[i].id,
-                    &staging,
-                    one,
-                    &mut images,
-                    &mut skipped,
-                )?;
-            }
-            None => {
-                skipped.insert(key, "no single preview picture in this map".into());
-            }
-        }
-    }
-
-    let manifest = build_manifest(key, images, skipped);
+    let images = write_pieces(&pieces, &staging)?;
+    let manifest = build_manifest(disc.key.clone(), images, palette, skipped);
     fs::write(
         staging.join("manifest.json"),
         format!("{}\n", serde_json::to_string_pretty(&manifest)?),
@@ -437,86 +889,14 @@ pub fn extract(disc: &Path, out: &Path) -> Result<Report> {
     Ok(Report { manifest, counts })
 }
 
-/// Decodes one tag's images (or its sprites, when it has any) under
-/// `key(i)`, recording failures in `skipped`.
-fn write_tag(
-    map: &mut map::Map<std::io::BufReader<fs::File>>,
-    files: &mut assets::ResourceFiles,
-    id: map::TagId,
-    out: &Path,
-    key: impl Fn(usize) -> String,
-    images: &mut BTreeMap<String, Entry>,
-    skipped: &mut BTreeMap<String, String>,
-) -> Result<()> {
-    let TagData::Bitmap(bitmap) = DecodedTag::read(map, id)?.data else {
-        bail!("not a bitmap")
-    };
-    let sprites: Vec<_> = bitmap
-        .sequences
-        .iter()
-        .flat_map(|s| s.sprites.iter())
-        .collect();
-    let mut decoded = Vec::new();
-    for (i, im) in bitmap.images.iter().enumerate() {
-        match assets::decode_image(im, files) {
-            Ok(d) => match d.levels.into_iter().find(|l| l.level == 0 && l.face == 0) {
-                Some(l) => decoded.push(Some((l.width, l.height, l.rgba))),
-                None => {
-                    skipped.insert(key(i), "no base level".into());
-                    decoded.push(None);
-                }
-            },
-            Err(e) => {
-                skipped.insert(key(i), format!("decode failed: {e}"));
-                decoded.push(None);
-            }
-        }
-    }
-    let pieces: Vec<(String, u32, u32, Vec<u8>)> = if sprites.is_empty() {
-        decoded
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, d)| d.map(|(w, h, px)| (key(i), w, h, px)))
-            .collect()
-    } else {
-        sprites
-            .iter()
-            .enumerate()
-            .filter_map(|(i, s)| {
-                let (w, h, px) = decoded
-                    .get(usize::try_from(s.image_index).ok()?)?
-                    .as_ref()?;
-                let (sw, sh, cut) = slice(px, *w, *h, s.bounds)?;
-                Some((key(i), sw, sh, cut))
-            })
-            .collect()
-    };
-    for (k, w, h, px) in pieces {
-        let file = format!("{k}.png");
-        let path = out.join(&file);
-        fs::create_dir_all(path.parent().expect("a parent"))?;
-        let mut png = Vec::new();
-        assets::png::write_rgba(&mut png, w, h, &px)?;
-        fs::write(&path, png)?;
-        images.insert(
-            k,
-            Entry {
-                file,
-                width: w,
-                height: h,
-            },
-        );
-    }
-    Ok(())
-}
-
 /// `h2 live assets extract [--disc PATH] [--out DIR]`.
 pub fn run(disc: PathBuf, out: PathBuf) -> Result<()> {
-    let report = extract(&disc, &out)?;
+    let report = extract(&Disc::scan(&disc)?, &out)?;
     println!("game art in {}", out.display());
     for (prefix, n) in &report.counts {
         println!("  {prefix:<10} {n}");
     }
+    println!("  {:<10} {}", "palette", report.manifest.palette.len());
     if !report.manifest.skipped.is_empty() {
         println!("skipped:");
         for (k, why) in &report.manifest.skipped {
@@ -650,17 +1030,17 @@ mod tests {
     #[test]
     fn manifests_alias_what_exists_and_round_trip() {
         let mut images = BTreeMap::new();
-        for i in [0usize, 3] {
+        for k in ["gametype/0", "gametype/3", "medal/5", "weapon/2"] {
             images.insert(
-                format!("gametype/{i}"),
+                k.to_string(),
                 Entry {
-                    file: format!("gametype/{i}.png"),
+                    file: format!("{k}.png"),
                     width: 40,
                     height: 40,
                 },
             );
         }
-        let m = build_manifest("k".into(), images, BTreeMap::new());
+        let m = build_manifest("k".into(), images, vec!["#ffffff".into()], BTreeMap::new());
         assert_eq!(
             m.aliases.get("gametype/slayer").map(String::as_str),
             Some("gametype/0")
@@ -669,6 +1049,9 @@ mod tests {
             m.aliases.get("gametype/oddball").map(String::as_str),
             Some("gametype/3")
         );
+        assert_eq!(m.aliases["medal/double_kill"], "medal/5");
+        assert_eq!(m.aliases["weapon/energy_sword"], "weapon/2");
+        assert_eq!(m.palette, ["#ffffff"]);
         assert!(
             !m.aliases.contains_key("gametype/ctf"),
             "no alias to a missing image"
@@ -678,6 +1061,111 @@ mod tests {
         fs::write(dir.join("manifest.json"), serde_json::to_vec(&m).unwrap()).unwrap();
         assert_eq!(cached(&dir, "k"), Some(m));
         assert_eq!(cached(&dir, "other"), None);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn icon(width: u32, height: u32, fill: u16, flat_share: f32) -> Icon {
+        let n = (width * height) as usize;
+        let flat = (n as f32 * flat_share) as usize;
+        let pixels = (0..n)
+            .map(|i| if i < flat { fill } else { i as u16 })
+            .collect();
+        Icon {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    #[test]
+    fn the_placeholder_record_is_not_an_icon() {
+        let units = [
+            (0xe000, 0),
+            (0xe001, 7),
+            (0xe002, 9),
+            (0xe003, 7),
+            (0xe004, 3),
+        ];
+        assert_eq!(own_records(&units), [9, 3], "7 is shared, 0 is unmapped");
+    }
+
+    #[test]
+    fn medals_are_the_24_pixel_icons() {
+        let mut icons: Vec<Icon> = (0..MEDALS)
+            .map(|i| icon(if i % 8 == 0 { 32 } else { 24 }, 24, 0xf123, 0.3))
+            .collect();
+        icons.insert(3, icon(24, 23, 0xf000, 0.3));
+        icons.insert(9, icon(16, 24, 0xf000, 0.3));
+        let m = medals(&icons).unwrap();
+        assert_eq!(m.len(), MEDALS);
+        assert_eq!((m[0].key.as_str(), m[0].width), ("medal/0", 32));
+        assert_eq!((m[1].key.as_str(), m[1].width), ("medal/1", 24));
+        assert_eq!(m[5].rgba.len(), 24 * 24 * 4);
+        assert_eq!(
+            &m[5].rgba[..4],
+            &[0x11, 0x22, 0x33, 0xff],
+            "ARGB4444 to RGBA8"
+        );
+        icons.pop();
+        assert!(medals(&icons).is_none(), "a partial set is not the medals");
+    }
+
+    #[test]
+    fn the_palette_is_the_flat_swatches() {
+        let mut icons: Vec<Icon> = (0..PALETTE as u16)
+            .map(|i| icon(43, 22, 0xf000 | i, 0.82))
+            .collect();
+        icons.push(icon(24, 24, 0xf0f0, 0.72));
+        icons.insert(0, icon(16, 18, 0xffff, 0.5));
+        let p = palette(&icons).unwrap();
+        assert_eq!(p.len(), PALETTE);
+        assert_eq!((p[0].as_str(), p[17].as_str()), ("#000000", "#001111"));
+        icons.truncate(5);
+        assert!(palette(&icons).is_none());
+    }
+
+    #[test]
+    fn the_cache_type_is_read_from_the_header() {
+        let mut head = vec![0u8; 0x800];
+        head[0x140] = 1;
+        assert_eq!(cache_type(&head), Some(CacheType::Multiplayer));
+        head[0x140] = 2;
+        assert_eq!(cache_type(&head), Some(CacheType::MainMenu));
+        assert_eq!(cache_type(&head[..0x100]), None, "short header");
+    }
+
+    #[test]
+    fn pieces_are_written_deterministically() {
+        let pieces: Vec<Piece> = (0..9u8)
+            .map(|i| Piece {
+                key: format!("medal/{i}"),
+                width: 2,
+                height: 1,
+                rgba: vec![i; 8],
+            })
+            .chain([Piece {
+                key: "map/x/preview".into(),
+                width: 1,
+                height: 1,
+                rgba: vec![9; 4],
+            }])
+            .collect();
+        let dir = std::env::temp_dir().join(format!("h2-art-pieces-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let entries = write_pieces(&pieces, &dir).unwrap();
+        assert_eq!(entries.len(), 10);
+        assert_eq!(
+            entries["map/x/preview"],
+            Entry {
+                file: "map/x/preview.png".into(),
+                width: 1,
+                height: 1
+            }
+        );
+        let first = fs::read(dir.join("medal/4.png")).unwrap();
+        assert_eq!(&first[1..4], b"PNG");
+        write_pieces(&pieces, &dir).unwrap();
+        assert_eq!(fs::read(dir.join("medal/4.png")).unwrap(), first);
         fs::remove_dir_all(&dir).unwrap();
     }
 }

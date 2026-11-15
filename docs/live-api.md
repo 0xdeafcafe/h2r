@@ -157,10 +157,13 @@ extract`; nothing of it is in this repo). Clients must work without it.
   "images":  { "<key>": { "file": "rank/12.png", "width": 28, "height": 26 } },
   "aliases": { "gametype/slayer": "gametype/0" },
   "emblem":  { ...colouring rules, below... },
+  "palette": ["#ffffff", "..."],
   "skipped": { "<key or prefix>": "why it is missing" } }
 ```
 
-`file` is relative to the manifest. Keys (a client looks a key up in
+`version` is the manifest format; it changes only when a client could no
+longer read it (new fields and keys do not change it). `file` is relative
+to the manifest. Keys (a client looks a key up in
 `aliases` first, then `images`):
 
 | Key | What |
@@ -170,10 +173,13 @@ extract`; nothing of it is in this repo). Clients must work without it.
 | `rank/<1..50>` | rank (level) icons |
 | `live/<0..31>` | Live status icons (friend, invite, voice, message...) |
 | `gametype/<0..10>` | game-type icons; aliases `gametype/slayer`, `king_of_the_hill`, `oddball`, `juggernaut`, `ctf`, `assault`, `territories` (identified by eye; the others have only an index) |
-| `weapon/<0..18>` | weapon silhouettes (index only; which weapon each is is not yet mapped) |
+| `weapon/<0..18>` | weapon silhouettes (small, single-mask: blue channel with matching alpha); aliases `weapon/energy_sword`, `plasma_pistol`, `plasma_rifle`, `sniper_rifle`, `rocket_launcher`, `smg`, `beam_rifle`, `sentinel_beam` (by eye; the others have only an index) |
+| `medal/<0..31>` | medals, full colour; aliases `medal/double_kill`, `triple_kill`, `killtacular`, `kill_frenzy`, `killtrocity`, `killimanjaro`, `killing_spree`, `running_riot`, `rampage`, `berserker`, `overkill`, `sniper_kill`, `splatter`, `bone_cracker`, `assassin`, `stick_it`, `flag_carrier_kill`, `bomb_carrier_kill`, `flag_returned`, `bomb_returned` (by eye; the spree order is inferred from the medals' growing number of points) |
 | `map/<map>/preview` | a multiplayer map's preview picture; `<map>` is the map file name without `.map` |
 
-Medals are not in the manifest: no medal art has been found on the disc.
+`palette` is the player colour palette, `#rrggbb` by colour index (the
+colours are stored at 4 bits per channel); empty, with a `skipped` entry,
+when not found.
 
 **Emblems.** An emblem is a background layer with a foreground layer drawn
 over it. Each layer image holds two masks, not colours: mask *a* is the red
@@ -186,7 +192,8 @@ rgb      = colour_a * red + colour_b * blue
 coverage = background: 1;  foreground: max(red, blue)
 ```
 
-`emblem.colours` in the manifest gives the profile colour for each mask
+`emblem.colours` in the manifest gives the profile colour (an index into
+`palette`) for each mask
 (foreground: primary for *a*, secondary for *b*; background: background
 colour for *a*, a second background colour for *b*). The masks were
 measured on the disc. Which profile colour fills which mask has not been

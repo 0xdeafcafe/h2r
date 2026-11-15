@@ -200,8 +200,9 @@ friends).
 `h2 live assets extract [--disc PATH] [--out DIR]` decodes the stats
 site's art from your own disc into PNGs and a `manifest.json`. The default
 `--out` is `game-art/` in the server directory. It covers emblem layers, rank
-icons, Live icons, game-type icons, weapon silhouettes and every multiplayer
-map's preview. Keys and emblem colouring are in
+icons, Live icons, game-type icons, weapon silhouettes, medals, the player
+colour palette and every multiplayer map's preview. A cold run takes well
+under a second. Keys and emblem colouring are in
 [live-api.md](live-api.md#optional-game-art).
 
 - **How the art is found.** No asset is named in the code (CONTRIBUTING.md,
@@ -209,7 +210,11 @@ map's preview. Keys and emblem colouring are in
   or shared map with a known image count and image shape. Where several
   sizes of the same set exist, the largest wins. A map preview is the one
   single-image UI picture a multiplayer map has that the shared map does
-  not.
+  not. Maps are told apart by the cache type in their header. Medals and
+  the palette are icon glyphs in the fonts' private-use range
+  ([fonts.md](fonts.md)): the medals are the 24-pixel-tall icons and the
+  palette the flat colour swatches, from the first font in the engine's font
+  table that has the full set.
 - **Output.** It is deterministic for a disc. Anything not found or not
   decoded is listed under `skipped`. The manifest's `source` is a SHA-256
   over the extractor version and every map file's path, size, sector and
