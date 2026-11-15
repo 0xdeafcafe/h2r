@@ -40,12 +40,18 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_VOICE=1` | with `H2_BOOT_OLD_GLUE`, keep voice on (skip the 0x55810 override) |
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
-| `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30) |
+| `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
+
+| `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
+| `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
+| `H2_BOOT_REALTIME=1` | pace the scheduler to wall-clock time (`Pacer::real_time`); off by default, so runs go as fast as the host allows |
+| `H2_BOOT_CACHE=<dir>` or `off` | where the fallback caches its unread jump-table targets (default `$TMPDIR/h2boot-cache`), keyed on the XBE hash and a hash of the analyze sources |
 | `H2_BOOT_INPUT=BUTTONS@WHEN,...` | scripted pad timeline through the keyboard pad and XInputGetState. BUTTONS: `A B X Y BLACK WHITE LT RT UP DOWN LEFT RIGHT START BACK LS RS LUP LDOWN LLEFT LRIGHT` or a key name, joined with `\|`. WHEN: `T`, `T+D` or `T-U`, a slice or (`f` prefix) a present count; held 4 presents or 100 slices by default. Each press is printed. |
 | `H2_BOOT_INPUT_FILE=<file>` | the same entries, one per line, `#` comments; merged with `H2_BOOT_INPUT` |
 | `H2_BOOT_CAPTURE=<dir>`, `H2_BOOT_CAPTURE_FRAME=N` | record frame N for offline replay (see `crates/boot/src/d3d_diag.rs`): every texture upload, surface, guest write, and the frame's `ResolvedDraw`s with their streams |
 | `H2_BOOT_CAPTURE_SNAP=K[-L],...` | with a capture, read the colour target back after those draws of frame N (`snap-K.bin`, guest BGRA bytes) |
 | `H2_BOOT_CAPTURE_SKIP=K[-L],...` | with a capture, drop those draws of frame N |
+| `H2_BOOT_CAPTURE_LITE=1` | with a capture, record only the frame's draws, surfaces and snapshots (no uploads or guest writes); for snapshots |
 | `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
 | `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
 | `H2_BOOT_DUMP=addr:len,...` | print guest words at the end of the run (hex) |
@@ -219,6 +225,37 @@ every 60 presents: 532 presents in 307 s; the last 100 (main menu) at
 1.9 fps, 484 ms median frame. Audio runs on logical time through a
 `NullSink` (its frames are counted as dropped, by design), vblanks on
 the 60 Hz logical clock.
+
+### Menu idle benchmark
+
+For the perf lanes: the main menu, idle, on master + boot. Fresh data
+makes every run take the same path; the script picks the Default profile
+and leaves the main menu up, then the run stops on its own.
+
+```
+T=$TMPDIR/h2bench
+cargo build --release -p cli            # target/release/h2
+h2 build disc/halo2.iso --out $T/out     # once per emitted module
+H2_BOOT_GFX=$T/gfx H2_BOOT_GFX_EVERY=never \
+H2_BOOT_INPUT="START@f310,DOWN@f408,A@f419" \
+H2_BOOT_FPS_FROM=440 H2_BOOT_STOP_AT_PRESENT=560 \
+h2 run disc/halo2.iso --out $T/out --data $T/data --fresh-data
+```
+
+- Window: presents 440-560, the main menu after it has faded in (the
+  profile is chosen at 419). The run report's `frames:` line gives fps,
+  mean, median and worst frame time over that window, and every 100
+  presents the run prints `present N: last 100 at X fps`.
+- `H2_BOOT_GFX_EVERY=never` keeps the GPU path but writes no PNGs; drop
+  it for a screenshot every N.
+- The first run of a build analyzes the image for the fallback (15-20 s
+  alone); later runs read the unread-target cache and analyze in the
+  background, so compare second runs.
+- Numbers are only meaningful on a quiet machine: with other lanes'
+  builds running (load average 170-430) the same run went from 1.9 fps
+  to a fraction of that, and the analysis from 15 s to 190 s.
+- Profile with `sample <pid> 10` or Instruments once `present 400`
+  appears.
 
 Runs compare frame for frame only from the same data directory state:
 use `--fresh-data` (or a new `--data`), and never share one between two
