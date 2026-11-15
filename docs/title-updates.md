@@ -3,11 +3,12 @@
 Status: design only. Nothing here is implemented, and it can't be tested
 until we have an update `default.xbe` to work with.
 
-Halo 2 shipped on disc as 1.0. Xbox Live title updates (1.1 and later) don't
-patch the disc. They put a new `default.xbe` on the console's hard disk under
-`TDATA\4D530064\`, usually in a `$u` subdirectory (to be confirmed from a real
-dump), and that image runs in place of the disc's. The maps and other data
-still come from the disc (`D:`). This page covers:
+Halo 2 shipped on disc as 1.0. Xbox Live title updates don't change the
+disc. Their installed result includes a replacement `default.xbe` at
+`E:\TDATA\4D530064\$u\default.xbe`, even when delivery uses a binary patch.
+The update image runs with the original disc's assets; downloadable maps
+are separate content. See Sources and formats below for evidence and the
+remaining launch-path checks. This page covers:
 
 - what in the repo assumes the 1.0 image;
 - what already copes with a different image;
@@ -15,8 +16,176 @@ still come from the disc (`D:`). This page covers:
 
 The rules don't change. Nothing read from either XBE goes into the repo:
 no bytes, tables or instruction sequences. Writing down addresses and names is
-fine, as it is everywhere else in `docs/`. Every per-version fact is worked out
-on the user's machine from the two XBEs they own.
+fine, as it is everywhere else in `docs/`. Every per-version address map is
+worked out on the user's machine from the two XBEs they own.
+
+## Sources and formats
+
+Research checked 2026-11-15. This concerns the original Xbox game. No XBE,
+patch, update package or game data was downloaded or examined for this
+survey; file-level conclusions still need the user's own inputs.
+
+### Versions and release history
+
+Preservation TU numbers, public 1.x names and executable revision fields
+use different numbering. Bungie explicitly called the April 2005 game
+**1.1**; Insignia identifies the final TU5 as **1.5**. Research found informal
+use of **1.2**, but no authoritative mapping of separate 1.2, 1.3 or 1.4
+releases to unique Xbox executables. Identify the actual image rather than
+assigning those names to successive dates.
+[Bungie's April preview](https://www.halo.bungie.org/bwu/index.html?item=21),
+[Insignia's Halo 2 FAQ](https://insignia.live/halo2/).
+
+This chronology combines release reporting with the five generations in
+the [preservation catalog](https://consolemods.org/wiki/Xbox:Title_Updates).
+It does not imply that every generation had a distinct displayed version.
+
+| Image / preservation generation | Public release | Known changes and naming |
+|---|---|---|
+| Retail **1.0** | 2004-11-09 North America; 2004-11-11 Europe/Japan | Disc baseline. [Release history](https://en.wikipedia.org/wiki/Halo_2). |
+| TU1 | Unknown | Harcroft reportedly recovered an XBE dated **2004-10-14**. This is a reported authoring timestamp, not a verified delivery date; changes unknown. Only the secondary transcription was accessible during research. [Discovery account and original-post reference](https://www.halopedia.org/Halo_2_Auto-Updates). |
+| TU2 | **2004-11-17** | Contemporary reporting calls this the first auto-update: shorter matchmaking waits, 480p/HUD framing fixes and Foundation unlocked for everyone. [Contemporary Bungie announcement repost](https://www.neowin.net/news/halo-2-xbox-live-autoupdate/). |
+| TU3 / **1.1** | **2005-04-18** | Stronger melee and grenades, shorter grenade fuse, weaker Magnum and some dual-wield combinations; these balance changes concern multiplayer. [Microsoft release notice](https://news.xbox.com/en-us/2005/04/18/halo-2-autoupdate/), [Bungie balance preview](https://www.halo.bungie.org/bwu/index.html?item=21). |
+| TU4 / sometimes **1.1b** | **2005-07-20** | Anti-cheating measures targeting modified DLC and a Relic teleporter fix. The 1.1a/1.1b distinction is a secondary history's label, not a verified menu-string progression. [Update history](https://www.halopedia.org/Halo_2_Auto-Updates), [contemporary July coverage](https://halo.bungie.org/newsarchive.html?month=July&year=2005). |
+| TU5 / **1.5** | **2007-04-12** | Final Xbox TU. Supports the forthcoming maps, strengthens Banhammer functions and clears learned hosting history and map cache. [Bungie's April 12 announcement, preserved mirror](https://bnetarchive.haloman30.com/news/Blog7d2b-2.html?dfilter=&mode=tags&page=1&tag=22), [displayed label](https://insignia.live/halo2/). |
+
+April 2005 also addressed flag bouncing/through-wall flag grabs, Elite
+ghosting, multiplayer vehicle sword flying, PAL/NTSC desynchronization and
+standby abuse. Campaign sword flying remained. **Flag bouncing is distinct
+from player superbouncing.** Bungie's 2010 farewell still referred to BXR;
+there is no established original-Xbox TU removal of BXR or general player
+superbounces. Reports of superbounces working in 1.5 are community evidence,
+not a changelog or a test here. Changes in Vista or MCC do not establish an
+Xbox TU fix.
+[Bungie's exploit-fix preview](https://halo.bungie.org/bwu/index.html?item=17),
+[Bungie's farewell](https://halo.bungie.org/bwu/index.html?item=272),
+[community 1.5 report](https://www.reddit.com/r/halo/comments/1m7onbe/).
+
+Map packs are separate releases: Bonus and Killtacular on **2005-04-25**,
+Maptacular on **2005-07-05**, and Blastacular on **2007-04-17**. The retail
+Multiplayer Map Pack DVD, released **2005-07-05**, carries the first nine
+DLC maps and the then-current cumulative update through TU3. It predates
+TU4 and does not supply final 1.5 or Blastacular. Its root `default.xbe`
+is an installer menu, not the updated gameplay image; later community
+repacked discs have different contents.
+[Early DLC chronology](https://www.mobygames.com/game/15499/halo-2/patches/),
+[Microsoft's Maptacular announcement](https://news.xbox.com/en-us/2005/07/05/halo-2-maptacular-pack-now-available/),
+[retail DVD history](https://www.halopedia.org/Halo_2_Multiplayer_Map_Pack),
+[Bungie's Blastacular announcement](https://bnetarchive.haloman30.com/news/Blog7d2b-2.html?dfilter=&mode=tags&page=1&tag=22),
+[repack author's explanation](https://digiex.net/threads/halo-2-xbox-360-multiplayer-map-pack-download-all-4-map-packs-with-1-5-update.13961/).
+
+Retail title ID is `4D530064`. The catalog distinguishes English, French,
+German, Italian, Spanish, Korean, Traditional Chinese and Japanese disc
+versions (`03` through `0a`, respectively), each with five TU generations.
+English XBE revisions are `01/02/03/05/08`; other languages use `01`–`05`.
+These are catalog identifiers, not menu decimals. Region-free flags do not
+establish language/disc interchangeability. The separate Halo 2 Beta uses
+`4D530082`, disc version `01`, with four catalogued TU revisions (`01`–`04`),
+marked unverified and without dates or changelogs. No standalone demo TU
+lineage was established; E3 demos, beta software and later ports are outside
+the retail sequence.
+[Variant inventory](https://consolemods.org/wiki/Xbox:Title_Updates).
+
+### Delivery and loading
+
+The installed update includes a complete gameplay executable at
+`E:\TDATA\4d530064\$u\default.xbe`. Pinecone's own Halo 2 example and scanner
+confirm that layout. DLC maps live separately under sibling `$c`; UDATA is
+save/profile storage, not the installed TU location. Preserve the whole
+`$u` tree: this research did not establish every companion file for every
+release or language.
+[Pinecone README](https://github.com/MrMilenko/Pinecone),
+[Pinecone scanner](https://github.com/MrMilenko/Pinecone/blob/main/fileparse.go),
+[installer maintainer's directory description](https://www.xbox-scene.info/forums/topic/213-dlc-halo-2/).
+
+That installed XBE does not establish the network payload format. Insignia
+says Xbox updates are binary patches requiring clean source game files;
+its Halo 2 FAQ likewise recommends an intact disc or unpatched rip if
+updating fails. The public sources do not identify Halo 2's transport codec
+as xdelta, IPS or BPS, nor establish the payload format of every historical
+TU.
+[Insignia's patch-delivery announcement](https://bsky.app/profile/insignia.live/post/3kjbyf7rhov2n),
+[Halo 2 troubleshooting](https://insignia.live/halo2/).
+
+The Xbox update flow installs to HDD and relaunches an executable; it is
+not a disc rewrite. XboxDev describes `XOnlineTitleUpdate` booting an updater.
+The clean nxdk launch implementation records a launch path/data page and
+uses the firmware quick-reboot handoff. For h2recomp, the intended input is
+the installed update XBE plus the user's disc assets. The exact Halo 2
+startup checks and drive mappings still need confirmation with owned files
+(section 3.6); these sources do not prove a universal kernel overlay that
+silently substitutes every disc XBE.
+[Xbox Live API notes](https://xboxdevwiki.net/Xbox_Live),
+[nxdk launch implementation](https://github.com/XboxDev/nxdk/blob/master/lib/hal/xbox.c).
+
+### Community patches and preservation
+
+**No verified retail-1.0-to-official-1.1/1.2/1.5 xdelta, IPS or BPS
+converter was found.** This is a search result, not proof of absence.
+Grimdoomer's Halo 2 HD release v1.1 has separate xdelta inputs for an
+already-owned 1.0 XBE and an already-owned 1.5 XBE; those patches are not
+interchangeable and do not manufacture official 1.5 from retail. The mod's
+v1.1 is its own release number. Farklem's Halo 2 Launcher requires an
+existing 1.1 update, while XBX Content Tool signs existing ContentMeta
+metadata for a console; neither is an official-version converter.
+[HD mod author's release notes](https://github.com/grimdoomer/Halo-2-HD/releases),
+[launcher author's release NFO](https://www.xbins.org/nfo.php?file=xboxnfo1248.nfo),
+[Content Tool author's README](https://github.com/feudalnate/XBX-Content-Tool).
+
+Preservation maintainers catalog recovered releases and bundle updates
+with offline DLC installers. Installer provenance matters: a 2023 release
+explicitly included spoofed regional substitutes for then-missing original
+TU5 files. A matching title ID or displayed 1.5 is therefore insufficient
+proof of an authentic localized release. Archive completeness changes;
+consult the current missing-content inventory. Pinecone recognizes local
+dumps; XCAT scans and uploads preservation contributions and console
+identifiers, so it is a separate opt-in activity from private extraction.
+[Maintainer's installer thread](https://digiex.net/threads/xbox-offline-xbox-live-downloadable-content-dlc-installers.675/),
+[regional-substitute disclosure](https://www.xbox-scene.info/forums/topic/213-dlc-halo-2/),
+[current missing inventory](https://consolemods.org/wiki/Xbox:Unarchived_DLC),
+[Pinecone](https://github.com/MrMilenko/Pinecone),
+[XCAT documentation](https://consolemods.org/wiki/Xbox:XCAT).
+
+### Getting and checking the user's own files
+
+Back up an existing `$u` directory before installing a newer TU, especially
+if preserving an older generation. For current 1.5, the practical route is
+the user's own clean game disc and configured Insignia console: Halo 2
+receives TU5 automatically. Insignia does not promise selection of older
+TUs. Its matchmaking also requires all four map packs, which are separate
+from obtaining the executable.
+[Insignia's update and DLC requirements](https://insignia.live/halo2/).
+
+Copy the installed `$u` tree privately through an existing dashboard's
+binary-mode FTP facility, or read the user's own unlocked HDD/image with a
+FATX-aware tool and the owner's required keys. Keep companions and provenance
+with `default.xbe`; leave the disc dump unchanged. The user's original map
+DVD offers the older offline update described above. Do not substitute its
+installer-menu XBE for the gameplay image.
+[Transfer guidance from the installer maintainer](https://www.xbox-scene.info/forums/topic/213-dlc-halo-2/),
+[xemu's own-HDD imaging guidance](https://xemu.app/docs/required-files/),
+[FATXplorer author's HDD-unlocking documentation](https://fatxplorer.eaton-works.com/2024/05/31/fatxplorer-3-0-beta-31-password-recovery-for-og-xbox-western-digital-drives/).
+
+Future h2 tooling could import that tree into ignored `disc/updates/`,
+validate XBE bounds/sections, and report title ID, raw certificate version,
+region, library builds and timestamps. Header creation, PE and certificate
+timestamps are distinct metadata, not public release dates. Preserve disc
+and language identity alongside them; metadata alone does not authenticate
+an executable. `crates/xbe` currently parses certificate title/version/region;
+the expanded importer and timestamp reporting remain design work.
+[XBE format reference](https://xboxdevwiki.net/Xbe).
+
+Keep provenance and integrity fingerprints in a private manifest, pairing
+the exact local base and update for the address-map design below. If future
+tooling accepts a user-supplied delta, it must first recognize its actual
+format and validate the source, reconstruct into a new local output, then
+check output structure, metadata and independently trusted local integrity
+evidence. The complete resulting XBE is the input to image matching;
+unknown or incompatible images must not acquire official labels solely
+from title ID or filename. Signature authentication must not be claimed
+unless implemented. No copyrighted bytes, copied tables, generated matches
+or newly measured copyrighted-file hashes belong in this public documentation
+or commit.
 
 ## 1. Census: what depends on the 1.0 image
 
@@ -185,9 +354,12 @@ Classify the image:
    repo as `wma::RETAIL_SHA256`. Move it into `xbe` (or a new small crate)
    as the single source of truth. Replace the three title-ID + entry gates and
    the test's copy with `ImageId::is_base()`.
-2. **Update**: same title ID, not the base hash. This needs an address map
-   (3.2) built on this machine from the user's base and update images.
-   Without one, `h2 play` refuses the image and says how to build the map.
+2. **Update candidate**: same title ID, not the base hash. This alone does
+   not prove an official TU: another localized retail image or a modified or
+   spoofed image can share that ID. Establish local provenance and disc/language
+   compatibility before assigning a version label. The candidate needs an
+   address map (3.2) built on this machine from the user's base and target
+   images. Without one, `h2 play` refuses the image and says how to build the map.
 3. **Anything else**: refused, as today.
 
 Also require that every XDK library build in the update equals the base's
@@ -198,9 +370,11 @@ tables. `gfx::RenderStateTable::for_build` is the model for making them
 per-build.
 
 A map file records both `ImageId`s, so it can't be applied to a different pair.
-Once the user has measured an update, it's fine to commit its hash and
-version label as an identifier, under the same precedent as
-`RETAIL_SHA256`. The hash then only adds a friendly name, never a code path.
+Keep newly measured copyrighted-file hashes in the user's private local
+manifest and map cache. Public documentation may record version labels,
+release dates and metadata identifiers, but must not publish those hashes
+or copied image data as distribution pointers. The existing `RETAIL_SHA256`
+is not a precedent for adding update fingerprints to the repository.
 
 ### 3.2 Per-version address map, built at analysis time
 
@@ -383,8 +557,8 @@ Some of this pays for itself even without update files:
 ### 3.6 CLI and UX
 
 - **Where files live**: `disc/updates/` (already ignored through `/disc/`).
-  The user copies the HDD's `TDATA/4D530064/$u/` (or wherever the update
-  turns out to be) into it as is, for example
+  The user copies the HDD's `E:/TDATA/4D530064/$u/` into it as is,
+  for example
   `disc/updates/<anything>/default.xbe`. Also accept an emulated data root
   laid out like the HDD (`<data>/disk/Partition1/TDATA/4D530064/...`), since
   `vfs` mirrors that layout.
