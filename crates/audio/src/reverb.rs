@@ -138,7 +138,7 @@ impl Allpass {
         let d = self.line.read();
         let w = x + self.g * d;
         let y = d - self.g * w;
-        self.line.write(w);
+        self.line.write(flush(w));
         y
     }
 }
@@ -602,5 +602,28 @@ mod tests {
         };
         let h = ir(p, 1.0);
         assert!(h.iter().all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn long_silence_leaves_no_subnormals_in_the_diffusers_or_lines() {
+        let mut r = Reverb::new(
+            RATE,
+            I3dl2Listener {
+                decay_time: 0.1,
+                ..params()
+            },
+        );
+        let mut input = vec![0.0f32; 48_000 * 6];
+        input[0] = 1.0;
+        let mut out = vec![0.0f32; input.len() * 2];
+        r.process(&input, &mut out);
+        assert!(
+            out.iter()
+                .all(|v| *v == 0.0 || v.abs() >= f32::MIN_POSITIVE)
+        );
+        let normal = |v: &f32| *v == 0.0 || v.abs() >= f32::MIN_POSITIVE;
+        assert!(r.allpass.iter().all(|a| a.line.buf.iter().all(normal)));
+        assert!(r.fdn.iter().all(|l| l.buf.iter().all(normal)));
+        assert!(r.line_z.iter().chain(&r.room_z).all(normal));
     }
 }

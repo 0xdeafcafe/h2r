@@ -570,6 +570,7 @@ impl DirectSound {
                 });
             }
         };
+        let mut release_output = None;
         if refs == 0 {
             match self.objects.remove(&ptr) {
                 Some(Object::Root(_)) => self.root = None,
@@ -585,6 +586,7 @@ impl DirectSound {
                     }
                 }
                 Some(Object::Stream(s)) => {
+                    release_output = s.output_buffer;
                     self.mixer.lock().unwrap().remove_stream(s.audio);
                     // Packets still attached never complete: the real stream
                     // drops them the same way. Their status stays PENDING.
@@ -601,6 +603,11 @@ impl DirectSound {
                 None => {}
             }
             h.free(ptr);
+            // A destroyed stream gives back the reference it held on its
+            // output buffer.
+            if let Some(out) = release_output {
+                self.release(h, out)?;
+            }
         }
         Ok(refs)
     }
@@ -2084,8 +2091,31 @@ impl DirectSound {
     /// feeds that mix-in buffer (at its input mix bin, full level) instead of
     /// its own mix bins; null restores the mix bins. A buffer that is not a
     /// mix-in leaves the mix bins in charge and is counted.
-    pub fn stream_set_output_buffer(&mut self, ptr: u32, out: u32) -> R {
+    pub fn stream_set_output_buffer(&mut self, h: &mut dyn Host, ptr: u32, out: u32) -> R {
+        // Validate everything before changing anything: a stale or foreign
+        // pointer is a stop with the stream untouched.
+        let old = self.stream(ptr)?.output_buffer;
+        if out != 0 {
+            match self.objects.get(&out) {
+                Some(Object::Buffer(_)) => {}
+                _ => {
+                    return Err(Stop::BadHandle {
+                        ptr: out,
+                        expected: "IDirectSoundBuffer",
+                    });
+                }
+            }
+        }
+        // The stream owns a reference to its output buffer (the retail call
+        // releases the previous target and AddRefs the new one), taken before
+        // the old one is given back so replacing a buffer with itself is safe.
+        if let Some(Object::Buffer(b)) = self.objects.get_mut(&out) {
+            b.refs += 1;
+        }
         self.stream(ptr)?.output_buffer = (out != 0).then_some(out);
+        if let Some(old) = old {
+            self.release(h, old)?;
+        }
         if out != 0 && !matches!(self.objects.get(&out), Some(Object::Buffer(b)) if b.mix_in) {
             self.note("SetOutputBuffer (not a mix-in buffer)");
         }

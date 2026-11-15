@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use crate::{
     AudioError,
     format::{Codec, WaveFormat},
-    fx::{EnvSpec, FilterSpec, FxState, I3dl2Source, LfoSpec, VoiceFx},
+    fx::{EnvSpec, FilterSpec, FxState, I3dl2Source, LfoSpec, MAX_PHASE_OFFSET, VoiceFx},
 };
 
 /// `DSBVOLUME_MIN`. At or below this the voice is silent.
@@ -132,6 +132,11 @@ macro_rules! voice_setters {
         /// Frames this voice has produced since it (re)started.
         pub(crate) fn fx_clock(&self) -> u64 {
             self.fx_state.clock
+        }
+        /// The I3DL2 direct path of `src` into `dst`; false if the source has
+        /// no direct-path shelf (the direct path is then `src`).
+        pub(crate) fn direct_shelf(&mut self, src: &[f32], dst: &mut [f32], rate: u32) -> bool {
+            self.fx_state.direct_shelf(&self.params.fx, src, dst, rate)
         }
         /// Sets the Doppler pitch ratio for the next render.
         #[allow(dead_code)]
@@ -526,6 +531,25 @@ impl Stream {
         std::mem::take(&mut self.completed)
     }
 
+    /// Frame `i` counted from the start of the front packet, continuing into
+    /// the packets behind it; the last queued frame if `i` runs past them all.
+    fn frame_rel(&self, mut i: usize) -> [f32; 2] {
+        for k in 0..self.queue.len() {
+            let n = self.queue[k].frames.len() / self.format.channels() as usize;
+            if i < n {
+                return self.frame(k, i).unwrap_or([0.0; 2]);
+            }
+            i -= n;
+        }
+        self.queue
+            .back()
+            .and_then(|p| {
+                let n = p.frames.len() / self.format.channels() as usize;
+                self.frame(self.queue.len() - 1, n.saturating_sub(1))
+            })
+            .unwrap_or([0.0; 2])
+    }
+
     fn frame(&self, packet: usize, i: usize) -> Option<[f32; 2]> {
         let p = self.queue.get(packet)?;
         let ch = self.format.channels() as usize;
@@ -545,13 +569,30 @@ impl Stream {
             if self.queue.is_empty() {
                 break;
             }
-            let step = base_step * self.fx_state.pitch_mult(&self.params.fx, host_rate);
-            let i = self.pos.floor() as usize;
-            let t = (self.pos - i as f64) as f32;
-            let a = self.frame(0, i).unwrap_or([0.0; 2]);
-            // Interpolate toward the next packet's first frame at a boundary
-            // so packet joins are seamless.
-            let b = self.frame(0, i + 1).or_else(|| self.frame(1, 0)).unwrap_or(a);
+            // Pitch modulation (LFO, Doppler) never changes how fast packets
+            // are consumed: `pos` advances at the nominal rate, so packets
+            // complete exactly when they would without effects. The
+            // modulation moves only the read position, by an offset that
+            // accumulates `(ratio - 1)` per frame and is bounded.
+            let m = self.fx_state.pitch_mult(&self.params.fx, host_rate);
+            let off = self.fx_state.phase_off;
+            let step = base_step;
+            let (a, b, t) = if m == 1.0 && off == 0.0 {
+                let i = self.pos.floor() as usize;
+                let t = (self.pos - i as f64) as f32;
+                let a = self.frame(0, i).unwrap_or([0.0; 2]);
+                // Interpolate toward the next packet's first frame at a
+                // boundary so packet joins are seamless.
+                let b = self.frame(0, i + 1).or_else(|| self.frame(1, 0)).unwrap_or(a);
+                (a, b, t)
+            } else {
+                let p = (self.pos + off).max(0.0);
+                let i = p.floor() as usize;
+                (self.frame_rel(i), self.frame_rel(i + 1), (p - i as f64) as f32)
+            };
+            if m != 1.0 {
+                self.fx_state.phase_off = (off + (m - 1.0) * base_step).clamp(-MAX_PHASE_OFFSET, MAX_PHASE_OFFSET);
+            }
             frame[0] += (a[0] + (b[0] - a[0]) * t) * gain.0;
             frame[1] += (a[1] + (b[1] - a[1]) * t) * gain.1;
             self.fx_state.clock += 1;
@@ -806,7 +847,14 @@ impl Listener {
         let distance_gain = if d <= min { 1.0 } else { min / (min + rolloff * (d - min)) };
 
         let pitch = self.doppler(src, rel);
-        Spatial { gain: distance_gain * cone_gain(src, rel), left, right, front: front.clamp(0.0, 1.0), pitch }
+        let out = Spatial { gain: distance_gain * cone_gain(src, rel), left, right, front: front.clamp(0.0, 1.0), pitch };
+        // A NaN position, distance or cone from the guest must not reach the
+        // mix: such a source is heard unprocessed.
+        if [out.gain, out.left, out.right, out.front].iter().all(|v| v.is_finite()) {
+            out
+        } else {
+            Spatial { pitch, ..Spatial::DRY }
+        }
     }
 }
 
@@ -814,16 +862,22 @@ impl Listener {
     /// The Doppler term of [`Listener::spatial`]; `rel` points from the
     /// listener to the source.
     fn doppler(&self, src: &Source3d, rel: Vec3) -> f64 {
-        let k = (self.doppler_factor * src.doppler_factor).max(0.0);
+        // DirectSound limits the factor to 0..=10; anything else (NaN,
+        // infinity) is clamped or means none.
+        let clean = |v: f32, max: f32| if v.is_nan() { 0.0 } else { v.clamp(0.0, max) };
+        let k = clean(self.doppler_factor, 10.0) * clean(src.doppler_factor, 10.0);
         if k == 0.0 || src.mode != Mode3d::Normal {
             return 1.0;
         }
         let Some(to_listener) = rel.scale(-1.0).unit() else { return 1.0 };
         let limit = 0.9 * SPEED_OF_SOUND / k;
-        let metres = self.distance_factor.max(0.0);
-        let vl = (self.velocity.dot(to_listener) * metres).clamp(-limit, limit);
-        let vs = (src.velocity.dot(to_listener) * metres).clamp(-limit, limit);
-        f64::from((SPEED_OF_SOUND - k * vl) / (SPEED_OF_SOUND - k * vs))
+        let metres = clean(self.distance_factor, 1.0e6);
+        let along = |v: Vec3| {
+            let d = v.dot(to_listener) * metres;
+            if d.is_nan() { 0.0 } else { d.clamp(-limit, limit) }
+        };
+        let ratio = f64::from((SPEED_OF_SOUND - k * along(self.velocity)) / (SPEED_OF_SOUND - k * along(src.velocity)));
+        if ratio.is_finite() && ratio > 0.0 { ratio.clamp(0.125, 8.0) } else { 1.0 }
     }
 }
 

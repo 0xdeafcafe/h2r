@@ -193,8 +193,9 @@ Documented and deliberately simple; it is not the MCPX HRTF.
 - **Doppler**: `Spatial::pitch = (c − k·vl)/(c − k·vs)` with `c` = 343 m/s,
   `vl`/`vs` the listener's and source's velocities along the source-to-
   listener direction times the distance factor, and `k` the product of the
-  listener's and source's Doppler factors. It scales the playback rate of a
-  buffer or stream that has its own 3D source (a mix-in has no samples to
+  listener's and source's Doppler factors (each clamped to 0..=10; NaN is 0).
+  The ratio is limited to 1/8..8. It scales the playback rate of a buffer,
+  and the (bounded) read position of a stream, that has its own 3D source (a mix-in has no samples to
   resample, so a positioned mix-in does not shift its inputs). Speeds are
   capped at `0.9 c / k`.
 - Not modelled: HRTF filtering. Occlusion and reverb are per-voice effects
@@ -219,6 +220,8 @@ change playback rate by design).
 - **Envelope** (`SetEG`): amplitude delay, attack, hold, decay, sustain in
   512-sample (1/93.75 s) units; release is not entered because stops and
   flushes are immediate.
+- `Mixer::reserve_block(frames)` reserves the reverb and direct-path working
+  memory so an idle render with a reverb allocates nothing (`tests/alloc.rs`).
 - **Headroom** (`SetHeadroom`): attenuates the voice by its millibels.
 - **I3DL2 source** (`SetI3DL2Source`): direct-path level, obstruction and
   occlusion (low-frequency share = HF level × LF ratio) as a gain plus a

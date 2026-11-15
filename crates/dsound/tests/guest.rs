@@ -2133,39 +2133,52 @@ fn stream_set_lfo_tremolo_from_a_halo_descriptor() {
     assert_eq!(rig.call(STREAM_SET_LFO, &[s, 0]).eax, E_INVALIDARG);
 }
 
+/// Plays one packet of `frames` frames one frame at a time, servicing the
+/// stream (`DirectSoundDoWork`) after each, and returns the frame count at
+/// which its status stopped being pending, with its completed size.
+fn completion_of(frames: usize, setup: impl FnOnce(&mut Rig, u32)) -> (usize, u32) {
+    let mut rig = Rig::new();
+    let s = mono_stream(&mut rig);
+    setup(&mut rig, s);
+    let (status, done) = rig.process(s, &sine16(300.0, frames), 0);
+    for step in 1..=frames + 200 {
+        rig.render(1);
+        rig.call(DO_WORK, &[]);
+        let st = rig.h.read_u32(status).unwrap();
+        if st != 0x8000_000A {
+            assert_eq!(st, 0, "completed successfully");
+            return (step, rig.h.read_u32(done).unwrap());
+        }
+    }
+    panic!("never completed");
+}
+
 #[test]
 fn effects_leave_packet_completion_alone() {
-    let run = |fx: bool| {
-        let mut rig = Rig::new();
-        let s = mono_stream(&mut rig);
-        if fx {
-            let f = dwords(
-                &mut rig,
-                &[1, 0, audio::fx::hz_to_coeff(500.0), 46341, 0, 0],
-            );
-            rig.call(STREAM_SET_FILTER, &[s, f]);
-            let l = dwords(&mut rig, &[0, 20, 175, 0, 32, 64]);
-            rig.call(STREAM_SET_LFO, &[s, l]);
-            let e = dwords(&mut rig, &[1, 2, 0, 20, 0, 0, 50, 0xFF, 0, 0]);
-            rig.call(STREAM_SET_EG, &[s, e]);
-            rig.call(STREAM_SET_HEADROOM, &[s, 600]);
-        }
-        let mut pkts = Vec::new();
-        for _ in 0..3 {
-            pkts.push(rig.process(s, &sine16(300.0, 1000), 0));
-        }
-        let mut done = Vec::new();
-        for step in 0..8 {
-            rig.render(500);
-            let state: Vec<(u32, u32)> = pkts
-                .iter()
-                .map(|&(st, c)| (rig.h.read_u32(st).unwrap(), rig.h.read_u32(c).unwrap()))
-                .collect();
-            done.push((step, state));
-        }
-        done
-    };
-    assert_eq!(run(false), run(true));
+    let plain = completion_of(800, |_, _| {});
+    assert_eq!(plain, (800, 1600));
+    let all = completion_of(800, |rig, s| {
+        let f = dwords(rig, &[1, 0, audio::fx::hz_to_coeff(500.0), 46341, 0, 0]);
+        rig.call(STREAM_SET_FILTER, &[s, f]);
+        let l = dwords(rig, &[0, 20, 175, 0, 32, 64]);
+        rig.call(STREAM_SET_LFO, &[s, l]);
+        let e = dwords(rig, &[1, 2, 0, 20, 0, 0, 50, 0xFF, 0, 0]);
+        rig.call(STREAM_SET_EG, &[s, e]);
+        rig.call(STREAM_SET_HEADROOM, &[s, 600]);
+    });
+    assert_eq!(all, plain);
+}
+
+#[test]
+fn pitch_lfo_leaves_packet_completion_alone() {
+    // dwLFO 1 (pitch), delta 175 (~4 Hz), depth 127: a deep vibrato. The
+    // packet must still complete after exactly its own length.
+    let plain = completion_of(800, |_, _| {});
+    let vibrato = completion_of(800, |rig, s| {
+        let l = dwords(rig, &[1, 0, 175, 127, 0, 0]);
+        assert_eq!(rig.call(STREAM_SET_LFO, &[s, l]).eax, S_OK);
+    });
+    assert_eq!(vibrato, plain);
 }
 
 #[test]
@@ -2375,4 +2388,77 @@ fn buffer_doppler_factor_is_applied_not_counted() {
         S_OK
     );
     assert!(rig.ds.ignored().get("SetDopplerFactor").is_none());
+}
+
+#[test]
+fn stream_set_output_buffer_retains_its_target() {
+    let mut rig = Rig::new();
+    let mix = mix_in(&mut rig, 0x17);
+    let s = mono_stream(&mut rig);
+    let dead = mix_bins(&mut rig, &[(0x19, 0)]);
+    rig.call(STREAM_SET_MIX_BINS, &[s, dead]);
+    rig.process(s, &sine16(300.0, 8000), 0);
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    // The caller drops its reference: the stream's keeps the mix-in alive.
+    assert_eq!(rig.call(BUF_RELEASE, &[mix]).eax, 1);
+    assert!(
+        rig.render(400).iter().any(|&v| v.abs() > 0.1),
+        "still routed"
+    );
+    // Setting it again is balanced (add before release).
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, mix]).eax, S_OK);
+    assert!(rig.render(400).iter().any(|&v| v.abs() > 0.1));
+    let live = rig.ds.live_objects();
+    // Clearing gives the last reference back and frees the mix-in.
+    assert_eq!(rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, 0]).eax, S_OK);
+    assert_eq!(rig.ds.live_objects(), live - 1);
+    assert!(rig.render(400).iter().all(|&v| v == 0.0));
+    // Replacement releases the old target; destroying the stream releases the new one.
+    let a = mix_in(&mut rig, 0x17);
+    let b = mix_in(&mut rig, 0x18);
+    rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, a]);
+    rig.call(BUF_RELEASE, &[a]);
+    let live = rig.ds.live_objects();
+    rig.call(STREAM_SET_OUTPUT_BUFFER, &[s, b]);
+    assert_eq!(rig.ds.live_objects(), live - 1, "a freed when replaced");
+    rig.call(BUF_RELEASE, &[b]);
+    let live = rig.ds.live_objects();
+    rig.call(STREAM_RELEASE, &[s]);
+    assert_eq!(rig.ds.live_objects(), live - 2, "stream and b freed");
+    // A stale pointer is rejected and changes nothing.
+    let s2 = mono_stream(&mut rig);
+    assert!(matches!(
+        invoke(&mut rig.ds, &mut rig.h, STREAM_SET_OUTPUT_BUFFER, &[s2, a]),
+        Err(Stop::BadHandle { .. })
+    ));
+}
+
+#[test]
+fn hostile_i3dl2_source_values_stay_finite() {
+    let nan = f32::NAN.to_bits();
+    for words in [
+        [
+            i32::MAX as u32,
+            i32::MIN as u32,
+            i32::MAX as u32,
+            5,
+            f32::INFINITY.to_bits(),
+            i32::MIN as u32,
+            nan,
+            77,
+            nan,
+        ],
+        [0, 0, 0, 0, 0, 0, nan, 0, nan],
+    ] {
+        let mut rig = Rig::new();
+        let mix = mix_in(&mut rig, 0x17);
+        let s = mono_stream(&mut rig);
+        let bins = mix_bins(&mut rig, &[(0x17, 0)]);
+        rig.call(STREAM_SET_MIX_BINS, &[s, bins]);
+        let d = dwords(&mut rig, &words);
+        assert_eq!(rig.call(BUF_SET_I3DL2, &[mix, d, 1]).eax, S_OK);
+        rig.process(s, &sine16(300.0, 2000), 0);
+        let out = rig.render(2000);
+        assert!(out.iter().all(|v| v.is_finite()));
+    }
 }

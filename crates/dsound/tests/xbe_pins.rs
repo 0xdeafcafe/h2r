@@ -127,3 +127,53 @@ fn wma_codec_entries_have_their_ret_sizes_in_the_retail_image() {
     }
     assert!(bad.is_empty(), "{}", bad.join("\n"));
 }
+
+/// The immediates of every `mov r32, imm` / `cmp r32, imm` in the straight-
+/// line decode of `[va, va + len)`.
+fn immediates(mem: &Guest, va: u32, len: u32) -> BTreeSet<u32> {
+    let mut out = BTreeSet::new();
+    let mut ip = va;
+    while ip < va + len {
+        let mut bytes = [0u8; 16];
+        if mem.read_bytes(ip, &mut bytes, 1).is_err() {
+            break;
+        }
+        let mut d = Decoder::with_ip(32, &bytes, ip as u64, DecoderOptions::NONE);
+        let i = d.decode();
+        if i.is_invalid() {
+            break;
+        }
+        if matches!(i.mnemonic(), Mnemonic::Mov | Mnemonic::Cmp)
+            && i.op_count() == 2
+            && matches!(
+                i.op1_kind(),
+                iced_x86::OpKind::Immediate32 | iced_x86::OpKind::Immediate32to64
+            )
+        {
+            out.insert(i.immediate32());
+        }
+        ip += i.len() as u32;
+    }
+    out
+}
+
+/// The PARAMEQ gain converter (`0x21e330`) encodes a boost as `v` limited to
+/// `0x7fff` and a cut as `0xc000 - v` limited to `0xc000..=0xdfff`;
+/// `audio::fx::gain_word_to_db` decodes exactly that. Reads the limits from
+/// the image at run time.
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn parameq_gain_converter_uses_the_biased_cut_encoding() {
+    let Some(path) = std::env::var_os("H2_XBE") else {
+        panic!("set H2_XBE to a retail default.xbe");
+    };
+    let image = load_xbe(&std::fs::read(path).unwrap()).unwrap();
+    let mem = image.runtime.memory();
+    let imms = immediates(&mem, 0x0021_e330, 0x80);
+    for want in [0x7fffu32, 0xc000, 0xdfff] {
+        assert!(imms.contains(&want), "limit {want:#x} not in {imms:x?}");
+    }
+    // The decoder agrees at the limits.
+    assert!(audio::fx::gain_word_to_db(0xdfff) <= -59.9);
+    assert!(audio::fx::gain_word_to_db(0x7fff) > 10.0);
+}

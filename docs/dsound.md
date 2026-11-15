@@ -628,6 +628,17 @@ builder (`0x220200..0x220700`) fills `SetFilter` (`0x2203e9`) and two
 | `SetDopplerFactor` (buffer, listener) | float | scales the Doppler shift (see `docs/audio.md`). No guest call sets a velocity (Halo never calls `SetVelocity`), so the shift is 1 for Halo; the machinery is tested in `audio` |
 | `XAudioSetEffectData(9, type 12)` | `DSI3DL2LISTENER`, 12 dwords | `Mixer::set_reverb` (index = the `reverbIndex` of the last `XAudioDownloadEffectsImage`) |
 
+Corrections after review: a cut in a PARAMEQ gain word is biased (`0xc000 -
+v`, `0xc000..=0xdfff`), a boost is `v` up to `0x7fff` (an ignored test
+`parameq_gain_converter_uses_the_biased_cut_encoding` checks the converter's
+limits against `$H2_XBE`); obstruction and the direct HF level shape the
+direct path only (speakers and mix-in sends), never the reverb send; source
+descriptors are clamped to the I3DL2 ranges and Doppler factors, velocities
+and the final ratio are limited so nothing non-finite reaches the mix;
+recursive filter, shelf and diffuser state is flushed to zero when tiny;
+`SetOutputBuffer` holds a reference on its target (balanced on replace,
+clear and stream destruction; a stale pointer is a `BadHandle` stop).
+
 Determinism and timing. Each voice's effects advance on a frame clock that
 the voice itself counts (stream clocks do not advance while starved, a
 `Flush` or a buffer `Play` from position 0 starts them over), so the output
@@ -636,8 +647,15 @@ is the same for any `Output::advance_to` slicing and any render block size
 frames). Nothing changes how many frames a voice consumes, so packet
 completion order and timing are the same with every effect on (tests
 `effects_leave_packet_completion_alone`, `fx_do_not_change_packet_completion`).
-The pitch LFO and Doppler change the playback rate and so move completion,
-as `SetPitch` does.
+On a **stream** the pitch LFO and Doppler do not change consumption either:
+packets are consumed at the nominal (`SetPitch`) rate, and the modulation
+moves only the read position, by an offset accumulating `(ratio - 1)` per
+frame and bounded to +-512 frames, so a vibrato is faithful until its swing
+exceeds that window and then saturates (a constant Doppler shift therefore
+shows as a bounded phase shift, not a pitch change). Test
+`pitch_lfo_leaves_packet_completion_alone` services the stream and compares
+status and completed size frame by frame. On a **buffer** (no packets) they
+change the playback rate like `SetFrequency`, so a buffer's end moves.
 
 Left out, on purpose:
 

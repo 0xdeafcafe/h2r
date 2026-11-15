@@ -45,6 +45,10 @@ pub struct Mixer {
     scratch: Vec<f32>,
     /// The environment behind the I3DL2 send bin, once the game sets one.
     reverb: Option<Reverb>,
+    /// The reverb's mono input and a voice's I3DL2 direct path, reused across
+    /// renders (see [`Mixer::reserve_block`]).
+    reverb_in: Vec<f32>,
+    direct: Vec<f32>,
 }
 
 impl Mixer {
@@ -61,6 +65,8 @@ impl Mixer {
             next_id: 1,
             scratch: Vec::new(),
             reverb: None,
+            reverb_in: Vec::new(),
+            direct: Vec::new(),
         }
     }
 
@@ -87,6 +93,16 @@ impl Mixer {
             (Some(e), None) => self.reverb = Some(Reverb::new(self.sample_rate, e)),
             (None, _) => self.reverb = None,
         }
+    }
+
+    /// Reserves working memory for renders of up to `frames` frames, so a
+    /// render on an audio callback does not allocate for the reverb or the
+    /// I3DL2 direct path. Call it from the control side, with the largest
+    /// block the output will ask for.
+    pub fn reserve_block(&mut self, frames: usize) {
+        self.scratch.reserve(frames * 2);
+        self.direct.reserve(frames * 2);
+        self.reverb_in.reserve(frames);
     }
 
     pub fn reverb(&self) -> Option<&I3dl2Listener> {
@@ -191,7 +207,13 @@ impl Mixer {
             .map(|&id| Bus { id, bin: self.mix_ins[&id].input_bin(), input: vec![0.0; frames], done: false })
             .collect();
         let reverb_live = self.reverb.as_ref().is_some_and(|r| !r.params().is_silent());
-        let mut reverb_in: Option<Vec<f32>> = reverb_live.then(|| vec![0.0; frames]);
+        let mut rin = std::mem::take(&mut self.reverb_in);
+        let mut direct = std::mem::take(&mut self.direct);
+        direct.resize(frames * 2, 0.0);
+        if reverb_live {
+            rin.clear();
+            rin.resize(frames, 0.0);
+        }
 
         let ids: Vec<BufferId> = self.buffers.iter().filter(|(_, b)| b.is_playing()).map(|(&id, _)| id).collect();
         for id in ids {
@@ -203,9 +225,10 @@ impl Mixer {
             b.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (b.fx_clock() - c0) as usize;
             b.apply_fx(&mut scratch[..produced * 2], c0, rate);
+            let has_direct = b.direct_shelf(&scratch, &mut direct, rate);
             let channels = b.format().channels() as usize;
-            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_in.as_mut() };
-            route_voice(&mut cx, &params, channels, &scratch, out);
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..]), out);
         }
         let ids: Vec<StreamId> = self.streams.iter().filter(|(_, s)| s.is_audible()).map(|(&id, _)| id).collect();
         for id in ids {
@@ -217,9 +240,10 @@ impl Mixer {
             s.render(&mut scratch, rate, (1.0, 1.0));
             let produced = (s.fx_clock() - c0) as usize;
             s.apply_fx(&mut scratch[..produced * 2], c0, rate);
+            let has_direct = s.direct_shelf(&scratch, &mut direct, rate);
             let channels = s.format().channels() as usize;
-            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_in.as_mut() };
-            route_voice(&mut cx, &params, channels, &scratch, out);
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+            route_voice(&mut cx, &params, channels, &scratch, has_direct.then_some(&direct[..]), out);
         }
         for i in 0..buses.len() {
             buses[i].done = true;
@@ -232,17 +256,20 @@ impl Mixer {
             let c0 = mix.fx_clock();
             mix.apply_fx(&mut scratch, c0, rate);
             mix.advance_clock(frames as u64);
-            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_in.as_mut() };
-            route_voice(&mut cx, &params, 1, &scratch, out);
+            let has_direct = mix.direct_shelf(&scratch, &mut direct, rate);
+            let mut cx = Route { listener: &self.listener, master, buses: &mut buses, reverb_in: reverb_live.then_some(&mut rin) };
+            route_voice(&mut cx, &params, 1, &scratch, has_direct.then_some(&direct[..]), out);
         }
-        if let (Some(r), Some(input)) = (self.reverb.as_mut(), reverb_in.as_ref()) {
+        if let (Some(r), true) = (self.reverb.as_mut(), reverb_live) {
             scratch.fill(0.0);
-            r.process(input, &mut scratch);
+            r.process(&rin, &mut scratch);
             for (o, w) in out.iter_mut().zip(&scratch) {
                 *o += w * master;
             }
         }
         self.scratch = scratch;
+        self.reverb_in = rin;
+        self.direct = direct;
     }
 
     /// Playing mix-ins, each after every mix-in that sends to it (Kahn's
@@ -286,7 +313,17 @@ struct Route<'a> {
 /// Mixes one voice, rendered at unity gain into `src` (interleaved stereo; a
 /// mono voice is in both channels), into `out`, the mix-in buses and the
 /// reverb send.
-fn route_voice(cx: &mut Route<'_>, p: &VoiceParams, channels: usize, src: &[f32], out: &mut [f32]) {
+fn route_voice(
+    cx: &mut Route<'_>,
+    p: &VoiceParams,
+    channels: usize,
+    src: &[f32],
+    direct_src: Option<&[f32]>,
+    out: &mut [f32],
+) {
+    // The direct path (speakers and mix-in sends) may be shelved by an I3DL2
+    // source's obstruction; the reverb send always takes `src`.
+    let dsrc = direct_src.unwrap_or(src);
     let (listener, master) = (cx.listener, cx.master);
     let spatial = p.spatial.as_ref().map(|s| listener.spatial(s));
     // I3DL2 source shaping: the direct level applies to everything but the
@@ -297,8 +334,8 @@ fn route_voice(cx: &mut Route<'_>, p: &VoiceParams, channels: usize, src: &[f32]
         // A plain DirectSound voice: volume and pan, then the 3D panning.
         let s = spatial.unwrap_or(Spatial::DRY);
         let (l, r) = p.gains();
-        add(out, src, 0, 0, l * s.gain * s.left * master * direct * hr);
-        add(out, src, 1, 1, r * s.gain * s.right * master * direct * hr);
+        add(out, dsrc, 0, 0, l * s.gain * s.left * master * direct * hr);
+        add(out, dsrc, 1, 1, r * s.gain * s.right * master * direct * hr);
         return;
     };
     let volume = mb_to_gain(p.volume_mb);
@@ -310,19 +347,19 @@ fn route_voice(cx: &mut Route<'_>, p: &VoiceParams, channels: usize, src: &[f32]
         let ch = route::channel_of(i, channels);
         match route::dest(bin) {
             Dest::Out { left, right } => {
-                add(out, src, ch, 0, g * left * master * direct);
-                add(out, src, ch, 1, g * right * master * direct);
+                add(out, dsrc, ch, 0, g * left * master * direct);
+                add(out, dsrc, ch, 1, g * right * master * direct);
             }
             Dest::Crosstalk { left, front } => {
                 let w = match spatial {
                     Some(s) => s.gain * if left { s.left } else { s.right } * if front { s.front } else { 1.0 - s.front },
                     None => 1.0,
                 };
-                add(out, src, ch, if left { 0 } else { 1 }, g * w * master * direct);
+                add(out, dsrc, ch, if left { 0 } else { 1 }, g * w * master * direct);
             }
             Dest::Send(bin) => {
                 for bus in cx.buses.iter_mut().filter(|b| b.bin == bin && !b.done) {
-                    for (acc, frame) in bus.input.iter_mut().zip(src.as_chunks::<2>().0) {
+                    for (acc, frame) in bus.input.iter_mut().zip(dsrc.as_chunks::<2>().0) {
                         *acc += frame[ch] * g * direct;
                     }
                 }
@@ -816,6 +853,144 @@ mod tests {
         assert_eq!(zero_crossings(68.6, 1.0, 0.0), still, "listener factor 0 turns it off");
         let half = zero_crossings(68.6, 0.5, 1.0);
         assert!(half > still && half < fast);
+    }
+
+    /// The output frame at which a stream's single packet completes, and the
+    /// rendered audio, one frame per render call batch of 100.
+    fn completion_frame(setup: impl FnOnce(&mut Stream)) -> (usize, Vec<f32>) {
+        let mut m = Mixer::new(48_000);
+        let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+        setup(m.stream_mut(sid).unwrap());
+        m.stream_mut(sid).unwrap().submit(&sine_pcm(440.0, 0.1)).unwrap();
+        let mut all = Vec::new();
+        for step in 0..60 {
+            let mut out = vec![0.0f32; 2 * 100];
+            m.render(&mut out);
+            all.extend(out);
+            if !m.stream_mut(sid).unwrap().take_completed().is_empty() {
+                return ((step + 1) * 100, all);
+            }
+        }
+        panic!("never completed");
+    }
+
+    #[test]
+    fn pitch_lfo_and_doppler_do_not_move_packet_completion() {
+        let (plain, plain_audio) = completion_frame(|_| {});
+        assert_eq!(plain, 4800);
+        // A deep, fast pitch LFO: the audio changes, the completion does not.
+        let (lfo, lfo_audio) = completion_frame(|s| s.set_lfo(1, Some(LfoSpec::from_dslfo(0, 175, 127, 0, 0))));
+        assert_eq!(lfo, plain);
+        assert_ne!(lfo_audio, plain_audio, "the vibrato is audible");
+        // A source approaching fast enough for a big Doppler shift, same story.
+        let (dop, dop_audio) = completion_frame(|s| {
+            s.set_source_3d(Some(Source3d {
+                position: Vec3::new(0.0, 0.0, 50.0),
+                velocity: Vec3::new(0.0, 0.0, -68.6),
+                rolloff_factor: 0.0,
+                ..Default::default()
+            }))
+        });
+        assert_eq!(dop, plain);
+        assert_ne!(dop_audio[..2 * 4800], plain_audio[..2 * 4800]);
+        assert!(lfo_audio.iter().chain(&dop_audio).all(|v| v.is_finite()));
+    }
+
+    #[test]
+    fn pitch_modulation_keeps_the_phase_offset_bounded() {
+        let mut st = crate::fx::FxState::default();
+        assert_eq!(st.phase_off, 0.0);
+        // The mixer drives it; here check a stream under a constant Doppler
+        // shift never reads further than the bound from its nominal position.
+        let mut m = Mixer::new(48_000);
+        let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+        m.stream_mut(sid).unwrap().set_source_3d(Some(Source3d {
+            position: Vec3::new(0.0, 0.0, 50.0),
+            velocity: Vec3::new(0.0, 0.0, -100.0),
+            rolloff_factor: 0.0,
+            ..Default::default()
+        }));
+        m.stream_mut(sid).unwrap().submit(&sine_pcm(300.0, 1.0)).unwrap();
+        let mut out = vec![0.0f32; 2 * 48_000];
+        m.render(&mut out);
+        assert!(out.iter().all(|v| v.is_finite() && v.abs() <= 1.0));
+        st.phase_off = 1e9;
+        assert!(st.phase_off > crate::fx::MAX_PHASE_OFFSET);
+    }
+
+    #[test]
+    fn obstruction_leaves_the_wet_send_alone() {
+        // A wet-only source (reverb bin only) with an obstructed direct path:
+        // changing obstruction must not change the wet signal.
+        let wet_energy = |obstruction_hf: i32| {
+            let mut m = Mixer::new(48_000);
+            m.set_reverb(Some(env_params()));
+            let id = m.add_buffer(SoundBuffer::from_data(WaveFormat::pcm16(1, 48_000).unwrap(), sine_pcm(5000.0, 0.2)).unwrap());
+            let b = m.buffer_mut(id).unwrap();
+            b.set_mix_bins(Some(vec![(route::I3DL2, 0)]));
+            b.set_i3dl2_source(Some(I3dl2Source { obstruction_hf, obstruction_lf_ratio: 0.0, ..Default::default() }));
+            b.play(false);
+            let mut out = vec![0.0f32; 2 * 24_000];
+            m.render(&mut out);
+            out.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>()
+        };
+        let open = wet_energy(0);
+        assert!(open > 0.0);
+        assert_eq!(wet_energy(-2000), open);
+        // The direct path of the same source still darkens.
+        let direct_energy = |obstruction_hf: i32| {
+            let mut m = Mixer::new(48_000);
+            let id = m.add_buffer(SoundBuffer::from_data(WaveFormat::pcm16(1, 48_000).unwrap(), sine_pcm(5000.0, 0.2)).unwrap());
+            let b = m.buffer_mut(id).unwrap();
+            b.set_mix_bins(Some(vec![(0, 0)]));
+            b.set_i3dl2_source(Some(I3dl2Source { obstruction_hf, obstruction_lf_ratio: 0.0, ..Default::default() }));
+            b.play(false);
+            let mut out = vec![0.0f32; 2 * 9600];
+            m.render(&mut out);
+            out.iter().skip(2 * 4800).map(|v| f64::from(*v).powi(2)).sum::<f64>()
+        };
+        assert!(direct_energy(-2000) < direct_energy(0) * 0.05);
+    }
+
+    #[test]
+    fn extreme_source_and_doppler_values_stay_finite() {
+        let nan = f32::NAN;
+        let inf = f32::INFINITY;
+        for (factor, listener_factor, vel, pos) in [
+            (inf, 1.0, 1.0e30, 5.0),
+            (1.0, inf, -1.0e30, 5.0),
+            (nan, nan, nan, 5.0),
+            (1.0, 1.0, 1.0, nan),
+            (1.0e30, 1.0e30, inf, 0.0),
+        ] {
+            let mut m = Mixer::new(48_000);
+            m.listener_mut().doppler_factor = listener_factor;
+            m.listener_mut().velocity = Vec3::new(0.0, 0.0, vel);
+            let id = m.add_buffer(SoundBuffer::from_data(WaveFormat::pcm16(1, 48_000).unwrap(), sine_pcm(440.0, 0.5)).unwrap());
+            let b = m.buffer_mut(id).unwrap();
+            b.set_source_3d(Some(Source3d {
+                position: Vec3::new(0.0, 0.0, pos),
+                velocity: Vec3::new(0.0, 0.0, vel),
+                doppler_factor: factor,
+                min_distance: nan,
+                ..Default::default()
+            }));
+            b.play(true);
+            let sid = m.add_stream(Stream::new(WaveFormat::pcm16(1, 48_000).unwrap()).unwrap());
+            m.stream_mut(sid).unwrap().submit(&sine_pcm(440.0, 0.1)).unwrap();
+            m.stream_mut(sid).unwrap().set_source_3d(Some(Source3d {
+                position: Vec3::new(0.0, 0.0, pos),
+                velocity: Vec3::new(0.0, 0.0, vel),
+                doppler_factor: factor,
+                ..Default::default()
+            }));
+            let mut out = vec![0.0f32; 2 * 4800];
+            m.render(&mut out);
+            assert!(out.iter().all(|v| v.is_finite()), "{factor} {listener_factor} {vel} {pos}");
+            let l = Listener { doppler_factor: listener_factor, velocity: Vec3::new(0.0, 0.0, vel), ..Default::default() };
+            let p = l.spatial(&Source3d { position: Vec3::new(0.0, 0.0, 5.0), velocity: Vec3::new(0.0, 0.0, vel), doppler_factor: factor, ..Default::default() }).pitch;
+            assert!(p.is_finite() && p > 0.0, "{p}");
+        }
     }
 
     #[test]

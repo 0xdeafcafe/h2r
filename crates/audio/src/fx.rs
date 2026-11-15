@@ -104,11 +104,31 @@ pub fn damping_to_q(word: u32) -> f32 {
     (1.0 / d.max(1.0 / 64.0)) as f32
 }
 
-/// A parametric-EQ gain word to dB. The word is `8192 * (10^(dB / 20) - 1)`
-/// (`0x21e330`), signed.
+/// A parametric-EQ gain word to dB. Halo's converter (`0x21e330`) computes
+/// `v = (10^(dB/20) - 1) * 8192` and encodes it in 16 bits: a boost
+/// (`v >= 0`) is `v` limited to `0x7fff`; a cut (`v < 0`) is biased,
+/// `0xc000 - v`, limited to `0xc000..=0xdfff`. Words in `0x8000..0xc000`
+/// are not produced by it and decode as the largest boost.
 pub fn gain_word_to_db(word: u32) -> f32 {
-    let ratio = 1.0 + f64::from(word as i32) / 8192.0;
+    let c = word & 0xffff;
+    let v = if c >= 0xc000 {
+        -f64::from((c.min(0xdfff)) - 0xc000)
+    } else {
+        f64::from(c.min(0x7fff))
+    };
+    let ratio = 1.0 + v / 8192.0;
     (20.0 * ratio.max(1e-3).log10()) as f32
+}
+
+/// The inverse of [`gain_word_to_db`], mirroring the converter, for tests
+/// and tools.
+pub fn db_to_gain_word(db: f32) -> u32 {
+    let v = ((10f64.powf(f64::from(db) / 20.0) - 1.0) * 8192.0) as i32;
+    if v >= 0 {
+        v.min(0x7fff) as u32
+    } else {
+        (0xc000 - v).clamp(0xc000, 0xdfff) as u32
+    }
 }
 
 /// Q for a parametric-EQ `dwQCoefficient` index `0..=7`. The hardware's
@@ -333,7 +353,10 @@ impl Default for I3dl2Source {
 }
 
 impl I3dl2Source {
-    /// From the nine dwords of a `DSI3DL2BUFFER` (floats as bit patterns).
+    /// From the nine dwords of a `DSI3DL2BUFFER` (floats as bit patterns),
+    /// sanitised: levels are limited to the I3DL2 ranges and ratios and
+    /// the rolloff to finite values, so nothing downstream sees NaN or
+    /// infinity whatever the guest wrote.
     pub fn from_words(w: [u32; 9]) -> Self {
         let f = f32::from_bits;
         Self {
@@ -347,6 +370,27 @@ impl I3dl2Source {
             occlusion_hf: w[7] as i32,
             occlusion_lf_ratio: f(w[8]),
         }
+        .sane()
+    }
+
+    /// Clamps to the I3DL2 ranges. NaN ratios and rolloff take their
+    /// defaults.
+    pub fn sane(mut self) -> Self {
+        let ratio = |v: f32, d: f32| if v.is_nan() { d } else { v.clamp(0.0, 1.0) };
+        self.direct = self.direct.clamp(-10_000, 1000);
+        self.direct_hf = self.direct_hf.clamp(-10_000, 0);
+        self.room = self.room.clamp(-10_000, 1000);
+        self.room_hf = self.room_hf.clamp(-10_000, 0);
+        self.obstruction_hf = self.obstruction_hf.clamp(-10_000, 0);
+        self.occlusion_hf = self.occlusion_hf.clamp(-10_000, 0);
+        self.obstruction_lf_ratio = ratio(self.obstruction_lf_ratio, 0.0);
+        self.occlusion_lf_ratio = ratio(self.occlusion_lf_ratio, 0.25);
+        self.room_rolloff = if self.room_rolloff.is_nan() {
+            0.0
+        } else {
+            self.room_rolloff.clamp(0.0, 10.0)
+        };
+        self
     }
 
     /// Direct-path level at low frequencies, millibels: the direct level plus
@@ -379,7 +423,7 @@ impl I3dl2Source {
 
     /// The direct path's high-frequency attenuation relative to its low
     /// frequencies, in dB (<= 0), as a one-pole shelf at the HF reference.
-    fn shelf_db(&self) -> f32 {
+    pub fn shelf_db(&self) -> f32 {
         ((self.direct_hf_mb() - self.direct_lf_mb()) / 100.0).min(0.0)
     }
 
@@ -437,7 +481,6 @@ impl VoiceFx {
                 .flatten()
                 .any(|l| l.filter_oct != 0.0 || l.amp_db != 0.0)
             || self.env.is_some()
-            || self.i3dl2.is_some_and(|i| i.shelf_db() != 0.0)
     }
 
     fn modulates_pitch(&self) -> bool {
@@ -458,7 +501,8 @@ struct Coeffs {
 impl Coeffs {
     /// RBJ audio-EQ-cookbook biquads (published, textbook formulas).
     fn new(s: &Stage, rate: f64) -> Self {
-        let f = f64::from(s.hz).clamp(10.0, rate * 0.45);
+        // max/min rather than clamp: a very low host rate must not panic.
+        let f = f64::from(s.hz).max(10.0).min(rate * 0.45);
         let q = f64::from(s.q).clamp(0.1, 40.0);
         let w = 2.0 * PI * f / rate;
         let (sin, cos) = w.sin_cos();
@@ -514,10 +558,17 @@ struct BiquadState {
 impl BiquadState {
     fn tick(&mut self, c: &Coeffs, ch: usize, x: f64) -> f64 {
         let y = c.b0 * x + self.z1[ch];
-        self.z1[ch] = c.b1 * x - c.a1 * y + self.z2[ch];
-        self.z2[ch] = c.b2 * x - c.a2 * y;
+        self.z1[ch] = flush64(c.b1 * x - c.a1 * y + self.z2[ch]);
+        self.z2[ch] = flush64(c.b2 * x - c.a2 * y);
         y
     }
+}
+
+/// Flushes values too small to matter to zero, so recursive state decaying in
+/// silence never reaches the denormal range (slow on some hosts), without
+/// depending on a floating-point mode.
+pub(crate) fn flush64(v: f64) -> f64 {
+    if v.abs() < 1e-30 { 0.0 } else { v }
 }
 
 /// A one-pole low-pass shelf with unity gain at DC and the requested gain at
@@ -549,7 +600,15 @@ pub struct FxState {
     /// Inputs the cached `coeffs` were built from.
     cached: Option<(FilterSpec, i32, u32)>,
     shelf_z: [f64; 2],
+    /// Stream 3D/LFO pitch effects move the *read* position by this many
+    /// frames, bounded by [`MAX_PHASE_OFFSET`], instead of changing the
+    /// consumption rate (see `pitch_mult`).
+    pub(crate) phase_off: f64,
 }
+
+/// Bound on the read-position offset pitch modulation may build up on a
+/// stream, in frames.
+pub const MAX_PHASE_OFFSET: f64 = 512.0;
 
 impl Default for FxState {
     fn default() -> Self {
@@ -561,6 +620,7 @@ impl Default for FxState {
             coeffs: [None; 2],
             cached: None,
             shelf_z: [0.0; 2],
+            phase_off: 0.0,
         }
     }
 }
@@ -591,7 +651,12 @@ impl FxState {
                 .sum();
             m *= oct.exp2();
         }
-        m
+        // Never NaN, zero or runaway, whatever Doppler or the LFO gave.
+        if m.is_finite() && m > 0.0 {
+            m.clamp(0.125, 8.0)
+        } else {
+            1.0
+        }
     }
 
     /// Applies the voice's effects to `frames` interleaved stereo frames of
@@ -601,8 +666,6 @@ impl FxState {
             return;
         }
         let rate_f = f64::from(rate);
-        let shelf = fx.i3dl2.map(|i| i.shelf_db()).filter(|&d| d < 0.0);
-        let shelf_a = shelf.map(|db| shelf_pole(db, f64::from(DEFAULT_HF_REFERENCE_HZ), rate_f));
         for (i, frame) in buf.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let c = c0 + i as u64;
             let t = c as f64 / rate_f;
@@ -645,14 +708,35 @@ impl FxState {
                         x = st.tick(co, ch, x);
                     }
                 }
-                if let Some(a) = shelf_a {
-                    // y = (1 - a) x + a y1, DC gain 1.
-                    x = (1.0 - a) * x + a * self.shelf_z[ch];
-                    self.shelf_z[ch] = x;
-                }
                 *sample = x as f32;
             }
         }
+    }
+
+    /// The I3DL2 direct path of a voice: `src` (the voice after the common
+    /// effects) through the source's high-frequency shelf into `dst`.
+    /// Returns false, leaving `dst` alone, when the source has no shelf (the
+    /// direct path is then `src` itself). Obstruction and the direct HF level
+    /// belong to the direct path only, so the room send is taken from `src`.
+    pub fn direct_shelf(&mut self, fx: &VoiceFx, src: &[f32], dst: &mut [f32], rate: u32) -> bool {
+        let Some(db) = fx.i3dl2.map(|i| i.shelf_db()).filter(|&d| d < 0.0) else {
+            return false;
+        };
+        let a = shelf_pole(db, f64::from(DEFAULT_HF_REFERENCE_HZ), f64::from(rate));
+        for (s, d) in src
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .zip(dst.as_chunks_mut::<2>().0)
+        {
+            for ch in 0..2 {
+                // y = (1 - a) x + a y1, DC gain 1.
+                let y = flush64((1.0 - a) * f64::from(s[ch]) + a * self.shelf_z[ch]);
+                self.shelf_z[ch] = y;
+                d[ch] = y as f32;
+            }
+        }
+        true
     }
 }
 
@@ -674,6 +758,21 @@ mod tests {
         let mut st = FxState::default();
         st.process(fx, &mut buf, 0, RATE);
         let tail = &buf.as_chunks::<2>().0[n / 2..];
+        let ms: f64 = tail.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>() / tail.len() as f64;
+        (ms * 2.0).sqrt()
+    }
+
+    /// Gain of the I3DL2 direct path (the shelf) on a sine of `hz`.
+    fn direct_at(fx: &VoiceFx, hz: f64) -> f64 {
+        let n = RATE as usize;
+        let mut src = vec![0.0f32; n * 2];
+        for (i, f) in src.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            let v = (2.0 * PI * hz * i as f64 / f64::from(RATE)).sin() as f32;
+            *f = [v, v];
+        }
+        let mut dst = vec![0.0f32; n * 2];
+        assert!(FxState::default().direct_shelf(fx, &src, &mut dst, RATE));
+        let tail = &dst.as_chunks::<2>().0[n / 2..];
         let ms: f64 = tail.iter().map(|f| f64::from(f[0]).powi(2)).sum::<f64>() / tail.len() as f64;
         (ms * 2.0).sqrt()
     }
@@ -705,7 +804,18 @@ mod tests {
         assert!((damping_to_q(3277) - 10.0).abs() < 0.05);
         // Gain words: +6.02 dB is a doubling.
         assert!((gain_word_to_db(8192) - 6.02).abs() < 0.01);
-        assert!((gain_word_to_db((-4096i32) as u32) + 6.02).abs() < 0.01);
+        // A cut is biased, as the converter emits it: half amplitude is
+        // v = -4096, word 0xc000 + 4096, and decodes to -6.02 dB (not a boost).
+        assert!((gain_word_to_db(0xc000 + 4096) + 6.02).abs() < 0.01);
+        assert_eq!(gain_word_to_db(0xc000), 0.0);
+        for db in [-24.0f32, -12.0, -6.0, -3.0, -0.5, 0.5, 3.0, 6.0, 12.0] {
+            let back = gain_word_to_db(db_to_gain_word(db));
+            assert!((back - db).abs() < 0.02, "{db} -> {back}");
+        }
+        // Cuts stay below unity and boosts above, and the extremes clamp.
+        assert!(gain_word_to_db(db_to_gain_word(-6.0)) < 0.0);
+        assert!(db_to_gain_word(-100.0) <= 0xdfff && db_to_gain_word(-100.0) >= 0xc000);
+        assert_eq!(db_to_gain_word(100.0), 0x7fff);
     }
 
     #[test]
@@ -756,7 +866,7 @@ mod tests {
             hz_to_coeff(500.0),
             8192,
             hz_to_coeff(4000.0),
-            (-4096i32) as u32,
+            db_to_gain_word(-6.02),
         ];
         let fx = fx_with(FilterSpec::from_dsfilter(FILTER_PARAMEQ, 3, c));
         assert!((db(gain_at(&fx, 500.0)) - 6.0).abs() < 0.5, "boost");
@@ -959,13 +1069,16 @@ mod tests {
             i3dl2: Some(src),
             ..Default::default()
         };
-        assert!(db(gain_at(&fx, 50.0)).abs() < 0.5);
-        let hf = db(gain_at(&fx, 5000.0));
+        assert!(db(direct_at(&fx, 50.0)).abs() < 0.5);
+        let hf = db(direct_at(&fx, 5000.0));
         assert!(
             (hf + 20.0).abs() < 1.5,
             "-20 dB at the 5 kHz reference: {hf}"
         );
-        assert!(db(gain_at(&fx, 15_000.0)) < hf);
+        assert!(db(direct_at(&fx, 15_000.0)) < hf);
+        // The shelf is the direct path only: common processing leaves the room
+        // send untouched.
+        assert!(db(gain_at(&fx, 5000.0)).abs() < 1e-6);
         // Occlusion also lowers the low frequencies by its ratio and the room send.
         let occ = I3dl2Source {
             occlusion_hf: -2000,
@@ -994,5 +1107,94 @@ mod tests {
         let mut b = src.clone();
         FxState::default().process(&fx, &mut b, 0, RATE);
         assert_eq!(b, src);
+    }
+
+    #[test]
+    fn recursive_state_never_goes_subnormal() {
+        let fx = VoiceFx {
+            filter: FilterSpec::from_dsfilter(FILTER_DLS2, 0, [hz_to_coeff(1000.0), 46341, 0, 0]),
+            i3dl2: Some(I3dl2Source {
+                obstruction_hf: -2000,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let n = RATE as usize * 2;
+        let mut buf = vec![0.0f32; n * 2];
+        buf[0] = 1.0;
+        buf[1] = 1.0;
+        let mut st = FxState::default();
+        st.process(&fx, &mut buf, 0, RATE);
+        let mut direct = vec![0.0f32; n * 2];
+        assert!(st.direct_shelf(&fx, &buf, &mut direct, RATE));
+        for v in buf.iter().chain(&direct) {
+            assert!(*v == 0.0 || v.abs() >= f32::MIN_POSITIVE, "subnormal {v:e}");
+        }
+        let normal = |v: f64| v == 0.0 || v.abs() >= f64::MIN_POSITIVE;
+        assert!(
+            st.bq
+                .iter()
+                .all(|b| b.z1.iter().chain(&b.z2).all(|&v| normal(v)))
+        );
+        assert!(st.shelf_z.iter().all(|&v| normal(v)));
+    }
+
+    #[test]
+    fn i3dl2_source_descriptors_are_sanitised() {
+        let nan = f32::NAN.to_bits();
+        let inf = f32::INFINITY.to_bits();
+        let src = I3dl2Source::from_words([
+            i32::MAX as u32,
+            i32::MIN as u32,
+            i32::MAX as u32,
+            5,
+            inf,
+            i32::MIN as u32,
+            nan,
+            77,
+            nan,
+        ]);
+        for v in [src.direct_gain(), src.room_gain()] {
+            assert!(v.is_finite() && v > 0.0, "{v}");
+        }
+        assert!(src.direct_lf_mb().is_finite() && src.direct_hf_mb().is_finite());
+        assert_eq!((src.direct, src.room), (1000, 1000));
+        assert_eq!(src.obstruction_lf_ratio, 0.0);
+        assert_eq!(src.occlusion_lf_ratio, 0.25);
+        assert_eq!(src.room_rolloff, 10.0);
+        assert!(src.shelf_db().is_finite());
+        // A NaN ratio no longer poisons the gain even with zero attenuation.
+        let z = I3dl2Source::from_words([0, 0, 0, 0, 0, 0, nan, 0, nan]);
+        assert_eq!(z.direct_gain(), 1.0);
+    }
+
+    #[test]
+    fn pitch_multiplier_is_always_finite_and_positive() {
+        let fx = VoiceFx {
+            lfo: [None, Some(LfoSpec::from_dslfo(0, 175, 127, 0, 0))],
+            ..Default::default()
+        };
+        for d in [f64::NAN, f64::INFINITY, 0.0, -1.0, 1e300, 1e-300] {
+            let st = FxState {
+                doppler: d,
+                ..Default::default()
+            };
+            let m = st.pitch_mult(&fx, RATE);
+            assert!(m.is_finite() && m > 0.0, "{d}: {m}");
+            let m = st.pitch_mult(&VoiceFx::default(), RATE);
+            assert!(m.is_finite() && m > 0.0, "{d}: {m}");
+        }
+    }
+
+    #[test]
+    fn a_tiny_host_rate_does_not_panic() {
+        let fx = fx_with(FilterSpec::from_dsfilter(
+            FILTER_DLS2,
+            0,
+            [hz_to_coeff(1000.0), 46341, 0, 0],
+        ));
+        let mut buf = vec![0.5f32; 16];
+        FxState::default().process(&fx, &mut buf, 0, 8);
+        assert!(buf.iter().all(|v| v.is_finite()));
     }
 }

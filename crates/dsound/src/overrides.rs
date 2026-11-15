@@ -207,7 +207,7 @@ pub fn invoke(
         "IDirectSoundStream_SetLFO" => ds.stream_set_lfo(h, a(0), a(1)),
         "IDirectSoundStream_SetEG" => ds.stream_set_eg(h, a(0), a(1)),
         "IDirectSoundStream_SetFilter" => ds.stream_set_filter(h, a(0), a(1)),
-        "IDirectSoundStream_SetOutputBuffer" => ds.stream_set_output_buffer(a(0), a(1)),
+        "IDirectSoundStream_SetOutputBuffer" => ds.stream_set_output_buffer(h, a(0), a(1)),
         "IDirectSoundStream_SetHeadroom" => ds.stream_set_headroom(a(0), a(1)),
         "IDirectSoundStream_SetMixBinVolumes" => ds.stream_set_mix_bin_volumes(h, a(0), a(1)),
         "IDirectSoundStream_SetMixBins" => ds.stream_set_mix_bins(h, a(0), a(1)),
