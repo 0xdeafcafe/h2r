@@ -607,6 +607,34 @@ fn g2_denormal_rounding_point_is_fixed_in_the_field() {
 // FPREM / FPREM1 (SDM Vol. 2 pseudo-code).
 
 #[test]
+fn g3_remainder_shortcuts_repack() {
+    // Quotient 0 (|a| < |b|) and an infinite divisor return a as the
+    // remainder, packed like any result: a true denormal is TINY, a
+    // pseudo-denormal becomes its normal encoding; both are DE operands.
+    let pseudo = f(0x0000, 0x8000_0000_0000_0001);
+    for b in [ONE, PINF, NINF] {
+        for p in [prem(MIN_DENORMAL, b), prem1(MIN_DENORMAL, b)] {
+            assert_eq!(
+                (p.value, p.incomplete, p.q, p.flags),
+                (MIN_DENORMAL, false, 0, DE | TINY),
+                "{b:?}"
+            );
+        }
+        for p in [prem(pseudo, b), prem1(pseudo, b)] {
+            assert_eq!(
+                (p.value, p.incomplete, p.q, p.flags),
+                (f(0x0001, 0x8000_0000_0000_0001), false, 0, DE),
+                "{b:?}"
+            );
+        }
+    }
+    // A normal operand is unchanged and raises nothing.
+    assert_eq!(prem(HALF, ONE).value, HALF);
+    assert_eq!(prem(HALF, ONE).flags, NONE);
+    assert_eq!(prem(ONE.neg(), PINF).value, NEG_ONE);
+}
+
+#[test]
 fn g3_prem_and_prem1() {
     let five_five = f(0x4001, 0xb000_0000_0000_0000);
     // 5.5 = 2*2 + 1.5: FPREM truncates, Q = 2 (C0=0, C3=1, C1=0).

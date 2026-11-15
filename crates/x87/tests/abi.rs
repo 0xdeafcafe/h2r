@@ -959,3 +959,35 @@ fn save_image_reads_through_a_const_pointer() {
     assert_eq!(img, save_image(&FROZEN, env_op::FNSAVE));
     assert_eq!(u16::from_le_bytes([img[4], img[5]]), 0x3800 | PE);
 }
+
+#[test]
+fn remainder_shortcuts_report_tininess_and_normalise() {
+    // FPREM/FPREM1 with |ST0| far below |ST1| (quotient 0) or ST1 = inf
+    // return ST0 as the remainder. A true denormal is an exact tiny result:
+    // with UE unmasked, both stop and change nothing.
+    for divisor in [ONE, F80::INFINITY] {
+        for op in [unary_op::PREM, unary_op::PREM1] {
+            let mut s = fresh();
+            ldcw(&mut s, cw_unmasking(UE));
+            ld_f80(&mut s, divisor.to_bytes());
+            ld_f80(&mut s, F80::new(0, 1).to_bytes());
+            let before = s;
+            assert_eq!(
+                unary(&mut s, op),
+                status::UNMODELLED,
+                "op {op} by {divisor:?}"
+            );
+            assert_eq!(s, before);
+            // Masked, the pseudo-denormal comes back normalised and valid,
+            // with DE alone and the remainder complete (C2 = 0).
+            let mut s = fresh();
+            s.status |= SW_C2;
+            ld_f80(&mut s, divisor.to_bytes());
+            ld_f80(&mut s, F80::new(0, 0x8000_0000_0000_0001).to_bytes());
+            assert_eq!(unary(&mut s, op), status::OK);
+            assert_eq!(s.st(0), Some(F80::new(1, 0x8000_0000_0000_0001)));
+            assert_eq!(s.tag_of(s.phys(0)), TAG_VALID);
+            assert_eq!((s.status & 0x3f, s.status & SW_C2), (DE, 0));
+        }
+    }
+}

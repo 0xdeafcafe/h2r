@@ -329,7 +329,12 @@ fn remainder(a: F80, b: F80, nearest: bool) -> Partial {
     };
     let (x, y) = match (ua, ub) {
         (Unp::Inf(_), _) | (_, Unp::Zero(_)) => return done(F80::INDEFINITE, Flags::IE),
-        (Unp::Zero(_), _) | (_, Unp::Inf(_)) => return done(a, fl),
+        (Unp::Zero(_), _) => return done(a, fl),
+        // Quotient 0, remainder a: repacked, as every finite result is.
+        (Unp::Fin(x), Unp::Inf(_)) => {
+            let (v, tiny) = repack(x);
+            return done(v, fl | tiny);
+        }
         (Unp::Fin(x), Unp::Fin(y)) => (x, y),
         _ => unreachable!(),
     };
@@ -373,7 +378,10 @@ fn remainder(a: F80, b: F80, nearest: bool) -> Partial {
         q = 1;
         incomplete = false;
     } else {
-        return done(a, fl);
+        // |a| < |b| (or, for FPREM1, too small to round the quotient to 1):
+        // quotient 0, remainder a, repacked.
+        let (v, tiny) = repack(x);
+        return done(v, fl | tiny);
     }
     if mag == 0 {
         neg = x.neg;
@@ -391,6 +399,16 @@ fn remainder(a: F80, b: F80, nearest: bool) -> Partial {
         q: if incomplete { 0 } else { (q & 7) as u8 },
         flags: fl | tiny,
     }
+}
+
+/// A finite operand returned unchanged in value as an arithmetic result:
+/// packed exactly at 64 bits, so a pseudo-denormal comes back as its normal
+/// encoding (arithmetic never produces one, SDM Vol. 1 §8.2.2), with only
+/// [`Flags::TINY`] from the packing (a true denormal is tiny; exact, so no
+/// UE or PE).
+fn repack(x: Fin) -> (F80, Flags) {
+    let (v, f) = round_pack(x.neg, x.sig as u128, x.exp as i64, 0, 64, Rc::Near);
+    (v, Flags(f.0 & Flags::TINY.0))
 }
 
 /// The result of an x87 comparison.

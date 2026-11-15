@@ -548,7 +548,7 @@ destination, so the ABI's reversed forms (`subr`, `divr`) call the internal
 | `add`/`sub`/`mul`/`div`/`sqrt` | **Exact.** The infinitely precise result is rounded once, to `pc` significand bits, under `rc`. The exponent range stays 15-bit at every `pc`. Denormal operands set DE, except where a higher-priority IE or ZE is raised (finite / 0 is ZE alone). Tiny results denormalise gradually; tininess is detected after rounding and always reported as `TINY`, and UE is set only when the result is tiny and inexact. |
 | `prem` | **Exact.** `a - b*trunc(a/b)`, with the sign of `a`. `prem(5.5, 2) = 1.5`. An exponent difference of 64 or more gives `incomplete`, a partial reduction by `2^(32 + (D mod 32))`, and `q = 0`. Otherwise `q` holds quotient bits 0..2. `b = 0` or `a = ±∞` sets IE and gives the indefinite. |
 | `prem1` | **Exact.** IEEE remainder (round-to-nearest-even quotient). `prem1(5.5, 2) = -0.5`. Same iteration and C0/C1/C3 rules. |
-| `rndint`, `scale`, `xtract` | **Exact**, by RC where they round. `scale` clamps `trunc(b)` to ±2^20, which overflows or underflows exactly like the unclamped value. `scale(a, ±0)` returns `a` repacked: a pseudo-denormal becomes its normal encoding (exponent 1) with DE, since arithmetic never produces one (SDM Vol. 1 §8.2.2), and the ABI tags it valid. `xtract(±0)` sets ZE and gives `(-∞, ±0)`. `prem`/`prem1` report `TINY` for a denormal remainder. |
+| `rndint`, `scale`, `xtract` | **Exact**, by RC where they round. `scale` clamps `trunc(b)` to ±2^20, which overflows or underflows exactly like the unclamped value. `scale(a, ±0)` returns `a` repacked: a pseudo-denormal becomes its normal encoding (exponent 1) with DE, since arithmetic never produces one (SDM Vol. 1 §8.2.2), and the ABI tags it valid. `xtract(±0)` sets ZE and gives `(-∞, ±0)`. `prem`/`prem1` repack every finite remainder the same way, including the shortcuts that return `a` (quotient 0, or an infinite divisor), so a denormal remainder reports `TINY` and a pseudo-denormal comes back normalised. |
 | conversions | **Exact.** One rounding by `rc`. Narrowing sets `TINY` for a result denormal in the target format, UE+PE for a tiny inexact one, and OE+PE on overflow. An integer out of range or NaN gives the integer indefinite and IE. BCD out of range gives the BCD indefinite. |
 | constants | **Exact.** The RN value or its neighbour by RC. π, log2(e), log10(2) and ln 2 round up at RN, and log2(10) rounds down (so `FLDL2T` under RC=up is one ulp above the RN value). |
 | NaN rules | SDM Table 4-7 x87 rules. An SNaN operand sets IE and is quieted. SNaN against QNaN gives the QNaN. Otherwise the larger significand wins, ties to the destination. An invalid operation with no NaN input gives `INDEFINITE`. |
@@ -618,7 +618,7 @@ treats the crate as the authority:
 
 All the tests below pass.
 
-- **`tests/spec.rs`**: 30 tests, plus 1 ignored, in 8 groups. Each value is
+- **`tests/spec.rs`**: 31 tests, plus 1 ignored, in 8 groups. Each value is
   hex with a comment giving its source.
   1. Special values against the SDM tables, including unsupported encodings.
   2. PC=24/53/64 double rounding, including `1 + 2^-63 − 1 = 2^-63` at PC=53.
@@ -632,7 +632,7 @@ All the tests below pass.
      release.
   8. Byte round trips, `FLDPI`'s full significand, and the indefinite
      encoding.
-- **`tests/abi.rs`**: 32 tests:
+- **`tests/abi.rs`**: 33 tests:
   - the `X87Abi` layout, TOP in `status`, push and pop wraparound, and tags;
   - stack overflow and underflow, with IE+SF+C1 and the indefinite;
   - an unmasked stack fault and an unmasked ZE that commit nothing and give
@@ -654,7 +654,8 @@ All the tests below pass.
     PE recorded under a suppressing DE (arithmetic, `fsqrt`, `fpatan`);
     FNSTENV discarding a pending #MF; suppressed compares (`fcom`, `fcomi`,
     stack underflow); FSCALE by zero of a pseudo-denormal; `save_image`
-    through a const pointer to an immutable static.
+    through a const pointer to an immutable static; FPREM/FPREM1 shortcuts
+    stopping on a tiny exact remainder and normalising a pseudo-denormal.
 - **Library unit tests**: 6, plus 2 ignored: the constant-table generator and
   the 180,000-case precision run.
 
