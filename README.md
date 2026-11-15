@@ -224,6 +224,7 @@ Running the game:
 - [fastmem-4k.md](docs/fastmem-4k.md): measured 4 KiB guest translation and write-bit variants; slower than phase-1 inline access, so not adopted
 - [perf-budget.md](docs/perf-budget.md): where a main-menu frame's time goes, and the plan to 30 fps
 - [frame-budget.md](docs/frame-budget.md): an in-level frame budget, the worst frames and their causes, and what a worst frame under 33 ms needs
+- [high-framerate.md](docs/high-framerate.md): design for opt-in 60 and 120 fps that keeps the 30 Hz tick exact (super bounces included): host-side interpolated replay, prior art, determinism test (not built)
 - [performance.md](docs/performance.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default) and runtime counters
 
 Graphics:
