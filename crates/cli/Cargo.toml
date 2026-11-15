@@ -20,6 +20,9 @@ movies.workspace = true
 xbe.workspace = true
 analyze.workspace = true
 symbols.workspace = true
+lift.workspace = true
+emit.workspace = true
+ir.workspace = true
 anyhow.workspace = true
 audio = { path = "../audio", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }

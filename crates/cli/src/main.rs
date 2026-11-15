@@ -69,6 +69,16 @@ const USAGE: &str = "usage: h2 <command> [disc]
   symbols [--list] [--no-xcheck] [--db <dir>]
                           identify statically linked XDK library functions
                           (needs scripts/setup-xbsymboldb.sh)
+  lift [--stats] [--histogram] [--run-entry] [--dump <addr>]...
+                          lower discovered functions to IR: coverage (--stats,
+                          the default), mnemonic counts, one function's IR, or
+                          interpret from the entry to the first kernel call
+  emit [--out <dir>] [--abi-header <h2abi.h>] [--no-build] [--run-entry]
+                          generate C for every function, build static libs for
+                          arm64 and x86_64 (default out: target/h2gen); with
+                          --run-entry, run the entry through the generated code
+                          (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
+                          caps it, dropping least recently used; H2_OPT, H2_DEBUG)
 
 [disc] is an .iso or a default.xbe. Without it, h2 uses $H2_DISC, then the
 first .iso in the repo's disc/ folder.";
@@ -126,6 +136,7 @@ fn main() -> Result<()> {
     let mut no_xcheck = false;
     let mut db_dir = None;
     let mut force = false;
+    let mut lift_opts = LiftOpts::default();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
@@ -135,6 +146,15 @@ fn main() -> Result<()> {
             "--force" => force = true,
             "--no-xcheck" => no_xcheck = true,
             "--db" => db_dir = Some(PathBuf::from(args.next().context("--db needs a path")?)),
+            "--stats" => lift_opts.stats = true,
+            "--histogram" => lift_opts.histogram = true,
+            "--run-entry" => lift_opts.run_entry = true,
+            "--out" => lift_opts.out = Some(PathBuf::from(args.next().context("--out needs a path")?)),
+            "--abi-header" => {
+                lift_opts.abi_header = Some(PathBuf::from(args.next().context("--abi-header needs a path")?))
+            }
+            "--no-build" => lift_opts.no_build = true,
+            "--dump" => lift_opts.dump.push(args.next().context("--dump needs an address")?),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
         }
@@ -164,6 +184,8 @@ fn main() -> Result<()> {
         ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe"), force),
         ("analyze", []) => run_analyze(&disc, functions_out, against, &explain, force),
         ("symbols", []) => run_symbols(&disc, list, !no_xcheck, db_dir),
+        ("lift", []) => run_lift(&disc, &lift_opts),
+        ("emit", []) => run_emit(&disc, &lift_opts),
         ("disasm", [addr]) => disasm(&disc, addr, None),
         ("disasm", [addr, n]) => disasm(&disc, addr, Some(n)),
         _ => bail!("{USAGE}"),
@@ -468,6 +490,161 @@ fn run_analyze(
         print!("{}", analyze::compare::compare(&a, &theirs));
     }
     Ok(())
+}
+
+#[derive(Default)]
+struct LiftOpts {
+    stats: bool,
+    histogram: bool,
+    run_entry: bool,
+    dump: Vec<String>,
+    out: Option<PathBuf>,
+    abi_header: Option<PathBuf>,
+    no_build: bool,
+}
+
+fn parse_hex(s: &str) -> Result<u32> {
+    u32::from_str_radix(s.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {s}"))
+}
+
+fn run_lift(path: &Path, opts: &LiftOpts) -> Result<()> {
+    let data = load_xbe(path)?;
+    let x = xbe::Xbe::parse(&data)?;
+    let a = analyze::analyze(&x)?;
+    let lifter = lift::Lifter::new(&a, &x)?;
+    for d in &opts.dump {
+        let va = parse_hex(d)?;
+        let f = lifter.lift(va).with_context(|| format!("no discovered function at {va:#x}"))?;
+        print!("{f}");
+    }
+    if opts.histogram {
+        let h = lifter.histogram();
+        let total: usize = h.iter().map(|(_, n)| n).sum();
+        println!("{total} distinct instructions, {} mnemonics", h.len());
+        let mut running = 0;
+        for (m, n) in &h {
+            running += n;
+            println!("{m:<16} {n:>8} {:>6.2}% {:>6.2}%", 100.0 * *n as f64 / total as f64, 100.0 * running as f64 / total as f64);
+        }
+    }
+    if opts.run_entry {
+        let run = lift::harness::run_to_kernel(&x, &lifter, 1_000_000).map_err(anyhow::Error::msg)?;
+        println!("{} steps, {} distinct instructions: {:x?}", run.steps, run.executed, run.stop);
+        let regs = ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"];
+        for (n, v) in regs.iter().zip(run.cpu.gpr) {
+            println!("  {n} = {v:#010x}");
+        }
+        println!("  eflags = {:#010x} (defined {:#x})", run.cpu.eflags, run.cpu.flags_valid);
+        let esp = run.cpu.gpr[4];
+        for i in 0..11 {
+            let v = run.mem.read_u32(esp + 4 * i).unwrap_or(0);
+            println!("  [esp+{:#04x}] = {v:#010x}{}", 4 * i, if i == 0 { "  (return address)" } else { "" });
+        }
+    }
+    if opts.stats || (!opts.histogram && !opts.run_entry && opts.dump.is_empty()) {
+        // H2_STATS_ALL=1 lists every unsupported mnemonic, not the top 30.
+        if std::env::var_os("H2_STATS_ALL").is_some() {
+            print!("{:#}", lifter.stats());
+        } else {
+            print!("{}", lifter.stats());
+        }
+    }
+    Ok(())
+}
+
+fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
+    use std::time::Instant;
+    let data = load_xbe(path)?;
+    let x = xbe::Xbe::parse(&data)?;
+    let t = Instant::now();
+    let a = analyze::analyze(&x)?;
+    println!("analyze: {:.1}s", t.elapsed().as_secs_f64());
+    let t = Instant::now();
+    let owners = emit::plan_image(&a, &x)?;
+    println!("lift + plan: {:.1}s", t.elapsed().as_secs_f64());
+    let out = opts.out.clone().unwrap_or_else(|| repo_root().join("target/h2gen"));
+    let src = out.join("src");
+    let t = Instant::now();
+    let w = emit::write_module(&owners, &src)?;
+    println!(
+        "emit: {:.1}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries",
+        t.elapsed().as_secs_f64(),
+        w.owners,
+        w.files.len(),
+        w.written,
+        w.bytes as f64 / 1e6,
+        w.entries,
+        w.resumes,
+        w.entry_exits
+    );
+    if opts.no_build {
+        return Ok(());
+    }
+    let header = opts
+        .abi_header
+        .clone()
+        .or_else(|| std::env::var_os("H2ABI_HEADER").map(PathBuf::from))
+        .unwrap_or_else(|| repo_root().join("crates/runtime/include/h2abi.h"));
+    emit::compile::install_header(&src, &header)?;
+    let jobs = emit::compile::default_jobs();
+    let cache_max = emit::compile::obj_cache_max()?;
+    let mut host = None;
+    let mut built = std::collections::HashSet::new();
+    for arch in emit::compile::Arch::ALL {
+        let b = emit::compile::build(&src, &out, arch, jobs)?;
+        println!(
+            "{:<7} {} compiled, {} cached, {:.1}s wall ({jobs} jobs); objects {:.1} MB, {} {:.1} MB",
+            arch.name(),
+            b.compiled,
+            b.reused,
+            b.compile_secs,
+            b.object_bytes as f64 / 1e6,
+            b.library.display(),
+            b.library_bytes as f64 / 1e6
+        );
+        built.extend(b.cache_objects.iter().cloned());
+        if arch == emit::compile::Arch::host() {
+            host = Some(b);
+        }
+    }
+    if let Some(max) = cache_max {
+        let dir = emit::compile::obj_dir(&out);
+        let p = emit::compile::prune_obj_cache(&dir, max, &built)?;
+        println!(
+            "object cache {}: removed {} ({:.1} MB), {:.1} MB kept (cap {:.1} MB)",
+            dir.display(),
+            p.removed,
+            p.freed as f64 / 1e6,
+            p.kept as f64 / 1e6,
+            max as f64 / 1e6
+        );
+    }
+    if opts.run_entry {
+        let b = host.context("no host build")?;
+        let dylib = out.join("libh2gen-host.dylib");
+        emit::compile::host_dylib(&b, &src, &[("bridge.c", emit::host::BRIDGE)], &dylib)?;
+        let (cpu, transfer, ctx) = emit_run_entry(&x, &dylib)?;
+        println!("{transfer:x?}");
+        for (n, v) in ["eax", "ecx", "edx", "ebx", "esp", "ebp", "esi", "edi"].iter().zip(cpu.gpr) {
+            println!("  {n} = {v:#010x}");
+        }
+        println!("  eflags = {:#010x} (defined {:#x}), events {:?}", cpu.eflags, cpu.eflags_defined, ctx.events);
+    }
+    Ok(())
+}
+
+/// Run the image's entry through a generated host dylib, with the same
+/// initial state as the interpreter harness.
+fn emit_run_entry(
+    x: &xbe::Xbe,
+    dylib: &Path,
+) -> Result<(emit::host::CpuAbi, emit::host::TransferAbi, emit::host::Ctx)> {
+    let (mut cpu, mut ctx) = emit::host::entry_state(x).map_err(anyhow::Error::msg)?;
+    // SAFETY: the dylib was just built from this crate's output.
+    let g = unsafe { emit::host::Generated::load(dylib) }.map_err(anyhow::Error::msg)?;
+    let start = emit::host::TransferAbi::new(emit::host::JUMP, emit::host::ENTRY, x.entry);
+    let (t, _) = g.run(&mut cpu, &mut ctx, start, 1_000_000);
+    Ok((cpu, t, ctx))
 }
 
 #[cfg(test)]
