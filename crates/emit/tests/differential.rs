@@ -528,6 +528,7 @@ fn shim_code(f: Fault) -> u32 {
         Fault::BoundRange => 6,
         Fault::GeneralProtection => 7,
         Fault::SimdException => 13,
+        Fault::FpError => 14,
     }
 }
 
@@ -643,6 +644,11 @@ fn random_state(rng: &mut Rng) -> (Cpu, FlatMemory) {
     }
     cpu.x87.control = rng.next() as u16;
     cpu.x87.status = rng.next() as u16;
+    // ES (a pending x87 exception) stops every MMX instruction with #MF:
+    // set it in a quarter of the states, so both paths run.
+    if !rng.next().is_multiple_of(4) {
+        cpu.x87.status &= !0x0080;
+    }
     cpu.x87.tag = rng.next() as u16;
     for st in cpu.x87.st.iter_mut() {
         for b in st.iter_mut() {

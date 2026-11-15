@@ -518,6 +518,10 @@ pub enum Fault {
     /// `#XM`: an unmasked SIMD floating-point exception. MXCSR's flags
     /// record it; the destination is not written.
     SimdException,
+    /// `#MF` (vector 16): a waiting x87 instruction, an MMX instruction or
+    /// `emms` found an unmasked x87 exception pending (status word ES set).
+    /// Nothing changed; the event's argument is the x87 status word.
+    FpError,
 }
 
 /// SSE floating-point operations, one per instruction form, executed by
@@ -649,9 +653,16 @@ pub enum Intrinsic {
     MxcsrWrite,
     /// The x87-to-MMX transition every instruction touching an MMX register
     /// makes: TOP (status bits 11-13) = 0, every tag valid (tag word 0).
+    /// It comes after the instruction's faulting accesses; the pending-#MF
+    /// check comes first, as [`Intrinsic::X87Wait`].
     MmxEnter,
-    /// `emms`: every tag empty (tag word 0xFFFF).
+    /// `emms`: [`Fault::FpError`] if an x87 exception is pending, else
+    /// every tag empty (tag word 0xFFFF).
     Emms,
+    /// `fwait`, and the check every MMX instruction makes before anything
+    /// else: [`Fault::FpError`] if an unmasked x87 exception is pending
+    /// (status word ES, bit 7). Changes nothing.
+    X87Wait,
     /// An SSE floating-point operation; see [`SseOp`].
     Sse(SseOp),
 }
@@ -666,7 +677,7 @@ impl Intrinsic {
             X87WriteControl => (&[Width::W16], &[]),
             MxcsrRead => (&[], &[Width::W32]),
             MxcsrWrite => (&[Width::W32], &[]),
-            MmxEnter | Emms => (&[], &[]),
+            MmxEnter | Emms | X87Wait => (&[], &[]),
             Sse(op) => op.signature(),
         }
     }
@@ -677,6 +688,7 @@ impl Intrinsic {
         match self {
             MmxEnter => "mmx_enter",
             Emms => "emms",
+            X87Wait => "x87_wait",
             Sse(op) => match op {
                 SseOp::AddSs => "sse_addss",
                 SseOp::AddPs => "sse_addps",

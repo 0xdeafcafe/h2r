@@ -117,12 +117,21 @@ faults, and the next instruction for the trap-style ones.
 | 11 | `H2SHIM_DESCENT_ERROR` | stop: analysis could not follow control past pc | 0 | pc |
 | 12 | `H2SHIM_UNMODELLED` | stop: `popfd` would change TF/IF/IOPL/NT | 0 | pc |
 | 13 | `H2SHIM_SIMD_EXCEPTION` | fault (#XM): an SSE floating-point exception whose MXCSR mask bit is clear | 0 | pc |
+| 14 | `H2SHIM_FP_ERROR` | fault (#MF, vector 16): a waiting x87 instruction, an MMX instruction or `emms` found an unmasked x87 exception pending (status word ES) | the status word | pc |
 
 Code 13 leaves MXCSR with the exception's flag bits set (the guest's
 handler reads them) and the instruction's destination unwritten; every other
 register is as before the instruction. Hardware raises `#XM` (vector 19)
 when CR4.OSXMMEXCPT is set and `#UD` when it is clear; which one the guest
 sees is the runtime's choice, as the kernel's CR4 setting is not modelled.
+
+Code 14 changes nothing: the instruction at `pc` is the waiting one that
+found the exception pending, not the one that raised it, whose address is
+still in the x87 instruction pointer (FIP). `arg` is the status word, which
+still holds the exception flags, ES and B; the runtime decodes an `arg`
+above 0xFFFF as an unknown event. Every MMX instruction makes the check
+first (`h2i_x87_wait`, before any access); `emms` makes it itself. See
+docs/FLOAT-ABI.md §2.2 for the x87 helpers' side.
 
 The runtime may map these onto its own `Event` variants. A runtime that
 injects guest exceptions (SEH dispatch, the debugger) needs `saved_eip`.

@@ -179,18 +179,20 @@ fn c_string(s: &str) -> String {
 /// Traps report the next instruction as the saved EIP, faults their own.
 fn raise(f: Fault, insn: &IrInsn) -> String {
     let (code, arg) = match f {
-        Fault::DivideError => ("H2SHIM_DIVIDE_ERROR", 0),
-        Fault::Breakpoint => ("H2SHIM_BREAKPOINT", 0),
-        Fault::InvalidOpcode => ("H2SHIM_INVALID_OPCODE", 0),
-        Fault::Interrupt(v) => ("H2SHIM_INTERRUPT", v as u32),
-        Fault::Overflow => ("H2SHIM_OVERFLOW", 0),
-        Fault::BoundRange => ("H2SHIM_BOUND_RANGE", 0),
-        Fault::GeneralProtection => ("H2SHIM_GENERAL_PROTECTION", 0),
-        Fault::SimdException => ("H2SHIM_SIMD_EXCEPTION", 0),
+        Fault::DivideError => ("H2SHIM_DIVIDE_ERROR", "0u".into()),
+        Fault::Breakpoint => ("H2SHIM_BREAKPOINT", "0u".into()),
+        Fault::InvalidOpcode => ("H2SHIM_INVALID_OPCODE", "0u".into()),
+        Fault::Interrupt(v) => ("H2SHIM_INTERRUPT", format!("{v}u")),
+        Fault::Overflow => ("H2SHIM_OVERFLOW", "0u".into()),
+        Fault::BoundRange => ("H2SHIM_BOUND_RANGE", "0u".into()),
+        Fault::GeneralProtection => ("H2SHIM_GENERAL_PROTECTION", "0u".into()),
+        Fault::SimdException => ("H2SHIM_SIMD_EXCEPTION", "0u".into()),
+        // #MF reports the status word as it is when raised.
+        Fault::FpError => ("H2SHIM_FP_ERROR", "(uint32_t)cpu->x87.status".into()),
     };
     let trap = matches!(f, Fault::Breakpoint | Fault::Interrupt(_) | Fault::Overflow);
     let saved = if trap { insn.next_pc() } else { insn.pc };
-    format!("H2_RAISE({:#x}u, {saved:#x}u, {code}, {arg}u);", insn.pc)
+    format!("H2_RAISE({:#x}u, {saved:#x}u, {code}, {arg});", insn.pc)
 }
 
 fn stop_code(r: StopReason) -> &'static str {
@@ -454,7 +456,7 @@ impl Emitter<'_> {
                     }
                     self.line(
                         d,
-                        format!("{{ uint32_t s_ = {call}); if (s_) {{ {}H2_RAISE({pc:#x}u, {pc:#x}u, s_, 0u); }} }}", self.restore()),
+                        format!("{{ uint32_t s_ = {call}); if (s_) {{ {}H2_RAISE({pc:#x}u, {pc:#x}u, s_, H2_INTRINSIC_ARG(s_)); }} }}", self.restore()),
                     );
                 }
                 Stmt::Repeat { kind, body } => {

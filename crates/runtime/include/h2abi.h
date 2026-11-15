@@ -109,6 +109,7 @@ uint32_t h2abi_v1_cmpxchg8b(CpuAbi *, ExecCtxOpaque *, uint32_t pc, uint32_t add
 #define H2SHIM_DESCENT_ERROR 11u
 #define H2SHIM_UNMODELLED 12u
 #define H2SHIM_SIMD_EXCEPTION 13u
+#define H2SHIM_FP_ERROR 14u
 uint32_t h2shim_v1_event(ExecCtxOpaque *, uint32_t pc, uint32_t saved_eip, uint32_t code, uint32_t arg);
 uint32_t h2shim_v1_unsupported(ExecCtxOpaque *, uint32_t pc, const char *mnemonic, const char *detail);
 

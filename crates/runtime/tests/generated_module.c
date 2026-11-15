@@ -8,6 +8,7 @@ uint32_t h2shim_v1_unsupported(ExecCtxOpaque *, uint32_t pc, const char *mnemoni
 /* Repeated from h2gen.h on purpose: must stay compatible with h2abi.h. */
 #define H2SHIM_DIVIDE_ERROR 1u
 #define H2SHIM_SIMD_EXCEPTION 13u
+#define H2SHIM_FP_ERROR 14u
 
 typedef struct H2GenEntry {
     uint32_t addr, kind;
@@ -118,6 +119,8 @@ TransferAbi h2fn_00401000(CpuAbi *cpu, ExecCtxOpaque *ctx, uint32_t start) {
         FAULT_AT(pc, h2shim_v1_event(ctx, pc, pc, 99, 7));
     case 8: /* an unmasked SSE exception (#XM) */
         FAULT_AT(pc, h2shim_v1_event(ctx, pc, pc, H2SHIM_SIMD_EXCEPTION, 0));
+    case 9: /* fwait with an unmasked x87 exception pending (#MF) */
+        FAULT_AT(pc, h2shim_v1_event(ctx, pc, pc, H2SHIM_FP_ERROR, cpu->x87.status));
     case 6: /* every stop code */
         STOP_AT(pc, h2shim_v1_event(ctx, pc, pc, cpu->ecx, cpu->edx));
     default:

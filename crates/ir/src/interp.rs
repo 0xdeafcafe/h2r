@@ -245,11 +245,22 @@ pub fn intrinsic(cpu: &mut Cpu, op: Intrinsic, args: &[u128]) -> Result<Vec<u128
             vec![]
         }
         Emms => {
+            x87_wait(cpu)?;
             cpu.x87.tag = 0xFFFF;
+            vec![]
+        }
+        X87Wait => {
+            x87_wait(cpu)?;
             vec![]
         }
         Sse(op) => return sse(cpu, op, args),
     })
+}
+
+/// The pending-#MF check of [`Intrinsic::X87Wait`] and [`Intrinsic::Emms`]:
+/// status word ES (bit 7).
+fn x87_wait(cpu: &Cpu) -> Result<(), Fault> {
+    if cpu.x87.status & 0x80 != 0 { Err(Fault::FpError) } else { Ok(()) }
 }
 
 /// [`Intrinsic::Sse`]: the reference semantics, argument shapes per
@@ -896,6 +907,22 @@ mod tests {
         assert_eq!(intrinsic(&mut cpu, Intrinsic::X87ReadControl, &[]), Ok(vec![0x037F]));
         assert_eq!(intrinsic(&mut cpu, Intrinsic::MxcsrWrite, &[0x1_0000]), Err(Fault::GeneralProtection));
         assert_eq!(cpu.mxcsr, MXCSR_DEFAULT);
+    }
+
+    #[test]
+    fn a_pending_x87_exception_stops_mmx_and_emms() {
+        let mut cpu = Cpu::default();
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87Wait, &[]), Ok(vec![]));
+        // ES set (an unmasked IE recorded earlier): #MF, nothing changes.
+        cpu.x87.status = 0x8081;
+        cpu.x87.tag = 0x5555;
+        let before = cpu.x87.clone();
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::X87Wait, &[]), Err(Fault::FpError));
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::Emms, &[]), Err(Fault::FpError));
+        assert_eq!(cpu.x87, before);
+        cpu.x87.status = 0;
+        assert_eq!(intrinsic(&mut cpu, Intrinsic::Emms, &[]), Ok(vec![]));
+        assert_eq!(cpu.x87.tag, 0xFFFF);
     }
 }
 

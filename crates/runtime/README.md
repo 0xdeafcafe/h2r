@@ -183,8 +183,8 @@ cargo test -p runtime --test loader -- --ignored
 The emitter's contract is `crates/emit/RUNTIME-CONTRACT.md`. The runtime
 exports the two shims declared in its `h2gen.h`:
 
-- `h2shim_v1_event(ctx, pc, saved_eip, code, arg)` records codes 1-7 and 13
-  as `Event::GuestException` and codes 8-12 as `Event::GeneratedStop`, and
+- `h2shim_v1_event(ctx, pc, saved_eip, code, arg)` records codes 1-7, 13 and
+  14 as `Event::GuestException` and codes 8-12 as `Event::GeneratedStop`, and
   returns the event id. Exceptions, and codes it does not know
   (`Event::UnknownShimEvent`), are latched like a failed memory access, so the
   invocation ends in FAULT even if the handler ignores the id.

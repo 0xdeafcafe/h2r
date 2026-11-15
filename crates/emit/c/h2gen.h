@@ -38,6 +38,7 @@ typedef unsigned __int128 h2u128;
 #define H2SHIM_DESCENT_ERROR 11u    /* stop: the CFG could not follow control past pc */
 #define H2SHIM_UNMODELLED 12u       /* stop: popfd changing TF/IF/IOPL/NT */
 #define H2SHIM_SIMD_EXCEPTION 13u   /* #XM: unmasked SSE FP exception (fault) */
+#define H2SHIM_FP_ERROR 14u         /* #MF: pending unmasked x87 exception (fault); arg: status word */
 uint32_t h2shim_v1_event(ExecCtxOpaque *, uint32_t pc, uint32_t saved_eip, uint32_t code, uint32_t arg);
 /* An instruction the lifter does not implement: a STOP with diagnostics. */
 uint32_t h2shim_v1_unsupported(ExecCtxOpaque *, uint32_t pc, const char *mnemonic, const char *detail);
@@ -134,7 +135,15 @@ static inline h2u128 h2_bswap128(h2u128 a) {
 
 /* ---- Intrinsics (ir::Intrinsic): FP state operations. Each mirrors
  * ir::interp::intrinsic exactly. Arguments, then result pointers; returns 0
- * or the H2SHIM_* fault code to raise. ------------------------------------ */
+ * or the H2SHIM_* fault code to raise, whose event arg is
+ * H2_INTRINSIC_ARG. ------------------------------------------------------- */
+
+/* The event arg for an intrinsic's fault code: the x87 status word for #MF
+ * (read after the intrinsic, which left the state untouched), else 0. */
+#define H2_INTRINSIC_ARG(code) ((code) == H2SHIM_FP_ERROR ? (uint32_t)cpu->x87.status : 0u)
+/* An unmasked x87 exception is pending (ES): the next waiting instruction
+ * raises #MF instead of running. */
+static inline int h2_x87_pending(const CpuAbi *cpu) { return (cpu->x87.status & 0x0080u) != 0; }
 
 static inline uint32_t h2i_x87_init(CpuAbi *cpu) {
     cpu->x87.control = 0x037f; cpu->x87.status = 0; cpu->x87.tag = 0xffff; cpu->x87.opcode = 0;
@@ -175,9 +184,19 @@ static inline void h2_wmm(CpuAbi *c, unsigned n, uint64_t v) {
     c->x87.st[n][8] = 0xff;
     c->x87.st[n][9] = 0xff;
 }
+/* A pending x87 exception stops every MMX instruction and emms with #MF
+ * before it does anything, as on hardware: the lifter puts h2i_x87_wait
+ * first in each MMX instruction (h2i_mmx_enter runs last, after the
+ * instruction's faulting accesses), and h2i_emms checks for itself.
+ * h2i_x87_wait is also fwait's lowering. */
+static inline uint32_t h2i_x87_wait(CpuAbi *cpu) { return h2_x87_pending(cpu) ? H2SHIM_FP_ERROR : 0u; }
 /* Every MMX instruction: TOP = 0, all tags valid. emms: all tags empty. */
 static inline uint32_t h2i_mmx_enter(CpuAbi *cpu) { cpu->x87.status &= (uint16_t)~0x3800u; cpu->x87.tag = 0; return 0; }
-static inline uint32_t h2i_emms(CpuAbi *cpu) { cpu->x87.tag = 0xffff; return 0; }
+static inline uint32_t h2i_emms(CpuAbi *cpu) {
+    if (h2_x87_pending(cpu)) return H2SHIM_FP_ERROR;
+    cpu->x87.tag = 0xffff;
+    return 0;
+}
 
 /* SSE floating point (ir::Intrinsic::Sse): MXCSR in CpuAbi, h2s_* from
  * h2simd.h returning 1 on #XM. Results written only on success. */

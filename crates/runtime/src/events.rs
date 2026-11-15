@@ -84,7 +84,7 @@ pub struct GuestFrame {
     pub pc: u32,
 }
 
-/// `h2shim_v1_event` codes 1-7 and 13.
+/// `h2shim_v1_event` codes 1-7, 13 and 14.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GuestException {
     /// #DE, code 1.
@@ -103,6 +103,12 @@ pub enum GuestException {
     GeneralProtection,
     /// #XM, code 13: an unmasked SSE floating-point exception.
     SimdException,
+    /// #MF (vector 16), code 14: a waiting x87 instruction (or an MMX
+    /// instruction, or `emms`) found an unmasked x87 exception pending
+    /// (status-word ES set). `status` is the x87 status word, which still
+    /// holds the exception flags; `saved_eip` is the waiting instruction,
+    /// not the one that raised the exception (FIP still points there).
+    FpError { status: u16 },
 }
 
 /// `h2shim_v1_event` codes 8-12.
@@ -143,6 +149,7 @@ impl ShimEvent {
     pub const DESCENT_ERROR: u32 = 11;
     pub const UNMODELLED: u32 = 12;
     pub const SIMD_EXCEPTION: u32 = 13;
+    pub const FP_ERROR: u32 = 14;
 
     pub fn decode(code: u32, arg: u32) -> Self {
         use GuestException as E;
@@ -161,6 +168,7 @@ impl ShimEvent {
             Self::DESCENT_ERROR => Self::Stop(S::DescentError),
             Self::UNMODELLED => Self::Stop(S::Unmodelled),
             Self::SIMD_EXCEPTION => Self::Exception(E::SimdException),
+            Self::FP_ERROR if arg <= 0xffff => Self::Exception(E::FpError { status: arg as u16 }),
             _ => Self::Unknown { code, arg },
         }
     }
@@ -178,6 +186,7 @@ impl GuestException {
             Self::BoundRange => "bound",
             Self::GeneralProtection => "sse/ldmxcsr",
             Self::SimdException => "sse",
+            Self::FpError { .. } => "fwait/x87",
         }
     }
     /// Traps report the next instruction; faults report the instruction.
@@ -200,6 +209,12 @@ impl std::fmt::Display for GuestException {
             Self::BoundRange => f.write_str("#BR bound range exceeded"),
             Self::GeneralProtection => f.write_str("#GP general protection"),
             Self::SimdException => f.write_str("#XM SIMD floating-point exception"),
+            Self::FpError { status } => {
+                write!(
+                    f,
+                    "#MF x87 floating-point error (status word {status:#06x})"
+                )
+            }
         }
     }
 }

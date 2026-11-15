@@ -100,7 +100,7 @@ pub fn lower(insn: &Instruction, env: &Env, site: Site<'_>) -> IrInsn {
             pc: insn.ip32(),
             len: insn.len() as u8,
             atomic,
-            stmts: l.b.finish(),
+            stmts: mmx_waits_first(l.b.finish()),
             control: l.control,
         },
         Err(detail) => IrInsn {
@@ -111,6 +111,18 @@ pub fn lower(insn: &Instruction, env: &Env, site: Site<'_>) -> IrInsn {
             control: Control::Stop(StopReason::Unsupported),
         },
     }
+}
+
+/// An instruction that makes the MMX transition first checks for a pending
+/// x87 exception (#MF), before any of its reads, writes or faults, so the
+/// [`Intrinsic::X87Wait`] goes in front; [`Intrinsic::MmxEnter`] itself
+/// stays last.
+fn mmx_waits_first(mut stmts: Vec<Stmt>) -> Vec<Stmt> {
+    let is_mmx = |s: &Stmt| matches!(s, Stmt::Intrinsic { op: Intrinsic::MmxEnter, .. });
+    if stmts.iter().any(is_mmx) {
+        stmts.insert(0, Stmt::Intrinsic { op: Intrinsic::X87Wait, args: vec![], dsts: vec![] });
+    }
+    stmts
 }
 
 /// Prefix an unsupported detail with the ISA extension the instruction

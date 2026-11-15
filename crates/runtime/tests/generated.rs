@@ -232,6 +232,28 @@ fn an_unmasked_sse_exception_is_a_guest_fault_at_its_pc() {
 }
 
 #[test]
+fn a_pending_x87_exception_is_a_guest_fault_with_the_status_word() {
+    // ES, B, IE and SF set by an earlier unmasked stack fault; TOP = 7.
+    let status = 0x8000 | 0x3800 | 0x80 | 0x41;
+    let (_, mut cpu, mut ctx) = setup(|_| {});
+    cpu.ebx = 9;
+    cpu.x87.status = status;
+    let (t, event) = run(&mut cpu, &mut ctx, MAIN);
+    assert_eq!((t.kind, cpu.eip), (abi::FAULT, MAIN_RESUME + 1));
+    let exception = GuestException::FpError { status };
+    assert!(matches!(
+        event,
+        Event::GuestException { pc, saved_eip, exception: e, .. }
+            if pc == MAIN_RESUME + 1 && saved_eip == pc && e == exception
+    ));
+    assert!(!exception.is_trap());
+    assert_eq!(
+        exception.to_string(),
+        "#MF x87 floating-point error (status word 0xb8c1)"
+    );
+}
+
+#[test]
 fn every_stop_code_decodes_and_stays_a_stop() {
     for (code, arg, reason) in [
         (8, 0, StopReason::Halt),
@@ -740,6 +762,7 @@ fn every_shim_code_decodes_to_its_own_event() {
         (6, 0, X::BoundRange),
         (7, 0, X::GeneralProtection),
         (13, 0, X::SimdException),
+        (14, 0x80c1, X::FpError { status: 0x80c1 }),
     ];
     let (_, _, mut ctx) = setup(|_| {});
     for (code, arg, expected) in exceptions {
@@ -783,16 +806,17 @@ fn every_shim_code_decodes_to_its_own_event() {
             ctx.event(id)
         );
     }
-    for code in [0, 14, u32::MAX] {
+    // Unused codes, and #MF with an argument no status word can have.
+    for (code, arg) in [(0, 3), (0xff, 3), (u32::MAX, 3), (14, 0x1_0000)] {
         // SAFETY: as above.
-        let id = unsafe { runtime::generated::h2shim_v1_event(shim(&mut ctx), 1, 2, code, 3) };
+        let id = unsafe { runtime::generated::h2shim_v1_event(shim(&mut ctx), 1, 2, code, arg) };
         assert_eq!(
             ctx.event(id),
             Some(&Event::UnknownShimEvent {
                 pc: 1,
                 saved_eip: 2,
                 code,
-                arg: 3
+                arg
             })
         );
     }
