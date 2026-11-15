@@ -257,6 +257,50 @@ fn create_initial_allocation_may_alias_iosb_and_failure_preserves_old_data() {
     assert_eq!(h.success(187, &[handle]), 0);
 }
 
+/// AllocationSize is only a hint: a backend with no reservation support
+/// (MemoryDisk) still creates an empty file, writes extend EOF as usual, and
+/// FileStandardInformation (class 5) reports EOF from the writes alone.
+#[test]
+fn create_with_allocation_hint_gives_empty_file_that_grows_by_writes() {
+    let mut h = setup();
+    path(&h, "T:\\hint.bin", 0);
+    h.runtime.memory().set_u64(INFO, 0x10000).unwrap();
+    assert_eq!(
+        h.success(
+            190,
+            &[DATA, vfs::Access::ALL.0, ATTR, IOSB, INFO, 0, 7, 3, 0x60]
+        ),
+        0
+    );
+    let handle = h.get(DATA);
+    assert_eq!(h.get(IOSB + 4), 2);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 0);
+    h.bytes(BUFFER, b"abcdef");
+    assert_eq!(h.success(236, &[handle, 0, 0, 0, IOSB, BUFFER, 6, 0]), 0);
+    assert_eq!(h.get(IOSB + 4), 6);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 6);
+    position(&mut h, handle, 0);
+    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BUFFER, 6, 0]), 0);
+    assert_eq!(h.runtime.memory().read::<6>(BUFFER).unwrap(), *b"abcdef");
+    assert_eq!(h.success(187, &[handle]), 0);
+    // Overwrite with a hint also leaves an empty file.
+    path(&h, "T:\\hint.bin", 0);
+    h.runtime.memory().set_u64(INFO, 0x10000).unwrap();
+    assert_eq!(
+        h.success(
+            190,
+            &[DATA, vfs::Access::ALL.0, ATTR, IOSB, INFO, 0, 7, 4, 0x60]
+        ),
+        0
+    );
+    let handle = h.get(DATA);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 0);
+    assert_eq!(h.success(187, &[handle]), 0);
+}
+
 #[test]
 fn vfs_file_open_io_shared_position_duplication_information_and_close() {
     let mut h = setup();

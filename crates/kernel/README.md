@@ -498,7 +498,9 @@ NtCreateFile also accepts an initial allocation size through VFS's allocated
 opens. It reads the LARGE_INTEGER before writing the IOSB, since generated
 XCreateSaveGame aliases them when reserving SaveMeta.xbx. Host storage reserves
 logical cluster capacity without changing EOF; disk-full create/overwrite
-reservations preserve existing data. See [checkpoint acceptance](../../docs/checkpoints.md)
+reservations preserve existing data. AllocationSize is only a hint, as on NT:
+it never changes EndOfFile, and a backend without reservation support (the
+`Backend` default) ignores it rather than failing the create. See [checkpoint acceptance](../../docs/checkpoints.md)
 for the generated-code harness and its boundaries.
 
 Synchronous completion is equivalent for what Halo does. The 62 opens without a

@@ -14,8 +14,11 @@ pub trait Backend: Send {
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }
-    /// Initial allocation reserves capacity without extending EOF. Backends
-    /// must reject unsupported reservations before creating/truncating data.
+    /// Initial allocation is a hint: it may reserve capacity but never extends
+    /// EOF. A backend that cannot reserve ignores it (the default), as NT
+    /// does for a file system that treats it as advisory; one that does
+    /// reserve must fail a reservation it cannot honour (e.g. disk full)
+    /// before creating or truncating data.
     /// `owner` is a unique VFS file-object identity, shared by duplicated handles.
     fn create_allocated(
         &mut self,
@@ -25,15 +28,11 @@ pub trait Backend: Send {
         allocation: u64,
         _owner: u64,
     ) -> Result<()> {
-        if allocation != 0 && !directory {
-            return Err(Error::NotSupported);
-        }
+        let _ = allocation;
         self.create(path, directory, attributes)
     }
     fn overwrite_allocated(&mut self, path: &str, allocation: u64, _owner: u64) -> Result<()> {
-        if allocation != 0 {
-            return Err(Error::NotSupported);
-        }
+        let _ = allocation;
         self.set_len(path, 0)
     }
     /// Release only this owner's unused allocation after its last handle closes.
