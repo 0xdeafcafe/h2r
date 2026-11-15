@@ -503,9 +503,12 @@ and unsigned is two host textures. `PixelOptions::color_sign` holds
 `COLORSIGN >> 28` per stage (`bits::color_sign`); the interpreter's
 `Sampler` returns host (biased) values too and applies the same transfer.
 Frame-buffer snapshots bound as textures are not stored biased, so the
-device clears `COLORSIGN` for those stages. Stand-in textures (unbound
-stages, dimension mismatches) are biased by the stage's sign mask too
-(`ProgramBindings::dummy`, keyed by it), so they still read black. The
+device clears `COLORSIGN` for those stages. Colour textures over depth
+memory use signed-channel bias and separate host copies for each sign mask,
+as ordinary textures do. Depth-format shadow maps always retain their raw
+bits and ignore `COLORSIGN` in the upload and sampling state. Stand-in
+textures (unbound stages, dimension mismatches) are biased by the stage's
+sign mask too (`ProgramBindings::dummy`, keyed by it), so they still read black. The
 host's border presets cannot express a biased or arbitrary border, so
 the shader supplies those colours (and all colours on hosts without border
 addressing) (`PixelOptions::border`): the sampler clamps to the
@@ -648,9 +651,10 @@ behaviour follows xemu's `psh_append_shadowmap`:
   xemu uses 16777215 for every 24-bit format).
 - NEVER gives 0 and ALWAYS gives 1, without sampling.
 - The renderer uploads depth textures as raw bits in RGBA8 (depth bytes
-  high to low in r, g, b, stencil in a; D16 and F16 in r and g). The
-  stored value is rebuilt from `round(c * 255)` exactly: an integer for
-  D24 and D16; for F24 the 24 bits are an IEEE single's top bits without
+  high to low in r, g, b, stencil in a; D16 and F16 in r and g), without
+  any `COLORSIGN` bias. The stored value is rebuilt from `round(c * 255)`
+  exactly: an integer for D24 and D16; for F24 the 24 bits are an IEEE
+  single's top bits without
   the sign (8-bit exponent, bias 127, 16-bit mantissa); F16 has a 4-bit
   exponent (bias 7) and a 12-bit mantissa with no denormals: every word
   but 0 has the implicit leading one, exponent 0 included. Both readings

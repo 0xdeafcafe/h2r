@@ -825,7 +825,134 @@ fn destroying_a_depth_alias_frees_its_host_texture() {
     d.set_texture(&mut m, 0, ALIAS).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(d.backend.held(), 1);
+    // Both channel-sign variants belong to the same guest resource.
+    m.write_u32(L.texture_state_slot(0, 10), 0xE000_0000)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert_eq!(d.backend.held(), 2);
     d.set_texture(&mut m, 0, 0).unwrap();
     d.destroy_resource(&mut m, ALIAS).unwrap();
     assert_eq!(d.backend.held(), 0);
+}
+
+/// Review P2: a shadow map's depth words are raw, even when the stage's
+/// colour sign bits are set. PROJECT2D/GREATER compares each word with 0.
+#[test]
+fn gpu_shadow_raw_bits_ignore_colorsign() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    t0_shader(&mut d, &mut m, shaders::psh::bits::TEX_PROJECT2D);
+    projective_quad(&mut d, &mut m, 0.0, 1.0);
+    m.write_u32(L.render_state_slot(RS_SHADOWFUNC), 0x204)
+        .unwrap();
+    for (format, pitch, bpp, positive) in [
+        (0x2A, None, 4, 0x0000_0100u32), // D24 = 1, stencil = 0
+        (0x2B, None, 4, 0x7F00_0000),    // F24 = 1.0
+        (0x2C, None, 2, 1),              // D16 = 1
+        (0x2D, None, 2, 0x7000),         // F16 = 1.0
+        (0x2E, Some(64), 4, 0x0000_0100),
+        (0x2F, Some(64), 4, 0x7F00_0000),
+        (0x30, Some(64), 2, 1),
+        (0x31, Some(64), 2, 0x7000),
+    ] {
+        for (word, want) in [(0u32, 0u8), (positive, 255)] {
+            let stride = pitch.unwrap_or(S * bpp) as usize;
+            let mut bytes = vec![0; stride * S as usize];
+            for y in 0..S as usize {
+                for x in 0..S as usize {
+                    let offset = y * stride + x * bpp as usize;
+                    bytes[offset..offset + bpp as usize]
+                        .copy_from_slice(&word.to_le_bytes()[..bpp as usize]);
+                }
+            }
+            m.write(0x8000_0000 | DDATA, &bytes).unwrap();
+            depth_texture(&mut m, format, pitch);
+            d.set_texture(&mut m, 0, DTEX).unwrap();
+            for sign in [0, 0xE000_0000, 0xF000_0000] {
+                m.write_u32(L.texture_state_slot(0, 10), sign).unwrap();
+                d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+                assert_eq!(
+                    back_pixel(&mut d, 20, 30),
+                    [want; 4],
+                    "format {format:#x}, word {word:#x}, COLORSIGN {sign:#x}"
+                );
+                assert_eq!(d.take_events(), []);
+            }
+        }
+    }
+    finish(scope);
+}
+
+/// Review P2: a colour alias over depth has the same signed-byte sampling
+/// as ordinary memory, and signed/unsigned views can coexist in one draw.
+#[test]
+fn gpu_signed_depth_alias_matches_identical_guest_texture() {
+    use shaders::psh::PixelShaderDef;
+    use shaders::psh::bits::*;
+
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    d.clear(
+        &mut m,
+        0,
+        0,
+        0x03,
+        0,
+        0xFF_2020u32 as f32 / 16_777_215.0,
+        0x40,
+    )
+    .unwrap();
+    textured_quad(&mut d, &mut m);
+    alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+    texture(&mut m, 0);
+    m.write(
+        0x8000_0000 | TEX_DATA,
+        &0xFF20_2040u32.to_le_bytes().repeat(64),
+    )
+    .unwrap();
+    // Revisit the unsigned view: changing signs must neither reuse the
+    // wrong host texture nor force another readback of unchanged depth.
+    for (sign, want) in [
+        (0, [32, 32, 64, 255]),
+        (0xE000_0000, [64, 64, 128, 255]),
+        (0, [32, 32, 64, 255]),
+    ] {
+        m.write_u32(L.texture_state_slot(0, 10), sign).unwrap();
+        d.set_texture(&mut m, 0, ALIAS).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        let alias_pixel = back_pixel(&mut d, 20, 30);
+        d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        let ordinary_pixel = back_pixel(&mut d, 20, 30);
+        assert_eq!(ordinary_pixel, want, "COLORSIGN {sign:#x}");
+        assert_eq!(alias_pixel, ordinary_pixel, "COLORSIGN {sign:#x}");
+    }
+    // Both stages fetch the same header, with opposite sign masks. Even
+    // the output from stage 0 must keep its own storage after stage 1 is
+    // resolved. Select each stage in turn to check both bindings.
+    d.set_texture(&mut m, 0, ALIAS).unwrap();
+    d.set_texture(&mut m, 1, ALIAS).unwrap();
+    m.write_u32(L.texture_state_slot(1, 10), 0xE000_0000)
+        .unwrap();
+    t0_shader(&mut d, &mut m, TEX_PROJECT2D);
+    for (reg, want) in [(REG_T0, [32, 32, 64, 255]), (REG_T1, [64, 64, 128, 255])] {
+        let def = PixelShaderDef {
+            texture_modes: texture_modes([TEX_PROJECT2D, TEX_PROJECT2D, 0, 0]),
+            final_inputs_abcd: inputs(0, 0, 0, reg),
+            final_inputs_efg: final_efg(0, 0, reg | CHAN_ALPHA, 0),
+            ..Default::default()
+        };
+        m.write(PSDEF, &def.to_bytes()).unwrap();
+        d.set_pixel_shader(&mut m, PS_OBJECT).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(back_pixel(&mut d, 20, 30), want, "output register {reg}");
+    }
+    assert_eq!(d.stats().depth_reads, 1);
+    assert_eq!(d.stats().depth_alias_uploads, 2);
+    assert_eq!(d.take_events(), []);
+    finish(scope);
 }

@@ -89,6 +89,10 @@ impl<S> RttTarget<S> {
     }
 }
 
+/// A depth alias's header and effective `COLORSIGN` mask. Different stages
+/// can sample the same header with different channel signs in one draw.
+pub(super) type DepthAliasKey = (u32, u32);
+
 /// A texture header over the depth buffer, decoded from a readback.
 pub(crate) struct DepthAlias<T> {
     /// [`Device::depth_generation`] of the bytes it was made from.
@@ -107,8 +111,8 @@ pub(super) enum FrameTexture<T> {
     /// A frame buffer, copied for this draw.
     Snapshot(TextureInfo, T),
     /// The depth buffer's bits as this texture's format: the host texture
-    /// is `Device::depth_alias[header]`.
-    DepthAlias(TextureInfo),
+    /// is `Device::depth_alias[key]`.
+    DepthAlias(TextureInfo, DepthAliasKey),
     /// The draw cannot sample it: skip with this reason.
     Skip(String),
 }
@@ -215,6 +219,7 @@ impl<B: Backend> Device<B> {
         mem: &dyn GuestMemory,
         header: u32,
         sampled: bool,
+        color_sign: u32,
     ) -> Result<FrameTexture<B::Texture>, D3dError> {
         let pc = PixelContainer::read(mem, header)?;
         if pc.resource.kind() != ResourceType::Texture {
@@ -228,7 +233,7 @@ impl<B: Backend> Device<B> {
         };
         if self.depth.is_some() && within(DEPTH_BUFFER_DATA) {
             let offset = data.wrapping_sub(map.to_virtual(DEPTH_BUFFER_DATA));
-            return self.depth_texture(header, &pc, offset, sampled);
+            return self.depth_texture(header, &pc, offset, sampled, color_sign);
         }
         let Some(&(base, buffer)) = sw.buffers.iter().find(|b| within(b.0)) else {
             return Ok(FrameTexture::No);
@@ -319,7 +324,9 @@ impl<B: Backend> Device<B> {
     /// alpha, its middle and low bytes as red and green and the stencil as
     /// blue, and `0x50936C` (`LIN_A8B8G8R8`) the same bytes with red and
     /// blue swapped. The depth buffer is read back once per change
-    /// (`depth_generation`), and each header decoded once per readback.
+    /// (`depth_generation`), and each header/sign mask decoded once per
+    /// readback. Colour channels are biased as for ordinary signed textures;
+    /// depth-format aliases keep raw words for shadow comparison.
     /// The draw sees the buffer as it was before the draw, as for the back
     /// buffer.
     fn depth_texture(
@@ -328,6 +335,7 @@ impl<B: Backend> Device<B> {
         pc: &PixelContainer,
         offset: u32,
         sampled: bool,
+        color_sign: u32,
     ) -> Result<FrameTexture<B::Texture>, D3dError> {
         if !sampled {
             return Ok(FrameTexture::Skip(format!(
@@ -374,11 +382,12 @@ impl<B: Backend> Device<B> {
         };
         let generation = self.depth_generation;
         let identity = pc.identity();
-        if let Some(a) = self.depth_alias.get(&header)
+        let key = (header, texture_color_sign(desc.format, color_sign));
+        if let Some(a) = self.depth_alias.get(&key)
             && a.generation == generation
             && a.identity == identity
         {
-            return Ok(FrameTexture::DepthAlias(a.info));
+            return Ok(FrameTexture::DepthAlias(a.info, key));
         }
         if self
             .depth_copy
@@ -409,10 +418,9 @@ impl<B: Backend> Device<B> {
             None,
             DecodeOptions {
                 bc_supported: self.backend.bc_supported(),
-                // Raw bits: a COLORSIGN stage over the depth buffer is not
-                // applied (none is known).
                 ..DecodeOptions::default()
-            },
+            }
+            .with_color_sign(key.1),
         ) {
             Ok(d) => d,
             Err(e) => return skip(e.to_string()),
@@ -423,7 +431,7 @@ impl<B: Backend> Device<B> {
             .map_err(D3dError::Backend)?;
         self.stats.depth_alias_uploads += 1;
         self.depth_alias.insert(
-            header,
+            key,
             DepthAlias {
                 generation,
                 identity,
@@ -431,7 +439,7 @@ impl<B: Backend> Device<B> {
                 texture,
             },
         );
-        Ok(FrameTexture::DepthAlias(info))
+        Ok(FrameTexture::DepthAlias(info, key))
     }
 
     /// The host surface for a texture-level render target (made on first

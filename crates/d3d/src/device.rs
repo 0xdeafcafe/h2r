@@ -126,13 +126,13 @@ pub const DISPLAY_BUFFER_DATA: u32 = 0x0E00_0000;
 pub const THIRD_BUFFER_DATA: u32 = 0x0F00_0000;
 /// Guest `Data` of the depth/stencil header the device creates (see
 /// [`BACK_BUFFER_DATA`]). Halo builds colour textures over it too
-/// (`0x509368`, `0x50936C`): draws sampling them are skipped, depth bits
-/// read as colour are not modelled.
+/// (`0x509368`, `0x50936C`): draws sample a depth/stencil readback decoded
+/// in the texture's own format, including its channel signs.
 pub const DEPTH_BUFFER_DATA: u32 = 0x0D00_0000;
 /// Bytes from a frame buffer's `Data` ([`BACK_BUFFER_DATA`],
 /// [`DISPLAY_BUFFER_DATA`], [`THIRD_BUFFER_DATA`]) or [`DEPTH_BUFFER_DATA`]
-/// that belong to that buffer: a texture whose `Data` falls inside but not
-/// at the start is skipped.
+/// that belong to that buffer. Colour frame-buffer textures must start at
+/// its base; depth aliases also support bounded offsets into the buffer.
 pub const FRAME_DATA_SPAN: u32 = 0x0100_0000;
 /// Host bound on `D3DDevice_Clear` rectangles (the original loops over any
 /// count; this only keeps a guest count from spinning the host).
@@ -335,8 +335,8 @@ pub struct Stats {
     /// ([`DEPTH_BUFFER_DATA`]): one per change of the depth buffer that a
     /// draw then samples.
     pub depth_reads: u64,
-    /// Host textures made from those readbacks (one per aliasing header
-    /// and depth-buffer change).
+    /// Host textures made from those readbacks (one per aliasing header,
+    /// effective channel signs and depth-buffer change).
     pub depth_alias_uploads: u64,
     /// Texture stages that sampled a render-to-texture surface in place
     /// (lazy render-to-texture, [`Device::set_rtt_direct`]).
@@ -581,8 +581,9 @@ pub struct Device<B: Backend> {
     /// The depth buffer as guest bytes, and the generation they were read
     /// at.
     depth_copy: Option<(u64, Vec<u8>)>,
-    /// Textures over the depth buffer, made from `depth_copy`, by header.
-    depth_alias: HashMap<u32, raster::DepthAlias<B::Texture>>,
+    /// Textures over the depth buffer, made from `depth_copy`, by header
+    /// and effective channel signs.
+    depth_alias: HashMap<raster::DepthAliasKey, raster::DepthAlias<B::Texture>>,
     /// Each target's level bytes when its host surface and guest memory
     /// last matched (filled from, or written back into, memory).
     rtt_synced: HashMap<u32, Vec<u8>>,
@@ -1804,7 +1805,7 @@ impl<B: Backend> Device<B> {
         }
         self.cache.retain(|k, _| k.0 != header && k.1 != header);
         // A texture over the depth buffer holds a host copy of it.
-        self.depth_alias.remove(&header);
+        self.depth_alias.retain(|(h, _), _| *h != header);
         if !self.pending_destroys.contains(&header) {
             self.pending_destroys.push(header);
         }
@@ -3079,7 +3080,7 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
-        let color_sign = color_sign & COLOR_SIGN_MASK;
+        let color_sign = texture_color_sign(desc.format, color_sign);
         let key = (header, pal.map_or(0, |p| p.header), color_sign);
         let info = TextureInfo {
             header,
@@ -3233,7 +3234,7 @@ impl<B: Backend> Device<B> {
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
-        let mut aliases: [Option<u32>; 4] = [None; 4];
+        let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut bound = self.textures;
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = self.translate_state(&parts.words);
@@ -3242,7 +3243,7 @@ impl<B: Backend> Device<B> {
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
-                match self.frame_texture(mem, header, sampled[stage])? {
+                match self.frame_texture(mem, header, sampled[stage], extras[stage].color_sign)? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
                         // Snapshots are not stored biased, so COLORSIGN
@@ -3252,9 +3253,10 @@ impl<B: Backend> Device<B> {
                         snapshots[stage] = Some(t);
                         continue;
                     }
-                    FrameTexture::DepthAlias(info) => {
+                    FrameTexture::DepthAlias(info, key) => {
+                        extras[stage].color_sign = key.1;
                         texture_info[stage] = Some(info);
-                        aliases[stage] = Some(header);
+                        aliases[stage] = Some(key);
                         continue;
                     }
                     FrameTexture::Skip(reason) if sampled[stage] => {
@@ -3281,6 +3283,7 @@ impl<B: Backend> Device<B> {
                     self.palettes[stage],
                     extras[stage].color_sign,
                 )?;
+                extras[stage].color_sign = k.2;
                 keys[stage] = Some(k);
                 texture_info[stage] = Some(i);
             }
@@ -3318,7 +3321,7 @@ impl<B: Backend> Device<B> {
                 .as_ref()
                 .or_else(|| {
                     aliases[i]
-                        .and_then(|h| self.depth_alias.get(&h))
+                        .and_then(|k| self.depth_alias.get(&k))
                         .map(|a| &a.texture)
                 })
                 .or_else(|| keys[i].and_then(|k| self.cache.get(&k)).map(|c| &c.host))
@@ -3854,6 +3857,16 @@ fn writes_depth_or_stencil(r: &gfx::RenderState, depth: Option<D3DFormat>) -> bo
             .iter()
             .any(|op| *op != StencilOp::Keep);
     z || stencil
+}
+
+/// Depth textures feed raw words to shadow comparison. Only colour
+/// textures store signed channels biased for the shader's signed transfer.
+fn texture_color_sign(format: D3DFormat, color_sign: u32) -> u32 {
+    if format.is_depth() {
+        0
+    } else {
+        color_sign & COLOR_SIGN_MASK
+    }
 }
 
 /// The linear twin of a swizzled surface format (render targets are linear).

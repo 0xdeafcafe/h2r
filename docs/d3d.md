@@ -875,10 +875,13 @@ and allocations are bounded before anything is read:
       draw that can write depth or stencil into the device's depth buffer
       (the same test as for depth levels: read-only stencil tests and
       skipped draws do not count) and by every depth or stencil clear of
-      it; each header is decoded once per readback, and its host texture
-      is freed when the header is destroyed. A run of draws that test
-      depth without writing it costs one readback. Like the back-buffer copy, a draw sees the buffer as
-      it was before the draw. Counted in `Stats::depth_reads` and
+      it; each header and `COLORSIGN` mask is decoded once per readback.
+      Colour aliases use the same biased signed-channel storage as ordinary
+      textures, so signed and unsigned bindings of one header can coexist.
+      All of its host textures are freed when the header is destroyed. A run
+      of draws that test depth without writing it costs one readback. Like
+      the back-buffer copy, a draw sees the buffer as it was before the draw.
+      Counted in `Stats::depth_reads` and
       `Stats::depth_alias_uploads`.
     - A texture that runs past the end of the buffer, or whose header
       does not decode, skips with a reason. So does any texture over it
