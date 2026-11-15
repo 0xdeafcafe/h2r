@@ -19,6 +19,9 @@ pub struct Installed {
     pub native: usize,
     /// The entries the write barrier wraps, in shadow-slot order.
     barrier: Vec<u32>,
+    /// The vblank callback on the 60 Hz logical clock, for
+    /// `Kernel::add_periodic` (taken once).
+    pub vblank: Option<kernel::periodic::Handler>,
 }
 
 impl Installed {
@@ -110,15 +113,17 @@ fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime
         d3d::register_frame_wait(
             d,
             Arc::clone(&device),
-            d3d::FrameWait::HALO2,
+            d3d::FrameWait::HALO2_CLOCKED,
             Arc::new(d3d::runtime_glue::default_stop),
         );
     });
     let r = out.unwrap();
     let entries: Vec<u32> = r.implemented.iter().chain(&r.stopping).map(|e| e.0).collect();
     install_write_barrier(rt, &device, &entries)?;
+    let vblank: Option<kernel::periodic::Handler> = Some(Box::new(d3d::vblank::clocked_vblanks(Arc::clone(&device))));
     let dev = device;
     Ok(Installed {
+        vblank,
         report: Box::new(move || {
             let mut d = dev.lock().unwrap();
             // Device events by kind and reason, most frequent first.

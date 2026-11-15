@@ -325,11 +325,17 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
     }
-    let d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
+    let mut d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
+    // Vblanks on the 60 Hz logical clock (docs/d3d.md "Vertical blank"),
+    // delivered as DPCs; the frame wait above is the clocked one.
+    if let Some(handler) = d3d_calls.as_mut().and_then(|i| i.vblank.take()) {
+        k.add_periodic(kernel::periodic::Source { name: "vblank", rate: kernel::periodic::Rate::HZ_60, max_catch_up: 4, handler })
+            .map_err(|e| anyhow::anyhow!("vblank source: {e:?}"))?;
+    }
     if d3d_calls.is_some() && uses.is_some() {
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
-    let ds = if opts.dsound { Some(dsound_glue::install(&loaded.runtime, &k)?) } else { None };
+    let ds = if opts.dsound { Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?) } else { None };
     let (xa, pad) = match opts.xapi {
         true => {
             let (x, pad) = xapi_glue::register(&loaded.runtime, &k)?;
@@ -352,12 +358,18 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     )
     .context("creating the entry thread")?;
     m.max_transfers_per_slice = opts.transfers_per_slice;
+    // H2_BOOT_REALTIME: hold the host back to real time (wall pacing); the
+    // schedule is unchanged.
+    if std::env::var_os("H2_BOOT_REALTIME").is_some() {
+        m.pacer = Some(kernel::pacer::Pacer::real_time());
+    }
     eprintln!("entry {:#010x}, running", loaded.cpu.eip);
     let t = Instant::now();
     // One slice at a time so XAPI's input pump runs between slices
     // (docs/xapi.md "Input pump"); no guard is held here.
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut input_errors = 0u64;
+    let mut audio_errors: Vec<String> = Vec::new();
     for slice in 0..opts.max_slices {
         if let Some(pad) = &pad {
             script.step(slice, pad);
@@ -371,6 +383,15 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         {
             input_errors += 1;
         }
+        if let Some(a) = &ds
+            && let Err(e) = dsound_glue::advance(a, &k)
+            && audio_errors.len() < 8
+        {
+            audio_errors.push(format!("slice {slice}: {e}"));
+        }
+    }
+    if let Some(a) = &ds {
+        a.output.halt();
     }
     let secs = t.elapsed().as_secs_f64();
     let (stop, eip) = match &outcome {
@@ -436,6 +457,9 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     }
     if let Some(h) = &ds {
         eprintln!("{}", dsound_glue::describe(h));
+        if !audio_errors.is_empty() {
+            eprintln!("dsound advance errors: {audio_errors:?}");
+        }
     }
     if xa.is_some() {
         eprintln!("xapi: registered; input pump errors {input_errors}");

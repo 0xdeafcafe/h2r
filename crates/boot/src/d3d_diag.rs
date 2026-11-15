@@ -216,6 +216,32 @@ impl<B: Backend> Backend for DiagBackend<B> {
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
         self.inner.destroy_surface(surface)
     }
+    // Every provided method is forwarded: a default here would silently
+    // replace the inner backend's (a frame-buffer snapshot would skip draws).
+    fn snapshot_surface(&mut self, surface: Self::Surface, opaque: bool) -> Result<Option<Self::Texture>, String> {
+        let r = self.inner.snapshot_surface(surface, opaque)?;
+        self.line(format!("snapshot_surface {surface:?} opaque={opaque} -> {}", if r.is_some() { "ok" } else { "unsupported" }));
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            if let Some(c) = self.capturing() {
+                c.append("frame.txt", &format!("snapshot_surface {surface:?} opaque={opaque} -> tex {id}"));
+            }
+            Tracked { id, inner }
+        }))
+    }
+    fn clear_pixel_count(&mut self) -> Result<(), String> {
+        self.inner.clear_pixel_count()
+    }
+    fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        self.inner.report_pixel_count()
+    }
+    fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
+        self.inner.read_pixel_count(ticket)
+    }
+    fn drop_pixel_count(&mut self, ticket: u64) {
+        self.inner.drop_pixel_count(ticket)
+    }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         let r = self.inner.upload_texture(texture);
         if let Err(e) = &r {
@@ -417,5 +443,25 @@ impl<B: Backend> Backend for DiagBackend<B> {
             c.append("surfaces.txt", &format!("frame {} create_texture_target {format:?} {width}x{height} -> {r:?}", self.in_frame));
         }
         r
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Every `Backend` method must be forwarded by `DiagBackend`; a missed
+    /// provided method silently falls back to the trait's default.
+    #[test]
+    fn forwards_every_backend_method() {
+        fn methods(src: &str, start: &str) -> std::collections::BTreeSet<String> {
+            let body = &src[src.find(start).expect(start)..];
+            let body = &body[..body.find("\n}\n").unwrap()];
+            body.lines()
+                .filter_map(|l| l.trim().strip_prefix("fn ").map(|r| r.split(['(', '<']).next().unwrap().to_string()))
+                .collect()
+        }
+        let tr = methods(include_str!("../../d3d/src/backend.rs"), "pub trait Backend");
+        let ours = methods(include_str!("d3d_diag.rs"), "impl<B: Backend> Backend for DiagBackend<B>");
+        let missing: Vec<_> = tr.difference(&ours).collect();
+        assert!(missing.is_empty(), "DiagBackend does not forward {missing:?}");
     }
 }
