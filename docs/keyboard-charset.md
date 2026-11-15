@@ -158,9 +158,9 @@ search-result summaries and are marked.
   in the tool, double-click icons from its list to add them to the name, save,
   re-sign, copy it back
   ([Sav3r how-to](https://www.se7ensins.com/forums/threads/halo-2-using-sav3r-to-edit-your-profile-gametypes-name-pics.62573/),
-  [HaloMods "Symbols In User Profile"](https://www.halomods.info/viewtopic.php?p=618002&sid=6a1af5e8e2bbb3ce4b6e024e20a324bc),
+  [HaloMods "Symbols In User Profile"](https://www.halomods.info/viewtopic.php?p=618002),
   [Sav3r release thread](https://www.halomods.info/viewtopic.php?t=18064&start=180),
-  [TeamXLink "halo 2 names"](https://teamxlink.co.uk/forum/viewtopic.php?t=19138&highlight=&sid=45bed61197d13d18b9ef5b89b8a96517)).
+  [TeamXLink "halo 2 names"](https://teamxlink.co.uk/forum/viewtopic.php?t=19138&highlight=)).
   The tool names the icons by label. A user reports a "damaged" error after
   inserting too many.
 - The same trick works for the game variant title. A tutorial titled for Halo 3
