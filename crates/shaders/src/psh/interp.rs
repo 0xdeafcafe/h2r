@@ -33,6 +33,8 @@ pub struct Uniforms {
     pub eye: Vec4,
     pub alpha_ref: Vec4,
     pub border: [Vec4; 4],
+    pub lod_bias: Vec4,
+    pub stipple: [u32; 32],
 }
 
 impl Default for Uniforms {
@@ -48,6 +50,8 @@ impl Default for Uniforms {
             eye: [0.0; 4],
             alpha_ref: [0.0; 4],
             border: [[0.0; 4]; 4],
+            lod_bias: [0.0; 4],
+            stipple: [0; 32],
         }
     }
 }
@@ -67,6 +71,10 @@ impl Uniforms {
         v.push(self.eye);
         v.push(self.alpha_ref);
         v.extend_from_slice(&self.border);
+        v.push(self.lod_bias);
+        for row in self.stipple.as_chunks::<4>().0 {
+            v.push(row.map(f32::from_bits));
+        }
         v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
     }
 }

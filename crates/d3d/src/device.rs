@@ -2577,7 +2577,7 @@ impl<B: Backend> Device<B> {
         let sw = self.swap.as_mut().expect("created");
         let shown = sw.back[0];
         self.backend
-            .present(shown, flags)
+            .present_with_gamma(shown, flags, self.display.gamma.as_deref())
             .map_err(D3dError::Backend)?;
         if flags & 1 == 0 {
             // Flip: the shown buffer becomes the front, the old front the

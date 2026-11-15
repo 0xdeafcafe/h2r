@@ -226,7 +226,7 @@ fn present_hook_copies_the_back_buffer() {
         )
         .unwrap();
     clear_to(&store, argb, [1.0, 0.0, 0.0, 0.5]);
-    hook(&ctx, &store, argb, 0);
+    hook(&ctx, &store, argb, 0, None);
     let f = source.latest().unwrap();
     assert_eq!(f.size, (64, 48));
     let px = read_texture(&ctx, &f.texture, wgpu::TextureAspect::All, 4, f.size);
@@ -242,12 +242,22 @@ fn present_hook_copies_the_back_buffer() {
         )
         .unwrap();
     clear_to(&store, xrgb, [0.0, 1.0, 0.0, 0.0]);
-    hook(&ctx, &store, xrgb, 0);
+    hook(&ctx, &store, xrgb, 0, None);
     let f = source.latest().unwrap();
     assert_eq!(f.size, (640, 480));
     let px = read_texture(&ctx, &f.texture, wgpu::TextureAspect::All, 4, f.size);
     assert_eq!(&px[..4], &[0, 255, 0, 255]);
-    assert_eq!(source.stats().published, 2);
+    let mut ramp = [0u8; 768];
+    ramp[255] = 37;
+    ramp[256] = 81;
+    ramp[512] = 129;
+    clear_to(&store, argb, [1.0, 0.0, 0.0, 0.5]);
+    hook(&ctx, &store, argb, 0, Some(&ramp));
+    let f = source.latest().unwrap();
+    let px = read_texture(&ctx, &f.texture, wgpu::TextureAspect::All, 4, f.size);
+    assert_eq!(&px[..3], &[37, 81, 129]);
+    assert!((126..=129).contains(&px[3]));
+    assert_eq!(source.stats().published, 3);
 }
 
 fn composite(

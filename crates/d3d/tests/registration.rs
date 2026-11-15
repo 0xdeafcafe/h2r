@@ -327,6 +327,6 @@ fn gfx_backend_registration_type_checks() {
         d3d::register::<GfxBackend>;
     let _install: fn(GfxBackend) -> GfxBackend = |b| {
         b.with_shaders(Box::new(NoShaders))
-            .on_present(|_, _, _, _| {})
+            .on_present(|_, _, _, _, _| {})
     };
 }

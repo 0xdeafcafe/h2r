@@ -73,9 +73,10 @@ pub struct PixelOptions {
     /// Per stage, the axes (bit 0 u, 1 v, 2 w) on which the shader, not the
     /// sampler, supplies the border: a 2D or 3D sample whose coordinate is
     /// outside `[0, 1]` on such an axis reads `border[n]` of the uniforms
-    /// instead. Used for `COLORSIGN` stages, whose biased texels the
-    /// host's three border presets cannot border; the sampler then clamps
-    /// to the edge on those axes. Cube maps are never bordered.
+    /// instead. Used for signed or arbitrary-colour borders and when the
+    /// host lacks border addressing; the sampler then clamps to the edge.
+    /// Linear filtering across the boundary is approximated. Cube maps are
+    /// never bordered.
     pub border: [u8; 4],
     /// Alpha test; `None` disables it.
     pub alpha_test: Option<AlphaFunc>,
@@ -88,6 +89,8 @@ pub struct PixelOptions {
     /// derivatives (compute; the GPU tests use this). Textures are then
     /// never minified.
     pub explicit_lod: bool,
+    /// Apply the 32 by 32 polygon stipple mask in the fragment shader.
+    pub stipple: bool,
 }
 
 /// A translated pixel pipeline.
@@ -136,6 +139,8 @@ struct XpsUniforms {
     alpha_ref: vec4f,
     // The texture unit's border value per stage (PixelOptions::border).
     border: array<vec4f, 4>,
+    lod_bias: vec4f,
+    stipple: array<vec4u, 8>,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -412,9 +417,12 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
         let mode = c.texture_modes[i];
         let tc = format!("i.t{i}");
         let (func, lod) = if options.explicit_lod {
-            ("textureSampleLevel", ", 0.0")
+            ("textureSampleLevel", ", 0.0".to_string())
         } else {
-            ("textureSample", "")
+            (
+                "textureSampleBias",
+                format!(", clamp(xps.lod_bias[{i}], -16.0, 15.99)"),
+            )
         };
         // Signed channels are converted as the texel leaves the texture
         // unit, before anything else in the stage uses it. The host
@@ -721,11 +729,17 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
 @fragment
 fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) vec4f {
     let r = xps_program(XpsInputs(v.d0, v.d1, v.b0, v.b1, v.t0, v.t1, v.t2, v.t3, v.fog, front));
-    if (r.kill) { discard; }
-    return r.color;
-}
 "#,
     );
+    if options.stipple {
+        s.push_str(
+            r#"    let xy = vec2u(v.position.xy) & vec2u(31u);
+    let row = xps.stipple[xy.y / 4u][xy.y % 4u];
+    if ((row & (1u << xy.x)) == 0u) { discard; }
+"#,
+        );
+    }
+    s.push_str("    if (r.kill) { discard; }\n    return r.color;\n}\n");
     let mut warnings = g.warnings;
     warnings.dedup();
     PixelShader {

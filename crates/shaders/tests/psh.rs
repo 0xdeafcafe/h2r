@@ -1101,3 +1101,19 @@ fn hilo_dot_mappings_split_the_texel_word() {
         [0.0, 0.0],
     );
 }
+
+#[test]
+fn implicit_samples_use_each_stage_lod_bias() {
+    let d = def(&[], [TEX_PROJECT2D, TEX_PROJECT2D, 0, 0]);
+    let shader = psh::translate(&d, &PixelOptions::default());
+    assert!(shader.body.contains("textureSampleBias(xps_tex0, xps_samp0"));
+    assert!(shader.body.contains("clamp(xps.lod_bias[0], -16.0, 15.99)"));
+    assert!(shader.body.contains("clamp(xps.lod_bias[1], -16.0, 15.99)"));
+    let u = PixelUniforms { lod_bias: [-1.0, 2.0, 0.0, 0.0], ..Default::default() };
+    let bytes = u.to_bytes();
+    assert_eq!(&bytes[bytes.len() - 144..bytes.len() - 140], &(-1.0f32).to_le_bytes());
+    assert_eq!(&bytes[bytes.len() - 140..bytes.len() - 136], &(2.0f32).to_le_bytes());
+    let explicit = psh::translate(&d, &PixelOptions { explicit_lod: true, ..Default::default() });
+    assert!(explicit.body.contains("textureSampleLevel(xps_tex0"));
+    assert!(!explicit.body.contains("textureSampleBias"));
+}

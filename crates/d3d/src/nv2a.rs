@@ -74,6 +74,7 @@ pub const SHADER_ID_BASE: u32 = 0x4E56_0000;
 /// Canonical render-state indices (identical to Halo 2's guest slots below
 /// 154) the translation reads from the raw words.
 mod rs {
+    pub const STIPPLEENABLE: u32 = 83;
     pub const FOGTABLEMODE: u32 = 93;
     pub const FOGSTART: u32 = 94;
     pub const FOGEND: u32 = 95;
@@ -697,8 +698,9 @@ impl ShaderProvider for Nv2aShaders {
             flat_shading: flat,
         };
         let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
-        let border: [u8; 4] =
-            std::array::from_fn(|n| shader_border(&draw.state.stages[n], signs[n]));
+        let border: [u8; 4] = std::array::from_fn(|n| {
+            shader_border(&draw.state.stages[n], signs[n], ctx.caps.clamp_to_border)
+        });
         let pixel_options = PixelOptions {
             texture_dims: bound.map(|k| k.map(texture_dim)),
             alpha_kill: std::array::from_fn(|n| draw.extras[n].alpha_kill & ALPHAKILL_ENABLE != 0),
@@ -710,6 +712,7 @@ impl ShaderProvider for Nv2aShaders {
             two_sided_lighting: raw(&self.table, draw, rs::TWOSIDEDLIGHTING) != 0,
             flat_shading: flat,
             explicit_lod: false,
+            stipple: polygon_stipple(&self.table, draw),
         };
         let key = ProgramKey {
             vertex,
@@ -763,6 +766,11 @@ impl ShaderProvider for Nv2aShaders {
             eye: eye_uniform(&draw.hw),
             ..PixelUniforms::default()
         };
+        pu.stipple = draw.hw.stipple_pattern;
+        pu.lod_bias = std::array::from_fn(|n| {
+            let bias = draw.state.stages[n].mip_lod_bias;
+            if bias.is_finite() { bias } else { 0.0 }
+        });
         pu.border =
             std::array::from_fn(|n| border_value(draw.state.stages[n].border_color, signs[n]));
         for n in 0..4 {
@@ -841,10 +849,10 @@ impl ShaderProvider for Nv2aShaders {
 }
 
 /// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage
-/// reads signed channels (biased texels, which the host's border presets
-/// cannot border), else none.
-fn shader_border(s: &TextureStageState, sign: u8) -> u8 {
-    if sign == 0 {
+/// reads signed channels, uses a non-preset colour, or the host cannot
+/// clamp to border. The shader path approximates linear filtering at edges.
+fn shader_border(s: &TextureStageState, sign: u8, clamp_to_border: bool) -> u8 {
+    if sign == 0 && clamp_to_border && matches!(s.border_color, 0 | 0xff00_0000 | 0xffff_ffff) {
         return 0;
     }
     [s.address_u, s.address_v, s.address_w]
@@ -892,6 +900,21 @@ fn fog_uniform(table: &RenderStateTable, draw: &ResolvedDraw) -> [f32; 4] {
     [mode, f(rs::FOGSTART), f(rs::FOGEND), f(rs::FOGDENSITY)]
 }
 
+fn polygon_stipple(table: &RenderStateTable, draw: &ResolvedDraw) -> bool {
+    use gfx::vertex::PrimitiveType;
+    !matches!(
+        draw.primitive,
+        PrimitiveType::PointList
+            | PrimitiveType::LineList
+            | PrimitiveType::LineLoop
+            | PrimitiveType::LineStrip
+    ) && draw
+        .hw
+        .stipple_control
+        .unwrap_or_else(|| raw(table, draw, rs::STIPPLEENABLE))
+        != 0
+}
+
 /// Whether gfx's built-in `XYZRHW | DIFFUSE` shader draws `draw` exactly as
 /// this provider would: no pixel shader, no texture, no fog, no specular,
 /// no flat shading or two-sided lighting, and the texture stages output
@@ -902,7 +925,8 @@ pub fn builtin_equivalent(draw: &ResolvedDraw, textured: bool) -> bool {
     static TABLE: std::sync::LazyLock<RenderStateTable> =
         std::sync::LazyLock::new(RenderStateTable::default);
     let render = &draw.state.render;
-    if textured
+    if polygon_stipple(&TABLE, draw)
+        || textured
         || draw.shader.pixel_shader.is_some()
         || render.fog_enable
         || render.shade_mode == ShadeMode::Flat

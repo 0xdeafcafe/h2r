@@ -267,6 +267,15 @@ pub trait Backend: Send {
     ) -> Result<DrawOutcome, String>;
     /// Shows `surface` (`Swap`). `flags` are the guest's `D3DSWAP_*` flags.
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String>;
+    /// Presents with the current DAC ramp. Backends without a display may ignore it.
+    fn present_with_gamma(
+        &mut self,
+        surface: Self::Surface,
+        flags: u32,
+        _gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present(surface, flags)
+    }
     /// Clears rectangles of the attachments, or only some colour channels.
     /// `Unsupported` stops the device (the default: no backend support).
     fn clear_rects(
@@ -479,6 +488,8 @@ pub struct RecordingBackend {
     next: u32,
     /// The byte `read_surface` returns.
     pub readback_fill: u8,
+    /// The DAC ramp passed at the most recent present.
+    pub present_gamma: Option<Box<[u8; 768]>>,
     /// Samples counted since the last `clear_pixel_count`: each counted
     /// draw adds the area of its clip rectangle (every pixel it may touch
     /// passes; nothing is rasterised here).
@@ -610,6 +621,15 @@ impl Backend for RecordingBackend {
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         self.calls.push(Recorded::Present { surface, flags });
         Ok(())
+    }
+    fn present_with_gamma(
+        &mut self,
+        surface: u32,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        self.present_gamma = gamma.map(|ramp| Box::new(*ramp));
+        self.present(surface, flags)
     }
     fn clear_rects(
         &mut self,

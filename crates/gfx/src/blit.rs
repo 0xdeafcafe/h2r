@@ -10,18 +10,20 @@ use crate::context::GfxContext;
 
 /// Options for one blit.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct BlitOptions {
+pub struct BlitOptions<'a> {
     /// Source rectangle in normalised texture coordinates: `[x, y, w, h]`.
     pub src_rect: [f32; 4],
     /// Linear (true) or nearest (false) sampling.
     pub linear: bool,
     /// Force output alpha to 1.
     pub force_opaque: bool,
+    /// Optional DAC ramp: 256 red, green and blue bytes.
+    pub gamma: Option<&'a [u8; 768]>,
 }
 
-impl Default for BlitOptions {
+impl Default for BlitOptions<'_> {
     fn default() -> Self {
-        Self { src_rect: [0.0, 0.0, 1.0, 1.0], linear: false, force_opaque: false }
+        Self { src_rect: [0.0, 0.0, 1.0, 1.0], linear: false, force_opaque: false, gamma: None }
     }
 }
 
@@ -97,7 +99,7 @@ impl Blitter {
         src: &wgpu::TextureView,
         dst: &wgpu::TextureView,
         dst_format: wgpu::TextureFormat,
-        opts: BlitOptions,
+        opts: BlitOptions<'_>,
     ) {
         let (module, layout) = (&self.module, &self.layout);
         let pipeline = self.pipelines.entry(dst_format).or_insert_with(|| {
@@ -122,16 +124,20 @@ impl Blitter {
                 cache: None,
             })
         });
-        let params = [
+        let mut params = vec![
             opts.src_rect[0],
             opts.src_rect[1],
             opts.src_rect[2],
             opts.src_rect[3],
             if opts.force_opaque { 1.0 } else { 0.0 },
-            0.0,
+            if opts.gamma.is_some() { 1.0 } else { 0.0 },
             0.0,
             0.0,
         ];
+        for i in 0..256 {
+            let channel = |c: usize| opts.gamma.map_or(i as f32 / 255.0, |g| g[c * 256 + i] as f32 / 255.0);
+            params.extend_from_slice(&[channel(0), channel(1), channel(2), 0.0]);
+        }
         let buffer = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("blit params"),
             contents: bytemuck::cast_slice(&params),

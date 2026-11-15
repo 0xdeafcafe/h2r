@@ -110,8 +110,8 @@ impl<B: Backend> Device<B> {
     /// selecting `n` at `+0x7E4`) and calls this. The original writes the
     /// 768 entries to the DAC palette (PRAMDAC `0x6813C8`/`0x6813C9`
     /// through the register base at `[EAX]`), red, green and blue per
-    /// index. Here the ramp is kept ([`Device::gamma_ramp`]); nothing
-    /// applies it at present yet.
+    /// index. The ramp is kept ([`Device::gamma_ramp`]) and passed to
+    /// the backend on each present.
     pub fn load_gamma_ramp(
         &mut self,
         mem: &mut dyn GuestMemory,

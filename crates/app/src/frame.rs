@@ -212,7 +212,7 @@ impl FrameSink {
         size: (u32, u32),
         opaque: bool,
     ) -> Result<u64, FrameError> {
-        self.submit_encoded(size, opaque, view, |_| Ok(()))
+        self.submit_encoded(size, opaque, view, None, |_| Ok(()))
     }
 
     /// Publishes a gfx colour surface: the D3D back buffer on `Swap`.
@@ -221,6 +221,15 @@ impl FrameSink {
         &mut self,
         store: &SurfaceStore,
         id: SurfaceId,
+    ) -> Result<u64, FrameError> {
+        self.submit_surface_with_gamma(store, id, None)
+    }
+
+    fn submit_surface_with_gamma(
+        &mut self,
+        store: &SurfaceStore,
+        id: SurfaceId,
+        gamma: Option<&[u8; 768]>,
     ) -> Result<u64, FrameError> {
         let s = store
             .get(id)
@@ -236,7 +245,7 @@ impl FrameSink {
             TexelFormat::A8R8G8B8 | TexelFormat::A1R5G5B5 | TexelFormat::A4R4G4B4
         );
         let view = s.view().clone();
-        self.submit_encoded(size, opaque, &view, |enc| {
+        self.submit_encoded(size, opaque, &view, gamma, |enc| {
             store
                 .resolve_msaa(enc, id)
                 .map_err(|e| FrameError::Surface(e.to_string()))
@@ -244,19 +253,20 @@ impl FrameSink {
     }
 
     /// Turns this sink into the closure `d3d::GfxBackend::on_present` takes:
-    /// `FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static`.
+    /// `FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static`.
     /// The `GfxBackend` must be built on [`crate::GuestHost::gfx_context`] (the
     /// shell's device). Errors are printed (first ten) and the frame is
     /// skipped; presentation never stops the guest.
     pub fn into_present_hook(
         mut self,
-    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static {
-        move |ctx, store, id, _flags| {
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static
+    {
+        move |ctx, store, id, _flags, gamma| {
             debug_assert!(
                 ctx.device == self.ctx.device,
                 "GfxBackend is not on the shell's device"
             );
-            if let Err(e) = self.submit_surface(store, id) {
+            if let Err(e) = self.submit_surface_with_gamma(store, id, gamma) {
                 self.hook_errors += 1;
                 if self.hook_errors <= 10 {
                     eprintln!("app: present hook: {e}");
@@ -270,6 +280,7 @@ impl FrameSink {
         size: (u32, u32),
         opaque: bool,
         src: &wgpu::TextureView,
+        gamma: Option<&[u8; 768]>,
         before: impl FnOnce(&mut wgpu::CommandEncoder) -> Result<(), FrameError>,
     ) -> Result<u64, FrameError> {
         check_size(size)?;
@@ -292,6 +303,7 @@ impl FrameSink {
                 BlitOptions {
                     linear: true,
                     force_opaque: opaque,
+                    gamma,
                     ..Default::default()
                 },
             );

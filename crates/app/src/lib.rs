@@ -196,7 +196,7 @@ impl GuestHost {
     /// sink on the same channel.
     pub fn present_hook(
         &self,
-    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static {
+    ) -> impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send + 'static {
         self.sink.another().into_present_hook()
     }
 

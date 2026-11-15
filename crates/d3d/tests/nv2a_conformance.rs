@@ -97,6 +97,8 @@ struct Case {
     /// Combiner-state slots written after the definition was bound (the
     /// render-state mirror of pushed combiner methods).
     pushed: Vec<(usize, u32)>,
+    stipple: [u32; 32],
+    varying_t0: bool,
 }
 
 #[derive(Clone)]
@@ -104,6 +106,7 @@ struct Tex {
     format: D3DFormat,
     width: u32,
     height: u32,
+    levels: u32,
     bytes: Vec<u8>,
     palette: Option<Vec<u32>>,
 }
@@ -116,6 +119,7 @@ impl Tex {
             format,
             width: 2,
             height: 2,
+            levels: 1,
             bytes: v.to_le_bytes().repeat(4),
             palette: None,
         }
@@ -125,6 +129,7 @@ impl Tex {
             format,
             width: 2,
             height: 2,
+            levels: 1,
             bytes: v.to_le_bytes().repeat(4),
             palette: None,
         }
@@ -134,6 +139,7 @@ impl Tex {
             format,
             width: 2,
             height: 2,
+            levels: 1,
             bytes: vec![v; 4],
             palette: None,
         }
@@ -156,6 +162,8 @@ impl Default for Case {
             d3dcolor_diffuse: None,
             ccw: false,
             pushed: Vec::new(),
+            stipple: [0; 32],
+            varying_t0: false,
         }
     }
 }
@@ -272,6 +280,7 @@ impl Gpu {
                     4 => c.d1,
                     5 => [c.fog, 0.0, 0.0, 1.0],
                     6 => c.b0,
+                    _ if c.varying_t0 => [x / 48.0, y / 48.0, 0.0, 1.0],
                     _ => c.t0,
                 };
                 data.extend(v.iter().flat_map(|f| f.to_le_bytes()));
@@ -289,7 +298,8 @@ impl Gpu {
         // Texture.
         let (host, info) = match &c.texture {
             Some(t) => {
-                let desc = TextureDesc::new(t.format, TextureKind::D2, t.width, t.height, 1, 1);
+                let desc =
+                    TextureDesc::new(t.format, TextureKind::D2, t.width, t.height, 1, t.levels);
                 let decoded = decode_texture(
                     &desc,
                     &t.bytes,
@@ -311,7 +321,7 @@ impl Gpu {
                     width: t.width,
                     height: t.height,
                     depth: 1,
-                    levels: 1,
+                    levels: t.levels,
                 };
                 (Some(host), Some(info))
             }
@@ -382,7 +392,10 @@ impl Gpu {
             textures: [info.map(|i| i.header), None, None, None],
             clip: None,
             clip_rects: Vec::new(),
-            hw: d3d::hw::HwState::default(),
+            hw: d3d::hw::HwState {
+                stipple_pattern: c.stipple,
+                ..Default::default()
+            },
         };
         assert!(draw.state.bad.is_empty(), "{:?}", draw.state.bad);
         let scope = b.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
@@ -855,6 +868,7 @@ fn texture_formats_decode_in_nv2a_channel_order() {
             format: D3DFormat::Dxt1,
             width: 4,
             height: 4,
+            levels: 1,
             bytes: v,
             palette: None,
         }
@@ -977,6 +991,7 @@ fn color_sign_filters_signed_values() {
         format: D3DFormat::A8R8G8B8,
         width: 2,
         height: 2,
+        levels: 1,
         bytes: [0xFF7F_7F7Fu32, 0xFF80_8080, 0xFF7F_7F7F, 0xFF80_8080]
             .iter()
             .flat_map(|w| w.to_le_bytes())
@@ -1192,4 +1207,67 @@ fn front_face_drives_two_sided_lighting_and_culling() {
             &format!("CULLMODE {cull:#x}, FRONTFACE {front:#x}, ccw {ccw}"),
         );
     }
+}
+
+#[test]
+fn polygon_stipple_masks_fragments_when_enabled() {
+    let Some(mut g) = gpu() else { return };
+    let mut c = Case {
+        d0: RED,
+        clear: BLUE,
+        render: vec![(83, 1)],
+        ..Case::default()
+    };
+    expect(g.run(&c), BLUE, "zero mask");
+    c.stipple[4] = 1 << 4;
+    expect(g.run(&c), RED, "enabled mask bit");
+    c.stipple[4] = 1 << 5;
+    expect(g.run(&c), BLUE, "adjacent mask bit");
+    c.render.clear();
+    expect(g.run(&c), RED, "stipple disabled");
+}
+
+#[test]
+fn unsigned_custom_border_keeps_all_channels() {
+    let Some(mut g) = gpu() else { return };
+    let c = Case {
+        def: Some(copy_t0()),
+        texture: Some(Tex::solid32(D3DFormat::A8R8G8B8, 0xFFFFFFFF)),
+        stage0: vec![
+            (TSS_ADDRESSU, TADDRESS_BORDER),
+            (TSS_BORDERCOLOR, 0x7F11_5DCD),
+        ],
+        t0: [-1.0, 0.5, 0.0, 1.0],
+        ..Case::default()
+    };
+    expect(
+        g.run(&c),
+        [17.0 / 255.0, 93.0 / 255.0, 205.0 / 255.0, 127.0 / 255.0],
+        "custom border",
+    );
+}
+
+#[test]
+fn texture_lod_bias_changes_the_selected_mip() {
+    let Some(mut g) = gpu() else { return };
+    let mut bytes = 0xffff_0000u32.to_le_bytes().repeat(16);
+    bytes.extend(0xff00_ff00u32.to_le_bytes().repeat(4));
+    bytes.extend(0xff00_00ffu32.to_le_bytes());
+    let mut c = Case {
+        def: Some(copy_t0()),
+        texture: Some(Tex {
+            format: D3DFormat::A8R8G8B8,
+            width: 4,
+            height: 4,
+            levels: 3,
+            bytes,
+            palette: None,
+        }),
+        stage0: vec![(5, 1), (6, 0.0f32.to_bits())],
+        varying_t0: true,
+        ..Case::default()
+    };
+    expect(g.run(&c), RED, "unbiased mip");
+    c.stage0[1].1 = 6.0f32.to_bits();
+    expect(g.run(&c), BLUE, "positive bias selects smaller mip");
 }

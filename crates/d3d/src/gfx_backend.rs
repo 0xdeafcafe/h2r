@@ -67,7 +67,8 @@ use crate::nv2a::{Nv2aShaders, builtin_equivalent};
 use crate::shader::{ShaderProvider, VertexProcessing};
 
 /// Called on every `Swap` with the surface shown and the swap flags.
-pub type PresentHook = Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send>;
+pub type PresentHook =
+    Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>) + Send>;
 
 /// A texture uploaded for the guest, with the view the shaders sample it
 /// through (`None` when its format cannot be bound as a filterable float
@@ -169,7 +170,9 @@ impl GfxBackend {
     /// blits it to its window with `gfx::surface::present_surface`).
     pub fn on_present(
         mut self,
-        hook: impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static,
+        hook: impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32, Option<&[u8; 768]>)
+        + Send
+        + 'static,
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
         self
@@ -695,6 +698,15 @@ impl Backend for GfxBackend {
     }
 
     fn present(&mut self, surface: SurfaceId, flags: u32) -> Result<(), String> {
+        self.present_with_gamma(surface, flags, None)
+    }
+
+    fn present_with_gamma(
+        &mut self,
+        surface: SurfaceId,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
         if let Some(s) = self.shaders.as_mut() {
@@ -702,7 +714,7 @@ impl Backend for GfxBackend {
         }
         self.presented = Some(surface);
         if let Some(hook) = self.present_hook.as_mut() {
-            hook(&self.ctx, &self.store, surface, flags);
+            hook(&self.ctx, &self.store, surface, flags, gamma);
         }
         if flags & 4 != 0 {
             // D3DSWAP_FINISH: wait for the GPU.

@@ -146,7 +146,7 @@ overridden; the original runs).
 | `0x3fdb20` | `Get2DSurfaceDesc` | yes | EDI = container, EBX = level, ESI = out desc | 4 / 4 | native |
 | `0x3fdbc0` | `D3D surface level layout (0x3fdbc0)` | no | stdcall 8 args; ret 0x20 | 12 / 9 | native |
 | `0x3fde00` | `D3D texture header setup (0x3fde00)` | no | stdcall 8 args; ret 0x20 | 3 / 3 | native |
-| `0x3ff5c6` | `D3D miniport gamma ramp (0x3ff5c6)` | no | EAX = miniport (device + 0x1C28), EDX = D3DGAMMARAMP (768 bytes); ret | 1 / 1 | yes (stored) |
+| `0x3ff5c6` | `D3D miniport gamma ramp (0x3ff5c6)` | no | EAX = miniport (device + 0x1C28), EDX = D3DGAMMARAMP (768 bytes); ret | 1 / 1 | yes (applied on present) |
 | `0x400fa0` | `D3D commit deferred state (0x400fa0)` | no | no args; ret | 23 / 19 | yes |
 | `0x401030` | `CDevice_SetStateVB` | yes | stdcall(device, base); ret 8 | 1 / 1 | native |
 
@@ -230,9 +230,11 @@ Notes on the table:
   switched on with `D3DRS_STIPPLEENABLE` (`SET_STIPPLE_CONTROL`, `0x147C`).
   The entry copies the pattern to device `+0x197C` (unless flag `0x10`)
   and pushes it; the drain records it in `HwState::stipple_pattern`
-  (`Device::stipple_pattern`, also in every `ResolvedDraw::hw`). Nothing
-  applies it yet: a backend would mask rasterised pixels with it while
-  `STIPPLEENABLE` is set. It has no place at present time.
+  (`Device::stipple_pattern`, also in every `ResolvedDraw::hw`). For filled
+  polygon primitives the translated fragment shader masks pixels against
+  that pattern while `STIPPLEENABLE` is set. Row and bit ordering follow
+  the current `HwState` model and still need an Xbox capture. The visibility
+  count pass does not yet apply this discard.
 - **`D3DResource_IsBusy`** (`0x3fb710`, called from `0x1db90`/`0x1de50`
   among others while render resources are set up). See "GPU model:
   fences and the busy check".
@@ -1391,9 +1393,10 @@ code at `0x13d24` (in `0x13cd0`) and teardown at `0x3fc611`, release device
 blue) into the miniport. `EAX` = the miniport (device `+0x1C28`) and
 `EDX` = the ramp. Halo calls it once, from the brightness update
 (`0x12d08`, an inlined `SetGammaRamp`). The device checks `EAX`, copies the
-ramp (`Device::gamma_ramp`) and does not apply it: the presenter has no
-gamma stage yet. The ignored `gamma_ramp_conventions` checks the
-convention.
+ramp (`Device::gamma_ramp`). Each `Swap` passes the current ramp to the
+frame handoff, which applies it per RGB channel when copying the presented
+surface. The unmodified surface remains available for guest reads. The
+ignored `gamma_ramp_conventions` checks the convention.
 
 ## gfx changes this wants
 

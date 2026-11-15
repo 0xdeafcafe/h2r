@@ -539,6 +539,8 @@ fn the_gamma_ramp_is_kept() {
     let out = call(&mut d, &mut m, 0x3ff5c6, r, &[]).unwrap();
     assert_eq!(out.eax, None);
     assert_eq!(&d.gamma_ramp().unwrap()[..], &ramp[..]);
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(&d.backend.present_gamma.as_ref().unwrap()[..], &ramp[..]);
     let r = Regs { eax: DEV, ..r };
     let err = call(&mut d, &mut m, 0x3ff5c6, r, &[])
         .unwrap_err()

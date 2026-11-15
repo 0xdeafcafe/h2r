@@ -742,6 +742,7 @@ impl SurfaceStore {
         let opts = BlitOptions {
             src_rect: [r.x as f32 / w, r.y as f32 / h, r.width as f32 / w, r.height as f32 / h],
             linear,
+            gamma: None,
             force_opaque: matches!(
                 s.desc.format.texel(),
                 TexelFormat::X8R8G8B8 | TexelFormat::X1R5G5B5 | TexelFormat::R5G6B5

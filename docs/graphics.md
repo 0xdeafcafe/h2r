@@ -306,7 +306,7 @@ earlier keep the old one.
 | `BACKFILLMODE` | not expressible in a pipeline; ignored |
 | `ALPHATEST*` | built-in shader: per-draw uniform and `discard`; translated programs: `PixelOptions::alpha_test` |
 | `FOG*`, `SHADEMODE`, `TEXTUREFACTOR` | shader inputs (`d3d::nv2a` feeds them to the translated programs) |
-| stage address/filter/mip/aniso | `SamplerKey` -> `SamplerDescriptor` (hashable; `MIPMAPLODBIAS` not representable); Border address needs `ADDRESS_MODE_CLAMP_TO_BORDER` and the colour snaps to one of wgpu's three presets; quincunx and gaussian-cubic filters approximate to linear |
+| stage address/filter/mip/aniso | `SamplerKey` -> `SamplerDescriptor` (hashable); `MIPMAPLODBIAS` goes to `textureSampleBias` in the translated pixel shader; standard border colours use `ADDRESS_MODE_CLAMP_TO_BORDER` when available; other colours use a shader substitution outside the texture, approximating linear filtering at the boundary; quincunx and gaussian-cubic filters approximate to linear |
 | stage ops/args (`COLOROP`, ...) | typed; `d3d::nv2a::fixed_function_def` turns them into a register-combiner program |
 
 `PipelineKey` is built from the *translated* wgpu descriptors (`PrimitiveState`,
@@ -361,8 +361,7 @@ software-renders structure BSPs through the same shared geometry decoder
 The two sections below are history: the translators now exist in
 `crates/shaders` (docs/shaders.md) and are wired in by `d3d::nv2a`. What is
 still missing there: untransformed fixed-function vertices (transform,
-lighting, texgen), fixed-function bump-env ops, `MIPMAPLODBIAS`, colour key,
-and point sprites.
+lighting, texgen), fixed-function bump-env ops, colour key and point sprites.
 
 ### Pixel processing: register combiners
 
@@ -422,7 +421,12 @@ renderer, not polish.
 * Palettes are passed in by the caller as a `&[u32]`; locating them from the
   guest `D3DPalette` is the HLE layer's job.
 * Multisampling (`MULTISAMPLE*` states, `D3DMULTISAMPLE_TYPE` quincunx etc.),
-  point sprites/size, line width, edge AA, dithering.
+  point sprites/size, line width, edge AA, dithering. Halo writes point-sprite
+  and point-scale state, and two retail vertex programs write `oPts`; wgpu
+  point draws still need quad expansion. Line stipple usage remains unverified.
+* The D3D flicker setting and the kernel TV encoder's flicker/luma settings
+  are recorded, but neither filter reaches presentation and no display-filter
+  option exists yet (see `crates/kernel/XAPI.md`).
 * Occlusion counts (`gfx::occlusion::PixelCounter`, `Draw::count_samples`)
   re-draw each counted draw into an additive `R16Float` target, against a
   scratch copy of depth/stencil with the draw's own writes, and sum it with
@@ -432,8 +436,8 @@ renderer, not polish.
 * Push-buffer/NV2A method-stream paths: out of scope by design. Inlined D3D
   fast paths must be intercepted at the call/region level (LIFTER.md section 7;
   Cxbx's `XbPushBuffer.cpp` shows what a draw submission has to preserve).
-* Texture border colour sources and `D3DTSS_COLORKEY*` are not modelled
-  (no retail Halo 2 material sets `COLORKEYOP`). `ALPHAKILL` and signed
+* Exact linear filtering at custom texture borders and `D3DTSS_COLORKEY*`
+  are not modelled (no retail Halo 2 material sets `COLORKEYOP`). `ALPHAKILL` and signed
   colour channels (`COLORSIGN`) are handled in the translated pixel
   programs (docs/shaders.md).
 
@@ -452,3 +456,10 @@ either. Constants and layouts are facts about the hardware and SDK ABI that we
 re-derived from their descriptions and cite for traceability. The repository
 license is `MIT OR Apache-2.0`; keep it that way by describing, not copying,
 when reading these sources.
+
+The texture LOD bias is per stage and applies to implicit texture samples.
+The host bias is clamped to WGSL's supported range; the test-only explicit
+level-zero path keeps its explicit level. The NV2A sampler uses an LOD bias,
+as documented by [xemu's texture sampler](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/vk/texture.c).
+The presentation handoff applies the DAC gamma ramp after rendering; guest
+surfaces and render-to-texture reads are not modified.

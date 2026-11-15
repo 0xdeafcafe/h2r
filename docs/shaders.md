@@ -420,8 +420,9 @@ Frame-buffer snapshots bound as textures are not stored biased, so the
 device clears `COLORSIGN` for those stages. Stand-in textures (unbound
 stages, dimension mismatches) are biased by the stage's sign mask too
 (`ProgramBindings::dummy`, keyed by it), so they still read black. The
-host's border presets cannot express a biased border, so on a signed stage
-the shader supplies it (`PixelOptions::border`): the sampler clamps to the
+host's border presets cannot express a biased or arbitrary border, so
+the shader supplies those colours (and all colours on hosts without border
+addressing) (`PixelOptions::border`): the sampler clamps to the
 edge on the `BORDER` axes and a coordinate outside `[0, 1]` there reads
 `D3DTSS_BORDERCOLOR` as the texture unit would, signed channels as `2s/255`
 of the border byte (an unverified guess at the hardware; 0x00 reads 0
@@ -650,6 +651,8 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
 
 - **Point sprites.** `oPts` is computed, but WGSL has no point size. Halo 2
   writes it in 2 programs, which need quad expansion in the renderer.
+  [xemu](https://github.com/xemu-project/xemu/blob/master/hw/xbox/nv2a/pgraph/glsl/vsh.c)
+  forwards `oPts.x` to the host point-size output.
 - **dot_zw depth replacement and brdf.** See the table above. Neither
   appears in Halo 2's tags.
 - **Persistent constant writes** from read/write programs and **state
