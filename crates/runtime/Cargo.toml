@@ -10,6 +10,7 @@ xbe.workspace = true
 x87.workspace = true
 # Interrupt and HLE-call events (docs/perf.md); dependency-free.
 timeline = { path = "../timeline" }
+rustc-hash = "2"
 
 [dev-dependencies]
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }

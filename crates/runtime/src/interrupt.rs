@@ -65,6 +65,11 @@ impl InterruptQueue {
     fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<GuestInterrupt>> {
         self.queue.lock().unwrap_or_else(|e| e.into_inner())
     }
+    /// Whether anything is queued: one load, for the runner's every-transfer
+    /// check (the queue's lock and the runtime handle are taken only then).
+    pub(crate) fn any_pending(&self) -> bool {
+        self.pending.load(Ordering::Acquire) != 0
+    }
     fn take_for(&self, thread: u32) -> Option<GuestInterrupt> {
         if self.pending.load(Ordering::Acquire) == 0 {
             return None;
@@ -157,6 +162,7 @@ pub(crate) fn deliver(
         || (transfer.kind == abi::RETURN && transfer.target_pc == HARNESS_EXIT)
         || ctx.interrupts_masked
         || ctx.in_interrupt()
+        || !ctx.runtime().interrupts.any_pending()
     {
         return None;
     }

@@ -3354,6 +3354,7 @@ version = "0.1.0"
 dependencies = [
  "iced-x86",
  "runtime-test-probe",
+ "rustc-hash 2.1.3",
  "thiserror 2.0.21",
  "timeline",
  "x87",

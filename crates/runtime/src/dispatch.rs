@@ -3,7 +3,11 @@
 //! invocation, including handlers which change dispatch or reenter services.
 
 use crate::{CpuAbi, ExecCtx, GuestFault, GuestFn, TransferAbi};
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
+
+// Looked up on every guest transfer: FxHash rather than SipHash (the keys
+// are guest addresses, not attacker-chosen).
+use rustc_hash::FxHashMap as HashMap;
 
 type SafeFn =
     dyn Fn(&mut CpuAbi, &mut ExecCtx, u32) -> Result<TransferAbi, GuestFault> + Send + Sync;

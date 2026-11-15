@@ -147,7 +147,7 @@ impl Runner {
                     route: transfer.route,
                 }));
             }
-            let Some((handler, selector, function)) = ctx.runtime().resolve(transfer) else {
+            let Some((handler, selector, function)) = ctx.resolve_cached(transfer) else {
                 return TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
                     pc: cpu.eip,
                     target: transfer.target_pc,

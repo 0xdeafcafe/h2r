@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 pub struct Runtime {
     memory: crate::ffi::Memory,
     dispatch: RwLock<Dispatch>,
+    /// Bumped by every [`edit_dispatch`](Self::edit_dispatch): execution
+    /// contexts drop their resolve caches when it moves.
+    dispatch_gen: AtomicU64,
     pub(crate) interrupts: crate::interrupt::InterruptQueue,
     tsc: Tsc,
     pub(crate) words: crate::preempt::Words,
@@ -65,6 +68,7 @@ impl Runtime {
         Arc::new(Self {
             memory: crate::ffi::Memory::new(memory),
             dispatch: RwLock::new(dispatch),
+            dispatch_gen: AtomicU64::new(1),
             interrupts: Default::default(),
             tsc: Tsc::default(),
             words: Default::default(),
@@ -109,14 +113,32 @@ impl Runtime {
         self.memory.fast_shared()
     }
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
-        f(&mut self.dispatch.write().unwrap_or_else(|e| e.into_inner()))
+        let mut d = self.dispatch.write().unwrap_or_else(|e| e.into_inner());
+        let r = f(&mut d);
+        // Under the write lock: a context that resolves after this sees the
+        // new tables and the new generation together.
+        self.dispatch_gen.fetch_add(1, Ordering::AcqRel);
+        r
     }
-    /// Resolve a transfer to (handler, start selector, function). Entry
-    /// routes start at the target; resumes start at the registered selector
-    /// of their owner. A RETURN_TARGET checks the exact resume table first,
-    /// so an entry override never runs in place of a caller's continuation.
-    pub(crate) fn resolve(&self, t: TransferAbi) -> Option<(Handler, u32, u32)> {
+    /// The dispatch tables' generation (see [`edit_dispatch`](Self::edit_dispatch)).
+    pub(crate) fn dispatch_generation(&self) -> u64 {
+        self.dispatch_gen.load(Ordering::Acquire)
+    }
+    /// Resolve a transfer to (handler, start selector, function), plus the
+    /// dispatch generation the answer belongs to (read under the same lock,
+    /// so the two agree). Entry routes start at the target; resumes start at
+    /// the registered selector of their owner. A RETURN_TARGET checks the
+    /// exact resume table first, so an entry override never runs in place of
+    /// a caller's continuation.
+    pub(crate) fn resolve_with_generation(
+        &self,
+        t: TransferAbi,
+    ) -> (u64, Option<(Handler, u32, u32)>) {
         let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
+        let generation = self.dispatch_gen.load(Ordering::Acquire);
+        (generation, Self::resolve_in(&d, t))
+    }
+    fn resolve_in(d: &Dispatch, t: TransferAbi) -> Option<(Handler, u32, u32)> {
         let entry = |pc: u32| d.resolve(pc).map(|h| (h, pc, pc));
         match t.route {
             abi::ENTRY => entry(t.target_pc),

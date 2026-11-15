@@ -743,3 +743,29 @@ fn the_first_ffi_fault_wins_and_later_faults_may_be_evicted() {
         Some(Event::MemoryFault { pc: ENTRY, .. })
     ));
 }
+
+#[test]
+fn editing_dispatch_reaches_a_context_that_already_resolved_the_target() {
+    let image = load_xbe(&synthetic_xbe()).unwrap();
+    let returning = |eax: u32| {
+        move |cpu: &mut CpuAbi, _: &mut runtime::ExecCtx, _| {
+            cpu.eax = eax;
+            Ok(TransferAbi::stop(0))
+        }
+    };
+    image.runtime.edit_dispatch(|d| {
+        let _ = d.register_override(ENTRY, "first", returning(1));
+    });
+    let mut ctx = image.context();
+    let mut cpu = image.cpu;
+    for _ in 0..2 {
+        Runner::default().run(&mut cpu, &mut ctx, ENTRY);
+        assert_eq!(cpu.eax, 1);
+    }
+    // Same context, same target: the cached handler must not survive the edit.
+    image.runtime.edit_dispatch(|d| {
+        let _ = d.register_override(ENTRY, "second", returning(2));
+    });
+    Runner::default().run(&mut cpu, &mut ctx, ENTRY);
+    assert_eq!(cpu.eax, 2);
+}

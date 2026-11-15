@@ -41,6 +41,31 @@ pub struct ExecCtx {
     pub(crate) slice: crate::preempt::Slice,
     /// The transfer a preemption interrupted (`take_preempted`).
     pub(crate) preempted: Option<TransferAbi>,
+    /// Recently resolved transfers, so a hot call or return skips the
+    /// dispatch lock and hash lookups (`resolve_cached`).
+    resolved: Box<ResolveCache>,
+}
+
+const RESOLVE_WAYS: usize = 256;
+
+#[derive(Clone)]
+struct Resolved {
+    generation: u64,
+    route: u32,
+    pc: u32,
+    handler: crate::dispatch::Handler,
+    selector: u32,
+    function: u32,
+}
+
+/// Direct-mapped by target pc. An entry is only used while its dispatch
+/// generation is current, so any `edit_dispatch` invalidates the whole cache.
+struct ResolveCache([Option<Resolved>; RESOLVE_WAYS]);
+
+impl Default for ResolveCache {
+    fn default() -> Self {
+        Self(std::array::from_fn(|_| None))
+    }
 }
 const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
 impl ExecCtx {
@@ -61,6 +86,7 @@ impl ExecCtx {
             interrupt_token: None,
             slice: Default::default(),
             preempted: None,
+            resolved: Box::default(),
             profile: None,
             fast_memory: None,
             fast_memory_enabled: true,
@@ -72,6 +98,33 @@ impl ExecCtx {
     pub fn enable_fast_memory(&mut self, enabled: bool) {
         crate::ffi::sync_accesses(self);
         self.fast_memory_enabled = enabled;
+    }
+    /// [`Runtime::resolve`] through this context's cache. Failures are not
+    /// cached: they end the run with a fault anyway.
+    pub(crate) fn resolve_cached(
+        &mut self,
+        t: TransferAbi,
+    ) -> Option<(crate::dispatch::Handler, u32, u32)> {
+        let slot = (t.target_pc ^ (t.target_pc >> 8)) as usize % RESOLVE_WAYS;
+        let generation = self.runtime.dispatch_generation();
+        if let Some(e) = &self.resolved.0[slot]
+            && e.generation == generation
+            && e.pc == t.target_pc
+            && e.route == t.route
+        {
+            return Some((e.handler.clone(), e.selector, e.function));
+        }
+        let (generation, found) = self.runtime.resolve_with_generation(t);
+        let (handler, selector, function) = found?;
+        self.resolved.0[slot] = Some(Resolved {
+            generation,
+            route: t.route,
+            pc: t.target_pc,
+            handler: handler.clone(),
+            selector,
+            function,
+        });
+        Some((handler, selector, function))
     }
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
