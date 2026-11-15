@@ -6,7 +6,7 @@ const RDATA: u32 = 0x12000;
 
 /// A minimal retail XBE: `.text` at 0x11000 holding `code`, and `.rdata` at
 /// 0x12000 holding a kernel thunk table that imports KeBugCheck.
-fn xbe_with(code: &[u8]) -> Vec<u8> {
+pub(crate) fn xbe_with(code: &[u8]) -> Vec<u8> {
     let mut d = vec![0u8; 0x1200];
     let put = |d: &mut Vec<u8>, o: usize, v: u32| d[o..o + 4].copy_from_slice(&v.to_le_bytes());
     d[..4].copy_from_slice(b"XBEH");

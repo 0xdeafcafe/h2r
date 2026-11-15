@@ -1,0 +1,13 @@
+[package]
+name = "x87"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[features]
+default = ["abi"]
+# The `#[repr(C)]` state structs and the `extern "C"` `h2x87_v1_*` surface
+# (docs/FLOAT-ABI.md §1-§4).
+abi = []
+
+[dependencies]

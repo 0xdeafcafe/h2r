@@ -66,6 +66,10 @@ const USAGE: &str = "usage: h2 <command> [disc]
   disasm <addr> [count]   decode instructions at a virtual address
   analyze [--functions <out.txt>] [--against <ghidra-functions.tsv>] [--explain <addr>]...
                           function discovery and coverage
+  fpstats [--root <addr>]...
+                          floating-point and SIMD instruction mix, control-word
+                          writes, compare idioms and x87 stack-depth walk;
+                          --root adds starting points for its reachability split
   symbols [--list] [--no-xcheck] [--db <dir>]
                           identify statically linked XDK library functions
                           (needs scripts/setup-xbsymboldb.sh)
@@ -137,6 +141,7 @@ fn main() -> Result<()> {
     let mut db_dir = None;
     let mut force = false;
     let mut lift_opts = LiftOpts::default();
+    let mut roots = Vec::new();
     while let Some(a) = args.next() {
         match a.as_str() {
             "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
@@ -145,6 +150,7 @@ fn main() -> Result<()> {
             "--list" => list = true,
             "--force" => force = true,
             "--no-xcheck" => no_xcheck = true,
+            "--root" => roots.push(args.next().context("--root needs an address")?),
             "--db" => db_dir = Some(PathBuf::from(args.next().context("--db needs a path")?)),
             "--stats" => lift_opts.stats = true,
             "--histogram" => lift_opts.histogram = true,
@@ -183,6 +189,7 @@ fn main() -> Result<()> {
         ("extract-xbe", [out]) => extract_xbe(&disc, out, force),
         ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe"), force),
         ("analyze", []) => run_analyze(&disc, functions_out, against, &explain, force),
+        ("fpstats", []) => run_fpstats(&disc, &roots),
         ("symbols", []) => run_symbols(&disc, list, !no_xcheck, db_dir),
         ("lift", []) => run_lift(&disc, &lift_opts),
         ("emit", []) => run_emit(&disc, &lift_opts),
@@ -429,6 +436,18 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
             );
         }
     }
+    Ok(())
+}
+
+fn run_fpstats(path: &Path, roots: &[String]) -> Result<()> {
+    let roots = roots
+        .iter()
+        .map(|r| u32::from_str_radix(r.trim_start_matches("0x"), 16).with_context(|| format!("bad hex: {r}")))
+        .collect::<Result<Vec<_>>>()?;
+    let data = load_xbe(path)?;
+    let x = xbe::Xbe::parse(&data)?;
+    let a = analyze::analyze(&x)?;
+    print!("{}", analyze::fpstats::fpstats(&x, &a, &roots)?);
     Ok(())
 }
 

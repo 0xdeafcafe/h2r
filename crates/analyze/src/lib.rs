@@ -18,6 +18,7 @@
 
 pub mod cfg;
 pub mod compare;
+pub mod fpstats;
 mod image;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
