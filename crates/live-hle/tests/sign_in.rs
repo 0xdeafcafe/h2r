@@ -565,6 +565,24 @@ fn mutelist_get_zeroes_count_and_returns_a_completing_task() {
 fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library() {
     let mut w = World::new();
     let implemented = [
+        "XOnlineMatchSessionCreate",
+        "XOnlineMatchSessionUpdate",
+        "XOnlineMatchSessionGetInfo",
+        "XOnlineMatchSessionDelete",
+        "XOnlineMatchSessionFindFromID",
+        "XOnlineMatchSearch",
+        "XOnlineMatchSearchGetResults",
+        "XOnlineMatchSearchParse",
+        "XOnlineMatchSearchResultsLen",
+        "XOnlineMessageCreate",
+        "XOnlineMessageDestroy",
+        "XOnlineMessageSetProperty",
+        "XOnlineMessageSend",
+        "XOnlineFriendsRequestEx",
+        "XOnlineFriendsRequestByNameEx",
+        "XOnlineGameInviteSend",
+        "XOnlineTeamMemberRecruit",
+        "XOnlineTeamMemberRecruitByName",
         "XOnlineStatWrite",
         "XOnlineStatWriteGetResult",
         "XOnlineStorageCreateServerPath",
@@ -1535,4 +1553,968 @@ fn stats_journal_exhaustion_preserves_accepted_batches_and_draining_allows_write
     assert_eq!(captured.last().unwrap().sequence, 256);
     assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
     assert_eq!(h.stat_writes()[0].sequence, 257);
+}
+
+fn outbox_world() -> (World, Arc<Hle>) {
+    let h = hle(config());
+    let mut w = World::with(Arc::clone(&h));
+    w.logon();
+    (w, h)
+}
+fn message_create(w: &mut World, ty: u32, context: u64, flags: u32) -> u32 {
+    assert_eq!(
+        w.call(
+            "XOnlineMessageCreate",
+            &[
+                ty,
+                0,
+                0,
+                context as u32,
+                (context >> 32) as u32,
+                flags,
+                0x4ec0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    w.u32(OUTPUT)
+}
+fn message_set(w: &mut World, h: u32, tag: u32, value: &[u8]) {
+    w.put(DATA + 0x4000, value);
+    assert_eq!(
+        w.call(
+            "XOnlineMessageSetProperty",
+            &[h, tag, value.len() as u32, DATA + 0x4000, 0]
+        ),
+        0
+    );
+}
+#[test]
+fn outbox_friend_by_name_composer_owns_text_voice_and_successful_send() {
+    use live_hle::{MessageRecipient, MessageSendKind, MessageValue};
+    let (mut w, h) = outbox_world();
+    let msg = message_create(&mut w, 2, 0, 0x0c);
+    message_set(&mut w, msg, 0x6c4, &wide_bytes("Hello 雪"));
+    message_set(&mut w, msg, 0x4c5, &3u32.to_le_bytes());
+    message_set(&mut w, msg, 0x9c1, &[9, 4, 2, 1]);
+    message_set(&mut w, msg, 0x3c2, &1u16.to_le_bytes());
+    message_set(&mut w, msg, 0x4c3, &1000u32.to_le_bytes());
+    w.put(DATA + 0x5000, b"Other Player\0");
+    assert_eq!(
+        w.call(
+            "XOnlineFriendsRequestByNameEx",
+            &[0, DATA + 0x5000, msg, 0, OUTPUT]
+        ),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    // The title may dispose the builder while its game task is still pending.
+    assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), 0);
+    w.put(DATA + 0x4000, &[0xdd; 32]);
+    w.put(DATA + 0x5000, &[0xee; 16]);
+    for _ in 0..3 {
+        assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    }
+    let sends = h.message_sends();
+    assert_eq!(sends.len(), 1);
+    assert_eq!(sends[0].sender_xuid, ID);
+    assert_eq!(sends[0].kind, MessageSendKind::FriendRequest);
+    assert_eq!(
+        sends[0].recipients,
+        vec![MessageRecipient::Gamertag("Other Player".into())]
+    );
+    assert_eq!(
+        sends[0].message.properties[&0x6c4].value,
+        MessageValue::String("Hello 雪".into())
+    );
+    assert_eq!(
+        sends[0].message.properties[&0x9c1].value,
+        MessageValue::Attachment(vec![9, 4, 2, 1])
+    );
+    assert_eq!(
+        sends[0].message.properties[&0x3c2].value,
+        MessageValue::I2(1)
+    );
+    assert_eq!(
+        sends[0].message.properties[&0x4c3].value,
+        MessageValue::I4(1000)
+    );
+    assert_eq!(sends[0].message.expire_minutes, 0x4ec0);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
+    assert_eq!(h.message_sends(), sends);
+}
+#[test]
+fn outbox_generic_send_parses_all_property_types_and_twelve_byte_recipients() {
+    use live_hle::{MessageRecipient, MessageUser, MessageValue};
+    let (mut w, h) = outbox_world();
+    let msg = message_create(&mut w, 1, 0x9988776655443322, 0x01000008);
+    for (tag, bytes) in [
+        (0x101, vec![]),
+        (0x202, vec![0xfe]),
+        (0x303, 0xfffdu16.to_le_bytes().to_vec()),
+        (0x404, u32::MAX.to_le_bytes().to_vec()),
+        (0x505, u64::MAX.to_le_bytes().to_vec()),
+        (0x606, wide_bytes("Text")),
+        (0x707, 1234567u64.to_le_bytes().to_vec()),
+        (0x808, vec![3, 1, 4]),
+        (0x909, vec![7, 8]),
+        (0xa0a, 7u32.to_le_bytes().to_vec()),
+        (0xb0b, 0x1234u32.to_le_bytes().to_vec()),
+    ] {
+        message_set(&mut w, msg, tag, &bytes);
+    }
+    let peers = DATA + 0x5000;
+    for i in 0..2 {
+        w.put(peers + i * 12, &(ID + 1 + u64::from(i)).to_le_bytes());
+        w.word(peers + i * 12 + 8, 0x100 + i);
+    }
+    assert_eq!(
+        w.call("XOnlineMessageSend", &[0, msg, 2, peers, 0, OUTPUT]),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    let capture = h.message_sends().remove(0);
+    assert_eq!(capture.message.context, 0x9988776655443322);
+    assert_eq!(capture.message.flags, 0x01000008);
+    assert_eq!(
+        capture.recipients[1],
+        MessageRecipient::User(MessageUser {
+            xuid: ID + 2,
+            flags: 0x101
+        })
+    );
+    let values: Vec<_> = capture
+        .message
+        .properties
+        .values()
+        .map(|p| p.value.clone())
+        .collect();
+    assert_eq!(
+        values,
+        vec![
+            MessageValue::Null,
+            MessageValue::I1(0xfe),
+            MessageValue::I2(0xfffd),
+            MessageValue::I4(u32::MAX),
+            MessageValue::I8(u64::MAX),
+            MessageValue::String("Text".into()),
+            MessageValue::FileTime(1234567),
+            MessageValue::Binary(vec![3, 1, 4]),
+            MessageValue::Attachment(vec![7, 8]),
+            MessageValue::Bool(true),
+            MessageValue::StringId(0x1234)
+        ]
+    );
+    message_set(&mut w, msg, 0x606, &wide_bytes("Changed"));
+    w.put(peers, &[0; 24]);
+    assert_eq!(h.message_sends()[0], capture);
+    assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), 0);
+    assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), INVALID_ARGUMENT);
+    assert_eq!(
+        w.call("XOnlineMessageSetProperty", &[msg, 0x101, 0, 0, 0]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn outbox_friend_xuid_and_game_invite_use_their_complete_stdcall_frames() {
+    use live_hle::{MessageRecipient, MessageSendKind, MessageUser};
+    let (mut w, h) = outbox_world();
+    let friend = message_create(&mut w, 2, 0, 0);
+    assert_eq!(
+        w.call(
+            "XOnlineFriendsRequestEx",
+            &[0, 0x12345678, 0x0009abcd, 0x200, friend, 0, OUTPUT]
+        ),
+        0
+    );
+    let friend_task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[friend_task]), TASK_SUCCESS);
+    let invite = message_create(&mut w, 3, 0, 0);
+    w.put(DATA + 0x5000, &(ID + 1).to_le_bytes());
+    w.word(DATA + 0x5008, 0);
+    message_set(&mut w, invite, 0x581, &0x1122334455667788u64.to_le_bytes());
+    assert_eq!(
+        w.call(
+            "XOnlineGameInviteSend",
+            &[
+                0,
+                1,
+                DATA + 0x5000,
+                0x55667788,
+                0x11223344,
+                0,
+                invite,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    let sends = h.message_sends();
+    assert_eq!(
+        sends[0].recipients,
+        vec![MessageRecipient::User(MessageUser {
+            xuid: 0x0009abcd12345678,
+            flags: 0x200
+        })]
+    );
+    assert_eq!(
+        sends[1].kind,
+        MessageSendKind::GameInvite {
+            session_id: 0x1122334455667788,
+            flags: 0
+        }
+    );
+    assert_eq!(w.call("XOnlineTaskClose", &[friend_task]), 0);
+}
+#[test]
+fn outbox_clan_recruitment_by_name_and_xuid_own_packed_member_properties() {
+    use live_hle::{MessageRecipient, MessageSendKind, MessageUser, RecruitProperties};
+    let (mut w, h) = outbox_world();
+    let msg = message_create(&mut w, 4, 0x00090000abcdefff, 0x40);
+    message_set(&mut w, msg, 0x681, &wide_bytes("Test Clan"));
+    let props = DATA + 0x6000;
+    w.put(props, &[0; 106]);
+    w.word(props, 0x10);
+    w.put(props + 4, &3u16.to_le_bytes());
+    w.put(props + 6, &[1, 2, 3]);
+    w.put(DATA + 0x5000, b"Recruit\0");
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberRecruitByName",
+            &[
+                0,
+                0xabcdefff,
+                0x00090000,
+                0x22,
+                DATA + 0x5000,
+                props,
+                msg,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberRecruit",
+            &[
+                0, 0xabcdefff, 0x00090000, 0x22, 0x12345678, 0x00090000, 0, props, msg, 0, OUTPUT
+            ]
+        ),
+        0
+    );
+    w.put(props, &[0xff; 106]);
+    let sends = h.message_sends();
+    assert_eq!(
+        sends[0].recipients,
+        vec![MessageRecipient::Gamertag("Recruit".into())]
+    );
+    assert_eq!(
+        sends[0].kind,
+        MessageSendKind::TeamRecruit {
+            team: MessageUser {
+                xuid: 0x00090000abcdefff,
+                flags: 0x22
+            },
+            properties: RecruitProperties {
+                privileges: 0x10,
+                data: vec![1, 2, 3]
+            }
+        }
+    );
+    assert_eq!(sends[1].kind, sends[0].kind);
+}
+#[test]
+fn outbox_rejects_invalid_sizes_flags_and_strings_without_corrupting_a_builder() {
+    use live_hle::MessageValue;
+    let (mut w, h) = outbox_world();
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call("XOnlineMessageCreate", &[4, 0, 0, 0, 0, 0, 0, OUTPUT]),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    let msg = message_create(&mut w, 1, 0, 0);
+    message_set(&mut w, msg, 0x6c4, &wide_bytes("Original"));
+    w.put(DATA + 0x4000, &[0; 64]);
+    for (tag, n, flags, expected) in [
+        (0xc80, 4, 0, INVALID_ARGUMENT),
+        (0x480, 3, 0, INVALID_ARGUMENT),
+        (0x680, 3, 0, INVALID_ARGUMENT),
+        (0x680, 0, 0, INVALID_ARGUMENT),
+        (0x980, 4, 2, INVALID_ARGUMENT),
+        (0x480, 4, 1, INVALID_ARGUMENT),
+        (0x880, 4096, 0, MESSAGE_MAX_DETAILS),
+    ] {
+        assert_eq!(
+            w.call(
+                "XOnlineMessageSetProperty",
+                &[msg, tag, n, DATA + 0x4000, flags]
+            ),
+            expected
+        );
+    }
+    w.put(DATA + 0x4000, &[0, 0xd8, 0, 0]);
+    assert_eq!(
+        w.call(
+            "XOnlineMessageSetProperty",
+            &[msg, 0x6c4, 4, DATA + 0x4000, 0]
+        ),
+        INVALID_ARGUMENT
+    );
+    w.put(DATA + 0x5000, &(ID + 1).to_le_bytes());
+    w.word(DATA + 0x5008, 0);
+    assert_eq!(
+        w.call("XOnlineMessageSend", &[0, msg, 0, 0, 0, OUTPUT]),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(
+        w.call("XOnlineMessageSend", &[0, msg, 101, 0, 0, OUTPUT]),
+        INVALID_ARGUMENT
+    );
+    assert!(h.message_sends().is_empty());
+    assert_eq!(
+        w.call("XOnlineMessageSend", &[0, msg, 1, DATA + 0x5000, 0, OUTPUT]),
+        0
+    );
+    assert_eq!(h.message_sends()[0].message.properties.len(), 1);
+    assert_eq!(
+        h.message_sends()[0].message.properties[&0x6c4].value,
+        MessageValue::String("Original".into())
+    );
+}
+#[test]
+fn outbox_pointer_faults_do_not_publish_tasks_or_partial_properties() {
+    let (mut w, h) = outbox_world();
+    let msg = message_create(&mut w, 1, 0, 0);
+    for (name, args) in [
+        (
+            "XOnlineMessageCreate",
+            vec![1, 0, 0, 0, 0, 0, 0, DATA + 0xfffe],
+        ),
+        (
+            "XOnlineMessageSetProperty",
+            vec![msg, 0x680, 8, DATA + 0xfffc, 0],
+        ),
+        (
+            "XOnlineMessageSend",
+            vec![0, msg, 1, DATA + 0xfffc, 0, OUTPUT],
+        ),
+        (
+            "XOnlineMessageSend",
+            vec![0, msg, 1, DATA + 0x5000, 0, DATA + 0xfffe],
+        ),
+    ] {
+        w.word(OUTPUT, 0xdeadbeef);
+        let t = w.raw(name, &args);
+        assert!(
+            matches!(w.ctx.event(t.event_id), Some(Event::MemoryFault { .. })),
+            "{name}"
+        );
+        assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+        assert!(h.message_sends().is_empty());
+    }
+}
+#[test]
+fn outbox_cleanup_invalidates_builders_and_tasks_but_keeps_captures() {
+    let (mut w, h) = outbox_world();
+    let msg = message_create(&mut w, 2, 0, 0);
+    w.put(DATA + 0x5000, b"Target\0");
+    assert_eq!(
+        w.call(
+            "XOnlineFriendsRequestByNameEx",
+            &[0, DATA + 0x5000, msg, 0, OUTPUT]
+        ),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineCleanup", &[]), 0);
+    w.startup();
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
+    assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), INVALID_ARGUMENT);
+    assert_eq!(h.message_sends().len(), 1);
+    assert_eq!(h.drain_message_sends()[0].sequence, 1);
+    assert!(h.message_sends().is_empty());
+    w.logon();
+    assert_eq!(
+        w.call(
+            "XOnlineFriendsRequestByNameEx",
+            &[0, DATA + 0x5000, 0, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(h.message_sends()[0].sequence, 2);
+}
+#[test]
+fn outbox_builder_and_capture_limits_fail_without_evicting_accepted_messages() {
+    let (mut w, h) = outbox_world();
+    let mut builders = Vec::new();
+    for _ in 0..64 {
+        builders.push(message_create(&mut w, 2, 0, 0));
+    }
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call("XOnlineMessageCreate", &[2, 0, 0, 0, 0, 0, 0, OUTPUT]),
+        OUT_OF_MEMORY
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    for msg in builders {
+        assert_eq!(w.call("XOnlineMessageDestroy", &[msg]), 0);
+    }
+    let msg = message_create(&mut w, 2, 0, 0);
+    w.put(DATA + 0x5000, b"Target\0");
+    for _ in 0..256 {
+        assert_eq!(
+            w.call(
+                "XOnlineFriendsRequestByNameEx",
+                &[0, DATA + 0x5000, msg, 0, OUTPUT]
+            ),
+            0
+        );
+        assert_eq!(w.call("XOnlineTaskClose", &[w.u32(OUTPUT)]), 0);
+    }
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call(
+            "XOnlineFriendsRequestByNameEx",
+            &[0, DATA + 0x5000, msg, 0, OUTPUT]
+        ),
+        OUT_OF_MEMORY
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    assert_eq!(h.drain_message_sends().len(), 256);
+    assert_eq!(
+        w.call(
+            "XOnlineFriendsRequestByNameEx",
+            &[0, DATA + 0x5000, msg, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(h.message_sends()[0].sequence, 257);
+}
+
+const MATCH_ATTRS: u32 = DATA + 0x6000;
+const MATCH_VALUES: u32 = DATA + 0x7000;
+const MATCH_SPECS: u32 = DATA + 0x8000;
+const MATCH_KID: u32 = DATA + 0x9000;
+const MATCH_KEY: u32 = DATA + 0x9020;
+fn match_attr(w: &World, at: u32, id: u32, changed: bool, value: u64) {
+    w.word(at, id);
+    w.word(at + 4, u32::from(changed));
+    w.put(at + 8, &value.to_le_bytes());
+}
+fn match_create(w: &mut World, count: u32) -> u32 {
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 2, 3, count, MATCH_ATTRS, 0, OUTPUT]
+        ),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[task, MATCH_KID, MATCH_KEY]),
+        0
+    );
+    task
+}
+fn match_id(w: &World) -> [u32; 2] {
+    [w.u32(MATCH_KID), w.u32(MATCH_KID + 4)]
+}
+#[test]
+fn match_local_host_lifecycle_keeps_ids_keys_slots_and_attributes_after_task_close() {
+    use live_hle::{SessionAttributeValue, SessionSlots};
+    let (mut w, h) = outbox_world();
+    match_attr(&w, MATCH_ATTRS, 0x101, false, u64::MAX);
+    w.put(MATCH_VALUES, &wide_bytes("Synthetic lobby 雪"));
+    match_attr(
+        &w,
+        MATCH_ATTRS + 16,
+        0x100102,
+        false,
+        u64::from(MATCH_VALUES),
+    );
+    w.put(MATCH_VALUES + 0x200, &[2, 4, 6, 8]);
+    match_attr(
+        &w,
+        MATCH_ATTRS + 32,
+        0x200103,
+        false,
+        u64::from(MATCH_VALUES + 0x200) | (4u64 << 32),
+    );
+    match_attr(&w, MATCH_ATTRS + 48, 0xf00104, false, u64::MAX);
+    let task = match_create(&mut w, 4);
+    let id = match_id(&w);
+    let key = w.bytes(MATCH_KEY, 16);
+    assert_eq!(w.bytes(MATCH_KID, 1)[0] & 0xf0, 0x80);
+    assert!(key.iter().any(|b| *b != 0));
+    for i in 0..4 {
+        assert_eq!(w.u32(MATCH_ATTRS + i * 16 + 4), 0);
+    }
+    let session = h.local_sessions().remove(0);
+    assert_eq!(
+        session.slots,
+        SessionSlots {
+            public_filled: 1,
+            public_open: 7,
+            private_filled: 2,
+            private_open: 3
+        }
+    );
+    assert_eq!(session.host_users, vec![ID]);
+    assert_eq!(&session.host_address[..4], &[192, 168, 1, 42]);
+    assert_eq!(&session.host_address[8..10], &3074u16.to_be_bytes());
+    assert_eq!(
+        session.attributes[&0x101],
+        SessionAttributeValue::Integer(u64::MAX)
+    );
+    assert_eq!(
+        session.attributes[&0x100102],
+        SessionAttributeValue::String("Synthetic lobby 雪".into())
+    );
+    assert_eq!(
+        session.attributes[&0x200103],
+        SessionAttributeValue::Blob(vec![2, 4, 6, 8])
+    );
+    assert_eq!(session.attributes.len(), 3);
+    w.put(MATCH_VALUES, &[0xdd; 0x204]);
+    for _ in 0..3 {
+        assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+        assert_eq!(
+            w.call("XOnlineMatchSessionGetInfo", &[task, MATCH_KID, MATCH_KEY]),
+            0
+        );
+        assert_eq!(match_id(&w), id);
+        assert_eq!(w.bytes(MATCH_KEY, 16), key);
+    }
+    // The host wrapper registers exactly the pair returned by GetInfo.
+    assert_eq!(w.call("XNetRegisterKey", &[MATCH_KID, MATCH_KEY]), 0);
+    assert_eq!(w.call("XNetGetTitleXnAddr", &[MATCH_VALUES]), 4);
+    assert_eq!(
+        w.call("XNetXnAddrToInAddr", &[MATCH_VALUES, MATCH_KID, OUTPUT]),
+        0
+    );
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(h.local_sessions(), vec![session]);
+    assert_eq!(
+        w.call("XOnlineMatchSessionGetInfo", &[task, MATCH_KID, MATCH_KEY]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn match_updates_consume_dirty_flags_preserve_unchanged_attributes_and_drop_noops() {
+    use live_hle::{SessionAttributeValue, SessionSlots};
+    let (mut w, h) = outbox_world();
+    match_attr(&w, MATCH_ATTRS, 0x101, true, 7);
+    match_attr(
+        &w,
+        MATCH_ATTRS + 16,
+        0x100102,
+        true,
+        u64::from(MATCH_VALUES),
+    );
+    w.put(MATCH_VALUES, &wide_bytes("Original"));
+    match_create(&mut w, 2);
+    let [lo, hi] = match_id(&w);
+    let key = w.bytes(MATCH_KEY, 16);
+    match_attr(&w, MATCH_ATTRS, 0x101, true, 9);
+    // Unchanged string data is intentionally invalid: retail does not read it.
+    match_attr(&w, MATCH_ATTRS + 16, 0x100102, false, 0xfffffff0);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 3, 5, 0, 4, 2, MATCH_ATTRS, 0, OUTPUT]
+        ),
+        0
+    );
+    let update = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[update]), TASK_SUCCESS);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionGetInfo",
+            &[update, MATCH_KID, MATCH_KEY]
+        ),
+        0
+    );
+    assert_eq!(match_id(&w), [lo, hi]);
+    assert_eq!(w.bytes(MATCH_KEY, 16), key);
+    let session = h.local_sessions().remove(0);
+    assert_eq!(session.revision, 2);
+    assert_eq!(
+        session.slots,
+        SessionSlots {
+            public_filled: 3,
+            public_open: 5,
+            private_filled: 0,
+            private_open: 4
+        }
+    );
+    assert_eq!(
+        session.attributes[&0x101],
+        SessionAttributeValue::Integer(9)
+    );
+    assert_eq!(
+        session.attributes[&0x100102],
+        SessionAttributeValue::String("Original".into())
+    );
+    assert_eq!(w.u32(MATCH_ATTRS + 4), 0);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 3, 5, 0, 4, 2, MATCH_ATTRS, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(h.local_sessions()[0].revision, 2);
+    match_attr(&w, MATCH_ATTRS, 0xf00101, true, u64::MAX);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 3, 5, 0, 4, 1, MATCH_ATTRS, 0, OUTPUT]
+        ),
+        0
+    );
+    assert!(!h.local_sessions()[0].attributes.contains_key(&0x101));
+    assert_eq!(h.local_sessions()[0].revision, 3);
+}
+#[test]
+fn match_delete_completes_independently_and_unknown_sessions_fail_cleanly() {
+    let (mut w, h) = outbox_world();
+    let create = match_create(&mut w, 0);
+    let [lo, hi] = match_id(&w);
+    assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUTPUT]), 0);
+    let delete = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[delete]), TASK_SUCCESS);
+    assert!(h.local_sessions().is_empty());
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionGetInfo",
+            &[create, MATCH_KID, MATCH_KEY]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionGetInfo",
+            &[delete, MATCH_KID, MATCH_KEY]
+        ),
+        INVALID_ARGUMENT
+    );
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 1, 7, 0, 0, 0, 0, 0, OUTPUT]
+        ),
+        MATCH_INVALID_SESSION
+    );
+    assert_eq!(
+        w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUTPUT]),
+        MATCH_INVALID_SESSION
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    assert_eq!(w.call("XOnlineTaskClose", &[delete]), 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[delete]), INVALID_ARGUMENT);
+}
+#[test]
+fn match_result_capacity_uses_the_retail_integer_string_and_blob_formula() {
+    let mut w = World::new();
+    w.startup();
+    for (i, (ty, len)) in [(0, 99), (0x100000, 13), (0x200000, 17), (0xf00000, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        w.word(MATCH_SPECS + i as u32 * 8, ty);
+        w.word(MATCH_SPECS + i as u32 * 8 + 4, len);
+    }
+    let expected = 0x5c + 3 * (0x54 + (8 + 8) + (8 + 13 * 2 + 2) + (8 + 17 + 2) + 8);
+    assert_eq!(
+        w.call("XOnlineMatchSearchResultsLen", &[3, 4, MATCH_SPECS]),
+        expected
+    );
+    assert_eq!(w.call("XOnlineMatchSearchResultsLen", &[0, 0, 0]), 0x5c);
+    assert_eq!(w.call("XOnlineMatchSearchResultsLen", &[u32::MAX, 0, 0]), 0);
+    assert_eq!(w.call("XOnlineMatchSearchResultsLen", &[1, 65, 0]), 0);
+    w.word(MATCH_SPECS, 0x300000);
+    assert_eq!(
+        w.call("XOnlineMatchSearchResultsLen", &[1, 1, MATCH_SPECS]),
+        0
+    );
+}
+#[test]
+fn match_searches_are_successful_empty_snapshots_and_keep_input_parameters_unchanged() {
+    let (mut w, h) = outbox_world();
+    // Same argument shapes as the title: procedure 1, up to 50 rows, positional
+    // integer/NULL parameters, and seven integer result columns. Synthetic data.
+    for i in 0..7 {
+        w.word(MATCH_SPECS + i * 8, 0);
+        w.word(MATCH_SPECS + i * 8 + 4, 0);
+    }
+    let len = w.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPECS]);
+    assert_eq!(len, 0x5c + 50 * (0x54 + 7 * 16));
+    for i in 0..12 {
+        match_attr(
+            &w,
+            MATCH_ATTRS + i * 16,
+            if i % 2 == 0 { 0 } else { 0xf00000 },
+            true,
+            u64::from(i),
+        );
+    }
+    let before = w.bytes(MATCH_ATTRS, 12 * 16);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSearch",
+            &[1, 50, 12, MATCH_ATTRS, len, 0, OUTPUT]
+        ),
+        0
+    );
+    let search = w.u32(OUTPUT);
+    assert_eq!(w.bytes(MATCH_ATTRS, 12 * 16), before);
+    for _ in 0..2 {
+        assert_eq!(w.call("XOnlineTaskContinue", &[search]), TASK_SUCCESS);
+        w.put(OUTPUT, &[0xcc; 12]);
+        assert_eq!(
+            w.call(
+                "XOnlineMatchSearchGetResults",
+                &[search, OUTPUT, OUTPUT + 4]
+            ),
+            0
+        );
+        assert_eq!(w.bytes(OUTPUT, 8), vec![0; 8]);
+        assert_eq!(w.bytes(OUTPUT + 8, 4), vec![0xcc; 4]);
+    }
+    // A local advertisement does not change the deliberately empty discovery view.
+    let create = match_create(&mut w, 0);
+    let [lo, hi] = match_id(&w);
+    for [id_lo, id_hi] in [[lo, hi], [0x12345678, 0x87654321]] {
+        assert_eq!(
+            w.call("XOnlineMatchSessionFindFromID", &[id_lo, id_hi, 0, OUTPUT]),
+            0
+        );
+        let find = w.u32(OUTPUT);
+        assert_eq!(w.call("XOnlineTaskContinue", &[find]), TASK_SUCCESS);
+        assert_eq!(
+            w.call("XOnlineMatchSearchGetResults", &[find, OUTPUT, OUTPUT + 4]),
+            0
+        );
+        assert_eq!(w.bytes(OUTPUT, 8), vec![0; 8]);
+        assert_eq!(w.call("XOnlineTaskClose", &[find]), 0);
+    }
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSearchGetResults",
+            &[create, OUTPUT, OUTPUT + 4]
+        ),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(w.call("XOnlineTaskClose", &[search]), 0);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSearchGetResults",
+            &[search, OUTPUT, OUTPUT + 4]
+        ),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(h.local_sessions().len(), 1);
+}
+#[test]
+fn match_empty_parser_matches_retail_early_return_and_rejects_unowned_columns() {
+    let mut w = World::new();
+    w.startup();
+    w.put(MATCH_VALUES, &[0; 0x54]);
+    w.put(OUTPUT, &[0xcc; 32]);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSearchParse",
+            &[MATCH_VALUES, u32::MAX, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(w.bytes(OUTPUT, 32), vec![0xcc; 32]);
+    w.word(MATCH_VALUES + 0x50, 1);
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSearchParse",
+            &[MATCH_VALUES, 1, MATCH_SPECS, OUTPUT]
+        ),
+        MATCH_INVALID_RESULT_COLUMN
+    );
+    assert_eq!(w.bytes(OUTPUT, 32), vec![0xcc; 32]);
+    assert_eq!(
+        w.call("XOnlineMatchSearchParse", &[0, 0, 0, OUTPUT]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn match_validation_rejects_oversized_or_malformed_attributes_atomically() {
+    let (mut w, h) = outbox_world();
+    match_attr(&w, MATCH_ATTRS, 0x101, true, 1);
+    for (id, value, expected) in [
+        (0x300101, 0, MATCH_INVALID_DATA_TYPE),
+        (
+            0x200101,
+            u64::from(MATCH_VALUES) | (801u64 << 32),
+            MATCH_BLOB_TOO_LONG,
+        ),
+        (0x100101, u64::from(MATCH_VALUES), MATCH_INVALID_STRING),
+    ] {
+        w.put(MATCH_VALUES, &[0, 0xd8, 0, 0]);
+        match_attr(&w, MATCH_ATTRS + 16, id, true, value);
+        w.word(OUTPUT, 0xdeadbeef);
+        assert_eq!(
+            w.call(
+                "XOnlineMatchSessionCreate",
+                &[1, 7, 0, 0, 2, MATCH_ATTRS, 0, OUTPUT]
+            ),
+            expected
+        );
+        assert_eq!(w.u32(MATCH_ATTRS + 4), 1);
+        assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+        assert!(h.local_sessions().is_empty());
+    }
+    w.put(MATCH_VALUES, &wide_bytes(&"x".repeat(401)));
+    match_attr(&w, MATCH_ATTRS, 0x100101, true, u64::from(MATCH_VALUES));
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 1, MATCH_ATTRS, 0, OUTPUT]
+        ),
+        MATCH_STRING_TOO_LONG
+    );
+    assert_eq!(
+        w.call("XOnlineMatchSessionCreate", &[1, 7, 0, 0, 65, 0, 0, OUTPUT]),
+        BUFFER_TOO_SMALL
+    );
+    assert_eq!(
+        w.call("XOnlineMatchSearch", &[1, 50, 0, 0, 0, 0, OUTPUT]),
+        MATCH_INVALID_SEARCH
+    );
+    assert_eq!(
+        w.call("XOnlineMatchSearch", &[1, 1001, 0, 0, 0x5c, 0, OUTPUT]),
+        MATCH_INVALID_SEARCH
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+}
+#[test]
+fn match_guest_faults_leave_existing_sessions_dirty_flags_and_getter_outputs_untouched() {
+    let (mut w, h) = outbox_world();
+    match_attr(&w, MATCH_ATTRS, 0x101, true, 1);
+    let create = match_create(&mut w, 1);
+    let [lo, hi] = match_id(&w);
+    let session = h.local_sessions();
+    match_attr(&w, MATCH_ATTRS, 0x100101, true, u64::from(DATA + 0xfffe));
+    w.put(DATA + 0xfffe, &[1, 0]);
+    for (api, args) in [
+        (
+            "XOnlineMatchSessionCreate",
+            vec![1, 7, 0, 0, 1, DATA + 0xfff8, 0, OUTPUT],
+        ),
+        (
+            "XOnlineMatchSessionUpdate",
+            vec![lo, hi, 1, 7, 0, 0, 1, MATCH_ATTRS, 0, OUTPUT],
+        ),
+        (
+            "XOnlineMatchSessionCreate",
+            vec![1, 7, 0, 0, 0, 0, 0, DATA + 0xfffe],
+        ),
+        (
+            "XOnlineMatchSessionGetInfo",
+            vec![create, OUTPUT, DATA + 0xfff8],
+        ),
+    ] {
+        w.put(OUTPUT, &[0xcc; 16]);
+        let t = w.raw(api, &args);
+        assert!(
+            matches!(w.ctx.event(t.event_id), Some(Event::MemoryFault { .. })),
+            "{api}"
+        );
+        assert_eq!(w.bytes(OUTPUT, 16), vec![0xcc; 16]);
+        assert_eq!(w.u32(MATCH_ATTRS + 4), 1);
+        assert_eq!(h.local_sessions(), session);
+    }
+    assert_eq!(
+        w.call("XOnlineMatchSearch", &[1, 1, 0, 0, 0x5c, 0, OUTPUT]),
+        0
+    );
+    let search = w.u32(OUTPUT);
+    w.word(OUTPUT, 0xdeadbeef);
+    let t = w.raw(
+        "XOnlineMatchSearchGetResults",
+        &[search, OUTPUT, DATA + 0xfffe],
+    );
+    assert!(matches!(
+        w.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+}
+#[test]
+fn match_cleanup_removes_advertisements_and_invalidates_tasks() {
+    for close_logon in [false, true] {
+        let h = hle(config());
+        let mut w = World::with(Arc::clone(&h));
+        let logon = w.logon();
+        let create = match_create(&mut w, 0);
+        assert_eq!(
+            w.call("XOnlineMatchSearch", &[1, 1, 0, 0, 0x5c, 0, OUTPUT]),
+            0
+        );
+        let search = w.u32(OUTPUT);
+        if close_logon {
+            assert_eq!(w.call("XOnlineTaskClose", &[logon]), 0);
+        } else {
+            assert_eq!(w.call("XOnlineCleanup", &[]), 0);
+            w.startup();
+        }
+        assert!(h.local_sessions().is_empty());
+        assert_eq!(w.call("XOnlineTaskContinue", &[create]), INVALID_ARGUMENT);
+        assert_eq!(w.call("XOnlineTaskContinue", &[search]), INVALID_ARGUMENT);
+        assert_eq!(
+            w.call(
+                "XOnlineMatchSessionGetInfo",
+                &[create, MATCH_KID, MATCH_KEY]
+            ),
+            INVALID_ARGUMENT
+        );
+        assert_eq!(
+            w.call("XOnlineMatchSessionCreate", &[1, 7, 0, 0, 0, 0, 0, OUTPUT]),
+            NO_SESSION
+        );
+    }
+}
+#[test]
+fn match_session_limit_preserves_advertisements_and_delete_releases_capacity() {
+    let (mut w, h) = outbox_world();
+    let mut ids = std::collections::BTreeSet::new();
+    for _ in 0..32 {
+        let task = match_create(&mut w, 0);
+        assert!(ids.insert(match_id(&w)));
+        assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    }
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call("XOnlineMatchSessionCreate", &[1, 7, 0, 0, 0, 0, 0, OUTPUT]),
+        OUT_OF_MEMORY
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    assert_eq!(h.local_sessions().len(), 32);
+    let [lo, hi] = *ids.first().unwrap();
+    assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUTPUT]), 0);
+    match_create(&mut w, 0);
+    assert_eq!(h.local_sessions().len(), 32);
 }

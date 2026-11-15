@@ -12,8 +12,15 @@ pub mod entries;
 mod host;
 mod network;
 mod network_config;
+mod outbox;
+pub use outbox::{
+    BuiltMessage, MessageProperty, MessageRecipient, MessageSend, MessageSendKind, MessageUser,
+    MessageValue, RecruitProperties,
+};
 mod qos;
 mod qos_memory;
+mod sessions;
+pub use sessions::{LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots};
 mod state;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
@@ -46,6 +53,14 @@ pub mod status {
     pub const SERVERS_BUSY: u32 = 0x8015_1003;
     pub const CONNECTION_LOST: u32 = 0x8015_1004;
     pub const BUFFER_TOO_SMALL: u32 = 0x8015_0001;
+    pub const MATCH_INVALID_SESSION: u32 = 0x8015_5100;
+    pub const MATCH_INVALID_DATA_TYPE: u32 = 0x8015_5102;
+    pub const MATCH_INVALID_SEARCH: u32 = 0x8015_5105;
+    pub const MATCH_INVALID_RESULT_COLUMN: u32 = 0x8015_510a;
+    pub const MATCH_INVALID_STRING: u32 = 0x8015_510b;
+    pub const MATCH_STRING_TOO_LONG: u32 = 0x8015_510c;
+    pub const MATCH_BLOB_TOO_LONG: u32 = 0x8015_510d;
+    pub const MESSAGE_MAX_DETAILS: u32 = 0x8015_5a08;
     pub const MESSAGE_INVALID_ID: u32 = 0x8015_5a01;
     pub const MESSAGE_DOWNLOAD_REQUIRED: u32 = 0x8015_5a02;
     pub const MESSAGE_PROPERTY_NOT_FOUND: u32 = 0x8015_5a03;
@@ -167,6 +182,27 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .drain_stat_writes()
+    }
+    /// Locally accepted outgoing messages, with owned properties/recipients.
+    pub fn message_sends(&self) -> Vec<MessageSend> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .message_sends()
+    }
+    /// Transfer captures to a future server-event forwarder without reusing IDs.
+    pub fn drain_message_sends(&self) -> Vec<MessageSend> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain_message_sends()
+    }
+    /// Local advertisements, with owned attributes and no exchange keys.
+    pub fn local_sessions(&self) -> Vec<LocalSession> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .local_sessions()
     }
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config

@@ -143,6 +143,8 @@ pub(crate) struct State {
     menu: crate::ui::Menu,
     files: crate::storage_api::Files,
     stats: crate::stats::Stats,
+    outbox: crate::outbox::Outbox,
+    sessions: crate::sessions::Sessions,
     user_ids: [u64; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
@@ -165,6 +167,8 @@ impl State {
             menu: crate::ui::Menu::default(),
             files: crate::storage_api::Files::default(),
             stats: crate::stats::Stats::default(),
+            outbox: crate::outbox::Outbox::default(),
+            sessions: crate::sessions::Sessions::default(),
             user_ids: [0; 4],
             state_flags: [1; 4],
             game_id: None,
@@ -216,6 +220,8 @@ impl State {
         self.menu.clear();
         self.files.clear();
         self.stats.clear_tasks();
+        self.outbox.clear_session();
+        self.sessions.clear();
         if let Some(base) = self.storage.base {
             m.write_bytes(base, &[0; USERS_SIZE], 1)?;
         }
@@ -370,8 +376,52 @@ impl State {
     pub fn drain_stat_writes(&mut self) -> Vec<crate::stats::StatWrite> {
         self.stats.drain()
     }
+    pub fn message_sends(&self) -> Vec<crate::outbox::MessageSend> {
+        self.outbox.snapshot()
+    }
+    pub fn drain_message_sends(&mut self) -> Vec<crate::outbox::MessageSend> {
+        self.outbox.drain()
+    }
+    pub fn local_sessions(&self) -> Vec<crate::sessions::LocalSession> {
+        self.sessions.snapshot()
+    }
     pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest) -> Result<u32> {
         use Operation::*;
+        if let Sessions(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if op.starts_task() && !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            return self.sessions.invoke(
+                op,
+                a,
+                m,
+                &mut self.storage,
+                crate::network::xnaddr(self.address),
+                &self.user_ids,
+            );
+        }
+        if let Outbox(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            let mut sender = 0;
+            if op.sends() {
+                if !self.connected() {
+                    return Ok(NO_SESSION);
+                }
+                if a[0] >= 4 {
+                    return Ok(INVALID_ARGUMENT);
+                }
+                sender = self.user_ids[a[0] as usize];
+                if sender == 0 {
+                    return Ok(NO_USER);
+                }
+            }
+            return self.outbox.invoke(op, a, m, &mut self.storage, sender);
+        }
         if let Stats(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -600,6 +650,12 @@ impl State {
                 Ok(OK)
             }
             Continue => {
+                if let Some(status) = self.sessions.poll(a[0]) {
+                    return Ok(status);
+                }
+                if let Some(status) = self.outbox.poll(a[0]) {
+                    return Ok(status);
+                }
                 if let Some(status) = self.stats.poll(a[0]) {
                     return Ok(status);
                 }
@@ -736,6 +792,12 @@ impl State {
                 Ok(OK)
             }
             Close => {
+                if self.sessions.close(a[0]) {
+                    return Ok(OK);
+                }
+                if self.outbox.close(a[0]) {
+                    return Ok(OK);
+                }
                 if self.stats.close(a[0]) {
                     return Ok(OK);
                 }
