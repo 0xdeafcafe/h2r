@@ -24,6 +24,12 @@ fn digest_file(path: &Path) -> io::Result<String> {
     Ok(format!("{:x}", hash.finalize()))
 }
 
+/// The `settings` part of [`key`]: the passes and the effective code
+/// generation choices, defaults included.
+pub fn settings(passes: &emit::opt::Passes, codegen: emit::Codegen) -> String {
+    format!("{passes:?} {codegen:?}")
+}
+
 /// Hash the entire executable as well as the XBE. A package version alone
 /// cannot distinguish edits in the analyzer, lifter, IR passes or emitter.
 /// `settings` covers run-time choices that change the C (the IR passes and
@@ -116,6 +122,20 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn the_key_covers_access_accounting_and_its_default() {
+        let passes = emit::opt::Passes::parse("all").unwrap();
+        let on = settings(&passes, emit::Codegen { accounting: true });
+        let off = settings(&passes, emit::Codegen { accounting: false });
+        assert_ne!(on, off);
+        assert_eq!(settings(&passes, emit::Codegen::parse(None).unwrap()), on);
+        assert_eq!(settings(&passes, emit::Codegen::parse(Some("0")).unwrap()), off);
+        let tree = Tree::new("settings");
+        let exe = tree.0.join("generator");
+        fs::write(&exe, "generator").unwrap();
+        assert_ne!(key(b"synthetic XBE", &exe, &on).unwrap(), key(b"synthetic XBE", &exe, &off).unwrap());
     }
 
     #[test]

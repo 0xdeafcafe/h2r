@@ -19,8 +19,8 @@ listed so the contract is complete.
 ### 1.1 Memory: `h2abi_v1_read`, `h2abi_v1_write` (existing)
 
 These are used exactly as `h2abi.h` documents them. Every guest load and
-store uses these helpers by default; `H2_FASTMEM=1` may complete it inline
-under the protocol below. `alignment` is always 1. The
+store uses these helpers unless `H2_FASTMEM` (on by default; `0` disables
+it) completes it inline under the protocol below. `alignment` is always 1. The
 16-byte alignment rule of the aligned SSE forms is checked by the
 generated code before the access (`#GP`, code 7 below), so the runtime never
 sees a misaligned aligned-SSE access. A non-zero status is an event id. The
@@ -30,7 +30,7 @@ IR orders faulting accesses before register and flag writes). The one
 exception is a REP string instruction (section 4): iterations completed
 before the faulting one keep their stores and their ESI/EDI/ECX progress.
 
-#### Optional inline RAM view (`H2_FASTMEM=1`)
+#### Optional inline RAM view (`H2_FASTMEM`, on by default)
 
 `h2abi_v1_fast_acquire(ctx)` returns an invocation-scoped `H2FastAccess *`,
 or null to retain the Rust path. `h2fastmem.h` defines the extension layout;
@@ -67,8 +67,9 @@ including faults and preemption. Runtime invocation also settles as a backstop.
 The two paths therefore charge identical access budgets and guest work.
 `enable_fast_memory(false)` is a per-context comparison/diagnostic switch.
 
-The header and `H2_FASTMEM` flag participate in C object cache keys. The default
-is off until the loading host provides the extension bridge. The emitter's
+The header and `H2_FASTMEM` flag participate in C object cache keys. The flag
+is on by default (boot provides the extension bridge); `H2_FASTMEM=0` builds
+without it, for hosts that don't. The emitter's
 mock host returns null; generated/runtime tests install the real view and
 cover mapping changes, permissions, aliases, every width, fault transactions,
 access budgets, host concurrency and replacement of the backing Guest.
@@ -218,9 +219,9 @@ counter for every thread (the Xbox has one CPU), in `crates/runtime/src/tsc.rs`:
 The emitter's test host and the IR interpreter count reads instead (each read
 returns the counter and adds one), so differential tests are exact.
 
-#### Optional access accounting (`H2_ACCESS_COUNT=1`, module feature 1)
+#### Optional access accounting (`H2_ACCESS_COUNT`, module feature 1)
 
-Off by default. With it, a handler counts its own guest accesses instead of
+On by default in `h2 build`/`h2 emit`; `H2_ACCESS_COUNT=0` turns it off. With it, a handler counts its own guest accesses instead of
 having each accessor charge one: a local `h2acc`, incremented before every
 attempted load or store (the faulting one included), inline or not. The
 accesses go through `h2abi_v1_read_counted` and `h2abi_v1_write_counted`,

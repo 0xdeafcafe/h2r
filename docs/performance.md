@@ -1,7 +1,7 @@
 # Runtime performance: guest memory access and the runner
 
-The runtime side of the 30 fps work: guest memory accessors, the opt-in
-inline RAM path (`H2_FASTMEM`), runner transfers and their counters. The
+The runtime side of the 30 fps work: guest memory accessors, the
+inline RAM path (`H2_FASTMEM`, on by default), runner transfers and their counters. The
 profiling and benchmark tools are in [perf.md](perf.md); the main-menu
 frame budget and the plan across every area are in
 [perf-budget.md](perf-budget.md).
@@ -122,9 +122,9 @@ when interpreting the populated-address-space benefit.
 The runtime-only change leaves generated
 C and clang cache keys unchanged.
 
-## Inline RAM experiment (opt-in)
+## Inline RAM path (on by default)
 
-`H2_FASTMEM=1` compiles ordinary single-page RAM accesses into C bounds,
+`H2_FASTMEM` (on unless set to `0`) compiles ordinary single-page RAM accesses into C bounds,
 permission and alignment checks plus a copy. A lazily allocated 8 MiB page
 table tracks mapping changes. An atomic gate excludes Rust memory guards;
 physical dirty bits preserve write watches, and batched context accounting

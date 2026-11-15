@@ -1,12 +1,13 @@
 # Guarded native x87 lowering
 
-`H2_X87_NATIVE=1` opts the generated C into native binary64 arithmetic.
-It is **off by default**. Set the variable for both the image build and
-its run: the C flags participate in the object-cache keys and the boot
-dylib stamp. Values other than `0` and `1` are rejected.
+The generated C runs guarded x87 arithmetic in native binary64. It is
+**on by default**; `H2_X87_NATIVE=0` keeps every operation on the
+`h2x87_v1_*` helpers. Set the variable for both the image build and its
+run: the C flags participate in the object-cache keys and the boot dylib
+stamp. Values other than `0` and `1` are rejected.
 
 ```sh
-H2_X87_NATIVE=1 cargo run --release -p cli -- build "$H2_XBE" --out "$TMPDIR/native-game" --jobs 4
+H2_X87_NATIVE=0 cargo run --release -p cli -- build "$H2_XBE" --out "$TMPDIR/helper-game" --jobs 4
 ```
 
 Use the lane's emit/game/bench gates around image builds and game runs.
@@ -21,7 +22,7 @@ host `long double`. All eight physical registers remain ten-byte ext80
 values in `X87Abi`; TOP is status bits 11–13 and tags are physical.
 The emitter already caches environment pointers in handler locals.
 
-The opt-in path uses inline C functions in `emit/c/h2x87_native.h` for
+The native path uses inline C functions in `emit/c/h2x87_native.h` for
 loads, register copies, store conversion/commit and guarded arithmetic.
 Eligible ADD/SUB/SUBR/MUL/DIV/DIVR and SQRT use transient C `double`
 locals; every rejected operation calls the original helper. The helper
@@ -141,11 +142,12 @@ There are no new Unicorn dependencies in ordinary builds.
 
 The generated-C differential suite also contains an explicit PC=53
 load/add/sqrt/div/store journey, with random mapped/faulting store
-addresses. Run that suite both with the native flag absent and enabled.
+addresses. Run that suite both with the native flag on (the default) and
+off.
 
 ```sh
 cargo test -p emit -p perf -p x87 --features emit/oracle-tests
-H2_X87_NATIVE=1 cargo test -p emit -p perf --features emit/oracle-tests
+H2_X87_NATIVE=0 cargo test -p emit -p perf --features emit/oracle-tests
 cargo clippy -p emit -p perf --all-targets --features emit/oracle-tests -- -D warnings
 ```
 
@@ -162,8 +164,8 @@ background worker threads; it is not whole-process or GPU time.
 Use separate work directories and run comparisons serially:
 
 ```sh
-cargo run --release -p cli --features perf -- bench --only hot-loop/x87 --label helpers --samples 31 --warmup 5 --out "$TMPDIR/x87-bench" --work "$TMPDIR/x87-base"
-H2_X87_NATIVE=1 cargo run --release -p cli --features perf -- bench --only hot-loop/x87 --label native --samples 31 --warmup 5 --out "$TMPDIR/x87-bench" --work "$TMPDIR/x87-fast"
+H2_X87_NATIVE=0 cargo run --release -p cli --features perf -- bench --only hot-loop/x87 --label helpers --samples 31 --warmup 5 --out "$TMPDIR/x87-bench" --work "$TMPDIR/x87-base"
+cargo run --release -p cli --features perf -- bench --only hot-loop/x87 --label native --samples 31 --warmup 5 --out "$TMPDIR/x87-bench" --work "$TMPDIR/x87-fast"
 cargo run --release -p cli --features perf -- bench compare "$TMPDIR/x87-bench"
 cargo run --release -p cli --features perf -- profile hot-loop/x87 --seconds 5 --cpu --by-category --out "$TMPDIR/x87-profile"
 ```
@@ -247,7 +249,7 @@ be credited to this lowering, especially since most measured x87 time
 remains in unchanged transcendental helpers. The controlled acceptance
 result is matching pixels and full architectural-state comparisons; the
 synthetic CPU benchmark establishes the arithmetic-path improvement.
-This remains opt-in and does not establish 30 fps.
+It is now on by default; it does not by itself establish 30 fps.
 
 Final checks on the rebased tree: 153 passing tests (5 ignored) for
 `emit`, `perf`, `x87` with the oracle feature, then 83 passing tests

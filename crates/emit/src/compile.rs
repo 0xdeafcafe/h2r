@@ -69,28 +69,29 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 }
 
 /// Every flag for a generated object: [`CFLAGS`] plus [`profile_flags`]
-/// from the environment.
+/// from the environment, plus the optional paths. `H2_PERF` is off unless
+/// set to `1`; the inline RAM path (`H2_FASTMEM`) and native x87
+/// (`H2_X87_NATIVE`) are on unless set to `0`.
 pub fn cflags() -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
     v.extend(profile_flags(env("H2_OPT").as_deref(), env("H2_DEBUG").as_deref())?);
-    match env("H2_PERF").as_deref() {
-        None | Some("0") => {}
-        Some("1") => v.push("-DH2_PERF=1".into()),
-        Some(value) => return Err(err(format!("H2_PERF={value}: expected 0 or 1"))),
-    }
-    match env("H2_FASTMEM").as_deref() {
-        None | Some("0") => {}
-        Some("1") => v.push("-DH2_FASTMEM=1".into()),
-        Some(value) => return Err(err(format!("H2_FASTMEM={value}: expected 0 or 1"))),
-    }
-
-    match env("H2_X87_NATIVE").as_deref() {
-        None | Some("0") => {},
-        Some("1") => v.push("-DH2_X87_NATIVE=1".into()),
-        Some(value) => return Err(err(format!("H2_X87_NATIVE={value}: expected 0 or 1"))),
+    for (name, default) in [("H2_PERF", false), ("H2_FASTMEM", true), ("H2_X87_NATIVE", true)] {
+        if flag(name, env(name).as_deref(), default)? {
+            v.push(format!("-D{name}=1"));
+        }
     }
     Ok(v)
+}
+
+/// A `0`/`1` switch: unset or empty takes `default`.
+fn flag(name: &str, value: Option<&str>, default: bool) -> Result<bool, Error> {
+    match value {
+        None | Some("") => Ok(default),
+        Some("0") => Ok(false),
+        Some("1") => Ok(true),
+        Some(value) => Err(err(format!("{name}={value}: expected 0 or 1"))),
+    }
 }
 
 /// A job count that uses every core.
@@ -786,6 +787,21 @@ mod tests {
         });
         let same_sdk = toolchain_identity_with("cc", &|_| None, &|cmd, _| Some(format!("{cmd} ok")));
         assert_ne!(key(&other_sdk), key(&same_sdk));
+    }
+
+    #[test]
+    fn fast_paths_default_on_and_zero_turns_them_off() {
+        assert!(flag("H2_FASTMEM", None, true).unwrap());
+        assert!(flag("H2_FASTMEM", Some(""), true).unwrap());
+        assert!(!flag("H2_FASTMEM", Some("0"), true).unwrap());
+        assert!(!flag("H2_PERF", None, false).unwrap());
+        assert!(flag("H2_PERF", Some("1"), false).unwrap());
+        assert!(flag("H2_X87_NATIVE", Some("yes"), true).is_err());
+        let flags = cflags().unwrap();
+        for name in ["H2_FASTMEM", "H2_X87_NATIVE"] {
+            let on = std::env::var(name).as_deref() != Ok("0");
+            assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
+        }
     }
 
     #[test]

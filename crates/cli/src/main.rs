@@ -664,7 +664,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     let codegen = emit::Codegen::from_env().map_err(anyhow::Error::msg)?;
     // The passes and code generation choices change the C, so they are part
     // of the key.
-    let cache_key = emit_cache::key(&data, &std::env::current_exe()?, &format!("{passes:?} {codegen:?}"))?;
+    let cache_key = emit_cache::key(&data, &std::env::current_exe()?, &emit_cache::settings(&passes, codegen))?;
     // Tracing is explicitly requested analysis work, even on a cache hit.
     let reuse = !opts.no_emit_cache && std::env::var_os("H2_TRACE").is_none() && emit_cache::valid(&out, &cache_key);
     println!("emit cache: {:.3}s, {}", t.elapsed().as_secs_f64(), if reuse { "hit" } else { "miss" });

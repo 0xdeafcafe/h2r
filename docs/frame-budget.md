@@ -157,6 +157,10 @@ Hitch causes, checked one by one:
 
 ## Opt-ins
 
+These three are now on by default; "defaults" below means
+the old defaults, which `H2_FASTMEM=0 H2_X87_NATIVE=0 H2_ACCESS_COUNT=0`
+reproduces.
+
 Same window, same input, with `H2_FASTMEM=1 H2_X87_NATIVE=1
 H2_ACCESS_COUNT=1` set for both build and run, plus `H2_GFX_MERGE_PASSES=1`
 as before. These numbers are for measurement only: FASTMEM has a known P1

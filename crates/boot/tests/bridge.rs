@@ -70,7 +70,7 @@ uint32_t boot_memory_probe(ExecCtxOpaque *ctx, uint32_t addr) {
                 (p.loop_safe_points, p.x87_helpers, p.memory_accessors),
                 (3, 5, 1)
             );
-            let inline = enabled && std::env::var("H2_FASTMEM").as_deref() == Ok("1");
+            let inline = enabled && std::env::var("H2_FASTMEM").as_deref() != Ok("0");
             assert_eq!(p.fast_memory_accesses, u64::from(inline));
             // Rejection must leave the previously installed table usable.
             assert_eq!(install(std::ptr::null(), 0), 0);

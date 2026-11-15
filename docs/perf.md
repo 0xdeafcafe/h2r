@@ -373,7 +373,7 @@ feature, which the CLI's `perf` feature turns on.
 ## Native x87 comparison
 
 `hot-loop/x87` exercises generated x87 load/mul/add/sqrt/div/store code.
-Run with and without `H2_X87_NATIVE=1` in separate work directories;
+Run with the default and with `H2_X87_NATIVE=0` in separate work directories;
 [x87-native.md](x87-native.md) describes the guards, oracle checks and
 measured limits. Hot-loop JSON results also record `cpu_ns_per_trip` on
 Unix, the mean thread CPU time per trip, excluding descheduling and

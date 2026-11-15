@@ -31,9 +31,13 @@ What works today:
   profiler and a benchmark tool.
 
 Speed is the big gap. On current master the main menu runs at about 5-6 fps
-on an unloaded M-series Mac. The target is 30 fps. The opt-in inline RAM
-path (`H2_FASTMEM=1`, [docs/performance.md](docs/performance.md)) cuts the
-menu's CPU time per frame by about 35%.
+on an unloaded M-series Mac. The target is 30 fps. Three speedups are on by
+default for `h2 build`, `h2 run` and `h2 play`: the inline RAM path
+(`H2_FASTMEM`, [docs/performance.md](docs/performance.md)), which cuts the
+menu's CPU time per frame by about 35%; native binary64 x87
+(`H2_X87_NATIVE`, [docs/x87-native.md](docs/x87-native.md)); and
+register-local access accounting (`H2_ACCESS_COUNT`). Set any of them to `0`
+to build without it.
 
 ### What is on master
 
@@ -62,7 +66,8 @@ In priority order:
    ("Gaps").
 2. 30 fps. The levers, measured in
    [docs/perf-budget.md](docs/perf-budget.md): faster guest memory access
-   (the first step is in, opt-in), merged render passes, native x87 and
+   (the first step is in, on by default), merged render passes, native x87
+   (on by default) and
    push-buffer decode cost. Draw batching, upload rings, IR optimisation and
    sampling render-to-texture levels in place have landed. See
    [docs/perf.md](docs/perf.md) for the tools.
@@ -190,7 +195,7 @@ Design and pipeline:
 - [LIFTER.md](docs/LIFTER.md): the lifter's original design proposal
 - [FLOAT.md](docs/FLOAT.md): floating point in the lifter: what the game uses and the correctness-first plan
 - [FLOAT-ABI.md](docs/FLOAT-ABI.md): the x87 IR ops and `h2x87_v1_*` runtime helpers (`crates/x87`)
-- [x87-native.md](docs/x87-native.md): the opt-in native binary64 x87 path (`H2_X87_NATIVE=1`): range proof, status bits, fallbacks
+- [x87-native.md](docs/x87-native.md): the native binary64 x87 path, on by default (`H2_X87_NATIVE=0` disables it): range proof, status bits, fallbacks
 - [simd.md](docs/simd.md): bit-exact SSE1 reference semantics (`crates/simd`)
 - [oracle.md](docs/oracle.md): independent x86 instruction oracle on Unicorn (`crates/oracle`)
 - [sse-oracle.md](docs/sse-oracle.md): SSE/MMX results measured on Rosetta 2 (`crates/sse-oracle`)
@@ -217,7 +222,7 @@ Running the game:
 - [fastmem-4k.md](docs/fastmem-4k.md): measured 4 KiB guest translation and write-bit variants; slower than phase-1 inline access, so not adopted
 - [perf-budget.md](docs/perf-budget.md): where a main-menu frame's time goes, and the plan to 30 fps
 - [frame-budget.md](docs/frame-budget.md): an in-level frame budget, the worst frames and their causes, and what a worst frame under 33 ms needs
-- [performance.md](docs/performance.md): guest memory accessors, the opt-in inline RAM path (`H2_FASTMEM`) and runtime counters
+- [performance.md](docs/performance.md): guest memory accessors, the inline RAM path (`H2_FASTMEM`, on by default) and runtime counters
 
 Graphics:
 

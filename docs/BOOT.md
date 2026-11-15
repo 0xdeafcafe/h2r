@@ -33,10 +33,11 @@ copies. Nothing is ever written next to it.
 
 | Environment | Effect |
 | --- | --- |
-| `H2_FASTMEM=1` | **Opt-in, off by default.** Set for both `h2 build` and `h2 run`/`play` to compile inline RAM checks/copies; unsupported accesses use Rust. Requires the current boot bridge; changing compiler flags invalidates the dylib stamp. This is the gated inline path, not fault-driven fastmem. |
-| `H2_BOOT_FASTMEM=0` | run a fast-memory image through checked Rust accessors, without rebuilding; use for A/B comparisons. Leave `H2_FASTMEM=1` to match that image's stamp. |
+| `H2_FASTMEM=0` | **On by default.** Generated code does inline RAM checks/copies; unsupported accesses use Rust. `0` compiles without them; set it for both `h2 build` and `h2 run`/`play`, since changing compiler flags invalidates the dylib stamp. Requires the current boot bridge. This is the gated inline path, not fault-driven fastmem. |
+| `H2_BOOT_FASTMEM=0` | run a fast-memory image through checked Rust accessors, without rebuilding; use for A/B comparisons. Leave `H2_FASTMEM` unset (or `1`) to match that image's stamp. |
 | `H2_PERF=1` | compile generated loop/x87 counters; forwarded by boot's versioned bridge to contexts with profiling enabled. Part of the dylib stamp. |
-| `H2_ACCESS_COUNT=1` | **Off by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). Set it for `h2 build`/`h2 emit`; it is part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
+| `H2_X87_NATIVE=0` | **On by default.** Generated code runs range-guarded x87 arithmetic in native binary64 (see [x87-native.md](x87-native.md)). `0` keeps every operation on the `h2x87_v1_*` helpers. A compiler flag: part of the dylib stamp and object cache keys, so set it for both build and run. |
+| `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
 | `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
@@ -284,14 +285,17 @@ use `--fresh-data` (or a new `--data`), and never share one between two
 runs at once. On master a run that shared the data directory with another
 stopped with a divide error at `0x223cff` (a zero stride in loaded data).
 
-### Opt-in accessor A/B with process CPU
+### Accessor A/B with process CPU
 
-Build one image with `H2_FASTMEM=1` in a private output directory. Run the
-same image twice, one run after the other, setting
+Build one image with the defaults (`H2_FASTMEM` on) in a private output
+directory. Run the same image twice, one run after the other, setting
 `H2_BOOT_FASTMEM=0` for checked access and `1` for inline access. Both use
 the default merged passes, `H2_BOOT_GFX_EVERY=never`, and input
-`START@f310,DOWN@f408,A@f419`. Leave `H2_FASTMEM=1` set during both runs so
-the module stamp matches. Use a new data directory for each run.
+`START@f310,DOWN@f408,A@f419`. Leave `H2_FASTMEM` unset during both runs so
+the module stamp matches. Use a new data directory for each run. To compare
+against an image without the default speedups, build a second one with
+`H2_FASTMEM=0 H2_X87_NATIVE=0 H2_ACCESS_COUNT=0` and keep those set for its
+run.
 
 `cargo build --release -p boot --example menu_cpu` builds a bounded driver:
 `menu_cpu DISC OUT FRESH_DATA_DIR`. It runs boot's normal headless backend,

@@ -227,7 +227,7 @@ fn generated_runtime_benchmark() {
             kind,
             n,
             std::env::var_os("H2_PERF").is_some_and(|v| v == "1"),
-            std::env::var_os("H2_FASTMEM").is_some_and(|v| v == "1"),
+            std::env::var_os("H2_FASTMEM").is_none_or(|v| v != "0"),
         );
         let mut mem = Guest::new();
         mem.map_zeroed(A, 4096, Permissions::RX).unwrap();

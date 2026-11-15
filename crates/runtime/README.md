@@ -80,7 +80,7 @@ performs its own TLS stores.
 
 ### Optional inline RAM accesses
 
-Build generated code with `H2_FASTMEM=1` to use `h2fastmem.h`. The runtime
+Generated code uses `h2fastmem.h` unless built with `H2_FASTMEM=0`. The runtime
 provides `h2abi_v1_fast_acquire` and `h2abi_v1_fast_release`; a dynamic bridge
 must forward both. `ExecCtx::enable_fast_memory(false)` selects checked Rust
 helpers in the same generated image for comparison or diagnosis. ABI v2's
