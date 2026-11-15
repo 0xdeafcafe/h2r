@@ -1,4 +1,6 @@
+use live_proto::sign::{KeyPair, PrivateJwk};
 use serde::Deserialize;
+use std::sync::Arc;
 use std::{
     collections::BTreeSet,
     net::{Ipv4Addr, SocketAddrV4, UdpSocket},
@@ -11,12 +13,14 @@ use std::{
 pub struct LiveConfig {
     pub enabled: bool,
     pub accounts_path: Option<PathBuf>,
-    /// Base URL for future service calls; this milestone stores it only.
+    /// Base URL for all Live service calls. None selects local sign-in only.
     pub server_url: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
+    #[error("could not configure the Live HTTP worker")]
+    Worker,
     #[error("invalid Live network configuration: {0}")]
     Network(String),
     #[error("reading Live accounts: {0}")]
@@ -34,12 +38,16 @@ pub enum ConfigError {
 struct StoredAccount {
     xuid: String,
     gamertag: String,
-    // serde ignores server/key and future fields. Private keys never enter state.
+    #[serde(default)]
+    key: Option<serde_json::Value>,
+    // The host-supplied server_url is authoritative. Ignore server/future fields.
 }
 
+#[derive(Clone)]
 pub(crate) struct Account {
     pub xuid: u64,
     pub gamertag: String,
+    pub key: Option<Arc<KeyPair>>,
 }
 
 impl LiveConfig {
@@ -87,6 +95,14 @@ pub(crate) fn parse_accounts(json: &[u8]) -> Result<Vec<Account>, ConfigError> {
             Ok(Account {
                 xuid,
                 gamertag: s.gamertag,
+                // A missing/invalid key makes this identity unusable for server
+                // logon, while old identity-only files still serve System Link.
+                // Never retain or format serde/JWK errors or input values.
+                key: s
+                    .key
+                    .and_then(|v| serde_json::from_value::<PrivateJwk>(v).ok())
+                    .and_then(|j| KeyPair::from_private_jwk(&j).ok())
+                    .map(Arc::new),
             })
         })
         .collect()
@@ -113,10 +129,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accounts_ignore_signing_keys_server_and_future_fields() {
+    fn identity_only_accounts_ignore_invalid_keys_server_and_future_fields() {
         let accounts = parse_accounts(br#"[{"xuid":"0X00091234567890AB","gamertag":"Player","server":"https://example/base","key":{"d":"private-test-marker","x":"public-test-marker"},"future":[1,2]}]"#).unwrap();
         assert_eq!(accounts[0].xuid, 0x0009_1234_5678_90ab);
         assert_eq!(accounts[0].gamertag, "Player");
+        assert!(accounts[0].key.is_none());
+    }
+    #[test]
+    fn accounts_parse_private_jwks_without_exposing_secrets() {
+        let key = KeyPair::generate();
+        let data = serde_json::json!([{"xuid":"00091234567890ab", "gamertag":"Player", "key":key.private_jwk(), "server":"https://ignored.example"}]);
+        let accounts = parse_accounts(&serde_json::to_vec(&data).unwrap()).unwrap();
+        let parsed = accounts[0].key.as_ref().unwrap();
+        assert_eq!(parsed.public(), key.public());
+        assert!(!format!("{parsed:?}").contains(&key.secret_b64()));
     }
     #[test]
     fn account_errors_never_echo_contents_or_private_key_material() {

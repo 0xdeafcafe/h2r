@@ -10,3 +10,11 @@ runtime.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+live-proto.workspace = true
+ureq = { version = "2", default-features = false, features = ["tls"] }
+time = "0.3"
+url = "2"
+
+[dev-dependencies]
+live-server = { path = "../live-server" }
+flate2 = "1"

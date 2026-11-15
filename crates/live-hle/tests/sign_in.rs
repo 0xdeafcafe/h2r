@@ -34,7 +34,7 @@ fn config() -> LiveConfig {
     LiveConfig {
         enabled: true,
         accounts_path: Some(path),
-        server_url: Some("https://live.example/base".into()),
+        server_url: None,
     }
 }
 fn hle(config: LiveConfig) -> Arc<Hle> {
@@ -620,6 +620,35 @@ fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library()
         "__WSAFDIsSet",
         "htonl/ntohl",
         "htons/ntohs",
+        "XOnlineFriendsGetAcceptedGameInvite",
+        "XOnlineMessageEnumerate",
+        "XOnlineMessageDetails",
+        "XOnlineMessageDetailsGetResultsProperty",
+        "XOnlineMessageDownloadAttachmentToMemory",
+        "XOnlineMessageDownloadAttachmentToMemoryGetResults",
+        "XOnlineMessageDelete",
+        "XOnlineGetNotificationEx",
+        "XOnlineFriendsGetLatest",
+        "XOnlineFriendsEnumerate",
+        "XOnlineFriendsEnumerateFinish",
+        "XOnlineFriendsGetTitleName",
+        "XOnlineGetNatType",
+        "XOnlineTitleIdIsSameTitle",
+        "XOnlineTitleIdIsSamePublisher",
+        "XOnlineTeamEnumerateByUserXUID",
+        "XOnlineTeamEnumerateGetResults",
+        "XOnlineTeamMembersEnumerate",
+        "XOnlineTeamMembersEnumerateGetResults",
+        "XOnlineTeamGetDetails",
+        "XOnlineTeamMemberGetDetails",
+        "XOnlineFeedbackSend",
+        "XOnlineStatRead",
+        "XOnlineStatReadGetResult",
+        "XOnlineQuerySearch",
+        "XOnlineQuerySearchGetResults",
+        "XOnlinePresenceClear",
+        "XOnlinePresenceGetLatest",
+        "XOnlineSaveLogonState",
     ];
     for e in ENTRIES.iter().filter(|e| !implemented.contains(&e.name)) {
         w.cpu = CpuAbi {
@@ -751,4 +780,170 @@ fn allocation_failure_is_a_guest_error_and_does_not_publish_a_logon() {
     w.call("WSAStartup", &[2, DATA]);
     assert_eq!(w.call("XOnlineStartup", &[0]), OUT_OF_MEMORY);
     assert_eq!(w.call("XOnlineGetLogonUsers", &[]), 0);
+}
+
+#[test]
+fn no_accepted_game_invite_is_e_fail_and_clears_the_156_byte_record() {
+    let mut w = World::new();
+    w.put(DATA, &[0xcc; 160]);
+    assert_eq!(
+        w.call("XOnlineFriendsGetAcceptedGameInvite", &[DATA]),
+        NOT_INITIALIZED
+    );
+    assert_eq!(w.bytes(DATA, 160), vec![0xcc; 160]);
+    w.startup();
+    let result = w.call("XOnlineFriendsGetAcceptedGameInvite", &[DATA]);
+    assert_eq!(result, NO_ACCEPTED_INVITE);
+    assert!((result as i32) < 0, "0x6d210 must report no invite");
+    assert_eq!(w.bytes(DATA, 156), vec![0; 156]);
+    assert_eq!(w.bytes(DATA + 156, 4), vec![0xcc; 4]);
+}
+
+#[test]
+fn signed_in_menu_polling_has_correct_empty_counts_bools_and_records() {
+    let mut w = World::new();
+    w.logon();
+    w.put(DATA, &[0xcc; 32]);
+    w.word(OUTPUT, u32::MAX);
+    assert_eq!(w.call("XOnlineGetNotificationEx", &[0, DATA, OUTPUT]), 0);
+    assert_eq!(w.bytes(DATA, 9), vec![0; 9]);
+    assert_eq!(w.bytes(DATA + 9, 4), vec![0xcc; 4]);
+    assert_eq!(w.u32(OUTPUT), 0);
+    assert_eq!(w.call("XOnlineFriendsGetLatest", &[0, 0, 0]), 0);
+    assert_eq!(w.call("XOnlineGetNatType", &[]), 0);
+    assert_eq!(w.call("XOnlineTitleIdIsSameTitle", &[0x4d530064]), 1);
+    assert_eq!(w.call("XOnlineTitleIdIsSameTitle", &[0x4d530001]), 0);
+    assert_eq!(w.call("XOnlineTitleIdIsSamePublisher", &[0x4d530001]), 1);
+    assert_eq!(w.call("XOnlineTitleIdIsSamePublisher", &[0x54450001]), 0);
+    w.put(DATA, &[0xcc; 32]);
+    assert_eq!(
+        w.call("XOnlineFriendsGetTitleName", &[0x4d530064, 0, 7, DATA]),
+        0
+    );
+    assert_eq!(
+        w.bytes(DATA, 14),
+        "Halo 2\0"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(w.bytes(DATA + 14, 2), vec![0xcc; 2]);
+    assert_eq!(
+        w.call("XOnlineFriendsGetTitleName", &[0x12345678, 0, 7, DATA]),
+        0
+    );
+    assert_eq!(w.bytes(DATA, 2), vec![0; 2]);
+    assert_eq!(w.call("XOnlineFriendsEnumerate", &[0, 0, OUTPUT]), 0);
+    let friends = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[friends]), 0x1500f1);
+    assert_eq!(w.call("XOnlineFriendsEnumerateFinish", &[friends]), 0);
+    assert_eq!(w.call("XOnlineTaskContinue", &[friends]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[friends]), 0);
+    assert_eq!(
+        w.call("XOnlineFriendsEnumerateFinish", &[friends]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn empty_team_and_member_enumerations_finish_and_write_output_only_zero_counts() {
+    let mut w = World::new();
+    w.logon();
+    assert_eq!(
+        w.call("XOnlineTeamEnumerateByUserXUID", &[0, 1, 0, 0, 0, OUTPUT]),
+        0
+    );
+    let teams = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[teams]), TASK_SUCCESS);
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call("XOnlineTeamEnumerateGetResults", &[teams, OUTPUT, 0]),
+        0
+    );
+    assert_eq!(w.u32(OUTPUT), 0);
+    assert_eq!(
+        w.call("XOnlineTeamGetDetails", &[teams, 1, 0, 0, 0]),
+        0x8015210b
+    );
+    assert_eq!(
+        w.call("XOnlineTeamMembersEnumerate", &[0, 1, 0, 0, 0, 0, OUTPUT]),
+        0
+    );
+    let members = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[members]), TASK_SUCCESS);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMembersEnumerateGetResults",
+            &[members, OUTPUT, 0]
+        ),
+        0
+    );
+    assert_eq!(w.u32(OUTPUT), 0);
+    assert_eq!(
+        w.call("XOnlineTeamMemberGetDetails", &[members, 1, 0, 0, 0]),
+        0x8015210b
+    );
+    assert_eq!(
+        w.call("XOnlineTeamEnumerateGetResults", &[members, OUTPUT, 0]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn presence_latest_returns_packed_offline_watch_records_and_clear_removes_them() {
+    let mut w = World::new();
+    w.logon();
+    let h = w.task("XOnlinePresenceInit");
+    w.put(DATA, &ID.to_le_bytes());
+    w.word(DATA + 8, 3);
+    assert_eq!(w.call("XOnlinePresenceAdd", &[h, 42, 1, DATA]), 0);
+    w.put(USERS, &[0xcc; 126]);
+    assert_eq!(w.call("XOnlinePresenceGetLatest", &[h, 42, 2, USERS]), 0);
+    assert_eq!(w.bytes(USERS, 12), w.bytes(DATA, 12));
+    assert_eq!(w.bytes(USERS + 12, 110), vec![0; 110]);
+    assert_eq!(w.bytes(USERS + 122, 4), vec![0xcc; 4]);
+    assert_eq!(w.call("XOnlinePresenceClear", &[h]), 0);
+    assert_eq!(w.call("XOnlinePresenceGetLatest", &[h, 42, 1, USERS]), 0);
+    assert_eq!(w.bytes(USERS, 61), vec![0; 61]);
+    assert_eq!(w.call("XOnlineTaskClose", &[h]), 0);
+    assert_eq!(
+        w.call("XOnlinePresenceGetLatest", &[h, 42, 0, 0]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn absent_stats_query_and_feedback_return_failed_tasks_without_claiming_submission() {
+    let mut w = World::new();
+    w.logon();
+    assert_eq!(w.call("XOnlineStatRead", &[0, 0, 0, OUTPUT]), 0);
+    let stats = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[stats]), 0x80159003);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[stats, 0, 0, 0, 0]),
+        0x80159003
+    );
+    assert_eq!(
+        w.call("XOnlineQuerySearch", &[0, 0, 0, 0, 0, 0, 0, 0, 0, OUTPUT]),
+        0
+    );
+    let query = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[query]), 0x80156109);
+    assert_eq!(
+        w.call("XOnlineQuerySearchGetResults", &[query, 0, 0, 0, 0]),
+        0x80156109
+    );
+    assert_eq!(
+        w.call("XOnlineFeedbackSend", &[0, 1, 0, 0, 0, 0, 0, OUTPUT]),
+        0
+    );
+    let feedback = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[feedback]), 0x80151102);
+}
+#[test]
+fn saved_logon_state_has_public_header_and_no_signing_key_material() {
+    let mut w = World::new();
+    w.logon();
+    w.put(DATA, &[0xcc; 520]);
+    assert_eq!(w.call("XOnlineSaveLogonState", &[DATA]), 0);
+    assert_eq!(w.bytes(DATA, 4), vec![0x4c, 1, 4, 2]);
+    assert_eq!(w.bytes(DATA + 4, 448), w.bytes(USERS, 448));
+    assert_eq!(w.bytes(DATA + 516, 4), vec![0xcc; 4]);
 }

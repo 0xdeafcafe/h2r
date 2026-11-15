@@ -474,26 +474,34 @@ Configuration or registration errors leave the PHY setting unchanged.
 The accounts file is a JSON array. Each entry needs a nonzero hexadecimal
 `xuid` string and a gamertag of 1–15 printable ASCII bytes. Uppercase hex and
 an optional `0x` prefix are accepted. Up to 16 distinct accounts are supported.
-The additional `server`, `key` and future fields are ignored; signing keys are
-not retained in client state or included in diagnostics. Invalid files fail
-configuration with an error that does not include their contents. No path means
-an empty account list; the client does not invent an account. The configured
-server base URL is stored for the next milestone. This milestone makes no
-service requests and does not authenticate accounts against a server.
+The optional `key` is a private Ed25519 JWK, parsed by
+`live_proto::sign::KeyPair::from_private_jwk`. Keys stay in host memory; guest
+records and configuration errors never contain them. The additional `server`
+and future fields are ignored: `LiveConfig.server_url` chooses the server for
+all calls. Missing or malformed keys allow local/System Link identities, but
+server logon rejects them as invalid users. Invalid identity files fail
+configuration without echoing their contents. No path means an empty account
+list; the client does not invent an account.
+
+With `server_url = None`, sign-in keeps its local-only behavior. With a URL,
+logon authenticates against that service and publishes signed presence, as
+specified in [Client HLE: service logon and messages](#client-hle-service-logon-and-messages).
 
 Transport startup succeeds through XNetStartup, WSAStartup and XOnlineStartup,
 with paired reference-counted cleanup. GetUsers writes the fixed 16-record
 buffer and an output count. Records are 112 bytes, with the XUID at offset 0,
 gamertag at 12 and per-user HRESULT at 108. Logon accepts four controller slots,
 checks their identities against the configured accounts and returns a persistent
-SDK task handle. TaskContinue and LogonTaskGetResults return connection established
-(`0x001510f0`) for that task. GetLogonUsers returns a stable guest pointer to the
+SDK task handle. With a server, TaskContinue and LogonTaskGetResults remain
+running (`0`) until verification and SignedIn finish. Success returns connection
+established (`0x001510f0`). GetLogonUsers then returns a stable guest pointer to
 four records with per-user HRESULT zero. Closing the connection clears that array
-and invalidates its tasks. ChangeLogonUsers commits a replacement array on its
-first pump and reports completion on the next; its result getter writes four
-successful HRESULTs. ServiceInfo succeeds for every requested service ID, with
-an optional endpoint output. NotificationSetState accepts the observed state
-payload without publishing presence to a server.
+and invalidates its tasks. ChangeLogonUsers waits for its server requests, commits
+the replacement array, then reports completion on the next pump. A rejected change
+returns `0x80151300` and its result getter supplies four per-user HRESULTs; failed
+validation preserves the previous users. ServiceInfo succeeds for every requested
+service ID, with an optional endpoint output. These endpoints remain local XNet
+placeholders; HTTP service traffic uses the configured URL.
 
 XNetGetTitleXnAddr returns the static-IP bit (`4`), rather than pending. Its
 36-byte XNADDR packs the host's default-route LAN IPv4 into `ina` and `inaOnline`
@@ -519,9 +527,9 @@ The immediate follow-up tasks have these local behaviors:
 |---|---|
 | XOnlineFriendsStartup | Returns an empty task. Its first pump completes; later pumps return RUNNING_IDLE so the game's disposer can drain it. |
 | XOnlineOfferingIsNewContentAvailable | Returns a task whose result is NO_NEW_CONTENT. |
-| XOnlinePresenceInit | Returns an empty task that completes successfully. |
-| XOnlinePresenceAdd | Validates the task and packed XUID input array; retains no presence data. |
-| XOnlinePresenceSubmit | Accepts the presence task; its pump completes with no data. |
+| XOnlinePresenceInit | Returns a task; with a server it waits for the controller's presence request. |
+| XOnlinePresenceAdd | Stores a bounded watch group of packed 12-byte XUIDs. |
+| XOnlinePresenceSubmit | Queues the controller's current presence; its pump waits for the server acknowledgement. |
 | XOnlineMutelistStartup | Returns an empty task that completes successfully. |
 | XOnlineMutelistGet | Writes count zero and returns a completing task; no mute entries are written. |
 
@@ -534,13 +542,12 @@ stable user array, task handles and QoS headers. Tokens advance without reuse,
 even after cleanup, so stale handles cannot name later tasks. Exhaustion returns
 out-of-memory rather than growing indefinitely.
 
-All 130 named boundary targets are registered when enabled. Sign-in and the
-sockets/System Link entries below implement 55 of them. Each of the other 75,
-including matchmaking, storage, stats and the remaining friend helpers,
-stops with `unimplemented Live API <name>` before reading arguments or executing
-the linked library. There is no silent fallback to XONLINES. Those stops are the
-next milestones' boundaries. The tests establish the public API contracts and
-host transport; the game has not been run to establish a playable session.
+All 130 named boundary targets are registered when enabled: 84 have implemented
+results, including deliberate empty views or failed tasks, and 46 remain named
+stops. The menu audit and remaining-stop list appear below. A stop reports
+`unimplemented Live API <name>` before reading arguments or executing the linked
+library. There is no silent fallback to XONLINES. Tests establish these API and
+host-transport contracts; they do not establish a playable Live session.
 
 Synthetic tests call every implemented entry through the real runtime Runner
 with guest stack arguments. They cover the packed records, stable pointers,
@@ -699,6 +706,142 @@ through broadcast fan-out, verify TCP connect/data/EOF/error paths, FIONBIO,
 FIONREAD, select, per-thread WSA errors, guest memory bounds, keys/address round
 trips, QoS listener data, cleanup and disabled boot wiring. These tests need
 permission to bind localhost sockets. No test builds or launches the game.
-The 75 remaining boundary entries still stop by name, including
-XNetTsAddrToInAddr, online matchmaking, stats, storage, messages and most friend
-operations. Actual lobby/gameplay progression has not been exercised.
+The remaining stops cover backend operations listed below, including
+XNetTsAddrToInAddr and online matchmaking. Actual lobby/gameplay progression has
+not been exercised.
+
+
+## Client HLE: service logon and messages
+
+The existing boot configuration is sufficient: set `enabled = true`, pass the
+CLI's accounts JSON path, and set `server_url` to the service base URL. Account
+creation remains the CLI's responsibility. Boot glue installs the same HLE and
+returns `Arc<Hle>` to an embedding host; no new boot argument is required.
+
+One `h2-live-http` worker owns a blocking `ureq` client. Guest calls only enqueue
+owned host data and poll completions. HTTP, signing, response parsing and waits
+never hold guest memory or HLE locks. The bounded queue fails with TASK_BUSY if
+full. Cleanup cancels the session without joining the thread; the worker sends
+best-effort SignedOut events, including when its command channel disconnects.
+Requests time out after five seconds. `Hle::with_server_options` permits shorter
+timings for tests; production heartbeats are 30 seconds.
+
+The worker reads `/.well-known/h2live.json`, then checks every selected account
+at `/v1/accounts/by-xuid/{xuid}/keys`. Its active public key must match the
+accounts file's private JWK. Only after all identities pass does it append
+SignedIn events to `/v1/events`. Every request has a fresh, single-use bearer;
+events also carry their own signed envelopes. Invalid/unknown/revoked identities
+return `XONLINE_E_LOGON_INVALID_USER` (`0x80151006`); transport/protocol failures
+return CANNOT_ACCESS_SERVICE (`0x80151001`); HTTP 429/503 returns SERVERS_TOO_BUSY
+(`0x80151003`). These are task results, so the title's own error classifier sees
+them. Failed logon publishes no guest user array. A failed heartbeat changes the
+persistent connection task to CONNECTION_LOST (`0x80151004`).
+
+As required by [live-security.md](live-security.md), remote services require
+HTTPS; HTTP is allowed only for loopback. Discovery can select a same-origin API
+path, and redirects are disabled. A discovered URL cannot move bearer tokens to
+another origin. The per-account `server` field never overrides LiveConfig.
+
+While connected, signed POSTs to `/v1/presence/ping` keep each distinct account
+alive. NotificationSetState and PresenceInit/Submit queue PresenceChanged events:
+a clear ONLINE bit means away, otherwise online. `Hle::set_game_id(Some(id))` is
+the telemetry hook for playing with a server game ID; `None` returns to online.
+The raw Xbox session ID is not used as a server game ID. Identical states are
+coalesced by the worker. `Hle::server_status` exposes acknowledged ping count and
+the last HRESULT without any account key data. The telemetry caller is not wired
+in this slice.
+
+After SignedIn, the worker checks these two files:
+
+| Server path under `/v1/titles/4D530064/files/` | Message ID / file class |
+|---|---:|
+| `message_of_the_day.dat` | 1 |
+| `multiplayer_hopper.dat` | 4 |
+
+A 404 produces no message. Other fetch failures remain errors rather than an
+invented empty file. Enumeration uses a logon-time catalog; publishing a previously
+absent file requires another logon. Details and downloads fetch current bytes
+again, so replacements and removals are observed. No legacy Xbox storage endpoint
+is contacted.
+
+MessageEnumerate fills 64-byte XONLINE_MSG_SUMMARY records, with type 1, title ID
+`0x4d530064` and message ID at offset `0x20`. The count is output-only. Each
+signed-in controller also receives one packed nine-byte GetNotificationEx record
+per published file, with MORE_ITEMS until the queue is drained. MessageDetails
+creates an asynchronous task and supports the flags the title supplies.
+DetailsGetResultsProperty returns:
+
+| Tag | Result |
+|---|---|
+| `0x3c2` | 16-bit 1: title-custom message |
+| `0x4c3` | 32-bit 1 |
+| `0x6c4` | UTF-16 filename, including terminator |
+| `0x4c5` | 32-bit file class: 1 or 4 |
+| `0x581` | Stable nonzero 64-bit content version |
+| `0x9c1` | DOWNLOAD_REQUIRED (`0x80155a02`), byte length and attachment flags 0 |
+
+DownloadAttachmentToMemory creates a second asynchronous task. Its result getter
+returns the guest buffer pointer, received size and total size. Downloads enforce
+the caller's capacity and the game's `0x499a` cap, even if the caller provides a
+larger buffer. Oversize returns `XONLINE_E_OVERFLOW` (`0x80150001`) without copying
+a partial attachment. Unknown IDs/properties and closed or wrong-kind handles
+return their XDK errors. MessageDelete acknowledges the title message for that
+controller during this logon; it does not delete the operator's shared file.
+Unobserved flag masks and non-null work events retain the unverified-contract
+stop convention.
+
+Synthetic guest tests use the real memory-backed `live_server::start_embedded`.
+They prove signed logon, unknown/mismatched/missing keys, unavailable and delayed
+servers, multi-user changes, presence, ping acknowledgements, connection loss and
+sign-out. The message test publishes a `live_proto::motd::Motd` file through the
+operator API, follows enumeration, details, property probes and download, then
+inflates the received payload to exactly `0x25224` bytes. Canary buffers and the
+oversize cases check the guest-memory boundaries. No test runs the title.
+
+## Client HLE: menu polling and remaining stops
+
+The polling audit starts from the game wrappers in
+[live-boundary.md](live-boundary.md), and the per-frame message manager documented
+in [live-motd-fetch.md](live-motd-fetch.md). The owner observed a real signed-in
+menu stop at `0x003a0827`; the no-invite path now matches the public XDK contract
+and the retail implementation. Other menu cases are statically audited and tested
+through synthetic guest stacks; browsing every screen has not been run here.
+
+| Game wrapper / call site | Menu-facing result |
+|---|---|
+| `0x0006d210` accepted invite poll | GetAcceptedGameInvite clears the 156-byte output and returns E_FAIL (`0x80004005`). The check at `0x0006d218` treats every nonnegative HRESULT as an invite, so S_FALSE would be wrong. |
+| `0x0008cc40`, `0x0008cd27`, `0x0008cddb`, disposer `0x0006b6a5` | FriendsStartup completes then idles. FriendsEnumerate reports RESULTS_AVAIL (`0x001500f1`); GetLatest returns DWORD count 0. EnumerateFinish lets the final pump succeed before TaskClose. No friend records are invented. |
+| `0x0006d080` / `0x0006d0d3` | GetNotificationEx returns BOOL FALSE and zeroed packed info/state when its title-file queue is empty. It never returns an HRESULT in a BOOL slot. |
+| `0x00058ab8`, `0x00058bd1` | MutelistStartup/Get complete; Get writes count 0. |
+| `0x0008d4d0` | OfferingIsNewContentAvailable reports NO_NEW_CONTENT. |
+| `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte offline records carrying the watched XUIDs. Remote presence is not fetched yet. |
+| `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
+| `0x0006b565` | GetNatType returns the retail initial/unknown value 0. No NAT probing or claim of open NAT is made. |
+| `0x000abc70` through `0x000ac2f2` | Team and member enumerations complete with count 0. Details getters report TEAM_NOT_FOUND (`0x8015210b`) instead of supplying a nonexistent team. |
+| `0x0008d3d0`, `0x00092220`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). StatRead/GetResult returns STAT_USER_NOT_FOUND (`0x80159003`); QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
+| `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
+| `0x0008e750`, manager `0x002c7410` | Message polling uses the server-backed title inbox above, or count 0 without a server. |
+
+These 46 entries still stop by API name because their backend behavior is not
+implemented. They are explicit actions or results used after those actions;
+ordinary empty-menu polling does not need them. Prefixes in the table are part
+of each listed API name.
+
+| Prefix | Remaining suffixes |
+|---|---|
+| `XOnline` | `TitleUpdate` |
+| `XOnlineMatch` | `SessionCreate`, `SessionUpdate`, `SessionGetInfo`, `SessionDelete`, `SessionFindFromID`, `Search`, `SearchGetResults`, `SearchParse`, `SearchResultsLen` |
+| `XOnlineFriends` | `Remove`, `GameInvite`, `AnswerRequest`, `AnswerGameInvite`, `JoinGame`, `RequestEx`, `RequestByNameEx` |
+| `XOnlineGameInvite` | `Send`, `Answer` |
+| `XOnlineMutelist` | `Add`, `Remove` |
+| `XOnlineTeam` | `Create`, `Delete`, `MemberSetProperties`, `MemberRemove`, `MemberRecruit`, `MemberRecruitByName`, `MemberAnswerRecruit` |
+| `XOnlineMessage` | `Create`, `Destroy`, `SetProperty`, `Send` |
+| `XOnlineStat` | `Write`, `WriteGetResult` |
+| `XOnlineStorage` | `CreateServerPath`, `Download`, `DownloadToMemory`, `DownloadToMemoryGetResults`, `UploadByServerPath`, `UploadFromMemory`, `GetProgress` |
+| `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
+| `XNet` | `TsAddrToInAddr` |
+
+Matchmaking/session registration, invitations, clans, feedback storage and remote
+friend presence are future work. The HTTP worker does not turn these into fake
+successful operations. The current proof covers the API boundary and local host
+transport; it does not establish an end-to-end online match.
