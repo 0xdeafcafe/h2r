@@ -77,6 +77,9 @@ pub const DOT_MINUS1_TO_1_D3D: u32 = 1;
 pub const DOT_MINUS1_TO_1_GL: u32 = 2;
 pub const DOT_MINUS1_TO_1: u32 = 3;
 pub const DOT_HILO_1: u32 = 4;
+pub const DOT_HILO_HEMISPHERE_D3D: u32 = 5;
+pub const DOT_HILO_HEMISPHERE_GL: u32 = 6;
+pub const DOT_HILO_HEMISPHERE: u32 = 7;
 
 /// `PS_COMBINERINPUTS(a, b, c, d)`.
 pub fn inputs(a: u8, b: u8, c: u8, d: u8) -> u32 {

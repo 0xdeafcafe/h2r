@@ -509,6 +509,10 @@ fn random_pixel_def(rng: &mut Rng) -> PixelShaderDef {
         DOT_MINUS1_TO_1_D3D,
         DOT_MINUS1_TO_1_GL,
         DOT_MINUS1_TO_1,
+        DOT_HILO_1,
+        DOT_HILO_HEMISPHERE_D3D,
+        DOT_HILO_HEMISPHERE_GL,
+        DOT_HILO_HEMISPHERE,
     ];
     d.dot_mapping = dot_mapping(rng.pick(&maps), rng.pick(&maps), rng.pick(&maps));
     d.input_texture = input_texture(rng.below(2) as u32, rng.below(3) as u32);
@@ -549,6 +553,7 @@ fn random_combiners_match_interpreter() {
     ];
     let (mut compared, mut killed, mut ambiguous) = (0usize, 0usize, 0usize);
     let mut sampled = std::collections::BTreeMap::new();
+    let mut mapped = std::collections::BTreeMap::new();
     for case in 0..200 {
         let d = random_pixel_def(&mut rng);
         let opts = PixelOptions {
@@ -571,6 +576,7 @@ fn random_combiners_match_interpreter() {
         common::check(&src);
         let sampler = TestTextures::random(&mut rng, t.textures);
         let modes = d.decode().texture_modes;
+        let dot_maps = d.decode().dot_mapping;
         let mut u = PixelUniforms::default();
         for c in u.c0.iter_mut().chain(u.c1.iter_mut()) {
             *c = std::array::from_fn(|_| rng.f(0.0, 1.0));
@@ -636,6 +642,13 @@ fn random_combiners_match_interpreter() {
             for m in modes {
                 *sampled.entry(m.name()).or_insert(0usize) += 1;
             }
+            for (st, m) in modes.iter().enumerate() {
+                if m.is_dot() {
+                    *mapped
+                        .entry(format!("{:?}", dot_maps[st]))
+                        .or_insert(0usize) += 1;
+                }
+            }
             let gk = out[i * 8 + 4] != 0.0;
             assert_eq!(
                 gk,
@@ -659,7 +672,7 @@ fn random_combiners_match_interpreter() {
         }
     }
     eprintln!(
-        "compared {compared}, killed {killed}, ambiguous {ambiguous}; fragments per mode {sampled:?}"
+        "compared {compared}, killed {killed}, ambiguous {ambiguous}; fragments per mode {sampled:?}; dot stages per mapping {mapped:?}"
     );
     assert!(
         compared > 5_000 && killed > 0,
@@ -670,6 +683,23 @@ fn random_combiners_match_interpreter() {
         ambiguous * 2 < compared / 4 + killed,
         "{ambiguous} ambiguous fragments"
     );
+    // Every dot mapping, HILO included, fed a compared dot product.
+    for m in [
+        "ZeroToOne",
+        "Minus1To1D3d",
+        "Minus1To1Gl",
+        "Minus1To1",
+        "Hilo1",
+        "HiloHemisphereD3d",
+        "HiloHemisphereGl",
+        "HiloHemisphere",
+    ] {
+        let n = mapped.get(m).copied().unwrap_or(0);
+        assert!(
+            n >= 32,
+            "dot mapping {m} compared on only {n} fragments: {mapped:?}"
+        );
+    }
     // Every supported texture mode was exercised and compared.
     for m in [
         "project2d",

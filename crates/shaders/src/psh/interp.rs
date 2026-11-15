@@ -144,6 +144,9 @@ fn signed(v: Vec4, mask: u8) -> Vec4 {
 }
 
 fn dot_map(m: DotMap, c: Vec4) -> [f32; 3] {
+    if let Some(v) = hilo_map(m, c) {
+        return v;
+    }
     let f: fn(f32) -> f32 = match m {
         DotMap::Minus1To1D3d => sign_d3d,
         DotMap::Minus1To1Gl => sign_gl,
@@ -502,4 +505,23 @@ pub fn run(
         kill = true;
     }
     (!kill).then_some(color)
+}
+
+/// The HILO dot mappings (`None` for the others): the texel as one 32-bit
+/// word laid out as `A8R8G8B8` samples it, hi = a:r, lo = g:b.
+fn hilo_map(m: DotMap, c: Vec4) -> Option<[f32; 3]> {
+    let b = c.map(|x| (x.clamp(0.0, 1.0) * 255.0).round_ties_even());
+    let (hi, lo) = (b[3] * 256.0 + b[0], b[1] * 256.0 + b[2]);
+    let twos = |h: f32| if h >= 32768.0 { h - 65536.0 } else { h };
+    let hemisphere = |x: f32, y: f32| [x, y, (1.0 - (x * x + y * y)).max(0.0).sqrt()];
+    Some(match m {
+        DotMap::Hilo1 => [hi / 65535.0, lo / 65535.0, 1.0],
+        DotMap::HiloHemisphereD3d => hemisphere((hi - 32768.0) / 32767.0, (lo - 32768.0) / 32767.0),
+        DotMap::HiloHemisphereGl => hemisphere(
+            (2.0 * twos(hi) + 1.0) / 65535.0,
+            (2.0 * twos(lo) + 1.0) / 65535.0,
+        ),
+        DotMap::HiloHemisphere => hemisphere(twos(hi) / 32767.0, twos(lo) / 32767.0),
+        _ => return None,
+    })
 }

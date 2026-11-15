@@ -117,8 +117,8 @@ fn shaders_corpus_report(dir: &Path) -> String {
             bump(format!("final combiner {}", c.final_combiner.is_some()));
             for (i, m) in c.texture_modes.iter().enumerate() {
                 bump(format!("tex mode {} (stage {i})", m.name()));
-                if i > 0 && m.texture_dim().is_none() && *m != psh::TexMode::None {
-                    bump(format!("dot map {:?}", c.dot_mapping[i]));
+                if m.is_dot() {
+                    bump(format!("dot map {:?} (stage {i})", c.dot_mapping[i]));
                 }
             }
             for st in &c.stages {

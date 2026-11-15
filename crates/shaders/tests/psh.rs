@@ -559,12 +559,13 @@ fn unsupported_modes_warn() {
         [TEX_PROJECT2D, TEX_DOTPRODUCT, TEX_BRDF, TEX_DOT_ZW],
     );
     let mut d = d;
-    d.dot_mapping = dot_mapping(DOT_HILO_1, 0, 0);
+    // Mapping values 8 to 15 are reserved.
+    d.dot_mapping = dot_mapping(8, 0, 0);
     let t = psh::translate(&d, &Default::default());
     let w = t.warnings.join("\n");
     assert!(w.contains("brdf"), "{w}");
     assert!(w.contains("dot_zw"), "{w}");
-    assert!(w.contains("Hilo1"), "{w}");
+    assert!(w.contains("Reserved(8)"), "{w}");
     common::check(&t.module());
     // A mode in a stage that cannot hold it.
     let bad = def(
@@ -993,4 +994,110 @@ fn default_final_combiner_matches_d3d() {
     d.final_inputs_abcd = inputs(0, 0, 0, REG_V0);
     d.final_inputs_efg = final_efg(0, 0, ONE, 0);
     assert_eq!(d.with_default_final_combiner(true, true), d);
+}
+
+/// HILO dot mappings read the source texel as two 16-bit halves, the 32-bit
+/// word presented as an A8R8G8B8 texture samples it: hi = a:r (bits
+/// 31..16), lo = g:b (bits 15..0).
+#[test]
+fn hilo_dot_mappings_split_the_texel_word() {
+    // t1 = dot(tc1, map(t0)), t2 = sample(dot1, dot2) echoed into r0.
+    let mut d = def(
+        &[(
+            inputs(REG_T2, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+            inputs(REG_T2 | CHAN_ALPHA, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [TEX_PASSTHRU, TEX_DOTPRODUCT, TEX_DOT_ST, 0],
+    );
+    let run = |d: &PixelShaderDef, word: u32, tc1: [f32; 3], tc2: [f32; 3]| {
+        let byte = |s: u32| ((word >> s) & 0xFF) as f32 / 255.0;
+        let mut inp = Inputs::default();
+        // Passthru hands the "texel" through: (r, g, b, a).
+        inp.t[0] = [byte(16), byte(8), byte(0), byte(24)];
+        inp.t[1] = [tc1[0], tc1[1], tc1[2], 0.0];
+        inp.t[2] = [tc2[0], tc2[1], tc2[2], 0.0];
+        let t = psh::translate(d, &Default::default());
+        assert!(t.warnings.is_empty(), "{:?}", t.warnings);
+        common::check(&t.module());
+        let out = interp::run(
+            d,
+            &Default::default(),
+            &inp,
+            &PixelUniforms::default(),
+            &Echo,
+        );
+        let o = out.unwrap();
+        [o[0], o[1]]
+    };
+    let close = |a: [f32; 2], b: [f64; 2]| {
+        for k in 0..2 {
+            assert!((a[k] as f64 - b[k]).abs() < 2e-6, "{a:?} != {b:?}");
+        }
+    };
+
+    // HILO_1 on a D24S8 word (depth 0x123456, stencil 0x78) seen as colour:
+    // (hi/65535, lo/65535, 1). The texture coordinates of the menu's depth
+    // fog style reconstruct depth / 2^24 (plus stencil / 2^32).
+    d.dot_mapping = dot_mapping(DOT_HILO_1, DOT_HILO_1, 0);
+    let word = 0x1234_5678;
+    let k = 65535.0f32;
+    close(
+        run(
+            &d,
+            word,
+            [1.0, 0.0, 0.25],
+            [k / 65536.0, k / 4_294_967_296.0, 0.0],
+        ),
+        [
+            0x1234 as f64 / 65535.0 + 0.25,
+            0x123456 as f64 / 16_777_216.0 + 0x78 as f64 / 4_294_967_296.0,
+        ],
+    );
+    close(
+        run(&d, word, [0.0, 1.0, 0.0], [0.0, 0.0, 0.5]),
+        [0x5678 as f64 / 65535.0, 0.5],
+    );
+
+    // Hemisphere: signed halves, z = sqrt(1 - hi^2 - lo^2).
+    let hemi = |hi: f64, lo: f64| (1.0 - hi * hi - lo * lo).max(0.0).sqrt();
+    // Two's complement over 32767: 0x4000 -> 0.50002, 0xC000 -> -0.50002.
+    d.dot_mapping = dot_mapping(DOT_HILO_HEMISPHERE, DOT_HILO_HEMISPHERE, 0);
+    let (h, l) = (16384.0 / 32767.0, -16384.0 / 32767.0);
+    close(
+        run(&d, 0x4000_C000, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+        [h, -l],
+    );
+    close(
+        run(&d, 0x4000_C000, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        [hemi(h, l), 0.0],
+    );
+    // D3D: excess 32768 over 32767 (0xC000 -> 0.50002, 0x4000 -> -0.50002).
+    d.dot_mapping = dot_mapping(DOT_HILO_HEMISPHERE_D3D, DOT_HILO_HEMISPHERE_D3D, 0);
+    close(
+        run(&d, 0xC000_4000, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+        [h, -l],
+    );
+    close(
+        run(&d, 0xC000_4000, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        [hemi(h, l), 0.0],
+    );
+    // GL: two's complement, (2s + 1) / 65535.
+    d.dot_mapping = dot_mapping(DOT_HILO_HEMISPHERE_GL, DOT_HILO_HEMISPHERE_GL, 0);
+    let (h, l) = (32769.0 / 65535.0, -32767.0 / 65535.0);
+    close(
+        run(&d, 0x4000_C000, [1.0, 0.0, 0.0], [0.0, -1.0, 0.0]),
+        [h, -l],
+    );
+    close(
+        run(&d, 0x4000_C000, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        [hemi(h, l), 0.0],
+    );
+    // Saturated halves leave no room for z.
+    d.dot_mapping = dot_mapping(DOT_HILO_HEMISPHERE, DOT_HILO_HEMISPHERE, 0);
+    close(
+        run(&d, 0x7FFF_7FFF, [0.0, 0.0, 1.0], [0.0, 0.0, 0.0]),
+        [0.0, 0.0],
+    );
 }

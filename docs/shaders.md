@@ -445,11 +445,47 @@ hold anything.
 | **dot_zw** | **unsupported.** The dot product is computed but depth is not replaced (no `frag_depth` write) |
 | **brdf** | **unsupported.** Reads zero (xemu doesn't implement it either) |
 | dot mappings zero_to_one, minus1_to_1_d3d/_gl/(nv) | supported, for unsigned 8-bit data |
-| **dot mappings hilo_*** | **unsupported.** Treated as zero_to_one with a warning; HILO formats need the renderer's cooperation |
+| dot mappings hilo_1, hilo_hemisphere_d3d/_gl/(nv) | supported; the texel is read as a 32-bit word, see below |
 
-Halo 2 uses none of the unsupported entries. A stage that holds a mode it
+Halo 2's tags use none of the unsupported entries. A stage that holds a mode it
 can't (dot_st in stage 0, for example) is skipped with a warning.
 `PixelShader::warnings` lists everything that was approximated.
+
+#### HILO dot mappings
+
+A HILO mapping reads its source texel as two 16-bit halves of one 32-bit
+word instead of three 8-bit channels. The translator takes the word as an
+`A8R8G8B8` texture samples it in gfx (a = bits 31..24, r = 23..16,
+g = 15..8, b = 7..0, the split xemu's `dotmap_hilo_1` uses too), so
+hi = a·256 + r and lo = g·256 + b, each channel rounded from `x·255`.
+
+| mapping | vector |
+|---|---|
+| hilo_1 | (hi/65535, lo/65535, 1) |
+| hilo_hemisphere_d3d | (h, l, √max(0, 1 − h² − l²)) with h = (hi − 32768)/32767, likewise l |
+| hilo_hemisphere_gl | the same with two's-complement halves, h = (2s + 1)/65535 |
+| hilo_hemisphere | the same with two's-complement halves, h = s/32767 |
+
+`hilo_1` is NV_texture_shader's `HILO`-to-`(hi, lo, 1)` rule. The
+hemisphere variants follow the spec's hemisphere completion, with the three
+signed conventions carried over from the 8-bit mappings. xemu leaves them as
+`FIXME`, and none of them has been checked against hardware.
+
+The menu's depth-fog pass uses this. It binds the depth buffer as a colour
+texture and dots it, with `hilo_1`, against texture coordinates that put the
+halves back together: a D24S8 word is `depth << 8 | stencil`, so hi is the
+top 16 bits of depth and lo is the low depth byte above the stencil byte.
+For this to work the renderer has to present the depth texel's 32-bit word
+in that `A8R8G8B8` layout, which is what d3d-r8 provides. Two caveats
+apply. Filtering 8-bit halves is not 16-bit filtering (a carry between r
+and a is lost), so only point-sampled HILO stages are exact. A format that
+forces alpha (`X8R8G8B8`) loses the top byte. No retail tag uses a HILO
+mapping: all 10 dot-product stages in the 149 definitions, and every dot
+stage across the 307,944 resolved material implementations, use
+`minus1_to_1_d3d`. `tests/psh.rs` (`hilo_dot_mappings_split_the_texel_word`)
+works through a D24S8 word and each hemisphere convention by hand.
+`tests/gpu.rs` draws HILO mappings in the random combiner test and requires
+at least 32 compared dot stages per mapping.
 
 Texture dimensions follow the mode. `PixelOptions::texture_dims` overrides
 project2d, project3d and cubemap the way D3D's `TEXMODE_ADJUST` would, but
@@ -569,8 +605,8 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
 
 - **Point sprites.** `oPts` is computed, but WGSL has no point size. Halo 2
   writes it in 2 programs, which need quad expansion in the renderer.
-- **dot_zw depth replacement, brdf, HILO dot mappings.** See the table
-  above. None of them appear in Halo 2.
+- **dot_zw depth replacement and brdf.** See the table above. Neither
+  appears in Halo 2's tags.
 - **Persistent constant writes** from read/write programs and **state
   programs** are not translated. Neither is used by Halo 2.
 - **Edge-case float behaviour.** wgpu's Metal backend compiles with fast

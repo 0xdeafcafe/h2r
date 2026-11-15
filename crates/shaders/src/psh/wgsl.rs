@@ -181,6 +181,24 @@ fn xps_outside(c: vec3f, m: vec3<bool>) -> bool {
 fn xps_mux_lsb(a: f32) -> bool { return (u32(a * 255.0) & 1u) == 1u; }
 "#;
 
+/// HILO dot mappings. The source texel is read as one 32-bit word, laid out
+/// the way an `A8R8G8B8` texture samples it (a = bits 31..24, r = 23..16,
+/// g = 15..8, b = 7..0, so xemu's `dotmap_hilo_1` split): hi = bits 31..16,
+/// lo = bits 15..0. The hemisphere variants read the halves as signed, by
+/// analogy with the 8-bit mappings, and complete the vector to unit length.
+pub(crate) const HILO_PRELUDE: &str = r#"
+fn xps_hilo(c: vec4f) -> vec2f {
+    let b = round(clamp(c, vec4f(0.0), vec4f(1.0)) * 255.0);
+    return vec2f(b.a * 256.0 + b.r, b.g * 256.0 + b.b);
+}
+fn xps_hilo_twos(h: vec2f) -> vec2f { return select(h, h - 65536.0, h >= vec2f(32768.0)); }
+fn xps_hemisphere(v: vec2f) -> vec3f { return vec3f(v, sqrt(max(1.0 - dot(v, v), 0.0))); }
+fn xps_hilo_1(c: vec4f) -> vec3f { return vec3f(xps_hilo(c) / 65535.0, 1.0); }
+fn xps_hilo_hemi_d3d(c: vec4f) -> vec3f { return xps_hemisphere((xps_hilo(c) - 32768.0) / 32767.0); }
+fn xps_hilo_hemi_gl(c: vec4f) -> vec3f { return xps_hemisphere((2.0 * xps_hilo_twos(xps_hilo(c)) + 1.0) / 65535.0); }
+fn xps_hilo_hemi_nv(c: vec4f) -> vec3f { return xps_hemisphere(xps_hilo_twos(xps_hilo(c)) / 32767.0); }
+"#;
+
 fn ty(alpha_portion: bool) -> &'static str {
     if alpha_portion { "f32" } else { "vec3f" }
 }
@@ -287,6 +305,10 @@ fn dot_map_fn(m: DotMap, warnings: &mut Vec<String>, stage: usize) -> &'static s
         DotMap::Minus1To1D3d => "xps_sign_d3d",
         DotMap::Minus1To1Gl => "xps_sign_gl",
         DotMap::Minus1To1 => "xps_sign_nv",
+        DotMap::Hilo1 => "xps_hilo_1",
+        DotMap::HiloHemisphereD3d => "xps_hilo_hemi_d3d",
+        DotMap::HiloHemisphereGl => "xps_hilo_hemi_gl",
+        DotMap::HiloHemisphere => "xps_hilo_hemi_nv",
         other => {
             warnings.push(format!(
                 "stage {stage}: dot mapping {other:?} unsupported; using zero_to_one"
@@ -316,6 +338,9 @@ fn mapped(src: &str, m: DotMap, warnings: &mut Vec<String>, stage: usize) -> Str
     let f = dot_map_fn(m, warnings, stage);
     if f.is_empty() {
         format!("{src}.rgb")
+    } else if f.starts_with("xps_hilo") {
+        // HILO reads the whole texel (both halves of the word).
+        format!("{f}({src})")
     } else {
         format!("{f}({src}.rgb)")
     }
@@ -330,6 +355,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     };
     let mut s = String::new();
     s.push_str(PRELUDE);
+    s.push_str(HILO_PRELUDE);
 
     // Texture bindings.
     let mut textures = [None; 4];
