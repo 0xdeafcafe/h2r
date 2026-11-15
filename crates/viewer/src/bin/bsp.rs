@@ -890,7 +890,8 @@ mod tests {
 
     #[test]
     fn render_output_never_clobbers() {
-        let dir = std::env::temp_dir().join(format!("h2-bsp-out-{}", std::process::id()));
+        // Resolve the temp dir: on macOS it sits under /var, a symlink the writer refuses.
+        let dir = std::fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("h2-bsp-out-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("x.png");

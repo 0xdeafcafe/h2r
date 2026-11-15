@@ -111,7 +111,8 @@ mod tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
-        let p = std::env::temp_dir().join(format!("h2-viewer-out-{name}-{}", std::process::id()));
+        // Resolve the temp dir: on macOS it sits under /var, a symlink the writer refuses.
+        let p = fs::canonicalize(std::env::temp_dir()).unwrap().join(format!("h2-viewer-out-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
         p
