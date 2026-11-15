@@ -41,78 +41,9 @@ pub fn install(rt: &runtime::Runtime, uses: &Uses) {
     });
 }
 
-/// Halo's frame-pacing wait, `0x0012b2e0` (callers 0x12b77b, 0x163a1f,
-/// 0x163ad2, 0x223288; no args, plain `ret`, returns the frame delta in
-/// EAX). It spins (0x12b330..0x12b342, no kernel call, no yield) until the
-/// 64-bit vertical-blank counter at 0x485ab0 reaches `[0x4e6398] - 1`. Only
-/// the D3D vertical-blank callback the game registers at device+0x1db8
-/// (0x12b093: 0x12b2a0 -> 0x14280) advances that counter, and nothing calls
-/// it (crates/d3d's Swap does not). In generated code the spin is a native
-/// loop, so the runner never regains control: the boot hangs silently.
-///
-/// Boot stopgap: deliver the missing vertical blanks, as fast as the game
-/// asks. While the counter is short of the target, call the registered
-/// callback with a `D3DVBLANKDATA { VBlank, Swap, Flags }` record (Swap =
-/// device+0x2478) and re-enter; then do the rest of the body exactly
-/// (0x12b344..0x12b3b5): store counter+1 at 0x4e63b0, clamp counter+1 -
-/// `[0x4e6398]` to [0, 0x7fff] as the result, and set the byte at 0x4e63bc.
-/// Owner: d3d + runtime/kernel (a vertical-blank source on the clock that
-/// runs the callback at a safe point), docs/BOOT.md.
-pub const FRAME_WAIT: u32 = 0x0012_b2e0;
-const VBLANK_COUNTER: u32 = 0x0048_5ab0;
-/// A boot-owned RW page: the D3DVBLANKDATA record here, the yield interval
-/// in wrappers.rs.
+/// A boot-owned RW page (the yield interval in wrappers.rs, the stream
+/// purge interval below).
 pub const BOOT_SCRATCH: u32 = 0xa0ff_3000;
-const VBLANK_RECORD: u32 = BOOT_SCRATCH;
-
-fn u64_at(mem: &runtime::Guest, a: u32) -> Result<u64, runtime::GuestFault> {
-    Ok(mem.u32(a)? as u64 | (mem.u32(a + 4)? as u64) << 32)
-}
-fn set_u64(mem: &mut runtime::Guest, a: u32, v: u64) -> Result<(), runtime::GuestFault> {
-    mem.set_u32(a, v as u32)?;
-    mem.set_u32(a + 4, (v >> 32) as u32)
-}
-
-pub fn install_frame_wait(rt: &runtime::Runtime, uses: &Uses) {
-    let _ = rt.memory().map_zeroed(BOOT_SCRATCH, 0x1000, runtime::guest::Permissions::RW);
-    let u = std::sync::Arc::clone(uses);
-    rt.edit_dispatch(|d| {
-        d.register_override(FRAME_WAIT, "boot:frame wait (vblanks delivered)", move |cpu, ctx, _| {
-            let rt = std::sync::Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let counter = u64_at(&mem, VBLANK_COUNTER)? as i64;
-            let start = u64_at(&mem, 0x004e_6398)? as i64;
-            let device = d3d::GuestLayout::HALO2.device;
-            let callback = mem.u32(device + 0x1db8)?;
-            if counter < start.wrapping_sub(1) {
-                u.lock().unwrap().entry(FRAME_WAIT).or_insert(("frame wait: vertical blank delivered", 0)).1 += 1;
-                if callback == 0 {
-                    set_u64(&mut mem, VBLANK_COUNTER, start.wrapping_sub(1) as u64)?;
-                    return Ok(runtime::TransferAbi::jump(FRAME_WAIT));
-                }
-                let swap = mem.u32(device + 0x2478)?;
-                mem.set_u32(VBLANK_RECORD, counter.wrapping_add(1) as u32)?;
-                mem.set_u32(VBLANK_RECORD + 4, swap)?;
-                mem.set_u32(VBLANK_RECORD + 8, 0)?;
-                cpu.esp = cpu.esp.wrapping_sub(4);
-                mem.set_u32(cpu.esp, VBLANK_RECORD)?;
-                return ctx.call_guest(cpu, &mut mem, callback, |cpu, _| {
-                    cpu.esp = cpu.esp.wrapping_add(4);
-                    Ok(runtime::TransferAbi::jump(FRAME_WAIT))
-                });
-            }
-            set_u64(&mut mem, 0x004e_63a8, counter.wrapping_add(1) as u64)?;
-            let next = counter.wrapping_add(1);
-            set_u64(&mut mem, 0x004e_63b0, next as u64)?;
-            let delta = next.wrapping_sub(start);
-            let ax = delta.clamp(0, 0x7fff) as u32;
-            let gate = mem.u16(0x004e_63b8)? as i16 > 0;
-            mem.set_u8(0x004e_63bc, (gate && ax == 0) as u8)?;
-            cpu.eax = ax;
-            mem.ret(cpu, 0)
-        });
-    });
-}
 
 /// The streaming block's purge callback, `0x00213fa0` (stdcall, 2 args,
 /// `ret 8`; registered by `0x213fe0` through the pool allocator

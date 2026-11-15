@@ -11,16 +11,67 @@ pub const PUSH_BASE: u32 = 0xa0e0_0000;
 pub const PUSH_LEN: u32 = 0x8_0000;
 pub const SCRATCH_BASE: u32 = 0xa0e8_0000;
 
-pub type Shared = Arc<Mutex<d3d::Device<RecordingBackend>>>;
-
 pub struct Installed {
-    pub device: Shared,
+    report: Box<dyn Fn() -> String + Send + Sync>,
     pub implemented: usize,
     pub stopping: usize,
     pub native: usize,
 }
 
+/// `d3d::register` on a headless `RecordingBackend`, or, with
+/// `H2_BOOT_GFX=<dir>`, on a headless `GfxBackend` with the nv2a shader
+/// translator; then every `Swap` that shows a new image (at most one per
+/// `H2_BOOT_GFX_EVERY` swaps, default 30) is written to `<dir>` as
+/// `frame-NNNNN.png`. Halo's frame wait goes through
+/// `d3d::register_frame_wait` either way.
 pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
+    match std::env::var_os("H2_BOOT_GFX") {
+        None => install_with(rt, RecordingBackend::new()),
+        Some(dir) => {
+            let dir = std::path::PathBuf::from(dir);
+            std::fs::create_dir_all(&dir)?;
+            let every: u64 = std::env::var("H2_BOOT_GFX_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+            let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
+            let mut swaps = 0u64;
+            let backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags| {
+                swaps += 1;
+                if swaps != 1 && swaps % every != 0 {
+                    return;
+                }
+                if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}.png"))) {
+                    eprintln!("boot: gfx screenshot {swaps}: {e}");
+                }
+            });
+            install_with(rt, backend)
+        }
+    }
+}
+
+fn save_png(
+    ctx: &gfx::GfxContext,
+    store: &gfx::surface::SurfaceStore,
+    id: gfx::surface::SurfaceId,
+    path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let (mut px, order) = store.read_color(ctx, id).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let d = store.get(id).map_err(|e| anyhow::anyhow!("{e:?}"))?.desc();
+    if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
+        for p in px.chunks_exact_mut(4) {
+            p.swap(0, 2);
+        }
+    }
+    for p in px.chunks_exact_mut(4) {
+        p[3] = 0xff; // X8R8G8B8 back buffer: alpha is undefined
+    }
+    let f = std::io::BufWriter::new(std::fs::File::create(path)?);
+    let mut enc = png::Encoder::new(f, d.width, d.height);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()?.write_image_data(&px)?;
+    Ok(())
+}
+
+fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime, backend: B) -> anyhow::Result<Installed> {
     let cfg = DeviceConfig {
         upload: UploadPolicy::Always,
         ..DeviceConfig::halo2(
@@ -29,59 +80,44 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
         )
     };
     d3d::runtime_glue::map_device_memory(&mut rt.memory(), &cfg)?;
-    let device = d3d::runtime_glue::shared(cfg, RecordingBackend::new());
+    let device = d3d::runtime_glue::shared(cfg, backend);
     let mut out = None;
-    rt.edit_dispatch(|d| out = Some(d3d::register(d, Arc::clone(&device))));
+    rt.edit_dispatch(|d| {
+        out = Some(d3d::register(d, Arc::clone(&device)));
+        // Halo's frame wait 0x12b2e0 ("Vertical blank" in docs/d3d.md):
+        // calls the vblank callback at device+0x1db8 until the counter
+        // reaches the target, unpaced. Generated code would otherwise spin
+        // on the counter natively and never return to the runner.
+        d3d::register_frame_wait(
+            d,
+            Arc::clone(&device),
+            d3d::FrameWait::HALO2,
+            Arc::new(d3d::runtime_glue::default_stop),
+        );
+    });
     let r = out.unwrap();
-    Ok(Installed { device, implemented: r.implemented.len(), stopping: r.stopping.len(), native: r.native.len() })
+    let dev: Arc<Mutex<d3d::Device<B>>> = device;
+    Ok(Installed {
+        report: Box::new(move || {
+            let d = dev.lock().unwrap();
+            format!("stats {:?}; last stop {:?}", d.stats(), d.last_stop())
+        }),
+        implemented: r.implemented.len(),
+        stopping: r.stopping.len(),
+        native: r.native.len(),
+    })
 }
 
 /// One line for the run report.
 pub fn describe(i: &Installed) -> String {
-    let d = i.device.lock().unwrap();
     format!(
-        "d3d: {} implemented, {} stopping, {} native overrides; stats {:?}; last stop {:?}",
+        "d3d: {} implemented, {} stopping, {} native overrides; {}",
         i.implemented,
         i.stopping,
         i.native,
-        d.stats(),
-        d.last_stop()
+        (i.report)()
     )
 }
-
-/// crates/d3d entries listed as unimplemented that the boot turns into
-/// no-ops, as `(address, report name, bytes popped by the ret)`. Each one
-/// only computes from device fields the HLE does not keep and writes NV2A
-/// methods into the push buffer (or device-private matrices), which the
-/// device's read-back does not decode; the HLE keeps its own viewport and
-/// transforms from the D3DDevice_* calls. Owner: crates/d3d.
-///
-/// - 0x3f6190, viewport push fragment. EAX = put, ESI = device, returns the
-///   new put in EAX, plain `ret`. Writes viewport offset/scale (0x0a20,
-///   0x0af0) and the clip range (0x0394). Halo's rasterizer calls it inline
-///   (0x12dc8) and stores EAX as put; EAX is left unchanged (nothing pushed).
-/// - 0x3f6840, D3D_UpdateProjectionViewportTransform. No args, plain `ret`.
-///   Builds the projection-viewport matrix at device+0x980 and sets dirty
-///   bit 0x200 in 0x407490. Called from 0x35c95 when the game flips the
-///   depth mode at 0x4076d4.
-/// - 0x3f6f40, transform/viewport push. ESI = device, plain `ret`; pushes
-///   the transform constants and stores the new put in [esi] itself, so
-///   doing nothing leaves put as it was. Called right after 0x3f6840.
-/// - 0x3f6390, control push fragment. EDX = put, [esp+4] = device,
-///   `ret 4`, and it returns the new put in **EAX** (`lea eax,[edx+8]`;
-///   crates/d3d's table says EDX). Writes NV097_SET_CONTROL0 (0x0290) with
-///   the depth-format bits (0x100001, | 0x10000000 when 0x407718, | 0x10000
-///   when 0x4076d4 == 2, | 0x1000 for some depth surface formats).
-///   Called from 0x35cb8; EAX = EDX (nothing pushed).
-pub const NO_OPS: &[(u32, &str, u32)] = &[
-    (0x003f_6190, "D3D viewport push fragment (nothing pushed)", 0),
-    (0x003f_6840, "D3D_UpdateProjectionViewportTransform (no-op)", 0),
-    (0x003f_6f40, "D3D transform/viewport push 0x3f6f40 (no-op)", 0),
-    (0x003f_6390, "D3D control push fragment 0x3f6390 (nothing pushed)", 4),
-];
-
-/// Entries in [`NO_OPS`] whose new put is EDX on entry, returned in EAX.
-const PUT_IN_EDX: &[u32] = &[0x003f_6390];
 
 /// crates/d3d entries listed as unimplemented whose retail body is safe to
 /// run as generated code: the boot disables the d3d override so the
@@ -105,39 +141,9 @@ pub fn install_stopgaps(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
                 uses.lock().unwrap().entry(addr).or_insert((name, 0));
             }
         }
-        for &(addr, name, pop) in NO_OPS {
-            let u = Arc::clone(uses);
-            d.register_override(addr, "boot:d3d no-op", move |cpu, ctx, _| {
-                u.lock().unwrap().entry(addr).or_insert((name, 0)).1 += 1;
-                if PUT_IN_EDX.contains(&addr) {
-                    cpu.eax = cpu.edx;
-                }
-                ctx.runtime().memory().ret(cpu, pop)
-            });
-        }
     });
 }
 
-/// D3DDevice_SetSoftDisplayFilter at 0x3f8c70 (crates/d3d: "display/flicker
-/// filter", unimplemented). Register ABI: ESI = enable, plain `ret`. The
-/// retail body sends AvSendTVEncoderOption(device+0x1c28 register base,
-/// 0xe, enable, NULL) unless the cached state already matches, then caches
-/// it: [0x40863c] = 1 (valid), [0x408630] = enable != 0. There is no TV
-/// encoder, so only the cache is kept. Called from 0x14170.
-pub const SET_SOFT_DISPLAY_FILTER: u32 = 0x003f_8c70;
-
-pub fn install_display_filter(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
-    let u = Arc::clone(uses);
-    rt.edit_dispatch(|d| {
-        d.register_override(SET_SOFT_DISPLAY_FILTER, "boot:D3DDevice_SetSoftDisplayFilter", move |cpu, ctx, _| {
-            u.lock().unwrap().entry(SET_SOFT_DISPLAY_FILTER).or_insert(("D3DDevice_SetSoftDisplayFilter (cached only)", 0)).1 += 1;
-            let mut mem = ctx.runtime().memory();
-            mem.set_u32(0x0040_863c, 1)?;
-            mem.set_u32(0x0040_8630, (cpu.esi != 0) as u32)?;
-            mem.ret(cpu, 0)
-        });
-    });
-}
 
 /// Retail NV2A register base. Halo's inlined GPU-idle waits read it from
 /// device+0x934 and spin on PFIFO (`+0x3240` != `+0x3244`, CACHE1 DMA put
@@ -252,139 +258,4 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
         let _ = mem.write_bytes(0x8000_0000 | phys, &vec![0; len as usize], 1);
         let _ = mem.set_u32(header + 4, phys);
     }
-}
-
-/// The XDK resource busy check, `0x003fb710` (register ABI: ECX = resource,
-/// plain `ret`, BOOL in EAX; EDI preserved). Retail body: busy (1) if the
-/// lock bits `0x780000` are set in the resource's Common word or, for a
-/// type-5 resource with a parent at +0x14, in the parent's; otherwise it
-/// compares the resource's push-buffer fence `[res+8]` with the GPU read
-/// pointer (`[[device+0x30]]`) and put (`[device+0x2c]`), and when the GPU
-/// is past it clears the fence and returns 0. Called from the game's pool
-/// allocator (`0x12d1ea`) before it reuses a block.
-///
-/// Boot stopgap: the same lock-bit checks, with the fence always passed
-/// (the HLE device executes every push synchronously, so nothing is in
-/// flight). Owner: d3d (crates/d3d lists it as a stopping entry).
-pub const RESOURCE_BUSY: u32 = 0x003f_b710;
-
-pub fn install_resource_busy(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
-    const LOCKS: u32 = 0x0078_0000;
-    let u = Arc::clone(uses);
-    rt.edit_dispatch(|d| {
-        d.register_override(RESOURCE_BUSY, "boot:D3D resource busy check (GPU idle)", move |cpu, ctx, _| {
-            u.lock().unwrap().entry(RESOURCE_BUSY).or_insert(("D3D resource busy 0x3fb710 (GPU idle)", 0)).1 += 1;
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let is_child = |c: u32| c & 0x7_0000 == 0x5_0000;
-            let mut res = cpu.ecx;
-            let common = mem.u32(res)?;
-            let parent = mem.u32(res + 0x14)?;
-            if is_child(common) && parent != 0 {
-                if common & LOCKS != 0 || mem.u32(parent)? & LOCKS != 0 {
-                    cpu.eax = 1;
-                    return mem.ret(cpu, 0);
-                }
-                res = parent;
-            }
-            let common = mem.u32(res)?;
-            if common & LOCKS != 0 {
-                cpu.eax = 1;
-                return mem.ret(cpu, 0);
-            }
-            if is_child(common) {
-                let p = mem.u32(res + 0x14)?;
-                if p != 0 && mem.u32(p)? & LOCKS != 0 {
-                    cpu.eax = 1;
-                    cpu.ecx = res;
-                    return mem.ret(cpu, 0);
-                }
-            }
-            if mem.u32(res + 8)? != 0 {
-                mem.set_u32(res + 8, 0)?;
-            }
-            cpu.eax = 0;
-            cpu.ecx = res;
-            mem.ret(cpu, 0)
-        });
-    });
-}
-
-/// `0x003f8cc0` (stdcall, 1 arg: 32 dwords; called from 0x47a55, the
-/// d3d table calls it the gamma/display ramp). Retail body: unless
-/// device+8 bit 0x10, cache the 32 dwords at device+0x197c; then push them
-/// as NV2A method 0x1480 x32. crates/d3d's push parser stops on method
-/// 0x1480 ("unimplemented NV2A method"), so running the retail body only
-/// moves the stop.
-///
-/// Boot stopgap: the cache write, no push. Owner: d3d (method 0x1480 in the
-/// push parser, then this entry can run as the retail body).
-pub const RAMP_1480: u32 = 0x003f_8cc0;
-
-pub fn install_ramp(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
-    let u = Arc::clone(uses);
-    rt.edit_dispatch(|d| {
-        d.register_override(RAMP_1480, "boot:0x3f8cc0 cache only (method 0x1480 not pushed)", move |cpu, ctx, _| {
-            u.lock().unwrap().entry(RAMP_1480).or_insert(("D3D 0x3f8cc0 ramp (cached, method 0x1480 not pushed)", 0)).1 += 1;
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let device = mem.u32(0x0040_7488)?;
-            let src = mem.u32(cpu.esp + 4)?;
-            if mem.u8(device + 8)? & 0x10 == 0 {
-                for i in 0..32 {
-                    let w = mem.u32(src + i * 4)?;
-                    mem.set_u32(device + 0x197c + i * 4, w)?;
-                }
-            }
-            mem.ret(cpu, 4)
-        });
-    });
-}
-
-/// `D3DDevice_SetRenderTarget` (`0x003f7870`, stdcall `pRenderTarget,
-/// pNewZStencil`, `ret 8`) when either surface is a level of a texture
-/// (`Parent`, header +0x14, non-zero). crates/d3d stops on those
-/// (render-to-texture): `0x14bc0` selects the offscreen targets `0x14850`
-/// built with `0x3fb7a0`.
-///
-/// Boot stopgap: record the pair in the device's game-visible fields
-/// (+0x1a04 / +0x1a08, which is all the HLE writes to guest memory) and
-/// leave the HLE drawing into its current target. Offscreen passes land on
-/// the current target and the texture keeps its old bytes, so those frames
-/// are wrong, but the trace goes on. Every other call goes to crates/d3d
-/// unchanged. Owner: d3d (render-to-texture).
-pub const SET_RENDER_TARGET: u32 = 0x003f_7870;
-
-pub fn install_render_to_texture(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
-    // Opt-in: the next stop is then the 320x240 offscreen viewport on the
-    // 640x480 back buffer, which this stopgap itself causes.
-    if std::env::var_os("H2_BOOT_RTT").is_none() {
-        return;
-    }
-    let inner = D3D_SHADOW + 0x10;
-    let u = Arc::clone(uses);
-    rt.edit_dispatch(|d| {
-        let prev = d.register_override(SET_RENDER_TARGET, "boot:SetRenderTarget (texture levels kept off the HLE)", move |cpu, ctx, _| {
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let target = mem.u32(cpu.esp + 4)?;
-            let z = mem.u32(cpu.esp + 8)?;
-            let level = |m: &runtime::Guest, s: u32| -> Result<bool, runtime::GuestFault> {
-                Ok(s != 0 && m.u32(s + 0x14)? != 0)
-            };
-            if !level(&mem, target)? && !level(&mem, z)? {
-                return Ok(runtime::TransferAbi::jump(inner));
-            }
-            u.lock().unwrap().entry(SET_RENDER_TARGET).or_insert(("SetRenderTarget to a texture level (HLE target kept)", 0)).1 += 1;
-            let device = d3d::GuestLayout::HALO2.device;
-            if target != 0 {
-                mem.set_u32(device + d3d::layout::device_field::RENDER_TARGET, target)?;
-            }
-            mem.set_u32(device + d3d::layout::device_field::DEPTH_STENCIL, z)?;
-            mem.ret(cpu, 8)
-        });
-        if let Some(prev) = prev {
-            d.restore_override(inner, prev);
-        }
-    });
 }

@@ -18,6 +18,8 @@ vfs.workspace = true
 anyhow.workspace = true
 libloading = "0.8"
 d3d = { path = "../d3d" }
+gfx = { path = "../gfx" }
+png = "0.18"
 dsound = { path = "../dsound" }
 audio = { path = "../audio", default-features = false }
 bink-hle = { path = "../bink-hle" }

@@ -308,17 +308,12 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
         wrappers::install_tv_encoder(&loaded.runtime, u);
-        game_glue::install_frame_wait(&loaded.runtime, u);
         wrappers::install_yield(&loaded.runtime, u);
         game_glue::install_stream_purge(&loaded.runtime, u);
     }
     let d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
     if let (Some(_), Some(u)) = (&d3d_calls, &uses) {
         d3d_glue::install_stopgaps(&loaded.runtime, u);
-        d3d_glue::install_display_filter(&loaded.runtime, u);
-        d3d_glue::install_resource_busy(&loaded.runtime, u);
-        d3d_glue::install_ramp(&loaded.runtime, u);
-        d3d_glue::install_render_to_texture(&loaded.runtime, u);
         d3d_glue::install_gpu_registers(&loaded.runtime)?;
     }
     let ds = if opts.dsound { Some(dsound_glue::install(&loaded.runtime, &k)?) } else { None };
