@@ -674,18 +674,28 @@ and allocations are bounded before anything is read:
   frame-buffer count, back buffers + 1, at `+0x1A10`. That flag, not the
   swap flags' `COPY` bit, decides what Swap does:
   - **Flip** (flag clear; Halo's device: no multisampling, swap effect 1
-    or 2 from `0x128c0`). Every `Swap(0)` (`COPY | FINISH`, Halo's one
-    per-frame call at `0x140fc`) takes `0x3f9d75` to `0x3f9a70`, which
-    rotates `Data` and `Lock` through the headers from `+0x1A14`: the
-    display surface (`+0x1A18`) gets the back buffer's, the back buffer
-    the last header's; the CRTC then scans out the display surface's
-    `Data`. The headers stay put; the buffers they name trade places. The
-    device does the same: its host ring rotates, and the guest headers'
-    words rotate as `0x3f9a70` rotates them. The original does nothing
-    on this path when `FINISH` is clear (`0x3f9d7a`); Halo never does
-    that, and here such a swap flips too.
-  - **Copy** (flag set). The back buffer stays; its image is shown and
-    copied to the front lazily (see "Display entries").
+    or 2 from `0x128c0`). With `FINISH` (4) set, as in `Swap(0)`
+    (`COPY | FINISH`, Halo's one per-frame call at `0x140fc`), `0x3f9d75`
+    goes to `0x3f9a70`, which rotates `Data` and `Lock` through the
+    headers from `+0x1A14`: the display surface (`+0x1A18`) gets the back
+    buffer's, the back buffer the last header's; the CRTC then scans out
+    the display surface's `Data`. The headers stay put; the buffers they
+    name trade places. The device does the same: its host ring rotates,
+    and the guest headers' words rotate as `0x3f9a70` rotates them.
+    Without `FINISH` the original returns the swap count and does nothing
+    else (`0x3f9d7a`); so does the device, presenting nothing.
+  - **Copy** (flag set). With `COPY` (1) the swap counts and, with three
+    frame buffers, first exchanges the display and third headers' `Data`
+    and `Lock` (`0x3f991c..0x3f9944`; the host front and second back
+    buffer trade places, after any copy still pending in back0 is made).
+    The back buffer stays; its image is shown and copied to the front
+    lazily (see "Display entries"). With neither `COPY` nor `BYPASSCOPY`
+    (2) nothing visible happens and the count is not incremented
+    (`0x3f9d35` -> `0x3f98f0`). `BYPASSCOPY` without `COPY` would re-show
+    a display buffer nothing was copied into; Halo's flip device cannot
+    reach it, and the device stops with `Unimplemented`.
+  - A device re-created after teardown starts with no lost-image state
+    (`shown_lost`, set when a backend cannot make the deferred copy).
 - **Frame buffers as textures** (`src/device/raster.rs`). The frame
   buffers and the depth buffer exist only on the host. Their headers
   carry `Data` values above any Xbox RAM that name them. Each frame

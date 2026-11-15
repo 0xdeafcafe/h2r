@@ -497,6 +497,8 @@ pub struct RecordingBackend {
     /// Reports not yet read, by ticket.
     pub pixel_reports: std::collections::HashMap<u64, u64>,
     next_ticket: u64,
+    /// `copy_surface` answers `Ok(false)` (a backend that cannot copy).
+    pub no_copies: bool,
 }
 
 impl RecordingBackend {
@@ -644,6 +646,9 @@ impl Backend for RecordingBackend {
         Ok(DrawOutcome::Drawn)
     }
     fn copy_surface(&mut self, src: u32, dst: u32) -> Result<bool, String> {
+        if self.no_copies {
+            return Ok(false);
+        }
         self.calls.push(Recorded::CopySurface { src, dst });
         Ok(true)
     }

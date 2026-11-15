@@ -10,7 +10,8 @@ mod common;
 use common::*;
 use d3d::abi::Regs;
 use d3d::device::{
-    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect, scissor_region,
+    BACK_BUFFER_DATA, COPY_SWAP_FLAG, DEPTH_BUFFER_DATA, DISPLAY_BUFFER_DATA, Rect,
+    THIRD_BUFFER_DATA, scissor_region,
 };
 use d3d::layout::device_field as f;
 use d3d::{
@@ -450,6 +451,132 @@ fn a_new_device_starts_its_frame_buffers_afresh() {
     d.set_texture(&mut m, 0, parity(0, true)).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     assert_eq!(snapshots(&d).last().copied(), Some(front));
+}
+
+fn presents(d: &Device<RecordingBackend>) -> Vec<u32> {
+    d.backend
+        .calls
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::Present { surface, .. } => Some(*surface),
+            _ => None,
+        })
+        .collect()
+}
+
+fn copies(d: &Device<RecordingBackend>) -> Vec<(u32, u32)> {
+    d.backend
+        .calls
+        .iter()
+        .filter_map(|c| match c {
+            Recorded::CopySurface { src, dst } => Some((*src, *dst)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The third frame-buffer header (`+0x1A1C`, two back buffers).
+const THIRD_HEADER: u32 = f::DISPLAY_SURFACE + 4;
+
+#[test]
+fn copy_swap_flags_follow_the_original() {
+    let (mut d, mut m) = create_copy_swap(RecordingBackend::new(), UploadPolicy::Always);
+    // FINISH alone, or no flag bit 1/2: nothing shown, no count
+    // (0x3f9d35 -> 0x3f98f0 without the increment).
+    for flags in [4, 8] {
+        assert_eq!(d.swap(&mut m, flags).unwrap(), 0, "flags {flags}");
+    }
+    assert!(presents(&d).is_empty());
+    // BYPASSCOPY without COPY: a stop, not a silent guess.
+    let e = d.swap(&mut m, 2).unwrap_err();
+    assert!(e.to_string().contains("BYPASSCOPY"), "{e}");
+    assert!(presents(&d).is_empty());
+    // COPY alone counts and shows back0.
+    let back = d.back_buffer().unwrap();
+    assert_eq!(d.swap(&mut m, 1).unwrap(), 1);
+    assert_eq!(presents(&d), [back]);
+    assert_eq!(d.back_buffer(), Some(back));
+}
+
+#[test]
+fn copy_swap_with_two_back_buffers_exchanges_the_display_and_third_headers() {
+    let (mut d, mut m) = create_with(RecordingBackend::new(), UploadPolicy::Always, |p| {
+        p.swap_effect = 3;
+        p.back_buffer_count = 2;
+    });
+    assert_eq!(m.read_u32(L.device + f::FRAME_BUFFER_COUNT).unwrap(), 3);
+    assert_eq!(header_words(&m, f::BACK_BUFFER).0, BACK_BUFFER_DATA);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, DISPLAY_BUFFER_DATA);
+    assert_eq!(header_words(&m, THIRD_HEADER).0, THIRD_BUFFER_DATA);
+    let display = m.read_u32(L.device + f::DISPLAY_SURFACE).unwrap();
+    m.write_u32(display + 8, 0x2222).unwrap();
+    let (back, front) = (d.back_buffer().unwrap(), d.front_buffer().unwrap());
+    // The third buffer's surface: the one a texture over its Data reads.
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    frame_texture(&mut m, THIRD_BUFFER_DATA, 0x12, W, H);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let third = *snapshots(&d).last().unwrap();
+    assert!(third != back && third != front);
+    d.set_texture(&mut m, 0, 0).unwrap();
+
+    // 0x3f991c: display and third trade Data and Lock; back stays.
+    assert_eq!(d.swap(&mut m, 0).unwrap(), 1);
+    assert_eq!(header_words(&m, f::BACK_BUFFER).0, BACK_BUFFER_DATA);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE), (THIRD_BUFFER_DATA, 0));
+    assert_eq!(
+        header_words(&m, THIRD_HEADER),
+        (DISPLAY_BUFFER_DATA, 0x2222)
+    );
+    assert_eq!(
+        (d.back_buffer(), d.front_buffer()),
+        (Some(back), Some(third))
+    );
+    assert_eq!(presents(&d), [back]);
+    // The first write copies the image shown into the new display buffer.
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    assert_eq!(copies(&d), [(back, third)]);
+
+    // Swapped again with nothing drawn: the pending copy reaches the
+    // old display buffer before it becomes the third.
+    d.swap(&mut m, 0).unwrap();
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(copies(&d), [(back, third), (back, front)]);
+    assert_eq!(header_words(&m, f::DISPLAY_SURFACE).0, THIRD_BUFFER_DATA);
+    assert_eq!(d.front_buffer(), Some(third));
+}
+
+#[test]
+fn a_lost_shown_image_does_not_outlive_the_device() {
+    let (mut d, mut m) = create_copy_swap(RecordingBackend::new(), UploadPolicy::Always);
+    d.backend.no_copies = true;
+    d.swap(&mut m, 0).unwrap();
+    // The image shown is in back0 and cannot be copied out before this
+    // write: it is lost.
+    d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+    assert!(d.persist_display(&mut m).is_err());
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    frame_texture(&mut m, DISPLAY_BUFFER_DATA, 0x12, W, H);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert!(
+        d.take_events().iter().any(
+            |e| matches!(e, Event::DrawSkipped { reason, .. } if reason.contains("drawn over"))
+        )
+    );
+    d.set_texture(&mut m, 0, 0).unwrap();
+    d.release_device(&mut m, L.device).unwrap();
+    d.backend.no_copies = false;
+    recreate(&mut d, &mut m);
+    // A new device: its front was never drawn over.
+    quad(&mut d, &mut m, 0xFFFF_FFFF);
+    frame_texture(&mut m, DISPLAY_BUFFER_DATA, 0x12, W, H);
+    d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    assert!(d.take_events().is_empty());
+    assert_eq!(snapshots(&d).last().copied(), d.front_buffer());
+    d.set_texture(&mut m, 0, 0).unwrap();
+    assert_eq!(d.persist_display(&mut m).unwrap(), 0);
 }
 
 /// CreateDevice again after a teardown, with the same parameters.

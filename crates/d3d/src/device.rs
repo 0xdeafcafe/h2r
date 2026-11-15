@@ -917,6 +917,8 @@ impl<B: Backend> Device<B> {
             self.sync_registers(mem)?;
         }
         self.params = Some(p);
+        // The lost-image state belongs to the old ring.
+        self.display.shown_lost = false;
         self.created = true;
         self.torn_down.clear();
         self.init_transform_state(mem)?;
@@ -2663,35 +2665,66 @@ impl<B: Backend> Device<B> {
     /// replaced by 5 (`COPY | FINISH`). Returns the swap count, which is also
     /// stored at device `+0x2478` where game code reads it.
     ///
-    /// The device's kind decides how, not the `COPY` bit: a device created
-    /// without [`COPY_SWAP_FLAG`] (Halo's: no multisampling, swap effect not
-    /// `COPY`) flips on every swap, `Swap(0)` included (`0x3f9d75` ->
-    /// `0x3f9a70`). The flip rotates `Data` and `Lock` through the
-    /// frame-buffer headers: the display surface (`+0x1A18`) gets the back
-    /// buffer's, the back buffer (`+0x1A14`) the last header's. The image
-    /// just drawn is then the front, and the old front is drawn into next.
-    /// A copy-swap device keeps its back buffer and shows a copy of it.
-    /// The original does nothing on a flipping device when `FINISH` is
-    /// clear (`0x3f9d7a`); Halo never does that (its one per-frame call,
-    /// `0x140fc`, passes 0), and here such a swap flips too.
+    /// The device's kind decides how, not the `COPY` bit alone:
+    /// - **Flip** (created without [`COPY_SWAP_FLAG`]; Halo's device: no
+    ///   multisampling, swap effect not `COPY`). With `FINISH` (4) the swap
+    ///   flips (`0x3f9d75` -> `0x3f9a70`), `Swap(0)` included: `Data` and
+    ///   `Lock` rotate through the frame-buffer headers, the display
+    ///   surface (`+0x1A18`) taking the back buffer's and the back buffer
+    ///   (`+0x1A14`) the last header's. The image just drawn is then the
+    ///   front, and the old front is drawn into next. Without `FINISH` the
+    ///   original returns the count and does nothing else (`0x3f9d7a`), and
+    ///   so does this: nothing is presented.
+    /// - **Copy** ([`COPY_SWAP_FLAG`] set). With `COPY` (1) the swap counts,
+    ///   with three frame buffers first exchanges the display and third
+    ///   headers' `Data` and `Lock` (`0x3f991c..0x3f9944`), and shows back0,
+    ///   which is copied to the front (`0x3f995d`; deferred here, see
+    ///   [`Device::before_target_write`]). With neither `COPY` nor
+    ///   `BYPASSCOPY` (2) nothing visible happens (`0x3f9d35` -> `0x3f98f0`
+    ///   with no count) and only the count is returned. `BYPASSCOPY`
+    ///   without `COPY` re-shows a display buffer nothing was copied into;
+    ///   Halo's flip device cannot get there, and it stops as unimplemented.
     pub fn swap(&mut self, mem: &mut dyn GuestMemory, flags: u32) -> Result<u32, D3dError> {
         const E: &str = "D3DDevice_Swap";
         let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "Swap");
         self.live(E)?;
-        timeline::frame();
         self.sync_push_buffer(mem)?;
         if self.immediate.is_open() {
             return Err(D3dError::invalid(E, "Swap inside Begin/End"));
         }
         let flags = if flags == 0 { 5 } else { flags };
+        let flip = self.swap.as_ref().expect("created").flip;
+        if flip && flags & 4 == 0 || !flip && flags & 3 == 0 {
+            return Ok(self.swap_count);
+        }
+        if !flip && flags & 1 == 0 {
+            return Err(D3dError::unimplemented(
+                E,
+                format!(
+                    "flags {flags:#x} on a copy-swap device: BYPASSCOPY without COPY shows a display buffer nothing was copied into"
+                ),
+            ));
+        }
+        timeline::frame();
         self.flush_render_targets(mem)?;
+        if !flip && self.frame_headers.len() > 1 {
+            // Three frame buffers: the display and third headers trade
+            // `Data`, and with them the host surfaces. A copy still waiting
+            // in back0 for the old front is made first, so the buffer that
+            // becomes the third holds the image it showed.
+            let back0 = self.swap.as_ref().expect("created").back[0];
+            self.before_target_write(back0)?;
+            let sw = self.swap.as_mut().expect("created");
+            std::mem::swap(&mut sw.front, &mut sw.back[1]);
+            self.exchange_display_headers(mem)?;
+        }
         self.display.swapped = true;
         let sw = self.swap.as_mut().expect("created");
         let shown = sw.back[0];
         self.backend
             .present_with_gamma(shown, flags, self.display.gamma.as_deref())
             .map_err(D3dError::Backend)?;
-        if sw.flip {
+        if flip {
             // Flip: the shown buffer becomes the front, the old front the
             // last back buffer.
             let old_front = std::mem::replace(&mut sw.front, shown);
@@ -2706,13 +2739,25 @@ impl<B: Backend> Device<B> {
         // is never drawn over costs nothing.
         let sw = self.swap.as_mut().expect("created");
         sw.shown = shown;
-        sw.shown_in_back = !sw.flip;
+        sw.shown_in_back = !flip;
         self.display.shown_lost = false;
         self.swap_count = self.swap_count.wrapping_add(1);
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
         self.sync_registers(mem)?;
         self.vblanks_after_swap(mem)?;
         Ok(self.swap_count)
+    }
+
+    /// `0x3f991c..0x3f9944`: the display (`+0x1A18`) and third (`+0x1A1C`)
+    /// headers exchange `Data` and `Lock`.
+    fn exchange_display_headers(&mut self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        let (d, t) = (self.frame_headers[0], self.frame_headers[1]);
+        for off in [4, 8] {
+            let (a, b) = (mem.read_u32(at(d, off)?)?, mem.read_u32(at(t, off)?)?);
+            mem.write_u32(at(d, off)?, b)?;
+            mem.write_u32(at(t, off)?, a)?;
+        }
+        Ok(())
     }
 
     // ---------------------------------------------------------------------

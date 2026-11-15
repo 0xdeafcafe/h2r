@@ -8,7 +8,7 @@ mod common;
 use common::*;
 use d3d::abi::Regs;
 use d3d::backend::Recorded;
-use d3d::{Event, GfxBackend, GuestMemory, RecordingBackend, UploadPolicy};
+use d3d::{Device, Event, GfxBackend, GuestMemory, RecordingBackend, SparseMemory, UploadPolicy};
 use gfx::GfxContext;
 
 #[test]
@@ -307,23 +307,47 @@ fn swap_flips_the_ring_and_reports_presents() {
     // whatever the COPY bit says (0x3f9d75 -> 0x3f9a70).
     assert_eq!(d.front_buffer(), Some(back), "the image shown is the front");
     assert_eq!(d.back_buffer(), Some(front));
-    let back = front;
-    // Flags 2 flip too.
-    assert_eq!(
+    // Without FINISH the original returns the count and does nothing
+    // else (0x3f9d7a): COPY (1) and BYPASSCOPY (2) alone neither present
+    // nor flip.
+    let swap = |d: &mut Device<RecordingBackend>, m: &mut SparseMemory, eax: u32| {
         call(
-            &mut d,
-            &mut m,
+            d,
+            m,
             0x3f9d00,
             Regs {
-                eax: 2,
+                eax,
                 ..Regs::default()
             },
-            &[]
+            &[],
         )
         .unwrap()
-        .eax,
-        Some(2)
+        .eax
+    };
+    let presents = |d: &Device<RecordingBackend>| {
+        d.backend
+            .calls
+            .iter()
+            .filter(|c| matches!(c, Recorded::Present { .. }))
+            .count()
+    };
+    for flags in [1, 2, 3] {
+        assert_eq!(swap(&mut d, &mut m, flags), Some(1), "flags {flags}");
+        assert_eq!(presents(&d), 1, "flags {flags}");
+        assert_eq!(
+            (d.back_buffer(), d.front_buffer()),
+            (Some(front), Some(back))
+        );
+    }
+    assert_eq!(
+        m.read_u32(d3d::GuestLayout::HALO2.device + 0x2478).unwrap(),
+        1
     );
-    assert_eq!(d.front_buffer(), Some(back));
-    assert_ne!(d.back_buffer(), Some(back));
+    // FINISH (4) alone flips.
+    assert_eq!(swap(&mut d, &mut m, 4), Some(2));
+    assert_eq!(presents(&d), 2);
+    assert_eq!(
+        (d.back_buffer(), d.front_buffer()),
+        (Some(back), Some(front))
+    );
 }
