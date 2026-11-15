@@ -307,8 +307,6 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             wrappers::install_set_allocation(&loaded.runtime, u);
             wrappers::install_full_attributes(&loaded.runtime, u);
         }
-        wrappers::install_tv_encoder(&loaded.runtime, u);
-        wrappers::install_yield(&loaded.runtime, u);
         game_glue::install_stream_purge(&loaded.runtime, u);
     }
     let d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
