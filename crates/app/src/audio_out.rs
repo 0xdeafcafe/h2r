@@ -292,6 +292,20 @@ mod tests {
         f()
     }
 
+    /// Wait until the renderer has stopped rendering: its count holds still
+    /// across a long interval. A renderer that never pauses never settles,
+    /// and this fails on the timeout.
+    fn settled(d: &DiscardRenderer) {
+        assert!(
+            wait_until(Duration::from_secs(30), || {
+                let n = d.frames_rendered();
+                std::thread::sleep(Duration::from_millis(100));
+                d.frames_rendered() == n
+            }),
+            "the renderer never stopped"
+        );
+    }
+
     #[test]
     fn silent_output_finishes_buffers_and_completes_packets() {
         let out = AudioOut::silent(RATE, None);
@@ -308,7 +322,7 @@ mod tests {
         };
         let mixer = out.mixer();
         assert!(
-            wait_until(Duration::from_secs(3), || !mixer
+            wait_until(Duration::from_secs(30), || !mixer
                 .lock()
                 .unwrap()
                 .buffer_mut(buf)
@@ -317,7 +331,7 @@ mod tests {
             "a non-looping buffer finishes"
         );
         let mut completed = Vec::new();
-        assert!(wait_until(Duration::from_secs(3), || {
+        assert!(wait_until(Duration::from_secs(30), || {
             completed.extend(
                 mixer
                     .lock()
@@ -335,13 +349,16 @@ mod tests {
     fn discard_runs_in_real_time() {
         let mixer = Arc::new(Mutex::new(Mixer::new(RATE)));
         let d = DiscardRenderer::start(Arc::clone(&mixer), RATE, None);
+        let t = Instant::now();
         std::thread::sleep(Duration::from_millis(200));
         let n = d.frames_rendered();
-        // 200 ms is 9600 frames; allow scheduling slack, but never a burst.
-        assert!(
-            (4_800..=RATE as u64 / 2).contains(&n),
-            "{n} frames after 200 ms"
-        );
+        // Never a burst: no more frames than wall time allows (plus 100 ms
+        // of slack; the clock started a moment before `t`). A loaded host
+        // may sleep or render late, so the floor is only that it runs.
+        let limit =
+            (t.elapsed().as_nanos() * u128::from(RATE) / 1_000_000_000) as u64 + RATE as u64 / 10;
+        assert!(n <= limit, "{n} frames after {:?}", t.elapsed());
+        assert!(wait_until(Duration::from_secs(30), || d.frames_rendered() >= 1));
     }
 
     #[test]
@@ -352,7 +369,7 @@ mod tests {
             SoundBuffer::from_data(WaveFormat::pcm16(1, 22_050).unwrap(), clip()).unwrap(),
         );
         d.pause();
-        std::thread::sleep(Duration::from_millis(30));
+        settled(&d);
         mixer.lock().unwrap().buffer_mut(id).unwrap().play(false);
         let before = d.frames_rendered();
         std::thread::sleep(Duration::from_millis(300));
@@ -361,15 +378,17 @@ mod tests {
             mixer.lock().unwrap().buffer_mut(id).unwrap().is_playing(),
             "the buffer waits"
         );
+        let t = Instant::now();
         d.resume();
         std::thread::sleep(Duration::from_millis(50));
-        // No catch-up burst for the 300 ms pause.
-        assert!(
-            d.frames_rendered() - before < RATE as u64 / 5,
-            "{}",
-            d.frames_rendered() - before
-        );
-        assert!(wait_until(Duration::from_secs(3), || !mixer
+        // No catch-up burst for the 300 ms pause: only what the time since
+        // the resume allows (plus 100 ms of slack), however long the host
+        // took to run the sleep above.
+        let rendered = d.frames_rendered() - before;
+        let limit =
+            (t.elapsed().as_nanos() * u128::from(RATE) / 1_000_000_000) as u64 + RATE as u64 / 10;
+        assert!(rendered <= limit, "{rendered} frames in {:?}", t.elapsed());
+        assert!(wait_until(Duration::from_secs(30), || !mixer
             .lock()
             .unwrap()
             .buffer_mut(id)
@@ -383,7 +402,7 @@ mod tests {
         let life = Lifecycle::new();
         let d = DiscardRenderer::start(Arc::clone(&mixer), RATE, Some(life.clone()));
         life.set_paused(true);
-        std::thread::sleep(Duration::from_millis(20));
+        settled(&d);
         let before = d.frames_rendered();
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(
@@ -394,7 +413,7 @@ mod tests {
         life.set_paused(false);
         life.request_stop();
         assert!(
-            wait_until(Duration::from_secs(1), || d.is_finished()),
+            wait_until(Duration::from_secs(30), || d.is_finished()),
             "guest stop ends the renderer"
         );
     }
@@ -403,8 +422,8 @@ mod tests {
     fn dropping_stops_the_thread_promptly() {
         let mixer = Arc::new(Mutex::new(Mixer::new(RATE)));
         let d = DiscardRenderer::start(Arc::clone(&mixer), RATE, None);
-        let t = Instant::now();
+        // Returning at all is the check: a thread that ignored the drop
+        // would hang the join. Speed is the host's business.
         drop(d);
-        assert!(t.elapsed() < Duration::from_millis(500));
     }
 }

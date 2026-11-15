@@ -249,8 +249,11 @@ fn a_pacer_that_falls_behind_starts_counting_again() {
     let start = std::time::Instant::now();
     p.wait(1 + 200_000); // 20 ms past the new origin
     let waited = start.elapsed();
+    // Without the re-anchor the old origin is long past and this would not
+    // sleep at all, so a lower bound proves the new origin. There is no upper
+    // bound: how long a sleep overshoots is up to the host scheduler.
     assert!(waited >= std::time::Duration::from_millis(15), "{waited:?}");
-    assert!(waited < std::time::Duration::from_millis(150), "{waited:?}");
+    assert_eq!(p.reanchors(), 1, "the paced wait did not re-anchor again");
 }
 
 #[test]

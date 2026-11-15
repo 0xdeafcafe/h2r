@@ -1029,7 +1029,8 @@ fn r08_synch_playback_releases_the_group_atomically() {
         Arc::new(AtomicBool::new(false)),
     );
     let mixer = Arc::clone(&rig.mixer);
-    let (s2, p2) = (Arc::clone(&started), Arc::clone(&stop));
+    let heard = Arc::new(AtomicBool::new(false));
+    let (s2, p2, h2) = (Arc::clone(&started), Arc::clone(&stop), Arc::clone(&heard));
     // Stands in for the audio callback: renders one frame at a time and
     // records every level it hears.
     let t = std::thread::spawn(move || {
@@ -1038,6 +1039,9 @@ fn r08_synch_playback_releases_the_group_atomically() {
         while !p2.load(Ordering::Relaxed) {
             mixer.lock().unwrap().render(&mut out);
             seen.push(out[0]);
+            if (out[0] - full).abs() < 1e-2 {
+                h2.store(true, Ordering::Relaxed);
+            }
             s2.store(true, Ordering::Relaxed);
         }
         seen
@@ -1046,8 +1050,11 @@ fn r08_synch_playback_releases_the_group_atomically() {
         std::thread::yield_now();
     }
     assert_eq!(rig.call(SYNCH_PLAYBACK, &[rig.ds_ptr]).eax, S_OK);
-    // Let the callback hear the released state before stopping it.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // Let the callback hear the released state before stopping it, however
+    // long the host takes to schedule it.
+    while !heard.load(Ordering::Relaxed) {
+        std::thread::yield_now();
+    }
     stop.store(true, Ordering::Relaxed);
     let seen = t.join().unwrap();
     for v in &seen {

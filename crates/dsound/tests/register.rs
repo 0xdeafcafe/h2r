@@ -105,7 +105,7 @@ impl Events for KernelLike {
             let _guard = runtime.memory();
             let _ = tx.send(());
         });
-        rx.recv_timeout(Duration::from_secs(2))
+        rx.recv_timeout(Duration::from_secs(30))
             .map_err(|_| "signalled under the memory guard".to_owned())?;
         self.calls.lock().unwrap().push(guest_handle);
         Ok(())
@@ -773,7 +773,7 @@ fn relock(runtime: &RuntimeSlot) -> Result<(), String> {
         let _guard = runtime.memory();
         let _ = tx.send(());
     });
-    rx.recv_timeout(Duration::from_secs(2))
+    rx.recv_timeout(Duration::from_secs(30))
         .map_err(|_| "called under the memory guard".to_owned())
 }
 
@@ -1020,7 +1020,7 @@ fn concurrent_pump_and_process_deliver_every_pin_in_order() {
         let (pkt, _, _) = w.packet(16, 0x200 + i);
         w.ok(0x0037_ad25, &[stream, pkt, 0]);
     }
-    assert!(wait_for(Duration::from_secs(10), || {
+    assert!(wait_for(Duration::from_secs(30), || {
         w.hle.pinned_events() == 0
             && log
                 .lock()
@@ -1134,7 +1134,7 @@ fn the_pump_renders_a_sinkless_mixer_and_completes_packets_on_its_own() {
     // The status is written first, the event is signalled after the guards drop.
     let signals = Arc::clone(&w.signals);
     assert!(
-        wait_for(Duration::from_secs(5), || !signals
+        wait_for(Duration::from_secs(30), || !signals
             .lock()
             .unwrap()
             .is_empty()),
@@ -1171,7 +1171,7 @@ fn a_service_only_pump_completes_what_an_external_sink_consumed() {
         .unwrap();
     let runtime = Arc::clone(&w.runtime);
     let signals = Arc::clone(&w.signals);
-    assert!(wait_for(Duration::from_secs(5), || !signals
+    assert!(wait_for(Duration::from_secs(30), || !signals
         .lock()
         .unwrap()
         .is_empty()));
@@ -1350,7 +1350,7 @@ fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
         ]
     );
     // The thread plays every packet's samples, in order (mono to both).
-    assert!(wait_for(Duration::from_secs(5), || played
+    assert!(wait_for(Duration::from_secs(30), || played
         .lock()
         .unwrap()
         .len()
@@ -1395,7 +1395,7 @@ fn logical_pacing_bounds_its_queue_when_the_sink_is_full() {
     // At most 32 ms (256 frames) waits; the older 256 are dropped.
     assert_eq!(output.stats().dropped_frames, 256);
     open_tx.send(()).unwrap();
-    assert!(wait_for(Duration::from_secs(5), || played
+    assert!(wait_for(Duration::from_secs(30), || played
         .lock()
         .unwrap()
         .len()
@@ -1432,7 +1432,7 @@ fn device_pacing_follows_the_sink_and_its_rate() {
         .unwrap();
     // The instantly draining "device" takes 20 ms (320 frames at 16 kHz) a
     // wake; the 8 kHz packet is 100 ms, 1600 output frames.
-    assert!(wait_for(Duration::from_secs(5), || !seen
+    assert!(wait_for(Duration::from_secs(30), || !seen
         .lock()
         .unwrap()
         .is_empty()));
@@ -1537,7 +1537,7 @@ fn callbacks_completed_by_the_output_thread_run_at_the_next_override_call() {
         )
         .unwrap();
     let hle = Arc::clone(&w.hle);
-    assert!(wait_for(Duration::from_secs(5), || hle.pending_callbacks() == 2));
+    assert!(wait_for(Duration::from_secs(30), || hle.pending_callbacks() == 2));
     drop(output);
     assert!(
         w.callbacks.lock().unwrap().is_empty(),
@@ -1656,7 +1656,7 @@ fn history_at_32ms(
     if !thread_runs {
         open_tx.send(()).unwrap();
     }
-    assert!(wait_for(Duration::from_secs(5), || played
+    assert!(wait_for(Duration::from_secs(30), || played
         .lock()
         .unwrap()
         .len()
@@ -1789,7 +1789,7 @@ fn a_halted_output_leaves_the_guest_alone() {
         }
         // The runner keeps calling: nothing renders, nothing is reported.
         assert_eq!(output.advance_to(10_000_000).unwrap(), 0);
-        assert!(wait_for(Duration::from_secs(5), || output.is_finished()));
+        assert!(wait_for(Duration::from_secs(30), || output.is_finished()));
         assert!(output.stats().halted);
         assert!(seen.lock().unwrap().is_empty());
         assert_eq!(w.u32(status), before, "no status written");
@@ -1828,7 +1828,7 @@ fn an_unbounded_sink_at_another_rate_is_resampled() {
     assert_eq!(output.advance_to(320_000).unwrap(), 256);
     assert_eq!(*seen.lock().unwrap(), [(0xc1, XMEDIAPACKET_STATUS_SUCCESS)]);
     // About twice the frames come out (the resampler holds the last one).
-    assert!(wait_for(Duration::from_secs(5), || played
+    assert!(wait_for(Duration::from_secs(30), || played
         .lock()
         .unwrap()
         .len()

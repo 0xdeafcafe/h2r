@@ -175,7 +175,7 @@ impl Events for KernelLike {
             let _guard = runtime.memory();
             let _ = tx.send(());
         });
-        rx.recv_timeout(Duration::from_secs(2))
+        rx.recv_timeout(Duration::from_secs(30))
             .map_err(|_| Error::Win32(0xdead))?;
         self.calls.push(guest_handle);
         Ok(())

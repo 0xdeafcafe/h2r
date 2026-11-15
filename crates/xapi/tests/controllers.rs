@@ -581,7 +581,7 @@ fn pinned_kernel_event_is_signalled_after_memory_guard_is_released() {
         ));
     });
     let (delivered, signal_state, released, resubmitted) = outcome
-        .recv_timeout(Duration::from_secs(3))
+        .recv_timeout(Duration::from_secs(30))
         .expect("completion deadlocked signalling a kernel event under the memory guard");
     assert_eq!(delivered, Ok(()));
     assert_eq!(signal_state, 1);

@@ -353,7 +353,7 @@ fn bounded<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
         let _ = tx.send(f());
     });
     let value = rx
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(std::time::Duration::from_secs(30))
         .expect("completion deadlocked");
     worker.join().unwrap();
     value

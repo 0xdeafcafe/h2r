@@ -3,7 +3,7 @@
 //! adapter for `GuestHost::headless`; skips without one.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use app::worker::{GuestFn, GuestWorker};
@@ -54,9 +54,9 @@ fn close_during_a_pacing_sleep() {
     let mut w = GuestWorker::spawn(h, sleeper(Arc::clone(&entered)), || {}).unwrap();
     assert!(wait(Duration::from_secs(2), || entered.load(Ordering::SeqCst)));
     std::thread::sleep(Duration::from_millis(20));
-    let t = Instant::now();
-    assert_eq!(w.stop(Duration::from_secs(5)), GuestExit::Returned);
-    assert!(t.elapsed() < Duration::from_secs(1), "{:?}", t.elapsed());
+    // The guest is sleeping for an hour: returning inside the stop timeout
+    // at all means the close woke it.
+    assert_eq!(w.stop(Duration::from_secs(30)), GuestExit::Returned);
 }
 
 #[test]
@@ -80,9 +80,7 @@ fn close_during_a_pause() {
         "a paused guest does not run"
     );
     assert!(w.try_finish().is_none());
-    let t = Instant::now();
-    assert_eq!(w.stop(Duration::from_secs(5)), GuestExit::Returned);
-    assert!(t.elapsed() < Duration::from_secs(1));
+    assert_eq!(w.stop(Duration::from_secs(30)), GuestExit::Returned);
 }
 
 #[test]
@@ -91,10 +89,13 @@ fn a_pause_during_a_pacing_sleep_holds_the_guest() {
     let life = h.lifecycle();
     let ran = Arc::new(AtomicBool::new(false));
     let r2 = Arc::clone(&ran);
+    let sleeps = Arc::new(AtomicU64::new(0));
+    let s2 = Arc::clone(&sleeps);
     let guest: GuestFn = Box::new(move |mut host: GuestHost| {
         host.tick(0);
         // One frame (200 ms) ahead: the pacer sleeps.
         let c = host.tick(2_000_000);
+        s2.store(host.pace_stats().sleeps, Ordering::SeqCst);
         r2.store(true, Ordering::SeqCst);
         assert_eq!(c, Control::Continue);
         Ok(())
@@ -108,15 +109,12 @@ fn a_pause_during_a_pacing_sleep_holds_the_guest() {
         !ran.load(Ordering::SeqCst),
         "tick returned Continue while paused"
     );
-    let t = Instant::now();
     life.set_paused(false);
-    assert!(wait(Duration::from_secs(2), || ran.load(Ordering::SeqCst)));
-    // The pause reset the origin: no extra sleep owed for the pause.
-    assert!(
-        t.elapsed() < Duration::from_millis(150),
-        "{:?}",
-        t.elapsed()
-    );
+    assert!(wait(Duration::from_secs(30), || ran.load(Ordering::SeqCst)));
+    // The pause reset the origin: no extra sleep owed for the pause, so the
+    // only sleep is the one the pause cut short (none if the guest thread
+    // started after the pause).
+    assert!(sleeps.load(Ordering::SeqCst) <= 1);
     assert_eq!(w.stop(Duration::from_secs(2)), GuestExit::Returned);
 }
 

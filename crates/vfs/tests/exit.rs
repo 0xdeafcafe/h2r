@@ -34,7 +34,16 @@ fn child(dir: &Path, how: &str) -> ! {
     b.set_basic_info("data", basic).unwrap();
     b.write_at("data", 0, b"payload").unwrap();
     match how {
-        "wait" => std::thread::sleep(vfs::METADATA_STALE + Duration::from_millis(600)),
+        "wait" => {
+            // Exit only once the flusher thread has stored the record, so a
+            // slow host cannot make the child race it. Generous cap: the
+            // parent's assertion reports the failure.
+            std::thread::sleep(vfs::METADATA_STALE);
+            let give_up = Instant::now() + Duration::from_secs(60);
+            while stored_write_time(dir) <= OLD && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         "flush-all" => vfs::flush_pending_metadata(),
         other => panic!("{other}"),
     }

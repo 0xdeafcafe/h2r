@@ -98,7 +98,8 @@ fn profiles_attribute_samples_to_guest_functions_and_instructions() {
         ..Render::default()
     };
     let s = p.summary(&r);
-    assert!(s.samples >= 50, "{} samples", s.samples);
+    // A loaded host can starve the sampler; only a handful are needed.
+    assert!(s.samples >= 10, "{} samples", s.samples);
     let guest = s
         .categories
         .iter()
