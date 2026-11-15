@@ -43,9 +43,6 @@ pub struct Stats {
 
 pub static STATS: Mutex<Option<Stats>> = Mutex::new(None);
 
-/// Switch jumps (jmp pc, target) the generated code could not follow, with
-/// counts, for the report.
-pub static SWITCHES: Mutex<std::collections::BTreeMap<(u32, u32), u64>> = Mutex::new(std::collections::BTreeMap::new());
 
 struct State {
     lifter: lift::Lifter<'static>,
@@ -130,6 +127,7 @@ fn to_interp(c: &CpuAbi) -> interp::Cpu {
             data_selector: c.x87.data_selector,
         },
         mxcsr: c.mxcsr,
+        tsc: 0,
     }
 }
 
@@ -199,6 +197,9 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     let mut st = state().lock().unwrap();
     let rt = Arc::clone(ctx.runtime());
     let mut icpu = to_interp(cpu);
+    // rdtsc in the interpreter counts up from here; seed it from the
+    // runtime's guest TSC (kernel clock) before taking the memory lock.
+    icpu.tsc = rt.read_tsc();
     let mut steps = 0u64;
     let (mut x87n, mut mn): (u64, HashMap<String, u64>) = (0, HashMap::new());
     let result = {
@@ -240,29 +241,6 @@ fn run(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
             let mut d = Decoder::with_ip(32, &code[..n], pc as u64, DecoderOptions::NONE);
             let ins = d.decode();
             let (m, detail) = insn.unsupported().unwrap_or(("?", "?"));
-            if ins.mnemonic() == iced_x86::Mnemonic::Rdtsc {
-                // Not lowered by the lifter. The Xbox CPU's 733.33 MHz time
-                // stamp, from host monotonic time since the first read.
-                let tsc = rdtsc_now();
-                icpu.gpr[0] = tsc as u32; // EAX
-                icpu.gpr[2] = (tsc >> 32) as u32; // EDX
-                icpu.eip = pc + ins.len() as u32;
-                *mn.entry("Rdtsc".into()).or_default() += 1;
-                continue;
-            }
-            if ins.mnemonic() == iced_x86::Mnemonic::Cpuid {
-                // Not lowered by the lifter. The Xbox CPU: a 733 MHz Pentium
-                // III (Coppermine), family 6 model 8 stepping 10, with MMX,
-                // FXSR and SSE but no SSE2.
-                let [a, b, c, d] = cpuid_xbox(icpu.gpr[0]);
-                icpu.gpr[0] = a; // EAX
-                icpu.gpr[3] = b; // EBX
-                icpu.gpr[1] = c; // ECX
-                icpu.gpr[2] = d; // EDX
-                icpu.eip = pc + ins.len() as u32;
-                *mn.entry("Cpuid".into()).or_default() += 1;
-                continue;
-            }
             let r = if detail.starts_with("x87") {
                 crate::x87::exec(&mut icpu, &mut mem, &ins)
             } else if detail.starts_with("sse") {
@@ -326,39 +304,8 @@ pub unsafe extern "C" fn trampoline(cpu: *mut CpuAbi, ctx: *mut ExecCtxOpaque, s
     }
     // SAFETY: the handler has returned; the pair is ours again.
     let (cpu, ctx) = unsafe { (&mut *cpu, &mut *ctx.cast::<ExecCtx>()) };
-    if let Some(target) = crate::shim::unknown_switch_target(ctx.thread_id, cpu.eip) {
-        // A switch target analysis did not find (an unbounded or holed jump
-        // table, e.g. 0x216b00's `dec eax; jmp [eax*4+0x216b30]`): the jmp
-        // has been taken, so interpret from its target. Owner: analyze.
-        *SWITCHES.lock().unwrap().entry((cpu.eip, target)).or_default() += 1;
-        cpu.eip = target;
-        return run(cpu, ctx);
-    }
     if !crate::shim::is_unsupported(ctx.thread_id, cpu.eip) {
         return t;
     }
     run(cpu, ctx)
-}
-
-/// Guest time-stamp counter: 733.33 MHz ticks of host monotonic time since
-/// the first RDTSC.
-fn rdtsc_now() -> u64 {
-    static START: OnceLock<std::time::Instant> = OnceLock::new();
-    let ns = START.get_or_init(std::time::Instant::now).elapsed().as_nanos();
-    (ns * 2200 / 3000) as u64
-}
-
-/// CPUID as the Xbox's Pentium III reports it (leaves 0..=2; higher leaves
-/// return zeros, as on that part).
-fn cpuid_xbox(leaf: u32) -> [u32; 4] {
-    match leaf {
-        // Max leaf 2, "GenuineIntel" in EBX, EDX, ECX.
-        0 => [2, 0x756e_6547, 0x6c65_746e, 0x4965_6e69],
-        // Signature 0x68a; FPU VME DE PSE TSC MSR PAE MCE CX8 SEP MTRR PGE
-        // MCA CMOV PAT PSE36 MMX FXSR SSE.
-        1 => [0x0000_068a, 0, 0, 0x0383_f9ff],
-        // Cache descriptors: 32-entry ITLB/DTLB, 16K L1 I and D, 128K L2.
-        2 => [0x0302_0101, 0, 0, 0x0c04_0841],
-        _ => [0; 4],
-    }
 }

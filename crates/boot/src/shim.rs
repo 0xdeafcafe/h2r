@@ -20,6 +20,7 @@ pub struct Bridge {
     write: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32, *const u8) -> u32,
     event: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32) -> u32,
     unsupported: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, *const c_char, *const c_char) -> u32,
+    rdtsc: unsafe extern "C" fn(*mut ExecCtxOpaque, u32) -> u64,
     rmw: unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, u32, *mut u32) -> u32,
     xchg: unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg: unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, *mut u32) -> u32,
@@ -33,6 +34,7 @@ pub fn bridge() -> Bridge {
         write: ffi::h2abi_v1_write,
         event,
         unsupported,
+        rdtsc: runtime::generated::h2shim_v1_rdtsc,
         rmw: ffi::h2abi_v1_atomic_rmw,
         xchg: ffi::h2abi_v1_xchg,
         cmpxchg: ffi::h2abi_v1_cmpxchg,
@@ -75,19 +77,6 @@ pub fn record_ctx(ctx: &mut ExecCtx, pc: u32, text: String) -> u32 {
 }
 
 const UNSUPPORTED: &str = "unsupported instruction at ";
-const UNKNOWN_SWITCH: &str = "guest exception/stop 10 ";
-
-/// The computed target of the newest "unknown switch target" stop at `pc`
-/// (the emitter passes it as the event argument).
-pub fn unknown_switch_target(thread: u32, pc: u32) -> Option<u32> {
-    let s = lookup(thread, pc)?;
-    if !s.starts_with(UNKNOWN_SWITCH) {
-        return None;
-    }
-    let arg = s.rsplit("arg 0x").next()?.trim_end_matches(')');
-    u32::from_str_radix(arg, 16).ok()
-}
-
 /// Whether the newest record for `pc` is a lifter "unsupported" stop.
 pub fn is_unsupported(thread: u32, pc: u32) -> bool {
     lookup(thread, pc).is_some_and(|s| s.starts_with(UNSUPPORTED))

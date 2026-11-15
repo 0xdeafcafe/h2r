@@ -39,6 +39,7 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
 | `H2_BOOT_VOICE=1` | with `H2_BOOT_OLD_GLUE`, keep voice on (skip the 0x55810 override) |
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
+| `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30) |
 
 The run prints a report when it ends. It covers:
@@ -65,7 +66,9 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
     implements the `h2shim_*` imports in `shim.rs`.
   - `run` reads the module's `h2gen_module` tables. Every generated entry
     and resume is registered with one trampoline (`fallback.rs`).
-- **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback.
+- **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback. `x87.rs`
+  does all of its arithmetic, conversions and transcendentals in
+  crates/x87 (exact ext80).
   - When generated code stops on an instruction the lifter doesn't lower,
     the trampoline interprets from there with `ir::interp`.
   - x87 and leftover SSE instructions go to the emulators in `x87.rs`
@@ -79,8 +82,12 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   - A wrapper parks the kernel's handler on a shadow page (`0xa0ff1000`),
     fixes up the arguments, then jumps to it.
 - **`trace.rs`**: wraps every kernel import token to record the TSV.
-- **`d3d_glue.rs`**: `d3d::register` on a headless `RecordingBackend`,
-  with `UploadPolicy::Always`.
+- **`d3d_glue.rs`**: `d3d::register` on a headless `RecordingBackend`
+  (or `GfxBackend` with `H2_BOOT_GFX`), with `UploadPolicy::Tracked`.
+  The write barrier subscribes to the runtime's write watch over all of
+  RAM and wraps every d3d entry: on entry, `take_dirty` goes to
+  `Device::note_write`; on return, the device's own stores are drained
+  and dropped.
 - **`dsound_glue.rs`**: `dsound::register`. Completion events go to
   `Kernel::signal_event`.
 - **`xapi_glue.rs`**: `xapi::register` with a kernel-VFS `Storage` and a
@@ -92,7 +99,7 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   wait, the stream purge callback, and the retired voice-off), each with
   its ABI and the retail path it reproduces.
 
-## Current state (2026-11-15, origin/master 2a2b197)
+## Current state (2026-11-15, origin/master 0775c97)
 
 **Last stop:** thread 2, in `D3DDevice_SetRenderState_CullMode`
 (`0x3f53d0`, from `0x5206c`). The push-buffer sync there hits
@@ -102,7 +109,8 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
 which is the vertex data array format. `CDevice_SetStateVB` (`0x401030`,
 run as the retail body) pushed it for an inline draw that `0x4b220` begins
 with BeginPush (`0x3fae10`). The run takes about 10.3k kernel calls, 753
-slices and about 22 s (about 52 s on GfxBackend).
+slices and about 22 s (about 52 s on GfxBackend). With the write barrier, texture uploads drop
+from 3106 to 32 (3074 cache hits), and the frames are byte-identical.
 
 **First real frames.** With `H2_BOOT_GFX`, the loading screen renders
 through `GfxBackend` and the nv2a shaders: Halo's own "LOADING 36%" ...
@@ -158,23 +166,24 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | 3 | **BeginPush `0x3fae10`, SetStateVB `0x401030`, Get2DSurfaceDesc `0x3fdb20`** | d3d | Stopping entries that the boot runs as retail bodies (`RUN_NATIVE`). Move them to `abi::NATIVE` or implement them. | S |
 | 4 | **NV2A register base** device+0x934, back/depth surface backing, `0xf0000000` alias | d3d (r6) / runtime | Boot glue at CreateDevice (`install_gpu_registers`). | S-M |
 | 5 | **Spin-waits in generated code** | backedge lane (8f72ddb, in review) | Retires the `0x213fa0` override. Preemptions use `Machine::run` slices, so `--slices` may need raising. | in review |
-| 6 | **x87 not lowered** | lift / emit (x87 crate on master) | About 10.5k fallback entries and 72k x87 instructions by the loading screen. The boot's fallback still uses its own `x87.rs`. | L |
-| 7 | **Lift leftovers** | lift-leftovers lane | `cpuid`, `rdtsc` and jump tables with null holes (`0x216a54`, `0x216b01`). The fallback covers them. | S |
-| 8 | **Write tracking** | boot + d3d | The boot still uses `UploadPolicy::Always`. Wiring `Guest::subscribe_writes` and `take_dirty` to `Device::note_write` (docs/d3d.md Integration) would allow `Tracked`. | S-M |
+| 6 | **x87 not lowered** | lift / emit | About 13.4k fallback entries and 95k x87 instructions by the loading screen. The fallback now computes them with crates/x87. | L |
 
 ### Boot stopgaps in force
 
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
 | `0x213fa0` stream purge waits 1 ms per spin | game_glue.rs `install_stream_purge` | backedge lands |
-| unknown switch target: interpret from the target | fallback.rs `trampoline` | lift-leftovers |
-| `cpuid` and `rdtsc` emulated | fallback.rs | lift-leftovers |
 | SetRenderTarget fast path `0x3f7b30` via `0x3f7870` | d3d_glue.rs `install_render_target_fast` | d3d (#2) |
 | Get2DSurfaceDesc, BeginPush and SetStateVB as retail bodies | d3d_glue.rs `RUN_NATIVE` | d3d (#3) |
 | device+0x934 NV2A stand-in, back/depth backing, `0xf0000000` alias | d3d_glue.rs `install_gpu_registers`, lib.rs | d3d-r6 (#4) |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired
+
+- Lift leftovers (0775c97): the fallback's `cpuid` and `rdtsc` emulation
+  and the unknown-switch-target path. `0x216a54` and `0x216b01` are lifted
+  now. The boot bridge forwards `h2shim_v1_rdtsc` to the runtime's guest
+  TSC, and the interpreter's TSC is seeded from it at each fallback entry.
 
 - Kernel round 5 (2a2b197):
   - NtYieldExecution as a 1 ms delay (the yield starvation is fixed, and

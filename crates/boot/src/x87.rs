@@ -1,16 +1,15 @@
-//! A stand-in x87 for the boot fallback: one instruction at a time on the
+//! The x87 for the boot fallback: one instruction at a time on the
 //! interpreter's CPU, until crates/lift lowers x87 (docs/FLOAT.md).
 //!
-//! Values live in the canonical ext80 registers. Moves (`fld`/`fstp` of
-//! registers and m80, `fxch`, `fild`, `fistp`) are exact on ext80;
-//! arithmetic converts to `f64`, which docs/FLOAT.md shows gives the same
-//! bits as the hardware at the PC=53 / round-to-nearest the game pins,
-//! outside exponent-range corners. Transcendentals use host libm (not
-//! bit-exact). No x87 exception is raised or flagged; all are treated as
-//! masked, which is what the game's control word asks for.
+//! Values live in the canonical ext80 registers; every arithmetic,
+//! conversion and transcendental goes through crates/x87 (exact software
+//! ext80 under the control word's precision and rounding). Exceptions take
+//! the masked response, which is what the game's control word asks for;
+//! their sticky bits are recorded in the status word.
 
 use iced_x86::{Instruction, MemorySize, Mnemonic, OpKind, Register};
 use ir::interp::Cpu;
+use x87::{Cmp, Const, F80, Flags, Mode};
 
 /// A memory access the x87 instruction needs.
 pub trait Mem {
@@ -35,122 +34,6 @@ fn ext_parts(e: &Ext) -> (bool, u16, u64) {
     let sig = u64::from_le_bytes(e[..8].try_into().unwrap());
     let se = u16::from_le_bytes([e[8], e[9]]);
     (se & 0x8000 != 0, se & 0x7fff, sig)
-}
-
-fn ext_make(sign: bool, exp: u16, sig: u64) -> Ext {
-    let mut e = [0u8; 10];
-    e[..8].copy_from_slice(&sig.to_le_bytes());
-    e[8..].copy_from_slice(&((exp & 0x7fff) | if sign { 0x8000 } else { 0 }).to_le_bytes());
-    e
-}
-
-pub fn f64_to_ext(v: f64) -> Ext {
-    let b = v.to_bits();
-    let sign = b >> 63 != 0;
-    let exp = ((b >> 52) & 0x7ff) as i32;
-    let mant = b & ((1 << 52) - 1);
-    if exp == 0 && mant == 0 {
-        return ext_make(sign, 0, 0);
-    }
-    if exp == 0x7ff {
-        return ext_make(sign, 0x7fff, (1 << 63) | (mant << 11));
-    }
-    if exp == 0 {
-        let lz = mant.leading_zeros() as i32; // >= 12
-        let sig = mant << lz;
-        // value = mant * 2^-1074 = sig * 2^(-1074 - lz); ext = sig * 2^(e - 16446)
-        let e = 16446 - 1074 - lz;
-        return ext_make(sign, e as u16, sig);
-    }
-    ext_make(sign, (exp - 1023 + 16383) as u16, (1 << 63) | (mant << 11))
-}
-
-fn scale2(mut v: f64, mut e: i32) -> f64 {
-    while e > 1000 {
-        v *= f64::from_bits(((1000 + 1023) as u64) << 52);
-        e -= 1000;
-    }
-    while e < -1000 {
-        v *= f64::from_bits(((-1000 + 1023) as u64) << 52);
-        e += 1000;
-    }
-    v * f64::from_bits(((e + 1023) as u64) << 52)
-}
-
-pub fn ext_to_f64(x: &Ext) -> f64 {
-    let (sign, exp, sig) = ext_parts(x);
-    let s = if sign { -1.0 } else { 1.0 };
-    if exp == 0 && sig == 0 {
-        return if sign { -0.0 } else { 0.0 };
-    }
-    if exp == 0x7fff {
-        if sig << 1 == 0 {
-            return s * f64::INFINITY;
-        }
-        let payload = (sig >> 11) & ((1 << 52) - 1);
-        return f64::from_bits(((sign as u64) << 63) | (0x7ff << 52) | payload | (1 << 51));
-    }
-    // sig as f64 rounds once to 53 bits; the power-of-two scale is exact
-    // outside the subnormal/overflow range.
-    s * scale2(sig as f64, exp as i32 - 16446)
-}
-
-fn int_to_ext(v: i64) -> Ext {
-    if v == 0 {
-        return ext_make(false, 0, 0);
-    }
-    let a = v.unsigned_abs();
-    let lz = a.leading_zeros();
-    ext_make(v < 0, (16383 + 63 - lz) as u16, a << lz)
-}
-
-/// ext80 to integer with the control word's rounding; None if out of range.
-fn ext_to_int(x: &Ext, rc: u16, bits: u32) -> Option<i64> {
-    let (sign, exp, sig) = ext_parts(x);
-    if exp == 0x7fff {
-        return None;
-    }
-    if exp == 0 && sig == 0 {
-        return Some(0);
-    }
-    let shift = exp as i32 - 16446; // value = sig * 2^shift
-    let mag: u128 = if shift >= 0 {
-        if shift > 64 {
-            return None;
-        }
-        (sig as u128) << shift
-    } else {
-        let k = (-shift) as u32;
-        let (q, rem, half, any) = if k >= 128 {
-            (0u128, 0u128, false, sig != 0)
-        } else {
-            let full = sig as u128;
-            let q = full >> k;
-            let rem = full & ((1u128 << k) - 1);
-            let half_v = 1u128 << (k - 1);
-            (q, rem, rem >= half_v, rem != 0)
-        };
-        let up = match rc {
-            0 => {
-                if k >= 128 {
-                    false
-                } else {
-                    let half_v = 1u128 << (k - 1);
-                    rem > half_v || (rem == half_v && q & 1 == 1)
-                }
-            }
-            1 => sign && any,  // toward -inf
-            2 => !sign && any, // toward +inf
-            _ => false,
-        };
-        let _ = half;
-        q + up as u128
-    };
-    let limit = 1u128 << (bits - 1);
-    if (!sign && mag >= limit) || (sign && mag > limit) {
-        return None;
-    }
-    Some(if sign { -(mag as i128) as i64 } else { mag as i64 })
 }
 
 fn classify_tag(x: &Ext) -> u16 {
@@ -189,11 +72,21 @@ impl Fpu<'_> {
         self.cpu.x87.st[p] = v;
         self.set_tag(p, classify_tag(&v));
     }
-    fn getf(&self, i: u16) -> f64 {
-        ext_to_f64(&self.get(i))
+    fn getv(&self, i: u16) -> F80 {
+        F80::from_bytes(self.get(i))
     }
-    fn setf(&mut self, i: u16, v: f64) {
-        self.set(i, f64_to_ext(v))
+    fn setv(&mut self, i: u16, v: F80) {
+        self.set(i, v.to_bytes())
+    }
+    fn mode(&self) -> Mode {
+        Mode::from_cw(self.cpu.x87.control)
+    }
+    /// Record the masked response: sticky exception bits, and C1 as the
+    /// operation reports it (round-up / stack fault direction).
+    fn flags(&mut self, fl: Flags) {
+        let st = &mut self.cpu.x87.status;
+        *st |= fl.exceptions();
+        *st = (*st & !C1) | if fl.contains(Flags::C1) { C1 } else { 0 };
     }
     fn push(&mut self, v: Ext) {
         let t = self.top().wrapping_sub(1) & 7;
@@ -209,35 +102,33 @@ impl Fpu<'_> {
     fn cc(&mut self, c: u16) {
         self.cpu.x87.status = (self.cpu.x87.status & !(C0 | C1 | C2 | C3)) | c;
     }
-    fn compare(&mut self, a: f64, b: f64) {
-        let c = if a.is_nan() || b.is_nan() {
-            C0 | C2 | C3
-        } else if a > b {
-            0
-        } else if a < b {
-            C0
-        } else {
-            C3
+    fn compare(&mut self, a: F80, b: F80, quiet: bool) {
+        let (r, fl) = x87::compare(a, b, quiet);
+        self.cpu.x87.status |= fl.exceptions();
+        let c = match r {
+            Cmp::Unordered => C0 | C2 | C3,
+            Cmp::Greater => 0,
+            Cmp::Less => C0,
+            Cmp::Equal => C3,
         };
         self.cc(c);
     }
-    fn comi(&mut self, a: f64, b: f64) {
+    fn comi(&mut self, a: F80, b: F80, quiet: bool) {
+        let (r, fl) = x87::compare(a, b, quiet);
+        self.cpu.x87.status |= fl.exceptions();
         // ZF 6, PF 2, CF 0; OF, SF, AF cleared.
-        let (zf, pf, cf) = if a.is_nan() || b.is_nan() {
-            (1, 1, 1)
-        } else if a > b {
-            (0, 0, 0)
-        } else if a < b {
-            (0, 0, 1)
-        } else {
-            (1, 0, 0)
+        let (zf, pf, cf) = match r {
+            Cmp::Unordered => (1, 1, 1),
+            Cmp::Greater => (0, 0, 0),
+            Cmp::Less => (0, 0, 1),
+            Cmp::Equal => (1, 0, 0),
         };
         let mask: u32 = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
         self.cpu.eflags = (self.cpu.eflags & !mask) | (zf << 6) | (pf << 2) | cf;
         self.cpu.flags_valid |= mask;
     }
-    fn rc(&self) -> u16 {
-        (self.cpu.x87.control >> 10) & 3
+    fn rc(&self) -> x87::Rc {
+        self.mode().rc
     }
 }
 
@@ -285,12 +176,12 @@ fn load_mem(mem: &mut dyn Mem, addr: u32, size: MemorySize) -> Result<Ext, Error
     };
     mem.read(addr, &mut b[..n]).map_err(Error::Memory)?;
     Ok(match size {
-        MemorySize::Float32 => f64_to_ext(f32::from_le_bytes(b[..4].try_into().unwrap()) as f64),
-        MemorySize::Float64 => f64_to_ext(f64::from_le_bytes(b[..8].try_into().unwrap())),
+        MemorySize::Float32 => F80::from_f32_bits(u32::from_le_bytes(b[..4].try_into().unwrap())).to_bytes(),
+        MemorySize::Float64 => F80::from_f64_bits(u64::from_le_bytes(b[..8].try_into().unwrap())).to_bytes(),
         MemorySize::Float80 => b,
-        MemorySize::Int16 => int_to_ext(i16::from_le_bytes(b[..2].try_into().unwrap()) as i64),
-        MemorySize::Int32 => int_to_ext(i32::from_le_bytes(b[..4].try_into().unwrap()) as i64),
-        _ => int_to_ext(i64::from_le_bytes(b[..8].try_into().unwrap())),
+        MemorySize::Int16 => F80::from_i64(i16::from_le_bytes(b[..2].try_into().unwrap()) as i64).to_bytes(),
+        MemorySize::Int32 => F80::from_i64(i32::from_le_bytes(b[..4].try_into().unwrap()) as i64).to_bytes(),
+        _ => F80::from_i64(i64::from_le_bytes(b[..8].try_into().unwrap())).to_bytes(),
     })
 }
 
@@ -306,37 +197,54 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
     let mut f = Fpu { cpu };
 
     // (dst index, src value) for the binary arithmetic forms.
-    let binop = |f: &mut Fpu, mem: &mut dyn Mem| -> Result<(u16, f64, f64), Error> {
+    let binop = |f: &mut Fpu, mem: &mut dyn Mem| -> Result<(u16, F80, F80), Error> {
         if has_mem {
-            let v = ext_to_f64(&load_mem(mem, addr, msize)?);
-            Ok((0, f.getf(0), v))
+            let v = F80::from_bytes(load_mem(mem, addr, msize)?);
+            Ok((0, f.getv(0), v))
         } else if regs.len() == 2 {
-            Ok((regs[0], f.getf(regs[0]), f.getf(regs[1])))
+            Ok((regs[0], f.getv(regs[0]), f.getv(regs[1])))
         } else {
             // faddp etc. with no operands: st(1) op= st(0)
-            Ok((1, f.getf(1), f.getf(0)))
+            Ok((1, f.getv(1), f.getv(0)))
         }
+    };
+    // Apply a rounded binary operation to st(d).
+    let arith = |f: &mut Fpu, d: u16, r: (F80, Flags)| {
+        f.setv(d, r.0);
+        f.flags(r.1);
     };
     match m {
         M::Fld | M::Fild => {
             let v = if has_mem { load_mem(mem, addr, msize)? } else { f.get(regs[0]) };
             f.push(v);
         }
-        M::Fld1 => f.push(f64_to_ext(1.0)),
-        M::Fldz => f.push(f64_to_ext(0.0)),
-        M::Fldpi => f.push(f64_to_ext(std::f64::consts::PI)),
-        M::Fldl2e => f.push(f64_to_ext(std::f64::consts::LOG2_E)),
-        M::Fldl2t => f.push(f64_to_ext(std::f64::consts::LOG2_10)),
-        M::Fldlg2 => f.push(f64_to_ext(std::f64::consts::LOG10_2)),
-        M::Fldln2 => f.push(f64_to_ext(std::f64::consts::LN_2)),
+        M::Fld1 | M::Fldz | M::Fldpi | M::Fldl2e | M::Fldl2t | M::Fldlg2 | M::Fldln2 => {
+            let c = match m {
+                M::Fld1 => Const::One,
+                M::Fldz => Const::Z,
+                M::Fldpi => Const::Pi,
+                M::Fldl2e => Const::L2E,
+                M::Fldl2t => Const::L2T,
+                M::Fldlg2 => Const::Lg2,
+                _ => Const::Ln2,
+            };
+            let rc = f.rc();
+            f.push(F80::constant(c, rc).to_bytes());
+        }
         M::Fst | M::Fstp => {
             let v = f.get(0);
             if has_mem {
                 match msize {
                     MemorySize::Float32 => {
-                        mem.write(addr, &(ext_to_f64(&v) as f32).to_le_bytes()).map_err(Error::Memory)?
+                        let (b, fl) = F80::from_bytes(v).to_f32_bits(f.mode());
+                        f.flags(fl);
+                        mem.write(addr, &b.to_le_bytes()).map_err(Error::Memory)?
                     }
-                    MemorySize::Float64 => mem.write(addr, &ext_to_f64(&v).to_le_bytes()).map_err(Error::Memory)?,
+                    MemorySize::Float64 => {
+                        let (b, fl) = F80::from_bytes(v).to_f64_bits(f.mode());
+                        f.flags(fl);
+                        mem.write(addr, &b.to_le_bytes()).map_err(Error::Memory)?
+                    }
                     MemorySize::Float80 => mem.write(addr, &v).map_err(Error::Memory)?,
                     s => return Err(Error::Unsupported(format!("fst size {s:?}"))),
                 }
@@ -348,19 +256,22 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
             }
         }
         M::Fist | M::Fistp | M::Fisttp => {
-            let rc = if m == M::Fisttp { 3 } else { f.rc() };
-            let v = f.get(0);
+            let trunc = m == M::Fisttp;
+            let (v, mode) = (f.getv(0), f.mode());
             match msize {
                 MemorySize::Int16 => {
-                    let i = ext_to_int(&v, rc, 16).unwrap_or(-0x8000) as i16;
+                    let (i, fl) = v.to_i16(mode, trunc);
+                    f.flags(fl);
                     mem.write(addr, &i.to_le_bytes()).map_err(Error::Memory)?
                 }
                 MemorySize::Int32 => {
-                    let i = ext_to_int(&v, rc, 32).unwrap_or(i32::MIN as i64) as i32;
+                    let (i, fl) = v.to_i32(mode, trunc);
+                    f.flags(fl);
                     mem.write(addr, &i.to_le_bytes()).map_err(Error::Memory)?
                 }
                 MemorySize::Int64 => {
-                    let i = ext_to_int(&v, rc, 64).unwrap_or(i64::MIN);
+                    let (i, fl) = v.to_i64(mode, trunc);
+                    f.flags(fl);
                     mem.write(addr, &i.to_le_bytes()).map_err(Error::Memory)?
                 }
                 s => return Err(Error::Unsupported(format!("fist size {s:?}"))),
@@ -371,42 +282,48 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
         }
         M::Fadd | M::Faddp | M::Fiadd => {
             let (d, a, b) = binop(&mut f, mem)?;
-            f.setf(d, a + b);
+            let r = x87::add(a, b, f.mode());
+            arith(&mut f, d, r);
             if m == M::Faddp {
                 f.pop();
             }
         }
         M::Fsub | M::Fsubp | M::Fisub => {
             let (d, a, b) = binop(&mut f, mem)?;
-            f.setf(d, a - b);
+            let r = x87::sub(a, b, f.mode());
+            arith(&mut f, d, r);
             if m == M::Fsubp {
                 f.pop();
             }
         }
         M::Fsubr | M::Fsubrp | M::Fisubr => {
             let (d, a, b) = binop(&mut f, mem)?;
-            f.setf(d, b - a);
+            let r = x87::sub(b, a, f.mode());
+            arith(&mut f, d, r);
             if m == M::Fsubrp {
                 f.pop();
             }
         }
         M::Fmul | M::Fmulp | M::Fimul => {
             let (d, a, b) = binop(&mut f, mem)?;
-            f.setf(d, a * b);
+            let r = x87::mul(a, b, f.mode());
+            arith(&mut f, d, r);
             if m == M::Fmulp {
                 f.pop();
             }
         }
         M::Fdiv | M::Fdivp | M::Fidiv => {
             let (d, a, b) = binop(&mut f, mem)?;
-            f.setf(d, a / b);
+            let r = x87::div(a, b, f.mode());
+            arith(&mut f, d, r);
             if m == M::Fdivp {
                 f.pop();
             }
         }
         M::Fdivr | M::Fdivrp | M::Fidivr => {
             let (d, a, b) = binop(&mut f, mem)?;
-            f.setf(d, b / a);
+            let r = x87::div(b, a, f.mode());
+            arith(&mut f, d, r);
             if m == M::Fdivrp {
                 f.pop();
             }
@@ -422,99 +339,96 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
             f.set(0, v);
         }
         M::Fsqrt => {
-            let v = f.getf(0);
-            f.setf(0, v.sqrt());
+            let r = x87::sqrt(f.getv(0), f.mode());
+            arith(&mut f, 0, r);
         }
-        M::Fsin => {
-            let v = f.getf(0);
-            f.setf(0, v.sin());
-            f.cc(0);
-        }
-        M::Fcos => {
-            let v = f.getf(0);
-            f.setf(0, v.cos());
-            f.cc(0);
+        M::Fsin | M::Fcos | M::Fptan => {
+            let v = f.getv(0);
+            let t = match m {
+                M::Fsin => x87::sin(v),
+                M::Fcos => x87::cos(v),
+                _ => x87::tan(v),
+            };
+            if t.out_of_range {
+                f.cc(C2);
+            } else {
+                f.setv(0, t.value);
+                f.flags(t.flags);
+                f.cpu.x87.status &= !C2;
+                if m == M::Fptan {
+                    let rc = f.rc();
+                    f.push(F80::constant(Const::One, rc).to_bytes());
+                }
+            }
         }
         M::Fsincos => {
-            let v = f.getf(0);
-            f.setf(0, v.sin());
-            f.push(f64_to_ext(v.cos()));
-            f.cc(0);
+            let (s, c) = x87::sincos(f.getv(0));
+            if s.out_of_range {
+                f.cc(C2);
+            } else {
+                f.setv(0, s.value);
+                f.push(c.to_bytes());
+                f.flags(s.flags);
+                f.cpu.x87.status &= !C2;
+            }
         }
-        M::Fptan => {
-            let v = f.getf(0);
-            f.setf(0, v.tan());
-            f.push(f64_to_ext(1.0));
-            f.cc(0);
-        }
-        M::Fpatan => {
-            let (x, y) = (f.getf(0), f.getf(1));
-            f.setf(1, y.atan2(x));
+        M::Fpatan | M::Fyl2x | M::Fyl2xp1 => {
+            let (x, y) = (f.getv(0), f.getv(1));
+            let r = match m {
+                M::Fpatan => x87::patan(y, x),
+                M::Fyl2x => x87::yl2x(y, x),
+                _ => x87::yl2xp1(y, x),
+            };
+            arith(&mut f, 1, r);
             f.pop();
         }
         M::F2xm1 => {
-            let v = f.getf(0);
-            f.setf(0, v.exp2() - 1.0);
-        }
-        M::Fyl2x => {
-            let (x, y) = (f.getf(0), f.getf(1));
-            f.setf(1, y * x.log2());
-            f.pop();
-        }
-        M::Fyl2xp1 => {
-            let (x, y) = (f.getf(0), f.getf(1));
-            f.setf(1, y * (x.ln_1p() / std::f64::consts::LN_2));
-            f.pop();
+            let r = x87::x2m1(f.getv(0));
+            arith(&mut f, 0, r);
         }
         M::Fscale => {
-            let (x, s) = (f.getf(0), f.getf(1).trunc());
-            let e = s.clamp(-4000.0, 4000.0) as i32;
-            f.setf(0, scale2(x, e));
+            let rc = f.rc();
+            let r = x87::scale(f.getv(0), f.getv(1), rc);
+            arith(&mut f, 0, r);
         }
         M::Frndint => {
-            let v = f.getf(0);
-            let r = match f.rc() {
-                0 => v.round_ties_even(),
-                1 => v.floor(),
-                2 => v.ceil(),
-                _ => v.trunc(),
-            };
-            f.setf(0, r);
+            let rc = f.rc();
+            let r = x87::rndint(f.getv(0), rc);
+            arith(&mut f, 0, r);
         }
         M::Fprem | M::Fprem1 => {
-            let (x, y) = (f.getf(0), f.getf(1));
-            let q = if m == M::Fprem { (x / y).trunc() } else { (x / y).round_ties_even() };
-            let r = if m == M::Fprem { x % y } else { x - q * y };
-            let qi = q.abs() as u64;
-            f.setf(0, r);
-            let mut c = 0;
-            if qi & 1 != 0 {
+            let (x, y) = (f.getv(0), f.getv(1));
+            let p = if m == M::Fprem { x87::prem(x, y) } else { x87::prem1(x, y) };
+            f.setv(0, p.value);
+            f.cpu.x87.status |= p.flags.exceptions();
+            let mut c = if p.incomplete { C2 } else { 0 };
+            if p.q & 1 != 0 {
                 c |= C1;
             }
-            if qi & 2 != 0 {
+            if p.q & 2 != 0 {
                 c |= C3;
             }
-            if qi & 4 != 0 {
+            if p.q & 4 != 0 {
                 c |= C0;
             }
             f.cc(c);
         }
         M::Fxtract => {
-            let v = f.get(0);
-            let (sign, exp, sig) = ext_parts(&v);
-            f.setf(0, exp as f64 - 16383.0);
-            f.push(ext_make(sign, 16383, sig));
+            let (e, sig, fl) = x87::xtract(f.getv(0));
+            f.cpu.x87.status |= fl.exceptions();
+            f.setv(0, e);
+            f.push(sig.to_bytes());
         }
         M::Fcom | M::Fcomp | M::Fcompp | M::Fucom | M::Fucomp | M::Fucompp | M::Ficom | M::Ficomp => {
             let b = if has_mem {
-                ext_to_f64(&load_mem(mem, addr, msize)?)
+                F80::from_bytes(load_mem(mem, addr, msize)?)
             } else if let Some(&r) = regs.iter().find(|&&r| r != 0).or(regs.get(1)) {
-                f.getf(r)
+                f.getv(r)
             } else {
-                f.getf(1)
+                f.getv(1)
             };
-            let a = f.getf(0);
-            f.compare(a, b);
+            let a = f.getv(0);
+            f.compare(a, b, matches!(m, M::Fucom | M::Fucomp | M::Fucompp));
             match m {
                 M::Fcomp | M::Fucomp | M::Ficomp => f.pop(),
                 M::Fcompp | M::Fucompp => {
@@ -525,16 +439,16 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
             }
         }
         M::Fcomi | M::Fcomip | M::Fucomi | M::Fucomip => {
-            let b = f.getf(*regs.get(1).unwrap_or(&1));
-            let a = f.getf(0);
-            f.comi(a, b);
+            let b = f.getv(*regs.get(1).unwrap_or(&1));
+            let a = f.getv(0);
+            f.comi(a, b, matches!(m, M::Fucomi | M::Fucomip));
             if matches!(m, M::Fcomip | M::Fucomip) {
                 f.pop();
             }
         }
         M::Ftst => {
-            let a = f.getf(0);
-            f.compare(a, 0.0);
+            let a = f.getv(0);
+            f.compare(a, F80::ZERO, false);
         }
         M::Fxam => {
             let p = f.phys(0);
@@ -620,23 +534,41 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use iced_x86::{Decoder, DecoderOptions};
 
-    #[test]
-    fn ext_roundtrips_doubles() {
-        for v in [0.0, -0.0, 1.0, -2.5, 1e300, 1e-300, 5e-324, f64::INFINITY, 3.141592653589793] {
-            assert_eq!(ext_to_f64(&f64_to_ext(v)).to_bits(), v.to_bits(), "{v}");
+    struct NoMem;
+    impl Mem for NoMem {
+        fn read(&mut self, addr: u32, _: &mut [u8]) -> Result<(), u32> {
+            Err(addr)
+        }
+        fn write(&mut self, addr: u32, _: &[u8]) -> Result<(), u32> {
+            Err(addr)
+        }
+    }
+
+    fn run(cpu: &mut Cpu, code: &[u8]) {
+        let mut d = Decoder::with_ip(32, code, 0x1000, DecoderOptions::NONE);
+        while d.can_decode() {
+            let ins = d.decode();
+            assert!(exec(cpu, &mut NoMem, &ins).is_ok(), "{:?}", ins.mnemonic());
         }
     }
 
     #[test]
-    fn ints_are_exact() {
-        for v in [0i64, 1, -1, 1 << 62, i64::MIN, i64::MAX, 123456789012345] {
-            assert_eq!(ext_to_int(&int_to_ext(v), 0, 64), Some(v));
-        }
-        assert_eq!(ext_to_int(&f64_to_ext(2.5), 0, 32), Some(2));
-        assert_eq!(ext_to_int(&f64_to_ext(3.5), 0, 32), Some(4));
-        assert_eq!(ext_to_int(&f64_to_ext(-2.5), 3, 32), Some(-2));
-        assert_eq!(ext_to_int(&f64_to_ext(-2.5), 1, 32), Some(-3));
-        assert_eq!(ext_to_int(&f64_to_ext(3e9), 0, 32), None);
+    fn arithmetic_goes_through_the_soft_float() {
+        // fld1; fadd st(0),st(0); fsqrt  -> sqrt(2) rounded at PC=64
+        let mut cpu = Cpu::default();
+        run(&mut cpu, &[0xd9, 0xe8, 0xd8, 0xc0, 0xd9, 0xfa]);
+        let f = Fpu { cpu: &mut cpu };
+        let two = x87::add(F80::ONE, F80::ONE, f.mode()).0;
+        assert_eq!(f.getv(0), x87::sqrt(two, f.mode()).0);
+    }
+
+    #[test]
+    fn constants_follow_the_rounding_control() {
+        let mut cpu = Cpu::default();
+        run(&mut cpu, &[0xd9, 0xeb]); // fldpi
+        let f = Fpu { cpu: &mut cpu };
+        assert_eq!(f.getv(0), F80::constant(Const::Pi, x87::Rc::Near));
     }
 }

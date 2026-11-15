@@ -322,6 +322,7 @@ dependencies = [
  "png",
  "runtime",
  "vfs",
+ "x87",
  "xapi",
  "xbe",
  "xiso",

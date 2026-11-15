@@ -422,9 +422,6 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
             s.fallbacks, s.interpreted, s.x87, s.x87_mnemonics
         );
     }
-    for ((pc, target), n) in fallback::SWITCHES.lock().unwrap().iter() {
-        eprintln!("fallback: unknown switch target {target:#x} from jmp {pc:#x} x{n} (interpreted)");
-    }
     {
         let t = tr.lock().unwrap();
         eprintln!("{} kernel calls; last 40:", t.calls.len());

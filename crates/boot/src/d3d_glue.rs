@@ -72,8 +72,15 @@ fn save_png(
 }
 
 fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime, backend: B) -> anyhow::Result<Installed> {
+    // Tracked uploads trust the write barrier below; H2_BOOT_UPLOAD_ALWAYS
+    // goes back to re-reading every resource on every use.
+    let upload = if std::env::var_os("H2_BOOT_UPLOAD_ALWAYS").is_some() {
+        UploadPolicy::Always
+    } else {
+        UploadPolicy::Tracked
+    };
     let cfg = DeviceConfig {
-        upload: UploadPolicy::Always,
+        upload,
         ..DeviceConfig::halo2(
             GuestRange { addr: PUSH_BASE, len: PUSH_LEN },
             GuestRange { addr: SCRATCH_BASE, len: 0x1000 },
@@ -96,6 +103,8 @@ fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime
         );
     });
     let r = out.unwrap();
+    let entries: Vec<u32> = r.implemented.iter().chain(&r.stopping).map(|e| e.0).collect();
+    install_write_barrier(rt, &device, &entries)?;
     let dev: Arc<Mutex<d3d::Device<B>>> = device;
     Ok(Installed {
         report: Box::new(move || {
@@ -304,4 +313,62 @@ pub fn install_render_target_fast(rt: &runtime::Runtime, uses: &crate::stopgaps:
             })
         });
     });
+}
+
+/// Shadow page for the d3d entries the write barrier wraps (4 bytes each).
+const BARRIER_SHADOW: u32 = 0xa0ff_4000;
+
+/// The D3D write barrier (docs/d3d.md "Integration", step 3) on the
+/// runtime's write watch: one subscriber watches all of RAM in the folded
+/// view, and every d3d entry is wrapped so that
+///
+/// - on entry, the pages written since the last drain (lifted code, the
+///   interpreter, kernel and HLE copies) go to `Device::note_write`, before
+///   the device reads any resource;
+/// - after the entry returns, the pages it wrote are drained and dropped:
+///   the device notes its own stores itself.
+///
+/// The device's tracker keeps only the pages it watches, so watching all of
+/// RAM here costs a bit per store and nothing more.
+fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
+    rt: &runtime::Runtime,
+    device: &Arc<Mutex<d3d::Device<B>>>,
+    entries: &[u32],
+) -> anyhow::Result<()> {
+    use runtime::watch::CONTIGUOUS_BASE;
+    let id = {
+        let mut mem = rt.memory();
+        mem.map_zeroed(BARRIER_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
+        let id = mem.subscribe_writes("boot:d3d");
+        mem.watch_writes(id, CONTIGUOUS_BASE, 0x0400_0000).map_err(|e| anyhow::anyhow!("{e}"))?;
+        id
+    };
+    anyhow::ensure!(entries.len() <= 0x400, "too many d3d entries for the shadow page");
+    rt.edit_dispatch(|d| {
+        for (i, &addr) in entries.iter().enumerate() {
+            let shadow = BARRIER_SHADOW + 4 * i as u32;
+            let dev = Arc::clone(device);
+            let Some(prev) = d.register_override(addr, "boot:d3d write barrier", move |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let dirty = mem.take_dirty(id).unwrap_or_default();
+                if !dirty.is_empty() {
+                    let mut dv = dev.lock().unwrap();
+                    for r in dirty {
+                        dv.note_write(r.addr, r.len);
+                    }
+                }
+                let ret_pc = mem.u32(cpu.esp)?;
+                cpu.esp = cpu.esp.wrapping_add(4);
+                ctx.call_guest(cpu, &mut mem, shadow, move |_cpu, ctx| {
+                    let _ = ctx.runtime().memory().take_dirty(id);
+                    Ok(runtime::TransferAbi::ret(ret_pc))
+                })
+            }) else {
+                continue;
+            };
+            d.restore_override(shadow, prev);
+        }
+    });
+    Ok(())
 }
