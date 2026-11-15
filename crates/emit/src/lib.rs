@@ -48,6 +48,9 @@ pub mod host;
 pub mod output;
 mod x87;
 
+/// The IR passes [`plan`] runs, re-exported for callers choosing them.
+pub use opt;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
@@ -100,6 +103,8 @@ pub struct Owner {
     /// Loop back-edges, each a preemption safe point, and their headers,
     /// which are registered as resumes ([`backedge`]).
     pub loops: backedge::Loops,
+    /// What the IR passes did to `func` ([`opt::optimize`]).
+    pub opt: opt::Report,
 }
 
 /// Branch sides, switch cases and fall-throughs of a block's last
@@ -113,16 +118,27 @@ fn entry_exits(insn: &ir::IrInsn) -> usize {
     }
 }
 
-/// Decide every owner's shape and registrations. `funcs` are validated
-/// lifted functions, one per discovered entry.
+/// Decide every owner's shape and registrations, and run the IR passes
+/// `H2_PASSES` selects (all of them by default; see [`opt::Passes`]).
+/// `funcs` are validated lifted functions, one per discovered entry.
+///
+/// # Panics
+///
+/// If `H2_PASSES` is set to something [`opt::Passes::parse`] rejects.
 pub fn plan(funcs: Vec<IrFunction>) -> Vec<Owner> {
+    plan_with(funcs, opt::Passes::from_env().unwrap_or_else(|e| panic!("{e}")))
+}
+
+/// [`plan`] with an explicit pass selection.
+pub fn plan_with(funcs: Vec<IrFunction>, passes: opt::Passes) -> Vec<Owner> {
     let mut owners: Vec<Owner> = funcs
         .into_iter()
         .map(|f| {
             let entry_exits = f.blocks.values().filter_map(|b| b.insns.last()).map(entry_exits).sum();
             let selectors = BTreeSet::from([f.entry]);
             let loops = backedge::find(&f);
-            Owner { func: f, selectors, entries: Vec::new(), resumes: Vec::new(), entry_exits, loops }
+            let opt = opt::Report::default();
+            Owner { func: f, selectors, entries: Vec::new(), resumes: Vec::new(), entry_exits, loops, opt }
         })
         .collect();
     owners.sort_by_key(|o| o.func.entry);
@@ -204,14 +220,24 @@ pub fn plan(funcs: Vec<IrFunction>) -> Vec<Owner> {
         o.resumes.push(pc);
         o.selectors.insert(pc);
     }
+    // The passes need the final shape: every selector (an entry point
+    // whose state comes from CpuAbi) and every polled header (an exit).
+    for o in &mut owners {
+        let shape = opt::Shape { selectors: &o.selectors, polled: &o.loops.headers };
+        o.opt = opt::optimize(&mut o.func, &shape, passes);
+    }
     owners
 }
 
-/// Lift every discovered function and plan its owner.
-pub fn plan_image(analysis: &analyze::Analysis, xbe: &xbe::Xbe) -> Result<Vec<Owner>, xbe::Error> {
+/// Lift every discovered function and plan its owner, running `passes`.
+pub fn plan_image(
+    analysis: &analyze::Analysis,
+    xbe: &xbe::Xbe,
+    passes: opt::Passes,
+) -> Result<Vec<Owner>, xbe::Error> {
     let lifter = lift::Lifter::new(analysis, xbe)?;
     let funcs = analysis.functions.keys().filter_map(|&e| lifter.lift(e)).collect();
-    Ok(plan(funcs))
+    Ok(plan_with(funcs, passes))
 }
 
 /// FNV-1a, 64-bit: stable across Rust versions, which a cache key needs.
@@ -235,6 +261,8 @@ pub struct WriteReport {
     pub entry_exits: usize,
     /// Loop back-edges, each with a preemption check ([`backedge`]).
     pub back_edges: usize,
+    /// What the IR passes did, summed over owners.
+    pub opt: opt::Report,
 }
 
 /// Write `content` unless the file already holds exactly that, so build
@@ -281,6 +309,7 @@ pub fn write_module(owners: &[Owner], dir: &Path) -> io::Result<WriteReport> {
         report.resumes += o.resumes.len();
         report.entry_exits += o.entry_exits;
         report.back_edges += o.loops.back_edges.len();
+        report.opt += o.opt;
     }
     files.insert("h2gen_registry.c".into(), registry(owners, &home));
 

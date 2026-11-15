@@ -72,7 +72,7 @@ fn a_far_jump_to_the_flat_selector_is_a_direct_tail_call() {
         common::skip(NAME, "needs h2abi.h (H2ABI_HEADER)");
         return;
     };
-    let owners = emit::plan_image(&analysis, &x).unwrap();
+    let owners = emit::plan_image(&analysis, &x, emit::opt::Passes::from_env().unwrap()).unwrap();
     let g = common::build(&owners, &header, "far-jmp");
     let stack = 0x20_0000;
     let mut mem = FlatMemory::new(stack - 0x1000, 0x1000);

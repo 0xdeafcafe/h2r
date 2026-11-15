@@ -34,7 +34,7 @@ fn entry_reaches_the_same_kernel_call_through_generated_c() {
 
     let full = std::env::var_os("H2_EMIT_FULL").is_some();
     let owners = if full {
-        emit::plan_image(&analysis, &x).unwrap()
+        emit::plan_image(&analysis, &x, emit::opt::Passes::from_env().unwrap()).unwrap()
     } else {
         emit::plan(reference.functions.iter().filter_map(|&e| lifter.lift(e)).collect())
     };

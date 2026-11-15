@@ -95,13 +95,15 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           interpret from the entry to the first kernel call
   emit [--out <dir>] [--abi-header <h2abi.h>] [--no-build] [--run-entry]
        [--arch host|all|arm64|x86_64] [--jobs N] [--no-emit-cache]
-       [--allow-repo-output]
+       [--allow-repo-output] [--passes <spec>]
                           generate C and build the host static lib (default out:
                           $TMPDIR/h2gen); --arch all builds both architectures;
                           --run-entry runs the entry through the generated code
                           repository output requires --allow-repo-output
                           (objects: H2_OBJ_CACHE or <out>/obj; H2_OBJ_CACHE_MAX
-                          caps it, dropping least recently used; H2_OPT, H2_DEBUG)
+                          caps it, dropping least recently used; H2_OPT, H2_DEBUG);
+                          --passes picks the IR passes (default H2_PASSES, else
+                          all): all, none, names, -name, comma-separated
 
   profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...   (--features perf)
                           sample a benchmark scenario: guest-aware folded stacks,
@@ -221,6 +223,7 @@ fn main() -> Result<()> {
             }
             "--no-emit-cache" => lift_opts.no_emit_cache = true,
             "--allow-repo-output" => lift_opts.allow_repo_output = true,
+            "--passes" => lift_opts.passes = Some(args.next().context("--passes needs a spec")?),
             "--dump" => lift_opts.dump.push(args.next().context("--dump needs an address")?),
             "-h" | "--help" => bail!("{USAGE}"),
             _ => positional.push(PathBuf::from(a)),
@@ -585,6 +588,7 @@ struct LiftOpts {
     jobs: Option<usize>,
     no_emit_cache: bool,
     allow_repo_output: bool,
+    passes: Option<String>,
 }
 
 fn parse_hex(s: &str) -> Result<u32> {
@@ -652,8 +656,13 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
     let src = out.join("src");
+    let passes = match &opts.passes {
+        Some(spec) => emit::opt::Passes::parse(spec).map_err(anyhow::Error::msg)?,
+        None => emit::opt::Passes::from_env().map_err(anyhow::Error::msg)?,
+    };
     let t = Instant::now();
-    let cache_key = emit_cache::key(&data, &std::env::current_exe()?)?;
+    // The passes change the C, so they are part of the key.
+    let cache_key = emit_cache::key(&data, &std::env::current_exe()?, &format!("{passes:?}"))?;
     // Tracing is explicitly requested analysis work, even on a cache hit.
     let reuse = !opts.no_emit_cache && std::env::var_os("H2_TRACE").is_none() && emit_cache::valid(&out, &cache_key);
     println!("emit cache: {:.3}s, {}", t.elapsed().as_secs_f64(), if reuse { "hit" } else { "miss" });
@@ -663,8 +672,8 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         let a = analyze::analyze(&x)?;
         println!("analyze: {:.3}s", t.elapsed().as_secs_f64());
         let t = Instant::now();
-        let owners = emit::plan_image(&a, &x)?;
-        println!("lift + plan: {:.3}s", t.elapsed().as_secs_f64());
+        let owners = emit::plan_image(&a, &x, passes)?;
+        println!("lift + plan: {:.3}s ({passes:?})", t.elapsed().as_secs_f64());
         let t = Instant::now();
         let w = emit::write_module(&owners, &src)?;
         println!(
@@ -679,6 +688,8 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
             w.entry_exits,
             w.back_edges
         );
+        let o = w.opt;
+        println!("passes: {} of {} flag writes dead, {} pure statements removed", o.dead_flags, o.flag_writes, o.dead_stmts);
         let t = Instant::now();
         emit_cache::record(&out, &cache_key)?;
         println!("emit cache record: {:.3}s", t.elapsed().as_secs_f64());

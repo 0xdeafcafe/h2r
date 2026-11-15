@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 ir.workspace = true
+opt.workspace = true
 lift.workspace = true
 analyze.workspace = true
 xbe.workspace = true
@@ -13,5 +14,6 @@ x87.workspace = true
 libloading = "0.8"
 
 [dev-dependencies]
+libc = "0.2"
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info", "code_asm"] }
 runtime = { path = "../runtime" }

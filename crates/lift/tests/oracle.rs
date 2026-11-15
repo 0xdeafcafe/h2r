@@ -15,6 +15,13 @@
 //! hide a flag the oracle defines nor define one it leaves undefined.
 //! Fixtures the oracle refused, or that lower to an unsupported
 //! instruction, are counted and skipped, by class (printed at the end).
+//!
+//! `H2_ORACLE_PASSES` (an `opt::Passes` spec such as `all`) runs each
+//! sequence through the IR passes first: the instructions become one
+//! function (a block each, leaving the sequence as a tail transfer) and the
+//! interpreter steps the optimised forms. The end of a sequence is an exit,
+//! so the passes must leave everything the oracle compares exactly as the
+//! plain lowering does.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -243,6 +250,50 @@ fn oracle_stop(stop: &Value) -> Option<String> {
     })
 }
 
+/// The passes `H2_ORACLE_PASSES` selects, if any.
+fn passes() -> Option<opt::Passes> {
+    static P: std::sync::OnceLock<Option<opt::Passes>> = std::sync::OnceLock::new();
+    *P.get_or_init(|| std::env::var("H2_ORACLE_PASSES").ok().map(|s| opt::Passes::parse(&s).unwrap()))
+}
+
+/// The sequence at `start` as one function, a block per instruction, run
+/// through the selected passes; its instructions by PC. `None` without
+/// passes. Control that leaves the bytes becomes a tail transfer, an exit
+/// that observes everything, as the end of a fixture does.
+fn optimised(code: &[u8], start: u32) -> Option<HashMap<u32, ir::IrInsn>> {
+    let passes = passes()?;
+    let end = start + code.len() as u32;
+    let inside = |pc: u32| (start..end).contains(&pc);
+    let mut blocks = std::collections::BTreeMap::new();
+    for insn in Decoder::with_ip(32, code, start as u64, DecoderOptions::NONE) {
+        let at = (insn.ip32() - start) as usize;
+        let mut ir = lift::lower_encoded(&insn, &code[at..], &lift::Env::default(), lift::Site::Plain);
+        let next = ir.next_pc();
+        match &mut ir.control {
+            ir::Control::Next if !inside(next) => {
+                let target = ir::Target::Direct(next);
+                ir.control = ir::Control::Jump { target, tail: true, kind: ir::CallKind::Direct };
+            }
+            ir::Control::Jump { target: ir::Target::Direct(t), tail, .. } if !inside(*t) => *tail = true,
+            ir::Control::Branch { taken, fallthrough, .. } => {
+                taken.tail |= !inside(taken.pc);
+                fallthrough.tail |= !inside(fallthrough.pc);
+            }
+            _ => {}
+        }
+        blocks.insert(ir.pc, ir::IrBlock { start: ir.pc, insns: vec![ir] });
+    }
+    // A jump into the middle of an instruction, or a decode that ran off
+    // the end, has no block: leave such a sequence unoptimised.
+    let mut f = ir::IrFunction { entry: start, blocks, interior_entries: vec![], errors: vec![] };
+    f.validate().ok()?;
+    let selectors = std::collections::BTreeSet::from([start]);
+    let polled = std::collections::BTreeSet::new();
+    opt::optimize(&mut f, &opt::Shape { selectors: &selectors, polled: &polled }, passes);
+    f.validate().unwrap_or_else(|e| panic!("passes broke the IR: {e}\n{f}"));
+    Some(f.blocks.into_values().flat_map(|b| b.insns).map(|i| (i.pc, i)).collect())
+}
+
 /// Run one fixture; `Ok(Err(class))` when it is skipped.
 fn check(f: &Value) -> Result<Result<(), String>, String> {
     let Some(theirs) = oracle_stop(&f["outcome"]["stop"]) else {
@@ -269,6 +320,7 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
     let initial_x87 = cpu.x87.clone();
     let start = cpu.eip;
     let end = start + code.len() as u32;
+    let optimised = optimised(&code, start);
     let mut result = Ok(());
     let mut mmx = false;
     let mut sse_fp = false;
@@ -280,8 +332,11 @@ fn check(f: &Value) -> Result<Result<(), String>, String> {
         }
         let at = (cpu.eip - start) as usize;
         let insn = Decoder::with_ip(32, &code[at..], cpu.eip as u64, DecoderOptions::NONE).decode();
-        let ir = lift::lower_encoded(&insn, &code[at..], &lift::Env::default(), lift::Site::Plain);
+        let mut ir = lift::lower_encoded(&insn, &code[at..], &lift::Env::default(), lift::Site::Plain);
         ir.validate().map_err(|e| format!("invalid IR: {e}"))?;
+        if let Some(o) = optimised.as_ref().and_then(|m| m.get(&cpu.eip)) {
+            ir = o.clone();
+        }
         if let Some((_, detail)) = ir.unsupported() {
             return Ok(Err(skip_class(&insn, detail)));
         }

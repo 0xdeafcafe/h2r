@@ -16,3 +16,4 @@ oracle-fixtures = []
 
 [dev-dependencies]
 serde_json = "1"
+opt.workspace = true

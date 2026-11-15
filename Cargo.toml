@@ -19,6 +19,7 @@ analyze = { path = "crates/analyze" }
 symbols = { path = "crates/symbols" }
 runtime = { path = "crates/runtime" }
 ir = { path = "crates/ir" }
+opt = { path = "crates/opt" }
 lift = { path = "crates/lift" }
 emit = { path = "crates/emit" }
 simd = { path = "crates/simd" }
