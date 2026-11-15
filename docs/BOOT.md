@@ -41,6 +41,11 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30) |
+| `H2_BOOT_INPUT=key@from-to,...` | hold a keyboard-pad key from slice `from` to `to`: `Escape` is START, `Space` A, `ArrowDown` d-pad down (input crate bindings) |
+| `H2_BOOT_DRAWLOG=<file>` | log every backend call of the frames in `H2_BOOT_DRAWLOG_FRAMES` (present counts, default `240`; frame N matches `frame-N.png`) |
+| `H2_BOOT_DRAWLOG_VERTS=1` | with `H2_BOOT_DRAWLOG`, add the vertex layout and the first 8 vertices of each stream |
+| `H2_BOOT_DUMP=addr:len,...` | print guest words at the end of the run (hex) |
+| `H2_BOOT_DUMP_RAW=addr:len:file;...` | save raw guest bytes at the end of the run (hex address and length) |
 
 The run prints a report when it ends. It covers:
 
@@ -98,34 +103,51 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   - `xapi::service_input` runs between scheduler slices.
   - With `--no-xapi`, the boot keeps its own XMountUtilityDrive override
     (`0x2d5b77`, which writes `xapi::register::addr::CACHE_ROW`).
-- **`game_glue.rs`**: boot-only overrides of Halo functions (the frame
-  wait, the stream purge callback, and the retired voice-off), each with
-  its ABI and the retail path it reproduces.
+- **`game_glue.rs`**: boot-only overrides of Halo functions (only the
+  retired voice-off, under `H2_BOOT_OLD_GLUE`).
+- **`d3d_diag.rs`**: a backend wrapper; the report gains draw outcomes by
+  target, the texture formats drawn and device events by reason, and
+  `H2_BOOT_DRAWLOG` logs whole frames.
 
-## Current state (2026-11-15, origin/master 377b675)
+## Current state (2026-11-15, origin/master a41dae4)
 
-**Last stop:** thread 2, in `D3DDevice_SetRenderState_CullMode`
-(`0x3f53d0`, from `0x5206c`):
+**The main menu renders and takes input.** On plain master (backedge and
+d3d-r6 landed), with no overlay:
 
-> push buffer: unimplemented NV2A method 0x1760
+- no stop: the run ends at the slice limit. Preemption makes slices short,
+  so `--slices` must be raised: the title screen is at about slice 9000
+  (present ~250), 12000 slices take about 106 s on GfxBackend;
+- the 3D title scene (the Covenant ship over New Mombasa, the bridge),
+  the HALO 2 logo and "PRESS START TO CONTINUE" render (present ~300);
+- with `H2_BOOT_INPUT="Escape@10000-10100"` the game takes START and
+  shows CHOOSE PROFILE (present ~400), text, buttons and frame complete;
+- with `ArrowDown@15600-15700,Space@16200-16300` added (pick Default,
+  press A) it reaches the main menu: CAMPAIGN, XBOX LIVE, SPLIT SCREEN,
+  SYSTEM LINK, SETTINGS over the 3D scene (present ~480). 21000 slices,
+  184 s, 19k preemptions.
 
-the vertex data array format that `CDevice_SetStateVB` pushes for an
-inline draw. x87 is lowered now, so the fallback sees no traffic before
-this stop (0 entries). About 10.3k kernel calls, 753 slices, 13 s.
+The earlier "menu backdrop without text" was the transition into the
+title screen, with the UI still faded out (its quads draw with vertex
+alpha 0); the game was waiting, not failing to draw.
 
-**With d3d-r6 overlaid (38daa6c, not landed)** there is no stop within
-the default 753 slices: the run ends on `TransferLimit` after 13.9k
-kernel calls and 60 s (92 s on GfxBackend), with 316k draws (272k
-inline-array draws), 14.2M push words, 2405 texture uploads against 617k
-cache hits, 2352 render-target writebacks and 781 vblanks. The fallback
-handles 16k entries, mostly the memcpy/memmove targets (blocker 1).
+Screenshots are kept outside the repo, in the session's keep directory:
+`boot-title-300.png`, `boot-choose-profile-400.png`,
+`boot-main-menu-480.png`, `boot-main-menu-520.png` (and the loading
+screen, `boot-loading-36.png`, `boot-loading-89.png`).
 
-**Main menu backdrop** (r6 overlay, `H2_BOOT_GFX`): after the loading
-screen, the frames show drifting nebula particles over a dark field and
-the horizontal menu band, with no text yet. Screenshots are kept outside
-the repo as `boot-menu-240.png` and `boot-menu-480.png` in the session's
-keep directory (the loading screen is `boot-loading-36.png` and
-`boot-loading-89.png`).
+Rendering differences still visible (owners to confirm):
+
+- the scene is washed out in a dense brown fog with no sky colour, and the
+  fog shows 8x8-pixel blocky patterns (gfx/shaders: atmospheric fog or
+  the P8/palette textures the scene binds);
+- dotted dark horizontal lines across the screen at a few heights in the
+  pre-title frames (gfx);
+- some 3D textures look low-detail early on (8x8 tag-data bitmaps until
+  the texture cache streams the full ones; expected).
+
+Until the analyzer fix lands, the CRT copy and unguarded switch targets
+go through the fallback (blocker 1): about 33k fallback entries by the
+profile screen.
 
 ### Milestones, from the entry point
 
@@ -148,19 +170,21 @@ keep directory (the loading screen is `boot-loading-36.png` and
 12. The `d:\bink\intro_60.bik` probe and the movie loop `0x1639c2`.
     SwitchToThread hands off since kernel round 5.
 13. `d:\maps\mainmenu.map` is opened on thread 3. The stream purge
-    callback `0x213fa0` waits for the read (stopgap).
+    callback `0x213fa0` waits for the read (preempted since backedge).
 14. Loading screen: the unbounded switch tables `0x216a54` and `0x216b01`
     run through the fallback. The "LOADING nn%" frames render; `t:\$C\`
     and `u:\` are probed.
-15. Offscreen render targets: render-to-texture through crates/d3d, and
-    the same-size SetRenderTarget fast path `0x3f7b30` (stopgap).
-16. Inline draws through BeginPush and SetStateVB, then the `0x1760`
-    stop. With d3d-r6:
-17. unaligned memcpy/memmove through the fallback (blocker 1);
-18. the main menu backdrop renders, and the run reaches the slice limit.
+15. Offscreen render targets: render-to-texture and the same-size
+    SetRenderTarget fast path `0x3f7b30` through crates/d3d.
+16. Inline draws through BeginPush and SetStateVB (vertex array formats,
+    d3d-r6).
+17. Unaligned memcpy/memmove and the zero-holed table at `0x336f0`
+    through the fallback (blocker 1).
+18. The title screen, then START (scripted), CHOOSE PROFILE, A on
+    Default, and the main menu.
 
-The main menu still needs, past this point: its text and widgets, and a
-longer run (`--slices`) to see what stops next.
+Next: drive the menu further (CAMPAIGN), longer runs, and the rendering
+differences above.
 
 ### Ranked blockers
 
@@ -168,26 +192,25 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 
 | # | Blocker | Owner | What's needed | Size |
 | --- | --- | --- | --- | --- |
-| 1 | **Masked jump tables** | analyze | `jump_table()` sizes a switch only from a cmp/ja guard. The CRT memcpy and memmove index theirs with `and r,3`, so they read as unbounded, and slot 0 overlaps code, so the loop stops before any target is read. Tables `0x3208f0`, `0x3209dc`, `0x320a7c`, `0x320b78`. Fix: bound `and r,2^k-1` at 2^k and treat impossible slots as holes. The boot interprets from the targets meanwhile. | S |
-| 1b | **NV2A vertex array methods** | d3d (r6, 38daa6c) | Decode `0x1760..0x179c` and the offsets. The current stop on master; r6 clears it. | S-M |
-| 2 | **SetRenderTarget fast path** `0x3f7b30` | d3d (r6) | `[esp+4]` = target, EBX = depth, `ret 4`. It is the same as `0x3f7870` without the viewport reset. The boot forwards it to `0x3f7870`. | S |
-| 3 | **BeginPush `0x3fae10`, SetStateVB `0x401030`, Get2DSurfaceDesc `0x3fdb20`** | d3d | Stopping entries that the boot runs as retail bodies (`RUN_NATIVE`). Move them to `abi::NATIVE` or implement them. | S |
-| 4 | **NV2A register base** device+0x934, back/depth surface backing, `0xf0000000` alias | d3d (r6) / runtime | Boot glue at CreateDevice (`install_gpu_registers`). | S-M |
-| 5 | **Spin-waits in generated code** | backedge lane (8f72ddb, in review) | Retires the `0x213fa0` override. Preemptions use `Machine::run` slices, so `--slices` may need raising. | in review |
-| 6 | ~~x87 not lowered~~ | lift / emit | Lowered on master (377b675). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
+| 1 | **Masked and holed jump tables** | analyze (1254e53 in review) | `jump_table()` sizes a switch only from a cmp/ja guard. The CRT copy (`0x320890`) indexes its tables with `and r,3` (slot 0 overlaps code) or a negated count (entries below the base), and `0x336f0`'s table (caller-checked index) has zero entries for impossible cases, where an unguarded read stops. The boot reads these tables from the image and interprets from their targets meanwhile. | S |
+| 2 | **Fog and sky on the title scene** | gfx / shaders | Brown fog over everything, no sky colour, 8x8 blocky patterns. Not yet narrowed to a shader or texture format. | ? |
+| 3 | **RTT write-back replayed as a CPU write** | d3d (runtime_glue) or runtime | The barrier reports the device's own write-back pages at the next entry, so an unchanged render texture uploads again. Boot cannot tell them apart from other contexts' stores during the call: d3d's handlers would need to run under `Guest::writes_unreported(id)` for the boot's watch, or the device would need to report its own write ranges. Performance only. | S |
+| 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (377b675). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
 
 ### Boot stopgaps in force
 
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
-| `0x213fa0` stream purge waits 1 ms per spin | game_glue.rs `install_stream_purge` | backedge lands |
-| SetRenderTarget fast path `0x3f7b30` via `0x3f7870` | d3d_glue.rs `install_render_target_fast` | d3d (#2) |
-| Get2DSurfaceDesc, BeginPush and SetStateVB as retail bodies | d3d_glue.rs `RUN_NATIVE` | d3d (#3) |
-| device+0x934 NV2A stand-in, back/depth backing, `0xf0000000` alias | d3d_glue.rs `install_gpu_registers`, lib.rs | d3d-r6 (#4) |
-| Fallback from the CRT copy (`0x320890`) table targets, read from the image, and the unknown-switch stops they cause | fallback.rs `copy_targets`, `install_unread_targets` | analyze (#1) |
+| Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
+| Fallback from unread jump-table targets (the CRT copy's and every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1) |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired
+
+- backedge (a7ca4f5) and d3d-r6 (a41dae4): the `0x213fa0` stream purge
+  wait; the SetRenderTarget fast path `0x3f7b30`; Get2DSurfaceDesc,
+  BeginPush and SetStateVB as retail bodies (`RUN_NATIVE`); the
+  device+0x934 NV2A stand-in (now `DeviceConfig::nv2a_window`).
 
 - Lift leftovers (0775c97): the fallback's `cpuid` and `rdtsc` emulation
   and the unknown-switch-target path. `0x216a54` and `0x216b01` are lifted

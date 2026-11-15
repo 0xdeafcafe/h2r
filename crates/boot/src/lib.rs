@@ -326,13 +326,18 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         }
     }
     let d3d_calls = if opts.d3d { Some(d3d_glue::install(&loaded.runtime)?) } else { None };
-    if let (Some(_), Some(u)) = (&d3d_calls, &uses) {
-        d3d_glue::install_stopgaps(&loaded.runtime, u);
-        d3d_glue::install_render_target_fast(&loaded.runtime, u);
-        d3d_glue::install_gpu_registers(&loaded.runtime)?;
+    if d3d_calls.is_some() && uses.is_some() {
+        d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
     let ds = if opts.dsound { Some(dsound_glue::install(&loaded.runtime, &k)?) } else { None };
-    let xa = if opts.xapi { Some(xapi_glue::register(&loaded.runtime, &k)?) } else { None };
+    let (xa, pad) = match opts.xapi {
+        true => {
+            let (x, pad) = xapi_glue::register(&loaded.runtime, &k)?;
+            (Some(x), Some(pad))
+        }
+        false => (None, None),
+    };
+    let script = xapi_glue::InputScript::from_env();
     if opts.bink {
         let hle = bink_hle::BinkHle::new(None);
         loaded.runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
@@ -353,7 +358,10 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     // (docs/xapi.md "Input pump"); no guard is held here.
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut input_errors = 0u64;
-    for _ in 0..opts.max_slices {
+    for slice in 0..opts.max_slices {
+        if let Some(pad) = &pad {
+            script.step(slice, pad);
+        }
         outcome = m.run(1).context("machine run")?;
         if !matches!(outcome, kernel::RunOutcome::SliceLimit) {
             break;

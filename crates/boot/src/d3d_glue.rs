@@ -92,6 +92,7 @@ fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime
     };
     let cfg = DeviceConfig {
         upload,
+        nv2a_window: Some(NV2A_BASE),
         ..DeviceConfig::halo2(
             GuestRange { addr: PUSH_BASE, len: PUSH_LEN },
             GuestRange { addr: SCRATCH_BASE, len: 0x1000 },
@@ -154,84 +155,35 @@ pub fn describe(i: &Installed) -> String {
     )
 }
 
-/// crates/d3d entries listed as unimplemented whose retail body is safe to
-/// run as generated code: the boot disables the d3d override so the
-/// original runs. `(address, report name)`. Owner: crates/d3d (move them to
-/// `abi::NATIVE`, or implement them).
-///
-/// - 0x3fdb20, Get2DSurfaceDesc. Register ABI (recovered here): EDI = pixel
-///   container, EBX = level, ESI = `D3DSURFACE_DESC` out; plain `ret`.
-///   Reads the container's format/size words through 0x3fb690 and 0x3fd9c0
-///   (pure, format table 0x403a50) and device+0x1a14 / +0x196c (render
-///   target, multisample type), and writes only the descriptor. Called
-///   from 0x13e06.
-pub const RUN_NATIVE: &[(u32, &str)] = &[
-    (0x003f_db20, "Get2DSurfaceDesc (retail body)"),
-    // BeginPush (crates/d3d: "inline UP draw", unrecovered). ESI = dword
-    // count, returns EAX = put; plain `ret`. Commits deferred state through
-    // the HLE entry 0x401030, then MakeSpace 0x3faae0 when the push buffer
-    // lacks `count * 4 + 0x204` bytes. The caller (0x4b24b) writes
-    // BEGIN_END and the inline vertices itself, which the push parser reads.
-    (0x003f_ae10, "BeginPush 0x3fae10 (retail body)"),
-    // CDevice_SetStateVB (stdcall device, base; ret 8). Clears the dirty
-    // bits at 0x407490, commits deferred state through the HLE entry
-    // 0x400fa0, then (when the base vertex at device+0x20 or the state
-    // changed) pushes the vertex array format/offset methods (0x1760..)
-    // for the streams of the vertex shader at device+0x794.
-    (0x0040_1030, "CDevice_SetStateVB 0x401030 (retail body)"),
-];
-
-pub fn install_stopgaps(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
-    rt.edit_dispatch(|d| {
-        for &(addr, name) in RUN_NATIVE {
-            if d.set_enabled(addr, false) {
-                uses.lock().unwrap().entry(addr).or_insert((name, 0));
-            }
-        }
-    });
-}
 
 
-/// Retail NV2A register base. Halo's inlined GPU-idle waits read it from
-/// device+0x934 and spin on PFIFO (`+0x3240` != `+0x3244`, CACHE1 DMA put
-/// vs get) and PGRAPH status (`+0x400700` != 0), e.g. 0x12d0cf and
-/// CDevice_KickOff's own tail at 0x3fac64. crates/d3d's CreateDevice does
-/// not set device+0x934, so the read is from address 0x3240. Boot stopgap:
-/// point it at a stand-in base and map just those two register pages,
-/// zeroed, so the FIFO always reads empty and PGRAPH idle. The retail base
-/// (0xfd000000) cannot be used: the runtime keeps the NV2A aperture free
-/// of RAM mappings and has no MMIO handlers.
+/// The NV2A register window crates/d3d maps and stores at device+0x934
+/// (`DeviceConfig::nv2a_window`): the retail 0xfd000000 cannot be used, as
+/// the runtime keeps the NV2A aperture free of RAM mappings.
 pub const NV2A_BASE: u32 = 0xa040_0000;
-const DEVICE_NV2A_FIELD: u32 = 0x934;
 
 /// Shadow page for the displaced crates/d3d handlers the boot wraps.
 const D3D_SHADOW: u32 = 0xa0ff_2000;
 const CREATE_DEVICE: u32 = 0x003f_5240;
 
 /// Halo creates the device, releases it (the caller zeroes the device
-/// object) and creates it again, so the field is set after every
-/// Direct3D_CreateDevice: crates/d3d's handler moves to a shadow address
-/// and a continuation writes device+0x934 once it returns.
-pub fn install_gpu_registers(rt: &runtime::Runtime) -> anyhow::Result<()> {
-    {
-        let mut mem = rt.memory();
-        mem.map_zeroed(NV2A_BASE + 0x3000, 0x1000, runtime::guest::Permissions::RW)?;
-        mem.map_zeroed(NV2A_BASE + 0x40_0000, 0x1000, runtime::guest::Permissions::RW)?;
-        mem.map_zeroed(D3D_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
-    }
+/// object) and creates it again, so the back and depth surfaces are backed
+/// after every Direct3D_CreateDevice ([`back_surfaces`]): crates/d3d's
+/// handler moves to a shadow address and a continuation runs once it
+/// returns.
+pub fn install_back_surfaces(rt: &runtime::Runtime) -> anyhow::Result<()> {
+    rt.memory().map_zeroed(D3D_SHADOW, 0x1000, runtime::guest::Permissions::RX)?;
     let device = d3d::GuestLayout::HALO2.device;
     let shadow = D3D_SHADOW;
     rt.edit_dispatch(|d| {
-        let prev = d.register_override(CREATE_DEVICE, "boot:CreateDevice+NV2A base", move |cpu, ctx, _| {
+        let prev = d.register_override(CREATE_DEVICE, "boot:CreateDevice+back surfaces", move |cpu, ctx, _| {
             let rt = Arc::clone(ctx.runtime());
             let mut mem = rt.memory();
             let ret_pc = mem.u32(cpu.esp)?;
             cpu.esp = cpu.esp.wrapping_add(4);
             ctx.call_guest(cpu, &mut mem, shadow, move |cpu, ctx| {
                 if cpu.eax == 0 {
-                    let mut mem = ctx.runtime().memory();
-                    mem.set_u32(device + DEVICE_NV2A_FIELD, NV2A_BASE)?;
-                    back_surfaces(&mut mem, device);
+                    back_surfaces(&mut ctx.runtime().memory(), device);
                 }
                 Ok(runtime::TransferAbi::ret(ret_pc))
             })
@@ -307,39 +259,6 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
     }
 }
 
-/// `0x003f7b30`, SetRenderTarget's fast path (crates/d3d: "SetRenderTarget
-/// variant", stopping). ABI: `[esp+4]` = target, EBX = depth/stencil,
-/// `ret 4`. `0x1cd30` takes it when the new target has the current one's
-/// format and size (`0x1cd48..0x1cd60`). Body: the same AddRef/Release of
-/// the pair and device +0x1a04/+0x1a08 updates as `0x3f7870`, the surface
-/// offset/pitch methods (0x210/0x214, 0x30c/0x32c), but no viewport reset.
-///
-/// Boot stopgap: call crates/d3d's SetRenderTarget (`0x3f7870`, stdcall
-/// target, z) with the same pair. The difference is the viewport reset to
-/// the whole (same-sized) target; `0x14bc0` sets the viewport right after.
-/// Owner: d3d.
-pub const SET_RENDER_TARGET_FAST: u32 = 0x003f_7b30;
-
-pub fn install_render_target_fast(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
-    let u = Arc::clone(uses);
-    rt.edit_dispatch(|d| {
-        d.register_override(SET_RENDER_TARGET_FAST, "boot:SetRenderTarget fast path via 0x3f7870", move |cpu, ctx, _| {
-            u.lock().unwrap().entry(SET_RENDER_TARGET_FAST).or_insert(("SetRenderTarget fast path 0x3f7b30 (via 0x3f7870)", 0)).1 += 1;
-            let rt = Arc::clone(ctx.runtime());
-            let mut mem = rt.memory();
-            let target = mem.u32(cpu.esp + 4)?;
-            for w in [cpu.ebx, target] {
-                cpu.esp = cpu.esp.wrapping_sub(4);
-                mem.set_u32(cpu.esp, w)?;
-            }
-            ctx.call_guest(cpu, &mut mem, 0x003f_7870, |cpu, ctx| {
-                let rt = Arc::clone(ctx.runtime());
-                let mem = rt.memory();
-                mem.ret(cpu, 4)
-            })
-        });
-    });
-}
 
 /// Shadow page for the d3d entries the write barrier wraps (4 bytes each).
 const BARRIER_SHADOW: u32 = 0xa0ff_4000;

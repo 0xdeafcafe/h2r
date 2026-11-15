@@ -21,9 +21,10 @@ impl xapi::Events for KernelEvents {
     }
 }
 
-/// After `k.set_vfs`, with no guard held.
-pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Result<Shared> {
-    let (input, _keyboard) = input::InputManager::with_keyboard_pad(input::bindings::Bindings::default())
+/// After `k.set_vfs`, with no guard held. Also returns the keyboard pad, for
+/// scripted input ([`InputScript`]).
+pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Result<(Shared, input::backend::keyboard::KeyboardMouse)> {
+    let (input, keyboard) = input::InputManager::with_keyboard_pad(input::bindings::Bindings::default())
         .map_err(|e| anyhow::anyhow!("input: {e:?}"))?;
     let storage = xapi::VfsStorage::new(k.vfs().context("VFS not attached")?);
     let config = xapi::Config::for_gamepad(xapi::register::addr::XDEVICE_TYPE_GAMEPAD);
@@ -32,7 +33,40 @@ pub fn register(rt: &runtime::Runtime, k: &Arc<kernel::Kernel>) -> anyhow::Resul
     let mut r = None;
     rt.edit_dispatch(|d| r = Some(xapi::register(d, &x, xapi::GuestLayout::default())));
     r.unwrap().map_err(|e| anyhow::anyhow!("xapi::register: {e}"))?;
-    Ok(x)
+    Ok((x, keyboard))
+}
+
+/// `H2_BOOT_INPUT=key@from-to[,...]`: hold a keyboard-pad key (a binding
+/// name such as `Escape` for START, `Space` for A, `ArrowDown`) from slice `from` up
+/// to slice `to`.
+pub struct InputScript(Vec<(String, u64, u64)>);
+
+impl InputScript {
+    pub fn from_env() -> Self {
+        let spec = std::env::var("H2_BOOT_INPUT").unwrap_or_default();
+        InputScript(
+            spec.split(',')
+                .filter_map(|item| {
+                    let (key, range) = item.trim().split_once('@')?;
+                    let (a, b) = range.split_once('-')?;
+                    Some((key.to_string(), a.parse().ok()?, b.parse().ok()?))
+                })
+                .collect(),
+        )
+    }
+
+    /// Apply the script at the start of `slice`.
+    pub fn step(&self, slice: u64, pad: &input::backend::keyboard::KeyboardMouse) {
+        for (key, from, to) in &self.0 {
+            if slice == *from {
+                pad.key_down(key);
+                crate::log::note(&format!("input: {key} down at slice {slice}"));
+            }
+            if slice == *to {
+                pad.key_up(key);
+            }
+        }
+    }
 }
 
 /// `BOOL XMountUtilityDrive(BOOL fFormatClean)` at 0x002d5b77 (docs/xapi.md),
