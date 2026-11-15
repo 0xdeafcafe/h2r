@@ -15,9 +15,15 @@
 //!   treats as a failed open, so a missing transcode is still a clean skip.
 //!
 //! No Bink decoding happens here. Decoded frames come from a
-//! [`MovieStream`], normally fed from the transcoded MP4 (see
+//! [`MovieStream`], normally fed from the transcoded MOV (see
 //! `docs/movies.md`) by a platform decoder behind [`MovieDecoder`].
 #![deny(unsafe_code)]
+
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod avfoundation;
+#[cfg(target_os = "macos")]
+pub use avfoundation::AvFoundationDecoder;
 
 pub mod addr;
 mod playback;
@@ -26,7 +32,7 @@ mod source;
 pub use playback::{BinkHle, DEFAULT_ARENA_HINT, HLE_RESERVED};
 pub use source::{
     Clock, MovieDecoder, MovieSource, MovieStream, Mp4Source, StreamInfo, SyntheticDecoder,
-    SystemClock,
+    SystemClock, TranscodedSource,
 };
 
 use runtime::{Dispatch, GuestFault, dispatch::Override};

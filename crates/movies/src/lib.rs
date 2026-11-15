@@ -3,14 +3,17 @@
 //! The disc's movies are Bink 1. We carry no Bink decoder; `h2 movies` runs
 //! the user's own ffmpeg as an external process to convert them (see
 //! docs/movies.md). This crate is the other half: it describes what the
-//! conversion wrote (`movies.json` next to the files) and lets a movie player
+//! conversion wrote (`movies.json` next to the files), provides a resumable
+//! app-data installer in [`install`], and lets a movie player
 //! find the outputs and notice when they are stale. It does no decoding.
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod install;
 mod sha256;
 pub use sha256::{Sha256, hex};
 
@@ -41,11 +44,18 @@ pub struct MovieEntry {
 pub struct Manifest {
     pub version: u32,
     pub movies: Vec<MovieEntry>,
+    /// Output SHA-256 by file name. Absent in legacy CLI manifests.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub output_sha256: BTreeMap<String, String>,
 }
 
 impl Default for Manifest {
     fn default() -> Self {
-        Self { version: MANIFEST_VERSION, movies: Vec::new() }
+        Self {
+            version: MANIFEST_VERSION,
+            movies: Vec::new(),
+            output_sha256: BTreeMap::new(),
+        }
     }
 }
 
@@ -59,7 +69,8 @@ pub enum Freshness {
 
 impl Manifest {
     pub fn parse(json: &str) -> io::Result<Self> {
-        let m: Manifest = serde_json::from_str(json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        let m: Manifest = serde_json::from_str(json)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         if m.version != MANIFEST_VERSION {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -70,6 +81,17 @@ impl Manifest {
             ));
         }
         Ok(m)
+    }
+
+    /// Validate an installer's output hash; legacy entries have no hash.
+    pub fn output_matches(&self, dir: &Path, entry: &MovieEntry) -> io::Result<bool> {
+        let Some(want) = self.output_sha256.get(&entry.output_name) else {
+            return Ok(false);
+        };
+        if locate_entry(dir, entry).is_none() {
+            return Ok(false);
+        }
+        Ok(install::hash_file(&dir.join(&entry.output_name))?.eq_ignore_ascii_case(want))
     }
 
     pub fn to_json(&self) -> String {
@@ -89,11 +111,16 @@ impl Manifest {
 
     /// Replace the entry with the same `source_name`, or add it.
     pub fn upsert(&mut self, e: MovieEntry) {
-        match self.movies.iter_mut().find(|m| m.source_name.eq_ignore_ascii_case(&e.source_name)) {
+        match self
+            .movies
+            .iter_mut()
+            .find(|m| m.source_name.eq_ignore_ascii_case(&e.source_name))
+        {
             Some(slot) => *slot = e,
             None => self.movies.push(e),
         }
-        self.movies.sort_by(|a, b| a.source_name.cmp(&b.source_name));
+        self.movies
+            .sort_by(|a, b| a.source_name.cmp(&b.source_name));
     }
 
     /// Entry for a source by disc path (`/bink/intro_60.bik`), by bare file
@@ -111,7 +138,8 @@ impl Manifest {
 
 impl MovieEntry {
     pub fn freshness(&self, source_size: u64, source_sha256: &str) -> Freshness {
-        if self.source_size == source_size && self.source_sha256.eq_ignore_ascii_case(source_sha256) {
+        if self.source_size == source_size && self.source_sha256.eq_ignore_ascii_case(source_sha256)
+        {
             Freshness::Fresh
         } else {
             Freshness::SourceChanged
@@ -129,15 +157,34 @@ impl MovieEntry {
 /// the staleness check too.
 pub fn locate(dir: &Path, name: &str) -> Option<PathBuf> {
     let manifest = Manifest::load(dir).ok().flatten()?;
-    locate_entry(dir, manifest.find(name)?)
+    let entry = manifest.find(name)?;
+    if manifest.output_sha256.contains_key(&entry.output_name)
+        && !manifest.output_matches(dir, entry).ok()?
+    {
+        return None;
+    }
+    locate_entry(dir, entry)
 }
 
 /// Like [`locate`], but also requires the entry to match the disc file's
 /// size and SHA-256 (hex), so a conversion of a different disc is not used.
-pub fn locate_fresh(dir: &Path, name: &str, source_size: u64, source_sha256: &str) -> Option<PathBuf> {
+pub fn locate_fresh(
+    dir: &Path,
+    name: &str,
+    source_size: u64,
+    source_sha256: &str,
+) -> Option<PathBuf> {
     let manifest = Manifest::load(dir).ok().flatten()?;
     let entry = manifest.find(name)?;
-    (entry.freshness(source_size, source_sha256) == Freshness::Fresh).then(|| locate_entry(dir, entry))?
+    if entry.freshness(source_size, source_sha256) != Freshness::Fresh {
+        return None;
+    }
+    if manifest.output_sha256.contains_key(&entry.output_name)
+        && !manifest.output_matches(dir, entry).ok()?
+    {
+        return None;
+    }
+    locate_entry(dir, entry)
 }
 
 /// A bare file name: no separators, no `..`, nothing absolute. The manifest
@@ -205,7 +252,12 @@ mod tests {
     fn find_by_path_file_or_stem() {
         let mut m = Manifest::default();
         m.upsert(entry("intro_60", 1));
-        for n in ["/bink/intro_60.bik", "bink/intro_60.bik", "INTRO_60.bik", "intro_60"] {
+        for n in [
+            "/bink/intro_60.bik",
+            "bink/intro_60.bik",
+            "INTRO_60.bik",
+            "intro_60",
+        ] {
             assert!(m.find(n).is_some(), "{n}");
         }
         assert!(m.find("credits_60").is_none());
@@ -238,7 +290,16 @@ mod tests {
     fn locate_rejects_escaping_output_names() {
         let d = scratch("escape");
         fs::write(d.join("secret"), b"1234").unwrap();
-        for bad in ["../secret", "sub/secret", "/etc/passwd", "..", ".", "", "a\\b", "c:x"] {
+        for bad in [
+            "../secret",
+            "sub/secret",
+            "/etc/passwd",
+            "..",
+            ".",
+            "",
+            "a\\b",
+            "c:x",
+        ] {
             let mut e = entry("a", 4);
             e.output_name = bad.into();
             let mut m = Manifest::default();

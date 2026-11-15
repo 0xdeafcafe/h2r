@@ -23,10 +23,10 @@ pub trait MovieStream: Send {
     fn decode(&mut self, index: u32, bgra: &mut [u8]) -> bool;
 }
 
-/// Turns a transcoded MP4 into a stream. Implemented per platform
-/// (AVFoundation on Apple targets); this crate has no codec.
+/// Turns a transcoded MOV or legacy MP4 into a stream. Implemented per platform
+/// (AVFoundation on Apple targets); the macOS implementation uses system codecs.
 pub trait MovieDecoder: Send + Sync {
-    fn open(&self, mp4: &Path) -> Option<Box<dyn MovieStream>>;
+    fn open(&self, movie: &Path) -> Option<Box<dyn MovieStream>>;
 }
 
 /// Resolves a movie name (`intro_60`) to a stream, or `None` to skip it.
@@ -35,12 +35,12 @@ pub trait MovieSource: Send + Sync {
 }
 
 /// Looks the movie up in the `movies.json` manifest of a transcode
-/// directory, then hands the MP4 to the decoder.
-pub struct Mp4Source {
+/// directory, then hands the MOV to the decoder.
+pub struct TranscodedSource {
     dir: PathBuf,
     decoder: Arc<dyn MovieDecoder>,
 }
-impl Mp4Source {
+impl TranscodedSource {
     pub fn new(dir: impl Into<PathBuf>, decoder: Arc<dyn MovieDecoder>) -> Self {
         Self {
             dir: dir.into(),
@@ -48,12 +48,15 @@ impl Mp4Source {
         }
     }
 }
-impl MovieSource for Mp4Source {
+impl MovieSource for TranscodedSource {
     fn open(&self, name: &str) -> Option<Box<dyn MovieStream>> {
-        let mp4 = movies::locate(&self.dir, name)?;
-        self.decoder.open(&mp4)
+        let movie = movies::locate(&self.dir, name)?;
+        self.decoder.open(&movie)
     }
 }
+
+/// Backward-compatible name for the original manifest source. Accepts MOV too.
+pub type Mp4Source = TranscodedSource;
 
 /// Monotonic milliseconds, injectable so pacing is testable.
 pub trait Clock: Send + Sync {
@@ -88,9 +91,23 @@ impl MovieStream for Synthetic {
     }
     fn decode(&mut self, index: u32, bgra: &mut [u8]) -> bool {
         let w = self.0.width as usize;
+        let Some(size) = w
+            .checked_mul(self.0.height as usize)
+            .and_then(|s| s.checked_mul(4))
+        else {
+            return false;
+        };
+        if w == 0 || self.0.height == 0 || index >= self.0.frames || bgra.len() != size {
+            return false;
+        }
         for (i, px) in bgra.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let (x, y) = (i % w, i / w);
-            *px = [(x as u32 + index * 4) as u8, y as u8, index as u8, 0xff];
+            *px = [
+                (x as u32).wrapping_add(index.wrapping_mul(4)) as u8,
+                y as u8,
+                index as u8,
+                0xff,
+            ];
         }
         true
     }

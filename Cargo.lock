@@ -232,6 +232,7 @@ version = "0.1.0"
 dependencies = [
  "movies",
  "runtime",
+ "xiso",
 ]
 
 [[package]]
@@ -1346,6 +1347,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "xiso",
 ]
 
 [[package]]
