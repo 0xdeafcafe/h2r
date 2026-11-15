@@ -132,7 +132,7 @@ impl PixelContainer {
 
     /// Reads a pixel container.
     pub fn read(mem: &dyn GuestMemory, addr: u32) -> Result<Self, GuestError> {
-        let w = mem.read_words(addr, 5)?;
+        let w = crate::guest::read_array::<5>(mem, addr)?;
         Ok(Self {
             resource: ResourceHeader {
                 common: w[0],

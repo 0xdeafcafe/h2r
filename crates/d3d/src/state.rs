@@ -15,6 +15,19 @@ use gfx::xdk::RenderStateTable;
 use crate::guest::{GuestError, GuestMemory};
 use crate::layout::{GuestLayout, RENDER_STATE_SLOTS, STAGE_SLOTS, STAGES};
 
+/// Reads `out.len()` words at `addr` into `out`, same limits as
+/// [`GuestMemory::read_words`].
+fn read_words_into(mem: &dyn GuestMemory, addr: u32, out: &mut [u32]) -> Result<(), GuestError> {
+    let mut bytes = [0u8; 4 * RENDER_STATE_SLOTS];
+    let bytes = &mut bytes[..4 * out.len()];
+    crate::guest::check_range(addr, bytes.len())?;
+    mem.read(addr, bytes)?;
+    for (w, c) in out.iter_mut().zip(bytes.as_chunks::<4>().0) {
+        *w = u32::from_le_bytes(*c);
+    }
+    Ok(())
+}
+
 /// Raw words of both state arrays.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateWords {
@@ -141,12 +154,12 @@ impl StateWords {
 
     /// Reads both arrays.
     pub fn read(mem: &dyn GuestMemory, layout: &GuestLayout) -> Result<Self, GuestError> {
+        // Straight into arrays: this runs for every draw.
         let mut render = [0; RENDER_STATE_SLOTS];
-        render.copy_from_slice(&mem.read_words(layout.render_state, RENDER_STATE_SLOTS)?);
+        read_words_into(mem, layout.render_state, &mut render)?;
         let mut stages = [[0; STAGE_SLOTS]; STAGES];
-        let all = mem.read_words(layout.texture_state, STAGES * STAGE_SLOTS)?;
-        for (s, chunk) in stages.iter_mut().zip(all.as_chunks::<STAGE_SLOTS>().0) {
-            s.copy_from_slice(chunk);
+        for (i, s) in stages.iter_mut().enumerate() {
+            read_words_into(mem, layout.texture_state + (4 * STAGE_SLOTS * i) as u32, s)?;
         }
         Ok(Self { render, stages })
     }
@@ -235,15 +248,44 @@ impl StateWords {
     /// Translates to the gfx state model. Invalid values are collected, not
     /// fatal: the field keeps its default and the caller reports them.
     pub fn translate(&self, table: &RenderStateTable) -> DrawState {
+        Translator::new(table).translate(self)
+    }
+}
+
+/// [`StateWords::translate`] with the slot-to-type lookups done once: the
+/// device translates every draw, and the table never changes under it.
+#[derive(Clone, Debug)]
+pub struct Translator {
+    /// Typed render state per guest slot (`None`: no such slot, or a slot
+    /// the model does not track).
+    render: Vec<Option<RenderStateType>>,
+    /// Typed stage state per slot (`None`: not modelled).
+    stage: [Option<TextureStageStateType>; STAGE_SLOTS],
+}
+
+impl Translator {
+    /// Resolves the slot types for the build described by `table`.
+    pub fn new(table: &RenderStateTable) -> Self {
+        Self {
+            render: (0..RENDER_STATE_SLOTS as u32)
+                .map(|g| {
+                    RenderStateType::from_guest_index(table, g)
+                        .filter(|t| !matches!(t, RenderStateType::Other(_)))
+                })
+                .collect(),
+            stage: std::array::from_fn(|i| {
+                let ty = TextureStageStateType::from_index(i as u32);
+                (!matches!(ty, TextureStageStateType::Other(_))).then_some(ty)
+            }),
+        }
+    }
+
+    /// Translates `words`; identical to [`StateWords::translate`].
+    pub fn translate(&self, words: &StateWords) -> DrawState {
         let mut render = RenderState::default();
         let mut bad = Vec::new();
-        for (g, &v) in self.render.iter().enumerate() {
-            let Some(ty) = RenderStateType::from_guest_index(table, g as u32) else {
-                continue;
-            };
-            if matches!(ty, RenderStateType::Other(_)) {
-                continue;
-            }
+        for (g, (&v, ty)) in words.render.iter().zip(&self.render).enumerate() {
+            let Some(ty) = *ty else { continue };
             if render.set_raw(ty, v).is_err() {
                 bad.push(BadState::Render {
                     slot: g as u32,
@@ -253,11 +295,8 @@ impl StateWords {
         }
         let stages = std::array::from_fn(|s| {
             let mut st = TextureStageState::default_for_stage(s as u32);
-            for (i, &v) in self.stages[s].iter().enumerate() {
-                let ty = TextureStageStateType::from_index(i as u32);
-                if matches!(ty, TextureStageStateType::Other(_)) {
-                    continue;
-                }
+            for (i, (&v, ty)) in words.stages[s].iter().zip(&self.stage).enumerate() {
+                let Some(ty) = *ty else { continue };
                 if st.set_raw(ty, v).is_err() {
                     bad.push(BadState::Stage {
                         stage: s as u32,
@@ -292,6 +331,22 @@ mod tests {
         }
         let d = StateWords::defaults(false).translate(&t);
         assert_eq!(d.render.depth_mode, DepthBufferMode::Disabled);
+    }
+
+    #[test]
+    fn translator_is_the_free_function_and_reads_match_writes() {
+        let t = RenderStateTable::default();
+        let mut w = StateWords::defaults(true);
+        w.render[57] = 0x1234; // bogus ZFUNC
+        w.stages[2][12] = 0x7777; // bogus COLOROP
+        let tr = Translator::new(&t);
+        assert_eq!(tr.translate(&w), w.translate(&t));
+        assert_eq!(tr.translate(&w).bad.len(), 2);
+        let mut m = crate::guest::SparseMemory::new();
+        let l = GuestLayout::HALO2;
+        m.map(l.texture_state & !0xFFF, 0x5000);
+        w.write(&mut m, &l).unwrap();
+        assert_eq!(StateWords::read(&m, &l).unwrap(), w);
     }
 
     #[test]

@@ -554,7 +554,8 @@ pub enum TexMode {
 }
 
 impl TexMode {
-    fn from_bits(b: u32) -> Self {
+    /// The mode of one stage from its 5-bit field of `PSTEXTUREMODES`.
+    pub fn from_bits(b: u32) -> Self {
         use TexMode::*;
         match b {
             0x00 => None,

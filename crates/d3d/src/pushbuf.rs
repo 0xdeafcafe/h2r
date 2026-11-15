@@ -472,6 +472,9 @@ pub const SIMPLE_ENCODE_SLOTS: usize = 92;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimpleEncode {
     methods: [u32; SIMPLE_ENCODE_SLOTS],
+    /// [`slot`](Self::slot) by `method / 4`, for every 4-aligned method
+    /// below `0x2000` (the range `from_headers` accepts).
+    by_method: Box<[Option<u8>]>,
 }
 
 impl SimpleEncode {
@@ -504,7 +507,22 @@ impl SimpleEncode {
         if methods.iter().all(|&m| m == methods[0]) {
             return Err(SimpleEncodeError::Uniform { method: methods[0] });
         }
-        Ok(Self { methods })
+        let mut count = vec![0u8; 0x800];
+        let mut by_method = vec![None; 0x800];
+        for (slot, &m) in methods.iter().enumerate() {
+            let i = (m / 4) as usize;
+            count[i] = count[i].saturating_add(1);
+            by_method[i] = Some(slot as u8);
+        }
+        for (b, c) in by_method.iter_mut().zip(&count) {
+            if *c != 1 {
+                *b = None;
+            }
+        }
+        Ok(Self {
+            methods,
+            by_method: by_method.into_boxed_slice(),
+        })
     }
 
     /// The method of slot `slot`.
@@ -516,11 +534,14 @@ impl SimpleEncode {
     /// several slots share, such as the `0x1D90` placeholder, is not
     /// invertible).
     pub fn slot(&self, m: u32) -> Option<u32> {
-        let mut found = self.methods.iter().enumerate().filter(|(_, x)| **x == m);
-        match (found.next(), found.next()) {
-            (Some((i, _)), None) => Some(i as u32),
-            _ => None,
+        if m & 3 != 0 {
+            return None;
         }
+        self.by_method
+            .get((m / 4) as usize)
+            .copied()
+            .flatten()
+            .map(u32::from)
     }
 
     /// The guest render-state slot whose value an inline write of method
@@ -795,5 +816,27 @@ mod encode_tests {
             SimpleEncode::read(&m, 0x1F00),
             Err(SimpleEncodeError::Unreadable { addr: 0x1F00, .. })
         ));
+    }
+
+    #[test]
+    fn slot_lookup_matches_a_linear_search() {
+        let mut headers = [0u32; SIMPLE_ENCODE_SLOTS];
+        for (i, h) in headers.iter_mut().enumerate() {
+            // Several slots share 0x0400; the rest are distinct.
+            *h = (1 << 18)
+                | if i % 7 == 0 {
+                    0x400
+                } else {
+                    0x500 + 4 * i as u32
+                };
+        }
+        let e = SimpleEncode::from_headers(&headers).unwrap();
+        for m in 0..0x2100u32 {
+            let hits: Vec<u32> = (0..SIMPLE_ENCODE_SLOTS as u32)
+                .filter(|&s| e.method(s as usize) == Some(m))
+                .collect();
+            let want = (hits.len() == 1).then(|| hits[0]);
+            assert_eq!(e.slot(m), want, "method {m:#x}");
+        }
     }
 }

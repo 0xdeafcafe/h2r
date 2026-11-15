@@ -326,3 +326,22 @@ The boot driver (crates/boot, on the `boot` branch) is not a dependency of
   `--features perf`. `timeline` has no dependencies. The hot-loop scenarios use emit's object
   cache under `--work`. Nothing here measures build time yet; a
   `build/emit-shard` scenario would fit the same harness if wanted.
+
+## Device CPU cost (crates/d3d)
+
+`cargo bench -p d3d --bench pushbuf` replays a synthetic frame (1,200 draws,
+mostly indexed, texture rebinding on two stages, constant uploads, inline
+state through the push buffer, vertex-input switches) against a null backend,
+so only the device's own work is timed. Nothing in it is retail data. It prints
+mean, median and p10 ms per frame; on a shared machine the mean is dominated
+by scheduling outliers, so compare p10 or median. `H2_BENCH_FRAMES`,
+`H2_BENCH_DRAWS` and `H2_BENCH_TRACE=1` (per-frame times) tune it. To profile,
+run the bench binary under `sample <pid>` or `samply record`.
+
+Per-draw costs removed so far: the linear slot search in
+`SimpleEncode::mirror_slot` (now a table), the per-draw guest-slot to state-type
+lookups in `StateWords::translate` (`state::Translator`, plus a memo of the last
+translation while the arrays are unchanged), the pixel-shader decode in
+`sampled_stages`, heap reads of fixed-size headers (`guest::read_array`, state
+arrays read straight into arrays), per-word constant-shadow writes, and the
+three passes over the index list in `draw_indexed_vertices`.

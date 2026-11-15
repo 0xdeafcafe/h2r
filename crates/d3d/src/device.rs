@@ -55,7 +55,7 @@ use crate::resource::{
     AddressMap, PaletteHeader, PixelContainer, ResourceHeader, ResourceType, SurfaceHeader, common,
 };
 use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
-use crate::state::{DrawState, StateWords, slot};
+use crate::state::{DrawState, StateWords, Translator, slot};
 
 mod display;
 mod fragments;
@@ -460,9 +460,9 @@ fn vertex_limit(entry: &'static str, count: u32) -> Result<(), D3dError> {
 /// One Direct3D device.
 pub struct Device<B: Backend> {
     cfg: DeviceConfig,
-    table: RenderStateTable,
-    /// The last state words translated and their translation: consecutive
-    /// draws mostly share their state.
+    /// The slot types of the build's render-state table, resolved once.
+    translator: Translator,
+    /// The last state translated, reused while the guest arrays are unchanged.
     translated: Option<(Box<StateWords>, DrawState)>,
     /// The host backend.
     pub backend: B,
@@ -561,7 +561,7 @@ impl<B: Backend> Device<B> {
     pub fn new(cfg: DeviceConfig, backend: B) -> Self {
         Self {
             cfg,
-            table: RenderStateTable::default(),
+            translator: Translator::new(&RenderStateTable::default()),
             translated: None,
             backend,
             created: false,
@@ -2055,9 +2055,8 @@ impl<B: Backend> Device<B> {
         let first = first as usize;
         self.constants[first..first + words.len()].copy_from_slice(&words);
         if shadow {
-            for (i, w) in words.iter().enumerate() {
-                mem.write_u32(self.cfg.layout.vs_constants + 4 * (first + i) as u32, *w)?;
-            }
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            mem.write(self.cfg.layout.vs_constants + 4 * first as u32, &bytes)?;
         }
         Ok(())
     }
@@ -2626,7 +2625,7 @@ impl<B: Backend> Device<B> {
             return Ok((layout, VertexProcessing::FixedFunction { fvf: h }, streams));
         }
         let obj = h & !1;
-        let vaf = mem.read_words(at(obj, 0x14)?, 64)?;
+        let vaf = crate::guest::read_array::<64>(mem, at(obj, 0x14)?)?;
         let mut by_stream: Vec<StreamLayout> = Vec::new();
         for reg in 0..16usize {
             let (stream, offset, format) =
@@ -2702,8 +2701,7 @@ impl<B: Backend> Device<B> {
             .fold(0u16, |m, a| m | 1 << (a.register.0 & 15));
         let pixel_shader = if self.pixel_shader != 0 {
             let def = mem.read_u32(at(self.pixel_shader, 8)?)?;
-            let w = mem.read_words(def, 60)?;
-            Some(Box::new(<[u32; 60]>::try_from(w).expect("60 words")))
+            Some(Box::new(crate::guest::read_array::<60>(mem, def)?))
         } else {
             None
         };
@@ -2935,14 +2933,7 @@ impl<B: Backend> Device<B> {
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         let mut bound = self.textures;
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
-        let state = match &self.translated {
-            Some((words, state)) if **words == parts.words => state.clone(),
-            _ => {
-                let state = parts.words.translate(&self.table);
-                self.translated = Some((Box::new(parts.words.clone()), state.clone()));
-                state
-            }
-        };
+        let state = self.translate_state(&parts.words);
         let sampled = sampled_stages(&shader, &parts.words, &state);
         let mut extras = parts.words.stage_extras();
         for stage in 0..4 {
@@ -3035,6 +3026,19 @@ impl<B: Backend> Device<B> {
             .map(|(_, c)| c.info)
     }
 
+    /// [`StateWords::translate`] through the memo: consecutive draws mostly
+    /// see the same arrays.
+    fn translate_state(&mut self, words: &StateWords) -> DrawState {
+        if let Some((w, s)) = &self.translated
+            && **w == *words
+        {
+            return s.clone();
+        }
+        let s = self.translator.translate(words);
+        self.translated = Some((Box::new(words.clone()), s.clone()));
+        s
+    }
+
     fn state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {
         Ok(StateWords::read(mem, &self.cfg.layout)?)
     }
@@ -3105,20 +3109,19 @@ impl<B: Backend> Device<B> {
         vertex_limit(E, count)?;
         let base = mem.read_u32(self.cfg.layout.device + field::BASE_VERTEX)?;
         let raw = mem.read_vec(indices, span(E, count, 2)?)?;
-        let idx = raw
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|c| {
-                u32::try_from(base as u64 + u16::from_le_bytes(*c) as u64).map_err(|_| {
-                    D3dError::invalid(E, format!("base vertex {base:#x} + index overflows"))
-                })
-            })
-            .collect::<Result<Vec<u32>, _>>()?;
-        let (lo, hi) = match (idx.iter().min(), idx.iter().max()) {
-            (Some(&lo), Some(&hi)) => (lo, hi),
-            _ => return Ok(()),
-        };
+        let (mut lo16, mut hi16) = (u16::MAX, 0u16);
+        for c in raw.as_chunks::<2>().0 {
+            let i = u16::from_le_bytes(*c);
+            lo16 = lo16.min(i);
+            hi16 = hi16.max(i);
+        }
+        if raw.len() < 2 {
+            return Ok(());
+        }
+        // Every index overflows alike or none does: the largest decides.
+        let overflow = || D3dError::invalid(E, format!("base vertex {base:#x} + index overflows"));
+        let hi = u32::try_from(base as u64 + hi16 as u64).map_err(|_| overflow())?;
+        let lo = base + lo16 as u32;
         let (layout, vertex, sources) = self.vertex_setup(mem, E)?;
         // The vertices `lo..=hi` the indices reach (at most 65536: 16-bit
         // indices), with the indices rebased onto them.
@@ -3137,7 +3140,13 @@ impl<B: Backend> Device<B> {
                 layout,
                 vertex,
                 streams,
-                indices: Some(idx.iter().map(|i| i - lo).collect()),
+                indices: Some(
+                    raw.as_chunks::<2>()
+                        .0
+                        .iter()
+                        .map(|c| u16::from_le_bytes(*c) as u32 - lo16 as u32)
+                        .collect(),
+                ),
                 words,
             },
         )
@@ -3531,12 +3540,12 @@ fn sampled_stages(
     if shader.pixel_shader.is_some() {
         // Only modes that fetch a texel read the image: CLIPPLANE (texkill),
         // PASSTHRU and the dot-only modes do not.
-        let def = shaders::psh::PixelShaderDef {
-            texture_modes: words.render[slot::PS_TEXTURE_MODES as usize],
-            ..Default::default()
-        };
-        let modes = def.decode().texture_modes;
-        return std::array::from_fn(|n| modes[n].texture_dim().is_some());
+        let tm = words.render[slot::PS_TEXTURE_MODES as usize];
+        return std::array::from_fn(|n| {
+            shaders::psh::TexMode::from_bits((tm >> (5 * n)) & 0x1F)
+                .texture_dim()
+                .is_some()
+        });
     }
     let mut on = true;
     std::array::from_fn(|n| {

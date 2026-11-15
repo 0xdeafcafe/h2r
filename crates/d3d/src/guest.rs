@@ -68,6 +68,22 @@ pub trait GuestMemory {
     }
 }
 
+/// Reads `N` consecutive `u32`s into an array without allocating (the small
+/// fixed-size header reads the device makes per draw). Same limits and
+/// errors as [`GuestMemory::read_words`]; `N` is at most 64.
+pub fn read_array<const N: usize>(
+    mem: &dyn GuestMemory,
+    addr: u32,
+) -> Result<[u32; N], GuestError> {
+    const { assert!(N <= 64) };
+    check_range(addr, 4 * N)?;
+    let mut bytes = [0u8; 256];
+    mem.read(addr, &mut bytes[..4 * N])?;
+    Ok(std::array::from_fn(|i| {
+        u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().expect("4 bytes"))
+    }))
+}
+
 /// Largest single read the device makes from guest memory: the Xbox has
 /// 64 MiB of RAM (128 MiB on debug kits), so nothing legitimate is bigger.
 pub const MAX_READ: usize = 128 << 20;
@@ -176,6 +192,27 @@ mod tests {
         // A write straddling into an unmapped page changes nothing.
         assert!(m.write(0x2ffe, &[1, 2, 3, 4]).is_err());
         assert_eq!(m.read_vec(0x2ffc, 4).unwrap(), vec![0; 4]);
+    }
+
+    #[test]
+    fn read_array_matches_read_words_and_faults_alike() {
+        let mut m = SparseMemory::new();
+        m.map(0x1000, 0x1000);
+        for i in 0..8 {
+            m.write_u32(0x1ff0 - 16 + 4 * i, 0x100 + i).unwrap();
+        }
+        assert_eq!(
+            read_array::<5>(&m, 0x1fec).unwrap().to_vec(),
+            m.read_words(0x1fec, 5).unwrap()
+        );
+        assert_eq!(
+            read_array::<5>(&m, 0x1ff8).unwrap_err(),
+            m.read_words(0x1ff8, 5).unwrap_err()
+        );
+        assert_eq!(
+            read_array::<5>(&m, 0xffff_fff8).unwrap_err(),
+            m.read_words(0xffff_fff8, 5).unwrap_err()
+        );
     }
 
     #[test]
