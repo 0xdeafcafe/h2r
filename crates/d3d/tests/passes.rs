@@ -991,7 +991,7 @@ fn gpu_previous_frame_reads_the_image_presented_and_current_reads_this_frame() {
         .unwrap();
     d.clear(&mut m, 1, RECTS, 0xF0, 0xFF00_00FF, 1.0, 0)
         .unwrap();
-    assert_eq!(back_buffer(&d)(10, 10), green);
+    assert_eq!(back_buffer(&mut d)(10, 10), green);
     // The previous parity over the left half: frame 0's red, not this
     // frame's green.
     mirrored_textured_quad(&mut d, &mut m);
@@ -999,7 +999,7 @@ fn gpu_previous_frame_reads_the_image_presented_and_current_reads_this_frame() {
     scissor(&mut d, &mut m, Some([0, 0, 32, 64]));
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(10, 10), red, "previous frame");
     assert_eq!(px(50, 10), blue);
     // The current parity, mirrored over everything: what this frame has
@@ -1008,15 +1008,12 @@ fn gpu_previous_frame_reads_the_image_presented_and_current_reads_this_frame() {
     scissor(&mut d, &mut m, None);
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(10, 10), blue, "current frame, mirrored");
     assert_eq!(px(50, 10), red);
     // The front still holds frame 0: drawing frame 1 did not reach it.
-    let (front, order) = d
-        .backend
-        .store
-        .read_color(&d.backend.ctx, d.front_buffer().unwrap())
-        .unwrap();
+    let front_id = d.front_buffer().unwrap();
+    let (front, order) = d.backend.read_color(front_id).unwrap();
     let p = pixel(&front, 10, 10);
     let p = match order {
         HostPixelOrder::Bgra8 => [p[2], p[1], p[0], p[3]],
@@ -1030,7 +1027,7 @@ fn gpu_previous_frame_reads_the_image_presented_and_current_reads_this_frame() {
     d.set_texture(&mut m, 0, parity(2, true)).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(10, 10), red);
     assert_eq!(px(50, 10), blue);
     // And current is this frame again.
@@ -1038,7 +1035,7 @@ fn gpu_previous_frame_reads_the_image_presented_and_current_reads_this_frame() {
     d.set_texture(&mut m, 0, parity(2, false)).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    assert_eq!(back_buffer(&d)(10, 10), green);
+    assert_eq!(back_buffer(&mut d)(10, 10), green);
     assert_eq!(d.stats().previous_frame_snapshots, 2);
     finish(scope);
 }
@@ -1062,6 +1059,6 @@ fn gpu_previous_frame_is_empty_after_the_device_is_recreated() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
     // Nothing was presented on this device: the old red does not leak in.
-    assert_eq!(back_buffer(&d)(10, 10), [0, 0, 0, 0]);
+    assert_eq!(back_buffer(&mut d)(10, 10), [0, 0, 0, 0]);
     finish(scope);
 }

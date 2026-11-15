@@ -1267,7 +1267,7 @@ fn polygon_stipple_does_not_mask_wireframe_or_point_fill() {
             ..Case::default()
         };
         g.run(&c);
-        let (before, order) = g.b.store.read_color(&g.b.ctx, g.color).unwrap();
+        let (before, order) = g.b.read_color(g.color).unwrap();
         let blue = match order {
             HostPixelOrder::Bgra8 => [255, 0, 0, 255],
             HostPixelOrder::Rgba8 => [0, 0, 255, 255],
@@ -1278,7 +1278,7 @@ fn polygon_stipple_does_not_mask_wireframe_or_point_fill() {
         );
         c.render.push((83, 1));
         g.run(&c);
-        let (after, _) = g.b.store.read_color(&g.b.ctx, g.color).unwrap();
+        let (after, _) = g.b.read_color(g.color).unwrap();
         assert_eq!(
             after, before,
             "zero stipple mask must not change mode {mode:#x}"
