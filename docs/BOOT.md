@@ -84,7 +84,7 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
 | `audio_sink: Option<dsound_glue::SinkOpener>` | a `NullSink` | `dsound_glue::install_with_sink`: the same logical-time output, advanced after every slice, playing into the sink the opener returns (called on the output thread; `DeviceSink` is not `Send`) |
 | `input: Option<input::InputManager>` | a headless keyboard pad | `xapi_glue::register_with` |
 | `keyboard: Option<KeyboardMouse>` | that pad | what `H2_BOOT_INPUT` presses |
-| `trace_limit: Option<usize>` | every call in memory | `trace::install_bounded`: the last N calls (plus any still open) stay in memory; the TSV still gets all |
+| `trace_limit: Option<usize>` | every call in memory | `trace::install_bounded`: the last N calls, and at most N older ones still open (calls that never return, such as thread exits, age out), stay in memory; the TSV still gets every completed call |
 | `between_slices: Option<BetweenSlices>` | nothing | called after every slice, input pump and audio advance with the kernel; `false` ends the run with outcome `HostStop` (the output is halted as on any end) |
 
 Everything else (stopgaps, fallback, vblanks, report) is the same in both

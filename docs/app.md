@@ -130,7 +130,7 @@ How it is wired (all through `boot::run_hosted` and `boot::Host`, docs/BOOT.md
    the guest thread returns (`shutdown_timeout` is 10 s for the report).
    The kernel's own `Machine::pacer` stays off: it sleeps inside
    `Machine::run`, where a pause or close cannot interrupt it.
-6. **Trace**: only the last 4096 kernel calls stay in memory
+6. **Trace**: only the last 4096 kernel calls (and at most 4096 older open ones) stay in memory
    (`Host::trace_limit`), so a long session does not grow; no TSV is
    written.
 

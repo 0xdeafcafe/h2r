@@ -39,8 +39,13 @@ pub struct Trace {
     pub calls: std::collections::VecDeque<Call>,
     /// Calls traced so far; the next call's `seq`.
     pub total: u64,
-    /// Calls pushed out of `calls` before they returned, by `seq`.
+    /// Calls pushed out of `calls` before they returned, by `seq` (at most
+    /// `limit`: calls that never return, such as thread exits, would
+    /// otherwise pile up here for the whole run).
     evicted_open: std::collections::BTreeMap<u64, Call>,
+    /// Open calls dropped from `evicted_open`, oldest first, to keep it
+    /// bounded; their results, if they ever come, are not recorded.
+    pub abandoned: u64,
     limit: usize,
     out: Option<std::fs::File>,
 }
@@ -56,6 +61,10 @@ impl Trace {
                 && old.result.is_none()
             {
                 self.evicted_open.insert(old.seq, old);
+                if self.evicted_open.len() > self.limit.max(1) {
+                    self.evicted_open.pop_first();
+                    self.abandoned += 1;
+                }
             }
         }
         seq
@@ -109,14 +118,17 @@ pub fn install(rt: &runtime::Runtime, path: Option<&std::path::Path>) -> anyhow:
     install_bounded(rt, path, usize::MAX)
 }
 
-/// [`install`] keeping only the last `limit` calls in memory (plus any
-/// still open); the TSV, if any, still gets every call. For long runs.
+/// [`install`] keeping only the last `limit` calls in memory, plus up to
+/// `limit` older ones still open (beyond that the oldest open calls are
+/// dropped and counted in [`Trace::abandoned`]); the TSV, if any, still
+/// gets every completed call. For long runs.
 pub fn install_bounded(rt: &runtime::Runtime, path: Option<&std::path::Path>, limit: usize) -> anyhow::Result<Shared> {
     rt.memory().map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
     let trace: Shared = Arc::new(Mutex::new(Trace {
         calls: Default::default(),
         total: 0,
         evicted_open: Default::default(),
+        abandoned: 0,
         limit,
         out: path.map(std::fs::File::create).transpose()?,
     }));
@@ -220,7 +232,7 @@ mod tests {
     }
 
     fn bounded(limit: usize) -> Trace {
-        Trace { calls: Default::default(), total: 0, evicted_open: Default::default(), limit, out: None }
+        Trace { calls: Default::default(), total: 0, evicted_open: Default::default(), abandoned: 0, limit, out: None }
     }
 
     #[test]
@@ -238,6 +250,24 @@ mod tests {
         assert_eq!(t.evicted_open.keys().copied().collect::<Vec<_>>(), [blocked]);
         t.finish(blocked, 0x55);
         assert!(t.evicted_open.is_empty());
+    }
+
+    #[test]
+    fn calls_that_never_return_stay_bounded() {
+        // Thread exits never reach their continuation.
+        let mut t = bounded(4);
+        for i in 0..20 {
+            t.push(call(i));
+        }
+        assert_eq!(t.calls.len(), 4);
+        assert_eq!(t.evicted_open.len(), 4);
+        assert_eq!(t.abandoned, 12);
+        // The newest evicted ones are the ones kept, and still complete.
+        assert_eq!(t.evicted_open.keys().copied().collect::<Vec<_>>(), [12, 13, 14, 15]);
+        t.finish(15, 1);
+        // An abandoned call's late return is ignored.
+        t.finish(0, 1);
+        assert_eq!(t.evicted_open.len(), 3);
     }
 
     #[test]
