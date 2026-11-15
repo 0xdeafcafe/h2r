@@ -1,14 +1,15 @@
 // A stand-in for a real server's optional game art (docs/live-api.md
 // "Optional game art"), so the app's game-art path can be run and tested
-// without a disc. Nothing here comes from the game: rank icons are the art
-// pack's own badges, and the emblem masks, game-type icons and map previews
-// are drawn below from simple shapes and the mock's invented maps.
+// without a disc. Nothing here comes from the game: rank icons and medals
+// are the art pack's own, the palette is ours, and the emblem masks,
+// game-type icons, weapon masks and map previews are drawn below from
+// simple shapes and the mock's invented maps.
 //
 // Emblem layers follow the real encoding: mask a in red (and green), mask b
 // in blue, alpha a copy of mask b (so alpha is NOT coverage).
 
 import { deflateSync } from "node:zlib";
-import type { GameArtManifest } from "../src/lib/gameart";
+import { EMBLEM_COLOURS, type GameArtManifest } from "../src/lib/gameart";
 import { MAPS } from "./maps";
 
 // ---- a minimal PNG encoder (8-bit RGBA) ----
@@ -139,6 +140,32 @@ function gametype(n: number): Uint8Array {
   return render(32, 32, (x, y) => (on(x, y) ? [1, 1, 1, 1] : [1, 1, 1, 0]));
 }
 
+const WEAPONS = ["energy_sword", "sniper_rifle", "smg", "rocket_launcher"];
+
+/** Weapon silhouettes in the real encoding: one mask, in blue and alpha,
+ *  where "full" is only about a quarter. */
+function weapon(n: number): Uint8Array {
+  const box = (x: number, y: number, x0: number, y0: number, x1: number, y1: number) => x > x0 && x < x1 && y > y0 && y < y1;
+  const on = (x: number, y: number): boolean => {
+    switch (n) {
+      case 0: return (Math.abs(y) < 0.5 * (1 - (x + 0.9) / 1.3) && x > -0.9 && x < 0.4) || box(x, y, 0.4, -0.8, 0.52, 0.8) || box(x, y, 0.52, -0.2, 0.95, 0.2);
+      case 1: return box(x, y, -0.95, -0.2, 0.95, 0.1) || box(x, y, -0.2, -0.6, 0.35, -0.2) || box(x, y, 0.45, 0.1, 0.95, 0.5) || box(x, y, 0.1, 0.1, 0.25, 0.8);
+      case 2: return box(x, y, -0.6, -0.5, 0.6, 0) || box(x, y, 0.2, 0, 0.5, 0.9) || box(x, y, -0.3, 0, -0.1, 0.6);
+      default: return box(x, y, -0.95, -0.5, 0.7, 0.2) || box(x, y, 0.7, -0.75, 0.95, 0.45) || box(x, y, -0.1, 0.2, 0.15, 0.85);
+    }
+  };
+  // Faint, like the real ones, which peak at 68 of 255.
+  return render(62, 30, (x, y) => { const m = on(x, y) ? 68 / 255 : 0; return [0, 0, m, m]; });
+}
+
+/** The pack's medal for each of the game's medal names our derived medals map onto. */
+const PACK_MEDALS: Array<[alias: string, pack: string]> = [
+  ["killing_spree", "hot-streak"], ["running_riot", "wildfire"], ["rampage", "untouchable"],
+  ["double_kill", "twofer"], ["triple_kill", "hat-trick"], ["killtacular", "full-house"], ["kill_frenzy", "encore"],
+];
+
+const hex = (c: readonly number[]) => "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+
 function inPoly(x: number, y: number, poly: [number, number][]): boolean {
   let inside = false;
   for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
@@ -193,7 +220,9 @@ export function mockGameArt(packDir: string): MockGameArt {
     add(`rank/${level}`, `rank/${level}.webp`, 128, 128, async () => new Uint8Array(await Bun.file(`${packDir}/ranks/${badge}@2x.webp`).arrayBuffer()));
   }
   for (let n = 0; n < 11; n++) add(`gametype/${n}`, `gametype/${n}.png`, 32, 32, () => encodePng(gametype(n), 32, 32));
-  const skipped: Record<string, string> = { "weapon/": "the mock draws no weapons", "live/": "the mock draws no status icons" };
+  for (let n = 0; n < WEAPONS.length; n++) add(`weapon/${n}`, `weapon/${n}.png`, 62, 30, () => encodePng(weapon(n), 62, 30));
+  PACK_MEDALS.forEach(([, pack], n) => add(`medal/${n}`, `medal/${n}.webp`, 128, 128, async () => new Uint8Array(await Bun.file(`${packDir}/medals/${pack}@2x.webp`).arrayBuffer())));
+  const skipped: Record<string, string> = { "live/": "the mock draws no status icons" };
   MAPS.forEach((m, i) => {
     if (m.outline) add(`map/${m.name}/preview`, `map/${m.name}.png`, 320, 180, () => encodePng(mapPreview(i)!, 320, 180));
     else skipped[`map/${m.name}/preview`] = "the mock map has no outline to draw";
@@ -202,7 +231,13 @@ export function mockGameArt(packDir: string): MockGameArt {
     version: 1,
     source: "mock",
     images,
-    aliases: Object.fromEntries(GAMETYPES.map((name, n) => [`gametype/${name}`, `gametype/${n}`])),
+    aliases: Object.fromEntries([
+      ...GAMETYPES.map((name, n) => [`gametype/${name}`, `gametype/${n}`]),
+      ...WEAPONS.map((name, n) => [`weapon/${name}`, `weapon/${n}`]),
+      ...PACK_MEDALS.map(([alias], n) => [`medal/${alias}`, `medal/${n}`]),
+    ]),
+    // Our own colours, in the reverse of the app's built-in order so a test can tell which was used.
+    palette: [...EMBLEM_COLOURS].reverse().map(hex),
     emblem: {
       layers: { background: "emblem/bg/<n>", foreground: "emblem/fg/<n>" },
       colour: "per pixel, with channels in 0..1: rgb = colour_a * red + colour_b * blue; ignore the image's alpha",

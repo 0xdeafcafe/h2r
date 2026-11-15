@@ -1,5 +1,13 @@
 // Weapon silhouettes for the Tool of Destruction rows. Original, generic
-// shapes picked by keyword from whatever name the game reported.
+// shapes picked by keyword from whatever name the game reported; or, when
+// the server has game art for that weapon, its silhouette. Those are single
+// masks (the alpha channel carries the shape, faintly), so the picture is
+// stretched to full strength and used as a CSS mask over the current text
+// colour: it takes the page's tint.
+
+import { Show, createEffect, createSignal, onCleanup } from "solid-js";
+import { weaponKey } from "../lib/gameart";
+import { gameImage, maskUrl } from "../state/gameart";
 
 const SHAPES: Array<[RegExp, string]> = [
   [/sniper|beam|long/, "M1 9H12L14 7H29V4H41V7H63V9H44L42 12H36L34 18H29L30 12H16L9 15H1Z"],
@@ -21,9 +29,26 @@ export default function WeaponIcon(props: { weapon: string; width?: number }) {
     return SHAPES.find(([re]) => re.test(w))?.[1] ?? GENERIC;
   };
   const w = () => props.width ?? 54;
+  const h = () => Math.round(w() * 20 / 64);
+  const [game, setGame] = createSignal<string | null>(null);
+  createEffect(() => {
+    const ref = gameImage(weaponKey(props.weapon));
+    if (!ref) { setGame(null); return; }
+    let current = true;
+    onCleanup(() => { current = false; });
+    void maskUrl(ref).then((url) => { if (current) setGame(url); });
+  });
+  const mask = (url: string) => `url("${url}") center / contain no-repeat`;
   return (
+    <Show when={game()} fallback={<Svg />}>
+      {(url) => <span class="weapon-icon weapon-icon--game" aria-hidden="true" style={{ width: `${w()}px`, height: `${h()}px`, mask: mask(url()), "-webkit-mask": mask(url()) }} />}
+    </Show>
+  );
+  function Svg() {
+    return (
     <svg class="weapon-icon" width={w()} height={Math.round(w() * 20 / 64)} viewBox="0 0 64 20" aria-hidden="true">
       <path d={d()} fill="currentColor" fill-rule="evenodd" />
     </svg>
-  );
+    );
+  }
 }
