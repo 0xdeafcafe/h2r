@@ -208,6 +208,19 @@ mod tests {
                 .contains("return 2")
         );
         // A killed/failed writer cannot leave a lock held after its fd closes.
-        let _released = OutputLock::acquire_with(&out, libc::LOCK_EX | libc::LOCK_NB).unwrap();
+        // Wait for the lock instead of trying it once: a child that another
+        // test in this process is spawning holds a copy of every open
+        // descriptor (and so of the flock) until it execs, which can take a
+        // while under load. A lock the writers really leaked is never freed,
+        // and the bounded wait fails.
+        let (acquired, released) = mpsc::channel();
+        let path = out.clone();
+        std::thread::spawn(move || {
+            let _ = acquired.send(OutputLock::acquire(&path).map(drop));
+        });
+        released
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the lock was never released")
+            .unwrap();
     }
 }
