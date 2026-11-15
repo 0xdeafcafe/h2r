@@ -176,8 +176,8 @@ readbacks and bytes read from files. `H2_FRAME_STATS_CSV=<file>` writes
 one row per frame; `H2_FRAME_STATS_FROM=N` starts the exit report at
 frame N. F6 hides the line until the next refresh.
 
-Cost: one clock read per phase switch (a few per draw, about 1% of a
-menu frame) and one short lock per frame. Off, each hook is a relaxed
+Cost: one clock read per phase switch, about six per draw. At 300 draws
+that is under 0.1 ms of a 75 ms level frame. Add one short lock per frame. Off, each hook is a relaxed
 load and a branch.
 
 ## Following a branch: `h2 play --follow`

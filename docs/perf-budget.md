@@ -7,6 +7,8 @@ built from 4620ba0, Apple Silicon (AGX G13), release build. The tools are
 in [perf.md](perf.md): the timeline, `h2 profile budget` and the sampler.
 The runtime's accessor work and its own menu profile are in
 [performance.md](performance.md).
+The in-level budget and its worst frames are in
+[frame-budget.md](frame-budget.md).
 
 Since then master has landed plan items 1 and 2 (draws batched per
 target into one submission, upload rings and cached texture bind groups,

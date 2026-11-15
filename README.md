@@ -215,6 +215,7 @@ Running the game:
 - [perf.md](docs/perf.md): sampling profiler, timeline traces and benchmarks (`h2 profile`, `h2 bench`, `crates/perf`, `crates/timeline`)
 - [fastmem-proto.md](docs/fastmem-proto.md): prototype write watch on Mach exception ports, and 4 KiB guest pages on 16 KiB host pages (`crates/fastmem-proto`)
 - [perf-budget.md](docs/perf-budget.md): where a main-menu frame's time goes, and the plan to 30 fps
+- [frame-budget.md](docs/frame-budget.md): an in-level frame budget, the worst frames and their causes, and what a worst frame under 33 ms needs
 - [performance.md](docs/performance.md): guest memory accessors, the opt-in inline RAM path (`H2_FASTMEM`) and runtime counters
 
 Graphics:
