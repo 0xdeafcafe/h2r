@@ -1,5 +1,6 @@
 //! The processor-model instructions an Xbox title runs in ring 0: `rdtsc`,
-//! `cpuid`, `cli`/`sti` and `wbinvd`.
+//! `cpuid`, `cli`/`sti`, `wbinvd`, `sgdt` and the reads of CS the flat
+//! segment model makes constant.
 
 use super::*;
 
@@ -29,7 +30,49 @@ pub const XBOX_CPUID: [[u32; 4]; 3] = [
     [0x0302_0101, 0, 0, 0x0C04_0841],
 ];
 
+/// The code selector of the flat model. Xbox titles run ring 0 with one flat
+/// 4 GB code segment at GDT index 1, so `mov r/m, cs` reads 8 and a far
+/// `jmp 0008:target` only reloads CS with what it already holds.
+pub const XBOX_CS: u16 = 0x08;
+
+/// What `sgdt` stores: the limit (eight descriptors) and linear base of the
+/// modelled GDT. These are model values, not a dump: nothing in guest
+/// memory backs the base, so code that goes on to read or write the
+/// descriptors (the XAPI helper at 0x2d6434 swaps descriptor 1) faults on
+/// the access until a runtime maps it. The title does not read them
+/// otherwise.
+pub const XBOX_GDT: (u16, u32) = (0x3F, 0x8001_0000);
+
 impl Lower<'_> {
+    /// `mov r/m, cs`: [`XBOX_CS`], zero-extended into a 32-bit destination.
+    /// The other segment registers are not modelled.
+    pub(super) fn mov_from_cs(&mut self) -> R {
+        let w = self.width(0)?;
+        self.write(0, k(w, XBOX_CS as u128))
+    }
+
+    /// `jmp ptr16:32` to the flat code selector: the CS reload changes
+    /// nothing, so it is a direct jump. Any other selector is not modelled.
+    pub(super) fn far_jmp(&mut self) -> R {
+        let insn = self.insn;
+        if insn.far_branch_selector() != XBOX_CS {
+            return Err(format!("far jump to selector {:#x}", insn.far_branch_selector()));
+        }
+        let tail = matches!(self.site, Site::Tail);
+        self.control = Control::Jump { target: Target::Direct(insn.far_branch32()), tail, kind: CallKind::Direct };
+        Ok(())
+    }
+
+    /// `sgdt m`: the 16-bit limit at `m`, the 32-bit base at `m+2`
+    /// ([`XBOX_GDT`]). Not privileged, so it runs in any ring.
+    pub(super) fn sgdt(&mut self) -> R {
+        let a = self.ea()?;
+        let at2 = Addr { seg: a.seg, offset: self.b.add(a.offset, c32(2)) };
+        self.b.store(a, k(Width::W16, XBOX_GDT.0 as u128));
+        self.b.store(at2, c32(XBOX_GDT.1));
+        Ok(())
+    }
+
     /// `rdtsc`: EDX:EAX = the time-stamp counter, which only the runtime
     /// knows (see [`Intrinsic::ReadTsc`]). Titles run in ring 0, where
     /// CR4.TSD cannot fault it. No flags change.

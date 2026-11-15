@@ -930,13 +930,39 @@ fn lower_one(code: &[u8], env: &Env, site: Site<'_>) -> ir::IrInsn {
 
 #[test]
 fn unsupported_is_a_terminal_stop() {
-    // in al, dx (ec) and a far jmp (ea ...) are not lowered: they stop,
-    // they never fall through.
-    for code in [&[0xEC][..], &[0xEA, 0, 0, 0, 0, 0x08, 0][..]] {
+    // in al, dx (ec: port I/O is the D3D overrides' business), a far jmp to
+    // a selector other than the flat code segment, and lidt (0f 01 18) are
+    // not lowered: they stop, they never fall through.
+    for code in [&[0xEC][..], &[0xEA, 0, 0, 0, 0, 0x10, 0][..], &[0x0F, 0x01, 0x18][..]] {
         let ir = lower_one(code, &Env::default(), Site::Plain);
         assert!(!ir.is_supported());
         assert_eq!(ir.control, ir::Control::Stop(ir::StopReason::Unsupported));
     }
+}
+
+#[test]
+fn flat_segment_model_lowers_cs_reads_sgdt_and_the_cs_reload() {
+    use ir::interp::Memory;
+    // mov [ecx], cs (8c 09) and sgdt [ecx] (0f 01 01).
+    let (mut cpu, mut mem) = (Cpu::default(), SparseMemory::default());
+    cpu.gpr[1] = 0x2010;
+    for (code, size) in [(&[0x8C, 0x09][..], 2), (&[0x0F, 0x01, 0x01][..], 6)] {
+        let ir = lower_one(code, &Env::default(), Site::Plain);
+        assert!(ir.is_supported(), "{code:x?}");
+        interp::step(&mut cpu, &mut mem, &ir).unwrap_or_else(|e| panic!("{e:?}"));
+        let mut got = vec![0; size];
+        mem.read(0x2010, &mut got).unwrap();
+        if size == 2 {
+            assert_eq!(got, lift::lower::XBOX_CS.to_le_bytes());
+        } else {
+            let (limit, base) = lift::lower::XBOX_GDT;
+            assert_eq!(got[..2], limit.to_le_bytes());
+            assert_eq!(got[2..], base.to_le_bytes());
+        }
+    }
+    // jmp 0008:00401234 is a direct jump to 0x401234.
+    let ir = lower_one(&[0xEA, 0x34, 0x12, 0x40, 0x00, 0x08, 0x00], &Env::default(), Site::Plain);
+    assert!(matches!(ir.control, ir::Control::Jump { target: ir::Target::Direct(0x401234), .. }));
 }
 
 #[test]

@@ -781,6 +781,27 @@ fn random_state(rng: &mut Rng) -> (Cpu, FlatMemory) {
     (cpu, mem)
 }
 
+/// The flat segment model's instructions: `mov` from CS, `sgdt` and a far `jmp` to the
+/// code selector, which is a plain jump. Alone in its slice so its base is
+/// `CODE_BASE`, the far jump's target the 7 bytes the jump takes.
+#[test]
+fn generated_c_matches_the_interpreter_for_cs_sgdt_and_far_jmp() {
+    let fixtures: [(&'static str, Asm); 1] = [("flat-segments", |a| {
+        use iced_x86::code_asm::*;
+        let [t0, t1, t2, t3] = (CODE_BASE + 7).to_le_bytes();
+        a.db(&[0xEA, t0, t1, t2, t3, 0x08, 0x00])?;
+        a.mov(ax, cs)?;
+        a.mov(edx, cs)?; // zero-extended
+        a.mov(word_ptr(ebx), cs)?;
+        a.sgdt(ptr(edi))?;
+        a.ret()
+    })];
+    let Some(ends) = differential("generated_c_matches_the_interpreter_for_cs_sgdt_and_far_jmp", &fixtures) else {
+        return;
+    };
+    assert_eq!(ends["flat-segments"].get("Returned"), Some(&STATES), "{:?}", ends["flat-segments"]);
+}
+
 #[test]
 fn generated_c_matches_the_interpreter() {
     let ends = differential("generated_c_matches_the_interpreter", &fixtures());

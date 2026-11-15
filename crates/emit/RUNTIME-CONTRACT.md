@@ -183,7 +183,12 @@ and SSE floating point by the `h2s_*` functions of `h2simd.h` (copied next
 to `h2gen.h`, which includes it). Those helpers mirror
 `ir::interp::intrinsic` (all but `ReadTsc`, which is §1.5) and need no
 runtime support. `cpuid` is constant IR (`lift::lower::XBOX_CPUID`), and
-`cli`, `sti` and `wbinvd` lower to nothing.
+`cli`, `sti` and `wbinvd` lower to nothing. The flat segment model is constant
+IR too: `mov r/m, cs` stores selector 8, a far `jmp 0008:target` is a direct
+jump, and `sgdt` stores the model GDT limit and base
+(`lift::lower::XBOX_GDT`; nothing backs that base, so reading the descriptors
+faults). Port I/O (`in`/`out`) is not lowered: it stops as unsupported. The
+three sites are the D3D GPIO guards in `docs/d3d.md`.
 
 MMX registers live in `X87Abi.st`, in physical order: `mmN` is `st[N]`
 bytes 0-7, and an MMX write sets bytes 8-9 to 0xFFFF. Every MMX instruction

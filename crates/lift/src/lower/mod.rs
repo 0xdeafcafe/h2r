@@ -34,7 +34,7 @@ mod string;
 mod system;
 mod x87;
 
-pub use system::XBOX_CPUID;
+pub use system::{XBOX_CPUID, XBOX_CS, XBOX_GDT};
 
 type R<T = ()> = Result<T, String>;
 
@@ -289,6 +289,9 @@ impl Lower<'_> {
                 let v = self.read(0)?;
                 self.intrinsic(Intrinsic::MxcsrWrite, vec![v]);
             }
+            M::Mov if insn.op1_kind() == OpKind::Register && insn.op1_register() == Register::CS => {
+                self.mov_from_cs()?
+            }
             M::Mov => self.mov()?,
             M::Movzx => self.extend(false)?,
             M::Movsx => self.extend(true)?,
@@ -352,6 +355,7 @@ impl Lower<'_> {
             M::Clc | M::Stc | M::Cmc | M::Cld | M::Std => self.flag_insn(),
 
             _ if is_string(insn.code()) => self.string()?,
+            _ if insn.mnemonic() == M::Jmp && insn.op0_kind() == OpKind::FarBranch32 => self.far_jmp()?,
             _ if insn.mnemonic() == M::Jmp => self.jmp()?,
             _ if is_jcc(insn) => {
                 let cond = self.condition(insn.condition_code())?;
@@ -390,6 +394,7 @@ impl Lower<'_> {
             M::Hlt => self.control = Control::Stop(StopReason::Halt),
 
             M::Rdtsc => self.rdtsc(),
+            M::Sgdt => self.sgdt()?,
             M::Cpuid => self.cpuid(),
             // IF is not modelled: nothing interrupts generated code, and
             // `popfd` stops rather than change IF. Guest memory is coherent

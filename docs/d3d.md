@@ -1036,6 +1036,12 @@ instructions:
 | `0x3feac0` | GPU interrupt service routine, stdcall `(Interrupt, ServiceContext)`, `ret 8`, `AL` = handled | `AL` = FALSE (the device raises no interrupts; the original's answer when nothing is pending, `0x3febd0`) |
 | `0x3fed90` | vertical-blank service (`EAX` = miniport): field bit, flip, vblank callback; from the DPC and the flip paths | stops (vblanks come from `Device::vblank`, see "Vertical blank") |
 
+These three instructions (`in` x2, `out` x1) are the only ones `h2 lift
+--stats` still reports as unlowered (18,685 of 18,688 functions fully
+lowered; the other three are these functions). That is deliberate: the
+lifter has no port-I/O model, and a guessed open-bus read would hide a stray
+call behind a plausible value, where the unsupported stop names it.
+
 The ignored test in `tests/round5.rs` decodes the retail image
 (`$H2_XBE`) to check that each port instruction lies in the function its
 guard overrides, after `mov dx, 80C0h`.
