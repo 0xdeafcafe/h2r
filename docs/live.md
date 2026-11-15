@@ -555,8 +555,8 @@ stable user array, task handles and QoS headers. Tokens advance without reuse,
 even after cleanup, so stale handles cannot name later tasks. Exhaustion returns
 out-of-memory rather than growing indefinitely.
 
-All 130 named boundary targets are registered when enabled: 111 have implemented
-results, including deliberate empty views or failed tasks, and 19 remain named
+All 130 named boundary targets are registered when enabled: 116 have implemented
+results, including deliberate empty views or failed tasks, and 14 remain named
 stops. The menu audit and remaining-stop list appear below. A stop reports
 `unimplemented Live API <name>` before reading arguments or executing the linked
 library. There is no silent fallback to XONLINES. Tests establish these API and
@@ -830,13 +830,13 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte offline records carrying the watched XUIDs. Remote presence is not fetched yet. |
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
 | `0x0006b565` | GetNatType returns the retail initial/unknown value 0. No NAT probing or claim of open NAT is made. |
-| `0x000abc70` through `0x000ac2f2` | Team and member enumerations complete with count 0. Details getters report TEAM_NOT_FOUND (`0x8015210b`) instead of supplying a nonexistent team. |
+| `0x000abc70` through `0x000ac2f2` | Team and member enumerations return snapshots from the local store described below. Unknown teams fail with TEAM_NOT_FOUND (`0x8015210b`); a missing item in a successful snapshot returns E_FAIL, as retail does. |
 | `0x0008d3d0`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
 | `0x00092220` through `0x00092450`, manager `0x00074aa0` | StatWrite/GetResult accepts an owned local capture and completes successfully without attachments. StatRead/GetResult completes with missing (`NONE`) stats and zero values in the caller's arrays. See the local stats section below. |
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling uses the server-backed title inbox above, or count 0 without a server. |
 
-These 19 entries still stop by API name because their backend behavior is not
+These 14 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -847,7 +847,6 @@ listed API name.
 | `XOnlineFriends` | `Remove`, `GameInvite`, `AnswerRequest`, `AnswerGameInvite`, `JoinGame` |
 | `XOnlineGameInvite` | `Answer` |
 | `XOnlineMutelist` | `Add`, `Remove` |
-| `XOnlineTeam` | `Create`, `Delete`, `MemberSetProperties`, `MemberRemove`, `MemberAnswerRecruit` |
 | `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
 | `XNet` | `TsAddrToInAddr` |
 
@@ -1150,3 +1149,48 @@ Synthetic guest-stack tests cover all nine APIs, exact stack cleanup, typed
 attributes and dirty flags, stable IDs/keys, XNet key registration, full lifecycle,
 empty search/find results, capacity math, pointer-fault atomicity, cleanup and
 advertisement limits. The tests do not load an XBE or run the game.
+
+## Client HLE: Teams (local slice)
+
+The clan-create stop at `0x003afb80` is called by `0x000abe60` from the UI action
+`0x00238bf1`. It passes a maximum of 100 members and creator privileges
+`0xffffffff`. All thirteen linked XOnlineTeam entries now use a local store:
+create/delete, enumerate-by-user/results/details, member enumeration/results/
+details, member property changes/removal, recruitment by XUID/name, and answers.
+The game refreshes enumeration after mutations; no CreateGetResults or
+TeamSetProperties thunk is called in the verified boundary. No guest address is
+invented for those unused APIs. The host seam supports team-property changes.
+
+The shared owned model/rules are in `live-proto::team`; guest marshalling is in
+`live-hle::teams`. A team properties record is 1670 bytes (UTF-16 name 16 units,
+description/motto/URL 256 each, WORD custom length and 100 bytes custom data).
+A full team is 1698 bytes: 12-byte XUID, properties, DWORD flags, FILETIME and
+DWORD active member count. A member is 146 bytes: 12-byte XUID, 16-byte ANSI
+gamertag, 106-byte properties, DWORD flags and FILETIME. Outputs are checked and
+written exactly to these bounds. The count in enumeration results is OUT, not
+an input capacity; limits keep lists within eight teams and 100 members.
+
+Each mutation returns a task; Continue reports success or the specific Teams
+HRESULT. Enumerations own snapshots with their detail records. Missing items in
+a successful snapshot return E_FAIL, matching retail. The store retains owned
+strings/custom data after guest buffers are reused. It survives local sign-out;
+cleanup invalidates tasks. Recruitment resolves the host accounts file in this
+slice, records a pending member and retains the outgoing message capture.
+Pending teams appear for the recruit with the recruit flag; an accepted answer
+moves the member into the roster, and decline removes the pending request.
+
+Privilege bits are delete=1, modify-team=2, modify-member-permissions=4,
+remove-member=8 and recruit=16. The title uses all bits for the leader, `0x1c`
+for officers, and `0x10` or zero for lower ranks. The shared rules preserve one
+creator/leader, reject orphaning/demoting it, require the appropriate permission
+for mutations, prevent privilege escalation, and allow an ordinary member to
+leave. Duplicate names, full teams, eight-team limits, unknown users and missing
+teams produce their XDK errors. Local diagnostics use `H2_BOOT_VERBOSE=1`.
+
+`Hle::local_teams()` snapshots the cache; `local_team_action` is the trusted local
+host seam, including team-property edits where no guest thunk is linked. These
+local records are not persistent across runtimes. The next slice replaces local
+writes/reads with signed server events and a cached projection. Synthetic guest
+tests cover create/list/details/member editing/recruit/accept/decline/leave/
+delete, packed layouts/canaries, snapshot ownership, validation/fault atomicity,
+permissions and cleanup. No test builds or runs the title.

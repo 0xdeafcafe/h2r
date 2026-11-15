@@ -64,6 +64,9 @@
 @keyframes dx-fade { from { opacity: 0; } }
 @keyframes dx-spin { to { transform: rotate(360deg); } }
 @keyframes dx-podpulse { 50% { filter: brightness(1.22); } }
+/* The selected small pod's glow breathing. Both ends list the same filters as the pod at rest
+   (dash.css), so the glow eases; a keyframe with a different list would snap it off and on. */
+@keyframes dx-satpulse { 50% { filter: drop-shadow(0 0 calc(var(--u) * 22) rgba(228, 255, 120, 1)) brightness(1.14); } }
 
 /* The menu doesn't zoom as one piece: the orb swells or shrinks and the
    ring swings round it into place (Dashboard.tsx turns it). */
@@ -167,9 +170,10 @@
   box-shadow: 0 0 calc(var(--u) * 10) rgba(200, 235, 80, .3);
 }
 .dx-bar-text {
-  position: relative; z-index: 2; font-family: "Michroma", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17.5); letter-spacing: .05em; text-transform: uppercase; white-space: nowrap;
+  position: relative; z-index: 2; font-family: "Michroma", var(--f-tech); font-weight: 400; font-size: calc(var(--u) * 17.5); letter-spacing: .1em; text-transform: uppercase; white-space: nowrap;
   color: color-mix(in srgb, #2c4a12 calc(var(--lit) * 100%), #cfe9a0);
-  -webkit-text-stroke: calc(var(--u) * .7) currentColor;
+  /* Michroma has one weight; a stroke in the text's own colour, painted under the fill, makes it bold. */
+  -webkit-text-stroke: calc(var(--u) * 1.45) currentColor; paint-order: stroke fill;
   text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(4, 40, 2, calc(.7 - var(--lit) * .7));
 }
 
@@ -187,6 +191,17 @@
   filter: blur(calc(var(--u) * .3)); transition: transform .15s var(--ease), filter .15s;
 }
 .dx-btn b { font-family: var(--f-tech); font-weight: 800; font-size: calc(var(--u) * 19); line-height: 1; text-transform: uppercase; color: #d4eeaa; text-shadow: 0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .6); }
+/* The keyboard's prompt: the same jelly as a wider keycap, the key's name on it. */
+.dx-btn.dx-btn--keyboard, .dx-menu .dx-btn.dx-btn--keyboard {
+  width: auto; min-width: calc(var(--u) * 58); height: calc(var(--u) * 40); padding: 0 calc(var(--u) * 12); border-radius: calc(var(--u) * 13);
+  border: calc(var(--u) * 5) solid rgba(156, 212, 106, .88);
+  background: linear-gradient(180deg, rgba(214, 240, 170, .16) 0, rgba(214, 240, 170, 0) 40%), #2f7a1c;
+  box-shadow: 0 0 0 calc(var(--u) * 1.5) rgba(96, 176, 56, .5), 0 0 calc(var(--u) * 5) rgba(80, 170, 44, .35), inset 0 0 calc(var(--u) * 3) rgba(40, 110, 24, .9);
+}
+.dx-btn.dx-btn--keyboard b, .dx-menu .dx-btn.dx-btn--keyboard b { font-size: calc(var(--u) * 12.5); letter-spacing: .08em; }
+/* A mouse or a finger gets an arrow to press: on for select, back for back. */
+.dx-btn-arrow { width: 0; height: 0; border: solid transparent; border-width: calc(var(--u) * 8) 0 calc(var(--u) * 8) calc(var(--u) * 12); border-left-color: #d4eeaa; margin-left: calc(var(--u) * 3); filter: drop-shadow(0 calc(var(--u) * 1) calc(var(--u) * 1) rgba(0, 50, 0, .6)); }
+.dx-btn--b .dx-btn-arrow { transform: scaleX(-1); margin: 0 calc(var(--u) * 3) 0 0; }
 .dx-menu .dx-btn { width: calc(var(--u) * 50); height: calc(var(--u) * 50); }
 .dx-menu .dx-btn b { font-size: calc(var(--u) * 16); }
 .dx-prompt:hover .dx-btn, .dx-prompt:focus-visible .dx-btn { transform: scale(1.08); filter: brightness(1.25); }

@@ -565,6 +565,11 @@ fn mutelist_get_zeroes_count_and_returns_a_completing_task() {
 fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library() {
     let mut w = World::new();
     let implemented = [
+        "XOnlineTeamMemberAnswerRecruit",
+        "XOnlineTeamMemberRemove",
+        "XOnlineTeamMemberSetProperties",
+        "XOnlineTeamDelete",
+        "XOnlineTeamCreate",
         "XOnlineMatchSessionCreate",
         "XOnlineMatchSessionUpdate",
         "XOnlineMatchSessionGetInfo",
@@ -872,48 +877,40 @@ fn signed_in_menu_polling_has_correct_empty_counts_bools_and_records() {
     );
 }
 #[test]
-fn empty_team_and_member_enumerations_finish_and_write_output_only_zero_counts() {
+fn empty_team_enumeration_is_successful_and_missing_team_members_fail_in_the_task() {
     let mut w = World::new();
     w.logon();
     assert_eq!(
         w.call("XOnlineTeamEnumerateByUserXUID", &[0, 1, 0, 0, 0, OUTPUT]),
         0
     );
-    let teams = w.u32(OUTPUT);
-    assert_eq!(w.call("XOnlineTaskContinue", &[teams]), TASK_SUCCESS);
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
     w.word(OUTPUT, 0xdeadbeef);
     assert_eq!(
-        w.call("XOnlineTeamEnumerateGetResults", &[teams, OUTPUT, 0]),
+        w.call("XOnlineTeamEnumerateGetResults", &[task, OUTPUT, 0]),
         0
     );
     assert_eq!(w.u32(OUTPUT), 0);
     assert_eq!(
-        w.call("XOnlineTeamGetDetails", &[teams, 1, 0, 0, 0]),
-        0x8015210b
+        w.call("XOnlineTeamGetDetails", &[task, 1, 0, 0, 0]),
+        0x80004005
     );
     assert_eq!(
-        w.call("XOnlineTeamMembersEnumerate", &[0, 1, 0, 0, 0, 0, OUTPUT]),
+        w.call("XOnlineTeamMembersEnumerate", &[0, 1, 0, 0, 1, 0, OUTPUT]),
         0
     );
     let members = w.u32(OUTPUT);
-    assert_eq!(w.call("XOnlineTaskContinue", &[members]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskContinue", &[members]), TEAM_NOT_FOUND);
     assert_eq!(
         w.call(
             "XOnlineTeamMembersEnumerateGetResults",
             &[members, OUTPUT, 0]
         ),
-        0
-    );
-    assert_eq!(w.u32(OUTPUT), 0);
-    assert_eq!(
-        w.call("XOnlineTeamMemberGetDetails", &[members, 1, 0, 0, 0]),
-        0x8015210b
-    );
-    assert_eq!(
-        w.call("XOnlineTeamEnumerateGetResults", &[members, OUTPUT, 0]),
-        INVALID_ARGUMENT
+        TEAM_NOT_FOUND
     );
 }
+
 #[test]
 fn presence_latest_returns_packed_offline_watch_records_and_clear_removes_them() {
     let mut w = World::new();
@@ -1778,28 +1775,20 @@ fn outbox_friend_xuid_and_game_invite_use_their_complete_stdcall_frames() {
 fn outbox_clan_recruitment_by_name_and_xuid_own_packed_member_properties() {
     use live_hle::{MessageRecipient, MessageSendKind, MessageUser, RecruitProperties};
     let (mut w, h) = outbox_world();
-    let msg = message_create(&mut w, 4, 0x00090000abcdefff, 0x40);
+    let team = team_create_local(&mut w, &h, "Test Clan");
+    let [lo, hi] = team_words(team);
+    let msg = message_create(&mut w, 4, team.0, 0x40);
     message_set(&mut w, msg, 0x681, &wide_bytes("Test Clan"));
     let props = DATA + 0x6000;
     w.put(props, &[0; 106]);
     w.word(props, 0x10);
     w.put(props + 4, &3u16.to_le_bytes());
     w.put(props + 6, &[1, 2, 3]);
-    w.put(DATA + 0x5000, b"Recruit\0");
+    w.put(DATA + 0x5000, b"Second\0");
     assert_eq!(
         w.call(
             "XOnlineTeamMemberRecruitByName",
-            &[
-                0,
-                0xabcdefff,
-                0x00090000,
-                0x22,
-                DATA + 0x5000,
-                props,
-                msg,
-                0,
-                OUTPUT
-            ]
+            &[0, lo, hi, 0x22, DATA + 0x5000, props, msg, 0, OUTPUT]
         ),
         0
     );
@@ -1807,11 +1796,19 @@ fn outbox_clan_recruitment_by_name_and_xuid_own_packed_member_properties() {
         w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
         TASK_SUCCESS
     );
+    h.local_team_action(
+        0x0009000011112222,
+        &live_proto::team::Action::Answer {
+            id: team,
+            accept: false,
+        },
+    )
+    .unwrap();
     assert_eq!(
         w.call(
             "XOnlineTeamMemberRecruit",
             &[
-                0, 0xabcdefff, 0x00090000, 0x22, 0x12345678, 0x00090000, 0, props, msg, 0, OUTPUT
+                0, lo, hi, 0x22, 0x11112222, 0x00090000, 0, props, msg, 0, OUTPUT
             ]
         ),
         0
@@ -1820,13 +1817,13 @@ fn outbox_clan_recruitment_by_name_and_xuid_own_packed_member_properties() {
     let sends = h.message_sends();
     assert_eq!(
         sends[0].recipients,
-        vec![MessageRecipient::Gamertag("Recruit".into())]
+        vec![MessageRecipient::Gamertag("Second".into())]
     );
     assert_eq!(
         sends[0].kind,
         MessageSendKind::TeamRecruit {
             team: MessageUser {
-                xuid: 0x00090000abcdefff,
+                xuid: team.0,
                 flags: 0x22
             },
             properties: RecruitProperties {
@@ -2517,4 +2514,414 @@ fn match_session_limit_preserves_advertisements_and_delete_releases_capacity() {
     assert_eq!(w.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUTPUT]), 0);
     match_create(&mut w, 0);
     assert_eq!(h.local_sessions().len(), 32);
+}
+
+const TEAM_PROPS: u32 = DATA + 0x4000;
+const TEAM_MEMBER_PROPS: u32 = DATA + 0x4700;
+const TEAM_IDS: u32 = DATA + 0x5000;
+const TEAM_DETAILS: u32 = DATA + 0x6000;
+const SECOND: u64 = 0x0009000011112222;
+fn team_words(id: live_proto::Xuid) -> [u32; 2] {
+    [id.0 as u32, (id.0 >> 32) as u32]
+}
+fn team_properties(w: &World, name: &str) {
+    w.put(TEAM_PROPS, &vec![0; 1670]);
+    w.put(TEAM_PROPS, &wide_bytes(name));
+    w.put(TEAM_PROPS + 32, &wide_bytes("Description"));
+    w.put(TEAM_PROPS + 544, &wide_bytes("Motto"));
+    w.put(TEAM_PROPS + 1056, &wide_bytes("https://example.test"));
+    w.put(TEAM_PROPS + 1568, &3u16.to_le_bytes());
+    w.put(TEAM_PROPS + 1570, &[3, 1, 4]);
+    w.put(TEAM_MEMBER_PROPS, &[0; 106]);
+    w.word(TEAM_MEMBER_PROPS, u32::MAX);
+}
+fn team_create_local(w: &mut World, h: &Hle, name: &str) -> live_proto::Xuid {
+    team_properties(w, name);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamCreate",
+            &[0, TEAM_PROPS, TEAM_MEMBER_PROPS, 100, 0, OUTPUT]
+        ),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    h.local_teams()
+        .of(live_proto::Xuid(ID))
+        .into_iter()
+        .find(|t| t.properties.name == name)
+        .unwrap()
+        .id
+}
+fn teams_two_users() -> (World, Arc<Hle>) {
+    let h = hle(config());
+    let mut w = World::with(Arc::clone(&h));
+    w.startup();
+    assert_eq!(w.call("XOnlineGetUsers", &[DATA, OUTPUT]), 0);
+    w.put(USERS, &w.bytes(DATA, 224));
+    for i in 0..13 {
+        w.word(SERVICES + i * 4, i + 2);
+    }
+    assert_eq!(w.call("XOnlineLogon", &[USERS, SERVICES, 13, 0, OUTPUT]), 0);
+    (w, h)
+}
+fn teams_enumerate(w: &mut World, user: u64) -> u32 {
+    assert_eq!(
+        w.call(
+            "XOnlineTeamEnumerateByUserXUID",
+            &[0, user as u32, (user >> 32) as u32, 0, 0, OUTPUT]
+        ),
+        0
+    );
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineTeamEnumerateGetResults", &[task, OUTPUT, TEAM_IDS]),
+        0
+    );
+    task
+}
+#[test]
+fn teams_create_enumerate_details_members_and_delete_match_packed_records() {
+    let (mut w, h) = outbox_world();
+    let id = team_create_local(&mut w, &h, "Synthetic Clan");
+    let [lo, hi] = team_words(id);
+    w.put(TEAM_PROPS, &[0xdd; 1670]);
+    let task = teams_enumerate(&mut w, ID);
+    assert_eq!(w.u32(OUTPUT), 1);
+    assert_eq!(w.bytes(TEAM_IDS, 8), id.0.to_le_bytes());
+    assert_eq!(w.u32(TEAM_IDS + 8), 0);
+    w.put(TEAM_DETAILS, &vec![0xcc; 1702]);
+    assert_eq!(
+        w.call("XOnlineTeamGetDetails", &[task, lo, hi, 0, TEAM_DETAILS]),
+        0
+    );
+    assert_eq!(
+        w.bytes(TEAM_DETAILS + 12, wide_bytes("Synthetic Clan").len()),
+        wide_bytes("Synthetic Clan")
+    );
+    assert_eq!(w.u32(TEAM_DETAILS + 1682), 0);
+    assert_eq!(w.u32(TEAM_DETAILS + 1694), 1);
+    assert!(w.bytes(TEAM_DETAILS + 1686, 8).iter().any(|b| *b != 0));
+    assert_eq!(w.bytes(TEAM_DETAILS + 1698, 4), vec![0xcc; 4]);
+    assert_eq!(
+        w.call("XOnlineTeamMembersEnumerate", &[0, lo, hi, 0, 1, 0, OUTPUT]),
+        0
+    );
+    let members = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[members]), TASK_SUCCESS);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMembersEnumerateGetResults",
+            &[members, OUTPUT, TEAM_IDS]
+        ),
+        0
+    );
+    assert_eq!(w.u32(OUTPUT), 1);
+    w.put(TEAM_DETAILS, &[0xcc; 150]);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberGetDetails",
+            &[members, ID as u32, (ID >> 32) as u32, 0, TEAM_DETAILS]
+        ),
+        0
+    );
+    assert_eq!(w.bytes(TEAM_DETAILS + 12, 13), b"First Player\0");
+    assert_eq!(w.u32(TEAM_DETAILS + 28), u32::MAX);
+    assert_eq!(w.u32(TEAM_DETAILS + 134), 0);
+    assert_eq!(w.bytes(TEAM_DETAILS + 146, 4), vec![0xcc; 4]);
+    assert_eq!(w.call("XOnlineTeamDelete", &[0, lo, hi, 0, 0, OUTPUT]), 0);
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    teams_enumerate(&mut w, ID);
+    assert_eq!(w.u32(OUTPUT), 0);
+    // Enumeration snapshots continue to own their earlier records.
+    assert_eq!(
+        w.call("XOnlineTeamGetDetails", &[task, lo, hi, 0, TEAM_DETAILS]),
+        0
+    );
+}
+#[test]
+fn teams_recruit_accept_promote_remove_and_decline_use_real_member_privileges() {
+    use live_proto::team::TeamError;
+    let (mut w, h) = teams_two_users();
+    let id = team_create_local(&mut w, &h, "Members");
+    let [lo, hi] = team_words(id);
+    let msg = message_create(&mut w, 4, id.0, 0x40);
+    w.word(TEAM_MEMBER_PROPS, 0x10);
+    w.put(DATA + 0x4800, b"Second\0");
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberRecruitByName",
+            &[
+                0,
+                lo,
+                hi,
+                0,
+                DATA + 0x4800,
+                TEAM_MEMBER_PROPS,
+                msg,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    let pending = teams_enumerate(&mut w, SECOND);
+    assert_eq!(
+        w.call("XOnlineTeamGetDetails", &[pending, lo, hi, 0, TEAM_DETAILS]),
+        0
+    );
+    assert_eq!(w.u32(TEAM_DETAILS + 1682), 1);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberAnswerRecruit",
+            &[1, lo, hi, 0, 1, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    w.word(TEAM_MEMBER_PROPS, 0x1c);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberSetProperties",
+            &[
+                1,
+                lo,
+                hi,
+                0,
+                SECOND as u32,
+                (SECOND >> 32) as u32,
+                0,
+                TEAM_MEMBER_PROPS,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TeamError::Privileges.hresult()
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberSetProperties",
+            &[
+                0,
+                lo,
+                hi,
+                0,
+                SECOND as u32,
+                (SECOND >> 32) as u32,
+                0,
+                TEAM_MEMBER_PROPS,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    assert_eq!(
+        h.local_teams().get(id).unwrap().members[&live_proto::Xuid(SECOND)]
+            .properties
+            .privileges,
+        0x1c
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberRemove",
+            &[1, lo, hi, 0, ID as u32, (ID >> 32) as u32, 0, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TeamError::NoAdmin.hresult()
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberRemove",
+            &[
+                1,
+                lo,
+                hi,
+                0,
+                SECOND as u32,
+                (SECOND >> 32) as u32,
+                0,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    w.word(TEAM_MEMBER_PROPS, 0x10);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberRecruit",
+            &[
+                0,
+                lo,
+                hi,
+                0,
+                SECOND as u32,
+                (SECOND >> 32) as u32,
+                0,
+                TEAM_MEMBER_PROPS,
+                msg,
+                0,
+                OUTPUT
+            ]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    assert_eq!(
+        w.call(
+            "XOnlineTeamMemberAnswerRecruit",
+            &[1, lo, hi, 0, 0, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TASK_SUCCESS
+    );
+    assert!(h.local_teams().get(id).unwrap().recruits.is_empty());
+}
+#[test]
+fn teams_properties_seam_updates_owned_fields_and_enumerations_refresh() {
+    use live_proto::team::{Action, Properties};
+    let (mut w, h) = outbox_world();
+    let id = team_create_local(&mut w, &h, "Before");
+    let [lo, hi] = team_words(id);
+    let properties = Properties {
+        name: "After".into(),
+        motto: "New motto".into(),
+        data: vec![7, 8],
+        ..Default::default()
+    };
+    h.local_team_action(
+        ID,
+        &Action::Properties {
+            id,
+            properties: properties.clone(),
+        },
+    )
+    .unwrap();
+    let task = teams_enumerate(&mut w, ID);
+    assert_eq!(
+        w.call("XOnlineTeamGetDetails", &[task, lo, hi, 0, TEAM_DETAILS]),
+        0
+    );
+    assert_eq!(w.bytes(TEAM_DETAILS + 12, 12), wide_bytes("After"));
+    assert_eq!(
+        w.bytes(TEAM_DETAILS + 12 + 544, 20),
+        wide_bytes("New motto")
+    );
+    assert_eq!(h.local_teams().get(id).unwrap().properties, properties);
+}
+#[test]
+fn teams_validation_and_pointer_faults_never_create_partial_teams() {
+    let (mut w, h) = outbox_world();
+    team_properties(&w, "Valid");
+    w.put(TEAM_PROPS + 1568, &101u16.to_le_bytes());
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call(
+            "XOnlineTeamCreate",
+            &[0, TEAM_PROPS, TEAM_MEMBER_PROPS, 100, 0, OUTPUT]
+        ),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    assert!(h.local_teams().teams.is_empty());
+    team_properties(&w, "Valid");
+    for (p, out) in [(DATA + 0xfff0, OUTPUT), (TEAM_PROPS, DATA + 0xfffe)] {
+        let t = w.raw("XOnlineTeamCreate", &[0, p, TEAM_MEMBER_PROPS, 100, 0, out]);
+        assert!(matches!(
+            w.ctx.event(t.event_id),
+            Some(Event::MemoryFault { .. })
+        ));
+        assert!(h.local_teams().teams.is_empty());
+    }
+    let id = team_create_local(&mut w, &h, "Valid");
+    let [lo, hi] = team_words(id);
+    let task = teams_enumerate(&mut w, ID);
+    w.word(OUTPUT, 0xdeadbeef);
+    let t = w.raw(
+        "XOnlineTeamEnumerateGetResults",
+        &[task, OUTPUT, DATA + 0xfffa],
+    );
+    assert!(matches!(
+        w.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    let t = w.raw("XOnlineTeamGetDetails", &[task, lo, hi, 0, DATA + 0xfffa]);
+    assert!(matches!(
+        w.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+}
+#[test]
+fn teams_duplicate_names_limits_and_cleanup_preserve_local_store() {
+    use live_proto::team::TeamError;
+    let (mut w, h) = outbox_world();
+    team_create_local(&mut w, &h, "Same Name");
+    team_properties(&w, "same name");
+    assert_eq!(
+        w.call(
+            "XOnlineTeamCreate",
+            &[0, TEAM_PROPS, TEAM_MEMBER_PROPS, 100, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TeamError::AlreadyExists.hresult()
+    );
+    for i in 1..8 {
+        team_create_local(&mut w, &h, &format!("Team {i}"));
+    }
+    team_properties(&w, "Ninth");
+    assert_eq!(
+        w.call(
+            "XOnlineTeamCreate",
+            &[0, TEAM_PROPS, TEAM_MEMBER_PROPS, 100, 0, OUTPUT]
+        ),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineTaskContinue", &[w.u32(OUTPUT)]),
+        TeamError::UserTeamsFull.hresult()
+    );
+    let task = teams_enumerate(&mut w, ID);
+    assert_eq!(w.u32(OUTPUT), 8);
+    assert_eq!(w.call("XOnlineCleanup", &[]), 0);
+    w.startup();
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
+    assert_eq!(h.local_teams().of(live_proto::Xuid(ID)).len(), 8);
 }

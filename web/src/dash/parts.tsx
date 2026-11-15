@@ -4,7 +4,8 @@
 // shell's styles (background, orb, menu, prompts, transitions) are in
 // styles/dash-shell.css.
 
-import { For, Show, type JSX } from "solid-js";
+import { For, Match, Show, Switch, type JSX } from "solid-js";
+import { inputMode } from "./input";
 import { blobPath } from "./shape";
 import "../styles/dash-shell.css";
 
@@ -213,14 +214,26 @@ export function Plate(props: { small: string; title: string; main?: boolean; chi
   );
 }
 
+/** The select / back prompts. They show whatever was used last (see input.ts):
+ *  a gamepad's a and b discs, the keyboard's keys on jelly keycaps, or, for a
+ *  mouse or a finger, plain arrows to press. */
 export function Prompts(props: { onA?: () => void; onB?: () => void; aLabel?: string }) {
+  const face = (pad: string, key: string) => (
+    <span class={`dx-btn dx-btn--${pad} dx-btn--${inputMode()}`} aria-hidden="true">
+      <Switch>
+        <Match when={inputMode() === "gamepad"}><b>{pad}</b></Match>
+        <Match when={inputMode() === "keyboard"}><b>{key}</b></Match>
+        <Match when={inputMode() === "pointer"}><i class="dx-btn-arrow" /></Match>
+      </Switch>
+    </span>
+  );
   return (
     <>
       <Show when={props.onB}>
-        <button class="dx-prompt dx-prompt--b" onClick={() => props.onB?.()}><span class="dx-btn dx-btn--b" aria-hidden="true"><b>b</b></span><span class="dx-prompt-label">back</span></button>
+        <button class="dx-prompt dx-prompt--b" onClick={() => props.onB?.()}>{face("b", "esc")}<span class="dx-prompt-label">back</span></button>
       </Show>
       <Show when={props.onA}>
-        <button class="dx-prompt dx-prompt--a" onClick={() => props.onA?.()}><span class="dx-btn dx-btn--a" aria-hidden="true"><b>a</b></span><span class="dx-prompt-label">{props.aLabel ?? "select"}</span></button>
+        <button class="dx-prompt dx-prompt--a" onClick={() => props.onA?.()}>{face("a", "enter")}<span class="dx-prompt-label">{props.aLabel ?? "select"}</span></button>
       </Show>
     </>
   );
