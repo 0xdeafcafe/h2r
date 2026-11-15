@@ -79,7 +79,7 @@ up to 15 Hz and are not stored.
 | `GET /v1/accounts` | accounts: `{xuid, gamertag, created_at, online}` |
 | `GET /v1/accounts/{gamertag}` | one account plus `recent_games` |
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
-| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, started_at, ended_at?, players, teams?}` |
+| `GET /v1/games?state=live\|ended` | game summaries: `{game_id, map, mode, variant, team_play, started_at, ended_at?, players, teams?}` |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
 | `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
