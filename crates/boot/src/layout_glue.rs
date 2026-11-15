@@ -76,6 +76,9 @@ const PROFILE_COPY_LAYOUT: u32 = 0x176c + 0x104;
 const DATA_BASE: u32 = 0xa2f0_0000;
 const DATA_SIZE: u32 = 0x1_0000;
 const SHADOW_BASE: u32 = 0xa2f1_0000;
+/// The Controls screen's seventh item widgets, one slot per open screen.
+const EXTRA_BASE: u32 = 0xa2f2_0000;
+const EXTRA_SLOTS: u32 = 0x1000 / speaker_row::ITEM_SIZE;
 
 pub const ADDED: [Layout; 3] = [Layout::BumperJumper, Layout::Recon, Layout::WalkieTalkie];
 
@@ -141,6 +144,7 @@ pub fn grown_count<M: Gm>(m: &M, esp: u32, eax: u32, layouts: bool, speaker: boo
     }
     if speaker {
         n = speaker_row::list_count(name, n);
+        n = speaker_row::small_list_count(name, n);
     }
     n
 }
@@ -209,6 +213,8 @@ pub fn served_strings(layouts: bool, speaker: bool) -> Vec<(u32, &'static str)> 
     let mut v = if layouts { strings() } else { Vec::new() };
     if speaker {
         v.push((speaker_row::LABEL_ID, speaker_row::LABEL_TEXT));
+        v.push((speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT));
+        v.push((speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT));
     }
     v
 }
@@ -396,6 +402,9 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         let mut mem = rt.memory();
         mem.map_zeroed(DATA_BASE, DATA_SIZE, Permissions::RW)?;
         mem.map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
+        if with_speaker {
+            mem.map_zeroed(EXTRA_BASE, 0x1000, Permissions::RW)?;
+        }
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served_strings(layouts, with_speaker))
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
@@ -406,9 +415,15 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
         shadow += 4;
         shadow - 4
     };
-    let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, SCREEN_TAG, TEXT_SET, PROFILE_ROWS];
-    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, LOCALE_FIND];
-    let speaker_hooks = [speaker_row::ROW_CHOSEN];
+    let layout_hooks = [ACTION_TABLE_BUILD, ROW_TEXT, ROW_SELECTED, INITIAL_ROW, PANE_SET, TEXT_SET, PROFILE_ROWS];
+    let shared_hooks = [LIST_DATA_NEW, CONTROLS_ROW_TEXT, LOCALE_FIND, SCREEN_TAG];
+    let speaker_hooks = [
+        speaker_row::ROW_CHOSEN,
+        speaker_row::ADD_ITEMS,
+        speaker_row::SMALL_CTOR,
+        speaker_row::SMALL_ROW_TEXT,
+        speaker_row::SMALL_ROW_CHOSEN,
+    ];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -529,32 +544,48 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                 Ok(o.invoke(cpu, ctx, PANE_SET))
             });
         }
-        // The screen's tag: add panes once.
+        // The screen's tag: the Button Layout screen gets its added panes
+        // once, the Controls screen its seventh visible row.
         if let Some(o) = originals.remove(&SCREEN_TAG) {
             let sh = alias(d, &mut next_shadow, &o, SCREEN_TAG);
             let o2 = Arc::clone(&o);
             let seen = AtomicBool::new(false);
+            let grown = Arc::new(AtomicBool::new(false));
             d.register_override(SCREEN_TAG, "layouts:panes", move |cpu, ctx, _| {
                 announce(&seen, "layouts: screen tag");
-                let is_ours = {
+                let id = {
                     let mem = ctx.runtime().memory();
-                    mem.u16(cpu.eax + 0x70).is_ok_and(|v| v as i16 == SCREEN_ID)
+                    mem.u16(cpu.eax + 0x70).map_or(-1, |v| v as i16)
                 };
-                if !is_ours {
+                let wanted = (layouts && id == SCREEN_ID) || (with_speaker && id == speaker_row::SCREEN_ID);
+                if !wanted {
                     return Ok(o2.invoke(cpu, ctx, SCREEN_TAG));
                 }
-                call_then(cpu, ctx, sh, |cpu, ctx| {
-                    if cpu.eax != 0 {
-                        let mut mem = ctx.runtime().memory();
-                        let mut alloc = ALLOC.load(Ordering::SeqCst);
-                        match extend_panes(&mut *mem, cpu.eax, &mut alloc) {
-                            Some(true) => {
-                                ALLOC.store(alloc, Ordering::SeqCst);
-                                eprintln!("layouts: button layout panes extended");
+                let grown = Arc::clone(&grown);
+                call_then(cpu, ctx, sh, move |cpu, ctx| {
+                    if cpu.eax == 0 {
+                        return Ok(());
+                    }
+                    let mut mem = ctx.runtime().memory();
+                    if id == speaker_row::SCREEN_ID {
+                        match speaker_row::grow_visible(&mut *mem, cpu.eax) {
+                            Some(0) => {}
+                            Some(_) if !grown.swap(true, Ordering::Relaxed) => {
+                                eprintln!("speaker row: controls list shows seven rows")
                             }
-                            Some(false) => {}
-                            None => eprintln!("layouts: could not extend the layout panes"),
+                            Some(_) => {}
+                            None => eprintln!("speaker row: could not grow the controls list"),
                         }
+                        return Ok(());
+                    }
+                    let mut alloc = ALLOC.load(Ordering::SeqCst);
+                    match extend_panes(&mut *mem, cpu.eax, &mut alloc) {
+                        Some(true) => {
+                            ALLOC.store(alloc, Ordering::SeqCst);
+                            eprintln!("layouts: button layout panes extended");
+                        }
+                        Some(false) => {}
+                        None => eprintln!("layouts: could not extend the layout panes"),
                     }
                     Ok(())
                 })
@@ -638,6 +669,115 @@ pub fn install(rt: &runtime::Runtime, speaker: Option<Arc<SpeakerSetting>>) -> a
                     return ctx.runtime().memory().ret(cpu, 8);
                 }
                 Ok(o.invoke(cpu, ctx, speaker_row::ROW_CHOSEN))
+            });
+        }
+        // The Controls list's seventh item widget.
+        if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), with_speaker) {
+            let sh = alias(d, &mut next_shadow, &o, speaker_row::ADD_ITEMS);
+            let seen = AtomicBool::new(false);
+            let slots = Arc::new(std::sync::Mutex::new((Vec::new(), 0u32)));
+            d.register_override(speaker_row::ADD_ITEMS, "speaker:add-items", move |cpu, ctx, _| {
+                announce(&seen, "speaker row: add items");
+                let handler = cpu.ecx;
+                let slots = Arc::clone(&slots);
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let ret_pc = mem.u32(cpu.esp)?;
+                cpu.esp = cpu.esp.wrapping_add(4);
+                ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    let item = {
+                        let mut g = slots.lock().unwrap_or_else(|e| e.into_inner());
+                        let (table, next) = &mut *g;
+                        speaker_row::extra_slot(table, next, handler, EXTRA_BASE, EXTRA_SLOTS)
+                    };
+                    let Some(build) = speaker_row::extra_item_needed(&*mem, handler, item) else {
+                        return Ok(TransferAbi::ret(ret_pc));
+                    };
+                    let saved = (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp);
+                    let finish = move |cpu: &mut CpuAbi| {
+                        (cpu.ebx, cpu.esi, cpu.edi, cpu.ebp) = saved;
+                        Ok(TransferAbi::ret(ret_pc))
+                    };
+                    // Append (or move back to the end) our item.
+                    let link = move |cpu: &mut CpuAbi, ctx: &mut ExecCtx| {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mut mem = rt.memory();
+                        cpu.eax = item;
+                        cpu.esi = handler;
+                        ctx.call_guest(cpu, &mut mem, speaker_row::ADD_CHILD, move |cpu, _| finish(cpu))
+                    };
+                    if !build {
+                        drop(mem);
+                        return link(cpu, ctx);
+                    }
+                    mem.write_bytes(item, &[0; speaker_row::ITEM_SIZE as usize], 1)?;
+                    let player = u32::from(mem.u16(handler + 8)?);
+                    cpu.ecx = item;
+                    ctx.call_guest(cpu, &mut mem, speaker_row::ITEM_CTOR, move |cpu, ctx| {
+                        let rt = Arc::clone(ctx.runtime());
+                        let mut mem = rt.memory();
+                        push(&mut mem, cpu, player)?;
+                        cpu.ecx = item;
+                        ctx.call_guest(cpu, &mut mem, speaker_row::SET_PLAYER, move |cpu, ctx| link(cpu, ctx))
+                    })
+                })
+            });
+        }
+        // The smaller Controls screen: a seventh datum after the constructor.
+        if let (Some(o), true) = (originals.remove(&speaker_row::SMALL_CTOR), with_speaker) {
+            let sh = alias(d, &mut next_shadow, &o, speaker_row::SMALL_CTOR);
+            let seen = AtomicBool::new(false);
+            d.register_override(speaker_row::SMALL_CTOR, "speaker:small-ctor", move |cpu, ctx, _| {
+                announce(&seen, "speaker row: small controls built");
+                let this = cpu.esi;
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let ret_pc = mem.u32(cpu.esp)?;
+                cpu.esp = cpu.esp.wrapping_add(4);
+                ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    let array = mem.u32(this + 0x70)?;
+                    cpu.edx = array;
+                    ctx.call_guest(cpu, &mut mem, speaker_row::DATUM_NEW, move |cpu, ctx| {
+                        let handle = cpu.eax;
+                        if !speaker_row::set_datum_value(&mut *ctx.runtime().memory(), array, handle, speaker_row::SMALL_VALUE) {
+                            eprintln!("speaker row: no room for the small controls row");
+                        }
+                        cpu.eax = this;
+                        Ok(TransferAbi::ret(ret_pc))
+                    })
+                })
+            });
+        }
+        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_TEXT), speaker.clone()) {
+            let seen = AtomicBool::new(false);
+            d.register_override(speaker_row::SMALL_ROW_TEXT, "speaker:small-row-text", move |cpu, ctx, _| {
+                let on = s.enabled();
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                if let Some(text) = speaker_row::small_row_text(&*mem, cpu.ecx, cpu.esp, on) {
+                    announce(&seen, "speaker row: small row text");
+                    let item = mem.u32(cpu.esp + 4)?;
+                    return row_texts(cpu, ctx, &mut mem, item, vec![text]);
+                }
+                drop(mem);
+                Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_TEXT))
+            });
+        }
+        if let (Some(o), Some(s)) = (originals.remove(&speaker_row::SMALL_ROW_CHOSEN), speaker.clone()) {
+            let seen = AtomicBool::new(false);
+            d.register_override(speaker_row::SMALL_ROW_CHOSEN, "speaker:small-row-chosen", move |cpu, ctx, _| {
+                let ours = speaker_row::small_is_ours(&*ctx.runtime().memory(), cpu.ecx, cpu.esp);
+                if ours {
+                    announce(&seen, "speaker row: small row chosen");
+                    s.toggle();
+                    eprintln!("pad speaker: {}", if s.enabled() { "on" } else { "off" });
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
+                Ok(o.invoke(cpu, ctx, speaker_row::SMALL_ROW_CHOSEN))
             });
         }
         // Our strings.
@@ -855,11 +995,18 @@ mod tests {
             }
         }
         assert_eq!(served_strings(true, false).len(), 6);
-        assert_eq!(served_strings(false, true), [(speaker_row::LABEL_ID, speaker_row::LABEL_TEXT)]);
+        assert_eq!(
+            served_strings(false, true),
+            [
+                (speaker_row::LABEL_ID, speaker_row::LABEL_TEXT),
+                (speaker_row::SMALL_ON_ID, speaker_row::SMALL_ON_TEXT),
+                (speaker_row::SMALL_OFF_ID, speaker_row::SMALL_OFF_TEXT),
+            ]
+        );
         let mut ids: Vec<u32> = served_strings(true, true).iter().map(|(i, _)| *i).collect();
         ids.sort();
         ids.dedup();
-        assert_eq!(ids.len(), 7);
+        assert_eq!(ids.len(), 9);
     }
 
     /// A datum array constructor call: name at [esp+4], element size 4 at
@@ -881,6 +1028,10 @@ mod tests {
         // The Controls list: count 6, one more for the speaker row.
         let f = list_call(speaker_row::LIST_NAME);
         assert_eq!(grown_count(&f, 0x1000, 6, true, true), 7);
+        assert_eq!(grown_count(&f, 0x1000, 6, true, false), 6);
+        // The smaller Controls screen's list: count 6, one more too.
+        let f = list_call(speaker_row::SMALL_LIST_NAME);
+        assert_eq!(grown_count(&f, 0x1000, 6, false, true), 7);
         assert_eq!(grown_count(&f, 0x1000, 6, true, false), 6);
         assert_eq!(grown_count(&list_call(LIST_NAME), 0x1000, 4, false, true), 4);
         // An element size that happens to match does not count.
