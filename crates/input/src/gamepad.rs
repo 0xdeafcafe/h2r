@@ -251,7 +251,7 @@ impl Capabilities {
             output: Rumble::from_bytes(b[Self::OFFSET_OUT..].try_into().expect("4 bytes")),
         }
     }
-    /// The standard controller: everything present.
+    /// Standard controller inputs. Rumble must be enabled from backend capability.
     pub fn standard() -> Self {
         Capabilities {
             sub_type: XINPUT_DEVSUBTYPE_GC_GAMEPAD,
@@ -263,7 +263,7 @@ impl Capabilities {
                 thumb_rx: -1,
                 thumb_ry: -1,
             },
-            output: Rumble { left_motor: 0xFFFF, right_motor: 0xFFFF },
+            output: Rumble::default(),
         }
     }
 }
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(&b[3..21], &c.input.to_bytes());
         assert_eq!(&b[3..5], &[0xFF, 0x00]); // wButtons @3
         assert_eq!(&b[5..13], &[0xFF; 8]); // bAnalogButtons @5
-        assert_eq!(&b[21..25], &[0xFF; 4]); // Out rumble
+        assert_eq!(&b[21..25], &[0; 4]); // no rumble without backend capability
         assert_eq!(Capabilities::from_bytes(&b), c);
     }
 

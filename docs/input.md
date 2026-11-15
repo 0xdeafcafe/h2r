@@ -2,8 +2,9 @@
 
 `crates/input` replaces Xbox XInput (XAPI) at the API level. The recompiled
 game calls `XInitDevices`, `XGetDevices`, `XGetDeviceChanges`, `XInputOpen`,
-`XInputPoll`, `XInputGetState`, `XInputSetState`; the runtime forwards those to
-`InputManager`. No USB stack is emulated.
+`XInputPoll`, `XInputGetState`, `XInputSetState`; the guest adapters in
+[`crates/xapi`](xapi.md) marshal those calls to `InputManager`. No USB stack
+is emulated.
 
 ```
 host backends (gilrs pads, keyboard+mouse)
@@ -53,8 +54,11 @@ Sources, pinned:
 
 Not verified against an XDK header (none available here): the Win32 constants
 (0, 997, 1167 are the standard winerror.h values) and the default polling
-intervals (8). The `Out` capability mask being all-ones is a reasonable
-guess for a standard pad. Memory units and expansion slots are out of scope.
+intervals (8). The `Out` capability mask follows each backend's
+`supports_rumble`: both motors are all-ones only when supported; otherwise
+both are zero. The standard input mask alone does not advertise rumble. The XAPI boundary is `0x00409994`
+(capabilities) / `0x00409bdf` (feedback). Memory units and expansion slots
+are out of scope.
 
 ## Device model
 
@@ -66,24 +70,27 @@ guess for a standard pad. Memory units and expansion slots are out of scope.
 - Insertion bumps the port's generation and starts a fresh device at packet
   number 0. Handles from `open` carry the generation, so after unplug/replug
   an old handle returns `ERROR_DEVICE_NOT_CONNECTED` (`InputError::win32`).
-- `device_changes()` is `XGetDeviceChanges`: `(insertions, removals)` bitmasks
-  since the last call. Unplug-and-replug between calls reports both.
+- `device_changes()` drains raw host `(insertions, removals)` edges. XAPI
+  applies the retail Cur/Prev/Chg formulas at `0x004098c5`: insert/remove
+  with Prev=Cur=0 reports neither; remove/reinsert with Prev=Cur=1 reports both.
   `connected_mask()` is `XGetDevices`.
 - Packet numbers increment only when the published `XINPUT_GAMEPAD` differs
   from the previous one. A pad idling at neutral stays at its packet number.
 - Polling: default `fAutoPoll = 1`, state is published on every `sync()`. With
   auto-poll off, state is published only by `poll(handle)`, so `get_state`
   returns the last polled snapshot.
-- Rumble: each `set_state(handle, FeedbackRequest { addr, h_event, rumble })`
-  is its own request, identified by the guest address of its
-  `XINPUT_FEEDBACK`, and returns `ERROR_IO_PENDING`. `sync()` completes every
+- Rumble: on a capable backend, each `set_state` with a
+  `FeedbackRequest { addr, h_event, rumble }` is its own request, identified
+  by the guest address of its `XINPUT_FEEDBACK`, and returns `ERROR_IO_PENDING`. `sync()` completes every
   pending request independently with `ERROR_SUCCESS` and the runtime drains
   them with `take_completions()`, writing `dwStatus` at `addr` and signalling
-  `h_event`. Requests apply in order and the last rumble value wins on the
-  backend. If the pad is unplugged first, its pending requests complete with
-  `ERROR_DEVICE_NOT_CONNECTED`.
-- `device_changes()` is accumulated as events happen in `sync()`, so a pad
-  that was inserted and removed between two reads shows up in both masks.
+  `h_event`. A backend without rumble returns `InputError::NotSupported`
+  (Win32 50) and does not queue feedback. Requests apply in order; the last
+  rumble value wins on the backend. If the pad is unplugged first, its pending
+  requests complete with `ERROR_DEVICE_NOT_CONNECTED`.
+- Raw `device_changes()` edges accumulate in `sync()`, so a pad inserted
+  and removed between drains appears in both raw masks. The XAPI adapter
+  normalizes these against the last connection mask seen by the guest.
 - `InputManager::new` validates the deadzones (finite, in `[0, 1)`).
 
 Guest layouts (`gamepad.rs`, little-endian, packed, 32-bit guest):
@@ -119,9 +126,9 @@ disconnect events and folds a per-pad generation into the `HostPadId`; the
 manager then sees a removal plus an insertion and old handles go stale.
 
 Decision: use gilrs now. It is pure Rust with no unsafe in our code and
-covers the Mac target. The cost is that rumble is a no-op on macOS
-(`supports_rumble` is false, so the device model never calls it; on Linux and
-Windows it drives gilrs's effect API, left motor = strong, right = weak). If
+covers the Mac target. Rumble is unavailable on macOS: requests return 50
+and motor capability masks are zero (`supports_rumble` is false, so the
+device model never calls the backend; on Linux and Windows it drives gilrs's effect API, left motor = strong, right = weak). If
 macOS rumble matters, add a GameController framework backend
 (`GCController` plus `CHHapticEngine`) behind the same trait. That needs
 Objective-C bindings (likely `objc2`, with some unsafe) so it is a separate
@@ -213,4 +220,5 @@ trigger conversion, d-pad rules, the device model (insertion, removal,
 change masks, stale handles, port limit, packet numbering, manual poll,
 rumble) and the binding table including TOML errors. `cargo run -p input
 --example pads` prints live state for every connected pad, one line per port,
-whenever it changes (`-- --rumble` sends one rumble to the first pad found; a no-op on macOS).
+whenever it changes (`-- --rumble` attempts one rumble on the first pad;
+macOS rejects it as unsupported).

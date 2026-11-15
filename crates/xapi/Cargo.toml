@@ -1,0 +1,9 @@
+[package]
+name = "xapi"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Guest XAPI service replacements for Halo 2"
+
+[dependencies]
+input = { path = "../input", default-features = false }

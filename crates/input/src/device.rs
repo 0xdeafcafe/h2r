@@ -63,12 +63,17 @@ impl PortIndex {
 pub enum InputError {
     #[error("device not connected")]
     NotConnected,
+    #[error("device does not support rumble")]
+    NotSupported,
 }
 
 impl InputError {
     /// The Win32 code the guest should see.
     pub fn win32(&self) -> u32 {
-        ERROR_DEVICE_NOT_CONNECTED
+        match self {
+            Self::NotConnected => ERROR_DEVICE_NOT_CONNECTED,
+            Self::NotSupported => 50,
+        }
     }
 }
 
@@ -226,9 +231,9 @@ impl InputManager {
         (0..PORT_COUNT).filter(|&i| self.ports[i].device.is_some()).fold(0, |m, i| m | 1 << i)
     }
 
-    /// `XGetDeviceChanges`: `(insertions, removals)` since the previous call,
-    /// accumulated at each `sync`. A port unplugged and replugged (or plugged
-    /// and unplugged) in between shows up in both.
+    /// Raw host `(insertions, removals)` since the previous drain. XAPI applies
+    /// the retail Cur/Prev/Chg formulas (guest 0x004098c5) to these edges; an
+    /// insert/remove with Prev=Cur=0 must not become a guest insertion.
     pub fn device_changes(&mut self) -> (u32, u32) {
         (std::mem::take(&mut self.changes_ins), std::mem::take(&mut self.changes_rem))
     }
@@ -276,8 +281,14 @@ impl InputManager {
     }
 
     /// `XInputGetCapabilities`.
-    pub fn capabilities(&self, h: Handle) -> Result<Capabilities, InputError> {
-        self.device(h).map(|_| Capabilities::standard())
+    pub fn capabilities(&self, handle: Handle) -> Result<Capabilities, InputError> {
+        self.device(handle).map(|device| {
+            let mut capabilities = Capabilities::standard();
+            if device.supports_rumble {
+                capabilities.output = Rumble { left_motor: u16::MAX, right_motor: u16::MAX };
+            }
+            capabilities
+        })
     }
 
     pub fn polling_parameters(&self, h: Handle) -> Result<PollingParameters, InputError> {
@@ -290,11 +301,16 @@ impl InputManager {
         Ok(())
     }
 
-    /// `XInputSetState`: queue a rumble request. Returns `ERROR_IO_PENDING`
+    /// `XInputSetState`: queue a rumble request on a capable backend, otherwise
+    /// return NotSupported (Win32 50). Returns `ERROR_IO_PENDING` on submission
     /// (the value for the call and the initial `dwStatus`); the request later
     /// appears in [`take_completions`](Self::take_completions).
-    pub fn set_state(&mut self, h: Handle, req: FeedbackRequest) -> Result<u32, InputError> {
-        self.device_mut(h)?.pending.push(req);
+    pub fn set_state(&mut self, handle: Handle, request: FeedbackRequest) -> Result<u32, InputError> {
+        let device = self.device_mut(handle)?;
+        if !device.supports_rumble {
+            return Err(InputError::NotSupported);
+        }
+        device.pending.push(request);
         Ok(ERROR_IO_PENDING)
     }
 }
