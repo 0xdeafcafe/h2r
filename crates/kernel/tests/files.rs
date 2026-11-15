@@ -194,6 +194,70 @@ fn position(h: &mut Harness, handle: u32, pos: u64) {
 }
 
 #[test]
+fn create_initial_allocation_may_alias_iosb_and_failure_preserves_old_data() {
+    let root = std::path::PathBuf::from(
+        std::env::var_os("TMPDIR").unwrap_or_else(|| std::env::temp_dir().into_os_string()),
+    )
+    .join(format!("kernel-initial-allocation-{}", std::process::id()));
+    struct Cleanup(std::path::PathBuf);
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+    let _cleanup = Cleanup(root.clone());
+    let mut h = Harness::new();
+    let mut fs = vfs::Vfs::new();
+    fs.mount(
+        "\\Device\\TestDisk",
+        vfs::HostBackend::new(root.join("data"), root.join("meta"))
+            .unwrap()
+            .with_volume("test", 1, vfs::FATX_CLUSTER_SIZE),
+    )
+    .unwrap();
+    h.kernel.set_vfs(fs).unwrap();
+    path(&h, "\\Device\\TestDisk\\SaveMeta.xbx", 0);
+    // XCreateSaveGame at 0x330f74 reuses the LARGE_INTEGER as its IOSB.
+    h.runtime.memory().set_u64(IOSB, 1).unwrap();
+    assert_eq!(
+        h.success(
+            190,
+            &[DATA, vfs::Access::ALL.0, ATTR, IOSB, IOSB, 0, 7, 5, 0x60]
+        ),
+        0
+    );
+    let handle = h.get(DATA);
+    assert_eq!(h.get(IOSB + 4), 2);
+    assert_eq!(h.success(211, &[handle, IOSB, INFO, 24, 5]), 0);
+    assert_eq!(
+        h.runtime.memory().u64(INFO).unwrap(),
+        vfs::FATX_CLUSTER_SIZE
+    );
+    assert_eq!(h.runtime.memory().u64(INFO + 8).unwrap(), 0);
+    h.bytes(BUFFER, b"Name=synthetic");
+    assert_eq!(h.success(236, &[handle, 0, 0, 0, IOSB, BUFFER, 14, 0]), 0);
+    assert_eq!(h.success(187, &[handle]), 0);
+    h.runtime
+        .memory()
+        .set_u64(IOSB, vfs::FATX_CLUSTER_SIZE + 1)
+        .unwrap();
+    assert_eq!(
+        h.success(
+            190,
+            &[DATA, vfs::Access::ALL.0, ATTR, IOSB, IOSB, 0, 7, 5, 0x60]
+        ),
+        vfs::Error::DiskFull.ntstatus()
+    );
+    let handle = open(&mut h, "\\Device\\TestDisk\\SaveMeta.xbx", 0, false, false);
+    assert_eq!(h.success(219, &[handle, 0, 0, 0, IOSB, BUFFER, 14, 0]), 0);
+    assert_eq!(
+        h.runtime.memory().read::<14>(BUFFER).unwrap(),
+        *b"Name=synthetic"
+    );
+    assert_eq!(h.success(187, &[handle]), 0);
+}
+
+#[test]
 fn vfs_file_open_io_shared_position_duplication_information_and_close() {
     let mut h = setup();
     let handle = open(&mut h, "T:\\new.bin", 0, true, false);

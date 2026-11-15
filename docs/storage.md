@@ -143,6 +143,13 @@ share/identity races with host replacements.
 
 ### FATX rules and logical metadata
 
+`open_allocated` and `open_relative_allocated` carry NtCreateFile's initial
+allocation hint. HostBackend reserves cluster-rounded logical capacity on
+create/overwrite without extending EOF. Writes consume that reservation; EOF
+changes and cleanup trim unused capacity. An ordinary existing-file open ignores
+the hint. Capacity failures precede creation/truncation. These are session
+reservations, not physical host disk preallocation. See [checkpoint acceptance](checkpoints.md).
+
 The FATX on-disk directory record has a 42-byte name and a 32-bit size; see
 [XboxDev's FATX definitions](https://github.com/XboxDev/fatx/blob/master/libfatx/fatx.h)
 and [raw record layout](https://github.com/XboxDev/fatx/blob/master/libfatx/fatx_internal.h).

@@ -393,6 +393,13 @@ against `$H2_XBE`):
 
 ### Asynchronous I/O
 
+NtCreateFile also accepts an initial allocation size through VFS's allocated
+opens. It reads the LARGE_INTEGER before writing the IOSB, since generated
+XCreateSaveGame aliases them when reserving SaveMeta.xbx. Host storage reserves
+logical cluster capacity without changing EOF; disk-full create/overwrite
+reservations preserve existing data. See [checkpoint acceptance](../../docs/checkpoints.md)
+for the generated-code harness and its boundaries.
+
 Synchronous completion is equivalent for what Halo does. The 62 opens without a
 synchronous bit (options 0x4040) are all XAPI DeleteFile (0x2d6b7e): open
 DELETE, set FileDispositionInformation, close, with no I/O on the handle. XAPI

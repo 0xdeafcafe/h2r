@@ -3509,11 +3509,17 @@ version = "0.1.0"
 name = "xapi"
 version = "0.1.0"
 dependencies = [
+ "analyze",
+ "emit",
  "iced-x86",
  "input",
+ "ir",
  "kernel",
+ "libloading",
+ "lift",
  "runtime",
  "vfs",
+ "xbe",
 ]
 
 [[package]]

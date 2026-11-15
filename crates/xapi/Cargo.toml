@@ -14,3 +14,11 @@ vfs = { path = "../vfs" }
 # The real raw-disk cache database, for tests/host_boot.rs only.
 kernel = { path = "../kernel" }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+
+# Ignored retail checkpoint acceptance compiles only its reached generated owners.
+analyze.workspace = true
+emit.workspace = true
+ir.workspace = true
+lift.workspace = true
+xbe.workspace = true
+libloading = "0.8"

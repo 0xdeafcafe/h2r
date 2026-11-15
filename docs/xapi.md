@@ -177,6 +177,10 @@ guards: kernel DispatcherReference::signal_event relocks guest memory.
 
 ## Generated saves and config
 
+The ignored [checkpoint acceptance harness](checkpoints.md) executes these
+generated save APIs, signatures and the game's checkpoint writer/revert/restore
+against synthetic state and private host storage, including a fresh Runtime.
+
 XCreateSaveGame at `00330df2` retains the original UTF-16 name hash and ordinary
 file operations. Metadata emission at `00330f8f` writes UTF-16LE: code unit FEFF
 (bytes FF FE), then `Name=<name>\r\n`, followed by `NoCopy=1\r\n` when bit 0 is

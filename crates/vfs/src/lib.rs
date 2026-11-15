@@ -228,14 +228,24 @@ impl Vfs {
             .ok_or(Error::InvalidHandle)?;
         Ok(self.next_handle)
     }
-    pub fn open(&mut self, name: &str, mut options: OpenOptions) -> Result<OpenResult> {
+    pub fn open(&mut self, name: &str, options: OpenOptions) -> Result<OpenResult> {
+        self.open_allocated(name, options, 0)
+    }
+    /// NtCreateFile's initial allocation hint, applied only on create/overwrite.
+    /// It reserves logical volume capacity without changing the initial EOF.
+    pub fn open_allocated(
+        &mut self,
+        name: &str,
+        mut options: OpenOptions,
+        allocation: u64,
+    ) -> Result<OpenResult> {
         if name.ends_with('\\') {
             if options.directory == Some(false) {
                 return Err(Error::InvalidParameter);
             }
             options.directory = Some(true);
         }
-        self.open_resolved(self.resolve(name)?, options)
+        self.open_resolved(self.resolve(name)?, options, allocation)
     }
     /// OBJECT_ATTRIBUTES.RootDirectory support. Absolute names must use open().
     pub fn open_relative(
@@ -243,6 +253,15 @@ impl Vfs {
         directory: Handle,
         name: &str,
         options: OpenOptions,
+    ) -> Result<OpenResult> {
+        self.open_relative_allocated(directory, name, options, 0)
+    }
+    pub fn open_relative_allocated(
+        &mut self,
+        directory: Handle,
+        name: &str,
+        options: OpenOptions,
+        allocation: u64,
     ) -> Result<OpenResult> {
         path::components(name)?;
         let root = self.object(directory)?;
@@ -257,12 +276,13 @@ impl Vfs {
         } else {
             format!("{root_path}\\{name}")
         };
-        self.open_resolved((mount, joined), options)
+        self.open_resolved((mount, joined), options, allocation)
     }
     fn open_resolved(
         &mut self,
         (mount, path): (usize, String),
         mut options: OpenOptions,
+        allocation: u64,
     ) -> Result<OpenResult> {
         options.access = Access::from_nt(options.access.0)?;
         if options.share.0 & !7 != 0 || options.attributes & !(FATX_ATTRIBUTES | ATTR_NORMAL) != 0 {
@@ -372,7 +392,9 @@ impl Vfs {
         }
         let information = if existing.is_some() {
             if overwriting {
-                self.mounts[mount].backend.set_len(&path, 0)?;
+                self.mounts[mount]
+                    .backend
+                    .overwrite_allocated(&path, allocation)?;
                 let mut basic = self.mounts[mount].backend.stat(&path)?.basic;
                 basic.attributes = if options.disposition == CreateDisposition::Supersede {
                     (options.attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY) | ATTR_ARCHIVE
@@ -391,10 +413,11 @@ impl Vfs {
                 CreateInformation::Opened
             }
         } else {
-            self.mounts[mount].backend.create(
+            self.mounts[mount].backend.create_allocated(
                 &path,
                 options.directory == Some(true),
                 options.attributes,
+                allocation,
             )?;
             CreateInformation::Created
         };

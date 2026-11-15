@@ -601,11 +601,17 @@ impl Core {
         } else {
             options
         };
-        if a.export.ordinal == ord::NT_CREATE_FILE && a.get(4) != 0 && memory.u64(a.get(4))? != 0 {
-            return Ok(Action::Stop(
-                "allocation-size reservation unsupported by VFS",
-            ));
-        }
+        // Read before I/O: generated XCreateSaveGame aliases AllocationSize
+        // and the output IO_STATUS_BLOCK. A negative LARGE_INTEGER is invalid.
+        let allocation = if a.export.ordinal == ord::NT_CREATE_FILE && a.get(4) != 0 {
+            let size = memory.u64(a.get(4))?;
+            if size > i64::MAX as u64 {
+                return Ok(Action::status(status::INVALID_PARAMETER));
+            }
+            size
+        } else {
+            0
+        };
         let open_options =
             match OpenOptions::from_nt(a.get(1), share, disposition, options, attributes) {
                 Ok(o) => o,
@@ -638,8 +644,10 @@ impl Core {
             return Ok(Action::status(status::NO_MEMORY));
         }
         let opened = match parent {
-            Some(parent) => storage.open_relative(parent, &path, open_options),
-            None => storage.open(&path, open_options),
+            Some(parent) => {
+                storage.open_relative_allocated(parent, &path, open_options, allocation)
+            }
+            None => storage.open_allocated(&path, open_options, allocation),
         };
         match opened {
             Ok(opened) => {

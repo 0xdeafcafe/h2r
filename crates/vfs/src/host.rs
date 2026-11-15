@@ -31,6 +31,8 @@ struct Cache {
     used_bytes: Option<u64>,
     atimes: BTreeMap<String, Timestamp>,
     dirty_data: BTreeSet<String>,
+    // Logical FATX preallocation, trimmed to EOF at file-object cleanup.
+    reservations: BTreeMap<String, u64>,
     #[cfg(test)]
     directory_scans: usize,
     #[cfg(test)]
@@ -415,7 +417,14 @@ impl HostBackend {
         Ok(Metadata {
             basic: self.load_basic(path, &host)?,
             end_of_file: if host.is_dir() { 0 } else { host.len() },
-            allocation_size: allocated(&host),
+            allocation_size: allocated(&host).max(
+                self.cache
+                    .borrow()
+                    .reservations
+                    .get(&path.to_ascii_lowercase())
+                    .copied()
+                    .unwrap_or(0),
+            ),
         })
     }
     fn mutable_file(&self, path: &str) -> Result<(PathBuf, Metadata)> {
@@ -607,6 +616,43 @@ impl Backend for HostBackend {
         self.sync_created_parent(parent);
         Ok(())
     }
+    fn create_allocated(
+        &mut self,
+        path: &str,
+        directory: bool,
+        attributes: u32,
+        allocation: u64,
+    ) -> Result<()> {
+        if directory {
+            return self.create(path, true, attributes);
+        }
+        // Capacity failures happen before publishing a new directory entry.
+        self.check_growth(0, allocation)?;
+        self.create(path, false, attributes)?;
+        let allocation = allocation.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE;
+        if allocation != 0 {
+            self.cache
+                .borrow_mut()
+                .reservations
+                .insert(path.to_ascii_lowercase(), allocation);
+            self.update_usage(0, allocation);
+        }
+        Ok(())
+    }
+    fn overwrite_allocated(&mut self, path: &str, allocation: u64) -> Result<()> {
+        let info = self.stat(path)?;
+        self.check_growth(info.allocation_size, allocation)?;
+        self.set_len(path, 0)?;
+        let allocation = allocation.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE;
+        if allocation != 0 {
+            self.cache
+                .borrow_mut()
+                .reservations
+                .insert(path.to_ascii_lowercase(), allocation);
+            self.update_usage(0, allocation);
+        }
+        Ok(())
+    }
     fn write_at(&mut self, path: &str, offset: u64, buffer: &[u8]) -> Result<usize> {
         let (host, info) = self.mutable_file(path)?;
         if buffer.is_empty() {
@@ -616,7 +662,7 @@ impl Backend for HostBackend {
             .checked_add(buffer.len() as u64)
             .ok_or(Error::FileTooLarge)?;
         self.used_bytes()?;
-        self.check_growth(info.end_of_file, end.max(info.end_of_file))?;
+        self.check_growth(info.allocation_size, end.max(info.end_of_file))?;
         let mut file = OpenOptions::new().write(true).open(&host)?;
         file.seek(SeekFrom::Start(offset))?;
         let written = file.write(buffer)?;
@@ -631,7 +677,7 @@ impl Backend for HostBackend {
             .max(offset + written as u64)
             .div_ceil(FATX_CLUSTER_SIZE)
             * FATX_CLUSTER_SIZE;
-        self.update_usage(info.allocation_size, after);
+        self.update_usage(info.allocation_size, after.max(info.allocation_size));
         self.update_parent(&host, true)?;
         self.touch(path, info.basic)?;
         Ok(written)
@@ -639,8 +685,12 @@ impl Backend for HostBackend {
     fn set_len(&mut self, path: &str, size: u64) -> Result<()> {
         let (host, info) = self.mutable_file(path)?;
         self.used_bytes()?;
-        self.check_growth(info.end_of_file, size)?;
+        self.check_growth(info.allocation_size, size)?;
         OpenOptions::new().write(true).open(&host)?.set_len(size)?;
+        self.cache
+            .borrow_mut()
+            .reservations
+            .remove(&path.to_ascii_lowercase());
         self.cache
             .borrow_mut()
             .dirty_data
@@ -708,6 +758,10 @@ impl Backend for HostBackend {
             .dirty_data
             .remove(&path.to_ascii_lowercase());
         self.update_usage(info.allocation_size, 0);
+        self.cache
+            .borrow_mut()
+            .reservations
+            .remove(&path.to_ascii_lowercase());
         self.update_parent(&host, false)?;
         if info.is_directory()
             && let Err(error) = self.retire_metadata(path)
@@ -741,10 +795,30 @@ impl Backend for HostBackend {
                 .dirty_data
                 .contains(&path.to_ascii_lowercase())
         {
-            self.flush(path)
+            self.flush(path)?;
         } else {
-            self.flush_atime(path)
+            self.flush_atime(path)?;
         }
+        if !self
+            .cache
+            .borrow()
+            .reservations
+            .contains_key(&path.to_ascii_lowercase())
+        {
+            return Ok(());
+        }
+        let info = self.stat(path)?;
+        self.cache
+            .borrow_mut()
+            .reservations
+            .remove(&path.to_ascii_lowercase());
+        let after = if info.is_directory() {
+            FATX_CLUSTER_SIZE
+        } else {
+            info.end_of_file.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE
+        };
+        self.update_usage(info.allocation_size, after);
+        Ok(())
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         let total = self.capacity / FATX_CLUSTER_SIZE;
@@ -850,6 +924,51 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn initial_allocation_reserves_capacity_without_exposing_bytes() {
+        let temp = Temp::new();
+        let mut backend = temp.backend().with_volume("test", 1, 3 * FATX_CLUSTER_SIZE);
+        backend
+            .create_allocated("meta", false, 0, FATX_CLUSTER_SIZE + 1)
+            .unwrap();
+        let info = backend.stat("meta").unwrap();
+        assert_eq!(info.end_of_file, 0);
+        assert_eq!(info.allocation_size, 2 * FATX_CLUSTER_SIZE);
+        assert_eq!(backend.read_at("meta", 0, &mut [0; 1]), Ok(0));
+        backend.create_allocated("other", false, 0, 1).unwrap();
+        assert_eq!(backend.volume_info().unwrap().available_allocation_units, 0);
+        // Writes and EOF growth inside the reservation consume no more space.
+        assert_eq!(backend.write_at("meta", 0, b"Name=synthetic"), Ok(14));
+        assert_eq!(
+            backend.stat("meta").unwrap().allocation_size,
+            2 * FATX_CLUSTER_SIZE
+        );
+        assert_eq!(
+            backend.create_allocated("failed", false, 0, 1),
+            Err(Error::DiskFull)
+        );
+        assert_eq!(backend.stat("failed"), Err(Error::ObjectNameNotFound));
+        assert_eq!(
+            backend.overwrite_allocated("meta", 3 * FATX_CLUSTER_SIZE),
+            Err(Error::DiskFull)
+        );
+        let mut data = [0; 14];
+        assert_eq!(backend.read_at("meta", 0, &mut data), Ok(14));
+        assert_eq!(&data, b"Name=synthetic");
+        backend.set_len("meta", FATX_CLUSTER_SIZE + 1).unwrap();
+        backend.cleanup("other", true).unwrap();
+        assert_eq!(backend.stat("other").unwrap().allocation_size, 0);
+        assert_eq!(backend.volume_info().unwrap().available_allocation_units, 1);
+        backend.cleanup("meta", true).unwrap();
+        drop(backend);
+        let mut backend = temp.backend().with_volume("test", 1, 3 * FATX_CLUSTER_SIZE);
+        assert_eq!(
+            backend.stat("meta").unwrap().end_of_file,
+            FATX_CLUSTER_SIZE + 1
+        );
+        assert_eq!(backend.volume_info().unwrap().available_allocation_units, 1);
     }
 
     #[test]
