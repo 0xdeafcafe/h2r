@@ -22,8 +22,7 @@ shadow maps, cinematic lighting), but there is no player control. The
 first level with control is the Armory (`01a_tutorial`), and nothing
 reaches it yet: the intro has to finish and queue the next map
 (level-preflight.md, risk 1). Simulation, AI and physics load will be
-higher in real gameplay. Rendering load is similar or lower: the
-cinematic's close-ups use heavy shaders and shadow maps.
+higher in real gameplay. Rendering load may differ either way.
 
 The window is presents 4220-4520: 300 frames, 36 s of wall time on
 master defaults.
@@ -49,9 +48,12 @@ Three views of the same run:
 - **The sampler**, at 250 Hz (a 1.5% pause tax), splits the guest
   `slice` span into guest code, accessors, x87 and dispatch.
 
-`H2_GFX_MERGE_PASSES=1` is on in every run. Without it, `h2 play` and
-`h2 run` encode a pass per draw, which BOOT.md measures at about 3x
-slower.
+`H2_GFX_MERGE_PASSES=1` is on in every run. Without it the backend
+encodes and submits a pass per draw, which BOOT.md measures at about 3x
+slower on the menu. On master, `h2 play` never merged: the variable was
+only read for `H2_BOOT_GFX`'s headless backend. So the user's `h2 play`
+numbers include a submit per draw. This branch makes `h2 play` honour
+`H2_GFX_MERGE_PASSES=1` too (opt-in, because a few edge pixels differ).
 
 ## What a level frame is
 
@@ -210,6 +212,7 @@ Steady frame p50 71.6 ms, p99 81.5, max 721.
 
 | # | change | owner | worst-frame effect | steady saving (ms/frame) | confidence |
 |---|---|---|---|---|---|
+| 0 | **Merged passes in `h2 play`** (`H2_GFX_MERGE_PASSES=1`, this branch): about 300 draws a frame otherwise mean about 300 passes and submits, against 26 | gfx | follows p50 | not measured in the level; on the menu, merging was about 3x on gfx time. Expect -15 to -30 for a user on master's `h2 play` | medium |
 | 1 | **Compile pipelines off the game thread, and prewarm them.** Create nv2a programs and render pipelines on a worker. Until one is ready, skip the draw for a frame or two, or block only on a deadline. Persist the keys seen (program hash plus pipeline key) and compile them at map load. Metal's own cache already makes a repeat compile ~5 ms (frame 4256), so the hitch is the first time a material or angle appears. | gfx, d3d nv2a | **721 -> ~80 ms** (-640): the only hitch over 110 ms in either run | ~2 | high: 665 of 721 ms is `pipeline create` |
 | 2 | **FASTMEM on by default** once its P1 is fixed (with `H2_ACCESS_COUNT`) | runtime, emit | follows p50 | **-35 to -40** (119 -> 75 measured, with a load difference) | high: measured |
 | 3 | **Fast exact FYL2X/F2XM1.** A table-driven or double-double first pass with a rounding-ambiguity check, keeping the `Wf<8>` series as the exact fallback for the rare hard cases. That is the correctly-rounded-libm pattern, and the guest result stays bit-exact. | x87 | follows p50 | **-10 to -12** (13.5 -> ~2) | medium: 97% of x87 time is these two; the exactness check is the work |

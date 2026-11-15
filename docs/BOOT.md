@@ -44,7 +44,7 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
-| `H2_GFX_MERGE_PASSES=1` | with `H2_BOOT_GFX`, merge consecutive draws to one target into one render pass (`GfxBackend::set_merge_passes`): about 3x faster, but a few edge pixels differ from one pass per draw, so not for fidelity checks or pixel comparisons |
+| `H2_GFX_MERGE_PASSES=1` | with `H2_BOOT_GFX` or in `h2 play`, merge consecutive draws to one target into one render pass (`GfxBackend::set_merge_passes`): about 3x faster, but a few edge pixels differ from one pass per draw, so not for fidelity checks or pixel comparisons |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
 | `H2_FRAME_STATS=1` | frame-time stats by phase: a line a second on stderr and the worst frames at the end (docs/app.md "Frame stats", docs/frame-budget.md); `H2_FRAME_STATS_CSV=<file>` writes every frame, `H2_FRAME_STATS_FROM=N` starts the end report at frame N |
 | `H2_PERF_FROM=N` | with an `h2` built with `--features perf`: open `perf::Session::from_env()` (`H2_PROFILE`, `H2_TIMELINE`) at present N, finished at the end of the run (docs/perf.md "Boot hook") |

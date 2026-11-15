@@ -107,7 +107,12 @@ fn hosted(
     timeline: Option<ScriptedInput>,
     interrupted: Arc<AtomicBool>,
 ) -> boot::Host {
-    let gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
+    let mut gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
+    // As for `h2 run`: one render pass per run of draws to a target. Faster,
+    // but a few edge pixels differ from a pass per draw (docs/BOOT.md).
+    if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "1") {
+        gfx.set_merge_passes(true);
+    }
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
     boot::Host {
