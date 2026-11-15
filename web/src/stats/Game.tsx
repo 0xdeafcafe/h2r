@@ -8,6 +8,7 @@ import KillFeed from "../components/KillFeed";
 import { VerifySummary } from "../components/bits";
 import { Block, Crumbs, Strip, Title } from "./Layout";
 import Carnage from "./Carnage";
+import GametypeIcon from "../components/GametypeIcon";
 import { MapThumb, gameTitle, hostName, playlist } from "./Side";
 import { hms, usDateTime, agoWords } from "./fmt";
 import { teamStandings, standings } from "../state/reducer";
@@ -71,7 +72,7 @@ function Header(props: { game: GameState; replayTick?: number }) {
       <div class="s-overview">
         <MapThumb game={g()} />
         <ul class="s-summary">
-          <li class="first">{gameTitle(g())} on {titleCase(g().map)} <Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show></li>
+          <li class="first"><GametypeIcon variant={g().variant} size={20} />{gameTitle(g())} on {titleCase(g().map)} <Show when={g().status === "live"} fallback={<span class="s-final">FINAL</span>}><span class="s-live-tag">LIVE</span></Show></li>
           <li class="break styled">{result()}</li>
           <li class="styled">Playlist - {playlist(g())}{g().score_limit ? `, first to ${g().score_limit}` : ""}{g().time_limit_s ? `, ${Math.round(g().time_limit_s! / 60)} minutes` : ""}</li>
           <li>{usDateTime(g().started_at)}<Show when={g().ended_at}> (ended {agoWords(g().ended_at, now())})</Show></li>

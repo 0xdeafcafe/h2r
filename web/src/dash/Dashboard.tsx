@@ -9,7 +9,7 @@
 // back; the mouse and touch work too.
 
 import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
-import { useNavigate, useParams, useSearchParams } from "@solidjs/router";
+import { useNavigate, useParams } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity, download } from "../state/identity";
 import { liveGames, endedGames, standings, teamStandings, type GameState, type AccountState } from "../state/reducer";
@@ -70,16 +70,20 @@ function gameLine(g: GameState): string {
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
+/** A route segment as typed: the router hands it over still encoded. */
+function safeDecode(s: string): string {
+  try { return decodeURIComponent(s); } catch { return s; }
+}
+
 export default function Dashboard() {
-  const params = useParams<{ section?: string }>();
-  const [search] = useSearchParams<{ p?: string }>();
+  const params = useParams<{ section?: string; tag?: string }>();
   const navigate = useNavigate();
 
   const section = createMemo((): SectionId | null => SECTIONS.find((s) => s.id === params.section)?.id ?? null);
   const viewed = createMemo((): AccountState | null => {
     const s = section();
     if (s === "signup") { const me = identity.me(); return me ? live.state.accounts[me.xuid] ?? { xuid: me.xuid, gamertag: me.gamertag, created_at: "", online: false, presence: null, last_seen: null } : null; }
-    if ((s === "players" || s === "friends") && search.p) return Object.values(live.state.accounts).find((a) => a.gamertag === search.p) ?? null;
+    if ((s === "players" || s === "friends") && params.tag) { const tag = safeDecode(params.tag); return Object.values(live.state.accounts).find((a) => a.gamertag === tag) ?? null; }
     return null;
   });
   const screen = createMemo((): ScreenId => {
@@ -146,12 +150,12 @@ export default function Dashboard() {
     if (!r || !s) return;
     setSel(i);
     if (s === "live" || s === "history") go(`/stats/games/${r.key}`, "deeper");
-    else go(`/dash/${s}?p=${encodeURIComponent(r.label)}`, "deeper");
+    else go(`/dash/${s}/${encodeURIComponent(r.label)}`, "deeper");
   }
 
   // The four small pods of a pod screen.
   const [sat, setSat] = createSignal(0);
-  createEffect(() => { screen(); search.p; setSat(0); });
+  createEffect(() => { screen(); params.tag; setSat(0); });
   const sats = createMemo((): Sat[] => {
     switch (screen()) {
       case "player": {

@@ -2,31 +2,15 @@
 // backed by a simulated world. `bun run mock` (port 8075, or H2_MOCK_PORT).
 // H2_MOCK_TAMPER=<n> corrupts every nth event's data to show bad signatures.
 // H2_MOCK_STATIC=<dir> also serves a built app (SPA fallback to index.html).
+// H2_MOCK_GAME_ART=1 serves a fake /art/game manifest (see mock/gameart.ts);
+// without it /art/game answers 404, like a server with no game art.
 
 import type { ServerWebSocket } from "bun";
 import type { Frame, WireEvent } from "../src/api/types";
 import { World, HOST } from "./world";
 import { createHash } from "node:crypto";
-import { b64urlDecode, canonicalJson, jwkThumbprint, parseJws } from "../src/state/verify";
-
-type OpenedAccount = { gamertag: string; jwk: { kty: "OKP"; crv: "Ed25519"; x: string; kid: string } } | { error: string };
-
-async function openAccountRequest(compact: string): Promise<OpenedAccount> {
-  const jws = parseJws(compact.trim());
-  if (!jws) return { error: "malformed JWS" };
-  const h = jws.header as { alg?: string; kid?: string; typ?: string };
-  if (h.alg !== "EdDSA") return { error: "alg must be EdDSA" };
-  if (h.typ !== "h2live-account") return { error: "typ must be h2live-account" };
-  const raw = new TextDecoder().decode(b64urlDecode(compact.split(".")[1]!));
-  if (canonicalJson(JSON.parse(raw)) !== raw) return { error: "payload is not canonical JSON" };
-  const body = jws.payload as { gamertag?: unknown; jwk?: { kty?: string; crv?: string; x?: string; kid?: string } };
-  if (typeof body.gamertag !== "string" || !body.jwk?.x || body.jwk.kty !== "OKP" || body.jwk.crv !== "Ed25519") return { error: "bad body" };
-  const kid = await jwkThumbprint({ kty: "OKP", crv: "Ed25519", x: body.jwk.x });
-  if ((body.jwk.kid && body.jwk.kid !== kid) || h.kid !== kid) return { error: "kid does not match the key" };
-  const key = await crypto.subtle.importKey("jwk", { kty: "OKP", crv: "Ed25519", x: body.jwk.x }, { name: "Ed25519" }, false, ["verify"]);
-  if (!(await crypto.subtle.verify({ name: "Ed25519" }, key, jws.signature, jws.signingInput))) return { error: "signature does not verify" };
-  return { gamertag: body.gamertag, jwk: { kty: "OKP", crv: "Ed25519", x: body.jwk.x, kid } };
-}
+import { openAccountRequest } from "./account";
+import { mockGameArt } from "./gameart";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -38,6 +22,7 @@ console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of hist
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
+const art = process.env.H2_MOCK_GAME_ART && process.env.H2_MOCK_GAME_ART !== "0" ? mockGameArt(new URL("../public/art", import.meta.url).pathname) : null;
 
 interface StreamData {
   kind: "stream";
@@ -113,9 +98,9 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     return list([...world.accounts.values()].map((a) => world.publicAccount(a)).slice(0, limitOf(u)));
   }
   if (path === "/v1/accounts" && req.method === "POST") {
-    // A JWS signed by the new key over {gamertag, jwk, invite?} (live-proto
-    // AccountRequest), sent as application/jose.
-    const opened = await openAccountRequest(await req.text());
+    // A JWS signed by the new key over {gamertag, jwk, invite?, aud, iat}
+    // (live-proto AccountRequest), sent as application/jose.
+    const opened = await openAccountRequest(await req.text(), HOST, Math.floor(Date.now() / 1000));
     if ("error" in opened) return err(400, "invalid", opened.error);
     const tag = opened.gamertag;
     if (!/^[A-Za-z][A-Za-z0-9]*( [A-Za-z0-9]+)*$/.test(tag) || tag.length > 15) return err(400, "invalid", "that gamertag isn't valid");
@@ -215,6 +200,15 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     return f ? new Response(f.bytes, { headers: { etag: f.sha256, ...CORS } }) : err(404, "not_found", "no such file");
   }
   if (path.startsWith("/v1/")) return err(404, "not_found", `no route ${req.method} ${path}`);
+
+  if (path.startsWith("/art/game/")) {
+    const name = decodeURIComponent(path.slice("/art/game/".length));
+    if (art && name === "manifest.json") return json(art.manifest);
+    const f = art ? await art.file(name) : null;
+    return f
+      ? new Response(f.bytes as Uint8Array<ArrayBuffer>, { headers: { "content-type": f.type, "cache-control": "max-age=3600", ...CORS } })
+      : err(404, "not_found", "no game art");
+  }
 
   if (staticDir) {
     const file = Bun.file(staticDir + (path === "/" ? "/index.html" : path));

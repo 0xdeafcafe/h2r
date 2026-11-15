@@ -16,8 +16,8 @@ const TAGS = [
 ];
 const WEAPONS = ["blaster", "rifle", "sniper", "shotgun", "rocket", "sword", "grenade", "pistol", "smg"];
 const CONSOLES = ["Den", "Basement", "Lounge", "Bedroom"];
-const VARIANTS_FFA = ["Free for All", "Rumble", "Snowball Fight", "Oddball Party"];
-const VARIANTS_TEAM = ["Team Tag", "Team Rumble", "Capture the Cushion", "Big Team Picnic"];
+const VARIANTS_FFA = ["Free for All", "Rumble", "Slayer", "Snowball Fight", "Oddball Party", "Hill Hopping"];
+const VARIANTS_TEAM = ["Team Tag", "Team Slayer", "Team Rumble", "Capture the Cushion", "Big Team Picnic", "Team Territories"];
 
 interface Account {
   xuid: string;

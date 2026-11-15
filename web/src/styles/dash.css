@@ -414,3 +414,5 @@
   [data-screen="server"] .dx-sat--1, [data-screen="server"] .dx-sat--2 { top: calc(var(--u) * 280); }
   [data-screen="server"] .dx-plate--main { top: calc(var(--u) * 388); }
 }
+/* A game-art emblem is an opaque square, not a glyph to screen over the pod. */
+.dx-bigpod-in .dx-emblem.emblem--game { width: 56%; height: 56%; mix-blend-mode: normal; filter: none; border-radius: 8px; box-shadow: 0 0 0 2px rgba(200, 255, 140, .55), 0 0 28px rgba(140, 255, 60, .45); }

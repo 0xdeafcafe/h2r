@@ -109,3 +109,9 @@ code { font-family: var(--font-mono); }
 .medal--dim { opacity: .2; filter: grayscale(1); }
 .rank-icon { display: inline-block; vertical-align: middle; flex: none; }
 .weapon-icon { display: block; }
+
+/* Game art (served by the user's own server, never shipped here) */
+.emblem--game { image-rendering: auto; object-fit: cover; }
+.rank-icon--game { object-fit: contain; }
+.gametype-icon { display: inline-flex; flex: none; align-items: center; justify-content: center; vertical-align: -3px; margin-right: 5px; padding: 1px; box-sizing: border-box; background: #1d2b3f; border: 1px solid #0c1420; border-radius: 2px; }
+.gametype-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }

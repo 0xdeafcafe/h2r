@@ -12,6 +12,7 @@ import { clock, titleCase } from "../lib/format";
 import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { Crumbs, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
+import GametypeIcon from "../components/GametypeIcon";
 import { MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, hostName, playlist } from "./Side";
 import { agoWords, dotDate, num, usDate } from "./fmt";
 
@@ -44,7 +45,7 @@ function GameItem(props: { game: GameState }) {
       <div class="s-item-main">
         <A href={href()} class="s-item-thumb" aria-label={`${gameTitle(g())} on ${titleCase(g().map)}`}><MapThumb game={g()} /></A>
         <div class="s-item-text">
-          <h4><A href={href()}>{gameTitle(g())}</A></h4>
+          <h4><GametypeIcon variant={g().variant} /><A href={href()}>{gameTitle(g())}</A></h4>
           <p>{playlist(g())} on {titleCase(g().map)}, {usDate(g().started_at)}</p>
           <p class="s-item-dim">{Object.keys(g().players).length} players{g().score_limit ? `, first to ${g().score_limit}` : ""}</p>
         </div>

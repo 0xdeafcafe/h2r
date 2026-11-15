@@ -32,7 +32,10 @@ Mock knobs: `H2_MOCK_HISTORY_MIN` (minutes of simulated history at boot,
 default 20), `H2_MOCK_TAMPER=<n>` (corrupt every nth event's data so the
 "bad signature" state shows up), `H2_MOCK_STATIC=<dir>` (also serve a built
 app with SPA fallback, the way the Rust server will:
-`bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`).
+`bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`),
+`H2_MOCK_GAME_ART=1` (serve a stand-in `/art/game` manifest so the game-art
+path runs; see "Game art" below). Without it `/art/game` answers 404, like a
+server with no game art.
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real
@@ -43,7 +46,7 @@ The choice and recent servers are kept in localStorage.
 
 ## Two sides
 
-**The dashboard** (`/`, `/dash/:section`, `src/dash/`) is the "live" side:
+**The dashboard** (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
 a glowing orb, a wireframe tunnel and an arc of menu bars (live now,
 friends, players, game history, sign up / profile, server), each opening a
 bezelled list panel. Keyboard: arrows move, Enter (or `a`) selects,
@@ -83,22 +86,58 @@ dying). EXP is games completed plus two per win.
 **Sign up in the browser.** The dashboard's "sign up" makes a new Ed25519
 key with WebCrypto, signs the same account request `h2 live account create`
 sends (compact JWS, header `{alg: "EdDSA", kid, typ: "h2live-account"}`,
-payload the canonical JSON of `{gamertag, jwk, invite?}`) and POSTs it as
-`application/jose` to `/v1/accounts` (`src/state/account.ts`). The private
+payload the canonical JSON of `{gamertag, jwk, invite?, aud, iat}`) and
+POSTs it as `application/jose` to `/v1/accounts` (`src/state/account.ts`).
+`aud` is the server's id from its well-known document and `iat` the time in
+seconds; the server refuses a request for another server or more than five
+minutes off its clock, and so does the mock (`mock/account.ts`). The private
 key is kept as a JWK (its `d`) in this browser's IndexedDB (`h2live` /
 `accounts`), so anyone with access to the browser profile can read it; the
 UI says so. "Download for h2" saves an `accounts.json`-style file for
 `h2 live account import <file>`. "Friends" are the people you have played
 with.
 
-**Fonts and artwork.** The dashboard uses Michroma (SIL Open Font Licence,
-`src/assets/fonts/Michroma-OFL.txt`); the stats site sets its name in it and
-otherwise uses system fonts (Arial for copy and headings, Verdana for the
-nav strip). Raster artwork (banner strips, page and map textures, 24 player
+**Fonts.** All bundled fonts are under the SIL Open Font Licence, each with
+its licence file beside it: Michroma (`src/assets/fonts`, the "h2 live" name
+on both sides), and Orbitron and Barlow Condensed (`src/dash/fonts`, the
+dashboard's headings and its condensed labels). The stats site otherwise
+uses system fonts (Arial for copy and headings, Verdana for the nav strip).
+
+**Artwork.** Raster artwork (banner strips, page and map textures, 24 player
 emblems, medals, rank badges) is original and lives in `public/art`,
 documented in `public/art/ART.md`; `src/lib/art.ts` maps emblems, medal ids
 and rank names to its files. Weapon silhouettes are small SVGs in
-`components/WeaponIcon.tsx`. No third-party logos or artwork.
+`components/WeaponIcon.tsx`. No third-party logos or artwork are in this
+repo or in the build.
+
+**Game art (optional, never shipped).** A server whose owner ran
+`h2 live assets extract` on their own disc serves that art at
+`/art/game/manifest.json` (docs/live-api.md "Optional game art"), by default
+only to a browser on the same machine. The app asks once at startup and on a
+server change (`src/state/gameart.ts`); a 404 or anything unreadable means
+"use the art pack", and a miss is remembered for a minute. With a manifest,
+any picture whose key it has replaces the pack's (`src/lib/gameart.ts`):
+
+- **Emblems** (`emblem/fg/<n>`, `emblem/bg/<n>`) are two-mask layers, not
+  colour pictures. `compositeEmblem` colours them per the manifest's rules
+  (`rgb = colour_a * red + colour_b * blue`; the background is opaque, the
+  foreground's coverage is `max(red, blue)`, PNG alpha is ignored) on a
+  canvas, cached per layers and colours. Until telemetry carries a player's
+  real emblem, layers and colours are picked from the XUID (`emblemChoice`);
+  `<Emblem emblem={{fg, bg, primary, ...}}>` takes real values.
+- **Ranks**: our experience ladder is spread over the game's levels
+  (`levelForExp`, then `rank/<1..50>`).
+- **Map previews** (`map/<map>/preview`) replace the top-down thumbnail in
+  game cards, Recent Games, history rows and preview, and the game page's
+  header; a live game keeps its blips, drawn over the picture.
+- **Game-type icons** go by the words of the variant name (`gametypeKey`:
+  slayer, ctf, assault, oddball, king of the hill, juggernaut, territories).
+- Weapons stay as the SVG silhouettes (the manifest's `weapon/<n>` are not
+  yet identified), and medals as the pack's (the disc has none).
+
+The mock's stand-in (`mock/gameart.ts`) uses the pack's rank badges and
+draws its own emblem masks, game-type glyphs and map postcards in the real
+encoding, so nothing from the game is needed to run or test this path.
 
 ## Architecture
 

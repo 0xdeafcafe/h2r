@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { accountsFile, createAccount, gamertagError, generateKey, importSeed, signAccountRequest, signCompact, TYP_ACCOUNT } from "../src/state/account";
+import { ACCOUNT_VECTOR } from "./helpers";
 import { b64urlDecode, canonicalJson, jwkThumbprint, parseJws } from "../src/state/verify";
 
 // RFC 8037 appendix A: the Ed25519 test key, its thumbprint and a signature.
@@ -9,13 +10,6 @@ const RFC = {
   kid: "kPrK_qmxVWaYVA9wwBF6Iuo3vVzz7TxHCTwXBygrS4k",
   jws: "eyJhbGciOiJFZERTQSJ9.RXhhbXBsZSBvZiBFZDI1NTE5IHNpZ25pbmc.hgyY0il_MGCjP0JzlnLWG1PPOt7-09PGcvMg3AIbQR6dWbhijcNR4ki4iylGjg5BhVsPt9g7sVvpAr_MuM0KAg",
 };
-
-// `ACCOUNT_VECTOR` in crates/live-proto/src/sign.rs: the RFC 8037 key signing
-// {gamertag: "Sneaky Pete", aud: "localhost", iat: 1800000000}.
-const ACCOUNT_VECTOR =
-  "eyJhbGciOiJFZERTQSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJ0eXAiOiJoMmxpdmUtYWNjb3VudCJ9." +
-  "eyJhdWQiOiJsb2NhbGhvc3QiLCJnYW1lcnRhZyI6IlNuZWFreSBQZXRlIiwiaWF0IjoxODAwMDAwMDAwLCJqd2siOnsiY3J2IjoiRWQyNTUxOSIsImtpZCI6ImtQcktfcW14VldhWVZBOXd3QkY2SXVvM3ZWeno3VHhIQ1R3WEJ5Z3JTNGsiLCJrdHkiOiJPS1AiLCJ4IjoiMTFxWUFZS3hDcmZWU183VHlXUUhPZzdoY3ZQYXBpTWxyd0lhYVBjSFVSbyJ9fQ." +
-  "CAbhCapHV4aPxyp0SgMosKYqEXCVZvD5fOSx8sUQo9IpOUII91YGE75JFkE2QN0aojf0I5zQH1lZN3ehfQOGBg";
 
 /** live-proto's AccountRequest::open, reimplemented: typ, canonical
  *  payload with aud and iat, kid = thumbprint of the carried key,

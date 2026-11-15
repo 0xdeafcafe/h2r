@@ -16,7 +16,8 @@ import RankIcon from "../components/RankIcon";
 import WeaponIcon from "../components/WeaponIcon";
 import { PresenceBadge, VerifySummary } from "../components/bits";
 import { Crumbs, Derived, Pager, Panel, Tabs, Title, playerHref } from "./Layout";
-import { MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, playlist } from "./Side";
+import GametypeIcon from "../components/GametypeIcon";
+import { MapPreview, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, playlist } from "./Side";
 import { titleCase } from "../lib/format";
 import { elapsedSeconds, teamName } from "../lib/game";
 import { now } from "../lib/now";
@@ -57,7 +58,7 @@ export function PlayerStrip(props: { account: AccountState; rec: ServiceRecord }
   return (
     <div class="s-id">
       <A href={playerHref(props.account.gamertag)} class="s-id-emblem"><Emblem seed={props.account.xuid} size={68} /></A>
-      <span class="s-id-rank"><RankIcon rank={rankIndex(props.rec.exp)} size={40} /></span>
+      <span class="s-id-rank"><RankIcon rank={rankIndex(props.rec.exp)} exp={props.rec.exp} size={40} /></span>
       <div class="s-id-name">
         <h2><A href={playerHref(props.account.gamertag)}>{props.account.gamertag}</A></h2>
         <div>Service Tag: {serviceTag(props.account.gamertag, props.account.xuid)}</div>
@@ -214,9 +215,9 @@ function HistoryTable(props: { rows: HistoryRow[]; selected?: string; onSelect: 
         <For each={props.rows} fallback={<tr><td colspan="6" class="s-dim">Your first chapter is still ahead.</td></tr>}>
           {(r) => (
             <tr classList={{ sel: props.selected === r.game.game_id }} onClick={() => props.onSelect(r.game.game_id)}>
-              <td><A href={`/stats/games/${r.game.game_id}`}>{gameTitle(r.game)}</A></td>
+              <td><span class="s-who"><GametypeIcon variant={r.game.variant} /><A href={`/stats/games/${r.game.game_id}`}>{gameTitle(r.game)}</A></span></td>
               <td>{usDateTime(r.game.started_at)}</td>
-              <td>{titleCase(r.game.map)}</td>
+              <td><span class="s-who"><MapPreview map={r.game.map} />{titleCase(r.game.map)}</span></td>
               <td class="hide-s">{playlist(r.game)}</td>
               <td>{r.game.status === "live" ? <span class="s-live-tag">LIVE</span> : r.place ? ordinal(r.place) : "–"}</td>
               <td class="num"><button class="s-linkbtn" onClick={(e) => { e.stopPropagation(); props.onSelect(r.game.game_id); }}>preview</button></td>
@@ -405,7 +406,7 @@ function GamerCard(props: { account: AccountState; rec: ServiceRecord }) {
           <div><dt>Total EXP:</dt><dd>{num(r().exp)}</dd></div>
           <div><dt>Best Spree:</dt><dd>{r().bestSpree}</dd></div>
         </dl>
-        <span class="s-card-rank" title={RANKS[rankIndex(r().exp)]![1]}><RankIcon rank={rankIndex(r().exp)} size={52} /></span>
+        <span class="s-card-rank" title={RANKS[rankIndex(r().exp)]![1]}><RankIcon rank={rankIndex(r().exp)} exp={r().exp} size={52} /></span>
       </div>
       <dl class="s-statgrid">
         <div><dt>K/D Ratio:</dt><dd>{ratio(r().kills, r().deaths)}</dd></div>

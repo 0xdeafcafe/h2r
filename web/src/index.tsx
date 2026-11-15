@@ -12,8 +12,10 @@ import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import Events from "./stats/Events";
 import { live } from "./state/live";
+import { startGameArt } from "./state/gameart";
 
 live.start();
+startGameArt();
 
 function NotFound() {
   return <div class="s-full"><Title class="s-title--bar">Page Not Found</Title><p class="s-pad">That page isn't here. Try the links above.</p></div>;
@@ -25,7 +27,7 @@ const OldPlayer = () => <Navigate href={`/stats/players/${useParams().tag}`} />;
 render(
   () => (
     <Router>
-      <Route path={["/", "/dash/:section"]} component={Dashboard} />
+      <Route path={["/", "/dash/:section", "/dash/:section/:tag"]} component={Dashboard} />
       <Route path="/stats" component={StatsLayout}>
         <Route path="/" component={Games} />
         <Route path="/games/:id" component={Game} />

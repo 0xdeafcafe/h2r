@@ -89,7 +89,7 @@ export default function Players() {
                         <tr>
                           <td>{i() + 4}</td>
                           <td><span class="s-who"><Emblem seed={r.a.xuid} size={16} /><A href={playerHref(r.a.gamertag)}>{r.a.gamertag}</A></span></td>
-                          <td class="hide-s"><span class="s-who"><RankIcon rank={rankIndex(r.rec.exp)} size={16} />{r.rec.rank}</span></td>
+                          <td class="hide-s"><span class="s-who"><RankIcon rank={rankIndex(r.rec.exp)} exp={r.rec.exp} size={16} />{r.rec.rank}</span></td>
                           <td class="num">{r.value}</td>
                           <td class="num">{num(r.rec.games)}</td>
                         </tr>
@@ -116,7 +116,7 @@ export default function Players() {
                     {(r) => (
                       <tr>
                         <td><span class="s-who"><Emblem seed={r.a.xuid} size={16} /><A href={playerHref(r.a.gamertag)}>{r.a.gamertag}</A></span></td>
-                        <td class="hide-s"><span class="s-who"><RankIcon rank={rankIndex(r.rec.exp)} size={16} />{r.rec.rank}</span></td>
+                        <td class="hide-s"><span class="s-who"><RankIcon rank={rankIndex(r.rec.exp)} exp={r.rec.exp} size={16} />{r.rec.rank}</span></td>
                         <td><PresenceBadge account={r.a} /></td>
                         <td class="num">{num(r.rec.games)}</td>
                         <td class="num">{num(r.rec.kills)}</td>

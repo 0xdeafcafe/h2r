@@ -1,6 +1,9 @@
 // Pieces the stats pages share in their menu column: the pill menu, the
 // People Finder, the Recent Games carousel, and map thumbnails.
 
+import GametypeIcon from "../components/GametypeIcon";
+import { mapKey } from "../lib/gameart";
+import { gameImage } from "../state/gameart";
 import { For, Show, createMemo, createSignal, type JSX } from "solid-js";
 import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
@@ -79,19 +82,30 @@ function stillFrame(g: GameState): (t: number) => MapFrame {
   };
 }
 
-/** A small top-down picture of a game: live blips, or where a finished game's knockouts fell. */
+/** A small picture of a game. With the server's game art it is the map's
+ *  preview (a live game's blips drawn over it); otherwise a top-down view:
+ *  live blips, or where a finished game's knockouts fell. */
 export function MapThumb(props: { game: GameState; class?: string; large?: boolean }) {
   const roster = createMemo(() => rosterFor(props.game));
   const outline = outlineFor(() => props.game.map);
   const liveSrc = liveFrameSource(props.game.game_id, roster);
   const still = stillFrame(props.game);
   const frame = (t: number) => (props.game.status === "live" ? liveSrc(t) : still(t));
+  const preview = () => gameImage(mapKey(props.game.map));
   return (
-    <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live" }}>
-      <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${titleCase(props.game.map)}`} />
+    <span class={`s-thumb ${props.class ?? ""}`} classList={{ "s-thumb--live": props.game.status === "live", "s-thumb--pic": !!preview() }}>
+      <Show when={preview()}>{(p) => <img class="s-thumb-pic" src={p().url} alt={`${titleCase(props.game.map)} preview`} decoding="async" draggable={false} />}</Show>
+      <Show when={!preview() || props.game.status === "live"}>
+        <MapCanvas mini={!props.large} frame={frame} roster={roster} outline={outline} still={props.game.status !== "live"} label={`Map of ${titleCase(props.game.map)}`} />
+      </Show>
       <Show when={props.game.status === "live"}><span class="s-live-tag">LIVE</span></Show>
     </span>
   );
+}
+
+/** A map's preview picture, small, for a table row. Nothing without game art. */
+export function MapPreview(props: { map: string }) {
+  return <Show when={gameImage(mapKey(props.map))}>{(p) => <img class="s-mappic" src={p().url} alt="" decoding="async" draggable={false} />}</Show>;
 }
 
 /** The gamertag of whoever started the game (the server names them `acct:<xuid>@<server>`). */
@@ -137,7 +151,7 @@ export function RecentGames(props: { games: GameState[]; title?: string; empty?:
             <A href={`/stats/games/${game.game_id}`} class="s-recent-item">
               <MapThumb game={game} />
               <ul>
-                <li class="s-recent-title">{gameTitle(game)}</li>
+                <li class="s-recent-title"><GametypeIcon variant={game.variant} />{gameTitle(game)}</li>
                 <li>On {titleCase(game.map)}</li>
                 <li>Playlist: {playlist(game)}</li>
                 <li>{game.status === "live" ? "In progress now" : `Finished ${ago(game.ended_at, now())}`}</li>
