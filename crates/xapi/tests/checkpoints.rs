@@ -29,6 +29,9 @@ const CREATE: u32 = 0x002d_2750;
 const CLOSE: u32 = 0x002d_1f3a;
 const READ: u32 = 0x002d_2241;
 const WRITE: u32 = 0x002d_232e;
+const HEADER_VALIDATE: u32 = 0x0012_4520;
+const HEADER_COMPATIBLE: u32 = 0x0012_4590;
+const READ_ORIGINAL: u32 = 0x6000_0000;
 
 // Only host services and the synthetic scenario lifecycle are substituted.
 // Snapshot policy, copies, validity/count checks, header identity checks,
@@ -95,12 +98,27 @@ fn functions(bytes: &[u8]) -> Vec<ir::IrFunction> {
     out
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
 struct Lifecycle {
     scenario: Vec<String>,
     bsp: Vec<u32>,
     before: usize,
     after: usize,
+}
+
+#[derive(Clone, Default)]
+struct RestoreTrace {
+    reads: Vec<ReadTrace>,
+    identity: Vec<Vec<u8>>,
+    compatibility: Vec<Vec<u8>>,
+}
+
+#[derive(Clone)]
+struct ReadTrace {
+    requested: u32,
+    completed: u32,
+    success: bool,
+    prefix: Vec<u8>,
 }
 
 struct World {
@@ -111,6 +129,7 @@ struct World {
     ctx: ExecCtx,
     lifecycle: Arc<Mutex<Lifecycle>>,
     staging: Arc<AtomicBool>,
+    trace: Arc<Mutex<RestoreTrace>>,
 }
 
 fn cstr(m: &Guest, addr: u32) -> String {
@@ -172,6 +191,8 @@ impl World {
             let mut m = runtime.memory();
             m.map_zeroed(STAGING, 0x40b000, Permissions::RW).unwrap();
             m.map_zeroed(SCRATCH, 0x100000, Permissions::RW).unwrap();
+            m.map_zeroed(READ_ORIGINAL, 0x1000, Permissions::RX)
+                .unwrap();
             m.set_u32(0x4e6080, STATE).unwrap();
             m.set_u32(0x4e6094, STATE).unwrap();
             m.set_u32(0x4e608c, 0x12345678).unwrap();
@@ -195,7 +216,68 @@ impl World {
         }
         let lifecycle = Arc::new(Mutex::new(Lifecycle::default()));
         let staging = Arc::new(AtomicBool::new(true));
+        let trace = Arc::new(Mutex::new(RestoreTrace::default()));
+        let read_original = runtime.resolve_original(READ).unwrap();
+        let identity_original = runtime.resolve_original(HEADER_VALIDATE).unwrap();
+        let compatible_original = runtime.resolve_original(HEADER_COMPATIBLE).unwrap();
         runtime.edit_dispatch(|d| {
+            // Observe the generated reader's actual result without substituting
+            // file I/O. The trampoline avoids re-entering this entry wrapper.
+            d.register_override(
+                READ_ORIGINAL,
+                "fixture original ReadFile",
+                move |cpu, ctx, _| Ok(read_original.invoke(cpu, ctx, READ)),
+            );
+            let reads = trace.clone();
+            d.register_override(READ, "fixture observe ReadFile", move |cpu, ctx, _| {
+                let rt = ctx.runtime().clone();
+                let mut m = rt.memory();
+                let mut args = [0; 5];
+                for (i, arg) in args.iter_mut().enumerate() {
+                    *arg = m.u32(cpu.esp + 4 + i as u32 * 4)?;
+                }
+                for arg in args.iter().rev() {
+                    cpu.esp -= 4;
+                    m.set_u32(cpu.esp, *arg)?;
+                }
+                let reads = reads.clone();
+                ctx.call_guest(cpu, &mut m, READ_ORIGINAL, move |cpu, ctx| {
+                    let m = ctx.memory();
+                    let completed = m.u32(args[3])?;
+                    assert!(completed <= args[2]);
+                    let mut prefix = vec![0; completed.min(HEADER) as usize];
+                    m.read_bytes(args[1], &mut prefix, 1)?;
+                    reads.lock().unwrap().reads.push(ReadTrace {
+                        requested: args[2],
+                        completed,
+                        success: cpu.eax != 0,
+                        prefix,
+                    });
+                    m.ret(cpu, 20)
+                })
+            });
+            let observed = trace.clone();
+            d.register_override(
+                HEADER_VALIDATE,
+                "fixture observe header validation",
+                move |cpu, ctx, pc| {
+                    let mut header = vec![0; HEADER as usize];
+                    ctx.memory().read_bytes(cpu.eax, &mut header, 1)?;
+                    observed.lock().unwrap().identity.push(header);
+                    Ok(identity_original.invoke(cpu, ctx, pc))
+                },
+            );
+            let observed = trace.clone();
+            d.register_override(
+                HEADER_COMPATIBLE,
+                "fixture observe header compatibility",
+                move |cpu, ctx, pc| {
+                    let mut header = vec![0; HEADER as usize];
+                    ctx.memory().read_bytes(cpu.edi, &mut header, 1)?;
+                    observed.lock().unwrap().compatibility.push(header);
+                    Ok(compatible_original.invoke(cpu, ctx, pc))
+                },
+            );
             d.register_override(0x1208b0, "fixture task allocation", |cpu, ctx, _| {
                 cpu.eax = TASK;
                 ctx.memory().ret(cpu, 0)
@@ -323,6 +405,7 @@ impl World {
             ctx,
             lifecycle,
             staging,
+            trace,
         };
         assert_eq!(world.call(0x2d156a, &[SIZE, 0x1000000, 0, 4]), STATE);
         world
@@ -498,6 +581,132 @@ impl World {
         assert_eq!(self.call(0x331276, &[search]), 1);
     }
 
+    fn prepare_restore(&mut self) {
+        self.call(0x2d15da, &[STATE, SIZE, 4]);
+        let initial = state(self, 0xee, 0);
+        self.runtime
+            .memory()
+            .write_bytes(STATE, &initial, 1)
+            .unwrap();
+        self.runtime.memory().set_u32(0x4e6948, 0).unwrap();
+    }
+
+    fn probe_restore(&mut self) -> (u32, RestoreTrace) {
+        *self.trace.lock().unwrap() = RestoreTrace::default();
+        self.text(SCRATCH, "N:\\header-case");
+        let result = self.call(RESTORE, &[SCRATCH]) & 0xff;
+        let trace = self.trace.lock().unwrap().clone();
+        (result, trace)
+    }
+
+    fn header_rejections(&mut self, older: &[u8]) {
+        let path = "N:\\header-case.bin";
+        // Every candidate is closed before restore. A valid control uses the
+        // identical file, open mode, writer cleanup and restore setup.
+        self.runtime
+            .memory()
+            .write_bytes(STAGING, older, 1)
+            .unwrap();
+        self.put(path, STAGING, SIZE);
+        self.prepare_restore();
+        let (result, trace) = self.probe_restore();
+        assert_eq!(result, 1, "valid header control");
+        assert_header_read(&trace, &older[..HEADER as usize]);
+        assert_eq!(trace.reads.len(), 2);
+        assert_eq!(trace.reads[1].completed, SIZE);
+        assert_eq!((trace.identity.len(), trace.compatibility.len()), (2, 1));
+        assert_bytes(&self.bytes(STATE, SIZE), older);
+
+        for (name, offset, validator, cleanup) in [
+            ("allocation identity", 0, HEADER_VALIDATE, 0),
+            ("backing address", 4, HEADER_VALIDATE, 0),
+            ("build", 0x108, HEADER_VALIDATE, 0),
+            ("compatibility", 0x128, HEADER_COMPATIBLE, 4),
+        ] {
+            let mut bad = older.to_vec();
+            bad[offset] ^= 0xff;
+            self.runtime.memory().write_bytes(STAGING, &bad, 1).unwrap();
+            self.put(path, STAGING, SIZE);
+            self.prepare_restore();
+            let baseline = self.bytes(STATE, SIZE);
+            let life = self.lifecycle.lock().unwrap().clone();
+            let (result, trace) = self.probe_restore();
+            assert_eq!(result, 0, "{name} must be rejected");
+            assert_header_read(&trace, &bad[..HEADER as usize]);
+            assert_eq!(trace.reads.len(), 1, "{name}: no bulk state read");
+            assert_bytes(&trace.identity[0], &bad[..HEADER as usize]);
+            if validator == HEADER_VALIDATE {
+                assert_eq!((trace.identity.len(), trace.compatibility.len()), (1, 0));
+                assert_eq!(
+                    *self.lifecycle.lock().unwrap(),
+                    life,
+                    "{name}: lifecycle unchanged"
+                );
+                assert_bytes(&self.bytes(STATE, SIZE), &baseline);
+            } else {
+                assert_eq!((trace.identity.len(), trace.compatibility.len()), (2, 1));
+                // Restore marks the temporary options initialized before the
+                // compatibility call; the original disk read remains exact.
+                let mut compared = bad[..HEADER as usize].to_vec();
+                compared[0x134] = 1;
+                assert_bytes(&trace.compatibility[0], &compared);
+                assert_bytes(&trace.identity[1], &compared);
+                let current = self.lifecycle.lock().unwrap();
+                assert_eq!(current.scenario.len(), life.scenario.len() + 1);
+                assert_eq!(current.bsp.len(), life.bsp.len() + 1);
+                assert_eq!((current.before, current.after), (life.before, life.after));
+                assert_bytes(
+                    &self.bytes(STATE + HEADER, SIZE - HEADER),
+                    &baseline[HEADER as usize..],
+                );
+            }
+
+            // Counterfactual on the same closed candidate: disabling exactly
+            // its validator must make this rejection test fail. Preserve and
+            // restore the observer around the real generated validator.
+            let previous = self.runtime.edit_dispatch(|d| {
+                d.register_override(
+                    validator,
+                    "fixture mutation: bypass validator",
+                    move |cpu, ctx, _| {
+                        cpu.eax = 1;
+                        ctx.memory().ret(cpu, cleanup)
+                    },
+                )
+                .unwrap()
+            });
+            self.prepare_restore();
+            let (accepted, trace) = self.probe_restore();
+            self.runtime
+                .edit_dispatch(|d| d.restore_override(validator, previous));
+            assert_eq!(accepted, 1, "{name}: bypass must break rejection");
+            assert_eq!(trace.reads.len(), 2, "{name}: bypass reaches bulk read");
+            assert_eq!(trace.reads[1].completed, SIZE);
+            assert_bytes(&self.bytes(STATE, SIZE), &bad);
+            eprintln!("header {name}: rejected normally; accepted with {validator:#x} disabled");
+        }
+
+        self.runtime
+            .memory()
+            .write_bytes(STAGING, older, 1)
+            .unwrap();
+        self.put(path, STAGING, 8);
+        self.prepare_restore();
+        let baseline = self.bytes(STATE, SIZE);
+        let life = self.lifecycle.lock().unwrap().clone();
+        let (result, trace) = self.probe_restore();
+        assert_eq!(result, 0, "short header");
+        assert_eq!(trace.reads.len(), 1);
+        let read = &trace.reads[0];
+        assert!(read.success, "short header: successful open and ReadFile");
+        assert_eq!((read.requested, read.completed), (HEADER, 8));
+        assert_bytes(&read.prefix, &older[..8]);
+        assert!(trace.identity.is_empty() && trace.compatibility.is_empty());
+        assert_eq!(*self.lifecycle.lock().unwrap(), life);
+        assert_bytes(&self.bytes(STATE, SIZE), &baseline);
+        eprintln!("short header: successful ReadFile, 8 bytes, no validators or lifecycle work");
+    }
+
     fn failure_cases(&mut self, older: &[u8], root: &Path) {
         {
             let mut fs = self.vfs.lock().unwrap();
@@ -527,37 +736,11 @@ impl World {
         // A valid slot marker does not turn a short read into a successful revert.
         self.runtime.memory().set_u8(0x5020f2, 1).unwrap();
         assert_eq!(self.call(0x2152e0, &[0]) & 0xff, 0);
-        // Complete but incompatible headers fail before any lifecycle callback.
-        let baseline = self.bytes(STATE, SIZE);
-        let callbacks = self.lifecycle.lock().unwrap().before;
-        for offset in [0, 4, 0x108] {
-            self.runtime
-                .memory()
-                .write_bytes(STAGING, &older[..HEADER as usize], 1)
-                .unwrap();
-            self.runtime
-                .memory()
-                .set_u8(STAGING + offset, 0xff)
-                .unwrap();
-            assert_eq!(self.call(0x2d2488, &[failed, 0, 0, 0]), 0);
-            assert_eq!(
-                self.call(WRITE, &[failed, STAGING, HEADER, SCRATCH + 0x9200, 0]),
-                1
-            );
-            self.text(SCRATCH, "F:\\failed");
-            assert_eq!(self.call(RESTORE, &[SCRATCH]) & 0xff, 0);
-            assert_bytes(&self.bytes(STATE, SIZE), &baseline);
-        }
-        assert_eq!(self.call(0x2d2488, &[failed, 8, 0, 0]), 8);
-        assert_eq!(self.call(0x2d2404, &[failed]), 1);
-        self.text(SCRATCH, "F:\\failed");
-        assert_eq!(self.call(RESTORE, &[SCRATCH]) & 0xff, 0);
-        assert_bytes(&self.bytes(STATE, SIZE), &baseline);
-        assert_eq!(self.lifecycle.lock().unwrap().before, callbacks);
         assert_eq!(self.call(0x2152e0, &[1]) & 0xff, 1);
         assert_bytes(&self.bytes(STATE, SIZE), older);
         self.runtime.memory().set_u32(0x5020f8, original).unwrap();
         assert_eq!(self.call(CLOSE, &[failed]), 1);
+        self.header_rejections(older);
     }
 }
 
@@ -589,6 +772,13 @@ fn assert_bytes(actual: &[u8], expected: &[u8]) {
         "first different state byte; values {:?}",
         diff.map(|i| (actual[i], expected[i]))
     );
+}
+
+fn assert_header_read(trace: &RestoreTrace, expected: &[u8]) {
+    let read = &trace.reads[0];
+    assert!(read.success, "header: successful open and ReadFile");
+    assert_eq!((read.requested, read.completed), (HEADER, HEADER));
+    assert_bytes(&read.prefix, expected);
 }
 
 #[test]

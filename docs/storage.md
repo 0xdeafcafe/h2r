@@ -72,7 +72,8 @@ in the absolute-name API. Relative opens take an existing directory handle throu
 `Backend: Send` exposes a cheap `read_only` property and root-relative
 `stat`, `read_directory`, `read_at`,
 `volume_info`, `create`, `write_at`, `set_len`, `set_basic_info`, `remove`,
-`flush` and final-object `cleanup`. Mutation defaults return `MediaWriteProtected`. VFS owns share
+`flush` and final-object `cleanup`, plus owned initial-allocation hooks.
+Mutation defaults return `MediaWriteProtected`. VFS owns share
 checks, access checks, file positions, handle lifetime and enumeration state.
 Backend methods independently validate their paths. A custom backend can
 implement the same interface without any guest-memory integration. Backends
@@ -145,9 +146,14 @@ share/identity races with host replacements.
 
 `open_allocated` and `open_relative_allocated` carry NtCreateFile's initial
 allocation hint. HostBackend reserves cluster-rounded logical capacity on
-create/overwrite without extending EOF. Writes consume that reservation; EOF
-changes and cleanup trim unused capacity. An ordinary existing-file open ignores
-the hint. Capacity failures precede creation/truncation. These are session
+create/overwrite without extending EOF. VFS passes a unique file-object identity
+to `Backend::create_allocated` / `overwrite_allocated`, then calls
+`release_allocation` when that object's last handle closes. Independent opens
+cannot trim another object's reservation; duplicates share the owner's lifetime.
+Writes consume the reservation; EOF changes or its owner's release trim unused
+capacity. Ordinary `cleanup` still handles flushing and timestamps separately.
+An ordinary existing-file open ignores the hint. Capacity failures precede
+creation/truncation. These are session
 reservations, not physical host disk preallocation. See [checkpoint acceptance](checkpoints.md).
 
 The FATX on-disk directory record has a 42-byte name and a 32-bit size; see
@@ -399,14 +405,17 @@ implementation of every class. `set_basic_information` replaces a full
 `BasicInfo`; merge NT zero/-1 unchanged-time sentinels and unchanged attributes
 with current values before calling it. Pack Xbox names as byte strings, not
 Windows UTF-16 names. Async completion, IRPs, events/APCs, notifications, raw
-sector/device IOCTLs, file IDs, rename, allocation reservations, EAs, oplocks,
+sector/device IOCTLs, file IDs, rename, EAs, oplocks,
 byte-range locks, volume formatting and ACLs are not implemented here.
 
-The only public API addition in this re-review is the defaulted method
-`Backend::cleanup(&mut self, path: &str, write_access: bool) -> Result<()>`.
-Existing backend implementations continue to compile. Backends with deferred
-metadata can override it; VFS owns logging its errors separately from close.
-Vfs method signatures, OpenOptions and Handle are unchanged.
+`Backend::cleanup(&mut self, path: &str, write_access: bool) -> Result<()>`
+handles deferred metadata independently of `release_allocation(path, owner)`.
+The initial-allocation methods receive that same owner identity; backend
+wrappers implementing reservations must forward it and its release to their
+inner backend. Default methods reject unsupported nonzero reservations before
+mutation. VFS logs cleanup/release errors separately from close. Existing
+open/close signatures, OpenOptions and Handle are unchanged; allocated-open
+variants carry the initial allocation hint.
 `set_basic_information` remains full replacement and must be merged by the
 kernel; `Handle` remains opaque and nonreusable. Rename is still unavailable.
 FileRenameInformation within a volume is a useful next addition for XAPI

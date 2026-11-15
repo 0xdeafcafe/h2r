@@ -16,23 +16,30 @@ pub trait Backend: Send {
     }
     /// Initial allocation reserves capacity without extending EOF. Backends
     /// must reject unsupported reservations before creating/truncating data.
+    /// `owner` is a unique VFS file-object identity, shared by duplicated handles.
     fn create_allocated(
         &mut self,
         path: &str,
         directory: bool,
         attributes: u32,
         allocation: u64,
+        _owner: u64,
     ) -> Result<()> {
         if allocation != 0 && !directory {
             return Err(Error::NotSupported);
         }
         self.create(path, directory, attributes)
     }
-    fn overwrite_allocated(&mut self, path: &str, allocation: u64) -> Result<()> {
+    fn overwrite_allocated(&mut self, path: &str, allocation: u64, _owner: u64) -> Result<()> {
         if allocation != 0 {
             return Err(Error::NotSupported);
         }
         self.set_len(path, 0)
+    }
+    /// Release only this owner's unused allocation after its last handle closes.
+    /// Independent opens still receive ordinary cleanup, but cannot trim it.
+    fn release_allocation(&mut self, _path: &str, _owner: u64) -> Result<()> {
+        Ok(())
     }
     fn write_at(&mut self, _path: &str, _offset: u64, _buffer: &[u8]) -> Result<usize> {
         Err(Error::MediaWriteProtected)

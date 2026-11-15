@@ -390,38 +390,50 @@ impl Vfs {
         {
             return Err(Error::DirectoryNotEmpty);
         }
-        let information = if existing.is_some() {
-            if overwriting {
-                self.mounts[mount]
-                    .backend
-                    .overwrite_allocated(&path, allocation)?;
-                let mut basic = self.mounts[mount].backend.stat(&path)?.basic;
-                basic.attributes = if options.disposition == CreateDisposition::Supersede {
-                    (options.attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY) | ATTR_ARCHIVE
+        // Allocate the identity before the backend reserves capacity. Duplicate
+        // handles keep this object identity until their last close.
+        let handle = self.allocate_handle()?;
+        let opened = (|| {
+            Ok(if existing.is_some() {
+                if overwriting {
+                    self.mounts[mount]
+                        .backend
+                        .overwrite_allocated(&path, allocation, handle)?;
+                    let mut basic = self.mounts[mount].backend.stat(&path)?.basic;
+                    basic.attributes = if options.disposition == CreateDisposition::Supersede {
+                        (options.attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY) | ATTR_ARCHIVE
+                    } else {
+                        basic.attributes
+                            | (options.attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY)
+                            | ATTR_ARCHIVE
+                    };
+                    self.mounts[mount].backend.set_basic_info(&path, basic)?;
+                    if options.disposition == CreateDisposition::Supersede {
+                        CreateInformation::Superseded
+                    } else {
+                        CreateInformation::Overwritten
+                    }
                 } else {
-                    basic.attributes
-                        | (options.attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY)
-                        | ATTR_ARCHIVE
-                };
-                self.mounts[mount].backend.set_basic_info(&path, basic)?;
-                if options.disposition == CreateDisposition::Supersede {
-                    CreateInformation::Superseded
-                } else {
-                    CreateInformation::Overwritten
+                    CreateInformation::Opened
                 }
             } else {
-                CreateInformation::Opened
+                self.mounts[mount].backend.create_allocated(
+                    &path,
+                    options.directory == Some(true),
+                    options.attributes,
+                    allocation,
+                    handle,
+                )?;
+                CreateInformation::Created
+            })
+        })();
+        let information = match opened {
+            Ok(information) => information,
+            Err(error) => {
+                let _ = self.mounts[mount].backend.release_allocation(&path, handle);
+                return Err(error);
             }
-        } else {
-            self.mounts[mount].backend.create_allocated(
-                &path,
-                options.directory == Some(true),
-                options.attributes,
-                allocation,
-            )?;
-            CreateInformation::Created
         };
-        let handle = self.allocate_handle()?;
         self.handles.insert(handle, handle);
         self.objects.insert(
             handle,
@@ -466,6 +478,12 @@ impl Vfs {
             // The handle is already closed. Preserve close success; explicit flush is
             // the API for callers that need a synchronous durability error.
             eprintln!("vfs: file-object cleanup sync failed: {error}");
+        }
+        if let Err(error) = self.mounts[object.mount]
+            .backend
+            .release_allocation(&object.path, id)
+        {
+            eprintln!("vfs: allocation release failed: {error}");
         }
         if object.options.delete_on_close || object.delete_requested {
             self.pending.insert(key.clone());

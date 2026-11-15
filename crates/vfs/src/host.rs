@@ -25,14 +25,18 @@ struct DirectoryIndex {
     modified: Option<SystemTime>,
     children: Arc<BTreeMap<String, Vec<Child>>>,
 }
+struct Reservation {
+    owner: u64,
+    bytes: u64,
+}
 #[derive(Default)]
 struct Cache {
     directories: BTreeMap<PathBuf, DirectoryIndex>,
     used_bytes: Option<u64>,
     atimes: BTreeMap<String, Timestamp>,
     dirty_data: BTreeSet<String>,
-    // Logical FATX preallocation, trimmed to EOF at file-object cleanup.
-    reservations: BTreeMap<String, u64>,
+    // Logical FATX preallocation, trimmed only by its owning file object's close.
+    reservations: BTreeMap<String, Reservation>,
     #[cfg(test)]
     directory_scans: usize,
     #[cfg(test)]
@@ -422,7 +426,7 @@ impl HostBackend {
                     .borrow()
                     .reservations
                     .get(&path.to_ascii_lowercase())
-                    .copied()
+                    .map(|reservation| reservation.bytes)
                     .unwrap_or(0),
             ),
         })
@@ -622,6 +626,7 @@ impl Backend for HostBackend {
         directory: bool,
         attributes: u32,
         allocation: u64,
+        owner: u64,
     ) -> Result<()> {
         if directory {
             return self.create(path, true, attributes);
@@ -631,24 +636,30 @@ impl Backend for HostBackend {
         self.create(path, false, attributes)?;
         let allocation = allocation.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE;
         if allocation != 0 {
-            self.cache
-                .borrow_mut()
-                .reservations
-                .insert(path.to_ascii_lowercase(), allocation);
+            self.cache.borrow_mut().reservations.insert(
+                path.to_ascii_lowercase(),
+                Reservation {
+                    owner,
+                    bytes: allocation,
+                },
+            );
             self.update_usage(0, allocation);
         }
         Ok(())
     }
-    fn overwrite_allocated(&mut self, path: &str, allocation: u64) -> Result<()> {
+    fn overwrite_allocated(&mut self, path: &str, allocation: u64, owner: u64) -> Result<()> {
         let info = self.stat(path)?;
         self.check_growth(info.allocation_size, allocation)?;
         self.set_len(path, 0)?;
         let allocation = allocation.div_ceil(FATX_CLUSTER_SIZE) * FATX_CLUSTER_SIZE;
         if allocation != 0 {
-            self.cache
-                .borrow_mut()
-                .reservations
-                .insert(path.to_ascii_lowercase(), allocation);
+            self.cache.borrow_mut().reservations.insert(
+                path.to_ascii_lowercase(),
+                Reservation {
+                    owner,
+                    bytes: allocation,
+                },
+            );
             self.update_usage(0, allocation);
         }
         Ok(())
@@ -799,11 +810,15 @@ impl Backend for HostBackend {
         } else {
             self.flush_atime(path)?;
         }
+        Ok(())
+    }
+    fn release_allocation(&mut self, path: &str, owner: u64) -> Result<()> {
         if !self
             .cache
             .borrow()
             .reservations
-            .contains_key(&path.to_ascii_lowercase())
+            .get(&path.to_ascii_lowercase())
+            .is_some_and(|reservation| reservation.owner == owner)
         {
             return Ok(());
         }
@@ -931,13 +946,13 @@ mod tests {
         let temp = Temp::new();
         let mut backend = temp.backend().with_volume("test", 1, 3 * FATX_CLUSTER_SIZE);
         backend
-            .create_allocated("meta", false, 0, FATX_CLUSTER_SIZE + 1)
+            .create_allocated("meta", false, 0, FATX_CLUSTER_SIZE + 1, 1)
             .unwrap();
         let info = backend.stat("meta").unwrap();
         assert_eq!(info.end_of_file, 0);
         assert_eq!(info.allocation_size, 2 * FATX_CLUSTER_SIZE);
         assert_eq!(backend.read_at("meta", 0, &mut [0; 1]), Ok(0));
-        backend.create_allocated("other", false, 0, 1).unwrap();
+        backend.create_allocated("other", false, 0, 1, 2).unwrap();
         assert_eq!(backend.volume_info().unwrap().available_allocation_units, 0);
         // Writes and EOF growth inside the reservation consume no more space.
         assert_eq!(backend.write_at("meta", 0, b"Name=synthetic"), Ok(14));
@@ -946,12 +961,12 @@ mod tests {
             2 * FATX_CLUSTER_SIZE
         );
         assert_eq!(
-            backend.create_allocated("failed", false, 0, 1),
+            backend.create_allocated("failed", false, 0, 1, 3),
             Err(Error::DiskFull)
         );
         assert_eq!(backend.stat("failed"), Err(Error::ObjectNameNotFound));
         assert_eq!(
-            backend.overwrite_allocated("meta", 3 * FATX_CLUSTER_SIZE),
+            backend.overwrite_allocated("meta", 3 * FATX_CLUSTER_SIZE, 4),
             Err(Error::DiskFull)
         );
         let mut data = [0; 14];
@@ -959,6 +974,7 @@ mod tests {
         assert_eq!(&data, b"Name=synthetic");
         backend.set_len("meta", FATX_CLUSTER_SIZE + 1).unwrap();
         backend.cleanup("other", true).unwrap();
+        backend.release_allocation("other", 2).unwrap();
         assert_eq!(backend.stat("other").unwrap().allocation_size, 0);
         assert_eq!(backend.volume_info().unwrap().available_allocation_units, 1);
         backend.cleanup("meta", true).unwrap();

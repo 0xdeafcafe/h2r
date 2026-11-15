@@ -136,6 +136,134 @@ fn read_all(fs: &mut Vfs, handle: Handle) -> Vec<u8> {
 }
 
 #[test]
+fn independent_closes_cannot_release_another_handles_reservation() {
+    let temp = TempDir::new();
+    let mut fs = Vfs::new();
+    fs.mount(
+        "\\Device\\Test",
+        HostBackend::new(temp.0.join("data"), temp.0.join("meta"))
+            .unwrap()
+            .with_volume("small", 1, 2 * FATX_CLUSTER_SIZE),
+    )
+    .unwrap();
+    let saved = "\\Device\\Test\\saved";
+    let writer = fs
+        .open_allocated(
+            saved,
+            options(CreateDisposition::Create),
+            2 * FATX_CLUSTER_SIZE,
+        )
+        .unwrap()
+        .handle;
+    let duplicate = fs.duplicate(writer).unwrap();
+    let reader = fs
+        .open(
+            saved,
+            OpenOptions {
+                access: Access::READ,
+                ..options(CreateDisposition::Open)
+            },
+        )
+        .unwrap()
+        .handle;
+    fs.close(reader).unwrap();
+    let independent_writer = fs
+        .open(saved, options(CreateDisposition::Open))
+        .unwrap()
+        .handle;
+    fs.close(independent_writer).unwrap();
+    assert_eq!(
+        fs.query_information(writer)
+            .unwrap()
+            .metadata
+            .allocation_size,
+        2 * FATX_CLUSTER_SIZE
+    );
+    let other = "\\Device\\Test\\other";
+    assert_eq!(
+        fs.open_allocated(
+            other,
+            options(CreateDisposition::Create),
+            2 * FATX_CLUSTER_SIZE
+        ),
+        Err(Error::DiskFull)
+    );
+    assert_eq!(fs.write(writer, Offset::Absolute(0), b"x"), Ok(1));
+    fs.close(writer).unwrap();
+    assert_eq!(
+        fs.query_information(duplicate)
+            .unwrap()
+            .metadata
+            .allocation_size,
+        2 * FATX_CLUSTER_SIZE
+    );
+    fs.close(duplicate).unwrap();
+    assert_eq!(
+        fs.query_path(saved).unwrap().allocation_size,
+        FATX_CLUSTER_SIZE
+    );
+    let other = fs
+        .open_allocated(other, options(CreateDisposition::Create), FATX_CLUSTER_SIZE)
+        .unwrap()
+        .handle;
+    fs.close(other).unwrap();
+}
+
+#[test]
+fn overwritten_reservation_belongs_to_the_new_file_object() {
+    let temp = TempDir::new();
+    let mut fs = Vfs::new();
+    fs.mount(
+        "\\Device\\Test",
+        HostBackend::new(temp.0.join("data"), temp.0.join("meta"))
+            .unwrap()
+            .with_volume("small", 1, 2 * FATX_CLUSTER_SIZE),
+    )
+    .unwrap();
+    let saved = "\\Device\\Test\\saved";
+    let old = fs
+        .open_allocated(
+            saved,
+            options(CreateDisposition::Create),
+            2 * FATX_CLUSTER_SIZE,
+        )
+        .unwrap()
+        .handle;
+    let new = fs
+        .open_allocated(
+            saved,
+            options(CreateDisposition::Overwrite),
+            2 * FATX_CLUSTER_SIZE,
+        )
+        .unwrap()
+        .handle;
+    fs.close(old).unwrap();
+    assert_eq!(
+        fs.query_information(new).unwrap().metadata.allocation_size,
+        2 * FATX_CLUSTER_SIZE
+    );
+    assert_eq!(
+        fs.open_allocated(
+            "\\Device\\Test\\other",
+            options(CreateDisposition::Create),
+            1
+        ),
+        Err(Error::DiskFull)
+    );
+    fs.close(new).unwrap();
+    assert_eq!(fs.query_path(saved).unwrap().allocation_size, 0);
+    let other = fs
+        .open_allocated(
+            "\\Device\\Test\\other",
+            options(CreateDisposition::Create),
+            2 * FATX_CLUSTER_SIZE,
+        )
+        .unwrap()
+        .handle;
+    fs.close(other).unwrap();
+}
+
+#[test]
 fn symbolic_links_paths_and_cycles() {
     let mut ns = Namespace::new();
     ns.create_symbolic_link("\\??\\D:", CDROM_DEVICE).unwrap();

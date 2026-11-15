@@ -41,8 +41,16 @@ The harness checks these separate contracts:
   bytes and key produce identical signatures in the fresh Runtime.
 - A small volume fails after a partial write. Exact counts invalidate that slot
   while the older slot remains recoverable. Short reads, a truncated header,
-  and incorrect build, allocation identity or backing address fail. Header
-  failures leave state and lifecycle callbacks untouched.
+  and incorrect build, allocation identity, backing address or compatibility
+  fields fail. Header fixtures close their writable handle before restore;
+  a valid control uses the same file and sharing setup. Observers record the
+  generated ReadFile result and the bytes seen by both real header validators.
+  Each malformed-header case also disables its validator temporarily and
+  verifies that restore then succeeds, breaking the rejection assertion.
+  Identity failures leave all lifecycle callbacks and state untouched;
+  compatibility failures may load scenario/BSP metadata but never enter the
+  state callbacks or read the bulk state. A truncated header must show a
+  successful short ReadFile and reach neither validator.
 
 The fixture supplies the worker allocator/queue synchronously, then repeatedly
 runs the **generated** I/O job until completion. Engine allocators and the
@@ -69,9 +77,13 @@ input before publishing the IOSB and passes it through VFS's allocated-open
 methods. Negative sizes are rejected.
 
 HostBackend reserves cluster-rounded **logical FATX capacity** without extending
-EOF. Writes consume the reservation; EOF changes and file-object cleanup trim
-unused capacity. Unwritten reservations are session state, while file bytes and
-metadata persist. Capacity checks precede create/overwrite so disk-full failures
+EOF. Writes consume the reservation; EOF changes and the owner's last handle
+close trim unused capacity. Each reservation retains its creating file-object
+identity. Independent reader/writer closes cannot release it; duplicate handles
+share its lifetime, and overwriting transfers ownership to the new file object.
+Ordinary cleanup still flushes data/timestamps independently. Unwritten
+reservations are session state, while file bytes and metadata persist.
+Capacity checks precede create/overwrite so disk-full failures
 do not truncate an older file. Existing ordinary opens ignore the allocation
 hint; directories ignore it too. Backends without reservation support stop
 before nonzero create/overwrite reservations change data.
