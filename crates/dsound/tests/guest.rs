@@ -352,10 +352,7 @@ fn mix_in_buffers_are_accepted_but_reported() {
     let buf = rig.create_buffer(0x0010_0000, 0, 0);
     assert_eq!(rig.call(PLAY, &[buf, 0, 0, 0]).eax, S_OK);
     assert_eq!(rig.status(buf), DSBSTATUS_PLAYING | DSBSTATUS_LOOPING);
-    assert_eq!(
-        rig.ds.ignored().get("mix-in buffer Play (no DSP, silent)"),
-        Some(&1)
-    );
+    assert_eq!(rig.ds.ignored().get("mix-in buffer Play"), Some(&1));
     assert!(rig.render(4).iter().all(|&v| v == 0.0));
 }
 
@@ -532,9 +529,104 @@ fn three_d_state_is_stored_and_pans_ctrl3d_buffers() {
         out[1] > out[0],
         "source on the right is louder on the right: {out:?}"
     );
-    // Cone, doppler etc. are accepted but counted.
-    rig.call(0x0037c600, &[buf, 0, 1]);
-    assert_eq!(rig.ds.ignored().get("SetConeOutsideVolume"), Some(&1));
+    // Doppler is stored and counted (not modelled); the cone outside volume
+    // is applied but the default 360 degree cone never reaches it.
+    rig.call(0x0037c69d, &[buf, f(0.0), 1]);
+    assert_eq!(rig.ds.ignored().get("SetDopplerFactor"), Some(&1));
+    rig.call(0x0037c600, &[buf, (-10_000i32) as u32, 1]);
+    assert_eq!(rig.render(2), out);
+    // Rolloff: 5 units out with min distance 1 is 1 / (1 + 4); 0 turns the
+    // attenuation off, as Halo 2 sets it.
+    let near_right = out[1];
+    rig.call(0x0037c668, &[buf, f(0.0), f(0.0), f(5.0), 0]);
+    let ahead = rig.render(2);
+    assert!((ahead[0] - 0.2 * 0.5).abs() < 1e-6, "{ahead:?}");
+    rig.call(0x0037c6c1, &[buf, f(0.0), 1]);
+    assert_eq!(rig.render(2), vec![0.5; 4]);
+    assert!(near_right < 0.5);
+}
+
+/// Halo 2's positioned voice (sound core `0x220b90`, `0x220ea1`): a mix-in
+/// buffer with `DSBCAPS_CTRL3D` reading FX send bin `0x17`, the 3D routing
+/// `{6, 8, 7, 9, 10}`, max/min distance `FLT_MAX`, rolloff, Doppler and cone
+/// volume 0; the voice's samples come from a stream sending to bin `0x17`.
+#[test]
+fn stream_through_a_positioned_mix_in_is_panned_and_follows_the_buffer() {
+    let mut rig = Rig::new();
+    let f = |v: f32| v.to_bits();
+    let pairs = rig.put(
+        &[6u32, 0, 8, 0, 7, 0, 9, 0, 10, 0]
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect::<Vec<_>>(),
+    );
+    let bins_3d = rig.put(&[5u32.to_le_bytes(), pairs.to_le_bytes()].concat());
+    let mut d = Vec::new();
+    for v in [
+        BufferDesc::SIZE,
+        0x0008_0000 | DSBCAPS_CTRL3D,
+        0,
+        0,
+        bins_3d,
+        0x17,
+    ] {
+        d.extend(v.to_le_bytes());
+    }
+    let desc = rig.put(&d);
+    let out = rig.scratch(4);
+    assert_eq!(
+        rig.call(CREATE_BUFFER, &[rig.ds_ptr, desc, out, 0]).eax,
+        S_OK
+    );
+    let mix = rig.h.read_u32(out).unwrap();
+    for (va, v) in [
+        (0x0037c620, f(f32::MAX)),
+        (0x0037c644, f(f32::MAX)),
+        (0x0037c6c1, 0),
+        (0x0037c69d, 0),
+        (0x0037c600, 0),
+    ] {
+        assert_eq!(rig.call(va, &[mix, v, 1]).eax, S_OK, "{va:#x}");
+    }
+    assert_eq!(
+        rig.call(0x0037c668, &[mix, f(10.0), f(0.0), f(0.0), 1]).eax,
+        S_OK
+    );
+
+    let wfx = rig.wfx(1, 1, RATE, 16, 2);
+    let stream = rig.create_stream(wfx, 4, 0, 0);
+    let send = rig.put(&[0x17u32.to_le_bytes(), 0u32.to_le_bytes()].concat());
+    let send = rig.put(&[1u32.to_le_bytes(), send.to_le_bytes()].concat());
+    assert_eq!(rig.call(0x0037c70a, &[stream, send]).eax, S_OK);
+    let (status, _) = rig.process(stream, &pcm16(&[16384; 64]), 0);
+
+    // Not played yet: the mix-in passes nothing, the packet still plays.
+    assert_eq!(rig.render(4), vec![0.0; 8]);
+    assert_eq!(rig.call(PLAY, &[mix, 0, 0, 0]).eax, S_OK);
+    let right = rig.render(4);
+    assert_eq!(right[1], 0.5, "{right:?}");
+    assert!(right[0] > 0.05 && right[0] < 0.15, "{right:?}");
+    // Every frame of the packet has played: 4 + 4 + 56 = 64.
+    rig.call(0x0037c668, &[mix, f(-10.0), f(0.0), f(0.0), 1]);
+    let left = rig.render(4);
+    assert_eq!((left[0], left[1]), (right[1], right[0]));
+    // Halo's own distance attenuation goes through the mix-in volume.
+    assert_eq!(rig.call(SET_VOLUME, &[mix, (-600i32) as u32]).eax, S_OK);
+    let quieter = rig.render(4);
+    assert!((quieter[0] - 0.5 * 10f32.powf(-0.3)).abs() < 1e-6);
+    // Paused and stopped mix-ins are silent.
+    assert_eq!(rig.call(PAUSE, &[mix, 1]).eax, S_OK);
+    assert_eq!(rig.render(4), vec![0.0; 8]);
+    assert_eq!(rig.call(PAUSE, &[mix, 0]).eax, S_OK);
+    assert!(rig.render(4)[0] > 0.0);
+    assert_eq!(rig.call(STOP, &[mix]).eax, S_OK);
+    assert_eq!(rig.render(48), vec![0.0; 96]);
+    assert_eq!(rig.call(DO_WORK, &[]).eax, S_OK);
+    assert_eq!(rig.h.read_u32(status).unwrap(), 0, "packet completed");
+    // Releasing the mix-in removes its submix.
+    assert_eq!(rig.mixer.lock().unwrap().mix_in_count(), 1);
+    assert_eq!(rig.call(BUF_RELEASE, &[mix]).eax, 0);
+    assert_eq!(rig.mixer.lock().unwrap().mix_in_count(), 0);
 }
 
 #[test]

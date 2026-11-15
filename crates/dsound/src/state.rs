@@ -12,7 +12,8 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
-use audio::dsound::{BufferId, Mode3d, PacketId, PacketStatus, Source3d, StreamId, Vec3};
+use audio::dsound::{BufferId, MixIn, Mode3d, PacketId, PacketStatus, Source3d, StreamId, Vec3};
+use audio::mixer::MixInId;
 use audio::{Mixer, SoundBuffer, Stream, WaveFormat};
 
 use crate::abi::*;
@@ -166,6 +167,14 @@ struct BufferObj {
     position: Option<[f32; 3]>,
     min_distance: f32,
     max_distance: f32,
+    /// `SetRolloffFactor` on the buffer (multiplies the listener's).
+    rolloff: f32,
+    /// `SetDopplerFactor` on the buffer: stored, Doppler is not modelled.
+    doppler: f32,
+    /// `SetConeOutsideVolume`, millibels.
+    cone_outside_mb: i32,
+    /// The mixer submix standing in for a mix-in buffer.
+    bus: Option<MixInId>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -485,6 +494,9 @@ impl DirectSound {
                     if let Some(id) = b.audio {
                         self.mixer.lock().unwrap().remove_buffer(id);
                     }
+                    if let Some(id) = b.bus {
+                        self.mixer.lock().unwrap().remove_mix_in(id);
+                    }
                     if let Some((base, _)) = b.data.and_then(|d| d.alloc) {
                         h.free(base);
                     }
@@ -584,6 +596,9 @@ impl DirectSound {
     fn release_buffer_gate(&mut self, ptr: u32) -> Result<(), Stop> {
         let b = self.buf(ptr)?;
         b.gate = Gate::Open;
+        if b.mix_in {
+            return self.sync_buffer(ptr);
+        }
         let Some(r) = b.resume.take() else {
             return Ok(());
         };
@@ -955,7 +970,19 @@ impl DirectSound {
             position: None,
             min_distance: 1.0,
             max_distance: 1.0e9,
+            rolloff: 1.0,
+            doppler: 1.0,
+            cone_outside_mb: 0,
+            bus: None,
         };
+        if mix_in {
+            obj.bus = Some(
+                self.mixer
+                    .lock()
+                    .unwrap()
+                    .add_mix_in(MixIn::new(d.input_mix_bin)),
+            );
+        }
         if let (Some(fmt), true) = (format, d.buffer_bytes != 0) {
             let align = fmt.block_align() as u32;
             if d.buffer_bytes % align != 0 || d.buffer_bytes > MAX_GUEST_COPY {
@@ -985,10 +1012,22 @@ impl DirectSound {
                 alloc: Some((p, d.buffer_bytes)),
             });
         }
-        let (audio, data) = (obj.audio, obj.data.as_ref().and_then(|d| d.alloc));
+        let (audio, bus, data) = (obj.audio, obj.bus, obj.data.as_ref().and_then(|d| d.alloc));
+        {
+            let mut m = self.mixer.lock().unwrap();
+            if let Some(sb) = audio.and_then(|id| m.buffer_mut(id)) {
+                Self::apply_params(&obj, sb);
+            }
+            if let Some(mi) = bus.and_then(|id| m.mix_in_mut(id)) {
+                Self::apply_mix_in(&obj, mi);
+            }
+        }
         let rollback = |this: &mut Self, h: &mut dyn Host| {
             if let Some(id) = audio {
                 this.mixer.lock().unwrap().remove_buffer(id);
+            }
+            if let Some(id) = bus {
+                this.mixer.lock().unwrap().remove_mix_in(id);
             }
             if let Some((base, _)) = data {
                 h.free(base);
@@ -1056,7 +1095,8 @@ impl DirectSound {
         } else {
             default_mix_bins(d.flags, format.channels() as usize)
         };
-        let stream = Stream::new(format).map_err(|_| unimpl("stream format"))?;
+        let mut stream = Stream::new(format).map_err(|_| unimpl("stream format"))?;
+        stream.set_mix_bins(Some(mix_bins.clone()));
         let audio = self.mixer.lock().unwrap().add_stream(stream);
         let obj = StreamObj {
             refs: 1,
@@ -1113,16 +1153,62 @@ impl DirectSound {
         if let Some(hz) = b.frequency {
             sb.set_frequency(hz);
         }
-        sb.set_source_3d(match (b.flags & DSBCAPS_CTRL3D != 0, b.position) {
+        sb.set_source_3d(Self::source_3d(b));
+        sb.set_mix_bins(Some(b.mix_bins.clone()));
+    }
+
+    /// The mixer submix of a mix-in buffer: volume, routing, 3D and whether
+    /// it passes audio (played, and not paused or held).
+    fn apply_mix_in(b: &BufferObj, mi: &mut MixIn) {
+        mi.set_volume(b.volume_mb);
+        mi.set_source_3d(Self::source_3d(b));
+        mi.set_mix_bins(Some(b.mix_bins.clone()));
+        if b.mix_in_playing && b.gate == Gate::Open {
+            mi.play();
+        } else {
+            mi.stop();
+        }
+    }
+
+    /// A `DSBCAPS_CTRL3D` voice's source, once the game has positioned it.
+    fn source_3d(b: &BufferObj) -> Option<Source3d> {
+        match (b.flags & DSBCAPS_CTRL3D != 0, b.position) {
             (true, Some([x, y, z])) => Some(Source3d {
                 position: Vec3::new(x, y, z),
                 min_distance: b.min_distance,
                 max_distance: b.max_distance,
+                rolloff_factor: b.rolloff,
+                doppler_factor: b.doppler,
+                cone_outside_volume_mb: b.cone_outside_mb,
                 mode: Mode3d::Normal,
                 ..Default::default()
             }),
             _ => None,
-        });
+        }
+    }
+
+    /// Pushes a buffer's stored parameters to its mixer voice or submix.
+    fn sync_buffer(&mut self, ptr: u32) -> Result<(), Stop> {
+        let mixer = Arc::clone(&self.mixer);
+        let b = self.buf(ptr)?;
+        let mut m = mixer.lock().unwrap();
+        if let Some(sb) = b.audio.and_then(|id| m.buffer_mut(id)) {
+            Self::apply_params(b, sb);
+        }
+        if let Some(mi) = b.bus.and_then(|id| m.mix_in_mut(id)) {
+            Self::apply_mix_in(b, mi);
+        }
+        Ok(())
+    }
+
+    /// Pushes a stream's routing to its mixer voice.
+    fn sync_stream_bins(&mut self, ptr: u32) -> Result<(), Stop> {
+        let mixer = Arc::clone(&self.mixer);
+        let s = self.stream(ptr)?;
+        if let Some(st) = mixer.lock().unwrap().stream_mut(s.audio) {
+            st.set_mix_bins(Some(s.mix_bins.clone()));
+        }
+        Ok(())
     }
 
     fn with_audio<T>(
@@ -1280,7 +1366,8 @@ impl DirectSound {
             // the other flags).
             b.mix_in_playing = true;
             b.gate = Gate::Open;
-            self.note("mix-in buffer Play (no DSP, silent)");
+            self.note("mix-in buffer Play");
+            self.sync_buffer(ptr)?;
             return Ok(S_OK);
         }
         if b.audio.is_none() {
@@ -1325,6 +1412,7 @@ impl DirectSound {
         b.resume = None;
         b.mix_in_playing = false;
         self.with_audio(ptr, |_, sb| sb.stop())?;
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1366,6 +1454,7 @@ impl DirectSound {
                     });
                 }
                 self.buf(ptr)?.gate = want;
+                self.sync_buffer(ptr)?;
             }
         }
         Ok(S_OK)
@@ -1419,7 +1508,7 @@ impl DirectSound {
             return Ok(E_INVALIDARG);
         }
         self.buf(ptr)?.volume_mb = mb;
-        self.with_audio(ptr, |b, sb| sb.set_volume(b.volume_mb))?;
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1463,6 +1552,7 @@ impl DirectSound {
             None => default_mix_bins(b.flags, b.format.map_or(2, |f| f.channels() as usize)),
         };
         self.note("SetMixBins");
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1476,6 +1566,7 @@ impl DirectSound {
             }
         }
         self.note("SetMixBinVolumes");
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1502,8 +1593,30 @@ impl DirectSound {
         self.refresh_3d(ptr)
     }
 
-    /// Doppler, rolloff, cone volume and I3DL2 source settings are accepted
-    /// and counted (the audio crate's 3D model has no such terms).
+    /// `SetRolloffFactor(flRolloffFactor, dwApply)` on a buffer: multiplies
+    /// the listener's rolloff for this voice. Halo 2 passes 0 (it attenuates
+    /// by distance itself through the voice volume).
+    pub fn buffer_set_rolloff(&mut self, ptr: u32, v: u32) -> R {
+        self.buf(ptr)?.rolloff = f(v);
+        self.refresh_3d(ptr)
+    }
+
+    /// `SetConeOutsideVolume(lConeOutsideVolume, dwApply)`, millibels.
+    pub fn buffer_set_cone_outside_volume(&mut self, ptr: u32, mb: u32) -> R {
+        self.buf(ptr)?.cone_outside_mb = (mb as i32).clamp(-10_000, 0);
+        self.refresh_3d(ptr)
+    }
+
+    /// `SetDopplerFactor(flDopplerFactor, dwApply)`: stored and counted;
+    /// Doppler shift is not modelled.
+    pub fn buffer_set_doppler(&mut self, ptr: u32, v: u32) -> R {
+        self.buf(ptr)?.doppler = f(v);
+        self.note("SetDopplerFactor");
+        self.refresh_3d(ptr)
+    }
+
+    /// I3DL2 source settings (reverb, occlusion) are accepted and counted:
+    /// reverb is not modelled.
     pub fn buffer_set_3d_extra(&mut self, ptr: u32, what: &'static str) -> R {
         self.buf(ptr)?;
         self.note(what);
@@ -1511,7 +1624,7 @@ impl DirectSound {
     }
 
     fn refresh_3d(&mut self, ptr: u32) -> R {
-        self.with_audio(ptr, Self::apply_params)?;
+        self.sync_buffer(ptr)?;
         Ok(S_OK)
     }
 
@@ -1754,6 +1867,7 @@ impl DirectSound {
             None => default_mix_bins(s.flags, usize::from(s.info.channels)),
         };
         self.note("SetMixBins");
+        self.sync_stream_bins(ptr)?;
         Ok(S_OK)
     }
 
@@ -1767,6 +1881,7 @@ impl DirectSound {
             }
         }
         self.note("SetMixBinVolumes");
+        self.sync_stream_bins(ptr)?;
         Ok(S_OK)
     }
 

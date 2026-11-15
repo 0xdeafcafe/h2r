@@ -9,6 +9,7 @@
 //! - [`resample`]: linear sample-rate conversion.
 //! - [`dsound`]: buffers, streams, 3D stub: the DirectSound-shaped model.
 //! - [`mixer`]: software mixer rendering voices to a host buffer.
+//! - [`route`]: Xbox mix bins folded down to stereo.
 //! - [`sink`]: lock-free ring, `AudioSink`, headless `NullSink`, latency-targeting `Pump`.
 //! - [`output`]: the only device-touching code (feature `device`).
 
@@ -17,14 +18,15 @@ pub mod dsound;
 pub mod format;
 pub mod mixer;
 pub mod resample;
+pub mod route;
 pub mod sink;
 
 #[cfg(feature = "device")]
 pub mod output;
 
-pub use dsound::{BufferId, SoundBuffer, Stream, StreamId};
+pub use dsound::{BufferId, MixIn, SoundBuffer, Stream, StreamId};
 pub use format::{Codec, WaveFormat};
-pub use mixer::Mixer;
+pub use mixer::{MixInId, Mixer};
 pub use sink::{AudioSink, NullSink, Pump, SinkStats};
 
 /// Errors from the audio layer.

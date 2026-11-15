@@ -196,11 +196,9 @@ pub fn invoke(
         "IDirectSoundBuffer_SetPosition" => ds.buffer_set_position(a(0), a(1), a(2), a(3)),
         "IDirectSoundBuffer_SetMinDistance" => ds.buffer_set_min_distance(a(0), a(1)),
         "IDirectSoundBuffer_SetMaxDistance" => ds.buffer_set_max_distance(a(0), a(1)),
-        "IDirectSoundBuffer_SetConeOutsideVolume" => {
-            ds.buffer_set_3d_extra(a(0), "SetConeOutsideVolume")
-        }
-        "IDirectSoundBuffer_SetDopplerFactor" => ds.buffer_set_3d_extra(a(0), "SetDopplerFactor"),
-        "IDirectSoundBuffer_SetRolloffFactor" => ds.buffer_set_3d_extra(a(0), "SetRolloffFactor"),
+        "IDirectSoundBuffer_SetConeOutsideVolume" => ds.buffer_set_cone_outside_volume(a(0), a(1)),
+        "IDirectSoundBuffer_SetDopplerFactor" => ds.buffer_set_doppler(a(0), a(1)),
+        "IDirectSoundBuffer_SetRolloffFactor" => ds.buffer_set_rolloff(a(0), a(1)),
         "IDirectSoundBuffer_SetI3DL2Source" => ds.buffer_set_3d_extra(a(0), "SetI3DL2Source"),
         "IDirectSoundBuffer_GetVoiceProperties" => ds.buffer_get_voice_properties(h, a(0), a(1)),
         "IDirectSoundStream_GetVoiceProperties" => ds.stream_get_voice_properties(h, a(0), a(1)),

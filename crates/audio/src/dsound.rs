@@ -46,11 +46,19 @@ pub struct VoiceParams {
     pub pan_mb: i32,
     /// Optional 3D source; see [`Listener`].
     pub spatial: Option<Source3d>,
+    /// Xbox mix-bin routing, `(bin, volume in millibels)`; see [`crate::route`].
+    /// `None` mixes the voice straight to stereo with `volume_mb` and `pan_mb`
+    /// (and the 3D panning, if any), as a plain DirectSound voice.
+    pub mix_bins: Option<Vec<(u32, i32)>>,
 }
 
 impl VoiceParams {
     fn new(format: &WaveFormat) -> Self {
-        Self { frequency: format.sample_rate(), volume_mb: 0, pan_mb: 0, spatial: None }
+        Self::with_frequency(format.sample_rate())
+    }
+
+    fn with_frequency(frequency: u32) -> Self {
+        Self { frequency, volume_mb: 0, pan_mb: 0, spatial: None, mix_bins: None }
     }
 
     /// Left and right linear gains from volume and pan (no 3D).
@@ -80,6 +88,11 @@ macro_rules! voice_setters {
         /// Attaches (or with `None` detaches) a 3D source.
         pub fn set_source_3d(&mut self, src: Option<Source3d>) {
             self.params.spatial = src;
+        }
+        /// `SetMixBins`/`SetMixBinVolumes`: routes the voice through Xbox mix
+        /// bins (see [`crate::route`]); `None` mixes it straight to stereo.
+        pub fn set_mix_bins(&mut self, bins: Option<Vec<(u32, i32)>>) {
+            self.params.mix_bins = bins;
         }
         pub fn params(&self) -> &VoiceParams {
             &self.params
@@ -273,6 +286,44 @@ impl SoundBuffer {
     }
 }
 
+/// A mix-in (submix) voice: an Xbox buffer created with `DSBCAPS_MIXIN` or
+/// `DSBCAPS_FXIN` that carries no samples of its own. Everything other voices
+/// send to its `input_bin` (one of the FX send bins, see [`crate::route`]) is
+/// summed to mono and then mixed like a voice: its volume, its own mix bins
+/// and, for a 3D mix-in, the listener's panning and attenuation. Halo 2
+/// positions its sounds this way: each voice's stream feeds a 3D mix-in that
+/// the game moves with `SetPosition`.
+///
+/// Like the hardware voice it stands for, a mix-in passes audio only while
+/// playing; input sent to a stopped mix-in is dropped.
+#[derive(Debug)]
+pub struct MixIn {
+    input_bin: u32,
+    params: VoiceParams,
+    playing: bool,
+}
+
+impl MixIn {
+    pub fn new(input_bin: u32) -> Self {
+        Self { input_bin, params: VoiceParams::with_frequency(0), playing: false }
+    }
+
+    voice_setters!();
+
+    pub fn input_bin(&self) -> u32 {
+        self.input_bin
+    }
+    pub fn play(&mut self) {
+        self.playing = true;
+    }
+    pub fn stop(&mut self) {
+        self.playing = false;
+    }
+    pub fn is_playing(&self) -> bool {
+        self.playing
+    }
+}
+
 /// Result of `Lock`; dropping it performs `Unlock`.
 pub struct Lock<'a> {
     buf: &'a mut SoundBuffer,
@@ -391,6 +442,15 @@ impl Stream {
         self.pos = 0.0;
     }
 
+    pub fn is_paused(&self) -> bool {
+        self.paused
+    }
+
+    /// Something would be heard: not paused and a packet is queued.
+    pub fn is_audible(&self) -> bool {
+        !self.paused && !self.queue.is_empty()
+    }
+
     /// Packets queued and not yet finished.
     pub fn pending(&self) -> usize {
         self.queue.len()
@@ -475,6 +535,14 @@ impl Vec3 {
     fn len(self) -> f32 {
         self.dot(self).sqrt()
     }
+    fn scale(self, k: f32) -> Self {
+        Self::new(self.x * k, self.y * k, self.z * k)
+    }
+    /// Unit vector, or `None` for a (near) zero or non-finite vector.
+    fn unit(self) -> Option<Self> {
+        let l = self.len();
+        (l.is_finite() && l > 1e-6).then(|| self.scale(1.0 / l))
+    }
 }
 
 /// How a 3D source's position is interpreted (`DS3DMODE_*`).
@@ -488,16 +556,33 @@ pub enum Mode3d {
     Disabled,
 }
 
-/// A positional sound source (`DS3DBUFFER`, reduced).
+/// `DS3D_DEFAULTCONEANGLE`: a 360 degree cone, which means no cone at all.
+pub const CONE_ANGLE_NONE: u32 = 360;
+
+/// A positional sound source (`DS3DBUFFER`).
 ///
-/// Stub: velocity, cones and `DSBCAPS_CTRL3D` min/max-distance hardware
-/// behaviour are not modelled; see [`Listener::spatialize`].
+/// See [`Listener::spatial`] for what each field does to the mix.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Source3d {
     pub position: Vec3,
+    /// Stored; Doppler shift is not modelled.
     pub velocity: Vec3,
+    /// Inside this distance the source is at full volume.
     pub min_distance: f32,
+    /// Beyond this distance the source gets no quieter.
     pub max_distance: f32,
+    /// Per-source rolloff, multiplied with the listener's. 0 turns distance
+    /// attenuation off (Halo 2 does its own and passes 0).
+    pub rolloff_factor: f32,
+    /// Stored; Doppler shift is not modelled.
+    pub doppler_factor: f32,
+    /// Inside and outside cone angles in degrees (`SetConeAngles`).
+    pub cone_inside: u32,
+    pub cone_outside: u32,
+    /// Direction the cone points (`SetConeOrientation`).
+    pub cone_orientation: Vec3,
+    /// Volume outside the outer cone, millibels (`SetConeOutsideVolume`).
+    pub cone_outside_volume_mb: i32,
     pub mode: Mode3d,
 }
 
@@ -508,31 +593,59 @@ impl Default for Source3d {
             velocity: Vec3::default(),
             min_distance: 1.0,
             max_distance: 1.0e9,
+            rolloff_factor: 1.0,
+            doppler_factor: 1.0,
+            cone_inside: CONE_ANGLE_NONE,
+            cone_outside: CONE_ANGLE_NONE,
+            cone_orientation: Vec3::new(0.0, 0.0, 1.0),
+            cone_outside_volume_mb: 0,
             mode: Mode3d::Normal,
         }
     }
 }
 
+/// What a 3D source gets from the listener: see [`Listener::spatial`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Spatial {
+    /// Distance and cone attenuation, linear.
+    pub gain: f32,
+    /// Panning gains, linear, each at most 1 (1 and 1 for a centred source).
+    pub left: f32,
+    pub right: f32,
+    /// 1 straight ahead, 0 straight behind, 0.5 to the side: how much of the
+    /// voice goes to the front crosstalk mix bins rather than the back ones.
+    pub front: f32,
+}
+
+impl Spatial {
+    /// No 3D processing.
+    pub const DRY: Self = Self { gain: 1.0, left: 1.0, right: 1.0, front: 1.0 };
+}
+
+/// How much of a hard-left or hard-right source still reaches the far ear:
+/// the pan position is scaled by this before the pan law, so a lateral source
+/// leaves the far channel about 16 dB down instead of silent (heads do not
+/// fully shadow sound; this stands in for the HRTF the MCPX DSP ran).
+pub const PAN_WIDTH: f32 = 0.8;
+
 /// The 3D listener (`IDirectSound::SetPosition` & co.).
 ///
-/// # What is missing
-///
-/// This is a stub meant to make positional sounds audible, not to match the
-/// hardware. Not modelled: Doppler shift (velocity is stored, never used),
-/// inside/outside sound cones, HRTF and the XTalk crosstalk cancellation
-/// (those ran on the MCPX DSP), occlusion/obstruction, reverb sends, and the
-/// SDK's `DS3D_IMMEDIATE`/`DEFERRED` commit semantics (every change is
-/// immediate). Distance attenuation is inverse-distance past
-/// `min_distance` and panning is a plain left/right projection.
+/// The Xbox ran HRTF and crosstalk cancellation for 3D voices on the MCPX
+/// DSP. That is not emulated; [`spatial`](Self::spatial) is a simple,
+/// documented stand-in. Not modelled: Doppler shift (velocities and factors
+/// are stored, never used), HRTF elevation and front/back colouring,
+/// occlusion and obstruction, reverb sends, and the SDK's
+/// `DS3D_DEFERRED` commit semantics (every change is immediate).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Listener {
     pub position: Vec3,
     pub front: Vec3,
     pub top: Vec3,
     pub velocity: Vec3,
-    /// World units per metre; scales distances.
+    /// Metres per world unit. In DirectSound 3D this only scales velocities
+    /// for Doppler, which is not modelled, so it is stored only.
     pub distance_factor: f32,
-    /// 0 disables attenuation, 1 is normal inverse-distance.
+    /// Global rolloff, multiplied with each source's. 0 disables attenuation.
     pub rolloff_factor: f32,
     /// Stored for the shim; unused.
     pub doppler_factor: f32,
@@ -553,33 +666,86 @@ impl Default for Listener {
 }
 
 impl Listener {
-    /// Returns the (linear gain, pan in millibels) a source gets from this
-    /// listener. Pan is capped at +-4000 mB so a hard-side source is clearly
-    /// lateral without going fully silent in one ear.
-    pub fn spatialize(&self, src: &Source3d) -> (f32, i32) {
+    /// The listener's right, up and front unit axes. The game's front and top
+    /// need be neither unit length nor exactly orthogonal; a degenerate pair
+    /// falls back to the default orientation.
+    fn axes(&self) -> (Vec3, Vec3, Vec3) {
+        let default = (Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 0.0, 1.0));
+        let Some(front) = self.front.unit() else { return default };
+        // Left-handed: right = top x front (front +z, top +y gives +x).
+        let Some(right) = self.top.cross(front).unit() else { return default };
+        (right, front.cross(right), front)
+    }
+
+    /// The panning and attenuation a source gets. The model, in full:
+    ///
+    /// - **Direction.** The source position relative to the listener (or as
+    ///   given, for [`Mode3d::HeadRelative`]) is projected on the listener's
+    ///   right axis: `p = x / distance` in `-1..=1` (front and back fold
+    ///   together). With `p' = p * PAN_WIDTH` and `t = (p' + 1) * pi / 4`,
+    ///   `left = min(1, sqrt(2) cos t)` and `right = min(1, sqrt(2) sin t)`:
+    ///   the sine/cosine equal-power law, scaled so a centred source keeps
+    ///   unity gain in both channels. A source at the listener is centred.
+    /// - **Front/back.** `front = (1 + z / distance) / 2` splits the voice
+    ///   between the front and back crosstalk mix bins (see `crate::route`).
+    /// - **Distance.** The DirectSound 3D inverse model, in world units:
+    ///   `d = min(distance, max_distance)`; full volume up to
+    ///   `min_distance`, then `min / (min + rolloff * (d - min))` with
+    ///   `rolloff = listener.rolloff_factor * source.rolloff_factor`.
+    /// - **Cone.** With angle `a` between the cone orientation and the
+    ///   direction from the source to the listener: 0 mB inside half the
+    ///   inner angle, `cone_outside_volume_mb` beyond half the outer angle,
+    ///   linear in millibels between. A 360 degree outer angle (the default)
+    ///   or a zero orientation means no cone.
+    pub fn spatial(&self, src: &Source3d) -> Spatial {
         if src.mode == Mode3d::Disabled {
-            return (1.0, 0);
+            return Spatial::DRY;
         }
         let rel = match src.mode {
             Mode3d::HeadRelative => src.position,
             _ => src.position.sub(self.position),
         };
-        let dist = (rel.len() * self.distance_factor).min(src.max_distance);
+        let dist = rel.len();
+        let (right_axis, _, front_axis) = self.axes();
+        let (p, front) = match rel.unit() {
+            Some(dir) => (dir.dot(right_axis).clamp(-1.0, 1.0), (1.0 + dir.dot(front_axis)) * 0.5),
+            None => (0.0, 1.0),
+        };
+        // In f64 so a centred source comes out at exactly 1.
+        let t = (f64::from(p * PAN_WIDTH) + 1.0) * std::f64::consts::FRAC_PI_4;
+        let left = (std::f64::consts::SQRT_2 * t.cos()).min(1.0) as f32;
+        let right = (std::f64::consts::SQRT_2 * t.sin()).min(1.0) as f32;
+
         let min = src.min_distance.max(1e-6);
-        let gain = if dist <= min {
-            1.0
-        } else {
-            min / (min + self.rolloff_factor * (dist - min))
-        };
-        let right = self.top.cross(self.front);
-        let rlen = right.len();
-        let pan = if dist > 1e-6 && rlen > 1e-6 {
-            (rel.dot(right) / (rlen * rel.len()) * 4000.0) as i32
-        } else {
-            0
-        };
-        (gain, pan)
+        let d = if dist.is_finite() { dist.min(src.max_distance.max(min)) } else { min };
+        let rolloff = (self.rolloff_factor * src.rolloff_factor).max(0.0);
+        let distance_gain = if d <= min { 1.0 } else { min / (min + rolloff * (d - min)) };
+
+        Spatial { gain: distance_gain * cone_gain(src, rel), left, right, front: front.clamp(0.0, 1.0) }
     }
+}
+
+/// The cone term of [`Listener::spatial`]. `rel` points from the listener to
+/// the source, so the source "sees" the listener along `-rel`.
+fn cone_gain(src: &Source3d, rel: Vec3) -> f32 {
+    let outside = src.cone_outside.min(CONE_ANGLE_NONE);
+    let inside = src.cone_inside.min(outside);
+    if outside >= CONE_ANGLE_NONE {
+        return 1.0;
+    }
+    let (Some(axis), Some(to_listener)) = (src.cone_orientation.unit(), rel.scale(-1.0).unit()) else {
+        return 1.0;
+    };
+    let angle = axis.dot(to_listener).clamp(-1.0, 1.0).acos().to_degrees();
+    let (half_in, half_out) = (inside as f32 / 2.0, outside as f32 / 2.0);
+    let mb = if angle <= half_in {
+        0.0
+    } else if angle >= half_out || half_out <= half_in {
+        src.cone_outside_volume_mb as f32
+    } else {
+        src.cone_outside_volume_mb as f32 * (angle - half_in) / (half_out - half_in)
+    };
+    mb_to_gain(mb.round() as i32)
 }
 
 #[cfg(test)]
@@ -762,16 +928,94 @@ mod tests {
     fn listener_attenuates_and_pans() {
         let l = Listener::default();
         let near = Source3d { position: Vec3::new(0.5, 0.0, 0.0), ..Default::default() };
-        assert_eq!(l.spatialize(&near).0, 1.0);
+        assert_eq!(l.spatial(&near).gain, 1.0);
         let far = Source3d { position: Vec3::new(5.0, 0.0, 0.0), ..Default::default() };
-        let (g, pan) = l.spatialize(&far);
-        assert!((g - 0.2).abs() < 1e-5); // 1 / (1 + 4)
-        assert_eq!(pan, 4000); // hard right
-        let left = Source3d { position: Vec3::new(-2.0, 0.0, 0.0), ..Default::default() };
-        assert_eq!(l.spatialize(&left).1, -4000);
-        let ahead = Source3d { position: Vec3::new(0.0, 0.0, 3.0), ..Default::default() };
-        assert_eq!(l.spatialize(&ahead).1, 0);
+        let s = l.spatial(&far);
+        assert!((s.gain - 0.2).abs() < 1e-5); // 1 / (1 + 4)
+        // Hard right: right ear full, left ear sqrt(2) cos(0.45 pi) ~ -16 dB.
+        assert_eq!(s.right, 1.0);
+        assert!((s.left - 0.2212).abs() < 1e-3, "{s:?}");
+        assert!((s.front - 0.5).abs() < 1e-6);
+        let left = l.spatial(&Source3d { position: Vec3::new(-2.0, 0.0, 0.0), ..Default::default() });
+        assert_eq!(left.left, 1.0);
+        assert!((left.right - 0.2212).abs() < 1e-3);
+        let ahead = l.spatial(&Source3d { position: Vec3::new(0.0, 0.0, 3.0), ..Default::default() });
+        assert_eq!((ahead.left, ahead.right, ahead.front), (1.0, 1.0, 1.0));
+        let behind = l.spatial(&Source3d { position: Vec3::new(0.0, 0.0, -3.0), ..Default::default() });
+        assert_eq!((behind.left, behind.right, behind.front), (1.0, 1.0, 0.0));
         let off = Source3d { mode: Mode3d::Disabled, position: Vec3::new(9.0, 0.0, 0.0), ..Default::default() };
-        assert_eq!(l.spatialize(&off), (1.0, 0));
+        assert_eq!(l.spatial(&off), Spatial::DRY);
+        let here = l.spatial(&Source3d::default());
+        assert_eq!((here.gain, here.left, here.right), (1.0, 1.0, 1.0));
+    }
+
+    #[test]
+    fn listener_orientation_and_position_rotate_the_pan() {
+        // Listener at (10, 0, 0) facing +x with y up: right is -z.
+        let l = Listener {
+            position: Vec3::new(10.0, 0.0, 0.0),
+            front: Vec3::new(2.0, 0.0, 0.0), // not unit length
+            top: Vec3::new(0.0, 3.0, 0.0),
+            ..Default::default()
+        };
+        let src = |x, z| Source3d { position: Vec3::new(x, 0.0, z), ..Default::default() };
+        let r = l.spatial(&src(10.0, -4.0));
+        assert_eq!(r.right, 1.0);
+        assert!(r.left < 0.3);
+        let ahead = l.spatial(&src(14.0, 0.0));
+        assert_eq!((ahead.left, ahead.right, ahead.front), (1.0, 1.0, 1.0));
+        // A degenerate orientation falls back to the default axes.
+        let flat = Listener { front: Vec3::default(), ..Default::default() };
+        assert_eq!(flat.spatial(&src(3.0, 0.0)).right, 1.0);
+    }
+
+    #[test]
+    fn distance_model_respects_rolloff_and_max_distance() {
+        let l = Listener::default();
+        let mut s = Source3d { position: Vec3::new(0.0, 0.0, 9.0), min_distance: 1.0, max_distance: 5.0, ..Default::default() };
+        // Clamped at max: 1 / (1 + 4).
+        assert!((l.spatial(&s).gain - 0.2).abs() < 1e-6);
+        s.rolloff_factor = 0.0; // Halo 2's setting: no attenuation.
+        assert_eq!(l.spatial(&s).gain, 1.0);
+        s.rolloff_factor = 2.0;
+        assert!((l.spatial(&s).gain - 1.0 / 9.0).abs() < 1e-6);
+        let quiet = Listener { rolloff_factor: 0.5, ..Default::default() };
+        assert!((quiet.spatial(&s).gain - 0.2).abs() < 1e-6);
+    }
+
+    #[test]
+    fn cone_attenuates_outside_listeners() {
+        let l = Listener::default();
+        // Source 4 units ahead of the listener; the listener is at angle 0
+        // from a cone pointing back at it (-z).
+        let mut s = Source3d {
+            position: Vec3::new(0.0, 0.0, 4.0),
+            rolloff_factor: 0.0,
+            cone_inside: 90,
+            cone_outside: 180,
+            cone_orientation: Vec3::new(0.0, 0.0, -1.0),
+            cone_outside_volume_mb: -2000,
+            ..Default::default()
+        };
+        assert_eq!(l.spatial(&s).gain, 1.0);
+        // Pointing away: the listener is outside the outer cone.
+        s.cone_orientation = Vec3::new(0.0, 0.0, 1.0);
+        assert!((l.spatial(&s).gain - mb_to_gain(-2000)).abs() < 1e-6);
+        // Pointing sideways: 90 degrees, half way between 45 and 90.
+        s.cone_orientation = Vec3::new(1.0, 0.0, 0.0);
+        assert!((l.spatial(&s).gain - mb_to_gain(-2000)).abs() < 1e-6);
+        s.cone_orientation = Vec3::new(1.0, 0.0, -1.0); // 45 degrees off: inside
+        assert!((l.spatial(&s).gain - 1.0).abs() < 1e-6);
+        s.cone_orientation = Vec3::new(0.577_35, 0.0, -1.0); // 30 deg: inside
+        assert_eq!(l.spatial(&s).gain, 1.0);
+        let tan_67_5 = 2.414_213_6;
+        s.cone_orientation = Vec3::new(tan_67_5, 0.0, -1.0); // 67.5: halfway
+        assert!((l.spatial(&s).gain - mb_to_gain(-1000)).abs() < 1e-4, "{:?}", l.spatial(&s));
+        // The default 360 degree cone, or no orientation, means no cone.
+        s.cone_outside = CONE_ANGLE_NONE;
+        assert_eq!(l.spatial(&s).gain, 1.0);
+        s.cone_outside = 180;
+        s.cone_orientation = Vec3::default();
+        assert_eq!(l.spatial(&s).gain, 1.0);
     }
 }
