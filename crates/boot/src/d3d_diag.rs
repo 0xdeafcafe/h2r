@@ -396,6 +396,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
         r
     }
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {
+        self.present_with_gamma(surface, flags, None)
+    }
+    fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("present {surface:?} flags={flags:#x}"));
@@ -416,7 +419,7 @@ impl<B: Backend> Backend for DiagBackend<B> {
         if let Some(l) = &mut self.log {
             let _ = l.flush();
         }
-        self.inner.present(surface, flags)
+        self.inner.present_with_gamma(surface, flags, gamma)
     }
     fn clear_rects(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: &RectClear) -> Result<DrawOutcome, String> {
         if let Some(c) = self.capturing() {

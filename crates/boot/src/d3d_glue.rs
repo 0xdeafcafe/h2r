@@ -51,7 +51,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
             };
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             let mut swaps = 0u64;
-            let mut backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags| {
+            let mut backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags, _gamma| {
                 swaps += 1;
                 if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
                     return;
@@ -150,6 +150,10 @@ impl d3d::backend::Backend for Headless {
     }
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
         let r = self.0.present(surface, flags);
+        self.forget(r)
+    }
+    fn present_with_gamma(&mut self, surface: u32, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
+        let r = self.0.present_with_gamma(surface, flags, gamma);
         self.forget(r)
     }
     fn clear_rects(&mut self, color: u32, depth: Option<u32>, clear: &d3d::backend::RectClear) -> Result<d3d::backend::DrawOutcome, String> {
