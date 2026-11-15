@@ -9,6 +9,10 @@ use std::sync::{
     atomic::{AtomicBool, AtomicU32, Ordering},
 };
 
+/// Gate bits, as in `h2fastmem.h`: the holder, and a Rust guard waiting.
+const GATE_HELD: u32 = 1;
+const GATE_WANTED: u32 = 2;
+
 #[repr(C)]
 pub struct MemoryData {
     pages: *const crate::guest::FastPage,
@@ -73,13 +77,25 @@ impl Memory {
                 ready: &self.ready,
             };
         }
+        // C holds the gate across runs of accesses and retakes it at once,
+        // so a waiter says so: C takes only a clear gate and releases its
+        // own bit alone, which leaves this guard next in line.
+        let gate = &self.shared.gate;
         let mut spins = 0;
-        while self
-            .shared
-            .gate
-            .compare_exchange_weak(0, 1, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
+        loop {
+            let seen = gate.load(Ordering::Relaxed);
+            if seen & GATE_HELD == 0 {
+                if gate
+                    .compare_exchange_weak(seen, GATE_HELD, Ordering::Acquire, Ordering::Relaxed)
+                    .is_ok()
+                {
+                    break;
+                }
+                continue;
+            }
+            if seen & GATE_WANTED == 0 {
+                gate.fetch_or(GATE_WANTED, Ordering::Relaxed);
+            }
             if spins < 64 {
                 std::hint::spin_loop();
                 spins += 1;
@@ -107,14 +123,23 @@ impl Memory {
         data.dirty_hi = 0;
         result
     }
-    pub(crate) fn allows_execute(&self, addr: u32) -> bool {
-        if !self.enabled.load(Ordering::Acquire)
-            || self
+    /// Take the gate without the Guest mutex, if it is entirely clear.
+    fn try_gate(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+            && self
                 .shared
                 .gate
-                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-        {
+                .compare_exchange(0, GATE_HELD, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+    }
+    /// Release a gate taken by [`Self::try_gate`]; the word it leaves. Only
+    /// the held bit is cleared: a guard may have started waiting meanwhile,
+    /// and a plain store of 0 would erase its request.
+    fn release_gate(&self) -> u32 {
+        self.shared.gate.fetch_and(!GATE_HELD, Ordering::Release) & !GATE_HELD
+    }
+    pub(crate) fn allows_execute(&self, addr: u32) -> bool {
+        if !self.try_gate() {
             return false;
         }
         // SAFETY: gate excludes both Rust mutations and C operations. A
@@ -123,7 +148,7 @@ impl Memory {
             let data = &*self.shared.data.get();
             !data.pages.is_null() && (*data.pages.add((addr >> 12) as usize)).permissions & 4 != 0
         };
-        self.shared.gate.store(0, Ordering::Release);
+        self.release_gate();
         allowed
     }
     pub(crate) fn fast_shared(&self) -> *const MemoryShared {
@@ -315,6 +340,61 @@ mod tests {
     use super::*;
     use crate::guest::Permissions;
     use crate::{CpuAbi, Dispatch, Runtime};
+
+    /// A guard waiting on a gate that C holds marks it wanted. C's release
+    /// clears only its own bit, C's try (a clear gate only) then fails, and
+    /// the guard gets the gate and leaves it clear.
+    #[test]
+    fn waiting_guard_marks_the_gate_and_is_next() {
+        let rt = Runtime::new(Guest::new(), Dispatch::default());
+        rt.memory().map(0x1000, 0x1000, 0, Permissions::RW).unwrap();
+        // SAFETY: the view outlives this test's uses; only its gate is touched.
+        let gate = unsafe { &(*rt.fast_memory()).gate };
+        // What h2_gate_take does.
+        assert_eq!(gate.compare_exchange(0, GATE_HELD, Ordering::Acquire, Ordering::Relaxed), Ok(0));
+        let host = rt.clone();
+        let waiter = std::thread::spawn(move || {
+            let mut m = host.memory();
+            m.set_u32(0x1000, 7).unwrap();
+        });
+        while gate.load(Ordering::Relaxed) & GATE_WANTED == 0 {
+            std::thread::yield_now();
+        }
+        assert_eq!(gate.load(Ordering::Relaxed), GATE_HELD | GATE_WANTED);
+        // C cannot retake a wanted gate, held or released.
+        assert!(gate.compare_exchange(0, GATE_HELD, Ordering::Acquire, Ordering::Relaxed).is_err());
+        // What H2_GATE_RELEASE does.
+        gate.fetch_and(!GATE_HELD, Ordering::Release);
+        waiter.join().unwrap();
+        assert_eq!(gate.load(Ordering::Relaxed), 0);
+        assert_eq!(rt.memory().u32(0x1000).unwrap(), 7);
+    }
+
+    /// A guard that starts waiting while an execute check holds the gate
+    /// keeps its request when the check ends, and is next.
+    #[test]
+    fn execute_check_release_keeps_a_waiting_guards_request() {
+        let memory = std::sync::Arc::new(Memory::new(Guest::new()));
+        memory.lock().map(0x1000, 0x1000, 0, Permissions::RX).unwrap();
+        memory.fast_shared();
+        assert!(memory.allows_execute(0x1000));
+        assert_eq!(memory.shared.gate.load(Ordering::Relaxed), 0);
+        // The execute check, stopped between its take and its release.
+        assert!(memory.try_gate());
+        let host = memory.clone();
+        let waiter = std::thread::spawn(move || {
+            host.lock().protect(0x1000, Permissions::READ).unwrap();
+        });
+        while memory.shared.gate.load(Ordering::Relaxed) & GATE_WANTED == 0 {
+            std::thread::yield_now();
+        }
+        // No other check or C access can cut in ahead of the waiter.
+        assert!(!memory.try_gate());
+        assert_eq!(memory.release_gate(), GATE_WANTED);
+        waiter.join().unwrap();
+        assert_eq!(memory.shared.gate.load(Ordering::Relaxed), 0);
+        assert!(!memory.allows_execute(0x1000));
+    }
 
     /// Rust-only model of a native handler retaining its actual runtime view
     /// across real slow callbacks. Does not load C, so it also runs under Miri.
