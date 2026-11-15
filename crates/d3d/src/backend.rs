@@ -411,6 +411,35 @@ pub trait Backend: Send {
         let _ = surface;
         Ok(None)
     }
+    /// Whether [`depth_alias_texture`](Self::depth_alias_texture) makes
+    /// depth-alias textures (default false).
+    fn defers_depth_aliases(&self) -> bool {
+        false
+    }
+    /// A texture over the depth buffer's memory, made on the backend's side:
+    /// the guest words [`read_depth`](Self::read_depth) gives for `depth`
+    /// (`format`, `width x height`, rows `pitch` bytes) as the device's
+    /// depth generation `generation` left them, from byte `offset` on,
+    /// decoded as `desc` with `options` and uploaded. The bytes never reach
+    /// guest memory, so a backend that renders on another thread can make
+    /// it there without the guest waiting (`threaded`). `Ok(None)`: the
+    /// device reads the depth back and decodes it itself (the default).
+    #[allow(clippy::too_many_arguments)]
+    fn depth_alias_texture(
+        &mut self,
+        depth: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        generation: u64,
+        offset: usize,
+        desc: &TextureDesc,
+        options: gfx::texture::DecodeOptions,
+    ) -> Result<Option<Self::Texture>, String> {
+        let _ = (depth, format, width, height, pitch, generation, offset, desc, options);
+        Ok(None)
+    }
 }
 
 /// What [`RecordingBackend`] saw.

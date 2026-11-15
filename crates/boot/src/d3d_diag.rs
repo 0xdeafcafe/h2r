@@ -237,6 +237,31 @@ impl<B: Backend> Backend for DiagBackend<B> {
             Tracked { id, inner }
         }))
     }
+    fn defers_depth_aliases(&self) -> bool {
+        self.inner.defers_depth_aliases()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn depth_alias_texture(
+        &mut self,
+        depth: Self::Surface,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        generation: u64,
+        offset: usize,
+        desc: &TextureDesc,
+        options: gfx::texture::DecodeOptions,
+    ) -> Result<Option<Self::Texture>, String> {
+        let r = self
+            .inner
+            .depth_alias_texture(depth, format, width, height, pitch, generation, offset, desc, options)?;
+        Ok(r.map(|inner| {
+            let id = self.next_texture;
+            self.next_texture += 1;
+            Tracked { id, inner }
+        }))
+    }
     fn can_sample_surfaces(&self) -> bool {
         self.inner.can_sample_surfaces()
     }

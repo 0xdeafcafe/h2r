@@ -955,4 +955,43 @@ fn gpu_signed_depth_alias_matches_identical_guest_texture() {
     assert_eq!(d.stats().depth_alias_uploads, 2);
     assert_eq!(d.take_events(), []);
     finish(scope);
+/// The render thread makes depth-alias textures on its side
+/// (`Backend::depth_alias_texture`): the same read-backs, uploads, draws
+/// and stats as the device making them itself, and the guest never waits.
+#[test]
+fn the_render_thread_makes_the_same_depth_alias_textures() {
+    fn run<B: d3d::Backend>(backend: B) -> (Device<B>, SparseMemory) {
+        let (mut d, mut m) = create(backend, UploadPolicy::Always);
+        set_states(&mut d, &mut m);
+        quad_vb(&mut m, 0.0, 0.0, W as f32, H as f32, 0xFFFF_FFFF);
+        bind_quad(&mut d, &mut m);
+        alias(&mut m, DEPTH_BUFFER_DATA, 0x12, W, H, W * 4);
+        d.set_texture(&mut m, 0, ALIAS).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        alias(&mut m, DEPTH_BUFFER_DATA, 0x3F, W, H, W * 4);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        d.clear(&mut m, 0, 0, 0x01, 0, 0.5, 0).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        z_writes(&mut m, true);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        // A format that does not decode skips the same way.
+        alias(&mut m, DEPTH_BUFFER_DATA, 0x7F, W, H, W * 4);
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        (d, m)
+    }
+    let recorder = || {
+        let mut r = RecordingBackend::new();
+        r.depth_readback = Some((0..=255).collect());
+        r
+    };
+    let (mut a, _) = run(recorder());
+    let (mut b, _) = run(d3d::ThreadedBackend::new(recorder()).unwrap());
+    assert_eq!(a.take_events(), b.take_events());
+    assert_eq!(a.stats(), b.stats());
+    assert!(a.stats().depth_reads >= 3, "{:?}", a.stats());
+    let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
+    assert_eq!(a.backend.calls, calls);
+    assert_eq!(b.backend.misses(), 0);
 }

@@ -389,6 +389,46 @@ impl<B: Backend> Device<B> {
         {
             return Ok(FrameTexture::DepthAlias(a.info, key));
         }
+        let options = DecodeOptions {
+            bc_supported: self.backend.bc_supported(),
+            ..DecodeOptions::default()
+        }
+        .with_color_sign(key.1);
+        // A backend that makes the texture on its side (a render thread)
+        // gets the whole job; whether the bytes decode depends only on the
+        // description, so that is checked here once per description, on
+        // zeros, and the draw skips exactly as below.
+        if self.backend.defers_depth_aliases() {
+            let known = self
+                .depth_alias_decodes
+                .iter()
+                .find(|(d, sign, _)| *d == desc && *sign == key.1);
+            let verdict = match known {
+                Some((_, _, v)) => v.clone(),
+                None => {
+                    let v = decode_texture(&desc, &vec![0; (len - offset as u64) as usize], None, options)
+                        .map(|_| ())
+                        .map_err(|e| e.to_string());
+                    self.depth_alias_decodes.push((desc.clone(), key.1, v.clone()));
+                    v
+                }
+            };
+            if let Err(e) = verdict {
+                return skip(e);
+            }
+            if self.depth_read_generation != Some(generation) {
+                self.depth_read_generation = Some(generation);
+                self.stats.depth_reads += 1;
+            }
+            let texture = self
+                .backend
+                .depth_alias_texture(depth, dfmt, p.width, p.height, pitch, generation, offset as usize, &desc, options)
+                .map_err(D3dError::Backend)?
+                .ok_or_else(|| D3dError::Backend("depth_alias_texture: deferred backend answered None".into()))?;
+            self.stats.depth_alias_uploads += 1;
+            self.depth_alias.insert(key, DepthAlias { generation, identity, info, texture });
+            return Ok(FrameTexture::DepthAlias(info, key));
+        }
         if self
             .depth_copy
             .as_ref()
@@ -412,16 +452,7 @@ impl<B: Backend> Device<B> {
             self.depth_copy = Some((generation, bytes));
         }
         let bytes = &self.depth_copy.as_ref().expect("read above").1;
-        let decoded = match decode_texture(
-            &desc,
-            &bytes[offset as usize..],
-            None,
-            DecodeOptions {
-                bc_supported: self.backend.bc_supported(),
-                ..DecodeOptions::default()
-            }
-            .with_color_sign(key.1),
-        ) {
+        let decoded = match decode_texture(&desc, &bytes[offset as usize..], None, options) {
             Ok(d) => d,
             Err(e) => return skip(e.to_string()),
         };

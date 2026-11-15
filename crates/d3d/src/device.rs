@@ -581,6 +581,12 @@ pub struct Device<B: Backend> {
     /// The depth buffer as guest bytes, and the generation they were read
     /// at.
     depth_copy: Option<(u64, Vec<u8>)>,
+    /// With a backend that makes depth-alias textures itself
+    /// ([`Backend::defers_depth_aliases`]): whether each description
+    /// decodes under a channel-sign mask, and the generation last counted
+    /// as a read.
+    depth_alias_decodes: Vec<(gfx::texture::TextureDesc, u32, Result<(), String>)>,
+    depth_read_generation: Option<u64>,
     /// Textures over the depth buffer, made from `depth_copy`, by header
     /// and effective channel signs.
     depth_alias: HashMap<raster::DepthAliasKey, raster::DepthAlias<B::Texture>>,
@@ -689,6 +695,8 @@ impl<B: Backend> Device<B> {
             rtt: HashMap::new(),
             depth_generation: 0,
             depth_copy: None,
+            depth_alias_decodes: Vec::new(),
+            depth_read_generation: None,
             depth_alias: HashMap::new(),
             rtt_synced: HashMap::new(),
             rtt_stores: HashMap::new(),
@@ -1045,6 +1053,7 @@ impl<B: Backend> Device<B> {
         self.fence = 0;
         self.cache.clear();
         self.depth_copy = None;
+        self.depth_read_generation = None;
         self.depth_alias.clear();
         self.drop_visibility_tests();
         self.hw.zpass_count_enable = false;

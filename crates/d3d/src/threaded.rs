@@ -62,6 +62,9 @@ pub struct Worker<B: Backend> {
     surfaces: HashMap<u32, B::Surface>,
     textures: HashMap<u64, B::Texture>,
     tickets: HashMap<u64, u64>,
+    /// The depth buffer read back for depth-alias textures: surface,
+    /// device depth generation, guest words.
+    depth_words: Option<(u32, u64, Vec<u8>)>,
     shared: Arc<Shared>,
     exit: bool,
 }
@@ -76,6 +79,40 @@ struct Shared {
     presented_cv: Condvar,
     /// Wall time the render thread spent in the inner backend (ns).
     busy_ns: AtomicU64,
+}
+
+static READS: AtomicU64 = AtomicU64::new(0);
+static READ_NS: AtomicU64 = AtomicU64::new(0);
+static THROTTLES: AtomicU64 = AtomicU64::new(0);
+static THROTTLE_NS: AtomicU64 = AtomicU64::new(0);
+static BUSY_NS: AtomicU64 = AtomicU64::new(0);
+
+/// [`Waits`] summed over every render thread in the process so far (for
+/// a measurement window: take it twice and subtract).
+pub fn total_waits() -> Waits {
+    let d = |a: &AtomicU64| std::time::Duration::from_nanos(a.load(Ordering::Relaxed));
+    Waits {
+        reads: READS.load(Ordering::Relaxed),
+        read_wait: d(&READ_NS),
+        throttles: THROTTLES.load(Ordering::Relaxed),
+        throttle_wait: d(&THROTTLE_NS),
+        busy: d(&BUSY_NS),
+    }
+}
+
+/// Where the guest's thread waited for the render thread.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Waits {
+    /// Calls that waited for an answer (reads, `finish`, `with_inner`).
+    pub reads: u64,
+    /// Wall time those waited.
+    pub read_wait: std::time::Duration,
+    /// `Swap`s that waited for the frame-in-flight limit.
+    pub throttles: u64,
+    /// Wall time those waited.
+    pub throttle_wait: std::time::Duration,
+    /// Wall time the render thread spent running backend work.
+    pub busy: std::time::Duration,
 }
 
 impl Shared {
@@ -143,6 +180,7 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     next_texture: u64,
     next_ticket: u64,
     presents: u64,
+    waits: Waits,
 }
 
 impl<B: Backend + 'static> ThreadedBackend<B> {
@@ -161,15 +199,16 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     surfaces: HashMap::new(),
                     textures: HashMap::new(),
                     tickets: HashMap::new(),
+                    depth_words: None,
                     shared: s,
                     exit: false,
                 };
                 while let Ok(job) = rx.recv() {
                     let t = std::time::Instant::now();
                     job(&mut w);
-                    w.shared
-                        .busy_ns
-                        .fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                    let ns = t.elapsed().as_nanos() as u64;
+                    w.shared.busy_ns.fetch_add(ns, Ordering::Relaxed);
+                    BUSY_NS.fetch_add(ns, Ordering::Relaxed);
                     if w.exit {
                         break;
                     }
@@ -188,6 +227,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             next_texture: 1,
             next_ticket: 1,
             presents: 0,
+            waits: Waits::default(),
         })
     }
 
@@ -196,9 +236,12 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         self.shared.misses.load(Ordering::Relaxed)
     }
 
-    /// Wall time the render thread has spent running backend work.
-    pub fn busy(&self) -> std::time::Duration {
-        std::time::Duration::from_nanos(self.shared.busy_ns.load(Ordering::Relaxed))
+    /// Where the guest waited so far, and the render thread's busy time.
+    pub fn waits(&self) -> Waits {
+        Waits {
+            busy: std::time::Duration::from_nanos(self.shared.busy_ns.load(Ordering::Relaxed)),
+            ..self.waits
+        }
     }
 
     /// Waits until the render thread has run everything queued so far.
@@ -247,6 +290,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         f: impl FnOnce(&mut Worker<B>) -> Result<R, String> + Send + 'static,
     ) -> Result<R, String> {
         self.check()?;
+        let t = std::time::Instant::now();
         let (rtx, rrx) = mpsc::sync_channel(1);
         self.tx
             .send(Box::new(move |w: &mut Worker<B>| {
@@ -256,6 +300,10 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let r = rrx
             .recv()
             .map_err(|_| "render thread: gone".to_string())?;
+        self.waits.reads += 1;
+        self.waits.read_wait += t.elapsed();
+        READS.fetch_add(1, Ordering::Relaxed);
+        READ_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         // An error queued before this call comes first.
         self.check()?;
         r
@@ -279,6 +327,9 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
 
 impl<B: Backend + 'static> Drop for ThreadedBackend<B> {
     fn drop(&mut self) {
+        if std::env::var_os("H2_RENDER_THREAD_STATS").is_some() {
+            eprintln!("render thread: {:?}", self.waits());
+        }
         let _ = self
             .tx
             .send(Box::new(|w: &mut Worker<B>| w.exit = true));
@@ -422,9 +473,16 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
             r
         });
         // Frame-in-flight limit: wall time only, never logical time.
+        let t = std::time::Instant::now();
         let mut done = self.shared.presented.lock().unwrap();
-        while n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
-            done = self.shared.presented_cv.wait(done).unwrap();
+        if n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
+            self.waits.throttles += 1;
+            while n.saturating_sub(*done) > MAX_FRAMES_IN_FLIGHT {
+                done = self.shared.presented_cv.wait(done).unwrap();
+            }
+            self.waits.throttle_wait += t.elapsed();
+            THROTTLES.fetch_add(1, Ordering::Relaxed);
+            THROTTLE_NS.fetch_add(t.elapsed().as_nanos() as u64, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -576,6 +634,63 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn can_sample_surfaces(&self) -> bool {
         self.sample_surfaces
+    }
+
+    fn defers_depth_aliases(&self) -> bool {
+        true
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn depth_alias_texture(
+        &mut self,
+        depth: u32,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        generation: u64,
+        offset: usize,
+        desc: &TextureDesc,
+        options: gfx::texture::DecodeOptions,
+    ) -> Result<Option<ProxyTexture<B>>, String> {
+        self.check()?;
+        let t = self.new_texture();
+        let id = t.id;
+        let desc = desc.clone();
+        let shared = Arc::clone(&self.shared);
+        self.post(move |w| {
+            // One read-back per depth generation, as the device does it.
+            if w
+                .depth_words
+                .as_ref()
+                .is_none_or(|(s, g, _)| (*s, *g) != (depth, generation))
+            {
+                let s = w.surface(depth)?;
+                let layout = GuestLayoutKind::Linear { pitch };
+                let Some(bytes) = w.inner.read_depth(s, format, width, height, layout)? else {
+                    shared.miss("read_depth returned None for a depth-alias texture".into());
+                    return Ok(());
+                };
+                w.depth_words = Some((depth, generation, bytes));
+            }
+            let bytes = &w.depth_words.as_ref().expect("read above").2;
+            let decoded = match bytes
+                .get(offset..)
+                .ok_or_else(|| format!("read_depth returned {} bytes, offset {offset}", bytes.len()))
+                .and_then(|b| {
+                    gfx::texture::decode_texture(&desc, b, None, options).map_err(|e| e.to_string())
+                }) {
+                Ok(d) => d,
+                Err(e) => {
+                    shared.miss(format!("depth-alias texture: {e}"));
+                    return Ok(());
+                }
+            };
+            let h = w.inner.upload_texture(&decoded)?;
+            w.textures.insert(id, h);
+            Ok(())
+        });
+        Ok(Some(t))
     }
 
     fn surface_texture(&mut self, surface: u32) -> Result<Option<ProxyTexture<B>>, String> {

@@ -234,6 +234,24 @@ impl d3d::backend::Backend for Headless {
         // Never called: the recorder does not sample surfaces.
         self.0.surface_texture(surface)
     }
+    fn defers_depth_aliases(&self) -> bool {
+        self.0.defers_depth_aliases()
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn depth_alias_texture(
+        &mut self,
+        depth: u32,
+        format: gfx::D3DFormat,
+        width: u32,
+        height: u32,
+        pitch: u32,
+        generation: u64,
+        offset: usize,
+        desc: &gfx::texture::TextureDesc,
+        options: gfx::texture::DecodeOptions,
+    ) -> Result<Option<u32>, String> {
+        self.0.depth_alias_texture(depth, format, width, height, pitch, generation, offset, desc, options)
+    }
 }
 
 /// [`install`] on the caller's backend (a host window's `GfxBackend`, with
