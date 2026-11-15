@@ -20,7 +20,8 @@
 //! * [`device`]: the device model and entry points;
 //! * [`abi`]: LTCG register-argument adapters (TODO-register);
 //! * [`runtime_glue`]: [`register`] installs them as `crates/runtime` overrides;
-//! * [`backend`], [`gfx_backend`], [`shader`]: the host side.
+//! * [`backend`], [`gfx_backend`], [`shader`]: the host side;
+//! * [`nv2a`]: the [`ShaderProvider`] over `crates/shaders`.
 
 pub mod abi;
 pub mod backend;
@@ -30,6 +31,7 @@ pub mod events;
 pub mod gfx_backend;
 pub mod guest;
 pub mod layout;
+pub mod nv2a;
 pub mod pushbuf;
 pub mod resource;
 pub mod runtime_glue;
@@ -45,6 +47,7 @@ pub use events::{D3dError, Event, HleStop};
 pub use gfx_backend::GfxBackend;
 pub use guest::{GuestError, GuestMemory, SparseMemory};
 pub use layout::GuestLayout;
+pub use nv2a::Nv2aShaders;
 pub use resource::AddressMap;
 pub use runtime_glue::register;
 pub use shader::{ShaderInputs, ShaderProvider};

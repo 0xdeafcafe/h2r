@@ -1,11 +1,10 @@
 //! What the device needs from the shader translator.
 //!
-//! TODO(shaders): `crates/shaders` (in review) decodes NV2A vertex microcode
-//! and `D3DPIXELSHADERDEF` register-combiner programs and emits WGSL with the
-//! resource contract in its `docs/shaders.md`. Once it lands, implement
-//! [`ShaderProvider`] on top of `shaders::link` and hand it to
-//! `GfxBackend::with_shaders`. Until then programmable draws are reported as
-//! `Event::DrawSkipped` and only pre-transformed fixed-function draws render.
+//! [`crate::nv2a::Nv2aShaders`] implements [`ShaderProvider`] over
+//! `crates/shaders` (NV2A vertex microcode and `D3DPIXELSHADERDEF`
+//! register-combiner programs to WGSL, joined by `shaders::link`);
+//! `GfxBackend::new` installs it. A draw it cannot translate is reported as
+//! `Event::DrawSkipped` with the reason.
 //!
 //! The device side is complete: it captures everything a translated draw
 //! needs into [`ShaderInputs`] at draw time, from the device model (program

@@ -10,9 +10,11 @@ gfx = { path = "../gfx" }
 wgpu = "30"
 thiserror.workspace = true
 runtime.workspace = true
-# TODO(shaders): once crates/shaders lands, depend on it here and implement
-# `shader::ShaderProvider` with it. Until then the interface in `shader.rs`
-# is all the device needs.
+# NV2A program translation behind `nv2a::Nv2aShaders` (the ShaderProvider).
+shaders = { path = "../shaders" }
 
 [dev-dependencies]
 pollster = "1"
+# The windowed example (examples/window.rs) presents through the host shell.
+app = { path = "../app" }
+anyhow.workspace = true

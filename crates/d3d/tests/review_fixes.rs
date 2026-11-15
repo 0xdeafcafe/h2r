@@ -435,7 +435,9 @@ fn p1_9_raster_state_gfx_cannot_express_stops() {
 }
 
 #[test]
-fn p1_9_alpha_test_with_the_builtin_shader_stops() {
+fn p1_9_alpha_test_with_the_builtin_shader_discards() {
+    // Originally a stop (the built-in shader never discarded); gfx's
+    // built-in shader now runs the alpha test.
     let ctx = match GfxContext::headless() {
         Ok(ctx) => ctx,
         Err(e) => {
@@ -445,15 +447,24 @@ fn p1_9_alpha_test_with_the_builtin_shader_stops() {
     };
     let (mut d, mut m) = create(GfxBackend::new(ctx), UploadPolicy::Tracked);
     set_states(&mut d, &mut m);
-    quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0xFFFF_FFFF);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    let l = d3d::GuestLayout::HALO2;
+    m.write_u32(l.render_state_slot(60), 1).unwrap(); // ALPHATESTENABLE
+    m.write_u32(l.render_state_slot(58), 0x204).unwrap(); // ALPHAFUNC = GREATER
+    m.write_u32(l.render_state_slot(61), 0x80).unwrap(); // ALPHAREF
     bind_quad(&mut d, &mut m);
+    quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0x40FF_FFFF); // fails the test
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    m.write_u32(d3d::GuestLayout::HALO2.render_state_slot(60), 1)
-        .unwrap(); // ALPHATESTENABLE
-    let e = d.draw_vertices(&mut m, 6, 0, 4);
-    assert!(
-        matches!(&e, Err(D3dError::Unimplemented { detail, .. }) if detail.contains("alpha test")),
-        "{e:?}"
+    quad_vb(&mut m, 8.0, 0.0, 16.0, 8.0, 0xC0FF_FFFF); // passes
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert!(d.take_events().is_empty());
+    let back = d.back_buffer().unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    assert_eq!(pixel(&px, 4, 4), [0, 0, 0, 255], "alpha 0x40 is discarded");
+    assert_eq!(
+        pixel(&px, 12, 4),
+        [255, 255, 255, 0xC0],
+        "alpha 0xC0 is drawn"
     );
 }
 

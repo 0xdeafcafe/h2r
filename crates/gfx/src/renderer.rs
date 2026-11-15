@@ -6,20 +6,34 @@
 //! data where wgpu cannot read the guest encoding, translates the state to a
 //! cached wgpu pipeline and records the draw.
 //!
+//! Per draw, on top of the pipeline state:
+//!
+//! * [`Draw::viewport`] maps clip space to a sub-rectangle of the target and
+//!   a depth range (a wgpu viewport). Shaders that already produce window
+//!   coordinates (pre-transformed vertices, translated NV2A programs) leave
+//!   it `None` and clip with [`Draw::scissor`] instead.
+//! * [`Draw::scissor`] clips to a rectangle.
+//! * [`Draw::indices`] draws an index list over the streams.
+//!
 //! One shader is built in ([`SHADER_XYZRHW_DIFFUSE`], the fixed-function
-//! stand-in for pre-transformed `XYZRHW | DIFFUSE` vertices). Generated
-//! shaders plug in through [`Renderer::register_shader`] and
-//! [`Draw::shader`].
+//! stand-in for pre-transformed `XYZRHW | DIFFUSE` vertices). It honours the
+//! alpha test in [`RenderState`]. Generated shaders plug in through
+//! [`Renderer::register_shader`] and [`Draw::shader`]; they do their own
+//! alpha test. [`Renderer::clear_rects`] clears rectangles and channel
+//! subsets (see [`crate::clear`]).
 
 use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
+use crate::clear::{Clearer, MaskedClear};
 use crate::context::GfxContext;
-use crate::pipeline::{PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline};
+use crate::pipeline::{
+    PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline,
+};
 use crate::presenter::RenderTarget;
 use crate::repack::{RepackError, RepackPlan};
-use crate::state::RenderState;
+use crate::state::{CompareFunc, RenderState};
 use crate::translate::{self, Capabilities};
 use crate::vertex::{HostPrimitive, PrimitiveType, VertexDataType, VertexLayout, VertexRegister};
 
@@ -27,7 +41,7 @@ use crate::vertex::{HostPrimitive, PrimitiveType, VertexDataType, VertexLayout, 
 pub const SHADER_XYZRHW_DIFFUSE: ShaderId = ShaderId(0);
 
 /// Why a draw was rejected.
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 pub enum DrawError {
     /// The built-in shader needs pre-transformed float4 position and a
     /// `D3DCOLOR` diffuse.
@@ -47,6 +61,17 @@ pub enum DrawError {
     /// Vertex data could not be repacked.
     #[error(transparent)]
     Repack(#[from] RepackError),
+    /// An index names a vertex the streams do not hold.
+    #[error("index {index} is out of range for {vertices} vertices")]
+    IndexOutOfRange {
+        /// The index.
+        index: u32,
+        /// Vertices in the streams.
+        vertices: u32,
+    },
+    /// The viewport is empty, not finite, or not inside the target.
+    #[error("viewport {0:?} is not inside the {1}x{2} target")]
+    BadViewport(DrawViewport, u32, u32),
 }
 
 /// Which attachments a pass clears (D3D `Clear` flags, typed).
@@ -62,11 +87,134 @@ pub struct Clear {
 
 impl Clear {
     /// Clear nothing.
-    pub const NONE: Self = Self { color: None, depth: None, stencil: None };
+    pub const NONE: Self = Self {
+        color: None,
+        depth: None,
+        stencil: None,
+    };
 
     /// Clear everything: `color`, depth 1.0, stencil 0.
     pub fn all(color: [f32; 4]) -> Self {
-        Self { color: Some(color), depth: Some(1.0), stencil: Some(0) }
+        Self {
+            color: Some(color),
+            depth: Some(1.0),
+            stencil: Some(0),
+        }
+    }
+}
+
+/// A wgpu viewport for one draw: clip space maps to this rectangle (target
+/// pixels, origin top left) and depth to `[min_depth, max_depth]`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DrawViewport {
+    /// Left edge.
+    pub x: f32,
+    /// Top edge.
+    pub y: f32,
+    /// Width.
+    pub width: f32,
+    /// Height.
+    pub height: f32,
+    /// Depth at clip z = 0.
+    pub min_depth: f32,
+    /// Depth at clip z = 1.
+    pub max_depth: f32,
+}
+
+impl DrawViewport {
+    /// The whole of a `width` x `height` target, depth 0..1.
+    pub fn full(width: u32, height: u32) -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            width: width as f32,
+            height: height as f32,
+            min_depth: 0.0,
+            max_depth: 1.0,
+        }
+    }
+
+    fn valid_in(&self, w: u32, h: u32) -> bool {
+        let v = [
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            self.min_depth,
+            self.max_depth,
+        ];
+        v.iter().all(|f| f.is_finite())
+            && self.x >= 0.0
+            && self.y >= 0.0
+            && self.width > 0.0
+            && self.height > 0.0
+            && self.x + self.width <= w as f32
+            && self.y + self.height <= h as f32
+            && (0.0..=1.0).contains(&self.min_depth)
+            && (0.0..=1.0).contains(&self.max_depth)
+            && self.min_depth <= self.max_depth
+    }
+}
+
+/// A rectangle in target pixels (origin top left).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ScissorRect {
+    /// Left edge.
+    pub x: u32,
+    /// Top edge.
+    pub y: u32,
+    /// Width.
+    pub width: u32,
+    /// Height.
+    pub height: u32,
+}
+
+impl ScissorRect {
+    /// The whole of a `width` x `height` target.
+    pub fn full(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    /// From edges `x1 <= x < x2`, `y1 <= y < y2` (signed, as D3D rects);
+    /// negative edges clamp to 0.
+    pub fn from_edges(x1: i64, y1: i64, x2: i64, y2: i64) -> Self {
+        let c = |v: i64| v.clamp(0, u32::MAX as i64) as u32;
+        let (x1, y1, x2, y2) = (c(x1), c(y1), c(x2), c(y2));
+        Self {
+            x: x1,
+            y: y1,
+            width: x2.saturating_sub(x1),
+            height: y2.saturating_sub(y1),
+        }
+    }
+
+    /// The part of this rectangle inside `other`.
+    pub fn intersect(self, other: Self) -> Self {
+        let x1 = self.x.max(other.x);
+        let y1 = self.y.max(other.y);
+        let x2 = (self.x as u64 + self.width as u64).min(other.x as u64 + other.width as u64);
+        let y2 = (self.y as u64 + self.height as u64).min(other.y as u64 + other.height as u64);
+        Self {
+            x: x1,
+            y: y1,
+            width: x2.saturating_sub(x1 as u64) as u32,
+            height: y2.saturating_sub(y1 as u64) as u32,
+        }
+    }
+
+    /// Whether it covers no pixel.
+    pub fn is_empty(self) -> bool {
+        self.width == 0 || self.height == 0
+    }
+
+    /// Whether it covers the whole `width` x `height` target.
+    pub fn covers(self, width: u32, height: u32) -> bool {
+        self.intersect(Self::full(width, height)) == Self::full(width, height)
     }
 }
 
@@ -85,7 +233,8 @@ pub struct Draw<'a> {
     pub shader: ShaderId,
     /// One entry per stream of `layout`, in the layout's order.
     pub streams: &'a [VertexStream<'a>],
-    /// Number of vertices to draw.
+    /// Number of vertices in `streams`. Without `indices` this is also the
+    /// number of vertices drawn.
     pub vertex_count: u32,
     /// Vertex format.
     pub layout: &'a VertexLayout,
@@ -96,67 +245,185 @@ pub struct Draw<'a> {
     /// Extra bind groups for registered shaders, `(group index, group)`. The
     /// built-in shader manages group 0 itself.
     pub bind_groups: &'a [(u32, &'a wgpu::BindGroup)],
+    /// Viewport; `None` is the whole target, depth 0..1.
+    pub viewport: Option<DrawViewport>,
+    /// Scissor rectangle; `None` is the whole target. Clamped to the
+    /// target; a draw whose scissor is empty draws nothing.
+    pub scissor: Option<ScissorRect>,
+    /// Index list into `streams` (each below `vertex_count`), in primitive
+    /// order; Xbox-only primitive types are rewritten on top of it. `None`
+    /// draws the vertices in order.
+    pub indices: Option<&'a [u32]>,
+}
+
+impl<'a> Draw<'a> {
+    /// A non-indexed draw over the whole target with no extra bind groups.
+    pub fn new(
+        shader: ShaderId,
+        layout: &'a VertexLayout,
+        streams: &'a [VertexStream<'a>],
+        vertex_count: u32,
+        primitive: PrimitiveType,
+        state: RenderState,
+    ) -> Self {
+        Self {
+            shader,
+            streams,
+            vertex_count,
+            layout,
+            primitive,
+            state,
+            bind_groups: &[],
+            viewport: None,
+            scissor: None,
+            indices: None,
+        }
+    }
+}
+
+/// Bytes per built-in uniform slot (the dynamic-offset alignment wgpu
+/// guarantees to accept).
+const BUILTIN_SLOT: u64 = 256;
+/// Bytes of the built-in shader's uniform struct.
+const BUILTIN_UNIFORM_SIZE: u64 = 32;
+
+/// The built-in shader's alpha-test code for a compare function (0 = test
+/// off); matches `alpha_passes` in `xyzrhw_diffuse.wgsl`.
+fn builtin_alpha_func(rs: &RenderState) -> f32 {
+    if !rs.alpha_test_enable {
+        return 0.0;
+    }
+    match rs.alpha_func {
+        CompareFunc::Always => 0.0,
+        CompareFunc::Never => 1.0,
+        CompareFunc::Less => 2.0,
+        CompareFunc::Equal => 3.0,
+        CompareFunc::LessEqual => 4.0,
+        CompareFunc::Greater => 5.0,
+        CompareFunc::NotEqual => 6.0,
+        CompareFunc::GreaterEqual => 7.0,
+    }
 }
 
 /// Draws guest primitives through the state model.
 pub struct Renderer {
     shaders: HashMap<ShaderId, ShaderProgram>,
-    viewport_buffer: wgpu::Buffer,
-    viewport_bind_group: wgpu::BindGroup,
+    builtin_bgl: wgpu::BindGroupLayout,
     cache: PipelineCache<wgpu::RenderPipeline>,
+    clearer: Clearer,
     caps: Capabilities,
     z_max: f32,
 }
 
-/// `D3DZ_MAX` for a 24-bit depth buffer: the range of pre-transformed z.
+/// `D3DZ_MAX` for a 24-bit integer depth buffer: the range of
+/// pre-transformed z.
 pub const D3DZ_MAX_24: f32 = 16_777_215.0;
+/// `D3DZ_MAX` for a 16-bit integer depth buffer.
+pub const D3DZ_MAX_16: f32 = 65_535.0;
+/// `D3DZ_MAX` for the Xbox 16-bit float depth format (4-bit exponent,
+/// 12-bit mantissa): its largest value, `(2 - 2^-12) * 2^8`.
+pub const D3DZ_MAX_F16: f32 = 511.9375;
+/// `D3DZ_MAX` for the Xbox 24-bit float depth format (8-bit exponent,
+/// 16-bit mantissa): its largest value, `(2 - 2^-16) * 2^127`.
+pub const D3DZ_MAX_F24: f32 = 3.402_797_7e38;
+
+/// The full scale of window-space z for a depth buffer format
+/// (`D3DZ_MAX_*`): pre-transformed and vertex-program z is divided by it
+/// to get the host depth in 0..1. No depth buffer counts as D24S8.
+pub fn d3dz_max(depth: Option<crate::D3DFormat>) -> f32 {
+    use crate::D3DFormat as F;
+    match depth {
+        Some(F::D16 | F::LinD16) => D3DZ_MAX_16,
+        Some(F::F16 | F::LinF16) => D3DZ_MAX_F16,
+        Some(F::F24S8 | F::LinF24S8) => D3DZ_MAX_F24,
+        _ => D3DZ_MAX_24,
+    }
+}
+
+/// A uniform buffer holding `bytes` (whole built-in slots) and its bind
+/// group. Every `render` call gets its own: queued buffer writes only land
+/// at submit, so a buffer shared between calls recorded before one submit
+/// would hand every call the last call's values.
+fn builtin_resources(
+    device: &wgpu::Device,
+    bgl: &wgpu::BindGroupLayout,
+    bytes: &[u8],
+) -> wgpu::BindGroup {
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("builtin draw uniforms"),
+        contents: bytes,
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("builtin draw uniforms"),
+        layout: bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: wgpu::BufferSize::new(BUILTIN_UNIFORM_SIZE),
+            }),
+        }],
+    })
+}
 
 impl Renderer {
     /// Creates the renderer and its built-in shader.
     pub fn new(ctx: &GfxContext) -> Self {
-        let module = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("xyzrhw_diffuse"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/xyzrhw_diffuse.wgsl").into()),
-        });
-        let bgl = ctx.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("viewport"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-        });
-        let layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("xyzrhw layout"),
-            bind_group_layouts: &[Some(&bgl)],
-            immediate_size: 0,
-        });
-        let viewport_buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("viewport uniform"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let viewport_bind_group = ctx.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("viewport"),
-            layout: &bgl,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: viewport_buffer.as_entire_binding() }],
-        });
+        let module = ctx
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("xyzrhw_diffuse"),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("../shaders/xyzrhw_diffuse.wgsl").into(),
+                ),
+            });
+        let bgl = ctx
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("builtin draw uniforms"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(BUILTIN_UNIFORM_SIZE),
+                    },
+                    count: None,
+                }],
+            });
+        let layout = ctx
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("xyzrhw layout"),
+                bind_group_layouts: &[Some(&bgl)],
+                immediate_size: 0,
+            });
         let mut shaders = HashMap::new();
         shaders.insert(
             SHADER_XYZRHW_DIFFUSE,
-            ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into() },
+            ShaderProgram {
+                module,
+                layout,
+                vs_entry: "vs_main".into(),
+                fs_entry: "fs_main".into(),
+            },
         );
-        Self { shaders, viewport_buffer, viewport_bind_group, cache: PipelineCache::new(), caps: ctx.caps, z_max: D3DZ_MAX_24 }
+        Self {
+            shaders,
+            builtin_bgl: bgl,
+            cache: PipelineCache::new(),
+            clearer: Clearer::new(&ctx.device),
+            caps: ctx.caps,
+            z_max: D3DZ_MAX_24,
+        }
     }
 
-    /// Sets the range of pre-transformed (`XYZRHW`) z values, normally
-    /// `D3DZ_MAX` of the depth format (default 16777215; 65535 for D16).
+    /// Sets the range of pre-transformed (`XYZRHW`) z values for the
+    /// built-in shader: [`d3dz_max`] of the depth format (default
+    /// 16777215, D24S8). Applies to `render` calls made after it.
     pub fn set_pretransformed_z_max(&mut self, z_max: f32) {
         self.z_max = z_max.max(1.0);
     }
@@ -174,18 +441,44 @@ impl Renderer {
         true
     }
 
+    /// Whether `id` names a registered (or the built-in) shader.
+    pub fn has_shader(&self, id: ShaderId) -> bool {
+        self.shaders.contains_key(&id)
+    }
+
     /// The pipeline cache (for stats).
     pub fn cache(&self) -> &PipelineCache<wgpu::RenderPipeline> {
         &self.cache
     }
 
-    fn builtin_supports(layout: &VertexLayout) -> bool {
+    /// Whether the built-in shader can draw `layout` (pre-transformed float4
+    /// position and a `D3DCOLOR` diffuse).
+    pub fn builtin_supports(layout: &VertexLayout) -> bool {
         let has = |reg: VertexRegister, ty: VertexDataType| {
-            layout.streams.iter().flat_map(|s| &s.attributes).any(|a| a.register == reg && a.data_type == ty)
+            layout
+                .streams
+                .iter()
+                .flat_map(|s| &s.attributes)
+                .any(|a| a.register == reg && a.data_type == ty)
         };
         layout.pretransformed
             && has(VertexRegister::POSITION, VertexDataType::Float4)
             && has(VertexRegister::DIFFUSE, VertexDataType::D3dColor)
+    }
+
+    /// Clears `rects` of `target` (clamped to it), only the attachments and
+    /// colour channels `clear` names, in one pass recorded on `encoder`.
+    /// Rectangles that cover the whole target with every channel use load
+    /// operations; anything else draws through a scissor.
+    pub fn clear_rects(
+        &mut self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &RenderTarget<'_>,
+        clear: MaskedClear,
+        rects: &[ScissorRect],
+    ) {
+        self.clearer.clear(ctx, encoder, target, clear, rects);
     }
 
     /// Records one render pass containing `draws`, applying `clear` first.
@@ -207,9 +500,18 @@ impl Renderer {
             blend_constant: wgpu::Color,
             stencil_ref: u32,
             bind_groups: &'a [(u32, &'a wgpu::BindGroup)],
+            viewport: DrawViewport,
+            scissor: ScissorRect,
+            builtin_slot: Option<u32>,
         }
-        let formats = TargetFormats { color: target.color_format, depth: target.depth_format, samples: target.samples };
+        let (w, h) = target.size;
+        let formats = TargetFormats {
+            color: target.color_format,
+            depth: target.depth_format,
+            samples: target.samples,
+        };
         let mut prepared = Vec::with_capacity(draws.len());
+        let mut builtin_uniforms: Vec<u8> = Vec::new();
         for d in draws {
             if !self.shaders.contains_key(&d.shader) {
                 return Err(DrawError::UnknownShader(d.shader));
@@ -218,7 +520,24 @@ impl Renderer {
                 return Err(DrawError::UnsupportedVertexFormat);
             }
             if d.streams.len() != d.layout.streams.len() {
-                return Err(DrawError::StreamCount { given: d.streams.len(), declared: d.layout.streams.len() });
+                return Err(DrawError::StreamCount {
+                    given: d.streams.len(),
+                    declared: d.layout.streams.len(),
+                });
+            }
+            let viewport = d.viewport.unwrap_or(DrawViewport::full(w, h));
+            if !viewport.valid_in(w, h) {
+                return Err(DrawError::BadViewport(viewport, w, h));
+            }
+            let full = ScissorRect::full(w, h);
+            let scissor = d.scissor.map_or(full, |s| s.intersect(full));
+            if let Some(idx) = d.indices
+                && let Some(&bad) = idx.iter().find(|&&i| i >= d.vertex_count)
+            {
+                return Err(DrawError::IndexOutOfRange {
+                    index: bad,
+                    vertices: d.vertex_count,
+                });
             }
             let strides: Vec<u32> = d.streams.iter().map(|s| s.stride).collect();
             let plan = RepackPlan::new(d.layout, &strides);
@@ -227,82 +546,154 @@ impl Renderer {
                 let bytes = sp.repack(vs.data, d.vertex_count)?;
                 // wgpu rejects zero-sized buffers; a 4-byte dummy keeps empty draws valid.
                 let contents: &[u8] = if bytes.is_empty() { &[0; 4] } else { &bytes };
-                vertex_buffers.push(ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("draw vertices"),
-                    contents,
-                    usage: wgpu::BufferUsages::VERTEX,
-                }));
+                vertex_buffers.push(ctx.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("draw vertices"),
+                        contents,
+                        usage: wgpu::BufferUsages::VERTEX,
+                    },
+                ));
             }
-            let key = PipelineKey::new(d.shader, d.layout, &strides, d.primitive, &d.state, formats, self.caps);
-            let indices = match d.primitive.to_host(d.vertex_count) {
-                HostPrimitive::Native(_) => None,
-                HostPrimitive::Indexed(_, idx) => {
-                    let n = idx.len() as u32;
-                    let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
-                    let buf = ctx.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            let mut key = PipelineKey::new(
+                d.shader,
+                d.layout,
+                &strides,
+                d.primitive,
+                &d.state,
+                formats,
+                self.caps,
+            );
+            let drawn = d.indices.map_or(d.vertex_count, |i| i.len() as u32);
+            let list: Option<Vec<u32>> = match (d.primitive.to_host(drawn), d.indices) {
+                (HostPrimitive::Native(_), None) => None,
+                (HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
+                (HostPrimitive::Indexed(_, conv), None) => Some(conv),
+                (HostPrimitive::Indexed(_, conv), Some(user)) => {
+                    Some(conv.iter().map(|&c| user[c as usize]).collect())
+                }
+            };
+            // An indexed strip needs the index format in the pipeline (wgpu
+            // validates it; restart never triggers, indices are below
+            // `vertex_count`).
+            if list.is_some()
+                && matches!(
+                    key.primitive.topology,
+                    wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip
+                )
+            {
+                key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+            }
+            let indices = list.map(|idx| {
+                let n = idx.len() as u32;
+                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
+                let buf = ctx
+                    .device
+                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
                         label: Some("draw indices"),
                         contents: if bytes.is_empty() { &[0; 4] } else { &bytes },
                         usage: wgpu::BufferUsages::INDEX,
                     });
-                    Some((buf, n))
-                }
-            };
+                (buf, n)
+            });
+            let builtin_slot = (d.shader == SHADER_XYZRHW_DIFFUSE).then(|| {
+                let slot = (builtin_uniforms.len() as u64 / BUILTIN_SLOT) as u32;
+                let words = [
+                    w as f32,
+                    h as f32,
+                    self.z_max,
+                    builtin_alpha_func(&d.state),
+                    d.state.alpha_ref as f32,
+                    0.0,
+                    0.0,
+                    0.0,
+                ];
+                let mut bytes: Vec<u8> = words.iter().flat_map(|f| f.to_le_bytes()).collect();
+                bytes.resize(BUILTIN_SLOT as usize, 0);
+                builtin_uniforms.extend(bytes);
+                slot
+            });
             prepared.push(Prepared {
                 key,
                 shader: d.shader,
                 vertex_buffers,
                 indices,
-                vertex_count: d.vertex_count,
+                vertex_count: drawn,
                 blend_constant: translate::blend_constant(&d.state),
                 stencil_ref: d.state.stencil.reference as u32,
                 bind_groups: d.bind_groups,
+                viewport,
+                scissor,
+                builtin_slot,
             });
         }
         for p in &prepared {
             let program = &self.shaders[&p.shader];
-            self.cache.get_or_insert_with(&p.key, |k| create_render_pipeline(&ctx.device, k, program, "xbox draw"));
+            self.cache.get_or_insert_with(&p.key, |k| {
+                create_render_pipeline(&ctx.device, k, program, "xbox draw")
+            });
         }
-
-        let (w, h) = target.size;
-        ctx.queue.write_buffer(&self.viewport_buffer, 0, bytemuck::cast_slice(&[w as f32, h as f32, 1.0 / self.z_max, 0.0]));
+        let builtin_group = (!builtin_uniforms.is_empty())
+            .then(|| builtin_resources(&ctx.device, &self.builtin_bgl, &builtin_uniforms));
 
         let color_load = match clear.color {
-            Some([r, g, b, a]) => wgpu::LoadOp::Clear(wgpu::Color { r: r as f64, g: g as f64, b: b as f64, a: a as f64 }),
+            Some([r, g, b, a]) => wgpu::LoadOp::Clear(wgpu::Color {
+                r: r as f64,
+                g: g as f64,
+                b: b as f64,
+                a: a as f64,
+            }),
             None => wgpu::LoadOp::Load,
         };
         let has_stencil = target.depth_format.is_some_and(|f| f.has_stencil_aspect());
-        let depth_attachment = target.depth.map(|view| wgpu::RenderPassDepthStencilAttachment {
-            view,
-            depth_ops: Some(wgpu::Operations {
-                load: clear.depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
-                store: wgpu::StoreOp::Store,
-            }),
-            stencil_ops: has_stencil.then_some(wgpu::Operations {
-                load: clear.stencil.map_or(wgpu::LoadOp::Load, |s| wgpu::LoadOp::Clear(s as u32)),
-                store: wgpu::StoreOp::Store,
-            }),
-        });
+        let depth_attachment = target
+            .depth
+            .map(|view| wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations {
+                    load: clear.depth.map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                    load: clear
+                        .stencil
+                        .map_or(wgpu::LoadOp::Load, |s| wgpu::LoadOp::Clear(s as u32)),
+                    store: wgpu::StoreOp::Store,
+                }),
+            });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("gfx pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target.color,
                 depth_slice: None,
                 resolve_target: None,
-                ops: wgpu::Operations { load: color_load, store: wgpu::StoreOp::Store },
+                ops: wgpu::Operations {
+                    load: color_load,
+                    store: wgpu::StoreOp::Store,
+                },
             })],
             depth_stencil_attachment: depth_attachment,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        // The attachments may be larger than the logical target (a depth
-        // surface bigger than the colour surface): confine drawing to it.
-        pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
-        pass.set_scissor_rect(0, 0, w, h);
         for p in &prepared {
+            // The attachments may be larger than the logical target (a depth
+            // surface bigger than the colour surface): the viewport and
+            // scissor were checked against, and clamped to, the logical size.
+            if p.scissor.is_empty() {
+                continue;
+            }
+            let v = p.viewport;
+            pass.set_viewport(v.x, v.y, v.width, v.height, v.min_depth, v.max_depth);
+            let s = p.scissor;
+            pass.set_scissor_rect(s.x, s.y, s.width, s.height);
             pass.set_pipeline(self.cache.get(&p.key).expect("built above"));
-            if p.shader == SHADER_XYZRHW_DIFFUSE {
-                pass.set_bind_group(0, &self.viewport_bind_group, &[]);
+            if let Some(slot) = p.builtin_slot {
+                pass.set_bind_group(
+                    0,
+                    builtin_group.as_ref(),
+                    &[(slot as u64 * BUILTIN_SLOT) as u32],
+                );
             }
             for (index, group) in p.bind_groups {
                 pass.set_bind_group(*index, *group, &[]);
@@ -321,5 +712,47 @@ impl Renderer {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scissor_maths() {
+        let full = ScissorRect::full(64, 48);
+        assert!(full.covers(64, 48));
+        assert!(!ScissorRect::from_edges(0, 0, 63, 48).covers(64, 48));
+        assert!(ScissorRect::from_edges(-5, -5, 100, 100).covers(64, 48));
+        let r = ScissorRect::from_edges(10, 20, 30, 25).intersect(full);
+        assert_eq!(
+            r,
+            ScissorRect {
+                x: 10,
+                y: 20,
+                width: 20,
+                height: 5
+            }
+        );
+        assert!(
+            ScissorRect::from_edges(70, 0, 80, 10)
+                .intersect(full)
+                .is_empty()
+        );
+        assert!(ScissorRect::from_edges(30, 0, 10, 10).is_empty());
+    }
+
+    #[test]
+    fn viewport_bounds() {
+        assert!(DrawViewport::full(64, 48).valid_in(64, 48));
+        let mut v = DrawViewport::full(64, 48);
+        v.x = 1.0;
+        assert!(!v.valid_in(64, 48));
+        v.width = 63.0;
+        assert!(v.valid_in(64, 48));
+        v.min_depth = 0.9;
+        v.max_depth = 0.1;
+        assert!(!v.valid_in(64, 48));
     }
 }

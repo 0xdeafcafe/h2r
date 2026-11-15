@@ -1,28 +1,38 @@
 //! [`Backend`] on `gfx`: surfaces in a `SurfaceStore`, draws through
 //! `gfx::Renderer`, textures through `gfx::upload`.
 //!
-//! What renders today: pre-transformed (`XYZRHW | DIFFUSE`) fixed-function
-//! draws via gfx's built-in shader. Everything else needs a
-//! [`ShaderProvider`] (TODO(shaders)) and is skipped with a reason until one
-//! is installed.
+//! What renders:
+//! * pre-transformed (`XYZRHW | DIFFUSE`) fixed-function draws whose whole
+//!   state the built-in shader reproduces (see
+//!   [`builtin_equivalent`](crate::nv2a::builtin_equivalent): no texture,
+//!   fog or specular, stages passing diffuse through) through gfx's built-in
+//!   shader (alpha test included), with the depth format's z full scale;
+//! * everything else through the installed [`ShaderProvider`]:
+//!   [`Nv2aShaders`] by default (translated NV2A vertex programs and
+//!   register combiners, plus the fixed-function texture stages turned into
+//!   combiners). A draw the provider cannot translate is skipped with the
+//!   reason.
 //!
-//! gfx changes this would benefit from (not made here; gfx is another lane):
-//! * per-draw viewport and scissor in `gfx::Draw` (the renderer always uses
-//!   the full target, so the device stops on a non-full viewport or
-//!   scissor);
-//! * alpha test in the built-in pre-transformed shader (alpha-tested draws
-//!   without a shader provider stop);
-//! * indexed draws in `gfx::Draw` (the device de-indexes on the CPU);
-//! * batching several draws into one pass across calls (the backend opens a
-//!   pass per draw, correct but slow);
-//! * partial-rectangle clears (`D3DDevice_Clear` with rects).
+//! Every draw is clipped to the viewport rectangle with a scissor: vertex
+//! positions are already window coordinates (pre-transformed vertices, and
+//! NV2A programs apply the viewport themselves), so the wgpu viewport stays
+//! the whole target.
+//!
+//! Not used yet (the device does not hand these over): gfx's partial and
+//! channel-masked clears (`gfx::Renderer::clear_rects`), indexed draws
+//! (`gfx::Draw::indices`; the device de-indexes on the CPU), scissor
+//! rectangles beyond the viewport, and render-to-texture surfaces
+//! (`gfx::surface::SurfaceStore::create_texture_target`). The backend
+//! opens one pass per draw, correct but slow.
 
-use gfx::renderer::SHADER_XYZRHW_DIFFUSE;
+use gfx::renderer::{SHADER_XYZRHW_DIFFUSE, d3dz_max};
 use gfx::surface::{SurfaceDesc, SurfaceId, SurfaceKind, SurfaceStore};
 use gfx::texture::DecodedTexture;
-use gfx::{Clear, D3DFormat, Draw, GfxContext, Renderer, VertexStream};
+use gfx::texture::TextureKind;
+use gfx::{Clear, D3DFormat, Draw, GfxContext, Renderer, ScissorRect, VertexStream};
 
 use crate::backend::{Backend, DrawOutcome, ResolvedDraw};
+use crate::nv2a::{Nv2aShaders, builtin_equivalent};
 use crate::shader::{ShaderProvider, VertexProcessing};
 
 /// Called on every `Swap` with the surface shown and the swap flags.
@@ -42,7 +52,7 @@ pub struct GfxBackend {
 }
 
 impl GfxBackend {
-    /// A backend on `ctx`.
+    /// A backend on `ctx`, translating shaders with [`Nv2aShaders`].
     pub fn new(ctx: GfxContext) -> Self {
         let store = SurfaceStore::new(ctx.caps);
         let renderer = Renderer::new(&ctx);
@@ -50,13 +60,13 @@ impl GfxBackend {
             ctx,
             store,
             renderer,
-            shaders: None,
+            shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
             present_hook: None,
         }
     }
 
-    /// Installs the shader translator for programmable draws.
+    /// Replaces the shader translator for textured and programmable draws.
     pub fn with_shaders(mut self, shaders: Box<dyn ShaderProvider>) -> Self {
         self.shaders = Some(shaders);
         self
@@ -69,6 +79,13 @@ impl GfxBackend {
         hook: impl FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send + 'static,
     ) -> Self {
         self.present_hook = Some(Box::new(hook));
+        self
+    }
+
+    /// Removes the shader translator: only draws the built-in shader handles
+    /// render; the rest are skipped.
+    pub fn without_shaders(mut self) -> Self {
+        self.shaders = None;
         self
     }
 
@@ -170,50 +187,75 @@ impl Backend for GfxBackend {
                 stride: s.stride,
             })
             .collect();
+        // Window-coordinate geometry: the viewport only clips.
+        let v = d.viewport;
+        let scissor = Some(ScissorRect::from_edges(
+            v.x as i64,
+            v.y as i64,
+            v.x as i64 + v.width as i64,
+            v.y as i64 + v.height as i64,
+        ));
         let fixed = matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. });
-        let builtin_ok = fixed
-            && d.layout.pretransformed
-            && d.shader.pixel_shader.is_none()
-            && textures.iter().all(Option::is_none);
-        if builtin_ok {
-            if d.state.render.alpha_test_enable {
-                // The built-in shader never discards, so alpha-tested pixels
-                // would be written: stop rather than render wrongly.
-                return Ok(DrawOutcome::Unsupported(
-                    "alpha test with the built-in pre-transformed shader (it never discards)"
-                        .into(),
-                ));
-            }
-            let draw = Draw {
-                shader: SHADER_XYZRHW_DIFFUSE,
-                streams: &streams,
-                vertex_count: d.vertex_count,
-                layout: &d.layout,
-                primitive: d.primitive,
-                state: d.state.render,
-                bind_groups: &[],
-            };
-            return match self.pass(color, depth, Clear::NONE, &[draw]) {
-                Ok(()) => Ok(DrawOutcome::Drawn),
-                // The built-in shader rejects layouts without float4 position
-                // and D3DCOLOR diffuse: that is a skip, not a failure.
-                Err(e) if e.contains("built-in shader") => Ok(DrawOutcome::Skipped(e)),
-                Err(e) => Err(e),
-            };
-        }
-        let Some(shaders) = self.shaders.as_mut() else {
-            let what = if fixed {
-                "fixed-function draw with textures, a pixel shader, or untransformed vertices"
+        let textured = textures.iter().any(Option::is_some);
+        let readable = fixed && Renderer::builtin_supports(&d.layout);
+        // With a provider the built-in shader only takes draws it renders
+        // exactly; without one it stands in for every untextured
+        // fixed-function draw it can read (stage states, fog and specular
+        // ignored).
+        let builtin_ok = readable
+            && if self.shaders.is_some() {
+                builtin_equivalent(d, textured)
             } else {
-                "vertex program"
+                !textured && d.shader.pixel_shader.is_none()
             };
-            return Ok(DrawOutcome::Skipped(format!(
-                "{what}: no shader provider (TODO(shaders): wire crates/shaders)"
-            )));
-        };
+        if builtin_ok || self.shaders.is_none() {
+            if !builtin_ok {
+                let what = if fixed {
+                    "fixed-function draw with textures, a pixel shader, or vertices the built-in shader cannot read"
+                } else {
+                    "vertex program"
+                };
+                return Ok(DrawOutcome::Skipped(format!("{what}: no shader provider")));
+            }
+            self.renderer
+                .set_pretransformed_z_max(d3dz_max(d.target.depth_format));
+            let draw = Draw {
+                scissor,
+                ..Draw::new(
+                    SHADER_XYZRHW_DIFFUSE,
+                    &d.layout,
+                    &streams,
+                    d.vertex_count,
+                    d.primitive,
+                    d.state.render,
+                )
+            };
+            self.pass(color, depth, Clear::NONE, &[draw])?;
+            return Ok(DrawOutcome::Drawn);
+        }
+        let shaders = self.shaders.as_mut().expect("checked above");
+        // Views as the shaders sample them; a texture that cannot be bound
+        // as a filterable float texture is left out (the program reads a
+        // stand-in).
+        let features = self.ctx.device.features();
         let views: Vec<Option<wgpu::TextureView>> = textures
             .iter()
-            .map(|t| t.map(|t| t.create_view(&Default::default())))
+            .zip(&d.texture_info)
+            .map(|(t, info)| {
+                let (t, info) = (t.as_ref()?, info.as_ref()?);
+                if !gfx::program::filterable(t.format(), features) {
+                    return None;
+                }
+                let dimension = match info.kind {
+                    TextureKind::D2 => wgpu::TextureViewDimension::D2,
+                    TextureKind::Cube => wgpu::TextureViewDimension::Cube,
+                    TextureKind::Volume => wgpu::TextureViewDimension::D3,
+                };
+                Some(t.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(dimension),
+                    ..Default::default()
+                }))
+            })
             .collect();
         let view_refs = std::array::from_fn(|i| views[i].as_ref());
         let prepared = match shaders.prepare(&self.ctx, &mut self.renderer, d, view_refs) {
@@ -223,13 +265,16 @@ impl Backend for GfxBackend {
         let groups: Vec<(u32, &wgpu::BindGroup)> =
             prepared.bind_groups.iter().map(|(i, g)| (*i, g)).collect();
         let draw = Draw {
-            shader: prepared.id,
-            streams: &streams,
-            vertex_count: d.vertex_count,
-            layout: &d.layout,
-            primitive: d.primitive,
-            state: d.state.render,
             bind_groups: &groups,
+            scissor,
+            ..Draw::new(
+                prepared.id,
+                &d.layout,
+                &streams,
+                d.vertex_count,
+                d.primitive,
+                d.state.render,
+            )
         };
         self.pass(color, depth, Clear::NONE, &[draw])?;
         Ok(DrawOutcome::Drawn)

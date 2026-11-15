@@ -10,11 +10,14 @@
 //! 2. **State model**: [`state`] (typed render/texture-stage state),
 //!    [`vertex`] (primitive types, FVF, declarations), [`translate`] (state to
 //!    wgpu descriptors) and [`pipeline`] (cache keyed by translated state).
-//! 3. **Presentation**: [`context`], [`presenter`], [`renderer`], [`upload`].
+//! 3. **Presentation**: [`context`], [`presenter`], [`renderer`] (with
+//!    [`clear`] for partial clears and [`program`] for translated shader
+//!    programs), [`upload`].
 //!    None of it knows about windows; a platform layer hands in a
 //!    `wgpu::Surface`.
 
 pub mod blit;
+pub mod clear;
 pub mod context;
 pub mod convert;
 pub mod dxt;
@@ -22,6 +25,7 @@ pub mod encode;
 pub mod format;
 pub mod pipeline;
 pub mod presenter;
+pub mod program;
 pub mod readback;
 pub mod renderer;
 pub mod repack;
@@ -37,6 +41,7 @@ pub mod xdk;
 pub use context::{GfxContext, GfxError};
 pub use format::{D3DFormat, HostFormat};
 pub use presenter::{Acquired, OffscreenTarget, Presenter, RenderTarget};
-pub use renderer::{Clear, Draw, Renderer, VertexStream};
+pub use clear::MaskedClear;
+pub use renderer::{Clear, Draw, DrawViewport, Renderer, ScissorRect, VertexStream};
 pub use state::RenderState;
 pub use texture::{DecodeOptions, TextureDesc, decode_texture};

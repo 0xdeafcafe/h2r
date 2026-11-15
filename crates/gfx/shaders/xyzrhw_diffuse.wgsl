@@ -1,13 +1,22 @@
 // Fixed-function stand-in for pre-transformed (D3DFVF_XYZRHW | D3DFVF_DIFFUSE)
 // geometry: x/y are window pixels (origin top-left), z is depth in
-// [0, D3DZ_MAX] (16777215 for D24S8; to be verified against captures),
+// [0, D3DZ_MAX] (the depth format's full scale: 16777215 for D24S8, 65535
+// for D16, 511.9375 for F16, 3.4027977e38 for F24S8),
 // rhw is 1/w. Mirrors what the Xbox does for XYZRHW vertices (the transform
 // is skipped; the viewport mapping is inverted here).
 
+// One slot per draw (dynamic offset).
 struct Viewport {
     size: vec2<f32>,
-    inv_z_max: f32, // 1 / D3DZ_MAX
-    pad: f32,
+    z_max: f32, // D3DZ_MAX (divided by: 1 / F24's is not a normal f32)
+    // Alpha test: 0 off, 1 never, 2 less, 3 equal, 4 less-equal, 5 greater,
+    // 6 not-equal, 7 greater-equal (D3DCMPFUNC order).
+    alpha_func: f32,
+    // D3DRS_ALPHAREF, 0..255.
+    alpha_ref: f32,
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> viewport: Viewport;
@@ -39,13 +48,32 @@ fn vs_main(in: VsIn) -> VsOut {
     );
     // Scaling by w keeps perspective-correct interpolation identical to the
     // original rhw-based interpolation.
-    let z = clamp(in.position.z * viewport.inv_z_max, 0.0, 1.0);
+    let z = clamp(in.position.z / viewport.z_max, 0.0, 1.0);
     out.clip = vec4<f32>(ndc * w, z * w, w);
     out.color = in.diffuse;
     return out;
 }
 
+// D3D compares the 8-bit alpha with the reference.
+fn alpha_passes(a: f32) -> bool {
+    let v = round(clamp(a, 0.0, 1.0) * 255.0);
+    let r = viewport.alpha_ref;
+    switch u32(viewport.alpha_func) {
+        case 1u: { return false; }
+        case 2u: { return v < r; }
+        case 3u: { return v == r; }
+        case 4u: { return v <= r; }
+        case 5u: { return v > r; }
+        case 6u: { return v != r; }
+        case 7u: { return v >= r; }
+        default: { return true; }
+    }
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    if (!alpha_passes(in.color.a)) {
+        discard;
+    }
     return in.color;
 }

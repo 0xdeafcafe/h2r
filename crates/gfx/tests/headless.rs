@@ -68,7 +68,7 @@ fn pixel(px: &[u8], w: u32, x: u32, y: u32) -> [u8; 4] {
 }
 
 fn draw<'a>(streams: &'a [VertexStream<'a>], count: u32, layout: &'a VertexLayout, prim: PrimitiveType, state: RenderState) -> Draw<'a> {
-    Draw { shader: SHADER_XYZRHW_DIFFUSE, streams, vertex_count: count, layout, primitive: prim, state, bind_groups: &[] }
+    Draw::new(SHADER_XYZRHW_DIFFUSE, layout, streams, count, prim, state)
 }
 
 /// A clockwise triangle is visible when its winding is not culled and
@@ -163,6 +163,9 @@ fn rejects_bad_draws() {
             primitive: PrimitiveType::TriangleList,
             state: RenderState::default(),
             bind_groups: &[],
+            viewport: None,
+            scissor: None,
+            indices: None,
         };
         renderer.render(&ctx, &mut enc, &target.target(), Clear::NONE, &[d])
     };

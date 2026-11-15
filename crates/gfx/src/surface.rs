@@ -43,7 +43,9 @@ use std::collections::HashMap;
 
 use crate::blit::{BlitOptions, Blitter};
 use crate::context::GfxContext;
-use crate::encode::{self, DepthPlane, EncodeError, HostPixelOrder};
+use crate::encode::{self, DepthPlane, EncodeError};
+/// Channel order of host colour readbacks.
+pub use crate::encode::HostPixelOrder;
 use crate::format::{D3DFormat, Layout, TexelFormat};
 use crate::presenter::{Frame, Presenter, RenderTarget};
 use crate::texture::TextureError;
@@ -264,6 +266,9 @@ pub struct Surface {
     /// Depth-sized stand-in colour attachment, used while this surface is
     /// paired with a larger depth surface (see [`SurfaceStore::prepare_target`]).
     padded: Option<Padded>,
+    /// One view per mip level, for render-to-texture surfaces
+    /// ([`SurfaceStore::create_texture_target`]); empty otherwise.
+    levels: Vec<wgpu::TextureView>,
 }
 
 struct Padded {
@@ -290,9 +295,14 @@ impl Surface {
     pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
-    /// A view of [`texture`](Self::texture).
+    /// A view of [`texture`](Self::texture) (every mip level: bind this to
+    /// sample a render-to-texture surface).
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+    /// Mip levels (1 unless made by [`SurfaceStore::create_texture_target`]).
+    pub fn mip_levels(&self) -> u32 {
+        self.texture.mip_level_count()
     }
 }
 
@@ -374,8 +384,67 @@ impl SurfaceStore {
         let view = texture.create_view(&Default::default());
         let id = SurfaceId(self.next);
         self.next += 1;
-        self.surfaces.insert(id, Surface { desc, kind, wgpu_format, texture, view, msaa, padded: None });
+        self.surfaces.insert(id, Surface { desc, kind, wgpu_format, texture, view, msaa, padded: None, levels: Vec::new() });
         Ok(id)
+    }
+
+    /// Creates a single-sample colour surface with `levels` mip levels that
+    /// is both a render target and a texture (render-to-texture: a guest
+    /// surface whose `Parent` is a texture). Draw into one level with
+    /// [`level_target`](Self::level_target) (level 0 also through
+    /// [`target`](Self::target)) and sample all of them through
+    /// [`Surface::view`]. MSAA is not supported (`desc.samples` is ignored).
+    pub fn create_texture_target(&mut self, ctx: &GfxContext, mut desc: SurfaceDesc, levels: u32) -> Result<SurfaceId, SurfaceError> {
+        if desc.width == 0 || desc.height == 0 {
+            return Err(SurfaceError::EmptySize);
+        }
+        let wgpu_format = color_surface_format(desc.format).ok_or(SurfaceError::BadFormat(desc.format, SurfaceKind::Color))?;
+        desc.samples = 1;
+        let levels = levels.clamp(1, crate::texture::max_levels(desc.width, desc.height, 1));
+        let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("surface render texture"),
+            size: wgpu::Extent3d { width: desc.width, height: desc.height, depth_or_array_layers: 1 },
+            mip_level_count: levels,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let level_views = (0..levels)
+            .map(|l| texture.create_view(&wgpu::TextureViewDescriptor { base_mip_level: l, mip_level_count: Some(1), ..Default::default() }))
+            .collect();
+        let id = SurfaceId(self.next);
+        self.next += 1;
+        self.surfaces.insert(
+            id,
+            Surface { desc, kind: SurfaceKind::Color, wgpu_format, texture, view, msaa: None, padded: None, levels: level_views },
+        );
+        Ok(id)
+    }
+
+    /// `SetRenderTarget` on mip `level` of a surface made by
+    /// [`create_texture_target`](Self::create_texture_target). A depth
+    /// surface must have exactly the level's size and one sample.
+    pub fn level_target(&self, color: SurfaceId, level: u32, depth: Option<SurfaceId>) -> Result<RenderTarget<'_>, SurfaceError> {
+        let c = self.typed(color, SurfaceKind::Color)?;
+        let view = c.levels.get(level as usize).ok_or(SurfaceError::TargetMismatch("no such mip level of a render-to-texture surface"))?;
+        let size = ((c.desc.width >> level).max(1), (c.desc.height >> level).max(1));
+        let (depth_view, depth_format) = match depth {
+            Some(d) => {
+                let d = self.typed(d, SurfaceKind::DepthStencil)?;
+                if (d.desc.width, d.desc.height) != size || d.desc.samples != 1 {
+                    return Err(SurfaceError::TargetMismatch("depth surface does not match the mip level"));
+                }
+                (Some(&d.view), Some(d.wgpu_format))
+            }
+            None => (None, None),
+        };
+        Ok(RenderTarget { color: view, color_format: c.wgpu_format, depth: depth_view, depth_format, size, samples: 1 })
     }
 
     /// Looks up a surface.
@@ -436,7 +505,7 @@ impl SurfaceStore {
         let larger = depth.and_then(|d| self.surfaces.get(&d)).is_some_and(|d| d.desc.width != c.desc.width || d.desc.height != c.desc.height);
         let view = match (&c.padded, larger) {
             (Some(p), true) => &p.view,
-            _ => c.msaa.as_ref().map_or(&c.view, |(_, v)| v),
+            _ => c.msaa.as_ref().map_or(c.levels.first().unwrap_or(&c.view), |(_, v)| v),
         };
         Ok(RenderTarget {
             color: view,

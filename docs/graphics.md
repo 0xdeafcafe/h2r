@@ -140,9 +140,13 @@ Unknown or unverified details, flagged so nobody trusts them blindly:
   `TEXTURE_COMPRESSION_BC_SLICED_3D`). Their block layout in guest memory is
   unverified: xemu has a dedicated 3D S3TC path and we assume plain
   slice-by-slice blocks.
-* Pre-transformed (`XYZRHW`) z is taken as `[0, D3DZ_MAX]` (16777215 for
-  D24S8; `Renderer::set_pretransformed_z_max`) and x/y get the D3D8 half-pixel
-  offset. Both are to be verified against captures.
+* Pre-transformed (`XYZRHW`) and vertex-program window z is taken as
+  `[0, D3DZ_MAX]` of the depth format (`gfx::renderer::d3dz_max`: 16777215
+  for D24S8, 65535 for D16, 511.9375 for F16, 3.4027977e38 for F24S8, the
+  largest value of the Xbox float formats) and x/y get the D3D8 half-pixel
+  offset. The built-in shader (`Renderer::set_pretransformed_z_max`) and
+  `d3d::nv2a` use the same scale. Both are to be verified against captures;
+  F24S8 z near zero falls into f32 denormals on the host.
 * Depth bias (`POLYGONOFFSETZOFFSET`) is in depth-buffer steps and passed
   through unscaled (xemu hands it to `glPolygonOffset` as is). It is dropped on
   line/point topologies and gated by `SOLID/WIREFRAME/POINTOFFSETENABLE`.
@@ -206,6 +210,10 @@ depth-sized stand-in attachment, seeded from and copied back to the real
 surface, with draws clipped by viewport and scissor to the colour size (not
 available for MSAA colour). Guest uploads and readbacks both use the surface's
 own `SurfaceLayout`.
+Render-to-texture: `create_texture_target(desc, levels)` makes a colour
+surface with a mip chain that is both an attachment and a texture;
+`level_target(id, level, depth)` draws into one level (level 0 also through
+`target`), and `Surface::view` samples the whole chain. No MSAA there.
 Limits: `F16` and
 `F24S8` depth cannot be encoded; tile compression and bank interleave are not
 modelled.
@@ -213,8 +221,39 @@ modelled.
 ### Shader hook
 `ShaderProgram` plus `Renderer::register_shader(ShaderId, ...)`; a draw picks
 one with `Draw::shader`, and `PipelineKey::shader` keys the cache. Extra
-resources go in `Draw::bind_groups`. The combiner/vertex translators plug in
-here.
+resources go in `Draw::bind_groups`. `program::ProgramBindings` implements
+the resource contract of `crates/shaders` (docs/shaders.md): group 0 holds
+the vertex and pixel uniform buffers, group 1 a texture and sampler per
+sampled stage. It builds and caches the layouts per set of stage dimensions,
+wraps a linked module into a `ShaderProgram`, caches samplers by
+`SamplerKey`, and binds a 1x1 opaque-black stand-in for a stage with nothing
+usable bound. `d3d::nv2a::Nv2aShaders` is the user: it translates each draw's
+vertex program and combiner program (or the fixed-function texture stages)
+and registers one program per distinct translation.
+
+### Per-draw raster state and clears
+* `Draw::viewport` (`DrawViewport`: rectangle plus depth range) is a wgpu
+  viewport; it must lie inside the target. `None` is the whole target.
+  Shaders that produce window coordinates (the built-in one, translated
+  NV2A programs) leave it `None`: the D3D viewport has already been applied
+  to their positions, so they clip with a scissor instead.
+* `Draw::scissor` (`ScissorRect`) is clamped to the target; an empty one
+  draws nothing.
+* `Draw::indices` draws a `u32` index list over the streams (each index
+  below `vertex_count`); Xbox-only primitive types are rewritten on top of
+  it.
+* The built-in shader runs the alpha test from `RenderState`
+  (`ALPHATESTENABLE`, `ALPHAFUNC`, `ALPHAREF`, comparing the rounded 8-bit
+  alpha) with a per-draw uniform slot; every `render` call gets its own
+  uniform buffer, so several calls recorded before one submit keep their
+  own values.
+* An indexed strip (`TriangleStrip`/`LineStrip` with `Draw::indices`) sets
+  the pipeline's strip index format (`Uint32`).
+* `Renderer::clear_rects(target, MaskedClear, rects)` clears rectangles and
+  any subset of colour channels, depth and stencil in one pass: a whole
+  target with every channel uses load operations; anything else draws a
+  scissored full-screen triangle whose pipeline writes the channel mask,
+  replaces depth (compare always) and replaces stencil.
 
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 
@@ -230,9 +269,10 @@ here.
 | `CULLMODE` | `CULL_CW` = `front_face Ccw, cull Back`; `CULL_CCW` = `front_face Cw, cull Back` |
 | `FILLMODE` | `PolygonMode` (`Line`/`Point` need `POLYGON_MODE_LINE/POINT`; falls back to `Fill`) |
 | `BACKFILLMODE`, `FRONTFACE` | not expressible in a pipeline; ignored |
-| `ALPHATEST*`, `FOG*`, `SHADEMODE`, `TEXTUREFACTOR` | stored, but they belong in shaders (not yet written) |
+| `ALPHATEST*` | built-in shader: per-draw uniform and `discard`; translated programs: `PixelOptions::alpha_test` |
+| `FOG*`, `SHADEMODE`, `TEXTUREFACTOR` | shader inputs (`d3d::nv2a` feeds them to the translated programs) |
 | stage address/filter/mip/aniso | `SamplerKey` -> `SamplerDescriptor` (hashable; `MIPMAPLODBIAS` not representable); Border address needs `ADDRESS_MODE_CLAMP_TO_BORDER` and the colour snaps to one of wgpu's three presets; quincunx and gaussian-cubic filters approximate to linear |
-| stage ops/args (`COLOROP`, ...) | typed and stored; consumed by a future fixed-function shader generator |
+| stage ops/args (`COLOROP`, ...) | typed; `d3d::nv2a::fixed_function_def` turns them into a register-combiner program |
 
 `PipelineKey` is built from the *translated* wgpu descriptors (`PrimitiveState`,
 `DepthStencilState`, `ColorTargetState`, vertex layouts) plus a shader id and
@@ -245,14 +285,33 @@ is generic over the stored value so its behaviour is unit tested without a GPU;
 ## What exists end to end
 
 `Renderer::render` takes `Draw { shader, streams, vertex_count, layout,
-primitive, state, bind_groups }`; the one built-in shader is for pre-transformed
-`XYZRHW | DIFFUSE` vertices (`shaders/xyzrhw_diffuse.wgsl`). The shader inverts
+primitive, state, bind_groups, viewport, scissor, indices }` (`Draw::new`
+fills the last four with defaults); the one built-in shader is for
+pre-transformed `XYZRHW | DIFFUSE` vertices (`shaders/xyzrhw_diffuse.wgsl`). The shader inverts
 the viewport mapping and keeps the guest's `rhw` interpolation. The tests draw
 offscreen on Metal and read pixels back to prove cull direction and alpha
 blending, including an Xbox `QUADLIST`. `examples/window.rs` opens a window,
 draws a triangle and a blended quad, and sets all state via raw Xbox values
 (`C` cycles cull, `W` wireframe, `B` blending; `--frames N` exits after N
-frames for smoke tests).
+frames for smoke tests). `tests/draw_features.rs` checks viewport, scissor,
+indexed draws, the built-in alpha test, partial and channel-masked clears and
+render-to-texture levels by pixel.
+
+Translated shaders: `d3d::GfxBackend` renders every draw through
+`d3d::nv2a::Nv2aShaders` (vertex programs and register combiners from
+`crates/shaders`, and the fixed-function texture stages as a synthesized
+combiner program) unless the built-in shader reproduces the whole state
+(`d3d::nv2a::builtin_equivalent`: no texture, pixel shader, fog, specular,
+flat shading or two-sided lighting, stages passing diffuse through).
+Fixed-function stages follow D3D: `CURRENT` is diffuse until a stage writes
+it (a stage writing `TEMP` leaves it), results saturate to [0, 1],
+`MULTIPLYADD` is `arg0 + arg1 * arg2`, and an operation reading an unbound
+texture passes `CURRENT` through (as Wine documents D3D doing). With
+`FOGENABLE` off a combiner program's fog register reads factor 1. `crates/d3d/tests/shaders_render.rs` draws a
+UI-like quad (vertex program with constants and a default input, combiner,
+linear texture, alpha blend and alpha test) and a fixed-function textured
+quad through the device and checks pixels; `cargo run -p d3d --example
+window` shows the same through `crates/app` in a real window.
 
 `crates/viewer` is the first consumer of real assets: it decodes a `mode` tag
 (`tags::model`, see map-format.md "Render-model geometry") and draws it with
@@ -263,6 +322,12 @@ software-renders structure BSPs through the same shared geometry decoder
 (`tags::geometry`, see structure-bsp.md).
 
 ## Not supported yet (future work)
+
+The two sections below are history: the translators now exist in
+`crates/shaders` (docs/shaders.md) and are wired in by `d3d::nv2a`. What is
+still missing there: untransformed fixed-function vertices (transform,
+lighting, texgen), fixed-function bump-env ops, `MIPMAPLODBIAS`, colour key,
+and point sprites.
 
 ### Pixel processing: register combiners
 
