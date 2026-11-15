@@ -57,7 +57,7 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// What a module is built from: the image's hash, the generator sources'
-/// hash (build.rs) and the module ABI. [`build`] writes it next to the dylib
+/// hash (build.rs), the IR passes `H2_PASSES` selects and the module ABI. [`build`] writes it next to the dylib
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
@@ -69,9 +69,10 @@ pub fn build_stamp(xbe_bytes: &[u8]) -> String {
 
 fn stamp_with_flags(xbe_bytes: &[u8], flags: &[String]) -> String {
     format!(
-        "xbe {:016x} generator {} abi {} flags {flags:?}\n",
+        "xbe {:016x} generator {} passes {} abi {} flags {flags:?}\n",
         fallback::fnv64(xbe_bytes),
         env!("GENERATOR_SOURCE_HASH"),
+        emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
         runtime::cpu::ABI_VERSION
     )
 }

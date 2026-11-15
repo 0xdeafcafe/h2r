@@ -120,3 +120,16 @@ fn dead_flag_elimination_is_unobservable() {
         equivalent(name, &function(body), dead_flags(), 300);
     }
 }
+
+#[test]
+fn a_spec_names_its_passes_and_parses_back() {
+    for name in Passes::names() {
+        let p = Passes::parse(name).unwrap();
+        assert_eq!(p.spec(), name, "a pass missing from Passes::spec");
+    }
+    for spec in ["all", "none", "dead-flags", "-dead-flags"] {
+        let p = Passes::parse(spec).unwrap();
+        assert_eq!(Passes::parse(&p.spec()).unwrap(), p, "{spec}");
+    }
+    assert_eq!(Passes::NONE.spec(), "none");
+}

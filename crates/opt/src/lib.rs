@@ -92,6 +92,16 @@ impl Passes {
             Err(_) => Ok(Passes::ALL),
         }
     }
+
+    /// The canonical spec: the names of the passes that are on, in order,
+    /// or `none`. [`Passes::parse`] gives back the same selection.
+    pub fn spec(&self) -> String {
+        let on: Vec<&str> = [("dead-flags", self.dead_flags), ("lazy-flags", self.lazy_flags)]
+            .into_iter()
+            .filter_map(|(n, on)| on.then_some(n))
+            .collect();
+        if on.is_empty() { "none".into() } else { on.join(",") }
+    }
 }
 
 impl Default for Passes {

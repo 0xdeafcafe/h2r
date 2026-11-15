@@ -4,8 +4,9 @@
 //! - `UNREAD_SOURCE_HASH`: the analyze crate and the boot's fallback, for
 //!   the cached unread-target set (fallback.rs).
 //! - `GENERATOR_SOURCE_HASH`: everything that turns an XBE into the native
-//!   module (xbe, analyze, ir, lift, emit and its C, x87, the runtime ABI
-//!   header and the boot's bridge C), for the dylib's build stamp (lib.rs).
+//!   module (xbe, analyze, ir, lift, the IR passes, emit and its C, x87, the
+//!   runtime ABI header and the boot's bridge C), for the dylib's build stamp
+//!   (lib.rs).
 
 use std::path::{Path, PathBuf};
 
@@ -46,7 +47,7 @@ fn main() {
     let unread = hash(&["../analyze/src"], &["rs"], &["src/fallback.rs"]);
     println!("cargo:rustc-env=UNREAD_SOURCE_HASH={unread:016x}");
     let generator = hash(
-        &["../xbe/src", "../analyze/src", "../ir/src", "../lift/src", "../emit/src", "../emit/c", "../x87/src", "../runtime/include", "c"],
+        &["../xbe/src", "../analyze/src", "../ir/src", "../lift/src", "../opt/src", "../emit/src", "../emit/c", "../x87/src", "../runtime/include", "c"],
         &["rs", "c", "h"],
         &[],
     );
