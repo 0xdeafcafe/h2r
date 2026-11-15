@@ -370,7 +370,12 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     let mut outcome = kernel::RunOutcome::SliceLimit;
     let mut input_errors = 0u64;
     let mut audio_errors: Vec<String> = Vec::new();
+    // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
+    let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
     for slice in 0..opts.max_slices {
+        if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
+            break;
+        }
         if let Some(pad) = &pad {
             script.step(slice, pad);
         }
@@ -402,7 +407,8 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         o => (format!("{o:?}"), m.threads().next().map_or(0, |t| t.cpu.eip)),
     };
     eprintln!("ran {secs:.2}s, {} slices, {} preemptions", m.schedule().len(), m.preemptions());
-    if let Some(fps) = d3d_diag::frame_rate(t, 100) {
+    let fps_from = std::env::var("H2_BOOT_FPS_FROM").ok().and_then(|v| v.parse().ok());
+    if let Some(fps) = d3d_diag::frame_rate(t, 100, fps_from) {
         eprintln!("{fps}");
     }
     for th in m.threads() {

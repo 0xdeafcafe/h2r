@@ -46,23 +46,27 @@ pub fn presents() -> u64 {
 static PRESENT_TIMES: Mutex<Vec<std::time::Instant>> = Mutex::new(Vec::new());
 
 /// Wall-clock frame rate: presents per second over the run since `start`,
-/// and over the last `tail` presents with their mean, median and worst
-/// frame time. `None` before two presents.
-pub fn frame_rate(start: std::time::Instant, tail: usize) -> Option<String> {
+/// and over a window with its mean, median and worst frame time: from
+/// present `from` (1-based) when given, else the last `tail` presents.
+/// `None` before two presents.
+pub fn frame_rate(start: std::time::Instant, tail: usize, from: Option<usize>) -> Option<String> {
     let times = PRESENT_TIMES.lock().unwrap();
     let n = times.len();
     if n < 2 {
         return None;
     }
     let total = times[n - 1].duration_since(start).as_secs_f64();
-    let from = n.saturating_sub(tail + 1);
+    let from = match from {
+        Some(f) => f.saturating_sub(1).min(n - 2),
+        None => n.saturating_sub(tail + 1),
+    };
     let mut gaps: Vec<f64> = times[from..].windows(2).map(|w| w[1].duration_since(w[0]).as_secs_f64() * 1e3).collect();
     let span: f64 = gaps.iter().sum();
     gaps.sort_by(f64::total_cmp);
     Some(format!(
-        "frames: {n} presents in {total:.1}s ({:.2} fps); last {}: {:.2} fps, frame ms mean {:.0} median {:.0} max {:.0}",
+        "frames: {n} presents in {total:.1}s ({:.2} fps); presents {}-{n}: {:.2} fps, frame ms mean {:.0} median {:.0} max {:.0}",
         n as f64 / total,
-        gaps.len(),
+        from + 1,
         gaps.len() as f64 * 1e3 / span,
         span / gaps.len() as f64,
         gaps[gaps.len() / 2],
@@ -389,8 +393,17 @@ impl<B: Backend> Backend for DiagBackend<B> {
             c.append("frame.txt", &format!("present {surface:?} flags={flags:#x}"));
         }
         self.stats.lock().unwrap().presents += 1;
-        PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        PRESENT_TIMES.lock().unwrap().push(std::time::Instant::now());
+        let n = PRESENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        {
+            let mut times = PRESENT_TIMES.lock().unwrap();
+            let now = std::time::Instant::now();
+            // A heartbeat for long runs: where the run is, and how fast the last 100 went.
+            if n.is_multiple_of(100) && times.len() >= 100 {
+                let secs = now.duration_since(times[times.len() - 100]).as_secs_f64();
+                eprintln!("present {n}: last 100 at {:.2} fps", 100.0 / secs);
+            }
+            times.push(now);
+        }
         self.in_frame += 1;
         if let Some(l) = &mut self.log {
             let _ = l.flush();

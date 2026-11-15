@@ -43,12 +43,16 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir)?;
-            let every: u64 = std::env::var("H2_BOOT_GFX_EVERY").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30);
+            // `never`: render on the GPU but write no screenshots (benchmarks).
+            let every: u64 = match std::env::var("H2_BOOT_GFX_EVERY").ok().as_deref() {
+                Some("never") => u64::MAX,
+                v => v.and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30),
+            };
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             let mut swaps = 0u64;
             let backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags| {
                 swaps += 1;
-                if swaps != 1 && !swaps.is_multiple_of(every) {
+                if (swaps != 1 || every == u64::MAX) && !swaps.is_multiple_of(every) {
                     return;
                 }
                 if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}.png"))) {
