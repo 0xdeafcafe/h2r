@@ -664,21 +664,28 @@ fn final_combiner_latched_absent_ignores_buffer_reuse() {
     assert!(pollster::block_on(scope.pop()).is_none());
 }
 
-/// Draws `quads` (window x0, x1, z, w, RGBA each; full height) with
-/// `oPos = v0, oD0 = v3`, depth tested LessEqual and written, after a
-/// clear to black and depth 1, and returns the back buffer.
-fn depth_quads(
-    d: &mut d3d::Device<GfxBackend>,
-    m: &mut SparseMemory,
-    quads: &[(f32, f32, f32, f32, [f32; 4])],
-) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
-    let code = program(&[
+/// `oPos = v0, oD0 = v3`.
+fn plain_program() -> Vec<u8> {
+    program(&[
         Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF),
         Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None)
             .to_out(false, OutReg::D0, 0xF)
             .last(),
-    ]);
-    m.write(FUNCTION, &code).unwrap();
+    ])
+}
+
+/// Draws a triangle list of `verts` (v0 = window x, y, z, w; v3 = RGBA)
+/// with vertex program `code` and `r0 = v0` combiners, depth function
+/// `zfunc` (a `D3DCMP_*`) and depth writes `zwrite`. No clear.
+fn draw_pass(
+    d: &mut d3d::Device<GfxBackend>,
+    m: &mut SparseMemory,
+    code: &[u8],
+    verts: &[[f32; 8]],
+    zfunc: u32,
+    zwrite: bool,
+) {
+    m.write(FUNCTION, code).unwrap();
     d.load_vertex_shader_program(m, FUNCTION, 0).unwrap();
     for reg in 0..16u32 {
         let (offset, format) = match reg {
@@ -691,14 +698,7 @@ fn depth_quads(
         }
     }
     d.select_vertex_shader_direct(m, VAF, 0).unwrap();
-    let mut vb = Vec::new();
-    for &(x0, x1, z, w, rgba) in quads {
-        for (x, y) in [(x0, 0.0f32), (x1, 0.0), (x0, H as f32), (x1, 0.0), (x1, H as f32), (x0, H as f32)] {
-            for f in [x, y, z, w].into_iter().chain(rgba) {
-                vb.extend_from_slice(&f.to_le_bytes());
-            }
-        }
-    }
+    let vb: Vec<u8> = verts.iter().flatten().flat_map(|f| f.to_le_bytes()).collect();
     m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
     m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
     m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
@@ -721,11 +721,28 @@ fn depth_quads(
         m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
     }
     d.set_pixel_shader(m, PS_OBJECT).unwrap();
-    d.set_render_state(m, RS_ZFUNC, 0x203).unwrap(); // LESSEQUAL
-    d.set_render_state(m, 64, 1).unwrap(); // ZWRITEENABLE
-    d.clear(m, 0, 0, 0xF3, 0xFF00_0000, 1.0, 0).unwrap();
-    d.draw_vertices(m, 5, 0, 6 * quads.len() as u32).unwrap(); // TRIANGLELIST
+    d.set_render_state(m, RS_ZFUNC, zfunc).unwrap();
+    d.set_render_state(m, 64, zwrite as u32).unwrap(); // ZWRITEENABLE
+    d.draw_vertices(m, 5, 0, verts.len() as u32).unwrap(); // TRIANGLELIST
     no_skips(d);
+}
+
+/// Draws `quads` (window x0, x1, z, w, RGBA each; full height) with
+/// `oPos = v0, oD0 = v3`, depth tested LessEqual and written, after a
+/// clear to black and depth 1, and returns the back buffer.
+fn depth_quads(
+    d: &mut d3d::Device<GfxBackend>,
+    m: &mut SparseMemory,
+    quads: &[(f32, f32, f32, f32, [f32; 4])],
+) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
+    let mut verts = Vec::new();
+    for &(x0, x1, z, w, [r, g, b, a]) in quads {
+        for (x, y) in [(x0, 0.0f32), (x1, 0.0), (x0, H as f32), (x1, 0.0), (x1, H as f32), (x0, H as f32)] {
+            verts.push([x, y, z, w, r, g, b, a]);
+        }
+    }
+    d.clear(m, 0, 0, 0xF3, 0xFF00_0000, 1.0, 0).unwrap();
+    draw_pass(d, m, &plain_program(), &verts, 0x203, true); // LESSEQUAL
     back_buffer(d)
 }
 
@@ -800,6 +817,109 @@ fn w_buffered_program_to_a_colour_only_target_draws() {
     let px = depth_quads(&mut d, &mut m, &[(0.0, 32.0, 0.5 * 16_777_215.0, 1.0, red)]);
     assert_eq!(px(16, 32), [255, 0, 0, 255]);
     assert_eq!(px(48, 32), [0, 0, 0, 255]);
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}
+
+/// Halo draws a surface in several passes with different vertex programs:
+/// the first writes depth, later ones test it with EQUAL. Programs that
+/// compute w by different instructions can differ in the last bit or two.
+/// The NV2A stores W-buffered depth as an integer (D24: the whole part of
+/// w), which absorbs that, so the later passes cover the first; stored
+/// as a float, every ulp fails EQUAL: the likely source of the stripes and
+/// dither on Ascension's tower and the Banshee. Here the second program scales w by
+/// 1 + 2^-22 (two ulps); x and y are window coordinates, so coverage is
+/// unchanged. w runs from 100 to 5000 depth units across the triangles.
+#[test]
+fn w_buffered_passes_with_ulp_different_w_store_equal_depth() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[2]).unwrap();
+    let corner = |x: f32, y: f32, w: f32| [x, y, 0.0, w, 1.0, 0.0, 0.0, 1.0];
+    let (a, b, c, e) = (
+        corner(1.0, 2.0, 100.3),
+        corner(63.0, 1.0, 1_723.7),
+        corner(2.0, 62.0, 911.1),
+        corner(62.5, 63.0, 5_000.0),
+    );
+    let verts = [a, b, c, b, e, c];
+    // c[96] = (1, 1, 1, 1 + 2^-22).
+    let scale = [1.0f32, 1.0, 1.0, 1.0 + f32::EPSILON * 2.0];
+    for (i, f) in scale.iter().enumerate() {
+        m.write_u32(CONSTS + 4 * i as u32, f.to_bits()).unwrap();
+    }
+    d.set_vertex_shader_constant(&mut m, 96, CONSTS, 1, true).unwrap();
+    // The position through a temporary and a multiply, another output
+    // around it, and the colour's red and green swapped.
+    let second = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None).to_temp(2, 0xF),
+        Inst::mac(MacOp::Mul, Some(Operand::v(0)), Some(Operand::c(96)), None).to_temp(0, 0xF),
+        Inst::mac(MacOp::Mul, Some(Operand::v(0)), Some(Operand::r(2)), None)
+            .to_out(false, OutReg::T(0), 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::r(0)), None, None).to_out(false, OutReg::Pos, 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::r(2).swz("yxzw")), None, None)
+            .to_out(false, OutReg::D0, 0xF)
+            .last(),
+    ]);
+    d.clear(&mut m, 0, 0, 0xF3, 0xFF00_0000, 1.0, 0).unwrap();
+    draw_pass(&mut d, &mut m, &plain_program(), &verts, 0x203, true); // LESSEQUAL
+    draw_pass(&mut d, &mut m, &second, &verts, 0x202, false); // EQUAL
+    let px = back_buffer(&mut d);
+    let (mut red, mut green) = (0, 0);
+    for y in 0..H {
+        for x in 0..W {
+            match px(x, y) {
+                [255, 0, 0, 255] => red += 1,
+                [0, 255, 0, 255] => green += 1,
+                _ => {}
+            }
+        }
+    }
+    assert!(red + green > 3000, "{} pixels drawn", red + green);
+    // Only w within two ulps of a whole number can land on either side.
+    assert!(red * 100 < red + green, "{red} of {} pixels failed the EQUAL pass", red + green);
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}
+
+/// `D3DDCC_DEPTHCLAMP` in `D3DRS_DEPTHCLIPCONTROL` (`SET_ZMIN_MAX_CONTROL`
+/// clamp mode): depth past the clip range is clamped to it, not culled.
+/// Ascension's black sky is the likely case: sky past the far clip,
+/// culled.
+#[test]
+fn w_buffered_depth_clamp_keeps_what_lies_past_the_clip_range() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    const D24: f32 = 16_777_215.0;
+    // The W-buffer parameters a projection with a near plane gives, so D3D
+    // pushes CLIP_MIN/MAX = [1/WFar * WNear * D24, D24] = [1000, D24].
+    use d3d::layout::device_field as f;
+    let dev = d3d::GuestLayout::HALO2.device;
+    m.write_u32(dev + f::INV_W_FAR, 1.0f32.to_bits()).unwrap();
+    m.write_u32(dev + f::W_NEAR, (1000.0 / D24).to_bits()).unwrap();
+    call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[2]).unwrap();
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let green = [0.0, 1.0, 0.0, 1.0];
+    // Culled (the default): the far quad is gone.
+    d.set_render_state(&mut m, 82, 0x01).unwrap();
+    let px = depth_quads(&mut d, &mut m, &[(0.0, W as f32, 0.0, 4.0 * D24, red)]);
+    assert_eq!(px(32, 32), [0, 0, 0, 255]);
+    // Clamped: it draws, at the far end of the range, so a nearer quad
+    // drawn after it still passes LessEqual.
+    d.set_render_state(&mut m, 82, 0x10).unwrap();
+    let px = depth_quads(
+        &mut d,
+        &mut m,
+        &[(0.0, W as f32, 0.0, 4.0 * D24, red), (0.0, 32.0, 0.0, 0.5 * D24, green)],
+    );
+    assert_eq!(px(48, 32), [255, 0, 0, 255]);
+    assert_eq!(px(16, 32), [0, 255, 0, 255]);
 
     let err = pollster::block_on(scope.pop());
     assert!(err.is_none(), "wgpu validation error: {err:?}");

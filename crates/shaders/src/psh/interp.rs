@@ -37,6 +37,8 @@ pub struct Uniforms {
     pub stipple: [u32; 32],
     /// W-buffering: depth full scale, polygon offset units, slope factor.
     pub depth: Vec4,
+    /// W-buffering: the clamp range of the stored w.
+    pub depth_range: Vec4,
 }
 
 impl Default for Uniforms {
@@ -55,7 +57,8 @@ impl Default for Uniforms {
             border: [[0.0; 4]; 4],
             lod_bias: [0.0; 4],
             stipple: [0; 32],
-            depth: [16_777_215.0, 0.0, 0.0, 0.0],
+            depth: [16_777_215.0, 0.0, 0.0, 1.0],
+            depth_range: [0.0, 16_777_215.0, 0.0, 0.0],
         }
     }
 }
@@ -80,6 +83,7 @@ impl Uniforms {
             v.push(row.map(f32::from_bits));
         }
         v.push(self.depth);
+        v.push(self.depth_range);
         v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
     }
 }

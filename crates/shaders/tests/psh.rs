@@ -1157,9 +1157,9 @@ fn implicit_samples_use_each_stage_lod_bias() {
     assert!(shader.body.contains("clamp(xps.lod_bias[1], -16.0, 15.99)"));
     let u = PixelUniforms { lod_bias: [-1.0, 2.0, 0.0, 0.0], ..Default::default() };
     let bytes = u.to_bytes();
-    // lod_bias sits before the stipple (128 bytes) and depth (16 bytes).
-    assert_eq!(&bytes[bytes.len() - 160..bytes.len() - 156], &(-1.0f32).to_le_bytes());
-    assert_eq!(&bytes[bytes.len() - 156..bytes.len() - 152], &(2.0f32).to_le_bytes());
+    // lod_bias sits before the stipple (128 bytes), depth and depth_range.
+    assert_eq!(&bytes[bytes.len() - 176..bytes.len() - 172], &(-1.0f32).to_le_bytes());
+    assert_eq!(&bytes[bytes.len() - 172..bytes.len() - 168], &(2.0f32).to_le_bytes());
     let explicit = psh::translate(&d, &PixelOptions { explicit_lod: true, ..Default::default() });
     assert!(explicit.body.contains("textureSampleLevel(xps_tex0"));
     assert!(!explicit.body.contains("textureSampleBias"));

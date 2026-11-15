@@ -37,7 +37,7 @@ pub(crate) mod common {
         let interp = if flat { " @interpolate(flat)" } else { "" };
         format!(
             "struct XboxVaryings {{
-    @builtin(position) position: vec4f,
+    @builtin(position) @invariant position: vec4f,
     @location(0){interp} d0: vec4f,
     @location(1){interp} d1: vec4f,
     @location(2){interp} b0: vec4f,

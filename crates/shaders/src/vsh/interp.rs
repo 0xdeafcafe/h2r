@@ -274,9 +274,13 @@ pub fn fixup(pos: Vec4, surface: [f32; 2], z_max: f32) -> Vec4 {
 /// there, and z = a (w - lo) with a = hi / (hi - lo), so the rasterizer's
 /// `0 <= z <= w` clip keeps exactly `lo <= w <= hi`. The depth itself is w,
 /// written by the fragment stage.
-pub fn fixup_w_buffer(pos: Vec4, surface: [f32; 2], clip: [f32; 2]) -> Vec4 {
+///
+/// With `clamp` (`D3DDCC_DEPTHCLAMP`) nothing is culled by the range: z is
+/// `w / 2`, and the fragment stage clamps the stored w instead.
+pub fn fixup_w_buffer(pos: Vec4, surface: [f32; 2], clip: [f32; 2], clamp: bool) -> Vec4 {
     let [lo, hi] = clip;
     let p = fixup(pos, surface, 1.0);
     let w = p[3];
-    [p[0], p[1], hi / (hi - lo) * (w - lo), w]
+    let z = if clamp { 0.5 * w } else { hi / (hi - lo) * (w - lo) };
+    [p[0], p[1], z, w]
 }

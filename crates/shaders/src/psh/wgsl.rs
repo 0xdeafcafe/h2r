@@ -157,8 +157,11 @@ struct XpsUniforms {
     lod_bias: vec4f,
     stipple: array<vec4u, 8>,
     // W-buffering (PixelOptions::w_buffer): x the depth full scale, y the
-    // polygon offset in depth units, z its slope factor.
+    // polygon offset in depth units, z its slope factor, w 1 for an
+    // integer depth format (the stored w is truncated, as the NV2A does).
     depth: vec4f,
+    // x, y: the range the stored w is clamped to (CLIP_MIN, CLIP_MAX).
+    depth_range: vec4f,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -784,7 +787,9 @@ struct XpsOut {
 fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> XpsOut {
     let zw = 1.0 / v.position.w;
     let slope = max(abs(dpdx(zw)), abs(dpdy(zw)));
-    let depth = clamp((zw + xps.depth.y + xps.depth.z * slope) / xps.depth.x, 0.0, 1.0);
+    let zc = clamp(zw + xps.depth.y + xps.depth.z * slope, xps.depth_range.x, xps.depth_range.y);
+    let zq = select(zc, floor(zc), xps.depth.w != 0.0);
+    let depth = clamp(zq / xps.depth.x, 0.0, 1.0);
     let r = xps_program(XpsInputs(v.d0, v.d1, v.b0, v.b1, v.t0, v.t1, v.t2, v.t3, v.fog, front));
 "#,
         );
