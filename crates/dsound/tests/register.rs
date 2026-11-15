@@ -8,6 +8,7 @@ use runtime::{
     guest::Permissions,
 };
 use std::collections::BTreeSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
 use std::time::Duration;
@@ -1280,11 +1281,12 @@ fn tone_packet(w: &mut World, stream: u32, frames: usize, value: i16, event: u32
 fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
     let (mut w, status_of, seen) = status_world();
     let stream = stream_of(&mut w, 8);
-    // 8000 Hz mono: 100, 200 and 50 frames of three levels.
+    // 8000 Hz mono: 256, 512 and 256 frames of three levels (whole
+    // quanta, so each completes at a quantum boundary).
     let plan = [
-        (100, 8192i16, 0x71u32),
-        (200, 16384, 0x72),
-        (50, -8192, 0x73),
+        (256, 8192i16, 0x71u32),
+        (512, 16384, 0x72),
+        (256, -8192, 0x73),
     ];
     for (frames, value, event) in plan {
         let status = tone_packet(&mut w, stream, frames, value, event);
@@ -1308,8 +1310,9 @@ fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
                 period: Duration::from_millis(1),
                 pacing: dsound::Pacing::Logical {
                     now: Box::new(move || now.load(std::sync::atomic::Ordering::Acquire)),
-                    max_catch_up: Duration::from_secs(1),
+                    max_per_wake: Duration::from_secs(1),
                 },
+                halt_when: None,
             },
         )
         .unwrap();
@@ -1318,16 +1321,20 @@ fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
     thread::sleep(Duration::from_millis(30));
     assert_eq!(output.stats().rendered_frames, 0);
     assert!(seen.lock().unwrap().is_empty());
-    // 12.5 ms = 100 frames: exactly the first packet.
-    logical.store(125_000, std::sync::atomic::Ordering::Release);
+    // 31.9 ms is not yet a whole quantum: nothing.
+    logical.store(319_000, std::sync::atomic::Ordering::Release);
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(output.stats().rendered_frames, 0);
+    // 32 ms = 256 frames: exactly the first packet.
+    logical.store(320_000, std::sync::atomic::Ordering::Release);
     assert!(wait_for(Duration::from_secs(5), || seen
         .lock()
         .unwrap()
         .len()
         == 1));
-    assert_eq!(output.stats().rendered_frames, 100);
-    // Then the rest: 250 more frames.
-    logical.store(125_000 + 312_500, std::sync::atomic::Ordering::Release);
+    assert_eq!(output.stats().rendered_frames, 256);
+    // Then the rest: 768 more frames.
+    logical.store(1_280_000, std::sync::atomic::Ordering::Release);
     assert!(wait_for(Duration::from_secs(5), || seen
         .lock()
         .unwrap()
@@ -1336,7 +1343,7 @@ fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
     assert!(wait_for(Duration::from_secs(5), || output
         .stats()
         .rendered_frames
-        == 350));
+        == 1024));
     // Submission order, each status already final when its event fired.
     assert_eq!(
         *seen.lock().unwrap(),
@@ -1348,11 +1355,11 @@ fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
     );
     // The sink got every packet's samples, in order (mono to both channels).
     let played = played.lock().unwrap();
-    assert_eq!(played.len(), 2 * 350);
+    assert_eq!(played.len(), 2 * 1024);
     let left: Vec<f32> = played.iter().step_by(2).copied().collect();
-    assert!(left[..99].iter().all(|&v| v == 0.25));
-    assert!(left[101..299].iter().all(|&v| v == 0.5));
-    assert!(left[301..349].iter().all(|&v| v == -0.25));
+    assert!(left[..255].iter().all(|&v| v == 0.25));
+    assert!(left[257..767].iter().all(|&v| v == 0.5));
+    assert!(left[769..1023].iter().all(|&v| v == -0.25));
     assert_eq!(output.stats().dropped_frames, 0);
     assert!(output.stats().wakes > 0);
     drop(output);
@@ -1364,7 +1371,7 @@ fn the_output_thread_plays_streams_and_completes_them_on_the_logical_clock() {
 fn logical_pacing_keeps_time_when_the_sink_is_full() {
     let (mut w, status_of, seen) = status_world();
     let stream = stream_of(&mut w, 8);
-    let status = tone_packet(&mut w, stream, 400, 1000, 0x81);
+    let status = tone_packet(&mut w, stream, 512, 1000, 0x81);
     status_of.lock().unwrap().push((0x81, status));
     let played = Arc::new(Mutex::new(Vec::new()));
     let sink_played = Arc::clone(&played);
@@ -1381,14 +1388,15 @@ fn logical_pacing_keeps_time_when_the_sink_is_full() {
             dsound::OutputConfig {
                 period: Duration::from_millis(1),
                 pacing: dsound::Pacing::Logical {
-                    // 50 ms of logical time on the first wake, then none.
+                    // 64 ms of logical time on the first wake, then none.
                     now: Box::new(move || {
-                        let t = if first { 0 } else { 500_000 };
+                        let t = if first { 0 } else { 640_000 };
                         first = false;
                         t
                     }),
-                    max_catch_up: Duration::from_secs(1),
+                    max_per_wake: Duration::from_secs(1),
                 },
+                halt_when: None,
             },
         )
         .unwrap();
@@ -1397,7 +1405,7 @@ fn logical_pacing_keeps_time_when_the_sink_is_full() {
         .unwrap()
         .is_empty()));
     let stats = output.stats();
-    assert_eq!((stats.rendered_frames, stats.dropped_frames), (400, 336));
+    assert_eq!((stats.rendered_frames, stats.dropped_frames), (512, 448));
     assert_eq!(played.lock().unwrap().len(), 2 * 64);
     assert_eq!(*seen.lock().unwrap(), [(0x81, XMEDIAPACKET_STATUS_SUCCESS)]);
 }
@@ -1424,6 +1432,7 @@ fn device_pacing_follows_the_sink_and_its_rate() {
                 pacing: dsound::Pacing::Device {
                     target_latency_ms: 20,
                 },
+                halt_when: None,
             },
         )
         .unwrap();
@@ -1529,6 +1538,7 @@ fn callbacks_completed_by_the_output_thread_run_at_the_next_override_call() {
                 pacing: dsound::Pacing::Device {
                     target_latency_ms: 40,
                 },
+                halt_when: None,
             },
         )
         .unwrap();
@@ -1548,4 +1558,221 @@ fn callbacks_completed_by_the_output_thread_run_at_the_next_override_call() {
             [0x5000, 0x62, XMEDIAPACKET_STATUS_SUCCESS]
         ]
     );
+}
+
+/// Runs one guest scenario under logical pacing, with the host seeing
+/// logical time move in `steps` (each waited for before the next), and
+/// returns what the sink played and the completions with the frame count
+/// rendered when each was signalled.
+fn logical_trace(steps: &[u64], max_per_wake: Duration) -> (Vec<f32>, Vec<(u32, u32)>, u64) {
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    for (frames, value, event) in [(1200usize, 4096i16, 0xa1u32), (600, -4096, 0xa2)] {
+        let status = tone_packet(&mut w, stream, frames, value, event);
+        status_of.lock().unwrap().push((event, status));
+    }
+    let logical = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let now = Arc::clone(&logical);
+    let played = Arc::new(Mutex::new(Vec::new()));
+    let sink_played = Arc::clone(&played);
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            move || CaptureSink {
+                rate: 8000,
+                room: usize::MAX,
+                played: sink_played,
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Logical {
+                    now: Box::new(move || now.load(std::sync::atomic::Ordering::Acquire)),
+                    max_per_wake,
+                },
+                halt_when: None,
+            },
+        )
+        .unwrap();
+    for &t in steps {
+        logical.store(t, std::sync::atomic::Ordering::Release);
+        let due = t * 8000 / 10_000_000 / 256 * 256;
+        assert!(wait_for(Duration::from_secs(5), || output
+            .stats()
+            .rendered_frames
+            == due));
+    }
+    let rendered = output.stats().rendered_frames;
+    drop(output);
+    let seen = seen.lock().unwrap().clone();
+    let played = played.lock().unwrap().clone();
+    (played, seen, rendered)
+}
+
+#[test]
+fn logical_pacing_does_not_depend_on_when_the_host_wakes() {
+    // 200 ms at 8 kHz is 1600 frames (six whole quanta, 1536). With 100 ms
+    // allowed per wake, one 200 ms step and two 100 ms steps must render
+    // the same audio and complete the same packets: nothing owed is dropped.
+    let cap = Duration::from_millis(100);
+    let one = logical_trace(&[2_000_000], cap);
+    let two = logical_trace(&[1_000_000, 2_000_000], cap);
+    let many = logical_trace(&[320_000, 330_000, 1_500_000, 2_000_000], cap);
+    assert_eq!(one.2, 1536);
+    assert_eq!(one.1, [(0xa1, XMEDIAPACKET_STATUS_SUCCESS)]);
+    assert_eq!(one, two);
+    assert_eq!(one, many);
+}
+
+#[test]
+fn each_thread_leases_the_mixer_alone() {
+    let w = world();
+    let open = || CaptureSink {
+        rate: 8000,
+        room: usize::MAX,
+        played: Arc::default(),
+    };
+    let a = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            open,
+            dsound::OutputConfig::default(),
+        )
+        .unwrap();
+    // A second output thread, or a render pump, is refused.
+    let b = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            open,
+            dsound::OutputConfig::default(),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(
+        (b.held, b.wanted),
+        (dsound::Consumer::Output, dsound::Consumer::Output)
+    );
+    assert!(
+        w.hle
+            .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true)
+            .is_err()
+    );
+    drop(a);
+    assert_eq!(w.hle.direct_sound().consumer(), None);
+    // Likewise for render pumps.
+    let p = w
+        .hle
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true)
+        .unwrap();
+    let q = w
+        .hle
+        .spawn_pump(Arc::clone(&w.runtime), Duration::from_millis(1), true)
+        .err()
+        .unwrap();
+    assert_eq!(
+        (q.held, q.wanted),
+        (dsound::Consumer::Pump, dsound::Consumer::Pump)
+    );
+    drop(p);
+    assert_eq!(w.hle.direct_sound().consumer(), None);
+    // A stale lease releases nothing it no longer holds.
+    let mut ds = w.hle.direct_sound();
+    let old = ds.lease_consumer(dsound::Consumer::Output).unwrap();
+    ds.release_lease(&old);
+    let new = ds.lease_consumer(dsound::Consumer::Pump).unwrap();
+    ds.release_lease(&old);
+    assert_eq!(ds.consumer(), Some(dsound::Consumer::Pump));
+    assert!(ds.holds(&new) && !ds.holds(&old));
+    assert!(ds.claim_consumer(dsound::Consumer::Pump).is_err());
+    ds.release_consumer(dsound::Consumer::Pump);
+    assert_eq!(
+        ds.consumer(),
+        Some(dsound::Consumer::Pump),
+        "only the lease"
+    );
+    ds.release_lease(&new);
+    assert_eq!(ds.consumer(), None);
+}
+
+#[test]
+fn a_halted_output_thread_leaves_the_guest_alone() {
+    // Halted by the runner's flag: a packet already finished by the mixer
+    // is never reported.
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    let status = tone_packet(&mut w, stream, 256, 1000, 0xb1);
+    status_of.lock().unwrap().push((0xb1, status));
+    let before = w.u32(status);
+    let faulted = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&faulted);
+    let logical = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let now = Arc::clone(&logical);
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            || CaptureSink {
+                rate: 8000,
+                room: usize::MAX,
+                played: Arc::default(),
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Logical {
+                    now: Box::new(move || now.load(std::sync::atomic::Ordering::Acquire)),
+                    max_per_wake: Duration::from_secs(1),
+                },
+                halt_when: Some(Box::new(move || flag.load(Ordering::Acquire))),
+            },
+        )
+        .unwrap();
+    faulted.store(true, Ordering::Release);
+    logical.store(10_000_000, std::sync::atomic::Ordering::Release);
+    assert!(wait_for(Duration::from_secs(5), || output.is_finished()));
+    assert!(output.stats().halted);
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(w.u32(status), before, "no status written");
+    drop(output);
+
+    // Halted by hand: after halt returns nothing more reaches the guest.
+    let (mut w, status_of, seen) = status_world();
+    let stream = stream_of(&mut w, 8);
+    let status = tone_packet(&mut w, stream, 256, 1000, 0xb2);
+    status_of.lock().unwrap().push((0xb2, status));
+    let before = w.u32(status);
+    let logical = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let now = Arc::clone(&logical);
+    let output = w
+        .hle
+        .spawn_output(
+            Arc::clone(&w.runtime),
+            || CaptureSink {
+                rate: 8000,
+                room: usize::MAX,
+                played: Arc::default(),
+            },
+            dsound::OutputConfig {
+                period: Duration::from_millis(1),
+                pacing: dsound::Pacing::Logical {
+                    now: Box::new(move || now.load(std::sync::atomic::Ordering::Acquire)),
+                    max_per_wake: Duration::from_secs(1),
+                },
+                halt_when: None,
+            },
+        )
+        .unwrap();
+    output.halt();
+    logical.store(10_000_000, std::sync::atomic::Ordering::Release);
+    assert!(wait_for(Duration::from_secs(5), || output.is_finished()));
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(w.u32(status), before);
+    // The mixer stays claimed until the Output drops.
+    assert_eq!(
+        w.hle.direct_sound().consumer(),
+        Some(dsound::Consumer::Output)
+    );
+    drop(output);
+    assert_eq!(w.hle.direct_sound().consumer(), None);
 }

@@ -18,7 +18,8 @@ const ESP: u32 = STACK_TOP - 0x100;
 const SCRATCH: u32 = 0x0070_0000;
 /// The game's input callback stands here (an override, like guest code).
 const INPUT: u32 = 0x0012_3460;
-const CONTEXT: u32 = 0x00c0_ffee;
+/// The container (create's context): the adapter reads its reader offsets.
+const CONTEXT: u32 = SCRATCH + 0x1_0000;
 
 /// Bytes the "container" has left to hand out, and what the callback saw.
 #[derive(Default)]
@@ -27,6 +28,8 @@ struct Input {
     offset: usize,
     /// The reader has only this many bytes of the front packet yet.
     stall_at: Option<usize>,
+    /// The queue running empty is a pending read, not the end of the file.
+    more_coming: bool,
     calls: Vec<u32>,
 }
 
@@ -82,6 +85,11 @@ fn world_with_tables(tables: wma::Tables) -> World {
                 }
                 None => Vec::new(),
             };
+            // The reader's offsets, as 0x387e3a leaves them: past the last
+            // data packet only at the end of the file.
+            let at_end = chunk.is_empty() && i.packets.is_empty() && !i.more_coming;
+            m.set_u32(context + 4, if at_end { 0x2000 } else { 0x1000 })?;
+            m.set_u32(context + 0x24, 0x1800)?;
             m.write_bytes(staging, &chunk, 1)?;
             m.set_u32(out_data, staging)?;
             m.set_u32(out_size, chunk.len() as u32)?;
@@ -312,6 +320,38 @@ fn input_that_stalls_mid_packet_resumes_on_the_next_begin() {
         (stats.packets, stats.dropped_partials, stats.restarts),
         (3, 0, 0)
     );
+}
+
+#[test]
+fn a_reader_that_runs_dry_between_packets_is_not_the_end() {
+    let mut w = world();
+    let packets: Vec<Vec<u8>> = (0..6).map(|i| silent(i, 4459)).collect();
+    let want = direct(&packets, 12003, 4459);
+    let (_, handle) = w.create(12003, 4459);
+    {
+        let mut i = w.input.lock().unwrap();
+        i.packets = packets[..3].iter().cloned().collect();
+        i.more_coming = true;
+    }
+    let mut got = Vec::new();
+    for _ in 0..3 {
+        assert_eq!(w.call(BEGIN, &[handle]), OK);
+        assert_eq!(w.call(DECODE, &[handle]), PACKET_DONE);
+        got.extend(w.pcm(handle));
+        got.extend(w.pcm(handle));
+    }
+    // The next disc read has not landed: the container will retry.
+    assert_eq!(w.call(BEGIN, &[handle]), NO_DATA);
+    assert_eq!(w.call(BEGIN, &[handle]), NO_DATA);
+    {
+        let mut i = w.input.lock().unwrap();
+        i.packets.extend(packets[3..].iter().cloned());
+        i.more_coming = false;
+    }
+    got.extend(w.decode_all(handle));
+    assert_eq!(got, want, "no frames lost to the gap");
+    let stats = w.hle.stats();
+    assert_eq!((stats.restarts, stats.pcm_frames), (0, 5 * 2048));
 }
 
 #[test]

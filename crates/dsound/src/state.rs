@@ -53,6 +53,29 @@ pub enum Consumer {
     External,
 }
 
+/// Who holds the mixer; `lease` is set for an exclusive [`Lease`] holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Claim {
+    who: Consumer,
+    lease: Option<u64>,
+}
+
+/// Exclusive ownership of the mixer by one thread instance (an output
+/// thread or a render pump): [`DirectSound::lease_consumer`] refuses while
+/// anyone holds the mixer, even another consumer of the same kind, and only
+/// this lease's [`DirectSound::release_lease`] gives it back.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Lease {
+    who: Consumer,
+    id: u64,
+}
+
+impl Lease {
+    pub fn consumer(&self) -> Consumer {
+        self.who
+    }
+}
+
 /// A second consumer asked for the mixer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("DirectSound: the mixer is already consumed by {held:?} ({wanted:?} refused)")]
@@ -347,7 +370,8 @@ pub struct DirectSound {
     light_hrtf_4_channel: bool,
     frames_per_do_work: Option<u64>,
     frames_rendered: u64,
-    consumer: Option<Consumer>,
+    consumer: Option<Claim>,
+    next_lease: u64,
     next_token: u64,
     ignored: BTreeMap<&'static str, u64>,
 }
@@ -371,6 +395,7 @@ impl DirectSound {
             frames_per_do_work: None,
             frames_rendered: 0,
             consumer: None,
+            next_lease: 1,
             next_token: 0,
             ignored: BTreeMap::new(),
         }
@@ -2111,6 +2136,22 @@ impl DirectSound {
         Ok(frames)
     }
 
+    /// [`advance_audio`](Self::advance_audio) by the holder of `lease`; a
+    /// [`Stop::Consumer`] if the lease no longer holds the mixer.
+    pub fn advance_audio_leased(
+        &mut self,
+        h: &mut dyn Host,
+        frames: u64,
+        lease: &Lease,
+    ) -> Result<u64, Stop> {
+        if !self.holds(lease) {
+            return Err(Stop::Consumer(self.conflict(lease.who)));
+        }
+        self.render_discard(frames);
+        self.service_all(h)?;
+        Ok(frames)
+    }
+
     /// Makes every `DirectSoundDoWork` advance the clock by `frames` output
     /// frames (for example `rate / 60` for a game that calls it once per
     /// frame). `None`, the default, leaves the mixer to its sink. Claims the
@@ -2124,28 +2165,66 @@ impl DirectSound {
         Ok(())
     }
 
-    /// Takes the mixer for `who`. Claiming again for the same consumer is a
-    /// no-op; any other consumer is refused until it is released.
+    /// Takes the mixer for `who`, shared by every caller of that kind (the
+    /// game's `DoWork`, manual calls, an external renderer). Claiming again
+    /// for the same consumer is a no-op; any other consumer, and any
+    /// [`Lease`] holder, is refused until it is released.
     pub fn claim_consumer(&mut self, who: Consumer) -> Result<(), ConsumerConflict> {
         match self.consumer {
-            Some(held) if held != who => Err(ConsumerConflict { held, wanted: who }),
+            Some(c) if c.who != who || c.lease.is_some() => Err(self.conflict(who)),
             _ => {
-                self.consumer = Some(who);
+                self.consumer = Some(Claim { who, lease: None });
                 Ok(())
             }
         }
     }
 
-    /// Gives the mixer back if `who` holds it.
+    /// Gives the mixer back if `who` holds it through
+    /// [`claim_consumer`](Self::claim_consumer) (a lease is released only by
+    /// [`release_lease`](Self::release_lease)).
     pub fn release_consumer(&mut self, who: Consumer) {
-        if self.consumer == Some(who) {
+        if self.consumer == Some(Claim { who, lease: None }) {
             self.consumer = None;
         }
     }
 
+    /// Takes the mixer for one thread instance, atomically under this
+    /// object's lock: refused if anyone holds it, including another `who`.
+    pub fn lease_consumer(&mut self, who: Consumer) -> Result<Lease, ConsumerConflict> {
+        if self.consumer.is_some() {
+            return Err(self.conflict(who));
+        }
+        let id = self.next_lease;
+        self.next_lease += 1;
+        self.consumer = Some(Claim {
+            who,
+            lease: Some(id),
+        });
+        Ok(Lease { who, id })
+    }
+
+    /// Gives the mixer back if `lease` still holds it.
+    pub fn release_lease(&mut self, lease: &Lease) {
+        if self.holds(lease) {
+            self.consumer = None;
+        }
+    }
+
+    /// `lease` holds the mixer.
+    pub fn holds(&self, lease: &Lease) -> bool {
+        self.consumer.is_some_and(|c| c.lease == Some(lease.id))
+    }
+
     /// Who renders the mixer, if anyone has claimed it.
     pub fn consumer(&self) -> Option<Consumer> {
-        self.consumer
+        self.consumer.map(|c| c.who)
+    }
+
+    fn conflict(&self, wanted: Consumer) -> ConsumerConflict {
+        ConsumerConflict {
+            held: self.consumer.map_or(wanted, |c| c.who),
+            wanted,
+        }
     }
 
     fn render_discard(&mut self, frames: u64) {

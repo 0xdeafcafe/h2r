@@ -15,7 +15,7 @@
 //!    A guest memory fault is a runtime FAULT instead.
 use crate::host::{EventSink, GuestMemory, MemFault, StreamCallback};
 use crate::overrides::{ENTRIES, Entry, invoke};
-use crate::state::{AudioClock, Consumer, ConsumerConflict, DirectSound, Stop};
+use crate::state::{AudioClock, Consumer, ConsumerConflict, DirectSound, Lease, Stop};
 use runtime::guest::{Access, FaultReason, MapError, Permissions};
 use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, GuestFault, Runtime, TransferAbi};
 use std::cell::Cell;
@@ -354,9 +354,12 @@ impl Hle {
         period: Duration,
         render: bool,
     ) -> Result<Pump, ConsumerConflict> {
-        if render {
-            lock(&self.ds).claim_consumer(Consumer::Pump)?;
-        }
+        let lease = if render {
+            Some(Arc::new(lock(&self.ds).lease_consumer(Consumer::Pump)?))
+        } else {
+            None
+        };
+        let thread_lease = lease.clone();
         let stop = Arc::new(AtomicBool::new(false));
         let hle = Arc::clone(self);
         let flag = Arc::clone(&stop);
@@ -373,11 +376,10 @@ impl Hle {
                 while !flag.load(Ordering::Acquire) {
                     std::thread::sleep(period);
                     let now = Instant::now();
-                    let result = if render {
+                    let result = if let Some(lease) = &thread_lease {
                         let frames = clock.advance(now - last);
                         hle.host_call(&runtime, |ds, bridge| {
-                            ds.advance_audio_as(bridge, frames, Consumer::Pump)
-                                .map(|_| ())
+                            ds.advance_audio_leased(bridge, frames, lease).map(|_| ())
                         })
                     } else {
                         hle.do_work(&runtime)
@@ -398,7 +400,7 @@ impl Hle {
         Ok(Pump {
             stop,
             join: Some(join),
-            claim: render.then(|| Arc::clone(self)),
+            claim: lease.map(|l| (Arc::clone(self), l)),
         })
     }
 }
@@ -408,7 +410,7 @@ pub struct Pump {
     stop: Arc<AtomicBool>,
     join: Option<std::thread::JoinHandle<()>>,
     /// Set for a render pump: gives the mixer back on drop.
-    claim: Option<Arc<Hle>>,
+    claim: Option<(Arc<Hle>, Arc<Lease>)>,
 }
 
 impl Pump {
@@ -424,8 +426,8 @@ impl Drop for Pump {
         if let Some(j) = self.join.take() {
             let _ = j.join();
         }
-        if let Some(hle) = self.claim.take() {
-            lock(&hle.ds).release_consumer(Consumer::Pump);
+        if let Some((hle, lease)) = self.claim.take() {
+            lock(&hle.ds).release_lease(&lease);
         }
     }
 }

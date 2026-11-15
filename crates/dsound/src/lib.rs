@@ -25,8 +25,10 @@ pub mod testing;
 pub mod xwma;
 
 pub use host::{EventSink, GuestMemory, Host, MemFault, StreamCallback};
+pub use output::{Output, OutputConfig, OutputStats, Pacing};
 pub use register::{
     EventRef, Events, Hle, Pump, RegisterError, Registration, register, unregister,
 };
-pub use output::{Output, OutputConfig, OutputStats, Pacing};
-pub use state::{AudioClock, Consumer, ConsumerConflict, DirectSound, EffectDesc, Layout, R, Stop};
+pub use state::{
+    AudioClock, Consumer, ConsumerConflict, DirectSound, EffectDesc, Layout, Lease, R, Stop,
+};

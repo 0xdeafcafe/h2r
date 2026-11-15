@@ -27,10 +27,17 @@
 //! produced a packet earlier. Where the guest decoder would carry on through
 //! damage, this one resynchronises instead of failing the stream:
 //!
-//! - **End of input.** Zero bytes at a packet boundary finishes the decoder,
-//!   emitting the held packet, and begin returns 0 so it is drained; every
-//!   begin after that returns [`NO_DATA`]. Input arriving after the end
-//!   starts a fresh decoder.
+//! - **Starvation is not the end.** The game's reader is asynchronous: a
+//!   dry callback usually means the next disc read has not landed. Begin then
+//!   returns [`NO_DATA`] and keeps everything (the partial packet, the held
+//!   packet and the decoder's overlap and reservoir), and the container tries
+//!   again on a later step. The adapter tells the two apart with the
+//!   container's own test (see [`Session::begin`]).
+//! - **End of input.** At the real end the decoder is finished, emitting the
+//!   held packet, and begin returns 0 so it is drained; every begin after that
+//!   returns [`NO_DATA`], which the container takes as the end. A partial
+//!   packet left at the end is dropped. Input arriving after the end starts a
+//!   fresh decoder.
 //! - **Sequence break** (a seek or loop without a reset): the held packet is
 //!   finished and a fresh decoder starts on the new one.
 //! - **Malformed packet:** counted in [`Stats::errors`], and a fresh decoder
@@ -158,18 +165,28 @@ impl Session {
         self.partial.extend_from_slice(bytes);
     }
 
-    /// Begin packet, after the adapter has fed what the callback had:
-    /// decodes a complete packet, or at the end of input (`partial` empty and
-    /// the callback dry) finishes the stream once.
-    pub fn begin(&mut self) -> u32 {
+    /// Begin packet, after the adapter has fed what the callback had.
+    /// Decodes a complete packet if there is one. Otherwise the callback ran
+    /// dry, and `end_of_input` says whether that was the end of the file:
+    /// in the game, the container's reader has passed its last data packet
+    /// (`[container+4] > [container+24h]`, the test the container itself
+    /// makes after [`NO_DATA`] at `0x388696`). Without it, begin returns
+    /// [`NO_DATA`] and nothing is lost; at the end it finishes the stream
+    /// once (returning 0 so the held packet is drained) and then returns
+    /// [`NO_DATA`].
+    pub fn begin(&mut self, end_of_input: bool) -> u32 {
         let align = usize::from(self.format.block_align);
         if self.partial.len() >= align {
             let packet: Vec<u8> = self.partial.drain(..align).collect();
             self.packet(&packet);
             return OK;
         }
-        if !self.partial.is_empty() || self.ended {
+        if !end_of_input || self.ended {
             return NO_DATA;
+        }
+        if !self.partial.is_empty() {
+            self.partial.clear();
+            self.stats.dropped_partials += 1;
         }
         self.end();
         OK
@@ -362,28 +379,31 @@ mod tests {
         let mut s = session();
         // Partial input: begin waits for more.
         s.feed(&packets[0][..128], true);
-        assert_eq!(s.begin(), NO_DATA);
+        assert_eq!(s.begin(false), NO_DATA);
         s.feed(&packets[0][128..], false);
         assert_eq!(s.wants(), 0);
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(false), OK);
         assert_eq!(s.decode(), PACKET_DONE);
         assert_eq!(2 * s.queued_frames(), want[0]);
         for (p, &n) in packets[1..].iter().zip(&want[1..]) {
             s.take_pcm(usize::MAX);
             feed(&mut s, p);
-            assert_eq!(s.begin(), OK);
+            assert_eq!(s.begin(false), OK);
             assert_eq!(2 * s.queued_frames(), n);
         }
         // Drained in pieces, as the container asks for at most 2048.
         let queued = s.queued_frames();
         assert_eq!(s.take_pcm(1).len(), 2.min(2 * queued));
         s.take_pcm(usize::MAX);
+        // A dry callback before the end: nothing happens, nothing is lost.
+        assert_eq!(s.begin(false), NO_DATA);
+        assert_eq!(s.queued_frames(), 0);
         // End of input: the held packet comes out once, then no data.
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(true), OK);
         assert_eq!(2 * s.queued_frames(), want[3]);
         assert_eq!(s.take_pcm(usize::MAX), vec![0; want[3]]);
-        assert_eq!(s.begin(), NO_DATA);
-        assert_eq!(s.begin(), NO_DATA);
+        assert_eq!(s.begin(true), NO_DATA);
+        assert_eq!(s.begin(false), NO_DATA);
         assert_eq!(s.stats.packets, 3);
         assert_eq!(s.stats.pcm_frames, 2 * 2048);
     }
@@ -402,12 +422,12 @@ mod tests {
         let mut got = Vec::new();
         for p in &packets {
             feed(&mut s, p);
-            assert_eq!(s.begin(), OK);
+            assert_eq!(s.begin(false), OK);
             got.extend(s.take_pcm(usize::MAX));
         }
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(true), OK);
         got.extend(s.take_pcm(usize::MAX));
-        assert_eq!(s.begin(), NO_DATA);
+        assert_eq!(s.begin(true), NO_DATA);
         assert_eq!(got, want);
         assert_eq!(got.len(), 4 * 4096);
     }
@@ -418,15 +438,15 @@ mod tests {
         assert!(two[2] > 0);
         let mut s = session();
         feed(&mut s, &silent(0));
-        s.begin();
+        s.begin(false);
         feed(&mut s, &silent(1));
-        s.begin();
+        s.begin(false);
         assert_eq!(2 * s.queued_frames(), two[1]);
         s.take_pcm(usize::MAX);
         // Sequence jump (a loop): the held packet is finished, a fresh
         // decoder takes the new one.
         feed(&mut s, &silent(7));
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(false), OK);
         assert_eq!(2 * s.queued_frames(), two[2]);
         assert_eq!(s.stats.restarts, 1);
         // A malformed packet (total gain above 512, as in the decoder's own
@@ -436,10 +456,10 @@ mod tests {
         fields.extend([(127, 7); 4]);
         fields.push((4, 7));
         feed(&mut s, &bits(&fields));
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(false), OK);
         assert_eq!(s.stats.errors, 0);
         feed(&mut s, &silent(9));
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(false), OK);
         assert_eq!(s.stats.errors, 1);
         assert!(s.last_error.is_some());
         // And the stream carries on with the packets after it.
@@ -447,7 +467,7 @@ mod tests {
         // (A fresh decoder holds one packet and suppresses its first frame.)
         for p in 10..13 {
             feed(&mut s, &silent(p));
-            assert_eq!(s.begin(), OK);
+            assert_eq!(s.begin(false), OK);
         }
         assert!(s.queued_frames() > before);
         s.take_pcm(usize::MAX);
@@ -455,16 +475,57 @@ mod tests {
         s.feed(&[0; 100], true);
         feed(&mut s, &silent(13));
         assert_eq!(s.stats.dropped_partials, 1);
-        assert_eq!(s.begin(), OK);
+        assert_eq!(s.begin(false), OK);
         // Reset forgets everything; a new stream starts cleanly.
         s.feed(&[0; 10], true);
         s.reset();
         assert_eq!((s.queued_frames(), s.wants()), (0, 4459));
         for p in [silent(3), silent(4)] {
             feed(&mut s, &p);
-            assert_eq!(s.begin(), OK);
+            assert_eq!(s.begin(false), OK);
         }
-        assert_eq!(s.begin(), OK, "end of input");
+        assert_eq!(s.begin(true), OK, "end of input");
         assert_eq!(2 * s.queued_frames(), two.iter().sum::<usize>());
+    }
+
+    #[test]
+    fn a_dry_reader_between_packets_loses_nothing() {
+        let packets: Vec<Vec<u8>> = (0..6).map(silent).collect();
+        let tables = Arc::new(Tables::synthetic());
+        let mut direct = Decoder::new(&tables, RETAIL_96.format().unwrap()).unwrap();
+        let mut want = Vec::new();
+        for p in &packets {
+            want.extend(direct.push(p).unwrap());
+        }
+        want.extend(direct.finish().unwrap());
+        assert_eq!(want.len(), 5 * 4096);
+        let mut s = Session::new(tables, &RETAIL_96).unwrap();
+        let mut got = Vec::new();
+        for (i, p) in packets.iter().enumerate() {
+            feed(&mut s, p);
+            assert_eq!(s.begin(false), OK);
+            got.extend(s.take_pcm(usize::MAX));
+            if i == 2 {
+                // The reader has nothing yet, twice; then it catches up.
+                assert_eq!(s.begin(false), NO_DATA);
+                assert_eq!(s.begin(false), NO_DATA);
+            }
+        }
+        assert_eq!(s.begin(true), OK);
+        got.extend(s.take_pcm(usize::MAX));
+        assert_eq!(got, want);
+        assert_eq!((s.stats.restarts, s.stats.pcm_frames), (0, 5 * 2048));
+    }
+
+    #[test]
+    fn a_partial_packet_at_the_end_is_dropped() {
+        let mut s = session();
+        feed(&mut s, &silent(0));
+        assert_eq!(s.begin(false), OK);
+        s.feed(&silent(1)[..300], true);
+        assert_eq!(s.begin(false), NO_DATA, "still arriving");
+        assert_eq!(s.begin(true), OK);
+        assert_eq!(s.stats.dropped_partials, 1);
+        assert_eq!(s.begin(true), NO_DATA);
     }
 }

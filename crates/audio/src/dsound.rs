@@ -695,8 +695,10 @@ impl Listener {
     /// - **Cone.** With angle `a` between the cone orientation and the
     ///   direction from the source to the listener: 0 mB inside half the
     ///   inner angle, `cone_outside_volume_mb` beyond half the outer angle,
-    ///   linear in millibels between. A 360 degree outer angle (the default)
-    ///   or a zero orientation means no cone.
+    ///   linear in millibels between (DirectSound3D's cone model). Only a
+    ///   360 degree inner angle (the default) or a zero orientation means no
+    ///   cone; a 360 degree outer angle with a narrower inner one fades all
+    ///   the way round, reaching the outside volume directly behind.
     pub fn spatial(&self, src: &Source3d) -> Spatial {
         if src.mode == Mode3d::Disabled {
             return Spatial::DRY;
@@ -730,7 +732,7 @@ impl Listener {
 fn cone_gain(src: &Source3d, rel: Vec3) -> f32 {
     let outside = src.cone_outside.min(CONE_ANGLE_NONE);
     let inside = src.cone_inside.min(outside);
-    if outside >= CONE_ANGLE_NONE {
+    if inside >= CONE_ANGLE_NONE {
         return 1.0;
     }
     let (Some(axis), Some(to_listener)) = (src.cone_orientation.unit(), rel.scale(-1.0).unit()) else {
@@ -1012,10 +1014,36 @@ mod tests {
         s.cone_orientation = Vec3::new(tan_67_5, 0.0, -1.0); // 67.5: halfway
         assert!((l.spatial(&s).gain - mb_to_gain(-1000)).abs() < 1e-4, "{:?}", l.spatial(&s));
         // The default 360 degree cone, or no orientation, means no cone.
+        s.cone_inside = CONE_ANGLE_NONE;
         s.cone_outside = CONE_ANGLE_NONE;
         assert_eq!(l.spatial(&s).gain, 1.0);
+        s.cone_inside = 90;
         s.cone_outside = 180;
         s.cone_orientation = Vec3::default();
+        assert_eq!(l.spatial(&s).gain, 1.0);
+    }
+
+    #[test]
+    fn a_full_outer_cone_still_fades_outside_a_narrow_inner_one() {
+        let l = Listener::default();
+        // Source ahead of the listener, cone pointing away: the listener is
+        // directly behind it (180 degrees).
+        let mut s = Source3d {
+            position: Vec3::new(0.0, 0.0, 1.0),
+            rolloff_factor: 0.0,
+            cone_inside: 90,
+            cone_outside: CONE_ANGLE_NONE,
+            cone_orientation: Vec3::new(0.0, 0.0, 1.0),
+            cone_outside_volume_mb: -6000,
+            ..Default::default()
+        };
+        assert!((l.spatial(&s).gain - mb_to_gain(-6000)).abs() < 1e-6, "{:?}", l.spatial(&s));
+        // Sideways (90 degrees): 45/135 of the way from 45 to 180.
+        s.cone_orientation = Vec3::new(1.0, 0.0, 0.0);
+        let want = mb_to_gain((-6000.0f32 * 45.0 / 135.0).round() as i32);
+        assert!((l.spatial(&s).gain - want).abs() < 1e-4, "{:?}", l.spatial(&s));
+        // Facing the listener: inside.
+        s.cone_orientation = Vec3::new(0.0, 0.0, -1.0);
         assert_eq!(l.spatial(&s).gain, 1.0);
     }
 }

@@ -275,11 +275,16 @@ distances) the shim's own distance curve is unity and only Halo's
 
 Buffers only finish, and stream packets only complete, when the mixer is
 rendered. Exactly one consumer may render a given mixer, or audio time runs
-twice. The shim enforces it among its own: `DirectSound::claim_consumer`
-records one `Consumer` (`Output`, `Pump`, `DoWork`, `Manual`), and every
-other way to render fails with `ConsumerConflict { held, wanted }` while it
-is held (`set_frames_per_do_work` and `spawn_pump(.., true)` return it, a
-manual `advance_audio` or `tick` is a `Stop::Consumer`). It cannot see a
+twice. The shim enforces it among its own, under the `DirectSound` lock.
+A thread instance (the output thread, a render pump) takes an exclusive
+`Lease` (`DirectSound::lease_consumer`): it is refused while anything holds
+the mixer, including another thread of the same kind, and only that lease
+gives it back, so dropping one handle never frees the mixer under another.
+The shared kinds (`DoWork` for `set_frames_per_do_work`, `Manual` for
+`advance_audio`/`tick`) use `claim_consumer`, which the same kind may
+repeat. Every refused path reports `ConsumerConflict { held, wanted }`
+(`spawn_output`, `spawn_pump(.., true)` and `set_frames_per_do_work` return
+it, a manual `advance_audio` or `tick` is a `Stop::Consumer`). It cannot see a
 renderer outside the crate (`crates/app`'s `AudioOut`/`DiscardRenderer`, or
 an `audio::Pump` of the caller's own): pick one.
 
@@ -292,12 +297,13 @@ an `audio::Pump` of the caller's own): pick one.
 ### Consumers and the output thread
 
 `Hle::spawn_output(runtime, open, OutputConfig) -> Result<Output,
-ConsumerConflict>` claims `Consumer::Output` and starts a thread. `open`
-runs on it (a `DeviceSink` is not `Send` on macOS) and returns the
-`audio::AudioSink` to render into. Each wake (`OutputConfig::period`,
-default 5 ms):
+ConsumerConflict>` leases the mixer as `Consumer::Output` and starts a
+thread. `open` runs on it (a `DeviceSink` is not `Send` on macOS) and
+returns the `audio::AudioSink` to render into. Each wake
+(`OutputConfig::period`, default 5 ms):
 
-1. render the frames owed under the mixer lock alone, and write them;
+1. render under the mixer lock alone, and write to the sink (with logical
+   pacing, one 256-frame quantum at a time, steps 2 and 3 following each);
 2. `Hle::do_work`: each completed packet's size and status reach guest
    memory, in submission order, before its event is published;
 3. deliver the events with no guard held. Stream callbacks, being guest
@@ -308,20 +314,36 @@ The frames owed depend on `Pacing`:
 - `Device { target_latency_ms }` (default 40): keep that much queued in the
   sink (`audio::Pump`); audio time is the device's, which is real time.
   The mixer follows the sink's rate, including after a device change.
-- `Logical { now, max_catch_up }`: `now()` returns logical time in 100 ns
-  ticks (the kernel's `Clock::counter`), and the thread renders exactly the
-  elapsed frames (an `AudioClock`, capped at `max_catch_up` per wake).
-  Completions, events and callbacks then follow the time the game sees,
-  deterministically. Rendered audio the sink has no room for is dropped and
+- `Logical { now, max_per_wake }`: `now()` returns logical time in 100 ns
+  ticks (the kernel's `Clock::counter`). Frame `n` is due `n / rate` after
+  the logical time of the `spawn_output` call, and the mixer is rendered in
+  whole quanta (`output::QUANTUM`, 256 frames) on that fixed grid, with
+  completions collected after each. The audio rendered, and the quantum in
+  which each packet completes, depend only on logical time, not on when the
+  thread wakes: two 100 ms steps render exactly what one 200 ms step does.
+  Nothing owed is discarded; `max_per_wake` only bounds one wake's work and
+  the rest carries over. Not ordered: a guest submission made after logical
+  time passed a quantum but before the thread rendered it (that needs the
+  guest scheduler to drive the mixer). Rendered audio the sink has no room for is dropped and
   counted (`OutputStats::dropped_frames`); if logical time runs slower than
   real time the device underruns. Audio time stands still while logical time
   does, so a game whose every thread waited on a stream event with no
   timeout would hang; use `Device` when a device is present.
 
-`Output::stats()` reports rendered and dropped frames, wakes, the rate and
-the sink's counters. Dropping the `Output` stops and joins the thread, drops
-the sink and releases the claim. A `Stop` from `do_work` ends the thread and
-is recorded by `take_stops` as `Hle::output`.
+`Output::stats()` reports rendered and dropped frames, wakes, the rate,
+whether it halted, and the sink's counters. Dropping the `Output` stops and
+joins the thread, drops the sink and releases the lease. A `Stop` from
+`do_work` ends the thread and is recorded by `take_stops` as `Hle::output`.
+
+The thread does not know when the runner faults or stops (the runtime has
+no shared terminal state), and left alone it would keep writing packet
+statuses and signalling events. `Output::halt()` stops that: it waits for a
+completion step in progress, and once it returns the thread touches neither
+guest memory nor events again (it exits at its next wake; the mixer stays
+leased until the `Output` drops). `OutputConfig::halt_when`, polled before
+every completion step, does the same from a runner's own "faulted or
+stopped" flag. Call `halt` before taking a frozen snapshot or tearing down
+the event bridge, and not while holding the guest memory guard.
 
 Streaming during loading: the output thread completes stream packets and
 signals their events whether or not the game calls any DirectSound entry,
@@ -597,7 +619,11 @@ impl Hle {
     pub fn do_work(&self, runtime: &runtime::Runtime) -> Result<(), Stop>;
     pub fn advance_audio(&self, runtime: &runtime::Runtime, frames: u64) -> Result<(), Stop>;
     pub fn tick(&self, runtime: &runtime::Runtime, clock: &mut AudioClock, elapsed: Duration) -> Result<u64, Stop>;
-    pub fn spawn_pump(self: &Arc<Self>, runtime: Arc<Runtime>, period: Duration, render: bool) -> Pump;
+    pub fn spawn_pump(self: &Arc<Self>, runtime: Arc<Runtime>, period: Duration, render: bool)
+        -> Result<Pump, ConsumerConflict>;
+    pub fn spawn_output<S: AudioSink + 'static, F: FnOnce() -> S + Send + 'static>(
+        self: &Arc<Self>, runtime: Arc<Runtime>, open: F, config: OutputConfig,
+    ) -> Result<Output, ConsumerConflict>;
     pub fn pinned_events(&self) -> usize;
     pub fn take_stops(&self) -> Vec<StopRecord>;
     pub fn take_signal_failures(&self) -> Vec<SignalFailure>;
@@ -697,19 +723,22 @@ loaded.runtime.edit_dispatch(|d| dsound::xwma::register(d, &wma))?;
 
 // Sound out: render into the default device and report completions, on its
 // own thread (keeps streams flowing through loading screens).
-let _output = hle.spawn_output(
+let output = hle.spawn_output(
     Arc::clone(&loaded.runtime),
     || audio::output::DeviceSink::open_default().expect("audio device"),
     dsound::OutputConfig::default(),
 )?;
+// When the runner faults or stops, before collecting diagnostics:
+// output.halt();   (or set OutputConfig::halt_when to the runner's flag)
 // Headless, or to tie audio to guest time: Pacing::Logical over the kernel
 // clock, into any sink (audio::NullSink when there is no device):
 // dsound::OutputConfig {
 //     period: Duration::from_millis(5),
 //     pacing: dsound::Pacing::Logical {
 //         now: Box::new({ let k = Arc::clone(&k); move || k.clock().counter() }),
-//         max_catch_up: Duration::from_millis(250),
+//         max_per_wake: Duration::from_millis(250),
 //     },
+//     halt_when: None,
 // }
 
 // On a stop whose event is Unsupported with a "dsound::" mnemonic:
@@ -726,7 +755,7 @@ output thread (pick one; the others then return `ConsumerConflict`):
 
 ```rust
 // Real time, own thread: renders the mixer and reports completions.
-let _pump = hle.spawn_pump(Arc::clone(&loaded.runtime), Duration::from_millis(5), true);
+let _pump = hle.spawn_pump(Arc::clone(&loaded.runtime), Duration::from_millis(5), true)?;
 // or deterministic, tied to the game's own calls (48 kHz at 60 DoWork/s):
 hle.direct_sound().set_frames_per_do_work(Some(800))?;
 // or by hand between slices:
@@ -811,11 +840,16 @@ covers, with synthetic data only (no disc bytes):
   removes the shim's distance attenuation; doppler is counted.
 - Consumers: only one of output thread, render pump, `set_frames_per_do_work`
   and manual `advance_audio` may hold the mixer; dropping the holder frees it.
+  A second output thread or render pump is refused, and a stale lease
+  releases nothing.
 - Output thread (`CaptureSink`): it plays a stream and completes packets in
-  order with status final at each event, on the logical clock; logical
-  pacing keeps time when the sink is full (400 frames rendered, 336
-  dropped); device pacing follows the sink's fill and rate; callbacks it
-  completes run at the next override call.
+  order with status final at each event, on the logical clock, in whole
+  quanta; logical pacing keeps time when the sink is full (512 frames
+  rendered, 448 dropped); one, two or four host-visible steps to the same
+  logical time give identical audio and completions; device pacing follows
+  the sink's fill and rate; callbacks it completes run at the next override
+  call; once halted (by hand or by `halt_when`) it writes no status and
+  signals nothing.
 - Host-driven clock: `Hle::tick` completes packets, delivers the event and
   leaves the callback owed to the next override call. `spawn_pump` with
   `render: true` completes a packet on a sinkless mixer, and with
@@ -825,7 +859,8 @@ covers, with synthetic data only (no disc bytes):
 `tests/xwma.rs` drives the WMA boundary through the runner, with synthetic
 tables and packets and the game's input callback as a guest override
 serving 128-byte chunks: both retail profiles decode to the same PCM as
-`wma::Decoder` directly, every callback gets the container's context, a read
+`wma::Decoder` directly, a reader that runs dry between packets loses no
+frames (the end is only taken from the container's reader offsets), every callback gets the container's context, a read
 stalled mid-packet resumes, `destroy` clears the handle word, unknown
 handles are `E_INVALIDARG`, other formats are refused with `0x80040000`, and
 a second registration fails closed. An ignored test decodes two real disc

@@ -183,8 +183,10 @@ Documented and deliberately simple; it is not the MCPX HRTF.
   factors. Halo 2 sets min and max to `FLT_MAX` and rolloff 0, and attenuates
   through `SetVolume` itself, so its mix-ins come out at unity.
 - **Cone**: unity inside half the inner angle, the outside volume (mB)
-  beyond half the outer angle, linear in mB between; 360° (the default)
-  disables it.
+  beyond half the outer angle, linear in mB between (the DS3D model). Only
+  a 360° inner angle (the default) or a zero orientation disables it; a
+  360° outer angle with a narrower inner one fades all the way round to the
+  outside volume directly behind.
 - **Head-relative** sources take their position as the direction itself.
 - Not modelled: doppler (factors stored), distance factor (stored),
   occlusion/obstruction, HRTF filtering, reverb.

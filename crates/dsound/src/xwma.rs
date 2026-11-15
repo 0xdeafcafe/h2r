@@ -320,8 +320,9 @@ fn pull(
 ) -> Result<TransferAbi, GuestFault> {
     let wants = hle.with(handle, |s| s.session.wants()).unwrap_or(0);
     if wants == 0 || pulls >= MAX_PULLS {
+        // A whole packet, or a callback that never runs dry: not the end.
         let status = hle
-            .with(handle, |s| s.session.begin())
+            .with(handle, |s| s.session.begin(false))
             .unwrap_or(INVALID_ARG);
         cpu.eax = status;
         return Ok(TransferAbi::ret(ret_pc));
@@ -360,9 +361,13 @@ fn pull(
         };
         cpu.esp = base;
         if bytes.is_empty() {
-            // Dry: begin with what has arrived (or the end of input).
+            // Dry: the reader's next read has not landed, or it is past
+            // the last data packet. The container decides which with this
+            // same test after NO_DATA (0x388696); its reader rewinds
+            // [+4] on a pending read (0x387fe7).
+            let end_of_input = end_of_input(&ctx.memory(), context)?;
             let status = hle
-                .with(handle, |s| s.session.begin())
+                .with(handle, |s| s.session.begin(end_of_input))
                 .unwrap_or(INVALID_ARG);
             cpu.eax = status;
             return Ok(TransferAbi::ret(ret_pc));
@@ -373,3 +378,16 @@ fn pull(
         pull(hle, handle, callback, context, cpu, ctx, ret_pc, pulls + 1)
     })
 }
+
+/// The container's end-of-file test (`0x388696`, and its reader's at
+/// `0x387f63`): the next read offset `[container+4]` is past the last data
+/// packet's offset `[container+24h]`. `context` is the container, as create
+/// receives it from `0x388ac1`.
+fn end_of_input(m: &runtime::Guest, context: u32) -> Result<bool, GuestFault> {
+    Ok(m.u32(context.wrapping_add(READ_OFFSET))? > m.u32(context.wrapping_add(LAST_PACKET))?)
+}
+
+/// Container field: offset of the reader's next ASF data packet.
+pub const READ_OFFSET: u32 = 0x4;
+/// Container field: offset of the last ASF data packet.
+pub const LAST_PACKET: u32 = 0x24;

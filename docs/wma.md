@@ -256,27 +256,40 @@ stdcall entries:
 | PCM `0x38a1cc` | `(handle, &u16 frames, buffer, bytes)`; writes LE i16 stereo and the u16 count | `10h` |
 
 The handle is opaque: it is stored at the container's `[esi+158h]` and only
-passed back to these entries, so the adapter hands out its own tokens. Input is pulled at begin by calling the game's callback `0x388777`
+passed back to these entries, so the adapter hands out its own tokens.
+Input is pulled at begin by calling the game's callback `0x388777`
 `(data**, size*, context, staging)` (`ret 10h`) as a guest call with a
 128-byte staging buffer below the caller's stack; it returns 3 on a codec
-packet's first chunk and size 0 at the end of what it has.
+packet's first chunk and size 0 when it has nothing. Size 0 is either a
+read that has not landed yet (the reader at `0x387e3a` returns `0x12` and
+rewinds its next-read offset `[container+4]`) or the end of the file
+(`[container+4] > [container+24h]`, the last data packet's offset). The
+adapter makes the container's own test (`0x388696`) on the context, which
+is the container, to tell them apart.
 
 Statuses (from the container's handling, `0x388557..0x3886a5`):
 
 - create: 0, or `0x80040000` for any format but the two retail profiles
   (the container reports 7); refusals are kept (`WmaHle::take_refusals`).
 - begin: 0 when a packet was decoded (or the end was reached and the held
-  packet is out), `0x80040004` when no data is available; the container
-  then asks its reader whether the file has ended.
+  packet is out), `0x80040004` when no data is available. A starved begin
+  keeps everything (partial packet, held packet, decoder overlap and
+  reservoir); the container marks itself starved and begins again on a
+  later step. After the end, begin is always `0x80040004` and the
+  container's own test reports the end of the stream.
 - decode: always 4 ("packet done"), so the container drains PCM and begins
   the next packet. The native decoder needs whole packets with one of
   lookahead, so a packet is decoded entirely at begin; the PCM is the same,
   produced a packet earlier.
-- any entry with an unknown handle: `E_INVALIDARG`.
+- reset, begin, decode and PCM with an unknown handle: `E_INVALIDARG`.
+  Destroy is idempotent: it clears the handle word and returns 0 for any
+  token.
 
-Resynchronisation, where the guest decoder would carry on through damage:
-a sequence break (loop or seek without a reset) or input after the end
-finishes the old decoder and starts a fresh one; a malformed packet is
+Resynchronisation, where the guest decoder would carry on through damage
+(starvation is not damage, and never restarts the decoder): a sequence
+break (loop or seek without a reset) or input after the end finishes the
+old decoder and starts a fresh one; a partial packet at the end of the file
+is dropped; a malformed packet is
 counted and silent, and a fresh decoder waits for the next; a packet start
 while a packet is partial drops the partial. A fresh decoder applies the
 engine's initial suppression again, so a restart loses one frame of output,
