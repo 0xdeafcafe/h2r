@@ -139,15 +139,25 @@ Screenshots are kept outside the repo, in the session's keep directory:
 `boot-main-menu-480.png`, `boot-main-menu-520.png` (and the loading
 screen, `boot-loading-36.png`, `boot-loading-89.png`).
 
-Rendering differences still visible (owners to confirm):
+Rendering differences still visible on master, with what the menu frame
+(present 480) shows them to be:
 
-- the scene is washed out in a dense brown fog with no sky colour, and the
-  fog shows 8x8-pixel blocky patterns (gfx/shaders: atmospheric fog or
-  the P8/palette textures the scene binds);
-- dotted dark horizontal lines across the screen at a few heights in the
-  pre-title frames (gfx);
-- some 3D textures look low-detail early on (8x8 tag-data bitmaps until
-  the texture cache streams the full ones; expected).
+- **the blue tint is missing** (the scene is sepia/grey). The menu's last
+  scene pass (draw ~1410: a full-screen strip, no blending) replaces the
+  frame with `dot(backbuffer, (0.5,0.7,0.2)) * fc0`, fc0 = `0x1A2340`.
+  Two things stop it: (1) its texture is a header Halo builds over the back
+  buffer (`0x14600`), which master samples from guest memory (zero); d3d-pass
+  (6f5e502/ed02305) snapshots the surface instead; (2) its vertices sit at
+  z = w = 0xFFFFFF, exactly the depth maximum, and `xvs_fixup`'s
+  `p.z / z_max` rounds above 1 on the GPU, so the quad is clipped
+  (shaders). With both on a scratch branch the frame is the blue menu.
+- a depth-based fog/distortion composite (361 draws by present 495) reads
+  the depth buffer through a colour texture (`0x7ff10000`, HILO dot
+  products): d3d skips it with a reason since d3d-pass; it needs depth as
+  colour (d3d) and the Hilo dot mappings (shaders);
+- dotted dark horizontal lines across the screen at a few heights (gfx,
+  not narrowed);
+- the CAMPAIGN OPTIONS highlight bar draws as coloured noise (not narrowed).
 
 Until the analyzer fix lands, the CRT copy and unguarded switch targets
 go through the fallback (blocker 1): about 33k fallback entries by the
@@ -187,8 +197,20 @@ profile screen.
 18. The title screen, then START (scripted), CHOOSE PROFILE, A on
     Default, and the main menu.
 
-Next: drive the menu further (CAMPAIGN), longer runs, and the rendering
-differences above.
+19. With a frame-timed script (`START@f310,DOWN@f408,A@f419,A@f524,A@f585,
+    A@f632`): CAMPAIGN, CAMPAIGN OPTIONS (New Campaign), then PROFILE NAME
+    (the Default profile cannot save, so the game asks for a new one), DONE.
+    Saving the new profile stops: `NtCreateFile` of
+    `u:\<id>\SaveMeta.xbx` with an AllocationSize ("allocation-size
+    reservation unsupported by VFS", kernel files.rs).
+
+Next: past the profile save (kernel), New Campaign, difficulty and the
+first level.
+
+Runs compare frame for frame only from the same data directory state:
+use `--fresh-data` (or a new `--data`), and never share one between two
+runs at once. On master a run that shared the data directory with another
+stopped with a divide error at `0x223cff` (a zero stride in loaded data).
 
 ### Ranked blockers
 
