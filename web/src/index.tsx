@@ -11,6 +11,7 @@ import Games from "./stats/Games";
 import Players from "./stats/Players";
 import { CareerPage, HistoryPage, ServiceRecordPage } from "./stats/Player";
 import Events from "./stats/Events";
+import Admin from "./admin/Admin";
 import { live } from "./state/live";
 import { startGameArt } from "./state/gameart";
 
@@ -36,6 +37,7 @@ render(
         <Route path="/players/:tag/history" component={HistoryPage} />
         <Route path="/players/:tag/career" component={CareerPage} />
         <Route path="/events" component={Events} />
+        <Route path="/admin" component={Admin} />
         <Route path="*404" component={NotFound} />
       </Route>
       <Route path="/games/:id" component={OldGame} />

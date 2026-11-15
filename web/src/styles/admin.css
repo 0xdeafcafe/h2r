@@ -1,0 +1,286 @@
+/* The Admin area (src/admin, served under /stats/admin), in the stats
+ * site's tokens (theme.css) so it reads as part of the record: dark boxes,
+ * blue headings, gold highlights. */
+
+.adm {
+  display: grid;
+  gap: 12px;
+}
+
+.adm-field {
+  display: grid;
+  gap: 3px;
+}
+
+.adm-field > span,
+.adm-field-label {
+  color: var(--s-ink-soft);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.adm input,
+.adm select,
+.adm textarea {
+  background: var(--s-row);
+  color: var(--s-white);
+  border: 1px solid var(--s-box-edge);
+  border-radius: 2px;
+  padding: 4px 6px;
+  font: 13px/1.3 Arial, sans-serif;
+}
+
+.adm input:focus,
+.adm select:focus,
+.adm textarea:focus {
+  outline: 1px solid var(--s-link);
+}
+
+.adm-num {
+  width: 90px;
+}
+
+.adm-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+}
+
+.adm-grow {
+  flex: 1;
+}
+
+.adm-hint summary {
+  cursor: pointer;
+  color: var(--s-link);
+  margin-top: 8px;
+}
+
+/* The MOTD editor and its preview. */
+.adm-motd {
+  display: grid;
+  gap: 12px;
+}
+
+.adm-messages {
+  list-style: none;
+  margin: 0 0 8px;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.adm-messages li {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.adm-messages input {
+  flex: 1;
+}
+
+.adm-x {
+  background: none;
+  border: 1px solid var(--s-box-edge);
+  border-radius: 2px;
+  color: var(--s-ink-soft);
+  cursor: pointer;
+  padding: 2px 8px;
+}
+
+.adm-x:hover:not(:disabled) {
+  color: var(--s-bad);
+  border-color: var(--s-bad);
+}
+
+.adm-preview {
+  background: var(--s-pill-2);
+  border: 1px solid var(--s-pill-edge);
+  border-radius: 4px;
+  padding: 14px 16px;
+  text-align: center;
+}
+
+.adm-preview-header {
+  color: var(--s-gold);
+  font-weight: bold;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 0 8px;
+}
+
+.adm-preview-message {
+  color: var(--s-white);
+  margin: 0 0 10px;
+}
+
+.adm-preview-note {
+  color: var(--s-ink-dim);
+  font-size: 11px;
+  margin: 0;
+}
+
+/* The playlist builder. */
+.adm-hopper-cols {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .adm-hopper-cols {
+    grid-template-columns: 1fr;
+  }
+}
+
+.adm-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.adm-list button {
+  display: flex;
+  width: 100%;
+  gap: 8px;
+  align-items: baseline;
+  background: var(--s-row);
+  border: 1px solid transparent;
+  border-radius: 2px;
+  color: var(--s-ink);
+  cursor: pointer;
+  padding: 4px 8px;
+  text-align: left;
+}
+
+.adm-list button.on {
+  background: var(--s-row-sel);
+  border-color: var(--s-box-edge-2);
+  color: var(--s-white);
+}
+
+.adm-list-idx {
+  color: var(--s-ink-dim);
+  min-width: 18px;
+}
+
+.adm-list-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.adm-list-meta {
+  color: var(--s-ink-dim);
+  font-size: 11px;
+}
+
+.adm-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.adm-editor > .adm-row:first-child {
+  align-items: end;
+}
+
+.adm-records {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+
+.adm-records th {
+  color: var(--s-ink-dim);
+  font-weight: normal;
+  text-align: left;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--s-box-edge);
+}
+
+.adm-records td {
+  padding: 2px 4px;
+  border-bottom: 1px solid var(--s-row-alt);
+}
+
+.adm-records input {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.adm-records .adm-num {
+  width: 84px;
+}
+
+.adm-rec-idx {
+  color: var(--s-ink-dim);
+  text-align: right;
+}
+
+.adm-rec-btns {
+  white-space: nowrap;
+}
+
+.adm-rec-btns button {
+  background: none;
+  border: 1px solid var(--s-box-edge);
+  border-radius: 2px;
+  color: var(--s-ink-soft);
+  cursor: pointer;
+  margin-left: 2px;
+  padding: 1px 6px;
+}
+
+.adm-rec-btns button:hover:not(:disabled) {
+  color: var(--s-white);
+  border-color: var(--s-link);
+}
+
+.adm-rec-btns button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Shared notices. */
+.adm-error,
+.adm-errors {
+  color: var(--s-bad);
+}
+
+.adm-errors {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.adm-ok {
+  color: var(--s-good);
+}
+
+.adm-note {
+  color: var(--s-ink-soft);
+}
+
+.adm-dirty {
+  color: var(--s-warn);
+  font-size: 11px;
+  margin-right: 8px;
+}
+
+.adm-paste {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 11px;
+}
+
+.adm-file input {
+  color: var(--s-ink-soft);
+  font-size: 12px;
+}

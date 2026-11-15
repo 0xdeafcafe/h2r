@@ -32,7 +32,7 @@ use crate::live_query::path_part;
 const USAGE: &str = "usage: h2 live <command> [options]
 
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
-        [--private] [--invite-only] [--game-art DIR] [--share-game-art]
+        [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
                           run the service. --db defaults to $H2_LIVE_DB or
                           postgres://localhost/h2live, --listen to
@@ -49,6 +49,9 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           {xuid, gamertag, server, key}) to accounts.json,
                           once the server confirms the key is the account's
   account list [--server URL]
+  account export <gamertag> [--file PATH] [--server URL]
+  admin grant|revoke <gamertag> [--server URL] [--data DIR]
+  hopper import <file> [--title ID] [--server URL] [--data DIR]
   friend add <gamertag> [--as GAMERTAG] [--server URL]
   friend accept <gamertag> [--as GAMERTAG] [--server URL]
   friend decline <gamertag> [--as GAMERTAG] [--server URL]
@@ -88,6 +91,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
         ("account", Some("create")) => account_create(rest.shift()),
         ("account", Some("import")) => account_import(rest.shift()),
         ("account", Some("list")) => account_list(rest.shift()),
+        ("account", Some("export")) => crate::live_admin::account_export(rest.shift()),
+        ("admin", Some("grant")) => crate::live_admin::admin_grant(rest.shift()),
+        ("admin", Some("revoke")) => crate::live_admin::admin_revoke(rest.shift()),
+        ("hopper", Some("import")) => crate::live_admin::hopper_import(rest.shift()),
         ("friend", Some("add")) => friend(rest.shift(), FriendAction::Add),
         ("friend", Some("accept")) => friend(rest.shift(), FriendAction::Accept),
         ("friend", Some("decline")) => friend(rest.shift(), FriendAction::Decline),
@@ -176,6 +183,10 @@ fn serve(mut args: Args) -> Result<()> {
     })?;
     let data_dir = data_dir(args.take("--data")?)?;
     let id = args.take("--id")?;
+    let mut admin_flags = Vec::new();
+    while let Some(a) = args.take("--admin")? {
+        admin_flags.push(a);
+    }
     let tls = match (args.take("--tls-cert")?, args.take("--tls-key")?) {
         (Some(cert), Some(key)) => Some((cert.into(), key.into())),
         (None, None) => None,
@@ -184,6 +195,8 @@ fn serve(mut args: Args) -> Result<()> {
     let policy = live_server::Policy {
         private: args.flag("--private"),
         invite_only: args.flag("--invite-only"),
+        admins: live_server::admin::Admins::from_flags_and_env(&admin_flags)
+            .map_err(|e| anyhow::anyhow!("--admin/H2_LIVE_ADMINS: {e}"))?,
         ..live_server::Policy::default()
     };
     let insecure_http = args.flag("--insecure-http");
@@ -763,7 +776,7 @@ fn print_friends(friends: &Friends) {
 
 /// The operator: this machine's server identity, checked against the
 /// server it is about to talk to.
-fn operator(data: Option<String>, client: &Client) -> Result<ServerIdentity> {
+pub(crate) fn operator(data: Option<String>, client: &Client) -> Result<ServerIdentity> {
     let dir = data_dir(data)?;
     let identity = ServerIdentity::load(&dir)
         .with_context(|| format!("loading the server identity in {}", dir.display()))?;
