@@ -21,3 +21,9 @@ runtime = { path = "crates/runtime" }
 bink-hle = { path = "crates/bink-hle" }
 thiserror = "2"
 anyhow = "1"
+
+# The fixture tests decode ~5M rows; keep them quick in debug builds.
+[profile.dev.package.sse-oracle]
+opt-level = 3
+[profile.dev.package.zstd-sys]
+opt-level = 3
