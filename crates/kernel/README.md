@@ -242,16 +242,20 @@ counts these switches and `preempt_slice = None` restores the purely
 cooperative schedule.
 
 Time and work. A preempted thread is runnable, never polling: the clock
-does not jump for it. Instead, with a slice set, every thread slice charges
-the accesses its generated code made to logical time at
+does not jump for it. Instead, with a slice set, the accesses a thread's
+generated code makes are charged to logical time at
 `threads::ACCESSES_PER_TICK` (100 per 100 ns tick, one a nanosecond),
-whether the slice ended in a preemption or a kernel call, carrying the
-remainder to the next slice. The 733 MHz Xbox CPU makes at most about one
-access a cycle, so charged time never runs ahead of the work that paid
-for it: a productive loop moves the clock by its own cost and no more,
-however alike its states look, and a spin-wait (on a flag, a counter or
-the TSC) carries the clock to its sleeping setter's deadline by running,
-about 15 default slices per guest millisecond. Jumping to the next deadline
+carrying the remainder. Work is settled on entry to every kernel call, so
+what the call reads of time and any relative deadline it sets start after
+the work before it, and again at the end of every run, including when a
+thread at DISPATCH_LEVEL or above keeps the CPU for another slice. The
+rate is a harness choice, not a calibrated Xbox timing model: simple,
+reproducible, about 66 us per default slice (15 slices per guest
+millisecond); accesses are not cycles, and register-only work, access
+width and cache behaviour are not costed. A productive loop moves the
+clock by its own cost and no more, however alike its states look, and a
+spin-wait (on a flag, a counter, the performance counter or the TSC)
+carries the clock to its deadline by running. Jumping to the next deadline
 stays reserved for threads that are blocked in the kernel or have asked to
 be: no thread ready, or every scheduled thread waiting, sleeping or polling
 through Delay(0)/NtYieldExecution as above. Rust overrides and DPCs make
@@ -315,8 +319,10 @@ and outcomes. History retains at most 4096 absolute advances, dropping the older
 half when full; `dropped_advances()` reports truncation. `Kernel::clock()` uses
 an Arc-backed copy-on-write snapshot instead of copying history on every read.
 Replaying a retained suffix recovers current time, but a full long-run replay
-requires capturing advances externally before truncation; charged work adds
-an advance for most generated-code slices, so a long run truncates sooner.
+requires capturing advances externally before truncation. Charged work
+(`Clock::charge`) does not fill the history: consecutive charges share one
+entry, moved to the latest time, since the steps between them follow from
+replaying the execution; any other advance starts a new entry.
 Overflow or backwards
 replay fails explicitly.
 

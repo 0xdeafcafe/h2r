@@ -7,6 +7,9 @@ pub struct Clock {
     epoch_100ns: u64,
     advances: Arc<Vec<u64>>,
     dropped_advances: u64,
+    /// The last history entry came from [`Clock::charge`]: the next charge
+    /// moves it rather than adding one.
+    charging: bool,
 }
 #[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
 #[error("logical clock overflow or non-monotonic replay")]
@@ -24,6 +27,7 @@ impl Clock {
             epoch_100ns,
             advances: Arc::new(Vec::new()),
             dropped_advances: 0,
+            charging: false,
         }
     }
     pub fn counter(&self) -> u64 {
@@ -46,13 +50,40 @@ impl Clock {
             return Err(ClockError);
         }
         self.ticks_100ns = ticks;
+        self.charging = false;
+        self.record(ticks);
+        Ok(())
+    }
+    /// Move time on by executed work (`threads::ACCESSES_PER_TICK`).
+    /// Consecutive charges share one history entry, which each moves to the
+    /// new time: the steps between them follow from replaying the
+    /// execution, and a long run of work does not flush the history. Any
+    /// other advance starts a new entry. Saturates at the epoch's limit.
+    pub fn charge(&mut self, ticks: u64) {
+        let target = self
+            .ticks_100ns
+            .saturating_add(ticks)
+            .min(u64::MAX - self.epoch_100ns);
+        if target == self.ticks_100ns {
+            return;
+        }
+        self.ticks_100ns = target;
+        if self.charging
+            && let Some(last) = Arc::make_mut(&mut self.advances).last_mut()
+        {
+            *last = target;
+        } else {
+            self.charging = true;
+            self.record(target);
+        }
+    }
+    fn record(&mut self, ticks: u64) {
         let advances = Arc::make_mut(&mut self.advances);
         if advances.len() == MAX_CLOCK_ADVANCES {
             advances.drain(..MAX_CLOCK_ADVANCES / 2);
             self.dropped_advances += (MAX_CLOCK_ADVANCES / 2) as u64;
         }
         advances.push(ticks);
-        Ok(())
     }
     pub fn advance(&mut self, ticks: u64) -> Result<(), ClockError> {
         self.advance_to(self.ticks_100ns.checked_add(ticks).ok_or(ClockError)?)

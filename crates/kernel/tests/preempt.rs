@@ -32,6 +32,9 @@ const TSC_WAIT: u32 = CODE + 0x5000;
 /// memory, registers unchanged at the loop header, then return `*flag`.
 const COUNT_UP: u32 = CODE + 0x6000;
 const COUNT: u32 = 100_000;
+/// `query_wait()` (stdcall): poll KeQueryPerformanceCounter until it reads
+/// at least 10 ticks (1), or give up after 100000 polls (0, EDI = 0).
+const QUERY_WAIT: u32 = CODE + 0x7000;
 /// `sleep_set(flag)` (stdcall, a Rust override): sleep for the machine's
 /// delay of logical time, then `*flag = 1`.
 const SLEEP_SET: u32 = CODE + 0x300;
@@ -157,7 +160,23 @@ fn guest_functions() -> Vec<ir::IrFunction> {
         a.mov(eax, dword_ptr(edx))?;
         a.ret_1(8)
     });
-    vec![spin, set, wait, count_wait, tsc_wait, count_up]
+    let query_wait = function(QUERY_WAIT, |a| {
+        let mut poll = a.create_label();
+        let mut seen = a.create_label();
+        a.mov(edi, 100_000)?;
+        a.set_label(&mut poll)?;
+        a.call(runtime::kernel::function_token(126) as u64)?; // KeQueryPerformanceCounter
+        a.cmp(eax, 10)?;
+        a.jae(seen)?;
+        a.dec(edi)?;
+        a.jnz(poll)?;
+        a.xor(eax, eax)?;
+        a.ret()?;
+        a.set_label(&mut seen)?;
+        a.mov(eax, 1)?;
+        a.ret()
+    });
+    vec![spin, set, wait, count_wait, tsc_wait, count_up, query_wait]
 }
 
 /// emit's test bridge (`c/bridge.c`) forwards the ABI imports through this
@@ -265,6 +284,49 @@ fn machine(lib: &libloading::Library, bound: u32) -> Machine {
     machine_with(lib, SET, SPIN, vec![FLAG, bound], HOUR)
 }
 
+/// A harness with the module registered and `DELAY` holding a relative
+/// `delay` (100 ns units).
+fn harness(lib: &libloading::Library, delay: u64) -> Harness {
+    let h = Harness::new();
+    h.runtime
+        .memory()
+        .set_u64(DELAY, (delay as i64).wrapping_neg() as u64)
+        .unwrap();
+    // SAFETY: the module's tables and probes follow the current ABI and
+    // live as long as `lib`, which the caller keeps loaded for the run.
+    unsafe {
+        let module: libloading::Symbol<*const H2GenModule> = lib.get(b"h2gen_module").unwrap();
+        let version: libloading::Symbol<unsafe extern "C" fn() -> u32> =
+            lib.get(b"h2gen_module_abi_version").unwrap();
+        let (module, version) = (&**module, *version);
+        h.runtime
+            .edit_dispatch(|d| d.register_generated_module(module, version))
+            .unwrap();
+    }
+    h
+}
+
+fn machine_of(h: &Harness) -> Machine {
+    Machine::new(
+        h.runtime.clone(),
+        h.kernel.clone(),
+        h.cpu,
+        STACK_BOTTOM,
+        STACK_TOP,
+    )
+    .unwrap()
+}
+
+/// One thread: `entry(args)`, then exit with EAX (or `then` it, if set).
+fn alone(lib: &libloading::Library, entry: u32, args: Vec<u32>, delay: u64) -> Harness {
+    let h = harness(lib, delay);
+    h.code(0, move |cpu, ctx, _| {
+        guest_call(cpu, ctx, entry, &args, CODE + 0x110)
+    });
+    h.code(0x110, |cpu, ctx, _| ctx.memory().ret(cpu, 0));
+    h
+}
+
 /// Thread 1 creates thread 2 running `start(FLAG)`, then calls
 /// `spinner(args)` (stdcall) and exits with its result. `sleep_set`
 /// sleeps for `delay` (100 ns units).
@@ -275,22 +337,7 @@ fn machine_with(
     args: Vec<u32>,
     delay: u64,
 ) -> Machine {
-    let h = Harness::new();
-    h.runtime
-        .memory()
-        .set_u64(DELAY, (delay as i64).wrapping_neg() as u64)
-        .unwrap();
-    // SAFETY: the module's tables and probes follow the current ABI and live as long
-    // as `lib`, which the caller keeps loaded for the whole run.
-    unsafe {
-        let module: libloading::Symbol<*const H2GenModule> = lib.get(b"h2gen_module").unwrap();
-        let version: libloading::Symbol<unsafe extern "C" fn() -> u32> =
-            lib.get(b"h2gen_module_abi_version").unwrap();
-        let (module, version) = (&**module, *version);
-        h.runtime
-            .edit_dispatch(|d| d.register_generated_module(module, version))
-            .unwrap();
-    }
+    let h = harness(lib, delay);
     h.code(0, move |cpu, ctx, _| {
         guest_call(
             cpu,
@@ -494,4 +541,91 @@ fn a_counting_spinner_waiting_on_a_sleeper_lets_logical_time_reach_it() {
 #[test]
 fn an_rdtsc_spinner_waiting_on_a_sleeper_lets_logical_time_reach_it() {
     spin_reaches_a_sleeper(TSC_WAIT);
+}
+
+#[test]
+fn a_counter_wait_at_dispatch_level_sees_its_own_work_move_time() {
+    let Some(lib) = module() else { return };
+    // Raised to DISPATCH_LEVEL the thread keeps the CPU across its slices;
+    // their work must still move the counter it polls.
+    let h = alone(lib, QUERY_WAIT, vec![], 0);
+    h.code(0, |cpu, ctx, _| {
+        guest_call(
+            cpu,
+            ctx,
+            runtime::kernel::function_token(129), // KeRaiseIrqlToDpcLevel
+            &[],
+            CODE + 0x108,
+        )
+    });
+    h.code(0x108, |cpu, ctx, _| {
+        guest_call(cpu, ctx, QUERY_WAIT, &[], CODE + 0x110)
+    });
+    let mut m = machine_of(&h);
+    assert_eq!(
+        m.run(1_000).unwrap(),
+        RunOutcome::Complete {
+            exits: [(1, 1)].into()
+        }
+    );
+    assert_eq!(m.preemptions(), 0);
+    assert!(m.thread(1).unwrap().cpu.edi > 0);
+}
+
+#[test]
+fn a_relative_delay_starts_after_the_work_before_it() {
+    let Some(lib) = module() else { return };
+    // 300004 accesses of work (3000 ticks), then a relative delay: the run
+    // ends at the work's cost plus the delay, with the default budget and
+    // with one slice covering it all.
+    for (budget, delay) in [(runtime::preempt::DEFAULT_SLICE, 200), (1_000_000, 2_000)] {
+        let h = alone(lib, COUNT_UP, vec![COUNTER, FLAG], delay);
+        h.code(0x110, |cpu, ctx, _| {
+            guest_call(
+                cpu,
+                ctx,
+                runtime::kernel::function_token(99), // KeDelayExecutionThread
+                &[0, 0, DELAY],
+                CODE + 0x120,
+            )
+        });
+        h.code(0x120, |cpu, ctx, _| ctx.memory().ret(cpu, 0));
+        let mut m = machine_of(&h);
+        m.preempt_slice = Some(budget);
+        assert!(matches!(m.run(100).unwrap(), RunOutcome::Complete { .. }));
+        assert_eq!(m.kernel.clock().counter(), 3_000 + delay, "budget {budget}");
+    }
+}
+
+#[test]
+fn charged_work_keeps_one_history_entry_however_long_it_runs() {
+    let Some(lib) = module() else { return };
+    // A wait nobody ends, one tick a slice: 4097 slices of work, one entry.
+    let h = alone(lib, WAIT, vec![FLAG], 0);
+    let mut m = machine_of(&h);
+    m.preempt_slice = Some(100);
+    assert_eq!(m.run(4_097).unwrap(), RunOutcome::SliceLimit);
+    let clock = m.kernel.clock();
+    assert!(clock.counter() >= 4_096, "{}", clock.counter());
+    assert_eq!(clock.advances(), [clock.counter()]);
+    assert_eq!(clock.dropped_advances(), 0);
+    assert_eq!(
+        kernel::clock::Clock::replay(0, clock.advances())
+            .unwrap()
+            .counter(),
+        clock.counter()
+    );
+}
+
+#[test]
+fn charges_coalesce_only_until_another_advance() {
+    let mut clock = kernel::clock::Clock::new(0);
+    clock.charge(2);
+    clock.charge(3);
+    clock.advance_to(10).unwrap();
+    clock.charge(1);
+    clock.charge(0);
+    clock.charge(4);
+    assert_eq!(clock.advances(), [5, 10, 15]);
+    assert_eq!(clock.counter(), 15);
 }

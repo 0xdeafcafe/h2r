@@ -114,15 +114,14 @@ pub struct Machine {
     pub preempt_slice: Option<u64>,
     /// Slices that ended in preemption rather than a kernel call.
     preemptions: u64,
-    /// Accesses charged but not yet a whole clock tick.
-    work_carry: u64,
 }
 
 /// The rate at which executed guest work moves logical time: accesses by
-/// generated code per 100 ns clock tick, one per nanosecond. The 733 MHz
-/// Xbox CPU makes at most about one memory access per cycle, so this is at
-/// least as fast as the real machine: charged time never runs ahead of the
-/// work that paid for it.
+/// generated code per 100 ns clock tick, one per nanosecond. A harness
+/// rate, not a calibrated Xbox timing model: simple and reproducible, about
+/// 66 us per default slice (15 slices per guest millisecond). Accesses are
+/// not cycles; register-only work, access width and cache behaviour are
+/// not costed.
 pub const ACCESSES_PER_TICK: u64 = 100;
 
 impl Machine {
@@ -219,7 +218,6 @@ impl Machine {
             max_transfers_per_slice: 1_000_000,
             preempt_slice: Some(runtime::preempt::DEFAULT_SLICE),
             preemptions: 0,
-            work_carry: 0,
         };
         machine.collect_threads()?;
         Ok(machine)
@@ -453,7 +451,6 @@ impl Machine {
             );
             let thread = self.threads.get_mut(&tid).unwrap();
             let mut resume = self.kernel.lock().threads[&tid].resume;
-            let mut spent = 0u64;
             let (transfer, preempted) = loop {
                 if let Some(accesses) = self.preempt_slice {
                     thread.ctx.arm_preemption(accesses);
@@ -462,14 +459,22 @@ impl Machine {
                     max_transfers: self.max_transfers_per_slice,
                 }
                 .run_from(&mut thread.cpu, &mut thread.ctx, resume);
-                spent = spent.saturating_add(thread.ctx.slice_spent());
+                // The run's work moves logical time, whether it ended in a
+                // preemption or a kernel call (which settled the work before
+                // it on entry) and whether or not the thread keeps the CPU,
+                // so a thread spinning on memory reaches a deadline by
+                // running and work never lets time leap ahead of it.
+                let kpcr = {
+                    let mut core = self.kernel.lock();
+                    core.charge_work(&mut self.runtime.memory(), thread.ctx.take_slice_spent())?;
+                    core.kpcr
+                };
                 thread.ctx.disarm_preemption();
                 let Some(next) = thread.ctx.take_preempted() else {
                     break (transfer, None);
                 };
                 // At DISPATCH_LEVEL or above nothing else may run on the
                 // one Xbox CPU: the thread carries on with a fresh slice.
-                let kpcr = self.kernel.lock().kpcr;
                 if self.runtime.memory().u8(kpcr + kpcr::IRQL)? < 2 {
                     break (transfer, Some(next));
                 }
@@ -478,16 +483,6 @@ impl Machine {
             {
                 let mut core = self.kernel.lock();
                 let mut memory = self.runtime.memory();
-                // The slice's work moves logical time, whether it ended in a
-                // preemption or a kernel call, so a thread spinning on
-                // memory reaches a sleeper's deadline by running and work
-                // never lets time leap ahead of it.
-                let carry = self.work_carry.saturating_add(spent);
-                self.work_carry = carry % ACCESSES_PER_TICK;
-                if carry >= ACCESSES_PER_TICK {
-                    core.clock.advance(carry / ACCESSES_PER_TICK)?;
-                    core.write_tick(&mut memory)?;
-                }
                 let kpcr = core.kpcr;
                 let record = core.threads.get_mut(&tid).unwrap();
                 for i in 0..7 {

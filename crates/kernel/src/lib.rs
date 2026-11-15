@@ -157,6 +157,8 @@ pub(crate) struct Core {
     bridge: u32,
     tls: Option<xbe::TlsDirectory>,
     clock: Clock,
+    /// Charged accesses not yet a whole clock tick ([`Core::charge_work`]).
+    work_carry: u64,
     data: BTreeMap<u32, u32>,
     saved_av: u32,
     /// PhyInitialize (253) has run.
@@ -286,6 +288,7 @@ impl Kernel {
                 bridge,
                 tls: config.tls,
                 clock: Clock::new(config.epoch_100ns),
+                work_carry: 0,
                 data,
                 console: config.console,
                 encoder: console::EncoderState::default(),
@@ -527,10 +530,15 @@ impl Kernel {
         cpu: &mut CpuAbi,
         ctx: &mut ExecCtx,
     ) -> Result<TransferAbi, GuestFault> {
+        let spent = ctx.take_slice_spent();
         let (args, action) = {
             // Every service takes locks in this order; neither escapes a call.
             let mut core = self.lock();
             let mut memory = ctx.runtime().memory();
+            // Settle the generated work before this call first, so what it
+            // reads of time, and any relative deadline it sets, starts
+            // after that work rather than before it.
+            core.charge_work(&mut memory, spent)?;
             let args = Args::read(export, cpu, &memory)?;
             core.write_tick(&mut memory)?;
             let action = core.call(&mut memory, &args, ctx.thread_id)?;
@@ -591,6 +599,21 @@ impl Core {
         }
         self.log_bytes += message.len();
         self.log.push(message);
+    }
+    /// Charge `accesses` of executed generated work to logical time at
+    /// [`threads::ACCESSES_PER_TICK`], carrying the remainder.
+    pub(crate) fn charge_work(
+        &mut self,
+        memory: &mut Guest,
+        accesses: u64,
+    ) -> Result<(), GuestFault> {
+        let carry = self.work_carry.saturating_add(accesses);
+        self.work_carry = carry % threads::ACCESSES_PER_TICK;
+        if carry >= threads::ACCESSES_PER_TICK {
+            self.clock.charge(carry / threads::ACCESSES_PER_TICK);
+            self.write_tick(memory)?;
+        }
+        Ok(())
     }
     fn write_tick(&self, memory: &mut Guest) -> Result<(), GuestFault> {
         if let Some(&address) = self.data.get(&ord::KE_TICK_COUNT) {

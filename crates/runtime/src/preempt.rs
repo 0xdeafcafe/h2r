@@ -173,6 +173,12 @@ impl ExecCtx {
     pub fn slice_spent(&self) -> u64 {
         self.slice.spent
     }
+    /// [`slice_spent`](Self::slice_spent), resetting it to 0 (the budget
+    /// left is unchanged), so a kernel call can settle the work before it
+    /// and the scheduler then settles only what came after.
+    pub fn take_slice_spent(&mut self) -> u64 {
+        std::mem::take(&mut self.slice.spent)
+    }
     /// The bits set on this context's own word.
     pub fn preempt_pending(&self) -> u32 {
         self.word.pending()

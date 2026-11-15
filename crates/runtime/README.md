@@ -343,7 +343,8 @@ impl ExecCtx {
     pub fn disarm_preemption(&mut self);
     pub fn preemption_armed(&self) -> bool;
     pub fn preempt_pending(&self) -> u32; // this context's word
-    pub fn slice_spent(&self) -> u64;     // accesses since armed
+    pub fn slice_spent(&self) -> u64;     // accesses since armed (or taken)
+    pub fn take_slice_spent(&mut self) -> u64; // and reset to 0
     pub fn take_preempted(&mut self) -> Option<TransferAbi>;
 }
 ```
@@ -361,8 +362,9 @@ impl ExecCtx {
   where the thread was. `kernel::Machine` arms each thread slice.
 - **Unarmed** (the default, a DPC, tests): the bits are dropped and the run
   carries on. INTERRUPT alone never takes the thread away.
-- **Spent.** `slice_spent` counts every access since the context was armed,
-  past the budget too; `kernel::Machine` charges it to logical time.
+- **Spent.** `slice_spent` counts every access since the context was armed
+  or the count was last taken, past the budget too. `kernel` takes it at
+  each kernel call and after each run and charges it to logical time.
 - **Slice.** Per context: the armed context that runs out sets SLICE on its
   own word, and only it acts on it. Counted in calls to the generated-code accessors (`h2abi_v1_read`,
   `_write` and the atomics) by an armed context: reproducible, and a
