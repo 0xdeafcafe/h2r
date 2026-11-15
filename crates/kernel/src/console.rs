@@ -7,6 +7,14 @@ use crate::{
 use runtime::{Guest, GuestFault, guest::Access};
 pub const XC_LANGUAGE: u32 = 7;
 pub const XC_VIDEO: u32 = 8;
+/// XC_AUDIO: analog/digital output flags (queried at retail 0x3739fa).
+pub const XC_AUDIO: u32 = 9;
+/// XC_AUDIO: analog output modes (low bits) and digital passthrough flags.
+pub const XC_AUDIO_STEREO: u32 = 0;
+pub const XC_AUDIO_MONO: u32 = 1;
+pub const XC_AUDIO_SURROUND: u32 = 2;
+pub const XC_AUDIO_FLAG_AC3: u32 = 0x0001_0000;
+pub const XC_AUDIO_FLAG_DTS: u32 = 0x0002_0000;
 pub const XC_P_CONTROL_GAMES: u32 = 10;
 pub const XC_P_CONTROL_PASSWORD: u32 = 11;
 pub const XC_P_CONTROL_MOVIES: u32 = 12;
@@ -41,6 +49,10 @@ pub struct ConsoleConfig {
     pub parental_movies: u32,
     /// XC_MISC flags; zero means auto power-down off and DST adjustment on.
     pub misc_flags: u32,
+    /// XC_AUDIO setting: stereo with no digital passthrough by default.
+    pub audio_flags: u32,
+    /// PhyGetLinkState mask (net.rs); 0 is no cable, the offline default.
+    pub phy_link: u32,
 }
 impl Default for ConsoleConfig {
     fn default() -> Self {
@@ -55,6 +67,8 @@ impl Default for ConsoleConfig {
             parental_password: 0,
             parental_movies: 0,
             misc_flags: 0,
+            audio_flags: XC_AUDIO_STEREO,
+            phy_link: 0,
         }
     }
 }
@@ -63,6 +77,7 @@ impl ConsoleConfig {
         Some(match index {
             XC_LANGUAGE => self.language,
             XC_VIDEO => self.video_flags,
+            XC_AUDIO => self.audio_flags,
             XC_P_CONTROL_GAMES => self.parental_games,
             XC_P_CONTROL_PASSWORD => self.parental_password,
             XC_P_CONTROL_MOVIES => self.parental_movies,

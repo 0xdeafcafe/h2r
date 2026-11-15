@@ -90,7 +90,7 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 203, 215 | Open a namespace symbolic link as a handle; query its captured target. |
 | 327, 328 | XBE section reference counts, pristine reload of on-demand sections, shared-page counts. |
 | 2 | Read configured AV encoder settings (option 6); other options stop. |
-| 24 | Configured DWORD nonvolatile settings including XC_MISC, checked buffers and unknown-index stops; XC_MAX_ALL (0xffff) is STATUS_OBJECT_NAME_NOT_FOUND (no EEPROM image). |
+| 24 | Configured DWORD nonvolatile settings including XC_MISC and XC_AUDIO (9, stereo/no passthrough by default), checked buffers and unknown-index stops; XC_MAX_ALL (0xffff) is STATUS_OBJECT_NAME_NOT_FOUND (no EEPROM image). |
 | 301 | Explicit NTSTATUS-to-DOS conversion for kernel/VFS outputs; unknown status stops. |
 | 8 | DbgPrint guest cdecl varargs to an ordered byte log. |
 | 14, 15, 17, 23 | Aligned pool allocation, size/tag tracking, free/reuse, actual block size. |
@@ -112,7 +112,8 @@ wait/completion references finish. Thread backing cannot yet be reclaimed (see A
 | 192, 221 | Unnamed mutants: initial owner, recursive acquire, release counts, MUTANT_NOT_OWNED, abandonment on thread exit (STATUS_ABANDONED_WAIT_0 + index). |
 | 210 | NtQueryFullAttributesFile: FILE_NETWORK_OPEN_INFORMATION by path (root 0, -3 or a directory handle) without leaving a handle open. |
 | 246, 250 | ObReferenceObjectByHandle (thread/event types, null type, current-thread pseudo-handle) and ObfDereferenceObject; references pin the object. |
-| 252, 253 | PhyInitialize succeeds and PhyGetLinkState reports no link (no network device is modelled). |
+| 252, 253 | PhyInitialize / PhyGetLinkState on the offline path; contract below. |
+| 269, 304, 305 | RtlCompareMemoryUlong (whole leading DWORDs; unaligned source stops), RtlTimeFieldsToTime (validated, BOOLEAN) and RtlTimeToTimeFields (proleptic Gregorian from 1601; negative times stop). |
 | 335–337 | XcSHAInit/Update/Final: SHA-1 (FIPS 180-4) in the caller's 116-byte context. |
 | 187, 197 | Close/duplicate typed guest handles, including file handles; current-thread pseudo-handle close is a no-op and duplication creates a real thread handle. |
 | 190, 202 | VFS create/open, root-directory-relative and ObDosDevices (root -3) opens, synchronous and asynchronous file objects, free-space-query opens, guest handle and IO_STATUS_BLOCK outputs. |
@@ -300,19 +301,48 @@ IOCTLs, notifications, rename and symbolic-link object handles remain
 unimplemented. OBJECT_ATTRIBUTES RootDirectory -3 (ObDosDevices) resolves the
 name under `\??\`; a rooted or empty name under it stops.
 
+### PHY / link state (252, 253)
+
+No NIC is modelled. The contract is decoded from the retail call sites (net.rs;
+the `#[ignore]`d `retail_phy_call_sites_have_the_documented_shapes` re-checks it
+against `$H2_XBE`):
+
+- `PhyInitialize(BOOLEAN forceReset, PVOID reserved)` (253), stdcall 2, returns
+  an NTSTATUS. Sites: `0x36c4a1` (inside the link wrapper `0x36c47d`, called
+  only while the flag at `0x48481c` and a per-processor word are zero; result
+  ignored) and `0x3d6a7d` (adapter bring-up, `cmp eax,edi; jl` at `0x3d6a83`:
+  a negative status aborts). Both push (0, 0). It succeeds regardless of cable
+  state and records that the PHY was probed; a nonzero second parameter is
+  unobserved and stops.
+- `PhyGetLinkState(BOOLEAN update)` (252), stdcall 1, returns a mask. Sites:
+  `0x36c4a8` (argument 0; the wrapper returns the mask only if bit 0 is set,
+  else 0, `0x36c4b8..0x36c4c0`), `0x3d5f6b` (argument `edi == 0`; bit 2 picks
+  the speed value at `0x3d5f88`, bit 3 the duplex write at `0x3d5f96`) and
+  `0x3dabc6` (argument 0; `test al,1` at `0x3dabcc`, clear sets the link-down
+  status `0x80000010` and fails the call). Bit 0 = link up, bit 2 = 100 Mbps,
+  bit 3 = full duplex. The kernel returns 0 (no cable) before PhyInitialize and
+  by default after it; `ConsoleConfig::phy_link` can configure a link, and only
+  the three tested bits are reported, none without bit 0. With link down the
+  caller skips XNetStartup, so no network hardware is required.
+
 ### Asynchronous I/O
 
 Synchronous completion is equivalent for what Halo does. The 62 opens without a
 synchronous bit (options 0x4040) are all XAPI DeleteFile (0x2d6b7e): open
 DELETE, set FileDispositionInformation, close, with no I/O on the handle. XAPI
-ReadFile/WriteFile (0x2d2241) with an OVERLAPPED pass Event = hEvent,
-ApcRoutine = 0, ApcContext = the OVERLAPPED and IoStatusBlock = the OVERLAPPED,
-and treat any status other than STATUS_PENDING as complete. The kernel does the
+ReadFile (0x2d2241) and WriteFile (0x2d232e) with an OVERLAPPED pass Event =
+hEvent, ApcRoutine = 0 and IoStatusBlock = the OVERLAPPED. ApcContext is NULL
+when hEvent bit 0 is set and the OVERLAPPED otherwise (decoded: `and cl,1; neg
+cl; sbb; not; and esi`). XAPI
+treats any status other than STATUS_PENDING as complete. The kernel does the
 transfer before returning, writes the IO_STATUS_BLOCK, resets and then signals
 the event, and never returns STATUS_PENDING, which is a legal outcome on
 retail. On an asynchronous handle the ByteOffset is required (NULL is
 STATUS_INVALID_PARAMETER and FILE_USE_FILE_POINTER_POSITION stops), and the
-file position is left unchanged. An ApcRoutine stops, and waiting on the file
+file position is left unchanged. ApcContext, NULL or OVERLAPPED, is ignored on purpose: without an
+ApcRoutine it only keys a completion port, which Xbox lacks. An ApcRoutine stops,
+as does an Event handle with its low bit set (NT's completion-port suppression
+convention, unverified on Xbox; it would otherwise be an invalid handle), and waiting on the file
 handle itself is unsupported. Host backend calls execute synchronously on
 the scheduler's host thread; they do not overlap other guest execution.
 

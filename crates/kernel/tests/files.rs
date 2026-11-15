@@ -1108,6 +1108,10 @@ fn asynchronous_file_objects_complete_synchronously_with_event_and_iosb() {
         h.success(219, &[file, 0x7ff0, 0, 0, IOSB, BUFFER, 1, OFFSET]),
         status::INVALID_HANDLE
     );
+    // The NT low-bit convention (no completion-port post) is unverified on
+    // Xbox: an explicit stop, whatever the ApcContext, rather than a silent
+    // invalid-handle result.
+    h.stopped(219, &[file, event | 1, 0, IOSB, IOSB, BUFFER, 1, OFFSET]);
     h.success(187, &[file]);
     // Synchronous objects take an event too, and move their position.
     let sync = open(&mut h, "T:\\a.txt", 0, false, false);

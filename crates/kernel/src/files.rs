@@ -307,6 +307,19 @@ impl Core {
                         "file I/O APC completion requires APC delivery",
                     ));
                 }
+                // ApcContext (arg 3) is deliberately not read: with no
+                // ApcRoutine it only keys a completion port, which this kernel
+                // does not have, so dropping it is the complete behavior (the
+                // IO_STATUS_BLOCK is the only completion record). A set low bit
+                // on the Event handle is the NT convention for suppressing that
+                // completion-port post. Whether the Xbox kernel honours it is
+                // unverified, and it would otherwise fail as an invalid handle
+                // below, so stop explicitly rather than guess.
+                if a.get(1) & 1 != 0 {
+                    return Ok(Action::Stop(
+                        "file I/O event handle with its low bit set unverified",
+                    ));
+                }
                 let event = if a.get(1) == 0 {
                     None
                 } else {

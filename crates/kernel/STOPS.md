@@ -42,10 +42,7 @@ The inventory is checked against Runtime by `tests/stops.rs`.
 | 200 | NtFsControlFile |
 | 228 | NtSetSystemTime |
 | 247 | ObReferenceObjectByName |
-| 269 | RtlCompareMemoryUlong |
 | 302 | RtlRaiseException |
-| 304 | RtlTimeFieldsToTime |
-| 305 | RtlTimeToTimeFields |
 | 312 | RtlUnwind |
 | 338 | XcRC4Key |
 | 339 | XcRC4Crypt |

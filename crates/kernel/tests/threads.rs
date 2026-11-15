@@ -511,8 +511,8 @@ fn owned_thread_start_completion_survives_an_unsupported_kernel_stop_and_retry()
         guest_call(
             cpu,
             ctx,
-            runtime::kernel::function_token(269),
-            &[DATA, 4, 0],
+            runtime::kernel::function_token(346),
+            &[DATA, 4],
             CODE + 0x210,
         )
     });
@@ -529,12 +529,12 @@ fn owned_thread_start_completion_survives_an_unsupported_kernel_stop_and_retry()
         panic!("expected child kernel boundary")
     };
     assert!(
-        matches!(machine.thread(2).unwrap().ctx.event(transfer.event_id),Some(Event::KernelCall(call)) if call.ordinal==269)
+        matches!(machine.thread(2).unwrap().ctx.event(transfer.event_id),Some(Event::KernelCall(call)) if call.ordinal==346)
     );
     h.runtime.edit_dispatch(|d| {
         kernel::abi::register(
             d,
-            kernel::abi::Export::stdcall(269, "synthetic comparison", 3),
+            kernel::abi::Export::stdcall(346, "synthetic comparison", 2),
             |args, memory| {
                 assert_eq!(args.get(0), DATA);
                 assert_eq!(args.get(1), 4);

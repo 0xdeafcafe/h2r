@@ -9,3 +9,6 @@ runtime.workspace = true
 xbe.workspace = true
 thiserror.workspace = true
 vfs = { path = "../vfs" }
+
+[dev-dependencies]
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }

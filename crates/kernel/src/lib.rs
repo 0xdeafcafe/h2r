@@ -15,9 +15,11 @@ pub mod image;
 pub mod launch;
 pub mod layout;
 pub mod memory;
+pub mod net;
 mod objects;
 pub mod ord;
 pub mod rawdisk;
+mod rtl;
 mod sections;
 pub mod status;
 mod strings;
@@ -154,6 +156,8 @@ pub(crate) struct Core {
     clock: Clock,
     data: BTreeMap<u32, u32>,
     saved_av: u32,
+    /// PhyInitialize (253) has run.
+    phy_ready: bool,
     log: Vec<Vec<u8>>,
     log_bytes: usize,
     dropped_log: u64,
@@ -282,6 +286,7 @@ impl Kernel {
                 launch_page: 0,
                 references: BTreeMap::new(),
                 saved_av: 0,
+                phy_ready: false,
                 log: Vec::new(),
                 log_bytes: 0,
                 dropped_log: 0,
@@ -686,10 +691,11 @@ impl Core {
                 self.object_call(memory, a, tid)
             }
             ord::XC_SHA_INIT | ord::XC_SHA_UPDATE | ord::XC_SHA_FINAL => self.sha_call(memory, a),
-            // No NIC model: the PHY initializes and reports no link (cable
-            // unplugged), which XNet treats as "no network".
-            ord::PHY_INITIALIZE => Ok(Action::status(status::SUCCESS)),
-            ord::PHY_GET_LINK_STATE => Ok(Action::value(0)),
+            // No NIC model; see net.rs for the decoded contract.
+            ord::PHY_INITIALIZE | ord::PHY_GET_LINK_STATE => Ok(self.phy_call(a)),
+            ord::RTL_COMPARE_MEMORY_ULONG
+            | ord::RTL_TIME_FIELDS_TO_TIME
+            | ord::RTL_TIME_TO_TIME_FIELDS => self.rtl_call(memory, a),
             ord::XE_LOAD_SECTION | ord::XE_UNLOAD_SECTION => {
                 self.section_call(memory, a.get(0), a.export.ordinal == ord::XE_LOAD_SECTION)
             }

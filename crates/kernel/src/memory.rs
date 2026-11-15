@@ -73,6 +73,11 @@ pub struct Memory {
 }
 
 /// Clear page-aligned guest RAM using fixed host scratch, whatever its size.
+/// Marks a failure the preflights make unreachable. Debug builds assert; a
+/// release build reports the caller's error instead of panicking.
+fn unreachable_failure(what: &str) {
+    debug_assert!(false, "unreachable after preflight: {what}");
+}
 fn zero(memory: &mut Guest, base: u32, size: u32) -> Result<(), GuestFault> {
     let page = [0u8; PAGE_SIZE as usize];
     let mut offset = 0;
@@ -288,7 +293,11 @@ impl Memory {
             .map(base, size, physical, Permissions::RW)
             .map_err(|_| status::NO_MEMORY)?;
         // A newly used gap can contain bytes written through an earlier alias.
-        zero(memory, base, size).expect("fresh RW mapping");
+        if zero(memory, base, size).is_err() {
+            unreachable_failure("zeroing a fresh internal mapping");
+            let _ = memory.unmap(base, size);
+            return Err(status::NO_MEMORY);
+        }
         Ok(base)
     }
     pub(crate) fn guarded_thread(
@@ -306,16 +315,27 @@ impl Memory {
         let physical =
             Self::find_physical(memory, backed, 0, u32::MAX, PAGE_SIZE).ok_or(status::NO_MEMORY)?;
         let bottom = base + 2 * PAGE_SIZE;
-        memory
+        if memory
             .map(base, PAGE_SIZE, physical, Permissions::RW)
-            .expect("preflighted thread object");
-        memory
+            .is_err()
+        {
+            unreachable_failure("mapping a thread object");
+            return Err(status::NO_MEMORY);
+        }
+        if memory
             .map(bottom, stack_size, physical + PAGE_SIZE, Permissions::RW)
-            .expect("preflighted thread stack");
-        memory
-            .write_bytes(base, &[0; PAGE_SIZE as usize], 1)
-            .expect("fresh thread object");
-        zero(memory, bottom, stack_size).expect("fresh thread stack");
+            .is_err()
+        {
+            unreachable_failure("mapping a thread stack");
+            let _ = memory.unmap(base, PAGE_SIZE);
+            return Err(status::NO_MEMORY);
+        }
+        if zero(memory, base, PAGE_SIZE).is_err() || zero(memory, bottom, stack_size).is_err() {
+            unreachable_failure("zeroing a fresh thread mapping");
+            let _ = memory.unmap(bottom, stack_size);
+            let _ = memory.unmap(base, PAGE_SIZE);
+            return Err(status::NO_MEMORY);
+        }
         self.guards.insert(base + PAGE_SIZE);
         Ok((base, bottom, bottom + stack_size))
     }
@@ -333,7 +353,11 @@ impl Memory {
         memory
             .map(bottom, size, physical, Permissions::RW)
             .map_err(|_| status::NO_MEMORY)?;
-        zero(memory, bottom, size).expect("fresh kernel stack");
+        if zero(memory, bottom, size).is_err() {
+            unreachable_failure("zeroing a fresh kernel stack");
+            let _ = memory.unmap(bottom, size);
+            return Err(status::NO_MEMORY);
+        }
         self.guards.insert(base);
         self.kernel_stacks.insert(bottom, KernelStack { size });
         Ok(bottom)
@@ -517,22 +541,27 @@ impl Memory {
         }
         if commit {
             for (i, &page) in pages.iter().enumerate() {
-                if memory
+                let mapped = memory
                     .map(page, PAGE_SIZE, physical[i], Permissions::RW)
-                    .is_err()
-                {
+                    .is_ok();
+                let ready = mapped
+                    && zero(memory, page, PAGE_SIZE).is_ok()
+                    && memory.protect(page, perms).is_ok();
+                if !ready {
                     // Unreachable after the preflight; undo rather than
                     // leave a partial commit.
+                    unreachable_failure("committing a preflighted page");
+                    if mapped {
+                        let _ = memory.unmap(page, PAGE_SIZE);
+                    }
                     for &done in &pages[..i] {
-                        memory.unmap(done, PAGE_SIZE).expect("mapped just now");
+                        let _ = memory.unmap(done, PAGE_SIZE);
                     }
                     if reserve {
                         self.regions.remove(&base);
                     }
                     return Ok(Action::status(status::CONFLICTING_ADDRESSES));
                 }
-                zero(memory, page, PAGE_SIZE).expect("fresh RW mapping");
-                memory.protect(page, perms).expect("fresh mapping");
             }
             let r = self.regions.get_mut(&region_base).unwrap();
             r.pages.extend(pages.iter().map(|&page| (page, protect)));
@@ -706,9 +735,17 @@ impl Memory {
         {
             return Ok(Action::Stop(reason));
         }
-        let r = self.regions.get_mut(&region).expect("found above");
+        let Some(r) = self.regions.get_mut(&region) else {
+            unreachable_failure("region vanished during decommit");
+            return Ok(Action::status(status::MEMORY_NOT_ALLOCATED));
+        };
         for page in committed {
-            memory.unmap(page, PAGE_SIZE).expect("preflighted unmap");
+            if memory.unmap(page, PAGE_SIZE).is_err() {
+                // The refusal scan above admitted every page; keep the
+                // bookkeeping of what is still mapped and stop here.
+                unreachable_failure("preflighted unmap refused");
+                return Ok(Action::Stop("preflighted unmap refused"));
+            }
             r.pages.remove(&page);
         }
         if kind == MEM_RELEASE {
@@ -793,9 +830,10 @@ impl Memory {
                     ) else {
                         return Ok(Action::value(0));
                     };
-                    memory
-                        .map_reserved(r.id, va, size, perms)
-                        .expect("vacant window inside the reservation");
+                    if memory.map_reserved(r.id, va, size, perms).is_err() {
+                        unreachable_failure("vacant window inside the reservation");
+                        return Ok(Action::value(0));
+                    }
                     self.contiguous.insert(va, (size, protect));
                     return Ok(Action::value(va));
                 }
@@ -814,9 +852,10 @@ impl Memory {
                 match physical {
                     Some(physical) => {
                         let va = CONTIGUOUS_ALIAS + physical;
-                        memory
-                            .map(va, size, physical, perms)
-                            .expect("preflighted contiguous map");
+                        if memory.map(va, size, physical, perms).is_err() {
+                            unreachable_failure("preflighted contiguous map");
+                            return Ok(Action::value(0));
+                        }
                         self.contiguous.insert(va, (size, protect));
                         Action::value(va)
                     }

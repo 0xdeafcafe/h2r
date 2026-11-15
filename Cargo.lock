@@ -1160,6 +1160,7 @@ dependencies = [
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "iced-x86",
  "runtime",
  "thiserror 2.0.21",
  "vfs",
