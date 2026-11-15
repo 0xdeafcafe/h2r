@@ -565,6 +565,8 @@ fn mutelist_get_zeroes_count_and_returns_a_completing_task() {
 fn unimplemented_entries_stop_by_name_without_reading_stack_or_running_library() {
     let mut w = World::new();
     let implemented = [
+        "XOnlineStatWrite",
+        "XOnlineStatWriteGetResult",
         "XOnlineStorageCreateServerPath",
         "XOnlineStorageDownload",
         "XOnlineStorageDownloadToMemory",
@@ -917,16 +919,9 @@ fn presence_latest_returns_packed_offline_watch_records_and_clear_removes_them()
     );
 }
 #[test]
-fn absent_stats_query_and_feedback_return_failed_tasks_without_claiming_submission() {
+fn absent_query_and_feedback_return_failed_tasks_without_claiming_submission() {
     let mut w = World::new();
     w.logon();
-    assert_eq!(w.call("XOnlineStatRead", &[0, 0, 0, OUTPUT]), 0);
-    let stats = w.u32(OUTPUT);
-    assert_eq!(w.call("XOnlineTaskContinue", &[stats]), 0x80159003);
-    assert_eq!(
-        w.call("XOnlineStatReadGetResult", &[stats, 0, 0, 0, 0]),
-        0x80159003
-    );
     assert_eq!(
         w.call("XOnlineQuerySearch", &[0, 0, 0, 0, 0, 0, 0, 0, 0, OUTPUT]),
         0
@@ -1169,4 +1164,375 @@ fn storage_package_reads_and_both_upload_forms_fail_cleanly_in_tasks() {
     assert_eq!(w.call("XOnlineCleanup", &[]), 0);
     w.startup();
     assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
+}
+
+const STAT_SPECS: u32 = DATA + 0x4000;
+const STAT_VALUES: u32 = DATA + 0x5000;
+const STAT_NAME: u32 = DATA + 0x5800;
+const STAT_EXTRA: u32 = DATA + 0x6000;
+fn put_stat_spec(w: &World, p: u32, xuid: u64, board: u32, count: u32, values: u32) {
+    w.put(p, &[0; 24]);
+    w.put(p, &xuid.to_le_bytes());
+    w.word(p + 12, board);
+    w.word(p + 16, count);
+    w.word(p + 20, values);
+}
+fn put_stat(w: &World, p: u32, id: u16, kind: u32, bits: u64) {
+    w.put(p, &[0xcc; 16]);
+    w.put(p, &id.to_le_bytes());
+    w.word(p + 4, kind);
+    w.put(p + 8, &bits.to_le_bytes());
+}
+fn stat_world() -> (World, Arc<Hle>) {
+    let h = hle(config());
+    let mut w = World::with(h.clone());
+    w.logon();
+    (w, h)
+}
+#[test]
+fn stats_write_parses_all_xdk_values_and_owns_the_accepted_copy() {
+    use live_hle::{Stat, StatValue};
+    let (mut w, h) = stat_world();
+    put_stat_spec(&w, STAT_SPECS, ID, 0x1234, 5, STAT_VALUES);
+    w.word(STAT_SPECS + 8, 0x12345678);
+    w.put(STAT_NAME, &wide_bytes("Player 雪"));
+    for (i, (id, kind, bits)) in [
+        (10, 0, u64::MAX),
+        (11, 1, 0x12345678ffffffefu64),
+        (12, 2, (-9876543210123i64) as u64),
+        (13, 3, (-2.5f64).to_bits()),
+        (0xfffd, 4, 0xdeadbeef00000000u64 | u64::from(STAT_NAME)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        put_stat(&w, STAT_VALUES + i as u32 * 16, id, kind, bits);
+    }
+    let input = w.bytes(STAT_VALUES, 80);
+    assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.bytes(STAT_VALUES, 80), input);
+    w.put(STAT_VALUES, &[0xdd; 80]);
+    w.put(STAT_NAME, &wide_bytes("Changed"));
+    for _ in 0..3 {
+        assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    }
+    let captures = h.stat_writes();
+    assert_eq!(captures.len(), 1);
+    let captured = &captures[0];
+    assert_eq!(captured.sequence, 1);
+    assert!(captured.captured_at_unix_ms > 0);
+    let spec = &captured.specs[0];
+    assert_eq!(
+        (spec.xuid, spec.user_flags, spec.leaderboard),
+        (ID, 0x12345678, 0x1234)
+    );
+    assert_eq!(
+        spec.stats,
+        vec![
+            Stat {
+                id: 10,
+                value: StatValue::None
+            },
+            Stat {
+                id: 11,
+                value: StatValue::Long(-17)
+            },
+            Stat {
+                id: 12,
+                value: StatValue::LongLong(-9876543210123)
+            },
+            Stat {
+                id: 13,
+                value: StatValue::Double(-2.5)
+            },
+            Stat {
+                id: 0xfffd,
+                value: StatValue::String("Player 雪".into())
+            },
+        ]
+    );
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(h.stat_writes(), captures);
+}
+#[test]
+fn stats_upload_results_succeed_without_attachments_and_preserve_acknowledged_inputs() {
+    let (mut w, h) = stat_world();
+    put_stat_spec(&w, STAT_SPECS, ID, 7, 4, STAT_VALUES);
+    w.put(STAT_NAME, &wide_bytes("Synthetic"));
+    put_stat(&w, STAT_VALUES, 0xfffd, 4, u64::from(STAT_NAME));
+    for i in 1..4 {
+        put_stat(&w, STAT_VALUES + i * 16, i as u16, 1, u64::from(i));
+    }
+    let before = w.bytes(STAT_VALUES, 64);
+    assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    w.put(OUTPUT, &[0xaa; 16]);
+    assert_eq!(
+        w.call(
+            "XOnlineStatWriteGetResult",
+            &[task, OUTPUT, OUTPUT + 4, OUTPUT + 8]
+        ),
+        0
+    );
+    assert_eq!(w.bytes(OUTPUT, 12), vec![0; 12]);
+    assert_eq!(w.bytes(OUTPUT + 12, 4), vec![0xaa; 4]);
+    assert_eq!(w.bytes(STAT_VALUES, 64), before);
+    assert_eq!(w.call("XOnlineStatWriteGetResult", &[task, 0, 0, 0]), 0);
+    assert_eq!(h.stat_writes().len(), 1);
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(
+        w.call("XOnlineStatWriteGetResult", &[task, 0, 0, 0]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn stats_write_rejects_bad_values_and_limits_atomically() {
+    let (mut w, h) = stat_world();
+    for case in 0..7 {
+        put_stat_spec(&w, STAT_SPECS, ID, 7, 1, STAT_VALUES);
+        put_stat(&w, STAT_VALUES, 1, 1, 12);
+        w.word(OUTPUT, 0xdeadbeef);
+        let mut count = 1;
+        let mut ptr = STAT_SPECS;
+        let expected = match case {
+            0 => {
+                count = 21;
+                ptr = 0;
+                STAT_TOO_MANY_SPECS
+            }
+            1 => {
+                w.word(STAT_SPECS + 16, 65);
+                STAT_TOO_MANY_STATS
+            }
+            2 => {
+                w.put(STAT_SPECS, &[0; 8]);
+                STAT_PERMISSION_DENIED
+            }
+            3 => {
+                w.word(STAT_VALUES + 4, 5);
+                STAT_BAD_REQUEST
+            }
+            4 => {
+                put_stat(&w, STAT_VALUES, 1, 3, f64::NAN.to_bits());
+                STAT_BAD_REQUEST
+            }
+            5 => {
+                w.put(STAT_NAME, &wide_bytes(&"x".repeat(33)));
+                put_stat(&w, STAT_VALUES, 0xfffd, 4, u64::from(STAT_NAME));
+                STAT_BAD_REQUEST
+            }
+            _ => {
+                w.put(STAT_NAME, &[0x00, 0xd8, 0, 0]);
+                put_stat(&w, STAT_VALUES, 0xfffd, 4, u64::from(STAT_NAME));
+                STAT_BAD_REQUEST
+            }
+        };
+        assert_eq!(
+            w.call("XOnlineStatWrite", &[count, ptr, 0, OUTPUT]),
+            expected,
+            "case {case}"
+        );
+        assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+        assert!(h.stat_writes().is_empty());
+    }
+    // A valid first spec must not be committed if a later spec is malformed.
+    put_stat_spec(&w, STAT_SPECS, ID, 7, 1, STAT_VALUES);
+    put_stat(&w, STAT_VALUES, 1, 1, 9);
+    put_stat_spec(&w, STAT_SPECS + 24, ID, 8, 1, STAT_VALUES + 16);
+    put_stat(&w, STAT_VALUES + 16, 2, 99, 0);
+    assert_eq!(
+        w.call("XOnlineStatWrite", &[2, STAT_SPECS, 0, OUTPUT]),
+        STAT_BAD_REQUEST
+    );
+    assert!(h.stat_writes().is_empty());
+}
+#[test]
+fn stats_nested_pointer_faults_do_not_accept_a_partial_write_or_publish_a_handle() {
+    let (mut w, h) = stat_world();
+    for pointer in [0xfffffff0, DATA + 0xfff8] {
+        put_stat_spec(&w, STAT_SPECS, ID, 7, 1, pointer);
+        w.word(OUTPUT, 0xdeadbeef);
+        let t = w.raw("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]);
+        assert!(matches!(
+            w.ctx.event(t.event_id),
+            Some(Event::MemoryFault { .. })
+        ));
+        assert!(h.stat_writes().is_empty());
+        assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    }
+    put_stat_spec(&w, STAT_SPECS, ID, 7, 1, STAT_VALUES);
+    put_stat(&w, STAT_VALUES, 0xfffd, 4, 0xfffffff0);
+    let t = w.raw("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]);
+    assert!(matches!(
+        w.ctx.event(t.event_id),
+        Some(Event::MemoryFault { .. })
+    ));
+    assert!(h.stat_writes().is_empty());
+}
+#[test]
+fn stats_reads_return_none_and_zero_in_the_callers_existing_stat_arrays() {
+    let (mut w, h) = stat_world();
+    put_stat_spec(&w, STAT_SPECS, ID, 7, 3, STAT_VALUES);
+    for i in 0..3 {
+        put_stat(
+            &w,
+            STAT_VALUES + i * 16,
+            (11 + i) as u16,
+            u32::MAX,
+            u64::MAX,
+        );
+    }
+    let headers = w.bytes(STAT_SPECS, 24);
+    w.put(STAT_EXTRA, &[0xdd; 32]);
+    assert_eq!(w.call("XOnlineStatRead", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+    assert_eq!(
+        w.call(
+            "XOnlineStatReadGetResult",
+            &[task, 1, STAT_SPECS, 32, STAT_EXTRA]
+        ),
+        0
+    );
+    assert_eq!(w.bytes(STAT_SPECS, 24), headers);
+    for i in 0..3 {
+        assert_eq!(
+            w.bytes(STAT_VALUES + i * 16, 2),
+            (11 + i as u16).to_le_bytes()
+        );
+        assert_eq!(w.bytes(STAT_VALUES + i * 16 + 2, 2), vec![0xcc; 2]);
+        assert_eq!(w.bytes(STAT_VALUES + i * 16 + 4, 12), vec![0; 12]);
+    }
+    assert_eq!(w.bytes(STAT_EXTRA, 32), vec![0xdd; 32]);
+    assert!(h.stat_writes().is_empty());
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 1, STAT_SPECS, 0, 0]),
+        0
+    );
+    assert_eq!(
+        w.call("XOnlineStatWriteGetResult", &[task, 0, 0, 0]),
+        INVALID_ARGUMENT
+    );
+    assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 1, STAT_SPECS, 0, 0]),
+        INVALID_ARGUMENT
+    );
+}
+#[test]
+fn stats_read_results_validate_all_specs_before_writing_and_own_request_ids() {
+    let (mut w, _) = stat_world();
+    for i in 0..2 {
+        put_stat_spec(
+            &w,
+            STAT_SPECS + i * 24,
+            ID + u64::from(i),
+            7,
+            1,
+            STAT_VALUES + i * 16,
+        );
+        put_stat(&w, STAT_VALUES + i * 16, (11 + i) as u16, 1, 99);
+    }
+    assert_eq!(w.call("XOnlineStatRead", &[2, STAT_SPECS, 0, OUTPUT]), 0);
+    let task = w.u32(OUTPUT);
+    // Relocate output arrays, then destroy the source: the task owns its query.
+    let out_specs = STAT_SPECS + 0x200;
+    let out_values = STAT_VALUES + 0x200;
+    for i in 0..2 {
+        put_stat_spec(
+            &w,
+            out_specs + i * 24,
+            ID + u64::from(i),
+            7,
+            1,
+            out_values + i * 16,
+        );
+        put_stat(&w, out_values + i * 16, (11 + i) as u16, 1, 77);
+    }
+    w.put(STAT_SPECS, &[0xbb; 48]);
+    w.put(STAT_VALUES, &[0xbb; 32]);
+    w.word(out_specs + 24 + 12, 8);
+    let before = w.bytes(out_values, 32);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 2, out_specs, 0, 0]),
+        RESULTS_UNAVAILABLE
+    );
+    assert_eq!(w.bytes(out_values, 32), before);
+    w.word(out_specs + 24 + 12, 7);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 2, out_specs, 0, 0]),
+        0
+    );
+    assert_eq!(w.bytes(out_values + 4, 12), vec![0; 12]);
+    assert_eq!(w.bytes(out_values + 20, 12), vec![0; 12]);
+}
+#[test]
+fn stats_reads_accept_the_managers_32_spec_batch_and_empty_queries() {
+    let (mut w, _) = stat_world();
+    for i in 0..32 {
+        put_stat_spec(
+            &w,
+            STAT_SPECS + i * 24,
+            ID,
+            100 + i,
+            1,
+            STAT_VALUES + i * 16,
+        );
+        put_stat(&w, STAT_VALUES + i * 16, 1, 0, u64::MAX);
+    }
+    assert_eq!(w.call("XOnlineStatRead", &[32, STAT_SPECS, 0, OUTPUT]), 0);
+    let task = w.u32(OUTPUT);
+    assert_eq!(
+        w.call("XOnlineStatReadGetResult", &[task, 32, STAT_SPECS, 0, 0]),
+        0
+    );
+    assert_eq!(w.call("XOnlineStatRead", &[0, 0, 0, OUTPUT]), 0);
+    let empty = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineTaskContinue", &[empty]), TASK_SUCCESS);
+    assert_eq!(w.call("XOnlineStatReadGetResult", &[empty, 0, 0, 0, 0]), 0);
+}
+#[test]
+fn stats_captures_survive_cleanup_and_draining_does_not_reuse_sequences() {
+    let (mut w, h) = stat_world();
+    put_stat_spec(&w, STAT_SPECS, ID, 7, 1, STAT_VALUES);
+    put_stat(&w, STAT_VALUES, 1, 1, 42);
+    assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+    let task = w.u32(OUTPUT);
+    assert_eq!(w.call("XOnlineCleanup", &[]), 0);
+    assert_eq!(h.stat_writes().len(), 1);
+    w.startup();
+    assert_eq!(w.call("XOnlineTaskContinue", &[task]), INVALID_ARGUMENT);
+    let first = h.drain_stat_writes();
+    assert_eq!(first[0].sequence, 1);
+    assert!(h.stat_writes().is_empty());
+    w.logon();
+    assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+    assert_eq!(h.stat_writes()[0].sequence, 2);
+}
+
+#[test]
+fn stats_journal_exhaustion_preserves_accepted_batches_and_draining_allows_writes() {
+    let (mut w, h) = stat_world();
+    put_stat_spec(&w, STAT_SPECS, ID, 7, 1, STAT_VALUES);
+    put_stat(&w, STAT_VALUES, 1, 1, 42);
+    for _ in 0..256 {
+        assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+        let task = w.u32(OUTPUT);
+        assert_eq!(w.call("XOnlineTaskContinue", &[task]), TASK_SUCCESS);
+        assert_eq!(w.call("XOnlineTaskClose", &[task]), 0);
+    }
+    w.word(OUTPUT, 0xdeadbeef);
+    assert_eq!(
+        w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]),
+        OUT_OF_MEMORY
+    );
+    assert_eq!(w.u32(OUTPUT), 0xdeadbeef);
+    let captured = h.drain_stat_writes();
+    assert_eq!(captured.len(), 256);
+    assert_eq!(captured.first().unwrap().sequence, 1);
+    assert_eq!(captured.last().unwrap().sequence, 256);
+    assert_eq!(w.call("XOnlineStatWrite", &[1, STAT_SPECS, 0, OUTPUT]), 0);
+    assert_eq!(h.stat_writes()[0].sequence, 257);
 }

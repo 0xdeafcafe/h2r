@@ -23,8 +23,6 @@ pub(crate) enum Op {
     TeamDetails,
     MemberDetails,
     Feedback,
-    StatRead,
-    StatResult,
     Query,
     QueryResults,
 }
@@ -34,7 +32,6 @@ enum Kind {
     Teams,
     Members,
     Feedback,
-    Stats,
     Query,
 }
 struct Task {
@@ -134,7 +131,6 @@ impl Menu {
         self.tasks.get(&h).map(|t| match t.kind {
             Kind::Friends if !t.finished => TASK_RESULTS_AVAILABLE,
             Kind::Feedback => SERVICE_TEMPORARILY_UNAVAILABLE,
-            Kind::Stats => STAT_USER_NOT_FOUND,
             Kind::Query => QUERY_DATASET_NOT_FOUND,
             _ => TASK_SUCCESS,
         })
@@ -270,13 +266,6 @@ impl Menu {
                 }
                 Ok(TEAM_NOT_FOUND) // XONLINE_E_TEAMS_TEAM_NOT_FOUND
             }
-            StatResult => Ok(
-                if self.tasks.get(&a[0]).is_some_and(|t| t.kind == Kind::Stats) {
-                    STAT_USER_NOT_FOUND
-                } else {
-                    INVALID_ARGUMENT
-                },
-            ),
             QueryResults => Ok(
                 if self.tasks.get(&a[0]).is_some_and(|t| t.kind == Kind::Query) {
                     QUERY_DATASET_NOT_FOUND
@@ -284,7 +273,7 @@ impl Menu {
                     INVALID_ARGUMENT
                 },
             ),
-            FriendsEnumerate | Teams | Members | Feedback | StatRead | Query => {
+            FriendsEnumerate | Teams | Members | Feedback | Query => {
                 if !connected {
                     return Ok(NO_SESSION);
                 }
@@ -315,13 +304,6 @@ impl Menu {
                             m.check(a[5], 4, Access::Read, 1)?;
                         }
                         (a[6], a[7], Kind::Feedback)
-                    }
-                    StatRead => {
-                        if a[0] > 20 {
-                            return Ok(INVALID_ARGUMENT);
-                        }
-                        m.check(a[1], a[0] as usize * 24, Access::Read, 1)?;
-                        (a[2], a[3], Kind::Stats)
                     }
                     Query => (a[8], a[9], Kind::Query),
                     _ => unreachable!(),

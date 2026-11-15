@@ -550,8 +550,8 @@ stable user array, task handles and QoS headers. Tokens advance without reuse,
 even after cleanup, so stale handles cannot name later tasks. Exhaustion returns
 out-of-memory rather than growing indefinitely.
 
-All 130 named boundary targets are registered when enabled: 91 have implemented
-results, including deliberate empty views or failed tasks, and 39 remain named
+All 130 named boundary targets are registered when enabled: 93 have implemented
+results, including deliberate empty views or failed tasks, and 37 remain named
 stops. The menu audit and remaining-stop list appear below. A stop reports
 `unimplemented Live API <name>` before reading arguments or executing the linked
 library. There is no silent fallback to XONLINES. Tests establish these API and
@@ -826,11 +826,12 @@ through synthetic guest stacks; browsing every screen has not been run here.
 | `0x0006b59d`, `0x0008d1da`, title checks `0x0008c28e` / `0x0008d27a` | FriendsGetTitleName writes UTF-16 “Halo 2” for this title and an empty terminated name for uncached titles. SameTitle/SamePublisher return BOOL comparisons. |
 | `0x0006b565` | GetNatType returns the retail initial/unknown value 0. No NAT probing or claim of open NAT is made. |
 | `0x000abc70` through `0x000ac2f2` | Team and member enumerations complete with count 0. Details getters report TEAM_NOT_FOUND (`0x8015210b`) instead of supplying a nonexistent team. |
-| `0x0008d3d0`, `0x00092220`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). StatRead/GetResult returns STAT_USER_NOT_FOUND (`0x80159003`); QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
+| `0x0008d3d0`, `0x000b388a` | FeedbackSend returns a failed task, SERVICE_TEMPORARILY_UNAVAILABLE (`0x80151102`). QuerySearch/GetResults returns QUERY_DATASET_NOT_FOUND (`0x80156109`). These optional views have no backend data yet. No feedback is claimed to be submitted. |
+| `0x00092220` through `0x00092450`, manager `0x00074aa0` | StatWrite/GetResult accepts an owned local capture and completes successfully without attachments. StatRead/GetResult completes with missing (`NONE`) stats and zero values in the caller's arrays. See the local stats section below. |
 | `0x0022387b` | SaveLogonState writes the public 516-byte launch-state layout with users and service IDs; it contains no signing key. |
 | `0x0008e750`, manager `0x002c7410` | Message polling uses the server-backed title inbox above, or count 0 without a server. |
 
-These 39 entries still stop by API name because their backend behavior is not
+These 37 entries still stop by API name because their backend behavior is not
 implemented. Their menu/game fallbacks are a separate follow-up slice; the
 storage entries below no longer stop. Prefixes in the table are part of each
 listed API name.
@@ -844,7 +845,6 @@ listed API name.
 | `XOnlineMutelist` | `Add`, `Remove` |
 | `XOnlineTeam` | `Create`, `Delete`, `MemberSetProperties`, `MemberRemove`, `MemberRecruit`, `MemberRecruitByName`, `MemberAnswerRecruit` |
 | `XOnlineMessage` | `Create`, `Destroy`, `SetProperty`, `Send` |
-| `XOnlineStat` | `Write`, `WriteGetResult` |
 | `XOnlineArbitration` | `CreateRoundID`, `Register`, `ExtendRound`, `Report` |
 | `XNet` | `TsAddrToInAddr` |
 
@@ -897,6 +897,54 @@ negative HRESULTs. Real profile storage remains future work. Tests drive every
 storage entry through the synthetic guest ABI, including split 64-bit IDs,
 exact-size buffers, Unicode, size queries, prefix-only overflow, untouched result
 buffers and task cleanup.
+
+## Client HLE: local stats
+
+The periodic stats manager `0x00074aa0`, called by the network update at
+`0x0008df50`, reaches four public entries through wrappers `0x00092220`,
+`0x00092330`, `0x000923c0` and `0x00092450`: StatRead, StatReadGetResult,
+StatWrite and StatWriteGetResult. No StatReset or leader-enumeration call was
+found in this chain or the verified boundary table; no new addresses are guessed.
+
+StatWrite (`0x003a08c0`) validates the guest batch and copies its nested values
+before returning a task. A spec is 24 bytes: a 12-byte XUID (64-bit ID plus flags),
+leaderboard ID, stat count and guest array pointer. Each stat is 16 bytes: a
+16-bit ID, two padding bytes, a 32-bit type and an eight-byte union. NONE, signed
+LONG, signed LONGLONG, finite DOUBLE and terminated UTF-16 strings are supported.
+The write batch allows at most 20 specs and 64 stats per spec; strings are bounded
+to 32 UTF-16 units. Invalid types, malformed strings and oversized counts return
+stat errors before accepting anything. All guest buffers are checked, including
+nested arrays and strings; an invalid pointer follows the runtime's memory-fault
+path without accepting a partial write or publishing a task handle.
+
+TaskContinue returns XONLINETASK_S_SUCCESS (`0x001500f0`). Ordinary S_OK from the
+starter alone would not complete a task. StatWriteGetResult (`0x003ab6a6`) returns
+S_OK and clears any supplied server-file handle, attachment-reference pointer and
+reference count. No attachment upload is needed. In the retail success branch at
+`0x000754e8`, the title then calls `0x00080d70` to acknowledge its original stat
+arrays and clear uploaded dirty state. Those input arrays remain unchanged by HLE.
+
+Accepted writes remain in the Hle as owned StatWrite records, including sequence,
+Unix capture time, user ID/flags, leaderboard, IDs and typed values. Closing tasks
+or signing out does not discard them. `Hle::stat_writes()` returns a snapshot;
+`Hle::drain_stat_writes()` transfers them to a future server-event forwarder.
+`H2_BOOT_VERBOSE=1` emits the parsed records as debug diagnostics; account keys
+are never part of the capture. The local journal is bounded to 256 batches and an
+8 MiB value budget. When full, a new write fails with OUT_OF_MEMORY without
+silently evicting an accepted batch. Draining frees the budget and preserves the
+monotonic sequence. Nothing is sent to the server or persisted to disk yet.
+
+StatRead (`0x003a08cb`) owns its query IDs, supports the manager's 32-spec batch
+(up to 64 specs), and completes successfully. StatReadGetResult (`0x003a08d6`)
+checks the caller-initialized specs/IDs before writing type NONE and a zero union
+in each existing stat. Headers, IDs, padding and the unused extra buffer are
+preserved. The consumer at `0x000751a9` treats NONE as zero. Reads currently do not
+serve the local write journal as canonical leaderboard data.
+
+Synthetic guest-stack tests exercise each entry, all five value types, copied
+ownership, optional attachment outputs, successful task pumping/closing,
+transactional rejection, pointer faults, the 32-spec read batch and capture
+retention/draining. No test runs the title.
 
 ## Client HLE: Live not set up
 
