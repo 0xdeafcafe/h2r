@@ -55,10 +55,14 @@ use crate::{Analysis, NORETURN_KERNEL, SwitchKind, is_code_section};
 pub struct JumpTable {
     /// Address of the `jmp` instruction.
     pub site: u32,
-    /// Address of entry 0 (the displacement of the `jmp`'s memory operand).
+    /// Address of entry 0: the displacement of the `jmp`'s memory operand,
+    /// or for a negative index (`neg r`, or `sub r, k; jb`) the lowest
+    /// entry the code can reach below it.
     pub table: u32,
     pub kind: SwitchKind,
-    /// Entries read, holes included: `targets.len() + holes.len()`.
+    /// Entries read, holes included: `targets.len() + holes.len()`. A
+    /// table bounded by a mask ends at its last case, so this may be less
+    /// than `bound`.
     pub count: u32,
     /// The guard's bound on the value indexing the table the code reads
     /// first: entries for [`SwitchKind::Bounded`], byte-table entries for
@@ -71,10 +75,12 @@ pub struct JumpTable {
     /// One target per entry that is not a hole, in table order, duplicates
     /// kept. [`JumpTable::cases`] pairs them with their indices.
     pub targets: Vec<u32>,
-    /// Indices of null entries between targets, ascending. Only an
-    /// [`SwitchKind::Unbounded`] table has them: an enum switch with no
-    /// range check fills the values it never sees with 0. The guest
-    /// jumping through one is an unknown target.
+    /// Indices of entries between targets that are not cases, ascending.
+    /// In an [`SwitchKind::Unbounded`] table they are nulls: an enum switch
+    /// with no range check fills the values it never sees with 0. In a
+    /// table bounded by an `and` mask they are slots the mask allows but
+    /// the code never reaches, which may overlap code. The guest jumping
+    /// through one is an unknown target.
     pub holes: Vec<u32>,
 }
 

@@ -6,7 +6,8 @@
 //!    call target. Each function's control flow is explored on its own, so
 //!    we learn which functions never return, and a call to one of those
 //!    ends the block instead of decoding whatever the compiler put after it.
-//!    Switch jump tables are sized from their `cmp`/`ja` guard.
+//!    Switch jump tables are sized from their `cmp`/`ja` guard (or the
+//!    taken side of a `jb`), or from an `and` mask on the index.
 //! 2. **Speculative.** Addresses that only look like code (immediates in
 //!    code, pointers in data, starts of leftover gaps) are explored into an
 //!    overlay and committed only if the whole function decodes cleanly.
@@ -65,7 +66,8 @@ pub enum Source {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum SwitchKind {
-    /// `cmp r, n; ja default; jmp [r*4 + table]`
+    /// `cmp r, n; ja default; jmp [r*4 + table]`, or `and r, n` (or
+    /// `movzx r, byte`) on the index, if the table fits the mask.
     Bounded,
     /// As above with a byte table in between: `movzx r, byte [r + index]`.
     Indexed,
@@ -184,6 +186,9 @@ struct FuncWork {
     /// Table jumps first reached with no guard, read only once every other
     /// path has been explored, in case one of those reaches them guarded.
     unguarded: Vec<(u32, Instruction)>,
+    /// What every branch to a block seen so far knows on arrival (`cmp r,
+    /// n; jb target`), or `None` once two branches there disagree.
+    entry_guards: HashMap<u32, Option<Guard>>,
 }
 
 impl FuncWork {
@@ -198,6 +203,15 @@ impl FuncWork {
             done: false,
             insns: 0,
             unguarded: Vec::new(),
+            entry_guards: HashMap::new(),
+        }
+    }
+
+    /// Note a branch to block `t` that knows `guard` on arrival.
+    fn arrive(&mut self, t: u32, guard: Option<Guard>) {
+        let known = self.entry_guards.entry(t).or_insert(guard);
+        if *known != guard {
+            *known = None;
         }
     }
 }
@@ -214,20 +228,63 @@ struct Trial {
 }
 
 /// What the instructions just before an indirect jump say about its table.
-#[derive(Default, Clone, Copy)]
+#[derive(Default, Clone, Copy, PartialEq)]
 struct Guard {
     cmp: Option<(Register, u32)>,
+    /// `sub r, k` set the flags last: (r, k).
+    sub: Option<(Register, u32)>,
     bound: Option<(Register, u32)>,
+    /// A negative index: (r, k, n) for `r` in `-k..-k+n`. The CRT copy
+    /// routines index a table from its end: `cmp ecx, 8; jb` then `neg ecx`
+    /// gives -7..=0, and `sub ecx, 4; jb` gives -4..=-1.
+    window: Option<(Register, u32, u32)>,
     /// `movzx dst, byte [idx + table]` with `idx` bounded to `n`:
     /// (dst, table, n). The bound is captured at the load, since the load
     /// usually overwrites the register it was checked on.
     byte_index: Option<(Register, u32, u32)>,
+    /// Per 32-bit GPR (in [`gpr`] order), the most a mask leaves in it plus
+    /// one: `and r, 3` gives 4, `movzx r, byte` 256. 0 if nothing is known.
+    /// Copies with `mov` carry it along.
+    masks: [u32; 8],
+    /// Per 32-bit GPR, a value `mov r, imm` put there, for `mov edx, 3;
+    /// and edx, ecx`. Not a bound on its own.
+    consts: [Option<u32>; 8],
+}
+
+/// Index of a 32-bit GPR in [`Guard::masks`].
+fn gpr(r: Register) -> Option<usize> {
+    r.is_gpr32().then(|| r as usize - Register::EAX as usize)
 }
 
 impl Guard {
     /// Whether this guard sizes a table indexed by `index`.
     fn bounds(&self, index: Register) -> bool {
-        self.bound.is_some_and(|(r, _)| r == index) || self.byte_index.is_some_and(|(d, _, _)| d == index)
+        self.bound.is_some_and(|(r, _)| r == index)
+            || self.byte_index.is_some_and(|(d, _, _)| d == index)
+            || self.mask(index).is_some()
+            || self.window.is_some_and(|(r, _, _)| r == index)
+    }
+
+    /// What the taken side of conditional branch `insn` knows: `jb`/`jbe`
+    /// after `cmp r, n` bound `r` as `ja`/`jae` do on the fall-through,
+    /// and `jb` after `sub r, k` leaves `r` in `-k..=-1`.
+    fn taken(&self, insn: &Instruction) -> Option<Guard> {
+        let extra = match insn.mnemonic() {
+            Mnemonic::Jb => 0,
+            Mnemonic::Jbe => 1,
+            _ => return None,
+        };
+        if let Some((r, n)) = self.cmp {
+            let n = n.saturating_add(extra);
+            return (n > 0).then_some(Guard { bound: Some((r, n)), ..Guard::default() });
+        }
+        let (r, k) = self.sub.filter(|(_, k)| extra == 0 && (1..=MAX_SWITCH).contains(k))?;
+        Some(Guard { window: Some((r, k, k)), ..Guard::default() })
+    }
+
+    /// Entries a mask leaves a table indexed by `index`, if one does.
+    fn mask(&self, index: Register) -> Option<u32> {
+        gpr(index).map(|i| self.masks[i]).filter(|n| (1..=MAX_SWITCH).contains(n))
     }
 
     /// Track the guard along the fall-through path. Anything that writes a
@@ -237,6 +294,7 @@ impl Guard {
         // The bound on the register a byte is loaded through, before the
         // load overwrites it.
         let bound_before = self.bound;
+        let (masks_before, consts_before) = (self.masks, self.consts);
         let written: Vec<Register> = info
             .info(insn)
             .used_registers()
@@ -248,12 +306,42 @@ impl Guard {
         if self.cmp.is_some_and(|(r, _)| writes(r)) || (insn.rflags_modified() != 0 && insn.mnemonic() != Mnemonic::Cmp) {
             self.cmp = None;
         }
+        if insn.rflags_modified() != 0 {
+            self.sub = None;
+        }
         if self.bound.is_some_and(|(r, _)| writes(r)) {
             self.bound = None;
+        }
+        if self.window.is_some_and(|(r, _, _)| writes(r)) {
+            self.window = None;
         }
         if self.byte_index.is_some_and(|(dst, _, _)| writes(dst)) {
             self.byte_index = None;
         }
+        for r in written.iter().filter_map(|r| gpr(*r)) {
+            self.masks[r] = 0;
+            self.consts[r] = None;
+        }
+        // The most a register can hold before this instruction, if known.
+        let most = |r: Register| {
+            let i = gpr(r)?;
+            masks_before[i].checked_sub(1).or(consts_before[i])
+        };
+        let (op0, op1) = (insn.op0_register(), insn.op1_register());
+        let reg_reg = insn.op_count() == 2
+            && insn.op0_kind() == OpKind::Register
+            && insn.op1_kind() == OpKind::Register
+            && op0.is_gpr32()
+            && op1.is_gpr32();
+        let reg_imm = insn.op_count() == 2
+            && insn.op0_kind() == OpKind::Register
+            && op0.is_gpr32()
+            && matches!(insn.op1_kind(), OpKind::Immediate32 | OpKind::Immediate8to32);
+        let set_mask = |g: &mut Guard, r: Register, max: u32| {
+            if let Some(i) = gpr(r) {
+                g.masks[i] = max.saturating_add(1);
+            }
+        };
 
         match insn.mnemonic() {
             Mnemonic::Cmp
@@ -293,6 +381,40 @@ impl Guard {
                     && let Some((_, n)) = bound_before.filter(|(r, _)| *r == reg.full_register32())
                 {
                     self.byte_index = Some((insn.op0_register().full_register32(), disp, n));
+                }
+                if insn.code() == Code::Movzx_r32_rm8 {
+                    set_mask(self, op0, 0xFF);
+                }
+            }
+            // `and r, m` leaves at most `m` in `r`, and `and r, s` at most
+            // what either held.
+            Mnemonic::And if reg_imm => {
+                let m = insn.immediate(1) as u32;
+                set_mask(self, op0, most(op0).map_or(m, |p| p.min(m)));
+            }
+            Mnemonic::And if reg_reg => {
+                if let Some(m) = [most(op0), most(op1)].into_iter().flatten().min() {
+                    set_mask(self, op0, m);
+                }
+            }
+            Mnemonic::Movzx if insn.code() == Code::Movzx_r32_rm8 => set_mask(self, op0, 0xFF),
+            Mnemonic::Sub if reg_imm => self.sub = Some((op0, insn.immediate(1) as u32)),
+            // `neg r` with `r` in 0..=m leaves it in -m..=0.
+            Mnemonic::Neg if insn.op0_kind() == OpKind::Register && op0.is_gpr32() => {
+                let bounded = bound_before.filter(|(r, n)| *r == op0 && *n > 0).map(|(_, n)| n - 1);
+                if let Some(m) = bounded.or_else(|| most(op0)).filter(|m| *m < MAX_SWITCH) {
+                    self.window = Some((op0, m, m + 1));
+                }
+            }
+            Mnemonic::Mov if reg_imm => {
+                if let Some(i) = gpr(op0) {
+                    self.consts[i] = Some(insn.immediate(1) as u32);
+                }
+            }
+            Mnemonic::Mov if reg_reg => {
+                if let (Some(d), Some(s)) = (gpr(op0), gpr(op1)) {
+                    self.masks[d] = masks_before[s];
+                    self.consts[d] = consts_before[s];
                 }
             }
             _ => {}
@@ -502,7 +624,7 @@ impl<'a> Analyzer<'a> {
 
     fn run_block(&mut self, f: &mut FuncWork, fstart: u32, start: u32) {
         let mut va = start;
-        let mut guard = Guard::default();
+        let mut guard = f.entry_guards.get(&start).copied().flatten().unwrap_or_default();
         let mut info = InstructionInfoFactory::new();
         loop {
             if self.failed() {
@@ -561,7 +683,11 @@ impl<'a> Analyzer<'a> {
 
             match insn.flow_control() {
                 FlowControl::Next => {}
-                FlowControl::ConditionalBranch => f.todo.push(insn.near_branch32()),
+                FlowControl::ConditionalBranch => {
+                    let t = insn.near_branch32();
+                    f.arrive(t, guard.taken(&insn));
+                    f.todo.push(t);
+                }
                 FlowControl::UnconditionalBranch => {
                     if let Some(t) = direct_jump_target(&insn) {
                         if t != fstart && (self.funcs.contains_key(&t) || self.is_tail_target(va, t)) {
@@ -573,6 +699,7 @@ impl<'a> Analyzer<'a> {
                             }
                             f.tails.push(t);
                         } else {
+                            f.arrive(t, None);
                             f.todo.push(t);
                         }
                     }
@@ -658,15 +785,25 @@ impl<'a> Analyzer<'a> {
 
     fn jump_table(&mut self, f: &mut FuncWork, fstart: u32, at: u32, insn: &Instruction, guard: Guard) {
         let index = insn.memory_index().full_register32();
-        let table = insn.memory_displacement32();
+        let mut table = insn.memory_displacement32();
         let region = self.image.region(at);
+
+        // Another function that shares this code (one found in a gap that
+        // falls into it, say) may reach the site with no guard. A table a
+        // guard sized already stands; the cases are this function's too.
+        if let Some(jt) = self.jump_tables.get(&at).filter(|j| j.kind != SwitchKind::Unbounded) {
+            f.todo.extend_from_slice(&jt.targets);
+            return;
+        }
 
         if trace_enabled(at) {
             eprintln!(
-                "table at {at:#x}: cmp {:?} bound {:?} byte_index {:?} trial {}",
+                "table at {at:#x}: cmp {:?} bound {:?} byte_index {:?} mask {:?} window {:?} trial {}",
                 guard.cmp,
                 guard.bound,
                 guard.byte_index,
+                guard.mask(index),
+                guard.window,
                 self.trial.is_some()
             );
         }
@@ -690,7 +827,28 @@ impl<'a> Analyzer<'a> {
                 (entries, SwitchKind::Indexed)
             }
             (_, Some((r, n))) if r == index && n <= MAX_SWITCH => (n, SwitchKind::Bounded),
+            // A negative index reads the entries below the displacement.
+            _ if let Some((_, k, n)) = guard.window.filter(|(r, _, n)| *r == index && *n <= MAX_SWITCH) => {
+                table = table.wrapping_sub(k * 4);
+                (n, SwitchKind::Bounded)
+            }
             _ => (MAX_UNBOUNDED_SWITCH, SwitchKind::Unbounded),
+        };
+        // A mask bounds the index too, but doesn't say every value it allows
+        // happens: the CRT memcpy masks `edi & 3` on a path where it isn't
+        // 0, and slot 0 of its table is code. A table that holds a case or
+        // a hole in every slot the mask allows is bounded by it; otherwise
+        // the mask only caps how far the table is read.
+        let mask = guard.mask(index).filter(|m| match kind {
+            SwitchKind::Unbounded => true,
+            SwitchKind::Bounded => *m < count,
+            SwitchKind::Indexed => false,
+        });
+        let masked = mask.and_then(|m| self.masked_table(table, region, m));
+        let (count, kind) = match (mask, &masked) {
+            (Some(m), Some(_)) => (m, SwitchKind::Bounded),
+            (Some(m), None) => (count.min(m), kind),
+            (None, _) => (count, kind),
         };
 
         let mut read = 0;
@@ -698,7 +856,30 @@ impl<'a> Analyzer<'a> {
         let mut holes = Vec::new();
         // Null entries of an unguarded table not yet followed by a target.
         let mut pending = Vec::new();
-        for i in 0..count {
+        // Holes in a masked table may be code, so only null ones are
+        // claimed, as in an unguarded table.
+        for (i, case) in masked.iter().flatten().enumerate() {
+            match *case {
+                Some(t) => {
+                    for h in pending.drain(..) {
+                        let slot = table + h * 4;
+                        if self.xbe.read_u32(slot).ok() == Some(0)
+                            && self.image.check_data(slot, 4, self.overlay()).is_ok()
+                        {
+                            self.claim_data(slot, 4);
+                        }
+                        holes.push(h);
+                    }
+                    self.claim_data(table + i as u32 * 4, 4);
+                    f.todo.push(t);
+                    targets.push(t);
+                    read = i as u32 + 1;
+                }
+                None => pending.push(i as u32),
+            }
+        }
+        let unread = if masked.is_some() { 0 } else { count };
+        for i in 0..unread {
             let slot = table + i * 4;
             let target = self.xbe.read_u32(slot).ok();
             let ok_target = target.filter(|t| self.image.region(*t) == region);
@@ -1173,6 +1354,51 @@ impl<'a> Analyzer<'a> {
         placed && !self.funcs.contains_key(&t) && matches!(self.image.state(t), Some(Byte::Unknown | Byte::InsnStart))
     }
 
+    /// The slots of a table at `table` that a mask bounds to `m` entries,
+    /// for a switch in `region`: `Some(target)` for a case,
+    /// `None` for a hole. The mask can rule out values the code never
+    /// passes, and the compiler lets those slots overlap whatever is there,
+    /// so a slot that can't be a case is a hole, up to
+    /// [`MAX_SWITCH_HOLES`] in a row. Before the first case such a slot may
+    /// be claimed code. `None` if the table doesn't fit the mask: a slot
+    /// past the first case that is claimed, in another table, or where a
+    /// function, label or data word starts, or no case at all. Then the
+    /// mask isn't the table's size.
+    fn masked_table(&self, table: u32, region: Option<usize>, m: u32) -> Option<Vec<Option<u32>>> {
+        let mut slots = Vec::with_capacity(m as usize);
+        let mut run = 0;
+        for i in 0..m {
+            let slot = table.checked_add(i * 4)?;
+            if self.in_neighbour_table(table, slot) || (i > 0 && self.evidenced_start(slot)) {
+                return None;
+            }
+            let free = self.image.check_data(slot, 4, self.overlay()).is_ok();
+            let case = self.xbe.read_u32(slot).ok().filter(|t| {
+                self.image.region(*t) == region
+                    && matches!(self.image.effective(*t, self.overlay()), Some(Byte::Unknown | Byte::InsnStart))
+            });
+            match case.filter(|_| free) {
+                Some(t) => {
+                    run = 0;
+                    slots.push(Some(t));
+                }
+                None if !free && slots.iter().any(Option::is_some) => return None,
+                None if run < MAX_SWITCH_HOLES => {
+                    run += 1;
+                    slots.push(None);
+                }
+                None => return None,
+            }
+        }
+        slots.iter().any(Option::is_some).then_some(slots)
+    }
+
+    /// Whether `slot` is in a table already read that starts somewhere
+    /// other than `table` (switches may share a table).
+    fn in_neighbour_table(&self, table: u32, slot: u32) -> bool {
+        self.jump_tables.values().any(|j| j.table != table && j.table <= slot && slot - j.table < j.count * 4)
+    }
+
     /// Whether `slot` is in a table already read for a switch other than
     /// the one at `at`: it bounds the table being read.
     fn in_other_table(&self, at: u32, slot: u32) -> bool {
@@ -1494,9 +1720,9 @@ fn is_table_jump(insn: &Instruction) -> bool {
 /// I/O. (Code found from certain evidence is not held to this: the XAPI's
 /// GDT helper does a far `jmp` on purpose.) Plain `in`/`out` are not on the
 /// list, as D3D programs a GPIO port with them, and neither is `mov` from a
-/// segment register: the CRT memmove's unread jump table at 0x320a80
-/// decodes as one, and that decode is what recovers the copy tails after
-/// it until switches masked with `and` are sized.
+/// segment register: the CRT memmove's jump table at 0x320a80 decodes as
+/// one. (That decode used to be what recovered the copy tails after it;
+/// the masked switch reaches them now.)
 fn implausible(insn: &Instruction) -> bool {
     let sreg = |r: Register| matches!(r, Register::ES | Register::CS | Register::SS | Register::DS);
     let far = (0..insn.op_count()).any(|i| matches!(insn.op_kind(i), OpKind::FarBranch16 | OpKind::FarBranch32))

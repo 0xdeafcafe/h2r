@@ -648,6 +648,192 @@ fn a_null_does_not_lead_into_known_data() {
     assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
 }
 
+/// `prefix` at `TEXT`, then `jmp [eax*4+0x11020]`. The table holds four
+/// cases at 0x11040..0x11043, then a word that looks like a fifth: it
+/// points at bytes that don't decode.
+fn switch_after(prefix: &[u8]) -> Analysis {
+    let jmp_at = TEXT + prefix.len() as u32;
+    let code = pieces(&[
+        (TEXT, prefix),
+        (jmp_at, &JMP_TABLE_11020),
+        (0x11020, &CASES),
+        (0x11030, &0x11050u32.to_le_bytes()),
+        (0x11040, &[0xC3, 0xC3, 0xC3, 0xC3]),
+        (0x11050, &[0xFF, 0xFF]),
+    ]);
+    cfgs_of(code).0
+}
+
+/// [`switch_after`]'s table, checked to be sized to its four cases.
+fn assert_four_cases(a: &Analysis, site: u32) {
+    let jt = &a.jump_tables[&site];
+    assert_eq!((jt.kind, jt.count, jt.bound), (SwitchKind::Bounded, 4, Some(4)));
+    assert_eq!(jt.targets, [0x11040, 0x11041, 0x11042, 0x11043]);
+    assert_eq!(a.claim(0x11030).unwrap().0, '?', "the word after the table is not read");
+    assert_eq!(a.claim(0x11050).unwrap().0, '?');
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
+#[test]
+fn an_and_mask_bounds_a_switch() {
+    let a = switch_after(&[0x83, 0xE0, 0x03]); // and eax, 3
+    assert_four_cases(&a, 0x11003);
+}
+
+#[test]
+fn an_and_mask_bounds_a_switch_through_a_copy() {
+    // and ecx, 3; cmp edx, 8 (flags are no matter); mov eax, ecx
+    let a = switch_after(&[0x83, 0xE1, 0x03, 0x83, 0xFA, 0x08, 0x8B, 0xC1]);
+    assert_four_cases(&a, 0x11008);
+    // mov eax, 3; and eax, ecx: `eax` holds at most the constant.
+    let a = switch_after(&[0xB8, 0x03, 0, 0, 0, 0x23, 0xC1]);
+    assert_four_cases(&a, 0x11007);
+}
+
+#[test]
+fn a_mask_is_forgotten_when_the_index_is_rewritten() {
+    // and ecx, 3; mov eax, ecx; inc eax: the copy no longer holds the mask.
+    let a = switch_after(&[0x83, 0xE1, 0x03, 0x8B, 0xC1, 0x40]);
+    assert_eq!(a.jump_tables[&0x11006].kind, SwitchKind::Unbounded);
+    // mov eax, 3 alone is no mask.
+    let a = switch_after(&[0xB8, 0x03, 0, 0, 0]);
+    assert_eq!(a.jump_tables[&0x11005].kind, SwitchKind::Unbounded);
+}
+
+#[test]
+fn a_masked_table_skips_a_slot_that_cannot_be_a_case() {
+    // The CRT memcpy shape: on this path `edi & 3` isn't 0, so the table
+    // starts inside the `jmp`, at its own displacement. Slot 0 is code and
+    // points into the middle of an instruction; it is a hole, not the end
+    // of the table, and stays the `jmp`'s bytes.
+    let words: Vec<u8> = [0x11030u32, 0x11031, 0x11032].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xF7, 0xC7, 0x03, 0x00, 0x00, 0x00]),       // test edi, 3
+        (0x11006, &[0x74, 0x28]),                               // je 0x11030
+        (0x11008, &[0x8B, 0xC7]),                               // mov eax, edi
+        (0x1100A, &[0x83, 0xE0, 0x03]),                         // and eax, 3
+        (0x1100D, &[0xFF, 0x24, 0x85, 0x10, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11010]
+        (0x11014, &words),
+        (0x11030, &[0xC3, 0xC3, 0xC3]),
+    ]);
+    let (a, cfgs) = cfgs_of(code);
+    let jt = &a.jump_tables[&0x1100D];
+    assert_eq!((jt.kind, jt.count, jt.bound), (SwitchKind::Bounded, 4, Some(4)));
+    assert_eq!(jt.holes, [0]);
+    assert_eq!(jt.cases().collect::<Vec<_>>(), [(1, 0x11030), (2, 0x11031), (3, 0x11032)]);
+    assert_eq!(a.claim(0x11010), Some(('i', Some(TEXT))), "slot 0 is still the jmp's displacement");
+    assert_eq!(a.claim(0x11014), Some(('d', Some(TEXT))));
+    assert!(!a.functions.contains_key(&0x11031), "cases are not functions");
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+    assert!(cfgs[&TEXT].errors.is_empty(), "{:?}", cfgs[&TEXT].errors);
+}
+
+#[test]
+fn a_mask_wider_than_its_table_does_not_swallow_a_function() {
+    // `and eax, 7` but only three cases: the next slot is a function the
+    // caller calls first. The mask doesn't size the table, it only caps
+    // the read, and the function is left alone.
+    let words: Vec<u8> = [0x11060u32, 0x11061, 0x11062].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x27, 0x00, 0x00, 0x00]),             // call 0x1102C
+        (0x11005, &[0x83, 0xE0, 0x07]),                         // and eax, 7
+        (0x11008, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x11020, &words),
+        (0x1102C, &[0x33, 0xC0, 0xC3]), // xor eax, eax; ret
+        (0x11060, &[0xC3, 0xC3, 0xC3]),
+    ]);
+    let (a, _) = cfgs_of(code);
+    let jt = &a.jump_tables[&0x11008];
+    assert_eq!((jt.kind, jt.count, &jt.targets), (SwitchKind::Unbounded, 3, &vec![0x11060, 0x11061, 0x11062]));
+    assert!(a.functions.contains_key(&0x1102C));
+    assert_eq!(a.claim(0x1102C), Some(('I', Some(0x1102C))));
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
+#[test]
+fn jb_bounds_a_switch_on_its_taken_side() {
+    // cmp eax, 4; jb 0x11006; ret
+    let a = switch_after(&[0x83, 0xF8, 0x04, 0x72, 0x01, 0xC3]);
+    assert_four_cases(&a, 0x11006);
+}
+
+/// `prefix` at `TEXT` (which branches to 0x11006 on the in-range side),
+/// `body` at 0x11006 ending in `jmp [ecx*4+disp]`, four cases at
+/// 0x11040..0x11043 in the table below `disp` at 0x11020, and words that
+/// look like cases just outside it.
+fn negative_index_switch(prefix: &[u8], body: &[u8]) -> Analysis {
+    let words: Vec<u8> = [0x11050u32, 0x11040, 0x11041, 0x11042, 0x11043, 0x11050]
+        .iter()
+        .flat_map(|t| t.to_le_bytes())
+        .collect();
+    let code = pieces(&[
+        (TEXT, prefix),
+        (0x11006, body),
+        (0x1101C, &words),
+        (0x11040, &[0xC3, 0xC3, 0xC3, 0xC3]),
+        (0x11050, &[0xFF, 0xFF]),
+    ]);
+    cfgs_of(code).0
+}
+
+fn assert_read_below(a: &Analysis, site: u32) {
+    let jt = &a.jump_tables[&site];
+    assert_eq!((jt.kind, jt.table, jt.count, jt.bound), (SwitchKind::Bounded, 0x11020, 4, Some(4)));
+    assert_eq!(jt.targets, [0x11040, 0x11041, 0x11042, 0x11043]);
+    assert_eq!(a.claim(0x1101C).unwrap().0, '?');
+    assert_eq!(a.claim(0x11030).unwrap().0, '?');
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
+#[test]
+fn a_negated_index_reads_the_table_below_its_displacement() {
+    // cmp ecx, 4; jb 0x11006; ret / neg ecx; jmp [ecx*4+0x1102C]: ecx is
+    // -3..=0, the CRT memmove's backward dword tails.
+    let a = negative_index_switch(
+        &[0x83, 0xF9, 0x04, 0x72, 0x01, 0xC3],
+        &[0xF7, 0xD9, 0xFF, 0x24, 0x8D, 0x2C, 0x10, 0x01, 0x00],
+    );
+    assert_read_below(&a, 0x11008);
+}
+
+#[test]
+fn a_borrow_on_sub_bounds_a_negative_index() {
+    // sub ecx, 4; jb 0x11006; ret / jmp [ecx*4+0x11030]: ecx is -4..=-1,
+    // the CRT memcpy's copies under 4 bytes.
+    let a = negative_index_switch(
+        &[0x83, 0xE9, 0x04, 0x72, 0x01, 0xC3],
+        &[0xFF, 0x24, 0x8D, 0x30, 0x10, 0x01, 0x00],
+    );
+    assert_read_below(&a, 0x11006);
+    // With jbe the borrow says nothing about ecx = 0.
+    let a = negative_index_switch(
+        &[0x83, 0xE9, 0x04, 0x76, 0x01, 0xC3],
+        &[0xFF, 0x24, 0x8D, 0x30, 0x10, 0x01, 0x00],
+    );
+    assert_ne!(a.jump_tables.get(&0x11006).map(|j| j.kind), Some(SwitchKind::Bounded));
+}
+
+#[test]
+fn a_switch_reached_again_unguarded_keeps_its_table() {
+    // Case 0 calls a function that jumps back to the table jump, with no
+    // guard on the way; the table the guard sized stands.
+    let words: Vec<u8> = [0x11040u32, 0x11046, 0x11047, 0x11048].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0x83, 0xF8, 0x03]),                         // cmp eax, 3
+        (0x11003, &[0x77, 0x07]),                               // ja 0x1100C
+        (0x11005, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x1100C, &[0xC3]),
+        (0x11020, &words),
+        (0x11040, &[0xE8, 0x0B, 0x00, 0x00, 0x00, 0xC3]), // call 0x11050; ret
+        (0x11046, &[0xC3, 0xC3, 0xC3]),
+        (0x11050, &[0xEB, 0xB3]), // jmp 0x11005
+    ]);
+    let (a, _) = cfgs_of(code);
+    let jt = &a.jump_tables[&0x11005];
+    assert_eq!((jt.kind, jt.bound, jt.count), (SwitchKind::Bounded, Some(4), 4));
+    assert!(a.conflicts.is_empty(), "{:?}", a.conflicts);
+}
+
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
 fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
     let data = xbe_with(&code);

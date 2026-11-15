@@ -135,7 +135,7 @@ impl<'a> Image<'a> {
         })
     }
 
-    fn effective(&self, va: u32, overlay: Option<&Overlay>) -> Option<Byte> {
+    pub(crate) fn effective(&self, va: u32, overlay: Option<&Overlay>) -> Option<Byte> {
         let committed = self.state(va)?;
         let yielded = self.yielding.is_some_and(|y| committed != Byte::Unknown && self.owner(va) == y);
         if committed != Byte::Unknown && !yielded {
