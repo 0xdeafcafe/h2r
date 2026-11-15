@@ -1,4 +1,4 @@
-use crate::{BasicInfo, DirectoryEntry, Error, Metadata, Result, VolumeInfo};
+use crate::{BasicInfo, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
 
 /// Backend paths are root-relative, backslash-separated, with no dot components.
 /// Implementations must validate inputs even when used without Vfs. All calls are serialized by &mut Vfs.
@@ -11,6 +11,13 @@ pub trait Backend: Send {
     /// Return 0 at EOF. Vfs translates a nonempty read at EOF to STATUS_END_OF_FILE.
     fn read_at(&mut self, path: &str, offset: u64, buffer: &mut [u8]) -> Result<usize>;
     fn volume_info(&mut self) -> Result<VolumeInfo>;
+    /// Where the file at `path` sits on the host, if its bytes are one
+    /// contiguous region of a host file that a reader outside the VFS may
+    /// open itself. `None` (the default) for anything else: directories,
+    /// rewritten or in-memory files.
+    fn host_file(&mut self, _path: &str) -> Option<HostFile> {
+        None
+    }
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }

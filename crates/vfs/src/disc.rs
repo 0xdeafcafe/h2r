@@ -1,6 +1,6 @@
 use crate::{
-    ATTR_DIRECTORY, ATTR_READONLY, BasicInfo, DirectoryEntry, Error, Metadata, Result, Timestamp,
-    VolumeInfo, backend::Backend, path::components,
+    ATTR_DIRECTORY, ATTR_READONLY, BasicInfo, DirectoryEntry, Error, HostFile, Metadata, Result,
+    Timestamp, VolumeInfo, backend::Backend, path::components,
 };
 use std::{
     collections::BTreeMap,
@@ -15,10 +15,14 @@ pub struct DiscBackend<R> {
     partition_offset: u64,
     entries: BTreeMap<String, xiso::Entry>,
     volume_bytes: u64,
+    /// The image file, when opened by path ([`Backend::host_file`]).
+    image: Option<std::path::PathBuf>,
 }
 impl DiscBackend<File> {
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::new(File::open(path)?)
+        let mut disc = Self::new(File::open(path.as_ref())?)?;
+        disc.image = Some(path.as_ref().to_path_buf());
+        Ok(disc)
     }
 }
 impl<R: Read + Seek> DiscBackend<R> {
@@ -49,6 +53,7 @@ impl<R: Read + Seek> DiscBackend<R> {
             partition_offset,
             entries,
             volume_bytes,
+            image: None,
         })
     }
     fn entry(&self, path: &str) -> Result<&xiso::Entry> {
@@ -89,6 +94,15 @@ impl<R: Read + Seek> DiscBackend<R> {
 impl<R: Read + Seek + Send> Backend for DiscBackend<R> {
     fn read_only(&self) -> bool {
         true
+    }
+    fn host_file(&mut self, path: &str) -> Option<HostFile> {
+        let image = self.image.clone()?;
+        let entry = self.entry(path).ok().filter(|e| !e.is_dir)?;
+        Some(HostFile {
+            path: image,
+            offset: self.partition_offset + entry.sector as u64 * xiso::SECTOR,
+            len: entry.size as u64,
+        })
     }
     fn stat(&mut self, path: &str) -> Result<Metadata> {
         Ok(Self::metadata(if path.is_empty() {

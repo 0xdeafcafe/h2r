@@ -10,7 +10,7 @@
 //! files (`docs/button-icons.md`).
 use std::collections::HashMap;
 
-use crate::{Backend, DirectoryEntry, Error, Metadata, Result, VolumeInfo};
+use crate::{Backend, DirectoryEntry, Error, HostFile, Metadata, Result, VolumeInfo};
 
 /// Files larger than this are served as they are, without asking the rewrite.
 pub const MAX_REWRITE_BYTES: u64 = 64 * 1024 * 1024;
@@ -127,6 +127,13 @@ impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         self.inner.volume_info()
+    }
+    /// The inner file's host bytes, unless this file may be rewritten.
+    fn host_file(&mut self, path: &str) -> Option<HostFile> {
+        if self.rewrite.wants(path) {
+            return None;
+        }
+        self.inner.host_file(path)
     }
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)

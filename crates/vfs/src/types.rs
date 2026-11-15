@@ -65,6 +65,27 @@ impl BasicInfo {
     }
 }
 
+/// Where a file's bytes sit on the host: `len` bytes at `offset` in the file
+/// at `path` (a whole file, or one entry inside a disc image). For readers
+/// outside the VFS that open the same data themselves, read-only.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct HostFile {
+    pub path: std::path::PathBuf,
+    pub offset: u64,
+    pub len: u64,
+}
+
+/// A file the VFS just opened, as [`crate::Vfs::set_open_observer`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenedFile {
+    /// The mounted device (`\Device\CdRom0`, `\Device\Harddisk0\Partition1`).
+    pub device: String,
+    /// The path within the device, as the backend sees it.
+    pub path: String,
+    /// Its bytes on the host, if they are one contiguous region of a host file.
+    pub host: Option<HostFile>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata {
     pub basic: BasicInfo,

@@ -104,6 +104,10 @@ struct OpenFile {
     directory: bool,
 }
 
+/// Told about every file (not directory) the VFS opens; see
+/// [`Vfs::set_open_observer`].
+pub type OpenObserver = Box<dyn FnMut(&OpenedFile) + Send>;
+
 /// One storage session and its NT file objects. Use one Vfs for all guest threads;
 /// put a mutex around it in the kernel. Share checks span every alias within this instance.
 #[derive(Default)]
@@ -115,6 +119,7 @@ pub struct Vfs {
     pending: HashSet<(usize, String)>,
     cleanup_pending: HashSet<(usize, String)>,
     next_handle: u64,
+    observer: Option<OpenObserver>,
 }
 impl Vfs {
     pub fn new() -> Self {
@@ -275,6 +280,21 @@ impl Vfs {
     }
     pub fn open(&mut self, name: &str, options: OpenOptions) -> Result<OpenResult> {
         self.open_allocated(name, options, 0)
+    }
+    /// Calls `observer` after every successful open of a file (not a
+    /// directory), with the guard on this `Vfs` held: it must be quick and
+    /// must not call back into the VFS. The controller-speaker sound index
+    /// uses it to see which maps the game loads (docs/playstation-audio.md).
+    /// `None` removes it.
+    pub fn set_open_observer(&mut self, observer: Option<OpenObserver>) {
+        self.observer = observer;
+    }
+    /// Where the file `name` (any object name or link) sits on the host, as
+    /// [`Backend::host_file`] says; `None` if it is not one contiguous host
+    /// region or does not exist.
+    pub fn host_file(&mut self, name: &str) -> Option<HostFile> {
+        let (mount, path) = self.resolve(name).ok()?;
+        self.mounts[mount].backend.host_file(&path)
     }
     /// NtCreateFile's initial allocation hint, applied only on create/overwrite.
     /// It reserves logical volume capacity without changing the initial EOF.
@@ -480,6 +500,17 @@ impl Vfs {
             }
         };
         self.handles.insert(handle, handle);
+        let directory = existing
+            .as_ref()
+            .map_or(options.directory == Some(true), Metadata::is_directory);
+        if !directory && let Some(observe) = self.observer.as_mut() {
+            let m = &mut self.mounts[mount];
+            observe(&OpenedFile {
+                device: m.device.clone(),
+                path: path.clone(),
+                host: m.backend.host_file(&path),
+            });
+        }
         self.objects.insert(
             handle,
             OpenFile {
@@ -490,9 +521,7 @@ impl Vfs {
                 position: 0,
                 enumeration: None,
                 delete_requested: false,
-                directory: existing
-                    .as_ref()
-                    .map_or(options.directory == Some(true), Metadata::is_directory),
+                directory,
             },
         );
         Ok(OpenResult {

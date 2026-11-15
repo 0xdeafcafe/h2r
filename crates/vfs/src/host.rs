@@ -1,7 +1,7 @@
 use crate::{
     ATTR_ARCHIVE, ATTR_DIRECTORY, ATTR_NORMAL, BasicInfo, DirectoryEntry, Error, FATX_ATTRIBUTES,
-    FATX_CLUSTER_SIZE, FATX_MAX_DIRECTORY_ENTRIES, FATX_MAX_FILE_SIZE, FATX_MAX_NAME, Metadata,
-    Result, Timestamp, VolumeInfo,
+    FATX_CLUSTER_SIZE, FATX_MAX_DIRECTORY_ENTRIES, FATX_MAX_FILE_SIZE, FATX_MAX_NAME, HostFile,
+    Metadata, Result, Timestamp, VolumeInfo,
     backend::Backend,
     path::{components, validate_fatx_name, validate_fatx_path},
 };
@@ -1078,6 +1078,15 @@ impl Backend for HostBackend {
         };
         self.update_usage(info.allocation_size, after);
         Ok(())
+    }
+    fn host_file(&mut self, path: &str) -> Option<HostFile> {
+        let host = self.resolve(path, false).ok()?;
+        let meta = fs::metadata(&host).ok().filter(fs::Metadata::is_file)?;
+        Some(HostFile {
+            path: host,
+            offset: 0,
+            len: meta.len(),
+        })
     }
     fn volume_info(&mut self) -> Result<VolumeInfo> {
         let total = self.capacity / FATX_CLUSTER_SIZE;

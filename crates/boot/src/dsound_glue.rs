@@ -43,6 +43,15 @@ pub struct Audio {
     pub hle: Arc<Hle>,
     pub output: dsound::Output,
     mixer: Arc<Mutex<audio::Mixer>>,
+    /// The controller-speaker sound index, while one runs.
+    _pad_index: Option<crate::pad_speaker::PadIndex>,
+}
+
+/// The controller speaker for [`install_with_sinks`]: its settings (routes,
+/// exclusive) and its output.
+pub struct PadSpeaker {
+    pub config: dsound::padroute::PadSpeakerConfig,
+    pub side: dsound::SideOutput,
 }
 
 /// The mixer rate [`install`] uses.
@@ -112,6 +121,9 @@ impl audio::sink::AudioSink for BoxedSink {
     fn maintain(&mut self) {
         self.0.maintain()
     }
+    fn connected(&self) -> bool {
+        self.0.connected()
+    }
 }
 
 pub fn install(rt: &Arc<runtime::Runtime>, k: &Arc<kernel::Kernel>, xbe: &[u8]) -> anyhow::Result<Audio> {
@@ -128,6 +140,20 @@ pub fn install_with_sink(
     xbe: &[u8],
     open: SinkOpener,
 ) -> anyhow::Result<Audio> {
+    install_with_sinks(rt, k, xbe, open, None)
+}
+
+/// [`install_with_sink`] with the controller speaker: a side output for the
+/// routed sounds, and the sound index ([`crate::pad_speaker`]) built from
+/// every map the game opens. With `pad` `None`, or its device absent, every
+/// sound plays on `open`'s sink.
+pub fn install_with_sinks(
+    rt: &Arc<runtime::Runtime>,
+    k: &Arc<kernel::Kernel>,
+    xbe: &[u8],
+    open: SinkOpener,
+    pad: Option<PadSpeaker>,
+) -> anyhow::Result<Audio> {
     let mixer = Arc::new(Mutex::new(audio::Mixer::new(RATE as u32)));
     let hle = Hle::new(DirectSound::new(Arc::clone(&mixer), Layout::default()), Box::new(KernelEvents(Arc::clone(k))));
     let mut r = None;
@@ -137,6 +163,10 @@ pub fn install_with_sink(
     let mut r = None;
     rt.edit_dispatch(|d| r = Some(dsound::xwma::register(d, &wma)));
     r.unwrap().map_err(|e| anyhow::anyhow!("dsound::xwma::register: {e:?}"))?;
+    let (config, side) = match pad {
+        Some(p) => (Some(p.config), Some(p.side)),
+        None => (None, None),
+    };
     let output = hle
         .spawn_output(
             Arc::clone(rt),
@@ -145,10 +175,12 @@ pub fn install_with_sink(
                 period: std::time::Duration::from_millis(5),
                 pacing: dsound::Pacing::Logical { origin: k.clock().counter(), max_queued: std::time::Duration::from_millis(250) },
                 halt_when: None,
+                side,
             },
         )
         .map_err(|e| anyhow::anyhow!("dsound output: {e:?}"))?;
-    Ok(Audio { hle, output, mixer })
+    let _pad_index = config.and_then(|c| crate::pad_speaker::install(k, &hle, &c));
+    Ok(Audio { hle, output, mixer, _pad_index })
 }
 
 /// Bring audio time up to the kernel's logical time. Between slices, with

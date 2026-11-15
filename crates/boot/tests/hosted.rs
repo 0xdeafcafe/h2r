@@ -84,6 +84,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
                 Box::new(Counting { written })
             }
         })),
+        pad_speaker: None,
         input: Some(input),
         keyboard: Some(keyboard),
         icons: None,

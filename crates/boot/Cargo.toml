@@ -15,6 +15,9 @@ ir.workspace = true
 runtime.workspace = true
 kernel.workspace = true
 vfs.workspace = true
+# The controller-speaker sound index reads the player's map files (pad_speaker).
+tags.workspace = true
+map.workspace = true
 font = { path = "../font" }
 anyhow.workspace = true
 libloading = "0.8"

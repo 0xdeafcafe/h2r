@@ -20,6 +20,7 @@ pub mod icons;
 pub mod layout_glue;
 pub mod live_glue;
 pub mod live_notice;
+pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
 pub mod shim;
@@ -379,6 +380,11 @@ pub struct Host {
     /// Where the logical-time audio output plays (an audio device), instead
     /// of a `NullSink` (`dsound_glue::install_with_sink`).
     pub audio_sink: Option<dsound_glue::SinkOpener>,
+    /// The controller speaker (docs/playstation-audio.md): a second sink
+    /// for the sounds its routes pick, and the sound index built from each
+    /// map the game opens. Needs `audio_sink`'s logical output; ignored
+    /// without DirectSound.
+    pub pad_speaker: Option<dsound_glue::PadSpeaker>,
     /// XAPI's input manager (`xapi_glue::register_with`).
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
@@ -542,9 +548,10 @@ pub fn run_hosted_with_live(
     if d3d_calls.is_some() && uses.is_some() {
         d3d_glue::install_back_surfaces(&loaded.runtime)?;
     }
+    let pad = host.pad_speaker.take();
     let ds = match (opts.dsound, host.audio_sink.take()) {
         (false, _) => None,
-        (true, Some(open)) => Some(dsound_glue::install_with_sink(&loaded.runtime, &k, xbe_bytes, open)?),
+        (true, Some(open)) => Some(dsound_glue::install_with_sinks(&loaded.runtime, &k, xbe_bytes, open, pad)?),
         (true, None) => Some(dsound_glue::install(&loaded.runtime, &k, xbe_bytes)?),
     };
     let (xa, pad) = match (opts.xapi, host.input.take()) {

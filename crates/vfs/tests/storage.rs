@@ -1761,3 +1761,92 @@ fn installed_content_appears_under_t_content_dir() {
         ]
     );
 }
+
+/// The open observer and host-file lookups the controller-speaker sound
+/// index uses (docs/playstation-audio.md): a disc entry is a region of the
+/// image file, a hard-disk file is the whole host file.
+#[test]
+fn opens_are_observed_with_their_host_bytes() {
+    let temp = TempDir::new();
+    let iso = temp.0.join("disc.iso");
+    fs::write(&iso, image()).unwrap();
+    let mut vfs = Vfs::with_disc(Config::new(temp.0.join("data"), 0x4D530064), &iso).unwrap();
+    vfs.namespace
+        .create_symbolic_link("D:", CDROM_DEVICE)
+        .unwrap();
+    vfs.namespace
+        .create_symbolic_link("E:", DATA_DEVICE)
+        .unwrap();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let log = Arc::clone(&seen);
+    vfs.set_open_observer(Some(Box::new(move |f: &OpenedFile| {
+        log.lock().unwrap().push(f.clone())
+    })));
+    let long = format!("D:\\MAPS\\{}.map", "A".repeat(43));
+    let h = vfs.open(&long, OpenOptions::default()).unwrap().handle;
+    let _ = vfs.open("D:\\maps", OpenOptions::default()).unwrap();
+    let host = vfs.host_file(&long).unwrap();
+    assert_eq!(
+        host,
+        HostFile {
+            path: iso.clone(),
+            offset: 36 * 2048,
+            len: 3
+        }
+    );
+    // The region holds exactly what the VFS reads.
+    let bytes = fs::read(&iso).unwrap();
+    assert_eq!(
+        &bytes[host.offset as usize..][..3],
+        read_all(&mut vfs, h).as_slice()
+    );
+    let e = create(&mut vfs, "E:\\save.bin");
+    vfs.write(e, Offset::Absolute(0), b"hello").unwrap();
+    let saved = vfs.host_file("E:\\save.bin").unwrap();
+    assert_eq!((saved.offset, saved.len), (0, 5));
+    assert_eq!(fs::read(&saved.path).unwrap(), b"hello");
+    assert_eq!(
+        vfs.host_file("D:\\maps"),
+        None,
+        "a directory has no host bytes"
+    );
+    assert_eq!(vfs.host_file("D:\\missing"), None);
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2, "files only, not the directory: {seen:?}");
+    assert_eq!(seen[0].device, CDROM_DEVICE);
+    assert_eq!(
+        seen[0].path.to_ascii_lowercase(),
+        format!("maps\\{}.map", "a".repeat(43))
+    );
+    assert_eq!(seen[0].host.as_ref(), Some(&host));
+    assert_eq!(seen[1].device, DATA_DEVICE);
+    assert_eq!(
+        seen[1].host.as_ref().map(|h| h.path.clone()),
+        Some(saved.path.clone())
+    );
+}
+
+/// A rewritten file is served from memory, so it has no host bytes.
+#[test]
+fn rewritten_files_have_no_host_bytes() {
+    struct Fonts;
+    impl Rewrite for Fonts {
+        fn wants(&self, path: &str) -> bool {
+            path.eq_ignore_ascii_case("default.xbe")
+        }
+        fn rewrite(&mut self, _: &str, original: &[u8]) -> Option<Vec<u8>> {
+            Some(original.to_vec())
+        }
+    }
+    let temp = TempDir::new();
+    let iso = temp.0.join("disc.iso");
+    fs::write(&iso, image()).unwrap();
+    let mut vfs =
+        Vfs::with_disc_rewrite(Config::new(temp.0.join("data"), 0x4D530064), &iso, Fonts).unwrap();
+    vfs.namespace
+        .create_symbolic_link("D:", CDROM_DEVICE)
+        .unwrap();
+    assert_eq!(vfs.host_file("D:\\default.xbe"), None);
+    let long = format!("D:\\maps\\{}.map", "a".repeat(43));
+    assert_eq!(vfs.host_file(&long).map(|h| h.offset), Some(36 * 2048));
+}
