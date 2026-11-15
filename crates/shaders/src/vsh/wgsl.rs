@@ -65,6 +65,11 @@ pub struct VertexUniforms {
     pub surface: [f32; 2],
     /// Depth buffer full scale: 65535 (D16), 16777215 (D24), or 1.0 for float depth.
     pub z_max: f32,
+    /// W-buffering (`SET_CONTROL0` z-perspective): the depth clip range
+    /// `[SET_CLIP_MIN, SET_CLIP_MAX]` that the vertex's w is held to, in
+    /// depth units. `None` clips z to `[0, z_max]` as usual. With it the
+    /// fragment stage must write the depth (`PixelOptions::w_buffer`).
+    pub w_clip: Option<[f32; 2]>,
 }
 
 impl Default for VertexUniforms {
@@ -74,13 +79,14 @@ impl Default for VertexUniforms {
             defaults: [[0.0, 0.0, 0.0, 1.0]; INPUT_COUNT],
             surface: [640.0, 480.0],
             z_max: 16_777_215.0,
+            w_clip: None,
         }
     }
 }
 
 impl VertexUniforms {
     /// Size of the uniform buffer in bytes.
-    pub const SIZE: usize = (CONSTANT_COUNT + INPUT_COUNT + 1) * 16;
+    pub const SIZE: usize = (CONSTANT_COUNT + INPUT_COUNT + 2) * 16;
 
     /// Buffer contents matching the WGSL struct layout.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -90,7 +96,11 @@ impl VertexUniforms {
                 out.extend_from_slice(&f.to_le_bytes());
             }
         }
-        for f in [self.surface[0], self.surface[1], self.z_max, 0.0] {
+        let clip = match self.w_clip {
+            Some([lo, hi]) => [lo, hi, 1.0, 0.0],
+            None => [0.0; 4],
+        };
+        for f in [self.surface[0], self.surface[1], self.z_max, 0.0].into_iter().chain(clip) {
             out.extend_from_slice(&f.to_le_bytes());
         }
         out
@@ -106,6 +116,8 @@ struct XvsUniforms {
     // x, y: guest render-target size in the units the program's viewport
     // constants use; z: depth full scale (65535 for D16, 16777215 for D24).
     viewport: vec4f,
+    // W-buffering when z is 1: x, y the depth clip range for w.
+    clip: vec4f,
 }
 @group(0) @binding(0) var<uniform> xvs: XvsUniforms;
 
@@ -197,6 +209,16 @@ fn xvs_fixup(p: vec4f) -> vec4f {
     let over = bitcast<i32>(p.z) > bitcast<i32>(xvs.viewport.z);
     let z = select(min(zn, 1.0), max(zn, bitcast<f32>(0x3f800001u)), over);
     let n = vec3f(2.0 * xy.x / xvs.viewport.x - 1.0, 1.0 - 2.0 * xy.y / xvs.viewport.y, z);
+    if (xvs.clip.z != 0.0) {
+        // W-buffered: the depth is w (written by the fragment stage), and
+        // the clip range applies to w. Clip z = a (w - lo) with
+        // a = hi / (hi - lo) is 0 at w = lo and equals w at w = hi, and it
+        // is linear in the clip coordinates, so the rasterizer's
+        // 0 <= z <= w clip is exactly lo <= w <= hi.
+        let lo = xvs.clip.x;
+        let hi = xvs.clip.y;
+        return vec4f(n.xy * w, hi / (hi - lo) * (w - lo), w);
+    }
     return vec4f(n * w, w);
 }
 "#;

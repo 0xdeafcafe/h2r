@@ -1157,8 +1157,9 @@ fn implicit_samples_use_each_stage_lod_bias() {
     assert!(shader.body.contains("clamp(xps.lod_bias[1], -16.0, 15.99)"));
     let u = PixelUniforms { lod_bias: [-1.0, 2.0, 0.0, 0.0], ..Default::default() };
     let bytes = u.to_bytes();
-    assert_eq!(&bytes[bytes.len() - 144..bytes.len() - 140], &(-1.0f32).to_le_bytes());
-    assert_eq!(&bytes[bytes.len() - 140..bytes.len() - 136], &(2.0f32).to_le_bytes());
+    // lod_bias sits before the stipple (128 bytes) and depth (16 bytes).
+    assert_eq!(&bytes[bytes.len() - 160..bytes.len() - 156], &(-1.0f32).to_le_bytes());
+    assert_eq!(&bytes[bytes.len() - 156..bytes.len() - 152], &(2.0f32).to_le_bytes());
     let explicit = psh::translate(&d, &PixelOptions { explicit_lod: true, ..Default::default() });
     assert!(explicit.body.contains("textureSampleLevel(xps_tex0"));
     assert!(!explicit.body.contains("textureSampleBias"));
@@ -1379,4 +1380,18 @@ fn discard_only_when_the_program_can_kill() {
         assert_eq!(t.body.contains("discard;"), discards, "{what}");
         shaders::validate(&t.module()).unwrap_or_else(|e| panic!("{what}: {e}"));
     }
+}
+
+/// W-buffering writes the depth from the fragment stage (`frag_depth`)
+/// without adding a `discard`, and the module still validates and lowers
+/// to MSL.
+#[test]
+fn w_buffer_writes_frag_depth_without_discard() {
+    let d = PixelShaderDef::default();
+    let on = psh::translate(&d, &PixelOptions { w_buffer: true, ..Default::default() });
+    let off = psh::translate(&d, &PixelOptions::default());
+    assert!(on.body.contains("@builtin(frag_depth)"));
+    assert!(!off.body.contains("frag_depth"));
+    assert!(!on.discards);
+    common::check(&on.module());
 }

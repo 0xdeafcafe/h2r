@@ -663,3 +663,119 @@ fn final_combiner_latched_absent_ignores_buffer_reuse() {
     );
     assert!(pollster::block_on(scope.pop()).is_none());
 }
+
+/// Draws `quads` (window x0, x1, z, w, RGBA each; full height) with
+/// `oPos = v0, oD0 = v3`, depth tested LessEqual and written, after a
+/// clear to black and depth 1, and returns the back buffer.
+fn depth_quads(
+    d: &mut d3d::Device<GfxBackend>,
+    m: &mut SparseMemory,
+    quads: &[(f32, f32, f32, f32, [f32; 4])],
+) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
+    let code = program(&[
+        Inst::mac(MacOp::Mov, Some(Operand::v(0)), None, None).to_out(false, OutReg::Pos, 0xF),
+        Inst::mac(MacOp::Mov, Some(Operand::v(3)), None, None)
+            .to_out(false, OutReg::D0, 0xF)
+            .last(),
+    ]);
+    m.write(FUNCTION, &code).unwrap();
+    d.load_vertex_shader_program(m, FUNCTION, 0).unwrap();
+    for reg in 0..16u32 {
+        let (offset, format) = match reg {
+            0 => (0, 0x42),
+            3 => (16, 0x42),
+            _ => (0, 0x02),
+        };
+        for (j, w) in [0, offset, format, 0].iter().enumerate() {
+            m.write_u32(VAF + 16 * reg + 4 * j as u32, *w).unwrap();
+        }
+    }
+    d.select_vertex_shader_direct(m, VAF, 0).unwrap();
+    let mut vb = Vec::new();
+    for &(x0, x1, z, w, rgba) in quads {
+        for (x, y) in [(x0, 0.0f32), (x1, 0.0), (x0, H as f32), (x1, 0.0), (x1, H as f32), (x0, H as f32)] {
+            for f in [x, y, z, w].into_iter().chain(rgba) {
+                vb.extend_from_slice(&f.to_le_bytes());
+            }
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    for (i, w) in [VB_HEADER, 32, 0].iter().enumerate() {
+        m.write_u32(STREAM_INPUTS + 4 * i as u32, *w).unwrap();
+    }
+    let handle = d3d::GuestLayout::HALO2.static_vertex_shader | 1;
+    d.set_vertex_shader_input(m, handle, 1, STREAM_INPUTS).unwrap();
+    let mut def = PixelShaderDef {
+        combiner_count: 1,
+        ..PixelShaderDef::default()
+    };
+    def.rgb_inputs[0] = inputs(REG_V0, ONE, 0, 0);
+    def.rgb_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    def.alpha_inputs[0] = inputs(REG_V0 | CHAN_ALPHA, ONE | CHAN_ALPHA, 0, 0);
+    def.alpha_outputs[0] = outputs(REG_R0, 0, 0, 0);
+    m.write(PSDEF, &def.to_bytes()).unwrap();
+    for (i, w) in [1, 0, PSDEF].iter().enumerate() {
+        m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
+    }
+    d.set_pixel_shader(m, PS_OBJECT).unwrap();
+    d.set_render_state(m, RS_ZFUNC, 0x203).unwrap(); // LESSEQUAL
+    d.set_render_state(m, 64, 1).unwrap(); // ZWRITEENABLE
+    d.clear(m, 0, 0, 0xF3, 0xFF00_0000, 1.0, 0).unwrap();
+    d.draw_vertices(m, 5, 0, 6 * quads.len() as u32).unwrap(); // TRIANGLELIST
+    no_skips(d);
+    back_buffer(d)
+}
+
+/// Halo runs W-buffered (`ZEnable(2)` at boot): the NV2A tests and stores
+/// the interpolated w, not the program's z. Its first-person models use
+/// another projection than the level, so their z does not order against
+/// the level's, but their w (the distance) does. With z, a weapon at
+/// w = 1 drawn after a wall at w = 10 lost to the wall wherever its z was
+/// larger: the see-through gun.
+#[test]
+fn w_buffered_programs_depth_test_w_not_z() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    // SetRenderState_ZEnable(D3DZB_USEW).
+    call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[2]).unwrap();
+    const D24: f32 = 16_777_215.0;
+    let green = [0.0, 1.0, 0.0, 1.0];
+    let red = [1.0, 0.0, 0.0, 1.0];
+    let px = depth_quads(
+        &mut d,
+        &mut m,
+        &[
+            // The wall: far (w = 10) but small z.
+            (0.0, W as f32, 0.2 * D24, 10.0, green),
+            // The weapon: near (w = 1), larger z, in front on the left.
+            (0.0, 32.0, 0.9 * D24, 1.0, red),
+            // Near (w = 2) with z past the depth maximum: z does not clip.
+            (32.0, 48.0, 2.0 * D24, 2.0, red),
+        ],
+    );
+    assert_eq!(px(16, 32), [255, 0, 0, 255], "the nearer w wins");
+    assert_eq!(px(40, 32), [255, 0, 0, 255], "z past the maximum is not clipped");
+    assert_eq!(px(56, 32), [0, 255, 0, 255]);
+    // Z-buffered, the same quads order by z (the wall wins on the left)
+    // and z past the maximum clips.
+    call(&mut d, &mut m, 0x3f54f0, d3d::abi::Regs::default(), &[1]).unwrap();
+    let px = depth_quads(
+        &mut d,
+        &mut m,
+        &[
+            (0.0, W as f32, 0.2 * D24, 10.0, green),
+            (0.0, 32.0, 0.9 * D24, 1.0, red),
+            (32.0, 48.0, 2.0 * D24, 2.0, red),
+        ],
+    );
+    assert_eq!(px(16, 32), [0, 255, 0, 255]);
+    assert_eq!(px(40, 32), [0, 255, 0, 255]);
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "wgpu validation error: {err:?}");
+}

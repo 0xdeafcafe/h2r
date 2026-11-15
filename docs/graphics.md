@@ -383,7 +383,7 @@ with each draw's bindings and pipeline state.
 | `BLENDOP = MIN/MAX` | factors forced to `One/One` (wgpu requires it) |
 | `BLENDCOLOR` | `set_blend_constant` at draw time; `CONSTANTALPHA` approximated by splatting alpha |
 | `COLORWRITEENABLE` | `ColorWrites` |
-| `ZENABLE`, `ZWRITEENABLE`, `ZFUNC` | `DepthStencilState`; disabled = `Always`, no write; W-buffer treated as Z |
+| `ZENABLE`, `ZWRITEENABLE`, `ZFUNC` | `DepthStencilState`; disabled = `Always`, no write; W-buffer treated as Z here (translated vertex programs store w themselves, docs/shaders.md "Position fixup") |
 | `STENCIL*` | front = back `StencilFaceState`, masks; `STENCILREF` is a draw-time `set_stencil_reference`; ignored on depth-only formats |
 | `POLYGONOFFSET*` | `DepthBiasState`; the constant is scaled by `2^depth_bits`, approximate and unvalidated |
 | `CULLMODE`, `FRONTFACE` | as D3D programs the NV2A (`SetRenderState_CullMode`, `0x3f53d0`): `front_face` is `FRONTFACE`, `cull` is `Front` when `CULLMODE == FRONTFACE`, else `Back`. Culling depends on `CULLMODE` alone; `FRONTFACE` decides `front_facing` (two-sided lighting) |

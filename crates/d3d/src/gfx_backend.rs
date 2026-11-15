@@ -806,6 +806,13 @@ impl Backend for GfxBackend {
             Err(e) => return Ok(DrawOutcome::Skipped(e)),
         };
         drop(prepare);
+        let mut render = d.state.render;
+        if prepared.writes_depth {
+            // The program adds the offset to the depth it writes.
+            render.solid_offset_enable = false;
+            render.wireframe_offset_enable = false;
+            render.point_offset_enable = false;
+        }
         let draw = Draw {
             bind_groups: &prepared.bind_groups,
             scissor,
@@ -817,7 +824,7 @@ impl Backend for GfxBackend {
                 &streams,
                 d.vertex_count,
                 d.primitive,
-                d.state.render,
+                render,
             )
         };
         for (i, piece) in split(draw, &pieces).iter().enumerate() {

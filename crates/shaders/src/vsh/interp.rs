@@ -269,3 +269,14 @@ pub fn fixup(pos: Vec4, surface: [f32; 2], z_max: f32) -> Vec4 {
     };
     [nx * w, ny * w, nz * w, w]
 }
+
+/// [`fixup`] for a W-buffered draw (`VertexUniforms::w_clip`): x, y and w as
+/// there, and z = a (w - lo) with a = hi / (hi - lo), so the rasterizer's
+/// `0 <= z <= w` clip keeps exactly `lo <= w <= hi`. The depth itself is w,
+/// written by the fragment stage.
+pub fn fixup_w_buffer(pos: Vec4, surface: [f32; 2], clip: [f32; 2]) -> Vec4 {
+    let [lo, hi] = clip;
+    let p = fixup(pos, surface, 1.0);
+    let w = p[3];
+    [p[0], p[1], hi / (hi - lo) * (w - lo), w]
+}

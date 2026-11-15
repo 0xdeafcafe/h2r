@@ -883,6 +883,20 @@ impl ShaderProvider for Nv2aShaders {
             ..PixelUniforms::default()
         };
         pu.stipple = draw.hw.stipple_pattern;
+        let w_buffer = key.pixel_options.w_buffer;
+        if w_buffer {
+            vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
+            // The polygon offset joins the stored w in the fragment stage
+            // (the pipeline's depth bias would offset the rasterized z,
+            // which is not what is stored); see `PreparedShader`.
+            let (units, slope) = if polygon_offset(render, draw.primitive) {
+                let finite = |v: f32| if v.is_finite() { v } else { 0.0 };
+                (finite(render.depth_bias), finite(render.depth_bias_slope_scale))
+            } else {
+                (0.0, 0.0)
+            };
+            pu.depth = [vu.z_max, units, slope, 0.0];
+        }
         pu.lod_bias = std::array::from_fn(|n| {
             let bias = draw.state.stages[n].mip_lod_bias;
             if bias.is_finite() { bias } else { 0.0 }
@@ -943,6 +957,7 @@ impl ShaderProvider for Nv2aShaders {
             id: compiled.id,
             bind_groups,
             discards: compiled.discards,
+            writes_depth: w_buffer,
         })
     }
 
@@ -1118,6 +1133,7 @@ fn program_key(
             explicit_lod: false,
             stipple: polygon_stipple(table, draw),
             shadow,
+            w_buffer: matches!(vertex, VertexSource::Microcode(_)) && w_buffered(draw),
         };
         let key = ProgramKey {
             vertex,
@@ -1132,6 +1148,34 @@ fn program_key(
             border,
             bound,
         })
+}
+
+/// `SET_CONTROL0` bit 16 (z-perspective), which D3D's control fragment
+/// (`0x3f6390`) sets when `D3DRS_ZENABLE` is `D3DZB_USEW`: the NV2A then
+/// depth-tests and stores the interpolated w instead of z, and clips w to
+/// `[CLIP_MIN, CLIP_MAX]`. Halo turns it on at boot (`ZEnable(2)` at
+/// `0x1267a`). Before any `SET_CONTROL0` has been seen, the render state
+/// decides.
+pub const CONTROL0_Z_PERSPECTIVE: u32 = 0x1_0000;
+
+/// Whether `draw` is W-buffered (see [`CONTROL0_Z_PERSPECTIVE`]).
+pub fn w_buffered(draw: &ResolvedDraw) -> bool {
+    match draw.hw.control0 {
+        Some(c) => c & CONTROL0_Z_PERSPECTIVE != 0,
+        None => draw.state.render.depth_mode == gfx::state::DepthBufferMode::W,
+    }
+}
+
+/// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,
+/// CLIP_MAX]`, or `[0, z_max]` when that is empty or not finite (nothing
+/// pushed yet).
+pub fn w_clip_range(hw: &crate::hw::HwState, z_max: f32) -> [f32; 2] {
+    let (lo, hi) = (hw.clip_min, hw.clip_max);
+    if lo.is_finite() && hi.is_finite() && lo >= 0.0 && hi > lo {
+        [lo, hi]
+    } else {
+        [0.0, z_max]
+    }
 }
 
 /// The shadow-map stages of a draw: a depth-format texture (`D24S8`,
@@ -1362,6 +1406,23 @@ fn fog_uniform(table: &RenderStateTable, draw: &ResolvedDraw) -> [f32; 4] {
     )
     .fog
     .uniform()
+}
+
+/// Whether the polygon offset applies: the enable for the fill mode in
+/// effect, on triangles (gfx's `depth_stencil_state` rule).
+fn polygon_offset(render: &gfx::state::RenderState, primitive: gfx::vertex::PrimitiveType) -> bool {
+    use gfx::state::FillMode;
+    use gfx::vertex::PrimitiveType as P;
+    let enabled = match render.fill_mode {
+        FillMode::Point => render.point_offset_enable,
+        FillMode::Wireframe => render.wireframe_offset_enable,
+        FillMode::Solid => render.solid_offset_enable,
+    };
+    enabled
+        && !matches!(
+            primitive,
+            P::PointList | P::LineList | P::LineLoop | P::LineStrip
+        )
 }
 
 fn stipple_eligible(primitive: gfx::vertex::PrimitiveType, fill: gfx::state::FillMode) -> bool {

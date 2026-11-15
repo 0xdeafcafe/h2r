@@ -74,6 +74,9 @@ pub struct PreparedShader {
     /// starts a render pass of its own (see
     /// [`GfxBackend::set_merge_passes`](crate::GfxBackend::set_merge_passes)).
     pub discards: bool,
+    /// The fragment shader writes the depth (W-buffering), polygon offset
+    /// included: the pipeline's own depth bias must stay off.
+    pub writes_depth: bool,
 }
 
 /// Turns a draw into a registered gfx shader.

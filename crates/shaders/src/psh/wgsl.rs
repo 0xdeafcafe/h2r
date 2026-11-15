@@ -95,6 +95,12 @@ pub struct PixelOptions {
     /// and PROJECT3D on a 2D texture compare instead of sampling colour
     /// (see [`super::shadow`]).
     pub shadow: [Option<super::shadow::Shadow>; 4],
+    /// W-buffering (`SET_CONTROL0` z-perspective, `D3DZB_USEW`): the
+    /// fragment writes its depth as the interpolated w plus the polygon
+    /// offset, over the depth full scale (`Uniforms::depth`), as the NV2A
+    /// stores it. The vertex stage must clip w (`VertexUniforms::w_clip`).
+    #[serde(default)]
+    pub w_buffer: bool,
 }
 
 /// A translated pixel pipeline.
@@ -150,6 +156,9 @@ struct XpsUniforms {
     border: array<vec4f, 4>,
     lod_bias: vec4f,
     stipple: array<vec4u, 8>,
+    // W-buffering (PixelOptions::w_buffer): x the depth full scale, y the
+    // polygon offset in depth units, z its slope factor.
+    depth: vec4f,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -759,13 +768,35 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     }
     s.push_str("    return XpsResult(color, kill);\n}\n");
 
-    s.push_str(
-        r#"
+    if options.w_buffer {
+        // position.w is 1/w interpolated linearly in screen space, so its
+        // reciprocal is the perspective-correct w the NV2A stores
+        // (xemu's z-perspective path in glsl/psh.c does the same). The
+        // slope comes before any discard, in uniform control flow.
+        s.push_str(
+            r#"
+struct XpsOut {
+    @location(0) color: vec4f,
+    @builtin(frag_depth) depth: f32,
+}
+
+@fragment
+fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> XpsOut {
+    let zw = 1.0 / v.position.w;
+    let slope = max(abs(dpdx(zw)), abs(dpdy(zw)));
+    let depth = clamp((zw + xps.depth.y + xps.depth.z * slope) / xps.depth.x, 0.0, 1.0);
+    let r = xps_program(XpsInputs(v.d0, v.d1, v.b0, v.b1, v.t0, v.t1, v.t2, v.t3, v.fog, front));
+"#,
+        );
+    } else {
+        s.push_str(
+            r#"
 @fragment
 fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) vec4f {
     let r = xps_program(XpsInputs(v.d0, v.d1, v.b0, v.b1, v.t0, v.t1, v.t2, v.t3, v.fog, front));
 "#,
-    );
+        );
+    }
     if options.stipple {
         s.push_str(
             r#"    let xy = vec2u(v.position.xy) & vec2u(31u);
@@ -781,7 +812,11 @@ fn fs_main(v: XboxVaryings, @builtin(front_facing) front: bool) -> @location(0) 
     if kills {
         s.push_str("    if (r.kill) { discard; }\n");
     }
-    s.push_str("    return r.color;\n}\n");
+    if options.w_buffer {
+        s.push_str("    return XpsOut(r.color, depth);\n}\n");
+    } else {
+        s.push_str("    return r.color;\n}\n");
+    }
     let mut warnings = g.warnings;
     warnings.dedup();
     PixelShader {

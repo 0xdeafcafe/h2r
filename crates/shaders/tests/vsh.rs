@@ -662,3 +662,18 @@ fn close_rejects_mismatched_non_finite_values() {
     assert!(close(1.0e20, 1.000_01e20, 1e-3));
     assert!(!close(1.0e20, 1.1e20, 1e-3));
 }
+
+/// W-buffered clip z is 0 at the clip minimum and equals w at the maximum,
+/// so the rasterizer's `0 <= z <= w` keeps exactly the w clip range, and
+/// the program's z plays no part.
+#[test]
+fn w_buffer_fixup_clips_w_to_the_clip_range() {
+    let clip = [10.0, 1000.0];
+    for z in [-5.0, 0.0, 1e9] {
+        for (w, inside) in [(9.9, false), (10.0, true), (500.0, true), (1000.0, true), (1000.5, false)] {
+            let p = vsh::interp::fixup_w_buffer([3.0, 4.0, z, w], [640.0, 480.0], clip);
+            let kept = p[2] >= 0.0 && p[2] <= p[3];
+            assert_eq!(kept, inside, "w = {w}, z = {z}: {p:?}");
+        }
+    }
+}

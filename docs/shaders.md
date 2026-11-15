@@ -252,10 +252,33 @@ clips. `tests/render.rs` (`quad_at_exactly_z_max_is_not_clipped`) draws
 quads at z = 0, exactly `Zmax`, the next float above it, a few ulps past
 it, 1.5·`Zmax` and −1, for
 D24, D16 and float depth, with w = 1 and w = z. Without the clamp the D24
-case fails on Metal. The clip range is taken as `[0, Zmax]`: the
-`CLIP_MIN`/`CLIP_MAX` the game pushes (`d3d::hw::HwState`) are not applied,
-and neither is the NV2A's clamp mode (`ZCLAMP_EN`), where out-of-range z is
+case fails on Metal. Without W-buffering the clip range is taken as `[0, Zmax]`: the
+`CLIP_MIN`/`CLIP_MAX` the game pushes (`d3d::hw::HwState`) are applied
+only to w when W-buffered (below), and the NV2A's clamp mode isn't applied either (`ZCLAMP_EN`), where out-of-range z is
 clamped instead of culled.
+
+**W-buffering.** With `SET_CONTROL0` bit 16 (z-perspective; D3D sets it
+for `D3DRS_ZENABLE = D3DZB_USEW`, and Halo enables that at boot with
+`ZEnable(2)` at `0x1267a`) the NV2A ignores the program's z: it depth-tests
+and stores the perspective-correct interpolated w, plus the polygon
+offset, and clips w to `[CLIP_MIN, CLIP_MAX]` (xemu's z-perspective path
+in `glsl/psh.c`). `d3d::nv2a` turns this on for vertex programs
+(`nv2a::w_buffered`) with `VertexUniforms::w_clip` and
+`PixelOptions::w_buffer`. The vertex stage then outputs clip z =
+a·(w − lo) with a = hi / (hi − lo): it is 0 at w = lo and equals w at
+w = hi, and it is linear in the clip coordinates, so the rasterizer's
+`0 <= z <= w` clip keeps exactly `lo <= w <= hi` (`interp::fixup_w_buffer`).
+The fragment stage writes `frag_depth = (1 / position.w + units + factor ·
+max(|dpdx|, |dpdy|)) / Zmax`, with the polygon offset in `XpsUniforms.depth`,
+and the pipeline's own depth bias is turned off for such draws
+(`PreparedShader::writes_depth`). Halo's first-person weapon and hands use
+another projection than the level, so their z did not order against the
+level's while their w does; drawn with z they were hidden behind nearby
+walls. `crates/d3d/tests/shaders_render.rs`
+(`w_buffered_programs_depth_test_w_not_z`) checks the order and that z past
+`Zmax` no longer clips. Not covered: pre-transformed (`XYZRHW`) draws keep
+z, and an occlusion count pass (which does not run the fragment program)
+still tests the rasterized z.
 
 `W` and `H` are the guest render-target size in the units the game's
 viewport constants use, so they include any supersampling scale the game
