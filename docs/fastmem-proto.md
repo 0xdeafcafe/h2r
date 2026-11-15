@@ -116,6 +116,7 @@ safe in the parallel harness) and `tests/process.rs` (child processes):
 | Crashes stay crashes | null deref ends in SIGSEGV; write outside regions, read of a `PROT_NONE` region page, and a write from an unattached thread end in SIGBUS |
 | Clean teardown and reinstall | five rounds leave the task's port-name count unchanged; reinstall on one thread five times |
 | Concurrency | four attached threads fault on 16 pages at once |
+| 4 KiB guest pages | one fault reports all four 4 KiB subpages of the host page; a re-armed sibling faults again |
 | lldb | `works_under_lldb` (ignored by default) |
 
 ## lldb
@@ -156,6 +157,72 @@ with a profile, is that each first write splits the VM map entry, so a fully
 dirty region has one entry per page until `rearm_dirty` merges it again. Watched regions should be armed at the granularity the
 consumers actually need, and re-armed with coalesced runs.
 
+## 4 KiB guest pages on 16 KiB host pages
+
+The Xbox has 4 KiB pages; this host has 16 KiB pages, and `mprotect` only
+works on whole host pages. Write watch therefore protects and faults per
+host page, whichever guest addressing scheme sits on top.
+
+**What one fault means.** The first store into a protected host page marks
+it dirty and opens all 16 KiB. Stores to the other three 4 KiB guest pages in
+that host page then run without faulting until the next re-arm. So the
+watch can only promise that every written guest page is reported, not that
+only written pages are. `rearm_dirty_subpages(id, 4096, visit)` reports
+every 4 KiB subpage of each dirty host page, and the test
+`guest_4k_subpages_are_reported_conservatively` pins the contract: writes
+to guest pages 1 and 3 (one fault) report pages 0 to 3, and a re-armed
+sibling faults again. Mapping a host page back to guest pages is the
+caller's job, through whatever reverse map it keeps. A subscriber that only
+watches some of the four guest pages filters there. Splitting a host page
+into four separately protected 4 KiB pages is not possible; calling
+`mprotect` four times just protects the same host page four times.
+
+The false-positive rate is bounded by layout. Watched guest data (vertex
+buffers, textures, push buffers, sound buffers) is mostly larger than 16 KiB
+and contiguous, so the extra uploads come from the ragged first and last
+host pages of each buffer and from small objects that share a host page with
+hot unwatched data. The latter is the worst case: a hot unwatched store next
+to a watched buffer re-dirties it, and pays one fault, every epoch. The A/B
+should count both the faults per frame and the extra uploads.
+
+**Fixed guest base (the 16 KiB eligibility design).** Each guest page is
+reached through host mappings of the backing, so one physical host page can
+be visible at several host addresses. Write watch has to protect every
+writable alias of a watched host page, which is the reverse map the design
+already asks for. The handler then has to accept a fault at any alias and
+mark the physical page. The prototype keys regions by host address, so this
+means registering, or reverse-mapping, each alias. Guest pages whose 4 KiB
+neighbours are not physically contiguous are already ineligible for direct
+access, and they don't need faults: their stores go through the checked
+path, which can mark exact 4 KiB dirt itself.
+
+**4 KiB translation table (the variant the fastmem lane is measuring).**
+Generated code looks each guest page up in a table of host pointers. All
+entries point into one backing mapping of guest physical RAM, so there are
+no host-level aliases. Protecting the backing host page covers every guest
+virtual alias at once, and the fault address maps to a physical frame as
+`(addr - backing_base) >> 12`. The same 16 KiB conservatism applies, because
+the backing still has 16 KiB host pages.
+
+The table also gives an exact alternative that needs no faults at all. Add
+a write-permission bit to each 4 KiB entry, or keep a separate write table,
+and clear it for watched pages. The first store to a watched page then takes
+the checked slow path, which marks that exact 4 KiB page dirty and sets the
+bit back. That costs a slow-path call, tens of nanoseconds, instead of a
+roughly 10 µs Mach fault round trip, and it is exact per guest page. The
+cost is that stores need their own lookup (or bit test), separate from
+loads. The Mach service then only has to cover host code and anything else
+that writes the backing directly without going through the table. If the
+translation-table variant wins its measurement, prefer the table bit for
+guest stores and keep page protection only as the backstop for direct host
+writes, or drop it if every host writer marks dirt while holding the host
+guard.
+
+Either way, a store that crosses a 4 KiB guest page boundary goes slow per
+the design, so the split-store retry above is a safety net for host code,
+not a path generated code relies on. A crossing store within one host page
+cannot fault twice in any case; there is only one host page to open.
+
 ## Consequences for the fastmem design
 
 No blockers found:
@@ -170,6 +237,10 @@ No blockers found:
   port (`convert_task_read_to_port` outside developer mode), which the handler
   never uses.
 - **Retry semantics:** clean for every store kind tried (above).
+- **Page size:** 4 KiB guest pages on 16 KiB host pages are workable, with
+  host-page-granular, conservative dirt (section above). With a 4 KiB
+  translation table, a write bit in the table is exact and far cheaper than
+  a fault.
 - **Budget:** at about 10 µs per first write per watched page per epoch, the
   design's "later stores run without marking until the next rearm" matters.
   A watch that re-arms hundreds of pages per frame costs milliseconds. Bulk

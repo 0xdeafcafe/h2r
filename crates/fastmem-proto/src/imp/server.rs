@@ -300,6 +300,30 @@ impl WatchServer {
         Ok(count)
     }
 
+    /// [`rearm_dirty`](Self::rearm_dirty) reported in guest-page units:
+    /// `visit` gets every `guest_page`-sized subpage index of each dirty host
+    /// page. Protection is per host page, so after the first fault the other
+    /// subpages are written without faulting; reporting all of them is the
+    /// conservative contract (false positives, never false negatives).
+    /// `guest_page` must be a power of two no larger than the host page.
+    pub fn rearm_dirty_subpages(
+        &self,
+        id: RegionId,
+        guest_page: usize,
+        mut visit: impl FnMut(usize),
+    ) -> Result<usize, Error> {
+        let host = self.page_size();
+        if !guest_page.is_power_of_two() || guest_page > host {
+            return Err(Error::BadRange);
+        }
+        let per = host / guest_page;
+        self.rearm_dirty(id, |page| {
+            for sub in 0..per {
+                visit(page * per + sub);
+            }
+        })
+    }
+
     /// Whether `page` (index within the region) is marked dirty.
     pub fn is_dirty(&self, id: RegionId, page: usize) -> Result<bool, Error> {
         let (slot, _, _) = self.region(id)?;

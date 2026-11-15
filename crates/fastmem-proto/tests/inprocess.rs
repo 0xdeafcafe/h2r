@@ -99,6 +99,34 @@ fn rearm_cycles_repeat() {
     unsafe { assert_eq!(load64(map.page(2)), 49) };
 }
 
+/// 4 KiB guest pages on 16 KiB host pages: one fault opens all four guest
+/// pages of a host page, so a later write to a sibling does not fault. The
+/// subpage drain must still report that sibling (no false negatives).
+#[test]
+fn guest_4k_subpages_are_reported_conservatively() {
+    const GUEST: usize = 4096;
+    let (server, map, id) = armed(2);
+    let _a = server.attach_current_thread().unwrap();
+    unsafe {
+        str64(map.at(GUEST), 1); // guest page 1: faults, opens host page 0
+        str64(map.at(3 * GUEST), 3); // guest page 3: same host page, no fault
+    }
+    assert_eq!(server.stats().handled, 1);
+    let mut seen = Vec::new();
+    server
+        .rearm_dirty_subpages(id, GUEST, |g| seen.push(g))
+        .unwrap();
+    // Exact would be [1, 3]; host-page granularity adds 0 and 2.
+    assert_eq!(seen, vec![0, 1, 2, 3]);
+    // Re-armed: a write to guest page 2 now faults again.
+    unsafe { str64(map.at(2 * GUEST), 2) };
+    assert_eq!(server.stats().handled, 2);
+    assert_eq!(
+        server.rearm_dirty_subpages(id, 3 * GUEST, |_| ()).err(),
+        Some(Error::BadRange)
+    );
+}
+
 #[test]
 fn store_straddling_two_armed_pages_marks_both() {
     let (server, map, id) = armed(2);
