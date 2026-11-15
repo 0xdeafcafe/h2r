@@ -16,6 +16,43 @@ pub const HEADER_BASE: u32 = 0x10000;
 pub const STACK_TOP: u32 = 0x7000_0000;
 pub const KERNEL_DATA_BASE: u32 = 0x8000_0000;
 
+/// Physical RAM that retail Halo 2 uses by fixed address. `0x0012b400`
+/// stores cursors 0x61000 and 0x3145000 at 0x004e6424.. and then calls
+/// XPhysicalAlloc(0x30e4000, 0x61000, 0, PAGE_READWRITE) at `0x0012b43e`,
+/// ignoring the result. Consumers such as `0x0001db10` carve from those
+/// cursors and use `0x80000000 | physical`.
+pub const HALO2_PHYSICAL_ARENA: std::ops::Range<u32> = 0x0006_1000..0x0314_5000;
+/// Xbox contiguous memory is visible at `CONTIGUOUS_ALIAS_BASE + physical`.
+pub const CONTIGUOUS_ALIAS_BASE: u32 = 0x8000_0000;
+
+/// One [`Guest::reserve_physical`] call made before the loader places
+/// anything. `physical` is exclusive at its end; `aliases` are window bases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReservationRequest {
+    pub physical: std::ops::Range<u32>,
+    pub aliases: Vec<u32>,
+    pub owner: &'static str,
+}
+
+/// Loader configuration. The default reserves nothing, matching `load_xbe`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LoadOptions {
+    pub physical_reservations: Vec<ReservationRequest>,
+}
+impl LoadOptions {
+    /// Reserve [`HALO2_PHYSICAL_ARENA`] with its contiguous alias window
+    /// `0x80061000..0x83145000`.
+    pub fn halo2() -> Self {
+        Self {
+            physical_reservations: vec![ReservationRequest {
+                physical: HALO2_PHYSICAL_ARENA,
+                aliases: vec![CONTIGUOUS_ALIAS_BASE + HALO2_PHYSICAL_ARENA.start],
+                owner: "halo2 physical arena",
+            }],
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
     #[error(transparent)]
@@ -69,6 +106,13 @@ fn reserved(va: u32, len: u32) -> bool {
 /// All sections are initially resident for this milestone. Section permissions
 /// are restored after patching kernel thunk slots; startup headers stay writable.
 pub fn load_xbe(bytes: &[u8]) -> Result<LoadedImage, LoadError> {
+    load_xbe_with(bytes, &LoadOptions::default())
+}
+
+/// [`load_xbe`] with physical reservations made on the empty guest, before
+/// headers, sections, stack or DATA exports receive backing. Their ids are in
+/// `runtime.memory().physical_reservations()`, in request order.
+pub fn load_xbe_with(bytes: &[u8], options: &LoadOptions) -> Result<LoadedImage, LoadError> {
     let image = xbe::Xbe::parse(bytes)?;
     if image.base != HEADER_BASE || image.size_of_headers < 0x178 {
         return Err(LoadError::Invalid("header base/size"));
@@ -84,6 +128,14 @@ pub fn load_xbe(bytes: &[u8]) -> Result<LoadedImage, LoadError> {
         return Err(LoadError::Invalid("headers exceed image"));
     }
     let mut memory = Guest::new();
+    for r in &options.physical_reservations {
+        let len = r
+            .physical
+            .end
+            .checked_sub(r.physical.start)
+            .ok_or(LoadError::Invalid("reservation range"))?;
+        memory.reserve_physical(r.physical.start, len, &r.aliases, r.owner)?;
+    }
     let mut pages = BTreeMap::<u32, Permissions>::new();
     let mut contributors = BTreeMap::<u32, Vec<(String, Permissions)>>::new();
     let round_end = |end: u32| {
@@ -228,6 +280,13 @@ pub fn load_xbe(bytes: &[u8]) -> Result<LoadedImage, LoadError> {
     }
     for (page, permissions) in pages {
         memory.protect(page, permissions)?;
+    }
+    // Generated handlers jump locally across these pages and check Execute
+    // only at dispatch, so later range changes must not revoke it.
+    for section in image.sections.iter().filter(|s| s.flags.executable()) {
+        if section.vsize != 0 {
+            memory.guard_code(section.va, section.vsize)?;
+        }
     }
     let tls_data_size = if let Some(tls) = tls {
         let raw_size = tls

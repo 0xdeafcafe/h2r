@@ -76,6 +76,76 @@ its index is validated after protections are final. `tls_data_size` records
 aligned payload bytes plus the leading pointer slot. Guest startup still
 performs its own TLS stores.
 
+### Range protection, unmapping and physical reservations
+
+These Guest methods serve MmSetAddressProtect (182), NtFreeVirtualMemory
+decommit/release (199), MmFreeContiguousMemory (171) and Halo 2's fixed
+physical arena. Signatures are in `API-CHANGES.md`. Every range method takes a
+page-aligned `va` and non-zero page-multiple `len` (`va + len` may equal 2^32).
+It validates the whole range before changing anything, so on error the mapping
+list, permissions and bytes are exactly as before.
+
+- `protect_range(va, len, perms)` sets permissions on exactly that range and
+  splits mappings at its edges. Split pieces keep their physical offsets.
+  Protection belongs to a virtual mapping: other aliases of the same physical
+  bytes keep their own permissions and still share the bytes.
+  `Permissions::NONE` (PAGE_NOACCESS) makes every access fault with
+  Protection. The existing whole-mapping `protect(va, perms)` is unchanged.
+- `unmap(va, len)` removes exactly that range, splitting at the edges. Bytes
+  are never cleared: another alias still sees them. A physical page becomes free
+  only when no mapping or reservation references it. `map_zeroed` uses
+  never-touched RAM first and then reuses freed pages, zeroing them first.
+  `map` with an explicit physical address does not clear anything; that is how
+  aliases work.
+- Errors: `InvalidRange` for bad bounds; `Unmapped` if any byte is unmapped
+  (decommit only committed runs); `Claimed` if the range touches an HLE claim.
+- Lifted code keeps Execute. Generated C checks Execute only when the runner
+  dispatches into a handler, and then jumps locally across pages without
+  rechecking. A page made non-executable or unmapped under running generated
+  code would therefore keep running. The runtime does not pretend otherwise:
+  `guard_code(va, len)` marks pages (rounded out) as lifted code, and the loader
+  guards every executable XBE section. From then on `protect_range` without
+  Execute and `unmap` over any guarded page fail with `LiftedCode` and change
+  nothing. This applies to the `_owned` variants too. Write-protecting code
+  (RX) is allowed. Whoever registers a generated module for code outside the
+  image must guard that code too. The legacy whole-mapping `protect` is not
+  guarded, because loader and kernel patching use it.
+  Refusing is better than recording an `Unmodelled` event here. Guest has no
+  event sink: events belong to an ExecCtx, and these calls run under the memory
+  guard. A refusal also keeps the all-or-nothing contract. The kernel turns
+  `LiftedCode` into a named stop, and it doesn't silently succeed.
+- `physical_aliases(physical, len)` lists every mapped window onto those
+  physical bytes, clipped to the query, so a kernel can propagate or audit
+  changes across aliases.
+- `claim_virtual(va, len, owner)` marks an HLE-owned range such as
+  `HLE_RESERVED` `0xa0000000..0xa1000000`. Guest-driven `unmap` and
+  `protect_range` then refuse any overlap. The owner calls `unmap_owned` or
+  `protect_range_owned` with its `ClaimId` for ranges inside its claim. Claims
+  do not block `map`/`map_zeroed`, so existing HLE allocators work unchanged.
+- `reserve_physical(physical, len, aliases, owner)` withholds RAM from
+  `map_zeroed`, `find_free_physical`/`physical_free` and explicit `map`. For each
+  alias base `a`, the window `[a, a + len)` can be mapped only by
+  `map_reserved(id, va, len, perms)`, at the same offset, so every alias sees the
+  same bytes. Reserve on an empty guest: an existing mapping of those physical
+  pages or in a window is `Overlap`. Reserved bytes start zero and survive
+  unmap/remap. Reservations are permanent.
+- `find_free_physical(len, range, alignment)` and `physical_free(physical, len)`
+  answer occupancy with reservations included, rounding mappings out to whole
+  pages. Kernel allocators must use them instead of scanning `mappings()`.
+
+`load_xbe_with(bytes, &LoadOptions::halo2())` reserves `HALO2_PHYSICAL_ARENA`
+`0x61000..0x3145000` (0x30e4000 bytes) with the window
+`0x80061000..0x83145000`. It does this before headers, sections, the stack or
+DATA exports get backing. `load_xbe` reserves nothing. From the retail XBE,
+`0x0012b400` stores cursors 0x61000/0x3145000 at `0x004e6424..` and calls
+`XPhysicalAlloc(0x30e4000, 0x61000, 0, PAGE_READWRITE)` at `0x0012b43e`
+(`0x002d156a`, which becomes MmAllocateContiguousMemoryEx with low 0x61000 and
+high 0x3144fff). It drops the result. Carvers such as `0x0001db10` subtract
+from the cursor, OR in `0x80000000` and call XPhysicalProtect with 0x404. Budget
+on the retail image: 0xf1c000 bytes lie outside the arena, the loader uses
+0x5c7000 of them (image, stack, DATA), and 0x955000 (about 9.3 MiB) is left for
+the kernel, HLE and the game's other physical allocations.
+
 Kernel stop handlers preserve the ordinal, name, CPU, return word and fixed
 stack argument words. DATA thunks point at shared guest storage; opaque object
 storage and key cells remain unimplemented zeroed placeholders. Stack top

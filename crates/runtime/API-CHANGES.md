@@ -257,3 +257,115 @@ stale RET and JUMP values. They also verify stale cancellation and an entry
 lookup decoy cannot affect the replacement, and that the replacement still
 resumes through its own guest token. Allocator tests cover FIFO reuse and
 retirement at the maximum generation without wrap or reset on clear.
+
+
+## Follow-up: range protection, unmap, physical reservations
+
+No generated-module ABI, C header, native layout or existing signature
+changed. Everything below is additive Rust API. Semantics are in the README
+section "Range protection, unmapping and physical reservations".
+
+```rust
+// guest::Permissions
+pub const NONE: Permissions; // PAGE_NOACCESS
+
+// guest::MapError: now also Clone + Copy, and new variants
+Unmapped, // part of the range has no mapping
+Reserved, // physical reservation or alias-window conflict
+Claimed,  // HLE-owned virtual claim
+LiftedCode, // unmap, or permissions without Execute, on guarded lifted code
+
+pub struct ReservationId(/* private */);   // Copy, Eq, Ord, Hash, Debug
+pub struct ClaimId(/* private */);         // Copy, Eq, Ord, Hash, Debug
+pub struct PhysicalReservation { pub id: ReservationId, pub physical_start: u32,
+    pub len: u32, pub aliases: Vec<u32>, pub owner: &'static str }
+pub struct VirtualClaim { pub id: ClaimId, pub virtual_start: u32, pub len: u32,
+    pub owner: &'static str }
+
+impl Guest {
+    pub fn protect_range(&mut self, va: u32, len: u32, permissions: Permissions)
+        -> Result<(), MapError>;
+    pub fn protect_range_owned(&mut self, claim: ClaimId, va: u32, len: u32,
+        permissions: Permissions) -> Result<(), MapError>;
+    pub fn unmap(&mut self, va: u32, len: u32) -> Result<(), MapError>;
+    pub fn unmap_owned(&mut self, claim: ClaimId, va: u32, len: u32)
+        -> Result<(), MapError>;
+    pub fn reserve_physical(&mut self, physical: u32, len: u32, aliases: &[u32],
+        owner: &'static str) -> Result<ReservationId, MapError>;
+    pub fn map_reserved(&mut self, reservation: ReservationId, va: u32, len: u32,
+        permissions: Permissions) -> Result<(), MapError>;
+    pub fn claim_virtual(&mut self, va: u32, len: u32, owner: &'static str)
+        -> Result<ClaimId, MapError>;
+    pub fn physical_free(&self, physical: u32, len: u32) -> bool;
+    pub fn find_free_physical(&self, len: u32, range: std::ops::Range<u32>,
+        alignment: u32) -> Option<u32>;
+    pub fn physical_aliases(&self, physical: u32, len: u32) -> Vec<Mapping>;
+    pub fn physical_reservations(&self) -> &[PhysicalReservation];
+    pub fn virtual_claims(&self) -> &[VirtualClaim];
+    pub fn guard_code(&mut self, va: u32, len: u32) -> Result<(), MapError>;
+    pub fn code_ranges(&self) -> Vec<std::ops::Range<u64>>;
+}
+
+// loader (load_xbe_with is also re-exported at the crate root)
+pub const HALO2_PHYSICAL_ARENA: std::ops::Range<u32>; // 0x61000..0x3145000
+pub const CONTIGUOUS_ALIAS_BASE: u32;                 // 0x80000000
+pub struct ReservationRequest { pub physical: std::ops::Range<u32>,
+    pub aliases: Vec<u32>, pub owner: &'static str }
+pub struct LoadOptions { pub physical_reservations: Vec<ReservationRequest> } // Default
+impl LoadOptions { pub fn halo2() -> Self; }
+pub fn load_xbe_with(bytes: &[u8], options: &LoadOptions)
+    -> Result<LoadedImage, LoadError>;
+```
+
+Behavior changes to existing calls, none of which affects a guest that has
+no reservations or unmaps:
+
+- `map` returns `Reserved` for reserved physical bytes or a reserved alias
+  window. Its other checks and their order are unchanged.
+- `map_zeroed` validates the virtual range before it chooses physical memory,
+  so a bad or overlapping VA reports InvalidRange/Overlap/Reserved even when
+  RAM is exhausted. It skips reservations. When fresh RAM above every earlier
+  mapping runs out, it reuses the lowest free gap and zeroes it, where it used
+  to return OutOfMemory.
+
+- `load_xbe`/`load_xbe_with` call `guard_code` for every executable section
+  after setting final protections. `protect_range` without Execute, `unmap`
+  and both `_owned` variants refuse such pages with `LiftedCode`. Generated
+  handlers check Execute only at dispatch and jump locally across pages, so
+  the runtime cannot enforce those changes. It refuses them, and doesn't
+  report a success it can't honour. A distinct
+  error was chosen over an `Unmodelled` event because Guest has no event sink
+  and the range calls are all-or-nothing. `protect` (whole mapping) is not
+  guarded. Modules for code outside the image must `guard_code` it.
+
+Kernel integration notes:
+
+- `kernel::memory` still finds physical memory by scanning `mappings()`
+  (`find_physical`, `physical_pages`). Once a reservation exists, it can pick
+  reserved pages, and its `.expect("preflighted ...")` maps would then panic on
+  `Reserved`. Switch those scans to `find_free_physical`/`physical_free` before
+  booting with `LoadOptions::halo2()`.
+- For Halo's `XPhysicalAlloc(0x30e4000, 0x61000, ...)`, recognise a request
+  wholly inside a reservation and use
+  `map_reserved(id, 0x80000000 + physical, size, perms)`. Return
+  `0x80061000`.
+- MmSetAddressProtect: `protect_range(base & !0xfff, page-rounded size, perms)`.
+  PAGE_NOACCESS maps to `Permissions::NONE`.
+- MmFreeContiguousMemory: `unmap(va, size)`. The pages stay reserved if they
+  belong to a reservation. NtFreeVirtualMemory decommit: `unmap` each committed
+  run. `Unmapped` means a hole.
+- Map `LiftedCode` from MmSetAddressProtect or a free to a named Stop.
+- Register `HLE_RESERVED` with `claim_virtual` if guest frees must never touch
+  it; HLE then frees with `unmap_owned`.
+
+Tests (`tests/memory_ranges.rs`) cover split edges, multi-mapping ranges,
+NONE, all-or-nothing failure for every error class, per-alias protection with
+shared bytes, unmap holes and straddling accesses, top-of-address-space
+ranges, freed-RAM reuse with zeroing, reservation violation attempts through
+every allocator and map path, reserved remaps after protect/unmap, claims, the
+lifted-code guard (loader sections, hand guards, owners, partial ranges), and
+runner Execute faults after protect and unmap of a non-image adapter page.
+Rejected reservations are checked against nonzero sentinels in live backing. The ignored
+`real_disc_arena_reservation_and_physical_budget` decodes the instructions at
+0x0012b400 with iced-x86 (operands, call target, ignored result) and checks the budget. Set `H2_XBE` to point it at a disc outside
+the worktree.

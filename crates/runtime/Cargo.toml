@@ -9,4 +9,5 @@ thiserror.workspace = true
 xbe.workspace = true
 
 [dev-dependencies]
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
 runtime-test-probe = { path = "test-probe" }

@@ -29,4 +29,4 @@ pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
 pub use ffi::ExecCtxOpaque;
 pub use generated::{H2GenEntry, H2GenModule, H2GenResume, RegisteredModule};
 pub use guest::{Guest, GuestFault};
-pub use loader::{LoadedImage, load_xbe};
+pub use loader::{LoadedImage, load_xbe, load_xbe_with};

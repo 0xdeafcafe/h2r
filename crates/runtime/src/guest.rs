@@ -36,6 +36,8 @@ pub struct GuestFault {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Permissions(u8);
 impl Permissions {
+    /// PAGE_NOACCESS: every access faults with `FaultReason::Protection`.
+    pub const NONE: Self = Self(0);
     pub const READ: Self = Self(1);
     pub const RW: Self = Self(3);
     pub const RX: Self = Self(5);
@@ -62,7 +64,7 @@ pub struct Mapping {
     pub permissions: Permissions,
 }
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
 pub enum MapError {
     #[error("invalid virtual or physical mapping range")]
     InvalidRange,
@@ -70,12 +72,82 @@ pub enum MapError {
     Overlap,
     #[error("64 MB physical memory exhausted")]
     OutOfMemory,
+    /// Part of the requested virtual range has no mapping.
+    #[error("range is not entirely mapped")]
+    Unmapped,
+    /// The range touches a physical reservation or one of its alias windows.
+    #[error("range conflicts with a physical reservation")]
+    Reserved,
+    /// The range touches an HLE-owned virtual claim.
+    #[error("range touches an HLE-owned virtual claim")]
+    Claimed,
+    /// Unmapping, or removing Execute from, a page of guarded lifted code.
+    /// Generated code checks Execute only at dispatch and jumps locally
+    /// across pages, so the change could not be enforced.
+    #[error("range would remove Execute from lifted code")]
+    LiftedCode,
+}
+
+/// Identifies one [`PhysicalReservation`]; returned by
+/// [`Guest::reserve_physical`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ReservationId(u32);
+
+/// Physical RAM withheld from every allocator. It is reachable only through
+/// [`Guest::map_reserved`] at the same offset inside one of its alias windows,
+/// each `[alias, alias + len)`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PhysicalReservation {
+    pub id: ReservationId,
+    pub physical_start: u32,
+    pub len: u32,
+    pub aliases: Vec<u32>,
+    pub owner: &'static str,
+}
+impl PhysicalReservation {
+    fn end(&self) -> u64 {
+        self.physical_start as u64 + self.len as u64
+    }
+}
+
+/// Identifies one [`VirtualClaim`]; returned by [`Guest::claim_virtual`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClaimId(u32);
+
+/// Virtual range owned by HLE. Guest-driven [`Guest::unmap`] and
+/// [`Guest::protect_range`] refuse to touch it; its owner uses the `_owned`
+/// variants. Claims do not stop ordinary mapping inside them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VirtualClaim {
+    pub id: ClaimId,
+    pub virtual_start: u32,
+    pub len: u32,
+    pub owner: &'static str,
+}
+impl VirtualClaim {
+    fn end(&self) -> u64 {
+        self.virtual_start as u64 + self.len as u64
+    }
 }
 
 pub struct Guest {
     ram: Box<[u8]>,
     mappings: Vec<Mapping>,
     next_physical: u32,
+    reservations: Vec<PhysicalReservation>,
+    claims: Vec<VirtualClaim>,
+    code: Vec<(u64, u64)>,
+    next_id: u32,
+}
+
+fn overlaps(a: u64, a_end: u64, b: u64, b_end: u64) -> bool {
+    a < b_end && b < a_end
+}
+fn page_aligned(v: u64) -> bool {
+    v.is_multiple_of(PAGE_SIZE as u64)
+}
+fn page_end(v: u64) -> u64 {
+    v.div_ceil(PAGE_SIZE as u64) * PAGE_SIZE as u64
 }
 
 impl Default for Guest {
@@ -90,10 +162,44 @@ impl Guest {
             ram: vec![0; RAM_SIZE].into_boxed_slice(),
             mappings: Vec::new(),
             next_physical: 0,
+            reservations: Vec::new(),
+            claims: Vec::new(),
+            code: Vec::new(),
+            next_id: 1,
         }
     }
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
+    }
+    pub fn physical_reservations(&self) -> &[PhysicalReservation] {
+        &self.reservations
+    }
+    pub fn virtual_claims(&self) -> &[VirtualClaim] {
+        &self.claims
+    }
+    /// Declare `[va, va + len)`, rounded out to whole pages, as lifted guest
+    /// code that generated handlers may run. From then on [`Guest::unmap`],
+    /// [`Guest::protect_range`] and their `_owned` variants refuse with
+    /// `LiftedCode` to unmap any of those pages or to apply permissions
+    /// without Execute to them. The loader guards every executable XBE
+    /// section; whoever registers a generated module for code elsewhere must
+    /// guard it too. Guards are permanent. Zero or overflowing bounds are
+    /// `InvalidRange`. The whole-mapping [`Guest::protect`] is not guarded.
+    pub fn guard_code(&mut self, va: u32, len: u32) -> Result<(), MapError> {
+        let end = va as u64 + len as u64;
+        if len == 0 || end > 1u64 << 32 {
+            return Err(MapError::InvalidRange);
+        }
+        self.code
+            .push((va as u64 & !(PAGE_SIZE as u64 - 1), page_end(end)));
+        Ok(())
+    }
+    /// Page-rounded ranges passed to `guard_code`; ends may equal 2^32.
+    pub fn code_ranges(&self) -> Vec<std::ops::Range<u64>> {
+        self.code.iter().map(|&(a, b)| a..b).collect()
+    }
+    fn touches_code(&self, start: u64, end: u64) -> bool {
+        self.code.iter().any(|&(a, b)| overlaps(start, end, a, b))
     }
 
     /// Explicit aliases may share physical bytes, but virtual ranges cannot
@@ -105,12 +211,21 @@ impl Guest {
         physical: u32,
         permissions: Permissions,
     ) -> Result<(), MapError> {
+        if physical as u64 + len as u64 > RAM_SIZE as u64 {
+            return Err(MapError::InvalidRange);
+        }
+        self.check_virtual(va, len)?;
+        if self.physical_reserved(physical as u64, physical as u64 + len as u64) {
+            return Err(MapError::Reserved);
+        }
+        self.insert_mapping(va, len, physical, permissions);
+        self.next_physical = self.next_physical.max(physical + len);
+        Ok(())
+    }
+    /// The virtual half of [`Guest::map`]'s validation.
+    fn check_virtual(&self, va: u32, len: u32) -> Result<(), MapError> {
         let end = va as u64 + len as u64;
-        if len == 0
-            || end > 1u64 << 32
-            || physical as u64 + len as u64 > RAM_SIZE as u64
-            || ((va as u64) < MMIO_END && end > MMIO_START)
-        {
+        if len == 0 || end > 1u64 << 32 || ((va as u64) < MMIO_END && end > MMIO_START) {
             return Err(MapError::InvalidRange);
         }
         if self.mappings.iter().any(|m| {
@@ -118,6 +233,12 @@ impl Guest {
         }) {
             return Err(MapError::Overlap);
         }
+        if self.in_alias_window(va as u64, end) {
+            return Err(MapError::Reserved);
+        }
+        Ok(())
+    }
+    fn insert_mapping(&mut self, va: u32, len: u32, physical: u32, permissions: Permissions) {
         self.mappings.push(Mapping {
             virtual_start: va,
             len,
@@ -125,26 +246,47 @@ impl Guest {
             permissions,
         });
         self.mappings.sort_unstable_by_key(|m| m.virtual_start);
-        self.next_physical = self.next_physical.max(physical + len);
-        Ok(())
     }
 
     /// Allocate distinct page-aligned physical storage for a virtual range.
+    /// Storage comes from never-used RAM above every earlier mapping, skipping
+    /// physical reservations. When that runs out, the lowest free page-aligned
+    /// gap left by [`Guest::unmap`] is reused and zeroed first.
     pub fn map_zeroed(
         &mut self,
         va: u32,
         len: u32,
         permissions: Permissions,
     ) -> Result<(), MapError> {
-        let physical = self
-            .next_physical
-            .checked_add(PAGE_SIZE - 1)
-            .ok_or(MapError::OutOfMemory)?
-            & !(PAGE_SIZE - 1);
-        if physical as u64 + len as u64 > RAM_SIZE as u64 {
-            return Err(MapError::OutOfMemory);
+        self.check_virtual(va, len)?;
+        if let Some(physical) = self.fresh_physical(len) {
+            return self.map(va, len, physical, permissions);
         }
-        self.map(va, len, physical, permissions)
+        let physical = self
+            .find_free_physical(len, 0..RAM_SIZE as u32, PAGE_SIZE)
+            .ok_or(MapError::OutOfMemory)?;
+        self.map(va, len, physical, permissions)?;
+        self.ram[physical as usize..physical as usize + len as usize].fill(0);
+        Ok(())
+    }
+    fn fresh_physical(&self, len: u32) -> Option<u32> {
+        let mut start = page_end(self.next_physical as u64);
+        loop {
+            let end = start + len as u64;
+            if end > RAM_SIZE as u64 {
+                return None;
+            }
+            match self
+                .reservations
+                .iter()
+                .filter(|r| overlaps(start, end, r.physical_start as u64, r.end()))
+                .map(|r| r.end())
+                .max()
+            {
+                Some(next) => start = page_end(next),
+                None => return Some(start as u32),
+            }
+        }
     }
     pub fn protect(&mut self, va: u32, permissions: Permissions) -> Result<(), MapError> {
         self.mappings
@@ -153,6 +295,372 @@ impl Guest {
             .ok_or(MapError::InvalidRange)?
             .permissions = permissions;
         Ok(())
+    }
+
+    /// True if no mapping uses any page of `[physical, physical + len)` and no
+    /// reservation covers it. Mapping extents are rounded out to whole pages.
+    pub fn physical_free(&self, physical: u32, len: u32) -> bool {
+        let start = physical as u64 & !(PAGE_SIZE as u64 - 1);
+        let end = page_end(physical as u64 + len as u64);
+        len != 0 && end <= RAM_SIZE as u64 && self.physical_conflict_end(start, end).is_none()
+    }
+    /// Lowest `alignment`-aligned (at least page-aligned) base inside `range`
+    /// with `len` free bytes per [`Guest::physical_free`]. `range.end` is
+    /// exclusive and clipped to RAM. None if `len` is zero, the alignment is
+    /// not a power of two, or nothing fits.
+    pub fn find_free_physical(
+        &self,
+        len: u32,
+        range: std::ops::Range<u32>,
+        alignment: u32,
+    ) -> Option<u32> {
+        if len == 0 || !alignment.is_power_of_two() {
+            return None;
+        }
+        let align = alignment.max(PAGE_SIZE) as u64;
+        let limit = (range.end as u64).min(RAM_SIZE as u64);
+        let mut start = (range.start as u64).div_ceil(align) * align;
+        loop {
+            let end = start + page_end(len as u64);
+            if end > limit {
+                return None;
+            }
+            match self.physical_conflict_end(start, end) {
+                Some(next) => start = next.div_ceil(align) * align,
+                None => return Some(start as u32),
+            }
+        }
+    }
+    fn physical_conflict_end(&self, start: u64, end: u64) -> Option<u64> {
+        let mapped = self
+            .mappings
+            .iter()
+            .map(|m| {
+                let p = m.physical_start as u64;
+                (p & !(PAGE_SIZE as u64 - 1), page_end(p + m.len as u64))
+            })
+            .chain(
+                self.reservations
+                    .iter()
+                    .map(|r| (r.physical_start as u64, r.end())),
+            );
+        mapped
+            .filter(|&(a, b)| overlaps(start, end, a, b))
+            .map(|(_, b)| b)
+            .max()
+    }
+    fn physical_reserved(&self, start: u64, end: u64) -> bool {
+        self.reservations
+            .iter()
+            .any(|r| overlaps(start, end, r.physical_start as u64, r.end()))
+    }
+    fn in_alias_window(&self, start: u64, end: u64) -> bool {
+        self.reservations.iter().any(|r| {
+            r.aliases
+                .iter()
+                .any(|&a| overlaps(start, end, a as u64, a as u64 + r.len as u64))
+        })
+    }
+    fn fresh_id(&mut self) -> u32 {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// Withhold physical `[physical, physical + len)` from every allocator and
+    /// from [`Guest::map`]. Each alias base `a` reserves the virtual window
+    /// `[a, a + len)`; only [`Guest::map_reserved`] can map there, and only at
+    /// the identical offset, so every alias sees the same bytes. All values
+    /// must be page-aligned and `len` non-zero. Call this before anything uses
+    /// the range: an existing mapping in a window or of those physical pages
+    /// is `Overlap`. Another reservation's physical range or window is
+    /// `Reserved`. Bad bounds, RAM overflow and windows touching the NV2A
+    /// aperture are `InvalidRange`. The reserved bytes are zeroed.
+    pub fn reserve_physical(
+        &mut self,
+        physical: u32,
+        len: u32,
+        aliases: &[u32],
+        owner: &'static str,
+    ) -> Result<ReservationId, MapError> {
+        let (p, n) = (physical as u64, len as u64);
+        if n == 0 || !page_aligned(p) || !page_aligned(n) || p + n > RAM_SIZE as u64 {
+            return Err(MapError::InvalidRange);
+        }
+        for &a in aliases {
+            let a = a as u64;
+            if !page_aligned(a) || a + n > 1u64 << 32 || overlaps(a, a + n, MMIO_START, MMIO_END) {
+                return Err(MapError::InvalidRange);
+            }
+        }
+        for (i, &a) in aliases.iter().enumerate() {
+            let a = a as u64;
+            if aliases[..i]
+                .iter()
+                .any(|&b| overlaps(a, a + n, b as u64, b as u64 + n))
+                || self.in_alias_window(a, a + n)
+            {
+                return Err(MapError::Reserved);
+            }
+        }
+        if self.physical_reserved(p, p + n) {
+            return Err(MapError::Reserved);
+        }
+        if self.mappings.iter().any(|m| {
+            let (v, q) = (m.virtual_start as u64, m.physical_start as u64);
+            overlaps(p, p + n, q, q + m.len as u64)
+                || aliases
+                    .iter()
+                    .any(|&a| overlaps(a as u64, a as u64 + n, v, v + m.len as u64))
+        }) {
+            return Err(MapError::Overlap);
+        }
+        self.ram[p as usize..(p + n) as usize].fill(0);
+        let id = ReservationId(self.fresh_id());
+        self.reservations.push(PhysicalReservation {
+            id,
+            physical_start: physical,
+            len,
+            aliases: aliases.to_vec(),
+            owner,
+        });
+        Ok(id)
+    }
+    /// Map `[va, va + len)` inside one alias window of `reservation` onto the
+    /// reserved physical bytes at the same offset. Bytes are not cleared, so
+    /// a later remap sees what an earlier one wrote. Unknown reservation or
+    /// zero/unaligned bounds are `InvalidRange`; a range not wholly inside one
+    /// of its windows is `Reserved`; an existing mapping there is `Overlap`.
+    pub fn map_reserved(
+        &mut self,
+        reservation: ReservationId,
+        va: u32,
+        len: u32,
+        permissions: Permissions,
+    ) -> Result<(), MapError> {
+        let (v, n) = (va as u64, len as u64);
+        let r = self
+            .reservations
+            .iter()
+            .find(|r| r.id == reservation)
+            .ok_or(MapError::InvalidRange)?;
+        if n == 0 || !page_aligned(v) || !page_aligned(n) {
+            return Err(MapError::InvalidRange);
+        }
+        let alias = r
+            .aliases
+            .iter()
+            .copied()
+            .find(|&a| v >= a as u64 && v + n <= a as u64 + r.len as u64)
+            .ok_or(MapError::Reserved)?;
+        let physical = r.physical_start + (va - alias);
+        if self.mappings.iter().any(|m| {
+            overlaps(
+                v,
+                v + n,
+                m.virtual_start as u64,
+                m.virtual_start as u64 + m.len as u64,
+            )
+        }) {
+            return Err(MapError::Overlap);
+        }
+        self.insert_mapping(va, len, physical, permissions);
+        Ok(())
+    }
+
+    /// Mark `[va, va + len)` as HLE-owned. Guest-driven [`Guest::unmap`] and
+    /// [`Guest::protect_range`] then fail with `Claimed` on any overlap. The
+    /// claim does not map anything and does not block [`Guest::map`].
+    /// Zero/unaligned/overflowing bounds are `InvalidRange`; overlapping
+    /// another claim is `Claimed`.
+    pub fn claim_virtual(
+        &mut self,
+        va: u32,
+        len: u32,
+        owner: &'static str,
+    ) -> Result<ClaimId, MapError> {
+        let (v, n) = (va as u64, len as u64);
+        if n == 0 || !page_aligned(v) || !page_aligned(n) || v + n > 1u64 << 32 {
+            return Err(MapError::InvalidRange);
+        }
+        if self
+            .claims
+            .iter()
+            .any(|c| overlaps(v, v + n, c.virtual_start as u64, c.end()))
+        {
+            return Err(MapError::Claimed);
+        }
+        let id = ClaimId(self.fresh_id());
+        self.claims.push(VirtualClaim {
+            id,
+            virtual_start: va,
+            len,
+            owner,
+        });
+        Ok(id)
+    }
+
+    /// Mapped virtual windows that reach any byte of physical
+    /// `[physical, physical + len)`, each clipped to that physical range.
+    pub fn physical_aliases(&self, physical: u32, len: u32) -> Vec<Mapping> {
+        let (start, end) = (physical as u64, physical as u64 + len as u64);
+        self.mappings
+            .iter()
+            .filter_map(|m| {
+                let p = m.physical_start as u64;
+                let lo = start.max(p);
+                let hi = end.min(p + m.len as u64);
+                (lo < hi).then(|| Mapping {
+                    virtual_start: (m.virtual_start as u64 + lo - p) as u32,
+                    len: (hi - lo) as u32,
+                    physical_start: lo as u32,
+                    permissions: m.permissions,
+                })
+            })
+            .collect()
+    }
+
+    /// Change the permissions of exactly `[va, va + len)`, splitting mappings
+    /// at both edges. Other virtual aliases of the same physical bytes keep
+    /// their own permissions; split pieces keep their physical offsets. The
+    /// whole range is validated first, so failure changes nothing:
+    /// zero/unaligned/overflowing bounds are `InvalidRange`, any unmapped byte
+    /// is `Unmapped`, any overlap with an HLE claim is `Claimed`, and
+    /// permissions without Execute on a [`Guest::guard_code`] page are
+    /// `LiftedCode`.
+    pub fn protect_range(
+        &mut self,
+        va: u32,
+        len: u32,
+        permissions: Permissions,
+    ) -> Result<(), MapError> {
+        let (start, end) = self.validate_range(va, len, None)?;
+        self.check_code(start, end, Some(permissions))?;
+        self.apply_protect(start, end, permissions);
+        Ok(())
+    }
+    /// [`Guest::protect_range`] for the owner of `claim`; the range must lie
+    /// wholly inside that claim, otherwise `Claimed`.
+    pub fn protect_range_owned(
+        &mut self,
+        claim: ClaimId,
+        va: u32,
+        len: u32,
+        permissions: Permissions,
+    ) -> Result<(), MapError> {
+        let (start, end) = self.validate_range(va, len, Some(claim))?;
+        self.check_code(start, end, Some(permissions))?;
+        self.apply_protect(start, end, permissions);
+        Ok(())
+    }
+    /// Remove exactly `[va, va + len)` from the virtual map, splitting
+    /// mappings at both edges. Physical bytes are untouched: another alias
+    /// still reads them, and a reservation keeps its pages reserved. Pages no
+    /// mapping or reservation references become free for
+    /// [`Guest::find_free_physical`] and are zeroed by `map_zeroed` on reuse.
+    /// Validation and errors match [`Guest::protect_range`]; unmapping any
+    /// guarded code page is `LiftedCode`. Failure changes nothing.
+    pub fn unmap(&mut self, va: u32, len: u32) -> Result<(), MapError> {
+        let (start, end) = self.validate_range(va, len, None)?;
+        self.check_code(start, end, None)?;
+        self.apply_unmap(start, end);
+        Ok(())
+    }
+    /// [`Guest::unmap`] for the owner of `claim`; the range must lie wholly
+    /// inside that claim, otherwise `Claimed`.
+    pub fn unmap_owned(&mut self, claim: ClaimId, va: u32, len: u32) -> Result<(), MapError> {
+        let (start, end) = self.validate_range(va, len, Some(claim))?;
+        self.check_code(start, end, None)?;
+        self.apply_unmap(start, end);
+        Ok(())
+    }
+    fn validate_range(
+        &self,
+        va: u32,
+        len: u32,
+        claim: Option<ClaimId>,
+    ) -> Result<(u64, u64), MapError> {
+        let (start, end) = (va as u64, va as u64 + len as u64);
+        if len == 0 || !page_aligned(start) || !page_aligned(len as u64) || end > 1u64 << 32 {
+            return Err(MapError::InvalidRange);
+        }
+        let allowed = match claim {
+            None => !self
+                .claims
+                .iter()
+                .any(|c| overlaps(start, end, c.virtual_start as u64, c.end())),
+            Some(id) => self
+                .claims
+                .iter()
+                .any(|c| c.id == id && start >= c.virtual_start as u64 && end <= c.end()),
+        };
+        if !allowed {
+            return Err(MapError::Claimed);
+        }
+        let mut index = self.mapping_index(start).ok_or(MapError::Unmapped)?;
+        let mut cursor = start;
+        while cursor < end {
+            let m = self
+                .mappings
+                .get(index)
+                .filter(|m| {
+                    m.virtual_start as u64 <= cursor
+                        && cursor < m.virtual_start as u64 + m.len as u64
+                })
+                .ok_or(MapError::Unmapped)?;
+            cursor = m.virtual_start as u64 + m.len as u64;
+            index += 1;
+        }
+        Ok((start, end))
+    }
+    /// `permissions` None means unmap. Checked after `validate_range`, so
+    /// bounds, holes and claims report first.
+    fn check_code(
+        &self,
+        start: u64,
+        end: u64,
+        permissions: Option<Permissions>,
+    ) -> Result<(), MapError> {
+        let removes_execute = permissions.is_none_or(|p| !p.allows(Access::Execute));
+        if removes_execute && self.touches_code(start, end) {
+            return Err(MapError::LiftedCode);
+        }
+        Ok(())
+    }
+    /// Split the mapping strictly containing `addr`, if any, into two pieces
+    /// with consistent physical offsets.
+    fn split_at(&mut self, addr: u64) {
+        let Some(i) = self.mapping_index(addr) else {
+            return;
+        };
+        let m = &mut self.mappings[i];
+        let offset = addr - m.virtual_start as u64;
+        if offset == 0 {
+            return;
+        }
+        let tail = Mapping {
+            virtual_start: addr as u32,
+            len: m.len - offset as u32,
+            physical_start: m.physical_start + offset as u32,
+            permissions: m.permissions,
+        };
+        m.len = offset as u32;
+        self.mappings.insert(i + 1, tail);
+    }
+    fn apply_protect(&mut self, start: u64, end: u64, permissions: Permissions) {
+        self.split_at(start);
+        self.split_at(end);
+        for m in &mut self.mappings {
+            if (start..end).contains(&(m.virtual_start as u64)) {
+                m.permissions = permissions;
+            }
+        }
+    }
+    fn apply_unmap(&mut self, start: u64, end: u64) {
+        self.split_at(start);
+        self.split_at(end);
+        self.mappings
+            .retain(|m| !(start..end).contains(&(m.virtual_start as u64)));
     }
 
     fn mapping_index(&self, addr: u64) -> Option<usize> {
