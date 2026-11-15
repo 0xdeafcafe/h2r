@@ -132,6 +132,18 @@ pub fn describe(i: &Installed) -> String {
 ///   from 0x13e06.
 pub const RUN_NATIVE: &[(u32, &str)] = &[
     (0x003f_db20, "Get2DSurfaceDesc (retail body)"),
+    // BeginPush (crates/d3d: "inline UP draw", unrecovered). ESI = dword
+    // count, returns EAX = put; plain `ret`. Commits deferred state through
+    // the HLE entry 0x401030, then MakeSpace 0x3faae0 when the push buffer
+    // lacks `count * 4 + 0x204` bytes. The caller (0x4b24b) writes
+    // BEGIN_END and the inline vertices itself, which the push parser reads.
+    (0x003f_ae10, "BeginPush 0x3fae10 (retail body)"),
+    // CDevice_SetStateVB (stdcall device, base; ret 8). Clears the dirty
+    // bits at 0x407490, commits deferred state through the HLE entry
+    // 0x400fa0, then (when the base vertex at device+0x20 or the state
+    // changed) pushes the vertex array format/offset methods (0x1760..)
+    // for the streams of the vertex shader at device+0x794.
+    (0x0040_1030, "CDevice_SetStateVB 0x401030 (retail body)"),
 ];
 
 pub fn install_stopgaps(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
@@ -258,4 +270,38 @@ pub fn back_surfaces(mem: &mut runtime::Guest, device: u32) {
         let _ = mem.write_bytes(0x8000_0000 | phys, &vec![0; len as usize], 1);
         let _ = mem.set_u32(header + 4, phys);
     }
+}
+
+/// `0x003f7b30`, SetRenderTarget's fast path (crates/d3d: "SetRenderTarget
+/// variant", stopping). ABI: `[esp+4]` = target, EBX = depth/stencil,
+/// `ret 4`. `0x1cd30` takes it when the new target has the current one's
+/// format and size (`0x1cd48..0x1cd60`). Body: the same AddRef/Release of
+/// the pair and device +0x1a04/+0x1a08 updates as `0x3f7870`, the surface
+/// offset/pitch methods (0x210/0x214, 0x30c/0x32c), but no viewport reset.
+///
+/// Boot stopgap: call crates/d3d's SetRenderTarget (`0x3f7870`, stdcall
+/// target, z) with the same pair. The difference is the viewport reset to
+/// the whole (same-sized) target; `0x14bc0` sets the viewport right after.
+/// Owner: d3d.
+pub const SET_RENDER_TARGET_FAST: u32 = 0x003f_7b30;
+
+pub fn install_render_target_fast(rt: &runtime::Runtime, uses: &crate::stopgaps::Uses) {
+    let u = Arc::clone(uses);
+    rt.edit_dispatch(|d| {
+        d.register_override(SET_RENDER_TARGET_FAST, "boot:SetRenderTarget fast path via 0x3f7870", move |cpu, ctx, _| {
+            u.lock().unwrap().entry(SET_RENDER_TARGET_FAST).or_insert(("SetRenderTarget fast path 0x3f7b30 (via 0x3f7870)", 0)).1 += 1;
+            let rt = Arc::clone(ctx.runtime());
+            let mut mem = rt.memory();
+            let target = mem.u32(cpu.esp + 4)?;
+            for w in [cpu.ebx, target] {
+                cpu.esp = cpu.esp.wrapping_sub(4);
+                mem.set_u32(cpu.esp, w)?;
+            }
+            ctx.call_guest(cpu, &mut mem, 0x003f_7870, |cpu, ctx| {
+                let rt = Arc::clone(ctx.runtime());
+                let mem = rt.memory();
+                mem.ret(cpu, 4)
+            })
+        });
+    });
 }
