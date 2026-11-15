@@ -33,6 +33,9 @@ use runtime::{Event, GuestFn};
 
 /// The bridge source linked into the generated dylib.
 pub const BRIDGE: &str = include_str!("../c/boot_bridge.c");
+/// The `h2x87_v1_*` forwarders generated code imports since x87 lowering:
+/// emit's own x87 bridge, installed with `h2x87bridge_install`.
+pub const BRIDGE_X87: &str = concat!("#include \"h2gen.h\"\n", include_str!("../../emit/c/bridge_x87.c"));
 /// The runtime ABI header, copied next to the generated sources.
 pub const H2ABI_H: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../runtime/include/h2abi.h");
 /// File name of the linked module inside the build directory.
@@ -106,7 +109,7 @@ pub fn build(xbe_bytes: &[u8], out: &Path, jobs: usize) -> Result<PathBuf> {
     );
     let lib = out.join(DYLIB);
     let t = Instant::now();
-    emit::compile::host_dylib(&b, &src, &[("h2boot_bridge.c", BRIDGE)], &lib).map_err(anyhow::Error::msg)?;
+    emit::compile::host_dylib(&b, &src, &[("h2boot_bridge.c", BRIDGE), ("h2boot_bridge_x87.c", BRIDGE_X87)], &lib).map_err(anyhow::Error::msg)?;
     eprintln!("link: {:.1}s -> {}", t.elapsed().as_secs_f64(), lib.display());
     Ok(lib)
 }
@@ -157,6 +160,10 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         }
         let install: libloading::Symbol<unsafe extern "C" fn(*const shim::Bridge)> = lib.get(b"h2boot_install")?;
         install(&shim::bridge());
+        let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)> =
+            lib.get(b"h2x87bridge_install")?;
+        let fns = shim::x87_helpers();
+        install_x87(fns.as_ptr(), fns.len() as u32);
         let module: libloading::Symbol<*const GenModule> = lib.get(b"h2gen_module")?;
         let m = &**module;
         if m.abi_version != runtime::cpu::ABI_VERSION {

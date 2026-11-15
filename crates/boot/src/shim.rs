@@ -42,7 +42,56 @@ pub fn bridge() -> Bridge {
     }
 }
 
-const NAMES: [&str; 13] = [
+/// crates/x87's helpers in `h2x87bridge_install` order (emit's
+/// `X87_BRIDGE_SYMBOLS`, which the test below checks).
+macro_rules! x87_helpers {
+    ($($name:ident,)*) => {
+        #[cfg(test)]
+        const X87_HELPER_NAMES: [&str; 35] = [$(stringify!($name)),*];
+        pub fn x87_helpers() -> [*const std::ffi::c_void; 35] {
+            [$(x87::abi::ffi::$name as *const std::ffi::c_void),*]
+        }
+    };
+}
+x87_helpers! {
+    h2x87_v1_ld_f32,
+    h2x87_v1_ld_f64,
+    h2x87_v1_ld_f80,
+    h2x87_v1_ld_i16,
+    h2x87_v1_ld_i32,
+    h2x87_v1_ld_i64,
+    h2x87_v1_ld_bcd,
+    h2x87_v1_ld_const,
+    h2x87_v1_ld_st,
+    h2x87_v1_st_f32,
+    h2x87_v1_st_f64,
+    h2x87_v1_st_f80,
+    h2x87_v1_st_i16,
+    h2x87_v1_st_i32,
+    h2x87_v1_st_i64,
+    h2x87_v1_st_bcd,
+    h2x87_v1_st_i32_trunc,
+    h2x87_v1_store_commit,
+    h2x87_v1_st_st,
+    h2x87_v1_ftol2,
+    h2x87_v1_arith,
+    h2x87_v1_unary,
+    h2x87_v1_cmp,
+    h2x87_v1_xam,
+    h2x87_v1_xch,
+    h2x87_v1_free,
+    h2x87_v1_adj_top,
+    h2x87_v1_cmov,
+    h2x87_v1_ldcw,
+    h2x87_v1_wait,
+    h2x87_v1_clex,
+    h2x87_v1_init,
+    h2x87_v1_save_image,
+    h2x87_v1_save_commit,
+    h2x87_v1_load_env,
+}
+
+const NAMES: [&str; 15] = [
     "?",
     "divide error (#DE)",
     "breakpoint (#BP)",
@@ -55,7 +104,9 @@ const NAMES: [&str; 13] = [
     "bad entry selector",
     "unknown switch target",
     "descent error (analysis could not follow control)",
-    "unmodelled popfd",
+    "unmodelled (popfd, or an unmasked x87 OE/UE/PE)",
+    "SIMD floating-point exception (#XM)",
+    "x87 floating-point error (#MF, arg = status word)",
 ];
 
 fn record(c: *mut ExecCtxOpaque, pc: u32, text: String) -> u32 {
@@ -96,4 +147,12 @@ unsafe extern "C" fn unsupported(c: *mut ExecCtxOpaque, pc: u32, m: *const c_cha
 /// The newest shim record for `pc` on `thread`.
 pub fn lookup(thread: u32, pc: u32) -> Option<String> {
     SHIM_EVENTS.lock().unwrap().iter().rev().find(|(t, p, _)| *t == thread && *p == pc).map(|e| e.2.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn x87_helpers_match_the_emit_bridge_order() {
+        assert_eq!(super::X87_HELPER_NAMES, emit::host::X87_BRIDGE_SYMBOLS);
+    }
 }
