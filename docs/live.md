@@ -853,3 +853,76 @@ Matchmaking/session registration, invitations, clans, feedback storage and remot
 friend presence are future work. The HTTP worker does not turn these into fake
 successful operations. The current proof covers the API boundary and local host
 transport; it does not establish an end-to-end online match.
+
+## Client HLE: Live not set up
+
+`crates/boot/src/live_notice.rs` puts our text on the game's own "cannot
+connect to Xbox Live" dialog, the one that offers the troubleshooter (UI
+error `0x23`). The game draws it in its dialog and font; no tag or localized
+string is edited. `boot::run_hosted_with_live` installs it after the Live
+boundary and telemetry. `H2_NO_LIVE_NOTICE=1` leaves it out.
+
+How the dialog is reached (static reading of the retail image, not a run):
+
+- **Without `--live`.** Nothing is registered, so the real XNet library runs.
+  The default console reports no cable (`ConsoleConfig::phy_link = 0`), so
+  `0x0008d690` never starts transport and `0x004d8b19` stays clear. Picking
+  Xbox Live on the main menu runs the row handler `0x002308e0`: not signed
+  in (`0x0019028d`) and transport unusable (`0x0008d7c0` at `0x00230928`), so
+  it calls `0x0019b5af` with error `0x23` and the network-settings action
+  `0x00236917` at `0x002309e1`. The dialog appears at once; there is no
+  sign-in attempt to hang on, so no extra "not configured" mode is needed.
+- **With `--live` and a server.** If logon ends with CANNOT_ACCESS_SERVICE
+  (`0x80151001`, the HLE's result for transport or protocol failures), the
+  classifier gives game result 4 and `0x001486b8` shows the same error
+  `0x23` (`0x001486fa`).
+
+Dialog widgets (vtables `0x00454560`, `0x004545d0`, `0x00454640`) keep the
+error ID at `+0x610`, then four 256-unit UTF-16 buffers: title `+0x614`,
+message `+0x814`, first button `+0xa14`, second button `+0xc14`.
+`0x0019b72a` (EAX = error ID, EBX = dialog, one stack word, `ret 4`) looks
+the error up in the shared UI globals (`0x0023661f`) and resolves its
+strings into those buffers; it is called from both dialog constructors
+(`0x0019b56a`, `0x0019b5f3`) and from `0x001911ef`. The update method
+`0x0019b682`, shared by all three vtables, copies the title and message
+buffers into the text widgets every frame. The hook wraps `0x0019b72a`
+(shadow entry `0xa0ff6000`): after the original fill, if `+0x610` is `0x23`,
+it writes our message into `+0x814`, at most 255 units and a zero, so the
+first button's buffer is never touched. Title and buttons keep the game's
+text. Finding the dialog this way needs no asset names, string IDs or
+string-table offsets.
+
+The text depends on the boot's `LiveConfig`:
+
+| Live | Server | Message |
+|---|---|---|
+| off | (any) | "Xbox Live isn't set up in h2recomp.", then how to start with `--live` |
+| on | URL | "Can't reach the h2 live server at" and the URL, then the same advice |
+| on | none | stock text (local sign-in cannot fail to connect) |
+
+```text
+Xbox Live isn't set up in h2recomp.
+Quit and start again with one of:
+h2 play --live  (built-in server)
+h2 play --live --live-server <URL>
+Accounts: h2 live account create <tag>
+```
+
+The message box on the OK/cancel error dialog is about 244 by 91 pixels,
+five lines of the body font, so each line is kept under about 240 pixels.
+Lines break on `\r\n`, as the game's own strings do. The URL is shortened
+to 40 characters, and `|` (which starts a markup escape in the text scanner)
+is replaced. `h2 play` does not read `H2_LIVE_SERVER` (only the `h2 live`
+account commands do), so the message does not suggest it.
+
+The first button still offers the troubleshooter. It launches the
+dashboard's network settings through `XLaunchNewImageA`, which ends the run
+here. Other Live errors (servers busy `0x25`, invalid user `0x9a`,
+connection lost `0x38`) keep the game's text.
+
+Tests: `crates/boot/src/live_notice.rs` checks the text, the URL line and
+the buffer bounds on synthetic guest memory; `crates/boot/tests/live_notice.rs`
+runs the hook through the real Runner with the fixture module's leaf
+standing in for the fill, and checks that only error `0x23` changes, that
+install refuses to wrap an existing override and skips a missing original,
+and that local-only Live installs nothing. They need no XBE or game build.

@@ -451,6 +451,7 @@ dependencies = [
  "perf",
  "png",
  "runtime",
+ "runtime-test-probe",
  "timeline",
  "vfs",
  "x87",
