@@ -287,8 +287,9 @@ perform no profiling work. ABI layouts are unchanged. See
 
 ### 1.7 Nothing else
 
-Handlers call no other runtime symbol (but §1.1's accounting extension). The one other thing they read is
-the preempt word through the context pointer (§4, "Loop safe points"). x87, MMX and MXCSR state are read
+Handlers call no other runtime symbol (but §1.1's accounting extension). The other things they read
+through the context pointer are the preempt word (§4, "Loop safe points") and, in a module with
+direct calls, the direct-call block (§4, "Direct calls"), which they also write. x87, MMX and MXCSR state are read
 and written directly in `CpuAbi` by `static inline` helpers in `h2gen.h`,
 and SSE floating point by the `h2s_*` functions of `h2simd.h` (copied next
 to `h2gen.h`, which includes it). Those helpers mirror
@@ -340,7 +341,8 @@ typedef struct H2GenModule {
 - Every loop header is also a resume of its owner (§4, "Loop safe
   points"), with `start` = the header.
 - `features` is a bit set of optional schemes the module's handlers use:
-  `H2GEN_FEATURE_ACCOUNTING` (1, §1.1) or 0. It was `reserved`, always 0.
+  `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
+  §4 "Direct calls"), or 0. It was `reserved`, always 0.
 
 ## 3. Registration adapter (**new**)
 
@@ -446,6 +448,74 @@ Its semantics:
     pointer first too.
   - No shim event code is used for this: the exit is an ordinary
     resumable transfer, so it records no event.
+- **Direct calls** (**new**, `H2_DIRECT_CALLS`, module feature 2). A
+  module built with the flag (on in `h2 build`/`h2 emit` unless
+  `H2_DIRECT_CALLS=0`; a C define, so it is in the object cache key and the
+  dylib stamp) may invoke another of its handlers itself instead of
+  leaving with the transfer, where the runner would have done nothing but
+  invoke it:
+  - The object behind `ExecCtxOpaque *` has a second pointer after the
+    preempt word's: the context's `H2Direct` block (h2gen.h,
+    `runtime::direct`), or null, in which case no call is direct (the test
+    host; `ExecCtx::enable_direct_calls(false)`). A runtime without the
+    block refuses the module by its feature bit.
+  - Only a `call` to a static target that is a function entry (kind 0) of
+    the module, whose continuation is a selector of the caller's own
+    handler, or a `jmp` tail to such an entry, is emitted as a direct call
+    (`H2_DCALL`, `H2_DJUMP`). Lazy flags are settled and the inline RAM
+    gate dropped first, and the handler's access count is charged
+    (`H2_ACC_FLUSH`), as at any exit.
+  - It is direct only if, at that moment: the preempt word is 0 and the
+    runtime's interrupt queue is empty (so the runner's safe point would do
+    nothing); the block's `budget` (the runner's `max_transfers` left) is
+    non-zero; `depth` is under `cap`; the block's slot for the target holds
+    the target, this very handler and the runtime's current dispatch
+    generation; and the target's page has the execute bit in the inline RAM
+    view (taken with the gate; no view, a busy gate or no bit is a no).
+    Otherwise the handler leaves with the ordinary `CALL`/`JUMP`, exactly
+    as without the flag.
+  - The runner fills a slot each time it dispatches an entry route to a
+    native handler with selector = target, recording the generation it
+    resolved at. Any `edit_dispatch` moves the generation, so an override
+    registered, enabled, disabled or replaced (from any thread) stops every
+    direct call to that entry: the next call goes to the runner, which
+    resolves it again. A direct call therefore never bypasses an override.
+  - The handler takes a transfer and a nesting level, records the frame
+    (kind, target, continuation, ESP) at `frames[depth]`, spills its state
+    to `CpuAbi` (x87 pointers too), sets `eip` = target and calls the
+    callee's handler with start = target.
+  - The callee's result continues inline only if it is `RETURN`/
+    `RETURN_TARGET` to exactly the continuation, with no event, ESP above
+    the return slot, and again a quiet safe point, a transfer left and an
+    executable continuation page. The handler takes one more transfer,
+    drops the frame, reloads everything a fresh entry with that start would
+    load and goes on from the continuation's label (`P_` for a loop header,
+    as the runner's resume skips the poll). The runner would have resumed
+    this same handler there: the continuation is its own registered resume.
+  - Anything else (a fault, a stop, a return elsewhere or with ESP at or
+    below its slot, a call or jump out, a preemption or interrupt now
+    pending, the budget spent) is returned unchanged as this handler's own
+    transfer, without running the epilogue: `CpuAbi` is as the callee left
+    it. The runner then handles it at its safe point as it would have.
+  - After every invocation the runner takes back the budget left (direct
+    transfers count in `transfers` and `direct_transfers`) and replays the
+    frames still recorded into the shadow stack as it would have recorded
+    them (`unwind`, `call`, `enter`). An event recorded while C is nested
+    takes its backtrace with those frames on top. A call that returns
+    inline leaves the shadow stack as it found it; the one difference is
+    that the runner's `unwind` at that return is skipped, so a stale record
+    (left by a longjmp-style ESP restore) goes at the next routed transfer
+    whose ESP is above it rather than at this return.
+  - Profile: `runner_safe_points` counts only the runner's; direct
+    transfers pass none. `generated_batches` counts handler exits, one
+    fewer per inline return.
+  - A runner nested inside a handler (an override running a callback)
+    restores the outer budget when it returns. Handlers invoked outside a
+    runner see a budget of 0 and make no direct calls.
+  - A generated handler never continues past a failed accessor (it leaves
+    with that FAULT), so no latched `pending_fault` can be pending when a
+    callee returns inline; `handler::execute` still checks it when the
+    outermost handler returns.
 - **Exclusivity.** Handler pointers are synchronous and do not retain
   `cpu` or `ctx`. One `CpuAbi` is used by one thread at a time. C never
   unwinds.
@@ -459,7 +529,9 @@ Objects are compiled with clang at `-std=c11 -fno-strict-aliasing
 `--arch all` for both, or `--arch arm64` / `--arch x86_64` for one.
 `--jobs N` selects clang parallelism (default: available cores). The profile is `-O1 -gline-tables-only` by default;
 `H2_OPT` (`0`, `1`, `g`, `s`, `2`) picks the optimisation level and
-`H2_DEBUG` (`lines`, `full` for `-g`, `none`) the debug info. The object
+`H2_DEBUG` (`lines`, `full` for `-g`, `none`) the debug info. The
+`H2_FASTMEM`, `H2_X87_NATIVE`, `H2_SSE_NATIVE` and `H2_DIRECT_CALLS`
+switches are `-D` flags too (on unless `0`). The object
 cache is keyed on the sources, `h2gen.h`, `h2simd.h`, `h2x87.h`, `h2abi.h`, the
 flags, the target and the toolchain identity. Clang dependency preprocessing
 also discovers every transitive include for each translation unit, including

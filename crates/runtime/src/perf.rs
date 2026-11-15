@@ -32,7 +32,11 @@ pub struct Timing {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Profile {
+    /// Guest transfers routed, by the runner or directly by generated code.
     pub transfers: u64,
+    /// The part of `transfers` generated code made itself (direct calls,
+    /// tail jumps and their inline returns), with no runner safe point.
+    pub direct_transfers: u64,
     pub runner_safe_points: u64,
     pub loop_safe_points: u64,
     pub memory_accessors: u64,
@@ -48,6 +52,7 @@ impl Profile {
     /// Aggregate contexts, or explicitly collected frame/slice snapshots.
     pub fn merge(&mut self, other: &Self) {
         self.transfers += other.transfers;
+        self.direct_transfers += other.direct_transfers;
         self.runner_safe_points += other.runner_safe_points;
         self.loop_safe_points += other.loop_safe_points;
         self.memory_accessors += other.memory_accessors;
@@ -74,8 +79,9 @@ impl fmt::Display for Profile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(
             f,
-            "perf: transfers={} safe_points={}/{} (runner/loop) memory_accesses={} inline={} x87_helpers={} generated_batches={}",
+            "perf: transfers={} (direct {}) safe_points={}/{} (runner/loop) memory_accesses={} inline={} x87_helpers={} generated_batches={}",
             self.transfers,
+            self.direct_transfers,
             self.runner_safe_points,
             self.loop_safe_points,
             self.memory_accessors,

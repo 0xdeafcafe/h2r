@@ -22,6 +22,10 @@ pub(crate) use crate::continuation::{
 pub struct ExecCtx {
     /// Must stay first (RUNTIME-CONTRACT.md, "Loop safe points").
     preempt: crate::preempt::WordPtr,
+    /// Must stay second (RUNTIME-CONTRACT.md, "Direct calls"): `direct`'s
+    /// block, or null while direct calls are disabled.
+    pub(crate) direct_ptr: crate::direct::DirectPtr,
+    pub(crate) direct: crate::direct::Direct,
     runtime: Arc<Runtime>,
     pub(crate) profile: Option<crate::perf::Profile>,
     pub(crate) fast_memory: Option<crate::ffi::OwnedFastAccess>,
@@ -68,11 +72,15 @@ impl Default for ResolveCache {
     }
 }
 const _: () = assert!(std::mem::offset_of!(ExecCtx, preempt) == 0);
+const _: () = assert!(std::mem::offset_of!(ExecCtx, direct_ptr) == size_of::<*const u32>());
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
         let (preempt, word) = crate::preempt::new_word(&runtime);
+        let (direct, direct_ptr) = crate::direct::Direct::new(&runtime);
         Self {
             preempt,
+            direct_ptr,
+            direct,
             word,
             runtime,
             thread_id,
@@ -99,12 +107,13 @@ impl ExecCtx {
         crate::ffi::sync_accesses(self);
         self.fast_memory_enabled = enabled;
     }
-    /// [`Runtime::resolve`] through this context's cache. Failures are not
-    /// cached: they end the run with a fault anyway.
+    /// [`Runtime::resolve`] through this context's cache, with the dispatch
+    /// generation the answer belongs to. Failures are not cached: they end
+    /// the run with a fault anyway.
     pub(crate) fn resolve_cached(
         &mut self,
         t: TransferAbi,
-    ) -> Option<(crate::dispatch::Handler, u32, u32)> {
+    ) -> Option<(crate::dispatch::Handler, u32, u32, u64)> {
         let slot = (t.target_pc ^ (t.target_pc >> 8)) as usize % RESOLVE_WAYS;
         let generation = self.runtime.dispatch_generation();
         if let Some(e) = &self.resolved.0[slot]
@@ -112,7 +121,7 @@ impl ExecCtx {
             && e.pc == t.target_pc
             && e.route == t.route
         {
-            return Some((e.handler.clone(), e.selector, e.function));
+            return Some((e.handler.clone(), e.selector, e.function, generation));
         }
         let (generation, found) = self.runtime.resolve_with_generation(t);
         let (handler, selector, function) = found?;
@@ -124,7 +133,7 @@ impl ExecCtx {
             selector,
             function,
         });
-        Some((handler, selector, function))
+        Some((handler, selector, function, generation))
     }
     pub fn runtime(&self) -> &Arc<Runtime> {
         &self.runtime
@@ -242,7 +251,7 @@ impl ExecCtx {
     /// stopping instruction. It is diagnostic only and may be incomplete
     /// across stack switches.
     pub fn backtrace(&self, pc: u32) -> Vec<GuestFrame> {
-        self.frames.snapshot(pc)
+        self.backtrace_with_direct(pc)
     }
     /// Forget the recorded call chain, e.g. after a thread's stack is reset.
     pub fn clear_backtrace(&mut self) {

@@ -7,6 +7,8 @@ pub mod abi;
 pub mod atomic;
 mod continuation;
 pub mod cpu;
+#[allow(unsafe_code)]
+pub mod direct;
 pub mod dispatch;
 pub mod events;
 pub mod exec;

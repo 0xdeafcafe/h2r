@@ -70,13 +70,20 @@ pub fn profile_flags(opt: Option<&str>, debug: Option<&str>) -> Result<Vec<Strin
 
 /// Every flag for a generated object: [`CFLAGS`] plus [`profile_flags`]
 /// from the environment, plus the optional paths. `H2_PERF` is off unless
-/// set to `1`; the inline RAM path (`H2_FASTMEM`) and native x87
-/// (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`) are on unless set to `0`.
+/// set to `1`; the inline RAM path (`H2_FASTMEM`), native x87
+/// (`H2_X87_NATIVE`) and SSE (`H2_SSE_NATIVE`), and direct calls between
+/// generated handlers (`H2_DIRECT_CALLS`) are on unless set to `0`.
 pub fn cflags() -> Result<Vec<String>, Error> {
     let env = |k| std::env::var(k).ok();
     let mut v: Vec<String> = CFLAGS.iter().map(|s| s.to_string()).collect();
     v.extend(profile_flags(env("H2_OPT").as_deref(), env("H2_DEBUG").as_deref())?);
-    for (name, default) in [("H2_PERF", false), ("H2_FASTMEM", true), ("H2_X87_NATIVE", true), ("H2_SSE_NATIVE", true)] {
+    for (name, default) in [
+        ("H2_PERF", false),
+        ("H2_FASTMEM", true),
+        ("H2_X87_NATIVE", true),
+        ("H2_SSE_NATIVE", true),
+        ("H2_DIRECT_CALLS", true),
+    ] {
         if flag(name, env(name).as_deref(), default)? {
             v.push(format!("-D{name}=1"));
         }
@@ -798,7 +805,7 @@ mod tests {
         assert!(flag("H2_PERF", Some("1"), false).unwrap());
         assert!(flag("H2_X87_NATIVE", Some("yes"), true).is_err());
         let flags = cflags().unwrap();
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE"] {
+        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
             let on = std::env::var(name).as_deref() != Ok("0");
             assert_eq!(flags.contains(&format!("-D{name}=1")), on, "{name}");
         }

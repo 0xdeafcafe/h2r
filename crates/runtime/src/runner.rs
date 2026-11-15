@@ -28,9 +28,14 @@ impl Runner {
         ctx: &mut ExecCtx,
         transfer: TransferAbi,
     ) -> TransferAbi {
-        ctx.measure(crate::perf::Scope::Runner, |ctx| {
+        // A runner nested in a handler (an override running a callback)
+        // hands the direct-call budget back as the outer one set it.
+        let outer = ctx.direct_budget();
+        let result = ctx.measure(crate::perf::Scope::Runner, |ctx| {
             self.run_inner(cpu, ctx, transfer)
-        })
+        });
+        ctx.set_direct_budget(outer);
+        result
     }
     fn run_inner(
         &self,
@@ -125,12 +130,14 @@ impl Runner {
                 && let Some(continuation) = ctx.take_continuation(transfer.target_pc)
             {
                 cpu.eip = transfer.target_pc;
+                ctx.direct_begin(remaining);
                 transfer = execute(
                     Invocation::Continuation(continuation),
                     cpu,
                     ctx,
                     transfer.target_pc,
                 );
+                remaining = ctx.direct_end(remaining);
                 continue;
             }
             // Tokens belong exclusively to the continuation namespace. A stale
@@ -147,7 +154,8 @@ impl Runner {
                     route: transfer.route,
                 }));
             }
-            let Some((handler, selector, function)) = ctx.resolve_cached(transfer) else {
+            let Some((handler, selector, function, generation)) = ctx.resolve_cached(transfer)
+            else {
                 return TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
                     pc: cpu.eip,
                     target: transfer.target_pc,
@@ -168,9 +176,17 @@ impl Runner {
                     return ctx.fault(transfer.target_pc, fault);
                 }
             }
+            // Generated code may now invoke this entry's handler directly
+            // (direct.rs) while the dispatch generation stays the same.
+            if transfer.route == abi::ENTRY && selector == transfer.target_pc {
+                ctx.note_direct(transfer.target_pc, &handler, generation);
+            }
             cpu.eip = transfer.target_pc;
             ctx.frames.enter(function);
+            // Direct calls the handler makes spend this run's transfers.
+            ctx.direct_begin(remaining);
             transfer = execute(Invocation::Handler(handler), cpu, ctx, selector);
+            remaining = ctx.direct_end(remaining);
         }
     }
 }

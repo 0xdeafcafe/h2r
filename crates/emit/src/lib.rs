@@ -341,8 +341,14 @@ pub fn write_module_with(owners: &[Owner], dir: &Path, codegen: Codegen) -> io::
     let mut home: BTreeMap<u32, String> = BTreeMap::new();
     // Each owner's C is independent of the others': generate it on every
     // core, then lay it out in owner order as before.
+    let functions: BTreeSet<u32> = owners.iter().map(|o| o.func.entry).collect();
     let texts = par::map(owners, |o| {
-        let shape = c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: codegen.accounting };
+        let shape = c::OwnerShape {
+            selectors: &o.selectors,
+            loops: &o.loops,
+            accounting: codegen.accounting,
+            functions: Some(&functions),
+        };
         c::function(&o.func, &shape)
     });
     for (o, text) in owners.iter().zip(texts) {
@@ -423,7 +429,7 @@ fn registry(owners: &[Owner], home: &BTreeMap<u32, String>, banner: &str, codege
         "const H2GenModule h2gen_module = {{H2_ABI_VERSION, {}u, {}u, {}, entries, resumes}};\n",
         entries.len(),
         resumes.len(),
-        if codegen.accounting { "H2GEN_FEATURE_ACCOUNTING" } else { "0u" }
+        if codegen.accounting { "H2GEN_FEATURE_ACCOUNTING | H2GEN_FEATURE_DIRECT" } else { "H2GEN_FEATURE_DIRECT" }
     ));
     s
 }
