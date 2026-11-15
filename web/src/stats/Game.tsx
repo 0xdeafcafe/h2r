@@ -6,7 +6,7 @@ import MapCanvas, { type MapFrame } from "../components/MapCanvas";
 import Scoreboard from "../components/Scoreboard";
 import KillFeed from "../components/KillFeed";
 import { VerifySummary } from "../components/bits";
-import { Block, Crumbs, Strip, Title } from "./Layout";
+import { Block, Crumbs, Title } from "./Layout";
 import Carnage from "./Carnage";
 import GametypeIcon from "../components/GametypeIcon";
 import { MapThumb, gameTitle, hostName, playlist } from "./Side";
@@ -35,7 +35,6 @@ export default function Game() {
   return (
     <>
       <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], [game()?.status === "ended" ? "Carnage Report" : "Game Details"]]} />
-      <Strip kind="game" />
       <Show
         when={game()}
         fallback={

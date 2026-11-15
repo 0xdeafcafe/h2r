@@ -2,7 +2,7 @@ import { For, Show, createMemo, createSignal } from "solid-js";
 import { live } from "../state/live";
 import type { WireEvent } from "../api/types";
 import { VerifyMark } from "../components/bits";
-import { Crumbs, Panel, Strip, Title } from "./Layout";
+import { Crumbs, Panel, Title } from "./Layout";
 import { Pills } from "./Side";
 import { num } from "./fmt";
 
@@ -60,7 +60,6 @@ export default function Events() {
   return (
     <>
       <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Event Log"]]} />
-      <Strip kind="events" />
       <div class="s-cols">
         <aside class="s-left">
           <Title>Event Log</Title>
