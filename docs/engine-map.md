@@ -633,3 +633,15 @@ What the engine does not say: the meaning of `reverse_` (codecs 6 and 7 use
 exactly the functions of 4 and 5; on the disc all of their key times ascend like
 the non-reverse codecs), and the two ints in each table record. See
 [animation.md](animation.md) for the open items.
+
+## Bink player and movie wrapper
+
+Identified by hand (no signatures cover Bink); details, argument lists and
+evidence are in [bink-hle.md](bink-hle.md). Calling convention is stdcall.
+
+| Entry | Role | Confidence |
+|---|---|---|
+| `0x003e0450` BinkSetSoundSystem, `0x003e0af0` BinkOpen, `0x003e2330` BinkWait, `0x003e2630` BinkSetMixBins, `0x003e2680` BinkSetMixBinVolumes, `0x003e2820` BinkSetMemory, `0x003e2830` BinkCopyToBuffer, `0x003e2870` BinkDoFrame, `0x003e2e50` BinkNextFrame, `0x003e2ff0` BinkClose | The only Bink functions called from outside the Bink sections | Likely from call shape and argument counts; BinkOpen confirmed by the `BIKi` compare |
+| `0x00156090` MovieStart `(path, flags)`, `0x00156040` tick, `0x001568d0` decode and blit, `0x00156960` draw, `0x00155f80` service, `0x00155f60` IsPlaying, `0x001565a0` stop, `0x00156ab0` skip-button poll, `0x001564e0` remaining ms, `0x00155ea0` / `0x00155ed0` init / dispose | The engine's movie wrapper, state block at `0x004e9188` (handle at `0x004e9194`, finished flag `0x004e918c`, flags `0x004e9190`) | Confirmed by reading the code |
+| `0x00223aa8` | Builds `d:\bink\%s_%d.bik` (`0x4575d0`) from a name; names `attract` `0x4575e4`, `credits` `0x4575ec`, `intro` `0x4575f4` | Confirmed |
+| Callers: `0x0012bf90` intro (flags `0x1c6`), `0x00163890` intro on entry (`0x3c6`), `0x00223a21` attract from idle timer `0x00223976` (`0xe`), `0x002ab8c0` credits (`0x40c`) | End of movie and skip-on-button are both inside the wrapper (service `0x155f80`, input `0x156ab0`) | Confirmed |

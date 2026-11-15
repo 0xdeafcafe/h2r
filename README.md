@@ -43,6 +43,7 @@ up as structured Rust.
 - [animation.md](docs/animation.md): animation graphs (jmad) and frame decompression (`crates/tags`)
 - [audio.md](docs/audio.md): DirectSound replacement (`crates/audio`)
 - [bitmaps.md](docs/bitmaps.md): bitmap tags to textures and PNG (`crates/assets`)
+- [bink-hle.md](docs/bink-hle.md): high-level Bink player replacement (`crates/bink-hle`)
 - [collision.md](docs/collision.md): collision and physics model tags (`crates/tags`)
 - [dsound.md](docs/dsound.md): guest-facing DirectSound shim (`crates/dsound`)
 - [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start

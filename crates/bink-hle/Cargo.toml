@@ -1,0 +1,9 @@
+[package]
+name = "bink-hle"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime.workspace = true
+movies.workspace = true

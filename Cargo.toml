@@ -18,5 +18,6 @@ xbe = { path = "crates/xbe" }
 analyze = { path = "crates/analyze" }
 symbols = { path = "crates/symbols" }
 runtime = { path = "crates/runtime" }
+bink-hle = { path = "crates/bink-hle" }
 thiserror = "2"
 anyhow = "1"
