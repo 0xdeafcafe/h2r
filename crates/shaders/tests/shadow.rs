@@ -233,6 +233,27 @@ fn clamp_cases() -> Vec<Case> {
     cases
 }
 
+/// F16 words with a zero exponent are not denormals: 0x0800 is
+/// 0.01171875, above a reference of 0.01, and 0x0400 (0.009765625) below.
+fn f16_low_exponent_cases() -> Vec<Case> {
+    vec![Case {
+        name: "F16 zero exponent".into(),
+        mode: TEX_PROJECT3D,
+        sh: shadow(DepthFormat::F16, AlphaFunc::Greater, false),
+        tex: DepthTexture::new(DepthFormat::F16, 2, 1, &[0x0800, 0x0400]),
+        frags: vec![
+            Frag {
+                t0: [0.25, 0.5, 0.01, 1.0],
+                want: 1.0,
+            },
+            Frag {
+                t0: [0.75, 0.5, 0.01, 1.0],
+                want: 0.0,
+            },
+        ],
+    }]
+}
+
 /// Linear filtering is 2x2 percentage-closer filtering: each texel is
 /// compared and the results weighted. On a 2x2 texture the coordinate
 /// (0.375, 0.625) sits a quarter of the way across and three quarters of
@@ -317,6 +338,7 @@ fn all_cases() -> Vec<Case> {
     let mut v = ladder_cases();
     v.extend(clamp_cases());
     v.extend(pcf_cases());
+    v.extend(f16_low_exponent_cases());
     v
 }
 
@@ -355,17 +377,18 @@ fn raw_bits_decode_exactly() {
         DepthFormat::F24.decode(f([0xFE, 0xFF, 0xFF, 0])),
         DepthFormat::F24.max()
     );
-    // F16: 4-bit exponent (bias 7), 12-bit mantissa, exponent 0 denormal.
-    assert_eq!(DepthFormat::F16.decode(f([0x70, 0x00, 0, 0])), 1.0);
-    assert_eq!(DepthFormat::F16.decode(f([0x78, 0x00, 0, 0])), 1.5);
-    assert_eq!(
-        DepthFormat::F16.decode(f([0x00, 0x01, 0, 0])),
-        2f32.powi(-18)
-    );
-    assert_eq!(
-        DepthFormat::F16.decode(f([0x10, 0x00, 0, 0])),
-        2f32.powi(-6)
-    );
+    // F16: 4-bit exponent (bias 7), 12-bit mantissa, no denormals: every
+    // word but 0 has the implicit one (xemu's convert_f16_to_float).
+    let f16 = |bits: u32| DepthFormat::F16.decode(f(texel(DepthFormat::F16, bits)));
+    assert_eq!(f16(0x7000), 1.0);
+    assert_eq!(f16(0x7800), 1.5);
+    assert_eq!(f16(0x0000), 0.0);
+    assert_eq!(f16(0x0001), (1.0 + 2f32.powi(-12)) * 2f32.powi(-7));
+    assert_eq!(f16(0x0800), 0.011_718_75);
+    assert_eq!(f16(0x0FFF), (2.0 - 2f32.powi(-12)) * 2f32.powi(-7));
+    assert_eq!(f16(0x1000), 2f32.powi(-6));
+    // F24 keeps IEEE's reading: the zero word is 0.
+    assert_eq!(DepthFormat::F24.decode(f([0, 0, 0, 0])), 0.0);
     assert_eq!(DepthFormat::F16.decode(f([0xFF, 0xFF, 0, 0])), 511.9375);
     assert_eq!(DepthFormat::F16.max(), 511.9375);
     // Every 16-bit pattern is monotonic in its value.

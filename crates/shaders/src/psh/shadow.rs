@@ -11,8 +11,9 @@
 //!   value (`0x204`, `GREATER`, passes where the stored depth is greater);
 //! * PROJECT2D compares with 0;
 //! * PROJECT3D compares with `r/q`, clamped to the format's depth range
-//!   (16777215 for `D24`, 65535 for `D16`, the largest finite value for
-//!   the float formats);
+//!   (16777215 for `D24`, 65535 for `D16`; for the float formats the
+//!   largest finite value, gfx's `D3DZ_MAX` for them, where xemu clamps
+//!   any 24-bit format to 16777215 and F16 to 511.9375);
 //! * NEVER and ALWAYS give 0 and 1 without sampling.
 //!
 //! abaire's `nxdk_pgraph_tests` (`texture_shadow_comparator_tests.cpp`)
@@ -54,10 +55,15 @@ pub enum DepthFormat {
     D16,
     /// 24-bit float depth (`F24S8`, `LIN_F24S8`): 8-bit exponent (bias
     /// 127) and 16-bit mantissa, no sign; the top 24 bits of an IEEE
-    /// single without its sign bit.
+    /// single without its sign bit (xemu's `convert_f24_to_float` in
+    /// `pgraph/util.h` reads it the same way). A zero exponent gives an
+    /// IEEE denormal, which the host GPU may flush to zero.
     F24,
     /// 16-bit float depth (`F16`, `LIN_F16`): 4-bit exponent (bias 7) and
-    /// 12-bit mantissa, no sign; exponent 0 is denormal.
+    /// 12-bit mantissa, no sign, no denormals and no infinities. Every
+    /// word but 0 has the implicit leading one, exponent 0 included
+    /// (`0x0800` is `1.5 * 2^-7`); only the all-zero word is 0. This
+    /// follows xemu's `convert_f16_to_float` (`pgraph/util.h`).
     F16,
 }
 
@@ -84,13 +90,11 @@ impl DepthFormat {
             Self::D24 => d24 as f32,
             Self::D16 => d16 as f32,
             Self::F24 => f32::from_bits(d24 << 7),
+            Self::F16 if d16 == 0 => 0.0,
             Self::F16 => {
+                // Rebias 7 to IEEE's 127 and widen the mantissa to 23 bits.
                 let (e, m) = (d16 >> 12, d16 & 0xFFF);
-                if e == 0 {
-                    m as f32 * F16_DENORMAL_STEP
-                } else {
-                    f32::from_bits(((e + 120) << 23) | (m << 11))
-                }
+                f32::from_bits(((e + 120) << 23) | (m << 11))
             }
         }
     }
@@ -104,9 +108,6 @@ impl DepthFormat {
         }
     }
 }
-
-/// 2^-18: one F16 denormal step (mantissa / 4096 * 2^(1 - 7)).
-const F16_DENORMAL_STEP: f32 = 3.814_697_3e-6;
 
 /// Texel addressing for one axis of a shadow map.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -173,7 +174,7 @@ fn xps_shadow_f16(c: vec4f) -> f32 {
     let d = (b.x << 8u) | b.y;
     let e = d >> 12u;
     let m = d & 0xFFFu;
-    if (e == 0u) { return f32(m) * 3.814697265625e-6; }
+    if (d == 0u) { return 0.0; }
     return bitcast<f32>(((e + 120u) << 23u) | (m << 11u));
 }
 fn xps_shadow_addr(i: i32, n: i32, mode: u32) -> i32 {

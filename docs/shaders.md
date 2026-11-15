@@ -644,14 +644,18 @@ behaviour follows xemu's `psh_append_shadowmap`:
   stored depth is greater than the reference.
 - PROJECT2D compares with 0. PROJECT3D compares with `r/q` clamped to
   `[0, max]`: 16777215 for D24, 65535 for D16, 511.9375 for F16 and
-  `(2 - 2^-16) * 2^127` for F24 (the `D3DZ_MAX` values window z uses).
+  `(2 - 2^-16) * 2^127` for F24 (the `D3DZ_MAX` values window z uses;
+  xemu uses 16777215 for every 24-bit format).
 - NEVER gives 0 and ALWAYS gives 1, without sampling.
 - The renderer uploads depth textures as raw bits in RGBA8 (depth bytes
   high to low in r, g, b, stencil in a; D16 and F16 in r and g). The
   stored value is rebuilt from `round(c * 255)` exactly: an integer for
   D24 and D16; for F24 the 24 bits are an IEEE single's top bits without
   the sign (8-bit exponent, bias 127, 16-bit mantissa); F16 has a 4-bit
-  exponent (bias 7), a 12-bit mantissa and denormals at exponent 0.
+  exponent (bias 7) and a 12-bit mantissa with no denormals: every word
+  but 0 has the implicit leading one, exponent 0 included. Both readings
+  are xemu's (`convert_f16_to_float`, `convert_f24_to_float` in
+  `pgraph/util.h`).
 - Filtering is per texel, then on the results. GeForce3-class hardware,
   which the NV2A is, compares each of the four neighbouring texels and
   bilinearly weights the 1/0 results when the filter is linear (2x2
@@ -821,10 +825,15 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   resolved stage states are 0).
 - **Shadow maps** (see "Shadow maps" above) read mip level 0 only, treat
   `BORDER` addressing as clamp, and choose PCF when either the min or the
-  mag filter is linear, since there is no LOD to choose between them. The
-  float formats' decoding (F24 as an IEEE single's top bits, F16 with
-  bias 7 and denormals) is derived from their `D3DZ_MAX` values, not
-  checked on hardware, and F24 denormals may flush to zero on the GPU.
+  mag filter is linear, since there is no LOD to choose between them: with
+  mixed filters (one point, one linear) a stage always gets PCF, whether
+  the map is minified or magnified. Keeping both filters and choosing by
+  derivatives (with a fallback for compute) is follow-up work. The
+  float formats' decoding follows xemu's conversions and is not checked
+  on hardware. F24 words with a zero exponent are IEEE denormals, which
+  the GPU may flush to zero. The float formats' PROJECT3D clamp is their
+  largest value (gfx's `D3DZ_MAX`), where xemu clamps any 24-bit format
+  to 16777215.
   The weights are exact f32; the NV2A's filter-weight precision isn't
   modelled. Only PROJECT2D and PROJECT3D compare.
 - **Signed blend equations.** `BLENDOP = ADDSIGNED/REVSUBTRACTSIGNED` have
@@ -865,7 +874,9 @@ facts only. No code was copied, and xemu and Cxbx-Reloaded are GPL.
   above). <https://github.com/XboxChaos/Assembly>
 - xemu, same commit: `glsl/psh.c` `psh_append_shadowmap` (shadow-map
   comparison, PROJECT2D against 0, PROJECT3D against clamped `r/q`,
-  NEVER/ALWAYS), `nv2a_regs.h` (`NV097_SET_SHADOW_DEPTH_FUNC` values).
+  NEVER/ALWAYS), `nv2a_regs.h` (`NV097_SET_SHADOW_DEPTH_FUNC` values),
+  `pgraph/util.h` `convert_f16_to_float`/`convert_f24_to_float` (float
+  depth words).
 - abaire's nxdk_pgraph_tests, `src/tests/texture_shadow_comparator_tests.cpp`
   (main branch, read 2026-11-15), and the hardware results in
   <https://github.com/abaire/nxdk_pgraph_tests_golden_results>
