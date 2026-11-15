@@ -71,7 +71,9 @@ impl Uniforms {
 /// Texture lookups. `coord` is already scaled/projected as in the WGSL; for
 /// 2D lookups only `x, y` are meaningful.
 pub trait Sampler {
-    /// Sample the texture bound to `stage`.
+    /// Sample the texture bound to `stage`: the filtered value of the
+    /// texels as the host stores them (`COLORSIGN` channels biased, see
+    /// [`PixelOptions::color_sign`]).
     fn sample(&self, stage: usize, dim: TextureDim, coord: [f32; 3]) -> Vec4;
 }
 
@@ -125,16 +127,16 @@ fn sign_nv(x: f32) -> f32 {
     }
 }
 
-/// `D3DTSS_COLORSIGN`: the masked channels as signed bytes.
+/// `D3DTSS_COLORSIGN`: the masked channels of a sample from a texture that
+/// stores signed bytes biased (`s + 128`), as `2s/255` (see
+/// [`PixelOptions::color_sign`]).
 fn signed(v: Vec4, mask: u8) -> Vec4 {
     let bit = [bits::SIGN_R, bits::SIGN_G, bits::SIGN_B, bits::SIGN_A];
     std::array::from_fn(|j| {
         if mask & bit[j] == 0 {
             return v[j];
         }
-        let b = (v[j].clamp(0.0, 1.0) * 255.0).round_ties_even();
-        let s = if b >= 128.0 { b - 256.0 } else { b };
-        (s / 127.0).max(-1.0)
+        (2.0 * v[j] - 256.0 / 255.0).max(-1.0)
     })
 }
 

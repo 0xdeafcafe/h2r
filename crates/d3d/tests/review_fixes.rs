@@ -369,6 +369,26 @@ fn p1_8_palettes_are_part_of_the_texture_cache_identity() {
     assert_eq!(d.backend.uploads(), 4);
 }
 
+/// `COLORSIGN` is part of the texture cache identity too: signed channels
+/// are stored biased, so one texture read signed and unsigned is two host
+/// textures, and the draw still carries the stage's sign bits.
+#[test]
+fn color_sign_is_part_of_the_texture_cache_identity() {
+    let (mut d, mut m) = rec();
+    quad(&mut d, &mut m);
+    texture(&mut m, 0x80);
+    d.set_texture(&mut m, 0, TEX_HEADER).unwrap();
+    d.set_texture(&mut m, 1, TEX_HEADER).unwrap();
+    d.set_texture_stage_state(&mut m, 1, 10, 0xE000_0000).unwrap(); // COLORSIGN
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 2, "unsigned and signed copies");
+    let draw = d.backend.draws()[0].clone();
+    assert_eq!(draw.extras[0].color_sign, 0);
+    assert_eq!(draw.extras[1].color_sign, 0xE000_0000);
+    d.draw_vertices(&mut m, 6, 0, 4).unwrap();
+    assert_eq!(d.backend.uploads(), 2, "both cached");
+}
+
 #[test]
 fn p1_8_verify_hashes_palette_contents() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Verify);

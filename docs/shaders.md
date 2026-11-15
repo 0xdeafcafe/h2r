@@ -359,15 +359,32 @@ alpha to the constant's zero.
 `D3DTSS_COLORSIGN` sets the NV2A texture unit's per-channel sign bits
 (`D3DTSIGN_ASIGNED` bit 28, `RSIGNED` 29, `GSIGNED` 30, `BSIGNED` 31; the
 same bits as `SET_TEXTURE_FILTER`). A signed channel is the texel byte read
-as two's complement: 0x7F gives 1, 0x00 gives 0, 0x80 and 0x81 give −1,
-0xFF gives −1/127. nouveau programs signed-normalised formats the same way,
-as the unsigned format plus these filter bits. `PixelOptions::color_sign`
-holds `COLORSIGN >> 28` per stage (`bits::color_sign`), and the generated
-code converts the channel right after the fetch, before bump-env, dot
-products, alpha kill or the combiners see it. The conversion runs after
-filtering, so a bilinear blend across 0x7F/0x80 differs from the hardware,
-which converts per texel. Retail Halo 2 sets it in 30 resolved
-implementations, all on stage 0 with RGB signed (`0xE0000000`).
+as two's complement `s`, and the texture unit delivers `2s/255`, clamped at
+−1: 0x7F gives 254/255 (not 1), 0x40 gives 128/255, 0x00 gives 0, 0xFF gives
+−2/255. The positive side is taken from Xbox hardware captures
+(nxdk_pgraph_tests golden results, `Texture_signed_component_tests`: bytes
+64, 100 and 127 render as 128, 200 and 254), not from the modern
+`max(s/127, −1)` SNORM rule. The negative side, and 0x80 in particular,
+follows the same formula but has not been checked against hardware.
+
+Hardware converts each texel before filtering, so a bilinear blend of 0x7F
+and 0x80 is about 0. To get that from the host's UNORM filtering, the
+texture is uploaded with every signed channel's byte XORed with 0x80
+(stored as `s + 128`, `gfx::texture::DecodeOptions::signed`, set from
+`COLORSIGN` by the device; signed DXT takes the CPU decode path for this).
+Filtering is then linear in `s`, and the pixel shader turns the filtered
+value `v` back into `max(2v − 256/255, −1)` right after the fetch, before
+bump-env, dot products, alpha kill or the combiners see it. The `COLORSIGN`
+bits are part of the device's texture cache key, so one texture used signed
+and unsigned is two host textures. `PixelOptions::color_sign` holds
+`COLORSIGN >> 28` per stage (`bits::color_sign`); the interpreter's
+`Sampler` returns host (biased) values too and applies the same transfer.
+Frame-buffer snapshots bound as textures are not stored biased, so the
+device clears `COLORSIGN` for those stages. The transfer applies to the
+channel the texel format expands to (an implicit alpha of 1 reads −2/255),
+which is unverified for anything but 8-bit channels. Retail Halo 2 sets
+`COLORSIGN` in 30 resolved implementations, all on stage 0 with RGB signed
+(`0xE0000000`).
 
 ### Texture modes
 
@@ -500,7 +517,8 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   register clamp, mux, AB/CD dots and blue-to-alpha, the final combiner's
   lerp, `v1+r0` flags, `E·F` and `G`, every fog mode with D3D's default
   final combiner and fog colour order, texture formats (`A8R8G8B8`,
-  `X8R8G8B8`, `A8B8G8R8`, 16-bit, `L8`, `A8L8`, DXT1, P8), `COLORSIGN`,
+  `X8R8G8B8`, `A8B8G8R8`, 16-bit, `L8`, `A8L8`, DXT1, P8), `COLORSIGN`
+  (the hardware ramp exactly, and filtering across 0x7F/0x80),
   `BLENDCOLOR` with constant blend factors, `TFACTOR` and `D3DCOLOR` vertex
   diffuse, and `FRONTFACE`/`CULLMODE` with two-sided lighting.
 - `tests/corpus.rs` is optional. With `H2_SHADER_CORPUS` set it checks the

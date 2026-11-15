@@ -55,6 +55,9 @@ const TSS_COLORARG2: usize = 15;
 const TSS_ALPHAOP: usize = 16;
 const TSS_ALPHAARG1: usize = 18;
 const TSS_COLORSIGN: usize = 10;
+const TSS_MAGFILTER: usize = 3;
+const TSS_MINFILTER: usize = 4;
+const TEXF_LINEAR: u32 = 2;
 // Xbox `D3DTOP_*` and `D3DTA_*`.
 const TOP_SELECTARG1: u32 = 2;
 const TOP_MODULATE: u32 = 4;
@@ -284,9 +287,12 @@ impl Gpu {
                     &desc,
                     &t.bytes,
                     t.palette.as_deref(),
+                    // As the device does: COLORSIGN channels stored biased.
                     DecodeOptions {
                         bc_supported: b.bc_supported(),
-                    },
+                        ..Default::default()
+                    }
+                    .with_color_sign(words.stages[0][TSS_COLORSIGN]),
                 )
                 .unwrap();
                 let host = b.upload_texture(&decoded).unwrap();
@@ -363,6 +369,7 @@ impl Gpu {
             },
             textures: [info.map(|i| i.header), None, None, None],
             clip: None,
+            clip_rects: Vec::new(),
             hw: d3d::hw::HwState::default(),
         };
         assert!(draw.state.bad.is_empty(), "{:?}", draw.state.bad);
@@ -863,9 +870,11 @@ fn texture_formats_decode_in_nv2a_channel_order() {
     }
 }
 
-/// `D3DTSS_COLORSIGN` makes the texture unit read channels as signed bytes:
-/// with R, G and B signed, 0x7F reads 1, 0x80 reads -1 and 0xC0 reads
-/// -64/127. Read through `r0 = 0.5 * t0 + 0.5` (signed identity).
+/// `D3DTSS_COLORSIGN` makes the texture unit read channels as signed bytes
+/// `s`, delivered as `2s/255` (Xbox captures: 127 reads 254/255) and
+/// clamped at -1: with R, G and B signed, 0x7F reads 254/255, 0x80 reads -1
+/// and 0xC0 reads -128/255. Read through `r0 = 0.5 * t0 + 0.5` (signed
+/// identity).
 #[test]
 fn color_sign_on_texture_stage() {
     let Some(mut g) = gpu() else { return };
@@ -884,12 +893,66 @@ fn color_sign_on_texture_stage() {
     let s = |x: f32| half * x + half;
     expect(
         g.run(&c),
-        [s(1.0), s(-1.0), s(-64.0 / 127.0), 1.0],
+        [s(254.0 / 255.0), s(-1.0), s(-128.0 / 255.0), 1.0],
         "signed RGB",
     );
     c.stage0.clear();
     let u = |x: u32| s(x as f32 / 255.0);
     expect(g.run(&c), [u(0x7F), u(0x80), u(0xC0), 1.0], "unsigned");
+}
+
+/// The signed transfer, exactly, at points read from the Xbox captures of
+/// nxdk_pgraph_tests (`Texture_signed_component_tests`, signed red ramp:
+/// bytes 64, 100, 127 give framebuffer 128, 200, 254). Point sampled and
+/// copied straight to the target, so no tolerance.
+#[test]
+fn color_sign_matches_hardware_ramp() {
+    let Some(mut g) = gpu() else { return };
+    let c = Case {
+        def: Some(copy_t0()),
+        texture: Some(Tex::solid32(D3DFormat::A8R8G8B8, 0xFF7F_6440)),
+        stage0: vec![(TSS_COLORSIGN, 0xE000_0000)],
+        ..Case::default()
+    };
+    assert_eq!(g.run(&c), [254, 200, 128, 255]);
+}
+
+/// Signed texels are filtered as signed values. A bilinear sample half-way
+/// between 0x7F (+127) and 0x80 (-128) is about 0, so `0.5 * t0 + 0.5`
+/// is mid grey. Converting after filtering the unsigned bytes would see
+/// 0x7F.8 and read -1 (black) or +1 (white).
+#[test]
+fn color_sign_filters_signed_values() {
+    let Some(mut g) = gpu() else { return };
+    let mut d = copy_t0();
+    d.rgb_inputs[0] = inputs(REG_T0 | MAP_SIGNED_IDENTITY, REG_C0, ONE, REG_C0);
+    d.rgb_outputs[0] = outputs(0, 0, REG_R0, 0);
+    d.constant0[0] = 0xFF80_8080;
+    // 2x2 swizzled (Morton order): left column 0x7F, right column 0x80.
+    let tex = Tex {
+        format: D3DFormat::A8R8G8B8,
+        width: 2,
+        height: 2,
+        bytes: [0xFF7F_7F7Fu32, 0xFF80_8080, 0xFF7F_7F7F, 0xFF80_8080]
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .collect(),
+        palette: None,
+    };
+    let c = Case {
+        def: Some(d),
+        texture: Some(tex),
+        stage0: vec![
+            (TSS_COLORSIGN, 0xE000_0000),
+            (TSS_MAGFILTER, TEXF_LINEAR),
+            (TSS_MINFILTER, TEXF_LINEAR),
+        ],
+        ..Case::default()
+    };
+    // (127 - 128) / 2 = -0.5 -> 2 * -0.5 / 255.
+    let half = 128.0 / 255.0;
+    let v = half * (-1.0 / 255.0) + half;
+    expect(g.run(&c), [v, v, v, 1.0], "filtered signed seam");
 }
 
 /// `D3DRS_BLENDCOLOR` is a `D3DCOLOR` (`NV097_SET_BLEND_COLOR` is ARGB);

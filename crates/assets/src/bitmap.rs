@@ -281,7 +281,7 @@ pub fn decode_bytes(desc: &TextureDesc, data: &[u8]) -> Result<Vec<Level>> {
     if texels * u64::from(layout.faces) * 4 > MAX_DECODED_BYTES {
         return Err(invalid("decoded size exceeds cap"));
     }
-    let decoded = decode_texture(desc, data, None, DecodeOptions { bc_supported: false })?;
+    let decoded = decode_texture(desc, data, None, DecodeOptions { bc_supported: false, ..Default::default() })?;
     let swap = decoded.host == HostFormat::Bgra8Unorm;
     Ok(decoded
         .levels

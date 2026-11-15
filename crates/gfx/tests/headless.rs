@@ -280,7 +280,7 @@ fn registered_shader_is_used() {
 #[test]
 fn uploads_dxt_cube_and_volume() {
     let Some(ctx) = context() else { return };
-    let opts = DecodeOptions { bc_supported: ctx.caps.texture_compression_bc };
+    let opts = DecodeOptions { bc_supported: ctx.caps.texture_compression_bc, ..Default::default() };
 
     let cube = TextureDesc::new(D3DFormat::Dxt1, TextureKind::Cube, 8, 8, 1, 4);
     let data = vec![0x5Au8; cube.layout().unwrap().total_size];
@@ -515,7 +515,7 @@ fn depth_surface_larger_than_color_and_odd_uploads() {
 #[test]
 fn deep_mip_headers_and_dxt_volumes_upload() {
     let Some(ctx) = context() else { return };
-    let opts = DecodeOptions { bc_supported: true };
+    let opts = DecodeOptions { bc_supported: true, ..Default::default() };
     // A 4x4 texture whose header claims 15 mip levels.
     let d = TextureDesc::new(D3DFormat::A8R8G8B8, TextureKind::D2, 4, 4, 1, 15);
     let data = vec![0x33u8; d.layout().unwrap().total_size];

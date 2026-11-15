@@ -225,11 +225,29 @@ pub struct DecodeOptions {
     /// Pass DXT blocks through as BC1/2/3. When `false` (or when the base
     /// size is not a multiple of 4) they are decoded to RGBA8 on the CPU.
     pub bc_supported: bool,
+    /// `D3DTSS_COLORSIGN` channels (R, G, B, A of the sampled texel) to
+    /// store biased: their decoded byte is XORed with `0x80`, so the
+    /// signed byte `s` is stored as the unsigned `s + 128`. The host's
+    /// UNORM filtering is then linear in `s`, and the pixel shader turns the
+    /// filtered value back into a signed one (see
+    /// `shaders::psh::PixelOptions::color_sign`). Any signed channel forces
+    /// the CPU path for DXT data.
+    pub signed: [bool; 4],
 }
 
 impl Default for DecodeOptions {
     fn default() -> Self {
-        Self { bc_supported: true }
+        Self { bc_supported: true, signed: [false; 4] }
+    }
+}
+
+impl DecodeOptions {
+    /// Sets [`Self::signed`] from a `D3DTSS_COLORSIGN` value
+    /// (`D3DTSIGN_ASIGNED` is bit 28, `RSIGNED` 29, `GSIGNED` 30, `BSIGNED`
+    /// 31).
+    pub fn with_color_sign(self, colorsign: u32) -> Self {
+        let bit = |n: u32| colorsign >> n & 1 != 0;
+        Self { signed: [bit(29), bit(30), bit(31), bit(28)], ..self }
     }
 }
 
@@ -294,7 +312,8 @@ pub fn decode_texture(
     // DXT textures (1x1, 2x2) therefore take the CPU path.
     // Volumes would need TEXTURE_COMPRESSION_BC_SLICED_3D, which is not
     // requested, so they always take the CPU path.
-    let bc_ok = opts.bc_supported && desc.kind != TextureKind::Volume && desc.width.is_multiple_of(4) && desc.height.is_multiple_of(4);
+    let any_signed = opts.signed.contains(&true);
+    let bc_ok = opts.bc_supported && !any_signed && desc.kind != TextureKind::Volume && desc.width.is_multiple_of(4) && desc.height.is_multiple_of(4);
     let host = match (texel, bc) {
         (_, Some(kind)) if bc_ok => match kind {
             BcKind::Bc1 => HostFormat::Bc1RgbaUnorm,
@@ -311,7 +330,10 @@ pub fn decode_texture(
         let face_base = face as usize * layout.face_stride;
         for lv in &layout.levels {
             let raw = &data[face_base + lv.offset..face_base + lv.offset + lv.size];
-            let level_data = decode_level(desc, lv, raw, bc, host, palette)?;
+            let mut level_data = decode_level(desc, lv, raw, bc, host, palette)?;
+            if any_signed {
+                bias_signed(&mut level_data, host, opts.signed);
+            }
             out.push(DecodedLevel {
                 face,
                 level: lv.level,
@@ -323,6 +345,27 @@ pub fn decode_texture(
         }
     }
     Ok(DecodedTexture { host, desc: desc.clone(), levels: out })
+}
+
+/// Stores the signed channels of RGBA8/BGRA8 texels as `s + 128`
+/// ([`DecodeOptions::signed`]).
+fn bias_signed(data: &mut [u8], host: HostFormat, signed: [bool; 4]) {
+    // Byte position of R, G, B, A within a host texel.
+    let at = match host {
+        HostFormat::Bgra8Unorm => [2, 1, 0, 3],
+        _ => [0, 1, 2, 3],
+    };
+    let mut flip = [0u8; 4];
+    for (c, &s) in signed.iter().enumerate() {
+        if s {
+            flip[at[c]] = 0x80;
+        }
+    }
+    for px in data.as_chunks_mut::<4>().0 {
+        for (b, f) in px.iter_mut().zip(flip) {
+            *b ^= f;
+        }
+    }
 }
 
 fn decode_level(
@@ -496,14 +539,38 @@ mod tests {
         block[0..2].copy_from_slice(&0xF800u16.to_le_bytes());
         block[2..4].copy_from_slice(&0xF800u16.to_le_bytes());
         let d = TextureDesc::new(D3DFormat::Dxt1, TextureKind::D2, 4, 4, 1, 1);
-        let t = decode_texture(&d, &block, None, DecodeOptions { bc_supported: true }).unwrap();
+        let t = decode_texture(&d, &block, None, DecodeOptions { bc_supported: true, ..Default::default() }).unwrap();
         assert_eq!(t.host, HostFormat::Bc1RgbaUnorm);
         assert_eq!(t.levels[0].data, block);
         assert_eq!(t.bytes_per_row(&t.levels[0]), 8);
-        let t = decode_texture(&d, &block, None, DecodeOptions { bc_supported: false }).unwrap();
+        let t = decode_texture(&d, &block, None, DecodeOptions { bc_supported: false, ..Default::default() }).unwrap();
         assert_eq!(t.host, HostFormat::Rgba8Unorm);
         assert_eq!(t.levels[0].data.len(), 64);
         assert_eq!(&t.levels[0].data[..4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn signed_channels_are_stored_biased() {
+        // A8R8G8B8 0x80_7F_01_FF (A, R, G, B): R and G signed.
+        let d = TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 1, 1, 1, 1);
+        let opts = DecodeOptions { signed: [true, true, false, false], ..Default::default() };
+        let t = decode_texture(&d, &[0xFF, 0x01, 0x7F, 0x80], None, opts).unwrap();
+        assert_eq!(t.host, HostFormat::Bgra8Unorm);
+        assert_eq!(t.levels[0].data, [0xFF, 0x81, 0xFF, 0x80]);
+        // RGBA hosts flip the same logical channels; alpha here.
+        let d = TextureDesc::new(D3DFormat::A8, TextureKind::D2, 1, 1, 1, 1);
+        let opts = DecodeOptions { signed: [false, false, false, true], ..Default::default() };
+        let t = decode_texture(&d, &[0x10], None, opts).unwrap();
+        assert_eq!(t.levels[0].data, [255, 255, 255, 0x90]);
+        // Signed DXT is decoded on the CPU so its texels can be biased.
+        let mut block = [0u8; 8];
+        block[0..2].copy_from_slice(&0xF800u16.to_le_bytes());
+        block[2..4].copy_from_slice(&0xF800u16.to_le_bytes());
+        let d = TextureDesc::new(D3DFormat::Dxt1, TextureKind::D2, 4, 4, 1, 1);
+        let opts = DecodeOptions { signed: [true, false, false, false], ..Default::default() };
+        let t = decode_texture(&d, &block, None, opts).unwrap();
+        assert_eq!(t.host, HostFormat::Rgba8Unorm);
+        assert_eq!(&t.levels[0].data[..4], &[0x7F, 0, 0, 255]);
     }
 
     #[test]
@@ -572,7 +639,7 @@ mod tests {
     fn dxt_volume_takes_the_cpu_path() {
         let d = TextureDesc::new(D3DFormat::Dxt1, TextureKind::Volume, 4, 4, 2, 1);
         let data = vec![0u8; d.layout().unwrap().total_size];
-        let t = decode_texture(&d, &data, None, DecodeOptions { bc_supported: true }).unwrap();
+        let t = decode_texture(&d, &data, None, DecodeOptions { bc_supported: true, ..Default::default() }).unwrap();
         assert!(!t.host.is_compressed());
         assert_eq!(t.levels[0].data.len(), 4 * 4 * 2 * 4);
     }

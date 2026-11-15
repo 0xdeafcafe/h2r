@@ -63,8 +63,12 @@ pub struct PixelOptions {
     pub alpha_kill: [bool; 4],
     /// `D3DTSS_COLORSIGN` per stage as [`bits::color_sign`] masks
     /// ([`bits::SIGN_R`] ...): the channels the texture unit reads as
-    /// signed bytes (two's complement, `max(s / 127, -1)`) instead of
-    /// unsigned ones.
+    /// signed bytes. The bound texture must store such a channel's
+    /// two's-complement byte `s` biased, as the unsigned byte `s + 128`
+    /// (`gfx::texture::DecodeOptions::signed`), so that filtering
+    /// interpolates signed values; the shader maps the filtered value `v`
+    /// to `max(2v - 256/255, -1)`, i.e. `2s/255`, which is what Xbox
+    /// captures show (byte 127 reads as 254/255, not 1).
     pub color_sign: [u8; 4],
     /// Alpha test; `None` disables it.
     pub alpha_test: Option<AlphaFunc>,
@@ -156,11 +160,10 @@ fn xps_sign_nv(x: vec3f) -> vec3f {
     let b = x * 255.0;
     return select(b / 127.0, (b - 256.0) / 127.0, b >= vec3f(128.0));
 }
-// A texel channel the texture unit reads as a signed byte (COLORSIGN).
+// COLORSIGN channels: the host texture holds the signed byte s as s + 128
+// (so filtering is linear in s); the texture unit delivers 2s/255.
 fn xps_signed(v: vec4f, m: vec4<bool>) -> vec4f {
-    let b = round(clamp(v, vec4f(0.0), vec4f(1.0)) * 255.0);
-    let s = select(b, b - 256.0, b >= vec4f(128.0));
-    return select(v, max(s / 127.0, vec4f(-1.0)), m);
+    return select(v, max(2.0 * v - 256.0 / 255.0, vec4f(-1.0)), m);
 }
 fn xps_mux_lsb(a: f32) -> bool { return (u32(a * 255.0) & 1u) == 1u; }
 "#;
@@ -375,7 +378,8 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
             ("textureSample", "")
         };
         // Signed channels are converted as the texel leaves the texture
-        // unit, before anything else in the stage uses it.
+        // unit, before anything else in the stage uses it. The host
+        // texture stores them biased, so this runs after filtering.
         let sign = options.color_sign[i] & 0xF;
         let signed = |e: String| {
             if sign == 0 || textures[i].is_none() {

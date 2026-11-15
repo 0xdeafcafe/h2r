@@ -337,9 +337,14 @@ pub struct PushCallback {
     pub at: u32,
 }
 
-/// Cache key: texture header plus, for P8 textures, the palette header
-/// (one header bound with two palettes is two host textures).
-type TextureKey = (u32, u32);
+/// Cache key: texture header, for P8 textures the palette header (one
+/// header bound with two palettes is two host textures), and the
+/// `D3DTSS_COLORSIGN` bits (signed channels are stored biased, see
+/// [`DecodeOptions::signed`]).
+type TextureKey = (u32, u32, u32);
+
+/// The `D3DTSIGN_*` bits of `D3DTSS_COLORSIGN` (28..31).
+const COLOR_SIGN_MASK: u32 = 0xF000_0000;
 
 /// Palette part of a cached texture's identity.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2716,6 +2721,7 @@ impl<B: Backend> Device<B> {
         entry: &'static str,
         header: u32,
         palette: u32,
+        color_sign: u32,
     ) -> Result<(TextureKey, TextureInfo), D3dError> {
         let pc = PixelContainer::read(mem, header)?;
         if pc.resource.kind() != ResourceType::Texture {
@@ -2768,7 +2774,8 @@ impl<B: Backend> Device<B> {
         } else {
             None
         };
-        let key = (header, pal.map_or(0, |p| p.header));
+        let color_sign = color_sign & COLOR_SIGN_MASK;
+        let key = (header, pal.map_or(0, |p| p.header), color_sign);
         let info = TextureInfo {
             header,
             palette: key.1,
@@ -2837,7 +2844,9 @@ impl<B: Backend> Device<B> {
             palette_entries.as_deref(),
             DecodeOptions {
                 bc_supported: self.backend.bc_supported(),
-            },
+                ..Default::default()
+            }
+            .with_color_sign(color_sign),
         )
         .map_err(|e| D3dError::unimplemented(entry, format!("texture {header:#010x}: {e}")))?;
         let host = self
@@ -2923,12 +2932,16 @@ impl<B: Backend> Device<B> {
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
         let state = parts.words.translate(&self.table);
         let sampled = sampled_stages(&shader, &parts.words, &state);
+        let mut extras = parts.words.stage_extras();
         for stage in 0..4 {
             let header = self.textures[stage];
             if header != 0 {
                 match self.frame_texture(mem, header, sampled[stage])? {
                     FrameTexture::No => {}
                     FrameTexture::Snapshot(info, t) => {
+                        // Snapshots are not stored biased, so COLORSIGN
+                        // cannot apply to them (docs/shaders.md).
+                        extras[stage].color_sign = 0;
                         texture_info[stage] = Some(info);
                         snapshots[stage] = Some(t);
                         continue;
@@ -2945,7 +2958,13 @@ impl<B: Backend> Device<B> {
                     }
                 }
                 self.flush_for_texture(mem, header)?;
-                let (k, i) = self.resolve_texture(mem, entry, header, self.palettes[stage])?;
+                let (k, i) = self.resolve_texture(
+                    mem,
+                    entry,
+                    header,
+                    self.palettes[stage],
+                    extras[stage].color_sign,
+                )?;
                 keys[stage] = Some(k);
                 texture_info[stage] = Some(i);
             }
@@ -2964,7 +2983,7 @@ impl<B: Backend> Device<B> {
             streams: parts.streams,
             indices: parts.indices,
             state,
-            extras: parts.words.stage_extras(),
+            extras,
             raw: Box::new(parts.words),
             shader,
             viewport: self.viewport,
@@ -2996,9 +3015,12 @@ impl<B: Backend> Device<B> {
     }
 
     /// Info about the host texture cached for `header` (with `palette` for
-    /// P8), if any.
+    /// P8), if any, under any `COLORSIGN`.
     pub fn cached_texture(&self, header: u32, palette: u32) -> Option<TextureInfo> {
-        self.cache.get(&(header, palette)).map(|c| c.info)
+        self.cache
+            .iter()
+            .find(|(k, _)| k.0 == header && k.1 == palette)
+            .map(|(_, c)| c.info)
     }
 
     fn state(&self, mem: &dyn GuestMemory) -> Result<StateWords, D3dError> {

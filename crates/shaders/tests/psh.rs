@@ -782,10 +782,11 @@ fn link_makes_one_module() {
     );
 }
 
-/// `D3DTSS_COLORSIGN`: masked channels are two's-complement bytes, so
-/// 0x7F reads 1, 0x80 reads -1 and 0xFF reads -1/127; unmasked channels
-/// stay unsigned. Read through r0 = 0.5 * t0 + 0.5 so negatives survive the
-/// output clamp.
+/// `D3DTSS_COLORSIGN`: the host texture stores a masked channel's signed
+/// byte `s` as `s + 128`, and the texture unit delivers `2s/255` (Xbox
+/// captures: 64 -> 128/255, 127 -> 254/255), clamped at -1. Unmasked
+/// channels stay unsigned. Read through r0 = 0.5 * t0 + 0.5 so negatives
+/// survive the output clamp.
 #[test]
 fn color_sign_reads_signed_bytes() {
     let d = def(
@@ -799,7 +800,9 @@ fn color_sign_reads_signed_bytes() {
     );
     let mut u = PixelUniforms::default();
     u.c0[0] = [0.5; 4];
-    let texel = [0x7F as f32 / 255.0, 0x80 as f32 / 255.0, 1.0, 0x40 as f32 / 255.0];
+    // Stored (biased) bytes: s = 127, -128, -1; alpha unsigned 0x40.
+    let stored = |b: u8| b as f32 / 255.0;
+    let texel = [stored(0xFF), stored(0x00), stored(0x7F), stored(0x40)];
     let tex = Flat([texel; 4]);
     let mut inp = Inputs::default();
     inp.t[0] = [0.5, 0.5, 0.0, 1.0];
@@ -809,7 +812,15 @@ fn color_sign_reads_signed_bytes() {
     };
     assert_eq!(opts.color_sign[0], SIGN_R | SIGN_G | SIGN_B);
     let out = interp::run(&d, &opts, &inp, &u, &tex).unwrap();
-    approx(out, [1.0, 0.0, 0.5 - 0.5 / 127.0, 0x40 as f32 / 255.0]);
+    approx(
+        out,
+        [
+            0.5 * 254.0 / 255.0 + 0.5,
+            0.0,
+            0.5 - 1.0 / 255.0,
+            0x40 as f32 / 255.0,
+        ],
+    );
     // Unsigned without the flag.
     let out = interp::run(&d, &Default::default(), &inp, &u, &tex).unwrap();
     approx(
@@ -817,18 +828,42 @@ fn color_sign_reads_signed_bytes() {
         [
             1.0f32.min(0.5 * texel[0] + 0.5),
             0.5 * texel[1] + 0.5,
-            1.0,
+            0.5 * texel[2] + 0.5,
             texel[3],
         ],
     );
+    // Positive capture points through t0 alone: s -> 2s/255.
+    let copy = def(
+        &[(
+            inputs(REG_T0 | MAP_SIGNED_IDENTITY, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+            inputs(ONE, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [TEX_PROJECT2D, 0, 0, 0],
+    );
+    let rgb = PixelOptions {
+        color_sign: [SIGN_R | SIGN_G | SIGN_B, 0, 0, 0],
+        ..Default::default()
+    };
+    for (s, want) in [(1u8, 2u8), (64, 128), (100, 200), (126, 252), (127, 254)] {
+        let t = [stored(s ^ 0x80); 4];
+        let out = interp::run(&copy, &rgb, &inp, &u, &Flat([t; 4])).unwrap();
+        approx(out, [stored(want), stored(want), stored(want), 1.0]);
+    }
+    // Filtering happens on the biased bytes: the average of 0x7F and 0x80
+    // (stored 0xFF and 0x00) is about 0, not -1 or 1.
+    let mid = [127.5 / 255.0; 4];
+    let out = interp::run(&d, &opts, &inp, &u, &Flat([mid; 4])).unwrap();
+    approx(out, [0.5 - 0.5 / 255.0, 0.5 - 0.5 / 255.0, 0.5 - 0.5 / 255.0, 127.5 / 255.0]);
     // Signed alpha.
     let opts = PixelOptions {
         color_sign: [SIGN_A, 0, 0, 0],
         ..Default::default()
     };
-    let t = [0.0, 0.0, 0.0, 0xC0 as f32 / 255.0];
+    let t = [0.0, 0.0, 0.0, stored(0xC0 ^ 0x80)];
     let out = interp::run(&d, &opts, &inp, &u, &Flat([t; 4])).unwrap();
-    approx(out, [0.5, 0.5, 0.5, 0.0]); // -64/127 clamps to 0 in r0's output
+    approx(out, [0.5, 0.5, 0.5, 0.0]); // -128/255 clamps to 0 in r0's output
     let w = psh::translate(&d, &opts);
     assert!(w.body.contains("xps_signed("), "{}", w.body);
     common::check(&w.module());
