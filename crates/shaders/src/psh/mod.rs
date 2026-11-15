@@ -20,6 +20,7 @@ pub mod bits;
 mod disasm;
 pub mod fog;
 pub mod interp;
+pub mod shadow;
 mod wgsl;
 
 pub use disasm::disassemble;

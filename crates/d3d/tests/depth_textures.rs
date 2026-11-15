@@ -512,18 +512,140 @@ fn gpu_depth_level_fills_from_and_writes_back_to_guest_memory() {
     finish(scope);
 }
 
-/// A depth-format texture is a shadow map on the NV2A (a comparison, not
-/// colour): the shader provider skips the draw with the reason until the
-/// translated programs compare.
+const PSDEF: u32 = MISC + 0x7900;
+const PS_OBJECT: u32 = MISC + 0x79F0;
+const RS_SHADOWFUNC: u32 = 156;
+
+/// A pixel shader whose stage 0 is in `mode` and whose output is t0
+/// (final combiner `D = t0`, `G = t0.a`).
+fn t0_shader(d: &mut Device<GfxBackend>, m: &mut SparseMemory, mode: u32) {
+    use shaders::psh::bits::*;
+    let def = shaders::psh::PixelShaderDef {
+        texture_modes: texture_modes([mode, 0, 0, 0]),
+        final_inputs_abcd: inputs(0, 0, 0, REG_T0),
+        final_inputs_efg: final_efg(0, 0, REG_T0 | CHAN_ALPHA, 0),
+        ..Default::default()
+    };
+    m.write(PSDEF, &def.to_bytes()).unwrap();
+    for (i, w) in [1, 0, PSDEF].iter().enumerate() {
+        m.write_u32(PS_OBJECT + 4 * i as u32, *w).unwrap();
+    }
+    d.set_pixel_shader(m, PS_OBJECT).unwrap();
+}
+
+/// A full-target quad with a four-component texture coordinate: (8, 8)
+/// in s and t (a texel of a linear texture, a repeat of a swizzled one),
+/// `r` running from 0 at the left edge to `r_right` at the right, all
+/// times `q`.
+fn projective_quad(d: &mut Device<GfxBackend>, m: &mut SparseMemory, r_right: f32, q: f32) {
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for v in [W as f32 * x, H as f32 * y, 0.5, 1.0] {
+            vb.extend_from_slice(&v.to_le_bytes());
+        }
+        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        for v in [8.0 * q, 8.0 * q, r_right * x * q, q] {
+            vb.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    // TEX1 with D3DFVF_TEXCOORDSIZE4(0).
+    d.set_vertex_shader(m, fvf::XYZRHW | fvf::DIFFUSE | 0x100 | (2 << 16))
+        .unwrap();
+    d.set_stream_source(m, 0, VB_HEADER, 36).unwrap();
+}
+
+/// A depth-format texture is a shadow map on the NV2A: PROJECT3D compares
+/// the stored depth with `r/q` under `D3DRS_SHADOWFUNC` and gives 1 or 0
+/// in every channel. Every texel holds the middle of the format's range
+/// and `r` runs from 0 to twice that across the target, so `GREATER`
+/// (stored > r, the first campaign level's `0x204`) is white on the left
+/// and black on the right, and `LESSEQUAL` the reverse. D24S8 and D16,
+/// swizzled and linear.
 #[test]
-fn gpu_sampling_a_depth_format_texture_is_skipped_as_a_shadow_map() {
+fn gpu_shadow_maps_compare_stored_depth_with_r_over_q() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    for (format, pitch) in [
+        (0x2A, None),
+        (0x2E, Some(64)),
+        (0x2C, None),
+        (0x30, Some(64)),
+    ] {
+        let d16 = format == 0x2C || format == 0x30;
+        let (bytes, mid): (Vec<u8>, f32) = if d16 {
+            (0x8000u16.to_le_bytes().repeat(512), 32768.0)
+        } else {
+            // Depth 0x800000 with stencil 0x5A.
+            (0x8000_005Au32.to_le_bytes().repeat(256), 8_388_608.0)
+        };
+        m.write(0x8000_0000 | DDATA, &bytes).unwrap();
+        depth_texture(&mut m, format, pitch);
+        t0_shader(&mut d, &mut m, shaders::psh::bits::TEX_PROJECT3D);
+        projective_quad(&mut d, &mut m, 2.0 * mid, 2.0);
+        d.set_texture(&mut m, 0, DTEX).unwrap();
+        for (func, left, right) in [(0x204, 0xFF, 0x00), (0x203, 0x00, 0xFF)] {
+            m.write_u32(L.render_state_slot(RS_SHADOWFUNC), func)
+                .unwrap();
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+            let ev = d.take_events();
+            assert!(ev.is_empty(), "format {format:#x}: {ev:?}");
+            for (x, v) in [(4, left), (W - 4, right)] {
+                assert_eq!(
+                    back_pixel(&d, x, 30),
+                    [v; 4],
+                    "format {format:#x} func {func:#x} x {x}"
+                );
+            }
+        }
+    }
+    finish(scope);
+}
+
+/// PROJECT2D compares with 0: with `GREATER` every non-zero stored depth
+/// passes, with `LESS` nothing does.
+#[test]
+fn gpu_shadow_map_project2d_compares_with_zero() {
+    let Some((mut d, mut m, scope)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    m.write(
+        0x8000_0000 | DDATA,
+        &0x0000_0100u32.to_le_bytes().repeat(256),
+    )
+    .unwrap();
+    depth_texture(&mut m, 0x2E, Some(64));
+    t0_shader(&mut d, &mut m, shaders::psh::bits::TEX_PROJECT2D);
+    projective_quad(&mut d, &mut m, 0.0, 1.0);
+    d.set_texture(&mut m, 0, DTEX).unwrap();
+    for (func, want) in [(0x204, 0xFF), (0x201, 0x00), (0x207, 0xFF), (0x200, 0x00)] {
+        m.write_u32(L.render_state_slot(RS_SHADOWFUNC), func)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        assert_eq!(d.take_events(), []);
+        assert_eq!(back_pixel(&d, 30, 30), [want; 4], "func {func:#x}");
+    }
+    finish(scope);
+}
+
+/// A `D3DRS_SHADOWFUNC` that is not a `D3DCMP_*` value has no comparison:
+/// the draw is skipped with a reason naming the stage, format and value.
+#[test]
+fn gpu_shadow_map_with_a_bad_shadowfunc_is_skipped() {
     let Some((mut d, mut m, scope)) = gpu() else {
         return;
     };
     set_states(&mut d, &mut m);
     depth_texture(&mut m, 0x2A, None);
     m.write(0x8000_0000 | DDATA, &[0x40; 1024]).unwrap();
-    m.write_u32(L.render_state_slot(156), 0x203).unwrap(); // SHADOWFUNC = LESSEQUAL
+    m.write_u32(L.render_state_slot(RS_SHADOWFUNC), 0x123)
+        .unwrap();
     textured_quad(&mut d, &mut m);
     d.set_texture(&mut m, 0, DTEX).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
@@ -531,11 +653,10 @@ fn gpu_sampling_a_depth_format_texture_is_skipped_as_a_shadow_map() {
     assert!(
         ev.iter()
             .any(|e| matches!(e, Event::DrawSkipped { reason, .. }
-            if reason.contains("shadow map") && reason.contains("0x203"))),
+            if reason.contains("stage 0") && reason.contains("D24S8") && reason.contains("0x123"))),
         "{ev:?}"
     );
-    // Uploaded all the same (its raw bits), so a provider that compares
-    // has what it needs.
+    // Uploaded all the same (its raw bits).
     assert_eq!(d.stats().texture_uploads, 1);
     finish(scope);
 }

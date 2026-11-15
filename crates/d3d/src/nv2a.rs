@@ -32,9 +32,13 @@
 //!   [`fixed_function_def`]): one general combiner stage per enabled texture
 //!   stage, plus the same final combiner for specular add and fog.
 //!
+//! * A depth-format texture a stage samples is a shadow map: PROJECT2D and
+//!   PROJECT3D compare its stored depth under `D3DRS_SHADOWFUNC` (see
+//!   [`shadow_stages`] and `shaders::psh::shadow`).
+//!
 //! Per-pipeline state that changes the generated code (texture dimensions,
 //! alpha kill, `COLORSIGN`, alpha test function, two-sided lighting, flat
-//! shading) is
+//! shading, the shadow-map format, function, filter and addressing) is
 //! part of the cache key, as is everything the synthesized programs are
 //! built from (texture-stage ops and arguments, `SPECULARENABLE`,
 //! `FOGENABLE`, texture-coordinate indices); the alpha reference, combiner
@@ -53,13 +57,15 @@ use std::collections::HashMap;
 use gfx::pipeline::ShaderId;
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::state::{
-    CompareFunc, ShadeMode, TextureAddress, TextureArg, TextureArgSource, TextureOp,
+    CompareFunc, ShadeMode, TextureAddress, TextureArg, TextureArgSource, TextureFilter,
+    TextureOp,
     TextureStageState,
 };
 use gfx::texture::TextureKind;
 use gfx::translate::SamplerKey;
 use gfx::xdk::RenderStateTable;
 use shaders::psh::bits::*;
+use shaders::psh::shadow::{DepthFormat, Shadow, ShadowAddress};
 use shaders::psh::{
     self, AlphaFunc, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim, argb,
 };
@@ -675,28 +681,7 @@ impl ShaderProvider for Nv2aShaders {
         let bound: [Option<TextureKind>; 4] =
             std::array::from_fn(|n| textures[n].and(draw.texture_info[n]).map(|i| i.kind));
         let fog_enable = render.fog_enable;
-        // A depth-format texture is a shadow map: the NV2A compares its
-        // stored depth with the texture coordinate under `SHADOWCTL`'s
-        // function (D3D's `D3DRS_SHADOWFUNC`) and returns 1 or 0 in every
-        // channel (xemu `psh_append_shadowmap`: PROJECT2D compares with 0,
-        // PROJECT3D with r/q clamped to the format's depth range). The
-        // translated programs do not compare yet, and sampling the raw
-        // depth bits as colour would draw garbage.
         let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
-        for n in 0..4 {
-            if let Some(info) = draw.texture_info[n]
-                && sampled[n]
-                && textures[n].is_some()
-                && info.format.is_depth()
-            {
-                return Err(format!(
-                    "stage {n} samples {:?} texture {:#010x} as a shadow map (D3DRS_SHADOWFUNC {:#x}): depth comparison is not translated",
-                    info.format,
-                    info.header,
-                    draw.raw.render[slot::SHADOWFUNC as usize]
-                ));
-            }
-        }
 
         // Vertex side.
         let vertex = match &draw.shader.vertex {
@@ -752,6 +737,7 @@ impl ShaderProvider for Nv2aShaders {
         if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
             self.stats.zero_final_draws += 1;
         }
+        let shadow = shadow_stages(draw, &def, sampled, textures)?;
         let (c0, c1) = def.embedded_constants();
         let mut code = def.clone();
         code.constant0 = [0; 8];
@@ -779,6 +765,7 @@ impl ShaderProvider for Nv2aShaders {
             flat_shading: flat,
             explicit_lod: false,
             stipple: polygon_stipple(&self.table, draw),
+            shadow,
         };
         let key = ProgramKey {
             vertex,
@@ -912,6 +899,72 @@ impl ShaderProvider for Nv2aShaders {
             b.end_frame();
         }
     }
+}
+
+/// The shadow-map stages of a draw: a depth-format texture (`D24S8`,
+/// `D16`, `F24S8`, `F16`, swizzled or linear) that a stage samples is
+/// compared, not read as colour (`shaders::psh::shadow`). The function is
+/// `D3DRS_SHADOWFUNC` (guest slot 156): `SetRenderState_ShadowFunc`
+/// (`0x3f5330`) pushes `Value - 0x200` to `NV097_SET_SHADOW_DEPTH_FUNC`
+/// (`0x1E6C`), the register xemu's `psh_append_shadowmap` reads, so the
+/// `D3DCMP_*` value is the comparison `stored OP reference`. A linear (or
+/// anisotropic, quincunx, gaussian) minification or magnification filter
+/// gives 2x2 percentage-closer filtering; `BORDER` addressing is treated
+/// as clamp.
+///
+/// Only PROJECT2D and PROJECT3D compare (xemu has no other mode either);
+/// a depth texture sampled by another mode, or a `SHADOWFUNC` that is not
+/// a `D3DCMP_*` value, skips the draw with the reason.
+fn shadow_stages(
+    draw: &ResolvedDraw,
+    def: &PixelShaderDef,
+    sampled: [bool; 4],
+    textures: [Option<&wgpu::TextureView>; 4],
+) -> Result<[Option<Shadow>; 4], String> {
+    let mut out = [None; 4];
+    let func_raw = draw.raw.render[slot::SHADOWFUNC as usize];
+    for n in 0..4 {
+        let Some(info) = draw.texture_info[n] else {
+            continue;
+        };
+        if !sampled[n] || textures[n].is_none() || !info.format.is_depth() {
+            continue;
+        }
+        use gfx::D3DFormat as F;
+        let format = match info.format {
+            F::D24S8 | F::LinD24S8 => DepthFormat::D24,
+            F::D16 | F::LinD16 => DepthFormat::D16,
+            F::F24S8 | F::LinF24S8 => DepthFormat::F24,
+            _ => DepthFormat::F16,
+        };
+        let mode = (def.texture_modes >> (5 * n)) & 0x1F;
+        if mode != TEX_PROJECT2D && mode != TEX_PROJECT3D {
+            return Err(format!(
+                "stage {n} samples {:?} texture {:#010x} as a shadow map in texture mode {mode:#x}: only PROJECT2D and PROJECT3D compare",
+                info.format, info.header
+            ));
+        }
+        let Some(func) = CompareFunc::from_xbox(func_raw) else {
+            return Err(format!(
+                "stage {n} samples {:?} texture {:#010x} as a shadow map with D3DRS_SHADOWFUNC {func_raw:#x}, not a D3DCMP value",
+                info.format, info.header
+            ));
+        };
+        let stage = &draw.state.stages[n];
+        let point = |f: TextureFilter| matches!(f, TextureFilter::None | TextureFilter::Point);
+        let address = |a: TextureAddress| match a {
+            TextureAddress::Wrap => ShadowAddress::Wrap,
+            TextureAddress::Mirror => ShadowAddress::Mirror,
+            _ => ShadowAddress::Clamp,
+        };
+        out[n] = Some(Shadow {
+            format,
+            func: alpha_func(func),
+            linear: !point(stage.min_filter) || !point(stage.mag_filter),
+            address: [address(stage.address_u), address(stage.address_v)],
+        });
+    }
+    Ok(out)
 }
 
 /// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage

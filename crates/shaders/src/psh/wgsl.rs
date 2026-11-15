@@ -26,7 +26,7 @@ pub enum AlphaFunc {
 }
 
 impl AlphaFunc {
-    fn op(self) -> Option<&'static str> {
+    pub(crate) fn op(self) -> Option<&'static str> {
         Some(match self {
             Self::Less => "<",
             Self::Equal => "==",
@@ -91,6 +91,10 @@ pub struct PixelOptions {
     pub explicit_lod: bool,
     /// Apply the 32 by 32 polygon stipple mask in the fragment shader.
     pub stipple: bool,
+    /// Stages whose texture is a shadow map (a depth format): PROJECT2D
+    /// and PROJECT3D on a 2D texture compare instead of sampling colour
+    /// (see [`super::shadow`]).
+    pub shadow: [Option<super::shadow::Shadow>; 4],
 }
 
 /// A translated pixel pipeline.
@@ -350,6 +354,9 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
     s.push_str(PRELUDE);
     s.push_str(super::fog::WGSL);
     s.push_str(HILO_PRELUDE);
+    if options.shadow.iter().any(Option::is_some) {
+        s.push_str(super::shadow::WGSL_HELPERS);
+    }
 
     // Texture bindings.
     let mut textures = [None; 4];
@@ -494,7 +501,22 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
         };
         let line = match mode {
             TexMode::None => String::new(),
+            TexMode::Project2d | TexMode::Project3d
+                if options.shadow[i].is_some() && textures[i] == Some(TextureDim::D2) =>
+            {
+                super::shadow::wgsl_stage(
+                    i,
+                    &options.shadow[i].unwrap(),
+                    mode == TexMode::Project3d,
+                )
+            }
             TexMode::Project2d | TexMode::Project3d | TexMode::Cubemap => {
+                if options.shadow[i].is_some() {
+                    g.warnings.push(format!(
+                        "stage {i}: shadow map bound as {:?}; sampled as colour",
+                        textures[i].unwrap()
+                    ));
+                }
                 match textures[i].unwrap() {
                     TextureDim::D2 => format!("t{i} = {};", sample2(&format!("{tc}.xy / {tc}.w"))),
                     TextureDim::D3 => format!("t{i} = {};", sample(&format!("{tc}.xyz / {tc}.w"))),
@@ -581,6 +603,18 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
                 format!("t{i} = vec4f(0.0);")
             }
         };
+        if options.shadow[i].is_some()
+            && !matches!(
+                mode,
+                TexMode::Project2d | TexMode::Project3d | TexMode::Cubemap
+            )
+            && textures[i].is_some()
+        {
+            g.warnings.push(format!(
+                "stage {i}: shadow map sampled by {}; no comparison, sampled as colour",
+                mode.name()
+            ));
+        }
         if !line.is_empty() {
             let _ = writeln!(s, "    {line}");
         }

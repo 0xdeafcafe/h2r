@@ -87,6 +87,16 @@ pub trait Sampler {
     /// texels as the host stores them (`COLORSIGN` channels biased, see
     /// [`PixelOptions::color_sign`]).
     fn sample(&self, stage: usize, dim: TextureDim, coord: [f32; 3]) -> Vec4;
+    /// Texel `(x, y)` of mip level 0 of the 2D texture bound to `stage`,
+    /// unfiltered (shadow maps; `textureLoad`). The default panics.
+    fn load(&self, stage: usize, x: u32, y: u32) -> Vec4 {
+        panic!("stage {stage}: texel ({x}, {y}) loaded from a sampler without texels")
+    }
+    /// Width and height of mip level 0 of the texture bound to `stage`
+    /// (`textureDimensions`). The default panics.
+    fn size(&self, stage: usize) -> [u32; 2] {
+        panic!("stage {stage}: size asked of a sampler without texels")
+    }
 }
 
 /// A sampler for programs that never sample; panics if used.
@@ -325,6 +335,16 @@ pub fn run(
         }
         match mode {
             None => {}
+            Project2d | Project3d if options.shadow[i].is_some() && dim == Some(TextureDim::D2) => {
+                r.t[i] = super::shadow::sample(
+                    i,
+                    &options.shadow[i].unwrap(),
+                    mode == Project3d,
+                    t,
+                    scale,
+                    sampler,
+                );
+            }
             Project2d | Project3d | Cubemap => {
                 r.t[i] = match dim.unwrap() {
                     TextureDim::D2 => s2([t[0] / t[3], t[1] / t[3]]),
