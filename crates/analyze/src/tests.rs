@@ -294,6 +294,24 @@ fn a_data_pointer_into_a_function_body_is_not_a_function() {
     assert_eq!((p.entries, p.interior, p.bodies), (0, 1, 1), "{p:?}");
 }
 
+#[test]
+fn data_that_decodes_is_not_a_function() {
+    // Pointed at from `.rdata`, all three decode cleanly to a `ret`: a
+    // segment push, a far jump and a run of zero bytes are data.
+    let code = pieces(&[
+        (0x11000, &[0xC3]),
+        (0x11010, &[0x06, 0xC3]),                                 // push es; ret
+        (0x11020, &[0xEA, 0x27, 0x10, 0x01, 0x00, 0x08, 0x00]),   // jmp far 8:0x11027
+        (0x11027, &[0xC3]),
+        (0x11030, &[0x00, 0x00, 0xC3]),                           // add [eax], al; ret
+        (0x11040, &[0x8C, 0xC8, 0xC3]),                           // mov eax, cs; ret (allowed)
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x11010, 0x11020, 0x11030, 0x11040]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    assert_eq!(a.functions.keys().copied().collect::<Vec<_>>(), [0x11000, 0x11040]);
+    assert_eq!(a.rejected.get(&(Source::DataPointer, ConflictKind::Implausible)), Some(&3), "{:?}", a.rejected);
+}
+
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
 fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
     let data = xbe_with(&code);

@@ -58,6 +58,10 @@ pub enum ConflictKind {
     BadJumpTable,
     /// A path ends on int3/ud2 without a call that never returns.
     FallsIntoTrap,
+    /// An instruction Xbox title code has no use for (see
+    /// `implausible`), or a start on zero fill: data that happened to
+    /// decode.
+    Implausible,
 }
 
 pub struct Region<'a> {

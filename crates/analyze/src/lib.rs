@@ -537,6 +537,10 @@ impl<'a> Analyzer<'a> {
                     true
                 }
             };
+            if self.trial.is_some() && implausible(&insn) {
+                self.conflict(va, ConflictKind::Implausible);
+                return;
+            }
             guard.observe(&insn, &mut info);
 
             match insn.flow_control() {
@@ -856,6 +860,12 @@ impl<'a> Analyzer<'a> {
                 return false;
             }
             Some(Byte::Unknown) => {}
+        }
+        // `add [eax], al` is two zero bytes: a pointer into zero fill.
+        if self.image.bytes_from(root).is_some_and(|b| b.starts_with(&[0, 0])) {
+            *self.rejected.entry((source, ConflictKind::Implausible)).or_default() += 1;
+            self.failed_candidates.insert(root);
+            return false;
         }
 
         // First assume unresolved callees return. If that trips over
@@ -1336,6 +1346,29 @@ fn is_table_jump(insn: &Instruction) -> bool {
         && insn.memory_base() == Register::None
         && insn.memory_index() != Register::None
         && insn.memory_index_scale() == 4
+}
+
+/// Instructions only data decodes to, as far as a speculative function is
+/// concerned: Xbox titles run flat 32-bit code in ring 0, so they never
+/// push, pop or load ES/CS/SS/DS, make far transfers, or do string port
+/// I/O. (Code found from certain evidence is not held to this: the XAPI's
+/// GDT helper does a far `jmp` on purpose.) Plain `in`/`out` are not on the
+/// list, as D3D programs a GPIO port with them, and neither is `mov` from a
+/// segment register: the CRT memmove's unread jump table at 0x320a80
+/// decodes as one, and that decode is what recovers the copy tails after
+/// it until switches masked with `and` are sized.
+fn implausible(insn: &Instruction) -> bool {
+    let sreg = |r: Register| matches!(r, Register::ES | Register::CS | Register::SS | Register::DS);
+    let far = (0..insn.op_count()).any(|i| matches!(insn.op_kind(i), OpKind::FarBranch16 | OpKind::FarBranch32))
+        || matches!(insn.mnemonic(), Mnemonic::Retf | Mnemonic::Iret | Mnemonic::Iretd)
+        || matches!(insn.code(), Code::Jmp_m1632 | Code::Call_m1632 | Code::Jmp_m1616 | Code::Call_m1616);
+    let segment = (matches!(insn.mnemonic(), Mnemonic::Push | Mnemonic::Pop) && sreg(insn.op0_register()))
+        || matches!(insn.mnemonic(), Mnemonic::Lds | Mnemonic::Les | Mnemonic::Lss);
+    let port_string = matches!(
+        insn.mnemonic(),
+        Mnemonic::Insb | Mnemonic::Insw | Mnemonic::Insd | Mnemonic::Outsb | Mnemonic::Outsw | Mnemonic::Outsd
+    );
+    far || segment || port_string
 }
 
 fn is_padding(b: u8) -> bool {
