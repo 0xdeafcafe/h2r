@@ -15,6 +15,8 @@ mod network_config;
 mod qos;
 mod qos_memory;
 mod state;
+mod stats;
+pub use stats::{Stat, StatSpec, StatValue, StatWrite};
 mod storage_api;
 mod ui;
 pub use network_config::NetworkConfig;
@@ -52,6 +54,11 @@ pub mod status {
     pub const TASK_RESULTS_AVAILABLE: u32 = 0x0015_00f1;
     pub const SERVICE_TEMPORARILY_UNAVAILABLE: u32 = 0x8015_1102;
     pub const TEAM_NOT_FOUND: u32 = 0x8015_210b;
+    pub const STAT_BAD_REQUEST: u32 = 0x8015_9001;
+    pub const STAT_TOO_MANY_SPECS: u32 = 0x8015_9004;
+    pub const STAT_TOO_MANY_STATS: u32 = 0x8015_9005;
+    pub const STAT_PERMISSION_DENIED: u32 = 0x8015_9200;
+    pub const RESULTS_UNAVAILABLE: u32 = 0x8015_0007;
     pub const STAT_USER_NOT_FOUND: u32 = 0x8015_9003;
     pub const QUERY_DATASET_NOT_FOUND: u32 = 0x8015_6109;
     pub const RUNNING_IDLE: u32 = 0x0015_00f2;
@@ -146,6 +153,20 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .server_status()
+    }
+    /// Accepted local stat writes, with no guest pointers or account keys.
+    pub fn stat_writes(&self) -> Vec<StatWrite> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stat_writes()
+    }
+    /// Transfer captured writes to a future server-event forwarder.
+    pub fn drain_stat_writes(&self) -> Vec<StatWrite> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain_stat_writes()
     }
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config

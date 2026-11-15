@@ -142,6 +142,7 @@ pub(crate) struct State {
     messages: Messages,
     menu: crate::ui::Menu,
     files: crate::storage_api::Files,
+    stats: crate::stats::Stats,
     user_ids: [u64; 4],
     state_flags: [u32; 4],
     game_id: Option<String>,
@@ -163,6 +164,7 @@ impl State {
             messages: Messages::default(),
             menu: crate::ui::Menu::default(),
             files: crate::storage_api::Files::default(),
+            stats: crate::stats::Stats::default(),
             user_ids: [0; 4],
             state_flags: [1; 4],
             game_id: None,
@@ -213,6 +215,7 @@ impl State {
         self.messages.clear();
         self.menu.clear();
         self.files.clear();
+        self.stats.clear_tasks();
         if let Some(base) = self.storage.base {
             m.write_bytes(base, &[0; USERS_SIZE], 1)?;
         }
@@ -361,8 +364,23 @@ impl State {
             .map(Service::status)
             .unwrap_or_default()
     }
+    pub fn stat_writes(&self) -> Vec<crate::stats::StatWrite> {
+        self.stats.snapshot()
+    }
+    pub fn drain_stat_writes(&mut self) -> Vec<crate::stats::StatWrite> {
+        self.stats.drain()
+    }
     pub fn invoke(&mut self, op: Operation, a: &[u32], m: &mut Guest) -> Result<u32> {
         use Operation::*;
+        if let Stats(op) = op {
+            if self.online_refs == 0 {
+                return Ok(NOT_INITIALIZED);
+            }
+            if matches!(op, crate::stats::Op::Read | crate::stats::Op::Write) && !self.connected() {
+                return Ok(NO_SESSION);
+            }
+            return self.stats.invoke(op, a, m, &mut self.storage);
+        }
         if let Storage(op) = op {
             if self.online_refs == 0 {
                 return Ok(NOT_INITIALIZED);
@@ -582,6 +600,9 @@ impl State {
                 Ok(OK)
             }
             Continue => {
+                if let Some(status) = self.stats.poll(a[0]) {
+                    return Ok(status);
+                }
                 if let Some(status) = self.files.poll(a[0]) {
                     return Ok(status);
                 }
@@ -715,6 +736,9 @@ impl State {
                 Ok(OK)
             }
             Close => {
+                if self.stats.close(a[0]) {
+                    return Ok(OK);
+                }
                 if self.files.close(a[0]) {
                     return Ok(OK);
                 }
