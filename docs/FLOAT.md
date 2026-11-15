@@ -7,10 +7,11 @@ Status: measurement plus design. This refines the FP parts of
 [LIFTER.md §3 and §8](LIFTER.md). The interface is in
 [FLOAT-ABI.md](FLOAT-ABI.md). The design was revised after the design review
 to be consistently correctness-first.
-- **Built:** `crates/x87` (the x87 ext80 helpers), `crates/simd` (SSE), and
-  event 14 (#MF) in the runtime and headers, with the MMX and `emms` checks.
-- **Not built:** lowering x87 instructions to the helpers in the IR, lifter
-  and emitter.
+- **Built:** `crates/x87` (the x87 ext80 helpers), `crates/simd` (SSE),
+  event 14 (#MF) in the runtime and headers, with the MMX and `emms` checks,
+  and the lowering of every x87 instruction to the helpers in the IR,
+  lifter and emitter (e5c4251).
+- **Not built:** the `double` fast path of §2.8.
 
 **Recommendation, in one paragraph.** Halo 2 is an SSE1 game with an x87
 sidecar. Scalar SSE is 53% of its floating-point instructions, packed SSE 20%,
@@ -30,7 +31,7 @@ proven, and they are not the PIII's 66-bit-π results. They sit under a named
 oracle tolerance until hardware traces exist.
 
 Evidence labels follow LIFTER.md: **measured** means `h2 fpstats` output on
-this XBE; **source** means code I read (Unicorn/QEMU, iced-x86); **design**
+this XBE; **source** means code that was read (Unicorn/QEMU, iced-x86); **design**
 is a proposal. The tool is static. It counts what the analyzer decoded and
 claimed, which is not what executes.
 

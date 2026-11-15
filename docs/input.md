@@ -102,7 +102,7 @@ Guest layouts (`gamepad.rs`, little-endian, packed, 32-bit guest):
 - `XINPUT_CAPABILITIES` is 25 bytes: `SubType` @0, `Reserved` u16 @1, `In`
   gamepad @3, `Out` rumble @21.
 - Layout tests check the exact offsets. Both come from the pinned Cxbx
-  `Xapi.h`; I did not check them against an XDK header.
+  `Xapi.h`; they were not checked against an XDK header.
 
 The caller owns the frame cadence: call `sync()` once per host frame (or per
 emulated USB poll interval) before running the guest.
@@ -154,7 +154,7 @@ only code that touches Objective-C. Tests drive the mapping and the
 
 Not verified: no physical controller was available, so `AppleSource` is
 compile-checked and the mapping is unit tested but live input, haptics output
-and connect notifications have not been seen on hardware in this lane.
+and connect notifications have not been checked on hardware.
 Connect/disconnect discovery requires the main run loop; windowed app hosts
 already run it. Headless physical-input hosts must call
 `game_controller::service_main_loop` regularly on the main thread. Scripts
@@ -172,9 +172,8 @@ gilrs elsewhere. Disable the `game-controller` feature to keep gilrs only.
 Evaluation of gilrs 0.11.2 on macOS, from its README support table and by
 building it here: input and hotplug are supported (IOKit HID with the SDL
 mapping database, so Xbox, PlayStation and most generic pads arrive in the
-standard layout), force feedback is not. I could not test with a physical
-pad in this session, only that it initialises and enumerates zero pads
-cleanly.
+standard layout), force feedback is not. It has not been tested with a physical pad, only
+that it initialises and enumerates zero pads cleanly.
 
 gilrs reuses a gamepad id on replug, so the backend consumes connect and
 disconnect events and folds a per-pad generation into the `HostPadId`; the
@@ -369,8 +368,8 @@ start a new playback epoch explicitly.
 
 The shell demo accepts `--input-script docs/input-menu-example.toml` and
 advances it from the demo's logical clock. This validates wiring; entering
-retail Campaign still requires the boot lane to choose menu-ready timing
-and pump while executing the generated game. Tests establish XAPI values,
+retail Campaign is the boot runner's job (`H2_BOOT_INPUT`, docs/BOOT.md),
+which chooses menu-ready timing and pumps while running the generated game. Tests establish XAPI values,
 not completion of Armory's generated pitch/movement gates.
 
 `tests/input_semantics.rs` in xapi covers every control's press/hold/release,

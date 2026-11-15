@@ -22,8 +22,7 @@ tables are included.
   The linked XDK library records report build 5849, including `D3D8LTCG`.
 - Repository HEAD at survey: `169378a492a2fb52d53fe0e16f2b3d183573859f`.
   Used the existing `target/release/h2`; no crate edits or rebuilds. XDK matches
-  came from the existing symbols-lane binary in
-  `target/release/h2`.
+  came from `h2 symbols` in the same binary.
 - `h2 analyze`: 18,735 discovered functions across executable sections;
   `.text` has 16,072 starts, 3,453,203 decoded code bytes out of 3,570,764 bytes.
   Its 99.90% *known* coverage includes data and padding. This is not proof of

@@ -25,7 +25,7 @@ The prior scenario schema supplied the initial `+0x1a8/+0x1b0` leads; that schem
 already documents community-source influence. The engine map supplied the HS
 address window, pools and stride leads. This is not a clean-room claim. No
 community HS layouts, opcode lists, implementation bodies, or XML were fetched,
-translated, copied, or used as build inputs for this lane.
+translated, copied, or used as build inputs for this work.
 
 **E** below means directly supported by inspected engine instructions/data.
 **D** means tested against every disc map. **Inference** identifies an
@@ -244,7 +244,7 @@ builtins/types, conflicting names, escaped byte strings, negative zero, script
 selection, malformed source, and deep iterative traversal. No disc tests run in
 the default suite; `hs --all` (and the optional example) explicitly opt into disc integration checks.
 
-Verification commands for this lane:
+Verification commands:
 
 ```sh
 cargo fmt -p hs --check
@@ -252,8 +252,7 @@ cargo clippy -p hs -p cli --all-targets --no-deps -- -D warnings
 cargo test -p hs -p cli
 ```
 
-The changed packages are checked on base `8e4dc8c`, using `--no-deps` to keep
-unrelated dependency lints outside this lane.
+`--no-deps` keeps lints in unrelated dependencies out of the check.
 
 ## Host limits and typed API
 

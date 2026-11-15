@@ -1,9 +1,9 @@
 # Graphics: D3D8 on wgpu
 
 `crates/gfx` is the graphics foundation. It replaces Direct3D 8 (Xbox flavour)
-at the API level; it does not emulate the NV2A GPU. The HLE layer (owned by
-other crates) will call into it from the recompiled D3D entry points and from
-the inlined state/submission regions described in `docs/LIFTER.md` section 7.
+at the API level; it does not emulate the NV2A GPU. `crates/d3d`
+([d3d.md](d3d.md)) calls into it from the D3D entry points and from the
+push-buffer methods the game writes inline.
 
 Nothing here needs the disc. `cargo test -p gfx` covers everything except a
 handful of GPU smoke tests (`tests/headless.rs`), which run on any machine with
@@ -459,9 +459,8 @@ renderer, not polish.
   a compute pass, because wgpu occlusion queries are boolean on Metal.
   The count pass does not run the draw's fragment program, so alpha test and
   `discard` do not reject samples. See "Visibility tests" in `d3d.md`.
-* Push-buffer/NV2A method-stream paths: out of scope by design. Inlined D3D
-  fast paths must be intercepted at the call/region level (LIFTER.md section 7;
-  Cxbx's `XbPushBuffer.cpp` shows what a draw submission has to preserve).
+* Push-buffer/NV2A method streams are not decoded here: `crates/d3d`
+  decodes them and calls this crate (d3d.md, "Push buffer").
 * Exact linear filtering at custom texture borders and `D3DTSS_COLORKEY*`
   are not modelled (no retail Halo 2 material sets `COLORKEYOP`). `ALPHAKILL` and signed
   colour channels (`COLORSIGN`) are handled in the translated pixel

@@ -410,8 +410,8 @@ final file still returns NotADirectory).
 
 ## Kernel integration
 
-Add `vfs = { path = "../vfs" }` to the kernel crate when integrating it. No
-existing crate has been wired up by this lane. Basic setup:
+The kernel depends on `vfs` and translates the NT file exports onto it; the
+boot runner configures it (docs/BOOT.md, `--data`). Basic setup:
 
 ```rust
 use vfs::{Config, OpenOptions, Offset, Vfs};

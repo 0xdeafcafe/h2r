@@ -343,10 +343,9 @@ coarse, the clean fix is a kernel hook called before each idle
 `advance_to(deadline)`, where the pacer would sleep until that deadline.
 
 `VBlank` is the refresh arithmetic in guest ticks (`NTSC` 60000/1001 Hz,
-`HZ60`, `PAL50`): `count_at(ticks)`, `time_of(n)`, `next_after(ticks)`. It is
-for the D3D lane's `BlockUntilVerticalBlank`, `GetDisplayFieldStatus` and
-vertical-blank callbacks, which should be kernel timers at
-`next_after(now)` so the logical clock advances to them like any other wait.
+`HZ60`, `PAL50`): `count_at(ticks)`, `time_of(n)`, `next_after(ticks)`. The
+game's own vblanks do not use it: `crates/d3d` delivers them as a kernel
+periodic source on the logical clock (d3d.md, "Vertical blank").
 
 ## Input
 
@@ -488,12 +487,13 @@ logical time through `tick`, input through `InputManager`, frames through a
 
 Checked on an M1 Max: window, Metal surface, 59-60 fps guest and display,
 pattern geometry and audio device all as above. Physical controllers and
-mouse capture were not exercised in this session.
+mouse capture were not exercised in that check.
 
 ## Known gaps
 
 - HiDPI: the surface is in physical pixels and the frame is scaled into it;
   nothing is done about the backing scale beyond that.
 - Pacing granularity is the chunk size (see Pacing).
-- No on-screen overlay; status is in the title bar.
+- No on-screen stats; status is in the title bar. The only overlay is the
+  `--follow` banner.
 - Window position, size and fullscreen are not remembered between runs.

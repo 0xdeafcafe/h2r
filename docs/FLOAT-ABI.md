@@ -3,7 +3,7 @@
 2026-11-15. Status: `crates/x87` implements §4 and §6. Event 14 (#MF) is in
 the runtime, `h2abi.h` and `h2gen.h`, and MMX instructions and `emms` check
 for it (§2.2). The IR, lifter and emitter (`crates/ir`, `crates/lift`,
-`crates/emit`) do not lower x87 instructions to the helpers yet. Revised after
+`crates/emit`) lower every x87 instruction to these helpers (e5c4251). Revised after
 the design review (APPROVE WITH CHANGES): the helpers run on master's
 `X87Abi`, #MF has an event code, and stores and environment operations are
 split into phases. Revised again after the re-review (COMMIT AFTER FIXES):

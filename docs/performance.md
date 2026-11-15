@@ -1,8 +1,13 @@
-# Runtime performance lane
+# Runtime performance: guest memory access and the runner
+
+The runtime side of the 30 fps work: guest memory accessors, the opt-in
+inline RAM path (`H2_FASTMEM`), runner transfers and their counters. The
+profiling and benchmark tools are in [perf.md](perf.md); the main-menu
+frame budget and the plan across every area are in
+[perf-budget.md](perf-budget.md).
 
 The goal is **retail running correctly at 30 presented frames per wall second**,
-a **33.33 ms** budget per frame. The first milestone is **1 FPS while sitting
-in the main menu**, using the boot branch with `H2_BOOT_GFX`.
+a **33.33 ms** budget per frame, measured in the main menu with `H2_BOOT_GFX`.
 Startup time, scheduler slices and guest virtual time are not frame rate.
 Count `(last_present - first_present) / (last_time - first_time)` over a
 verified menu interval. Retain sparse frame dumps to confirm the scene.
@@ -37,7 +42,8 @@ wall durations. Nested Runner/Kernel/D3d/Gfx/Fallback times **overlap** and must
 not be summed. GPU completion latency is not measured by a host submission timer.
 An unobserved category prints `unobserved`, not a misleading measured zero.
 
-Boot integration (boot is not part of this branch):
+Boot integration (not done yet; `H2_PERF` counters already reach the runtime
+through boot's bridge):
 
 - Enable profiling for every guest ExecCtx, including new threads and DPCs.
 - After registering D3D entries, use `Dispatch::profile_override(addr,
@@ -145,8 +151,8 @@ cleared the tool's noise bound. These are synthetic results, not menu FPS.
 
 A five-second, 500 Hz guest-aware sample of the inline memory loop collected
 1422 samples without misses: 99.93% were attributed to generated code, with
-no Rust `h2abi_v1_read` or `Guest::checked_start` samples. The tooling lane's
-original profile attributed 28% and 24% to those functions. Inline checks and
+no Rust `h2abi_v1_read` or `Guest::checked_start` samples. An earlier
+profile of the same loop attributed 28% and 24% to those functions. Inline checks and
 copies now reside in generated code: their cost has moved, not vanished, and
 must not be attributed to IR optimization work.
 
@@ -166,12 +172,12 @@ memory on each execution context. This is not an unmodified-master control.
 | Inline RAM | 640–720 | 2.208 | 411.50 (106.27) |
 | Checked access | 720–800 | 1.379 | 716.13 (213.62) |
 
-Other lanes' game processes overlapped this run. Camera progression and
+Other game processes overlapped this run. Camera progression and
 changing contention prevent treating the ratios as causal accessor speedups.
 The second control also retains the initialized memory gate and execute-page
-cache. The external master-plus-boot reference supplied by the boot lane is
-**1.91 FPS, 484 ms median frame**. A fresh-data, same-frame pair is queued
-through the shared game gate to reduce these confounders.
+cache. The master-plus-boot reference from docs/BOOT.md at the time was
+**1.91 FPS, 484 ms median frame**. A fresh-data, same-frame pair would
+reduce these confounders.
 
 A separate diagnostic interval, presents 800–880, took **366.97 ms/frame**.
 The 500 Hz sampler collected 11,423 samples without misses, with a 35 us mean
@@ -208,9 +214,9 @@ coherence. Kernel/VFS samples predominantly follow `Vfs::write` through
 **30 FPS requires 33.33 ms/frame.** This diagnostic window needs about
 333.6 ms/frame removed (90.9%); the unprofiled inline windows need roughly
 13.6–15.1 times their observed throughput. Runtime/emit alone cannot close
-that gap. Memory checks and runner dispatch remain this lane's targets;
+that gap. Memory checks and runner dispatch remain the runtime's targets;
 codegen-opt owns the generated-operation budget, gfx-perf owns the largest
-backend budget, and kernel/VFS persistence requires its owning lane.
+backend budget, and kernel/VFS persistence belongs to the VFS.
 Most x87 cost is arithmetic and needs work beyond helper-call overhead.
 Disable boot debug tracing for production acceptance measurements.
 
@@ -235,15 +241,9 @@ to 108,415,832 (**60.3%**), and executable text from 40,250,060 to 55,107,324
 comparison does not isolate either flag. This footprint tradeoff belongs
 in build-perf and codegen-opt planning.
 
-All further game/menu runs use the shared `game` gate, and full-image
-compiles use the `emit` gate, with `CARGO_BUILD_JOBS=4`, empty `RUSTC_WRAPPER`
-and `H2_OBJ_CACHE=$TMPDIR/shared-objcache`. This lane needs its own generated
-image because the emitter support code changes. Runtime-only follow-ups
-reuse that image rather than triggering another full emit.
-
 ## Ownership
 
-This lane owns runtime/emit accessors, runner transfers, safe points and helper
+This work covers runtime/emit accessors, runner transfers, safe points and helper
 call overhead. `codegen-opt` owns IR optimizations, `gfx-perf` owns wgpu work,
 `perf-tooling` owns guest-aware sampling, Perfetto and `h2 bench`, and
 `build-perf` owns compile-time improvements. Gfx/d3d source is untouched here.

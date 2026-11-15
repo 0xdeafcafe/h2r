@@ -195,11 +195,11 @@ continues after map/tag errors, prints counts only, and exits unsuccessfully
 if any validation fails. It discovers maps, rather than hardcoding a count of 30.
 
 ```sh
-cargo run -p cli --release -- strings mainmenu --lang en --tag 'ui\screens\game_shell\main_menu_screen\main_menu_screen' --disc /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso
+cargo run -p cli --release -- strings mainmenu --lang en --tag 'ui\screens\game_shell\main_menu_screen\main_menu_screen' --disc disc/halo2.iso
 ```
 
 ```sh
-cargo run -p cli --release -- strings --all --disc /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso
+cargo run -p cli --release -- strings --all --disc disc/halo2.iso
 ```
 
 Validation result: **30 maps, 325,864 name slots, 270 descriptors, 1,404 `unic`
@@ -244,11 +244,11 @@ Reproduce executable evidence with the existing disassembler (disc comes
 before the address):
 
 ```sh
-cargo run -p cli --release -- disasm /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso 0x1a0180 210
+cargo run -p cli --release -- disasm disc/halo2.iso 0x1a0180 210
 ```
 
 ```sh
-cargo run -p cli --release -- disasm /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso 0x140440 110
+cargo run -p cli --release -- disasm disc/halo2.iso 0x140440 110
 ```
 
 [ids]: https://github.com/XboxChaos/Assembly/blob/fd14ef3c46135e9422966c6a64cd926fb0bd23fb/src/Blamite/Blam/LengthBasedStringIDResolver.cs

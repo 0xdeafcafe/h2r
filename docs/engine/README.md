@@ -62,8 +62,10 @@ ending at the end of RAM so that only the first k arguments are mapped,
 for every k. The test pins the image by
 SHA-256 (`03215919…935d`) and fails if any adapter goes unexercised.
 
-`ir` and `lift` are not on master yet, so the feature cannot build in this
-tree; it was run against a copy of the lift worktree's crates. Recorded on
+`ir` and `lift` are on master now, but the `differential` feature does not
+list them as dependencies yet (the TODO in `crates/engine/Cargo.toml`), so
+it does not build as is. The run below used a copy of the lift crates from
+before they landed. Recorded on
 2026-11-15, seeds 1, 7, 99, 2026, 31337 at scale 1: 7.66 M original
 instructions interpreted, 93,291 calls, 5 matching fault outcomes,
 zero disagreements across all 22 adapters. After the argument-order

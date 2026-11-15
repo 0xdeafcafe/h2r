@@ -300,8 +300,8 @@ Adding a scenario: implement `perf::bench::Scenario` (`prepare` untimed,
 
 ## Boot hook
 
-The boot driver (crates/boot, on the `boot` branch) is not a dependency of
-`perf`. Two small changes on the boot side wire it in.
+The boot driver (crates/boot) is not a dependency of `perf`. Two small
+changes on the boot side, not on master yet, wire it in.
 
 1. **Profiling `h2 run`.** In `boot::run`, after `load_module` and before
    the slice loop, add `let _perf = perf::Session::from_env();`. Declare it

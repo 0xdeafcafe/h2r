@@ -27,10 +27,10 @@ five-argument GetDiskFreeSpace, fiber API or multimedia timer API. Do not invent
 an address for an unmatched function.
 
 Reproduce matching with the pinned database from
-[xdk-libraries.md](xdk-libraries.md) and the absolute disc path:
+[xdk-libraries.md](xdk-libraries.md) and your XBE:
 
 ```sh
-H2_XBSYMDB=<pinned-database-checkout> cargo run -p cli --release -- symbols /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe --list
+H2_XBSYMDB=<pinned-database-checkout> cargo run -p cli --release -- symbols disc/default.xbe --list
 ```
 
 Use the main checkout's `scripts/ghidra --json x-ref to <address> --limit 0`
@@ -194,7 +194,7 @@ XGAME_FIND_DATA has a 320-byte WIN32_FIND_DATAA prefix, an ANSI directory at
 NUL termination for both find-data name arrays and the added strings; no raw
 Rust prefix is accepted anymore. Empty/end enumeration must return error 18
 through the generated file/search path. Retain generated XCalculateSignature*
-and the kernel crypto HLE; this lane supplies no signing keys.
+and the kernel crypto HLE; this crate supplies no signing keys.
 
 XGetLanguage at `0033039a` queries nonvolatile index 7, returns zero on query
 failure, preserves values 0..9, and maps values above 9 to 1 (`003303b9`).
@@ -825,7 +825,7 @@ these are checked as decoded mnemonics and operands. The repository holds
 no instruction bytes copied from the XBE:
 
 ```sh
-H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
+H2_XBE="$PWD/disc/default.xbe" \
   cargo test -p xapi --test xbe_pins -- --ignored
 ```
 
@@ -861,4 +861,4 @@ state/capabilities/feedback entries at 0x409b6c/0x409994/0x409bdf with a timelin
 The existing retry, disconnected snapshot, event pinning and memory-fault
 tests remain applicable. These tests prove service semantics; observing
 0x124c36's consumer and 0x2a9470..0x2a9550's Armory pitch gates during a retail
-boot remains the boot lane's integration acceptance.
+boot is left to the boot runner's integration checks.

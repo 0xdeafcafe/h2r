@@ -9,7 +9,7 @@ from the shared loader with its framing and resource-key checks.
 No asset bytes, extracted files, names, dumps or game-derived fixtures belong
 in Git. Tests invent their data. Validation read the owner's disc image
 directly (`--disc <disc.iso>`), without copying or linking it. Analysis
-scripts and build output stayed in session scratch. See [map-format.md](map-format.md),
+scripts and build output stayed in scratch space. See [map-format.md](map-format.md),
 [structure-bsp.md](structure-bsp.md) and [bitmaps.md](bitmaps.md).
 
 ## Evidence and scope

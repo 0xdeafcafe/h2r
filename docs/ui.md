@@ -27,7 +27,7 @@ Labels used in the tables:
   effect was not traced. A renderer must not rely on these.
 
 Disassembly came from a linear sweep of the analyzer's function starts with
-`iced-x86`, kept in session scratch space. Addresses are guest virtual
+`iced-x86`, kept in scratch space (`$TMPDIR`). Addresses are guest virtual
 addresses. The walkers are listed in [engine-map.md](engine-map.md#ui-tag-walkers-2026-11-15).
 
 ## The tag graph

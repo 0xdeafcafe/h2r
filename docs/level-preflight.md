@@ -7,7 +7,14 @@ Addresses below are guest virtual addresses. Names are tool/catalog names or
 explicitly descriptive engine names; no retail bytes, instructions, scripts,
 callback tables or assets are reproduced.
 
-The supplied boot observation is **8,000+ presents in 00a_introduction, with
+**Since this audit:** shadow maps landed (5965e8a), so the level's
+shadow-compare draws are no longer skipped (one run took 50,207 samples,
+none skipped). Depth levels as targets and the depth buffer read through
+colour textures landed (850fe2f), which addresses rank 5. Voice effects
+landed (3b4b14a; rank 10). The back and display surfaces got separate
+frame buffers (5ee56bb), which rank 4 depends on; recheck it.
+
+The supplied boot observation was **8,000+ presents in 00a_introduction, with
 shadow-compare draws skipped**. This audit did not reproduce that run. A present
 count does not establish elapsed simulation ticks, cinematic completion, input
 acceptance or a successful level transition. The boot integration lives outside
@@ -27,7 +34,7 @@ Ranking is triage priority, not a predicted execution order. **Gap** means the
 current implementation demonstrably lacks the behavior; activation may still be
 conditional. **Risk** means an address-backed dependency whose integrated
 execution remains unproved, not a demonstrated defect. The existing
-shadow-compare skip belongs to the other lane and is not counted again.
+shadow-compare skip was tracked separately and is not counted again.
 
 | Rank | Candidate and evidence | Owner | Suggested fix scope / acceptance |
 |---:|---|---|---|
@@ -40,7 +47,7 @@ shadow-compare skip belongs to the other lane and is not counted again.
 | 7 | **Risk: streamed sound stops progressing or completes into freed level state.** Engine DoWork `0x0021ec37 → 0x0037b844`; stream creation `0x002ae68d → 0x0037d4e2`; Process `0x0037ad25`; FlushEx `0x002ae4e2 → 0x0037b827`; WMA creator `0x0038a0c5`. DoWork does not consume samples. | `dsound`, `audio`, `wma`, `app`, boot integration | Verify exactly one mixer consumer stays active in loading loops, WMA registration is installed, and status/size publication precedes callbacks/events. Trace cancel/release at map change and WMA reset/destruction. Use existing consumer-lease and output APIs; do not add a second pump. |
 | 8 | **Risk: first active physics/AI/weapon callback escapes known dispatch or exposes state errors.** Objects `0x000b7b40`, type update/post-physics `0x00108c60` / `0x00108cd0`, AI `0x001c83c0`, command scripts `0x00257d00`, Havok `0x001c3ddd → 0x00311100`. Table targets are covered, but Havok alone has 146 unassociated dynamic sites. | `analyze`, `lift`, `emit`, `runtime`; `x87`, `simd` if differential evidence warrants | Preserve unsupported-target PCs/targets/transfer kinds, emitted revision and per-thread FP state. Validate grounded movement, contact/door/tram behavior, AI pathing, weapon pickup/fire/reload and damage in Cairo. Fix the first missing target or proven semantic discrepancy; do not stub physics/AI. |
 | 9 | **Risk: persistent save-and-quit/resume depends on unverified signing/profile policy.** Generated signing `0x002d6765`, `0x002d6779`, `0x002d67c7` consumes key import `0x00411660`; runtime key DATA exports are unconfigured placeholders. The checkpoint restart fixture explicitly supplies synthetic keys and a separate U: payload. | `runtime`, `kernel`, `xapi`, `vfs`, boot integration | Confirm stable per-title/console key provisioning and persistent UDATA/TDATA paths before signing. Exercise real save-and-quit, process exit, profile selection and resume; reject damaged signatures without replacing a good save. Stable zero placeholders are not evidence of a crash, but neither are they the configured save contract. |
-| 10 | **Gap (partly closed on `audio-fx`): campaign audio lacked environmental/effect behavior.** Filters, LFOs, the amplitude envelope, headroom, I3DL2 source occlusion, Doppler, `SetOutputBuffer` and an I3DL2-style reverb are now applied (`docs/dsound.md`, "Voice effects"); what remains is listed there. Positional source `0x00220ea1 → 0x0037c668`; stream filter/LFO/envelope sites `0x002203e9`, `0x00220508`, `0x002ae812`; effects setup `0x001913a4`. The guest DSP image stays dry (the reverb is a host-side stand-in). | `dsound`, `audio` | Remaining: confirm the assumed descriptor units on real playback (dialogue filtering, room/airlock occlusion), then tune. Synthetic response and packet completion are tested. This is expected fidelity loss, not proof of a campaign hang. |
+| 10 | **Gap (partly closed by `audio-fx`, 3b4b14a): campaign audio lacked environmental/effect behavior.** Filters, LFOs, the amplitude envelope, headroom, I3DL2 source occlusion, Doppler, `SetOutputBuffer` and an I3DL2-style reverb are now applied (`docs/dsound.md`, "Voice effects"); what remains is listed there. Positional source `0x00220ea1 → 0x0037c668`; stream filter/LFO/envelope sites `0x002203e9`, `0x00220508`, `0x002ae812`; effects setup `0x001913a4`. The guest DSP image stays dry (the reverb is a host-side stand-in). | `dsound`, `audio` | Remaining: confirm the assumed descriptor units on real playback (dialogue filtering, room/airlock occlusion), then tune. Synthetic response and packet completion are tested. This is expected fidelity loss, not proof of a campaign hang. |
 
 ## Cutscene and mission route
 
@@ -313,12 +320,8 @@ and no game run, full-image emit or generated-game clang build was needed.
 Reproduction from a checkout with its built `h2` available:
 
 ```sh
-export H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe
-export H2_DISC=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso
-export RUSTC_WRAPPER= CARGO_BUILD_JOBS=4
-export CARGO_TARGET_DIR="$TMPDIR/level-preflight-target"
-export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
-export H2_OBJ_CACHE="$TMPDIR/shared-objcache"
+export H2_XBE="$PWD/disc/default.xbe"
+export H2_DISC="$PWD/disc/halo2.iso"
 h2 analyze "$H2_XBE"
 h2 disasm "$H2_XBE" 0x18e960 100
 h2 disasm "$H2_XBE" 0x11c1b0 110
@@ -336,13 +339,10 @@ For the boot owner, the smallest useful next observation is **tick + HS thread
 wake/frame + pending level options** while the introduction advances. Then
 accept tutorial input, reach Cairo, change BSP, revert and restart from a
 persistent save, in that order. Log the generated dylib revision, HLE override
-set, upload policy, audio consumer and input mapping with each result. Use
-bounded runs through `gate.sh game` and the shared dylib under
-`$TMPDIR/shared-gen/<master short hash>/`; do not emit another full image for
-this report. Follow the lane rule's background completion notifications,
-not sleep/poll loops. The frame budget and first failing callback/material
-remain open questions; this static audit supplies no FPS or gameplay-success
-claim.
+set, upload policy, audio consumer and input mapping with each result. Keep
+runs bounded (`H2_BOOT_STOP_AT_PRESENT`). The frame budget and first failing
+callback/material remain open questions; this static audit supplies no FPS
+or gameplay-success claim.
 
 No isolated production patch was justified: the proven remaining gaps span
 resource identity/conversion or audio processing, while the potential hard

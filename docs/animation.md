@@ -291,7 +291,7 @@ small for any graph; a failure part-way removes the partial file.
 Each animation lists its nodes (`index`, `parent`, `name`) and then, per frame, one
 object per node: `rotation` (`[x,y,z,w]`), `translation`, `scale` and a `has`
 object saying which channels the animation supplied. Dumps of retail graphs are
-game-derived data: keep them out of the repository (`$RUSH_KEEP`, not `$TMPDIR`
+game-derived data: keep them out of the repository (in a directory of your own, not `$TMPDIR`
 or the tree).
 
 ## Validation on the retail disc

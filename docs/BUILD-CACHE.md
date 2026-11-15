@@ -39,8 +39,8 @@ supported. User-supplied root aliases are resolved before taking the lock.
 
 Rebuilding `h2` invalidates the receipt, including analyzer, IR, lifter or
 emitter edits without a crate version bump. This deliberately does not
-persist IR across generator builds, so pass changes in other lanes cannot
-silently use old results. `--no-emit-cache` forces regeneration, as does
+persist IR across generator builds, so a changed pass can never silently
+use old results. `--no-emit-cache` forces regeneration, as does
 setting `H2_TRACE` for analysis diagnostics. The installed `h2abi.h` is
 refreshed separately on every build: changing the runtime ABI invalidates
 objects without repeating analysis and lifting.
@@ -134,7 +134,7 @@ change one function in a private XBE copy and use the same output; compare
 `clang` wrapper on `PATH` that forwards to the real compiler, records wall
 time and exit status, and handles version/resource probes unchanged. Use
 the same wrapper for before/after runs: changing its contents changes the
-object cache identity. Results from this lane are in [build-perf.md](build-perf.md).
+object cache identity. Measured results are in [build-perf.md](build-perf.md).
 
 ## Rust dependency builds
 
@@ -144,5 +144,5 @@ across worktrees. Cargo reads configuration from ancestor directories, so
 a config below the repository root may apply only to nested worktrees.
 Avoid committing machine-specific cache paths or requiring sccache for
 other developers. `RUSTC_WRAPPER=` disables a configured wrapper for one
-command. Use a per-lane `CARGO_TARGET_DIR` under `$TMPDIR`; generated C object
+command. Give each worktree its own `CARGO_TARGET_DIR`; generated C object
 sharing does not require sharing Cargo target directories.

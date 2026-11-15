@@ -12,12 +12,10 @@ Run from the checkout; keep the source disc read-only. The optional
 the rest of analysis so before/after results use the same implementation.
 
 ```sh
-export RUSTC_WRAPPER=
-export CARGO_TARGET_DIR="$TMPDIR/dyn-coverage-target"
-export CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0
 export H2_XBE=/path/to/default.xbe
-cargo run -p analyze --release --example dispatch_coverage -- --unseeded > "$RUSH_KEEP/dispatch-before.tsv"
-cargo run -p analyze --release --example dispatch_coverage > "$RUSH_KEEP/dispatch-after.tsv"
+KEEP=/path/outside/the/repo     # the TSVs are derived from your disc
+cargo run -p analyze --release --example dispatch_coverage -- --unseeded > "$KEEP/dispatch-before.tsv"
+cargo run -p analyze --release --example dispatch_coverage > "$KEEP/dispatch-after.tsv"
 ```
 
 The TSV contains:

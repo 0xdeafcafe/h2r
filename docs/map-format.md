@@ -339,7 +339,7 @@ no licence or repository-commit fields in their examined nuspec files. They
 were inspected in scratch, not installed or linked. A permissive source
 licence must not be inferred merely from an unlabelled binary package.
 
-All fetched repositories/packages stayed in session scratch. None is a build
+All fetched repositories/packages stayed in scratch space. None is a build
 input. Future opt-in reference downloads may live under git-ignored `.tools/`
 with an exact commit and original notices, but moving files there does not
 change their licence or authorize distributing generated derivatives. A missing

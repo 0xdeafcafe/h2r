@@ -974,7 +974,7 @@ a second registration fails closed. An ignored test decodes two real disc
 streams through the boundary and compares them with `wma::decode_asf`:
 
 ```sh
-H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
+H2_XBE="$PWD/disc/default.xbe" \
   cargo test --release -p dsound --test xwma -- --ignored
 ```
 
@@ -988,7 +988,7 @@ and pins the six `dsound::xwma::ENTRIES` the same way (`ret 2Ch`, `4`, `4`,
 `4`, `4`, `10h`):
 
 ```sh
-H2_XBE=/Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe \
+H2_XBE="$PWD/disc/default.xbe" \
   cargo test -p dsound --test xbe_pins -- --ignored
 ```
 

@@ -1,5 +1,10 @@
 # Golden boot traces
 
+Status: design and format only. The `oracle::golden` module, the
+`h2 golden-trace` command and the CLI's `unicorn` feature described here are
+not on master; the boot's kernel trace (docs/BOOT.md, `kernel-trace.tsv`) is
+what exists today.
+
 `oracle::golden` captures XBE execution using the optional GPL Unicorn backend.
 It uses the **same `analyze::cfg::CfgBuilder` leaders as the lifter**. It never
 uses Unicorn translation-block hooks. A code hook emits a block entry whenever
@@ -15,11 +20,11 @@ CARGO_TARGET_DIR="$TMPDIR/golden-target" cargo build -p cli --features unicorn
 ```
 
 ```sh
-"$TMPDIR/golden-target/debug/h2" golden-trace /absolute/path/to/halo2.iso --steps 100000 --out "$RUSH_KEEP/realistic.jsonl" --registers-every 1
+"$TMPDIR/golden-target/debug/h2" golden-trace /absolute/path/to/halo2.iso --steps 100000 --out "$KEEP/realistic.jsonl" --registers-every 1
 ```
 
 ```sh
-"$TMPDIR/golden-target/debug/h2" golden-trace /absolute/path/to/halo2.iso --profile lifter --fixed-time --steps 100000 --out "$RUSH_KEEP/lifter.jsonl" --registers-every 1
+"$TMPDIR/golden-target/debug/h2" golden-trace /absolute/path/to/halo2.iso --profile lifter --fixed-time --steps 100000 --out "$KEEP/lifter.jsonl" --registers-every 1
 ```
 
 The input must be an absolute ISO or XBE path. The ISO's `default.xbe` is loaded
@@ -27,7 +32,8 @@ in memory, without extraction or alternate disc search. A denied disc read must
 be reported without trying a workaround. `--out` is required, its parent must
 exist, and the destination must not exist. An output inside a repository is
 refused, including linked worktrees and symlink aliases into a checkout. Retail
-traces belong in `$RUSH_KEEP`; scratch files/builds belong in `$TMPDIR`.
+traces belong in a directory of your own outside the repository (`$KEEP`
+above); scratch files and builds belong in `$TMPDIR`.
 
 Unicorn remains optional and is excluded from default builds. See
 [oracle.md](oracle.md) for licensing, architectural limitations, and the known
@@ -55,7 +61,7 @@ seeded in this profile. A temporary GDT initializes Unicorn's hidden FS cache,
 then is unmapped before execution; it leaves no bytes in the flat RAM image.
 
 The shared CFG post-pass and its analyzer metadata are prerequisites from the
-lifter lane. Golden does not modify the lifter harness. Compare against the
+lifter. Golden does not modify the lifter harness. Compare against the
 same analyzer revision and leader set, not TB boundaries or function discovery
 from another version. Executing outside analyzed instructions stops visibly.
 

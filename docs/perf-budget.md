@@ -2,12 +2,17 @@
 
 Where the wall time of one main-menu frame goes on master plus the boot
 runner, and a ranked plan for getting from under 2 fps to 30 fps.
-Measured 2026-11-15 on master 4620ba0 + `boot` (6eaa2cd), with the shared
-dylib `$TMPDIR/shared-gen/4620ba0`, Apple Silicon (AGX G13), release
-build. The tools are in docs/perf.md: the timeline, `h2 profile budget`
-and the sampler. Since then master has landed gfx-perf's pass batching
-and upload rings, which target rows 2, 4 and 6 below; re-measure before
-acting on those rows.
+Measured 2026-11-15 on master 4620ba0 + `boot` (6eaa2cd), with a dylib
+built from 4620ba0, Apple Silicon (AGX G13), release build. The tools are
+in [perf.md](perf.md): the timeline, `h2 profile budget` and the sampler.
+The runtime's accessor work and its own menu profile are in
+[performance.md](performance.md).
+
+Since then master has landed plan items 1 and 2 (draws batched per
+target into one submission, upload rings and cached texture bind groups,
+592686a) and item 4 (deferred VFS write metadata, 6eb79b6). Those target
+rows 2, 3, 4 and 6 of the budget. The main menu now runs at about 5-6 fps
+on an unloaded M-series Mac. Re-measure before acting on any row.
 
 ## Method
 
@@ -24,7 +29,7 @@ things to `boot::run`:
 - A `boot: input + audio pump` span around the runner's per-slice
   `xapi::service_input` and `dsound_glue::advance`.
 
-Those two changes belong on the boot branch (docs/perf.md "Boot hook").
+Neither is on master yet (docs/perf.md, "Boot hook").
 
 | run | what | window mean / median ms | load avg |
 |---|---|---|---|
@@ -34,7 +39,7 @@ Those two changes belong on the boot branch (docs/perf.md "Boot hook").
 | D | as B, plus the VFS fix below | 497 / 439 | 20-30 |
 
 B and C agree within noise, so the timeline, even with `hle`, costs
-nothing measurable. A ran while other lanes were building, which made
+nothing measurable. A ran while other builds were running, which made
 everything 2.4x slower, and slower unevenly: fsync-heavy file I/O and
 Metal suffer most. So the ms below come from B, and A's sampler is used
 only for fractions *inside* B's `slice` self time, where the two runs
@@ -43,13 +48,13 @@ quiet-machine number is 484 ms median. Expect every ms here to scale
 down by roughly 0.8 on an idle machine. The percentages are the
 portable part.
 
-Reproduce (overlay of master + boot + this branch, with the hook above):
+Reproduce (with the hook above added to `boot::run`):
 
 ```
 menu.sh() { H2_BOOT_GFX=$R/gfx H2_BOOT_GFX_EVERY=never \
   H2_BOOT_INPUT="START@f310,DOWN@f408,A@f419" \
   H2_BOOT_FPS_FROM=440 H2_BOOT_STOP_AT_PRESENT=560 "$@" \
-  h2 run disc/halo2.iso --out $TMPDIR/shared-gen/<master> --data $R/data --fresh-data; }
+  h2 run disc/halo2.iso --out $TMPDIR/h2boot --data $R/data --fresh-data; }
 R=$TMPDIR/b menu.sh env H2_PERF_FROM=440 H2_TIMELINE=$R/trace.json H2_TIMELINE_CATS=all
 h2 profile budget $R/trace.json
 R=$TMPDIR/a menu.sh env H2_PERF_FROM=440 H2_PROFILE=$R/prof H2_TIMELINE=$R/trace.json
@@ -92,16 +97,16 @@ split B's `slice` self time (238 ms) by run A's sampler fractions.
 
 | # | cost | ms/frame | % | owner |
 |---|---|---|---|---|
-| 1 | Runtime guest-memory accessors and the write watch\*: `Guest::checked_start` 6.8, `h2abi_v1_read` 4.5, `h2abi_v1_write` 3.2, `read_bytes` 2.7, `WriteWatch::mark` 1.7, `write_bytes` 1.5 (% of A) | ~134 | ~21.6% | perf (Astra) |
+| 1 | Runtime guest-memory accessors and the write watch\*: `Guest::checked_start` 6.8, `h2abi_v1_read` 4.5, `h2abi_v1_write` 3.2, `read_bytes` 2.7, `WriteWatch::mark` 1.7, `write_bytes` 1.5 (% of A) | ~134 | ~21.6% | runtime |
 | 2 | `queue submit`: 1265 a frame, ~100 us each | 124 | 20.0% | gfx-perf |
 | 3 | `NtWriteFile` (`hle call` pc `0xa0ff03b0`): VFS stores the metadata record with two fsyncs per write | 84 | 13.6% | vfs (fixed here) |
 | 4 | `shader prepare`: nv2a `prepare`, per-draw uniform/bind-group buffers (`AGXBuffer init` 7.1% and `dealloc` 2.9% of A) | 76 | 12.3% | gfx-perf (with d3d nv2a) |
 | 5 | Guest code\*: flat, the top function `0x0013b390` is 0.5% own time; inclusive leaders are `0x00016b90`, `0x0013b390`, `0x00224550`, `0x00246cd0`, `0x00372d6c` | ~43 | ~7.0% | codegen-opt |
 | 6 | `render encode`: wgpu render pass per draw | 41 | 6.6% | gfx-perf |
-| 7 | x87 soft-float\*: `Wf<8>` div/mul/add and the `atanh`/`log2`/`expm1`/`sin`/`cos` series | ~31 | ~5.0% | x87 (no lane named; codegen-opt) |
+| 7 | x87 soft-float\*: `Wf<8>` div/mul/add and the `atanh`/`log2`/`expm1`/`sin`/`cos` series | ~31 | ~5.0% | x87, codegen-opt |
 | 8 | GPU round trips: `surface readback` 14.9 (7 a frame, ~2 ms each), `GPU wait` 3.3, `surface write` 3.2 | 21 | 3.4% | d3d (BOOT.md blocker 3), gfx-perf |
 | 9 | Other HLE overrides: the d3d write-barrier shadows `0xa0ff4xxx`, D3D entries such as `0x003f5cf0` (1960 calls a frame) | 15 | 2.5% | d3d, boot |
-| 10 | Runner and dispatch\*: `run_from`, `resolve`, `resolve_resume`, `handler::execute` | ~13 | ~2.1% | perf (Astra) |
+| 10 | Runner and dispatch\*: `run_from`, `resolve`, `resolve_resume`, `handler::execute` | ~13 | ~2.1% | runtime |
 | 11 | `pushbuf drain` self: decode and state, without the draws | 12 | 1.9% | pushbuf-perf |
 | 12 | Boot fallback interpreter (`boot::fallback::trampoline`)\* | ~7 | ~1.1% | analyze / boot |
 | 13 | `draw` self (d3d resolve, splitting), texture upload, snapshots, pipeline creation (0.1 a frame) | 8 | 1.3% | d3d, gfx |
@@ -129,10 +134,10 @@ Ranked by expected win per unit of effort. The wins come from B's
 
 | # | change | owner | expected win | confidence |
 |---|---|---|---|---|
-| 1 | **Batch draws:** one command encoder and one submit per render-target pass or frame, not per draw | gfx-perf | 124 -> ~5 ms (-120) | high: 1265 submits are the cost, and Metal's per-submit overhead is well known |
-| 2 | **Stop allocating per draw:** a frame ring buffer for uniforms, vertices and indices; cached bind groups keyed by texture views | gfx-perf (d3d nv2a `prepare`) | 76+41 -> ~15 ms (-100) | medium |
-| 3 | **Fast accessors:** an inline host-pointer path in generated code for mapped RAM (one bounds check, then a load or store), with the write watch as a bit test on the store side only | perf (Astra) | 134 -> ~20 ms (-110) | medium: it depends on how much of `checked_start` the inline path can skip |
-| 4 | **VFS write metadata** deferred to flush/close (done on this branch) | vfs | -84 during cache fill, about 0 afterwards | high |
+| 1 | **Batch draws** (landed, 592686a): one command encoder and one submit per render-target pass or frame, not per draw | gfx-perf | 124 -> ~5 ms (-120) | high: 1265 submits are the cost, and Metal's per-submit overhead is well known |
+| 2 | **Stop allocating per draw** (landed, 592686a): a frame ring buffer for uniforms, vertices and indices; cached bind groups keyed by texture views | gfx-perf (d3d nv2a `prepare`) | 76+41 -> ~15 ms (-100) | medium |
+| 3 | **Fast accessors:** an inline host-pointer path in generated code for mapped RAM (one bounds check, then a load or store), with the write watch as a bit test on the store side only | runtime | 134 -> ~20 ms (-110) | medium: it depends on how much of `checked_start` the inline path can skip |
+| 4 | **VFS write metadata** deferred to flush/close (landed, 6eb79b6) | vfs | -84 during cache fill, about 0 afterwards | high |
 | 5 | **x87:** native f64 for ops whose precision control or operands do not need 64-bit mantissas, and native transcendentals where the guest result is rounded to double anyway | x87 / codegen-opt | 31 -> ~8 ms (-23) | low to medium: a fidelity trade-off |
 | 6 | **RTT write-back** reported as the device's own write (BOOT.md blocker 3) so render textures are not read back and re-uploaded; drop `D3DSWAP_FINISH`'s full poll | d3d, gfx-perf | 21 -> ~3 ms (-18) | medium |
 | 7 | **Guest code** IR passes (flags, dead stores, register promotion across blocks) | codegen-opt | 43 -> ~25 ms (-18) | low: the profile is flat, with no hot spot |
@@ -154,7 +159,7 @@ plus the residue of each item. Honest reading:
 - At that point add the real-time pacer (`H2_BOOT_REALTIME`) to hold
   30 fps rather than run past it.
 
-## Recommendations per lane
+## Recommendations per area
 
 - **gfx-perf.** The biggest lever (rows 2, 4, 6: 39% of the frame).
   1. One encoder and one submit per pass.
@@ -165,7 +170,7 @@ plus the residue of each item. Honest reading:
   Watch `queue submit`, `shader prepare` and `render encode` in
   `h2 profile budget`. Readbacks: 7 a frame at ~2 ms each, all
   render-to-texture write-back.
-- **perf (Astra).** Rows 1 and 10, 24%. `checked_start` is the single
+- **runtime.** Rows 1 and 10, 24%. `checked_start` is the single
   biggest host function after Metal's buffer allocator. The menu does
   2.56 M accesses a frame, so every ns per access is 2.6 ms per frame.
   `WriteWatch::mark` is 1.7% on its own: consider skipping it on pages
@@ -182,13 +187,13 @@ plus the residue of each item. Honest reading:
   overlay's ~30 lines) so these runs need no overlay. Its kernel tracer
   (`trace.rs`) writes an unbuffered TSV line per kernel call into
   `--out`, the shared dylib directory. That is cheap at menu call rates,
-  but every lane running from `shared-gen` writes the same file.
+  but every run sharing one `--out` writes the same file.
 - **d3d.** Blocker 3 (RTT write-back seen as a CPU write) costs about 3%
   in readbacks and re-uploads.
 
 ## Instrumentation added
 
-On this branch, with tests (docs/perf.md lists every event):
+Landed with this budget, with tests (docs/perf.md lists every event):
 
 - `timeline`: `sched` and `lock` categories.
 - `kernel`:
@@ -210,7 +215,7 @@ On this branch, with tests (docs/perf.md lists every event):
   logical time per frame, vblanks, slices, accesses, idle advances and
   lock waits, from any saved trace.
 
-## Prototype: deferred VFS write metadata
+## Deferred VFS write metadata (landed)
 
 `vfs::host::HostBackend::write_at` and `set_len` stored the file's
 metadata record (write and change times, the archive bit) durably on

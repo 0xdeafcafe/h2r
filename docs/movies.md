@@ -44,7 +44,7 @@ an explicit optional status and leaves existing movies alone. Conversion or
 I/O failure returns `io::Error`, including ffmpeg's bounded diagnostic log.
 It is appropriate to continue app installation with a message explaining
 that movies are unavailable and can be installed later. Missing movies are
-skippable only once the host opts into the existing skip/HLE path; this lane
+skippable only once the host opts into the existing skip/HLE path; this crate
 does not register overrides or change boot behavior.
 
 ## Output and staging
@@ -129,8 +129,7 @@ older standalone exporter in `crates/cli`. It still writes H.264/AAC MP4,
 requires `--force` to replace existing output, and does not use the new
 resumable app installer. Its exit codes remain 0 success, 1 failure, 2 bad
 arguments, 3 ffmpeg missing, 4 unsuitable ffmpeg, and 130 interrupted.
-The app integration should call `movies::install::install_iso`; changing or
-wiring the CLI is outside this lane. Legacy MP4s remain playable through
+An app installer should call `movies::install::install_iso`. Legacy MP4s remain playable through
 `TranscodedSource` (`Mp4Source` is a compatibility alias).
 
 ## Tests

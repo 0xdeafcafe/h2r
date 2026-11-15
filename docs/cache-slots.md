@@ -2,15 +2,13 @@
 
 `crates/kernel/tests/cache_slots.rs` is an opt-in retail integration test.
 It reads and analyzes the supplied XBE at runtime, lifts the cache path and its
-callees, compiles a bounded C module in session scratch, and runs it against the
+callees, compiles a bounded C module in scratch space, and runs it against the
 real kernel/runtime/VFS. No retail bytes or generated code belong in Git.
 
-Run from the checkout with `TMPDIR` set to session scratch:
+Run from the checkout with `TMPDIR` set to scratch space:
 
 ```sh
-RUSTC_WRAPPER= CARGO_TARGET_DIR="$TMPDIR/cache-slots-target" \
-CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 \
-CARGO_PROFILE_TEST_OPT_LEVEL=1 CARGO_BUILD_JOBS=2 \
+CARGO_PROFILE_TEST_OPT_LEVEL=1 \
 H2_XBE=/path/to/default.xbe H2_DISC=/path/to/halo2.iso \
 cargo test -p kernel --test cache_slots -- --ignored --nocapture
 ```

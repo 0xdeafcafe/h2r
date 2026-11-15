@@ -8,7 +8,7 @@ writes. Nothing uses C floating-point expressions to execute the target operatio
 
 ## Run
 
-From the `sse-oracle` worktree, use scratch for builds and all derived data:
+From the repository root, use scratch for builds and all derived data:
 
 ```sh
 export CARGO_TARGET_DIR="$TMPDIR/sse-oracle-target"
@@ -18,7 +18,7 @@ Decode the read-only XBE through `analyze` and iced-x86. Release mode makes the
 whole-image analysis substantially faster:
 
 ```sh
-/opt/homebrew/bin/cargo run --release -p sse-oracle -- inventory /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/default.xbe > "$TMPDIR/sse-inventory.json"
+cargo run --release -p sse-oracle -- inventory disc/default.xbe > "$TMPDIR/sse-inventory.json"
 ```
 
 Generate a new JSONL file (refuses to overwrite an existing file). The final
@@ -26,14 +26,14 @@ argument is the number of random states per form, default 64. Default output
 is approximately 7.6 GB; generation streams and uses a few MB of working memory.
 
 ```sh
-/opt/homebrew/bin/cargo run --release -p sse-oracle -- generate "$TMPDIR/sse-inventory.json" "$TMPDIR/sse-corpus.jsonl" 64 > "$TMPDIR/sse-counts.json"
+cargo run --release -p sse-oracle -- generate "$TMPDIR/sse-inventory.json" "$TMPDIR/sse-corpus.jsonl" 64 > "$TMPDIR/sse-counts.json"
 ```
 
 Audit the completed file, including sticky flags, arithmetic EFLAGS preservation,
 eight-mode coverage, schema integrity and captured non-temporal stores:
 
 ```sh
-/opt/homebrew/bin/cargo run --release -p sse-oracle -- audit "$TMPDIR/sse-corpus.jsonl" > "$TMPDIR/sse-audit.json"
+cargo run --release -p sse-oracle -- audit "$TMPDIR/sse-corpus.jsonl" > "$TMPDIR/sse-audit.json"
 ```
 
 Run the independent SDM probes. Each JSON check has `passed`, `actual` and
@@ -41,7 +41,7 @@ Run the independent SDM probes. Each JSON check has `passed`, `actual` and
 limitations as a process failure; inspect `passed: false` entries.
 
 ```sh
-/opt/homebrew/bin/cargo run --release -p sse-oracle -- fidelity > "$TMPDIR/sse-fidelity.json"
+cargo run --release -p sse-oracle -- fidelity > "$TMPDIR/sse-fidelity.json"
 ```
 
 The C runner is built by `build_runner`, using
@@ -311,14 +311,14 @@ Fixtures are generated instruction inputs and outputs only; there is no game dat
 From an existing corpus (no Rosetta; streams it in about 30 s, parsing every row):
 
 ```sh
-/opt/homebrew/bin/cargo run --release -p sse-oracle -- regen-fixtures "$TMPDIR/sse-corpus.jsonl" crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
+cargo run --release -p sse-oracle -- regen-fixtures "$TMPDIR/sse-corpus.jsonl" crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
 ```
 
 Directly from hardware (explicit opt-in; prints "skipped" and exits 0 if
 `arch -x86_64` or clang is absent):
 
 ```sh
-/opt/homebrew/bin/cargo run --release -p sse-oracle -- regen-fixtures --live "$TMPDIR/sse-inventory.json" crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
+cargo run --release -p sse-oracle -- regen-fixtures --live "$TMPDIR/sse-inventory.json" crates/sse-oracle/fixtures/sse-fixtures-v1.bin.zst
 ```
 
 Selection lives in `fixtures::keep` / `fixtures::selected_cases`. If the corpus

@@ -154,33 +154,24 @@ alignment, gain fitting, or concealment is used for oracle comparisons.
   also require explicit rejection, followed by poisoning, for a sequence
   discontinuity and for a total gain above 512.
 
-## Oracle handoff
+## Running the oracle
 
-The earlier Unicorn attempt crashed in host cache initialization, before guest
-execution. The user authorized continuing native work and assigned execution to
-an agent outside the Codex sandbox. **Do not rerun Unicorn in this sandbox.**
-The runner has since been run outside the sandbox on 48 streams (see "Oracle
-results"). Its guest ABI and EOF driver produce output of the right length.
-
-From this worktree, outside the affected sandbox:
+The oracle runs the game's own decoder in Unicorn (`--features unicorn`,
+see [oracle.md](oracle.md); Unicorn can crash in host cache initialisation
+inside some macOS sandboxes, before any guest code runs). Write the outputs
+to a directory of your own outside the repository (`$KEEP` below). The
+disc and output paths must be absolute. Pass the same zero-based stream
+index to each tool:
 
 ```sh
-CARGO_TARGET_DIR="$TMPDIR/target" /opt/homebrew/bin/cargo run -p oracle --features unicorn --example wma_oracle -- /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso 5 /Users/afr/.config/rush/keep/h2recomp-b5afe71a/586b38da/oracle-5.pcm
+cargo run -p oracle --features unicorn --example wma_oracle -- "$PWD/disc/halo2.iso" 5 "$KEEP/oracle-5.pcm"
+cargo run -p wma --example native_pcm -- "$PWD/disc/halo2.iso" 5 "$KEEP/native-5.pcm"
 ```
 
-Native PCM files for indices **0, 5, 38, and 388 are already prepared** in the
-retained directory used above. Skip this native command for the initial handoff.
-For reproduction, use the same zero-based index and choose a fresh output path
-(the example below refuses to overwrite the prepared file):
+Compare them (raw little-endian signed i16 stereo; no WAV headers):
 
 ```sh
-CARGO_TARGET_DIR="$TMPDIR/target" /opt/homebrew/bin/cargo run -p wma --example native_pcm -- /Users/afr/Source/github.com/0xdeafcafe/h2recomp/disc/halo2.iso 5 /Users/afr/.config/rush/keep/h2recomp-b5afe71a/586b38da/native-5.pcm
-```
-
-Comparison (raw little-endian signed i16 stereo; no WAV headers):
-
-```sh
-CARGO_TARGET_DIR="$TMPDIR/target" /opt/homebrew/bin/cargo run -p wma --example compare -- /Users/afr/.config/rush/keep/h2recomp-b5afe71a/586b38da/native-5.pcm /Users/afr/.config/rush/keep/h2recomp-b5afe71a/586b38da/oracle-5.pcm
+cargo run -p wma --example compare -- "$KEEP/native-5.pcm" "$KEEP/oracle-5.pcm"
 ```
 
 Output reports both lengths, compared length, max absolute error, RMSE, and SNR.
@@ -305,9 +296,9 @@ identical to `decode_asf`).
 ## Work record
 
 - Done: ASF milestone and 485-stream parse validation.
-- Done: native PCM and WAV export (step 1 report delivered).
+- Done: native PCM and WAV export.
 - Done: internal energy, spectrum, click, and duration checks.
-- Done: oracle runner and comparison tool built; executed externally (below).
+- Done: oracle runner and comparison tool.
 - Done: 15 ASF/WMA synthetic tests and four CLI sound tests; formatting and
   Clippy with warnings denied for the changed packages (`--no-deps`). The wider
   dependency-lint run hits an existing `xbe` constant-chunk lint under Rust 1.98;

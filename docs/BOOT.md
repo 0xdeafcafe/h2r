@@ -3,20 +3,18 @@
 `h2 build` lifts the whole `default.xbe` and compiles it to a host dylib.
 `h2 run` loads that dylib into the runtime with the kernel, VFS, XAPI, D3D,
 DSound and Bink HLE registered, then starts the guest at the XBE entry
-point. It's a tracer bullet: the aim is to find, in order, what stops Halo 2
-on its way to the main menu. It does not play the game.
+point. It started as a tracer bullet to find, in order, what stopped Halo 2
+on its way to the main menu. It runs headless; `h2 play` ([app.md](app.md))
+runs the same boot in a window with live input and sound.
 
 ## Running it
 
 ```sh
-# host binary (build output stays in $TMPDIR)
-CARGO_TARGET_DIR=$TMPDIR/boot-target2 /opt/homebrew/bin/cargo build --release -p cli
-
 # lift + emit + clang the whole XBE (about 6-7 min of clang, about 400 MB of C)
-$TMPDIR/boot-target2/release/h2 build /abs/path/to/disc/halo2.iso
+cargo h2 build /abs/path/to/disc/halo2.iso
 
-# boot it (runs `build` first if the dylib is missing)
-$TMPDIR/boot-target2/release/h2 run /abs/path/to/disc/halo2.iso
+# boot it (runs `build` first if the dylib is missing or stale)
+cargo h2 run /abs/path/to/disc/halo2.iso
 ```
 
 Pass the disc as an absolute path to the real ISO, with no symlinks or
@@ -45,7 +43,6 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
 | `H2_BOOT_UPLOAD_ALWAYS=1` | D3D re-reads every resource on every use, instead of trusting the write barrier (`UploadPolicy::Tracked`) |
 | `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30); `never` renders on the GPU but writes no PNGs |
-
 | `H2_GFX_MERGE_PASSES=1` | with `H2_BOOT_GFX`, merge consecutive draws to one target into one render pass (`GfxBackend::set_merge_passes`): about 3x faster, but a few edge pixels differ from one pass per draw, so not for fidelity checks or pixel comparisons |
 | `H2_BOOT_STOP_AT_PRESENT=N` | end the run once N frames are presented |
 | `H2_BOOT_FPS_FROM=N` | measure the report's fps window from present N (default: the last 100) |
@@ -116,7 +113,7 @@ fed on the guest's clock, the callback count, a monotonic clock and
   - x87 and leftover SSE instructions go to the emulators in `x87.rs`
     (a decoder over crates/x87's `abi` state machine, so stack faults,
     source-format exceptions and condition codes match what generated
-    code will get) and `sse.rs`.
+    code gets) and `sse.rs`.
   - Control goes back to generated code at the next registered entry or
     resume, call or return.
 - **`stopgaps.rs`, `wrappers.rs`**: boot-only kernel behaviour, each a
@@ -146,63 +143,41 @@ fed on the guest's clock, the callback count, a monotonic clock and
   target, the texture formats drawn and device events by reason, and
   `H2_BOOT_DRAWLOG` logs whole frames.
 
-## Current state (2026-11-15, origin/master fd3e969)
+## Current state
 
-**The main menu renders and takes input.** On plain master (backedge and
-d3d-r6 landed), with no overlay:
+**The main menu renders and takes input, and the campaign starts.** On
+master, with no overlay:
 
-- no stop: the run ends at the slice limit. Preemption makes slices short,
-  so `--slices` must be raised: the title screen is at about slice 9000
-  (present ~250), 12000 slices take about 106 s on GfxBackend;
-- the 3D title scene (the Covenant ship over New Mombasa, the bridge),
-  the HALO 2 logo and "PRESS START TO CONTINUE" render (present ~300);
-- with `H2_BOOT_INPUT="Escape@10000-10100"` the game takes START and
-  shows CHOOSE PROFILE (present ~400), text, buttons and frame complete;
-- with `ArrowDown@15600-15700,Space@16200-16300` added (pick Default,
-  press A) it reaches the main menu: CAMPAIGN, XBOX LIVE, SPLIT SCREEN,
-  SYSTEM LINK, SETTINGS over the 3D scene (present ~480). 21000 slices,
-  184 s, 19k preemptions.
+- the loading screen, the 3D title scene (the Covenant ship over New
+  Mombasa), the HALO 2 logo and "PRESS START TO CONTINUE" render, with the
+  menu's blue grade;
+- scripted input takes START, CHOOSE PROFILE, the main menu, CAMPAIGN and
+  SELECT LEVEL, and loads The Heretic (`00a_introduction`);
+- the level renders past 8,000 presents, shadow maps included: one run
+  there took 50,207 shadow-map samples and skipped none.
 
-The earlier "menu backdrop without text" was the transition into the
-title screen, with the UI still faded out (its quads draw with vertex
-alpha 0); the game was waiting, not failing to draw.
+Preemption makes slices short, so raise `--slices` for long runs. The
+present numbers below are from master fd3e969 with the default script
+timing: the title screen is at about present 300, CHOOSE PROFILE about
+400, the main menu about 480 (21,000 slices).
 
-Screenshots are kept outside the repo, in the session's keep directory:
-`boot-title-300.png`, `boot-choose-profile-400.png`,
-`boot-main-menu-480.png`, `boot-main-menu-520.png` (and the loading
-screen, `boot-loading-36.png`, `boot-loading-89.png`).
+Screenshots are kept in the issue threads linked from the README, not in
+the repo.
 
-Rendering differences still visible on master, with what the menu frame
-(present 480) shows them to be:
+Rendering notes from the menu frame (present 480):
 
-- **the blue tint is missing** (the scene is sepia/grey). The menu's last
-  scene pass (draw ~1410: a full-screen strip, no blending) replaces the
-  frame with `dot(backbuffer, (0.5,0.7,0.2)) * fc0`, fc0 = `0x1A2340`.
-  Two things stop it: (1) its texture is a header Halo builds over the back
-  buffer (`0x14600`), which master samples from guest memory (zero); d3d-pass
-  (6f5e502/ed02305) snapshots the surface instead; (2) its vertices sit at
-  z = w = 0xFFFFFF, exactly the depth maximum, and `xvs_fixup`'s
-  `p.z / z_max` rounds above 1 on the GPU, so the quad is clipped
-  (shaders). With both on a scratch branch the frame is the blue menu.
-- a depth-based fog/distortion composite (361 draws by present 495) reads
-  the depth buffer through a colour texture (`0x7ff10000`, HILO dot
-  products): d3d skips it with a reason since d3d-pass; it needs depth as
-  colour (d3d) and the Hilo dot mappings (shaders);
-- dotted dark horizontal lines across the screen at a few heights: the
+- dotted dark horizontal lines across the screen at a few heights are the
   menu's own scrolling glyph strips, drawn as authored. In frame 480 they
   are draws 1439-1481 of 1578 (after the full-screen grade at 1437): 43
   `Begin/End` quads in pairs (the second of each pair wraps the scroll),
-  each a 1024-wide DXT3 strip 4, 8 or 16 texels tall (textures `0x7fe60088`
-  to `0x7fe612a8`), `SrcAlpha/InvSrcAlpha`. Their texels are dark blue
-  (`0x3273`, `0x4aae`) at alpha 2/15 to 4/15. They show up dark because
-  the scene under them is tan; with the blue grade (master d5f82c6) they
-  sit on blue;
+  each a 1024-wide DXT3 strip 4, 8 or 16 texels tall, `SrcAlpha/InvSrcAlpha`,
+  with dark blue texels at alpha 2/15 to 4/15. With the blue grade (d5f82c6)
+  they sit on blue;
 - the CAMPAIGN OPTIONS highlight bar draws as horizontal stripes, not
-  noise, on master + boot: draws 985-986 of frame 570, a 200x21
-  `LinA8R8G8B8` texture (pitch 832) written once by the game when the
-  screen opens, light blue (197,227,254) with alpha alternating 52 and 36
-  every two rows. The same with `H2_BOOT_UPLOAD_ALWAYS=1`, so no CPU
-  write is missed.
+  noise: draws 985-986 of frame 570, a 200x21 `LinA8R8G8B8` texture
+  (pitch 832) written once by the game when the screen opens, light blue
+  with alpha alternating 52 and 36 every two rows. The same with
+  `H2_BOOT_UPLOAD_ALWAYS=1`, so no CPU write is missed.
 
 Unguarded switch targets the analyzer still doesn't read go through the
 fallback (blocker 1): about 45k fallback entries by the main menu.
@@ -211,7 +186,7 @@ fallback (blocker 1): about 45k fallback entries by the main menu.
 
 1. Entry `0x2d0aee` and the XAPI startup (`xapi::register`).
 2. XMountUtilityDrive (Partition 5 cache, `CACHE_ROW`).
-3. CRT static init: x87 in the fallback interpreter.
+3. CRT static init (its x87 is lifted now; it ran in the fallback first).
 4. Game main:
    - AV pack, video and the push buffer;
    - `Direct3D_CreateDevice`, with the NV2A base stand-in and the
@@ -224,7 +199,7 @@ fallback (blocker 1): about 45k fallback entries by the main menu.
 8. XcSHA, XInitDevices and the D3D state setup.
 9. XHV voice engine passes `0x33337d` (DSound round 2).
 10. Network: PhyInitialize and the XNet 20 ms timer DPC on thread 0.
-11. `cpuid` at `0x34881d` (emulated in the fallback).
+11. `cpuid` at `0x34881d` (lifted now; emulated in the fallback first).
 12. The `d:\bink\intro_60.bik` probe and the movie loop `0x1639c2`.
     SwitchToThread hands off since kernel round 5.
 13. `d:\maps\mainmenu.map` is opened on thread 3. The stream purge
@@ -244,23 +219,20 @@ fallback (blocker 1): about 45k fallback entries by the main menu.
 19. With a frame-timed script (`START@f310,DOWN@f408,A@f419,A@f524,A@f585,
     A@f632`): CAMPAIGN, CAMPAIGN OPTIONS (New Campaign), then PROFILE NAME
     (the Default profile cannot save, so the game asks for a new one), DONE.
-    Saving the new profile stops: `NtCreateFile` of
-    `u:\<id>\SaveMeta.xbx` with an AllocationSize ("allocation-size
-    reservation unsupported by VFS", kernel files.rs).
+    Saving the new profile used to stop on `NtCreateFile` of
+    `u:\<id>\SaveMeta.xbx` with an AllocationSize; the kernel now treats
+    it as a hint on backends that cannot reserve (b906763).
 
     With fresh partitions the Default profile is accepted and no profile
     name is asked for: `START@f310,DOWN@f408,A@f419,A@f524,A@f585,A@f632,
     A@f700,A@f760` goes CAMPAIGN, CAMPAIGN OPTIONS, SELECT LEVEL (The
     Heretic), difficulty, then loads `maps\00a_introduction.map`
-    (loading screen from present ~830). About present 4210 (slice
-    51700) the first level frame stops in SetRenderTarget: a depth/stencil
-    surface that is a level of a texture (depth render-to-texture, d3d).
+    (loading screen from present ~830). About present 4210 the first
+    level frame needs depth render-to-texture, which d3d has had since
+    850fe2f; the level then renders past 8,000 presents.
 
-Next: depth render-to-texture (d3d), then the first level.
-
-Frame rate on master fd3e969 + boot, one run alone, with `H2_BOOT_GFX`
-every 60 presents: 532 presents in 307 s; the last 100 (main menu) at
-1.9 fps, 484 ms median frame. Audio runs on logical time through a
+On current master the main menu runs at about 5-6 fps on an unloaded
+M-series Mac (it was 1.9 fps at fd3e969). Audio runs on logical time through a
 `NullSink` (its frames are counted as dropped, by design), vblanks on
 the 60 Hz logical clock. When every thread waits with nothing timed but
 audio is still playing, the runner moves logical time on one audio
@@ -269,20 +241,20 @@ no thread running) instead of stopping with a deadlock.
 
 ### Menu idle benchmark
 
-For the perf lanes: the main menu, idle, on master + boot. Fresh data
+For performance work: the main menu, idle. Fresh data
 makes every run take the same path; the script picks the Default profile
 and leaves the main menu up, then the run stops on its own.
 
 ```
-T=$TMPDIR/h2bench; OUT=$TMPDIR/shared-gen/$(git rev-parse --short HEAD)
+T=$TMPDIR/h2bench; OUT=$TMPDIR/h2boot
 cargo build --release -p cli            # target/release/h2
-# Once per generator (h2 run rebuilds a dylib whose .stamp doesn't match,
-# so stamp the shared one inside the emit gate first):
-gate.sh emit -- h2 build disc/halo2.iso --out $OUT
+# Once per generator (h2 run rebuilds a dylib whose .stamp doesn't match):
+target/release/h2 build disc/halo2.iso --out $OUT
 H2_BOOT_GFX=$T/gfx H2_BOOT_GFX_EVERY=never \
 H2_BOOT_INPUT="START@f310,DOWN@f408,A@f419" \
 H2_BOOT_FPS_FROM=440 H2_BOOT_STOP_AT_PRESENT=560 \
-H2_GFX_MERGE_PASSES=1 gate.sh bench -- h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
+H2_GFX_MERGE_PASSES=1 \
+target/release/h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
 ```
 
 - Window: presents 440-560, the main menu after it has faded in (the
@@ -294,9 +266,10 @@ H2_GFX_MERGE_PASSES=1 gate.sh bench -- h2 run disc/halo2.iso --out $OUT --data $
 - The first run of a build analyzes the image for the fallback (15-20 s
   alone); later runs read the unread-target cache and analyze in the
   background, so compare second runs.
-- Numbers are only meaningful on a quiet machine: with other lanes'
-  builds running (load average 170-430) the same run went from 1.9 fps
-  to a fraction of that, and the analysis from 15 s to 190 s.
+- Numbers are only meaningful on a quiet machine: with heavy builds
+  running alongside (load average 170-430) the same run fell to a
+  fraction of its quiet-machine rate, and the analysis went from 15 s to
+  190 s.
 - Profile with `sample <pid> 10` or Instruments once `present 400`
   appears.
 
@@ -307,8 +280,8 @@ stopped with a divide error at `0x223cff` (a zero stride in loaded data).
 
 ### Opt-in accessor A/B with process CPU
 
-Build one image with `H2_FASTMEM=1` in a private output directory, under the
-emit gate. Run the same image twice, serially under the bench gate, setting
+Build one image with `H2_FASTMEM=1` in a private output directory. Run the
+same image twice, one run after the other, setting
 `H2_BOOT_FASTMEM=0` for checked access and `1` for inline access. Both use
 `H2_GFX_MERGE_PASSES=1`, `H2_BOOT_GFX_EVERY=never`, and input
 `START@f310,DOWN@f408,A@f419`. Leave `H2_FASTMEM=1` set during both runs so
@@ -331,9 +304,9 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | # | Blocker | Owner | What's needed | Size |
 | --- | --- | --- | --- | --- |
 | 1 | **Holed jump tables** | analyze | The CRT copy's masked and negative-index tables are read on master (bceed11), and the boot no longer scans them. Still unread: tables with zero entries for impossible cases, where an unguarded read stops (`0x336f0`, caller-checked index; `0x33980`; `0x22dcd9`: 65 site/target pairs on master). The boot reads these from the image and interprets from their targets meanwhile. | S |
-| 2 | **Fog and sky on the title scene** | gfx / shaders | Brown fog over everything, no sky colour, 8x8 blocky patterns. Not yet narrowed to a shader or texture format. | ? |
+| 2 | **Fog and sky on the title scene** | gfx / shaders | Seen at fd3e969: brown fog over everything, no sky colour, 8x8 blocky patterns. Fog has followed the NV2A fog unit since 5c2845d and 5b8ec7d; recheck before working on it. | ? |
 | 3 | **RTT write-back replayed as a CPU write** | d3d (runtime_glue) or runtime | The barrier reports the device's own write-back pages at the next entry, so an unchanged render texture uploads again. Boot cannot tell them apart from other contexts' stores during the call: d3d's handlers would need to run under `Guest::writes_unreported(id)` for the boot's watch, or the device would need to report its own write ranges. Performance only. | S |
-| 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (377b675). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
+| 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (e5c4251). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
 
 ### Boot stopgaps in force
 
@@ -341,7 +314,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | --- | --- | --- |
 | Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
 | Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1) |
-| Interpreting past instructions the lifter doesn't lower (x87 and SSE leftovers) | fallback.rs `trampoline`, `set_recovery` | lift |
+| Interpreting past instructions the lifter doesn't lower | fallback.rs `trampoline`, `set_recovery` | lift |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired

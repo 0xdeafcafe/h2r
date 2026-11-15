@@ -1358,7 +1358,8 @@ listed under "Stops on the way to the menu" below.
 
 ### Stops on the way to the menu
 
-No boot trace exists yet, so this is static. Conditional stops that normal
+This list is from static analysis; the boot (docs/BOOT.md) now runs past
+all of it to the menu and into the first level. Conditional stops that normal
 view rendering (`0x223240 -> 0x2232a0 -> 0x2c8a0 -> 0x132d0`) can reach:
 
 Of the 18 entries that stopped before, 1 remains (`abi::UNIMPLEMENTED`).
@@ -1566,6 +1567,7 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
   sampled depth levels go through a CPU round trip: a readback, then a
   decode and an upload (and, for levels, guest memory). A pass that writes
   the bits straight into a colour texture would avoid the stall. The
-  shadow-map comparison itself belongs in `crates/shaders`.
+  shadow-map comparison itself is in `crates/shaders` (shaders.md,
+  "Shadow maps").
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
   `gfx::encode::HostPixelOrder`.

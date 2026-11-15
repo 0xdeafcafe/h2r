@@ -3,8 +3,9 @@
 `crates/bink-hle` provides opt-in replacements for the Bink 1.x player that
 Halo 2 links statically (sections `BINK*`, `BINKDATA`). It has no Bink decoder;
 see [movies.md](movies.md) for the optional install-time MOV transcode.
-This lane supplies a frame source and does **not** register any overrides in
-the app, boot, or runtime. The existing registration helpers remain opt-in.
+The boot runner registers it in skip mode (`RunOpts::bink`, off with
+`h2 run --no-bink`); the movie frame source below is not installed by any
+host yet.
 Campaign scenes rendered by the engine are separate from disc Bink files.
 
 All addresses are virtual addresses in the retail XBE (XDK 5849). The
@@ -177,7 +178,7 @@ skip in this mode too.
 
 `BinkHle::requests()` lists every movie asked for and whether it was played.
 
-## Future host integration (not installed by this lane)
+## Future host integration (not installed by any host yet)
 
 Constructing the source opens no guest dispatch entries:
 
