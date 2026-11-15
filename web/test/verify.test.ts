@@ -3,7 +3,7 @@ import { World } from "../mock/world";
 import { newSigningKey, signJws, chainHashSync } from "../mock/sign";
 import { KeyCache, Verifier, bodyMatches, canonicalJson, chainHash, jwkThumbprint, verifyEvent, type VerifyResult } from "../src/state/verify";
 import type { WireEvent } from "../src/api/types";
-import { applyEvents, initialState } from "../src/state/reducer";
+import { applyAccountsSnapshot, applyEvents, applyGameSnapshot, applyPresenceSnapshot, initialState } from "../src/state/reducer";
 
 function keysFor(world: World) {
   let accountFetches = 0;
@@ -13,7 +13,7 @@ function keysFor(world: World) {
       accountFetches++;
       const xuid = /^acct:([0-9a-f]{16})@/.exec(author)?.[1];
       const a = xuid ? world.accounts.get(xuid) : undefined;
-      return a ? world.accountKeys(a) : null;
+      return a ? world.accountKeys(a).keys : null;
     },
   });
   return { cache, fetches: () => accountFetches };
@@ -93,10 +93,41 @@ describe("event verification (real Ed25519 from the mock)", () => {
     expect((await verifyEvent({ ...e, jws: undefined }, cache)).status).toBe("unsigned");
   });
 
-  test("batch JWS bodies match by element", () => {
-    const e: WireEvent = { position: 1, stream: "game-g", version: 1, type: "B", at: "t", data: { y: 2 } };
-    expect(bodyMatches([{ type: "A", data: { x: 1 } }, { type: "B", stream: "game-g", data: { y: 2 } }], e)).toBe(true);
-    expect(bodyMatches([{ type: "A", data: { x: 1 } }], e)).toBe(false);
+  test("batch JWS bodies match by jws_index", () => {
+    const e: WireEvent = { position: 1, stream: "game-g", version: 1, type: "B", at: "t", data: { y: 2 }, jws_index: 1 };
+    const batch = [{ type: "A", stream: "game-g", at: "t", data: { x: 1 } }, { type: "B", stream: "game-g", at: "t", data: { y: 2 } }];
+    expect(bodyMatches(batch, e)).toBe(true);
+    expect(bodyMatches(batch, { ...e, jws_index: 0 })).toBe(false);
+    expect(bodyMatches(batch, { ...e, jws_index: undefined })).toBe(false);
+    // A single body with a jws_index is not a batch member.
+    expect(bodyMatches(batch[1], e)).toBe(false);
+    // The wire `at` must equal the signed one.
+    expect(bodyMatches(batch, { ...e, at: "other" })).toBe(false);
+  });
+
+  test("mock batches carry jws_index and verify; a wrong index is caught", async () => {
+    const w = smallWorld();
+    const { cache } = keysFor(w);
+    const kill = w.log.find((e) => e.type === "PlayerKilled")!;
+    const score = w.log.find((e) => e.position === kill.position + 1)!;
+    expect(kill.jws_index).toBe(0);
+    expect(score.jws_index).toBe(1);
+    expect(score.jws).toBe(kill.jws);
+    expect((await verifyEvent(score, cache)).status).toBe("verified");
+    expect((await verifyEvent({ ...score, jws_index: 0 }, cache)).status).toBe("bad");
+  });
+
+  test("an account key outside its validity range is rejected", async () => {
+    const w = smallWorld();
+    const e = w.log.find((x) => x.type === "SignedIn")!;
+    const a = w.accounts.get((e.data as { xuid: string }).xuid)!;
+    const cache = new KeyCache({
+      serverKeys: async () => [],
+      accountKeys: async () => [{ ...w.accountKeys(a).keys[0]!, valid_to: e.position }],
+    });
+    const r = await verifyEvent(e, cache);
+    expect(r.status).toBe("bad");
+    expect(r.reason).toContain("not valid");
   });
 
   test("hash chain matches the mock's", async () => {
@@ -149,5 +180,40 @@ describe("mock world through the reducer", () => {
       expect(g.kills.length).toBe(sim.kills.length);
       expect(g.status).toBe(sim.ended_at ? "ended" : "live");
     }
+  });
+});
+
+describe("snapshot plus stream equals full replay (mock world)", () => {
+  test("joining by position gives the same state", () => {
+    const w = new World();
+    w.seed(6 * 60_000);
+    // Snapshot from the mock's read models at position P...
+    const P = w.log.length;
+    const snap = initialState();
+    applyAccountsSnapshot(snap, [...w.accounts.values()].map((a) => w.publicAccount(a)));
+    applyPresenceSnapshot(snap, [...w.accounts.values()].filter((a) => a.online).map((a) => ({
+      xuid: a.xuid, gamertag: a.gamertag, state: a.state, game_id: a.game_id ?? undefined, since: a.since,
+    })));
+    for (const g of w.games.values()) applyGameSnapshot(snap, w.gameDetail(g));
+    snap.position = P;
+    // ...then more happens, and the stream delivers events after P.
+    for (let i = 0; i < 15 * 90; i++) { w.now += 1000 / 15; w.step(); }
+    applyEvents(snap, w.log.slice(P));
+    const full = initialState();
+    applyEvents(full, w.log);
+    for (const [xuid, a] of Object.entries(full.accounts)) {
+      expect(snap.accounts[xuid]!.online).toBe(a.online);
+      expect(snap.accounts[xuid]!.presence?.game_id ?? null).toBe(a.presence?.game_id ?? null);
+    }
+    expect(Object.keys(snap.games).sort()).toEqual(Object.keys(full.games).sort());
+    for (const [id, g] of Object.entries(full.games)) {
+      const sg = snap.games[id]!;
+      expect(sg.status).toBe(g.status);
+      expect(sg.winner).toEqual(g.winner);
+      expect(sg.scores).toEqual(g.scores);
+      expect(sg.teams).toEqual(g.teams);
+      expect(sg.team_play).toBe(g.team_play);
+    }
+    expect(snap.gameOrder).toEqual(full.gameOrder);
   });
 });

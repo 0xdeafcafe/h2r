@@ -11,7 +11,7 @@ export interface ReplayKill {
   weapon: string | null;
   kind: PlayerKilled["kind"];
   position: number;
-  /** Where the victim was, from the frames; null if no frame covers it. */
+  /** Where the victim died: the event's `pos`, else from the frames. */
   at: { x: number; y: number; z: number } | null;
 }
 
@@ -48,11 +48,16 @@ export class ReplayTimeline {
     for (const ev of sorted) {
       if (ev.type === "PlayerKilled") {
         const d = ev.data as PlayerKilled;
-        const p = sampleFrames(this.frames, d.tick).find((q) => q.index === d.victim);
+        // The event carries the victim's position; older logs may not, so
+        // fall back to the frames.
+        let at: ReplayKill["at"] = d.pos ? { x: d.pos[0], y: d.pos[1], z: d.pos[2] } : null;
+        if (!at && this.frames.length) {
+          const p = sampleFrames(this.frames, d.tick).find((q) => q.index === d.victim);
+          if (p) at = { x: p.x, y: p.y, z: p.z };
+        }
         this.kills.push({
           tick: d.tick, victim: d.victim, killer: d.killer ?? null, weapon: d.weapon ?? null,
-          kind: d.kind ?? "kill", position: ev.position,
-          at: this.frames.length && p ? { x: p.x, y: p.y, z: p.z } : null,
+          kind: d.kind ?? "kill", position: ev.position, at,
         });
         endTick = Math.max(endTick, d.tick);
       } else if (ev.type === "ScoreChanged") {

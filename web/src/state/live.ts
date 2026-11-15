@@ -7,10 +7,13 @@ import { createStore, produce, reconcile } from "solid-js/store";
 import type { WireEvent, PlayerKilled } from "../api/types";
 import { api, type Api } from "../api/http";
 import { fetchWellKnown, initialBase, remember, targetFor, wsUrl, type ServerTarget, type WellKnown } from "../api/server";
-import { applyEvent, initialState, type LiveState } from "./reducer";
+import {
+  applyAccountsSnapshot, applyEvent, applyGameSnapshot, applyPresenceSnapshot, initialState, seedTail, type LiveState,
+} from "./reducer";
+import { loadSnapshot } from "./snapshot";
 import { FrameHub } from "./frames";
 import { StreamClient, type StreamStatus } from "./stream";
-import { KeyCache, Verifier, type VerifyResult, type VerifyStatus } from "./verify";
+import { KeyCache, Verifier, authorXuid, type VerifyResult, type VerifyStatus } from "./verify";
 
 export const frameHub = new FrameHub();
 
@@ -23,6 +26,9 @@ function createLive() {
   const [serverError, setServerError] = createSignal<string | null>(null);
   const [verify, setVerify] = createStore<Record<number, VerifyResult>>({});
   const [verifySummary, setVerifySummary] = createStore({ verified: 0, bad: 0, unsigned: 0, unknown: 0 });
+  /** "snapshot" while loading REST snapshots, then "stream" (or "replay" when
+   *  the server gave no positions and we replay the whole log). */
+  const [loadMode, setLoadMode] = createSignal<"snapshot" | "stream" | "replay">("snapshot");
 
   let client: StreamClient | null = null;
   let verifier: Verifier | null = null;
@@ -32,7 +38,6 @@ function createLive() {
   let rest: Api = api(server());
   let gen = 0;
 
-  const gamertags = new Map<string, string>();
   const listeners = new Set<(ev: WireEvent) => void>();
 
   function flush() {
@@ -49,7 +54,7 @@ function createLive() {
         if (!gid) continue;
         if (ev.type === "PlayerKilled" && frameHub.has(gid)) {
           const d = ev.data as PlayerKilled;
-          frameHub.get(gid).addDeath(d.victim, d.tick, now);
+          frameHub.get(gid).addDeath(d.victim, d.tick, now, d.pos);
         } else if (ev.type === "GameEnded") {
           setTimeout(() => frameHub.drop(gid), 10_000);
         }
@@ -78,26 +83,26 @@ function createLive() {
     const keys = new KeyCache({
       serverKeys: async () => (await fetchWellKnown(target.base)).keys ?? [],
       accountKeys: async (author) => {
-        // author = "acct:<xuid>@<host>"; keys are filed by gamertag.
-        const m = /^acct:([0-9a-fA-F]{16})@/.exec(author);
-        if (!m) return null;
-        // Filled synchronously as events arrive, so it's ahead of the store.
-        const tag = gamertags.get(m[1]!.toLowerCase()) ?? state.accounts[m[1]!]?.gamertag;
-        if (!tag) return null;
-        return r.accountKeys(tag);
+        const xuid = authorXuid(author);
+        return xuid ? r.accountKeys(xuid) : null;
       },
     });
     return new Verifier(keys, onVerifyResults);
   }
 
+  let abort: AbortController | null = null;
+
   function connect(target: ServerTarget) {
     const my = ++gen;
+    abort?.abort();
+    abort = new AbortController();
+    const signal = abort.signal;
     client?.stop();
+    client = null;
     frameHub.clear();
     pending = [];
     caughtUpAt = null;
     rest = api(target);
-    gamertags.clear();
     verifier = makeVerifier(target, rest);
     batch(() => {
       setState(reconcile(initialState()));
@@ -105,6 +110,33 @@ function createLive() {
       setVerifySummary({ verified: 0, bad: 0, unsigned: 0, unknown: 0 });
     });
     const r = rest;
+    setLoadMode("snapshot");
+    setStatus("connecting");
+    void loadSnapshot(r, signal).then(
+      (snap) => {
+        if (my !== gen) return;
+        if (!snap) { setLoadMode("replay"); openStream(my, r, null); return; }
+        setState(produce((s) => {
+          applyAccountsSnapshot(s, snap.accounts);
+          applyPresenceSnapshot(s, snap.presence);
+          for (const g of snap.games) applyGameSnapshot(s, g);
+          seedTail(s, snap.tail);
+          s.position = snap.position;
+        }));
+        for (const ev of snap.tail) verifier?.enqueue(ev);
+        setLoadMode("stream");
+        openStream(my, r, snap.position);
+      },
+      () => {
+        if (my !== gen || signal.aborted) return;
+        // No snapshot endpoints (or a hiccup): replay the log instead.
+        setLoadMode("replay");
+        openStream(my, r, null);
+      },
+    );
+  }
+
+  function openStream(my: number, r: Api, from: number | null) {
     client = new StreamClient(
       {
         url: (from) => wsUrl(r.streamUrl(from)),
@@ -112,10 +144,6 @@ function createLive() {
       },
       {
         onEvent: (ev) => {
-          if (ev.type === "AccountCreated") {
-            const d = ev.data as { xuid?: string; gamertag?: string };
-            if (d?.xuid && d.gamertag) gamertags.set(d.xuid.toLowerCase(), d.gamertag);
-          }
           pending.push(ev);
           verifier?.enqueue(ev);
           schedule();
@@ -134,7 +162,26 @@ function createLive() {
         },
       },
     );
-    client.start(null);
+    client.start(from);
+  }
+
+  /** Loads one game's detail into the store (deep links, profiles). */
+  const loading = new Map<string, Promise<boolean>>();
+  function ensureGame(id: string): Promise<boolean> {
+    if (state.games[id]?.scores && Object.keys(state.games[id]!.scores).length) return Promise.resolve(true);
+    const key = server().api + "|" + id;
+    let p = loading.get(key);
+    if (!p) {
+      const my = gen;
+      p = rest.game(id).then((d) => {
+        if (my !== gen) return false;
+        setState(produce((s) => applyGameSnapshot(s, d)));
+        return true;
+      }, () => false);
+      loading.set(key, p);
+      void p.then((ok) => { if (!ok) loading.delete(key); });
+    }
+    return p;
   }
 
   async function useServer(base: string): Promise<void> {
@@ -154,14 +201,18 @@ function createLive() {
   }
 
   function start() {
-    const t = server();
-    connect(t);
-    fetchWellKnown(t.base).then((wk) => {
+    const base = server().base;
+    // Discover first so a relative or moved `api` is honoured from the start.
+    fetchWellKnown(base).then((wk) => {
       setWellKnown(wk);
-      remember(t.base, wk.id);
-      const t2 = targetFor(t.base, wk);
-      if (t2.api !== t.api) { setServer(t2); connect(t2); }
-    }, (e) => setServerError((e as Error).message));
+      remember(base, wk.id);
+      const t = targetFor(base, wk);
+      setServer(t);
+      connect(t);
+    }, (e) => {
+      setServerError((e as Error).message);
+      connect(server());
+    });
   }
 
   return {
@@ -173,6 +224,8 @@ function createLive() {
     serverError,
     verify,
     verifySummary,
+    loadMode,
+    ensureGame,
     useServer,
     start,
     api: () => rest,

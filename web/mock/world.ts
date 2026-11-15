@@ -55,6 +55,8 @@ interface SimGame {
   started_at: string;
   ended_at: string | null;
   kills: Array<Record<string, unknown>>;
+  winner: { team: number } | { player: number } | null;
+  end_reason: string | null;
   frames: Frame[];
   killRate: number;
 }
@@ -100,7 +102,7 @@ export class World {
     const bodies = items.map((it) => ({ stream, type: it.type, data: it.data, author, kid: key.kid, at, nonce: hex(16) }));
     const jws = signJws(key, bodies.length === 1 ? bodies[0] : bodies);
     const out: WireEvent[] = [];
-    for (const b of bodies) {
+    for (const [i, b] of bodies.entries()) {
       const st = this.streams.get(stream) ?? { version: 0, hash: null };
       st.version += 1;
       st.hash = chainHashSync(st.hash, jws);
@@ -109,6 +111,7 @@ export class World {
         position: this.log.length + 1, stream, version: st.version, type: b.type, at,
         data: b.data, author, kid: key.kid, jws, hash: st.hash,
       };
+      if (bodies.length > 1) ev.jws_index = i;
       if (this.tamperEvery && ev.position % this.tamperEvery === 0 && b.type !== "GameFrame" && b.type !== "AccountCreated") {
         // Demo of a forged copy: the data no longer matches the signature.
         ev.data = { ...(b.data as object), tampered: true };
@@ -195,7 +198,7 @@ export class World {
         };
       }),
       teams: new Map(team_play ? [[0, 0], [1, 0]] : []),
-      started_at: new Date(this.now).toISOString(), ended_at: null, kills: [], frames: [],
+      started_at: new Date(this.now).toISOString(), ended_at: null, kills: [], frames: [], winner: null, end_reason: null,
       killRate: 0.12 + n * 0.035,
     };
     this.games.set(id, g);
@@ -205,7 +208,7 @@ export class World {
       type: "GameStarted",
       data: {
         game_id: id, console: host.xuid, map: map.name, mode: "multiplayer", variant: g.variant, team_play,
-        score_limit: g.score_limit, time_limit_s: g.time_limit_s, players,
+        score_limit: g.score_limit, time_limit_s: g.time_limit_s, tick: 0, players,
       },
     }], host);
     for (const a of humans) this.presence(a, "PresenceChanged", "playing", id);
@@ -295,14 +298,18 @@ export class World {
       victim.score.score -= 1;
       if (g.team_play) g.teams.set(victim.p.team, (g.teams.get(victim.p.team) ?? 0) - 1);
     }
-    const kd: Record<string, unknown> = { tick: g.tick, victim: victim.p.index, kind };
+    const kd: Record<string, unknown> = {
+      tick: g.tick, victim: victim.p.index, kind,
+      pos: [round(victim.pos[0]), round(victim.pos[1]), round(victim.pos[2])],
+    };
     if (killer) { kd.killer = killer.p.index; kd.weapon = pick(WEAPONS); }
-    g.kills.push(kd);
     // Kill and score in one signed batch, as the game's ingest would send them.
-    this.append(`game-${g.id}`, [
+    const appended = this.append(`game-${g.id}`, [
       { type: "PlayerKilled", data: kd },
       { type: "ScoreChanged", data: this.scoreData(g) },
     ], g.host);
+    const kev = appended[0]!;
+    g.kills.push({ ...kd, position: kev.position, at: kev.at });
   }
 
   private scoreData(g: SimGame) {
@@ -312,17 +319,18 @@ export class World {
   }
 
   endGame(g: SimGame, reason: string) {
-    let winner: number | null = null;
+    let winner: { team: number } | { player: number } | null = null;
     if (g.team_play) {
       const best = [...g.teams.entries()].sort((a, b) => b[1] - a[1]);
-      if (best[0] && (!best[1] || best[0][1] > best[1][1])) winner = best[0][0];
+      if (best[0] && (!best[1] || best[0][1] > best[1][1])) winner = { team: best[0][0] };
     } else {
       const best = [...g.players].sort((a, b) => b.score.score - a.score.score);
-      if (best[0] && (!best[1] || best[0].score.score > best[1].score.score)) winner = best[0].p.index;
+      if (best[0] && (!best[1] || best[0].score.score > best[1].score.score)) winner = { player: best[0].p.index };
     }
     g.ended_at = new Date(this.now).toISOString();
-    const data: Record<string, unknown> = { tick: g.tick, reason, players: g.players.map((p) => ({ ...p.score })) };
-    if (winner !== null) data.winner = winner;
+    const data: Record<string, unknown> = { tick: g.tick, reason, winner, players: g.players.map((p) => ({ ...p.score })) };
+    g.winner = winner;
+    g.end_reason = reason;
     this.append(`game-${g.id}`, [{ type: "GameEnded", data }], g.host);
     for (const sp of g.players) {
       const a = sp.p.xuid ? this.accounts.get(sp.p.xuid) : undefined;
@@ -378,7 +386,7 @@ export class World {
   }
 
   accountKeys(a: Account) {
-    return [{ ...a.key.jwk, valid_from: a.keyFrom, valid_to: null }];
+    return { keys: [{ kid: a.key.kid, jwk: a.key.jwk, valid_from: a.keyFrom, valid_to: null }] };
   }
 
   gameSummary(g: SimGame) {
@@ -390,7 +398,11 @@ export class World {
   }
 
   gameDetail(g: SimGame) {
-    return { ...this.gameSummary(g), scoreboard: g.players.map((p) => ({ ...p.score })), kills: g.kills.slice(-50) };
+    return {
+      ...this.gameSummary(g), console: g.host.xuid, team_play: g.team_play, score_limit: g.score_limit,
+      time_limit_s: g.time_limit_s, tick: 0, last_tick: g.tick, winner: g.winner, end_reason: g.end_reason,
+      scoreboard: g.players.map((p) => ({ ...p.score })), kills: g.kills.slice(-50), position: this.log.length,
+    };
   }
 
   publicAccount(a: Account) {

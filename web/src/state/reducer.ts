@@ -2,8 +2,9 @@
 // runs inside Solid's `produce` in the app and on plain objects in tests.
 
 import type {
-  AccountCreated, GameEnded, GamePlayer, GameStarted, KillKind, PlayerJoined, PlayerKilled,
-  PlayerLeft, PlayerScore, PresenceData, ScoreChanged, WireEvent, Xuid, GameId,
+  AccountCreated, AccountSummary, GameDetail, GameEnded, GamePlayer, GameStarted, GameSummary, KillKind,
+  KillRecord, PlayerJoined, PlayerKilled, PlayerLeft, PlayerScore, PresenceData, PresenceEntry, ScoreChanged,
+  WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
 
 export interface Presence {
@@ -29,6 +30,8 @@ export interface Kill {
   killer: number | null;
   weapon: string | null;
   kind: KillKind;
+  /** Victim position, when the event carried it. */
+  pos: [number, number, number] | null;
 }
 
 export interface GamePlayerState extends GamePlayer {
@@ -48,7 +51,9 @@ export interface GameState {
   ended_at: string | null;
   status: "live" | "ended";
   end_reason: string | null;
-  winner: number | null;
+  winner: Winner | null;
+  /** Game tick the game started at. */
+  start_tick: number;
   players: Record<number, GamePlayerState>;
   scores: Record<number, PlayerScore>;
   teams: Record<number, number>;
@@ -162,6 +167,8 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const d = ev.data as GameStarted;
       const id = d.game_id ?? streamGameId(ev.stream);
       if (!id) break;
+      // Already known from a snapshot: the snapshot is newer, keep it.
+      if (s.games[id]) break;
       const g: GameState = {
         game_id: id,
         console: d.console ?? null,
@@ -176,11 +183,12 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
         status: "live",
         end_reason: null,
         winner: null,
+        start_tick: d.tick ?? 0,
         players: {},
         scores: {},
         teams: {},
         kills: [],
-        last_tick: 0,
+        last_tick: d.tick ?? 0,
         first_position: ev.position,
         positions: [ev.position],
       };
@@ -209,15 +217,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       const g = gameFor(s, ev);
       if (!g) break;
       const d = ev.data as PlayerKilled;
-      g.kills.push({
-        position: ev.position,
-        at: ev.at,
-        tick: d.tick,
-        victim: d.victim,
-        killer: d.killer ?? null,
-        weapon: d.weapon ?? null,
-        kind: d.kind ?? "kill",
-      });
+      addKill(g, { ...d, position: ev.position, at: ev.at });
       g.last_tick = Math.max(g.last_tick, d.tick ?? 0);
       break;
     }
@@ -243,13 +243,9 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       g.status = "ended";
       g.ended_at = ev.at;
       g.end_reason = d.reason ?? "finished";
-      g.winner = d.winner ?? null;
+      g.winner = normalizeWinner(d.winner);
       g.last_tick = Math.max(g.last_tick, d.tick ?? 0);
-      // `players` is the final scoreboard; tolerate a roster too.
-      const final = (d.players ?? []) as Array<Partial<PlayerScore> & { index: number }>;
-      if (final.length && final.every((p) => typeof p.kills === "number")) {
-        applyScores(g, final as PlayerScore[]);
-      }
+      applyScores(g, d.players ?? undefined);
       break;
     }
     default:
@@ -268,6 +264,37 @@ function applyScores(g: GameState, players: PlayerScore[] | undefined) {
       assists: p.assists ?? 0,
     };
   }
+}
+
+export function normalizeWinner(w: unknown): Winner | null {
+  if (!w || typeof w !== "object") return null;
+  const o = w as { team?: unknown; player?: unknown };
+  if (typeof o.team === "number") return { team: o.team };
+  if (typeof o.player === "number") return { player: o.player };
+  return null;
+}
+
+/** Adds a kill unless one at the same log position is already there
+ *  (a snapshot and the stream can both carry it). */
+function addKill(g: GameState, k: KillRecord) {
+  if (k.position !== undefined && g.kills.some((x) => x.position === k.position)) return;
+  const kill: Kill = {
+    position: k.position ?? 0,
+    at: k.at ?? "",
+    tick: k.tick,
+    victim: k.victim,
+    killer: k.killer ?? null,
+    weapon: k.weapon ?? null,
+    kind: k.kind ?? "kill",
+    pos: k.pos ?? null,
+  };
+  // Keep kills in log order even if a snapshot's arrive after streamed ones.
+  let i = g.kills.length;
+  while (i > 0 && g.kills[i - 1]!.position > kill.position && kill.position > 0) i--;
+  g.kills.splice(i, 0, kill);
+  // Snapshot kills count towards the game's signature summary too.
+  if (kill.position > 0 && !g.positions.includes(kill.position)) g.positions.push(kill.position);
+  g.last_tick = Math.max(g.last_tick, k.tick ?? 0);
 }
 
 function ensureAccount(s: LiveState, xuid: Xuid, at: string): AccountState {
@@ -351,19 +378,22 @@ export function playerStats(s: LiveState, xuid: Xuid): PlayerStats {
   for (const g of gamesFor(s, xuid)) {
     st.games += 1;
     if (g.status === "live") st.live += 1;
-    const slots = new Set(Object.values(g.players).filter((p) => p.xuid === xuid).map((p) => p.index));
-    for (const k of g.kills) {
-      if (k.killer !== null && slots.has(k.killer) && k.kind === "kill" && k.killer !== k.victim) st.kills += 1;
-      if (slots.has(k.victim)) st.deaths += 1;
-    }
-    if (g.status === "ended" && g.winner !== null) {
-      for (const i of slots) {
-        const p = g.players[i]!;
-        if (g.team_play ? p.team === g.winner : p.index === g.winner) st.wins += 1;
-      }
+    // Scoreboards are authoritative (and complete, unlike a snapshot's
+    // last 50 kills), so totals come from them.
+    for (const p of Object.values(g.players)) {
+      if (p.xuid !== xuid) continue;
+      const sc = g.scores[p.index];
+      if (sc) { st.kills += sc.kills; st.deaths += sc.deaths; }
+      if (g.status === "ended" && isWinner(g, p)) st.wins += 1;
     }
   }
   return st;
+}
+
+export function isWinner(g: Pick<GameState, "winner">, p: { index: number; team: number }): boolean {
+  const w = g.winner;
+  if (!w) return false;
+  return "team" in w ? p.team === w.team : p.index === w.player;
 }
 
 export function gamesFor(s: LiveState, xuid: Xuid): GameState[] {
@@ -375,4 +405,93 @@ export function gamesFor(s: LiveState, xuid: Xuid): GameState[] {
 export function accountByGamertag(s: LiveState, tag: string): AccountState | undefined {
   const k = tag.toLowerCase();
   return Object.values(s.accounts).find((a) => a.gamertag.toLowerCase() === k);
+}
+
+// ---------- snapshots (REST reads joined to the stream by position) ----------
+
+export function applyAccountsSnapshot(s: LiveState, accounts: AccountSummary[]) {
+  for (const a of accounts) {
+    const prev = s.accounts[a.xuid];
+    s.accounts[a.xuid] = {
+      xuid: a.xuid,
+      gamertag: a.gamertag,
+      created_at: a.created_at ?? prev?.created_at ?? "",
+      online: a.online ?? prev?.online ?? false,
+      presence: prev?.presence ?? null,
+      last_seen: prev?.last_seen ?? null,
+    };
+  }
+}
+
+export function applyPresenceSnapshot(s: LiveState, entries: PresenceEntry[]) {
+  for (const e of entries) {
+    const a = ensureAccount(s, e.xuid, e.since);
+    if (a.gamertag === a.xuid && e.gamertag) a.gamertag = e.gamertag;
+    a.online = true;
+    a.presence = { state: e.state, game_id: e.game_id ?? null, since: e.since };
+    a.last_seen = e.since;
+  }
+}
+
+/** A game from `GET /v1/games` (summary) or `GET /v1/games/{id}` (detail). */
+export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
+  const det = d as GameDetail;
+  const teamPlay = det.team_play ?? !!(d.teams && d.teams.length);
+  let g = s.games[d.game_id];
+  if (!g) {
+    g = {
+      game_id: d.game_id,
+      console: det.console ?? null,
+      map: d.map,
+      mode: d.mode,
+      variant: d.variant ?? null,
+      team_play: teamPlay,
+      score_limit: det.score_limit ?? null,
+      time_limit_s: det.time_limit_s ?? null,
+      started_at: d.started_at,
+      ended_at: d.ended_at ?? null,
+      status: d.ended_at ? "ended" : "live",
+      end_reason: det.end_reason ?? null,
+      winner: normalizeWinner(det.winner),
+      start_tick: det.tick ?? 0,
+      players: {},
+      scores: {},
+      teams: {},
+      kills: [],
+      last_tick: det.last_tick ?? det.tick ?? 0,
+      first_position: 0,
+      positions: [],
+    };
+    s.games[d.game_id] = g;
+    s.gameOrder = insertByStart(s, d.game_id, d.started_at);
+  } else {
+    if (det.team_play !== undefined) g.team_play = det.team_play;
+    if (det.score_limit !== undefined) g.score_limit = det.score_limit ?? null;
+    if (det.time_limit_s !== undefined) g.time_limit_s = det.time_limit_s ?? null;
+    if (det.console !== undefined) g.console = det.console ?? null;
+    if (det.end_reason !== undefined) g.end_reason = det.end_reason ?? null;
+    if (det.winner !== undefined) g.winner = normalizeWinner(det.winner);
+    if (d.ended_at) { g.ended_at = d.ended_at; g.status = "ended"; }
+    if (det.last_tick) g.last_tick = Math.max(g.last_tick, det.last_tick);
+  }
+  for (const p of d.players ?? []) if (!g.players[p.index]) addPlayer(g, p);
+  for (const t of d.teams ?? []) g.teams[t.team] = t.score;
+  if (g.team_play) for (const p of Object.values(g.players)) g.teams[p.team] ??= 0;
+  if (det.scoreboard) applyScores(g, det.scoreboard);
+  for (const k of det.kills ?? []) addKill(g, k);
+}
+
+function insertByStart(s: LiveState, id: GameId, startedAt: string): GameId[] {
+  const t = Date.parse(startedAt);
+  const order = s.gameOrder.filter((x) => x !== id);
+  const i = order.findIndex((x) => Date.parse(s.games[x]?.started_at ?? "") < t);
+  order.splice(i < 0 ? order.length : i, 0, id);
+  return order;
+}
+
+/** Fills the event page's tail with events from before the stream's start. */
+export function seedTail(s: LiveState, evs: WireEvent[]) {
+  const have = new Set(s.tail.map((e) => e.position));
+  const merged = [...evs.filter((e) => !have.has(e.position)), ...s.tail].sort((a, b) => a.position - b.position);
+  s.tail = merged.slice(-TAIL_LIMIT);
 }

@@ -19,7 +19,18 @@ world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
 
-interface StreamData { kind: "stream"; games: Set<string> | null; from: number | null }
+interface StreamData {
+  kind: "stream";
+  games: Set<string> | null;
+  from: number | null;
+  exclude: Set<string> | null;
+  types: Set<string> | null;
+}
+
+function wants(d: StreamData, type: string) {
+  return (!d.exclude || !d.exclude.has(type)) && (!d.types || d.types.has(type));
+}
+const csv = (v: string | null) => (v ? new Set(v.split(",").filter(Boolean)) : null);
 interface IngestData { kind: "ingest"; authed: boolean }
 type WsData = StreamData | IngestData;
 
@@ -28,7 +39,7 @@ const readers = new Set<ServerWebSocket<WsData>>();
 world.listeners.add({
   onEvent(ev: WireEvent) {
     const msg = JSON.stringify({ kind: "event", event: ev });
-    for (const ws of readers) ws.send(msg);
+    for (const ws of readers) if (wants(ws.data as StreamData, ev.type)) ws.send(msg);
   },
   onFrame(f: Frame) {
     const msg = JSON.stringify({ kind: "frame", frame: f });
@@ -51,6 +62,9 @@ function json(body: unknown, status = 200, extra: Record<string, string> = {}) {
 function err(status: number, error: string, message: string) {
   return json({ error, message }, status);
 }
+function list(items: unknown[], next: string | null = null) {
+  return json({ items, next, position: world.log.length });
+}
 function limitOf(u: URL) {
   return Math.min(1000, Math.max(1, Number(u.searchParams.get("limit") ?? 100) || 100));
 }
@@ -62,9 +76,9 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   if (path === "/healthz") return json({ ok: true, position: world.log.length });
   if (path === "/.well-known/h2live.json") {
-    const host = req.headers.get("host") ?? `127.0.0.1:${port}`;
     return json({
-      id: HOST, api: `http://${host}/v1`, keys: [world.serverKey.jwk],
+      // Relative, resolved against this document's URL (contract clarification 12).
+      id: HOST, api: "/v1", keys: [world.serverKey.jwk],
       software: "h2recomp web mock 0.1", federation: false,
     });
   }
@@ -76,7 +90,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {
-    return json({ items: [...world.accounts.values()].map((a) => world.publicAccount(a)).slice(0, limitOf(u)), next: null });
+    return list([...world.accounts.values()].map((a) => world.publicAccount(a)).slice(0, limitOf(u)));
   }
   if (path === "/v1/accounts" && req.method === "POST") {
     const b = (await req.json().catch(() => null)) as { gamertag?: string } | null;
@@ -86,28 +100,29 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     const a = world.createAccount(tag);
     return json({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}` }, 201);
   }
+  if ((m = path.match(/^\/v1\/accounts\/by-xuid\/([0-9a-fA-F]{16})\/keys$/))) {
+    const a = world.accounts.get(m[1]!.toLowerCase());
+    return a ? json(world.accountKeys(a)) : err(404, "not_found", "no such account");
+  }
   if ((m = path.match(/^\/v1\/accounts\/([^/]+)\/keys$/))) {
     const a = world.accountByTag(decodeURIComponent(m[1]!));
-    return a ? json({ items: world.accountKeys(a), next: null }) : err(404, "not_found", "no such account");
+    return a ? json(world.accountKeys(a)) : err(404, "not_found", "no such account");
   }
   if ((m = path.match(/^\/v1\/accounts\/([^/]+)$/))) {
     const a = world.accountByTag(decodeURIComponent(m[1]!));
     if (!a) return err(404, "not_found", "no such account");
     const recent = [...world.games.values()].filter((g) => g.players.some((p) => p.p.xuid === a.xuid)).slice(-20).reverse();
-    return json({ ...world.publicAccount(a), recent_games: recent.map((g) => world.gameSummary(g)) });
+    return json({ ...world.publicAccount(a), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
   }
   if (path === "/v1/presence") {
-    return json({
-      items: [...world.accounts.values()].filter((a) => a.online).map((a) => ({
-        xuid: a.xuid, gamertag: a.gamertag, state: a.state, game_id: a.game_id ?? undefined, since: a.since,
-      })),
-      next: null,
-    });
+    return list([...world.accounts.values()].filter((a) => a.online).map((a) => ({
+      xuid: a.xuid, gamertag: a.gamertag, state: a.state, game_id: a.game_id ?? undefined, since: a.since,
+    })));
   }
   if (path === "/v1/games" && req.method === "GET") {
     const state = u.searchParams.get("state");
     const all = [...world.games.values()].reverse().filter((g) => !state || (state === "live" ? !g.ended_at : !!g.ended_at));
-    return json({ items: all.slice(0, limitOf(u)).map((g) => world.gameSummary(g)), next: null });
+    return list(all.slice(0, limitOf(u)).map((g) => world.gameSummary(g)));
   }
   if (path === "/v1/games" && req.method === "POST") {
     // Mock only: accepts GameStarted data and appends it unsigned by a console.
@@ -126,9 +141,13 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
   if ((m = path.match(/^\/v1\/games\/([^/]+)\/frames$/))) {
     const g = world.games.get(m[1]!);
     if (!g) return err(404, "not_found", "no such game");
-    const from = Number(u.searchParams.get("from_tick") ?? -Infinity);
+    // Oldest first, at most 600 per page; the cursor is the last tick sent.
+    const cursor = u.searchParams.get("cursor");
+    const from = cursor !== null ? Number(cursor) + 1 : Number(u.searchParams.get("from_tick") ?? -Infinity);
     const to = Number(u.searchParams.get("to_tick") ?? Infinity);
-    return json({ items: g.frames.filter((f) => f.tick >= from && f.tick <= to), next: null });
+    const all = g.frames.filter((f) => f.tick >= from && f.tick <= to);
+    const page = all.slice(0, 600);
+    return list(page, all.length > page.length ? String(page[page.length - 1]!.tick) : null);
   }
   if ((m = path.match(/^\/v1\/games\/([^/]+)$/))) {
     const g = world.games.get(m[1]!);
@@ -138,26 +157,27 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     const name = decodeURIComponent(m[1]!);
     if (req.method === "PUT") {
       world.outlines.set(name, await req.json());
-      return json({ ok: true });
+      return json({ ok: true, position: world.log.length });
     }
     const o = world.outlines.get(name);
-    return o ? json(o) : err(404, "not_found", "no outline uploaded for this map yet");
+    return o ? json({ ...o, position: world.log.length }) : err(404, "not_found", "no outline uploaded for this map yet");
   }
   if (path === "/v1/events") {
-    const from = Number(u.searchParams.get("from") ?? 0);
+    // `from` is exclusive; `cursor` (from a previous `next`) is the next `from`.
+    const from = Number(u.searchParams.get("cursor") ?? u.searchParams.get("from") ?? 0);
     const type = u.searchParams.get("type");
     const stream = u.searchParams.get("stream");
     const limit = limitOf(u);
     const items: WireEvent[] = [];
-    let next: number | null = null;
-    for (let i = Math.max(0, from - 1); i < world.log.length; i++) {
+    let next: string | null = null;
+    for (let i = Math.max(0, from); i < world.log.length; i++) {
       const ev = world.log[i]!;
       if (type && ev.type !== type) continue;
       if (stream && ev.stream !== stream) continue;
-      if (items.length === limit) { next = ev.position; break; }
+      if (items.length === limit) { next = String(items[items.length - 1]!.position); break; }
       items.push(ev);
     }
-    return json({ items, next });
+    return list(items, next);
   }
   if ((m = path.match(/^\/v1\/titles\/([^/]+)\/files\/([^/]+)$/))) {
     const key = `${m[1]!.toLowerCase()}/${m[2]}`;
@@ -190,7 +210,10 @@ const server = Bun.serve<WsData>({
     if (u.pathname === "/v1/stream") {
       const from = u.searchParams.get("from");
       const games = u.searchParams.get("games");
-      const data: StreamData = { kind: "stream", games: games ? new Set(games.split(",")) : null, from: from === null ? null : Number(from) };
+      const data: StreamData = {
+        kind: "stream", games: csv(games), from: from === null ? null : Number(from),
+        exclude: csv(u.searchParams.get("exclude")), types: csv(u.searchParams.get("types")),
+      };
       if (srv.upgrade(req, { data })) return undefined;
       return err(400, "invalid", "expected a WebSocket upgrade");
     }
@@ -200,9 +223,13 @@ const server = Bun.serve<WsData>({
     open(ws) {
       if (ws.data.kind !== "stream") return;
       const from = ws.data.from;
-      // Replay from `from` (inclusive), then caught_up, then live.
-      const start = from === null ? world.log.length : Math.max(0, from - 1);
-      for (let i = start; i < world.log.length; i++) ws.send(JSON.stringify({ kind: "event", event: world.log[i] }));
+      // Replay events after `from` (exclusive), then caught_up, then live.
+      const d = ws.data as StreamData;
+      const start = from === null ? world.log.length : Math.max(0, from);
+      for (let i = start; i < world.log.length; i++) {
+        const ev = world.log[i]!;
+        if (wants(d, ev.type)) ws.send(JSON.stringify({ kind: "event", event: ev }));
+      }
       ws.send(JSON.stringify({ kind: "caught_up", position: world.log.length }));
       readers.add(ws);
     },

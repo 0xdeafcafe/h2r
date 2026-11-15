@@ -53,9 +53,14 @@ export function Player() {
   const stats = createMemo(() => (acct() ? playerStats(live.state, acct()!.xuid) : null));
   const games = createMemo(() => (acct() ? gamesFor(live.state, acct()!.xuid).slice(0, 25) : []));
   const [restRecent, setRestRecent] = createSignal<number | null>(null);
-  // The REST profile is a cross-check; the page itself is built from events.
-  createEffect(on(tag, (t) => {
-    live.api().account(t).then((a) => setRestRecent(a.recent_games?.length ?? null), () => setRestRecent(null));
+  // The profile's recent games may be older than the snapshot: load their
+  // scoreboards so the stats include them.
+  createEffect(on(() => [tag(), live.loadMode()] as const, ([t, mode]) => {
+    if (mode === "snapshot") return;
+    live.api().account(t).then((a) => {
+      setRestRecent(a.recent_games?.length ?? null);
+      for (const g of (a.recent_games ?? []).slice(0, 20)) void live.ensureGame(g.game_id);
+    }, () => setRestRecent(null));
   }));
 
   return (
@@ -63,7 +68,7 @@ export function Player() {
       <Show
         when={acct()}
         fallback={
-          <Show when={live.state.caughtUp} fallback={<div class="loading">Looking them up…</div>}>
+          <Show when={live.loadMode() !== "snapshot"} fallback={<div class="loading">Looking them up…</div>}>
             <Empty title={`No one called "${tag()}" here`} mood="wow"><A href="/players">See everyone</A></Empty>
           </Show>
         }

@@ -140,12 +140,14 @@ export class FrameBuffer {
     return sampleFrames(this.frames, this.renderTick(now));
   }
 
-  /** Records where a victim died, from the frame nearest the kill tick. */
-  addDeath(index: number, tick: number, now: number): void {
-    const players = sampleFrames(this.frames, Math.min(tick, this.lastTick));
-    const p = players.find((q) => q.index === index);
-    if (!p) return;
-    this.markers.push({ index, x: p.x, y: p.y, z: p.z, tick, bornAt: now });
+  /** Records where a victim died: the kill's `pos` when given, else the
+   *  frame nearest the kill tick. */
+  addDeath(index: number, tick: number, now: number, pos?: [number, number, number] | null): void {
+    let at: { x: number; y: number; z: number } | undefined;
+    if (pos) at = { x: pos[0], y: pos[1], z: pos[2] };
+    else at = sampleFrames(this.frames, Math.min(tick, this.lastTick)).find((q) => q.index === index);
+    if (!at) return;
+    this.markers.push({ index, x: at.x, y: at.y, z: at.z, tick, bornAt: now });
     if (this.markers.length > 32) this.markers.shift();
   }
 

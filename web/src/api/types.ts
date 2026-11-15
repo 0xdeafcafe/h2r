@@ -14,6 +14,8 @@ export interface WireEvent<T = unknown> {
   author?: string;
   kid?: string;
   jws?: string;
+  /** Element of a batch JWS (an array payload) this event is. */
+  jws_index?: number;
   hash?: string;
 }
 
@@ -68,23 +70,31 @@ export interface GameStarted {
   team_play: boolean;
   score_limit?: number | null;
   time_limit_s?: number | null;
+  /** Game tick the game started at. */
+  tick?: number | null;
   players: GamePlayer[];
 }
 export interface PlayerJoined { player: GamePlayer }
 export interface PlayerLeft { index: number }
 export interface PlayerKilled {
   tick: number;
+  /** The victim's position when it died. */
+  pos?: [number, number, number] | null;
   victim: number;
   killer?: number | null;
   weapon?: string | null;
   kind: KillKind;
 }
 export interface ScoreChanged { tick: number; players: PlayerScore[]; teams?: TeamScore[] | null }
+/** `{team}` in team games, `{player}` (slot index) otherwise, null for a draw or quit. */
+export type Winner = { team: number } | { player: number };
+
 export interface GameEnded {
   tick: number;
   reason: "finished" | "quit" | "lost" | string;
-  winner?: number | null;
-  players?: PlayerScore[] | GamePlayer[] | null;
+  winner?: Winner | null;
+  /** The final scoreboard. */
+  players?: PlayerScore[] | null;
 }
 
 export type StreamMessage =
@@ -93,7 +103,9 @@ export type StreamMessage =
   | { kind: "caught_up"; position: number };
 
 // REST shapes.
-export interface ListResponse<T> { items: T[]; next: number | string | null }
+/** Every list: `next` is an opaque cursor (pass back as `?cursor=`),
+ *  `position` the log head when it was read. */
+export interface ListResponse<T> { items: T[]; next: string | null; position: number }
 
 export interface AccountSummary { xuid: Xuid; gamertag: string; created_at?: string; online?: boolean }
 
@@ -108,6 +120,31 @@ export interface GameSummary {
   ended_at?: string | null;
   players: GamePlayer[];
   teams?: TeamScore[] | null;
+}
+
+export interface KillRecord extends PlayerKilled { position?: number; at?: string }
+
+/** `GET /v1/games/{id}`: the summary plus scoreboard and the last 50 kills.
+ *  Fields past the summary are read when present. */
+export interface GameDetail extends GameSummary {
+  position?: number;
+  scoreboard?: PlayerScore[];
+  kills?: KillRecord[];
+  team_play?: boolean;
+  score_limit?: number | null;
+  time_limit_s?: number | null;
+  console?: string | null;
+  tick?: number | null;
+  last_tick?: number | null;
+  winner?: Winner | null;
+  end_reason?: string | null;
+}
+
+export interface AccountKeyEntry {
+  kid: string;
+  jwk: { kty: string; crv: string; x: string; kid?: string };
+  valid_from: number | null;
+  valid_to: number | null;
 }
 
 export interface MapLayer { z: [number, number]; polygons: [number, number][][] }

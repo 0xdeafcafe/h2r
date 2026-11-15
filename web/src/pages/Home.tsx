@@ -35,7 +35,7 @@ export default function Home() {
       <section class="section">
         <h2 class="section__title">Live now</h2>
         <Show
-          when={live.state.caughtUp || games().length}
+          when={live.loadMode() !== "snapshot" || games().length}
           fallback={<div class="loading">Catching up on what you missed…</div>}
         >
           <Show

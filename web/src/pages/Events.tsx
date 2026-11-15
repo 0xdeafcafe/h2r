@@ -36,7 +36,7 @@ export default function Events() {
     if (!first) return;
     setLoadingOlder(true);
     try {
-      const from = Math.max(0, first - 200);
+      const from = Math.max(0, first - 201); // exclusive
       const r = await live.api().events({ from, limit: 200, type: type() || undefined, stream: stream().trim() || undefined });
       setOlder([...r.items.filter((e) => e.position < first), ...older()]);
     } finally {
@@ -100,7 +100,11 @@ function summary(e: WireEvent): string {
     case "PlayerKilled": return `${d.killer ?? "world"} → ${d.victim} (${d.kind}${d.weapon ? ", " + d.weapon : ""})`;
     case "ScoreChanged": return `tick ${d.tick}`;
     case "GameFrame": return `tick ${d.tick}, ${(d.players as unknown[])?.length ?? 0} players`;
-    case "GameEnded": return `${d.reason}${d.winner !== undefined && d.winner !== null ? `, winner ${d.winner}` : ""}`;
+    case "GameEnded": {
+      const w = d.winner as { team?: number; player?: number } | null | undefined;
+      const who = w ? (w.team !== undefined ? `team ${w.team} won` : `slot ${w.player} won`) : "no winner";
+      return `${d.reason}, ${who}`;
+    }
     default: return "";
   }
 }

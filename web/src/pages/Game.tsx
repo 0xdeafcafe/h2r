@@ -18,12 +18,19 @@ import { onAnimationFrame } from "../map/scheduler";
 export default function Game() {
   const params = useParams<{ id: string }>();
   const game = () => live.state.games[params.id];
+  // A game outside the snapshot (older, or a deep link): fetch its detail.
+  const [missing, setMissing] = createSignal(false);
+  createEffect(on(() => [params.id, live.loadMode()] as const, ([id, mode]) => {
+    setMissing(false);
+    if (mode === "snapshot") return;
+    void live.ensureGame(id).then((ok) => setMissing(!ok && !live.state.games[id]));
+  }));
   return (
     <div class="page game-page">
       <Show
         when={game()}
         fallback={
-          <Show when={live.state.caughtUp} fallback={<div class="loading">Looking for that game…</div>}>
+          <Show when={missing()} fallback={<div class="loading">Looking for that game…</div>}>
             <Empty title="We couldn't find that game" mood="wow">
               Maybe it was on another server? <A href="/">Back home</A>
             </Empty>
@@ -40,8 +47,8 @@ function Header(props: { game: GameState; replayTick?: number }) {
   const g = () => props.game;
   const winner = () => {
     const w = g().winner;
-    if (w === null || g().status !== "ended") return null;
-    return g().team_play ? `${teamName(w)} team wins!` : `${g().players[w]?.name ?? "Someone"} wins!`;
+    if (!w || g().status !== "ended") return null;
+    return "team" in w ? `${teamName(w.team)} team wins!` : `${g().players[w.player]?.name ?? "Someone"} wins!`;
   };
   return (
     <header class="game-head">
@@ -174,7 +181,7 @@ function Replay(props: { game: GameState }) {
   const kills = createMemo((): Kill[] => {
     const tl = timeline();
     if (!tl) return [];
-    return tl.killsBetween(-Infinity, tick()).map((k) => ({ ...k, at: "", killer: k.killer, weapon: k.weapon }));
+    return tl.killsBetween(-Infinity, tick()).map((k) => ({ ...k, at: "", pos: k.at ? [k.at.x, k.at.y, k.at.z] : null }));
   });
 
   const toggle = () => {

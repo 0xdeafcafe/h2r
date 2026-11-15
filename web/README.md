@@ -43,15 +43,22 @@ The choice and recent servers are kept in localStorage.
 
 ## Architecture
 
-**One stream, one store.** `src/state/live.ts` opens a single
-`/v1/stream?from=0` WebSocket for the whole app (`StreamClient` in
-`state/stream.ts`). It replays the log from the start, so all client state
-is built from events: `state/reducer.ts` is a pure reducer (`applyEvent`)
-that runs inside Solid's `produce` and on plain objects in tests. Events
-are batched into one store update per tick while catching up and per
-animation frame once live. On a dropped connection the client reconnects
-with exponential backoff and jitter and resumes from the last applied
-position, dropping duplicates, so pages update without polling.
+**Snapshot, then one stream.** `src/state/live.ts` discovers the server
+(`/.well-known/h2live.json`, resolving a relative `api`), loads REST
+snapshots (`state/snapshot.ts`: accounts, presence, live and recent games
+with their details, and the last few hundred log events for the event page),
+then opens a single `/v1/stream?from=<position>&exclude=GameFrame` WebSocket
+(`StreamClient` in `state/stream.ts`) for the whole app. Every read reports
+the log position it was taken at; the stream starts after the oldest one,
+and `state/reducer.ts` is written so the overlap is harmless (a known game
+isn't restarted, kills are deduplicated by position, scores are absolute).
+If the server reports no positions, the client replays the whole log from 0
+instead. The reducer is pure (`applyEvent`, plus `apply*Snapshot`) and runs
+inside Solid's `produce` and on plain objects in tests. On a dropped
+connection the client reconnects with exponential backoff and jitter and
+resumes after the last applied position (`from` is exclusive), so pages
+update without polling. Games outside the snapshot (deep links, older
+games on a profile) are fetched on demand.
 
 **Frames are not reactive.** Live frames (up to 15 Hz per game) go into
 `FrameHub`/`FrameBuffer` (`state/frames.ts`), plain objects that the canvases
@@ -63,7 +70,7 @@ snapping on respawns. All canvases share one `requestAnimationFrame` loop
 (`map/render.ts`) uses the uploaded map outline when there is one, or an
 auto-fitted grid from the bounds seen so far.
 
-**Replays** fetch `/v1/games/{id}/frames` (1 Hz) and the game stream's
+**Replays** fetch `/v1/games/{id}/frames` (1 Hz, following cursors) and the game stream's
 events from `/v1/events?stream=game-<id>`; `ReplayTimeline` samples
 positions, kills and the scoreboard at any tick and `ReplayClock` handles
 play, pause, speed and seek (`state/replay.ts`).
@@ -72,7 +79,7 @@ play, pause, speed and seek (`state/replay.ts`).
 that checks the compact JWS with WebCrypto Ed25519 in batches, yielding
 between batches, and checks the per-stream hash chain where it has
 consecutive versions. Keys come from `/.well-known/h2live.json` (server) and
-`/v1/accounts/{gamertag}/keys` (accounts), cached by `kid`. Results land in
+`/v1/accounts/by-xuid/{xuid}/keys` (accounts, valid between log positions), cached by `kid`. Results land in
 a separate store keyed by position, so rendering never waits on crypto.
 
 **Styling.** `src/styles/theme.css` holds every colour, font, radius and

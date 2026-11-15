@@ -3,7 +3,7 @@
 // verify with WebCrypto, off the hot path and in batches, and report a
 // status per log position.
 
-import type { WireEvent } from "../api/types";
+import type { AccountKeyEntry, WireEvent } from "../api/types";
 
 export type VerifyStatus = "verified" | "bad" | "unsigned" | "unknown";
 
@@ -15,14 +15,6 @@ export interface VerifyResult {
 
 export interface Jwk { kty: string; crv: string; x: string; kid?: string }
 
-export interface AccountKey extends Jwk {
-  /** Positions the key was valid between (inclusive from, exclusive to). */
-  valid_from?: number | null;
-  valid_to?: number | null;
-  from?: number | null;
-  to?: number | null;
-  revoked_at?: number | null;
-}
 
 // ---------- encoding helpers ----------
 
@@ -80,19 +72,22 @@ export function parseJws(jws: string): ParsedJws | null {
   }
 }
 
-/** Does the signed body describe this wire event? A batch JWS (an array of
- *  bodies) matches if one element does. */
+/** Does the signed body describe this wire event? For a batch JWS (an
+ *  array payload) the event's `jws_index` names its element. */
 export function bodyMatches(payload: unknown, ev: WireEvent): boolean {
   const one = (b: unknown): boolean => {
     if (!b || typeof b !== "object") return false;
     const body = b as Record<string, unknown>;
     if (body.type !== ev.type) return false;
     if (body.stream !== undefined && body.stream !== ev.stream) return false;
-    if (body.at !== undefined && ev.at !== undefined && body.at !== ev.at) return false;
+    // The wire `at` is a copy of the signed one (security §2, exact rules).
+    if (body.at !== ev.at) return false;
     if (body.author !== undefined && ev.author !== undefined && body.author !== ev.author) return false;
     return canonicalJson(body.data) === canonicalJson(ev.data);
   };
-  return Array.isArray(payload) ? payload.some(one) : one(payload);
+  if (!Array.isArray(payload)) return ev.jws_index === undefined && one(payload);
+  if (typeof ev.jws_index !== "number") return false;
+  return one(payload[ev.jws_index]);
 }
 
 // ---------- keys ----------
@@ -100,11 +95,17 @@ export function bodyMatches(payload: unknown, ev: WireEvent): boolean {
 export interface KeySource {
   /** Server keys from /.well-known/h2live.json. */
   serverKeys(): Promise<Jwk[]>;
-  /** Account keys from /v1/accounts/{gamertag}/keys; null if unknown. */
-  accountKeys(author: string): Promise<AccountKey[] | null>;
+  /** Account keys for an author id (`acct:<xuid>@host`), from
+   *  /v1/accounts/by-xuid/{xuid}/keys; null if unknown. */
+  accountKeys(author: string): Promise<AccountKeyEntry[] | null>;
 }
 
-interface CachedKey { key: CryptoKey; jwk: AccountKey }
+interface CachedKey { key: CryptoKey; validFrom: number | null; validTo: number | null }
+
+/** The XUID in an `acct:<xuid>@<host>` author id. */
+export function authorXuid(author: string): string | null {
+  return /^acct:([0-9a-fA-F]{16})@/.exec(author)?.[1]?.toLowerCase() ?? null;
+}
 
 export class KeyCache {
   private byKid = new Map<string, Promise<CachedKey | null>>();
@@ -113,33 +114,40 @@ export class KeyCache {
 
   constructor(private readonly src: KeySource) {}
 
-  private async importJwk(jwk: AccountKey): Promise<CachedKey | null> {
+  private async importJwk(jwk: Jwk, validFrom: number | null, validTo: number | null): Promise<CachedKey | null> {
     try {
       const key = await crypto.subtle.importKey("jwk", { kty: jwk.kty, crv: jwk.crv, x: jwk.x }, { name: "Ed25519" }, false, ["verify"]);
-      return { key, jwk };
+      return { key, validFrom, validTo };
     } catch {
       return null;
     }
   }
 
-  private async addAll(keys: AccountKey[]) {
+  private async addServerKeys(keys: Jwk[]) {
     for (const k of keys) {
       const kid = k.kid ?? (await jwkThumbprint(k));
-      if (!this.byKid.has(kid)) this.byKid.set(kid, this.importJwk(k));
+      if (!this.byKid.has(kid)) this.byKid.set(kid, this.importJwk(k, null, null));
+    }
+  }
+
+  private addAccountKeys(keys: AccountKeyEntry[]) {
+    for (const k of keys) {
+      if (!k?.jwk || !k.kid) continue;
+      if (!this.byKid.has(k.kid)) this.byKid.set(k.kid, this.importJwk(k.jwk, k.valid_from ?? null, k.valid_to ?? null));
     }
   }
 
   /** Finds `kid`, fetching the author's keys once if it is unknown. */
   async get(kid: string, author: string | undefined): Promise<CachedKey | null> {
     if (!this.byKid.has(kid)) {
-      if (!this.serverLoaded) this.serverLoaded = this.src.serverKeys().then((k) => this.addAll(k), () => {});
+      if (!this.serverLoaded) this.serverLoaded = this.src.serverKeys().then((k) => this.addServerKeys(k), () => {});
       await this.serverLoaded;
     }
     if (!this.byKid.has(kid) && author) {
       // One fetch per author, shared by every event waiting on it.
       let p = this.authors.get(author);
       if (!p) {
-        p = this.src.accountKeys(author).then((keys) => (keys ? this.addAll(keys) : undefined), () => {});
+        p = this.src.accountKeys(author).then((keys) => { if (keys) this.addAccountKeys(keys); }, () => {});
         this.authors.set(author, p);
       }
       await p;
@@ -153,11 +161,10 @@ export class KeyCache {
   }
 }
 
-function keyValidAt(k: AccountKey, position: number): boolean {
-  const from = k.valid_from ?? k.from ?? null;
-  const to = k.valid_to ?? k.to ?? k.revoked_at ?? null;
-  if (from !== null && position < from) return false;
-  if (to !== null && position >= to) return false;
+/** Account keys are valid from `valid_from` (inclusive) until `valid_to` (exclusive). */
+function keyValidAt(k: CachedKey, position: number): boolean {
+  if (k.validFrom !== null && position < k.validFrom) return false;
+  if (k.validTo !== null && position >= k.validTo) return false;
   return true;
 }
 
@@ -186,12 +193,12 @@ export async function verifyEvent(ev: WireEvent, keys: KeyCache): Promise<Verify
   }
   if (!ok) return { position, status: "bad", reason: "signature does not verify" };
   if (!bodyMatches(jws.payload, ev)) return { position, status: "bad", reason: "event differs from what was signed" };
-  if (!keyValidAt(k.jwk, position)) return { position, status: "bad", reason: "key was not valid at this position" };
+  if (!keyValidAt(k, position)) return { position, status: "bad", reason: "key was not valid at this position" };
   return { position, status: "verified" };
 }
 
-/** sha256(prev_hash || jws), hex. `prev` is the previous event's hex hash
- *  in the stream, or null for the first. */
+/** hex(sha256(prev || utf8(jws))): `prev` is the raw 32 bytes of the
+ *  previous event's hash in the stream, empty for the first. */
 export async function chainHash(prev: string | null, jws: string): Promise<string> {
   const p = prev ? hexToBytes(prev) : new Uint8Array(0);
   const j = enc.encode(jws);

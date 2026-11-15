@@ -86,3 +86,11 @@ describe("ReplayClock", () => {
     expect(c.tickAt(11_000)).toBe(0);
   });
 });
+
+describe("kill positions", () => {
+  test("PlayerKilled.pos wins over the frames", () => {
+    resetPos();
+    const t = new ReplayTimeline([frame(0, 0), frame(30, 3)], [ev("PlayerKilled", "game-g", { tick: 15, victim: 0, kind: "world", pos: [7, 8, 9] })]);
+    expect(t.kills[0]!.at).toEqual({ x: 7, y: 8, z: 9 });
+  });
+});

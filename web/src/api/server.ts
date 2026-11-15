@@ -34,11 +34,17 @@ export function normalizeBase(input: string, fallbackProtocol = "http:"): string
   return u.origin + path;
 }
 
+export function wellKnownUrl(base: string): string {
+  return base + "/.well-known/h2live.json";
+}
+
+/** The API root: the well-known `api`, which may be relative, resolved
+ *  against the well-known document's own URL. */
 export function targetFor(base: string, wk?: WellKnown | null): ServerTarget {
   let api = base + "/v1";
   if (wk?.api) {
     try {
-      api = new URL(wk.api, base + "/").toString().replace(/\/+$/, "");
+      api = new URL(wk.api, wellKnownUrl(base)).toString().replace(/\/+$/, "");
     } catch { /* keep default */ }
   }
   return { base, api };
@@ -106,7 +112,7 @@ export function forget(base: string): void {
 }
 
 export async function fetchWellKnown(base: string, signal?: AbortSignal): Promise<WellKnown> {
-  const r = await fetch(base + "/.well-known/h2live.json", { signal, headers: { accept: "application/json" } });
+  const r = await fetch(wellKnownUrl(base), { signal, headers: { accept: "application/json" } });
   if (!r.ok) throw new Error(`no live server there (HTTP ${r.status})`);
   const wk = (await r.json()) as WellKnown;
   if (!wk || typeof wk.id !== "string") throw new Error("that doesn't look like a live server");
