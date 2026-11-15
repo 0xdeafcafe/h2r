@@ -1,0 +1,22 @@
+[package]
+name = "engine"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Hand-written Rust replacements for Halo 2 engine functions, over guest memory"
+
+[dependencies]
+# For src/runtime_glue.rs (feature `runtime-glue`): registration of the
+# adapters with the runtime's dispatch table.
+runtime = { workspace = true, optional = true }
+# For tests/differential.rs only.
+# TODO(differential): also needs `ir` and `lift` (optional, added to the
+# feature below) once those crates are on master.
+analyze = { workspace = true, optional = true }
+xbe = { workspace = true, optional = true }
+
+[features]
+runtime-glue = ["dep:runtime"]
+# Seeded differential test against the lifted original. Not buildable
+# until `ir`/`lift` land; see the TODO above and tests/differential.rs.
+differential = ["dep:analyze", "dep:xbe"]
