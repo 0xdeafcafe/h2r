@@ -184,7 +184,11 @@ How it works (crates/cli `follow.rs`):
   group a second SIGTERM (`h2 play` then exits at once) and SIGKILL after
   15 s. Nothing it started outlives it: the build's group gets SIGKILL 3 s
   after its SIGTERM, and both are reaped before the supervisor exits and
-  drops its lock.
+  drops its lock. Whenever a group's leader exits, normally or not, the
+  rest of its group is killed before the leader is reaped. The watcher's
+  poll sleep wakes on shutdown, and its thread (and the startup read's,
+  after an interrupt) is joined, with any fetch stopped and reaped, before
+  the supervisor exits.
 - **Watching.** Every `--poll` seconds: `git fetch <remote> <branch>`, which
   only moves the remote-tracking ref, then `rev-parse`. With `--no-fetch` it
   reads the local branch. A failed fetch, or one with no answer in 2
@@ -204,8 +208,10 @@ How it works (crates/cli `follow.rs`):
   --force`, then `clean`) it must be a real directory, not a symlink, at
   exactly `<cache>/checkout`, the top of its work tree, registered in the
   repository's `git worktree list` at that path as a linked worktree (not
-  the main checkout), with the repository's git dir. Anything else there is
-  refused and left alone. It runs `nice -n 15 cargo build
+  the main checkout), with the repository's git dir, and a `.git` file
+  selecting that worktree's own private git dir (`<common>/worktrees/<name>`,
+  whose `gitdir` names this `.git`), never the main git dir or another
+  worktree's. Anything else there is refused and left alone. It runs `nice -n 15 cargo build
   --release -p cli` with `CARGO_TARGET_DIR=<cache>/target`, and
   `CARGO_BUILD_JOBS` set to half the cores unless you have set it.
   `RUSTC_WRAPPER` (sccache) and the rest of your environment pass through.
@@ -253,8 +259,11 @@ failed, restart, queueing, rollbacks, close and interrupt). Against scratch
 repositories and plain shell processes (no game, no cargo), it checks:
 
 - a checkout symlinked to the user's checkout, the user's main checkout at
-  the cache path, and a foreign repository there are all refused, with the
-  user's edits, untracked files and branch intact;
+  the cache path, a foreign repository there, and a registered checkout
+  whose `.git` file selects the main git dir or another worktree's are all
+  refused, with the user's edits, staged changes, untracked files and
+  branch intact;
+- a leader that exits normally leaves nothing behind in its group;
 - the first build leaves another worktree's missing entry alone, and
   re-adds its own;
 - a build step started from a thread with the signals blocked still dies
@@ -264,7 +273,9 @@ repositories and plain shell processes (no game, no cargo), it checks:
 - a second interrupt kills and reaps a game child that ignores SIGTERM
   before `drive` returns;
 - a hanging fetch times out to the last fetched ref, and an interrupt
-  during the startup fetch ends it at once. It also runs the event
+  during the startup fetch ends it at once; a transport helper that
+  ignores SIGTERM is killed and reaped before the startup read returns,
+  and before the watcher's thread ends on shutdown, mid-poll or mid-fetch. It also runs the event
 loop with a fake builder and a fake child: build, F5, failure, fix, F5,
 close. The status file format, the first-error pick and the argument split
 are covered too. An ignored test (`cargo test -p cli --bin h2 -- --ignored

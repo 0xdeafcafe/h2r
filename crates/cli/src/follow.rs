@@ -538,6 +538,8 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 /// the spawn or reaches the child.
 struct Owned {
     state: Mutex<OwnedState>,
+    /// Wakes [`Owned::sleep`] on a cancel.
+    cancelled_cv: std::sync::Condvar,
     grace: Duration,
 }
 
@@ -568,6 +570,7 @@ impl Owned {
     fn new(grace: Duration) -> Self {
         Self {
             state: Mutex::default(),
+            cancelled_cv: std::sync::Condvar::new(),
             grace,
         }
     }
@@ -601,7 +604,18 @@ impl Owned {
     /// period, from [`Owned::wait`]) and refuse new ones until [`Owned::reset`].
     fn cancel(&self) {
         self.lock().cancelled = true;
+        self.cancelled_cv.notify_all();
         self.signal(libc::SIGTERM);
+    }
+
+    /// Sleeps for `d` unless cancelled first; returns whether it was.
+    fn sleep(&self, d: Duration) -> bool {
+        let s = self.lock();
+        let (s, _) = self
+            .cancelled_cv
+            .wait_timeout_while(s, d, |s| !s.cancelled)
+            .unwrap_or_else(|e| e.into_inner());
+        s.cancelled
     }
 
     fn reset(&self) {
@@ -614,9 +628,10 @@ impl Owned {
 
     /// Waits for `child`, the group's leader. After a cancel or `timeout`
     /// the group gets SIGTERM, then SIGKILL once the grace period is up;
-    /// once the leader has exited, whatever it left in the group is killed
-    /// before the leader is reaped. Returns the status and whether it timed
-    /// out.
+    /// once the leader has exited, however it exited, whatever it left in
+    /// the group is killed before the leader is reaped (under the lock
+    /// [`Owned::signal`] takes, so no signal can reach a reused id).
+    /// Returns the status and whether it timed out.
     fn wait(
         &self,
         child: &mut std::process::Child,
@@ -635,7 +650,7 @@ impl Owned {
                     &mut info,
                     libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
                 ) == 0
-                    && info.si_pid != 0
+                    && info.si_pid() != 0
             };
             if exited {
                 break;
@@ -651,11 +666,12 @@ impl Owned {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
-        if stopping.is_some() {
-            self.signal(libc::SIGKILL);
-        }
+        let mut s = self.lock();
+        // SAFETY: the leader is a zombie we have not reaped, so the group id
+        // is still ours; this ends anything it left behind.
+        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
         let status = child.wait();
-        self.lock().pgid = 0;
+        s.pgid = 0;
         Ok((status?, timed_out))
     }
 }
@@ -734,7 +750,8 @@ impl Watch {
 
     /// Fetches (updating only the remote-tracking ref) and reads the head.
     /// A fetch that fails or does not answer in `fetch_timeout` falls back
-    /// to the ref as last fetched.
+    /// to the ref as last fetched. Every git step runs under `owned`, so a
+    /// cancel stops the one running and refuses the rest.
     fn head(&self, log: &Log) -> Result<Commit> {
         if self.fetch
             && let Err(e) = git_owned(
@@ -749,21 +766,20 @@ impl Watch {
                 self.reference()
             ));
         }
-        let hash = git(
-            &self.repo,
-            &[
-                "rev-parse",
-                "--verify",
-                &format!("{}^{{commit}}", self.reference()),
-            ],
-        )?;
-        let subject = git(&self.repo, &["log", "-1", "--format=%s", &hash])?;
+        let git = |args: &[&str]| git_owned(&self.repo, args, &self.owned, GIT_TIMEOUT);
+        let hash = git(&[
+            "rev-parse",
+            "--verify",
+            &format!("{}^{{commit}}", self.reference()),
+        ])?;
+        let subject = git(&["log", "-1", "--format=%s", &hash])?;
         Ok(Commit { hash, subject })
     }
 
     /// Reads the head on a thread, so a hanging fetch cannot hold up the
     /// handling of an interrupt; the result arrives as [`Event::Baseline`].
-    fn spawn_baseline(&self, log: Log, tx: Sender<Event>) {
+    /// Join the handle before exiting: it reaps the fetch.
+    fn spawn_baseline(&self, log: Log, tx: Sender<Event>) -> std::thread::JoinHandle<()> {
         let w = self.clone();
         std::thread::Builder::new()
             .name("follow-baseline".into())
@@ -771,16 +787,18 @@ impl Watch {
                 let r = w.head(&log).map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Event::Baseline(r));
             })
-            .expect("spawning the baseline read");
+            .expect("spawning the baseline read")
     }
 
-    fn spawn(self, poll: Duration, log: Log, tx: Sender<Event>) {
+    /// Polls every `poll` until `owned` is cancelled. Cancel, then join the
+    /// handle before exiting: the poll sleep wakes on the cancel, and a
+    /// fetch in flight is stopped and reaped first.
+    fn spawn(self, poll: Duration, log: Log, tx: Sender<Event>) -> std::thread::JoinHandle<()> {
         std::thread::Builder::new()
             .name("follow-watch".into())
             .spawn(move || {
                 loop {
-                    std::thread::sleep(poll);
-                    if self.owned.cancelled() {
+                    if self.owned.sleep(poll) {
                         return;
                     }
                     match self.head(&log) {
@@ -793,18 +811,28 @@ impl Watch {
                     }
                 }
             })
-            .expect("spawning the watcher");
+            .expect("spawning the watcher")
     }
 }
 
 /// Waits for the startup head, handling interrupts meanwhile: `None` if
-/// interrupted (the fetch in flight is stopped first).
-fn wait_baseline(rx: &Receiver<Event>, watch: &Watch) -> Result<Option<Commit>> {
+/// interrupted. Either way it returns only once the read's thread has
+/// ended, so the fetch it ran (stopped, escalated to SIGKILL and reaped on
+/// an interrupt) cannot outlive the supervisor.
+fn wait_baseline(
+    rx: &Receiver<Event>,
+    watch: &Watch,
+    read: std::thread::JoinHandle<()>,
+) -> Result<Option<Commit>> {
     loop {
         match rx.recv() {
-            Ok(Event::Baseline(r)) => return r.map(Some).map_err(anyhow::Error::msg),
+            Ok(Event::Baseline(r)) => {
+                let _ = read.join();
+                return r.map(Some).map_err(anyhow::Error::msg);
+            }
             Ok(Event::Interrupt) | Err(_) => {
                 watch.owned.cancel();
+                let _ = read.join();
                 return Ok(None);
             }
             Ok(_) => {}
@@ -909,7 +937,10 @@ fn common_dir(dir: &Path) -> Result<PathBuf, String> {
 /// a real directory (no symlink anywhere at its last step) at exactly that
 /// path under the cache, the top of a work tree, registered in the repo's
 /// `git worktree list` at that path as a linked (not the main) worktree,
-/// and sharing the repo's git dir. Anything else at that path is refused,
+/// sharing the repo's git dir, and with a `.git` file that selects that
+/// worktree's own private git dir (`<common>/worktrees/<name>`, whose
+/// `gitdir` names this `.git`), never the main git dir or another
+/// worktree's. Anything else at that path is refused,
 /// never reset, cleaned or removed: the user's work could be there.
 fn own_checkout(repo: &Path, cache: &Path) -> Result<bool, String> {
     let path = cache.join("checkout");
@@ -951,8 +982,30 @@ fn own_checkout(repo: &Path, cache: &Path) -> Result<bool, String> {
     if canonical(Path::new(&top))? != here {
         return refuse("it is inside another work tree");
     }
-    if common_dir(&path)? != common_dir(repo)? {
+    let common = common_dir(repo)?;
+    if common_dir(&path)? != common {
         return refuse("it belongs to another repository");
+    }
+    // Its .git must be a plain file selecting this worktree's own private
+    // git dir, <common>/worktrees/<name>, whose backlink names this .git:
+    // pointed at the main git dir (or another worktree's), a checkout here
+    // would reset that index and HEAD.
+    let dot_git = here.join(".git");
+    if !fs::symlink_metadata(&dot_git).is_ok_and(|m| m.is_file() && !m.file_type().is_symlink()) {
+        return refuse("its .git is not a linked worktree's .git file");
+    }
+    let own = git(&path, &["rev-parse", "--absolute-git-dir"]).map_err(|e| format!("{e:#}"))?;
+    let own = canonical(Path::new(&own))?;
+    if own == common {
+        return refuse("its .git selects the main repository's git dir");
+    }
+    if own.parent() != Some(common.join("worktrees").as_path()) {
+        return refuse("its .git does not select a linked worktree's own git dir");
+    }
+    let back =
+        fs::read_to_string(own.join("gitdir")).map_err(|e| format!("{}: {e}", own.display()))?;
+    if fs::canonicalize(back.trim()).ok() != Some(dot_git) {
+        return refuse("its git dir belongs to another worktree");
     }
     Ok(true)
 }
@@ -1319,8 +1372,8 @@ pub fn run(args: Vec<String>) -> Result<()> {
         fetch_timeout: FETCH_TIMEOUT,
         owned: Arc::new(Owned::new(BUILD_GRACE)),
     };
-    watch.spawn_baseline(log.clone(), tx.clone());
-    let Some(baseline) = wait_baseline(&rx, &watch)? else {
+    let read = watch.spawn_baseline(log.clone(), tx.clone());
+    let Some(baseline) = wait_baseline(&rx, &watch, read)? else {
         log.line("interrupted while reading the branch");
         std::process::exit(130);
     };
@@ -1340,7 +1393,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         subjects: Vec::new(),
     };
     let fetches = Arc::clone(&watch.owned);
-    watch.spawn(f.poll, log.clone(), tx.clone());
+    let watcher = watch.spawn(f.poll, log.clone(), tx.clone());
 
     let status = cache.join("status");
     let mut builder = GitCargoBuilder {
@@ -1378,6 +1431,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     );
     // A fetch in flight must not outlive the lock either.
     fetches.cancel();
+    let _ = watcher.join();
     log.line(&format!("exiting ({code})"));
     if code != 0 {
         std::process::exit(code);
@@ -2128,16 +2182,162 @@ mod tests {
         let (clone, _) = hanging_clone(&root);
         let watch = watch_of(&clone, Duration::from_secs(600));
         let (tx, rx) = channel();
-        watch.spawn_baseline(Log::open(&root.join("follow.log")), tx.clone());
+        let read = watch.spawn_baseline(Log::open(&root.join("follow.log")), tx.clone());
         let deadline = Instant::now() + Duration::from_secs(5);
         while !running("sleep 4242") && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(20));
         }
         tx.send(Event::Interrupt).unwrap();
         let start = Instant::now();
-        assert!(wait_baseline(&rx, &watch).unwrap().is_none());
+        assert!(wait_baseline(&rx, &watch, read).unwrap().is_none());
         assert!(start.elapsed() < Duration::from_secs(1));
         assert!(!running("sleep 4242"), "the fetch outlived the interrupt");
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_checkout_whose_git_file_selects_another_git_dir_is_refused() {
+        let root = scratch("gitfile");
+        let repo = root.join("repo");
+        let hash = repo_with_commit(&repo);
+        let other = root.join("other");
+        sh(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                &other.to_string_lossy(),
+                "HEAD",
+            ],
+        );
+        // Work the user has staged in the main checkout.
+        fs::write(repo.join("b.txt"), "staged\n").unwrap();
+        sh(&repo, &["add", "b.txt"]);
+        let cache = root.join("cache");
+        assert_eq!(
+            build_git_only(&repo, &cache, &hash).unwrap_err(),
+            "cancelled"
+        );
+        assert_eq!(own_checkout(&repo, &cache), Ok(true));
+        let dot_git = cache.join("checkout/.git");
+        for (target, what) in [
+            (repo.join(".git"), "the main git dir"),
+            (repo.join(".git/worktrees/other"), "another worktree's"),
+        ] {
+            fs::write(&dot_git, format!("gitdir: {}\n", target.display())).unwrap();
+            let e = build_git_only(&repo, &cache, &hash).unwrap_err();
+            assert!(e.starts_with("refusing"), "{what}: {e}");
+            assert_eq!(
+                sh(&repo, &["diff", "--cached", "--name-only"]),
+                "b.txt",
+                "{what}"
+            );
+            assert_eq!(
+                sh(&repo, &["symbolic-ref", "HEAD"]),
+                "refs/heads/master",
+                "{what}"
+            );
+            assert_eq!(sh(&other, &["rev-parse", "HEAD"]), hash, "{what}");
+        }
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_leader_that_exits_normally_leaves_nothing_in_its_group() {
+        let owned = Owned::new(BUILD_GRACE);
+        let mut child = owned
+            .spawn(Command::new("sh").args(["-c", "sleep 4343 & exit 0"]))
+            .unwrap();
+        let (status, timed_out) = owned.wait(&mut child, None).unwrap();
+        assert!(status.success() && !timed_out);
+        assert!(
+            !running("sleep 4343"),
+            "the leader's background child survived it"
+        );
+    }
+
+    /// A clone whose origin's transport helper ignores SIGTERM and hangs.
+    fn stubborn_clone(root: &Path, secs: u32) -> PathBuf {
+        let (clone, _) = hanging_clone(root);
+        let helper = root.join("stubborn-remote");
+        fs::write(&helper, format!("#!/bin/sh\ntrap '' TERM\nsleep {secs}\n")).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        sh(
+            &clone,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                &format!("ext::{}", helper.display()),
+            ],
+        );
+        clone
+    }
+
+    #[test]
+    fn an_interrupt_during_the_startup_fetch_reaps_a_stubborn_helper() {
+        let root = scratch("fetch-stubborn");
+        let clone = stubborn_clone(&root, 4444);
+        let watch = watch_of(&clone, Duration::from_secs(600));
+        let (tx, rx) = channel();
+        let read = watch.spawn_baseline(Log::open(&root.join("follow.log")), tx.clone());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !running("sleep 4444") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        tx.send(Event::Interrupt).unwrap();
+        let start = Instant::now();
+        assert!(wait_baseline(&rx, &watch, read).unwrap().is_none());
+        // Back only after SIGKILL and the reap, within the grace period.
+        assert!(
+            start.elapsed() < BUILD_GRACE + Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(
+            !running("sleep 4444"),
+            "the fetch helper outlived wait_baseline"
+        );
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_watcher_stops_at_once_on_cancel_even_mid_poll_or_mid_fetch() {
+        let root = scratch("watch-stop");
+        let repo = root.join("repo");
+        repo_with_commit(&repo);
+        let mut watch = watch_of(&repo, FETCH_TIMEOUT);
+        watch.fetch = false;
+        let (owned, (tx, _rx)) = (Arc::clone(&watch.owned), channel());
+        let log = Log::open(&root.join("follow.log"));
+        let watcher = watch.spawn(Duration::from_secs(600), log.clone(), tx.clone());
+        std::thread::sleep(Duration::from_millis(100));
+        let start = Instant::now();
+        owned.cancel();
+        watcher.join().unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "{:?}",
+            start.elapsed()
+        );
+        // Mid-fetch: the stubborn helper is killed and reaped first.
+        let clone = stubborn_clone(&root, 4545);
+        let watch = watch_of(&clone, Duration::from_secs(600));
+        let owned = Arc::clone(&watch.owned);
+        let watcher = watch.spawn(Duration::from_millis(10), log, tx);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !running("sleep 4545") && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        owned.cancel();
+        watcher.join().unwrap();
+        assert!(
+            !running("sleep 4545"),
+            "the fetch helper outlived the watcher"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -2227,7 +2427,8 @@ fn main() {
             hash: a_hash,
             subject: "a".into(),
         };
-        watch.spawn(Duration::from_millis(200), log.clone(), tx.clone());
+        let polls = Arc::clone(&watch.owned);
+        let watcher = watch.spawn(Duration::from_millis(200), log.clone(), tx.clone());
         let mut builder = GitCargoBuilder {
             repo: repo.clone(),
             cache: cache.clone(),
@@ -2347,6 +2548,8 @@ fn main() {
             "/* bridge v2 */\n"
         );
         builder.shutdown();
+        polls.cancel();
+        watcher.join().unwrap();
 
         // Fetching: a clone follows its origin's branch, and its own
         // branch and working tree stay where they were.
