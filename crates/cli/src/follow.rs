@@ -922,6 +922,54 @@ fn prune(dir: &Path, keep: &[PathBuf], log: &Log) {
     }
 }
 
+/// Starts a new generated game from a clone of the last one's C, so the
+/// emit rewrites only the files this commit changes (`write_if_changed`)
+/// instead of all of them, and unchanged files share their blocks with the
+/// last game. Only for an `out` that doesn't exist yet; the emit deletes
+/// shards the new generator no longer makes. Best effort: if the clone
+/// fails, the partial copy is removed and the emit writes everything.
+fn seed_sources(prev: &Path, out: &Path, log: &Log) {
+    let (from, to) = (prev.join("src"), out.join("src"));
+    if prev == out || !real_dir(&from) || fs::symlink_metadata(out).is_ok() {
+        return;
+    }
+    if let Err(e) = clone_dir(&from, &to) {
+        log.line(&format!(
+            "not reusing {}: {e}; generating every file",
+            from.display()
+        ));
+        let _ = fs::remove_dir_all(out);
+    }
+}
+
+/// `cp -cR`: an APFS clone, which takes no space until a file changes.
+#[cfg(target_os = "macos")]
+fn clone_dir(from: &Path, to: &Path) -> Result<(), String> {
+    if let Some(parent) = to.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
+    }
+    let out = Command::new("/bin/cp")
+        .arg("-cR")
+        .arg(from)
+        .arg(to)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("cp: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "cp -cR: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn clone_dir(_: &Path, _: &Path) -> Result<(), String> {
+    Err("cloning needs APFS".into())
+}
+
 fn canonical(p: &Path) -> Result<PathBuf, String> {
     fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()))
 }
@@ -1093,6 +1141,7 @@ impl GitCargoBuilder {
                 "building {short}: the generated game is out of date, h2 build --out {}",
                 out.display()
             ));
+            seed_sources(&prev, &out, log);
             let mut emit = niced(&built);
             emit.arg("build").arg(disc).arg("--out").arg(&out);
             step.run("h2 build", &mut emit)?;
@@ -1833,6 +1882,49 @@ mod tests {
         git(dir, args).unwrap()
     }
 
+    #[test]
+    fn a_new_generated_game_starts_from_the_last_ones_sources() {
+        let root = scratch("seed-sources");
+        let log = Log::open(&root.join("follow.log"));
+        let prev = root.join("gen/a");
+        fs::create_dir_all(prev.join("src")).unwrap();
+        fs::write(prev.join("src/shard_00001.c"), "int a;\n").unwrap();
+        fs::write(prev.join("libh2game.dylib"), "old").unwrap();
+
+        let out = root.join("gen/b");
+        seed_sources(&prev, &out, &log);
+        if cfg!(target_os = "macos") {
+            assert_eq!(
+                fs::read_to_string(out.join("src/shard_00001.c")).unwrap(),
+                "int a;\n"
+            );
+            // Only the C: the new game's library and stamp are its own build's.
+            assert!(!out.join("libh2game.dylib").exists());
+            // A clone, not a link: editing the new copy leaves the old one.
+            fs::write(out.join("src/shard_00001.c"), "int b;\n").unwrap();
+            assert_eq!(
+                fs::read_to_string(prev.join("src/shard_00001.c")).unwrap(),
+                "int a;\n"
+            );
+        } else {
+            assert!(!out.exists());
+        }
+
+        // An out that already exists is the emit's to update, as is.
+        let existing = root.join("gen/c");
+        fs::create_dir_all(&existing).unwrap();
+        seed_sources(&prev, &existing, &log);
+        assert!(!existing.join("src").exists());
+        // Nothing to start from: no sources, or the same directory.
+        let empty = root.join("gen/empty");
+        fs::create_dir_all(&empty).unwrap();
+        seed_sources(&empty, &root.join("gen/d"), &log);
+        assert!(!root.join("gen/d").exists());
+        seed_sources(&prev, &prev, &log);
+        assert_eq!(fs::read_dir(prev.join("src")).unwrap().count(), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     /// A repository at `dir` with one commit of `a.txt`; returns its hash.
     fn repo_with_commit(dir: &Path) -> String {
         fs::create_dir_all(dir).unwrap();
@@ -2537,6 +2629,9 @@ fn main() {
         // not, so the game is generated again.
         write("crates/boot/c/boot_bridge.c", "/* bridge v2 */\n");
         let e = commit_all("boot: bridge v2");
+        // The last game's C, which the new one starts from.
+        fs::create_dir_all(gen_b.join("src")).unwrap();
+        fs::write(gen_b.join("src/shard_00001.c"), "int a;\n").unwrap();
         builder.start(
             &e,
             &d,
@@ -2548,6 +2643,11 @@ fn main() {
         assert_eq!(
             fs::read_to_string(gen_e.join("libh2game.dylib.stamp")).unwrap(),
             "/* bridge v2 */\n"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            fs::read_to_string(gen_e.join("src/shard_00001.c")).unwrap(),
+            "int a;\n"
         );
         builder.shutdown();
         polls.cancel();
