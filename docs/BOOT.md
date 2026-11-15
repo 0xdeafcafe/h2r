@@ -38,7 +38,8 @@ copies. Nothing is ever written next to it.
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
 | `H2_BOOT_VOICE=1` | with `H2_BOOT_OLD_GLUE`, keep voice on (skip the 0x55810 override) |
-| `H2_BOOT_RTT=1` | SetRenderTarget to a texture level keeps the HLE target (see Current state) |
+| `H2_BOOT_GFX=<dir>` | run D3D on a headless `GfxBackend` with the nv2a shaders and write presented frames to `<dir>/frame-NNNNN.png` |
+| `H2_BOOT_GFX_EVERY=N` | with `H2_BOOT_GFX`, keep the first frame and every Nth (default 30) |
 
 The run prints a report when it ends. It covers:
 
@@ -91,66 +92,60 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   wait, the stream purge callback, and the retired voice-off), each with
   its ABI and the retail path it reproduces.
 
-## Current state (2026-11-15, master b309045)
+## Current state (2026-11-15, origin/master 2a2b197)
 
-**Last stop:** thread 2, `D3DDevice_SetRenderTarget` (`0x3f7870`), from
-`0x1cd71` <- `0x14d47` (`0x14bc0` selects a render target by index):
+**Last stop:** thread 2, in `D3DDevice_SetRenderState_CullMode`
+(`0x3f53d0`, from `0x5206c`). The push-buffer sync there hits
 
-> render target 0x004b56b8 is a level of texture 0x004b56a4 (render-to-texture)
+> push buffer: unimplemented NV2A method 0x1760
 
-That's after about 9.7k kernel calls, 565 slices and about 30 s, with no
-kernel stopgap installed. By then the loading screen has drawn 2880 inline
-Begin/End draws (about 105k push words and 2880 texture uploads), and
-`mainmenu.map` is open on thread 3.
+which is the vertex data array format. `CDevice_SetStateVB` (`0x401030`,
+run as the retail body) pushed it for an inline draw that `0x4b220` begins
+with BeginPush (`0x3fae10`). The run takes about 10.3k kernel calls, 753
+slices and about 22 s (about 52 s on GfxBackend).
 
-With `H2_BOOT_RTT=1` the run gets one call further. It then stops on
-the next SetRenderTarget's push sync, because the offscreen pass now lands
-on the back buffer (a stopgap artefact): "viewport 320x240 at (0, 0) on a
-640x480 target (gfx draws the whole target)".
+**First real frames.** With `H2_BOOT_GFX`, the loading screen renders
+through `GfxBackend` and the nv2a shaders: Halo's own "LOADING 36%" ...
+"LOADING 89%" over its dark blue background. There are 2986 draws (2889
+inline), 110k push words and 3106 texture uploads, and render-to-texture
+writes back 6 times. Screenshots are kept outside the repo, as
+`boot-loading-36.png` and `boot-loading-89.png` in the session's keep
+directory.
 
 ### Milestones, from the entry point
 
-1. Entry `0x2d0aee` and the XAPI startup (`xapi::register`): the `\??\D:`
-   link, T:/U: and TitleMeta.
-2. XMountUtilityDrive through `xapi::register`. Partition 5 is the cache,
-   and the cache DB row is `CACHE_ROW`.
+1. Entry `0x2d0aee` and the XAPI startup (`xapi::register`).
+2. XMountUtilityDrive (Partition 5 cache, `CACHE_ROW`).
 3. CRT static init: x87 in the fallback interpreter.
 4. Game main:
-   - AV pack and video;
-   - the push buffer;
-   - `Direct3D_CreateDevice` (NV2A base stand-in and back/depth surfaces
-     from the boot);
+   - AV pack, video and the push buffer;
+   - `Direct3D_CreateDevice`, with the NV2A base stand-in and the
+     back/depth backing from the boot;
    - the first Swap.
-5. The world pool: MmAllocateContiguousMemoryEx `0x30e4000` at physical
-   `0x61000`, mapped at `0x80061000` by `LoadOptions::halo2()`. There's
-   also a write-combined alias at `0xf0061000`.
+5. The world pool at physical `0x61000` (`LoadOptions::halo2()`, mapped at
+   `0x80061000` and `0xf0061000`).
 6. The second thread, the mutants and the fonts.
-7. Cache files `z:\cache000/001.map`. The N: partition is mounted
-   (Partition4), and `n:\cache002..005`, `savegame0/1` and `sgf` are
-   created.
+7. Cache files on Z: and N: (Partition4), the save games and `sgf`.
 8. XcSHA, XInitDevices and the D3D state setup.
-9. XHV voice engine: it passes `0x33337d` with DSound round 2 (no
-   `0x55810` override).
-10. Network: PhyInitialize, then the XNet 20 ms timer DPC `0x332f4c`
-    runs on thread 0 (kernel round 3 DPCs).
-11. `cpuid` at `0x34881d`, emulated in the fallback.
-12. The `d:\bink\intro_60.bik` probe and the movie loop `0x1639c2`
-    (SwitchToThread). Needs the NtYieldExecution stopgap.
-13. `d:\maps\mainmenu.map` is opened (thread 3). The stream-block purge
-    callback `0x213fa0` waits on the async read (stopgap).
-14. Loading screen: unbounded switch tables `0x216a54` and `0x216b01`
-    (fallback). It draws 2880 inline draws. `t:\$C\` and `u:\` are probed,
-    and `d:\launch.txt` is missing, as it should be.
-15. The resource busy check `0x3fb710`, then `0x3f8cc0` (method `0x1480`),
-    then the render-to-texture stop.
+9. XHV voice engine passes `0x33337d` (DSound round 2).
+10. Network: PhyInitialize and the XNet 20 ms timer DPC on thread 0.
+11. `cpuid` at `0x34881d` (emulated in the fallback).
+12. The `d:\bink\intro_60.bik` probe and the movie loop `0x1639c2`.
+    SwitchToThread hands off since kernel round 5.
+13. `d:\maps\mainmenu.map` is opened on thread 3. The stream purge
+    callback `0x213fa0` waits for the read (stopgap).
+14. Loading screen: the unbounded switch tables `0x216a54` and `0x216b01`
+    run through the fallback. The "LOADING nn%" frames render; `t:\$C\`
+    and `u:\` are probed.
+15. Offscreen render targets: render-to-texture through crates/d3d, and
+    the same-size SetRenderTarget fast path `0x3f7b30` (stopgap).
+16. An inline draw through BeginPush and SetStateVB, then the `0x1760`
+    stop.
 
 The main menu still needs, past this point:
 
-- render-to-texture and partial viewports;
-- then the menu's own UI draws.
-
-GfxBackend + nv2a (gfx-shaders) is not switched on yet. The trace is
-still in the loading screen, on RecordingBackend.
+- the vertex array methods in the push parser;
+- whatever the menu's UI draws reach next.
 
 ### Ranked blockers
 
@@ -158,39 +153,41 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 
 | # | Blocker | Owner | What's needed | Size |
 | --- | --- | --- | --- | --- |
-| 1 | **Render-to-texture** at `0x3f7870` | d3d | The offscreen targets `0x14850` builds (`0x3fb7a0` sets `Parent`) must be real host surfaces whose results reach the texture's guest bytes, or the texture's sampling. The current stop. | M |
-| 2 | **Partial viewports** | d3d / gfx | `0x14bc0` sets the viewport to the target's extents: 320x240 for the offscreen targets, with split screen later. gfx draws the whole target, so it needs a viewport/scissor. This is the stop after #1 (seen with `H2_BOOT_RTT`). | S-M |
-| 3 | **Spin-waits in generated code** | emit + runtime (backedge lane) | Generated loops never give the runner control back, so a guest busy-wait on another thread hangs natively, with no stop and no transfer: `0x12b2e0` (vblank) and `0x213fa0` (async read). It needs a preemption point on loop back-edges (a budget check that ends the slice). | M |
-| 4 | **NtYieldExecution starvation** | kernel (kernel-r5 lane) | `Machine::run` advances the clock to the next deadline and runs DPCs while every ready thread is `polling`. With a periodic DPC (XNet's timer re-arms itself from the DPC) there is always another DPC, so a yielding thread never gets a slice. A polling thread must run after one clock advance. | S |
-| 5 | **vblank delivery** | d3d round 4 + runtime-watch | The vblank callback at device+0x1db8 (`0x12b2a0`) is never called. The boot's 0x12b2e0 override calls it from the frame wait; it hasn't been reached yet. Retire it when frame-wait B and `raise_interrupt` land. | S |
-| 6 | **D3D entries still stopgapped** | d3d (rounds 4/5) | `0x3f6190`, `0x3f6390`, `0x3f6840`, `0x3f6f40` (fragment and transform pushes), SetSoftDisplayFilter `0x3f8c70` (round 4); `0x3fb710` resource busy and `0x3f8cc0` / NV2A method `0x1480` (round 5); Get2DSurfaceDesc `0x3fdb20` (retail body); device+0x934 NV2A base and the back/depth surface backing at CreateDevice. | M total |
-| 7 | **x87 not lowered** | lift / emit | About 10.5k fallback entries and 72k x87 instructions by the loading screen (fmul, fld, fstp, fistp, fsqrt, fptan, fpatan, ...). Correct, but slow. Lower x87 per docs/FLOAT.md. | L |
-| 8 | **Lift leftovers** | lift-leftovers lane | `cpuid` (emulated in the fallback as the Pentium III, family 6 model 8 stepping 10). The analyzer stops reading a jump table at its first null entry: `0x216a54` and `0x216b01` are unchecked `dec eax; jmp [eax*4+tbl]` with holes. The fallback now interprets from any unknown switch target. | S |
-| 9 | **AvSendTVEncoderOption 0xb** | kernel (kernel-r5 lane) | The flicker-filter option is ignored in the boot (`*Result = 0`). Kernel round 4 still stops on it. | S |
-| 10 | **Async file I/O, write barrier, analysis of pointer-only functions, build time** | kernel/vfs, d3d+runtime-watch, analyze, emit | Unchanged from the previous round. None is the current stop. | M each |
+| 1 | **NV2A vertex array methods** | d3d | The push parser must decode `0x1760..0x179c` (`SET_VERTEX_DATA_ARRAY_FORMAT`) and the matching offsets (`0x1720..`). `CDevice_SetStateVB` pushes them before inline and indexed draws. This is the current stop. | S-M |
+| 2 | **SetRenderTarget fast path** `0x3f7b30` | d3d (r6) | `[esp+4]` = target, EBX = depth, `ret 4`. It is the same as `0x3f7870` without the viewport reset. The boot forwards it to `0x3f7870`. | S |
+| 3 | **BeginPush `0x3fae10`, SetStateVB `0x401030`, Get2DSurfaceDesc `0x3fdb20`** | d3d | Stopping entries that the boot runs as retail bodies (`RUN_NATIVE`). Move them to `abi::NATIVE` or implement them. | S |
+| 4 | **NV2A register base** device+0x934, back/depth surface backing, `0xf0000000` alias | d3d (r6) / runtime | Boot glue at CreateDevice (`install_gpu_registers`). | S-M |
+| 5 | **Spin-waits in generated code** | backedge lane (8f72ddb, in review) | Retires the `0x213fa0` override. Preemptions use `Machine::run` slices, so `--slices` may need raising. | in review |
+| 6 | **x87 not lowered** | lift / emit (x87 crate on master) | About 10.5k fallback entries and 72k x87 instructions by the loading screen. The boot's fallback still uses its own `x87.rs`. | L |
+| 7 | **Lift leftovers** | lift-leftovers lane | `cpuid`, `rdtsc` and jump tables with null holes (`0x216a54`, `0x216b01`). The fallback covers them. | S |
+| 8 | **Write tracking** | boot + d3d | The boot still uses `UploadPolicy::Always`. Wiring `Guest::subscribe_writes` and `take_dirty` to `Device::note_write` (docs/d3d.md Integration) would allow `Tracked`. | S-M |
 
 ### Boot stopgaps in force
 
-All of these are in crates/boot and listed in the run report under
-"stopgap used".
-
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
-| AvSendTVEncoderOption 0xb ignored | wrappers.rs `install_tv_encoder` | kernel-r5 |
-| NtYieldExecution as a 1 ms KeDelayExecutionThread | wrappers.rs `install_yield` | kernel-r5 (#4) |
-| `0x12b2e0` frame wait delivers vblanks | game_glue.rs `install_frame_wait` | d3d round 4 frame-wait B |
-| `0x213fa0` stream purge waits 1 ms per spin | game_glue.rs `install_stream_purge` | backedge lane (#3) |
-| unknown switch target: interpret from the target | fallback.rs `trampoline` | lift-leftovers (#8) |
-| `cpuid` emulated | fallback.rs | lift-leftovers (#8) |
-| D3D no-ops `0x3f6190`, `0x3f6390`, `0x3f6840`, `0x3f6f40`; SetSoftDisplayFilter | d3d_glue.rs | d3d round 4 |
-| `0x3fb710` resource busy (GPU idle) | d3d_glue.rs `install_resource_busy` | d3d round 5 |
-| `0x3f8cc0` cache only, method `0x1480` not pushed | d3d_glue.rs `install_ramp` | d3d round 5 |
-| Get2DSurfaceDesc as the retail body | d3d_glue.rs `RUN_NATIVE` | d3d |
-| device+0x934 NV2A stand-in, back/depth surface backing, `0xf0000000` alias | d3d_glue.rs `install_gpu_registers`, lib.rs | d3d / runtime-watch |
-| SetRenderTarget to a texture level, opt-in `H2_BOOT_RTT=1` | d3d_glue.rs `install_render_to_texture` | d3d (#1) |
+| `0x213fa0` stream purge waits 1 ms per spin | game_glue.rs `install_stream_purge` | backedge lands |
+| unknown switch target: interpret from the target | fallback.rs `trampoline` | lift-leftovers |
+| `cpuid` and `rdtsc` emulated | fallback.rs | lift-leftovers |
+| SetRenderTarget fast path `0x3f7b30` via `0x3f7870` | d3d_glue.rs `install_render_target_fast` | d3d (#2) |
+| Get2DSurfaceDesc, BeginPush and SetStateVB as retail bodies | d3d_glue.rs `RUN_NATIVE` | d3d (#3) |
+| device+0x934 NV2A stand-in, back/depth backing, `0xf0000000` alias | d3d_glue.rs `install_gpu_registers`, lib.rs | d3d-r6 (#4) |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired
+
+- Kernel round 5 (2a2b197):
+  - NtYieldExecution as a 1 ms delay (the yield starvation is fixed, and
+    the movie loop `0x1639c2` still progresses);
+  - AvSendTVEncoderOption 0xb.
+- D3D round 4 (f5f7390 and earlier):
+  - the fragment no-ops `0x3f6190`, `0x3f6390`, `0x3f6840` and `0x3f6f40`;
+  - SetSoftDisplayFilter `0x3f8c70`;
+  - the boot's `0x12b2e0` frame wait (now `d3d::register_frame_wait`);
+  - the `0x3fb710` resource busy check and `0x3f8cc0` (SetStipple,
+    method `0x1480`), both implemented by crates/d3d;
+  - the `H2_BOOT_RTT` SetRenderTarget stopgap (render-to-texture is in
+    crates/d3d).
 
 Master covers these now. The kernel stopgap table installs nothing,
 because `Kernel::stopped_ordinals()` is empty for every entry.
