@@ -177,7 +177,7 @@ on the row of the host thread that recorded them (process "host").
 | `guest` | `slice`: a guest thread on the CPU | `kernel::Machine::run` |
 | `kernel` | `wait objects`, `wait critical section`, `sleep` spans on the guest thread's row, from block to next schedule | `kernel/src/sync.rs`, `threads.rs` |
 | `kernel` | `idle: clock to deadline` instant | `Machine::run` |
-| `interrupt` | `DPC` span (arg `routine`) on the DPC row | `Machine::run_dpc` |
+| `interrupt` | span per DISPATCH_LEVEL call on the DPC row: `DPC`, or the periodic source's name (arg `routine`) | `Machine::run_on_dpc_stack` |
 | `interrupt` | async span named after the `GuestInterrupt` (vblank, ...) from delivery to return | `runtime/src/interrupt.rs` |
 | `d3d` | `Swap`, `KickOff`, `pushbuf drain` (arg `bytes`) | `d3d/src/device.rs` |
 | `gfx` | `queue submit`, `present` | `d3d/src/gfx_backend.rs` |

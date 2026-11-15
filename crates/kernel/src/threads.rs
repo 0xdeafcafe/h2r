@@ -729,9 +729,9 @@ impl Machine {
         let dpc = timeline::span(
             timeline::Cat::Interrupt,
             timeline::Track::Guest(DPC_THREAD_ID),
-            "DPC",
+            name,
         )
-        .arg("routine", call.routine as u64);
+        .arg("routine", routine as u64);
         let transfer = Runner {
             max_transfers: self.max_transfers_per_slice,
         }
