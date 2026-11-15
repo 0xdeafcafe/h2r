@@ -1,0 +1,19 @@
+[package]
+name = "asf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+disc = ["dep:xiso", "dep:map", "dep:tags"]
+
+[dependencies]
+xiso = { workspace = true, optional = true }
+map = { workspace = true, optional = true }
+tags = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+xiso.workspace = true
+map.workspace = true
+tags.workspace = true

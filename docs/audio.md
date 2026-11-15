@@ -90,8 +90,11 @@ effect image and the SDK's effect images. These are skipped:
   doc comments on `Listener` list them.
 - **Dolby Digital / DTS encoding** for the S/PDIF output and 5.1 mixing:
   output is stereo.
-- **WMA**: the XDK's `XWMAXMO` stream decoder is not implemented; it would
-  need a WMA decoder (possibly via a pure-Rust or system codec).
+- **WMA runtime integration**: the XDK's `XWMAXMO` wrapper is not lifted.
+  `crates/asf` and `crates/wma` now provide native retail-profile PCM decoding
+  and `h2 sound` WAV export. Against the game's own decoder it is within 1 LSB,
+  apart from rare 2-LSB float-rounding differences. Live engine playback is not
+  wired yet; see [wma.md](wma.md).
 - Voice limits and the hardware's fixed-point rounding. Our mix is f32.
 
 ## How others handled it

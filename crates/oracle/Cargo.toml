@@ -7,9 +7,13 @@ license.workspace = true
 
 [features]
 default = []
-unicorn = ["dep:unicorn-engine"]
+wma = ["unicorn"]
+unicorn = ["dep:unicorn-engine", "dep:wma", "dep:asf", "dep:anyhow"]
 
 [dependencies]
+wma = { path = "../wma", optional = true }
+asf = { path = "../asf", optional = true, features = ["disc"] }
+anyhow = { workspace = true, optional = true }
 iced-x86 = { version = "1.22", default-features = false, features = ["std", "decoder", "instr_info"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -18,4 +22,8 @@ unicorn-engine = { version = "=2.1.5", optional = true, default-features = false
 [[bin]]
 name = "oracle-fixtures"
 path = "src/bin/fixtures.rs"
+required-features = ["unicorn"]
+
+[[example]]
+name = "wma_oracle"
 required-features = ["unicorn"]

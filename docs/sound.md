@@ -46,8 +46,10 @@ only, per the licence table in map-format.md).
 - `Encoding::Codec` (value 2) is **not** Xbox ADPCM despite compression byte 1 on
   two sounds: the data begins with the ASF header GUID (`30 26 b2 75 8e 66 cf 11`),
   i.e. WMA in ASF. 480 further sounds in the multiplayer/shared maps are
-  `Wma`+`Codec`. These are not decoded (audio.md lists WMA as unimplemented);
-  `h2 sound` writes ASF-framed ones as raw `.wma`.
+  `Wma`+`Codec`. `h2 sound` decodes the retail WMAv2 profiles to PCM WAV,
+  loading codec tables from the owner's verified `default.xbe` on `--disc`.
+  See [wma.md](wma.md) for the clean-room provenance and the oracle comparison
+  (within 1 LSB, apart from rare 2-LSB float-rounding differences).
 
 ## Samples per Xbox ADPCM block: 64, not 65 (**V**, **E**)
 
@@ -94,15 +96,15 @@ Verdict: 64 samples per block per channel; `SamplesPerBlock::Hardware64` is righ
 
 ## `h2 sound` behaviour
 
-- Output is always `<tag path>.r<range>p<permutation>.wav` (or `.wma` for raw
-  ASF), in one scheme for single and bulk export, so names cannot collide.
+- Output is always `<tag path>.r<range>p<permutation>.wav`, including retail
+  WMAv2, in one scheme for single and bulk export, so names cannot collide.
 - Files are never overwritten unless `--force`; only regular files are replaced.
   Directories below `--out` are created one level at a time and refused if they
   are symlinks, and files use exclusive creation, so output cannot leave `--out`
   through a symlink (`crates/cli/src/safe_out.rs`; it cannot defend against a
   concurrent process rewriting the tree).
-- `--all` exits non-zero if any sound fails. WMA and codec streams are counted
-  as "unsupported format", listed separately, and do not affect the exit status.
+- `--all` exits non-zero if any sound fails, including an ASF/WMAv2 decoding
+  failure or a missing/unrecognized XBE needed for the runtime tables.
 - WAV sizes are checked against the RIFF 4 GiB limit before writing.
 - Aliased metadata is bounded: at most 4096 permutations and 65,536 chunk
   references per sound, 256 MiB per permutation, and every chunk is checked
