@@ -30,6 +30,11 @@ impl Drop for Temp {
 }
 
 pub fn media(path: &Path, filter: &str) -> Vec<u8> {
+    media_for(path, filter, "0.2002")
+}
+
+#[allow(dead_code)]
+pub fn media_for(path: &Path, filter: &str, seconds: &str) -> Vec<u8> {
     let output = Command::new("ffmpeg")
         .args([
             "-nostdin",
@@ -44,7 +49,7 @@ pub fn media(path: &Path, filter: &str) -> Vec<u8> {
             "-i",
             "sine=frequency=440:sample_rate=44100",
             "-t",
-            "0.2002",
+            seconds,
             "-c:v",
             "ffv1",
             "-c:a",
@@ -99,4 +104,25 @@ pub fn disc(files: &[(&str, &[u8])]) -> xiso::Xiso<Cursor<Vec<u8>>> {
     assert!(directory.len() <= 2048);
     image[34 * 2048..34 * 2048 + directory.len()].copy_from_slice(&directory);
     xiso::Xiso::open(Cursor::new(image)).unwrap()
+}
+
+/// A stand-in that passes capability probing but cannot encode: enough to
+/// reach the lock and manifest handling without the user's real ffmpeg.
+#[cfg(unix)]
+#[allow(dead_code)]
+pub fn stub_ffmpeg(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join("ffmpeg-capable-stub");
+    fs::write(
+        &path,
+        "#!/bin/sh\n\
+         case \"$1$2\" in\n\
+         -version) echo 'ffmpeg version stub' ;;\n\
+         -hide_banner-decoders) printf ' V....D binkvideo x\\n A....D binkaudio_dct x\\n A....D binkaudio_rdft x\\n' ;;\n\
+         -hide_banner-encoders) printf ' V....D libx264 x\\n A....D aac x\\n' ;;\n\
+         *) exit 1 ;;\nesac\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    path
 }

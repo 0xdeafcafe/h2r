@@ -25,15 +25,20 @@ fn main() {
         other => panic!("unsupported macOS architecture {other}"),
     };
     let object = out.join("avfoundation.o");
-    let status = Command::new("xcrun")
+    // Warnings fail the build in CI only: a newer SDK must not break users.
+    println!("cargo:rerun-if-env-changed=CI");
+    let mut clang = Command::new("xcrun");
+    clang.arg("clang");
+    if env::var_os("CI").is_some_and(|v| !v.is_empty()) {
+        clang.arg("-Werror");
+    }
+    let status = clang
         .args([
-            "clang",
             "-c",
             "-fobjc-arc",
             "-arch",
             arch,
             "-mmacosx-version-min=11.0",
-            "-Werror",
             "-Wall",
             "-Wextra",
             "-Wno-deprecated-declarations",

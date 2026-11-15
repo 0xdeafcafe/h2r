@@ -74,6 +74,8 @@ impl MovieStream for Stream {
     fn info(&self) -> StreamInfo {
         self.info
     }
+    /// Sequential decoding is cheap. Going backwards (a loop rewind) is O(n):
+    /// the reader restarts at frame 0 and decodes forward to `index`.
     fn decode(&mut self, index: u32, bgra: &mut [u8]) -> bool {
         let size = self.info.width as usize * self.info.height as usize * 4;
         if index >= self.info.frames || bgra.len() != size {

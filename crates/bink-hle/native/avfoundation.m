@@ -54,13 +54,23 @@ void *h2_movie_open(const char *path, H2MovieInfo *info, char *error, size_t err
         if (![counter startReading]) FAIL(counter.error.description.UTF8String ?: "metadata reader failed");
         uint64_t frames = 0;
         CMSampleBufferRef sample;
-        CMTime duration = movie.track.minFrameDuration;
+        // The rate is the first sample's duration. track.minFrameDuration is
+        // only a fallback: muxers round it differently from the samples, so
+        // comparing against it rejects ordinary constant-rate files. The last
+        // sample may be shorter (it is trimmed to the stream end); any other
+        // difference means variable-rate video.
+        CMTime duration = kCMTimeInvalid, shortLast = kCMTimeInvalid;
+        uint64_t shortLastAt = 0;
         while ((sample = [packets copyNextSampleBuffer])) {
             CMTime sampleDuration = CMSampleBufferGetDuration(sample);
             if (CMTIME_IS_NUMERIC(sampleDuration) && sampleDuration.value > 0) {
-                if (!CMTIME_IS_NUMERIC(duration) || duration.value <= 0) duration = sampleDuration;
+                if (!CMTIME_IS_NUMERIC(duration)) duration = sampleDuration;
                 else if (CMTimeCompare(duration, sampleDuration) != 0) {
-                    CFRelease(sample); [counter cancelReading]; FAIL("variable-rate video is unsupported");
+                    if (CMTIME_IS_NUMERIC(shortLast) || CMTimeCompare(sampleDuration, duration) > 0) {
+                        CFRelease(sample); [counter cancelReading]; FAIL("variable-rate video is unsupported");
+                    }
+                    shortLast = sampleDuration;
+                    shortLastAt = frames;
                 }
             }
             frames += CMSampleBufferGetNumSamples(sample);
@@ -68,6 +78,8 @@ void *h2_movie_open(const char *path, H2MovieInfo *info, char *error, size_t err
             if (frames > UINT32_MAX) { [counter cancelReading]; FAIL("too many movie frames"); }
         }
         if (counter.status != AVAssetReaderStatusCompleted || !frames) FAIL(counter.error.description.UTF8String ?: "no video samples");
+        if (CMTIME_IS_NUMERIC(shortLast) && shortLastAt + 1 != frames) FAIL("variable-rate video is unsupported");
+        if (!CMTIME_IS_NUMERIC(duration)) duration = movie.track.minFrameDuration;
         // The installer preserves constant-rate Bink timing. Reject variable
         // or unknown rates rather than inventing an HBINK timebase.
         if (!CMTIME_IS_NUMERIC(duration) || duration.value <= 0 || duration.timescale <= 0 ||
@@ -88,6 +100,9 @@ void *h2_movie_open(const char *path, H2MovieInfo *info, char *error, size_t err
 
 // Calls are serialized by Rust's &mut MovieStream. Rewinds restart reading;
 // the normal path uses a single sequential decoder and bounded frame storage.
+// A rewind (or seek backwards) is O(n): the reader is recreated and decodes
+// forward from frame 0 to the requested frame. Fine for looping; do not use
+// it for random access.
 int h2_movie_decode(void *handle, uint32_t index, uint8_t *dest, size_t len) {
     @autoreleasepool {
         H2MovieReader *movie = (__bridge H2MovieReader *)handle;
@@ -96,7 +111,12 @@ int h2_movie_decode(void *handle, uint32_t index, uint8_t *dest, size_t len) {
         if (index < movie.nextFrame && ![movie reset]) return 0;
         while (movie.nextFrame <= index) {
             CMSampleBufferRef sample = [movie.output copyNextSampleBuffer];
-            if (!sample) return 0;
+            if (!sample) {
+                // Mid-stream error: the reader is dead. Force a reset on the
+                // next call instead of staying stuck at the failure point.
+                movie.nextFrame = UINT32_MAX;
+                return 0;
+            }
             uint32_t current = movie.nextFrame++;
             if (current != index) { CFRelease(sample); continue; }
             CVPixelBufferRef pixel = CMSampleBufferGetImageBuffer(sample);

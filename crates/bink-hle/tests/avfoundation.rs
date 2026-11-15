@@ -76,3 +76,34 @@ fn generated_red_frame_is_bgra_and_stream_can_move_threads() {
         "BGRA red: {pixel:?}"
     );
 }
+
+fn installed_rate(filter: &str, seconds: &str) -> (u32, u32, u32) {
+    let temp = Temp::new();
+    let bytes = support::media_for(&temp.0.join("r.nut"), filter, seconds);
+    let options = InstallOptions::new(temp.0.join("data/movies"));
+    install(&mut disc(&[("r.bik", &bytes)]), &options).unwrap();
+    let source = TranscodedSource::new(&options.data_dir, Arc::new(AvFoundationDecoder));
+    let stream = source.open("r").expect("constant-rate movie opens");
+    let info = stream.info();
+    (info.frames, info.fps_num, info.fps_den)
+}
+
+#[test]
+#[cfg_attr(not(has_ffmpeg), ignore = "requires user's ffmpeg on PATH")]
+fn real_transcodes_at_30_and_29_97_fps_are_accepted() {
+    for (rate, seconds) in [
+        ("30", "1"),
+        ("30000/1001", "1"),
+        ("30", "0.55"),
+        ("30000/1001", "0.55"),
+    ] {
+        let (frames, num, den) =
+            installed_rate(&format!("testsrc2=size=32x24:rate={rate}"), seconds);
+        let want = if rate == "30" { 30.0 } else { 30000.0 / 1001.0 };
+        assert!(frames > 10, "{rate} {seconds}: {frames} frames");
+        assert!(
+            (num as f64 / den as f64 - want).abs() < 0.001,
+            "{rate} {seconds}: {num}/{den}"
+        );
+    }
+}

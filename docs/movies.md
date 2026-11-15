@@ -20,7 +20,7 @@ use movies::install::{app_movies_dir, install_iso, InstallOptions, InstallStatus
 use std::path::Path;
 
 let mut options = InstallOptions::new(app_movies_dir()?);
-options.ffmpeg = "/opt/homebrew/bin/ffmpeg".into(); // optional; default searches PATH
+options.ffmpeg = Some("/opt/homebrew/bin/ffmpeg".into()); // optional; else H2_FFMPEG, PATH, then /opt/homebrew/bin, /usr/local/bin, /opt/local/bin
 let report = install_iso(Path::new("/Volumes/OwnDisc/halo2.iso"), &options)?;
 match report.status {
     InstallStatus::Complete => { /* report.converted and report.reused */ }
@@ -84,7 +84,13 @@ with the existing CLI: source path, size and SHA-256; output name and size;
 duration; ffmpeg version; exact encoding settings. An additive
 `output_sha256` map records output hashes by file name. Legacy manifests
 without that map still load. They are upgraded through conversion, since
-the installer cannot establish output integrity from size alone.
+the installer cannot establish output integrity from size alone. An
+`output_stamp` map records each output's size and mtime at the moment its
+hash was verified, so `locate` does not re-hash a multi-megabyte movie on
+every call; a changed stamp falls back to a full hash. Once a manifest has
+any output hashes, an entry without one is not trusted. After a successful
+run the installer deletes `movie-*.mov` files the manifest no longer
+references, and stale `.install-*` scratch directories, under its lock.
 
 For each movie, reuse requires matching source size/hash, matching encoder
 settings, a regular output file with the recorded size, and matching output

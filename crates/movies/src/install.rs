@@ -1,5 +1,7 @@
 //! Optional installation using an external, user-owned ffmpeg executable.
-use crate::{Freshness, MANIFEST_NAME, Manifest, MovieEntry, Sha256, hex, locate_entry};
+use crate::{
+    Freshness, MANIFEST_NAME, Manifest, MovieEntry, OutputStamp, Sha256, hex, locate_entry,
+};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -11,16 +13,45 @@ use xiso::{Entry, Xiso};
 #[derive(Debug, Clone)]
 pub struct InstallOptions {
     pub data_dir: PathBuf,
-    /// Absolute path or executable name searched on PATH. Never a shell command.
-    pub ffmpeg: PathBuf,
+    /// Explicit ffmpeg executable. Never a shell command. When `None`, the
+    /// `H2_FFMPEG` environment variable, then PATH, then the usual package
+    /// manager directories are tried (see [`find_ffmpeg`]).
+    pub ffmpeg: Option<PathBuf>,
 }
 impl InstallOptions {
     pub fn new(data_dir: impl Into<PathBuf>) -> Self {
         Self {
             data_dir: data_dir.into(),
-            ffmpeg: "ffmpeg".into(),
+            ffmpeg: None,
         }
     }
+}
+
+/// Where Homebrew (Apple silicon, Intel) and MacPorts put ffmpeg. A
+/// Finder-launched app has PATH=/usr/bin:/bin and would never find these.
+const FFMPEG_FALLBACK_DIRS: [&str; 3] = ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"];
+
+/// Pick an ffmpeg executable. An explicit path or a non-empty `H2_FFMPEG`
+/// is used exclusively, so a wrong override is reported rather than hidden.
+/// Otherwise the first existing `ffmpeg` on `path_var`, then in `fallbacks`.
+pub fn find_ffmpeg(
+    explicit: Option<&Path>,
+    env_override: Option<&std::ffi::OsStr>,
+    path_var: Option<&std::ffi::OsStr>,
+    fallbacks: &[&Path],
+) -> Option<PathBuf> {
+    if let Some(p) = explicit {
+        return Some(p.to_path_buf());
+    }
+    if let Some(p) = env_override.filter(|p| !p.is_empty()) {
+        return Some(PathBuf::from(p));
+    }
+    let on_path = path_var.into_iter().flat_map(std::env::split_paths);
+    on_path
+        .chain(fallbacks.iter().map(|p| p.to_path_buf()))
+        .filter(|d| d.is_absolute())
+        .map(|d| d.join("ffmpeg"))
+        .find(|c| c.is_file())
 }
 
 /// Default data destination for the native macOS application.
@@ -72,17 +103,38 @@ pub fn install<R: Read + Seek>(
     options: &InstallOptions,
 ) -> io::Result<InstallReport> {
     let entries = discover(disc)?;
-    let ffmpeg = match Ffmpeg::probe(&options.ffmpeg)? {
+    let fallbacks = FFMPEG_FALLBACK_DIRS.map(Path::new);
+    let found = find_ffmpeg(
+        options.ffmpeg.as_deref(),
+        std::env::var_os("H2_FFMPEG").as_deref(),
+        std::env::var_os("PATH").as_deref(),
+        &fallbacks,
+    );
+    let probed = match found {
+        Some(path) => Ffmpeg::probe(&path)?,
+        None => Err(InstallStatus::FfmpegAbsent),
+    };
+    let ffmpeg = match probed {
         Ok(f) => f,
         Err(status) => {
-            return Ok(InstallReport {
-                status,
-                converted: vec![],
-                reused: vec![],
+            // Without a usable ffmpeg an already complete install is still
+            // complete. The check is read-only: nothing is created or locked.
+            let reused = installed_without_ffmpeg(disc, &entries, &options.data_dir)?;
+            return Ok(match reused {
+                Some(reused) => InstallReport {
+                    status: InstallStatus::Complete,
+                    converted: vec![],
+                    reused,
+                },
+                None => InstallReport {
+                    status,
+                    converted: vec![],
+                    reused: vec![],
+                },
             });
         }
     };
-    let dir = prepare_dir(&options.data_dir)?;
+    let dir = prepare_dir(&options.data_dir, true)?;
     // Advisory OS lock survives as a file, but is released on crash/exit. Do not
     // unlink it: that would let concurrent installers lock different inodes.
     let lock = OpenOptions::new()
@@ -93,6 +145,9 @@ pub fn install<R: Read + Seek>(
         .open(dir.join(".install.lock"))?;
     lock.try_lock().map_err(io::Error::other)?;
     let mut manifest = Manifest::load(&dir)?.unwrap_or_default();
+    // Holding the lock, nobody else owns a scratch directory in `dir`.
+    sweep(&dir, |name| name.starts_with(".install-"), true);
+    let scratch_root = std::env::temp_dir().canonicalize()?;
     let mut report = InstallReport {
         status: InstallStatus::Complete,
         converted: vec![],
@@ -109,12 +164,18 @@ pub fn install<R: Read + Seek>(
             && locate_entry(&dir, old).is_some()
             && manifest.output_matches(&dir, old)?
         {
+            let stamp = OutputStamp::of(&dir.join(&old.output_name))?;
+            if manifest.output_stamp.get(&old.output_name) != Some(&stamp) {
+                let name = old.output_name.clone();
+                manifest.output_stamp.insert(name, stamp);
+                commit_manifest(&dir, &manifest)?;
+            }
             report.reused.push(entry.path);
             continue;
         }
         // Seekable input matters: Bink has indexed frames. Spooling also lets
         // the exact same path exercise this pipeline with generated test media.
-        let scratch = Scratch::new(&std::env::temp_dir())?;
+        let scratch = Scratch::new(&scratch_root)?;
         let input = scratch.0.join("source");
         let mut source = File::create(&input)?;
         let mut copied = DigestWriter::default();
@@ -140,6 +201,13 @@ pub fn install<R: Read + Seek>(
         fs::copy(&output, &staged_output)?;
         File::open(&staged_output)?.sync_all()?;
         fs::rename(&staged_output, dir.join(&output_name))?;
+        if let Some(old) = manifest.find(&entry.path)
+            && old.output_name != output_name
+        {
+            let old = old.output_name.clone();
+            manifest.output_sha256.remove(&old);
+            manifest.output_stamp.remove(&old);
+        }
         manifest.upsert(MovieEntry {
             source_name: entry.path.clone(),
             source_size: entry.size as u64,
@@ -150,16 +218,86 @@ pub fn install<R: Read + Seek>(
             ffmpeg_version: ffmpeg.version.clone(),
             settings: ffmpeg.settings(),
         });
+        manifest.output_stamp.insert(
+            output_name.clone(),
+            OutputStamp::of(&dir.join(&output_name))?,
+        );
         manifest.output_sha256.insert(output_name, output_hash);
-        let manifest_tmp = publication.0.join(MANIFEST_NAME);
-        let mut file = File::create(&manifest_tmp)?;
-        file.write_all(manifest.to_json().as_bytes())?;
-        file.sync_all()?;
-        fs::rename(manifest_tmp, dir.join(MANIFEST_NAME))?;
-        File::open(&dir)?.sync_all()?;
+        commit_manifest(&dir, &manifest)?;
         report.converted.push(entry.path);
     }
+    // Replaced or abandoned conversions: drop any movie the manifest no
+    // longer references. Only after success, so a failed run keeps its files.
+    let referenced: Vec<&str> = manifest
+        .movies
+        .iter()
+        .map(|m| m.output_name.as_str())
+        .collect();
+    sweep(
+        &dir,
+        |name| name.starts_with("movie-") && name.ends_with(".mov") && !referenced.contains(&name),
+        false,
+    );
     Ok(report)
+}
+
+/// Atomically publish the manifest (staged on the destination filesystem).
+fn commit_manifest(dir: &Path, manifest: &Manifest) -> io::Result<()> {
+    let staging = Scratch::new(dir)?;
+    let manifest_tmp = staging.0.join(MANIFEST_NAME);
+    let mut file = File::create(&manifest_tmp)?;
+    file.write_all(manifest.to_json().as_bytes())?;
+    file.sync_all()?;
+    fs::rename(manifest_tmp, dir.join(MANIFEST_NAME))?;
+    File::open(dir)?.sync_all()
+}
+
+/// Best-effort removal of matching entries directly inside `dir`.
+fn sweep(dir: &Path, matches: impl Fn(&str) -> bool, directories: bool) {
+    let Ok(read) = fs::read_dir(dir) else { return };
+    for item in read.flatten() {
+        if !item.file_name().to_str().is_some_and(&matches) {
+            continue;
+        }
+        let Ok(kind) = item.file_type() else { continue };
+        if directories && kind.is_dir() {
+            let _ = fs::remove_dir_all(item.path());
+        } else if !directories && kind.is_file() {
+            let _ = fs::remove_file(item.path());
+        }
+    }
+}
+
+/// `Some(reused paths)` when every movie on the disc has a fresh, verified
+/// conversion already installed; reads only, and never creates `data_dir`.
+fn installed_without_ffmpeg<R: Read + Seek>(
+    disc: &mut Xiso<R>,
+    entries: &[Entry],
+    data_dir: &Path,
+) -> io::Result<Option<Vec<String>>> {
+    let Ok(dir) = prepare_dir(data_dir, false) else {
+        return Ok(None);
+    };
+    let Some(manifest) = Manifest::load(&dir).ok().flatten() else {
+        return Ok(None);
+    };
+    let mut reused = vec![];
+    for entry in entries {
+        let mut digest = DigestWriter::default();
+        copy_exact(disc, entry, &mut digest)?;
+        let hash = hex(&digest.sha.finish());
+        match manifest.find(&entry.path) {
+            Some(old)
+                if old.freshness(entry.size as u64, &hash) == Freshness::Fresh
+                    && manifest.output_sha256.contains_key(&old.output_name)
+                    && manifest.output_matches(&dir, old)? =>
+            {
+                reused.push(entry.path.clone());
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok((!reused.is_empty()).then_some(reused))
 }
 
 fn copy_exact<R: Read + Seek>(
@@ -179,7 +317,7 @@ fn copy_exact<R: Read + Seek>(
 
 /// Reject repository destinations, including worktrees and symlink aliases.
 /// Callers may supply their platform's app data directory for sandboxed apps.
-fn prepare_dir(path: &Path) -> io::Result<PathBuf> {
+fn prepare_dir(path: &Path, create: bool) -> io::Result<PathBuf> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -199,7 +337,9 @@ fn prepare_dir(path: &Path) -> io::Result<PathBuf> {
             ));
         }
     }
-    fs::create_dir_all(&resolved)?;
+    if create {
+        fs::create_dir_all(&resolved)?;
+    }
     resolved.canonicalize()
 }
 
@@ -397,7 +537,9 @@ impl Scratch {
                 builder.mode(0o700);
             }
             match builder.create(&p) {
-                Ok(()) => return Ok(Self(p)),
+                // Canonical, so ffmpeg is handed a stable absolute path that
+                // can never read as an option or traverse a symlink alias.
+                Ok(()) => return Ok(Self(p.canonicalize()?)),
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
             }
@@ -446,9 +588,67 @@ mod tests {
     #[test]
     fn refuses_checkout_and_parent_traversal() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-        assert!(prepare_dir(&root.join("movie-output")).is_err());
-        assert!(prepare_dir(&root.join("../movies/movie-output")).is_err());
+        assert!(prepare_dir(&root.join("movie-output"), true).is_err());
+        assert!(prepare_dir(&root.join("../movies/movie-output"), true).is_err());
         assert!(!root.join("movie-output").exists());
+    }
+    #[test]
+    fn lists_matches_the_name_column_only() {
+        let text = "Decoders:\n V..... = Video\n ------\n V....D binkvideo  Bink Video\n A....D binkaudio_dct Bink Audio (DCT)\n V....D other   mentions binkaudio_rdft here\n";
+        assert!(lists(text, "binkvideo"));
+        assert!(lists(text, "binkaudio_dct"));
+        assert!(
+            !lists(text, "binkaudio_rdft"),
+            "description text is not a name"
+        );
+        assert!(!lists(text, "bink"), "no prefix matches");
+        assert!(!lists("", "binkvideo"));
+        assert!(
+            !lists("binkvideo\n", "binkvideo"),
+            "flags column is required"
+        );
+    }
+    #[test]
+    fn ffmpeg_discovery_order() {
+        let t = std::env::temp_dir().join(format!("h2-find-ffmpeg-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&t);
+        let (on_path, fallback, empty) = (t.join("path"), t.join("fallback"), t.join("empty"));
+        for d in [&on_path, &fallback, &empty] {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(on_path.join("ffmpeg"), "").unwrap();
+        fs::write(fallback.join("ffmpeg"), "").unwrap();
+        let path_var = std::env::join_paths([&empty, &on_path]).unwrap();
+        let fb = [fallback.as_path()];
+        let explicit = Path::new("/x/explicit");
+        let env = std::ffi::OsStr::new("/x/env");
+        let find = |e, v, p| find_ffmpeg(e, v, p, &fb);
+        assert_eq!(
+            find(Some(explicit), Some(env), Some(&path_var)),
+            Some(explicit.into())
+        );
+        assert_eq!(
+            find(None, Some(env), Some(&path_var)),
+            Some("/x/env".into())
+        );
+        assert_eq!(
+            find(None, Some("".as_ref()), Some(&path_var)),
+            Some(on_path.join("ffmpeg"))
+        );
+        // Finder-style PATH without ffmpeg falls back to the package dirs.
+        let finder = std::ffi::OsStr::new("/usr/bin:/bin");
+        assert_eq!(
+            find(None, None, Some(finder)),
+            Some(fallback.join("ffmpeg"))
+        );
+        assert_eq!(find(None, None, None), Some(fallback.join("ffmpeg")));
+        assert_eq!(
+            find_ffmpeg(None, None, Some(finder), &[empty.as_path()]),
+            None
+        );
+        // A relative PATH entry is never searched.
+        assert_eq!(find_ffmpeg(None, None, Some("rel".as_ref()), &[]), None);
+        let _ = fs::remove_dir_all(&t);
     }
     #[test]
     fn missing_ffmpeg_is_optional() {
