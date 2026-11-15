@@ -1,0 +1,11 @@
+[package]
+name = "fastmem-proto"
+description = "Isolated prototype: Mach exception-port write watch for fastmem (macOS arm64)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+# No dependencies, by design: the prototype declares the handful of Mach and
+# libc entry points it needs itself (src/sys.rs).
+[dependencies]

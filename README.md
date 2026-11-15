@@ -187,6 +187,7 @@ up as structured Rust.
 - [dsound.md](docs/dsound.md): guest-facing DirectSound shim (`crates/dsound`)
 - [effects.md](docs/effects.md): effects-family tags (effe, prt3, pmov and more) (`crates/tags`)
 - [engine-map.md](docs/engine-map.md): survey of the retail engine and where to start
+- [fastmem-proto.md](docs/fastmem-proto.md): prototype of the fastmem write watch on Mach exception ports (`crates/fastmem-proto`)
 - [fonts.md](docs/fonts.md): packed bitmap fonts and text rasteriser (`crates/font`)
 - [graphics.md](docs/graphics.md): D3D8 on wgpu (`crates/gfx`)
 - [haloscript.md](docs/haloscript.md): HaloScript syntax, builtins and the VM (`crates/hs`)
