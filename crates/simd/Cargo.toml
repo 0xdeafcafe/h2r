@@ -1,0 +1,12 @@
+[package]
+name = "simd"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+description = "Bit-exact, MXCSR-exact reference semantics for the Pentium III's SSE1 floating point"
+
+[dependencies]
+
+[dev-dependencies]
+# Only for reading the SSE oracle's JSONL corpus in tests/oracle_corpus.rs.
+serde_json = "1"
