@@ -187,6 +187,14 @@ fn generated_runtime_benchmark() {
         let mut mem = Guest::new();
         mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
         mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
+        let mappings: u32 = std::env::var("H2_PERF_MAPS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        for i in 0..mappings {
+            mem.map_zeroed(0x1000000 + i * 8192, 4096, Permissions::RW)
+                .unwrap();
+        }
         mem.set_u32(DATA, 1).unwrap();
         mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
         let rt = Runtime::new(mem, dispatch);

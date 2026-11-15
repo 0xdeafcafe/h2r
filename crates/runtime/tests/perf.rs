@@ -95,3 +95,75 @@ fn ffi_direct_buffers_preserve_cross_mapping_fault_atomicity_and_alignment() {
     assert_eq!(output, [0xa5; 16]);
     assert_eq!(ctx.profile().unwrap().memory_accessors, 16);
 }
+
+#[test]
+fn mapping_hints_follow_insert_protect_unmap_remap_and_alias_changes() {
+    use runtime::guest::{Access, FaultReason};
+    let mut guest = Guest::new();
+    guest.map(0x4000, 4096, 0, Permissions::RW).unwrap();
+    guest.set_u32(0x4000, 7).unwrap();
+    assert_eq!(guest.u32(0x4000).unwrap(), 7); // fill the hint
+    guest.map(0x1000, 4096, 4096, Permissions::RW).unwrap(); // shift indices
+    assert_eq!(guest.u32(0x4000).unwrap(), 7);
+    guest.map(0x8000, 4096, 0, Permissions::READ).unwrap();
+    assert_eq!(guest.u32(0x8000).unwrap(), 7);
+    guest
+        .protect_range(0x4000, 4096, Permissions::READ)
+        .unwrap();
+    assert_eq!(
+        guest.set_u32(0x4000, 8).unwrap_err().reason,
+        FaultReason::Protection
+    );
+    guest.unmap(0x4000, 4096).unwrap();
+    assert_eq!(guest.u32(0x4000).unwrap_err().reason, FaultReason::Unmapped);
+    guest.map(0x4000, 4096, 8192, Permissions::RW).unwrap();
+    guest.set_u32(0x4000, 9).unwrap();
+    assert_eq!(guest.u32(0x4000).unwrap(), 9);
+    assert_eq!(guest.u32(0x8000).unwrap(), 7); // old backing still aliased
+    guest
+        .protect_range(0x4000, 4096, Permissions::NONE)
+        .unwrap();
+    assert_eq!(
+        guest
+            .check(0x4000, 1, Access::Execute, 1)
+            .unwrap_err()
+            .reason,
+        FaultReason::Protection
+    );
+    guest.protect_range(0x4000, 4096, Permissions::RW).unwrap();
+    guest.map(0x5000, 4096, 12288, Permissions::NONE).unwrap();
+    guest.set_u32(0x4ffc, 0x11223344).unwrap();
+    assert!(guest.write_bytes(0x4ffc, &[0x55; 8], 1).is_err());
+    assert_eq!(guest.u32(0x4ffc).unwrap(), 0x11223344);
+    // A hint must never make device addresses or 32-bit wrap valid.
+    assert_eq!(
+        guest.u32(0xfd000000).unwrap_err().reason,
+        FaultReason::UnsupportedDevice
+    );
+    assert_eq!(
+        guest.u32(u32::MAX).unwrap_err().reason,
+        FaultReason::AddressOverflow
+    );
+}
+
+#[test]
+fn mapping_hints_remain_safe_for_shared_readers() {
+    let mut guest = Guest::new();
+    for i in 0..16 {
+        guest
+            .map(0x1000 + i * 8192, 4096, i * 4096, Permissions::RW)
+            .unwrap();
+        guest.set_u32(0x1000 + i * 8192, i).unwrap();
+    }
+    std::thread::scope(|scope| {
+        for t in 0..4 {
+            let guest = &guest;
+            scope.spawn(move || {
+                for n in 0..1000 {
+                    let i = (n + t) % 16;
+                    assert_eq!(guest.u32(0x1000 + i * 8192).unwrap(), i);
+                }
+            });
+        }
+    });
+}

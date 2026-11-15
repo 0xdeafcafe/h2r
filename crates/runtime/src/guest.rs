@@ -1,6 +1,8 @@
 //! Checked virtual mappings over one 64 MB physical store. Physical offsets
 //! identify aliases; high virtual addresses are never masked into RAM.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 pub const RAM_SIZE: usize = 64 * 1024 * 1024;
 pub const PAGE_SIZE: u32 = 4096;
 const MMIO_START: u64 = 0xfd00_0000;
@@ -133,6 +135,9 @@ impl VirtualClaim {
 pub struct Guest {
     ram: Box<[u8]>,
     mappings: Vec<Mapping>,
+    // Hints only: every hit rechecks the current mapping's virtual range.
+    // Never cache permissions or RAM pointers. Atomics retain Guest: Sync.
+    mapping_hints: [AtomicUsize; 8],
     next_physical: u32,
     reservations: Vec<PhysicalReservation>,
     claims: Vec<VirtualClaim>,
@@ -162,6 +167,7 @@ impl Guest {
         Self {
             ram: vec![0; RAM_SIZE].into_boxed_slice(),
             mappings: Vec::new(),
+            mapping_hints: std::array::from_fn(|_| AtomicUsize::new(usize::MAX)),
             next_physical: 0,
             reservations: Vec::new(),
             claims: Vec::new(),
@@ -674,12 +680,27 @@ impl Guest {
     }
 
     pub(crate) fn mapping_index(&self, addr: u64) -> Option<usize> {
+        let hint = &self.mapping_hints[((addr >> 12) & 7) as usize];
+        let cached = hint.load(Ordering::Relaxed);
+        if let Some(m) = self.mappings.get(cached)
+            && m.virtual_start as u64 <= addr
+            && addr < m.virtual_start as u64 + m.len as u64
+        {
+            return Some(cached);
+        }
         let i = self
             .mappings
             .partition_point(|m| m.virtual_start as u64 <= addr)
             .checked_sub(1)?;
         let m = &self.mappings[i];
-        (addr < m.virtual_start as u64 + m.len as u64).then_some(i)
+        if addr >= m.virtual_start as u64 + m.len as u64 {
+            return None;
+        }
+        // Mapping edits may move indices; a stale hint simply misses the
+        // range test above. Permissions and physical offsets are read from
+        // the live mapping by the caller, including after protect/remap.
+        hint.store(i, Ordering::Relaxed);
+        Some(i)
     }
 
     fn span(&self, index: usize, addr: u64, end: u64) -> std::ops::Range<usize> {
@@ -689,7 +710,7 @@ impl Guest {
     }
 
     /// Validate once, then copy without allocating. Adjacent mappings use a
-    /// second linear walk; the usual one-mapping access needs one binary search.
+    /// second linear walk; the usual one-mapping access needs one hinted lookup.
     fn checked_start(
         &self,
         addr: u32,
