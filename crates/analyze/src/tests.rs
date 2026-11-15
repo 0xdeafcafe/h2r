@@ -220,3 +220,14 @@ fn a_bad_opcode_blames_nobody_else() {
     let c = a.conflicts.iter().find(|c| c.kind == ConflictKind::InvalidOpcode).expect("conflict");
     assert_eq!(c.claimed_by, None, "{c:?}");
 }
+
+#[test]
+fn small_immediates_and_pointers_do_not_underflow() {
+    // `mov eax, 0` / `push 2`: the immediates are candidate function starts
+    // with fewer than three bytes before them, which used to panic
+    // ("attempt to subtract with overflow") in debug builds.
+    let data = xbe_with(&[0xB8, 0, 0, 0, 0, 0x6A, 0x02, 0xC3]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    assert!(a.functions.contains_key(&TEXT));
+    assert!(!a.functions.contains_key(&0) && !a.functions.contains_key(&2));
+}

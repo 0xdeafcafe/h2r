@@ -942,7 +942,7 @@ impl<'a> Analyzer<'a> {
         let far = from.abs_diff(t) > 0x1_0000;
         let after_ret = byte(t.wrapping_sub(1)) == Some(0xC3)
             || (byte(t.wrapping_sub(3)) == Some(0xC2) && byte(t.wrapping_sub(1)) == Some(0x00));
-        after_padding || far || (t % 16 == 0 && after_ret)
+        after_padding || far || (t.is_multiple_of(16) && after_ret)
     }
 
     fn code_refs_to_fixpoint(&mut self) {
@@ -960,7 +960,7 @@ impl<'a> Analyzer<'a> {
     /// after padding, `ret` or `ret n`. True for 97.6% of Ghidra's `.text`
     /// functions, and rarely true of a pointer into the middle of one.
     fn looks_like_start(&self, va: u32) -> bool {
-        va % 16 == 0 || self.after_boundary(va)
+        va.is_multiple_of(16) || self.after_boundary(va)
     }
 
     /// Straight after padding, `ret`, `ret n`, or an instruction nothing
@@ -968,7 +968,14 @@ impl<'a> Analyzer<'a> {
     /// aligned says nothing about them: `0xFE000` is far more often a size
     /// than a function.
     fn after_boundary(&self, va: u32) -> bool {
-        let prev = |n: u32| self.image.state(va - n).and_then(|_| self.xbe.bytes_at(va - n, 1).ok()).map(|b| b[0]);
+        // `va` comes from arbitrary immediates and data words (0 is common),
+        // so there may be no byte `n` before it: that is "no evidence", not
+        // an address wrapped around the top of the 32-bit space.
+        let prev = |n: u32| {
+            let at = va.checked_sub(n)?;
+            self.image.state(at)?;
+            self.xbe.bytes_at(at, 1).ok().map(|b| b[0])
+        };
         matches!(prev(1), Some(0xCC | 0x90 | 0xC3))
             || (prev(3) == Some(0xC2) && prev(1) == Some(0x00))
             || self.after_terminator(va)
@@ -1047,8 +1054,10 @@ impl<'a> Analyzer<'a> {
             let words: Vec<u32> = self
                 .xbe
                 .section_bytes(s)?
-                .chunks_exact(4)
-                .map(|w| u32::from_le_bytes(w.try_into().unwrap()))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|w| u32::from_le_bytes(*w))
                 .collect();
             let is_code = |v: u32| self.image.region(v).is_some();
             for (i, &v) in words.iter().enumerate() {
@@ -1124,7 +1133,7 @@ impl<'a> Analyzer<'a> {
             c.functions = self.funcs.range(r.va..r.va + r.bytes.len() as u32).count();
             sections.push(c);
         }
-        gaps.sort_by(|a, b| b.1.cmp(&a.1));
+        gaps.sort_by_key(|g| std::cmp::Reverse(g.1));
         gaps.truncate(20);
 
         let section_of = |va: u32| {

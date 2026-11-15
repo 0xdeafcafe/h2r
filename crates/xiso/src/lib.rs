@@ -12,7 +12,7 @@ const MAGIC: &[u8; 20] = b"MICROSOFT*XBOX*MEDIA";
 /// Volume descriptor lives at sector 32 of the game partition.
 const VOLUME_DESCRIPTOR: u64 = 32 * SECTOR;
 /// Known starts of the game partition: XISO, Redump XGD1, XGD2, XGD3.
-const PARTITION_OFFSETS: [u64; 4] = [0, 0x1830_0000, 0x0FD9_0000, 0x0208_0000];
+pub const PARTITION_OFFSETS: [u64; 4] = [0, 0x1830_0000, 0x0FD9_0000, 0x0208_0000];
 
 const ATTR_DIRECTORY: u8 = 0x10;
 

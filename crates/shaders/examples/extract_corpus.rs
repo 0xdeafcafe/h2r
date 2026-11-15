@@ -1,7 +1,7 @@
 //! Extract the shader corpus from your own Halo 2 disc image.
 //!
 //! ```sh
-//! cargo run --release -p shaders --example extract_corpus -- <halo2.iso> <out-dir>
+//! cargo run --release -p shaders --example extract_corpus -- <halo2.iso> <out-dir> [--force]
 //! ```
 //!
 //! Reads every `.map` on the disc and writes, into `<out-dir>` (use a
@@ -309,12 +309,64 @@ impl Corpus {
     }
 }
 
+/// Write one output file. Existing files are kept unless `force`; the disc
+/// being read, anything holding an XDVDFS volume and `.iso`/`.xiso` names are
+/// never written, even with `force`. (Same rules as `h2`'s `safe_out`; this
+/// example cannot depend on the cli binary crate.)
+fn guarded_write(dir: &Path, name: &str, bytes: &[u8], disc: &Path, force: bool) -> Result<(), String> {
+    use std::io::Write;
+    if name.is_empty() || name.contains(['/', '\\', '\0']) || name == ".." || name == "." {
+        return Err(format!("unsafe output name {name:?}"));
+    }
+    let dest = dir.join(name);
+    let ext = dest.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
+    if matches!(ext.as_deref(), Some("iso" | "xiso")) {
+        return Err(format!("refusing to write {}: looks like a disc image", dest.display()));
+    }
+    if let Ok(m) = std::fs::symlink_metadata(&dest) {
+        if !force {
+            return Err(format!("{} exists (use --force to replace it)", dest.display()));
+        }
+        let same = match (dest.canonicalize(), disc.canonicalize()) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        };
+        #[cfg(unix)]
+        let same = same || {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(disc).is_ok_and(|d| d.dev() == m.dev() && d.ino() == m.ino())
+        };
+        if same {
+            return Err(format!("refusing to write {}: it is the disc being read", dest.display()));
+        }
+        if !m.is_file() {
+            return Err(format!("{} is not a regular file", dest.display()));
+        }
+        // Fail closed: content that cannot be inspected is not replaced.
+        match std::fs::File::open(&dest) {
+            Ok(f) => {
+                if xiso::Xiso::open(f).is_ok() {
+                    return Err(format!("refusing to write {}: it is an Xbox disc image", dest.display()));
+                }
+            }
+            Err(e) => {
+                return Err(format!("refusing to replace {}: cannot inspect it ({e})", dest.display()));
+            }
+        }
+        std::fs::remove_file(&dest).map_err(|e| e.to_string())?;
+    }
+    // create_new never follows a symlink planted at the name.
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).open(&dest).map_err(|e| e.to_string())?;
+    f.write_all(bytes).map_err(|e| e.to_string())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let (Some(iso), Some(out)) = (args.get(1), args.get(2)) else {
-        return Err("usage: extract_corpus <halo2.iso> <out-dir>".into());
+        return Err("usage: extract_corpus <halo2.iso> <out-dir> [--force]".into());
     };
     let out = PathBuf::from(out);
+    let force = args.iter().skip(3).any(|a| a == "--force");
     let iso_path = Path::new(iso);
     let iso_len = std::fs::metadata(iso_path)
         .map_err(|e| e.to_string())?
@@ -429,15 +481,116 @@ fn main() -> Result<(), String> {
         ));
     }
 
-    std::fs::create_dir_all(&out).map_err(|e| e.to_string())?;
-    let mut manifest = String::new();
-    for (name, (bytes, n, label)) in &corpus.files {
-        std::fs::write(out.join(name), bytes).map_err(|e| e.to_string())?;
-        let _ = writeln!(manifest, "{name}\t{}\t{n}\t{label}", sha256(bytes));
-    }
-    std::fs::write(out.join("manifest.tsv"), &manifest).map_err(|e| e.to_string())?;
-    let _ = writeln!(prov, "manifest_sha256\t{}", sha256(manifest.as_bytes()));
-    std::fs::write(out.join("provenance.txt"), &prov).map_err(|e| e.to_string())?;
+    write_outputs(&out, &corpus.files, &mut prov, iso_path, force)?;
     print!("{prov}");
     Ok(())
+}
+
+/// Write the corpus, `manifest.tsv` and `provenance.txt` into `out`, all
+/// through [`guarded_write`].
+fn write_outputs(
+    out: &Path,
+    files: &BTreeMap<String, (Vec<u8>, usize, String)>,
+    prov: &mut String,
+    iso_path: &Path,
+    force: bool,
+) -> Result<(), String> {
+    std::fs::create_dir_all(out).map_err(|e| e.to_string())?;
+    let mut manifest = String::new();
+    for (name, (bytes, n, label)) in files {
+        guarded_write(out, name, bytes, iso_path, force)?;
+        let _ = writeln!(manifest, "{name}\t{}\t{n}\t{label}", sha256(bytes));
+    }
+    guarded_write(out, "manifest.tsv", manifest.as_bytes(), iso_path, force)?;
+    let _ = writeln!(prov, "manifest_sha256\t{}", sha256(manifest.as_bytes()));
+    guarded_write(out, "provenance.txt", prov.as_bytes(), iso_path, force)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    fn scratch(n: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("h2-corpus-{n}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn corpus_writes_never_clobber_or_touch_the_disc() {
+        let d = scratch("guard");
+        let disc = d.join("disc.bin");
+        std::fs::write(&disc, b"disc").unwrap();
+        // Source disc: refused even with force.
+        assert!(guarded_write(&d, "disc.bin", b"x", &disc, true).is_err());
+        assert_eq!(std::fs::read(&disc).unwrap(), b"disc");
+        // Existing file: refused without force, replaced with it.
+        std::fs::write(d.join("a.xvu"), b"old").unwrap();
+        assert!(guarded_write(&d, "a.xvu", b"new", &disc, false).is_err());
+        assert_eq!(std::fs::read(d.join("a.xvu")).unwrap(), b"old");
+        guarded_write(&d, "a.xvu", b"new", &disc, true).unwrap();
+        assert_eq!(std::fs::read(d.join("a.xvu")).unwrap(), b"new");
+        // Disc names and disc content: refused.
+        assert!(guarded_write(&d, "x.iso", b"x", &disc, true).is_err());
+        let mut img = vec![0u8; 0x10000];
+        img.extend_from_slice(b"MICROSOFT*XBOX*MEDIA");
+        img.extend_from_slice(&[0u8; 8]);
+        std::fs::write(d.join("img.dat"), &img).unwrap();
+        assert!(guarded_write(&d, "img.dat", b"x", &disc, true).is_err());
+        assert_eq!(std::fs::read(d.join("img.dat")).unwrap(), img);
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&disc, d.join("l.xvu")).unwrap();
+            assert!(guarded_write(&d, "l.xvu", b"x", &disc, true).is_err());
+            assert_eq!(std::fs::read(&disc).unwrap(), b"disc");
+        }
+    }
+
+    fn corpus() -> BTreeMap<String, (Vec<u8>, usize, String)> {
+        BTreeMap::from([("a.xvu".to_string(), (b"shader".to_vec(), 1usize, "label".to_string()))])
+    }
+
+    /// Each of the three real write sites must be guarded: pre-existing
+    /// files survive a run without `--force`, and the disc never changes.
+    #[test]
+    fn write_outputs_guards_every_call_site() {
+        for existing in ["a.xvu", "manifest.tsv", "provenance.txt"] {
+            let d = scratch(&format!("sites-{existing}"));
+            let disc = d.join("disc.bin");
+            std::fs::write(&disc, b"disc").unwrap();
+            std::fs::write(d.join(existing), b"mine").unwrap();
+            let mut prov = String::new();
+            assert!(write_outputs(&d, &corpus(), &mut prov, &disc, false).is_err(), "{existing}");
+            assert_eq!(std::fs::read(d.join(existing)).unwrap(), b"mine", "{existing} was clobbered");
+            // With --force it is replaced, and the disc is still untouched.
+            let mut prov = String::new();
+            write_outputs(&d, &corpus(), &mut prov, &disc, true).unwrap();
+            assert_ne!(std::fs::read(d.join(existing)).unwrap(), b"mine");
+            assert_eq!(std::fs::read(&disc).unwrap(), b"disc");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_images_are_never_replaced() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = scratch("unreadable");
+        let disc = d.join("disc.bin");
+        std::fs::write(&disc, b"disc").unwrap();
+        let mut img = vec![0u8; 0x10000];
+        img.extend_from_slice(b"MICROSOFT*XBOX*MEDIA");
+        img.extend_from_slice(&[0u8; 8]);
+        let victim = d.join("provenance.txt");
+        std::fs::write(&victim, &img).unwrap();
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if File::open(&victim).is_ok() {
+            return; // root
+        }
+        let mut prov = String::new();
+        assert!(write_outputs(&d, &corpus(), &mut prov, &disc, true).is_err());
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), img);
+    }
 }

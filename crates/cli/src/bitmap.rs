@@ -12,12 +12,12 @@ use tags::{DecodedTag, TagData};
 
 use crate::safe_out::OutDir;
 
-const USAGE: &str = "usage: h2 bitmap <map> <tag name> [--image N] [--out DIR] [--mips] [--disc disc.iso]
-       h2 bitmap --all <map> [--list] [--out DIR] [--disc disc.iso]   (--list: one line per image)
+const USAGE: &str = "usage: h2 bitmap <map> <tag name> [--image N] [--out DIR] [--mips] [--force] [--disc disc.iso]
+       h2 bitmap --all <map> [--list] [--out DIR] [--force] [--disc disc.iso]   (--list: one line per image)
 
 <map> is a map name on the disc (mainmenu, c10_...) or a local .map file;
 sibling shared maps are found on the same disc / directory. Without --out
-nothing is written. --mips also writes every mip level (default: base only);
+nothing is written; existing files are kept unless --force. --mips also writes every mip level (default: base only);
 --raw also dumps each LOD's undecoded bytes as .bin (for format debugging).";
 
 const BITM: FourCC = FourCC(*b"bitm");
@@ -76,31 +76,53 @@ fn open(name: &str, disc: Option<PathBuf>) -> Result<(Map<BufReader<File>>, Reso
     Ok((map, files))
 }
 
-pub(super) fn run(args: Vec<String>) -> Result<()> {
+/// Parsed command line, with the output directory already opened.
+struct Prepared {
+    positional: Vec<String>,
+    all: bool,
+    list: bool,
+    mips: bool,
+    raw: bool,
+    image: Option<usize>,
+    disc: Option<PathBuf>,
+    out: Option<Out>,
+}
+
+/// `Ok(None)` means help was printed.
+fn prepare(args: Vec<String>) -> Result<Option<Prepared>> {
     let mut args = args.into_iter();
     let (mut positional, mut all, mut mips, mut raw) = (Vec::new(), false, false, false);
     let mut list = false;
     let (mut image, mut out, mut disc) = (None, None, None);
+    let mut force = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--all" => all = true,
             "--mips" => mips = true,
             "--raw" => raw = true,
             "--list" => list = true,
+            "--force" => force = true,
             "--image" => image = Some(args.next().context("--image needs N")?.parse::<usize>()?),
             "--out" => out = Some(PathBuf::from(args.next().context("--out needs a dir")?)),
             "--disc" => disc = Some(PathBuf::from(args.next().context("--disc needs an ISO")?)),
             "-h" | "--help" => {
                 println!("{USAGE}");
-                return Ok(());
+                return Ok(None);
             }
             s if s.starts_with("--") => bail!("unknown option {s}\n{USAGE}"),
             _ => positional.push(a),
         }
     }
-    match (all, positional.as_slice()) {
-        (true, [map]) => check_all(map, disc, out.as_deref(), list),
-        (false, [map, tag]) => one(map, tag, disc, image, out.as_deref(), mips, raw),
+    // Existing files are kept unless --force.
+    let out = out.as_deref().map(|o| Out::new(o, force)).transpose()?;
+    Ok(Some(Prepared { positional, all, list, mips, raw, image, disc, out }))
+}
+
+pub(super) fn run(args: Vec<String>) -> Result<()> {
+    let Some(p) = prepare(args)? else { return Ok(()) };
+    match (p.all, p.positional.as_slice()) {
+        (true, [map]) => check_all(map, p.disc, p.out, p.list),
+        (false, [map, tag]) => one(map, tag, p.disc, p.image, p.out, p.mips, p.raw),
         _ => bail!("{USAGE}"),
     }
 }
@@ -117,17 +139,16 @@ fn file_stem(tag: &str, id: map::TagId) -> String {
 }
 
 /// Writes output files through the shared symlink-safe [`OutDir`] and never
-/// reuses a name within a run. Bitmap export has no `--force` flag and has
-/// always replaced existing regular files, so the dir is opened with force on;
-/// symlinks and non-regular files are still refused.
+/// reuses a name within a run. Existing files are kept unless `--force`;
+/// symlinks, non-regular files and discs are always refused.
 struct Out {
     dir: OutDir,
     seen: HashSet<String>,
 }
 
 impl Out {
-    fn new(dir: &Path) -> Result<Self> {
-        Ok(Self { dir: OutDir::new(dir, true)?, seen: HashSet::new() })
+    fn new(dir: &Path, force: bool) -> Result<Self> {
+        Ok(Self { dir: OutDir::new(dir, force)?, seen: HashSet::new() })
     }
 
     /// `name` must be a plain file name; a name already written in this run is
@@ -180,7 +201,7 @@ fn one(
     tag: &str,
     disc: Option<PathBuf>,
     image: Option<usize>,
-    out: Option<&Path>,
+    mut out: Option<Out>,
     mips: bool,
     raw: bool,
 ) -> Result<()> {
@@ -195,7 +216,6 @@ fn one(
         bail!("--image {n} out of range: the tag has {} image(s)", bitmap.images.len());
     }
     let stem = file_stem(tag, id);
-    let mut out = out.map(Out::new).transpose()?;
     let mut failed = 0usize;
     for (i, im) in bitmap.images.iter().enumerate() {
         if image.is_some_and(|n| n != i) {
@@ -237,9 +257,8 @@ fn one(
     Ok(())
 }
 
-fn check_all(map_name: &str, disc: Option<PathBuf>, out: Option<&Path>, verbose: bool) -> Result<()> {
+fn check_all(map_name: &str, disc: Option<PathBuf>, mut out: Option<Out>, verbose: bool) -> Result<()> {
     let (mut map, mut files) = open(map_name, disc)?;
-    let mut out = out.map(Out::new).transpose()?;
     let list: Vec<_> = map
         .tags()
         .iter()
@@ -351,7 +370,7 @@ mod tests {
         let victim = root.join("victim.txt");
         fs::write(&victim, b"precious").unwrap();
         std::os::unix::fs::symlink(&victim, out_dir.join("x.png")).unwrap();
-        let mut out = Out::new(&out_dir).unwrap();
+        let mut out = Out::new(&out_dir, true).unwrap();
         assert!(out.write("x.png", b"x").is_err());
         assert_eq!(fs::read(&victim).unwrap(), b"precious");
         // dangling link too
@@ -362,10 +381,12 @@ mod tests {
     }
 
     #[test]
-    fn existing_regular_files_are_replaced_and_names_stay_inside() {
+    fn existing_files_are_kept_without_force_and_replaced_with_it() {
         let root = scratch("regular");
         fs::write(root.join("a.png"), b"old").unwrap();
-        let mut out = Out::new(&root).unwrap();
+        assert!(Out::new(&root, false).unwrap().write("a.png", b"new").is_err());
+        assert_eq!(fs::read(root.join("a.png")).unwrap(), b"old");
+        let mut out = Out::new(&root, true).unwrap();
         let p = out.write("a.png", b"new").unwrap();
         assert_eq!(fs::read(p).unwrap(), b"new");
         for bad in ["../evil.png", "a/b.png", "a\\b.png", "..", ""] {
@@ -375,12 +396,29 @@ mod tests {
     }
 
     #[test]
+    fn force_flag_reaches_the_output_directory() {
+        let root = scratch("flag");
+        fs::write(root.join("a.png"), b"old").unwrap();
+        let args = |extra: &[&str]| -> Vec<String> {
+            ["--all", "m", "--out", root.to_str().unwrap()].iter().chain(extra).map(|s| s.to_string()).collect()
+        };
+        let mut p = prepare(args(&[])).unwrap().unwrap();
+        assert!(p.all && p.positional == ["m"]);
+        assert!(p.out.as_mut().unwrap().write("a.png", b"new").is_err());
+        assert_eq!(fs::read(root.join("a.png")).unwrap(), b"old");
+        let mut p = prepare(args(&["--force"])).unwrap().unwrap();
+        p.out.as_mut().unwrap().write("a.png", b"new").unwrap();
+        assert_eq!(fs::read(root.join("a.png")).unwrap(), b"new");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn colliding_sanitised_names_get_distinct_stems_and_repeats_are_detected() {
         let a = file_stem("a\\b", map::TagId(0xe1000001));
         let b = file_stem("a_b", map::TagId(0xe1000002));
         assert_ne!(a, b);
         let root = scratch("collide");
-        let mut out = Out::new(&root).unwrap();
+        let mut out = Out::new(&root, false).unwrap();
         out.write(&format!("{a}.png"), b"x").unwrap();
         out.write(&format!("{b}.png"), b"x").unwrap();
         assert!(out.write(&format!("{a}.png"), b"x").is_err());

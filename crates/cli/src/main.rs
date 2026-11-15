@@ -1,5 +1,5 @@
 use std::fs::{self, File};
-use std::io::{BufReader, BufWriter, Read};
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
@@ -12,8 +12,8 @@ mod effects;
 mod fonts;
 mod maps;
 mod movies_cmd;
-mod scripts;
 mod safe_out;
+mod scripts;
 mod sound;
 mod strings;
 mod ui;
@@ -46,8 +46,13 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --all <map|all> validates every UI tag (option --disc <iso>)
   anim <map> <jmad tag>   animation graph summary; --anim NAME for one animation,
                           --json PATH to dump sampled transforms; --all validates the disc
-  extract [out-dir]       copy every file off the disc (default disc/extracted)
-  extract-xbe [out]       just default.xbe (default disc/default.xbe)
+  extract [disc] [out-dir] [--force]
+                          copy every file off the disc (default disc/extracted)
+  extract-xbe [disc] [out] [--force]
+                          just default.xbe (default disc/default.xbe). With two
+                          arguments it is <disc> <out>: the output comes LAST
+  (Output is never written over an existing file without --force, and never
+  over the disc being read, a .iso/.xiso or anything holding a disc image.)
   disasm <addr> [count]   decode instructions at a virtual address
   analyze [--functions <out.txt>] [--against <ghidra-functions.tsv>] [--explain <addr>]...
                           function discovery and coverage
@@ -101,12 +106,14 @@ fn main() -> Result<()> {
     let mut list = false;
     let mut no_xcheck = false;
     let mut db_dir = None;
+    let mut force = false;
     while let Some(a) = args.next() {
         match a.as_str() {
             "--functions" => functions_out = Some(PathBuf::from(args.next().context("--functions needs a path")?)),
             "--explain" => explain.push(args.next().context("--explain needs an address")?),
             "--against" => against = Some(PathBuf::from(args.next().context("--against needs a path")?)),
             "--list" => list = true,
+            "--force" => force = true,
             "--no-xcheck" => no_xcheck = true,
             "--db" => db_dir = Some(PathBuf::from(args.next().context("--db needs a path")?)),
             "-h" | "--help" => bail!("{USAGE}"),
@@ -132,11 +139,11 @@ fn main() -> Result<()> {
     match (cmd.as_str(), positional.as_slice()) {
         ("info", []) => info(&disc),
         ("ls", []) => ls(&disc),
-        ("extract", [out]) => extract(&disc, out),
-        ("extract", []) => extract(&disc, &repo_root().join("disc/extracted")),
-        ("extract-xbe", [out]) => extract_xbe(&disc, out),
-        ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe")),
-        ("analyze", []) => run_analyze(&disc, functions_out, against, &explain),
+        ("extract", [out]) => extract(&disc, out, force),
+        ("extract", []) => extract(&disc, &repo_root().join("disc/extracted"), force),
+        ("extract-xbe", [out]) => extract_xbe(&disc, out, force),
+        ("extract-xbe", []) => extract_xbe(&disc, &repo_root().join("disc/default.xbe"), force),
+        ("analyze", []) => run_analyze(&disc, functions_out, against, &explain, force),
         ("symbols", []) => run_symbols(&disc, list, !no_xcheck, db_dir),
         ("disasm", [addr]) => disasm(&disc, addr, None),
         ("disasm", [addr, n]) => disasm(&disc, addr, Some(n)),
@@ -173,16 +180,16 @@ fn default_disc() -> Result<PathBuf> {
 }
 
 fn open_iso(path: &Path) -> Result<Xiso<BufReader<File>>> {
+    safe_out::protect(path);
     let f = File::open(path).with_context(|| format!("opening {}", path.display()))?;
     Ok(Xiso::open(BufReader::new(f))?)
 }
 
 /// Accepts a raw XBE or a disc image, returning the XBE bytes.
 fn load_xbe(path: &Path) -> Result<Vec<u8>> {
+    safe_out::protect(path);
     let mut magic = [0u8; 4];
-    File::open(path)
-        .with_context(|| format!("opening {}", path.display()))?
-        .read_exact(&mut magic)?;
+    File::open(path).with_context(|| format!("opening {}", path.display()))?.read_exact(&mut magic)?;
     if &magic == b"XBEH" {
         return Ok(fs::read(path)?);
     }
@@ -224,27 +231,56 @@ fn ls(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn extract(path: &Path, out: &Path) -> Result<()> {
+fn extract(path: &Path, out: &Path, force: bool) -> Result<()> {
     let mut iso = open_iso(path)?;
+    extract_to(&mut iso, path, out, force)
+}
+
+fn extract_to<R: Read + std::io::Seek>(iso: &mut Xiso<R>, path: &Path, out: &Path, force: bool) -> Result<()> {
     let entries = iso.entries()?;
+    if out.is_file() {
+        bail!("{} is a file, not an output directory (is the argument order <disc> <out-dir>?)", out.display());
+    }
+    let dir = safe_out::OutDir::new(out, force)?.protecting(path);
     for e in &entries {
         // Paths come from the disc: refuse anything that could escape `out`.
         let rel = e.path.trim_start_matches('/');
         if rel.split('/').any(|p| p.is_empty() || p == "." || p == ".." || p.contains('\\')) {
             bail!("refusing unsafe path on disc: {:?}", e.path);
         }
-        let dest = out.join(rel);
+        let comps: Vec<String> = rel.split('/').map(str::to_string).collect();
         if e.is_dir {
-            fs::create_dir_all(&dest)?;
+            dir.create_dir(&comps).with_context(|| format!("creating {}", e.path))?;
             continue;
         }
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let mut w = BufWriter::new(File::create(&dest)?);
-        iso.copy_to(e, &mut w)?;
+        // Streams straight into the guarded temp file; published only when whole.
+        dir.write_with(&comps, |f| {
+            iso.copy_to(e, f).map(drop).map_err(|x| std::io::Error::other(x.to_string()))
+        })
+        .with_context(|| format!("writing {}", e.path))?;
     }
     println!("extracted {} entries to {}", entries.len(), out.display());
+    Ok(())
+}
+
+/// Write one file through the guarded [`safe_out::OutDir`]: no overwrite
+/// without `force`, never the disc being read, never a disc image.
+fn write_guarded(dest: &Path, source: &Path, force: bool, bytes: &[u8]) -> Result<()> {
+    safe_out::guard_target(dest, Some(source))?;
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| format!("{} is not a file path", dest.display()))?
+        .to_string();
+    let parent = match dest.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    safe_out::OutDir::new(parent, force)?
+        .protecting(source)
+        .write(&[name], bytes)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .with_context(|| format!("writing {}", dest.display()))?;
     Ok(())
 }
 
@@ -274,9 +310,11 @@ fn disasm(disc: &Path, addr: &Path, count: Option<&PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn extract_xbe(disc: &Path, out: &Path) -> Result<()> {
+fn extract_xbe(disc: &Path, out: &Path, force: bool) -> Result<()> {
+    // Check before doing any work, so a swapped argument costs nothing.
+    safe_out::guard_target(out, Some(disc))?;
     let data = load_xbe(disc)?;
-    fs::write(out, &data).with_context(|| format!("writing {}", out.display()))?;
+    write_guarded(out, disc, force, &data)?;
     println!("wrote {} ({} bytes)", out.display(), data.len());
     Ok(())
 }
@@ -304,11 +342,7 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
         let (mut on, mut off) = (0, 0);
         if let Some(st) = &starts {
             for m in r.matches.iter().filter(|m| m.library == *lib && m.kind == Kind::Function) {
-                if st.contains(&m.va) {
-                    on += 1
-                } else {
-                    off += 1
-                }
+                if st.contains(&m.va) { on += 1 } else { off += 1 }
             }
         }
         let cand = r.candidate_symbols.get(lib).copied().unwrap_or(0);
@@ -357,7 +391,13 @@ fn run_symbols(path: &Path, list: bool, xcheck: bool, db_dir: Option<PathBuf>) -
     Ok(())
 }
 
-fn run_analyze(path: &Path, functions_out: Option<PathBuf>, against: Option<PathBuf>, explain: &[String]) -> Result<()> {
+fn run_analyze(
+    path: &Path,
+    functions_out: Option<PathBuf>,
+    against: Option<PathBuf>,
+    explain: &[String],
+    force: bool,
+) -> Result<()> {
     let data = load_xbe(path)?;
     let x = xbe::Xbe::parse(&data)?;
     let a = analyze::analyze(&x)?;
@@ -377,7 +417,9 @@ fn run_analyze(path: &Path, functions_out: Option<PathBuf>, against: Option<Path
                 }
                 let owners: Vec<String> = owners
                     .iter()
-                    .map(|o| format!("{o:#x}{}", a.functions.get(o).map_or(String::new(), |f| format!("({:?})", f.source))))
+                    .map(|o| {
+                        format!("{o:#x}{}", a.functions.get(o).map_or(String::new(), |f| format!("({:?})", f.source)))
+                    })
                     .collect();
                 println!("{line}  {}", owners.join(" "));
             }
@@ -397,7 +439,7 @@ fn run_analyze(path: &Path, functions_out: Option<PathBuf>, against: Option<Path
         for f in a.functions.values() {
             s.push_str(&format!("{:#010x} {:<10} {:?}\n", f.start, f.section, f.source));
         }
-        fs::write(&out, s)?;
+        write_guarded(&out, path, force, s.as_bytes())?;
         println!("wrote {} functions to {}", a.functions.len(), out.display());
     }
     if let Some(tsv) = against {
@@ -407,4 +449,131 @@ fn run_analyze(path: &Path, functions_out: Option<PathBuf>, against: Option<Path
         print!("{}", analyze::compare::compare(&a, &theirs));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Opening a disc registers it, so any exporter's `OutDir` refuses it even
+    /// under `--force` and even when the file has an innocent name.
+    #[test]
+    fn opened_discs_are_protected_from_every_exporter() {
+        use std::io::{Seek, SeekFrom, Write};
+        let d = std::env::temp_dir().join(format!("h2-main-test-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let disc = d.join("pretty.png");
+        let mut f = File::create(&disc).unwrap();
+        f.seek(SeekFrom::Start(0x10000)).unwrap();
+        f.write_all(b"MICROSOFT*XBOX*MEDIA").unwrap();
+        f.write_all(&[0u8; 8]).unwrap();
+        drop(f);
+        let before = fs::read(&disc).unwrap();
+        open_iso(&disc).unwrap();
+        let out = safe_out::OutDir::new(&d, true).unwrap();
+        assert!(out.write(&["pretty.png".to_string()], b"png").is_err());
+        assert_eq!(fs::read(&disc).unwrap(), before);
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    /// Read + Seek over an image that records its largest single read.
+    struct Spy {
+        inner: std::io::Cursor<Vec<u8>>,
+        max_read: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+    impl Read for Spy {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.max_read.set(self.max_read.get().max(buf.len()));
+            self.inner.read(buf)
+        }
+    }
+    impl std::io::Seek for Spy {
+        fn seek(&mut self, to: std::io::SeekFrom) -> std::io::Result<u64> {
+            self.inner.seek(to)
+        }
+    }
+
+    fn dirent(left: u16, right: u16, sector: u32, size: u32, attr: u8, name: &str) -> Vec<u8> {
+        let mut v = Vec::new();
+        v.extend(left.to_le_bytes());
+        v.extend(right.to_le_bytes());
+        v.extend(sector.to_le_bytes());
+        v.extend(size.to_le_bytes());
+        v.push(attr);
+        v.push(name.len() as u8);
+        v.extend(name.as_bytes());
+        while v.len() % 4 != 0 {
+            v.push(0xFF);
+        }
+        v
+    }
+
+    const BIG: usize = 1 << 20;
+
+    /// A tiny XISO: `/big` (1 MiB patterned file) and an empty directory `/empty`.
+    fn tiny_xiso() -> Vec<u8> {
+        let mut img = vec![0u8; 40 * 2048 + BIG];
+        img[0x10000..0x10014].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
+        img[0x10014..0x10018].copy_from_slice(&33u32.to_le_bytes());
+        img[0x10018..0x1001C].copy_from_slice(&2048u32.to_le_bytes());
+        let big = dirent(0, 5, 40, BIG as u32, 0, "big");
+        assert_eq!(big.len(), 20);
+        let empty = dirent(0, 0, 34, 0, 0x10, "empty");
+        let mut root = [big, empty].concat();
+        root.resize(2048, 0xFF);
+        img[33 * 2048..34 * 2048].copy_from_slice(&root);
+        for (i, b) in img[40 * 2048..].iter_mut().enumerate() {
+            *b = (i % 251) as u8;
+        }
+        img
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("h2-main-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn extract_streams_files_and_creates_empty_directories() {
+        let d = scratch("extract");
+        let max_read = std::rc::Rc::new(std::cell::Cell::new(0));
+        let spy = Spy { inner: std::io::Cursor::new(tiny_xiso()), max_read: max_read.clone() };
+        let mut iso = Xiso::open(spy).unwrap();
+        let out = d.join("out");
+        extract_to(&mut iso, &d.join("disc.xiso"), &out, false).unwrap();
+        // Empty directories are created.
+        assert!(out.join("empty").is_dir());
+        // File contents are right...
+        let got = fs::read(out.join("big")).unwrap();
+        assert_eq!(got.len(), BIG);
+        assert!(got.iter().enumerate().all(|(i, b)| *b == (i % 251) as u8));
+        // ...and arrived in small reads, never as one whole-file buffer.
+        assert!(max_read.get() <= 64 << 10, "largest read was {} bytes", max_read.get());
+        // Re-extracting over existing files needs --force.
+        assert!(extract_to(&mut iso, &d.join("disc.xiso"), &out, false).is_err());
+        extract_to(&mut iso, &d.join("disc.xiso"), &out, true).unwrap();
+        fs::remove_dir_all(d).unwrap();
+    }
+
+    /// Registration must not depend on the disc-magic fallback: a file that is
+    /// not a disc at all is still protected once a loader has seen it.
+    #[test]
+    fn loaders_register_their_input_even_without_disc_magic() {
+        let d = scratch("register");
+        let junk = d.join("junk.dat");
+        fs::write(&junk, b"not a disc at all").unwrap();
+        assert!(open_iso(&junk).is_err());
+        let xbe = d.join("x.dat");
+        fs::write(&xbe, b"XBEH synthetic").unwrap();
+        load_xbe(&xbe).unwrap();
+        let out = safe_out::OutDir::new(&d, true).unwrap();
+        for n in ["junk.dat", "x.dat"] {
+            assert!(out.write(&[n.to_string()], b"x").is_err(), "{n} was overwritten");
+        }
+        assert_eq!(fs::read(&junk).unwrap(), b"not a disc at all");
+        assert_eq!(fs::read(&xbe).unwrap(), b"XBEH synthetic");
+        fs::remove_dir_all(d).unwrap();
+    }
 }

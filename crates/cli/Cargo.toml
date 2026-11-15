@@ -22,3 +22,6 @@ symbols.workspace = true
 anyhow.workspace = true
 audio = { path = "../audio", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
