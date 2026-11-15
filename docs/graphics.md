@@ -214,6 +214,10 @@ Render-to-texture: `create_texture_target(desc, levels)` makes a colour
 surface with a mip chain that is both an attachment and a texture;
 `level_target(id, level, depth)` draws into one level (level 0 also through
 `target`), and `Surface::view` samples the whole chain. No MSAA there.
+`write_color(ctx, id, &TextureDesc, bytes)` fills level 0 of a colour
+surface from guest texels laid out as the `TextureDesc` says (its format,
+and its pitch for linear formats, which may differ from the surface's own),
+so a render-to-texture level starts from its texture's memory.
 Limits: `F16` and
 `F24S8` depth cannot be encoded; tile compression and bank interleave are not
 modelled.

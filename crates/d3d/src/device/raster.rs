@@ -132,7 +132,7 @@ impl<B: Backend> Device<B> {
         }
         let surface = self
             .backend
-            .create_surface(desc.format, desc.width, desc.height, false)
+            .create_texture_target(desc.format, desc.width, desc.height)
             .map_err(D3dError::Backend)?;
         let target = RttTarget {
             surface,
@@ -161,8 +161,19 @@ impl<B: Backend> Device<B> {
     /// the surface as it was.
     fn fill_rtt(&mut self, header: u32, bytes: &[u8]) -> Result<(), D3dError> {
         let t = *self.rtt.get(&header).expect("cached");
+        let mut desc = TextureDesc::new(
+            t.format,
+            gfx::texture::TextureKind::D2,
+            t.width,
+            t.height,
+            1,
+            1,
+        );
+        if let GuestLayoutKind::Linear { pitch } = t.layout {
+            desc.pitch = pitch;
+        }
         self.backend
-            .write_surface(t.surface, t.format, t.width, t.height, t.layout, bytes)
+            .write_surface(t.surface, &desc, bytes)
             .map_err(D3dError::Backend)?;
         self.stats.rtt_uploads += 1;
         let hash = if self.cfg.upload == UploadPolicy::Verify {

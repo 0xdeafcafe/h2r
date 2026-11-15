@@ -5,7 +5,7 @@
 //! to a [`Backend`]. [`GfxBackend`](crate::gfx_backend::GfxBackend) renders
 //! through `gfx`; [`RecordingBackend`] records calls for CPU-only tests.
 
-use gfx::texture::DecodedTexture;
+use gfx::texture::{DecodedTexture, TextureDesc};
 use gfx::vertex::{PrimitiveType, VertexLayout};
 use gfx::{Clear, D3DFormat};
 
@@ -48,7 +48,7 @@ pub struct TextureInfo {
     pub levels: u32,
 }
 
-/// One vertex stream, already read out of guest memory (and de-indexed).
+/// One vertex stream, already read out of guest memory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamBytes {
     /// Bytes, first vertex first.
@@ -170,6 +170,9 @@ pub struct ResolvedDraw {
     pub layout: VertexLayout,
     /// One per stream of `layout`.
     pub streams: Vec<StreamBytes>,
+    /// Indexed draws: indices into `streams`, each below `vertex_count`, in
+    /// primitive order. `None` draws the vertices in order.
+    pub indices: Option<Vec<u32>>,
     /// Translated render and stage state.
     pub state: DrawState,
     /// The raw state words the translation came from: everything the guest
@@ -293,22 +296,29 @@ pub trait Backend: Send {
         let _ = (src, dst);
         Ok(false)
     }
-    /// Fills a colour surface from guest bytes laid out like
-    /// [`read_surface`](Self::read_surface)'s, so a render-to-texture target
-    /// starts with the level's current texels. `Ok(false)`: the backend
-    /// cannot, and the surface keeps whatever it was created with (the
-    /// default; `docs/d3d.md` gives the gfx API this needs).
+    /// Fills a colour surface from guest texels: `desc` is the level as the
+    /// guest lays it out (format, size, and the pitch of a linear level), so
+    /// a render-to-texture target starts with the level's current texels.
+    /// `Ok(false)`: the backend cannot, and the surface keeps whatever it
+    /// was created with (the default).
     fn write_surface(
         &mut self,
         surface: Self::Surface,
+        desc: &TextureDesc,
+        bytes: &[u8],
+    ) -> Result<bool, String> {
+        let _ = (surface, desc, bytes);
+        Ok(false)
+    }
+    /// A colour surface that is also a texture, for a render-to-texture
+    /// level. The default is [`create_surface`](Self::create_surface).
+    fn create_texture_target(
+        &mut self,
         format: D3DFormat,
         width: u32,
         height: u32,
-        layout: GuestLayoutKind,
-        bytes: &[u8],
-    ) -> Result<bool, String> {
-        let _ = (surface, format, width, height, layout, bytes);
-        Ok(false)
+    ) -> Result<Self::Surface, String> {
+        self.create_surface(format, width, height, false)
     }
 }
 
@@ -533,10 +543,7 @@ impl Backend for RecordingBackend {
     fn write_surface(
         &mut self,
         surface: u32,
-        _format: D3DFormat,
-        _width: u32,
-        _height: u32,
-        _layout: GuestLayoutKind,
+        _desc: &TextureDesc,
         bytes: &[u8],
     ) -> Result<bool, String> {
         self.calls.push(Recorded::WriteSurface {

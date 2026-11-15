@@ -463,8 +463,8 @@ and allocations are bounded before anything is read:
 
 - Every draw resolves to a `ResolvedDraw` that holds no guest pointers:
   - the gfx vertex layout;
-  - stream bytes read from guest memory, de-indexed on the CPU for indexed
-    draws;
+  - stream bytes read from guest memory; for indexed draws, the vertices
+    the indices reach plus the indices rebased onto them (`indices`);
   - translated render and stage state, with untranslatable values reported
     as `Event::BadState`;
   - the raw state words (`raw`) and the stage state `TextureStageState`
@@ -475,12 +475,18 @@ and allocations are bounded before anything is read:
   - the render target's size and formats (`target`), and each bound
     texture's header, palette, format, kind, size and levels
     (`texture_info`).
-- `GfxBackend` renders pre-transformed fixed-function draws through gfx's
-  built-in shader.
-- Programmable draws need a `ShaderProvider`, the interface for
-  `crates/shaders` (TODO(shaders)). Its `prepare` receives the whole
-  `ResolvedDraw`. Until one is installed they are skipped with an
+- `GfxBackend` renders pre-transformed fixed-function draws its built-in
+  shader reproduces exactly through that shader, and everything else
+  through a `ShaderProvider` (`Nv2aShaders` over `crates/shaders` by
+  default). A draw the provider cannot translate is skipped with an
   `Event::DrawSkipped` that gives the reason.
+  - Each draw is scissored to `clip`. The wgpu viewport stays the whole
+    target, because positions are already window coordinates
+    (pre-transformed vertices; NV2A programs apply the viewport
+    themselves), so a `gfx::DrawViewport` would transform them twice.
+  - Indices go through `gfx::Draw::indices`.
+  - `Renderer::set_pretransformed_z_max` is renderer-wide, so it is set
+    before every built-in draw from that draw's depth format.
 - Each draw also carries:
   - `clip`: the pixel rectangle it may touch. That is the viewport
     intersected with the target and with the scissor rectangle when one is
@@ -493,10 +499,7 @@ and allocations are bounded before anything is read:
   - several scissor rectangles, none covering the target (one clip
     rectangle cannot hold them);
   - a back-buffer scale other than 1 x 1;
-  - alpha test on the built-in shader path (it never discards);
-  - a backend that returns `DrawOutcome::Unsupported`. `GfxBackend` does
-    this today for a clip smaller than the target: `gfx::Draw` has no
-    scissor (see "gfx changes this wants").
+  - a backend that returns `DrawOutcome::Unsupported`.
 - **Clears** (`Device::clear`, `src/device/raster.rs`). `Clear` intersects
   every rectangle with the viewport, or uses the viewport when Count is 0
   (`0x3fa1a0..0x3fa247`), clips to the target and skips empty
@@ -510,17 +513,18 @@ and allocations are bounded before anything is read:
     `(eax & 1 ? 0xF0 : 0) | (eax & 0x1E) << 3 | (eax >> 5) & 3`. The
     alpha-only clears are `0x3c515` (`EAX = 0x10` -> `0x80`, colour
     `0x00FFFFFF`, Z 0) and `0x13c3f` (`Clear(0, 0, 0x80, 0, 1.0, 0)`).
-  - `GfxBackend::clear_rects` draws one quad per rectangle through the
-    built-in `XYZRHW | DIFFUSE` shader, with the channel write mask,
-    depth Always and stencil Replace.
+  - `GfxBackend::clear_rects` hands them to `gfx::Renderer::clear_rects`
+    as a `MaskedClear` plus one `ScissorRect` per rectangle.
 - **Render-to-texture** (`src/device/raster.rs`). A target or texture
   surface whose `Parent` is a texture gets its own host surface (an
   `RttTarget`). The `0x14850` 64x64 targets are such levels, and `0x14bc0`
   selects them.
-  - On creation the host surface is filled from the level's guest texels
-    through `Backend::write_surface`. A backend that cannot do this
-    returns `Ok(false)`, and the surface starts as created; that is
-    `GfxBackend` today.
+  - The host surface is made with `Backend::create_texture_target`
+    (`SurfaceStore::create_texture_target` on `GfxBackend`). It is filled
+    from the level's guest texels through `Backend::write_surface`, which
+    takes a `TextureDesc` carrying the guest format, size and pitch;
+    `GfxBackend` calls `SurfaceStore::write_color`. A backend that cannot
+    fill it returns `Ok(false)`, and the surface starts as created.
   - Bound again, a cached level is refilled when its guest texels changed,
     judged apart from the header identity and by the upload policy, as
     for textures: `Always` every time, `Tracked` after a reported write,
@@ -642,8 +646,8 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    `Device::set_vblanks_per_swap(n)` and/or `d3d::register_frame_wait`.
 5. **Present.** `GfxBackend::on_present` receives the surface on every
    `Swap`. Blit it with `gfx::surface::present_surface`.
-6. **Shaders.** Implement `ShaderProvider` over `shaders::link` once
-   `crates/shaders` lands, and install it with `GfxBackend::with_shaders`.
+6. **Shaders.** `GfxBackend::new` installs `Nv2aShaders`; replace it with
+   `GfxBackend::with_shaders`, or drop it with `without_shaders`.
 
 ## Fragments and NV2A registers
 
@@ -794,9 +798,8 @@ fragments, the display entries, `0x3fb710` and Get2DSurfaceDesc are done
 - **Viewport.** `0x14bc0` selects a render target by index and calls
   SetViewport with its extents. A smaller viewport (split screen,
   letterboxing, the offscreen targets) now gives each draw and each
-  Count=0 clear a clip rectangle. `RecordingBackend` takes it. On
-  `GfxBackend` a draw with a partial clip still stops, until `gfx::Draw`
-  has a scissor. Partial clears render through `clear_rects`.
+  Count=0 clear a clip rectangle, which `GfxBackend` applies as a
+  scissor. Partial clears render through `clear_rects`.
 - **Offscreen targets.** The `0x14850` targets are texture levels
   (`Parent` set by `0x3fb7a0`). They become render-to-texture targets
   with write-back. `0x14bc0`'s Get2DSurfaceDesc (`0x3fdb20`) runs
@@ -826,47 +829,19 @@ reaches needs a boot trace.
 
 ## gfx changes this wants
 
-These were not made here, since gfx is its own lane.
+Done since the last revision: per-draw scissor and viewport
+(`gfx::Draw::scissor`/`viewport`), rectangle and channel-masked clears
+(`Renderer::clear_rects`), render-to-texture surfaces
+(`SurfaceStore::create_texture_target`), the surface upload
+`SurfaceStore::write_color(ctx, id, &TextureDesc, bytes)` (added with this
+change), alpha test in the built-in shader, and indexed draws
+(`gfx::Draw::indices`). Still wanted:
 
-- **Per-draw clip.** `gfx::Draw` needs `scissor: Option<[u32; 4]>`
-  (`x, y, width, height` in target pixels; `None` = the whole target),
-  applied with `set_scissor_rect`. A viewport rectangle
-  (`viewport: Option<[f32; 6]>`, `x, y, w, h, min_z, max_z`) would also
-  let programmable draws use the guest viewport directly. `GfxBackend`
-  would pass `ResolvedDraw::clip` through and drop its Unsupported check.
-  The gfx-shaders lane adds `Draw::viewport` / `Draw::scissor`; once that
-  lands, the hookup is in `gfx_backend.rs` only.
-- **Rectangle and channel-masked clears.** `GfxBackend::clear_rects` draws
-  quads today. A renderer-level `clear_rects(target, depth, &[rect],
-  color, mask, depth, stencil)` (the gfx-shaders `MaskedClear`) would
-  replace that.
-- **Render-to-texture surfaces.** Two things are needed:
-  - A texture-level target whose view the texture cache samples, so a
-    write-back and re-upload is not needed (gfx-shaders
-    `create_texture_target` / `level_target`).
-  - **A surface upload**, so a target starts from the guest's texels:
-
-    ```rust
-    impl SurfaceStore {
-        /// Replaces a colour surface's contents with guest-format texels
-        /// (`desc` gives format, size, pitch and layout: swizzled or
-        /// linear), decoded as texture uploads are.
-        pub fn write_color(
-            &mut self,
-            ctx: &GfxContext,
-            id: SurfaceId,
-            desc: &TextureDesc,
-            bytes: &[u8],
-        ) -> Result<(), GfxError>;
-    }
-    ```
-
-    `GfxBackend::write_surface` would call it and return `Ok(true)`. It is
-    the inverse of `gfx::readback::read_texture` plus
-    `gfx::encode::encode_color`, which `read_surface` already uses.
-- **Alpha test in the built-in pre-transformed shader.** Alpha-tested draws
-  on that path stop today.
-- **Indexed draws.** The device de-indexes on the CPU.
+- **Sampling render targets directly.** A level drawn into is written back
+  to guest memory and uploaded again as a texture. Binding the
+  `create_texture_target` surface's view (`Surface::view`) for the
+  texture would avoid the round trip. That needs the texture cache to map
+  a texture header to the surface.
 - **Batching several draws into one pass.** The backend opens one pass per
   draw. That is correct but slow.
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as

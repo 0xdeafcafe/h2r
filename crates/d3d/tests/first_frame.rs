@@ -119,7 +119,7 @@ fn draws_snapshot_guest_state_arrays() {
 }
 
 #[test]
-fn indexed_draws_are_deindexed_with_the_base_vertex() {
+fn indexed_draws_pass_rebased_indices_with_the_base_vertex() {
     let (mut d, mut m) = create(RecordingBackend::new(), UploadPolicy::Tracked);
     quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0xFF00_00FF);
     bind_quad(&mut d, &mut m);
@@ -140,11 +140,19 @@ fn indexed_draws_are_deindexed_with_the_base_vertex() {
                 .unwrap(),
         )
     };
-    // Indices 1,0,2 + base 1 = vertices 2,1,3: (0,8), (8,0), (8,8).
-    assert_eq!(
-        [(x(0), y(0)), (x(1), y(1)), (x(2), y(2))],
-        [(0.0, 8.0), (8.0, 0.0), (8.0, 8.0)]
-    );
+    // Indices 1,0,2 + base 1 = vertices 2,1,3. The streams hold vertices
+    // 1..=3, (8,0), (0,8), (8,8); the indices are rebased onto them.
+    assert_eq!(draw.vertex_count, 3);
+    assert_eq!(draw.indices.as_deref(), Some(&[1, 0, 2][..]));
+    let at = |i: u32| (x(i as usize), y(i as usize));
+    let v: Vec<_> = draw
+        .indices
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|&i| at(i))
+        .collect();
+    assert_eq!(v, [(0.0, 8.0), (8.0, 0.0), (8.0, 8.0)]);
 }
 
 #[test]

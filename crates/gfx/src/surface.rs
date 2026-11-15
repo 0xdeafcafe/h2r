@@ -769,14 +769,40 @@ impl SurfaceStore {
     /// Replaces a colour surface's contents from guest memory in its own
     /// format and layout (e.g. after the guest wrote to a locked surface).
     pub fn upload_color_from_guest(&self, ctx: &GfxContext, id: SurfaceId, guest: &[u8]) -> Result<(), SurfaceError> {
-        let s = self.typed(id, SurfaceKind::Color)?;
-        let d = &s.desc;
+        let d = self.typed(id, SurfaceKind::Color)?.desc;
         // Decode by the surface's own layout (not the format's default one),
         // mirroring `encode::encode_color`.
-        let bpt = d.format.bytes_per_texel().ok_or(TextureError::InvalidHeader("surface format has no texel size"))? as usize;
+        self.write_color_texels(ctx, id, d.format, d.layout.pitch(), guest)
+    }
+
+    /// Replaces a colour surface's contents with guest texels described by
+    /// `desc`, which gives the guest's format, size and pitch (a
+    /// render-to-texture level filled from its texture's memory, whose
+    /// pitch need not be the surface's). `desc` must be one 2D level of the
+    /// surface's size; swizzled formats are unswizzled, linear ones read
+    /// with `desc.pitch`. Compressed formats cannot be render targets.
+    pub fn write_color(&self, ctx: &GfxContext, id: SurfaceId, desc: &crate::texture::TextureDesc, guest: &[u8]) -> Result<(), SurfaceError> {
+        let d = self.typed(id, SurfaceKind::Color)?.desc;
+        if desc.kind != crate::texture::TextureKind::D2 || desc.depth != 1 || (desc.width, desc.height) != (d.width, d.height) {
+            return Err(SurfaceError::TargetMismatch("texel description is not one 2D level of the surface's size"));
+        }
+        let pitch = match desc.format.layout() {
+            Layout::Swizzled => None,
+            Layout::Linear => Some(desc.pitch),
+            Layout::Compressed => return Err(SurfaceError::BadFormat(desc.format, SurfaceKind::Color)),
+        };
+        self.write_color_texels(ctx, id, desc.format, pitch, guest)
+    }
+
+    /// Decodes `guest` (`format` texels, swizzled when `pitch` is `None`,
+    /// else rows of `pitch` bytes) into level 0 of colour surface `id`.
+    fn write_color_texels(&self, ctx: &GfxContext, id: SurfaceId, format: D3DFormat, pitch: Option<u32>, guest: &[u8]) -> Result<(), SurfaceError> {
+        let s = self.typed(id, SurfaceKind::Color)?;
+        let d = &s.desc;
+        let bpt = format.bytes_per_texel().ok_or(TextureError::InvalidHeader("surface format has no texel size"))? as usize;
         let (w, h) = (d.width as usize, d.height as usize);
         let row = w * bpt;
-        let tight: Vec<u8> = match d.layout.pitch() {
+        let tight: Vec<u8> = match pitch {
             None => {
                 if guest.len() < row * h {
                     return Err(TextureError::DataTooShort { need: row * h, have: guest.len() }.into());
@@ -792,14 +818,13 @@ impl SurfaceStore {
                 (0..h).flat_map(|y| guest[y * pitch..y * pitch + row].iter().copied()).collect()
             }
         };
-        let texel = d.format.texel();
+        let texel = format.texel();
         let data = if s.wgpu_format == wgpu::TextureFormat::Bgra8Unorm {
             crate::convert::to_bgra8(texel, &tight, w * h)
         } else {
             crate::convert::to_rgba8(texel, &tight, w * h, None)
         }
         .map_err(TextureError::from)?;
-        let level = &data;
         ctx.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &s.texture,
@@ -807,7 +832,7 @@ impl SurfaceStore {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            level,
+            &data,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(d.width * 4), rows_per_image: Some(d.height) },
             wgpu::Extent3d { width: d.width, height: d.height, depth_or_array_layers: 1 },
         );

@@ -412,6 +412,8 @@ struct DrawParts {
     layout: VertexLayout,
     vertex: VertexProcessing,
     streams: Vec<StreamBytes>,
+    /// Indices into `streams` (indexed draws).
+    indices: Option<Vec<u32>>,
     words: StateWords,
 }
 
@@ -2240,6 +2242,7 @@ impl<B: Backend> Device<B> {
             vertex_count: parts.vertex_count,
             layout: parts.layout,
             streams: parts.streams,
+            indices: parts.indices,
             state,
             extras: parts.words.stage_extras(),
             raw: Box::new(parts.words),
@@ -2320,6 +2323,7 @@ impl<B: Backend> Device<B> {
                 layout,
                 vertex,
                 streams,
+                indices: None,
                 words,
             },
         )
@@ -2327,7 +2331,8 @@ impl<B: Backend> Device<B> {
 
     /// `D3DDevice_DrawIndexedVertices` (`0x3fafa0`, stdcall `PrimitiveType,
     /// VertexCount, pIndexData`: 16-bit indices in guest memory, offset by
-    /// the base vertex at device `+0x1C`). De-indexed on the CPU.
+    /// the base vertex at device `+0x1C`). The streams hold the vertices the
+    /// indices reach; the indices go to the backend rebased onto them.
     pub fn draw_indexed_vertices(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -2357,20 +2362,12 @@ impl<B: Backend> Device<B> {
             _ => return Ok(()),
         };
         let (layout, vertex, sources) = self.vertex_setup(mem, E)?;
+        // The vertices `lo..=hi` the indices reach (at most 65536: 16-bit
+        // indices), with the indices rebased onto them.
+        let window = hi - lo + 1;
         let mut streams = Vec::new();
         for s in &sources {
-            // The window is at most 65536 vertices (16-bit indices).
-            let window = self.read_stream(mem, E, s, lo, hi - lo + 1)?;
-            let stride = s.stride as usize;
-            let mut data = Vec::with_capacity(span(E, count, s.stride)?);
-            for &i in &idx {
-                let o = (i - lo) as usize * stride;
-                data.extend_from_slice(&window.data[o..o + stride]);
-            }
-            streams.push(StreamBytes {
-                data,
-                stride: s.stride,
-            });
+            streams.push(self.read_stream(mem, E, s, lo, window)?);
         }
         let words = self.draw_state(mem)?;
         self.submit(
@@ -2378,10 +2375,11 @@ impl<B: Backend> Device<B> {
             DrawParts {
                 entry: E,
                 primitive,
-                vertex_count: count,
+                vertex_count: window,
                 layout,
                 vertex,
                 streams,
+                indices: Some(idx.iter().map(|i| i - lo).collect()),
                 words,
             },
         )
@@ -2420,6 +2418,7 @@ impl<B: Backend> Device<B> {
                 layout,
                 vertex,
                 streams,
+                indices: None,
                 words,
             },
         )
@@ -2571,6 +2570,7 @@ impl<B: Backend> Device<B> {
                 layout,
                 vertex,
                 streams,
+                indices: None,
                 words,
             },
         )

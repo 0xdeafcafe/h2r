@@ -765,3 +765,62 @@ fn persist_display_survives_device_teardown() {
     );
     assert_eq!(d.persisted_surface(), Some(saved));
 }
+
+#[test]
+fn gpu_render_to_texture_starts_from_the_guest_texels() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    texture(&mut m, 0);
+    // Red texels (A8R8G8B8 in memory: B, G, R, A).
+    for i in 0..64u32 {
+        m.write_u32(0x8000_0000 | (TEX_DATA + 4 * i), 0xFFFF_0000)
+            .unwrap();
+    }
+    let surf = MISC + 0x7200;
+    let mut h =
+        d3d::resource::SurfaceHeader::linear(gfx::D3DFormat::LinA8R8G8B8, 16, 4, 64, TEX_DATA);
+    h.parent = TEX_HEADER;
+    h.write(&mut m, surf).unwrap();
+    let back = m.read_u32(DEV + f::RENDER_TARGET).unwrap();
+    d.set_render_target(&mut m, surf, 0).unwrap();
+    // Clear only {0, 0, 4, 4} (D3DRECT x1, y1, x2, y2) to green.
+    let rect = MISC + 0x7300;
+    for (i, v) in [0u32, 0, 4, 4].iter().enumerate() {
+        m.write_u32(rect + 4 * i as u32, *v).unwrap();
+    }
+    d.clear(&mut m, 1, rect, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
+    d.set_render_target(&mut m, back, 0).unwrap();
+    let texel = |m: &SparseMemory, x: u32, y: u32| {
+        m.read_u32(0x8000_0000 | (TEX_DATA + 64 * y + 4 * x))
+            .unwrap()
+    };
+    assert_eq!(texel(&m, 0, 0), 0xFF00_FF00, "cleared");
+    assert_eq!(texel(&m, 3, 3), 0xFF00_FF00, "cleared");
+    assert_eq!(texel(&m, 8, 0), 0xFFFF_0000, "kept from guest memory");
+    assert_eq!(texel(&m, 15, 3), 0xFFFF_0000, "kept from guest memory");
+}
+
+#[test]
+fn gpu_indexed_draw_renders_through_the_index_list() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    // Strip-order corners (0,0), (8,0), (0,8), (8,8) as a triangle list.
+    quad_vb(&mut m, 0.0, 0.0, 8.0, 8.0, 0xFF00_00FF);
+    bind_quad(&mut d, &mut m);
+    let idx = MISC + 0x7400;
+    for (i, v) in [0u16, 1, 2, 1, 3, 2].iter().enumerate() {
+        m.write(idx + 2 * i as u32, &v.to_le_bytes()).unwrap();
+    }
+    m.write_u32(DEV + 0x1C, 0).unwrap(); // base vertex
+    call(&mut d, &mut m, 0x3fafa0, Regs::default(), &[5, 6, idx]).unwrap();
+    assert!(d.take_events().is_empty());
+    let back = d.back_buffer().unwrap();
+    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    assert_eq!(pixel(&px, 2, 6), [255, 0, 0, 255], "blue (B, G, R, A)");
+    assert_eq!(pixel(&px, 6, 2), [255, 0, 0, 255]);
+    assert_eq!(pixel(&px, 12, 12), [0, 0, 0, 255], "outside");
+}

@@ -527,3 +527,33 @@ fn deep_mip_headers_and_dxt_volumes_upload() {
     let t = gfx::upload::upload_texture(&ctx.device, &ctx.queue, &tex, "dxt volume");
     assert_eq!(t.dimension(), wgpu::TextureDimension::D3);
 }
+
+#[test]
+fn write_color_takes_the_guest_pitch_and_layout() {
+    let Some(ctx) = context() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    // A 16x4 render-to-texture level whose guest pitch (128) is wider than
+    // the surface's own (64).
+    let s = store.create_texture_target(&ctx, SurfaceDesc::new(D3DFormat::LinA8R8G8B8, 16, 4), 1).unwrap();
+    let mut desc = TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 16, 4, 1, 1);
+    desc.pitch = 128;
+    let mut guest = vec![0xEEu8; 128 * 4];
+    for y in 0..4usize {
+        for x in 0..16usize {
+            guest[y * 128 + x * 4..][..4].copy_from_slice(&[x as u8, y as u8, 7, 255]);
+        }
+    }
+    store.write_color(&ctx, s, &desc, &guest).unwrap();
+    let tight: Vec<u8> = (0..4).flat_map(|y| guest[y * 128..y * 128 + 64].to_vec()).collect();
+    assert_eq!(store.read_color_guest(&ctx, s).unwrap(), tight);
+    // Swizzled guest texels into the same surface.
+    let swz_desc = TextureDesc::new(D3DFormat::A8R8G8B8, TextureKind::D2, 16, 4, 1, 1);
+    let swz = gfx::swizzle::swizzle(&tight, 16, 4, 1, 4).unwrap();
+    store.write_color(&ctx, s, &swz_desc, &swz).unwrap();
+    assert_eq!(store.read_color_guest(&ctx, s).unwrap(), tight);
+    // Not this surface's size, or compressed: refused.
+    let small = TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 8, 4, 1, 1);
+    assert!(store.write_color(&ctx, s, &small, &guest).is_err());
+    let dxt = TextureDesc::new(D3DFormat::Dxt1, TextureKind::D2, 16, 4, 1, 1);
+    assert!(store.write_color(&ctx, s, &dxt, &guest).is_err());
+}

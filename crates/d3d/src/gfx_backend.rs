@@ -18,7 +18,7 @@
 //! viewport stays the whole target: vertex positions are already window
 //! coordinates (pre-transformed vertices, and NV2A programs apply the
 //! viewport themselves), so a `gfx::DrawViewport` would transform them
-//! twice.
+//! twice. Indexed draws pass their indices through `gfx::Draw::indices`.
 //!
 //! Partial and channel-masked clears ([`Backend::clear_rects`]) go to
 //! `gfx::Renderer::clear_rects`. Render-to-texture levels are
@@ -208,6 +208,7 @@ impl Backend for GfxBackend {
                 )
             }
         });
+        let indices = d.indices.as_deref();
         let fixed = matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. });
         let textured = textures.iter().any(Option::is_some);
         let readable = fixed && Renderer::builtin_supports(&d.layout);
@@ -234,6 +235,7 @@ impl Backend for GfxBackend {
                 .set_pretransformed_z_max(d3dz_max(d.target.depth_format));
             let draw = Draw {
                 scissor,
+                indices,
                 ..Draw::new(
                     SHADER_XYZRHW_DIFFUSE,
                     &d.layout,
@@ -280,6 +282,7 @@ impl Backend for GfxBackend {
         let draw = Draw {
             bind_groups: &groups,
             scissor,
+            indices,
             ..Draw::new(
                 prepared.id,
                 &d.layout,
@@ -345,6 +348,29 @@ impl Backend for GfxBackend {
             .map_err(|e| e.to_string())?;
         self.ctx.queue.submit([enc.finish()]);
         Ok(DrawOutcome::Drawn)
+    }
+
+    fn write_surface(
+        &mut self,
+        surface: SurfaceId,
+        desc: &gfx::TextureDesc,
+        bytes: &[u8],
+    ) -> Result<bool, String> {
+        self.store
+            .write_color(&self.ctx, surface, desc, bytes)
+            .map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
+    fn create_texture_target(
+        &mut self,
+        format: D3DFormat,
+        width: u32,
+        height: u32,
+    ) -> Result<SurfaceId, String> {
+        self.store
+            .create_texture_target(&self.ctx, SurfaceDesc::new(format, width, height), 1)
+            .map_err(|e| e.to_string())
     }
 
     fn read_surface(

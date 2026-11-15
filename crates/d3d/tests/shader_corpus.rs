@@ -83,6 +83,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60]) -> ResolvedDraw {
             data: vec![0; 3 * stride as usize],
             stride,
         }],
+        indices: None,
         state: words.translate(&RenderStateTable::default()),
         extras: words.stage_extras(),
         target: TargetInfo {
