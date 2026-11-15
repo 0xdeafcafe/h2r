@@ -1036,7 +1036,9 @@ impl Renderer {
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    PassState::default().draw(&mut pass, p, count.get());
+                    if let Some(count) = count.get() {
+                        PassState::default().draw(&mut pass, p, count);
+                    }
                 }
                 if !p.scissor.is_empty() {
                     let s = p.scissor;
@@ -1076,7 +1078,9 @@ impl Renderer {
             });
             let mut state = PassState::default();
             for p in &draws[run] {
-                state.draw(&mut pass, p, p.pipeline.get());
+                if let Some(pipeline) = p.pipeline.get() {
+                    state.draw(&mut pass, p, pipeline);
+                }
             }
         }
         Ok(passes)
@@ -1236,33 +1240,28 @@ fn pending_pipeline(
 ) -> Arc<PendingPipeline> {
     let (device, key, program) = (device.clone(), key.clone(), program.clone());
     Pending::new(move || {
-        on_worker_scope(&device, || {
+        validated(&device, || {
             create_render_pipeline(&device, &key, &program, "xbox draw")
         })
     })
 }
 
-/// Runs `build`; on a compile worker, inside a validation error scope of
-/// its own (scopes are per thread, so the error would otherwise reach the
-/// uncaptured-error handler from a thread nobody watches). The error is
-/// reported, and the invalid pipeline fails again where a draw uses it. On
-/// the drawing thread the caller's own scopes see it, as before.
-fn on_worker_scope(
+/// Runs `build` inside a validation error scope of its own, on a compile
+/// worker or the drawing thread alike (scopes are per thread). A pipeline
+/// that fails validation is reported once and comes back as `None`, so its
+/// draws are skipped: an invalid pipeline reaching `set_pipeline` panics
+/// inside wgpu and took the guest thread down with it.
+fn validated(
     device: &wgpu::Device,
     build: impl FnOnce() -> wgpu::RenderPipeline,
-) -> wgpu::RenderPipeline {
-    if !std::thread::current()
-        .name()
-        .is_some_and(|n| n.starts_with(crate::compile::WORKER_NAME))
-    {
-        return build();
-    }
+) -> Option<wgpu::RenderPipeline> {
     let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
     let p = build();
     if let Some(e) = pollster::block_on(scope.pop()) {
-        eprintln!("gfx: pipeline compile: {e}");
+        eprintln!("gfx: pipeline compile (its draws are skipped): {e}");
+        return None;
     }
-    p
+    Some(p)
 }
 
 /// The count pipeline for `key`, likewise.
@@ -1279,7 +1278,7 @@ fn pending_count(
         fragment.clone(),
     );
     Pending::new(move || {
-        on_worker_scope(&device, || {
+        validated(&device, || {
             create_count_pipeline(&device, &key, &program, &fragment)
         })
     })

@@ -884,8 +884,10 @@ impl ShaderProvider for Nv2aShaders {
         };
         pu.stipple = draw.hw.stipple_pattern;
         let w_buffer = key.pixel_options.w_buffer;
-        if w_buffer {
+        if w_clipped(&key.vertex, draw) {
             vu.w_clip = Some(w_clip_range(&draw.hw, vu.z_max));
+        }
+        if w_buffer {
             // The polygon offset joins the stored w in the fragment stage
             // (the pipeline's depth bias would offset the rasterized z,
             // which is not what is stored); see `PreparedShader`.
@@ -1133,7 +1135,11 @@ fn program_key(
             explicit_lod: false,
             stipple: polygon_stipple(table, draw),
             shadow,
-            w_buffer: matches!(vertex, VertexSource::Microcode(_)) && w_buffered(draw),
+            // The depth write needs a depth attachment: a W-buffered draw
+            // to a colour-only target still clips w but writes no depth
+            // (a pipeline whose fragment writes depth without one fails
+            // validation).
+            w_buffer: w_clipped(&vertex, draw) && draw.target.depth_format.is_some(),
         };
         let key = ProgramKey {
             vertex,
@@ -1164,6 +1170,12 @@ pub fn w_buffered(draw: &ResolvedDraw) -> bool {
         Some(c) => c & CONTROL0_Z_PERSPECTIVE != 0,
         None => draw.state.render.depth_mode == gfx::state::DepthBufferMode::W,
     }
+}
+
+/// Whether the vertex stage clips w instead of z: a W-buffered draw of a
+/// vertex program.
+fn w_clipped(vertex: &VertexSource, draw: &ResolvedDraw) -> bool {
+    matches!(vertex, VertexSource::Microcode(_)) && w_buffered(draw)
 }
 
 /// The w clip range of a W-buffered draw: the pushed `[CLIP_MIN,

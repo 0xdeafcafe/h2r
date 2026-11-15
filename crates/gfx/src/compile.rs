@@ -80,8 +80,11 @@ impl<T> Pending<T> {
     }
 }
 
-/// A render pipeline that may still be compiling.
-pub type PendingPipeline = Pending<wgpu::RenderPipeline>;
+/// A render pipeline that may still be compiling. `None` once built means
+/// it failed validation (the error was logged): draws using it are skipped
+/// instead of reaching `set_pipeline` with an invalid pipeline, which wgpu
+/// turns into a panic.
+pub type PendingPipeline = Pending<Option<wgpu::RenderPipeline>>;
 
 /// Queue priority.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
