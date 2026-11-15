@@ -98,6 +98,10 @@ pub struct Nv2aStats {
     pub failed: u64,
     /// Draws prepared.
     pub draws: u64,
+    /// Draws whose bound definition has a final combiner but whose pushed
+    /// final-combiner inputs are both zero, so it runs as an all-zero
+    /// final combiner (black, alpha 0; [`PixelShaderDef::explicit_final`]).
+    pub zero_final_draws: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -213,6 +217,11 @@ fn alpha_func(f: CompareFunc) -> AlphaFunc {
 
 /// The guest's combiner program: render-state slots 0..57, texture modes
 /// from slot 136, the last three dwords from the definition.
+///
+/// Whether there is a final combiner comes from the definition itself, as
+/// D3D latches it at `SetPixelShader` (`0x3fa452`, device `+0x788`): a
+/// definition with one keeps it even when zero is later pushed to both
+/// final-combiner methods ([`PixelShaderDef::explicit_final`]).
 pub fn guest_def(
     psdef: &[u32; 60],
     combiner_state: &[u32; 57],
@@ -222,7 +231,9 @@ pub fn guest_def(
     words[..57].copy_from_slice(combiner_state);
     words[54] = texture_modes;
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    PixelShaderDef::from_bytes(&bytes).expect("60 dwords")
+    let mut def = PixelShaderDef::from_bytes(&bytes).expect("60 dwords");
+    def.explicit_final = psdef[8] | psdef[9] != 0;
+    def
 }
 
 /// The vertex program for pre-transformed (`XYZRHW`) fixed-function
@@ -664,6 +675,9 @@ impl ShaderProvider for Nv2aShaders {
                 fog: fog_enable,
             })?,
         };
+        if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
+            self.stats.zero_final_draws += 1;
+        }
         let (c0, c1) = def.embedded_constants();
         let mut code = def.clone();
         code.constant0 = [0; 8];

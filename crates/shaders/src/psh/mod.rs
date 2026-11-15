@@ -55,6 +55,13 @@ pub struct PixelShaderDef {
     pub c0_mapping: u32,
     pub c1_mapping: u32,
     pub final_constants: u32,
+    /// The final combiner runs even if both of its input dwords are zero.
+    /// Not part of the 60-dword layout: D3D latches whether the bound
+    /// definition has a final combiner when `SetPixelShader` runs (device
+    /// `+0x788`), and later pushes of zero to the final-combiner methods do
+    /// not clear that latch, so the hardware then runs an all-zero final
+    /// combiner (black, alpha 0) rather than D3D's default one.
+    pub explicit_final: bool,
 }
 
 impl PixelShaderDef {
@@ -84,6 +91,7 @@ impl PixelShaderDef {
             rgb_outputs: arr(45),
             combiner_count: w[53],
             texture_modes: w[54],
+            explicit_final: false,
             dot_mapping: w[55],
             input_texture: w[56],
             c0_mapping: w[57],
@@ -138,10 +146,11 @@ impl PixelShaderDef {
         (c0, c1)
     }
 
-    /// Whether the definition programs the final combiner (either inputs
-    /// dword non-zero). D3D keeps this in device `+0x788`.
+    /// Whether the definition programs the final combiner: either inputs
+    /// dword non-zero, or [`Self::explicit_final`]. D3D keeps this in
+    /// device `+0x788`.
     pub fn has_final_combiner(&self) -> bool {
-        self.final_inputs_abcd != 0 || self.final_inputs_efg != 0
+        self.explicit_final || self.final_inputs_abcd != 0 || self.final_inputs_efg != 0
     }
 
     /// The definition as the NV2A runs it under the given render states.
@@ -177,24 +186,23 @@ impl PixelShaderDef {
                 },
             })
             .collect();
-        let final_combiner =
-            (self.final_inputs_abcd != 0 || self.final_inputs_efg != 0).then(|| {
-                let [a, b, c, d] = inputs(self.final_inputs_abcd);
-                let [e, f, g, _] = inputs(self.final_inputs_efg);
-                let fl = self.final_inputs_efg & 0xFF;
-                FinalCombiner {
-                    a,
-                    b,
-                    c,
-                    d,
-                    e,
-                    f,
-                    g,
-                    clamp_sum: fl & 0x80 != 0,
-                    complement_v1: fl & 0x40 != 0,
-                    complement_r0: fl & 0x20 != 0,
-                }
-            });
+        let final_combiner = self.has_final_combiner().then(|| {
+            let [a, b, c, d] = inputs(self.final_inputs_abcd);
+            let [e, f, g, _] = inputs(self.final_inputs_efg);
+            let fl = self.final_inputs_efg & 0xFF;
+            FinalCombiner {
+                a,
+                b,
+                c,
+                d,
+                e,
+                f,
+                g,
+                clamp_sum: fl & 0x80 != 0,
+                complement_v1: fl & 0x40 != 0,
+                complement_r0: fl & 0x20 != 0,
+            }
+        });
         Combiners {
             stages,
             mux_msb: flags & 0x001 != 0,

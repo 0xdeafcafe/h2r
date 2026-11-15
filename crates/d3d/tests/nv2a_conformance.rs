@@ -94,6 +94,9 @@ struct Case {
     d3dcolor_diffuse: Option<u32>,
     /// Wind the triangle counter-clockwise on screen.
     ccw: bool,
+    /// Combiner-state slots written after the definition was bound (the
+    /// render-state mirror of pushed combiner methods).
+    pushed: Vec<(usize, u32)>,
 }
 
 #[derive(Clone)]
@@ -152,6 +155,7 @@ impl Default for Case {
             clear: [0.0; 4],
             d3dcolor_diffuse: None,
             ccw: false,
+            pushed: Vec::new(),
         }
     }
 }
@@ -319,13 +323,16 @@ impl Gpu {
                 let w = psdef_words(def);
                 words.render[..57].copy_from_slice(&w[..57]);
                 words.render[136] = w[54];
+                for &(slot, v) in &c.pushed {
+                    words.render[slot] = v;
+                }
                 (
                     VertexProcessing::Program {
                         start: 0,
                         microcode: passthrough(),
                     },
                     Some(Box::new(w)),
-                    Box::new(w[..57].try_into().unwrap()),
+                    Box::new(words.render[..57].try_into().unwrap()),
                 )
             }
             None => (
@@ -656,6 +663,36 @@ fn output_mapping_mux_dot_and_blue_to_alpha() {
         [dot, dot, dot, dot],
         "AB dot replicated, blue to alpha",
     );
+}
+
+/// Whether a final combiner runs is latched from the bound definition
+/// (`SetPixelShader`, device `+0x788`). Pushing zero to both final-combiner
+/// methods afterwards leaves an explicit all-zero final combiner (RGB 0,
+/// alpha 0), not D3D's default one; a definition that never had one still
+/// gets the default (`r0`), with or without the pushes.
+#[test]
+fn explicit_final_combiner_survives_zero_pushes() {
+    let Some(mut g) = gpu() else { return };
+    let mut d = copy_v0(1);
+    // Final: rgb = D = r0, alpha = G = r0.a.
+    d.final_inputs_abcd = inputs(0, 0, 0, REG_R0);
+    d.final_inputs_efg = final_efg(0, 0, REG_R0 | CHAN_ALPHA, 0);
+    let mut c = Case {
+        def: Some(d.clone()),
+        d0: [1.0, 0.0, 0.0, 1.0],
+        clear: [0.0, 0.0, 1.0, 1.0],
+        ..Case::default()
+    };
+    expect(g.run(&c), RED, "explicit final");
+    c.pushed = vec![(8, 0), (9, 0)];
+    expect(g.run(&c), [0.0; 4], "explicit final, zero pushed");
+    // No final combiner in the definition: the default one, r0.
+    d.final_inputs_abcd = 0;
+    d.final_inputs_efg = 0;
+    c.def = Some(d);
+    expect(g.run(&c), RED, "default final, zero pushed");
+    c.pushed.clear();
+    expect(g.run(&c), RED, "default final");
 }
 
 /// The final combiner: `A*B + (1-A)*C + D`, the `v1 + r0` input with its

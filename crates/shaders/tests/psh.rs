@@ -903,6 +903,38 @@ fn shader_supplied_border() {
     common::check(&w.module());
 }
 
+/// `explicit_final`: an all-zero final combiner still runs (black, alpha
+/// 0) and is not replaced by D3D's default.
+#[test]
+fn explicit_zero_final_combiner_runs() {
+    let mut d = def(
+        &[(
+            inputs(REG_C0, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+            inputs(REG_C0 | CHAN_ALPHA, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [0, 0, 0, 0],
+    );
+    d.explicit_final = true;
+    assert!(d.has_final_combiner());
+    assert!(d.decode().final_combiner.is_some());
+    let kept = d.with_default_final_combiner(true, true);
+    assert_eq!((kept.final_inputs_abcd, kept.final_inputs_efg), (0, 0));
+    let mut u = PixelUniforms::default();
+    u.c0[0] = [1.0, 0.5, 0.25, 1.0];
+    let out = interp::run(&d, &Default::default(), &Inputs::default(), &u, &Flat([[0.0; 4]; 4])).unwrap();
+    approx(out, [0.0; 4]);
+    d.explicit_final = false;
+    assert!(d.decode().final_combiner.is_none());
+    let out = interp::run(&d, &Default::default(), &Inputs::default(), &u, &Flat([[0.0; 4]; 4])).unwrap();
+    approx(out, [1.0, 0.5, 0.25, 1.0]);
+    // The 60-dword layout does not carry it.
+    let mut e = d.clone();
+    e.explicit_final = true;
+    assert_eq!(PixelShaderDef::from_bytes(&e.to_bytes()).unwrap(), d);
+}
+
 /// Linear fog with `FOGSTART == FOGEND`: D3D programs a scale of 8192
 /// instead of dividing by zero (`0x0040008e`).
 #[test]

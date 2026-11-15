@@ -294,6 +294,13 @@ register file. `psh::bits` has the `PS_*` encodings.
   always get one too (ABCD `0xc`, EFG `0x2000`; see shader-instances.md).
   So this only changes draws whose pixel shader the game builds without
   one.
+  Whether a definition has one is latched when it is bound
+  (`0x3fa452`, the OR of its two final dwords into device `+0x788`), and
+  pushing zero to both final-combiner methods later does not clear the
+  latch. The hardware then runs an all-zero final combiner, RGB 0 and
+  alpha 0. `d3d::nv2a::guest_def` takes the presence from the bound
+  definition (`PixelShaderDef::explicit_final`) rather than from the
+  merged words, and counts such draws in `Nv2aStats::zero_final_draws`.
 - **`v1+r0` (V1R0_SUM)** unsigned-maps each operand before adding: each is
   clamped to [0, 1], and inverted (1 − clamp) when its complement flag is
   set. The clamp-sum flag then clamps the sum. So r0 = −0.5 and v1 = 0.75
