@@ -1216,6 +1216,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "lift"
+version = "0.1.0"
+dependencies = [
+ "analyze",
+ "iced-x86",
+ "ir",
+ "serde_json",
+ "xbe",
+]
+
+[[package]]
 name = "linux-raw-sys"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
