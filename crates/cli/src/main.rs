@@ -15,6 +15,7 @@ mod emit_output;
 mod extract_shaders;
 mod fonts;
 mod lighting;
+mod live_cmd;
 mod maps;
 mod movies_cmd;
 mod object;
@@ -105,6 +106,15 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           --passes picks the IR passes (default H2_PASSES, else
                           all): all, none, names, -name, comma-separated
 
+  live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST] [--private]
+             [--invite-only] [--tls-cert PEM --tls-key PEM | --insecure-http]
+                          run the Xbox Live service (docs/live.md)
+  live account create <gamertag> [--server URL] [--invite CODE]
+  live account list [--server URL]
+  live motd set <line>... [--header TEXT] | --file PATH
+  live invite create [--days N]
+                          `h2 live --help` for details
+
   profile <scenario> [--out DIR] [--seconds S] [--timeline FILE] ...   (--features perf)
                           sample a benchmark scenario: guest-aware folded stacks,
                           top-N table, optional Chrome/Perfetto timeline (docs/perf.md)
@@ -160,6 +170,9 @@ fn main() -> Result<()> {
     }
     if cmd == "play" {
         return play_cmd::run(args.collect());
+    }
+    if cmd == "live" {
+        return live_cmd::run(args.collect());
     }
     if matches!(cmd.as_str(), "build" | "run") {
         return boot_cmd::run(&cmd, args.collect());

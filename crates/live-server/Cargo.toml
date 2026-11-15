@@ -1,0 +1,30 @@
+[package]
+name = "live-server"
+description = "The Xbox Live replacement service: signed events on Postgres behind axum (docs/live.md, docs/live-api.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+live-proto.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+async-trait = "0.1"
+axum = { version = "0.8", features = ["ws"] }
+axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "json", "macros"] }
+sha2 = "0.10"
+getrandom = "0.3"
+time = "0.3"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tokio-tungstenite = "0.26"
+futures-util = "0.3"
+base64 = "0.22"

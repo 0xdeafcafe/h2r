@@ -37,6 +37,12 @@ vfs.workspace = true
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "intel"] }
 asf = { path = "../asf" }
 wma = { path = "../wma" }
+live-proto.workspace = true
+live-server.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+# `h2 live account/motd` talk to the service over HTTP or HTTPS.
+ureq = { version = "2", default-features = false, features = ["tls"] }
 # `h2 profile` and `h2 bench` (docs/perf.md): off by default so ordinary
 # builds skip the profiler's dependencies. `cargo run -p cli --features perf`.
 perf = { path = "../perf", optional = true }

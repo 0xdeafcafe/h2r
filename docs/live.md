@@ -120,83 +120,137 @@ all and proves the socket layer.
 
 ### 4.2 CLI
 
-Implemented (crates/cli/src/live_cmd.rs):
+Implemented (crates/cli/src/live_cmd.rs; `h2 live --help` has every flag):
 
 ```
-h2 live serve [--db URL] [--listen ADDR]   # run the service; defaults
-                                           # $H2_LIVE_DB or postgres://localhost/h2live,
-                                           # and 127.0.0.1:8074
-h2 live account create <gamertag> [--server URL]   # register; store for the game HLE
+h2 live serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
+              [--private] [--invite-only]
+              [--tls-cert PEM --tls-key PEM | --insecure-http]
+h2 live account create <gamertag> [--server URL] [--invite CODE]
 h2 live account list [--server URL]
-h2 live motd set <file> [--server URL]     # publish <file> as Halo 2's
-                                           # message_of_the_day.dat
+h2 live motd set <line>... [--header TEXT] [--server URL] [--data DIR]
+h2 live motd set --file PATH [--server URL] [--data DIR]
+h2 live invite create [--days N] [--data DIR]
 ```
 
-The server URL defaults to `$H2_LIVE_SERVER` or `http://127.0.0.1:8074`.
-`account create` upserts the account (by xuid) into
-`~/Library/Application Support/h2recomp/live/accounts.json` — beside the
-movies directory and the VFS data root ([storage.md](storage.md)) — because
-the game-side HLE will answer `XOnlineGetUsers` from that file, so no HDD
-config-sector work is needed.
+Defaults: `--db` is `$H2_LIVE_DB` or `postgres://localhost/h2live`,
+`--listen` `127.0.0.1:8074`, `--server` `$H2_LIVE_SERVER` or
+`http://127.0.0.1:8074`, `--data` the server directory below.
+
+Host data lives in `~/Library/Application Support/h2recomp/live`, beside
+the movies directory and the VFS data root ([storage.md](storage.md)):
+
+- `accounts.json` (mode 0600): one entry per account made here, `{xuid,
+  gamertag, id, server, server_id, kid, key}`, where `key` is the account's
+  Ed25519 private key. `account create` generates the key locally, signs
+  the creation request with it and stores it; the server only ever sees the
+  public half. The game-side HLE answers `XOnlineGetUsers` from `xuid` and
+  `gamertag`, so no HDD config-sector work is needed.
+- `server/` (mode 0700): `h2 live serve`'s identity, `server.key` (0600)
+  and `server.json` (`{"id"}`). The server id is set on first start
+  (`--id`, default `localhost`) and cannot change, because every author id
+  contains it.
+
+Operator commands sign with the server key in `--data`, so they run on the
+server's machine: `motd set` publishes `message_of_the_day.dat` (built from
+up to 32 lines plus an optional header, in the format of
+[live-motd.md](live-motd.md) §3.1, the same text in all nine language
+slots; or a prebuilt `--file`), and `invite create` prints an invite code
+for an `--invite-only` server. Clients find everything else from the base
+URL's `/.well-known/h2live.json`, and refuse to send a token over plain
+HTTP to anything but loopback.
 
 Planned, not built: `h2 live friend add <gamertag> <gamertag>` (with
 friends), `h2 play --live [url]` (boot with link up, signed in).
 
 ### 4.3 Service
 
-Two crates: `crates/live-proto` (serde wire types shared with the client
-HLE: XUIDs as 16-hex-digit strings, gamertags with Live validation
-(1..=15 chars, letters, digits and single spaces, starting with a letter;
-compared case-insensitively, display case kept), title IDs as 8 hex digits,
-request/response bodies, one error-body shape) and `crates/live-server`
-(axum + tokio + sqlx, runtime-checked queries so no `DATABASE_URL` is
-needed to build; see its README).
+Two crates. `crates/live-proto` is what clients and server share, with no
+runtime: the wire types of [live-api.md](live-api.md) (XUIDs as 16 hex
+digits, title IDs as 8, gamertags with Live's rules: 1..=15 letters, digits
+and single spaces, starting with a letter, compared case-insensitively),
+the signing code of [live-security.md](live-security.md) (`sign`: Ed25519
+keys as JWK with RFC 7638 thumbprints, compact JWS, signed event bodies and
+batches, self-issued tokens, invites, the hash chain; `jcs`: RFC 8785
+canonical JSON) and the MOTD builder (`motd`). The game-side client and
+the CLI sign with exactly this code. `crates/live-server` is the service
+(axum, tokio, sqlx with runtime-checked queries; see its README).
 
-HTTP API (default `127.0.0.1:8074`):
+The API is [live-api.md](live-api.md) on `127.0.0.1:8074`. Built: health,
+discovery, accounts (create, list, one, keys by gamertag and by XUID),
+presence, the event log (`GET /v1/events` with `from`/`cursor`, `type`,
+`exclude`, `stream`, `limit`; `POST /v1/events` for one signed event), the
+`/v1/stream` WebSocket (replay from `?from=`, `caught_up`, then live
+events, with `types`/`exclude`), and title files. Games, ingest and map
+outlines answer 501 `unimplemented` until they are built. Deviations and
+choices the contract leaves open:
 
-| request | result |
-|---|---|
-| `GET /healthz` | 200 `ok` |
-| `POST /v1/accounts {"gamertag": ...}` | 201 `{xuid, gamertag}`; 409 taken; 400 invalid |
-| `GET /v1/accounts` | `{accounts: [...]}` |
-| `GET /v1/accounts/{gamertag}` | the account; 404 (lookup is case-insensitive) |
-| `PUT /v1/titles/{title_id}/files/{name}` | publish raw bytes (≤ 64 KiB); `{name, sha256, size}` |
-| `GET /v1/titles/{title_id}/files/{name}` | raw bytes, `ETag` = sha256, 304 on matching `If-None-Match` |
+- `POST /v1/accounts` and `POST /v1/events` take the compact JWS as the
+  raw body (`application/jose`). `POST /v1/events` is not in the contract's
+  write table; it is how accounts write `KeyAdded`, `KeyRevoked` and
+  presence.
+- Title files are published by the operator only: a token signed by the
+  server key. They are capped at 2 MiB, not the 64 KiB of security §6,
+  because `multiplayer_hopper.dat` inflates to 1.4 MB. The bytes live in a
+  `blobs` table keyed by SHA-256; the event carries `{title_id, name,
+  sha256, size}`.
+- Error codes are the contract's plus `too_large` (413).
 
-Errors are `{"error": {"code", "message"}}`; file names are
-`[A-Za-z0-9_.-]{1,64}`; title IDs are 8 hex digits (Halo 2 is `4D530064`).
+**Security** ([live-security.md](live-security.md), all but §5
+federation). Every event is a JWS by its author; the server writes its own
+(`GamertagReserved`, `AccountCreated`, `KeyAdded` at creation, title
+files) with its key. An append checks, all in memory: the bearer token
+(EdDSA by a current key of `iss`, `aud` = server id, `exp - iat` ≤ 60 s,
+`lxm`, `jti` unseen for two minutes), that the event's author is the
+token's issuer, the event signature against the author's current key,
+`at` within 5 minutes, the stream permission (an account writes only key
+events on `account-<own xuid>` and presence on `presence-<own xuid>`),
+the event's data (a `KeyAdded` key must be new, the last key cannot be
+revoked, presence states are `online`/`away`/`playing`), and a fresh
+nonce. Account creation is the one write without a token: the request is
+signed by the key it registers, and `KeyAdded` keeps it as `proof`.
+Invites are JWS by the server key, single use. Writes are rate limited
+per author and method, account creation server-wide; bodies are capped at
+64 KiB (title files 2 MiB, WebSocket messages 16 KiB). Reads are public
+unless `--private`, which needs a `read` token on every read and as the
+first stream message; discovery and `/healthz` stay public. CORS allows any
+origin on GET and HEAD and nothing else. Binding to a non-loopback address
+needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`. The database
+URL is never printed with its credentials.
 
-**The log.** One append-only `events` table — `position bigserial`,
-`stream_id`, `version`, `type`, `payload jsonb`, `at`, unique on
-`(stream_id, version)` — created at startup if missing, plus a
-`subscriptions(name, position)` table holding checkpoints for future durable
-projections (`load_checkpoint`/`save_checkpoint` exist; none use them yet).
-Events are a serde-tagged enum: `AccountCreated {xuid, gamertag}` on
-`account-<xuid>`; `GamertagReserved {xuid}` on `gamertag-<lowercased>`,
-appended with expected version 0 *before* the account event — a conflict
-there is what makes a gamertag taken; `TitleFilePublished {title_id, name,
-sha256, bytes_b64}` on `title-<titleid>-file-<name>`. XUIDs are
-`0x0009_0000_0000_0000 | random 48 bits`: the online-account marker real
-Live XUIDs carry, so ours look like Live XUIDs, with no guessable
-allocation sequence.
+**The log.** One append-only `events` table: `position bigserial`,
+`stream_id`, `version`, `type`, `data jsonb`, `at`, `author`, `kid`, `jws`,
+`jws_index` (batches), `hash`, unique on `(stream_id, version)`. The `jws`
+is the author's, untouched, and the source of truth: events are decoded
+from it, and the other columns are copies for querying. `hash` is
+`hex(sha256(prev || jws))` per stream, computed in the append transaction.
+Appends take a list of events and expected versions (0: the stream must
+not exist) and are atomic across streams: account creation writes the
+gamertag stream (expected 0, which is what makes a gamertag taken) and the
+account stream in one transaction. They hold `pg_advisory_xact_lock` on a
+fixed key for the whole transaction, so `bigserial` positions are handed
+out in commit order (without it a tailer could read 12, miss an 11 that
+commits later, and never go back for it), and send `pg_notify('events',
+position)` before committing. Serialising appends caps write throughput,
+which is fine at this scale. Schema creation takes its own advisory lock.
+`subscriptions(name, position)` holds checkpoints for durable subscribers
+(the store has `load_checkpoint`/`save_checkpoint`; none use them yet).
+XUIDs are `0x0009 << 48 | random 48 bits`, the marker real Live account
+XUIDs carry, with no guessable sequence; a collision fails the account
+stream's version check and is retried.
 
-**Subscriptions.** Everything that turns the log into state is a
-`Subscriber` (a name and `handle(&RecordedEvent, &StoreHandle)`) fed by a
-dispatcher that tails the global log by position; a subscriber can append
-derived events through the store handle. The in-memory projections
-(accounts by xuid and by lowercased gamertag; latest title file per title
-and name) are one such subscriber, replayed from position 0 at startup.
-The dispatcher is woken by the `pg_notify('events', position)` each append
-sends in its transaction (Postgres LISTEN; a tokio `Notify` on the
-in-memory test store), with a slow poll as the fallback so a lost wake
-costs latency, not correctness. Appends take `pg_advisory_xact_lock` on a
-fixed key for the whole transaction so `bigserial` positions are handed out
-in commit order — without that, a tailer could read position 12, miss an
-11 that commits later, and never go back for it. Serialising appends caps
-write throughput, which is fine at this service's scale. HTTP reads come
-from the projections; a write handler appends, then waits (short timeout)
-until the projection has applied that position before replying, so a
-successful reply is also readable state.
+**Subscriptions.** One `Dispatcher` tails the log by position and feeds
+every `Subscriber` in order, woken by LISTEN (a watch channel on the
+in-memory store) with a one-second poll as the fallback, so a lost wake
+costs latency, not correctness. The read model (accounts, keys with their
+valid-from/to positions, title files, presence, recent nonces and used
+invites) is one subscriber, replayed from position 0 at startup before the
+server listens. After each event the dispatcher publishes the applied
+position and broadcasts the event: write handlers wait for their position
+(read-your-writes), and stream readers subscribe to the broadcast before
+replaying from the store, so nothing falls between the two; a reader that
+lags re-reads from the store. Every read reply carries that applied
+position.
 
 Postgres rather than Mongo: an event store needs ordered append with a
 uniqueness check per stream, which is one table and one constraint in
@@ -208,7 +262,9 @@ online, where and with whom. To keep that from flooding the log:
 
 - **Changes, not pings.** A presence stream records `SignedIn`,
   `PresenceChanged` (title, state, session), `SignedOut`. Keep-alive pings
-  only refresh an in-memory deadline and are never written.
+  only refresh an in-memory deadline and are never written. (Built:
+  presence events and the projection. Not built: the deadline, so nothing
+  expires yet.)
 - **Expiry is an event.** When a deadline passes, the server appends
   `PresenceExpired` (or `SessionExpired`), so a crashed client still ends
   its stream and a replay gives the same answer.

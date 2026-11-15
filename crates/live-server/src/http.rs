@@ -1,0 +1,570 @@
+//! The HTTP and WebSocket API (docs/live-api.md) over [`Live`].
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+
+use axum::Router;
+use axum::body::Bytes;
+use axum::extract::rejection::BytesRejection;
+use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{DefaultBodyLimit, Path, Query as Params, Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use live_proto::sign::TOKEN_LEEWAY_S;
+use live_proto::{
+    ClientMessage, ErrorBody, ErrorCode, Gamertag, Health, StreamMessage, TitleId, Xuid, lxm,
+};
+
+use crate::app::{ApiError, Live, MAX_TITLE_FILE, not_found};
+use crate::store::Query;
+
+/// Every request body but title files.
+pub const MAX_BODY: usize = 64 * 1024;
+/// WebSocket messages from clients.
+pub const MAX_WS_MESSAGE: usize = 16 * 1024;
+const DEFAULT_LIMIT: usize = 100;
+const MAX_LIMIT: usize = 1000;
+/// How long a `--private` stream waits for its auth message.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(10);
+/// WebSocket close code for a missing, bad or expired token.
+const CLOSE_UNAUTHORIZED: u16 = 4401;
+
+type Shared = State<Arc<Live>>;
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let status = match self.code {
+            ErrorCode::Invalid => StatusCode::BAD_REQUEST,
+            ErrorCode::Unauthorized => StatusCode::UNAUTHORIZED,
+            ErrorCode::Forbidden => StatusCode::FORBIDDEN,
+            ErrorCode::NotFound => StatusCode::NOT_FOUND,
+            ErrorCode::Conflict => StatusCode::CONFLICT,
+            ErrorCode::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+            ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::Unimplemented => StatusCode::NOT_IMPLEMENTED,
+            ErrorCode::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        };
+        let mut resp =
+            (status, axum::Json(ErrorBody::new(self.code, self.message))).into_response();
+        if status == StatusCode::UNAUTHORIZED {
+            resp.headers_mut()
+                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        }
+        resp
+    }
+}
+
+type ApiResult<T> = Result<T, ApiError>;
+
+fn json<T: serde::Serialize>(status: StatusCode, body: &T) -> Response {
+    (status, axum::Json(body)).into_response()
+}
+
+fn invalid(m: impl Into<String>) -> ApiError {
+    ApiError::new(ErrorCode::Invalid, m)
+}
+
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .strip_prefix("Bearer ")
+        .map(str::trim)
+}
+
+/// A JWS request body (`application/jose`): compact text.
+fn jws_body(body: Result<Bytes, BytesRejection>) -> ApiResult<String> {
+    let bytes = body_bytes(body)?;
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| invalid("the body must be a compact JWS"))?;
+    Ok(text.trim().to_string())
+}
+
+fn body_bytes(body: Result<Bytes, BytesRejection>) -> ApiResult<Bytes> {
+    body.map_err(|e| match e.status() {
+        StatusCode::PAYLOAD_TOO_LARGE => {
+            ApiError::new(ErrorCode::TooLarge, "request body too large")
+        }
+        _ => invalid(e.body_text()),
+    })
+}
+
+fn gamertag(raw: &str) -> ApiResult<Gamertag> {
+    Gamertag::new(raw).map_err(|_| not_found("no such account"))
+}
+
+/// `?limit=` and `?cursor=` (or `?from=`, its alias on the log).
+struct Paging {
+    after: u64,
+    limit: usize,
+}
+
+fn paging(p: &HashMap<String, String>) -> ApiResult<Paging> {
+    let num = |k: &str| -> ApiResult<Option<u64>> {
+        p.get(k)
+            .filter(|v| !v.is_empty())
+            .map(|v| {
+                v.parse::<u64>()
+                    .map_err(|_| invalid(format!("{k} must be a non-negative integer")))
+            })
+            .transpose()
+    };
+    let limit = num("limit")?.map_or(DEFAULT_LIMIT, |l| (l as usize).clamp(1, MAX_LIMIT));
+    let after = match p.get("cursor").filter(|v| !v.is_empty()) {
+        Some(c) => c.parse().map_err(|_| invalid("bad cursor"))?,
+        None => num("from")?.unwrap_or(0),
+    };
+    Ok(Paging { after, limit })
+}
+
+fn list_param(p: &HashMap<String, String>, keys: &[&str]) -> Vec<String> {
+    keys.iter()
+        .filter_map(|k| p.get(*k))
+        .flat_map(|v| v.split(','))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+        .collect()
+}
+
+pub fn router(live: Arc<Live>) -> Router {
+    let unimplemented = || get(not_built).post(not_built).put(not_built);
+    let files = Router::new()
+        .route(
+            "/v1/titles/{title}/files/{name}",
+            get(get_file).put(put_file),
+        )
+        .layer(DefaultBodyLimit::max(MAX_TITLE_FILE));
+    Router::new()
+        .route("/healthz", get(healthz))
+        .route("/.well-known/h2live.json", get(well_known))
+        .route("/v1/accounts", get(list_accounts).post(create_account))
+        .route("/v1/accounts/by-xuid/{xuid}/keys", get(keys_by_xuid))
+        .route("/v1/accounts/{gamertag}", get(account))
+        .route("/v1/accounts/{gamertag}/keys", get(keys_by_tag))
+        .route("/v1/presence", get(presence))
+        .route("/v1/events", get(list_events).post(post_event))
+        .route("/v1/stream", get(stream))
+        .route("/v1/games", unimplemented())
+        .route("/v1/games/{id}", unimplemented())
+        .route("/v1/games/{id}/frames", unimplemented())
+        .route("/v1/games/{id}/events", post(not_built))
+        .route("/v1/maps/{map}/outline", unimplemented())
+        .route("/v1/ingest", get(not_built))
+        .merge(files)
+        .fallback(|| async { not_found("no such endpoint") })
+        .method_not_allowed_fallback(|| async {
+            ApiError::new(ErrorCode::Invalid, "method not allowed here")
+                .into_response()
+                .with_status(StatusCode::METHOD_NOT_ALLOWED)
+        })
+        .layer(DefaultBodyLimit::max(MAX_BODY))
+        .layer(middleware::from_fn(cors))
+        .with_state(live)
+}
+
+trait WithStatus {
+    fn with_status(self, status: StatusCode) -> Self;
+}
+
+impl WithStatus for Response {
+    fn with_status(mut self, status: StatusCode) -> Self {
+        *self.status_mut() = status;
+        self
+    }
+}
+
+/// CORS (security §6): reads are open to any origin, writes to none. A
+/// preflight for anything but GET/HEAD gets no CORS headers, so browsers
+/// refuse to send it.
+async fn cors(req: Request, next: Next) -> Response {
+    let method = req.method().clone();
+    if method == Method::OPTIONS
+        && req
+            .headers()
+            .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
+    {
+        let wanted = req.headers()[header::ACCESS_CONTROL_REQUEST_METHOD].as_bytes();
+        let mut resp = StatusCode::NO_CONTENT.into_response();
+        if wanted == b"GET" || wanted == b"HEAD" {
+            let h = resp.headers_mut();
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                HeaderValue::from_static("*"),
+            );
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_METHODS,
+                HeaderValue::from_static("GET, HEAD"),
+            );
+            h.insert(
+                header::ACCESS_CONTROL_ALLOW_HEADERS,
+                HeaderValue::from_static("authorization, if-none-match"),
+            );
+            h.insert(
+                header::ACCESS_CONTROL_MAX_AGE,
+                HeaderValue::from_static("600"),
+            );
+        }
+        return resp;
+    }
+    let mut resp = next.run(req).await;
+    if method == Method::GET || method == Method::HEAD {
+        let h = resp.headers_mut();
+        h.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+        h.insert(
+            header::ACCESS_CONTROL_EXPOSE_HEADERS,
+            HeaderValue::from_static("etag"),
+        );
+    }
+    resp
+}
+
+async fn not_built() -> ApiError {
+    ApiError::new(
+        ErrorCode::Unimplemented,
+        "games, ingest and map outlines are not built yet",
+    )
+}
+
+async fn healthz(State(live): Shared) -> ApiResult<axum::Json<Health>> {
+    let position = live.store().head().await?;
+    Ok(axum::Json(Health { ok: true, position }))
+}
+
+async fn well_known(State(live): Shared) -> Response {
+    json(StatusCode::OK, &live.discovery())
+}
+
+async fn list_accounts(
+    State(live): Shared,
+    headers: HeaderMap,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let paging = paging(&p)?;
+    Ok(json(
+        StatusCode::OK,
+        &live.accounts(paging.after, paging.limit),
+    ))
+}
+
+async fn create_account(
+    State(live): Shared,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let created = live.create_account(&jws_body(body)?).await?;
+    Ok(json(StatusCode::CREATED, &created))
+}
+
+async fn account(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.account(&gamertag(&tag)?)?))
+}
+
+async fn keys_by_tag(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(tag): Path<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.keys_by_tag(&gamertag(&tag)?)?))
+}
+
+async fn keys_by_xuid(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path(xuid): Path<String>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let xuid = Xuid::parse(&xuid).map_err(|_| not_found("no such account"))?;
+    Ok(json(StatusCode::OK, &live.keys_by_xuid(xuid)?))
+}
+
+async fn presence(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.presence()))
+}
+
+fn event_query(p: &HashMap<String, String>) -> ApiResult<Query> {
+    let paging = paging(p)?;
+    Ok(Query {
+        after: paging.after,
+        limit: paging.limit,
+        stream: p.get("stream").filter(|s| !s.is_empty()).cloned(),
+        types: list_param(p, &["type", "types"]),
+        exclude: list_param(p, &["exclude"]),
+    })
+}
+
+async fn list_events(
+    State(live): Shared,
+    headers: HeaderMap,
+    Params(p): Params<HashMap<String, String>>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    Ok(json(StatusCode::OK, &live.events(&event_query(&p)?).await?))
+}
+
+async fn post_event(
+    State(live): Shared,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let event = live
+        .append_signed(bearer(&headers), &jws_body(body)?)
+        .await?;
+    Ok(json(StatusCode::CREATED, &event))
+}
+
+fn title_path(title: &str, name: &str) -> ApiResult<(TitleId, String)> {
+    let title = TitleId::parse(title).map_err(|_| invalid("title ids are 8 hex digits"))?;
+    if !live_proto::valid_file_name(name) {
+        return Err(invalid("file names are [A-Za-z0-9_.-]{1,64}"));
+    }
+    Ok((title, name.to_string()))
+}
+
+async fn get_file(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path((title, name)): Path<(String, String)>,
+) -> ApiResult<Response> {
+    live.authorize_read(bearer(&headers))?;
+    let (title, name) = title_path(&title, &name)?;
+    let (meta, bytes) = live.file(title, &name).await?;
+    let etag = format!("\"{}\"", meta.sha256);
+    let etag_value = HeaderValue::from_str(&etag).expect("hex is a valid header");
+    let matches = headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| {
+            v.split(',')
+                .any(|t| t.trim() == etag || t.trim() == meta.sha256 || t.trim() == "*")
+        });
+    if matches {
+        return Ok((StatusCode::NOT_MODIFIED, [(header::ETAG, etag_value)]).into_response());
+    }
+    Ok((
+        [
+            (header::ETAG, etag_value),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("application/octet-stream"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
+}
+
+async fn put_file(
+    State(live): Shared,
+    headers: HeaderMap,
+    Path((title, name)): Path<(String, String)>,
+    body: Result<Bytes, BytesRejection>,
+) -> ApiResult<Response> {
+    let (title, name) = title_path(&title, &name)?;
+    let bytes = body_bytes(body)?;
+    let published = live
+        .publish_file(bearer(&headers), title, &name, &bytes)
+        .await?;
+    Ok(json(StatusCode::OK, &published))
+}
+
+/// What a stream reader asked for.
+struct StreamFilter {
+    from: Option<u64>,
+    types: Vec<String>,
+    exclude: Vec<String>,
+}
+
+impl StreamFilter {
+    fn query(&self, after: u64, limit: usize) -> Query {
+        Query {
+            after,
+            limit,
+            stream: None,
+            types: self.types.clone(),
+            exclude: self.exclude.clone(),
+        }
+    }
+}
+
+async fn stream(
+    State(live): Shared,
+    Params(p): Params<HashMap<String, String>>,
+    ws: Result<WebSocketUpgrade, axum::extract::ws::rejection::WebSocketUpgradeRejection>,
+) -> ApiResult<Response> {
+    let from = p
+        .get("from")
+        .filter(|v| !v.is_empty())
+        .map(|v| {
+            v.parse::<u64>()
+                .map_err(|_| invalid("from must be a position"))
+        })
+        .transpose()?;
+    let filter = StreamFilter {
+        from,
+        types: list_param(&p, &["types", "type"]),
+        exclude: list_param(&p, &["exclude"]),
+    };
+    let ws = ws.map_err(|_| invalid("/v1/stream is a WebSocket"))?;
+    Ok(ws
+        .max_message_size(MAX_WS_MESSAGE)
+        .on_upgrade(move |socket| async move {
+            if let Err(reason) = run_stream(live, socket, filter).await {
+                eprintln!("live: stream closed: {reason}");
+            }
+        }))
+}
+
+async fn send(socket: &mut WebSocket, msg: &StreamMessage) -> Result<(), axum::Error> {
+    let text = serde_json::to_string(msg).expect("serializes");
+    socket.send(Message::Text(text.into())).await
+}
+
+async fn close(socket: &mut WebSocket, code: u16, reason: &str) {
+    let frame = CloseFrame {
+        code,
+        reason: reason.to_string().into(),
+    };
+    let _ = socket.send(Message::Close(Some(frame))).await;
+}
+
+/// The token in an auth message, checked; its `exp`.
+fn auth_message(live: &Live, text: &str) -> Result<i64, ApiError> {
+    match serde_json::from_str::<ClientMessage>(text) {
+        Ok(ClientMessage::Auth { token }) => live.authenticate_until(&token, lxm::READ),
+        Err(_) => Err(ApiError::new(
+            ErrorCode::Unauthorized,
+            "expected {\"kind\":\"auth\",\"token\":...}",
+        )),
+    }
+}
+
+/// Sends every stored event after `last` that the filter keeps, then
+/// moves `last` to at least the position the read model had reached.
+async fn catch_up(
+    live: &Live,
+    socket: &mut WebSocket,
+    filter: &StreamFilter,
+    last: &mut u64,
+) -> Result<(), String> {
+    const PAGE: usize = 500;
+    let target = live.position();
+    loop {
+        let batch = live
+            .store()
+            .read(&filter.query(*last, PAGE))
+            .await
+            .map_err(|e| e.to_string())?;
+        for e in &batch {
+            send(
+                socket,
+                &StreamMessage::Event {
+                    event: Box::new(e.to_wire()),
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+            *last = e.position;
+        }
+        if batch.len() < PAGE {
+            *last = (*last).max(target);
+            return Ok(());
+        }
+    }
+}
+
+/// Replays from `from` (default: the head), says `caught_up`, then
+/// follows the dispatcher's feed. On a `--private` server the first
+/// message must be a token, and the socket closes when it expires unless
+/// the client sends a fresh one.
+async fn run_stream(
+    live: Arc<Live>,
+    mut socket: WebSocket,
+    filter: StreamFilter,
+) -> Result<(), String> {
+    let mut expires: Option<i64> = None;
+    if live.policy().private {
+        let first = tokio::time::timeout(AUTH_TIMEOUT, socket.recv()).await;
+        let result = match first {
+            Ok(Some(Ok(Message::Text(text)))) => auth_message(&live, &text),
+            _ => Err(ApiError::new(
+                ErrorCode::Unauthorized,
+                "send an auth message first",
+            )),
+        };
+        match result {
+            Ok(exp) => expires = Some(exp),
+            Err(e) => {
+                close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
+                return Ok(());
+            }
+        }
+    }
+    // Subscribe before replaying, so nothing falls between the two.
+    let mut feed = live.feed();
+    let mut last = filter.from.unwrap_or_else(|| live.position());
+    catch_up(&live, &mut socket, &filter, &mut last).await?;
+    send(&mut socket, &StreamMessage::CaughtUp { position: last })
+        .await
+        .map_err(|e| e.to_string())?;
+    let probe = filter.query(0, 1);
+    loop {
+        let deadline = async {
+            match expires {
+                Some(exp) => {
+                    let wait = (exp + TOKEN_LEEWAY_S - crate::app::now()).max(0) as u64;
+                    tokio::time::sleep(Duration::from_secs(wait)).await
+                }
+                None => std::future::pending().await,
+            }
+        };
+        tokio::select! {
+            event = feed.recv() => match event {
+                Ok(e) => {
+                    if e.position > last {
+                        last = e.position;
+                        if probe.matches(&e) {
+                            send(&mut socket, &StreamMessage::Event { event: Box::new(e.to_wire()) }).await.map_err(|e| e.to_string())?;
+                        }
+                    }
+                }
+                // Fell behind the feed: re-read from the store.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    catch_up(&live, &mut socket, &filter, &mut last).await?;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+            },
+            msg = socket.recv() => match msg {
+                // Fresh tokens on a private stream; public streams ignore
+                // what clients send.
+                Some(Ok(Message::Text(text))) if expires.is_some() => match auth_message(&live, &text) {
+                    Ok(exp) => expires = Some(exp),
+                    Err(e) => {
+                        close(&mut socket, CLOSE_UNAUTHORIZED, &e.message).await;
+                        return Ok(());
+                    }
+                },
+                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
+                Some(Ok(_)) => {}
+            },
+            _ = deadline => {
+                close(&mut socket, CLOSE_UNAUTHORIZED, "token expired").await;
+                return Ok(());
+            }
+        }
+    }
+}
