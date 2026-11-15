@@ -334,6 +334,9 @@ impl Core {
                 let write = a.export.ordinal == ord::NT_WRITE_FILE;
                 let buffer = a.get(5);
                 let length = a.get(6) as usize;
+                if !write {
+                    timeline::phase::count(timeline::phase::Counter::ReadBytes, length as u64);
+                }
                 memory.check(
                     buffer,
                     length,

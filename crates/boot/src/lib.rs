@@ -528,9 +528,25 @@ pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host
     let mut audio_idle = 0u64;
     // H2_BOOT_STOP_AT_PRESENT=N: end the run once N presents are out.
     let stop_at: Option<u64> = std::env::var("H2_BOOT_STOP_AT_PRESENT").ok().and_then(|v| v.parse().ok());
+    // H2_FRAME_STATS=1: frame times split by phase (docs/frame-budget.md).
+    // `h2 play --frame-stats` may have started them already.
+    let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
+    // H2_PERF_FROM=N (cli built with `--features perf`): open
+    // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N.
+    // It is finished below, before the module is dropped.
+    #[cfg(feature = "perf")]
+    let mut perf_from: Option<u64> = std::env::var("H2_PERF_FROM").ok().and_then(|v| v.parse().ok());
+    #[cfg(feature = "perf")]
+    let mut perf_session: Option<perf::Session> = None;
     for slice in 0..opts.max_slices {
         if stop_at.is_some_and(|n| d3d_diag::presents() >= n) {
             break;
+        }
+        #[cfg(feature = "perf")]
+        if perf_from.is_some_and(|n| d3d_diag::presents() >= n) {
+            perf_from = None;
+            eprintln!("perf: session from present {}", d3d_diag::presents());
+            perf_session = perf::Session::from_env();
         }
         if let Some(pad) = &pad {
             script.step(slice, pad);
@@ -578,6 +594,11 @@ pub fn run_hosted(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts, mut host: Host
         a.output.halt();
     }
     let secs = t.elapsed().as_secs_f64();
+    #[cfg(feature = "perf")]
+    drop(perf_session.take());
+    if frame_stats && let Some(report) = timeline::phase::stop() {
+        eprint!("{report}");
+    }
     let (stop, eip) = match &outcome {
         kernel::RunOutcome::Stopped { thread, transfer } => {
             let th = m.thread(*thread).context("stopped thread")?;

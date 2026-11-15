@@ -89,7 +89,7 @@ fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--bindings FILE` (docs/input.md
 TOML), `--input-timeline FILE` (an input timeline, docs/input.md, played on
 guest time in place of live input), `--status` (frame rates once a second,
-the slice count every 1000 slices). The boot's environment variables still
+the slice count every 1000 slices), `--frame-stats` (frame-time stats, below). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
 scripted run goes through the same `KeyboardMouse`, `InputManager` and XAPI
 as a person's keys. Hold keys for one present at the menu's frame rate
@@ -150,6 +150,35 @@ Where the input pump runs: after every slice, not once per guest frame. Mouse
 motion is held until the game's `XInputGetState` has read it and is scaled by
 the read interval, so mouse look does not depend on the slice rate or the
 game's frame rate (docs/input.md, "Keyboard and mouse").
+
+### Frame stats: `--frame-stats`
+
+`h2 play --frame-stats`, or `H2_FRAME_STATS=1` for `h2 play` and `h2 run`,
+times every frame on the game thread and splits it into phases
+(`timeline::phase`, docs/frame-budget.md):
+
+| phase | what |
+|---|---|
+| `cpu` | game code, runtime accessors, kernel, scheduler, HLE calls |
+| `dec` / `decode` | push-buffer decode and device state |
+| `enc` / `encode` | wgpu on the CPU: draw recording, shader prepare, pass encode, pipeline compiles, texture uploads, the present copy |
+| `sub` / `submit` | `queue.submit` |
+| `gpu` / `gpu-wait` | blocking GPU round trips: readbacks, `D3DSWAP_FINISH` |
+| `pace` | the tick's sleep to wall time; slack, not cost |
+
+Over the last 5 s it shows fps and the p50, p99 and max frame time, and
+the mean of each phase: in the window's top-left corner (the banner, so
+not with `--follow`, whose banner keeps the corner), and once a second on
+stderr. At exit the run prints the whole run's percentiles and its ten
+worst frames, each with its phases and what happened in it: draws,
+submits, pipeline compiles, nv2a shader compiles, texture uploads,
+readbacks and bytes read from files. `H2_FRAME_STATS_CSV=<file>` writes
+one row per frame; `H2_FRAME_STATS_FROM=N` starts the exit report at
+frame N. F6 hides the line until the next refresh.
+
+Cost: one clock read per phase switch (a few per draw, about 1% of a
+menu frame) and one short lock per frame. Off, each hook is a relaxed
+load and a branch.
 
 ## Following a branch: `h2 play --follow`
 
@@ -496,6 +525,6 @@ mouse capture were not exercised in that check.
 - HiDPI: the surface is in physical pixels and the frame is scaled into it;
   nothing is done about the backing scale beyond that.
 - Pacing granularity is the chunk size (see Pacing).
-- No on-screen stats; status is in the title bar. The only overlay is the
-  `--follow` banner.
+- The only on-screen stats are `--frame-stats`, drawn in the banner's
+  corner; rates are also in the title bar.
 - Window position, size and fullscreen are not remembered between runs.

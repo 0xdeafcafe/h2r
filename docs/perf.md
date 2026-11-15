@@ -304,17 +304,25 @@ Adding a scenario: implement `perf::bench::Scenario` (`prepare` untimed,
 
 ## Boot hook
 
-The boot driver (crates/boot) is not a dependency of `perf`. Two small
-changes on the boot side, not on master yet, wire it in.
+The boot driver (crates/boot) depends on `perf` only behind its `perf`
+feature, which the CLI's `perf` feature turns on.
 
-1. **Profiling `h2 run`.** In `boot::run`, after `load_module` and before
-   the slice loop, add `let _perf = perf::Session::from_env();`. Declare it
-   after `module` so it drops first: Rust drops locals in reverse order,
-   and resolution needs the dylib loaded. Then
-   `H2_PROFILE=dir H2_TIMELINE=trace.json h2 run disc.iso` profiles a boot.
+1. **Profiling `h2 run` and `h2 play`** (on master). With an `h2` built
+   with `--features perf`, `H2_PERF_FROM=N` opens
+   `perf::Session::from_env()` at present N, on the game thread, and
+   finishes it when the slice loop ends, before the dylib is unloaded:
+
+   ```
+   H2_PERF_FROM=4220 H2_PROFILE=$R/prof H2_PROFILE_HZ=250 \
+   H2_TIMELINE=$R/trace.json H2_TIMELINE_CATS=all h2 run disc/halo2.iso ...
+   h2 profile budget $R/trace.json
+   ```
+
    The fallback interpreter is already recognised (`boot::fallback::*` is
    the `fallback` category). The kernel, runtime and d3d events come from
-   the hooks above. Swap counts frames.
+   the hooks above. Swap counts frames. For frame times without a trace,
+   `H2_FRAME_STATS=1` (docs/app.md "Frame stats") splits every frame into
+   phases at a clock read per phase switch.
 2. **`boot/menu-hold`.** Split `boot::run` into setup and stepping, and
    implement `perf::boot::BootDriver` on the result:
    - `boot_to_menu()`: run until the main menu is up. For example, step

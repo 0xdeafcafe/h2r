@@ -1222,6 +1222,7 @@ fn compile(
     key: &ProgramKey,
     id: u32,
 ) -> Result<Compiled, String> {
+    timeline::phase::count(timeline::phase::Counter::Shaders, 1);
     let program = match &key.vertex {
         VertexSource::Microcode(words) => vsh::Program::from_words(ProgramKind::Normal, words)
             .map_err(|e| format!("vertex program: {e}"))?,

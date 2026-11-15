@@ -249,6 +249,7 @@ impl GfxBackend {
         let Some(p) = self.pending.take() else {
             return Ok(());
         };
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "flush pass")
             .arg("draws", p.draws.len() as u64);
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
@@ -289,6 +290,8 @@ impl GfxBackend {
             s.flush_uploads(&self.ctx);
         }
         let index = {
+            let _p = timeline::phase::enter(timeline::phase::Phase::Submit);
+            timeline::phase::count(timeline::phase::Counter::Submits, 1);
             let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
             self.ctx.queue.submit([enc.finish()])
         };
@@ -403,6 +406,8 @@ impl Backend for GfxBackend {
     }
 
     fn upload_texture(&mut self, t: &DecodedTexture) -> Result<HostTexture, String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        timeline::phase::count(timeline::phase::Counter::Uploads, 1);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "texture upload");
         let texture =
             gfx::upload::upload_texture(&self.ctx.device, &self.ctx.queue, t, "guest texture");
@@ -439,6 +444,8 @@ impl Backend for GfxBackend {
         d: &ResolvedDraw,
         textures: [Option<&HostTexture>; 4],
     ) -> Result<DrawOutcome, String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        timeline::phase::count(timeline::phase::Counter::Draws, 1);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "draw");
         // A full pass is submitted here, before the draw stages anything,
         // like a target switch.
@@ -627,6 +634,7 @@ impl Backend for GfxBackend {
         bytes: &[u8],
     ) -> Result<bool, String> {
         self.flush()?;
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "surface write");
         let kind = self.store.get(surface).map_err(|e| e.to_string())?.kind();
         match kind {
@@ -670,6 +678,7 @@ impl Backend for GfxBackend {
     ) -> Result<Option<HostTexture>, String> {
         // The copy holds everything drawn so far.
         self.flush()?;
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(
             timeline::Cat::Gfx,
             timeline::Track::Host,
@@ -758,6 +767,8 @@ impl Backend for GfxBackend {
         use gfx::surface::SurfaceLayout;
         self.flush()?;
         // A GPU round trip: submit, wait, map.
+        let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
+        timeline::phase::count(timeline::phase::Counter::Readbacks, 1);
         let _t = timeline::span(
             timeline::Cat::Gfx,
             timeline::Track::Host,
@@ -821,6 +832,7 @@ impl Backend for GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
         self.flush()?;
         if let Some(s) = self.shaders.as_mut() {
@@ -832,6 +844,7 @@ impl Backend for GfxBackend {
         }
         if flags & 4 != 0 {
             // D3DSWAP_FINISH: wait for the GPU.
+            let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
             let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
             let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
         }
@@ -865,6 +878,8 @@ impl Backend for GfxBackend {
 
     fn read_pixel_count(&mut self, ticket: u64) -> Result<u64, String> {
         // Waits for the GPU when the report is not yet back.
+        let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
+        timeline::phase::count(timeline::phase::Counter::Readbacks, 1);
         let _t = timeline::span(
             timeline::Cat::Gfx,
             timeline::Track::Host,

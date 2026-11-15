@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
-          [--input-timeline FILE]
+          [--input-timeline FILE] [--frame-stats]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
 
@@ -26,7 +26,11 @@ Opens a window and runs the recompiled game live (builds the dylib first when
 --out has none, or one built from another image or generator). --out and
 --data default to $TMPDIR/h2boot and $TMPDIR/h2boot-data, as for `h2 run`. --slices is unlimited by default.
 --status prints the frame rates once a second and the slice count every
-1000 slices (the unit H2_BOOT_INPUT scripts in). --input-timeline plays an
+1000 slices (the unit H2_BOOT_INPUT scripts in). --frame-stats (or
+H2_FRAME_STATS=1) shows fps, p50/p99/max frame time and the split into game
+CPU, push-buffer decode, wgpu encode, submit, GPU wait and pacing over the
+last 5 s, in the window and once a second on stderr, and the worst frames at
+exit (docs/frame-budget.md). --input-timeline plays an
 input crate timeline (docs/input.md) on guest time instead of live input.
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
@@ -127,7 +131,11 @@ fn hosted(
                     // H2_BOOT_INPUT counts slices; this says where a run is.
                     eprintln!("play: slice {slices}, guest time {:.1}s", now as f64 / 1e7);
                 }
-                !interrupted.load(Ordering::Relaxed) && host.tick(now) == app::Control::Continue
+                if interrupted.load(Ordering::Relaxed) {
+                    return false;
+                }
+                let _pace = timeline::phase::enter(timeline::phase::Phase::Pace);
+                host.tick(now) == app::Control::Continue
             }
         })),
     }
@@ -220,6 +228,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut disc = None;
     let mut audio = true;
     let mut follow_status = None;
+    let mut frame_stats = timeline::phase::Config::from_env();
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
         // AudioOut would open it a second time (its discard renderer only
@@ -262,6 +271,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--no-vsync" => config.vsync = false,
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
+            "--frame-stats" => {
+                frame_stats.get_or_insert(timeline::phase::Config {
+                    log_every_ns: Some(1_000_000_000),
+                    window_ns: timeline::phase::Config::DEFAULT_WINDOW_NS,
+                    worst: 10,
+                    ..Default::default()
+                });
+            }
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
             "--input-timeline" => {
                 let path = PathBuf::from(val()?);
@@ -316,6 +333,13 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     #[cfg(not(unix))]
     let _ = follow_status;
+    if let Some(c) = frame_stats {
+        timeline::phase::start(c).context("starting frame stats")?;
+        // The follow banner wins the corner; the stats still log.
+        if config.banner.is_none() {
+            config.banner = Some(stats_banner());
+        }
+    }
     let report = app::run(config, move |host| {
         let host = hosted(host, audio, status, timeline, Arc::clone(&interrupted));
         let r = boot::run_hosted(&xbe, &lib, &opts, host);
@@ -352,6 +376,34 @@ pub fn run(args: Vec<String>) -> Result<()> {
     Ok(())
 }
 
+/// A banner showing the frame stats' rolling window, refreshed once a
+/// second (`--frame-stats`).
+fn stats_banner() -> app::Banner {
+    let banner = app::Banner::new();
+    let b = banner.clone();
+    std::thread::Builder::new()
+        .name("frame-stats".into())
+        .spawn(move || {
+            loop {
+                std::thread::sleep(Duration::from_secs(1));
+                if !timeline::phase::enabled() {
+                    b.set(None);
+                    return;
+                }
+                b.set(stats_notice(timeline::phase::window_summary()));
+            }
+        })
+        .expect("spawning the frame-stats reader");
+    banner
+}
+
+fn stats_notice(s: Option<timeline::phase::Summary>) -> Option<app::Notice> {
+    s.map(|s| app::Notice {
+        kind: app::NoticeKind::Info,
+        text: s.short_line(),
+    })
+}
+
 /// The window's banner, kept in step with the `--follow` supervisor's
 /// status file (polled twice a second).
 #[cfg(unix)]
@@ -382,6 +434,27 @@ mod tests {
         assert_eq!(on_signal(&flag, &closer), OnSignal::Stopping);
         assert!(closer.requested() && flag.load(Ordering::Relaxed));
         assert_eq!(on_signal(&flag, &closer), OnSignal::ExitNow);
+    }
+
+    #[test]
+    fn the_stats_notice_fits_the_banner() {
+        assert_eq!(stats_notice(None), None);
+        let s = timeline::phase::Summary {
+            frames: 75,
+            fps: 14.8,
+            p50_ms: 61.2,
+            p99_ms: 998.4,
+            max_ms: 1402.0,
+            phase_ms: [40.1, 3.2, 8.4, 2.0, 5.5, 0.0],
+        };
+        let n = stats_notice(Some(s)).unwrap();
+        assert_eq!(n.kind, app::NoticeKind::Info);
+        assert_eq!(
+            n.text,
+            "14.8 fps p50 61 p99 998 max 1402 ms | cpu 40 dec 3 enc 8 sub 2 gpu 6 pace 0"
+        );
+        // The banner cuts at 96 characters.
+        assert!(n.text.len() < 96);
     }
 
     #[test]

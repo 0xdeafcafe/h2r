@@ -21,6 +21,8 @@
 //! assert!(String::from_utf8(json).unwrap().contains("\"slice\""));
 //! ```
 
+pub mod phase;
+
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -547,10 +549,13 @@ fn wait_end_slow(generation: u32, thread: u32) {
 
 /// One guest frame was presented (Swap). Always counted, so [`frames`]
 /// gives an fps without recording; also an instant when [`Cat::Frame`]
-/// is on.
+/// is on, and the end of a frame for [`phase`] stats when they are on.
 #[inline]
 pub fn frame() {
     let n = FRAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    if phase::enabled() {
+        phase::frame_end(n);
+    }
     if let Some(g) = token(Cat::Frame) {
         record(
             g,

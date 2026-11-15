@@ -1333,6 +1333,7 @@ impl<B: Backend> Device<B> {
         if put == self.consumed {
             return Ok(None);
         }
+        let _p = timeline::phase::enter(timeline::phase::Phase::Decode);
         let _t = timeline::span(timeline::Cat::D3d, timeline::Track::Host, "pushbuf drain")
             .arg("bytes", put.wrapping_sub(self.consumed) as u64);
         if put < self.consumed || put as u64 > end || !(put - self.consumed).is_multiple_of(4) {

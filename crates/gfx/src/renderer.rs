@@ -716,6 +716,7 @@ impl Renderer {
         let pipeline = self
             .cache
             .get_or_insert_with(&key, |k| {
+                timeline::phase::count(timeline::phase::Counter::Pipelines, 1);
                 let _t =
                     timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "pipeline create");
                 create_render_pipeline(&ctx.device, k, program, "xbox draw")
@@ -732,6 +733,7 @@ impl Renderer {
             let pipeline = self
                 .count_cache
                 .get_or_insert_with(&key, |k| {
+                    timeline::phase::count(timeline::phase::Counter::Pipelines, 1);
                     let _t = timeline::span(
                         timeline::Cat::Gfx,
                         timeline::Track::Host,

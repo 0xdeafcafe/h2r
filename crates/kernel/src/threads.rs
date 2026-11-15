@@ -434,6 +434,7 @@ impl Machine {
                 // next happens no earlier in wall time than in logical time,
                 // and a host thread reading guest memory is not held up.
                 let now = self.kernel.lock().clock.counter();
+                let _p = timeline::phase::enter(timeline::phase::Phase::Pace);
                 let _t = timeline::span(timeline::Cat::Sched, timeline::Track::Host, "pacer wait");
                 pacer.wait(now);
             }
