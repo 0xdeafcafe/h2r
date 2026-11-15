@@ -67,6 +67,8 @@ pub struct Worker<B: Backend> {
     depth_words: Option<(u32, u64, Vec<u8>)>,
     shared: Arc<Shared>,
     exit: bool,
+    /// [`ThreadedBackend::with_jitter`]: a xorshift state.
+    jitter: Option<u64>,
 }
 
 #[derive(Default)]
@@ -202,8 +204,15 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
                     depth_words: None,
                     shared: s,
                     exit: false,
+                    jitter: None,
                 };
                 while let Ok(job) = rx.recv() {
+                    if let Some(x) = w.jitter.as_mut() {
+                        *x ^= *x << 13;
+                        *x ^= *x >> 7;
+                        *x ^= *x << 17;
+                        std::thread::sleep(std::time::Duration::from_micros(*x % 300));
+                    }
                     let t = std::time::Instant::now();
                     job(&mut w);
                     let ns = t.elapsed().as_nanos() as u64;
@@ -242,6 +251,18 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             busy: std::time::Duration::from_nanos(self.shared.busy_ns.load(Ordering::Relaxed)),
             ..self.waits
         }
+    }
+
+    /// Delays the render thread by a pseudo-random 0-300 us before every
+    /// command from here on (seeded), so tests can show that its timing
+    /// changes nothing the guest sees.
+    pub fn with_jitter(self, seed: u64) -> Self {
+        let seed = seed | 1;
+        self.post(move |w| {
+            w.jitter = Some(seed);
+            Ok(())
+        });
+        self
     }
 
     /// Waits until the render thread has run everything queued so far.

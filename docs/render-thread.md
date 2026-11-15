@@ -105,8 +105,19 @@ Each `Backend` method falls in one of three classes
    run stops instead of continuing with a device that differs from a
    synchronous run. `ThreadedBackend::misses` counts them.
    `GfxBackend` skips a draw only when the nv2a translator cannot
-   translate it (`Nv2aShaders::prepare`), which on the menu does not
-   happen (no `draw skipped` events in the menu window).
+   translate it (`Nv2aShaders::prepare`). Every menu run below reached
+   present 560, so no speculation was wrong there; a level that has
+   untranslatable draws would stop (see "Risks").
+4. **Device-internal reads.** A texture over the depth buffer
+   (`0x509368`, `0x50936C`: the menu's fog/distortion pass) used to be
+   made by the device: `read_depth`, decode, `upload_texture`. Those
+   bytes never reach guest memory, but the read made the guest wait for
+   the whole queue once a frame. `Backend::depth_alias_texture` (default:
+   the device does it as before) lets the render thread read back,
+   decode and upload at that point in the queue, once per depth
+   generation as the device did. Whether a description decodes depends
+   only on the description, so the device checks it once per description
+   on zero bytes and skips exactly where it skipped before.
 
 Against the requirements:
 
@@ -147,25 +158,106 @@ Against the requirements:
   a closure on a channel. `finish`, `with_inner` and `with_surface` run
   something after the queue and wait (tests, reports).
 - `H2_RENDER_THREAD=1` with `H2_BOOT_GFX` (boot's `d3d_glue::install`)
-  wraps the headless `GfxBackend` in it. `h2 play` is not wired yet: it
+  wraps the headless `GfxBackend` in it. `H2_RENDER_THREAD_STATS=1`
+  prints the waits when it is dropped. `h2 play` is not wired yet: it
   builds its own `GfxBackend` (`crates/cli/src/play_cmd.rs`) and would
   wrap it the same way; its present hook already only publishes into the
   shared frame slot.
 - `menu_cpu` (docs/BOOT.md) now also prints
   `guest_thread_cpu_ms_per_frame`, the runner thread's own CPU time,
   which is the guest's critical path.
-- Tests (`crates/d3d/tests/threaded.rs`): one device sequence (an RTT
-  level cleared, sampled in place, stored into by the guest, written back
-  by a busy check, three swaps) through a backend and through the render
-  thread gives the same backend calls, the same device stats and events,
-  the same guest memory, and on the GPU the same back-buffer bytes and
-  batch counts; a wrong speculation stops the next call; reads wait for
-  the work queued before them.
+- Tests (`crates/d3d/tests/threaded.rs`, `depth_textures.rs`): one
+  device sequence through a backend and through the render thread. The
+  sequence clears an RTT level, samples it in place, has the guest store
+  into it, writes it back with `BlockOnResource`, and then runs
+  `EndVisibilityTest`, `SetFence`, `BlockOnTime`, the busy check,
+  `GetVisibilityTestResult`, `Swap` and `KickOff`, over three frames.
+  Both paths give:
+  - the same observed values: entry results, the level's bytes after
+    each wait, and 8 KiB of device words (GPU time, completion word, swap
+    fences, register window);
+  - the same backend calls, device stats, events and guest memory;
+  - on the GPU, the same back-buffer bytes and batch counts.
+
+  They match too with the render thread lagging by seeded random
+  amounts (`ThreadedBackend::with_jitter`, three seeds), which is the
+  determinism check: its timing changes nothing the guest sees.
+  Depth-alias textures made on the render thread give the same
+  read-backs, uploads, draws, skips and stats. A wrong speculation stops
+  the next call, and reads wait for the work queued before them.
 
 ## Measurements
 
-MEASUREMENTS
+`menu_cpu` (docs/BOOT.md), exact passes, presents 480-560, fresh data,
+the same dylib (master's generator), one run at a time in the bench gate
+on a shared 10-core M-series machine. Load averages are at each run's
+start. `guest CPU` is the runner thread's own CPU per frame; `reads` and
+`render busy` come from the render thread's counters (busy is wall time
+in backend work, GPU waits included).
+
+| build | render thread | load | fps | ms/frame | process CPU ms | guest CPU ms | reads/frame (wait ms) | render busy ms |
+|---|---|---|---:|---:|---:|---:|---|---:|
+| master 9a39ed7 | - | 55 | 4.75 | 211 | 226 | - | - | - |
+| branch | off | 7 | 4.81 | 208 | 222 | 167.8 | - | - |
+| branch | off | 86 | 4.66 | 215 | 229 | 171.8 | - | - |
+| first cut | on | 9 | 4.71 | 212 | 248 | 125.9 | 1.00 (82.8) | 112.9 |
+| final | on | 100 | 6.30 | 159 | 252 | 130.5 | 0 (throttle 8.9) | 159.4 |
+| final | on | 23 | **7.65** | **131** | 240 | **125.9** | 0 | 104.1 |
+
+- **Guest-thread CPU** falls from about 170 to about 126 ms a frame
+  (-27%): that is the backend's CPU work (shader preparation, recording,
+  encoding, submission, uploads, the present hook).
+- **The guest also stops waiting.** With the synchronous backend a
+  frame took about 210 ms of wall time against 170 ms of guest CPU: about
+  40 ms of GPU waits (`D3DSWAP_FINISH`, read-backs). With the final cut,
+  wall time per frame (131 ms) is the guest thread's CPU time (126 ms).
+- **The first cut gained nothing**, which is why the depth-alias change
+  is part of the design. Its one wait a frame was the depth read-back for
+  the fog pass. It cost 83 ms, because the guest waited for the whole
+  frame's queue before it. Moving that read to the render thread
+  removed the last per-frame wait.
+- **Fps** goes from 4.75 (master) to 7.65 (+61%) at similar load. Under
+  heavy load (100) it was still 6.30, with the frame-in-flight limit
+  holding the guest 9 ms a frame: there the render thread was the
+  slower side.
+- **Frames are byte-identical.** Every 20th frame from 1 to 560 (29
+  PNGs) of master and of both render-thread cuts compared equal with
+  `cmp`.
+
+Estimate against the 33.3 ms budget: the render thread takes the
+backend's whole cost off the critical path. The frame then costs
+max(guest, render) instead of guest + render. Both are now about 100-130
+ms, so 30 fps needs both sides cut about 4x. The guest side is the
+runtime, generated code, x87 and kernel work in docs/perf-budget.md. The
+render side is gfx-perf's encode and submit, now off the guest's thread
+but still a ceiling of about 10 fps at 100 ms.
 
 ## Risks and next steps
 
-RISKS
+- **Speculated outcomes.** A draw that `GfxBackend` skips (an
+  untranslatable shader) stops a render-thread run where the synchronous
+  run records `DrawSkipped` and goes on. The menu has none; levels have
+  not been run with the render thread. The exact fix is to decide
+  translatability on the guest side: split `Nv2aShaders::prepare` into
+  the program key and compile cache, kept by the device, and the
+  uniforms and bind groups, kept on the render thread. Compiles are rare
+  (about 0.1 pipeline creations a frame).
+- **Copies on the guest thread.** `draw` clones each `ResolvedDraw`
+  (streams and indices) and `upload_texture` its decoded texels, because
+  the trait passes references. Taking them by value would remove those
+  copies.
+- **Errors arrive late.** A backend error stops the guest at the next
+  backend call, not at the entry that caused it.
+- **Waits remaining.** RTT write-backs the guest asks for
+  (`BlockOnResource`, the busy check, `BlockOnTime`, push-buffer
+  callbacks) and pixel-count reads still wait for the queue. The menu
+  has none in its steady state; a level with many could lose part of the
+  gain.
+- **Memory and latency.** At most two presents in flight. Under load the
+  limit is what holds the guest (6.30 fps run).
+- **`h2 play`** is not wired yet (`crates/cli/src/play_cmd.rs`). Its
+  present hook only publishes into the shared frame slot, so wrapping
+  its `GfxBackend` the same way should be enough.
+- **Measurement noise.** These are single runs on a shared machine with
+  load swinging between 7 and 100. Repeat on a quiet machine before
+  quoting fps.

@@ -64,10 +64,15 @@ fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, rect: [f32
 }
 
 /// Render-to-texture into level A, sampled in place and through memory,
-/// a guest store into the level, a busy check that writes it back, a
-/// swap, and the frame drawn again. Returns the device for the caller to
-/// read the back buffer.
-fn scenario<B: Backend>(backend: B) -> (Device<B>, SparseMemory) {
+/// a guest store into the level, waits that write it back, fences, a
+/// visibility test, a swap, and the frame drawn again. Returns the device
+/// for the caller to read the back buffer, and every value the guest
+/// could observe along the way: entry results, the device's guest words
+/// (GPU time, completion word, swap count and fences, register window)
+/// and the level's bytes after each wait.
+fn scenario<B: Backend>(backend: B) -> (Device<B>, SparseMemory, Vec<String>) {
+    let mut seen = Vec::new();
+    let dev = d3d::GuestLayout::HALO2.device;
     let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
     set_states(&mut d, &mut m);
     level(&mut m);
@@ -93,12 +98,23 @@ fn scenario<B: Backend>(backend: B) -> (Device<B>, SparseMemory) {
         m.write(0x8000_0000 | DATA_A, &[0x77; 64]).unwrap();
         d.note_write(0x8000_0000 | DATA_A, 64);
         d.block_on_resource(&mut m, TEX_A).unwrap();
+        seen.push(format!("level {:?}", m.read_vec(0x8000_0000 | DATA_A, LEN).unwrap()));
         textured_quad(&mut d, &mut m, [32.0, 0.0, 64.0, 32.0], 0xFFFF_FFFF);
+        d.end_visibility_test(&mut m, frame).unwrap();
+        let fence = d.set_fence(&mut m).unwrap();
+        d.block_on_time(&mut m).unwrap();
+        let busy = d.resource_busy(&mut m, TEX_A).unwrap();
+        let visible = d.get_visibility_test_result(&mut m, frame).unwrap();
+        seen.push(format!(
+            "fence {fence} completed {} busy {busy} visible {visible:?}",
+            d.gpu_completed()
+        ));
         d.swap(&mut m, 0).unwrap();
         d.kick_off(&mut m).unwrap();
+        seen.push(format!("device {:?}", m.read_vec(dev, 0x2000).unwrap()));
     }
     textured_quad(&mut d, &mut m, [0.0, 32.0, 32.0, 64.0], 0xFFFF_FFFF);
-    (d, m)
+    (d, m, seen)
 }
 
 #[test]
@@ -109,8 +125,11 @@ fn the_render_thread_makes_the_same_backend_calls() {
         r
     };
     let (direct, queued) = (recorder(), recorder());
-    let (mut a, mut am) = scenario(direct);
-    let (mut b, mut bm) = scenario(ThreadedBackend::new(queued).unwrap());
+    let (mut a, mut am, seen_a) = scenario(direct);
+    let (mut b, mut bm, seen_b) = scenario(ThreadedBackend::new(queued).unwrap());
+    assert_eq!(seen_a, seen_b, "what the guest observed");
+    let s = a.stats();
+    assert!(s.rtt_writebacks > 0 && s.rtt_direct_samples > 0, "{s:?}");
     a.flush_render_targets(&mut am).unwrap();
     b.flush_render_targets(&mut bm).unwrap();
     assert_eq!(a.take_events(), b.take_events());
@@ -134,8 +153,9 @@ fn the_render_thread_draws_the_same_pixels() {
             return;
         }
     };
-    let (mut a, mut am) = scenario(GfxBackend::new(ctx_a));
-    let (mut b, mut bm) = scenario(ThreadedBackend::new(GfxBackend::new(ctx_b)).unwrap());
+    let (mut a, mut am, seen_a) = scenario(GfxBackend::new(ctx_a));
+    let (mut b, mut bm, seen_b) = scenario(ThreadedBackend::new(GfxBackend::new(ctx_b)).unwrap());
+    assert_eq!(seen_a, seen_b, "what the guest observed");
     assert_eq!(a.take_events(), b.take_events());
     assert_eq!(a.stats(), b.stats());
     let (pa, _) = a.backend.read_color(a.back_buffer().unwrap()).unwrap();
@@ -205,4 +225,31 @@ fn reads_wait_for_the_work_before_them_and_textures_are_freed() {
     }
     t.finish().unwrap();
     assert_eq!(t.misses(), 0);
+}
+
+/// The render thread's timing changes nothing the guest sees: with it
+/// lagging by random amounts (three seeds) every observed value, the
+/// backend calls and guest memory match the synchronous backend.
+#[test]
+fn render_thread_timing_changes_nothing_the_guest_sees() {
+    let recorder = || {
+        let mut r = RecordingBackend::new();
+        r.sample_surfaces = true;
+        r
+    };
+    let (mut a, mut am, seen_a) = scenario(recorder());
+    a.flush_render_targets(&mut am).unwrap();
+    for seed in [1, 0x9e37_79b9, 0xdead_beef] {
+        let t = ThreadedBackend::new(recorder()).unwrap().with_jitter(seed);
+        let (mut b, mut bm, seen_b) = scenario(t);
+        b.flush_render_targets(&mut bm).unwrap();
+        assert_eq!(seen_a, seen_b, "seed {seed:#x}");
+        assert_eq!(a.stats(), b.stats(), "seed {seed:#x}");
+        let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
+        assert_eq!(a.backend.calls, calls, "seed {seed:#x}");
+        assert_eq!(
+            am.read_vec(0x8000_0000 | DATA_A, LEN).unwrap(),
+            bm.read_vec(0x8000_0000 | DATA_A, LEN).unwrap()
+        );
+    }
 }
