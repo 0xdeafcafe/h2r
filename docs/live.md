@@ -180,8 +180,12 @@ anything but loopback.
 
 **`h2 play --live`** starts a service inside the process on a background
 runtime: Postgres from `$H2_LIVE_DB` or `postgres://localhost/h2live`
-(creating the database if it is missing), else the in-memory store with a
-one-line warning. It binds 127.0.0.1 on a free port (`--live-listen ADDR`
+(creating the database if it is missing), else a file-backed log in the
+data directory (`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`),
+so accounts, friends, teams, games and title files survive a restart; the
+in-memory store only if another server holds that directory, with a
+warning. When no MOTD was ever published, the embedded server publishes a
+default (`default_motd.rs`). It binds 127.0.0.1 on a free port (`--live-listen ADDR`
 for a fixed one) with the identity in `live/server`, so its accounts are
 `h2 live serve`'s. `--live-server URL` uses a running service instead. The
 account is the first local one for that server whose key the server still
@@ -773,14 +777,23 @@ After SignedIn, the worker checks these two files:
 
 A 404 produces no message. Other fetch failures remain errors rather than an
 invented empty file. Enumeration uses a logon-time catalog; publishing a previously
-absent file requires another logon. Details and downloads fetch current bytes
+absent file requires another logon. With the default MOTD always published,
+the MOTD is in every logon catalog; a replacement reaches the game at its
+next sign-in. Details and downloads fetch current bytes
 again, so replacements and removals are observed. No legacy Xbox storage endpoint
 is contacted.
 
+> Caution (2026-11-16): static RE indicates `0x2c7410`'s class is the
+> voice/text message playback screen and the tags below are standard message
+> properties (VOICE_DATA `0x9c1`, TEXT_LANGUAGE `0x4c5`); retail MOTD delivery
+> is being re-traced through title storage (`0x0008e240` →
+> StorageDownloadToMemory).
+
 MessageEnumerate fills 64-byte XONLINE_MSG_SUMMARY records, with type 1, title ID
-`0x4d530064` and message ID at offset `0x20`. The count is output-only. Each
-signed-in controller also receives one packed nine-byte GetNotificationEx record
-per published file, with MORE_ITEMS until the queue is drained. MessageDetails
+`0x4d530064` and message ID at offset `0x20`. The count is output-only. GetNotificationEx reports nothing for title
+files: a pending notification makes the poller `0x002359ce` show a "new
+message" toast from the sender name and light the menu indicator, and no
+screen opens a title message from XUID 0. MessageDetails
 creates an asynchronous task and supports the flags the title supplies.
 DetailsGetResultsProperty returns:
 
@@ -824,7 +837,7 @@ through synthetic guest stacks; browsing every screen has not been run here.
 |---|---|
 | `0x0006d210` accepted invite poll | GetAcceptedGameInvite clears the 156-byte output and returns E_FAIL (`0x80004005`). The check at `0x0006d218` treats every nonnegative HRESULT as an invite, so S_FALSE would be wrong. |
 | `0x0008cc40`, `0x0008cd27`, `0x0008cddb`, disposer `0x0006b6a5` | FriendsStartup completes then idles. FriendsEnumerate reports RESULTS_AVAIL (`0x001500f1`); GetLatest returns DWORD count 0. EnumerateFinish lets the final pump succeed before TaskClose. No friend records are invented. |
-| `0x0006d080` / `0x0006d0d3` | GetNotificationEx returns BOOL FALSE and zeroed packed info/state when its title-file queue is empty. It never returns an HRESULT in a BOOL slot. |
+| `0x0006d080` / `0x0006d0d3` | GetNotificationEx returns BOOL FALSE and zeroed packed info/state (always; title files are not notifications). It never returns an HRESULT in a BOOL slot. |
 | `0x00058ab8`, `0x00058bd1` | MutelistStartup/Get complete; Get writes count 0. |
 | `0x0008d4d0` | OfferingIsNewContentAvailable reports NO_NEW_CONTENT. |
 | `0x0008c320` through `0x0008c59b` | PresenceInit/Add/Submit/Clear retain the bounded watch groups; GetLatest writes 61-byte offline records carrying the watched XUIDs. Remote presence is not fetched yet. |
@@ -1150,11 +1163,11 @@ attributes and dirty flags, stable IDs/keys, XNet key registration, full lifecyc
 empty search/find results, capacity math, pointer-fault atomicity, cleanup and
 advertisement limits. The tests do not load an XBE or run the game.
 
-## Client HLE: Teams (local slice)
+## Client HLE: Teams
 
 The clan-create stop at `0x003afb80` is called by `0x000abe60` from the UI action
 `0x00238bf1`. It passes a maximum of 100 members and creator privileges
-`0xffffffff`. All thirteen linked XOnlineTeam entries now use a local store:
+`0xffffffff`. All thirteen linked XOnlineTeam entries use the same owned store and task seam:
 create/delete, enumerate-by-user/results/details, member enumeration/results/
 details, member property changes/removal, recruitment by XUID/name, and answers.
 The game refreshes enumeration after mutations; no CreateGetResults or
@@ -1174,8 +1187,8 @@ Each mutation returns a task; Continue reports success or the specific Teams
 HRESULT. Enumerations own snapshots with their detail records. Missing items in
 a successful snapshot return E_FAIL, matching retail. The store retains owned
 strings/custom data after guest buffers are reused. It survives local sign-out;
-cleanup invalidates tasks. Recruitment resolves the host accounts file in this
-slice, records a pending member and retains the outgoing message capture.
+cleanup invalidates tasks. With no server configured, recruitment resolves the host accounts file,
+records a pending member and retains the outgoing message capture.
 Pending teams appear for the recruit with the recruit flag; an accepted answer
 moves the member into the roster, and decline removes the pending request.
 
@@ -1188,9 +1201,42 @@ leave. Duplicate names, full teams, eight-team limits, unknown users and missing
 teams produce their XDK errors. Local diagnostics use `H2_BOOT_VERBOSE=1`.
 
 `Hle::local_teams()` snapshots the cache; `local_team_action` is the trusted local
-host seam, including team-property edits where no guest thunk is linked. These
-local records are not persistent across runtimes. The next slice replaces local
-writes/reads with signed server events and a cached projection. Synthetic guest
+host seam, including team-property edits where no guest thunk is linked. The trusted host action seam is available only without a configured server.
+Local-only records are not persistent across runtimes. Synthetic guest
 tests cover create/list/details/member editing/recruit/accept/decline/leave/
 delete, packed layouts/canaries, snapshot ownership, validation/fault atomicity,
 permissions and cleanup. No test builds or runs the title.
+
+### Server-backed Teams
+
+With `LiveConfig.server_url` set, the thirteen entries submit owned requests to
+the existing HTTP worker. No HTTP work runs on the guest thread. Tasks remain
+running until the response arrives; success snapshots populate the local cache,
+and server permission/limit errors finish the task with the XDK Team HRESULT.
+Transport failures report cannot-access-service without accepting a local write.
+Closing a task drops its result; it does not undo an event already sent.
+
+Creation, property changes, deletion, recruitment, answers and removal are
+signed account events on `team-<id>`. The server owns the persistent projection
+and validates the same rules as the offline store. Enumeration reads its account
+and team endpoints. Recruitment resolves registered accounts by name or XUID,
+so another user's private key need not be in the host accounts file. Guest
+buffers and keys never enter diagnostics or the request queue as raw pointers.
+Remote records are bounded and validated before packing SDK records.
+
+A recruit also gets `TeamRecruitReceived` on their account stream. Pending
+teams appear in their team enumeration with the recruit flag; accepting makes
+them active members. The HLE does not yet translate that account event into a
+Live inbox message or toast, and remote recruitment does not forward optional
+voice/text message attachments. The team invitation and answer themselves are
+persistent. Team-property edits are available through the server/CLI; the
+verified title boundary has no linked TeamSetProperties entry to register.
+
+`h2 live team` creates, lists, edits, recruits, accepts/declines, changes member
+permissions, removes/leaves and deletes teams; `h2 live q teams [gamertag]`
+reads the views. See live-api.md's Teams section for arguments and wire records.
+Two simulated guests and an embedded server test this lifecycle, including
+separate account files, pending flags, officer rights, denial and network
+failure. Server tests cover signed authors, mailbox append, replay, concurrent
+name conflicts and private reads; a CLI test drives signed commands through the
+same endpoints. These tests do not build or run the title.

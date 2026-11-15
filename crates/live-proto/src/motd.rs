@@ -21,6 +21,10 @@ pub const LANGUAGES: usize = 9;
 pub const MAX_MESSAGES: usize = 32;
 /// Longest string, in UTF-16 code units (one 512-byte slot minus the NUL).
 pub const MAX_UNITS: usize = 255;
+/// The largest file the game takes: its one attachment download passes a
+/// 0x499a-byte buffer (docs/live-motd-fetch.md §5). A larger file fails
+/// that download and the game silently shows no message of the day.
+pub const MAX_FILE: usize = 0x499a;
 
 const SLOT: usize = 512;
 const BLOCK: usize = 4 + MAX_MESSAGES * SLOT;
@@ -35,6 +39,8 @@ pub enum MotdError {
     TooLong(String),
     #[error("{0:?} contains a NUL")]
     Nul(String),
+    #[error("the file is {0} bytes; the game downloads at most 18842 (0x499a)")]
+    TooLarge(usize),
     #[error("not a message_of_the_day.dat: {0}")]
     Format(&'static str),
 }
@@ -91,7 +97,11 @@ impl Motd {
         out.extend_from_slice(&(INFLATED_SIZE as u32).to_be_bytes());
         let mut z = flate2::write::ZlibEncoder::new(out, flate2::Compression::best());
         z.write_all(&raw).expect("writing to a Vec");
-        Ok(z.finish().expect("writing to a Vec"))
+        let file = z.finish().expect("writing to a Vec");
+        if file.len() > MAX_FILE {
+            return Err(MotdError::TooLarge(file.len()));
+        }
+        Ok(file)
     }
 
     /// Reads a file the way the game does, returning the first language's
@@ -170,6 +180,28 @@ mod tests {
             messages: vec!["y".repeat(255); 32],
         };
         assert_eq!(Motd::parse(&full.build().unwrap()).unwrap(), full);
+    }
+
+    /// Text that does not compress: 32 full messages of varied characters.
+    #[test]
+    fn the_largest_motd_fits_the_games_download_buffer() {
+        let mut seed = 0x2545f491u32;
+        let mut line = || {
+            (0..MAX_UNITS)
+                .map(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    char::from(b' ' + (seed >> 24) as u8 % 95)
+                })
+                .collect::<String>()
+        };
+        let worst = Motd {
+            header: line(),
+            messages: (0..MAX_MESSAGES).map(|_| line()).collect(),
+        };
+        match worst.build() {
+            Ok(file) => assert!(file.len() <= MAX_FILE),
+            Err(e) => assert!(matches!(e, MotdError::TooLarge(n) if n > MAX_FILE), "{e}"),
+        }
     }
 
     #[test]

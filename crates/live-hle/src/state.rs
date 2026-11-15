@@ -289,8 +289,6 @@ impl State {
             status = match reply {
                 Ok(Reply::Logon { files, files_error }) => {
                     self.publish_users(m, &users)?;
-                    self.menu
-                        .messages(self.user_ids, files.iter().map(|f| f.id).collect());
                     self.messages.set_files(files, files_error);
                     CONNECTED
                 }
@@ -396,6 +394,9 @@ impl State {
         actor: u64,
         action: &live_proto::team::Action,
     ) -> std::result::Result<(), live_proto::team::TeamError> {
+        if self.service.is_some() {
+            return Err(live_proto::team::TeamError::Invalid);
+        }
         let account = self
             .accounts
             .iter()
@@ -438,6 +439,7 @@ impl State {
             } else {
                 None
             };
+            let session = self.session();
             return self.teams.invoke(
                 op,
                 a,
@@ -447,6 +449,8 @@ impl State {
                     outbox: &mut self.outbox,
                     actor,
                     known: &known,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
                 },
             );
         }
@@ -1120,18 +1124,14 @@ impl State {
                     return Ok(INVALID_USER);
                 }
                 let session = self.session();
-                let result = self.messages.invoke(
+                self.messages.invoke(
                     op,
                     a,
                     m,
                     &mut self.storage,
                     self.service.as_ref(),
                     session.as_ref(),
-                )?;
-                if op == MessageDelete && result == 0 {
-                    self.menu.remove_message(a[0], a[1]);
-                }
-                Ok(result)
+                )
             }
             _ => unreachable!("registration routes only implemented operations here"),
         }

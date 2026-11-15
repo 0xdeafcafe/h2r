@@ -5,7 +5,7 @@ use crate::{
     status::*,
 };
 use runtime::{Guest, guest::Access};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Op {
     Notification,
@@ -33,29 +33,13 @@ struct Task {
 #[derive(Default)]
 pub(crate) struct Menu {
     tasks: BTreeMap<u32, Task>,
-    notifications: BTreeMap<u32, VecDeque<u32>>,
     presence: BTreeMap<u32, BTreeMap<u32, Vec<[u8; 12]>>>,
 }
 type Result<T> = std::result::Result<T, Error>;
 impl Menu {
     pub fn clear(&mut self) {
         self.tasks.clear();
-        self.notifications.clear();
         self.presence.clear();
-    }
-    pub fn messages(&mut self, users: [u64; 4], ids: Vec<u32>) {
-        self.notifications.clear();
-        for (controller, user) in users.into_iter().enumerate() {
-            if user != 0 {
-                self.notifications
-                    .insert(controller as u32, ids.iter().copied().collect());
-            }
-        }
-    }
-    pub fn remove_message(&mut self, user: u32, id: u32) {
-        if let Some(q) = self.notifications.get_mut(&user) {
-            q.retain(|m| *m != id);
-        }
     }
     pub fn close(&mut self, h: u32) -> bool {
         self.presence.remove(&h);
@@ -172,23 +156,14 @@ impl Menu {
                 }
                 m.check(a[1], 9, Access::Write, 1)?;
                 m.check(a[2], 4, Access::Write, 1)?;
-                let mut info = [0; 9];
-                let mut flags = 0;
-                let id = self
-                    .notifications
-                    .get_mut(&a[0])
-                    .and_then(VecDeque::pop_front);
-                if let Some(id) = id {
-                    info[0] = 1;
-                    info[1..5].copy_from_slice(&id.to_le_bytes());
-                    info[5..9].copy_from_slice(&1u32.to_le_bytes());
-                    if self.notifications.get(&a[0]).is_some_and(|q| !q.is_empty()) {
-                        flags = 1;
-                    }
-                }
-                m.write_bytes(a[1], &info, 1)?;
-                m.set_u32(a[2], flags)?;
-                return Ok(u32::from(id.is_some()));
+                // Nothing to notify. The title files are not player
+                // messages: a pending notification makes the game's poller
+                // (0x002359ce) raise a "new message" toast from the sender
+                // name and light the menu's message indicator, and no
+                // screen opens a title message from XUID 0.
+                m.write_bytes(a[1], &[0; 9], 1)?;
+                m.set_u32(a[2], 0)?;
+                return Ok(0);
             }
             FriendsLatest => {
                 if initialized && a[1] <= 100 {

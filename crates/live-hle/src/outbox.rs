@@ -118,6 +118,9 @@ fn hr<T>(v: u32) -> Result<T> {
     Err(Failure::Hr(v))
 }
 impl Outbox {
+    pub fn accepts(&self, h: u32, ty: u8) -> bool {
+        h == 0 || self.builders.get(&h).is_some_and(|b| b.message_type == ty)
+    }
     pub fn snapshot(&self) -> Vec<MessageSend> {
         self.captures.iter().cloned().collect()
     }

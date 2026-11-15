@@ -13,7 +13,9 @@ import { now } from "../lib/now";
 import { outlineFor } from "../state/outlines";
 import { Crumbs, Pager, Panel, Strip, Tabs, Title, playerHref } from "./Layout";
 import GametypeIcon from "../components/GametypeIcon";
-import { MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, hostName, playlist } from "./Side";
+import { DidYouKnow, MapThumb, PeopleFinder, Pills, RecentGames, gameTitle, hostName, playlist } from "./Side";
+import { motdMessages } from "../lib/motd";
+import { useMotd } from "../state/motd";
 import { agoWords, dotDate, num, usDate } from "./fmt";
 
 type Tab = "live" | "recent" | "team" | "ffa";
@@ -141,6 +143,8 @@ export default function Games() {
   const pages = () => Math.max(1, Math.ceil(list().length / PER));
   const pg = () => Math.min(page(), pages() - 1);
   const me = () => identity.me();
+  const motd = useMotd();
+  const tips = createMemo(() => motdMessages(motd()));
   return (
     <>
       <Crumbs trail={[["Home", "/"], ["h2 live Online"]]} />
@@ -172,6 +176,7 @@ export default function Games() {
             </div>
           </Panel>
           <RecentGames games={ended().slice(0, 12)} title="Recent h2 live Games" />
+          <DidYouKnow messages={tips()} />
         </aside>
         <div class="s-right">
           <Featured game={featured()} online={online()} />

@@ -485,17 +485,32 @@ async fn the_web_app_is_served_with_a_spa_fallback() {
 }
 
 #[test]
-fn an_embedded_server_falls_back_to_memory() {
+fn an_embedded_server_falls_back_to_its_file_store_then_memory() {
     use std::io::{Read, Write};
     let dir = temp_dir();
-    let server = live_server::start_embedded(
-        "postgres://127.0.0.1:1/h2live",
-        "127.0.0.1:0".parse().unwrap(),
-        &dir,
-        Default::default(),
-    )
-    .unwrap();
+    let start = || {
+        live_server::start_embedded(
+            "postgres://127.0.0.1:1/h2live",
+            "127.0.0.1:0".parse().unwrap(),
+            &dir,
+            Default::default(),
+        )
+        .unwrap()
+    };
+    // No Postgres: the log goes to the data directory, starting with the
+    // default message of the day.
+    let file = start();
+    assert_eq!(file.store, "file");
+    assert!(
+        live_server::file_store_dir(&dir)
+            .join("events.jsonl")
+            .is_file()
+    );
+    assert_eq!(file.live.position(), 1);
+    // A second server cannot share that directory: it runs in memory.
+    let server = start();
     assert_eq!(server.store, "memory");
+    drop(file);
     let addr = server.url.strip_prefix("http://").unwrap().to_string();
     let mut s = std::net::TcpStream::connect(&addr).unwrap();
     s.write_all(b"GET /healthz HTTP/1.0\r\nHost: x\r\n\r\n")
