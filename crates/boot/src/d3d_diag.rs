@@ -164,6 +164,24 @@ impl<B: Backend> Backend for DiagBackend<B> {
                 out
             ));
         }
+        if self.logging() && std::env::var_os("H2_BOOT_DRAWLOG_VERTS").is_some() {
+            self.line(format!("  layout {:?}", draw.layout));
+            for (i, st) in draw.streams.iter().enumerate() {
+                let stride = st.stride.max(4) as usize;
+                for v in st.data.chunks(stride).take(8) {
+                    let words: Vec<String> = v
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|w| {
+                            let f = f32::from_le_bytes(*w);
+                            if f.is_finite() && (f == 0.0 || (1e-4..1e5).contains(&f.abs())) { format!("{f}") } else { format!("#{:08x}", u32::from_le_bytes(*w)) }
+                        })
+                        .collect();
+                    self.line(format!("  s{i} {}", words.join(" ")));
+                }
+            }
+        }
         r
     }
     fn present(&mut self, surface: Self::Surface, flags: u32) -> Result<(), String> {

@@ -184,7 +184,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | SetRenderTarget fast path `0x3f7b30` via `0x3f7870` | d3d_glue.rs `install_render_target_fast` | d3d (#2) |
 | Get2DSurfaceDesc, BeginPush and SetStateVB as retail bodies | d3d_glue.rs `RUN_NATIVE` | d3d (#3) |
 | device+0x934 NV2A stand-in, back/depth backing, `0xf0000000` alias | d3d_glue.rs `install_gpu_registers`, lib.rs | d3d-r6 (#4) |
-| Fallback from the memcpy/memmove table targets | fallback.rs `UNREAD_TABLE_TARGETS` | analyze (#1) |
+| Fallback from the CRT copy (`0x320890`) table targets, read from the image, and the unknown-switch stops they cause | fallback.rs `copy_targets`, `install_unread_targets` | analyze (#1) |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired

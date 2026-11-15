@@ -133,7 +133,29 @@ pub fn is_unsupported(thread: u32, pc: u32) -> bool {
     lookup(thread, pc).is_some_and(|s| s.starts_with(UNSUPPORTED))
 }
 
+/// `H2SHIM_UNKNOWN_TARGET`: a switch loaded a target outside its cases.
+pub const UNKNOWN_TARGET: u32 = 10;
+
+/// The last unknown switch target per (thread, saved EIP), for the
+/// fallback's allowlisted recovery.
+static UNKNOWN_SWITCH: std::sync::Mutex<Option<std::collections::HashMap<(u32, u32), u32>>> = std::sync::Mutex::new(None);
+
+/// Remember an unknown switch target (`arg`) stopped at `saved_eip`.
+pub fn note_unknown_switch(thread: u32, saved_eip: u32, target: u32) {
+    UNKNOWN_SWITCH.lock().unwrap().get_or_insert_default().insert((thread, saved_eip), target);
+}
+
+/// Take the unknown switch target recorded for `thread` at `pc`.
+pub fn take_unknown_switch(thread: u32, pc: u32) -> Option<u32> {
+    UNKNOWN_SWITCH.lock().unwrap().as_mut()?.remove(&(thread, pc))
+}
+
 unsafe extern "C" fn event(c: *mut ExecCtxOpaque, pc: u32, saved_eip: u32, code: u32, arg: u32) -> u32 {
+    if code == UNKNOWN_TARGET {
+        // SAFETY: the live, exclusive context generated code was handed.
+        let thread = unsafe { &*c.cast::<ExecCtx>() }.thread_id;
+        note_unknown_switch(thread, saved_eip, arg);
+    }
     let name = NAMES.get(code as usize).copied().unwrap_or("?");
     record(c, pc, format!("guest exception/stop {code} {name} at {pc:#x} (saved eip {saved_eip:#x}, arg {arg:#x})"))
 }

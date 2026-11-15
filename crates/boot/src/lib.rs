@@ -280,8 +280,10 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     let t = Instant::now();
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
-    let unread = fallback::install_unread_targets(&loaded.runtime);
-    crate::log::note(&format!("fallback: {unread} unread jump-table targets registered"));
+    if opts.stopgaps {
+        let unread = fallback::install_unread_targets(&loaded.runtime);
+        crate::log::note(&format!("fallback: {unread} CRT copy table targets registered"));
+    }
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
     std::fs::create_dir_all(&opts.data_root)?;
@@ -453,6 +455,34 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
                 c.result.map_or("(open)".into(), |r| format!("{r:#x}")),
                 c.detail
             );
+        }
+    }
+    // H2_BOOT_DUMP=addr:len[,addr:len...]: guest words at the end of the run.
+    if let Ok(spec) = std::env::var("H2_BOOT_DUMP") {
+        let mem = loaded.runtime.memory();
+        for item in spec.split(',') {
+            let Some((a, n)) = item.split_once(':') else { continue };
+            let parse = |v: &str| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok();
+            let (Some(a), Some(n)) = (parse(a), parse(n)) else { continue };
+            let words: Vec<String> = (0..n.div_ceil(4))
+                .map(|i| mem.u32(a + 4 * i).map_or("????????".into(), |w| format!("{w:08x}")))
+                .collect();
+            for (i, row) in words.chunks(8).enumerate() {
+                eprintln!("dump {:#010x}: {}", a + 32 * i as u32, row.join(" "));
+            }
+        }
+    }
+    // H2_BOOT_DUMP_RAW=addr:len:file[;...]: raw guest bytes to host files.
+    if let Ok(spec) = std::env::var("H2_BOOT_DUMP_RAW") {
+        let mem = loaded.runtime.memory();
+        for item in spec.split(';') {
+            let mut it = item.splitn(3, ':');
+            let parse = |v: Option<&str>| v.and_then(|v| u32::from_str_radix(v.trim().trim_start_matches("0x"), 16).ok());
+            let (Some(a), Some(n), Some(path)) = (parse(it.next()), parse(it.next()), it.next()) else { continue };
+            let bytes: Vec<u8> = (0..n).map(|i| mem.u8(a + i).unwrap_or(0)).collect();
+            if let Err(e) = std::fs::write(path, bytes) {
+                eprintln!("dump {a:#x}: {e}");
+            }
         }
     }
     let stops: BTreeMap<u32, &str> = k.stop_reasons().into_iter().collect();
