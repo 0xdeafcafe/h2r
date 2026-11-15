@@ -161,3 +161,135 @@ fn draws_to_one_target_share_a_submission() {
         assert_eq!(pixel(&px, 4, 12), [0, 0, 0, 0xFF], "below the quads");
     }
 }
+
+/// Many draws to one target. Merged into one render pass, they stage more
+/// than the program uniform ring holds (4 MiB at the 256-byte offset
+/// alignment Metal and most adapters have): the ring moves to a new buffer
+/// inside the pending pass, and the draws recorded before the move keep
+/// their uniforms. One render pass per draw, the pending pass is submitted
+/// about every 1024 draws (Metal loses the device near 2048 render passes
+/// in one submission). The pixels are the same either way.
+#[test]
+fn many_draws_to_one_target_keep_their_uniforms() {
+    for merge in [true, false] {
+        let Some((mut d, mut m)) = gpu() else {
+            return;
+        };
+        d.backend.set_merge_passes(merge);
+        set_states(&mut d, &mut m);
+        tfactor_stage(&mut m);
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+        quads(
+            &mut m,
+            &[
+                (0.0, 0.0, 8.0, 8.0),
+                (8.0, 0.0, 16.0, 8.0),
+                (16.0, 0.0, 24.0, 8.0),
+            ],
+        );
+        bind_quad(&mut d, &mut m);
+        let before = d.backend.batch_stats();
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFFFF_0000)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+        // A new texture factor each draw: new pixel uniforms each time.
+        const N: u32 = 17_000;
+        for i in 0..N {
+            d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_0000 | i)
+                .unwrap();
+            d.draw_vertices(&mut m, TRIANGLESTRIP, 4, 4).unwrap();
+        }
+        d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_FF00)
+            .unwrap();
+        d.draw_vertices(&mut m, TRIANGLESTRIP, 8, 4).unwrap();
+        let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+        let after = d.backend.batch_stats();
+        assert_eq!(after.draws - before.draws, N as u64 + 2);
+        let passes = after.passes - before.passes;
+        if merge {
+            assert_eq!(passes, 1, "one pending pass");
+        } else {
+            assert!((16..=18).contains(&passes), "{passes} pending passes");
+        }
+        // B, G, R, A.
+        assert_eq!(
+            pixel(&px, 4, 4),
+            [0, 0, 0xFF, 0xFF],
+            "first draw, merge {merge}"
+        );
+        let last = N - 1;
+        assert_eq!(
+            pixel(&px, 12, 4),
+            [last as u8, (last >> 8) as u8, 0, 0xFF],
+            "last of the many, merge {merge}"
+        );
+        assert_eq!(
+            pixel(&px, 20, 4),
+            [0, 0xFF, 0, 0xFF],
+            "after them, merge {merge}"
+        );
+    }
+}
+
+/// `XYZRHW | DIFFUSE | TEX1` quad over the 16x4 texture at `TEX_HEADER`,
+/// bound to stage 0 (default stage: texture times white diffuse).
+fn textured_quad(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for f in [16.0 * x, 16.0 * y, 0.5, 1.0] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        for f in [16.0 * x, 4.0 * y] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    d.set_vertex_shader(
+        m,
+        gfx::vertex::fvf::XYZRHW | gfx::vertex::fvf::DIFFUSE | 0x100,
+    )
+    .unwrap();
+    d.set_stream_source(m, 0, VB_HEADER, 28).unwrap();
+    d.set_texture(m, 0, TEX_HEADER).unwrap();
+}
+
+/// The texture's colour at (8, 8) of a fresh frame (B, G, R, A).
+fn textured_pixel(d: &mut Device<GfxBackend>, m: &mut SparseMemory) -> [u8; 4] {
+    d.clear(m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+    let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+    pixel(&px, 8, 8)
+}
+
+/// A texture group dropped after frames unused is rebuilt when the texture
+/// is sampled again, and rewriting the texture's guest bytes replaces its
+/// view: the draws see the old texels, then the new ones.
+#[test]
+fn texture_groups_follow_eviction_and_replacement() {
+    let Some((mut d, mut m)) = gpu() else {
+        return;
+    };
+    set_states(&mut d, &mut m);
+    texture(&mut m, 0x40);
+    textured_quad(&mut d, &mut m);
+    assert_eq!(textured_pixel(&mut d, &mut m), [0x40; 4]);
+    // More frames than a group may go unused.
+    for _ in 0..6 {
+        d.swap(&mut m, 0).unwrap();
+    }
+    assert_eq!(textured_pixel(&mut d, &mut m), [0x40; 4], "after eviction");
+    m.write(0x8000_0000 | TEX_DATA, &[0x90; 256]).unwrap();
+    d.note_write(0x8000_0000 | TEX_DATA, 256);
+    assert_eq!(textured_pixel(&mut d, &mut m), [0x90; 4], "replaced");
+    d.swap(&mut m, 0).unwrap();
+    assert_eq!(textured_pixel(&mut d, &mut m), [0x90; 4]);
+    assert!(
+        d.take_events()
+            .iter()
+            .all(|e| !matches!(e, d3d::Event::DrawSkipped { .. } | d3d::Event::BadState(_)))
+    );
+}

@@ -91,7 +91,16 @@ struct PendingPass {
     depth: Option<SurfaceId>,
     clear: Clear,
     draws: Vec<RecordedDraw>,
+    /// Passes (render and compute) its draws will be encoded as, about.
+    encoded: usize,
 }
+
+/// Passes one submission may hold before the pending pass is submitted and
+/// a new one started for the same target. Metal loses the device when one
+/// command buffer holds about 2048 render passes (one per draw, unless
+/// passes are merged); the split changes nothing drawn, since each draw's
+/// render pass loads what the one before it stored.
+const MAX_ENCODED_PASSES: usize = 1024;
 
 /// Rendering through `gfx`.
 pub struct GfxBackend {
@@ -304,6 +313,7 @@ impl GfxBackend {
             depth,
             clear: Clear::NONE,
             draws: Vec::new(),
+            encoded: 1,
         }))
     }
 
@@ -344,10 +354,19 @@ impl GfxBackend {
                 .record(&self.ctx, &target, draw)
                 .map_err(|e| e.to_string())?
         };
+        // A counted draw adds its count pass and the sum, and the draws
+        // after it resume in a new render pass.
+        let encoded = if recorded.counts_samples() {
+            3
+        } else {
+            usize::from(first && !self.merge_passes)
+        };
         if first && !self.merge_passes {
             recorded.start_pass();
         }
-        self.pending_for(color, depth)?.draws.push(recorded);
+        let pending = self.pending_for(color, depth)?;
+        pending.draws.push(recorded);
+        pending.encoded += encoded;
         self.stats.draws += 1;
         Ok(())
     }
@@ -421,6 +440,15 @@ impl Backend for GfxBackend {
         textures: [Option<&HostTexture>; 4],
     ) -> Result<DrawOutcome, String> {
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "draw");
+        // A full pass is submitted here, before the draw stages anything,
+        // like a target switch.
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.encoded >= MAX_ENCODED_PASSES)
+        {
+            self.flush()?;
+        }
         self.switch_to(color, depth)?;
         let streams: Vec<VertexStream<'_>> = d
             .streams

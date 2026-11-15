@@ -78,8 +78,10 @@ pub enum DrawError {
     /// [`Renderer::render_counted`]).
     #[error("draw counts samples, but the pass has no pixel counter")]
     NoPixelCounter,
-    /// A counted draw needs to copy the depth/stencil attachment (see
-    /// [`crate::occlusion`]), but its texture lacks `COPY_SRC`.
+    /// A counted draw that writes depth or stencil needs to copy the
+    /// depth/stencil attachment (see [`crate::occlusion`]), but its texture
+    /// lacks `COPY_SRC`. Read-only counted draws replay in place and need
+    /// no copy.
     /// [`SurfaceStore`](crate::SurfaceStore) depth surfaces have it.
     #[error("draw counts samples, but the depth/stencil texture cannot be copied (no COPY_SRC)")]
     CountDepthNotCopyable,
@@ -642,13 +644,6 @@ impl Renderer {
         if !self.shaders.contains_key(&d.shader) {
             return Err(DrawError::UnknownShader(d.shader));
         }
-        if d.count_samples
-            && target
-                .depth
-                .is_some_and(|v| !v.texture().usage().contains(wgpu::TextureUsages::COPY_SRC))
-        {
-            return Err(DrawError::CountDepthNotCopyable);
-        }
         if d.shader == SHADER_XYZRHW_DIFFUSE && !Self::builtin_supports(d.layout) {
             return Err(DrawError::UnsupportedVertexFormat);
         }
@@ -687,6 +682,16 @@ impl Renderer {
             formats,
             self.caps,
         );
+        // Only a counted draw that writes depth or stencil copies the
+        // attachment (a read-only one replays in place).
+        if d.count_samples
+            && key.depth_stencil.as_ref().is_some_and(writes_depth_stencil)
+            && target
+                .depth
+                .is_some_and(|v| !v.texture().usage().contains(wgpu::TextureUsages::COPY_SRC))
+        {
+            return Err(DrawError::CountDepthNotCopyable);
+        }
         let drawn = d.indices.map_or(d.vertex_count, |i| i.len() as u32);
         let list: Option<Vec<u32>> = match (d.primitive.to_host(drawn), d.indices) {
             (HostPrimitive::Native(_), None) => None,

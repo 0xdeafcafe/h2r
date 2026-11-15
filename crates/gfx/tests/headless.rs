@@ -852,8 +852,8 @@ fn pixel_counter_follows_a_replaced_shader() {
     assert_eq!(count(&mut renderer), 0, "the count pass still used the replaced shader");
 }
 
-/// A counted draw copies the depth attachment, so one that cannot be
-/// copied is refused before anything is recorded.
+/// A counted draw that writes depth copies the depth attachment, so one
+/// that cannot be copied is refused before anything is recorded.
 #[test]
 fn pixel_counter_needs_a_copyable_depth() {
     use gfx::occlusion::PixelCounter;
@@ -872,4 +872,185 @@ fn pixel_counter_needs_a_copyable_depth() {
         renderer.render_counted(&ctx, &mut enc, &target.target(), Clear::NONE, &[d], Some(&mut counter)),
         Err(DrawError::CountDepthNotCopyable)
     );
+}
+
+/// A counted draw that only reads depth replays in place and copies
+/// nothing, so a depth texture without `COPY_SRC` is fine: a 16x16 quad in
+/// front of the cleared depth counts 256.
+#[test]
+fn pixel_counter_reads_a_non_copyable_depth() {
+    use gfx::occlusion::PixelCounter;
+    let Some(ctx) = context() else { return };
+    // OffscreenTarget's depth is a render attachment only.
+    let target = OffscreenTarget::new(&ctx.device, (16, 16), wgpu::TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(&ctx);
+    let mut counter = PixelCounter::new(&ctx);
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let verts = [
+        vertex(0.0, 0.0, 0), vertex(16.0, 0.0, 0), vertex(0.0, 16.0, 0),
+        vertex(16.0, 0.0, 0), vertex(16.0, 16.0, 0), vertex(0.0, 16.0, 0),
+    ]
+    .concat();
+    let streams = [VertexStream { data: &verts, stride: 0 }];
+    let reads = RenderState { depth_write: false, ..RenderState::default() };
+    let mut d = draw(&streams, 6, &vl, PrimitiveType::TriangleList, reads);
+    d.count_samples = true;
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    counter.clear(&mut enc);
+    let clear = Clear { color: Some([0.0; 4]), depth: Some(1.0), stencil: Some(0) };
+    renderer.render_counted(&ctx, &mut enc, &target.target(), clear, &[d], Some(&mut counter)).unwrap();
+    let report = counter.report(&ctx, &mut enc);
+    report.submitted(ctx.queue.submit([enc.finish()]));
+    assert_eq!(report.read(&ctx).unwrap(), 256);
+}
+
+/// Reports read long after their submission, and out of order, still give
+/// their own counts: each waits for its own submission and keeps its value
+/// while later submissions clear the counter and count again.
+#[test]
+fn pixel_reports_read_after_later_submissions() {
+    use gfx::occlusion::PixelCounter;
+    let Some(ctx) = context() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    let color = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinA8R8G8B8, 32, 32), SurfaceKind::Color).unwrap();
+    let depth = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinD24S8, 32, 32), SurfaceKind::DepthStencil).unwrap();
+    let mut renderer = Renderer::new(&ctx);
+    let mut counter = PixelCounter::new(&ctx);
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let c = 0xFFFF_FFFF;
+    // A w x 8 quad: 8w samples.
+    let quad = |w: f32| {
+        [
+            vertex(0.0, 0.0, c), vertex(w, 0.0, c), vertex(0.0, 8.0, c),
+            vertex(w, 0.0, c), vertex(w, 8.0, c), vertex(0.0, 8.0, c),
+        ]
+        .concat()
+    };
+    let reads = RenderState { depth_write: false, ..RenderState::default() };
+    let clear_all = Clear { color: Some([0.0; 4]), depth: Some(1.0), stencil: Some(0) };
+    let mut reports = Vec::new();
+    for w in [4.0, 8.0, 16.0, 32.0] {
+        let verts = quad(w);
+        let streams = [VertexStream { data: &verts, stride: 0 }];
+        let mut d = draw(&streams, 6, &vl, PrimitiveType::TriangleList, reads);
+        d.count_samples = true;
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        counter.clear(&mut enc);
+        let t = store.target(color, Some(depth)).unwrap();
+        renderer.render_counted(&ctx, &mut enc, &t, clear_all, &[d], Some(&mut counter)).unwrap();
+        let report = counter.report(&ctx, &mut enc);
+        report.submitted(ctx.queue.submit([enc.finish()]));
+        reports.push(report);
+    }
+    // Last first, then the first, then the rest.
+    assert_eq!(reports[3].read(&ctx).unwrap(), 256);
+    assert_eq!(reports[0].read(&ctx).unwrap(), 32);
+    assert_eq!(reports[2].read(&ctx).unwrap(), 128);
+    assert_eq!(reports[1].read(&ctx).unwrap(), 64);
+}
+
+/// One render call with more draws than the built-in uniform ring holds
+/// (1 MiB at the 256-byte offset alignment Metal and most adapters
+/// have) and one vertex stream bigger than
+/// the vertex ring (4 MiB): both rings move to new buffers mid-pass, and
+/// every draw keeps its own uniforms and vertices. The alpha reference
+/// travels in the uniforms: even draws pass the test, odd ones fail, so a
+/// draw reading another's uniforms breaks the checkerboard.
+#[test]
+fn upload_rings_roll_over_within_one_pass() {
+    let Some(ctx) = context() else { return };
+    let (w, h) = (64u32, 96u32);
+    let target = OffscreenTarget::new(&ctx.device, (w, h), wgpu::TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(&ctx);
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let white = 0x80FF_FFFF;
+    let rect = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        [
+            vertex(x0, y0, white), vertex(x1, y0, white), vertex(x0, y1, white),
+            vertex(x1, y0, white), vertex(x1, y1, white), vertex(x0, y1, white),
+        ]
+        .concat()
+    };
+    // 5120 one-pixel quads over rows 0..80.
+    let cells: Vec<Vec<u8>> = (0..64 * 80)
+        .map(|i| {
+            let (x, y) = ((i % 64) as f32, (i / 64) as f32);
+            rect(x, y, x + 1.0, y + 1.0)
+        })
+        .collect();
+    let state = |i: usize| RenderState {
+        cull_mode: CullMode::None,
+        alpha_test_enable: true,
+        alpha_func: CompareFunc::Greater,
+        alpha_ref: if i.is_multiple_of(2) { 0x10 } else { 0xF0 },
+        ..RenderState::default()
+    };
+    // Rows 80..88 at the end of a 5.2 MB stream of degenerate triangles,
+    // then rows 88..96 from a small draw after it.
+    let mut big = vertex(0.0, 0.0, 0).repeat(3 * 87_379);
+    big.extend(rect(0.0, 80.0, 64.0, 88.0));
+    let after = rect(0.0, 88.0, 64.0, 96.0);
+    let cell_streams: Vec<[VertexStream; 1]> = cells.iter().map(|v| [VertexStream { data: v, stride: 0 }]).collect();
+    let big_stream = [VertexStream { data: &big, stride: 0 }];
+    let after_stream = [VertexStream { data: &after, stride: 0 }];
+    let mut draws: Vec<Draw> = cell_streams
+        .iter()
+        .enumerate()
+        .map(|(i, s)| draw(s, 6, &vl, PrimitiveType::TriangleList, state(i)))
+        .collect();
+    draws.push(draw(&big_stream, (big.len() / 20) as u32, &vl, PrimitiveType::TriangleList, state(0)));
+    draws.push(draw(&after_stream, 6, &vl, PrimitiveType::TriangleList, state(0)));
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    renderer.render(&ctx, &mut enc, &target.target(), Clear::all([0.0, 0.0, 0.0, 1.0]), &draws).unwrap();
+    ctx.queue.submit([enc.finish()]);
+    let px = target.read_pixels(&ctx);
+    let bad: Vec<(u32, [u8; 4])> = (0..64 * 80u32)
+        .filter_map(|i| {
+            let want = if i.is_multiple_of(2) { 0xFF } else { 0 };
+            let p = pixel(&px, w, i % 64, i / 64);
+            (p[0] != want).then_some((i, p))
+        })
+        .collect();
+    assert!(bad.is_empty(), "{} cells wrong: {:?}", bad.len(), &bad[..bad.len().min(40)]);
+    for y in [80, 87, 88, 95] {
+        assert_eq!(pixel(&px, w, 5, y)[0], 0xFF, "row {y}");
+    }
+}
+
+/// Texture groups are cached by view and sampler: the same views give the
+/// same group, a replaced view a new one, and a group unused for more than
+/// four frames is dropped (asking again builds a new one).
+#[test]
+fn texture_groups_are_replaced_and_evicted() {
+    use gfx::program::ProgramBindings;
+    use gfx::translate::SamplerKey;
+    let Some(ctx) = context() else { return };
+    let mut b = ProgramBindings::new(&ctx.device);
+    let view = |fill: u8| {
+        let desc = TextureDesc::new(D3DFormat::LinA8R8G8B8, TextureKind::D2, 4, 4, 1, 1);
+        let tex = decode_texture(&desc, &[fill; 64], None, DecodeOptions::default()).unwrap();
+        gfx::upload::upload_texture(&ctx.device, &ctx.queue, &tex, "group").create_view(&Default::default())
+    };
+    let (a, other) = (view(1), view(2));
+    let dims = [Some(wgpu::TextureViewDimension::D2), None, None, None];
+    let sampler = SamplerKey::from_stage(&gfx::state::TextureStageState::default_for_stage(0), ctx.caps);
+    let group = |b: &mut ProgramBindings, v: &wgpu::TextureView| {
+        b.textures(&ctx.device, &ctx.queue, dims, [Some(v), None, None, None], [sampler; 4], [[false; 4]; 4])
+            .unwrap()
+    };
+    let first = group(&mut b, &a);
+    assert_eq!(group(&mut b, &a), first, "cached");
+    let replaced = group(&mut b, &other);
+    assert_ne!(replaced, first, "a new view, a new group");
+    // Used again within four frames: kept.
+    for _ in 0..4 {
+        b.end_frame();
+    }
+    assert_eq!(group(&mut b, &a), first);
+    // Unused for five: dropped, so the same views build a new group.
+    for _ in 0..5 {
+        b.end_frame();
+    }
+    assert_ne!(group(&mut b, &a), first, "evicted");
+    assert_ne!(group(&mut b, &other), replaced, "evicted");
 }

@@ -591,7 +591,12 @@ and allocations are bounded before anything is read:
     (another target, a partial clear, a read, write, copy, snapshot or
     destruction of a surface, `Swap`) submits the pending pass first. The
     target switch comes before the provider stages anything for the new
-    draw, because the submit lets the rings reuse their space.
+    draw, because the submit lets the rings reuse their space. A pending
+    pass that will encode about 1024 passes (render passes, plus a count
+    pass and a sum per visibility-tested draw) is submitted before the
+    next draw too, on the same target: Metal loses the device at about
+    2048 render passes in one command buffer, which one pass per draw
+    reaches at about 2048 draws to one target.
     `GfxBackend::flush` submits by hand, and `GfxBackend::read_color`
     flushes before reading. Code that reads `GfxBackend::store` directly
     must flush first. `GfxBackend::batch_stats` counts draws, pending
