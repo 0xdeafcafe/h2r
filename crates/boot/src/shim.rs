@@ -28,6 +28,10 @@ pub struct Bridge {
     profile: unsafe extern "C" fn(*mut ExecCtxOpaque, u64, u64),
     fast_acquire: unsafe extern "C" fn(*mut ExecCtxOpaque) -> *mut runtime::ffi::FastAccess,
     fast_release: unsafe extern "C" fn(*mut ExecCtxOpaque),
+    read_counted: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32, *mut u8) -> u32,
+    write_counted: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32, *const u8) -> u32,
+    charge: unsafe extern "C" fn(*mut ExecCtxOpaque, u64),
+    budget: unsafe extern "C" fn(*mut ExecCtxOpaque) -> u64,
 }
 
 pub fn bridge() -> Bridge {
@@ -51,6 +55,10 @@ pub fn bridge_with_fast_memory(enabled: bool) -> Bridge {
         profile: ffi::h2abi_v1_profile,
         fast_acquire: if enabled { ffi::h2abi_v1_fast_acquire } else { no_fast_memory },
         fast_release: ffi::h2abi_v1_fast_release,
+        read_counted: ffi::h2abi_v1_read_counted,
+        write_counted: ffi::h2abi_v1_write_counted,
+        charge: ffi::h2abi_v1_charge,
+        budget: ffi::h2abi_v1_budget,
     }
 }
 

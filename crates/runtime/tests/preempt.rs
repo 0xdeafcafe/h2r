@@ -258,3 +258,52 @@ fn a_v1_object_is_rejected_by_the_v2_runtime() {
     assert!(unsafe { d.register_generated(LOOP, 1, never) }.is_err());
     assert!(!d.has_generated(LOOP));
 }
+
+/// What one context's slice looks like from outside: word bits, accesses
+/// spent and the budget a counting module would see.
+fn slice_state(ctx: &mut ExecCtx) -> (u32, u64, u64) {
+    let exec = (ctx as *mut ExecCtx).cast::<ExecCtxOpaque>();
+    // SAFETY: the context is live and nothing else uses it.
+    let budget = unsafe { ffi::h2abi_v1_budget(exec) };
+    (word_seen_by_c(ctx), ctx.slice_spent(), budget)
+}
+
+#[test]
+fn charging_n_accesses_is_n_charged_accesses() {
+    let (rt, _) = setup();
+    for n in [0u64, 1, 2, 4, 5, 9] {
+        // One context spends through the charged accessor, one at a time;
+        // the other through the uncharged one, settling with one charge.
+        let mut one = ExecCtx::new(rt.clone(), 1);
+        let mut counted = ExecCtx::new(rt.clone(), 2);
+        one.arm_preemption(5);
+        counted.arm_preemption(5);
+        assert_eq!(slice_state(&mut counted).2, 5);
+        let mut b = [0u8; 4];
+        for _ in 0..n {
+            let e = (&mut one as *mut ExecCtx).cast::<ExecCtxOpaque>();
+            let c = (&mut counted as *mut ExecCtx).cast::<ExecCtxOpaque>();
+            // SAFETY: live contexts; the buffer is valid for 4 bytes.
+            unsafe {
+                assert_eq!(ffi::h2abi_v1_read(e, LOOP, DATA, 4, 1, b.as_mut_ptr()), 0);
+                assert_eq!(ffi::h2abi_v1_read_counted(c, LOOP, DATA, 4, 1, b.as_mut_ptr()), 0);
+            }
+        }
+        assert_eq!(counted.slice_spent(), 0, "the counted accessor spends nothing");
+        let c = (&mut counted as *mut ExecCtx).cast::<ExecCtxOpaque>();
+        // SAFETY: as above.
+        unsafe { ffi::h2abi_v1_charge(c, n) };
+        let (word, spent, budget) = slice_state(&mut counted);
+        assert_eq!((word, spent, budget), slice_state(&mut one), "{n} accesses");
+        assert_eq!(word & preempt::SLICE != 0, n >= 5, "{n} accesses");
+        assert_eq!(budget, if n >= 5 { u64::MAX } else { 5 - n });
+    }
+    // Not armed, or armed for host requests only: nothing expires.
+    let mut ctx = ExecCtx::new(rt.clone(), 3);
+    assert_eq!(slice_state(&mut ctx), (0, 0, u64::MAX));
+    ctx.arm_preemption(0);
+    let e = (&mut ctx as *mut ExecCtx).cast::<ExecCtxOpaque>();
+    // SAFETY: as above.
+    unsafe { ffi::h2abi_v1_charge(e, 1000) };
+    assert_eq!(slice_state(&mut ctx), (0, 1000, u64::MAX));
+}

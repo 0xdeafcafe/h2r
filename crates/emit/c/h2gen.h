@@ -65,8 +65,10 @@ typedef struct H2GenEntry {
 typedef struct H2GenResume {
     uint32_t pc, owner, start;
 } H2GenResume;
+/* features: H2GEN_FEATURE_ACCOUNTING or 0 (runtime generated.rs). */
+#define H2GEN_FEATURE_ACCOUNTING 1u
 typedef struct H2GenModule {
-    uint32_t abi_version, entry_count, resume_count, reserved;
+    uint32_t abi_version, entry_count, resume_count, features;
     const H2GenEntry *entries;
     const H2GenResume *resumes;
 } H2GenModule;
@@ -248,6 +250,56 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     return H2_SSE_RES(h2s_cvttps2pi(&cpu->mxcsr, a, out));
 }
 
+/* ---- Access accounting (module feature H2GEN_FEATURE_ACCOUNTING). -------
+ * A module emitted with accounting defines H2_ACCOUNTING to 1 before
+ * including this header. Its handlers count guest memory accesses in a
+ * local, h2acc, one before each attempted access (the faulting one
+ * included). The accesses themselves charge nothing: h2fastmem.h's inline
+ * RAM path skips its own count and its slow path takes the uncharged
+ * h2abi_v1_read/write_counted. Handlers settle the count
+ * with h2abi_v1_charge: on every way out (the shared epilogue)
+ * and before anything that spends or observes the slice (H2_ACC_SETTLE).
+ * The local never escapes, so clang merges the increments along a path.
+ * Loops compare it with the budget read on entry (h2left, from
+ * h2abi_v1_budget) where they poll, so they leave at the safe point where
+ * the charged accessors' slice bit would have made them leave. Without
+ * accounting every macro below is the plain, charging form. */
+#ifndef H2_ACCOUNTING
+#define H2_ACCOUNTING 0
+#endif
+#if H2_ACCOUNTING
+#define H2_ACC_LOCALS() uint64_t h2acc = 0
+#define H2_ACC_ONE() (h2acc += 1u)
+#define H2_ACC_FLUSH()                                                          \
+    do {                                                                        \
+        if (h2acc) { h2abi_v1_charge(ctx, h2acc); h2acc = 0; }                  \
+    } while (0)
+/* The budget left after this handler's own count, cached for the polls. */
+#define H2_ACC_BUDGET_LOCALS() uint64_t h2left = h2abi_v1_budget(ctx)
+#define H2_ACC_OVER() (h2acc >= h2left)
+/* Settle before something that spends `extra` accesses itself (an atomic)
+ * or observes the slice; a handler that polls keeps h2left in step. */
+#define H2_ACC_SETTLE(extra)                                                    \
+    do {                                                                        \
+        (void)(extra);                                                          \
+        H2_ACC_FLUSH();                                                         \
+    } while (0)
+#define H2_ACC_SETTLE_POLLED(extra)                                             \
+    do {                                                                        \
+        uint64_t n_ = h2acc + (extra);                                          \
+        H2_ACC_FLUSH();                                                         \
+        h2left = h2left > n_ ? h2left - n_ : 0u;                                \
+    } while (0)
+#else
+#define H2_ACC_LOCALS() (void)0
+#define H2_ACC_ONE() ((void)0)
+#define H2_ACC_FLUSH() ((void)0)
+#define H2_ACC_BUDGET_LOCALS() (void)0
+#define H2_ACC_OVER() 0
+#define H2_ACC_SETTLE(extra) ((void)0)
+#define H2_ACC_SETTLE_POLLED(extra) ((void)0)
+#endif
+
 /* ---- Code-shape macros. They name the handler's locals: cpu, ctx, the
  * eight register locals, fl (EFLAGS) and fd (its defined mask). ---------- */
 
@@ -269,7 +321,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     uint32_t esp = cpu->esp, ebp = cpu->ebp, esi = cpu->esi, edi = cpu->edi;    \
     uint32_t fl = cpu->eflags, fd = cpu->eflags_defined;                       \
     uint32_t x_kind, x_route, x_target, x_resume, x_event, x_eip;               \
-    H2_PERF_LOCALS(); H2_FAST_LOCALS(); (void)ctx
+    H2_PERF_LOCALS(); H2_FAST_LOCALS(); H2_ACC_LOCALS(); (void)ctx
 
 /* Every way out of a handler sets the x_* locals and jumps to the one
  * shared epilogue, which commits canonical state and returns. Keeping a
@@ -279,6 +331,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     h2_exit:                                                                    \
     H2_EPILOGUE_BODY()
 #define H2_EPILOGUE_BODY()                                                      \
+    H2_ACC_FLUSH();                                                             \
     cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;             \
     cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;             \
     cpu->eflags = fl | 2u; cpu->eflags_defined = fd; cpu->eip = x_eip;          \
@@ -307,6 +360,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
     T dst = 0;                                                                  \
     do {                                                                        \
         uint8_t b_[16];                                                         \
+        H2_ACC_ONE();                                                           \
         uint32_t st_ = h2_mem_read(h2_mem_, ctx, (pc), (addr), (n), 1u, b_);           \
         if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                          \
         memcpy(&dst, b_, (n));                                                  \
@@ -333,6 +387,7 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
         T v_ = (value);                                                         \
         uint8_t b_[16];                                                         \
         memcpy(b_, &v_, (n));                                                   \
+        H2_ACC_ONE();                                                           \
         uint32_t st_ = h2_mem_write(h2_mem_, ctx, (pc), (addr), (n), 1u, b_);          \
         if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                          \
     } while (0)
@@ -485,12 +540,24 @@ static inline const uint32_t *h2_preempt_word(ExecCtxOpaque *ctx) {
     memcpy(&p, (const void *)ctx, sizeof p);
     return p;
 }
-#define H2_PREEMPT_LOCALS() const uint32_t *const h2_pre_ = h2_preempt_word(ctx)
+#define H2_PREEMPT_LOCALS()                                                     \
+    const uint32_t *const h2_pre_ = h2_preempt_word(ctx);                       \
+    H2_ACC_BUDGET_LOCALS()
+#define H2_POLLED() (__atomic_load_n(h2_pre_, __ATOMIC_RELAXED) != 0u || H2_ACC_OVER())
 #define H2_LOOP_POLL(header)                                                    \
     do {                                                                        \
         H2_PERF_LOOP();                                                         \
-        if (__builtin_expect(__atomic_load_n(h2_pre_, __ATOMIC_RELAXED) != 0u, 0)) \
+        if (__builtin_expect(H2_POLLED(), 0))                                   \
             H2_XFER(H2_JUMP, H2_RESUME, (header), 0u);                          \
+    } while (0)
+/* After a completed REP iteration with more to come (accounting only): the
+ * instruction's own PC is a resume of its owner, and leaving there with
+ * ESI/EDI/ECX as they are is an interrupted string instruction. At least
+ * one iteration runs per handler call, so a re-entered REP makes progress. */
+#define H2_REP_POLL(pc)                                                         \
+    do {                                                                        \
+        if (__builtin_expect(H2_POLLED(), 0))                                   \
+            H2_XFER(H2_JUMP, H2_RESUME, (pc), 0u);                              \
     } while (0)
 
 #endif

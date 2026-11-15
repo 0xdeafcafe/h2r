@@ -97,9 +97,45 @@ pub unsafe extern "C" fn h2abi_v1_read(
     alignment: u32,
     out: *mut u8,
 ) -> u32 {
+    // SAFETY: the caller's contract, passed on.
+    unsafe { read(exec, pc, addr, width, alignment, out, true) }
+}
+
+/// [`h2abi_v1_read`] without spending from the slice: for a module that
+/// counts its own accesses ([`crate::generated::FEATURE_ACCOUNTING`]) and
+/// settles them through [`h2abi_v1_charge`].
+///
+/// # Safety
+/// As for [`h2abi_v1_read`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_read_counted(
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    alignment: u32,
+    out: *mut u8,
+) -> u32 {
+    // SAFETY: the caller's contract, passed on.
+    unsafe { read(exec, pc, addr, width, alignment, out, false) }
+}
+
+/// # Safety
+/// As for [`h2abi_v1_read`].
+unsafe fn read(
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    alignment: u32,
+    out: *mut u8,
+    charge: bool,
+) -> u32 {
     // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
     let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
-    ctx.spend_access();
+    if charge {
+        ctx.spend_access();
+    }
     if !matches!(width, 1 | 2 | 4 | 8 | 10 | 16) {
         return invalid(
             ctx,
@@ -143,9 +179,75 @@ pub unsafe extern "C" fn h2abi_v1_write(
     alignment: u32,
     value: *const u8,
 ) -> u32 {
+    // SAFETY: the caller's contract, passed on.
+    unsafe { write(exec, pc, addr, width, alignment, value, true) }
+}
+
+/// [`h2abi_v1_write`] without spending from the slice; see
+/// [`h2abi_v1_read_counted`].
+///
+/// # Safety
+/// As for [`h2abi_v1_write`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_write_counted(
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    alignment: u32,
+    value: *const u8,
+) -> u32 {
+    // SAFETY: the caller's contract, passed on.
+    unsafe { write(exec, pc, addr, width, alignment, value, false) }
+}
+
+/// Spend `accesses` guest memory accesses from the context's slice at
+/// once, exactly as that many charged accessor calls would: what a module
+/// that counts its own accesses settles before it leaves a handler and
+/// before anything that spends or observes the slice.
+///
+/// # Safety
+/// `exec` is the current exclusive handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_charge(exec: *mut ExecCtxOpaque, accesses: u64) {
     // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
     let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
-    ctx.spend_access();
+    // Anything the inline RAM view charged itself comes first.
+    sync_accesses(ctx);
+    ctx.spend_accesses(accesses);
+}
+
+/// How many accesses the context may make before its slice expires
+/// (`UINT64_MAX` when nothing would expire): a counting module's loops
+/// leave for the runner once their uncharged count reaches it, where the
+/// charged accessors would have set the slice bit.
+///
+/// # Safety
+/// `exec` is the current exclusive handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_budget(exec: *mut ExecCtxOpaque) -> u64 {
+    // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    sync_accesses(ctx);
+    ctx.access_budget()
+}
+
+/// # Safety
+/// As for [`h2abi_v1_write`].
+unsafe fn write(
+    exec: *mut ExecCtxOpaque,
+    pc: u32,
+    addr: u32,
+    width: u32,
+    alignment: u32,
+    value: *const u8,
+    charge: bool,
+) -> u32 {
+    // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    if charge {
+        ctx.spend_access();
+    }
     if !matches!(width, 1 | 2 | 4 | 8 | 10 | 16) {
         return invalid(
             ctx,

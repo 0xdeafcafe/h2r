@@ -22,6 +22,21 @@ struct H2FastAccess {
 _Static_assert(sizeof(H2MemoryData) == 2080 && sizeof(H2MemoryShared) == 2088, "fast memory layout");
 _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32, "fast context layout");
 #endif
+#ifndef H2_ACCOUNTING
+#define H2_ACCOUNTING 0
+#endif
+/* With access accounting (h2gen.h) the handler counts every attempted access
+ * itself, fast or slow, so the fast path charges nothing and the slow path
+ * takes the uncharged accessors: nothing is charged twice. */
+#if H2_ACCOUNTING
+#define H2_FAST_CHARGE(f) ((void)(f))
+#define H2_MEM_READ_SLOW h2abi_v1_read_counted
+#define H2_MEM_WRITE_SLOW h2abi_v1_write_counted
+#else
+#define H2_FAST_CHARGE(f) h2_fast_charge(f)
+#define H2_MEM_READ_SLOW h2abi_v1_read
+#define H2_MEM_WRITE_SLOW h2abi_v1_write
+#endif
 #if H2_FASTMEM
 #define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); (void)h2_mem_
 #define H2_FAST_RELEASE() h2abi_v1_fast_release(ctx)
@@ -68,7 +83,7 @@ static inline int h2_fast_copy(H2FastAccess *f, uint32_t addr, uint32_t width,
         memcpy(out, ram, width);
     }
     __atomic_store_n(&m->gate, 0u, __ATOMIC_RELEASE);
-    h2_fast_charge(f);
+    H2_FAST_CHARGE(f);
     return 1;
 }
 static inline uint32_t h2_mem_read(H2FastAccess *f, ExecCtxOpaque *ctx, uint32_t pc,
@@ -78,7 +93,7 @@ static inline uint32_t h2_mem_read(H2FastAccess *f, ExecCtxOpaque *ctx, uint32_t
 #else
     (void)f;
 #endif
-    return h2abi_v1_read(ctx, pc, addr, width, alignment, out);
+    return H2_MEM_READ_SLOW(ctx, pc, addr, width, alignment, out);
 }
 static inline uint32_t h2_mem_write(H2FastAccess *f, ExecCtxOpaque *ctx, uint32_t pc,
                                   uint32_t addr, uint32_t width, uint32_t alignment, const uint8_t *value) {
@@ -87,6 +102,6 @@ static inline uint32_t h2_mem_write(H2FastAccess *f, ExecCtxOpaque *ctx, uint32_
 #else
     (void)f;
 #endif
-    return h2abi_v1_write(ctx, pc, addr, width, alignment, value);
+    return H2_MEM_WRITE_SLOW(ctx, pc, addr, width, alignment, value);
 }
 #endif

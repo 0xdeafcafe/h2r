@@ -26,7 +26,8 @@ fn digest_file(path: &Path) -> io::Result<String> {
 
 /// Hash the entire executable as well as the XBE. A package version alone
 /// cannot distinguish edits in the analyzer, lifter, IR passes or emitter.
-/// `settings` covers run-time choices that change the C (the IR passes).
+/// `settings` covers run-time choices that change the C (the IR passes and
+/// `H2_ACCESS_COUNT`).
 pub fn key(image: &[u8], executable: &Path, settings: &str) -> io::Result<String> {
     Ok(format!(
         "{RECEIPT}\n{}\n{:x}\n{}\n{settings}\n",
@@ -122,12 +123,13 @@ mod tests {
         let tree = Tree::new("key");
         let exe = tree.0.join("generator");
         fs::write(&exe, "generator version one").unwrap();
-        let first = key(b"synthetic XBE one", &exe, "all").unwrap();
-        assert_eq!(first, key(b"synthetic XBE one", &exe, "all").unwrap());
-        assert_ne!(first, key(b"synthetic XBE two", &exe, "all").unwrap());
-        assert_ne!(first, key(b"synthetic XBE one", &exe, "none").unwrap());
+        let first = key(b"synthetic XBE one", &exe, "all off").unwrap();
+        assert_eq!(first, key(b"synthetic XBE one", &exe, "all off").unwrap());
+        assert_ne!(first, key(b"synthetic XBE two", &exe, "all off").unwrap());
+        assert_ne!(first, key(b"synthetic XBE one", &exe, "none off").unwrap());
+        assert_ne!(first, key(b"synthetic XBE one", &exe, "all on").unwrap());
         fs::write(&exe, "generator version two").unwrap();
-        assert_ne!(first, key(b"synthetic XBE one", &exe, "all").unwrap());
+        assert_ne!(first, key(b"synthetic XBE one", &exe, "all off").unwrap());
     }
 
     #[test]

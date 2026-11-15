@@ -65,6 +65,8 @@ pub struct OwnerShape<'a> {
     pub selectors: &'a BTreeSet<u32>,
     /// Loops: each header polls for preemption ([`crate::backedge`]).
     pub loops: &'a crate::backedge::Loops,
+    /// Count guest memory accesses in the handler ([`crate::Codegen`]).
+    pub accounting: bool,
 }
 
 /// The C symbol of an owner's handler.
@@ -77,8 +79,19 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
     let lazy = Lazy::of(f);
     let entry_of_settle = format!("{:08x}", f.entry);
     let x87 = crate::x87::uses_x87(f);
-    let mut e =
-        Emitter { out: String::new(), shape, in_repeat: false, x87, lazy, pend: Pend::default(), entry_of_settle };
+    // With accounting a REP loop polls too, so it needs the poll's locals.
+    let polled = !shape.loops.headers.is_empty()
+        || (shape.accounting && f.insns().any(|i| i.stmts.iter().any(|s| matches!(s, Stmt::Repeat { .. }))));
+    let mut e = Emitter {
+        out: String::new(),
+        shape,
+        in_repeat: false,
+        x87,
+        polled,
+        lazy,
+        pend: Pend::default(),
+        entry_of_settle,
+    };
     e.function(f);
     e.out
 }
@@ -90,6 +103,9 @@ struct Emitter<'a> {
     in_repeat: bool,
     /// The handler has x87 ops: it has the x87 locals and fail block.
     x87: bool,
+    /// The handler polls (loop headers, or REP loops with accounting): it
+    /// has `H2_PREEMPT_LOCALS`.
+    polled: bool,
     /// The handler's lazy flags, if it has any.
     lazy: Option<Lazy>,
     /// What may be pending at the statement being emitted.
@@ -262,7 +278,7 @@ impl Emitter<'_> {
             self.line(1, "H2X87_LOCALS();");
         }
         let headers = &self.shape.loops.headers;
-        if !headers.is_empty() {
+        if self.polled {
             self.line(1, "H2_PREEMPT_LOCALS();");
         }
         self.line(1, "switch (start) {");
@@ -427,6 +443,16 @@ impl Emitter<'_> {
         self.line(1, "}");
     }
 
+    /// With accounting, charge the handler's count before something that
+    /// spends `extra` accesses of its own or observes the slice. Unrelated
+    /// to [`Self::settle`], which materialises lazy flags.
+    fn acc_settle(&mut self, d: usize, extra: u32) {
+        if self.shape.accounting {
+            let m = if self.polled { "H2_ACC_SETTLE_POLLED" } else { "H2_ACC_SETTLE" };
+            self.line(d, format!("{m}({extra}u);"));
+        }
+    }
+
     /// An atomic instruction (validated shape: pure prefix, one load, one
     /// store): the prefix, then the runtime's operation-wide accessor in
     /// place of the load..store statements.
@@ -446,6 +472,8 @@ impl Emitter<'_> {
                 op.rmw_tag().expect("read-modify-write op")
             ),
         };
+        // The atomic spends its own access: settle the count before it.
+        self.acc_settle(2, 1);
         self.line(2, format!("H2_ATOMIC({pc:#x}u, {call});"));
         if let Some((g, s)) = a.old {
             self.line(2, write_reg(g, s, "o_"));
@@ -661,7 +689,9 @@ impl Emitter<'_> {
                     self.line(d, "}");
                 }
                 Stmt::Intrinsic { op: Intrinsic::ReadTsc, dsts, .. } => {
-                    // The counter is the runtime's; it cannot fail.
+                    // The counter is the runtime's; it cannot fail. Guest
+                    // time may follow the accesses spent: settle first.
+                    self.acc_settle(d, 0);
                     self.line(d, format!("uint64_t t{} = h2shim_v1_rdtsc(ctx, {pc:#x}u);", dsts[0].id));
                 }
                 // In an x87 handler the wait shares the fail block: #MF
@@ -714,6 +744,10 @@ impl Emitter<'_> {
                         RepKind::Rep => {}
                         RepKind::RepE => self.line(d + 1, format!("if (!H2_FLAG({zf})) break;")),
                         RepKind::RepNe => self.line(d + 1, format!("if (H2_FLAG({zf})) break;")),
+                    }
+                    if self.shape.accounting {
+                        // A bounded poll interval: one iteration.
+                        self.line(d + 1, format!("if (ecx) H2_REP_POLL({pc:#x}u);"));
                     }
                     self.line(d, "}");
                 }

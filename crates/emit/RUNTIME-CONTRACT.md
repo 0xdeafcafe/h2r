@@ -218,6 +218,44 @@ counter for every thread (the Xbox has one CPU), in `crates/runtime/src/tsc.rs`:
 The emitter's test host and the IR interpreter count reads instead (each read
 returns the counter and adds one), so differential tests are exact.
 
+#### Optional access accounting (`H2_ACCESS_COUNT=1`, module feature 1)
+
+Off by default. With it, a handler counts its own guest accesses instead of
+having each accessor charge one: a local `h2acc`, incremented before every
+attempted load or store (the faulting one included), inline or not. The
+accesses go through `h2abi_v1_read_counted` and `h2abi_v1_write_counted`,
+which behave exactly as `h2abi_v1_read`/`write` but charge nothing, and the
+inline RAM path skips its own count. `h2abi_v1_charge(ctx, n)` spends `n`
+accesses as `n` charged accessors would have (SLICE on the preempt word when
+the budget runs out), and `h2abi_v1_budget(ctx)` is the number left before
+that happens (`UINT64_MAX` when unarmed). Both first settle any count the
+inline RAM view holds. A handler charges its count:
+
+- at the shared epilogue, so on every way out, faults and preemption included;
+- before an atomic helper, which charges its own access, and before `rdtsc`.
+
+A handler with polls reads the budget once on entry, and a poll also leaves
+once `h2acc` reaches it, so a loop gives up its slice at the same safe point
+as with charged accessors. With accounting a REP string instruction polls
+too, after each iteration with more to come, leaving with `JUMP`/`RESUME` to
+its own PC (already a resume, §4) and ESI/EDI/ECX as they are: an interrupted
+string instruction. At least one iteration runs per handler call. This is
+the only place accounting changes where a run can stop; totals, final state
+and every other stop are the same.
+
+Accounting is independent of lazy flags (crates/opt). A poll, REP poll or
+fault leaves through the shared epilogue, which materialises the pending
+flags and then charges the count before spilling; neither step reads what the
+other writes. Nothing is pending at a REP poll: a `Repeat` settles every flag
+before its loop, and its body's flag writes are never lazy or removed.
+
+Helpers called from generated code (atomics, HLE, x87) keep charging their
+own accesses. The module declares the scheme in `H2GenModule.features`
+(`H2GEN_FEATURE_ACCOUNTING`, §2); the runtime refuses unknown feature bits,
+so a module is never run by a runtime that would charge twice or not at all.
+A bridge forwards the four functions; the test bridge's legacy install fills
+them with the charged accessors, a no-op charge and an unlimited budget.
+
 ### 1.6 Optional profiling extension
 
 `H2_PERF=1` adds `void h2abi_v1_profile(ExecCtxOpaque *, uint64_t loop_polls,
@@ -229,7 +267,7 @@ perform no profiling work. ABI layouts are unchanged. See
 
 ### 1.7 Nothing else
 
-Handlers call no other runtime symbol. The one other thing they read is
+Handlers call no other runtime symbol (but §1.1's accounting extension). The one other thing they read is
 the preempt word through the context pointer (§4, "Loop safe points"). x87, MMX and MXCSR state are read
 and written directly in `CpuAbi` by `static inline` helpers in `h2gen.h`,
 and SSE floating point by the `h2s_*` functions of `h2simd.h` (copied next
@@ -265,7 +303,7 @@ debugger or an x87 implementation reading `X87Abi` sees these values.
 typedef struct H2GenEntry  { uint32_t addr, kind; H2Handler fn; uint32_t (*abi_version)(void); } H2GenEntry;
 typedef struct H2GenResume { uint32_t pc, owner, start; } H2GenResume;
 typedef struct H2GenModule {
-    uint32_t abi_version, entry_count, resume_count, reserved;
+    uint32_t abi_version, entry_count, resume_count, features;
     const H2GenEntry *entries;    /* entry_count rows, then a zero row */
     const H2GenResume *resumes;   /* resume_count rows, then a zero row */
 } H2GenModule;
@@ -281,6 +319,8 @@ typedef struct H2GenModule {
   B, and B's entry row stays as it is.
 - Every loop header is also a resume of its owner (§4, "Loop safe
   points"), with `start` = the header.
+- `features` is a bit set of optional schemes the module's handlers use:
+  `H2GEN_FEATURE_ACCOUNTING` (1, §1.1) or 0. It was `reserved`, always 0.
 
 ## 3. Registration adapter (**new**)
 
@@ -295,7 +335,8 @@ unsafe fn Dispatch::register_generated_module(&mut self, module: &H2GenModule,
 Its semantics:
 
 1. Call `module_version()` and check `module.abi_version` against
-   `H2_ABI_VERSION`. Reject the module on mismatch.
+   `H2_ABI_VERSION`. Reject the module on mismatch, and on a `features`
+   bit the runtime does not know (`RegistrationError::UnknownFeatures`).
 2. For each entry row, in table order:
    `register_generated_object(row.addr, row.abi_version, row.fn)`. Per-row
    probes matter because a module's objects can be rebuilt separately.
@@ -338,7 +379,8 @@ Its semantics:
   call. If an iteration faults, ESI/EDI/ECX hold the completed iterations'
   progress, EFLAGS and the defined mask are as they were before the
   instruction, and `eip` is the instruction. Restarting at `eip` continues
-  (next item).
+  (next item). With access accounting a `rep` loop can also give up its
+  slice part-way, the same way (§1.1).
 - **Restarting after a fault.** Every REP-prefixed instruction's PC is
   registered as a resume of its owner (`H2GenResume`, `start` = the PC),
   even mid-block. To continue at a FAULT's `eip` (SEH

@@ -22,7 +22,7 @@ copies. Nothing is ever written next to it.
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
-| `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, ABI: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
+| `--out DIR` | `$TMPDIR/h2boot` | generated C (`src/`), objects, `libh2game.dylib` and its `.stamp` (image hash, generator source hash, IR passes, `H2_ACCESS_COUNT`, ABI, compiler flags: `run` rebuilds a dylib stamped for another image or generator), `kernel-trace.tsv` |
 | `--data DIR` | `$TMPDIR/h2boot-data` | VFS host storage (`disk/PartitionN`, `metadata/PartitionN`) |
 | `--jobs N` | cores | clang parallelism |
 | `--slices N` | 100000 | cooperative scheduler slices before giving up |
@@ -36,6 +36,7 @@ copies. Nothing is ever written next to it.
 | `H2_FASTMEM=1` | **Opt-in, off by default.** Set for both `h2 build` and `h2 run`/`play` to compile inline RAM checks/copies; unsupported accesses use Rust. Requires the current boot bridge; changing compiler flags invalidates the dylib stamp. This is the gated inline path, not fault-driven fastmem. |
 | `H2_BOOT_FASTMEM=0` | run a fast-memory image through checked Rust accessors, without rebuilding; use for A/B comparisons. Leave `H2_FASTMEM=1` to match that image's stamp. |
 | `H2_PERF=1` | compile generated loop/x87 counters; forwarded by boot's versioned bridge to contexts with profiling enabled. Part of the dylib stamp. |
+| `H2_ACCESS_COUNT=1` | **Off by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). Set it for `h2 build`/`h2 emit`; it is part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
 | `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |

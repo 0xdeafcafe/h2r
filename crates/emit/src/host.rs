@@ -261,7 +261,7 @@ struct GenModule {
     abi_version: u32,
     entry_count: u32,
     resume_count: u32,
-    reserved: u32,
+    features: u32,
     entries: *const GenEntry,
     resumes: *const GenResume,
 }
@@ -300,6 +300,15 @@ pub struct Ctx {
     /// The CPU of the running handler ([`Generated::run`]), for
     /// [`Ctx::fp_error_x87`].
     cpu: *const CpuAbi,
+    /// Accesses charged, as the runtime's slice counts them: one per
+    /// charged accessor or atomic call, `n` per `h2abi_v1_charge(n)`.
+    pub charged: u64,
+    /// Calls of the uncharged `h2abi_v1_read/write_counted`.
+    pub counted: u64,
+    /// The runtime's armed slice, in accesses: `None` is not armed. When a
+    /// charge spends the last one, the preempt word is set, as the
+    /// runtime's slice expiry sets its bit.
+    pub slice: Option<u64>,
 }
 
 const _: () = assert!(std::mem::offset_of!(Ctx, preempt) == 0);
@@ -315,7 +324,28 @@ impl Ctx {
             perf: [0; 2],
             fp_error_x87: Vec::new(),
             cpu: std::ptr::null(),
+            charged: 0,
+            counted: 0,
+            slice: None,
         }
+    }
+
+    /// The runtime's `spend_accesses`.
+    fn spend(&mut self, n: u64) {
+        self.charged += n;
+        if let Some(left) = self.slice.filter(|&l| l > 0 && n > 0) {
+            if n >= left {
+                self.slice = Some(0);
+                self.preempt.fetch_or(1, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                self.slice = Some(left - n);
+            }
+        }
+    }
+
+    /// The runtime's `access_budget`.
+    fn budget(&self) -> u64 {
+        self.slice.filter(|&l| l > 0).unwrap_or(u64::MAX)
     }
 
     fn emit(&mut self, e: HostEvent) -> u32 {
@@ -341,11 +371,15 @@ struct Bridge {
     profile: unsafe extern "C" fn(*mut c_void, u64, u64),
     fast_acquire: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
     fast_release: unsafe extern "C" fn(*mut c_void),
+    read_counted: unsafe extern "C" fn(*mut c_void, u32, u32, u32, u32, *mut u8) -> u32,
+    write_counted: unsafe extern "C" fn(*mut c_void, u32, u32, u32, u32, *const u8) -> u32,
+    charge: unsafe extern "C" fn(*mut c_void, u64),
+    budget: unsafe extern "C" fn(*mut c_void) -> u64,
 }
 
 impl Bridge {
     /// What `h2bridge_layout_v2` must report: each slot's offset, then the size.
-    const LAYOUT: [usize; 12] = [
+    const LAYOUT: [usize; 16] = [
         std::mem::offset_of!(Bridge, read),
         std::mem::offset_of!(Bridge, write),
         std::mem::offset_of!(Bridge, event),
@@ -357,6 +391,10 @@ impl Bridge {
         std::mem::offset_of!(Bridge, profile),
         std::mem::offset_of!(Bridge, fast_acquire),
         std::mem::offset_of!(Bridge, fast_release),
+        std::mem::offset_of!(Bridge, read_counted),
+        std::mem::offset_of!(Bridge, write_counted),
+        std::mem::offset_of!(Bridge, charge),
+        std::mem::offset_of!(Bridge, budget),
         size_of::<Bridge>(),
     ];
 }
@@ -365,6 +403,34 @@ impl Bridge {
 /// Generated code passes back the `Ctx` pointer it was given and buffers
 /// valid for `width` bytes, per the ABI contract.
 unsafe extern "C" fn cb_read(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, out: *mut u8) -> u32 {
+    unsafe { &mut *c.cast::<Ctx>() }.spend(1);
+    unsafe { read(c, pc, addr, width, align, out) }
+}
+
+unsafe extern "C" fn cb_read_counted(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, out: *mut u8) -> u32 {
+    unsafe { &mut *c.cast::<Ctx>() }.counted += 1;
+    unsafe { read(c, pc, addr, width, align, out) }
+}
+
+unsafe extern "C" fn cb_write(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, v: *const u8) -> u32 {
+    unsafe { &mut *c.cast::<Ctx>() }.spend(1);
+    unsafe { write(c, pc, addr, width, align, v) }
+}
+
+unsafe extern "C" fn cb_write_counted(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, v: *const u8) -> u32 {
+    unsafe { &mut *c.cast::<Ctx>() }.counted += 1;
+    unsafe { write(c, pc, addr, width, align, v) }
+}
+
+unsafe extern "C" fn cb_charge(c: *mut c_void, n: u64) {
+    unsafe { &mut *c.cast::<Ctx>() }.spend(n);
+}
+
+unsafe extern "C" fn cb_budget(c: *mut c_void) -> u64 {
+    unsafe { &*c.cast::<Ctx>() }.budget()
+}
+
+unsafe fn read(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, out: *mut u8) -> u32 {
     let ctx = unsafe { &mut *c.cast::<Ctx>() };
     let mut buf = [0u8; 16];
     let buf = &mut buf[..width as usize];
@@ -380,7 +446,7 @@ unsafe extern "C" fn cb_read(c: *mut c_void, pc: u32, addr: u32, width: u32, ali
     }
 }
 
-unsafe extern "C" fn cb_write(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, v: *const u8) -> u32 {
+unsafe fn write(c: *mut c_void, pc: u32, addr: u32, width: u32, align: u32, v: *const u8) -> u32 {
     let ctx = unsafe { &mut *c.cast::<Ctx>() };
     if align > 1 && !addr.is_multiple_of(align) {
         return ctx.emit(HostEvent::Guest { pc, saved_eip: pc, code: 7, arg: addr });
@@ -497,6 +563,8 @@ unsafe extern "C" fn cb_rmw(
     unsafe {
         atomic_commit(cpu, c, out, |ctx, cpu| {
             ctx.atomics.push(op);
+            // One access, charged by the runtime's atomic accessors too.
+            ctx.spend(1);
             if !matches!(width, 1 | 2 | 4) || (matches!(op, 12..=14) && width == 1) {
                 return Err(bad_width(ctx, pc, addr));
             }
@@ -555,6 +623,7 @@ unsafe extern "C" fn cb_xchg(
     unsafe {
         atomic_commit(cpu, c, out, |ctx, _| {
             ctx.atomics.push(15);
+            ctx.spend(1);
             if !matches!(width, 1 | 2 | 4) {
                 return Err(bad_width(ctx, pc, addr));
             }
@@ -577,6 +646,7 @@ unsafe extern "C" fn cb_cmpxchg(
     unsafe {
         atomic_commit(cpu, c, out, |ctx, cpu| {
             ctx.atomics.push(16);
+            ctx.spend(1);
             if !matches!(width, 1 | 2 | 4) {
                 return Err(bad_width(ctx, pc, addr));
             }
@@ -637,6 +707,10 @@ impl Generated {
                 profile: cb_profile,
                 fast_acquire: cb_fast_acquire,
                 fast_release: cb_fast_release,
+                read_counted: cb_read_counted,
+                write_counted: cb_write_counted,
+                charge: cb_charge,
+                budget: cb_budget,
             };
             if install(&bridge, size_of::<Bridge>()) != 1 {
                 return Err("bridge table size rejected".into());

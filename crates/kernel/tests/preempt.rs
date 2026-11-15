@@ -308,12 +308,16 @@ struct Bridge {
     profile: unsafe extern "C" fn(*mut ExecCtxOpaque, u64, u64),
     fast_acquire: unsafe extern "C" fn(*mut ExecCtxOpaque) -> *mut runtime::ffi::FastAccess,
     fast_release: unsafe extern "C" fn(*mut ExecCtxOpaque),
+    read_counted: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32, *mut u8) -> u32,
+    write_counted: unsafe extern "C" fn(*mut ExecCtxOpaque, u32, u32, u32, u32, *const u8) -> u32,
+    charge: unsafe extern "C" fn(*mut ExecCtxOpaque, u64),
+    budget: unsafe extern "C" fn(*mut ExecCtxOpaque) -> u64,
 }
 
 impl Bridge {
     /// What bridge.c's `h2bridge_layout_v2` must report: each slot's offset in
     /// declaration order, then the size.
-    const LAYOUT: [usize; 12] = [
+    const LAYOUT: [usize; 16] = [
         std::mem::offset_of!(Bridge, read),
         std::mem::offset_of!(Bridge, write),
         std::mem::offset_of!(Bridge, event),
@@ -325,6 +329,10 @@ impl Bridge {
         std::mem::offset_of!(Bridge, profile),
         std::mem::offset_of!(Bridge, fast_acquire),
         std::mem::offset_of!(Bridge, fast_release),
+        std::mem::offset_of!(Bridge, read_counted),
+        std::mem::offset_of!(Bridge, write_counted),
+        std::mem::offset_of!(Bridge, charge),
+        std::mem::offset_of!(Bridge, budget),
         size_of::<Bridge>(),
     ];
 }
@@ -369,6 +377,10 @@ fn build() -> Option<libloading::Library> {
         profile: runtime::ffi::h2abi_v1_profile,
         fast_acquire: runtime::ffi::h2abi_v1_fast_acquire,
         fast_release: runtime::ffi::h2abi_v1_fast_release,
+        read_counted: runtime::ffi::h2abi_v1_read_counted,
+        write_counted: runtime::ffi::h2abi_v1_write_counted,
+        charge: runtime::ffi::h2abi_v1_charge,
+        budget: runtime::ffi::h2abi_v1_budget,
     };
     // SAFETY: bridge.c copies the table, whose layout is checked first;
     // the signatures match h2abi.h.

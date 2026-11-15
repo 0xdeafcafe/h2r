@@ -57,22 +57,28 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 }
 
 /// What a module is built from: the image's hash, the generator sources'
-/// hash (build.rs), the IR passes `H2_PASSES` selects and the module ABI. [`build`] writes it next to the dylib
+/// hash (build.rs), the IR passes `H2_PASSES` selects, the code generation
+/// choices (`H2_ACCESS_COUNT`), the module ABI and the compiler flags.
+/// [`build`] writes it next to the dylib
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
     match emit::compile::cflags() {
-        Ok(flags) => stamp_with_flags(xbe_bytes, &flags),
+        Ok(flags) => stamp_with(
+            xbe_bytes,
+            &emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
+            &emit::Codegen::from_env().map_or_else(|e| e, |c| format!("{c:?}")),
+            &flags,
+        ),
         Err(e) => format!("invalid compiler flags: {e}"),
     }
 }
 
-fn stamp_with_flags(xbe_bytes: &[u8], flags: &[String]) -> String {
+fn stamp_with(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String]) -> String {
     format!(
-        "xbe {:016x} generator {} passes {} abi {} flags {flags:?}\n",
+        "xbe {:016x} generator {} passes {passes} codegen {codegen} abi {} flags {flags:?}\n",
         fallback::fnv64(xbe_bytes),
         env!("GENERATOR_SOURCE_HASH"),
-        emit::opt::Passes::from_env().map_or_else(|e| e, |p| p.spec()),
         runtime::cpu::ABI_VERSION
     )
 }
@@ -672,14 +678,26 @@ mod tests {
 
     #[test]
     fn generated_flags_are_part_of_the_dylib_stamp() {
+        let stamp = |flags: &[String]| stamp_with(b"synthetic", "all", "Codegen { accounting: false }", flags);
         let base = vec!["-O1".to_owned()];
         let mut fast = base.clone();
         fast.push("-DH2_FASTMEM=1".to_owned());
         let mut profiled = base.clone();
         profiled.push("-DH2_PERF=1".to_owned());
-        assert_ne!(stamp_with_flags(b"synthetic", &base), stamp_with_flags(b"synthetic", &fast));
-        assert_ne!(stamp_with_flags(b"synthetic", &base), stamp_with_flags(b"synthetic", &profiled));
-        assert_eq!(stamp_with_flags(b"synthetic", &fast), stamp_with_flags(b"synthetic", &fast));
+        assert_ne!(stamp(&base), stamp(&fast));
+        assert_ne!(stamp(&base), stamp(&profiled));
+        assert_eq!(stamp(&fast), stamp(&fast));
+    }
+
+    #[test]
+    fn passes_and_codegen_are_part_of_the_dylib_stamp() {
+        let flags = vec!["-O1".to_owned()];
+        let off = format!("{:?}", emit::Codegen::default());
+        let on = format!("{:?}", emit::Codegen { accounting: true });
+        let base = stamp_with(b"synthetic", "all", &off, &flags);
+        assert_ne!(base, stamp_with(b"synthetic", "all", &on, &flags), "H2_ACCESS_COUNT");
+        assert_ne!(base, stamp_with(b"synthetic", "none", &off, &flags), "H2_PASSES");
+        assert_eq!(base, stamp_with(b"synthetic", "all", &off, &flags));
     }
 
     #[test]

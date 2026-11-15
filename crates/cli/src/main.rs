@@ -661,8 +661,10 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         None => emit::opt::Passes::from_env().map_err(anyhow::Error::msg)?,
     };
     let t = Instant::now();
-    // The passes change the C, so they are part of the key.
-    let cache_key = emit_cache::key(&data, &std::env::current_exe()?, &format!("{passes:?}"))?;
+    let codegen = emit::Codegen::from_env().map_err(anyhow::Error::msg)?;
+    // The passes and code generation choices change the C, so they are part
+    // of the key.
+    let cache_key = emit_cache::key(&data, &std::env::current_exe()?, &format!("{passes:?} {codegen:?}"))?;
     // Tracing is explicitly requested analysis work, even on a cache hit.
     let reuse = !opts.no_emit_cache && std::env::var_os("H2_TRACE").is_none() && emit_cache::valid(&out, &cache_key);
     println!("emit cache: {:.3}s, {}", t.elapsed().as_secs_f64(), if reuse { "hit" } else { "miss" });
@@ -675,7 +677,7 @@ fn run_emit(path: &Path, opts: &LiftOpts) -> Result<()> {
         let owners = emit::plan_image(&a, &x, passes)?;
         println!("lift + plan: {:.3}s ({passes:?})", t.elapsed().as_secs_f64());
         let t = Instant::now();
-        let w = emit::write_module(&owners, &src)?;
+        let w = emit::write_module_with(&owners, &src, codegen)?;
         println!(
             "emit: {:.3}s, {} owners, {} files ({} rewritten), {:.1} MB of C, {} entries, {} resumes, {} branch/fall-through/case exits into other entries, {} loop back-edges",
             t.elapsed().as_secs_f64(),

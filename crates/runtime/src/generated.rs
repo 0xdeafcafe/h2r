@@ -129,7 +129,10 @@ pub struct H2GenModule {
     pub abi_version: u32,
     pub entry_count: u32,
     pub resume_count: u32,
-    pub reserved: u32,
+    /// [`FEATURE_ACCOUNTING`], or 0. A bit this runtime does not know is a
+    /// registration error, so a newer module never runs on assumptions an
+    /// older runtime cannot honour.
+    pub features: u32,
     pub entries: *const H2GenEntry,
     pub resumes: *const H2GenResume,
 }
@@ -141,11 +144,27 @@ const _: () = assert!(size_of::<H2GenEntry>() == 24 && size_of::<H2GenModule>() 
 pub const ENTRY_FUNCTION: u32 = 0;
 pub const ENTRY_INTERIOR: u32 = 1;
 
+/// Module feature (`H2GEN_FEATURE_ACCOUNTING`): the module's handlers count
+/// their own guest memory accesses (access accounting, version 1). They use
+/// the uncharged `h2abi_v1_read_counted`/`write_counted`, settle the count
+/// with `h2abi_v1_charge` on every way out of a handler and before anything
+/// that spends or observes the slice (atomics, which still charge
+/// themselves, and `rdtsc`), and leave a loop for the runner once the count
+/// reaches `h2abi_v1_budget`, where the charged accessors would have set the
+/// slice bit. REP string loops poll after each iteration. Charged totals at
+/// those points equal an unflagged module's; only when a REP loop gives up
+/// its slice differs (it can now leave mid-instruction, at its own PC).
+pub const FEATURE_ACCOUNTING: u32 = 1;
+/// Every module feature this runtime implements.
+pub const FEATURES: u32 = FEATURE_ACCOUNTING;
+
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegisteredModule {
     pub entries: usize,
     pub resumes: usize,
+    /// The module's features ([`FEATURE_ACCOUNTING`]).
+    pub features: u32,
 }
 
 fn row(table: ModuleTable, index: usize, error: RegistrationError) -> RegistrationError {
@@ -203,6 +222,9 @@ impl Dispatch {
                 runtime: ABI_VERSION,
             });
         }
+        if module.features & !FEATURES != 0 {
+            return Err(RegistrationError::UnknownFeatures(module.features & !FEATURES));
+        }
         // SAFETY: the caller guarantees the table shapes.
         let entries = unsafe { table(module.entries, module.entry_count, ModuleTable::Entries)? };
         // SAFETY: as above.
@@ -247,6 +269,7 @@ impl Dispatch {
         Ok(RegisteredModule {
             entries: entries.len(),
             resumes: resumes.len(),
+            features: module.features,
         })
     }
 }

@@ -451,3 +451,15 @@ from the architectural ABI v2 layouts. The default compile mode remains off;
 a loading bridge must explicitly forward the extensions before enabling it.
 `ExecCtx::enable_fast_memory(false)` keeps a compatible generated module on
 the checked Rust accessor path for diagnostic comparisons.
+
+## Optional access accounting (module features)
+
+`H2GenModule.reserved` is now `features`, a bit set of optional schemes a
+generated module uses; `RegisteredModule` reports it. Registration refuses a
+bit outside `generated::FEATURES` with `RegistrationError::UnknownFeatures`.
+`generated::FEATURE_ACCOUNTING` (1) marks a module built with
+`H2_ACCESS_COUNT=1`: its handlers count guest accesses themselves and call
+four new exports, `ffi::h2abi_v1_read_counted` and `h2abi_v1_write_counted`
+(the accessors without the charge), `h2abi_v1_charge(ctx, n)` and
+`h2abi_v1_budget(ctx)`. A bridge that loads such a module forwards them.
+Modules without the bit, and every helper, charge as before.

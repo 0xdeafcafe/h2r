@@ -50,7 +50,8 @@ fn setup(edit: impl FnOnce(&mut Dispatch)) -> (Arc<Runtime>, CpuAbi, ExecCtx) {
         register(&mut dispatch),
         Ok(RegisteredModule {
             entries: 7,
-            resumes: 2
+            resumes: 2,
+            features: 0
         })
     );
     edit(&mut dispatch);
@@ -423,7 +424,7 @@ fn try_module(
         abi_version: runtime::cpu::ABI_VERSION,
         entry_count: counts.0,
         resume_count: counts.1,
-        reserved: 0,
+        features: 0,
         entries: entries.as_ptr(),
         resumes: resumes.as_ptr(),
     };
@@ -537,7 +538,7 @@ fn a_bad_module_registers_nothing_and_names_the_row() {
         abi_version: runtime::cpu::ABI_VERSION,
         entry_count: 1,
         resume_count: 3,
-        reserved: 0,
+        features: 0,
         entries: rows.as_ptr(),
         resumes: std::ptr::null(),
     };
@@ -573,7 +574,7 @@ fn register_raw(
         abi_version,
         entry_count,
         resume_count,
-        reserved: 0,
+        features: 0,
         entries: entries.as_ptr(),
         resumes: resumes.as_ptr(),
     };
@@ -965,4 +966,30 @@ fn a_tail_jump_keeps_its_callers() {
             },
         ]
     );
+}
+
+#[test]
+fn a_module_names_its_features_and_unknown_ones_are_refused() {
+    let with = |features: u32| {
+        let rows = [entry(0x1000, 0, good_probe), ZERO_ENTRY];
+        let resumes = [ZERO_RESUME];
+        let module = H2GenModule {
+            abi_version: runtime::cpu::ABI_VERSION,
+            entry_count: 1,
+            resume_count: 0,
+            features,
+            entries: rows.as_ptr(),
+            resumes: resumes.as_ptr(),
+        };
+        let mut d = Dispatch::default();
+        // SAFETY: each table holds count + 1 rows; the handler follows ABI v1.
+        let r = unsafe { d.register_generated_module(&module, good_probe) };
+        (r, d.has_generated(0x1000))
+    };
+    let accounting = runtime::generated::FEATURE_ACCOUNTING;
+    assert_eq!(
+        with(accounting),
+        (Ok(RegisteredModule { entries: 1, resumes: 0, features: accounting }), true)
+    );
+    assert_eq!(with(0x8000_0000 | accounting), (Err(RegistrationError::UnknownFeatures(0x8000_0000)), false));
 }

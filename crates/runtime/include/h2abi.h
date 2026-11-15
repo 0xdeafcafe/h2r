@@ -59,6 +59,17 @@ uint32_t h2abi_v1_read(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
                      uint32_t width, uint32_t alignment, uint8_t *out);
 uint32_t h2abi_v1_write(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
                       uint32_t width, uint32_t alignment, const uint8_t *value);
+/* Accounting (module feature H2GEN_FEATURE_ACCOUNTING): the same accessors
+ * without spending from the context's slice, for a module that counts its
+ * own accesses, settles them with h2abi_v1_charge before leaving a handler
+ * or anything that spends or observes the slice, and compares its count with
+ * h2abi_v1_budget (UINT64_MAX: nothing would expire) at loop safe points. */
+uint32_t h2abi_v1_read_counted(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
+                               uint32_t width, uint32_t alignment, uint8_t *out);
+uint32_t h2abi_v1_write_counted(ExecCtxOpaque *, uint32_t pc, uint32_t addr,
+                                uint32_t width, uint32_t alignment, const uint8_t *value);
+void h2abi_v1_charge(ExecCtxOpaque *, uint64_t accesses);
+uint64_t h2abi_v1_budget(ExecCtxOpaque *);
 
 /* Optional H2_PERF=1 generated counters, batched once at each handler exit.
  * Extension symbol only: ordinary ABI v2 modules do not require it. */

@@ -18,6 +18,10 @@ typedef struct H2BootBridge {
     void (*profile)(ExecCtxOpaque *, uint64_t, uint64_t);
     H2FastAccess *(*fast_acquire)(ExecCtxOpaque *);
     void (*fast_release)(ExecCtxOpaque *);
+    uint32_t (*read_counted)(ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint8_t *);
+    uint32_t (*write_counted)(ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, const uint8_t *);
+    void (*charge)(ExecCtxOpaque *, uint64_t);
+    uint64_t (*budget)(ExecCtxOpaque *);
 } H2BootBridge;
 
 static H2BootBridge bridge;
@@ -67,3 +71,13 @@ void h2abi_v1_profile(ExecCtxOpaque *c, uint64_t loops, uint64_t x87_calls) {
 }
 H2FastAccess *h2abi_v1_fast_acquire(ExecCtxOpaque *c) { return bridge.fast_acquire(c); }
 void h2abi_v1_fast_release(ExecCtxOpaque *c) { bridge.fast_release(c); }
+uint32_t h2abi_v1_read_counted(ExecCtxOpaque *c, uint32_t pc, uint32_t addr, uint32_t width, uint32_t alignment,
+                               uint8_t *out) {
+    return bridge.read_counted(c, pc, addr, width, alignment, out);
+}
+uint32_t h2abi_v1_write_counted(ExecCtxOpaque *c, uint32_t pc, uint32_t addr, uint32_t width, uint32_t alignment,
+                                const uint8_t *value) {
+    return bridge.write_counted(c, pc, addr, width, alignment, value);
+}
+void h2abi_v1_charge(ExecCtxOpaque *c, uint64_t accesses) { bridge.charge(c, accesses); }
+uint64_t h2abi_v1_budget(ExecCtxOpaque *c) { return bridge.budget(c); }

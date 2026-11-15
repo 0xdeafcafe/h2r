@@ -5,57 +5,18 @@
 
 mod common;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 
 use emit::host::{CpuAbi, Ctx, ENTRY, HARNESS_EXIT, JUMP, RESUME, RETURN, TransferAbi};
+use common::function;
 use iced_x86::code_asm::*;
-use iced_x86::{Decoder, DecoderOptions};
+use ir::IrFunction;
 use ir::interp::FlatMemory;
-use ir::{IrBlock, IrFunction};
 
 const A: u32 = 0x0040_0000;
 const STACK: u32 = 0x0010_8000;
 const FLAG: u32 = STACK - 0x800;
-
-/// Assemble `body` at `base` and split it into blocks at every label the
-/// code branches to and after every control transfer.
-fn function(base: u32, body: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedError>) -> IrFunction {
-    let mut a = CodeAssembler::new(32).unwrap();
-    body(&mut a).unwrap();
-    let code = a.assemble(base as u64).unwrap();
-    let env = lift::Env::default();
-    let insns: Vec<_> = Decoder::with_ip(32, &code, base as u64, DecoderOptions::NONE)
-        .into_iter()
-        .map(|i| lift::lower(&i, &env, lift::Site::Plain))
-        .collect();
-    let mut starts = BTreeSet::from([base]);
-    for i in &insns {
-        match &i.control {
-            ir::Control::Next => {}
-            ir::Control::Branch { taken, fallthrough, .. } => {
-                starts.extend([taken.pc, fallthrough.pc]);
-            }
-            ir::Control::Jump { target: ir::Target::Direct(t), .. } => {
-                starts.extend([*t, i.next_pc()]);
-            }
-            _ => {
-                starts.insert(i.next_pc());
-            }
-        }
-    }
-    let mut blocks: BTreeMap<u32, IrBlock> = BTreeMap::new();
-    let mut current = base;
-    for i in insns {
-        if starts.contains(&i.pc) {
-            current = i.pc;
-        }
-        blocks.entry(current).or_insert_with(|| IrBlock { start: current, insns: vec![] }).insns.push(i);
-    }
-    let f = IrFunction { entry: base, blocks, interior_entries: vec![], errors: vec![] };
-    f.validate().unwrap_or_else(|e| panic!("{e}\n{f}"));
-    f
-}
 
 /// `spin(flag)`: wait for `*flag != 0`, then return 1.
 fn spin() -> (IrFunction, u32) {
@@ -104,14 +65,14 @@ fn plan_registers_each_loop_header_as_a_resume_of_its_owner() {
     assert_eq!(o.loops.headers, BTreeSet::from([header]));
     assert_eq!(o.resumes, vec![header]);
     assert!(o.selectors.contains(&header));
-    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops });
+    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false });
     assert_eq!(text.matches("H2_LOOP_POLL(").count(), 1, "{text}");
     assert_eq!(text.matches("H2_PREEMPT_LOCALS();").count(), 1);
     // A function without loops polls nothing.
     let straight = function(A, |a| a.ret());
     let owners = emit::plan(vec![straight]);
     let o = &owners[0];
-    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops });
+    let text = emit::c::function(&o.func, &emit::c::OwnerShape { selectors: &o.selectors, loops: &o.loops, accounting: false });
     assert!(!text.contains("H2_PREEMPT") && !text.contains("H2_LOOP_POLL"), "{text}");
 }
 

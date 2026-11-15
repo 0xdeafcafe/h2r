@@ -221,6 +221,13 @@ impl ExecCtx {
             };
         }
     }
+    /// Accesses the context may make before its slice expires, for
+    /// generated code that counts its own: `u64::MAX` when nothing would
+    /// expire (not armed, armed for host requests only, or already spent).
+    #[inline]
+    pub(crate) fn access_budget(&self) -> u64 {
+        if !self.slice.armed || self.slice.left == 0 { u64::MAX } else { self.slice.left }
+    }
     /// First step of the runner's safe point: take this context's wake bits
     /// before the interrupt queue is looked at. One relaxed load while
     /// nothing is set.

@@ -45,6 +45,9 @@ pub enum RegistrationError {
         table: u32,
         runtime: u32,
     },
+    /// The module asks for features this runtime does not implement.
+    #[error("generated module features {0:#x} are unknown to this runtime")]
+    UnknownFeatures(u32),
     /// A table pointer is null while its count is not zero.
     #[error("generated module {0} table is null with a non-zero count")]
     NullTable(ModuleTable),

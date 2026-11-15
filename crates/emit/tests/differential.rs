@@ -851,6 +851,9 @@ fn differential(
         .collect();
     let owners = emit::plan(funcs.iter().map(|(_, f)| f.clone()).collect());
     let g = common::build(&owners, &header, name);
+    // The same module counting its own accesses (h2gen.h, "Access
+    // accounting"): it must end the same way and charge the same total.
+    let counting = common::build_with(&owners, &header, &format!("{name}-acc"), emit::Codegen { accounting: true });
 
     let mut ends: BTreeMap<&str, BTreeMap<String, usize>> = BTreeMap::new();
     let mut failures = Vec::new();
@@ -862,8 +865,11 @@ fn differential(
             let mut ctx = Ctx::new(mem.clone());
             // The C side's counter lives in the host context.
             ctx.tsc = cpu.tsc;
+            let (mut acc_abi, mut acc_ctx) = (abi, Ctx::new(mem.clone()));
+            acc_ctx.tsc = cpu.tsc;
             let want = run_interp(f, &mut cpu, &mut mem);
             let got = run_c(&g, f.entry, &mut abi, &mut ctx);
+            let acc_got = run_c(&counting, f.entry, &mut acc_abi, &mut acc_ctx);
             let kind = format!("{want:?}").split([' ', '(', '{']).next().unwrap().to_owned();
             *ends.entry(name).or_default().entry(kind).or_default() += 1;
             let mut why = Vec::new();
@@ -876,6 +882,23 @@ fn differential(
             }
             if let Some(i) = ctx.mem.bytes.iter().zip(&mem.bytes).position(|(a, b)| a != b) {
                 why.push(format!("memory differs first at {:#x}", MEM_BASE + i as u32));
+            }
+            // Accounting: the same end, state and memory as without it, and
+            // the same accesses charged, each counted one exactly once.
+            let acc_cpu = ir::interp::Cpu { tsc: acc_ctx.tsc, ..acc_abi.to_interp() };
+            if acc_got != got || acc_cpu != c || acc_ctx.mem.bytes != ctx.mem.bytes {
+                why.push(format!("accounting: end {acc_got:x?}, cpu {acc_cpu:x?}"));
+            }
+            if ctx.counted != 0 || acc_ctx.charged != ctx.charged {
+                why.push(format!("accounting charged {}, unflagged {} ({} counted)", acc_ctx.charged, ctx.charged, ctx.counted));
+            }
+            if acc_ctx.counted + acc_ctx.atomics.len() as u64 != acc_ctx.charged {
+                why.push(format!(
+                    "accounting: {} counted + {} atomics, {} charged",
+                    acc_ctx.counted,
+                    acc_ctx.atomics.len(),
+                    acc_ctx.charged
+                ));
             }
             // An #MF callback sees the raiser's pointers, as returned.
             if let (End::Fault { code: 14, .. }, Some(seen)) = (&got, ctx.fp_error_x87.last()) {

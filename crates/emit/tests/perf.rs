@@ -115,10 +115,23 @@ fn module(kind: &str, n: u32, instrumented: bool, fast: bool) -> (libloading::Li
     compile_module(kind, funcs, instrumented, fast)
 }
 fn compile_module(kind: &str, funcs: Vec<IrFunction>, instrumented: bool, fast: bool) -> (libloading::Library, Dispatch) {
-    let owners = emit::plan(funcs);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("perf-{kind}-{instrumented}-{fast}"));
+    let passes = emit::opt::Passes::from_env().unwrap();
+    compile_module_with(kind, funcs, instrumented, fast, passes, emit::Codegen::default())
+}
+fn compile_module_with(
+    kind: &str,
+    funcs: Vec<IrFunction>,
+    instrumented: bool,
+    fast: bool,
+    passes: emit::opt::Passes,
+    codegen: emit::Codegen,
+) -> (libloading::Library, Dispatch) {
+    let owners = emit::plan_with(funcs, passes);
+    let accounting = codegen.accounting;
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("perf-{kind}-{instrumented}-{fast}-{accounting}-{}", passes.spec()));
     let src = dir.join("src");
-    emit::write_module(&owners, &src).unwrap();
+    emit::write_module_with(&owners, &src, codegen).unwrap();
     if fast {
         let header = src.join("h2gen.h");
         let content = std::fs::read_to_string(&header).unwrap();
@@ -173,6 +186,10 @@ uint32_t h2probe_write(ExecCtxOpaque *c, uint32_t a, uint32_t n, uint32_t align,
             runtime::ffi::h2abi_v1_profile as *const (),
             runtime::ffi::h2abi_v1_fast_acquire as *const (),
             runtime::ffi::h2abi_v1_fast_release as *const (),
+            runtime::ffi::h2abi_v1_read_counted as *const (),
+            runtime::ffi::h2abi_v1_write_counted as *const (),
+            runtime::ffi::h2abi_v1_charge as *const (),
+            runtime::ffi::h2abi_v1_budget as *const (),
         ];
         let layout: libloading::Symbol<unsafe extern "C" fn(u32) -> usize> =
             lib.get(b"h2bridge_layout_v2").unwrap();
@@ -303,6 +320,105 @@ fn generated_counts_match_executed_work() {
         );
         assert_eq!(p.timing(runtime::perf::Scope::Runner).calls, 1);
         assert_eq!(ctx.profile().unwrap(), &runtime::perf::Profile::default());
+    }
+}
+
+/// Access accounting composes with the inline RAM path: a module that counts
+/// its own accesses (inline or through the slow accessors, one access here
+/// crossing a page) gives up its slice at the same safe points with the same
+/// accesses spent as the charging module, with inline RAM on or off and
+/// with the IR passes off or on (lazy flags settled on the way out of a
+/// poll, alongside the count).
+#[test]
+fn counted_inline_ram_gives_up_its_slice_where_charged_inline_ram_does() {
+    use runtime::{TransferAbi, abi};
+    let f = || {
+        function(A, |a| {
+            let mut l = a.create_label();
+            a.xor(eax, eax)?;
+            a.set_label(&mut l)?;
+            a.add(eax, dword_ptr(esi))?;
+            a.mov(dword_ptr(edi), eax)?;
+            a.add(esi, 4)?;
+            a.add(edi, 4)?;
+            a.dec(ecx)?;
+            a.jnz(l)?;
+            a.ret()
+        })
+    };
+    use emit::opt::Passes;
+    // The charging build without the passes first: every build must match it.
+    let combos = [(false, Passes::NONE), (true, Passes::NONE), (false, Passes::ALL), (true, Passes::ALL)];
+    let builds = combos.map(|(accounting, passes)| {
+        let built = compile_module_with("fast-accounting", vec![f()], false, true, passes, emit::Codegen { accounting });
+        let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("perf-fast-accounting-false-true-{accounting}-{}", passes.spec()))
+            .join("src");
+        let c: String = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.extension().is_some_and(|x| x == "c"))
+            .map(|p| std::fs::read_to_string(p).unwrap())
+            .collect();
+        // The combination under test is really there: the loop's flags are
+        // left pending, and the count is kept in the handler.
+        assert_eq!(c.contains("lzm = "), passes.lazy_flags, "accounting {accounting} passes {passes:?}");
+        assert_eq!(c.contains("#define H2_ACCOUNTING 1"), accounting, "accounting {accounting} passes {passes:?}");
+        ((accounting, passes), built)
+    });
+    // The 20th read crosses into the stack's page; the writes stay below it.
+    let (src, dst, n) = (DATA + 0xfb2, DATA + 0x400, 20);
+    let mut runs = Vec::new();
+    let memory = || {
+        let mut mem = Guest::new();
+        mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
+        mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
+        for i in 0..2048 {
+            mem.set_u32(DATA + 4 * i, i.wrapping_mul(0x9e37_79b9)).unwrap();
+        }
+        mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        mem
+    };
+    for ((accounting, passes), (_lib, dispatch)) in builds {
+        let rt = Runtime::new(memory(), dispatch);
+        for fast in [false, true] {
+            for slice in [1, 2, 3, 5, 7, 64, 1000] {
+                *rt.memory() = memory();
+                let mut ctx = ExecCtx::new(rt.clone(), 1);
+                ctx.enable_fast_memory(fast);
+                ctx.enable_profiling(true);
+                ctx.arm_preemption(slice);
+                let mut cpu = CpuAbi { esp: STACK, esi: src, edi: dst, ecx: n, ..CpuAbi::default() };
+                let mut t = TransferAbi::jump(A);
+                let mut stops = Vec::new();
+                let end = loop {
+                    let end = Runner::default().run_from(&mut cpu, &mut ctx, t);
+                    let Some(next) = ctx.take_preempted() else { break end };
+                    stops.push((next.target_pc, ctx.take_slice_spent()));
+                    ctx.arm_preemption(slice);
+                    t = next;
+                };
+                assert_eq!((end.kind, cpu.eip), (abi::STOP, runtime::exec::HARNESS_EXIT), "{end:?}");
+                let spent = stops.iter().map(|s| s.1).sum::<u64>() + ctx.take_slice_spent();
+                let key = format!("accounting {accounting} passes {} fast {fast} slice {slice}", passes.spec());
+                assert_eq!(spent, 2 * n as u64 + 1, "{key}");
+                let p = ctx.take_profile().unwrap();
+                assert_eq!(p.memory_accessors, spent);
+                let mut out = vec![0; 8192];
+                rt.memory().read_bytes(DATA, &mut out, 1).unwrap();
+                runs.push((key, (stops, cpu, out)));
+            }
+        }
+    }
+    let (charging, others) = runs.split_at(runs.len() / combos.len());
+    for (i, (key, got)) in others.iter().enumerate() {
+        let (base, want) = &charging[i % charging.len()];
+        assert_eq!(got, want, "{key} against {base}");
+    }
+    for (key, want) in charging {
+        // Every slice ends in the same state.
+        assert_eq!(&charging[0].1.1, &want.1, "{key}");
+        assert_eq!(&charging[0].1.2, &want.2, "{key}");
     }
 }
 
