@@ -18,8 +18,10 @@
 
 pub mod cfg;
 pub mod compare;
+pub mod dispatch;
 pub mod fpstats;
 mod image;
+mod pointer_seeds;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
@@ -337,11 +339,16 @@ struct Analyzer<'a> {
 const MAX_ROUNDS: usize = 8;
 
 pub fn analyze(xbe: &Xbe) -> Result<Analysis, xbe::Error> {
+    analyze_with_pointer_seeds(xbe, true)
+}
+
+/// Disable table seeds only to reproduce the pre-seeding coverage census.
+pub fn analyze_with_pointer_seeds(xbe: &Xbe, seed_tables: bool) -> Result<Analysis, xbe::Error> {
     let mut blacklist = HashSet::new();
     let mut round = 0;
     loop {
         round += 1;
-        let mut a = run(xbe, &blacklist)?;
+        let mut a = run(xbe, &blacklist, seed_tables)?;
         // When a better-evidenced function runs into bytes a speculative
         // one claimed first, the speculative one was wrong.
         let mut losers: Vec<u32> = a
@@ -366,7 +373,7 @@ pub fn analyze(xbe: &Xbe) -> Result<Analysis, xbe::Error> {
     }
 }
 
-fn run(xbe: &Xbe, blacklist: &HashSet<u32>) -> Result<Analysis, xbe::Error> {
+fn run(xbe: &Xbe, blacklist: &HashSet<u32>, seed_tables: bool) -> Result<Analysis, xbe::Error> {
     let imports = xbe.kernel_imports()?;
     let mut a = Analyzer {
         xbe,
@@ -411,6 +418,9 @@ fn run(xbe: &Xbe, blacklist: &HashSet<u32>) -> Result<Analysis, xbe::Error> {
         if a.funcs.len() == before {
             break;
         }
+    }
+    if seed_tables {
+        pointer_seeds::seed(&mut a)?;
     }
     Ok(a.finish(imports.len()))
 }
