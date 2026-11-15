@@ -195,7 +195,7 @@ where
                 match pending {
                     Ok(Some(cb)) => {
                         drop(guest);
-                        return deliver_push_callback(cpu, ctx, cb, addr);
+                        return deliver_push_callback(cpu, ctx, &dev, cb, addr);
                     }
                     Ok(None) => {
                         let result = h(&regs, &mut mem);
@@ -267,9 +267,16 @@ where
 /// The argument goes just below the entry's `ESP` (above it are the
 /// caller's return address and arguments, untouched) and the callback
 /// starts with the direction flag clear.
-pub fn deliver_push_callback(
+///
+/// The device is marked as delivering `cb` until the callback returns
+/// ([`Device::begin_push_callback`]): a D3D entry called from the callback
+/// stops with a named error instead of draining the work queued after it.
+/// If the callback never returns (an unwind), the mark stays and every
+/// later D3D call stops the same way.
+pub fn deliver_push_callback<B: Backend + Send + 'static>(
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,
+    device: &SharedDevice<B>,
     cb: crate::device::PushCallback,
     entry: u32,
 ) -> Result<TransferAbi, GuestFault> {
@@ -281,11 +288,25 @@ pub fn deliver_push_callback(
     guest.set_u32(esp, cb.context)?;
     cpu.esp = esp;
     cpu.eflags &= !DIRECTION_FLAG;
-    ctx.call_guest(cpu, &mut guest, cb.function, move |cpu, _ctx| {
+    if let Ok(mut d) = device.lock() {
+        d.begin_push_callback(cb);
+    }
+    let dev = device.clone();
+    let call = ctx.call_guest(cpu, &mut guest, cb.function, move |cpu, _ctx| {
+        if let Ok(mut d) = dev.lock() {
+            d.end_push_callback();
+        }
         // cdecl: the callback leaves its argument; the restore drops it.
         *cpu = saved;
         Ok(TransferAbi::jump(entry))
-    })
+    });
+    // Not entered (a fault or the continuation limit): nothing to wait for.
+    if !matches!(&call, Ok(t) if t.kind == runtime::abi::CALL)
+        && let Ok(mut d) = device.lock()
+    {
+        d.end_push_callback();
+    }
+    call
 }
 
 fn regs(cpu: &CpuAbi) -> Regs {

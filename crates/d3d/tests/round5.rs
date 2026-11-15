@@ -329,13 +329,36 @@ mod through_the_runtime {
     use d3d::{DeviceConfig, PresentParameters, runtime_glue};
     use runtime::exec::HARNESS_EXIT;
     use runtime::guest::Permissions;
-    use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, abi as rt};
+    use runtime::{
+        CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, TransferAbi, abi as rt,
+    };
 
     const STACK: u32 = MISC + 0xF000;
     /// A stand-in for Halo's callback `0x24970`: logs its argument and the
     /// stipple row the GPU state shows at that moment.
     const CALLBACK: u32 = 0x003F_0100;
     const LOG: u32 = MISC + 0x8000;
+    /// The first texel of the render-to-texture level, as each callback saw it.
+    const TEXLOG: u32 = MISC + 0x9000;
+    /// Texel memory of the level (`Data` = `TEX_DATA`).
+    const TEXELS: u32 = 0x8000_0000 | TEX_DATA;
+    /// A callback with this context calls `CDevice_KickOff` from inside
+    /// itself, then logs `NESTED_END`.
+    const NESTED: u32 = 0xC;
+    const NESTED_END: u32 = 0xCC;
+
+    fn log_entry(
+        m: &mut runtime::Guest,
+        context: u32,
+        row: u32,
+    ) -> Result<(), runtime::GuestFault> {
+        let n = m.u32(LOG)?;
+        m.set_u32(LOG + 4 + 8 * n, context)?;
+        m.set_u32(LOG + 8 + 8 * n, row)?;
+        let texel = m.u32(TEXELS)?;
+        m.set_u32(TEXLOG + 4 * n, texel)?;
+        m.set_u32(LOG, n + 1)
+    }
 
     fn guest(cfg: &DeviceConfig) -> Guest {
         let mut g = Guest::new();
@@ -347,6 +370,7 @@ mod through_the_runtime {
             .unwrap();
         g.write_bytes(encode, &synthetic_encode_bytes(), 1).unwrap();
         g.map_zeroed(MISC, 0x1_0000, Permissions::RW).unwrap();
+        g.map_zeroed(TEXELS, 0x1000, Permissions::RW).unwrap();
         runtime_glue::map_device_memory(&mut g, cfg).unwrap();
         let mut params = SparseMemory::new();
         params.map(PARAMS, 0x100);
@@ -371,17 +395,25 @@ mod through_the_runtime {
         let dev = device.clone();
         let _ = dispatch.register_override(CALLBACK, "test push callback", move |cpu, ctx, _| {
             let row = dev.lock().unwrap().stipple_pattern()[0];
-            let mut m = ctx.memory();
+            let runtime = std::sync::Arc::clone(ctx.runtime());
+            let mut m = runtime.memory();
             let context = m.u32(cpu.esp + 4)?;
-            let n = m.u32(LOG)?;
-            m.set_u32(LOG + 4 + 8 * n, context)?;
-            m.set_u32(LOG + 8 + 8 * n, row)?;
-            m.set_u32(LOG, n + 1)?;
+            log_entry(&mut m, context, row)?;
             // cdecl may clobber anything the caller does not keep; the
             // glue restores the entry's registers.
             cpu.eax = 0xDEAD_0001;
             cpu.edx = 0xDEAD_0003;
             cpu.esi = 0xDEAD_0005;
+            if context == NESTED {
+                // A D3D call from inside the callback.
+                let dev = dev.clone();
+                return ctx.call_guest(cpu, &mut m, 0x3fac30, move |cpu, ctx| {
+                    let row = dev.lock().unwrap().stipple_pattern()[0];
+                    let mut m = ctx.memory();
+                    log_entry(&mut m, NESTED_END, row)?;
+                    m.ret(cpu, 0)
+                });
+            }
             m.ret(cpu, 0)
         });
         Harness {
@@ -391,6 +423,36 @@ mod through_the_runtime {
     }
 
     impl Harness {
+        fn create(&mut self) {
+            let cpu = CpuAbi {
+                eax: 0x40,
+                ecx: PP_DEVICE,
+                ..CpuAbi::default()
+            };
+            assert_eq!(self.ok(0x3f5240, cpu, &[PARAMS]).eax, 0);
+        }
+
+        fn run(&mut self, entry: u32, mut cpu: CpuAbi, stack: &[u32]) -> (TransferAbi, CpuAbi) {
+            let esp = STACK - 4 - 4 * stack.len() as u32;
+            {
+                let mut m = self.ctx.memory();
+                m.set_u32(esp, HARNESS_EXIT).unwrap();
+                for (i, v) in stack.iter().enumerate() {
+                    m.set_u32(esp + 4 + 4 * i as u32, *v).unwrap();
+                }
+            }
+            cpu.esp = esp;
+            let t = Runner::default().run(&mut cpu, &mut self.ctx, entry);
+            (t, cpu)
+        }
+
+        fn texels(&mut self) -> Vec<u32> {
+            let n = self.ctx.memory().u32(LOG).unwrap();
+            (0..n)
+                .map(|i| self.ctx.memory().u32(TEXLOG + 4 * i).unwrap())
+                .collect()
+        }
+
         fn ok(&mut self, entry: u32, mut cpu: CpuAbi, stack: &[u32]) -> CpuAbi {
             let esp = STACK - 4 - 4 * stack.len() as u32;
             {
@@ -477,6 +539,78 @@ mod through_the_runtime {
         let d = h.device.lock().unwrap();
         assert_eq!(d.stipple_pattern()[0], 3, "the entry ran after them");
         assert_eq!(d.stats().push_callbacks, 2);
+    }
+
+    /// Review P1: a callback reads what the work before it rendered. The
+    /// level of a render-to-texture target is drawn into (the recording
+    /// backend reads back 0x5A); the callback queued after it must find
+    /// those texels in guest memory, not the stale 0x11.
+    #[test]
+    fn a_callback_sees_render_targets_written_back() {
+        let mut h = harness();
+        h.create();
+        {
+            let runtime = std::sync::Arc::clone(h.ctx.runtime());
+            let mut guest = runtime.memory();
+            let mut m = runtime_glue::GuestAdapter::new(&mut guest);
+            // A 16x4 LIN_A8R8G8B8 texture and its level 0 as a target.
+            m.write_u32(TEX_HEADER, 1 | (4 << 16) | 0x0100_0000)
+                .unwrap();
+            m.write_u32(TEX_HEADER + 4, TEX_DATA).unwrap();
+            m.write_u32(TEX_HEADER + 12, (2 << 4) | (0x12 << 8) | (1 << 16))
+                .unwrap();
+            m.write_u32(TEX_HEADER + 16, 15 | (3 << 12)).unwrap();
+            m.write(TEXELS, &[0x11; 256]).unwrap();
+            let surf = MISC + 0x7200;
+            let mut l = d3d::resource::SurfaceHeader::linear(
+                gfx::D3DFormat::LinA8R8G8B8,
+                16,
+                4,
+                64,
+                TEX_DATA,
+            );
+            l.parent = TEX_HEADER;
+            l.write(&mut m, surf).unwrap();
+            let mut d = h.device.lock().unwrap();
+            d.backend.readback_fill = 0x5A;
+            d.set_render_target(&mut m, surf, 0).unwrap();
+            d.clear(&mut m, 0, 0, 0xF0, 0, 1.0, 0).unwrap();
+        }
+        h.callback(0xD);
+        h.ok(0x3fac30, CpuAbi::default(), &[]);
+        assert_eq!(h.log().len(), 1);
+        assert_eq!(h.texels(), vec![0x5A5A_5A5A]);
+    }
+
+    /// Review P2: a D3D entry called from inside a callback must not drain
+    /// the work queued after that callback (nor deliver the next one). It
+    /// stops with a named error; nothing after the boundary has run.
+    #[test]
+    fn a_d3d_call_from_a_callback_stops_without_draining_past_it() {
+        let mut h = harness();
+        h.create();
+        h.push(&[header(0x1480, 1), 1]);
+        h.callback(NESTED);
+        h.push(&[header(0x1480, 1), 2]);
+        h.callback(0xB);
+        let (t, _) = h.run(0x3fac30, CpuAbi::default(), &[]);
+        assert_eq!(t.kind, rt::STOP);
+        match h.ctx.event(t.event_id) {
+            Some(Event::Unsupported { pc, detail, .. }) => {
+                assert_eq!(*pc, 0x3fac30);
+                assert!(
+                    detail.contains("inside the push-buffer callback"),
+                    "{detail}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // A started; B never ran, and neither did A's nested KickOff.
+        assert_eq!(h.log(), vec![(NESTED, 1)]);
+        let d = h.device.lock().unwrap();
+        assert_eq!(d.stipple_pattern()[0], 1, "nothing after A was drained");
+        assert_eq!(d.stats().push_callbacks, 1);
+        assert!(d.active_push_callback().is_some());
     }
 }
 

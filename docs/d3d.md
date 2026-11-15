@@ -861,8 +861,16 @@ before the work queued after it.
 - Draining outside the glue (`sync_push_buffer`, for example a test
   calling the device directly) cannot call the guest: a callback there is
   a named error that latches the device.
-- A D3D entry called from inside the callback drains past it. Halo's
-  `0x24970` only calls the native helper `0x3fdbc0`.
+- Render-to-texture targets drawn into are written back to guest memory
+  before the callback runs: Halo's `0x24970` reads a target's texels
+  (through `0x3fdbc0` and `0x24a70`).
+- D3D is not callable from a callback (on the Xbox they run at interrupt
+  time). While one is being delivered (`Device::begin_push_callback` ..
+  `end_push_callback`), any D3D entry stops with a named error and drains
+  nothing, so the work queued after the callback, and the next callback,
+  wait until it returns. Halo's `0x24970` only calls the native helper
+  `0x3fdbc0`. If a callback never returns (an unwind), every later D3D
+  call stops the same way.
 
 Tests: `tests/round5.rs` (`through_the_runtime`, with a Rust stand-in for
 `0x24970`).

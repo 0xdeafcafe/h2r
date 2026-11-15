@@ -421,6 +421,9 @@ pub struct Device<B: Backend> {
     display: display::Display<B::Surface>,
     /// Render-to-texture targets, by surface header ([`RttTarget`]).
     rtt: HashMap<u32, RttTarget<B::Surface>>,
+    /// The push-buffer callback being delivered, between
+    /// [`Device::begin_push_callback`] and [`Device::end_push_callback`].
+    active_callback: Option<PushCallback>,
 }
 
 fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
@@ -496,6 +499,7 @@ impl<B: Backend> Device<B> {
             hw: HwState::default(),
             display: display::Display::default(),
             rtt: HashMap::new(),
+            active_callback: None,
         }
     }
 
@@ -932,6 +936,17 @@ impl<B: Backend> Device<B> {
     /// glue does this before every entry, so a callback runs exactly where
     /// the GPU would have called it, after the work queued before it and
     /// before the work queued after it.
+    ///
+    /// Before a callback is returned, render-to-texture targets drawn into
+    /// are written back to guest memory: the callback reads what the work
+    /// before it produced (Halo's `0x24970` reads a target's texels through
+    /// `0x24a70`).
+    ///
+    /// While a callback is being delivered ([`Device::begin_push_callback`])
+    /// this fails with [`D3dError::Invalid`] and drains nothing: the work
+    /// after the callback must not run until it returns, and the device
+    /// does not support D3D calls from a callback (on the Xbox they run at
+    /// interrupt time, where D3D is off limits).
     pub fn drain_until_callback(
         &mut self,
         mem: &mut dyn GuestMemory,
@@ -939,16 +954,25 @@ impl<B: Backend> Device<B> {
         if !self.created {
             return Ok(None);
         }
+        if let Some(cb) = self.active_callback {
+            return Err(D3dError::invalid(
+                "push-buffer callback",
+                format!(
+                    "D3D called from inside the push-buffer callback {:#010x}({:#x}) queued at {:#010x}; the work after it must not run before it returns",
+                    cb.function, cb.context, cb.at
+                ),
+            ));
+        }
         if let Some(f) = &self.fault {
             return Err(D3dError::Faulted(f.clone()));
         }
         match self.drain(mem, true) {
-            Ok(cb) => {
-                if cb.is_some() {
-                    self.stats.push_callbacks += 1;
-                }
-                Ok(cb)
+            Ok(Some(cb)) => {
+                self.stats.push_callbacks += 1;
+                self.flush_render_targets(mem)?;
+                Ok(Some(cb))
             }
+            Ok(None) => Ok(None),
             Err(e) => {
                 self.fault = Some(format!(
                     "{e} (push-buffer command at {:#010x})",
@@ -957,6 +981,23 @@ impl<B: Backend> Device<B> {
                 Err(e)
             }
         }
+    }
+
+    /// Marks `cb` as being delivered: until [`Device::end_push_callback`],
+    /// [`Device::drain_until_callback`] refuses to drain (the runtime glue
+    /// calls these around the guest call).
+    pub fn begin_push_callback(&mut self, cb: PushCallback) {
+        self.active_callback = Some(cb);
+    }
+
+    /// The callback returned.
+    pub fn end_push_callback(&mut self) {
+        self.active_callback = None;
+    }
+
+    /// The push-buffer callback being delivered, if any.
+    pub fn active_push_callback(&self) -> Option<PushCallback> {
+        self.active_callback
     }
 
     /// `NV097_NO_OPERATION` with a non-zero parameter: on the Xbox the GPU
