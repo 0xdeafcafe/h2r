@@ -7,6 +7,7 @@
 
 pub mod audit;
 pub mod game;
+pub mod hopper;
 pub mod jcs;
 pub mod motd;
 pub mod sign;
@@ -360,6 +361,10 @@ pub struct AccountSummary {
     pub gamertag: Gamertag,
     pub created_at: String,
     pub online: bool,
+    /// Whether the account is an admin (docs/live-admin.md): configured at
+    /// startup or granted. Only this server's admins, not a federation view.
+    #[serde(default)]
+    pub admin: bool,
 }
 
 /// `GET /v1/accounts/{gamertag}`.

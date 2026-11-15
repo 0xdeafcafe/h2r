@@ -12,6 +12,7 @@ import { playedWith } from "../state/derive";
 import Emblem from "../components/Emblem";
 import { VerifyMark } from "../components/bits";
 import Wordmark from "./Wordmark";
+import { adminState } from "../admin/state";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -73,6 +74,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
           <A href="/stats" end>h2 live Online</A>
           <A href="/stats/players" end>Players</A>
           <A href="/stats/events">Event Log</A>
+          <Show when={adminState.isMeAdmin() === true}><A href="/stats/admin" end>Admin</A></Show>
           <A href="/dash/server">Server</A>
           <form class="s-search" onSubmit={search} role="search">
             <label class="sr-only" for="s-q">Find a gamertag</label>

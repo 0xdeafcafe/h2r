@@ -103,6 +103,8 @@ pub struct Policy {
     pub game_idle_s: i64,
     /// How often the presence and game managers look.
     pub sweep_every: Duration,
+    /// Admin gamertags from --admin/H2_LIVE_ADMINS (docs/live-admin.md).
+    pub admins: Vec<Gamertag>,
 }
 
 impl Default for Policy {
@@ -115,6 +117,7 @@ impl Default for Policy {
             presence_ttl_s: 90,
             game_idle_s: 300,
             sweep_every: Duration::from_secs(5),
+            admins: Vec::new(),
         }
     }
 }
@@ -122,6 +125,7 @@ impl Default for Policy {
 pub struct Live {
     pub(crate) store: Arc<dyn EventStore>,
     pub(crate) model: Arc<Model>,
+    pub(crate) admins: Arc<crate::admin::Admins>,
     pub(crate) identity: ServerIdentity,
     policy: Policy,
     applied: watch::Receiver<u64>,
@@ -328,8 +332,10 @@ impl Live {
         policy: Policy,
     ) -> anyhow::Result<Arc<Self>> {
         let model = Arc::new(Model::default());
+        let admins = Arc::new(crate::admin::Admins::new(policy.admins.clone()));
         let mut dispatcher = Dispatcher::new(store.clone());
         dispatcher.subscribe(model.clone());
+        dispatcher.subscribe(admins.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -338,6 +344,7 @@ impl Live {
         let live = Live {
             store,
             model,
+            admins,
             identity,
             applied: applied.clone(),
             feed,
@@ -370,6 +377,13 @@ impl Live {
 
     pub fn policy(&self) -> &Policy {
         &self.policy
+    }
+
+    /// Makes an account an admin until the process stops: the embedded
+    /// server's playing account, on the owner's own machine
+    /// (docs/live-admin.md).
+    pub fn grant_admin_runtime(&self, xuid: Xuid, tag: &str) {
+        self.admins.grant_runtime(xuid, tag);
     }
 
     /// The last position the read model has applied: the `position` of
@@ -650,9 +664,7 @@ impl Live {
         bytes: &[u8],
     ) -> Result<PublishedFile, ApiError> {
         let author = self.authenticate(bearer, lxm::TITLES_WRITE)?;
-        if !matches!(author, Author::Server(_)) {
-            return Err(forbidden("only the server operator publishes title files"));
-        }
+        crate::admin::require_admin(self, &author)?;
         self.rate_limit(&author, lxm::TITLES_WRITE)?;
         if !valid_file_name(name) {
             return Err(invalid("file names are [A-Za-z0-9_.-]{1,64}"));
@@ -746,6 +758,7 @@ impl Live {
             gamertag: a.gamertag.clone(),
             created_at: a.created_at.clone(),
             online: s.presence.contains_key(&a.xuid),
+            admin: self.admins.is_admin_of(&a.gamertag, a.xuid),
         }
     }
 

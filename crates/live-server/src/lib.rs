@@ -12,6 +12,7 @@
 //! Signing and verification live in `live_proto::sign`, shared with the
 //! clients. Run it with `h2 live serve`.
 
+pub mod admin;
 pub mod app;
 pub mod art;
 pub mod dispatch;
@@ -128,6 +129,10 @@ pub async fn serve(config: Config) -> Result<()> {
         live.position(),
         redact(&config.db)
     );
+    let admins = live.admins.configured();
+    if !admins.is_empty() {
+        println!("h2 live: admins configured: {}", admins.join(", "));
+    }
     match &config.site.web {
         Some(dir) => println!("h2 live: web app from {}", dir.display()),
         None => println!("h2 live: no web app (build it: cd web && bun run build)"),
@@ -213,7 +218,11 @@ pub fn start_embedded(
                 }
             },
         };
-        let live = Live::start(store, identity, Policy::default()).await?;
+        let policy = Policy {
+            admins: crate::admin::Admins::from_flags_and_env(&[]).map_err(anyhow::Error::msg)?,
+            ..Policy::default()
+        };
+        let live = Live::start(store, identity, policy).await?;
         let listener = tokio::net::TcpListener::bind(listen)
             .await
             .with_context(|| format!("binding {listen}"))?;
