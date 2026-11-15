@@ -1,0 +1,34 @@
+/* The veil between the dashboard and the stats site (dash/Veil.tsx), and
+   the hairline of dashboard green the stats site keeps along its top. */
+
+.xf { position: fixed; inset: 0; z-index: 1000; overflow: hidden; pointer-events: none; }
+.xf i { position: absolute; inset: 0; display: block; opacity: 0; will-change: opacity, transform; }
+/* The dashboard's light: the orb's yellow at the heart, green out to black. A disc big enough to cover any screen. */
+.xf .xf-g { inset: auto; left: 50%; top: 47%; width: 300vmax; height: 300vmax; margin: -150vmax 0 0 -150vmax; border-radius: 50%; background: radial-gradient(circle closest-side, #f6ff9c 0, #cdf04a 6%, #6fcf28 15%, #1f8612 27%, #0a4a0a 40%, #031c06 54%, #010a02 66%, #010a02 74%, rgba(1, 10, 2, 0) 100%); }
+/* The stats site's page. */
+.xf-n { background: radial-gradient(ellipse 70% 60% at 50% 0, #173e70 0, #071a35 70%, #050f20 100%); }
+
+/* dashboard -> stats: the green swells up through the screen, then thins into navy. */
+.xf--to-stats.xf--in .xf-g { animation: xf-swell .2s cubic-bezier(.5, 0, .9, .5) both; }
+.xf--to-stats.xf--out .xf-g { animation: xf-thin .32s ease-out both; }
+.xf--to-stats.xf--out .xf-n { animation: xf-wash .32s ease-out both; }
+@keyframes xf-swell { from { opacity: 0; transform: scale(.1); } 60% { opacity: .9; } to { opacity: 1; transform: scale(.75); } }
+@keyframes xf-thin { from { opacity: 1; transform: scale(.75); } 45% { opacity: 0; } to { opacity: 0; transform: scale(1.2); } }
+@keyframes xf-wash { from { opacity: 1; } 30% { opacity: 1; } to { opacity: 0; } }
+
+/* stats -> dashboard: the page sinks into the dark, and a green flare closes in on the orb. */
+.xf--to-dash.xf--in .xf-n { animation: xf-sink .2s ease-in both; }
+.xf--to-dash.xf--in .xf-g { animation: xf-seed .2s ease-in both; }
+.xf--to-dash.xf--out .xf-g { animation: xf-close .32s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes xf-sink { from { opacity: 0; } to { opacity: 1; filter: brightness(.35); } }
+@keyframes xf-seed { from { opacity: 0; transform: scale(1.1); } to { opacity: 1; transform: scale(.85); } }
+@keyframes xf-close { from { opacity: 1; transform: scale(.85); } 55% { opacity: .35; } to { opacity: 0; transform: scale(.3); } }
+
+/* The echo: a thin line of the dashboard's green over the stats page. It scrolls away with the page. */
+.xf-echo { position: absolute; z-index: 2; left: 0; right: 0; top: 0; height: 2px; display: block; pointer-events: none; background: linear-gradient(90deg, transparent 0, #2f9a14 18%, #b9f66e 50%, #2f9a14 82%, transparent 100%); box-shadow: 0 0 10px rgba(126, 255, 48, .45), 0 0 26px rgba(126, 255, 48, .18); animation: xf-echo-in .6s ease-out both; }
+@keyframes xf-echo-in { from { opacity: 0; transform: scaleX(.2); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .xf { display: none; }
+  .xf-echo { animation: none; }
+}

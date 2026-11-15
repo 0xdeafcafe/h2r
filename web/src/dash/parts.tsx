@@ -18,8 +18,10 @@ const MEMBRANES = {
   cell2: blobPath(19, 6, 26, 0.18),
 };
 
-/** The orb: a soft yellow-green ball wrapped in drifting jelly. It carries no mark. */
-export function Orb() {
+/** The orb: a soft yellow-green ball wrapped in drifting jelly. It carries no mark.
+ *  `turn` (degrees) turns its skins with the menu's ring; the light on the ball stays put. */
+export function Orb(props: { turn?: number }) {
+  const turned = () => `rotate(${(props.turn ?? 0).toFixed(2)})`;
   return (
     <div class="dx-orb" aria-hidden="true">
       <i class="dx-orb-halo" />
@@ -55,24 +57,28 @@ export function Orb() {
           <clipPath id="dxo-clip"><circle r="100" /></clipPath>
           <filter id="dxo-blur" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="5" /></filter>
         </defs>
+        <g transform={turned()}>
         <g class="dx-orb-ribbons">
           <path d="M-64 78C-120 150 -150 200 -128 268C-96 214 -40 170 30 112Z" fill="url(#dxo-ribbon)" />
           <path d="M40 -98C96 -150 150 -160 214 -128" />
         </g>
         <g class="dx-mem dx-mem--back1"><path d={MEMBRANES.back1} fill="url(#dxo-back)" /><path class="dx-mem-fold" d={MEMBRANES.back1} /></g>
         <g class="dx-mem dx-mem--back2"><path d={MEMBRANES.back2} fill="url(#dxo-back)" /><path class="dx-mem-fold" d={MEMBRANES.back2} /></g>
+        </g>
         <circle class="dx-orb-body" r="100" fill="url(#dxo-body)" />
         <g clip-path="url(#dxo-clip)">
-          <g class="dx-orb-cells">
+          <g transform={turned()}><g class="dx-orb-cells">
             <path d={MEMBRANES.cell1} transform="translate(-44 -46)" />
             <path d={MEMBRANES.cell2} transform="translate(52 -58)" />
-          </g>
+          </g></g>
           <circle r="100" fill="url(#dxo-shade)" />
           <ellipse class="dx-orb-sheen" cx="-34" cy="-52" rx="50" ry="26" transform="rotate(-32 -34 -52)" filter="url(#dxo-blur)" />
         </g>
         <circle class="dx-orb-rim" r="99.4" />
+        <g transform={turned()}>
         <g class="dx-mem dx-mem--front1"><path d={MEMBRANES.front1} fill="url(#dxo-front)" /><path class="dx-mem-fold" d={MEMBRANES.front1} /></g>
         <g class="dx-mem dx-mem--front2"><path d={MEMBRANES.front2} fill="url(#dxo-front)" /></g>
+        </g>
         <circle class="dx-orb-glint" cx="-52" cy="-56" r="3.2" />
       </svg>
     </div>
@@ -155,7 +161,7 @@ export function Tubes() {
   );
 }
 
-export type GlyphName = "record" | "history" | "download" | "exit" | "compare" | "career" | "key" | "sign" | "store" | "server" | "globe" | "empty";
+export type GlyphName = "record" | "history" | "download" | "exit" | "compare" | "career" | "key" | "sign" | "store" | "server" | "globe" | "gear" | "empty";
 
 const GLYPHS: Record<GlyphName, string> = {
   record: "M5 19V11M10 19V5M15 19V9M20 19V14M3 21H22",
@@ -169,6 +175,7 @@ const GLYPHS: Record<GlyphName, string> = {
   store: "M3 5H21V19H3ZM3 9H21M6 7H6.1M9 7H9.1",
   server: "M4 4H20V10H4ZM4 14H20V20H4ZM7 7H7.1M7 17H7.1M12 10V14",
   globe: "M12 3A9 9 0 1 1 11.9 3M3 12H21M12 3C8 7 8 17 12 21M12 3C16 7 16 17 12 21",
+  gear: "M12 8.5A3.5 3.5 0 1 1 11.9 8.5M12 2.5V5.5M12 18.5V21.5M2.5 12H5.5M18.5 12H21.5M5.3 5.3L7.4 7.4M16.6 16.6L18.7 18.7M5.3 18.7L7.4 16.6M16.6 7.4L18.7 5.3",
   empty: "M8 12H16",
 };
 
