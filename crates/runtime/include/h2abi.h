@@ -89,6 +89,29 @@ uint32_t h2abi_v1_cmpxchg(CpuAbi *, ExecCtxOpaque *, uint32_t pc, uint32_t addr,
                         uint32_t width, uint32_t replacement, uint32_t *out);
 uint32_t h2abi_v1_cmpxchg8b(CpuAbi *, ExecCtxOpaque *, uint32_t pc, uint32_t addr);
 
+/* Generated-module shims (crates/emit RUNTIME-CONTRACT.md). h2shim_v1_event
+ * records a guest exception (codes 1-7, 13; latched like a failed access) or a
+ * stop (8-12) and returns its non-zero event id; saved_eip is the EIP the
+ * exception reports (the next instruction for traps). h2shim_v1_unsupported
+ * copies both strings and returns a stop's event id. These macros and
+ * prototypes are token-identical to the emitter's h2gen.h, so both headers can
+ * be included together. */
+#define H2SHIM_DIVIDE_ERROR 1u
+#define H2SHIM_BREAKPOINT 2u
+#define H2SHIM_INVALID_OPCODE 3u
+#define H2SHIM_INTERRUPT 4u
+#define H2SHIM_OVERFLOW 5u
+#define H2SHIM_BOUND_RANGE 6u
+#define H2SHIM_GENERAL_PROTECTION 7u
+#define H2SHIM_HALT 8u
+#define H2SHIM_BAD_ENTRY 9u
+#define H2SHIM_UNKNOWN_TARGET 10u
+#define H2SHIM_DESCENT_ERROR 11u
+#define H2SHIM_UNMODELLED 12u
+#define H2SHIM_SIMD_EXCEPTION 13u
+uint32_t h2shim_v1_event(ExecCtxOpaque *, uint32_t pc, uint32_t saved_eip, uint32_t code, uint32_t arg);
+uint32_t h2shim_v1_unsupported(ExecCtxOpaque *, uint32_t pc, const char *mnemonic, const char *detail);
+
 static inline TransferAbi h2_transfer(uint32_t kind, uint32_t route,
                                      uint32_t target, uint32_t resume,
                                      uint32_t event) {

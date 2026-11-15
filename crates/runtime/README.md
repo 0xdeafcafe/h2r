@@ -107,3 +107,30 @@ test reads `disc/default.xbe` directly without copying it:
 ```sh
 cargo test -p runtime --test loader -- --ignored
 ```
+
+## Generated modules
+
+The emitter's contract is `crates/emit/RUNTIME-CONTRACT.md`. The runtime
+exports the two shims declared in its `h2gen.h`:
+
+- `h2shim_v1_event(ctx, pc, saved_eip, code, arg)` records codes 1-7 and 13
+  as `Event::GuestException` and codes 8-12 as `Event::GeneratedStop`, and
+  returns the event id. Exceptions, and codes it does not know
+  (`Event::UnknownShimEvent`), are latched like a failed memory access, so the
+  invocation ends in FAULT even if the handler ignores the id.
+- `h2shim_v1_unsupported(ctx, pc, mnemonic, detail)` copies both strings into
+  `Event::Unsupported` and returns its id. Generated code then stops.
+
+Both events carry a guest backtrace. The runner keeps a best-effort call chain
+per context: it records each CALL it routes and drops records once ESP rises
+above their return slot. `ExecCtx::backtrace(pc)` reads it, and
+`ExecCtx::report(id)` renders any retained event with its PC, instruction and
+frames. The chain is diagnostic only and never affects where a RET goes.
+
+`Dispatch::register_generated_module(&h2gen_module, h2gen_module_abi_version)`
+checks the module probe and table version, then each entry row's own object
+probe, kinds, duplicates, terminators and that every resume owner is a kind-0
+row of the module. It registers nothing unless the whole module is valid, and
+errors name the table and row. Entry rows of kind 0 and 1 dispatch with
+`start = addr`; resume rows dispatch their owner with their `start`. Returns
+check the resume table before entry dispatch.

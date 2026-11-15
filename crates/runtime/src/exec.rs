@@ -3,7 +3,9 @@ use crate::{CpuAbi, Guest, GuestFault, TransferAbi};
 use std::sync::{Arc, MutexGuard};
 
 // Keep previous module paths working while the implementation is split.
-pub use crate::events::{Event, KernelCall};
+pub use crate::events::{
+    Event, FaultReport, GuestException, GuestFrame, KernelCall, ShimEvent, StopReason,
+};
 pub use crate::handler::OriginalHandler;
 pub use crate::runner::{HARNESS_EXIT, Runner};
 pub use crate::services::Runtime;
@@ -21,6 +23,7 @@ pub struct ExecCtx {
     next_event_id: u32,
     pub(crate) pending_fault: Option<u32>,
     continuations: Continuations,
+    pub(crate) frames: crate::frames::ShadowStack,
 }
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
@@ -32,6 +35,7 @@ impl ExecCtx {
             next_event_id: 1,
             pending_fault: None,
             continuations: Continuations::default(),
+            frames: Default::default(),
         }
     }
     pub fn runtime(&self) -> &Arc<Runtime> {
@@ -140,6 +144,171 @@ impl ExecCtx {
     }
     pub(crate) fn take_continuation(&mut self, pc: u32) -> Option<Continuation> {
         self.continuations.take(pc)
+    }
+
+    /// The guest call chain as the runner has recorded it, innermost first,
+    /// with frame 0 at `pc`. Right after a run stops this is the chain at the
+    /// stopping instruction. It is diagnostic only and may be incomplete
+    /// across stack switches.
+    pub fn backtrace(&self, pc: u32) -> Vec<GuestFrame> {
+        self.frames.snapshot(pc)
+    }
+    /// Forget the recorded call chain, e.g. after a thread's stack is reset.
+    pub fn clear_backtrace(&mut self) {
+        self.frames.clear();
+    }
+
+    /// Record an `h2shim_v1_event`. Exceptions and unknown codes are latched
+    /// like a failed memory access, so a handler that ignores the id still
+    /// faults. Stops are not latched, so they stay stops.
+    pub(crate) fn shim_event(&mut self, pc: u32, saved_eip: u32, code: u32, arg: u32) -> u32 {
+        let (event, latch) = match ShimEvent::decode(code, arg) {
+            ShimEvent::Exception(exception) => (
+                Event::GuestException {
+                    pc,
+                    saved_eip,
+                    exception,
+                    backtrace: self.backtrace(pc),
+                },
+                true,
+            ),
+            ShimEvent::Stop(reason) => (
+                Event::GeneratedStop {
+                    pc,
+                    saved_eip,
+                    reason,
+                    backtrace: self.backtrace(pc),
+                },
+                false,
+            ),
+            ShimEvent::Unknown { code, arg } => (
+                Event::UnknownShimEvent {
+                    pc,
+                    saved_eip,
+                    code,
+                    arg,
+                },
+                true,
+            ),
+        };
+        let id = self.emit(event);
+        if latch {
+            self.pending_fault.get_or_insert(id);
+        }
+        id
+    }
+
+    /// Record an `h2shim_v1_unsupported` instruction. It is a stop.
+    pub(crate) fn unsupported(&mut self, pc: u32, mnemonic: String, detail: String) -> u32 {
+        let backtrace = self.backtrace(pc);
+        self.emit(Event::Unsupported {
+            pc,
+            mnemonic,
+            detail,
+            backtrace,
+        })
+    }
+
+    /// Describe a retained event: summary, PC, instruction and guest
+    /// backtrace. Events that carry their own backtrace use it; the others
+    /// use the chain recorded now, which is the one at the stop if this is
+    /// called before running again.
+    pub fn report(&self, id: u32) -> Option<FaultReport> {
+        let event = self.event(id)?;
+        let (pc, mnemonic, summary, backtrace) = match event {
+            Event::GuestException {
+                pc,
+                saved_eip,
+                exception,
+                backtrace,
+            } => (
+                Some(*pc),
+                Some(exception.mnemonic().to_owned()),
+                format!("guest exception {exception} (reported EIP {saved_eip:#010x})"),
+                Some(backtrace),
+            ),
+            Event::GeneratedStop {
+                pc,
+                saved_eip,
+                reason,
+                backtrace,
+            } => (
+                Some(*pc),
+                Some(reason.mnemonic().to_owned()),
+                format!("generated code stopped: {reason} (reported EIP {saved_eip:#010x})"),
+                Some(backtrace),
+            ),
+            Event::Unsupported {
+                pc,
+                mnemonic,
+                detail,
+                backtrace,
+            } => (
+                Some(*pc),
+                Some(mnemonic.clone()),
+                format!("unsupported instruction `{mnemonic}`: {detail}"),
+                Some(backtrace),
+            ),
+            Event::UnknownShimEvent {
+                pc,
+                saved_eip,
+                code,
+                arg,
+            } => (
+                Some(*pc),
+                None,
+                format!(
+                    "unknown h2shim_v1_event code {code} (arg {arg:#x}, reported EIP {saved_eip:#010x})"
+                ),
+                None,
+            ),
+            Event::MemoryFault { pc, fault } => (
+                Some(*pc),
+                None,
+                format!(
+                    "memory fault: {:?} of {} bytes at {:#010x} ({:?})",
+                    fault.access, fault.len, fault.addr, fault.reason
+                ),
+                None,
+            ),
+            Event::UnsupportedTarget {
+                pc,
+                target,
+                kind,
+                route,
+            } => (
+                Some(*pc),
+                None,
+                format!(
+                    "no handler for target {target:#010x} (transfer kind {kind}, route {route})"
+                ),
+                None,
+            ),
+            Event::UnrecordedFault { pc } => (
+                Some(*pc),
+                None,
+                "handler returned FAULT without an event".to_owned(),
+                None,
+            ),
+            Event::KernelCall(call) => (
+                Some(call.cpu.eip),
+                None,
+                format!("kernel call {} (ordinal {})", call.name, call.ordinal),
+                None,
+            ),
+            other => (None, None, format!("{other:?}"), None),
+        };
+        let backtrace = match backtrace {
+            Some(frames) => frames.clone(),
+            None => self.backtrace(pc.unwrap_or(0)),
+        };
+        Some(FaultReport {
+            id,
+            pc,
+            mnemonic,
+            summary,
+            backtrace,
+        })
     }
 }
 

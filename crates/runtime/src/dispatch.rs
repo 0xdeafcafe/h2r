@@ -38,6 +38,50 @@ pub enum RegistrationError {
     DuplicateGenerated(u32),
     #[error("resume already registered at {0:#010x}")]
     DuplicateResume(u32),
+    /// The module's own probe or its table header disagrees with the runtime.
+    #[error("generated module ABI: probe {probe}, table {table}, runtime {runtime}")]
+    ModuleAbiVersion {
+        probe: u32,
+        table: u32,
+        runtime: u32,
+    },
+    /// A table pointer is null while its count is not zero.
+    #[error("generated module {0} table is null with a non-zero count")]
+    NullTable(ModuleTable),
+    /// The row after the last counted one is not the zero terminator, so the
+    /// count and the table disagree.
+    #[error("generated module {0} table has no zero row after its count")]
+    MissingTerminator(ModuleTable),
+    /// One row is unusable; nothing from the module was registered.
+    #[error("generated module {table} row {index}: {error}")]
+    ModuleRow {
+        table: ModuleTable,
+        index: usize,
+        error: Box<RegistrationError>,
+    },
+    #[error("entry {addr:#010x} has unknown kind {kind}")]
+    EntryKind { addr: u32, kind: u32 },
+    #[error("entry {0:#010x} has a null handler or version probe")]
+    NullEntry(u32),
+    #[error("address zero cannot be registered")]
+    ZeroAddress,
+    #[error("resume owner {0:#010x} is not a function entry (kind 0) of this module")]
+    OwnerNotFunction(u32),
+}
+
+/// Which table of an `H2GenModule` a registration error refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModuleTable {
+    Entries,
+    Resumes,
+}
+impl std::fmt::Display for ModuleTable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Entries => "entry",
+            Self::Resumes => "resume",
+        })
+    }
 }
 
 impl Dispatch {
@@ -122,11 +166,18 @@ impl Dispatch {
             .map(|o| o.handler.clone())
             .or_else(|| self.resolve_original(addr))
     }
+    pub fn has_generated(&self, addr: u32) -> bool {
+        self.generated.contains_key(&addr)
+    }
+    pub fn has_resume(&self, pc: u32) -> bool {
+        self.resumes.contains_key(&pc)
+    }
     pub(crate) fn resolve_original(&self, addr: u32) -> Option<Handler> {
         self.generated.get(&addr).cloned()
     }
-    pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32)> {
+    /// The owner's original handler, its selector and the owner address.
+    pub(crate) fn resolve_resume(&self, pc: u32) -> Option<(Handler, u32, u32)> {
         let &(owner, selector) = self.resumes.get(&pc)?;
-        Some((self.resolve_original(owner)?, selector))
+        Some((self.resolve_original(owner)?, selector, owner))
     }
 }

@@ -12,6 +12,9 @@ pub mod events;
 pub mod exec;
 #[allow(unsafe_code)]
 pub mod ffi;
+mod frames;
+#[allow(unsafe_code)]
+pub mod generated;
 pub mod guest;
 mod handler;
 pub mod kernel;
@@ -22,7 +25,8 @@ pub mod services;
 pub use abi::{GuestFn, TransferAbi};
 pub use cpu::CpuAbi;
 pub use dispatch::Dispatch;
-pub use exec::{Event, ExecCtx, Runner, Runtime};
+pub use exec::{Event, ExecCtx, FaultReport, GuestFrame, Runner, Runtime};
 pub use ffi::ExecCtxOpaque;
+pub use generated::{H2GenEntry, H2GenModule, H2GenResume, RegisteredModule};
 pub use guest::{Guest, GuestFault};
 pub use loader::{LoadedImage, load_xbe};

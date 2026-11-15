@@ -21,14 +21,17 @@ impl Runtime {
     pub fn edit_dispatch<R>(&self, f: impl FnOnce(&mut Dispatch) -> R) -> R {
         f(&mut self.dispatch.write().unwrap_or_else(|e| e.into_inner()))
     }
-    pub(crate) fn resolve(&self, t: TransferAbi) -> Option<(Handler, u32)> {
+    /// Resolve a transfer to (handler, start selector, function). Entry
+    /// routes start at the target; resumes start at the registered selector
+    /// of their owner. A RETURN_TARGET checks the exact resume table first,
+    /// so an entry override never runs in place of a caller's continuation.
+    pub(crate) fn resolve(&self, t: TransferAbi) -> Option<(Handler, u32, u32)> {
         let d = self.dispatch.read().unwrap_or_else(|e| e.into_inner());
+        let entry = |pc: u32| d.resolve(pc).map(|h| (h, pc, pc));
         match t.route {
-            abi::ENTRY => d.resolve(t.target_pc).map(|h| (h, t.target_pc)),
+            abi::ENTRY => entry(t.target_pc),
             abi::RESUME => d.resolve_resume(t.target_pc),
-            abi::RETURN_TARGET => d
-                .resolve_resume(t.target_pc)
-                .or_else(|| d.resolve(t.target_pc).map(|h| (h, t.target_pc))),
+            abi::RETURN_TARGET => d.resolve_resume(t.target_pc).or_else(|| entry(t.target_pc)),
             _ => None,
         }
     }

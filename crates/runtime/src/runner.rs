@@ -70,6 +70,19 @@ impl Runner {
             if !valid {
                 return TransferAbi::fault(ctx.emit(Event::InvalidTransfer));
             }
+            // Diagnostic call chain only; the guest stack decides control.
+            // Every transfer first drops the records whose return slots ESP
+            // has passed, so returns, `ret n` and longjmp-style ESP restores
+            // followed by a JUMP all forget the frames they abandoned. A tail
+            // jump leaves ESP at its own return slot and keeps its frame.
+            ctx.frames.unwind(cpu.esp);
+            match transfer.kind {
+                abi::CALL => ctx
+                    .frames
+                    .call(transfer.target_pc, transfer.resume_pc, cpu.esp),
+                abi::RETURN => {}
+                _ => ctx.frames.enter(transfer.target_pc),
+            }
             if transfer.kind == abi::RETURN && transfer.target_pc == HARNESS_EXIT {
                 cpu.eip = HARNESS_EXIT;
                 return TransferAbi::stop(ctx.emit(Event::HarnessExit));
@@ -104,7 +117,7 @@ impl Runner {
                     route: transfer.route,
                 }));
             }
-            let Some((handler, selector)) = ctx.runtime().resolve(transfer) else {
+            let Some((handler, selector, function)) = ctx.runtime().resolve(transfer) else {
                 return TransferAbi::fault(ctx.emit(Event::UnsupportedTarget {
                     pc: cpu.eip,
                     target: transfer.target_pc,
@@ -128,6 +141,7 @@ impl Runner {
                 }
             }
             cpu.eip = transfer.target_pc;
+            ctx.frames.enter(function);
             transfer = execute(Invocation::Handler(handler), cpu, ctx, selector);
         }
     }
