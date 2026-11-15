@@ -123,6 +123,9 @@ struct Capture {
     /// `H2_BOOT_CAPTURE_LITE`: no texture or guest-write bytes (frame.txt,
     /// streams and snapshots only), for quick looks at one frame.
     lite: bool,
+    /// `H2_BOOT_CAPTURE_TEX=K[-L],...`: texture upload ids whose bytes are
+    /// kept even with `lite` (ids as in textures.txt and frame.txt).
+    keep_tex: BTreeSet<u64>,
 }
 
 /// `K[-L][,...]` as a set of draw indices.
@@ -172,7 +175,7 @@ impl<B> DiagBackend<B> {
             let dir = std::path::PathBuf::from(d);
             std::fs::create_dir_all(&dir).map_err(|e| eprintln!("boot: H2_BOOT_CAPTURE {}: {e}", dir.display())).ok()?;
             let frame = std::env::var("H2_BOOT_CAPTURE_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(480);
-            Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP"), lite: std::env::var_os("H2_BOOT_CAPTURE_LITE").is_some() })
+            Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP"), lite: std::env::var_os("H2_BOOT_CAPTURE_LITE").is_some(), keep_tex: draw_set("H2_BOOT_CAPTURE_TEX") })
         });
         (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0 }, stats)
     }
@@ -259,7 +262,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
                 .iter()
                 .enumerate()
                 .map(|(i, l)| {
-                    c.blob(&format!("tex-{id}-{i}.bin"), &l.data);
+                    let name = format!("tex-{id}-{i}.bin");
+                    if c.keep_tex.contains(&id) {
+                        let _ = std::fs::write(c.dir.join(name), &l.data);
+                    } else {
+                        c.blob(&name, &l.data);
+                    }
                     format!("face {} level {} {}x{}x{} {} bytes", l.face, l.level, l.width, l.height, l.depth, l.data.len())
                 })
                 .collect();
