@@ -21,8 +21,8 @@ const USAGE: &str = "usage:
           [--input-timeline FILE]
 
 Opens a window and runs the recompiled game live (builds the dylib first when
---out has none). --out and --data default to $TMPDIR/h2boot and
-$TMPDIR/h2boot-data, as for `h2 run`. --slices is unlimited by default.
+--out has none, or one built from another image or generator). --out and
+--data default to $TMPDIR/h2boot and $TMPDIR/h2boot-data, as for `h2 run`. --slices is unlimited by default.
 --status prints the frame rates once a second and the slice count every
 1000 slices (the unit H2_BOOT_INPUT scripts in). --input-timeline plays an
 input crate timeline (docs/input.md) on guest time instead of live input.
@@ -43,6 +43,22 @@ pub fn play_bindings() -> Bindings {
         }
     }
     b
+}
+
+/// Whether `lib` must be (re)built before playing: missing, or stamped
+/// for another image, generator or module ABI (`boot::dylib_current`), which
+/// `boot::run_hosted` would refuse inside the window.
+fn needs_build(xbe: &[u8], lib: &std::path::Path) -> bool {
+    if boot::dylib_current(xbe, lib) {
+        return false;
+    }
+    if lib.exists() {
+        eprintln!(
+            "play: {} was built from another image or generator; rebuilding",
+            lib.display()
+        );
+    }
+    true
 }
 
 /// Kernel calls `h2 play` keeps in memory for the report (the run is
@@ -229,7 +245,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         .context(USAGE)?;
     let xbe = boot::read_xbe(&disc)?;
     let lib = out.join(boot::DYLIB);
-    if !lib.exists() {
+    if needs_build(&xbe, &lib) {
         let jobs = std::thread::available_parallelism().map_or(4, |n| n.get());
         boot::build(&xbe, &out, jobs)?;
     }
@@ -281,6 +297,29 @@ pub fn run(args: Vec<String>) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stale_or_missing_dylib_is_rebuilt() {
+        let dir = std::env::temp_dir().join(format!("h2-play-stamp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = dir.join(boot::DYLIB);
+        let xbe = b"XBEH synthetic image bytes";
+        assert!(needs_build(xbe, &lib), "missing");
+        std::fs::write(&lib, b"").unwrap();
+        assert!(needs_build(xbe, &lib), "no stamp");
+        let stamp = dir.join(format!("{}.stamp", boot::DYLIB));
+        std::fs::write(&stamp, boot::build_stamp(b"another image")).unwrap();
+        assert!(needs_build(xbe, &lib), "another image");
+        std::fs::write(
+            &stamp,
+            boot::build_stamp(xbe).replace("generator ", "generator old"),
+        )
+        .unwrap();
+        assert!(needs_build(xbe, &lib), "another generator");
+        std::fs::write(&stamp, boot::build_stamp(xbe)).unwrap();
+        assert!(!needs_build(xbe, &lib), "current");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn play_bindings_add_enter_and_backspace() {

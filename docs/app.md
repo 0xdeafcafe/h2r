@@ -82,7 +82,8 @@ $TMPDIR/app-play-target/release/h2 play /abs/path/to/disc/halo2.iso
 ```
 
 It builds the dylib first when `--out` (default `$TMPDIR/h2boot`) has none,
-like `h2 run`. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
+or one whose `.stamp` names another image, generator or module ABI
+(`boot::dylib_current`), like `h2 run`. Flags: `--out DIR`, `--data DIR`, `--slices N` (unlimited by
 default), `--transfers N`, `--aspect 4:3|16:9|source`, `--scaling
 fit|integer|stretch`, `--nearest`, `--fullscreen`, `--no-audio`,
 `--no-gamepads`, `--no-vsync`, `--unpaced`, `--bindings FILE` (docs/input.md
