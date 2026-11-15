@@ -21,12 +21,12 @@ included here.
 - **91** D3D functions are reached from outside the section. **26** of those
   have no signature match and are named below from evidence: which state
   slot they store, what they push, and who calls them.
-- Of those 91, **79** are implemented (adapter plus device method), **8**
+- Of those 91, **80** are implemented (adapter plus device method), **5**
   stop with `D3dError::Unimplemented` (which carries the entry name and
-  its convention), and **4** are pure helpers left to the original code
-  (`d3d::abi::NATIVE`).
-- `d3d::register` installs **91** overrides in a `runtime::Dispatch`
-  (see "Integration"): **81** implemented and **10** stopping. Beyond the
+  its convention), and **6** are left to the original code
+  (`d3d::abi::NATIVE`): four pure helpers and two push-buffer writers.
+- `d3d::register` installs **89** overrides in a `runtime::Dispatch`
+  (see "Integration"): **82** implemented and **7** stopping. Beyond the
   census:
   - `SetRenderState_PSTextureModes` (`0x3f5cc0`, implemented). It is
     matched by signature and has an adapter, but no code outside the
@@ -106,7 +106,7 @@ overridden; the original runs).
 | `0x3f7440` | `D3DDevice_SetVertexShaderInput` | yes | stdcall(Handle, StreamCount, pStreamInputs); ret 0xC | 2 / 1 | yes |
 | `0x3f77c0` | `D3DDevice_Reset` | yes | EBX = pPresentationParameters | 1 / 1 | stop |
 | `0x3f7870` | `D3DDevice_SetRenderTarget` | yes | stdcall(pRenderTarget, pNewZStencil); ret 8 | 1 / 1 | yes |
-| `0x3f7b30` | `D3DDevice_SetRenderTarget variant (0x3f7b30)` | no | 1 stack arg; ret 4 | 1 / 1 | stop |
+| `0x3f7b30` | `D3DDevice_SetRenderTarget (same size, 0x3f7b30)` | no | [esp+4] = target, EBX = depth/stencil; ret 4 | 1 / 1 | yes |
 | `0x3f8100` | `D3DDevice_SetViewport` | yes | stdcall(pViewport); ret 4 | 3 / 2 | yes |
 | `0x3f8320` | `D3DDevice_SetTexture` | yes | EAX = Stage, [esp+4] = pTexture; ret 4 | 2 / 2 | yes |
 | `0x3f84d0` | `D3DDevice_SetPalette` | yes | EAX = Stage, [esp+4] = pPalette; ret 4 | 7 / 4 | yes |
@@ -125,7 +125,7 @@ overridden; the original runs).
 | `0x3faae0` | `D3D_MakeRequestedSpace` | yes | [esp+4] = MinimumSpace, EAX = RequestedSpace; returns EAX = put; ret 4 | 199 / 53 | yes |
 | `0x3fac30` | `CDevice_KickOff` | yes | no args; EDX live across the call; ret | 17 / 16 | yes |
 | `0x3fad50` | `D3D_BlockOnResource` | yes | EAX = pResource; ret (no-op: the host GPU is synchronous) | 10 / 8 | yes |
-| `0x3fae10` | `D3D inline UP draw (0x3fae10)` | no | unrecovered | 1 / 1 | stop |
+| `0x3fae10` | `D3D BeginPush (0x3fae10)` | no | ESI = dword count; returns EAX = put; ret | 1 / 1 | native |
 | `0x3faed0` | `D3DDevice_DrawVertices` | yes | EAX = VertexCount, ECX = StartVertex, [esp+4] = PrimitiveType; ret 4 | 3 / 3 | yes |
 | `0x3fafa0` | `D3DDevice_DrawIndexedVertices` | yes | stdcall(PrimitiveType, VertexCount, pIndexData); ret 0xC | 8 / 5 | yes |
 | `0x3fb280` | `D3DDevice_SetVertexData2f` | yes | stdcall(Register, a, b); ret 0xC | 39 / 6 | yes |
@@ -146,7 +146,7 @@ overridden; the original runs).
 | `0x3fde00` | `D3D texture header setup (0x3fde00)` | no | stdcall 8 args; ret 0x20 | 3 / 3 | native |
 | `0x3ff5c6` | `D3D miniport (0x3ff5c6)` | no | unrecovered | 1 / 1 | stop |
 | `0x400fa0` | `D3D commit deferred state (0x400fa0)` | no | no args; ret | 23 / 19 | yes |
-| `0x401030` | `CDevice_SetStateVB` | yes | stdcall(device, base); ret 8 | 1 / 1 | stop |
+| `0x401030` | `CDevice_SetStateVB` | yes | stdcall(device, base); ret 8 | 1 / 1 | native |
 
 Notes on the table:
 
@@ -242,6 +242,57 @@ Notes on the table:
   (the multisample type, which CreateDevice writes). Their callees touch
   no device global, NV2A register or push buffer, so the original code
   runs.
+- **Native push-buffer writers.** BeginPush (`0x3fae10`) and
+  `CDevice_SetStateVB` (`0x401030`) also run as compiled. They read only
+  guest state the device keeps current (the dirty flags, `D3D__Streams`,
+  the shader object at device `+0x794`), call only overridden entries (the
+  commit `0x400fa0` and `MakeRequestedSpace` `0x3faae0`), and push only
+  methods the drain decodes:
+  - SetStateVB clears dirty bits `0x50`, commits when other dirty bits are
+    set, then, with dirty bit `0x10`, pushes all 16
+    `SET_VERTEX_DATA_ARRAY_FORMAT` words (`0x4010b2`: type and size from
+    the shader's attribute format, stride from the stream), and one
+    `SET_VERTEX_DATA_ARRAY_OFFSET` per enabled attribute (`0x401134`).
+  - BeginPush (`ESI` = dword count) calls `SetStateVB(device, 0)`, makes
+    room when `put + 4 * count + 4` passes the threshold plus `0x200`, and
+    returns `EAX` = put. Its one caller (`0x4b24b` in `0x4b220`) then
+    pushes `BEGIN_END`, a non-incrementing `INLINE_ARRAY` (`0x1818`) that
+    a callback fills with vertices, and `BEGIN_END` 0.
+  - The overridden commit leaves dirty bits `0xC0000070` set
+    (`device::COMMIT_KEEPS`), as the retail commit does (`0x401013`), and
+    clears the rest. SetStateVB consumes `0x10` and `0x40` itself, so a
+    commit run first (from `Begin`, a setter or SetStateVB's own call)
+    must not take them away, or the vertex formats are never pushed.
+- **Same-size SetRenderTarget** (`0x3f7b30`, `[esp+4]` = target, `EBX` =
+  depth/stencil, `ret 4`; one caller). Halo uses it for a target the size
+  and format of the current one. It swaps the two surface pointers and
+  pushes their offsets and the depth/stencil test enables
+  (`0x3f7bd6..0x3f7c6a`), and clears device flag `0x100` when the target
+  is the back buffer (`0x3f7c6d`). Unlike `0x3f7870` it leaves the target
+  size fields, the depth scale and the viewport alone. The device does the
+  same target switch as `0x3f7870` (render-to-texture write-back included)
+  without the viewport reset, and does not check the size, as the original
+  does not.
+- **Internal references on targets.** Both SetRenderTarget paths take an
+  internal reference on the new target and depth/stencil
+  (`0x3f7b38..0x3f7b60`) and release the old ones through `0x3fb5a0`:
+  - acquire adds `0x80000` to the surface, and to its parent texture the
+    first time the surface is bound (the surface had no internal
+    reference);
+  - release, when the surface holds the last internal reference and has a
+    parent, takes `0x80000` off the parent (destroying it when no
+    reference of any kind remains, `& 0x78FFFF == 0`), then destroys the
+    surface when its refcount is 0 and otherwise takes `0x80000` off it.
+  - The device's own back-buffer and depth headers are skipped. A destroy
+    stops (`D3D_DestroyResource`): nothing on the menu path reaches it.
+  - The whole switch is staged and checked before anything is written. A
+    switch that stops leaves every count, `Lock` and the binding as they
+    were, so it can be retried; retail decrements the parent before the
+    destroy, but it also finishes the switch.
+  - Teardown releases the bound target and then depth/stencil the same way
+    (`0x3fc720`, called at `0x3fc5cb`) before the texture, palette and
+    stream releases, and clears both device fields. The releases are one
+    staged set too: a teardown that stops changes no reference.
 
 ## Guest structures
 
@@ -730,6 +781,11 @@ The drain applies these register methods to `d3d::hw::HwState`
 - `0x1EA0` program start;
 - `0x147C`/`0x1480` stipple control and pattern;
 - `0x1710` vertex-cache break (no effect);
+- `0x1720..0x175C` `SET_VERTEX_DATA_ARRAY_OFFSET` and `0x1760..0x179C`
+  `SET_VERTEX_DATA_ARRAY_FORMAT`, per attribute register
+  (`HwState::vertex_offset`/`vertex_format`). Offsets are recorded only:
+  nothing draws from GPU-side arrays, so `DRAW_ARRAYS` and the
+  `ARRAY_ELEMENT` methods still stop as unknown;
 - `0x1D8C`/`0x1D90` the clear values, which are also the operands of
   software methods.
 
@@ -931,7 +987,7 @@ listed under "Stops on the way to the menu" below.
 No boot trace exists yet, so this is static. Conditional stops that normal
 view rendering (`0x223240 -> 0x2232a0 -> 0x2c8a0 -> 0x132d0`) can reach:
 
-Of the 18 entries that stopped before, 8 remain (`abi::UNIMPLEMENTED`).
+Of the 18 entries that stopped before, 5 remain (`abi::UNIMPLEMENTED`).
 The fragments, the display entries, `SetStipple` (`0x3f8cc0`), the busy
 check (`0x3fb710`), `SetVertexShaderConstantNotInline` (`0x3f7410`) and
 Get2DSurfaceDesc are done (see the inventory), and so are the cases
@@ -959,11 +1015,32 @@ below:
   The inline `BeginVisibilityTest` (`0x17C8`, `0x20cec`) still stops, with
   the visibility entries below.
 
-The 8 that still stop, and where the menu path reaches them:
+- **Inline arrays.** `0x4b220`'s draw through BeginPush and SetStateVB
+  (both native) drains: `INLINE_ARRAY` (`0x1818`) words between
+  `BEGIN_END` words collect in the immediate-mode state
+  (`ImmediateDraw::inline`, at most `pushbuf::MAX_INLINE_WORDS` per
+  primitive, never mixed with vertex-data writes), and the `End` draws
+  them against the pushed state. The vertex is unpacked from the
+  `SET_VERTEX_DATA_ARRAY_FORMAT` registers as the NV2A does it (the xemu
+  model): enabled registers in register order, each aligned to its
+  component size and packed with no gaps; the format's stride field is not
+  used. A trailing partial vertex is dropped (64 bytes of 20-byte
+  vertices draw 3), as xemu's `pgraph_gl_bind_inline_array` counts whole
+  vertices. A format with no vertex type, or one with every register
+  disabled, stops. After the draw the last vertex's values stay in the
+  attribute registers (xemu `bind_vertex_attributes` does the same), so a
+  later draw that leaves a register disabled reads them as its constant.
+  Programs get the registers as attributes; an FVF shader draws fixed
+  function, pre-transformed for `XYZRHW`. Counted in
+  `Stats::inline_array_draws`.
+- **Same-size targets.** `0x3f7b30` is implemented (see the inventory
+  notes). Tests for both, the commit's kept bits and the internal
+  references: `tests/round6.rs`.
+
+The 5 that still stop, and where the menu path reaches them:
 
 - `0x3f77c0` Reset. It is reached only if the game's device pointer is
   still set at `0x128c0`; it is not, after boot step 1.
-- `0x3f7b30`, the SetRenderTarget variant (1 caller).
 - `0x3f85d0` / `0x3f8630`: visibility tests (occlusion queries).
   `EndVisibilityTest` (`EAX` = index; `ret`) stamps a 16-byte report slot
   (pages at device `+0x7D4`) with the GPU time and pushes
@@ -974,15 +1051,8 @@ The 8 that still stop, and where the menu path reaches them:
   Halo divides the count by an expected pixel count (`0x20840`), so a
   constant answer is wrong somewhere; a faithful one needs counting
   occlusion queries from gfx, which it does not have yet.
-- `0x3fae10`, the inline UP draw (1 caller, `0x4b24b` in `0x4b220`). It
-  calls `SetStateVB(device, 0)` (`0x401030`, the vertex-array formats and
-  offsets) and reserves space; the caller then pushes `BEGIN_END`, an
-  `INLINE_ARRAY` (`0x1818`, non-incrementing) filled by a callback, and
-  `END`. Needs `SetStateVB` and inline arrays decoded with the current
-  vertex-array formats.
 - `0x3fb520` `D3D_DestroyResource` (1 caller).
 - `0x3ff5c6`, the miniport (1 caller).
-- `0x401030` `CDevice_SetStateVB` (1 caller).
 
 None of them is on the static boot path above; which of them the menu
 reaches needs a boot trace.

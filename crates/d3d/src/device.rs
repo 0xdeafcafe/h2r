@@ -82,6 +82,8 @@ pub const SCRATCH_BYTES: u32 = 0x100;
 /// points at ([`Device::gpu_completed`]), after the back and depth headers.
 pub const GPU_COMPLETED_OFFSET: u32 = 2 * SurfaceHeader::SIZE;
 const _: () = assert!(GPU_COMPLETED_OFFSET + 4 <= SCRATCH_BYTES);
+/// Dirty bits the deferred-state commit leaves set (`0x401013`).
+pub const COMMIT_KEEPS: u32 = 0xC000_0070;
 /// Most vertices one draw may use (the NV2A index range is 2^20).
 pub const MAX_VERTICES: u32 = 1 << 20;
 /// Most bytes the device reads from guest memory for one stream or index
@@ -255,6 +257,8 @@ pub struct Stats {
     pub draws: u64,
     /// Inline (push-buffer) immediate draws among them.
     pub inline_draws: u64,
+    /// Inline-array (`INLINE_ARRAY`, `0x1818`) primitives among those.
+    pub inline_array_draws: u64,
     /// Push-buffer words consumed.
     pub push_words: u64,
     /// `SetRenderState_Simple` calls (value already in the guest array).
@@ -342,6 +346,37 @@ struct Swap<S> {
 
 /// `base + offset` as a guest address, or an error if it leaves the 32-bit
 /// address space.
+/// Guest dwords to write together: reads see the staged values first, and
+/// nothing reaches guest memory until [`Staged::commit`]. Reference
+/// transitions build one so a stop part-way changes nothing.
+#[derive(Default)]
+struct Staged {
+    words: Vec<(u32, u32)>,
+}
+
+impl Staged {
+    fn read(&self, mem: &dyn GuestMemory, addr: u32) -> Result<u32, D3dError> {
+        match self.words.iter().find(|w| w.0 == addr) {
+            Some(w) => Ok(w.1),
+            None => Ok(mem.read_u32(addr)?),
+        }
+    }
+
+    fn write(&mut self, addr: u32, value: u32) {
+        match self.words.iter_mut().find(|w| w.0 == addr) {
+            Some(w) => w.1 = value,
+            None => self.words.push((addr, value)),
+        }
+    }
+
+    fn commit(self, mem: &mut dyn GuestMemory) -> Result<(), D3dError> {
+        for (addr, value) in self.words {
+            mem.write_u32(addr, value)?;
+        }
+        Ok(())
+    }
+}
+
 fn at(base: u32, offset: u64) -> Result<u32, D3dError> {
     u32::try_from(base as u64 + offset).map_err(|_| D3dError::Invalid {
         entry: "guest address",
@@ -810,7 +845,11 @@ impl<B: Backend> Device<B> {
         Ok(())
     }
 
-    /// Teardown's resource releases (`0x3fc5f4..0x3fc69b`): one internal
+    /// Teardown's resource releases. First the render target and then the
+    /// depth/stencil surface are stamped and released as by a switch
+    /// (`0x3fc720`, called at `0x3fc5cb`: `0x3fb5a0` at `0x3fc765` and
+    /// `0x3fc78f`), and both device fields cleared. Then
+    /// (`0x3fc5f4..0x3fc69b`) one internal
     /// reference off each bound texture and palette, each `D3D__Streams`
     /// buffer (and, here, each `SetVertexShaderInput` buffer, which this
     /// device also holds a reference to); then `D3D__Streams` (16 records,
@@ -823,6 +862,9 @@ impl<B: Backend> Device<B> {
         mem: &mut dyn GuestMemory,
         entry: &'static str,
     ) -> Result<(), D3dError> {
+        let mut refs = Staged::default();
+        self.release_surface(&mut refs, mem, entry, self.render_target)?;
+        self.release_surface(&mut refs, mem, entry, self.depth_stencil)?;
         let mut held: Vec<u32> = Vec::new();
         held.extend(self.textures);
         held.extend(self.palettes);
@@ -839,9 +881,8 @@ impl<B: Backend> Device<B> {
                 None => counts.push((h, 1)),
             }
         }
-        let mut updates = Vec::new();
         for (h, n) in counts {
-            let word = mem.read_u32(h)?;
+            let word = refs.read(mem, h)?;
             let c = word.wrapping_sub(n.wrapping_mul(common::INTREFCOUNT_ONE));
             if (word & common::INTREFCOUNT_MASK) < n * common::INTREFCOUNT_ONE
                 || c & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0
@@ -851,11 +892,12 @@ impl<B: Backend> Device<B> {
                     format!("releasing the last reference to {h:#010x} (D3D_DestroyResource)"),
                 ));
             }
-            updates.push((h, c));
+            refs.write(h, c);
         }
-        for (h, c) in updates {
-            mem.write_u32(h, c)?;
-        }
+        refs.commit(mem)?;
+        let dev = self.cfg.layout.device;
+        mem.write_u32(dev + field::RENDER_TARGET, 0)?;
+        mem.write_u32(dev + field::DEPTH_STENCIL, 0)?;
         let streams = self.cfg.layout.streams;
         mem.write(streams, &[0; 16 * 12])?;
         Ok(())
@@ -1198,7 +1240,12 @@ impl<B: Backend> Device<B> {
         self.live("D3D_CommitState")?;
         self.sync_push_buffer(mem)?;
         self.refresh_pushed(mem)?;
-        mem.write_u32(self.cfg.layout.dirty_flags, 0)?;
+        // `0x401013`: the commit keeps the bits it does not consume, the
+        // vertex-format and binding bits (`0x70`) that `CDevice_SetStateVB`
+        // (`0x401030`, native) reads, and the two top bits.
+        let dirty = self.cfg.layout.dirty_flags;
+        let d = mem.read_u32(dirty)?;
+        mem.write_u32(dirty, d & COMMIT_KEEPS)?;
         Ok(())
     }
 
@@ -2021,18 +2068,8 @@ impl<B: Backend> Device<B> {
         } else {
             target
         };
-        self.surface_for(mem, E, target, false)?;
-        if z_stencil != 0 {
-            self.surface_for(mem, E, z_stencil, true)?;
-        }
-        if target != self.render_target {
-            self.leave_target(mem)?;
-        }
-        self.render_target = target;
-        self.depth_stencil = z_stencil;
+        self.switch_targets(mem, E, target, z_stencil)?;
         let dev = self.cfg.layout.device;
-        mem.write_u32(dev + field::RENDER_TARGET, target)?;
-        mem.write_u32(dev + field::DEPTH_STENCIL, z_stencil)?;
         // `0x3f793f` (depth scale), `0x3f6741` (target size), `0x3f682a`
         // (pass-through reload), then `0x3f6836` tail-calls SetViewport
         // with `{0, 0, 0x7FFFFFFF, 0x7FFFFFFF, 0, 1}` (`0x403B88`), which
@@ -2059,6 +2096,166 @@ impl<B: Backend> Device<B> {
         let put = self.reserve(mem)?;
         let put = self.push_viewport(mem, put, dev)?;
         mem.write_u32(dev + field::PUT, put)?;
+        Ok(())
+    }
+
+    /// The same-size SetRenderTarget (`0x3f7b30`: `[esp+4]` = target, `EBX`
+    /// = depth/stencil, `ret 4`; one caller). Halo calls it only for a
+    /// target the size and format of the current one, so, unlike
+    /// `0x3f7870`, it touches neither the target-size fields, the depth
+    /// scale, nor the viewport (a different size is not checked, as in the
+    /// original: the old viewport stays): it swaps the two surface pointers (internal
+    /// references moved through `0x3fb5a0`), pushes their offsets and the
+    /// depth/stencil test enables (`0x3f7bd6..0x3f7c6a`), and clears device
+    /// flag `0x100` when the target is the back buffer (`0x3f7c6d`). The
+    /// target may not be null (the original dereferences it).
+    pub fn set_render_target_same_size(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        target: u32,
+        z_stencil: u32,
+    ) -> Result<(), D3dError> {
+        const E: &str = "D3DDevice_SetRenderTarget (same size, 0x3f7b30)";
+        self.live(E)?;
+        self.sync_push_buffer(mem)?;
+        if target == 0 {
+            return Err(D3dError::invalid(E, "null render target"));
+        }
+        self.switch_targets(mem, E, target, z_stencil)?;
+        let dev = self.cfg.layout.device;
+        let flags = mem.read_u32(dev + field::FLAGS)?;
+        if flags & 0x100 != 0 && target == mem.read_u32(dev + field::BACK_BUFFER)? {
+            mem.write_u32(dev + field::FLAGS, flags & !0x100)?;
+        }
+        Ok(())
+    }
+
+    /// The target switch both SetRenderTarget paths share: checks both
+    /// surfaces, writes a render-to-texture target being left back, and
+    /// stores the device fields.
+    fn switch_targets(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        target: u32,
+        z_stencil: u32,
+    ) -> Result<(), D3dError> {
+        self.surface_for(mem, entry, target, false)?;
+        if z_stencil != 0 {
+            self.surface_for(mem, entry, z_stencil, true)?;
+        }
+        // Internal references move with the binding (`0x3f7b53..0x3f7b82`
+        // for the target, `0x3f7b87..0x3f7c29` for the depth buffer): the
+        // new one is acquired before the old one is stamped and released.
+        // Staged, so a release that stops leaves every count and the
+        // binding as they were.
+        let mut refs = Staged::default();
+        self.acquire_surface(&mut refs, mem, target)?;
+        self.release_surface(&mut refs, mem, entry, self.render_target)?;
+        self.release_surface(&mut refs, mem, entry, self.depth_stencil)?;
+        self.acquire_surface(&mut refs, mem, z_stencil)?;
+        if target != self.render_target {
+            self.leave_target(mem)?;
+        }
+        refs.commit(mem)?;
+        self.render_target = target;
+        self.depth_stencil = z_stencil;
+        let dev = self.cfg.layout.device;
+        mem.write_u32(dev + field::RENDER_TARGET, target)?;
+        mem.write_u32(dev + field::DEPTH_STENCIL, z_stencil)?;
+        Ok(())
+    }
+
+    /// Whether `header` is a surface the title owns (not the device's own
+    /// back and depth headers, which hold no references).
+    fn title_surface(&self, header: u32) -> bool {
+        header != 0 && header != self.back_header && header != self.depth_header
+    }
+
+    /// The parent texture of surface `header`, if it is a texture level.
+    fn surface_parent(mem: &dyn GuestMemory, header: u32) -> Result<u32, D3dError> {
+        let c = mem.read_u32(header)?;
+        if (c & common::TYPE_MASK) >> common::TYPE_SHIFT != ResourceType::Surface.raw() {
+            return Ok(0);
+        }
+        Ok(mem.read_u32(at(header, 0x14)?)?)
+    }
+
+    /// Binding a surface: one internal reference, plus one on its parent
+    /// texture when the surface held none (`0x3f7b38..0x3f7b60`).
+    fn acquire_surface(
+        &self,
+        refs: &mut Staged,
+        mem: &dyn GuestMemory,
+        header: u32,
+    ) -> Result<(), D3dError> {
+        if !self.title_surface(header) {
+            return Ok(());
+        }
+        let c = refs.read(mem, header)?;
+        if c & common::INTREFCOUNT_MASK == 0 {
+            let parent = Self::surface_parent(mem, header)?;
+            if parent != 0 {
+                let p = refs.read(mem, parent)?;
+                refs.write(parent, p.wrapping_add(common::INTREFCOUNT_ONE));
+            }
+        }
+        refs.write(header, c.wrapping_add(common::INTREFCOUNT_ONE));
+        Ok(())
+    }
+
+    /// Unbinding a surface: stamps `Lock` (of the parent, for a level) with
+    /// the GPU time (`0x3f7b67..0x3f7b79`), then drops the internal
+    /// reference as `0x3fb5a0` does. The last internal reference also
+    /// drops the parent's; a resource left with no references at all would
+    /// be destroyed (`D3D_DestroyResource`, which stops).
+    ///
+    /// Everything goes into `refs`; nothing is written unless the whole
+    /// release can be done.
+    fn release_surface(
+        &self,
+        refs: &mut Staged,
+        mem: &dyn GuestMemory,
+        entry: &'static str,
+        header: u32,
+    ) -> Result<(), D3dError> {
+        if !self.title_surface(header) {
+            return Ok(());
+        }
+        let parent = Self::surface_parent(mem, header)?;
+        let time = mem.read_u32(self.cfg.layout.device + field::GPU_TIME)?;
+        refs.write(at(if parent != 0 { parent } else { header }, 8)?, time);
+        let c = refs.read(mem, header)?;
+        let destroy = |h: u32| {
+            D3dError::unimplemented(
+                entry,
+                format!("unbinding the last reference to {h:#010x} (D3D_DestroyResource)"),
+            )
+        };
+        match c & common::INTREFCOUNT_MASK {
+            0 => {
+                return Err(D3dError::invalid(
+                    entry,
+                    format!("surface {header:#010x} is bound without an internal reference"),
+                ));
+            }
+            common::INTREFCOUNT_ONE => {
+                if parent != 0 {
+                    let p = refs
+                        .read(mem, parent)?
+                        .wrapping_sub(common::INTREFCOUNT_ONE);
+                    if p & (common::INTREFCOUNT_MASK | common::REFCOUNT_MASK) == 0 {
+                        return Err(destroy(parent));
+                    }
+                    refs.write(parent, p);
+                }
+                if c & common::REFCOUNT_MASK == 0 {
+                    return Err(destroy(header));
+                }
+            }
+            _ => {}
+        }
+        refs.write(header, c - common::INTREFCOUNT_ONE);
         Ok(())
     }
 
@@ -2724,6 +2921,9 @@ impl<B: Backend> Device<B> {
         entry: &'static str,
         d: ImmediateDraw,
     ) -> Result<(), D3dError> {
+        if !d.inline.is_empty() {
+            return self.inline_array_draw(mem, entry, d);
+        }
         let (layout, vertex) = if self.vertex_shader & 1 == 0 {
             let (l, v, _) = self.vertex_setup(mem, entry)?;
             (l, v)
@@ -2819,6 +3019,169 @@ impl<B: Backend> Device<B> {
             },
         )
     }
+}
+
+impl<B: Backend> Device<B> {
+    /// A `BEGIN_END`/`INLINE_ARRAY`/`BEGIN_END` primitive (`0x4b220` after
+    /// BeginPush `0x3fae10`): the vertices are the inline words, unpacked
+    /// with the `SET_VERTEX_DATA_ARRAY_FORMAT` registers as the NV2A does
+    /// (the xemu model): the enabled registers in register order, each
+    /// aligned to its component size and packed with no gaps. The format's
+    /// stride field is not used. Drawn against the pushed state, like the
+    /// other inline draws.
+    fn inline_array_draw(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        entry: &'static str,
+        d: ImmediateDraw,
+    ) -> Result<(), D3dError> {
+        let (attributes, size) = inline_array_layout(&self.hw.vertex_format)
+            .map_err(|e| D3dError::unimplemented(entry, e))?;
+        let bytes = d.inline.len() as u32 * 4;
+        if size == 0 {
+            // No enabled register: the formats were never pushed.
+            return Err(D3dError::invalid(
+                entry,
+                format!("{bytes} inline-array bytes with every vertex array format disabled"),
+            ));
+        }
+        // Whole vertices only; a trailing partial one is dropped, as the
+        // NV2A model does (xemu, `pgraph_gl_bind_inline_array`: the count is
+        // the byte count over the vertex size).
+        let count = bytes / size;
+        if count == 0 {
+            return Ok(());
+        }
+        vertex_limit(entry, count)?;
+        let data: Vec<u8> = d
+            .inline
+            .iter()
+            .flat_map(|w| w.to_le_bytes())
+            .take((count * size) as usize)
+            .collect();
+        // The attribute registers keep the last vertex's values, which a
+        // later draw with the register disabled reads (xemu carries them
+        // the same way in `bind_vertex_attributes`).
+        let last = &data[((count - 1) * size) as usize..];
+        for a in &attributes {
+            let o = a.offset as usize;
+            let value =
+                attribute_value(a.data_type, &last[o..o + a.data_type.byte_size() as usize]);
+            self.immediate.carry(a.register.0 as usize & 15, value);
+        }
+        let vertex = if self.vertex_shader & 1 == 0 {
+            if self.vertex_shader == 0 {
+                return Err(D3dError::invalid(entry, "no vertex shader set"));
+            }
+            VertexProcessing::FixedFunction {
+                fvf: self.vertex_shader,
+            }
+        } else {
+            VertexProcessing::Program {
+                start: self.program_start,
+                microcode: self.microcode(),
+            }
+        };
+        let pretransformed = self.vertex_shader & 1 == 0
+            && self.vertex_shader & gfx::vertex::fvf::POSITION_MASK == gfx::vertex::fvf::XYZRHW;
+        let layout = VertexLayout {
+            streams: vec![StreamLayout {
+                stream: 0,
+                attributes,
+                stride: size,
+            }],
+            pretransformed,
+        };
+        let words = self.pushed_state(mem)?;
+        self.stats.inline_array_draws += 1;
+        self.submit(
+            mem,
+            DrawParts {
+                entry,
+                primitive: d.primitive,
+                vertex_count: count,
+                layout,
+                vertex,
+                streams: vec![StreamBytes { data, stride: size }],
+                indices: None,
+                words,
+            },
+        )
+    }
+}
+
+/// One attribute of guest vertex data as the float4 the vertex unit
+/// reads: missing components are `(0, 0, 0, 1)`, normalised types are
+/// scaled as the formats say.
+pub(crate) fn attribute_value(ty: VertexDataType, b: &[u8]) -> [f32; 4] {
+    use VertexDataType as T;
+    let f = |i: usize| f32::from_le_bytes(b[4 * i..4 * i + 4].try_into().expect("4 bytes"));
+    let s = |i: usize| i16::from_le_bytes([b[2 * i], b[2 * i + 1]]);
+    let sn = |v: i32, max: f32| (v as f32 / max).max(-1.0);
+    let mut out = [0.0, 0.0, 0.0, 1.0];
+    match ty {
+        T::Float1 | T::Float2 | T::Float3 | T::Float4 => {
+            for (i, o) in out.iter_mut().enumerate().take(ty.byte_size() as usize / 4) {
+                *o = f(i);
+            }
+        }
+        T::Float2H => out = [f(0), f(1), 0.0, f(2)],
+        T::D3dColor => out = [b[2], b[1], b[0], b[3]].map(|x| x as f32 / 255.0),
+        T::PByte1 | T::PByte2 | T::PByte3 | T::PByte4 => {
+            for (o, x) in out.iter_mut().zip(b) {
+                *o = *x as f32 / 255.0;
+            }
+        }
+        T::Short1 | T::Short2 | T::Short3 | T::Short4 => {
+            for (i, o) in out.iter_mut().enumerate().take(b.len() / 2) {
+                *o = s(i) as f32;
+            }
+        }
+        T::NormShort1 | T::NormShort2 | T::NormShort3 | T::NormShort4 => {
+            for (i, o) in out.iter_mut().enumerate().take(b.len() / 2) {
+                *o = sn(s(i) as i32, 32767.0);
+            }
+        }
+        T::NormPacked3 => {
+            let w = u32::from_le_bytes(b[..4].try_into().expect("4 bytes"));
+            let x = ((w << 21) as i32) >> 21;
+            let y = ((w << 10) as i32) >> 21;
+            let z = (w as i32) >> 22;
+            out = [sn(x, 1023.0), sn(y, 1023.0), sn(z, 511.0), 1.0];
+        }
+    }
+    out
+}
+
+/// The attributes of an inline-array vertex and its size in bytes, from the
+/// 16 `SET_VERTEX_DATA_ARRAY_FORMAT` registers (see
+/// [`Device::inline_array_draw`]).
+pub(crate) fn inline_array_layout(
+    formats: &[u32; 16],
+) -> Result<(Vec<VertexAttribute>, u32), String> {
+    let mut attributes = Vec::new();
+    let mut offset = 0u32;
+    for (reg, &f) in formats.iter().enumerate() {
+        let format = f & 0xFF;
+        if (format >> 4) & 0xF == 0 {
+            continue; // no components: disabled
+        }
+        let data_type = VertexDataType::from_xbox(format)
+            .ok_or_else(|| format!("vertex register {reg} array format {format:#x}"))?;
+        let component = match format & 0xF {
+            0 | 4 => 1, // UB_D3D, UB_OGL
+            1 | 5 => 2, // S1, S32K
+            _ => 4,     // F, CMP
+        };
+        offset = offset.next_multiple_of(component);
+        attributes.push(VertexAttribute {
+            register: VertexRegister(reg as u8),
+            data_type,
+            offset,
+        });
+        offset = (offset + data_type.byte_size()).next_multiple_of(component);
+    }
+    Ok((attributes, offset))
 }
 
 /// The linear twin of a swizzled surface format (render targets are linear).

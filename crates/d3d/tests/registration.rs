@@ -148,10 +148,10 @@ fn register_installs_every_entry_but_the_native_helpers() {
     assert_eq!(r.implemented.len() + r.stopping.len(), entries.len());
     // The unimplemented entries plus the two port-I/O guards that stop.
     assert_eq!(r.stopping.len(), abi::UNIMPLEMENTED.len() + 2);
-    // The counts docs/d3d.md gives: 91 overrides (81 + 10) and 4 native.
+    // The counts docs/d3d.md gives: 89 overrides (82 + 7) and 6 native.
     assert_eq!(
         (r.implemented.len(), r.stopping.len(), r.native.len()),
-        (81, 10, 4)
+        (82, 7, 6)
     );
     // The functions holding the GPIO port I/O (0x3fe131, 0x3feb3c,
     // 0x3fee0d) never run: 0x3fe005 and 0x3fed90 stop, the ISR 0x3feac0

@@ -52,6 +52,19 @@ pub mod method {
     /// device reads vertex data from guest memory at every draw, so it has
     /// no cache to break.
     pub const BREAK_VERTEX_BUFFER_CACHE: u32 = 0x1710;
+    /// `NV097_SET_VERTEX_DATA_ARRAY_OFFSET` (16 words, one per attribute
+    /// register): where the GPU fetches the register's array from (a
+    /// physical address, bit 31 picking the DMA context). `CDevice_SetStateVB`
+    /// (`0x401030`) pushes one per enabled attribute: the vertex buffer's
+    /// `Data` plus the declaration and stream offsets (plus `base * stride`
+    /// for indexed draws).
+    pub const VERTEX_DATA_ARRAY_OFFSET: u32 = 0x1720;
+    /// `NV097_SET_VERTEX_DATA_ARRAY_FORMAT` (16 words): bits 3:0 the type
+    /// (the `D3DVSDT_*` low nibble), 7:4 the component count (0 disables the
+    /// register), 31:8 the stride. `CDevice_SetStateVB` pushes all 16 when
+    /// the vertex-format dirty bit (`0x10`) is set. Inline arrays
+    /// (`0x1818`) are unpacked with these.
+    pub const VERTEX_DATA_ARRAY_FORMAT: u32 = 0x1760;
     /// `NV097_SET_ZSTENCIL_CLEAR_VALUE`. D3D (and the inlined
     /// `InsertCallback` at `0x2460e`) also loads it with a software-method
     /// operand: the callback function, or a register offset.
@@ -114,7 +127,17 @@ pub struct HwState {
     pub zstencil_clear_value: u32,
     /// `SET_COLOR_CLEAR_VALUE` as last pushed.
     pub color_clear_value: u32,
+    /// `SET_VERTEX_DATA_ARRAY_FORMAT`, per attribute register.
+    pub vertex_format: [u32; 16],
+    /// `SET_VERTEX_DATA_ARRAY_OFFSET`, per attribute register. Recorded
+    /// only: nothing draws from GPU-side arrays (`DRAW_ARRAYS` and the
+    /// `ARRAY_ELEMENT` methods stop as unknown).
+    pub vertex_offset: [u32; 16],
 }
+
+/// The reset value of every `SET_VERTEX_DATA_ARRAY_FORMAT` register: float,
+/// no components (`D3DVSDT_NONE`), stride 0.
+pub const VERTEX_FORMAT_DISABLED: u32 = 0x02;
 
 impl Default for HwState {
     fn default() -> Self {
@@ -133,6 +156,8 @@ impl Default for HwState {
             stipple_pattern: [0; 32],
             zstencil_clear_value: 0,
             color_clear_value: 0,
+            vertex_format: [VERTEX_FORMAT_DISABLED; 16],
+            vertex_offset: [0; 16],
         }
     }
 }
@@ -208,6 +233,12 @@ impl HwState {
                 self.stipple_pattern[((m - STIPPLE_PATTERN) / 4) as usize] = w;
             }
             BREAK_VERTEX_BUFFER_CACHE => {}
+            _ if (VERTEX_DATA_ARRAY_OFFSET..VERTEX_DATA_ARRAY_OFFSET + 0x40).contains(&m) => {
+                self.vertex_offset[((m - VERTEX_DATA_ARRAY_OFFSET) / 4) as usize] = w;
+            }
+            _ if (VERTEX_DATA_ARRAY_FORMAT..VERTEX_DATA_ARRAY_FORMAT + 0x40).contains(&m) => {
+                self.vertex_format[((m - VERTEX_DATA_ARRAY_FORMAT) / 4) as usize] = w;
+            }
             ZSTENCIL_CLEAR_VALUE => self.zstencil_clear_value = w,
             COLOR_CLEAR_VALUE => self.color_clear_value = w,
             EXECUTION_MODE => self.execution_mode = w,
@@ -276,5 +307,42 @@ mod tests {
         assert_eq!(m.constants[58 * 4 + 1], 2.0f32.to_bits());
         assert_eq!(m.constants[59 * 4], 0.5f32.to_bits());
         assert!(!hw.apply(0x17FC, 0, &mut m).unwrap());
+    }
+
+    #[test]
+    fn vertex_array_formats_and_offsets_land_per_register() {
+        let (mut c, mut p) = mems();
+        let mut m = Memories {
+            constants: &mut c,
+            program: &mut p,
+        };
+        let mut hw = HwState::default();
+        assert_eq!(hw.vertex_format, [VERTEX_FORMAT_DISABLED; 16]);
+        // Register 0: float3, stride 24; register 3: D3DCOLOR.
+        assert!(
+            hw.apply(method::VERTEX_DATA_ARRAY_FORMAT, 24 << 8 | 0x32, &mut m)
+                .unwrap()
+        );
+        assert!(
+            hw.apply(
+                method::VERTEX_DATA_ARRAY_FORMAT + 12,
+                24 << 8 | 0x40,
+                &mut m
+            )
+            .unwrap()
+        );
+        assert!(
+            hw.apply(method::VERTEX_DATA_ARRAY_OFFSET + 60, 0x1234, &mut m)
+                .unwrap()
+        );
+        assert_eq!(hw.vertex_format[0], 0x1832);
+        assert_eq!(hw.vertex_format[3], 0x1840);
+        assert_eq!(hw.vertex_format[1], VERTEX_FORMAT_DISABLED);
+        assert_eq!(hw.vertex_offset[15], 0x1234);
+        // The ranges end where the next method begins.
+        assert!(
+            !hw.apply(method::VERTEX_DATA_ARRAY_FORMAT + 0x40, 0, &mut m)
+                .unwrap()
+        );
     }
 }

@@ -152,11 +152,6 @@ render_state_setters! {
 pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
     (0x3f77c0, "D3DDevice_Reset", "EBX = pPresentationParameters"),
     (
-        0x3f7b30,
-        "D3DDevice_SetRenderTarget variant (0x3f7b30)",
-        "1 stack arg; ret 4",
-    ),
-    (
         0x3f85d0,
         "D3DDevice_EndVisibilityTest",
         "register (unrecovered)",
@@ -166,14 +161,8 @@ pub const UNIMPLEMENTED: &[(u32, &str, &str)] = &[
         "D3DDevice_GetVisibilityTestResult (assumed)",
         "EAX = index; ret 4",
     ),
-    (0x3fae10, "D3D inline UP draw (0x3fae10)", "unrecovered"),
     (0x3fb520, "D3D_DestroyResource", "register (unrecovered)"),
     (0x3ff5c6, "D3D miniport (0x3ff5c6)", "unrecovered"),
-    (
-        0x401030,
-        "CDevice_SetStateVB",
-        "stdcall(device, base); ret 8",
-    ),
 ];
 
 /// D3D-internal functions that execute port I/O: `in al, dx` / `out dx, al`
@@ -223,10 +212,19 @@ pub fn stops(addr: u32) -> bool {
 }
 
 /// D3D-section functions game code calls that are deliberately not
-/// overridden: they only compute from their arguments and read-only D3D
-/// tables (plus `XMemAlloc` and the overridden `D3DResource_AddRef`), so the
-/// original code runs. Their transitive callees were checked for device
-/// globals, NV2A registers and push-buffer writes; see `docs/d3d.md`.
+/// overridden, so the original code runs. Two kinds:
+///
+/// * helpers that only compute from their arguments and read-only D3D
+///   tables (plus `XMemAlloc` and the overridden `D3DResource_AddRef`).
+///   Their transitive callees were checked for device globals, NV2A
+///   registers and push-buffer writes;
+/// * push-buffer writers (`0x3fae10`, `0x401030`) that read only guest
+///   state the device keeps current (the dirty flags, `D3D__Streams`, the
+///   shader object at device `+0x794`), call only overridden D3D entries
+///   (the commit `0x400fa0`, `MakeRequestedSpace` `0x3faae0`), and push only
+///   methods the drain decodes, like any inline writer.
+///
+/// See `docs/d3d.md`.
 pub const NATIVE: &[(u32, &str, &str)] = &[
     (
         0x3fb7a0,
@@ -242,6 +240,16 @@ pub const NATIVE: &[(u32, &str, &str)] = &[
         0x3fdb20,
         "Get2DSurfaceDesc",
         "EDI = pixel container, EBX = level, ESI = D3DSURFACE_DESC out; reads the format table 0x403a50, device +0x1A14 (back buffer Data) and +0x196C (multisample type, written by CreateDevice); callees 0x3fb690, 0x3fd9c0 are pure",
+    ),
+    (
+        0x3fae10,
+        "D3D BeginPush (0x3fae10)",
+        "ESI = dword count; SetStateVB(device, 0), then MakeRequestedSpace when put + 4 * count + 4 passes threshold + 0x200; returns EAX = put; ret",
+    ),
+    (
+        0x401030,
+        "CDevice_SetStateVB",
+        "stdcall(device, base); commits through 0x400fa0 when other dirty bits are set, then pushes SET_VERTEX_DATA_ARRAY_FORMAT x16 (dirty bit 0x10) and one SET_VERTEX_DATA_ARRAY_OFFSET per enabled attribute; ret 8",
     ),
     (
         0x3fde00,
@@ -489,6 +497,16 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
                 let a = args::<2>(m, r)?;
                 d.set_render_target(m, a[0], a[1])?;
                 Ok(Outcome::eax(0, 8))
+            },
+        },
+        Entry {
+            addr: 0x3f7b30,
+            name: "D3DDevice_SetRenderTarget (same size, 0x3f7b30)",
+            convention: "[esp+4] = pRenderTarget, EBX = pNewZStencil; ret 4",
+            call: |d, m, r| {
+                let a = args::<1>(m, r)?;
+                d.set_render_target_same_size(m, a[0], r.ebx)?;
+                Ok(Outcome::pop(4))
             },
         },
         Entry {

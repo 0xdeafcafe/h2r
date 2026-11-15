@@ -190,6 +190,11 @@ pub mod method {
     pub const WAIT_FOR_IDLE: u32 = 0x0110;
     /// `NV097_SET_BEGIN_END`: primitive type to begin, 0 to end.
     pub const BEGIN_END: u32 = 0x17FC;
+    /// `NV097_INLINE_ARRAY`: vertex data inline in the push buffer, packed
+    /// per the `SET_VERTEX_DATA_ARRAY_FORMAT` registers. Halo pushes it
+    /// non-incrementing between `BEGIN_END` words (`0x4b220`, after
+    /// BeginPush `0x3fae10`).
+    pub const INLINE_ARRAY: u32 = 0x1818;
     /// `NV097_SET_VERTEX4F`: position, triggers a vertex.
     pub const VERTEX4F: u32 = 0x1518;
     /// `NV097_SET_VERTEX_DATA2F_M`: 16 registers x 2 floats.
@@ -207,6 +212,10 @@ pub mod method {
 /// Vertices one immediate-mode primitive may hold (each is 256 bytes).
 pub const MAX_IMMEDIATE_VERTICES: usize = crate::device::MAX_VERTICES as usize;
 
+/// Words of inline-array data one primitive may hold: as many vertices as
+/// immediate mode allows, at the largest vertex (16 float4 registers).
+pub const MAX_INLINE_WORDS: usize = MAX_IMMEDIATE_VERTICES * 64;
+
 /// Number of vertex attribute registers.
 pub const REGISTERS: usize = 16;
 
@@ -223,6 +232,9 @@ pub struct ImmediateDraw {
     /// Registers written at least once between `Begin` and `End` (bit n =
     /// register n). Others hold their persistent values.
     pub written: u16,
+    /// `INLINE_ARRAY` words pushed between `Begin` and `End`. A primitive
+    /// has either these or assembled `vertices`, never both.
+    pub inline: Vec<u32>,
 }
 
 /// Immediate-mode vertex assembly with NV2A semantics: attribute registers
@@ -234,6 +246,7 @@ pub struct Immediate {
     open: Option<(PrimitiveType, u32)>,
     vertices: Vec<ImmediateVertex>,
     written: u16,
+    inline: Vec<u32>,
 }
 
 impl Default for Immediate {
@@ -246,6 +259,7 @@ impl Default for Immediate {
             open: None,
             vertices: Vec::new(),
             written: 0,
+            inline: Vec::new(),
         }
     }
 }
@@ -285,6 +299,7 @@ impl Immediate {
         }
         self.open = Some((primitive, at));
         self.vertices.clear();
+        self.inline.clear();
         self.written = 0;
         Ok(())
     }
@@ -295,11 +310,46 @@ impl Immediate {
             at,
             what: "End without Begin",
         })?;
+        if !self.inline.is_empty() && !self.vertices.is_empty() {
+            self.vertices.clear();
+            self.inline.clear();
+            return Err(PushError::Immediate {
+                at,
+                what: "INLINE_ARRAY and vertex-data writes in one Begin/End",
+            });
+        }
         Ok(ImmediateDraw {
             primitive,
             vertices: std::mem::take(&mut self.vertices),
             written: self.written,
+            inline: std::mem::take(&mut self.inline),
         })
+    }
+
+    /// Sets the persistent value of register `reg` (an inline-array
+    /// draw leaves its last vertex's attributes there).
+    pub fn carry(&mut self, reg: usize, value: [f32; 4]) {
+        self.regs[reg] = value;
+    }
+
+    /// One `INLINE_ARRAY` word. Only inside `Begin`/`End`; held to
+    /// [`MAX_INLINE_WORDS`] per primitive for the same reason as
+    /// [`Immediate::set`].
+    pub fn inline_word(&mut self, at: u32, w: u32) -> Result<(), PushError> {
+        if self.open.is_none() {
+            return Err(PushError::Immediate {
+                at,
+                what: "INLINE_ARRAY outside Begin/End",
+            });
+        }
+        if self.inline.len() >= MAX_INLINE_WORDS {
+            return Err(PushError::Immediate {
+                at,
+                what: "more than MAX_INLINE_WORDS inline-array words in one Begin/End",
+            });
+        }
+        self.inline.push(w);
+        Ok(())
     }
 
     /// Sets register `reg` component-wise (the `SetVertexData*` family).
@@ -354,6 +404,10 @@ impl Immediate {
                     self.begin(p, at)?;
                     Effect::None
                 }
+            }
+            method::INLINE_ARRAY => {
+                self.inline_word(at, w)?;
+                Effect::None
             }
             m if (method::VERTEX4F..method::VERTEX4F + 16).contains(&m) => {
                 let c = ((m - method::VERTEX4F) / 4) as usize;
@@ -616,11 +670,56 @@ mod tests {
         assert_eq!(d.vertices[2][0], [0.0, 1.0, 0.5, 1.0]);
         assert_eq!(d.vertices[0][3], [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(d.written, 0b1001);
+        assert!(d.inline.is_empty());
         assert!(im.apply(0, 0x1234, 0).unwrap().is_none());
         assert!(
             im.apply(0, method::BEGIN_END, 0).is_err(),
             "End without Begin"
         );
+    }
+}
+
+#[cfg(test)]
+mod inline_tests {
+    use super::*;
+
+    #[test]
+    fn inline_array_words_collect_between_begin_and_end() {
+        let mut im = Immediate::default();
+        assert!(matches!(
+            im.apply(0x10, method::INLINE_ARRAY, 1),
+            Err(PushError::Immediate { at: 0x10, .. })
+        ));
+        im.apply(0, method::BEGIN_END, 6).unwrap();
+        for w in 1..=6 {
+            im.apply(0, method::INLINE_ARRAY, w).unwrap();
+        }
+        let Some(Effect::Draw(d)) = im.apply(0, method::BEGIN_END, 0).unwrap() else {
+            panic!("no draw")
+        };
+        assert_eq!(d.primitive, PrimitiveType::TriangleStrip);
+        assert_eq!(d.inline, vec![1, 2, 3, 4, 5, 6]);
+        assert!(d.vertices.is_empty());
+        // The next primitive starts empty.
+        im.apply(0, method::BEGIN_END, 5).unwrap();
+        let Some(Effect::Draw(d)) = im.apply(0, method::BEGIN_END, 0).unwrap() else {
+            panic!("no draw")
+        };
+        assert!(d.inline.is_empty());
+    }
+
+    #[test]
+    fn inline_array_and_vertex_data_do_not_mix() {
+        let mut im = Immediate::default();
+        im.apply(0, method::BEGIN_END, 5).unwrap();
+        im.apply(0, method::INLINE_ARRAY, 0).unwrap();
+        im.apply(0, method::VERTEX4F + 12, 1.0f32.to_bits())
+            .unwrap();
+        assert!(matches!(
+            im.apply(0x20, method::BEGIN_END, 0),
+            Err(PushError::Immediate { at: 0x20, .. })
+        ));
+        assert!(!im.is_open());
     }
 }
 
