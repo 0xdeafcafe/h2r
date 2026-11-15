@@ -40,12 +40,30 @@ export const MAX_RECORDS = 100;
 export const MAX_NAME = 0x84;
 export const MAX_STRING = 0x47;
 export const DWORS = 18;
+/** The title and description slots, in UTF-8 bytes (minus the NUL). */
+export const MAX_TITLE = 15;
+export const MAX_DESCRIPTION = 127;
+/** Session setup clamps a record's weight (`dwords[0]`) to 1..1000. */
+export const MAX_WEIGHT = 1000;
 
+/** What a record's game variant says about itself (read-only). */
+export interface RecordVariant {
+  name: string;
+  /** Game-engine index: 1 CTF, 2 Slayer, 3 Oddball, 4 King, 7 Juggernaut,
+   *  8 Territories, 9 Assault. */
+  engine: number;
+  team: boolean;
+}
+
+/** One entry of a hopper: a map (`id`, a multiplayer level id) with a game
+ *  variant (the bytes after `+0x24c`, which `string`, `flags` and
+ *  `dwords[1]` lie inside), picked at random by `dwords[0]`, its weight. */
 export interface HopperRecord {
   id: number;
   string: string;
   flags: number;
   dwords: [number, number];
+  variant?: RecordVariant | null;
 }
 
 /** `GET /v1/titles/{title}/hopper`, one hopper of it. */
@@ -55,9 +73,17 @@ export interface HopperView {
   status: number;
   record_count: number;
   name: string;
+  /** What the playlist list shows (English slot; written to all nine). */
+  title: string;
+  description: string;
   ranges: [number, number, number];
   dwords: number[];
   records: HopperRecord[];
+}
+
+/** UTF-8 length, the unit the title and description slots count in. */
+export function utf8Length(s: string): number {
+  return new TextEncoder().encode(s).length;
 }
 
 const U32_MAX = 0xffff_ffff;
@@ -73,7 +99,13 @@ export function hopperErrors(h: HopperView): string[] {
     errs.push("type must be 1 to 5");
   if (!isU32(h.status) || h.status > 2)
     errs.push("status must be 0 (not loaded), 1 (ok) or 2 (error)");
-  if (!h.name) errs.push("the playlist needs a name");
+  if (!h.title) errs.push("the playlist needs a title");
+  if (h.title.includes("\0") || h.description.includes("\0"))
+    errs.push("the title and description cannot contain NUL");
+  if (utf8Length(h.title) > MAX_TITLE)
+    errs.push(`the title is longer than ${MAX_TITLE} bytes`);
+  if (utf8Length(h.description) > MAX_DESCRIPTION)
+    errs.push(`the description is longer than ${MAX_DESCRIPTION} bytes`);
   if (!asciiOk(h.name)) errs.push("the name must be ASCII");
   if (h.name.length > MAX_NAME)
     errs.push(`the name is longer than ${MAX_NAME} characters`);
@@ -110,6 +142,9 @@ function asciiOk(s: string): boolean {
  *  own position. */
 export interface EditRecord extends HopperRecord {
   src: number | null;
+  /** The hopper `src` is in, when not this one (a record copied across
+   *  playlists, e.g. by a preset). */
+  srcHopper?: number;
 }
 
 export interface EditHopper {
@@ -117,6 +152,8 @@ export interface EditHopper {
   type: number;
   status: number;
   name: string;
+  title: string;
+  description: string;
   ranges: [number, number, number];
   dwords: number[];
   records: EditRecord[];
@@ -130,6 +167,8 @@ export function toEditable(hoppers: HopperView[]): EditHopper[] {
     type: h.type,
     status: h.status,
     name: h.name,
+    title: h.title ?? "",
+    description: h.description ?? "",
     ranges: [...h.ranges] as [number, number, number],
     dwords: [...h.dwords],
     records: h.records.map((r, i) => ({ ...r, dwords: [...r.dwords] as [number, number], src: i })),
@@ -142,6 +181,7 @@ export interface PatchRecord {
   flags: number;
   dwords: [number, number];
   from?: number;
+  from_hopper?: number;
 }
 
 export interface PatchHopper {
@@ -149,6 +189,8 @@ export interface PatchHopper {
   type: number;
   status: number;
   name: string;
+  title: string;
+  description: string;
   ranges: [number, number, number];
   dwords: number[];
   record_count: number;
@@ -162,7 +204,8 @@ export interface HoppersPatch {
 function sameRecord(a: EditRecord, b: EditRecord): boolean {
   return (
     a.id === b.id && a.string === b.string && a.flags === b.flags &&
-    a.dwords[0] === b.dwords[0] && a.dwords[1] === b.dwords[1]
+    a.dwords[0] === b.dwords[0] && a.dwords[1] === b.dwords[1] &&
+    a.src === b.src && (a.srcHopper ?? null) === (b.srcHopper ?? null)
   );
 }
 
@@ -170,6 +213,7 @@ function sameHopper(edited: EditHopper, original: EditHopper): boolean {
   return (
     edited.type === original.type && edited.status === original.status &&
     edited.name === original.name &&
+    edited.title === original.title && edited.description === original.description &&
     edited.ranges.every((r, i) => r === original.ranges[i]) &&
     edited.dwords.every((d, i) => d === original.dwords[i]) &&
     edited.records.length === original.records.length &&
@@ -194,6 +238,8 @@ export function buildPatch(original: EditHopper[], edited: EditHopper[]): Hopper
       type: h.type,
       status: h.status,
       name: h.name,
+      title: h.title,
+      description: h.description,
       ranges: [...h.ranges] as [number, number, number],
       dwords: [...h.dwords],
       record_count: h.records.length,
@@ -205,7 +251,9 @@ export function buildPatch(original: EditHopper[], edited: EditHopper[]): Hopper
           dwords: [...r.dwords] as [number, number],
         };
         // The server reads a record without `from` as the one in its own slot.
-        if (r.src !== null && r.src !== slot) p.from = r.src;
+        const across = r.srcHopper !== undefined && r.srcHopper !== h.index;
+        if (r.src !== null && (across || r.src !== slot)) p.from = r.src;
+        if (across && r.src !== null) p.from_hopper = r.srcHopper;
         return p;
       }),
     });

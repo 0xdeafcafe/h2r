@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 2;
+pub const EXTRACTOR_VERSION: u32 = 3;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -441,13 +441,13 @@ pub fn cache_type(head: &[u8]) -> Option<CacheType> {
 }
 
 /// A map file on the disc and its cache type.
-struct MapFile {
+pub(crate) struct MapFile {
     entry: xiso::Entry,
     cache_type: Option<CacheType>,
 }
 
 impl MapFile {
-    fn name(&self) -> &str {
+    pub(crate) fn name(&self) -> &str {
         let file = self
             .entry
             .path
@@ -505,12 +505,12 @@ impl Disc {
         self.partition + u64::from(e.sector) * xiso::SECTOR
     }
 
-    fn maps_of(&self, ty: CacheType) -> impl Iterator<Item = &MapFile> {
+    pub(crate) fn maps_of(&self, ty: CacheType) -> impl Iterator<Item = &MapFile> {
         self.maps.iter().filter(move |m| m.cache_type == Some(ty))
     }
 
     /// Opens a map with its shared maps (found by cache type) for pixel data.
-    fn open(&self, m: &MapFile) -> Result<(Map<BufReader<File>>, ResourceFiles)> {
+    pub(crate) fn open(&self, m: &MapFile) -> Result<(Map<BufReader<File>>, ResourceFiles)> {
         let region = |e: &xiso::Entry| Region {
             path: self.path.clone(),
             base: self.base(e),
@@ -821,6 +821,8 @@ pub struct Report {
     pub manifest: Manifest,
     /// Images written per key prefix (`emblem/fg`, `map`, ...).
     pub counts: BTreeMap<String, usize>,
+    /// The playlist builder's catalog, written beside the manifest.
+    pub catalog: crate::live_catalog::Catalog,
 }
 
 /// Decodes every category from `disc` into `out` (replacing what was
@@ -869,6 +871,12 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
     fs::create_dir_all(&staging).with_context(|| format!("creating {}", staging.display()))?;
     let images = write_pieces(&pieces, &staging)?;
     let manifest = build_manifest(disc.key.clone(), images, palette, skipped);
+    // The playlist builder's catalog rides along (docs/live-admin.md).
+    let catalog = crate::live_catalog::extract(disc);
+    fs::write(
+        staging.join(crate::live_catalog::CATALOG),
+        format!("{}\n", serde_json::to_string_pretty(&catalog)?),
+    )?;
     fs::write(
         staging.join("manifest.json"),
         format!("{}\n", serde_json::to_string_pretty(&manifest)?),
@@ -886,7 +894,11 @@ pub fn extract(disc: &Disc, out: &Path) -> Result<Report> {
         };
         *counts.entry(prefix).or_default() += 1;
     }
-    Ok(Report { manifest, counts })
+    Ok(Report {
+        manifest,
+        counts,
+        catalog,
+    })
 }
 
 /// `h2 live assets extract [--disc PATH] [--out DIR]`.
@@ -897,6 +909,16 @@ pub fn run(disc: PathBuf, out: PathBuf) -> Result<()> {
         println!("  {prefix:<10} {n}");
     }
     println!("  {:<10} {}", "palette", report.manifest.palette.len());
+    let c = &report.catalog;
+    println!(
+        "catalog: {} maps, {} playlists, {} variants",
+        c.maps.len(),
+        c.playlists.len(),
+        c.variants.len()
+    );
+    for (k, why) in &c.skipped {
+        println!("  catalog {k}: {why}");
+    }
     if !report.manifest.skipped.is_empty() {
         println!("skipped:");
         for (k, why) in &report.manifest.skipped {

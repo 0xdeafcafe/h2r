@@ -31,7 +31,7 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use live_proto::hopper::{
-    HALO_2_HOPPER_FILE, HOPPERS, Hopper, HopperError, HopperFile, MAX_RECORDS, Record,
+    HALO_2_HOPPER_FILE, HOPPERS, Hopper, HopperError, HopperFile, HopperText, MAX_RECORDS, Record,
 };
 use live_proto::motd::Motd;
 use live_proto::sign;
@@ -485,6 +485,9 @@ pub struct HopperDoc {
     pub status: u32,
     pub record_count: u32,
     pub name: String,
+    /// The title and description the playlist list shows (English slot).
+    pub title: String,
+    pub description: String,
     pub ranges: [u32; 3],
     pub dwords: Vec<u32>,
     pub records: Vec<RecordDoc>,
@@ -497,6 +500,17 @@ pub struct RecordDoc {
     pub string: String,
     pub flags: u32,
     pub dwords: [u32; 2],
+    /// What the record's game variant says about itself (read-only).
+    #[serde(default)]
+    pub variant: Option<VariantDoc>,
+}
+
+/// A record's game variant: name, game-engine index, team play.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VariantDoc {
+    pub name: String,
+    pub engine: u32,
+    pub team: bool,
 }
 
 /// `GET /v1/titles/{title}/hopper`.
@@ -510,23 +524,35 @@ fn hoppers_doc(live: &Live, file: &HopperFile) -> ApiResult<HoppersDoc> {
     let hoppers = (0..HOPPERS)
         .map(|i| {
             let h = file.hopper(i).map_err(hopper_error)?;
+            let text = file.text(i).map_err(hopper_error)?;
             let records = file
                 .records(i)
                 .map_err(hopper_error)?
                 .into_iter()
-                .map(|r| RecordDoc {
-                    id: r.id,
-                    string: r.string,
-                    flags: r.flags,
-                    dwords: r.dwords,
+                .enumerate()
+                .map(|(j, r)| {
+                    let v = file.variant(i, j).map_err(hopper_error)?;
+                    Ok(RecordDoc {
+                        id: r.id,
+                        string: r.string,
+                        flags: r.flags,
+                        dwords: r.dwords,
+                        variant: Some(VariantDoc {
+                            name: v.name,
+                            engine: v.engine,
+                            team: v.team,
+                        }),
+                    })
                 })
-                .collect::<Vec<_>>();
+                .collect::<Result<Vec<_>, ApiError>>()?;
             Ok(HopperDoc {
                 index: i,
                 hopper_type: h.hopper_type,
                 status: h.status,
                 record_count: h.record_count,
                 name: h.name,
+                title: text.title,
+                description: text.description,
                 ranges: h.ranges,
                 dwords: h.dwords,
                 records,
@@ -562,6 +588,11 @@ pub struct HopperPatch {
     pub status: Option<u32>,
     #[serde(default)]
     pub name: Option<String>,
+    /// Written into every language slot.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
     #[serde(default)]
     pub ranges: Option<[u32; 3]>,
     #[serde(default)]
@@ -583,11 +614,17 @@ pub struct RecordPatch {
     /// position.
     #[serde(default)]
     pub from: Option<usize>,
+    /// With `from`: the hopper that slot is in (the file as it stood before
+    /// this patch). Absent: this hopper. How a record, game variant and all,
+    /// is copied from one playlist into another.
+    #[serde(default)]
+    pub from_hopper: Option<usize>,
 }
 
 /// Applies a patch to the parsed file. Pure, so it is easy to test; the
 /// handler publishes the result.
 pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()> {
+    let original = file.clone();
     let mut seen = [false; HOPPERS];
     for h in &patch.hoppers {
         if h.index >= HOPPERS {
@@ -625,21 +662,26 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
                     h.index
                 )));
             }
-            // The slots as they stand, so `from` names them.
-            let old = current.record_count as usize;
-            let slots: Vec<Vec<u8>> = (0..old)
-                .map(|j| file.slot(h.index, j).map(<[u8]>::to_vec))
-                .collect::<Result<_, _>>()
-                .map_err(hopper_error)?;
+            // The slots as they stood, so `from` names them.
+            let mut bytes = Vec::with_capacity(n);
             for (j, r) in records.iter().enumerate() {
+                let hopper = r.from_hopper.unwrap_or(h.index);
+                if hopper >= HOPPERS {
+                    return Err(invalid(format!(
+                        "from_hopper {hopper} is out of range (there are 16)"
+                    )));
+                }
                 let src = r.from.unwrap_or(j);
-                let bytes = slots.get(src).ok_or_else(|| {
-                    invalid(format!(
-                        "from: slot {src} is not one of hopper {}'s {old} records",
-                        h.index
-                    ))
-                })?;
-                file.set_slot(h.index, j, bytes).map_err(hopper_error)?;
+                let old = original.hopper(hopper).map_err(hopper_error)?.record_count as usize;
+                if src >= old.min(MAX_RECORDS) {
+                    return Err(invalid(format!(
+                        "from: slot {src} is not one of hopper {hopper}'s {old} records"
+                    )));
+                }
+                bytes.push(original.slot(hopper, src).map_err(hopper_error)?.to_vec());
+            }
+            for (j, b) in bytes.iter().enumerate() {
+                file.set_slot(h.index, j, b).map_err(hopper_error)?;
             }
             file.set_record_count(h.index, n as u32)
                 .map_err(hopper_error)?;
@@ -659,6 +701,14 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
             next.record_count = n as u32;
         }
         file.set_hopper(h.index, &next).map_err(hopper_error)?;
+        if h.title.is_some() || h.description.is_some() {
+            let now = file.text(h.index).map_err(hopper_error)?;
+            let text = HopperText {
+                title: h.title.clone().unwrap_or(now.title),
+                description: h.description.clone().unwrap_or(now.description),
+            };
+            file.set_text(h.index, &text).map_err(hopper_error)?;
+        }
         if h.records.is_none()
             && let Some(c) = h.record_count
         {
@@ -953,6 +1003,8 @@ mod tests {
                 hopper_type: None,
                 status: None,
                 name: None,
+                title: None,
+                description: None,
                 ranges: None,
                 dwords: None,
                 record_count: None,
@@ -968,6 +1020,7 @@ mod tests {
             flags: 0,
             dwords: [0, 0],
             from,
+            from_hopper: None,
         }
     }
 
@@ -1019,6 +1072,44 @@ mod tests {
     }
 
     #[test]
+    fn patches_set_text_and_copy_records_across_hoppers() {
+        let mut file = base_file();
+        // Hopper 1 gets one record whose variant carries a marker.
+        file.set_hopper(
+            1,
+            &Hopper {
+                record_count: 1,
+                ..file.hopper(0).unwrap()
+            },
+        )
+        .unwrap();
+        file.set_record_count(1, 1).unwrap();
+        let slot = 0x6140 + live_proto::hopper::BLOCK + 0x48;
+        file.image_mut()[slot + 0x24c + 0x44] = 9; // engine: Assault
+        file.image_mut()[slot + 0x24c + 0x04] = b'A';
+        let mut copy = rec(7, "", Some(0));
+        copy.from_hopper = Some(1);
+        let mut p = patch(0, vec![rec(1, "one", None), copy]);
+        p.hoppers[0].title = Some("Team Snipers".into());
+        apply_patch(&mut file, &p).unwrap();
+        assert_eq!(file.text(0).unwrap().title, "Team Snipers");
+        assert_eq!(file.records(0).unwrap()[1].id, 7);
+        let v = file.variant(0, 1).unwrap();
+        assert_eq!((v.engine, v.name.as_str()), (9, "A"));
+        // The source hopper is untouched.
+        assert_eq!(file.variant(1, 0).unwrap().engine, 9);
+        // Out-of-range sources are refused.
+        let mut bad = rec(7, "", Some(1));
+        bad.from_hopper = Some(1);
+        assert!(apply_patch(&mut file, &patch(0, vec![bad.clone()])).is_err());
+        bad.from_hopper = Some(HOPPERS);
+        assert!(apply_patch(&mut file, &patch(0, vec![bad])).is_err());
+        let mut long = patch(0, vec![rec(1, "one", None)]);
+        long.hoppers[0].title = Some("x".repeat(16));
+        assert!(apply_patch(&mut file, &long).is_err());
+    }
+
+    #[test]
     fn patches_validate() {
         let mut file = base_file();
         let plain = |index: usize| HopperPatch {
@@ -1026,6 +1117,8 @@ mod tests {
             hopper_type: None,
             status: None,
             name: None,
+            title: None,
+            description: None,
             ranges: None,
             dwords: None,
             record_count: None,
@@ -1095,6 +1188,8 @@ mod tests {
             status: h.status,
             record_count: h.record_count,
             name: h.name.clone(),
+            title: "Big Team".into(),
+            description: String::new(),
             ranges: h.ranges,
             dwords: h.dwords.clone(),
             records: records
@@ -1104,16 +1199,18 @@ mod tests {
                     string: r.string,
                     flags: r.flags,
                     dwords: r.dwords,
+                    variant: None,
                 })
                 .collect(),
         };
         let expected = json!({
             "index": 0, "type": 4, "status": 1, "record_count": 2,
-            "name": "Big Team Battle", "ranges": [1, 8, 6],
+            "name": "Big Team Battle", "title": "Big Team", "description": "",
+            "ranges": [1, 8, 6],
             "dwords": serde_json::json!(vec![0x7530_07a4u32; 18]),
             "records": [
-                {"id": 1, "string": "one", "flags": 0, "dwords": [0, 0]},
-                {"id": 2, "string": "two", "flags": 0, "dwords": [1, 0]}
+                {"id": 1, "string": "one", "flags": 0, "dwords": [0, 0], "variant": null},
+                {"id": 2, "string": "two", "flags": 0, "dwords": [1, 0], "variant": null}
             ]
         });
         assert_eq!(serde_json::to_value(&doc).unwrap(), expected);

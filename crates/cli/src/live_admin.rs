@@ -129,7 +129,10 @@ pub fn hopper_import(mut args: Args) -> Result<()> {
         if h.record_count > 0 {
             println!(
                 "  {:>2}  type {}  {:3} entries  {}",
-                i, h.hopper_type, h.record_count, h.name
+                i,
+                h.hopper_type,
+                h.record_count,
+                file.text(i)?.title
             );
         }
     }
@@ -174,8 +177,9 @@ fn publish_title_file(
 }
 
 /// The web app's account entry (`src/state/account.ts`, `LocalAccount`):
-/// what its Admin-area import accepts and what sign-up's download produces.
-fn export_entry(
+/// what its Admin-area import and `/signin` link (`h2 play --live`) accept,
+/// and what sign-up's download produces.
+pub(crate) fn export_entry(
     entry: &LocalAccount,
     base: &str,
     server_id: &str,

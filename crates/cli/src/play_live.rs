@@ -70,6 +70,9 @@ pub struct Session {
     pub config: boot::LiveConfig,
     pub account: LocalAccount,
     pub server: String,
+    /// The embedded server's one-use, this-machine-only link signing a
+    /// browser in as `account` (docs/live-admin.md §4).
+    pub signin: Option<String>,
     embedded: Option<live_server::Embedded>,
 }
 
@@ -141,10 +144,23 @@ pub fn start(
     }
     // The embedded server is the owner's own machine: the account we are
     // about to play as is an admin for this server's lifetime.
+    // It may also hand this machine's browser the account: a one-use link
+    // carrying the token in its fragment.
+    let mut signin = None;
     if let Some(server) = embedded.as_ref() {
         server
             .live
             .grant_admin_runtime(account.xuid, account.gamertag.as_str());
+        let entry = crate::live_admin::export_entry(
+            &account,
+            &client.base,
+            &client.discovery.id,
+            &account.key_pair()?,
+        );
+        let token = server
+            .live
+            .offer_local_signin(entry, live_server::local_signin::OFFER_TTL);
+        signin = Some(format!("{}/signin#once={token}", client.base));
     }
     live_accounts::save(&places.session_accounts, std::slice::from_ref(&account))?;
     Ok(Session {
@@ -155,6 +171,7 @@ pub fn start(
         },
         account,
         server: client.base,
+        signin,
         embedded,
     })
 }
@@ -393,6 +410,93 @@ mod tests {
             1
         );
         drop(session);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_embedded_session_offers_a_one_use_signin_link() {
+        let dir = temp("signin");
+        let places = Places::under(&dir);
+        let opts = LiveOpts {
+            enabled: true,
+            ..LiveOpts::default()
+        };
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "test.user",
+        )
+        .unwrap();
+        let link = session
+            .signin
+            .clone()
+            .expect("an embedded server offers a link");
+        let token = link
+            .strip_prefix(&format!("{}/signin#once=", session.server))
+            .expect("the token rides in the fragment");
+        assert_eq!(token.len(), 44);
+        let redeem = || {
+            ureq::post(&format!("{}/v1/local/signin", session.server))
+                .set("content-type", "application/json")
+                .send_string(&serde_json::json!({ "once": token }).to_string())
+        };
+        let entry: serde_json::Value = redeem().unwrap().into_json().unwrap();
+        let client = Client::at(&session.server).unwrap();
+        let key = session.account.key_pair().unwrap();
+        assert_eq!(
+            entry,
+            crate::live_admin::export_entry(
+                &session.account,
+                &client.base,
+                &client.discovery.id,
+                &key
+            )
+        );
+        assert_eq!(entry["gamertag"], "test user");
+        assert_eq!(entry["server"], session.server.as_str());
+        assert_eq!(entry["key"], key.secret_b64());
+        match redeem() {
+            Err(ureq::Error::Status(404, _)) => {}
+            other => panic!("a second use: {other:?}"),
+        }
+        drop(session);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn another_server_gets_no_link() {
+        // `--live-server`: the account is that server's business; there is
+        // no embedded server to offer a link.
+        let dir = temp("signin-remote");
+        let places = Places::under(&dir);
+        let embedded = start(
+            &LiveOpts {
+                enabled: true,
+                ..LiveOpts::default()
+            },
+            live_server::MEMORY_DB,
+            &Places::under(&dir.join("host")),
+            Default::default(),
+            "host",
+        )
+        .unwrap();
+        let remote = start(
+            &LiveOpts {
+                enabled: true,
+                server: Some(embedded.server.clone()),
+                ..LiveOpts::default()
+            },
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "guest",
+        )
+        .unwrap();
+        assert!(remote.signin.is_none());
+        drop(remote);
+        drop(embedded);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

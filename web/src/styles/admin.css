@@ -248,6 +248,80 @@
   cursor: default;
 }
 
+/* "Start from preset": the picker and what the preset resolved to. */
+.adm-preset {
+  background: var(--s-row);
+  border: 1px solid var(--s-box-edge);
+  border-radius: 2px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.adm-preset-preview {
+  display: grid;
+  gap: 6px;
+}
+
+.adm-preset-title {
+  color: var(--s-gold);
+  font-weight: bold;
+  margin: 0;
+}
+
+.adm-preset-title span {
+  color: var(--s-ink-soft);
+  font-weight: normal;
+  margin-left: 6px;
+}
+
+.adm-preset-note {
+  color: var(--s-ink-dim);
+  font-size: 11px;
+  margin: 0;
+}
+
+.adm-preset-games {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  columns: 2 220px;
+  font-size: 12px;
+  color: var(--s-ink);
+}
+
+.adm-preset-games li.off {
+  color: var(--s-ink-dim);
+}
+
+.adm-preset-games li.off span {
+  color: var(--s-warn);
+}
+
+.adm-preset-preview .s-btn {
+  justify-self: start;
+}
+
+.adm-records select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.adm-variant {
+  color: var(--s-ink-soft);
+  white-space: nowrap;
+}
+
+.adm-mono {
+  font-family: ui-monospace, Menlo, monospace;
+  color: var(--s-ink-soft);
+}
+
+.adm-advanced[open] {
+  display: grid;
+  gap: 10px;
+}
+
 /* Shared notices. */
 .adm-error,
 .adm-errors {

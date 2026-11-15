@@ -289,6 +289,24 @@ of exactly 0x162cc0 bytes with **no magic, no version, no checksum**:
 So: the tag defines the universe of hopper descriptions; the .dat supplies
 live-tunable per-hopper parameters that reference tag records by id.
 
+#### 5.2.1 Corrections (read from the code)
+
+- Descriptor `+0x0c` and `+0x9c` are nine per-language UTF-8 titles (16
+  bytes each) and descriptions (128 bytes each); the defaults
+  (`0x001936e0`) fill them from the `matchmaking_hopper_descriptions`
+  strings (the "packed `(value << 16) | field_id`" dwords above are those
+  strings' ids, `0x090007a4` = `ffa_title` and so on). `+0x51c` is a
+  128-byte table the validator (`0x00193560`) requires to hold `i..=0x7f`
+  at index `i`; there is no ASCII name at `+0x51b`. The same validator
+  allows `+0x04` 0..3.
+- A record's id is a multiplayer **map** id: `0x0019c5f0` searches the
+  globals tag's multiplayer levels (`[0x4e034c] + 0x178`, element 0,
+  block `+0x10`, stride `0xc64`) for an entry whose first dword equals it.
+  `+0x248` is the record's weight (clamped 1..1000; session setup picks a
+  record at random by weight), and `+0x24c..+0x37c` is its 0x130-byte game
+  variant, copied out whole with the map id for the record chosen
+  (`0x00192f00`..`0x00192fd5`).
+
 ### 5.3 Load paths and failure behavior
 
 - `0x00194160` (descriptor callback +0x18): reset-to-defaults — allocates the

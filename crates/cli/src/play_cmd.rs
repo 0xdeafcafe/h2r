@@ -566,7 +566,15 @@ fn start_live(
             .map_or(String::new(), |s| format!(" (embedded, {s} store)"))
     );
     match (session.store(), has_web) {
-        (Some(_), true) => eprintln!("live: web app at {}/", session.server),
+        (Some(_), true) => {
+            eprintln!("live: web app at {}/", session.server);
+            if let Some(link) = &session.signin {
+                eprintln!(
+                    "live: sign this browser in as {} (one use, this machine only): {link}",
+                    session.account.gamertag
+                );
+            }
+        }
         (Some(_), false) => eprintln!("live: no web app; build it with `cd web && bun run build`"),
         (None, _) => {}
     }
