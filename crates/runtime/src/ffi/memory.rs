@@ -123,14 +123,23 @@ impl Memory {
         data.dirty_hi = 0;
         result
     }
-    pub(crate) fn allows_execute(&self, addr: u32) -> bool {
-        if !self.enabled.load(Ordering::Acquire)
-            || self
+    /// Take the gate without the Guest mutex, if it is entirely clear.
+    fn try_gate(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+            && self
                 .shared
                 .gate
-                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-        {
+                .compare_exchange(0, GATE_HELD, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+    }
+    /// Release a gate taken by [`Self::try_gate`]; the word it leaves. Only
+    /// the held bit is cleared: a guard may have started waiting meanwhile,
+    /// and a plain store of 0 would erase its request.
+    fn release_gate(&self) -> u32 {
+        self.shared.gate.fetch_and(!GATE_HELD, Ordering::Release) & !GATE_HELD
+    }
+    pub(crate) fn allows_execute(&self, addr: u32) -> bool {
+        if !self.try_gate() {
             return false;
         }
         // SAFETY: gate excludes both Rust mutations and C operations. A
@@ -139,7 +148,7 @@ impl Memory {
             let data = &*self.shared.data.get();
             !data.pages.is_null() && (*data.pages.add((addr >> 12) as usize)).permissions & 4 != 0
         };
-        self.shared.gate.store(0, Ordering::Release);
+        self.release_gate();
         allowed
     }
     pub(crate) fn fast_shared(&self) -> *const MemoryShared {
@@ -359,6 +368,32 @@ mod tests {
         waiter.join().unwrap();
         assert_eq!(gate.load(Ordering::Relaxed), 0);
         assert_eq!(rt.memory().u32(0x1000).unwrap(), 7);
+    }
+
+    /// A guard that starts waiting while an execute check holds the gate
+    /// keeps its request when the check ends, and is next.
+    #[test]
+    fn execute_check_release_keeps_a_waiting_guards_request() {
+        let memory = std::sync::Arc::new(Memory::new(Guest::new()));
+        memory.lock().map(0x1000, 0x1000, 0, Permissions::RX).unwrap();
+        memory.fast_shared();
+        assert!(memory.allows_execute(0x1000));
+        assert_eq!(memory.shared.gate.load(Ordering::Relaxed), 0);
+        // The execute check, stopped between its take and its release.
+        assert!(memory.try_gate());
+        let host = memory.clone();
+        let waiter = std::thread::spawn(move || {
+            host.lock().protect(0x1000, Permissions::READ).unwrap();
+        });
+        while memory.shared.gate.load(Ordering::Relaxed) & GATE_WANTED == 0 {
+            std::thread::yield_now();
+        }
+        // No other check or C access can cut in ahead of the waiter.
+        assert!(!memory.try_gate());
+        assert_eq!(memory.release_gate(), GATE_WANTED);
+        waiter.join().unwrap();
+        assert_eq!(memory.shared.gate.load(Ordering::Relaxed), 0);
+        assert!(!memory.allows_execute(0x1000));
     }
 
     /// Rust-only model of a native handler retaining its actual runtime view

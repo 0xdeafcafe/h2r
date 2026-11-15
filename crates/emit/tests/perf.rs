@@ -897,51 +897,105 @@ fn held_gate_matches_the_helper_path_at_every_stop_and_fault() {
     }
 }
 
-/// A host thread taking memory guards while a handler runs loops under the
-/// held gate: neither starves, and each guard's two writes land together.
+/// A host thread's memory guards get in while a handler holds the gate, at
+/// a loop header and inside a REP, and the handler cannot finish without
+/// them. The guest spins (bounded) on a flag only the host sets, and
+/// acknowledges it with a store the host must see before it sets the next:
+/// so the host's later guards all arrive while the handler is in its loop.
+/// The guest then scans (bounded: about 1 GiB of aliased pages) for a word
+/// the host writes only once the guest says it has reached the REP. A
+/// starved host leaves either loop to run out its count, which fails here;
+/// the host gives up after its own timeout.
 #[test]
 fn held_gate_gives_way_to_a_waiting_memory_guard() {
+    use std::time::{Duration, Instant};
+    const FLAGS: u32 = DATA + 0x800;
+    const BIG: u32 = 0x4000_0000;
+    const CHUNK: u32 = 0x20_0000;
+    const CHUNKS: u32 = 512;
     let f = function(A, |a| {
-        let mut top = a.create_label();
+        let (mut top, mut scan) = (a.create_label(), a.create_label());
         a.xor(ebx, ebx)?;
         a.set_label(&mut top)?;
         a.mov(eax, dword_ptr(esi))?;
-        a.add(ebx, dword_ptr(esi + 4))?;
-        a.mov(dword_ptr(esi + 8), eax)?;
+        a.mov(dword_ptr(esi + 4), eax)?;
+        a.mov(eax, dword_ptr(esi + 8))?;
+        a.test(eax, eax)?;
+        a.jnz(scan)?;
         a.dec(ecx)?;
         a.jnz(top)?;
+        a.ret()?;
+        a.set_label(&mut scan)?;
+        a.mov(ebx, 1u32)?;
+        a.mov(dword_ptr(esi + 12), ebx)?;
+        a.mov(eax, 0x5eed_5eedu32)?;
+        a.mov(ecx, CHUNKS * (CHUNK / 4))?;
+        a.mov(edi, BIG)?;
+        a.cld()?;
+        a.repne().scasd()?;
         a.ret()
     });
-    let (_lib, dispatch) =
-        compile_module_with("held-gate-host", vec![f], false, true, emit::opt::Passes::ALL, emit::Codegen { accounting: true });
-    let mut mem = Guest::new();
-    mem.map_zeroed(A, 4096, Permissions::RX).unwrap();
-    mem.map_zeroed(DATA, 8192, Permissions::RW).unwrap();
-    mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
-    let rt = Runtime::new(mem, dispatch);
-    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let (host_rt, host_done) = (rt.clone(), done.clone());
-    let writer = std::thread::spawn(move || {
-        let mut guards = 0u32;
-        while !host_done.load(std::sync::atomic::Ordering::Relaxed) || guards < 2000 {
-            guards += 1;
-            let mut m = host_rt.memory();
-            assert_eq!(m.u32(DATA + 0x800).unwrap(), m.u32(DATA + 0x804).unwrap());
-            m.set_u32(DATA + 0x800, guards).unwrap();
-            m.set_u32(DATA + 0x804, guards).unwrap();
+    for accounting in [false, true] {
+        let (_lib, dispatch) = compile_module_with(
+            "held-gate-host",
+            vec![f.clone()],
+            false,
+            true,
+            emit::opt::Passes::ALL,
+            emit::Codegen { accounting },
+        );
+        let mut mem = Guest::new();
+        mem.map(A, 4096, 0, Permissions::RX).unwrap();
+        mem.map(DATA, 8192, 0x1000, Permissions::RW).unwrap();
+        // Every chunk is the same 2 MiB of RAM: a long scan, little memory.
+        for i in 0..CHUNKS {
+            mem.map(BIG + i * CHUNK, CHUNK, 0x10_0000, Permissions::RW).unwrap();
         }
-        guards
-    });
-    let mut ctx = ExecCtx::new(rt.clone(), 1);
-    for _ in 0..20 {
-        let mut cpu = CpuAbi { esp: STACK, esi: DATA + 0x800, ecx: 200_000, ..CpuAbi::default() };
+        mem.set_u32(STACK, runtime::exec::HARNESS_EXIT).unwrap();
+        let rt = Runtime::new(mem, dispatch);
+        let host_rt = rt.clone();
+        let host = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            // One guard per step; each waits for the guest's last store.
+            let step = |seen: u32, set: u32| {
+                let mut guards = 0u32;
+                loop {
+                    assert!(Instant::now() < deadline, "host starved waiting for {seen:#x}");
+                    guards += 1;
+                    let mut m = host_rt.memory();
+                    if m.u32(seen).unwrap() == 1 {
+                        m.set_u32(set, if set == BIG + CHUNK - 4 { 0x5eed_5eed } else { 1 }).unwrap();
+                        return guards;
+                    }
+                    drop(m);
+                    std::thread::yield_now();
+                }
+            };
+            host_rt.memory().set_u32(FLAGS, 1).unwrap();
+            // Seen the guest's echo, in its loop: let it leave the loop.
+            let in_loop = step(FLAGS + 4, FLAGS + 8);
+            // Seen it reach the REP: write what the scan looks for.
+            let in_rep = step(FLAGS + 12, BIG + CHUNK - 4);
+            (in_loop, in_rep)
+        });
+        let mut ctx = ExecCtx::new(rt.clone(), 1);
+        ctx.enable_profiling(true);
+        let mut cpu = CpuAbi { esp: STACK, esi: FLAGS, ecx: 0x7fff_ffff, ..CpuAbi::default() };
         let t = Runner::default().run(&mut cpu, &mut ctx, A);
         assert_eq!((t.kind, cpu.eip), (runtime::abi::STOP, runtime::exec::HARNESS_EXIT), "{:?}", ctx.events());
+        // The loop ended on the host's flag, and the scan on the host's word.
+        assert_eq!(cpu.ebx, 1, "accounting {accounting}: the loop ran out with the host shut out");
+        assert_ne!(cpu.ecx, 0, "accounting {accounting}: the REP ran out with the host shut out");
+        assert_ne!(cpu.eflags & 0x40, 0, "accounting {accounting}: scan stopped without a match");
+        assert_eq!(cpu.edi & (CHUNK - 1), 0, "accounting {accounting}: matched at {:#x}", cpu.edi);
+        let (in_loop, in_rep) = host.join().unwrap();
+        assert!(in_loop >= 1 && in_rep >= 1);
+        // The guest was on the inline path throughout, not the helpers.
+        let p = ctx.take_profile().unwrap();
+        if !accounting {
+            assert!(p.fast_memory_accesses * 10 >= p.memory_accessors * 9, "{p:?}");
+        }
     }
-    done.store(true, std::sync::atomic::Ordering::Relaxed);
-    assert!(writer.join().unwrap() >= 2000);
-    let m = rt.memory();
-    assert_eq!(m.u32(DATA + 0x800).unwrap(), m.u32(DATA + 0x804).unwrap());
 }
 
 /// How many of the image's inline accesses take the gate themselves, and
