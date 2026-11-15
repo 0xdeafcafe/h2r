@@ -2132,9 +2132,10 @@ impl<B: Backend> Device<B> {
             let base = self.cfg.layout.vs_constants + 4 * first as u32;
             let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
             // A write checks its whole range before changing anything, so
-            // when it fails the per-word stores below write the words
-            // before the fault and report the faulting word, as ever.
-            if mem.write(base, &bytes).is_err() {
+            // when it is refused (and not recorded as a fault: `try_write`)
+            // the per-word stores below write the words before the fault
+            // and report the faulting word, as ever.
+            if !mem.try_write(base, &bytes) {
                 for (i, w) in words.iter().enumerate() {
                     mem.write_u32(base + 4 * i as u32, *w)?;
                 }

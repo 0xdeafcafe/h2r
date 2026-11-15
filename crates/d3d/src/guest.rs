@@ -29,6 +29,15 @@ pub trait GuestMemory {
     /// Stores `data` at `addr`.
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestError>;
 
+    /// [`write`](Self::write) that may fail quietly: `false` means nothing
+    /// was written, and the failure must not be recorded as the fault the
+    /// runtime later reports (an adapter that keeps the first fault would
+    /// otherwise keep this speculative one). Callers fall back to narrower
+    /// writes that fault for real. The default is `write(..).is_ok()`.
+    fn try_write(&mut self, addr: u32, data: &[u8]) -> bool {
+        self.write(addr, data).is_ok()
+    }
+
     /// Reads a little-endian `u32`.
     fn read_u32(&self, addr: u32) -> Result<u32, GuestError> {
         let mut b = [0; 4];

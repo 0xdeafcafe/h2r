@@ -97,6 +97,10 @@ impl GuestMemory for GuestAdapter<'_> {
             Err(f) => Err(self.failed(f, addr, data.len())),
         }
     }
+    /// Writes nothing and records nothing when the access is refused.
+    fn try_write(&mut self, addr: u32, data: &[u8]) -> bool {
+        self.guest.write_bytes(addr, data, 1).is_ok()
+    }
 }
 
 /// A stop, as the hook sees it.
