@@ -12,6 +12,7 @@ mod effects;
 mod fonts;
 mod maps;
 mod movies_cmd;
+mod object;
 mod safe_out;
 mod scripts;
 mod sound;
@@ -31,6 +32,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   collision --all <map|all>  validate every coll/phmo tag (all = every disc map)
   sound <map> <tag>       export a snd! tag to WAV; --all <map> validates every sound
                           (options --out DIR, --disc <iso>)
+  object <map> <tag>      object-family tag, its hlmt and default variant;
+                          --all <map|all> validates every object-family tag
   strings <map>           localized text; --lang en, --tag name, --all, --disc iso
   font <font> <text> --out <png>
                           render text with a /maps/fonts file; --all validates every font
@@ -68,6 +71,9 @@ fn main() -> Result<()> {
     let Some(cmd) = args.next() else { bail!("{USAGE}") };
     if cmd == "sound" {
         return sound::run(args.collect());
+    }
+    if cmd == "object" {
+        return object::run(args.collect());
     }
     if cmd == "strings" {
         return strings::run(args.collect());

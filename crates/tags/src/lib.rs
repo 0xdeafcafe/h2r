@@ -21,6 +21,8 @@ pub mod ui;
 /// Animation graphs (`jmad`) and their compressed frame data; see `docs/animation.md`.
 pub mod anim;
 pub mod anim_sample;
+/// Object family (`obje` subtypes, `hlmt`, `itmc`, `vehc`); see `docs/objects.md`.
+pub mod object;
 pub mod records {
     include!(concat!(env!("OUT_DIR"), "/records.rs"));
 }

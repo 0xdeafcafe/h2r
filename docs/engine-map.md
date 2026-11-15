@@ -707,3 +707,36 @@ in [effects.md](effects.md).
 | `0x00178eb0` `particle_system_new_from_event` | Likely | Reads the event's particle-system array at event `+0x34`, record stride 0x38, resolves the location (`0x0017ae50`), allocates a `particle_system` entry and sets its fields. |
 | `0x00173cb0` particle tag class check | Confirmed | Accepts exactly `prt3` and `PRTM` for a particle system's particle reference (compares `0x70727433`, `0x5052544d`). |
 | `0x00174180` `particle_system_delete` | Likely | Frees a `particle_system` entry and walks its child chain. |
+
+## Object definitions and models (added 2026-11-15)
+
+These addresses support the tag layouts in [objects.md](objects.md). Every
+row was checked with `h2 disasm`, and with Ghidra where it has a function.
+
+| Address / assigned name | Confidence | Evidence |
+|---|---|---|
+| `0x00468630` `object_type_table` | Confirmed | 13 descriptor pointers, in the order bipd, vehi, weap, eqip, garb, proj, scen, mach, ctrl, lifi, ssce, bloc, crea. `object_new` indexes it with the definition's `+0` word. |
+| Descriptor `+8` / `+0xa` / `+0xc` / `+0xe` | Confirmed | `+8` is the runtime body size, which `object_new` passes to `0x000bc280`. The others are the scenario placement-block offset, palette-block offset and placement stride (`0xffff` for garb/proj), with values per type in objects.md. |
+| `0x004678e8` / `0x004679b0` / `0x00467c08` / `0x00468248` | Confirmed | Abstract object/unit/item/device descriptors. Body sizes are `0x12c`/`0x348`/`0x16c`/`0x1cc`. |
+| `0x000ba540` `object_set_variant` | Confirmed | Uses the requested variant, else definition `+0x30`. Looks it up in the hlmt at `+0x38` via `0x0016d180` and stores the index byte at object `+0xb1`. Called from `object_new`. |
+| `0x0016d180` `model_find_variant` | Confirmed | Null hlmt gives -1. A zero name gives 0 if variants exist, else -1. Otherwise it scans hlmt `+0x50/+0x54` with stride `0x38` and compares the full string ID; no match gives -1. |
+| `0x0016d1d0` `model_find_region` | Confirmed | Scans hlmt `+0x70/+0x74` with stride `0x10` by full string ID. |
+| `0x0016d764` region-permutation selection (inside a larger body) | Likely | At this instruction, reads the variant's signed region-map byte at `+4+region` and the variant regions at `+0x18` (×`0x14`), then calls `0x0016dad0`. |
+| `0x000b8c40` `object_attachment_marker` | Confirmed | Bounds-checks an index against definition `+0x94` (`0x000b8c7a`), then loads element `+8` (stride `0x18`) at `0x000b8c8b`. |
+| `0x000becd1` attachment instantiation (inside a larger body) | Confirmed | Walks definition `+0x94`, switches on the element's reference class (ligh, lsnd, effe, cont; skips lens/MGS2/tdtl), and creates instances into object storage at `+0x11e`. |
+| `0x000bac0c` object function lookup (inside a larger body) | Likely | Steps definition `+0x64/+0x68` by `0x20`, matching element `+8`, then evaluates through `0x000ba8c0`. |
+| `0x000bdf90`..`0x000be075` bounding-sphere update | Confirmed | Transforms definition `+8..+0x10` by the root node and scales `+4` by object scale. |
+| `0x0019f1a0` `collection_select` | Confirmed | `itmc`/`vehc`: block at tag `+0`, stride `0x10`, weighted by `+0` f32. Returns the `+8` datum and the `+0xc` word (the `vehc` variant name). The class comparisons against `itmc` and `vehc` are at `0x0015ab15`/`0x0015ab1d`; the calls follow at `0x0015ab29`/`0x0015ab34`. |
+| `0x0011c840` resource preparation | Likely | Passes bipd `+0x264` and crea `+0xd4` to `0x001c2390`, and vehi `+0x2ac` to `0x00205550`. A `coll` tag goes to `0x002122b0`. |
+| `0x000de4c0` `biped_new` helper | Confirmed | Called by `biped_new` `0x000dc540`; tests a bit in the bipd definition flags at `+0x1f0`. |
+
+`object_new` (`0x000b7b40`) also reads several hlmt fields:
+
+- `+0xc` and `+0x14` null checks on the collision and animation datums.
+- `+0x60` element 0 `+0xbc`, as a count of 8-byte entries.
+- `+0x70` count: 10 bytes reserved per region.
+- `+0x78` count: `0x34` bytes reserved per node.
+
+It also reserves 8 bytes per attachment and `0x18` bytes per change-colour
+entry, and spawns the effect at definition `+0x50`. Ghidra has no functions at
+`0x000c4410`, `0x000dc540`, `0x000eeb80` or `0x000ee910`; use `h2 disasm`.
