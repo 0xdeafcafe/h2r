@@ -553,8 +553,7 @@ impl<'a> Analyzer<'a> {
                 FlowControl::Next => {}
                 FlowControl::ConditionalBranch => f.todo.push(insn.near_branch32()),
                 FlowControl::UnconditionalBranch => {
-                    if insn.op0_kind() == OpKind::NearBranch32 {
-                        let t = insn.near_branch32();
+                    if let Some(t) = direct_jump_target(&insn) {
                         if t != fstart && (self.funcs.contains_key(&t) || self.is_tail_target(va, t)) {
                             if self.trial.is_none() {
                                 self.add_function(t, Source::TailCall, va);
@@ -1453,6 +1452,20 @@ fn strongly_connected(nodes: &[u32], edges: &HashMap<u32, Vec<u32>>) -> Vec<Vec<
         }
     }
     out
+}
+
+/// The code selector of the flat ring-0 model: a far jump to it only
+/// reloads CS, so it is a direct jump to its offset.
+pub const FLAT_CS: u16 = 0x08;
+
+/// Where an unconditional `jmp` with a direct operand goes: a near target,
+/// or the offset of a far jump to [`FLAT_CS`].
+pub fn direct_jump_target(insn: &Instruction) -> Option<u32> {
+    match insn.op0_kind() {
+        OpKind::NearBranch32 => Some(insn.near_branch32()),
+        OpKind::FarBranch32 if insn.far_branch_selector() == FLAT_CS => Some(insn.far_branch32()),
+        _ => None,
+    }
 }
 
 fn is_table_jump(insn: &Instruction) -> bool {

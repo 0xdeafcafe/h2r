@@ -931,9 +931,9 @@ fn lower_one(code: &[u8], env: &Env, site: Site<'_>) -> ir::IrInsn {
 #[test]
 fn unsupported_is_a_terminal_stop() {
     // in al, dx (ec: port I/O is the D3D overrides' business), a far jmp to
-    // a selector other than the flat code segment, and lidt (0f 01 18) are
-    // not lowered: they stop, they never fall through.
-    for code in [&[0xEC][..], &[0xEA, 0, 0, 0, 0, 0x10, 0][..], &[0x0F, 0x01, 0x18][..]] {
+    // a selector other than the flat code segment, lidt (0f 01 18) and the
+    // 16-bit sgdt (66 0f 01 01) are not lowered: they stop, they never fall through.
+    for code in [&[0xEC][..], &[0xEA, 0, 0, 0, 0, 0x10, 0][..], &[0x0F, 0x01, 0x18][..], &[0x66, 0x0F, 0x01, 0x01][..]] {
         let ir = lower_one(code, &Env::default(), Site::Plain);
         assert!(!ir.is_supported());
         assert_eq!(ir.control, ir::Control::Stop(ir::StopReason::Unsupported));

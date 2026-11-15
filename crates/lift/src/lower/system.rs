@@ -33,14 +33,15 @@ pub const XBOX_CPUID: [[u32; 4]; 3] = [
 /// The code selector of the flat model. Xbox titles run ring 0 with one flat
 /// 4 GB code segment at GDT index 1, so `mov r/m, cs` reads 8 and a far
 /// `jmp 0008:target` only reloads CS with what it already holds.
-pub const XBOX_CS: u16 = 0x08;
+pub const XBOX_CS: u16 = analyze::FLAT_CS;
 
 /// What `sgdt` stores: the limit (eight descriptors) and linear base of the
-/// modelled GDT. These are model values, not a dump: nothing in guest
-/// memory backs the base, so code that goes on to read or write the
-/// descriptors (the XAPI helper at 0x2d6434 swaps descriptor 1) faults on
-/// the access until a runtime maps it. The title does not read them
-/// otherwise.
+/// modelled GDT. These are model values, not a dump. The base is the
+/// runtime's mapped, read-only synthetic kernel PE header, so a descriptor
+/// read returns header bytes and a write faults. That only matters to the
+/// XAPI GDT helper at 0x2d6434, and both its callers are bypassed under the
+/// HLE (0x2d1e62: the last section is .rdata, not INIT; 0x2d610c: the saved
+/// descriptor is zero), so no GDT backing is needed.
 pub const XBOX_GDT: (u16, u32) = (0x3F, 0x8001_0000);
 
 impl Lower<'_> {
@@ -64,8 +65,12 @@ impl Lower<'_> {
     }
 
     /// `sgdt m`: the 16-bit limit at `m`, the 32-bit base at `m+2`
-    /// ([`XBOX_GDT`]). Not privileged, so it runs in any ring.
+    /// ([`XBOX_GDT`]). Not privileged, so it runs in any ring. The 16-bit
+    /// form (`66 0f 01 /0`, which stores only 24 bits of base) is rejected.
     pub(super) fn sgdt(&mut self) -> R {
+        if self.insn.code() != Code::Sgdt_m1632 {
+            return Err("16-bit sgdt".into());
+        }
         let a = self.ea()?;
         let at2 = Addr { seg: a.seg, offset: self.b.add(a.offset, c32(2)) };
         self.b.store(a, k(Width::W16, XBOX_GDT.0 as u128));

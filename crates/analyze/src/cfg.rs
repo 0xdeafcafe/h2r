@@ -327,11 +327,10 @@ impl<'a> CfgBuilder<'a> {
             FlowControl::Next => Flow::Next,
             FlowControl::ConditionalBranch => Flow::Cond(insn.near_branch32()),
             FlowControl::UnconditionalBranch => {
-                // `jmp far ptr16:32` has no near target; treat as unknown.
-                if insn.op0_kind() != OpKind::NearBranch32 {
+                // A far jump to a selector other than the flat one is unknown.
+                let Some(t) = crate::direct_jump_target(insn) else {
                     return Flow::TailIndirect;
-                }
-                let t = insn.near_branch32();
+                };
                 if self.is_other_entry(entry, t) || (t != entry && self.analysis.tail_sites.contains(&va)) {
                     Flow::Tail(t)
                 } else {

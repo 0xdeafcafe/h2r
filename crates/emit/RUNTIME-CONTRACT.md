@@ -186,8 +186,11 @@ runtime support. `cpuid` is constant IR (`lift::lower::XBOX_CPUID`), and
 `cli`, `sti` and `wbinvd` lower to nothing. The flat segment model is constant
 IR too: `mov r/m, cs` stores selector 8, a far `jmp 0008:target` is a direct
 jump, and `sgdt` stores the model GDT limit and base
-(`lift::lower::XBOX_GDT`; nothing backs that base, so reading the descriptors
-faults). Port I/O (`in`/`out`) is not lowered: it stops as unsupported. The
+(`lift::lower::XBOX_GDT`; the base is the mapped, read-only synthetic kernel
+PE header, so no GDT is backed. Only the XAPI GDT helper at 0x2d6434 would
+notice, and both its callers are bypassed under the HLE: 0x2d1e62 because the
+last section is .rdata rather than INIT, 0x2d610c because the saved descriptor
+is zero). The 16-bit `sgdt` is not lowered. Port I/O (`in`/`out`) is not lowered: it stops as unsupported. The
 three sites are the D3D GPIO guards in `docs/d3d.md`.
 
 MMX registers live in `X87Abi.st`, in physical order: `mmN` is `st[N]`
