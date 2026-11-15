@@ -89,6 +89,21 @@ pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, 
 }
 
 fn state() -> &'static Mutex<State> {
+    if let Some(s) = STATE.get() {
+        return s;
+    }
+    let t = std::time::Instant::now();
+    let s = build_state();
+    let waited = t.elapsed().as_secs_f64();
+    if std::thread::current().name() != Some(ANALYSIS_THREAD) && waited > 0.1 {
+        eprintln!("fallback: waited {waited:.1}s for the interpreter's analysis");
+    }
+    s
+}
+
+const ANALYSIS_THREAD: &str = "fallback-analysis";
+
+fn build_state() -> &'static Mutex<State> {
     STATE.get_or_init(|| {
         let bytes = *XBE.get().unwrap();
         let t = std::time::Instant::now();
@@ -477,7 +492,25 @@ fn unread_allowed(site: u32, target: u32) -> bool {
 /// interpreter's analysis now.
 pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
     UNREAD_ENABLED.store(true, std::sync::atomic::Ordering::SeqCst);
-    let _ = state();
+    let bytes = *XBE.get().unwrap();
+    let path = unread_cache_path(bytes);
+    match path.as_deref().and_then(read_unread_cache) {
+        // Cached: register now, and build the interpreter's analysis on a
+        // thread; the first interpreted entry waits for it if it must.
+        Some(u) => {
+            let _ = UNREAD.set(u);
+            eprintln!("fallback: unread jump-table targets from {}", path.as_deref().unwrap().display());
+            let _ = std::thread::Builder::new().name(ANALYSIS_THREAD.into()).spawn(|| {
+                let _ = state();
+            });
+        }
+        None => {
+            let _ = state();
+            if let (Some(p), Some(u)) = (path.as_deref(), UNREAD.get()) {
+                write_unread_cache(p, u);
+            }
+        }
+    }
     let Some(unread) = UNREAD.get() else { return 0 };
     let tables = TABLES.get().unwrap();
     let mut n = 0;
@@ -496,6 +529,57 @@ pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
     n
 }
 
+/// Where the unread-target set for this image is cached: `H2_BOOT_CACHE`
+/// or `$TMPDIR/h2boot-cache`, keyed on the XBE bytes and on the analyze
+/// and fallback sources (`build.rs`). `H2_BOOT_CACHE=off` disables it.
+fn unread_cache_path(xbe: &[u8]) -> Option<std::path::PathBuf> {
+    let dir = match std::env::var_os("H2_BOOT_CACHE") {
+        Some(d) if d == "off" => return None,
+        Some(d) => std::path::PathBuf::from(d),
+        None => std::env::temp_dir().join("h2boot-cache"),
+    };
+    Some(dir.join(format!("unread-{:016x}-{}.txt", fnv64(xbe), env!("UNREAD_SOURCE_HASH"))))
+}
+
+fn fnv64(bytes: &[u8]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100_0000_01b3);
+    }
+    h
+}
+
+/// One line per site: `site target target ...`, hex.
+fn read_unread_cache(path: &std::path::Path) -> Option<Unread> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let mut by_site = HashMap::new();
+    for line in text.lines() {
+        let mut words = line.split_whitespace().map(|w| u32::from_str_radix(w, 16));
+        let site = words.next()?.ok()?;
+        let targets = words.collect::<Result<Vec<u32>, _>>().ok()?;
+        by_site.insert(site, targets);
+    }
+    let all = by_site.values().flatten().copied().collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    Some(Unread { by_site, all })
+}
+
+fn write_unread_cache(path: &std::path::Path, u: &Unread) {
+    let mut sites: Vec<_> = u.by_site.iter().collect();
+    sites.sort();
+    let text: String = sites
+        .into_iter()
+        .map(|(site, t)| std::iter::once(*site).chain(t.iter().copied()).map(|v| format!("{v:x}")).collect::<Vec<_>>().join(" ") + "\n")
+        .collect();
+    let tmp = path.with_extension("tmp");
+    let ok = path.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok())
+        && std::fs::write(&tmp, text).is_ok()
+        && std::fs::rename(&tmp, path).is_ok();
+    if !ok {
+        crate::log::note(&format!("fallback: could not cache unread targets at {}", path.display()));
+    }
+}
+
 /// Interpret from `cpu.eip` (for overrides and tests).
 pub fn interpret(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> TransferAbi {
     run(cpu, ctx)
@@ -507,6 +591,18 @@ mod tests {
 
     unsafe extern "C" fn one(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
         TransferAbi::ret(0)
+    }
+
+    #[test]
+    fn unread_cache_round_trips() {
+        let dir = std::env::temp_dir().join(format!("h2boot-unread-test-{}", std::process::id()));
+        let path = dir.join("u.txt");
+        let u = Unread { by_site: HashMap::from([(0x320b00, vec![0x320b5c, 0x32092c]), (0x336f0, vec![])]), all: vec![] };
+        write_unread_cache(&path, &u);
+        let back = read_unread_cache(&path).unwrap();
+        assert_eq!(back.by_site, u.by_site);
+        assert_eq!(back.all, vec![0x32092c, 0x320b5c]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
