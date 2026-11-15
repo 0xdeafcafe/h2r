@@ -13,15 +13,23 @@
 //! [`Renderer::render_counted`](crate::Renderer::render_counted), *before*
 //! the real draw:
 //!
-//! 1. draws the same geometry with the same vertex stage, primitive,
-//!    depth/stencil test and scissor into a cleared `R16Float` count
-//!    texture, with depth and stencil writes off, additive blending and a
-//!    fragment stage that writes 1. Each texel then holds the number of
-//!    the draw's fragments that passed there (exact up to 2048 per texel);
-//! 2. sums the texels inside the scissor rectangle with a compute pass into
+//! 1. copies the depth/stencil attachment into a scratch texture of the
+//!    counter's (the attachment needs `COPY_SRC`), so the replay can change
+//!    depth and stencil without touching the real ones;
+//! 2. draws the same geometry with the same vertex stage, primitive,
+//!    depth/stencil state (writes included) and scissor into a cleared
+//!    `R16Float` count texture, against the scratch copy, with additive
+//!    blending and a fragment stage that writes 1. Each texel then holds
+//!    the number of the draw's fragments that passed there (exact up to
+//!    2048 per texel). Because the replay writes depth and stencil as the
+//!    draw does, a later triangle of the same draw that the real draw
+//!    rejects (behind an earlier one, or failing a stencil the draw just
+//!    changed) is rejected here too;
+//! 3. sums the texels inside the scissor rectangle with a compute pass into
 //!    the counter's 32-bit total.
 //!
-//! Then the real draw runs and changes depth and stencil as it should.
+//! Then the real draw runs against the real attachment, which is written
+//! once.
 //! What is not reproduced: fragment-stage rejection (alpha test, alpha
 //! kill, `discard`), because the count pass does not run the draw's
 //! fragment program. Every sample that survives the fixed-function tests is
@@ -136,6 +144,8 @@ pub struct PixelCounter {
     multi: (wgpu::BindGroupLayout, wgpu::ComputePipeline),
     /// Count textures by `(width, height, samples)`.
     targets: HashMap<(u32, u32, u32), (wgpu::Texture, wgpu::TextureView)>,
+    /// Scratch depth/stencil copies by `(width, height, samples, format)`.
+    depths: HashMap<(u32, u32, u32, wgpu::TextureFormat), (wgpu::Texture, wgpu::TextureView)>,
 }
 
 fn sum_pipeline(
@@ -219,6 +229,7 @@ impl PixelCounter {
             single: sum_pipeline(&ctx.device, false),
             multi: sum_pipeline(&ctx.device, true),
             targets: HashMap::new(),
+            depths: HashMap::new(),
         }
     }
 
@@ -274,6 +285,40 @@ impl PixelCounter {
                 (texture, view)
             })
             .1
+    }
+
+    /// Copies the depth/stencil texture `source` (all of it, every aspect)
+    /// into a scratch texture of the same size, format and sample count,
+    /// and returns the scratch view.
+    pub(crate) fn depth_copy(
+        &mut self,
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::Texture,
+    ) -> &wgpu::TextureView {
+        let size = source.size();
+        let key = (
+            size.width,
+            size.height,
+            source.sample_count(),
+            source.format(),
+        );
+        let (scratch, _) = self.depths.entry(key).or_insert_with(|| {
+            let texture = ctx.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("gfx pixel count depth"),
+                size,
+                mip_level_count: 1,
+                sample_count: key.2,
+                dimension: wgpu::TextureDimension::D2,
+                format: key.3,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = texture.create_view(&Default::default());
+            (texture, view)
+        });
+        encoder.copy_texture_to_texture(source.as_image_copy(), scratch.as_image_copy(), size);
+        &self.depths[&key].1
     }
 
     /// Adds the texels of the count texture for `(size, samples)` inside

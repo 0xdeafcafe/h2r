@@ -126,7 +126,7 @@ overridden; the original runs).
 | `0x3fa970` | `D3D_BlockOnTime` | yes | 2 stack args; ret 8 (no-op: the host GPU is synchronous) | 1 / 1 | yes |
 | `0x3faae0` | `D3D_MakeRequestedSpace` | yes | [esp+4] = MinimumSpace, EAX = RequestedSpace; returns EAX = put; ret 4 | 199 / 53 | yes |
 | `0x3fac30` | `CDevice_KickOff` | yes | no args; EDX live across the call; ret | 17 / 16 | yes |
-| `0x3fad50` | `D3D_BlockOnResource` | yes | EAX = pResource; ret (no-op: the host GPU is synchronous) | 10 / 8 | yes |
+| `0x3fad50` | `D3D_BlockOnResource` | yes | EAX = pResource; ret (no-op: the host GPU is synchronous) | 10 / 8 | yes (also after a teardown, for what it destroyed) |
 | `0x3fae10` | `D3D BeginPush (0x3fae10)` | no | ESI = dword count; returns EAX = put; ret | 1 / 1 | native |
 | `0x3faed0` | `D3DDevice_DrawVertices` | yes | EAX = VertexCount, ECX = StartVertex, [esp+4] = PrimitiveType; ret 4 | 3 / 3 | yes |
 | `0x3fafa0` | `D3DDevice_DrawIndexedVertices` | yes | stdcall(PrimitiveType, VertexCount, pIndexData); ret 0xC | 8 / 5 | yes |
@@ -1239,23 +1239,34 @@ be wrong somewhere, so the counts are real.
   for the host GPU (`Backend::read_pixel_count`) the first time and keeps
   the count, so asking again answers the same. It never returns
   `D3DERR_TESTINCOMPLETE`. That is what the hardware answers once caught
-  up, and the game cannot tell a fast GPU from a slow one. The wait costs
-  one GPU round trip per test, once per frame for the flare.
+  up, and the game cannot tell a fast GPU from a slow one. The cost is a
+  GPU wait at each test's first read, and the wait covers everything
+  submitted so far, not only that test's report. Halo reads several
+  query objects a frame, so this needs measuring in gameplay; batching the
+  reports or answering `D3DERR_TESTINCOMPLETE` asynchronously are the
+  fallbacks.
 - An index never ended, or at or above `0x4000` (`VISIBILITY_INDICES`), is
   an invalid call. Ending an index again replaces its result. Teardown
   forgets every test. Counted in `Stats::visibility_tests`.
 - **The count in gfx** (`gfx::occlusion`). wgpu occlusion queries are
   boolean on Metal, so they cannot give a count. Instead each counted draw
   is drawn a second time first, into an `R16Float` target with additive
-  blending, the draw's depth/stencil test, no depth or stencil writes and a
-  fragment shader that writes 1. A compute pass then adds up the texels
+  blending and a fragment shader that writes 1, against a scratch copy of
+  the depth/stencil attachment with the draw's full depth/stencil state,
+  writes included. Overlapping triangles of one draw are then rejected
+  in the count as in the real draw, and the real attachment is written
+  once. The depth texture needs `COPY_SRC` (`SurfaceStore` depth surfaces
+  have it; `DrawError::CountDepthNotCopyable` otherwise). Replacing a
+  registered shader drops the cached count pipelines along with the
+  others. A compute pass then adds up the texels
   inside the draw's scissor into a `u32` (`PixelCounter`). With
   multisampling it counts samples, as the NV2A does. Limit: the count
   pass does not run the draw's own fragment program, so alpha test and
   `discard` do not reject samples there. The flare's occlusion draws do
   not depend on them.
 - Tests: `tests/round7.rs` (device and runner) and `gfx`'s
-  `pixel_counter_counts_samples`. The ignored `visibility_conventions`
+  `pixel_counter_*` tests (within-draw depth and stencil at 1x and 4x, a
+  replaced shader, a depth that cannot be copied). The ignored `visibility_conventions`
   checks the call sites and conventions in the image.
 
 ## Resource destruction
@@ -1283,7 +1294,15 @@ code at `0x13d24` (in `0x13cd0`) and teardown at `0x3fc611`, release device
   header. It then restores the entry's registers and delivers any pending
   vblanks. The guest memory is freed by the game's own code, so the
   allocator state stays the game's.
-- Tests: `tests/round7.rs` (a runner with a stand-in at `0x3fb520`) and
+- The original waits on each resource it frees first (`BlockOnResource`,
+  `0x3fb537..0x3fb539`, skipped for a surface the title made). After a
+  teardown those calls arrive with no device. Teardown drained the push
+  buffer and wrote every target back before it queued the resources, so
+  `Device::block_on_resource` answers each resource the teardown destroyed
+  once with no device; any other wait with no device stops with
+  `NoDevice`. CreateDevice forgets the list.
+- Tests: `tests/round7.rs` (a runner with a stand-in at `0x3fb520` that
+  waits through `BlockOnResource` as the original does) and
   `round6.rs`/`recheck_fixes.rs` (teardown and unbind destroys). The
   ignored `destroy_resource_conventions` checks that `EDI` is the
   resource, the callees, that only `0x3fb4d0` names `0x408644`, and that

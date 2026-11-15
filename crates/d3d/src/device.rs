@@ -32,7 +32,7 @@
 //! arithmetic, and allocations are bounded ([`MAX_VERTICES`],
 //! [`MAX_SPAN`]) before anything is read.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
 use gfx::vertex::{
@@ -519,6 +519,10 @@ pub struct Device<B: Backend> {
     /// Destroyed resources the original `D3D_DestroyResource` has yet to
     /// free ([`Device::take_pending_destroys`]).
     pending_destroys: Vec<u32>,
+    /// Resources the last teardown destroyed, whose original
+    /// `D3D_DestroyResource` may still wait on them after the device is
+    /// gone ([`Device::block_on_resource`]).
+    torn_down: HashSet<u32>,
 }
 
 fn d3dcolor_to_rgba(c: u32) -> [f32; 4] {
@@ -601,6 +605,7 @@ impl<B: Backend> Device<B> {
             undelivered: None,
             visibility: HashMap::new(),
             pending_destroys: Vec::new(),
+            torn_down: HashSet::new(),
         }
     }
 
@@ -833,6 +838,7 @@ impl<B: Backend> Device<B> {
         }
         self.params = Some(p);
         self.created = true;
+        self.torn_down.clear();
         self.init_transform_state(mem)?;
         Ok(0)
     }
@@ -919,6 +925,9 @@ impl<B: Backend> Device<B> {
         self.cache.clear();
         self.drop_visibility_tests();
         self.hw.zpass_count_enable = false;
+        // The original D3D_DestroyResource runs for these after this returns
+        // and first waits on each (block_on_resource).
+        self.torn_down = self.pending_destroys.iter().copied().collect();
         Ok(())
     }
 
@@ -1311,6 +1320,30 @@ impl<B: Backend> Device<B> {
         mem.write_u32(self.cfg.layout.device + field::PUT, pb.addr)?;
         self.consumed = pb.addr;
         Ok(pb.addr)
+    }
+
+    /// `D3D_BlockOnResource` (`0x3fad50`, `EAX` = resource): what
+    /// [`kick_off`](Self::kick_off) does, while there is a device.
+    ///
+    /// The original `D3D_DestroyResource` calls it first for every resource
+    /// except a surface the title made (`0x3fb537..0x3fb539`), and a
+    /// teardown's destroys run after the teardown entry has returned (see
+    /// [`Device::take_pending_destroys`]), when there is no device any
+    /// more. Those waits are already satisfied: the teardown drained the
+    /// push buffer and wrote every render target back before it queued the
+    /// resources, and nothing can be queued after it. So each resource that
+    /// teardown destroyed may be waited on once with no device; any other
+    /// wait with no device is still `NoDevice`.
+    pub fn block_on_resource(
+        &mut self,
+        mem: &mut dyn GuestMemory,
+        resource: u32,
+    ) -> Result<(), D3dError> {
+        if !self.created && self.torn_down.remove(&resource) {
+            return Ok(());
+        }
+        self.live("D3D_BlockOnResource")?;
+        self.kick_off(mem)
     }
 
     /// `CDevice_KickOff`, `D3D_BlockOnTime`, `D3D_BlockOnResource`: execute

@@ -29,6 +29,7 @@ use runtime::{CpuAbi, Dispatch, Event, ExecCtx, Guest, Runner, Runtime, Transfer
 const DEV: u32 = 0x0040_4FE0;
 const END: u32 = 0x3f85d0;
 const GET: u32 = 0x3f8630;
+const BLOCK_ON_RESOURCE: u32 = 0x3fad50;
 const OUT: u32 = MISC + 0x8000;
 const STAMP: u32 = MISC + 0x8010;
 
@@ -319,6 +320,51 @@ fn teardown_forgets_visibility_tests() {
     assert!(err.contains("never ended"), "{err}");
 }
 
+/// The original `D3D_DestroyResource` waits on what it frees
+/// (`BlockOnResource`), and a teardown's destroys run after the teardown
+/// returned. Each resource the teardown destroyed may be waited on once
+/// with no device; any other wait with no device still stops.
+#[test]
+fn a_teardown_destroy_may_wait_on_its_resource() {
+    let (mut d, mut m) = rec();
+    // Two vertex buffers held only by their bindings.
+    for (i, hdr) in [VB_HEADER, VB_HEADER + 0x10].into_iter().enumerate() {
+        m.write_u32(hdr, 0x0100_0001).unwrap();
+        m.write_u32(hdr + 4, VB_DATA).unwrap();
+        d.set_stream_source(&mut m, i as u32, hdr, 20).unwrap();
+        let c = m.read_u32(hdr).unwrap();
+        m.write_u32(hdr, c - 1).unwrap();
+    }
+    // Live, the wait is a kick-off.
+    let wait = |d: &mut Device<RecordingBackend>, m: &mut SparseMemory, r: u32| {
+        let regs = Regs {
+            eax: r,
+            ..Regs::default()
+        };
+        call(d, m, BLOCK_ON_RESOURCE, regs, &[])
+    };
+    wait(&mut d, &mut m, VB_HEADER).unwrap();
+    d.release_device(&mut m, DEV).unwrap();
+    assert_eq!(d.take_pending_destroys(), [VB_HEADER, VB_HEADER + 0x10]);
+    wait(&mut d, &mut m, VB_HEADER).unwrap();
+    for r in [VB_HEADER, VB_HEADER + 0x20] {
+        let err = wait(&mut d, &mut m, r).unwrap_err();
+        assert!(matches!(err, D3dError::NoDevice(_)), "{r:#x}: {err}");
+    }
+    // A new device forgets what an old teardown destroyed (VB_HEADER + 0x10
+    // was never waited on): after its own, empty, teardown that wait stops.
+    let regs = Regs {
+        eax: 0x40,
+        ecx: PP_DEVICE,
+        ..Regs::default()
+    };
+    call(&mut d, &mut m, 0x3f5240, regs, &[PARAMS]).unwrap();
+    d.release_device(&mut m, DEV).unwrap();
+    assert!(d.take_pending_destroys().is_empty());
+    let err = wait(&mut d, &mut m, VB_HEADER + 0x10).unwrap_err();
+    assert!(matches!(err, D3dError::NoDevice(_)), "{err}");
+}
+
 /// Through the GPU: the inline quads inside the test are counted exactly,
 /// the one outside is not.
 #[test]
@@ -547,7 +593,10 @@ mod runner {
                 .any(|n| n.0 == runtime_glue::DESTROY_RESOURCE)
         );
         // The original is native, so nothing is registered there: a Rust
-        // stand-in records each call and clobbers what it may.
+        // stand-in records each call and, as the original does for every
+        // resource but a title surface (0x3fb537..0x3fb539), first waits on
+        // it through the overridden D3D_BlockOnResource (EAX = resource),
+        // then clobbers what it may and returns.
         let destroyed = Arc::new(Mutex::new(Vec::new()));
         let log = destroyed.clone();
         let _ = dispatch.register_override(
@@ -555,13 +604,18 @@ mod runner {
             "test D3D_DestroyResource",
             move |cpu, ctx, _| {
                 let runtime = Arc::clone(ctx.runtime());
-                let m = runtime.memory();
+                let mut m = runtime.memory();
                 let ret = m.u32(cpu.esp)?;
                 log.lock().unwrap().push((cpu.edi, cpu.esp, ret));
-                cpu.eax = 0xDEAD_0001;
-                cpu.ecx = 0xDEAD_0002;
-                cpu.edx = 0xDEAD_0003;
-                m.ret(cpu, 0)
+                cpu.eax = cpu.edi;
+                ctx.call_guest(cpu, &mut m, BLOCK_ON_RESOURCE, |cpu, ctx| {
+                    let runtime = Arc::clone(ctx.runtime());
+                    let m = runtime.memory();
+                    cpu.eax = 0xDEAD_0001;
+                    cpu.ecx = 0xDEAD_0002;
+                    cpu.edx = 0xDEAD_0003;
+                    m.ret(cpu, 0)
+                })
             },
         );
         Harness {
@@ -692,6 +746,9 @@ fn destroys_reach_the_original_through_the_runner() {
     assert_eq!(h.destroyed.lock().unwrap().len(), 1);
 }
 
+/// The stand-in waits on each resource through `BlockOnResource`, as the
+/// original does, after the device is gone: the teardown's destroys still
+/// finish.
 #[test]
 fn teardown_destroys_in_order_through_the_runner() {
     let mut h = runner::harness();

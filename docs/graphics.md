@@ -393,8 +393,9 @@ renderer, not polish.
 * Multisampling (`MULTISAMPLE*` states, `D3DMULTISAMPLE_TYPE` quincunx etc.),
   point sprites/size, line width, edge AA, dithering.
 * Occlusion counts (`gfx::occlusion::PixelCounter`, `Draw::count_samples`)
-  re-draw each counted draw into an additive `R16Float` target and sum it
-  with a compute pass, because wgpu occlusion queries are boolean on Metal.
+  re-draw each counted draw into an additive `R16Float` target, against a
+  scratch copy of depth/stencil with the draw's own writes, and sum it with
+  a compute pass, because wgpu occlusion queries are boolean on Metal.
   The count pass does not run the draw's fragment program, so alpha test and
   `discard` do not reject samples. See "Visibility tests" in `d3d.md`.
 * Push-buffer/NV2A method-stream paths: out of scope by design. Inlined D3D

@@ -79,6 +79,11 @@ pub enum DrawError {
     /// [`Renderer::render_counted`]).
     #[error("draw counts samples, but the pass has no pixel counter")]
     NoPixelCounter,
+    /// A counted draw needs to copy the depth/stencil attachment (see
+    /// [`crate::occlusion`]), but its texture lacks `COPY_SRC`.
+    /// [`SurfaceStore`](crate::SurfaceStore) depth surfaces have it.
+    #[error("draw counts samples, but the depth/stencil texture cannot be copied (no COPY_SRC)")]
+    CountDepthNotCopyable,
 }
 
 /// Which attachments a pass clears (D3D `Clear` flags, typed).
@@ -457,6 +462,7 @@ impl Renderer {
         }
         if self.shaders.insert(id, program).is_some() {
             self.cache.clear();
+            self.count_cache.clear();
         }
         true
     }
@@ -543,6 +549,13 @@ impl Renderer {
             }
             if d.count_samples && counter.is_none() {
                 return Err(DrawError::NoPixelCounter);
+            }
+            if d.count_samples
+                && target
+                    .depth
+                    .is_some_and(|v| !v.texture().usage().contains(wgpu::TextureUsages::COPY_SRC))
+            {
+                return Err(DrawError::CountDepthNotCopyable);
             }
             if d.shader == SHADER_XYZRHW_DIFFUSE && !Self::builtin_supports(d.layout) {
                 return Err(DrawError::UnsupportedVertexFormat);
@@ -717,6 +730,12 @@ impl Renderer {
                 let counter = counter.as_deref_mut().expect("checked above");
                 let samples = target.samples;
                 let count_view = counter.target(ctx, attachment, samples).clone();
+                // The replay writes depth and stencil as the draw does, so it
+                // runs on a copy (see crate::occlusion). A pending clear is
+                // applied to the copy and stays pending for the real pass.
+                let depth_copy = target
+                    .depth
+                    .map(|v| counter.depth_copy(ctx, encoder, v.texture()).clone());
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("gfx count pass"),
@@ -729,10 +748,22 @@ impl Renderer {
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
-                        depth_stencil_attachment: depth_ops(
-                            depth_clear.take(),
-                            stencil_clear.take(),
-                        ),
+                        depth_stencil_attachment: depth_copy.as_ref().map(|view| {
+                            wgpu::RenderPassDepthStencilAttachment {
+                                view,
+                                depth_ops: Some(wgpu::Operations {
+                                    load: depth_clear
+                                        .map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
+                                    store: wgpu::StoreOp::Discard,
+                                }),
+                                stencil_ops: has_stencil.then_some(wgpu::Operations {
+                                    load: stencil_clear.map_or(wgpu::LoadOp::Load, |s| {
+                                        wgpu::LoadOp::Clear(s as u32)
+                                    }),
+                                    store: wgpu::StoreOp::Discard,
+                                }),
+                            }
+                        }),
                         timestamp_writes: None,
                         occlusion_query_set: None,
                         multiview_mask: None,
@@ -840,9 +871,9 @@ fn record_draw(
 }
 
 /// A count-pass pipeline for `key` (see [`crate::occlusion`]): the draw's
-/// vertex stage, primitive state and depth/stencil tests, with depth and
-/// stencil writes off, into a [`COUNT_FORMAT`] target that adds 1 per
-/// fragment.
+/// vertex stage, primitive state and depth/stencil state (writes included;
+/// the pass runs on a scratch copy of the attachment), into a
+/// [`COUNT_FORMAT`] target that adds 1 per fragment.
 fn create_count_pipeline(
     device: &wgpu::Device,
     key: &PipelineKey,
@@ -867,11 +898,7 @@ fn create_count_pipeline(
         }),
         write_mask: wgpu::ColorWrites::RED,
     })];
-    let depth_stencil = key.depth_stencil.clone().map(|mut ds| {
-        ds.depth_write_enabled = Some(false);
-        ds.stencil.write_mask = 0;
-        ds
-    });
+    let depth_stencil = key.depth_stencil.clone();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("gfx count pass"),
         layout: Some(&program.layout),

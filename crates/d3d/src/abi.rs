@@ -645,8 +645,8 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
             addr: 0x3fad50,
             name: "D3D_BlockOnResource",
             convention: "EAX = pResource; ret (no-op: the host GPU is synchronous)",
-            call: |d, m, _| {
-                d.kick_off(m)?;
+            call: |d, m, r| {
+                d.block_on_resource(m, r.eax)?;
                 Ok(Outcome::pop(0))
             },
         },

@@ -667,3 +667,153 @@ fn pixel_counter_counts_samples() {
     let t = store.target(color, Some(depth)).unwrap();
     assert_eq!(renderer.render(&ctx, &mut enc, &t, Clear::NONE, &[d]), Err(DrawError::NoPixelCounter));
 }
+
+/// A counted draw's own depth and stencil writes reject its later
+/// triangles in the count as they do in the real draw, and the real
+/// attachment is changed once: two overlapping 16x8 quads in one draw
+/// count 128 (256 would mean the count ignored what the draw itself wrote),
+/// with depth (near first, then far, `Less`) and with stencil (`Equal 0`,
+/// increment on pass), single-sampled and, where supported, at 4x.
+#[test]
+fn pixel_counter_keeps_depth_and_stencil_changes_within_a_draw() {
+    use gfx::occlusion::PixelCounter;
+    use gfx::state::{DepthBufferMode, StencilOp, StencilState};
+    let Some(ctx) = context() else { return };
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let c = 0xFFFF_FFFF;
+    let quad = |z: f32| {
+        [
+            vertex_z(0.0, 0.0, z, c), vertex_z(16.0, 0.0, z, c), vertex_z(0.0, 8.0, z, c),
+            vertex_z(16.0, 0.0, z, c), vertex_z(16.0, 8.0, z, c), vertex_z(0.0, 8.0, z, c),
+        ]
+        .concat()
+    };
+    let depth_state = RenderState { depth_func: CompareFunc::Less, depth_write: true, ..RenderState::default() };
+    let stencil = |reference: u8, pass: StencilOp| RenderState {
+        depth_mode: DepthBufferMode::Disabled,
+        depth_write: false,
+        stencil: StencilState { enable: true, func: CompareFunc::Equal, reference, pass, ..StencilState::default() },
+        ..RenderState::default()
+    };
+    for samples in [1u32, 4] {
+        let mut store = SurfaceStore::new(ctx.caps);
+        let mut cdesc = SurfaceDesc::new(D3DFormat::LinA8R8G8B8, 32, 32);
+        cdesc.samples = samples;
+        let mut ddesc = SurfaceDesc::new(D3DFormat::LinD24S8, 32, 32);
+        ddesc.samples = samples;
+        let color = store.create(&ctx, cdesc, SurfaceKind::Color).unwrap();
+        let depth = store.create(&ctx, ddesc, SurfaceKind::DepthStencil).unwrap();
+        let got = store.get(depth).unwrap().desc().samples;
+        if got != samples || store.get(color).unwrap().desc().samples != samples {
+            eprintln!("skipping {samples}x: the adapter gives {got}x");
+            continue;
+        }
+        let mut renderer = Renderer::new(&ctx);
+        let mut counter = PixelCounter::new(&ctx);
+        let mut count = |verts: &[u8], state: RenderState, clear: Clear| {
+            let mut enc = ctx.device.create_command_encoder(&Default::default());
+            counter.clear(&mut enc);
+            let streams = [VertexStream { data: verts, stride: 0 }];
+            let mut d = draw(&streams, (verts.len() / 20) as u32, &vl, PrimitiveType::TriangleList, state);
+            d.count_samples = true;
+            let t = store.target(color, Some(depth)).unwrap();
+            renderer.render_counted(&ctx, &mut enc, &t, clear, &[d], Some(&mut counter)).unwrap();
+            let report = counter.report(&ctx, &mut enc);
+            ctx.queue.submit([enc.finish()]);
+            report.read(&ctx).unwrap() / samples as u64
+        };
+        let clear_all = Clear { color: Some([0.0; 4]), depth: Some(1.0), stencil: Some(0) };
+        let near_then_far = [quad(0.25), quad(0.75)].concat();
+        assert_eq!(count(&near_then_far, depth_state, clear_all), 128, "{samples}x depth");
+        // The real depth holds the near quad once: a quad between them is
+        // behind it, one in front passes.
+        assert_eq!(count(&quad(0.5), depth_state, Clear::NONE), 0, "{samples}x");
+        assert_eq!(count(&quad(0.1), depth_state, Clear::NONE), 128, "{samples}x");
+
+        let twice = [quad(0.5), quad(0.5)].concat();
+        assert_eq!(count(&twice, stencil(0, StencilOp::IncrSat), clear_all), 128, "{samples}x stencil");
+        // The real stencil was incremented once (to 1), not twice.
+        assert_eq!(count(&quad(0.5), stencil(1, StencilOp::Keep), Clear::NONE), 128, "{samples}x");
+        assert_eq!(count(&quad(0.5), stencil(2, StencilOp::Keep), Clear::NONE), 0, "{samples}x");
+    }
+}
+
+/// Replacing a registered shader also replaces what the count pass draws:
+/// a replacement that moves the quad off the target counts 0.
+#[test]
+fn pixel_counter_follows_a_replaced_shader() {
+    use gfx::occlusion::PixelCounter;
+    let Some(ctx) = context() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    let color = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinA8R8G8B8, 32, 32), SurfaceKind::Color).unwrap();
+    let depth = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinD24S8, 32, 32), SurfaceKind::DepthStencil).unwrap();
+    let mut renderer = Renderer::new(&ctx);
+    let mut counter = PixelCounter::new(&ctx);
+    let program = |x_offset: f32| {
+        let module = ctx.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("count replace"),
+            source: wgpu::ShaderSource::Wgsl(
+                format!(
+                    "@vertex fn vs_main(@location(0) p: vec4<f32>) -> @builtin(position) vec4<f32> {{
+                         return vec4<f32>(p.x / 16.0 - 1.0 + {x_offset:.1}, 1.0 - p.y / 16.0, 0.5, 1.0);
+                     }}
+                     @fragment fn fs_main() -> @location(0) vec4<f32> {{ return vec4<f32>(1.0); }}"
+                )
+                .into(),
+            ),
+        });
+        let layout = ctx.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: None,
+            bind_group_layouts: &[],
+            immediate_size: 0,
+        });
+        ShaderProgram { module, layout, vs_entry: "vs_main".into(), fs_entry: "fs_main".into() }
+    };
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let c = 0xFFFF_FFFF;
+    let verts = [
+        vertex(0.0, 0.0, c), vertex(16.0, 0.0, c), vertex(0.0, 8.0, c),
+        vertex(16.0, 0.0, c), vertex(16.0, 8.0, c), vertex(0.0, 8.0, c),
+    ]
+    .concat();
+    let mut count = |renderer: &mut Renderer| {
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        counter.clear(&mut enc);
+        let streams = [VertexStream { data: &verts, stride: 0 }];
+        let mut d = draw(&streams, 6, &vl, PrimitiveType::TriangleList, RenderState::default());
+        d.shader = ShaderId(99);
+        d.count_samples = true;
+        let t = store.target(color, Some(depth)).unwrap();
+        let clear = Clear { color: Some([0.0; 4]), depth: Some(1.0), stencil: Some(0) };
+        renderer.render_counted(&ctx, &mut enc, &t, clear, &[d], Some(&mut counter)).unwrap();
+        let report = counter.report(&ctx, &mut enc);
+        ctx.queue.submit([enc.finish()]);
+        report.read(&ctx).unwrap()
+    };
+    assert!(renderer.register_shader(ShaderId(99), program(0.0)));
+    assert_eq!(count(&mut renderer), 128);
+    assert!(renderer.register_shader(ShaderId(99), program(5.0)));
+    assert_eq!(count(&mut renderer), 0, "the count pass still used the replaced shader");
+}
+
+/// A counted draw copies the depth attachment, so one that cannot be
+/// copied is refused before anything is recorded.
+#[test]
+fn pixel_counter_needs_a_copyable_depth() {
+    use gfx::occlusion::PixelCounter;
+    let Some(ctx) = context() else { return };
+    // OffscreenTarget's depth is a render attachment only.
+    let target = OffscreenTarget::new(&ctx.device, (16, 16), wgpu::TextureFormat::Bgra8Unorm);
+    let mut renderer = Renderer::new(&ctx);
+    let mut counter = PixelCounter::new(&ctx);
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let verts = [vertex(0.0, 0.0, 0), vertex(16.0, 0.0, 0), vertex(0.0, 16.0, 0)].concat();
+    let streams = [VertexStream { data: &verts, stride: 0 }];
+    let mut d = draw(&streams, 3, &vl, PrimitiveType::TriangleList, RenderState::default());
+    d.count_samples = true;
+    let mut enc = ctx.device.create_command_encoder(&Default::default());
+    assert_eq!(
+        renderer.render_counted(&ctx, &mut enc, &target.target(), Clear::NONE, &[d], Some(&mut counter)),
+        Err(DrawError::CountDepthNotCopyable)
+    );
+}
