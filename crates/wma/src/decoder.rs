@@ -1,4 +1,5 @@
 use crate::{Error, Result, Tables, bits::Bits};
+use std::sync::Arc;
 
 /// The two finite CBR profiles observed on the retail disc.
 #[derive(Clone, Copy, Debug)]
@@ -67,11 +68,26 @@ impl Packet {
         })
     }
 }
+/// The tables a decoder reads: borrowed for one-shot decodes, shared when a
+/// long-lived decoder (a runtime boundary) must own them.
+enum TablesRef<'a> {
+    Borrowed(&'a Tables),
+    Shared(Arc<Tables>),
+}
+impl std::ops::Deref for TablesRef<'_> {
+    type Target = Tables;
+    fn deref(&self) -> &Tables {
+        match self {
+            Self::Borrowed(t) => t,
+            Self::Shared(t) => t,
+        }
+    }
+}
 /// One-packet lookahead for the superframe reservoir. Each push returns owned,
 /// interleaved stereo i16 PCM. Call finish once at EOF. A failed decoder must be
 /// discarded; it never tries to conceal malformed input.
 pub struct Decoder<'a> {
-    tables: &'a Tables,
+    tables: TablesRef<'a>,
     format: Format,
     pending: Option<Packet>,
     channels: [Channel; 2],
@@ -87,8 +103,18 @@ pub struct Decoder<'a> {
     pub nonzero_coefficients: u64,
     pub frame_boundaries: Vec<usize>,
 }
+impl Decoder<'static> {
+    /// A decoder that owns a share of the tables, for a decoder that outlives
+    /// any one borrow (one per guest stream at the runtime boundary).
+    pub fn new_shared(tables: Arc<Tables>, format: Format) -> Result<Self> {
+        Self::with_tables(TablesRef::Shared(tables), format)
+    }
+}
 impl<'a> Decoder<'a> {
     pub fn new(tables: &'a Tables, format: Format) -> Result<Self> {
+        Self::with_tables(TablesRef::Borrowed(tables), format)
+    }
+    fn with_tables(tables: TablesRef<'a>, format: Format) -> Result<Self> {
         if !matches!(
             (format.bytes_per_second, format.block_align),
             (12003, 4459) | (16002, 5945)
@@ -119,6 +145,10 @@ impl<'a> Decoder<'a> {
             nonzero_coefficients: 0,
             frame_boundaries: Vec::new(),
         })
+    }
+    /// The stream format this decoder was built for.
+    pub fn format(&self) -> Format {
+        self.format
     }
     pub fn push(&mut self, packet: &[u8]) -> Result<Vec<i16>> {
         if self.finished {

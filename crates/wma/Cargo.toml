@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Exposes `Tables::synthetic` for other crates' tests (no retail data).
+synthetic = []
+
 [dependencies]
 xbe.workspace = true
 thiserror.workspace = true

@@ -3,6 +3,7 @@
 //! No codec tables are compiled in; the owner supplies the verified retail XBE.
 #![forbid(unsafe_code)]
 mod bits;
+pub mod boundary;
 mod container;
 mod decoder;
 pub mod diagnostics;

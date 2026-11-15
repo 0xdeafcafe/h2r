@@ -231,9 +231,13 @@ impl Tables {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "synthetic"))]
 impl Tables {
-    pub(crate) fn synthetic() -> Self {
+    /// Stand-in tables for tests that cannot read the retail image: plain
+    /// sine windows, exact rotations, flat gains and one-symbol trees. They
+    /// decode synthetic silence, not real streams. Feature `synthetic`.
+    #[doc(hidden)]
+    pub fn synthetic() -> Self {
         let bands = std::array::from_fn(|d| vec![0, 2048 >> d]);
         let windows = std::array::from_fn(|d| {
             let n = 2048 >> d;
