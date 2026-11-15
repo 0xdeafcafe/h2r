@@ -71,6 +71,15 @@ pub enum Event {
         code: u32,
         arg: u32,
     },
+    /// A delivered [`crate::interrupt::GuestInterrupt`] returned with an ESP
+    /// its calling convention does not allow. CPU state was restored to the
+    /// interrupted point; the interrupted transfer did not continue.
+    InterruptImbalance {
+        name: &'static str,
+        target: u32,
+        expected_esp: u32,
+        actual_esp: u32,
+    },
 }
 
 /// One guest frame, innermost first. Frame 0 is the function executing at

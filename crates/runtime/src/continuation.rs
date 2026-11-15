@@ -48,6 +48,15 @@ impl Continuations {
         Some(BASE + (slot.generation << SLOT_BITS) + index as u32)
     }
 
+    pub(crate) fn live(&self, token: u32) -> bool {
+        is_token_address(token) && {
+            let identity = token - BASE;
+            self.slots
+                .get((identity & SLOT_MASK) as usize)
+                .is_some_and(|s| s.continuation.is_some() && s.generation == identity >> SLOT_BITS)
+        }
+    }
+
     pub(crate) fn take(&mut self, token: u32) -> Option<Continuation> {
         if !is_token_address(token) {
             return None;

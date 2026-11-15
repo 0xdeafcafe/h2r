@@ -24,6 +24,9 @@ pub struct ExecCtx {
     pub(crate) pending_fault: Option<u32>,
     continuations: Continuations,
     pub(crate) frames: crate::frames::ShadowStack,
+    pub(crate) interrupts_masked: bool,
+    /// Return token of the delivered interrupt callback, if one is running.
+    pub(crate) interrupt_token: Option<u32>,
 }
 impl ExecCtx {
     pub fn new(runtime: Arc<Runtime>, thread_id: u32) -> Self {
@@ -36,6 +39,8 @@ impl ExecCtx {
             pending_fault: None,
             continuations: Continuations::default(),
             frames: Default::default(),
+            interrupts_masked: false,
+            interrupt_token: None,
         }
     }
     pub fn runtime(&self) -> &Arc<Runtime> {
@@ -141,6 +146,9 @@ impl ExecCtx {
     /// unwind. The caller must discard the corresponding guest stack frames.
     pub fn clear_continuations(&mut self) -> usize {
         self.continuations.clear()
+    }
+    pub(crate) fn continuation_live(&self, token: u32) -> bool {
+        self.continuations.live(token)
     }
     pub(crate) fn take_continuation(&mut self, pc: u32) -> Option<Continuation> {
         self.continuations.take(pc)

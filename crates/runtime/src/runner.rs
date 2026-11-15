@@ -70,6 +70,13 @@ impl Runner {
             if !valid {
                 return TransferAbi::fault(ctx.emit(Event::InvalidTransfer));
             }
+            // Safe point: the last handler has returned and CPU state is
+            // canonical. A due interrupt runs first, as a call that resumes
+            // this transfer when it returns.
+            if let Some(call) = crate::interrupt::deliver(cpu, ctx, transfer) {
+                transfer = call;
+                continue;
+            }
             // Diagnostic call chain only; the guest stack decides control.
             // Every transfer first drops the records whose return slots ESP
             // has passed, so returns, `ret n` and longjmp-style ESP restores

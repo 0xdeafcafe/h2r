@@ -5,12 +5,14 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 pub struct Runtime {
     memory: Mutex<Guest>,
     dispatch: RwLock<Dispatch>,
+    pub(crate) interrupts: crate::interrupt::InterruptQueue,
 }
 impl Runtime {
     pub fn new(memory: Guest, dispatch: Dispatch) -> Arc<Self> {
         Arc::new(Self {
             memory: Mutex::new(memory),
             dispatch: RwLock::new(dispatch),
+            interrupts: Default::default(),
         })
     }
     /// Compound HLE operations use this guard, including Guest::call/ret.

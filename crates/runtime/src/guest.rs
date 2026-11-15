@@ -138,6 +138,7 @@ pub struct Guest {
     claims: Vec<VirtualClaim>,
     code: Vec<(u64, u64)>,
     next_id: u32,
+    pub(crate) watch: crate::watch::WriteWatch,
 }
 
 fn overlaps(a: u64, a_end: u64, b: u64, b_end: u64) -> bool {
@@ -166,6 +167,7 @@ impl Guest {
             claims: Vec::new(),
             code: Vec::new(),
             next_id: 1,
+            watch: Default::default(),
         }
     }
     pub fn mappings(&self) -> &[Mapping] {
@@ -266,7 +268,7 @@ impl Guest {
             .find_free_physical(len, 0..RAM_SIZE as u32, PAGE_SIZE)
             .ok_or(MapError::OutOfMemory)?;
         self.map(va, len, physical, permissions)?;
-        self.ram[physical as usize..physical as usize + len as usize].fill(0);
+        self.fill_zero(physical as usize, len as usize);
         Ok(())
     }
     fn fresh_physical(&self, len: u32) -> Option<u32> {
@@ -415,7 +417,7 @@ impl Guest {
         }) {
             return Err(MapError::Overlap);
         }
-        self.ram[p as usize..(p + n) as usize].fill(0);
+        self.fill_zero(p as usize, n as usize);
         let id = ReservationId(self.fresh_id());
         self.reservations.push(PhysicalReservation {
             id,
@@ -663,7 +665,15 @@ impl Guest {
             .retain(|m| !(start..end).contains(&(m.virtual_start as u64)));
     }
 
-    fn mapping_index(&self, addr: u64) -> Option<usize> {
+    /// Zero physical bytes, reporting the change to the write watch.
+    fn fill_zero(&mut self, physical: usize, len: usize) {
+        self.ram[physical..physical + len].fill(0);
+        if self.watch.active() {
+            self.watch.note(physical, len);
+        }
+    }
+
+    pub(crate) fn mapping_index(&self, addr: u64) -> Option<usize> {
         let i = self
             .mappings
             .partition_point(|m| m.virtual_start as u64 <= addr)
@@ -773,8 +783,12 @@ impl Guest {
                 addr as u64 + offset as u64,
                 addr as u64 + value.len() as u64,
             );
-            let n = span.len();
+            let (start, n) = (span.start, span.len());
             self.ram[span].copy_from_slice(&value[offset..offset + n]);
+            // Every RAM store passes here, so this is the whole write barrier.
+            if self.watch.active() {
+                self.watch.note(start, n);
+            }
             offset += n;
             index += 1;
         }

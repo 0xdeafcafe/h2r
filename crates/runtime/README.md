@@ -178,6 +178,145 @@ test reads `disc/default.xbe` directly without copying it:
 cargo test -p runtime --test loader -- --ignored
 ```
 
+## Write watch
+
+`watch.rs` tells a consumer (D3D's texture cache first) which guest RAM
+pages changed since it last looked. It is a dirty-page bitmap set inside
+`Guest::write_bytes`, drained by the consumer at its own entry points.
+
+```rust
+impl Guest {
+    pub fn subscribe_writes(&mut self, owner: &'static str) -> WatchId;
+    pub fn unsubscribe_writes(&mut self, id: WatchId) -> bool;
+    pub fn watch_writes(&mut self, id: WatchId, addr: u32, len: u32) -> Result<(), WatchError>;
+    pub fn unwatch_writes(&mut self, id: WatchId, addr: u32, len: u32) -> Result<(), WatchError>;
+    pub fn has_dirty(&self, id: WatchId) -> bool;
+    pub fn take_dirty(&mut self, id: WatchId) -> Result<Vec<DirtyRange>, WatchError>;
+    pub fn writes_unreported<R>(&mut self, id: WatchId, f: impl FnOnce(&mut Guest) -> R)
+        -> Result<R, WatchError>;
+    pub fn fold_address(&self, va: u32) -> Option<u32>;
+    pub fn write_watch_owners(&self) -> Vec<(WatchId, &'static str)>;
+}
+pub struct DirtyRange { pub addr: u32, pub len: u32 } // folded, page-aligned
+pub const watch::CONTIGUOUS_BASE: u32 = 0x8000_0000;
+```
+
+Addresses are in the folded view `0x80000000 | pa`, the one D3D reads
+resource data at (`AddressMap::XboxContiguous`). `fold_address(va)` turns a
+mapped virtual address into it. Ranges are rounded out to 4 KiB pages and
+must lie inside `[0x80000000, 0x84000000)`, otherwise `InvalidRange`.
+
+Guarantees:
+
+1. **Complete.** Every change to RAM bytes made after `watch_writes`
+   returns marks the page for each subscriber watching it. The RAM store is
+   private to `guest.rs` and has three mutation sites, all reported:
+   `write_bytes` (so every typed setter, `Guest::call`, the atomics,
+   `h2abi_v1_write` and the atomic imports, the loader, and every kernel or
+   HLE copy, since they all write through a `Guest`), the zeroing of a
+   reused gap in `map_zeroed`, and the zeroing in `reserve_physical`. There
+   is no raw pointer into RAM. A future interpreter binding or DMA engine
+   has to write through `Guest` too, and then reports for free.
+2. **Aliases folded.** Bits are per physical page, so a store through any
+   virtual alias marks the same page and is reported once, as
+   `0x80000000 | pa`.
+3. **Conservative.** A page is reported if any byte of it was stored, even
+   with the value it already had. A faulting store changes nothing and
+   reports nothing (`write_bytes` is all-or-nothing). Map, unmap and
+   protect calls change no bytes and report nothing.
+4. **Ordered.** The bit is set before `write_bytes` returns, under the
+   memory lock. A consumer that drains while holding the guard has seen
+   every store that completed before it took the lock, from any thread.
+5. **Drain.** `take_dirty` returns ascending, disjoint, non-adjacent runs
+   and clears them. Subscribers are independent. `unwatch_writes` drops
+   pending bits of the pages it unwatches.
+6. **Own stores.** `writes_unreported(id, f)` mutes `id` for exactly the
+   stores made inside `f`. Since `f` holds the only guard, those are the
+   consumer's own stores. Other subscribers still see them. The mute is
+   lifted even if `f` panics.
+
+Why a bitmap and not host page protection: generated code never touches
+host memory. Every guest store in the ~40k lifted functions is already a
+call to `h2abi_v1_write`, which takes the memory lock, binary-searches the
+mapping and copies (RUNTIME-CONTRACT.md 1.1). Adding a flag test there costs
+almost nothing. `mprotect` plus a SIGBUS handler would need RAM in its own
+`mmap`, a signal (microseconds) on the first store to each watched page
+every frame, an `mprotect` call per drained run, and a signal handler that
+runs while the store holds the memory mutex. It would also miss nothing the
+bitmap misses, because there is only one store path.
+
+Cost, measured with `cargo test -p runtime --release --test write_watch --
+--ignored --nocapture` (M1 Max, 4-byte stores spread over 64
+mappings, best of 5):
+
+| case | ns per store |
+|---|---|
+| master, no watch code | 16.8 |
+| no subscriber | 16.5 |
+| subscriber, store to an unwatched page | 18.7 |
+| subscriber, store to a watched page | 22.7 |
+
+An override entry that drains and runs its body muted costs about 18 ns
+when nothing is dirty and 67 ns with one dirty page (including that store).
+`watch_writes`/`unwatch_writes` rebuild the 2 KiB union bitmap, about 256
+word ORs per subscriber.
+
+## Guest interrupts
+
+`interrupt.rs` runs a guest function asynchronously, the way a vblank
+interrupt would. Any thread can queue one on the shared `Runtime`:
+
+```rust
+impl Runtime {
+    pub fn raise_interrupt(&self, interrupt: GuestInterrupt) -> Raise; // Queued | Coalesced | Full
+    pub fn pending_interrupts(&self) -> usize;
+    pub fn clear_interrupts(&self) -> usize;
+}
+pub struct GuestInterrupt {
+    pub target: u32, pub args: Vec<u32>, pub convention: CallConvention, // Cdecl | Stdcall
+    pub thread: Option<u32>, pub coalesce: bool, pub name: &'static str,
+}
+impl ExecCtx {
+    pub fn set_interrupts_masked(&mut self, masked: bool);
+    pub fn interrupts_masked(&self) -> bool;
+    pub fn in_interrupt(&self) -> bool;
+}
+```
+
+Delivery:
+
+- **Where.** At the top of the runner loop, once a handler (generated code,
+  an override or a continuation) has returned a valid CALL, JUMP or RETURN
+  and before the next is dispatched. CPU state is canonical there. Not at
+  a RETURN to `HARNESS_EXIT`, not while the context is masked, and not
+  while a delivered callback has yet to return (no nesting). An empty queue
+  costs one atomic load per transfer.
+- **Which.** The oldest queued interrupt whose `thread` is None or the
+  context's `thread_id`. The queue holds at most `MAX_PENDING` (64);
+  `coalesce` drops a raise while one with the same target and thread is
+  queued.
+- **Frame.** The whole `CpuAbi` is snapshotted. The arguments are pushed
+  right to left below ESP, then a callback token as the return address
+  (`call_guest`). DF is cleared. The target is entered as an ordinary CALL,
+  so it shows in backtraces.
+- **Return.** When the target returns to the token, ESP must equal the
+  value its convention requires (Cdecl: just above the token; Stdcall:
+  the ESP at the safe point). The snapshot is then restored whole, GPRs,
+  EFLAGS, x87, XMM, MXCSR and EIP, and the interrupted transfer continues
+  unchanged. Memory changes stay.
+- **Failures.** A wrong ESP faults with `Event::InterruptImbalance`. A push
+  that faults is a `MemoryFault`, and the continuation limit is
+  `ContinuationLimit`. Each restores the snapshot and drops the interrupt.
+  A callback that stops (a kernel call) is resumed with `run_from` as usual
+  and stays in service until it returns. One that unwinds past its token
+  (`cancel_continuation`, `clear_continuations`) ends the service without a
+  restore.
+- **Latency.** A safe point comes at every call, return and cross-function
+  jump. A loop inside one generated function that calls nothing never
+  reaches one, so a guest spinning on a vblank counter inside one function
+  would wait forever. HLE that blocks on vblank has to deliver the
+  callback itself or return to the runner.
+
 ## Generated modules
 
 The emitter's contract is `crates/emit/RUNTIME-CONTRACT.md`. The runtime

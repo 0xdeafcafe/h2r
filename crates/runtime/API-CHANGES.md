@@ -369,3 +369,33 @@ Rejected reservations are checked against nonzero sentinels in live backing. The
 `real_disc_arena_reservation_and_physical_budget` decodes the instructions at
 0x0012b400 with iced-x86 (operands, call target, ignored result) and checks the budget. Set `H2_XBE` to point it at a disc outside
 the worktree.
+
+## Follow-up: write watch and guest interrupts
+
+No generated-module ABI, C header or layout changed. Everything is additive
+Rust API; semantics are in the README sections "Write watch" and "Guest
+interrupts".
+
+- New modules `watch` (`WatchId`, `DirtyRange`, `WatchError`,
+  `CONTIGUOUS_BASE`, and the `Guest` methods `subscribe_writes`,
+  `unsubscribe_writes`, `watch_writes`, `unwatch_writes`, `has_dirty`,
+  `take_dirty`, `writes_unreported`, `fold_address`, `write_watch_owners`)
+  and `interrupt` (`GuestInterrupt`, `CallConvention`, `Raise`,
+  `MAX_PENDING`, `Runtime::{raise_interrupt, pending_interrupts,
+  clear_interrupts}`, `ExecCtx::{set_interrupts_masked, interrupts_masked,
+  in_interrupt}`). The types are re-exported at the crate root.
+- New `Event::InterruptImbalance { name, target, expected_esp, actual_esp }`.
+  A `match` on `Event` without a wildcard needs an arm.
+- `Runner::run_from` may now run a queued interrupt between two transfers.
+  With nothing queued, behaviour is unchanged.
+- `Guest::write_bytes`, `map_zeroed` and `reserve_physical` record changed
+  pages for watching subscribers. With no subscriber they behave and cost
+  as before.
+
+Tests: `tests/write_watch.rs` (alias folding, page coalescing, faulting
+stores, atomics and `h2abi_v1_write`, runtime zero fills, independent and
+muted subscribers, panic safety, unwatch/unsubscribe and errors, plus two
+ignored benchmarks) and `tests/interrupts.rs` (restore of the whole CPU at
+the first safe point, Stdcall, imbalance, no nesting, masking and thread
+filters, coalescing and the bound, an unpushable frame, and a raise from
+another host thread during a run).
