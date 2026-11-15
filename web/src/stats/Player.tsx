@@ -148,20 +148,22 @@ export function ServiceRecordPage() {
               <PeopleFinder />
             </aside>
             <div class="s-right">
-              <div class="s-shot">
-                <Show when={latest()} keyed fallback={<div class="s-shot-empty">No games on record yet.</div>}>
+              <div class="s-capbar s-capbar--slim">
+                <Show when={latest()} fallback={<span class="s-dim">Latest game</span>}>
                   {(h) => (
                     <>
-                      <div class="s-shot-cap">
-                        <A href={`/stats/games/${h.game.game_id}`}>{gameTitle(h.game)} on {titleCase(h.game.map)}</A>
-                        {h.game.status === "live" ? " · playing now" : ` · ${usDate(h.game.started_at)}`}
-                      </div>
-                      <MapThumb game={h.game} large />
+                      <A href={`/stats/games/${h().game.game_id}`}>{gameTitle(h().game)} on {titleCase(h().game.map)}</A>
+                      <span class="s-capbar-right">{h().game.status === "live" ? "playing now" : usDate(h().game.started_at)}</span>
                     </>
                   )}
                 </Show>
               </div>
-              <Title>Player Snapshot</Title>
+              <div class="s-shot">
+                <Show when={latest()} keyed fallback={<div class="s-shot-empty">No games on record yet.</div>}>
+                  {(h) => <MapThumb game={h.game} large />}
+                </Show>
+              </div>
+              <Title class="s-title--rule">Player Snapshot</Title>
               <div class="s-snap">
                 <div class="s-snap-pic"><Emblem seed={a().xuid} size={112} /></div>
                 <dl class="s-facts">
@@ -515,7 +517,7 @@ export function CareerPage() {
                   <div class="s-career">
                     <div class="s-career-col">
                       <section class="s-sec">
-                        <header><span>{a().gamertag}</span><SortKey sort={sort()} /></header>
+                        <header><A href={playerHref(a().gamertag)}>{a().gamertag}</A><SortKey sort={sort()} /></header>
                         <GamerCard account={a()} rec={rec()} />
                       </section>
                       <section class="s-sec">
