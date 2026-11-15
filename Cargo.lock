@@ -1003,6 +1003,7 @@ checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 name = "hs"
 version = "0.1.0"
 dependencies = [
+ "iced-x86",
  "map",
  "thiserror 2.0.21",
  "xbe",

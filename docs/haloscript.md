@@ -4,7 +4,9 @@
 and builtin descriptors, and renders Lisp-like source. `h2 hs` prints source to
 the terminal; no game scripts, extracted tables, or binary fixtures are build
 inputs. Keep menu scripting running; it needs a small builtin subset.
-This work does **not** implement a native VM or demonstrate a rendered menu.
+A native VM with the retail evaluator's semantics lives in `hs::vm`; its
+evidence, binding layer and disc validation are in
+[engine/hs_vm.md](engine/hs_vm.md). It is not yet wired into the game.
 
 ## Evidence and scope
 
@@ -197,7 +199,8 @@ no per-script call list or script-derived summary is retained here.
   `0x00209e70`. A Rust VM must preserve dormant, completed and timed waits as
   distinct states; an OS-thread sleep is not an equivalent implementation.
 
-No complete native VM ABI or stack-overflow policy is promised here. The
+The VM in [engine/hs_vm.md](engine/hs_vm.md) reproduces these structures in
+Rust; its stack bound is a host policy. No guest-compatible VM ABI is promised here. The
 interpreter uses register arguments in several helpers; these notes must not
 be turned directly into ordinary C calling conventions. Retain generated VM
 execution until replacement behavior is tested against a runtime trace.

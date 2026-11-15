@@ -8,6 +8,9 @@ license.workspace = true
 map.workspace = true
 xbe.workspace = true
 thiserror.workspace = true
+# Decoding builtin evaluator bodies to recognize retail stub shapes.
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder"] }
 
 [dev-dependencies]
+iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "code_asm"] }
 xiso.workspace = true

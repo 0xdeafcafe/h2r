@@ -18,6 +18,7 @@ mod check;
 mod expression;
 mod scenario;
 mod source;
+pub mod vm;
 mod wire;
 
 pub use catalog::*;
