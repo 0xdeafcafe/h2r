@@ -125,8 +125,8 @@ export default function Carnage(props: { game: GameState }) {
                 <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
                 <div class="s-tod s-game-weapons">
                   <For each={weapons().slice(0, 4)} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
-                    {(w, i) => (
-                      <div class="s-tod-row" classList={{ "s-tod-row--top": i() === 0 }}>
+                    {(w) => (
+                      <div class="s-tod-row">
                         <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
                         <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(w.share / max()) * 74}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
                         <div class="s-tod-nums">{w.kills}</div>
@@ -218,8 +218,8 @@ export default function Carnage(props: { game: GameState }) {
             <div class="s-game-weapon-key"><span>Weapon / share of kills</span><span>Kills</span></div>
             <div class="s-tod s-game-weapons">
               <For each={weapons()} fallback={<p class="s-tod-empty">No knockouts yet.</p>}>
-                {(w, i) => (
-                  <div class="s-tod-row" classList={{ "s-tod-row--top": i() === 0 }}>
+                {(w) => (
+                  <div class="s-tod-row">
                     <span class="s-tod-ico"><span><WeaponIcon weapon={w.weapon} width={50} /><small>{titleCase(w.weapon)}</small></span></span>
                     <div class="s-tod-bars"><div class="s-tod-bar"><span style={{ width: `${(w.share / max()) * 86}%` }} />{(w.share * 100).toFixed(1)}%</div></div>
                     <div class="s-tod-nums">{w.kills}</div>

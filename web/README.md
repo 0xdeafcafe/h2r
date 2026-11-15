@@ -99,8 +99,9 @@ with.
 
 **Fonts.** All bundled fonts are under the SIL Open Font Licence, each with
 its licence file beside it: Michroma (`src/assets/fonts`, the "h2 live" name
-on both sides), and Orbitron and Barlow Condensed (`src/dash/fonts`, the
-dashboard's headings and its condensed labels). The stats site otherwise
+on the dashboard), and Orbitron and Barlow Condensed (`src/dash/fonts`, the
+dashboard's headings and its condensed labels). The stats site draws its
+wordmark as SVG (`stats/Wordmark.tsx`) and otherwise
 uses system fonts (Arial for copy and headings, Verdana for the nav strip).
 
 **Artwork.** Raster artwork (banner strips, page and map textures, 24 player

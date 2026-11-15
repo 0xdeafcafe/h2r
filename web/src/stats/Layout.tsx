@@ -11,6 +11,7 @@ import { accountByGamertag, liveGames } from "../state/reducer";
 import { playedWith } from "../state/derive";
 import Emblem from "../components/Emblem";
 import { VerifyMark } from "../components/bits";
+import Wordmark, { type WordmarkVariant } from "./Wordmark";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -35,7 +36,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
     <div class="stats">
       <div class="s-column">
         <header class="s-top">
-          <A href="/stats" class="s-logo" aria-label="h2 live stats home"><span class="s-logo-h2">h2</span><span class="s-logo-live">live</span></A>
+          <A href="/stats" class="s-logo" aria-label="h2 live stats home"><Wordmark height={40} variant={(new URLSearchParams(location.search).get("wm") as WordmarkVariant | null) ?? undefined} /></A>
           <div class="s-welcome">
             <Show
               when={identity.me()}
@@ -119,11 +120,11 @@ export function Crumbs(props: { trail: Array<[string, string?]> }) {
 }
 
 /** The decorative strip under the breadcrumbs. `kind` picks the artwork. */
-export function Strip(props: { kind: "home" | "players" | "events" | "game"; children?: JSX.Element }) {
+export function Strip(props: { kind: "home" | "players"; children?: JSX.Element }) {
   return (
     <div class={`s-strip s-strip--${props.kind}`}>
       <div class="s-strip-art" aria-hidden="true" />
-      <div class="s-strip-mark" aria-hidden="true">h2 live<small>{{ home: "online", players: "players", events: "event log", game: "game details" }[props.kind]}</small></div>
+      <div class="s-strip-mark" aria-hidden="true"><Wordmark height={24} /><small>{{ home: "online", players: "players" }[props.kind]}</small></div>
       {props.children}
     </div>
   );
