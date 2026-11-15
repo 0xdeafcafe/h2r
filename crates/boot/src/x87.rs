@@ -1,15 +1,16 @@
 //! The x87 for the boot fallback: one instruction at a time on the
 //! interpreter's CPU, until crates/lift lowers x87 (docs/FLOAT.md).
 //!
-//! Values live in the canonical ext80 registers; every arithmetic,
-//! conversion and transcendental goes through crates/x87 (exact software
-//! ext80 under the control word's precision and rounding). Exceptions take
-//! the masked response, which is what the game's control word asks for;
-//! their sticky bits are recorded in the status word.
+//! This is a decoder over crates/x87's state machine (`x87::abi`, the same
+//! helpers generated code will call): stack faults, source-format
+//! exceptions, condition codes and the masked responses all come from
+//! there, so the fallback cannot diverge from it. A helper reporting a
+//! pending unmasked exception (#MF) or an unmodelled one stops the
+//! fallback; the game masks everything.
 
 use iced_x86::{Instruction, MemorySize, Mnemonic, OpKind, Register};
 use ir::interp::Cpu;
-use x87::{Cmp, Const, F80, Flags, Mode};
+use x87::abi::{self, X87Abi, arith_op, src_kind, status, unary_op};
 
 /// A memory access the x87 instruction needs.
 pub trait Mem {
@@ -23,112 +24,31 @@ pub enum Error {
     Unsupported(String),
 }
 
-const C0: u16 = 1 << 8;
-const C1: u16 = 1 << 9;
-const C2: u16 = 1 << 10;
-const C3: u16 = 1 << 14;
-
-pub type Ext = [u8; 10];
-
-fn ext_parts(e: &Ext) -> (bool, u16, u64) {
-    let sig = u64::from_le_bytes(e[..8].try_into().unwrap());
-    let se = u16::from_le_bytes([e[8], e[9]]);
-    (se & 0x8000 != 0, se & 0x7fff, sig)
-}
-
-fn classify_tag(x: &Ext) -> u16 {
-    let (_, exp, sig) = ext_parts(x);
-    if exp == 0 && sig == 0 {
-        1
-    } else if exp == 0x7fff || exp == 0 || sig >> 63 == 0 {
-        2
-    } else {
-        0
+fn to_abi(x: &ir::interp::X87) -> X87Abi {
+    X87Abi {
+        st: x.st,
+        control: x.control,
+        status: x.status,
+        tag: x.tag,
+        opcode: x.opcode,
+        instruction_pointer: x.instruction_pointer,
+        data_pointer: x.data_pointer,
+        instruction_selector: x.instruction_selector,
+        data_selector: x.data_selector,
     }
 }
 
-struct Fpu<'a> {
-    cpu: &'a mut Cpu,
-}
-
-impl Fpu<'_> {
-    fn top(&self) -> u16 {
-        (self.cpu.x87.status >> 11) & 7
-    }
-    fn set_top(&mut self, t: u16) {
-        self.cpu.x87.status = (self.cpu.x87.status & !(7 << 11)) | ((t & 7) << 11);
-    }
-    fn phys(&self, i: u16) -> usize {
-        ((self.top() + i) & 7) as usize
-    }
-    fn get(&self, i: u16) -> Ext {
-        self.cpu.x87.st[self.phys(i)]
-    }
-    fn set_tag(&mut self, p: usize, t: u16) {
-        self.cpu.x87.tag = (self.cpu.x87.tag & !(3 << (2 * p))) | (t << (2 * p));
-    }
-    fn set(&mut self, i: u16, v: Ext) {
-        let p = self.phys(i);
-        self.cpu.x87.st[p] = v;
-        self.set_tag(p, classify_tag(&v));
-    }
-    fn getv(&self, i: u16) -> F80 {
-        F80::from_bytes(self.get(i))
-    }
-    fn setv(&mut self, i: u16, v: F80) {
-        self.set(i, v.to_bytes())
-    }
-    fn mode(&self) -> Mode {
-        Mode::from_cw(self.cpu.x87.control)
-    }
-    /// Record the masked response: sticky exception bits, and C1 as the
-    /// operation reports it (round-up / stack fault direction).
-    fn flags(&mut self, fl: Flags) {
-        let st = &mut self.cpu.x87.status;
-        *st |= fl.exceptions();
-        *st = (*st & !C1) | if fl.contains(Flags::C1) { C1 } else { 0 };
-    }
-    fn push(&mut self, v: Ext) {
-        let t = self.top().wrapping_sub(1) & 7;
-        self.set_top(t);
-        self.set(0, v);
-    }
-    fn pop(&mut self) {
-        let p = self.phys(0);
-        self.set_tag(p, 3);
-        let t = (self.top() + 1) & 7;
-        self.set_top(t);
-    }
-    fn cc(&mut self, c: u16) {
-        self.cpu.x87.status = (self.cpu.x87.status & !(C0 | C1 | C2 | C3)) | c;
-    }
-    fn compare(&mut self, a: F80, b: F80, quiet: bool) {
-        let (r, fl) = x87::compare(a, b, quiet);
-        self.cpu.x87.status |= fl.exceptions();
-        let c = match r {
-            Cmp::Unordered => C0 | C2 | C3,
-            Cmp::Greater => 0,
-            Cmp::Less => C0,
-            Cmp::Equal => C3,
-        };
-        self.cc(c);
-    }
-    fn comi(&mut self, a: F80, b: F80, quiet: bool) {
-        let (r, fl) = x87::compare(a, b, quiet);
-        self.cpu.x87.status |= fl.exceptions();
-        // ZF 6, PF 2, CF 0; OF, SF, AF cleared.
-        let (zf, pf, cf) = match r {
-            Cmp::Unordered => (1, 1, 1),
-            Cmp::Greater => (0, 0, 0),
-            Cmp::Less => (0, 0, 1),
-            Cmp::Equal => (1, 0, 0),
-        };
-        let mask: u32 = (1 << 0) | (1 << 2) | (1 << 4) | (1 << 6) | (1 << 7) | (1 << 11);
-        self.cpu.eflags = (self.cpu.eflags & !mask) | (zf << 6) | (pf << 2) | cf;
-        self.cpu.flags_valid |= mask;
-    }
-    fn rc(&self) -> x87::Rc {
-        self.mode().rc
+fn from_abi(s: &X87Abi) -> ir::interp::X87 {
+    ir::interp::X87 {
+        st: s.st,
+        control: s.control,
+        status: s.status,
+        tag: s.tag,
+        opcode: s.opcode,
+        instruction_pointer: s.instruction_pointer,
+        data_pointer: s.data_pointer,
+        instruction_selector: s.instruction_selector,
+        data_selector: s.data_selector,
     }
 }
 
@@ -143,7 +63,6 @@ fn reg_value(cpu: &Cpu, r: Register) -> u32 {
         EBP => 5,
         ESI => 6,
         EDI => 7,
-        None => return 0,
         _ => return 0,
     };
     cpu.gpr[i]
@@ -159,359 +78,310 @@ fn ea(cpu: &Cpu, ins: &Instruction) -> u32 {
     a
 }
 
-fn st_index(r: Register) -> Option<u16> {
+fn st_index(r: Register) -> Option<u32> {
     let n = r as u32;
     let base = Register::ST0 as u32;
-    (base..base + 8).contains(&n).then(|| (n - base) as u16)
+    (base..base + 8).contains(&n).then(|| n - base)
 }
 
-fn load_mem(mem: &mut dyn Mem, addr: u32, size: MemorySize) -> Result<Ext, Error> {
-    let mut b = [0u8; 10];
-    let n = match size {
-        MemorySize::Float32 | MemorySize::Int32 => 4,
-        MemorySize::Float64 | MemorySize::Int64 => 8,
-        MemorySize::Float80 => 10,
-        MemorySize::Int16 => 2,
-        s => return Err(Error::Unsupported(format!("x87 load size {s:?}"))),
-    };
-    mem.read(addr, &mut b[..n]).map_err(Error::Memory)?;
+fn read<const N: usize>(mem: &mut dyn Mem, addr: u32) -> Result<[u8; N], Error> {
+    let mut b = [0u8; N];
+    mem.read(addr, &mut b).map_err(Error::Memory)?;
+    Ok(b)
+}
+
+/// A memory operand as an `arith`/`cmp` source.
+fn mem_source(mem: &mut dyn Mem, addr: u32, size: MemorySize) -> Result<(u32, u64), Error> {
     Ok(match size {
-        MemorySize::Float32 => F80::from_f32_bits(u32::from_le_bytes(b[..4].try_into().unwrap())).to_bytes(),
-        MemorySize::Float64 => F80::from_f64_bits(u64::from_le_bytes(b[..8].try_into().unwrap())).to_bytes(),
-        MemorySize::Float80 => b,
-        MemorySize::Int16 => F80::from_i64(i16::from_le_bytes(b[..2].try_into().unwrap()) as i64).to_bytes(),
-        MemorySize::Int32 => F80::from_i64(i32::from_le_bytes(b[..4].try_into().unwrap()) as i64).to_bytes(),
-        _ => F80::from_i64(i64::from_le_bytes(b[..8].try_into().unwrap())).to_bytes(),
+        MemorySize::Float32 => (src_kind::F32, u32::from_le_bytes(read(mem, addr)?) as u64),
+        MemorySize::Float64 => (src_kind::F64, u64::from_le_bytes(read(mem, addr)?)),
+        MemorySize::Int16 => (src_kind::I16, u16::from_le_bytes(read(mem, addr)?) as u64),
+        MemorySize::Int32 => (src_kind::I32, u32::from_le_bytes(read(mem, addr)?) as u64),
+        s => return Err(Error::Unsupported(format!("x87 source size {s:?}"))),
     })
+}
+
+/// A helper's status: OK goes on, the rest stop the fallback.
+fn check(r: u32, m: Mnemonic) -> Result<u32, Error> {
+    match r & status::MASK {
+        status::OK | status::SUPPRESS => Ok(r & !status::MASK),
+        status::MF => Err(Error::Unsupported(format!("x87 {m:?}: unmasked exception pending (#MF)"))),
+        _ => Err(Error::Unsupported(format!("x87 {m:?}: unmasked OE/UE/PE or directed-RC transcendental"))),
+    }
+}
+
+/// Phase 2 and 3 of a store: write `bytes` on OK, then commit the status
+/// word (and pop) only if the write succeeded. SUPPRESS writes nothing.
+fn store(s: &mut X87Abi, mem: &mut dyn Mem, addr: u32, m: Mnemonic, (code, sw): (u32, u16), bytes: &[u8], pop: bool) -> Result<(), Error> {
+    match code {
+        status::OK => {
+            mem.write(addr, bytes).map_err(Error::Memory)?;
+            abi::store_commit(s, sw, pop);
+        }
+        status::SUPPRESS => abi::store_commit(s, sw, false),
+        c => {
+            check(c, m)?;
+        }
+    }
+    Ok(())
 }
 
 /// Execute one x87 instruction. Returns the next EIP.
 pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, Error> {
+    let mut s = to_abi(&cpu.x87);
+    exec_on(&mut s, cpu, mem, ins)?;
+    cpu.x87 = from_abi(&s);
+    Ok(ins.next_ip32())
+}
+
+fn exec_on(s: &mut X87Abi, cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<(), Error> {
     use Mnemonic as M;
-    let next = ins.next_ip32();
     let m = ins.mnemonic();
     let has_mem = (0..ins.op_count()).any(|i| ins.op_kind(i) == OpKind::Memory);
     let addr = if has_mem { ea(cpu, ins) } else { 0 };
     let msize = ins.memory_size();
-    let regs: Vec<u16> = (0..ins.op_count()).filter_map(|i| st_index(ins.op_register(i))).collect();
-    let mut f = Fpu { cpu };
-
-    // (dst index, src value) for the binary arithmetic forms.
-    let binop = |f: &mut Fpu, mem: &mut dyn Mem| -> Result<(u16, F80, F80), Error> {
-        if has_mem {
-            let v = F80::from_bytes(load_mem(mem, addr, msize)?);
-            Ok((0, f.getv(0), v))
-        } else if regs.len() == 2 {
-            Ok((regs[0], f.getv(regs[0]), f.getv(regs[1])))
-        } else {
-            // faddp etc. with no operands: st(1) op= st(0)
-            Ok((1, f.getv(1), f.getv(0)))
-        }
+    let regs: Vec<u32> = (0..ins.op_count()).filter_map(|i| st_index(ins.op_register(i))).collect();
+    // The ST(i) operand of a one-register form, decoded as [ST0, STi] or
+    // [STi]; ST(1) when the form has none. An explicit ST(0) stays 0.
+    let sti = match regs.as_slice() {
+        [_, i] => *i,
+        [i] => *i,
+        _ => 1,
     };
-    // Apply a rounded binary operation to st(d).
-    let arith = |f: &mut Fpu, d: u16, r: (F80, Flags)| {
-        f.setv(d, r.0);
-        f.flags(r.1);
-    };
+    let ck = |r: u32| check(r, m);
     match m {
-        M::Fld | M::Fild => {
-            let v = if has_mem { load_mem(mem, addr, msize)? } else { f.get(regs[0]) };
-            f.push(v);
+        M::Fld if has_mem => {
+            let r = match msize {
+                MemorySize::Float32 => abi::ld_f32(s, u32::from_le_bytes(read(mem, addr)?)),
+                MemorySize::Float64 => abi::ld_f64(s, u64::from_le_bytes(read(mem, addr)?)),
+                MemorySize::Float80 => abi::ld_f80(s, read(mem, addr)?),
+                z => return Err(Error::Unsupported(format!("fld size {z:?}"))),
+            };
+            ck(r)?;
+        }
+        M::Fld => {
+            ck(abi::ld_st(s, sti))?;
+        }
+        M::Fild => {
+            let v = match msize {
+                MemorySize::Int16 => i16::from_le_bytes(read(mem, addr)?) as i64,
+                MemorySize::Int32 => i32::from_le_bytes(read(mem, addr)?) as i64,
+                MemorySize::Int64 => i64::from_le_bytes(read(mem, addr)?),
+                z => return Err(Error::Unsupported(format!("fild size {z:?}"))),
+            };
+            ck(abi::ld_int(s, v))?;
+        }
+        M::Fbld => {
+            ck(abi::ld_bcd(s, read(mem, addr)?))?;
         }
         M::Fld1 | M::Fldz | M::Fldpi | M::Fldl2e | M::Fldl2t | M::Fldlg2 | M::Fldln2 => {
-            let c = match m {
-                M::Fld1 => Const::One,
-                M::Fldz => Const::Z,
-                M::Fldpi => Const::Pi,
-                M::Fldl2e => Const::L2E,
-                M::Fldl2t => Const::L2T,
-                M::Fldlg2 => Const::Lg2,
-                _ => Const::Ln2,
+            let which = match m {
+                M::Fld1 => 0,
+                M::Fldz => 1,
+                M::Fldpi => 2,
+                M::Fldl2e => 3,
+                M::Fldl2t => 4,
+                M::Fldlg2 => 5,
+                _ => 6,
             };
-            let rc = f.rc();
-            f.push(F80::constant(c, rc).to_bytes());
+            ck(abi::ld_const(s, which))?;
+        }
+        M::Fst | M::Fstp if has_mem => {
+            let pop = m == M::Fstp;
+            match msize {
+                MemorySize::Float32 => {
+                    let (c, st) = abi::st_f32(s, 0);
+                    store(s, mem, addr, m, (c, st.status), &st.value.to_le_bytes(), pop)?;
+                }
+                MemorySize::Float64 => {
+                    let (c, st) = abi::st_f64(s, 0);
+                    store(s, mem, addr, m, (c, st.status), &st.value.to_le_bytes(), pop)?;
+                }
+                MemorySize::Float80 => {
+                    let (c, st) = abi::st_f80(s, 0);
+                    store(s, mem, addr, m, (c, st.status), &st.value, pop)?;
+                }
+                z => return Err(Error::Unsupported(format!("fst size {z:?}"))),
+            }
         }
         M::Fst | M::Fstp => {
-            let v = f.get(0);
-            if has_mem {
-                match msize {
-                    MemorySize::Float32 => {
-                        let (b, fl) = F80::from_bytes(v).to_f32_bits(f.mode());
-                        f.flags(fl);
-                        mem.write(addr, &b.to_le_bytes()).map_err(Error::Memory)?
-                    }
-                    MemorySize::Float64 => {
-                        let (b, fl) = F80::from_bytes(v).to_f64_bits(f.mode());
-                        f.flags(fl);
-                        mem.write(addr, &b.to_le_bytes()).map_err(Error::Memory)?
-                    }
-                    MemorySize::Float80 => mem.write(addr, &v).map_err(Error::Memory)?,
-                    s => return Err(Error::Unsupported(format!("fst size {s:?}"))),
-                }
-            } else {
-                f.set(regs[0], v);
-            }
-            if m == M::Fstp {
-                f.pop();
-            }
+            ck(abi::st_st(s, sti, m == M::Fstp))?;
         }
-        M::Fist | M::Fistp | M::Fisttp => {
-            let trunc = m == M::Fisttp;
-            let (v, mode) = (f.getv(0), f.mode());
+        M::Fist | M::Fistp => {
+            let pop = m == M::Fistp;
             match msize {
                 MemorySize::Int16 => {
-                    let (i, fl) = v.to_i16(mode, trunc);
-                    f.flags(fl);
-                    mem.write(addr, &i.to_le_bytes()).map_err(Error::Memory)?
+                    let (c, st) = abi::st_i16(s, 0);
+                    store(s, mem, addr, m, (c, st.status), &st.value.to_le_bytes(), pop)?;
                 }
                 MemorySize::Int32 => {
-                    let (i, fl) = v.to_i32(mode, trunc);
-                    f.flags(fl);
-                    mem.write(addr, &i.to_le_bytes()).map_err(Error::Memory)?
+                    let (c, st) = abi::st_i32(s, 0);
+                    store(s, mem, addr, m, (c, st.status), &st.value.to_le_bytes(), pop)?;
                 }
                 MemorySize::Int64 => {
-                    let (i, fl) = v.to_i64(mode, trunc);
-                    f.flags(fl);
-                    mem.write(addr, &i.to_le_bytes()).map_err(Error::Memory)?
+                    let (c, st) = abi::st_i64(s, 0);
+                    store(s, mem, addr, m, (c, st.status), &st.value.to_le_bytes(), pop)?;
                 }
-                s => return Err(Error::Unsupported(format!("fist size {s:?}"))),
-            }
-            if m != M::Fist {
-                f.pop();
+                z => return Err(Error::Unsupported(format!("fist size {z:?}"))),
             }
         }
-        M::Fadd | M::Faddp | M::Fiadd => {
-            let (d, a, b) = binop(&mut f, mem)?;
-            let r = x87::add(a, b, f.mode());
-            arith(&mut f, d, r);
-            if m == M::Faddp {
-                f.pop();
-            }
+        M::Fbstp => {
+            let (c, st) = abi::st_bcd(s, 0);
+            store(s, mem, addr, m, (c, st.status), &st.value, true)?;
         }
-        M::Fsub | M::Fsubp | M::Fisub => {
-            let (d, a, b) = binop(&mut f, mem)?;
-            let r = x87::sub(a, b, f.mode());
-            arith(&mut f, d, r);
-            if m == M::Fsubp {
-                f.pop();
-            }
-        }
-        M::Fsubr | M::Fsubrp | M::Fisubr => {
-            let (d, a, b) = binop(&mut f, mem)?;
-            let r = x87::sub(b, a, f.mode());
-            arith(&mut f, d, r);
-            if m == M::Fsubrp {
-                f.pop();
-            }
-        }
-        M::Fmul | M::Fmulp | M::Fimul => {
-            let (d, a, b) = binop(&mut f, mem)?;
-            let r = x87::mul(a, b, f.mode());
-            arith(&mut f, d, r);
-            if m == M::Fmulp {
-                f.pop();
-            }
-        }
-        M::Fdiv | M::Fdivp | M::Fidiv => {
-            let (d, a, b) = binop(&mut f, mem)?;
-            let r = x87::div(a, b, f.mode());
-            arith(&mut f, d, r);
-            if m == M::Fdivp {
-                f.pop();
-            }
-        }
-        M::Fdivr | M::Fdivrp | M::Fidivr => {
-            let (d, a, b) = binop(&mut f, mem)?;
-            let r = x87::div(b, a, f.mode());
-            arith(&mut f, d, r);
-            if m == M::Fdivrp {
-                f.pop();
-            }
-        }
-        M::Fchs => {
-            let mut v = f.get(0);
-            v[9] ^= 0x80;
-            f.set(0, v);
-        }
-        M::Fabs => {
-            let mut v = f.get(0);
-            v[9] &= 0x7f;
-            f.set(0, v);
-        }
-        M::Fsqrt => {
-            let r = x87::sqrt(f.getv(0), f.mode());
-            arith(&mut f, 0, r);
-        }
-        M::Fsin | M::Fcos | M::Fptan => {
-            let v = f.getv(0);
-            let t = match m {
-                M::Fsin => x87::sin(v),
-                M::Fcos => x87::cos(v),
-                _ => x87::tan(v),
+        M::Fadd | M::Faddp | M::Fiadd | M::Fsub | M::Fsubp | M::Fisub | M::Fsubr | M::Fsubrp | M::Fisubr | M::Fmul | M::Fmulp | M::Fimul | M::Fdiv | M::Fdivp | M::Fidiv | M::Fdivr | M::Fdivrp | M::Fidivr => {
+            let (op, pop) = match m {
+                M::Fadd | M::Fiadd => (arith_op::ADD, false),
+                M::Faddp => (arith_op::ADD, true),
+                M::Fsub | M::Fisub => (arith_op::SUB, false),
+                M::Fsubp => (arith_op::SUB, true),
+                M::Fsubr | M::Fisubr => (arith_op::SUBR, false),
+                M::Fsubrp => (arith_op::SUBR, true),
+                M::Fmul | M::Fimul => (arith_op::MUL, false),
+                M::Fmulp => (arith_op::MUL, true),
+                M::Fdiv | M::Fidiv => (arith_op::DIV, false),
+                M::Fdivp => (arith_op::DIV, true),
+                M::Fdivr | M::Fidivr => (arith_op::DIVR, false),
+                _ => (arith_op::DIVR, true),
             };
-            if t.out_of_range {
-                f.cc(C2);
+            let op = op | if pop { abi::ARITH_POP } else { 0 };
+            // ST(dst) = ST(dst) op src.
+            let (dst, kind, src) = if has_mem {
+                let (k, v) = mem_source(mem, addr, msize)?;
+                (0, k, v)
+            } else if let [d, r] = regs.as_slice() {
+                (*d, src_kind::ST, *r as u64)
             } else {
-                f.setv(0, t.value);
-                f.flags(t.flags);
-                f.cpu.x87.status &= !C2;
-                if m == M::Fptan {
-                    let rc = f.rc();
-                    f.push(F80::constant(Const::One, rc).to_bytes());
-                }
-            }
-        }
-        M::Fsincos => {
-            let (s, c) = x87::sincos(f.getv(0));
-            if s.out_of_range {
-                f.cc(C2);
-            } else {
-                f.setv(0, s.value);
-                f.push(c.to_bytes());
-                f.flags(s.flags);
-                f.cpu.x87.status &= !C2;
-            }
-        }
-        M::Fpatan | M::Fyl2x | M::Fyl2xp1 => {
-            let (x, y) = (f.getv(0), f.getv(1));
-            let r = match m {
-                M::Fpatan => x87::patan(y, x),
-                M::Fyl2x => x87::yl2x(y, x),
-                _ => x87::yl2xp1(y, x),
+                (1, src_kind::ST, 0)
             };
-            arith(&mut f, 1, r);
-            f.pop();
+            ck(abi::arith(s, op, dst, kind, src))?;
         }
-        M::F2xm1 => {
-            let r = x87::x2m1(f.getv(0));
-            arith(&mut f, 0, r);
-        }
-        M::Fscale => {
-            let rc = f.rc();
-            let r = x87::scale(f.getv(0), f.getv(1), rc);
-            arith(&mut f, 0, r);
-        }
-        M::Frndint => {
-            let rc = f.rc();
-            let r = x87::rndint(f.getv(0), rc);
-            arith(&mut f, 0, r);
-        }
-        M::Fprem | M::Fprem1 => {
-            let (x, y) = (f.getv(0), f.getv(1));
-            let p = if m == M::Fprem { x87::prem(x, y) } else { x87::prem1(x, y) };
-            f.setv(0, p.value);
-            f.cpu.x87.status |= p.flags.exceptions();
-            let mut c = if p.incomplete { C2 } else { 0 };
-            if p.q & 1 != 0 {
-                c |= C1;
-            }
-            if p.q & 2 != 0 {
-                c |= C3;
-            }
-            if p.q & 4 != 0 {
-                c |= C0;
-            }
-            f.cc(c);
-        }
-        M::Fxtract => {
-            let (e, sig, fl) = x87::xtract(f.getv(0));
-            f.cpu.x87.status |= fl.exceptions();
-            f.setv(0, e);
-            f.push(sig.to_bytes());
-        }
-        M::Fcom | M::Fcomp | M::Fcompp | M::Fucom | M::Fucomp | M::Fucompp | M::Ficom | M::Ficomp => {
-            let b = if has_mem {
-                F80::from_bytes(load_mem(mem, addr, msize)?)
-            } else if let Some(&r) = regs.iter().find(|&&r| r != 0).or(regs.get(1)) {
-                f.getv(r)
-            } else {
-                f.getv(1)
+        M::Fsqrt | M::Fabs | M::Fchs | M::Frndint | M::Fsin | M::Fcos | M::Fptan | M::Fpatan | M::Fyl2x | M::Fyl2xp1 | M::F2xm1 | M::Fscale | M::Fxtract | M::Fsincos | M::Fprem | M::Fprem1 => {
+            let op = match m {
+                M::Fsqrt => unary_op::SQRT,
+                M::Fabs => unary_op::ABS,
+                M::Fchs => unary_op::CHS,
+                M::Frndint => unary_op::RNDINT,
+                M::Fsin => unary_op::SIN,
+                M::Fcos => unary_op::COS,
+                M::Fptan => unary_op::TAN,
+                M::Fpatan => unary_op::PATAN,
+                M::Fyl2x => unary_op::YL2X,
+                M::Fyl2xp1 => unary_op::YL2XP1,
+                M::F2xm1 => unary_op::X2M1,
+                M::Fscale => unary_op::SCALE,
+                M::Fxtract => unary_op::XTRACT,
+                M::Fsincos => unary_op::SINCOS,
+                M::Fprem => unary_op::PREM,
+                _ => unary_op::PREM1,
             };
-            let a = f.getv(0);
-            f.compare(a, b, matches!(m, M::Fucom | M::Fucomp | M::Fucompp));
-            match m {
-                M::Fcomp | M::Fucomp | M::Ficomp => f.pop(),
-                M::Fcompp | M::Fucompp => {
-                    f.pop();
-                    f.pop();
-                }
-                _ => {}
-            }
+            ck(abi::unary(s, op))?;
+        }
+        M::Fcom | M::Fcomp | M::Fcompp | M::Fucom | M::Fucomp | M::Fucompp | M::Ficom | M::Ficomp | M::Ftst => {
+            let kind = match m {
+                M::Fucom | M::Fucomp | M::Fucompp => 1,
+                M::Ficom | M::Ficomp => 2,
+                _ => 0,
+            };
+            let pop = match m {
+                M::Fcomp | M::Fucomp | M::Ficomp => 1,
+                M::Fcompp | M::Fucompp => 2,
+                _ => 0,
+            };
+            let (skind, src) = if m == M::Ftst {
+                (src_kind::F32, 0)
+            } else if has_mem {
+                mem_source(mem, addr, msize)?
+            } else {
+                (src_kind::ST, sti as u64)
+            };
+            // C3/C2/C0 are already in the status word.
+            ck(abi::cmp(s, kind, skind, src, pop, false))?;
         }
         M::Fcomi | M::Fcomip | M::Fucomi | M::Fucomip => {
-            let b = f.getv(*regs.get(1).unwrap_or(&1));
-            let a = f.getv(0);
-            f.comi(a, b, matches!(m, M::Fucomi | M::Fucomip));
-            if matches!(m, M::Fcomip | M::Fucomip) {
-                f.pop();
+            let kind = if matches!(m, M::Fucomi | M::Fucomip) { 1 } else { 0 };
+            let pop = matches!(m, M::Fcomip | M::Fucomip) as u32;
+            let r = abi::cmp(s, kind, src_kind::ST, sti as u64, pop, true);
+            let low = ck(r)?;
+            // OF, SF, AF cleared; ZF/PF/CF from the compare unless it was
+            // suppressed.
+            let zpc = abi::EFL_ZF | abi::EFL_PF | abi::EFL_CF;
+            let mut clear = (1 << 4) | (1 << 7) | (1 << 11);
+            if r & status::MASK != status::SUPPRESS {
+                clear |= zpc;
             }
-        }
-        M::Ftst => {
-            let a = f.getv(0);
-            f.compare(a, F80::ZERO, false);
+            cpu.eflags = (cpu.eflags & !clear) | (low & zpc & clear);
+            cpu.flags_valid |= zpc | (1 << 4) | (1 << 7) | (1 << 11);
         }
         M::Fxam => {
-            let p = f.phys(0);
-            let empty = (f.cpu.x87.tag >> (2 * p)) & 3 == 3;
-            let v = f.get(0);
-            let (sign, exp, sig) = ext_parts(&v);
-            let class = if empty {
-                C3 | C0
-            } else if exp == 0x7fff {
-                if sig << 1 == 0 { C2 | C0 } else { C0 }
-            } else if exp == 0 && sig == 0 {
-                C3
-            } else if exp == 0 {
-                C3 | C2
-            } else {
-                C2
-            };
-            f.cc(class | if sign { C1 } else { 0 });
+            ck(abi::xam(s))?;
         }
         M::Fxch => {
-            let i = *regs.iter().find(|&&r| r != 0).unwrap_or(&1);
-            let (a, b) = (f.get(0), f.get(i));
-            f.set(0, b);
-            f.set(i, a);
+            ck(abi::xch(s, sti))?;
         }
         M::Fnstsw | M::Fstsw => {
-            let s = f.cpu.x87.status;
+            if m == M::Fstsw {
+                ck(abi::wait(s))?;
+            }
             if has_mem {
-                mem.write(addr, &s.to_le_bytes()).map_err(Error::Memory)?;
+                mem.write(addr, &s.status.to_le_bytes()).map_err(Error::Memory)?;
             } else {
-                f.cpu.gpr[0] = (f.cpu.gpr[0] & 0xffff_0000) | s as u32;
+                cpu.gpr[0] = (cpu.gpr[0] & 0xffff_0000) | s.status as u32;
             }
         }
-        M::Fnstcw | M::Fstcw => mem.write(addr, &f.cpu.x87.control.to_le_bytes()).map_err(Error::Memory)?,
+        M::Fnstcw | M::Fstcw => {
+            if m == M::Fstcw {
+                ck(abi::wait(s))?;
+            }
+            mem.write(addr, &s.control.to_le_bytes()).map_err(Error::Memory)?;
+        }
         M::Fldcw => {
-            let mut b = [0u8; 2];
-            mem.read(addr, &mut b).map_err(Error::Memory)?;
-            f.cpu.x87.control = u16::from_le_bytes(b);
+            ck(abi::ldcw(s, u16::from_le_bytes(read(mem, addr)?)))?;
         }
         M::Fninit | M::Finit => {
-            f.cpu.x87 = ir::interp::X87::default();
-        }
-        M::Fnclex | M::Fclex => f.cpu.x87.status &= 0x7f00,
-        M::Ffree | M::Ffreep => {
-            let p = f.phys(regs[0]);
-            f.set_tag(p, 3);
-            if m == M::Ffreep {
-                f.pop();
+            if m == M::Finit {
+                ck(abi::wait(s))?;
             }
+            abi::init(s);
+        }
+        M::Fnclex | M::Fclex => {
+            if m == M::Fclex {
+                ck(abi::wait(s))?;
+            }
+            abi::clex(s);
+        }
+        M::Fnstenv | M::Fstenv | M::Fnsave | M::Fsave => {
+            if matches!(m, M::Fstenv | M::Fsave) {
+                ck(abi::wait(s))?;
+            }
+            let op = if matches!(m, M::Fnstenv | M::Fstenv) { abi::env_op::FNSTENV } else { abi::env_op::FNSAVE };
+            let image = abi::save_image(s, op);
+            mem.write(addr, &image[..abi::env_len(op)]).map_err(Error::Memory)?;
+            abi::save_commit(s, op);
+        }
+        M::Fldenv | M::Frstor => {
+            ck(abi::wait(s))?;
+            let op = if m == M::Fldenv { abi::env_op::FLDENV } else { abi::env_op::FRSTOR };
+            let mut image = [0u8; 108];
+            mem.read(addr, &mut image[..abi::env_len(op)]).map_err(Error::Memory)?;
+            ck(abi::load_env(s, op, &image))?;
+        }
+        M::Ffree | M::Ffreep => {
+            ck(abi::free(s, sti, m == M::Ffreep))?;
         }
         M::Fincstp => {
-            let t = (f.top() + 1) & 7;
-            f.set_top(t);
+            ck(abi::adj_top(s, 1))?;
         }
         M::Fdecstp => {
-            let t = f.top().wrapping_sub(1) & 7;
-            f.set_top(t);
+            ck(abi::adj_top(s, -1))?;
         }
-        M::Wait | M::Fnop => {}
+        M::Wait | M::Fnop => {
+            ck(abi::wait(s))?;
+        }
         M::Fcmovb | M::Fcmove | M::Fcmovbe | M::Fcmovu | M::Fcmovnb | M::Fcmovne | M::Fcmovnbe | M::Fcmovnu => {
-            let fl = f.cpu.eflags;
+            let fl = cpu.eflags;
             let (cf, zf, pf) = (fl & 1 != 0, fl & 0x40 != 0, fl & 4 != 0);
-            let c = match m {
+            let take = match m {
                 M::Fcmovb => cf,
                 M::Fcmove => zf,
                 M::Fcmovbe => cf || zf,
@@ -521,54 +391,136 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
                 M::Fcmovnbe => !(cf || zf),
                 _ => !pf,
             };
-            if c {
-                let v = f.get(regs[1]);
-                f.set(0, v);
-            }
+            ck(abi::cmov(s, sti, take))?;
         }
         other => return Err(Error::Unsupported(format!("x87 {other:?}"))),
     }
-    Ok(next)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use iced_x86::{Decoder, DecoderOptions};
+    use x87::F80;
 
-    struct NoMem;
-    impl Mem for NoMem {
-        fn read(&mut self, addr: u32, _: &mut [u8]) -> Result<(), u32> {
-            Err(addr)
+    /// 64 bytes of guest memory at 0x2000.
+    struct Buf([u8; 64]);
+    impl Mem for Buf {
+        fn read(&mut self, addr: u32, buf: &mut [u8]) -> Result<(), u32> {
+            let at = addr.checked_sub(0x2000).ok_or(addr)? as usize;
+            buf.copy_from_slice(self.0.get(at..at + buf.len()).ok_or(addr)?);
+            Ok(())
         }
-        fn write(&mut self, addr: u32, _: &[u8]) -> Result<(), u32> {
-            Err(addr)
+        fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), u32> {
+            let at = addr.checked_sub(0x2000).ok_or(addr)? as usize;
+            self.0.get_mut(at..at + data.len()).ok_or(addr)?.copy_from_slice(data);
+            Ok(())
+        }
+    }
+
+    fn run_with(cpu: &mut Cpu, mem: &mut Buf, code: &[u8]) {
+        let mut d = Decoder::with_ip(32, code, 0x1000, DecoderOptions::NONE);
+        while d.can_decode() {
+            let ins = d.decode();
+            assert!(exec(cpu, mem, &ins).is_ok(), "{:?}", ins.mnemonic());
         }
     }
 
     fn run(cpu: &mut Cpu, code: &[u8]) {
-        let mut d = Decoder::with_ip(32, code, 0x1000, DecoderOptions::NONE);
-        while d.can_decode() {
-            let ins = d.decode();
-            assert!(exec(cpu, &mut NoMem, &ins).is_ok(), "{:?}", ins.mnemonic());
-        }
+        run_with(cpu, &mut Buf([0; 64]), code)
     }
+
+    fn st(cpu: &Cpu, i: u32) -> Option<F80> {
+        to_abi(&cpu.x87).st(i)
+    }
+
+    const IE: u16 = abi::H2_FP_IE;
+    const DE: u16 = abi::H2_FP_DE;
+    const SF: u16 = abi::H2_FP_SF;
 
     #[test]
     fn arithmetic_goes_through_the_soft_float() {
         // fld1; fadd st(0),st(0); fsqrt  -> sqrt(2) rounded at PC=64
         let mut cpu = Cpu::default();
         run(&mut cpu, &[0xd9, 0xe8, 0xd8, 0xc0, 0xd9, 0xfa]);
-        let f = Fpu { cpu: &mut cpu };
-        let two = x87::add(F80::ONE, F80::ONE, f.mode()).0;
-        assert_eq!(f.getv(0), x87::sqrt(two, f.mode()).0);
+        let mode = x87::Mode::from_cw(cpu.x87.control);
+        let two = x87::add(F80::ONE, F80::ONE, mode).0;
+        assert_eq!(st(&cpu, 0), Some(x87::sqrt(two, mode).0));
+        assert_eq!(cpu.x87.status & 0x7f & !abi::H2_FP_PE, 0);
     }
 
     #[test]
     fn constants_follow_the_rounding_control() {
         let mut cpu = Cpu::default();
         run(&mut cpu, &[0xd9, 0xeb]); // fldpi
-        let f = Fpu { cpu: &mut cpu };
-        assert_eq!(f.getv(0), F80::constant(Const::Pi, x87::Rc::Near));
+        assert_eq!(st(&cpu, 0), Some(F80::constant(x87::Const::Pi, x87::Rc::Near)));
+    }
+
+    #[test]
+    fn empty_stack_arithmetic_is_a_stack_fault() {
+        // fninit; fadd st(0),st(0)
+        let mut cpu = Cpu::default();
+        run(&mut cpu, &[0xdb, 0xe3, 0xd8, 0xc0]);
+        assert_eq!(cpu.x87.status & (IE | SF), IE | SF);
+        assert_eq!(cpu.x87.status & abi::SW_C1, 0);
+        assert_eq!(st(&cpu, 0), Some(F80::INDEFINITE));
+    }
+
+    #[test]
+    fn stack_overflow_is_a_stack_fault() {
+        // nine fld1
+        let mut cpu = Cpu::default();
+        run(&mut cpu, &[0xd9, 0xe8].repeat(9));
+        assert_eq!(cpu.x87.status & (IE | SF), IE | SF);
+        assert_ne!(cpu.x87.status & abi::SW_C1, 0, "C1 marks overflow");
+        assert_eq!(st(&cpu, 0), Some(F80::INDEFINITE));
+    }
+
+    #[test]
+    fn loads_raise_source_format_exceptions() {
+        // fld dword [0x2000]: an f32 denormal sets DE.
+        let fld = [0xd9, 0x05, 0x00, 0x20, 0x00, 0x00];
+        let mut cpu = Cpu::default();
+        let mut mem = Buf([0; 64]);
+        mem.0[..4].copy_from_slice(&1u32.to_le_bytes());
+        run_with(&mut cpu, &mut mem, &fld);
+        assert_eq!(cpu.x87.status & (IE | DE), DE);
+
+        // An SNaN raises IE and is quieted.
+        let mut cpu = Cpu::default();
+        mem.0[..4].copy_from_slice(&0x7f80_0001u32.to_le_bytes());
+        run_with(&mut cpu, &mut mem, &fld);
+        assert_eq!(cpu.x87.status & (IE | DE), IE);
+        let v = st(&cpu, 0).unwrap();
+        assert_eq!(v.classify(), x87::Class::QNaN);
+
+        // Memory arithmetic with a denormal source sets DE too.
+        let mut cpu = Cpu::default();
+        mem.0[..4].copy_from_slice(&1u32.to_le_bytes());
+        run_with(&mut cpu, &mut mem, &[0xd9, 0xe8, 0xd8, 0x05, 0x00, 0x20, 0x00, 0x00]); // fld1; fadd dword [0x2000]
+        assert_ne!(cpu.x87.status & DE, 0);
+    }
+
+    #[test]
+    fn fxch_st0_keeps_the_stack() {
+        // fldz; fld1; fxch st(0)
+        let mut cpu = Cpu::default();
+        run(&mut cpu, &[0xd9, 0xee, 0xd9, 0xe8, 0xd9, 0xc8]);
+        assert_eq!(st(&cpu, 0), Some(F80::ONE));
+        assert_eq!(st(&cpu, 1), Some(F80::ZERO));
+        // fxch st(1) swaps.
+        run(&mut cpu, &[0xd9, 0xc9]);
+        assert_eq!(st(&cpu, 0), Some(F80::ZERO));
+    }
+
+    #[test]
+    fn stores_write_and_pop() {
+        // fld1; fstp dword [0x2000]
+        let mut cpu = Cpu::default();
+        let mut mem = Buf([0; 64]);
+        run_with(&mut cpu, &mut mem, &[0xd9, 0xe8, 0xd9, 0x1d, 0x00, 0x20, 0x00, 0x00]);
+        assert_eq!(&mem.0[..4], &1.0f32.to_bits().to_le_bytes());
+        assert_eq!(st(&cpu, 0), None);
     }
 }

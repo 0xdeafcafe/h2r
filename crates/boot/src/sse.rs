@@ -75,8 +75,9 @@ fn cmp(pred: u8, a: f32, b: f32) -> bool {
         2 => a <= b,
         3 => a.is_nan() || b.is_nan(),
         4 => a != b,
-        5 => !(a < b),
-        6 => !(a <= b),
+        // NLT/NLE are true when unordered: not `>=`/`>`.
+        5 => a.partial_cmp(&b).is_none_or(|o| o.is_ge()),
+        6 => a.partial_cmp(&b).is_none_or(|o| o.is_gt()),
         _ => !(a.is_nan() || b.is_nan()),
     }
 }
@@ -223,4 +224,15 @@ pub fn exec(cpu: &mut Cpu, mem: &mut dyn Mem, ins: &Instruction) -> Result<u32, 
         other => return Err(Error::Unsupported(format!("sse {other:?}"))),
     }
     Ok(next)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn negated_predicates_are_true_when_unordered() {
+        let n = f32::NAN;
+        assert!(super::cmp(5, n, 1.0) && super::cmp(6, 1.0, n));
+        assert!(super::cmp(5, 2.0, 1.0) && super::cmp(5, 1.0, 1.0) && !super::cmp(5, 0.0, 1.0));
+        assert!(super::cmp(6, 2.0, 1.0) && !super::cmp(6, 1.0, 1.0));
+    }
 }

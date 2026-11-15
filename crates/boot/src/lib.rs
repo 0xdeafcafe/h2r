@@ -173,7 +173,7 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
             rows.push((e.addr, f));
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
-        let conflicts = fallback::init(xbe_bytes, &rows, &res);
+        let conflicts = fallback::init(xbe_bytes, &rows, &res).map_err(anyhow::Error::msg)?;
         if conflicts != 0 {
             eprintln!("warning: {conflicts} selectors map to more than one handler");
         }
@@ -254,13 +254,18 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
     // Keep Halo's fixed arena, physical [0x61000, 0x3145000), free, with its
     // contiguous window at 0x80061000 and (boot addition) its write-combined
     // window at 0xf0061000, so MmAllocateContiguousMemoryEx can return
-    // exactly what the game assumes.
+    // exactly what the game assumes. The write-combined window is a boot
+    // stopgap: --no-stopgaps leaves it out.
     let mut options = runtime::loader::LoadOptions::halo2();
-    for r in &mut options.physical_reservations {
-        r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
+    if opts.stopgaps {
+        for r in &mut options.physical_reservations {
+            r.aliases.push(d3d_glue::WC_BASE | r.physical.start);
+        }
     }
     let mut loaded = runtime::load_xbe_with(xbe_bytes, &options).context("mapping the XBE")?;
-    d3d_glue::map_reserved_write_combined(&loaded.runtime)?;
+    if opts.stopgaps {
+        d3d_glue::map_reserved_write_combined(&loaded.runtime)?;
+    }
     for n in &loaded.permission_notes {
         log::note(&format!("page {:#x} widened to {:?}", n.page, n.effective));
     }
@@ -344,10 +349,10 @@ pub fn run(xbe_bytes: &[u8], dylib: &Path, opts: &RunOpts) -> Result<RunReport> 
         if !matches!(outcome, kernel::RunOutcome::SliceLimit) {
             break;
         }
-        if let Some(x) = &xa {
-            if xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))).is_err() {
-                input_errors += 1;
-            }
+        if let Some(x) = &xa
+            && xapi::service_input(&loaded.runtime, x, &mut xapi_glue::KernelEvents(Arc::clone(&k))).is_err()
+        {
+            input_errors += 1;
         }
     }
     let secs = t.elapsed().as_secs_f64();

@@ -1,11 +1,11 @@
-//! The two emitter imports the runtime does not export yet
-//! (RUNTIME-CONTRACT.md §1.3, §1.4), and the bridge table that forwards the
-//! rest to the runtime's own `h2abi_v1_*` functions.
+//! The bridge table that forwards the emitter's imports to the runtime's
+//! `h2abi_v1_*` and `h2shim_v1_rdtsc`, and boot's own `h2shim_v1_event` and
+//! `h2shim_v1_unsupported` (RUNTIME-CONTRACT.md §1.3, §1.4).
 //!
-//! The runtime has no `Event` variant for a guest exception or an
-//! unsupported instruction, so these record an `UnrecordedFault { pc }`
-//! (which gives a valid event id for the FAULT/STOP transfer) and keep the
-//! real description in a side table keyed by thread and PC.
+//! The runtime exports those two as well; boot keeps its own because the
+//! fallback needs the description. They record an `UnrecordedFault { pc }`
+//! (a valid event id for the FAULT/STOP transfer) and keep the text in a
+//! side table keyed by thread and PC, which `is_unsupported` reads.
 
 use std::ffi::{CStr, c_char};
 

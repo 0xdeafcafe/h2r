@@ -20,7 +20,7 @@ libloading = "0.8"
 d3d = { path = "../d3d" }
 gfx = { path = "../gfx" }
 png = "0.18"
-x87 = { path = "../x87", default-features = false }
+x87 = { path = "../x87" }
 dsound = { path = "../dsound" }
 audio = { path = "../audio", default-features = false }
 bink-hle = { path = "../bink-hle" }

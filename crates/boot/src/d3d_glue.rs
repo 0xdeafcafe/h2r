@@ -1,7 +1,8 @@
 //! Installs crates/d3d through its own registration (`d3d::register`,
 //! docs/d3d.md "Integration") on a headless RecordingBackend, so the boot
-//! tracer gets past device creation without a window. There is no write
-//! barrier yet, so the device runs with `UploadPolicy::Always`.
+//! tracer gets past device creation without a window (or on a headless
+//! GfxBackend with `H2_BOOT_GFX`). Uploads are `UploadPolicy::Tracked`,
+//! fed by the write barrier below.
 
 use std::sync::{Arc, Mutex};
 
@@ -16,6 +17,15 @@ pub struct Installed {
     pub implemented: usize,
     pub stopping: usize,
     pub native: usize,
+    /// The entries the write barrier wraps, in shadow-slot order.
+    barrier: Vec<u32>,
+}
+
+impl Installed {
+    /// Where the write barrier moved `entry`'s real handler.
+    pub fn barrier_shadow(&self, entry: u32) -> Option<u32> {
+        self.barrier.iter().position(|&e| e == entry).map(|i| BARRIER_SHADOW + 4 * i as u32)
+    }
 }
 
 /// `d3d::register` on a headless `RecordingBackend`, or, with
@@ -30,12 +40,12 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<Installed> {
         Some(dir) => {
             let dir = std::path::PathBuf::from(dir);
             std::fs::create_dir_all(&dir)?;
-            let every: u64 = std::env::var("H2_BOOT_GFX_EVERY").ok().and_then(|v| v.parse().ok()).unwrap_or(30);
+            let every: u64 = std::env::var("H2_BOOT_GFX_EVERY").ok().and_then(|v| v.parse().ok()).filter(|&n| n > 0).unwrap_or(30);
             let ctx = gfx::GfxContext::headless().map_err(|e| anyhow::anyhow!("gfx headless context: {e}"))?;
             let mut swaps = 0u64;
             let backend = d3d::GfxBackend::new(ctx).on_present(move |ctx, store, id, _flags| {
                 swaps += 1;
-                if swaps != 1 && swaps % every != 0 {
+                if swaps != 1 && !swaps.is_multiple_of(every) {
                     return;
                 }
                 if let Err(e) = save_png(ctx, store, id, &dir.join(format!("frame-{swaps:05}.png"))) {
@@ -56,11 +66,11 @@ fn save_png(
     let (mut px, order) = store.read_color(ctx, id).map_err(|e| anyhow::anyhow!("{e:?}"))?;
     let d = store.get(id).map_err(|e| anyhow::anyhow!("{e:?}"))?.desc();
     if matches!(order, gfx::surface::HostPixelOrder::Bgra8) {
-        for p in px.chunks_exact_mut(4) {
+        for p in px.as_chunks_mut::<4>().0 {
             p.swap(0, 2);
         }
     }
-    for p in px.chunks_exact_mut(4) {
+    for p in px.as_chunks_mut::<4>().0 {
         p[3] = 0xff; // X8R8G8B8 back buffer: alpha is undefined
     }
     let f = std::io::BufWriter::new(std::fs::File::create(path)?);
@@ -114,6 +124,7 @@ fn install_with<B: d3d::backend::Backend + Send + 'static>(rt: &runtime::Runtime
         implemented: r.implemented.len(),
         stopping: r.stopping.len(),
         native: r.native.len(),
+        barrier: entries,
     })
 }
 
@@ -325,8 +336,12 @@ const BARRIER_SHADOW: u32 = 0xa0ff_4000;
 /// - on entry, the pages written since the last drain (lifted code, the
 ///   interpreter, kernel and HLE copies) go to `Device::note_write`, before
 ///   the device reads any resource;
-/// - after the entry returns, the pages it wrote are drained and dropped:
-///   the device notes its own stores itself.
+/// - nothing is drained on return. The entry is a guest call: runner safe
+///   points, interrupts and other contexts can store between the entry
+///   drain and the return, and dropping the pages then would lose those
+///   stores. The device's own stores are therefore reported back to it at
+///   the next entry, which costs a re-check of a page it already has (its
+///   render-target writebacks it invalidates itself).
 ///
 /// The device's tracker keeps only the pages it watches, so watching all of
 /// RAM here costs a bit per store and nothing more.
@@ -360,10 +375,7 @@ fn install_write_barrier<B: d3d::backend::Backend + Send + 'static>(
                 }
                 let ret_pc = mem.u32(cpu.esp)?;
                 cpu.esp = cpu.esp.wrapping_add(4);
-                ctx.call_guest(cpu, &mut mem, shadow, move |_cpu, ctx| {
-                    let _ = ctx.runtime().memory().take_dirty(id);
-                    Ok(runtime::TransferAbi::ret(ret_pc))
-                })
+                ctx.call_guest(cpu, &mut mem, shadow, move |_, _| Ok(runtime::TransferAbi::ret(ret_pc)))
             }) else {
                 continue;
             };

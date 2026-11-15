@@ -72,7 +72,9 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   - When generated code stops on an instruction the lifter doesn't lower,
     the trampoline interprets from there with `ir::interp`.
   - x87 and leftover SSE instructions go to the emulators in `x87.rs`
-    (ext80 storage, f64 arithmetic per docs/FLOAT.md) and `sse.rs`.
+    (a decoder over crates/x87's `abi` state machine, so stack faults,
+    source-format exceptions and condition codes match what generated
+    code will get) and `sse.rs`.
   - Control goes back to generated code at the next registered entry or
     resume, call or return.
 - **`stopgaps.rs`, `wrappers.rs`**: boot-only kernel behaviour, each a
@@ -86,8 +88,9 @@ file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
   (or `GfxBackend` with `H2_BOOT_GFX`), with `UploadPolicy::Tracked`.
   The write barrier subscribes to the runtime's write watch over all of
   RAM and wraps every d3d entry: on entry, `take_dirty` goes to
-  `Device::note_write`; on return, the device's own stores are drained
-  and dropped.
+  `Device::note_write`. Nothing is drained on return: other contexts can
+  store while the call is in flight, so the device's own stores come back
+  to it at the next entry instead.
 - **`dsound_glue.rs`**: `dsound::register`. Completion events go to
   `Kernel::signal_event`.
 - **`xapi_glue.rs`**: `xapi::register` with a kernel-VFS `Storage` and a

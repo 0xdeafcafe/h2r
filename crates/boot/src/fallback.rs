@@ -50,28 +50,42 @@ struct State {
     cache: HashMap<u32, ir::IrInsn>,
 }
 
+/// Set by the first [`init`]; never cleared.
+static CLAIMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Remember the image for lazy lifting; build the selector tables.
-pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, u32)]) -> usize {
-    let _ = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice()));
+///
+/// The tables, image and interpreter are process-wide and hold the first
+/// module's handler pointers, so one process loads one generated module:
+/// a second call is refused before anything is registered, and the caller
+/// must keep the first module's library loaded for as long as its runtime
+/// can reach the trampoline. Returns the count of resume selectors that
+/// map to more than one handler.
+pub fn init(xbe_bytes: &[u8], entries: &[(u32, GuestFn)], resumes: &[(u32, u32, u32)]) -> Result<usize, String> {
+    if CLAIMED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("the boot fallback serves one generated module per process; a second load was refused".into());
+    }
     let mut handlers: HashMap<u32, GuestFn> = entries.iter().copied().collect();
     let owners: HashMap<u32, GuestFn> = entries.iter().copied().collect();
     let mut conflicts = 0;
-    for &(pc, owner, start) in resumes {
-        let f = owners[&owner];
+    for &(_, owner, start) in resumes {
+        let f = *owners.get(&owner).ok_or_else(|| format!("resume owner {owner:#x} is not an entry"))?;
         if let Some(old) = handlers.insert(start, f)
             && old as usize != f as usize
         {
             conflicts += 1;
         }
-        let _ = pc;
     }
-    let _ = TABLES.set(Tables {
+    let tables = Tables {
         handlers,
         entries: entries.iter().map(|e| e.0).collect(),
         resumes: resumes.iter().map(|r| r.0).collect(),
-    });
+    };
+    // CLAIMED guarantees these are unset.
+    let set = XBE.set(Box::leak(xbe_bytes.to_vec().into_boxed_slice())).is_ok() && TABLES.set(tables).is_ok();
+    assert!(set, "fallback tables set outside init");
     *STATS.lock().unwrap() = Some(Stats::default());
-    conflicts
+    Ok(conflicts)
 }
 
 fn state() -> &'static Mutex<State> {
@@ -367,4 +381,21 @@ pub fn install_unread_targets(rt: &runtime::Runtime) -> usize {
         }
     });
     n
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    unsafe extern "C" fn one(_: *mut CpuAbi, _: *mut ExecCtxOpaque, _: u32) -> TransferAbi {
+        TransferAbi::ret(0)
+    }
+
+    #[test]
+    fn a_second_module_is_refused() {
+        assert_eq!(init(&[], &[(0x1000, one as GuestFn)], &[]), Ok(0));
+        assert!(init(&[], &[(0x2000, one as GuestFn)], &[]).is_err());
+        let t = TABLES.get().unwrap();
+        assert!(t.entries.contains(&0x1000) && !t.entries.contains(&0x2000));
+    }
 }

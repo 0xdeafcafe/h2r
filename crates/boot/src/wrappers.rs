@@ -68,11 +68,11 @@ fn network_open(
             let mut b = [0u8; 56];
             match cpu.eax {
                 0 => {
-                    for i in 0..32 {
-                        b[i] = mem.u8(basic + i as u32)?;
+                    for (i, x) in b[..32].iter_mut().enumerate() {
+                        *x = mem.u8(basic + i as u32)?;
                     }
-                    for i in 0..4 {
-                        b[48 + i] = mem.u8(basic + 32 + i as u32)?;
+                    for (i, x) in b[48..52].iter_mut().enumerate() {
+                        *x = mem.u8(basic + 32 + i as u32)?;
                     }
                 }
                 0xc000_0022 => b[48] = 0x80,
