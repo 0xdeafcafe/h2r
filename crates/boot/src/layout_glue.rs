@@ -61,9 +61,9 @@ const TEXT_SIZE: u32 = 0x2c;
 const PROFILE_COPY_LAYOUT: u32 = 0x176c + 0x104;
 
 /// Our guest memory: strings, then the new pane tables.
-const DATA_BASE: u32 = 0xa0ff_8000;
+const DATA_BASE: u32 = 0xa2f0_0000;
 const DATA_SIZE: u32 = 0x1_0000;
-const SHADOW_BASE: u32 = 0xa0ff_6000;
+const SHADOW_BASE: u32 = 0xa2f1_0000;
 
 pub const ADDED: [Layout; 3] = [Layout::BumperJumper, Layout::Recon, Layout::WalkieTalkie];
 
@@ -346,9 +346,28 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         shadow += 4;
         shadow - 4
     };
+    // Resolve every original first: `resolve_original` takes the dispatch read
+    // lock, which `edit_dispatch` holds for writing, so doing it inside the
+    // closure deadlocks.
+    let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> = [
+        ACTION_TABLE_BUILD,
+        LIST_DATA_NEW,
+        ROW_TEXT,
+        ROW_SELECTED,
+        INITIAL_ROW,
+        PANE_SET,
+        SCREEN_TAG,
+        TEXT_SET,
+        LOCALE_FIND,
+        PROFILE_ROWS,
+        CONTROLS_ROW_TEXT,
+    ]
+    .into_iter()
+    .filter_map(|a| original(rt, a).map(|o| (a, o)))
+    .collect();
     rt.edit_dispatch(|d| {
         // Layout table: original, then ours for bytes 4 to 6.
-        if let Some(o) = original(rt, ACTION_TABLE_BUILD) {
+        if let Some(o) = originals.remove(&ACTION_TABLE_BUILD) {
             let sh = alias(d, &mut next_shadow, &o, ACTION_TABLE_BUILD);
             d.register_override(ACTION_TABLE_BUILD, "layouts:table", move |cpu, ctx, _| {
                 let player = cpu.eax;
@@ -360,7 +379,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         // List size.
-        if let Some(o) = original(rt, LIST_DATA_NEW) {
+        if let Some(o) = originals.remove(&LIST_DATA_NEW) {
             d.register_override(LIST_DATA_NEW, "layouts:list", move |cpu, ctx, _| {
                 {
                     let mut mem = ctx.runtime().memory();
@@ -374,7 +393,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         // Row text.
-        if let Some(o) = original(rt, ROW_TEXT) {
+        if let Some(o) = originals.remove(&ROW_TEXT) {
             d.register_override(ROW_TEXT, "layouts:row-text", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
@@ -388,7 +407,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         // Row chosen.
-        if let Some(o) = original(rt, ROW_SELECTED) {
+        if let Some(o) = originals.remove(&ROW_SELECTED) {
             let sh = alias(d, &mut next_shadow, &o, ROW_SELECTED);
             d.register_override(ROW_SELECTED, "layouts:row-selected", move |cpu, ctx, _| {
                 let row = {
@@ -405,7 +424,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         // Initial row.
-        if let Some(o) = original(rt, INITIAL_ROW) {
+        if let Some(o) = originals.remove(&INITIAL_ROW) {
             d.register_override(INITIAL_ROW, "layouts:initial-row", move |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
@@ -424,7 +443,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         // Pane for a row.
-        if let Some(o) = original(rt, PANE_SET) {
+        if let Some(o) = originals.remove(&PANE_SET) {
             d.register_override(PANE_SET, "layouts:pane", move |cpu, ctx, _| {
                 {
                     let mut mem = ctx.runtime().memory();
@@ -441,7 +460,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         // The screen's tag: add panes once.
-        if let Some(o) = original(rt, SCREEN_TAG) {
+        if let Some(o) = originals.remove(&SCREEN_TAG) {
             let sh = alias(d, &mut next_shadow, &o, SCREEN_TAG);
             let o2 = Arc::clone(&o);
             d.register_override(SCREEN_TAG, "layouts:panes", move |cpu, ctx, _| {
@@ -468,7 +487,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
         }
         // Value text on the Controls list and the Edit Profile screen: the
         // game gives a layout byte it does not know the empty id 0.
-        if let Some(o) = original(rt, TEXT_SET) {
+        if let Some(o) = originals.remove(&TEXT_SET) {
             d.register_override(TEXT_SET, "layouts:text", move |cpu, ctx, _| {
                 let pending = PENDING_VALUE.load(Ordering::Relaxed);
                 if pending != 0 {
@@ -484,7 +503,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             });
         }
         for (addr, name) in [(PROFILE_ROWS, "layouts:profile-rows"), (CONTROLS_ROW_TEXT, "layouts:controls-row")] {
-            if let Some(o) = original(rt, addr) {
+            if let Some(o) = originals.remove(&addr) {
                 let sh = alias(d, &mut next_shadow, &o, addr);
                 d.register_override(addr, name, move |cpu, ctx, _| {
                     let at = if addr == PROFILE_ROWS { cpu.ecx + PROFILE_COPY_LAYOUT } else { EDIT_LAYOUT };
@@ -497,7 +516,7 @@ pub fn install(rt: &runtime::Runtime) -> anyhow::Result<()> {
             }
         }
         // Our strings.
-        if let Some(o) = original(rt, LOCALE_FIND) {
+        if let Some(o) = originals.remove(&LOCALE_FIND) {
             d.register_override(LOCALE_FIND, "layouts:strings", move |cpu, ctx, _| {
                 if is_ours(cpu.edi)
                     && let Some((_, a)) = STRING_ADDRS.get().and_then(|v| v.iter().find(|(i, _)| *i == cpu.edi))
@@ -533,7 +552,8 @@ fn row_text(
     let ret_pc = mem.u32(cpu.esp)?;
     cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
     let (esi, edi) = (cpu.esi, cpu.edi);
-    for v in [6, 0, 0] {
+    // The game pushes 0, 0, 6, so 6 is on top.
+    for v in [0, 0, 6] {
         push(mem, cpu, v)?;
     }
     cpu.ecx = widget;
@@ -777,5 +797,21 @@ mod tests {
         put(&mut f, wgit + 0x20, &5u32.to_le_bytes());
         assert_eq!(extend_panes(&mut f, wgit, &mut alloc), Some(false));
         assert_eq!(alloc, 0x20_0000);
+    }
+
+    #[test]
+    fn install_returns_on_a_runtime_without_the_game() {
+        // `resolve_original` inside `edit_dispatch` deadlocks on the dispatch
+        // lock; run the install on its own thread so a regression fails the
+        // test instead of hanging it.
+        let rt = Arc::new(runtime::Runtime::new(Guest::new(), Dispatch::default()));
+        let (tx, rx) = std::sync::mpsc::channel();
+        let r = Arc::clone(&rt);
+        std::thread::spawn(move || {
+            tx.send(install(&r).is_ok()).ok();
+        });
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)), Ok(true));
+        // Nothing generated, so every hook was skipped and ours own no entry.
+        rt.edit_dispatch(|d| assert!(d.override_name(ACTION_TABLE_BUILD).is_none()));
     }
 }

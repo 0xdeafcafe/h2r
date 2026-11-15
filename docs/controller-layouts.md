@@ -1,9 +1,11 @@
 # Controller button layouts
 
-Status: research and a building block. The in-game menu entries are not
-built; this page records how the retail game implements layouts, what a
-runtime change has to touch, and the plan. The symbolic tables are in
-`crates/input/src/layouts.rs` and are tested.
+Status: built and unit tested. Not run in the game (the project rule is tests
+only), so the in-game behaviour is unverified; "To check in the game" lists
+what to look at. The symbolic tables are in `crates/input/src/layouts.rs`; the hooks are
+in `crates/boot/src/layout_glue.rs`, installed by `boot::run` unless
+`H2_NO_LAYOUTS=1`. This page records how the retail game implements layouts
+and what the hooks touch.
 
 No game data is here. Addresses are guest virtual addresses of the retail XBE
 (SHA-256 `03215919…935d`), named only as hook points. Strings were read with
@@ -110,7 +112,7 @@ is "drawn". The list rows are not in the tag. Code fills them:
 | `0x253b1a` | set a text widget's string id (EDI = widget, id on the stack) |
 | `0x1a02d0` | `locale_string_id_find`, which resolves every string id (`docs/engine/locale_string_id_find.md`) |
 
-## What an in-game entry needs
+## What the in-game entry does (`layout_glue.rs`)
 
 Every change is at a function entry, because the game is statically
 recompiled: `rt.edit_dispatch(|d| d.register_override(addr, name, closure))`
@@ -148,14 +150,15 @@ is a switch inside a big function needs the whole function wrapped.
    help-text id, then point the screen's pane block at the larger array. Pane
    and block layouts are in `docs/ui.md`. Patch at first use of screen 40 by
    wrapping the screen finder `0x148098`; do it once.
-9. Persistence: the profile byte survives a save only if nothing clamps it on
-   load. Not traced. The path from the Controls edit buffer (`0x54e6d4` flags,
-   `+4` layout, `+5` thumbstick, `+6` sensitivity) into the profile and out of
-   the profile at load has not been found; the edit buffer is only touched by
-   offset in a few places and is copied as a block elsewhere. Needed: where the
-   copy happens and whether a layout above 3 survives it and any profile
-   validation. If something clamps, wrap it; otherwise the byte already round
-   trips.
+9. Persistence (traced as far as static reading goes). The profile record's
+   settings block is saved and loaded as one block copy (`0x215367` copies
+   0x4c dwords from the save buffer to the record at `+0x114`; the signature
+   check at `0x212f10` covers the whole blob), and no field is range-checked on
+   the way in or out. The only consumer of the layout byte is `0x190c34`, which
+   ignores unknown values. So a byte of 4 to 6 should round-trip, but the
+   Controls edit buffer (`0x54e6d4`) is never block-copied by an immediate
+   address, so the commit from it into the profile was not found. Unverified
+   in the game.
 10. Retail behaviour of 0 to 3: every hook above must pass those through to the
     original, and a test must prove it.
 
@@ -169,21 +172,48 @@ is a switch inside a big function needs the whole function wrapped.
 - Wrapping `0x253b1a` and `0x1a02d0` is on a hot path; the wrappers must test
   the cheap condition first.
 
-## Tests that exist and tests that need the game
+## Tests
 
-Done, in `crates/input/src/layouts.rs` (no game): the retail layouts change
-only what Halopedia says against Default; Bumper Jumper, Recon and Walkie
-Talkie match their documented sources; every layout gives each gameplay
-action its own button; menu confirm and cancel never move; the slot encoding
-and the preset numbers (retail 0 to 3 fixed, ours 4 to 6) round trip.
+`crates/input/src/layouts.rs`: the layout tables (retail diffs against
+Default, the three added layouts, one button per action, fixed menu
+buttons, the 16-slot encoding, preset numbers).
 
-Needed for the hooks: synthetic guest memory tests for the list size wrap,
-the row-text replacement, the selection write, the table overwrite and the
-string-id range, each also proving 0 to 3 pass through unchanged. One game run
-at the end to see the row and choose it.
+`crates/boot/src/layout_glue.rs`, over a fake guest: only rows 4 to 6 are
+ours; only the layout list grows; for every layout byte 0 to 255 the action
+table is rewritten for 4 to 6 and left exactly as the original made it
+otherwise (so retail 0 to 3 give the original table); pane rows leave retail
+rows alone and land ours on panes 8 to 13; our string ids do not collide; the
+strings are written NUL-terminated; relabelling moves each label to the slot
+at its new button; the pane array grows from 8 to 14 once, leaves the eight
+retail panes byte for byte, and ignores other screens and odd tags; and
+`install` returns on a synthetic runtime (`resolve_original` must run before
+`edit_dispatch`, which holds the dispatch lock).
 
-## Not done
+## To check in the game
 
-Everything under "What an in-game entry needs". The input crate has no hook
-code and does not depend on the runtime; the hooks belong in `crates/boot`
-next to `game_glue.rs` (boot-only Halo overrides) or a new glue module.
+1. Settings, a profile, Controls, Button Layout: seven rows, the last three
+   "Bumper Jumper", "Recon", "Walkie Talkie" (the list has five visible
+   slots in the tag; check it scrolls).
+2. Highlighting each added row shows its diagram with the labels moved (for
+   Bumper Jumper, Jump beside White, Melee beside Black, Swap Grenades beside A,
+   Reload beside B, Flashlight beside X) and its help text; both thumbstick
+   diagram variants (Default and Legacy sticks).
+3. Choosing Bumper Jumper, then playing: left bumper (White) jumps, right
+   bumper (Black) melees, A swaps grenades, B reloads, X is the flashlight.
+4. The Controls list and the Edit Profile screen show the layout's name, not
+   an empty value.
+5. Reopening the screen with the added layout set highlights its row.
+6. Save, quit, reload: the layout is kept (needs a named profile; the Default
+   profile cannot save). The profile select dialog's summary has not been
+   traced for a layout byte of 4 and up; check it does not show garbage or crash.
+7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns it all off.
+8. The hooks install with no stall at boot.
+
+## Known gaps
+
+- Strings are English only.
+- Which of the retail text widgets the Controls and Edit Profile screens
+  fill with an empty id is inferred; the value-text hook substitutes the
+  first empty text while the function runs.
+- The memory addresses we map for our data (`0xa2f00000`, `0xa2f10000`) were
+  picked to avoid the other boot mappings, which overlapped at `0xa0ff....`.
