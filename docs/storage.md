@@ -247,8 +247,12 @@ close and drop store pending metadata. Every record store holds the
 pending map's lock, so a thread's store never lands after a newer one.
 Removing a file holds that lock across the unlink and drops the pending
 entry only once the file is gone, so a failed remove keeps both the
-durable record and the write's pending metadata. Format clears pending
-metadata only once the volume is empty.
+durable record and the write's pending metadata. Creating a name drops
+any pending entry for it and holds the lock from clearing an orphaned
+record until the new entry exists. Format holds the lock throughout and
+clears pending metadata once the volume is empty; a format that fails
+partway keeps the pending metadata of the files that survive it and drops
+that of the files it removed, so no flusher recreates their records.
 
 Persistent metadata lives under `metadata/PartitionN`, outside guest-visible
 mounts. Each lowercase path component is hex encoded as a metadata-directory

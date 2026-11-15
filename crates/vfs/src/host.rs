@@ -219,6 +219,9 @@ pub struct HostBackend {
     next_unlink_error: std::cell::Cell<Option<Error>>,
     #[cfg(test)]
     next_format_error: std::cell::Cell<Option<Error>>,
+    /// Fail the next format after this many removals.
+    #[cfg(test)]
+    format_error_after_unlinks: std::cell::Cell<Option<usize>>,
 }
 
 fn host_litter(name: &str) -> bool {
@@ -312,6 +315,8 @@ impl HostBackend {
             next_unlink_error: std::cell::Cell::new(None),
             #[cfg(test)]
             next_format_error: std::cell::Cell::new(None),
+            #[cfg(test)]
+            format_error_after_unlinks: std::cell::Cell::new(None),
         })
     }
     pub fn with_volume(mut self, label: impl Into<String>, serial: u32, capacity: u64) -> Self {
@@ -753,15 +758,21 @@ impl Backend for HostBackend {
             return Err(Error::DiskFull);
         }
         // A successful directory unlink may leave metadata if its cleanup failed.
-        // Never attach that orphaned subtree to a newly created object.
-        self.retire_metadata(path)?;
-        if directory {
-            fs::create_dir(&host)?;
-        } else {
-            OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&host)?;
+        // Never attach that orphaned subtree to a newly created object. The
+        // pending lock is held from the retirement until the entry exists, so
+        // no flusher stores a record for the name in between.
+        {
+            let mut pending = self.written.lock();
+            pending.remove(&path.to_ascii_lowercase());
+            self.retire_metadata(path)?;
+            if directory {
+                fs::create_dir(&host)?;
+            } else {
+                OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&host)?;
+            }
         }
         self.update_parent(&host, true)?;
         let attributes = (attributes & FATX_ATTRIBUTES & !ATTR_DIRECTORY)
@@ -901,17 +912,60 @@ impl Backend for HostBackend {
     /// ancestor path is never consulted.
     #[cfg(unix)]
     fn format(&mut self) -> Result<()> {
-        // Held throughout so no flusher stores a record mid-format; cleared
-        // only once the volume is empty, so a failed format keeps the
-        // pending metadata of the files that survive it.
+        // Held throughout so no flusher stores a record mid-format. A
+        // format that fails partway keeps the pending metadata of the files
+        // that survive it and drops that of the files it removed, so no
+        // flusher recreates their records.
         let mut written = self.written.lock();
-        for fd in &self.anchors {
+        #[cfg(test)]
+        let mut unlinks = self.format_error_after_unlinks.take();
+        let mut before_unlink = || -> Result<()> {
             #[cfg(test)]
-            if let Some(error) = self.next_format_error.take() {
-                return Err(error);
+            if let Some(n) = unlinks.as_mut() {
+                if *n == 0 {
+                    return Err(Error::IoDeviceError);
+                }
+                *n -= 1;
             }
-            anchor::empty(fd)?;
-            rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
+            Ok(())
+        };
+        let emptied = (|| -> Result<()> {
+            for fd in &self.anchors {
+                #[cfg(test)]
+                if let Some(error) = self.next_format_error.take() {
+                    return Err(error);
+                }
+                anchor::empty(fd, &mut before_unlink)?;
+                rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
+            }
+            Ok(())
+        })();
+        if let Err(error) = emptied {
+            // Listings, usage and per-path state may describe removed
+            // entries; keep only what still names a surviving file.
+            let (atimes, dirty_data, reservations) = {
+                let mut cache = self.cache.borrow_mut();
+                cache.directories.clear();
+                cache.used_bytes = None;
+                (
+                    std::mem::take(&mut cache.atimes),
+                    std::mem::take(&mut cache.dirty_data),
+                    std::mem::take(&mut cache.reservations),
+                )
+            };
+            let exists = |path: &String| self.resolve(path, false).is_ok();
+            written.retain(|path, _| exists(path));
+            let atimes = atimes.into_iter().filter(|(p, _)| exists(p)).collect();
+            let dirty_data = dirty_data.into_iter().filter(exists).collect();
+            let reservations = reservations
+                .into_iter()
+                .filter(|(p, _)| exists(p))
+                .collect();
+            let mut cache = self.cache.borrow_mut();
+            cache.atimes = atimes;
+            cache.dirty_data = dirty_data;
+            cache.reservations = reservations;
+            return Err(error);
         }
         written.clear();
         *self.cache.borrow_mut() = Cache::default();
@@ -1063,7 +1117,11 @@ mod anchor {
     }
 
     /// Remove every entry below `dir`, keeping `dir` itself.
-    pub(super) fn empty(dir: &impl AsFd) -> Result<()> {
+    /// `before_unlink` runs before each removal; its error stops the walk.
+    pub(super) fn empty(
+        dir: &impl AsFd,
+        before_unlink: &mut impl FnMut() -> Result<()>,
+    ) -> Result<()> {
         let mut names = Vec::new();
         for entry in Dir::read_from(dir).map_err(io)? {
             let entry = entry.map_err(io)?;
@@ -1078,9 +1136,11 @@ mod anchor {
                 // Fails (ELOOP/ENOTDIR) if the entry was swapped for a
                 // symlink after the stat, instead of following it.
                 let child = openat(dir, &name, DIRECTORY, Mode::empty()).map_err(io)?;
-                empty(&child)?;
+                empty(&child, before_unlink)?;
+                before_unlink()?;
                 unlinkat(dir, &name, AtFlags::REMOVEDIR).map_err(io)?;
             } else {
+                before_unlink()?;
                 unlinkat(dir, &name, AtFlags::empty()).map_err(io)?;
             }
         }
@@ -1536,6 +1596,48 @@ mod tests {
         backend.format().unwrap();
         assert_eq!(backend.pending_written(), 0);
         assert!(!backend.root.join("data").exists());
+    }
+
+    #[test]
+    fn a_partly_failed_format_drops_pending_metadata_of_the_files_it_removed() {
+        let temp = Temp::new();
+        let mut backend = temp.backend();
+        backend.set_stale(Duration::from_secs(3600));
+        for name in ["one", "two"] {
+            backend.create(name, false, 0).unwrap();
+            backend.write_at(name, 0, b"x").unwrap();
+        }
+        assert_eq!(backend.pending_written(), 2);
+        // The first removal succeeds, the second fails: one file is gone and
+        // one survives, whichever order the host lists them in.
+        backend.format_error_after_unlinks.set(Some(1));
+        assert_eq!(backend.format(), Err(Error::IoDeviceError));
+        let [gone, kept] = if backend.root.join("one").exists() {
+            ["two", "one"]
+        } else {
+            ["one", "two"]
+        };
+        assert!(!backend.root.join(gone).exists());
+        assert!(backend.root.join(kept).exists());
+        assert_eq!(backend.pending_written(), 1);
+        assert_eq!(
+            backend.stat(gone).map(|_| ()),
+            Err(Error::ObjectNameNotFound)
+        );
+        let kept_basic = backend.stat(kept).unwrap().basic;
+        // A flush stores only the survivor's pending metadata. The removed
+        // file's record may outlive the failed format as an orphan, which
+        // creating the name clears.
+        backend.written.flush(None).unwrap();
+        assert_eq!(backend.pending_written(), 0);
+        backend.create(gone, false, ATTR_HIDDEN).unwrap();
+        assert_eq!(
+            backend.stat(gone).unwrap().basic.attributes,
+            ATTR_HIDDEN | ATTR_ARCHIVE
+        );
+        drop(backend);
+        let mut reopened = temp.backend();
+        assert_eq!(reopened.stat(kept).unwrap().basic, kept_basic);
     }
 
     #[test]
