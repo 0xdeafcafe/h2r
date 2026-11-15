@@ -6,10 +6,13 @@ use anyhow::{Context, Result, bail};
 
 const USAGE: &str = "usage:
   h2 build <disc.iso|default.xbe> [--out DIR] [--jobs N]
-  h2 run   <disc.iso> [--out DIR] [--data DIR] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi]
+  h2 run   <disc.iso> [--out DIR] [--data DIR] [--fresh-data] [--slices N] [--transfers N] [--no-stopgaps] [--no-d3d] [--no-bink] [--no-dsound] [--no-xapi]
 
 --out defaults to $TMPDIR/h2boot (generated C, objects, libh2game.dylib).
 --data defaults to $TMPDIR/h2boot-data (host root of the hard-disk partitions).
+--fresh-data empties it first: the cache partitions, profiles and saves a
+  run leaves behind change what the next run does, so runs compared frame
+  for frame need it (and must not share a data directory while running).
 `run` builds first when the dylib is missing.";
 
 pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
@@ -25,6 +28,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     let mut bink = true;
     let mut dsound = true;
     let mut xapi = true;
+    let mut fresh = false;
     let mut it = args.into_iter();
     while let Some(a) = it.next() {
         let mut val = || it.next().with_context(|| format!("{a} needs a value"));
@@ -32,6 +36,7 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
             "--out" => out = PathBuf::from(val()?),
             "--data" => data = PathBuf::from(val()?),
             "--jobs" => jobs = val()?.parse()?,
+            "--fresh-data" => fresh = true,
             "--no-stopgaps" => stopgaps = false,
             "--no-d3d" => d3d = false,
             "--no-bink" => bink = false,
@@ -52,6 +57,14 @@ pub fn run(cmd: &str, args: Vec<String>) -> Result<()> {
     }
     if cmd == "build" {
         return Ok(());
+    }
+    if fresh {
+        for sub in ["disk", "metadata"] {
+            let d = data.join(sub);
+            if d.exists() {
+                std::fs::remove_dir_all(&d).with_context(|| format!("emptying {}", d.display()))?;
+            }
+        }
     }
     let r = boot::run(
         &xbe,
