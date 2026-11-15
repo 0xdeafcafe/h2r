@@ -15,11 +15,19 @@ typedef struct H2BootBridge {
     uint32_t (*xchg)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
     uint32_t (*cmpxchg)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t *);
     uint32_t (*cmpxchg8b)(CpuAbi *, ExecCtxOpaque *, uint32_t, uint32_t);
+    void (*profile)(ExecCtxOpaque *, uint64_t, uint64_t);
+    H2FastAccess *(*fast_acquire)(ExecCtxOpaque *);
+    void (*fast_release)(ExecCtxOpaque *);
 } H2BootBridge;
 
 static H2BootBridge bridge;
 
-void h2boot_install(const H2BootBridge *b) { bridge = *b; }
+/* A distinct symbol prevents an old host from installing a shorter table. */
+uint32_t h2boot_install_v2(const H2BootBridge *b, size_t size) {
+    if (!b || size != sizeof bridge) return 0;
+    bridge = *b;
+    return 1;
+}
 
 uint32_t h2abi_v1_version(void) { return H2_ABI_VERSION; }
 
@@ -53,3 +61,9 @@ uint32_t h2abi_v1_cmpxchg(CpuAbi *cpu, ExecCtxOpaque *c, uint32_t pc, uint32_t a
 uint32_t h2abi_v1_cmpxchg8b(CpuAbi *cpu, ExecCtxOpaque *c, uint32_t pc, uint32_t addr) {
     return bridge.cmpxchg8b(cpu, c, pc, addr);
 }
+
+void h2abi_v1_profile(ExecCtxOpaque *c, uint64_t loops, uint64_t x87_calls) {
+    bridge.profile(c, loops, x87_calls);
+}
+H2FastAccess *h2abi_v1_fast_acquire(ExecCtxOpaque *c) { return bridge.fast_acquire(c); }
+void h2abi_v1_fast_release(ExecCtxOpaque *c) { bridge.fast_release(c); }

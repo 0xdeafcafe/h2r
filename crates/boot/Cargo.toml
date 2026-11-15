@@ -27,3 +27,6 @@ bink-hle = { path = "../bink-hle" }
 xapi = { path = "../xapi" }
 input = { path = "../input", default-features = false }
 iced-x86 = { version = "1", default-features = false, features = ["std", "decoder", "instr_info"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

@@ -61,8 +61,15 @@ pub fn read_xbe(path: &Path) -> Result<Vec<u8>> {
 /// (`<dylib>.stamp`) once linked; [`run`] refuses a dylib whose stamp
 /// differs, and `h2 run` rebuilds instead.
 pub fn build_stamp(xbe_bytes: &[u8]) -> String {
+    match emit::compile::cflags() {
+        Ok(flags) => stamp_with_flags(xbe_bytes, &flags),
+        Err(e) => format!("invalid compiler flags: {e}"),
+    }
+}
+
+fn stamp_with_flags(xbe_bytes: &[u8], flags: &[String]) -> String {
     format!(
-        "xbe {:016x} generator {} abi {}\n",
+        "xbe {:016x} generator {} abi {} flags {flags:?}\n",
         fallback::fnv64(xbe_bytes),
         env!("GENERATOR_SOURCE_HASH"),
         runtime::cpu::ABI_VERSION
@@ -186,8 +193,11 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         if version() != runtime::cpu::ABI_VERSION {
             bail!("module ABI {} != runtime {}", version(), runtime::cpu::ABI_VERSION);
         }
-        let install: libloading::Symbol<unsafe extern "C" fn(*const shim::Bridge)> = lib.get(b"h2boot_install")?;
-        install(&shim::bridge());
+        let install: libloading::Symbol<unsafe extern "C" fn(*const shim::Bridge, usize) -> u32> =
+            lib.get(b"h2boot_install_v2").context("boot bridge predates optional callbacks; rebuild the generated module")?;
+        if install(&shim::bridge(), std::mem::size_of::<shim::Bridge>()) != 1 {
+            bail!("boot bridge layout mismatch; rebuild the generated module");
+        }
         let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)> =
             lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
@@ -658,6 +668,18 @@ pub(crate) static SHIM_EVENTS: Mutex<Vec<(u32, u32, String)>> = Mutex::new(Vec::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_flags_are_part_of_the_dylib_stamp() {
+        let base = vec!["-O1".to_owned()];
+        let mut fast = base.clone();
+        fast.push("-DH2_FASTMEM=1".to_owned());
+        let mut profiled = base.clone();
+        profiled.push("-DH2_PERF=1".to_owned());
+        assert_ne!(stamp_with_flags(b"synthetic", &base), stamp_with_flags(b"synthetic", &fast));
+        assert_ne!(stamp_with_flags(b"synthetic", &base), stamp_with_flags(b"synthetic", &profiled));
+        assert_eq!(stamp_with_flags(b"synthetic", &fast), stamp_with_flags(b"synthetic", &fast));
+    }
 
     #[test]
     fn a_dylib_is_current_only_for_its_image_and_generator() {

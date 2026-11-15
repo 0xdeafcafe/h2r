@@ -25,9 +25,18 @@ pub struct Bridge {
     xchg: unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg: unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32, u32, u32, *mut u32) -> u32,
     cmpxchg8b: unsafe extern "C" fn(*mut CpuAbi, *mut ExecCtxOpaque, u32, u32) -> u32,
+    profile: unsafe extern "C" fn(*mut ExecCtxOpaque, u64, u64),
+    fast_acquire: unsafe extern "C" fn(*mut ExecCtxOpaque) -> *mut runtime::ffi::FastAccess,
+    fast_release: unsafe extern "C" fn(*mut ExecCtxOpaque),
 }
 
 pub fn bridge() -> Bridge {
+    bridge_with_fast_memory(std::env::var("H2_BOOT_FASTMEM").as_deref() != Ok("0"))
+}
+
+/// The same image can use checked accessors for a controlled comparison.
+/// Selecting the callback once also covers new guest threads and DPCs.
+pub fn bridge_with_fast_memory(enabled: bool) -> Bridge {
     use runtime::ffi;
     Bridge {
         read: ffi::h2abi_v1_read,
@@ -39,7 +48,14 @@ pub fn bridge() -> Bridge {
         xchg: ffi::h2abi_v1_xchg,
         cmpxchg: ffi::h2abi_v1_cmpxchg,
         cmpxchg8b: ffi::h2abi_v1_cmpxchg8b,
+        profile: ffi::h2abi_v1_profile,
+        fast_acquire: if enabled { ffi::h2abi_v1_fast_acquire } else { no_fast_memory },
+        fast_release: ffi::h2abi_v1_fast_release,
     }
+}
+
+unsafe extern "C" fn no_fast_memory(_: *mut ExecCtxOpaque) -> *mut runtime::ffi::FastAccess {
+    std::ptr::null_mut()
 }
 
 /// crates/x87's helpers in `h2x87bridge_install` order (emit's

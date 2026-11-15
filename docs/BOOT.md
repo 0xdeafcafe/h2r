@@ -35,6 +35,9 @@ copies. Nothing is ever written next to it.
 
 | Environment | Effect |
 | --- | --- |
+| `H2_FASTMEM=1` | **Opt-in, off by default.** Set for both `h2 build` and `h2 run`/`play` to compile inline RAM checks/copies; unsupported accesses use Rust. Requires the current boot bridge; changing compiler flags invalidates the dylib stamp. This is the gated inline path, not fault-driven fastmem. |
+| `H2_BOOT_FASTMEM=0` | run a fast-memory image through checked Rust accessors, without rebuilding; use for A/B comparisons. Leave `H2_FASTMEM=1` to match that image's stamp. |
+| `H2_PERF=1` | compile generated loop/x87 counters; forwarded by boot's versioned bridge to contexts with profiling enabled. Part of the dylib stamp. |
 | `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
@@ -279,7 +282,7 @@ gate.sh emit -- h2 build disc/halo2.iso --out $OUT
 H2_BOOT_GFX=$T/gfx H2_BOOT_GFX_EVERY=never \
 H2_BOOT_INPUT="START@f310,DOWN@f408,A@f419" \
 H2_BOOT_FPS_FROM=440 H2_BOOT_STOP_AT_PRESENT=560 \
-gate.sh game -- h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
+H2_GFX_MERGE_PASSES=1 gate.sh bench -- h2 run disc/halo2.iso --out $OUT --data $T/data --fresh-data
 ```
 
 - Window: presents 440-560, the main menu after it has faded in (the
@@ -301,6 +304,25 @@ Runs compare frame for frame only from the same data directory state:
 use `--fresh-data` (or a new `--data`), and never share one between two
 runs at once. On master a run that shared the data directory with another
 stopped with a divide error at `0x223cff` (a zero stride in loaded data).
+
+### Opt-in accessor A/B with process CPU
+
+Build one image with `H2_FASTMEM=1` in a private output directory, under the
+emit gate. Run the same image twice, serially under the bench gate, setting
+`H2_BOOT_FASTMEM=0` for checked access and `1` for inline access. Both use
+`H2_GFX_MERGE_PASSES=1`, `H2_BOOT_GFX_EVERY=never`, and input
+`START@f310,DOWN@f408,A@f419`. Leave `H2_FASTMEM=1` set during both runs so
+the module stamp matches. Use a new data directory for each run.
+
+`cargo build --release -p boot --example menu_cpu` builds a bounded driver:
+`menu_cpu DISC OUT FRESH_DATA_DIR`. It runs boot's normal headless backend,
+keeps 4096 trace rows, and stops after present 560. `MENU_CPU` reports wall
+FPS and process user+system CPU milliseconds per frame for presents 480–560.
+CPU includes every process thread; GPU execution and time descheduled are
+not CPU time. Samples are taken between scheduler slices at those presents,
+so boundaries can differ slightly from the backend's frame timestamps.
+Compare CPU as well as FPS when shared-machine load changes. Merged passes
+are unsuitable for pixel-fidelity acceptance tests.
 
 ### Ranked blockers
 
