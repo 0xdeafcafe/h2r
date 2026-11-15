@@ -186,9 +186,37 @@ struct FuncWork {
     /// Table jumps first reached with no guard, read only once every other
     /// path has been explored, in case one of those reaches them guarded.
     unguarded: Vec<(u32, Instruction)>,
-    /// What every branch to a block seen so far knows on arrival (`cmp r,
-    /// n; jb target`), or `None` once two branches there disagree.
+    /// What every way into a block seen so far knows on arrival (`cmp r,
+    /// n; jb target`), or `None` once two disagree. The function's entry,
+    /// table cases and unconditional jumps know nothing.
     entry_guards: HashMap<u32, Option<Guard>>,
+    /// Addresses reached by falling through from the instruction before.
+    fell_into: HashSet<u32>,
+    /// Table jumps in blocks entered with a guard from [`entry_guards`],
+    /// read once the function is explored and read again unguarded if a
+    /// way in that knows less turns up.
+    entry_sized: Vec<EntrySized>,
+}
+
+/// A table jump sized (or to be sized) from its block's entry guard.
+#[derive(Clone, Copy)]
+struct EntrySized {
+    /// The block it is in.
+    start: u32,
+    at: u32,
+    insn: Instruction,
+    /// The guard at the jump, entry guard included.
+    guard: Guard,
+    state: EntryState,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum EntryState {
+    Unread,
+    /// Read with the entry guard, which still has to hold.
+    Guarded,
+    /// Read without it: final.
+    Unguarded,
 }
 
 impl FuncWork {
@@ -203,16 +231,32 @@ impl FuncWork {
             done: false,
             insns: 0,
             unguarded: Vec::new(),
-            entry_guards: HashMap::new(),
+            entry_guards: HashMap::from([(start, None)]),
+            fell_into: HashSet::new(),
+            entry_sized: Vec::new(),
         }
     }
 
     /// Note a branch to block `t` that knows `guard` on arrival.
     fn arrive(&mut self, t: u32, guard: Option<Guard>) {
+        let guard = guard.filter(|_| !self.fell_into.contains(&t));
         let known = self.entry_guards.entry(t).or_insert(guard);
         if *known != guard {
             *known = None;
         }
+    }
+
+    /// Note control falling through to `next`.
+    fn fall(&mut self, next: u32) {
+        self.fell_into.insert(next);
+        if let Some(g) = self.entry_guards.get_mut(&next) {
+            *g = None;
+        }
+    }
+
+    /// Whether every way into block `start` seen so far brings its guard.
+    fn entry_holds(&self, start: u32) -> bool {
+        self.entry_guards.get(&start).is_some_and(Option::is_some)
     }
 }
 
@@ -306,7 +350,7 @@ impl Guard {
         if self.cmp.is_some_and(|(r, _)| writes(r)) || (insn.rflags_modified() != 0 && insn.mnemonic() != Mnemonic::Cmp) {
             self.cmp = None;
         }
-        if insn.rflags_modified() != 0 {
+        if insn.rflags_modified() != 0 || self.sub.is_some_and(|(r, _)| writes(r)) {
             self.sub = None;
         }
         if self.bound.is_some_and(|(r, _)| writes(r)) {
@@ -321,6 +365,28 @@ impl Guard {
         for r in written.iter().filter_map(|r| gpr(*r)) {
             self.masks[r] = 0;
             self.consts[r] = None;
+        }
+        // A call that returns may leave anything in the registers the
+        // callee needn't keep, and in the flags.
+        if matches!(insn.flow_control(), FlowControl::Call | FlowControl::IndirectCall) {
+            let clobbered = |r: Register| matches!(r, Register::EAX | Register::ECX | Register::EDX);
+            for r in [Register::EAX, Register::ECX, Register::EDX] {
+                let i = gpr(r).unwrap();
+                self.masks[i] = 0;
+                self.consts[i] = None;
+            }
+            self.cmp = None;
+            self.sub = None;
+            if self.bound.is_some_and(|(r, _)| clobbered(r)) {
+                self.bound = None;
+            }
+            if self.window.is_some_and(|(r, _, _)| clobbered(r)) {
+                self.window = None;
+            }
+            if self.byte_index.is_some_and(|(r, _, _)| clobbered(r)) {
+                self.byte_index = None;
+            }
+            return;
         }
         // The most a register can hold before this instruction, if known.
         let most = |r: Register| {
@@ -624,7 +690,8 @@ impl<'a> Analyzer<'a> {
 
     fn run_block(&mut self, f: &mut FuncWork, fstart: u32, start: u32) {
         let mut va = start;
-        let mut guard = f.entry_guards.get(&start).copied().flatten().unwrap_or_default();
+        let entry = f.entry_guards.get(&start).copied().flatten();
+        let mut guard = entry.unwrap_or_default();
         let mut info = InstructionInfoFactory::new();
         loop {
             if self.failed() {
@@ -637,7 +704,7 @@ impl<'a> Analyzer<'a> {
                     && guard.bounds(f.unguarded[i].1.memory_index().full_register32())
                 {
                     let (_, insn) = f.unguarded.swap_remove(i);
-                    self.jump_table(f, fstart, va, &insn, guard);
+                    self.jump_table(f, fstart, va, &insn, guard, false);
                 }
                 return;
             }
@@ -710,8 +777,12 @@ impl<'a> Analyzer<'a> {
                         self.note_kernel_call(ord, fresh);
                         f.returns |= !NORETURN_KERNEL.contains(&ord);
                     } else if is_table_jump(&insn) {
-                        if guard.bounds(insn.memory_index().full_register32()) {
-                            self.jump_table(f, fstart, va, &insn, guard);
+                        if entry.is_some() {
+                            // Other ways into the block may turn up yet.
+                            let state = EntryState::Unread;
+                            f.entry_sized.push(EntrySized { start, at: va, insn, guard, state });
+                        } else if guard.bounds(insn.memory_index().full_register32()) {
+                            self.jump_table(f, fstart, va, &insn, guard, false);
                         } else {
                             f.unguarded.push((va, insn));
                         }
@@ -733,6 +804,7 @@ impl<'a> Analyzer<'a> {
                         None if self.trial.as_ref().is_some_and(|t| t.assume_return) => {}
                         None if self.trial.is_some() => return,
                         None => {
+                            f.fall(va + len as u32);
                             f.pending.push((va + len as u32, t));
                             return;
                         }
@@ -761,6 +833,7 @@ impl<'a> Analyzer<'a> {
                 FlowControl::XbeginXabortXend => return,
             }
             va += len as u32;
+            f.fall(va);
         }
     }
 
@@ -774,25 +847,82 @@ impl<'a> Analyzer<'a> {
                     return;
                 }
             }
+            if self.entry_sized_tables(f, start) {
+                continue;
+            }
             if f.unguarded.is_empty() {
                 return;
             }
             for (va, insn) in std::mem::take(&mut f.unguarded) {
-                self.jump_table(f, start, va, &insn, Guard::default());
+                self.jump_table(f, start, va, &insn, Guard::default(), false);
             }
         }
     }
 
-    fn jump_table(&mut self, f: &mut FuncWork, fstart: u32, at: u32, insn: &Instruction, guard: Guard) {
+    /// Read the table jumps sized from an entry guard: with it while every
+    /// way into the block brings it, else (again) with what the block
+    /// itself says. Whether any was read.
+    fn entry_sized_tables(&mut self, f: &mut FuncWork, fstart: u32) -> bool {
+        let mut any = false;
+        for i in 0..f.entry_sized.len() {
+            let e = f.entry_sized[i];
+            let holds = f.entry_holds(e.start);
+            let state = match (e.state, holds) {
+                (EntryState::Unread, true) => {
+                    self.jump_table(f, fstart, e.at, &e.insn, e.guard, false);
+                    EntryState::Guarded
+                }
+                (EntryState::Unread, false) | (EntryState::Guarded, false) => {
+                    let guard = self.guard_from(e.start, e.at);
+                    self.jump_table(f, fstart, e.at, &e.insn, guard, e.state == EntryState::Guarded);
+                    EntryState::Unguarded
+                }
+                _ => continue,
+            };
+            f.entry_sized[i].state = state;
+            any = true;
+            if self.failed() {
+                break;
+            }
+        }
+        any
+    }
+
+    /// The guard straight-line code from block start `start` builds up to
+    /// `at`, knowing nothing on arrival.
+    fn guard_from(&self, start: u32, at: u32) -> Guard {
+        let mut guard = Guard::default();
+        let mut info = InstructionInfoFactory::new();
+        let Some(bytes) = self.image.bytes_from(start) else { return guard };
+        for insn in Decoder::with_ip(32, bytes, start as u64, DecoderOptions::NONE) {
+            if insn.ip32() >= at || insn.code() == Code::INVALID {
+                break;
+            }
+            guard.observe(&insn, &mut info);
+        }
+        guard
+    }
+
+    /// Size and read the table of the jump at `at`. `replace` drops what
+    /// this function read there before with a guard that no longer holds.
+    fn jump_table(&mut self, f: &mut FuncWork, fstart: u32, at: u32, insn: &Instruction, guard: Guard, replace: bool) {
         let index = insn.memory_index().full_register32();
         let mut table = insn.memory_displacement32();
         let region = self.image.region(at);
 
-        // Another function that shares this code (one found in a gap that
-        // falls into it, say) may reach the site with no guard. A table a
-        // guard sized already stands; the cases are this function's too.
-        if let Some(jt) = self.jump_tables.get(&at).filter(|j| j.kind != SwitchKind::Unbounded) {
-            f.todo.extend_from_slice(&jt.targets);
+        // A speculative function that shares this code (one found in a gap
+        // that falls into it, say) knows nothing of how the code got here.
+        // A table a guard sized already stands; the cases are its too.
+        let speculative =
+            self.trial.is_some() || matches!(f.source, Source::CodeRef | Source::DataPointer | Source::GapScan);
+        if !replace
+            && speculative
+            && let Some(jt) = self.jump_tables.get(&at).filter(|j| j.kind != SwitchKind::Unbounded)
+        {
+            for t in jt.targets.clone() {
+                f.arrive(t, None);
+                f.todo.push(t);
+            }
             return;
         }
 
@@ -844,7 +974,7 @@ impl<'a> Analyzer<'a> {
             SwitchKind::Bounded => *m < count,
             SwitchKind::Indexed => false,
         });
-        let masked = mask.and_then(|m| self.masked_table(table, region, m));
+        let masked = mask.and_then(|m| self.masked_table(fstart, table, region, m));
         let (count, kind) = match (mask, &masked) {
             (Some(m), Some(_)) => (m, SwitchKind::Bounded),
             (Some(m), None) => (count.min(m), kind),
@@ -871,6 +1001,7 @@ impl<'a> Analyzer<'a> {
                         holes.push(h);
                     }
                     self.claim_data(table + i as u32 * 4, 4);
+                    f.arrive(t, None);
                     f.todo.push(t);
                     targets.push(t);
                     read = i as u32 + 1;
@@ -916,6 +1047,7 @@ impl<'a> Analyzer<'a> {
                         holes.push(h);
                     }
                     self.claim_data(slot, 4);
+                    f.arrive(t, None);
                     f.todo.push(t);
                     targets.push(t);
                     read = i + 1;
@@ -932,7 +1064,20 @@ impl<'a> Analyzer<'a> {
         if kind == SwitchKind::Unbounded {
             f.returns = true;
         }
-        if read > 0 && self.trial.is_none() {
+        if replace && read == 0 && self.trial.is_none() {
+            self.switches.remove(&at);
+            self.jump_tables.remove(&at);
+        }
+        // Another path may allow fewer entries than one read before: the
+        // table that covers the other's entries stands.
+        let span = |t: u32, n: u32| (u64::from(t), u64::from(t) + 4 * u64::from(n));
+        let (lo, hi) = span(table, read);
+        let covered = !replace
+            && self.jump_tables.get(&at).is_some_and(|j| {
+                let (jlo, jhi) = span(j.table, j.count);
+                j.kind != SwitchKind::Unbounded && jlo <= lo && hi <= jhi
+            });
+        if read > 0 && self.trial.is_none() && !covered {
             self.switches.insert(at, kind);
             let bound = match kind {
                 SwitchKind::Unbounded => None,
@@ -1362,11 +1507,15 @@ impl<'a> Analyzer<'a> {
     /// [`MAX_SWITCH_HOLES`] in a row. Before the first case such a slot may
     /// be claimed code. `None` if the table doesn't fit the mask: a slot
     /// past the first case that is claimed, in another table, or where a
-    /// function, label or data word starts, or no case at all. Then the
-    /// mask isn't the table's size.
-    fn masked_table(&self, table: u32, region: Option<usize>, m: u32) -> Option<Vec<Option<u32>>> {
+    /// function, label or data word starts, or no case at all. Past a hole
+    /// between cases, a word is only a case of the switching function's
+    /// own ([`Self::own_case`]): the hole may be metadata before the next
+    /// table. Then the mask isn't the table's size.
+    fn masked_table(&self, fstart: u32, table: u32, region: Option<usize>, m: u32) -> Option<Vec<Option<u32>>> {
         let mut slots = Vec::with_capacity(m as usize);
+        let mut cases = Vec::new();
         let mut run = 0;
+        let mut past_hole = false;
         for i in 0..m {
             let slot = table.checked_add(i * 4)?;
             if self.in_neighbour_table(table, slot) || (i > 0 && self.evidenced_start(slot)) {
@@ -1379,18 +1528,23 @@ impl<'a> Analyzer<'a> {
             });
             match case.filter(|_| free) {
                 Some(t) => {
+                    if past_hole && !self.own_case(fstart, table, slot, &cases, t) {
+                        return None;
+                    }
                     run = 0;
+                    cases.push(t);
                     slots.push(Some(t));
                 }
-                None if !free && slots.iter().any(Option::is_some) => return None,
+                None if !free && !cases.is_empty() => return None,
                 None if run < MAX_SWITCH_HOLES => {
+                    past_hole |= !cases.is_empty();
                     run += 1;
                     slots.push(None);
                 }
                 None => return None,
             }
         }
-        slots.iter().any(Option::is_some).then_some(slots)
+        (!cases.is_empty()).then_some(slots)
     }
 
     /// Whether `slot` is in a table already read that starts somewhere
