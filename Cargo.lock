@@ -628,6 +628,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
+ "libc",
  "objc2 0.6.5",
 ]
 
@@ -1049,6 +1051,8 @@ dependencies = [
 name = "input"
 version = "0.1.0"
 dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
  "gilrs",
  "objc2 0.6.5",
  "objc2-core-haptics",
@@ -1701,6 +1705,8 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1962c1882c5abcedb18e5f01acffeaad7b3cbd0a9d4cd8f5ca259ba8a64cb9a3"
 dependencies = [
+ "block2 0.6.2",
+ "dispatch2",
  "objc2 0.6.5",
  "objc2-foundation 0.3.2",
 ]

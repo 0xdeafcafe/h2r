@@ -30,6 +30,7 @@ fn main() {
     let mut buzzed = false;
     let mut first = true;
     loop {
+        let tick = std::time::Instant::now();
         mgr.sync();
         let _ = mgr.take_completions();
         let (ins, rem) = mgr.device_changes();
@@ -73,6 +74,13 @@ fn main() {
             }
             last = out;
         }
-        std::thread::sleep(Duration::from_millis(16));
+        // GameController delivers connect/disconnect on the main run loop, so
+        // on macOS service it for the frame instead of just sleeping.
+        let frame = Duration::from_millis(16);
+        #[cfg(all(feature = "game-controller", target_os = "macos"))]
+        input::backend::game_controller::service_main_loop(frame);
+        if let Some(rest) = frame.checked_sub(tick.elapsed()) {
+            std::thread::sleep(rest);
+        }
     }
 }

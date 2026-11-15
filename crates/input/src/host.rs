@@ -16,11 +16,12 @@
 //!   emulator convention; it is a policy choice and lives in one place.
 //! * Triggers: host analog 0..1 is rescaled to 0..=255 after a small
 //!   trigger deadzone. Backends with only digital triggers report 0.0/1.0.
-//! * Sticks: a radial deadzone with rescaling, then scaled to +-32767.
+//! * Sticks: a radial deadzone with rescaling, then scaled asymmetrically (-1.0 is -32768, +1.0 is 32767).
 //!   `sThumbLY`/`sThumbRY` are positive up, like the host float convention
 //!   used here. The real Xbox pad reports raw values and games apply their
 //!   own deadzone, so we only remove host-side noise (default 0.08), not a
-//!   gameplay deadzone. Virtual pads (keyboard/mouse) skip it.
+//!   gameplay deadzone. Virtual pads (keyboard/mouse) and backends that
+//!   report `prefiltered` input (GameController) skip it.
 //! * D-pad: opposing directions cancel each other (a real d-pad cannot
 //!   report both, and keyboards can).
 
@@ -80,6 +81,10 @@ pub struct HostPadState {
     /// buttons report pressure (Apple GameController does). `None` means
     /// digital: a press reports 255.
     pub analog_buttons: Option<[f32; 6]>,
+    /// The platform already applied its own deadzones (Apple GameController
+    /// does), so `to_gamepad` only sanitises and scales instead of cutting a
+    /// second deadzone on top.
+    pub prefiltered: bool,
 }
 
 /// One connected host pad as reported by a backend.
@@ -146,7 +151,12 @@ fn stick_to_i16(stick: (f32, f32), deadzone: f32) -> (i16, i16) {
     let dz = deadzone.clamp(0.0, 0.99);
     let scaled = ((mag.min(1.0) - dz) / (1.0 - dz)).clamp(0.0, 1.0);
     let f = scaled / mag;
-    let conv = |v: f32| (v * f * 32767.0).round().clamp(-32767.0, 32767.0) as i16;
+    // Asymmetric like i16 itself: -1.0 reaches -32768, +1.0 reaches 32767.
+    let conv = |v: f32| {
+        let v = v * f;
+        let scaled = if v < 0.0 { v * 32768.0 } else { v * 32767.0 };
+        scaled.round().clamp(-32768.0, 32767.0) as i16
+    };
     (conv(x), conv(y))
 }
 
@@ -184,7 +194,7 @@ impl HostPadState {
             }
         }
 
-        let (sdz, tdz) = if apply_deadzone { (cfg.stick_deadzone, cfg.trigger_deadzone) } else { (0.0, 0.0) };
+        let (sdz, tdz) = if apply_deadzone && !self.prefiltered { (cfg.stick_deadzone, cfg.trigger_deadzone) } else { (0.0, 0.0) };
         g.analog[AnalogButton::LeftTrigger.index()] = trigger_to_u8(self.left_trigger, tdz);
         g.analog[AnalogButton::RightTrigger.index()] = trigger_to_u8(self.right_trigger, tdz);
         (g.thumb_lx, g.thumb_ly) = stick_to_i16(self.left_stick, sdz);
@@ -246,6 +256,37 @@ mod tests {
     }
 
     #[test]
+    fn stick_endpoints_are_asymmetric_i16() {
+        let g = HostPadState { left_stick: (-1.0, 1.0), right_stick: (1.0, -1.0), ..Default::default() };
+        let g = g.to_gamepad(&ConvertConfig { stick_deadzone: 0.0, trigger_deadzone: 0.0 }, true);
+        // Full diagonal is clamped to the circle, so test pure-axis endpoints.
+        assert!(g.thumb_lx < -23000 && g.thumb_ly > 23000);
+        let g = HostPadState { left_stick: (-1.0, 0.0), ..Default::default() }.to_gamepad(&cfg(), true);
+        assert_eq!(g.thumb_lx, i16::MIN);
+        let g = HostPadState { left_stick: (1.0, 0.0), ..Default::default() }.to_gamepad(&cfg(), true);
+        assert_eq!(g.thumb_lx, i16::MAX);
+        let g = HostPadState { left_stick: (0.0, -1.0), ..Default::default() }.to_gamepad(&cfg(), true);
+        assert_eq!(g.thumb_ly, i16::MIN);
+    }
+
+    #[test]
+    fn prefiltered_input_skips_the_extra_deadzone_but_still_sanitises() {
+        let s = HostPadState {
+            prefiltered: true,
+            left_stick: (0.02, 0.0),
+            right_stick: (f32::NAN, 1.0),
+            right_trigger: 0.05,
+            ..Default::default()
+        };
+        let g = s.to_gamepad(&cfg(), true);
+        assert_eq!(g.thumb_lx, 655, "no second deadzone");
+        assert_eq!(g.analog(AnalogButton::RightTrigger), 13);
+        assert_eq!((g.thumb_rx, g.thumb_ry), (0, 32767), "NaN axis still sanitised");
+        let g = HostPadState { prefiltered: false, ..s }.to_gamepad(&cfg(), true);
+        assert_eq!(g.thumb_lx, 0, "unfiltered input still gets the deadzone");
+    }
+
+    #[test]
     fn virtual_pads_skip_deadzone() {
         let s = HostPadState { right_stick: (0.02, 0.0), right_trigger: 0.05, ..Default::default() };
         let g = s.to_gamepad(&cfg(), false);
@@ -277,7 +318,7 @@ mod tests {
         assert_eq!(g.thumb_lx, 0);
         assert!(g.thumb_ly > 0, "y survives a NaN x");
         assert_eq!(g.thumb_rx, 0);
-        assert_eq!(g.thumb_ry, -32767);
+        assert_eq!(g.thumb_ry, -32768);
         assert_eq!(g.analog(AnalogButton::LeftTrigger), 0);
         assert_eq!(g.analog(AnalogButton::RightTrigger), 255);
     }
@@ -287,7 +328,7 @@ mod tests {
         let mut s = HostPadState { left_stick: (100.0, 0.0), ..Default::default() };
         assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, 32767);
         s.left_stick = (-5.0, 0.0);
-        assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, -32767);
+        assert_eq!(s.to_gamepad(&cfg(), true).thumb_lx, -32768);
         s.right_trigger = -3.0;
         assert_eq!(s.to_gamepad(&cfg(), true).analog(AnalogButton::RightTrigger), 0);
     }

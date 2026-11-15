@@ -123,6 +123,34 @@ impl Consumer {
     /// silence. After the first write, a shortfall counts as one underrun.
     /// Real-time safe: no locks, no allocation.
     pub fn read(&mut self, out: &mut [f32]) {
+        let short = self.copy_out(out);
+        self.account(out.len() / 2, short);
+    }
+
+    /// Plays `frames` frames through `scratch`-sized chunks, calling `f` with
+    /// each filled chunk (interleaved stereo, silence past the data). The
+    /// whole request counts as one callback for the statistics, however many
+    /// chunks it takes. Real-time safe as long as `f` is.
+    pub fn drain(&mut self, frames: usize, scratch: &mut [f32], mut f: impl FnMut(&[f32])) {
+        let chunk = (scratch.len() / 2).max(1) * 2;
+        let mut left = frames * 2;
+        let mut short = 0;
+        while left > 0 {
+            let n = left.min(chunk).min(scratch.len());
+            if n < 2 {
+                break;
+            }
+            let out = &mut scratch[..n];
+            short += self.copy_out(out);
+            f(out);
+            left -= n;
+        }
+        self.account(frames, short);
+    }
+
+    /// Copies what is queued into `out`, zero-fills the rest and returns the
+    /// number of samples that were missing.
+    fn copy_out(&mut self, out: &mut [f32]) -> usize {
         let s = &*self.0;
         let t = s.tail.load(Ordering::Relaxed);
         let h = s.head.load(Ordering::Acquire);
@@ -133,12 +161,16 @@ impl Consumer {
         }
         out[n..].fill(0.0);
         s.tail.store(t.wrapping_add(n), Ordering::Release);
-        s.played_frames
-            .fetch_add((out.len() / 2) as u64, Ordering::Relaxed);
-        if n < want && s.primed.load(Ordering::Relaxed) != 0 {
+        want - n
+    }
+
+    fn account(&self, frames: usize, short_samples: usize) {
+        let s = &*self.0;
+        s.played_frames.fetch_add(frames as u64, Ordering::Relaxed);
+        if short_samples > 0 && s.primed.load(Ordering::Relaxed) != 0 {
             s.underruns.fetch_add(1, Ordering::Relaxed);
             s.underrun_frames
-                .fetch_add(((want - n) / 2) as u64, Ordering::Relaxed);
+                .fetch_add((short_samples / 2) as u64, Ordering::Relaxed);
         }
     }
 
@@ -430,5 +462,20 @@ mod tests {
         Pump::new(40).pump(&mut m, &mut sink);
         sink.advance(320);
         assert!(sink.captured().iter().all(|&v| v == 1.0));
+    }
+
+    #[test]
+    fn drain_chunks_but_counts_one_callback() {
+        let (mut p, mut c) = ring(64);
+        let data: Vec<f32> = (0..20).map(|v| v as f32 + 1.0).collect(); // 10 frames
+        assert_eq!(p.write(&data), 10);
+        let mut scratch = [0.0f32; 8]; // 4-frame chunks
+        let mut out = Vec::new();
+        c.drain(25, &mut scratch, |chunk| out.extend_from_slice(chunk));
+        assert_eq!(out.len(), 50);
+        assert_eq!(&out[..20], &data[..]);
+        assert!(out[20..].iter().all(|&v| v == 0.0));
+        let s = c.stats();
+        assert_eq!((s.played_frames, s.underruns, s.underrun_frames), (25, 1, 15));
     }
 }

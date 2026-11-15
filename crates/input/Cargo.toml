@@ -12,7 +12,7 @@ gilrs = ["dep:gilrs"]
 # Apple GameController (GCController): hot-plug, pressure buttons and rumble
 # on macOS. The platform half is compiled only on macOS; the mapping layer is
 # portable and always built with this feature.
-game-controller = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-game-controller", "dep:objc2-core-haptics"]
+game-controller = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-game-controller", "dep:objc2-core-haptics", "dep:block2", "dep:dispatch2"]
 
 [dependencies]
 thiserror.workspace = true
@@ -22,10 +22,12 @@ gilrs = { version = "0.11", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "0.6", optional = true }
-objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSSet", "NSObject", "NSEnumerator"] }
+block2 = { version = "0.6", optional = true }
+dispatch2 = { version = "0.3", optional = true }
+objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSSet", "NSObject", "NSEnumerator", "NSRunLoop", "NSDate", "NSObjCRuntime"] }
 objc2-game-controller = { version = "0.3", optional = true, default-features = false, features = [
     "std", "GCController", "GCControllerElement", "GCControllerButtonInput", "GCControllerAxisInput",
-    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCExtendedGamepad", "GCPhysicalInputProfile",
+    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCExtendedGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
 ] }
 objc2-core-haptics = { version = "0.3", optional = true, default-features = false, features = [
     "std", "block2", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer",

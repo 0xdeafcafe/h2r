@@ -27,7 +27,7 @@ use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
 #[cfg(target_os = "macos")]
 mod apple;
 #[cfg(target_os = "macos")]
-pub use apple::AppleSource;
+pub use apple::{AppleSource, service_main_loop};
 
 /// A controller's inputs in GameController terms, already read out as plain
 /// numbers. Sticks are -1..=1 with +Y up (the framework's convention),
@@ -72,6 +72,40 @@ pub trait ControllerSource: Send {
     fn poll(&mut self) -> Vec<RawPad>;
     /// Motor speeds 0..=1 (`left` is the heavy motor). 0/0 stops.
     fn set_rumble(&mut self, key: u64, left: f32, right: f32);
+}
+
+/// A haptic locality a controller may advertise (`GCDeviceHaptics.supportedLocalities`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Locality {
+    LeftHandle,
+    RightHandle,
+    Handles,
+    All,
+    Default,
+}
+
+/// How rumble is delivered on one controller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RumblePlan {
+    /// One engine per handle: left is the heavy motor, right the light one.
+    Split,
+    /// A single engine on this locality drives both; it plays at the larger of
+    /// the two requested speeds.
+    Combined(Locality),
+}
+
+/// Chooses how to rumble given what the controller supports: separate
+/// handles when both exist, else one engine on the first of handles / all /
+/// default. `None` means no usable haptics, so the pad reports no rumble.
+pub fn plan_rumble(supported: &[Locality]) -> Option<RumblePlan> {
+    let has = |l| supported.contains(&l);
+    if has(Locality::LeftHandle) && has(Locality::RightHandle) {
+        return Some(RumblePlan::Split);
+    }
+    [Locality::Handles, Locality::All, Locality::Default]
+        .into_iter()
+        .find(|&l| has(l))
+        .map(RumblePlan::Combined)
 }
 
 /// Pressure at or above which a pressure-sensitive button counts as a
@@ -123,6 +157,8 @@ pub fn map_snapshot(s: &Snapshot) -> HostPadState {
     st.right_stick = s.right_stick;
     st.left_trigger = s.left_trigger;
     st.right_trigger = s.right_trigger;
+    // The framework already applies its own deadzones.
+    st.prefiltered = true;
     st.analog_buttons = Some([s.a, s.b, s.x, s.y, s.right_shoulder, s.left_shoulder].map(unit));
     st
 }
@@ -259,7 +295,7 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(g.analog(AnalogButton::LeftTrigger), 255);
-        assert!((i32::from(g.analog(AnalogButton::RightTrigger)) - 128).abs() <= 5); // minus the trigger deadzone
+        assert_eq!(g.analog(AnalogButton::RightTrigger), 128); // no extra trigger deadzone
         let g = gp(&Snapshot::default());
         assert_eq!(g.analog, [0; 8]);
     }
@@ -279,16 +315,23 @@ mod tests {
             right_stick: (-1.0, 0.0),
             ..Default::default()
         });
-        assert_eq!((g.thumb_ly, g.thumb_rx), (32767, -32767));
+        assert_eq!((g.thumb_ly, g.thumb_rx), (32767, -32768));
+        // Already filtered by the framework: small values pass through, scaled.
         let g = gp(&Snapshot {
             left_stick: (0.03, -0.03),
             ..Default::default()
         });
-        assert_eq!(
-            (g.thumb_lx, g.thumb_ly),
-            (0, 0),
-            "host deadzone removes noise"
-        );
+        assert_eq!((g.thumb_lx, g.thumb_ly), (983, -983));
+    }
+
+    #[test]
+    fn rumble_plan_prefers_split_handles_then_falls_back() {
+        use Locality::*;
+        assert_eq!(plan_rumble(&[All, LeftHandle, RightHandle]), Some(RumblePlan::Split));
+        assert_eq!(plan_rumble(&[Default, All, Handles]), Some(RumblePlan::Combined(Handles)));
+        assert_eq!(plan_rumble(&[LeftHandle, All]), Some(RumblePlan::Combined(All)));
+        assert_eq!(plan_rumble(&[Default]), Some(RumblePlan::Combined(Default)));
+        assert_eq!(plan_rumble(&[]), None);
     }
 
     #[test]
