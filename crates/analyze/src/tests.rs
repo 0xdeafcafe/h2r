@@ -434,6 +434,105 @@ fn a_null_does_not_lead_to_a_function_before_the_table() {
     assert_eq!(a.functions.get(&0x11010).map(|f| f.source), Some(Source::Call));
 }
 
+#[test]
+fn a_null_does_not_lead_into_a_function_that_looks_like_an_own_case() {
+    // As above, but the function's first word, 0x11068, is a case of the
+    // switch between its code and its table. Only `.rdata` says 0x11088
+    // is a function, and that is enough to end the table at the null.
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x80, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11080]
+        (0x11068, &[0xC3]),
+        (0x11080, &0x11068u32.to_le_bytes()),
+        (0x11084, &[0; 4]),
+        (0x11088, &[0x68, 0x10, 0x01, 0x00, 0x00, 0x58, 0xC3]), // push 0x110; pop eax; ret
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x11088]);
+    let a = analyze(&Xbe::parse(&data).unwrap()).unwrap();
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (1, &vec![0x11068], &vec![]));
+    assert!(a.functions.contains_key(&0x11088));
+    assert_eq!(a.claim(0x11088), Some(('I', Some(0x11088))), "push is code, not a table entry");
+}
+
+#[test]
+fn an_unguarded_table_keeps_cases_after_it_past_a_null() {
+    // Cases after the table on both sides of the null: the case before
+    // the null says this switch keeps its cases past its table.
+    let words: Vec<u8> = [0x11060u32, 0, 0x11068].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x11020, &words),
+        (0x11060, &[0x40, 0xC3]), // inc eax; ret
+        (0x11068, &[0x48, 0xC3]), // dec eax; ret
+    ]);
+    let (a, cfgs) = cfgs_of(code);
+    let jt = &a.jump_tables[&TEXT];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (3, &vec![0x11060, 0x11068], &vec![1]));
+    assert!(cfgs[&TEXT].blocks.contains_key(&0x11068));
+}
+
+#[test]
+fn a_null_leads_to_a_case_past_an_intervening_callee() {
+    // The function this one calls sits between two of its cases.
+    let words: Vec<u8> = [0x1100Cu32, 0, 0x11018].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x0B, 0x00, 0x00, 0x00]),             // call 0x11010
+        (0x11005, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x1100C, &[0xC3]),
+        (0x11010, &[0x33, 0xC0, 0xC3]), // xor eax, eax; ret
+        (0x11018, &[0x40, 0xC3]),
+        (0x11020, &words),
+    ]);
+    let (a, cfgs) = cfgs_of(code);
+    let jt = &a.jump_tables[&0x11005];
+    assert_eq!((jt.count, &jt.holes), (3, &vec![1]));
+    assert!(cfgs[&TEXT].blocks.contains_key(&0x11018));
+}
+
+#[test]
+fn a_null_leads_to_a_case_whose_address_is_taken() {
+    // The function takes the address of its own case, which makes it a
+    // label once its immediates are scanned.
+    let words: Vec<u8> = [0x11010u32, 0, 0x11018].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0x68, 0x18, 0x10, 0x01, 0x00, 0x58]),       // push 0x11018; pop eax
+        (0x11006, &[0xFF, 0x24, 0x85, 0x20, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11020]
+        (0x11010, &[0x40, 0xC3]),
+        (0x11018, &[0x48, 0xC3]),
+        (0x11020, &words),
+    ]);
+    let (a, cfgs) = cfgs_of(code);
+    assert!(a.labels.contains(&0x11018));
+    assert_eq!(a.jump_tables[&0x11006].count, 3);
+    assert!(cfgs[&TEXT].interior_entries.contains(&0x11018));
+}
+
+#[test]
+fn a_null_leads_to_a_case_shared_with_another_function() {
+    // 0x11040 takes the address of 0x11053 and falls into it, so 0x11053
+    // is that function's label before the switch, known only from
+    // `.rdata`, is explored. The switch's case after the null jumps into
+    // the same block.
+    let words: Vec<u8> = [0x11030u32, 0, 0x11053].iter().flat_map(|t| t.to_le_bytes()).collect();
+    let code = pieces(&[
+        (0x11000, &[0xE8, 0x3B, 0x00, 0x00, 0x00, 0xC3]),       // call 0x11040; ret
+        (0x11010, &[0xFF, 0x24, 0x85, 0x80, 0x10, 0x01, 0x00]), // jmp [eax*4+0x11080]
+        (0x11030, &[0xC3]),
+        (0x11040, &[0xB8, 0x53, 0x10, 0x01, 0x00]), // mov eax, 0x11053
+        (0x11045, &[0x90; 14]),
+        (0x11053, &[0x40, 0xC3]),
+        (0x11080, &words),
+    ]);
+    let data = xbe_full(&code, 0x100, &[0x11010]);
+    let x = Xbe::parse(&data).unwrap();
+    let a = analyze(&x).unwrap();
+    assert!(a.labels.contains(&0x11053));
+    assert_eq!(a.claim(0x11053), Some(('I', Some(0x11040))));
+    let jt = &a.jump_tables[&0x11010];
+    assert_eq!((jt.count, &jt.targets, &jt.holes), (3, &vec![0x11030, 0x11053], &vec![1]));
+    assert!(a.function_cfg(&x, 0x11010).unwrap().blocks.contains_key(&0x11053));
+}
+
 /// Discovery plus the CFG of every function, for `.text` holding `code`.
 fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
     let data = xbe_with(&code);

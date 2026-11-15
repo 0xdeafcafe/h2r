@@ -329,6 +329,8 @@ struct Analyzer<'a> {
     failed_candidates: HashSet<u32>,
     /// Functions whose code has been scanned for immediates.
     scanned: HashSet<u32>,
+    /// Every aligned word in a data section that is a code address.
+    data_words: HashSet<u32>,
 }
 
 /// Rounds of "blacklist the weaker side of each conflict and start over".
@@ -390,7 +392,9 @@ fn run(xbe: &Xbe, blacklist: &HashSet<u32>) -> Result<Analysis, xbe::Error> {
         contested: HashSet::new(),
         failed_candidates: HashSet::new(),
         scanned: HashSet::new(),
+        data_words: HashSet::new(),
     };
+    a.data_words = a.data_words()?;
 
     a.add_function(xbe.entry, Source::Entry, xbe.entry);
     a.run_certain();
@@ -699,11 +703,14 @@ impl<'a> Analyzer<'a> {
             }
             // Past a null, a word that only looks like a code address may
             // be the next table or function, so the table goes on only for
-            // a case of its own: in this function's code before the table,
-            // and not a known start. Otherwise the table ends at the first
-            // null and the rest stays unclaimed.
+            // a case of its own, in a slot nothing else points at.
+            // Otherwise the table ends at the first null and the rest stays
+            // unclaimed.
             let past_null = !holes.is_empty() || !pending.is_empty();
-            if past_null && !ok_target.is_some_and(|t| self.own_case(fstart, table, t)) {
+            if past_null
+                && (self.evidenced_start(slot)
+                    || !ok_target.is_some_and(|t| self.own_case(fstart, table, slot, &targets, t)))
+            {
                 break;
             }
             match (kind, ok_target, ok_slot) {
@@ -1132,14 +1139,44 @@ impl<'a> Analyzer<'a> {
         out.into_iter().collect()
     }
 
-    /// Whether `t` can be a case of a switch in the function at `fstart`
-    /// with its table at `table`: compilers put the cases between the two,
-    /// and no function or label starts there. (Data words that hold it are
-    /// no evidence either way: one in DOLBY holds a case at 0x5a449.)
-    fn own_case(&self, fstart: u32, table: u32, t: u32) -> bool {
-        (fstart < t && t < table)
-            && !self.funcs.contains_key(&t)
-            && !self.labels.contains(&t)
+    /// Whether `t`, read from `slot` past a null, can be a case of a switch
+    /// in the function at `fstart` with its table at `table`, given the
+    /// cases `before` read so far. Compilers put the cases on one side of
+    /// the table, between the code and the table, or (if the cases read so
+    /// far are all after it) past the table, so a word on the other side is
+    /// the next table. No function starts there, and it is not in the middle
+    /// of an instruction or in data. A known instruction start is fine,
+    /// labels included: a case can be a block another function falls into.
+    /// (Data words that hold `t` are no evidence either way: one in DOLBY
+    /// holds a case at 0x5a449.)
+    fn own_case(&self, fstart: u32, table: u32, slot: u32, before: &[u32], t: u32) -> bool {
+        let forward = !before.is_empty() && before.iter().all(|c| *c > table);
+        let placed = if forward { t > slot } else { fstart < t && t < table };
+        placed && !self.funcs.contains_key(&t) && matches!(self.image.state(t), Some(Byte::Unknown | Byte::InsnStart))
+    }
+
+    /// Whether something other than a table points at `va` as code: a data
+    /// word, or a known function or label. Such a slot starts a function,
+    /// whatever its bytes look like as a table entry.
+    fn evidenced_start(&self, va: u32) -> bool {
+        self.data_words.contains(&va) || self.funcs.contains_key(&va) || self.labels.contains(&va)
+    }
+
+    /// Every aligned word in a data section that is a code address.
+    fn data_words(&self) -> Result<HashSet<u32>, xbe::Error> {
+        let mut out = HashSet::new();
+        for s in self.xbe.sections.iter().filter(|s| !is_code_section(s)) {
+            let bytes = self.xbe.section_bytes(s)?;
+            out.extend(
+                bytes
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|w| u32::from_le_bytes(*w))
+                    .filter(|v| self.image.region(*v).is_some()),
+            );
+        }
+        Ok(out)
     }
 
     /// Aligned words in data sections that point into code. Runs of two or
