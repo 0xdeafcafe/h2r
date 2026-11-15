@@ -38,7 +38,14 @@
 //! [`PixelCounter::clear`] and [`PixelCounter::report`] record into the
 //! caller's encoder, so they stay in order with the counted passes;
 //! [`PixelReport::read`] waits for the GPU and must only be called once
-//! that encoder has been submitted.
+//! that encoder has been submitted. Telling the report which submission
+//! holds it ([`PixelReport::submitted`]) makes the read wait for that
+//! submission only, not for everything submitted since: a report read a
+//! frame or two later is then usually ready without waiting.
+//!
+//! A counted draw that writes neither depth nor stencil replays against
+//! the real depth/stencil attachment (it cannot change it), so only a draw
+//! that writes them pays for the scratch copy.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -95,9 +102,18 @@ pub(crate) const COUNT_FRAGMENT_WGSL: &str =
 pub struct PixelReport {
     buffer: Arc<wgpu::Buffer>,
     value: Arc<Mutex<Option<u64>>>,
+    submission: Arc<Mutex<Option<wgpu::SubmissionIndex>>>,
 }
 
 impl PixelReport {
+    /// Records the submission that holds the encoder the report was
+    /// recorded into, so [`read`](Self::read) waits for it alone.
+    pub fn submitted(&self, index: wgpu::SubmissionIndex) {
+        if let Ok(mut s) = self.submission.lock() {
+            *s = Some(index);
+        }
+    }
+
     /// Samples that passed, summed over every counted draw since the clear.
     /// Blocks until the GPU has finished; the encoder the report was
     /// recorded into must have been submitted.
@@ -111,8 +127,12 @@ impl PixelReport {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
+        let submission_index = self.submission.lock().ok().and_then(|s| s.clone());
         ctx.device
-            .poll(wgpu::PollType::wait_indefinitely())
+            .poll(wgpu::PollType::Wait {
+                submission_index,
+                timeout: None,
+            })
             .map_err(|e| format!("waiting for the pixel count: {e}"))?;
         rx.recv()
             .map_err(|_| "pixel-count readback dropped".to_owned())?
@@ -252,6 +272,7 @@ impl PixelCounter {
         PixelReport {
             buffer: Arc::new(buffer),
             value: Arc::new(Mutex::new(None)),
+            submission: Arc::new(Mutex::new(None)),
         }
     }
 

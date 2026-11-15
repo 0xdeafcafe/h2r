@@ -231,10 +231,13 @@ modelled.
 ### Shader hook
 `ShaderProgram` plus `Renderer::register_shader(ShaderId, ...)`; a draw picks
 one with `Draw::shader`, and `PipelineKey::shader` keys the cache. Extra
-resources go in `Draw::bind_groups`. `program::ProgramBindings` implements
+resources go in `Draw::bind_groups` (`BoundGroup`: index, group and its
+dynamic offsets). `program::ProgramBindings` implements
 the resource contract of `crates/shaders` (docs/shaders.md): group 0 holds
-the vertex and pixel uniform buffers, group 1 a texture and sampler per
-sampled stage. It builds and caches the layouts per set of stage dimensions,
+the vertex and pixel uniforms (dynamic offsets into one upload ring; bytes
+equal to the previous draw's reuse its copy), group 1 a texture and sampler
+per sampled stage (cached by views and sampler keys, dropped after four
+frames unused). It builds and caches the layouts per set of stage dimensions,
 wraps a linked module into a `ShaderProgram`, caches samplers by
 `SamplerKey`, and binds a 1x1 opaque-black stand-in for a stage with nothing
 usable bound. `d3d::nv2a::Nv2aShaders` is the user: it translates each draw's
@@ -254,8 +257,8 @@ and registers one program per distinct translation.
   it.
 * The built-in shader runs the alpha test from `RenderState`
   (`ALPHATESTENABLE`, `ALPHAFUNC`, `ALPHAREF`, comparing the rounded 8-bit
-  alpha) with a per-draw uniform slot; every `render` call gets its own
-  uniform buffer, so several calls recorded before one submit keep their
+  alpha) with a per-draw uniform slot: a dynamic offset into the
+  renderer's uniform ring, so draws recorded before one submit keep their
   own values.
 * An indexed strip (`TriangleStrip`/`LineStrip` with `Draw::indices`) sets
   the pipeline's strip index format (`Uint32`).
@@ -264,6 +267,28 @@ and registers one program per distinct translation.
   target with every channel uses load operations; anything else draws a
   scissored full-screen triangle whose pipeline writes the channel mask,
   replaces depth (compare always) and replaces stencil.
+
+### Batching (`Renderer::record`, `encode_pass`, `ring.rs`)
+`Renderer::render` encodes a pass of draws at once; `GfxBackend` instead
+records draws one at a time and encodes a whole pass later.
+`Renderer::record(ctx, target, draw)` validates a draw, fetches its pipeline
+and stages its vertices, indices and built-in uniforms in upload rings
+(`ring::UploadRing`: CPU-side staging packed into one buffer, written with
+one `queue.write_buffer` per flush) and returns a `RecordedDraw`.
+`Renderer::encode_pass(ctx, encoder, target, clear, draws, counter)` encodes
+them into one render pass, or a new one at each draw marked with
+`RecordedDraw::start_pass` and at each counted draw (see `occlusion.rs`),
+and returns how many it opened. Within a render pass it skips viewport,
+scissor, pipeline, blend-constant and bind group calls that repeat the
+previous draw's. A counted draw that writes neither depth nor stencil
+replays its count pass on the real depth/stencil attachment instead of a
+scratch copy. The owner calls
+`Renderer::flush_uploads(queue)` (and `ProgramBindings::flush_uploads`)
+before the submit that runs the draws, and `submitted()` after it, which
+lets the rings start over: queued writes are ordered after work already
+submitted, so a region reused after the reset never races a draw still
+reading it. A ring that fills moves to a new, larger buffer; draws recorded
+earlier keep the old one.
 
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 

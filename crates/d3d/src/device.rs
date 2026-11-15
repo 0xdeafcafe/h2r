@@ -55,7 +55,7 @@ use crate::resource::{
     AddressMap, PaletteHeader, PixelContainer, ResourceHeader, ResourceType, SurfaceHeader, common,
 };
 use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
-use crate::state::{StateWords, slot};
+use crate::state::{DrawState, StateWords, slot};
 
 mod display;
 mod fragments;
@@ -461,6 +461,9 @@ fn vertex_limit(entry: &'static str, count: u32) -> Result<(), D3dError> {
 pub struct Device<B: Backend> {
     cfg: DeviceConfig,
     table: RenderStateTable,
+    /// The last state words translated and their translation: consecutive
+    /// draws mostly share their state.
+    translated: Option<(Box<StateWords>, DrawState)>,
     /// The host backend.
     pub backend: B,
     created: bool,
@@ -559,6 +562,7 @@ impl<B: Backend> Device<B> {
         Self {
             cfg,
             table: RenderStateTable::default(),
+            translated: None,
             backend,
             created: false,
             params: None,
@@ -2931,7 +2935,14 @@ impl<B: Backend> Device<B> {
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         let mut bound = self.textures;
         let shader = self.shader_inputs(mem, parts.vertex, &parts.layout, &parts.words)?;
-        let state = parts.words.translate(&self.table);
+        let state = match &self.translated {
+            Some((words, state)) if **words == parts.words => state.clone(),
+            _ => {
+                let state = parts.words.translate(&self.table);
+                self.translated = Some((Box::new(parts.words.clone()), state.clone()));
+                state
+            }
+        };
         let sampled = sampled_stages(&shader, &parts.words, &state);
         let mut extras = parts.words.stage_extras();
         for stage in 0..4 {

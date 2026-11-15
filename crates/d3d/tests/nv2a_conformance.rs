@@ -387,11 +387,13 @@ impl Gpu {
         assert!(draw.state.bad.is_empty(), "{:?}", draw.state.bad);
         let scope = b.ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let r = b.draw(self.color, None, &draw, [host.as_ref(), None, None, None]);
+        // The draw is encoded and submitted with the pending pass.
+        b.flush().unwrap();
         let err = pollster::block_on(scope.pop());
         assert_eq!(r, Ok(DrawOutcome::Drawn));
         assert!(err.is_none(), "{err:?}");
 
-        let (px, order) = b.store.read_color(&b.ctx, self.color).unwrap();
+        let (px, order) = b.read_color(self.color).unwrap();
         let i = 4 * (AT.1 * SIZE + AT.0) as usize;
         let p = [px[i], px[i + 1], px[i + 2], px[i + 3]];
         match order {

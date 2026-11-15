@@ -65,7 +65,7 @@ pub struct PreparedShader {
     /// Registered gfx shader id.
     pub id: ShaderId,
     /// Bind groups for `Draw::bind_groups`.
-    pub bind_groups: Vec<(u32, wgpu::BindGroup)>,
+    pub bind_groups: Vec<gfx::BoundGroup>,
 }
 
 /// Turns a draw into a registered gfx shader.
@@ -88,4 +88,15 @@ pub trait ShaderProvider: Send {
         draw: &crate::backend::ResolvedDraw,
         textures: [Option<&wgpu::TextureView>; 4],
     ) -> Result<PreparedShader, String>;
+
+    /// Writes per-draw data staged by [`prepare`](Self::prepare) to the
+    /// queue. The backend calls it before every submit.
+    fn flush_uploads(&mut self, _ctx: &gfx::GfxContext) {}
+
+    /// Every draw prepared so far has been submitted: staging space may be
+    /// reused.
+    fn submitted(&mut self) {}
+
+    /// A frame was presented (per-frame caches may drop what went unused).
+    fn end_frame(&mut self) {}
 }

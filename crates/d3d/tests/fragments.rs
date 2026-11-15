@@ -576,12 +576,12 @@ fn gpu_alpha_only_clear_keeps_the_colour_channels() {
     d.clear(&mut m, 0, 0, 0xF0, 0xFF10_2030, 1.0, 0).unwrap();
     let back = d.back_buffer().unwrap();
     // The A8R8G8B8 back buffer reads back in memory order: B, G, R, A.
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 0, 0), [0x30, 0x20, 0x10, 0xFF]);
     // 0x3c515's clear: alpha to 0 (colour 0x00FFFFFF), RGB untouched.
     d.clear(&mut m, 0, 0, wrapper_flags(0x10), 0x00FF_FFFF, 0.0, 0)
         .unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 0, 0), [0x30, 0x20, 0x10, 0]);
     assert_eq!(pixel(&px, W - 1, H - 1), [0x30, 0x20, 0x10, 0]);
 }
@@ -744,10 +744,10 @@ fn gpu_persist_display_keeps_what_a_copy_swap_showed() {
     // A COPY swap leaves the ring as it is: the image is back0, not front.
     d.persist_display(&mut m).unwrap();
     let saved = d.persisted_surface().unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, saved).unwrap();
+    let (px, _) = d.backend.read_color(saved).unwrap();
     assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "B, G, R, A: red");
     d.release_device(&mut m, DEV).unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, saved).unwrap();
+    let (px, _) = d.backend.read_color(saved).unwrap();
     assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "kept through teardown");
 }
 
@@ -819,7 +819,7 @@ fn gpu_indexed_draw_renders_through_the_index_list() {
     call(&mut d, &mut m, 0x3fafa0, Regs::default(), &[5, 6, idx]).unwrap();
     assert!(d.take_events().is_empty());
     let back = d.back_buffer().unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 2, 6), [255, 0, 0, 255], "blue (B, G, R, A)");
     assert_eq!(pixel(&px, 6, 2), [255, 0, 0, 255]);
     assert_eq!(pixel(&px, 12, 12), [0, 0, 0, 255], "outside");
@@ -836,10 +836,10 @@ fn gpu_persist_display_keeps_a_copy_swap_image_drawn_over_later() {
     d.clear(&mut m, 0, 0, 0xF0, 0xFF00_FF00, 1.0, 0).unwrap();
     d.persist_display(&mut m).unwrap();
     let saved = d.persisted_surface().unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, saved).unwrap();
+    let (px, _) = d.backend.read_color(saved).unwrap();
     assert_eq!(pixel(&px, 0, 0), [0, 0, 255, 255], "the red image shown");
     let back = d.back_buffer().unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 0, 0), [0, 255, 0, 255], "back0 keeps drawing");
 }
 

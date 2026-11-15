@@ -314,8 +314,7 @@ fn r3_gpu_clear_never_touches_pixels_outside_the_viewport() {
     d.clear(&mut m, 0, 0, 0xF0, 0xFFFF_0000, 1.0, 0).unwrap();
     let (px, order) = d
         .backend
-        .store
-        .read_color(&d.backend.ctx, d.back_buffer().unwrap())
+        .read_color(d.back_buffer().unwrap())
         .unwrap();
     let p = pixel(&px, 0, 0);
     let p = match order {

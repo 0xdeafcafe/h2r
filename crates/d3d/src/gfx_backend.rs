@@ -30,15 +30,25 @@
 //! `gfx::encode`. A texture over the back buffer is sampled from a
 //! `SurfaceStore::snapshot` copy ([`Backend::snapshot_surface`]).
 //! `set_pretransformed_z_max` is renderer-wide, so it is set
-//! before every built-in draw. The backend opens one pass per draw,
-//! correct but slow.
+//! before every built-in draw.
+//!
+//! Draws are batched: consecutive draws (and a clear before them) to the
+//! same colour and depth surfaces are recorded into one pending render
+//! pass, their vertex, index and uniform bytes packed into the renderer's
+//! and the shader provider's upload rings. Anything else that touches
+//! surfaces (another target, partial clears, surface reads, writes, copies
+//! and snapshots, destruction, present) first submits the pending pass, so
+//! the GPU sees the same operations in the same order as one pass per draw
+//! would give it. Each draw is still its own render pass within the
+//! submission unless [`GfxBackend::set_merge_passes`] is on (see there).
 //!
 //! Visibility tests: a draw issued while `SET_ZPASS_PIXEL_COUNT_ENABLE` is
 //! set has its samples counted into a [`gfx::occlusion::PixelCounter`]
 //! (a count pass before the draw; see that module for what is and is not
 //! counted). `report_pixel_count` copies the total without waiting and
 //! `read_pixel_count` waits for the GPU. A counted draw that is skipped (no
-//! translation) counts nothing.
+//! translation) counts nothing. Clearing and reporting the counter submit
+//! the pending pass first, so they stay in order with the counted draws.
 
 use std::collections::HashMap;
 
@@ -47,7 +57,10 @@ use gfx::renderer::{SHADER_XYZRHW_DIFFUSE, d3dz_max};
 use gfx::surface::{SurfaceDesc, SurfaceId, SurfaceKind, SurfaceStore};
 use gfx::texture::DecodedTexture;
 use gfx::texture::TextureKind;
-use gfx::{Clear, D3DFormat, Draw, GfxContext, MaskedClear, Renderer, ScissorRect, VertexStream};
+use gfx::{
+    Clear, D3DFormat, Draw, GfxContext, MaskedClear, RecordedDraw, Renderer, ScissorRect,
+    VertexStream,
+};
 
 use crate::backend::{Backend, DrawOutcome, GuestLayoutKind, RectClear, ResolvedDraw};
 use crate::nv2a::{Nv2aShaders, builtin_equivalent};
@@ -55,6 +68,25 @@ use crate::shader::{ShaderProvider, VertexProcessing};
 
 /// Called on every `Swap` with the surface shown and the swap flags.
 pub type PresentHook = Box<dyn FnMut(&GfxContext, &SurfaceStore, SurfaceId, u32) + Send>;
+
+/// A texture uploaded for the guest, with the view the shaders sample it
+/// through (`None` when its format cannot be bound as a filterable float
+/// texture: the program then reads a stand-in).
+#[derive(Debug)]
+pub struct HostTexture {
+    /// The texture.
+    pub texture: wgpu::Texture,
+    view: Option<wgpu::TextureView>,
+}
+
+/// The render pass being recorded: its target, the clear it starts with and
+/// its draws.
+struct PendingPass {
+    color: SurfaceId,
+    depth: Option<SurfaceId>,
+    clear: Clear,
+    draws: Vec<RecordedDraw>,
+}
 
 /// Rendering through `gfx`.
 pub struct GfxBackend {
@@ -67,10 +99,28 @@ pub struct GfxBackend {
     shaders: Option<Box<dyn ShaderProvider>>,
     presented: Option<SurfaceId>,
     present_hook: Option<PresentHook>,
+    pending: Option<PendingPass>,
+    stats: BatchStats,
+    merge_passes: bool,
     /// Made at the first counted draw.
     counter: Option<PixelCounter>,
     reports: HashMap<u64, PixelReport>,
     next_ticket: u64,
+}
+
+/// How draws were grouped into passes and submissions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchStats {
+    /// Draws recorded (each scissor piece counts).
+    pub draws: u64,
+    /// Pending passes submitted: consecutive draws to one target, and a
+    /// whole-target clear before them.
+    pub passes: u64,
+    /// Render passes those were encoded as (one per draw unless passes are
+    /// merged, plus the count passes of visibility tests).
+    pub render_passes: u64,
+    /// Queue submissions.
+    pub submits: u64,
 }
 
 impl GfxBackend {
@@ -85,10 +135,28 @@ impl GfxBackend {
             shaders: Some(Box::new(Nv2aShaders::new())),
             presented: None,
             present_hook: None,
+            pending: None,
+            stats: BatchStats::default(),
+            merge_passes: false,
             counter: None,
             reports: HashMap::new(),
             next_ticket: 0,
         }
+    }
+
+    /// Pass and submission counts so far.
+    pub fn batch_stats(&self) -> BatchStats {
+        self.stats
+    }
+
+    /// Encode the draws of a pending pass into one render pass instead of
+    /// one render pass per draw (both in one submission). Off by default:
+    /// merged passes are cheaper for the GPU (no attachment store and load
+    /// between draws) but on Apple GPUs a few edge pixels of some draws come
+    /// out a few levels different from one pass per draw, so output is not
+    /// pixel-identical to it.
+    pub fn set_merge_passes(&mut self, merge: bool) {
+        self.merge_passes = merge;
     }
 
     /// Replaces the shader translator for textured and programmable draws.
@@ -119,46 +187,156 @@ impl GfxBackend {
         self.presented
     }
 
-    fn pass(
+    /// `texture` with the view the shaders sample a `kind` texture through,
+    /// if its format can be bound as a filterable float texture.
+    fn host_texture(&self, texture: wgpu::Texture, kind: TextureKind) -> HostTexture {
+        let view =
+            gfx::program::filterable(texture.format(), self.ctx.device.features()).then(|| {
+                let dimension = match kind {
+                    TextureKind::D2 => wgpu::TextureViewDimension::D2,
+                    TextureKind::Cube => wgpu::TextureViewDimension::Cube,
+                    TextureKind::Volume => wgpu::TextureViewDimension::D3,
+                };
+                texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(dimension),
+                    ..Default::default()
+                })
+            });
+        HostTexture { texture, view }
+    }
+
+    /// Reads a colour surface back (after submitting the pending pass), in
+    /// host pixel order.
+    pub fn read_color(
+        &mut self,
+        id: SurfaceId,
+    ) -> Result<(Vec<u8>, gfx::encode::HostPixelOrder), String> {
+        self.flush()?;
+        self.store
+            .read_color(&self.ctx, id)
+            .map_err(|e| format!("{e:?}"))
+    }
+
+    /// Submits the pending pass, if any.
+    pub fn flush(&mut self) -> Result<(), String> {
+        let Some(p) = self.pending.take() else {
+            return Ok(());
+        };
+        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "flush pass")
+            .arg("draws", p.draws.len() as u64);
+        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+        if let Some(d) = p.depth {
+            self.store
+                .prepare_target(&self.ctx, &mut enc, p.color, d)
+                .map_err(|e| e.to_string())?;
+        }
+        {
+            let target = self
+                .store
+                .target(p.color, p.depth)
+                .map_err(|e| e.to_string())?;
+            let ctx = &self.ctx;
+            let counter = p
+                .draws
+                .iter()
+                .any(RecordedDraw::counts_samples)
+                .then(|| self.counter.get_or_insert_with(|| PixelCounter::new(ctx)));
+            self.stats.render_passes +=
+                Renderer::encode_pass(ctx, &mut enc, &target, p.clear, &p.draws, counter)
+                    .map_err(|e| e.to_string())? as u64;
+        }
+        self.store
+            .finish_target(&mut enc, p.color)
+            .map_err(|e| e.to_string())?;
+        self.submit(enc);
+        self.stats.passes += 1;
+        Ok(())
+    }
+
+    /// Writes every staged upload, submits `enc` and lets the rings reuse
+    /// their space.
+    fn submit(&mut self, enc: wgpu::CommandEncoder) -> wgpu::SubmissionIndex {
+        self.renderer.flush_uploads(&self.ctx.queue);
+        if let Some(s) = self.shaders.as_mut() {
+            s.flush_uploads(&self.ctx);
+        }
+        let index = {
+            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
+            self.ctx.queue.submit([enc.finish()])
+        };
+        self.renderer.submitted();
+        if let Some(s) = self.shaders.as_mut() {
+            s.submitted();
+        }
+        self.stats.submits += 1;
+        index
+    }
+
+    /// The pending pass for `color` and `depth`, submitting one for another
+    /// target first.
+    fn pending_for(
         &mut self,
         color: SurfaceId,
         depth: Option<SurfaceId>,
-        clear: Clear,
-        draws: &[Draw<'_>],
+    ) -> Result<&mut PendingPass, String> {
+        self.switch_to(color, depth)?;
+        Ok(self.pending.get_or_insert_with(|| PendingPass {
+            color,
+            depth,
+            clear: Clear::NONE,
+            draws: Vec::new(),
+        }))
+    }
+
+    /// Submits the pending pass if it is for another target. Must run before
+    /// anything for a draw on `color` and `depth` is staged (the shader
+    /// provider's uniforms included): the submit lets every ring reuse what
+    /// was staged before it.
+    fn switch_to(&mut self, color: SurfaceId, depth: Option<SurfaceId>) -> Result<(), String> {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.color != color || p.depth != depth)
+        {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Records `draw` into the pending pass for `color` and `depth` (after
+    /// [`switch_to`](Self::switch_to)).
+    /// `first` is the first scissor piece of a backend draw: unless passes
+    /// are merged, it starts a render pass of its own.
+    fn record(
+        &mut self,
+        color: SurfaceId,
+        depth: Option<SurfaceId>,
+        draw: &Draw<'_>,
+        first: bool,
     ) -> Result<(), String> {
-        let mut enc = self.ctx.device.create_command_encoder(&Default::default());
-        if let Some(d) = depth {
-            self.store
-                .prepare_target(&self.ctx, &mut enc, color, d)
-                .map_err(|e| e.to_string())?;
-        }
-        {
+        debug_assert!(
+            self.pending
+                .as_ref()
+                .is_none_or(|p| p.color == color && p.depth == depth)
+        );
+        let mut recorded = {
             let target = self.store.target(color, depth).map_err(|e| e.to_string())?;
-            let counted = draws.iter().any(|d| d.count_samples);
-            let ctx = &self.ctx;
-            let counter = if counted {
-                Some(self.counter.get_or_insert_with(|| PixelCounter::new(ctx)))
-            } else {
-                None
-            };
             self.renderer
-                .render_counted(ctx, &mut enc, &target, clear, draws, counter)
-                .map_err(|e| e.to_string())?;
+                .record(&self.ctx, &target, draw)
+                .map_err(|e| e.to_string())?
+        };
+        if first && !self.merge_passes {
+            recorded.start_pass();
         }
-        self.store
-            .finish_target(&mut enc, color)
-            .map_err(|e| e.to_string())?;
-        {
-            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
-            self.ctx.queue.submit([enc.finish()]);
-        }
+        self.pending_for(color, depth)?.draws.push(recorded);
+        self.stats.draws += 1;
         Ok(())
     }
 }
 
 impl Backend for GfxBackend {
     type Surface = SurfaceId;
-    type Texture = wgpu::Texture;
+    type Texture = HostTexture;
 
     fn create_surface(
         &mut self,
@@ -178,6 +356,7 @@ impl Backend for GfxBackend {
     }
 
     fn destroy_surface(&mut self, surface: SurfaceId) -> Result<(), String> {
+        self.flush()?;
         if self.store.remove(surface) {
             Ok(())
         } else {
@@ -185,13 +364,10 @@ impl Backend for GfxBackend {
         }
     }
 
-    fn upload_texture(&mut self, t: &DecodedTexture) -> Result<wgpu::Texture, String> {
-        Ok(gfx::upload::upload_texture(
-            &self.ctx.device,
-            &self.ctx.queue,
-            t,
-            "guest texture",
-        ))
+    fn upload_texture(&mut self, t: &DecodedTexture) -> Result<HostTexture, String> {
+        let texture =
+            gfx::upload::upload_texture(&self.ctx.device, &self.ctx.queue, t, "guest texture");
+        Ok(self.host_texture(texture, t.desc.kind))
     }
 
     fn bc_supported(&self) -> bool {
@@ -204,7 +380,17 @@ impl Backend for GfxBackend {
         depth: Option<SurfaceId>,
         clear: Clear,
     ) -> Result<(), String> {
-        self.pass(color, depth, clear, &[])
+        // A clear starts a pass: it becomes the pass's load operations.
+        if self.pending.as_ref().is_some_and(|p| !p.draws.is_empty()) {
+            self.flush()?;
+        }
+        let p = self.pending_for(color, depth)?;
+        p.clear = Clear {
+            color: clear.color.or(p.clear.color),
+            depth: clear.depth.or(p.clear.depth),
+            stencil: clear.stencil.or(p.clear.stencil),
+        };
+        Ok(())
     }
 
     fn draw(
@@ -212,8 +398,9 @@ impl Backend for GfxBackend {
         color: SurfaceId,
         depth: Option<SurfaceId>,
         d: &ResolvedDraw,
-        textures: [Option<&wgpu::Texture>; 4],
+        textures: [Option<&HostTexture>; 4],
     ) -> Result<DrawOutcome, String> {
+        self.switch_to(color, depth)?;
         let streams: Vec<VertexStream<'_>> = d
             .streams
             .iter()
@@ -290,42 +477,25 @@ impl Backend for GfxBackend {
                     d.state.render,
                 )
             };
-            self.pass(color, depth, Clear::NONE, &split(draw, &pieces))?;
+            for (i, piece) in split(draw, &pieces).iter().enumerate() {
+                self.record(color, depth, piece, i == 0)?;
+            }
             return Ok(DrawOutcome::Drawn);
         }
         let shaders = self.shaders.as_mut().expect("checked above");
         // Views as the shaders sample them; a texture that cannot be bound
         // as a filterable float texture is left out (the program reads a
         // stand-in).
-        let features = self.ctx.device.features();
-        let views: Vec<Option<wgpu::TextureView>> = textures
-            .iter()
-            .zip(&d.texture_info)
-            .map(|(t, info)| {
-                let (t, info) = (t.as_ref()?, info.as_ref()?);
-                if !gfx::program::filterable(t.format(), features) {
-                    return None;
-                }
-                let dimension = match info.kind {
-                    TextureKind::D2 => wgpu::TextureViewDimension::D2,
-                    TextureKind::Cube => wgpu::TextureViewDimension::Cube,
-                    TextureKind::Volume => wgpu::TextureViewDimension::D3,
-                };
-                Some(t.create_view(&wgpu::TextureViewDescriptor {
-                    dimension: Some(dimension),
-                    ..Default::default()
-                }))
-            })
-            .collect();
-        let view_refs = std::array::from_fn(|i| views[i].as_ref());
+        let view_refs: [Option<&wgpu::TextureView>; 4] = std::array::from_fn(|i| {
+            d.texture_info[i]?;
+            textures[i]?.view.as_ref()
+        });
         let prepared = match shaders.prepare(&self.ctx, &mut self.renderer, d, view_refs) {
             Ok(p) => p,
             Err(e) => return Ok(DrawOutcome::Skipped(e)),
         };
-        let groups: Vec<(u32, &wgpu::BindGroup)> =
-            prepared.bind_groups.iter().map(|(i, g)| (*i, g)).collect();
         let draw = Draw {
-            bind_groups: &groups,
+            bind_groups: &prepared.bind_groups,
             scissor,
             indices,
             count_samples: d.hw.zpass_count_enable,
@@ -338,7 +508,9 @@ impl Backend for GfxBackend {
                 d.state.render,
             )
         };
-        self.pass(color, depth, Clear::NONE, &split(draw, &pieces))?;
+        for (i, piece) in split(draw, &pieces).iter().enumerate() {
+            self.record(color, depth, piece, i == 0)?;
+        }
         Ok(DrawOutcome::Drawn)
     }
 
@@ -378,6 +550,7 @@ impl Backend for GfxBackend {
                 height: r.height,
             })
             .collect();
+        self.flush()?;
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         if let Some(d) = depth {
             self.store
@@ -392,10 +565,7 @@ impl Backend for GfxBackend {
         self.store
             .finish_target(&mut enc, color)
             .map_err(|e| e.to_string())?;
-        {
-            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
-            self.ctx.queue.submit([enc.finish()]);
-        }
+        self.submit(enc);
         Ok(DrawOutcome::Drawn)
     }
 
@@ -405,6 +575,7 @@ impl Backend for GfxBackend {
         desc: &gfx::TextureDesc,
         bytes: &[u8],
     ) -> Result<bool, String> {
+        self.flush()?;
         self.store
             .write_color(&self.ctx, surface, desc, bytes)
             .map_err(|e| e.to_string())?;
@@ -415,7 +586,9 @@ impl Backend for GfxBackend {
         &mut self,
         surface: SurfaceId,
         opaque: bool,
-    ) -> Result<Option<wgpu::Texture>, String> {
+    ) -> Result<Option<HostTexture>, String> {
+        // The copy holds everything drawn so far.
+        self.flush()?;
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         let t = self
             .store
@@ -447,8 +620,8 @@ impl Backend for GfxBackend {
             self.renderer
                 .clear_rects(&self.ctx, &mut enc, &target, clear, &[all]);
         }
-        self.ctx.queue.submit([enc.finish()]);
-        Ok(Some(t))
+        self.submit(enc);
+        Ok(Some(self.host_texture(t, TextureKind::D2)))
     }
 
     fn create_texture_target(
@@ -472,6 +645,7 @@ impl Backend for GfxBackend {
     ) -> Result<Vec<u8>, String> {
         use gfx::encode::HostPixelOrder;
         use gfx::surface::SurfaceLayout;
+        self.flush()?;
         let s = self.store.get(surface).map_err(|e| e.to_string())?;
         let order = match s.wgpu_format() {
             wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb => {
@@ -498,6 +672,7 @@ impl Backend for GfxBackend {
     }
 
     fn copy_surface(&mut self, src: SurfaceId, dst: SurfaceId) -> Result<bool, String> {
+        self.flush()?;
         let s = *self.store.get(src).map_err(|e| e.to_string())?.desc();
         let mut enc = self.ctx.device.create_command_encoder(&Default::default());
         self.store
@@ -515,15 +690,16 @@ impl Backend for GfxBackend {
                 0,
             )
             .map_err(|e| e.to_string())?;
-        {
-            let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "queue submit");
-            self.ctx.queue.submit([enc.finish()]);
-        }
+        self.submit(enc);
         Ok(true)
     }
 
     fn present(&mut self, surface: SurfaceId, flags: u32) -> Result<(), String> {
         let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
+        self.flush()?;
+        if let Some(s) = self.shaders.as_mut() {
+            s.end_frame();
+        }
         self.presented = Some(surface);
         if let Some(hook) = self.present_hook.as_mut() {
             hook(&self.ctx, &self.store, surface, flags);
@@ -536,20 +712,25 @@ impl Backend for GfxBackend {
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
+        // After the counted draws before it.
+        self.flush()?;
         let ctx = &self.ctx;
         let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
         let mut enc = ctx.device.create_command_encoder(&Default::default());
         counter.clear(&mut enc);
-        ctx.queue.submit([enc.finish()]);
+        self.submit(enc);
         Ok(())
     }
 
     fn report_pixel_count(&mut self) -> Result<Option<u64>, String> {
+        // The counted draws before it are in the total.
+        self.flush()?;
         let ctx = &self.ctx;
         let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
         let mut enc = ctx.device.create_command_encoder(&Default::default());
         let report = counter.report(ctx, &mut enc);
-        ctx.queue.submit([enc.finish()]);
+        // The read waits for this submission only.
+        report.submitted(self.submit(enc));
         self.next_ticket += 1;
         self.reports.insert(self.next_ticket, report);
         Ok(Some(self.next_ticket))

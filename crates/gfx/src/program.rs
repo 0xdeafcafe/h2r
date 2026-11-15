@@ -12,16 +12,38 @@
 //!
 //! [`ProgramBindings`] builds the layouts for that contract, wraps a module
 //! into a [`ShaderProgram`] for [`crate::Renderer::register_shader`], and
-//! makes the per-draw bind groups: uniform buffers, the stage textures (a
+//! makes the per-draw bind groups: the uniforms, and the stage textures (a
 //! 1x1 stand-in, opaque black, for a stage the program samples but nothing
-//! usable is bound to) and samplers cached by [`SamplerKey`].
+//! usable is bound to) with samplers cached by [`SamplerKey`].
+//!
+//! Uniforms are staged in an [`UploadRing`] and bound with dynamic offsets
+//! into one group per ring buffer, so a draw costs no buffer or bind group
+//! of its own: call [`ProgramBindings::flush_uploads`] before the submit
+//! that runs the draws and [`ProgramBindings::submitted`] after it. Texture
+//! groups are cached by view and sampler; [`ProgramBindings::end_frame`]
+//! drops the ones not used for a few frames.
 
 use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
 use crate::pipeline::ShaderProgram;
+use crate::renderer::BoundGroup;
+use crate::ring::UploadRing;
 use crate::translate::SamplerKey;
+
+/// Initial size of the uniform ring.
+const UNIFORM_RING: u64 = 4 << 20;
+/// Frames a texture group may go unused before [`ProgramBindings::end_frame`]
+/// drops it (and the views it holds).
+const GROUP_FRAMES: u64 = 4;
+
+/// A texture group's dimensions and, per sampled stage, the view bound (a
+/// stand-in when `None`) and its sampler.
+type TextureGroupKey = (
+    StageDims,
+    [Option<(Option<wgpu::TextureView>, SamplerKey, [bool; 4])>; 4],
+);
 
 /// Texture dimension per stage a program samples (`None`: not sampled).
 pub type StageDims = [Option<wgpu::TextureViewDimension>; 4];
@@ -32,6 +54,16 @@ pub struct ProgramBindings {
     layouts: HashMap<StageDims, (Option<wgpu::BindGroupLayout>, wgpu::PipelineLayout)>,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
     dummies: HashMap<(wgpu::TextureViewDimension, [bool; 4]), wgpu::TextureView>,
+    ring: Option<UploadRing>,
+    /// Group 0 on the ring's current buffer: (ring generation, vertex and
+    /// pixel sizes, group).
+    uniform_group: Option<(u64, u64, u64, wgpu::BindGroup)>,
+    /// The last vertex and pixel uniforms staged (bytes, offset, ring
+    /// generation) since the last submit, for draws that repeat them.
+    last: [Option<(Vec<u8>, u32, u64)>; 2],
+    uniform_align: u64,
+    texture_groups: HashMap<TextureGroupKey, (wgpu::BindGroup, u64)>,
+    frame: u64,
 }
 
 fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -40,7 +72,7 @@ fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGrou
         visibility,
         ty: wgpu::BindingType::Buffer {
             ty: wgpu::BufferBindingType::Uniform,
-            has_dynamic_offset: false,
+            has_dynamic_offset: true,
             min_binding_size: None,
         },
         count: None,
@@ -71,6 +103,14 @@ impl ProgramBindings {
             layouts: HashMap::new(),
             samplers: HashMap::new(),
             dummies: HashMap::new(),
+            ring: None,
+            uniform_group: None,
+            last: [None, None],
+            uniform_align: (device.limits().min_uniform_buffer_offset_alignment as u64)
+                .max(4)
+                .next_power_of_two(),
+            texture_groups: HashMap::new(),
+            frame: 0,
         }
     }
 
@@ -137,31 +177,100 @@ impl ProgramBindings {
         }
     }
 
-    /// Group 0: the vertex and pixel uniform buffers, as bytes.
-    pub fn uniforms(&self, device: &wgpu::Device, vertex: &[u8], pixel: &[u8]) -> wgpu::BindGroup {
-        let buf = |label, contents: &[u8]| {
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage: wgpu::BufferUsages::UNIFORM,
-            })
+    /// Group 0 with the vertex and pixel uniforms (as bytes) at its
+    /// dynamic offsets. The bytes are staged: they reach the GPU at
+    /// [`flush_uploads`](Self::flush_uploads), which must come before the
+    /// submit of the draw that binds the group. Uniforms equal to the
+    /// previous draw's share its copy.
+    pub fn uniforms(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        vertex: &[u8],
+        pixel: &[u8],
+    ) -> BoundGroup {
+        let ring = self.ring.get_or_insert_with(|| {
+            UploadRing::new(
+                device,
+                "program uniforms",
+                wgpu::BufferUsages::UNIFORM,
+                UNIFORM_RING,
+            )
+        });
+        let mut offsets = [0u32; 2];
+        loop {
+            let generation = ring.generation();
+            for (n, bytes) in [vertex, pixel].into_iter().enumerate() {
+                if let Some((b, off, g)) = &self.last[n]
+                    && *g == generation
+                    && b.as_slice() == bytes
+                {
+                    offsets[n] = *off;
+                    continue;
+                }
+                let (_, off) = ring.push(device, queue, bytes, self.uniform_align);
+                offsets[n] = off as u32;
+                self.last[n] = Some((bytes.to_vec(), off as u32, ring.generation()));
+            }
+            // A push that moved to a new buffer leaves the earlier offset in
+            // the old one: stage both again.
+            if ring.generation() == generation {
+                break;
+            }
+        }
+        let (vlen, plen) = (vertex.len() as u64, pixel.len() as u64);
+        let generation = ring.generation();
+        let group = match &self.uniform_group {
+            Some((g, v, p, group)) if *g == generation && *v == vlen && *p == plen => group.clone(),
+            _ => {
+                let buffer = ring.buffer();
+                let binding = |binding, size| wgpu::BindGroupEntry {
+                    binding,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(size),
+                    }),
+                };
+                let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("program uniforms"),
+                    layout: &self.uniforms,
+                    entries: &[binding(0, vlen.max(4)), binding(1, plen.max(4))],
+                });
+                self.uniform_group = Some((generation, vlen, plen, group.clone()));
+                group
+            }
         };
-        let v = buf("program vertex uniforms", vertex);
-        let p = buf("program pixel uniforms", pixel);
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("program uniforms"),
-            layout: &self.uniforms,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: v.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: p.as_entire_binding(),
-                },
-            ],
-        })
+        BoundGroup {
+            index: 0,
+            group,
+            offsets: offsets.to_vec(),
+        }
+    }
+
+    /// Writes the uniforms staged since the last flush to the queue.
+    pub fn flush_uploads(&mut self, queue: &wgpu::Queue) {
+        if let Some(r) = &mut self.ring {
+            r.flush(queue);
+        }
+    }
+
+    /// Lets the uniform ring reuse its space: call after the submit that
+    /// follows [`flush_uploads`](Self::flush_uploads).
+    pub fn submitted(&mut self) {
+        if let Some(r) = &mut self.ring {
+            r.reset();
+        }
+        self.last = [None, None];
+    }
+
+    /// A frame ended: texture groups unused for a few frames are dropped,
+    /// releasing the views (and textures) they hold.
+    pub fn end_frame(&mut self) {
+        self.frame += 1;
+        let frame = self.frame;
+        self.texture_groups
+            .retain(|_, (_, used)| frame - *used <= GROUP_FRAMES);
     }
 
     /// The sampler for `key` (cached).
@@ -238,6 +347,14 @@ impl ProgramBindings {
         samplers: [SamplerKey; 4],
         signed: [[bool; 4]; 4],
     ) -> Option<wgpu::BindGroup> {
+        let key: TextureGroupKey = (
+            dims,
+            std::array::from_fn(|n| dims[n].map(|_| (views[n].cloned(), samplers[n], signed[n]))),
+        );
+        if let Some((group, used)) = self.texture_groups.get_mut(&key) {
+            *used = self.frame;
+            return Some(group.clone());
+        }
         let mut owned: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = Vec::new();
         for n in 0..4 {
             let Some(d) = dims[n] else { continue };
@@ -260,10 +377,12 @@ impl ProgramBindings {
                 resource: wgpu::BindingResource::Sampler(sampler),
             });
         }
-        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("program textures"),
             layout,
             entries: &entries,
-        }))
+        });
+        self.texture_groups.insert(key, (group.clone(), self.frame));
+        Some(group)
     }
 }

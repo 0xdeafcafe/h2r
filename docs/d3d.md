@@ -570,6 +570,26 @@ and allocations are bounded before anything is read:
     (pre-transformed vertices; NV2A programs apply the viewport
     themselves), so a `gfx::DrawViewport` would transform them twice.
   - Indices go through `gfx::Draw::indices`.
+  - Draws are batched. Consecutive draws to the same colour and depth
+    surfaces, and a whole-target clear before them, are recorded into one
+    pending pass (`gfx::Renderer::record`), with their vertices, indices
+    and uniforms packed into upload rings, and submitted together. Each
+    draw still gets a render pass of its own in that submission:
+    `GfxBackend::set_merge_passes(true)` encodes the whole pending pass as
+    one render pass, which costs less (no Metal render encoder per draw,
+    no attachment store and load between draws) but on Apple GPUs leaves a
+    few edge pixels a few levels off one pass per draw (22 pixels, up to 7
+    levels, on one menu frame), so it is off until that is understood. Any other surface operation
+    (another target, a partial clear, a read, write, copy, snapshot or
+    destruction of a surface, `Swap`) submits the pending pass first. The
+    target switch comes before the provider stages anything for the new
+    draw, because the submit lets the rings reuse their space.
+    `GfxBackend::flush` submits by hand, and `GfxBackend::read_color`
+    flushes before reading. Code that reads `GfxBackend::store` directly
+    must flush first. `GfxBackend::batch_stats` counts draws, pending
+    passes, render passes and submits. Clearing and reporting the pixel
+    counter submit the pending pass first; a report's read waits for its
+    own submission only.
   - `Renderer::set_pretransformed_z_max` is renderer-wide, so it is set
     before every built-in draw from that draw's depth format.
 - Each draw also carries:
@@ -800,7 +820,8 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    `d3d::register_frame_wait(.., FrameWait::HALO2_CLOCKED, ..)`; without a
    kernel, `Device::set_vblanks_per_swap(n)` and/or the inline frame wait.
 5. **Present.** `GfxBackend::on_present` receives the surface on every
-   `Swap`. Blit it with `gfx::surface::present_surface`.
+   `Swap`, after the pending pass has been submitted. Blit it with
+   `gfx::surface::present_surface`.
 6. **Shaders.** `GfxBackend::new` installs `Nv2aShaders`; replace it with
    `GfxBackend::with_shaders`, or drop it with `without_shaders`.
 
@@ -1399,7 +1420,5 @@ counts for visibility tests (`gfx::occlusion`, `Draw::count_samples`,
 - **Depth as a texture.** The depth-buffer textures above need a pass
   that converts depth/stencil bits into the colour format they are read
   as.
-- **Batching several draws into one pass.** The backend opens one pass per
-  draw. That is correct but slow.
 - **Public `HostPixelOrder` from `gfx::surface`.** It is only reachable as
   `gfx::encode::HostPixelOrder`.

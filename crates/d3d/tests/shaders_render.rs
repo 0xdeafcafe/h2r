@@ -64,11 +64,10 @@ fn gpu() -> Option<(d3d::Device<GfxBackend>, SparseMemory, wgpu::ErrorScopeGuard
 }
 
 /// The back buffer as RGBA rows.
-fn back_buffer(d: &d3d::Device<GfxBackend>) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
+fn back_buffer(d: &mut d3d::Device<GfxBackend>) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
     let (px, order) = d
         .backend
-        .store
-        .read_color(&d.backend.ctx, d.back_buffer().unwrap())
+        .read_color(d.back_buffer().unwrap())
         .unwrap();
     move |x, y| {
         let p = pixel(&px, x, y);
@@ -193,7 +192,7 @@ fn ui_quad_with_program_combiner_blend_and_alpha_test() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
 
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(16, 32), [255, 0, 0, 255], "opaque red texel");
     // Green 0x80 tinted by c0 to 0x80, blended at alpha 0x80 over white.
     assert!(close(px(40, 32), [127, 191, 127, 191]), "{:?}", px(40, 32));
@@ -209,7 +208,7 @@ fn ui_quad_with_program_combiner_blend_and_alpha_test() {
     d.set_render_state(&mut m, RS_ALPHATESTENABLE, 0).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert!(close(px(56, 32), [239, 239, 255, 240]), "{:?}", px(56, 32));
 
     let err = pollster::block_on(scope.pop());
@@ -247,7 +246,7 @@ fn fixed_function_textured_quad() {
     // SELECTARG1(texture).
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(16, 32), [128, 0, 0, 255]);
     assert_eq!(px(40, 32), [0, 255, 0, 0x80]);
     assert_eq!(px(56, 32), [0, 0, 255, 0x10]);
@@ -260,7 +259,7 @@ fn fixed_function_textured_quad() {
     d.set_render_state(&mut m, 148, 0xFF20_4060).unwrap(); // TEXTUREFACTOR
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(5, 5), [0x20, 0x40, 0x60, 0xFF]);
 
     let err = pollster::block_on(scope.pop());

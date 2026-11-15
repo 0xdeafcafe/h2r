@@ -777,7 +777,7 @@ impl ShaderProvider for Nv2aShaders {
                 pu.tex_scale[n] = [1.0 / w, 1.0 / h, 1.0, 1.0];
             }
         }
-        let group0 = bindings.uniforms(&ctx.device, &vu.to_bytes(), &pu.to_bytes());
+        let group0 = bindings.uniforms(&ctx.device, &ctx.queue, &vu.to_bytes(), &pu.to_bytes());
 
         // Textures: a stand-in where the bound view has another dimension.
         let views: [Option<&wgpu::TextureView>; 4] = std::array::from_fn(|n| {
@@ -804,7 +804,7 @@ impl ShaderProvider for Nv2aShaders {
         // Stand-ins carry the stage's signed channels too.
         let signed =
             signs.map(|m| [m & SIGN_R, m & SIGN_G, m & SIGN_B, m & SIGN_A].map(|b| b != 0));
-        let mut bind_groups = vec![(0, group0)];
+        let mut bind_groups = vec![group0];
         if let Some(g) = bindings.textures(
             &ctx.device,
             &ctx.queue,
@@ -813,12 +813,30 @@ impl ShaderProvider for Nv2aShaders {
             samplers,
             signed,
         ) {
-            bind_groups.push((1, g));
+            bind_groups.push(gfx::BoundGroup::new(1, g));
         }
         Ok(PreparedShader {
             id: compiled.id,
             bind_groups,
         })
+    }
+
+    fn flush_uploads(&mut self, ctx: &gfx::GfxContext) {
+        if let Some(b) = &mut self.bindings {
+            b.flush_uploads(&ctx.queue);
+        }
+    }
+
+    fn submitted(&mut self) {
+        if let Some(b) = &mut self.bindings {
+            b.submitted();
+        }
+    }
+
+    fn end_frame(&mut self) {
+        if let Some(b) = &mut self.bindings {
+            b.end_frame();
+        }
     }
 }
 

@@ -26,8 +26,6 @@
 
 use std::collections::HashMap;
 
-use wgpu::util::DeviceExt;
-
 use crate::clear::{Clearer, MaskedClear};
 use crate::context::GfxContext;
 use crate::occlusion::{COUNT_FORMAT, COUNT_FRAGMENT_WGSL, PixelCounter};
@@ -36,6 +34,7 @@ use crate::pipeline::{
 };
 use crate::presenter::RenderTarget;
 use crate::repack::{RepackError, RepackPlan};
+use crate::ring::UploadRing;
 use crate::state::{CompareFunc, RenderState};
 use crate::translate::{self, Capabilities};
 use crate::vertex::{HostPrimitive, PrimitiveType, VertexDataType, VertexLayout, VertexRegister};
@@ -239,6 +238,29 @@ pub struct VertexStream<'a> {
     pub stride: u32,
 }
 
+/// A bind group for one draw: the group index, the group, and its dynamic
+/// offsets (empty for a layout without dynamic bindings).
+#[derive(Clone, Debug)]
+pub struct BoundGroup {
+    /// Group index (`@group(n)`).
+    pub index: u32,
+    /// The group.
+    pub group: wgpu::BindGroup,
+    /// Dynamic offsets, in binding order.
+    pub offsets: Vec<u32>,
+}
+
+impl BoundGroup {
+    /// A group without dynamic offsets.
+    pub fn new(index: u32, group: wgpu::BindGroup) -> Self {
+        Self {
+            index,
+            group,
+            offsets: Vec::new(),
+        }
+    }
+}
+
 /// One draw call. Cloning it copies the borrows (a draw repeated with another
 /// scissor, for example).
 #[derive(Clone)]
@@ -256,9 +278,9 @@ pub struct Draw<'a> {
     pub primitive: PrimitiveType,
     /// Render state in effect.
     pub state: RenderState,
-    /// Extra bind groups for registered shaders, `(group index, group)`. The
-    /// built-in shader manages group 0 itself.
-    pub bind_groups: &'a [(u32, &'a wgpu::BindGroup)],
+    /// Extra bind groups for registered shaders. The built-in shader
+    /// manages group 0 itself.
+    pub bind_groups: &'a [BoundGroup],
     /// Viewport; `None` is the whole target, depth 0..1.
     pub viewport: Option<DrawViewport>,
     /// Scissor rectangle; `None` is the whole target. Clamped to the
@@ -300,11 +322,12 @@ impl<'a> Draw<'a> {
     }
 }
 
-/// Bytes per built-in uniform slot (the dynamic-offset alignment wgpu
-/// guarantees to accept).
-const BUILTIN_SLOT: u64 = 256;
 /// Bytes of the built-in shader's uniform struct.
 const BUILTIN_UNIFORM_SIZE: u64 = 32;
+/// Initial size of the vertex/index upload ring.
+const VERTEX_RING: u64 = 4 << 20;
+/// Initial size of the built-in uniform ring.
+const UNIFORM_RING: u64 = 1 << 20;
 
 /// The built-in shader's alpha-test code for a compare function (0 = test
 /// off); matches `alpha_passes` in `xyzrhw_diffuse.wgsl`.
@@ -332,10 +355,54 @@ pub struct Renderer {
     clearer: Clearer,
     caps: Capabilities,
     z_max: f32,
+    /// Vertex and index bytes of recorded draws.
+    vertices: UploadRing,
+    /// Built-in shader uniforms of recorded draws.
+    uniforms: UploadRing,
+    /// The built-in uniform group on `uniforms`' current buffer, by ring
+    /// generation.
+    builtin_group: Option<(u64, wgpu::BindGroup)>,
+    uniform_align: u64,
     /// Count-pass pipelines (see [`crate::occlusion`]), keyed by the
     /// draw's own key.
     count_cache: PipelineCache<wgpu::RenderPipeline>,
     count_fragment: Option<wgpu::ShaderModule>,
+}
+
+/// One draw, validated, with its pipeline built and its bytes staged in the
+/// renderer's upload rings: ready for [`Renderer::encode_pass`] on a target
+/// with the size and formats it was recorded for.
+pub struct RecordedDraw {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffers: Vec<(wgpu::Buffer, u64, u64)>,
+    indices: Option<(wgpu::Buffer, u64, u64)>,
+    vertices: u32,
+    builtin: Option<(wgpu::BindGroup, u32)>,
+    bind_groups: Vec<BoundGroup>,
+    viewport: DrawViewport,
+    scissor: ScissorRect,
+    blend_constant: wgpu::Color,
+    stencil_ref: u32,
+    /// The count-pass pipeline of a draw that counts its samples, and
+    /// whether it writes depth or stencil (the replay then needs a scratch
+    /// copy of the attachment).
+    count: Option<(wgpu::RenderPipeline, bool)>,
+    /// [`encode_pass`](Renderer::encode_pass) opens a new render pass for
+    /// this draw.
+    new_pass: bool,
+}
+
+impl RecordedDraw {
+    /// Whether the draw adds its samples to the pass's [`PixelCounter`].
+    pub fn counts_samples(&self) -> bool {
+        self.count.is_some()
+    }
+
+    /// Makes [`Renderer::encode_pass`] start a new render pass (on the same
+    /// encoder) at this draw instead of continuing the previous draw's.
+    pub fn start_pass(&mut self) {
+        self.new_pass = true;
+    }
 }
 
 /// `D3DZ_MAX` for a 24-bit integer depth buffer: the range of
@@ -363,27 +430,20 @@ pub fn d3dz_max(depth: Option<crate::D3DFormat>) -> f32 {
     }
 }
 
-/// A uniform buffer holding `bytes` (whole built-in slots) and its bind
-/// group. Every `render` call gets its own: queued buffer writes only land
-/// at submit, so a buffer shared between calls recorded before one submit
-/// would hand every call the last call's values.
-fn builtin_resources(
+/// The built-in uniform group over `buffer`, one struct at a dynamic
+/// offset.
+fn builtin_group(
     device: &wgpu::Device,
     bgl: &wgpu::BindGroupLayout,
-    bytes: &[u8],
+    buffer: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
-    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("builtin draw uniforms"),
-        contents: bytes,
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("builtin draw uniforms"),
         layout: bgl,
         entries: &[wgpu::BindGroupEntry {
             binding: 0,
             resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
+                buffer,
                 offset: 0,
                 size: wgpu::BufferSize::new(BUILTIN_UNIFORM_SIZE),
             }),
@@ -441,6 +501,22 @@ impl Renderer {
             clearer: Clearer::new(&ctx.device),
             caps: ctx.caps,
             z_max: D3DZ_MAX_24,
+            vertices: UploadRing::new(
+                &ctx.device,
+                "draw vertices",
+                wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::INDEX,
+                VERTEX_RING,
+            ),
+            uniforms: UploadRing::new(
+                &ctx.device,
+                "builtin draw uniforms",
+                wgpu::BufferUsages::UNIFORM,
+                UNIFORM_RING,
+            ),
+            builtin_group: None,
+            uniform_align: (ctx.device.limits().min_uniform_buffer_offset_alignment as u64)
+                .max(4)
+                .next_power_of_two(),
             count_cache: PipelineCache::new(),
             count_fragment: None,
         }
@@ -448,7 +524,7 @@ impl Renderer {
 
     /// Sets the range of pre-transformed (`XYZRHW`) z values for the
     /// built-in shader: [`d3dz_max`] of the depth format (default
-    /// 16777215, D24S8). Applies to `render` calls made after it.
+    /// 16777215, D24S8). Applies to draws recorded after it.
     pub fn set_pretransformed_z_max(&mut self, z_max: f32) {
         self.z_max = z_max.max(1.0);
     }
@@ -508,6 +584,8 @@ impl Renderer {
     }
 
     /// Records one render pass containing `draws`, applying `clear` first.
+    /// The draws' bytes are written to the queue before it returns, so the
+    /// pass is ready for the caller's next submit.
     pub fn render(
         &mut self,
         ctx: &GfxContext,
@@ -532,163 +610,223 @@ impl Renderer {
         target: &RenderTarget<'_>,
         clear: Clear,
         draws: &[Draw<'_>],
-        mut counter: Option<&mut PixelCounter>,
+        counter: Option<&mut PixelCounter>,
     ) -> Result<(), DrawError> {
-        // Validate everything and create GPU resources before the pass opens.
+        if counter.is_none() && draws.iter().any(|d| d.count_samples) {
+            return Err(DrawError::NoPixelCounter);
+        }
+        let mut recorded = Vec::with_capacity(draws.len());
+        for d in draws {
+            recorded.push(self.record(ctx, target, d)?);
+        }
+        self.flush_uploads(&ctx.queue);
+        Self::encode_pass(ctx, encoder, target, clear, &recorded, counter).map(|_| ())
+    }
+
+    /// Validates `d` for `target`'s size and formats, builds (or finds) its
+    /// pipeline and stages its vertices, indices and built-in uniforms.
+    /// The staged bytes reach the GPU at [`flush_uploads`](Self::flush_uploads),
+    /// which must come before the submit of the pass the draw is encoded in.
+    pub fn record(
+        &mut self,
+        ctx: &GfxContext,
+        target: &RenderTarget<'_>,
+        d: &Draw<'_>,
+    ) -> Result<RecordedDraw, DrawError> {
         let (w, h) = target.size;
         let formats = TargetFormats {
             color: target.color_format,
             depth: target.depth_format,
             samples: target.samples,
         };
-        let mut prepared = Vec::with_capacity(draws.len());
-        let mut builtin_uniforms: Vec<u8> = Vec::new();
-        for d in draws {
-            if !self.shaders.contains_key(&d.shader) {
-                return Err(DrawError::UnknownShader(d.shader));
+        if !self.shaders.contains_key(&d.shader) {
+            return Err(DrawError::UnknownShader(d.shader));
+        }
+        if d.count_samples
+            && target
+                .depth
+                .is_some_and(|v| !v.texture().usage().contains(wgpu::TextureUsages::COPY_SRC))
+        {
+            return Err(DrawError::CountDepthNotCopyable);
+        }
+        if d.shader == SHADER_XYZRHW_DIFFUSE && !Self::builtin_supports(d.layout) {
+            return Err(DrawError::UnsupportedVertexFormat);
+        }
+        if d.streams.len() != d.layout.streams.len() {
+            return Err(DrawError::StreamCount {
+                given: d.streams.len(),
+                declared: d.layout.streams.len(),
+            });
+        }
+        let viewport = d.viewport.unwrap_or(DrawViewport::full(w, h));
+        if !viewport.valid_in(w, h) {
+            return Err(DrawError::BadViewport(viewport, w, h));
+        }
+        let full = ScissorRect::full(w, h);
+        let scissor = d.scissor.map_or(full, |s| s.intersect(full));
+        if let Some(idx) = d.indices
+            && let Some(&bad) = idx.iter().find(|&&i| i >= d.vertex_count)
+        {
+            return Err(DrawError::IndexOutOfRange {
+                index: bad,
+                vertices: d.vertex_count,
+            });
+        }
+        let strides: Vec<u32> = d.streams.iter().map(|s| s.stride).collect();
+        let plan = RepackPlan::new(d.layout, &strides);
+        let mut repacked = Vec::with_capacity(d.streams.len());
+        for (sp, vs) in plan.streams.iter().zip(d.streams) {
+            repacked.push(sp.repack(vs.data, d.vertex_count)?);
+        }
+        let mut key = PipelineKey::new(
+            d.shader,
+            d.layout,
+            &strides,
+            d.primitive,
+            &d.state,
+            formats,
+            self.caps,
+        );
+        let drawn = d.indices.map_or(d.vertex_count, |i| i.len() as u32);
+        let list: Option<Vec<u32>> = match (d.primitive.to_host(drawn), d.indices) {
+            (HostPrimitive::Native(_), None) => None,
+            (HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
+            (HostPrimitive::Indexed(_, conv), None) => Some(conv),
+            (HostPrimitive::Indexed(_, conv), Some(user)) => {
+                Some(conv.iter().map(|&c| user[c as usize]).collect())
             }
-            if d.count_samples && counter.is_none() {
-                return Err(DrawError::NoPixelCounter);
-            }
-            if d.count_samples
-                && target
-                    .depth
-                    .is_some_and(|v| !v.texture().usage().contains(wgpu::TextureUsages::COPY_SRC))
-            {
-                return Err(DrawError::CountDepthNotCopyable);
-            }
-            if d.shader == SHADER_XYZRHW_DIFFUSE && !Self::builtin_supports(d.layout) {
-                return Err(DrawError::UnsupportedVertexFormat);
-            }
-            if d.streams.len() != d.layout.streams.len() {
-                return Err(DrawError::StreamCount {
-                    given: d.streams.len(),
-                    declared: d.layout.streams.len(),
-                });
-            }
-            let viewport = d.viewport.unwrap_or(DrawViewport::full(w, h));
-            if !viewport.valid_in(w, h) {
-                return Err(DrawError::BadViewport(viewport, w, h));
-            }
-            let full = ScissorRect::full(w, h);
-            let scissor = d.scissor.map_or(full, |s| s.intersect(full));
-            if let Some(idx) = d.indices
-                && let Some(&bad) = idx.iter().find(|&&i| i >= d.vertex_count)
-            {
-                return Err(DrawError::IndexOutOfRange {
-                    index: bad,
-                    vertices: d.vertex_count,
-                });
-            }
-            let strides: Vec<u32> = d.streams.iter().map(|s| s.stride).collect();
-            let plan = RepackPlan::new(d.layout, &strides);
-            let mut vertex_buffers = Vec::with_capacity(d.streams.len());
-            for (sp, vs) in plan.streams.iter().zip(d.streams) {
-                let bytes = sp.repack(vs.data, d.vertex_count)?;
-                // wgpu rejects zero-sized buffers; a 4-byte dummy keeps empty draws valid.
-                let contents: &[u8] = if bytes.is_empty() { &[0; 4] } else { &bytes };
-                vertex_buffers.push(ctx.device.create_buffer_init(
-                    &wgpu::util::BufferInitDescriptor {
-                        label: Some("draw vertices"),
-                        contents,
-                        usage: wgpu::BufferUsages::VERTEX,
-                    },
-                ));
-            }
-            let mut key = PipelineKey::new(
-                d.shader,
-                d.layout,
-                &strides,
-                d.primitive,
-                &d.state,
-                formats,
-                self.caps,
+        };
+        // An indexed strip needs the index format in the pipeline (wgpu
+        // validates it; restart never triggers, indices are below
+        // `vertex_count`).
+        if list.is_some()
+            && matches!(
+                key.primitive.topology,
+                wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip
+            )
+        {
+            key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
+        }
+        let program = &self.shaders[&d.shader];
+        let pipeline = self
+            .cache
+            .get_or_insert_with(&key, |k| {
+                create_render_pipeline(&ctx.device, k, program, "xbox draw")
+            })
+            .clone();
+        let count = d.count_samples.then(|| {
+            let fragment = self.count_fragment.get_or_insert_with(|| {
+                ctx.device
+                    .create_shader_module(wgpu::ShaderModuleDescriptor {
+                        label: Some("gfx count fragment"),
+                        source: wgpu::ShaderSource::Wgsl(COUNT_FRAGMENT_WGSL.into()),
+                    })
+            });
+            let pipeline = self
+                .count_cache
+                .get_or_insert_with(&key, |k| {
+                    create_count_pipeline(&ctx.device, k, program, fragment)
+                })
+                .clone();
+            (
+                pipeline,
+                key.depth_stencil.as_ref().is_some_and(writes_depth_stencil),
+            )
+        });
+
+        let vertex_buffers = repacked
+            .iter()
+            .map(|bytes| {
+                // An empty stream stages 4 zero bytes: slices are never empty.
+                let len = (bytes.len() as u64).max(4);
+                let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
+                (buf, off, len)
+            })
+            .collect();
+        let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
+        let indices = list.map(|idx| {
+            let bytes: &[u8] = bytemuck::cast_slice(&idx);
+            let len = (bytes.len() as u64).max(4);
+            let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
+            (buf, off, len)
+        });
+        let builtin = (d.shader == SHADER_XYZRHW_DIFFUSE).then(|| {
+            let words = [
+                w as f32,
+                h as f32,
+                self.z_max,
+                builtin_alpha_func(&d.state),
+                d.state.alpha_ref as f32,
+                0.0,
+                0.0,
+                0.0,
+            ];
+            let (buf, off) = self.uniforms.push(
+                &ctx.device,
+                &ctx.queue,
+                bytemuck::cast_slice(&words),
+                self.uniform_align,
             );
-            let drawn = d.indices.map_or(d.vertex_count, |i| i.len() as u32);
-            let list: Option<Vec<u32>> = match (d.primitive.to_host(drawn), d.indices) {
-                (HostPrimitive::Native(_), None) => None,
-                (HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
-                (HostPrimitive::Indexed(_, conv), None) => Some(conv),
-                (HostPrimitive::Indexed(_, conv), Some(user)) => {
-                    Some(conv.iter().map(|&c| user[c as usize]).collect())
+            let generation = self.uniforms.generation();
+            let group = match &self.builtin_group {
+                Some((g, group)) if *g == generation => group.clone(),
+                _ => {
+                    let group = builtin_group(&ctx.device, &self.builtin_bgl, &buf);
+                    self.builtin_group = Some((generation, group.clone()));
+                    group
                 }
             };
-            // An indexed strip needs the index format in the pipeline (wgpu
-            // validates it; restart never triggers, indices are below
-            // `vertex_count`).
-            if list.is_some()
-                && matches!(
-                    key.primitive.topology,
-                    wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip
-                )
-            {
-                key.primitive.strip_index_format = Some(wgpu::IndexFormat::Uint32);
-            }
-            let indices = list.map(|idx| {
-                let n = idx.len() as u32;
-                let bytes: Vec<u8> = idx.iter().flat_map(|i| i.to_le_bytes()).collect();
-                let buf = ctx
-                    .device
-                    .create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                        label: Some("draw indices"),
-                        contents: if bytes.is_empty() { &[0; 4] } else { &bytes },
-                        usage: wgpu::BufferUsages::INDEX,
-                    });
-                (buf, n)
-            });
-            let builtin_slot = (d.shader == SHADER_XYZRHW_DIFFUSE).then(|| {
-                let slot = (builtin_uniforms.len() as u64 / BUILTIN_SLOT) as u32;
-                let words = [
-                    w as f32,
-                    h as f32,
-                    self.z_max,
-                    builtin_alpha_func(&d.state),
-                    d.state.alpha_ref as f32,
-                    0.0,
-                    0.0,
-                    0.0,
-                ];
-                let mut bytes: Vec<u8> = words.iter().flat_map(|f| f.to_le_bytes()).collect();
-                bytes.resize(BUILTIN_SLOT as usize, 0);
-                builtin_uniforms.extend(bytes);
-                slot
-            });
-            prepared.push(Prepared {
-                key,
-                shader: d.shader,
-                vertex_buffers,
-                indices,
-                vertex_count: drawn,
-                blend_constant: translate::blend_constant(&d.state),
-                stencil_ref: d.state.stencil.reference as u32,
-                bind_groups: d.bind_groups,
-                viewport,
-                scissor,
-                builtin_slot,
-                count_samples: d.count_samples,
-            });
-        }
-        for p in &prepared {
-            let program = &self.shaders[&p.shader];
-            self.cache.get_or_insert_with(&p.key, |k| {
-                create_render_pipeline(&ctx.device, k, program, "xbox draw")
-            });
-            if p.count_samples {
-                let fragment = self.count_fragment.get_or_insert_with(|| {
-                    ctx.device
-                        .create_shader_module(wgpu::ShaderModuleDescriptor {
-                            label: Some("gfx count fragment"),
-                            source: wgpu::ShaderSource::Wgsl(COUNT_FRAGMENT_WGSL.into()),
-                        })
-                });
-                self.count_cache.get_or_insert_with(&p.key, |k| {
-                    create_count_pipeline(&ctx.device, k, program, fragment)
-                });
-            }
-        }
-        let builtin_group = (!builtin_uniforms.is_empty())
-            .then(|| builtin_resources(&ctx.device, &self.builtin_bgl, &builtin_uniforms));
+            (group, off as u32)
+        });
+        Ok(RecordedDraw {
+            pipeline,
+            vertex_buffers,
+            indices,
+            vertices,
+            builtin,
+            bind_groups: d.bind_groups.to_vec(),
+            viewport,
+            scissor,
+            blend_constant: translate::blend_constant(&d.state),
+            stencil_ref: d.state.stencil.reference as u32,
+            count,
+            new_pass: false,
+        })
+    }
 
+    /// Writes the bytes staged by [`record`](Self::record) since the last
+    /// flush to the queue.
+    pub fn flush_uploads(&mut self, queue: &wgpu::Queue) {
+        self.vertices.flush(queue);
+        self.uniforms.flush(queue);
+    }
+
+    /// Lets the upload rings reuse their space: call after submitting every
+    /// pass recorded so far (and after [`flush_uploads`](Self::flush_uploads)).
+    /// Without it the rings move to a new buffer whenever one fills up.
+    pub fn submitted(&mut self) {
+        self.vertices.reset();
+        self.uniforms.reset();
+    }
+
+    /// Encodes `draws` (recorded for a target of this size and these
+    /// formats) on `encoder`, applying `clear` first, and returns how many
+    /// render passes that took: one render pass, or a
+    /// run of passes split before each draw marked with
+    /// [`RecordedDraw::start_pass`] and before each counted draw, which gets
+    /// its count and sum passes first (as
+    /// [`render_counted`](Self::render_counted)).
+    pub fn encode_pass(
+        ctx: &GfxContext,
+        encoder: &mut wgpu::CommandEncoder,
+        target: &RenderTarget<'_>,
+        clear: Clear,
+        draws: &[RecordedDraw],
+        mut counter: Option<&mut PixelCounter>,
+    ) -> Result<usize, DrawError> {
+        if counter.is_none() && draws.iter().any(RecordedDraw::counts_samples) {
+            return Err(DrawError::NoPixelCounter);
+        }
         let has_stencil = target.depth_format.is_some_and(|f| f.has_stencil_aspect());
         let color_view = target.color;
         let attachment = {
@@ -716,26 +854,43 @@ impl Renderer {
         };
         // Runs of draws, each starting at the start or at a counted draw.
         let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
-        for (i, p) in prepared.iter().enumerate() {
+        for (i, p) in draws.iter().enumerate() {
             match runs.last_mut() {
-                Some(r) if !p.count_samples => r.end = i + 1,
+                Some(r) if !p.counts_samples() && !p.new_pass => r.end = i + 1,
                 _ => runs.push(i..i + 1),
             }
         }
         if runs.is_empty() {
             runs.push(0..0);
         }
+        let passes = runs.len();
         for run in runs {
-            if let Some(p) = prepared.get(run.start).filter(|p| p.count_samples) {
+            if let Some(p) = draws.get(run.start)
+                && let Some((count, writes)) = &p.count
+            {
                 let counter = counter.as_deref_mut().expect("checked above");
                 let samples = target.samples;
                 let count_view = counter.target(ctx, attachment, samples).clone();
-                // The replay writes depth and stencil as the draw does, so it
-                // runs on a copy (see crate::occlusion). A pending clear is
-                // applied to the copy and stays pending for the real pass.
+                // A replay that writes depth or stencil runs on a copy (see
+                // crate::occlusion); a pending clear is applied to the copy
+                // and stays pending for the real pass. One that writes
+                // neither replays on the attachment itself, which then
+                // takes the pending clear.
                 let depth_copy = target
                     .depth
+                    .filter(|_| *writes)
                     .map(|v| counter.depth_copy(ctx, encoder, v.texture()).clone());
+                let in_place = depth_copy.is_none() && target.depth.is_some();
+                let (count_depth, count_stencil) = if in_place {
+                    (depth_clear.take(), stencil_clear.take())
+                } else {
+                    (depth_clear, stencil_clear)
+                };
+                let depth_store = if in_place {
+                    wgpu::StoreOp::Store
+                } else {
+                    wgpu::StoreOp::Discard
+                };
                 {
                     let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("gfx count pass"),
@@ -748,28 +903,27 @@ impl Renderer {
                                 store: wgpu::StoreOp::Store,
                             },
                         })],
-                        depth_stencil_attachment: depth_copy.as_ref().map(|view| {
-                            wgpu::RenderPassDepthStencilAttachment {
+                        depth_stencil_attachment: depth_copy.as_ref().or(target.depth).map(
+                            |view| wgpu::RenderPassDepthStencilAttachment {
                                 view,
                                 depth_ops: Some(wgpu::Operations {
-                                    load: depth_clear
+                                    load: count_depth
                                         .map_or(wgpu::LoadOp::Load, wgpu::LoadOp::Clear),
-                                    store: wgpu::StoreOp::Discard,
+                                    store: depth_store,
                                 }),
                                 stencil_ops: has_stencil.then_some(wgpu::Operations {
-                                    load: stencil_clear.map_or(wgpu::LoadOp::Load, |s| {
+                                    load: count_stencil.map_or(wgpu::LoadOp::Load, |s| {
                                         wgpu::LoadOp::Clear(s as u32)
                                     }),
-                                    store: wgpu::StoreOp::Discard,
+                                    store: depth_store,
                                 }),
-                            }
-                        }),
+                            },
+                        ),
                         timestamp_writes: None,
                         occlusion_query_set: None,
                         multiview_mask: None,
                     });
-                    let pipeline = self.count_cache.get(&p.key).expect("built above");
-                    record_draw(&mut pass, p, pipeline, builtin_group.as_ref());
+                    PassState::default().draw(&mut pass, p, count);
                 }
                 if !p.scissor.is_empty() {
                     let s = p.scissor;
@@ -807,67 +961,102 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            for p in &prepared[run] {
-                let pipeline = self.cache.get(&p.key).expect("built above");
-                record_draw(&mut pass, p, pipeline, builtin_group.as_ref());
+            let mut state = PassState::default();
+            for p in &draws[run] {
+                state.draw(&mut pass, p, &p.pipeline);
             }
         }
-        Ok(())
+        Ok(passes)
     }
 }
 
-/// A draw validated, with its GPU resources made, ready to record.
-struct Prepared<'a> {
-    key: PipelineKey,
-    shader: ShaderId,
-    vertex_buffers: Vec<wgpu::Buffer>,
-    indices: Option<(wgpu::Buffer, u32)>,
-    vertex_count: u32,
-    blend_constant: wgpu::Color,
-    stencil_ref: u32,
-    bind_groups: &'a [(u32, &'a wgpu::BindGroup)],
-    viewport: DrawViewport,
-    scissor: ScissorRect,
-    builtin_slot: Option<u32>,
-    count_samples: bool,
+/// The state an open render pass has had set, so a draw only sets what
+/// differs from the draw before it. A pipeline switch keeps bind groups wgpu
+/// has already validated against a compatible layout, so groups are
+/// compared by value.
+#[derive(Default)]
+struct PassState<'a> {
+    last: Option<(&'a RecordedDraw, &'a wgpu::RenderPipeline)>,
+    groups: [Option<(&'a wgpu::BindGroup, &'a [u32])>; 4],
 }
 
-/// Records one prepared draw into `pass` with `pipeline`.
-fn record_draw(
-    pass: &mut wgpu::RenderPass<'_>,
-    p: &Prepared<'_>,
-    pipeline: &wgpu::RenderPipeline,
-    builtin_group: Option<&wgpu::BindGroup>,
-) {
-    // The attachments may be larger than the logical target (a depth
-    // surface bigger than the colour surface): the viewport and scissor
-    // were checked against, and clamped to, the logical size.
-    if p.scissor.is_empty() {
-        return;
-    }
-    let v = p.viewport;
-    pass.set_viewport(v.x, v.y, v.width, v.height, v.min_depth, v.max_depth);
-    let s = p.scissor;
-    pass.set_scissor_rect(s.x, s.y, s.width, s.height);
-    pass.set_pipeline(pipeline);
-    if let Some(slot) = p.builtin_slot {
-        pass.set_bind_group(0, builtin_group, &[(slot as u64 * BUILTIN_SLOT) as u32]);
-    }
-    for (index, group) in p.bind_groups {
-        pass.set_bind_group(*index, *group, &[]);
-    }
-    pass.set_blend_constant(p.blend_constant);
-    pass.set_stencil_reference(p.stencil_ref);
-    for (i, buf) in p.vertex_buffers.iter().enumerate() {
-        pass.set_vertex_buffer(i as u32, buf.slice(..));
-    }
-    match &p.indices {
-        None => pass.draw(0..p.vertex_count, 0..1),
-        Some((buf, n)) => {
-            pass.set_index_buffer(buf.slice(..), wgpu::IndexFormat::Uint32);
-            pass.draw_indexed(0..*n, 0, 0..1);
+impl<'a> PassState<'a> {
+    /// Encodes `p` with `pipeline` (its own, or its count pipeline).
+    fn draw(
+        &mut self,
+        pass: &mut wgpu::RenderPass<'_>,
+        p: &'a RecordedDraw,
+        pipeline: &'a wgpu::RenderPipeline,
+    ) {
+        // The attachments may be larger than the logical target (a depth
+        // surface bigger than the colour surface): the viewport and scissor
+        // were checked against, and clamped to, the logical size.
+        if p.scissor.is_empty() {
+            return;
         }
+        let last = self.last.map(|(l, _)| l);
+        let v = p.viewport;
+        if last.is_none_or(|l| l.viewport != v) {
+            pass.set_viewport(v.x, v.y, v.width, v.height, v.min_depth, v.max_depth);
+        }
+        let s = p.scissor;
+        if last.is_none_or(|l| l.scissor != s) {
+            pass.set_scissor_rect(s.x, s.y, s.width, s.height);
+        }
+        if self.last.is_none_or(|(_, l)| l != pipeline) {
+            pass.set_pipeline(pipeline);
+        }
+        let builtin = p
+            .builtin
+            .as_ref()
+            .map(|(group, offset)| (0, group, std::slice::from_ref(offset)));
+        let extra = p
+            .bind_groups
+            .iter()
+            .map(|g| (g.index, &g.group, g.offsets.as_slice()));
+        for (index, group, offsets) in builtin.into_iter().chain(extra) {
+            match self.groups.get_mut(index as usize) {
+                Some(Some((g, o))) if *g == group && *o == offsets => {}
+                slot => {
+                    pass.set_bind_group(index, group, offsets);
+                    if let Some(slot) = slot {
+                        *slot = Some((group, offsets));
+                    }
+                }
+            }
+        }
+        if last.is_none_or(|l| l.blend_constant != p.blend_constant) {
+            pass.set_blend_constant(p.blend_constant);
+        }
+        if last.is_none_or(|l| l.stencil_ref != p.stencil_ref) {
+            pass.set_stencil_reference(p.stencil_ref);
+        }
+        // Every draw stages its own vertices and indices.
+        for (i, (buf, off, len)) in p.vertex_buffers.iter().enumerate() {
+            pass.set_vertex_buffer(i as u32, buf.slice(*off..*off + *len));
+        }
+        match &p.indices {
+            None => pass.draw(0..p.vertices, 0..1),
+            Some((buf, off, len)) => {
+                pass.set_index_buffer(buf.slice(*off..*off + *len), wgpu::IndexFormat::Uint32);
+                pass.draw_indexed(0..p.vertices, 0, 0..1);
+            }
+        }
+        self.last = Some((p, pipeline));
     }
+}
+
+/// Whether a draw with `ds` can change the depth/stencil attachment.
+fn writes_depth_stencil(ds: &wgpu::DepthStencilState) -> bool {
+    let face_writes = |f: &wgpu::StencilFaceState| {
+        [f.fail_op, f.depth_fail_op, f.pass_op]
+            .iter()
+            .any(|op| *op != wgpu::StencilOperation::Keep)
+    };
+    ds.depth_write_enabled == Some(true)
+        || (ds.stencil.write_mask != 0
+            && ds.format.has_stencil_aspect()
+            && (face_writes(&ds.stencil.front) || face_writes(&ds.stencil.back)))
 }
 
 /// A count-pass pipeline for `key` (see [`crate::occlusion`]): the draw's

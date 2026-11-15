@@ -513,7 +513,7 @@ fn p1_9_alpha_test_with_the_builtin_shader_discards() {
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
     assert!(d.take_events().is_empty());
     let back = d.back_buffer().unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 4, 4), [0, 0, 0, 255], "alpha 0x40 is discarded");
     assert_eq!(
         pixel(&px, 12, 4),
@@ -533,7 +533,7 @@ fn p1_9_alpha_test_with_the_builtin_shader_discards() {
     d.set_viewport(&mut m, vp).unwrap();
     quad_vb(&mut m, 0.0, 0.0, 64.0, 64.0, 0xFF00_FF00);
     d.draw_vertices(&mut m, 6, 0, 4).unwrap();
-    let (px, _) = d.backend.store.read_color(&d.backend.ctx, back).unwrap();
+    let (px, _) = d.backend.read_color(back).unwrap();
     assert_eq!(pixel(&px, 20, 20), [0, 255, 0, 255], "inside the viewport");
     assert_eq!(pixel(&px, 40, 40), [0, 0, 0, 255], "outside the viewport");
 }

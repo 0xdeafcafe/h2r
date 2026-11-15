@@ -738,6 +738,62 @@ fn pixel_counter_keeps_depth_and_stencil_changes_within_a_draw() {
     }
 }
 
+/// A counted draw that writes neither depth nor stencil replays against the
+/// real attachment, which then takes the pass's pending clear: the clear is
+/// kept for the draws after it, and nothing the replay does changes depth.
+#[test]
+fn pixel_counter_replays_a_read_only_draw_in_place() {
+    use gfx::occlusion::PixelCounter;
+    let Some(ctx) = context() else { return };
+    let mut store = SurfaceStore::new(ctx.caps);
+    let color = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinA8R8G8B8, 32, 32), SurfaceKind::Color).unwrap();
+    let depth = store.create(&ctx, SurfaceDesc::new(D3DFormat::LinD24S8, 32, 32), SurfaceKind::DepthStencil).unwrap();
+    let mut renderer = Renderer::new(&ctx);
+    let mut counter = PixelCounter::new(&ctx);
+    let vl = VertexLayout::from_fvf(fvf::XYZRHW | fvf::DIFFUSE).unwrap();
+    let c = 0xFFFF_FFFF;
+    let quad = |z: f32| {
+        [
+            vertex_z(0.0, 0.0, z, c), vertex_z(16.0, 0.0, z, c), vertex_z(0.0, 8.0, z, c),
+            vertex_z(16.0, 0.0, z, c), vertex_z(16.0, 8.0, z, c), vertex_z(0.0, 8.0, z, c),
+        ]
+        .concat()
+    };
+    let (near, far) = (quad(0.25), quad(0.75));
+    let writes = RenderState { depth_func: CompareFunc::LessEqual, depth_write: true, ..RenderState::default() };
+    let reads = RenderState { depth_write: false, ..writes };
+    let mut run = |draws: &[(&[u8], RenderState, bool)], clear: Clear| {
+        let mut enc = ctx.device.create_command_encoder(&Default::default());
+        counter.clear(&mut enc);
+        let streams: Vec<[VertexStream; 1]> = draws.iter().map(|(v, ..)| [VertexStream { data: v, stride: 0 }]).collect();
+        let ds: Vec<Draw> = draws
+            .iter()
+            .zip(&streams)
+            .map(|((_, state, counted), s)| {
+                let mut d = draw(s, 6, &vl, PrimitiveType::TriangleList, *state);
+                d.count_samples = *counted;
+                d
+            })
+            .collect();
+        let t = store.target(color, Some(depth)).unwrap();
+        renderer.render_counted(&ctx, &mut enc, &t, clear, &ds, Some(&mut counter)).unwrap();
+        let report = counter.report(&ctx, &mut enc);
+        report.submitted(ctx.queue.submit([enc.finish()]));
+        report.read(&ctx).unwrap()
+    };
+    let clear_all = Clear { color: Some([0.0; 4]), depth: Some(1.0), stencil: Some(0) };
+    // Depth holds the near quad.
+    assert_eq!(run(&[(&near, writes, false)], clear_all), 0);
+    assert_eq!(run(&[(&far, reads, true)], Clear::NONE), 0, "behind the near quad");
+    // The clear goes to the replay's attachment and stays for the draw
+    // after it: the far quad passes, then writes the depth the near test
+    // compares against.
+    assert_eq!(run(&[(&far, reads, true), (&far, writes, false), (&near, reads, true)], clear_all), 256);
+    // The replay wrote nothing; the real draw wrote the far quad.
+    assert_eq!(run(&[(&far, reads, true)], Clear::NONE), 128);
+    assert_eq!(run(&[(&quad(0.9), reads, true)], Clear::NONE), 0);
+}
+
 /// Replacing a registered shader also replaces what the count pass draws:
 /// a replacement that moves the quad off the target counts 0.
 #[test]

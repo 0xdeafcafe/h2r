@@ -293,12 +293,8 @@ fn gpu() -> Option<(Device<GfxBackend>, SparseMemory, wgpu::ErrorScopeGuard)> {
 }
 
 /// The back buffer as RGBA.
-fn back_buffer(d: &Device<GfxBackend>) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
-    let (px, order) = d
-        .backend
-        .store
-        .read_color(&d.backend.ctx, d.back_buffer().unwrap())
-        .unwrap();
+fn back_buffer(d: &mut Device<GfxBackend>) -> impl Fn(u32, u32) -> [u8; 4] + use<> {
+    let (px, order) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
     move |x, y| {
         let p = pixel(&px, x, y);
         match order {
@@ -340,7 +336,7 @@ fn gpu_inclusive_scissors_blend_every_pixel_once() {
     d.set_scissors(&mut m, 2, 0, RECTS).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     let grey = [0x40, 0x40, 0x40, 0xFF];
     let black = [0, 0, 0, 0xFF];
     assert_eq!(px(10, 10), grey);
@@ -364,7 +360,7 @@ fn gpu_exclusive_scissor_leaves_the_inside_alone() {
     d.set_scissors(&mut m, 1, 1, RECTS).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     let (red, blue) = ([0xFF, 0, 0, 0xFF], [0, 0, 0xFF, 0xFF]);
     for (x, y) in [(0, 0), (8, 32), (47, 15), (48, 48), (63, 63)] {
         assert_eq!(px(x, y), red, "{x},{y} outside");
@@ -419,7 +415,7 @@ fn gpu_texture_over_the_back_buffer_samples_what_was_drawn() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
     assert_eq!(d.stats().frame_snapshots, 1);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     let (red, blue) = ([0xFF, 0, 0, 0xFF], [0, 0, 0xFF, 0xFF]);
     assert_eq!(px(4, 32), blue);
     assert_eq!(px(28, 10), blue);
@@ -473,7 +469,7 @@ fn gpu_render_to_texture_then_sample_it() {
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
     assert_eq!(d.stats().rtt_writebacks, 1);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     assert_eq!(px(8, 32), [0, 0xFF, 0, 0xFF]);
     assert_eq!(px(56, 32), [0, 0xFF, 0, 0x40]);
     finish(scope);
@@ -537,7 +533,7 @@ fn gpu_window_scissors_draw_outside_a_small_viewport() {
     d.set_scissors(&mut m, 2, 0, RECTS).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    let px = back_buffer(&d);
+    let px = back_buffer(&mut d);
     let (red, blue) = ([0xFF, 0, 0, 0xFF], [0, 0, 0xFF, 0xFF]);
     assert_eq!(px(44, 4), red);
     assert_eq!(px(4, 44), red);
@@ -559,7 +555,7 @@ fn gpu_unused_depth_texture_stage_does_not_cancel_the_draw() {
     d.set_texture(&mut m, 3, FRAME_TEX).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    assert_eq!(back_buffer(&d)(32, 32), [0xFF, 0, 0, 0xFF]);
+    assert_eq!(back_buffer(&mut d)(32, 32), [0xFF, 0, 0, 0xFF]);
     // Read on stage 0 it is still skipped.
     d.set_texture(&mut m, 3, 0).unwrap();
     d.set_texture(&mut m, 0, FRAME_TEX).unwrap();
@@ -589,7 +585,7 @@ fn gpu_x8_texture_over_the_back_buffer_reads_opaque_alpha() {
         d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
         no_skips(&mut d);
         assert_eq!(
-            back_buffer(&d)(20, 20),
+            back_buffer(&mut d)(20, 20),
             [0x11, 0x22, 0x33, alpha],
             "format {format:#x}"
         );
@@ -634,7 +630,7 @@ fn gpu_clipplane_stage_over_a_depth_alias_does_not_cancel_the_draw() {
     d.set_texture(&mut m, 3, FRAME_TEX).unwrap();
     d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
     no_skips(&mut d);
-    assert_eq!(back_buffer(&d)(32, 32), [0xFF, 0, 0, 0xFF]);
+    assert_eq!(back_buffer(&mut d)(32, 32), [0xFF, 0, 0, 0xFF]);
     // The same alias on a PROJECT2D stage is read: skipped.
     def.texture_modes = texture_modes([0, 0, 0, TEX_PROJECT2D]);
     m.write(PSDEF, &def.to_bytes()).unwrap();

@@ -70,7 +70,7 @@ fn first_frame_renders_through_gfx() {
     );
 
     let shown = d.backend.last_presented().expect("presented");
-    let (px, order) = d.backend.store.read_color(&d.backend.ctx, shown).unwrap();
+    let (px, order) = d.backend.read_color(shown).unwrap();
     let rgba = |p: [u8; 4]| match order {
         gfx::encode::HostPixelOrder::Bgra8 => [p[2], p[1], p[0], p[3]],
         _ => p,
