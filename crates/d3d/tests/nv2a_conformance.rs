@@ -58,6 +58,9 @@ const TSS_COLORSIGN: usize = 10;
 const TSS_MAGFILTER: usize = 3;
 const TSS_MINFILTER: usize = 4;
 const TEXF_LINEAR: u32 = 2;
+const TSS_ADDRESSU: usize = 0;
+const TSS_BORDERCOLOR: usize = 29;
+const TADDRESS_BORDER: u32 = 4;
 // Xbox `D3DTOP_*` and `D3DTA_*`.
 const TOP_SELECTARG1: u32 = 2;
 const TOP_MODULATE: u32 = 4;
@@ -953,6 +956,71 @@ fn color_sign_filters_signed_values() {
     let half = 128.0 / 255.0;
     let v = half * (-1.0 / 255.0) + half;
     expect(g.run(&c), [v, v, v, 1.0], "filtered signed seam");
+}
+
+/// `r0.rgb = 0.5 * signed(t0.rgb) + 0.5`, `r0.a = t0.a`.
+fn rebias_t0() -> PixelShaderDef {
+    let mut d = copy_t0();
+    d.rgb_inputs[0] = inputs(REG_T0 | MAP_SIGNED_IDENTITY, REG_C0, ONE, REG_C0);
+    d.rgb_outputs[0] = outputs(0, 0, REG_R0, 0);
+    d.constant0[0] = 0xFF80_8080;
+    d
+}
+
+/// A signed stage's border is the border colour read through the sign unit,
+/// not a host preset applied to biased texels: an opaque-black border with
+/// signed RGB reads 0 (mid grey through the rebias), not -1 (black).
+/// Inside the texture the texels still read signed.
+#[test]
+fn color_sign_border_reads_the_border_colour() {
+    let Some(mut g) = gpu() else { return };
+    let half = 128.0 / 255.0;
+    let mut c = Case {
+        def: Some(rebias_t0()),
+        texture: Some(Tex::solid32(D3DFormat::A8R8G8B8, 0xFF40_4040)),
+        stage0: vec![
+            (TSS_COLORSIGN, 0xE000_0000),
+            (TSS_ADDRESSU, TADDRESS_BORDER),
+            (TSS_BORDERCOLOR, 0xFF00_0000),
+        ],
+        t0: [-1.0, 0.5, 0.0, 1.0],
+        ..Case::default()
+    };
+    expect(
+        g.run(&c),
+        [half, half, half, 1.0],
+        "black border, signed RGB",
+    );
+    // 0x40 in the border's red reads 128/255 like a texel would.
+    c.stage0[2].1 = 0xFF40_0000;
+    let s = |x: f32| half * x + half;
+    expect(
+        g.run(&c),
+        [s(half), half, half, 1.0],
+        "red border byte 0x40",
+    );
+    c.t0 = [0.5, 0.5, 0.0, 1.0];
+    expect(
+        g.run(&c),
+        [s(half), s(half), s(half), 1.0],
+        "inside the texture",
+    );
+}
+
+/// An unbound signed stage samples the opaque-black stand-in as black:
+/// mid grey through the rebias, as without `COLORSIGN`.
+#[test]
+fn color_sign_unbound_stage_reads_black() {
+    let Some(mut g) = gpu() else { return };
+    let half = 128.0 / 255.0;
+    let mut c = Case {
+        def: Some(rebias_t0()),
+        stage0: vec![(TSS_COLORSIGN, 0xE000_0000)],
+        ..Case::default()
+    };
+    expect(g.run(&c), [half, half, half, 1.0], "signed stand-in");
+    c.stage0.clear();
+    expect(g.run(&c), [half, half, half, 1.0], "unsigned stand-in");
 }
 
 /// `D3DRS_BLENDCOLOR` is a `D3DCOLOR` (`NV097_SET_BLEND_COLOR` is ARGB);

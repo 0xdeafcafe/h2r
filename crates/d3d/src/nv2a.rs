@@ -51,7 +51,8 @@ use std::collections::HashMap;
 use gfx::pipeline::ShaderId;
 use gfx::program::{ProgramBindings, StageDims};
 use gfx::state::{
-    CompareFunc, ShadeMode, TextureArg, TextureArgSource, TextureOp, TextureStageState,
+    CompareFunc, ShadeMode, TextureAddress, TextureArg, TextureArgSource, TextureOp,
+    TextureStageState,
 };
 use gfx::texture::TextureKind;
 use gfx::translate::SamplerKey;
@@ -674,10 +675,14 @@ impl ShaderProvider for Nv2aShaders {
             provided_inputs: draw.shader.provided_inputs,
             flat_shading: flat,
         };
+        let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
+        let border: [u8; 4] =
+            std::array::from_fn(|n| shader_border(&draw.state.stages[n], signs[n]));
         let pixel_options = PixelOptions {
             texture_dims: bound.map(|k| k.map(texture_dim)),
             alpha_kill: std::array::from_fn(|n| draw.extras[n].alpha_kill & ALPHAKILL_ENABLE != 0),
-            color_sign: std::array::from_fn(|n| color_sign(draw.extras[n].color_sign)),
+            color_sign: signs,
+            border,
             alpha_test: render
                 .alpha_test_enable
                 .then(|| alpha_func(render.alpha_func)),
@@ -736,6 +741,8 @@ impl ShaderProvider for Nv2aShaders {
             alpha_ref: [render.alpha_ref as f32, 0.0, 0.0, 0.0],
             ..PixelUniforms::default()
         };
+        pu.border =
+            std::array::from_fn(|n| border_value(draw.state.stages[n].border_color, signs[n]));
         for n in 0..4 {
             let e = &draw.extras[n];
             pu.bump_mat[n] = e.bump_env_mat;
@@ -756,11 +763,34 @@ impl ShaderProvider for Nv2aShaders {
             let have = bound[n].map(|k| view_dim(texture_dim(k)))?;
             (want == have).then_some(textures[n]).flatten()
         });
-        let samplers: [SamplerKey; 4] =
-            std::array::from_fn(|n| SamplerKey::from_stage(&draw.state.stages[n], ctx.caps));
+        let samplers: [SamplerKey; 4] = std::array::from_fn(|n| {
+            let mut k = SamplerKey::from_stage(&draw.state.stages[n], ctx.caps);
+            if border[n] != 0 {
+                // The shader supplies the border; the sampler clamps.
+                for (axis, mode) in [&mut k.address_u, &mut k.address_v, &mut k.address_w]
+                    .into_iter()
+                    .enumerate()
+                {
+                    if border[n] >> axis & 1 != 0 {
+                        *mode = wgpu::AddressMode::ClampToEdge;
+                    }
+                }
+                k.border = None;
+            }
+            k
+        });
+        // Stand-ins carry the stage's signed channels too.
+        let signed =
+            signs.map(|m| [m & SIGN_R, m & SIGN_G, m & SIGN_B, m & SIGN_A].map(|b| b != 0));
         let mut bind_groups = vec![(0, group0)];
-        if let Some(g) = bindings.textures(&ctx.device, &ctx.queue, compiled.dims, views, samplers)
-        {
+        if let Some(g) = bindings.textures(
+            &ctx.device,
+            &ctx.queue,
+            compiled.dims,
+            views,
+            samplers,
+            signed,
+        ) {
             bind_groups.push((1, g));
         }
         Ok(PreparedShader {
@@ -768,6 +798,35 @@ impl ShaderProvider for Nv2aShaders {
             bind_groups,
         })
     }
+}
+
+/// [`PixelOptions::border`] for a stage: the `BORDER` axes when the stage
+/// reads signed channels (biased texels, which the host's border presets
+/// cannot border), else none.
+fn shader_border(s: &TextureStageState, sign: u8) -> u8 {
+    if sign == 0 {
+        return 0;
+    }
+    [s.address_u, s.address_v, s.address_w]
+        .iter()
+        .enumerate()
+        .fold(0, |m, (axis, &a)| {
+            m | u8::from(a == TextureAddress::Border) << axis
+        })
+}
+
+/// The texture unit's value for a stage's `D3DTSS_BORDERCOLOR`
+/// (`D3DCOLOR`, ARGB): signed channels read the border byte the way they
+/// read texel bytes (`2s/255`, clamped at -1), the others `b/255`.
+fn border_value(argb_color: u32, sign: u8) -> [f32; 4] {
+    let mut v = argb(argb_color);
+    for (c, bit) in [SIGN_R, SIGN_G, SIGN_B, SIGN_A].into_iter().enumerate() {
+        if sign & bit != 0 {
+            let s = ((v[c] * 255.0).round() as u8) as i8;
+            v[c] = (2.0 * s as f32 / 255.0).max(-1.0);
+        }
+    }
+    v
 }
 
 /// The fog uniform: `[mode, start, end, density]`. With `D3DRS_FOGENABLE`

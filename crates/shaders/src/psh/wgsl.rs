@@ -70,6 +70,13 @@ pub struct PixelOptions {
     /// to `max(2v - 256/255, -1)`, i.e. `2s/255`, which is what Xbox
     /// captures show (byte 127 reads as 254/255, not 1).
     pub color_sign: [u8; 4],
+    /// Per stage, the axes (bit 0 u, 1 v, 2 w) on which the shader, not the
+    /// sampler, supplies the border: a 2D or 3D sample whose coordinate is
+    /// outside `[0, 1]` on such an axis reads `border[n]` of the uniforms
+    /// instead. Used for `COLORSIGN` stages, whose biased texels the
+    /// host's three border presets cannot border; the sampler then clamps
+    /// to the edge on those axes. Cube maps are never bordered.
+    pub border: [u8; 4],
     /// Alpha test; `None` disables it.
     pub alpha_test: Option<AlphaFunc>,
     /// Two-sided lighting: back faces read `oB0`/`oB1` as `v0`/`v1`.
@@ -127,6 +134,8 @@ struct XpsUniforms {
     eye: vec4f,
     // x: alpha reference, 0..255.
     alpha_ref: vec4f,
+    // The texture unit's border value per stage (PixelOptions::border).
+    border: array<vec4f, 4>,
 }
 @group(0) @binding(1) var<uniform> xps: XpsUniforms;
 
@@ -164,6 +173,10 @@ fn xps_sign_nv(x: vec3f) -> vec3f {
 // (so filtering is linear in s); the texture unit delivers 2s/255.
 fn xps_signed(v: vec4f, m: vec4<bool>) -> vec4f {
     return select(v, max(2.0 * v - 256.0 / 255.0, vec4f(-1.0)), m);
+}
+// Outside [0, 1] on one of the axes in m (PixelOptions::border).
+fn xps_outside(c: vec3f, m: vec3<bool>) -> bool {
+    return any(m & ((c < vec3f(0.0)) | (c > vec3f(1.0))));
 }
 fn xps_mux_lsb(a: f32) -> bool { return (u32(a * 255.0) & 1u) == 1u; }
 "#;
@@ -394,12 +407,34 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
                 b(bits::SIGN_A)
             )
         };
-        let sample2 = |uv: &str| {
-            signed(format!(
-                "{func}(xps_tex{i}, xps_samp{i}, ({uv}) * xps.tex_scale[{i}].xy{lod})"
-            ))
+        // Shader-supplied border (PixelOptions::border).
+        let axes = options.border[i] & 7;
+        let bordered = |e: String, c: String| {
+            if axes == 0 || textures[i].is_none() {
+                return e;
+            }
+            let b = |m: u8| axes & m != 0;
+            format!(
+                "select({e}, xps.border[{i}], xps_outside({c}, vec3<bool>({}, {}, {})))",
+                b(1),
+                b(2),
+                b(4)
+            )
         };
-        let sample = |coord: &str| signed(format!("{func}(xps_tex{i}, xps_samp{i}, {coord}{lod})"));
+        let sample2 = |uv: &str| {
+            let c = format!("({uv}) * xps.tex_scale[{i}].xy");
+            bordered(
+                signed(format!("{func}(xps_tex{i}, xps_samp{i}, {c}{lod})")),
+                format!("vec3f({c}, 0.5)"),
+            )
+        };
+        let sample = |coord: &str| {
+            let e = signed(format!("{func}(xps_tex{i}, xps_samp{i}, {coord}{lod})"));
+            match textures[i] {
+                Some(TextureDim::D3) => bordered(e, format!("vec3f({coord})")),
+                _ => e,
+            }
+        };
         let _ = writeln!(s, "    // texture stage {i}: {}", mode.name());
         let valid_stage = match mode {
             TexMode::BumpEnvMap

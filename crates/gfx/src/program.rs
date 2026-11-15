@@ -31,7 +31,7 @@ pub struct ProgramBindings {
     uniforms: wgpu::BindGroupLayout,
     layouts: HashMap<StageDims, (Option<wgpu::BindGroupLayout>, wgpu::PipelineLayout)>,
     samplers: HashMap<SamplerKey, wgpu::Sampler>,
-    dummies: HashMap<wgpu::TextureViewDimension, wgpu::TextureView>,
+    dummies: HashMap<(wgpu::TextureViewDimension, [bool; 4]), wgpu::TextureView>,
 }
 
 fn uniform_entry(binding: u32, visibility: wgpu::ShaderStages) -> wgpu::BindGroupLayoutEntry {
@@ -172,22 +172,31 @@ impl ProgramBindings {
             .clone()
     }
 
-    /// A 1x1 opaque-black texture viewed as `dim`.
+    /// A 1x1 opaque-black texture viewed as `dim`. `signed` (R, G, B, A)
+    /// stores those channels biased, as `texture::DecodeOptions::signed`
+    /// does, so a pixel shader reading them signed still sees black
+    /// (0x80 reads 0) and an alpha of 254/255, the largest signed value.
     pub fn dummy(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         dim: wgpu::TextureViewDimension,
+        signed: [bool; 4],
     ) -> wgpu::TextureView {
         self.dummies
-            .entry(dim)
+            .entry((dim, signed))
             .or_insert_with(|| {
                 let (dimension, layers) = match dim {
                     wgpu::TextureViewDimension::D3 => (wgpu::TextureDimension::D3, 1),
                     wgpu::TextureViewDimension::Cube => (wgpu::TextureDimension::D2, 6),
                     _ => (wgpu::TextureDimension::D2, 1),
                 };
-                let texels: Vec<u8> = [0u8, 0, 0, 255].repeat(layers as usize);
+                let texel: [u8; 4] = std::array::from_fn(|c| match (c, signed[c]) {
+                    (3, _) => 255,
+                    (_, true) => 0x80,
+                    _ => 0,
+                });
+                let texels: Vec<u8> = texel.repeat(layers as usize);
                 let t = device.create_texture_with_data(
                     queue,
                     &wgpu::TextureDescriptor {
@@ -218,7 +227,8 @@ impl ProgramBindings {
     /// Group 1 for a program sampling `dims`: `views[n]` (a stand-in when
     /// `None`) with the sampler for `samplers[n]`. `None` when the program
     /// samples nothing. Each view must have the dimension `dims[n]` names
-    /// and a filterable float format (see [`filterable`]).
+    /// and a filterable float format (see [`filterable`]). `signed[n]` is
+    /// stage `n`'s signed channels, for its stand-in ([`Self::dummy`]).
     pub fn textures(
         &mut self,
         device: &wgpu::Device,
@@ -226,13 +236,14 @@ impl ProgramBindings {
         dims: StageDims,
         views: [Option<&wgpu::TextureView>; 4],
         samplers: [SamplerKey; 4],
+        signed: [[bool; 4]; 4],
     ) -> Option<wgpu::BindGroup> {
         let mut owned: Vec<(u32, wgpu::TextureView, wgpu::Sampler)> = Vec::new();
         for n in 0..4 {
             let Some(d) = dims[n] else { continue };
             let view = match views[n] {
                 Some(v) => v.clone(),
-                None => self.dummy(device, queue, d),
+                None => self.dummy(device, queue, d, signed[n]),
             };
             let sampler = self.sampler(device, samplers[n]);
             owned.push((n as u32, view, sampler));

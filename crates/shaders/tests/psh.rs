@@ -869,6 +869,40 @@ fn color_sign_reads_signed_bytes() {
     common::check(&w.module());
 }
 
+/// `PixelOptions::border`: outside `[0, 1]` on a bordered axis the stage
+/// reads the border uniform as is; inside, the texture (signed).
+#[test]
+fn shader_supplied_border() {
+    let d = def(
+        &[(
+            inputs(REG_T0 | MAP_SIGNED_IDENTITY, REG_C0, ONE, REG_C0),
+            outputs(0, 0, REG_R0, 0),
+            inputs(REG_T0 | CHAN_ALPHA, ONE, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [TEX_PROJECT2D, 0, 0, 0],
+    );
+    let mut u = PixelUniforms::default();
+    u.c0[0] = [0.5; 4];
+    u.border[0] = [0.0, 0.0, 0.0, 1.0];
+    let tex = Flat([[1.0; 4]; 4]); // stored 0xFF: signed 127
+    let opts = PixelOptions {
+        color_sign: [SIGN_R | SIGN_G | SIGN_B, 0, 0, 0],
+        border: [1, 0, 0, 0],
+        ..Default::default()
+    };
+    let mut inp = Inputs::default();
+    inp.t[0] = [-0.25, 0.5, 0.0, 1.0];
+    approx(interp::run(&d, &opts, &inp, &u, &tex).unwrap(), [0.5, 0.5, 0.5, 1.0]);
+    // v is not bordered: only u decides.
+    inp.t[0] = [0.5, 1.5, 0.0, 1.0];
+    let inside = 0.5 * 254.0 / 255.0 + 0.5;
+    approx(interp::run(&d, &opts, &inp, &u, &tex).unwrap(), [inside, inside, inside, 1.0]);
+    let w = psh::translate(&d, &opts);
+    assert!(w.body.contains("xps_outside("), "{}", w.body);
+    common::check(&w.module());
+}
+
 /// Linear fog with `FOGSTART == FOGEND`: D3D programs a scale of 8192
 /// instead of dividing by zero (`0x0040008e`).
 #[test]

@@ -380,7 +380,16 @@ and unsigned is two host textures. `PixelOptions::color_sign` holds
 `COLORSIGN >> 28` per stage (`bits::color_sign`); the interpreter's
 `Sampler` returns host (biased) values too and applies the same transfer.
 Frame-buffer snapshots bound as textures are not stored biased, so the
-device clears `COLORSIGN` for those stages. The transfer applies to the
+device clears `COLORSIGN` for those stages. Stand-in textures (unbound
+stages, dimension mismatches) are biased by the stage's sign mask too
+(`ProgramBindings::dummy`, keyed by it), so they still read black. The
+host's border presets cannot express a biased border, so on a signed stage
+the shader supplies it (`PixelOptions::border`): the sampler clamps to the
+edge on the `BORDER` axes and a coordinate outside `[0, 1]` there reads
+`D3DTSS_BORDERCOLOR` as the texture unit would, signed channels as `2s/255`
+of the border byte (an unverified guess at the hardware; 0x00 reads 0
+either way). The half texel at the edge where hardware blends texels with
+the border reads the edge texel instead. The transfer applies to the
 channel the texel format expands to (an implicit alpha of 1 reads −2/255),
 which is unverified for anything but 8-bit channels. Retail Halo 2 sets
 `COLORSIGN` in 30 resolved implementations, all on stage 0 with RGB signed

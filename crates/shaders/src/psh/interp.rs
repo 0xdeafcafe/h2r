@@ -32,6 +32,7 @@ pub struct Uniforms {
     pub tex_scale: [Vec4; 4],
     pub eye: Vec4,
     pub alpha_ref: Vec4,
+    pub border: [Vec4; 4],
 }
 
 impl Default for Uniforms {
@@ -46,6 +47,7 @@ impl Default for Uniforms {
             tex_scale: [[1.0; 4]; 4],
             eye: [0.0; 4],
             alpha_ref: [0.0; 4],
+            border: [[0.0; 4]; 4],
         }
     }
 }
@@ -64,6 +66,7 @@ impl Uniforms {
         v.extend_from_slice(&self.tex_scale);
         v.push(self.eye);
         v.push(self.alpha_ref);
+        v.extend_from_slice(&self.border);
         v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
     }
 }
@@ -298,11 +301,22 @@ pub fn run(
         let t = tc[i];
         let scale = u.tex_scale[i];
         let sign = options.color_sign[i];
+        let axes = options.border[i] & 7;
+        let outside =
+            |c: [f32; 3]| (0..3).any(|j| axes >> j & 1 != 0 && !(0.0..=1.0).contains(&c[j]));
         let s2 = |uv: [f32; 2]| {
-            let v = sampler.sample(i, TextureDim::D2, [uv[0] * scale[0], uv[1] * scale[1], 0.0]);
-            signed(v, sign)
+            let c = [uv[0] * scale[0], uv[1] * scale[1], 0.5];
+            if outside(c) {
+                return u.border[i];
+            }
+            signed(sampler.sample(i, TextureDim::D2, [c[0], c[1], 0.0]), sign)
         };
-        let s3 = |d: TextureDim, v: [f32; 3]| signed(sampler.sample(i, d, v), sign);
+        let s3 = |d: TextureDim, v: [f32; 3]| {
+            if d == TextureDim::D3 && outside(v) {
+                return u.border[i];
+            }
+            signed(sampler.sample(i, d, v), sign)
+        };
         use TexMode::*;
         let valid = match mode {
             BumpEnvMap | BumpEnvMapLum | DependentAr | DependentGb => i >= 1,

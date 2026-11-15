@@ -572,6 +572,7 @@ fn render_to_texture_levels() {
         dims,
         [Some(surface.view()), None, None, None],
         [key; 4],
+        [[false; 4]; 4],
     );
     assert!(group.is_some());
 }
