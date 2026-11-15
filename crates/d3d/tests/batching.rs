@@ -357,6 +357,91 @@ fn a_draw_after_a_partly_masked_draw_starts_a_new_render_pass() {
     assert!(pixels[0] == pixels[1], "merged and per-draw pixels differ");
 }
 
+/// Three provider draws, the middle one alpha-tested (its program can
+/// `discard`), the first writing `first_mask` (`COLORWRITEENABLE`) and the
+/// others all channels, or `first_mask` too with `same_mask`, with merged
+/// passes in the fast mode (`fast`), the exact mode or one render pass per
+/// draw (`merge` false). Returns the back buffer and the render passes the
+/// draws took.
+fn discard_after(
+    merge: bool,
+    fast: bool,
+    first_mask: u32,
+    same_mask: bool,
+) -> Option<(Vec<u8>, u64)> {
+    let (mut d, mut m) = gpu()?;
+    d.backend.set_merge_passes(merge);
+    d.backend.set_merge_discards(fast);
+    set_states(&mut d, &mut m);
+    tfactor_stage(&mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF00_0000, 1.0, 0).unwrap();
+    quads(
+        &mut m,
+        &[
+            (0.0, 0.0, 8.0, 8.0),
+            (8.0, 0.0, 16.0, 8.0),
+            (16.0, 0.0, 24.0, 8.0),
+        ],
+    );
+    bind_quad(&mut d, &mut m);
+    let l = d3d::GuestLayout::HALO2;
+    let before = d.backend.batch_stats();
+    m.write_u32(l.render_state_slot(67), first_mask).unwrap(); // COLORWRITEENABLE
+    d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFFFF_0000)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    if !same_mask {
+        m.write_u32(l.render_state_slot(67), 0x0101_0101).unwrap(); // ALL
+    }
+    m.write_u32(l.render_state_slot(60), 1).unwrap(); // ALPHATESTENABLE
+    m.write_u32(l.render_state_slot(58), 0x204).unwrap(); // ALPHAFUNC = GREATER
+    m.write_u32(l.render_state_slot(61), 0x80).unwrap(); // ALPHAREF
+    d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_FF00)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 4, 4).unwrap();
+    m.write_u32(l.render_state_slot(60), 0).unwrap();
+    d.set_render_state(&mut m, RS_TEXTUREFACTOR, 0xFF00_00FF)
+        .unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 8, 4).unwrap();
+    assert!(d.take_events().is_empty());
+    let (px, _) = d.backend.read_color(d.back_buffer().unwrap()).unwrap();
+    let after = d.backend.batch_stats();
+    assert_eq!(after.draws - before.draws, 3);
+    assert_eq!(after.passes - before.passes, 1, "one pending pass");
+    Some((px, after.render_passes - before.render_passes))
+}
+
+/// The fast merge mode (`set_merge_discards`, `H2_GFX_MERGE_PASSES=fast`)
+/// keeps a draw that can `discard` in the render pass after fully written
+/// draws, and starts a render pass for it after a draw writing only some
+/// colour channels, even the same ones. The exact mode always gives it one.
+#[test]
+fn the_fast_merge_mode_splits_a_discarding_draw_only_after_a_masked_one() {
+    let all = 0x0101_0101;
+    let rgb = 0x0001_0101;
+    let Some((exact, passes)) = discard_after(false, false, all, false) else {
+        return;
+    };
+    assert_eq!(passes, 3, "one render pass per draw");
+    assert_eq!(discard_after(true, false, all, false).unwrap().1, 2);
+    let (px, passes) = discard_after(true, true, all, false).unwrap();
+    assert_eq!(passes, 1, "fast, after fully written draws");
+    assert!(px == exact, "fast and per-draw pixels differ");
+    // B, G, R, A.
+    assert_eq!(pixel(&px, 4, 4), [0, 0, 0xFF, 0xFF]);
+    assert_eq!(pixel(&px, 12, 4), [0, 0xFF, 0, 0xFF]);
+    assert_eq!(pixel(&px, 20, 4), [0xFF, 0, 0, 0xFF]);
+    // After an RGB-only draw with the same mask: the discarding draw starts
+    // a render pass and the draw after it (RGB, no discard) joins it.
+    let (exact, passes) = discard_after(false, false, rgb, true).unwrap();
+    assert_eq!(passes, 3);
+    assert_eq!(discard_after(true, false, rgb, true).unwrap().1, 2);
+    let (px, passes) = discard_after(true, true, rgb, true).unwrap();
+    assert_eq!(passes, 2, "fast, after a masked draw");
+    assert!(px == exact, "fast and per-draw pixels differ");
+    assert_eq!(pixel(&px, 12, 4), [0, 0xFF, 0, 0xFF]);
+}
+
 /// `XYZRHW | DIFFUSE | TEX1` quad over the 16x4 texture at `TEX_HEADER`,
 /// bound to stage 0 (default stage: texture times white diffuse).
 fn textured_quad(d: &mut Device<GfxBackend>, m: &mut SparseMemory) {

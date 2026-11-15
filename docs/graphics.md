@@ -375,6 +375,37 @@ prints the pixels that differ, and narrows them down to the first draw
 that shows the difference and a smallest set of earlier draws it needs,
 with each draw's bindings and pipeline state.
 
+**What the discard rule costs.** In a level the first rule splits off
+every alpha-tested draw: a third of the draws in `d3d/tests/draw_churn.rs`
+(600 textured draws with level-like churn), 200 render passes a frame
+there against 1 without the rule. wgpu 30 encodes each render pass as two
+Metal command buffers (it records a "Pre Pass" command buffer before
+every pass) and a render encoder, about 40-75 us of CPU each on a loaded
+machine, most of it in Metal (`renderCommandEncoderWithDescriptor`,
+command-buffer commit and teardown). This rule, added in 38cd3f7, is what
+took The Heretic's `queue submit` from 2.1 to 7.1 ms a frame between
+9a39ed7 and 1a5aa8d: the bench puts 9a39ed7's opt-in merged passes at 1
+render pass and 38cd3f7 onwards at 200, and the later commits in that
+range (compile workers, render thread, W-buffer) change neither count
+nor cost.
+
+**The fast mode** (`H2_GFX_MERGE_PASSES=fast`,
+`GfxBackend::set_merge_discards`) gives a discarding draw a render pass
+of its own only after a partly masked draw (`merge_split` in
+`d3d::gfx_backend`), which is the one trigger the menu cases share.
+Because a draw with another mask already splits after a partly masked
+one, a render pass holds a partly masked draw only while its last draw
+is one, so the check looks at the previous draw only. It is not exact.
+The merge self-check at The Heretic's frame 4216 found two passes off
+(the others were exact): 8 pixels by up to 2 levels, which needs draws
+434, 524 and 526, and 53 pixels by up to 4, which needs draws 838 and 840.
+All of them write every channel, and the later ones are additive
+(`DstAlpha`, `One`) with depth `Equal`. So an earlier additive draw
+triggers it too, not only a masked one. It is off by default. In the
+bench it takes the churn scene from 200 render passes and 32.6 us a draw
+to 1 and 9.4 us. Whether the exact mode is exact on that level frame was
+not checked: the self-check ran only with the fast mode on.
+
 ### Translation (`translate.rs`) and pipeline cache (`pipeline.rs`)
 
 | D3D state | wgpu |

@@ -589,6 +589,9 @@ and allocations are bounded before anything is read:
     stage, the polygon stipple), and one after a draw that writes only
     some colour channels, unless it writes the same ones. With those rules
     the main menu's frames match one render pass per draw byte for byte;
+    `H2_GFX_MERGE_PASSES=fast` (`GfxBackend::set_merge_discards`)
+    keeps discarding draws merged except after a partly masked draw:
+    much cheaper in a level, a few edge pixels off.
     `GfxBackend::set_merge_passes(false)` gives one render pass per draw,
     the exact reference (docs/graphics.md, "Merged passes"). `GfxBackend::set_merge_check(Some(frame))` renders
     every pending pass of that frame both ways and prints what differs.
