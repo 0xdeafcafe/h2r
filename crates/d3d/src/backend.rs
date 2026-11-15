@@ -214,6 +214,22 @@ pub struct ResolvedDraw {
     pub textures: [Option<u32>; 4],
 }
 
+/// Predicts a backend's [`Backend::draw`] outcomes without running it, so
+/// a backend that renders on another thread (`crate::threaded`) answers
+/// each draw exactly when it is issued: skipped where the backend would
+/// skip it. Made by [`Backend::judge`] before the backend moves.
+pub trait DrawJudge: Send {
+    /// Whether a texture uploaded from `texture` has a view the shaders
+    /// sample.
+    fn upload_view(&self, texture: &DecodedTexture) -> bool;
+    /// The same for a texture over a colour surface of `format` (a
+    /// snapshot, or the surface sampled in place).
+    fn surface_view(&self, format: D3DFormat) -> bool;
+    /// What [`Backend::draw`] answers for `draw`: `views[n]` is `None`
+    /// with no texture on stage `n`, else whether it has a view.
+    fn draw(&mut self, draw: &ResolvedDraw, views: [Option<bool>; 4]) -> DrawOutcome;
+}
+
 /// Result of [`Backend::draw`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DrawOutcome {
@@ -410,6 +426,11 @@ pub trait Backend: Send {
     fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
         let _ = surface;
         Ok(None)
+    }
+    /// A [`DrawJudge`] that answers this backend's draw outcomes on the
+    /// device's side. `None` (the default): they cannot be predicted.
+    fn judge(&self) -> Option<Box<dyn DrawJudge>> {
+        None
     }
     /// Whether [`depth_alias_texture`](Self::depth_alias_texture) makes
     /// depth-alias textures (default false).
@@ -631,9 +652,28 @@ impl RecordingBackend {
     }
 }
 
+/// [`RecordingBackend`] draws everything.
+struct DrawsEverything;
+
+impl DrawJudge for DrawsEverything {
+    fn upload_view(&self, _: &DecodedTexture) -> bool {
+        true
+    }
+    fn surface_view(&self, _: D3DFormat) -> bool {
+        true
+    }
+    fn draw(&mut self, _: &ResolvedDraw, _: [Option<bool>; 4]) -> DrawOutcome {
+        DrawOutcome::Drawn
+    }
+}
+
 impl Backend for RecordingBackend {
     type Surface = u32;
     type Texture = u32;
+
+    fn judge(&self) -> Option<Box<dyn DrawJudge>> {
+        Some(Box::new(DrawsEverything))
+    }
 
     fn create_surface(
         &mut self,

@@ -237,6 +237,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
             Tracked { id, inner }
         }))
     }
+    fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
+        self.inner.judge()
+    }
     fn defers_depth_aliases(&self) -> bool {
         self.inner.defers_depth_aliases()
     }

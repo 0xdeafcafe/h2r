@@ -253,3 +253,58 @@ fn render_thread_timing_changes_nothing_the_guest_sees() {
         );
     }
 }
+
+/// Untransformed fixed-function vertices (`XYZ`, no `RHW`), which the
+/// nv2a translator cannot draw, between two drawn quads.
+fn untranslatable<B: Backend>(backend: B) -> (Device<B>, SparseMemory) {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    set_states(&mut d, &mut m);
+    d.clear(&mut m, 0, 0, 0xF0, 0xFF10_2030, 1.0, 0).unwrap();
+    quad_vb(&mut m, 0.0, 0.0, 32.0, 32.0, 0xFF40_8020);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    let mut vb = Vec::new();
+    for (x, y) in [(0.0f32, 0.0f32), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+        for f in [x, y, 0.5] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    d.set_vertex_shader(&mut m, fvf::XYZ | fvf::DIFFUSE).unwrap();
+    d.set_stream_source(&mut m, 0, VB_HEADER, 16).unwrap();
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    quad_vb(&mut m, 32.0, 32.0, 64.0, 64.0, 0xFF20_4080);
+    bind_quad(&mut d, &mut m);
+    d.draw_vertices(&mut m, TRIANGLESTRIP, 0, 4).unwrap();
+    d.swap(&mut m, 0).unwrap();
+    (d, m)
+}
+
+/// The render thread answers an untranslatable draw as the synchronous
+/// backend does: skipped, with the same event, and the run goes on.
+#[test]
+fn an_untranslatable_draw_is_skipped_the_same_way() {
+    let (ctx_a, ctx_b) = match (gfx::GfxContext::headless(), gfx::GfxContext::headless()) {
+        (Ok(a), Ok(b)) => (a, b),
+        (Err(e), _) | (_, Err(e)) => {
+            eprintln!("skipping GPU test: {e}");
+            return;
+        }
+    };
+    let (mut a, _) = untranslatable(GfxBackend::new(ctx_a));
+    let (mut b, _) = untranslatable(ThreadedBackend::new(GfxBackend::new(ctx_b)).unwrap());
+    let (ea, eb) = (a.take_events(), b.take_events());
+    assert!(
+        ea.iter().any(|e| matches!(e, d3d::Event::DrawSkipped { reason, .. } if reason.contains("untransformed"))),
+        "{ea:?}"
+    );
+    assert_eq!(ea, eb);
+    assert_eq!(a.stats(), b.stats());
+    b.backend.finish().unwrap();
+    assert_eq!(b.backend.misses(), 0);
+    let (pa, _) = a.backend.read_color(a.back_buffer().unwrap()).unwrap();
+    let back = b.back_buffer().unwrap();
+    let (pb, _) = b.backend.with_surface(back, |g, s| g.read_color(s)).unwrap();
+    assert_eq!(pa, pb);
+}

@@ -119,4 +119,21 @@ pub trait ShaderProvider: Send {
         _new_pipelines: &[(gfx::pipeline::PipelineKey, bool)],
     ) {
     }
+
+    /// A [`ShaderJudge`] that answers, without a GPU, whether
+    /// [`prepare`](Self::prepare) succeeds for a draw. `None` (the
+    /// default): it cannot be predicted.
+    fn judge(&self, caps: gfx::translate::Capabilities) -> Option<Box<dyn ShaderJudge>> {
+        let _ = caps;
+        None
+    }
+}
+
+/// Predicts [`ShaderProvider::prepare`]'s verdict on the device's side, so a
+/// render thread can answer a draw's outcome when it is issued
+/// (`crate::threaded`).
+pub trait ShaderJudge: Send {
+    /// `Err(reason)` exactly where `prepare` fails. `present[n]`: stage
+    /// `n` has a sampleable texture view.
+    fn check(&mut self, draw: &crate::backend::ResolvedDraw, present: [bool; 4]) -> Result<(), String>;
 }

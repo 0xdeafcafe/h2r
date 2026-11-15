@@ -152,6 +152,9 @@ impl<B: Backend> Worker<B> {
 /// it frees that texture after everything queued before the drop.
 pub struct ProxyTexture<B: Backend + 'static> {
     id: u64,
+    /// Whether the inner backend's texture has a view the shaders sample
+    /// (the judge's answer; true without one).
+    view: bool,
     tx: mpsc::Sender<Job<B>>,
 }
 
@@ -183,6 +186,13 @@ pub struct ThreadedBackend<B: Backend + 'static> {
     next_ticket: u64,
     presents: u64,
     waits: Waits,
+    /// The inner backend's draw outcomes, answered here (`None`: they are
+    /// speculated as drawn).
+    judge: Option<Box<dyn crate::backend::DrawJudge>>,
+    /// Each live surface's format and kind (for the judge's views).
+    surface_formats: HashMap<u32, (D3DFormat, bool)>,
+    /// Depth-alias decodes seen: description, signs, whether it has a view.
+    alias_views: Vec<(TextureDesc, [bool; 4], bool)>,
 }
 
 impl<B: Backend + 'static> ThreadedBackend<B> {
@@ -191,6 +201,7 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let (tx, rx) = mpsc::channel::<Job<B>>();
         let shared = Arc::new(Shared::default());
         let bc = inner.bc_supported();
+        let judge = inner.judge();
         let sample_surfaces = inner.can_sample_surfaces();
         let s = Arc::clone(&shared);
         let join = std::thread::Builder::new()
@@ -237,6 +248,9 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
             next_ticket: 1,
             presents: 0,
             waits: Waits::default(),
+            judge,
+            surface_formats: HashMap::new(),
+            alias_views: Vec::new(),
         })
     }
 
@@ -336,12 +350,22 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         id
     }
 
-    fn new_texture(&mut self) -> ProxyTexture<B> {
+    fn new_texture(&mut self, view: bool) -> ProxyTexture<B> {
         let id = self.next_texture;
         self.next_texture += 1;
         ProxyTexture {
             id,
+            view,
             tx: self.tx.clone(),
+        }
+    }
+
+    /// The judge's view answer for a texture over surface `surface`.
+    fn surface_view(&self, surface: u32) -> bool {
+        match (&self.judge, self.surface_formats.get(&surface)) {
+            (Some(j), Some(&(format, false))) => j.surface_view(format),
+            (Some(_), _) => false,
+            (None, _) => true,
         }
     }
 }
@@ -380,6 +404,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     ) -> Result<u32, String> {
         self.check()?;
         let id = self.new_surface();
+        self.surface_formats.insert(id, (format, depth));
         self.post(move |w| {
             let s = w.inner.create_surface(format, width, height, depth)?;
             w.surfaces.insert(id, s);
@@ -396,6 +421,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     ) -> Result<u32, String> {
         self.check()?;
         let id = self.new_surface();
+        self.surface_formats.insert(id, (format, false));
         self.post(move |w| {
             let s = w.inner.create_texture_target(format, width, height)?;
             w.surfaces.insert(id, s);
@@ -406,6 +432,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn destroy_surface(&mut self, surface: u32) -> Result<(), String> {
         self.check()?;
+        self.surface_formats.remove(&surface);
         self.post(move |w| {
             let s = w.surface(surface)?;
             w.surfaces.remove(&surface);
@@ -416,7 +443,8 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
 
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<ProxyTexture<B>, String> {
         self.check()?;
-        let t = self.new_texture();
+        let view = self.judge.as_ref().is_none_or(|j| j.upload_view(texture));
+        let t = self.new_texture(view);
         let id = t.id;
         let texture = texture.clone();
         self.post(move |w| {
@@ -449,6 +477,15 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
     ) -> Result<DrawOutcome, String> {
         self.check()?;
         let ids = textures.map(|t| t.map(|t| t.id));
+        // The outcome the inner backend will give, decided now from the
+        // draw and the textures' views; speculated as drawn without a
+        // judge. A skipped draw still goes to the render thread: the inner
+        // backend submits a pass for another target before it skips.
+        let judged = match self.judge.as_mut() {
+            Some(j) => j.draw(draw, textures.map(|t| t.map(|t| t.view))),
+            None => DrawOutcome::Drawn,
+        };
+        let expect = judged.clone();
         let draw = Box::new(draw.clone());
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
@@ -464,12 +501,12 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
                 }
             }
             let r = w.inner.draw(c, d, &draw, tex)?;
-            if let Err(e) = expect_drawn(draw.entry, r) {
-                shared.miss(e);
+            if r != expect {
+                shared.miss(format!("{}: answered {expect:?}, the backend gave {r:?}", draw.entry));
             }
             Ok(())
         });
-        Ok(DrawOutcome::Drawn)
+        Ok(judged)
     }
 
     fn present(&mut self, surface: u32, flags: u32) -> Result<(), String> {
@@ -595,7 +632,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         opaque: bool,
     ) -> Result<Option<ProxyTexture<B>>, String> {
         self.check()?;
-        let t = self.new_texture();
+        let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {
@@ -675,7 +712,26 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         options: gfx::texture::DecodeOptions,
     ) -> Result<Option<ProxyTexture<B>>, String> {
         self.check()?;
-        let t = self.new_texture();
+        let view = match &self.judge {
+            None => true,
+            Some(j) => match self
+                .alias_views
+                .iter()
+                .find(|(d, s, _)| d == desc && *s == options.signed)
+            {
+                Some(&(_, _, v)) => v,
+                None => {
+                    // The host format depends on the description only:
+                    // decode zeros once to learn it.
+                    let len = desc.layout().map_err(|e| e.to_string())?.total_size;
+                    let v = gfx::texture::decode_texture(desc, &vec![0; len], None, options)
+                        .is_ok_and(|t| j.upload_view(&t));
+                    self.alias_views.push((desc.clone(), options.signed, v));
+                    v
+                }
+            },
+        };
+        let t = self.new_texture(view);
         let id = t.id;
         let desc = desc.clone();
         let shared = Arc::clone(&self.shared);
@@ -719,7 +775,7 @@ impl<B: Backend + 'static> Backend for ThreadedBackend<B> {
         if !self.sample_surfaces {
             return Ok(None);
         }
-        let t = self.new_texture();
+        let t = self.new_texture(self.surface_view(surface));
         let id = t.id;
         let shared = Arc::clone(&self.shared);
         self.post(move |w| {

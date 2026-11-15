@@ -816,103 +816,19 @@ impl ShaderProvider for Nv2aShaders {
         draw: &ResolvedDraw,
         textures: [Option<&wgpu::TextureView>; 4],
     ) -> Result<PreparedShader, String> {
-        let render = &draw.state.render;
-        let flat = render.shade_mode == ShadeMode::Flat;
-        let bound: [Option<TextureKind>; 4] =
-            std::array::from_fn(|n| textures[n].and(draw.texture_info[n]).map(|i| i.kind));
-        let fog_enable = render.fog_enable;
-        let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
-
-        // Vertex side.
-        let vertex = match &draw.shader.vertex {
-            VertexProcessing::Program { microcode, .. } => {
-                VertexSource::Microcode(microcode.clone())
-            }
-            VertexProcessing::FixedFunction { fvf } => {
-                if !draw.layout.pretransformed {
-                    return Err(format!(
-                        "untransformed fixed-function vertices (FVF {fvf:#x}) need the transform and lighting pipeline"
-                    ));
-                }
-                let mut texcoords = [9u8; 4];
-                for (n, s) in draw.state.stages.iter().enumerate() {
-                    if s.tex_coord_index >= 4 {
-                        return Err(format!(
-                            "stage {n}: D3DTSS_TEXCOORDINDEX {:#x} (texture coordinate generation)",
-                            s.tex_coord_index
-                        ));
-                    }
-                    texcoords[n] = 9 + s.tex_coord_index as u8;
-                }
-                VertexSource::Pretransformed(PretransformedKey {
-                    texcoords,
-                    fog: PassthroughFog::select(
-                        raw(&self.table, draw, rs::FOGTABLEMODE),
-                        draw.shader.affine_projection,
-                    ),
-                })
-            }
-        };
-
-        // Pixel side.
-        let specular = raw(&self.table, draw, rs::SPECULARENABLE) != 0;
-        let def = match &draw.shader.pixel_shader {
-            // A definition without a final combiner gets the one D3D's
-            // lazy commit programs from FOGENABLE and SPECULARENABLE.
-            Some(ps) => guest_def(
-                ps,
-                &draw.shader.combiner_state,
-                draw.raw.render[slot::PS_TEXTURE_MODES as usize],
-                draw.shader.final_combiner_latch,
-            )
-            .with_default_final_combiner(fog_enable, specular),
-            None => fixed_function_def(&FixedFunction {
-                stages: &draw.state.stages,
-                bound,
-                texture_factor: render.texture_factor,
-                specular,
-                fog: fog_enable,
-            })?,
-        };
+        let present = textures.map(|t| t.is_some());
+        let KeyParts {
+            key,
+            def,
+            signs,
+            border,
+            bound,
+        } = program_key(&self.table, ctx.caps, draw, present)?;
         if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
             self.stats.zero_final_draws += 1;
         }
-        let shadow = shadow_stages(draw, &def, sampled, textures)?;
+        let render = &draw.state.render;
         let (c0, c1) = def.embedded_constants();
-        let mut code = def.clone();
-        code.constant0 = [0; 8];
-        code.constant1 = [0; 8];
-        code.final_constant0 = 0;
-        code.final_constant1 = 0;
-
-        let vertex_options = VertexOptions {
-            provided_inputs: draw.shader.provided_inputs,
-            flat_shading: flat,
-        };
-        let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
-        let border: [u8; 4] = std::array::from_fn(|n| {
-            shader_border(&draw.state.stages[n], signs[n], ctx.caps.clamp_to_border)
-        });
-        let pixel_options = PixelOptions {
-            texture_dims: bound.map(|k| k.map(texture_dim)),
-            alpha_kill: std::array::from_fn(|n| draw.extras[n].alpha_kill & ALPHAKILL_ENABLE != 0),
-            color_sign: signs,
-            border,
-            alpha_test: render
-                .alpha_test_enable
-                .then(|| alpha_func(render.alpha_func)),
-            two_sided_lighting: raw(&self.table, draw, rs::TWOSIDEDLIGHTING) != 0,
-            flat_shading: flat,
-            explicit_lod: false,
-            stipple: polygon_stipple(&self.table, draw),
-            shadow,
-        };
-        let key = ProgramKey {
-            vertex,
-            vertex_options,
-            pixel: code,
-            pixel_options,
-        };
         if !self.programs.contains_key(&key) {
             // Being translated ahead of time: take that one.
             self.install_warm(ctx, renderer, Some(&key));
@@ -1067,6 +983,155 @@ impl ShaderProvider for Nv2aShaders {
             }
         }
     }
+    fn judge(&self, caps: gfx::translate::Capabilities) -> Option<Box<dyn crate::shader::ShaderJudge>> {
+        Some(Box::new(Nv2aJudge {
+            table: self.table.clone(),
+            caps,
+            programs: HashMap::new(),
+        }))
+    }
+}
+
+/// [`Nv2aShaders`]' verdicts without a GPU: the same program key, and the
+/// same translation (cached by key, as `prepare` caches compiles), up to
+/// WGSL validation.
+pub struct Nv2aJudge {
+    table: RenderStateTable,
+    caps: gfx::translate::Capabilities,
+    programs: HashMap<ProgramKey, Result<(), String>>,
+}
+
+impl crate::shader::ShaderJudge for Nv2aJudge {
+    fn check(&mut self, draw: &ResolvedDraw, present: [bool; 4]) -> Result<(), String> {
+        let key = program_key(&self.table, self.caps, draw, present)?.key;
+        if let Some(v) = self.programs.get(&key) {
+            return v.clone();
+        }
+        let v = translate(&key).map(|_| ());
+        self.programs.insert(key, v.clone());
+        v
+    }
+}
+
+/// What [`program_key`] derives from a draw.
+struct KeyParts {
+    key: ProgramKey,
+    def: PixelShaderDef,
+    signs: [u8; 4],
+    border: [u8; 4],
+    bound: [Option<TextureKind>; 4],
+}
+
+/// The program a draw needs, from the draw and which stages have a
+/// sampleable texture view (`present`). Pure: [`Nv2aJudge`] runs it on
+/// the device's side to know a draw's outcome before the render thread
+/// prepares it. An error is the reason the draw is skipped.
+fn program_key(
+    table: &RenderStateTable,
+    caps: gfx::translate::Capabilities,
+    draw: &ResolvedDraw,
+    present: [bool; 4],
+) -> Result<KeyParts, String> {
+        let render = &draw.state.render;
+        let flat = render.shade_mode == ShadeMode::Flat;
+        let bound: [Option<TextureKind>; 4] =
+            std::array::from_fn(|n| present[n].then_some(()).and(draw.texture_info[n]).map(|i| i.kind));
+        let fog_enable = render.fog_enable;
+        let sampled = crate::device::sampled_stages(&draw.shader, &draw.raw, &draw.state);
+
+        // Vertex side.
+        let vertex = match &draw.shader.vertex {
+            VertexProcessing::Program { microcode, .. } => {
+                VertexSource::Microcode(microcode.clone())
+            }
+            VertexProcessing::FixedFunction { fvf } => {
+                if !draw.layout.pretransformed {
+                    return Err(format!(
+                        "untransformed fixed-function vertices (FVF {fvf:#x}) need the transform and lighting pipeline"
+                    ));
+                }
+                let mut texcoords = [9u8; 4];
+                for (n, s) in draw.state.stages.iter().enumerate() {
+                    if s.tex_coord_index >= 4 {
+                        return Err(format!(
+                            "stage {n}: D3DTSS_TEXCOORDINDEX {:#x} (texture coordinate generation)",
+                            s.tex_coord_index
+                        ));
+                    }
+                    texcoords[n] = 9 + s.tex_coord_index as u8;
+                }
+                VertexSource::Pretransformed(PretransformedKey {
+                    texcoords,
+                    fog: PassthroughFog::select(
+                        raw(table, draw, rs::FOGTABLEMODE),
+                        draw.shader.affine_projection,
+                    ),
+                })
+            }
+        };
+
+        // Pixel side.
+        let specular = raw(table, draw, rs::SPECULARENABLE) != 0;
+        let def = match &draw.shader.pixel_shader {
+            // A definition without a final combiner gets the one D3D's
+            // lazy commit programs from FOGENABLE and SPECULARENABLE.
+            Some(ps) => guest_def(
+                ps,
+                &draw.shader.combiner_state,
+                draw.raw.render[slot::PS_TEXTURE_MODES as usize],
+                draw.shader.final_combiner_latch,
+            )
+            .with_default_final_combiner(fog_enable, specular),
+            None => fixed_function_def(&FixedFunction {
+                stages: &draw.state.stages,
+                bound,
+                texture_factor: render.texture_factor,
+                specular,
+                fog: fog_enable,
+            })?,
+        };
+        let shadow = shadow_stages(draw, &def, sampled, present)?;
+        let mut code = def.clone();
+        code.constant0 = [0; 8];
+        code.constant1 = [0; 8];
+        code.final_constant0 = 0;
+        code.final_constant1 = 0;
+
+        let vertex_options = VertexOptions {
+            provided_inputs: draw.shader.provided_inputs,
+            flat_shading: flat,
+        };
+        let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
+        let border: [u8; 4] = std::array::from_fn(|n| {
+            shader_border(&draw.state.stages[n], signs[n], caps.clamp_to_border)
+        });
+        let pixel_options = PixelOptions {
+            texture_dims: bound.map(|k| k.map(texture_dim)),
+            alpha_kill: std::array::from_fn(|n| draw.extras[n].alpha_kill & ALPHAKILL_ENABLE != 0),
+            color_sign: signs,
+            border,
+            alpha_test: render
+                .alpha_test_enable
+                .then(|| alpha_func(render.alpha_func)),
+            two_sided_lighting: raw(table, draw, rs::TWOSIDEDLIGHTING) != 0,
+            flat_shading: flat,
+            explicit_lod: false,
+            stipple: polygon_stipple(table, draw),
+            shadow,
+        };
+        let key = ProgramKey {
+            vertex,
+            vertex_options,
+            pixel: code,
+            pixel_options,
+        };
+        Ok(KeyParts {
+            key,
+            def,
+            signs,
+            border,
+            bound,
+        })
 }
 
 /// The shadow-map stages of a draw: a depth-format texture (`D24S8`,
@@ -1087,7 +1152,7 @@ fn shadow_stages(
     draw: &ResolvedDraw,
     def: &PixelShaderDef,
     sampled: [bool; 4],
-    textures: [Option<&wgpu::TextureView>; 4],
+    present: [bool; 4],
 ) -> Result<[Option<Shadow>; 4], String> {
     let mut out = [None; 4];
     let func_raw = draw.raw.render[slot::SHADOWFUNC as usize];
@@ -1095,7 +1160,7 @@ fn shadow_stages(
         let Some(info) = draw.texture_info[n] else {
             continue;
         };
-        if !sampled[n] || textures[n].is_none() || !info.format.is_depth() {
+        if !sampled[n] || !present[n] || !info.format.is_depth() {
             continue;
         }
         use gfx::D3DFormat as F;

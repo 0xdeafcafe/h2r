@@ -237,6 +237,9 @@ impl d3d::backend::Backend for Headless {
     fn defers_depth_aliases(&self) -> bool {
         self.0.defers_depth_aliases()
     }
+    fn judge(&self) -> Option<Box<dyn d3d::backend::DrawJudge>> {
+        self.0.judge()
+    }
     #[allow(clippy::too_many_arguments)]
     fn depth_alias_texture(
         &mut self,

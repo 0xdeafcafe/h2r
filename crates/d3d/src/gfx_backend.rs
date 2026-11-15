@@ -676,6 +676,17 @@ impl Backend for GfxBackend {
         self.ctx.caps.texture_compression_bc
     }
 
+    fn judge(&self) -> Option<Box<dyn crate::backend::DrawJudge>> {
+        let shaders = match &self.shaders {
+            Some(s) => Some(s.judge(self.ctx.caps)?),
+            None => None,
+        };
+        Some(Box::new(GfxJudge {
+            features: self.ctx.device.features(),
+            shaders,
+        }))
+    }
+
     fn clear(
         &mut self,
         color: SurfaceId,
@@ -755,28 +766,12 @@ impl Backend for GfxBackend {
             }
         });
         let indices = d.indices.as_deref();
-        let fixed = matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. });
         let textured = textures.iter().any(Option::is_some);
-        let readable = fixed && Renderer::builtin_supports(&d.layout);
-        // With a provider the built-in shader only takes draws it renders
-        // exactly; without one it stands in for every untextured
-        // fixed-function draw it can read (stage states, fog and specular
-        // ignored).
-        let builtin_ok = readable
-            && if self.shaders.is_some() {
-                builtin_equivalent(d, textured)
-            } else {
-                !textured && d.shader.pixel_shader.is_none()
-            };
-        if builtin_ok || self.shaders.is_none() {
-            if !builtin_ok {
-                let what = if fixed {
-                    "fixed-function draw with textures, a pixel shader, or vertices the built-in shader cannot read"
-                } else {
-                    "vertex program"
-                };
-                return Ok(DrawOutcome::Skipped(format!("{what}: no shader provider")));
-            }
+        let builtin = match route(d, textured, self.shaders.is_some()) {
+            Ok(b) => b,
+            Err(why) => return Ok(DrawOutcome::Skipped(why)),
+        };
+        if builtin {
             self.renderer
                 .set_pretransformed_z_max(d3dz_max(d.target.depth_format));
             let draw = Draw {
@@ -1157,6 +1152,69 @@ impl Backend for GfxBackend {
 
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.reports.remove(&ticket);
+    }
+}
+
+/// Which shader a draw takes: `Ok(true)` gfx's built-in one, `Ok(false)`
+/// the provider's, `Err` the reason it is skipped. With a provider the
+/// built-in shader only takes draws it renders exactly; without one it
+/// stands in for every untextured fixed-function draw it can read (stage
+/// states, fog and specular ignored).
+fn route(d: &ResolvedDraw, textured: bool, provider: bool) -> Result<bool, String> {
+    let fixed = matches!(d.shader.vertex, VertexProcessing::FixedFunction { .. });
+    let readable = fixed && Renderer::builtin_supports(&d.layout);
+    let builtin_ok = readable
+        && if provider {
+            builtin_equivalent(d, textured)
+        } else {
+            !textured && d.shader.pixel_shader.is_none()
+        };
+    if builtin_ok {
+        return Ok(true);
+    }
+    if provider {
+        return Ok(false);
+    }
+    let what = if fixed {
+        "fixed-function draw with textures, a pixel shader, or vertices the built-in shader cannot read"
+    } else {
+        "vertex program"
+    };
+    Err(format!("{what}: no shader provider"))
+}
+
+/// [`GfxBackend`]'s draw outcomes without a GPU ([`Backend::judge`]).
+struct GfxJudge {
+    features: wgpu::Features,
+    shaders: Option<Box<dyn crate::shader::ShaderJudge>>,
+}
+
+impl crate::backend::DrawJudge for GfxJudge {
+    fn upload_view(&self, texture: &DecodedTexture) -> bool {
+        gfx::program::filterable(texture.host.to_wgpu(), self.features)
+    }
+    fn surface_view(&self, format: D3DFormat) -> bool {
+        gfx::surface::color_surface_format(format)
+            .is_some_and(|f| gfx::program::filterable(f, self.features))
+    }
+    fn draw(&mut self, d: &ResolvedDraw, views: [Option<bool>; 4]) -> DrawOutcome {
+        let textured = views.iter().any(Option::is_some);
+        match route(d, textured, self.shaders.is_some()) {
+            Err(why) => DrawOutcome::Skipped(why),
+            Ok(true) => DrawOutcome::Drawn,
+            Ok(false) => {
+                // As `draw` passes views: a stage with texture info and a
+                // texture that has a view.
+                let present = std::array::from_fn(|i| {
+                    d.texture_info[i].is_some() && views[i] == Some(true)
+                });
+                let shaders = self.shaders.as_mut().expect("routed to the provider");
+                match shaders.check(d, present) {
+                    Ok(()) => DrawOutcome::Drawn,
+                    Err(e) => DrawOutcome::Skipped(e),
+                }
+            }
+        }
     }
 }
 

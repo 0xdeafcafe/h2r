@@ -955,6 +955,8 @@ fn gpu_signed_depth_alias_matches_identical_guest_texture() {
     assert_eq!(d.stats().depth_alias_uploads, 2);
     assert_eq!(d.take_events(), []);
     finish(scope);
+}
+
 /// The render thread makes depth-alias textures on its side
 /// (`Backend::depth_alias_texture`): the same read-backs, uploads, draws
 /// and stats as the device making them itself, and the guest never waits.
