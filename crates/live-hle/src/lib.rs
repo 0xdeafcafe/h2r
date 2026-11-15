@@ -25,6 +25,8 @@ mod state;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
 mod storage_api;
+mod teams;
+pub use teams::{MEMBER_SIZE, TEAM_PROPERTIES_SIZE, TEAM_SIZE};
 mod ui;
 pub use network_config::NetworkConfig;
 
@@ -203,6 +205,23 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .local_sessions()
+    }
+    pub fn local_teams(&self) -> live_proto::team::Store {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .local_teams()
+    }
+    /// Trusted host-side seam for properties whose SDK thunk is not linked.
+    pub fn local_team_action(
+        &self,
+        actor: u64,
+        action: &live_proto::team::Action,
+    ) -> Result<(), live_proto::team::TeamError> {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .local_team_action(actor, action)
     }
     pub fn network_config(&self) -> &NetworkConfig {
         &self.network.config

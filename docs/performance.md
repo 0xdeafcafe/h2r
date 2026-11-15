@@ -386,6 +386,63 @@ RUSTC_WRAPPER= cargo test -p emit --release --test perf image_gate_holds -- --ig
 Not done here, in the order the code suggests: the runner's transfer path
 (`call` is about 180 ns for a call and return, two `HashMap` resolves with
 SipHash and a shadow-stack update per transfer; an address-indexed table
-and direct calls between generated handlers are the next step, about 5 ms),
+and direct calls between generated handlers are the next step, about 5 ms;
+both have since landed, see "Direct calls" below),
 then cross-block dead stores and register promotion, which a flat profile
 at `-O1` does not point at.
+
+## Direct calls between generated handlers (2026-11-15)
+
+Every guest `call` used to leave generated code with `CALL`/`ENTRY` and
+come back through the runner twice: once for the call and once for the
+callee's `ret`, each paying the safe point, shadow-stack bookkeeping, the
+resolve cache, `check_execute` and `handler::execute`. With
+`H2_DIRECT_CALLS` (on unless `H2_DIRECT_CALLS=0`; a C define, so it is in
+the object cache key and the dylib stamp like `H2_X87_NATIVE`) a call to a
+function entry of the same module whose continuation is one of the caller's
+own selectors calls the callee's `h2fn_` as a C function, and a tail jump to
+one does the same and returns its transfer. A `RETURN` to exactly the
+continuation, with ESP above the return slot, continues inline from the
+continuation's label. Everything else is handed to the runner as it was.
+
+The direct path runs only where the runner would have done nothing else:
+the preempt word and the interrupt queue are empty, `max_transfers` has a
+transfer left (each direct call, jump and inline return takes one), the
+nesting is under the context's cap (32 by default, at most 64), the
+context's slot says the runner resolved the target to this very handler at
+the current dispatch generation (any `edit_dispatch` stops all direct calls
+until the runner resolves again), and the page is executable in the inline
+RAM view. The same checks repeat for the return. The contract has the
+details (`crates/emit/RUNTIME-CONTRACT.md` §4, "Direct calls").
+
+Counters: `transfers` still counts every guest transfer; the new
+`direct_transfers` is the part made in C, which passes no runner safe point,
+so `runner_safe_points` drops by that much. `generated_batches` counts
+handler exits, one fewer per call that returned inline.
+
+Synthetic benchmark (`generated_runtime_benchmark`, release, median of 7,
+5M iterations, this machine):
+
+| kind | before | `H2_DIRECT_CALLS=0` | direct |
+|---|---:|---:|---:|
+| call (call + ret) | 52.3 ns | 52.6 ns | 35.3 ns |
+| tail (call, tail jmp, ret) | 73.8 ns | 75.1 ns | 45.2 ns |
+
+What is left of a direct call is mostly the callee's own prologue and
+epilogue: `h2abi_v1_fast_acquire`/`release` (two Rust calls), the register
+spill and reload, and two gate round trips for the execute checks.
+
+Proof: `crates/emit/tests/direct.rs` builds one synthetic module with the
+flag off and on and runs it on the real runtime three ways (built off, built
+on with `ExecCtx::enable_direct_calls(false)`, on), requiring identical
+transfer, CPU, memory, events, backtrace, preempted transfer and transfer
+count for nested and stdcall calls, recursion past the depth cap, a faulting
+callee, a tail-jumping callee, a rewritten return address, a return with ESP
+at its slot, an override registered and disabled between runs, every
+transfer limit, a slice that runs out at every access, a host preempt
+request, and pending interrupts.
+
+```sh
+cargo test -p emit --test direct
+H2_PERF_KIND=call cargo test --release -p emit --test perf generated_runtime_benchmark -- --ignored --nocapture
+```

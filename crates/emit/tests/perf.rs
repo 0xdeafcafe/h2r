@@ -315,8 +315,21 @@ fn generated_counts_match_executed_work() {
             _ => 1,
         };
         assert_eq!(p.transfers, transfers);
-        assert_eq!(p.runner_safe_points, transfers + 1);
-        assert_eq!(p.generated_batches, transfers);
+        // With direct calls (on unless H2_DIRECT_CALLS=0) the first trip
+        // goes through the runner, which fills the context's slots; the
+        // other ten call B directly (and B tail-jumps to C directly), and
+        // the return to A continues inline. Transfers count the same; those
+        // made directly pass no runner safe point, and the caller's handler
+        // does not exit in between.
+        let direct = std::env::var("H2_DIRECT_CALLS").as_deref() != Ok("0");
+        let (direct_transfers, inline_returns) = match kind {
+            "call" if direct => (20, 10),
+            "tail" if direct => (30, 10),
+            _ => (0, 0),
+        };
+        assert_eq!(p.direct_transfers, direct_transfers);
+        assert_eq!(p.runner_safe_points, transfers + 1 - direct_transfers);
+        assert_eq!(p.generated_batches, transfers - inline_returns);
         assert_eq!(
             p.loop_safe_points,
             if kind == "call" || kind == "tail" {

@@ -21,7 +21,7 @@ struct CallRecord {
     slot: u32,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct ShadowStack {
     records: VecDeque<CallRecord>,
     current: u32,

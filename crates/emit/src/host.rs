@@ -284,6 +284,9 @@ pub enum HostEvent {
 #[repr(C)]
 pub struct Ctx {
     pub preempt: Box<std::sync::atomic::AtomicU32>,
+    /// The direct-call block (RUNTIME-CONTRACT.md §4, "Direct calls"):
+    /// always null here, so every call leaves for this host's own loop.
+    direct: *mut std::ffi::c_void,
     pub mem: FlatMemory,
     pub events: Vec<HostEvent>,
     /// Calls to the atomic accessors, by `H2_ATOMIC_*` tag (`xchg` is 15,
@@ -313,11 +316,13 @@ pub struct Ctx {
 }
 
 const _: () = assert!(std::mem::offset_of!(Ctx, preempt) == 0);
+const _: () = assert!(std::mem::offset_of!(Ctx, direct) == size_of::<*const u32>());
 
 impl Ctx {
     pub fn new(mem: FlatMemory) -> Self {
         Ctx {
             preempt: Box::default(),
+            direct: std::ptr::null_mut(),
             mem,
             events: Vec::new(),
             atomics: Vec::new(),

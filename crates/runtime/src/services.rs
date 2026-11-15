@@ -120,6 +120,11 @@ impl Runtime {
         self.dispatch_gen.fetch_add(1, Ordering::AcqRel);
         r
     }
+    /// The generation counter itself, for generated code's direct calls
+    /// (`direct.rs`); it lives as long as the runtime.
+    pub(crate) fn dispatch_generation_ptr(&self) -> *const AtomicU64 {
+        &self.dispatch_gen
+    }
     /// The dispatch tables' generation (see [`edit_dispatch`](Self::edit_dispatch)).
     pub(crate) fn dispatch_generation(&self) -> u64 {
         self.dispatch_gen.load(Ordering::Acquire)

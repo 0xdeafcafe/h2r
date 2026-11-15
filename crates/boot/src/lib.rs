@@ -923,6 +923,9 @@ mod tests {
         fast.push("-DH2_FASTMEM=1".to_owned());
         let mut profiled = base.clone();
         profiled.push("-DH2_PERF=1".to_owned());
+        let mut direct = base.clone();
+        direct.push("-DH2_DIRECT_CALLS=1".to_owned());
+        assert_ne!(stamp(&base), stamp(&direct));
         assert_ne!(stamp(&base), stamp(&fast));
         assert_ne!(stamp(&base), stamp(&profiled));
         assert_eq!(stamp(&fast), stamp(&fast));
@@ -930,12 +933,13 @@ mod tests {
 
     /// `h2 build`, `h2 run` and `h2 play` (and `h2 follow`, which runs
     /// `h2 play`) all stamp through here, so the stamp names the effective
-    /// defaults: inline RAM, native x87/SSE and accounting on unless set to `0`.
+    /// defaults: inline RAM, native x87/SSE, direct calls and accounting on unless
+    /// set to `0`.
     #[test]
     fn the_stamp_records_the_effective_fast_path_defaults() {
         let stamp = build_stamp(b"synthetic");
         let on = |name: &str| std::env::var(name).as_deref() != Ok("0");
-        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE"] {
+        for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
             assert_eq!(stamp.contains(&format!("\"-D{name}=1\"")), on(name), "{name}: {stamp}");
         }
         let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT") });

@@ -25,9 +25,10 @@ import { elapsedSeconds, liveFrameSource, rosterFor, teamName } from "../lib/gam
 import { outlineFor } from "../state/outlines";
 import { now } from "../lib/now";
 import Tunnel, { type TunnelAim } from "./Tunnel";
-import { BigPod, Glyph, Orb, Plate, Prompts, Tubes, type GlyphName } from "./parts";
+import { BigPod, Bracket, Glyph, Orb, Plate, Pod, Prompts, Tubes, Vine, type GlyphName } from "./parts";
 import { approach, ringPlace } from "./shape";
 import { sideOf } from "./cross";
+import { inputMode, keyAction, watchGamepads, watchInput, type Action } from "./input";
 import { crossTo, crossing } from "./Veil";
 import "../styles/dash-pages.css";
 
@@ -55,7 +56,7 @@ function menuHome(s: SectionId): SectionId {
 }
 
 /** The orb's centre on the stage, and how far the ring turns per item (for the orb's skins). */
-const ORB_X = 444, ORB_Y = 318, RING_STEP_DEG = 21;
+const ORB_X = 444, ORB_Y = 318, RING_STEP_DEG = 24;
 
 interface Row { key: string; label: string; meta?: string }
 interface Sat { label: string; glyph: GlyphName; act?: () => void; lit?: boolean }
@@ -270,42 +271,56 @@ export default function Dashboard() {
     }
   }
 
-  function onKey(e: KeyboardEvent) {
-    if (e.metaKey || e.ctrlKey || e.altKey || leaving()) return;
-    const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
-    if (typing && e.key !== "Escape") return;
-    const k = e.key;
-    const isBack = k === "Escape" || k === "Backspace" || k === "b" || k === "B";
-    const isSelect = k === "Enter" || k === "a" || k === "A";
+  /** One step of input, from the keyboard or a gamepad. Says whether it meant anything here. */
+  function act(a: Action): boolean {
+    if (leaving()) return false;
     const n = items().length;
     switch (screen()) {
       case "menu":
-        if (k === "ArrowDown") setMenu((menu() + 1) % n);
-        else if (k === "ArrowUp") setMenu((menu() + n - 1) % n);
-        else if (isSelect || k === "ArrowRight") select();
-        else return;
-        break;
+        if (a === "down") setMenu((menu() + 1) % n);
+        else if (a === "up") setMenu((menu() + n - 1) % n);
+        else if (a === "select" || a === "right") select();
+        else return false;
+        return true;
       case "list":
-        if (k === "ArrowDown") setSel(Math.min(rows().length - 1, sel() + 1));
-        else if (k === "ArrowUp") setSel(Math.max(0, sel() - 1));
-        else if (k === "PageDown") setSel(Math.min(rows().length - 1, sel() + 6));
-        else if (k === "PageUp") setSel(Math.max(0, sel() - 6));
-        else if (isSelect || k === "ArrowRight") select();
-        else if (isBack || k === "ArrowLeft") back();
-        else return;
-        break;
+        if (a === "down") setSel(Math.min(rows().length - 1, sel() + 1));
+        else if (a === "up") setSel(Math.max(0, sel() - 1));
+        else if (a === "pageDown") setSel(Math.min(rows().length - 1, sel() + 6));
+        else if (a === "pageUp") setSel(Math.max(0, sel() - 6));
+        else if (a === "select" || a === "right") select();
+        else if (a === "back" || a === "left") back();
+        else return false;
+        return true;
       default: {
         // Pods sit 0 top left, 1 bottom left, 2 bottom right, 3 top right.
         const i = sat();
-        if (isBack) back();
-        else if (isSelect) select();
-        else if (k === "ArrowLeft" || k === "ArrowRight") setSat(3 - i);
-        else if (k === "ArrowUp" || k === "ArrowDown") setSat(i ^ 1);
-        else return;
+        if (a === "back") back();
+        else if (a === "select") select();
+        else if (a === "left" || a === "right") setSat(3 - i);
+        else if (a === "up" || a === "down") setSat(i ^ 1);
+        else return false;
+        return true;
       }
     }
-    e.preventDefault();
   }
+
+  function onKey(e: KeyboardEvent) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const typing = (e.target as HTMLElement).closest?.("input, textarea, select");
+    if (typing && e.key !== "Escape") return;
+    const a = keyAction(e.key);
+    if (a && act(a)) e.preventDefault();
+  }
+  // A gamepad steers the same way; in a form its stick leaves the text caret alone.
+  function onPad(a: Action) {
+    const typing = document.activeElement?.closest?.("input, textarea, select");
+    if (typing && a !== "select" && a !== "back") return;
+    act(a);
+  }
+  onMount(() => {
+    const stopInput = watchInput(), stopPads = watchGamepads(onPad);
+    onCleanup(() => { stopInput(); stopPads(); });
+  });
   onMount(() => document.addEventListener("keydown", onKey));
   onCleanup(() => document.removeEventListener("keydown", onKey));
 
@@ -384,6 +399,7 @@ export default function Dashboard() {
       class="dash dx"
       classList={{ "dx--leaving": going(), "dx--boot": boot, "dx--back": dir() === "back" || (cameFrom !== null && cameFrom !== "menu" && screen() === "menu" && !leaving()) }}
       data-screen={screen()}
+      data-input={inputMode()}
     >
       <Tunnel aim={aim()} />
       <Tubes />
@@ -411,16 +427,16 @@ export default function Dashboard() {
                       <button
                         class="dx-item"
                         classList={{ on: menu() === i(), hov: hover() === i(), "dx-item--far": at().opacity < 0.12 }}
-                        style={{ "--i": String(i()), "--x": at().x.toFixed(2), "--y": at().y.toFixed(2), "--s": at().scale.toFixed(4), "--o": at().opacity.toFixed(3), "--lit": at().lit.toFixed(3) }}
+                        style={{ "--i": String(i()), "--x": at().x.toFixed(2), "--y": at().y.toFixed(2), "--s": at().scale.toFixed(4), "--o": at().opacity.toFixed(3), "--dr": at().drop.toFixed(2), "--lit": at().lit.toFixed(3) }}
                         onMouseEnter={() => hoverOn(i())}
                         onMouseLeave={hoverOff}
                         onFocus={() => setMenu(i())}
                         onClick={() => pickItem(i())}
                         aria-current={menu() === i() ? "true" : undefined}
                       >
-                        <span class="dx-pod" aria-hidden="true"><i /></span>
-                        <span class="dx-wire" aria-hidden="true" />
-                        <span class="dx-bar"><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span></span>
+                        <Vine />
+                        <Pod seed={i()} />
+                        <span class="dx-bar"><Bracket /><i class="dx-bar-lit" aria-hidden="true" /><span class="dx-bar-text">{LABELS[id]()}</span></span>
                       </button>
                     );
                   }}

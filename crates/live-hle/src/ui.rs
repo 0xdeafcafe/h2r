@@ -16,12 +16,6 @@ pub(crate) enum Op {
     NatType,
     SameTitle,
     SamePublisher,
-    Teams,
-    TeamResults,
-    Members,
-    MemberResults,
-    TeamDetails,
-    MemberDetails,
     Feedback,
     Query,
     QueryResults,
@@ -29,8 +23,6 @@ pub(crate) enum Op {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Friends,
-    Teams,
-    Members,
     Feedback,
     Query,
 }
@@ -243,29 +235,6 @@ impl Menu {
                 t.finished = true;
                 Ok(0)
             }
-            TeamResults | MemberResults => {
-                let kind = if op == TeamResults {
-                    Kind::Teams
-                } else {
-                    Kind::Members
-                };
-                if self.tasks.get(&a[0]).is_none_or(|t| t.kind != kind) {
-                    return Ok(INVALID_ARGUMENT);
-                }
-                m.set_u32(a[1], 0)?;
-                Ok(0)
-            }
-            TeamDetails | MemberDetails => {
-                let kind = if op == TeamDetails {
-                    Kind::Teams
-                } else {
-                    Kind::Members
-                };
-                if self.tasks.get(&a[0]).is_none_or(|t| t.kind != kind) {
-                    return Ok(INVALID_ARGUMENT);
-                }
-                Ok(TEAM_NOT_FOUND) // XONLINE_E_TEAMS_TEAM_NOT_FOUND
-            }
             QueryResults => Ok(
                 if self.tasks.get(&a[0]).is_some_and(|t| t.kind == Kind::Query) {
                     QUERY_DATASET_NOT_FOUND
@@ -273,7 +242,7 @@ impl Menu {
                     INVALID_ARGUMENT
                 },
             ),
-            FriendsEnumerate | Teams | Members | Feedback | Query => {
+            FriendsEnumerate | Feedback | Query => {
                 if !connected {
                     return Ok(NO_SESSION);
                 }
@@ -283,18 +252,6 @@ impl Menu {
                             return Ok(INVALID_ARGUMENT);
                         }
                         (a[1], a[2], Kind::Friends)
-                    }
-                    Teams => {
-                        if a[0] >= 4 {
-                            return Ok(INVALID_ARGUMENT);
-                        }
-                        (a[4], a[5], Kind::Teams)
-                    }
-                    Members => {
-                        if a[0] >= 4 {
-                            return Ok(INVALID_ARGUMENT);
-                        }
-                        (a[5], a[6], Kind::Members)
                     }
                     Feedback => {
                         if a[0] >= 4 {

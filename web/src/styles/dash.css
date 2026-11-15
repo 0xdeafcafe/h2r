@@ -154,7 +154,7 @@
 .dx-sat--1 { left: calc(var(--u) * 282); top: calc(var(--u) * 246); }
 .dx-sat--2 { left: calc(var(--u) * 998); top: calc(var(--u) * 246); }
 .dx-sat--3 { left: calc(var(--u) * 980); top: calc(var(--u) * 70); }
-.dx-sat-pod { position: relative; display: grid; place-items: center; width: calc(var(--u) * 128); height: calc(var(--u) * 128); background: url("/art/dashboard/menu-pod-normal@2x.webp") 50% 50% / contain no-repeat; filter: drop-shadow(0 0 calc(var(--u) * 8) rgba(120, 255, 40, .4)); transition: filter .2s, transform .25s var(--ease); }
+.dx-sat-pod { position: relative; display: grid; place-items: center; width: calc(var(--u) * 128); height: calc(var(--u) * 128); background: url("/art/dashboard/menu-pod-normal@2x.webp") 50% 50% / contain no-repeat; filter: drop-shadow(0 0 calc(var(--u) * 8) rgba(120, 255, 40, .4)) brightness(1); transition: filter .2s, transform .25s var(--ease); }
 .dx-sat-pod::before { content: ""; position: absolute; inset: 0; background: url("/art/dashboard/menu-pod-selected@2x.webp") 50% 50% / contain no-repeat; opacity: 0; transition: opacity .18s; }
 .dx-sat-pod .dx-glyph { position: relative; width: 36%; height: 36%; stroke: #e9ffc4; stroke-width: 1.7; filter: drop-shadow(0 1px 1px rgba(0, 40, 0, .9)); transition: stroke .15s; }
 .dx-sat-label {
@@ -162,7 +162,7 @@
   color: var(--g-bright); border: calc(var(--u) * 1.5) solid rgba(150, 240, 80, .7); border-radius: calc(var(--u) * 4) calc(var(--u) * 12) calc(var(--u) * 4) calc(var(--u) * 12); background: linear-gradient(180deg, rgba(50, 130, 18, .7), rgba(12, 60, 5, .8)); text-shadow: 0 calc(var(--u) * 1) 0 rgba(0, 30, 0, .8);
   transition: background .15s, color .15s, box-shadow .15s;
 }
-.dx-sat.on .dx-sat-pod { transform: scale(1.1); filter: drop-shadow(0 0 calc(var(--u) * 16) rgba(220, 255, 100, .95)); animation: dx-podpulse 1.6s ease-in-out infinite; }
+.dx-sat.on .dx-sat-pod { transform: scale(1.1); filter: drop-shadow(0 0 calc(var(--u) * 16) rgba(220, 255, 100, .95)) brightness(1); animation: dx-satpulse 1.8s ease-in-out infinite; }
 .dx-sat.on .dx-sat-pod::before { opacity: 1; }
 .dx-sat.on .dx-sat-pod .dx-glyph { stroke: #1f4a04; filter: none; }
 .dx-sat.on .dx-sat-label { color: var(--y-ink); border-color: #fbffb8; background: linear-gradient(180deg, var(--y-1), var(--y-2) 50%, var(--y-3)); box-shadow: 0 0 calc(var(--u) * 14) rgba(230, 255, 90, .7); text-shadow: none; }

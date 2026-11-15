@@ -155,8 +155,12 @@ pub const ENTRY_INTERIOR: u32 = 1;
 /// those points equal an unflagged module's; only when a REP loop gives up
 /// its slice differs (it can now leave mid-instruction, at its own PC).
 pub const FEATURE_ACCOUNTING: u32 = 1;
+/// Module feature (`H2GEN_FEATURE_DIRECT_CALLS`, `H2_DIRECT_CALLS`): the
+/// module's handlers read the direct-call block through the context's second
+/// word and may invoke each other's handlers directly ([`crate::direct`]).
+pub const FEATURE_DIRECT_CALLS: u32 = 2;
 /// Every module feature this runtime implements.
-pub const FEATURES: u32 = FEATURE_ACCOUNTING;
+pub const FEATURES: u32 = FEATURE_ACCOUNTING | FEATURE_DIRECT_CALLS;
 
 /// What `register_generated_module` added.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

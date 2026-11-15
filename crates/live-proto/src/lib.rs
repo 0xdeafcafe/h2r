@@ -11,6 +11,7 @@ pub mod hopper;
 pub mod jcs;
 pub mod motd;
 pub mod sign;
+pub mod team;
 
 use std::fmt;
 

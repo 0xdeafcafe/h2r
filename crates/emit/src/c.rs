@@ -69,6 +69,11 @@ pub struct OwnerShape<'a> {
     pub loops: &'a crate::backedge::Loops,
     /// Count guest memory accesses in the handler ([`crate::Codegen`]).
     pub accounting: bool,
+    /// The module's function entries (each has a handler `h2fn_<entry>`):
+    /// a call or tail jump to one may invoke it directly (`H2_DCALL`,
+    /// `H2_DJUMP`; RUNTIME-CONTRACT.md §4, "Direct calls"). `None` emits
+    /// every transfer for the runner.
+    pub functions: Option<&'a BTreeSet<u32>>,
 }
 
 /// The C symbol of an owner's handler.
@@ -93,9 +98,17 @@ pub fn function(f: &IrFunction, shape: &OwnerShape<'_>) -> String {
         lazy,
         pend: Pend::default(),
         entry_of_settle,
+        direct: BTreeSet::new(),
     };
     e.function(f);
-    e.out
+    // Prototypes of the handlers this one may invoke directly.
+    let mut out: String = e
+        .direct
+        .iter()
+        .map(|t| format!("TransferAbi {}(CpuAbi *, ExecCtxOpaque *, uint32_t);\n", symbol(*t)))
+        .collect();
+    out.push_str(&e.out);
+    out
 }
 
 /// Recognize the complete flat MOVS iteration, including its address updates.
@@ -141,6 +154,8 @@ struct Emitter<'a> {
     pend: Pend,
     /// `h2lz_` suffix: the handler's entry, as `%08x`.
     entry_of_settle: String,
+    /// Handlers invoked directly, which need prototypes.
+    direct: BTreeSet<u32>,
 }
 
 /// C for `reg[slice] = v` (a partial-register merge below `Full`); `v` is
@@ -827,6 +842,16 @@ impl Emitter<'_> {
         }
     }
 
+    /// Whether `t` is a function entry of the module, so its handler may be
+    /// invoked directly; records it for a prototype.
+    fn direct_target(&mut self, t: u32) -> bool {
+        let yes = self.shape.functions.is_some_and(|f| f.contains(&t));
+        if yes {
+            self.direct.insert(t);
+        }
+        yes
+    }
+
     /// `goto` a local block, or leave through an entry-routed jump so the
     /// target's dispatch (and any override) applies.
     fn go(d: Dest) -> String {
@@ -853,6 +878,11 @@ impl Emitter<'_> {
                     self.line(d, Self::go(Dest::local(insn.next_pc())));
                 }
             }
+            Control::Jump { target: Target::Direct(t), tail: true, .. } if self.direct_target(*t) => {
+                self.settle(lazy::ALL, d);
+                let spill = if self.x87 { "H2X87_SPILL()" } else { "(void)0" };
+                self.line(d, format!("H2_DJUMP({}, {t:#x}u, {spill});", symbol(*t)));
+            }
             Control::Jump { target: Target::Direct(t), tail, .. } => {
                 self.line(d, Self::go(Dest { pc: *t, tail: *tail }));
             }
@@ -872,6 +902,25 @@ impl Emitter<'_> {
                 }
                 self.line(d, format!("default: H2_HALT({pc:#x}u, H2SHIM_UNKNOWN_TARGET, {});", val(target)));
                 self.line(d, "}");
+            }
+            Control::Call { target: Target::Direct(t), continuation, .. }
+                if self.direct_target(*t) && self.shape.selectors.contains(continuation) =>
+            {
+                // The continuation is this handler's own selector, so a
+                // return there resumes this handler with that start: going
+                // on from its label is the same thing.
+                self.settle(lazy::ALL, d);
+                let label = if self.shape.loops.headers.contains(continuation) { "P" } else { "L" };
+                let (spill, reload) =
+                    if self.x87 { ("H2X87_SPILL()", "H2X87_RELOAD()") } else { ("(void)0", "(void)0") };
+                let refresh = if self.polled { "H2_ACC_REFRESH()" } else { "(void)0" };
+                self.line(
+                    d,
+                    format!(
+                        "H2_DCALL({}, {t:#x}u, {continuation:#x}u, {label}_{continuation:08x}, {spill}, {reload}, {refresh});",
+                        symbol(*t)
+                    ),
+                );
             }
             Control::Call { target, continuation, .. } => self.line(
                 d,
