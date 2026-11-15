@@ -1,23 +1,139 @@
 # h2recomp
 
 A static recompilation of Halo 2 (original Xbox) to native code, with the
-runtime written in Rust. You need your own copy of the disc: no game data
-lives in this repo.
+runtime written in Rust. The retail executable is analysed, lifted to IR,
+emitted as C11 and built by clang into a dylib. `crates/runtime` runs that
+dylib against high-level replacements for the Xbox kernel, xapi, Direct3D
+and DirectSound, rendering through wgpu on Metal.
 
-Put your own disc image in `disc/` (it's git-ignored), then:
+You need your own legally obtained copy of the disc. No game data, extracted
+assets or screenshots live in this repo.
+
+Public repo: <https://github.com/0xdeafcafe/h2r>.
+
+## Status
+
+What works today:
+
+- **Analysis and lifting.** The retail XBE is analysed (about 18,700
+  functions and 504 jump tables), lifted to IR and emitted as C11, which clang
+  builds into a dylib.
+- **Boot to the main menu.** The recompiled game boots through the HLE
+  kernel, xapi, D3D (NV2A push-buffer emulation onto wgpu/Metal) and
+  DirectSound with a WMA decoder, to the real main menu with its 3D scene
+  and blue tint.
+- **Into the campaign.** Scripted input clicks through the menus into the
+  first level, The Heretic (`00a_introduction`). It renders past 8,000
+  frames. Shadow maps are still skipped.
+- **Windowed player.** `h2 play` runs with keyboard, gamepad and sound.
+- **Tooling.** Deterministic logical-time scheduling, checkpoints, a sampling
+  profiler and a benchmark tool.
+
+Speed is the big gap: the main menu runs at about 1.9 fps today. The target
+is 30 fps.
+
+### What is on master
+
+Not all of the above has landed. Master has the analyser, lifter, emitter
+(`h2 emit`), runtime, kernel, xapi, D3D and DirectSound crates, the tag and
+map readers, the `app` host shell crate, logical-time scheduling,
+checkpoints, and the profiler and benchmarks (`h2 profile`, `h2 bench`).
+
+In review, landing soon:
+
+- the boot runner (`boot` branch), which drives the game to the menu and
+  the first level;
+- the windowed player `h2 play` (`app-play` branch);
+- depth-texture support in the D3D layer (`d3d-r8` branch).
+
+Until those land, master has no command that boots the game; the CLI has no
+`run`, `boot` or `play` yet.
+
+## Proof
+
+Screenshots are kept in issue threads, not in the repo:
+
+- [Boot to the main menu](https://github.com/0xdeafcafe/h2r/issues/1)
+- [In-game levels](https://github.com/0xdeafcafe/h2r/issues/2)
+
+## Work left
+
+In priority order:
+
+1. Land the boot runner and `h2 play` (including `--follow`, which
+   auto-updates) on master.
+2. Fidelity gaps: shadow maps, fog and the like.
+3. 30 fps. The planned levers are runtime fast paths, GPU batching (a branch
+   already roughly halves CPU time per frame), IR optimisation, native
+   overrides of hot functions, and D3D decode cost. See
+   [docs/perf.md](docs/perf.md).
+4. More campaign levels.
+5. Later: a map editing kit, and TV targets (see
+   [docs/app.md](docs/app.md)).
+
+## Requirements
+
+- macOS with Metal. The profiler is macOS-only, and the runtime and player
+  target Metal.
+- Rust (stable) and `cargo`.
+- clang on your `PATH`, for building the generated C.
+- Your own disc image (see below).
+
+## Your disc
+
+Put your own disc image in `disc/` (it's git-ignored). On macOS, `cp -c`
+clones the image without using any extra space:
 
 ```sh
-cargo h2 info
-cargo h2 ls
-cargo h2 analyze
-cargo h2 extract          # to disc/extracted/
+mkdir -p disc
+cp -c ~/Downloads/your.iso disc/halo2.iso
 ```
 
-On macOS, `cp -c` clones the image without using any extra space:
-`cp -c ~/Downloads/your.iso disc/halo2.iso`. You can also pass a path to
-any command, or set `H2_DISC`.
+You can also pass a path to any command, or set `H2_DISC`. Both XISO (game
+partition only) and full Redump images work. Without an argument `h2` uses
+`$H2_DISC`, then the first `.iso` in `disc/`.
 
-Both XISO (game partition only) and full Redump images work.
+## Commands
+
+`.cargo/config.toml` defines an alias, so `cargo h2 <command>` is
+`cargo run --release -q -p cli -- <command>`. These all exist on master:
+
+```sh
+cargo h2 info                    # title, sections, libraries
+cargo h2 ls                      # files on the disc
+cargo h2 maps                    # map headers and tag counts
+cargo h2 tags <map> [group]      # tags in a map
+cargo h2 extract                 # copy the disc's files to disc/extracted/
+cargo h2 analyze                 # function discovery and coverage
+cargo h2 lift --stats            # lowering coverage
+cargo h2 emit --out $TMPDIR/h2gen   # generate C and build the host library
+```
+
+`emit` is slow and writes a lot of output (about 1 GB), so point `--out`
+at scratch space. Unchanged output is cached; see
+[docs/BUILD-CACHE.md](docs/BUILD-CACHE.md). `cargo h2` with no arguments
+prints the full command list, including the tag decoders (`tag`, `bitmap`,
+`sound`, `strings`, `ui`, `hs` and more).
+
+Profiling and benchmarks need the `perf` feature (the alias doesn't pass it):
+
+```sh
+cargo run --release -p cli --features perf -- bench list
+cargo run --release -p cli --features perf -- bench --only hot-loop
+cargo run --release -p cli --features perf -- profile hot-loop/memory --seconds 5 --out $TMPDIR/prof
+```
+
+See [docs/perf.md](docs/perf.md).
+
+### Coming soon: the player
+
+Arrives with the `app-play` branch and is not on master yet:
+
+```sh
+cargo run --release -p cli -- play disc/halo2.iso
+```
+
+`play --follow` (auto-update) comes with it.
 
 ## Ghidra
 
