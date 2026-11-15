@@ -27,3 +27,10 @@ anyhow = "1"
 opt-level = 3
 [profile.dev.package.zstd-sys]
 opt-level = 3
+
+# The disc-gated tests analyse the whole image; unoptimised that takes minutes.
+[profile.dev.package.analyze]
+opt-level = 2
+
+[profile.dev.package.iced-x86]
+opt-level = 2

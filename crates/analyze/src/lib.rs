@@ -16,6 +16,7 @@
 //! A conflict means two certain decodes disagree about a byte. Speculative
 //! candidates that would conflict are rejected and counted, not reported.
 
+pub mod cfg;
 pub mod compare;
 mod image;
 
@@ -28,6 +29,7 @@ use iced_x86::{
 };
 use xbe::Xbe;
 
+pub use cfg::JumpTable;
 pub use image::{ConflictKind, is_code_section};
 use image::{Byte, Image, Overlay};
 
@@ -108,6 +110,10 @@ pub struct Analysis {
     pub functions: BTreeMap<u32, Function>,
     pub sections: Vec<SectionCoverage>,
     pub switches: BTreeMap<u32, SwitchKind>,
+    /// Every jump table read, keyed by the address of its `jmp`: where the
+    /// table is, how it was sized, and each target in table order. A
+    /// superset of the detail in [`Analysis::switches`].
+    pub jump_tables: BTreeMap<u32, JumpTable>,
     pub conflicts: Vec<Conflict>,
     /// Speculative candidates turned down, by source and reason.
     pub rejected: BTreeMap<(Source, ConflictKind), usize>,
@@ -131,6 +137,9 @@ pub struct Analysis {
     claims: Vec<(u32, Vec<Byte>, Vec<u32>)>,
     /// Speculative functions that lost a contest; blacklisted next round.
     losers: Vec<u32>,
+    /// `jmp` sites the certain pass decided leave their function (tail
+    /// calls). Read by [`cfg`] so the exported CFG makes the same call.
+    tail_sites: HashSet<u32>,
 }
 
 struct FuncWork {
@@ -277,6 +286,8 @@ struct Analyzer<'a> {
     rejected: BTreeMap<(Source, ConflictKind), usize>,
     labels: BTreeSet<u32>,
     switches: BTreeMap<u32, SwitchKind>,
+    jump_tables: BTreeMap<u32, JumpTable>,
+    tail_sites: HashSet<u32>,
     thunk_slots: HashMap<u32, u32>,
     kernel_calls: BTreeMap<u32, usize>,
     /// Speculative starts that lost a conflict in an earlier round.
@@ -342,6 +353,8 @@ fn run(xbe: &Xbe, blacklist: &HashSet<u32>) -> Result<Analysis, xbe::Error> {
         rejected: BTreeMap::new(),
         labels: BTreeSet::new(),
         switches: BTreeMap::new(),
+        jump_tables: BTreeMap::new(),
+        tail_sites: HashSet::new(),
         thunk_slots: imports.iter().map(|k| (k.slot_va, k.ordinal)).collect(),
         kernel_calls: BTreeMap::new(),
         blacklist,
@@ -512,6 +525,7 @@ impl<'a> Analyzer<'a> {
                         if t != fstart && (self.funcs.contains_key(&t) || self.is_tail_target(va, t)) {
                             if self.trial.is_none() {
                                 self.add_function(t, Source::TailCall, va);
+                                self.tail_sites.insert(va);
                             } else if !self.plausible_target(t) {
                                 return;
                             }
@@ -614,6 +628,7 @@ impl<'a> Analyzer<'a> {
                 self.trial.is_some()
             );
         }
+        let mut index_table = None;
         let (count, kind) = match (guard.byte_index, guard.bound) {
             (Some((dst, idx_table, n)), _) if dst == index && n <= MAX_SWITCH => {
                 let Ok(idx) = self.xbe.bytes_at(idx_table, n as usize) else {
@@ -629,6 +644,7 @@ impl<'a> Analyzer<'a> {
                     .map_or(0, |i| i + 1);
                 let entries = idx[skip as usize..].iter().copied().max().map_or(0, |m| m as u32 + 1);
                 self.claim_data(idx_table + skip, (n - skip) as usize);
+                index_table = Some((idx_table, n));
                 (entries, SwitchKind::Indexed)
             }
             (_, Some((r, n))) if r == index && n <= MAX_SWITCH => (n, SwitchKind::Bounded),
@@ -636,6 +652,7 @@ impl<'a> Analyzer<'a> {
         };
 
         let mut read = 0;
+        let mut targets = Vec::new();
         for i in 0..count {
             let slot = table + i * 4;
             let target = self.xbe.read_u32(slot).ok();
@@ -645,6 +662,7 @@ impl<'a> Analyzer<'a> {
                 (_, Some(t), true) => {
                     self.claim_data(slot, 4);
                     f.todo.push(t);
+                    targets.push(t);
                     read += 1;
                 }
                 (SwitchKind::Unbounded, _, _) => break,
@@ -661,6 +679,13 @@ impl<'a> Analyzer<'a> {
         }
         if read > 0 && self.trial.is_none() {
             self.switches.insert(at, kind);
+            let bound = match kind {
+                SwitchKind::Unbounded => None,
+                SwitchKind::Indexed => index_table.map(|(_, n)| n),
+                SwitchKind::Bounded => Some(count),
+            };
+            self.jump_tables
+                .insert(at, JumpTable { site: at, table, kind, count: read, bound, index_table, targets });
         }
     }
 
@@ -1155,6 +1180,7 @@ impl<'a> Analyzer<'a> {
             functions,
             sections,
             switches: self.switches,
+            jump_tables: self.jump_tables,
             conflicts,
             rejected: self.rejected,
             labels,
@@ -1167,6 +1193,7 @@ impl<'a> Analyzer<'a> {
             converged: true,
             claims: self.image.regions.into_iter().map(|r| (r.va, r.state, r.owner)).collect(),
             losers: self.losers,
+            tail_sites: self.tail_sites,
         }
     }
 }

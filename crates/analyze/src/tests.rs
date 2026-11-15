@@ -231,3 +231,131 @@ fn small_immediates_and_pointers_do_not_underflow() {
     assert!(a.functions.contains_key(&TEXT));
     assert!(!a.functions.contains_key(&0) && !a.functions.contains_key(&2));
 }
+
+/// Discovery plus the CFG of every function, for `.text` holding `code`.
+fn cfgs_of(code: Vec<u8>) -> (Analysis, BTreeMap<u32, cfg::FunctionCfg>) {
+    let data = xbe_with(&code);
+    let x = Xbe::parse(&data).unwrap();
+    let a = analyze(&x).unwrap();
+    let c = a.cfgs(&x);
+    (a, c)
+}
+
+/// `.text` from `(va, bytes)` pieces over int3 fill.
+fn pieces(pieces: &[(u32, &[u8])]) -> Vec<u8> {
+    let mut c = vec![0xCCu8; 0x100];
+    for (va, bytes) in pieces {
+        let o = (va - TEXT) as usize;
+        c[o..o + bytes.len()].copy_from_slice(bytes);
+    }
+    c
+}
+
+#[test]
+fn cfg_calls_end_blocks_and_noreturn_calls_have_no_continuation() {
+    use cfg::*;
+    let (_, cfgs) = cfgs_of(program());
+    let entry = &cfgs[&0x11000];
+    assert!(entry.errors.is_empty(), "{:?}", entry.errors);
+    assert_eq!(entry.blocks.keys().copied().collect::<Vec<_>>(), [0x11000, 0x11005]);
+    assert_eq!(entry.blocks[&0x11000].edges, [Edge { kind: EdgeKind::CallContinuation, target: Some(0x11005), exits: false }]);
+    assert_eq!(entry.blocks[&0x11005].edges, [Edge { kind: EdgeKind::NoReturnCall, target: Some(0x11010), exits: true }]);
+    assert_eq!(entry.blocks[&0x11005].end, 0x1100A, "the dead ret after it is not part of the function");
+    let targets: Vec<_> = entry.calls.iter().map(|c| (c.va, c.target, c.returns)).collect();
+    assert_eq!(
+        targets,
+        [(0x11000, CallTarget::Direct(0x11020), true), (0x11005, CallTarget::Direct(0x11010), false)]
+    );
+    assert_eq!(entry.calls[0].continuation(), 0x11005);
+}
+
+#[test]
+fn cfg_kernel_calls_carry_their_ordinal() {
+    use cfg::*;
+    let (_, cfgs) = cfgs_of(program());
+    let f = &cfgs[&0x11010];
+    assert_eq!(f.calls.len(), 1);
+    assert_eq!(f.calls[0].target, CallTarget::Kernel { slot: RDATA, ordinal: 95 });
+    assert!(!f.calls[0].returns);
+    assert_eq!(f.blocks[&0x11010].edges, [Edge { kind: EdgeKind::KernelNoReturn(95), target: None, exits: true }]);
+    assert_eq!(f.insn_count(), 1, "garbage after KeBugCheck is not decoded");
+}
+
+#[test]
+fn cfg_switch_lists_every_table_entry() {
+    use cfg::*;
+    let (a, cfgs) = cfgs_of(program());
+    let jt = &a.jump_tables[&0x11025];
+    assert_eq!(
+        *jt,
+        JumpTable {
+            site: 0x11025,
+            table: 0x11030,
+            kind: SwitchKind::Bounded,
+            count: 3,
+            bound: Some(3),
+            index_table: None,
+            targets: vec![0x11040, 0x11041, 0x11042],
+        }
+    );
+    let f = &cfgs[&0x11020];
+    assert!(f.errors.is_empty(), "{:?}", f.errors);
+    // cmp/ja | jmp table | three one-ret cases (0x11040 is also ja's target).
+    assert_eq!(f.blocks.keys().copied().collect::<Vec<_>>(), [0x11020, 0x11025, 0x11040, 0x11041, 0x11042]);
+    assert_eq!(
+        f.blocks[&0x11020].edges,
+        [Edge { kind: EdgeKind::Taken, target: Some(0x11040), exits: false }, Edge { kind: EdgeKind::NotTaken, target: Some(0x11025), exits: false }]
+    );
+    let sw: Vec<_> = f.blocks[&0x11025].edges.iter().map(|e| (e.kind, e.target.unwrap())).collect();
+    let want: Vec<_> =
+        (0..3).map(|i| (EdgeKind::Switch { site: 0x11025, table: 0x11030, index: i }, 0x11040 + i)).collect();
+    assert_eq!(sw, want);
+    assert!(f.blocks.values().filter(|b| b.start >= 0x11040).all(|b| b.edges[0].kind == EdgeKind::Return));
+}
+
+#[test]
+fn cfg_branch_into_a_run_splits_it_and_tails_leave() {
+    use cfg::*;
+    let (_, cfgs) = cfgs_of(pieces(&[
+        (0x11000, &[0x40]),                // inc eax
+        (0x11001, &[0x48]),                // dec eax        <- loop head
+        (0x11002, &[0x75, 0xFD]),          // jnz 0x11001
+        (0x11004, &[0xE9, 0x37, 0, 0, 0]), // jmp 0x11040 (after int3 padding: a tail call)
+        (0x11040, &[0xC3]),
+    ]));
+    let f = &cfgs[&0x11000];
+    assert!(f.errors.is_empty(), "{:?}", f.errors);
+    assert_eq!(f.blocks.keys().copied().collect::<Vec<_>>(), [0x11000, 0x11001, 0x11004]);
+    assert_eq!(f.blocks[&0x11000].insns, [0x11000]);
+    assert_eq!(f.blocks[&0x11000].edges, [Edge { kind: EdgeKind::Fallthrough, target: Some(0x11001), exits: false }]);
+    assert_eq!(f.blocks[&0x11001].insns, [0x11001, 0x11002]);
+    assert_eq!(f.blocks[&0x11004].edges, [Edge { kind: EdgeKind::Tail, target: Some(0x11040), exits: true }]);
+    assert!(cfgs.contains_key(&0x11040));
+    assert!(f.block_containing(0x11002).is_some_and(|b| b.start == 0x11001));
+    assert!(f.block_containing(0x11003).is_none(), "mid-instruction");
+}
+
+#[test]
+fn cfg_branches_and_fallthrough_into_another_entry_exit() {
+    use cfg::*;
+    let (_, cfgs) = cfgs_of(pieces(&[
+        (0x11000, &[0xE8, 0x0B, 0, 0, 0]), // call 0x11010 (makes it a function)
+        (0x11005, &[0x85, 0xC0]),          // test eax, eax
+        (0x11007, &[0x74, 0x07]),          // jz 0x11010
+        (0x11009, &[0x90; 7]),             // nops, falling into 0x11010
+        (0x11010, &[0xC3]),                // ret
+    ]));
+    let f = &cfgs[&0x11000];
+    assert!(f.errors.is_empty(), "{:?}", f.errors);
+    assert_eq!(f.blocks.keys().copied().collect::<Vec<_>>(), [0x11000, 0x11005, 0x11009]);
+    assert!(f.block_containing(0x11010).is_none(), "another function's entry is never absorbed");
+    assert_eq!(
+        f.blocks[&0x11005].edges,
+        [
+            Edge { kind: EdgeKind::Taken, target: Some(0x11010), exits: true },
+            Edge { kind: EdgeKind::NotTaken, target: Some(0x11009), exits: false }
+        ]
+    );
+    assert_eq!(f.blocks[&0x11009].edges, [Edge { kind: EdgeKind::Fallthrough, target: Some(0x11010), exits: true }]);
+    assert_eq!(f.blocks[&0x11009].end, 0x11010);
+}
