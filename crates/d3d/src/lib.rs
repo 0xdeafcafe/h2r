@@ -62,5 +62,5 @@ pub use resource::AddressMap;
 pub use runtime_glue::register;
 pub use scaled::{ScaledBackend, render_scale};
 pub use shader::{ShaderInputs, ShaderProvider};
-pub use threaded::ThreadedBackend;
+pub use threaded::{RENDER_THREAD_START, ThreadedBackend};
 pub use vblank::{FrameWait, register_frame_wait};

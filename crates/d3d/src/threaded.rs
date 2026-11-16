@@ -359,6 +359,10 @@ impl<B: Backend + 'static> std::fmt::Debug for ProxyTexture<B> {
     }
 }
 
+/// Called first thing on each render thread a [`ThreadedBackend`] starts,
+/// e.g. to register it with the sampling profiler.
+pub static RENDER_THREAD_START: std::sync::OnceLock<fn()> = std::sync::OnceLock::new();
+
 /// [`Backend`] that queues `B`'s work to a render thread.
 pub struct ThreadedBackend<B: Backend + 'static> {
     queue: Arc<Queue<B>>,
@@ -400,6 +404,9 @@ impl<B: Backend + 'static> ThreadedBackend<B> {
         let join = std::thread::Builder::new()
             .name("d3d-render".into())
             .spawn(move || {
+                if let Some(hook) = RENDER_THREAD_START.get() {
+                    hook();
+                }
                 let mut w = Worker {
                     inner,
                     surfaces: HashMap::new(),
