@@ -2125,6 +2125,7 @@ dependencies = [
 name = "h1convert"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "content",
  "h1map",
  "map",

@@ -8,6 +8,7 @@
 //! - [`placements`]: spawns, flags and item spawns for the Halo 2 sandbox.
 //! - [`apply`]: a plan written into a base map's scenario.
 //! - [`structure`]: the converted structure BSP and lightmap.
+//! - [`shaders`]: the base shader each Halo 1 shader draws with.
 //! - [`convert`]: a whole map, onto a base, with its package manifest.
 //!
 //! No game data is in this crate or its tests. Tests build invented BSPs;
@@ -20,6 +21,7 @@ pub mod convert;
 pub mod placements;
 pub mod query;
 pub mod sandbox;
+pub mod shaders;
 pub mod structure;
 
 /// Why a conversion was refused.
@@ -41,10 +43,6 @@ pub enum Error {
     /// Something in either map isn't as a conversion needs.
     #[error("{0}")]
     Invalid(&'static str),
-    /// No longer returned: the MOPP writer is merged. Kept until the editor
-    /// (crates/studio) drops its match on it.
-    #[error("MOPP writer not merged yet")]
-    MoppNotMerged,
     /// The structure has more surfaces than its MOPP code can key.
     #[error("{0} structure surfaces; Havok MOPP code keys at most 65536")]
     TooManySurfaces(usize),
