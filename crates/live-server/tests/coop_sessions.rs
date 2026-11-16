@@ -39,6 +39,7 @@ fn coop(visibility: session::Visibility) -> NewSession {
             name: Some("Outskirts".into()),
             difficulty: 2,
         }),
+        ping_ms: None,
     }
 }
 

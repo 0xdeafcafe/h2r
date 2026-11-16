@@ -148,6 +148,7 @@ fn session(flags: &str, hopper: Option<u32>, map_id: Option<MapId>) -> NewSessio
         map_id,
         skulls: None,
         campaign: None,
+        ping_ms: None,
     }
 }
 

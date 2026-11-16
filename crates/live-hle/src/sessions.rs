@@ -870,6 +870,7 @@ fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
         map_id: s.map_id,
         skulls: s.skulls.clone(),
         campaign: s.campaign.clone(),
+        ping_ms: None,
     }
 }
 /// A co-op lobby is friends-only unless the host made it invite-only.

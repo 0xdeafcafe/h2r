@@ -367,6 +367,7 @@ fn coop_session(skulls: Option<Vec<u8>>) -> live_proto::session::Session {
                 name: Some("Outskirts".into()),
                 difficulty: 2,
             }),
+            ping_ms: None,
         },
         since: String::new(),
         last_activity: 0,

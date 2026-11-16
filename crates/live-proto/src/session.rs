@@ -150,7 +150,14 @@ pub struct NewSession {
     /// `flags: "coop"`. Left out otherwise.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign: Option<Campaign>,
+    /// The round trip in milliseconds between the host and its farthest
+    /// guest, as the host last measured it (docs/live/live-coop.md, "Ping").
+    /// Left out until there is a guest and a measurement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_ms: Option<u16>,
 }
+/// The highest round trip a session reports; anything slower is this.
+pub const PING_MAX_MS: u16 = 9_999;
 fn custom() -> String {
     "custom".into()
 }
@@ -236,6 +243,9 @@ pub struct Update {
     /// A co-op session's new level or difficulty (makes it `coop`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub campaign: Option<Campaign>,
+    /// A new round trip ([`NewSession::ping_ms`]); 0 clears it (no guest).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ping_ms: Option<u16>,
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -289,6 +299,9 @@ impl NewSession {
             if !self.is_coop() && !crate::skulls::multiplayer_ok(skulls) {
                 return Err("a session names only skulls that work in multiplayer".into());
             }
+        }
+        if self.ping_ms.is_some_and(|p| p == 0 || p > PING_MAX_MS) {
+            return Err(format!("ping_ms is 1 to {PING_MAX_MS}"));
         }
         if let Some(c) = &self.campaign {
             if !self.is_coop() {
@@ -348,6 +361,9 @@ impl Session {
         }
         if let Some(v) = &u.skulls {
             next.skulls = (!v.is_empty()).then(|| v.clone());
+        }
+        if let Some(v) = u.ping_ms {
+            next.ping_ms = (v != 0).then_some(v);
         }
         next.validate()?;
         let changed = next != self.advertisement;
@@ -439,6 +455,7 @@ mod tests {
             map_id: None,
             skulls: None,
             campaign: None,
+            ping_ms: None,
         }
     }
     #[test]
@@ -705,6 +722,22 @@ mod tests {
         // and an unknown flag is refused.
         assert!(
             s.apply(UPDATED, &json!({"flags": "nonsense"}), "", 201)
+                .is_err()
+        );
+    }
+    #[test]
+    fn the_host_reports_its_round_trip_and_clears_it_with_zero() {
+        let mut s = session("observed", "203.0.113.9", Visibility::Friends);
+        assert!(s.apply(UPDATED, &json!({"ping_ms": 42}), "", 1).unwrap());
+        assert_eq!(s.advertisement.ping_ms, Some(42));
+        let wire = serde_json::to_value(&s.advertisement).unwrap();
+        assert_eq!(wire["ping_ms"], 42);
+        assert!(s.apply(UPDATED, &json!({"ping_ms": 0}), "", 2).unwrap());
+        assert_eq!(s.advertisement.ping_ms, None);
+        let wire = serde_json::to_value(&s.advertisement).unwrap();
+        assert!(wire.get("ping_ms").is_none(), "left out when none");
+        assert!(
+            s.apply(UPDATED, &json!({"ping_ms": PING_MAX_MS + 1}), "", 3)
                 .is_err()
         );
     }
