@@ -17,6 +17,15 @@
 //! Cost while off: one relaxed load and a branch per hook. While on: one
 //! clock read per phase switch (a handful per draw) and, once a frame, a
 //! push under a mutex. Nothing is recorded per event.
+//!
+//! A *guest scope* ([`scope_begin`], [`scope_end`]) is a phase that belongs
+//! to one guest thread rather than to a Rust block: the `render-timing`
+//! feature opens [`Phase::Render`] when the game enters its render
+//! front-end and closes it when that returns. Every guest thread runs on the
+//! one host thread, so the kernel says which guest thread is running
+//! ([`guest_thread`], at each slice); while another thread (or a DPC, or
+//! the scheduler) runs, the scope is suspended and its time goes back to
+//! the phase it interrupted.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
@@ -31,7 +40,8 @@ use std::sync::{Mutex, MutexGuard};
 pub enum Phase {
     /// Everything else on the game thread: guest code, runtime accessors,
     /// the kernel and scheduler, HLE calls (XAPI, DirectSound, file I/O,
-    /// the D3D API entries that only write the push buffer).
+    /// the D3D API entries that only write the push buffer). Not the time
+    /// in [`Phase::Render`] when that is being measured.
     Guest = 0,
     /// Push-buffer decode and device state (`pushbuf drain` self time).
     Decode = 1,
@@ -50,10 +60,16 @@ pub enum Phase {
     /// Game-thread wall time waiting for render-thread answers or its
     /// frame-in-flight limit. Excluded from `Guest` self time.
     RenderWait = 6,
+    /// The game's render front-end on the game thread: the guest thread
+    /// that entered `render_frame_and_present`, from entry to return, minus
+    /// the other phases inside it (push-buffer decode, render-wait) and
+    /// minus slices of other guest threads. Zero unless the
+    /// `render-timing` feature is on. `Guest + Render` is all guest time.
+    Render = 7,
 }
 
 /// Number of [`Phase`]s.
-pub const PHASES: usize = 7;
+pub const PHASES: usize = 8;
 
 impl Phase {
     pub const ALL: [Phase; PHASES] = [
@@ -64,6 +80,7 @@ impl Phase {
         Phase::Wait,
         Phase::Pace,
         Phase::RenderWait,
+        Phase::Render,
     ];
 
     /// Short name for log lines and the overlay.
@@ -76,6 +93,7 @@ impl Phase {
             Phase::Wait => "gpu-wait",
             Phase::Pace => "pace",
             Phase::RenderWait => "render-wait",
+            Phase::Render => "render",
         }
     }
 }
@@ -154,8 +172,23 @@ struct Local {
     since: Cell<u64>,
     frame_start: Cell<u64>,
     acc: [Cell<u64>; PHASES],
+    /// Like `acc`, but never taken by a frame: for [`thread_ns`].
+    total: [Cell<u64>; PHASES],
     counts: [Cell<u64>; COUNTERS],
+    /// The guest scope: its phase (`INERT` when none is open), nesting
+    /// depth, owning guest thread, the phase it interrupted, and whether
+    /// another guest thread is running now.
+    scope: Cell<u8>,
+    scope_depth: Cell<u32>,
+    scope_owner: Cell<u32>,
+    scope_prev: Cell<u8>,
+    suspended: Cell<bool>,
+    /// The guest thread the kernel says is running, or `NO_THREAD`.
+    guest: Cell<u32>,
 }
+
+/// No guest thread is running (or the kernel never said).
+const NO_THREAD: u32 = u32::MAX;
 
 thread_local! {
     static LOCAL: Local = const {
@@ -166,7 +199,14 @@ thread_local! {
             since: Cell::new(0),
             frame_start: Cell::new(0),
             acc: [const { Cell::new(0) }; PHASES],
+            total: [const { Cell::new(0) }; PHASES],
             counts: [const { Cell::new(0) }; COUNTERS],
+            scope: Cell::new(INERT),
+            scope_depth: Cell::new(0),
+            scope_owner: Cell::new(NO_THREAD),
+            scope_prev: Cell::new(Phase::Guest as u8),
+            suspended: Cell::new(false),
+            guest: Cell::new(NO_THREAD),
         }
     };
 }
@@ -206,24 +246,142 @@ fn switch(to: u8) -> u8 {
     let now = crate::now_ns();
     LOCAL.with(|l| {
         start_local(l, now);
-        let cur = l.current.get();
-        let a = &l.acc[cur as usize];
-        a.set(a.get() + now.saturating_sub(l.since.get()));
-        l.since.set(now);
+        let cur = charge(l, now);
         l.current.set(to);
-        cur
+        cur as u8
     })
+}
+
+/// Charges the time since the last switch to the current phase; returns it.
+fn charge(l: &Local, now: u64) -> usize {
+    let cur = l.current.get() as usize;
+    let d = now.saturating_sub(l.since.get());
+    l.acc[cur].set(l.acc[cur].get() + d);
+    l.total[cur].set(l.total[cur].get() + d);
+    l.since.set(now);
+    cur
+}
+
+/// Opens a guest scope of `phase` for the running guest thread: its time
+/// goes to `phase` until [`scope_end`], except while the kernel runs another
+/// guest thread ([`guest_thread`]). Nested opens count; only the outermost
+/// switches. A no-op while stats are off.
+pub fn scope_begin(phase: Phase) {
+    if !enabled() {
+        return;
+    }
+    let outer = LOCAL.with(|l| {
+        prepare_local(l);
+        let depth = l.scope_depth.get();
+        l.scope_depth.set(depth + 1);
+        if depth != 0 {
+            return false;
+        }
+        l.scope.set(phase as u8);
+        l.scope_owner.set(l.guest.get());
+        l.suspended.set(false);
+        true
+    });
+    if outer {
+        let prev = switch(phase as u8);
+        LOCAL.with(|l| l.scope_prev.set(prev));
+    }
+}
+
+/// Closes the guest scope [`scope_begin`] opened. Unmatched closes (stats
+/// turned on inside a scope) are ignored.
+pub fn scope_end() {
+    if !enabled() {
+        return;
+    }
+    let restore = LOCAL.with(|l| {
+        prepare_local(l);
+        let depth = l.scope_depth.get();
+        if depth == 0 {
+            return None;
+        }
+        l.scope_depth.set(depth - 1);
+        if depth != 1 {
+            return None;
+        }
+        l.scope.set(INERT);
+        (!l.suspended.replace(false)).then(|| l.scope_prev.get())
+    });
+    if let Some(prev) = restore {
+        switch(prev);
+    }
+}
+
+/// The kernel says which guest thread runs on this host thread from now
+/// on: `Some(tid)` at the start of its slice, `None` when the slice ends.
+/// An open guest scope is suspended while it is not its owner's slice.
+#[inline]
+pub fn guest_thread(tid: Option<u32>) {
+    if enabled() {
+        guest_thread_slow(tid.unwrap_or(NO_THREAD));
+    }
+}
+
+#[inline(never)]
+fn guest_thread_slow(tid: u32) {
+    let to = LOCAL.with(|l| {
+        prepare_local(l);
+        l.guest.set(tid);
+        if l.scope_depth.get() == 0 {
+            return None;
+        }
+        let mine = tid != NO_THREAD && tid == l.scope_owner.get();
+        match (mine, l.suspended.get()) {
+            (false, false) => {
+                l.suspended.set(true);
+                Some(l.scope_prev.get())
+            }
+            (true, true) => {
+                l.suspended.set(false);
+                Some(l.scope.get())
+            }
+            _ => None,
+        }
+    });
+    if let Some(to) = to {
+        switch(to);
+    }
+}
+
+/// Nanoseconds this host thread has spent in `phase` since collection
+/// started, the running interval included. `None` while stats are off.
+/// For splitting a phase further (the render stages): differences of two
+/// readings are self time in `phase`.
+pub fn thread_ns(phase: Phase) -> Option<u64> {
+    if !enabled() {
+        return None;
+    }
+    let now = crate::now_ns();
+    Some(LOCAL.with(|l| {
+        start_local(l, now);
+        let p = phase as usize;
+        let open = if l.current.get() as usize == p {
+            now.saturating_sub(l.since.get())
+        } else {
+            0
+        };
+        l.total[p].get() + open
+    }))
 }
 
 fn reset_local(l: &Local) {
     l.started.set(false);
     l.current.set(Phase::Guest as u8);
-    for a in &l.acc {
+    for a in l.acc.iter().chain(&l.total) {
         a.set(0);
     }
     for c in &l.counts {
         c.set(0);
     }
+    l.scope.set(INERT);
+    l.scope_depth.set(0);
+    l.scope_owner.set(NO_THREAD);
+    l.suspended.set(false);
 }
 
 fn prepare_local(l: &Local) {
@@ -297,9 +455,7 @@ impl WorkerFrame {
         let now = crate::now_ns();
         let sample = LOCAL.with(|l| {
             start_local(l, now);
-            let cur = l.current.get() as usize;
-            l.acc[cur].set(l.acc[cur].get() + now.saturating_sub(l.since.get()));
-            l.since.set(now);
+            charge(l, now);
             let mut s = FrameSample::default();
             for (d, a) in s.phase_ns.iter_mut().zip(&l.acc) {
                 *d = a.replace(0);
@@ -357,9 +513,7 @@ pub fn frame_end(index: u64) {
             start_local(l, now);
             return None;
         }
-        let cur = l.current.get() as usize;
-        l.acc[cur].set(l.acc[cur].get() + now.saturating_sub(l.since.get()));
-        l.since.set(now);
+        charge(l, now);
         let mut s = FrameSample {
             index,
             end_ns: now,
@@ -662,7 +816,8 @@ impl Recorder {
             sorted.iter().filter(|&&v| v > 33_333).count(),
         );
         out += "  mean ms/frame:";
-        for p in Phase::ALL {
+        let shown = |p: Phase| p != Phase::Render || self.phase_sum[p as usize] != 0;
+        for p in Phase::ALL.into_iter().filter(|&p| shown(p)) {
             out += &format!(
                 " {} {:.2}",
                 p.label(),
@@ -680,7 +835,7 @@ impl Recorder {
         out += "\n  worst frames:\n";
         for w in &self.worst {
             out += &format!("    #{} {:.1} ms:", w.index, w.total_ns as f64 / 1e6);
-            for p in Phase::ALL {
+            for p in Phase::ALL.into_iter().filter(|&p| shown(p)) {
                 out += &format!(" {} {:.1}", p.label(), w.phase_ns[p as usize] as f64 / 1e6);
             }
             out += " |";
@@ -746,11 +901,18 @@ impl Summary {
     }
 
     /// One line, under the overlay's 96 characters:
-    /// `14.8 fps p50 61 p99 98 max 140 ms | cpu 40 dec 3 enc 8 sub 2 gpu 5 pace 0`.
+    /// `14.8 fps p50 61 p99 98 max 140 ms | cpu 40 dec 3 enc 8 sub 2 gpu 5 pace 0 rt 0`,
+    /// with `ren` after `cpu` while the render front-end is being timed.
     pub fn short_line(&self) -> String {
         let p = &self.phase_ms;
+        let render = p[Phase::Render as usize];
+        let ren = if render > 0.0 {
+            format!(" ren {render:.0}")
+        } else {
+            String::new()
+        };
         format!(
-            "{:.1} fps p50 {:.0} p99 {:.0} max {:.0} ms | cpu {:.0} dec {:.0} enc {:.0} sub {:.0} gpu {:.0} pace {:.0} rt {:.0}",
+            "{:.1} fps p50 {:.0} p99 {:.0} max {:.0} ms | cpu {:.0}{ren} dec {:.0} enc {:.0} sub {:.0} gpu {:.0} pace {:.0} rt {:.0}",
             self.fps,
             self.p50_ms,
             self.p99_ms,
@@ -771,7 +933,11 @@ impl Summary {
             "{:.2} fps over {} frames; frame ms p50 {:.1} p99 {:.1} max {:.1}; mean ms",
             self.fps, self.frames, self.p50_ms, self.p99_ms, self.max_ms
         );
-        for p in Phase::ALL {
+        // `render` only while the render front-end is being timed.
+        for p in Phase::ALL
+            .into_iter()
+            .filter(|&p| p != Phase::Render || self.phase_ms[p as usize] > 0.0)
+        {
             s += &format!(" {} {:.1}", p.label(), self.phase_ms[p as usize]);
         }
         s
@@ -787,7 +953,7 @@ mod tests {
             index,
             end_ns: end_ms * 1_000_000,
             total_ns: total_ms * 1_000_000,
-            phase_ns: [total_ms * 1_000_000, 0, 0, 0, 0, 0, 0],
+            phase_ns: [total_ms * 1_000_000, 0, 0, 0, 0, 0, 0, 0],
             counts: [0; COUNTERS],
         }
     }

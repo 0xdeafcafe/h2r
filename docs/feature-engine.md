@@ -588,6 +588,14 @@ loop produces equal the original's for the same frame capture. Until 7a,
 **Unlocks.** 4K, lighting and interpolation stop being reconstructions
 from a flat draw list.
 
+**Measured first (built).** `render-timing` (`crates/feature/src/
+render_timing.rs`, off by default) puts observers on both sides of the
+four orchestrators, `render_frame_and_present` and the per-light pass, and
+reports the front-end's guest time as the frame stats' `render` phase with
+an exclusive split per stage ([frame-budget.md](frame-budget.md), "Render
+front-end versus simulation"). It answers how much of the game thread's
+guest time 7a-7d can move at all.
+
 ### The rest, briefly
 
 - **Input mapping (10).** Native above the per-player action table: the

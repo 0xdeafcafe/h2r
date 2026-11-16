@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 runtime.workspace = true
 engine = { path = "../engine", features = ["runtime-glue"] }
+timeline = { path = "../timeline" }
 
 [dev-dependencies]
 runtime-test-probe = { path = "../runtime/test-probe" }
