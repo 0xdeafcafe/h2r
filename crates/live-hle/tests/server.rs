@@ -1760,6 +1760,52 @@ fn browser_search_rows_follow_the_hosts_visibility_setting() {
     );
     assert_eq!(friend.u32(OUT + 4), 1);
 }
+/// The title's own party privacy, read through the embedder's probe when a
+/// lobby is advertised, wins over the setting.
+#[test]
+fn the_titles_privacy_probe_decides_a_new_advertisement() {
+    use live_hle::Visibility;
+    const PRIVACY: u32 = DATA + 0x14000;
+    let s = Server::new();
+    let a = s.account("Host");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    host.logon();
+    host.hle.set_session_visibility(Visibility::Public);
+    host.hle
+        .set_visibility_probe(Some(std::sync::Arc::new(|g: &runtime::Guest| {
+            match g.u32(PRIVACY).ok()? {
+                0 => Some(Visibility::Public),
+                1 => Some(Visibility::Friends),
+                2 => Some(Visibility::Invite),
+                _ => None,
+            }
+        })));
+    host.word(PRIVACY, 2);
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 1);
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert_eq!(host.hle.session_visibility(), Visibility::Invite);
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert_eq!(created.data["advertisement"]["visibility"], "invite");
+    assert!(
+        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items
+            .is_empty()
+    );
+}
 #[test]
 fn sessions_typed_results_are_owned_bounded_and_signout_closes_advertisement() {
     let s = Server::new();

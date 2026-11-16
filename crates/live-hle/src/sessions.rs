@@ -107,7 +107,13 @@ pub(crate) struct Sessions {
     visibility: Visibility,
     /// Visibility updates sent outside a guest task; dropped once answered.
     background: Vec<Pending>,
+    /// Reads the title's own party privacy, when the embedder knows where it
+    /// is; it wins over the setting when a lobby is advertised.
+    probe: Option<VisibilityProbe>,
 }
+/// Reads the host's visibility out of guest memory (boot: the squad
+/// session's privacy), or None when there is none to read.
+pub type VisibilityProbe = std::sync::Arc<dyn Fn(&Guest) -> Option<Visibility> + Send + Sync>;
 enum Failure {
     Fault(GuestFault),
     Hr(u32),
@@ -158,6 +164,9 @@ impl Sessions {
     }
     pub fn visibility(&self) -> Visibility {
         self.visibility
+    }
+    pub fn set_probe(&mut self, probe: Option<VisibilityProbe>) {
+        self.probe = probe;
     }
     pub fn clear(&mut self) {
         self.records.clear();
@@ -249,6 +258,9 @@ impl Sessions {
                     m.check(p[5] + i * 16 + 4, 4, Access::Write, 1)?;
                 }
                 let slots = slots(p);
+                if let Some(v) = self.probe.as_ref().and_then(|probe| probe(m)) {
+                    self.visibility = v;
+                }
                 let (id, key, mut session) = if op == Op::Create {
                     if self.records.len() >= MAX_SESSIONS {
                         return hr(OUT_OF_MEMORY);

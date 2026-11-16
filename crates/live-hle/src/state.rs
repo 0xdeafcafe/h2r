@@ -400,6 +400,9 @@ impl State {
         self.sessions
             .set_visibility(v, self.service.as_ref(), session.as_ref());
     }
+    pub fn set_visibility_probe(&mut self, probe: Option<crate::sessions::VisibilityProbe>) {
+        self.sessions.set_probe(probe);
+    }
     pub fn session_visibility(&self) -> crate::sessions::Visibility {
         self.sessions.visibility()
     }

@@ -21,7 +21,10 @@ pub use outbox::{
 mod qos;
 mod qos_memory;
 mod sessions;
-pub use sessions::{LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility};
+pub use sessions::{
+    LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility,
+    VisibilityProbe,
+};
 mod state;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
@@ -176,6 +179,15 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_session_visibility(v)
+    }
+    /// Where the title keeps its own party privacy: read (with guest memory
+    /// already held) each time a lobby is advertised or updated, winning over
+    /// the setting. Boot installs one that reads the squad session.
+    pub fn set_visibility_probe(&self, probe: Option<VisibilityProbe>) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_visibility_probe(probe)
     }
     pub fn session_visibility(&self) -> Visibility {
         self.state
