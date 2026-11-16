@@ -12,6 +12,7 @@ const catalog: Catalog = parseCatalog({
     { id: 10, name: "Alpha Yard", description: "" },
     { id: 20, name: "Beta Deck", description: "", key: "beta" },
     { id: "bad", name: "Broken" },
+    { id: 5, name: "Gamma Level", description: "", key: "01x_gamma", kind: "campaign" },
   ],
   playlists: [{ key: "solo", title: "Solo Pit", description: "Alone." }],
   variants: [{ name: "Team Fight", game_type: "slayer", engine: 2 }],
@@ -56,6 +57,12 @@ describe("the catalog", () => {
     expect(parseCatalog({ version: 2, maps: [] })).toBeNull();
     expect(parseCatalog(null)).toBeNull();
     expect(findMap(catalog, "ALPHA-yard")?.id).toBe(10);
+  });
+
+  test("campaign levels are kept apart from playlist maps", () => {
+    expect(catalog.maps.map((m) => m.id)).toEqual([10, 20]);
+    expect(catalog.campaign).toEqual([{ id: 5, name: "Gamma Level", description: "", key: "01x_gamma" }]);
+    expect(findMap(catalog, "Gamma Level")).toBeNull();
   });
 });
 

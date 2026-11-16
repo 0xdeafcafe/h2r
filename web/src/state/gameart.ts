@@ -59,7 +59,7 @@ export function startGameArt() {
         void loadCatalog(base).then((c) => {
           if (live.server().base !== base || !c) return;
           const m = new Map<string, string>();
-          for (const e of c.maps) if (e.key && e.name) m.set(mapStem(e.key), e.name);
+          for (const e of [...c.maps, ...c.campaign]) if (e.key && e.name) m.set(mapStem(e.key), e.name);
           setMapNames(m);
         });
       });
