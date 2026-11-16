@@ -9,6 +9,8 @@ use dear_imgui_rs::Context;
 use dear_imgui_wgpu::{FramebufferExtent, GammaMode, WgpuInitInfo, WgpuRenderer};
 
 use crate::app::App;
+use crate::probe;
+use crate::script::{Button, Scene, Step};
 use crate::ui::Studio;
 use crate::viewport::Gpu;
 
@@ -25,6 +27,12 @@ pub struct Headless {
     size: [f32; 2],
     scale: f32,
     target: wgpu::Texture,
+    /// What the last frame drew, to aim scripted input at.
+    pub scene: Scene,
+    /// Numbered boxes drawn over the frame: (target, badge text).
+    pub callouts: Vec<(String, String)>,
+    /// Where the scripted mouse is, in points.
+    mouse: [f32; 2],
     // Declared last: the renderer and studio must go before the context.
     ctx: Context,
 }
@@ -76,6 +84,9 @@ impl Headless {
             size,
             scale,
             target,
+            scene: Scene::default(),
+            callouts: Vec::new(),
+            mouse: [-1.0e4, -1.0e4],
             ctx,
         })
     }
@@ -92,12 +103,18 @@ impl Headless {
         self.ctx.io_mut().set_delta_time(dt.max(1e-4));
         self.ctx.io_mut().set_display_size(self.size);
         let ui = self.ctx.frame();
+        probe::begin();
         let mut gpu = Gpu {
             device: &self.device,
             queue: &self.queue,
             renderer: &mut self.renderer,
         };
         self.studio.frame(ui, app, &mut gpu);
+        self.scene = Scene {
+            items: probe::items(),
+            windows: probe::windows(),
+        };
+        draw_callouts(ui, &self.scene, &self.callouts);
         let view = self.target.create_view(&Default::default());
         let mut enc = self.device.create_command_encoder(&Default::default());
         {
@@ -226,6 +243,191 @@ impl Headless {
     pub fn screenshot(&mut self, app: &mut App, frames: usize, path: &Path) -> Result<()> {
         let (rgba, [w, h]) = self.capture(app, frames)?;
         write_png(path, &rgba, w, h)
+    }
+
+    /// Settle for `frames` frames, play `steps`, then write the frame to
+    /// `path`, cropped to the union of `crop` (grown by `pad` points; made
+    /// `height` points tall from its top) when given.
+    #[allow(clippy::too_many_arguments)]
+    pub fn scripted(
+        &mut self,
+        app: &mut App,
+        frames: usize,
+        steps: &[Step],
+        crop: &[String],
+        pad: f32,
+        height: Option<f32>,
+        path: &Path,
+    ) -> Result<()> {
+        for _ in 0..frames.max(1) {
+            self.frame(app, 1.0 / 60.0)?;
+        }
+        for step in steps {
+            self.step(app, step)
+                .with_context(|| format!("--do {step:?}"))?;
+        }
+        let (rgba, [w, h]) = self.capture(app, 2)?;
+        // What a script can aim at, for writing one.
+        if std::env::var_os("H2_EDITOR_PROBE").is_some() {
+            for win in &self.scene.windows {
+                eprintln!("window {:?} {:?}", win.name, win.rect);
+            }
+            for i in &self.scene.items {
+                eprintln!("item {:?} in {:?} {:?}", i.label, i.window, i.rect);
+            }
+        }
+        if crop.is_empty() {
+            return write_png(path, &rgba, w, h);
+        }
+        let mut r = self.scene.union(crop)?;
+        if let Some(h) = height {
+            r[3] = r[1] + h;
+        }
+        let s = self.scale;
+        let px = |v: f32, max: u32| ((v * s).round().max(0.0) as u32).min(max);
+        let (x0, y0) = (px(r[0] - pad, w), px(r[1] - pad, h));
+        let (x1, y1) = (px(r[2] + pad, w), px(r[3] + pad, h));
+        if x1 <= x0 || y1 <= y0 {
+            anyhow::bail!("--crop: an empty rectangle");
+        }
+        let mut out = Vec::with_capacity(((x1 - x0) * (y1 - y0) * 4) as usize);
+        for y in y0..y1 {
+            let row = (y * w * 4) as usize;
+            out.extend_from_slice(&rgba[row + (x0 * 4) as usize..row + (x1 * 4) as usize]);
+        }
+        write_png(path, &out, x1 - x0, y1 - y0)
+    }
+
+    fn frames(&mut self, app: &mut App, n: usize) -> Result<()> {
+        for _ in 0..n {
+            self.frame(app, 1.0 / 60.0)?;
+        }
+        Ok(())
+    }
+
+    fn aim(&mut self, target: &str) -> Result<()> {
+        let (_, at) = self.scene.find(target)?;
+        self.mouse = at;
+        self.ctx.io_mut().add_mouse_pos_event(at);
+        Ok(())
+    }
+
+    fn button(&mut self, b: dear_imgui_rs::MouseButton, down: bool) {
+        self.ctx.io_mut().add_mouse_button_event(b, down);
+    }
+
+    fn step(&mut self, app: &mut App, step: &Step) -> Result<()> {
+        use dear_imgui_rs::MouseButton as M;
+        match step {
+            Step::Hover(t) => {
+                self.aim(t)?;
+                // Past the tooltip delay, with the mouse at rest.
+                self.frames(app, 45)?;
+            }
+            Step::Click(t, b) => {
+                self.aim(t)?;
+                self.frames(app, 2)?;
+                let (button, times) = match b {
+                    Button::Left => (M::Left, 1),
+                    Button::Right => (M::Right, 1),
+                    Button::Double => (M::Left, 2),
+                };
+                for _ in 0..times {
+                    self.button(button, true);
+                    self.frames(app, 1)?;
+                    self.button(button, false);
+                    self.frames(app, 1)?;
+                }
+                self.frames(app, 3)?;
+            }
+            Step::Move(t) => {
+                let (_, to) = self.scene.find(t)?;
+                let from = if self.mouse[0] < -1.0e3 { to } else { self.mouse };
+                for i in 1..=12 {
+                    let k = i as f32 / 12.0;
+                    let p = [
+                        from[0] + (to[0] - from[0]) * k,
+                        from[1] + (to[1] - from[1]) * k,
+                    ];
+                    self.ctx.io_mut().add_mouse_pos_event(p);
+                    self.frames(app, 1)?;
+                }
+                self.mouse = to;
+                self.frames(app, 3)?;
+            }
+            Step::Down => {
+                self.button(M::Left, true);
+                self.frames(app, 2)?;
+            }
+            Step::Up => {
+                self.button(M::Left, false);
+                self.frames(app, 3)?;
+            }
+            Step::Type(text) => {
+                self.ctx.io_mut().add_input_characters_utf8(text);
+                self.frames(app, 2)?;
+            }
+            Step::Key(k, n) => {
+                for _ in 0..*n {
+                    self.ctx.io_mut().add_key_event(*k, true);
+                    self.frames(app, 1)?;
+                    self.ctx.io_mut().add_key_event(*k, false);
+                    self.frames(app, 1)?;
+                }
+            }
+            Step::Wait(n) => self.frames(app, *n)?,
+            Step::Sleep(ms) => {
+                std::thread::sleep(std::time::Duration::from_millis(*ms));
+                self.frames(app, 3)?;
+            }
+            Step::Wheel(dy) => {
+                self.ctx.io_mut().add_mouse_wheel_event([0.0, *dy]);
+                self.frames(app, 3)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The callouts' one colour (an orange the theme never uses).
+pub const CALLOUT: [f32; 4] = [1.0, 0.55, 0.12, 1.0];
+
+/// A box round each target and a numbered badge on it, over everything.
+fn draw_callouts(ui: &dear_imgui_rs::Ui, scene: &Scene, callouts: &[(String, String)]) {
+    if callouts.is_empty() {
+        return;
+    }
+    let dl = ui.get_foreground_draw_list();
+    for (target, badge) in callouts {
+        let Ok((r, _)) = scene.find(target) else {
+            continue;
+        };
+        let (p0, p1) = ([r[0] + 2.0, r[1] + 2.0], [r[2] - 2.0, r[3] - 2.0]);
+        dl.add_rect(p0, p1, CALLOUT)
+            .thickness(3.0)
+            .rounding(4.0)
+            .build();
+        if badge.is_empty() {
+            continue;
+        }
+        let size = ui.calc_text_size(badge);
+        let rad = (size[0].max(size[1]) / 2.0 + 6.0).max(13.0);
+        // Inside a panel's top left corner; left of a small widget, or
+        // at its right end when that is off the frame (the menu bar).
+        let mid = (r[1] + r[3]) / 2.0;
+        let c = if r[3] - r[1] > 5.0 * rad {
+            [p0[0] + rad + 6.0, p0[1] + rad + 6.0]
+        } else if p0[0] - 2.0 * rad - 4.0 >= 0.0 {
+            [p0[0] - rad - 4.0, mid]
+        } else {
+            [p1[0] - rad - 6.0, mid]
+        };
+        dl.add_circle(c, rad, CALLOUT).filled(true).build();
+        dl.add_text(
+            [c[0] - size[0] / 2.0, c[1] - size[1] / 2.0],
+            [0.08, 0.08, 0.1, 1.0],
+            badge,
+        );
     }
 }
 

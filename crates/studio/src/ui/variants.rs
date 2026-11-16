@@ -23,6 +23,9 @@ pub struct VariantsUi {
     copy_for: Option<Origin>,
     /// Pasted portable variant text.
     import_text: String,
+    /// Open only the settings pages whose title contains this, once (the
+    /// headless screenshots' `--page`).
+    pub only_page: Option<String>,
 }
 
 impl Default for VariantsUi {
@@ -32,6 +35,7 @@ impl Default for VariantsUi {
             copy_name: String::new(),
             copy_for: None,
             import_text: String::new(),
+            only_page: None,
         }
     }
 }
@@ -161,8 +165,12 @@ pub fn settings(ui: &Ui, app: &App, st: &mut VariantsUi, fonts: &Fonts, actions:
 
     let defaults = e.schema().new_variant(ty);
     let disabled = ui.begin_disabled_with_cond(read_only);
+    let only = st.only_page.take();
     ui.child_window("##variant-pages").build(ui, || {
         for page in e.schema().pages_for(ty) {
+            if let Some(only) = &only {
+                ui.set_next_item_open(page.title.contains(only.as_str()));
+            }
             if !ui.collapsing_header(
                 format!("{}##page-{}", page.title, page.id),
                 TreeNodeFlags::DEFAULT_OPEN,
