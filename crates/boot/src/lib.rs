@@ -402,7 +402,8 @@ pub struct Host {
     /// frame buffers at this scale and presents, while `gfx` stays at the
     /// guest's size and answers the guest (`d3d::ScaledBackend`,
     /// `H2_RENDER_SCALE`, docs/high-resolution.md). `gfx` then has no
-    /// present hook; the view has it.
+    /// present hook; the view has it. At 1 the view sleeps; with
+    /// `settings`, the scale follows the Resolution setting during the run.
     pub gfx_view: Option<(d3d::GfxBackend, u32)>,
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
     /// docs/render-thread.md); off in `Host::default()`. Hosts set it from
@@ -586,7 +587,8 @@ pub fn run_hosted_with_live(
     community_variants::install(&loaded.runtime).context("installing the community game variants")?;
     // Extra button layouts and the Controller Speaker row on the Controls
     // screen (docs/controller-layouts.md, docs/playstation-audio.md).
-    // The Video row opens our Video screen (docs/settings-menu.md).
+    // The Video row on the Settings list opens our Video screen
+    // (docs/settings-menu.md).
     let model = match host.settings.clone() {
         Some(store) => Some(Arc::new(
             video_screen::model(store, video_screen::Switches::from_env()).map_err(anyhow::Error::msg)?,
@@ -627,7 +629,13 @@ pub fn run_hosted_with_live(
         (true, Some(b)) => Some(match host.gfx_view.take() {
             Some((view, scale)) => {
                 let mut b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
-                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE); the guest sees a 1x reference");
+                eprintln!("d3d: rendering at {scale}x; the guest sees a 1x reference");
+                // The Video screen's Resolution row changes the scale at the
+                // next frame boundary (docs/high-resolution.md).
+                if let Some(store) = &host.settings {
+                    let wanted = store.handle::<u32>(setting_defs::RENDER_SCALE.key);
+                    b.follow_scale(move || wanted.get());
+                }
                 let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
                     d3d_glue::install_with_report(&loaded.runtime, d3d::ThreadedBackend::new(b)?, report)?

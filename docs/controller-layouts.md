@@ -298,8 +298,7 @@ the speaker row and the Video screen's rows saves them all to `<data>/settings.t
    traced for a layout byte of 4 and up; check it does not show garbage or crash.
 7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
    layouts off (the Controller Speaker row on the Controls screen has its own
-   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md, and so has the
-   Video row after it, `H2_NO_VIDEO_SCREEN=1`; docs/settings-menu.md).
+   switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md).
 8. The hooks install with no stall at boot.
 
 ## Known gaps

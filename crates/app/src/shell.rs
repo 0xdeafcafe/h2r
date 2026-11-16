@@ -124,6 +124,16 @@ impl WindowSurface {
         }
     }
 
+    /// Waits for the display's vblank (`true`) or not, from the next frame.
+    fn set_vsync(&mut self, ctx: &GfxContext, vsync: bool) {
+        self.config.present_mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
+        self.surface.configure(&ctx.device, &self.config);
+    }
+
     fn acquire(&mut self, ctx: &GfxContext) -> Option<wgpu::SurfaceTexture> {
         use wgpu::CurrentSurfaceTexture as C;
         if self.stale && !self.configure(ctx) {
@@ -803,6 +813,18 @@ impl ApplicationHandler<UserEvent> for Shell {
         // interpolation before phase 2, docs/high-framerate.md). At 30 the
         // schedule is never due and this changes nothing.
         let mut wake = self.status.last + Duration::from_secs(1);
+        // A new frame-rate target (the Video screen's row): the schedule
+        // from now, and the surface's vsync when that changes too.
+        if let Some(c) = &self.config.fps_control
+            && let Some((target, vsync)) = crate::fps::follow(c, self.config.fps, self.config.vsync)
+        {
+            self.config.fps = target;
+            self.display.retarget(target);
+            if let (Some(v), Some(g)) = (vsync, self.gpu.as_mut()) {
+                g.surface.set_vsync(&g.ctx, v);
+            }
+            eprintln!("app: frame rate {target}");
+        }
         if let Some(g) = &self.gpu
             && !self.closing
         {

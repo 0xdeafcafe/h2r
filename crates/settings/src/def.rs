@@ -52,6 +52,9 @@ pub enum Unit {
     Degrees,
     /// `2x`.
     Times,
+    /// A multiple of a size, shown as the size it gives: `1280x960` for 2
+    /// of 640 by 480.
+    Pixels { width: u32, height: u32 },
 }
 
 /// One value of a [`Kind::Choice`]: its number, how the file, the
@@ -267,7 +270,7 @@ impl Def {
         }
     }
 
-    /// `v` as a row shows it: `Uncapped`, `2x`, `90`, `On`.
+    /// `v` as a row shows it: `Uncapped`, `2x`, `1280x960`, `90`, `On`.
     pub fn label(&self, v: Value) -> String {
         match (&self.kind, v) {
             (_, Value::Bool(b)) => if b { "On" } else { "Off" }.into(),
@@ -281,6 +284,13 @@ impl Def {
                 },
                 Value::Int(i),
             ) => format!("{i}x"),
+            (
+                Kind::Int {
+                    unit: Unit::Pixels { width, height },
+                    ..
+                },
+                Value::Int(i),
+            ) => format!("{}x{}", i64::from(*width) * i, i64::from(*height) * i),
             (_, Value::Int(i)) => i.to_string(),
         }
     }
@@ -480,6 +490,25 @@ pub(crate) mod tests {
         assert_eq!(FPS.name(Value::Int(0)), "uncapped");
         assert_eq!(FOV.label(Value::Int(95)), "95");
         assert_eq!(SPEAKER.label(Value::Bool(false)), "Off");
+        let scale = Def {
+            kind: Kind::Int {
+                valid: 1..=6,
+                steps: &[1, 2, 3, 4],
+                unit: Unit::Pixels {
+                    width: 640,
+                    height: 480,
+                },
+            },
+            ..FOV
+        };
+        let shown: Vec<String> = (1..=4).map(|i| scale.label(Value::Int(i))).collect();
+        assert_eq!(shown, ["640x480", "1280x960", "1920x1440", "2560x1920"]);
+        assert_eq!(scale.label(Value::Int(6)), "3840x2880");
+        assert_eq!(
+            scale.name(Value::Int(2)),
+            "2",
+            "the file and CLI keep the scale"
+        );
         assert_eq!(FOV.values().len(), 121);
         assert_eq!(FPS.values().len(), 4);
         assert_eq!(FOV.table_key(), ("graphics", "fov"));
