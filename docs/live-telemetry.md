@@ -243,10 +243,237 @@ contract allows, and batches up to four game events into one JWS signed with
 the account key through `live-proto`. Empty batches and messages over 16 KiB
 are rejected. The account key is never included in debug output.
 
+Frames go as [packed frames](#packed-frames): one record per binary
+message, a stream per connection (a reconnect starts a new one), a keyframe
+every 150 frames (ten seconds) and deltas between. A frame the format
+cannot carry (it never should: the same checks the server makes) goes as
+the JSON `frame` message instead and the stream carries on. The offline
+JSONL capture stays JSON.
+
 The player on local slot 0 is the signed-in account: its roster entries
 (`GameStarted`, `PlayerJoined`) carry that account's `xuid`, while `name`
 stays the in-game profile name. Other local slots and remote players have no
 `xuid` until their accounts are known. Offline capture links no one.
+
+## Scenario objects
+
+`Frame.objects` lists the scenario's placed objects that are not where the
+scenario put them: moved (with their pose) or gone. An object is matched to
+its placement by kind and index in that kind's scenario block, as map.glb's
+`scenario` node names them (docs/live-art.md). Everything not listed is at
+its placement, so a frame with no `objects` means nothing has moved.
+
+| kind | block | stride | what |
+|---|---|---:|---|
+| `bipd` | `scnr+0x60` | `0x54` | bipeds |
+| `vehi` | `scnr+0x70` | `0x54` | vehicles |
+| `weap` | `scnr+0x90` | `0x54` | weapons lying in the level |
+| `eqip` | `scnr+0x80` | `0x38` | equipment |
+| `scen` | `scnr+0x50` | `0x5c` | scenery |
+| `ctrl` | `scnr+0xb8` | `0x44` | controls (switches, panels) |
+| `lifi` | `scnr+0xc8` | `0x54` | light fixtures |
+| `bloc` | `scnr+0x328` | `0x4c` | crates and physics props |
+| `crea` | `scnr+0x368` | `0x34` | creatures |
+| `netgame` | `scnr+0x120` | `0x90` | multiplayer weapon and vehicle spawns (netgame equipment) |
+
+Machines are left out (they travel in `Frame.machines`), and so is sound
+scenery. A placement record holds its position at `+0x8` and yaw, pitch,
+roll (radians) at `+0x14`; forward and up are `Rz(yaw)·Ry(-pitch)·Rx(roll)`
+applied to +x and +z, as map.glb's placements are built. A netgame
+equipment entry holds its position at `+0x40` and orientation at `+0x4c`.
+The scenario is `*(0x004e0350)`; the blocks are read once a game, when the
+map has loaded. A block that does not read is left empty and its objects
+are not tracked.
+
+Which object is which placement:
+
+| field | offset | type | status | evidence |
+|---|---|---|---|---|
+| placement index | object `+0x1a` | `i16` | confirmed | `object_create` by name (`0x000bb670`) looks up the name's type (`+0x20`) and index (`+0x22`), and passes the index to `0x000bf0f0` with the record (block base `+0xa`, index times stride `+0xe`; `0x000bb71e..0x000bb74c`). `0x000bf0f0` hands it to the placement-data builder `0x000d5060` (call at `0x000bf152`), which stores it at placement data `+0x10` (`0x000d520b`, `0x000d522c`). `object_new` (`0x000b7b40`) copies placement data `+0x10` to object `+0x1a` (`0x000b7c87`); the placement data default is -1 (`0x000b7a31`); dynamic objects get -1 (`0x000b7c63`), and a scripted re-create sets -1 (`0x000bb6cc`) |
+| netgame equipment index | object `+0xaf` | `i8` | confirmed | The netgame spawner `0x0015aad0` creates the object (`object_new` call at `0x0015abe6`) and writes the spawn's index at `0x0015ac15`; `object_new` sets `0xff` (`0x000b7db1`); deletion (`0x000b85c3`) calls `0x0015b220`, which clears the spawn's object. The spawner walks `scnr+0x120`, stride `0x90` (`0x0015aaf3`), and converts the orientation at `+0x4c` with `0x0011df60` |
+| object type | header `+3` | `u8` | confirmed | The type table at `0x00468630`: bipd 0, vehi 1, weap 2, eqip 3, garb 4, proj 5, scen 6, mach 7, ctrl 8, lifi 9, ssce 10, bloc 11, crea 12 |
+
+Each frame (15 a second, in the object-table scan the frame makes anyway)
+every object with `+0x1a >= 0` counts for its type's block, and every
+object with `+0xaf` not `0xff` for `netgame` too. Per placement:
+
+- no object: **gone** (picked up, destroyed, never spawned);
+- a weapon, equipment or netgame object with a parent (a player holds
+  it): **gone**; another kind with a parent (a passenger seat, a turret) is
+  left out: its transform is parent-relative;
+- one with no parent wins over a held copy; if it is more than 0.02 world
+  units from the placement, or either axis is turned more than 2 degrees,
+  it is **moved**: `p`, `f`, `u` (unit length);
+- otherwise nothing is sent.
+
+At most 2048 entries, ordered by kind then index. A campaign mission with a
+few dozen crates knocked about sends a few dozen entries, and the packed
+stream sends only the ones that changed.
+
+## Packed frames
+
+Frames travel bit-packed: game to server (`/v1/ingest`, binary messages),
+server to readers (`/v1/stream?frames=packed`), recorded frames at rest
+(`GameFrame.data.packed`) and the replay fetch
+(`/v1/games/{id}/frames?format=packed`). JSON stays for the public read
+API (`?format=json`, the default, decoded on the server) and for events.
+`crates/live-proto/src/pack.rs` writes and reads it;
+`web/src/api/pack.ts` reads it; the golden vectors in
+`web/test/fixtures/pack` (written by the Rust tests from invented frames,
+read by the TypeScript tests) keep the two in step.
+
+### Bits and numbers
+
+Bits are written least significant first into bytes, first byte first.
+
+| code | bits |
+|---|---|
+| `u(n)` | `n` bits, unsigned |
+| `eg(k)` | Exp-Golomb of order `k`: for `v`, let `x = v + 2^k` have `z + k + 1` bits; `z` zeros, a one, then the low `z + k` bits of `x` (least significant first). `v` below `2^44` |
+| `seg(k)` | signed: zig-zag (`0, -1, 1, -2, ...` to `0, 1, 2, 3, ...`) then `eg(k)` |
+| `str` | literal: `eg(3)` byte length (at most 255), then each byte `u(8)`; UTF-8 |
+
+A container holds several records: each a LEB128 length then that many
+bytes. Binary socket messages and the `application/x-h2-frames` replay
+body are containers; `GameFrame.data.packed` is one record, base64url
+without padding.
+
+### Values
+
+| value | wire | quantisation |
+|---|---|---|
+| position | three `seg(16)` | 1/512 world unit (about 6 mm), coordinates under 10^9 |
+| position in a delta | three `seg(7)`: the difference from the previous frame's quantised value | |
+| yaw | `u(12)` | a turn in 4096 steps; read back in (-π, π] |
+| direction (aim, forward, up) | two `u(12)` | octahedral: x and y of `v / (|x|+|y|+|z|)`, folded when z < 0, each mapped from -1..1 to 0..4094 (2047 is 0, so the axes are exact); read back unit length |
+| speed | `eg(6)` | 1/16 unit a second |
+| hit amount | `eg(6)` | 1/256 of a vitality |
+| shots | `eg(1)` | |
+| stance | `u(3)` | `stand`, `crouch`, `airborne`, `vehicle`, `dead` |
+| actions | `eg(0)` count (at most 8), then `u(3)` each | `grenade`, `melee`, `reload`, `jump`, `switch`, `pickup` |
+| grenade | `u(1)` | `frag`, `plasma` |
+| device position | `u(10)` | 0..1 in 1023 steps |
+| string | `eg(3)`: index into the stream's string table | |
+| id | `u(2)` form: 0 datum, `u(32)` (exactly 8 lowercase hex digits in JSON); 1 player `p<n>`, `eg(2)`; 2 anything else, a string index | |
+| object kind | `u(4)` | the order of the kind table above, with `bipd` 0, `vehi` 1, `weap` 2, `eqip` 3, `scen` 4, `mach` 5, `ctrl` 6, `lifi` 7, `ssce` 8, `bloc` 9, `crea` 10, `netgame` 11 |
+| object index | `eg(6)` | at most `0x7fff` |
+
+An optional field (marked `opt` below) is a presence bit, then the value
+when present.
+
+### A frame
+
+| field | wire |
+|---|---|
+| version | `u(4)`, 1 |
+| keyframe | `u(1)` |
+| stream id | `eg(0)` |
+| sequence | `eg(8)`, one more each frame of the stream |
+| **keyframe:** game id | `str` literal |
+| tick | `eg(20)` |
+| bsp | `u(1)` present, then `eg(1)` |
+| **delta:** tick | `eg(2)`, the difference from the previous frame (never negative) |
+| bsp | `u(1)` changed; if so `u(1)` present, then `eg(1)` |
+| new strings | `eg(1)` count (at most 1024), then each a `str` literal, appended to the table (a keyframe starts an empty one) |
+| players | list |
+| vehicles | list |
+| actors | list |
+| hits | always whole: `eg(2)` count, then each entity |
+| machines | list |
+| objects | list |
+
+A list in a keyframe is `eg(2)` count, then each entity whole: its fields in
+order. In a delta it is `eg(2)` count, then, until that many entities:
+
+- `0`, `eg(2)` run-1: the next run of entities are the previous frame's,
+  unchanged, taken in order from the cursor (the cursor moves past them);
+- `1`, `1`, `seg(0)` index of the previous entity relative to the cursor,
+  then one bit per non-key field (changed), then each changed field (a
+  position as a difference); the cursor moves past that entity;
+- `1`, `0`: a new entity, whole.
+
+Entities are matched by their key fields (below). A field "changed" is a
+change in its quantised value, so jitter below the quantum costs nothing.
+
+| list | fields (key in bold) |
+|---|---|
+| player | **index `eg(2)`**, alive `u(1)`, pos, yaw, opt vehicle id, opt species string, opt aim, opt weapon string, opt shots, opt stance, opt speed, opt actions, opt grenade |
+| vehicle | **id**, kind string, pos, forward, up, occupied `u(1)` |
+| actor | **id**, species string, pos, yaw, opt aim, opt weapon string, opt shots, opt team string, opt vehicle id, opt stance, opt speed, opt actions, opt grenade |
+| hit | opt from id, opt to id, opt weapon string, pos, opt amount, opt kind string |
+| machine | opt node string, **id**, kind string, pos, forward, up, opt device position |
+| object | **kind**, **index**, gone `u(1)`, opt pos, opt forward, opt up |
+
+### Streams, keyframes and gaps
+
+An encoder starts with a keyframe and sends one again every N frames (the
+game: 150; the server's reader stream: 15), when the game id changes, when
+the tick goes backwards, and when the string table would pass 4096 strings.
+A decoder keeps the last frame and string table per stream id; a delta
+whose sequence is not the next one it expects (a dropped frame, or joining
+mid-stream) is a gap: it drops deltas until the next keyframe. The reader
+stream sends a joining or lagging reader every frame since the last
+keyframe first, so it starts decoding at once. A frame that cannot be
+packed (non-finite numbers, unknown names, too many strings) leaves the
+encoder as it was.
+
+### Compatibility
+
+The version is the first four bits; a decoder refuses versions it does not
+know. Recorded `GameFrame` events written before packed frames hold the
+JSON frame (no `packed` field) and stay readable: the server's
+`?format=json` returns them as they are, `?format=packed` packs them on
+the fly, and the web's `recordedFrame` reads both. The ingest socket takes
+the JSON `frame` message as before, and `/v1/stream` sends JSON frames
+unless asked for `?frames=packed`. A recorded frame is signed by the
+server's event signature over `{tick, source, packed}`, so the signature
+covers the packed bytes.
+
+## Telemetry cost
+
+Measured on the deterministic invented games in
+`crates/live-proto/src/samples.rs` (a 16-player Slayer: 16 players, 4
+vehicles, hits, weapon spawns; a campaign scene: 1 player, 60 actors, 8
+vehicles, 12 machines, 25 crates moved, 16 objects gone), 450 frames each,
+release build on the development Mac. Run
+`cargo test --release -p live-proto frame_sizes -- --nocapture` and
+`cargo test --release -p live-proto measure -- --ignored --nocapture`, and
+`cargo test --release -p live-telemetry measure_frame_cost -- --ignored --nocapture`.
+
+| per frame | JSON (before) | packed | packed + deflate |
+|---|---:|---:|---:|
+| 16-player MP, live frame | 6026 B | 219 B (keyframe every 15) | |
+| 16-player MP, keyframe / recorded | | 511 B | 514 B |
+| campaign 60 actors, live frame | 24678 B | 650 B | |
+| campaign, keyframe / recorded | | 2098 B | 2089 B |
+| MP ingest at 15 Hz | 90 KB/s | 3.3 KB/s | |
+| campaign ingest at 15 Hz | 370 KB/s | 9.8 KB/s | |
+| MP stored `GameFrame` (signed event, 1 Hz) | 8629 B | 1498 B | |
+| campaign stored `GameFrame` | 33105 B | 4332 B | |
+| MP storage per hour | 31 MB | 5.4 MB | |
+| campaign storage per hour | 119 MB | 15.6 MB | |
+
+General-purpose compression of a packed record gains nothing (deflate:
++1% to -0.5%; the bits are already near their entropy), so recorded frames
+are not compressed at rest and zstd was left out. The stored event is
+bigger than its keyframe because of the JWS around it (base64 of the
+payload and the signature).
+
+| CPU per frame | JSON (before) | packed |
+|---|---:|---:|
+| MP, game's sink worker (serialise / pack) | 12.2 µs | 7.7 µs |
+| MP, server (parse or decode, validate, pass on) | 40.3 µs | 17.8 µs |
+| campaign, game's sink worker | 59.0 µs | 38.7 µs |
+| campaign, server | 206 µs | 146 µs |
+
+The server's JSON cost is per reader (each reader got its own JSON
+message); packed frames are encoded once per frame for every reader.
+
+On the game thread, for a campaign scene of 60 actors, 8 vehicles, 12
+machines and 90 placed objects (synthetic guest memory): the object-table
+scan takes 38 µs without the placement reads and 54 µs with them, the frame
+build 14 µs; serialising stays off the game thread, on the sink worker.
+At 15 frames a second that is under 0.1% of a core.
 
 ## Runtime validation needed first
 
@@ -291,3 +518,9 @@ relying on live output, check in this order:
     tag is in `03a`/`03b`); `+0x1a` matching map.glb's machine names; the
     device position `+0x140` moving 0 to 1 as doors open and elevators
     travel (likely); the active BSP switching between campaign zones.
+12. Scenario objects: crates knocked about in campaign show as moved in the
+    3D viewer and settle where they stop; a weapon picked up off the floor
+    and a multiplayer spawn's weapon after a pickup go gone and come back
+    on respawn (`+0xaf`); scenery destroyed (for example glass or barrels)
+    goes gone; that `+0x1a` indexes match map.glb's `scenario` children (a
+    moved crate moves the right model).

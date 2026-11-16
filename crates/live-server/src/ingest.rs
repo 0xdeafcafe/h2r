@@ -1,6 +1,7 @@
 //! `GET /v1/ingest`: the game's WebSocket (docs/live-api.md, Streams). The
 //! first message is `{kind: "auth", token}` with `lxm: games.write`; then
-//! `frame`, `events` (one batch JWS) and `ping` messages. Each `events`
+//! `frame`, `events` (one batch JWS) and `ping` messages, and binary
+//! messages of packed frames (docs/live-telemetry.md, Packed frames). Each `events`
 //! batch is answered with `appended` or `error`; frames are answered only
 //! when refused. The socket closes when the token expires unless the client
 //! sends a fresh `auth`.
@@ -12,7 +13,7 @@ use axum::extract::State;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
 use live_proto::sign::{TOKEN_LEEWAY_S, Token};
-use live_proto::{Author, ClientMessage, ErrorCode, IngestReply, lxm};
+use live_proto::{Author, ClientMessage, ErrorCode, IngestReply, lxm, pack};
 
 use crate::app::{ApiError, Live, now};
 use crate::games::reply_error;
@@ -59,6 +60,7 @@ async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
             return Ok(());
         }
     };
+    let mut decoder = pack::Decoder::new();
     loop {
         let wait = Duration::from_secs((expires + TOKEN_LEEWAY_S - now()).max(0) as u64);
         let msg = tokio::select! {
@@ -70,6 +72,16 @@ async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
         };
         let text = match msg {
             Some(Ok(Message::Text(text))) => text,
+            Some(Ok(Message::Binary(bytes))) => {
+                // Packed frames (docs/live-telemetry.md, Packed frames): a
+                // container of this socket's stream. Only refusals reply.
+                for reply in ingest_packed(&live, &author, &mut decoder, &bytes).await {
+                    send_json(&mut socket, &reply_error(&reply))
+                        .await
+                        .map_err(|e| e.to_string())?;
+                }
+                continue;
+            }
             Some(Ok(Message::Close(_))) | Some(Err(_)) | None => return Ok(()),
             Some(Ok(_)) => continue,
         };
@@ -112,4 +124,27 @@ async fn run(live: Arc<Live>, mut socket: WebSocket) -> Result<(), String> {
             .await
             .map_err(|e| e.to_string())?;
     }
+}
+
+/// Decodes and ingests a binary message's packed frames, oldest first;
+/// returns the refusals. A frame that does not decode (a gap after a
+/// refused or lost frame) is refused until the sender's next keyframe.
+async fn ingest_packed(
+    live: &Live,
+    author: &Author,
+    decoder: &mut pack::Decoder,
+    bytes: &[u8],
+) -> Vec<ApiError> {
+    let mut refusals = Vec::new();
+    for record in pack::records(bytes) {
+        let decoded = record.and_then(|r| decoder.decode(r));
+        let result = match decoded {
+            Ok(d) => live.ingest_frame(author, d.frame).await.map(|_| ()),
+            Err(e) => Err(ApiError::new(ErrorCode::Invalid, format!("frame: {e}"))),
+        };
+        if let Err(e) = result {
+            refusals.push(e);
+        }
+    }
+    refusals
 }

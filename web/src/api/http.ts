@@ -3,6 +3,7 @@
 import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
 import type { ServerTarget } from "./server";
 import { formatSkullsParam } from "../lib/skulls";
+import { decodeKeyframes } from "./pack";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -22,6 +23,45 @@ async function getJson<T>(url: string, signal?: AbortSignal): Promise<T> {
     throw new ApiError(r.status, code, message);
   }
   return (await r.json()) as T;
+}
+
+/** The packed frames container's content type (docs/live-telemetry.md). */
+export const PACKED_FRAMES = "application/x-h2-frames";
+
+/** Recorded frames, packed: one keyframe record each, the cursor in
+ *  `x-next`, following it to the end (bounded). A server that answers JSON
+ *  (it predates packed frames) is read as JSON pages. */
+export async function packedFrames(
+  url: (cursor: string | null) => string,
+  fetcher: (url: string, init: RequestInit) => Promise<Response>,
+  signal?: AbortSignal,
+  maxPages = 200,
+): Promise<Frame[]> {
+  const out: Frame[] = [];
+  let cursor: string | null = null;
+  for (let i = 0; i < maxPages; i++) {
+    const r = await fetcher(url(cursor), { signal, headers: { accept: `${PACKED_FRAMES}, application/json` } });
+    if (!r.ok) {
+      let code = "http_" + r.status, message = r.statusText;
+      try {
+        const b = await r.json();
+        if (typeof b?.error === "string") { code = b.error; message = b.message ?? message; }
+      } catch { /* not JSON */ }
+      throw new ApiError(r.status, code, message);
+    }
+    let items: Frame[];
+    if ((r.headers.get("content-type") ?? "").startsWith(PACKED_FRAMES)) {
+      items = decodeKeyframes(new Uint8Array(await r.arrayBuffer()));
+      cursor = r.headers.get("x-next");
+    } else {
+      const p = page<Frame>(await r.json());
+      items = p.items;
+      cursor = p.next;
+    }
+    out.push(...items);
+    if (cursor === null || items.length === 0) break;
+  }
+  return out;
 }
 
 /** A list response, `{items, next, position}` (contract clarification 3). */
@@ -70,8 +110,12 @@ export function api(t: ServerTarget) {
       getJson(u("/games", { state, limit, skulls: skulls ? formatSkullsParam(skulls) : undefined }), s).then((b) => page<GameSummary>(b)),
     game: (id: string, s?: AbortSignal) => getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s),
     /** All recorded frames in a tick range, following cursors (600 per page). */
-    frames: async (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal) =>
-      (await all<Frame>("/games/" + encodeURIComponent(id) + "/frames", { from_tick, to_tick }, s, 200)).items,
+    frames: (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal) =>
+      packedFrames(
+        (cursor) => u("/games/" + encodeURIComponent(id) + "/frames", { from_tick, to_tick, cursor, format: "packed" }),
+        (url, init) => fetch(url, init),
+        s,
+      ),
     outline: async (map: string, s?: AbortSignal): Promise<MapOutline | null> => {
       try {
         return await getJson<MapOutline>(u("/maps/" + encodeURIComponent(map) + "/outline"), s);
@@ -105,7 +149,7 @@ export function api(t: ServerTarget) {
     /** Every event of one stream, following cursors. */
     streamEvents: async (stream: string, s?: AbortSignal) => (await all<WireEvent>("/events", { stream, limit: 1000 }, s)).items,
     /** The reader stream, resuming after `from` (exclusive), without the 1 Hz GameFrame events. */
-    streamUrl: (from: number | null) => u("/stream", { from: from ?? 0, exclude: "GameFrame" }),
+    streamUrl: (from: number | null) => u("/stream", { from: from ?? 0, exclude: "GameFrame", frames: "packed" }),
   };
 }
 

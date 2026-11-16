@@ -3,6 +3,7 @@
 // logic is testable without a socket.
 
 import type { StreamMessage, WireEvent, Frame } from "../api/types";
+import { FrameDecoder, PackError, records } from "../api/pack";
 
 export interface SocketLike {
   onopen: ((ev: unknown) => void) | null;
@@ -47,6 +48,8 @@ export class StreamClient {
   private timer: unknown = null;
   private stopped = false;
   private readonly o: Required<StreamOptions>;
+  /** Packed frame streams (`?frames=packed`); a new socket starts afresh. */
+  private frames = new FrameDecoder();
 
   constructor(opts: StreamOptions, private readonly h: StreamHandlers) {
     this.o = {
@@ -97,6 +100,7 @@ export class StreamClient {
       return;
     }
     this.sock = sock;
+    this.frames = new FrameDecoder();
     sock.onopen = () => { if (this.sock === sock) this.setStatus("catching-up"); };
     sock.onmessage = (m) => { if (this.sock === sock) this.handle(m.data); };
     sock.onerror = () => { /* onclose follows */ };
@@ -114,8 +118,14 @@ export class StreamClient {
     this.timer = this.o.setTimer(() => { this.timer = null; if (!this.stopped) this.open(); }, delay);
   }
 
-  /** Handles one raw message. Exposed for tests. */
+  /** Handles one raw message. Exposed for tests. Binary messages are
+   *  packed frame records (docs/live-telemetry.md, Packed frames). */
   handle(raw: unknown): void {
+    if (raw instanceof ArrayBuffer || ArrayBuffer.isView(raw)) {
+      const bytes = raw instanceof ArrayBuffer ? new Uint8Array(raw) : new Uint8Array(raw.buffer, raw.byteOffset, raw.byteLength);
+      this.handlePacked(bytes);
+      return;
+    }
     let msg: StreamMessage;
     try {
       msg = (typeof raw === "string" ? JSON.parse(raw) : raw) as StreamMessage;
@@ -144,6 +154,23 @@ export class StreamClient {
         this.setStatus("live");
         this.h.onCaughtUp(msg.position);
         break;
+    }
+  }
+
+  private handlePacked(bytes: Uint8Array) {
+    try {
+      for (const record of records(bytes)) {
+        try {
+          this.h.onFrame(this.frames.decode(record).frame);
+        } catch (e) {
+          // A delta after a missed frame: the stream's next keyframe
+          // picks it up again.
+          if (!(e instanceof PackError && e.gap)) throw e;
+        }
+      }
+    } catch (e) {
+      if (!(e instanceof PackError)) throw e;
+      // A bad message: drop the rest of it.
     }
   }
 }

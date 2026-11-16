@@ -126,6 +126,7 @@ export function createReplaySession(game: Accessor<GameState>, roster: Accessor<
       hits: tl.sampleHits(at),
       bsp: tl.sampleBsp(at),
       machines: tl.sampleMachines(at),
+      objects: tl.sampleObjects(at),
       markers: tl.killsBetween(at - fade, at).filter((k) => k.at).map((k) => ({
         ...k.at!, alpha: 1 - (at - k.tick) / fade, colour: r.get(k.victim)?.colour ?? "#555",
       })),

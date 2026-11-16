@@ -337,7 +337,113 @@ pub struct Frame {
     /// recorded frame. At most [`MAX_FRAME_MACHINES`].
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub machines: Vec<FrameMachine>,
+    /// Scenario placements that are not where the scenario put them: moved
+    /// by more than a small epsilon, or gone (destroyed, picked up, not
+    /// created). Every such placement, each frame, ordered by kind then
+    /// index; the packed wire format sends only what changed. At most
+    /// [`MAX_FRAME_OBJECTS`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objects: Vec<FrameObject>,
 }
+
+/// Which scenario block a [`FrameObject`] is placed by. The order is the
+/// packed format's kind code (docs/live-telemetry.md, Packed frames). Its
+/// JSON name is the placement's `kind` in map.glb's `scenario` node
+/// (docs/live-art.md): the tag group, and `netgame` for multiplayer spawns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub enum ObjectKind {
+    /// `scnr+0x60`.
+    #[serde(rename = "bipd")]
+    Biped,
+    /// `scnr+0x70`.
+    #[serde(rename = "vehi")]
+    Vehicle,
+    /// `scnr+0x90`.
+    #[serde(rename = "weap")]
+    Weapon,
+    /// `scnr+0x80`.
+    #[serde(rename = "eqip")]
+    Equipment,
+    /// `scnr+0x50`.
+    #[serde(rename = "scen")]
+    Scenery,
+    /// `scnr+0xa8`; machines also travel in [`Frame::machines`].
+    #[serde(rename = "mach")]
+    Machine,
+    /// `scnr+0xb8`.
+    #[serde(rename = "ctrl")]
+    Control,
+    /// `scnr+0xc8`.
+    #[serde(rename = "lifi")]
+    LightFixture,
+    /// `scnr+0xd8`.
+    #[serde(rename = "ssce")]
+    SoundScenery,
+    /// `scnr+0x328` (`bloc`: crates and physics props).
+    #[serde(rename = "bloc")]
+    Crate,
+    /// `scnr+0x368`.
+    #[serde(rename = "crea")]
+    Creature,
+    /// `scnr+0x120`: a multiplayer weapon or vehicle spawn.
+    #[serde(rename = "netgame")]
+    NetgameEquipment,
+}
+
+impl ObjectKind {
+    /// Every kind, in code order.
+    pub const ALL: [ObjectKind; 12] = [
+        ObjectKind::Biped,
+        ObjectKind::Vehicle,
+        ObjectKind::Weapon,
+        ObjectKind::Equipment,
+        ObjectKind::Scenery,
+        ObjectKind::Machine,
+        ObjectKind::Control,
+        ObjectKind::LightFixture,
+        ObjectKind::SoundScenery,
+        ObjectKind::Crate,
+        ObjectKind::Creature,
+        ObjectKind::NetgameEquipment,
+    ];
+
+    /// The packed format's code.
+    pub fn code(self) -> u8 {
+        Self::ALL.iter().position(|k| *k == self).unwrap() as u8
+    }
+
+    pub fn from_code(code: u8) -> Option<Self> {
+        Self::ALL.get(usize::from(code)).copied()
+    }
+}
+
+/// A scenario placement that moved or is gone: `k` and `i` name it (the
+/// kind's scenario block and the index in it, map.glb's `scenario` child
+/// `{kind, index}`). A moved one carries its pose; a gone one only `gone`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FrameObject {
+    pub k: ObjectKind,
+    pub i: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub p: Option<[f64; 3]>,
+    /// Forward, unit length, game coordinates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub f: Option<[f64; 3]>,
+    /// Up, unit length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub u: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub gone: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// Most objects one frame may carry.
+pub const MAX_FRAME_OBJECTS: usize = 2048;
+/// Largest placement index (scenario blocks count with an `i16`).
+pub const MAX_OBJECT_INDEX: u32 = 0x7fff;
 
 /// Damage one object took.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -745,6 +851,7 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
     if frame.machines.len() > MAX_FRAME_MACHINES {
         return Err(format!("at most {MAX_FRAME_MACHINES} machines"));
     }
+    validate_objects(&frame.objects)?;
     for m in &frame.machines {
         if !valid_model_id(&m.id) || !valid_model_id(&m.kind) {
             return Err("machine id and kind must be [a-z0-9_]{1,32}".into());
@@ -757,6 +864,33 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         }
         if m.position.is_some_and(|p| !(0.0..=1.0).contains(&p)) {
             return Err("machine position must be 0 to 1".into());
+        }
+    }
+    Ok(())
+}
+
+fn validate_objects(objects: &[FrameObject]) -> Result<(), String> {
+    if objects.len() > MAX_FRAME_OBJECTS {
+        return Err(format!("at most {MAX_FRAME_OBJECTS} objects"));
+    }
+    let direction = |v: [f64; 3]| v.iter().all(|c| c.is_finite()) && length(v) >= 1e-6;
+    for pair in objects.windows(2) {
+        if (pair[0].k, pair[0].i) >= (pair[1].k, pair[1].i) {
+            return Err("objects must be ordered by kind and index, each once".into());
+        }
+    }
+    for o in objects {
+        if o.i > MAX_OBJECT_INDEX {
+            return Err(format!("object index above {MAX_OBJECT_INDEX}"));
+        }
+        match (o.gone, o.p, o.f, o.u) {
+            (true, None, None, None) => {}
+            (false, Some(p), Some(f), Some(u)) => {
+                if !p.iter().all(|c| c.is_finite()) || !direction(f) || !direction(u) {
+                    return Err("object p must be finite, f and u finite and non-zero".into());
+                }
+            }
+            _ => return Err("an object is gone, or has p, f and u".into()),
         }
     }
     Ok(())
@@ -962,6 +1096,9 @@ pub fn normalize_frame(frame: &mut Frame) {
     for m in &mut frame.machines {
         unit(&mut m.forward);
         unit(&mut m.up);
+    }
+    for o in &mut frame.objects {
+        o.f.iter_mut().chain(o.u.iter_mut()).for_each(unit);
     }
     for v in &mut frame.vehicles {
         unit(&mut v.forward);

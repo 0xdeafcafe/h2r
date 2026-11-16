@@ -196,8 +196,6 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("weapon_fire.one_call_per_shot", WEAPON_FIRE),
     ("biped.physics_mode", BIPED_PHYSICS_MODE),
     ("grenade.type_names", UNIT_GRENADE_INDEX),
-    ("object.scenario_placement_index", BODY_PLACEMENT_INDEX),
-    ("object_type.machine", OBJECT_TYPE_MACHINE as u32),
     ("device.position", DEVICE_POSITION),
     ("damage_report.reporting_type_names", 0),
 ];
@@ -210,14 +208,62 @@ pub const GLOBALS_ACTIVE_BSP: u32 = 0x2;
 /// Telemetry uses only its sign (a jump goes up); `speed` comes from
 /// positions.
 pub const BODY_VELOCITY: u32 = 0x88;
-/// likely: the scenario placement index (`i16`, -1 for objects the scenario
-/// did not place): `object_new` (`0x000b7c87`) copies it from the placement
-/// data's `+0x10` beside the object identifier (`+0xa4`, `+0xa8`).
+/// The scenario placement index (`i16`, -1 for objects the scenario did not
+/// place): the index in the scenario block of the object's type.
+/// Confirmed: `object_create` by name (`0x000bb670`) passes a name's type
+/// (`+0x20`) and placement index (`+0x22`) to `0x000bf0f0` with the record
+/// at the type's block (descriptor `+0xa`) plus index times stride
+/// (`+0xe`); that hands the index to the placement builder `0x000d5060`,
+/// which stores it in the placement data's `+0x10` (`0x000d520b`); and
+/// `object_new` copies that to `+0x1a` (`0x000b7c87`). Objects not from a
+/// placement get -1 (`0x000b7c63`; the placement data default `0x000b7a31`),
+/// and an object a script recreates loses it (`0x000bb6cc`).
 pub const BODY_PLACEMENT_INDEX: u32 = 0x1a;
-/// likely: object type 7 is a machine (the engine's type order: biped,
-/// vehicle, weapon, equipment, garbage, projectile, scenery, machine, ...;
-/// 0 to 2 are confirmed). The scarab of `03a`/`03b` is a `mach` tag.
+/// The netgame equipment entry that spawned the object (`i8`, -1 none).
+/// Confirmed: the spawner `0x0015aad0` writes the entry index (its first
+/// argument) after `object_new` (`0x0015ac15`); `object_new` sets -1
+/// (`0x000b7db1`); deleting the object hands it back to its entry
+/// (`0x000b85c3` calls `0x0015b220`, which clears it).
+pub const BODY_NETGAME_EQUIPMENT: u32 = 0xaf;
+/// Object type 7 is a machine. Confirmed: the type table at `0x00468630`
+/// is bipd, vehi, weap, eqip, garb, proj, scen, mach, ctrl, lifi, ssce,
+/// bloc, crea (docs/objects.md); the scarab of `03a`/`03b` is a `mach` tag.
 pub const OBJECT_TYPE_MACHINE: u8 = 7;
+
+/// The loaded scenario tag (`scnr` root), confirmed (cache loader
+/// publication; `0x000bb702` and `0x0015aad6` read placement blocks
+/// through it).
+pub const SCENARIO_PTR: u32 = 0x004e_0350;
+/// Scenario placement blocks whose objects frames track: the object type
+/// (header `+3`), the block's `(count, address)` offset in `scnr` and the
+/// record stride, from the type table's descriptors (`+0xa`, `+0xe`;
+/// docs/objects.md, confirmed). Machines travel in `machines` and sound
+/// scenery is not drawn, so neither is here.
+pub const PLACEMENT_BLOCKS: &[(u8, u32, u32)] = &[
+    (0, 0x60, 0x54),   // bipd
+    (1, 0x70, 0x54),   // vehi
+    (2, 0x90, 0x54),   // weap
+    (3, 0x80, 0x38),   // eqip
+    (6, 0x50, 0x5c),   // scen
+    (8, 0xb8, 0x44),   // ctrl
+    (9, 0xc8, 0x54),   // lifi
+    (11, 0x328, 0x4c), // bloc
+    (12, 0x368, 0x34), // crea
+];
+/// A placement record's position (`f32[3]`) and yaw, pitch, roll in
+/// radians (`f32[3]`), as the placement builder reads them (`0x000d5140`,
+/// `0x000d516e` into `0x0011df60`).
+pub const PLACEMENT_POSITION: u32 = 0x8;
+pub const PLACEMENT_ROTATION: u32 = 0x14;
+/// Netgame equipment (`scnr+0x120`, stride `0x90`): the spawner reads the
+/// entry at `index * 0x90` (`0x0015aaf3`), copies its position from `+0x40`
+/// and converts its orientation at `+0x4c` with `0x0011df60`.
+pub const NETGAME_EQUIPMENT: u32 = 0x120;
+pub const NETGAME_EQUIPMENT_STRIDE: u32 = 0x90;
+pub const NETGAME_EQUIPMENT_POSITION: u32 = 0x40;
+pub const NETGAME_EQUIPMENT_ROTATION: u32 = 0x4c;
+/// The most entries a placement block is read for (they count with `i16`).
+pub const MAX_PLACEMENTS: u32 = 0x8000;
 /// likely: a device's position, `f32` 0..1. The machine network-state
 /// builder `0x000a3df0` copies it (flag `0x400`) next to the desired value
 /// of the device group at `+0x13c` (flag `0x800`); the object function

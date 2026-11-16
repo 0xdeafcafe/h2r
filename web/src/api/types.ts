@@ -119,6 +119,23 @@ export interface Frame {
   /** The structure BSP the game has loaded. */
   bsp?: number | null;
   machines?: FrameMachine[];
+  /** Scenario placements not where the scenario put them (moved or gone),
+   *  every one each frame, by kind then index. */
+  objects?: FrameObject[];
+}
+
+/** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's
+ *  `scenario` child `{kind: k, index: i}`. */
+export interface FrameObject {
+  /** The placement's kind, as map.glb's scenario extras name it: "bipd",
+   *  "vehi", "weap", "eqip", "scen", "mach", "ctrl", "lifi", "ssce", "bloc",
+   *  "crea", or "netgame" (a multiplayer spawn). */
+  k: string;
+  i: number;
+  p?: [number, number, number];
+  f?: [number, number, number];
+  u?: [number, number, number];
+  gone?: boolean;
 }
 
 export interface PlayerScore {

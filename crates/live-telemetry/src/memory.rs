@@ -4,12 +4,13 @@ use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
 use crate::event::{
-    ActorState, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState, PlayerState,
-    PlayerStats, Snapshot, VehicleState, Weapon, World,
+    ActorState, Appearance, GameInfo, HitRecord, MachineState, Motion, ObjectState, PlacedObject,
+    Placements, PlayerState, PlayerStats, Pose, Snapshot, VehicleState, Weapon, World,
 };
 use crate::layout;
 use engine::DatumHandle;
 use engine::view::{Datums, objects, players};
+use live_proto::game::ObjectKind;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
 
@@ -428,6 +429,10 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
             continue;
         }
         let datum = (u32::from(salt) << 16) | slot as u32;
+        if let Some(kind) = placed_kind(kind) {
+            // A fault skips the object, as below.
+            let _ = placed(guest, kind, body, &mut out.placed);
+        }
         match kind {
             layout::OBJECT_TYPE_BIPED => {
                 if let Ok(parent) = guest.u32(body + layout::BODY_PARENT)
@@ -492,6 +497,146 @@ pub fn world(guest: &Guest) -> ReadResult<World> {
     Ok(out)
 }
 
+/// The placement kind of an object type whose placements frames track.
+fn placed_kind(object_type: u8) -> Option<ObjectKind> {
+    layout::PLACEMENT_BLOCKS
+        .iter()
+        .any(|(t, _, _)| *t == object_type)
+        .then(|| object_kind(object_type))
+        .flatten()
+}
+
+/// The scenario block an object type is placed by (the type table's order).
+pub fn object_kind(object_type: u8) -> Option<ObjectKind> {
+    Some(match object_type {
+        0 => ObjectKind::Biped,
+        1 => ObjectKind::Vehicle,
+        2 => ObjectKind::Weapon,
+        3 => ObjectKind::Equipment,
+        6 => ObjectKind::Scenery,
+        7 => ObjectKind::Machine,
+        8 => ObjectKind::Control,
+        9 => ObjectKind::LightFixture,
+        10 => ObjectKind::SoundScenery,
+        11 => ObjectKind::Crate,
+        12 => ObjectKind::Creature,
+        _ => return None,
+    })
+}
+
+/// Notes an object that came from a scenario placement (`+0x1a`) or a
+/// netgame equipment entry (`+0xaf`).
+fn placed(
+    guest: &Guest,
+    kind: ObjectKind,
+    body: u32,
+    out: &mut Vec<PlacedObject>,
+) -> ReadResult<()> {
+    let index = guest.u16(body + layout::BODY_PLACEMENT_INDEX)? as i16;
+    let netgame = guest.u8(body + layout::BODY_NETGAME_EQUIPMENT)? as i8;
+    if index < 0 && netgame < 0 {
+        return Ok(());
+    }
+    let parented = guest.u32(body + layout::BODY_PARENT)? != u32::MAX;
+    let pos = vector(guest, body + layout::BODY_POSITION)?;
+    let forward = vector(guest, body + layout::BODY_FORWARD)?;
+    let up = vector(guest, body + layout::BODY_UP)?;
+    let mut push = |kind, index| {
+        out.push(PlacedObject {
+            kind,
+            index,
+            parented,
+            pos,
+            forward,
+            up,
+        })
+    };
+    if index >= 0 {
+        push(kind, index as u16);
+    }
+    if netgame >= 0 {
+        push(ObjectKind::NetgameEquipment, netgame as u16);
+    }
+    Ok(())
+}
+
+/// Forward and up of a scenario rotation (yaw, pitch, roll in radians):
+/// `Rz(yaw) · Ry(−pitch) · Rx(roll)` applied to +x and +z, as map.glb's
+/// placements are built (docs/live-art.md).
+pub fn rotation_axes([yaw, pitch, roll]: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let (sr, cr) = roll.sin_cos();
+    let rot = |v: [f64; 3]| {
+        let v = [v[0], cr * v[1] - sr * v[2], sr * v[1] + cr * v[2]];
+        let v = [cp * v[0] - sp * v[2], v[1], sp * v[0] + cp * v[2]];
+        [cy * v[0] - sy * v[1], sy * v[0] + cy * v[1], v[2]]
+    };
+    (rot([1.0, 0.0, 0.0]), rot([0.0, 0.0, 1.0]))
+}
+
+/// One placement block's poses: `(count, address)` at `at`, records of
+/// `stride` bytes with the position at `position` and the rotation at
+/// `rotation`.
+fn block_poses(
+    guest: &Guest,
+    at: u32,
+    stride: u32,
+    position: u32,
+    rotation: u32,
+) -> ReadResult<Vec<Option<Pose>>> {
+    let count = guest.u32(at)?;
+    let address = guest.u32(at + 4)?;
+    if count == 0 || address == 0 || count > layout::MAX_PLACEMENTS {
+        return Ok(Vec::new());
+    }
+    let mut bytes = vec![0; (count * stride) as usize];
+    guest.read_bytes(address, &mut bytes, 1)?;
+    let f = |o: usize| f64::from(f32::from_le_bytes(bytes[o..o + 4].try_into().unwrap()));
+    Ok((0..count as usize)
+        .map(|i| {
+            let r = i * stride as usize;
+            let v = |at: u32| [0, 4, 8].map(|k| f(r + at as usize + k));
+            let (pos, rot) = (v(position), v(rotation));
+            if !pos.iter().chain(&rot).all(|c| c.is_finite()) {
+                return None;
+            }
+            let (forward, up) = rotation_axes(rot);
+            Some(Pose { pos, forward, up })
+        })
+        .collect())
+}
+
+/// The loaded scenario's placements for every tracked kind and its netgame
+/// equipment (read once a game: the scenario does not change under it). A
+/// block that faults is left empty.
+pub fn placements(guest: &Guest) -> ReadResult<Placements> {
+    let scenario = ptr(guest, layout::SCENARIO_PTR)?;
+    let mut kinds: Vec<(ObjectKind, Vec<Option<Pose>>)> = layout::PLACEMENT_BLOCKS
+        .iter()
+        .filter_map(|&(object_type, offset, stride)| {
+            let poses = block_poses(
+                guest,
+                scenario + offset,
+                stride,
+                layout::PLACEMENT_POSITION,
+                layout::PLACEMENT_ROTATION,
+            );
+            Some((object_kind(object_type)?, poses.unwrap_or_default()))
+        })
+        .collect();
+    let netgame = block_poses(
+        guest,
+        scenario + layout::NETGAME_EQUIPMENT,
+        layout::NETGAME_EQUIPMENT_STRIDE,
+        layout::NETGAME_EQUIPMENT_POSITION,
+        layout::NETGAME_EQUIPMENT_ROTATION,
+    );
+    kinds.push((ObjectKind::NetgameEquipment, netgame.unwrap_or_default()));
+    kinds.sort_by_key(|(k, _)| *k);
+    Ok(Placements { kinds })
+}
+
 /// An object's definition and its own transform (parent-relative when it
 /// has a parent).
 fn transform(guest: &Guest, body: u32) -> ReadResult<(Option<u32>, [[f64; 3]; 3])> {
@@ -551,6 +696,7 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
         actors: Vec::new(),
         vehicles: Vec::new(),
         machines: Vec::new(),
+        placed: Vec::new(),
         bsp: active_bsp(guest).ok().flatten(),
         hits: Vec::new(),
     })
@@ -735,6 +881,14 @@ pub(crate) mod fixture {
         guest
             .set_u32(body + super::layout::UNIT_PLAYER, u32::MAX)
             .unwrap();
+        // Not from a placement or a netgame spawn, as `object_new` leaves
+        // dynamic objects.
+        guest
+            .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, u16::MAX)
+            .unwrap();
+        guest
+            .set_u8(body + super::layout::BODY_NETGAME_EQUIPMENT, 0xff)
+            .unwrap();
         let high_water = OBJECTS + super::layout::DATUM_HIGH_WATER;
         let current = guest.u32(high_water).unwrap();
         guest.set_u32(high_water, current.max(slot + 1)).unwrap();
@@ -795,6 +949,37 @@ pub(crate) mod fixture {
         guest
             .set_f32(body + super::layout::DEVICE_POSITION, position)
             .unwrap();
+    }
+
+    /// An object of `object_type` at `slot` from placement `placement`
+    /// (-1 for none) and netgame equipment entry `netgame` (-1 for none),
+    /// at `pos`, held by `parent`.
+    pub fn put_placed(
+        guest: &mut Guest,
+        slot: u32,
+        object_type: u8,
+        placement: i16,
+        netgame: i8,
+        pos: [f32; 3],
+        parent: u32,
+    ) {
+        put_object(guest, slot, parent);
+        let header = OBJECT_DATA + slot * super::layout::OBJECT_HEADER_SIZE;
+        guest
+            .set_u8(header + super::layout::OBJECT_TYPE, object_type)
+            .unwrap();
+        let body = BODY + slot * 0x1000;
+        guest
+            .set_u16(body + super::layout::BODY_PLACEMENT_INDEX, placement as u16)
+            .unwrap();
+        guest
+            .set_u8(body + super::layout::BODY_NETGAME_EQUIPMENT, netgame as u8)
+            .unwrap();
+        for (i, value) in pos.into_iter().enumerate() {
+            guest
+                .set_f32(body + super::layout::BODY_POSITION + 4 * i as u32, value)
+                .unwrap();
+        }
     }
 
     pub fn object_datum(slot: u32) -> u32 {
@@ -1433,5 +1618,135 @@ mod tests {
         assert!(hit.pos.is_some());
         let gone = super::hit(&guest, report, 0x1234_0077).unwrap();
         assert_eq!(gone.pos, None, "a dead datum has no position");
+    }
+
+    #[test]
+    fn world_scan_notes_placed_and_netgame_objects() {
+        let mut guest = fixture::memory();
+        // A crate from crate placement 4, a weapon on netgame spawn 2 that
+        // also came from weapon placement 7, a held weapon from placement
+        // 1, a dynamic weapon, and a machine (frames carry those apart).
+        fixture::put_placed(&mut guest, 1, 11, 4, -1, [5.0, 6.0, 7.0], u32::MAX);
+        fixture::put_placed(&mut guest, 2, 2, 7, 2, [1.0, 1.0, 1.0], u32::MAX);
+        fixture::put_placed(&mut guest, 3, 2, 1, -1, [0.0, 0.0, 0.0], 0x9001_0001);
+        fixture::put_placed(&mut guest, 4, 2, -1, -1, [0.0, 0.0, 0.0], u32::MAX);
+        fixture::put_machine(&mut guest, 5, 3, 0.5);
+        let placed = world(&guest).unwrap().placed;
+        let seen: Vec<_> = placed
+            .iter()
+            .map(|p| (p.kind, p.index, p.parented))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                (ObjectKind::Crate, 4, false),
+                (ObjectKind::Weapon, 7, false),
+                (ObjectKind::NetgameEquipment, 2, false),
+                (ObjectKind::Weapon, 1, true),
+            ]
+        );
+        assert_eq!(placed[0].pos, [5.0, 6.0, 7.0]);
+        assert_eq!(placed[0].forward, [0.0, 1.0, 0.0]);
+        assert_eq!(placed[0].up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn placements_read_scenario_blocks_and_netgame_equipment() {
+        let mut guest = fixture::memory();
+        let scenario = 0x180000;
+        guest.set_u32(layout::SCENARIO_PTR, scenario).unwrap();
+        let put_block = |guest: &mut Guest,
+                         at: u32,
+                         records: u32,
+                         poses: &[([f32; 3], [f32; 3])],
+                         stride: u32,
+                         position: u32,
+                         rotation: u32| {
+            guest.set_u32(scenario + at, poses.len() as u32).unwrap();
+            guest.set_u32(scenario + at + 4, records).unwrap();
+            for (i, (pos, rot)) in poses.iter().enumerate() {
+                let record = records + i as u32 * stride;
+                for k in 0..3 {
+                    guest
+                        .set_f32(record + position + 4 * k as u32, pos[k])
+                        .unwrap();
+                    guest
+                        .set_f32(record + rotation + 4 * k as u32, rot[k])
+                        .unwrap();
+                }
+            }
+        };
+        let half_pi = std::f32::consts::FRAC_PI_2;
+        // Two crates: one unrotated, one turned a quarter left (yaw); the
+        // second's record holds a NaN and does not read.
+        let (_, crate_at, crate_stride) = *layout::PLACEMENT_BLOCKS
+            .iter()
+            .find(|(t, _, _)| *t == 11)
+            .unwrap();
+        put_block(
+            &mut guest,
+            crate_at,
+            0x190000,
+            &[
+                ([1.0, 2.0, 3.0], [half_pi, 0.0, 0.0]),
+                ([f32::NAN, 0.0, 0.0], [0.0; 3]),
+            ],
+            crate_stride,
+            layout::PLACEMENT_POSITION,
+            layout::PLACEMENT_ROTATION,
+        );
+        put_block(
+            &mut guest,
+            layout::NETGAME_EQUIPMENT,
+            0x1a0000,
+            &[([9.0, 8.0, 7.0], [0.0; 3])],
+            layout::NETGAME_EQUIPMENT_STRIDE,
+            layout::NETGAME_EQUIPMENT_POSITION,
+            layout::NETGAME_EQUIPMENT_ROTATION,
+        );
+        // An absurd count is a bad block, not an allocation.
+        let (_, weapon_at, _) = *layout::PLACEMENT_BLOCKS
+            .iter()
+            .find(|(t, _, _)| *t == 2)
+            .unwrap();
+        guest.set_u32(scenario + weapon_at, 0x10_0000).unwrap();
+        guest.set_u32(scenario + weapon_at + 4, 0x190000).unwrap();
+        let placements = placements(&guest).unwrap();
+        let kinds: Vec<_> = placements.kinds.iter().map(|(k, _)| *k).collect();
+        let mut sorted = kinds.clone();
+        sorted.sort();
+        assert_eq!(kinds, sorted, "placements are in kind order");
+        assert_eq!(kinds.last(), Some(&ObjectKind::NetgameEquipment));
+        assert!(!kinds.contains(&ObjectKind::Machine));
+        let block = |kind| &placements.kinds.iter().find(|(k, _)| *k == kind).unwrap().1;
+        let crates = block(ObjectKind::Crate);
+        assert_eq!(crates.len(), 2);
+        let first = crates[0].unwrap();
+        assert_eq!(first.pos, [1.0, 2.0, 3.0]);
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-6);
+        assert!(near(first.forward, [0.0, 1.0, 0.0]), "{:?}", first.forward);
+        assert!(near(first.up, [0.0, 0.0, 1.0]));
+        assert_eq!(crates[1], None);
+        assert!(block(ObjectKind::Weapon).is_empty());
+        assert!(block(ObjectKind::Scenery).is_empty());
+        let netgame = block(ObjectKind::NetgameEquipment);
+        assert_eq!(netgame.len(), 1);
+        assert_eq!(netgame[0].unwrap().pos, [9.0, 8.0, 7.0]);
+        assert_eq!(netgame[0].unwrap().forward, [1.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn rotation_axes_follow_yaw_pitch_roll() {
+        let near = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
+        let q = std::f64::consts::FRAC_PI_2;
+        assert!(near(rotation_axes([0.0; 3]).0, [1.0, 0.0, 0.0]));
+        // Pitch up a quarter: forward points up, up points back.
+        let (f, u) = rotation_axes([0.0, q, 0.0]);
+        assert!(near(f, [0.0, 0.0, 1.0]), "{f:?}");
+        assert!(near(u, [-1.0, 0.0, 0.0]), "{u:?}");
+        // Roll a quarter: up tips to -y, forward stays.
+        let (f, u) = rotation_axes([0.0, 0.0, q]);
+        assert!(near(f, [1.0, 0.0, 0.0]));
+        assert!(near(u, [0.0, -1.0, 0.0]), "{u:?}");
     }
 }

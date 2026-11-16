@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use live_proto::game::{Frame, PlayerScore, TeamScore, Winner};
+use live_proto::game::{Frame, ObjectKind, PlayerScore, TeamScore, Winner};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -168,6 +168,38 @@ pub struct World {
     pub actors: Vec<ActorState>,
     pub vehicles: Vec<VehicleState>,
     pub machines: Vec<MachineState>,
+    /// Objects from scenario placements and netgame equipment.
+    pub placed: Vec<PlacedObject>,
+}
+
+/// An object the scenario placed (or a netgame equipment entry spawned):
+/// which placement, and where it is now.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacedObject {
+    pub kind: ObjectKind,
+    pub index: u16,
+    /// It has a parent: a held weapon, a passenger, a turret. Its own
+    /// transform is then parent-relative.
+    pub parented: bool,
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+}
+
+/// Where a placement puts its object.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pose {
+    pub pos: [f64; 3],
+    pub forward: [f64; 3],
+    pub up: [f64; 3],
+}
+
+/// The loaded scenario's placements, by kind (in [`ObjectKind`] order):
+/// each block's entries in order, `None` where a record does not read as
+/// a pose.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Placements {
+    pub kinds: Vec<(ObjectKind, Vec<Option<Pose>>)>,
 }
 
 /// An AI-controlled biped: its object datum and state.
@@ -222,6 +254,8 @@ pub struct Snapshot {
     pub vehicles: Vec<VehicleState>,
     /// Every machine; frame ticks only.
     pub machines: Vec<MachineState>,
+    /// Objects from placements; frame ticks only.
+    pub placed: Vec<PlacedObject>,
     /// The active structure BSP index.
     pub bsp: Option<u32>,
     /// Damage reports since the previous snapshot.

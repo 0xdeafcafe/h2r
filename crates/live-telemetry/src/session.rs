@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FrameHit, FrameMachine, FramePlayer, FrameVehicle, GameEnded,
-    MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_SHOTS, MAX_FRAME_VEHICLES,
-    PlayerKilled, PlayerLeft, ScoreChanged,
+    Frame, FrameActor, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle, GameEnded,
+    MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_OBJECTS, MAX_FRAME_SHOTS,
+    MAX_FRAME_VEHICLES, ObjectKind, PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
 use crate::event::{
-    GameEvent, GameInfo, HitRecord, MachineState, ObjectState, Output, PlayerState, Snapshot,
+    GameEvent, GameInfo, HitRecord, MachineState, ObjectState, Output, PlacedObject, Placements,
+    PlayerState, Snapshot,
 };
 use crate::layout;
 use crate::memory::yaw;
@@ -56,6 +57,10 @@ struct Match {
     machines_sent: BTreeMap<u32, MachineState>,
     /// Damage reports since the last frame (newest [`MAX_FRAME_HITS`]).
     hits: Vec<HitRecord>,
+    /// The scenario's placements, for frame `objects`.
+    placements: Placements,
+    /// Scratch for [`frame_objects`], kept to spare an allocation a frame.
+    found: Vec<u32>,
 }
 
 pub struct Session {
@@ -238,7 +243,17 @@ impl Session {
             units: BTreeMap::new(),
             machines_sent: BTreeMap::new(),
             hits: Vec::new(),
+            placements: Placements::default(),
+            found: Vec::new(),
         });
+    }
+
+    /// The scenario's placements for the current match's frame `objects`;
+    /// frames carry none until this is set.
+    pub fn set_placements(&mut self, placements: Placements) {
+        if let Some(current) = &mut self.current {
+            current.placements = placements;
+        }
     }
 
     /// Names for the current match's frame `species` and `weapon`; frames
@@ -482,6 +497,7 @@ impl Session {
             }
             let vehicles = frame_vehicles(snapshot, &actors, tags);
             let machines = frame_machines(snapshot, &mut current.machines_sent, tags);
+            let objects = frame_objects(&current.placements, &snapshot.placed, &mut current.found);
             self.output.push(Output::Frame(Frame {
                 game_id,
                 tick: snapshot.tick,
@@ -491,6 +507,7 @@ impl Session {
                 hits: frame_hits,
                 bsp: snapshot.bsp,
                 machines,
+                objects,
             }));
         }
     }
@@ -742,6 +759,93 @@ fn frame_machines(
         .collect()
 }
 
+/// How far an object may be from its placement and still count as there:
+/// a fiftieth of a world unit, and two degrees (cosine) of either axis.
+const PLACED_DISTANCE: f64 = 0.02;
+const PLACED_COS: f64 = 0.999_390_827;
+
+/// Every placement whose object is not where the scenario put it, by kind
+/// then index: moved by more than [`PLACED_DISTANCE`] or turned more than
+/// two degrees (with its pose), or gone: no object, or (weapons, equipment
+/// and netgame spawns) the object is held. Other parented objects are
+/// left out (their transform is parent-relative).
+fn frame_objects(
+    placements: &Placements,
+    placed: &[PlacedObject],
+    found: &mut Vec<u32>,
+) -> Vec<FrameObject> {
+    const NONE: u32 = u32::MAX;
+    let dot = |a: [f64; 3], b: [f64; 3]| a.iter().zip(b).map(|(x, y)| x * y).sum::<f64>();
+    let unit = |v: [f64; 3]| {
+        let len = dot(v, v).sqrt();
+        (len.is_finite() && len > 1e-6).then(|| v.map(|c| c / len))
+    };
+    let mut out = Vec::new();
+    for (kind, poses) in &placements.kinds {
+        found.clear();
+        found.resize(poses.len(), NONE);
+        for (n, p) in placed.iter().enumerate() {
+            if p.kind != *kind {
+                continue;
+            }
+            let Some(slot) = found.get_mut(usize::from(p.index)) else {
+                continue;
+            };
+            // One on its spawn beats one a player holds.
+            if *slot == NONE || (placed[*slot as usize].parented && !p.parented) {
+                *slot = n as u32;
+            }
+        }
+        let held_is_gone = matches!(
+            kind,
+            ObjectKind::Weapon | ObjectKind::Equipment | ObjectKind::NetgameEquipment
+        );
+        for (i, (pose, slot)) in poses.iter().zip(found.iter()).enumerate() {
+            let object = (*slot != NONE).then(|| &placed[*slot as usize]);
+            let entry = match object {
+                Some(o) if o.parented && !held_is_gone => None,
+                None | Some(PlacedObject { parented: true, .. }) => Some(FrameObject {
+                    k: *kind,
+                    i: i as u32,
+                    p: None,
+                    f: None,
+                    u: None,
+                    gone: true,
+                }),
+                Some(o) => {
+                    let (Some(forward), Some(up)) = (unit(o.forward), unit(o.up)) else {
+                        continue;
+                    };
+                    if !o.pos.iter().all(|c| c.is_finite()) {
+                        continue;
+                    }
+                    let moved = pose.is_none_or(|pose| {
+                        let d = [0, 1, 2].map(|k| o.pos[k] - pose.pos[k]);
+                        dot(d, d) > PLACED_DISTANCE * PLACED_DISTANCE
+                            || dot(forward, pose.forward) < PLACED_COS
+                            || dot(up, pose.up) < PLACED_COS
+                    });
+                    moved.then_some(FrameObject {
+                        k: *kind,
+                        i: i as u32,
+                        p: Some(o.pos),
+                        f: Some(forward),
+                        u: Some(up),
+                        gone: false,
+                    })
+                }
+            };
+            if let Some(entry) = entry {
+                if out.len() == MAX_FRAME_OBJECTS {
+                    return out;
+                }
+                out.push(entry);
+            }
+        }
+    }
+    out
+}
+
 /// The frame's hits: attacker and victim as `p<index>` for a player's unit
 /// (or the reporting player), else the object datum; the weapon from the
 /// damage reporting type, else the damage effect's stem.
@@ -834,6 +938,7 @@ mod tests {
             actors: Vec::new(),
             vehicles: Vec::new(),
             machines: Vec::new(),
+            placed: Vec::new(),
             bsp: None,
             hits: Vec::new(),
         }
@@ -1747,5 +1852,245 @@ mod tests {
         assert_eq!(second.stance.as_deref(), Some("crouch"));
         assert_eq!(second.speed, Some(6.0));
         assert_eq!(second.actions, Some(vec!["grenade".to_string()]));
+    }
+
+    fn pose(pos: [f64; 3]) -> Option<crate::event::Pose> {
+        Some(crate::event::Pose {
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        })
+    }
+
+    fn placed(kind: ObjectKind, index: u16, pos: [f64; 3], parented: bool) -> PlacedObject {
+        PlacedObject {
+            kind,
+            index,
+            parented,
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+        }
+    }
+
+    /// An invented scenario: four crates, three weapons, two vehicles and
+    /// two netgame spawns.
+    fn table() -> Placements {
+        Placements {
+            kinds: vec![
+                (
+                    ObjectKind::Vehicle,
+                    vec![pose([0.0; 3]), pose([5.0, 0.0, 0.0])],
+                ),
+                (
+                    ObjectKind::Weapon,
+                    vec![
+                        pose([1.0, 0.0, 0.0]),
+                        pose([2.0, 0.0, 0.0]),
+                        pose([3.0, 0.0, 0.0]),
+                    ],
+                ),
+                (
+                    ObjectKind::Crate,
+                    vec![pose([0.0; 3]), pose([1.0; 3]), pose([2.0; 3]), None],
+                ),
+                (
+                    ObjectKind::NetgameEquipment,
+                    vec![pose([7.0; 3]), pose([8.0; 3])],
+                ),
+            ],
+        }
+    }
+
+    fn objects(placed: &[PlacedObject]) -> Vec<(ObjectKind, u32, bool)> {
+        frame_objects(&table(), placed, &mut Vec::new())
+            .into_iter()
+            .map(|o| (o.k, o.i, o.gone))
+            .collect()
+    }
+
+    #[test]
+    fn objects_where_the_scenario_put_them_are_not_sent() {
+        let all = [
+            placed(ObjectKind::Vehicle, 0, [0.0; 3], false),
+            placed(ObjectKind::Vehicle, 1, [5.0, 0.0, 0.0], false),
+            placed(ObjectKind::Weapon, 0, [1.0, 0.0, 0.0], false),
+            placed(ObjectKind::Weapon, 1, [2.0, 0.0, 0.0], false),
+            placed(ObjectKind::Weapon, 2, [3.0, 0.0, 0.0], false),
+            // Jitter under the threshold.
+            placed(ObjectKind::Crate, 0, [0.01, 0.0, 0.0], false),
+            placed(ObjectKind::Crate, 1, [1.0; 3], false),
+            placed(ObjectKind::Crate, 2, [2.0; 3], false),
+            placed(ObjectKind::NetgameEquipment, 0, [7.0; 3], false),
+            placed(ObjectKind::NetgameEquipment, 1, [8.0; 3], false),
+        ];
+        // Crate 3's placement did not read: present means moved.
+        assert_eq!(objects(&all), [(ObjectKind::Crate, 3, true)]);
+    }
+
+    #[test]
+    fn moved_turned_gone_and_held_objects_are_sent_in_order() {
+        let mut turned = placed(ObjectKind::Crate, 1, [1.0; 3], false);
+        // Three degrees about z.
+        let (s, c) = 3f64.to_radians().sin_cos();
+        turned.forward = [c, s, 0.0];
+        let mut tipped = placed(ObjectKind::Crate, 2, [2.0; 3], false);
+        tipped.up = [0.0, 0.1, 1.0];
+        let world = [
+            // Vehicle 0 driven off; vehicle 1 has a parent (ignored, as
+            // a parented vehicle's transform is not world space).
+            placed(ObjectKind::Vehicle, 0, [0.0, 3.0, 0.0], false),
+            placed(ObjectKind::Vehicle, 1, [0.0; 3], true),
+            // Weapon 0 held by a player: gone. Weapon 1 dropped elsewhere
+            // and another copy held: the dropped one wins. Weapon 2 absent.
+            placed(ObjectKind::Weapon, 0, [9.0; 3], true),
+            placed(ObjectKind::Weapon, 1, [0.0; 3], true),
+            placed(ObjectKind::Weapon, 1, [2.0, 1.0, 0.0], false),
+            placed(ObjectKind::Crate, 0, [0.0; 3], false),
+            turned,
+            tipped,
+            placed(ObjectKind::Crate, 3, [4.0; 3], false),
+            // Picked up from spawn 1; spawn 0 respawned in place. An index
+            // past the block is ignored.
+            placed(ObjectKind::NetgameEquipment, 0, [7.0; 3], false),
+            placed(ObjectKind::NetgameEquipment, 9, [7.0; 3], false),
+        ];
+        assert_eq!(
+            objects(&world),
+            [
+                (ObjectKind::Vehicle, 0, false),
+                (ObjectKind::Weapon, 0, true),
+                (ObjectKind::Weapon, 1, false),
+                (ObjectKind::Weapon, 2, true),
+                (ObjectKind::Crate, 1, false),
+                (ObjectKind::Crate, 2, false),
+                (ObjectKind::Crate, 3, false),
+                (ObjectKind::NetgameEquipment, 1, true),
+            ]
+        );
+        let sent = frame_objects(&table(), &world, &mut Vec::new());
+        assert_eq!(sent[2].p, Some([2.0, 1.0, 0.0]));
+        assert_eq!(sent[0].f, Some([1.0, 0.0, 0.0]));
+        let up = sent[5].u.unwrap();
+        assert!(
+            (up.iter().map(|c| c * c).sum::<f64>() - 1.0).abs() < 1e-9,
+            "sent normalised"
+        );
+        assert!(sent[1].p.is_none() && sent[1].f.is_none() && sent[1].u.is_none());
+        // The frame validates.
+        let mut frame = Frame {
+            objects: sent,
+            ..Frame::default()
+        };
+        frame.tick = 2;
+        live_proto::game::validate_frame(&frame).unwrap();
+    }
+
+    #[test]
+    fn no_placements_no_objects() {
+        let world = [placed(ObjectKind::Crate, 0, [5.0; 3], false)];
+        assert!(frame_objects(&Placements::default(), &world, &mut Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn frames_carry_objects_once_placements_are_set() {
+        let mut session = Session::new("test", None);
+        let p = player(0, 0);
+        session.start(&campaign(), vec![p.clone()]);
+        session.set_placements(table());
+        session.take_output();
+        let mut state = snapshot(2, vec![p]);
+        state.placed = vec![placed(ObjectKind::Crate, 0, [0.0, 0.0, 1.0], false)];
+        session.sample(&state);
+        let frame = frames(&mut session).pop().unwrap();
+        let sent: Vec<_> = frame.objects.iter().map(|o| (o.k, o.i, o.gone)).collect();
+        assert!(sent.contains(&(ObjectKind::Crate, 0, false)));
+        assert!(sent.contains(&(ObjectKind::Weapon, 0, true)));
+        assert_eq!(frame.objects[0].k, ObjectKind::Vehicle);
+    }
+
+    /// Game-thread cost of a frame for a ~60-actor campaign scene: the
+    /// object table scan, the frame build, and its JSON or packed form.
+    /// `cargo test --release -p live-telemetry measure_frame_cost -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn measure_frame_cost() {
+        use crate::memory::{fixture, world};
+        use std::time::Instant;
+        let mut guest = fixture::memory();
+        let mut slot = 1;
+        for i in 0..60 {
+            fixture::put_actor(&mut guest, slot, 2, [i as f32, 1.0, 2.0]);
+            slot += 1;
+        }
+        for _ in 0..8 {
+            fixture::put_vehicle(&mut guest, slot);
+            slot += 1;
+        }
+        for i in 0..12 {
+            fixture::put_machine(&mut guest, slot, i, 0.5);
+            slot += 1;
+        }
+        for i in 0..90 {
+            let kind = [2u8, 6, 11][i % 3];
+            fixture::put_placed(
+                &mut guest,
+                slot,
+                kind,
+                i as i16,
+                -1,
+                [i as f32, 0.0, 0.0],
+                u32::MAX,
+            );
+            slot += 1;
+        }
+        let poses = |n: usize| (0..n).map(|i| pose([i as f64 * 3.0, 0.0, 0.0])).collect();
+        let table = Placements {
+            kinds: vec![
+                (ObjectKind::Weapon, poses(40)),
+                (ObjectKind::Scenery, poses(40)),
+                (ObjectKind::Crate, poses(40)),
+            ],
+        };
+        let mut session = Session::new("test", None);
+        let p = player(0, 0);
+        session.start(&campaign(), vec![p.clone()]);
+        session.set_placements(table);
+        session.take_output();
+        let runs = 2000u32;
+        let (mut scan, mut build, mut json, mut packed) = (0.0, 0.0, 0.0, 0.0);
+        let mut encoder = live_proto::pack::Encoder::new(0, 150);
+        let mut bytes = (0, 0);
+        for n in 0..runs {
+            let start = Instant::now();
+            let found = world(&guest).unwrap();
+            scan += start.elapsed().as_secs_f64();
+            let mut state = snapshot(2 + 2 * u64::from(n), vec![p.clone()]);
+            state.actors = found.actors;
+            state.vehicles = found.vehicles;
+            state.machines = found.machines;
+            state.placed = found.placed;
+            let start = Instant::now();
+            session.sample(&state);
+            let frame = frames(&mut session).pop().unwrap();
+            build += start.elapsed().as_secs_f64();
+            let start = Instant::now();
+            let text = serde_json::to_string(&frame).unwrap();
+            json += start.elapsed().as_secs_f64();
+            let start = Instant::now();
+            let (record, _) = encoder.encode(&frame).unwrap();
+            packed += start.elapsed().as_secs_f64();
+            bytes = (text.len(), record.len());
+        }
+        let us = |t: f64| t * 1e6 / f64::from(runs);
+        println!(
+            "scan {:.1} us, build {:.1} us, json {:.1} us ({} B), packed {:.1} us ({} B)",
+            us(scan),
+            us(build),
+            us(json),
+            bytes.0,
+            us(packed),
+            bytes.1
+        );
     }
 }

@@ -1,5 +1,5 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
-import type { MapOutline } from "../api/types";
+import type { FrameObject, MapOutline } from "../api/types";
 import type { SampledHit, SampledMachine, SampledPlayer, SampledVehicle } from "../state/frames";
 import type { MapFeatures } from "../map/features";
 import { onAnimationFrame } from "../map/scheduler";
@@ -22,6 +22,8 @@ export interface MapFrame {
   bsp?: number | null;
   /** Machines that move (lift platforms, doors, big scripted things), when the frames have them. */
   machines?: SampledMachine[];
+  /** Scenario objects moved or gone (`Frame.objects`), when the frames have them. */
+  objects?: FrameObject[] | null;
 }
 
 export default function MapCanvas(props: {

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 use live_proto::game::{
     self, Frame, GameCreated, GameDetail, GameEnded, GameStarted, GameSummary, NewGame, Outline,
 };
+use live_proto::pack;
 use live_proto::sign::{self, MAX_EVENT_SKEW_S, SignedEvent, parse_time};
 use live_proto::{Author, Page, lxm, streams, types};
 use serde_json::{Value, json};
@@ -26,10 +27,30 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(1000 / 15);
 /// `GET /v1/games/{id}/frames` page size.
 pub const FRAMES_PAGE: usize = 600;
 
+/// A keyframe on the packed live stream at least this often (one a second
+/// at 15 Hz): what a reader that joins or falls behind waits for at most.
+const STREAM_KEYFRAME_EVERY: u64 = 15;
+
 /// Per-game frame bookkeeping for the ingest path.
 #[derive(Default)]
 pub struct IngestState {
     games: Mutex<HashMap<String, FrameClock>>,
+    /// The next packed stream id (one per game while it sends frames).
+    next_sid: std::sync::atomic::AtomicU64,
+}
+
+/// A live frame as stream readers get it: the frame for JSON readers, and
+/// its record in the game's packed stream (docs/live-telemetry.md, Packed
+/// frames) for packed ones.
+#[derive(Debug)]
+pub struct LiveFrame {
+    pub frame: Frame,
+    /// The game's packed stream and this frame's place in it.
+    pub sid: u64,
+    pub seq: u64,
+    pub keyframe: bool,
+    /// `None` when the frame would not pack (the stream skips it).
+    pub packed: Option<Vec<u8>>,
 }
 
 struct FrameClock {
@@ -44,17 +65,50 @@ struct FrameClock {
     unrecorded: game::FrameCarry,
     /// Every machine's latest state, by id: recorded frames carry them all.
     machines: BTreeMap<String, game::FrameMachine>,
+    /// The game's packed live stream.
+    pack: pack::Encoder,
+    /// Its frames since the last keyframe, for readers that join.
+    since_key: Vec<Arc<LiveFrame>>,
 }
 
 impl FrameClock {
-    fn new(now: Instant) -> Self {
+    fn new(now: Instant, sid: u64) -> Self {
         FrameClock {
             last_sent: now - FRAME_INTERVAL,
             last_recorded: 0,
             unsent: game::FrameCarry::default(),
             unrecorded: game::FrameCarry::default(),
             machines: BTreeMap::new(),
+            pack: pack::Encoder::new(sid, STREAM_KEYFRAME_EVERY),
+            since_key: Vec::new(),
         }
+    }
+
+    /// Packs a sent frame into the game's stream and keeps it for readers
+    /// that join before the next keyframe.
+    fn publish(&mut self, frame: Frame) -> Arc<LiveFrame> {
+        let seq = self.pack.next_seq();
+        let (packed, keyframe) = match self.pack.encode(&frame) {
+            Ok((bytes, key)) => (Some(bytes), key),
+            Err(e) => {
+                eprintln!("live: frame of {} does not pack: {e}", frame.game_id);
+                (None, false)
+            }
+        };
+        let live = Arc::new(LiveFrame {
+            frame,
+            sid: self.pack.sid(),
+            seq,
+            keyframe,
+            packed,
+        });
+        if keyframe {
+            self.since_key.clear();
+        }
+        if live.packed.is_some() {
+            self.since_key.push(Arc::clone(&live));
+        }
+        live
     }
 
     /// Throttles a validated frame: `None` when it is dropped (what it
@@ -94,6 +148,59 @@ pub enum FrameOutcome {
     Sent { recorded: bool },
     /// Dropped: faster than 15 Hz.
     Throttled,
+}
+
+/// A recorded `GameFrame`'s data: its tick, who sent it and the frame
+/// packed on its own as base64url (the signature covers those bytes).
+/// Older recordings hold the JSON frame itself with `source`.
+fn recorded_data(frame: &Frame, author: &Author) -> Value {
+    match pack::encode_keyframe(frame) {
+        Ok(bytes) => json!({
+            "tick": frame.tick,
+            "source": author.to_string(),
+            "packed": pack::to_base64(&bytes),
+        }),
+        Err(e) => {
+            eprintln!(
+                "live: recorded frame of {} does not pack: {e}",
+                frame.game_id
+            );
+            let mut data = serde_json::to_value(frame).expect("serializes");
+            data["source"] = json!(author.to_string());
+            data
+        }
+    }
+}
+
+/// A recorded frame's packed bytes (packing an old JSON recording now);
+/// `None` when it holds neither.
+pub fn recorded_packed(data: &Value) -> Option<Vec<u8>> {
+    match data.get("packed").and_then(Value::as_str) {
+        Some(text) => pack::from_base64(text).ok(),
+        None => {
+            let frame: Frame = serde_json::from_value(data.clone()).ok()?;
+            pack::encode_keyframe(&frame).ok()
+        }
+    }
+}
+
+/// A recorded frame as JSON (`GET /v1/games/{id}/frames`): the frame plus
+/// `source`, whichever form it was stored in.
+pub fn recorded_json(data: &Value) -> Value {
+    let Some(text) = data.get("packed").and_then(Value::as_str) else {
+        return data.clone();
+    };
+    let frame = pack::from_base64(text).and_then(|bytes| pack::decode_keyframe(&bytes));
+    match frame {
+        Ok(frame) => {
+            let mut out = serde_json::to_value(frame).expect("serializes");
+            if let Some(source) = data.get("source") {
+                out["source"] = source.clone();
+            }
+            out
+        }
+        Err(_) => data.clone(),
+    }
 }
 
 fn random_game_id() -> String {
@@ -301,30 +408,45 @@ impl Live {
         game::normalize_frame(&mut frame);
         let now_s = now();
         self.model.touch_game(&frame.game_id, now_s);
-        let record = {
+        let (record, live) = {
             let mut games = self.ingest.games.lock().unwrap();
             let now = Instant::now();
-            let clock = games
-                .entry(frame.game_id.clone())
-                .or_insert_with(|| FrameClock::new(now));
-            match clock.admit(&mut frame, now, now_s) {
+            let clock = games.entry(frame.game_id.clone()).or_insert_with(|| {
+                let sid = self
+                    .ingest
+                    .next_sid
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                FrameClock::new(now, sid)
+            });
+            let record = match clock.admit(&mut frame, now, now_s) {
                 None => return Ok(FrameOutcome::Throttled),
                 Some(record) => record,
-            }
+            };
+            (record, clock.publish(frame))
         };
         let recorded = record.is_some();
-        let _ = self.frames.send(Arc::new(frame));
+        let _ = self.frames.send(live);
         if let Some(frame) = record {
-            let mut data = serde_json::to_value(&frame).expect("serializes");
-            data["source"] = json!(author.to_string());
+            let data = recorded_data(&frame, author);
             let event = self.server_event(game::stream(&frame.game_id), game::GAME_FRAME, data);
             self.store.append(vec![event], &[]).await?;
         }
         Ok(FrameOutcome::Sent { recorded })
     }
 
-    pub fn frames(&self) -> tokio::sync::broadcast::Receiver<Arc<Frame>> {
+    pub fn frames(&self) -> tokio::sync::broadcast::Receiver<Arc<LiveFrame>> {
         self.frames.subscribe()
+    }
+
+    /// Each live game's packed frames since its last keyframe (all games,
+    /// or those in `games`): what a packed reader that joins or fell
+    /// behind is sent first.
+    pub fn frames_since_keyframe(&self, games: &[String]) -> Vec<Arc<LiveFrame>> {
+        let all = self.ingest.games.lock().unwrap();
+        all.iter()
+            .filter(|(id, _)| games.is_empty() || games.contains(id))
+            .flat_map(|(_, clock)| clock.since_key.iter().cloned())
+            .collect()
     }
 
     /// `GET /v1/games`: newest first; the cursor is a start position.
@@ -392,8 +514,26 @@ impl Live {
     }
 
     /// `GET /v1/games/{id}/frames`: recorded frames with `from_tick <= tick
-    /// <= to_tick`, oldest first; the cursor is a log position.
+    /// <= to_tick` as JSON (each the frame plus `source`, however it was
+    /// stored), oldest first; the cursor is a log position.
     pub async fn recorded_frames(
+        &self,
+        id: &str,
+        from_tick: Option<u64>,
+        to_tick: Option<u64>,
+        after: u64,
+        limit: usize,
+    ) -> Result<Page<Value>, ApiError> {
+        let mut page = self
+            .recorded_frame_data(id, from_tick, to_tick, after, limit)
+            .await?;
+        page.items = page.items.iter().map(recorded_json).collect();
+        Ok(page)
+    }
+
+    /// [`Live::recorded_frames`] as stored: each `GameFrame`'s data, packed
+    /// (`{tick, source, packed}`) or, for older games, the JSON frame.
+    pub async fn recorded_frame_data(
         &self,
         id: &str,
         from_tick: Option<u64>,
@@ -610,7 +750,7 @@ mod tests {
     #[test]
     fn recorded_frames_sum_the_shots_of_their_second() {
         let start = Instant::now();
-        let mut clock = FrameClock::new(start);
+        let mut clock = FrameClock::new(start, 0);
         let at = |ms: u64| start + Duration::from_millis(ms);
 
         // Second 10: sent at 0, 100, 200 ms (one throttled at 120 ms).
@@ -658,7 +798,7 @@ mod tests {
     fn recorded_frames_carry_the_seconds_actions_hits_and_every_machine() {
         use live_proto::game::FrameHit;
         let start = Instant::now();
-        let mut clock = FrameClock::new(start);
+        let mut clock = FrameClock::new(start, 0);
         let at = |ms: u64| start + Duration::from_millis(ms);
         let hit = |amount| FrameHit {
             amount: Some(amount),
@@ -701,5 +841,82 @@ mod tests {
             .map(|m| (m.id.as_str(), m.position))
             .collect();
         assert_eq!(machines, [("a", Some(0.5)), ("b", Some(0.0))]);
+    }
+
+    fn author() -> Author {
+        Author::parse("acct:0009a1b2c3d4e5f6@live.test").unwrap()
+    }
+
+    #[test]
+    fn old_json_recordings_stay_readable() {
+        let mut frame = live_proto::samples::campaign(1).remove(0);
+        game::normalize_frame(&mut frame);
+        // A GameFrame as servers before packed frames stored it.
+        let mut old = serde_json::to_value(&frame).unwrap();
+        old["source"] = json!("acct:0009a1b2c3d4e5f6@live.test");
+        assert_eq!(recorded_json(&old), old, "JSON stays as it was");
+        let packed = recorded_packed(&old).expect("old frames pack on the way out");
+        assert_eq!(
+            pack::decode_keyframe(&packed).unwrap(),
+            pack::quantize(&frame).unwrap()
+        );
+
+        // A packed recording: tick and source in the clear, the frame packed.
+        let new = recorded_data(&frame, &author());
+        assert_eq!(new["tick"], frame.tick);
+        assert!(new.get("players").is_none());
+        let back = recorded_json(&new);
+        assert_eq!(back["source"], old["source"]);
+        let decoded: Frame = serde_json::from_value(back).unwrap();
+        assert_eq!(decoded, pack::quantize(&frame).unwrap());
+        assert_eq!(recorded_packed(&new), Some(packed));
+        // Damaged data is passed through, not invented.
+        let broken = json!({"tick": 1, "packed": "***"});
+        assert_eq!(recorded_json(&broken), broken);
+        assert_eq!(recorded_packed(&broken), None);
+    }
+
+    /// What one recorded frame costs at rest: its signed event's JWS, the
+    /// string the store keeps.
+    fn stored_bytes(data: Value) -> usize {
+        let key = live_proto::sign::KeyPair::generate();
+        let body = live_proto::sign::EventBody::new(
+            &key,
+            "server:live.test",
+            "game-c4a1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+            game::GAME_FRAME,
+            data,
+            time::OffsetDateTime::now_utc(),
+        );
+        body.sign(&key).len()
+    }
+
+    #[test]
+    fn recorded_frames_cost_less_at_rest() {
+        for (name, frames) in [
+            ("multiplayer", live_proto::samples::multiplayer(450)),
+            ("campaign", live_proto::samples::campaign(450)),
+        ] {
+            let recorded: Vec<Frame> = frames.into_iter().step_by(15).collect();
+            let json: usize = recorded
+                .iter()
+                .map(|f| {
+                    let mut d = serde_json::to_value(f).unwrap();
+                    d["source"] = json!(author().to_string());
+                    stored_bytes(d)
+                })
+                .sum();
+            let packed: usize = recorded
+                .iter()
+                .map(|f| stored_bytes(recorded_data(f, &author())))
+                .sum();
+            let n = recorded.len();
+            println!(
+                "{name}: stored JWS per recorded frame: JSON {} B, packed {} B",
+                json / n,
+                packed / n
+            );
+            assert!(packed * 4 < json, "{name}: {packed} vs {json}");
+        }
     }
 }

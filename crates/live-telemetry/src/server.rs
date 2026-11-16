@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use live_proto::game::{Frame, GameCreated, NewGame};
+use live_proto::pack;
 use live_proto::sign::{EventBody, KeyPair, issue_token, sign_batch};
 use live_proto::{ClientMessage, Discovery, IngestReply, lxm};
 use time::OffsetDateTime;
@@ -17,6 +18,9 @@ use crate::sink::Sink;
 
 const MAX_INGEST_MESSAGE: usize = 16 * 1024;
 const MAX_BATCH_EVENTS: usize = 4;
+/// A packed keyframe every this many frames (ten seconds at 15 a second);
+/// the frames between are deltas (docs/live-telemetry.md, Packed frames).
+const FRAME_KEYFRAME_EVERY: u64 = 150;
 
 type Socket = WebSocket<MaybeTlsStream<TcpStream>>;
 
@@ -25,6 +29,9 @@ struct Connection {
     discovery: Discovery,
     author: String,
     last_auth: Instant,
+    /// The connection's packed frame stream: a new connection starts a new
+    /// stream with a keyframe.
+    frames: pack::Encoder,
 }
 
 pub struct ServerSink {
@@ -116,6 +123,7 @@ impl ServerSink {
             discovery,
             author,
             last_auth: Instant::now(),
+            frames: pack::Encoder::new(0, FRAME_KEYFRAME_EVERY),
         };
         self.connection = Some(connection);
         self.authenticate()
@@ -136,16 +144,22 @@ impl ServerSink {
             self.authenticate()?;
         }
         let text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
-        if text.len() > MAX_INGEST_MESSAGE {
+        self.send_message(Message::Text(text.into()))
+    }
+
+    /// Sends a text or binary message of at most [`MAX_INGEST_MESSAGE`]
+    /// bytes and drains replies already waiting.
+    fn send_message(&mut self, message: Message) -> Result<(), String> {
+        if message.len() > MAX_INGEST_MESSAGE {
             return Err(format!(
                 "telemetry ingest message is {} bytes (limit {MAX_INGEST_MESSAGE})",
-                text.len()
+                message.len()
             ));
         }
         let connection = self.connection.as_mut().unwrap();
         connection
             .socket
-            .send(Message::Text(text.into()))
+            .send(message)
             .map_err(|e| format!("telemetry ingest send: {e}"))?;
         // Replies are optional for frames. Drain what is already available,
         // but never wait for an acknowledgement on the guest's behalf.
@@ -249,9 +263,15 @@ impl Sink for ServerSink {
             .cloned()
             .ok_or_else(|| format!("no server game for {}", frame.game_id))?;
         frame.game_id = server_id;
-        self.send(ClientMessage::Frame {
-            frame: Box::new(frame),
-        })
+        if self
+            .connection
+            .as_ref()
+            .is_some_and(|c| c.last_auth.elapsed() >= Duration::from_secs(45))
+        {
+            self.authenticate()?;
+        }
+        let message = frame_message(&mut self.connection.as_mut().unwrap().frames, frame)?;
+        self.send_message(message)
     }
 
     fn flush(&mut self) -> Result<(), String> {
@@ -263,6 +283,26 @@ impl Drop for ServerSink {
     fn drop(&mut self) {
         if let Some(connection) = &mut self.connection {
             let _ = connection.socket.close(None);
+        }
+    }
+}
+
+/// A frame as an ingest message: one packed record in a binary message, or
+/// (a frame the format cannot carry, which leaves the stream as it was)
+/// the JSON `Frame` message; the server takes both.
+fn frame_message(frames: &mut pack::Encoder, frame: Frame) -> Result<Message, String> {
+    match frames.encode(&frame) {
+        Ok((record, _)) => {
+            let mut bytes = Vec::with_capacity(record.len() + 3);
+            pack::push_record(&mut bytes, &record);
+            Ok(Message::Binary(bytes.into()))
+        }
+        Err(_) => {
+            let message = ClientMessage::Frame {
+                frame: Box::new(frame),
+            };
+            let text = serde_json::to_string(&message).map_err(|e| e.to_string())?;
+            Ok(Message::Text(text.into()))
         }
     }
 }
@@ -475,6 +515,40 @@ mod tests {
             bodies
                 .iter()
                 .all(|b| b.stream == "game-server-game" && b.author == author)
+        );
+    }
+
+    #[test]
+    fn frames_go_as_packed_records_the_server_decodes() {
+        let mut frames = pack::Encoder::new(0, FRAME_KEYFRAME_EVERY);
+        let mut decoder = pack::Decoder::new();
+        let sample = live_proto::samples::multiplayer(4);
+        for (n, frame) in sample.iter().enumerate() {
+            let Message::Binary(bytes) = frame_message(&mut frames, frame.clone()).unwrap() else {
+                panic!("frame {n} not packed");
+            };
+            assert!(bytes.len() < MAX_INGEST_MESSAGE);
+            let records: Vec<_> = pack::records(&bytes).collect::<Result<_, _>>().unwrap();
+            assert_eq!(records.len(), 1);
+            let decoded = decoder.decode(records[0]).unwrap();
+            assert_eq!(decoded.keyframe, n == 0);
+            assert_eq!(decoded.frame, pack::quantize(frame).unwrap());
+        }
+        // A frame the format cannot carry goes as JSON, and the stream
+        // carries on.
+        let mut odd = sample[0].clone();
+        odd.players[0].pos[0] = f64::NAN;
+        assert!(matches!(
+            frame_message(&mut frames, odd).unwrap(),
+            Message::Text(_)
+        ));
+        let Message::Binary(bytes) = frame_message(&mut frames, sample[3].clone()).unwrap() else {
+            panic!("not packed");
+        };
+        let record = pack::records(&bytes).next().unwrap().unwrap();
+        assert_eq!(
+            decoder.decode(record).unwrap().frame,
+            pack::quantize(&sample[3]).unwrap()
         );
     }
 
