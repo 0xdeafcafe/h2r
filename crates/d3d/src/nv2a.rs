@@ -843,6 +843,12 @@ impl ShaderProvider for Nv2aShaders {
             border,
             bound,
         } = program_key(&self.table, ctx.caps, draw, present, renderer.vertex_fetch())?;
+        // Text from the glyph cache, magnified: the glyph filter
+        // (`crate::glyph`). Never at 1x, so the reference is untouched.
+        let mut key = key;
+        if self.render_scale > 1 {
+            key.pixel_options.glyph = draw.glyph_cache & 0xF;
+        }
         if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
             self.stats.zero_final_draws += 1;
         }
@@ -1210,6 +1216,8 @@ fn program_key(
             w_buffer: w_clipped(&vertex, draw)
                 && draw.target.depth_format.is_some()
                 && uses_depth(render),
+            // Depends on the target's scale: set by `Nv2aShaders::prepare`.
+            glyph: 0,
         };
         let key = ProgramKey {
             vertex,

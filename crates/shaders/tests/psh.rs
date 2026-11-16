@@ -1433,3 +1433,88 @@ fn loading_screen_sweep_adds_blue_to_a_grey_texel() {
         "combiners 2 mux=lsb c0=per-stage c1=per-stage\ntex t0 project2d\n  stage0.rgb: t0.rgb = (t0.rgb * 1) + (c1.rgb * c0.a)\n  stage0.a  : (no writes)\n  stage1.rgb: r0.rgb = t0.rgb * c0.rgb\n  stage1.rgb: r1.rgb = t0.a * c0.a\n  stage1.a  : (no writes)\nfinal: rgb = prod.rgb*c0.a + (1-prod.rgb)*0 + 0; a = r1.a; E=r0.rgb F=r1.rgb\n"
     );
 }
+
+/// The glyph filter (`PixelOptions::glyph`) replaces a 2D projective fetch
+/// on its stages only; with no stage marked, or under `explicit_lod`, the
+/// program is the one without the option, byte for byte. The module
+/// validates and lowers to MSL.
+#[test]
+fn glyph_filter_changes_only_its_stages() {
+    let d = def(
+        &[(
+            inputs(REG_T0, REG_T1, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+            inputs(REG_T0 | CHAN_ALPHA, REG_T1 | CHAN_ALPHA, 0, 0),
+            outputs(REG_R0, 0, 0, 0),
+        )],
+        [TEX_PROJECT2D, TEX_PROJECT2D, 0, 0],
+    );
+    let off = psh::translate(&d, &PixelOptions::default());
+    let none = psh::translate(
+        &d,
+        &PixelOptions {
+            glyph: 0,
+            ..Default::default()
+        },
+    );
+    assert_eq!(off.body, none.body);
+    assert!(!off.body.contains("xps_glyph"));
+    let lod = PixelOptions {
+        glyph: 1,
+        explicit_lod: true,
+        ..Default::default()
+    };
+    let lod_off = PixelOptions {
+        explicit_lod: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        psh::translate(&d, &lod).body,
+        psh::translate(&d, &lod_off).body
+    );
+
+    let on = psh::translate(
+        &d,
+        &PixelOptions {
+            glyph: 1,
+            ..Default::default()
+        },
+    );
+    assert!(on.warnings.is_empty(), "{:?}", on.warnings);
+    assert!(on.body.contains("t0 = xps_glyph(xps_tex0, guest, uv, k);"));
+    assert!(
+        !on.body.contains("xps_glyph(xps_tex1"),
+        "stage 1 is not a glyph stage"
+    );
+    assert!(on.body.contains("t1 = textureSampleBias(xps_tex1"));
+    common::check(&on.module());
+
+    // A COLORSIGN or shader-bordered stage keeps the guest's fetch.
+    let signed = PixelOptions {
+        glyph: 1,
+        color_sign: [SIGN_A, 0, 0, 0],
+        ..Default::default()
+    };
+    assert!(
+        !psh::translate(&d, &signed)
+            .body
+            .contains("xps_glyph(xps_tex0")
+    );
+    let bordered = PixelOptions {
+        glyph: 1,
+        border: [3, 0, 0, 0],
+        ..Default::default()
+    };
+    assert!(
+        !psh::translate(&d, &bordered)
+            .body
+            .contains("xps_glyph(xps_tex0")
+    );
+
+    // Options without the field (older pipeline-cache records) read as 0,
+    // and 0 is not written, so existing records keep their hash.
+    let json = serde_json::to_string(&PixelOptions::default()).unwrap();
+    assert!(!json.contains("glyph"));
+    let back: PixelOptions = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.glyph, 0);
+}

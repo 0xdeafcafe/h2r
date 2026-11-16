@@ -773,6 +773,9 @@ pub struct Device<B: Backend> {
     /// ([`Device::set_visibility_poll`]; `H2_D3D_VISIBILITY_POLL=0` turns
     /// it off).
     visibility_poll: bool,
+    /// Draws note which stages sample the game's glyph cache
+    /// ([`Device::set_glyph_smoothing`]; `H2_SMOOTH_TEXT=0` turns it off).
+    glyph_smoothing: bool,
     /// Destroyed resources the original `D3D_DestroyResource` has yet to
     /// free ([`Device::take_pending_destroys`]).
     pending_destroys: Vec<u32>,
@@ -888,6 +891,7 @@ impl<B: Backend> Device<B> {
             undelivered: None,
             visibility: HashMap::new(),
             visibility_poll: std::env::var_os("H2_D3D_VISIBILITY_POLL").is_none_or(|v| v != "0"),
+            glyph_smoothing: crate::glyph::smoothing_from_env(),
             pending_destroys: Vec::new(),
             torn_down: HashSet::new(),
         }
@@ -3626,6 +3630,7 @@ impl<B: Backend> Device<B> {
         }
         let mut keys = [None; 4];
         let mut texture_info = [None; 4];
+        let mut glyph_cache = 0u8;
         let mut snapshots: [Option<B::Texture>; 4] = Default::default();
         let mut aliases: [Option<raster::DepthAliasKey>; 4] = [None; 4];
         let mut depth_levels: [Option<u32>; 4] = [None; 4];
@@ -3687,6 +3692,9 @@ impl<B: Backend> Device<B> {
                 extras[stage].color_sign = k.2;
                 keys[stage] = Some(k);
                 texture_info[stage] = Some(i);
+                if self.glyph_smoothing && crate::glyph::is_glyph_cache(mem, &i) {
+                    glyph_cache |= 1 << stage;
+                }
             }
         }
         let target = self.target_info(mem)?;
@@ -3716,6 +3724,7 @@ impl<B: Backend> Device<B> {
             target,
             textures: bound.map(|t| (t != 0).then_some(t)),
             texture_info,
+            glyph_cache,
         };
         let textures: [Option<&B::Texture>; 4] = std::array::from_fn(|i| {
             snapshots[i]
@@ -3739,6 +3748,14 @@ impl<B: Backend> Device<B> {
             }
         }
         Ok(())
+    }
+
+    /// Whether draws mark the stages that sample the game's glyph cache
+    /// ([`ResolvedDraw::glyph_cache`], `crate::glyph`), so a backend that
+    /// renders above the guest's size redraws text sharp. On by default;
+    /// `H2_SMOOTH_TEXT=0` turns it off. Nothing changes at 1x either way.
+    pub fn set_glyph_smoothing(&mut self, on: bool) {
+        self.glyph_smoothing = on;
     }
 
     /// Info about the host texture cached for `header` (with `palette` for

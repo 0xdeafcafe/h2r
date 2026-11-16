@@ -138,6 +138,30 @@ offsets and alpha blending. Not implemented: markup escapes, tab stops, alignmen
 tokens, icons, and the per-draw scale factor the engine
 multiplies into every metric (`1.0` here). Control units below 0x20 are skipped.
 
+## Glyph cache texture
+
+How the engine draws text, from the disassembly (**E**):
+
+* At init (`0x1eff0`) it makes one bitmap through `0x1358e0`: 256x256,
+  format 9 (A4R4G4B4), flags `0x810` (bit 4 is linear, bit 11 no CPU
+  copy), and stores it at `0x4b62ac`. Its D3D texture (`0x1d000`, kept at
+  bitmap `+0x50`) is therefore a `LIN_A4R4G4B4` texture of one level.
+* A glyph not yet cached (`0x1f5c0`) gets a place by shelf packing
+  (`0x4b62a6`/`0x4b62a8` the pen, rows of up to 256), evicting older
+  entries from a 512-entry ring (`0x4b62b0`). The glyph is decompressed
+  (`0x140960`, the decoder above) into a stack buffer, the texture is
+  locked (`0x1d5e0`, `LockRect` at `0x3fdbc0`), a one-texel border around
+  the slot is cleared to `0x0fff` (white, alpha 0) and the ARGB4444 words
+  are copied in by rows of the lock's pitch.
+* Strings are then drawn as quads sampling that texture.
+
+So every glyph on screen is a 1x bitmap in one texture, and the D3D layer
+can recognise it: `d3d::glyph` checks the texture's shape and that its
+header is the one the bitmap at `0x4b62ac` names. Above 1x the view
+redraws those draws with a filter that rebuilds the edges from the alpha
+([high-resolution.md](high-resolution.md), "Text"). No glyph data is
+stored or shipped; it is all the texture the game fills at run time.
+
 ## Engine addresses
 
 | Address | What |
@@ -155,6 +179,8 @@ multiplies into every metric (`1.0` here). Control units below 0x20 are skipped.
 | `0x00140f50` | step 2: read the 16-byte record (`(index + 0x4040) << 4`) |
 | `0x0013ef40` | glyph advance and word wrap |
 | `0x0013f700` | glyph draw (position from `x_offset`, `y_offset`, kerning) |
+| `0x0001eff0` | glyph cache texture: 256x256 linear A4R4G4B4 bitmap, kept at `0x4b62ac` |
+| `0x0001f5c0` | put a glyph in the cache: pack, decompress, lock, copy |
 
 ## Validation
 

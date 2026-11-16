@@ -32,6 +32,7 @@ pub mod device;
 pub mod dirty;
 pub mod events;
 pub mod gfx_backend;
+pub mod glyph;
 pub mod guest;
 pub mod hw;
 pub mod layout;

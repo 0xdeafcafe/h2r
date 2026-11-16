@@ -410,6 +410,7 @@ impl Gpu {
                 max_z: 1.0,
             },
             textures: [info.map(|i| i.header), None, None, None],
+            glyph_cache: 0,
             clip: None,
             clip_rects: Vec::new(),
             hw: d3d::hw::HwState {
