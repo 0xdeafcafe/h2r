@@ -20,6 +20,16 @@ export interface PlayerModels {
   objects: Record<string, string>;
   /** The animation class of each weapon stem (version 2): which clip set a biped holding it plays. */
   classes: Record<string, string>;
+  /** The table's version: 1 is static models, 2 skinned and animated. */
+  version: number;
+  /** Whether any biped lists animation clips. */
+  animated: boolean;
+  /** Changes with each extraction (the manifest's `source`); see `modelUrl`. */
+  stamp?: string;
+  /** Per weapon stem, what its shots are and how fast they fly, from the
+   *  weapon's projectile on the disc (viewer/projectiles.ts); absent when
+   *  the art has none. */
+  ballistics?: Record<string, { kind?: string; speed?: number; final_speed?: number; rate?: number }>;
 }
 
 export const MODELS_VERSION = 2;
@@ -54,7 +64,19 @@ export function parseModels(raw: unknown): PlayerModels | null {
       if (/^[a-z0-9_]{1,32}$/.test(id) && typeof c === "string" && /^[a-z0-9_]{1,32}$/.test(c)) classes[id] = c;
     }
   }
-  return [bipeds, weapons, vehicles, objects].some((t) => Object.keys(t).length) ? { bipeds, weapons, vehicles, objects, classes } : null;
+  const ballistics: NonNullable<PlayerModels["ballistics"]> = {};
+  if (r.weapons && typeof r.weapons === "object") {
+    for (const [id, v] of Object.entries(r.weapons as Record<string, unknown>)) {
+      const b = (v as { ballistics?: unknown } | null)?.ballistics as Record<string, unknown> | undefined;
+      if (!/^[a-z0-9_]{1,32}$/.test(id) || !b || typeof b !== "object") continue;
+      const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x > 0 ? x : undefined);
+      const kind = typeof b.kind === "string" && /^[a-z]{1,16}$/.test(b.kind) ? b.kind : undefined;
+      ballistics[id] = { kind, speed: num(b.speed), final_speed: num(b.final_speed), rate: num(b.rate) };
+    }
+  }
+  const animated = !!r.bipeds && typeof r.bipeds === "object" &&
+    Object.values(r.bipeds as Record<string, unknown>).some((b) => Array.isArray((b as { clips?: unknown } | null)?.clips) && (b as { clips: unknown[] }).clips.length > 0);
+  return [bipeds, weapons, vehicles, objects].some((t) => Object.keys(t).length) ? { bipeds, weapons, vehicles, objects, classes, version: r.version, animated, ...(Object.keys(ballistics).length ? { ballistics } : {}) } : null;
 }
 
 /** The glb to draw a player with: their species', else the spartan's.
@@ -127,9 +149,19 @@ export function vehicleBasis(forward: Rgb, up: Rgb): { x: Rgb; y: Rgb; z: Rgb } 
   return { x, y, z };
 }
 
-/** A model file's address under the art root. */
-export function modelUrl(root: string, file: string): string {
-  return root + file.split("/").map(encodeURIComponent).join("/");
+/** A model file's address under the art root. `stamp` (the manifest's
+ *  `source`, which changes with every extraction) is added as a query, so a
+ *  browser never shows a model it cached from an older extraction. */
+export function modelUrl(root: string, file: string, stamp?: string | null): string {
+  const url = root + file.split("/").map(encodeURIComponent).join("/");
+  return stamp ? `${url}?v=${encodeURIComponent(stamp.slice(0, 16))}` : url;
+}
+
+/** Whether the server's player models can animate: version 2 tables carry
+ *  clips. Version 1 art (extracted by an older `h2`) is static; the
+ *  viewer says so, since the cure is extracting the art again. */
+export function modelsAnimate(models: PlayerModels | null | undefined): boolean {
+  return !!models && models.version >= 2 && models.animated;
 }
 
 /** A weapon stem as people read it: `battle_rifle` → "battle rifle". */
@@ -137,14 +169,10 @@ export function weaponLabel(weapon: string | null | undefined): string {
   return (weapon ?? "").replace(/_+/g, " ").trim();
 }
 
-/** How much bigger than life to draw a model `height` tall seen from
- *  `distance`: life size while it fills enough of the view, then growing
- *  with the distance so it stays findable, never past the map's marker
- *  scale `limit`. */
-export function modelScale(distance: number, height: number, limit: number): number {
-  const k = (distance * 0.03) / Math.max(height, 1e-3);
-  return Math.min(Math.max(1, limit), Math.max(1, k));
-}
+/** Models are drawn at the game's own size: the glbs are in world units
+ *  (a Spartan about 0.7 tall, a Warthog about 2 long), the same as the
+ *  map, and nothing rescales them, however far away the camera is. */
+export const MODEL_SCALE = 1;
 
 // ---- finding the contract's nodes ----
 

@@ -193,11 +193,11 @@ fn change_colour_weights_come_from_the_map_at_each_vertex() {
         materials: vec![
             Material {
                 name: "armour".into(),
-                texture: None,
+                ..Material::default()
             },
             Material {
                 name: "visor".into(),
-                texture: None,
+                ..Material::default()
             },
         ],
         change_colour: vec![Some(cc_map()), None],
@@ -228,6 +228,7 @@ fn biped_source() -> Source {
                 height: 2,
                 rgba: vec![200; 16],
             }),
+            ..Material::default()
         }],
         change_colour: vec![Some(cc_map())],
         ..Source::default()
@@ -461,6 +462,213 @@ fn grey_without_a_texture_and_no_colour_on_weapons() {
             .iter()
             .any(|n| n["name"] == "muzzle")
     );
+}
+
+/// A flat picture: every pixel `rgba`.
+fn flat(w: u32, h: u32, rgba: [u8; 4]) -> Image {
+    Image {
+        width: w,
+        height: h,
+        rgba: rgba.repeat((w * h) as usize),
+    }
+}
+
+#[test]
+fn bitmap_roles_come_from_their_names() {
+    let role = |n: &str| bitmap_role(n);
+    assert_eq!(
+        role(r"objects\characters\x\bitmaps\x_cc"),
+        BitmapRole::ChangeColour
+    );
+    assert_eq!(
+        role(r"objects\v\bitmaps\plate_change_color"),
+        BitmapRole::ChangeColour
+    );
+    // Spelt the other way round on some armour.
+    assert_eq!(
+        role(r"objects\c\bitmaps\arms_color_change"),
+        BitmapRole::ChangeColour
+    );
+    assert_eq!(
+        role(r"objects\c\bitmaps\arms_self_illum"),
+        BitmapRole::SelfIllum
+    );
+    assert_eq!(
+        role(r"objects\c\bitmaps\torso_illumination"),
+        BitmapRole::SelfIllum
+    );
+    assert_eq!(role(r"objects\c\bitmaps\torso"), BitmapRole::Diffuse);
+    assert_eq!(role(r"objects\c\bitmaps\torso_bump"), BitmapRole::Other);
+    assert_eq!(
+        role(r"objects\bitmaps\detail_maps\metal"),
+        BitmapRole::Other
+    );
+    assert_eq!(
+        role(r"objects\bitmaps\reflection_maps\armor"),
+        BitmapRole::Other
+    );
+    // Engine defaults are never the surface, whatever they are called.
+    assert_eq!(
+        role(r"shaders\default_bitmaps\bitmaps\default_additive"),
+        BitmapRole::Other
+    );
+    assert_eq!(
+        role(r"shaders\default_bitmaps\bitmaps\color_white"),
+        BitmapRole::Other
+    );
+}
+
+#[test]
+fn a_bump_env_change_colour_shader_gets_its_maps_and_shine() {
+    // Base alpha is the specular mask: full on the left column, empty on the right.
+    let mut base = flat(2, 2, [200, 100, 50, 255]);
+    base.rgba[4..8].copy_from_slice(&[200, 100, 50, 0]);
+    base.rgba[12..16].copy_from_slice(&[200, 100, 50, 0]);
+    let cc = flat(2, 2, [255, 0, 0, 0]);
+    let glow = flat(2, 2, [0, 80, 255, 255]);
+    let (m, vertex_cc) = material_look(
+        "armour",
+        r"shaders\shader_templates\opaque\tex_bump_env_illum_two_change_color",
+        vec![
+            (
+                r"o\bitmaps\armour_bump".into(),
+                Some(flat(2, 2, [1, 2, 3, 4])),
+            ),
+            (r"o\bitmaps\armour".into(), Some(base)),
+            (r"o\bitmaps\armour_color_change".into(), Some(cc.clone())),
+            (r"o\bitmaps\armour_self_illum".into(), Some(glow.clone())),
+            (r"objects\bitmaps\reflection_maps\shell".into(), None),
+        ],
+    );
+    assert_eq!(m.template, "tex_bump_env_illum_two_change_color");
+    assert_eq!(m.blend, Blend::Opaque);
+    assert_eq!(vertex_cc.as_ref(), Some(&cc));
+    assert_eq!(m.change_colour.as_ref(), Some(&cc));
+    assert_eq!(m.emissive.as_ref(), Some(&glow));
+    // The base map goes opaque; its alpha became the specular texture.
+    let t = m.texture.as_ref().unwrap();
+    assert!(t.rgba.chunks(4).all(|p| p[3] == 255));
+    assert_eq!(&t.rgba[..3], &[200, 100, 50]);
+    let s = m.specular.as_ref().unwrap();
+    // Masked: smooth and metallic (an env shader's 0.6). Unmasked: matte, not metal.
+    assert_eq!(&s.rgba[0..3], &[255, 77, 153]);
+    assert_eq!(&s.rgba[4..7], &[255, 217, 0]);
+}
+
+#[test]
+fn transparent_alpha_tested_and_lit_looks() {
+    let base = || Some(flat(2, 2, [10, 20, 30, 128]));
+    let look = |t: &str| {
+        material_look(
+            "m",
+            &format!(r"shaders\shader_templates\{t}"),
+            vec![(r"o\bitmaps\skin".into(), base())],
+        )
+        .0
+    };
+    // Glass: no picture, blended.
+    let glass = look(r"transparent\two_alpha_env_multichannel");
+    assert_eq!((glass.blend, glass.texture.is_none()), (Blend::Alpha, true));
+    assert!(glass.specular.is_none());
+    // Additive: only the glow is left.
+    let light = look(r"transparent\two_add_env_illum");
+    assert_eq!(light.blend, Blend::Additive);
+    assert!(light.texture.is_none());
+    assert_eq!(light.emissive, base());
+    // Cut-outs keep their alpha.
+    let torn = look(r"opaque\tex_bump_env_alpha_test");
+    assert_eq!(torn.blend, Blend::Mask);
+    assert_eq!(torn.texture.as_ref().unwrap().rgba[3], 128);
+    assert!(
+        torn.specular.is_none(),
+        "a cut-out's alpha is its shape, not shine"
+    );
+    // A decal overlay blends with its alpha.
+    assert_eq!(look(r"opaque\overlay").blend, Blend::Alpha);
+    // A lit display glows with its own picture.
+    assert_eq!(
+        look(r"opaque\tex_bump_meter_illum")
+            .emissive
+            .map(|e| e.rgba[0]),
+        Some(10)
+    );
+    // A plain bump shader: opaque, no shine, no glow.
+    let plain = look(r"opaque\tex_bump");
+    assert_eq!(plain.blend, Blend::Opaque);
+    assert!(plain.specular.is_none() && plain.emissive.is_none() && plain.change_colour.is_none());
+}
+
+#[test]
+fn the_glb_carries_each_look() {
+    let mut src = biped_source();
+    let (armour, _) = material_look(
+        "armour",
+        r"shaders\shader_templates\opaque\tex_bump_env_illum_four_change_color",
+        vec![
+            (
+                r"o\bitmaps\armour".into(),
+                Some(flat(2, 2, [200, 200, 200, 255])),
+            ),
+            (
+                r"o\bitmaps\armour_cc".into(),
+                Some(flat(2, 2, [255, 0, 0, 255])),
+            ),
+            (
+                r"o\bitmaps\armour_illum".into(),
+                Some(flat(2, 2, [0, 0, 255, 255])),
+            ),
+        ],
+    );
+    let (light, _) = material_look(
+        "light",
+        r"shaders\shader_templates\transparent\one_add_illum",
+        vec![(
+            r"o\bitmaps\armour".into(),
+            Some(flat(2, 2, [200, 200, 200, 255])),
+        )],
+    );
+    let (glass, _) = material_look(
+        "glass",
+        r"shaders\shader_templates\transparent\two_alpha_env",
+        vec![],
+    );
+    src.materials = vec![armour, light, glass];
+    src.pieces = vec![quad_piece(0, -0.5), quad_piece(1, 0.0), quad_piece(2, 0.5)];
+    src.change_colour = vec![None, None, None];
+    let glb = write_glb(&weapon(&src).unwrap());
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    let m = &doc["materials"];
+    let tex = |v: &Value| v["index"].as_u64().unwrap();
+    let base = tex(&m[0]["pbrMetallicRoughness"]["baseColorTexture"]);
+    let spec = tex(&m[0]["pbrMetallicRoughness"]["metallicRoughnessTexture"]);
+    let glow = tex(&m[0]["emissiveTexture"]);
+    let cc = m[0]["extras"]["h2"]["change_colour"].as_u64().unwrap();
+    assert_eq!(
+        m[0]["extras"]["h2"]["template"],
+        "tex_bump_env_illum_four_change_color"
+    );
+    assert_eq!(m[0]["emissiveFactor"], json!([1.0, 1.0, 1.0]));
+    assert!(m[0].get("alphaMode").is_none());
+    let mut all = vec![base, spec, glow, cc];
+    all.sort();
+    all.dedup();
+    assert_eq!(all.len(), 4, "four different pictures");
+    // The additive light: its base map became its glow, stored once, shared.
+    assert_eq!(m[1]["alphaMode"], "BLEND");
+    assert_eq!(m[1]["extras"]["h2"]["blend"], "add");
+    assert_eq!(
+        tex(&m[1]["emissiveTexture"]),
+        base,
+        "same picture, one image"
+    );
+    assert_eq!(doc["images"].as_array().unwrap().len(), 4);
+    // Glass: a see-through factor and no picture.
+    assert_eq!(
+        m[2]["pbrMetallicRoughness"]["baseColorFactor"],
+        json!(GLASS)
+    );
+    assert_eq!(m[2]["alphaMode"], "BLEND");
 }
 
 #[test]
@@ -1491,6 +1699,88 @@ fn models_from_the_disc() {
         assert!(entry.bipeds.contains_key(b), "{b}");
     }
 
+    // True scale: the glbs are in world units (1 = 10 ft), unscaled. A
+    // Spartan stands about 0.7 (7 ft), an elite taller, a Warthog is about
+    // two units long.
+    let extras =
+        |glb: &str| parse_glb(&fs::read(out.join(glb)).unwrap()).0["asset"]["extras"].clone();
+    let spartan_h = extras(&entry.bipeds["spartan"].glb)["height"]
+        .as_f64()
+        .unwrap();
+    let elite_h = extras(&entry.bipeds["elite"].glb)["height"]
+        .as_f64()
+        .unwrap();
+    let hog = read_drawn(&fs::read(out.join(&entry.vehicles["warthog"].glb)).unwrap());
+    let (lo, hi) = hog.tris.iter().flatten().fold(
+        ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]),
+        |(lo, hi), (p, ..)| {
+            (
+                std::array::from_fn(|k| lo[k].min(p[k])),
+                std::array::from_fn(|k| hi[k].max(p[k])),
+            )
+        },
+    );
+    let hog_len = hi[0] - lo[0];
+    println!("scale: spartan {spartan_h:.3}, elite {elite_h:.3}, warthog {hog_len:.3} long");
+    assert!((0.6..0.8).contains(&spartan_h), "spartan {spartan_h}");
+    assert!(elite_h > spartan_h, "elite {elite_h}");
+    assert!((1.5..3.0).contains(&hog_len), "warthog {hog_len}");
+
+    // Looks: the armour's change colour per pixel, glows, glass, team plates.
+    let materials = |glb: &str| {
+        parse_glb(&fs::read(out.join(glb)).unwrap()).0["materials"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let has = |glb: &str, f: &dyn Fn(&Value) -> bool| materials(glb).iter().any(f);
+    let cc = |m: &Value| m["extras"]["h2"]["change_colour"].is_u64();
+    assert!(
+        has(&entry.bipeds["spartan"].glb, &cc),
+        "spartan change colour"
+    );
+    assert!(has(&entry.bipeds["elite"].glb, &cc), "elite change colour");
+    assert!(
+        has(&entry.bipeds["elite"].glb, &|m| m
+            .get("emissiveTexture")
+            .is_some()),
+        "elite glow"
+    );
+    assert!(
+        has(&entry.vehicles["banshee"].glb, &cc),
+        "banshee change colour"
+    );
+    assert!(
+        has(&entry.vehicles["warthog"].glb, &|m| m["alphaMode"]
+            == "BLEND"),
+        "warthog glass"
+    );
+    assert!(
+        has(&entry.bipeds["spartan"].glb, &|m| m["pbrMetallicRoughness"]
+            .get("metallicRoughnessTexture")
+            .is_some()),
+        "spartan shine"
+    );
+    // The elite keeps its sword clips.
+    assert!(
+        entry.bipeds["elite"]
+            .clips
+            .iter()
+            .any(|c| c == "sword:melee"),
+        "elite sword"
+    );
+    // Shots by weapon, from the projectile tags.
+    let shot = |w: &str| {
+        entry.weapons[w]
+            .ballistics
+            .clone()
+            .unwrap_or_else(|| panic!("{w} ballistics"))
+    };
+    assert_eq!(shot("battle_rifle").kind, "bullet");
+    assert_eq!(shot("plasma_rifle").kind, "plasma");
+    assert_eq!(shot("rocket_launcher").kind, "rocket");
+    assert!(shot("plasma_rifle").speed.unwrap() < shot("battle_rifle").speed.unwrap());
+
     // The rest pose agrees with the inverse rest frames the render model
     // stores (node +0x2c: three axes and a position): the quaternion
     // convention used for the pose is the engine's.
@@ -1867,4 +2157,97 @@ fn a_vertex_without_nodes_follows_its_sections_node() {
     // A section with no per-vertex nodes is bound to its first mapped node.
     assert_eq!(vertex_nodes(&[3], None), [3; 4]);
     assert_eq!(vertex_nodes(&[], None), [0; 4]);
+}
+
+/// Prints every material of the player bipeds and the main vehicles: the
+/// shader, its template, each bitmap parameter (name, format, size, what
+/// role the extractor gives it), and the instance colours and vectors, to
+/// `$RUSH_KEEP/viewer-models-fix/shaders.txt`.
+/// `cargo test --release -p cli --bin h2 shaders_from_the_disc -- --ignored --exact --nocapture`
+#[test]
+#[ignore]
+fn shaders_from_the_disc() {
+    use crate::live_art::Disc;
+    let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
+    });
+    let keep = std::env::var("RUSH_KEEP")
+        .unwrap_or_else(|_| "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc".into());
+    let disc = Disc::scan(Path::new(&disc_path)).unwrap();
+    let mut out = String::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for m in disc
+        .maps_of(map::CacheType::Shared)
+        .chain(disc.maps_of(map::CacheType::Multiplayer))
+    {
+        let (mut map, mut files) = disc.open(m).unwrap();
+        let wanted: Vec<(map::TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| (t.group == BIPD || t.group == VEHI) && t.location.is_some())
+            .filter_map(|t| Some((t.id, t.name.clone()?)))
+            .filter(|(_, n)| seen.insert(n.clone()))
+            .collect();
+        for (id, name) in wanted {
+            let Ok((mode, _)) = object_model(&mut map, id) else {
+                continue;
+            };
+            let Ok(geo) = RenderModelGeometry::read(&mut map, mode, &mut Res(&mut files)) else {
+                continue;
+            };
+            out += &format!("== {name}\n");
+            for mat in &geo.materials {
+                let shader = mat.shader.id;
+                let sname = map
+                    .tag(shader)
+                    .ok()
+                    .and_then(|t| t.name.clone())
+                    .unwrap_or_default();
+                let (template, bitmaps) = shader_bitmaps(&mut map, shader).unwrap_or_default();
+                out += &format!("  shader {sname}\n    template {template}\n");
+                let tag = map.tag(shader).unwrap().clone();
+                let bytes = map.read_tag_bytes(shader).unwrap();
+                let view = TagView::new(&bytes, tag.location.unwrap().address);
+                let Ok(post) = view.block(&bytes[..0x54.min(bytes.len())], 0x20, 0x7c) else {
+                    out += "    (no postprocess)\n";
+                    continue;
+                };
+                let post = &post[0];
+                for (k, id) in bitmaps.iter().enumerate() {
+                    let bname = map
+                        .tag(*id)
+                        .ok()
+                        .and_then(|t| t.name.clone())
+                        .unwrap_or("-".into());
+                    let fmt = match DecodedTag::read(&mut map, *id).map(|d| d.data) {
+                        Ok(TagData::Bitmap(b)) => b
+                            .images
+                            .first()
+                            .map(|i| {
+                                format!(
+                                    "{:?} {:?} {:?} mips {}",
+                                    i.format, i.kind, i.dimensions, i.mip_count
+                                )
+                            })
+                            .unwrap_or_default(),
+                        _ => "-".into(),
+                    };
+                    out += &format!(
+                        "    bitmap {k}: {bname} [{fmt}] role {:?}\n",
+                        bitmap_role(&bname)
+                    );
+                }
+                for c in view.block(post, 0xc, 4).unwrap_or_default() {
+                    out += &format!("    colour {:08x}\n", u32_at(c, 0).unwrap());
+                }
+                for v in view.block(post, 0x14, 0x10).unwrap_or_default() {
+                    out += &format!("    vector {:?}\n", f32s::<4>(v, 0).unwrap());
+                }
+            }
+        }
+    }
+    let dir = Path::new(&keep).join("viewer-models-fix");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("shaders.txt"), &out).unwrap();
+    println!("{} lines", out.lines().count());
 }

@@ -110,17 +110,64 @@ export class BipedAnim {
 }
 
 /** Speed for a sender that doesn't give one: from how far the eased
- *  position moved, itself eased so one long frame doesn't read as a sprint. */
+ *  position moved, itself eased so one long frame doesn't read as a sprint.
+ *  It keeps the eased velocity too, for which way the legs go. */
 export class SpeedMeter {
   private x = NaN; private y = NaN;
   speed = 0;
+  vx = 0; vy = 0;
   update(x: number, y: number, dtMs: number): number {
     if (Number.isFinite(this.x) && dtMs > 0) {
-      const v = Math.hypot(x - this.x, y - this.y) / (dtMs / 1000);
+      const s = dtMs / 1000, k = Math.min(1, dtMs / 150);
+      const vx = (x - this.x) / s, vy = (y - this.y) / s;
       // A jump of more than a sprint is a respawn or a seek, not running.
-      this.speed = v > 12 ? 0 : this.speed + (v - this.speed) * Math.min(1, dtMs / 150);
+      if (Math.hypot(vx, vy) > 12) this.vx = this.vy = 0;
+      else { this.vx += (vx - this.vx) * k; this.vy += (vy - this.vy) * k; }
+      this.speed = Math.hypot(this.vx, this.vy);
     }
     this.x = x; this.y = y;
     return this.speed;
   }
+  /** The heading of the movement (game yaw), or null when barely moving. */
+  get heading(): number | null {
+    return Math.hypot(this.vx, this.vy) >= WALK_SPEED ? Math.atan2(this.vy, this.vx) : null;
+  }
 }
+
+// ---- aiming ----
+
+/** An angle brought into -pi..pi. */
+export function wrapAngle(a: number): number {
+  return a - 2 * Math.PI * Math.round(a / (2 * Math.PI));
+}
+
+/** The yaw (game, from +x towards +y) and pitch (up positive) of an aim vector. */
+export function aimAngles(aim: readonly [number, number, number]): { yaw: number; pitch: number } {
+  const flat = Math.hypot(aim[0], aim[1]);
+  return { yaw: Math.atan2(aim[1], aim[0]), pitch: Math.atan2(aim[2], flat) };
+}
+
+/** How far the legs may turn from where the body aims (radians). */
+export const MAX_TWIST = 1.0;
+/** Pitch past this is held (radians): the spine bends only so far. */
+export const MAX_PITCH = 1.2;
+
+/** How far the legs turn from the aim to follow the movement: towards its
+ *  heading, or away from it when backing up or strafing back (so the legs
+ *  never face more than a right angle off the aim), at most MAX_TWIST.
+ *  Standing still they face the aim. */
+export function legTwist(aimYaw: number, moveYaw: number | null): number {
+  if (moveYaw === null) return 0;
+  let d = wrapAngle(moveYaw - aimYaw);
+  if (Math.abs(d) > Math.PI / 2) d = wrapAngle(d + Math.PI);
+  return Math.max(-MAX_TWIST, Math.min(MAX_TWIST, d));
+}
+
+/** Which bones carry the aim, and each one's share of the pitch and of the
+ *  twist back from the legs: the two spine bones, so the arms (and the gun
+ *  in them) and the head above all point along it. A rig with only one of
+ *  them gives it the whole turn. */
+export const AIM_SHARES: ReadonlyArray<[RegExp, number, number]> = [
+  [/^(joint_)?spine$/i, 0.5, 0.5],
+  [/^(joint_)?spine1$/i, 0.5, 0.5],
+];
