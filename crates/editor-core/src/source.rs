@@ -1,7 +1,8 @@
 //! Where maps come from: the user's own disc image (an XISO, as
 //! `crates/viewer/src/disc.rs` reads it; the logic is copied here so the
-//! editor does not depend on the viewer binary crate) or a loose `.map`
-//! file. Read-only; nothing is copied anywhere.
+//! editor does not depend on the viewer binary crate), a loose `.map`
+//! file, or a folder of `.map` files (an extracted `maps` directory).
+//! Read-only; nothing is copied anywhere.
 
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -69,17 +70,25 @@ impl Disc {
     }
 }
 
-/// The opened map source: a disc image, or one loose `.map` (its siblings
-/// in the same directory serve as the shared caches).
+/// The opened map source: a disc image, one loose `.map` (its siblings
+/// in the same directory serve as the shared caches), or a folder of maps.
 pub enum MapSource {
     Disc(Disc),
     Loose(PathBuf),
+    /// Every `*.map` directly in this directory.
+    Folder(PathBuf),
 }
 
 impl MapSource {
-    /// Opens `path`: a `.map` file as a loose map, anything else as a disc
-    /// image.
+    /// Opens `path`: a directory as a folder of maps, a `.map` file as a
+    /// loose map, anything else as a disc image.
     pub fn open(path: &Path) -> Result<Self> {
+        if path.is_dir() {
+            if folder_maps(path).is_empty() {
+                bail!("no .map files in {}", path.display());
+            }
+            return Ok(MapSource::Folder(path.to_owned()));
+        }
         let is_map = path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("map"));
@@ -98,14 +107,16 @@ impl MapSource {
     pub fn path(&self) -> &Path {
         match self {
             MapSource::Disc(d) => d.path(),
-            MapSource::Loose(p) => p,
+            MapSource::Loose(p) | MapSource::Folder(p) => p,
         }
     }
 
-    /// What the sidebar lists: every map on a disc, or the loose map's stem.
+    /// What the sidebar lists: every map on a disc or in the folder (sorted),
+    /// or the loose map's stem.
     pub fn map_names(&self) -> Vec<String> {
         match self {
             MapSource::Disc(d) => d.map_names(),
+            MapSource::Folder(dir) => folder_maps(dir),
             MapSource::Loose(p) => p
                 .file_stem()
                 .map(|s| vec![s.to_string_lossy().into_owned()])
@@ -118,7 +129,7 @@ impl MapSource {
     pub fn open_map(&self, name: &str) -> Result<Map<BufReader<File>>> {
         match self {
             MapSource::Disc(d) => d.open_map(name),
-            MapSource::Loose(_) => {
+            MapSource::Loose(_) | MapSource::Folder(_) => {
                 let p = self
                     .loose_file(name)
                     .with_context(|| format!("no {name}.map"))?;
@@ -134,7 +145,7 @@ impl MapSource {
     pub fn location(&self, name: &str) -> Result<(PathBuf, Option<(u64, u64)>)> {
         match self {
             MapSource::Disc(d) => Ok((d.path().to_owned(), Some(d.region(name)?))),
-            MapSource::Loose(_) => Ok((
+            MapSource::Loose(_) | MapSource::Folder(_) => Ok((
                 self.loose_file(name)
                     .with_context(|| format!("no {name}.map"))?,
                 None,
@@ -143,10 +154,17 @@ impl MapSource {
     }
 
     fn loose_file(&self, name: &str) -> Option<PathBuf> {
-        let MapSource::Loose(p) = self else {
-            return None;
-        };
         let want = name.strip_suffix(".map").unwrap_or(name);
+        let p = match self {
+            MapSource::Disc(_) => return None,
+            MapSource::Folder(dir) => {
+                return folder_entries(dir)
+                    .into_iter()
+                    .find(|(n, _)| n.eq_ignore_ascii_case(want))
+                    .map(|(_, p)| p);
+            }
+            MapSource::Loose(p) => p,
+        };
         if p.file_stem()
             .is_some_and(|s| s.to_string_lossy().eq_ignore_ascii_case(want))
         {
@@ -173,7 +191,7 @@ impl MapSource {
                         files.push((file, d.path().to_owned(), base, len));
                     }
                 }
-                MapSource::Loose(_) => {
+                MapSource::Loose(_) | MapSource::Folder(_) => {
                     if let Some(p) = self.loose_file(name) {
                         let len = std::fs::metadata(&p)?.len();
                         files.push((file, p, 0, len));
@@ -228,6 +246,28 @@ pub fn default_disc(explicit: Option<PathBuf>) -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
+/// The stems of the `*.map` files directly in `dir`, sorted
+/// case-insensitively.
+pub fn folder_maps(dir: &Path) -> Vec<String> {
+    folder_entries(dir).into_iter().map(|(n, _)| n).collect()
+}
+
+/// `(stem, path)` of each `*.map` file directly in `dir`, sorted by stem.
+fn folder_entries(dir: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(String, PathBuf)> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("map")))
+        .filter_map(|p| Some((p.file_stem()?.to_str()?.to_owned(), p)))
+        .collect();
+    out.sort_by_key(|(n, _)| n.to_ascii_lowercase());
+    out
+}
+
 /// `/maps/<name>.map` (case-insensitive, no deeper directories) -> `<name>`.
 fn map_name(path: &str) -> Option<&str> {
     let rest = path
@@ -276,6 +316,26 @@ mod tests {
         // Not a cache file: open refuses it up front.
         assert!(MapSource::open(&a).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_folder_lists_its_maps_sorted() {
+        let dir = std::env::temp_dir().join(format!("h2-editor-folder-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        for f in ["b.map", "A.MAP", "notes.txt", "sub/c.map"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        let src = MapSource::open(&dir).unwrap();
+        assert!(matches!(src, MapSource::Folder(_)));
+        assert_eq!(src.map_names(), vec!["A".to_string(), "b".to_string()]);
+        assert_eq!(src.loose_file("a"), Some(dir.join("A.MAP")));
+        assert_eq!(src.location("b").unwrap(), (dir.join("b.map"), None));
+        assert!(src.location("c").is_err(), "only maps directly in the folder");
+        std::fs::remove_dir_all(&dir).unwrap();
+        let empty = std::env::temp_dir().join(format!("h2-editor-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(MapSource::open(&empty).is_err());
+        std::fs::remove_dir_all(&empty).unwrap();
     }
 
     #[test]

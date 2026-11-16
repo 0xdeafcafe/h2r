@@ -441,7 +441,7 @@ fn panel_state_without_a_window() {
     std::fs::create_dir_all(&dir).unwrap();
     let src_path = dir.join("source.map");
     std::fs::write(&src_path, fixture()).unwrap();
-    let mut ed = crate::ScenarioEditor::new();
+    let mut ed = crate::Session::new();
     assert!(!ed.is_dirty());
     ed.open(MapSource::file(&src_path)).unwrap();
     assert!(!ed.is_dirty() && !ed.can_undo());
@@ -479,6 +479,46 @@ fn rotation_matches_the_placement_convention() {
         assert!(geometry::dot(a, b).abs() < 1e-5);
     }
     assert!(close(geometry::cross(f, l), u));
+}
+
+#[test]
+fn decompose_inverts_rotation_and_the_transform_matrix() {
+    for ypr in [
+        [0.0, 0.0, 0.0],
+        [0.3, -0.7, 1.1],
+        [-2.5, 0.4, -0.2],
+        [3.0, 1.2, 2.9],
+    ] {
+        let t = crate::Transform {
+            position: [1.0, -2.0, 3.5],
+            rotation: Some(crate::RotationField::Ypr(ypr)),
+        };
+        let mut m = t.matrix();
+        let (p, back) = geometry::decompose(&m);
+        assert_eq!(p, [1.0, -2.0, 3.5]);
+        for k in 0..3 {
+            assert!((back[k] - ypr[k]).abs() < 1e-4, "{ypr:?} -> {back:?}");
+        }
+        // A gizmo may leave scale in the axes; it is ignored.
+        for v in &mut m[..12] {
+            *v *= 2.0;
+        }
+        let (_, scaled) = geometry::decompose(&m);
+        for k in 0..3 {
+            assert!((scaled[k] - ypr[k]).abs() < 1e-4);
+        }
+    }
+    // Facing-only placements turn about z.
+    let f = crate::Transform {
+        position: [0.0; 3],
+        rotation: Some(crate::RotationField::Facing(0.5)),
+    };
+    assert_eq!(f.ypr(), [0.5, 0.0, 0.0]);
+    // The camera's view and projection make up its view-projection.
+    let cam = Camera::default();
+    let vp = geometry::mul(&cam.proj(1.5), &cam.view());
+    assert_eq!(vp, cam.view_proj(1.5));
+    assert_eq!(geometry::flat(&vp)[4..8], vp[1]);
 }
 
 #[test]
@@ -534,7 +574,6 @@ fn camera_rays_projection_picking_and_planes() {
 /// the machine has no wgpu adapter.
 #[test]
 fn viewport_renders_markers_offscreen() {
-    use egui_wgpu::wgpu;
     let instance = wgpu::Instance::default();
     let Ok(adapter) =
         pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
@@ -986,12 +1025,12 @@ fn panel_delete_and_duplicate() {
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("fixture.map");
     std::fs::write(&path, fixture_at_end()).unwrap();
-    let mut ed = crate::ScenarioEditor::new();
+    let mut ed = crate::Session::new();
     ed.open(MapSource::file(&path)).unwrap();
     // Full blocks refuse to grow until growth is allowed.
     assert_eq!(
         ed.add_refusal(BlockKind::Weapons),
-        Some(crate::panel::GROWTH_REFUSAL)
+        Some(crate::session::GROWTH_REFUSAL)
     );
     assert!(ed.add_entry(BlockKind::Weapons, Some(0)).is_err());
     ed.remove_entry(BlockKind::Weapons, 0).unwrap();
@@ -1105,7 +1144,7 @@ fn disc_add_and_remove_round_trip() {
 
 mod packages {
     use super::*;
-    use crate::ScenarioEditor;
+    use crate::Session as ScenarioEditor;
     use crate::package::{self, PackageForm};
     use content::patch::Format;
     use content::{Library, Manifest, MapId, Sha256};

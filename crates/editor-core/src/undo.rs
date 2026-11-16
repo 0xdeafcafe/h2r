@@ -10,7 +10,9 @@
 //! immutable parts with `Arc` (the hopper tool shares its 1.4 MB image that
 //! way).
 
-/// Undo/redo of a `T` by snapshots.
+/// Undo/redo of a `T` by snapshots. Coalescing keys are plain `u64`s (an
+/// egui `Id::value()`, an ImGui item ID, a hash): any stable per-widget
+/// number works.
 #[derive(Debug, Clone)]
 pub struct UndoStack<T> {
     undo: Vec<T>,
@@ -18,7 +20,7 @@ pub struct UndoStack<T> {
     limit: usize,
     /// The widget the last recorded change came from: further changes from
     /// it extend that step instead of adding one.
-    coalesce: Option<egui::Id>,
+    coalesce: Option<u64>,
 }
 
 impl<T> Default for UndoStack<T> {
@@ -55,7 +57,7 @@ impl<T> UndoStack<T> {
 
     /// Records `before` unless the previous step came from the same `key`
     /// (one widget's run of edits is one step).
-    pub fn record_coalesced(&mut self, before: T, key: egui::Id) {
+    pub fn record_coalesced(&mut self, before: T, key: u64) {
         if self.coalesce == Some(key) && !self.undo.is_empty() {
             self.redo.clear();
             return;
@@ -110,7 +112,7 @@ impl<T: PartialEq> UndoStack<T> {
     /// Records `before` if `after` differs from it: one step per change,
     /// coalesced per `key` when given (pass the focused widget's id for
     /// text fields and drag values). Returns whether anything changed.
-    pub fn track(&mut self, before: T, after: &T, key: Option<egui::Id>) -> bool {
+    pub fn track(&mut self, before: T, after: &T, key: Option<u64>) -> bool {
         if before == *after {
             return false;
         }
@@ -161,8 +163,8 @@ mod tests {
     #[test]
     fn edits_from_one_widget_coalesce() {
         let mut s = UndoStack::default();
-        let field = egui::Id::unique("title");
-        let other = egui::Id::unique("desc");
+        let field = 1;
+        let other = 2;
         let mut v = String::new();
         for c in ["a", "ab", "abc"] {
             let before = v.clone();
@@ -184,7 +186,7 @@ mod tests {
     #[test]
     fn coalescing_ends_after_undo_or_a_break() {
         let mut s = UndoStack::default();
-        let k = egui::Id::unique("k");
+        let k = 7;
         s.track(0, &1, Some(k));
         s.break_coalescing();
         s.track(1, &2, Some(k));

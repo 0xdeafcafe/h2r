@@ -1,13 +1,13 @@
 //! The 3D viewport: the structure BSP and the placement markers, drawn with
-//! wgpu into the panel's own colour and depth textures, which egui then
-//! shows as an image.
+//! wgpu into the viewport's own colour and depth textures, which the UI
+//! (egui or Dear ImGui) then shows as an image.
 //!
-//! Rendering offscreen (instead of inside egui's render pass) keeps the
-//! viewport independent of the shell's surface: egui's pass may have no
-//! depth buffer and any MSAA count, and a pipeline must match both. The
-//! texture is registered with `egui_wgpu::Renderer` as a native texture.
+//! Rendering offscreen (instead of inside the UI's render pass) keeps the
+//! viewport independent of the shell's surface: the UI pass may have no
+//! depth buffer and any MSAA count, and a pipeline must match both. No UI
+//! toolkit is used here; the egui panel registers [`Viewport::color_view`]
+//! with `egui_wgpu`, `h2-studio` with `dear-imgui-wgpu`.
 use crate::geometry::{Camera, Marker, Tri, Vec3, block_color, marker_triangles};
-use egui_wgpu::wgpu;
 use wgpu::util::DeviceExt;
 
 pub const COLOR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -113,7 +113,6 @@ pub struct Viewport {
     world: Option<(wgpu::Buffer, u32)>,
     markers: Option<(wgpu::Buffer, u32)>,
     target: Option<Target>,
-    texture_id: Option<egui::TextureId>,
 }
 
 impl Viewport {
@@ -193,7 +192,6 @@ impl Viewport {
             world: None,
             markers: None,
             target: None,
-            texture_id: None,
         }
     }
 
@@ -253,7 +251,8 @@ impl Viewport {
     }
 
     /// Draw into the offscreen target (resized to `size`). Returns whether
-    /// the target was recreated (its egui registration must be refreshed).
+    /// the target was recreated (its UI texture registration must be
+    /// refreshed with the new [`Self::color_view`]).
     pub fn render(
         &mut self,
         device: &wgpu::Device,
@@ -317,32 +316,13 @@ impl Viewport {
         self.target.as_ref().map(|t| &t.color)
     }
 
-    /// Render and hand the result to egui as a texture.
-    pub fn egui_texture(
-        &mut self,
-        render: &egui_wgpu::RenderState,
-        camera: &Camera,
-        size: [u32; 2],
-    ) -> egui::TextureId {
-        let resized = self.render(&render.device, &render.queue, camera, size);
-        let view = &self.target.as_ref().expect("rendered").color_view;
-        let mut r = render.renderer.write();
-        match self.texture_id {
-            Some(id) if resized => {
-                r.update_egui_texture_from_wgpu_texture(
-                    &render.device,
-                    view,
-                    wgpu::FilterMode::Linear,
-                    id,
-                );
-                id
-            }
-            Some(id) => id,
-            None => {
-                let id = r.register_native_texture(&render.device, view, wgpu::FilterMode::Linear);
-                self.texture_id = Some(id);
-                id
-            }
-        }
+    /// The colour target's view, to register with a UI renderer.
+    pub fn color_view(&self) -> Option<&wgpu::TextureView> {
+        self.target.as_ref().map(|t| &t.color_view)
+    }
+
+    /// The current target size in pixels.
+    pub fn size(&self) -> Option<[u32; 2]> {
+        self.target.as_ref().map(|t| t.size)
     }
 }
