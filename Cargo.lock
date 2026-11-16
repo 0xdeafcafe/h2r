@@ -2313,6 +2313,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "h1convert"
+version = "0.1.0"
+dependencies = [
+ "h1map",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
 name = "h1map"
 version = "0.1.0"
 dependencies = [
