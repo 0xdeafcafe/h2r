@@ -1850,3 +1850,26 @@ fn rewritten_files_have_no_host_bytes() {
     let long = format!("D:\\maps\\{}.map", "a".repeat(43));
     assert_eq!(vfs.host_file(&long).map(|h| h.offset), Some(36 * 2048));
 }
+
+/// Halo 2's first hard-disk write at boot (0x2d193a): U:'s TitleMeta.xbx,
+/// opened as the game opens it, through the lower-case device path the
+/// kernel log shows. A failure here makes the game hand over to the
+/// dashboard (XLaunchNewImageA). Must pass on case-sensitive volumes too
+/// (tvOS): run with TMPDIR on one.
+#[test]
+fn titlemeta_open_if_on_a_fresh_disk() {
+    let temp = TempDir::new();
+    let mut vfs = Vfs::with_storage(Config::new(&temp.0, 0x4D530064)).unwrap();
+    let r = vfs.open(
+        "\\Device\\Harddisk0\\Partition1\\UDATA\\4d530064\\TitleMeta.xbx",
+        OpenOptions {
+            access: Access(Access::WRITE.0 | Access::APPEND.0 | Access::WRITE_ATTRIBUTES.0 | 0x0010_0000),
+            share: ShareAccess::READ,
+            disposition: CreateDisposition::OpenIf,
+            directory: Some(false),
+            attributes: 4,
+            delete_on_close: false,
+        },
+    );
+    assert!(r.is_ok(), "{r:?}");
+}

@@ -24,9 +24,10 @@ use crate::backend::HostBackend;
 use crate::gamepad::Rumble;
 use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 mod apple;
-#[cfg(target_os = "macos")]
+pub mod remote;
+#[cfg(target_vendor = "apple")]
 pub use apple::{AppleSource, service_main_loop};
 
 /// A controller's inputs in GameController terms, already read out as plain
@@ -64,6 +65,9 @@ pub struct RawPad {
     pub name: String,
     pub snapshot: Snapshot,
     pub supports_rumble: bool,
+    /// An Apple TV remote (a micro gamepad): `snapshot` is unused and this
+    /// is read instead ([`remote`]).
+    pub remote: Option<remote::RemoteSnapshot>,
 }
 
 /// A platform's controller list.
@@ -164,17 +168,59 @@ pub fn map_snapshot(s: &Snapshot) -> HostPadState {
 }
 
 /// [`HostBackend`] over a [`ControllerSource`].
+///
+/// An Apple TV remote is merged into the first gamepad, so both drive the
+/// same player at once; with no gamepad it is a pad of its own. The merged
+/// pad takes the remote's name while the remote is pressing something, so
+/// the last-used device (`crate::active`) can tell them apart.
 pub struct GameControllerPads<S: ControllerSource> {
     source: S,
+    navs: std::collections::HashMap<u64, remote::RemoteNav>,
+    epoch: std::time::Instant,
 }
 
 impl<S: ControllerSource> GameControllerPads<S> {
     pub fn with_source(source: S) -> Self {
-        Self { source }
+        Self { source, navs: Default::default(), epoch: std::time::Instant::now() }
+    }
+
+    /// [`HostBackend::poll`] at `now` on the remote clock.
+    fn poll_at(&mut self, now: std::time::Duration) -> Vec<HostPad> {
+        let raw = self.source.poll();
+        self.navs.retain(|k, _| raw.iter().any(|p| p.key == *k && p.remote.is_some()));
+        let mut pads = Vec::new();
+        let mut remotes = Vec::new();
+        for p in raw {
+            let pad = |state| HostPad {
+                id: HostPadId(p.key),
+                name: p.name.clone(),
+                state,
+                physical: true,
+                supports_rumble: p.supports_rumble,
+            };
+            match &p.remote {
+                Some(r) => remotes.push(pad(self.navs.entry(p.key).or_default().update(r, now))),
+                None => pads.push(pad(map_snapshot(&p.snapshot))),
+            }
+        }
+        pads.sort_by_key(|p| p.id); // keys grow with connection order
+        remotes.sort_by_key(|p| p.id);
+        match pads.first_mut() {
+            Some(first) => {
+                for r in &remotes {
+                    remote::merge_remote(&mut first.state, &r.state);
+                    if remote::remote_active(&r.state) {
+                        first.name = r.name.clone();
+                    }
+                }
+            }
+            None => pads = remotes,
+        }
+        pads
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 impl GameControllerPads<AppleSource> {
     /// The system GameController backend. Also asks the framework to keep
     /// delivering input while the app is in the background, which a headless
@@ -184,7 +230,7 @@ impl GameControllerPads<AppleSource> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 impl Default for GameControllerPads<AppleSource> {
     fn default() -> Self {
         Self::new()
@@ -201,20 +247,8 @@ impl<S: ControllerSource> HostBackend for GameControllerPads<S> {
     }
 
     fn poll(&mut self) -> Vec<HostPad> {
-        let mut pads: Vec<HostPad> = self
-            .source
-            .poll()
-            .into_iter()
-            .map(|p| HostPad {
-                id: HostPadId(p.key),
-                name: p.name,
-                state: map_snapshot(&p.snapshot),
-                physical: true,
-                supports_rumble: p.supports_rumble,
-            })
-            .collect();
-        pads.sort_by_key(|p| p.id); // keys grow with connection order
-        pads
+        let now = self.epoch.elapsed();
+        self.poll_at(now)
     }
 
     fn set_rumble(&mut self, id: HostPadId, rumble: Rumble) {
@@ -256,7 +290,60 @@ mod tests {
             name: format!("pad{key}"),
             snapshot,
             supports_rumble: true,
+            remote: None,
         }
+    }
+
+    fn remote(key: u64, r: remote::RemoteSnapshot) -> RawPad {
+        RawPad {
+            key,
+            name: remote::NAME.into(),
+            snapshot: Snapshot::default(),
+            supports_rumble: false,
+            remote: Some(r),
+        }
+    }
+
+    #[test]
+    fn the_remote_merges_into_the_first_gamepad_and_names_it_while_used() {
+        use std::time::Duration;
+        let src = FakeSource::default();
+        src.0.lock().unwrap().pads = vec![
+            raw(2, Snapshot { x: 1.0, ..Default::default() }),
+            remote(5, remote::RemoteSnapshot { select: true, ..Default::default() }),
+            raw(3, Snapshot::default()),
+        ];
+        let mut b = GameControllerPads::with_source(src.clone());
+        let pads = b.poll_at(Duration::from_millis(1));
+        assert_eq!(pads.len(), 2, "the remote is not a pad of its own");
+        assert_eq!(pads[0].id, HostPadId(2));
+        assert_eq!(pads[0].name, "Apple TV Remote", "the remote is in use");
+        assert!(pads[0].state.buttons.contains(HostButton::South), "the remote's click");
+        assert!(pads[0].state.buttons.contains(HostButton::West), "the pad's own X");
+        assert!(!pads[1].state.buttons.contains(HostButton::South), "only the first pad");
+        src.0.lock().unwrap().pads[1].remote = Some(remote::RemoteSnapshot::default());
+        let pads = b.poll_at(Duration::from_millis(2));
+        assert_eq!(pads[0].name, "pad2", "an idle remote leaves the name");
+    }
+
+    #[test]
+    fn a_remote_alone_is_its_own_pad() {
+        use std::time::Duration;
+        let src = FakeSource::default();
+        src.0.lock().unwrap().pads = vec![remote(7, remote::RemoteSnapshot { back: true, ..Default::default() })];
+        let mut b = GameControllerPads::with_source(src.clone());
+        let pads = b.poll_at(Duration::from_millis(1));
+        assert_eq!(pads.len(), 1);
+        assert_eq!(pads[0].id, HostPadId(7));
+        assert!(!pads[0].supports_rumble);
+        let g = pads[0].state.to_gamepad(&ConvertConfig::default(), true);
+        assert_eq!(g.analog(AnalogButton::B), 255, "Back is B");
+        // Through the manager: a pad on port 0 that the menus can read.
+        let mut m = InputManager::new(ConvertConfig::default()).unwrap();
+        m.add_backend(Box::new(GameControllerPads::with_source(src)));
+        m.sync();
+        let h = m.open(PortIndex::new(0).unwrap()).unwrap();
+        assert_eq!(m.get_state(h).unwrap().gamepad.analog(AnalogButton::B), 255);
     }
     fn gp(s: &Snapshot) -> crate::gamepad::Gamepad {
         map_snapshot(s).to_gamepad(&ConvertConfig::default(), true)

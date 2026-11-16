@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use xiso::{Entry, Xiso};
 
-use crate::patch_lvl;
+use content::patch_lvl;
 use crate::safe_out::OutDir;
 
 const HALO2_TITLE: u32 = 0x4D53_0064;
@@ -577,7 +577,7 @@ fn try_auto(game_disc: &Path, data: &Path) -> Result<Option<String>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::patch_lvl::tests::{v3_file, v3_record};
+    use content::patch_lvl::testing::{v3_file, v3_record};
     use std::fs;
     use std::io::Cursor;
 

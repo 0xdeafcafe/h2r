@@ -183,6 +183,9 @@ struct Local {
     /// Like `total`, but only while a guest scope is open and running on
     /// its owner: for [`scope_ns`].
     scoped: [Cell<u64>; PHASES],
+    /// Entries into each phase while a guest scope is open and running on
+    /// its owner: for [`scope_entries`].
+    entries: [Cell<u64>; PHASES],
     counts: [Cell<u64>; COUNTERS],
     /// The guest scope: its phase (`INERT` when none is open), nesting
     /// depth, owning guest thread, the phase it interrupted, and whether
@@ -210,6 +213,7 @@ thread_local! {
             acc: [const { Cell::new(0) }; PHASES],
             total: [const { Cell::new(0) }; PHASES],
             scoped: [const { Cell::new(0) }; PHASES],
+            entries: [const { Cell::new(0) }; PHASES],
             counts: [const { Cell::new(0) }; COUNTERS],
             scope: Cell::new(INERT),
             scope_depth: Cell::new(0),
@@ -258,6 +262,10 @@ fn switch(to: u8) -> u8 {
         start_local(l, now);
         let cur = charge(l, now);
         l.current.set(to);
+        if l.scope_depth.get() != 0 && !l.suspended.get() {
+            let e = &l.entries[to as usize];
+            e.set(e.get() + 1);
+        }
         cur as u8
     })
 }
@@ -384,6 +392,21 @@ pub fn scope_ns(phase: Phase) -> Option<u64> {
     }))
 }
 
+/// How many times this host thread entered `phase` ([`enter`]) inside
+/// guest scopes (open and on their owner's slices) since collection
+/// started. `None` while stats are off. Every D3D entry enters
+/// [`Phase::D3d`], so for that phase it counts D3D calls.
+pub fn scope_entries(phase: Phase) -> Option<u64> {
+    if !enabled() {
+        return None;
+    }
+    let now = crate::now_ns();
+    Some(LOCAL.with(|l| {
+        start_local(l, now);
+        l.entries[phase as usize].get()
+    }))
+}
+
 /// Nanoseconds this host thread has spent in `phase` since collection
 /// started, the running interval included. `None` while stats are off.
 /// For splitting a phase further (the render stages): differences of two
@@ -408,7 +431,13 @@ pub fn thread_ns(phase: Phase) -> Option<u64> {
 fn reset_local(l: &Local) {
     l.started.set(false);
     l.current.set(Phase::Guest as u8);
-    for a in l.acc.iter().chain(&l.total).chain(&l.scoped) {
+    for a in l
+        .acc
+        .iter()
+        .chain(&l.total)
+        .chain(&l.scoped)
+        .chain(&l.entries)
+    {
         a.set(0);
     }
     for c in &l.counts {
@@ -1205,6 +1234,7 @@ mod tests {
             spin(2);
         }
         assert_eq!(scope_ns(Phase::D3d), Some(0));
+        assert_eq!(scope_entries(Phase::D3d), Some(0));
         scope_begin(Phase::Render);
         spin(2);
         {
@@ -1225,6 +1255,7 @@ mod tests {
         assert!((2_000_000..4_000_000).contains(&render), "{render}");
         assert!((3_000_000..5_000_000).contains(&d3d), "{d3d}");
         assert!(thread_ns(Phase::D3d).unwrap() >= 7_000_000);
+        assert_eq!(scope_entries(Phase::D3d), Some(1), "only the scoped entry");
         guest_thread(None);
         assert_eq!(stop(), None);
         assert!(!enabled());

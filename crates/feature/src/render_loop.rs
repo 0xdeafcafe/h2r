@@ -3,7 +3,10 @@
 //! back to `impl.render`; all are off by default.
 //!
 //! Built: `impl.render.views`, the Rust `render_views`
-//! ([`engine::render_loop::Machine`]). The driver runs the port to each
+//! ([`engine::render_loop::Machine`]); `impl.render.layer_draw` and
+//! `impl.render.layer_entries`, the layer draw `0x00044550` and its entry
+//! loop `0x0003bc30` ([`engine::render_loop::layer`], docs/layer-draw.md).
+//! The driver runs the port to each
 //! guest call, makes it with `call_guest` (the callee returns into a
 //! continuation that resumes the port), and returns to the caller when the
 //! port does. The only guest-visible difference from the original is the
@@ -12,7 +15,9 @@
 
 use std::sync::Arc;
 
+use engine::memory::{GuestMemory, MemFault};
 use engine::points;
+use engine::render_loop::layer::{Draw, Entries};
 use engine::render_loop::{Machine, Regs, Step};
 use runtime::guest::{Access, FaultReason};
 use runtime::{CpuAbi, ExecCtx, Guest, GuestFault, TransferAbi};
@@ -32,7 +37,19 @@ impl Feature for RenderLoop {
         if b.switches().implementation("render.views", false) {
             b.raw()
                 .implement(&points::RENDER_VIEWS, "render_views", |cpu, ctx, _| {
-                    views(cpu, ctx)
+                    run(cpu, ctx, Machine::start)
+                });
+        }
+        if b.switches().implementation("render.layer_draw", false) {
+            b.raw()
+                .implement(&points::LAYER_DRAW, "layer_draw", |cpu, ctx, _| {
+                    run(cpu, ctx, Draw::start)
+                });
+        }
+        if b.switches().implementation("render.layer_entries", false) {
+            b.raw()
+                .implement(&points::LAYER_ENTRIES, "layer_entries", |cpu, ctx, _| {
+                    run(cpu, ctx, Entries::start)
                 });
         }
         Ok(())
@@ -74,20 +91,47 @@ fn fault(f: engine::memory::MemFault) -> GuestFault {
     }
 }
 
-/// The `render_views` implementation: entered at the function's first
-/// instruction, as the original would be.
-fn views(cpu: &mut CpuAbi, ctx: &mut ExecCtx) -> Result<TransferAbi, GuestFault> {
+/// A port the driver can resume after each guest call.
+trait Port: Copy + Send + 'static {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault>;
+}
+
+impl Port for Machine {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
+        Machine::resume(self, r, m)
+    }
+}
+impl Port for Draw {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
+        Draw::resume(self, r, m)
+    }
+}
+impl Port for Entries {
+    fn resume(&mut self, r: &mut Regs, m: &mut dyn GuestMemory) -> Result<Step, MemFault> {
+        Entries::resume(self, r, m)
+    }
+}
+
+type Start<P> = fn(&mut Regs, &mut dyn GuestMemory) -> Result<(P, Step), MemFault>;
+
+/// An implementation: entered at the function's first instruction, as the
+/// original would be.
+fn run<P: Port>(
+    cpu: &mut CpuAbi,
+    ctx: &mut ExecCtx,
+    start: Start<P>,
+) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let mut r = regs(cpu);
-    let (m, step) = Machine::start(&mut r, &mut *mem).map_err(fault)?;
+    let (m, step) = start(&mut r, &mut *mem).map_err(fault)?;
     store(cpu, &r);
     follow(m, step, cpu, ctx, &mut mem)
 }
 
 /// Makes the call `step` asks for, or returns.
-fn follow(
-    mut m: Machine,
+fn follow<P: Port>(
+    mut m: P,
     step: Step,
     cpu: &mut CpuAbi,
     ctx: &mut ExecCtx,

@@ -1,0 +1,28 @@
+[package]
+name = "tvos"
+description = "The tvOS app's Rust half: a static library the UIKit host (platform/tvos) calls to boot the game into its CAMetalLayer"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+# The app links the static library; rlib keeps `cargo test -p tvos` working on a Mac.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+boot.workspace = true
+vfs.workspace = true
+xiso.workspace = true
+kernel.workspace = true
+settings = { path = "../settings" }
+d3d = { path = "../d3d" }
+audio = { path = "../audio" }
+# GameController only: no gilrs or IOKit HID on tvOS.
+app = { path = "../app", default-features = false, features = ["game-controller"] }
+input = { path = "../input", default-features = false, features = ["game-controller"] }
+
+[[example]]
+# Mac-side packer: the trimmed disc, the tvOS module framework and the
+# boot cache for the app bundle (platform/tvos/build.sh).
+name = "pack"

@@ -22,7 +22,7 @@ const USAGE: &str = "usage:
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
           [--live-tunnel [--live-tunnel-name NAME [--live-tunnel-url https://HOST]]
            [--no-tunnel-setup]]
-          [--icons auto|xbox|xbox360|playstation|keyboard]
+          [--icons auto|xbox|xbox360|playstation|keyboard|remote]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>

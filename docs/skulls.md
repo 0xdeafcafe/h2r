@@ -202,8 +202,8 @@ The parts:
   the widget a child of the screen (docs/ui.md "A text of our own on a
   screen"). Row text asks the list for its focused row (`0x24c447`) and,
   when that changed, sets the widget to the row's description. The
-  Controls list spans the screen's width, so the text sits right of the
-  title, above the list (`[222 80 150 312]`, top, left, bottom, right);
+  Controls list spans the screen's width, so the text sits under
+  the list, across its width (`[-25 -225 -140 245]`, top, left, bottom, right; Y up from the screen centre);
   `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
 - **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
 
@@ -481,10 +481,10 @@ The menu:
    text`, the widget could not be made.
 9. The rows, gold first: Assassins, Thunderstorm, Famine, Blind, Black
    Eye, Catch, Iron, Mythic, Angry, then Envy, Grunt Birthday Party,
-   IWHBYD, Ghost, Sputnik, Bandana; each value On, Off or Locked. Scroll to the end and back: all
-   fifteen are reachable.
-10. The description: "Gold skull:" or "Silver skull:", the focused skull's effect and
-    "Found on <level>, Legendary only" (Blind: "any difficulty"); it
+   IWHBYD, Ghost, Sputnik, Bandana; each value On, Off or Locked. Scroll
+   to the end and back: all fifteen are reachable.
+10. The description: under the list, "Gold skull:" or "Silver skull:",
+    the focused skull's effect and "Found on <level>, Legendary only" (Blind: "any difficulty"); it
     changes as the cursor moves. If it is missing, clipped or over the
     list, say where it sits; `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
     (screen centre origin, Y up, 640x480) moves it to try another place.

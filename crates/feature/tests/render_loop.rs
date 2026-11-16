@@ -189,3 +189,139 @@ fn render_loop_is_off_unless_switched() {
     let text = r.build(&feature::Base).unwrap().text();
     assert_eq!(text, "feature render-loop: on\n");
 }
+
+/// `impl.render.layer_entries` on the runtime: the build and two entry
+/// handlers are Rust overrides that log and `ret n`; the runtime's calls
+/// are the ones the port asks for when driven directly, and every entry
+/// whose target is not skipped reaches its handler with its arguments.
+#[test]
+fn the_runtime_runs_the_rust_layer_entry_loop() {
+    use engine::render_loop::layer::{self, Entries};
+    const LIST: u32 = 0x0060_0000;
+    const TABLE: u32 = 0x0060_0100;
+    const TARGET: u32 = 0x0060_0400;
+    const H0: u32 = 0x0001_2000;
+    const H1: u32 = 0x0001_2100;
+    const ESP: u32 = 0x0071_ff00;
+    // Entry kinds 0, 1, 1, 0; the third one's target is skipped.
+    let kinds = [0u16, 1, 1, 0];
+    let guest = || {
+        let mut g = Guest::new();
+        g.map_zeroed(0x0001_0000, 0x0004_0000, Permissions::RX)
+            .unwrap();
+        g.map_zeroed(LIST, 0x1000, Permissions::RW).unwrap();
+        g.map_zeroed(0x0070_0000, 0x0002_0000, Permissions::RW)
+            .unwrap();
+        g.set_u32(LIST + 0x14, TABLE).unwrap();
+        for (k, h) in [H0, H1].into_iter().enumerate() {
+            let rec = TABLE + k as u32 * layer::RECORD_SIZE;
+            g.set_u32(rec + 4, h).unwrap();
+            g.set_u32(rec + 8, 0x800 + k as u32).unwrap();
+            g.set_u32(rec + 0xc, 0x900 + k as u32).unwrap();
+            g.set_u8(rec + 0x14, 0x14).unwrap();
+            g.set_u8(rec + 0x15, 0x15).unwrap();
+        }
+        g.set_u32(TARGET + 0x100, 0).unwrap();
+        g.set_u32(TARGET + 0x200 + 0x100, u32::MAX).unwrap();
+        g.set_u32(ESP, HARNESS_EXIT).unwrap();
+        g.set_u32(ESP + 4, 0xa59).unwrap();
+        g
+    };
+    // The build's effect: four entries into the buffer, count in EAX.
+    let build = move |g: &mut dyn engine::memory::GuestMemory, buffer: u32| -> u32 {
+        for (i, k) in kinds.iter().enumerate() {
+            let e = buffer + i as u32 * layer::ENTRY_SIZE;
+            g.write(e, &k.to_le_bytes()).unwrap();
+            let t = if i == 2 { TARGET + 0x200 } else { TARGET };
+            g.set_u32(e + 0x10, t).unwrap();
+        }
+        kinds.len() as u32
+    };
+    let entry = Regs {
+        eax: 1,
+        ecx: 2,
+        edx: 3,
+        ebx: 12,
+        esp: ESP,
+        ebp: 0xe0e0,
+        esi: 0x5151,
+        edi: LIST,
+        xmm0: 0,
+    };
+
+    // Directly.
+    let mut g = guest();
+    let mut r = entry;
+    let mut want = Vec::new();
+    let (mut m, mut step) = Entries::start(&mut r, &mut g).unwrap();
+    while let Step::Call {
+        target, cleanup, ..
+    } = step
+    {
+        want.push((target, snapshot(&r)));
+        if target == layer::LAYER_BUILD {
+            // No return address is pushed here: the buffer is the 4th dword.
+            let buffer = engine::memory::GuestMemory::u32(&g, r.esp + 12).unwrap();
+            r.eax = build(&mut g, buffer);
+        }
+        r.esp += cleanup;
+        step = m.resume(&mut r, &mut g).unwrap();
+    }
+    assert_eq!(r.esp, ESP + 8, "ret 4");
+
+    // On the runtime.
+    let log: Log = Arc::default();
+    let mut d = Dispatch::default();
+    for target in [layer::LAYER_BUILD, H0, H1] {
+        let log = Arc::clone(&log);
+        d.register_override(target, format!("stub {target:#x}"), move |cpu, ctx, _| {
+            log.lock().unwrap().push((
+                target,
+                [
+                    cpu.eax, cpu.ecx, cpu.edx, cpu.ebx, cpu.ebp, cpu.esi, cpu.edi,
+                ],
+            ));
+            let mut mem = ctx.memory();
+            let cleanup = if target == layer::LAYER_BUILD {
+                let buffer = mem.u32(cpu.esp + 16).unwrap();
+                cpu.eax = build(&mut *mem, buffer);
+                16
+            } else {
+                layer::HANDLER_CLEANUP
+            };
+            mem.ret(cpu, cleanup)
+        });
+    }
+    let rt = Runtime::new(guest(), d);
+    let mut reg = Registry::new(Switches::parse("impl.render.layer_entries=on").unwrap());
+    reg.add(&feature::render_loop::RenderLoop).unwrap();
+    reg.build(&feature::Base).unwrap().install(&rt).unwrap();
+    let mut cpu = CpuAbi {
+        eax: entry.eax,
+        ecx: entry.ecx,
+        edx: entry.edx,
+        ebx: entry.ebx,
+        esp: entry.esp,
+        ebp: entry.ebp,
+        esi: entry.esi,
+        edi: entry.edi,
+        ..Default::default()
+    };
+    let mut ctx = ExecCtx::new(Arc::clone(&rt), 1);
+    let t = Runner::default().run(&mut cpu, &mut ctx, points::LAYER_ENTRIES.base);
+    assert!(
+        matches!(ctx.event(t.event_id), Some(Event::HarnessExit)),
+        "{:?}",
+        ctx.event(t.event_id)
+    );
+    let got = log.lock().unwrap().clone();
+    let targets: Vec<u32> = got.iter().map(|c| c.0).collect();
+    assert_eq!(
+        targets,
+        [layer::LAYER_BUILD, H0, H1, H0],
+        "entry 2 is skipped"
+    );
+    assert_eq!(got, want, "the runtime's calls are the port's");
+    assert_eq!(cpu.esp, ESP + 8);
+    assert_eq!([cpu.ebp, cpu.esi, cpu.edi], [0xe0e0, 0x5151, LIST]);
+}

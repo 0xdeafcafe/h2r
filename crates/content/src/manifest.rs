@@ -24,6 +24,12 @@
 //!
 //! [result]                   # optional
 //! geometry = "..."
+//!
+//! [list]                     # optional: 1.0's map list entry of a new map
+//! base = "lockout"           # the retail map whose entry gives the rest
+//! sort = 300
+//! name.ja = "..."            # per-language name; others use [package] name
+//! description.ja = "..."     # likewise, from [package] description
 //! ```
 use std::path::{Component, Path, PathBuf};
 
@@ -51,6 +57,35 @@ pub struct Manifest {
     pub packs: Vec<Layer>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub result: Option<ResultInfo>,
+    /// Display data for 1.0's multiplayer map list, for a map whose name the
+    /// disc doesn't have (docs/maps.md §4). Not part of the `MapId`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list: Option<ListInfo>,
+}
+
+/// The languages of the game's map list text, in the order its records hold
+/// them (docs/map-pack.md 8.1: nine languages a record).
+pub const LANGUAGES: [&str; 9] = ["en", "ja", "de", "fr", "es", "it", "ko", "zh", "pt"];
+
+/// `[list]`: how a new map appears in 1.0's multiplayer map list.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ListInfo {
+    /// The retail map whose own list entry (in `mainmenu.map`) gives the
+    /// team counts, the flags and, without an image, the preview.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    /// The entry's sort order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sort: Option<i32>,
+    /// Per-language names by [`LANGUAGES`] code; a language left out uses
+    /// `[package] name`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub name: std::collections::BTreeMap<String, String>,
+    /// Per-language descriptions; a language left out uses
+    /// `[package] description`.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub description: std::collections::BTreeMap<String, String>,
 }
 
 /// `[package]`: the format version and display data.
@@ -119,6 +154,8 @@ pub enum ManifestError {
     Escapes(String),
     #[error("image {0:?}: {1}")]
     Image(String, String),
+    #[error("[list] {0}")]
+    List(String),
 }
 
 impl Manifest {
@@ -140,6 +177,7 @@ impl Manifest {
             patches: Vec::new(),
             packs: Vec::new(),
             result: None,
+            list: None,
         }
     }
 
@@ -175,6 +213,21 @@ impl Manifest {
         let files = self.patches.iter().chain(&self.packs).map(|l| &l.file);
         for f in files.chain(&self.package.image) {
             relative(f)?;
+        }
+        if let Some(list) = &self.list {
+            if let Some(base) = list.base.as_deref().filter(|b| !is_map_name(b)) {
+                return Err(ManifestError::List(format!(
+                    "base {base:?} is not a plain map name"
+                )));
+            }
+            for lang in list.name.keys().chain(list.description.keys()) {
+                if !LANGUAGES.contains(&lang.as_str()) {
+                    return Err(ManifestError::List(format!(
+                        "language {lang:?} is not one of {}",
+                        LANGUAGES.join(", ")
+                    )));
+                }
+            }
         }
         if let Some(image) = &self.package.image {
             let lower = image.to_ascii_lowercase();

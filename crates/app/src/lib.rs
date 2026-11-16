@@ -18,16 +18,20 @@
 //! guest-side code is the same for `h2 run --headless` and tests.
 
 pub mod audio_out;
+pub mod embedded;
 pub mod fps;
 pub mod frame;
 pub mod input_pump;
+#[cfg(not(target_os = "tvos"))]
 pub mod keymap;
 pub mod lifecycle;
 pub mod mailbox;
 pub mod overlay;
 pub mod pacing;
 pub mod scale;
+#[cfg(not(target_os = "tvos"))]
 mod shell;
+mod surface;
 pub mod watermark;
 pub mod worker;
 
@@ -189,6 +193,7 @@ impl Closer {
 
     /// Connects the shell: `life` is the guest's lifecycle, `wake` asks the
     /// event loop to close.
+    #[cfg_attr(target_os = "tvos", allow(dead_code))]
     pub(crate) fn attach(&self, life: Lifecycle, wake: Wake) {
         let mut s = self.state();
         if s.requested {
@@ -418,14 +423,14 @@ fn build_input(config: &AppConfig) -> (InputManager, Option<KeyboardMouse>) {
     (manager, keyboard)
 }
 
-#[cfg(all(feature = "gamepads", target_os = "macos"))]
+#[cfg(all(feature = "game-controller", target_vendor = "apple"))]
 fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
     Some(Box::new(
         input::backend::game_controller::GameControllerPads::new(),
     ))
 }
 
-#[cfg(all(feature = "gamepads", not(target_os = "macos")))]
+#[cfg(all(feature = "gamepads", not(target_vendor = "apple")))]
 fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
     match input::backend::gilrs_pads::GilrsPads::new() {
         Ok(p) => Some(Box::new(p)),
@@ -436,7 +441,10 @@ fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
     }
 }
 
-#[cfg(not(feature = "gamepads"))]
+#[cfg(not(any(
+    all(feature = "game-controller", target_vendor = "apple"),
+    all(feature = "gamepads", not(target_vendor = "apple"))
+)))]
 fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
     eprintln!("app: built without the `gamepads` feature; keyboard only");
     None
@@ -445,7 +453,9 @@ fn gamepad_backend() -> Option<Box<dyn input::HostBackend>> {
 /// Opens the window and runs `guest` on a worker thread until the window
 /// closes. Must be called on the main thread (macOS UI rule; winit returns
 /// an error otherwise). Returns after the window has closed and the guest
-/// thread has stopped or timed out.
+/// thread has stopped or timed out. Not on tvOS, where the app owns the
+/// window: see [`embedded::Embedded`].
+#[cfg(not(target_os = "tvos"))]
 pub fn run<F>(config: AppConfig, guest: F) -> anyhow::Result<ExitReport>
 where
     F: FnOnce(GuestHost) -> anyhow::Result<()> + Send + 'static,

@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 mod backend;
+mod dir_disc;
 mod disc;
 mod host;
 mod map_override;
@@ -15,6 +16,7 @@ mod types;
 mod write_behind;
 
 pub use backend::Backend;
+pub use dir_disc::{AnyDisc, DirDiscBackend, open_disc};
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};
@@ -201,7 +203,8 @@ impl Vfs {
     }
     pub fn with_disc(config: Config, disc: impl AsRef<std::path::Path>) -> Result<Self> {
         // Fail a bad image before creating persistent storage directories.
-        let disc = DiscBackend::open(disc)?;
+        // A directory holding the disc's files serves as well (tvOS).
+        let disc = open_disc(disc)?;
         let mut vfs = Self::with_storage(config)?;
         vfs.mount(CDROM_DEVICE, disc)?;
         Ok(vfs)
@@ -213,7 +216,7 @@ impl Vfs {
         disc: impl AsRef<std::path::Path>,
         rewrite: impl Rewrite + 'static,
     ) -> Result<Self> {
-        let disc = DiscBackend::open(disc)?;
+        let disc = open_disc(disc)?;
         let mut vfs = Self::with_storage(config)?;
         vfs.mount(CDROM_DEVICE, RewriteBackend::new(disc, rewrite))?;
         Ok(vfs)

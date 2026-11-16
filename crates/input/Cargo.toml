@@ -10,7 +10,7 @@ default = ["gilrs", "game-controller", "hid"]
 # Physical gamepads through gilrs (IOKit HID on macOS).
 gilrs = ["dep:gilrs"]
 # Apple GameController (GCController): hot-plug, pressure buttons and rumble
-# on macOS. The platform half is compiled only on macOS; the mapping layer is
+# on macOS and tvOS. The platform half is compiled only on Apple platforms; the mapping layer is
 # portable and always built with this feature.
 game-controller = ["dep:objc2", "dep:objc2-foundation", "dep:objc2-game-controller", "dep:objc2-core-haptics", "dep:block2", "dep:dispatch2"]
 # The DualSense over raw HID (pad_hid): speaker path, mute button and LED.
@@ -23,16 +23,20 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 gilrs = { version = "0.11", optional = true }
 
+# IOKit HID (pad_hid) is macOS only; GameController is every Apple
+# platform, tvOS included (docs/tvos.md).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-io-kit = { version = "0.3.2", optional = true, default-features = false, features = ["std", "libc", "hid"] }
 objc2-core-foundation = { version = "0.3.2", optional = true, default-features = false, features = ["std", "CFArray", "CFDictionary", "CFNumber", "CFString", "CFRunLoop", "CFDate"] }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
 objc2 = { version = "0.6", optional = true }
 block2 = { version = "0.6", optional = true }
 dispatch2 = { version = "0.3", optional = true }
 objc2-foundation = { version = "0.3", optional = true, default-features = false, features = ["std", "NSArray", "NSString", "NSError", "NSSet", "NSObject", "NSEnumerator", "NSRunLoop", "NSDate", "NSObjCRuntime"] }
 objc2-game-controller = { version = "0.3", optional = true, default-features = false, features = [
     "std", "GCController", "GCControllerElement", "GCControllerButtonInput", "GCControllerAxisInput",
-    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCExtendedGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
+    "GCControllerDirectionPad", "GCDevice", "GCDeviceHaptics", "GCExtendedGamepad", "GCMicroGamepad", "GCPhysicalInputProfile", "block2", "dispatch2",
 ] }
 objc2-core-haptics = { version = "0.3", optional = true, default-features = false, features = [
     "std", "block2", "CHHapticEngine", "CHHapticEvent", "CHHapticParameter", "CHHapticPattern", "CHHapticPatternPlayer",

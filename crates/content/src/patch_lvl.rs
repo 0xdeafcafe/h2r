@@ -7,7 +7,19 @@
 //! checksum) inserted at `+0x10c`. So a v2 `patch.lvl` is made from one v3
 //! record by pure mapping: version 2, `+0x8..+0x10c` copied, the inserted
 //! dword dropped, the rest shifted down by 4, and the CRC recomputed.
-use anyhow::{Result, bail};
+//!
+//! [`crate::map_list`] builds a v2 record from scratch for a new map.
+
+/// A record or file that 1.0 or the update would refuse.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{0}")]
+pub struct LvlError(pub String);
+
+type Result<T> = std::result::Result<T, LvlError>;
+
+macro_rules! bail {
+    ($($t:tt)*) => { return Err(LvlError(format!($($t)*))) };
+}
 
 /// `patch.lvl` is exactly one record of this size; 1.0 reads this many bytes
 /// and no more (`0x19bfd0`).
@@ -17,16 +29,16 @@ pub const V3_RECORD_LEN: usize = 0x2d400;
 /// `patch_v3.lvl` starts with version and record count.
 pub const V3_HEADER_LEN: usize = 8;
 
-const VERSION: usize = 0x0;
-const CRC: usize = 0x4;
-const KIND: usize = 0x8;
+pub(crate) const VERSION: usize = 0x0;
+pub(crate) const CRC: usize = 0x4;
+pub(crate) const KIND: usize = 0x8;
 /// Record type: the only one 1.0's applier (`0x19be00`) accepts.
-const KIND_MAP: u32 = 1;
-const SCENARIO: usize = 0xc;
-const SCENARIO_LEN: usize = 0x100;
+pub(crate) const KIND_MAP: u32 = 1;
+pub(crate) const SCENARIO: usize = 0xc;
+pub(crate) const SCENARIO_LEN: usize = 0x100;
 /// v2: the map id. v3: the inserted checksum, with the map id after it.
 const INSERTED: usize = 0x10c;
-const V2_MAP_ID: usize = 0x10c;
+pub(crate) const V2_MAP_ID: usize = 0x10c;
 #[cfg(test)]
 const V3_MAP_ID: usize = 0x110;
 
@@ -107,7 +119,7 @@ pub fn v3_records(file: &[u8]) -> Result<Vec<&[u8]>> {
     let (records, _) = file[V3_HEADER_LEN..].as_chunks::<V3_RECORD_LEN>();
     let records: Vec<&[u8]> = records.iter().map(|r| r.as_slice()).collect();
     for (i, r) in records.iter().enumerate() {
-        validate_v3_record(r).map_err(|e| e.context(format!("patch_v3.lvl record {i}")))?;
+        validate_v3_record(r).map_err(|e| LvlError(format!("patch_v3.lvl record {i}: {e}")))?;
     }
     Ok(records)
 }
@@ -144,26 +156,28 @@ pub fn map_name(record: &[u8]) -> Result<String> {
     Ok(base.to_string())
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
+/// Synthetic records for tests here and in other crates (the map pack
+/// import's).
+pub mod testing {
     use super::*;
 
     /// A synthetic v3 record: patterned filler, the given scenario path,
     /// map id and inserted checksum, and a correct CRC.
-    pub(crate) fn v3_record(scenario: &str, map_id: u32, checksum: u32) -> Vec<u8> {
+    pub fn v3_record(scenario: &str, map_id: u32, checksum: u32) -> Vec<u8> {
         let mut r: Vec<u8> = (0..V3_RECORD_LEN).map(|i| (i * 7 + i / 251) as u8).collect();
         r[VERSION..VERSION + 4].copy_from_slice(&3u32.to_le_bytes());
         r[KIND..KIND + 4].copy_from_slice(&KIND_MAP.to_le_bytes());
         r[SCENARIO..SCENARIO + SCENARIO_LEN].fill(0);
         r[SCENARIO..SCENARIO + scenario.len()].copy_from_slice(scenario.as_bytes());
         r[INSERTED..INSERTED + 4].copy_from_slice(&checksum.to_le_bytes());
-        r[V3_MAP_ID..V3_MAP_ID + 4].copy_from_slice(&map_id.to_le_bytes());
+        r[INSERTED + 4..INSERTED + 8].copy_from_slice(&map_id.to_le_bytes());
         let crc = record_crc(&r);
         r[CRC..CRC + 4].copy_from_slice(&crc.to_le_bytes());
         r
     }
 
-    pub(crate) fn v3_file(records: &[Vec<u8>]) -> Vec<u8> {
+    /// A `patch_v3.lvl` holding `records`.
+    pub fn v3_file(records: &[Vec<u8>]) -> Vec<u8> {
         let mut f = 3u32.to_le_bytes().to_vec();
         f.extend((records.len() as u32).to_le_bytes());
         for r in records {
@@ -171,6 +185,12 @@ pub(crate) mod tests {
         }
         f
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testing::*;
+    use super::*;
 
     #[test]
     fn crc_is_crc32_without_the_final_xor() {

@@ -1,0 +1,67 @@
+# The tvOS app (docs/tvos.md). H2TV.xcodeproj is generated from this with
+# `xcodegen generate` (in platform/tvos); both are committed, so Xcode alone
+# is enough to build. build.sh fills build/ first: the Rust static library,
+# the game module framework, the trimmed disc and the boot cache.
+name: H2TV
+options:
+  bundleIdPrefix: red.forbes.h2recomp
+  deploymentTarget:
+    tvOS: "17.0"
+  createIntermediateGroups: true
+configFiles:
+  Debug: Config.xcconfig
+  Release: Config.xcconfig
+targets:
+  H2TV:
+    type: application
+    platform: tvOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: H2TV
+      - path: include/h2tv.h
+        buildPhase: none
+      # Folder references: copied into the bundle as directories.
+      - path: build/disc
+        type: folder
+        buildPhase: resources
+      - path: build/bootcache
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - framework: build/libtvos.a
+        embed: false
+      # Embedded and signed, not linked: crates/boot dlopens it, after
+      # checking its stamp.
+      - framework: build/h2game.framework
+        embed: true
+        codeSign: true
+        link: false
+      - sdk: Metal.framework
+      - sdk: QuartzCore.framework
+      - sdk: CoreGraphics.framework
+      - sdk: GameController.framework
+      - sdk: CoreHaptics.framework
+      - sdk: AVFoundation.framework
+      - sdk: AudioToolbox.framework
+      - sdk: CoreAudio.framework
+      - sdk: Security.framework
+      - sdk: SystemConfiguration.framework
+      - sdk: libc++.tbd
+      - sdk: libiconv.tbd
+    settings:
+      base:
+        INFOPLIST_FILE: H2TV/Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: H2TV/H2TV-Bridging-Header.h
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "3"
+        SUPPORTED_PLATFORMS: appletvos
+        SDKROOT: appletvos
+        ARCHS: arm64
+        LIBRARY_SEARCH_PATHS: $(PROJECT_DIR)/build
+        FRAMEWORK_SEARCH_PATHS: $(PROJECT_DIR)/build
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_BITCODE: NO
+        DEAD_CODE_STRIPPING: YES
+        # The Rust library carries no Swift module; keep its symbols.
+        OTHER_LDFLAGS: "$(inherited) -ObjC"

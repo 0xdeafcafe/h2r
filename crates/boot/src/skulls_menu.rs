@@ -70,12 +70,13 @@ pub const TITLE: &str = "Skulls";
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
 
-/// The description text: right of the title, above the list (the Controls
-/// layout's list spans the screen's width, so the space beside the header
-/// is the one free of it). Font 1 is the difficulty screen's description
-/// font. Not seen yet: `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it.
+/// The description text: under the list, across its width. Above the list,
+/// beside the header, it ran over the header bar (seen in game). The list
+/// ends just below the screen's centre with six rows showing, so the block
+/// starts 25 below it. Font 1 is the difficulty screen's description font.
+/// `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
 pub const DESCRIPTION_TEXT: TextBlock = TextBlock {
-    rect: [222, 80, 150, 312],
+    rect: [-25, -225, -140, 245],
     font: 1,
     colour: [0.8, 0.88, 1.0],
 };
