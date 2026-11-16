@@ -277,7 +277,26 @@ submix played at full level and unpanned however far away it was.
   Events are `EventSink::signal_event(handle, token)`, and callbacks are queued
   with `EventSink::stream_callback(StreamCallback)`. Through `register`,
   events reach the kernel after the guards drop. Callbacks run as guest
-  calls before the override returns (see "Runtime registration").
+  calls before the override returns (see "Runtime registration"), or, for
+  completions a host render produced, from the completion DPC (below).
+- **The completion DPC.** On the Xbox a stream callback runs from the APU's
+  DPC as soon as its packet completes. `Hle::completion_dpc()` is a kernel
+  periodic-source handler that does the same on logical time: while
+  callbacks are queued it calls `DirectSoundDoWork()`
+  (`register::COMPLETION_DPC_TARGET`, `0x37b844`) on the DPC stack, whose
+  override runs every queued callback, in order, before it returns; with
+  none queued it calls nothing. `boot::dsound_glue` adds it at one period
+  per audio quantum (`COMPLETION_RATE`, 187.5 Hz) from the output's own
+  origin, so its deadlines are the grid's. Those deadlines also stop the
+  scheduler's idle advance at every quantum, so the runner renders at each
+  grid point and a callback runs at most two quanta (10.7 ms) after its
+  packet completed, whatever the game's frame rate. Before this, a
+  callback waited for the game's next DirectSound call on a guest thread:
+  Halo makes those in its once-a-frame sound update, so a voice stream's
+  refill came up to a frame and more after the completion, past the one
+  20 ms packet it had left, and the stream starved about every packet.
+  Events and polled statuses were already current when the game looked:
+  they do not depend on this.
 - **Order of effects (verified, `0x37f3a8`).** Completed size and status are
   written to guest memory first, then the event is signalled or the callback
   queued. Completion order is submission order. Neither happens while a guest
@@ -307,6 +326,33 @@ submix played at full level and unpanned however far away it was.
   `GetStatus` or `DoWork` completes it.
 - **Buffers have no notifications in Halo 2.** `SetNotificationPositions`,
   `SetPlayRegion` and `SetLoopRegion` are not matched and have no call sites.
+
+### How Halo feeds its streams
+
+Two feeders, read from the disassembly:
+
+- **Sound core streams** (music and dialogue, created at `0x2ae68d`) are
+  polled. The once-a-frame sound update (`0x21ee80`, from the frame at
+  `0x125b40`) walks the streams (`0x21f22f` → `0x2ae820`): while stream
+  `GetStatus` reports room, it asks the source (vtable `0x45711c`, slot 3,
+  `0x2ae290`) for a packet, `Process`es it, then calls `Discontinuity`.
+  The source keeps two packet slots in one `0x20000`-byte block and reads
+  their status words directly; a slot is free once its status is no longer
+  `E_PENDING`. The packets carry no event and the stream no callback. The
+  packet size is the word at `0x47f0e0`: `0x10000`, or `0x4000` unless
+  `[[0x4e6948]+8] == 3` (`0x125797`). At 44.1 kHz stereo PCM16, 16 KB is
+  93 ms, so two packets ride out a poll that comes a frame late, but not
+  two frames late at 30 Hz with jitter. A source with data waiting also
+  feeds at once from the read path (`0x22077d`).
+- **Voice streams** (`DirectSoundCreateStream` at `0x335ed3`, flags
+  `0x40000000`) are 8 kHz mono PCM16, `dwMaxAttachedPackets = 2`, and are
+  refilled only from their completion callback: `0x335d82` → `0x335d38`
+  submits the next 320-byte (20 ms) packet; `0x335d99` → `0x3358e5`
+  rotates three 320-byte packets and decodes more every third. The
+  callback must run within 20 ms of a completion or the stream starves.
+  The rest of that code runs from a kernel timer DPC (`KeSetTimer` at
+  `0x333c28` and `0x333e3b`, 1 ms or `19 - n` ms) and raises IRQL around
+  its stream state, as code whose callbacks come at DPC level must.
 
 ## Audio clock
 
@@ -479,17 +525,31 @@ audio: 5.0s fill 48ms (30-70) target 75ms trim -1200ppm | dropouts +1 | dev unde
   10 ms past its period (a device probe, the host).
 - `stream starves`: a stream ran out of packets and was fed again within
   250 ms (`audio::StreamHealth`). The game fed it late, and the gap is
-  in the audio itself, before the device.
+  in the audio itself, before the device. Each is one cut to silence and one
+  restart, so this is also the count of clicks at gap edges. With the
+  completion DPC a guest that keeps up does not starve a stream: expect
+  `+0`. A nonzero count with `rendered` at or above 100% means a feed path
+  the DPC does not cover.
 - `unrouted`: frames streams consumed, completing their packets, whose
   mix bins reached nothing: an empty list, or sends only to mix-ins that
   are not playing. The game believes those played. A dialogue line that is
   skipped but still counted shows here.
-- `callbacks waiting max`: the most stream callbacks queued for the next
-  guest override call.
+- `callbacks waiting max`: the most stream callbacks queued at once
+  between slices, waiting for the completion DPC (or the next override
+  call). The DPC runs them every quantum, so expect at most the packets that
+  complete in one quantum: 1 or 2 per callback stream. A larger number
+  means callbacks are not being delivered (no DPC installed, or the game
+  held at raised IRQL).
 - `rendered % of real time`: logical audio time over wall time. Under
   100% means the guest ran slower than real time, and the device must run
   dry.
 - `pad ...`: the controller speaker's sink, when configured.
+
+A headless run plays into `audio::NullSink`, which nothing drains: `fill`
+sits at its ring plus the 250 ms queue (about 590 ms), `trim` at its
+limit, and almost everything rendered is `dropped`. That is the sink only.
+The output thread's queue and playout never feed back into logical time,
+rendering or completions, so the stream counters are still the game's.
 
 ## Memory model
 
@@ -861,8 +921,9 @@ pub fn unregister(dispatch: &mut runtime::Dispatch, registration: &Registration)
   one as a guest stdcall `callback(stream_context, packet_context, status)`
   through `ExecCtx::call_guest`. The callbacks run in order, as if called
   from the original return site, and EAX is restored before the final
-  `TransferAbi::ret`. Callbacks produced by a host-driven `Hle::do_work` wait
-  and run at the next override call.
+  `TransferAbi::ret`. Callbacks produced by a host-driven `Hle::do_work` (or
+  an output's render) wait and run at the next override call, which is the
+  completion DPC's `DirectSoundDoWork` when one is installed.
 - **Stops and faults.** On a `Stop` the CPU and stack stay untouched. The
   stop is recorded in `take_stops` (address, name, args, `Stop`) and the
   runner stops on `Event::Unsupported { mnemonic: "dsound::<name>",
@@ -954,6 +1015,14 @@ let output = hle.spawn_output(
 // ... and at every scheduler point (logical tick or vblank), with no guest
 // memory guard held:
 // output.advance_to(k.clock().counter())?;
+// ... with the completion DPC on the same origin, so callbacks run at DPC
+// level within two quanta of their packet (see "The completion DPC"):
+// k.add_periodic(kernel::periodic::Source {
+//     name: "dsound completions",
+//     rate: kernel::periodic::Rate { num: 48_000, den: dsound::output::QUANTUM },
+//     max_catch_up: 64,
+//     handler: Box::new(hle.completion_dpc()),
+// })?;
 
 // On a stop whose event is Unsupported with a "dsound::" mnemonic:
 for s in hle.take_stops() {
@@ -980,9 +1049,8 @@ hle.tick(&loaded.runtime, &mut clock, elapsed)?;
 `do_work`, `advance_audio` and `tick` take the guest memory guard themselves:
 call them from a host thread or between runner slices, never from inside an
 override. Stream callbacks are guest calls, so they run at the next override
-call on a guest thread (see "Runtime registration"). A game that waits on a
-stream callback while calling no DirectSound entry would not see it; Halo's
-streams use events or poll `GetStatus`/`Process`.
+call on a guest thread (see "Runtime registration"), or from the completion
+DPC where the runner installs it, as `boot` does.
 
 ## Tests
 
@@ -1072,6 +1140,16 @@ covers, with synthetic data only (no disc bytes):
   `render: true` completes a packet on a sinkless mixer, and with
   `render: false` reports what an external consumer rendered, without
   rendering anything.
+
+`tests/stream_feed.rs` runs Halo's two stream feeders on the real kernel
+scheduler, the registered overrides and a logical-pacing output, with the
+boot loop (`m.run(1)`, then `advance_to` the clock). A guest frame at 60 Hz
+or 30 Hz, its sound update jittered within the frame, sleeps, refills and
+calls `DirectSoundDoWork`. A callback-fed stream (two 20 ms 8 kHz packets,
+resubmitted from the callback, as the voice streams are) starves without the
+completion DPC and never with it, and the callback queue never holds more
+than two. A polled stream with Halo's 16 KB 44.1 kHz stereo packets,
+refilled when a status is no longer pending, never starves either way.
 
 `tests/xwma.rs` drives the WMA boundary through the runner, with synthetic
 tables and packets and the game's input callback as a guest override

@@ -53,6 +53,10 @@ pub trait Events: Send {
 /// shared HLE window `0xa000_0000..0xa100_0000` that `bink-hle` documents as
 /// `HLE_RESERVED` (bink searches upward from the window's start).
 pub const ARENA: std::ops::Range<u32> = 0xa080_0000..0xa100_0000;
+
+/// What [`Hle::completion_dpc`] calls: `DirectSoundDoWork` (`0x37b844`, no
+/// arguments, `ret`), whose override runs the queued stream callbacks.
+pub const COMPLETION_DPC_TARGET: u32 = 0x0037_b844;
 /// Pages are mapped on demand in chunks of at least this many bytes.
 const CHUNK: u32 = 0x1_0000;
 
@@ -225,6 +229,39 @@ impl Hle {
     }
     pub fn pending_callbacks(&self) -> usize {
         lock(&self.callbacks).len()
+    }
+
+    /// A periodic DPC handler (`kernel::periodic::Handler`, boxed by the
+    /// caller) that runs the stream callbacks a host render left waiting,
+    /// as the APU's DPC does on the Xbox: while any are queued it returns
+    /// the call `DirectSoundDoWork()` ([`COMPLETION_DPC_TARGET`]), whose
+    /// override collects completions and runs every queued callback on the
+    /// DPC stack before returning; with none queued it calls nothing.
+    ///
+    /// Without it a callback waits for the game's next DirectSound call on
+    /// a guest thread, and a stream refilled from its callback (Halo's voice
+    /// streams, two 20 ms packets) starves whenever that call comes later
+    /// than one packet. Add it at the audio quantum's rate on the same clock
+    /// origin as the output's grid (docs/dsound.md, "Notification and
+    /// callback contracts"). Needs [`register`]'s override at the target.
+    pub fn completion_dpc(
+        self: &Arc<Self>,
+    ) -> impl FnMut(&mut Guest, u32, u64) -> Result<Option<runtime::GuestInterrupt>, GuestFault>
+    + Send
+    + 'static {
+        let hle = Arc::clone(self);
+        move |_, _, _| {
+            Ok(
+                (hle.pending_callbacks() > 0).then(|| runtime::GuestInterrupt {
+                    target: COMPLETION_DPC_TARGET,
+                    args: Vec::new(),
+                    convention: runtime::CallConvention::Stdcall,
+                    thread: None,
+                    coalesce: false,
+                    name: "dsound completion DPC",
+                }),
+            )
+        }
     }
 
     /// Host-driven `DirectSound::do_work`: completes whatever the mixer has
