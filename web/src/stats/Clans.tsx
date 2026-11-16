@@ -72,7 +72,7 @@ export default function Clans() {
             <form class="s-toolbar" onSubmit={(e) => e.preventDefault()}>
               <label for="s-team-q">find a clan</label>
               <input id="s-team-q" value={q()} onInput={(e) => setQ(e.currentTarget.value)} />
-              <span class="s-dim" style={{ "margin-left": "auto", color: "#9d9d9d" }}>{shown().length} of {all().length}</span>
+              <span class="s-toolbar-note">{shown().length} of {all().length}</span>
             </form>
             <div class="s-grid-wrap">
               <table class="s-grid s-grid--roomy">
@@ -452,7 +452,7 @@ function EditTeam(props: { team: Team }) {
         <div class="s-soc-danger">
           <Show when={sure()} fallback={<button class="s-btn" onClick={() => setSure(true)}>Disband clan…</button>}>
             <span>Disband {p().name} for everyone?</span>
-            <button class="s-btn s-btn--bad" disabled={social.busy()} onClick={async () => { const res = await social.write(teamWrites.delete(props.team.id)); if (res.ok) navigate("/stats/teams"); else setR(res); }}>Disband</button>
+            <button class="s-btn s-btn--bad" disabled={social.busy()} onClick={async () => { const res = await social.write(teamWrites.delete(props.team.id)); if (res.ok) navigate("/stats/clans"); else setR(res); }}>Disband</button>
             <button class="s-btn" onClick={() => setSure(false)}>Keep</button>
           </Show>
         </div>
