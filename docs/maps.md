@@ -1,9 +1,9 @@
 # Maps: new, edited, patched and shared (design)
 
 Status: design, with the foundation built: `crates/content` (manifest,
-`MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`,
-the boot wiring, and the scenario editor's "Save as package" and "Open
-package" (§8). Sections marked **Built** say exactly what exists; see also
+`MapId`, PPF/IPS/BPS readers and writers, resolver), `vfs::PackageBackend`
+(including packages installed while the game runs, §3), the boot wiring,
+and the scenario editor's "Save as package" and "Open package" (§8). Sections marked **Built** say exactly what exists; see also
 §7. Agreed with the Live session (network side) and built on
 the feature engine's content packs ([feature-engine.md](feature-engine.md),
 "Content packs"). What exists today: the editor (`h2-editor`,
@@ -154,9 +154,34 @@ author, description and image map onto the package manifest.
 
 ## 3. Realtime
 
-- **Now:** a map saved into the maps folder is used at the next map load.
-  The runtime watches the folder and the resolver re-hashes on change.
-- **Next:** the editor talks to the running game over a local socket.
+- **Now** (**Built**): a package saved into the maps folder while the
+  game runs (the editor's save, a Live join's download) is used at the
+  map's next load, with no restart.
+  - `vfs::PackageBackend` keeps a stamp of `<data>/maps`: the
+    modification times of the folder and `active.toml`, and of each
+    package directory and its `manifest.toml`. It compares the stamp before
+    each map path is looked up (every open stats first) and before each
+    listing of `maps`. When the stamp differs, the library is scanned
+    again. `Vfs::rescan_maps()` forces the same thing; the boot calls it
+    when `MapGate` has installed or activated a package
+    (`MapGate::on_installed`).
+  - After a scan, only maps whose chosen package (its directory and
+    `MapId`) changed are resolved again. The others keep their
+    resolution, so their bases are not hashed again.
+  - A map that has a file object open keeps what it was serving until its
+    last handle closes. A new package takes effect at the next open of
+    that path, never under an open handle (`Backend::opened` and
+    `closed`).
+  - **The game's cache slots.** The game reuses a cache slot whose
+    resident header names the same `d:\maps\<name>.map`, without reading
+    the DVD file again, so a changed map would be served stale from its
+    slot. The boot's `map-slots` feature drops such a slot (zeroes its
+    resident header) once the slot is no longer the current map's; the
+    next load copies the map afresh. See
+    [cache-slots.md](cache-slots.md), "Changed maps".
+- **Next:** a file-system watch instead of the stamp, if the stamp ever
+  shows up in a profile.
+- **Later:** the editor talks to the running game over a local socket.
   Field edits the scenario editor makes (move, rotate, retype, team) are
   exactly a `map-variant` pack's edits, so the editor sends them as a pack
   and the runtime applies them at the feature engine's safe point. The
@@ -317,14 +342,31 @@ Deviations from the design above:
 - Joining writes `active.toml`: with one package per map name, that is how
   the session's map is the one served, and it stays chosen afterwards.
 
-Not yet wired: the boot does not give the HLE a `MapGate` yet. It needs
-`Bases` over the disc's own maps (below the package layer, so a package
-cannot vouch for its own base) and `ServerOptions { maps: Some(..) }` in
-`boot::live_glue::install_with_network` (which uses `Hle::with_network`
-today). And `<data>/maps` is scanned once at mount, so a package downloaded
-while the game runs is served from the next boot, until the folder watch
-(§3) or a rescan hook on `vfs::PackageBackend` lands. A `--private`
-server's reads need a token, which the gate's fetches do not send yet.
+**Wired in the boot** (lane "maps-live-runtime"):
+
+- **The gate.** With Live on, `boot::map_bases::gate` builds the
+  `MapGate` over `<data>/maps`, and `live_glue::install` passes it as
+  `ServerOptions { maps: Some(..) }`.
+- **`Bases`.** `boot::map_bases::DiscBases` hashes `maps\<name>.map` as
+  the retail ISO has it. It reads through its own read-only
+  `vfs::DiscBackend`, below every package and `H2_MAP_DIR` layer, so a
+  package can never vouch for its own base.
+  - Hashing is lazy: each map once, on first ask. A missing map is
+    remembered too. Names that are not plain (letters, digits, `_`, `-`)
+    are refused without touching the disc.
+  - The hashes are a `content::DiscHashes` shared with the package
+    resolver, which records the hash of each disc base it reads in full
+    while checking a package. A map hashed by either is not read again.
+  - They persist in `<data>/maps/cache/disc-hashes.toml`, keyed by the
+    ISO's canonical path, size and modification time (ns), so a restart
+    against the same ISO reads nothing. Any other ISO, or a touched one,
+    starts afresh.
+- **Installing.** A package `MapGate` installs is served at the map's
+  next open (§3, "Now"), and the game's cached copy of the old map is
+  dropped ([cache-slots.md](cache-slots.md), "Changed maps").
+
+Still open: a `--private` server's reads need a token, which the gate's
+fetches do not send yet.
 
 ## 6. Plan
 
@@ -334,7 +376,7 @@ server's reads need a token, which the gate's fetches do not send yet.
 | editor | **Built** (§8): save as package (one PPF3 or BPS layer against the base, manifest, image, optional `active.toml`), open packages; `map-variant` packs not yet | content |
 | map list | synthesised `patch.lvl` for new maps (and the Map Pack, if 1.0 loads it) | the 1.0 research |
 | live | `map_id` in sessions, hoppers and telemetry; the content store; join-time download; admin; art keys | content (`MapId`) |
-| realtime | folder watch, then the editor-to-game socket for `map-variant` edits | feature engine loader hook |
+| realtime | **Built:** packages installed mid-session served at the next open, stale cache slots dropped (§3). Next: the editor-to-game socket for `map-variant` edits | feature engine loader hook |
 | formats | SPPF and Serenity readers | sample patches from the user |
 
 ## 7. What is built
@@ -379,7 +421,8 @@ and is at most 512 KB. Unknown keys are refused.
 Names match ASCII case-insensitively. Only maps the disc has are served
 (a package for a new name stays unseen until the map list work).
 
-**Resolution**, on the map's first use, once per session:
+**Resolution**, on the map's first use, and again only after its chosen
+package changes (§3):
 
 - Each layer is read and its SHA-256 checked. The format comes from its
   signature (`PPF`, `PATCH`, `BPS1`); a file with none ending in `.map`
@@ -416,12 +459,17 @@ for an overlay, which is not one region of a host file (so telemetry and
 the speaker index fall back as for any file without one).
 `PackageBackend::map_id(path)` gives the `MapId` serving a map.
 
-**Boot.** `<data>/maps/` is scanned at mount. With no valid package there
-and `H2_MAP_DIR` unset, the disc is mounted exactly as before
-(`Vfs::with_disc` / `with_disc_rewrite`, no wrapper).
+**Boot.** `<data>/maps/` is scanned at mount and again whenever it
+changes (§3). The packages layer is always mounted, even while the folder
+is empty or missing, so a package installed later is served; with no
+package it serves the disc unchanged. Without a packages directory and
+with `H2_MAP_DIR` unset, `map_override::mount` is exactly `Vfs::with_disc`
+/ `with_disc_rewrite`.
 
-**Not yet:** applying content packs; the folder watch (§3); SPPF and Serenity; caching the base's hash between runs
-(each session reads a patched map's base once, in full, on first use).
+**Not yet:** applying content packs; SPPF and Serenity. A resolution still
+reads a patched map's base once, in full, per session: the overlay's
+checksum pass needs the bytes anyway. The base's hash is kept between runs
+for the Live gate (§5, `disc-hashes.toml`).
 
 ## 8. Saving packages from the editor
 

@@ -11,6 +11,8 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod controls_text;
+pub mod coop_probe;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -21,12 +23,15 @@ pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
+pub mod retail_rows;
 pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
 pub mod lockstep_glue;
+pub mod map_bases;
 pub mod map_override;
+pub mod map_slots;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
@@ -35,6 +40,7 @@ pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
+pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
 pub mod video_screen;
@@ -510,7 +516,13 @@ pub fn run_hosted_with_live(
     }
     eprintln!("registered {} entries, {} resumes in {:.1}s", module.entries, module.resumes, t.elapsed().as_secs_f64());
     let k = kernel::Kernel::for_image(&mut loaded).context("attaching the kernel")?;
-    let _live = live_glue::install(&loaded.runtime, &k, live)?;
+    // The disc's map hashes, shared by the package resolver and the Live
+    // map gate's bases (docs/maps.md §5): each disc map is read at most
+    // once a session, or not at all when the stamp under <data>/maps/cache
+    // already has it.
+    let disc_hashes = content::DiscHashes::default();
+    let map_gate = live.enabled.then(|| map_bases::gate(&opts.disc, &opts.data_root, disc_hashes.clone()));
+    let _live = live_glue::install(&loaded.runtime, &k, live, map_gate.clone())?;
     // Features declare their hooks here; the plan is built and installed
     // once, below, after the last of them (docs/feature-engine.md).
     let mut features = feature::Registry::new(feature::Switches::from_env().map_err(anyhow::Error::msg)?);
@@ -537,7 +549,7 @@ pub fn run_hosted_with_live(
     // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
     let packages = map_override::packages_dir(&opts.data_root);
-    let mounted = map_override::mount(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages));
+    let mounted = map_override::mount_with_hashes(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages), disc_hashes);
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -551,6 +563,17 @@ pub fn run_hosted_with_live(
         }
     };
     k.set_vfs(v).context("attaching the VFS")?;
+    // A package installed while the game runs (docs/maps.md §3): a Live
+    // join tells the VFS to look again at once (it also notices by itself
+    // at the map's next open), and the map-slots feature drops the game's
+    // cached copy of a map whose package changed (docs/cache-slots.md).
+    if let Some(vfs) = k.vfs() {
+        if let Some(gate) = &map_gate {
+            let vfs = Arc::clone(&vfs);
+            gate.on_installed(Box::new(move |_| vfs.lock().unwrap_or_else(|e| e.into_inner()).rescan_maps()));
+        }
+        features.add(&map_slots::MapSlots { vfs }).map_err(|e| anyhow::anyhow!("map slots: {e}"))?;
+    }
     // Frame species and weapon names come from the loaded map's tag names,
     // which stay on disc: let telemetry find the map file through the VFS.
     // Which map exactly (docs/maps.md §5): a package's MapId, None for the
@@ -714,6 +737,11 @@ pub fn run_hosted_with_live(
     // Stage 7a: the Rust render_views, when H2_FEATURES has
     // impl.render.views=on (off by default; docs/render-loop.md).
     features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
+    // H2_COOP_PROBE=1: the retail synchronous campaign path over System Link
+    // (docs/live-coop.md section 9). Added last, so it can see every
+    // override placed outside the plan and refuse instead of failing it.
+    let coop_probe = coop_probe::parse(|k| std::env::var(k).ok()).map_err(anyhow::Error::msg)?;
+    coop_probe::install(&loaded.runtime, &mut features, coop_probe, &opts.disc, &opts.data_root)?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))

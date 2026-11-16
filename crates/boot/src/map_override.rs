@@ -7,8 +7,11 @@
 //!   docs/storage.md "Map overrides", docs/scenario-editor.md "How patched
 //!   maps reach the game"). It wins over a package for the same map.
 //!
-//! With neither (no valid package, `H2_MAP_DIR` unset or empty), the DVD is
-//! mounted exactly as before.
+//! With neither (no packages directory, `H2_MAP_DIR` unset or empty), the
+//! DVD is mounted exactly as before. The boot always passes the packages
+//! directory, so its packages layer is there even while the folder is
+//! empty, ready for one installed while the game runs; with no package it
+//! serves the disc unchanged.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -41,9 +44,9 @@ pub fn packages_dir(data_root: &Path) -> PathBuf {
 }
 
 /// Storage plus the DVD at `disc`, with the font rewrite if any, the
-/// packages in `packages` (normally [`packages_dir`]) if it holds any, and
-/// the disc's maps overridden from `maps` if given. With neither this is
-/// exactly `Vfs::with_disc` / `Vfs::with_disc_rewrite`.
+/// packages in `packages` (normally [`packages_dir`]), and the disc's maps
+/// overridden from `maps` if given. With neither this is exactly
+/// `Vfs::with_disc` / `Vfs::with_disc_rewrite`.
 pub fn mount<R: vfs::Rewrite + 'static>(
     cfg: vfs::Config,
     disc: &Path,
@@ -51,12 +54,33 @@ pub fn mount<R: vfs::Rewrite + 'static>(
     maps: Option<&Path>,
     packages: Option<&Path>,
 ) -> vfs::Result<vfs::Vfs> {
-    let library = packages.map(content::Library::open).and_then(|mut l| {
-        for line in l.take_notices() {
-            eprintln!("map packages: {line}");
-        }
-        (!l.is_empty()).then_some(l)
-    });
+    mount_with_hashes(
+        cfg,
+        disc,
+        fonts,
+        maps,
+        packages,
+        content::DiscHashes::default(),
+    )
+}
+
+/// [`mount`], with the package resolver recording each disc base it hashes
+/// in `hashes` (shared with [`crate::map_bases::DiscBases`]).
+///
+/// Given a packages directory, the packages layer is always mounted, even
+/// with no package there yet: a package installed while the game runs (a
+/// Live join, the editor) is served at the map's next open
+/// (`vfs::PackageBackend`, docs/maps.md §3). With an empty folder it serves
+/// the disc's bytes unchanged.
+pub fn mount_with_hashes<R: vfs::Rewrite + 'static>(
+    cfg: vfs::Config,
+    disc: &Path,
+    fonts: Option<R>,
+    maps: Option<&Path>,
+    packages: Option<&Path>,
+    hashes: content::DiscHashes,
+) -> vfs::Result<vfs::Vfs> {
+    let library = packages.map(|p| content::Library::open(p).with_disc_hashes(hashes));
     if library.is_none() && maps.is_none() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
@@ -102,7 +126,7 @@ fn finish<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -141,6 +165,11 @@ mod tests {
     }
     /// An XISO with `fonts\font` ("glyphs") and `maps\level.map` ("disc map").
     fn iso(t: &Temp) -> PathBuf {
+        iso_at(&t.0, b"disc map")
+    }
+    /// That XISO in `dir`, with `level` as `maps\level.map` (at most one
+    /// sector).
+    pub(crate) fn iso_at(dir: &Path, level: &[u8]) -> PathBuf {
         let mut image = vec![0; 40 * 2048];
         image[32 * 2048..][..20].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
         image[32 * 2048 + 20..][..4].copy_from_slice(&33u32.to_le_bytes());
@@ -154,16 +183,16 @@ mod tests {
         image[33 * 2048..][..root.len()].copy_from_slice(&root);
         let fonts = dirent(0, 36, 6, false, "font");
         image[34 * 2048..][..fonts.len()].copy_from_slice(&fonts);
-        let maps = dirent(0, 37, 8, false, "level.map");
+        let maps = dirent(0, 37, level.len() as u32, false, "level.map");
         image[35 * 2048..][..maps.len()].copy_from_slice(&maps);
         image[36 * 2048..][..6].copy_from_slice(b"glyphs");
-        image[37 * 2048..][..8].copy_from_slice(b"disc map");
-        let path = t.0.join("disc.iso");
+        image[37 * 2048..][..level.len()].copy_from_slice(level);
+        let path = dir.join("disc.iso");
         std::fs::write(&path, image).unwrap();
         path
     }
     /// Upper-cases every file under `fonts\`.
-    struct Upper;
+    pub(crate) struct Upper;
     impl vfs::Rewrite for Upper {
         fn wants(&self, path: &str) -> bool {
             path.to_ascii_lowercase().starts_with("fonts\\")

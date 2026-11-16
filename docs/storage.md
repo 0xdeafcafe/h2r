@@ -158,19 +158,44 @@ disc's map with the patched runs laid over each read, never copied; a
 materialised map (BPS) is read from `<data>/maps/cache/<MapId>.map`. The
 header checksum at +0x2d0 is repaired in both. Its size shows in `stat`
 and in listings of `maps`; `host_file` gives the cache file for a
-materialised map and none for an overlay. Each map is resolved once, on
-first use, and logged once; a package that cannot be used (base hash
-mismatch, damaged patch) is a warning and the disc's map is served.
-Read-only, like the disc.
+materialised map and none for an overlay. Each map is resolved on first
+use and logged once; a package that cannot be used (base hash mismatch,
+damaged patch) is a warning and the disc's map is served. Read-only, like
+the disc.
+
+Packages can change while the game runs (docs/maps.md §3, "Now"):
+
+- **When the folder is looked at.** Before a map path is looked up, and
+  before a listing of `maps`, the backend compares a stamp of the folder:
+  modification times and sizes of `<data>/maps`, `active.toml`, and each
+  package directory and its `manifest.toml`. If the stamp changed, or on
+  `Vfs::rescan_maps()` (`Backend::rescan`, forwarded by the rewrite and
+  override layers), the library is scanned again.
+- **What is resolved again.** Only maps whose chosen package (directory
+  and `MapId`) changed.
+- **Open files.** The VFS tells backends when a file object opens and
+  when its last handle closes (`Backend::opened` and `closed`). A map
+  path with an open file object keeps its old resolution until the last
+  close, so a change takes effect at the next open of that path, never
+  under an open handle.
+- **`Vfs::map_changed(name)`** says whether a map would now come from
+  another package than at its last open. It is false for a map never
+  opened, one open now, or an `H2_MAP_DIR` file. The boot uses it to
+  drop stale cache slots (docs/cache-slots.md).
 
 The boot stacks the layers as font rewrite, then `MapOverrideBackend`
-(`H2_MAP_DIR`), then `PackageBackend`, then the disc, adding only the
-layers in use: with no valid package and no `H2_MAP_DIR` the mount is
-exactly `with_disc` / `with_disc_rewrite`. Tests:
+(`H2_MAP_DIR`), then `PackageBackend`, then the disc. The packages layer
+is always there in a boot, even with an empty maps folder, so a package
+installed later is served; without a packages directory and without
+`H2_MAP_DIR`, `map_override::mount` is exactly `with_disc` /
+`with_disc_rewrite`. Tests:
 `crates/content` (formats, resolver, cache), `crates/vfs/tests/packages.rs`
 (streaming at arbitrary offsets through `D:`, listings, BPS from the cache,
 a refused base, `H2_MAP_DIR` over a package, an unchanged disc without
-packages) and `crates/boot/src/map_override.rs`.
+packages, packages installed or changed while mounted, open handles kept,
+unchanged maps not resolved again, `map_changed`),
+`crates/boot/src/map_override.rs`, `crates/boot/src/map_bases.rs` and
+`crates/boot/src/map_slots.rs`.
 
 `Vfs::with_disc_backend(config, backend)` is `with_disc` for a disc
 backend built by the caller. Tests: `crates/vfs/src/map_override.rs` and

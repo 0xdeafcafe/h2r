@@ -79,3 +79,85 @@ must expose an invalid cache; resuming the retail copy must recover normally.
 The full active Cairo payload is compared against the ISO after every injected
 failure and after recovery; the recovered tutorial payload is also compared.
 This pause/reopen test does not terminate and relaunch the whole runner.
+
+## Changed maps
+
+A static read of the slot code (1.0 XBE), made when map packages became
+installable while the game runs (docs/maps.md §3):
+
+- **Reuse is by path alone.** `0x214a60` normalises the requested path
+  (`0x214db0`, which makes `d:\maps\<name>.map`, lowercased) and compares
+  it case-insensitively (`0x11c920`) with each slot's resident header
+  path. That path is header `+0x20`, which is record `+0x24` from
+  `0x557c90` (stride `0x804`). Nothing else is compared: no valid flag,
+  size, timestamp or `+0x2d0` checksum.
+- **The path comes from the copier.** Copy state 4 (`0x214343`) writes it
+  and stamps a FILETIME at header `+0x14c`. The source map supplies
+  neither.
+- **The source is not opened on a hit.** The status function `0x213f10`
+  returns 3 on a path match. The copy machine's idle state, the request
+  API `0x213d20` and the loader `0x18eaa0` all take 3 as ready to use.
+  The DVD file is opened only in state 1, after a miss.
+- **What invalidates a slot.**
+  - Being picked for another map of its type: state 7 zeroes the
+    resident header and writes a zero header to the slot file.
+  - A failed copy.
+  - At boot, `0x2136c0`.
+
+  Only slot 1 is ever checked against the DVD again (`+0x144`), and only
+  at boot.
+- **Slots by type** (`0x214b80`):
+
+  | Type | Map | Slot |
+  |---|---|---|
+  | 0 | campaign | 4-5 |
+  | 1 | multiplayer | 3 |
+  | 2 | main menu | 2 |
+  | 3 | shared | 0 |
+  | 4 | single-player shared | 1 |
+
+  Slots 0-1 are on Z:, 2-5 on N:.
+
+So a map whose bytes change under the same `d:\maps\` path within a
+session is served stale while its slot still holds it. For a
+multiplayer map that lasts until another multiplayer map is loaded; for
+a campaign map, through up to two other levels. The game keeps no copy
+of the header outside guest memory during a session, so the on-disk
+slot header does not matter. The record's resident header is the only
+thing checked.
+
+**The fix: the `map-slots` feature** (`crates/boot/src/map_slots.rs`).
+
+- **When it runs.** After `RENDER_FRAME`, on the main thread, where the
+  copy machine `0x2141f0` also runs, at most every 500 ms.
+- **What it checks.** Only while the copy machine is idle (`0x55bd04` is
+  0), and only for slots 3-5 that are not the current map's (`0x55aca8`).
+  For each, it reads the map name in the slot's path and asks
+  `vfs::Vfs::map_changed`.
+- **What it does.** When the map would now come from another package than
+  at the open that filled the slot, it zeroes the slot's 0x800-byte
+  resident header, as state 7 does. The handle at record `+0` is kept.
+  The next request misses, and the map is copied again through the VFS,
+  which now serves the new package.
+- **What it leaves alone.**
+  - Slots 0-2: copies of other maps check their headers as dependencies
+    (state 4, `0x214390`).
+  - The copy failure table (`0x55acac`): a path that failed three times
+    stays refused for the session.
+
+Tests: `map_slots` (synthetic guest memory: drops, the current slot, a
+copy in flight, the shared slots, a refilled slot) and
+`crates/vfs/tests/packages.rs` (`map_changed`). Nothing here is checked
+in game; see the lane report for the in-game checks.
+
+Known gaps:
+
+- A package for `shared`, `single_player_shared` or `mainmenu` installed
+  mid-session is not picked up until those slots are refilled. Slots 0-1
+  are on Z:, which survives a reboot, so they can stay stale across boots
+  too, whether the change comes from a package or from `H2_MAP_DIR`. This
+  is not new.
+- If a map is loaded again straight after itself without the menu in
+  between, its slot stays current and is not dropped. The multiplayer
+  lobby runs on the main menu (slot 2), so between games slot 3 is not
+  current. That is expected, not checked.
