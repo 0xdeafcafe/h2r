@@ -20,7 +20,8 @@ const USAGE: &str = "usage:
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
-          [--tunnel | --tunnel-name NAME [--hostname HOST]]
+          [--live-tunnel [--live-tunnel-name NAME [--live-tunnel-url https://HOST]]
+           [--no-tunnel-setup]]
           [--icons auto|xbox|xbox360|playstation|keyboard]
           [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
@@ -67,9 +68,13 @@ friends, games and the MOTD are kept) on 127.0.0.1 and a free port, or
 --live-listen ADDR, serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
 running service instead. The account is --gamertag NAME, or one named after
 your user; either is made on the server and kept in accounts.json if needed.
---tunnel (with --live) publishes the embedded server through a cloudflared
-quick tunnel so friends can join with --live-server <its URL>; --tunnel-name
-runs a named tunnel at https://HOST instead (docs/live-hosting.md).
+--live-tunnel (implies --live; --tunnel with --live is the same) publishes
+the embedded server through a cloudflared quick tunnel so friends can join with
+--live-server <its URL>. With --live-tunnel-name NAME --live-tunnel-url
+https://HOST (or --tunnel-name NAME --hostname HOST) it runs named tunnel NAME
+at that lasting URL instead, first logging in to Cloudflare (a browser link),
+creating the tunnel and routing HOST to it if any of that is missing;
+--no-tunnel-setup skips those steps (docs/live-hosting.md).
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
@@ -965,16 +970,25 @@ mod tests {
             p50_ms: 61.2,
             p99_ms: 998.4,
             max_ms: 1402.0,
-            phase_ms: [40.1, 3.2, 8.4, 2.0, 5.5, 0.0, 6.4],
+            phase_ms: [40.1, 3.2, 8.4, 2.0, 5.5, 0.0, 6.4, 0.0],
             count_mean: [0.0; timeline::phase::COUNTERS],
         };
-        let n = stats_notice(Some(s)).unwrap();
+        let n = stats_notice(Some(s.clone())).unwrap();
         assert_eq!(n.kind, app::NoticeKind::Info);
         assert_eq!(
             n.text,
             "14.8 fps p50 61 p99 998 max 1402 ms | cpu 40 dec 3 enc 8 sub 2 gpu 6 pace 0 rt 6"
         );
         // The banner cuts at 96 characters.
+        assert!(n.text.len() < 96);
+        // With render-timing on, the render front-end follows cpu.
+        let mut s = s;
+        s.phase_ms[timeline::phase::Phase::Render as usize] = 15.2;
+        let n = stats_notice(Some(s)).unwrap();
+        assert_eq!(
+            n.text,
+            "14.8 fps p50 61 p99 998 max 1402 ms | cpu 40 ren 15 dec 3 enc 8 sub 2 gpu 6 pace 0 rt 6"
+        );
         assert!(n.text.len() < 96);
     }
 

@@ -31,6 +31,7 @@ pub mod locale;
 pub mod memory;
 pub mod points;
 pub mod render;
+pub mod render_loop;
 pub mod tags;
 pub mod testing;
 pub mod view;

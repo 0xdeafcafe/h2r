@@ -7,6 +7,7 @@ mod backend;
 mod disc;
 mod host;
 mod map_override;
+mod packages;
 mod path;
 mod rewrite;
 mod status;
@@ -17,6 +18,7 @@ pub use backend::Backend;
 pub use disc::DiscBackend;
 pub use host::{HostBackend, METADATA_STALE, flush_pending_metadata};
 pub use map_override::{MapOverrideBackend, MapOverrideNotice};
+pub use packages::PackageBackend;
 pub use rewrite::{MAX_REWRITE_BYTES, Rewrite, RewriteBackend};
 pub use path::{Namespace, validate_fatx_name, validate_fatx_path, wildcard_matches};
 pub use status::{Error, Result};
@@ -305,6 +307,13 @@ impl Vfs {
     pub fn host_file(&mut self, name: &str) -> Option<HostFile> {
         let (mount, path) = self.resolve(name).ok()?;
         self.mounts[mount].backend.host_file(&path)
+    }
+    /// Which map exactly `name` serves, when it isn't the retail disc map:
+    /// a map package's `MapId`, or a whole-file override's. `None` means
+    /// retail (or not a map). See [`Backend::map_id`].
+    pub fn map_id(&mut self, name: &str) -> Option<content::MapId> {
+        let (mount, path) = self.resolve(name).ok()?;
+        self.mounts[mount].backend.map_id(&path)
     }
     /// NtCreateFile's initial allocation hint, applied only on create/overwrite.
     /// It reserves logical volume capacity without changing the initial EOF.

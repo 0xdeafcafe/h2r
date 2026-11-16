@@ -182,8 +182,9 @@ What the hooks do:
   `0x2c9ce7` draws row 4 as "Skulls"; rows 0 to 3 go to the original. The
   pane hook (`0x230427`) returns at once (`ret 4`) for row 4 on screen 12,
   so the previous difficulty's pane stays up. The list has four item
-  widgets, so it scrolls to the fifth row, as the Live menu's Custom Games
-  row does (likely; unseen).
+  widgets, so it scrolls to the fifth row (likely; unseen). The Live menu
+  instead adds a fifth item widget ([live-custom-games.md](live-custom-games.md)
+  §5), which this list could do the same way.
 - **The press.** `0x2c9d38` for row 4 never runs the original (it would
   clamp the row to Legendary and start the campaign). The player is the
   callback's `[[esp+4]]+4`, as for the Controls and Live menu lists; the

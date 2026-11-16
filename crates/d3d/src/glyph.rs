@@ -48,17 +48,15 @@ pub fn has_glyph_cache_shape(info: &TextureInfo) -> bool {
         && info.levels == 1
 }
 
-/// Glyph smoothing is on unless `H2_SMOOTH_TEXT` is `0`, `off` or `false`.
+/// Glyph smoothing is off unless `H2_SMOOTH_TEXT` is `1`, `on` or `true`
+/// (it made letters look bloated in play; opt-in until it is reworked).
 pub fn smoothing_from_env() -> bool {
     smoothing_from(std::env::var("H2_SMOOTH_TEXT").ok().as_deref())
 }
 
 /// [`smoothing_from_env`] for a given value.
 pub fn smoothing_from(value: Option<&str>) -> bool {
-    !matches!(
-        value.map(str::trim),
-        Some("0") | Some("off") | Some("false")
-    )
+    matches!(value.map(str::trim), Some("1") | Some("on") | Some("true"))
 }
 
 #[cfg(test)]
@@ -118,7 +116,7 @@ mod tests {
 
     #[test]
     fn the_switch() {
-        assert!(smoothing_from(None));
+        assert!(!smoothing_from(None));
         assert!(smoothing_from(Some("1")));
         for off in ["0", "off", "false", " 0 "] {
             assert!(!smoothing_from(Some(off)), "{off}");

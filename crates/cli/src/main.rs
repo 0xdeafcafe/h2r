@@ -30,6 +30,7 @@ mod mappack_cmd;
 mod maps;
 mod movies_cmd;
 mod object;
+mod patch_lvl;
 #[cfg(unix)]
 mod follow;
 mod play_cmd;

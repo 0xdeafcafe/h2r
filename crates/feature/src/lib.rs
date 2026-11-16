@@ -21,6 +21,8 @@ pub mod install;
 pub mod leaves;
 pub mod locale;
 pub mod plan;
+pub mod render_loop;
+pub mod render_timing;
 pub mod switches;
 
 use std::sync::Arc;

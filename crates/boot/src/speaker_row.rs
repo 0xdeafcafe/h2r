@@ -125,7 +125,13 @@ pub fn grow_visible<M: Gm>(m: &mut M, wgit: u32, extra: u32) -> Option<u32> {
 /// linked, `Some(false)` when it is already a child and only has to move
 /// back to the end (the original re-appends the six retail items).
 pub fn extra_item_needed<M: Gm>(m: &M, handler: u32, item: u32) -> Option<bool> {
-    if m.u32(handler)? != HANDLER_VTABLE {
+    item_needed(m, handler, HANDLER_VTABLE, item)
+}
+
+/// [`extra_item_needed`] for the list whose handler vtable is `vtable` (the
+/// Xbox Live menu's too, `crate::custom_games`).
+pub fn item_needed<M: Gm>(m: &M, handler: u32, vtable: u32, item: u32) -> Option<bool> {
+    if m.u32(handler)? != vtable {
         return None;
     }
     Some(!children(m, handler)?.contains(&item))

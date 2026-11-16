@@ -125,13 +125,15 @@ impl WindowSurface {
     }
 
     /// Waits for the display's vblank (`true`) or not, from the next frame.
-    fn set_vsync(&mut self, ctx: &GfxContext, vsync: bool) {
+    fn set_vsync(&mut self, vsync: bool) {
         self.config.present_mode = if vsync {
             wgpu::PresentMode::AutoVsync
         } else {
             wgpu::PresentMode::AutoNoVsync
         };
-        self.surface.configure(&ctx.device, &self.config);
+        // Deferred like a resize: the next acquire configures inside an
+        // error scope, so a GPU that is slow to go idle cannot abort us.
+        self.stale = true;
     }
 
     fn acquire(&mut self, ctx: &GfxContext) -> Option<wgpu::SurfaceTexture> {
@@ -821,7 +823,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             self.config.fps = target;
             self.display.retarget(target);
             if let (Some(v), Some(g)) = (vsync, self.gpu.as_mut()) {
-                g.surface.set_vsync(&g.ctx, v);
+                g.surface.set_vsync(v);
             }
             eprintln!("app: frame rate {target}");
         }

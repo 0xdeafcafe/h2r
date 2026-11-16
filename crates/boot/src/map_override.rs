@@ -1,8 +1,14 @@
-//! Edited maps in place of the disc's: `H2_MAP_DIR` names a host directory
-//! whose `<name>.map` files the game reads as `D:\maps\<name>.map`
-//! (`vfs::MapOverrideBackend`, docs/storage.md "Map overrides",
-//! docs/scenario-editor.md "How patched maps reach the game").
-//! Unset or empty, the DVD is mounted exactly as before.
+//! Edited maps in place of the disc's.
+//!
+//! - Map packages in `<data>/maps/` (docs/maps.md, `vfs::PackageBackend`):
+//!   a base plus patches, served as `D:\maps\<name>.map`.
+//! - `H2_MAP_DIR` names a host directory whose `<name>.map` files the game
+//!   reads as `D:\maps\<name>.map` (`vfs::MapOverrideBackend`,
+//!   docs/storage.md "Map overrides", docs/scenario-editor.md "How patched
+//!   maps reach the game"). It wins over a package for the same map.
+//!
+//! With neither (no valid package, `H2_MAP_DIR` unset or empty), the DVD is
+//! mounted exactly as before.
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
@@ -21,26 +27,73 @@ pub fn dir() -> Option<PathBuf> {
     dir_from(std::env::var_os(ENV))
 }
 
-/// Storage plus the DVD at `disc`, with the font rewrite if any, and the
-/// disc's maps overridden from `maps` if given. Without `maps` this is
+/// Which map exactly the game gets for `maps\<name>.map`: a package's
+/// `MapId`, or a whole-file override's (`H2_MAP_DIR`). `None` means the
+/// retail disc map. For sessions and telemetry: pass the loaded map's
+/// short name (the cache header's, `0x00547898`, docs/live-gamestate.md).
+pub fn map_id(vfs: &mut vfs::Vfs, name: &str) -> Option<content::MapId> {
+    vfs.map_id(&format!("{}\\maps\\{name}.map", vfs::CDROM_DEVICE))
+}
+
+/// Where map packages live: `<data>/maps`.
+pub fn packages_dir(data_root: &Path) -> PathBuf {
+    data_root.join("maps")
+}
+
+/// Storage plus the DVD at `disc`, with the font rewrite if any, the
+/// packages in `packages` (normally [`packages_dir`]) if it holds any, and
+/// the disc's maps overridden from `maps` if given. With neither this is
 /// exactly `Vfs::with_disc` / `Vfs::with_disc_rewrite`.
 pub fn mount<R: vfs::Rewrite + 'static>(
     cfg: vfs::Config,
     disc: &Path,
     fonts: Option<R>,
     maps: Option<&Path>,
+    packages: Option<&Path>,
 ) -> vfs::Result<vfs::Vfs> {
-    let Some(maps) = maps else {
+    let library = packages.map(content::Library::open).and_then(|mut l| {
+        for line in l.take_notices() {
+            eprintln!("map packages: {line}");
+        }
+        (!l.is_empty()).then_some(l)
+    });
+    if library.is_none() && maps.is_none() {
         return match fonts {
             Some(r) => vfs::Vfs::with_disc_rewrite(cfg, disc, r),
             None => vfs::Vfs::with_disc(cfg, disc),
         };
-    };
-    eprintln!(
-        "map override: maps from {} replace the disc's",
-        maps.display()
-    );
-    let disc = vfs::MapOverrideBackend::new(vfs::DiscBackend::open(disc)?, maps);
+    }
+    let disc = vfs::DiscBackend::open(disc)?;
+    if let Some(l) = &library {
+        eprintln!(
+            "map packages: {} package(s) in {}",
+            l.packages().len(),
+            l.root().display()
+        );
+    }
+    if let Some(maps) = maps {
+        eprintln!(
+            "map override: maps from {} replace the disc's",
+            maps.display()
+        );
+    }
+    match (library, maps) {
+        (Some(l), Some(m)) => finish(
+            cfg,
+            vfs::MapOverrideBackend::new(vfs::PackageBackend::new(disc, l), m),
+            fonts,
+        ),
+        (Some(l), None) => finish(cfg, vfs::PackageBackend::new(disc, l), fonts),
+        (None, Some(m)) => finish(cfg, vfs::MapOverrideBackend::new(disc, m), fonts),
+        (None, None) => unreachable!("handled above"),
+    }
+}
+
+fn finish<B: vfs::Backend + 'static, R: vfs::Rewrite + 'static>(
+    cfg: vfs::Config,
+    disc: B,
+    fonts: Option<R>,
+) -> vfs::Result<vfs::Vfs> {
     match fonts {
         // Fonts live under `fonts\`, maps under `maps\`: the layers never meet.
         Some(r) => vfs::Vfs::with_disc_backend(cfg, vfs::RewriteBackend::new(disc, r)),
@@ -130,8 +183,16 @@ mod tests {
         buf
     }
     fn mounted(t: &Temp, fonts: bool, maps: Option<&Path>) -> vfs::Vfs {
+        mounted_with(t, fonts, maps, None)
+    }
+    fn mounted_with(
+        t: &Temp,
+        fonts: bool,
+        maps: Option<&Path>,
+        packages: Option<&Path>,
+    ) -> vfs::Vfs {
         let cfg = vfs::Config::new(t.0.join("data"), 0x4D530064);
-        let mut v = mount(cfg, &iso(t), fonts.then_some(Upper), maps).unwrap();
+        let mut v = mount(cfg, &iso(t), fonts.then_some(Upper), maps, packages).unwrap();
         v.namespace
             .create_symbolic_link("\\??\\D:", vfs::CDROM_DEVICE)
             .unwrap();
@@ -184,5 +245,109 @@ mod tests {
         let t = Temp::new();
         let mut v = mounted(&t, false, Some(&t.0.join("absent")));
         assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"disc map");
+    }
+
+    /// A package in `<data>/maps` for `level`: an IPS patch over the disc's
+    /// map ("disc map" becomes "DISC map").
+    fn level_package(t: &Temp) -> PathBuf {
+        let root = packages_dir(&t.0.join("data"));
+        let dir = root.join("level-mod");
+        std::fs::create_dir_all(&dir).unwrap();
+        let patch = b"PATCH\0\0\0\0\x04DISCEOF";
+        std::fs::write(dir.join("a.ips"), patch).unwrap();
+        let mut m = content::Manifest::retail("level", content::Sha256::of(b"disc map"));
+        m.patches.push(content::manifest::Layer {
+            file: "a.ips".into(),
+            sha256: content::Sha256::of(patch),
+        });
+        std::fs::write(dir.join("manifest.toml"), m.to_toml()).unwrap();
+        root
+    }
+
+    /// Everything the guest sees of the disc, for comparing mounts.
+    fn observe(v: &mut vfs::Vfs) -> Vec<String> {
+        let mut seen = Vec::new();
+        for name in ["D:\\maps\\level.map", "D:\\fonts\\font"] {
+            seen.push(format!("{:?}", v.query_path(name)));
+            seen.push(format!("{:?}", read(v, name)));
+            seen.push(format!("{:?}", v.host_file(name)));
+        }
+        seen
+    }
+
+    #[test]
+    fn without_packages_the_mount_is_unchanged() {
+        let t = Temp::new();
+        for fonts in [true, false] {
+            let expected = observe(&mut mounted(&t, fonts, None));
+            let root = packages_dir(&t.0.join("data"));
+            // Missing, empty, holding only a cache or a broken package.
+            assert_eq!(
+                observe(&mut mounted_with(&t, fonts, None, Some(&root))),
+                expected
+            );
+            std::fs::create_dir_all(root.join("cache")).unwrap();
+            std::fs::create_dir_all(root.join("broken")).unwrap();
+            std::fs::write(root.join("broken").join("manifest.toml"), "x").unwrap();
+            assert_eq!(
+                observe(&mut mounted_with(&t, fonts, None, Some(&root))),
+                expected
+            );
+            std::fs::remove_dir_all(&root).unwrap();
+        }
+    }
+
+    #[test]
+    fn packages_are_served_and_fonts_still_rewritten() {
+        let t = Temp::new();
+        let root = level_package(&t);
+        for fonts in [true, false] {
+            let mut v = mounted_with(&t, fonts, None, Some(&root));
+            assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"DISC map");
+            let font: &[u8] = if fonts { b"GLYPHS" } else { b"glyphs" };
+            assert_eq!(read(&mut v, "D:\\fonts\\font"), font);
+        }
+    }
+
+    #[test]
+    fn map_ids_name_packages_and_overrides_and_retail_is_none() {
+        let t = Temp::new();
+        // Retail: nothing to say.
+        let mut v = mounted(&t, false, None);
+        assert_eq!(map_id(&mut v, "level"), None);
+        // A package: its manifest's id, through the font rewrite too.
+        let root = level_package(&t);
+        let mut ids = Vec::new();
+        for fonts in [true, false] {
+            let mut v = mounted_with(&t, fonts, None, Some(&root));
+            ids.push(map_id(&mut v, "LEVEL").expect("a package names its map"));
+            assert_eq!(map_id(&mut v, "other"), None);
+        }
+        assert_eq!(ids[0], ids[1]);
+        // An override wins and has an id of its own, stable per contents.
+        let dir = t.0.join("maps");
+        std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        let o = map_id(&mut v, "level").unwrap();
+        assert_ne!(o, ids[0]);
+        assert_eq!(map_id(&mut v, "level"), Some(o));
+        std::fs::write(dir.join("level.map"), b"edited again").unwrap();
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        assert_ne!(map_id(&mut v, "level"), Some(o));
+    }
+
+    #[test]
+    fn the_map_dir_wins_over_a_package() {
+        let t = Temp::new();
+        let root = level_package(&t);
+        let dir = t.0.join("maps");
+        std::fs::write(dir.join("level.map"), b"edited!!!").unwrap();
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"edited!!!");
+        assert_eq!(read(&mut v, "D:\\fonts\\font"), b"GLYPHS");
+        // Without the override file, the package shows through.
+        std::fs::remove_file(dir.join("level.map")).unwrap();
+        let mut v = mounted_with(&t, true, Some(&dir), Some(&root));
+        assert_eq!(read(&mut v, "D:\\maps\\level.map"), b"DISC map");
     }
 }

@@ -533,10 +533,12 @@ pub fn run_hosted_with_live(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
-    // Edited maps from H2_MAP_DIR in place of the disc's (docs/storage.md
-    // "Map overrides"); unset, the disc is mounted as it always was.
+    // Map packages from <data>/maps (docs/maps.md) and edited maps from
+    // H2_MAP_DIR in place of the disc's (docs/storage.md "Map overrides");
+    // with neither, the disc is mounted as it always was.
     let maps = map_override::dir();
-    let mounted = map_override::mount(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref());
+    let packages = map_override::packages_dir(&opts.data_root);
+    let mounted = map_override::mount(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref(), Some(&packages));
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
@@ -600,7 +602,7 @@ pub fn run_hosted_with_live(
     };
     layout_glue::install(&loaded.runtime, &mut features, model).context("installing the button layouts")?;
     // The party privacy as the Live session's visibility, and the Live
-    // menu's Custom Games row (registered with the layouts above;
+    // menu's Custom Game Browser and Content Download rows (registered with the layouts above;
     // docs/live-custom-games.md).
     custom_games::install_privacy(&loaded.runtime, _live.as_ref(), host.settings.as_ref())
         .context("installing the Live game visibility")?;
@@ -692,6 +694,12 @@ pub fn run_hosted_with_live(
     // The Rust datum, tag and locale functions, when H2_FEATURES has
     // impl.engine=on (off by default).
     features.add(&feature::leaves::EngineLeaves).map_err(|e| anyhow::anyhow!("engine leaves: {e}"))?;
+    // Render front-end time in the frame stats, when H2_FEATURES has
+    // render-timing (off by default).
+    features.add(&feature::render_timing::RenderTiming::new()).map_err(|e| anyhow::anyhow!("render timing: {e}"))?;
+    // Stage 7a: the Rust render_views, when H2_FEATURES has
+    // impl.render.views=on (off by default; docs/render-loop.md).
+    features.add(&feature::render_loop::RenderLoop).map_err(|e| anyhow::anyhow!("render loop: {e}"))?;
     let plan = features.build(&feature::Base).map_err(|conflicts| {
         let c: Vec<String> = conflicts.iter().map(ToString::to_string).collect();
         anyhow::anyhow!("feature plan refused: {}", c.join("; "))

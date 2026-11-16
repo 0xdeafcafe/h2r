@@ -1,6 +1,9 @@
 # Maps: new, edited, patched and shared (design)
 
-Status: design. Agreed with the Live session (network side) and built on
+Status: design, with the foundation built: `crates/content` (manifest,
+`MapId`, PPF/IPS/BPS, resolver), `vfs::PackageBackend` and the boot
+wiring. Sections marked **Built** say exactly what exists; see also
+§7. Agreed with the Live session (network side) and built on
 the feature engine's content packs ([feature-engine.md](feature-engine.md),
 "Content packs"). What exists today: the editor (`h2-editor`,
 [editor.md](editor.md), [scenario-editor.md](scenario-editor.md)) saves
@@ -67,6 +70,23 @@ same map exactly when they have the same base and the same layers in the
 same order, and a server can tell a client exactly which pieces it lacks.
 Retail maps have a `MapId` too: a manifest with only `[base]`.
 
+**Built** (`content::MapId`). The hashed identity is
+
+```json
+{"base":{"derived":false,"map":"lockout","sha256":"<hex>"},"format":1,"pack":["<hex>"],"patch":["<hex>","<hex>"]}
+```
+
+canonicalised by RFC 8785: the package's display fields (name, author,
+description, image) are dropped, and so are the layer file names and
+`[result]`, since neither changes the bytes served. The map name is
+lowercased, hex is lowercase, `sha256` is omitted for a derived map
+without one, and layers keep manifest order. `MapId::retail(name,
+sha256)` is the id of the base-only manifest. It displays and serialises
+as 64 lowercase hex digits. The canonical JSON is a copy of
+`live-proto::jcs` restricted to integers (manifests hold no floats),
+because live-proto will depend on `content` for `MapId`; its tests replay
+jcs's vectors. Golden vectors on synthetic hashes pin the id.
+
 The type lives in a small new crate, `crates/content` (manifest, `MapId`,
 patch format readers, resolver), which vfs, boot, editor, live-proto and
 live-server depend on. It is the hand-off to the Live session.
@@ -74,7 +94,9 @@ live-server depend on. It is the hand-off to the Live session.
 ## 2. Applying layers at boot
 
 The resolver turns a `MapId` into bytes the vfs serves as
-`\maps\<name>.map`, generalising today's `MapOverrideBackend`:
+`\maps\<name>.map`, generalising today's `MapOverrideBackend`
+(**Built**, except content packs, which are listed and not yet applied;
+the details are in §7):
 
 - **Offset patches** (PPF records, IPS, and our own) never copy the map:
   the vfs reads the base and overlays the patched ranges as it streams.
@@ -92,8 +114,8 @@ The resolver turns a `MapId` into bytes the vfs serves as
 
 | Format | Era | Shape | Status |
 |---|---|---|---|
-| PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | public spec; read it |
-| IPS / BPS | generic | offset runs / copy-from-source deltas with CRCs | public specs; cheap to add |
+| PPF 1/2/3 | 2004- | absolute-offset byte runs; PPF3 has 64-bit offsets and an optional undo block | **Built**: block check, PPF2 input size, PPF3 undo data checked against the base; FILE_ID.DIZ read |
+| IPS / BPS | generic | offset runs / copy-from-source deltas with CRCs | **Built**: IPS with RLE, growth and the truncation extension; BPS with all four actions and its three CRC32s |
 | SPPF ("Super PPF") | 2006 | the map split into 4 blocks, so a size change only shifts to the end of its block; can add files to the map | no public spec |
 | Serenity | 2005-07 | 35 blocks plus one per tag; embeds author, description and image | no public spec |
 | ours | — | a map package (above) | this page |
@@ -159,6 +181,11 @@ Agreed with the Live session:
   playlists allow only retail or admin-pinned `MapId`s. A map served from
   `H2_MAP_DIR` gets its own `MapId`, so a local edit is never announced
   as retail.
+- Which map is loaded: `vfs::Vfs::map_id(path)` (each backend answers: a
+  package gives its manifest's id, an `H2_MAP_DIR` file the id of a derived
+  manifest whose one layer is the whole file) and
+  `boot::map_override::map_id(vfs, name)`, given the loaded map's short name
+  from the cache header. `None` means the retail disc map.
 - Stats and carnage reports record `map_id` as well as the name, so a
   modded Lockout doesn't mix into Lockout's stats.
 
@@ -180,11 +207,98 @@ geometry is extracted from the patched map.
 
 | Lane | Work | Depends on |
 |---|---|---|
-| content | `crates/content`: manifest, `MapId`, PPF/IPS/BPS readers, resolver; the vfs serves packages from `<data>/maps/` (with `H2_MAP_DIR` kept as a shortcut) | — |
+| content | **Built.** `crates/content`: manifest, `MapId`, PPF/IPS/BPS readers, resolver; the vfs serves packages from `<data>/maps/` (with `H2_MAP_DIR` kept as a shortcut) | — |
 | editor | save as package: an offset patch or a `map-variant` pack against the base, plus manifest and image; open packages | content |
 | map list | synthesised `patch.lvl` for new maps (and the Map Pack, if 1.0 loads it) | the 1.0 research |
 | live | `map_id` in sessions, hoppers and telemetry; the content store; join-time download; admin; art keys | content (`MapId`) |
 | realtime | folder watch, then the editor-to-game socket for `map-variant` edits | feature engine loader hook |
 | formats | SPPF and Serenity readers | sample patches from the user |
+
+## 7. What is built
+
+`crates/content` (no game data; every test uses synthetic maps and
+patches), `vfs::PackageBackend`, and the boot mount
+(`crates/boot/src/map_override.rs`).
+
+**Layout.**
+
+```text
+<data>/maps/
+  active.toml              optional: which package serves which map
+  lockout-snipers/         one directory per package (any name)
+    manifest.toml          the manifest of §1
+    snipers.ppf            its layers, packs and image
+  cache/<MapId>.map        materialised maps
+```
+
+Directories starting with `.` and `cache` are not packages. A package
+whose manifest fails to parse or validate is skipped with a warning.
+
+**Manifest checks.** `format` must be 1; `name` non-empty; `[base] map` a
+plain name (letters, digits, `_`, `-`); `sha256` present unless
+`derived = true`, and a derived map needs at least one `[[patch]]` (its
+map file, first); hashes are 64 hex digits (either case, stored
+lowercase); every file name is relative with no `..`, root or backslash,
+and is opened only if, links followed, it stays in the package directory;
+the image is `.png`/`.jpg`/`.jpeg`, starts with a PNG or JPEG signature
+and is at most 512 KB. Unknown keys are refused.
+
+**Choice rule: one package per map name.**
+
+1. `active.toml` decides when it names the map: `lockout = "dir"` picks
+   the package in `<data>/maps/dir`; `lockout = false` the disc's map. If
+   the named package is missing, broken or for another map, the disc's map
+   is served with a warning, never another package.
+2. Otherwise, of the valid packages for the name, the one whose directory
+   name sorts last wins (so `lockout-2026-11-16` beats `lockout-2026-10-01`),
+   with a notice when there was more than one.
+
+Names match ASCII case-insensitively. Only maps the disc has are served
+(a package for a new name stays unseen until the map list work).
+
+**Resolution**, on the map's first use, once per session:
+
+- Each layer is read and its SHA-256 checked. The format comes from its
+  signature (`PPF`, `PATCH`, `BPS1`); a file with none ending in `.map`
+  is a whole map, which replaces everything before it and becomes the
+  base. Anything else (SPPF, Serenity) is refused as unrecognised.
+- **Overlay** (only PPF and IPS after the base): the layers compose into
+  sorted, non-overlapping byte runs over the base. One pass over the base
+  checks its SHA-256 (the disc's map against `[base] sha256`, or the whole
+  `.map` layer against its own hash) and computes the copy-time checksum
+  of the patched bytes, which is then written at +0x2d0 as a last run,
+  when the result starts with the `daeh` header and is at least 0x800
+  bytes. Reads lay the runs over the base as they stream; nothing is
+  copied. PPF records past the base's end are refused (PPF patches a
+  fixed-size image); IPS may grow the file (zeros where nothing is
+  written) and truncate it.
+- **Materialised** (any BPS layer): the result is built in memory once,
+  checksum repaired, and written atomically (a temporary file, then a
+  rename) to `cache/<MapId>.map`. A later resolution of the same `MapId`
+  uses the file without reading the base. After each write the cache is
+  trimmed to its cap (4 GiB by default) by removing the least recently
+  used maps (by modification time, refreshed on each use), never the one
+  just built.
+- Content packs are hash-checked and listed (`Resolved::packs`) for the
+  feature engine; nothing applies them yet.
+- Any failure (a base that does not match, a damaged patch, a layer
+  leaving its package) is a warning, and the disc's map is served.
+
+**In the vfs** (`PackageBackend`, wrapping the disc beneath
+`MapOverrideBackend`, so `H2_MAP_DIR` still wins as a whole-file
+override): `stat` and listings of `maps` give the result's size,
+`read_at` streams it, and the choice is logged once with the package and
+`MapId`. `host_file` is the cache file for a materialised map and none
+for an overlay, which is not one region of a host file (so telemetry and
+the speaker index fall back as for any file without one).
+`PackageBackend::map_id(path)` gives the `MapId` serving a map.
+
+**Boot.** `<data>/maps/` is scanned at mount. With no valid package there
+and `H2_MAP_DIR` unset, the disc is mounted exactly as before
+(`Vfs::with_disc` / `with_disc_rewrite`, no wrapper).
+
+**Not yet:** applying content packs; the folder watch (§3); `MapId` in
+sessions (§5); SPPF and Serenity; caching the base's hash between runs
+(each session reads a patched map's base once, in full, on first use).
 
 [formats]: https://connortumbleson.com/2020/04/12/halo-2-patch-format-types/
