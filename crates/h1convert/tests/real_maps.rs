@@ -126,3 +126,53 @@ fn converted_collision_agrees_with_the_source_on_points_rays_and_surfaces() {
     }
     assert!(maps > 0, "no maps in {dir}");
 }
+
+#[test]
+#[ignore = "reads Halo 1 maps from $H1_MAP_DIR"]
+fn the_halo_2_sandbox_plan_of_each_map() {
+    let dir = std::env::var("H1_MAP_DIR").expect("set H1_MAP_DIR");
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_none_or(|e| e != "map") {
+            continue;
+        }
+        let m = H1Map::from_reader(Cursor::new(std::fs::read(&path).unwrap())).unwrap();
+        let mp = m.multiplayer().unwrap();
+        let p = h1convert::placements::plan_map(&m).unwrap();
+        eprintln!(
+            "{}: {} spawns, {} flags, {} items; dropped {}",
+            m.header().name,
+            p.spawns.len(),
+            p.flags.len(),
+            p.items.len(),
+            p.dropped.len()
+        );
+        for d in &p.dropped {
+            eprintln!("  dropped {d}");
+        }
+        let mut roles: Vec<_> = p.items.iter().map(|i| format!("{:?}", i.item)).collect();
+        roles.sort();
+        roles.dedup();
+        eprintln!("  roles {roles:?}");
+        assert_eq!(p.spawns.len(), mp.starting_locations.len());
+        // Every item spawn is placed or reported.
+        assert_eq!(
+            p.items.len() + p.dropped.iter().filter(|d| !d.starts_with("flag")).count(),
+            mp.equipment.len() + mp.vehicles.len()
+        );
+        // Nothing unrecognised: every drop is a known Halo 2 gap.
+        for d in p.dropped.iter().filter(|d| !d.starts_with("flag")) {
+            assert!(
+                [
+                    "ammo",
+                    "health pack",
+                    "double speed",
+                    "full-spectrum vision"
+                ]
+                .iter()
+                .any(|w| d.contains(w)),
+                "{d}"
+            );
+        }
+    }
+}

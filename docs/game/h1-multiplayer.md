@@ -114,15 +114,37 @@ item is found in the base map by the words in its tag name.
 | Ammo pickups | Dropped | Halo 2 has no ammo pickups |
 | Double speed, full-spectrum vision | Dropped | Unused on Xbox maps |
 
+## Placements plan (**Built** as `h1convert::placements`)
+
+`plan_map` turns a Halo 1 map's multiplayer parts into Halo 2 sandbox
+records, and lists everything it leaves out:
+
+| Halo 1 | Halo 2 |
+|---|---|
+| Player starting location | Starting location: position, facing, team. Halo 1's per-spawn game types are not kept (Halo 2 has no field for them) |
+| CTF flag (per team) | CTF flag spawn and CTF flag return at the same place (Halo 1 uses one point for both) |
+| Oddball | Oddball spawn |
+| Teleporter from / to | Teleporter source / destination, channel in the team field |
+| Hill flag | Hill marker (hill number in the team field) |
+| Race track, race and CTF vehicle points, Vegas bank | Dropped: Halo 2 has no race |
+| Netgame equipment | Item spawn of the item collection's first item's Halo 2 role (table above), with its respawn time |
+| Vehicle placement | Vehicle spawn by its palette entry's role |
+
+`resolve` picks the base map's item collection (`itmc`) or vehicle
+collection (`vehc`) for a role by the words in its name. **V:** on
+beavercreek and carousel every spawn is placed and every item spawn is
+either placed or one of the known gaps (health packs, ammo,
+`the_halo_2_sandbox_plan_of_each_map`).
+
 ## Still to do, in order
 
-1. **Placements (Halo 2 sandbox).** Starting locations, netgame flags and
-   equipment onto the base's scenario through `scenario-edit` (its
-   `Scenario` reads, edits and grows these blocks). Open: Halo 2's
-   netgame flag type values (the editor marks them "small values"); the
-   plan is to read them off the disc (teleporter pairs share a channel, CTF
-   flags come one per team) before mapping Halo 1's kinds, and the game
-   type masks Halo 1 puts on spawns, which Halo 2 has no field for.
+1. **Placements onto the base.** Write the plan into the base's scenario
+   through `scenario-edit` (its `Scenario` reads, edits and grows these
+   blocks). Halo 2's netgame flag kind values (`H2Flag::raw`) follow the
+   community enum, and the disc agrees (`h1convert/tests/h2_scenario.rs`:
+   0 and 1 once per team on all 12 maps, 4 always neutral, 7 and 8 in
+   equal numbers, 10 to 16 runs of boundary points); not yet confirmed from
+   engine code.
 2. **Structure BSP and lightmap.** Write a whole Halo 2 `sbsp` and `ltmp`
    from Halo 1's geometry: collision (done), the leaves block parallel to
    the collision leaves (cluster per leaf), clusters with their render

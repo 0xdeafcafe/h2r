@@ -5,12 +5,14 @@
 //! - [`query`]: point and segment tests over either game's BSP tree, which
 //!   is how a conversion is checked against its source.
 //! - [`sandbox`]: Halo 1 multiplayer items to their nearest Halo 2 ones.
+//! - [`placements`]: spawns, flags and item spawns for the Halo 2 sandbox.
 //!
 //! No game data is in this crate or its tests. Tests build invented BSPs;
 //! the `#[ignore]`d ones read maps from `$H1_MAP_DIR` at run time.
 #![forbid(unsafe_code)]
 
 pub mod collision;
+pub mod placements;
 pub mod query;
 pub mod sandbox;
 

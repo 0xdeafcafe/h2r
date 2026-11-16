@@ -122,3 +122,105 @@ fn halo_1_items_map_to_their_nearest_halo_2_items() {
         "plasma_rifle"
     ));
 }
+
+fn mp() -> h1map::scenario::Multiplayer {
+    use h1map::scenario::*;
+    use h1map::{Group, TagId, TagRef};
+    let null = TagRef {
+        group: Group::new(b"itmc"),
+        name_address: 0,
+        name_len: 0,
+        id: TagId::NONE,
+    };
+    let flag = |kind, team| NetgameFlag {
+        position: [1.0, 2.0, 3.0],
+        facing: 0.5,
+        kind,
+        team,
+        weapon_group: null,
+    };
+    let equipment = |respawn| NetgameEquipment {
+        flags: 0,
+        game_types: [GameType::ALL; 4],
+        team: 0,
+        spawn_time: respawn,
+        position: [4.0, 5.0, 6.0],
+        facing: 1.0,
+        item: null,
+    };
+    Multiplayer {
+        skies: vec![],
+        starting_locations: vec![StartingLocation {
+            position: [7.0, 8.0, 9.0],
+            facing: 0.25,
+            team: 1,
+            bsp: 0,
+            game_types: [GameType::ALL; 4],
+        }],
+        flags: vec![
+            flag(FlagKind::CtfFlag, 1),
+            flag(FlagKind::TeleportFrom, 3),
+            flag(FlagKind::RaceTrack, 0),
+        ],
+        equipment: vec![equipment(30), equipment(0)],
+        vehicle_palette: vec![],
+        vehicles: vec![],
+    }
+}
+
+#[test]
+fn the_halo_2_sandbox_plan_maps_flags_and_items_and_says_what_it_drops() {
+    use crate::placements::*;
+    let names = [
+        vec!["weapons\\assault rifle\\assault rifle".to_string()],
+        vec!["powerups\\health pack".to_string()],
+    ];
+    let p = plan(&mp(), |i| names[i].clone());
+    assert_eq!(
+        p.spawns,
+        vec![Spawn {
+            position: [7.0, 8.0, 9.0],
+            facing: 0.25,
+            team: 1
+        }]
+    );
+    let kinds: Vec<_> = p.flags.iter().map(|f| (f.kind, f.team)).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            (H2Flag::CtfFlagSpawn, 1),
+            (H2Flag::CtfFlagReturn, 1),
+            (H2Flag::TeleporterSource, 3)
+        ]
+    );
+    assert_eq!(p.items.len(), 1);
+    assert_eq!(p.items[0].item, H2Item::Weapon("smg"));
+    assert_eq!(p.items[0].respawn, 30);
+    assert_eq!(p.dropped.len(), 2, "{:?}", p.dropped);
+    assert!(p.dropped[0].contains("RaceTrack"));
+    assert!(p.dropped[1].contains("health pack"));
+}
+
+#[test]
+fn roles_resolve_to_the_base_maps_collections() {
+    use crate::placements::resolve;
+    let tags: Vec<(String, String)> = [
+        ("weap", "objects\\weapons\\rifle\\smg\\smg"),
+        ("itmc", "multiplayer\\single_weapons\\plasma_rifle"),
+        ("itmc", "multiplayer\\single_weapons\\smg"),
+        ("vehc", "multiplayer\\vehicles\\warthog"),
+    ]
+    .iter()
+    .map(|(g, n)| (g.to_string(), n.to_string()))
+    .collect();
+    assert_eq!(
+        resolve(H2Item::Weapon("smg"), &tags),
+        Some("multiplayer\\single_weapons\\smg")
+    );
+    assert_eq!(
+        resolve(H2Item::Vehicle("warthog"), &tags),
+        Some("multiplayer\\vehicles\\warthog")
+    );
+    assert_eq!(resolve(H2Item::Weapon("needler"), &tags), None);
+    assert_eq!(resolve(H2Item::Dropped, &tags), None);
+}
