@@ -1018,7 +1018,11 @@ impl Live {
             .files
             .get(&(title, name.to_string()))
             .map(|f| f.meta.clone());
-        let meta = meta.ok_or_else(|| not_found("no such title file"))?;
+        let Some(meta) = meta else {
+            // Halo 2's playlists until one is published (default_hopper).
+            return crate::default_hopper::fallback(title, name)
+                .ok_or_else(|| not_found("no such title file"));
+        };
         let bytes = self
             .store
             .blob(&meta.sha256)

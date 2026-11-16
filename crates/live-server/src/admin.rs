@@ -718,8 +718,9 @@ pub fn apply_patch(file: &mut HopperFile, patch: &HoppersPatch) -> ApiResult<()>
     Ok(())
 }
 
-/// `GET /v1/titles/{title}/hopper`: the playlists as JSON. 404 until a base
-/// image has been imported.
+/// `GET /v1/titles/{title}/hopper`: the playlists as JSON. Halo 2 with no
+/// file published reads the built-in lineup ([`crate::default_hopper`]);
+/// other titles 404 until a file is imported.
 pub async fn get_hopper(
     State(live): State<Arc<Live>>,
     headers: HeaderMap,
@@ -748,8 +749,8 @@ pub async fn get_hopper(
 }
 
 /// `PUT /v1/titles/{title}/hopper`: admin-only. Applies the patch to the
-/// published file, keeping every byte the patch does not name, and
-/// republishes it.
+/// published file (or the built-in lineup, for Halo 2 with none), keeping
+/// every byte the patch does not name, and publishes the result.
 pub async fn put_hopper(
     State(live): State<Arc<Live>>,
     headers: HeaderMap,
