@@ -1395,3 +1395,41 @@ fn w_buffer_writes_frag_depth_without_discard() {
     assert!(!on.discards);
     common::check(&on.module());
 }
+
+/// The level loading screen's sweep (`0x2a8d0` with its multiply flag, the
+/// combiners built at `0x2ac13`): stage 0 writes `t0 + blue * c0[0].a`
+/// back into `t0`, stage 1 tints it (`r0`) and takes the texel alpha
+/// (`r1`), and the final combiner scales `r0 * r1` by the final constant's
+/// alpha. On an `L8` texel the output is grey plus blue, never yellow.
+#[test]
+fn loading_screen_sweep_adds_blue_to_a_grey_texel() {
+    let mut d = PixelShaderDef::default();
+    d.texture_modes = texture_modes([TEX_PROJECT2D, 0, 0, 0]);
+    d.combiner_count = 2 | COUNT_UNIQUE_C0 | COUNT_UNIQUE_C1;
+    // Stage 0: sum t0 * 1 + c1.rgb * c0.a into t0.
+    d.rgb_inputs[0] = 0x0820_0211;
+    d.rgb_outputs[0] = 0x800;
+    d.constant0[0] = 0x4000_0000; // c0[0].a = 64/255
+    d.constant1[0] = 0x0000_00FF; // blue
+    // Stage 1: r0 = t0.rgb * c0.rgb, r1 = t0.a * c0.a (white tint, alpha 1).
+    d.rgb_inputs[1] = 0x0801_1811;
+    d.rgb_outputs[1] = 0xCD;
+    d.constant0[1] = 0xFFFF_FFFF;
+    // Final: rgb = (r0 * r1) * fc0.a, alpha = r1.a.
+    d.final_inputs_abcd = 0x0F11_0000;
+    d.final_inputs_efg = 0x0C0D_1D00;
+    d.final_constant0 = 0x8000_0000; // fc0.a = 128/255
+    let (c0, c1) = d.embedded_constants();
+    let mut u = PixelUniforms::default();
+    u.c0 = c0;
+    u.c1 = c1;
+    let l = 160.0 / 255.0;
+    let s = Flat([[l, l, l, 1.0], [0.0; 4], [0.0; 4], [0.0; 4]]);
+    let out = interp::run(&d, &PixelOptions::default(), &Inputs::default(), &u, &s).unwrap();
+    let m = 128.0 / 255.0;
+    approx(out, [l * m, l * m, (l + 64.0 / 255.0) * m, 0.0]);
+    assert_eq!(
+        psh::disassemble(&d),
+        "combiners 2 mux=lsb c0=per-stage c1=per-stage\ntex t0 project2d\n  stage0.rgb: t0.rgb = (t0.rgb * 1) + (c1.rgb * c0.a)\n  stage0.a  : (no writes)\n  stage1.rgb: r0.rgb = t0.rgb * c0.rgb\n  stage1.rgb: r1.rgb = t0.a * c0.a\n  stage1.a  : (no writes)\nfinal: rgb = prod.rgb*c0.a + (1-prod.rgb)*0 + 0; a = r1.a; E=r0.rgb F=r1.rgb\n"
+    );
+}

@@ -105,6 +105,8 @@ pub struct DiagBackend<B> {
     in_frame: u64,
     capture: Option<Capture>,
     next_texture: u64,
+    /// `H2_SWEEP_DIAG` (see [`crate::sweep_diag`]).
+    sweep: Option<crate::sweep_diag::SweepDiag>,
 }
 
 /// A host texture with the ID the capture names it by.
@@ -177,13 +179,33 @@ impl<B> DiagBackend<B> {
             let frame = std::env::var("H2_BOOT_CAPTURE_FRAME").ok().and_then(|v| v.parse().ok()).unwrap_or(480);
             Some(Capture { dir, frame, draws: 0, writes: 0, snaps: draw_set("H2_BOOT_CAPTURE_SNAP"), skips: draw_set("H2_BOOT_CAPTURE_SKIP"), lite: std::env::var_os("H2_BOOT_CAPTURE_LITE").is_some(), keep_tex: draw_set("H2_BOOT_CAPTURE_TEX") })
         });
-        (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0 }, stats)
+        let sweep = crate::sweep_diag::SweepDiag::from_env();
+        (DiagBackend { inner, stats: Arc::clone(&stats), log, frames, in_frame: 1, capture, next_texture: 0, sweep }, stats)
     }
 
     /// The capture, while frame `H2_BOOT_CAPTURE_FRAME` is being drawn.
     fn capturing(&mut self) -> Option<&mut Capture> {
         let f = self.in_frame;
         self.capture.as_mut().filter(|c| c.frame == f)
+    }
+
+    /// `H2_SWEEP_DIAG`: reads `color` back and logs it, in the frame being
+    /// logged.
+    fn sweep_samples(&mut self, color: B::Surface, width: u32, height: u32, what: &str)
+    where
+        B: Backend,
+    {
+        if !self.sweep.as_ref().is_some_and(|s| s.dumping(self.in_frame)) {
+            return;
+        }
+        let layout = GuestLayoutKind::Linear { pitch: width * 4 };
+        let r = self.inner.read_surface(color, D3DFormat::LinA8R8G8B8, width, height, layout);
+        if let Some(s) = &mut self.sweep {
+            match r {
+                Ok(bytes) => s.samples(what, &bytes, width, height),
+                Err(e) => s.line(&format!("  {what}: read back failed: {e}")),
+            }
+        }
     }
 
     fn logging(&self) -> bool {
@@ -325,6 +347,9 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         let r = self.inner.upload_texture(texture);
+        if let Some(s) = &mut self.sweep {
+            s.upload(texture);
+        }
         if let Err(e) = &r {
             self.line(format!("upload_texture failed: {e}"));
         }
@@ -357,6 +382,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn clear(&mut self, color: Self::Surface, depth: Option<Self::Surface>, clear: Clear) -> Result<(), String> {
         self.line(format!("clear {color:?} depth={depth:?} {clear:?}"));
+        if let Some(s) = &mut self.sweep
+            && s.dumping(self.in_frame)
+        {
+            s.line(&format!("clear {color:?} depth={depth:?} {clear:?}"));
+        }
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("clear color={color:?} depth={depth:?} {clear:?}"));
         }
@@ -392,8 +422,21 @@ impl<B: Backend> Backend for DiagBackend<B> {
             }
             c.append("frame.txt", &format!("draw {k} color={color:?} depth={depth:?} textures={ids:?}\n{d:#?}"));
         }
+        let sweep_logging = self.sweep.as_ref().is_some_and(|s| s.dumping(self.in_frame));
+        if sweep_logging && self.sweep.as_ref().is_some_and(|s| s.logged_draws() == 0) {
+            self.sweep_samples(color, draw.target.width, draw.target.height, "target before the frame's first draw");
+        }
         let inner: [Option<&B::Texture>; 4] = std::array::from_fn(|i| textures[i].map(|t| &t.inner));
         let r = self.inner.draw(color, depth, draw, inner);
+        if let Some(s) = &mut self.sweep {
+            if s.dumping(self.in_frame) {
+                s.draw(draw, &format!("{color:?}"), &outcome_name(&r));
+            }
+            s.saw_draw(self.in_frame, draw);
+        }
+        if sweep_logging {
+            self.sweep_samples(color, draw.target.width, draw.target.height, "target after");
+        }
         if let Some((k, path)) = snap {
             let t = &draw.target;
             let layout = GuestLayoutKind::Linear { pitch: t.width * 4 };
@@ -477,6 +520,12 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn present_with_gamma(&mut self, surface: Self::Surface, flags: u32, gamma: Option<&[u8; 768]>) -> Result<(), String> {
         self.line(format!("present {surface:?} flags={flags:#x}"));
+        if let Some(s) = &mut self.sweep {
+            if s.dumping(self.in_frame) {
+                s.line(&format!("present {surface:?} flags={flags:#x}"));
+            }
+            s.presented(self.in_frame);
+        }
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("present {surface:?} flags={flags:#x}"));
         }
@@ -536,6 +585,11 @@ impl<B: Backend> Backend for DiagBackend<B> {
     }
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         self.line(format!("copy_surface {src:?} -> {dst:?}"));
+        if let Some(s) = &mut self.sweep
+            && s.dumping(self.in_frame)
+        {
+            s.line(&format!("copy_surface {src:?} -> {dst:?}"));
+        }
         if let Some(c) = self.capturing() {
             c.append("frame.txt", &format!("copy_surface {src:?} -> {dst:?}"));
         }
