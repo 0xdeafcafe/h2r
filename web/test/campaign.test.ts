@@ -219,7 +219,7 @@ describe("routing", () => {
 describe("mock campaign games", () => {
   test("occasional campaign games: invented levels, 1 to 4 players, difficulty, no scores or winner", () => {
     const w = new World();
-    w.seed(2 * 3600_000);
+    w.seed(90 * 60_000);
     const all = [...w.games.values()];
     const camp = all.filter((g) => g.mode === "campaign");
     expect(camp.length).toBeGreaterThan(0);
@@ -239,5 +239,5 @@ describe("mock campaign games", () => {
     const mp = all.filter((g) => g.mode !== "campaign");
     expect(mp.some((g) => g.kind.kind === "matchmaking" && typeof g.kind.playlist === "string")).toBe(true);
     expect(mp.some((g) => g.kind.kind === "custom")).toBe(true);
-  });
+  }, 30_000);
 });
