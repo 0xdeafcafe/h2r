@@ -315,6 +315,26 @@ impl Vfs {
         let (mount, path) = self.resolve(name).ok()?;
         self.mounts[mount].backend.map_id(&path)
     }
+    /// Look again at map packages (`<data>/maps`) on every mount, after
+    /// one was installed or edited while the game runs: a map whose
+    /// package changed is resolved again at its next open; a file open now
+    /// keeps what it had. See [`Backend::rescan`]. The packages backend
+    /// also notices changes by itself on each map open; this is for a
+    /// writer that knows it just changed something.
+    pub fn rescan_maps(&mut self) {
+        for m in &mut self.mounts {
+            m.backend.rescan();
+        }
+    }
+    /// Whether the map `name` would now be served differently than at its
+    /// last open (see [`Backend::map_changed`]); looks at the maps folder
+    /// first.
+    pub fn map_changed(&mut self, name: &str) -> bool {
+        let Ok((mount, path)) = self.resolve(name) else {
+            return false;
+        };
+        self.mounts[mount].backend.map_changed(&path)
+    }
     /// NtCreateFile's initial allocation hint, applied only on create/overwrite.
     /// It reserves logical volume capacity without changing the initial EOF.
     pub fn open_allocated(
@@ -522,6 +542,9 @@ impl Vfs {
         let directory = existing
             .as_ref()
             .map_or(options.directory == Some(true), Metadata::is_directory);
+        if !directory {
+            self.mounts[mount].backend.opened(&path);
+        }
         if !directory && let Some(observe) = self.observer.as_mut() {
             let m = &mut self.mounts[mount];
             observe(&OpenedFile {
@@ -561,6 +584,9 @@ impl Vfs {
             return Ok(());
         }
         let object = self.objects.remove(&id).ok_or(Error::InvalidHandle)?;
+        if !object.directory {
+            self.mounts[object.mount].backend.closed(&object.path);
+        }
         let key = (object.mount, object.key.clone());
         let write_access = !object.directory
             && object.options.access.0 & (Access::WRITE.0 | Access::APPEND.0) != 0;

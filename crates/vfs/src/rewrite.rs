@@ -87,6 +87,18 @@ impl<B: Backend, R: Rewrite> RewriteBackend<B, R> {
 }
 
 impl<B: Backend, R: Rewrite> Backend for RewriteBackend<B, R> {
+    fn opened(&mut self, path: &str) {
+        self.inner.opened(path)
+    }
+    fn closed(&mut self, path: &str) {
+        self.inner.closed(path)
+    }
+    fn rescan(&mut self) {
+        self.inner.rescan()
+    }
+    fn map_changed(&mut self, path: &str) -> bool {
+        self.inner.map_changed(path)
+    }
     fn map_id(&mut self, path: &str) -> Option<content::MapId> {
         self.inner.map_id(path)
     }

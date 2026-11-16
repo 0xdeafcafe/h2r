@@ -457,3 +457,237 @@ fn a_map_dir_override_wins_over_a_package() {
     let mut vfs = linked(Vfs::with_disc_backend(cfg.clone(), backend).unwrap(), &cfg);
     assert_eq!(read_file(&mut vfs, "D:\\maps\\ascension.map"), edited);
 }
+
+/// Make `dir` the package `active.toml` picks for `map`.
+fn activate(t: &TempDir, map: &str, dir: &str) {
+    fs::write(t.maps().join("active.toml"), format!("{map} = \"{dir}\"\n")).unwrap();
+}
+fn open_map(vfs: &mut Vfs, name: &str) -> Handle {
+    vfs.open(name, OpenOptions::default()).unwrap().handle
+}
+fn read_at(vfs: &mut Vfs, h: Handle, at: u64, n: usize) -> Vec<u8> {
+    let mut out = vec![0; n];
+    let got = vfs.read(h, Offset::Absolute(at), &mut out).unwrap();
+    out.truncate(got);
+    out
+}
+const ASCENSION: &str = "D:\\maps\\ascension.map";
+fn ascension_id(vfs: &mut Vfs) -> Option<content::MapId> {
+    vfs.map_id(&format!("{CDROM_DEVICE}\\maps\\ascension.map"))
+}
+
+/// A package written into `<data>/maps` while the game runs (a Live join,
+/// the editor's save) is served at the map's next open, with no restart and
+/// no explicit call: the open notices the folder changed.
+#[test]
+fn a_package_installed_while_running_is_served_at_the_next_open() {
+    let t = TempDir::new();
+    let iso = disc(&t);
+    let (mut vfs, notices) = with_packages(&t, &iso);
+    assert_eq!(read_file(&mut vfs, ASCENSION), ascension());
+    assert_eq!(ascension_id(&mut vfs), None);
+    let m = package(
+        &t,
+        "live-0123456789abcdef",
+        "ascension",
+        &ascension(),
+        &[("a.ips", &ips(&[(0x900, b"NEW")]))],
+    );
+    let mut want = ascension();
+    want[0x900..0x903].copy_from_slice(b"NEW");
+    let want = resigned(want);
+    assert_eq!(read_file(&mut vfs, ASCENSION), want);
+    assert_eq!(ascension_id(&mut vfs), Some(m.map_id()));
+    // The listing of maps shows it too.
+    let entry = listing(&mut vfs, "D:\\maps")
+        .into_iter()
+        .find(|e| e.name.eq_ignore_ascii_case("ascension.map"))
+        .unwrap();
+    assert_eq!(entry.metadata.end_of_file, want.len() as u64);
+    let notices = notices.lock().unwrap();
+    assert!(
+        notices.iter().any(|n| n.contains("changed: 1 package")),
+        "{notices:?}"
+    );
+    // Other maps are untouched.
+    drop(notices);
+    assert_eq!(
+        read_file(&mut vfs, "D:\\maps\\mainmenu.map"),
+        cache_file(DISC_MENU)
+    );
+}
+
+/// A map whose package changes while a file object has it open keeps
+/// serving that object (and any other open meanwhile) what it opened; the
+/// new package takes effect at the first open after the last close.
+#[test]
+fn a_changed_package_never_swaps_under_an_open_handle() {
+    let t = TempDir::new();
+    let iso = disc(&t);
+    let a = package(
+        &t,
+        "a",
+        "ascension",
+        &ascension(),
+        &[("a.ips", &ips(&[(0x900, b"AAA")]))],
+    );
+    let (mut vfs, _) = with_packages(&t, &iso);
+    let h = open_map(&mut vfs, ASCENSION);
+    assert_eq!(read_at(&mut vfs, h, 0x900, 3), b"AAA");
+    let b = package(
+        &t,
+        "b",
+        "ascension",
+        &ascension(),
+        &[("b.ips", &ips(&[(0x900, b"BBB")]))],
+    );
+    activate(&t, "ascension", "b");
+    // Still open: the old map, for this handle and for a second open.
+    assert_eq!(read_at(&mut vfs, h, 0x900, 3), b"AAA");
+    let h2 = open_map(&mut vfs, ASCENSION);
+    assert_eq!(read_at(&mut vfs, h2, 0x900, 3), b"AAA");
+    assert_eq!(ascension_id(&mut vfs), Some(a.map_id()));
+    // An explicit rescan does not swap it either.
+    vfs.rescan_maps();
+    assert_eq!(read_at(&mut vfs, h, 0x900, 3), b"AAA");
+    vfs.close(h).unwrap();
+    assert_eq!(read_at(&mut vfs, h2, 0x900, 3), b"AAA");
+    vfs.close(h2).unwrap();
+    // Closed: the next open gets the new package.
+    let h = open_map(&mut vfs, ASCENSION);
+    assert_eq!(read_at(&mut vfs, h, 0x900, 3), b"BBB");
+    assert_eq!(ascension_id(&mut vfs), Some(b.map_id()));
+    vfs.close(h).unwrap();
+    // Choosing the disc again (active.toml: false) serves the disc's map.
+    fs::write(t.maps().join("active.toml"), "ascension = false\n").unwrap();
+    assert_eq!(read_file(&mut vfs, ASCENSION), ascension());
+    assert_eq!(ascension_id(&mut vfs), None);
+}
+
+/// A rescan resolves again only maps whose chosen package changed: a map
+/// whose package did not change is not read again (its base not hashed a
+/// second time), and its choice is not logged again.
+#[test]
+fn a_rescan_keeps_maps_whose_package_did_not_change() {
+    let t = TempDir::new();
+    let iso = disc(&t);
+    package(
+        &t,
+        "asc",
+        "ascension",
+        &ascension(),
+        &[("a.ips", &ips(&[(0x900, b"one")]))],
+    );
+    let (mut vfs, notices) = with_packages(&t, &iso);
+    read_file(&mut vfs, ASCENSION);
+    let resolved = |n: &Notices| {
+        n.lock()
+            .unwrap()
+            .iter()
+            .filter(|l| l.starts_with("maps\\ascension.map from package"))
+            .count()
+    };
+    assert_eq!(resolved(&notices), 1);
+    let menu = cache_file(DISC_MENU);
+    package(
+        &t,
+        "menu",
+        "mainmenu",
+        &menu,
+        &[("m.ips", &ips(&[(0x800, b"M")]))],
+    );
+    vfs.rescan_maps();
+    read_file(&mut vfs, ASCENSION);
+    assert_eq!(resolved(&notices), 1, "unchanged choice kept");
+    let mut want = menu.clone();
+    want[0x800] = b'M';
+    assert_eq!(
+        read_file(&mut vfs, "D:\\maps\\mainmenu.map"),
+        resigned(want)
+    );
+    // Removing the package: the disc's map at the next open.
+    fs::remove_dir_all(t.maps().join("asc")).unwrap();
+    assert_eq!(read_file(&mut vfs, ASCENSION), ascension());
+}
+
+/// With an empty (or missing) maps directory at mount, a package that
+/// appears later is still served: the folder need not exist at boot.
+#[test]
+fn a_maps_directory_created_after_mount_is_seen() {
+    let t = TempDir::new();
+    let iso = disc(&t);
+    fs::remove_dir_all(t.maps()).unwrap();
+    let (mut vfs, _) = with_packages(&t, &iso);
+    assert_eq!(read_file(&mut vfs, ASCENSION), ascension());
+    let m = package(
+        &t,
+        "asc",
+        "ascension",
+        &ascension(),
+        &[("a.ips", &ips(&[(0x900, b"new")]))],
+    );
+    let h = open_map(&mut vfs, ASCENSION);
+    assert_eq!(read_at(&mut vfs, h, 0x900, 3), b"new");
+    vfs.close(h).unwrap();
+    assert_eq!(ascension_id(&mut vfs), Some(m.map_id()));
+}
+
+/// `map_changed` says when a map last opened from one package (or the
+/// disc) would now come from another: what the boot needs to drop the
+/// game's cached copy (docs/cache-slots.md, "Changed maps").
+#[test]
+fn map_changed_compares_the_last_open_with_the_folder_now() {
+    let t = TempDir::new();
+    let iso = disc(&t);
+    let (mut vfs, _) = with_packages(&t, &iso);
+    let name = format!("{CDROM_DEVICE}\\maps\\ascension.map");
+    // Never opened: nothing to say.
+    assert!(!vfs.map_changed(&name));
+    read_file(&mut vfs, ASCENSION);
+    assert!(!vfs.map_changed(&name));
+    assert!(!vfs.map_changed(&format!("{CDROM_DEVICE}\\maps\\mainmenu.map")));
+    package(
+        &t,
+        "a",
+        "ascension",
+        &ascension(),
+        &[("a.ips", &ips(&[(0x900, b"AAA")]))],
+    );
+    // Installed after the last open: changed, with no open in between,
+    // and still so until the next open.
+    assert!(vfs.map_changed(&name));
+    assert!(vfs.map_changed(&name));
+    assert!(!vfs.map_changed(&format!("{CDROM_DEVICE}\\maps\\mainmenu.map")));
+    // Open now: not changed (the copy in flight has what it has).
+    let h = open_map(&mut vfs, ASCENSION);
+    assert!(!vfs.map_changed(&name));
+    vfs.close(h).unwrap();
+    assert!(!vfs.map_changed(&name));
+    // A package that fails to resolve is still the same choice: no churn.
+    package(
+        &t,
+        "b",
+        "ascension",
+        b"not the disc's",
+        &[("b.ips", &ips(&[]))],
+    );
+    activate(&t, "ascension", "b");
+    assert!(vfs.map_changed(&name));
+    assert_eq!(read_file(&mut vfs, ASCENSION), ascension());
+    assert!(!vfs.map_changed(&name));
+    // Through an H2_MAP_DIR override, a path it serves never changes.
+    drop(vfs);
+    fs::write(t.overrides().join("ascension.map"), b"override").unwrap();
+    let cfg = config(&t);
+    let backend = MapOverrideBackend::new(
+        PackageBackend::new(
+            DiscBackend::open(&iso).unwrap(),
+            content::Library::open(t.maps()),
+        ),
+        t.overrides(),
+    );
+    let mut vfs = linked(Vfs::with_disc_backend(cfg.clone(), backend).unwrap(), &cfg);
+    read_file(&mut vfs, ASCENSION);
+    activate(&t, "ascension", "a");
+    assert!(!vfs.map_changed(&name));
+}

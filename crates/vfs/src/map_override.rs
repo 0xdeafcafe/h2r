@@ -248,6 +248,19 @@ pub(crate) fn override_id(map: &str, file: &Path) -> std::io::Result<content::Ma
 }
 
 impl<B: Backend> Backend for MapOverrideBackend<B> {
+    fn opened(&mut self, path: &str) {
+        self.inner.opened(path)
+    }
+    fn closed(&mut self, path: &str) {
+        self.inner.closed(path)
+    }
+    fn rescan(&mut self) {
+        self.inner.rescan()
+    }
+    /// An `H2_MAP_DIR` file is chosen once per session: never changed.
+    fn map_changed(&mut self, path: &str) -> bool {
+        self.chosen(path).is_none() && self.inner.map_changed(path)
+    }
     fn read_only(&self) -> bool {
         true
     }

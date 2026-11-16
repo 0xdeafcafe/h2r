@@ -10,12 +10,29 @@
 //! (BPS) is read from the cache file. Everything else comes from the inner
 //! backend unchanged.
 //!
-//! Each map is resolved once, on first use, and kept for the session; the
-//! choice is reported once through the notice callback. A package that
-//! cannot be used (a base that does not match, a damaged patch) is refused
-//! with a warning and the disc's map is served. Nothing is ever written
-//! through the VFS.
-use std::{collections::HashMap, io};
+//! Each map is resolved on first use and kept; the choice is reported once
+//! through the notice callback. A package that cannot be used (a base that
+//! does not match, a damaged patch) is refused with a warning and the
+//! disc's map is served. Nothing is ever written through the VFS.
+//!
+//! **Changes while the game runs** (docs/maps.md §3, "Realtime: Now"):
+//! before a map path is looked up (`stat`, so every open) and before a
+//! listing of `maps`, the backend compares a cheap stamp of the maps
+//! directory (its own modification time, `active.toml`'s, and each package
+//! directory's and manifest's) with the one it scanned. When it differs,
+//! or on an explicit [`rescan`](Backend::rescan), the library is scanned
+//! again and every map whose chosen package (directory and `MapId`)
+//! changed is resolved again at its next use. A map with a file object
+//! open keeps what it was serving until its last handle closes, so a
+//! re-resolved map takes effect at the next open of that path, never under
+//! an open handle. Maps whose choice did not change keep their resolution
+//! (no second pass over a 300 MB base).
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    path::{Path, PathBuf},
+    time::SystemTime,
+};
 
 use content::{
     BaseRef, Data, Library, MapId,
@@ -49,12 +66,67 @@ struct Entry {
     served: Served,
 }
 
+/// One looked-up map path: what the library chose for it then, and what
+/// is served.
+struct Slot {
+    /// The chosen package's directory and `MapId`, None for no package.
+    choice: Option<(PathBuf, MapId)>,
+    /// The resolved package, or `None` for a map served from the inner
+    /// backend (no package, or one that could not be used).
+    entry: Option<Entry>,
+}
+
+/// What the maps directory looks like, cheaply: modification times and
+/// sizes of the directory, `active.toml`, and each package's directory and
+/// manifest. Equal stamps mean nothing a scan reads has changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Stamp(Vec<(String, Option<SystemTime>, Option<(SystemTime, u64)>)>);
+
+fn modified(path: &Path) -> Option<(SystemTime, u64)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
+}
+
+impl Stamp {
+    fn of(root: &Path) -> Self {
+        let mut rows = vec![(
+            String::new(),
+            modified(root).map(|m| m.0),
+            modified(&root.join(content::ACTIVE_FILE)),
+        )];
+        if let Ok(entries) = std::fs::read_dir(root) {
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || name == content::CACHE_DIR {
+                    continue;
+                }
+                let dir = e.path();
+                rows.push((
+                    name,
+                    modified(&dir).map(|m| m.0),
+                    modified(&dir.join(content::manifest::MANIFEST_FILE)),
+                ));
+            }
+        }
+        rows.sort();
+        Stamp(rows)
+    }
+}
+
 pub struct PackageBackend<B> {
     inner: B,
     library: Library,
-    /// By lowercase `maps\<name>.map`: the resolved package, or `None` for
-    /// a map served from the inner backend.
-    files: HashMap<String, Option<Entry>>,
+    /// The maps directory as last scanned.
+    stamp: Stamp,
+    /// By lowercase `maps\<name>.map`.
+    files: HashMap<String, Slot>,
+    /// Open file objects per lowercase map path.
+    open: HashMap<String, usize>,
+    /// Paths whose choice changed while open: looked at again when their
+    /// last handle closes.
+    stale: HashSet<String>,
+    /// The choice served at each map's last open.
+    last_opened: HashMap<String, Option<(PathBuf, MapId)>>,
     notice: MapOverrideNotice,
 }
 
@@ -98,8 +170,12 @@ impl<B: Backend> PackageBackend<B> {
         }
         Self {
             inner,
+            stamp: Stamp::of(library.root()),
             library,
             files: HashMap::new(),
+            open: HashMap::new(),
+            stale: HashSet::new(),
+            last_opened: HashMap::new(),
             notice,
         }
     }
@@ -108,18 +184,72 @@ impl<B: Backend> PackageBackend<B> {
         self.inner
     }
 
+    /// Scan the maps directory again if its stamp changed.
+    fn refresh(&mut self) {
+        if Stamp::of(self.library.root()) != self.stamp {
+            self.reload();
+        }
+    }
+
+    /// Scan the maps directory again and forget every map whose choice
+    /// changed, except those open now (until their last close).
+    fn reload(&mut self) {
+        self.stamp = Stamp::of(self.library.root());
+        self.library = self.library.reopen();
+        (self.notice)(&format!(
+            "{} changed: {} package(s)",
+            self.library.root().display(),
+            self.library.packages().len()
+        ));
+        let keys: Vec<String> = self.files.keys().cloned().collect();
+        for key in keys {
+            if self.open.contains_key(&key) {
+                self.stale.insert(key);
+            } else {
+                self.forget_if_changed(&key);
+            }
+        }
+        self.flush_notices();
+    }
+
+    /// Drop `key`'s resolution if the library now chooses another package
+    /// (or none, or one where there was none) for it.
+    fn forget_if_changed(&mut self, key: &str) {
+        let Some(slot) = self.files.get(key) else {
+            return;
+        };
+        let stem = is_map_path(key).map(|n| &n[..n.len() - 4]);
+        let now = stem
+            .and_then(|s| self.library.choose(s))
+            .map(|p| (p.dir.clone(), p.id));
+        if now != slot.choice {
+            self.files.remove(key);
+        }
+    }
+
+    /// Report the library's notices, each line once (choosing a map again
+    /// to compare repeats its notice).
+    fn flush_notices(&mut self) {
+        let mut seen = HashSet::new();
+        for line in self.library.take_notices() {
+            if seen.insert(line.clone()) {
+                (self.notice)(&line);
+            }
+        }
+    }
+
     /// The resolved package for `path`, resolving it on first use.
     fn chosen(&mut self, path: &str) -> Option<&mut Entry> {
         let name = is_map_path(path)?;
         let key = path.to_ascii_lowercase();
         if !self.files.contains_key(&key) {
-            let entry = self.resolve(path, name);
-            for line in self.library.take_notices() {
-                (self.notice)(&line);
-            }
-            self.files.insert(key.clone(), entry);
+            let stem = &name[..name.len() - 4];
+            let choice = self.library.choose(stem).map(|p| (p.dir.clone(), p.id));
+            let entry = choice.as_ref().and_then(|_| self.resolve(path, name));
+            self.flush_notices();
+            self.files.insert(key.clone(), Slot { choice, entry });
         }
-        self.files.get_mut(&key)?.as_mut()
+        self.files.get_mut(&key)?.entry.as_mut()
     }
 
     fn resolve(&mut self, path: &str, name: &str) -> Option<Entry> {
@@ -201,6 +331,54 @@ impl<B: Backend> PackageBackend<B> {
 }
 
 impl<B: Backend> Backend for PackageBackend<B> {
+    fn opened(&mut self, path: &str) {
+        if is_map_path(path).is_some() {
+            let key = path.to_ascii_lowercase();
+            *self.open.entry(key.clone()).or_default() += 1;
+            self.chosen(path);
+            if let Some(slot) = self.files.get(&key) {
+                self.last_opened.insert(key, slot.choice.clone());
+            }
+        }
+        self.inner.opened(path)
+    }
+    fn map_changed(&mut self, path: &str) -> bool {
+        let Some(name) = is_map_path(path) else {
+            return self.inner.map_changed(path);
+        };
+        let key = path.to_ascii_lowercase();
+        if self.open.contains_key(&key) {
+            return false;
+        }
+        self.refresh();
+        let Some(then) = self.last_opened.get(&key).cloned() else {
+            return self.inner.map_changed(path);
+        };
+        let now = self
+            .library
+            .choose(&name[..name.len() - 4])
+            .map(|p| (p.dir.clone(), p.id));
+        self.flush_notices();
+        now != then || self.inner.map_changed(path)
+    }
+    fn closed(&mut self, path: &str) {
+        let key = path.to_ascii_lowercase();
+        if let Some(n) = self.open.get_mut(&key) {
+            *n -= 1;
+            if *n == 0 {
+                self.open.remove(&key);
+                if self.stale.remove(&key) {
+                    self.forget_if_changed(&key);
+                    self.flush_notices();
+                }
+            }
+        }
+        self.inner.closed(path)
+    }
+    fn rescan(&mut self) {
+        self.reload();
+        self.inner.rescan()
+    }
     /// The `MapId` of the package serving `path` (resolving it if needed),
     /// else whatever the inner backend says.
     fn map_id(&mut self, path: &str) -> Option<MapId> {
@@ -213,6 +391,11 @@ impl<B: Backend> Backend for PackageBackend<B> {
         true
     }
     fn stat(&mut self, path: &str) -> Result<Metadata> {
+        // Every open stats first: the moment to notice a changed folder,
+        // unless this map is open now.
+        if is_map_path(path).is_some() && !self.open.contains_key(&path.to_ascii_lowercase()) {
+            self.refresh();
+        }
         let mut meta = self.inner.stat(path)?;
         if let Some(e) = self.chosen(path) {
             let len = e.len;
@@ -222,7 +405,11 @@ impl<B: Backend> Backend for PackageBackend<B> {
     }
     fn read_directory(&mut self, path: &str) -> Result<Vec<DirectoryEntry>> {
         let mut entries = self.inner.read_directory(path)?;
-        if self.library.is_empty() || !path.eq_ignore_ascii_case("maps") {
+        if !path.eq_ignore_ascii_case("maps") {
+            return Ok(entries);
+        }
+        self.refresh();
+        if self.library.is_empty() {
             return Ok(entries);
         }
         for e in &mut entries {
@@ -243,7 +430,7 @@ impl<B: Backend> Backend for PackageBackend<B> {
         let Self { inner, files, .. } = self;
         let entry = files
             .get_mut(&path.to_ascii_lowercase())
-            .and_then(Option::as_mut)
+            .and_then(|s| s.entry.as_mut())
             .expect("chosen above");
         match &mut entry.served {
             Served::File { file, .. } => file.read_at(offset, buffer).map_err(io_error),
