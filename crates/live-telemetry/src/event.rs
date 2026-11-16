@@ -170,6 +170,9 @@ pub struct World {
     pub machines: Vec<MachineState>,
     /// Objects from scenario placements and netgame equipment.
     pub placed: Vec<PlacedObject>,
+    /// Dead bipeds (body depleted) the game has not cleared away yet:
+    /// AI and players' bodies alike.
+    pub bodies: Vec<ActorState>,
 }
 
 /// An object the scenario placed (or a netgame equipment entry spawned):
@@ -256,6 +259,8 @@ pub struct Snapshot {
     pub machines: Vec<MachineState>,
     /// Objects from placements; frame ticks only.
     pub placed: Vec<PlacedObject>,
+    /// Dead bipeds still in the world; frame ticks only.
+    pub bodies: Vec<ActorState>,
     /// The active structure BSP index.
     pub bsp: Option<u32>,
     /// Damage reports since the previous snapshot.

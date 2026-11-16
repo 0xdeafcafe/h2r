@@ -247,6 +247,7 @@ impl Telemetry {
             snapshot.vehicles = world.vehicles;
             snapshot.machines = world.machines;
             snapshot.placed = world.placed;
+            snapshot.bodies = world.bodies;
         }
         self.session.lock().unwrap().sample(&snapshot);
         self.publish()
