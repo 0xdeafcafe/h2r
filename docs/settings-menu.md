@@ -293,9 +293,9 @@ Not every flag belongs in a menu. They fall in four groups.
 | audio, gamepads | `--no-audio`, `--no-gamepads` | restart |
 | controller speaker | **Built:** a "Controller Speaker" row on Settings, Controls, saved as `[pad_speaker] enabled` in `settings.toml` in `h2 play`'s data root. `H2_PAD_SPEAKER` (on, or a TOML file) locks it when set; `H2_PAD_SPEAKER_DEVICE`, `H2_PAD_SPEAKER_EXCLUSIVE` ([playstation-audio.md](playstation-audio.md)) | on/off live (the router and the HID speaker path, `boot::speaker_setting`); routes and exclusive could go live the same way; device needs the output reopened |
 | field of view | **Built:** a "Field of View" row on the Video screen, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
-| frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | next launch: the row says "(restart)" until then |
-| resolution scale | **Built:** a "Resolution" row on the Video screen (640x480, 1280x960, 1920x1440, 2560x1920: the game's 640x480 back buffer times the scale), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](high-resolution.md)) | next launch, as above |
-| controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) locks it when set | next launch (the HID thread reads it once); could go live through that thread |
+| frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | live (the window follows it at its next turn) |
+| resolution scale | **Built:** a "Resolution" row on the Video screen (640x480, 1280x960, 1920x1440, 2560x1920: the game's 640x480 back buffer times the scale), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](high-resolution.md)) | live (the next frame is at the new size) |
+| controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) locks it when set | live (sent to the HID thread) |
 | Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](live-custom-games.md)) | at once |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
@@ -378,15 +378,17 @@ row, **Video**. A on it opens a screen titled "Video" with up to four rows:
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
-| Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | next launch | `--fps`, `H2_FPS` |
-| Resolution | 640x480, 1280x960, 1920x1440, 2560x1920 (scale 1 to 4; shown as the size, saved as the scale) | `[graphics] render_scale` | next launch | `H2_RENDER_SCALE` |
-| Mute Button | On, Off | `[pad] mute_button` | next launch | `H2_PAD_MUTE` |
+| Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | at once | `--fps`, `H2_FPS` |
+| Resolution | 640x480, 1280x960, 1920x1440, 2560x1920 (scale 1 to 4; shown as the size, saved as the scale) | `[graphics] render_scale` | next frame | `H2_RENDER_SCALE` |
+| Mute Button | On, Off | `[pad] mute_button` | at once | `H2_PAD_MUTE` |
 
 A steps the row's value and saves it to `<data>/settings.toml` at once,
-keeping every other key. The frame rate and the scale are fixed for a run
-(the window's display clock and the view backend are made at launch), so a
-value that differs from the running one reads "60 (restart)" and `h2 play`
-starts with it next time. A locked row shows the variable's value and A
+keeping every other key, and every row applies at once, so none says
+"(restart)": the window follows the frame rate at its next turn
+(`app::fps::FpsControl`), the view backend makes its targets again at the
+next frame boundary on the render thread (`ScaledBackend::follow_scale`,
+[high-resolution.md](high-resolution.md)), and the HID thread gets the mute
+button (`PadHid::mute_switch`). A locked row shows the variable's value and A
 does nothing. A bad variable is reported and ignored, so the saved value is
 used (before this, a bad `H2_RENDER_SCALE` meant 1x). Above 30, the frame
 rate only redraws the newest game frame more often until high-fps phase 2
@@ -458,11 +460,21 @@ skipped.
    screen. The empty item widgets below the rows must not draw anything.
 3. B returns to Settings. Player Profiles and Game Variants still open
    their screens. A profile's Controls has no Video row any more.
-4. Frame Rate: A steps 30, 60 (restart), 120 (restart), Uncapped (restart),
-   30. Quit and start `h2 play` again: the window runs at the saved rate.
-   With `H2_FPS=60` the row shows 60 and does not move.
-5. Resolution: the same, 1x to 4x; the next launch renders at the saved scale.
-6. Field of View: as below, now on this screen.
+4. Frame Rate: A steps 30, 60, 120, Uncapped, 30, with no "(restart)".
+   stderr: `app: frame rate 60` and so on at each press, and the watermark's
+   shown rate follows; Uncapped tears (vsync off), and going back to 30
+   brings vsync back. With `H2_FPS=60` the row shows 60 and does not move.
+5. Resolution: A steps 640x480, 1280x960, 1920x1440, 2560x1920. The very
+   next frame is sharper or softer: stderr `d3d: render scale 1x -> 2x`,
+   no `showing the 1x frame` line and no flash or black frame. Check in a
+   level and on a menu (the main menu's blur and the texaccum passes),
+   and back down to 640x480 (the view sleeps; the run report's
+   `render scale` line counts `1x frames`, not fallback frames). The run
+   report's `fallback frames` stays 0. `H2_RENDER_SCALE=2` locks it.
+6. Mute Button (DualSense): Off puts the mute LED out and the button stops
+   doing anything; On makes the button toggle again, at once, with no
+   relaunch. Turning it Off while muted unmutes.
+7. Field of View: as below, now on this screen.
 
 ## Field of view (built)
 
@@ -605,7 +617,8 @@ that way. Behaviour kept from the hand-written settings: the same file keys
 and variables, `H2_FOV=0` for retail, `"uncapped"` written as a string,
 `H2_PAD_SPEAKER` naming a routes file. Changed: a bad `H2_PAD_MUTE` is now
 ignored (the file or on) where it used to turn the button off, and the log
-line after a press names the key (`graphics.fps: 60 from the next launch`).
+line after a press names the key (`graphics.fps: 60`, or for a `Restart`
+setting `<key>: <value> from the next launch`).
 
 **Per-profile values.** A setting can also hold a value per player profile
 (`Store::profile_get` / `profile_set`), written as

@@ -413,9 +413,12 @@ mod tests {
     use settings::Value;
 
     fn model(store: Arc<Store>) -> Model {
+        let video = Screen::new("video")
+            .title("Video")
+            .rows_from_settings(&store.defs());
         Model::new(
             store,
-            vec![Screen::new("video").title("Video").rows_from_settings(ALL)],
+            vec![video],
             vec![
                 extend(List::Controls, 6)
                     .row(Row::setting(PAD_SPEAKER.key).bool_ids(0xa, 0xb))
@@ -481,11 +484,34 @@ mod tests {
             panic!()
         };
         assert_eq!((text(&m, label), text(&m, value)), ("Frame Rate", "30"));
+        // A live setting: the value in effect changes at once.
+        assert_eq!(m.press(&fps), Chosen::Stepped("graphics.fps: 60".into()));
+        assert_eq!(text(&m, m.texts(&fps)[1].1), "60");
+        assert_eq!(m.store().get(FPS.key), Some(Value::Int(60)));
+        // One that waits for the next launch says so.
+        let later: &'static Def = Box::leak(Box::new(Def {
+            key: "graphics.later",
+            apply: Apply::Restart,
+            ..FPS.clone()
+        }));
+        let defs: Vec<&'static Def> = ALL.iter().copied().chain([later]).collect();
+        let m = model(Arc::new(Store::defaults(&defs)));
+        let row = m
+            .rows(List::Screen("video"))
+            .iter()
+            .find(|r| r.kind == RowKind::Setting(later.key))
+            .unwrap()
+            .clone();
         assert_eq!(
-            m.press(&fps),
-            Chosen::Stepped("graphics.fps: 60 from the next launch".into())
+            m.press(&row),
+            Chosen::Stepped("graphics.later: 60 from the next launch".into())
         );
-        assert_eq!(text(&m, m.texts(&fps)[1].1), "60 (restart)");
+        assert_eq!(text(&m, m.texts(&row)[1].1), "60 (restart)");
+        assert_eq!(
+            m.store().get(later.key),
+            Some(Value::Int(30)),
+            "this run keeps its value"
+        );
         let speaker = m.row(List::Controls, 6).unwrap().clone();
         assert_eq!(m.texts(&speaker)[1].1, 0xa, "the game's own On");
         m.press(&speaker);

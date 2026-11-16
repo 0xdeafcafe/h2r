@@ -470,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn pressing_steps_the_row_saves_it_and_the_text_says_restart() {
+    fn pressing_steps_the_row_saves_it_and_applies_it_at_once() {
         let dir = std::env::temp_dir().join(format!("h2-video-{}-press", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -479,22 +479,27 @@ mod tests {
         let store = Arc::new(Store::load(ALL, Some(&path), &|_| None, &[]).0);
         let fov = store.handle::<u32>(FOV.key);
         let fps = store.handle::<u32>(FPS.key);
+        let scale = store.handle::<u32>(RENDER_SCALE.key);
+        let mute = store.handle::<bool>(PAD_MUTE.key);
+        // What the window, the view backend and the HID thread are told.
+        let told = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for key in [FPS.key, RENDER_SCALE.key, PAD_MUTE.key] {
+            let told = Arc::clone(&told);
+            store.on_change(key, move |v| told.lock().unwrap().push((key, *v)));
+        }
         let m = model(Arc::clone(&store), Switches::ALL).unwrap();
         assert_eq!(
             press(&m, LIST, 1),
-            Chosen::Stepped("graphics.fps: 60 from the next launch".into())
+            Chosen::Stepped("graphics.fps: 60".into())
         );
-        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "60 (restart)"));
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "60"));
+        assert_eq!(fps.get(), 60, "applies at once");
         press(&m, LIST, 1);
         press(&m, LIST, 1);
-        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "Uncapped (restart)"));
-        assert_eq!(fps.get(), 30, "this run keeps its rate");
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "Uncapped"));
+        assert_eq!(fps.get(), 0);
         press(&m, LIST, 1);
-        assert_eq!(
-            drawn(&m, LIST, 1),
-            s("Frame Rate", "30"),
-            "back to this run's"
-        );
+        assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(
             press(&m, LIST, 0),
             Chosen::Stepped("graphics.fov: 75".into())
@@ -502,7 +507,8 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
         press(&m, LIST, 2);
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1280x960 (restart)"));
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1280x960"));
+        assert_eq!(scale.get(), 2, "applies at once");
         assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
         assert_eq!(
             drawn(&m, List::Controls, 6),
@@ -513,15 +519,23 @@ mod tests {
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
         );
-        // The mute button is read at launch: saved for the next one.
         assert_eq!(
             press(&m, LIST, 3),
-            Chosen::Stepped("pad.mute_button: false from the next launch".into())
+            Chosen::Stepped("pad.mute_button: false".into())
         );
-        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "Off (restart)"));
-        assert!(
-            store.handle::<bool>(PAD_MUTE.key).get(),
-            "this run keeps it"
+        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "Off"));
+        assert!(!mute.get(), "applies at once");
+        // Each change reached its listener, in order, once.
+        assert_eq!(
+            *told.lock().unwrap(),
+            [
+                (FPS.key, Value::Int(60)),
+                (FPS.key, Value::Int(120)),
+                (FPS.key, Value::Int(0)),
+                (FPS.key, Value::Int(30)),
+                (RENDER_SCALE.key, Value::Int(2)),
+                (PAD_MUTE.key, Value::Bool(false)),
+            ]
         );
         // Rows past ours, or no row, are not ours.
         assert_eq!(press(&m, LIST, 4), Chosen::Nothing);
@@ -557,16 +571,19 @@ mod tests {
         for t in [
             "Video",
             "Uncapped",
-            "60 (restart)",
+            "60",
+            "640x480",
+            "2560x1920",
             "3840x2880",
-            "3840x2880 (restart)",
+            "Off",
             "150",
             "30",
             "",
         ] {
             assert!(text(t), "{t:?}");
         }
-        assert!(!text("75 (restart)"), "the field of view applies at once");
+        // Every row applies at once: no "(restart)" text at all.
+        assert!(all.iter().all(|(_, s)| !s.contains("(restart)")), "{all:?}");
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i) && MODEL_IDS.contains(i)));
         ids.extend(

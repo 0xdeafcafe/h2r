@@ -484,12 +484,25 @@ with synthetic frames, not captures.
 - **Failures**: a view error is counted (`ScaleStats`), never returned, and
   that frame is shown from the reference (`present_reference` calls the
   view's present hook on the reference's store).
-- **Flag**: `H2_RENDER_SCALE=2..6` in `h2 play` builds the view
-  (`boot::Host::gfx_view`); unset or 1 builds nothing extra. The presenter
-  needed no change: it already fits any frame size into the window.
-  With the variable unset, the Video screen's Resolution row decides
-  (1x to 4x, saved as `[graphics] render_scale` in `<data>/settings.toml`,
-  applied from the next launch; docs/settings-menu.md "Video screen").
+- **Flag**: `H2_RENDER_SCALE=1..6` in `h2 play` sets the scale and locks
+  it; `H2_RENDER_SCALE=1` builds nothing extra (one backend, as before the
+  setting). The presenter needed no change: it already fits any frame size
+  into the window. With the variable unset, the Video screen's Resolution
+  row decides (640x480 to 2560x1920, saved as `[graphics] render_scale` in
+  `<data>/settings.toml`; docs/settings-menu.md "Video screen"), and the
+  view is always built so the row can change it.
+- **Changing the scale during a run**: `ScaledBackend::follow_scale` reads
+  the setting at every present. A new scale is made at that frame boundary,
+  on the thread that presents (the render thread under `ThreadedBackend`):
+  every scaled surface is made again at the new size and filled from the
+  reference's (nearest), and the device's surface handles are mapped onto
+  the new ones, so the guest and the device see nothing. At 1 the view
+  sleeps: it draws nothing and each frame is the reference's
+  (`ScaleStats::reference_frames`, not a fallback). Tests:
+  `crates/d3d/tests/render_scale.rs`, `the_scale_changes_at_a_frame_boundary_with_no_fallback_frames`
+  (1x, 2x, 3x, 1x, 4x, 2x: each frame after a change is at the new size,
+  byte for byte what a run started at that scale draws, with no fallback
+  frame) and `on_the_render_thread_the_change_is_made_there_and_shown_at_once`.
 
 The half-pixel offset is not harmless for geometry, as "Half-pixel and texel
 offsets" first said. D3D-convention geometry puts edges, and the texel corners

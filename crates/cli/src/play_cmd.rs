@@ -48,7 +48,7 @@ newest game frame more often for now, with no smoothing (the game itself
 always runs at 30; docs/high-framerate.md).
 With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
 screen (Settings, Video), saved as [graphics] fps and render_scale
-in <data>/settings.toml and applied from the next launch.
+in <data>/settings.toml; a change there applies at once.
 --set KEY=VALUE sets any of our settings for this run only, as its environment
 variable would: it wins over the variable and the file and locks its row
 (`h2 settings list` shows them; docs/settings-menu.md).
@@ -162,11 +162,17 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
     // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Video screen's
-    // Mute Button row), read once here, so a row press applies from the
-    // next launch.
-    let mute = store.handle::<bool>(boot::setting_defs::PAD_MUTE.key).get();
+    // Mute Button row). A row press reaches the HID thread at once, so the
+    // thread runs while the row can still turn it on (not when
+    // H2_PAD_MUTE=0 locks it off and the speaker is off).
+    let key = boot::setting_defs::PAD_MUTE.key;
+    let mute = store.handle::<bool>(key).get();
+    let may_mute = mute || !store.state(key).is_some_and(|s| s.locked);
     let hid_config = input::pad_hid::PadHidConfig { mute };
-    let hid = pad_hid(hid_config, config.is_some());
+    let hid = pad_hid(hid_config, may_mute || config.is_some());
+    if let Some(switch) = hid.as_ref().map(input::pad_hid::PadHid::mute_switch) {
+        store.on_change(key, move |v| switch.set(v.as_bool().unwrap_or(true)));
+    }
     let Some(config) = config else {
         return (None, hid, setting);
     };
@@ -199,9 +205,9 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     (Some(pad), hid, setting)
 }
 
-/// The HID thread, when it has something to do and can run here.
-fn pad_hid(config: input::pad_hid::PadHidConfig, speaker: bool) -> Option<input::pad_hid::PadHid> {
-    let open = input::pad_hid::platform_opener().filter(|_| config.mute || speaker)?;
+/// The HID thread, when it may have something to do and can run here.
+fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::pad_hid::PadHid> {
+    let open = input::pad_hid::platform_opener().filter(|_| wanted)?;
     Some(input::pad_hid::spawn(open, config, Default::default()))
 }
 
@@ -233,15 +239,19 @@ fn hosted(
             None => gfx,
         }
     };
-    // H2_RENDER_SCALE=N (2..6): a view backend renders the frame at N
-    // times 640x480 and presents; the backend the guest talks to stays at
-    // 1x (docs/high-resolution.md). Unset: the Video screen's saved scale
-    // (`[graphics] render_scale`), else 1, one backend as before.
+    // A view backend renders the frame at the scale times 640x480 and
+    // presents; the backend the guest talks to stays at 1x
+    // (docs/high-resolution.md). The scale is H2_RENDER_SCALE, else the
+    // Video screen's Resolution (`[graphics] render_scale`), else 1, and
+    // follows the row during the run (at 1 the view sleeps). Locked at 1
+    // (H2_RENDER_SCALE=1, --set): one backend, as before the row.
+    let key = boot::setting_defs::RENDER_SCALE.key;
     let scale = store
-        .handle::<u32>(boot::setting_defs::RENDER_SCALE.key)
+        .handle::<u32>(key)
         .get()
         .clamp(1, d3d::scaled::MAX_SCALE);
-    let view = d3d::scaled::view_for(scale, || {
+    let locked = store.state(key).is_some_and(|s| s.locked);
+    let view = (scale > 1 || !locked).then(|| {
         (
             configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
             scale,
@@ -500,10 +510,18 @@ pub fn run(args: Vec<String>) -> Result<()> {
     }
     let store = Arc::new(store);
     // --fps, then H2_FPS (both checked above), then the Video screen's
-    // saved rate, then 30.
+    // saved rate, then 30. The row changes it during the run.
     let fps = &boot::setting_defs::FPS;
     let rate = store.get(fps.key).unwrap_or(fps.default);
     config.fps = app::fps::FpsTarget::parse(&fps.name(rate)).map_err(anyhow::Error::msg)?;
+    let control = app::fps::FpsControl::new(config.fps);
+    config.fps_control = Some(control.clone());
+    store.on_change(fps.key, move |v| {
+        match app::fps::FpsTarget::parse(&fps.name(*v)) {
+            Ok(t) => control.set(t),
+            Err(e) => eprintln!("play: frame rate: {e}"),
+        }
+    });
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
