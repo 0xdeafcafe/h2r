@@ -115,7 +115,9 @@ impl Backoff {
         self.locked_at(key, Instant::now())
     }
 
-    pub fn fail(&self, key: &str) {
+    /// Records a failure; returns how many more `key` may make before it
+    /// is locked out (0: locked now).
+    pub fn fail(&self, key: &str) -> u32 {
         self.fail_at(key, Instant::now())
     }
 
@@ -138,7 +140,7 @@ impl Backoff {
         (until > now).then(|| until - now)
     }
 
-    fn fail_at(&self, key: &str, now: Instant) {
+    fn fail_at(&self, key: &str, now: Instant) -> u32 {
         let mut fails = self.fails.lock().unwrap();
         let max = self.max;
         if fails.len() > 10_000 {
@@ -149,6 +151,7 @@ impl Backoff {
             entry.0 = 0;
         }
         *entry = (entry.0 + 1, now);
+        self.free.saturating_sub(entry.0)
     }
 }
 
@@ -163,10 +166,10 @@ mod tests {
         let b = Backoff::new(3, Duration::from_secs(60), Duration::from_secs(600));
         let t0 = Instant::now();
         let at = |s: u64| t0 + Duration::from_secs(s);
-        b.fail_at("a", at(0));
-        b.fail_at("a", at(1));
+        assert_eq!(b.fail_at("a", at(0)), 2, "tries left");
+        assert_eq!(b.fail_at("a", at(1)), 1);
         assert_eq!(b.locked_at("a", at(1)), None);
-        b.fail_at("a", at(2));
+        assert_eq!(b.fail_at("a", at(2)), 0, "locked now");
         assert_eq!(b.locked_at("a", at(2)), Some(Duration::from_secs(60)));
         assert_eq!(b.locked_at("b", at(2)), None, "per key");
         assert_eq!(b.locked_at("a", at(62)), None);

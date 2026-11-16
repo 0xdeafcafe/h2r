@@ -1081,8 +1081,10 @@ Invite a friend from Co-op Campaign.
 
 Split screen keeps the game's own text: the locale source answers that id
 only in a co-op session. Every text of the co-op screens is ours: guest
-memory slots of 128 bytes under ids `0x20ffe000` up, rewritten when a row
-is drawn and every tick.
+memory slots of 128 bytes under ids `0x20ffd000` up, rewritten when a row
+is drawn and every tick. Not `0x20ffe000`, the first choice: the community
+variants answer index `0xffe0xx` whatever the top byte, so the co-op screen
+showed their names (a test now checks every id against every private range).
 
 **Skulls.** The host's own campaign selection (collected and on, for the
 signed-in profiles: the Skulls page's rule, so the host has them unlocked)

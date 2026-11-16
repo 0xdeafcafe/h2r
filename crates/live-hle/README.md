@@ -33,7 +33,11 @@ With a server URL, logon verifies accounts and publishes signed presence on a
 background thread. Session advertisements and signed mailbox invitations use that
 worker too; acceptance feeds the game's own session lookup and socket path.
 Private account keys stay in host memory and are never logged or copied to the
-guest. Without a server URL, local sign-in remains available.
+guest. Without a server URL, local sign-in remains available. An account
+marked `needs_code` keeps its logon pending while the boot's prompt asks for a
+recovery code; `signin.rs` checks it off the game thread, saves the key and
+lets the logon go on (docs/live/live.md, "In-game sign-in").
+
 
 Run `cargo test -p live-hle` for synthetic boundary and real loopback tests;
 the latter require permission to bind localhost sockets. No XBE is needed.

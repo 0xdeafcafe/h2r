@@ -191,9 +191,13 @@ pub fn disc_levels(disc: &Path) -> anyhow::Result<Vec<Level>> {
 
 // ---- texts that change ----
 
-/// Our dynamic string ids: an index range no retail string uses, next to
-/// the layouts' (`layout_glue::ID_BASE`).
-pub const TEXT_ID_BASE: u32 = 0x20ff_e000;
+/// Our dynamic string ids: an index range no retail string uses and no
+/// other source of ours claims. The localized-string lookup the text
+/// widgets go through matches some private ranges on the low 24 bits only
+/// (`community_variants` takes `0x??ffe0xx`, the layouts' family
+/// `0x??fff0xx`), so the index differs from theirs, not just the top byte:
+/// `0x20ffe000` showed the community variants' names in place of ours.
+pub const TEXT_ID_BASE: u32 = 0x20ff_d000;
 pub const TEXT_SLOTS: u32 = 128;
 pub const TEXT_SLOT_LEN: u32 = 128;
 
@@ -274,6 +278,28 @@ fn label_slot(base: u32, row: i16) -> u32 {
 }
 fn value_slot(base: u32, row: i16) -> u32 {
     base + 2 + 2 * row as u32
+}
+
+/// A screen of ours as text for the log: its title and each row's texts,
+/// with their string ids.
+fn describe(rows: &dyn Rows, texts: &Texts, count: usize) -> String {
+    let text = |id: u32| {
+        let t = id
+            .checked_sub(TEXT_ID_BASE)
+            .and_then(|slot| texts.get(slot))
+            .unwrap_or_else(|| "?".into());
+        format!("{t:?} ({id:#010x})")
+    };
+    let mut out = format!("title {}; rows:", text(rows.title()));
+    for row in 0..count.min(i16::MAX as usize) as i16 {
+        let cells: Vec<String> = rows
+            .texts(row)
+            .into_iter()
+            .map(|(_, id)| text(id))
+            .collect();
+        out.push_str(&format!(" [{row}] {}", cells.join(" = ")));
+    }
+    out
 }
 
 // ---- the lobby ----
@@ -776,6 +802,9 @@ impl HostRows {
 }
 
 impl Rows for HostRows {
+    fn describe(&self, count: usize) -> Option<String> {
+        Some(describe(self, &self.0.texts, count))
+    }
     fn title(&self) -> u32 {
         self.0.texts.set(title_slot(HOST_SLOTS), "Co-op Campaign")
     }
@@ -843,6 +872,9 @@ impl FriendRows {
 }
 
 impl Rows for FriendRows {
+    fn describe(&self, count: usize) -> Option<String> {
+        Some(describe(self, &self.0.texts, count))
+    }
     fn title(&self) -> u32 {
         self.0
             .texts
@@ -909,6 +941,9 @@ impl JoinRows {
 }
 
 impl Rows for JoinRows {
+    fn describe(&self, count: usize) -> Option<String> {
+        Some(describe(self, &self.0.texts, count))
+    }
     fn title(&self) -> u32 {
         self.0
             .texts

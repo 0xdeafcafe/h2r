@@ -21,7 +21,11 @@ pub fn start(session: &Session, data: &Path, settings: &Arc<settings::Store>) ->
         return None;
     }
     let say = |line: &str| eprintln!("cloud saves: {line}");
-    let key = match session.account.key_pair() {
+    let Some(account) = session.account.as_ref() else {
+        say("off until the account is on this machine (signed in from the game; next start)");
+        return None;
+    };
+    let key = match account.key_pair() {
         Ok(k) => k,
         Err(e) => {
             say(&format!("off: {e:#}"));
@@ -34,8 +38,8 @@ pub fn start(session: &Session, data: &Path, settings: &Arc<settings::Store>) ->
             server: session.server.clone(),
             api: session.api.clone(),
             server_id: session.server_id.clone(),
-            xuid: session.account.xuid,
-            gamertag: session.account.gamertag.clone(),
+            xuid: account.xuid,
+            gamertag: account.gamertag.clone(),
             key,
         },
         data,

@@ -21,6 +21,7 @@ mod network;
 mod network_config;
 mod outbox;
 pub mod platform;
+pub mod signin;
 pub use outbox::{
     BuiltMessage, MessageProperty, MessageRecipient, MessageSend, MessageSendKind, MessageUser,
     MessageValue, RecruitProperties,
@@ -222,8 +223,13 @@ impl Hle {
             None
         };
         Ok(Arc::new(Self {
+            state: Mutex::new(state::State::new(
+                accounts,
+                address,
+                service,
+                config.clone(),
+            )),
             config,
-            state: Mutex::new(state::State::new(accounts, address, service)),
             network: network::Network::new(network),
         }))
     }
@@ -240,6 +246,35 @@ impl Hle {
             .unwrap_or_else(|e| e.into_inner())
             .set_accounts(accounts);
         Ok(n)
+    }
+    /// The in-game sign-in prompt, while a logon waits for a code
+    /// ([`signin`]). Takes in a finished server call; no guest memory.
+    pub fn signin(&self) -> Option<signin::Prompt> {
+        self.lock().signin()
+    }
+    /// The controller whose prompt should open now: once per sign-in.
+    pub fn take_signin_open(&self) -> Option<u32> {
+        self.lock().take_signin_open()
+    }
+    /// The code the player typed; the check runs on its own thread.
+    /// False when no code is being asked for.
+    pub fn signin_submit(&self, code: &str) -> bool {
+        self.lock().signin_submit(code)
+    }
+    /// Make the gamertag on the server, when the prompt offers that.
+    pub fn signin_create(&self) -> bool {
+        self.lock().signin_create()
+    }
+    /// The player backed out: the waiting logon fails.
+    pub fn signin_cancel(&self) {
+        self.lock().signin_cancel()
+    }
+    /// The prompt closed; a finished sign-in is forgotten.
+    pub fn signin_dismiss(&self) {
+        self.lock().signin_dismiss()
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, state::State> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
     /// Telemetry can call this after the server assigns a game ID; no I/O or
     /// guest memory access occurs on the caller's thread. None returns to online.
