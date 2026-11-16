@@ -235,6 +235,28 @@ fn expected_back(f: u32) -> Vec<u8> {
     px
 }
 
+/// CPU time this thread has used.
+fn thread_cpu() -> Duration {
+    #[repr(C)]
+    struct Timespec {
+        sec: i64,
+        nsec: i64,
+    }
+    unsafe extern "C" {
+        fn clock_gettime(clock: i32, tp: *mut Timespec) -> i32;
+    }
+    #[cfg(target_os = "macos")]
+    const CLOCK_THREAD_CPUTIME_ID: i32 = 16;
+    #[cfg(not(target_os = "macos"))]
+    const CLOCK_THREAD_CPUTIME_ID: i32 = 3;
+    let mut t = Timespec { sec: 0, nsec: 0 };
+    // SAFETY: `t` is a valid out-pointer for the call.
+    if unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &mut t) } != 0 {
+        return Duration::ZERO;
+    }
+    Duration::new(t.sec as u64, t.nsec as u32)
+}
+
 /// Per-frame counters over `frames` frames.
 #[derive(Debug, Default, Clone, Copy)]
 struct PerFrame {
@@ -245,7 +267,11 @@ struct PerFrame {
     submits: f64,
     render_passes: f64,
     swap_waits: f64,
+    /// Wall time.
     time: Duration,
+    /// This thread's CPU time (the render thread's work: the GPU waits
+    /// are not in it).
+    cpu: Duration,
 }
 
 /// Runs frames `from..from + frames` with `D3DSWAP_FINISH` and returns
@@ -254,10 +280,12 @@ fn measure(s: &mut Scene, from: u32, frames: u32) -> PerFrame {
     let churn = gfx::churn::snapshot();
     let batch = s.d.backend.batch_stats();
     let t = Instant::now();
+    let cpu = thread_cpu();
     for f in from..from + frames {
         s.frame(f, SWAP_FINISH);
     }
     let time = t.elapsed() / frames;
+    let cpu = (thread_cpu() - cpu) / frames;
     let c = gfx::churn::snapshot() - churn;
     let b = s.d.backend.batch_stats();
     let per = |v: u64| v as f64 / f64::from(frames);
@@ -270,6 +298,7 @@ fn measure(s: &mut Scene, from: u32, frames: u32) -> PerFrame {
         render_passes: per(b.render_passes - batch.render_passes),
         swap_waits: per(b.swap_waits - batch.swap_waits),
         time,
+        cpu,
     }
 }
 
@@ -305,6 +334,34 @@ fn frames_draw_what_they_must() {
     }
 }
 
+/// Submitting every pass on its own (the old way) and batching the passes
+/// of several targets into one submission give the same bytes.
+#[test]
+fn batched_submissions_match_one_per_pass() {
+    let run = |per_pass: bool| {
+        let mut s = scene(|b| b.set_submit_per_pass(per_pass))?;
+        let mut out = Vec::new();
+        for f in 0..4 {
+            s.frame(f, SWAP_FINISH);
+            out.push(s.shown());
+        }
+        s.d.block_on_resource(&mut s.m, TEX_HEADER).unwrap();
+        let mut texels = vec![0u8; 256];
+        s.m.read(0x8000_0000 | TEX_DATA, &mut texels).unwrap();
+        out.push(texels);
+        Some((out, s.d.backend.batch_stats().submits))
+    };
+    let Some((per_pass, per_pass_submits)) = run(true) else {
+        return;
+    };
+    let (batched, batched_submits) = run(false).unwrap();
+    assert!(per_pass == batched, "the bytes differ");
+    assert!(
+        batched_submits * 8 < per_pass_submits,
+        "{batched_submits} vs {per_pass_submits}"
+    );
+}
+
 /// The ceilings: a regression in any of them is churn coming back.
 #[test]
 fn per_frame_churn_stays_down() {
@@ -317,8 +374,10 @@ fn per_frame_churn_stays_down() {
     eprintln!("{p:?}");
     // One blocking wait per frame, for the previous frame.
     assert_eq!(p.swap_waits, 1.0);
-    // Two submissions per target switch plus the present's.
-    assert!(p.submits <= f64::from(2 * SWITCHES + 2), "{p:?}");
+    // One submission for the frame (the present's), not one per target
+    // switch.
+    assert_eq!(p.submits, 1.0, "{p:?}");
+    assert_eq!(p.render_passes, f64::from(2 * SWITCHES + 1), "{p:?}");
 }
 
 #[test]
@@ -332,18 +391,31 @@ pub fn bench() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(120);
-    for (name, finish) in [
-        ("swap finish: full", d3d::SwapFinish::Full),
-        ("swap finish: pipelined", d3d::SwapFinish::Pipelined),
+    for (name, finish, per_pass) in [
+        ("full wait, submit per pass", d3d::SwapFinish::Full, true),
+        (
+            "pipelined, submit per pass",
+            d3d::SwapFinish::Pipelined,
+            true,
+        ),
+        (
+            "pipelined, batched (default)",
+            d3d::SwapFinish::Pipelined,
+            false,
+        ),
     ] {
-        let Some(mut s) = scene(|b| b.set_swap_finish(finish)) else {
+        let Some(mut s) = scene(|b| {
+            b.set_swap_finish(finish);
+            b.set_submit_per_pass(per_pass);
+        }) else {
             return;
         };
         measure(&mut s, 0, 8);
         let p = measure(&mut s, 8, frames);
         println!(
-            "{name:<24} {:>7.3} ms/frame  buffers created {:>6.1}  queue writes {:>6.1}  staging reused {:>6.1}  buffers reused {:>5.1}  submits {:>5.1}  render passes {:>5.1}  swap waits {:.1}",
+            "{name:<30} {:>7.3} ms/frame (CPU {:>6.3} ms)  buffers created {:>6.1}  queue writes {:>6.1}  staging reused {:>6.1}  buffers reused {:>5.1}  submits {:>5.1}  render passes {:>5.1}  swap waits {:.1}",
             p.time.as_secs_f64() * 1e3,
+            p.cpu.as_secs_f64() * 1e3,
             p.buffers_created,
             p.queue_writes,
             p.staging_reused,
