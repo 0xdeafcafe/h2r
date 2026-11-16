@@ -108,6 +108,12 @@ pub trait ShaderProvider: Send {
     /// at 1x.
     fn set_render_scale(&mut self, _scale: u32) {}
 
+    /// E3 lighting's hard shadows (docs/graphics/e3-lighting.md, phase 1):
+    /// from now on every shadow-map comparison is one tap
+    /// (`shaders::psh::PixelOptions::hard_shadow`). Only a render-scale
+    /// view is told this; off (the default) is retail's lookup.
+    fn set_hard_shadows(&mut self, _on: bool) {}
+
     /// Writes per-draw data staged by [`prepare`](Self::prepare) to the
     /// queue. The backend calls it before every submit.
     fn flush_uploads(&mut self, _ctx: &gfx::GfxContext) {}

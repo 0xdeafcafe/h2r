@@ -108,6 +108,52 @@ pub static RENDER_SCALE: Def = Def {
     }),
 };
 
+/// [`LIGHTING`]'s values.
+pub const LIGHTING_RETAIL: i64 = 0;
+pub const LIGHTING_E3: i64 = 1;
+
+pub static LIGHTING: Def = Def {
+    key: "graphics.lighting",
+    label: "Lighting",
+    help: "Retail, or E3: harder, sharper shadows (docs/graphics/e3-lighting.md, phase 1). \
+           E3 draws the game's shadow maps at the render scale (at least twice the game's \
+           size) and compares them with one tap, in the shown image only; the game itself \
+           sees retail. A change applies at the next frame.",
+    kind: Kind::Choice(&[
+        Choice {
+            value: LIGHTING_RETAIL,
+            name: "retail",
+            label: "Retail",
+        },
+        Choice {
+            value: LIGHTING_E3,
+            name: "e3",
+            label: "E3",
+        },
+    ]),
+    default: Value::Int(LIGHTING_RETAIL),
+    env: Some("H2_LIGHTING"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 35,
+    }),
+};
+
+/// [`LIGHTING`]'s value as the view backend takes it.
+pub fn lighting_of(value: u32) -> d3d::Lighting {
+    if value as i64 == LIGHTING_E3 {
+        d3d::Lighting::E3
+    } else {
+        d3d::Lighting::Retail
+    }
+}
+
 pub static PAD_SPEAKER: Def = Def {
     key: "pad_speaker.enabled",
     label: "Controller Speaker",
@@ -304,6 +350,7 @@ pub static ALL: &[&Def] = &[
     &FOV,
     &FPS,
     &RENDER_SCALE,
+    &LIGHTING,
     &PAD_SPEAKER,
     &PAD_MUTE,
     &STEAM_SPEAKER,
@@ -436,12 +483,14 @@ mod tests {
                 ("H2_STEAM_SPEAKER", "0"),
                 ("H2_STEAM_SENSITIVITY", "8"),
                 ("H2_STEAM_LEFT_PAD", "stick"),
+                ("H2_LIGHTING", "e3"),
             ],
         );
         assert!(p.is_empty(), "{p:?}");
         assert_eq!(s.get(STEAM_SPEAKER.key), Some(Value::Bool(false)));
         assert_eq!(s.get(STEAM_SENSITIVITY.key), Some(Value::Int(8)));
         assert_eq!(s.get(STEAM_LEFT_PAD.key), Some(Value::Int(LEFT_PAD_STICK)));
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_E3)));
         assert_eq!(
             s.get(LIVE_VISIBILITY.key),
             Some(Value::Int(VISIBILITY_FRIENDS))
@@ -497,5 +546,38 @@ mod tests {
         assert!(!t.speaker());
         assert!(s.set(STEAM_SENSITIVITY.key, Value::Int(11)).is_err());
         assert_eq!(t.sensitivity(), 9);
+    }
+
+    #[test]
+    fn lighting_is_retail_unless_asked_and_has_a_video_row() {
+        let data = tmp("lighting");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(LIGHTING.default, Value::Int(LIGHTING_RETAIL));
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_RETAIL)));
+        assert_eq!(lighting_of(LIGHTING_RETAIL as u32), d3d::Lighting::Retail);
+        assert_eq!(lighting_of(LIGHTING_E3 as u32), d3d::Lighting::E3);
+        let menu = LIGHTING.menu.expect("a row");
+        assert_eq!(menu.screen, "video");
+        // Between Resolution and Mute Button.
+        assert!(RENDER_SCALE.menu.unwrap().order < menu.order);
+        assert!(menu.order < PAD_MUTE.menu.unwrap().order);
+        assert_eq!(LIGHTING.apply, Apply::Live, "no restart");
+        // The file takes the names; the variable locks it.
+        std::fs::write(settings::path_in(&data), "[graphics]\nlighting = \"e3\"\n").unwrap();
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_E3)));
+        assert!(!s.state(LIGHTING.key).unwrap().locked);
+        let (s, _) = with_env(&data, &[("H2_LIGHTING", "retail")]);
+        assert_eq!(s.get(LIGHTING.key), Some(Value::Int(LIGHTING_RETAIL)));
+        assert!(s.state(LIGHTING.key).unwrap().locked);
+        let (s, p) = with_env(&data, &[("H2_LIGHTING", "stencil")]);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert_eq!(
+            s.get(LIGHTING.key),
+            Some(Value::Int(LIGHTING_E3)),
+            "the file's"
+        );
     }
 }

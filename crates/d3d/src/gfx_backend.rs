@@ -250,6 +250,15 @@ impl GfxBackend {
         self.renderer.persistent_stats()
     }
 
+    /// E3 lighting's one-tap shadow lookup for the draws prepared from now
+    /// on (`ShaderProvider::set_hard_shadows`). Only a render-scale view
+    /// sets it (`crate::scaled`); the backend the guest reads stays retail.
+    pub fn set_hard_shadows(&mut self, on: bool) {
+        if let Some(s) = self.shaders.as_mut() {
+            s.set_hard_shadows(on);
+        }
+    }
+
     /// Where vertex formats are converted for program draws (default
     /// [`gfx::repack::FetchMode::from_env`]: the vertex shader, unless
     /// `H2_VERTEX_FETCH=cpu`). For tests and benches comparing the paths.

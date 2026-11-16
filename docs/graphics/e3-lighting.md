@@ -2,7 +2,9 @@
 
 A design for an opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo:
 hard-edged shadows from every direct light, cast by and onto everything, and
-per-pixel lighting with normal maps. Nothing here is built.
+per-pixel lighting with normal maps. Phase 0 (research) and phase 1
+(harder, sharper retail shadows in the view: "Phase 1 as built") are done;
+the rest is design.
 
 The short version: **the evidence says there is nothing of the cut renderer to
 switch back on in the retail game.** What retail kept is the vocabulary (a
@@ -15,9 +17,10 @@ It was written from the code and docs on master and from public sources,
 without building or running the game. No leaked build, game file or archive
 was downloaded or examined, and none may be for this work.
 
-The setting is `lighting = "retail" | "e3"` in the settings design
-([settings-menu.md](../game/settings-menu.md)), which has no lighting control
-yet. This page proposes `H2_LIGHTING` as the developer flag.
+The setting is `[graphics] lighting = "retail" | "e3"`, the Video screen's
+**Lighting** row ([settings-menu.md](../game/settings-menu.md)), default
+Retail and live. `H2_LIGHTING=e3` (or `retail`) locks it, for development
+and for headless `h2 run`.
 
 ## Evidence labels
 
@@ -300,7 +303,101 @@ the layer number is the pass tag, and the dynamic-light layers are 10 to 13
   volumes-against-maps question is open on its merits.
 - **Phase 1** stays the cheapest visible step: shadow buffers are layer 10
   into target 9 or 10, sampled with `GREATER` on layer 11, which the view can
-  scale and force to one tap without guest changes.
+  scale and force to one tap without guest changes. Built: "Phase 1 as
+  built" below.
+
+## Phase 1 as built
+
+What was already on master: render scale (`d3d::ScaledBackend`, a 1x
+reference that answers the guest and a scaled view that is shown;
+high-resolution.md phases 1 and 2), per-pass submission, and in-place
+depth sampling: a dirty `D24S8` depth level sampled through its texture
+is turned into a raw-bits texture on the GPU (`Backend::depth_level_texture`,
+`gfx::depth_bits`; [d3d.md](d3d.md) "Lazy depth levels"), with no read-back.
+The shadow comparison already indexed texels by the bound texture's real
+size (`textureDimensions`) and took the coordinate in the guest's size
+(`tex_scale`), which is high-resolution.md's rule 2, so a larger map needed
+no change there. What was missing, and is built:
+
+- **Scaled shadow maps in the view** (`d3d::scaled`). Every `D24S8` depth
+  surface not of the frame's size is a shadow level. With E3 lighting the
+  view keeps a copy of it at `shadow_scale` times its size, made at first
+  use, with a colour surface of that size to draw through. A draw that
+  writes the level into a guest-size target (layer 10, shadow generate) is
+  drawn again into the copy with colour writes off; a clear of it is
+  repeated; a draw that samples it (layer 11, shadow apply) gets a texture
+  of the copy from `depth_level_texture` instead of the reference's 1x one.
+  What the view cannot repeat (guest bytes, a copy, a fill from the alias
+  mirror, a draw it cannot make) marks the copy stale per aspect; a stale
+  copy is filled from the reference (each texel repeated) at its next draw,
+  or skipped for sampling (the 1x texture stands in), unless a clear makes
+  it fresh first. Halo's shadow pass clears the map before it draws, so the
+  mirror refill at each binding costs nothing in the view.
+- **The factor**: tied to the render scale, at least 2
+  (`d3d::scaled::shadow_scale`: 2, 2, 3, 4, 5, 6 for scales 1 to 6). At
+  the render scale a shadow texel covers no more host pixels than it covers
+  guest pixels at 1x, so a one-tap edge steps no coarser on screen than
+  retail's filtered one; the minimum of 2 makes E3 sharper than retail at
+  640x480 too. One setting and one rescale point; 512x512 at 6x is
+  3072x3072, inside any GPU's limit. A separate factor can come later if
+  the pictures ask for it.
+- **One comparison tap** (`shaders::psh::PixelOptions::hard_shadow`, set by
+  `Nv2aShaders` only when the view is told `set_hard_shadows`). A hard stage
+  reads the nearest texel and compares once: no 2x2 percentage-closer
+  filter. If a pass samples one map on several stages (taps the combiners
+  average), each compares at the mean of their coordinates, so the average
+  is one tap too. Whether retail's layer 11 does that is not known (S); the
+  code covers both. Retail's translation is byte for byte what it was
+  (`retail_shadow_lookups_are_unchanged` compares against a golden file
+  written by the code before the option).
+- **At render scale 1** the view used to sleep. With E3 it wakes: the frame
+  at 1x, the shadow maps at 2x.
+- **Live**: `ScaledBackend::follow_lighting` reads the row at every present
+  and changes there, as the scale does. Copies at another factor are
+  dropped at that boundary and made again at their next use.
+- **The guest sees retail**: the reference keeps every level at 1x and
+  answers every read (`read_depth`, `read_surface`, counts, the judge), so
+  game memory, read-backs and the simulation are the 1x run's.
+
+Tests (no game run): `crates/shaders/tests/shadow.rs` (retail and E3 golden
+WGSL; one tap on the interpreter and the GPU; the mean of two stages over
+one map), and `crates/d3d/tests/render_scale.rs`, E3 section, on a headless
+Metal device: the 32x32 map's copy is `32k x 32k` at render scales 1 to 4;
+the guest's written-back map, colour level and device memory, and the
+reference's frame, equal a plain backend's byte for byte; retail through the
+wrapper makes no copy and draws nothing extra; the E3 image is all black or
+white and, against the caster's exact outline, wrong at 186 host pixels at
+2x and 378 at 4x where retail is wrong at 658-688 and 2648-2692; the row
+changes both ways at a frame boundary with no fallback frame, at 1x and 2x.
+
+The run report's `render scale` line ends with `shadow maps at Kx: D draws,
+T textures, R refills`. In a level with shadows, `T` above 0 is the scaled
+map being sampled; `D` above 0 with `T` at 0 means the level went through
+guest memory (written back) and the view sampled the 1x upload, still one
+tap.
+
+Not done: a separate factor; float depth levels (`F24S8`, `F16`) and `D16`
+maps stay 1x (their texture comes through guest memory); per-axis scale.
+
+### Captures to take
+
+Each pair the same frame with `H2_LIGHTING=retail` and `=e3`, at
+`H2_RENDER_SCALE=2` (and once at 1 to see E3 at 640x480):
+
+1. **The Heretic** (`00a_introduction`), the cinematic's opening shots:
+   `H2_LEVEL=00a_introduction`, or the menu route of frame-budget.md
+   (presents 4220 to 4520). Headless, `h2 run` with `H2_BOOT_GFX=<dir>` and
+   `H2_BOOT_GFX_EVERY=30` writes `frame-NNNNN.png` (the view) and
+   `frame-NNNNN-1x.png` (the reference, which must be identical between
+   the two runs). This level is known to bind and sample the 512x512 shadow
+   map every frame (d3d.md, frame-budget.md), so it is the first check.
+2. **Cairo Station** (`H2_LEVEL=01b_spacestation`), the opening corridors
+   with the flashlight on, close to a Marine or a crate between the light
+   and a wall: a dynamic light's shadow (S: which lights cast in which
+   level was not checked, so pick a spot where retail shows a soft shadow).
+3. The same spot in `h2 play` stepping the Lighting row: the edge should
+   go hard at the next frame, with no flash and `d3d: lighting Retail -> E3`
+   on stderr.
 
 ## Goals and non-goals
 
@@ -487,7 +584,7 @@ here to show relative size.
 | Phase | Work | Effort | Needs |
 |---|---|---|---|
 | 0 | **Done 2026-11-16** ("Phase 0 findings"). Static research, no runtime change: trace the stencil call sites and name each use; find the light creation and render path from the `ligh` part case (`0x0017ab2e`); read the light flags off engine code; find who draws the shadow depth levels; name the layers in the scene-pass dispatch. Deliverables are docs, decoders and invented-data tests. | 2-4 weeks | Nothing |
-| 1 | Harder retail shadows in the view: scaled shadow buffers, one-tap comparison. | 1-2 weeks | high-resolution.md phases 1-2, and in-place depth sampling |
+| 1 | **Built 2026-11-16** ("Phase 1 as built"). Harder retail shadows in the view: scaled shadow buffers, one-tap comparison; the Lighting row. | 1-2 weeks | high-resolution.md phases 1-2, and in-place depth sampling (all were on master) |
 | 2 | Observers and the scene description: camera, draw tagging, lights, object poses. Uncharged reads. Tests on invented guest memory. | 3-5 weeks | Phase 0 |
 | 3 | Viewer prototype: volumes against shadow maps on tag geometry, with timings. Decide. | 2-3 weeks | Nothing; can run beside phase 2 |
 | 4 | Sun shadows from objects in the view, composited as a mask. | 6-10 weeks | Phases 2, 3 |

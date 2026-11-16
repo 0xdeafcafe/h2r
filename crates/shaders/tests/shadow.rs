@@ -535,3 +535,270 @@ fn gpu_compares_every_function_and_format() {
     eprintln!("compared {compared} fragments");
     assert!(compared > 400);
 }
+
+// --- Hard shadows (E3 lighting, docs/graphics/e3-lighting.md phase 1) ---
+
+/// The programs the golden files hold: retail's lookups as the game's
+/// first level uses them (linear PROJECT3D `GREATER` on D24) and a point
+/// PROJECT2D one, and a pass sampling one map on two stages.
+fn golden_programs(hard: bool) -> Vec<(String, PixelShaderDef, PixelOptions)> {
+    let mut out = Vec::new();
+    for (name, mode, sh) in [
+        (
+            "project3d linear d24 greater",
+            TEX_PROJECT3D,
+            shadow(DepthFormat::D24, AlphaFunc::Greater, true),
+        ),
+        (
+            "project2d point d16 less",
+            TEX_PROJECT2D,
+            shadow(DepthFormat::D16, AlphaFunc::Less, false),
+        ),
+    ] {
+        let mut opts = options(sh);
+        if hard {
+            opts.hard_shadow[0] = 1;
+        }
+        out.push((name.to_string(), def(mode), opts));
+    }
+    let sh = shadow(DepthFormat::D24, AlphaFunc::Greater, true);
+    let mut opts = two_stage_options(sh);
+    if hard {
+        opts.hard_shadow = [0b11, 0b11, 0, 0];
+    }
+    out.push(("two stages, one map".into(), two_stage_def(REG_T1), opts));
+    out
+}
+
+/// Every golden program's module, each under a header line.
+fn golden_text(hard: bool) -> String {
+    let mut s = String::new();
+    for (name, d, opts) in golden_programs(hard) {
+        let ps = psh::translate(&d, &opts);
+        assert!(ps.warnings.is_empty(), "{name}: {:?}", ps.warnings);
+        common::check(&ps.module());
+        s.push_str(&format!("// ---- {name}\n{}\n", ps.module()));
+    }
+    s
+}
+
+/// Compares `text` with `tests/golden/<name>`; `SHADOW_GOLDEN_BLESS=1`
+/// writes it instead.
+fn golden(name: &str, text: &str) {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden")
+        .join(name);
+    if std::env::var_os("SHADOW_GOLDEN_BLESS").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, text).unwrap();
+        return;
+    }
+    let want = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    assert!(want == text, "{name} differs from the golden file");
+}
+
+/// Retail's translation is what it was before hard shadows existed: the
+/// golden file was written by the code before the option.
+#[test]
+fn retail_shadow_lookups_are_unchanged() {
+    golden("shadow_retail.wgsl", &golden_text(false));
+    // And the option at zero is retail, whatever else is set.
+    let mut opts = options(shadow(DepthFormat::D24, AlphaFunc::Greater, true));
+    let retail = psh::translate(&def(TEX_PROJECT3D), &opts).module();
+    opts.hard_shadow = [0; 4];
+    assert_eq!(psh::translate(&def(TEX_PROJECT3D), &opts).module(), retail);
+    // Left out of persisted keys at zero, so existing caches still match.
+    let json = serde_json::to_string(&opts).unwrap();
+    assert!(!json.contains("hard_shadow"), "{json}");
+}
+
+/// E3's translation: one `textureLoad` per shadow stage and no filter
+/// weights, at the stage's coordinate or the mean of its group's.
+#[test]
+fn e3_shadow_lookups_are_one_tap() {
+    golden("shadow_e3.wgsl", &golden_text(true));
+    for (name, d, opts) in golden_programs(true) {
+        let ps = psh::translate(&d, &opts);
+        for i in 0..2 {
+            if opts.shadow[i].is_none() || !ps.body.contains(&format!("t{i} = vec4f(select")) {
+                continue;
+            }
+            let loads = ps.body.matches(&format!("textureLoad(xps_tex{i},")).count();
+            assert_eq!(loads, 1, "{name}: stage {i}");
+        }
+        assert!(!ps.body.contains("mix("), "{name}: no filter weights");
+    }
+    let (_, d, opts) = golden_programs(true).pop().unwrap();
+    let ps = psh::translate(&d, &opts);
+    assert!(
+        ps.body.contains("let uv = ((i.t0.xy / i.t0.w) * xps.tex_scale[0].xy + (i.t1.xy / i.t1.w) * xps.tex_scale[1].xy) / 2.0;"),
+        "{}",
+        ps.body
+    );
+}
+
+/// A hard stage is the point lookup, whatever the stage's filter: the
+/// 2x2 case `pcf_cases` filters to 0.625 reads one texel, 1.
+#[test]
+fn a_hard_stage_compares_once_on_the_interpreter_and_the_gpu() {
+    let lo = 0xAB_CDEF;
+    let hi = 0xAB_CDF0;
+    let tex = DepthTexture::new(DepthFormat::D24, 2, 2, &[lo, hi, hi, lo]);
+    let r = lo as f32;
+    let frags = [
+        ([0.375, 0.625, r, 1.0], 1.0),
+        ([0.75, 0.25, r, 1.0], 1.0),
+        ([0.25, 0.25, r, 1.0], 0.0),
+    ];
+    let mut opts = options(shadow(DepthFormat::D24, AlphaFunc::Greater, true));
+    opts.hard_shadow[0] = 1;
+    let d = def(TEX_PROJECT3D);
+    for (t0, want) in frags {
+        let mut t = [[0.0; 4]; 4];
+        t[0] = t0;
+        let i = Inputs {
+            t,
+            ..Default::default()
+        };
+        let got = interp::run(&d, &opts, &i, &PixelUniforms::default(), &tex);
+        assert_eq!(got, Some([want; 4]), "{t0:?}");
+    }
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    let ps = psh::translate(&d, &opts);
+    let src = format!("{}{}", ps.module(), HARNESS);
+    let input: Vec<f32> = frags.iter().flat_map(|(t, _)| *t).collect();
+    let out = gpu.run_with_textures(
+        &src,
+        "harness",
+        1,
+        &PixelUniforms::default().to_bytes(),
+        &input,
+        frags.len() * 4,
+        frags.len() as u32,
+        &[common::GpuTexture {
+            binding: 0,
+            view: gpu.texture(wgpu::TextureViewDimension::D2, [2, 2, 1], &tex.texels),
+            dim: wgpu::TextureViewDimension::D2,
+        }],
+    );
+    for (k, (_, want)) in frags.iter().enumerate() {
+        assert_eq!(&out[k * 4..k * 4 + 4], [*want; 4], "fragment {k}");
+    }
+}
+
+/// Stages 0 and 1 in PROJECT3D; the output is `reg` (t0 or t1).
+fn two_stage_def(reg: u8) -> PixelShaderDef {
+    PixelShaderDef {
+        texture_modes: texture_modes([TEX_PROJECT3D, TEX_PROJECT3D, TEX_NONE, TEX_NONE]),
+        final_inputs_abcd: inputs(0, 0, 0, reg),
+        final_inputs_efg: final_efg(0, 0, reg | CHAN_ALPHA, 0),
+        ..Default::default()
+    }
+}
+
+fn two_stage_options(sh: Shadow) -> PixelOptions {
+    PixelOptions {
+        texture_dims: [Some(TextureDim::D2), Some(TextureDim::D2), None, None],
+        shadow: [Some(sh), Some(sh), None, None],
+        ..Default::default()
+    }
+}
+
+/// One texture on every stage.
+struct Shared<'a>(&'a DepthTexture);
+
+impl Sampler for Shared<'_> {
+    fn sample(&self, stage: usize, _: TextureDim, _: [f32; 3]) -> [f32; 4] {
+        panic!("stage {stage}: a shadow map was sampled as colour")
+    }
+    fn load(&self, _: usize, x: u32, y: u32) -> [f32; 4] {
+        self.0.load(0, x, y)
+    }
+    fn size(&self, _: usize) -> [u32; 2] {
+        self.0.size(0)
+    }
+}
+
+/// Taps a pass spreads over stages of one map collapse onto one: stage 0
+/// at texel 0 (passes) and stage 1 at texel 1 (fails) both compare at
+/// their mean, texel 1. Retail compares each where it is.
+#[test]
+fn hard_stages_of_one_map_compare_at_their_mean_coordinate() {
+    let lo = 0xAB_CDEF;
+    let hi = 0xAB_CDF0;
+    let tex = DepthTexture::new(DepthFormat::D24, 2, 1, &[hi, lo]);
+    let r = lo as f32;
+    let (t0, t1) = ([0.3, 0.5, r, 1.0], [0.8, 0.5, r, 1.0]);
+    let mut t = [[0.0; 4]; 4];
+    t[0] = t0;
+    t[1] = t1;
+    let inputs_ = Inputs {
+        t,
+        ..Default::default()
+    };
+    let sh = shadow(DepthFormat::D24, AlphaFunc::Greater, false);
+    let retail = two_stage_options(sh);
+    let mut hard = retail;
+    hard.hard_shadow = [0b11, 0b11, 0, 0];
+    let run = |reg, opts: &PixelOptions| {
+        interp::run(
+            &two_stage_def(reg),
+            opts,
+            &inputs_,
+            &PixelUniforms::default(),
+            &Shared(&tex),
+        )
+        .unwrap()[0]
+    };
+    assert_eq!((run(REG_T0, &retail), run(REG_T1, &retail)), (1.0, 0.0));
+    assert_eq!((run(REG_T0, &hard), run(REG_T1, &hard)), (0.0, 0.0));
+    // Each stage its own group: its own coordinate, as retail point.
+    let mut alone = retail;
+    alone.hard_shadow = [0b01, 0b10, 0, 0];
+    assert_eq!((run(REG_T0, &alone), run(REG_T1, &alone)), (1.0, 0.0));
+    let Some(gpu) = common::gpu() else {
+        eprintln!("no GPU adapter; skipping");
+        return;
+    };
+    const HARNESS2: &str = r#"
+@group(1) @binding(8) var<storage, read> hin: array<vec4f>;
+@group(1) @binding(9) var<storage, read_write> hout: array<vec4f>;
+@compute @workgroup_size(1)
+fn harness(@builtin(global_invocation_id) id: vec3u) {
+    let z = vec4f(0.0);
+    let r = xps_program(XpsInputs(z, z, z, z, hin[2u * id.x], hin[2u * id.x + 1u], z, z, 0.0, true));
+    hout[id.x] = r.color;
+}
+"#;
+    for (opts, want) in [
+        (&retail, [1.0, 0.0]),
+        (&hard, [0.0, 0.0]),
+        (&alone, [1.0, 0.0]),
+    ] {
+        for (k, reg) in [REG_T0, REG_T1].into_iter().enumerate() {
+            let ps = psh::translate(&two_stage_def(reg), opts);
+            let src = format!("{}{}", ps.module(), HARNESS2);
+            common::check(&src);
+            let texture = |binding| common::GpuTexture {
+                binding,
+                view: gpu.texture(wgpu::TextureViewDimension::D2, [2, 1, 1], &tex.texels),
+                dim: wgpu::TextureViewDimension::D2,
+            };
+            let input: Vec<f32> = t0.iter().chain(&t1).copied().collect();
+            let out = gpu.run_with_textures(
+                &src,
+                "harness",
+                1,
+                &PixelUniforms::default().to_bytes(),
+                &input,
+                4,
+                1,
+                &[texture(0), texture(2)],
+            );
+            assert_eq!(out, [want[k]; 4], "{:?} t{k}", opts.hard_shadow);
+        }
+    }
+}

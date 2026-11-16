@@ -409,7 +409,7 @@ fn restart(label: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setting_defs::{ALL, FOV, FPS, PAD_MUTE, PAD_SPEAKER, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FOV, FPS, LIGHTING, PAD_MUTE, PAD_SPEAKER, RENDER_SCALE};
     use settings::Value;
 
     fn model(store: Arc<Store>) -> Model {
@@ -451,10 +451,11 @@ mod tests {
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
+                RowKind::Setting(LIGHTING.key),
                 RowKind::Setting(PAD_MUTE.key)
             ]
         );
-        assert_eq!(m.count(List::Screen("video"), 6), 4);
+        assert_eq!(m.count(List::Screen("video"), 6), 5);
         assert_eq!(m.count(List::Controls, 6), 8);
         assert_eq!(m.count(List::Controls, 4), 4, "not the list we extend");
         assert_eq!(m.row(List::Controls, 5), None);
