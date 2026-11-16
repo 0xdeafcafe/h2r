@@ -59,6 +59,9 @@ Each arena also has furniture (`mock/fixtures.ts`): a lift platform that
 rides up and down and a walking thing with no node in the glb (both in the
 frames' `machines`), two pairs of teleporters with their links and a
 gravity lift (in the glb's extras); `H2_MOCK_FURNITURE=0` leaves it out.
+`H2_MOCK_ADMIN=1` makes every account
+signed up in the browser an admin, so the dashboard's server screen shows "your server"
+and its invites, and the stats site shows the admin area (`mock/admin.ts`).
 
 **Against the real server.** `h2 live serve` serves `web/dist` at `/`, so
 build and open the server's URL. To use Vite's dev server with a real

@@ -61,10 +61,12 @@ pub struct Lockstep {
 }
 
 impl Lockstep {
-    /// Installs what `config` asks for: the tick observer at `hook`, and an
-    /// input tap on `xapi`. Call after the generated module is registered.
+    /// Sets up what `config` asks for: the tick observer (added to
+    /// `registry`; it is hooked when the plan is installed), and an input tap
+    /// on `xapi`. When the plan turns the observer off, say so with
+    /// [`set_tick_note`](Self::set_tick_note).
     pub fn install<S: xapi::Storage>(
-        rt: &runtime::Runtime,
+        registry: &mut feature::Registry,
         config: Config,
         hook: lockstep::TickHook,
         xapi: Option<&Mutex<xapi::Xapi<S>>>,
@@ -79,9 +81,12 @@ impl Lockstep {
             .map(|_| lockstep::Recorder::new(hook.game_time));
         if let Some(r) = &recorder
             && config.ticks
-            && let Err(e) = lockstep::install_tick_observer(rt, hook, Arc::clone(r))
         {
-            tick_note = Some(e);
+            match registry.add(&lockstep::TickObserver(Arc::clone(r))) {
+                Ok(true) => {}
+                Ok(false) => tick_note = Some("features: lockstep is switched off".to_owned()),
+                Err(e) => tick_note = Some(format!("lockstep: {e}")),
+            }
         }
         let mut input = None;
         let mut replay = None;
@@ -116,6 +121,12 @@ impl Lockstep {
             replay,
             tick_note,
         })
+    }
+
+    /// Why ticks are not hashed, when the installed plan left the observer
+    /// out.
+    pub fn set_tick_note(&mut self, note: String) {
+        self.tick_note = Some(note);
     }
 
     /// Between slices: a record for each present since the last call.
@@ -184,9 +195,16 @@ mod tests {
                 ticks: true,
                 ..Default::default()
             };
+            let mut features = feature::Registry::new(feature::Switches::defaults());
             let h =
-                Lockstep::install::<xapi::VfsStorage>(&toy.runtime, config, synthetic::HOOK, None)
+                Lockstep::install::<xapi::VfsStorage>(&mut features, config, synthetic::HOOK, None)
                     .unwrap();
+            let addrs = feature::Remap::new(&[(&feature::points::GAME_TICK, synthetic::TICK)]);
+            features
+                .build(&addrs)
+                .unwrap()
+                .install(&toy.runtime)
+                .unwrap();
             for f in 0..20u32 {
                 toy.set_input(&synthetic::packet(
                     f,
@@ -212,7 +230,7 @@ mod tests {
 
     #[test]
     fn input_needs_xapi_and_record_excludes_replay() {
-        let toy = lockstep::synthetic::Toy::new();
+        let mut features = feature::Registry::new(feature::Switches::defaults());
         let both = Config {
             record: Some("a".into()),
             replay: Some("b".into()),
@@ -220,7 +238,7 @@ mod tests {
         };
         assert!(
             Lockstep::install::<xapi::VfsStorage>(
-                &toy.runtime,
+                &mut features,
                 both,
                 lockstep::synthetic::HOOK,
                 None
@@ -233,7 +251,7 @@ mod tests {
         };
         assert!(
             Lockstep::install::<xapi::VfsStorage>(
-                &toy.runtime,
+                &mut features,
                 rec,
                 lockstep::synthetic::HOOK,
                 None

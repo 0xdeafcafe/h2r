@@ -29,13 +29,9 @@ pub const INPUT: u32 = DATA + 0x200;
 pub const PLAYER: u32 = DATA + 0x300;
 const STACK_BOTTOM: u32 = 0x6fff_0000;
 const STACK_TOP: u32 = 0x7000_0000;
-/// Ticks in [`Toy::frame`] go through this shadow page.
-pub const SHADOW: u32 = 0xa0ff_9000;
-
 /// The observer hook for this guest.
 pub const HOOK: crate::TickHook = crate::TickHook {
     entry: TICK,
-    shadow: SHADOW,
     game_time: Some(GAME_TIME_PTR),
 };
 

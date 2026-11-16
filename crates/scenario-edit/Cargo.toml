@@ -1,0 +1,18 @@
+[package]
+name = "scenario-edit"
+description = "Sapien-style scenario placement editor: typed scnr placement blocks, undoable edits written as patched .map files, and an egui panel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+map.workspace = true
+tags.workspace = true
+thiserror.workspace = true
+egui.workspace = true
+egui-wgpu.workspace = true
+bytemuck = { version = "1", features = ["derive"] }
+xiso.workspace = true
+
+[dev-dependencies]
+pollster = "1"

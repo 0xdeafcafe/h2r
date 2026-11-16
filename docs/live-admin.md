@@ -218,6 +218,12 @@ browser account is an admin (the `admin` field above). Three sections:
   historical lineup (below).
 - **Import account** — below.
 
+The same playlist editing is available offline in the native editor's
+hopper tool (`h2-editor`, [editor.md](editor.md)): it opens and saves a
+`multiplayer_hopper.dat` file (raw image or envelope) with the same
+fields, validation and presets; publish the result with `h2 live hopper
+import`.
+
 Saves are the browser's first writes: each signs a self-issued 60-second
 token (`titles.write`) with the signed-in account's key, exactly as the CLI
 signs its requests, and sends it as a bearer header.
@@ -385,11 +391,80 @@ route registrations, the `Policy.admins`/`Live.admins` fields, the
 `admin` field on account reads, the CLI dispatch and the `--admin` flag,
 and the embedded server's runtime grant.
 
-## 5. Security notes
+## 5. The dashboard's server screen and admin invites
+
+`/dash/server` (Settings → Server on the dashboard) shows every visitor
+the server's public facts from `GET /v1/server`: id, public address,
+software, whether sign-up needs an invite, whether reads are private,
+accounts, online players and live games. Its four pods lead to another
+server (the switcher, now `/dash/server/connect`), the event log, the
+players and the stats site.
+
+For an admin (`isMeAdmin`, the account read's `admin` field) it is "your
+server", from `GET /v1/admin/status` (an `admin.read` token, admins and
+the operator only; `crates/live-server/src/status.rs`):
+
+```json
+{ "id": "…", "software": "…", "url": "https://….trycloudflare.com",
+  "invite_only": true, "private": false, "federation": false,
+  "counts": {"accounts": 12, "online": 3, "live_games": 1, "sessions": 2},
+  "position": 900, "started_at": "2026-11-16T10:00:00Z", "uptime_s": 93784,
+  "public": {"url": "https://….trycloudflare.com", "tunnel": "quick"},
+  "game_art": {"present": true, "shared": false, "manifest_version": 1,
+               "extractor": 7, "source": "<disc cache key>", "maps": 12},
+  "admins": [{"gamertag": "afr", "source": "configured"}],
+  "log": {"position": 900, "head": 900, "store": "file"},
+  "invites": {"open": 2, "used": 5, "revoked": 1, "expired": 0},
+  "data_dir": "/Users/…/live/server" }
+```
+
+`tunnel` is `quick` (a `trycloudflare.com` name), `named` (another
+Cloudflare tunnel host), `proxy` (`--public-url`) or null. `extractor` is
+the art extractor version `h2 live assets extract` now records in the
+manifest (null for older art). Nothing secret is in it: no keys, no file
+contents, no database URL; `data_dir` only when the caller is on this
+machine (a loopback peer with no proxy header, as for game art), so not
+through a tunnel. Its pods: **Invites**, the MOTD editor and the
+playlist builder (`/stats/admin?tab=motd|hopper`), and another server.
+Granting admin stays operator-only, so the plate shows the
+`h2 live admin grant` command to copy instead of a button.
+
+**Invites** (`/dash/server/invites`, `crates/live-server/src/invites.rs`):
+pick how long it lasts (1, 7 or 30 days; at most 30), make one, and the
+code is shown and copied. Each is single-use, like the operator's. The
+list shows open invites (copy again, revoke) and recent used, revoked and
+expired ones, with who made and who used them.
+
+- `POST /v1/invites`: an `invites.write` token from an admin account and,
+  as the body (`application/jose`), an `InviteCreated` event on the
+  `invites` stream, signed by the same key, data `{jti, exp}` (`jti` 16 to
+  64 of `[A-Za-z0-9_-]`, `exp` in unix seconds, at most 30 days ahead).
+  201 `{invite, jti, exp, position}`. The operator's form (no body,
+  `?days=`) is unchanged.
+- `GET /v1/invites`: admins only (`admin.read`); `{items: [{jti, by,
+  by_gamertag?, at, exp, state: open|used|revoked|expired, used_by?,
+  used_by_gamertag?, invite?}]}`, newest first. Open ones carry their code
+  again (the server's signature over the same `jti` and `exp`, which is
+  deterministic).
+- `POST /v1/invites/{jti}/revoke`: an `InviteRevoked` event `{jti}` by an
+  admin; 409 unless it is open.
+
+At sign-up, an invite the log knows must be open and its maker still an
+admin. Rate limit: per author a burst of 10, then one a minute. The
+security reasoning is in [live-security.md](live-security.md) §3.
+
+In the mock (`bun run dev`), `H2_MOCK_ADMIN=1` makes every account signed
+up in the browser an admin, and the mock serves these endpoints
+(`web/mock/admin.ts`; it parses but does not verify tokens and events).
+
+## 6. Security notes
 
 - Grant and revoke are operator-only (a server-key token with `lxm`
-  `admin.write`), like invites: an admin can publish content, not make
-  admins.
+  `admin.write`): an admin can publish content and invite people, not
+  make admins.
+- Admin invites are logged as the admin's own signed `InviteCreated`
+  events, rate-limited, and die with the admin's grant (§5,
+  [live-security.md](live-security.md) §3).
 - Admin publishes go through the same event log as operator ones
   (`TitleFilePublished` by the server key), so the audit trail does not
   say who clicked; the operator's own log of grants and the account reads

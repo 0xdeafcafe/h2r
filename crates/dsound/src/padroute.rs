@@ -153,18 +153,21 @@ pub struct PadSpeakerConfig {
     pub exclude: Vec<String>,
 }
 
-/// Starting patterns: the player's own sounds. Shields, reloads, the
-/// empty-magazine click, skulls and the round-start cues; the player
-/// character's own sounds (pain, death, boarding, melee), jumps and
-/// landings; and first-person weapon handling: melee, raising a weapon
-/// (the sword opening is its raise), inspection poses, dry fire, grenade
-/// throws, zoom and overheating. Walking and running footsteps and gunfire
-/// stay on the main output. Routing is by sound name, not by who plays it,
-/// so an enemy playing one of these sounds is routed too. These are generic
-/// words, not tag paths read from the disc; check them against your own
-/// maps with `h2 tags <map> snd!` and adjust (`docs/playstation-audio.md`).
+/// Starting patterns: the player's own sounds. Shield charge, low and
+/// depleted warnings (the HUD's, under a `ui` folder: an enemy's shield, a
+/// Jackal's or an Elite's, is a character or material sound and stays on the
+/// main output), reloads, the empty-magazine click, skulls and the round-start
+/// cues; the player character's own sounds (pain, death, boarding, melee),
+/// jumps and landings; and first-person weapon handling: melee, raising a
+/// weapon (the sword opening is its raise), inspection poses, dry fire,
+/// grenade throws, zoom and overheating. Walking and running footsteps and
+/// gunfire stay on the main output. Whatever the name, a voice the game
+/// positions in 3D (its own DirectSound3D source, or a stream feeding a 3D
+/// mix-in) is never routed: see `DirectSound::set_pad_router`. These are
+/// generic words, not tag paths read from the disc; check them against your
+/// own maps with `h2 tags <map> snd!` and adjust (`docs/playstation-audio.md`).
 pub const DEFAULT_ROUTES: &[&str] = &[
-    "*shield*",
+    "*/ui/*shield*",
     "*reload*",
     "*empty*",
     "*skull*",
@@ -455,9 +458,9 @@ mod tests {
     fn shared_openings_route_only_when_every_owner_agrees() {
         let silence = vec![0u8; PREFIX_BYTES];
         let mut idx = SoundIndex::new();
-        idx.insert(r"fx\shield_recharge", &silence);
-        idx.insert(r"fx\shield_depleted", &silence);
-        idx.insert(r"fx\shield_recharge", &silence); // again, from another map
+        idx.insert(r"fx\ui\shield_recharge", &silence);
+        idx.insert(r"fx\ui\shield_depleted", &silence);
+        idx.insert(r"fx\ui\shield_recharge", &silence); // again, from another map
         let cfg = PadSpeakerConfig::default();
         assert_eq!(idx.lookup(&silence).len(), 2);
         assert_eq!(
@@ -470,6 +473,40 @@ mod tests {
             router(&idx, &cfg).classify(&silence),
             Classified::Start(VoiceOutput::Main)
         );
+    }
+
+    #[test]
+    fn the_players_shield_routes_and_an_enemys_does_not() {
+        // Synthetic names laid out like the game's: the HUD's shield warnings
+        // live in a `ui` folder, an enemy's shield under its character, a
+        // shield hit under the weapon or material that made it.
+        let player = [
+            r"sound\ui\shield_recharge",
+            r"sound\ui\shield_warning\loop",
+            r"sound\ui\shield_gone",
+        ];
+        let enemy = [
+            r"sound\characters\jackal\shield_hit",
+            r"sound\characters\jackal\shield_break",
+            r"sound\weapons\grenade\shield_impact",
+            r"sound\materials\energy_shield\impact",
+            r"sound\ambience\door_shield\loop",
+        ];
+        let table = RouteTable::new(&PadSpeakerConfig::default());
+        for name in player {
+            assert_eq!(table.output_for(name), VoiceOutput::Side, "{name}");
+        }
+        for name in enemy {
+            assert_eq!(table.output_for(name), VoiceOutput::Main, "{name}");
+        }
+        // Through the index, by the bytes the game hands DirectSound.
+        let mut idx = SoundIndex::new();
+        let (mine, jackal) = (sound(7, 4000), sound(8, 4000));
+        idx.insert(player[2], &mine[..PREFIX_BYTES]);
+        idx.insert(enemy[0], &jackal[..PREFIX_BYTES]);
+        let r = router(&idx, &PadSpeakerConfig::default());
+        assert_eq!(r.classify(&mine), Classified::Start(VoiceOutput::Side));
+        assert_eq!(r.classify(&jackal), Classified::Start(VoiceOutput::Main));
     }
 
     #[test]
@@ -494,7 +531,8 @@ mod tests {
             PadSpeakerConfig::default()
         );
         assert!(PadSpeakerConfig::default().enabled, "on by default");
-        let off = PadSpeakerConfig::from_env(|k| (k == "H2_PAD_SPEAKER").then(|| "0".into())).unwrap();
+        let off =
+            PadSpeakerConfig::from_env(|k| (k == "H2_PAD_SPEAKER").then(|| "0".into())).unwrap();
         assert!(!off.enabled);
         let on = PadSpeakerConfig::from_env(|k| match k {
             "H2_PAD_SPEAKER" => Some("1".into()),

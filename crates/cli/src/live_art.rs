@@ -350,6 +350,10 @@ pub struct Entry {
 pub struct Manifest {
     /// [`MANIFEST_VERSION`].
     pub version: u32,
+    /// [`EXTRACTOR_VERSION`] of the extraction that wrote it (the admin
+    /// status shows it); 0 in manifests from before it was recorded.
+    #[serde(default)]
+    pub extractor: u32,
     /// The cache key of the disc it came from ([`cache_key`]).
     pub source: String,
     /// Semantic key -> picture.
@@ -413,6 +417,7 @@ pub fn build_manifest(
         .collect();
     Manifest {
         version: MANIFEST_VERSION,
+        extractor: EXTRACTOR_VERSION,
         source,
         images,
         aliases,

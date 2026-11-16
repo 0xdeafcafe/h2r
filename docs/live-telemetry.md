@@ -75,9 +75,47 @@ Frames also carry `vehicles` and `actors` ([live-gamestate.md](live-gamestate.md
   stem; both `unknown` without the map's names.
 - Actors' shots: every weapon's fire-hook count since the last frame,
   given to the actor holding that weapon at frame time.
-- Vehicles: each vehicle a player or sent actor rides, once, with its
-  forward and up vectors; a vehicle whose vectors are not finite and
-  non-zero is left out.
+- Vehicles: every vehicle the scan finds (object type 1), occupied when a
+  biped's parent is it, occupied first, at most 64; a vehicle a player or
+  sent actor rides uses the transform the rider read. A vehicle whose
+  vectors are not finite and non-zero is left out. A vehicle parented to
+  another object (a turret on the scarab or a dropship) is sent with its
+  parent-relative `+0x64`.
+
+And, from the same scan and the units' own memory
+([live-gamestate.md](live-gamestate.md), "Unit stance, actions, damage and
+machines"):
+
+- `stance`: `dead` without a live unit, `vehicle` in one, `airborne` when
+  the biped physics mode is 2, else `crouch` when the crouch amount
+  (`+0x2c4`) is at least 0.5, else `stand`.
+- `speed`: horizontal distance between this frame's and the previous
+  frame's position over the game time between them; not sent for the first
+  frame of a unit, over gaps of more than a second, or above 100 units a
+  second (respawns, teleports).
+- `actions`, from what changed since the unit's previous frame (none for a
+  unit seen the first time): a weapon datum new to its four slots is
+  `pickup`; the held weapon becoming one it already carried is `switch`; the
+  held weapon's first magazine gaining loaded rounds while its reserve
+  drops is `reload`; fewer grenades is `grenade`, more is `pickup`; the
+  physics mode going from ground (1) to flying (2) with the velocity's z
+  above 0 is `jump`; entering the melee mode (6), or dealing melee damage,
+  is `melee`.
+- `grenade`: the selected grenade type (`+0x23c`).
+- `hits`: a hook on the damage report function `0x000d9640` (custom ABI,
+  `EDI` = report, the victim datum on the stack; always runs the original)
+  records each report; frames send those since the last frame, newest 64.
+  The damage reporting type (the report code's low 6 bits) gives `kind` and,
+  for hand weapons, `weapon`; otherwise `weapon` is the `jpt!` tag's stem.
+  The attacker is the report's owner player (`p<index>`), else its owner
+  object. The hook is optional: without that entry frames carry no hits.
+- `bsp`: the game globals' active structure BSP (`G+0x02`).
+- `machines`: every machine (object type 7) whose position, forward, up or
+  device position changed by 0.001 or more since it was last sent; all of
+  them in the game's first frame. `node` is the `mach` stem and the
+  object's scenario placement index (`+0x1a`), matching map.glb's
+  `machines` children, which are named after the scenario's machine block
+  index.
 
 Game starts say their `kind`: `campaign` for campaign mode, with
 `difficulty` from the active options' `+0x12a` word (0 easy to 3
@@ -224,3 +262,17 @@ relying on live output, check in this order:
    the team names (likely: tag-definition order); vehicle `up` for banshees;
    that dropship-mounted turrets (vehicles parented to vehicles) look right
    (their `+0x64` is parent-relative and is sent as is).
+9. Stance and actions: crouch, airborne and the biped physics mode values
+   (likely, from Project Cartographer's names); that a jump and a melee
+   (hit and miss) each show once; that reloads, weapon swaps, grenade
+   throws and pickups each show once and not when firing; the grenade type
+   names (likely 0 frag, 1 plasma).
+10. Hits: that `0x000d9640` runs once per damage instance on the host
+    (its four callers include a network path, `0x0009c76e`); the reporting
+    type order (likely, from Project Cartographer); body and shield amounts
+    as vitality fractions (likely); a grenade's or vehicle's weapon falls
+    back to the damage effect's stem.
+11. Machines: object type 7 is a machine and the scarab is one (its `mach`
+    tag is in `03a`/`03b`); `+0x1a` matching map.glb's machine names; the
+    device position `+0x140` moving 0 to 1 as doors open and elevators
+    travel (likely); the active BSP switching between campaign zones.

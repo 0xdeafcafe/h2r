@@ -1,13 +1,17 @@
 use std::collections::BTreeMap;
 
 use live_proto::game::{
-    Frame, FrameActor, FramePlayer, FrameVehicle, GameEnded, MAX_FRAME_ACTORS, MAX_FRAME_SHOTS,
-    MAX_FRAME_VEHICLES, PlayerKilled, PlayerLeft, ScoreChanged,
+    Frame, FrameActor, FrameHit, FrameMachine, FramePlayer, FrameVehicle, GameEnded,
+    MAX_FRAME_ACTORS, MAX_FRAME_HITS, MAX_FRAME_MACHINES, MAX_FRAME_SHOTS, MAX_FRAME_VEHICLES,
+    PlayerKilled, PlayerLeft, ScoreChanged,
 };
 
-use crate::event::{GameEvent, GameInfo, ObjectState, Output, PlayerState, Snapshot};
+use crate::event::{
+    GameEvent, GameInfo, HitRecord, MachineState, ObjectState, Output, PlayerState, Snapshot,
+};
 use crate::layout;
 use crate::memory::yaw;
+use crate::motion::{self, UnitMemory};
 use crate::tags::TagNames;
 
 /// Shots a player's held weapon fired since their previous frame.
@@ -44,6 +48,14 @@ struct Match {
     /// Every weapon's shots since the last frame, for actors (read only on
     /// frame ticks, so their held weapon is looked up then).
     actor_shots: BTreeMap<u32, u32>,
+    /// Each player's and sent actor's unit at the previous frame, by unit
+    /// datum, for `speed` and `actions`.
+    units: BTreeMap<u32, UnitMemory>,
+    /// Each machine as last sent, by datum: frames send only those that
+    /// moved.
+    machines_sent: BTreeMap<u32, MachineState>,
+    /// Damage reports since the last frame (newest [`MAX_FRAME_HITS`]).
+    hits: Vec<HitRecord>,
 }
 
 pub struct Session {
@@ -126,6 +138,8 @@ impl Session {
             current.last_score_tick = info.tick;
             current.shots.clear();
             current.actor_shots.clear();
+            current.units.clear();
+            current.hits.clear();
             return;
         }
         self.end_previous();
@@ -193,6 +207,9 @@ impl Session {
             tags: None,
             shots: BTreeMap::new(),
             actor_shots: BTreeMap::new(),
+            units: BTreeMap::new(),
+            machines_sent: BTreeMap::new(),
+            hits: Vec::new(),
         });
     }
 
@@ -339,9 +356,45 @@ impl Session {
             *count = count.saturating_add(*n);
         }
 
+        current.hits.extend(snapshot.hits.iter().cloned());
+        let over = current.hits.len().saturating_sub(MAX_FRAME_HITS);
+        current.hits.drain(..over);
+
         if snapshot.tick.is_multiple_of(2) {
             let game_id = current.game_id.clone();
             let tags = current.tags.as_ref();
+            let hits = std::mem::take(&mut current.hits);
+            let player_of_unit: BTreeMap<u32, u32> = snapshot
+                .players
+                .iter()
+                .filter(|p| p.unit != u32::MAX)
+                .map(|p| (p.unit, p.player.index))
+                .collect();
+            let frame_hits = frame_hits(&hits, &player_of_unit, tags);
+            // Units that dealt melee damage since the last frame.
+            let meleed: std::collections::BTreeSet<u32> = hits
+                .iter()
+                .filter(|h| layout::damage_reporting_type(h.code).0 == "melee")
+                .map(|h| h.owner_object)
+                .collect();
+            let previous = std::mem::take(&mut current.units);
+            let tick = snapshot.tick;
+            let tick_rate = current.tick_rate;
+            let units = &mut current.units;
+            let mut observe = |datum: u32, object: &ObjectState, alive: bool| {
+                let (observed, memory) = motion::observe(
+                    previous.get(&datum),
+                    object,
+                    alive,
+                    tick,
+                    tick_rate,
+                    meleed.contains(&datum),
+                );
+                if alive {
+                    units.insert(datum, memory);
+                }
+                observed
+            };
             let players = snapshot
                 .players
                 .iter()
@@ -354,6 +407,14 @@ impl Session {
                         p.count = 0;
                         n
                     });
+                    let observed = match object {
+                        Some(o) => observe(player.unit, o, alive),
+                        None if !alive => motion::Observed {
+                            stance: Some("dead".into()),
+                            ..Default::default()
+                        },
+                        None => motion::Observed::default(),
+                    };
                     FramePlayer {
                         index,
                         alive,
@@ -375,18 +436,33 @@ impl Session {
                             .zip(tags)
                             .and_then(|(w, t)| t.weapon(w.definition)),
                         shots: shots.filter(|n| *n > 0),
+                        stance: observed.stance,
+                        speed: observed.speed,
+                        actions: observed.actions,
+                        grenade: observed.grenade,
                     }
                 })
                 .collect();
             let actor_shots = std::mem::take(&mut current.actor_shots);
-            let actors = frame_actors(snapshot, tags, current.campaign, &actor_shots);
+            let mut actors = frame_actors(snapshot, tags, current.campaign, &actor_shots);
+            for (actor, object, datum) in &mut actors {
+                let observed = observe(*datum, object, true);
+                actor.stance = observed.stance;
+                actor.speed = observed.speed;
+                actor.actions = observed.actions;
+                actor.grenade = observed.grenade;
+            }
             let vehicles = frame_vehicles(snapshot, &actors, tags);
+            let machines = frame_machines(snapshot, &mut current.machines_sent, tags);
             self.output.push(Output::Frame(Frame {
                 game_id,
                 tick: snapshot.tick,
                 players,
                 vehicles,
-                actors: actors.into_iter().map(|(a, _)| a).collect(),
+                actors: actors.into_iter().map(|(a, _, _)| a).collect(),
+                hits: frame_hits,
+                bsp: snapshot.bsp,
+                machines,
             }));
         }
     }
@@ -471,7 +547,7 @@ fn frame_actors(
     tags: Option<&TagNames>,
     campaign: bool,
     shots: &BTreeMap<u32, u32>,
-) -> Vec<(FrameActor, ObjectState)> {
+) -> Vec<(FrameActor, ObjectState, u32)> {
     let players: Vec<[f64; 3]> = snapshot.objects.iter().flatten().map(|o| o.pos).collect();
     let distance = |pos: [f64; 3]| {
         players
@@ -509,25 +585,33 @@ fn frame_actors(
                     .filter(|n| *n > 0),
                 team: o.team.map(|t| team_name(t, campaign)),
                 vehicle: o.vehicle.map(|v| format!("{v:08x}")),
+                ..FrameActor::default()
             };
-            (actor, o.clone())
+            (actor, o.clone(), a.datum)
         })
         .collect()
 }
 
-/// Every vehicle a player or a sent actor rides, once, with a sane
-/// transform.
+/// Every vehicle, occupied ones first, capped: those a player or a sent
+/// actor rides (their transform as the rider read it), then the world
+/// scan's, occupied when a biped is parented to it.
 fn frame_vehicles(
     snapshot: &Snapshot,
-    actors: &[(FrameActor, ObjectState)],
+    actors: &[(FrameActor, ObjectState, u32)],
     tags: Option<&TagNames>,
 ) -> Vec<FrameVehicle> {
+    let kind = |definition: Option<u32>| {
+        definition
+            .zip(tags)
+            .and_then(|(d, t)| t.vehicle(d))
+            .unwrap_or_else(|| UNKNOWN.into())
+    };
     let mut seen = std::collections::BTreeSet::new();
-    snapshot
+    let ridden = snapshot
         .objects
         .iter()
         .flatten()
-        .chain(actors.iter().map(|(_, o)| o))
+        .chain(actors.iter().map(|(_, o, _)| o))
         .filter_map(|o| {
             let id = o.vehicle?;
             if !finite_direction(o.forward) || !finite_direction(o.up) || !seen.insert(id) {
@@ -535,17 +619,138 @@ fn frame_vehicles(
             }
             Some(FrameVehicle {
                 id: format!("{id:08x}"),
-                kind: o
-                    .vehicle_definition
-                    .zip(tags)
-                    .and_then(|(d, t)| t.vehicle(d))
-                    .unwrap_or_else(|| UNKNOWN.into()),
+                kind: kind(o.vehicle_definition),
                 pos: o.pos,
                 forward: o.forward,
                 up: o.up,
+                occupied: true,
             })
         })
+        .collect::<Vec<_>>();
+    let mut world: Vec<_> = snapshot
+        .vehicles
+        .iter()
+        .filter(|v| {
+            v.pos.iter().all(|c| c.is_finite())
+                && finite_direction(v.forward)
+                && finite_direction(v.up)
+                && seen.insert(v.datum)
+        })
+        .map(|v| FrameVehicle {
+            id: format!("{:08x}", v.datum),
+            kind: kind(v.definition),
+            pos: v.pos,
+            forward: v.forward,
+            up: v.up,
+            occupied: v.occupied,
+        })
+        .collect();
+    world.sort_by_key(|v| !v.occupied);
+    ridden
+        .into_iter()
+        .chain(world)
         .take(MAX_FRAME_VEHICLES)
+        .collect()
+}
+
+/// The machines that moved since they were last sent (all of them the
+/// first time), capped; remembers what it sends.
+fn frame_machines(
+    snapshot: &Snapshot,
+    sent: &mut BTreeMap<u32, MachineState>,
+    tags: Option<&TagNames>,
+) -> Vec<FrameMachine> {
+    const EPSILON: f64 = 1e-3;
+    let near = |a: &[f64; 3], b: &[f64; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < EPSILON);
+    let moved = |m: &MachineState| match sent.get(&m.datum) {
+        None => true,
+        Some(s) => {
+            !near(&s.pos, &m.pos)
+                || !near(&s.forward, &m.forward)
+                || !near(&s.up, &m.up)
+                || match (s.position, m.position) {
+                    (Some(a), Some(b)) => (a - b).abs() >= EPSILON,
+                    (a, b) => a.is_some() != b.is_some(),
+                }
+        }
+    };
+    let changed: Vec<MachineState> = snapshot
+        .machines
+        .iter()
+        .filter(|m| {
+            m.pos.iter().all(|c| c.is_finite())
+                && finite_direction(m.forward)
+                && finite_direction(m.up)
+                && moved(m)
+        })
+        .take(MAX_FRAME_MACHINES)
+        .cloned()
+        .collect();
+    changed
+        .into_iter()
+        .map(|m| {
+            let kind = m
+                .definition
+                .zip(tags)
+                .and_then(|(d, t)| t.machine(d))
+                .unwrap_or_else(|| UNKNOWN.into());
+            let node = m
+                .placement
+                .filter(|_| kind != UNKNOWN)
+                .map(|i| format!("{kind}_{i}"))
+                .filter(|n| live_proto::game::valid_node(n));
+            let frame = FrameMachine {
+                node,
+                id: format!("{:08x}", m.datum),
+                kind,
+                pos: m.pos,
+                forward: m.forward,
+                up: m.up,
+                position: m.position,
+            };
+            sent.insert(m.datum, m);
+            frame
+        })
+        .collect()
+}
+
+/// The frame's hits: attacker and victim as `p<index>` for a player's unit
+/// (or the reporting player), else the object datum; the weapon from the
+/// damage reporting type, else the damage effect's stem.
+fn frame_hits(
+    hits: &[HitRecord],
+    player_of_unit: &BTreeMap<u32, u32>,
+    tags: Option<&TagNames>,
+) -> Vec<FrameHit> {
+    let object = |datum: u32| {
+        (datum != u32::MAX).then(|| match player_of_unit.get(&datum) {
+            Some(index) => format!("p{index}"),
+            None => format!("{datum:08x}"),
+        })
+    };
+    hits.iter()
+        .filter_map(|h| {
+            let pos = h.pos?;
+            let (kind, weapon) = layout::damage_reporting_type(h.code);
+            let from = if h.owner_player != u32::MAX {
+                Some(format!("p{}", h.owner_player & 0xffff))
+            } else {
+                object(h.owner_object)
+            };
+            let amount = f64::from(h.body.max(0.0)) + f64::from(h.shield.max(0.0));
+            Some(FrameHit {
+                from,
+                to: object(h.victim),
+                weapon: weapon.map(str::to_owned).or_else(|| {
+                    tags.and_then(|t| t.damage_effect(h.effect))
+                        .filter(|s| live_proto::game::valid_model_id(s))
+                }),
+                pos,
+                amount: amount.is_finite().then_some(amount),
+                kind: Some(kind.into()),
+            })
+        })
+        .take(MAX_FRAME_HITS)
         .collect()
 }
 
@@ -598,6 +803,10 @@ mod tests {
             teams: Vec::new(),
             shots: BTreeMap::new(),
             actors: Vec::new(),
+            vehicles: Vec::new(),
+            machines: Vec::new(),
+            bsp: None,
+            hits: Vec::new(),
         }
     }
 
@@ -867,11 +1076,13 @@ mod tests {
         let frame = &frames(&mut session)[0];
         assert_eq!(frame.players[0].species.as_deref(), Some("elite"));
         assert_eq!(frame.players[0].weapon.as_deref(), Some("battle_rifle"));
-        // A dead player (no unit, no object) has none of them.
+        // A dead player (no unit, no object) has none of them, only the
+        // stance.
         assert_eq!(
             frame.players[1],
             FramePlayer {
                 index: 1,
+                stance: Some("dead".into()),
                 ..FramePlayer::default()
             }
         );
@@ -1130,6 +1341,7 @@ mod tests {
                 pos: [20.0, 0.0, 1.0],
                 forward: [0.0, 1.0, 0.0],
                 up: [0.0, 0.6, 0.8],
+                occupied: true,
             }]
         );
         assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
@@ -1261,5 +1473,209 @@ mod tests {
             panic!()
         };
         assert!(started.data["players"][0].get("xuid").is_none());
+    }
+
+    fn machine(slot: u32, pos: [f64; 3], position: Option<f64>) -> MachineState {
+        MachineState {
+            datum: 0x9000_0000 | (slot << 16) | slot,
+            definition: Some(0xe100_0030),
+            placement: Some(slot as u16),
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            position,
+        }
+    }
+
+    fn world_names() -> TagNames {
+        TagNames::new(
+            0xe000_0001,
+            [
+                (
+                    0xe100_0030,
+                    *b"mach",
+                    "scenarios\\objects\\covenant\\military\\scarab\\scarab".to_string(),
+                ),
+                (
+                    0xe100_0040,
+                    *b"jpt!",
+                    "objects\\weapons\\melee\\big_punch".to_string(),
+                ),
+                (
+                    0xe100_0050,
+                    *b"vehi",
+                    "objects\\vehicles\\warthog\\warthog".to_string(),
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn frames_carry_bsp_hits_vehicles_and_moved_machines() {
+        use crate::event::{HitRecord, VehicleState};
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        session.start(&campaign(), vec![p.clone()]);
+        session.set_tag_names(world_names());
+        session.take_output();
+        let mut state = snapshot(2, vec![p.clone()]);
+        state.objects[0] = Some(ObjectState {
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            ..ObjectState::default()
+        });
+        state.bsp = Some(1);
+        let vehicle = |slot: u32, occupied| VehicleState {
+            datum: 0x9000_0000 | (slot << 16) | slot,
+            definition: Some(0xe100_0050),
+            pos: [slot as f64, 0.0, 0.0],
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            occupied,
+        };
+        state.vehicles = vec![vehicle(5, false), vehicle(6, true)];
+        state.machines = vec![
+            machine(7, [1.0, 1.0, 1.0], Some(0.0)),
+            machine(8, [2.0, 2.0, 2.0], None),
+        ];
+        state.hits = vec![
+            // Player 0 shoots an AI with a battle rifle.
+            HitRecord {
+                code: 10,
+                effect: 0xe100_0099,
+                owner_player: 0x8001_0000,
+                owner_object: 0x9001_0001,
+                victim: 0x9003_0003,
+                pos: Some([3.0, 0.0, 0.0]),
+                body: 0.25,
+                shield: 0.5,
+            },
+            // An AI punches player 0: a melee for the AI and a weapon from
+            // the damage effect's name.
+            HitRecord {
+                code: 3,
+                effect: 0xe100_0040,
+                owner_player: u32::MAX,
+                owner_object: 0x9003_0003,
+                victim: 0x9001_0001,
+                pos: Some([0.0, 0.0, 0.0]),
+                body: 0.1,
+                shield: 0.0,
+            },
+            // No position: not sent.
+            HitRecord {
+                code: 1,
+                effect: 0,
+                owner_player: u32::MAX,
+                owner_object: u32::MAX,
+                victim: 0x900a_000a,
+                pos: None,
+                body: 0.1,
+                shield: 0.0,
+            },
+        ];
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert_eq!(live_proto::game::validate_frame(&frame), Ok(()));
+        assert_eq!(frame.bsp, Some(1));
+        assert_eq!(frame.hits.len(), 2);
+        let shot = &frame.hits[0];
+        assert_eq!(shot.from.as_deref(), Some("p0"));
+        assert_eq!(shot.to.as_deref(), Some("90030003"));
+        assert_eq!(shot.weapon.as_deref(), Some("battle_rifle"));
+        assert_eq!(shot.kind.as_deref(), Some("bullet"));
+        assert_eq!(shot.amount, Some(0.75));
+        let punch = &frame.hits[1];
+        assert_eq!(punch.from.as_deref(), Some("90030003"));
+        assert_eq!(punch.to.as_deref(), Some("p0"));
+        assert_eq!(punch.weapon.as_deref(), Some("big_punch"));
+        assert_eq!(punch.kind.as_deref(), Some("melee"));
+        let vehicles: Vec<_> = frame
+            .vehicles
+            .iter()
+            .map(|v| (v.id.as_str(), v.kind.as_str(), v.occupied))
+            .collect();
+        assert_eq!(
+            vehicles,
+            [
+                ("90060006", "warthog", true),
+                ("90050005", "warthog", false)
+            ],
+            "occupied first"
+        );
+        let machines: Vec<_> = frame
+            .machines
+            .iter()
+            .map(|m| (m.node.as_deref(), m.kind.as_str(), m.position))
+            .collect();
+        assert_eq!(
+            machines,
+            [
+                (Some("scarab_7"), "scarab", Some(0.0)),
+                (Some("scarab_8"), "scarab", None)
+            ],
+            "all of them in the first frame"
+        );
+
+        // Next frame: only the machine that moved, no old hits.
+        state.tick = 4;
+        state.hits.clear();
+        state.machines = vec![
+            machine(7, [1.0, 1.0, 1.0], Some(0.5)),
+            machine(8, [2.0, 2.0, 2.0], None),
+        ];
+        session.sample(&state);
+        let frame = frames(&mut session).remove(0);
+        assert!(frame.hits.is_empty());
+        assert_eq!(frame.machines.len(), 1);
+        assert_eq!(frame.machines[0].position, Some(0.5));
+        state.tick = 6;
+        session.sample(&state);
+        assert!(frames(&mut session)[0].machines.is_empty(), "nothing moved");
+    }
+
+    #[test]
+    fn frames_carry_stance_speed_actions_and_grenade() {
+        use crate::event::{Motion, Weapon};
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x9001_0001;
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let unit = |pos: [f64; 3], grenades: u32, crouch: f64| ObjectState {
+            pos,
+            forward: [1.0, 0.0, 0.0],
+            up: [0.0, 0.0, 1.0],
+            weapon: Some(Weapon {
+                datum: 0x9002_0002,
+                definition: 1,
+            }),
+            motion: Motion {
+                crouch: Some(crouch),
+                physics_mode: Some(layout::BIPED_MODE_GROUND),
+                grenade: Some(1),
+                grenades: Some(grenades),
+                weapons: Some([0x9002_0002, u32::MAX, u32::MAX, u32::MAX]),
+                ..Motion::default()
+            },
+            ..ObjectState::default()
+        };
+        let mut state = snapshot(2, vec![p.clone()]);
+        state.objects[0] = Some(unit([0.0; 3], 2, 0.0));
+        session.sample(&state);
+        let first = &frames(&mut session)[0].players[0];
+        assert_eq!(first.stance.as_deref(), Some("stand"));
+        assert_eq!(first.speed, None, "no previous frame");
+        assert_eq!(first.actions, None);
+        assert_eq!(first.grenade.as_deref(), Some("plasma"));
+
+        state.tick = 4;
+        state.objects[0] = Some(unit([0.4, 0.0, 0.0], 1, 1.0));
+        session.sample(&state);
+        let second = &frames(&mut session)[0].players[0];
+        assert_eq!(second.stance.as_deref(), Some("crouch"));
+        assert_eq!(second.speed, Some(6.0));
+        assert_eq!(second.actions, Some(vec!["grenade".to_string()]));
     }
 }

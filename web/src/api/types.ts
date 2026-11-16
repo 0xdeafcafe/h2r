@@ -43,31 +43,17 @@ export interface FramePlayer {
   weapon?: string | null;
   /** Shots the held weapon fired since this player's previous frame. */
   shots?: number | null;
-  /** "stand", "crouch", "airborne" (jumping or falling), "vehicle" or "dead". */
+  /** "stand" | "crouch" | "airborne" | "vehicle" | "dead". */
   stance?: string | null;
   /** Horizontal speed, game units a second. */
   speed?: number | null;
-  /** One-shot actions started since their previous frame, in order:
-   *  "grenade", "melee", "reload", "jump", "switch", "pickup". */
+  /** One-shot actions since the previous frame, oldest first: "grenade", "melee", "reload", "jump", "switch", "pickup". */
   actions?: string[] | null;
-  /** The grenade held or thrown: "frag" or "plasma". */
+  /** "frag" | "plasma". */
   grenade?: string | null;
 }
 
-/** Damage dealt since the previous frame. */
-export interface FrameHit {
-  /** Attacker and victim: "p<index>" for a player, else an actor's or vehicle's id. */
-  from?: string | null;
-  to?: string | null;
-  weapon?: string | null;
-  /** Where the victim was. */
-  pos: [number, number, number];
-  amount?: number | null;
-  /** "bullet", "explosion", "melee", "fall", "vehicle"... */
-  kind?: string | null;
-}
-
-/** A vehicle with someone in it. A player's or actor's `vehicle` is its `id`. */
+/** A vehicle anywhere in the world. A player's or actor's `vehicle` is its `id`. */
 export interface FrameVehicle {
   id: string;
   /** The vehicle tag's stem: "warthog", "ghost". */
@@ -76,23 +62,31 @@ export interface FrameVehicle {
   /** Unit vectors, game coordinates (z up). */
   forward: [number, number, number];
   up: [number, number, number];
-  /** False for one nobody is in; older senders list only occupied ones and leave this out. */
-  occupied?: boolean | null;
+  /** Someone is in it; absent (older senders) means occupied. */
+  occupied?: boolean;
 }
 
-/** A device machine or other big scripted mover (a lift platform, a door,
- *  a walking tank). Sent when its transform or device position changed,
- *  and all of them in a game's first frame and every recorded frame. */
+/** Damage dealt: "p<index>" for players, else an object id. */
+export interface FrameHit {
+  from?: string | null;
+  to?: string | null;
+  weapon?: string | null;
+  pos: [number, number, number];
+  /** Body plus shield, as fractions of the victim's vitality. */
+  amount?: number | null;
+  /** "bullet", "explosion", "grenade", "melee", "fall", "collision", "vehicle", ... */
+  kind?: string | null;
+}
+
+/** A door, elevator, the scarab, ...: map.glb's `machines` child `node`. */
 export interface FrameMachine {
-  /** The map glb's `machines` child this object is: `<tag stem>_<placement index>`. Absent for one the scenario didn't place. */
   node?: string | null;
   id: string;
-  /** The tag's stem. */
   kind: string;
   pos: [number, number, number];
   forward: [number, number, number];
   up: [number, number, number];
-  /** A device's position, 0 to 1 (how far a door or a lift has travelled). */
+  /** Device position 0..1. */
   position?: number | null;
 }
 
@@ -122,9 +116,9 @@ export interface Frame {
   vehicles?: FrameVehicle[];
   actors?: FrameActor[];
   hits?: FrameHit[];
-  machines?: FrameMachine[];
-  /** The structure BSP the game has loaded (a campaign level's current zone). */
+  /** The structure BSP the game has loaded. */
   bsp?: number | null;
+  machines?: FrameMachine[];
 }
 
 export interface PlayerScore {

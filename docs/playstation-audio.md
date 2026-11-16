@@ -198,7 +198,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 # H2_PAD_SPEAKER=~/pad-speaker.toml
 device = "auto"
 exclusive = true
-routes = ["*shield*", "*reload*", "*empty*", "*skull*"]   # tag-name globs
+routes = ["*/ui/*shield*", "*reload*", "*empty*", "*skull*"]   # tag-name globs
 exclude = ["*music*"]
 ```
 
@@ -207,8 +207,12 @@ exclude = ["*music*"]
 character's pain, death, boarding, melee, jumps and landings, and
 first-person weapon handling: melee, raising, inspection poses, dry fire,
 grenade throws, zoom, overheating). Walking and running footsteps and
-gunfire stay on the main output. Routing goes by sound name, not by who
-plays the sound. These are generic words,
+gunfire stay on the main output. Shields are the HUD's warnings, under a
+`ui` folder: an enemy's shield (a Jackal's, an Elite's) is a character,
+weapon or material sound and stays on the main output. Routing goes by
+sound name, with one rule on top: a voice the game positions in 3D (a
+`DSBCAPS_CTRL3D` buffer, or a stream whose output buffer is one) is never
+routed, whatever it is called. These are generic words,
 not tag paths from the disc: check them against your maps with `h2 tags
 <map>` (filter `snd!`) and narrow them. Globs ignore case and treat `/` as `\`.
 In the settings menu this belongs with the restart-only audio settings
