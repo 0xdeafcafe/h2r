@@ -433,6 +433,29 @@ read at each call, never cached: a handler's vtable pointer and its press
 record's function can be replaced after the constructor has run, and
 before the screen is pushed nothing has drawn or pressed it.
 
+**A text of our own on a screen** (read for the Skulls screen's
+description, 2026-11-16, static, **E**). The pane builder (`0x22fc08`)
+makes each text block's widget with `0x22f9bf`: EBX the screen, stdcall
+(the block's index, a pointer to the `0x2c`-byte block), `ret 8`. It
+allocates `0xf8` or `0x2b8` bytes by block flag bit 4, constructs the text
+widget, links it as a child of the screen (`0x22eb18`, EAX the widget, ESI
+the screen) and fills it from the block, string id included (`0x253765`);
+the widget comes back in EAX (0 when allocation failed). The block need not
+be in a tag: a block of ours in arena memory, handed to `0x22f9bf` after
+the retail pane set-up, gives the screen one more text widget, whose string
+`TEXT_SET` (`0x253b1a`) changes later. Its lifetime is the pane's: a pane
+change (`0x230427`) tears the pane's widgets down (`0x22fba9`) before it
+builds the next.
+
+**The focused row.** `0x24c447` (EAX the list, plain `ret`, ECX kept)
+walks the list's children (`0x24bae6`, first child at `+0x14`, next at
+`+0x18`) to the first item for which `0x22ed7a` holds, and returns that
+item's row handle (`+0x70`), or -1. The base list code calls it when the
+focus moves and, for a list whose definition flag bit 0 is set (copied to
+`list + 0x7e`; the difficulty list's is, the Controls list's is not), hands
+the row to the pane change `0x230427`; that is how the difficulty screen
+changes its description pane per row.
+
 ## Aliased blocks, budget and nesting
 
 Block addresses can point into another tag's payload. Two retail screens use
