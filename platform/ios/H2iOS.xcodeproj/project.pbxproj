@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		1228DA40AE3CDB3067CEBDDF /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A42C9F3625FFB4EE2344F765 /* Security.framework */; };
+		1271B107FCEA343DCBC2B2D4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = BABF62A82D21C631CB99AF80 /* Assets.xcassets */; };
 		176FBBBC60D04FB80B3FEF1B /* CoreAudio.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 20BE44FED7B314C2B7E034AC /* CoreAudio.framework */; };
 		17E3EFF266D09D148A4F07D3 /* h2game.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 7E8497E7A119BF7AB5E25277 /* h2game.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		19E9B0EAFD720C5B5D9A954F /* bootcache in Resources */ = {isa = PBXBuildFile; fileRef = F9BD2EC6E010E6E6A76646C6 /* bootcache */; };
@@ -63,6 +64,7 @@
 		8678E4B35E1E524CF1A974FA /* TouchControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TouchControls.swift; sourceTree = "<group>"; };
 		9D4389DB9C34B5479AD68D0F /* GameViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameViewController.swift; sourceTree = "<group>"; };
 		A42C9F3625FFB4EE2344F765 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
+		BABF62A82D21C631CB99AF80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		CB475C1BDCD693A0E93A8F7F /* libiconv.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libiconv.tbd; path = usr/lib/libiconv.tbd; sourceTree = SDKROOT; };
 		D100B049AFB6D7FFCE6BE5E3 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		E546608ED02F5C2CC48D559B /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
@@ -148,6 +150,7 @@
 			isa = PBXGroup;
 			children = (
 				E96233BC3EB701F59A25D57F /* AppDelegate.swift */,
+				BABF62A82D21C631CB99AF80 /* Assets.xcassets */,
 				9D4389DB9C34B5479AD68D0F /* GameViewController.swift */,
 				01DBDDFC19A443C4B36599BC /* H2iOS-Bridging-Header.h */,
 				2B6D2650C60BA8FF51864593 /* Info.plist */,
@@ -248,6 +251,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				1271B107FCEA343DCBC2B2D4 /* Assets.xcassets in Resources */,
 				19E9B0EAFD720C5B5D9A954F /* bootcache in Resources */,
 				E4D86485BE4CC87BBA653C85 /* disc in Resources */,
 			);

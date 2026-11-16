@@ -393,10 +393,11 @@ removes the menu bar's own login item; the server and tunnel agents stay.
 
 ### The menu
 
-The icon is a ring: a dot in it when the server answers, a gap while it
-starts or an action runs, empty when it is stopped, and a slash on an
-error (the agent failed, or the server answers but will not give its
-status).
+The icon is the app icon's "2" as a template glyph
+([art/app-icon](../../art/app-icon/README.md)): plain when the server
+answers, with a small ring beside it while it starts or an action runs,
+dimmed when it is stopped, and slashed through on an error (the agent
+failed, or the server answers but will not give its status).
 
 - **Status lines**: the server's state and local URL; uptime, players
   online, live games and accounts (from `GET /v1/admin/status`, what the

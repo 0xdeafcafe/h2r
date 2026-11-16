@@ -14,6 +14,7 @@ is no simulator build.
 | `disc/` | the disc files the app needs, as a directory (`vfs::DirDiscBackend` serves it as D:) | `pack` (`h2host::layout::DISC_FILES`) |
 | `bootcache/` | the XBE's analysis, copied to Caches on first launch so the fallback interpreter need not redo it | `pack` |
 | `platform/tvos/H2TV` | a UIKit host: a `GCEventViewController` whose view is a `CAMetalLayer`; a 30 Hz `CADisplayLink` calls `h2host_redraw` | Xcode |
+| `H2TV/Assets.xcassets` | the app icon and Top Shelf images: `App Icon & Top Shelf Image.brandassets`, with the layered App Icon (400x240 @1x/@2x) and App Store (1280x768) stacks, Front, Middle and Back, and Top Shelf Image and Top Shelf Image Wide at @1x/@2x ([art/app-icon](../../art/app-icon/README.md)) | Xcode (actool), named by `ASSETCATALOG_COMPILER_APPICON_NAME` in `project.yml` |
 
 winit has no tvOS backend, so the Swift host owns the window and hands the
 layer to Rust (`platform/apple/h2host.h`, shared with iOS); wgpu renders into it through Metal. On tvOS
@@ -56,6 +57,8 @@ computes the stamp with their defaults, and `pack` refuses to run with any set.
 
 `H2TV.xcodeproj` is generated from `project.yml` by `xcodegen generate` (in
 `platform/tvos`); both are committed, so only Xcode is needed to build.
+Regenerate it after adding or removing files under `H2TV` (xcodegen needs
+`build/disc` and `build/bootcache` to exist, even empty).
 
 ## Signing and installing
 

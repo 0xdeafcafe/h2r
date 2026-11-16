@@ -172,6 +172,7 @@ name = "app"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-icon",
  "audio",
  "cpal",
  "font8x8",
@@ -184,6 +185,16 @@ dependencies = [
  "wgpu",
  "winit",
  "xapi",
+]
+
+[[package]]
+name = "app-icon"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "png",
 ]
 
 [[package]]
@@ -3011,6 +3022,7 @@ name = "live-menubar"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-icon",
  "libc",
  "serde",
  "serde_json",
@@ -5473,6 +5485,7 @@ name = "studio"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-icon",
  "content",
  "dear-imgui-rs",
  "dear-imgui-wgpu",

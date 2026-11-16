@@ -373,6 +373,8 @@ impl Win {
                     .with_inner_size(LogicalSize::new(1600.0, 1000.0)),
             )?,
         );
+        // The editor runs unbundled: give its Dock tile the app icon.
+        app_icon::set_dock_icon();
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..wgpu::InstanceDescriptor::new_without_display_handle()

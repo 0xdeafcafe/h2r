@@ -15,6 +15,8 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # The tray icon and its menu (muda, re-exported as tray_icon::menu), on a
 # winit event loop as tray-icon's docs recommend on macOS.
 tray-icon = "0.26"
+# The status glyph (art/app-icon).
+app-icon = { path = "../app-icon" }
 winit = "0.30"
 
 [target.'cfg(unix)'.dependencies]

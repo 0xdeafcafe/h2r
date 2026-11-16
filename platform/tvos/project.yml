@@ -18,6 +18,7 @@ targets:
     platform: tvOS
     deploymentTarget: "17.0"
     sources:
+      # Swift sources, Info.plist and Assets.xcassets (icon, Top Shelf).
       - path: H2TV
       - path: ../apple/GameKeyInput.swift
       - path: ../apple/h2host.h
@@ -53,6 +54,9 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: H2TV/Info.plist
+        # The icon and Top Shelf images: the brand assets in
+        # H2TV/Assets.xcassets (art/app-icon).
+        ASSETCATALOG_COMPILER_APPICON_NAME: "App Icon & Top Shelf Image"
         SWIFT_OBJC_BRIDGING_HEADER: H2TV/H2TV-Bridging-Header.h
         SWIFT_VERSION: "5.0"
         TARGETED_DEVICE_FAMILY: "3"
