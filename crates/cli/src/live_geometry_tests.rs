@@ -222,20 +222,57 @@ fn glb_round_trips_with_converted_axes() {
             // Game up (+z) is glTF up (+y).
             assert_eq!(&nf[..3], &[0.0, 1.0, 0.0]);
         }
-        let (idx, ni) = accessor(&doc, &bin, prim["indices"].as_u64().unwrap());
+        let ia = prim["indices"].as_u64().unwrap();
+        assert_eq!(doc["accessors"][ia as usize]["componentType"], 5123, "u16");
+        let (idx, ni) = accessor(&doc, &bin, ia);
         assert_eq!(ni % 3, 0);
+        assert_eq!(idx.len(), 2 * ni);
         triangles += ni / 3;
         assert!(
-            idx.as_chunks::<4>()
+            idx.as_chunks::<2>()
                 .0
                 .iter()
-                .all(|b| (u32::from_le_bytes(*b) as usize) < n)
+                .all(|b| (u16::from_le_bytes(*b) as usize) < n)
         );
     }
     assert_eq!(triangles, 12);
     // Accessor min/max in glTF axes.
     let first = &doc["accessors"][0];
     assert!(first["min"].is_array() && first["max"].is_array());
+}
+
+#[test]
+fn big_primitives_split_so_indices_fit_in_u16() {
+    // A strip of triangles over more vertices than u16 can index.
+    let n = MAX_PRIMITIVE_VERTICES + 10;
+    let p = Primitive {
+        positions: (0..n).map(|i| [i as f32, (i % 2) as f32, 0.0]).collect(),
+        normals: vec![[0.0, 0.0, 1.0]; n],
+        indices: (0..n as u32 - 2).flat_map(|i| [i, i + 1, i + 2]).collect(),
+    };
+    let parts = split_u16(&p);
+    assert_eq!(parts.len(), 2);
+    let mut tris = Vec::new();
+    for q in &parts {
+        assert!(q.positions.len() <= MAX_PRIMITIVE_VERTICES);
+        for t in q.indices.as_chunks::<3>().0 {
+            tris.push(t.map(|i| q.positions[i as usize]));
+        }
+    }
+    let want: Vec<[[f32; 3]; 3]> = p
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| t.map(|i| p.positions[i as usize]))
+        .collect();
+    assert_eq!(tris, want, "every triangle once, in order");
+    // A small one is untouched.
+    let small = build_mesh(&cuboid([0.0; 3], [1.0; 3]));
+    assert_eq!(
+        split_u16(&small.primitives[0].1)[0].indices,
+        small.primitives[0].1.indices
+    );
 }
 
 #[test]
@@ -435,6 +472,108 @@ fn a_broken_section_is_counted_not_fatal() {
     let (tris, failed) = bsp_triangles(&bsp, &mut empty, &[]);
     assert!(tris.is_empty());
     assert_eq!(failed, 2, "the cluster and the definition");
+}
+
+// ---- Levels with several BSPs (campaign) ----------------------------------
+
+fn node_names(doc: &Value) -> Vec<&str> {
+    doc["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_multi_bsp_level_has_a_node_per_bsp_and_skips_a_broken_one() {
+    let (bsp, mut raw) = synthetic_bsp(2);
+    let (placed, failed) = bsp_triangles(&bsp, &mut raw, &[]);
+    assert_eq!(failed, 0);
+    let bsps = vec![
+        (0, Ok(build_mesh(&cuboid([0.0; 3], [10.0, 10.0, 3.0])))),
+        (1, Err(anyhow!("reading BSP 1: broken"))),
+        (2, Ok(build_mesh(&placed))),
+        (3, Ok(build_mesh(&[]))),
+    ];
+    let level = Level::build("lvl", MapKind::Campaign, bsps).unwrap();
+    assert_eq!(level.bsp_count, 4);
+    assert_eq!(
+        level.bsps.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(
+        level.skipped.keys().collect::<Vec<_>>(),
+        ["map/lvl/bsp_1", "map/lvl/bsp_3"]
+    );
+    assert!(level.skipped["map/lvl/bsp_1"].contains("broken"));
+    assert_eq!(level.mesh.triangles(), 12 + 2, "the views draw every BSP");
+    assert_eq!(level.mesh.bounds.max, [10.0, 22.0, 30.0]);
+
+    let glb = level.glb();
+    let parsed = gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    assert_eq!(parsed.meshes().count(), 2);
+    let (doc, _) = parse_glb(&glb);
+    assert_eq!(node_names(&doc), ["bsp_0", "bsp_2"]);
+    assert_eq!(doc["scenes"][0]["nodes"], serde_json::json!([0, 1]));
+    assert_eq!(doc["nodes"][1]["extras"]["bsp"], 2);
+    assert_eq!(doc["meshes"][1]["name"], "bsp_2");
+    assert!(doc["nodes"][0].get("matrix").is_none());
+    // One material per class, shared by both meshes.
+    let names: Vec<&str> = doc["materials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    let unique: HashSet<&str> = names.iter().copied().collect();
+    assert_eq!(names.len(), unique.len());
+    let triangles: u64 = doc["meshes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["primitives"].as_array().unwrap())
+        .map(|p| {
+            doc["accessors"][p["indices"].as_u64().unwrap() as usize]["count"]
+                .as_u64()
+                .unwrap()
+                / 3
+        })
+        .sum();
+    assert_eq!(triangles, 14);
+    assert_eq!(
+        doc["asset"]["extras"]["bounds"]["max"],
+        serde_json::json!([10.0, 22.0, 30.0])
+    );
+}
+
+#[test]
+fn a_single_bsp_keeps_the_structure_node_and_no_bsp_is_an_error() {
+    let one = Level::build(
+        "mp",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&cuboid([0.0; 3], [1.0; 3]))))],
+    )
+    .unwrap();
+    let (doc, _) = parse_glb(&one.glb());
+    assert_eq!(node_names(&doc), ["structure"]);
+    assert!(doc["nodes"][0].get("extras").is_none());
+    assert_eq!(doc["meshes"][0]["name"], "structure");
+    // Same bytes as the single-mesh writer the multiplayer contract uses.
+    assert_eq!(one.glb(), write_glb(&one.mesh));
+
+    let none = Level::build(
+        "lvl",
+        MapKind::Campaign,
+        vec![(0, Err(anyhow!("a"))), (1, Ok(build_mesh(&[])))],
+    );
+    assert!(none.is_err());
+    let lone = Level::build(
+        "mp",
+        MapKind::Multiplayer,
+        vec![(0, Err(anyhow!("bad tag")))],
+    );
+    assert!(format!("{:#}", lone.err().unwrap()).contains("bad tag"));
 }
 
 // ---- Views ---------------------------------------------------------------
@@ -762,23 +901,45 @@ fn views_json_and_manifest_entries_follow_the_contract() {
         MapEntry {
             geometry: Some("map/stem/map.glb".into()),
             views: Some("map/stem/views.json".into()),
+            kind: Some(MapKind::Campaign),
+            bsps: Some(3),
         },
     );
     let j = serde_json::to_value(&manifest).unwrap();
     assert_eq!(
         j["maps"]["stem"],
-        serde_json::json!({"geometry": "map/stem/map.glb", "views": "map/stem/views.json"})
+        serde_json::json!({"geometry": "map/stem/map.glb", "views": "map/stem/views.json",
+                           "kind": "campaign", "bsps": 3})
     );
     let back: crate::live_art::Manifest = serde_json::from_value(j).unwrap();
     assert_eq!(back, manifest);
-    // An older manifest without maps still reads.
+    // An older manifest without maps still reads, and so does an entry
+    // without a kind.
     let old: crate::live_art::Manifest = serde_json::from_value(none).unwrap();
     assert!(old.maps.is_empty());
+    let older: MapEntry =
+        serde_json::from_value(serde_json::json!({"geometry": "map/s/map.glb"})).unwrap();
+    assert_eq!((older.kind, older.bsps), (None, None));
+    let mp: MapEntry = serde_json::from_value(serde_json::json!({"kind": "multiplayer"})).unwrap();
+    assert_eq!(mp.kind, Some(MapKind::Multiplayer));
 }
 
 // ---- The owner's disc ----------------------------------------------------
 
-const CHECK_DIR: &str = "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/geometry-check";
+/// Where the disc check writes: `$H2_GEOMETRY_CHECK`, else this default
+/// (outside the repository either way).
+const CHECK_DIR: &str = "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/campaign-geometry";
+
+/// Every level the extractor reads, with its kind.
+fn levels(disc: &Disc) -> Vec<(&MapFile, MapKind)> {
+    disc.maps_of(CacheType::Multiplayer)
+        .map(|m| (m, MapKind::Multiplayer))
+        .chain(
+            disc.maps_of(CacheType::Campaign)
+                .map(|m| (m, MapKind::Campaign)),
+        )
+        .collect()
+}
 
 /// Box-downscale an RGBA image by an integer factor, over a dark backdrop.
 fn thumb(rgba: &[u8], w: usize, h: usize, f: usize, bg: [u8; 3]) -> (usize, usize, Vec<u8>) {
@@ -815,7 +976,8 @@ fn geometry_from_the_disc() {
     let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
     });
-    let check = Path::new(CHECK_DIR);
+    let keep = std::env::var("H2_GEOMETRY_CHECK").unwrap_or_else(|_| CHECK_DIR.into());
+    let check = Path::new(&keep);
     let out = check.join("art");
     let _ = fs::remove_dir_all(&out);
     fs::create_dir_all(&out).unwrap();
@@ -831,8 +993,11 @@ fn geometry_from_the_disc() {
     );
     for s in &x.stats {
         report += &format!(
-            "{:<16} src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
+            "{:<20} {:<11} bsps {}/{} src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
             s.stem,
+            format!("{:?}", s.kind.unwrap()),
+            s.bsps,
+            s.scenario_bsps,
             s.source_triangles,
             s.triangles,
             s.vertices,
@@ -860,9 +1025,12 @@ fn geometry_from_the_disc() {
     // The shader names behind the classes, for review only (outside the
     // repository).
     let mut names = String::new();
-    for m in disc.maps_of(CacheType::Multiplayer) {
+    for (m, _) in levels(&disc) {
         let (mut map, _) = disc.open(m).unwrap();
         for bsp in scenario_bsps(&mut map).unwrap() {
+            if bsp == TagId::NULL {
+                continue;
+            }
             for (i, n) in material_shaders(&mut map, bsp)
                 .unwrap()
                 .unwrap_or_default()
@@ -891,9 +1059,9 @@ fn geometry_from_the_disc() {
     let pairs = check.join("cutaway");
     let _ = fs::remove_dir_all(&pairs);
     fs::create_dir_all(&pairs).unwrap();
-    for m in disc.maps_of(CacheType::Multiplayer) {
+    for (m, kind) in levels(&disc) {
         let mut stats = MapStats::default();
-        let Ok(level) = load_level(&disc, m, &mut stats) else {
+        let Ok(level) = load_level(&disc, m, kind, &mut stats) else {
             continue;
         };
         let (entry, cam) = cameras(&level.mesh, &level.frame).remove(0);

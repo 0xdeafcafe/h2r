@@ -1,6 +1,6 @@
-//! Multiplayer level geometry for the stats site: `map/<stem>/map.glb`, the
-//! pre-drawn views in `map/<stem>/views/` and `views.json` (docs/live-art.md,
-//! the map geometry contract).
+//! Level geometry (multiplayer and campaign) for the stats site:
+//! `map/<stem>/map.glb`, the pre-drawn views in `map/<stem>/views/` and
+//! `views.json` (docs/live-art.md, the map geometry contract).
 //!
 //! Runs inside the art extraction (`live_art::extract`), from the owner's own
 //! disc, once per disc. The level is the structure BSP's render geometry as
@@ -607,87 +607,198 @@ pub fn to_gltf(p: [f32; 3]) -> [f32; 3] {
     [p[0], p[2], -p[1]]
 }
 
-/// `map.glb`: one node and mesh named `structure`, a primitive per class
-/// (POSITION, NORMAL, u32 indices), a material per class. `asset.extras`
-/// carries the bounds and the views' [`frame`] (game coordinates).
+/// Most vertices one primitive may have, so its indices fit in u16.
+pub const MAX_PRIMITIVE_VERTICES: usize = 1 << 16;
+
+/// A primitive cut into pieces of at most [`MAX_PRIMITIVE_VERTICES`]
+/// vertices each, triangles in order (a small one is returned whole).
+pub fn split_u16(p: &Primitive) -> Vec<Primitive> {
+    if p.positions.len() <= MAX_PRIMITIVE_VERTICES {
+        return vec![p.clone()];
+    }
+    let mut out = Vec::new();
+    let mut cur = Primitive::default();
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    for t in p.indices.as_chunks::<3>().0 {
+        let new = t.iter().filter(|i| !remap.contains_key(i)).count();
+        if cur.positions.len() + new > MAX_PRIMITIVE_VERTICES {
+            out.push(std::mem::take(&mut cur));
+            remap.clear();
+        }
+        for &i in t {
+            let j = *remap.entry(i).or_insert_with(|| {
+                cur.positions.push(p.positions[i as usize]);
+                cur.normals.push(p.normals[i as usize]);
+                (cur.positions.len() - 1) as u32
+            });
+            cur.indices.push(j);
+        }
+    }
+    if !cur.indices.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// One node of `map.glb`: an optional mesh (its primitives, game
+/// coordinates), `extras`, and child nodes. Nodes carry no transforms.
+pub struct GlbNode<'a> {
+    pub name: String,
+    pub mesh: Option<&'a [(Class, Primitive)]>,
+    pub extras: Option<serde_json::Value>,
+    pub children: Vec<GlbNode<'a>>,
+}
+
+impl<'a> GlbNode<'a> {
+    pub fn mesh(name: impl Into<String>, mesh: &'a LevelMesh) -> Self {
+        GlbNode {
+            name: name.into(),
+            mesh: Some(&mesh.primitives),
+            extras: None,
+            children: Vec::new(),
+        }
+    }
+}
+
+/// `map.glb` of a single mesh: one node and mesh named `structure` (the
+/// multiplayer contract), its bounds and [`frame`].
+#[cfg(test)]
 pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
+    write_nodes(
+        &[GlbNode::mesh("structure", mesh)],
+        mesh.bounds,
+        frame(mesh),
+    )
+}
+
+/// `map.glb` from nodes: a mesh per node that has triangles, named like
+/// its node, with a primitive per class (POSITION, NORMAL, u16 indices; a
+/// class over [`MAX_PRIMITIVE_VERTICES`] vertices gets several) and
+/// one material per class shared by every mesh. `asset.extras` carries
+/// `bounds` and the views' `frame` (game coordinates).
+pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> {
     use serde_json::{Value, json};
-    let frame = frame(mesh);
-    let mut bin: Vec<u8> = Vec::new();
-    let mut views: Vec<Value> = Vec::new();
-    let mut accessors: Vec<Value> = Vec::new();
-    let mut materials: Vec<Value> = Vec::new();
-    let mut prims: Vec<Value> = Vec::new();
-    let mut view = |bin: &mut Vec<u8>, bytes: &[u8], target: u32| -> usize {
-        while !bin.len().is_multiple_of(4) {
-            bin.push(0);
-        }
-        views.push(json!({
-            "buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len(), "target": target
-        }));
-        bin.extend_from_slice(bytes);
-        views.len() - 1
-    };
-    for (class, p) in &mesh.primitives {
-        let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
-        let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
-        let mut lo = [f32::INFINITY; 3];
-        let mut hi = [f32::NEG_INFINITY; 3];
-        for v in &pos {
-            for k in 0..3 {
-                lo[k] = lo[k].min(v[k]);
-                hi[k] = hi[k].max(v[k]);
+    struct Out {
+        bin: Vec<u8>,
+        views: Vec<Value>,
+        accessors: Vec<Value>,
+        materials: Vec<Value>,
+        material_of: BTreeMap<Class, usize>,
+        meshes: Vec<Value>,
+        nodes: Vec<Value>,
+    }
+    impl Out {
+        fn view(&mut self, bytes: &[u8], target: u32) -> usize {
+            while !self.bin.len().is_multiple_of(4) {
+                self.bin.push(0);
             }
+            self.views.push(json!({
+                "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len(), "target": target
+            }));
+            self.bin.extend_from_slice(bytes);
+            self.views.len() - 1
         }
-        let floats = |v: &[[f32; 3]]| -> Vec<u8> {
-            v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
-        };
-        let pv = view(&mut bin, &floats(&pos), 34962);
-        let nv = view(&mut bin, &floats(&nrm), 34962);
-        let iv = view(
-            &mut bin,
-            &p.indices
+        fn material(&mut self, class: Class) -> usize {
+            if let Some(&m) = self.material_of.get(&class) {
+                return m;
+            }
+            let [r, g, b] = class.linear();
+            let (metallic, roughness) = class.metallic_roughness();
+            let mut m = json!({
+                "name": class.name(),
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [r, g, b, class.alpha()],
+                    "metallicFactor": metallic,
+                    "roughnessFactor": roughness
+                }
+            });
+            if class.transparent() {
+                m["alphaMode"] = json!("BLEND");
+            }
+            self.materials.push(m);
+            self.material_of.insert(class, self.materials.len() - 1);
+            self.materials.len() - 1
+        }
+        fn primitive(&mut self, class: Class, p: &Primitive) -> Value {
+            let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
+            let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for v in &pos {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+            let floats = |v: &[[f32; 3]]| -> Vec<u8> {
+                v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
+            };
+            let pv = self.view(&floats(&pos), 34962);
+            let nv = self.view(&floats(&nrm), 34962);
+            let indices: Vec<u8> = p
+                .indices
                 .iter()
-                .flat_map(|i| i.to_le_bytes())
-                .collect::<Vec<_>>(),
-            34963,
-        );
-        let base = accessors.len();
-        accessors.push(json!({
-            "bufferView": pv, "componentType": 5126, "count": pos.len(), "type": "VEC3",
-            "min": lo, "max": hi
-        }));
-        accessors.push(json!({
-            "bufferView": nv, "componentType": 5126, "count": nrm.len(), "type": "VEC3"
-        }));
-        accessors.push(json!({
-            "bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"
-        }));
-        let [r, g, b] = class.linear();
-        let (metallic, roughness) = class.metallic_roughness();
-        let mut m = json!({
-            "name": class.name(),
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [r, g, b, class.alpha()],
-                "metallicFactor": metallic,
-                "roughnessFactor": roughness
-            }
-        });
-        if class.transparent() {
-            m["alphaMode"] = json!("BLEND");
+                .flat_map(|&i| (i as u16).to_le_bytes())
+                .collect();
+            let iv = self.view(&indices, 34963);
+            let base = self.accessors.len();
+            self.accessors.push(json!({
+                "bufferView": pv, "componentType": 5126, "count": pos.len(), "type": "VEC3",
+                "min": lo, "max": hi
+            }));
+            self.accessors.push(json!({
+                "bufferView": nv, "componentType": 5126, "count": nrm.len(), "type": "VEC3"
+            }));
+            self.accessors.push(json!({
+                "bufferView": iv, "componentType": 5123, "count": p.indices.len(), "type": "SCALAR"
+            }));
+            json!({
+                "attributes": {"POSITION": base, "NORMAL": base + 1},
+                "indices": base + 2,
+                "material": self.material(class),
+                "mode": 4
+            })
         }
-        materials.push(m);
-        prims.push(json!({
-            "attributes": {"POSITION": base, "NORMAL": base + 1},
-            "indices": base + 2,
-            "material": materials.len() - 1,
-            "mode": 4
-        }));
+        /// Adds a node and its children; returns its index.
+        fn node(&mut self, n: &GlbNode) -> usize {
+            let at = self.nodes.len();
+            self.nodes.push(json!({"name": n.name}));
+            let prims: Vec<Value> = n
+                .mesh
+                .unwrap_or(&[])
+                .iter()
+                .filter(|(_, p)| !p.indices.is_empty())
+                .flat_map(|(c, p)| split_u16(p).into_iter().map(|p| (*c, p)))
+                .map(|(c, p)| self.primitive(c, &p))
+                .collect();
+            if !prims.is_empty() {
+                self.meshes
+                    .push(json!({"name": n.name, "primitives": prims}));
+                self.nodes[at]["mesh"] = json!(self.meshes.len() - 1);
+            }
+            if let Some(e) = &n.extras {
+                self.nodes[at]["extras"] = e.clone();
+            }
+            if !n.children.is_empty() {
+                let kids: Vec<usize> = n.children.iter().map(|c| self.node(c)).collect();
+                self.nodes[at]["children"] = json!(kids);
+            }
+            at
+        }
     }
-    while !bin.len().is_multiple_of(4) {
-        bin.push(0);
+    let mut o = Out {
+        bin: Vec::new(),
+        views: Vec::new(),
+        accessors: Vec::new(),
+        materials: Vec::new(),
+        material_of: BTreeMap::new(),
+        meshes: Vec::new(),
+        nodes: Vec::new(),
+    };
+    let top: Vec<usize> = roots.iter().map(|n| o.node(n)).collect();
+    while !o.bin.len().is_multiple_of(4) {
+        o.bin.push(0);
     }
-    let bounds = json!({"min": mesh.bounds.min, "max": mesh.bounds.max});
     let mut doc = json!({
         "asset": {
             "version": "2.0",
@@ -695,29 +806,25 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
             "extras": {
                 "generator": GENERATOR,
                 "geometry_version": GEOMETRY_VERSION,
-                "bounds": bounds,
+                "bounds": {"min": bounds.min, "max": bounds.max},
                 "frame": {"min": frame.min, "max": frame.max}
             }
         },
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"name": "structure", "mesh": 0}],
-        "meshes": [{"name": "structure", "primitives": prims}],
-        "materials": materials,
-        "accessors": accessors,
-        "bufferViews": views,
-        "buffers": [{"byteLength": bin.len()}]
+        "scenes": [{"nodes": top}],
+        "nodes": o.nodes,
     });
-    if mesh.primitives.is_empty() {
-        // A valid file with no geometry: no mesh, no buffer.
-        doc = json!({
-            "asset": doc["asset"].clone(),
-            "scene": 0,
-            "scenes": [{"nodes": [0]}],
-            "nodes": [{"name": "structure"}]
-        });
-        bin.clear();
+    // A file with no geometry has no meshes and no buffer.
+    if !o.meshes.is_empty() {
+        doc["meshes"] = json!(o.meshes);
+        doc["materials"] = json!(o.materials);
+        doc["accessors"] = json!(o.accessors);
+        doc["bufferViews"] = json!(o.views);
+        doc["buffers"] = json!([{"byteLength": o.bin.len()}]);
+    } else {
+        o.bin.clear();
     }
+    let bin = o.bin;
     let mut json = serde_json::to_vec(&doc).expect("glTF JSON");
     while !json.len().is_multiple_of(4) {
         json.push(b' ');
@@ -780,19 +887,37 @@ pub struct ViewsFile {
     pub views: Vec<ViewEntry>,
 }
 
-/// The manifest's entry for one map (contract: `geometry` and `views`).
+/// Which kind of level a map is (manifest `kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MapKind {
+    Campaign,
+    Multiplayer,
+}
+
+/// The manifest's entry for one map (contract: `geometry`, `views`, `kind`
+/// and `bsps`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub views: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MapKind>,
+    /// Structure BSPs in `map.glb` (one node each).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bsps: Option<usize>,
 }
 
 /// Counts and timings for one map.
 #[derive(Clone, Debug, Default)]
 pub struct MapStats {
     pub stem: String,
+    pub kind: Option<MapKind>,
+    /// BSPs in the scenario, and how many made it into `map.glb`.
+    pub scenario_bsps: usize,
+    pub bsps: usize,
     pub source_triangles: usize,
     pub triangles: usize,
     pub vertices: usize,
@@ -884,43 +1009,142 @@ fn material_surfaces(map: &mut MapReader, bsp: TagId) -> (Vec<Surface>, usize) {
 /// A loaded map, ready to draw.
 pub struct Level {
     pub stem: String,
+    pub kind: MapKind,
+    /// How many structure BSPs the scenario lists.
+    pub bsp_count: usize,
+    /// Every BSP that loaded: its index in the scenario and its mesh.
+    pub bsps: Vec<(usize, LevelMesh)>,
+    /// All of them together, for the views.
     pub mesh: LevelMesh,
     pub frame: Bounds,
     pub shadow: ShadowMap,
+    /// What was left out of this level, by manifest `skipped` key.
+    pub skipped: BTreeMap<String, String>,
 }
 
-/// Opens one multiplayer map and builds its level.
-fn load_level(disc: &Disc, m: &MapFile, stats: &mut MapStats) -> Result<Level> {
+impl Level {
+    /// The level from its BSP meshes (scenario index, mesh or why it failed).
+    /// Fails only when no BSP has drawn geometry.
+    pub fn build(
+        stem: &str,
+        kind: MapKind,
+        bsps: Vec<(usize, Result<LevelMesh>)>,
+    ) -> Result<Level> {
+        let bsp_count = bsps.len();
+        let mut skipped = BTreeMap::new();
+        let mut kept = Vec::new();
+        for (i, m) in bsps {
+            match m {
+                Ok(m) if !m.primitives.is_empty() => kept.push((i, m)),
+                Ok(_) => {
+                    skipped.insert(
+                        format!("map/{stem}/bsp_{i}"),
+                        "no drawn level geometry".into(),
+                    );
+                }
+                Err(e) => {
+                    skipped.insert(format!("map/{stem}/bsp_{i}"), format!("{e:#}"));
+                }
+            }
+        }
+        if kept.is_empty() {
+            return Err(match skipped.into_values().next() {
+                Some(why) if bsp_count == 1 => anyhow!(why),
+                _ => anyhow!("no drawn level geometry"),
+            });
+        }
+        let mesh = merge(kept.iter().map(|(_, m)| m));
+        let frame = frame(&mesh);
+        let shadow = live_render::shadow_map(&mesh, &frame);
+        Ok(Level {
+            stem: stem.to_string(),
+            kind,
+            bsp_count,
+            bsps: kept,
+            mesh,
+            frame,
+            shadow,
+            skipped,
+        })
+    }
+
+    /// The `map.glb` nodes: `structure` when the scenario has one BSP,
+    /// else `bsp_<index>` per BSP (scenario index) with `extras.bsp`.
+    pub fn nodes(&self) -> Vec<GlbNode<'_>> {
+        self.bsps
+            .iter()
+            .map(|(i, m)| {
+                if self.bsp_count == 1 {
+                    GlbNode::mesh("structure", m)
+                } else {
+                    GlbNode {
+                        extras: Some(serde_json::json!({ "bsp": i })),
+                        ..GlbNode::mesh(format!("bsp_{i}"), m)
+                    }
+                }
+            })
+            .collect()
+    }
+
+    pub fn glb(&self) -> Vec<u8> {
+        write_nodes(&self.nodes(), self.mesh.bounds, self.frame)
+    }
+}
+
+/// Meshes concatenated, a primitive per class.
+pub fn merge<'a>(meshes: impl IntoIterator<Item = &'a LevelMesh>) -> LevelMesh {
+    let mut by: BTreeMap<Class, Primitive> = BTreeMap::new();
+    let mut bounds = Bounds::EMPTY;
+    for m in meshes {
+        for k in [m.bounds.min, m.bounds.max] {
+            bounds.add(k);
+        }
+        for (c, p) in &m.primitives {
+            let out = by.entry(*c).or_default();
+            let base = out.positions.len() as u32;
+            out.positions.extend(&p.positions);
+            out.normals.extend(&p.normals);
+            out.indices.extend(p.indices.iter().map(|i| i + base));
+        }
+    }
+    LevelMesh {
+        primitives: by.into_iter().collect(),
+        bounds,
+    }
+}
+
+/// Opens one map and builds its level, one mesh per scenario BSP. A BSP
+/// that cannot be read is left out (and listed in `Level::skipped`).
+fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> Result<Level> {
     let (mut map, mut files) = disc.open(m)?;
-    let mut tris = Vec::new();
-    for bsp_id in scenario_bsps(&mut map)? {
-        let (surfaces, named) = material_surfaces(&mut map, bsp_id);
-        stats.shaders_named += named;
-        stats.materials += surfaces.len();
-        let bsp = StructureRender::read(&mut map, bsp_id)
-            .with_context(|| format!("reading BSP {bsp_id}"))?;
-        let (t, failed) = bsp_triangles(&bsp, &mut Raw(&mut files), &surfaces);
-        stats.failed_sections += failed;
-        tris.extend(t);
+    let mut bsps = Vec::new();
+    for (i, bsp_id) in scenario_bsps(&mut map)?.into_iter().enumerate() {
+        let mesh = (|| {
+            if bsp_id == TagId::NULL {
+                return Err(anyhow!("no BSP tag"));
+            }
+            let (surfaces, named) = material_surfaces(&mut map, bsp_id);
+            stats.shaders_named += named;
+            stats.materials += surfaces.len();
+            let bsp = StructureRender::read(&mut map, bsp_id)
+                .with_context(|| format!("reading BSP {bsp_id}"))?;
+            let (t, failed) = bsp_triangles(&bsp, &mut Raw(&mut files), &surfaces);
+            stats.failed_sections += failed;
+            stats.source_triangles += t.len();
+            Ok(build_mesh(&t))
+        })();
+        bsps.push((i, mesh));
     }
-    stats.source_triangles = tris.len();
-    let mesh = build_mesh(&tris);
-    if mesh.primitives.is_empty() {
-        return Err(anyhow!("no drawn level geometry"));
-    }
-    stats.triangles = mesh.triangles();
-    stats.vertices = mesh.vertices();
-    for (c, p) in &mesh.primitives {
+    let level = Level::build(m.name(), kind, bsps)?;
+    stats.kind = Some(kind);
+    stats.scenario_bsps = level.bsp_count;
+    stats.bsps = level.bsps.len();
+    stats.triangles = level.mesh.triangles();
+    stats.vertices = level.mesh.vertices();
+    for (c, p) in &level.mesh.primitives {
         stats.classes.insert(c.name(), p.indices.len() / 3);
     }
-    let frame = frame(&mesh);
-    let shadow = live_render::shadow_map(&mesh, &frame);
-    Ok(Level {
-        stem: m.name().to_string(),
-        mesh,
-        frame,
-        shadow,
-    })
+    Ok(level)
 }
 
 /// The view entries and cameras for a level.
@@ -953,7 +1177,14 @@ pub fn cameras(mesh: &LevelMesh, level_frame: &Bounds) -> Vec<(ViewEntry, Camera
 /// (`map/<stem>/...`). Maps load in parallel, then every view of every map
 /// is drawn in parallel.
 pub fn extract(disc: &Disc, out: &Path) -> Extracted {
-    let maps: Vec<&MapFile> = disc.maps_of(CacheType::Multiplayer).collect();
+    let maps: Vec<(&MapFile, MapKind)> = disc
+        .maps_of(CacheType::Multiplayer)
+        .map(|m| (m, MapKind::Multiplayer))
+        .chain(
+            disc.maps_of(CacheType::Campaign)
+                .map(|m| (m, MapKind::Campaign)),
+        )
+        .collect();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut result = Extracted::default();
 
@@ -964,15 +1195,15 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
     std::thread::scope(|s| {
         for _ in 0..workers.min(maps.len()) {
             s.spawn(|| {
-                while let Some(m) = maps.get(next.fetch_add(1, Ordering::Relaxed)) {
+                while let Some(&(m, kind)) = maps.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let started = Instant::now();
                     let mut stats = MapStats {
                         stem: m.name().to_string(),
                         ..Default::default()
                     };
                     let key = format!("map/{}/geometry", m.name());
-                    let done = load_level(disc, m, &mut stats).and_then(|level| {
-                        let glb = write_glb(&level.mesh);
+                    let done = load_level(disc, m, kind, &mut stats).and_then(|level| {
+                        let glb = level.glb();
                         stats.glb_bytes = glb.len();
                         let dir = out.join("map").join(&level.stem);
                         fs::create_dir_all(dir.join("views"))?;
@@ -1044,9 +1275,12 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
     let times = times.into_inner().unwrap();
     for (i, ((level, mut stats), plan)) in loaded.into_iter().zip(plans).enumerate() {
         stats.render = times[i];
+        result.skipped.extend(level.skipped.clone());
         let mut entry = MapEntry {
             geometry: Some(format!("map/{}/map.glb", level.stem)),
             views: None,
+            kind: Some(level.kind),
+            bsps: Some(level.bsps.len()),
         };
         let views: Vec<ViewEntry> = plan
             .into_iter()

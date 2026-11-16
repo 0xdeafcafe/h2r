@@ -1,7 +1,7 @@
 # Map geometry and pre-drawn views
 
 `h2 live assets extract` (and `h2 play --live`, once per disc) writes each
-multiplayer map's level geometry and five pre-drawn pictures of it next to
+multiplayer and campaign level's geometry and five pre-drawn pictures of it next to
 the rest of the game art ([live.md](live.md#game-art)). The stats site's
 tactical map plots players on the pictures; the 3D game viewer loads the
 model. Everything comes from the owner's disc at run time and is served
@@ -27,13 +27,19 @@ map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
 
 ```json
 "maps": { "<stem>": { "geometry": "map/<stem>/map.glb",
-                      "views": "map/<stem>/views.json" } }
+                      "views": "map/<stem>/views.json",
+                      "kind": "multiplayer", "bsps": 1 } }
 ```
 
-Paths are relative to the manifest. A map whose geometry could not be read
-is listed under `skipped` as `map/<stem>/geometry` and has no entry.
-`GEOMETRY_VERSION` is 1; the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 4, so a disc extracted by an older build is extracted again.
+`kind` is `"multiplayer"` or `"campaign"` (the map's cache type); `bsps` is
+how many structure BSPs `map.glb` holds. Both are absent in manifests from
+older builds. Paths are relative to the manifest. A map whose geometry could
+not be read is listed under `skipped` as `map/<stem>/geometry` and has no
+entry; a single BSP of a level that could not be read is listed as
+`map/<stem>/bsp_<index>` and the level keeps its other BSPs.
+`GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
+it); the art's `EXTRACTOR_VERSION` (part of the cache
+key) is 5, so a disc extracted by an older build is extracted again.
 
 ### `map.glb`
 
@@ -41,19 +47,28 @@ key) is 4, so a disc extracted by an older build is extracted again.
   `(x, y, z)` (z up, as telemetry frames give it) is the glTF point
   `(x, z, -y)`; normals are converted the same way. There are no node
   transforms.
-- One node and one mesh, both named `structure`, with one triangle
-  primitive per surface class present: `POSITION`, `NORMAL` (both float
-  VEC3) and u32 indices. No `COLOR_0` and no texture coordinates: the colour
+- A scenario with one structure BSP (every multiplayer map) has one node
+  and one mesh, both named `structure`. A scenario with several (campaign
+  levels) has a node and mesh per BSP, named `bsp_<index>` by the BSP's
+  index in the scenario, with `extras.bsp` holding that index; all are root
+  nodes of the scene, in index order, already in world space. Each mesh has
+  one triangle primitive per surface class present: `POSITION`, `NORMAL`
+  (both float VEC3) and u16 indices. A class with more than 65,536 vertices
+  in one mesh is split into several primitives so every index fits in 16
+  bits. No `COLOR_0` and no texture coordinates: the colour
   is the material's.
-- Materials are named by class: `floor`, `wall`, `metal`, `glass`, `water`,
-  `foliage`, `default`. Metallic-roughness PBR with base colour factors only;
+- Materials are named by class (one material per class, shared by every
+  mesh): `floor`, `wall`, `metal`, `glass`, `water`, `foliage`, `default`. Metallic-roughness PBR with base colour factors only;
   `glass` and `water` are `alphaMode: BLEND`. Single-sided: the level's
   triangles face into the playable space, so back faces should be culled.
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below).
-- Retail multiplayer maps come out at 11k to 31k triangles and 0.4 to
-  1.3 MB.
+- Retail multiplayer maps come out at 11k to 31k triangles and 0.3 to
+  1.1 MB. Campaign levels (1 to 8 BSPs) come out at 38k to 412k triangles
+  and 1.1 to 14.4 MB; nothing is simplified away (the largest, with 356k
+  triangles and 538k vertices, is just under the 15 MB a browser should be
+  asked to fetch). Before `EXTRACTOR_VERSION` 5 indices were u32.
 
 ### `views.json`
 
@@ -101,10 +116,12 @@ view), the same for every view.
 
 ## Pipeline
 
-1. **Maps.** The multiplayer maps, found by cache type, each opened with its
-   shared maps (`live_art::Disc`).
+1. **Maps.** The multiplayer and campaign maps, found by cache type, each
+   opened with its shared maps (`live_art::Disc`).
 2. **BSPs.** The scenario's structure BSP block (`scnr+0x210`, stride
-   `0x44`, BSP tag at `+0x14`; docs/live-gamestate.md). Every BSP is used.
+   `0x44`, BSP tag at `+0x14`; docs/live-gamestate.md). Every BSP is used
+   and becomes its own mesh (steps 3 to 5 run per BSP); the views draw them
+   all together. A BSP that fails to read is skipped on its own.
 3. **Triangles.** `tags::structure::StructureRender` and the shared section
    decoder ([structure-bsp.md](structure-bsp.md)): every cluster as stored and
    every instanced-geometry placement transformed (`translation + scale ×
@@ -170,10 +187,10 @@ view), the same for every view.
    picture in parallel, then `views.json`; the manifest is written last by
    the art extractor.
 
-Maps load on all CPUs, then all 60 pictures are drawn on all CPUs. On a
-10-core machine the whole geometry step takes 2 to 3 s for the 12 retail
-multiplayer maps (about 0.1 s to load each map; most of the rest is
-drawing).
+Maps load on all CPUs, then all pictures (five per level) are drawn on all
+CPUs. On a 10-core machine the whole geometry step takes about 7 s for the
+12 retail multiplayer maps and 15 campaign levels (0.02 to 0.36 s to load
+each; most of the rest is drawing, 1 to 3 s of CPU per level).
 
 ## Checking against your disc
 
@@ -184,7 +201,8 @@ cargo test --release -p cli geometry_from_the_disc -- --ignored --nocapture
 writes the outputs, a timing report, the shader names behind the classes,
 a contact sheet of every view and, under `cutaway/`, each top view with and
 without the cutaway side by side to a directory outside the repository (the
-path is `CHECK_DIR` in the test). Do not commit anything it writes.
+path is `$H2_GEOMETRY_CHECK`, else `CHECK_DIR` in the test). Do not commit
+anything it writes.
 
 ## Limits
 

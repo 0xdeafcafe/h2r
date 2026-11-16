@@ -30,7 +30,7 @@ use tags::{DecodedTag, TagData};
 
 /// Bumped when the output for a given disc would change (part of the cache
 /// key).
-pub const EXTRACTOR_VERSION: u32 = 4;
+pub const EXTRACTOR_VERSION: u32 = 5;
 /// The manifest's format, bumped only for changes a client cannot read
 /// (clients check it; added fields do not count).
 pub const MANIFEST_VERSION: u32 = 1;
@@ -364,7 +364,7 @@ pub struct Manifest {
     pub palette: Vec<String>,
     /// What was looked for and not found or not decoded, by key or prefix.
     pub skipped: BTreeMap<String, String>,
-    /// Per multiplayer map stem, its level geometry and pre-drawn views
+    /// Per map stem (multiplayer and campaign), its level geometry and views
     /// (docs/live-art.md); absent when none were extracted.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub maps: BTreeMap<String, crate::live_geometry::MapEntry>,
