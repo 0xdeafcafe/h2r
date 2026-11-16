@@ -43,6 +43,7 @@ targets:
       - sdk: QuartzCore.framework
       - sdk: CoreGraphics.framework
       - sdk: GameController.framework
+      - sdk: CoreMotion.framework
       - sdk: CoreHaptics.framework
       - sdk: AVFoundation.framework
       - sdk: AudioToolbox.framework
