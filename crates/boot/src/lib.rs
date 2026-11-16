@@ -608,12 +608,13 @@ pub fn run_hosted_with_live(
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
             Some((view, scale)) => {
-                let b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
+                let mut b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
                 eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE); the guest sees a 1x reference");
+                let report = Some(d3d_glue::scale_report(&mut b));
                 if host.render_thread {
-                    d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?
+                    d3d_glue::install_with_report(&loaded.runtime, d3d::ThreadedBackend::new(b)?, report)?
                 } else {
-                    d3d_glue::install_with(&loaded.runtime, b)?
+                    d3d_glue::install_with_report(&loaded.runtime, b, report)?
                 }
             }
             None if host.render_thread => d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?,

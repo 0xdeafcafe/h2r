@@ -148,7 +148,7 @@ pub struct GfxBackend {
     /// surface, the device's depth generation, and the bytes.
     depth_words: Option<(SurfaceId, u64, Vec<u8>)>,
     /// Surface and depth read-backs so far ([`readbacks`](Self::readbacks)).
-    readbacks: u64,
+    pub(crate) readbacks: u64,
     /// The alias mirror ([`Backend::mirror_reserve`]).
     mirror: Option<wgpu::Buffer>,
     reports: HashMap<u64, PixelReport>,
@@ -727,6 +727,24 @@ impl GfxBackend {
                 .as_ref()
                 .is_none_or(|p| p.color == color && p.depth == depth)
         );
+        // A depth surface larger than the colour one draws through the
+        // colour's depth-sized stand-in; it must exist to record against
+        // (the copy into it is made again when the pass is encoded, so
+        // this encoder is dropped).
+        let size = |s| {
+            self.store
+                .get(s)
+                .map(|s| (s.desc().width, s.desc().height))
+                .map_err(|e| e.to_string())
+        };
+        if let Some(d) = depth
+            && size(d)? != size(color)?
+        {
+            let mut enc = self.ctx.device.create_command_encoder(&Default::default());
+            self.store
+                .prepare_target(&self.ctx, &mut enc, color, d)
+                .map_err(|e| e.to_string())?;
+        }
         let mut recorded = {
             let target = self.store.target(color, depth).map_err(|e| e.to_string())?;
             self.renderer

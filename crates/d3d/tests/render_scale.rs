@@ -355,6 +355,7 @@ fn only_frame_sized_surfaces_scale() {
         .unwrap();
     let small = b.create_surface(fmt, 320, 240, false).unwrap();
     let level = b.create_texture_target(fmt, 640, 480).unwrap();
+    let bloom = b.create_texture_target(fmt, 128, 128).unwrap();
     let size = |b: &Scaled, s: Option<gfx::surface::SurfaceId>| {
         let d = *b.view().store.get(s.unwrap()).unwrap().desc();
         (d.width, d.height)
@@ -363,9 +364,11 @@ fn only_frame_sized_surfaces_scale() {
     assert_eq!(size(&b, depth.view), (2560, 1920));
     assert_eq!(small.view, None, "another size stays in the reference");
     assert_eq!(
-        level.view, None,
-        "render-to-texture levels stay at 1x in phase 1"
+        size(&b, level.view),
+        (2560, 1920),
+        "a back-buffer-sized render-to-texture level scales"
     );
+    assert_eq!(bloom.view, None, "smaller levels stay at 1x");
     let r = *b.reference().store.get(back.reference).unwrap().desc();
     assert_eq!(
         (r.width, r.height),
@@ -395,5 +398,415 @@ fn rejects_scales_outside_one_to_six() {
             )
             .is_err()
         );
+    }
+}
+
+// Phase 2: what the view used to leave out (docs/high-resolution.md,
+// "Phase 2 as built"). Each scene is drawn by a plain backend and by the
+// wrapper; the reference must be the plain image and the view, box-filtered
+// to the guest size, the reference. Every edge here is on a whole pixel, so
+// the match is exact.
+
+const L: d3d::GuestLayout = d3d::GuestLayout::HALO2;
+const RS_ZENABLE: u32 = 143;
+const RS_ZWRITEENABLE: u32 = 64;
+const Z_LESS: u32 = 0x201;
+const Z_EQUAL: u32 = 0x202;
+const Z_ALWAYS: u32 = 0x207;
+
+/// A 64x64 (frame-sized) `LIN_A8R8G8B8` texture and its level, like
+/// Halo's texaccum.
+const TEX_B: u32 = MISC + 0x5000;
+const LEVEL_B: u32 = MISC + 0x5100;
+const DATA_B: u32 = 0x0031_0000;
+/// A 64x64 `LIN_D24S8` texture and its level.
+const DTEX: u32 = MISC + 0x5200;
+const DLEVEL: u32 = MISC + 0x5300;
+const DDATA: u32 = 0x0034_0000;
+/// A colour surface over the depth buffer's memory (Halo's target 3).
+const CSURF: u32 = MISC + 0x5400;
+/// A `LIN_A8R8G8B8` texture over the depth buffer's memory (Halo's
+/// `0x509368`).
+const ALIAS: u32 = MISC + 0x5500;
+const FRAME_LEN: u32 = W * H * 4;
+
+fn z_state(m: &mut SparseMemory, enable: bool, write: bool, func: u32) {
+    m.write_u32(L.render_state_slot(RS_ZENABLE), enable as u32)
+        .unwrap();
+    m.write_u32(L.render_state_slot(RS_ZWRITEENABLE), write as u32)
+        .unwrap();
+    m.write_u32(L.render_state_slot(RS_ZFUNC), func).unwrap();
+}
+
+fn device_field(m: &SparseMemory, field: u32) -> u32 {
+    m.read_u32(L.device + field).unwrap()
+}
+
+/// A linear texture header at `tex` and its level at `level`: `format`
+/// (raw, 32 bits a texel), `n x n`, tight rows at `data` holding `fill`.
+fn square_level(
+    m: &mut SparseMemory,
+    tex: u32,
+    level: u32,
+    format: u32,
+    data: u32,
+    n: u32,
+    fill: &[u8],
+) {
+    m.map(0x8000_0000 | data, n * n * 4);
+    m.write(0x8000_0000 | data, fill).unwrap();
+    let fmt = (2 << 4) | (format << 8) | (1 << 16);
+    let size = (n - 1) | ((n - 1) << 12) | ((n * 4 / 64 - 1) << 24);
+    for (i, w) in [1 | (4 << 16) | 0x0100_0000, data, 0, fmt, size]
+        .iter()
+        .enumerate()
+    {
+        m.write_u32(tex + 4 * i as u32, *w).unwrap();
+    }
+    for (i, w) in [1 | (5 << 16) | 0x0100_0000, data, 0, fmt, size, tex]
+        .iter()
+        .enumerate()
+    {
+        m.write_u32(level + 4 * i as u32, *w).unwrap();
+    }
+}
+
+/// A header at `at` over the depth buffer's memory: a `LIN_A8R8G8B8`
+/// texture (`surface` false) or colour surface, 64x64.
+fn over_depth(m: &mut SparseMemory, at: u32, surface: bool) {
+    let common = if surface {
+        1 | (5 << 16) | 0x0100_0000
+    } else {
+        0x0004_0001
+    };
+    let fmt = 1 | (2 << 4) | (0x12 << 8) | (1 << 16);
+    let size = (W - 1) | ((H - 1) << 12) | ((W * 4 / 64 - 1) << 24);
+    let data = d3d::device::DEPTH_BUFFER_DATA;
+    for (i, w) in [common, data, 0, fmt, size, 0].iter().enumerate() {
+        m.write_u32(at + 4 * i as u32, *w).unwrap();
+    }
+}
+
+/// A quad over `r` at depth `z` sampling a `size`-texel linear texture 1:1
+/// from its corner.
+fn texel_quad<B: Backend>(
+    d: &mut Device<B>,
+    m: &mut SparseMemory,
+    r: (f32, f32, f32, f32),
+    z: f32,
+) {
+    let mut vb = Vec::new();
+    for (x, y) in [(r.0, r.1), (r.2, r.1), (r.0, r.3), (r.2, r.3)] {
+        for f in [x, y, z, 1.0] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+        vb.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        for f in [x, y] {
+            vb.extend_from_slice(&f.to_le_bytes());
+        }
+    }
+    m.write(0x8000_0000 | VB_DATA, &vb).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    d.set_vertex_shader(m, fvf::XYZRHW | fvf::DIFFUSE | 0x100)
+        .unwrap();
+    d.set_stream_source(m, 0, VB_HEADER, 28).unwrap();
+    d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+}
+
+/// A flat quad at depth `z`.
+fn z_quad<B: Backend>(
+    d: &mut Device<B>,
+    m: &mut SparseMemory,
+    r: (f32, f32, f32, f32),
+    z: f32,
+    color: u32,
+) {
+    let mut bytes = Vec::new();
+    for (x, y) in [(r.0, r.1), (r.2, r.1), (r.0, r.3), (r.2, r.3)] {
+        for f in [x, y, z, 1.0] {
+            bytes.extend_from_slice(&f.to_le_bytes());
+        }
+        bytes.extend_from_slice(&color.to_le_bytes());
+    }
+    m.write(0x8000_0000 | VB_DATA, &bytes).unwrap();
+    m.write_u32(VB_HEADER, 1 | 0x0100_0000).unwrap();
+    m.write_u32(VB_HEADER + 4, VB_DATA).unwrap();
+    m.write_u32(VB_HEADER + 8, 0).unwrap();
+    bind_quad(d, m);
+    d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
+}
+
+#[derive(Clone, Copy, Debug)]
+enum Scene {
+    /// A frame-sized render-to-texture level drawn with the depth buffer
+    /// bound (writing it), then sampled into the back buffer by a pass
+    /// that tests depth EQUAL: Halo's texaccum.
+    FrameSizedTarget,
+    /// The same with a 32x32 level: a guest-size target with the scaled
+    /// depth buffer.
+    SmallTargetWritesDepth,
+    /// A frame-sized depth level whose guest bytes hold the depth, bound
+    /// with the back buffer and tested LESS.
+    GuestDepthLevel,
+    /// The same with a depth level twice the frame's size: the view's
+    /// back buffer with a depth surface it does not scale, so the
+    /// reference's image stands in.
+    LargerDepthLevel,
+    /// Depth from clears, then the depth buffer's memory sampled as a
+    /// colour texture over the whole screen.
+    DepthAlias,
+    /// A colour surface over the depth buffer's memory drawn into, then
+    /// sampled through the texture over that memory.
+    ColorOverDepth,
+}
+
+/// Pixel `(x, y)` of a 64-wide BGRA readback as `0xAARRGGBB`.
+fn argb(px: &[u8], x: u32, y: u32) -> u32 {
+    let [b, g, r, a] = pixel(px, x, y);
+    u32::from_be_bytes([a, r, g, b])
+}
+
+/// Pre-transformed z for a `D24S8` buffer: depth `z` of 0..1 scaled to
+/// the buffer's range, as the game passes it.
+const fn d24(z: f32) -> f32 {
+    z * 16_777_215.0
+}
+
+/// Draws `scene` into the back buffer.
+fn scene<B: Backend>(backend: B, scene: Scene) -> Device<B> {
+    let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+    d.set_rtt_direct(true);
+    set_states(&mut d, &mut m);
+    let back = device_field(&m, d3d::layout::device_field::RENDER_TARGET);
+    let depth = device_field(&m, d3d::layout::device_field::DEPTH_STENCIL);
+    assert_ne!(depth, 0);
+    // Colour, depth 1 and stencil 0 everywhere.
+    d.clear(&mut m, 0, 0, 0xF3, 0xFF10_2030, 1.0, 0).unwrap();
+    match scene {
+        Scene::FrameSizedTarget | Scene::SmallTargetWritesDepth => {
+            let (level, tex, span) = match scene {
+                Scene::FrameSizedTarget => {
+                    square_level(
+                        &mut m,
+                        TEX_B,
+                        LEVEL_B,
+                        0x12,
+                        DATA_B,
+                        W,
+                        &[0x30; FRAME_LEN as usize],
+                    );
+                    (LEVEL_B, TEX_B, 40.0)
+                }
+                _ => {
+                    level(&mut m);
+                    (LEVEL_A, TEX_A, 24.0)
+                }
+            };
+            d.set_render_target(&mut m, level, depth).unwrap();
+            set_states(&mut d, &mut m);
+            z_state(&mut m, true, true, Z_ALWAYS);
+            z_quad(&mut d, &mut m, (8.0, 8.0, span, span), 0.5, 0xFFFF_0000);
+            z_quad(&mut d, &mut m, (2.0, 12.0, 6.0, 20.0), 0.5, 0xFF00_FF00);
+            // The composite: only where the level's pass left depth 0.5.
+            d.set_render_target(&mut m, back, depth).unwrap();
+            set_states(&mut d, &mut m);
+            z_state(&mut m, true, false, Z_EQUAL);
+            match scene {
+                Scene::FrameSizedTarget => {
+                    d.set_texture(&mut m, 0, tex).unwrap();
+                    texel_quad(&mut d, &mut m, (0.0, 0.0, W as f32, H as f32), 0.5);
+                    d.set_texture(&mut m, 0, 0).unwrap();
+                }
+                _ => z_quad(
+                    &mut d,
+                    &mut m,
+                    (0.0, 0.0, W as f32, H as f32),
+                    0.5,
+                    0xFF00_80FF,
+                ),
+            }
+        }
+        Scene::GuestDepthLevel | Scene::LargerDepthLevel => {
+            // z = 0.25 on the left of the frame, 1 elsewhere; stencil 0.
+            let n = match scene {
+                Scene::GuestDepthLevel => W,
+                _ => 2 * W,
+            };
+            let mut bytes = Vec::with_capacity((n * n * 4) as usize);
+            for _y in 0..n {
+                for x in 0..n {
+                    let z: u32 = if x < W / 2 { 0x40_0000 } else { 0xFF_FFFF };
+                    bytes.extend_from_slice(&(z << 8).to_le_bytes());
+                }
+            }
+            square_level(&mut m, DTEX, DLEVEL, 0x2E, DDATA, n, &bytes);
+            d.set_render_target(&mut m, back, DLEVEL).unwrap();
+            set_states(&mut d, &mut m);
+            z_state(&mut m, true, false, Z_LESS);
+            z_quad(
+                &mut d,
+                &mut m,
+                (0.0, 0.0, W as f32, H as f32),
+                d24(0.5),
+                0xFF00_FF00,
+            );
+        }
+        Scene::DepthAlias => {
+            for (rect, z, s) in [
+                ([0u32, 0, 40, 24], 0.333_333, 0x5A),
+                ([20, 10, 64, 50], 0.7, 0xA5),
+                ([5, 40, 30, 64], 0.000_123, 0x01),
+            ] {
+                rects(&mut m, &[rect]);
+                d.clear(&mut m, 1, RECTS, 0x03, 0, z, s).unwrap();
+            }
+            over_depth(&mut m, ALIAS, false);
+            z_state(&mut m, false, false, Z_ALWAYS);
+            d.set_texture(&mut m, 0, ALIAS).unwrap();
+            texel_quad(&mut d, &mut m, (0.0, 0.0, W as f32, H as f32), 0.5);
+            d.set_texture(&mut m, 0, 0).unwrap();
+        }
+        Scene::ColorOverDepth => {
+            over_depth(&mut m, CSURF, true);
+            over_depth(&mut m, ALIAS, false);
+            d.set_render_target(&mut m, CSURF, 0).unwrap();
+            set_states(&mut d, &mut m);
+            d.clear(&mut m, 0, 0, 0xF0, 0xFF40_4040, 1.0, 0).unwrap();
+            flat_quad(&mut d, &mut m, (8.0, 16.0, 48.0, 40.0), 0xFFFF_8000);
+            d.set_render_target(&mut m, back, depth).unwrap();
+            set_states(&mut d, &mut m);
+            d.set_texture(&mut m, 0, ALIAS).unwrap();
+            texel_quad(&mut d, &mut m, (0.0, 0.0, W as f32, H as f32), 0.5);
+            d.set_texture(&mut m, 0, 0).unwrap();
+        }
+    }
+    let skipped: Vec<_> = d
+        .take_events()
+        .into_iter()
+        .filter(|e| matches!(e, Event::DrawSkipped { .. } | Event::BadState(_)))
+        .collect();
+    assert!(skipped.is_empty(), "{scene:?}: {skipped:?}");
+    d
+}
+
+/// Draws `s` plainly and at `scale`; checks the reference is the plain
+/// image and the view matches it box-filtered. Returns the plain image and
+/// the wrapper's stats.
+fn check_scene(ctx: &GfxContext, s: Scene, scale: u32) -> (Vec<u8>, d3d::scaled::ScaleStats) {
+    let mut plain = scene(GfxBackend::new(share(ctx)), s);
+    let bb = plain.back_buffer().unwrap();
+    let (plain_px, _) = pixels(&mut plain.backend, bb);
+    let mut d = scene(scaled(ctx, scale), s);
+    let bb = d.back_buffer().unwrap();
+    let (ref_px, _) = pixels(d.backend.reference_mut(), bb.reference);
+    assert!(
+        ref_px == plain_px,
+        "{s:?} {scale}x: the reference is not the plain image"
+    );
+    let (view_px, size) = pixels(d.backend.view_mut(), bb.view.expect("scaled"));
+    assert_eq!(size, (W * scale, H * scale));
+    let down = downsample(&view_px, size.0, scale);
+    let differ: Vec<_> = (0..(W * H) as usize)
+        .filter(|&i| down[i * 4..i * 4 + 4] != ref_px[i * 4..i * 4 + 4])
+        .map(|i| (i as u32 % W, i as u32 / W))
+        .collect();
+    assert!(
+        differ.is_empty(),
+        "{s:?} {scale}x: {} pixels differ from the reference, first {:?}: view {:?}, reference {:?}",
+        differ.len(),
+        differ[..differ.len().min(8)].to_vec(),
+        pixel(&down, differ[0].0, differ[0].1),
+        pixel(&ref_px, differ[0].0, differ[0].1),
+    );
+    let stats = d.backend.stats();
+    assert_eq!(
+        (stats.view_errors, stats.depth_missed, stats.fallback_frames),
+        (0, 0, 0),
+        "{s:?} {scale}x: {stats:?}"
+    );
+    (plain_px, stats)
+}
+
+#[test]
+fn a_frame_sized_target_drawn_with_the_depth_buffer_scales() {
+    let Some(ctx) = context() else { return };
+    for scale in [2, 3, 4] {
+        let (px, stats) = check_scene(&ctx, Scene::FrameSizedTarget, scale);
+        // Not vacuous: the composite drew the level's red where the level's
+        // pass wrote depth, and nothing elsewhere.
+        assert_eq!(argb(&px, 20, 20), 0xFFFF_0000);
+        assert_eq!(argb(&px, 4, 16), 0xFF00_FF00);
+        assert_eq!(argb(&px, 50, 50), 0xFF10_2030);
+        assert_eq!(
+            (stats.mismatches, stats.color_resyncs, stats.depth_resyncs),
+            (0, 0, 0),
+            "{stats:?}"
+        );
+    }
+}
+
+#[test]
+fn a_small_target_drawn_with_the_depth_buffer_reaches_the_view_depth() {
+    let Some(ctx) = context() else { return };
+    for scale in [2, 4] {
+        let (px, stats) = check_scene(&ctx, Scene::SmallTargetWritesDepth, scale);
+        assert_eq!(argb(&px, 16, 16), 0xFF00_80FF);
+        assert_eq!(argb(&px, 4, 16), 0xFF00_80FF);
+        assert_eq!(argb(&px, 30, 30), 0xFF10_2030);
+        assert_eq!(stats.proxy_depth_draws, 2, "{stats:?}");
+        assert_eq!(stats.depth_resyncs, 0, "{stats:?}");
+    }
+}
+
+#[test]
+fn guest_bytes_in_a_frame_sized_depth_level_reach_the_view() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: the depth level cannot be read back");
+        return;
+    }
+    for scale in [2, 3] {
+        let (px, _) = check_scene(&ctx, Scene::GuestDepthLevel, scale);
+        assert_eq!(argb(&px, 10, 10), 0xFF10_2030);
+        assert_eq!(argb(&px, 50, 10), 0xFF00_FF00);
+    }
+}
+
+#[test]
+fn the_depth_buffer_as_a_texture_matches_downsampled() {
+    let Some(ctx) = context() else { return };
+    for scale in [2, 4] {
+        let (px, stats) = check_scene(&ctx, Scene::DepthAlias, scale);
+        assert_ne!(pixel(&px, 10, 10), pixel(&px, 50, 30));
+        if ctx.caps.depth32_stencil8 {
+            assert!(stats.scaled_depth_aliases > 0, "{stats:?}");
+        }
+    }
+}
+
+#[test]
+fn a_colour_surface_over_the_depth_memory_matches_downsampled() {
+    let Some(ctx) = context() else { return };
+    for scale in [2, 3] {
+        let (px, _) = check_scene(&ctx, Scene::ColorOverDepth, scale);
+        assert_eq!(argb(&px, 20, 20), 0xFFFF_8000);
+        assert_eq!(argb(&px, 2, 2), 0xFF40_4040);
+    }
+}
+
+#[test]
+fn a_draw_the_view_cannot_repeat_shows_the_reference_not_a_hole() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: the depth level cannot be read back");
+        return;
+    }
+    for scale in [2, 3] {
+        let (px, stats) = check_scene(&ctx, Scene::LargerDepthLevel, scale);
+        assert_eq!(argb(&px, 10, 10), 0xFF10_2030);
+        assert_eq!(argb(&px, 50, 10), 0xFF00_FF00);
+        assert_eq!(stats.color_resyncs, 1, "{stats:?}");
     }
 }
