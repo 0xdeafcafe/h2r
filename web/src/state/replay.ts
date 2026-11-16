@@ -2,7 +2,7 @@
 // sampled at any tick.
 
 import type { Frame, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import { sampleActors, sampleFrames, sampleVehicles, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
+import { sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleVehicles, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
   tick: number;
@@ -113,6 +113,21 @@ export class ReplayTimeline {
   /** Vehicles with someone in them at `tick`. */
   sampleVehicles(tick: number): SampledVehicle[] {
     return sampleVehicles(this.frames, this.clamp(tick));
+  }
+
+  /** Damage in the recorded frame at or before `tick`. */
+  sampleHits(tick: number) {
+    return sampleHits(this.frames, this.clamp(tick));
+  }
+
+  /** The level zone (structure BSP) loaded at `tick`. */
+  sampleBsp(tick: number): number | null {
+    return sampleBsp(this.frames, this.clamp(tick));
+  }
+
+  /** Machines at `tick`. */
+  sampleMachines(tick: number): SampledMachine[] {
+    return sampleMachines(this.frames, this.clamp(tick));
   }
 
   /** Kills with from < tick <= to, oldest first. */

@@ -177,10 +177,34 @@ pub fn press(store: &Store, profile: &str, row: i16) -> Option<String> {
 }
 
 /// The profile whose skulls a press by local player `index` shows: the
-/// one signed in on that player's slot. `None` when that slot has no named
-/// profile.
+/// one signed in on that player's slot, else [`skulls::DEFAULT_PROFILE`]
+/// (where a pickup with no named profile is kept).
 pub fn profile_of<M: Gm>(m: &M, index: u32) -> Option<String> {
-    skulls::slot_name(m, index)
+    (index < skulls::LOCAL_PLAYERS).then(|| skulls::profile_or_default(m, index))
+}
+
+/// Whether the difficulty list gets the Skulls row for `profiles` (from
+/// [`skulls::profiles_or_default`]), and the line that says why.
+pub fn difficulty_row(
+    store: &Store,
+    (names, fallback): &(Vec<String>, Option<String>),
+) -> (bool, String) {
+    let row = any_collected(store, names);
+    let why = fallback
+        .as_ref()
+        .map_or(String::new(), |w| format!(" ({w})"));
+    let line = if row {
+        format!(
+            "skulls menu: difficulty list for {}: Skulls row shown{why}",
+            names.join(", ")
+        )
+    } else {
+        format!(
+            "skulls menu: difficulty list for {}: no Skulls row, no skull collected{why}",
+            names.join(", ")
+        )
+    };
+    (row, line)
 }
 
 /// The profile of the open Skulls screen. One is open at a time: the
@@ -328,12 +352,42 @@ mod tests {
         }
         f.wr(base + skulls::SLOT_NAME, &name);
         assert_eq!(profile_of(&f, 1).as_deref(), Some("Arbiter"));
-        assert_eq!(profile_of(&f, 0), None);
+        // A slot with no named profile shows the default profile's skulls,
+        // where a pickup with no named profile was kept.
+        assert_eq!(profile_of(&f, 0).as_deref(), Some(skulls::DEFAULT_PROFILE));
+        assert_eq!(profile_of(&f, 4), None, "no such slot");
         f.set_u32(0x6004, 4);
         assert_eq!(player_index(&f, 0x1000), None);
         set_open(Some("Arbiter".into()));
         assert_eq!(open_profile().as_deref(), Some("Arbiter"));
         set_open(None);
+    }
+
+    /// The user's report: a skull picked up with no named profile signed
+    /// in, then no Skulls row. The pickup is kept under the default profile
+    /// and the row is shown for it, each with a line that says why.
+    #[test]
+    fn a_pickup_with_no_named_profile_still_gets_the_row() {
+        let s = Store::defaults(crate::setting_defs::ALL);
+        let none = skulls::profiles_or_default(&Fake::default());
+        let (row, line) = difficulty_row(&s, &none);
+        assert!(!row);
+        assert!(line.contains("no Skulls row, no skull collected"), "{line}");
+        assert!(line.contains("no named profile signed in"), "{line}");
+        skulls::record_pickup(&s, &none.0, 12);
+        let (row, line) = difficulty_row(&s, &none);
+        assert!(row, "{line}");
+        assert_eq!(
+            difficulty_count(DIFFICULTY_LIST_NAME, DIFFICULTY_ROWS, row),
+            DIFFICULTY_ROWS + 1
+        );
+        assert!(
+            line.starts_with("skulls menu: difficulty list for default: Skulls row shown"),
+            "{line}"
+        );
+        // The pressing player (slot 0, nobody signed in) opens the same one.
+        let p = profile_of(&Fake::default(), 0).unwrap();
+        assert_eq!(row_skull(&s, &p, 0), Some(12));
     }
 
     #[test]

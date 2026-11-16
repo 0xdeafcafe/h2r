@@ -45,7 +45,8 @@ export class ShotQueue {
 
   /** Looks at this moment's players and queues any burst not seen before.
    *  `quiet` (a seek, a jump) notes the bursts without drawing them. */
-  observe(players: readonly SampledPlayer[], now: number, opts: { quiet?: boolean } = {}): void {
+  observe(players: readonly SampledPlayer[], now: number, opts: { quiet?: boolean } = {}): number[] {
+    const firedNow: number[] = [];
     for (const p of players) {
       if (!p.shots || p.shotTick === undefined) continue;
       if (this.seen.get(p.index) === p.shotTick) continue;
@@ -57,9 +58,12 @@ export class ShotQueue {
         this.shots.push({ id: this.nextId++, index: p.index, born: now + i * SHOT_GAP_MS, x: p.x, y: p.y, z: p.z, aim });
       }
       this.fired.set(p.index, now + (n - 1) * SHOT_GAP_MS);
+      firedNow.push(p.index);
     }
     // Over the cap, the oldest go first.
     if (this.shots.length > MAX_LIVE_SHOTS) this.shots.splice(0, this.shots.length - MAX_LIVE_SHOTS);
+    // Who started a burst just now (for the fire animation).
+    return firedNow;
   }
 
   /** The shots on screen at `now`, oldest first; spent ones are dropped. */

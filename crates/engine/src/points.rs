@@ -244,6 +244,13 @@ points! { ALL;
     LOCALE_FIND @ 0x001a_02d0: [fn(id: edi) -> eax ret 0], Hot; "docs/engine/locale_string_id_find.md";
     /// `locale_string_id_exists`: whether the packed id has a string (AL).
     LOCALE_EXISTS @ 0x001a_0310: [opaque]; "docs/engine/locale_string_id_find.md";
+    /// `ice_cream_flavor_stock`'s worker: turns skull ESI on (byte ESI of
+    /// the 15-byte array at `0x4f55dc`, only when it was 0), then the HUD
+    /// message and sound.
+    SKULL_STOCK @ 0x001d_f3e0: [fn(index: esi) ret 0]; "docs/skulls.md";
+    /// Queue new game options (EAX = the options; `+0` the mode, 1 a
+    /// campaign). The menu's campaign start and level boot both end here.
+    OPTIONS_QUEUE @ 0x0018_e790: [fn(options: eax) ret 0]; "docs/skulls.md";
 }
 
 globals! { GLOBALS;

@@ -2,13 +2,13 @@ import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import type { Frame, FrameActor, FramePlayer, FrameVehicle } from "../src/api/types";
-import { MAX_ACTORS, actorIndex, sampleActors, sampleFrames, sampleVehicles, type SampledPlayer, type SampledVehicle } from "../src/state/frames";
+import { MAX_ACTORS, actorIndex, sampleActors, sampleBsp, sampleFrames, sampleVehicles, type SampledPlayer, type SampledVehicle } from "../src/state/frames";
 import { ShotQueue } from "../src/map/shots";
 import { vehicleColour } from "../src/map/render";
 import { VEHICLE_TINT, actorColour, bipedFile, parseModels, vehicleBasis, vehicleBox, vehicleFile, vehicleTint } from "../src/viewer/models";
 import { ModelLibrary } from "../src/viewer/players3d";
 import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "../src/viewer/sync";
-import { MOCK_ACTORS, campaignHook } from "../mock/campaign";
+import { MOCK_ACTORS, ZONE_TICKS, campaignHook } from "../mock/campaign";
 import { MAPS } from "../mock/maps";
 import { MOCK_ACTOR_BIPEDS, MOCK_BIPEDS, MOCK_VEHICLES, encodeModelGlb, mockModels } from "../mock/models";
 
@@ -101,12 +101,12 @@ describe("vehicles in frames", () => {
     expect(sampleVehicles(frames, 0.9)[0]!.x).toBe(0);
     expect(sampleVehicles(frames, 1.1)[0]!.x).toBe(100);
     const odd = [vehicle("v1", 0, { forward: [0, 0, 0], up: [NaN, 0, 0], kind: "Bad Kind" }), vehicle("no good", 0), { ...vehicle("v3", 0), pos: [0, 0] }] as FrameVehicle[];
-    expect(sampleVehicles([frame(0, { vehicles: odd })], 0)).toEqual([{ id: "v1", kind: "vehicle", x: 0, y: 0, z: 0, forward: [1, 0, 0], up: [0, 0, 1] }]);
+    expect(sampleVehicles([frame(0, { vehicles: odd })], 0)).toEqual([{ id: "v1", kind: "vehicle", x: 0, y: 0, z: 0, forward: [1, 0, 0], up: [0, 0, 1], occupied: true }]);
   });
 
   test("the 3D view eases them and drops one nobody is in", () => {
     const shown = new Map<string, SampledVehicle>();
-    const at = (x: number, forward: [number, number, number] = [1, 0, 0]): SampledVehicle => ({ id: "v1", kind: "ghost", x, y: 0, z: 0, forward, up: [0, 0, 1] });
+    const at = (x: number, forward: [number, number, number] = [1, 0, 0]): SampledVehicle => ({ id: "v1", kind: "ghost", x, y: 0, z: 0, forward, up: [0, 0, 1], occupied: true });
     smoothVehicles(shown, [at(0)], 16);
     smoothVehicles(shown, [at(1, [0, 1, 0])], 16);
     const v = shown.get("v1")!;
@@ -173,14 +173,14 @@ describe("models for vehicles and AI", () => {
     expect(vehicleFile(m, "warthog")).toBe("models/vehicle/warthog.glb");
     expect(vehicleFile(m, "ghost")).toBeNull();
     expect(vehicleFile(null, "warthog")).toBeNull();
-    expect(parseModels({ version: 1, vehicles: raw.vehicles })).toEqual({ bipeds: {}, weapons: {}, vehicles: { warthog: "models/vehicle/warthog.glb" } });
+    expect(parseModels({ version: 1, vehicles: raw.vehicles })).toEqual({ bipeds: {}, weapons: {}, vehicles: { warthog: "models/vehicle/warthog.glb" }, objects: {}, classes: {} });
   });
 
   test("an AI gets its species' model, else the spartan's, else a capsule", () => {
     const m = parseModels(raw)!;
     expect(bipedFile(m, "grunt")).toBe("models/biped/grunt.glb");
     expect(bipedFile(m, "hunter")).toBe("models/biped/spartan.glb");
-    expect(bipedFile({ bipeds: {}, weapons: {}, vehicles: m.vehicles }, "hunter")).toBeNull();
+    expect(bipedFile({ ...m, bipeds: {} }, "hunter")).toBeNull();
   });
 
   test("sides have their colours; an unknown one is neutral", () => {
@@ -271,16 +271,17 @@ describe("the mock's campaign", () => {
     const last = frames[frames.length - 1]!;
     expect(last.actors).toHaveLength(MOCK_ACTORS);
     expect(MOCK_ACTORS).toBeGreaterThanOrEqual(28);
-    expect(last.vehicles!.map((v) => v.kind).sort()).toEqual(["ghost", "warthog"]);
+    // Two in use, listed first, and three parked with nobody in them.
+    expect(last.vehicles!.map((v) => [v.kind, v.occupied])).toEqual([["ghost", true], ["warthog", true], ["warthog", false], ["ghost", false], ["banshee", false]]);
     // Everything survives the client's own checks.
     expect(sampleActors([last], last.tick)).toHaveLength(MOCK_ACTORS);
-    expect(sampleVehicles([last], last.tick)).toHaveLength(2);
+    expect(sampleVehicles([last], last.tick).map((v) => v.occupied)).toEqual([true, true, false, false, false]);
     expect(new Set(last.actors!.map((a) => a.id)).size).toBe(MOCK_ACTORS);
     const species = new Set(last.actors!.map((a) => a.species));
     for (const s of ["grunt", "jackal", "elite", "hunter", "marine"]) expect(species.has(s)).toBe(true);
     expect(new Set(last.actors!.map((a) => a.team))).toEqual(new Set(["covenant", "human"]));
     // The first player drives one, with an AI aboard; an AI drives the other.
-    const warthog = last.vehicles!.find((v) => v.kind === "warthog")!, ghost = last.vehicles!.find((v) => v.kind === "ghost")!;
+    const warthog = last.vehicles!.find((v) => v.kind === "warthog" && v.occupied)!, ghost = last.vehicles!.find((v) => v.kind === "ghost" && v.occupied)!;
     expect(last.players[0]!.vehicle).toBe(warthog.id);
     expect(warthog.pos).toEqual([1, 2, 3]);
     expect(last.players[1]!.vehicle).toBeUndefined();
@@ -306,6 +307,20 @@ describe("the mock's campaign", () => {
     const f: Frame = { game_id: "g", tick: 2, players: [{ index: 0, alive: false, pos: [0, 0, 0], yaw: 0 }] };
     hook(f, { id: "g", map, tick: 2, mode: "campaign" });
     expect(f.players[0]!.vehicle).toBeUndefined();
-    expect(f.vehicles!.map((v) => v.kind)).toEqual(["ghost"]);
+    expect(f.vehicles!.filter((v) => v.occupied).map((v) => v.kind)).toEqual(["ghost"]);
+    // Having driven, the vehicle stays where it stopped, empty, while they are down.
+    const up: Frame = { game_id: "g", tick: 3, players: [{ index: 0, alive: true, pos: [4, 5, 6], yaw: 0 }] };
+    hook(up, { id: "g", map, tick: 3, mode: "campaign" });
+    expect(up.players[0]!.vehicle).toBe("f2000");
+    const down: Frame = { game_id: "g", tick: 4, players: [{ index: 0, alive: false, pos: [9, 9, 9], yaw: 0 }] };
+    hook(down, { id: "g", map, tick: 4, mode: "campaign" });
+    expect(down.vehicles!.find((v) => v.id === "f2000")).toMatchObject({ kind: "warthog", pos: [4, 5, 6], occupied: false });
+  });
+
+  test("the frames name the zone in play, and it changes", () => {
+    const frames = run(campaignHook(), "campaign", ZONE_TICKS + 60);
+    expect(frames[0]!.bsp).toBe(0);
+    expect(frames[frames.length - 1]!.bsp).toBe(1);
+    expect(sampleBsp(frames, frames[frames.length - 1]!.tick)).toBe(1);
   });
 });

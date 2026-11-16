@@ -134,10 +134,9 @@ where
     V: d3d::scaled::ScaleView<R>,
 {
     let stats = b.shared_stats();
-    let scale = b.scale();
     Box::new(move || {
         let s = *stats.lock().unwrap_or_else(|e| e.into_inner());
-        format!("render scale {scale}: {s}")
+        format!("render scale {}: {s}", s.scale)
     })
 }
 

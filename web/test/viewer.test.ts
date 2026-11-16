@@ -3,7 +3,7 @@ import type { Frame } from "../src/api/types";
 import { ReplayClock, ReplayTimeline } from "../src/state/replay";
 import { TICKS_PER_SECOND, type SampledPlayer } from "../src/state/frames";
 import { applyClock, clockAgrees, isSyncMessage, readClock, smoothPlayers, syncChannelName, type SmoothPlayer } from "../src/viewer/sync";
-import { cameraFit, markerScale } from "../src/viewer/camera";
+import { FOLLOW_DISTANCE, cameraFit, followDistance, markerScale } from "../src/viewer/camera";
 import { MIN_H, MIN_W, placeWindow } from "../src/viewer/window";
 
 function frames(seconds: number): Frame[] {
@@ -160,6 +160,18 @@ describe("camera", () => {
     expect(markerScale({ min: [0, 0, 0], max: [20, 20, 5] })).toBe(1);
     expect(markerScale(box)).toBeCloseTo(Math.hypot(80, 80) / 45, 9);
     expect(markerScale({ min: [0, 0, 0], max: [900, 900, 5] })).toBe(4);
+  });
+
+  test("following starts close to the player whatever the size of the level", () => {
+    // From far out on a huge campaign level: a few units from a life-size model, not a share of the map.
+    expect(followDistance(900, 4, true, 2.4)).toBe(FOLLOW_DISTANCE);
+    expect(followDistance(60, 1, true, 0.6)).toBe(FOLLOW_DISTANCE);
+    // Already closer than that: stay there, but not inside what the controls allow.
+    expect(followDistance(2, 1, true, 0.6)).toBe(2);
+    expect(followDistance(0.5, 1, true, 0.6)).toBe(1.2);
+    // A capsule is drawn bigger on a big map, and is followed from as much farther back.
+    expect(followDistance(900, 4, false, 2.4)).toBe(FOLLOW_DISTANCE * 4);
+    expect(followDistance(900, 1, false, 0.6)).toBe(FOLLOW_DISTANCE);
   });
 });
 

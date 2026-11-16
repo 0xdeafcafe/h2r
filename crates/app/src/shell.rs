@@ -40,6 +40,10 @@ enum UserEvent {
 struct WindowSurface {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
+    /// The surface needs `configure` before the next acquire: the window
+    /// was resized, or the last configure failed (wgpu could not wait for
+    /// the GPU to go idle, which happens mid-resize under a heavy frame).
+    stale: bool,
 }
 
 impl WindowSurface {
@@ -77,28 +81,68 @@ impl WindowSurface {
             view_formats: vec![],
         };
         surface.configure(&ctx.device, &config);
-        Ok(Self { surface, config })
+        Ok(Self {
+            surface,
+            config,
+            stale: false,
+        })
     }
 
     fn size(&self) -> (u32, u32) {
         (self.config.width, self.config.height)
     }
 
-    fn resize(&mut self, ctx: &GfxContext, size: (u32, u32)) {
+    fn resize(&mut self, size: (u32, u32)) {
         if size.0 == 0 || size.1 == 0 || size == self.size() {
             return;
         }
+        // Only recorded: reconfiguring inside the window's resize callback
+        // waits for the GPU to go idle there, and a failure in that
+        // callback cannot unwind (it aborted the process). The next acquire
+        // configures, inside an error scope.
         self.config.width = size.0;
         self.config.height = size.1;
+        self.stale = true;
+    }
+
+    /// Configures the surface, catching a validation error (a GPU that did
+    /// not go idle in time) instead of panicking; `stale` stays set so the
+    /// next acquire tries again.
+    fn configure(&mut self, ctx: &GfxContext) -> bool {
+        let scope = ctx.device.push_error_scope(wgpu::ErrorFilter::Validation);
+        self.surface.configure(&ctx.device, &self.config);
+        match pollster::block_on(scope.pop()) {
+            None => {
+                self.stale = false;
+                true
+            }
+            Some(e) => {
+                eprintln!("app: surface configure failed, retrying next frame: {e}");
+                self.stale = true;
+                false
+            }
+        }
+    }
+
+    /// Waits for the display's vblank (`true`) or not, from the next frame.
+    fn set_vsync(&mut self, ctx: &GfxContext, vsync: bool) {
+        self.config.present_mode = if vsync {
+            wgpu::PresentMode::AutoVsync
+        } else {
+            wgpu::PresentMode::AutoNoVsync
+        };
         self.surface.configure(&ctx.device, &self.config);
     }
 
     fn acquire(&mut self, ctx: &GfxContext) -> Option<wgpu::SurfaceTexture> {
         use wgpu::CurrentSurfaceTexture as C;
+        if self.stale && !self.configure(ctx) {
+            return None;
+        }
         match self.surface.get_current_texture() {
             C::Success(t) | C::Suboptimal(t) => Some(t),
             C::Outdated | C::Lost => {
-                self.surface.configure(&ctx.device, &self.config);
+                self.configure(ctx);
                 None
             }
             C::Timeout | C::Occluded => None,
@@ -585,7 +629,7 @@ impl ApplicationHandler<UserEvent> for Shell {
             WindowEvent::CloseRequested => self.close(event_loop, "window closed"),
             WindowEvent::Resized(size) => {
                 if let Some(g) = self.gpu.as_mut() {
-                    g.surface.resize(&g.ctx, (size.width, size.height));
+                    g.surface.resize((size.width, size.height));
                     g.window.request_redraw();
                 }
             }
@@ -769,6 +813,18 @@ impl ApplicationHandler<UserEvent> for Shell {
         // interpolation before phase 2, docs/high-framerate.md). At 30 the
         // schedule is never due and this changes nothing.
         let mut wake = self.status.last + Duration::from_secs(1);
+        // A new frame-rate target (the Video screen's row): the schedule
+        // from now, and the surface's vsync when that changes too.
+        if let Some(c) = &self.config.fps_control
+            && let Some((target, vsync)) = crate::fps::follow(c, self.config.fps, self.config.vsync)
+        {
+            self.config.fps = target;
+            self.display.retarget(target);
+            if let (Some(v), Some(g)) = (vsync, self.gpu.as_mut()) {
+                g.surface.set_vsync(&g.ctx, v);
+            }
+            eprintln!("app: frame rate {target}");
+        }
         if let Some(g) = &self.gpu
             && !self.closing
         {

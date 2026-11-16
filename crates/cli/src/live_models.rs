@@ -5,9 +5,11 @@
 //! Runs inside the art extraction (`live_art::extract`) from the owner's own
 //! disc. A biped is posed once: a frame of its animation graph's rifle idle is
 //! sampled, composed up the render model's node tree and baked into the
-//! vertices by linear blend skinning against the model's rest pose. Nothing
-//! is skinned or animated in the file. The pure parts (pose, skin, change
-//! colour, glTF) take plain data so the tests can build invented models.
+//! vertices by linear blend skinning against the model's rest pose. Bipeds
+//! are also skinned to that pose and carry `<weapon_class>:<state>` clips
+//! sampled from the graph (contract section 10); weapons and vehicles stay
+//! static. The pure parts (pose, skin, change colour, glTF) take plain data
+//! so the tests can build invented models.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -34,7 +36,8 @@ use crate::live_art::Disc;
 use crate::live_geometry::{GENERATOR, cross, dot, normalize, to_gltf};
 
 /// The model files' format (contract `models.version`, `models_version`).
-pub const MODELS_VERSION: u32 = 1;
+/// 2: bipeds are skinned and carry clips; weapons name their class.
+pub const MODELS_VERSION: u32 = 2;
 /// The largest texture side written into a glb; bigger ones are halved.
 pub const MAX_TEXTURE: u32 = 512;
 /// Base colour of a material whose diffuse map could not be decoded.
@@ -45,6 +48,12 @@ pub const GREY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
 pub struct GlbRef {
     /// Relative to the manifest, `/`-separated.
     pub glb: String,
+    /// Bipeds: the glb's animations, `<weapon_class>:<state>`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub clips: Vec<String>,
+    /// Weapons: the clip set to hold it with (`rifle`, `pistol`, ...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub class: Option<String>,
 }
 
 /// The manifest's `models` object.
@@ -71,7 +80,12 @@ impl ModelsEntry {
                 .iter()
                 .map(|n| {
                     let glb = format!("models/{dir}/{n}.glb");
-                    (n.clone(), GlbRef { glb })
+                    let r = GlbRef {
+                        glb,
+                        clips: Vec::new(),
+                        class: None,
+                    };
+                    (n.clone(), r)
                 })
                 .collect()
         };
@@ -159,32 +173,41 @@ fn parents(bones: &[Bone]) -> Vec<Option<usize>> {
 /// graph node named `graph_names[j]`; a bone takes each channel the frame
 /// supplies for the node of its own name and keeps its rest value otherwise.
 pub fn posed_world(bones: &[Bone], graph_names: &[String], pose: &Pose) -> Vec<Mat4> {
-    let locals: Vec<Mat4> = bones
+    compose(&posed_locals(bones, graph_names, pose), &parents(bones))
+}
+
+/// Each bone's frame relative to its parent in an animation frame (see
+/// [`posed_world`]).
+pub fn posed_locals(bones: &[Bone], graph_names: &[String], pose: &Pose) -> Vec<Mat4> {
+    let slot = graph_slots(bones, graph_names);
+    bones
         .iter()
-        .map(|b| {
-            let t = graph_names
-                .iter()
-                .position(|n| *n == b.name)
-                .and_then(|j| pose.nodes.get(j));
-            match t {
-                Some(t) => trs(
-                    if t.has_translation {
-                        t.translation
-                    } else {
-                        b.translation
-                    },
-                    if t.has_rotation {
-                        t.rotation
-                    } else {
-                        b.rotation
-                    },
-                    if t.has_scale { t.scale } else { 1.0 },
-                ),
-                None => trs(b.translation, b.rotation, 1.0),
-            }
+        .zip(slot)
+        .map(|(b, j)| match j.and_then(|j| pose.nodes.get(j)) {
+            Some(t) => trs(
+                if t.has_translation {
+                    t.translation
+                } else {
+                    b.translation
+                },
+                if t.has_rotation {
+                    t.rotation
+                } else {
+                    b.rotation
+                },
+                if t.has_scale { t.scale } else { 1.0 },
+            ),
+            None => trs(b.translation, b.rotation, 1.0),
         })
-        .collect();
-    compose(&locals, &parents(bones))
+        .collect()
+}
+
+/// For each bone, the graph node of the same name.
+fn graph_slots(bones: &[Bone], graph_names: &[String]) -> Vec<Option<usize>> {
+    bones
+        .iter()
+        .map(|b| graph_names.iter().position(|n| *n == b.name))
+        .collect()
 }
 
 /// Inverse of a rigid (rotation, translation, uniform scale) matrix.
@@ -249,6 +272,26 @@ pub fn skin_vertex(
         }
     }
     (op, normalize(on))
+}
+
+/// A vertex's JOINTS_0 and WEIGHTS_0: the weights [`skin_vertex`] uses
+/// (renormalised, nodes past `joints` dropped; none left -> node 0 alone).
+pub fn joint_weights(nodes: [usize; 4], weights: [f32; 4], joints: usize) -> ([u16; 4], [f32; 4]) {
+    let w: [f32; 4] = std::array::from_fn(|k| {
+        if nodes[k] < joints && nodes[k] <= usize::from(u16::MAX) {
+            weights[k].max(0.0)
+        } else {
+            0.0
+        }
+    });
+    let total: f32 = w.iter().sum();
+    if total <= 0.0 {
+        return ([0; 4], [1.0, 0.0, 0.0, 0.0]);
+    }
+    (
+        std::array::from_fn(|k| if w[k] > 0.0 { nodes[k] as u16 } else { 0 }),
+        w.map(|v| v / total),
+    )
 }
 
 pub const IDENTITY: Mat4 = [
@@ -353,7 +396,52 @@ pub struct Primitive {
     pub uvs: Vec<[f32; 2]>,
     /// COLOR_0 (same length as `positions`) or empty.
     pub colours: Vec<[f32; 4]>,
+    /// JOINTS_0 and WEIGHTS_0 (skeleton joint indices, weights summing to
+    /// one); written only when the model has a [`Skeleton`].
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
     pub indices: Vec<u32>,
+}
+
+/// A joint of a skinned model: a render-model node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Joint {
+    pub name: String,
+    pub parent: Option<usize>,
+    /// Frame relative to the parent (the model, for a root) in the default
+    /// pose, game coordinates. The mesh is stored in this pose.
+    pub local: Mat4,
+}
+
+/// An animation: every joint's local frame at every frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Clip {
+    /// `<weapon_class>:<state>`.
+    pub name: String,
+    pub fps: f32,
+    /// `frames[f][j]`: joint `j`'s local frame (as [`Joint::local`]).
+    pub frames: Vec<Vec<Mat4>>,
+}
+
+/// What makes a model skinned and animated.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Skeleton {
+    pub joints: Vec<Joint>,
+    /// Empty nodes (of [`Model::nodes`]) carried by a joint, by name.
+    pub attach: BTreeMap<String, usize>,
+    pub clips: Vec<Clip>,
+}
+
+impl Skeleton {
+    /// Joint world frames from per-joint locals (the default pose's or a
+    /// clip frame's).
+    pub fn world(&self, locals: &[Mat4]) -> Vec<Mat4> {
+        let parents: Vec<Option<usize>> = self.joints.iter().map(|j| j.parent).collect();
+        compose(locals, &parents)
+    }
+    pub fn default_locals(&self) -> Vec<Mat4> {
+        self.joints.iter().map(|j| j.local).collect()
+    }
 }
 
 /// A posed (or rest) model ready to write.
@@ -367,6 +455,10 @@ pub struct Model {
     pub nodes: Vec<(String, Mat4)>,
     /// Added to `asset.extras` (besides `generator` and `models_version`).
     pub extras: serde_json::Map<String, Value>,
+    /// Bipeds: the skeleton the mesh is skinned to, and the clips.
+    pub skeleton: Option<Skeleton>,
+    /// Weapons: the animation graphs' weapon class (`rifle`, `pistol`, ...).
+    pub class: Option<String>,
 }
 
 impl Model {
@@ -393,9 +485,22 @@ impl Model {
                 *v = std::array::from_fn(|k| v[k] + d[k]);
             }
         }
-        for (_, m) in &mut self.nodes {
+        let shift = |m: &mut Mat4| {
             for k in 0..3 {
                 m[3][k] += d[k];
+            }
+        };
+        self.nodes.iter_mut().for_each(|(_, m)| shift(m));
+        // Joints follow; a root joint's frame is relative to the model.
+        if let Some(sk) = &mut self.skeleton {
+            let roots: Vec<usize> = (0..sk.joints.len())
+                .filter(|&j| sk.joints[j].parent.is_none())
+                .collect();
+            for &j in &roots {
+                shift(&mut sk.joints[j].local);
+                for c in &mut sk.clips {
+                    c.frames.iter_mut().for_each(|f| shift(&mut f[j]));
+                }
             }
         }
     }
@@ -411,13 +516,31 @@ const AXES: Mat4 = [
 
 /// A game-space rigid frame as glTF translation and rotation.
 pub fn gltf_trs(m: &Mat4) -> ([f32; 3], [f32; 4]) {
-    let g = mat_mul(&mat_mul(&AXES, m), &invert_rigid(&AXES));
+    let g = to_gltf_frame(m);
     // Orthonormalise the rotation part, then convert.
     let x = normalize([g[0][0], g[0][1], g[0][2]]);
     let y0 = [g[1][0], g[1][1], g[1][2]];
     let z = normalize(cross(x, y0));
     let y = cross(z, x);
     ([g[3][0], g[3][1], g[3][2]], quat_from_axes(x, y, z))
+}
+
+/// A game-space frame in glTF axes, as a matrix.
+fn to_gltf_frame(m: &Mat4) -> Mat4 {
+    mat_mul(&mat_mul(&AXES, m), &invert_rigid(&AXES))
+}
+
+/// Quaternions with each one's sign flipped where needed to stay in the
+/// previous one's hemisphere, so linear interpolation takes the short way.
+pub fn continuous(qs: impl Iterator<Item = [f32; 4]>) -> Vec<[f32; 4]> {
+    let mut out: Vec<[f32; 4]> = Vec::new();
+    for q in qs {
+        let flip = out
+            .last()
+            .is_some_and(|p| (0..4).map(|k| p[k] * q[k]).sum::<f32>() < 0.0);
+        out.push(if flip { q.map(|v| -v) } else { q });
+    }
+    out
 }
 
 /// The unit quaternion `[x, y, z, w]` of a rotation with these columns.
@@ -513,6 +636,8 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
         materials.push(json!({"name": m.name, "pbrMetallicRoughness": pbr}));
     }
 
+    let skeleton = model.skeleton.as_ref().filter(|s| !s.joints.is_empty());
+    let joint_count = skeleton.map_or(0, |s| s.joints.len());
     let mut prims = Vec::new();
     for p in model.primitives.iter().filter(|p| !p.indices.is_empty()) {
         let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
@@ -571,6 +696,25 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
                 false,
             );
         }
+        if joint_count > 0 && p.joints.len() == pos.len() && p.weights.len() == pos.len() {
+            add(
+                "WEIGHTS_0",
+                floats(&mut p.weights.iter().flatten().copied()),
+                "VEC4",
+                pos.len(),
+                false,
+            );
+            let bytes: Vec<u8> = p
+                .joints
+                .iter()
+                .flatten()
+                .map(|&j| if usize::from(j) < joint_count { j } else { 0 })
+                .flat_map(u16::to_le_bytes)
+                .collect();
+            let bv = view(&mut bin, &bytes, Some(34962));
+            accessors.push(json!({"bufferView": bv, "componentType": 5123, "count": pos.len(), "type": "VEC4"}));
+            attributes.insert("JOINTS_0".into(), json!(accessors.len() - 1));
+        }
         let iv = view(
             &mut bin,
             &p.indices
@@ -594,15 +738,116 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
     extras.insert("generator".into(), json!(GENERATOR));
     extras.insert("models_version".into(), json!(MODELS_VERSION));
     extras.extend(model.extras.clone());
-    let mut nodes = vec![json!({"name": "root", "children": []})];
+    let mut nodes = vec![json!({"name": "root"})];
+    let mut root_children = Vec::new();
     if !prims.is_empty() {
         nodes.push(json!({"name": model.mesh_name, "mesh": 0}));
+        root_children.push(1);
+    }
+    let joint_base = nodes.len();
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); joint_count];
+    let mut skins = Vec::new();
+    let mut animations = Vec::new();
+    let world = skeleton.map_or_else(Vec::new, |sk| sk.world(&sk.default_locals()));
+    if let Some(sk) = skeleton {
+        for (j, joint) in sk.joints.iter().enumerate() {
+            let (t, r) = gltf_trs(&joint.local);
+            nodes.push(
+                json!({"name": format!("joint_{}", joint.name), "translation": t, "rotation": r}),
+            );
+            match joint.parent {
+                Some(p) if p < j => children[p].push(joint_base + j),
+                _ => root_children.push(joint_base + j),
+            }
+        }
+        // Bound in the default pose: skinning there changes nothing.
+        let ibm = floats(
+            &mut world
+                .iter()
+                .flat_map(|w| invert_rigid(&to_gltf_frame(w)))
+                .flatten(),
+        );
+        let bv = view(&mut bin, &ibm, None);
+        accessors.push(
+            json!({"bufferView": bv, "componentType": 5126, "count": joint_count, "type": "MAT4"}),
+        );
+        skins.push(json!({
+            "inverseBindMatrices": accessors.len() - 1,
+            "joints": (joint_base..joint_base + joint_count).collect::<Vec<_>>(),
+        }));
+        if !prims.is_empty() {
+            nodes[1]["skin"] = json!(0);
+        }
+        // A one-key time line for channels that never change.
+        let still = {
+            let bv = view(&mut bin, &0f32.to_le_bytes(), None);
+            accessors.push(json!({"bufferView": bv, "componentType": 5126, "count": 1, "type": "SCALAR", "min": [0.0], "max": [0.0]}));
+            accessors.len() - 1
+        };
+        for clip in sk.clips.iter().filter(|c| !c.frames.is_empty()) {
+            let n = clip.frames.len();
+            let times: Vec<f32> = (0..n).map(|f| f as f32 / clip.fps).collect();
+            let bv = view(&mut bin, &floats(&mut times.iter().copied()), None);
+            accessors.push(json!({"bufferView": bv, "componentType": 5126, "count": n, "type": "SCALAR", "min": [0.0], "max": [times[n - 1]]}));
+            let timeline = accessors.len() - 1;
+            let (mut samplers, mut channels) = (Vec::new(), Vec::new());
+            for j in 0..joint_count {
+                let keys: Vec<([f32; 3], [f32; 4])> = clip
+                    .frames
+                    .iter()
+                    .map(|f| gltf_trs(f.get(j).unwrap_or(&sk.joints[j].local)))
+                    .collect();
+                let rotations = continuous(keys.iter().map(|k| k.1));
+                let translations: Vec<[f32; 3]> = keys.iter().map(|k| k.0).collect();
+                let rot_still = rotations
+                    .iter()
+                    .all(|r| (0..4).all(|k| (r[k] - rotations[0][k]).abs() < 1e-4));
+                let pos_still = translations
+                    .iter()
+                    .all(|t| (0..3).all(|k| (t[k] - translations[0][k]).abs() < 1e-4));
+                let keep = |still_: bool| if still_ { 1 } else { n };
+                let r = &rotations[..keep(rot_still)];
+                let bytes: Vec<u8> = r
+                    .iter()
+                    .flatten()
+                    .map(|v| (v.clamp(-1.0, 1.0) * 32767.0).round() as i16)
+                    .flat_map(i16::to_le_bytes)
+                    .collect();
+                let bv = view(&mut bin, &bytes, None);
+                accessors.push(json!({"bufferView": bv, "componentType": 5122, "normalized": true, "count": r.len(), "type": "VEC4"}));
+                samplers.push(json!({"input": if rot_still { still } else { timeline }, "output": accessors.len() - 1, "interpolation": "LINEAR"}));
+                channels.push(json!({"sampler": samplers.len() - 1, "target": {"node": joint_base + j, "path": "rotation"}}));
+                let t = &translations[..keep(pos_still)];
+                let bv = view(&mut bin, &floats(&mut t.iter().flatten().copied()), None);
+                accessors.push(json!({"bufferView": bv, "componentType": 5126, "count": t.len(), "type": "VEC3"}));
+                samplers.push(json!({"input": if pos_still { still } else { timeline }, "output": accessors.len() - 1, "interpolation": "LINEAR"}));
+                channels.push(json!({"sampler": samplers.len() - 1, "target": {"node": joint_base + j, "path": "translation"}}));
+            }
+            animations.push(json!({"name": clip.name, "samplers": samplers, "channels": channels}));
+        }
     }
     for (name, m) in &model.nodes {
-        let (t, r) = gltf_trs(m);
+        let joint = skeleton
+            .and_then(|sk| sk.attach.get(name))
+            .copied()
+            .filter(|&j| j < joint_count);
+        let frame = match joint {
+            Some(j) => mat_mul(&invert_rigid(&world[j]), m),
+            None => *m,
+        };
+        let (t, r) = gltf_trs(&frame);
         nodes.push(json!({"name": name, "translation": t, "rotation": r}));
+        match joint {
+            Some(j) => children[j].push(nodes.len() - 1),
+            None => root_children.push(nodes.len() - 1),
+        }
     }
-    nodes[0]["children"] = json!((1..nodes.len()).collect::<Vec<_>>());
+    nodes[0]["children"] = json!(root_children);
+    for (j, c) in children.into_iter().enumerate() {
+        if !c.is_empty() {
+            nodes[joint_base + j]["children"] = json!(c);
+        }
+    }
     let mut doc = json!({
         "asset": {"version": "2.0", "generator": GENERATOR, "extras": extras},
         "scene": 0,
@@ -615,6 +860,14 @@ pub fn write_glb(model: &Model) -> Vec<u8> {
     }
     if !materials.is_empty() {
         doc["materials"] = json!(materials);
+    }
+    if !skins.is_empty() {
+        doc["skins"] = json!(skins);
+        // Accessors of the skin (and clips) even without a mesh.
+        doc["accessors"] = json!(accessors);
+    }
+    if !animations.is_empty() {
+        doc["animations"] = json!(animations);
     }
     if !images.is_empty() {
         doc["images"] = json!(images);
@@ -708,17 +961,16 @@ pub fn pose_mesh(src: &Source, posed: &[Mat4]) -> Vec<Primitive> {
             .and_then(Option::as_ref);
         for i in 0..piece.positions.len() {
             let n = piece.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
-            let (p, n) = skin_vertex(
-                &skin,
-                piece.nodes.get(i).copied().unwrap_or([0; 4]),
-                piece
-                    .weights
-                    .get(i)
-                    .copied()
-                    .unwrap_or([1.0, 0.0, 0.0, 0.0]),
-                piece.positions[i],
-                n,
-            );
+            let nodes = piece.nodes.get(i).copied().unwrap_or([0; 4]);
+            let weights = piece
+                .weights
+                .get(i)
+                .copied()
+                .unwrap_or([1.0, 0.0, 0.0, 0.0]);
+            let (p, n) = skin_vertex(&skin, nodes, weights, piece.positions[i], n);
+            let (j, w) = joint_weights(nodes, weights, skin.len());
+            prim.joints.push(j);
+            prim.weights.push(w);
             let uv = piece.uvs.get(i).copied().unwrap_or([0.0; 2]);
             prim.positions.push(p);
             prim.normals.push(n);
@@ -749,9 +1001,121 @@ pub const HEAD_MARKERS: &[&str] = &["head"];
 pub const HEAD_BONES: &[&str] = &["head"];
 pub const MUZZLE_MARKERS: &[&str] = &["primary_trigger", "primary trigger", "primary_muzzle"];
 
+/// One animation as sampled poses, ready to become a [`Clip`].
+#[derive(Clone, Debug, Default)]
+pub struct ClipPoses {
+    /// `<weapon_class>:<state>`.
+    pub name: String,
+    pub fps: f32,
+    /// The node names of the graph the poses come from (see [`posed_world`]).
+    pub graph_names: Vec<String>,
+    pub poses: Vec<Pose>,
+    /// An overlay: each frame's change from the first is added to the
+    /// default pose (a weapon's recoil over the idle).
+    pub overlay: bool,
+}
+
+/// Quaternion product `a * b` (`[x, y, z, w]`).
+pub fn quat_mul(a: [f32; 4], b: [f32; 4]) -> [f32; 4] {
+    [
+        a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+        a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+        a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+        a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+    ]
+}
+
+fn quat_conj(q: [f32; 4]) -> [f32; 4] {
+    [-q[0], -q[1], -q[2], q[3]]
+}
+
+/// A bone's translation and rotation relative to its parent.
+type Local = ([f32; 3], [f32; 4]);
+
+/// Each bone's channels in one frame: the frame's own where it has them,
+/// else `base`'s. For an overlay, the frame's change since `first` is
+/// applied to `base` instead.
+pub fn clip_locals(
+    bones: &[Bone],
+    graph_names: &[String],
+    pose: &Pose,
+    base: &[Local],
+    overlay: Option<&Pose>,
+) -> Vec<Mat4> {
+    let slot = graph_slots(bones, graph_names);
+    (0..bones.len())
+        .map(|b| {
+            let (mut t, mut q) = base[b];
+            let node = slot[b].and_then(|j| Some((pose.nodes.get(j)?, j)));
+            if let Some((n, j)) = node {
+                match overlay.and_then(|f| f.nodes.get(j)) {
+                    Some(first) => {
+                        if n.has_translation && first.has_translation {
+                            t = std::array::from_fn(|k| {
+                                t[k] + n.translation[k] - first.translation[k]
+                            });
+                        }
+                        if n.has_rotation && first.has_rotation {
+                            q = quat_mul(q, quat_mul(quat_conj(first.rotation), n.rotation));
+                        }
+                    }
+                    None => {
+                        if n.has_translation {
+                            t = n.translation;
+                        }
+                        if n.has_rotation {
+                            q = n.rotation;
+                        }
+                    }
+                }
+            }
+            rigid(&trs(t, q, 1.0))
+        })
+        .collect()
+}
+
+/// Each bone's channels in `pose`, its rest values where it has none.
+fn base_locals(bones: &[Bone], graph_names: &[String], pose: &Pose) -> Vec<Local> {
+    let slot = graph_slots(bones, graph_names);
+    bones
+        .iter()
+        .zip(slot)
+        .map(|(b, j)| {
+            let n = j.and_then(|j| pose.nodes.get(j));
+            (
+                n.filter(|n| n.has_translation)
+                    .map_or(b.translation, |n| n.translation),
+                n.filter(|n| n.has_rotation)
+                    .map_or(b.rotation, |n| n.rotation),
+            )
+        })
+        .collect()
+}
+
+/// A frame without its scale: the rotation columns made orthonormal.
+pub fn rigid(m: &Mat4) -> Mat4 {
+    let x = normalize([m[0][0], m[0][1], m[0][2]]);
+    let z = normalize(cross(x, [m[1][0], m[1][1], m[1][2]]));
+    let y = cross(z, x);
+    [
+        [x[0], x[1], x[2], 0.0],
+        [y[0], y[1], y[2], 0.0],
+        [z[0], z[1], z[2], 0.0],
+        m[3],
+    ]
+}
+
 /// A biped posed by one animation frame, standing on the origin: the mesh,
 /// and `weapon` and `head` nodes from the markers (or bones) of those names.
-pub fn biped(src: &Source, graph_names: &[String], pose: &Pose) -> Result<Model> {
+/// The mesh is skinned to the render model's nodes, whose default pose is
+/// that frame, and `clips` animate them; `weapon` and `head` ride on their
+/// nodes.
+pub fn biped(
+    src: &Source,
+    graph_names: &[String],
+    pose: &Pose,
+    clips: &[ClipPoses],
+) -> Result<Model> {
     let posed = posed_world(&src.bones, graph_names, pose);
     let mut model = Model {
         mesh_name: "body".into(),
@@ -762,10 +1126,10 @@ pub fn biped(src: &Source, graph_names: &[String], pose: &Pose) -> Result<Model>
     if model.primitives.is_empty() {
         anyhow::bail!("no drawn triangles");
     }
-    let frame = |markers: &[&str], bones: &[&str]| -> Option<Mat4> {
+    let frame = |markers: &[&str], bones: &[&str]| -> Option<(Mat4, usize)> {
         match src.marker(markers) {
-            Some(m) if m.node < posed.len() => Some(marker_world(&posed[m.node], m)),
-            _ => src.bone(bones).map(|b| posed[b]),
+            Some(m) if m.node < posed.len() => Some((marker_world(&posed[m.node], m), m.node)),
+            _ => src.bone(bones).map(|b| (posed[b], b)),
         }
     };
     // Creatures without the usual markers fall back to a name with `hand`
@@ -779,19 +1143,83 @@ pub fn biped(src: &Source, graph_names: &[String], pose: &Pose) -> Result<Model>
                     n.contains("hand") && (!right || n.starts_with('r') || n.contains("right"))
                 })
             };
-            hand(true).or_else(|| hand(false)).map(|b| posed[b])
+            hand(true).or_else(|| hand(false)).map(|b| (posed[b], b))
         })
-        .unwrap_or_else(|| posed.first().copied().unwrap_or(IDENTITY));
-    let head = frame(HEAD_MARKERS, HEAD_BONES).unwrap_or_else(|| {
-        let mut m = IDENTITY;
-        m[3] = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, hi[2], 1.0];
-        m
-    });
-    model.nodes.push(("weapon".into(), weapon));
-    model.nodes.push(("head".into(), head));
+        .map_or_else(
+            || (posed.first().copied().unwrap_or(IDENTITY), Some(0)),
+            |(m, b)| (m, Some(b)),
+        );
+    let head = frame(HEAD_MARKERS, HEAD_BONES).map_or_else(
+        || {
+            let mut m = IDENTITY;
+            m[3] = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, hi[2], 1.0];
+            (m, None)
+        },
+        |(m, b)| (m, Some(b)),
+    );
+    model.nodes.push(("weapon".into(), weapon.0));
+    model.nodes.push(("head".into(), head.0));
+    model.skeleton = skeleton(src, graph_names, pose, clips);
+    if let Some(sk) = &mut model.skeleton {
+        for (name, joint) in [("weapon", weapon.1), ("head", head.1)] {
+            if let Some(j) = joint.filter(|&j| j < sk.joints.len()) {
+                sk.attach.insert(name.into(), j);
+            }
+        }
+    }
     model.translate([0.0, 0.0, -lo[2]]);
     model.extras.insert("height".into(), json!(hi[2] - lo[2]));
     Ok(model)
+}
+
+/// The render model's nodes as joints in the pose `pose`, and the clips.
+/// A node whose parent comes after it is made a root, so the joints form a
+/// tree; `None` without nodes.
+fn skeleton(
+    src: &Source,
+    graph_names: &[String],
+    pose: &Pose,
+    clips: &[ClipPoses],
+) -> Option<Skeleton> {
+    if src.bones.is_empty() {
+        return None;
+    }
+    let locals = posed_locals(&src.bones, graph_names, pose);
+    let joints = src
+        .bones
+        .iter()
+        .zip(&locals)
+        .enumerate()
+        .map(|(j, (b, l))| Joint {
+            name: b.name.clone(),
+            parent: b.parent.filter(|&p| p < j),
+            local: rigid(l),
+        })
+        .collect();
+    // Channels a clip lacks (an upper-body replacement's legs) keep the
+    // default pose's.
+    let base = base_locals(&src.bones, graph_names, pose);
+    let clips = clips
+        .iter()
+        .filter(|c| !c.poses.is_empty() && c.fps > 0.0)
+        .map(|c| Clip {
+            name: c.name.clone(),
+            fps: c.fps,
+            frames: c
+                .poses
+                .iter()
+                .map(|p| {
+                    let first = c.overlay.then(|| &c.poses[0]);
+                    clip_locals(&src.bones, &c.graph_names, p, &base, first)
+                })
+                .collect(),
+        })
+        .collect();
+    Some(Skeleton {
+        joints,
+        attach: BTreeMap::new(),
+        clips,
+    })
 }
 
 /// A weapon in its rest pose and own model space, with a `muzzle` node.
@@ -938,6 +1366,7 @@ pub struct Written {
 pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Written {
     let mut out = Written::default();
     let (mut bipeds, mut weapons, mut vehicles) = (Vec::new(), Vec::new(), Vec::new());
+    let mut extra = Vec::new();
     for (kind, name, model) in built {
         let key = format!("models/{}/{name}", kind.dir());
         let model = match model {
@@ -962,13 +1391,32 @@ pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Wr
             triangles: model.triangles(),
             glb_bytes: glb.len(),
         });
+        let clips: Vec<String> = model
+            .skeleton
+            .iter()
+            .flat_map(|s| s.clips.iter().map(|c| c.name.clone()))
+            .collect();
         match kind {
-            Kind::Biped => bipeds.push(name),
-            Kind::Weapon => weapons.push(name),
-            Kind::Vehicle => vehicles.push(name),
+            Kind::Biped => bipeds.push(name.clone()),
+            Kind::Weapon => weapons.push(name.clone()),
+            Kind::Vehicle => vehicles.push(name.clone()),
         }
+        extra.push((kind, name, clips, model.class));
     }
     out.entry = ModelsEntry::new(&bipeds, &weapons, &vehicles);
+    if let Some(entry) = &mut out.entry {
+        for (kind, name, clips, class) in extra {
+            let table = match kind {
+                Kind::Biped => &mut entry.bipeds,
+                Kind::Weapon => &mut entry.weapons,
+                Kind::Vehicle => &mut entry.vehicles,
+            };
+            if let Some(r) = table.get_mut(&name) {
+                r.clips = clips;
+                r.class = class;
+            }
+        }
+    }
     out
 }
 
@@ -1470,6 +1918,228 @@ pub fn pick_vehicle_pose(stances: &[Stance]) -> Option<(usize, Frame)> {
         .or_else(|| find(POSE_ACTION).map(|i| (i, Frame::First)))
 }
 
+// ---- clips -------------------------------------------------------------------
+
+/// The weapon classes a biped's clips cover: those multiplayer weapons are
+/// held with (`dual`, the vehicle seats and the AI-only classes are left out).
+pub const CLIP_CLASSES: &[&str] = &[
+    "rifle", "pistol", "missile", "support", "sword", "unarmed", "flag", "ball",
+];
+/// Weapon types that stand in for their class where a state is animated only
+/// per type (battle rifle, magnum, rocket launcher, brute shot); otherwise
+/// the first type by name.
+pub const CLIP_TYPES: &[&str] = &["br", "hp", "rl", "bs"];
+/// The animation graphs' frame rate.
+pub const ANIMATION_FPS: f32 = 30.0;
+
+/// Where a state's animation is found.
+#[derive(Clone, Copy, Debug)]
+enum Want {
+    /// An action of the graph: mode, the class (`None`: the class itself),
+    /// the action.
+    Action(&'static str, Option<&'static str>, &'static str),
+    /// A combat animation of the class by name, any of these actions.
+    Named(&'static [&'static str]),
+}
+
+/// The states of contract section 10 and where each comes from.
+const STATES: &[(&str, Want)] = &[
+    ("idle", Want::Action("combat", None, "idle")),
+    ("walk", Want::Action("combat", None, "walk_front")),
+    ("run", Want::Action("combat", None, "move_front")),
+    ("crouch", Want::Action("crouch", None, "idle")),
+    ("airborne", Want::Action("combat", None, "airborne")),
+    ("land", Want::Action("combat", None, "land_soft")),
+    ("grenade", Want::Named(&["throw_grenade"])),
+    ("melee", Want::Named(&["melee_strike_1", "melee"])),
+    ("reload", Want::Named(&["reload_1"])),
+    ("fire", Want::Named(&["fire_1"])),
+    ("switch", Want::Named(&["ready"])),
+    ("die", Want::Action("combat", Some("any"), "landing_dead")),
+];
+
+/// Where a clip's animation is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClipFrom {
+    /// An action, by index into the stances.
+    Action(usize),
+    /// An animation, by index into the names.
+    Animation(usize),
+}
+
+/// The clips a graph can give, `(<class>:<state>, source)`, from its actions
+/// ([`Stance`]s, type `any`) and its animations' names (`mode:class:action`
+/// or `mode:class:type:action`, maybe with `:varN`). States missing from
+/// the graph are left out.
+pub fn plan_clips(stances: &[Stance], animations: &[String]) -> Vec<(String, ClipFrom)> {
+    let mut out = Vec::new();
+    for class in CLIP_CLASSES {
+        for (state, want) in STATES {
+            let from = match *want {
+                Want::Action(mode, c, action) => stances
+                    .iter()
+                    .position(|s| {
+                        s[0] == mode
+                            && s[1] == c.unwrap_or(class)
+                            && s[2] == POSE_TYPE
+                            && s[3] == action
+                    })
+                    .map(ClipFrom::Action),
+                Want::Named(actions) => {
+                    named_animation(animations, class, actions).map(ClipFrom::Animation)
+                }
+            };
+            if let Some(from) = from {
+                out.push((format!("{class}:{state}"), from));
+            }
+        }
+    }
+    out
+}
+
+/// The combat animation of `class` doing one of `actions`: the class's own
+/// (or its `any` type's), else a [`CLIP_TYPES`] type's, else any type's.
+fn named_animation(animations: &[String], class: &str, actions: &[&str]) -> Option<usize> {
+    let is = |name: &str, base: &str| {
+        name == base
+            || name
+                .strip_prefix(base)
+                .is_some_and(|rest| rest.starts_with(":var"))
+    };
+    let find = |ty: Option<&str>| {
+        actions.iter().find_map(|a| {
+            let base = match ty {
+                Some(t) => format!("combat:{class}:{t}:{a}"),
+                None => format!("combat:{class}:{a}"),
+            };
+            animations.iter().position(|n| is(n, &base))
+        })
+    };
+    find(None).or_else(|| find(Some(POSE_TYPE))).or_else(|| {
+        CLIP_TYPES.iter().find_map(|t| find(Some(t))).or_else(|| {
+            let mut types: Vec<&str> = animations
+                .iter()
+                .filter_map(|n| {
+                    let rest = n.strip_prefix("combat:")?.strip_prefix(class)?;
+                    let mut parts = rest.strip_prefix(':')?.split(':');
+                    let ty = parts.next()?;
+                    let action = parts.next()?;
+                    actions.contains(&action).then_some(ty)
+                })
+                .collect();
+            types.sort_unstable();
+            types.into_iter().find_map(|t| find(Some(t)))
+        })
+    })
+}
+
+/// A graph and the graphs it inherits from, with every node and animation
+/// name.
+struct Graphs {
+    graphs: Vec<AnimationGraph>,
+    /// Per graph, its node names.
+    nodes: Vec<Vec<String>>,
+    /// Every animation of every graph, own first: `(graph, index, name)`.
+    animations: Vec<(usize, usize, String)>,
+}
+
+impl Graphs {
+    fn read(map: &mut MapReader, jmad: TagId) -> Result<Self> {
+        let own = AnimationGraph::read(map, jmad).context("reading the animation graph")?;
+        let mut graphs = vec![own];
+        for i in 0..graphs[0].inheritance.len() {
+            let id = graphs[0].inheritance[i].graph.id;
+            graphs.push(AnimationGraph::read(map, id).context("reading an inherited graph")?);
+        }
+        let strings = map.strings();
+        let name = |id: StringId| id.resolve(strings).ok().flatten().unwrap_or("").to_owned();
+        let nodes = graphs
+            .iter()
+            .map(|g| g.nodes.iter().map(|n| name(n.name)).collect())
+            .collect();
+        let animations = graphs
+            .iter()
+            .enumerate()
+            .flat_map(|(g, graph)| {
+                graph
+                    .animations
+                    .iter()
+                    .enumerate()
+                    .map(move |(i, a)| (g, i, a.name))
+            })
+            .map(|(g, i, n)| (g, i, name(n)))
+            .collect();
+        Ok(Self {
+            graphs,
+            nodes,
+            animations,
+        })
+    }
+
+    /// The graph (by position) and animation an action plays.
+    fn action(&self, a: &Action) -> Option<(usize, usize)> {
+        let g = if a.graph_index < 0 {
+            0
+        } else {
+            a.graph_index as usize + 1
+        };
+        (g < self.graphs.len()).then_some((g, a.animation_index as usize))
+    }
+
+    /// Every frame of an animation, sampled; aim grids give `None`.
+    fn clip(
+        &self,
+        files: &mut ResourceFiles,
+        (g, i): (usize, usize),
+        name: String,
+    ) -> Result<Option<ClipPoses>> {
+        let graph = &self.graphs[g];
+        let clip = graph.load_clip(i, &mut Res(files))?;
+        if clip.is_aim_grid() || clip.frame_count() == 0 {
+            return Ok(None);
+        }
+        let poses = (0..clip.frame_count())
+            .map(|f| clip.sample_frame(f))
+            .collect::<tags::Result<Vec<_>>>()?;
+        Ok(Some(ClipPoses {
+            name,
+            fps: ANIMATION_FPS,
+            graph_names: self.nodes[g].clone(),
+            poses,
+            overlay: graph.animations[i].anim_type == tags::anim::AnimationType::Overlay,
+        }))
+    }
+}
+
+/// A biped's clips (see [`plan_clips`]); an animation that fails to decode
+/// is left out and named in the second list.
+fn biped_clips(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    jmad: TagId,
+) -> Result<(Vec<ClipPoses>, Vec<String>)> {
+    let graphs = Graphs::read(map, jmad)?;
+    let strings = map.strings().to_vec();
+    let (stances, actions): (Vec<Stance>, Vec<Action>) = graph_stances(&graphs.graphs[0], &strings)
+        .into_iter()
+        .unzip();
+    let names: Vec<String> = graphs.animations.iter().map(|a| a.2.clone()).collect();
+    let (mut clips, mut failed) = (Vec::new(), Vec::new());
+    for (name, from) in plan_clips(&stances, &names) {
+        let at = match from {
+            ClipFrom::Action(i) => graphs.action(&actions[i]),
+            ClipFrom::Animation(i) => Some((graphs.animations[i].0, graphs.animations[i].1)),
+        };
+        let Some(at) = at else { continue };
+        match graphs.clip(files, at, name.clone()) {
+            Ok(Some(c)) => clips.push(c),
+            Ok(None) => {}
+            Err(e) => failed.push(format!("{name}: {e}")),
+        }
+    }
+    Ok((clips, failed))
+}
+
 /// What the disc gave for one biped, for the report and the disc test.
 #[derive(Clone, Debug)]
 pub struct BipedInfo {
@@ -1479,7 +2149,12 @@ pub struct BipedInfo {
     pub animation: String,
 }
 
-/// One biped tag posed and built.
+/// The largest biped glb; past it whole weapon classes are dropped, last
+/// of [`CLIP_CLASSES`] first.
+pub const MAX_BIPED_GLB: usize = 3 << 20;
+
+/// One biped tag posed, skinned and animated. The animation note names the
+/// pose, the clip count and any clips left out.
 fn biped_from(
     map: &mut MapReader,
     files: &mut ResourceFiles,
@@ -1487,11 +2162,37 @@ fn biped_from(
 ) -> Result<(Model, String)> {
     let (mode, jmad) = object_model(map, id)?;
     let src = read_source(map, files, mode, MAX_BIPED_TRIANGLES)?;
-    let (names, pose, animation) = match jmad {
-        Some(jmad) => idle_pose(map, files, jmad)?,
-        None => (Vec::new(), Pose { nodes: Vec::new() }, "rest pose".into()),
+    let Some(jmad) = jmad else {
+        let model = biped(&src, &[], &Pose { nodes: Vec::new() }, &[])?;
+        return Ok((model, "rest pose".into()));
     };
-    Ok((biped(&src, &names, &pose)?, animation))
+    let (names, pose, mut note) = idle_pose(map, files, jmad)?;
+    let (mut clips, failed) = biped_clips(map, files, jmad)?;
+    let mut dropped = Vec::new();
+    let model = loop {
+        let model = biped(&src, &names, &pose, &clips)?;
+        if clips.is_empty() || write_glb(&model).len() <= MAX_BIPED_GLB {
+            break model;
+        }
+        let last = clips.last().map(|c| clip_class(&c.name).to_owned());
+        if let Some(class) = last {
+            clips.retain(|c| clip_class(&c.name) != class);
+            dropped.push(class);
+        }
+    };
+    note += &format!("; {} clips", clips.len());
+    if !dropped.is_empty() {
+        note += &format!(", dropped {} for size", dropped.join(", "));
+    }
+    if !failed.is_empty() {
+        note += &format!(", failed {}", failed.join(", "));
+    }
+    Ok((model, note))
+}
+
+/// The weapon class of a clip name (`rifle:run` -> `rifle`).
+pub fn clip_class(name: &str) -> &str {
+    name.split(':').next().unwrap_or(name)
 }
 
 fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
@@ -1693,13 +2394,32 @@ fn build_weapons(disc: &Disc) -> Vec<(String, Result<Model>)> {
             if out.iter().any(|(s, _)| *s == stem) || !is_id(&stem) {
                 continue;
             }
+            let class = weapon_class(&mut map, id);
             let model = object_model(&mut map, id)
                 .and_then(|(mode, _)| read_source(&mut map, &mut files, mode, usize::MAX))
-                .and_then(|src| weapon(&src));
+                .and_then(|src| weapon(&src))
+                .map(|mut m| {
+                    m.class = class;
+                    m
+                });
             out.push((stem, model));
         }
     }
     out
+}
+
+/// Offset in a `weap` tag of the string ID naming the animation graphs'
+/// weapon class it is held with. D: on the disc every multiplayer weapon's
+/// names a class of the player graphs (`rifle` for the battle rifle,
+/// `missile` for the rocket launcher, `fixed` for vehicle guns).
+const WEAPON_CLASS: usize = 0x288;
+
+/// A weapon's class (see [`WEAPON_CLASS`]), when it reads as an id.
+fn weapon_class(map: &mut MapReader, weapon: TagId) -> Option<String> {
+    let b = map.read_tag_bytes(weapon).ok()?;
+    let id = StringId(u32_at(&b, WEAPON_CLASS)?);
+    let name = id.resolve(map.strings()).ok().flatten()?;
+    is_id(name).then(|| name.to_owned())
 }
 
 /// The contract's id rule: `[a-z0-9_]{1,32}`.

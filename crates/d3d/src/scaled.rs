@@ -42,6 +42,17 @@
 //!
 //! A view failure never reaches the guest: it is counted and that frame is
 //! shown from the reference's image.
+//!
+//! **Changing the scale during a run.** [`ScaledBackend::follow_scale`]
+//! gives it a source of the wanted scale (the Video screen's Resolution
+//! setting), read at every present. A change is made at that frame
+//! boundary, on whichever thread presents (the render thread under
+//! [`crate::ThreadedBackend`]): every scaled surface is made again at the
+//! new scale and filled from the reference's, and the device's handles are
+//! mapped onto the new ones, so the guest and the device see nothing. At
+//! scale 1 the view sleeps: it draws nothing and each frame is the
+//! reference's ([`ScaleStats::reference_frames`]), so a run can start at
+//! 1x and go up without a second backend's work until it does.
 
 use std::sync::{Arc, Mutex};
 
@@ -182,6 +193,13 @@ pub struct ScaleStats {
     pub proxy_depth_draws: u64,
     /// Textures over the depth buffer made from the view's scaled depth.
     pub scaled_depth_aliases: u64,
+    /// Frames shown from the reference because the scale is 1 (the view
+    /// sleeps): not failures.
+    pub reference_frames: u64,
+    /// Scale changes made during the run.
+    pub rescales: u64,
+    /// The scale in effect.
+    pub scale: u32,
 }
 
 impl std::fmt::Display for ScaleStats {
@@ -189,7 +207,8 @@ impl std::fmt::Display for ScaleStats {
         write!(
             f,
             "{} view frames, {} fallback frames, {} view errors, {} mismatches, {} depth missed, \
-             {} colour resyncs, {} depth resyncs, {} depth-only proxy draws, {} scaled depth aliases",
+             {} colour resyncs, {} depth resyncs, {} depth-only proxy draws, {} scaled depth aliases, \
+             {} 1x frames, {} scale changes",
             self.view_frames,
             self.fallback_frames,
             self.view_errors,
@@ -198,7 +217,9 @@ impl std::fmt::Display for ScaleStats {
             self.color_resyncs,
             self.depth_resyncs,
             self.proxy_depth_draws,
-            self.scaled_depth_aliases
+            self.scaled_depth_aliases,
+            self.reference_frames,
+            self.rescales
         )
     }
 }
@@ -222,10 +243,14 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     scale: u32,
     /// The frame size: the first colour surface's (the back buffer).
     frame: Option<(u32, u32)>,
-    /// Scaled colour surfaces and their guest size and format, for clears
-    /// and depth-only draws of the scaled depth buffer bound with a
-    /// guest-size colour target.
-    scaled_colors: Vec<(V::Surface, (u32, u32), D3DFormat)>,
+    /// Every scaled surface, in the order made: the colour ones serve
+    /// clears and depth-only draws of the scaled depth buffer bound with a
+    /// guest-size colour target, and all are made again on a scale change.
+    scaled: Vec<Scaled<R::Surface, V::Surface>>,
+    /// A scale change has mapped a handle the device holds onto another.
+    remapped: bool,
+    /// Where the wanted scale comes from ([`ScaledBackend::follow_scale`]).
+    follow: Option<Box<dyn Fn() -> u32 + Send>>,
     /// The view has recorded work not yet submitted.
     view_pending: bool,
     /// A view call failed since the last present.
@@ -236,6 +261,19 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     /// A copy of `stats` updated at every present, for a reader on another
     /// thread ([`ScaledBackend::shared_stats`]).
     shared: Option<Arc<Mutex<ScaleStats>>>,
+}
+
+/// A scaled surface of the view: the handle the device holds (`original`),
+/// the one in use now, and what it takes to make it again.
+struct Scaled<R, V> {
+    original: V,
+    current: V,
+    reference: R,
+    size: (u32, u32),
+    format: D3DFormat,
+    depth: bool,
+    /// Made by [`Backend::create_texture_target`].
+    target: bool,
 }
 
 /// Whether `draw` can change the depth or stencil buffer it is bound with.
@@ -264,18 +302,110 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             view,
             scale,
             frame: None,
-            scaled_colors: Vec::new(),
+            scaled: Vec::new(),
+            remapped: false,
+            follow: None,
             view_pending: false,
             frame_failed: false,
-            stats: ScaleStats::default(),
+            stats: ScaleStats {
+                scale,
+                ..ScaleStats::default()
+            },
             logged: 0,
             shared: None,
         })
     }
 
-    /// The scale.
+    /// The scale in effect.
     pub fn scale(&self) -> u32 {
         self.scale
+    }
+
+    /// Reads the wanted scale from `wanted` at every present and changes to
+    /// it there (module docs). Values outside 1 to [`MAX_SCALE`] are
+    /// clamped.
+    pub fn follow_scale(&mut self, wanted: impl Fn() -> u32 + Send + 'static) {
+        self.follow = Some(Box::new(wanted));
+    }
+
+    /// The view surface standing for `s` now: `None` while the view sleeps
+    /// (scale 1) or for a surface only the reference keeps.
+    pub fn view_surface(&self, s: &ScaledSurface<R::Surface, V::Surface>) -> Option<V::Surface> {
+        self.live(s.view)
+    }
+
+    fn live(&self, v: Option<V::Surface>) -> Option<V::Surface> {
+        if self.scale == 1 {
+            return None;
+        }
+        let v = v?;
+        if !self.remapped {
+            return Some(v);
+        }
+        Some(
+            self.scaled
+                .iter()
+                .find(|s| s.original == v)
+                .map_or(v, |s| s.current),
+        )
+    }
+
+    /// Makes every scaled surface again at `scale` and fills it from the
+    /// reference's. Nothing changes if one cannot be made.
+    fn rescale(&mut self, scale: u32) {
+        let scale = scale.clamp(1, MAX_SCALE);
+        if scale == self.scale {
+            return;
+        }
+        let old = self.scale;
+        if let Err(e) = self.view.submit_recorded() {
+            self.view_failed("submit", e);
+        }
+        self.view_pending = false;
+        let mut made = Vec::with_capacity(self.scaled.len());
+        for s in &self.scaled {
+            let (w, h) = s.size;
+            let r = if s.target {
+                self.view
+                    .create_scaled_texture_target(s.format, w, h, scale)
+            } else {
+                self.view
+                    .create_scaled_surface(s.format, w, h, s.depth, scale)
+            };
+            match r {
+                Ok(v) => made.push(v),
+                Err(e) => {
+                    for v in made {
+                        let _ = self.view.destroy_surface(v);
+                    }
+                    eprintln!("d3d: render scale stays {old}: a {w}x{h} surface at {scale}x: {e}");
+                    return;
+                }
+            }
+        }
+        self.scale = scale;
+        self.stats.scale = scale;
+        self.stats.rescales += 1;
+        self.remapped = true;
+        for (i, v) in made.into_iter().enumerate() {
+            let old = std::mem::replace(&mut self.scaled[i].current, v);
+            if let Err(e) = self.view.destroy_surface(old) {
+                self.view_failed("destroy", e);
+            }
+        }
+        // Waking or changing: the new surfaces start as the reference's
+        // image, each guest pixel repeated, until they are drawn again.
+        if scale > 1 {
+            for i in 0..self.scaled.len() {
+                let (r, v) = (self.scaled[i].reference, self.scaled[i].current);
+                match self.view.fill_from(&mut self.reference, r, v) {
+                    Ok(true) => {}
+                    Ok(false) => self.stats.depth_missed += 1,
+                    Err(e) => self.view_failed("fill", e),
+                }
+            }
+        }
+        eprintln!("d3d: render scale {old}x -> {scale}x");
     }
 
     /// What the view did differently so far.
@@ -363,7 +493,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// Before the reference changes guest-size surface `s`: the view's
     /// recorded draws that sample it must reach the GPU first.
     fn before_shared_write(&mut self, s: &ScaledSurface<R::Surface, V::Surface>) {
-        if s.view.is_none() && self.view_pending {
+        if self.live(s.view).is_none() && self.view_pending {
             self.view_pending = false;
             if let Err(e) = self.view.submit_recorded() {
                 self.view_failed("submit", e);
@@ -374,10 +504,10 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// A scaled colour surface of guest size `size`, and its format, to
     /// clear or draw the scaled depth through.
     fn proxy_color(&self, size: (u32, u32)) -> Option<(V::Surface, D3DFormat)> {
-        self.scaled_colors
+        self.scaled
             .iter()
-            .find(|(_, s, _)| *s == size)
-            .map(|(c, _, f)| (*c, *f))
+            .find(|s| !s.depth && s.size == size)
+            .map(|s| (s.current, s.format))
     }
 
     fn share(&mut self, t: &R::Texture) -> Option<V::Texture> {
@@ -387,7 +517,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
     /// Refreshes the view's copy of scaled surface `s` from the
     /// reference's. `false`: it could not (counted).
     fn refill(&mut self, s: &ScaledSurface<R::Surface, V::Surface>) -> bool {
-        let Some(v) = s.view else { return true };
+        let Some(v) = self.live(s.view) else {
+            return true;
+        };
         // The view's recorded draws into `v` come first; the fill replaces
         // them.
         self.view_pending = false;
@@ -416,11 +548,11 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         depth: Option<&Surf<R, V>>,
         draw: Option<&ResolvedDraw>,
     ) {
-        if color.view.is_some() && self.refill(color) {
+        if self.live(color.view).is_some() && self.refill(color) {
             self.stats.color_resyncs += 1;
         }
         if let Some(d) = depth
-            && d.view.is_some()
+            && self.live(d.view).is_some()
             && draw.is_none_or(writes_depth_or_stencil)
             && self.refill(d)
         {
@@ -440,7 +572,9 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         textures: [Option<&V::Texture>; 4],
         sampled: bool,
     ) {
-        let Some(vd) = depth.view else { return };
+        let Some(vd) = self.live(depth.view) else {
+            return;
+        };
         let proxy = self.proxy_color(depth.size).filter(|_| sampled);
         if let Some((proxy, format)) = proxy {
             let mut d = draw.clone();
@@ -514,8 +648,16 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         } else {
             None
         };
-        if let (Some(v), false) = (view, depth) {
-            self.scaled_colors.push((v, (width, height), format));
+        if let Some(v) = view {
+            self.scaled.push(Scaled {
+                original: v,
+                current: v,
+                reference,
+                size: (width, height),
+                format,
+                depth,
+                target: false,
+            });
         }
         Ok(ScaledSurface {
             reference,
@@ -528,7 +670,8 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.before_shared_write(&surface);
         self.reference.destroy_surface(surface.reference)?;
         if let Some(v) = surface.view {
-            self.scaled_colors.retain(|(c, _, _)| *c != v);
+            let at = self.scaled.iter().position(|s| s.original == v);
+            let v = at.map_or(v, |i| self.scaled.remove(i).current);
             if let Err(e) = self.view.destroy_surface(v) {
                 self.view_failed("destroy", e);
             }
@@ -555,8 +698,8 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.before_shared_write(&color);
         self.reference
             .clear(color.reference, depth.map(|d| d.reference), clear)?;
-        let vd = depth.and_then(|d| d.view);
-        let r = match (color.view, depth) {
+        let vd = self.live(depth.and_then(|d| d.view));
+        let r = match (self.live(color.view), depth) {
             (Some(vc), None) => self.view.clear(vc, None, clear),
             (Some(vc), Some(_)) if vd.is_some() => self.view.clear(vc, vd, clear),
             // The depth surface is not scaled: the view's colour only.
@@ -615,13 +758,13 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             textures.map(|t| t.map(|t| &t.reference)),
         )?;
         let drawn = out == DrawOutcome::Drawn;
-        let vd = depth.and_then(|d| d.view);
+        let vd = self.live(depth.and_then(|d| d.view));
         let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
         let sampled = textures
             .iter()
             .zip(&vt)
             .all(|(t, v)| t.is_none() || v.is_some());
-        match (color.view, depth) {
+        match (self.live(color.view), depth) {
             (Some(vc), d) if d.is_none() || vd.is_some() => {
                 if !sampled {
                     // A texture the view cannot sample: it would read a
@@ -680,7 +823,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         self.reference
             .present_with_gamma(surface.reference, flags, gamma)?;
         self.view_pending = false;
-        let shown = match surface.view {
+        let shown = match self.live(surface.view) {
             Some(v) if !self.frame_failed => match self.view.present_with_gamma(v, flags, gamma) {
                 Ok(()) => true,
                 Err(e) => {
@@ -693,7 +836,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         if shown {
             self.stats.view_frames += 1;
         } else {
-            self.stats.fallback_frames += 1;
+            if self.scale == 1 {
+                self.stats.reference_frames += 1;
+            } else {
+                self.stats.fallback_frames += 1;
+            }
             if let Err(e) =
                 self.view
                     .present_reference(&self.reference, surface.reference, flags, gamma)
@@ -708,6 +855,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             }
         }
         self.frame_failed = false;
+        // The frame boundary: a wanted scale is made here, before the next
+        // frame's first call.
+        if let Some(wanted) = self.follow.as_ref().map(|f| f()) {
+            self.rescale(wanted);
+        }
         if let Some(s) = &self.shared
             && let Ok(mut s) = s.lock()
         {
@@ -729,9 +881,9 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         if out != DrawOutcome::Drawn {
             return Ok(out);
         }
-        let vd = depth.and_then(|d| d.view);
+        let vd = self.live(depth.and_then(|d| d.view));
         let touches_depth = clear.depth.is_some() || clear.stencil.is_some();
-        let r = match (color.view, depth) {
+        let r = match (self.live(color.view), depth) {
             (Some(vc), d) if d.is_none() || vd.is_some() => self.view.clear_rects(vc, vd, clear),
             (Some(vc), Some(_)) => {
                 let colour_only = RectClear {
@@ -793,8 +945,8 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
         self.before_shared_write(&dst);
         let copied = self.reference.copy_surface(src.reference, dst.reference)?;
-        if copied && let Some(vd) = dst.view {
-            match src.view {
+        if copied && let Some(vd) = self.live(dst.view) {
+            match self.live(src.view) {
                 Some(vs) => match self.view.copy_surface(vs, vd) {
                     Ok(true) => {}
                     Ok(false) => {
@@ -834,7 +986,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let Some(reference) = self.reference.snapshot_surface(surface.reference, opaque)? else {
             return Ok(None);
         };
-        let view = match surface.view {
+        let view = match self.live(surface.view) {
             // The copy of the scaled image.
             Some(v) => match self.view.snapshot_surface(v, opaque) {
                 Ok(t) => t,
@@ -895,7 +1047,15 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             None
         };
         if let Some(v) = view {
-            self.scaled_colors.push((v, (width, height), format));
+            self.scaled.push(Scaled {
+                original: v,
+                current: v,
+                reference,
+                size: (width, height),
+                format,
+                depth: false,
+                target: true,
+            });
         }
         Ok(ScaledSurface {
             reference,
@@ -912,7 +1072,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         let Some(reference) = self.reference.surface_texture(surface.reference)? else {
             return Ok(None);
         };
-        let view = match surface.view {
+        let view = match self.live(surface.view) {
             Some(v) => match self.view.surface_texture(v) {
                 Ok(t) => t,
                 Err(e) => {
@@ -991,8 +1151,8 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             && desc.kind == gfx::texture::TextureKind::D2
             && desc.format.layout() == gfx::format::Layout::Linear;
         let mut view = None;
-        if let Some(vd) = depth
-            .view
+        if let Some(vd) = self
+            .live(depth.view)
             .filter(|_| whole && self.view.defers_depth_aliases())
         {
             let scaled = TextureDesc {
