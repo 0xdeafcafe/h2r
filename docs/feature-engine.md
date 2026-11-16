@@ -1579,11 +1579,13 @@ Tests only; nothing here was run in the game.
   on the difficulty list is two plan hooks. Gone from `layout_glue`: the
   Skulls open flag, its array-name test, the header hook (`0x22fda6`) and
   the text hook's title swap, the Skulls branches in the Controls hooks.
-  **Limit (a regression):** at most seven rows (the constructor's array),
-  where the old path scrolled through all of a profile's skulls. The fix
-  is to build the rows' array ourselves with the count we want; it needs
-  the list base destructor (`0x2376c8`) read first, to free the one the
-  constructor made.
+  Its rows' array is built at the screen's count: while a class loader
+  runs the Controls constructor, the datum array constructor's hook
+  (`0x1a480d`, count in EAX) asks `list_class::array_count`. Building a
+  second array and swapping it in was the other way; the destructors
+  (`0x2b7563` → `0x2376c8` → `0x1474e8` → `0x22e34b`) never free
+  `list + 0x70`, so nothing would own a replaced array's lifetime. Past
+  six rows the list scrolls, as the old Skulls path did.
 - **Open rows** open another screen of ours: classes register their loader
   by screen id (`list_class::loader_of`), and a press on an `Open` row
   calls `0x149f1e(1 << player, loader)` for the pressing player.

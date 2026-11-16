@@ -19,9 +19,11 @@
 //!   re-opens it as ours.
 //!
 //! Nothing here tells our screens apart from retail ones at run time: the
-//! retail functions never see them. Limits: six item widgets (the Controls
-//! list's), so at most six rows; the Controls list hook may grow the array
-//! first (the speaker row), and adopting trims it back.
+//! retail functions never see them. The rows' datum array is built at our
+//! count: while our loader runs the Controls constructor, the datum array
+//! constructor's hook (`layout_glue`, `0x1a480d`) asks [`array_count`].
+//! Past six rows the list scrolls through the Controls list's six item
+//! widgets.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -105,6 +107,39 @@ pub fn loader_of(screen: &str) -> Option<u32> {
         .copied()
 }
 
+/// The rows our loader is building a screen with (0: no loader of ours is
+/// running the Controls constructor).
+static BUILDING: AtomicU32 = AtomicU32::new(0);
+
+/// The count the datum array named `name` is built with, `count` being what
+/// the game asks for: while one of our loaders runs the Controls
+/// constructor, the Controls rows' array gets the screen's row count. No
+/// list destructor frees the array at `list + 0x70` (`0x2b7563`, `0x2376c8`,
+/// `0x1474e8`, `0x22e34b` read 2026-11-16), so it is sized when it is made
+/// rather than replaced after.
+pub fn array_count(name: u32, count: u32) -> u32 {
+    match BUILDING.load(Ordering::SeqCst) {
+        n if n != 0 && name == crate::speaker_row::LIST_NAME => n,
+        _ => count,
+    }
+}
+
+/// Clears [`BUILDING`] when the constructor call ends, however it ends.
+struct Building;
+
+impl Building {
+    fn start(rows: usize) -> Self {
+        BUILDING.store(u32::try_from(rows).unwrap_or(0), Ordering::SeqCst);
+        Building
+    }
+}
+
+impl Drop for Building {
+    fn drop(&mut self) {
+        BUILDING.store(0, Ordering::SeqCst);
+    }
+}
+
 /// A screen of ours as our own list class. See the module docs.
 pub struct ListClass {
     /// The feature id (`features.<id>` switches it).
@@ -171,10 +206,10 @@ pub enum Adopted {
 }
 
 /// Makes the Controls screen at `screen` ours: vtables, row chosen, and the
-/// rows trimmed to `rows`. More rows than the constructor made (six, seven
-/// with the speaker row's list hook) cannot be added here; past six the list
-/// scrolls through its six item widgets. The loaded byte is
-/// set as the Controls loader sets it.
+/// rows trimmed to `rows`. Rows cannot be added here: the array is built
+/// with the count the loader asked for ([`array_count`]), and a screen
+/// opened some other way keeps what its constructor made. The loaded byte
+/// is set as the Controls loader sets it.
 pub fn adopt(
     m: &mut dyn GuestMemory,
     screen: u32,
@@ -255,12 +290,15 @@ pub async fn load(
             u32::from(m.u16(request + 2)?),
         ))
     })?;
-    cx.call(
-        GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
-            .edi(screen)
-            .args([a, b, player]),
-    )
-    .await?;
+    {
+        let _building = Building::start(rows);
+        cx.call(
+            GuestCall::new(points::CONTROLS_SCREEN_CTOR.base)
+                .edi(screen)
+                .args([a, b, player]),
+        )
+        .await?;
+    }
     match cx.write(|m| adopt(m, screen, &e, rows))? {
         Adopted::Ours { rows } => eprintln!("{name}: opened with {rows} rows (our list class)"),
         Adopted::NotControls(why) => {
@@ -639,10 +677,14 @@ mod tests {
         assert_eq!(g.u32(TABLES), Ok(0), "no tables written");
     }
 
+    /// Loader tests run one at a time: the array count is process-wide.
+    static LOADING: Mutex<()> = Mutex::new(());
+
     /// The loader against fake callees: allocate, construct (the fake builds
     /// what the Controls constructor builds), adopt, push.
     #[test]
     fn the_loader_allocates_constructs_adopts_and_pushes() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
         let mut g = guest();
         g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
             .map(ROWS - 0x20, 0x200);
@@ -656,8 +698,13 @@ mod tests {
             esp: STACK,
             ..Default::default()
         };
+        let during = std::sync::Mutex::new(None);
         let run = testing::run(&f, g, regs, |c, m| {
             if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                *during.lock().unwrap() = Some((
+                    array_count(crate::speaker_row::LIST_NAME, 7),
+                    array_count(0x1234, 7),
+                ));
                 construct(m, 7);
             }
             Regs {
@@ -692,6 +739,66 @@ mod tests {
         );
         assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
         assert_eq!(Screen::at(SCREEN).vtable(&run.guest), Ok(TABLES));
+        // While the constructor ran, the Controls rows' array was asked for
+        // our four rows; any other array, and anything after, as asked.
+        assert_eq!(*during.lock().unwrap(), Some((4, 7)));
+        assert_eq!(array_count(crate::speaker_row::LIST_NAME, 7), 7);
+    }
+
+    #[test]
+    fn a_screen_of_fifteen_rows_gets_an_array_of_fifteen() {
+        let _serial = LOADING.lock().unwrap_or_else(|e| e.into_inner());
+        struct Fifteen;
+        impl Rows for Fifteen {
+            fn title(&self) -> u32 {
+                0
+            }
+            fn count(&self) -> usize {
+                15
+            }
+            fn texts(&self, _: i16) -> Vec<(u32, u32)> {
+                Vec::new()
+            }
+            fn press(&self, _: i16) -> Chosen {
+                Chosen::Nothing
+            }
+        }
+        let mut g = guest();
+        g.map(SCREEN, ui::CONTROLS_SCREEN_SIZE)
+            .map(ROWS - 0x20, 0x400);
+        g.put_u16(REQUEST + 2, 0)
+            .put_u32(REQUEST + 4, 5)
+            .put_u32(REQUEST + 8, 4);
+        g.put_u32(STACK, 0xdead).put_u32(STACK + 4, REQUEST);
+        let e = entries();
+        let f = move |cx| -> EntryFuture { Box::pin(load(cx, e, Arc::new(Fifteen), "test")) };
+        let regs = Regs {
+            esp: STACK,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, m| {
+            if c.target == points::CONTROLS_SCREEN_CTOR.base {
+                // The fake constructor builds what the hook would have it
+                // build.
+                construct(m, array_count(crate::speaker_row::LIST_NAME, 6) as usize);
+            }
+            Regs {
+                eax: if c.target == points::UI_ALLOC.base {
+                    SCREEN
+                } else {
+                    0
+                },
+                ..Default::default()
+            }
+        });
+        assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+        let live = Screen::at(SCREEN)
+            .list()
+            .row_array(&run.guest)
+            .unwrap()
+            .live(&run.guest, 32)
+            .unwrap();
+        assert_eq!(live.len(), 15);
     }
 
     #[test]

@@ -607,6 +607,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 } else {
                     n
                 };
+                // One of our list class screens being built: its own count.
+                let n = crate::list_class::array_count(name, n);
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {

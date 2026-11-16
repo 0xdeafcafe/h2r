@@ -199,11 +199,11 @@ What the hooks do:
   pointed at our vtables. Its rows are the profile's skulls with the
   skull's name and the game's own On or Off (`0x02000181`, `0x03000182`,
   the vibration row's); a press flips it in the store (written at once);
-  its title is "Skulls". No retail function is patched for it. **Limit:**
-  the constructor's array holds six rows (seven with the speaker row's
-  list hook); a profile with more skulls shows the first seven. The old
-  path sized the array to the profile and scrolled through all of them.
-  B returns to the difficulty screen.
+  its title is "Skulls". No retail function is patched for it. The
+  rows' array is built at the profile's skull count (the class's loader
+  sets it for the datum array hook while the constructor runs), and past
+  six the list scrolls, as the old path did. B returns to the difficulty
+  screen.
 - **Strings** are served by the locale hook from ids `0x21fff000` up (the
   15 names and the title): `is_ours` reads only the middle
   bytes, so they are clear of the `0x20fff0xx` ids the other rows and the
