@@ -198,15 +198,17 @@ impl<B: Backend> PackageBackend<B> {
         })
     }
 
-    /// The `MapId` serving `path`, if a package does (resolving it if
-    /// needed). For sessions and telemetry that need to know which map
-    /// exactly is loaded.
-    pub fn map_id(&mut self, path: &str) -> Option<MapId> {
-        self.chosen(path).map(|e| e.id)
-    }
 }
 
 impl<B: Backend> Backend for PackageBackend<B> {
+    /// The `MapId` of the package serving `path` (resolving it if needed),
+    /// else whatever the inner backend says.
+    fn map_id(&mut self, path: &str) -> Option<MapId> {
+        match self.chosen(path) {
+            Some(e) => Some(e.id),
+            None => self.inner.map_id(path),
+        }
+    }
     fn read_only(&self) -> bool {
         true
     }

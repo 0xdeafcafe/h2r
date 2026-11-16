@@ -14,7 +14,7 @@
 //! skull, draw row 4 ourselves and, for a press on row 4, open our screen
 //! and never run the original. The handler embeds four item widgets, so the
 //! list scrolls to the fifth row as lists with more rows than items do
-//! (the Live menu's Custom Games row does the same). Moving onto row 4 would
+//! (the Live menu instead adds a fifth item, `crate::custom_games`). Moving onto row 4 would
 //! set pane 4 of a tag that has four (`0x230427`, no bounds check), so the
 //! pane change is skipped for it and the previous difficulty's pane stays.
 //!

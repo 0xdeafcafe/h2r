@@ -3,12 +3,15 @@
 To install it: put the map pack ISO next to `halo2.iso` as `mappack.iso`.
 `h2 play` and `h2 run` do the rest at start-up ([section 4](#4-automatic-install)).
 
-Status: `h2 import-mappack` installs the disc's content into the emulated
-hard disk, signs each package for this console as the disc's installer
-would ([section 7](#7-why-the-game-said-the-content-was-damaged)), and keeps
-its title update aside. **The new maps won't show up in
-the game yet.** Only the title update reads their map list, and we can't run
-the update yet ([title-updates.md](title-updates.md)).
+Status: `h2 import-mappack` installs the nine maps as nine content
+packages, one map each, with a version 2 `patch.lvl` made from the map's
+`patch_v3.lvl` record, so **1.0 should list them without the title update**
+([section 8](#8-playing-the-map-pack-on-10)). Each package is signed for this
+console as the disc's installer would
+([section 7](#7-why-the-game-said-the-content-was-damaged)), and the title
+update is kept aside. Tests pass on synthetic discs and on the user's map
+pack ISO. **Not yet seen in game**: the check is in
+[section 8.6](#86-what-to-change-and-the-check).
 
 The official Halo 2 Multiplayer Map Pack disc (2005) holds the nine
 downloadable multiplayer maps, a Halo 2 title update, an installer and some
@@ -115,19 +118,22 @@ update lists the content directories under `T:\$c`, reads each
 `ContentMeta.xbx` and `patch_v3.lvl`, adds the maps to the multiplayer map
 list, and opens them from that directory.
 
-**Do the maps work with 1.0? No, not in the map list.** 1.0 can find a
-package, but it reads `patch.lvl`, and that only names Lockout. The new maps
-need the update. This is why the disc carries both files: an un-updated
-console sees a package that adds nothing. [Section 8](#8-playing-the-map-pack-on-10)
-looks at serving 1.0 our own `patch.lvl` instead. Nobody has run either path here
-yet, so this is a reading of the files, not an observation.
+**Do the disc's packages work with 1.0? No, not in the map list.** 1.0 can
+find a package, but it reads `patch.lvl`, and that only names Lockout. The
+new maps need the update. This is why the disc carries both files: an
+un-updated console sees a package that adds nothing. Our import therefore
+doesn't install the disc's packages as they are: it serves 1.0 its own
+`patch.lvl` per map ([section 8](#8-playing-the-map-pack-on-10)). Nobody has
+run either path here yet, so this is a reading of the files, not an
+observation.
 
 To be confirmed once the update runs:
 
-- the offer ID. We use the title ID in the high half and the package number
-  in the low half (`4d53006400000001`), the usual convention. The offer ID
-  field of each package's `ContentMeta.xbx` (offset `0x28`) agrees for all
-  three packages;
+- the offer ID the update expects. The disc packages' own offer IDs (field
+  `0x28` of each `ContentMeta.xbx`) are the title ID in the high half and
+  the package number in the low half (`4d53006400000001`), the usual
+  convention. Our import uses its own per-map IDs instead (section 5), the
+  same in the directory name and the header (8.4's safe choice);
 - which drive the game enumerates. The format takes a drive letter; `T:` is
   where installed content lives;
 - whether the update checks the per-file hashes in `ContentMeta.xbx`. The
@@ -159,9 +165,14 @@ certificate version, and
 `<data>/disk/Partition1/TDATA/4D530064/$c` still exists. Replace the ISO, change
 the game disc version, or empty the data dir (`--fresh-data`), and the next
 start installs again. The format version is bumped when older imports wrote
-something wrong: version 2 signs `ContentMeta.xbx`, so an install made
-before it (an unversioned stamp) is written again, signed, at the next
-start.
+something wrong, so an older install is written again once, at the next
+start:
+
+- version 2 signs `ContentMeta.xbx` (an unversioned stamp copied it
+  unsigned);
+- version 3 installs one package per map with our own `patch.lvl`, and
+  removes the three disc-shaped packages version 2 wrote, whose `patch.lvl`
+  took over the Lockout slot (8.5).
 
 It never stops the game from starting: a problem is printed as
 `map pack: not installed: <why>` and the game runs on. `--no-mappack` or
@@ -182,15 +193,40 @@ cargo h2 import-mappack ~/Downloads/<map pack>.iso
 cargo h2 import-mappack <iso> --data <data root> --disc disc/halo2.iso --dry-run
 ```
 
-It reads the disc's directory tree and writes:
+It reads the disc's directory tree and, for every `/demos/dlc/<8 hex
+digits>/` package, its `ContentMeta.xbx` and `patch_v3.lvl`. Then it writes
+**one package per map** (1.0 takes one map per package, 8.1) to
+`<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/`, which is the host
+side of `T:\$c\<offer ID>\` in `crates/vfs` (`vfs::Config::content_dir`).
+Each holds:
 
-- every file of every `/demos/dlc/<8 hex digits>/` package to
-  `<data>/disk/Partition1/TDATA/4D530064/$c/<offer ID>/`, which is the
-  host side of `T:\$c\<offer ID>\` in `crates/vfs`
-  (`vfs::Config::content_dir`);
-- the update copy that matches your Halo 2 disc to
-  `<data>/updates/4D530064/<certificate version>/default.xbe`, for example
-  `.../00000303/default.xbe`.
+| file | from |
+|---|---|
+| the map, under its disc name | copied byte for byte, the only copy of it |
+| `patch.lvl` | made from the map's `patch_v3.lvl` record (8.2), version 2, one record |
+| `ContentMeta.xbx` | the disc package's, with this package's offer ID at `0x28`, then signed (section 7) |
+| `ContentImage.xbx` and any other file | copied byte for byte from the disc package |
+
+The disc's `patch.lvl` (Lockout's record, 8.5) and `patch_v3.lvl` are never
+installed. The record's scenario path names the map: its basename plus
+`.map` must be a file in the same disc package (any case), every map in
+the package must have exactly one record, and no two records may share a
+map id. The `ContentMeta.xbx` file table is left as on the disc, listing
+the disc package's files and digests: its own digest in the header stays
+right, and 1.0 doesn't hash the files (8.4).
+
+Offer IDs: Halo 2's title ID in the high half, and
+`package number << 8 | record number` in the low half, the record number
+counting from 1 in that package's `patch_v3.lvl`. So package 1's two maps
+are `4d53006400000101` and `4d53006400000102`, package 2's are `...0201`
+and `...0202`, and package 3's five are `...0301` to `...0305`. They never
+equal the bare package numbers (`...0001` to `...0003`) the older layout
+used. After writing, the import removes those older package directories
+(nothing else under `$c`), with or without `--force`.
+
+It also writes the update copy that matches your Halo 2 disc to
+`<data>/updates/4D530064/<certificate version>/default.xbe`, for example
+`.../00000303/default.xbe`.
 
 The update is deliberately **not** put in `TDATA\4D530064\$u`. If it were
 there, 1.0 would try to relaunch into an image we can't run yet
@@ -209,33 +245,53 @@ Options:
 
 It checks:
 
-- the disc has at least one package, and each package has a `ContentMeta.xbx`;
+- the disc has at least one package, and each package has a `ContentMeta.xbx`
+  and a `patch_v3.lvl`;
+- each `patch_v3.lvl` record passes the update's check (version 3, length,
+  CRC) and record type 1, and each `patch.lvl` made from it passes 1.0's
+  (8.1);
 - every name fits FATX (ASCII, at most 42 bytes);
 - the chosen update has Halo 2's title ID, and its version's low byte
   matches the base disc's with a non-zero update byte;
 - the map pack ISO itself is never written to (`safe_out`).
 
 Every file is published whole or not at all. Nothing is read from inside
-the files except each `ContentMeta.xbx` header, which is signed (all of them
-before anything is written, so a malformed one leaves the data dir as it
-was), and the update's certificate. Every other file is copied byte for
-byte. Import before starting the game:
+the files except each `ContentMeta.xbx` header, each `patch_v3.lvl` and the
+update's certificate, all before anything is written, so a malformed one
+leaves the data dir as it was. Every other file is copied byte for byte. Import before starting the game:
 `vfs`'s host backend caches directory listings, so a running game won't see
 files added under it.
 
-The map pack ISO stays read-only. Only the content and the update are
-copied, about 440 MB. The videos and the installer stay on the disc.
+The map pack ISO stays read-only. Only the maps, their images and the
+update are copied, about 440 MB, each map once. The videos and the
+installer stay on the disc.
 
 ### Tests
 
-- `cli` `mappack_cmd::tests` (synthetic XDVDFS image, XBE headers and
-  ContentMeta headers): the package and update plan, refusals (no
-  packages, a package without metadata, a malformed metadata header, no
-  update for the base version, the wrong title or version), the written
-  layout checked against `vfs::Config::content_dir`, that each
-  `ContentMeta.xbx` is signed and otherwise unchanged, that nothing goes to
-  `$u`, `--force`, `--dry-run`, and that an install with an unversioned
-  stamp is redone and signed.
+- `cli` `patch_lvl::tests` (synthetic records): the CRC against the
+  CRC-32 check value, a v3 record's own CRC recomputed, the v2 mapping
+  (copied span, dropped checksum, shift, map id, new CRC that 1.0's check
+  accepts), and refusals of wrong lengths, versions, types and CRCs.
+- `cli` `mappack_cmd::tests` (synthetic XDVDFS image with two packages and
+  three maps, XBE headers, ContentMeta headers and `patch_v3.lvl` files):
+  the plan, the offer ID scheme, one package per map, refusals (no
+  packages, a package without metadata, a malformed metadata header, a
+  record naming a missing map, a map without a record, a map named twice,
+  a shared map id, a bad record CRC, no update for the base version, the
+  wrong title or version), and the written layout end to end: the package
+  directories by offer ID through `vfs::Config::content_dir`, each
+  `ContentMeta.xbx` with its offer ID and a signature `kernel::content`
+  accepts and otherwise unchanged, each `patch.lvl` valid for 1.0 and
+  naming the map beside it, no Lockout record anywhere, nothing in `$u`,
+  `--force`, `--dry-run`, removal of the older layout, and that installs
+  with an unversioned or version 2 stamp are redone once.
+- `cli` `real_map_pack_gives_nine_packages_1_0_can_read` (ignored, reads
+  the user's map pack ISO, writes nothing): nine packages with distinct
+  offer IDs and map ids, each `patch.lvl` passing 1.0's check and naming a
+  map file of its own disc package, each `ContentMeta.xbx` signed with its
+  offer ID, and none equal to the disc's Lockout `patch.lvl`. It passes on
+  the user's disc.
+  `H2_MAPPACK_ISO=disc/mappack.iso cargo test -p cli --bin h2 real_map_pack -- --ignored`
 - `kernel`: see section 7.
 - `vfs` `installed_content_appears_under_t_content_dir`: files put on the
   host there open and list through `T:\$c\<offer ID>\` (case-insensitive).
@@ -252,6 +308,9 @@ records are now skipped.
 
 ## 6. What's left before the maps can be played
 
+On 1.0 (section 8), only the in-game check in 8.6. The rest of this section
+is for playing them through the title update instead.
+
 1. **Run the update** ([title-updates.md](title-updates.md)): an address map
    from 1.0 to `0x303`, hooks placed through it, and `--image` so `h2 play`
    boots `<data>/updates/4D530064/00000303/default.xbe` with the 1.0 disc
@@ -267,9 +326,11 @@ records are now skipped.
    multiplayer game going on our runtime is a separate job, after the
    campaign work.
 
-Until then the import is groundwork. It costs nothing at run time. 1.0
-should find nothing new in the packages, since it reads only `patch.lvl`,
-but that hasn't been run either.
+The one-package-per-map layout doesn't serve the update: its packages hold
+no `patch_v3.lvl`, and the update checks that file's digest against the
+package's signed table (8.4), so a trimmed copy wouldn't pass. When the
+update runs, the import will need a second layout (the disc's three
+packages, without their `patch.lvl`) for it.
 
 ## 7. Why the game said the content was damaged
 
@@ -540,19 +601,25 @@ the 12 retail ids (V).
   XONLINE. The safe choice is matching names and a rebuilt or copied
   table.
 
-### 8.5 A side effect today
+### 8.5 A side effect of the older import
 
-With the import as it is now, 1.0 reads the disc's `patch.lvl` from every
+With the import as it was (stamp version 2), 1.0 read the disc's `patch.lvl` from every
 package. Its record has Lockout's id, so 1.0 overwrites the **retail Lockout
 slot** and sets its path to `t:\$C\<offer ID>\lockout`. No package holds a
 `lockout.map` (E for the rewrite, V for the files). Lockout may fail to load
 on 1.0 while the map pack is installed (S, not observed). On a real Xbox
 this never happened, because the installer always put the update in `$u`.
-Serving our own `patch.lvl` instead of the disc's removes the problem.
+Serving our own `patch.lvl` instead of the disc's removes the problem. The
+import now does (stamp version 3), and removes the older packages.
 
 ### 8.6 What to change, and the check
 
-Smallest change (S, design):
+Built: option 1, in `h2 import-mappack` (section 5): nine packages, offer
+IDs `4d530064000001NN` to `...03NN`, a v2 `patch.lvl` per map made by
+`cli` `patch_lvl::v2_from_v3`, the file table copied, the disc's
+`patch.lvl` never installed. On the user's disc the test in section 5 finds
+nine packages whose `patch.lvl` passes 1.0's check. The design as written
+before it was built:
 
 1. Serve **one package per map**, nine in all, under `T:\$C\` with distinct
    offer IDs. Each holds a `ContentMeta.xbx` made from its source package's,
@@ -566,8 +633,11 @@ Smallest change (S, design):
    real packages and needs no new metadata, but it's guest code to
    maintain.
 
-The check: start 1.0 with the change and open a local custom game's map
-choice. The new maps should be listed with their names and previews (their
-sort orders are all above the retail ones, V). Start a game on **Turf**: the largest metadata of the
-nine, so it also tests the arena. If it reaches spawn, 1.0 plays the map
-pack. Then load Lockout once, to confirm 8.5 is gone.
+The check, for the user (not run yet): start 1.0 with the import done (put
+the ISO beside the disc as `mappack.iso` and `h2 play`, which redoes an
+older import once and prints `map pack: installed 9 maps ...`), and open a
+local custom game's map choice. The **nine new maps should be listed with
+their names and previews** (their sort orders are all above the retail
+ones, V). Start a game on **Turf**: the largest metadata of the nine, so it
+also tests the arena. If it reaches spawn, 1.0 plays the map pack. Then
+load **Lockout** once, to confirm 8.5 is gone.

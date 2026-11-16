@@ -18,6 +18,13 @@ pub trait Backend: Send {
     fn host_file(&mut self, _path: &str) -> Option<HostFile> {
         None
     }
+    /// Which map exactly is served at `path`, when that differs from the
+    /// retail disc map: a map package's [`content::MapId`], or the identity
+    /// of an overriding whole file. `None` (the default) means the
+    /// backend serves `path` as it is (retail, for a disc map).
+    fn map_id(&mut self, _path: &str) -> Option<content::MapId> {
+        None
+    }
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }

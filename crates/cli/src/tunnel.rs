@@ -8,9 +8,11 @@
 //! - Quick tunnel (`--tunnel`): `cloudflared tunnel --url <origin>`, no
 //!   Cloudflare account; it prints a fresh `https://*.trycloudflare.com`
 //!   URL each run, which [`quick_url`] finds in its log.
-//! - Named tunnel (`--tunnel-name NAME [--hostname HOST]`): one the owner
-//!   made with `cloudflared tunnel create` and routed to HOST, so the URL
-//!   stays `https://HOST`.
+//! - Named tunnel (`--tunnel-name NAME [--hostname HOST]`, on `h2 play`
+//!   also `--live-tunnel-name NAME --live-tunnel-url https://HOST`): the URL
+//!   stays `https://HOST`. With a host name it is set up first when missing
+//!   ([`provision`]: `cloudflared tunnel login`, `create`, `route dns`)
+//!   unless `--no-tunnel-setup`.
 //!
 //! cloudflared is supervised: if it exits it is started again with backoff
 //! (a quick tunnel then gets a new URL, reported through the callback), and
@@ -27,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 
 /// How to install cloudflared, for the error when it is missing.
 pub const INSTALL_HINT: &str = "install it with `brew install cloudflared` (or see \
@@ -114,6 +116,244 @@ fn valid_hostname(h: &str) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// The host name in a tunnel URL (`--live-tunnel-url`): `https://HOST`,
+/// with at most a trailing `/`; no port, path, query or user name.
+pub fn hostname_from_url(url: &str) -> Result<String> {
+    let bad = || {
+        anyhow!(
+            "--live-tunnel-url {url:?} must be https://HOST with no port or path, like \
+             https://play.example.net"
+        )
+    };
+    let rest = url
+        .get(..8)
+        .filter(|s| s.eq_ignore_ascii_case("https://"))
+        .map(|_| &url[8..])
+        .ok_or_else(bad)?;
+    let host = rest.strip_suffix('/').unwrap_or(rest);
+    valid_hostname(host).map_err(|_| bad())?;
+    Ok(host.to_ascii_lowercase())
+}
+
+/// Where cloudflared keeps the origin certificate (`cert.pem`) that
+/// `cloudflared tunnel login` writes and that listing, creating and routing
+/// tunnels need. cloudflared's own rules: `$TUNNEL_ORIGIN_CERT` (its
+/// `--origincert`) names the file outright; else the first `cert.pem` in
+/// its default directories.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginCert {
+    /// `$TUNNEL_ORIGIN_CERT`: this file and no other.
+    pub explicit: Option<PathBuf>,
+    /// The directories searched for `cert.pem`, in order.
+    pub dirs: Vec<PathBuf>,
+}
+
+impl OriginCert {
+    pub fn from_env() -> OriginCert {
+        OriginCert::new(
+            std::env::var_os("TUNNEL_ORIGIN_CERT"),
+            std::env::var_os("HOME"),
+        )
+    }
+
+    pub fn new(explicit: Option<OsString>, home: Option<OsString>) -> OriginCert {
+        let mut dirs = Vec::new();
+        if let Some(home) = home.filter(|h| !h.is_empty()).map(PathBuf::from) {
+            dirs.extend(
+                [".cloudflared", ".cloudflare-warp", "cloudflare-warp"].map(|d| home.join(d)),
+            );
+        }
+        dirs.extend(["/etc/cloudflared", "/usr/local/etc/cloudflared"].map(PathBuf::from));
+        OriginCert {
+            explicit: explicit.filter(|p| !p.is_empty()).map(PathBuf::from),
+            dirs,
+        }
+    }
+
+    /// The certificate, if there is one.
+    pub fn find(&self) -> Option<PathBuf> {
+        match &self.explicit {
+            Some(p) => p.is_file().then(|| p.clone()),
+            None => self
+                .dirs
+                .iter()
+                .map(|d| d.join("cert.pem"))
+                .find(|p| p.is_file()),
+        }
+    }
+}
+
+/// What `cloudflared tunnel route dns` said.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Routed {
+    Added,
+    Already,
+}
+
+/// Makes named tunnel `name` exist and serve `hostname`, doing what is
+/// missing, one line to `say` per step:
+///
+/// 1. no origin certificate: `cloudflared tunnel login`, on this terminal
+///    (it prints a link to open in a browser and waits);
+/// 2. no tunnel called `name` in `cloudflared tunnel list --output json`:
+///    `cloudflared tunnel create NAME`;
+/// 3. `cloudflared tunnel route dns NAME HOST`, which is fine to repeat. A
+///    DNS record of another kind at HOST is a conflict only its owner can
+///    settle, so that is an error saying so.
+pub fn provision(
+    program: &Path,
+    name: &str,
+    hostname: &str,
+    cert: &OriginCert,
+    say: &mut dyn FnMut(&str),
+) -> Result<Routed> {
+    if cert.find().is_none() {
+        if let Some(p) = &cert.explicit {
+            bail!(
+                "$TUNNEL_ORIGIN_CERT is {}, which does not exist; run `cloudflared tunnel login` \
+                 and move the cert.pem it writes there, or unset TUNNEL_ORIGIN_CERT",
+                p.display()
+            );
+        }
+        say(
+            "no Cloudflare login on this machine; running `cloudflared tunnel login`: open the \
+             link it prints and pick the domain for the tunnel",
+        );
+        let status = Command::new(program)
+            .args(["tunnel", "login"])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .status()
+            .map_err(|e| spawn_error(program, e))?;
+        if !status.success() {
+            bail!("`cloudflared tunnel login` failed ({status})");
+        }
+        let Some(found) = cert.find() else {
+            bail!(
+                "`cloudflared tunnel login` finished but there is still no cert.pem in {}",
+                cert.dirs
+                    .first()
+                    .map_or_else(|| "~/.cloudflared".into(), |d| d.display().to_string())
+            );
+        };
+        say(&format!("logged in to Cloudflare ({})", found.display()));
+    }
+
+    let list = captured(program, &["tunnel", "list", "--output", "json"])?;
+    if !list.ok {
+        bail!("`cloudflared tunnel list` failed:\n  {}", list.tail());
+    }
+    match listed_id(&list.stdout, name)? {
+        Some(id) => say(&format!("tunnel {name} exists ({id})")),
+        None => {
+            say(&format!("creating tunnel {name}"));
+            let made = captured(program, &["tunnel", "create", name])?;
+            if !made.ok {
+                bail!(
+                    "`cloudflared tunnel create {name}` failed:\n  {}",
+                    made.tail()
+                );
+            }
+        }
+    }
+
+    say(&format!("routing {hostname} to tunnel {name}"));
+    let route = captured(program, &["tunnel", "route", "dns", name, hostname])?;
+    let routed = route_outcome(route.ok, &route.all, name, hostname)?;
+    if routed == Routed::Already {
+        say(&format!("{hostname} already routes to tunnel {name}"));
+    }
+    Ok(routed)
+}
+
+/// The id of the live tunnel called (or with the id) `name` in `cloudflared
+/// tunnel list --output json`.
+pub fn listed_id(json: &str, name: &str) -> Result<Option<String>> {
+    let v: serde_json::Value = serde_json::from_str(json.trim()).map_err(|e| {
+        anyhow!("`cloudflared tunnel list --output json` printed something else ({e}): {json}")
+    })?;
+    let Some(tunnels) = v.as_array() else {
+        return Ok(None); // `null`: none
+    };
+    let field =
+        |t: &serde_json::Value, k: &str| t.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    Ok(tunnels
+        .iter()
+        .filter(|t| {
+            // Deleted tunnels carry a real deletion time; live ones Go's zero time.
+            field(t, "deleted_at").is_none_or(|d| d.starts_with("0001-01-01"))
+        })
+        .find(|t| {
+            field(t, "name").as_deref() == Some(name)
+                || field(t, "id").is_some_and(|id| id.eq_ignore_ascii_case(name))
+        })
+        .map(|t| field(t, "id").unwrap_or_default()))
+}
+
+/// `cloudflared tunnel route dns`'s outcome from its exit and output.
+pub fn route_outcome(ok: bool, output: &str, name: &str, hostname: &str) -> Result<Routed> {
+    let lower = output.to_ascii_lowercase();
+    if lower.contains("already configured") {
+        return Ok(Routed::Already);
+    }
+    if ok {
+        return Ok(Routed::Added);
+    }
+    if lower.contains("already exists") || lower.contains("code: 1003") {
+        bail!(
+            "{hostname} already has a DNS record that is not tunnel {name}'s, and cloudflared \
+             will not replace it. Delete the old {hostname} record in the Cloudflare dashboard \
+             (your domain, DNS, Records), then run this again; or pick another host name.\n\
+             cloudflared said:\n  {}",
+            output.trim().replace('\n', "\n  ")
+        );
+    }
+    bail!(
+        "`cloudflared tunnel route dns {name} {hostname}` failed:\n  {}",
+        output.trim().replace('\n', "\n  ")
+    )
+}
+
+/// A finished cloudflared command's result.
+struct Captured {
+    ok: bool,
+    stdout: String,
+    /// stdout then stderr.
+    all: String,
+}
+
+impl Captured {
+    fn tail(&self) -> String {
+        let lines: Vec<_> = self.all.trim().lines().collect();
+        lines[lines.len().saturating_sub(TAIL)..].join("\n  ")
+    }
+}
+
+fn captured(program: &Path, args: &[&str]) -> Result<Captured> {
+    let out = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| spawn_error(program, e))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let all = format!("{stdout}{}", String::from_utf8_lossy(&out.stderr));
+    Ok(Captured {
+        ok: out.status.success(),
+        stdout,
+        all,
+    })
+}
+
+fn spawn_error(program: &Path, e: std::io::Error) -> anyhow::Error {
+    match e.kind() {
+        std::io::ErrorKind::NotFound => {
+            anyhow!("{} is missing; {INSTALL_HINT}", program.display())
+        }
+        _ => anyhow!("starting {}: {e}", program.display()),
+    }
 }
 
 /// cloudflared's arguments for `mode`, forwarding to `origin`
@@ -211,12 +451,7 @@ impl Run {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| match e.kind() {
-                std::io::ErrorKind::NotFound => {
-                    anyhow::anyhow!("{} is missing; {INSTALL_HINT}", program.display())
-                }
-                _ => anyhow::anyhow!("starting {}: {e}", program.display()),
-            })?;
+            .map_err(|e| spawn_error(program, e))?;
         let (tx, lines) = mpsc::channel();
         for out in [
             child
@@ -489,18 +724,36 @@ fn supervise(
 /// Starts `program` (`None`: cloudflared from `$H2_CLOUDFLARED`, else
 /// PATH) in `mode`, forwarding to the loopback server at `origin`. The public URL goes into
 /// `public` (discovery shows it) now and whenever a restart changes it;
-/// `who` prefixes the line saying so.
+/// `who` prefixes the line saying so. With `setup`, a named tunnel with a
+/// host name is [`provision`]ed first (`None`: `--no-tunnel-setup`).
 pub fn open(
     program: Option<PathBuf>,
     mode: Mode,
     origin: &str,
     public: live_server::public::PublicUrl,
     who: &'static str,
+    setup: Option<&OriginCert>,
 ) -> Result<Tunnel> {
     let program = match program {
         Some(p) => p,
         None => find(std::env::var_os("H2_CLOUDFLARED"), std::env::var_os("PATH"))?,
     };
+    if let (
+        Some(cert),
+        Mode::Named {
+            name,
+            hostname: Some(host),
+        },
+    ) = (setup, &mode)
+    {
+        provision(
+            &program,
+            name,
+            &host.to_ascii_lowercase(),
+            cert,
+            &mut |line| eprintln!("{who}: {line}"),
+        )?;
+    }
     eprintln!(
         "{who}: starting cloudflared ({}) for {origin}",
         program.display()
@@ -545,7 +798,9 @@ pub fn notices(url: Option<&str>, mode: &Mode, invite_only: bool, private: bool)
     match url {
         Some(u) => out.push(format!("public at {u} (through cloudflared)")),
         None => out.push(
-            "tunnel up; pass --hostname with --tunnel-name to print and publish its URL".into(),
+            "tunnel up, but its URL is unknown, so it is not printed or published; pass \
+             --hostname HOST (h2 play: --live-tunnel-url https://HOST) with the tunnel name"
+                .into(),
         ),
     }
     if *mode == Mode::Quick {
@@ -931,5 +1186,409 @@ mod tests {
         let locked = notices(None, &named, true, true);
         assert_eq!(locked.len(), 1, "{locked:?}");
         assert!(locked[0].contains("--hostname"));
+    }
+
+    #[test]
+    fn a_tunnel_url_is_https_and_a_host() {
+        assert_eq!(
+            hostname_from_url("https://play.forbes.red").unwrap(),
+            "play.forbes.red"
+        );
+        assert_eq!(
+            hostname_from_url("HTTPS://Play.Example.net/").unwrap(),
+            "play.example.net"
+        );
+        for bad in [
+            "http://play.example.net",
+            "play.example.net",
+            "https://play.example.net:443",
+            "https://play.example.net/x",
+            "https://play.example.net//",
+            "https://play.example.net?x=1",
+            "https://u@play.example.net",
+            "https://localhost",
+            "https://",
+            "",
+        ] {
+            let e = hostname_from_url(bad).unwrap_err();
+            assert!(format!("{e}").contains("https://HOST"), "{bad}: {e}");
+        }
+    }
+
+    #[test]
+    fn the_origin_cert_follows_cloudflareds_rules() {
+        let home = temp("cert-home");
+        let c = OriginCert::new(None, Some(home.clone().into()));
+        assert_eq!(c.explicit, None);
+        assert_eq!(c.dirs[0], home.join(".cloudflared"));
+        assert!(c.dirs.contains(&PathBuf::from("/etc/cloudflared")));
+        let hermetic = OriginCert {
+            explicit: None,
+            dirs: c.dirs[..3].to_vec(),
+        };
+        assert_eq!(hermetic.find(), None);
+        std::fs::create_dir_all(home.join(".cloudflare-warp")).unwrap();
+        std::fs::write(home.join(".cloudflare-warp/cert.pem"), "x").unwrap();
+        assert_eq!(
+            hermetic.find(),
+            Some(home.join(".cloudflare-warp/cert.pem"))
+        );
+        // $TUNNEL_ORIGIN_CERT names the file outright: the others do not count.
+        let elsewhere = home.join("mine.pem");
+        let explicit = OriginCert::new(Some(elsewhere.clone().into()), Some(home.clone().into()));
+        assert_eq!(explicit.explicit.as_deref(), Some(elsewhere.as_path()));
+        assert_eq!(explicit.find(), None);
+        std::fs::write(&elsewhere, "x").unwrap();
+        assert_eq!(explicit.find(), Some(elsewhere));
+        // Empty values are unset.
+        assert_eq!(OriginCert::new(Some("".into()), None).explicit, None);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn tunnel_list_json() {
+        let json = r#"[
+            {"id":"6ff42ae2-765d-4adf-8112-31c55c1551ef","name":"h2live","created_at":"2025-03-01T10:00:00Z","deleted_at":"0001-01-01T00:00:00Z","connections":[]},
+            {"id":"11111111-2222-3333-4444-555555555555","name":"h2play","created_at":"2025-03-01T10:00:00Z","deleted_at":"2025-03-02T10:00:00Z","connections":[]},
+            {"id":"aaaaaaaa-2222-3333-4444-555555555555","name":"h2play","created_at":"2025-03-03T10:00:00Z","connections":[]}
+        ]"#;
+        assert_eq!(
+            listed_id(json, "h2live").unwrap().as_deref(),
+            Some("6ff42ae2-765d-4adf-8112-31c55c1551ef")
+        );
+        // The deleted one is skipped.
+        assert_eq!(
+            listed_id(json, "h2play").unwrap().as_deref(),
+            Some("aaaaaaaa-2222-3333-4444-555555555555")
+        );
+        assert_eq!(
+            listed_id(json, "6FF42AE2-765D-4ADF-8112-31C55C1551EF")
+                .unwrap()
+                .as_deref(),
+            Some("6ff42ae2-765d-4adf-8112-31c55c1551ef")
+        );
+        assert_eq!(listed_id(json, "other").unwrap(), None);
+        assert_eq!(listed_id("[]", "h2play").unwrap(), None);
+        assert_eq!(listed_id("null\n", "h2play").unwrap(), None);
+        assert!(listed_id("You need to login first", "h2play").is_err());
+    }
+
+    // Real `cloudflared tunnel route dns` output (2024-2025 releases).
+    const ROUTE_ADDED: &str = "2025-03-04T10:15:01Z INF Added CNAME play.example.net which will route to this tunnel tunnelID=6ff42ae2-765d-4adf-8112-31c55c1551ef";
+    const ROUTE_ALREADY: &str = "2025-03-04T10:15:01Z INF play.example.net is already configured to route to your tunnel tunnelID=6ff42ae2-765d-4adf-8112-31c55c1551ef";
+    const ROUTE_CONFLICT: &str = "Failed to add route: code: 1003, reason: Failed to create record play.example.net with err An A, AAAA, or CNAME record with that host already exists. For more details, refer to <https://developers.cloudflare.com/dns/manage-dns-records/troubleshooting/records-with-same-name/>.";
+
+    #[test]
+    fn route_dns_outcomes() {
+        let r = |ok, out| route_outcome(ok, out, "h2play", "play.example.net");
+        assert_eq!(r(true, ROUTE_ADDED).unwrap(), Routed::Added);
+        assert_eq!(r(true, ROUTE_ALREADY).unwrap(), Routed::Already);
+        assert_eq!(r(false, ROUTE_ALREADY).unwrap(), Routed::Already);
+        let e = format!("{:#}", r(false, ROUTE_CONFLICT).unwrap_err());
+        assert!(
+            e.contains("Delete the old play.example.net record in the Cloudflare dashboard"),
+            "{e}"
+        );
+        assert!(
+            e.contains("code: 1003"),
+            "cloudflared's words are kept: {e}"
+        );
+        let e = format!(
+            "{:#}",
+            r(false, "ERR Unauthorized: invalid zone").unwrap_err()
+        );
+        assert!(
+            e.contains("route dns h2play play.example.net` failed") && e.contains("invalid zone"),
+            "{e}"
+        );
+    }
+
+    /// A fake `cloudflared` for [`provision`]: logs each call to `calls`;
+    /// `login` writes `cert` (if given); `tunnel list` prints `list`;
+    /// `route dns` prints `route` and exits `route_exit`.
+    fn fake_setup(
+        dir: &Path,
+        cert: Option<&Path>,
+        list: &str,
+        route: &str,
+        route_exit: i32,
+    ) -> PathBuf {
+        let login = cert.map_or_else(
+            || "exit 0".to_string(),
+            |c| {
+                format!(
+                    "mkdir -p {d}; echo cert > {c}",
+                    d = c.parent().unwrap().display(),
+                    c = c.display()
+                )
+            },
+        );
+        fake(
+            dir,
+            &format!(
+                "echo \"$@\" >> {calls}\n\
+                 case \"$1 $2\" in\n\
+                 'tunnel login') {login} ;;\n\
+                 'tunnel list') echo '{list}' ;;\n\
+                 'tunnel create') echo \"Created tunnel $3 with id 6ff42ae2-765d-4adf-8112-31c55c1551ef\" >&2 ;;\n\
+                 'tunnel route') echo '{route}' >&2; exit {route_exit} ;;\n\
+                 *) echo \"unexpected: $*\" >&2; exit 9 ;;\n\
+                 esac",
+                calls = dir.join("calls").display(),
+            ),
+        )
+    }
+
+    fn calls(dir: &Path) -> Vec<String> {
+        std::fs::read_to_string(dir.join("calls"))
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn hermetic_cert(home: &Path) -> OriginCert {
+        OriginCert {
+            explicit: None,
+            dirs: vec![home.join(".cloudflared")],
+        }
+    }
+
+    const LISTED: &str = r#"[{"id":"6ff42ae2-765d-4adf-8112-31c55c1551ef","name":"h2play","deleted_at":"0001-01-01T00:00:00Z"}]"#;
+
+    #[test]
+    fn setup_with_no_login_logs_in_creates_and_routes() {
+        let dir = temp("setup-fresh");
+        let cert_path = dir.join(".cloudflared/cert.pem");
+        let bin = fake_setup(&dir, Some(&cert_path), "[]", ROUTE_ADDED, 0);
+        let mut said = Vec::new();
+        let routed = provision(
+            &bin,
+            "h2play",
+            "play.example.net",
+            &hermetic_cert(&dir),
+            &mut |l| said.push(l.to_string()),
+        )
+        .unwrap();
+        assert_eq!(routed, Routed::Added);
+        assert_eq!(
+            calls(&dir),
+            [
+                "tunnel login",
+                "tunnel list --output json",
+                "tunnel create h2play",
+                "tunnel route dns h2play play.example.net"
+            ]
+        );
+        assert!(cert_path.is_file());
+        assert!(said[0].contains("cloudflared tunnel login"), "{said:?}");
+        assert!(
+            said.contains(&"creating tunnel h2play".to_string()),
+            "{said:?}"
+        );
+        assert!(
+            said.contains(&"routing play.example.net to tunnel h2play".to_string()),
+            "{said:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_skips_what_is_there() {
+        let dir = temp("setup-there");
+        std::fs::create_dir_all(dir.join(".cloudflared")).unwrap();
+        std::fs::write(dir.join(".cloudflared/cert.pem"), "x").unwrap();
+        let bin = fake_setup(&dir, None, LISTED, ROUTE_ALREADY, 0);
+        let mut said = Vec::new();
+        let routed = provision(
+            &bin,
+            "h2play",
+            "play.example.net",
+            &hermetic_cert(&dir),
+            &mut |l| said.push(l.to_string()),
+        )
+        .unwrap();
+        assert_eq!(routed, Routed::Already);
+        // No login, no create.
+        assert_eq!(
+            calls(&dir),
+            [
+                "tunnel list --output json",
+                "tunnel route dns h2play play.example.net"
+            ]
+        );
+        assert!(
+            said.iter()
+                .any(|l| l.contains("tunnel h2play exists (6ff42ae2")),
+            "{said:?}"
+        );
+        assert!(
+            said.iter().any(|l| l.contains("already routes")),
+            "{said:?}"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_with_a_missing_tunnel_creates_it() {
+        let dir = temp("setup-create");
+        std::fs::create_dir_all(dir.join(".cloudflared")).unwrap();
+        std::fs::write(dir.join(".cloudflared/cert.pem"), "x").unwrap();
+        let other = r#"[{"id":"6ff42ae2-765d-4adf-8112-31c55c1551ef","name":"h2live","deleted_at":"0001-01-01T00:00:00Z"}]"#;
+        let bin = fake_setup(&dir, None, other, ROUTE_ADDED, 0);
+        provision(
+            &bin,
+            "h2play",
+            "play.example.net",
+            &hermetic_cert(&dir),
+            &mut |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            calls(&dir),
+            [
+                "tunnel list --output json",
+                "tunnel create h2play",
+                "tunnel route dns h2play play.example.net"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_reports_a_dns_conflict_plainly() {
+        let dir = temp("setup-conflict");
+        std::fs::create_dir_all(dir.join(".cloudflared")).unwrap();
+        std::fs::write(dir.join(".cloudflared/cert.pem"), "x").unwrap();
+        let bin = fake_setup(&dir, None, LISTED, ROUTE_CONFLICT, 1);
+        let e = provision(
+            &bin,
+            "h2play",
+            "play.example.net",
+            &hermetic_cert(&dir),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        let e = format!("{e:#}");
+        assert!(e.contains("already has a DNS record"), "{e}");
+        assert!(e.contains("in the Cloudflare dashboard"), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn setup_stops_when_login_does_not_help() {
+        // A login that writes nothing: the error says where the cert was looked for.
+        let dir = temp("setup-nologin");
+        let bin = fake_setup(&dir, None, "[]", ROUTE_ADDED, 0);
+        let e = provision(
+            &bin,
+            "h2play",
+            "play.example.net",
+            &hermetic_cert(&dir),
+            &mut |_| {},
+        )
+        .unwrap_err();
+        assert!(format!("{e}").contains("still no cert.pem"), "{e}");
+        assert_eq!(calls(&dir), ["tunnel login"]);
+
+        // $TUNNEL_ORIGIN_CERT naming a missing file: no login (it would write elsewhere).
+        let _ = std::fs::remove_file(dir.join("calls"));
+        let cert = OriginCert {
+            explicit: Some(dir.join("nope.pem")),
+            dirs: vec![dir.join(".cloudflared")],
+        };
+        let e = provision(&bin, "h2play", "play.example.net", &cert, &mut |_| {}).unwrap_err();
+        assert!(format!("{e}").contains("TUNNEL_ORIGIN_CERT"), "{e}");
+        assert!(calls(&dir).is_empty());
+
+        // A failing list is shown with what cloudflared said.
+        std::fs::write(dir.join("nope.pem"), "x").unwrap();
+        let broken = fake(&dir, "echo 'ERR Error locating origin cert' >&2; exit 1");
+        let e = provision(&broken, "h2play", "play.example.net", &cert, &mut |_| {}).unwrap_err();
+        assert!(format!("{e}").contains("Error locating origin cert"), "{e}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn open_sets_up_a_named_tunnel_unless_told_not_to() {
+        let dir = temp("open-setup");
+        std::fs::create_dir_all(dir.join(".cloudflared")).unwrap();
+        std::fs::write(dir.join(".cloudflared/cert.pem"), "x").unwrap();
+        let bin = fake(
+            &dir,
+            &format!(
+                "echo \"$@\" >> {calls}\n\
+                 case \"$1 $2\" in\n\
+                 'tunnel list') echo '[]' ;;\n\
+                 'tunnel create') ;;\n\
+                 'tunnel route') echo '{ROUTE_ADDED}' >&2 ;;\n\
+                 *) echo 'INF Registered tunnel connection connIndex=0' >&2; exec sleep 30 ;;\n\
+                 esac",
+                calls = dir.join("calls").display()
+            ),
+        );
+        let mode = Mode::Named {
+            name: "h2play".into(),
+            hostname: Some("Play.Example.net".into()),
+        };
+        let cert = hermetic_cert(&dir);
+        let public = live_server::public::PublicUrl::default();
+        let t = open(
+            Some(bin.clone()),
+            mode.clone(),
+            "http://127.0.0.1:1",
+            public.clone(),
+            "test",
+            Some(&cert),
+        )
+        .unwrap();
+        assert_eq!(t.url.as_deref(), Some("https://play.example.net"));
+        drop(t);
+        assert_eq!(
+            calls(&dir),
+            [
+                "tunnel list --output json",
+                "tunnel create h2play",
+                "tunnel route dns h2play play.example.net",
+                "tunnel --no-autoupdate --grace-period 1s run --url http://127.0.0.1:1 h2play"
+            ]
+        );
+
+        // --no-tunnel-setup: straight to `run`.
+        std::fs::remove_file(dir.join("calls")).unwrap();
+        let t = open(
+            Some(bin.clone()),
+            mode,
+            "http://127.0.0.1:1",
+            public.clone(),
+            "test",
+            None,
+        )
+        .unwrap();
+        drop(t);
+        assert_eq!(
+            calls(&dir),
+            ["tunnel --no-autoupdate --grace-period 1s run --url http://127.0.0.1:1 h2play"]
+        );
+
+        // Without a host name there is nothing to route: no setup either.
+        std::fs::remove_file(dir.join("calls")).unwrap();
+        let nameless = Mode::Named {
+            name: "h2play".into(),
+            hostname: None,
+        };
+        let t = open(
+            Some(bin),
+            nameless,
+            "http://127.0.0.1:1",
+            public,
+            "test",
+            Some(&cert),
+        )
+        .unwrap();
+        assert_eq!(t.url, None);
+        drop(t);
+        assert_eq!(calls(&dir).len(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

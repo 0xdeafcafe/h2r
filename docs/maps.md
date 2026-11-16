@@ -207,6 +207,11 @@ Agreed with the Live session:
   playlists allow only retail or admin-pinned `MapId`s. A map served from
   `H2_MAP_DIR` gets its own `MapId`, so a local edit is never announced
   as retail.
+- Which map is loaded: `vfs::Vfs::map_id(path)` (each backend answers: a
+  package gives its manifest's id, an `H2_MAP_DIR` file the id of a derived
+  manifest whose one layer is the whole file) and
+  `boot::map_override::map_id(vfs, name)`, given the loaded map's short name
+  from the cache header. `None` means the retail disc map.
 - Stats and carnage reports record `map_id` as well as the name, so a
   modded Lockout doesn't mix into Lockout's stats.
 
