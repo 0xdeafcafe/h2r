@@ -26,12 +26,7 @@ pub enum ToolError {
     Other(#[from] anyhow::Error),
 }
 
-/// A status-line message.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Status {
-    Info(String),
-    Error(String),
-}
+pub use editor_core::Status;
 
 /// What a tool sees of the shell while it draws or saves.
 pub struct ToolContext<'a> {

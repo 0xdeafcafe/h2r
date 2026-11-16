@@ -291,7 +291,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-core-graphics",
  "objc2-foundation 0.3.2",
- "parking_lot",
+ "parking_lot 0.12.5",
  "percent-encoding",
  "windows-sys 0.61.2",
  "x11rb",
@@ -1298,6 +1298,90 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4583a4551df46e2792f82ceeac45e850d2e2d5debba0b91f102385cda5b11f06"
 
 [[package]]
+name = "dear-imgui-build-support"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5d2683d46e026a93eceeb815ca0f5709b21e089bd99029adc2e52eb1029c5ecb"
+dependencies = [
+ "cc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "dear-imgui-rs"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ad13a535a4e605dbab22a3e3870bfbcf4e53d9873fdb7f7d713895da511879ad"
+dependencies = [
+ "bitflags 2.13.2",
+ "dear-imgui-sys",
+ "parking_lot 0.13.0",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "dear-imgui-sys"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b82f66d6c4165fb1e40888e48765d7175ecf96b7c411d351304c8fa8ca6f365"
+dependencies = [
+ "cc",
+ "dear-imgui-build-support",
+ "mint",
+]
+
+[[package]]
+name = "dear-imgui-wgpu"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd1cda5fb3f24d21cefbd0571cc8c03c7ac52ebe2696bd578967f0dc194f1432"
+dependencies = [
+ "bytemuck",
+ "dear-imgui-rs",
+ "thiserror 2.0.21",
+ "wgpu",
+]
+
+[[package]]
+name = "dear-imgui-winit"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ae7e00eb8be05f5aee2fab146374cf0e8962f293cb6937e878df8971b7ae756"
+dependencies = [
+ "dear-imgui-rs",
+ "thiserror 2.0.21",
+ "web-sys",
+ "web-time",
+ "winit",
+]
+
+[[package]]
+name = "dear-imguizmo"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a27078cf884a2eb7451126a91a202b0575d97e3de269122f2573e3371ae47544"
+dependencies = [
+ "bitflags 2.13.2",
+ "dear-imgui-rs",
+ "dear-imgui-sys",
+ "dear-imguizmo-sys",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "dear-imguizmo-sys"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aa647f05238bac32ac56baaa68cb58f697aeab335858413d3d0fd55cec71735b"
+dependencies = [
+ "cc",
+ "dear-imgui-build-support",
+ "dear-imgui-sys",
+ "mint",
+]
+
+[[package]]
 name = "der"
 version = "0.7.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1446,6 +1530,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "content",
+ "editor-core",
  "eframe",
  "egui",
  "egui-wgpu",
@@ -1459,6 +1544,16 @@ dependencies = [
  "thiserror 2.0.21",
  "variants",
  "xbe",
+ "xiso",
+]
+
+[[package]]
+name = "editor-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "map",
+ "tags",
  "xiso",
 ]
 
@@ -1480,7 +1575,7 @@ dependencies = [
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
- "parking_lot",
+ "parking_lot 0.12.5",
  "percent-encoding",
  "pollster",
  "profiling",
@@ -1650,7 +1745,7 @@ dependencies = [
  "harfrust",
  "log",
  "nohash-hasher",
- "parking_lot",
+ "parking_lot 0.12.5",
  "profiling",
  "self_cell",
  "skrifa",
@@ -1925,8 +2020,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d930c203dd0b6ff06e0201a4a2fe9149b43c684fd4420555b26d21b1a02956f"
 dependencies = [
  "futures-core",
- "lock_api",
- "parking_lot",
+ "lock_api 0.4.14",
+ "parking_lot 0.12.5",
 ]
 
 [[package]]
@@ -2991,6 +3086,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lock_api"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "65d91b22da179613dcf4d6ec8349563f52a363f6849e03b00dd0a185ec4a59af"
+dependencies = [
+ "scopeguard",
+]
+
+[[package]]
 name = "lockstep"
 version = "0.1.0"
 dependencies = [
@@ -3117,6 +3221,12 @@ dependencies = [
  "adler2",
  "simd-adler32",
 ]
+
+[[package]]
+name = "mint"
+version = "0.5.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e53debba6bda7a793e5f99b8dacf19e626084f525f7829104ba9898f367d85ff"
 
 [[package]]
 name = "mio"
@@ -3825,8 +3935,18 @@ version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93857453250e3077bd71ff98b6a65ea6621a19bb0f559a85248955ac12c45a1a"
 dependencies = [
- "lock_api",
- "parking_lot_core",
+ "lock_api 0.4.14",
+ "parking_lot_core 0.9.12",
+]
+
+[[package]]
+name = "parking_lot"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9cf937ca4e1d0b7578784559063422fc39ae7c5a00f02471f2614d5486fd226"
+dependencies = [
+ "lock_api 0.5.0",
+ "parking_lot_core 0.10.0",
 ]
 
 [[package]]
@@ -3838,6 +3958,18 @@ dependencies = [
  "cfg-if",
  "libc",
  "redox_syscall 0.5.18",
+ "smallvec",
+ "windows-link",
+]
+
+[[package]]
+name = "parking_lot_core"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9cfff060068cc18aa7815010fcaf80c68c7fb9e85fc7f5c0f9bf142c21d19826"
+dependencies = [
+ "libc",
+ "redox_syscall 0.9.5",
  "smallvec",
  "windows-link",
 ]
@@ -4557,6 +4689,7 @@ dependencies = [
  "pollster",
  "tags",
  "thiserror 2.0.21",
+ "wgpu",
  "xiso",
 ]
 
@@ -4931,7 +5064,7 @@ version = "0.9.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3763264f6b73151db08c50ff20d7d8a0b8796e021cdea7ceedad07b80155fa0e"
 dependencies = [
- "lock_api",
+ "lock_api 0.4.14",
 ]
 
 [[package]]
@@ -5181,6 +5314,25 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
  "unicode-properties",
+]
+
+[[package]]
+name = "studio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "content",
+ "dear-imgui-rs",
+ "dear-imgui-wgpu",
+ "dear-imgui-winit",
+ "dear-imguizmo",
+ "editor-core",
+ "png",
+ "pollster",
+ "rfd",
+ "scenario-edit",
+ "wgpu",
+ "winit",
 ]
 
 [[package]]
@@ -6218,7 +6370,7 @@ dependencies = [
  "js-sys",
  "log",
  "naga",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
@@ -6252,7 +6404,7 @@ dependencies = [
  "naga",
  "naga-types",
  "once_cell",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "profiling",
  "raw-window-handle",
@@ -6340,7 +6492,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "once_cell",
  "ordered-float",
- "parking_lot",
+ "parking_lot 0.12.5",
  "portable-atomic",
  "portable-atomic-util",
  "profiling",

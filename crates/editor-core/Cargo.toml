@@ -1,0 +1,13 @@
+[package]
+name = "editor-core"
+description = "UI-free parts of the editor suite shared by h2-editor (egui) and h2-studio (Dear ImGui): map sources, the snapshot undo stack, status messages"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+map.workspace = true
+tags.workspace = true
+xiso.workspace = true

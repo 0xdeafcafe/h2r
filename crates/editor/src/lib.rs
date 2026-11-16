@@ -17,10 +17,12 @@ pub mod scenario;
 #[cfg(test)]
 mod screenshots;
 pub mod shell;
-pub mod source;
 pub mod tool;
-pub mod undo;
 pub mod variants;
+
+/// Map sources and the undo stack live in `editor-core`, shared with
+/// `h2-studio`.
+pub use editor_core::{source, undo};
 
 pub use source::{Disc, MapSource};
 pub use tool::{Handoff, Tool, ToolContext, ToolError};

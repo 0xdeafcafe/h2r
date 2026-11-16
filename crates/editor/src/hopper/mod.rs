@@ -527,7 +527,7 @@ impl Tool for HopperTool {
         let (action, error) = (panel.action.take(), panel.error.take());
         // One undo step per change; a run of edits from one focused field
         // (typing, dragging a number) is one step.
-        let key = ui.ctx().memory(|m| m.focused());
+        let key = ui.ctx().memory(|m| m.focused()).map(|id| id.value());
         doc.undo.track(before, &doc.state, key);
         if let Some(e) = error {
             cx.error(e);

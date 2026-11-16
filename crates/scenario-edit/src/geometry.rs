@@ -462,27 +462,33 @@ impl Camera {
             self.distance * 4.0 + 2000.0,
         )
     }
-    /// Column-major view-projection for wgpu clip space (depth 0..1).
-    pub fn view_proj(&self, aspect: f32) -> Mat4 {
+    /// Column-major view matrix (right-handed, looking down -z).
+    pub fn view(&self) -> Mat4 {
         let eye = self.eye();
         let f = self.forward();
         let r = normalize(cross(f, [0.0, 0.0, 1.0]));
         let u = cross(r, f);
-        let view: Mat4 = [
+        [
             [r[0], u[0], -f[0], 0.0],
             [r[1], u[1], -f[1], 0.0],
             [r[2], u[2], -f[2], 0.0],
             [-dot(r, eye), -dot(u, eye), dot(f, eye), 1.0],
-        ];
+        ]
+    }
+    /// Column-major perspective projection for wgpu clip space (depth 0..1).
+    pub fn proj(&self, aspect: f32) -> Mat4 {
         let (n, fa) = self.near_far();
         let t = 1.0 / (self.fov_y * 0.5).tan();
-        let proj: Mat4 = [
+        [
             [t / aspect.max(1e-3), 0.0, 0.0, 0.0],
             [0.0, t, 0.0, 0.0],
             [0.0, 0.0, fa / (n - fa), -1.0],
             [0.0, 0.0, n * fa / (n - fa), 0.0],
-        ];
-        mul(&proj, &view)
+        ]
+    }
+    /// Column-major view-projection for wgpu clip space (depth 0..1).
+    pub fn view_proj(&self, aspect: f32) -> Mat4 {
+        mul(&self.proj(aspect), &self.view())
     }
     /// The ray through a viewport point given in 0..1 (x right, y down).
     pub fn ray(&self, u: f32, v: f32, aspect: f32) -> Ray {
@@ -503,6 +509,35 @@ impl Camera {
         let c = transform(&m, [p[0], p[1], p[2], 1.0]);
         (c[3] > 0.0).then(|| [(c[0] / c[3] + 1.0) * 0.5, (1.0 - c[1] / c[3]) * 0.5])
     }
+}
+
+/// A column-major 4x4 as the flat array ImGuizmo takes.
+pub fn flat(m: &Mat4) -> [f32; 16] {
+    let mut out = [0.0; 16];
+    for (c, col) in m.iter().enumerate() {
+        out[c * 4..c * 4 + 4].copy_from_slice(col);
+    }
+    out
+}
+
+/// Position and yaw/pitch/roll from a column-major model matrix whose
+/// columns are the forward, left and up axes (as [`rotation`] builds them),
+/// possibly scaled: the inverse of `rotation`. Pitch is clamped to ±90°.
+pub fn decompose(m: &[f32; 16]) -> (Vec3, Vec3) {
+    let f = normalize([m[0], m[1], m[2]]);
+    let l = normalize([m[4], m[5], m[6]]);
+    let position = [m[12], m[13], m[14]];
+    let pitch = f[2].clamp(-1.0, 1.0).asin();
+    let yaw = f[1].atan2(f[0]);
+    // Undo Rz(yaw) then Ry(-pitch) on the left axis; what is left is
+    // Rx(roll)·ŷ = [0, cos roll, sin roll].
+    let (sy, cy) = yaw.sin_cos();
+    let (sp, cp) = pitch.sin_cos();
+    let a = l[0] * cy + l[1] * sy;
+    let ly = -l[0] * sy + l[1] * cy;
+    let lz = -a * sp + l[2] * cp;
+    let roll = lz.atan2(ly);
+    (position, [yaw, pitch, roll])
 }
 
 pub fn mul(a: &Mat4, b: &Mat4) -> Mat4 {
