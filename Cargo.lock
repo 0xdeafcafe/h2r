@@ -771,6 +771,7 @@ dependencies = [
  "h1convert",
  "h1map",
  "h1models",
+ "h1sounds",
  "hs",
  "iced-x86",
  "image",
@@ -2169,6 +2170,19 @@ name = "h1models"
 version = "0.1.0"
 dependencies = [
  "h1map",
+ "map",
+ "tags",
+ "thiserror 2.0.21",
+ "xiso",
+]
+
+[[package]]
+name = "h1sounds"
+version = "0.1.0"
+dependencies = [
+ "audio",
+ "h1map",
+ "h1models",
  "map",
  "tags",
  "thiserror 2.0.21",
