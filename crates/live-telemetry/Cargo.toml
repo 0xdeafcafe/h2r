@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 runtime.workspace = true
 live-proto.workspace = true
+map.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 time = "0.3"

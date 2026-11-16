@@ -78,8 +78,26 @@ A frame (`tick` is the game tick, 30 per second):
 ```json
 { "game_id": "7f3c...", "tick": 5400,
   "players": [ { "index": 0, "alive": true, "pos": [12.5, -3.25, 4.0],
-                 "yaw": 1.57, "vehicle": null } ] }
+                 "yaw": 1.57, "species": "elite", "aim": [0.7, 0.7, 0.1],
+                 "weapon": "battle_rifle", "shots": 3 } ] }
 ```
+
+A frame player may also carry, each left out when unknown (older senders
+send none of them; draw what is there):
+
+| field | meaning |
+|---|---|
+| `vehicle` | the vehicle's object datum (hex) when riding one |
+| `species` | `"spartan"` or `"elite"`, from the biped's tag; another biped passes through as its short id, and readers fall back to spartan |
+| `aim` | the unit's aim direction in game coordinates (z up), unit length |
+| `weapon` | the held weapon's tag file stem, lower case: `battle_rifle`, `smg`, `energy_sword`, ... |
+| `shots` | shots the held weapon fired since the player's previous frame; `0` is sent as absent, at most 64 |
+
+The server refuses a frame whose `aim` is not finite or is zero, whose
+`species` or `weapon` is not `[a-z0-9_]{1,32}`, or whose `shots` is over 64,
+and stores `aim` normalised to unit length. A frame the server drops for the
+15 Hz limit hands its `shots` on to the next frame it sends, so shots are
+counted since the previous *delivered* frame.
 
 `GameFrame` events hold a frame at 1 Hz. Live frames go out on the stream at
 up to 15 Hz and are not stored.

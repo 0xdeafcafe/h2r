@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use live_proto::game::{Player, TeamScore};
 use runtime::{Guest, GuestFault};
 
-use crate::event::{Appearance, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot};
+use crate::event::{Appearance, GameInfo, ObjectState, PlayerState, PlayerStats, Snapshot, Weapon};
 use crate::layout;
 
 pub type ReadResult<T> = Result<T, GuestFault>;
@@ -205,19 +205,9 @@ pub fn team_scores(guest: &Guest, players: &[PlayerState]) -> ReadResult<Vec<Tea
         .collect()
 }
 
-pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
-    fn transform(guest: &Guest, body: u32) -> ReadResult<([f64; 3], [f64; 3])> {
-        let mut pos = [0.0; 3];
-        let mut forward = [0.0; 3];
-        for (i, value) in pos.iter_mut().enumerate() {
-            *value = f64::from(guest.f32(body + layout::BODY_POSITION + 4 * i as u32)?);
-        }
-        for (i, value) in forward.iter_mut().enumerate() {
-            *value = f64::from(guest.f32(body + layout::BODY_FORWARD + 4 * i as u32)?);
-        }
-        Ok((pos, forward))
-    }
-
+/// An object's concrete type and body address, if `datum` names a live
+/// object (high-water, salt and non-null body checks of `0x000badc0`).
+fn object_body(guest: &Guest, datum: u32) -> ReadResult<Option<(u8, u32)>> {
     if datum == u32::MAX {
         return Ok(None);
     }
@@ -232,35 +222,73 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
     if salt == 0 || u32::from(salt) != datum >> 16 {
         return Ok(None);
     }
-    if guest.u8(header + layout::OBJECT_TYPE)? > 1 {
-        return Ok(None);
-    }
     let body = guest.u32(header + layout::OBJECT_BODY)?;
     if body == 0 {
         return Ok(None);
     }
-    let (mut pos, mut forward) = transform(guest, body)?;
+    Ok(Some((guest.u8(header + layout::OBJECT_TYPE)?, body)))
+}
+
+fn vector(guest: &Guest, address: u32) -> ReadResult<[f64; 3]> {
+    let mut out = [0.0; 3];
+    for (i, value) in out.iter_mut().enumerate() {
+        *value = f64::from(guest.f32(address + 4 * i as u32)?);
+    }
+    Ok(out)
+}
+
+/// The unit's aiming vector, normalised, or `None` unless it is finite and
+/// within 10% of unit length (the "likely" offset must not send garbage).
+fn aim(guest: &Guest, body: u32) -> ReadResult<Option<[f64; 3]>> {
+    let v = vector(guest, body + layout::UNIT_AIM)?;
+    let len = v.iter().map(|c| c * c).sum::<f64>().sqrt();
+    Ok((v.iter().all(|c| c.is_finite()) && (0.9..=1.1).contains(&len)).then(|| v.map(|c| c / len)))
+}
+
+/// The weapon the unit holds: current weapon index `+0x212` into the four
+/// weapon datums at `+0x218`. The weapon must be a live weapon object
+/// parented to this unit (`0x00101fb0` finds a weapon's owner through its
+/// parent).
+fn held_weapon(guest: &Guest, unit: u32, body: u32) -> ReadResult<Option<Weapon>> {
+    let index = guest.u8(body + layout::UNIT_WEAPON_INDEX)? as i8;
+    if !(0..layout::UNIT_WEAPON_SLOTS).contains(&index) {
+        return Ok(None);
+    }
+    let datum = guest.u32(body + layout::UNIT_WEAPONS + 4 * index as u32)?;
+    let Some((kind, weapon)) = object_body(guest, datum)? else {
+        return Ok(None);
+    };
+    if kind != layout::OBJECT_TYPE_WEAPON || guest.u32(weapon + layout::BODY_PARENT)? != unit {
+        return Ok(None);
+    }
+    let definition = guest.u32(weapon + layout::BODY_DEFINITION)?;
+    Ok((definition != u32::MAX).then_some(Weapon { datum, definition }))
+}
+
+pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
+    let Some((kind, body)) = object_body(guest, datum)? else {
+        return Ok(None);
+    };
+    if kind > 1 {
+        return Ok(None);
+    }
+    let definition = Some(guest.u32(body + layout::BODY_DEFINITION)?).filter(|d| *d != u32::MAX);
+    // The frame-model fields only add detail: a fault while following them
+    // (a stale weapon datum, a "likely" offset) drops the field, not the
+    // snapshot.
+    let aim = aim(guest, body).ok().flatten();
+    let weapon = held_weapon(guest, datum, body).ok().flatten();
+    let mut pos = vector(guest, body + layout::BODY_POSITION)?;
+    let mut forward = vector(guest, body + layout::BODY_FORWARD)?;
     let parent = guest.u32(body + layout::BODY_PARENT)?;
-    let vehicle =
-        if parent != u32::MAX && (parent & 0xffff) < guest.u32(array + layout::DATUM_HIGH_WATER)? {
-            let parent_header = data + (parent & 0xffff) * layout::OBJECT_HEADER_SIZE;
-            let parent_salt = guest.u16(parent_header + layout::OBJECT_SALT)?;
-            if parent_salt != 0
-                && u32::from(parent_salt) == parent >> 16
-                && guest.u8(parent_header + layout::OBJECT_TYPE)? == 1
-            {
-                let parent_body = guest.u32(parent_header + layout::OBJECT_BODY)?;
-                if parent_body == 0 {
-                    return Ok(None);
-                }
-                (pos, forward) = transform(guest, parent_body)?;
-                Some(parent)
-            } else {
-                None
-            }
-        } else {
-            None
-        };
+    let vehicle = match object_body(guest, parent)? {
+        Some((1, parent_body)) => {
+            pos = vector(guest, parent_body + layout::BODY_POSITION)?;
+            forward = vector(guest, parent_body + layout::BODY_FORWARD)?;
+            Some(parent)
+        }
+        _ => None,
+    };
     if !pos.iter().chain(forward.iter()).all(|v| v.is_finite()) {
         return Ok(None);
     }
@@ -268,6 +296,9 @@ pub fn object(guest: &Guest, datum: u32) -> ReadResult<Option<ObjectState>> {
         pos,
         forward,
         vehicle,
+        definition,
+        aim,
+        weapon,
     }))
 }
 
@@ -285,7 +316,15 @@ pub fn snapshot(guest: &Guest) -> ReadResult<Snapshot> {
         players,
         teams,
         objects,
+        shots: Default::default(),
     })
+}
+
+/// The scenario tag datum of the loaded map's tag index, to check a
+/// host-side name table against (`tags::TagNames::is_for`).
+pub fn tag_index_scenario(guest: &Guest) -> ReadResult<u32> {
+    let index = ptr(guest, layout::TAG_INDEX_PTR)?;
+    guest.u32(index + layout::TAG_INDEX_SCENARIO)
 }
 
 pub fn yaw(forward: [f64; 3]) -> f64 {
@@ -438,9 +477,9 @@ pub(crate) mod fixture {
         guest
             .set_f32(body + super::layout::BODY_FORWARD + 8, 0.0)
             .unwrap();
-        guest
-            .set_u32(OBJECTS + super::layout::DATUM_HIGH_WATER, (slot + 1).max(1))
-            .unwrap();
+        let high_water = OBJECTS + super::layout::DATUM_HIGH_WATER;
+        let current = guest.u32(high_water).unwrap();
+        guest.set_u32(high_water, current.max(slot + 1)).unwrap();
     }
 
     pub fn put_vehicle(guest: &mut Guest, slot: u32) {
@@ -465,6 +504,56 @@ pub(crate) mod fixture {
 
     pub fn object_datum(slot: u32) -> u32 {
         ((0x9001 + slot) << 16) | slot
+    }
+
+    /// Gives the unit object at `slot` a definition, an aiming vector and
+    /// a current weapon index.
+    pub fn put_unit(guest: &mut Guest, slot: u32, definition: u32, aim: [f32; 3], index: i8) {
+        let body = BODY + slot * 0x1000;
+        guest
+            .set_u32(body + super::layout::BODY_DEFINITION, definition)
+            .unwrap();
+        for (i, value) in aim.into_iter().enumerate() {
+            guest
+                .set_f32(body + super::layout::UNIT_AIM + 4 * i as u32, value)
+                .unwrap();
+        }
+        guest
+            .set_u8(body + super::layout::UNIT_WEAPON_INDEX, index as u8)
+            .unwrap();
+        for i in 0..4 {
+            guest
+                .set_u32(body + super::layout::UNIT_WEAPONS + 4 * i, u32::MAX)
+                .unwrap();
+        }
+    }
+
+    /// A weapon object at `slot`, held by the unit at `unit_slot` in its
+    /// weapon slot `index`.
+    pub fn put_weapon(guest: &mut Guest, slot: u32, unit_slot: u32, index: u32, definition: u32) {
+        put_object(guest, slot, object_datum(unit_slot));
+        let header = OBJECT_DATA + slot * super::layout::OBJECT_HEADER_SIZE;
+        guest
+            .set_u8(
+                header + super::layout::OBJECT_TYPE,
+                super::layout::OBJECT_TYPE_WEAPON,
+            )
+            .unwrap();
+        guest
+            .set_u32(
+                BODY + slot * 0x1000 + super::layout::BODY_DEFINITION,
+                definition,
+            )
+            .unwrap();
+        guest
+            .set_u32(
+                BODY + unit_slot * 0x1000 + super::layout::UNIT_WEAPONS + 4 * index,
+                object_datum(slot),
+            )
+            .unwrap();
+        let high_water = OBJECTS + super::layout::DATUM_HIGH_WATER;
+        let current = guest.u32(high_water).unwrap();
+        guest.set_u32(high_water, current.max(slot + 1)).unwrap();
     }
 }
 
@@ -637,6 +726,130 @@ mod tests {
             super::players(&guest).unwrap()[0].appearance,
             Appearance::default()
         );
+    }
+
+    #[test]
+    fn reads_unit_definition_aim_and_held_weapon() {
+        let mut guest = fixture::memory();
+        let unit = fixture::object_datum(1);
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        fixture::put_unit(&mut guest, 1, 0xe100_0010, [0.0, 0.6, 0.8], 1);
+        fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+        fixture::put_weapon(&mut guest, 6, 1, 1, 0xe100_0021);
+
+        let state = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(state.definition, Some(0xe100_0010));
+        let aim = state.aim.unwrap();
+        for (got, want) in aim.into_iter().zip([0.0, 0.6, 0.8]) {
+            assert!((got - want).abs() < 1e-6, "{aim:?}");
+        }
+        assert_eq!(
+            state.weapon,
+            Some(Weapon {
+                datum: fixture::object_datum(6),
+                definition: 0xe100_0021,
+            }),
+            "the current index picks the slot"
+        );
+
+        // In a vehicle the transform is the vehicle's, but definition, aim
+        // and weapon stay the unit's own.
+        fixture::put_vehicle(&mut guest, 4);
+        guest
+            .set_u32(
+                fixture::BODY + 0x1000 + layout::BODY_PARENT,
+                fixture::object_datum(4),
+            )
+            .unwrap();
+        let riding = object(&guest, unit).unwrap().unwrap();
+        assert_eq!(riding.pos, [10.0, 20.0, 30.0]);
+        assert_eq!(riding.definition, Some(0xe100_0010));
+        assert_eq!(riding.weapon.unwrap().definition, 0xe100_0021);
+    }
+
+    #[test]
+    fn garbage_aim_and_weapon_reads_are_dropped() {
+        let mut guest = fixture::memory();
+        let unit = fixture::object_datum(1);
+        fixture::put_object(&mut guest, 1, u32::MAX);
+        fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+        let read = |guest: &runtime::Guest| object(guest, unit).unwrap().unwrap();
+        for bad in [
+            [0.0; 3],
+            [f32::NAN, 0.0, 1.0],
+            [3.0, 0.0, 0.0],
+            [0.5, 0.0, 0.0],
+        ] {
+            fixture::put_unit(&mut guest, 1, 0xe100_0010, bad, 0);
+            fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+            assert_eq!(read(&guest).aim, None, "{bad:?}");
+        }
+        // Small drift is renormalised.
+        fixture::put_unit(&mut guest, 1, 0xe100_0010, [1.05, 0.0, 0.0], 0);
+        fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+        assert_eq!(read(&guest).aim, Some([1.0, 0.0, 0.0]));
+        assert!(read(&guest).weapon.is_some());
+
+        // No weapon index, an index past the four slots, an empty slot.
+        for index in [-1, 4, 2] {
+            guest
+                .set_u8(
+                    fixture::BODY + 0x1000 + layout::UNIT_WEAPON_INDEX,
+                    index as u8,
+                )
+                .unwrap();
+            assert_eq!(read(&guest).weapon, None, "index {index}");
+        }
+        guest
+            .set_u8(fixture::BODY + 0x1000 + layout::UNIT_WEAPON_INDEX, 0)
+            .unwrap();
+        // A weapon held by someone else, or not a weapon, is not this one's.
+        guest
+            .set_u32(
+                fixture::BODY + 5 * 0x1000 + layout::BODY_PARENT,
+                fixture::object_datum(2),
+            )
+            .unwrap();
+        assert_eq!(read(&guest).weapon, None);
+        fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+        guest
+            .set_u8(
+                fixture::OBJECT_DATA + 5 * layout::OBJECT_HEADER_SIZE + layout::OBJECT_TYPE,
+                0,
+            )
+            .unwrap();
+        assert_eq!(read(&guest).weapon, None);
+        // A weapon body that faults drops the weapon, not the unit.
+        fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+        guest
+            .set_u32(
+                fixture::OBJECT_DATA + 5 * layout::OBJECT_HEADER_SIZE + layout::OBJECT_BODY,
+                0xdead_0000,
+            )
+            .unwrap();
+        let unit_state = read(&guest);
+        assert_eq!(unit_state.weapon, None);
+        assert_eq!(unit_state.pos, [1.0, 2.0, 3.0]);
+        // A stale salt in the slot.
+        fixture::put_weapon(&mut guest, 5, 1, 0, 0xe100_0020);
+        guest
+            .set_u32(
+                fixture::BODY + 0x1000 + layout::UNIT_WEAPONS,
+                fixture::object_datum(5) ^ 0x0001_0000,
+            )
+            .unwrap();
+        assert_eq!(read(&guest).weapon, None);
+    }
+
+    #[test]
+    fn reads_the_tag_index_scenario() {
+        let mut guest = fixture::memory();
+        assert!(tag_index_scenario(&guest).is_err(), "no index yet");
+        guest.set_u32(layout::TAG_INDEX_PTR, 0x16_0000).unwrap();
+        guest
+            .set_u32(0x16_0000 + layout::TAG_INDEX_SCENARIO, 0xe000_0001)
+            .unwrap();
+        assert_eq!(tag_index_scenario(&guest).unwrap(), 0xe000_0001);
     }
 
     #[test]

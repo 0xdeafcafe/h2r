@@ -237,7 +237,7 @@ fn ingest_frame(game_id: &str, tick: u64) -> Message {
             alive: true,
             pos: [1.0, 2.0, 0.5],
             yaw: 0.25,
-            vehicle: None,
+            ..Default::default()
         }],
     };
     Message::Text(
@@ -431,4 +431,163 @@ async fn ingest_fans_out_and_records_frames() {
     assert_eq!(recorded.len(), 1, "{recorded:?}");
     assert_eq!(recorded[0]["tick"], 30);
     assert_eq!(recorded[0]["source"], account.id.as_str());
+}
+
+#[tokio::test]
+async fn frames_carry_species_aim_weapon_and_shots() {
+    use live_proto::Author;
+    use live_proto::game::{Frame, FramePlayer, NewGame, Player};
+
+    let (live, addr) = serve(Policy::default()).await;
+    let (key, account) = create(&live, "Host").await;
+    let new = NewGame {
+        console: None,
+        map: "lockout".into(),
+        mode: "multiplayer".into(),
+        variant: None,
+        team_play: false,
+        score_limit: None,
+        time_limit_s: None,
+        tick: None,
+        players: vec![Player {
+            index: 0,
+            name: "Host".into(),
+            xuid: Some(account.xuid),
+            team: 0,
+            local: Some(true),
+            appearance: None,
+        }],
+    };
+    let token = issue_token(
+        &key,
+        &account.id,
+        "live.test",
+        lxm::GAMES_WRITE,
+        live_server::app::now(),
+    );
+    let game_id = live.start_game(Some(&token), new).await.unwrap().game_id;
+    let author = Author::parse(&account.id).unwrap();
+    let mut reader = connect(addr, &format!("?games={game_id}&exclude=GameFrame")).await;
+    assert!(matches!(
+        next(&mut reader).await,
+        StreamMessage::CaughtUp { .. }
+    ));
+
+    let frame = |player: FramePlayer| Frame {
+        game_id: game_id.clone(),
+        tick: 30,
+        players: vec![player],
+    };
+    let good = FramePlayer {
+        index: 0,
+        alive: true,
+        pos: [1.0, 2.0, 0.5],
+        yaw: 0.25,
+        species: Some("elite".into()),
+        aim: Some([0.0, 3.0, 4.0]),
+        weapon: Some("battle_rifle".into()),
+        shots: Some(3),
+        ..FramePlayer::default()
+    };
+
+    // Refused before anything is sent or stored: non-finite or zero aim, an
+    // id that is not [a-z0-9_]{1,32}, too many shots.
+    for bad in [
+        FramePlayer {
+            aim: Some([f64::NAN, 0.0, 1.0]),
+            ..good.clone()
+        },
+        FramePlayer {
+            aim: Some([0.0; 3]),
+            ..good.clone()
+        },
+        FramePlayer {
+            species: Some("Elite Ultra".into()),
+            ..good.clone()
+        },
+        FramePlayer {
+            weapon: Some("objects\\weapons\\rifle\\battle_rifle".into()),
+            ..good.clone()
+        },
+        FramePlayer {
+            shots: Some(65),
+            ..good.clone()
+        },
+    ] {
+        assert!(
+            live.ingest_frame(&author, frame(bad.clone()))
+                .await
+                .is_err(),
+            "{bad:?}"
+        );
+    }
+
+    live.ingest_frame(&author, frame(good.clone()))
+        .await
+        .unwrap();
+    // Readers get it with the aim made unit length.
+    let StreamMessage::Frame { frame: live_frame } = next(&mut reader).await else {
+        panic!("expected a frame")
+    };
+    let served = &live_frame.players[0];
+    assert_eq!(served.species.as_deref(), Some("elite"));
+    assert_eq!(served.weapon.as_deref(), Some("battle_rifle"));
+    assert_eq!(served.shots, Some(3));
+    assert_eq!(served.aim, Some([0.0, 0.6, 0.8]));
+
+    // A frame inside the 15 Hz window is dropped, but its shots ride on the
+    // next frame that goes out.
+    let outcome = live
+        .ingest_frame(
+            &author,
+            Frame {
+                tick: 32,
+                ..frame(FramePlayer {
+                    shots: Some(2),
+                    ..good.clone()
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, live_server::games::FrameOutcome::Throttled);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    live.ingest_frame(
+        &author,
+        Frame {
+            tick: 34,
+            ..frame(FramePlayer {
+                shots: Some(1),
+                ..good.clone()
+            })
+        },
+    )
+    .await
+    .unwrap();
+    let StreamMessage::Frame { frame: next_frame } = next(&mut reader).await else {
+        panic!("expected a frame")
+    };
+    assert_eq!(next_frame.tick, 34);
+    assert_eq!(next_frame.players[0].shots, Some(3));
+
+    // And the recorded GameFrame keeps the same fields.
+    let mut recorded = Vec::new();
+    for _ in 0..50 {
+        recorded = live
+            .recorded_frames(&game_id, None, None, 0, 100)
+            .await
+            .unwrap()
+            .items;
+        if !recorded.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!recorded.is_empty());
+    assert_eq!(recorded[0]["tick"], 30);
+    let player = &recorded[0]["players"][0];
+    assert_eq!(player["species"], "elite");
+    assert_eq!(player["weapon"], "battle_rifle");
+    assert_eq!(player["shots"], 3);
+    assert_eq!(player["aim"], serde_json::json!([0.0, 0.6, 0.8]));
 }

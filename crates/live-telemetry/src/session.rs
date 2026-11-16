@@ -1,9 +1,19 @@
 use std::collections::BTreeMap;
 
-use live_proto::game::{Frame, FramePlayer, GameEnded, PlayerKilled, PlayerLeft, ScoreChanged};
+use live_proto::game::{
+    Frame, FramePlayer, GameEnded, MAX_FRAME_SHOTS, PlayerKilled, PlayerLeft, ScoreChanged,
+};
 
 use crate::event::{GameEvent, GameInfo, ObjectState, Output, PlayerState, Snapshot};
 use crate::memory::yaw;
+use crate::tags::TagNames;
+
+/// Shots a player's held weapon fired since their previous frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct PendingShots {
+    weapon: u32,
+    count: u32,
+}
 
 struct Match {
     game_id: String,
@@ -15,6 +25,11 @@ struct Match {
     last_emitted_teams: Vec<live_proto::game::TeamScore>,
     last_score_tick: u64,
     ended: bool,
+    /// The loaded map's biped and weapon names, when the host found them.
+    tags: Option<TagNames>,
+    /// By player index; reset when the held weapon changes or the player
+    /// has no weapon (dead, or none held).
+    shots: BTreeMap<u32, PendingShots>,
 }
 
 pub struct Session {
@@ -113,7 +128,17 @@ impl Session {
             last_score_tick: info.tick,
             players,
             ended: false,
+            tags: None,
+            shots: BTreeMap::new(),
         });
+    }
+
+    /// Names for the current match's frame `species` and `weapon`; frames
+    /// leave both out until (and unless) this is set.
+    pub fn set_tag_names(&mut self, tags: TagNames) {
+        if let Some(current) = &mut self.current {
+            current.tags = Some(tags);
+        }
     }
 
     fn end_previous(&mut self) {
@@ -221,29 +246,70 @@ impl Session {
             current.last_score_tick = snapshot.tick;
         }
 
+        let mut shots = BTreeMap::new();
+        for (player, object) in snapshot.players.iter().zip(&snapshot.objects) {
+            let Some(weapon) = object.as_ref().and_then(|o| o.weapon) else {
+                continue;
+            };
+            let index = player.player.index;
+            let mut pending = current
+                .shots
+                .get(&index)
+                .copied()
+                .filter(|p| p.weapon == weapon.datum)
+                .unwrap_or(PendingShots {
+                    weapon: weapon.datum,
+                    count: 0,
+                });
+            let fired = snapshot.shots.get(&weapon.datum).copied().unwrap_or(0);
+            pending.count = pending.count.saturating_add(fired);
+            shots.insert(index, pending);
+        }
+        current.shots = shots;
+
         if snapshot.tick.is_multiple_of(2) {
             let game_id = current.game_id.clone();
+            let tags = current.tags.as_ref();
+            let players = snapshot
+                .players
+                .iter()
+                .zip(&snapshot.objects)
+                .map(|(player, object)| {
+                    let alive = player.unit != u32::MAX;
+                    let index = player.player.index;
+                    let shots = current.shots.get_mut(&index).map(|p| {
+                        let n = p.count.min(MAX_FRAME_SHOTS);
+                        p.count = 0;
+                        n
+                    });
+                    FramePlayer {
+                        index,
+                        alive,
+                        pos: object.as_ref().map_or([0.0; 3], |o| o.pos),
+                        yaw: object.as_ref().map_or(0.0, |o| yaw(o.forward)),
+                        vehicle: object
+                            .as_ref()
+                            .and_then(|o| o.vehicle)
+                            .map(|v| format!("{v:08x}")),
+                        species: object
+                            .as_ref()
+                            .and_then(|o| o.definition)
+                            .zip(tags)
+                            .and_then(|(d, t)| t.species(d)),
+                        aim: object.as_ref().and_then(|o| o.aim),
+                        weapon: object
+                            .as_ref()
+                            .and_then(|o| o.weapon)
+                            .zip(tags)
+                            .and_then(|(w, t)| t.weapon(w.definition)),
+                        shots: shots.filter(|n| *n > 0),
+                    }
+                })
+                .collect();
             self.output.push(Output::Frame(Frame {
                 game_id,
                 tick: snapshot.tick,
-                players: snapshot
-                    .players
-                    .iter()
-                    .zip(&snapshot.objects)
-                    .map(|(player, object)| {
-                        let alive = player.unit != u32::MAX;
-                        FramePlayer {
-                            index: player.player.index,
-                            alive,
-                            pos: object.as_ref().map_or([0.0; 3], |o| o.pos),
-                            yaw: object.as_ref().map_or(0.0, |o| yaw(o.forward)),
-                            vehicle: object
-                                .as_ref()
-                                .and_then(|o| o.vehicle)
-                                .map(|v| format!("{v:08x}")),
-                        }
-                    })
-                    .collect(),
+                players,
             }));
         }
     }
@@ -351,6 +417,7 @@ mod tests {
             objects: players.iter().map(|_| None).collect(),
             players,
             teams: Vec::new(),
+            shots: BTreeMap::new(),
         }
     }
 
@@ -478,7 +545,7 @@ mod tests {
         let object = ObjectState {
             pos: [4.0, 5.0, 6.0],
             forward: [1.0, 0.0, 0.0],
-            vehicle: None,
+            ..ObjectState::default()
         };
         session.kill(9, Some(0), 1, false, Some(object.clone()));
         session.kill(10, Some(0), 0, false, Some(object.clone()));
@@ -539,6 +606,7 @@ mod tests {
             pos: [1.0, 2.0, 3.0],
             forward: [0.0, -1.0, 0.0],
             vehicle: Some(0x90020001),
+            ..ObjectState::default()
         });
         session.sample(&state);
         assert!(session.take_output().is_empty());
@@ -551,6 +619,146 @@ mod tests {
         assert_eq!(frame.players[0].yaw, -std::f64::consts::FRAC_PI_2);
         assert_eq!(frame.players[0].vehicle.as_deref(), Some("90020001"));
         assert!(frame.players[0].alive);
+    }
+
+    fn frames(session: &mut Session) -> Vec<Frame> {
+        session
+            .take_output()
+            .into_iter()
+            .filter_map(|o| match o {
+                Output::Frame(f) => Some(f),
+                Output::Event(_) => None,
+            })
+            .collect()
+    }
+
+    fn armed(weapon: u32, definition: u32) -> ObjectState {
+        ObjectState {
+            pos: [1.0, 2.0, 3.0],
+            forward: [1.0, 0.0, 0.0],
+            definition: Some(0xe100_0010),
+            aim: Some([0.0, 0.6, 0.8]),
+            weapon: Some(crate::event::Weapon {
+                datum: weapon,
+                definition,
+            }),
+            ..ObjectState::default()
+        }
+    }
+
+    fn names() -> TagNames {
+        TagNames::new(
+            0xe000_0001,
+            [
+                (
+                    0xe100_0010,
+                    *b"bipd",
+                    "objects\\characters\\elite\\elite_mp".to_string(),
+                ),
+                (
+                    0xe100_0020,
+                    *b"weap",
+                    "objects\\weapons\\rifle\\battle_rifle\\battle_rifle".to_string(),
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn frames_carry_species_aim_and_weapon_from_tag_names() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&info(), vec![p.clone(), player(1, 0)]);
+        session.take_output();
+        let mut state = snapshot(2, vec![p.clone(), player(1, 0)]);
+        state.objects[0] = Some(armed(0x9005_0005, 0xe100_0020));
+
+        // Without names, only the aim (read straight from memory) is sent.
+        session.sample(&state);
+        let frame = &frames(&mut session)[0];
+        assert_eq!(frame.players[0].aim, Some([0.0, 0.6, 0.8]));
+        assert_eq!(frame.players[0].species, None);
+        assert_eq!(frame.players[0].weapon, None);
+
+        session.set_tag_names(names());
+        state.tick = 4;
+        session.sample(&state);
+        let frame = &frames(&mut session)[0];
+        assert_eq!(frame.players[0].species.as_deref(), Some("elite"));
+        assert_eq!(frame.players[0].weapon.as_deref(), Some("battle_rifle"));
+        // A dead player (no unit, no object) has none of them.
+        assert_eq!(
+            frame.players[1],
+            FramePlayer {
+                index: 1,
+                ..FramePlayer::default()
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(&frame.players[0]).unwrap()["species"],
+            "elite"
+        );
+
+        // An unknown definition sends nothing rather than a guess.
+        state.objects[0] = Some(armed(0x9005_0005, 0xe100_0099));
+        state.tick = 6;
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].players[0].weapon, None);
+
+        // A new match forgets the old map's names.
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let mut state = snapshot(8, vec![p]);
+        state.objects[0] = Some(armed(0x9005_0005, 0xe100_0020));
+        session.sample(&state);
+        assert_eq!(frames(&mut session)[0].players[0].weapon, None);
+    }
+
+    #[test]
+    fn shots_add_up_between_frames_and_reset_on_weapon_change_and_death() {
+        let mut session = Session::new("test", None);
+        let mut p = player(0, 0);
+        p.unit = 0x90010000;
+        session.start(&info(), vec![p.clone()]);
+        session.take_output();
+        let rifle = 0x9005_0005;
+        let pistol = 0x9006_0006;
+        let sample =
+            |session: &mut Session, tick: u64, weapon: Option<u32>, fired: &[(u32, u32)]| {
+                let mut state = snapshot(tick, vec![p.clone()]);
+                state.objects[0] = weapon.map(|w| armed(w, 0xe100_0020));
+                state.shots = fired.iter().copied().collect();
+                session.sample(&state);
+                frames(session).first().map(|f| f.players[0].shots)
+            };
+
+        // Odd ticks add up into the next even tick's frame.
+        assert_eq!(sample(&mut session, 1, Some(rifle), &[(rifle, 2)]), None);
+        assert_eq!(
+            sample(&mut session, 2, Some(rifle), &[(rifle, 1), (pistol, 4)]),
+            Some(Some(3)),
+            "only the held weapon's shots count"
+        );
+        assert_eq!(
+            sample(&mut session, 4, Some(rifle), &[]),
+            Some(None),
+            "0 is absent"
+        );
+        // Switching weapons drops shots counted for the old one.
+        assert_eq!(sample(&mut session, 5, Some(rifle), &[(rifle, 5)]), None);
+        assert_eq!(
+            sample(&mut session, 6, Some(pistol), &[(pistol, 1)]),
+            Some(Some(1))
+        );
+        // Death drops pending shots, and a dead player sends none.
+        assert_eq!(sample(&mut session, 7, Some(pistol), &[(pistol, 2)]), None);
+        assert_eq!(sample(&mut session, 8, None, &[(pistol, 1)]), Some(None));
+        // Counts are capped at the protocol's limit.
+        assert_eq!(
+            sample(&mut session, 10, Some(rifle), &[(rifle, 500)]),
+            Some(Some(MAX_FRAME_SHOTS))
+        );
     }
 
     #[test]

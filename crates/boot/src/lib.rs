@@ -548,6 +548,15 @@ pub fn run_hosted_with_live(
         }
     };
     k.set_vfs(v).context("attaching the VFS")?;
+    // Frame species and weapon names come from the loaded map's tag names,
+    // which stay on disc: let telemetry find the map file through the VFS.
+    if let (Some(t), Some(vfs)) = (&_telemetry, k.vfs()) {
+        t.set_map_locator(Box::new(move |map| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+        }));
+    }
     let uses = opts.stopgaps.then(|| stopgaps::install(&k, &loaded.runtime));
     if let Some(u) = &uses {
         // Retired with the kernel round: the class-34 wrapper
