@@ -1395,6 +1395,7 @@ dependencies = [
  "egui-wgpu",
  "live-proto",
  "map",
+ "scenario-edit",
  "tags",
  "thiserror 2.0.21",
  "xiso",
