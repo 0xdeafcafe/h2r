@@ -6,9 +6,13 @@ spirit of the original tools' Sapien. It hosts tools:
 
 - **Playlists (hoppers)**: edits `multiplayer_hopper.dat`, the 16
   matchmaking playlists the game downloads from Live (below).
-- **Scenario editor** (`crates/scenario-edit`) and **game variant editor**
-  (`crates/variants`): separate crates, wired in as tools by the
-  integrator.
+- **Scenario**: the scenario editor (`crates/scenario-edit`,
+  [scenario-editor.md](scenario-editor.md)), wired in by
+  `crates/editor/src/scenario.rs`. Picking a map in the sidebar opens it,
+  unless the open map has unsaved edits. Save always asks for a new path:
+  the source map is never overwritten.
+- **Game variants** (`crates/variants`): a separate crate, wired in the
+  same way once it lands.
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.

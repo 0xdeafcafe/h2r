@@ -12,6 +12,7 @@
 //! from the user's own disc at run time.
 
 pub mod hopper;
+pub mod scenario;
 pub mod shell;
 pub mod source;
 pub mod tool;

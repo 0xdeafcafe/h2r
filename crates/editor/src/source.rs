@@ -128,6 +128,20 @@ impl MapSource {
         }
     }
 
+    /// Where map `name`'s bytes are: the file to read and, for a disc, the
+    /// `(offset, length)` range inside it. For tools that open maps
+    /// through their own readers.
+    pub fn location(&self, name: &str) -> Result<(PathBuf, Option<(u64, u64)>)> {
+        match self {
+            MapSource::Disc(d) => Ok((d.path().to_owned(), Some(d.region(name)?))),
+            MapSource::Loose(_) => Ok((
+                self.loose_file(name)
+                    .with_context(|| format!("no {name}.map"))?,
+                None,
+            )),
+        }
+    }
+
     fn loose_file(&self, name: &str) -> Option<PathBuf> {
         let MapSource::Loose(p) = self else {
             return None;

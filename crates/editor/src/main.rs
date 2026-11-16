@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use editor::hopper::HopperTool;
+use editor::scenario::ScenarioTool;
 use editor::shell::Shell;
 use editor::source::default_disc;
 
@@ -49,6 +50,7 @@ fn main() -> Result<()> {
             .map_err(|e| anyhow::anyhow!("{}: {e}", p.display()))?;
     }
     shell.add_tool(Box::new(hoppers));
+    shell.add_tool(Box::new(ScenarioTool::new()));
     if let Some(p) = default_disc(source) {
         shell.open_source(p);
     }
