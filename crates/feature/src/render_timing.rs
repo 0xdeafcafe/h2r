@@ -73,9 +73,20 @@ pub enum Stage {
     ShaderBegin = 10,
     /// Geometry submission `0x00041040`, wherever it is called.
     Geometry = 11,
+    /// A shader parameter's evaluation `0x0001b230`, inside the render
+    /// front-end only, except what follows.
+    Parameter = 12,
+    /// A tag function's evaluation `0x0013b390`, inside the render front-end.
+    Function = 13,
+    /// The CRT `fmod` `0x00373b6a`, inside the render front-end.
+    Fmod = 14,
+    /// A texture binding's source `0x00019530`, inside the render front-end.
+    TextureSource = 15,
+    /// An animated bitmap's frame `0x000143c0`, inside the render front-end.
+    BitmapFrame = 16,
 }
 
-pub const STAGES: usize = 12;
+pub const STAGES: usize = 17;
 
 impl Stage {
     pub const ALL: [Stage; STAGES] = [
@@ -91,6 +102,11 @@ impl Stage {
         Stage::LayerBuild,
         Stage::ShaderBegin,
         Stage::Geometry,
+        Stage::Parameter,
+        Stage::Function,
+        Stage::Fmod,
+        Stage::TextureSource,
+        Stage::BitmapFrame,
     ];
 
     pub fn label(self) -> &'static str {
@@ -107,7 +123,25 @@ impl Stage {
             Stage::LayerBuild => "layer_build",
             Stage::ShaderBegin => "shader_begin",
             Stage::Geometry => "geometry",
+            Stage::Parameter => "parameter",
+            Stage::Function => "function",
+            Stage::Fmod => "fmod",
+            Stage::TextureSource => "texture_source",
+            Stage::BitmapFrame => "bitmap_frame",
         }
+    }
+
+    /// Helpers the rest of the game calls too: timed only when they run
+    /// inside the render front-end (another stage is open).
+    pub fn nested_only(self) -> bool {
+        matches!(
+            self,
+            Stage::Parameter
+                | Stage::Function
+                | Stage::Fmod
+                | Stage::TextureSource
+                | Stage::BitmapFrame
+        )
     }
 
     pub fn point(self) -> &'static Point {
@@ -124,6 +158,11 @@ impl Stage {
             Stage::LayerBuild => &points::LAYER_BUILD,
             Stage::ShaderBegin => &points::SHADER_DRAW_BEGIN,
             Stage::Geometry => &points::GEOMETRY_SUBMIT,
+            Stage::Parameter => &points::SHADER_PARAMETER,
+            Stage::Function => &points::FUNCTION_EVALUATE,
+            Stage::Fmod => &points::CRT_FMOD,
+            Stage::TextureSource => &points::TEXTURE_SOURCE,
+            Stage::BitmapFrame => &points::BITMAP_FRAME,
         }
     }
 }
@@ -497,6 +536,9 @@ impl StageClock {
     }
 
     pub fn enter(&mut self, stage: Stage, now: Now) {
+        if stage.nested_only() && self.stack.is_empty() {
+            return;
+        }
         self.charge_top(now);
         self.stack.push(Entry { stage, site: None });
         self.acc.calls[stage as usize] += 1;
@@ -945,6 +987,34 @@ mod tests {
     }
 
     #[test]
+    fn helpers_are_timed_only_inside_the_render_front_end() {
+        let mut c = StageClock::default();
+        // The simulation's fmod: no frame open, nothing counted.
+        c.enter(Stage::Fmod, g(0));
+        assert_eq!(c.depth(), 0);
+        assert!(c.leave(Stage::Fmod, g(5)));
+        c.enter(Stage::Frame, g(10));
+        c.enter(Stage::ShaderBegin, g(11)); // frame 1
+        c.enter(Stage::Parameter, g(12)); // shader 1
+        c.enter(Stage::Fmod, g(13)); // parameter 1
+        c.leave(Stage::Fmod, g(17)); // fmod 4
+        c.enter(Stage::Function, g(18)); // parameter 1
+        c.leave(Stage::Function, g(20)); // function 2
+        c.leave(Stage::Parameter, g(21)); // parameter 1
+        c.leave(Stage::ShaderBegin, g(22)); // shader 1
+        assert!(c.leave(Stage::Frame, g(23))); // frame 1
+        let t = c.take();
+        assert_eq!(t.frames, 1);
+        let time = |s: Stage| t.time[s as usize].guest;
+        assert_eq!(time(Stage::Fmod), 4);
+        assert_eq!(time(Stage::Function), 2);
+        assert_eq!(time(Stage::Parameter), 3);
+        assert_eq!(time(Stage::ShaderBegin), 2);
+        assert_eq!(t.calls[Stage::Fmod as usize], 1);
+        assert_eq!(t.render_ns(), 13);
+    }
+
+    #[test]
     fn a_stage_that_never_returned_is_unwound_by_its_caller() {
         let mut c = StageClock::default();
         c.enter(Stage::Frame, g(0));
@@ -1026,15 +1096,20 @@ mod tests {
                 ms(0, 0),
                 ms(0, 0),
                 ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
+                ms(0, 0),
             ],
-            calls: [2, 2, 2, 2, 2, 24, 0, 0, 0, 0, 0, 0],
+            calls: [2, 2, 2, 2, 2, 24, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
             sites: BTreeMap::new(),
             foreign: 300,
             layers: BTreeMap::new(),
         };
         assert_eq!(
             t.line(),
-            "2 frames; ms/frame render 18.50 d3d 1.50 = frame 0.50 + game_views 0.00 + views 0.00 + game_view 1.00 + scene_passes 15.00 + light_passes 3.50 + layer_draw 0.00 + layer_setup 0.00 + layer_entries 0.00 + layer_build 0.00 + shader_begin 0.00 + geometry 0.00; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 12.0 layer_draw 0.0 layer_setup 0.0 layer_entries 0.0 layer_build 0.0 shader_begin 0.0 geometry 0.0; d3d calls/frame light_passes 300.0; foreign 150"
+            "2 frames; ms/frame render 18.50 d3d 1.50 = frame 0.50 + game_views 0.00 + views 0.00 + game_view 1.00 + scene_passes 15.00 + light_passes 3.50 + layer_draw 0.00 + layer_setup 0.00 + layer_entries 0.00 + layer_build 0.00 + shader_begin 0.00 + geometry 0.00 + parameter 0.00 + function 0.00 + fmod 0.00 + texture_source 0.00 + bitmap_frame 0.00; calls/frame game_views 1.0 views 1.0 game_view 1.0 scene_passes 1.0 light_passes 12.0 layer_draw 0.0 layer_setup 0.0 layer_entries 0.0 layer_build 0.0 shader_begin 0.0 geometry 0.0 parameter 0.0 function 0.0 fmod 0.0 texture_source 0.0 bitmap_frame 0.0; d3d calls/frame light_passes 300.0; foreign 150"
         );
     }
 }
