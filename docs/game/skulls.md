@@ -2,9 +2,11 @@
 
 Status: built. Pickup tracking, per-profile storage and the
 campaign-start apply (`boot::skulls`, the settings store's per-profile
-values) and the "Skulls" row on the difficulty screen have been seen
-working. The Skulls screen that row opens (`boot::skulls_menu`, our own
-list class, "Menu" below) is built and not yet seen running.
+values) have been seen working. The Skulls page between the difficulty
+and the level (`boot::skulls_screen`, `boot::skulls_menu`, our own list
+class with the level select's layout, "Menu" below) is built and tested
+offline, not yet seen running; it replaces the Skulls row the difficulty
+list had.
 
 The ask: a skull a player has picked up is remembered on their profile, and
 when they start a new campaign (alone or in co-op) they can pick which of
@@ -166,113 +168,118 @@ lines say each hook ran the first time.
 
 ## Menu (built)
 
-A "Skulls" row on the difficulty list, the screen both new campaign and
-co-op campaign reach before the level loads, opens the Skulls screen: all
-fifteen skulls, gold first ("Gold and silver" below), then our six ("Our
-skulls" below), each with its name and the pressing
-player's profile's state (the game's own On or Off for a collected skull,
-our "Locked" for one not collected), and a description text with the
-focused skull's effect, its level and whether it needs Legendary. A on a
-collected skull flips it; A on a locked one does nothing (and says why on
-stderr). B returns to the difficulty list, the cursor still on Skulls.
+**The flow** is level select (or New Campaign) → difficulty → the Skulls
+page → the level. The page comes only when the pressing player's profile
+(the one signed in on that player's slot, else `default`) has collected
+at least one skull, retail's or ours; with none, the difficulty starts
+the level as retail does. There is no Skulls row on the difficulty list
+any more: the list is retail's four rows.
 
-The parts:
+The page (`boot::skulls_screen`, feature `skulls-page` for the hook and
+`skulls-screen` for the screen's class):
 
-- **The model** (`boot::skulls`): `ABOUT` (name, effect in our words,
-  level, Legendary, a note; the table above), `state` (Locked until the
-  profile has a value for the skull, then On or Off) and `toggle` (refuses
-  a skull not collected). The store is the same per-profile `skulls.*`
-  values the pickup writes and the campaign start reads (`selection`), so
-  what the screen leaves is what the next start turns on.
-- **The screen** (`boot::skulls_menu::SkullsScreen`, its class in
-  `boot::skulls_screen`): `list_class::Rows` of 21 rows (retail's fifteen, our six) for the profile the row's press set
-  (`open`). It is our own list class, feature `skulls-screen`
-  (`boot::list_class`, docs/engine/feature-engine.md "UI step b"), as the Video
-  screen is: built by the Controls constructor (so the Controls tag's
-  layout: label on the left, value on the right), our vtable copies, our
-  row text, row chosen, pane set-up (title "Skulls") and loader. No retail
-  function is patched for it.
-- **Twenty-one rows on six item widgets.** While the class's loader runs the
-  Controls constructor, the Controls list hook (`layout_glue`, the
-  `0x1a480d` hook) builds the array with `list_class::array_count`'s count
-  (21) instead of six; the list scrolls, as the difficulty list does over
-  our fifth row.
-- **The description** is a text widget of ours: at pane set-up the class
-  hands a text block of its own (font 1, the difficulty description's,
-  left-justified) to the pane builder's text step `0x22f9bf`, which makes
-  the widget a child of the screen (docs/formats/ui.md "A text of our own on a
-  screen"). Row text asks the list for its focused row (`0x24c447`) and,
-  when that changed, sets the widget to the row's description. It sits
-  under the picture (below);
-  `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
-- **The picture** (both screens): the difficulty screen's Legendary skull,
-  the game's own art (`ui\screens\game_shell\difficulty\difficulty_options`
-  image 3, 256 by 256), right of the list with its top-left at (56, 150),
-  and the description under it (`[-112 56 -230 312]`, top, left, bottom,
-  right; Y up from the screen centre; `H2_SKULLS_TEXT_RECT` still moves
-  the text). At pane set-up the class finds the difficulty screen's tag
-  through the interface's screen list (`0x148098(12)`, the tag's handle;
-  its metadata from the tag entries at `[0x4e3b44]`), copies pane 3's
-  first bitmap block (checking it is a `bitm` showing image 3), sets its
-  point to ours and its animation to none, and hands it to the pane
-  builder's bitmap step `0x22fa30` (ESI the screen, the block on the
-  stack, `ret 4`; allocates 0x90, constructs with `0x2b01eb`, links the
-  widget to the screen). The bitmap reference is the loaded map's own, so
-  nothing is hard-coded but the screen, pane and image.
-- **Gold and silver.** The art has one colour, a pale silver. The bitmap
-  draw (`0x2b0565`) builds its colour from the widget's alpha (`+0x64`)
-  and three floats at `+0x28`, `+0x2c`, `+0x30` (`0x2b05e2` to `0x2b0632`),
-  which the widget header (`0x22e27b`) sets to 1; so they tint the image.
-  When the focus moves, row text sets them from the focused skull: gold
-  `(1.0, 0.78, 0.3)` or silver `(0.86, 0.9, 1.0)` by tier, a third as
-  bright while the skull is Locked (`skulls_menu::tint`).
-- **The list is still full width.** The Controls list the class is built
-  on uses the `setting_lists` skin, whose row background
-  (`settings_list_bkd`) and highlight are bitmaps 508 units wide, drawn at
-  their image's size; the value column ends right of the screen's centre.
-  So the picture sits over the right part of the rows. Narrowing the list
-  means another skin, which the list reads from its screen's tag each time
-  (`0x24bbf3` → `0x14837a`): a copy of the Controls tag for our screens,
-  served by the screen-tag hook (`0x22f871` gets the screen in EAX, so it
-  can tell ours by vtable), with the list on the default skin (one label,
-  200 wide, as the difficulty list). Not done: it is unverified without a
-  game run, and our rows would need their value in the label.
-- **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
+- **Start** is the first row. A on it, or the Start button anywhere on
+  the page, starts the level on the difficulty chosen, with the skulls
+  marked On. A on a collected skull flips it On or Off (the store is
+  written at once); A on a locked one does nothing and says why on
+  stderr. B goes back to the difficulty list (the generic back handler,
+  as on every screen of ours); choosing a difficulty there opens the
+  page again.
+- **Rows**: Start, then every skull, gold first ("Gold and silver"
+  below), then our six ("Our skulls"), each one label with its state:
+  "Mythic: On", "Mythic: Off", "Mythic: Locked". The list skin the page
+  uses has one text per row, so the state is in the label.
+- **Right column**: the skull picture, gold or silver for the focused
+  skull's tier and dimmed (to 60%) while it is locked, and under it the
+  description: tier, what it does, where it is found and whether only on
+  Legendary (for a locked skull that is how to unlock it). The Start
+  row's description says what Start, A and B do.
+
+How the flow is made (static reading, not seen running):
 
 | Address | What | Confidence |
 |---|---|---|
-| `0x2bb3ed`, `0x2bb432` | the difficulty screen's two loaders (`+0x8b4` = 0 or 1), screen id 12 (`ui\screens\game_shell\difficulty\difficulty`), constructor `0x2bb477`, vtable `0x45c588` | confirmed |
-| `0x2c9c12` | its list handler constructor (at `screen + 0x614`), called only by `0x2bb477`: vtable `0x45d688`, datum array named `0x45d6e0` ("difficulty list") with 4 rows, row-chosen callback `0x2c9d38` | confirmed |
-| `0x2c9ce7` | row text (vtable slot 20, `ret 8`, item at `[esp+4]`, row at `item+0x70`): rows 0 to 3 to the difficulty names, anything else the null id | confirmed |
-| `0x2c9d38` | row chosen (thiscall, row pointer at `[esp+8]`, `ret 8`): clamps the row to 0..3, stores the difficulty and starts the campaign | confirmed |
-| `0x230427` | pane for a row (`screen + 0x5f3` base + row, no bounds check here); the difficulty screen has one pane per row (4) | confirmed |
+| `0x2bb3ed`, `0x2bb432` | the difficulty screen's two loaders (`+0x8b4` = 0 New Campaign, 1 Select Level), screen id 12, constructor `0x2bb477`, vtable `0x45c588` | confirmed |
+| `0x2c9c12` | its list handler constructor (at `screen + 0x614`): vtable `0x45d688`, "difficulty list" (`0x45d6e0`) of 4 rows | confirmed |
+| `0x2c9d38` | row chosen (thiscall on the list, the player chain and a pointer to the row, `ret 8`): clamps the row to 0..3 and sets the difficulty (`0x148d42`). With `list + 0x2a0` (the screen's `+0x8b4`) clear it stores it (`0x121060`, `0x510994`) and opens the loading screen (`0x2b1467`, screen 209) on window 5 slot 4 for `1 << [[chain]]+4`; set, it stores it at `0x510998` (`0x1210c0`) and plays the difficulty screen's out transition (`0x22eeee` finds the root, `0x22e957(.., 3)`) | confirmed |
+| `0x2300ea` | the generic screen event handler (screen slot 10): event kind 5 (a button) with button 1 (B) or 13 (Back) closes the screen with `0x14800c(eax = [screen+0x78], ecx = [screen+0x74])`; anything else goes to the children (`0x22ec73`) | confirmed |
+| `0x14800c` | close the top screen of a window's stack: the stack's slot `+0x1c`, which starts the screen's out transition (`0x22e957(.., 2)`; it is freed when that ends), then the back sound | confirmed (window 2 read; window 5's stack assumed alike) |
 
-  The list constructor hook grows "difficulty list" from 4 to 5 rows
-  whenever the menu is on (every skull is listed, collected or not, so
-  the row is useful with none). `0x2c9ce7` draws row 4 as "Skulls"; rows
-  0 to 3 go to the original. The pane hook returns at once (`ret 4`) for
-  row 4 on screen 12, so the previous difficulty's pane stays up. A press
-  on row 4 never runs the original (it would clamp the row to Legendary
-  and start the campaign): the player is the callback's `[[esp+4]]+4`;
-  the profile is the name on that player's slot (in co-op each player
-  sees and edits their own; with no named profile there, `default`'s);
-  the screen is opened with `0x149f1e(1 << player, loader)`. The row's
-  text and press are `before` hooks on the plan
-  (`boot::skulls_screen::DifficultyRow`); the Live menu instead adds a
-  fifth item widget ([live-custom-games.md](../live/live-custom-games.md) §5),
-  which this list could do the same way.
-- **Strings** are served by the locale hook from ids `0x21fff000` up (15
-  names, the title, "Locked", 15 descriptions): `is_ours` reads only the
-  middle bytes, so they are clear of the `0x20fff0xx` ids the other rows
-  and the `ui` model take. The row names are the game's (IWHBYD shortened;
-  its description gives the full name).
-- `H2_NO_SKULLS_MENU=1` (or `H2_NO_SKULLS=1`) leaves the difficulty screen
-  as retail; `H2_FEATURES=skulls-screen=off` keeps the row but opens
-  nothing (it says so).
-- **Co-op.** The difficulty list's handler is built only by the screen-12
-  constructor. The game also has `difficulty_lobby` (screen id 1, another
-  list); if co-op reaches that one, it has no Skulls row (not checked in
-  game).
+- A `before` hook on `0x2c9d38` (`skulls_screen::DifficultyPage`) reads
+  the row, the pressing player and its profile, and asks
+  `skulls_screen::PageFlow`. For rows 0 to 3 with a skull collected it
+  keeps the press (the list, the row, the player) and opens the page
+  with `0x149f1e(1 << player, loader)`, never running the original.
+  Otherwise the original runs.
+- The page's Start (`skulls_screen::start`): checks the kept list is
+  still a difficulty list (vtable `0x45d688`), closes the page with
+  `0x14800c` on its own window and slot, writes a player chain and the
+  row to a page of ours, and calls `0x2c9d38` on the kept list; the
+  hook lets that one call through. So the start is retail's own, from
+  either loader. `H2_SKULLS_PAGE_CLOSE=0` skips the close (the page then
+  stays up under whatever the start shows).
+- The Start button: our class's screen vtable has its own slot 10
+  (`list_class::event`): event kind 5 with button 12 runs Start;
+  everything else goes to `0x2300ea`. Button 12 is Start by the order
+  the generic handler's 1 (B) and 13 (Back) imply; not seen running.
+- A row whose press is `Chosen::Act` runs the class's action
+  (`list_class::ListClass::action`); Start is the page's.
+
+**The layout** is the campaign level select's
+(`ui\screens\game_shell\load_level\load_level`, screen 11, mainmenu.map;
+`h2 ui` prints it): its list on the left, its picture box on the right
+and its description under the picture.
+
+| Part | Level select (retail) | The page |
+|---|---|---|
+| list | anchor (-215, 130), skin 0 (`ui\list_skins\default\default`: one text `[28 20 8 210]`, row background 200 wide) | the same |
+| picture | `[177 39 -30 259]` (220 by 207) | the difficulty screen's Legendary skull (`difficulty_options` image 3, 256 by 256, drawn at its size), top-left (36, 180): its visible part (17..209 across, 3..208 down) sits centred in that box, its top on the box's top |
+| description | `[-30 39 -133 260]`, font 1, colour (99, 148, 193) | the same |
+| frame | `ul_02` top left | the Controls tag's left frame (`ul_03`, `[170 -280 42 -24]`); its bottom-right one (`br_06`, `[-30 150 -286 406]`) is left out: it is where the description goes, and the old description ran into it |
+
+Our screens are Controls screens (the Controls constructor builds them),
+and the Controls tag puts a 508-wide two-column list across the screen.
+The list reads its definition (`0x24bbf3` → the current pane
+`0x22f899` → the screen's tag `0x22f871`) and lays its items out and
+builds their texts and bitmaps from the skin (`0x24bc12`, `0x14837a`,
+`0x2bacbc`) when the pane is set up, after our loader has adopted the
+screen. So the screen-tag hook (`layout_glue`, `0x22f871`, EAX the
+screen) hands a screen whose vtable is a class with a layout
+(`list_class::ListLayout`) a copy of its tag (`list_class::copy_tag`,
+in the class's table page, made once per retail tag): the root, one
+pane, the list block with our anchor and skin, and only the bitmaps
+whose left edge is left of the centre. The retail Controls tag is not
+written. The picture and the description are widgets of ours, as
+before: the pane builder's bitmap step (`0x22fa30`) on a copy of the
+difficulty screen's pane 3 bitmap, and its text step (`0x22f9bf`) on a
+block of ours.
+
+Env overrides, read at boot, each logged when set:
+
+- `H2_SKULLS_LIST_AT=x,y`: the list's anchor (default `-215,130`);
+- `H2_SKULLS_LIST_SKIN=n`: the list skin (default 0);
+- `H2_SKULLS_PICTURE_AT=x,y`: the skull's top-left (default `36,180`);
+- `H2_SKULLS_TEXT_RECT=top,left,bottom,right`: the description
+  (default `-30,39,-133,260`).
+
+The multiplayer screen uses the same layout, picture and description.
+
+- **Strings** are served by the locale hook: the title, "Locked", Start
+  and its description, 15 + 6 names and descriptions from ids
+  `0x21fff000` up; the row labels with their state from `0x22fff000`
+  (three per skull). `is_ours` reads only the middle bytes, so both are
+  clear of the `0x20fff0xx` ids the other rows and the `ui` model take.
+  The row names are the game's (IWHBYD shortened; its description gives
+  the full name).
+- `H2_NO_SKULLS_MENU=1` (or `H2_NO_SKULLS=1`) leaves the difficulty
+  screen as retail; `H2_FEATURES=skulls-screen=off` does too (the page
+  has no class, so the difficulty starts at once);
+  `H2_FEATURES=skulls-page=off` removes the hook.
+- **Co-op.** The page is for the pressing player's profile. The
+  campaign start applies the union of every signed-in profile's On
+  skulls, as before. The game also has `difficulty_lobby` (screen 1,
+  another list); if co-op reaches that one, it has no page (not checked
+  in game).
 
 ## Gold and silver
 
@@ -314,11 +321,12 @@ Uncertain, so said here:
   (November 2026); MCC patches have changed scoring before.
 
 The tier is `skulls::About::tier` (`SkullTier`), next to the rest of
-`ABOUT`. The Skulls screen lists gold first, then silver, each in the
+`ABOUT`. The Skulls page lists gold first, then silver, each in the
 engine's order (`skulls::by_tier`; `skulls_menu::row_of` maps an index to
 its row), and each description starts "Gold skull:" or "Silver skull:".
 Coloured rows are not done: our list class sets each row's text only,
-and the rows draw in the Controls tag's colour, so the tier is in words. The web badges
+and the rows draw in the skin's colour, so the tier is in words and in
+the picture's tint. The web badges
 and the games filter group by the same tiers (`web/src/lib/skulls.ts`,
 kept in step with `ABOUT` by hand).
 
@@ -761,50 +769,64 @@ ours is placed or applied; retail's skulls are untouched either way.
 6. The HUD message and sound on pickup are unchanged (the game's own
    function still runs).
 
-The menu:
+The page (step numbers kept for the multiplayer steps below):
 
-7. Campaign, a new campaign: the difficulty list is Easy, Normal, Heroic,
-   Legendary, Skulls (scrolled by one), with or without skulls collected.
-   stderr: `skulls menu: difficulty list: Skulls row shown; <profile> <n>
-   of 21 collected`, and `skulls menu: difficulty row text`. Moving
-   onto Skulls keeps the Legendary pane up.
-8. A on Skulls: a screen titled "Skulls". stderr, in order:
-   `skulls menu: difficulty row chosen`,
-   `skulls menu: opening the Skulls screen for <profile> (player 0)`,
-   `layouts: list 0x45d298 grows from 6 to 21 rows` (the Controls list;
-   only when no Controls list grew earlier in the run, since that line is
-   said once),
-   `skulls-screen: opened with 21 rows (our list class)`,
-   `skulls-screen: row text`. If it says fewer than 21 rows, the list
-   hook did not see the build: report it. If it says `no description
-   text`, the widget could not be made.
-9. The rows, gold first: Assassins, Thunderstorm, Famine, Blind, Black
-   Eye, Catch, Iron, Mythic, Angry, then Envy, Grunt Birthday Party,
-   IWHBYD, Ghost, Sputnik, Bandana, then ours: Fall Damage, Acrophobia,
-   Low Gravity, Unlimited Ammo, Unlimited Grenades, Invincible; each value
-   On, Off or Locked. Scroll to the end and back: all 21 are reachable.
-10. The picture: a large skull right of the list, gold on a gold skull
-    and silver on a silver one, dim on a locked one, changing as the
-    cursor moves. If there is none, stderr says `skulls-screen: no
-    picture: <why>` once. The description: under the picture, "Gold
-    skull:" or "Silver skull:",
-    the focused skull's effect and "Found on <level>, Legendary only" (Blind: "any difficulty"); it
-    changes as the cursor moves. If it is missing, clipped or over the
-    list, say where it sits; `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
-    (screen centre origin, Y up, 640x480) moves it to try another place.
-11. A on a collected skull flips On and Off at once (stderr `skulls: Mythic
-    off for <profile>`), and `settings.toml` follows. A on a locked skull
-    changes nothing: `skulls menu: Iron is locked for <profile>: not
-    collected yet (found on High Charity, Legendary only)`.
-12. B returns to the difficulty list with the cursor on Skulls; choosing a
-    difficulty starts the campaign with exactly the On skulls (step 2's
-    stderr line).
-13. Co-op (two named profiles): each player's A opens their own profile's
-    screen (`... for <profile> (player 1)`). Note which difficulty screen
-    co-op shows; if it has no Skulls row, it is the lobby one (screen 1).
-14. Select Level's difficulty choice (the second loader, `0x2bb432`): the
-    row appears there too.
-15. `H2_NO_SKULLS_MENU=1`: the difficulty screen is retail.
+7. With a profile that has no skull collected: Campaign, New Campaign,
+   pick a difficulty. The difficulty list is retail's four rows (no
+   Skulls row), and the level starts at once. stderr: `skulls page:
+   <profile> has no skulls collected; starting as retail`.
+8. With a profile that has a skull: pick a difficulty. A page titled
+   "Skulls" opens instead of the level. stderr, in order: `skulls page:
+   difficulty chosen; the Skulls page comes first`, `skulls page:
+   opening the Skulls page for <profile> (player 0, difficulty <n>)`,
+   `skulls-screen: opened with 22 rows (our list class)`, `list class: a
+   screen of ours gets its own layout (tag copy at 0x...)`,
+   `skulls-screen: row text`. If the layout line is missing, the list is
+   still full width: report it.
+9. **Look at the layout** (the point of this change; it can only be seen
+   in game). It should match Select Level's screen:
+   - the list on the **left**, rows about as wide as Select Level's
+     (each row ends left of the screen's centre), first row **Start**,
+     then Assassins, Thunderstorm, Famine, Blind, Black Eye, Catch, Iron,
+     Mythic, Angry, Envy, Grunt Birthday Party, IWHBYD, Ghost, Sputnik,
+     Bandana, Fall Damage, Acrophobia, Low Gravity, Unlimited Ammo,
+     Unlimited Grenades, Invincible; each "Name: On", "Name: Off" or
+     "Name: Locked". Scroll to the end and back: all 22 reachable.
+   - on the **right**, a large skull in Select Level's picture box,
+     **gold** on a gold skull, **silver** on a silver one, dimmer while
+     locked, changing as the cursor moves.
+   - **under the skull**, inside the right column, the description,
+     wrapped to the picture's width: "Gold skull:" or "Silver skull:",
+     the effect, "Found on <level>, Legendary only" (Blind: "any
+     difficulty"). Nothing over the frame art; no frame art bottom right.
+   If something sits wrong, try without a rebuild and say which values
+   look right: `H2_SKULLS_LIST_AT=x,y` (default `-215,130`),
+   `H2_SKULLS_LIST_SKIN=n` (default 0), `H2_SKULLS_PICTURE_AT=x,y`
+   (default `36,180`), `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
+   (default `-30,39,-133,260`); screen centre origin, Y up, 640x480.
+   Also note: whether long labels ("Unlimited Grenades: Locked") fit
+   their row; the button prompts (the Controls screen's own: B may still
+   say "Done", though it goes back).
+10. A on a collected skull flips On and Off at once (stderr `skulls:
+    Mythic off for <profile>`), and `settings.toml` follows. A on a
+    locked skull changes nothing: `skulls menu: Iron is locked for
+    <profile>: not collected yet (found on High Charity, Legendary
+    only)`.
+11. B: back on the difficulty list. Pick a difficulty again: the page
+    opens again.
+12. A on Start: the page closes and the level starts on the difficulty
+    picked. stderr `skulls page: starting on difficulty <n> for
+    <profile> with <skulls on>`, then the campaign start's `skulls:
+    campaign start for <profile>: ...` with exactly the On skulls. Then
+    try the Start button on the page instead of the Start row: the same.
+    If the level does not start, or the page stays up, report the last
+    `skulls page:` lines; then try `H2_SKULLS_PAGE_CLOSE=0`.
+13. Select Level: pick a level, then a difficulty: the same page, and
+    Start loads that level (the other loader, `0x2bb432`).
+14. Co-op (two named profiles): each player's difficulty press opens the
+    page for their own profile. Note which difficulty screen co-op shows;
+    if it has no page, it is the lobby one (screen 1).
+15. `H2_NO_SKULLS_MENU=1`: the difficulty starts the level as retail.
 
 Multiplayer (a Live server running; two machines for 20 to 22):
 
@@ -821,7 +843,9 @@ Multiplayer (a Live server running; two machines for 20 to 22):
 18. A on it: "Multiplayer Skulls", rows Famine, Blind and Low Gravity, over
     the variant editor. stderr `skulls menu: opening the multiplayer Skulls screen for
     <profile> (player 0) on window 5`, then `skulls-mp-screen: opened with
-    3 rows (our list class)`. The big skull: gold or silver by the
+    3 rows (our list class)`. The same layout as the campaign page
+    (list left, "Famine: Locked" style labels, skull right, description
+    under it; no Start row). The big skull: gold or silver by the
     focused skull's tier, dim while locked. A on Blind (collected): `skulls: Blind on
     in multiplayer for <profile>`; on one not collected: Locked, nothing
     changes, and `skulls menu: Famine is locked for <profile> in

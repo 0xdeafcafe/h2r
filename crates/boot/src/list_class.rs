@@ -46,6 +46,28 @@ use crate::ui::{Chosen, List, Model};
 /// adopt the screen.
 pub const CONTROLS_ROW_CHOSEN: u32 = 0x002c_8719;
 
+/// Screen vtable slot 10: the event handler (thiscall, the event, `ret 4`;
+/// the Controls one is the generic `0x2300ea`, which closes the screen on
+/// B or Back and hands anything else to the children).
+pub const SCREEN_EVENT_SLOT: u32 = 10;
+/// An event's kind word (`+0`) for a button, and its button (`+8`): the
+/// generic handler takes 1 (B) and 13 (Back); 12 is Start in the same
+/// order (A, B, X, Y, black, white, triggers, d-pad, Start, Back).
+pub const BUTTON_EVENT: u32 = 5;
+pub const START_BUTTON: u32 = 12;
+
+/// A step of a screen's own, run on a press of a row whose press is
+/// [`Chosen::Act`] or on the Start button: async, given the screen.
+pub type Action = Arc<
+    dyn Fn(
+            Cx,
+            u32,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), EntryError>> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Our entries and vtable copies, once built.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Entries {
@@ -54,6 +76,8 @@ pub struct Entries {
     pub row_chosen: u32,
     pub setup_pane: u32,
     pub loader_slot: u32,
+    /// Screen slot 10 of ours (a class with an action), else 0.
+    pub event: u32,
     /// Our copy of the Controls screen vtable, then of the list's.
     pub screen_vtable: u32,
     pub list_vtable: u32,
@@ -177,6 +201,148 @@ pub fn picture_block(
     b[BITMAP_POINT..BITMAP_POINT + 2].copy_from_slice(&spec.at[0].to_le_bytes());
     b[BITMAP_POINT + 2..BITMAP_POINT + 4].copy_from_slice(&spec.at[1].to_le_bytes());
     Ok(b)
+}
+
+/// The list of a screen of ours placed and skinned as another screen's
+/// (docs/game/skulls.md "Layout"): our screens are built by the Controls
+/// constructor, whose tag puts a full-width two-column list across the
+/// screen. The screen-tag function (`0x22f871`, EAX the screen) hands our
+/// screens a copy of that tag ([`copy_tag`]) whose one pane has the list
+/// block moved and reskinned and only the frame art left of `bitmaps_left_of`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ListLayout {
+    /// The list skin, an index into the shared UI globals' skins
+    /// (`wigl +0x138`; 0 is `ui\list_skins\default\default`).
+    pub skin: i16,
+    /// The first item's top-left, `x, y` (Y up, screen centre origin).
+    pub anchor: [i16; 2],
+    /// A retail bitmap of the pane is kept only when its top-left `x` is
+    /// less than this: the picture column on the right stays clear.
+    pub bitmaps_left_of: i16,
+}
+
+/// A `wgit` root's size, and its panes block (count, address).
+pub const SCREEN_ROOT_SIZE: u32 = 0x68;
+/// A pane's lists block (count, address), and a list block's size, skin
+/// (`i16`) and anchor (point).
+const PANE_LISTS: u32 = 0x0c;
+pub const LIST_BLOCK_SIZE: u32 = 0x18;
+const LIST_SKIN: u32 = 0x04;
+const LIST_ANCHOR: u32 = 0x08;
+/// Frame bitmaps kept at most.
+const KEPT_BITMAPS: u32 = 4;
+/// Where a class's tag copy goes in its table page, and the word that says
+/// which retail tag it was made from.
+const TAG_COPY: u32 = 0x200;
+const TAG_SOURCE: u32 = 0x1fc;
+/// The copy's size: root, one pane, one list, the kept bitmaps.
+pub const TAG_COPY_SIZE: u32 =
+    SCREEN_ROOT_SIZE + PANE_SIZE + LIST_BLOCK_SIZE + KEPT_BITMAPS * BITMAP_BLOCK_SIZE;
+const _: () = assert!(TAG_SOURCE + 4 <= TAG_COPY && TAG_COPY + TAG_COPY_SIZE <= 0x1000);
+const _: () = assert!(PICTURE_BLOCK + BITMAP_BLOCK_SIZE <= TAG_SOURCE);
+
+/// Writes at `at` a copy of the retail screen tag at `retail` with one pane
+/// (its pane 0): the first list block moved to `layout.anchor` on skin
+/// `layout.skin`, and only the bitmaps left of `layout.bitmaps_left_of`.
+/// Text blocks and the rest are the retail ones. `None` when the tag has no
+/// pane (left as it is).
+pub fn copy_tag(
+    m: &mut dyn GuestMemory,
+    retail: u32,
+    at: u32,
+    layout: &ListLayout,
+) -> Result<Option<u32>, MemFault> {
+    let (panes, pane_from) = (
+        m.u32(retail + SCREEN_PANES)?,
+        m.u32(retail + SCREEN_PANES + 4)?,
+    );
+    if panes == 0 {
+        return Ok(None);
+    }
+    let copy = |m: &mut dyn GuestMemory, from: u32, to: u32, len: u32| -> Result<(), MemFault> {
+        let mut b = vec![0u8; len as usize];
+        m.read(from, &mut b)?;
+        m.write(to, &b)
+    };
+    let pane = at + SCREEN_ROOT_SIZE;
+    let list = pane + PANE_SIZE;
+    let bitmaps = list + LIST_BLOCK_SIZE;
+    copy(m, retail, at, SCREEN_ROOT_SIZE)?;
+    m.set_u32(at + SCREEN_PANES, 1)?;
+    m.set_u32(at + SCREEN_PANES + 4, pane)?;
+    copy(m, pane_from, pane, PANE_SIZE)?;
+    let (lists, list_from) = (
+        m.u32(pane_from + PANE_LISTS)?,
+        m.u32(pane_from + PANE_LISTS + 4)?,
+    );
+    if lists > 0 {
+        copy(m, list_from, list, LIST_BLOCK_SIZE)?;
+        m.set_u16(list + LIST_SKIN, layout.skin as u16)?;
+        m.set_u16(list + LIST_ANCHOR, layout.anchor[0] as u16)?;
+        m.set_u16(list + LIST_ANCHOR + 2, layout.anchor[1] as u16)?;
+        m.set_u32(pane + PANE_LISTS, 1)?;
+        m.set_u32(pane + PANE_LISTS + 4, list)?;
+    }
+    let (n, from) = (
+        m.u32(pane_from + PANE_BITMAPS)?,
+        m.u32(pane_from + PANE_BITMAPS + 4)?,
+    );
+    let mut kept = 0;
+    for i in 0..n.min(64) {
+        let b = from + i * BITMAP_BLOCK_SIZE;
+        let x = m.u16(b + BITMAP_POINT as u32)? as i16;
+        if x < layout.bitmaps_left_of && kept < KEPT_BITMAPS {
+            copy(m, b, bitmaps + kept * BITMAP_BLOCK_SIZE, BITMAP_BLOCK_SIZE)?;
+            kept += 1;
+        }
+    }
+    m.set_u32(pane + PANE_BITMAPS, kept)?;
+    m.set_u32(pane + PANE_BITMAPS + 4, bitmaps)?;
+    Ok(Some(at))
+}
+
+/// The classes with a layout: their screen vtable, table page and layout.
+static LAYOUTS: Mutex<Vec<(u32, u32, ListLayout)>> = Mutex::new(Vec::new());
+
+/// Whether `vtable` is the screen vtable of a class with a layout.
+pub fn has_layout(vtable: u32) -> bool {
+    LAYOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|(v, _, _)| *v == vtable)
+}
+
+/// What the screen-tag function returns for `screen`, given that it found
+/// `retail`: our copy for a screen of a class with a layout (made once per
+/// retail tag, made again when a map load moves it), else `None`.
+pub fn served_tag(
+    m: &mut dyn GuestMemory,
+    screen: u32,
+    retail: u32,
+) -> Result<Option<u32>, MemFault> {
+    if retail == 0 {
+        return Ok(None);
+    }
+    let vtable = m.u32(screen)?;
+    let Some((tables, layout)) = LAYOUTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(v, _, _)| *v == vtable)
+        .map(|(_, t, l)| (*t, *l))
+    else {
+        return Ok(None);
+    };
+    let at = tables + TAG_COPY;
+    if m.u32(tables + TAG_SOURCE)? == retail {
+        return Ok(Some(at));
+    }
+    let made = copy_tag(m, retail, at, &layout)?;
+    if made.is_some() {
+        m.set_u32(tables + TAG_SOURCE, retail)?;
+    }
+    Ok(made)
 }
 
 /// Sets widget `widget`'s tint.
@@ -380,6 +546,8 @@ pub struct ListClass {
     rows: Arc<dyn Rows>,
     description: Option<TextBlock>,
     picture: Option<PictureSpec>,
+    layout: Option<ListLayout>,
+    action: Option<Action>,
     loader: Arc<AtomicU32>,
 }
 
@@ -396,6 +564,8 @@ impl ListClass {
             rows,
             description: None,
             picture: None,
+            layout: None,
+            action: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -408,6 +578,17 @@ impl ListClass {
     /// ([`Rows::tint`]). Only a class with a description shows one.
     pub fn picture(mut self, spec: PictureSpec) -> Self {
         self.picture = Some(spec);
+        self
+    }
+    /// With its list placed and skinned by `layout` ([`ListLayout`]).
+    pub fn layout(mut self, layout: ListLayout) -> Self {
+        self.layout = Some(layout);
+        self
+    }
+    /// With an action: what a row whose press is [`Chosen::Act`] runs, and
+    /// the Start button too.
+    pub fn action(mut self, action: Action) -> Self {
+        self.action = Some(action);
         self
     }
     /// The loader address to open it with (`0x149f1e(mask, loader)`), once
@@ -439,6 +620,9 @@ pub fn write_vtables(m: &mut dyn GuestMemory, e: &Entries) -> Result<(), MemFaul
     m.set_u32(e.screen_vtable + 4 * screen_slot::SETUP_PANE, e.setup_pane)?;
     m.set_u32(e.screen_vtable + 4 * screen_slot::LOADER, e.loader_slot)?;
     m.set_u32(e.list_vtable + 4 * list_slot::ROW_TEXT, e.row_text)?;
+    if e.event != 0 {
+        m.set_u32(e.screen_vtable + 4 * SCREEN_EVENT_SLOT, e.event)?;
+    }
     Ok(())
 }
 
@@ -659,16 +843,44 @@ pub async fn row_text(
 /// Row chosen (the press record's function): thiscall, the player chain and
 /// a pointer to the row, `ret 8`. A setting row steps; an open row opens
 /// the screen of ours it names.
-pub async fn row_chosen(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> {
+pub async fn row_chosen(
+    cx: Cx,
+    rows: Arc<dyn Rows>,
+    action: Option<Action>,
+) -> Result<Ret, EntryError> {
     let (chain, at) = (cx.arg(0)?, cx.arg(1)?);
     let row = cx.read(|m| m.u16(at))? as i16;
     // The store is written with no guest memory held.
     match rows.press(row) {
         Chosen::Stepped(msg) => eprintln!("{msg}"),
         Chosen::Open(id) => open(&cx, chain, id).await?,
-        _ => {}
+        Chosen::Act => {
+            if let Some(action) = action {
+                let screen = cx.entry().ecx.wrapping_sub(ui::LIST);
+                action(cx.clone(), screen).await?;
+            }
+        }
+        Chosen::Nothing => {}
     }
     Ok(Ret::new(0, 8))
+}
+
+/// Screen slot 10 of a class with an action: the Start button runs the
+/// action (AL 1, handled); every other event goes to `original`, the
+/// Controls class's handler. Thiscall, the event, `ret 4`.
+pub async fn event(cx: Cx, original: u32, action: Action) -> Result<Ret, EntryError> {
+    let screen = cx.entry().ecx;
+    let ev = cx.arg(0)?;
+    let (kind, button) =
+        cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(ev)?, m.u32(ev + 8)?)) })?;
+    if kind == BUTTON_EVENT && button == START_BUTTON {
+        action(cx.clone(), screen).await?;
+        return Ok(Ret::new(1, 4));
+    }
+    let r = cx
+        .call(GuestCall::new(original).ecx(screen).args([ev]))
+        .await?;
+    Ok(Ret::new(r.eax, 4))
 }
 
 /// Screen slot 18: the retail pane set-up, then our title on the header,
@@ -794,10 +1006,23 @@ impl feature::Feature for ListClass {
             })?
         };
         let row_chosen_at = {
-            let rows = Arc::clone(&rows);
+            let (rows, action) = (Arc::clone(&rows), self.action.clone());
             b.entry("row chosen", move |cx| -> EntryFuture {
-                Box::pin(row_chosen(cx, Arc::clone(&rows)))
+                Box::pin(row_chosen(cx, Arc::clone(&rows), action.clone()))
             })?
+        };
+        // The Controls class's event handler, read from its vtable when
+        // first needed (the class's own slot replaces it in our copy).
+        let event_at = match self.action.clone() {
+            Some(action) => b.entry("event", move |cx| -> EntryFuture {
+                let action = Arc::clone(&action);
+                Box::pin(async move {
+                    let original =
+                        cx.read(|m| ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_EVENT_SLOT))?;
+                    event(cx, original, action).await
+                })
+            })?,
+            None => 0,
         };
         let description = self
             .description
@@ -821,11 +1046,17 @@ impl feature::Feature for ListClass {
             row_chosen: row_chosen_at,
             setup_pane: setup_pane_at,
             loader_slot,
+            event: event_at,
             screen_vtable: tables,
             list_vtable: tables + 4 * screen_slot::COUNT,
         };
         cell.set(e).ok();
         self.loader.store(loader, Ordering::SeqCst);
+        if let Some(layout) = self.layout {
+            let mut v = LAYOUTS.lock().unwrap_or_else(|e| e.into_inner());
+            v.retain(|(vt, _, _)| *vt != tables);
+            v.push((tables, tables, layout));
+        }
         LOADERS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -857,6 +1088,7 @@ mod tests {
             row_chosen: 0xa0f0_0020,
             setup_pane: 0xa0f0_0030,
             loader_slot: 0xa0f0_0040,
+            event: 0,
             screen_vtable: TABLES,
             list_vtable: TABLES + 0x70,
         }
@@ -894,7 +1126,8 @@ mod tests {
             .put_u32(0x0071_0000, 0x0072_0000)
             .put_u32(0x0072_0004, player);
         g.put_u32(STACK + 8, 0x0070_0000).put_u16(0x0070_0000, 0);
-        let f = move |cx| -> EntryFuture { Box::pin(row_chosen(cx, Arc::new(Opens(target)))) };
+        let f =
+            move |cx| -> EntryFuture { Box::pin(row_chosen(cx, Arc::new(Opens(target)), None)) };
         let regs = Regs {
             esp: STACK,
             ..Default::default()
@@ -1248,6 +1481,7 @@ mod tests {
                         model: Arc::clone(&m),
                         screen: video_screen::SCREEN,
                     }),
+                    None,
                 ))
             }
         };
@@ -1692,5 +1926,145 @@ mod tests {
         m.map(PICTURE, 0x90);
         set_tint(&mut m, PICTURE, [1.0, 0.78, 0.3]).unwrap();
         assert_eq!(f32::from_bits(m.u32(PICTURE + 0x2c).unwrap()), 0.78);
+    }
+
+    /// A Controls-shaped tag: one pane with the full-width list and two
+    /// frame bitmaps, the left one and the bottom-right one.
+    fn controls_tag(g: &mut FakeGuest) -> u32 {
+        const T: u32 = 0x0090_0000;
+        g.map(T, 0x400);
+        let (pane, list, bitmaps) = (T + 0x100, T + 0x200, T + 0x300);
+        g.put_u32(T, 0x11)
+            .put_u16(T + 4, 39)
+            .put_u32(T + 0x2c, 0x0600_0233);
+        g.put_u32(T + 0x20, 1).put_u32(T + 0x24, pane);
+        g.put_u32(pane + 0x0c, 1).put_u32(pane + 0x10, list);
+        g.put_u32(pane + 0x24, 2).put_u32(pane + 0x28, bitmaps);
+        g.put_u32(pane + 0x1c, 0).put_u32(pane + 0x20, 0);
+        // The list: skin 2, six visible, anchor (-254, 130), animation 21.
+        g.put_u16(list + 4, 2)
+            .put_u16(list + 6, 6)
+            .put_u16(list + 8, (-254i16) as u16)
+            .put_u16(list + 0xa, 130)
+            .put_u16(list + 0xc, 21);
+        g.put_u16(bitmaps + 0xc, (-280i16) as u16)
+            .put_u32(bitmaps + 0x1c, 0xaaaa);
+        let b1 = bitmaps + BITMAP_BLOCK_SIZE;
+        g.put_u16(b1 + 0xc, 150).put_u32(b1 + 0x1c, 0xbbbb);
+        T
+    }
+
+    const LAYOUT: ListLayout = ListLayout {
+        skin: 0,
+        anchor: [-215, 130],
+        bitmaps_left_of: 0,
+    };
+
+    #[test]
+    fn the_tag_copy_moves_and_reskins_the_list_and_drops_the_right_frame() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        let at = TABLES + TAG_COPY;
+        assert_eq!(copy_tag(&mut g, retail, at, &LAYOUT), Ok(Some(at)));
+        // The root is the retail one but for its one pane.
+        assert_eq!(g.u32(at), Ok(0x11));
+        assert_eq!(g.u16(at + 4), Ok(39));
+        assert_eq!(g.u32(at + 0x2c), Ok(0x0600_0233));
+        assert_eq!(g.u32(at + 0x20), Ok(1));
+        let pane = g.u32(at + 0x24).unwrap();
+        assert!((at..at + TAG_COPY_SIZE).contains(&pane));
+        // The list: ours in place and skin, the rest retail.
+        assert_eq!(g.u32(pane + 0x0c), Ok(1));
+        let list = g.u32(pane + 0x10).unwrap();
+        assert_eq!(g.u16(list + 4), Ok(0));
+        assert_eq!(g.u16(list + 6), Ok(6), "visible count kept");
+        assert_eq!(g.u16(list + 8).map(|v| v as i16), Ok(-215));
+        assert_eq!(g.u16(list + 0xa), Ok(130));
+        assert_eq!(g.u16(list + 0xc), Ok(21), "animation kept");
+        // Only the frame left of the centre.
+        assert_eq!(g.u32(pane + 0x24), Ok(1));
+        let kept = g.u32(pane + 0x28).unwrap();
+        assert_eq!(g.u32(kept + 0x1c), Ok(0xaaaa));
+        // The retail tag is untouched.
+        assert_eq!(g.u32(retail + 0x20), Ok(1));
+        assert_eq!(g.u16(0x0090_0200 + 4), Ok(2));
+    }
+
+    #[test]
+    fn only_screens_of_a_class_with_a_layout_get_the_copy_made_once() {
+        let mut g = guest();
+        let retail = controls_tag(&mut g);
+        const OURS: u32 = 0x00a0_0000;
+        const THEIRS: u32 = 0x00a1_0000;
+        g.map(OURS, 4).map(THEIRS, 4);
+        g.put_u32(OURS, TABLES)
+            .put_u32(THEIRS, CONTROLS_SCREEN_VTABLE.base);
+        LAYOUTS.lock().unwrap().push((TABLES, TABLES, LAYOUT));
+        assert!(has_layout(TABLES));
+        assert_eq!(served_tag(&mut g, THEIRS, retail), Ok(None));
+        assert_eq!(served_tag(&mut g, OURS, 0), Ok(None), "no retail tag");
+        let at = TABLES + TAG_COPY;
+        assert_eq!(served_tag(&mut g, OURS, retail), Ok(Some(at)));
+        assert_eq!(g.u32(TABLES + TAG_SOURCE), Ok(retail));
+        // Made once: a change to our copy stays until the retail tag moves.
+        g.put_u32(at, 0x77);
+        assert_eq!(served_tag(&mut g, OURS, retail), Ok(Some(at)));
+        assert_eq!(g.u32(at), Ok(0x77));
+        LAYOUTS.lock().unwrap().retain(|(v, _, _)| *v != TABLES);
+    }
+
+    /// Slot 10 of a class with an action: Start runs it and is handled;
+    /// anything else goes to the Controls handler.
+    #[test]
+    fn the_start_button_runs_the_action_and_the_rest_go_to_the_original() {
+        const EVENT: u32 = 0x0061_0000;
+        let ran = Arc::new(AtomicU32::new(0));
+        let run_with = |button: u32| {
+            let mut g = guest();
+            g.map(EVENT, 0x10);
+            g.put_u32(EVENT, BUTTON_EVENT).put_u32(EVENT + 8, button);
+            g.put_u32(STACK + 4, EVENT);
+            let ran = Arc::clone(&ran);
+            let action: Action = Arc::new(move |_, screen| {
+                ran.store(screen, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            });
+            let f = move |cx| -> EntryFuture { Box::pin(event(cx, 0x2300ea, Arc::clone(&action))) };
+            let regs = Regs {
+                esp: STACK,
+                ecx: SCREEN,
+                ..Default::default()
+            };
+            testing::run(&f, g, regs, |_, _| Regs {
+                eax: 7,
+                ..Default::default()
+            })
+        };
+        let run = run_with(START_BUTTON);
+        assert_eq!(run.result, Ok(Ret::new(1, 4)));
+        assert_eq!(run.calls, []);
+        assert_eq!(ran.swap(0, Ordering::SeqCst), SCREEN);
+        let run = run_with(1);
+        assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
+        assert_eq!(run.result, Ok(Ret::new(7, 4)));
+        assert_eq!(ran.load(Ordering::SeqCst), 0, "B is not Start");
+    }
+
+    #[test]
+    fn a_class_with_an_action_gets_our_event_slot() {
+        let mut g = guest();
+        let e = Entries {
+            event: 0xa0f0_0050,
+            ..entries()
+        };
+        write_vtables(&mut g, &e).unwrap();
+        assert_eq!(ui::slot(&g, TABLES, SCREEN_EVENT_SLOT), Ok(0xa0f0_0050));
+        let mut g = guest();
+        write_vtables(&mut g, &entries()).unwrap();
+        assert_eq!(
+            ui::slot(&g, TABLES, SCREEN_EVENT_SLOT),
+            Ok(0x5000 + SCREEN_EVENT_SLOT),
+            "no action: the Controls handler"
+        );
     }
 }
