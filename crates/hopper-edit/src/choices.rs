@@ -146,17 +146,11 @@ impl Choices {
     }
 }
 
-/// The invented schema the hopper tests use.
-#[cfg(test)]
-pub(crate) fn tests_schema() -> Schema {
-    tests::schema()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixture::schema;
     use variants::GameType;
-    use variants::schema::Builtin;
 
     fn scratch(name: &str) -> PathBuf {
         let dir =
@@ -164,26 +158,6 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    /// The fallback schema with two invented built-ins.
-    pub(crate) fn schema() -> Schema {
-        let mut s = Schema::fallback();
-        s.builtins = vec![
-            Builtin {
-                name: "Alpha\u{e001}".into(),
-                game_type: GameType::Slayer,
-                description: 3,
-                pairs: Vec::new(),
-            },
-            Builtin {
-                name: "Bravo".into(),
-                game_type: GameType::King,
-                description: 4,
-                pairs: Vec::new(),
-            },
-        ];
-        s
     }
 
     #[test]

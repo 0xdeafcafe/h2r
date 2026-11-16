@@ -27,6 +27,7 @@ xiso.workspace = true
 rfd = "0.18"
 content.workspace = true
 editor-core = { path = "../editor-core" }
+hopper-edit = { path = "../hopper-edit" }
 
 [dev-dependencies]
 # The guide's screenshots (src/screenshots.rs): offscreen egui-wgpu

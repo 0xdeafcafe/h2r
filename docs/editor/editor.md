@@ -18,7 +18,9 @@ spirit of the original tools' Sapien. It hosts tools:
   panel's **Save as package...** and **Open package...** save and open map
   packages in `<data>/maps` (scenario-editor.md §5, maps.md §8).
 - **Game variants**: the game variant editor (`crates/variants`,
-  [variants.md](variants.md)), wired in by `crates/editor/src/variants.rs`.
+  [variants.md](variants.md)), wired in by `crates/editor/src/variants.rs`
+  (its schema, XBE names and save storage come from
+  `editor_core::variant_sources`, shared with h2-studio).
   Settings come from the disc's `mainmenu` map, save names from the XBE
   (`H2_XBE`, else `default.xbe` beside the disc). Saves go to the
   runtime's save storage (`U:` under `<data>`), so there is no Save As;
@@ -184,7 +186,8 @@ server's copy:
   listed as unavailable.
 - **Undo/redo** covers every edit, including past a save.
 
-The editing logic (`crates/editor/src/hopper/model.rs`) mirrors the
+The editing logic (`crates/hopper-edit/src/model.rs`, shared with
+h2-studio's playlist tool through `hopper_edit::HopperSession`) mirrors the
 server's `apply_patch`: every entry remembers the slot its bytes come
 from, and writing back copies that whole 0x37c-byte slot (game variant
 and unknown blobs) before setting the edited fields, so reorders and

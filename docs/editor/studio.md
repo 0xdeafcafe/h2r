@@ -12,8 +12,8 @@ building and working, and stays the tool for whatever the studio lacks.
 
 | Phase | What | State |
 | --- | --- | --- |
-| 1 | Shell, scenario tool, 3D viewport, headless screenshots | this page |
-| 2 | Game variants and playlists (hoppers) | `h2-editor` has them |
+| 1 | Shell, scenario tool, 3D viewport, headless screenshots | done |
+| 2 | Game variants and playlists (hoppers) | done |
 | 3 | Guide screenshots with real assets, the user guide, retiring egui (`h2-editor` moves to the studio) | to do |
 
 Nothing in the studio contains game data: maps come from your own disc at
@@ -36,8 +36,11 @@ With no source it opens `H2_DISC`, else `disc/halo2.iso` when it exists
   map as a new `.map`, save as or open a package, quit), Edit (undo, redo,
   duplicate, delete, allow growing full blocks), View (frame the map,
   focus the selection, gizmo mode and axes, reset layout).
-- **Tools** (left, top): the tools, then the opened source and its maps.
-  Variants and playlists are listed but disabled until phase 2.
+- **Tools** (left, top): the tools (Scenario, Game variants, Playlists; a
+  `*` marks one with unsaved edits), then the opened source and its maps.
+  The outliner, centre and inspector windows show the active tool: below
+  for the scenario tool, then [Game variants](#game-variants) and
+  [Playlists](#playlists).
 - **Outliner** (left, bottom): the placement blocks as a tree, a filter,
   Duplicate and Delete. Right-click an entry for Duplicate, Delete and
   Add; right-click a block for Add. A button is disabled, with the reason
@@ -57,20 +60,79 @@ With no source it opens `H2_DISC`, else `disc/halo2.iso` when it exists
 - **Log** (bottom): every action's result, errors in red.
 - **Status bar**: the last message, unsaved state, the map's triangle and
   placement counts, frame rate.
-- **Unsaved changes**: opening another source or map, or quitting, with
-  unsaved edits asks first: Save as..., Discard or Cancel.
+- **Unsaved changes**: anything that would drop a tool's unsaved edits
+  asks first, naming the tool: another source or map (scenario), another,
+  new or imported variant, or an entry's variant opened from a playlist
+  (variants), another or new playlist file (playlists). Save (Save as...
+  for a map, or a playlist file with no path yet), Discard or Cancel.
+  Quitting asks about each tool with unsaved edits in turn.
 
-Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save map as, Cmd/Ctrl+Z undo,
-Shift+Cmd/Ctrl+Z or Cmd/Ctrl+Y redo, Cmd/Ctrl+D duplicate, Delete delete,
-F focus, Home frame all, W/E gizmo mode, Cmd/Ctrl+Q quit. Dropping a disc
+Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
+variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
+Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
+Cmd/Ctrl+D duplicate, Delete delete, F focus, Home frame all, W/E gizmo
+mode; Cmd/Ctrl+Q quit. Dropping a disc
 image, map or folder on the window opens it.
+
+## Game variants
+
+The variant editor of [variants.md](variants.md), in the same windows:
+
+- **Variants** (the outliner's place): New (pick a game type; a new
+  variant has the type's defaults), the saved variants, the built-ins.
+- **Settings** (centre): the open variant's name and its settings in the
+  game's pages, each a combo of the values the game offers, a checkbox or
+  a bounded number; a setting changed from the type's default is bold,
+  and its help and default are on hover. Built-ins are read-only, as in
+  the game: Copy makes a named, editable copy.
+- **Inspector**: Save (to the game's save storage under the data root),
+  Revert, Delete, Export... (a portable `.h2variant` file), Import... (a
+  file, or pasted text), whether the game would accept it, and the
+  changes from the type's defaults.
+
+The schema comes from the disc's `mainmenu` map (the built-in model
+without a disc); save names come from the XBE (`H2_XBE`, else
+`default.xbe` beside the disc image), as for `h2-editor`
+(`editor_core::variant_sources`). Every edit undoes; typing a name is one
+step.
+
+## Playlists
+
+The hopper tool of [editor.md](editor.md#the-hopper-tool) on
+`multiplayer_hopper.dat`, either form:
+
+- **Playlists** (the outliner's place): New (every playlist empty),
+  Default lineup (the playlists a Live server serves before any file is
+  published), Open..., Save, Save as..., then the 16 playlists (a mark on
+  those that would not save).
+- **Entries** (centre): the playlist's title and description and its
+  entries: the map (from the disc's catalog), the game variant (a combo of
+  the disc's built-ins, the saves and loaded `.h2variant` files; one the
+  game would reject is disabled with the reasons on hover), Edit (opens a
+  copy in the variant tool), the weight and the resulting chance, and
+  move, duplicate, remove; Add an entry. Validation errors are listed
+  below.
+- **Inspector**: start from a historical preset, the variant picker's
+  sources (load a `.h2variant` file, re-read the saves), and the raw
+  fields (name, type, status, ranges, each entry's raw string, flags and
+  second dword).
+
+Each change is one undo step (typing in a field or dragging a weight is
+one), and undo walks back past a save.
 
 ## Code
 
 - `crates/editor-core`: what both editors share and no UI touches: map
   sources (`MapSource`: a disc image, a loose `.map` with its siblings, or
   a folder of maps), the snapshot `UndoStack` (coalescing by `u64` keys),
-  `Status`.
+  `Status`, and `variant_sources` (the variant schema, XBE save names and
+  save storage for a source).
+- `crates/hopper-edit`: the playlist editor's logic (working copy,
+  validation, presets, catalog, the variant picker's sources) and
+  `HopperSession` (file handling, undo), drawn by both editors.
+- `crates/variants`: the variant record, schema, saves and
+  `VariantEditor` (UI-free; its egui panel is behind the default `egui`
+  feature, off in the studio).
 - `crates/scenario-edit`: `Session` holds the scenario editor's state and
   every command (open, select, add, remove, plane drags, gizmo gestures,
   undo, save, packages) with no UI. The egui `panel` (feature `egui`, on
@@ -79,10 +141,14 @@ image, map or folder on the window opens it.
   and projection matrices for ImGuizmo; `geometry::decompose` turns a
   gizmo matrix back into position and yaw/pitch/roll).
 - `crates/studio`:
-  - `app.rs`: `App`, the state and `Action`s (open, select map, save,
-    packages, undo/redo, select, delete, duplicate, add, quit), with the
-    unsaved-changes guard (`dispatch` holds a discarding action;
-    `resolve` answers). Tested without a window (`app/tests.rs`).
+  - `app.rs`: `App`, the state (each tool's session) and `Action`s
+    (open, select map, save, packages, undo/redo, select, delete,
+    duplicate, add; variants; playlist files and entries; quit), with the
+    unsaved-changes guard (`dispatch` holds an action that would drop a
+    tool's edits; `resolve` answers). Tested without a window
+    (`app/tests.rs`).
+  - `ui/variants.rs`, `ui/playlists.rs`: the variant and playlist tools'
+    windows.
   - `ui.rs`: the ImGui shell; it only turns input into `Action`s and draws
     `App`.
   - `viewport.rs`: the viewport texture (`register_external_texture`),
@@ -99,7 +165,9 @@ cargo run --release -p studio -- --disc <iso> --pick <map> --screenshot out.png 
 ```
 
 renders six frames of the real UI offscreen (no window) and writes the
-last. `headless::tests::renders_the_studio_offscreen` does the same over
+last. `--tool variants --variant <n>` opens built-in variant `n`;
+`--hopper <file>|default --playlist <1..16>` opens a playlist file (or the
+default lineup) at a playlist. `headless::tests::renders_the_studio_offscreen` does the same over
 the scenario crate's invented test map, and skips when the machine has no
 wgpu adapter. Screenshots of real maps are for local use; the repository
 takes no game data.

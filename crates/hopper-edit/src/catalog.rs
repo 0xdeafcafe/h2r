@@ -10,7 +10,7 @@ use std::io::{Read, Seek};
 use anyhow::{Context, Result, anyhow};
 use map::Map;
 
-use crate::source::MapSource;
+use editor_core::MapSource;
 
 /// `matg +0x178`: the UI level data block; its element 0 holds the
 /// multiplayer levels at `+0x10`.
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     #[ignore = "needs the user's disc (H2_DISC)"]
     fn maps_from_the_disc() {
-        let path = crate::source::default_disc(None).expect("H2_DISC");
+        let path = editor_core::default_disc(None).expect("H2_DISC");
         let source = MapSource::open(&path).unwrap();
         let c = Catalog::from_source(&source).unwrap();
         assert!(!c.maps.is_empty());

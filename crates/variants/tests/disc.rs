@@ -222,6 +222,7 @@ fn saved_variant_verifies() {
 /// The panel over the disc's schema: every built-in opens and draws
 /// headlessly, read-only, with nothing the game would reject.
 #[test]
+#[cfg(feature = "egui")]
 #[ignore = "needs the user's disc"]
 fn panel_over_the_disc() {
     let mut m = mainmenu();
