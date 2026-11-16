@@ -1,6 +1,7 @@
 //! [`Store`]: every setting's running and saved value, the handles, the
 //! one writer.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
@@ -216,6 +217,10 @@ type Callback = Arc<dyn Fn(&Value) + Send + Sync>;
 struct Inner {
     entries: Vec<Entry>,
     callbacks: Vec<(usize, Callback)>,
+    /// Per-profile values (`[profiles."<name>".<table>] key = v`): what a
+    /// player profile has, by profile name, then key. A key a profile has
+    /// no value for is absent, not the default.
+    profiles: BTreeMap<String, BTreeMap<&'static str, Value>>,
 }
 
 /// Every setting of a run.
@@ -315,11 +320,20 @@ impl Store {
                 source,
             });
         }
+        let profiles = table
+            .as_ref()
+            .map(|t| {
+                file::profile_values(t, defs, &mut |message| {
+                    problems.push(Problem { key: None, message })
+                })
+            })
+            .unwrap_or_default();
         let store = Store {
             file: file.map(Path::to_path_buf),
             inner: Mutex::new(Inner {
                 entries,
                 callbacks: Vec::new(),
+                profiles,
             }),
         };
         (store, problems)
@@ -446,6 +460,61 @@ impl Store {
         let mut g = self.lock();
         let i = Self::index(&g, key).unwrap_or_else(|| panic!("no setting {key:?}"));
         g.callbacks.push((i, Arc::new(f)));
+    }
+}
+
+/// Per-profile values: settings a player profile carries, kept apart from
+/// the run's own value of the same key (which the handles read). Nothing
+/// here locks or runs callbacks; the file is written on each change.
+impl Store {
+    /// `profile`'s value of `key`: `None` when the profile has none (an
+    /// unknown profile has none of any key).
+    pub fn profile_get(&self, profile: &str, key: &str) -> Option<Value> {
+        self.lock().profiles.get(profile)?.get(key).copied()
+    }
+
+    /// Every value `profile` has, in key order.
+    pub fn profile_values(&self, profile: &str) -> Vec<(&'static str, Value)> {
+        self.lock()
+            .profiles
+            .get(profile)
+            .map(|m| m.iter().map(|(k, v)| (*k, *v)).collect())
+            .unwrap_or_default()
+    }
+
+    /// Every profile with a value.
+    pub fn profiles(&self) -> Vec<String> {
+        self.lock().profiles.keys().cloned().collect()
+    }
+
+    /// Sets `profile`'s value of `key` and saves it. `Ok(Some(why))` when
+    /// the value changed for this run but the file was not written (a file
+    /// that is not TOML is never overwritten).
+    pub fn profile_set(
+        &self,
+        profile: &str,
+        key: &str,
+        v: Value,
+    ) -> Result<Option<String>, SetError> {
+        if profile.is_empty() {
+            return Err(SetError::Invalid("a profile needs a name".into()));
+        }
+        let mut g = self.lock();
+        let i = Self::index(&g, key).ok_or_else(|| SetError::Unknown(key.into()))?;
+        let def = g.entries[i].def;
+        let v = def.check(v).map_err(SetError::Invalid)?;
+        let old = g
+            .profiles
+            .entry(profile.to_owned())
+            .or_default()
+            .insert(def.key, v);
+        if old == Some(v) {
+            return Ok(None);
+        }
+        Ok(self
+            .file
+            .as_deref()
+            .and_then(|p| file::write_profile_value(p, profile, def, v).err()))
     }
 }
 
@@ -757,5 +826,105 @@ mod tests {
         assert!(p.is_empty());
         assert_eq!(s.get("pad_speaker.enabled"), Some(Value::Bool(false)));
         assert!(s.state("pad_speaker.enabled").unwrap().locked);
+    }
+
+    #[test]
+    fn profile_values_round_trip_and_keep_other_keys() {
+        let path = tmp("profiles");
+        std::fs::write(&path, "[graphics]\nfov = 90\n").unwrap();
+        let (s, p) = load(&path, &[], &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(
+            s.profile_set("Chief", "pad_speaker.enabled", Value::Bool(false)),
+            Ok(None)
+        );
+        assert_eq!(
+            s.profile_set("Arbiter \"2\"", "graphics.fov", Value::Int(100)),
+            Ok(None)
+        );
+        assert_eq!(
+            s.profile_get("Chief", "pad_speaker.enabled"),
+            Some(Value::Bool(false))
+        );
+        // The run's own value is not the profile's.
+        assert_eq!(s.get("pad_speaker.enabled"), Some(Value::Bool(true)));
+        let (again, p) = load(&path, &[], &[]);
+        assert!(p.is_empty(), "{p:?}");
+        assert_eq!(
+            again.profile_get("Chief", "pad_speaker.enabled"),
+            Some(Value::Bool(false))
+        );
+        assert_eq!(
+            again.profile_get("Arbiter \"2\"", "graphics.fov"),
+            Some(Value::Int(100))
+        );
+        assert_eq!(
+            again.get("graphics.fov"),
+            Some(Value::Int(90)),
+            "other keys kept"
+        );
+        assert_eq!(again.profiles(), ["Arbiter \"2\"", "Chief"]);
+        assert_eq!(
+            again.profile_values("Chief"),
+            [("pad_speaker.enabled", Value::Bool(false))]
+        );
+    }
+
+    #[test]
+    fn an_unknown_profile_has_nothing() {
+        let path = tmp("unknown-profile");
+        let (s, _) = load(&path, &[], &[]);
+        assert_eq!(s.profile_get("Nobody", "graphics.fov"), None);
+        assert!(s.profile_values("Nobody").is_empty());
+        assert!(matches!(
+            s.profile_set("", "graphics.fov", Value::Int(90)),
+            Err(SetError::Invalid(_))
+        ));
+        assert!(matches!(
+            s.profile_set("Chief", "no.such", Value::Int(1)),
+            Err(SetError::Unknown(_))
+        ));
+        assert!(matches!(
+            s.profile_set("Chief", "graphics.fov", Value::Int(9999)),
+            Err(SetError::Invalid(_))
+        ));
+        assert!(!path.exists(), "nothing valid was set, nothing written");
+    }
+
+    #[test]
+    fn a_corrupt_file_is_reported_and_never_overwritten() {
+        let path = tmp("corrupt-profiles");
+        std::fs::write(&path, "this is [not toml").unwrap();
+        let (s, p) = load(&path, &[], &[]);
+        assert!(
+            p.iter()
+                .any(|p| p.message.contains("settings file ignored")),
+            "{p:?}"
+        );
+        let not_saved = s
+            .profile_set("Chief", "pad_speaker.enabled", Value::Bool(true))
+            .unwrap();
+        assert!(not_saved.unwrap().contains("not overwritten"));
+        assert_eq!(
+            s.profile_get("Chief", "pad_speaker.enabled"),
+            Some(Value::Bool(true)),
+            "kept for the run"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "this is [not toml");
+
+        // A bad value inside one profile is reported and the rest is read.
+        std::fs::write(
+            &path,
+            "[profiles.Chief.graphics]\nfov = \"wide\"\n[profiles.Chief.pad_speaker]\nenabled = true\n[profiles]\nOdd = 3\n",
+        )
+        .unwrap();
+        let (s, p) = load(&path, &[], &[]);
+        assert_eq!(p.len(), 2, "{p:?}");
+        assert_eq!(s.profile_get("Chief", "graphics.fov"), None);
+        assert_eq!(
+            s.profile_get("Chief", "pad_speaker.enabled"),
+            Some(Value::Bool(true))
+        );
+        assert_eq!(s.profiles(), ["Chief"]);
     }
 }

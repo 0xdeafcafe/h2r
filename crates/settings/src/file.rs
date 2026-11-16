@@ -70,3 +70,77 @@ pub fn write_value(path: &Path, def: &Def, v: Value) -> Result<(), String> {
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
 }
+
+/// The table per-profile values live under: `[profiles."<name>".<table>]`.
+pub const PROFILES: &str = "profiles";
+
+/// Every profile's values of `defs` in `table`. A value that is not valid
+/// for its setting, or a profile entry that is not a table, is reported
+/// through `report` and left out; keys no setting has are ignored (a later
+/// version's settings survive an older run, as the file keeps them).
+pub(crate) fn profile_values(
+    table: &toml::Table,
+    defs: &[&'static Def],
+    report: &mut dyn FnMut(String),
+) -> std::collections::BTreeMap<String, std::collections::BTreeMap<&'static str, Value>> {
+    let mut out = std::collections::BTreeMap::new();
+    let Some(profiles) = table.get(PROFILES) else {
+        return out;
+    };
+    let Some(profiles) = profiles.as_table() else {
+        report(format!("{PROFILES} must be a table; ignored"));
+        return out;
+    };
+    for (name, t) in profiles {
+        let Some(t) = t.as_table() else {
+            report(format!("{PROFILES}.{name:?} must be a table; ignored"));
+            continue;
+        };
+        let mut values = std::collections::BTreeMap::new();
+        for def in defs {
+            match lookup(t, def) {
+                Ok(Some(v)) => {
+                    values.insert(def.key, v);
+                }
+                Ok(None) => {}
+                Err(e) => report(format!("{PROFILES}.{name:?}: {e}; ignored")),
+            }
+        }
+        if !values.is_empty() {
+            out.insert(name.clone(), values);
+        }
+    }
+    out
+}
+
+/// Writes `profile`'s `def = v` under [`PROFILES`], keeping every other key
+/// in the file, as [`write_value`] does.
+pub fn write_profile_value(path: &Path, profile: &str, def: &Def, v: Value) -> Result<(), String> {
+    let v = def.check(v)?;
+    let mut table = match read_table(path) {
+        Ok(t) => t.unwrap_or_default(),
+        Err(e) => return Err(format!("{e}; not overwritten")),
+    };
+    let (t, k) = def.table_key();
+    let mut at = &mut table;
+    for name in [PROFILES, profile, t] {
+        let next = at
+            .entry(name)
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        let toml::Value::Table(next) = next else {
+            return Err(format!(
+                "{}: {name} must be a table; not overwritten",
+                path.display()
+            ));
+        };
+        at = next;
+    }
+    at.insert(k.into(), def.to_toml(v));
+    let text = toml::to_string(&table).map_err(|e| format!("{}: {e}", path.display()))?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    }
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))
+}

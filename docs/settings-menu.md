@@ -597,6 +597,12 @@ and variables, `H2_FOV=0` for retail, `"uncapped"` written as a string,
 ignored (the file or on) where it used to turn the button off, and the log
 line after a press names the key (`graphics.fps: 60 from the next launch`).
 
+**Per-profile values.** A setting can also hold a value per player profile
+(`Store::profile_get` / `profile_set`), written as
+`[profiles."<name>".<table>] key = value` and kept apart from the run's own
+value. The campaign skulls use it: which skulls each profile has collected
+and which it wants on ([skulls.md](skulls.md)).
+
 ## Opening the menu
 
 - Hotkey: a key the guest pad does not use (F1 or Cmd+comma, to match macOS).

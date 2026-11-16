@@ -31,6 +31,7 @@ pub mod sha;
 pub mod shim;
 pub mod speaker_row;
 pub mod setting_defs;
+pub mod skulls;
 pub mod speaker_setting;
 pub mod ui;
 pub mod video_screen;
@@ -608,6 +609,12 @@ pub fn run_hosted_with_live(
     let level_name = level.as_ref().map(|l| l.name.clone());
     level_boot::install(&loaded.runtime, level, perf_from == Some(level_boot::PerfFrom::Level))
         .context("installing the level boot")?;
+    // Campaign skulls kept per profile: a pickup is remembered and a
+    // campaign start turns on the profile's chosen skulls (docs/skulls.md).
+    // Headless runs (no settings store) leave skulls as retail.
+    if let Some(store) = host.settings.clone() {
+        skulls::install(&loaded.runtime, store).context("installing the skulls")?;
+    }
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
