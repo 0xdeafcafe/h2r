@@ -1,5 +1,5 @@
 //! The plan boot builds with every migrated feature on (Live telemetry, the
-//! Video screen's list class, the level boot's loaded mark, our strings, lockstep's tick hash, the Rust
+//! Video and Skulls screens' list classes, the level boot's loaded mark, our strings, lockstep's tick hash, the Rust
 //! locale lookup on by default): it builds
 //! with no conflict, and this is its text (the `feature plan:` lines boot
 //! logs). Before the registry, telemetry and lockstep could not both hook
@@ -25,6 +25,15 @@ fn the_full_plan_builds_and_reads_as_expected() {
         std::sync::Arc::new(model),
     );
     r.add(&video).unwrap();
+    // The Skulls screen's list class, with its description text.
+    let skulls = boot::list_class::ListClass::with_source(
+        boot::skulls_menu::FEATURE,
+        std::sync::Arc::new(boot::skulls_menu::SkullsScreen::new(std::sync::Arc::new(
+            settings::Store::defaults(boot::setting_defs::ALL),
+        ))),
+    )
+    .description(boot::skulls_menu::DESCRIPTION_TEXT);
+    r.add(&skulls).unwrap();
     r.add(&boot::layout_glue::StringsFeature).unwrap();
     r.add(&boot::level_boot::LoadedMark(None)).unwrap();
     r.add(&lockstep::TickObserver(lockstep::Recorder::new(None)))
@@ -37,6 +46,7 @@ fn the_full_plan_builds_and_reads_as_expected() {
         "\
 feature live-telemetry: on
 feature video-screen: on
+feature skulls-screen: on
 feature ui-strings: on
 feature level-boot: on
 feature lockstep: on
@@ -54,6 +64,11 @@ feature engine-leaves: on
 0xa0f01020 entry video-screen:row chosen
 0xa0f01030 entry video-screen:set up pane
 0xa0f01040 entry video-screen:loader slot
+0xa0f03000 entry skulls-screen:loader
+0xa0f03010 entry skulls-screen:row text
+0xa0f03020 entry skulls-screen:row chosen
+0xa0f03030 entry skulls-screen:set up pane
+0xa0f03040 entry skulls-screen:loader slot
 locale source ui-strings:our strings (served by engine-leaves)
 warning: LOCALE_FIND (0x001a02d0) is hot: hooking it leaves the direct-call fast path
 "

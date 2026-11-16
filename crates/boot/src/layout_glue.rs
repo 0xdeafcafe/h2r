@@ -399,33 +399,9 @@ static STRING_ADDRS: std::sync::OnceLock<Vec<(u32, u32)>> = std::sync::OnceLock:
 /// The Video screen's loader: our list class's (`crate::list_class`), 0
 /// until the class is built.
 static VIDEO_LOADER: AtomicU32 = AtomicU32::new(0);
-/// Set while our Skulls row's open call runs: the next Controls list built
-/// is the Skulls list, with this many rows.
-static OPENING_SKULLS: AtomicU32 = AtomicU32::new(0);
-/// Set while a Skulls screen's header is built.
-static SKULLS_HEADER: AtomicBool = AtomicBool::new(false);
-/// The guest address of the Skulls list's array name (0: none).
-static SKULLS_LIST_NAME: AtomicU32 = AtomicU32::new(0);
-
-/// In place of the difficulty list's row-chosen call (`ret 8`) for the
-/// Skulls row: open a Controls screen for `mask` as the Video row does, with
-/// the list hook told to build the Skulls list of `rows` rows.
-fn open_skulls(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, rows: u32) -> Result<TransferAbi, GuestFault> {
-    let rt = Arc::clone(ctx.runtime());
-    let mut mem = rt.memory();
-    let ret_pc = mem.u32(cpu.esp)?;
-    cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
-    push(&mut mem, cpu, video_screen::CONTROLS_LOADER)?;
-    push(&mut mem, cpu, mask)?;
-    OPENING_SKULLS.store(rows, Ordering::SeqCst);
-    eprintln!("skulls menu: opening with {rows} rows");
-    ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| {
-        if OPENING_SKULLS.swap(0, Ordering::SeqCst) != 0 {
-            eprintln!("skulls menu: the open call built no Controls list");
-        }
-        Ok(TransferAbi::ret(ret_pc))
-    })
-}
+/// The Skulls screen's loader: its list class's (`crate::skulls_menu`), 0
+/// until the class is built.
+static SKULLS_LOADER: AtomicU32 = AtomicU32::new(0);
 
 /// The text hook's call (string id at `[esp+4]`) while a Video screen's
 /// header is built: our title for the Controls tag's header id, `None` for
@@ -449,14 +425,14 @@ fn open_video(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32) -> Result<Transfer
 
 /// In place of a row-chosen call (`ret 8`): open the screen of `loader`
 /// for `mask` through `0x149f1e`, then return to the caller.
-fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note: &'static str) -> Result<TransferAbi, GuestFault> {
+fn open_screen(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, loader: u32, note: impl AsRef<str>) -> Result<TransferAbi, GuestFault> {
     let rt = Arc::clone(ctx.runtime());
     let mut mem = rt.memory();
     let ret_pc = mem.u32(cpu.esp)?;
     cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
     push(&mut mem, cpu, loader)?;
     push(&mut mem, cpu, mask)?;
-    eprintln!("{note}");
+    eprintln!("{}", note.as_ref());
     ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| Ok(TransferAbi::ret(ret_pc)))
 }
 
@@ -523,6 +499,8 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let store = Arc::clone(model.store());
     let speaker_on = with_speaker.then(|| store.handle::<bool>(PAD_SPEAKER.key));
     let fov = with_fov.then(|| store.handle::<u32>(FOV.key));
+    // The Skulls screen's rows, shown for the profile the row's press sets.
+    let skulls_screen = with_skulls.then(|| Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(&store))));
     let extra_rows = model.count(List::Controls, speaker_row::VANILLA_ROWS) - speaker_row::VANILLA_ROWS;
     {
         let mut mem = rt.memory();
@@ -538,14 +516,10 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         }
         if with_skulls {
             served.extend(skulls_menu::strings());
-            served.push((skulls_menu::LIST_NAME_ID, skulls_menu::LIST_NAME_TEXT));
         }
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
-        if let Some((_, a)) = addrs.iter().find(|(i, _)| *i == skulls_menu::LIST_NAME_ID) {
-            SKULLS_LIST_NAME.store(*a, Ordering::SeqCst);
-        }
         let _ = STRING_ADDRS.set(addrs);
     }
     let mut shadow = SHADOW_BASE;
@@ -570,14 +544,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     let fov_hooks = [fov_row::PLAYER_FOV];
     let controls_hooks = [speaker_row::ADD_ITEMS];
     let custom_games_hooks = [custom_games::ROW_TEXT, custom_games::ROW_CHOSEN];
-    let skulls_hooks = [
-        skulls_menu::DIFFICULTY_ROW_TEXT,
-        skulls_menu::DIFFICULTY_ROW_CHOSEN,
-        PANE_SET,
-        speaker_row::ROW_CHOSEN,
-        video_screen::HEADER_BUILD,
-        TEXT_SET,
-    ];
+    let skulls_hooks = [skulls_menu::DIFFICULTY_ROW_TEXT, skulls_menu::DIFFICULTY_ROW_CHOSEN, PANE_SET];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -621,33 +588,26 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     let mem = ctx.runtime().memory();
                     (grown_count(&*mem, cpu.esp, cpu.eax, layouts, with_speaker), mem.u32(cpu.esp + 4).unwrap_or(0))
                 };
-                // The list our Skulls row's open call builds: our name, the
-                // profile's rows.
-                let skull_rows = OPENING_SKULLS.load(Ordering::SeqCst);
-                if let Some(count) = skulls_menu::skulls_count(name, cpu.eax, skull_rows != 0, skull_rows as usize) {
-                    OPENING_SKULLS.store(0, Ordering::SeqCst);
-                    let ours = SKULLS_LIST_NAME.load(Ordering::SeqCst);
-                    if ours != 0 {
-                        ctx.runtime().memory().set_u32(cpu.esp + 4, ours)?;
-                        eprintln!("skulls menu: list built with {count} rows");
-                        cpu.eax = count;
-                        return Ok(o.invoke(cpu, ctx, LIST_DATA_NEW));
-                    }
-                }
                 let n = video_screen::list_count(&model, name, n);
+                // A Controls list our list class's loader is constructing:
+                // as many rows as the class shows (the Skulls screen's
+                // fifteen), the item widgets scrolling over them.
+                let n = match crate::list_class::building_rows() {
+                    rows if name == speaker_row::LIST_NAME && rows > n => rows,
+                    _ => n,
+                };
                 if with_video && video_screen::settings_third_item(name, n) {
                     // Slot 19 reports a third item widget for our row.
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
-                // The difficulty list gets the Skulls row when a signed-in
-                // profile (else the default one) has a skull. The store is
-                // read with guest memory released.
+                // The difficulty list gets the Skulls row; the line says what
+                // each signed-in profile (else the default one) has. The
+                // store is read with guest memory released.
                 let n = if with_skulls && name == skulls_menu::DIFFICULTY_LIST_NAME {
                     let profiles = skulls::profiles_or_default(&*ctx.runtime().memory());
-                    let (row, line) = skulls_menu::difficulty_row(model.store(), &profiles);
-                    eprintln!("{line}");
-                    skulls_menu::difficulty_count(name, n, row)
+                    eprintln!("{}", skulls_menu::difficulty_line(model.store(), &profiles));
+                    skulls_menu::difficulty_count(name, n)
                 } else {
                     n
                 };
@@ -831,12 +791,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             let seen = AtomicBool::new(false);
             d.register_override(TEXT_SET, "layouts:text", move |cpu, ctx, _| {
                 announce(&seen, "layouts: text set");
-                if SKULLS_HEADER.load(Ordering::Relaxed) {
-                    let mut mem = ctx.runtime().memory();
-                    if let Some(id) = video_header_id(&*mem, cpu.esp, skulls_menu::TITLE_ID) {
-                        mem.set_u32(cpu.esp + 4, id)?;
-                    }
-                }
                 let pending = PENDING_VALUE.load(Ordering::Relaxed);
                 if pending != 0 {
                     let mut mem = ctx.runtime().memory();
@@ -862,32 +816,16 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Controls row text: every row of a Skulls list; on Controls our
-        // speaker row, else the layout value (layouts on), else the
-        // original.
+        // The Controls row text: our speaker row, else the layout value
+        // (layouts on), else the original.
         if let Some(o) = originals.remove(&CONTROLS_ROW_TEXT) {
             let sh = alias(d, &mut next_shadow, &o, CONTROLS_ROW_TEXT);
             let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
             let drawn = AtomicBool::new(false);
-            let skulls_drawn = AtomicBool::new(false);
             d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
                 announce(&seen, "layouts: controls row text");
-                let (is_skulls, row) = {
-                    let mem = ctx.runtime().memory();
-                    (with_skulls && skulls_menu::is_skulls_list(&*mem, cpu.ecx), video_screen::text_row(&*mem, cpu.esp))
-                };
-                if is_skulls {
-                    // The store is read with guest memory released.
-                    let texts = skulls_menu::open_profile()
-                        .zip(row)
-                        .and_then(|(p, r)| skulls_menu::row_texts(model.store(), &p, r));
-                    let rt = Arc::clone(ctx.runtime());
-                    let mut mem = rt.memory();
-                    let item = mem.u32(cpu.esp + 4)?;
-                    announce(&skulls_drawn, "skulls menu: row text");
-                    return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
-                }
+                let row = video_screen::text_row(&*ctx.runtime().memory(), cpu.esp);
                 // The model reads the settings store: never with guest
                 // memory held.
                 let texts = row.and_then(|r| model.row(List::Controls, r)).map(|r| model.texts(r));
@@ -908,30 +846,15 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 })
             });
         }
-        // The Controls row chosen: on a Skulls list every row is ours; on
-        // Controls the speaker row toggles in place (an open row there would
-        // open the Video screen). The original would open the vibration
-        // dialog for any of them.
+        // The Controls row chosen: the speaker row toggles in place (an open
+        // row there would open the Video screen). The original would open
+        // the vibration dialog for either.
         if let Some(o) = originals.remove(&speaker_row::ROW_CHOSEN) {
             let model = Arc::clone(&model);
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: row chosen");
-                let (row, is_skulls) = {
-                    let mem = ctx.runtime().memory();
-                    (chosen_row(&*mem, cpu.esp), with_skulls && skulls_menu::is_skulls_list(&*mem, cpu.ecx))
-                };
-                if is_skulls {
-                    // Every row of a Skulls list is ours; the store is
-                    // written with guest memory released.
-                    if let Some(msg) = skulls_menu::open_profile()
-                        .zip(row)
-                        .and_then(|(p, r)| skulls_menu::press(model.store(), &p, r))
-                    {
-                        eprintln!("{msg}");
-                    }
-                    return ctx.runtime().memory().ret(cpu, 8);
-                }
+                let row = chosen_row(&*ctx.runtime().memory(), cpu.esp);
                 let mask = video_screen::player_mask(&*ctx.runtime().memory(), cpu.esp);
                 // Guest memory is not held while a setting changes: the
                 // speaker toggle takes DirectSound's lock, which the audio
@@ -992,29 +915,6 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 }
             });
         }
-        // The Skulls screen's header: while it is built, the text hook gives
-        // the Controls tag's title our id. (The Video screen's class sets
-        // its own title.)
-        if let Some(o) = originals.remove(&video_screen::HEADER_BUILD) {
-            let sh = alias(d, &mut next_shadow, &o, video_screen::HEADER_BUILD);
-            let seen = AtomicBool::new(false);
-            d.register_override(video_screen::HEADER_BUILD, "skulls:header", move |cpu, ctx, _| {
-                let skulls = {
-                    let mem = ctx.runtime().memory();
-                    let screen = mem.u32(cpu.esp + 4).ok();
-                    screen.is_some_and(|s| with_skulls && skulls_menu::is_skulls_screen(&*mem, s))
-                };
-                if !skulls {
-                    return Ok(o.invoke(cpu, ctx, video_screen::HEADER_BUILD));
-                }
-                announce(&seen, "skulls menu: header");
-                SKULLS_HEADER.store(true, Ordering::Relaxed);
-                call_then(cpu, ctx, sh, move |_, _| {
-                    SKULLS_HEADER.store(false, Ordering::Relaxed);
-                    Ok(())
-                })
-            });
-        }
         // The Controls list's added item widgets, one per added row.
         if let (Some(o), true) = (originals.remove(&speaker_row::ADD_ITEMS), extra_rows > 0) {
             let sh = alias(d, &mut next_shadow, &o, speaker_row::ADD_ITEMS);
@@ -1031,11 +931,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 ctx.call_guest(cpu, &mut mem, sh, move |cpu, ctx| {
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
-                    // The Skulls list keeps the six retail item widgets; a
-                    // Video list is our class (another vtable).
-                    if mem.u32(handler)? != speaker_row::HANDLER_VTABLE
-                        || skulls_menu::is_skulls_list(&*mem, handler)
-                    {
+                    // A list of our class (the Video and Skulls screens) has
+                    // another vtable and keeps the six retail item widgets.
+                    if mem.u32(handler)? != speaker_row::HANDLER_VTABLE {
                         return Ok(TransferAbi::ret(ret_pc));
                     }
                     let slot = {
@@ -1185,7 +1083,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             });
         }
         if let Some(o) = originals.remove(&skulls_menu::DIFFICULTY_ROW_CHOSEN) {
-            let model = Arc::clone(&model);
+            let skulls_screen = skulls_screen.clone();
             let seen = AtomicBool::new(false);
             d.register_override(skulls_menu::DIFFICULTY_ROW_CHOSEN, "skulls:row-chosen", move |cpu, ctx, _| {
                 let (row, player, profile) = {
@@ -1203,13 +1101,14 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     eprintln!("skulls menu: the pressing player's index is unreadable; not opened");
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
-                let rows = skulls::screen_for(model.store(), &profile).rows().len() as u32;
-                if rows == 0 {
-                    eprintln!("skulls menu: {profile} has no skulls yet; not opened");
+                let loader = SKULLS_LOADER.load(Ordering::SeqCst);
+                let Some(screen) = skulls_screen.as_ref().filter(|_| loader != 0) else {
+                    eprintln!("skulls menu: features.{} is off; not opened", skulls_menu::FEATURE);
                     return ctx.runtime().memory().ret(cpu, 8);
-                }
-                skulls_menu::set_open(Some(profile));
-                open_skulls(cpu, ctx, 1 << player, rows)
+                };
+                let note = format!("skulls menu: opening the Skulls screen for {profile} (player {player})");
+                screen.open(profile);
+                open_screen(cpu, ctx, 1 << player, loader, note)
             });
         }
     });
@@ -1220,6 +1119,20 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
             Ok(true) => VIDEO_LOADER.store(class.loader(), Ordering::SeqCst),
             Ok(false) => eprintln!("video screen: features.video-screen is off"),
             Err(e) => eprintln!("video screen: {e}"),
+        }
+    }
+    // The Skulls screen: our own list class, opened by the difficulty row.
+    if let Some(screen) = &skulls_screen {
+        let (block, line) = skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
+        let source: Arc<dyn crate::list_class::Source> = Arc::clone(screen) as _;
+        let class = crate::list_class::ListClass::with_source(skulls_menu::FEATURE, source).description(block);
+        match registry.add(&class) {
+            Ok(true) => SKULLS_LOADER.store(class.loader(), Ordering::SeqCst),
+            Ok(false) => eprintln!("skulls menu: features.{} is off", skulls_menu::FEATURE),
+            Err(e) => eprintln!("skulls menu: {e}"),
         }
     }
     // Our strings: a source for the locale lookup (the Rust one serves it;

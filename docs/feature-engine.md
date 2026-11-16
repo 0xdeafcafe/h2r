@@ -1555,14 +1555,24 @@ the game exercises is the Video screen, so it is the one to play-test.
   the Video branches in the Controls row text and row chosen hooks, the
   header id swap, and the "h2r video settings" string. The Settings row
   itself is still a hook on the retail Settings list (step c territory).
-  The Skulls screen keeps the old way; it is the next to move.
-- **Limits.** Six rows (the Controls item widgets); more are cut, with a
-  line. Opening a screen from one of ours is not wired (an `Open` row
-  logs). Nothing has measured the entries' cost; they run only on menu
-  draws and presses.
+- **The Skulls screen is on it too** (docs/skulls.md "Menu"). What a
+  class shows is a `list_class::Source` (a `ui` model screen, or the
+  Skulls screen's per-profile rows); a class may have a description text
+  (a text block of ours the pane builder's own text step makes a widget
+  from at pane set-up, set to the focused row's text from row text when
+  the focus moves, docs/ui.md "A text of our own on a screen"); and a
+  class may have more rows than the six item widgets: while its loader
+  constructs, the Controls list hook builds at least
+  `list_class::building_rows()`, and the list scrolls. Gone with it: the
+  "h2r skulls" array name, the open-in-progress count, the header hook
+  and the Skulls branches in the Controls row text, row chosen and
+  added-items hooks.
+- **Limits.** Opening a screen from one of ours is not wired (an `Open`
+  row logs). Nothing has measured the entries' cost; they run only on
+  menu draws and presses (row text asks for the focused row once per
+  drawn item on a class with a description).
 
-Then (phase 4): the retail Controls and Button Layout handlers in Rust,
-with the Skulls screen moved to the class first.
+Then (phase 4): the retail Controls and Button Layout handlers in Rust.
 
 Why this first:
 
