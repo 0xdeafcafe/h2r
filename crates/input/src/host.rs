@@ -59,6 +59,13 @@ impl HostButtons {
     pub fn contains(self, b: HostButton) -> bool {
         self.0 & (1 << b as u8) != 0
     }
+    /// The raw set, one bit per [`HostButton`] in declaration order.
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+    pub const fn from_bits(bits: u16) -> Self {
+        Self(bits)
+    }
     pub fn set(&mut self, b: HostButton, down: bool) {
         if down {
             self.0 |= 1 << b as u8;
