@@ -18,10 +18,12 @@ Evidence labels, as in map-format.md:
   relies on it, but it has not yet been checked on the disc.
 - **Design:** an implementation choice, not a format fact.
 
-**Status (2026-11-16):** checked on two retail multiplayer maps
-(`beavercreek`, `carousel`), cut from a partial download of the disc as
-stored (compressed). What they confirm is marked V; the rest stays S until
-the whole disc (campaign and UI maps) is checked.
+**Status:** the multiplayer parts and the collision BSP were checked on two
+retail maps (`beavercreek`, `carousel`) cut from a partial download of the
+disc. The whole disc (24 maps, [h1-bitmaps.md](h1-bitmaps.md)) is read by
+`real_disc_every_map_reads`, and the converter ([h1-multiplayer.md](../game/h1-multiplayer.md))
+reads all 13 multiplayer maps. What those confirm is marked V; the rest
+stays S.
 
 No map bytes, tag dumps, tag-name lists or extracted assets are included
 here or in tests. The tests build invented maps and discs in memory
@@ -335,6 +337,10 @@ needs every level and adds `ui`, `bitmaps` and `sounds` when present.
   of every tag (or one group's).
 - `h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips]`: one bitmap's
   images as PNGs ([h1-bitmaps.md](h1-bitmaps.md)).
+- `h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
+  [--disc halo2.iso] [--dry-run] [--force]`: converts a multiplayer map onto
+  a Halo 2 base map (`crates/h1convert`;
+  [h1-multiplayer.md](../game/h1-multiplayer.md)).
 - `h2 import halo1 [iso] [--data DIR] [--force] [--dry-run]`: checks the
   title and every campaign map's header, then copies the maps as stored
   (still compressed) into `<data>/campaigns/halo1/source/` and writes

@@ -119,6 +119,18 @@ one that is missing:
   5 GB in `$TMPDIR` (the generated C and objects). `just clean-device-builds`
   and deleting `$TMPDIR/h2*-gen` free most of it.
 
+## Target directories
+
+The cross builds use cargo target directories of their own, because
+`RUSTC_BOOTSTRAP` and `-Zbuild-std` would otherwise invalidate the host
+build's artifacts, and back. Each can be moved (to another volume, say):
+
+| Variable | What it holds | Default |
+| --- | --- | --- |
+| `H2_APPLE_TARGET_DIR` | the `apple-host` runtime cross-built for tvOS or iOS (`platform/apple/build.sh`) | `target/<tvos\|ios>-cross` |
+| `H2_APPLE_HOST_TARGET_DIR` | the host-side `h2` and packer that `build.sh` runs for the disc subset and game module | `target/apple-host-pack` |
+| `H2_WINDOWS_TARGET_DIR` | the Windows cross build (`platform/windows/env.sh`, so `windows-dll` and `check-windows`) | `target/windows-cross` |
+
 ## Tests
 
 `scripts/tests/just_test.sh` runs the justfile in a scratch copy of the

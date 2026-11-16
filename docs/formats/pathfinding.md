@@ -1,9 +1,9 @@
 # AI pathfinding data (`sbsp` +0xc4) and generating it
 
 Halo 2's AI walks on *sectors*: convex polygons joined by *links*. A
-structure BSP carries them. Halo 1 maps don't, so the Halo 1 campaign
-converter ([campaigns.md](../game/campaigns.md) §2 and step 5) has to
-generate them from collision. This page is the layout as retail levels
+structure BSP carries them. Halo 1 maps don't, so a Halo 1 converter has to
+generate them from collision. `h2 h1 convert` does not yet: it leaves
+`sbsp+0xc4` empty ([h1-multiplayer.md](../game/h1-multiplayer.md)). This page is the layout as retail levels
 carry it, how it relates to the collision BSP, and the generator in
 `crates/pathfind`.
 
@@ -158,7 +158,7 @@ Design, kept simple so the engine's lookups have nothing unusual to meet:
    element; no object refs or compiled hints.
 
 `build::element` turns the result into a `map::build::Block` of `0x74`
-bytes with a `Block` fixup per table; the converter writes
+bytes with a `Block` fixup per table; a caller writes
 `sbsp.block(0xc4, 1, element)` ([map-builder.md](map-builder.md)). It
 refuses object refs and non-zero user hints, whose child pointers it would
 not know how to relocate. A synthetic test builds a whole map with it and

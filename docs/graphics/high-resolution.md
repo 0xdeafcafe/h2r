@@ -2,8 +2,9 @@
 
 A design for rendering above the game's 640x480, as an opt-in setting. Phase 1
 is built (`d3d::scaled`, `H2_RENDER_SCALE`; see "Phase 1 as built" below), and
-part of phase 2 ("Phase 2 as built"); the rest is design. It was written from the code and docs on master
-([d3d.md](d3d.md), [graphics.md](graphics.md), [shaders.md](shaders.md),
+part of phase 2 ("Phase 2 as built"); the rest is design, apart from the lazy
+reference and shadow-map scale (below). It was written from the code and docs
+on master ([d3d.md](d3d.md), [graphics.md](graphics.md), [shaders.md](shaders.md),
 [render-thread.md](render-thread.md)) and from public prior art, without
 building or running the game. Every number under "Cost" is arithmetic or a
 figure quoted from another doc, not a new measurement.
@@ -30,8 +31,10 @@ page also proposes a per-axis form for widescreen.
   geometry but break 1:1 point-sampled copies, so they come later and are
   marked experimental. 4K output is an integer internal size plus the
   presenter's resample.
-- **Shadow maps scale last**, because sampled depth levels go through guest
-  memory today.
+- **Shadow maps scale last**, because sampled depth levels went through guest
+  memory. They are built now, as E3 lighting's phase 1 (Lighting row,
+  [e3-lighting.md](e3-lighting.md)): the view keeps a scaled copy of each depth
+  level and samples it with one tap.
 - **MSAA and forced anisotropy are separate, later options** on the view only.
 
 ## Terms
@@ -424,8 +427,9 @@ resampled.
   buffer: at 3840x2400 each is about 37 MB, and the menu took five a frame
   when [perf-budget.md](../perf/perf-budget.md) was measured. That is about 185 MB of
   GPU copies a frame, which is tolerable but is the first thing to measure.
-- **CPU.** This is the real cost. The runtime is CPU-bound today: about 5-6
-  fps on the menu. The second backend repeats per-draw work (uniforms, bind
+- **CPU.** This is the real cost. The runtime is CPU-bound today: about 11-16
+  fps on the menu ([perf-budget.md](../perf/perf-budget.md), latest
+  flyover). The second backend repeats per-draw work (uniforms, bind
   groups, recording, encoding, submission) but not push-buffer decode, draw
   resolve, texture decode or shader translation. When the render thread was
   measured, the backend's CPU share was about 42 ms of a 168 ms menu frame
@@ -599,9 +603,10 @@ with synthetic frames, not captures.
   on the thread that presents (the render thread under `ThreadedBackend`):
   every scaled surface is made again at the new size and filled from the
   reference's (nearest), and the device's surface handles are mapped onto
-  the new ones, so the guest and the device see nothing. At 1 the view
-  sleeps: it draws nothing and each frame is the reference's
-  (`ScaleStats::reference_frames`, not a fallback). Tests:
+  the new ones, so the guest and the device see nothing. At 1 with
+  retail lighting the view sleeps: it draws nothing and each frame is the
+  reference's (`ScaleStats::reference_frames`, not a fallback). With E3
+  lighting it stays awake at 1 (shadow maps at 2x). Tests:
   `crates/d3d/tests/render_scale.rs`, `the_scale_changes_at_a_frame_boundary_with_no_fallback_frames`
   (1x, 2x, 3x, 1x, 4x, 2x: each frame after a change is at the new size,
   byte for byte what a run started at that scale draws, with no fallback
@@ -740,10 +745,9 @@ texaccum explanation is the whole story in the game (that needs a run).
 Shadow-map scale is built as E3 lighting's phase 1 ([e3-lighting.md](e3-lighting.md),
 "Phase 1 as built"): the view keeps a scaled copy of each `D24S8` depth
 level and samples it with one tap, and with E3 the view is awake at 1x
-too. The original note follows. Shadow-map scale needs two things first: sampling a depth level in place
-instead of through guest memory (the view can do this without touching the
-reference), and the comparison indexing host texels. A sharper shadow map
-also narrows the 2x2 percentage-closer filter on screen, so shadow edges get
+too. Shadow-map scale needed two things first, both done: sampling a depth
+level in place instead of through guest memory, and the comparison indexing
+host texels. A sharper shadow map also narrows the 2x2 percentage-closer filter on screen, so shadow edges get
 harder. Whether that is wanted is a taste question; xemu issue 1996 shows
 shadows are where scaling artefacts get reported.
 

@@ -5,14 +5,19 @@ multiplayer and campaign level's geometry and five pre-drawn pictures of it next
 the rest of the game art ([live.md](live.md#game-art)). The stats site's
 tactical map plots players on the pictures; the 3D game viewer loads the
 model. Everything comes from the owner's disc at run time and is served
-loopback-only under `/art/game/` like the other art. Nothing derived from the
+under `/art/game/` like the other art, to this machine only unless the
+server runs with `--share-game-art`. Nothing derived from the
 disc is in the repository: the tests build invented tag data.
 
 Code: `crates/cli/src/live_geometry.rs` (extraction, mesh, glTF, files),
 `crates/cli/src/live_looks.rs` (surface pictures),
 `crates/cli/src/live_basemap.rs` (which bitmap a shader draws as its base),
 `crates/cli/src/live_mappack.rs` (map pack maps),
-`crates/cli/src/live_scenario.rs` (placed objects) and
+`crates/cli/src/live_scenario.rs` (placed objects),
+`crates/cli/src/live_layers.rs` (decals and effects), `live_sky.rs` (the sky),
+`live_weather.rs` (weather volumes), `live_models.rs` (player, weapon and
+vehicle models), `live_weapons.rs` (weapon ballistics), `live_features.rs`
+(teleporters and lifts), `live_catalog.rs` (the playlist builder's catalog) and
 `crates/cli/src/live_render.rs` (the software renderer). Tests:
 `crates/cli/src/live_geometry_tests.rs` and the modules' own.
 
@@ -46,13 +51,14 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 16, so a disc extracted by an older build is extracted again
+key) is 17, so a disc extracted by an older build is extracted again
 (10 added the layers, the sky and `extras.name`; 12 the surface
 pictures, texture coordinates and the `scenario` node; 13 the base map
 from the shader's passes, pictures as files beside `map.glb`, the gzip
 copy and the map pack maps; 15 vehicles in their own colours, the
 reflection tints and shaders whose compiled data another shader shares;
-16 vehicles' turrets and hull decals that double what is under them).
+16 vehicles' turrets and hull decals that double what is under them;
+17 the weather volumes and the sky light's glow).
 
 ### `map.glb`
 

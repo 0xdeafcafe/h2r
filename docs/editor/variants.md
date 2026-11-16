@@ -2,10 +2,11 @@
 
 `crates/variants` is the game variant editor of the editor suite: the
 0x130-byte variant record, the settings schema, saved-variant files and the
-editor's state and commands (`VariantEditor`, drawn by `h2-editor`). No game data is in the repository: the schema and the built-in
-variants are read from the user's disc at run time, tests use synthetic
-bytes, and the checks against the retail XBE and disc are `#[ignore]` tests
-that read `$H2_XBE` (and `halo2.iso` beside it, or `$H2_ISO`).
+editor's state and commands (`VariantEditor`, drawn by `h2-editor`). No
+game data is in the repository: the schema and the built-in variants are
+read from the user's disc at run time, tests use synthetic bytes, and the
+checks against the retail XBE and disc are `#[ignore]` tests that read
+`$H2_XBE` (and `halo2.iso` beside it, or `$H2_ISO`).
 
 Everything below was read statically from the retail XBE (SHA-256
 `03215919…935d`) with a scratch disassembler and from the retail main menu
@@ -16,7 +17,7 @@ marked **confirmed** (seen in code or data) or **inferred**.
 
 The record is the active variant at `G+0x13c` (docs/live/live-gamestate.md §3),
 the whole payload of a saved variant, and the last 0x130 bytes of a hopper
-record slot (`crates/live-proto/src/hopper.rs`, `VARIANT_AT`). The editor's
+record slot (`crates/live-proto/src/hopper/mod.rs`, `VARIANT_AT`). The editor's
 hopper tool links a variant by copying `GameVariant::to_bytes()` into the
 slot, after `record::check` finds nothing (docs/editor/editor.md).
 

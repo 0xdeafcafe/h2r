@@ -485,7 +485,7 @@ All 30 disc maps, shared tags counted once per map:
 The unique-tag counts (915, 253, 89, 161, 34, 158, 192, 161) are the distinct
 datum/data identities across maps; the `effe` layout also tiles its payload
 exactly for all 14,195 instances with a recorded payload (see "Shared
-conventions"). `cargo test -p tags effects` runs 48 synthetic tests (valid
+conventions"). `cargo test -p tags effects` runs the synthetic tests (59 `#[test]` functions under `crates/tags/src/effects/`: valid
 decode, empty blocks, aliased pointers, truncated and out-of-bounds blocks,
 over-budget counts, unknown values preserved, per-type function evaluation); none
 needs the disc.

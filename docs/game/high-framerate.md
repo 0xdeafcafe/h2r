@@ -30,7 +30,7 @@ In short:
   and their leftover bugs were all on the rendering side.
 
 Nothing here is useful until a level holds a steady 30 fps. It doesn't today
-(about 8 fps in The Heretic, [frame-budget.md](../perf/frame-budget.md)). This mode
+(about 15 fps in The Heretic when last measured, 2026-11-15, [frame-budget.md](../perf/frame-budget.md)). This mode
 comes after that work, not instead of it.
 
 ## 1. How the tick, the frame and the vblank are coupled

@@ -38,7 +38,7 @@ disc/halo1.iso ─▶ <mp map>.map (cache v5, zlib)
    retail Halo 2 MP map (the base) + converted sbsp/ltmp, sky, placements
                     │  map::build (TagSet from the base)
                     ▼
-   <data>/maps/<h1 map>/{h2,h1}/<map>.map + manifest ─▶ content package
+   <data>/maps/h1_<map>/{h2,h1}/h1_<map>.map + manifest.toml ─▶ content package
 ```
 
 **The base.** Each converted map starts from a retail Halo 2 multiplayer

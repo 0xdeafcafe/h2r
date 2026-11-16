@@ -14,7 +14,11 @@ step. Design and status: [docs/live/live-coop.md](../../docs/live/live-coop.md)
 | `tap` | `ScheduleTap`: the schedule as an `xapi::tap::InputTap` |
 
 Nothing in it reads a clock or a device itself, and nothing in it knows the
-guest. Nothing calls it from `boot` yet.
+guest. Nothing calls it from `boot`: Co-op over Live as built uses the retail
+game's own synchronous campaign path
+([live-coop.md](../../docs/live/live-coop.md) section 10), and this crate is
+the host-level lockstep alternative kept in reserve. `live-server` uses it for
+the relay's datagram limit and its tests.
 
 ```sh
 cargo test -p coop                       # schedule, links, peers over a simulated link, two toy guests

@@ -199,8 +199,11 @@ object cache identity. Measured results are in [build-perf.md](build-perf.md).
 
 `h2 build`, and `h2 run`/`play` when they rebuild, don't use the emission
 receipt above. They write `<out>/src`, compile it with the same object
-cache, link `libh2game.dylib` and stamp it (docs/runtime/BOOT.md). What each kind
-of change costs:
+cache, link `libh2game.dylib` and stamp it (docs/runtime/BOOT.md).
+`H2_EMIT_TARGET` (`host` or unset, `macos`, `tvos`, `ios`, `windows`) picks
+what they compile for; the target is in the objects' flags and the stamp
+([windows.md](../runtime/windows.md), [tvos.md](../runtime/tvos.md),
+[ios.md](../runtime/ios.md)). What each kind of change costs:
 
 - **Nothing changed.** `play` and `build --check` read the image and
   compare the stamp, and do nothing else.

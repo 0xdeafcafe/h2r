@@ -249,6 +249,10 @@ by root and the server, which runs as uid 65532, cannot write to it. On
 Linux set `H2_LIVE_UID`/`H2_LIVE_GID` in `.env` to your own ids so the
 files stay yours (Docker Desktop on macOS maps ownership for you).
 
+`H2_LIVE_DATA_DIR` and `H2_LIVE_ART_DIR` in `.env` (default `./data` and
+`./art`; `setup.sh` writes both) say where on the host the state and the
+extracted art live; compose mounts them at `/data` and `/art`.
+
 The first start creates `data/server.key` and `data/server.json` with the
 id `live.forbes.red`, from `--public-url` (`--behind-cloudflared`, above).
 Among the first lines of the log:
@@ -548,7 +552,9 @@ H2_LIVE_S3_ACCESS_KEY_ID=...
 H2_LIVE_S3_SECRET_ACCESS_KEY=...
 ```
 
-(`H2_LIVE_S3_PUBLIC_*` override any of them for the public bucket;
+(`H2_LIVE_S3_PUBLIC_ENDPOINT`, `H2_LIVE_S3_PUBLIC_ACCESS_KEY_ID`,
+`H2_LIVE_S3_PUBLIC_SECRET_ACCESS_KEY` and `H2_LIVE_S3_PUBLIC_REGION` override
+the matching one for the public bucket, for a token scoped to it;
 `H2_LIVE_S3_REGION` defaults to `auto`.) Then:
 
 ```

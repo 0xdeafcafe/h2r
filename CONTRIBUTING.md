@@ -25,6 +25,7 @@ stops at the first failure.
 
 - `scripts/check.sh --fix` applies `cargo fmt` and `cargo clippy --fix` first.
 - `scripts/check.sh --crate <name>` limits the checks to one package.
+- `just check` runs the same script; `just test` runs the workspace tests.
 
 Tests that need the disc are skipped by default. To run them, put the disc in
 place and run:

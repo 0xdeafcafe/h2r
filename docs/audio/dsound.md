@@ -387,7 +387,8 @@ returns the `audio::AudioSink` to play into. Who renders depends on
 `Pacing`; completion order does not: each completed packet's size and
 status reach guest memory, in submission order, before its event is
 published, events are delivered with no guard held, and stream callbacks
-(guest calls) run at the next override call on a guest thread, in order.
+(guest calls) run on a guest thread, in order, at the next override call or
+from the completion DPC (see "Notification and callback contracts").
 
 - `Device { target_latency_ms }` (default 40). Each wake
   (`OutputConfig::period`, default 5 ms) the thread renders enough to keep
@@ -894,6 +895,9 @@ impl Hle {
     pub fn spawn_output<S: AudioSink + 'static, F: FnOnce() -> S + Send + 'static>(
         self: &Arc<Self>, runtime: Arc<Runtime>, open: F, config: OutputConfig,
     ) -> Result<Output, ConsumerConflict>;
+    /// A kernel periodic-source handler that runs queued stream callbacks.
+    pub fn completion_dpc(self: &Arc<Self>) -> impl FnMut(&mut Guest, u32, u64)
+        -> Result<Option<GuestInterrupt>, GuestFault> + Send + 'static;
     pub fn pinned_events(&self) -> usize;
     pub fn take_stops(&self) -> Vec<StopRecord>;
     pub fn take_signal_failures(&self) -> Vec<SignalFailure>;
@@ -940,11 +944,11 @@ pub fn unregister(dispatch: &mut runtime::Dispatch, registration: &Registration)
 
 ### Boot integration
 
-For `.claude/worktrees/boot`, this replaces `dsound_glue::install`. Don't
-install both: `register` reports every address the glue owns as occupied.
-The glue's heap at `0xa080_0000` is not needed, because the arena maps its
-own pages and skips existing ones. This is the exact wiring, including the
-audio clock and event pinning:
+`boot::dsound_glue::install` does this wiring for the booted game (`install`, `install_with_sink`,
+`install_with_sinks`).
+What follows is the same shape for a runner of your own, including the audio
+clock and event pinning. Don't register both: `register` reports every
+address the glue owns as occupied.
 
 ```rust
 use std::sync::{Arc, Mutex};

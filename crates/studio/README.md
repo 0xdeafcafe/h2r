@@ -17,5 +17,8 @@ cargo run --release -p studio -- --disc <iso> --hopper default --playlist 2 --sc
 scripts/editor-screenshots.sh     # the user guide's screenshots, from your disc
 ```
 
+`--screenshot` also takes scripted input (`--do`), crops and callouts; see
+"Headless screenshots" in editor.md.
+
 Fonts in `assets/fonts`: Inter (SIL OFL 1.1, `Inter-LICENSE.txt`) and a
 subset of Lucide icons (ISC, `Lucide-LICENSE.txt`).

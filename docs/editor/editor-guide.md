@@ -179,7 +179,7 @@ could be drawn.
 
 - **Outliner**: a **Filter placements** box, **Duplicate** and
   **Delete**, and one group per kind of object with its count, for
-  example `Netgame equipment (61)`. Click a group to expand it, and an
+  example `Netgame equipment (33)`. Click a group to expand it, and an
   entry to select it; double-click an entry to point the camera at it.
 - **Viewport**: the level in 3D with its textures and baked lighting, the placed objects'
   models, and a small coloured marker for each placement. The toolbar

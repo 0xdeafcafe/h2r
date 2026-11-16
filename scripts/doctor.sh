@@ -113,7 +113,7 @@ section "Xbox (just xbox, xbox-deploy)"
 if [ -d platform/xbox ]; then ok "platform/xbox"; else note "platform/xbox is not on this checkout yet; the recipes say so until it is merged"; fi
 makemsix=${H2_MAKEMSIX:-$(command -v makemsix || echo "${TMPDIR%/}/msix-tools/bin/makemsix")}
 if [ -x "$makemsix" ]; then ok "makemsix ($makemsix)"; else
-  miss "makemsix" "build microsoft/msix-packaging with pack support and set H2_MAKEMSIX (docs/runtime/xbox.md)"
+  miss "makemsix" "build microsoft/msix-packaging with pack support and set H2_MAKEMSIX (docs/runtime/building.md)"
 fi
 if have osslsigncode; then ok "osslsigncode"; else miss "osslsigncode" "brew install osslsigncode"; fi
 if have openssl; then ok "openssl"; else miss "openssl" "brew install openssl"; fi

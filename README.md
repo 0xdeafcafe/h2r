@@ -16,8 +16,8 @@ Public repo: <https://github.com/0xdeafcafe/h2r>.
 What works today:
 
 - **Analysis and lifting.** The retail XBE is analysed (about 18,700
-  functions and 504 jump tables), lifted to IR and emitted as C11, which clang
-  builds into a dylib.
+  functions), lifted to IR and emitted as C11, which clang builds into a
+  dylib.
 - **Boot to the main menu.** The recompiled game boots through the HLE
   kernel, xapi, D3D (replaced at the API level, push buffer included, on
   wgpu/Metal) and DirectSound with a WMA decoder, to the real main menu
@@ -26,7 +26,23 @@ What works today:
   first level, The Heretic (`00a_introduction`). It renders past 8,000
   frames, with shadow maps: one run there took 50,207 shadow-map samples
   and skipped none.
-- **Windowed player.** `h2 play` runs with keyboard, gamepad and sound.
+- **Windowed player.** `h2 play` runs with keyboard, gamepad and sound. Any
+  campaign level or multiplayer map can be started directly
+  ([docs/runtime/level-boot.md](docs/runtime/level-boot.md)).
+- **Beyond the retail game.** An Xbox Live replacement (server, web app and
+  client HLE, with co-op over Live, [docs/live/live.md](docs/live/live.md)); an
+  expanded settings menu ([docs/game/settings-menu.md](docs/game/settings-menu.md));
+  the Multiplayer Map Pack ([docs/game/map-pack.md](docs/game/map-pack.md));
+  new and edited maps as packages ([docs/game/maps.md](docs/game/maps.md)); and
+  Halo 1 multiplayer maps converted to Halo 2 maps
+  ([docs/game/h1-multiplayer.md](docs/game/h1-multiplayer.md)).
+- **Editor.** `h2-editor`, a native Rust editor for map placements, game
+  variants and matchmaking playlists, with a 3D viewport
+  ([docs/editor/editor-guide.md](docs/editor/editor-guide.md)).
+- **Other targets.** Apple TV and iPhone/iPad apps are built from the same
+  module ([docs/runtime/tvos.md](docs/runtime/tvos.md),
+  [docs/runtime/ios.md](docs/runtime/ios.md)). The runtime cross-compiles for
+  Windows; nothing has run there yet ([docs/runtime/windows.md](docs/runtime/windows.md)).
 - **Tooling.** Deterministic logical-time scheduling, checkpoints, a sampling
   profiler and a benchmark tool.
 
@@ -47,7 +63,9 @@ Master has the analyser, lifter, emitter (`h2 emit`), runtime, kernel,
 xapi, D3D and DirectSound crates, the tag and map readers, the boot runner
 (`h2 build`, `h2 run`), the windowed player (`h2 play`, below),
 logical-time scheduling, checkpoints, and the profiler and benchmarks
-(`h2 profile`, `h2 bench`).
+(`h2 profile`, `h2 bench`). It also has the Live service (`h2 live`), the Halo 1
+readers and converter (`h2 h1`, `h2 import halo1`), the editor (`h2-editor`,
+`crates/studio`) and the `justfile` targets below.
 
 In progress for 30 fps: the rest of fast guest memory access and the
 gameplay frame ([docs/perf/architecture-review.md](docs/perf/architecture-review.md)).
@@ -82,8 +100,10 @@ In priority order:
      ([docs/graphics/high-resolution.md](docs/graphics/high-resolution.md)).
    - Recovering the E3 2003 stencil-shadow lighting engine
      ([docs/graphics/e3-lighting.md](docs/graphics/e3-lighting.md)).
-5. Later: a map editing kit, and TV targets (see
-   [docs/runtime/app.md](docs/runtime/app.md)).
+5. Later: Forge and theater on Halo 2 multiplayer maps
+   ([docs/game/forge.md](docs/game/forge.md), [docs/game/theater.md](docs/game/theater.md);
+   both designs), and a Windows and Xbox host app
+   ([docs/runtime/windows.md](docs/runtime/windows.md)).
 
 ## Requirements
 
@@ -119,6 +139,7 @@ just mac-play        # build and play on this Mac
 just tvos            # the Apple TV app's inputs; then just tvos-install
 just ios maps=all    # the iPhone/iPad app with every map and the map pack
 just windows-dll     # the game module cross-built for Windows
+just check           # fmt, clippy and tests, as before a push (scripts/check.sh)
 ```
 
 It uses `disc/halo2.iso` and, when present, `disc/mappack.iso` (or `iso=`,
@@ -139,6 +160,7 @@ cargo h2 extract                 # copy the disc's files to disc/extracted/
 cargo h2 analyze                 # function discovery and coverage
 cargo h2 lift --stats            # lowering coverage
 cargo h2 emit --out $TMPDIR/h2gen   # generate C and build the host library
+cargo h2 h1 info disc/halo1.iso  # Halo 1 map headers (your own Halo 1 disc)
 ```
 
 `emit` is slow and writes a lot of output (about 1 GB), so point `--out`
@@ -191,6 +213,16 @@ background under `~/Library/Caches/h2recomp/follow`; your checkout is never
 touched. A banner in the window shows progress. Press F5 on "Update ready"
 to restart into the new build, or F6 to hide the banner. See
 [docs/runtime/app.md](docs/runtime/app.md) for every flag.
+
+## Editor
+
+```sh
+cargo run --release -p studio -- --disc disc/halo2.iso
+```
+
+`h2-editor` opens a map from your disc, shows it in 3D and edits its
+placements, your game variants and the matchmaking playlists file. Start with
+[docs/editor/editor-guide.md](docs/editor/editor-guide.md).
 
 ## Ghidra
 

@@ -2,6 +2,9 @@
 
 Status: design. Nothing on this page is built unless it says so. Rust and
 JSON blocks are sketches of an interface, not code that compiles today.
+Checked against master on 2026-11-17: there is no `h2 agent`, no `h2 serve`
+(the only `serve` is `h2 live serve`) and no `H2_AGENT` in the code, and
+the game process still has no listener outside `live-server`.
 
 This page designs one interface through which an agent (or a script, or a
 test) can see and drive a running Halo 2. That means: what is on screen,

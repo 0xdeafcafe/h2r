@@ -42,8 +42,9 @@ wall durations. Nested Runner/Kernel/D3d/Gfx/Fallback times **overlap** and must
 not be summed. GPU completion latency is not measured by a host submission timer.
 An unobserved category prints `unobserved`, not a misleading measured zero.
 
-Boot integration (not done yet; `H2_PERF` counters already reach the runtime
-through boot's bridge):
+Boot integration (not done; `H2_PERF` counters already reach the runtime
+through boot's bridge, and a timeline of a real run comes from `H2_TIMELINE`,
+see [perf.md](perf.md)):
 
 - Enable profiling for every guest ExecCtx, including new threads and DPCs.
 - After registering D3D entries, use `Dispatch::profile_override(addr,
@@ -257,7 +258,7 @@ correctness, graphics work, input and scheduling throughout.
 
 ## Guest CPU: SSE, REP copies and D3D entry (2026-11-15)
 
-`H2_SSE_NATIVE` enables guarded native binary32 arithmetic with observable
+`H2_SSE_NATIVE` (on by default; `0` disables it) enables guarded native binary32 arithmetic with observable
 MXCSR preserved; [sse-native.md](../lifter/sse-native.md) gives the proof and escape
 hatch. The runtime ABI and Rust integer authority are unchanged.
 
@@ -428,9 +429,10 @@ Synthetic benchmark (`generated_runtime_benchmark`, release, median of 7,
 | call (call + ret) | 52.3 ns | 52.6 ns | 35.3 ns |
 | tail (call, tail jmp, ret) | 73.8 ns | 75.1 ns | 45.2 ns |
 
-What is left of a direct call is mostly the callee's own prologue and
+What was left of a direct call was mostly the callee's own prologue and
 epilogue: `h2abi_v1_fast_acquire`/`release` (two Rust calls), the register
-spill and reload, and two gate round trips for the execute checks.
+spill and reload, and two gate round trips for the execute checks. The
+next section removes the Rust calls.
 
 Proof: `crates/emit/tests/direct.rs` builds one synthetic module with the
 flag off and on and runs it on the real runtime three ways (built off, built
@@ -446,6 +448,50 @@ request, and pending interrupts.
 cargo test -p emit --test direct
 H2_PERF_KIND=call cargo test --release -p emit --test perf generated_runtime_benchmark -- --ignored --nocapture
 ```
+
+## One exit call, and a callee on its caller's view (2026-11-17)
+
+Two changes to the handler's way in and out, both with `H2_FASTMEM`.
+Neither has a benchmark recorded here; the tests below prove them equal to
+the old calls.
+
+- **One exit call.** The shared epilogue used to call `h2abi_v1_charge`
+  (with accounting, when the count was not zero) before the spill and
+  `h2abi_v1_fast_release` after it. It now calls `h2abi_v1_exit(ctx, n)`
+  once, after the spill: the runtime settles the inline view's count and
+  then spends the handler's `n`. Without `H2_FASTMEM` the charge alone
+  stays. The ABI version is unchanged and the two older callbacks stay
+  exported. The boot bridge table has a last slot, `exit`, installed by
+  `h2boot_install_v3`; boot installs a module built before it through
+  `h2boot_install_v2`, so older images still load.
+- **A direct callee runs on its caller's view.** A direct call lends the
+  caller's inline RAM view through the last word of the direct-call block
+  (`H2Direct.view`). The callee's entry takes and clears it and skips
+  `h2abi_v1_fast_acquire`; its exit calls `h2abi_v1_exit` only when it has
+  a count of its own to charge, and a hand-up from it releases nothing.
+  The caller charged its count just before the call, every Rust helper
+  settles the view's count before it looks, and the budget is what acquire
+  would have set again, so the slice runs out at the same access. The
+  runtime clears `view` before it invokes any native handler itself, so a
+  handler entered through the runner always acquires. Module feature 4
+  (`H2GEN_FEATURE_DIRECT_VIEW`) marks a module that lends: a runtime whose
+  block ends before `view` refuses it, and older modules ignore the word.
+
+`H2_EXIT_CALL=0` and `H2_DIRECT_VIEW=0` build the old exit and the old
+entries and exits. They are C defines the equivalence tests set, not
+`cflags()` switches. `crates/emit/RUNTIME-CONTRACT.md` §4 has the rules.
+
+Proof: `crates/emit/tests/direct.rs` compares lent and unlent views, and
+old-exit builds through the v2 bridge table, in every scenario above
+(faults, hand-ups, transfer limits, a slice ending at every access, depth
+caps, overrides, interrupts), on charged and inline accesses, slice spent,
+budget and preempt word. `a_direct_callee_borrows_its_callers_view` counts
+the calls: in the nested fixture 7 acquires and 7 releases become 1
+acquire and 7 exits, and calls past a depth cap acquire as through the
+runner. `crates/emit/tests/exits.rs` checks the preprocessed epilogue, lend,
+borrow and hand-up for every accounting and fast-memory combination, the
+runtime has `exit_settles_as_charge_then_release`, and
+`crates/boot/tests/bridge.rs` loads an old-style bridge through v2.
 
 ## Inline guest loads and stores (2026-11-16)
 

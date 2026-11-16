@@ -48,7 +48,7 @@ The database URL comes from `--db`, then `H2_LIVE_DB`, then the default; it
 is only ever printed without credentials. The schema is created at startup
 if missing. The server's key and id live in `--data` (default
 `~/Library/Application Support/h2recomp/live/server`, mode 0700, key 0600),
-never in Postgres; the id is fixed on first start. A non-loopback `--listen`
+never in the database; the id is fixed on first start. A non-loopback `--listen`
 needs `--tls-cert`/`--tls-key` (rustls) or `--insecure-http`. `--private`
 makes reads need a token; `--invite-only` makes account creation need an
 invite from `h2 live invite create`.
@@ -85,11 +85,20 @@ What is built of [live-api.md](../../docs/live/live-api.md):
 | `PUT /v1/maps/{map}/outline` | `games.write`, ≤ 2 MiB; first upload wins, operator may replace |
 | `GET /v1/maps/{map}/outline` | the outline JSON |
 
+Also built, in [live-api.md](../../docs/live/live-api.md): teams
+(`/v1/teams`), sessions and game invitations (`/v1/sessions`, mailboxes),
+co-op games and the relay (`/v1/coop/games`, `/v1/sessions/{id}/relay`),
+custom maps and content (`/v1/maps/{map}`, `/v1/hoppers/pins`), cloud saves
+(`/v1/accounts/{gamertag}/storage`), the stats summary, the admin routes
+(`/v1/admins`, `/v1/admin/status`, `/v1/admin/content`, `/v1/server`), the
+local sign-in link (`/v1/local/signin`) and the game art at `/art/game/`.
+The table above is the core.
+
 Lists are `{items, next, position}`; pass `next` back as `?cursor=`. Every
 read reply carries `position`, the last position the read model applied.
 Errors are `{"error": "<code>", "message"}` with codes `invalid`,
 `unauthorized`, `forbidden`, `not_found`, `conflict`, `too_large`,
-`rate_limited`, `unimplemented`, `unavailable`.
+`gone`, `rate_limited`, `unimplemented`, `unavailable`.
 
 Accounts may append, on their own streams only: `KeyAdded` / `KeyRevoked`
 and the friend events (`FriendRequested` from oneself, `FriendAccepted` /

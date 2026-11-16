@@ -239,8 +239,11 @@ exact replay, which gives the same result:
 - **Per-tick simulation hash.** A hash of the game-state arena at the end
   of every tick, from the observing wrapper on `0x00137fe0` that the
   `lockstep` crate already uses for its whole-RAM hash. Write one every
-  30 ticks. The high-fps harness hashes all 64 MiB; Theater needs a
-  narrower *simulation hash* over the arena only, per named allocation,
+  30 ticks. The high-fps harness hashes all of RAM in use
+  (`lockstep::hash_guest`). A narrower hash over the arena alone,
+  `lockstep::hash_sim` with `SimRegion::HALO2` (the co-op probe's, and
+  `lockstep::pools` cuts it per datum array), already exists. Theater
+  needs it per named allocation,
   so a camera-driven change elsewhere doesn't count as a desync. If some
   arena allocations turn out to hold view state, add them to an explicit
   exclude list.

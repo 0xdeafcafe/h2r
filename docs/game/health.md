@@ -1,6 +1,9 @@
 # Health: Halo 1's model on Halo 2's engine
 
-Status: built, tests only; not seen running. Started 2026-11-16.
+Status: the hooks, the window meter and the switch are built, tests only;
+not seen running. Nothing calls the switch yet: no map load or converted
+Halo 1 map selects the Halo 1 model, so today it is on only through the
+debug override `H2_HEALTH_MODEL=halo1`. Started 2026-11-16.
 
 Halo 1 has a shield that recharges over a health bar that doesn't, and
 health packs that refill it. Halo 2 has a shield over hidden body health
@@ -99,6 +102,10 @@ plan:
 - **Damage**: unchanged.
 
 ### The switch (for the campaigns and h1-mp lanes)
+
+`boot::health::set_mode` has no caller outside this module and its tests
+(checked in the tree, 2026-11-17). The converter and the map load have to
+call it; until they do the model is Halo 2's on every map.
 
 ```rust
 use boot::health::{self, HealthModel};

@@ -99,6 +99,9 @@ change 1.
 
 ### 1. A guest load or store is a function call that calls memcpy
 
+This is the state at the review; `h2_held_read`/`h2_held_write` have since
+been replaced by the always-inline `H2_HELD_TRY` (ranked change 2 below).
+
 `H2_LD`/`H2_ST` (`crates/emit/c/h2gen.h`) call `h2_held_read`/
 `h2_held_write` (`h2fastmem.h`). They are `static inline`, but clang
 does not inline them: the dylib has exactly one out-of-line copy per
@@ -328,6 +331,14 @@ frame from frame stats on Old Mombasa, to turn ns per access into ms.
 
 ### 3. Thin transfers
 
+Status (2026-11-17): the epilogue now makes one call, `h2abi_v1_exit`, in
+place of `charge` and `fast_release`, and a direct callee runs on its
+caller's inline view, so it skips `fast_acquire` and `fast_release`
+(`docs/perf/performance.md`, "One exit call, and a callee on its caller's
+view"). Reading the budget and count from context fields, the execute
+permission by generation, direct calls that need no warming and the flat
+dispatch table below are not done.
+
 - **Context header fields instead of calls.** Put the fast-memory view,
   the access budget and the spent count where C can reach them from
   `ctx` (it already reads the preempt word and the `H2Direct` block that
@@ -369,6 +380,12 @@ flag alone is most of the win. Also count HLE calls per frame by
 handler.
 
 ### 4. Floating point
+
+Status (2026-11-17): the table-driven first pass for FYL2X and F2XM1 has
+landed (`docs/lifter/x87-transcendentals.md`, "Table-driven first pass"),
+which is the division-free-series idea below in another form: F2XM1 went
+from about 1030 to about 525 ns per call. The memo, the NEON SSE helpers
+and the double-slot x87 stack are not done.
 
 **SSE.** Keep the guard design and the proof in `docs/lifter/sse-native.md`;
 change the unit of work from a lane to an instruction.

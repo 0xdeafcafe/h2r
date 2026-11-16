@@ -278,13 +278,13 @@ is the trace source for validating the mixer later.
 
 ## Next steps
 
-1. (Done: 64 confirmed, docs/formats/sound.md.)
-2. (Done: `crates/dsound` maps the guest's DirectSound calls onto this model;
-   see [dsound.md](dsound.md).)
-3. Notifications and play regions (Halo 2 has no call sites for them; see
-   dsound.md). (Done: the I3DL2 reverb, as an FDN.)
-4. Replace linear resampling with a windowed-sinc or polyphase path for big
+1. Notifications and play regions (Halo 2 has no call sites for them; see
+   [dsound.md](dsound.md)).
+2. Replace linear resampling with a windowed-sinc or polyphase path for big
    downsamples.
-5. (Done: the ring-fed `DeviceSink` removes the callback lock, and
-   `dsound::Hle::spawn_output` is the one consumer that renders into it; see
-   `docs/audio/dsound.md`, "Consumers and the output thread".)
+
+Done: the 64-sample ADPCM block ([sound.md](../formats/sound.md)), the guest
+mapping in `crates/dsound`, the I3DL2 reverb (an FDN), and the ring-fed
+`DeviceSink`, with `dsound::Hle::spawn_output` as the one consumer that
+renders into it ([dsound.md](dsound.md), "Consumers and the output
+thread").
