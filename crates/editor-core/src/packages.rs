@@ -298,6 +298,50 @@ mod tests {
         assert_eq!(o[1].sandbox, Some(Sandbox::Halo2));
     }
 
+    /// The manifest as `content::Manifest` writes it (the converter's
+    /// packages): `[[variant]]` with `sha256` and an `[variant.origin]`
+    /// sub-table, and the package lists and reads one entry per variant.
+    #[test]
+    fn the_converters_serialized_manifest_lists_both_variants() {
+        let sha = content::Sha256::of(b"map");
+        let src = content::Sha256::of(b"h1");
+        let variant = |s: &str| {
+            format!(
+                "[[variant]]\nfile = \"{s}/h1_bloodgulch.map\"\nsha256 = \"{sha}\"\n\
+                 origin = {{ game = \"halo1\", map = \"bloodgulch\", sandbox = \"{s}\", \
+                 source_sha256 = \"{src}\" }}\n"
+            )
+        };
+        let text = format!(
+            "[package]\nformat = 1\nname = \"Blood Gulch\"\n\n[base]\nmap = \"h1_bloodgulch\"\n\
+             derived = true\n\n[list]\nbase = \"beavercreek\"\n\n{}{}",
+            variant("h1"),
+            variant("h2")
+        );
+        let serialized = content::Manifest::from_toml(&text).unwrap().to_toml();
+        assert!(serialized.contains("[variant.origin]"), "{serialized}");
+        let o = halo1_origins(&table(&serialized));
+        assert_eq!(o.len(), 2);
+        assert_eq!(o[0].sandbox, Some(Sandbox::Halo1));
+        assert_eq!(o[1].file.as_deref(), Some("h2/h1_bloodgulch.map"));
+        assert_eq!(o[1].source_sha256, Some(src.to_string()));
+
+        let maps = std::env::temp_dir().join(format!("h2-editor-pkgser-{}", std::process::id()));
+        let dir = maps.join("h1_bloodgulch");
+        let _ = std::fs::remove_dir_all(&maps);
+        std::fs::create_dir_all(dir.join("h2")).unwrap();
+        std::fs::write(dir.join("manifest.toml"), &serialized).unwrap();
+        std::fs::write(dir.join("h2/h1_bloodgulch.map"), b"map").unwrap();
+        let listed = list(&maps);
+        let labels: Vec<String> = listed.iter().map(|e| e.label()).collect();
+        assert_eq!(
+            labels,
+            ["Blood Gulch (H1 sandbox)", "Blood Gulch (H2 sandbox)"]
+        );
+        assert_eq!(read_map(&maps, &listed[1], None).unwrap(), b"map");
+        let _ = std::fs::remove_dir_all(&maps);
+    }
+
     #[test]
     fn other_packages_and_other_games_have_no_origin() {
         assert!(halo1_origins(&table("[package]\nname = \"x\"\n")).is_empty());

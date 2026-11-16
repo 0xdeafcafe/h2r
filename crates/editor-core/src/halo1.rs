@@ -13,10 +13,6 @@ use h1map::scenario::{FlagKind, GameType, Multiplayer};
 use h1map::{H1Map, TagId, TagRef};
 use xiso::{Entry, Xiso};
 
-/// The library function that will turn a Halo 1 map into a built Halo 2
-/// map; the editor's "Convert to Halo 2" waits on it.
-pub const CONVERT_ENTRY_POINT: &str = "h1convert::convert(h1: &h1map::H1Map, base: &map::Map<_>, sandbox: Sandbox) -> Result<Converted>";
-
 /// Where Halo 1 maps come from.
 #[derive(Debug, Clone)]
 pub enum H1Source {

@@ -128,6 +128,7 @@ impl App {
         self.opened_package = None;
         self.h1_view = None;
         self.h1_loaded = None;
+        self.convert_error = None;
         if self.compare.take().is_some() {
             self.overlay_rev += 1;
         }
