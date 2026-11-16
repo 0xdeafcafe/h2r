@@ -14,6 +14,8 @@
 pub mod dialog;
 pub mod hopper;
 pub mod scenario;
+#[cfg(test)]
+mod screenshots;
 pub mod shell;
 pub mod source;
 pub mod tool;

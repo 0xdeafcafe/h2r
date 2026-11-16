@@ -219,6 +219,7 @@ Running the game:
 - [title-updates.md](docs/title-updates.md): supporting title-update XBEs (1.1 and later): what assumes the 1.0 image, and the address-map design (not implemented)
 - [map-pack.md](docs/map-pack.md): the Multiplayer Map Pack disc: its content packages, the title update it carries, and `h2 import-mappack` (the maps need the update, which doesn't run yet)
 - [kernel-imports.md](docs/kernel-imports.md): work list of every kernel import Halo 2 uses
+- [editor-guide.md](docs/editor-guide.md): user guide to `h2-editor`: editing what is on a map, game variants and playlists, with screenshots ([editor.md](docs/editor.md) for developers)
 - [storage.md](docs/storage.md): Xbox storage boundary (`crates/vfs`)
 - [xapi.md](docs/xapi.md): guest XAPI service replacements (`crates/xapi`)
 - [checkpoints.md](docs/checkpoints.md): checkpoint save and revert acceptance test

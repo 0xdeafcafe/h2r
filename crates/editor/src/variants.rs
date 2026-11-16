@@ -170,6 +170,20 @@ impl Tool for VariantTool {
 }
 
 #[cfg(test)]
+impl VariantTool {
+    /// Uses `editor` as if it had been built for the source at `source`
+    /// (the guide's screenshots, with a made-up schema).
+    pub(crate) fn use_editor(&mut self, editor: VariantEditor, source: Option<&Path>) {
+        self.editor = Some(editor);
+        self.built_for = Some(source.map(Path::to_owned));
+    }
+
+    pub(crate) fn editor_mut(&mut self) -> Option<&mut VariantEditor> {
+        self.editor.as_mut()
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
