@@ -92,7 +92,7 @@ impl ViewportView {
             self.markers_rev = Some(session.markers_rev());
         }
         let resized = vp.render(gpu.device, gpu.queue, session.camera(), size_px);
-        let view = vp.color_view()?;
+        let view = vp.ui_view()?;
         match self.texture {
             Some(id) if resized => {
                 if let Err(e) = gpu.renderer.update_external_texture(id, view) {
