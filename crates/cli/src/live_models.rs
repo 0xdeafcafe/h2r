@@ -1719,7 +1719,7 @@ fn markers(map: &mut MapReader, mode: TagId, nodes: usize) -> Result<Vec<Marker>
 /// A shader's bitmaps: `shad +0x20` is the compiled postprocess (one
 /// element), whose `+4` block lists the bitmap parameters (0xc bytes, datum
 /// first; docs/shader-instances.md).
-fn shader_bitmaps(map: &mut MapReader, shader: TagId) -> Result<(String, Vec<TagId>)> {
+pub(crate) fn shader_bitmaps(map: &mut MapReader, shader: TagId) -> Result<(String, Vec<TagId>)> {
     let tag = map.tag(shader)?.clone();
     let address = tag.location.context("no payload")?.address;
     let bytes = map.read_tag_bytes(shader)?;
@@ -1807,7 +1807,11 @@ pub fn bitmap_role(name: &str) -> BitmapRole {
 }
 
 /// The first image of a bitmap tag, decoded to RGBA.
-fn decode_bitmap(map: &mut MapReader, files: &mut ResourceFiles, id: TagId) -> Result<Image> {
+pub(crate) fn decode_bitmap(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    id: TagId,
+) -> Result<Image> {
     let bitmap = match DecodedTag::read(map, id)?.data {
         TagData::Bitmap(b) => b,
         _ => return Err(anyhow!("not a bitmap")),
@@ -1932,7 +1936,7 @@ fn chosen_sections(geo: &RenderModelGeometry, lod: usize) -> Vec<usize> {
 
 /// A render model as [`Source`], at the highest detail level whose drawn
 /// triangles fit `budget`.
-fn read_source(
+pub(crate) fn read_source(
     map: &mut MapReader,
     files: &mut ResourceFiles,
     mode: TagId,

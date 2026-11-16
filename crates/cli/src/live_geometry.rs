@@ -32,6 +32,8 @@ use tags::structure::StructureRender;
 
 use crate::live_art::{Disc, MapFile};
 use crate::live_features::{Features, read_features};
+pub use crate::live_layers::{Blend, Layer};
+use crate::live_layers::{LayerMaterial, LayerPrim, LayerTri};
 use crate::live_render::{self, Camera, ShadowMap, VIEWS};
 
 /// The geometry files' format (contract `GEOMETRY_VERSION`).
@@ -144,8 +146,20 @@ pub enum Surface {
     Class(Class),
     /// Sky, clouds or fog: not part of the level.
     Sky,
+    /// A layer drawn over the level or into the air, not solid level:
+    /// decals and overlays, glows, light volumes, waterfalls
+    /// ([`crate::live_layers`]).
+    Layer(Layer),
     /// Nothing; the triangle's facing decides.
     Unknown,
+}
+
+impl Surface {
+    /// Whether triangles of this surface are solid level geometry (not
+    /// sky, not a layer).
+    pub fn is_level(self) -> bool {
+        !matches!(self, Surface::Sky | Surface::Layer(_))
+    }
 }
 
 /// The surface a shader's tag name describes, by generic words in its last
@@ -210,10 +224,15 @@ pub fn surface_from_name(name: &str) -> Surface {
 /// generic rendering words in the template's tag name (its folder and last
 /// path component), read at run time. Decides before the shader's own name:
 ///
-/// - sky or cloud templates, additive ones (`add`: glows, light shafts and
-///   volumes, which have no solid surface) and decal or overlay layers
-///   (named for it first: an opaque `..._detail_overlay` blends its detail
-///   map and is a solid surface) are not level geometry: [`Surface::Sky`];
+/// - decal or overlay layers (named for it first: an opaque
+///   `..._detail_overlay` blends its detail map and is a solid surface)
+///   are [`Layer`]s of the `decal` group ([`crate::live_layers`]);
+/// - additive templates (`add`: glows, light shafts and volumes, electric
+///   arcs, gas) are `effect` layers drawn added to what is behind them;
+/// - sky templates (named `sky...` first, and not additive) are the sky:
+///   [`Surface::Sky`], not drawn;
+/// - other cloud templates (`..._clouds`: waterfalls, spray, smoke cards)
+///   are alpha-blended `effect` layers;
 /// - templates in a `water` folder or named for water or waves are water;
 /// - other templates in a `transparent` folder blend over what is behind
 ///   them: glass, unless the shader's name says otherwise.
@@ -226,9 +245,12 @@ pub fn surface_from_template(template: &str) -> Option<Surface> {
         .filter(|w| !w.is_empty())
         .collect();
     let has = |set: &[&str]| words.iter().any(|w| set.contains(w));
-    let layer = matches!(words.first(), Some(&("decal" | "overlay")));
-    if layer || has(&["sky", "cloud", "clouds", "add"]) {
+    if let Some(layer) = Layer::from_template_words(&words) {
+        Some(Surface::Layer(layer))
+    } else if words.first() == Some(&"sky") || has(&["sky"]) {
         Some(Surface::Sky)
+    } else if has(&["cloud", "clouds"]) {
+        Some(Surface::Layer(Layer::effect(Blend::Alpha)))
     } else if folder == "water" || has(&["water", "waves"]) {
         Some(Surface::Class(Class::Water))
     } else if folder == "transparent" {
@@ -238,16 +260,17 @@ pub fn surface_from_template(template: &str) -> Option<Surface> {
     }
 }
 
-/// A surface from its shader's name and template: the template's verdict
-/// on sky, effects, decals and water; the name's on anything else; then
-/// the template's on transparency.
+/// A surface from its shader's name and template: sky by either; then
+/// the template's verdict on layers (decals, effects) and water; the
+/// name's on anything else; then the template's on transparency.
 pub fn surface_of(name: Option<&str>, template: Option<&str>) -> Surface {
     let by_template = template.and_then(surface_from_template);
     let by_name = name.map_or(Surface::Unknown, surface_from_name);
     match (by_template, by_name) {
-        (Some(t @ (Surface::Sky | Surface::Class(Class::Water))), _) => t,
-        (_, n @ (Surface::Sky | Surface::Class(_))) => n,
-        (Some(t), Surface::Unknown) => t,
+        (Some(Surface::Sky), _) | (_, Surface::Sky) => Surface::Sky,
+        (Some(t @ (Surface::Layer(_) | Surface::Class(Class::Water))), _) => t,
+        (_, n @ Surface::Class(_)) => n,
+        (Some(t), _) => t,
         (None, n) => n,
     }
 }
@@ -279,18 +302,32 @@ pub struct Tri {
 
 /// Every drawn triangle of a BSP: clusters as stored, instances placed. A
 /// section that fails to load is counted in the second value, not fatal.
+#[cfg(test)]
 pub fn bsp_triangles(
     bsp: &StructureRender,
     raw: &mut dyn RawSource,
     surfaces: &[Surface],
 ) -> (Vec<Tri>, usize) {
+    let (tris, _, failed) = bsp_geometry(bsp, raw, surfaces);
+    (tris, failed)
+}
+
+/// [`bsp_triangles`], and the triangles of its layers (decals and effects,
+/// [`Surface::Layer`]) with their texture coordinates and BSP material.
+pub fn bsp_geometry(
+    bsp: &StructureRender,
+    raw: &mut dyn RawSource,
+    surfaces: &[Surface],
+) -> (Vec<Tri>, Vec<LayerTri>, usize) {
     let materials = Some(bsp.material_count as usize);
     let mut out = Vec::new();
+    let mut layers = Vec::new();
     let mut failed = 0;
     let push = |s: &Section,
                 place: &dyn Fn([f32; 3]) -> [f32; 3],
                 rotate: &dyn Fn([f32; 3]) -> [f32; 3],
-                out: &mut Vec<Tri>|
+                out: &mut Vec<Tri>,
+                layers: &mut Vec<LayerTri>|
      -> Result<()> {
         let v = s.vertices(None)?;
         if v.positions.len() != s.vertex_count() {
@@ -307,7 +344,19 @@ pub fn bsp_triangles(
                 .get(usize::from(part.material))
                 .copied()
                 .unwrap_or(Surface::Unknown);
-            if surface == Surface::Sky {
+            if let Surface::Layer(_) = surface {
+                for t in s.part_triangles(part) {
+                    let i = t.map(usize::from);
+                    layers.push(LayerTri {
+                        p: i.map(|i| placed[i]),
+                        n: i.map(|i| normals[i]),
+                        uv: i.map(|i| v.texcoords.get(i).copied().unwrap_or([0.0; 2])),
+                        material: usize::from(part.material),
+                    });
+                }
+                continue;
+            }
+            if !surface.is_level() {
                 continue;
             }
             for t in s.part_triangles(part) {
@@ -325,7 +374,7 @@ pub fn bsp_triangles(
     for c in &bsp.clusters {
         match c.geometry.load(raw, materials) {
             Ok(Some(s)) => {
-                if push(&s, &same, &same, &mut out).is_err() {
+                if push(&s, &same, &same, &mut out, &mut layers).is_err() {
                     failed += 1;
                 }
             }
@@ -352,11 +401,12 @@ pub fn bsp_triangles(
             failed += 1;
             continue;
         }
-        if push(s, &|p| inst.transform(p), &|n| inst.rotate(n), &mut out).is_err() {
+        let (place, rotate) = (|p| inst.transform(p), |n| inst.rotate(n));
+        if push(s, &place, &rotate, &mut out, &mut layers).is_err() {
             failed += 1;
         }
     }
-    (out, failed)
+    (out, layers, failed)
 }
 
 /// Axis-aligned bounds in game coordinates.
@@ -700,6 +750,9 @@ pub struct GlbNode<'a> {
     /// Its mesh; a mesh given to several nodes (the same slice) is written
     /// once, named by the first node that has it.
     pub mesh: Option<&'a [(Class, Primitive)]>,
+    /// Layer primitives (decals, effects), added to its mesh, with the
+    /// level's layer materials.
+    pub layers: &'a [LayerPrim],
     /// Column-major glTF transform (placed objects only).
     pub matrix: Option<[f32; 16]>,
     pub extras: Option<serde_json::Value>,
@@ -711,8 +764,25 @@ impl<'a> GlbNode<'a> {
         GlbNode {
             name: name.into(),
             mesh: Some(&mesh.primitives),
+            layers: &[],
             matrix: None,
             extras: None,
+            children: Vec::new(),
+        }
+    }
+
+    /// A node holding only layer primitives.
+    pub fn layers(
+        name: impl Into<String>,
+        layers: &'a [LayerPrim],
+        extras: serde_json::Value,
+    ) -> Self {
+        GlbNode {
+            name: name.into(),
+            mesh: None,
+            layers,
+            matrix: None,
+            extras: Some(extras),
             children: Vec::new(),
         }
     }
@@ -740,14 +810,35 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
 /// one material per class shared by every mesh. `asset.extras` carries
 /// `bounds` and the views' `frame` (game coordinates), then the keys in
 /// `more`.
+#[cfg(test)]
 pub fn write_nodes(
     roots: &[GlbNode],
     bounds: Bounds,
     frame: Bounds,
     more: serde_json::Map<String, serde_json::Value>,
 ) -> Vec<u8> {
+    write_nodes_with(roots, bounds, frame, more, &[])
+}
+
+/// [`write_nodes`] with the materials the nodes' layer primitives use: a
+/// glTF material each (written once, when first used), their textures as
+/// embedded PNGs (one per bitmap), TEXCOORD_0 and u32 indices on layer
+/// primitives.
+pub fn write_nodes_with(
+    roots: &[GlbNode],
+    bounds: Bounds,
+    frame: Bounds,
+    more: serde_json::Map<String, serde_json::Value>,
+    layer_materials: &[LayerMaterial],
+) -> Vec<u8> {
     use serde_json::{Value, json};
-    struct Out {
+    struct Out<'m> {
+        layer_materials: &'m [LayerMaterial],
+        layer_material_of: HashMap<usize, usize>,
+        images: Vec<Value>,
+        textures: Vec<Value>,
+        texture_of: HashMap<u32, usize>,
+        unlit: bool,
         bin: Vec<u8>,
         views: Vec<Value>,
         accessors: Vec<Value>,
@@ -757,7 +848,7 @@ pub fn write_nodes(
         mesh_of: HashMap<*const (Class, Primitive), usize>,
         nodes: Vec<Value>,
     }
-    impl Out {
+    impl Out<'_> {
         fn view(&mut self, bytes: &[u8], target: u32) -> usize {
             while !self.bin.len().is_multiple_of(4) {
                 self.bin.push(0);
@@ -767,6 +858,83 @@ pub fn write_nodes(
             }));
             self.bin.extend_from_slice(bytes);
             self.views.len() - 1
+        }
+        fn layer_material(&mut self, i: usize) -> usize {
+            if let Some(&m) = self.layer_material_of.get(&i) {
+                return m;
+            }
+            let lm = &self.layer_materials[i];
+            let texture = lm.texture.clone().map(|t| {
+                if let Some(&k) = self.texture_of.get(&t.bitmap) {
+                    return k;
+                }
+                let mut png = Vec::new();
+                assets::png::write_rgba_fast(
+                    &mut png,
+                    t.image.width,
+                    t.image.height,
+                    &t.image.rgba,
+                )
+                .expect("PNG into memory");
+                while !self.bin.len().is_multiple_of(4) {
+                    self.bin.push(0);
+                }
+                self.views.push(json!({
+                    "buffer": 0, "byteOffset": self.bin.len(), "byteLength": png.len()
+                }));
+                self.bin.extend_from_slice(&png);
+                self.images
+                    .push(json!({"bufferView": self.views.len() - 1, "mimeType": "image/png"}));
+                self.textures
+                    .push(json!({"sampler": 0, "source": self.images.len() - 1}));
+                self.texture_of.insert(t.bitmap, self.textures.len() - 1);
+                self.textures.len() - 1
+            });
+            let lm = &self.layer_materials[i];
+            let m = crate::live_layers::gltf_material(lm, texture);
+            self.unlit |= m.get("extensions").is_some();
+            self.materials.push(m);
+            self.layer_material_of.insert(i, self.materials.len() - 1);
+            self.materials.len() - 1
+        }
+        fn layer_primitive(&mut self, p: &LayerPrim) -> Value {
+            let (pos, nrm) = crate::live_layers::gltf_vertices(p);
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for v in &pos {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+            let floats = |v: &mut dyn Iterator<Item = f32>| -> Vec<u8> {
+                v.flat_map(f32::to_le_bytes).collect()
+            };
+            let pv = self.view(&floats(&mut pos.iter().flatten().copied()), 34962);
+            let nv = self.view(&floats(&mut nrm.iter().flatten().copied()), 34962);
+            let tv = self.view(&floats(&mut p.uvs.iter().flatten().copied()), 34962);
+            let indices: Vec<u8> = p.indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+            let iv = self.view(&indices, 34963);
+            let base = self.accessors.len();
+            self.accessors.push(json!({
+                "bufferView": pv, "componentType": 5126, "count": pos.len(), "type": "VEC3",
+                "min": lo, "max": hi
+            }));
+            self.accessors.push(json!({
+                "bufferView": nv, "componentType": 5126, "count": nrm.len(), "type": "VEC3"
+            }));
+            self.accessors.push(json!({
+                "bufferView": tv, "componentType": 5126, "count": p.uvs.len(), "type": "VEC2"
+            }));
+            self.accessors.push(json!({
+                "bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"
+            }));
+            json!({
+                "attributes": {"POSITION": base, "NORMAL": base + 1, "TEXCOORD_0": base + 2},
+                "indices": base + 3,
+                "material": self.layer_material(p.material),
+                "mode": 4
+            })
         }
         fn material(&mut self, class: Class) -> usize {
             if let Some(&m) = self.material_of.get(&class) {
@@ -834,21 +1002,33 @@ pub fn write_nodes(
             let at = self.nodes.len();
             self.nodes.push(json!({"name": n.name}));
             let src = n.mesh.unwrap_or(&[]);
-            let mesh = match self.mesh_of.get(&src.as_ptr()) {
-                Some(&m) if !src.is_empty() => Some(m),
-                _ => {
-                    let prims: Vec<Value> = src
-                        .iter()
-                        .filter(|(_, p)| !p.indices.is_empty())
-                        .flat_map(|(c, p)| split_u16(p).into_iter().map(|p| (*c, p)))
-                        .map(|(c, p)| self.primitive(c, &p))
-                        .collect();
-                    (!prims.is_empty()).then(|| {
-                        self.meshes
-                            .push(json!({"name": n.name, "primitives": prims}));
-                        self.mesh_of.insert(src.as_ptr(), self.meshes.len() - 1);
-                        self.meshes.len() - 1
-                    })
+            let layer_prims: Vec<Value> = n
+                .layers
+                .iter()
+                .filter(|p| !p.indices.is_empty() && p.material < self.layer_materials.len())
+                .map(|p| self.layer_primitive(p))
+                .collect();
+            let mesh = if !layer_prims.is_empty() {
+                self.meshes
+                    .push(json!({"name": n.name, "primitives": layer_prims}));
+                Some(self.meshes.len() - 1)
+            } else {
+                match self.mesh_of.get(&src.as_ptr()) {
+                    Some(&m) if !src.is_empty() => Some(m),
+                    _ => {
+                        let prims: Vec<Value> = src
+                            .iter()
+                            .filter(|(_, p)| !p.indices.is_empty())
+                            .flat_map(|(c, p)| split_u16(p).into_iter().map(|p| (*c, p)))
+                            .map(|(c, p)| self.primitive(c, &p))
+                            .collect();
+                        (!prims.is_empty()).then(|| {
+                            self.meshes
+                                .push(json!({"name": n.name, "primitives": prims}));
+                            self.mesh_of.insert(src.as_ptr(), self.meshes.len() - 1);
+                            self.meshes.len() - 1
+                        })
+                    }
                 }
             };
             if let Some(m) = mesh {
@@ -868,6 +1048,12 @@ pub fn write_nodes(
         }
     }
     let mut o = Out {
+        layer_materials,
+        layer_material_of: HashMap::new(),
+        images: Vec::new(),
+        textures: Vec::new(),
+        texture_of: HashMap::new(),
+        unlit: false,
         bin: Vec::new(),
         views: Vec::new(),
         accessors: Vec::new(),
@@ -906,6 +1092,16 @@ pub fn write_nodes(
         doc["accessors"] = json!(o.accessors);
         doc["bufferViews"] = json!(o.views);
         doc["buffers"] = json!([{"byteLength": o.bin.len()}]);
+        if !o.textures.is_empty() {
+            doc["images"] = json!(o.images);
+            doc["textures"] = json!(o.textures);
+            // Linear filtering with mipmaps, repeating.
+            doc["samplers"] =
+                json!([{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}]);
+        }
+        if o.unlit {
+            doc["extensionsUsed"] = json!(["KHR_materials_unlit"]);
+        }
     } else {
         o.bin.clear();
     }
@@ -1013,6 +1209,13 @@ pub struct MapStats {
     pub vertices: usize,
     pub failed_sections: usize,
     pub glb_bytes: usize,
+    /// Layer (decal and effect) triangles kept, their materials, and the
+    /// triangles dropped for want of a picture.
+    pub layer_triangles: usize,
+    pub layer_materials: usize,
+    pub layers_dropped: usize,
+    /// `sky.glb`'s size, when written.
+    pub sky_bytes: usize,
     pub classes: BTreeMap<&'static str, usize>,
     pub shaders_named: usize,
     pub materials: usize,
@@ -1029,7 +1232,7 @@ pub struct Extracted {
 }
 
 /// Raw blocks through the art extractor's resource files.
-struct Raw<'a>(&'a mut ResourceFiles);
+pub(crate) struct Raw<'a>(pub(crate) &'a mut ResourceFiles);
 impl RawSource for Raw<'_> {
     fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
         self.0.read(p.file, p.offset, size).map_err(|e| match e {
@@ -1082,7 +1285,7 @@ fn material_shaders(map: &mut MapReader, bsp: TagId) -> Result<Option<Vec<Option
 }
 
 /// A shader's template tag name (`shad +0`, tag reference; ID at +4).
-fn shader_template(map: &mut MapReader, shader: TagId) -> Option<String> {
+pub(crate) fn shader_template(map: &mut MapReader, shader: TagId) -> Option<String> {
     let bytes = map.read_tag_bytes(shader).ok()?;
     let id = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?);
     map.tag(TagId(id)).ok().and_then(|t| t.name.clone())
@@ -1326,7 +1529,8 @@ pub fn model_triangles(model: &tags::model::RenderModelGeometry, surfaces: &[Sur
                 .get(usize::from(part.material))
                 .copied()
                 .unwrap_or(Surface::Class(Class::Metal));
-            if surface == Surface::Sky {
+            // Machines are drawn solid only: their decals and glows are left out.
+            if !surface.is_level() {
                 continue;
             }
             for t in s.geometry.part_triangles(part) {
@@ -1517,6 +1721,16 @@ pub struct Level {
     pub shadow: ShadowMap,
     /// What was left out of this level, by manifest `skipped` key.
     pub skipped: BTreeMap<String, String>,
+    /// Per BSP index, its layers (decals and effects), a primitive per
+    /// material, into `layer_materials`.
+    pub layers: BTreeMap<usize, Vec<LayerPrim>>,
+    pub layer_materials: Vec<LayerMaterial>,
+    /// Per BSP index, its tag's file name (`extras.name`).
+    pub bsp_names: BTreeMap<usize, String>,
+    /// The level's sky (`asset.extras.sky`), when it has one, and its
+    /// model's glb (`sky.glb`).
+    pub sky: Option<crate::live_sky::SkyInfo>,
+    pub sky_glb: Option<Vec<u8>>,
 }
 
 impl Level {
@@ -1567,6 +1781,11 @@ impl Level {
             frame,
             shadow,
             skipped,
+            layers: BTreeMap::new(),
+            layer_materials: Vec::new(),
+            bsp_names: BTreeMap::new(),
+            sky: None,
+            sky_glb: None,
         })
     }
 
@@ -1629,7 +1848,43 @@ impl Level {
                     if self.cinematic.contains(i) {
                         e["cinematic"] = serde_json::json!(true);
                     }
+                    if let Some(n) = self.bsp_names.get(i) {
+                        e["name"] = serde_json::json!(n);
+                    }
                     node.extras = Some(e);
+                }
+                if let Some(layers) = self.layers.get(i) {
+                    let suffix = if self.bsp_count == 1 {
+                        String::new()
+                    } else {
+                        format!("_{i}")
+                    };
+                    for (group, key, extras) in [
+                        (
+                            crate::live_layers::Group::Decal,
+                            "decals",
+                            serde_json::json!({"decals": true}),
+                        ),
+                        (
+                            crate::live_layers::Group::Effect,
+                            "effects",
+                            serde_json::json!({"effects": true}),
+                        ),
+                    ] {
+                        let start = layers.partition_point(|p| {
+                            self.layer_materials[p.material].layer.group < group
+                        });
+                        let end = layers.partition_point(|p| {
+                            self.layer_materials[p.material].layer.group <= group
+                        });
+                        if start < end {
+                            node.children.push(GlbNode::layers(
+                                format!("{key}{suffix}"),
+                                &layers[start..end],
+                                extras,
+                            ));
+                        }
+                    }
                 }
                 if let Some(b) = self.backdrops.get(i) {
                     node.children.push(GlbNode {
@@ -1651,6 +1906,7 @@ impl Level {
             nodes.push(GlbNode {
                 name: "machines".into(),
                 mesh: None,
+                layers: &[],
                 extras: None,
                 matrix: None,
                 children: self
@@ -1685,7 +1941,68 @@ impl Level {
                 serde_json::to_value(&self.features).expect("plain data"),
             );
         }
-        write_nodes(&self.nodes(), self.mesh.bounds, self.frame, more)
+        if let Some(sky) = &self.sky {
+            more.insert("sky".into(), serde_json::to_value(sky).expect("plain data"));
+        }
+        write_nodes_with(
+            &self.nodes(),
+            self.mesh.bounds,
+            self.frame,
+            more,
+            &self.layer_materials,
+        )
+    }
+
+    /// Adds a BSP's layer triangles: materials by shader (`shaders[m]` is
+    /// the BSP material's shader and its tag name, `surfaces[m]` its surface), one per
+    /// shader across the level, with `texture` giving each its picture.
+    /// Layers without a picture are dropped unless they are glows. Returns
+    /// how many triangles were dropped. Layer primitives are kept sorted
+    /// by group (decals first).
+    pub fn add_layers(
+        &mut self,
+        bsp: usize,
+        tris: &[LayerTri],
+        shaders: &[(TagId, String)],
+        surfaces: &[Surface],
+        mut texture: impl FnMut(TagId, Layer) -> Option<std::sync::Arc<crate::live_layers::Texture>>,
+    ) -> usize {
+        let mut of: HashMap<usize, Option<usize>> = HashMap::new();
+        let mut kept = Vec::new();
+        let mut dropped = 0;
+        for t in tris {
+            let slot = *of.entry(t.material).or_insert_with(|| {
+                let Some(Surface::Layer(layer)) = surfaces.get(t.material).copied() else {
+                    return None;
+                };
+                let (id, name) = shaders.get(t.material)?.clone();
+                if let Some(k) = self.layer_materials.iter().position(|m| m.shader == id.0) {
+                    return Some(k);
+                }
+                let tex = texture(id, layer);
+                if tex.is_none() && !layer.drawn_without_texture() {
+                    return None;
+                }
+                let layer = tex.as_ref().map_or(layer, |t| layer.with_picture(&t.image));
+                self.layer_materials.push(LayerMaterial {
+                    shader: id.0,
+                    name: name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string(),
+                    layer,
+                    texture: tex,
+                });
+                Some(self.layer_materials.len() - 1)
+            });
+            match slot {
+                Some(k) => kept.push(LayerTri { material: k, ..*t }),
+                None => dropped += 1,
+            }
+        }
+        let mut prims = crate::live_layers::build_layer_prims(&kept);
+        prims.sort_by_key(|p| (self.layer_materials[p.material].layer.group, p.material));
+        if !prims.is_empty() {
+            self.layers.insert(bsp, prims);
+        }
+        dropped
     }
 }
 
@@ -1842,7 +2159,14 @@ fn gameplay_bsps(disc: &Disc, map: &mut MapReader) -> Result<BTreeSet<usize>> {
 fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> Result<Level> {
     let (mut map, mut files) = disc.open(m)?;
     let mut bsps = Vec::new();
+    // Per BSP: its layer triangles, its materials' shaders and surfaces.
+    type BspLayers = (Vec<LayerTri>, Vec<(TagId, String)>, Vec<Surface>);
+    let mut bsp_layers: BTreeMap<usize, BspLayers> = BTreeMap::new();
+    let mut bsp_names = BTreeMap::new();
     for (i, bsp_id) in scenario_bsps(&mut map)?.into_iter().enumerate() {
+        if let Some(n) = map.tag(bsp_id).ok().and_then(|t| t.name.clone()) {
+            bsp_names.insert(i, n.rsplit(['\\', '/']).next().unwrap_or(&n).to_string());
+        }
         let mesh = (|| {
             if bsp_id == TagId::NULL {
                 return Err(anyhow!("no BSP tag"));
@@ -1852,9 +2176,20 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
             stats.materials += surfaces.len();
             let bsp = StructureRender::read(&mut map, bsp_id)
                 .with_context(|| format!("reading BSP {bsp_id}"))?;
-            let (t, failed) = bsp_triangles(&bsp, &mut Raw(&mut files), &surfaces);
+            let (t, layers, failed) = bsp_geometry(&bsp, &mut Raw(&mut files), &surfaces);
             stats.failed_sections += failed;
             stats.source_triangles += t.len();
+            if !layers.is_empty() {
+                let shaders = material_shader_ids(&mut map, bsp_id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|id| {
+                        let name = map.tag(id).ok().and_then(|t| t.name.clone());
+                        (id, name.unwrap_or_default())
+                    })
+                    .collect();
+                bsp_layers.insert(i, (layers, shaders, surfaces));
+            }
             let (level, backdrop) = split_backdrop(t);
             Ok((build_mesh(&level), build_mesh(&backdrop)))
         })();
@@ -1877,6 +2212,43 @@ fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> 
         .collect();
     let mut level = Level::build(m.name(), kind, bsps)?;
     level.backdrops = backdrops;
+    level.bsp_names = bsp_names;
+    // Layers of the BSPs that made it in, their pictures read once per bitmap.
+    let mut cache = HashMap::new();
+    for (i, (tris, shaders, surfaces)) in bsp_layers {
+        if !level.bsps.iter().any(|(k, _)| *k == i) {
+            continue;
+        }
+        stats.layers_dropped += level.add_layers(i, &tris, &shaders, &surfaces, |id, layer| {
+            crate::live_layers::shader_texture(&mut map, &mut files, id, layer, &mut cache)
+        });
+    }
+    stats.layer_triangles = level
+        .layers
+        .values()
+        .flatten()
+        .map(LayerPrim::triangles)
+        .sum();
+    stats.layer_materials = level.layer_materials.len();
+    match crate::live_sky::read_level_sky(&mut map, &mut files) {
+        Ok(Some((info, glb))) => {
+            match glb {
+                Ok(b) => level.sky_glb = Some(b),
+                Err(e) => {
+                    level
+                        .skipped
+                        .insert(format!("map/{}/sky", m.name()), format!("{e:#}"));
+                }
+            }
+            level.sky = Some(info);
+        }
+        Ok(None) => {}
+        Err(e) => {
+            level
+                .skipped
+                .insert(format!("map/{}/sky", m.name()), format!("{e:#}"));
+        }
+    }
     stats.backdrop_triangles = level.backdrops.values().map(LevelMesh::triangles).sum();
     if level.bsp_count > 1 {
         match gameplay_bsps(disc, &mut map) {
@@ -1979,12 +2351,16 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
                         ..Default::default()
                     };
                     let key = format!("map/{}/geometry", m.name());
-                    let done = load_level(disc, m, kind, &mut stats).and_then(|level| {
+                    let done = load_level(disc, m, kind, &mut stats).and_then(|mut level| {
                         let glb = level.glb();
                         stats.glb_bytes = glb.len();
                         let dir = out.join("map").join(&level.stem);
                         fs::create_dir_all(dir.join("views"))?;
                         fs::write(dir.join("map.glb"), glb)?;
+                        if let Some(sky) = level.sky_glb.take() {
+                            stats.sky_bytes = sky.len();
+                            fs::write(dir.join("sky.glb"), sky)?;
+                        }
                         Ok(level)
                     });
                     stats.load = started.elapsed();

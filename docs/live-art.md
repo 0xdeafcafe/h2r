@@ -21,6 +21,7 @@ Per map, keyed by the map stem the art manifest already uses
 map/<stem>/map.glb          glTF 2.0 binary: the level's render geometry
 map/<stem>/views.json       the pre-drawn views and how to plot on them
 map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
+map/<stem>/sky.glb          the level's sky model (when it has one)
 ```
 
 `manifest.json` gains a `maps` object (absent when nothing was extracted):
@@ -39,7 +40,8 @@ entry; a single BSP of a level that could not be read is listed as
 `map/<stem>/bsp_<index>` and the level keeps its other BSPs.
 `GEOMETRY_VERSION` is 1 (`views.json` is unchanged; the web viewer checks
 it); the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 9, so a disc extracted by an older build is extracted again.
+key) is 10, so a disc extracted by an older build is extracted again
+(10 added the layers, the sky and `extras.name`).
 
 ### `map.glb`
 
@@ -54,7 +56,8 @@ key) is 9, so a disc extracted by an older build is extracted again.
   nodes of the scene, in index order, already in world space. A BSP only
   cinematics load also has `extras.cinematic: true` (pipeline step 2), so
   a viewer can hide it; the index is still the game's BSP index, as
-  telemetry frames give it.
+  telemetry frames give it. `extras.name` is the BSP tag's file name, for
+  a zone picker to show.
 - **Backdrop.** A BSP's huge triangles (sea, sea floor and distant terrain
   planes; step 5) are not in its mesh but in a child node and mesh
   `backdrop_<index>` (`backdrop` on a single-BSP level) with
@@ -83,6 +86,29 @@ key) is 9, so a disc extracted by an older build is extracted again.
   `metal`, unless their shader names them glass, water or foliage. The
   model is drawn at rest (no animation): each region's first permutation
   at the highest detail level up to 3 of 5 it has.
+- **Layers.** Decals and effect surfaces (pipeline steps 4 and 7) are in a
+  BSP's child nodes `decals_<index>` (`extras.decals: true`) and
+  `effects_<index>` (`extras.effects: true`), `decals` and `effects` on a
+  single-BSP level; a BSP without any has no such child. These meshes have
+  `TEXCOORD_0` and u32 indices, one primitive per material, and their
+  materials (one per shader) carry their picture, embedded as a PNG (at
+  most 256 pixels a side), and `extras.layer` (`decal` or `effect`) and
+  `extras.blend`: `alpha` (over, by the picture's alpha), `multiply`
+  (darkens by the picture), `double` (twice the picture times what is
+  behind: mid-grey leaves it), `test` (cut out where alpha is under a
+  half; `alphaMode: MASK`) or `additive` (added; no depth). Multiplying,
+  doubling and additive materials are `KHR_materials_unlit`; effects are
+  double-sided.
+- **Sky.** `asset.extras.sky`, when the scenario has a sky: `name` (the
+  sky tag's file name), `glb` (`"sky.glb"`, beside `map.glb`, when its
+  model could be built), `clear` (the clear colour, RGB 0..1, when not
+  black), `fog` (`colour`, `density` 0..1 reached at `end`, `start` and
+  `end` in game units from the eye) and `scale` (the model's scale in the
+  game). `sky.glb` is the sky's render model at rest in model space (same
+  axes), textured, every region's first permutation at the highest detail
+  under 30,000 triangles; its `asset.extras.blend` says per material, in
+  order, `opaque`, `alpha` or `additive` (from the template's words:
+  `add`; `alpha`, `cloud(s)`).
 - `asset.generator` is `h2 live art`. `asset.extras` holds `generator`,
   `geometry_version`, `bounds` (`min`/`max`, game coordinates) and `frame`
   (the part of the level the views show, below). `bounds` covers the
@@ -220,11 +246,12 @@ view), the same for every view.
    element does not resolve on some disc, every material there is unknown.
    The shader's template comes first (`shad +0`, a tag reference: the
    template's tag name, by generic words in its last path component and
-   its folder): sky and cloud templates, additive ones (`add`: glows,
-   light shafts and light volumes, which have no solid surface) and
-   decal or overlay layers (named so first: `overlay`, `decal_simple`; an
-   opaque `..._detail_overlay` is a solid surface blending a detail map)
-   are not level and are dropped; a template in a `water` folder or named
+   its folder): sky templates are dropped; decal or overlay layers (named
+   so first: `overlay`, `decal_simple`; an opaque `..._detail_overlay` is
+   a solid surface blending a detail map) are decals; additive ones
+   (`add`: glows, light shafts and light volumes, which have no solid
+   surface) and cloud templates (spray, falling water) are effects. Layers
+   are not level: they go to the layer nodes (step 7); a template in a `water` folder or named
    for water or waves is water; another `transparent` template is glass
    unless the shader's name says otherwise. Then the last path component
    of the shader's own tag name is split into words and matched against
@@ -258,6 +285,24 @@ view), the same for every view.
    holding at least 15% of the largest group's triangles is kept, grown by a
    cell. z covers the kept centroids, except a sparse tail (under 5%)
    separated by a gap over 10% of the range. The frame is padded by 3%.
+7. **Layers.** A layer's picture is its shader's diffuse map (for a glow,
+   the first map that is not an engine default, bump, normal, cube or
+   reflection map), decoded as the player models' textures are and
+   shrunk to 256 pixels. A decal or `alpha` effect without a picture is
+   dropped (it would be a solid slab); a glow without one is kept as a
+   faint grey. A decal's blend then comes from its picture: one with
+   alpha blends by it (unless cut out); an opaque one centred on
+   mid-grey (no more than a quarter of its pixels over 160) doubles,
+   else multiplies. Triangles are welded per material (1/1024-unit
+   position, 1/64 normal, 1/4096 texture coordinate).
+8. **Sky.** The scenario's skies block (`scnr+0x8`, 8-byte tag references,
+   ID at +4); the first sky with a model, else the first. Of the `sky `
+   tag: the render model reference at +0 (ID at +4), the model scale at
+   +0x14, the atmospheric fog block at +0x48 (0x18-byte elements: colour,
+   maximum density, start, opaque distance), the secondary fog block at
+   +0x50 (the same; used when there is no atmospheric fog) and the clear
+   colour at +0xa0. A sky that cannot be read is listed under `skipped`
+   as `map/<stem>/sky`.
    Each view's camera is then fitted to what it draws, not to the frame's
    box: the corners of every drawn triangle cut to the frame (plus 1%),
    projected, with a 3% margin. A level that fills only part of its frame
@@ -344,8 +389,15 @@ teleporters, links and lifts. Do not commit anything they write.
 - The cinematic test only knows switch volumes and numeric script
   switches: a gameplay BSP reached only some other way (a script switching
   by name in play) would be flagged cinematic.
-- Template words decide what is dropped: an additive or overlay template
-  used for a solid surface would vanish.
+- Template words decide what is not level: an additive or overlay
+  template used for a solid surface would become a layer.
+- Layers are drawn without the game's shader constants, animation or
+  lightmaps: a glow is its picture added, a waterfall does not flow.
+  Decals on dynamic objects, and particle systems (campaign fires, smoke,
+  sparks) are not in the BSP and not extracted.
+- A level with several skies (one per zone) gets only the first with a
+  model. Additive sky layers (haze, glows) are left out by the viewer:
+  without the shader's constants they wash the sky out.
 
 # Player and weapon models
 

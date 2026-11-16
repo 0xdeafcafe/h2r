@@ -275,13 +275,19 @@ node are ordinary models and keep the side they came with. Every mesh is
 found by walking the glb, so one `structure` node or many `bsp_<n>` ones
 are the same to it. Two more ways in (`viewer/cutaway.ts`): **Cut** (key
 `c`, `[` and `]` or the slider) hides the level above a height, and while
-following a player keeps to just over their head; **See-through** (key `x`,
-on by default) cuts away whatever of the level lies between the camera and
-the player being followed (or pointed at in the scoreboard), a cone with a
-dithered rim, leaving the floor they stand on. Both are a clipping plane
-and a few lines in the map materials' shaders, shared by all of them, so a
-big level costs no more. `?cut=<height>` and `?see=0` on the pop-out page
-set them from a link.
+following a player keeps to just over their head; **See-through** (key `x`
+steps off, *in focus* and *everyone*; *in focus* by default) cuts away
+whatever of the level lies between the camera and the
+player being followed (or pointed at in the scoreboard), else every player
+(up to 8, nearest the camera first), a cone to each with a dithered rim,
+leaving the floor they stand on, so a player inside a building is seen
+through its walls and roof; *everyone* cuts to all of them as well as the
+one in focus. Players, vehicles and machines are never cut. Both are a clipping
+plane and a few lines in the map materials' shaders, shared by all of
+them, so a big level costs no more. `?cut=<height>` and `?see=0` on the
+pop-out page set them from a link. (Culling front faces instead was
+tried: Halo's levels are thick-walled and faced inwards, so it shows the
+inside of the near walls and ceilings rather than what is beyond them.)
 
 **Players, aim and shots.** Frames may say each player's `species`, `aim`
 (a unit direction), held `weapon` and `shots` fired since their last frame;
@@ -347,8 +353,26 @@ optional; a frame without them draws as before.
   3D view shows only the one the frames name; with no `bsp` in the frames
   (or one the glb lacks) it shows every zone not marked cinematic-only in
   its node's extras, and never none at all. A `backdrop` node (far scenery)
-  is hidden. The toolbar gets "All zones" and "Backdrop" buttons when the
-  level has them; the camera and the lights fit the playable zones only.
+  is hidden. When the level has several, the toolbar's zone picker offers
+  "Zone in play" (following the frames), "All zones", and each zone by its
+  BSP's name (`extras.name`; cutscene zones too when "Cutscene zones" is
+  ticked); its "Show" menu switches the backdrop, cutscene zones, decals,
+  effects, sky and fog. The camera and the lights fit the playable zones
+  only (`viewer/level3d.ts`).
+- *Layers, sky and fog* (`viewer/layers3d.ts`, `viewer/sky3d.ts`). A zone's
+  `decals_<n>` and `effects_<n>` meshes are drawn with their pictures,
+  after the level and without depth: decals pulled just in front of their
+  wall and multiplied, doubled or alpha-blended as their material's
+  `extras.blend` says, glows and light shafts added, unlit and unfogged
+  (docs/live-art.md, "Layers"). The level's `sky.glb` is drawn around the
+  camera before everything else, moving with it but not turning, its
+  additive layers left out; behind it is the sky's clear colour, else its
+  fog colour. The sky's fog is linear, clear up to its start past the
+  point in focus and as thick as the game's at its end, but stretched so
+  the far side of the level is never more fogged than the game's most:
+  an overview fades the far side instead of hiding it. With no sky the
+  view keeps its own gradient and haze. The occlusion pass leaves out
+  anything see-through that writes no depth (`viewer/aopass.ts`).
 
 **Machines, teleporters and lifts (optional).** Frames may carry `machines`:
 lift platforms, doors and other big scripted movers, each with the name of

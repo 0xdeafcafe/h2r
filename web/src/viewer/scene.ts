@@ -6,8 +6,9 @@
 // in flight, every vehicle in the world, and fading knockout marks. A
 // skinned model plays its clips (standing, walking, running, crouching, in
 // the air, throwing, hitting, reloading, firing) as the frames say; a
-// static one glides in the pose it was exported in. A campaign level shows
-// the zone the game has loaded. Game positions (z up) are placed at glTF
+// static one glides in the pose it was exported in. What of the level is
+// shown (the zone the game has loaded or one picked, far scenery, decals and
+// effects, the sky and fog) is `level3d.ts`'s. Game positions (z up) are placed at glTF
 // (x, z, -y), as the map geometry contract says.
 //
 // This file pulls in three.js, so it is only ever loaded lazily.
@@ -33,13 +34,16 @@ import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
 import { BipedAnim, SpeedMeter, actionShot, aimAngles, clipFor, legTwist, paceScale, weaponClass, wrapAngle, type OneShot } from "./anim";
 import { EventFeed } from "../map/events";
 import { Effects3D } from "./effects3d";
-import { bspNumber, isBackdrop, isCinematic, zoneVisibility } from "./zones";
+import { bspNumber, isBackdrop, isCinematic, layerNode, type ZonePick } from "./zones";
+import { LevelLook, type LevelInfo } from "./level3d";
+import { dressLayer } from "./layers3d";
+import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
 import { buildFeatures } from "./features3d";
 import { parseFeatures, type MapFeatures } from "../map/features";
 import type { SampledMachine } from "../state/frames";
 import { cameraFit, followDistance, markerScale, type Box3 } from "./camera";
-import { SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough } from "./cutaway";
+import { SEE_MAX, SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough, seeTargets, type SeeMode } from "./cutaway";
 
 export type ViewMode = "orbit" | "top" | "follow";
 
@@ -144,10 +148,10 @@ export class ViewerScene {
   private raycaster = new THREE.Raycaster();
   private feed = new EventFeed();
   private effects: Effects3D;
-  // A campaign level's zones (`bsp_<n>` nodes) and far scenery, and which are shown.
-  private zones: Array<{ obj: THREE.Object3D; name: string; cinematic: boolean }> = [];
-  private bsp: number | null = null;
-  private allZones = false;
+  // What of the level is shown (zones, far scenery, decals, effects) and
+  // the sky and fog around it.
+  private look: LevelLook;
+  private gradient: THREE.Texture;
   // The level's machines by node name, the frames' machines eased, and
   // stand-ins for the ones the glb has no node for.
   private machineNodes = new Map<string, MachineNode>();
@@ -156,7 +160,6 @@ export class ViewerScene {
   private features: MapFeatures | null = null;
   private featureGroup: THREE.Group | null = null;
   private featuresOn = true;
-  private backdrop = false;
   private tracers = new Map<number, TracerObj>();
   private spare: TracerObj[] = [];
   // Seeing into the level: a clipping plane that drops everything above a
@@ -166,8 +169,12 @@ export class ViewerScene {
   private cutPlane = new THREE.Plane(new THREE.Vector3(0, -1, 0), CUT_OFF);
   private cut = { on: false, height: 0 };
   private cutShown: number | null = null;
-  private seeOn = true;
-  private see = { uSeeTarget: { value: new THREE.Vector3() }, uSeeRadius: { value: 0 }, uSeeFloor: { value: 0 } };
+  private seeMode: SeeMode = "auto";
+  private see = {
+    uSeeTargets: { value: Array.from({ length: SEE_MAX }, () => new THREE.Vector4()) },
+    uSeeFloors: { value: new Array<number>(SEE_MAX).fill(0) },
+    uSeeCount: { value: 0 },
+  };
   private patched = new WeakSet<THREE.Material>();
   private v0 = new THREE.Vector3();
   private v1 = new THREE.Vector3();
@@ -213,7 +220,9 @@ export class ViewerScene {
 
     const scene = this.scene;
     scene.fog = new THREE.FogExp2(HAZE, 0.002);
-    scene.background = skyTexture();
+    this.gradient = skyTexture();
+    scene.background = this.gradient;
+    this.look = new LevelLook(scene, this.gradient, () => { this.dirty = true; });
     const pmrem = new THREE.PMREMGenerator(renderer);
     scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     scene.environmentIntensity = 0.22;
@@ -282,13 +291,27 @@ export class ViewerScene {
       // nor a zone only a cutscene uses.
       const assetExtras = (gltf.asset as { extras?: unknown } | undefined)?.extras;
       const box = new THREE.Box3();
+      // Machines share the level's class materials in the glb: they get
+      // copies of their own, which the see-through leaves alone.
+      const machineMats = new Map<THREE.Material, THREE.Material>();
+      const own = (m: THREE.Material) => {
+        let c = machineMats.get(m);
+        if (!c) { c = m.clone(); machineMats.set(m, c); }
+        return c;
+      };
       const walk = (o: THREE.Object3D, names: string[], aside = false) => {
         const path = o.name ? [...names, o.name] : names;
         aside ||= isBackdrop(o.name) || (bspNumber(o.name) !== null && isCinematic(o.userData, o.name, assetExtras));
         const role = meshRole(path);
         if (role === "hidden") { o.visible = false; return; }
         const mesh = o as THREE.Mesh;
+        // Decals and effects: their own blending, the level's cuts, no part in the framing.
+        if (mesh.isMesh && path.some((n) => layerNode(n)) && dressLayer(mesh)) {
+          this.cutaway(mesh.material as THREE.Material);
+          return;
+        }
         if (mesh.isMesh) {
+          if (role === "machine") mesh.material = Array.isArray(mesh.material) ? mesh.material.map(own) : own(mesh.material);
           const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
           let solid = true;
           for (const m of mats) {
@@ -301,7 +324,7 @@ export class ViewerScene {
             // Machines are ordinary models and keep the side they came with,
             // and so does anything cut out by alpha (a grate reads from both sides).
             if (role === "level" && !m.transparent && !m.alphaTest) m.side = THREE.FrontSide;
-            this.cutaway(m);
+            this.cutaway(m, role === "level");
           }
           mesh.castShadow = solid;
           mesh.receiveShadow = true;
@@ -314,12 +337,9 @@ export class ViewerScene {
       if (box.isEmpty()) box.setFromObject(root);
       if (box.isEmpty()) return false;
       this.clearMap();
-      // Zones and far scenery, wherever in the tree the glb keeps them.
-      root.traverse((o) => {
-        if (bspNumber(o.name) === null && !isBackdrop(o.name)) return;
-        this.zones.push({ obj: o, name: o.name, cinematic: isCinematic(o.userData, o.name, assetExtras) });
-      });
-      this.applyZones();
+      // Zones, far scenery, decals and effects, wherever in the tree the glb
+      // keeps them, and the level's sky.
+      this.look.adopt(root, assetExtras, url);
       // The level's machines: each child of `machines` can be moved by the frames.
       root.traverse((o) => {
         if (o.name !== "machines") return;
@@ -415,25 +435,19 @@ export class ViewerScene {
     }
   }
 
-  /** Shows the zone the game has loaded (every playable one when the
-   *  frames don't say, or when asked for all), and the backdrop if wanted. */
-  private applyZones() {
-    const show = zoneVisibility(this.zones, this.allZones ? null : this.bsp, { backdrop: this.backdrop });
-    this.zones.forEach((z, i) => {
-      if (z.obj.visible !== show[i]) { z.obj.visible = show[i]!; this.dirty = true; }
-    });
-  }
+  /** What the level offers the toolbar: its zones, far scenery, layers, sky and fog. */
+  levelInfo(): LevelInfo { return this.look.info(); }
 
-  /** What the level is split into, for the toolbar: how many zones, and whether it has a backdrop. */
-  zoneInfo(): { zones: number; backdrop: boolean; active: number | null } {
-    return { zones: this.zones.filter((z) => bspNumber(z.name) !== null).length, backdrop: this.zones.some((z) => isBackdrop(z.name)), active: this.bsp };
-  }
-
-  /** Every playable zone at once, instead of only the loaded one. */
-  setAllZones(on: boolean) { this.allZones = on; this.applyZones(); }
-
+  /** Which zone to show: the one the game has loaded (`auto`), all, or one. */
+  setZonePick(p: ZonePick) { this.look.setPick(p); }
+  /** Zones only cutscenes use: listed and shown in `all` when on. */
+  setCinematic(on: boolean) { this.look.setCinematic(on); }
   /** The far scenery around the playable space: hidden unless asked for. */
-  setBackdrop(on: boolean) { this.backdrop = on; this.applyZones(); }
+  setBackdrop(on: boolean) { this.look.setBackdrop(on); }
+  setDecals(on: boolean) { this.look.setDecals(on); }
+  setEffects(on: boolean) { this.look.setEffects(on); }
+  setSky(on: boolean) { this.look.setSky(on); }
+  setFog(on: boolean) { this.look.setFog(on); }
 
   /** Gives a level material the height cut and the see-through. */
   /** Near plane from the camera's distance to what it orbits: small up
@@ -447,11 +461,14 @@ export class ViewerScene {
     }
   }
 
-  private cutaway(m: THREE.Material) {
+  /** The height cut on a material, and the see-through unless `see` is
+   *  false (machines: they are always drawn whole). */
+  private cutaway(m: THREE.Material, see = true) {
     if (this.patched.has(m)) return;
     this.patched.add(m);
     m.clippingPlanes = [this.cutPlane];
     m.clipShadows = true;
+    if (!see) return;
     const before = m.onBeforeCompile, key = m.customProgramCacheKey;
     m.onBeforeCompile = (shader, renderer) => {
       before.call(m, shader, renderer);
@@ -480,8 +497,12 @@ export class ViewerScene {
 
   /** The see-through: level geometry between the camera and the player in
    *  focus (followed, else highlighted) is cut away. */
-  setSeeThrough(on: boolean) {
-    this.seeOn = on;
+  setSeeThrough(on: boolean) { this.setSeeMode(on ? "auto" : "off"); }
+
+  /** Who the see-through cuts towards: nobody, the player in focus (else
+   *  everyone), or everyone. */
+  setSeeMode(mode: SeeMode) {
+    this.seeMode = mode;
     this.dirty = true;
   }
 
@@ -501,22 +522,31 @@ export class ViewerScene {
     this.cutShown = h;
     this.cutPlane.constant = h === null ? CUT_OFF : h;
 
+    // The see-through: a cone from the camera to each player it is for.
     const focus = this.followIndex ?? highlight;
-    const s = this.seeOn && focus !== null ? this.shown.get(focus) : undefined;
-    const p = s?.alive ? this.players.get(focus!) : undefined;
+    const cam = this.camera.position;
+    const alive = [...this.shown]
+      .filter(([i, s]) => s.alive && !s.actor && this.players.has(i))
+      .map(([i, s]) => { const [x, y, z] = gameToGl(s.x, s.y, s.z); return { i, d: cam.distanceToSquared(this.v0.set(x, y, z)) }; })
+      .sort((a, b) => a.d - b.d)
+      .map((p) => p.i);
+    const inFocus = focus !== null && this.shown.get(focus)?.alive && this.players.has(focus) ? focus : null;
+    const targets = seeTargets(this.seeMode, inFocus, alive);
     const u = this.see;
-    if (s && p) {
+    let n = 0;
+    for (const index of targets) {
+      const s = this.shown.get(index)!, p = this.players.get(index)!;
       const k = p.turn.scale.x, tall = p.biped ? p.biped.height * k : 0.86 * k;
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const r = SEE_RADIUS * Math.max(1, k);
-      if (u.uSeeRadius.value !== r || u.uSeeTarget.value.x !== x || u.uSeeTarget.value.y !== y + tall * 0.6 || u.uSeeTarget.value.z !== z) this.dirty = true;
-      u.uSeeTarget.value.set(x, y + tall * 0.6, z);
-      u.uSeeRadius.value = r;
-      u.uSeeFloor.value = y + 0.06 * k;
-    } else {
-      if (u.uSeeRadius.value !== 0) this.dirty = true;
-      u.uSeeRadius.value = 0;
+      const t = u.uSeeTargets.value[n]!;
+      if (t.x !== x || t.y !== y + tall * 0.6 || t.z !== z || t.w !== r) this.dirty = true;
+      t.set(x, y + tall * 0.6, z, r);
+      u.uSeeFloors.value[n] = y + 0.06 * k;
+      n++;
     }
+    if (u.uSeeCount.value !== n) this.dirty = true;
+    u.uSeeCount.value = n;
   }
 
   private clearMap() {
@@ -529,7 +559,7 @@ export class ViewerScene {
       for (const m of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) m.dispose();
     });
     this.map = null;
-    this.zones = [];
+    this.look.clear();
     this.machineNodes.clear();
     this.features = null;
     this.showFeatures();
@@ -554,7 +584,7 @@ export class ViewerScene {
     const texel = (r * 2.3) / this.sun.shadow.mapSize.x;
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = texel * 1.6;
-    (this.scene.fog as THREE.FogExp2).density = 0.11 / r;
+    this.look.setExtent(c, r);
     // Without a map the floor is the players' lowest point; with one, just under it.
     const drop = real ? Math.max(0.02 * r, 0.3) : 0.02 * this.scale;
     this.ground.position.set(c.x, b.min[2] - drop, c.z);
@@ -988,8 +1018,7 @@ export class ViewerScene {
       const shot = actionShot(e.action);
       if (shot) this.oneShot(e.index, shot, now);
     }
-    const bsp = frame.bsp ?? null;
-    if (bsp !== this.bsp) { this.bsp = bsp; this.applyZones(); }
+    this.look.setActive(frame.bsp ?? null);
     const S = this.scale;
     const still = this.opts.reducedMotion;
 
@@ -1141,6 +1170,9 @@ export class ViewerScene {
   }
 
   private draw(dt: number) {
+    this.look.beforeDraw(this.camera, this.camera.position.distanceTo(this.controls.target));
+    // The soft ground stands in for a sky's horizon only when there is none.
+    this.ground.visible = !this.look.skyShown();
     if (this.composer && this.aoWanted) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.labels.render(this.scene, this.camera);
@@ -1166,7 +1198,7 @@ export class ViewerScene {
         const target = new THREE.WebGLRenderTarget(size.x, size.y, { type: THREE.HalfFloatType, samples: 4 });
         const composer = new EffectComposer(this.renderer, target);
         composer.addPass(new RenderPass(this.scene, this.camera));
-        const gtao = new GTAOPass(this.scene, this.camera, this.w, this.h);
+        const gtao = new LevelAoPass(this.scene, this.camera, this.w, this.h);
         gtao.blendIntensity = 0.9;
         composer.addPass(gtao);
         composer.addPass(new OutputPass());
@@ -1216,9 +1248,10 @@ export class ViewerScene {
     this.effects.dispose();
     this.projectiles.dispose();
     this.library.dispose();
+    this.look.dispose();
     disposeTree(this.scene);
     this.scene.environment?.dispose();
-    (this.scene.background as THREE.Texture | null)?.dispose();
+    this.gradient.dispose();
     this.composer?.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();

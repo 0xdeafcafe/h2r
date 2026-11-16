@@ -577,20 +577,42 @@ fn a_single_bsp_keeps_the_structure_node_and_no_bsp_is_an_error() {
 }
 
 #[test]
-fn templates_drop_effects_decals_and_sky_and_mark_water_and_glass() {
+fn templates_make_layers_drop_sky_and_mark_water_and_glass() {
     let t = surface_from_template;
-    // Not level geometry: sky, clouds, additive glows and light volumes,
-    // decal and overlay layers.
+    let layer = |l: Layer| Some(Surface::Layer(l));
+    // Not drawn: sky templates (named for the sky first, not additive).
     for name in [
         r"shaders\shader_templates\opaque\sky_one",
-        r"shaders\shader_templates\transparent\two_alpha_clouds",
-        r"shaders\shader_templates\transparent\one_add_illum_detail",
-        r"shaders\shader_templates\transparent\add_glow",
-        r"shaders\shader_templates\opaque\overlay",
-        r"shaders\shader_templates\transparent\decal_simple",
+        r"shaders\shader_templates\transparent\sky_two_alpha_clouds",
     ] {
         assert_eq!(t(name), Some(Surface::Sky), "{name}");
     }
+    // Decals: overlays multiply, other decals blend or cut out.
+    assert_eq!(
+        t(r"shaders\shader_templates\opaque\overlay"),
+        layer(Layer::decal(Blend::Multiply))
+    );
+    assert_eq!(
+        t(r"shaders\shader_templates\transparent\decal_simple"),
+        layer(Layer::decal(Blend::Alpha))
+    );
+    assert_eq!(
+        t(r"shaders\shader_templates\opaque\decal_alpha_test"),
+        layer(Layer::decal(Blend::Test))
+    );
+    // Effects: anything additive (glows, light volumes, an additive sky
+    // card is an effect in the level), and alpha cloud cards (waterfalls).
+    for name in [
+        r"shaders\shader_templates\transparent\one_add_illum_detail",
+        r"shaders\shader_templates\transparent\add_glow",
+        r"shaders\shader_templates\transparent\sky_two_add_clouds",
+    ] {
+        assert_eq!(t(name), layer(Layer::effect(Blend::Additive)), "{name}");
+    }
+    assert_eq!(
+        t(r"shaders\shader_templates\transparent\two_alpha_clouds"),
+        layer(Layer::effect(Blend::Alpha))
+    );
     assert_eq!(
         t(r"shaders\shader_templates\water\riverbed"),
         Some(Surface::Class(Class::Water)),
@@ -615,16 +637,37 @@ fn templates_drop_effects_decals_and_sky_and_mark_water_and_glass() {
     assert_eq!(t(r"shaders\shader_templates\opaque\address_bump"), None);
     assert_eq!(t(r"shaders\decal\tex_bump"), None);
 
-    // The template decides sky, effects and water; the name decides the
-    // rest; a transparent template makes an unnamed surface glass.
+    // Sky by either name; then the template decides layers and water; the
+    // name decides the rest; a transparent template makes an unnamed
+    // surface glass.
     let add = Some(r"shaders\shader_templates\transparent\one_add_illum");
     let alpha = Some(r"shaders\shader_templates\transparent\one_alpha_env");
     let opaque = Some(r"shaders\shader_templates\opaque\tex_bump");
+    let overlay = Some(r"shaders\shader_templates\opaque\overlay");
+    let clouds = Some(r"shaders\shader_templates\transparent\two_alpha_clouds");
+    let glow = Surface::Layer(Layer::effect(Blend::Additive));
+    assert_eq!(surface_of(Some(r"a\b\light_long_volume"), add), glow);
+    assert_eq!(surface_of(Some(r"a\b\metal_glow"), add), glow);
     assert_eq!(
-        surface_of(Some(r"a\b\light_long_volume"), add),
-        Surface::Sky
+        surface_of(Some(r"a\b\glow_glass"), add),
+        glow,
+        "the template wins over glass"
     );
-    assert_eq!(surface_of(Some(r"a\b\metal_glow"), add), Surface::Sky);
+    assert_eq!(
+        surface_of(Some(r"a\b\water_stain"), overlay),
+        Surface::Layer(Layer::decal(Blend::Multiply)),
+        "a stain named for water is still a decal"
+    );
+    assert_eq!(
+        surface_of(Some(r"a\b\waterfall"), clouds),
+        Surface::Layer(Layer::effect(Blend::Alpha))
+    );
+    assert_eq!(
+        surface_of(Some(r"a\b\high_clouds"), clouds),
+        Surface::Sky,
+        "named for clouds"
+    );
+    assert_eq!(surface_of(Some(r"a\b\fog_wisps"), alpha), Surface::Sky);
     assert_eq!(
         surface_of(Some(r"a\b\metal_grate"), alpha),
         Surface::Class(Class::Metal)
@@ -638,8 +681,9 @@ fn templates_drop_effects_decals_and_sky_and_mark_water_and_glass() {
     assert_eq!(surface_of(Some(r"a\b\sky_far"), opaque), Surface::Sky);
     assert_eq!(surface_of(Some(r"a\b\panel"), None), Surface::Unknown);
     assert_eq!(surface_of(None, None), Surface::Unknown);
+    assert!(!glow.is_level() && !Surface::Sky.is_level() && Surface::Unknown.is_level());
     // Machines: as the level, except unknown is metal.
-    assert_eq!(machine_surface(Some(r"a\b\beam"), add), Surface::Sky);
+    assert_eq!(machine_surface(Some(r"a\b\beam"), add), glow);
     assert_eq!(
         machine_surface(Some(r"a\b\panel"), opaque),
         Surface::Class(Class::Metal)
@@ -1251,6 +1295,39 @@ fn geometry_from_the_disc() {
             s.classes
         );
     }
+    // Layers and skies: what each level got.
+    for s in &x.stats {
+        report += &format!(
+            "{:<20} layers {:>6} tris {:>4} materials dropped {:>5} sky.glb {:>5} KiB\n",
+            s.stem,
+            s.layer_triangles,
+            s.layer_materials,
+            s.layers_dropped,
+            s.sky_bytes / 1024
+        );
+    }
+    for stem in x.maps.keys() {
+        let glb = fs::read(out.join("map").join(stem).join("map.glb")).unwrap();
+        let (doc, _) = parse_glb(&glb);
+        report += &format!("{stem:<20} sky {}\n", doc["asset"]["extras"]["sky"]);
+        let mut blends: BTreeMap<String, usize> = BTreeMap::new();
+        for m in doc["materials"].as_array().into_iter().flatten() {
+            if let Some(l) = m["extras"]["layer"].as_str() {
+                let tex = if m["pbrMetallicRoughness"].get("baseColorTexture").is_some() {
+                    ""
+                } else {
+                    " untextured"
+                };
+                *blends
+                    .entry(format!(
+                        "{l}/{}{tex}",
+                        m["extras"]["blend"].as_str().unwrap_or("")
+                    ))
+                    .or_default() += 1;
+            }
+        }
+        report += &format!("{stem:<20} layer materials {blends:?}\n");
+    }
     for (stem, e) in &x.maps {
         let v: ViewsFile =
             serde_json::from_slice(&fs::read(out.join(e.views.as_ref().unwrap())).unwrap())
@@ -1746,4 +1823,361 @@ fn shader_templates_on_the_disc() {
     fs::create_dir_all(&keep).unwrap();
     fs::write(Path::new(&keep).join("templates.txt"), out).unwrap();
     fs::write(Path::new(&keep).join("surfaces-changed.txt"), changed).unwrap();
+}
+
+// ---- Layers (decals and effects) and the sky --------------------------------
+
+#[test]
+fn a_layer_material_comes_out_as_layer_triangles_not_level() {
+    let (bsp, mut raw) = synthetic_bsp(2);
+    let decal = Surface::Layer(Layer::decal(Blend::Multiply));
+    // The synthetic sections draw with material 1.
+    let (tris, layers, failed) = bsp_geometry(&bsp, &mut raw, &[decal, Surface::Unknown]);
+    assert_eq!(failed, 0);
+    assert_eq!((tris.len(), layers.len()), (2, 0));
+    let (tris, layers, _) = bsp_geometry(&bsp, &mut raw, &[Surface::Unknown, decal]);
+    assert_eq!(
+        (tris.len(), layers.len()),
+        (0, 2),
+        "every triangle is a layer now"
+    );
+    assert_eq!(layers[0].material, 1);
+    assert_eq!(layers[0].p, [[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]);
+    // Placed like the level: the instance's transform.
+    assert_eq!(layers[1].p[0], [10.0, 20.0, 30.0]);
+}
+
+fn layer_tri(p: [[f32; 3]; 3], uv: [[f32; 2]; 3], material: usize) -> crate::live_layers::LayerTri {
+    crate::live_layers::LayerTri {
+        p,
+        n: [[0.0, 0.0, 1.0]; 3],
+        uv,
+        material,
+    }
+}
+
+#[test]
+fn layer_triangles_weld_per_material_by_position_normal_and_uv() {
+    use crate::live_layers::build_layer_prims;
+    let a = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+    let b = [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]];
+    let uv = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+    let prims = build_layer_prims(&[
+        layer_tri(a, uv, 3),
+        layer_tri(b, [[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 3),
+        // The same corner with another texture coordinate is another vertex.
+        layer_tri(b, [[5.0, 0.0], [1.0, 1.0], [0.0, 1.0]], 1),
+        // Degenerate and non-finite triangles are dropped.
+        layer_tri([[0.0; 3]; 3], uv, 1),
+        layer_tri(
+            [[f32::NAN, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            uv,
+            1,
+        ),
+    ]);
+    assert_eq!(prims.iter().map(|p| p.material).collect::<Vec<_>>(), [1, 3]);
+    assert_eq!(prims[1].positions.len(), 4, "two triangles sharing an edge");
+    assert_eq!(prims[1].triangles(), 2);
+    assert_eq!(prims[0].triangles(), 1);
+    assert_eq!(prims[1].uvs[1], [1.0, 0.0]);
+}
+
+#[test]
+fn a_glow_without_a_picture_is_kept_faint_but_a_decal_without_one_is_dropped() {
+    use crate::live_layers::pick_bitmap;
+    let glow = Layer::effect(Blend::Additive);
+    let names = |v: &[&str]| {
+        v.iter()
+            .enumerate()
+            .map(|(i, n)| (i as u32, n.to_string()))
+            .collect::<Vec<_>>()
+    };
+    // The diffuse map first, for any layer.
+    let both = names(&[r"x\bitmaps\panel_bump", r"x\bitmaps\letters"]);
+    assert_eq!(pick_bitmap(&both, Layer::decal(Blend::Alpha)), Some(1));
+    // A glow's picture is often named for self-illumination.
+    let illum = names(&[
+        r"shaders\default_bitmaps\gray_50",
+        r"x\bitmaps\light_volume_illum",
+    ]);
+    assert_eq!(pick_bitmap(&illum, glow), Some(1));
+    assert_eq!(pick_bitmap(&illum, Layer::decal(Blend::Alpha)), None);
+    assert!(glow.drawn_without_texture());
+    assert!(!Layer::decal(Blend::Multiply).drawn_without_texture());
+    assert!(!Layer::effect(Blend::Alpha).drawn_without_texture());
+}
+
+#[test]
+fn a_decal_blends_as_its_picture_says() {
+    let img = |px: &[[u8; 4]]| crate::live_models::Image {
+        width: px.len() as u32,
+        height: 1,
+        rgba: px.iter().flatten().copied().collect(),
+    };
+    // Opaque and centred on grey: doubles what is behind.
+    let grey = img(&[
+        [128, 128, 128, 255],
+        [20, 20, 20, 255],
+        [130, 120, 110, 255],
+        [200, 200, 200, 255],
+    ]);
+    assert_eq!(
+        Layer::decal(Blend::Multiply).with_picture(&grey),
+        Layer::decal(Blend::Double)
+    );
+    assert_eq!(
+        Layer::decal(Blend::Alpha).with_picture(&grey),
+        Layer::decal(Blend::Double)
+    );
+    // Opaque and mostly light: multiplies.
+    let light = img(&[
+        [250, 250, 250, 255],
+        [240, 200, 200, 255],
+        [40, 40, 40, 255],
+    ]);
+    assert_eq!(
+        Layer::decal(Blend::Alpha).with_picture(&light),
+        Layer::decal(Blend::Multiply)
+    );
+    // With alpha: blends by it, unless cut out.
+    let sign = img(&[[200, 10, 10, 255], [0, 0, 0, 0]]);
+    assert_eq!(
+        Layer::decal(Blend::Multiply).with_picture(&sign),
+        Layer::decal(Blend::Alpha)
+    );
+    assert_eq!(
+        Layer::decal(Blend::Test).with_picture(&sign),
+        Layer::decal(Blend::Test)
+    );
+    // Effects are as named.
+    assert_eq!(
+        Layer::effect(Blend::Additive).with_picture(&grey),
+        Layer::effect(Blend::Additive)
+    );
+    assert_eq!(Layer::decal(Blend::Double).blend_name(), "double");
+}
+
+fn texture(bitmap: u32) -> std::sync::Arc<crate::live_layers::Texture> {
+    std::sync::Arc::new(crate::live_layers::Texture {
+        bitmap,
+        image: crate::live_models::Image {
+            width: 2,
+            height: 2,
+            rgba: vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ],
+        },
+    })
+}
+
+#[test]
+fn layers_are_children_of_their_bsp_with_textured_blended_materials() {
+    let bsps = vec![
+        (0, Ok(build_mesh(&cuboid([0.0; 3], [10.0, 10.0, 3.0])))),
+        (
+            1,
+            Ok(build_mesh(&cuboid([20.0, 0.0, 0.0], [30.0, 10.0, 3.0]))),
+        ),
+    ];
+    let mut level = Level::build("lvl", MapKind::Campaign, bsps).unwrap();
+    level.bsp_names.insert(1, "earth_2".into());
+    let uv = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]];
+    let wall = [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 0.0, 2.0]];
+    let air = [[5.0, 5.0, 1.0], [6.0, 5.0, 1.0], [5.0, 5.0, 4.0]];
+    // BSP materials: 0 a stain (multiply), 1 a light volume (additive), 2
+    // a painted sign (alpha, but its picture failed), 3 level.
+    let surfaces = [
+        Surface::Layer(Layer::decal(Blend::Multiply)),
+        Surface::Layer(Layer::effect(Blend::Additive)),
+        Surface::Layer(Layer::decal(Blend::Alpha)),
+        Surface::Unknown,
+    ];
+    let shaders: Vec<(TagId, String)> = (0..4)
+        .map(|i| {
+            (
+                TagId(0xe000_0010 + i),
+                format!(r"levels\shaders\shader_{i}"),
+            )
+        })
+        .collect();
+    let tris = [
+        layer_tri(wall, uv, 0),
+        layer_tri(air, uv, 1),
+        layer_tri(wall, uv, 2),
+        layer_tri(air, uv, 3),
+    ];
+    let mut asked = Vec::new();
+    let dropped = level.add_layers(0, &tris, &shaders, &surfaces, |id, layer| {
+        asked.push(id.0);
+        // The stain and the glow share one bitmap; the sign has none.
+        (layer.blend != Blend::Alpha).then(|| texture(7))
+    });
+    assert_eq!(dropped, 2, "the picture-less sign and the level triangle");
+    assert_eq!(asked, [0xe000_0010, 0xe000_0011, 0xe000_0012]);
+    // The same shader in another BSP shares the material and asks no more.
+    level.add_layers(1, &[layer_tri(wall, uv, 0)], &shaders, &surfaces, |_, _| {
+        panic!("cached")
+    });
+    assert_eq!(level.layer_materials.len(), 2);
+    assert_eq!(level.layer_materials[0].name, "shader_0");
+
+    let glb = level.glb();
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, bin) = parse_glb(&glb);
+    assert_eq!(
+        node_names(&doc),
+        ["bsp_0", "decals_0", "effects_0", "bsp_1", "decals_1"]
+    );
+    assert_eq!(doc["nodes"][0]["children"], serde_json::json!([1, 2]));
+    assert_eq!(doc["nodes"][1]["extras"]["decals"], true);
+    assert_eq!(doc["nodes"][2]["extras"]["effects"], true);
+    assert_eq!(doc["nodes"][3]["extras"]["name"], "earth_2");
+    assert!(doc["nodes"][0]["extras"].get("name").is_none());
+    let material = |node: usize| {
+        let mesh = doc["nodes"][node]["mesh"].as_u64().unwrap() as usize;
+        let prim = &doc["meshes"][mesh]["primitives"][0];
+        assert!(prim["attributes"].get("TEXCOORD_0").is_some());
+        assert_eq!(
+            doc["accessors"][prim["indices"].as_u64().unwrap() as usize]["componentType"],
+            5125
+        );
+        doc["materials"][prim["material"].as_u64().unwrap() as usize].clone()
+    };
+    let stain = material(1);
+    assert_eq!(stain["name"], "shader_0");
+    assert_eq!(
+        stain["extras"],
+        serde_json::json!({"layer": "decal", "blend": "multiply"})
+    );
+    assert_eq!(stain["alphaMode"], "BLEND");
+    assert!(stain["extensions"].get("KHR_materials_unlit").is_some());
+    assert!(stain.get("doubleSided").is_none());
+    let glow = material(2);
+    assert_eq!(glow["extras"]["blend"], "additive");
+    assert_eq!(glow["doubleSided"], true);
+    assert_eq!(material(4), stain, "shared across BSPs");
+    // One image for the shared bitmap, a decodable PNG.
+    assert_eq!(doc["images"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        stain["pbrMetallicRoughness"]["baseColorTexture"],
+        glow["pbrMetallicRoughness"]["baseColorTexture"]
+    );
+    let view = &doc["bufferViews"][doc["images"][0]["bufferView"].as_u64().unwrap() as usize];
+    let at = view["byteOffset"].as_u64().unwrap() as usize;
+    assert_eq!(&bin[at..at + 4], b"\x89PNG");
+    assert_eq!(
+        doc["extensionsUsed"],
+        serde_json::json!(["KHR_materials_unlit"])
+    );
+    // Class materials are untouched and the level mesh has no layers.
+    assert!(
+        doc["materials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "wall")
+    );
+}
+
+fn sky_header() -> Vec<u8> {
+    use crate::live_sky::*;
+    let mut b = vec![0u8; 0x200];
+    put32(&mut b, SKY_MODEL + 4, 0xe17a_0005);
+    put32(&mut b, SKY_SCALE, 150f32.to_bits());
+    for (k, v) in [0.2f32, 0.3, 0.4].iter().enumerate() {
+        put32(&mut b, SKY_CLEAR + 4 * k, v.to_bits());
+    }
+    // Atmospheric fog: one element at 0x100.
+    put32(&mut b, SKY_ATMOSPHERIC_FOG, 1);
+    put32(&mut b, SKY_ATMOSPHERIC_FOG + 4, BASE + 0x100);
+    for (k, v) in [0.5f32, 0.6, 0.7, 0.55, 70.0, 180.0].iter().enumerate() {
+        put32(&mut b, 0x100 + 4 * k, v.to_bits());
+    }
+    b
+}
+
+#[test]
+fn a_sky_tag_gives_its_model_clear_colour_and_fog() {
+    use crate::live_sky::*;
+    let b = sky_header();
+    let view = TagView::new(&b, BASE);
+    let f = sky_fields(&view, &b[..SKY_HEADER]);
+    assert_eq!(f.model, Some(TagId(0xe17a_0005)));
+    assert_eq!(f.scale, 150.0);
+    assert_eq!(f.clear, Some([0.2, 0.3, 0.4]));
+    assert_eq!(
+        f.fog,
+        Some(SkyFog {
+            colour: [0.5, 0.6, 0.7],
+            density: 0.55,
+            start: 70.0,
+            end: 180.0
+        })
+    );
+    // No model, black clear colour, a fog with nothing to it: none of them.
+    let mut b = sky_header();
+    put32(&mut b, SKY_MODEL + 4, u32::MAX);
+    for k in 0..3 {
+        put32(&mut b, SKY_CLEAR + 4 * k, 0);
+    }
+    put32(&mut b, 0x100 + 0xc, 0);
+    let view = TagView::new(&b, BASE);
+    let f = sky_fields(&view, &b[..SKY_HEADER]);
+    assert_eq!((f.model, f.clear, f.fog), (None, None, None));
+    // The secondary fog stands in when the atmospheric one says nothing.
+    put32(&mut b, SKY_SECONDARY_FOG, 1);
+    put32(&mut b, SKY_SECONDARY_FOG + 4, BASE + 0x140);
+    for (k, v) in [0.1f32, 0.1, 0.1, 0.3, 20.0, 100.0].iter().enumerate() {
+        put32(&mut b, 0x140 + 4 * k, v.to_bits());
+    }
+    let view = TagView::new(&b, BASE);
+    assert_eq!(sky_fields(&view, &b[..SKY_HEADER]).fog.unwrap().end, 100.0);
+    // An end before the start is no fog.
+    let mut e = [0u8; 0x18];
+    for (k, v) in [0.5f32, 0.5, 0.5, 0.5, 50.0, 10.0].iter().enumerate() {
+        e[4 * k..4 * k + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    assert_eq!(fog_element(&e), None);
+}
+
+#[test]
+fn sky_materials_blend_by_template_words_and_the_sky_is_in_the_extras() {
+    use crate::live_sky::*;
+    assert_eq!(
+        sky_blend(r"shaders\shader_templates\transparent\sky_two_add_clouds"),
+        "additive"
+    );
+    assert_eq!(
+        sky_blend(r"shaders\shader_templates\transparent\sky_two_alpha_clouds"),
+        "alpha"
+    );
+    assert_eq!(
+        sky_blend(r"shaders\shader_templates\opaque\tex_bump"),
+        "opaque"
+    );
+    let mut level = Level::build(
+        "mp",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&cuboid([0.0; 3], [1.0; 3]))))],
+    )
+    .unwrap();
+    level.sky = Some(SkyInfo {
+        name: "beach".into(),
+        glb: Some("sky.glb".into()),
+        clear: None,
+        fog: Some(SkyFog {
+            colour: [0.5, 0.6, 0.7],
+            density: 0.5,
+            start: 1.0,
+            end: 40.0,
+        }),
+        scale: 1.0,
+    });
+    let (doc, _) = parse_glb(&level.glb());
+    let sky = &doc["asset"]["extras"]["sky"];
+    assert_eq!(sky["glb"], "sky.glb");
+    assert_eq!(sky["fog"]["end"], 40.0);
+    assert!(sky.get("clear").is_none());
+    let back: SkyInfo = serde_json::from_value(sky.clone()).unwrap();
+    assert_eq!(back, level.sky.clone().unwrap());
 }
