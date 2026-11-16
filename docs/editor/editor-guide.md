@@ -132,7 +132,7 @@ Click a map in the **Maps** list. The status bar says `opened <map>`,
 with how many triangles and placements it has and how much of its art
 could be drawn.
 
-![Ascension open with a battle rifle spawn selected: the outliner, the lit, textured level in the viewport with the move gizmo, and the spawn's fields in the inspector](../images/editor/scenario-weapon.jpg)
+![Coagulation open with the battle rifle spawn on a base selected: the outliner, the lit, textured level in the viewport with the move gizmo, and the spawn's fields in the inspector](../images/editor/scenario-weapon.jpg)
 
 - **Outliner**: a **Filter placements** box, **Duplicate** and
   **Delete**, and one group per kind of object with its count, for
@@ -505,12 +505,12 @@ Playlists tool has no disc to read map names from. Open your disc with
 fit the game's 128 KiB download buffer, or the game would ignore it and
 keep its built-in playlists. Remove some entries.
 
-**Parts of a level are untextured, dark, or an object has only a
-marker.** The viewport draws the level's textures with its baked
-lighting, but not everything the game draws (no detail maps or the real
-sky, for example), and the outsides of a few buildings still come out
-dark. The status bar says how many shaders and objects could be drawn;
-the rest show flat-shaded or as markers only. Editing works the same.
+**Parts of a level are untextured, or an object has only a marker.**
+The viewport draws the level's textures with its baked lighting, but
+not everything the game draws (no detail maps or the real sky, for
+example). The status bar says how many shaders and objects could be
+drawn; the rest show flat-shaded or as markers only. Editing works the
+same.
 
 **The panels are in a mess.** **View > Reset layout**.
 
