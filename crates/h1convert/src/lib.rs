@@ -41,13 +41,13 @@ pub enum Error {
     /// Something in either map isn't as a conversion needs.
     #[error("{0}")]
     Invalid(&'static str),
-    /// The structure's Havok MOPP code can't be made yet.
-    #[error(
-        "MOPP writer not merged yet: the structure BSP needs Havok MOPP code \
-         (sbsp+0x1e0) and nothing makes it, so no map is written \
-         (docs/game/h1-multiplayer.md)"
-    )]
+    /// No longer returned: the MOPP writer is merged. Kept until the editor
+    /// (crates/studio) drops its match on it.
+    #[error("MOPP writer not merged yet")]
     MoppNotMerged,
+    /// The structure has more surfaces than its MOPP code can key.
+    #[error("{0} structure surfaces; Havok MOPP code keys at most 65536")]
+    TooManySurfaces(usize),
     /// The Halo 1 sandbox (phase 4) isn't built.
     #[error("the Halo 1 sandbox isn't built yet; convert with the Halo 2 sandbox")]
     Halo1Sandbox,

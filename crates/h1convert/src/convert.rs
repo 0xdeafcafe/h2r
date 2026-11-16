@@ -39,12 +39,16 @@ impl Sandbox {
     }
 }
 
-/// The structure's Havok MOPP code (`sbsp+0x1e0`), from the `mopp` crate's
-/// `mopp::build_structure` once that lands. Until then this refuses, so
-/// no map is written with a missing or stand-in MOPP (one that loads but
-/// lets every physics object fall through the level).
-pub fn structure_mopp(_bsp: &tags::collision::Bsp) -> Result<Vec<u8>> {
-    Err(Error::MoppNotMerged)
+/// The structure's Havok MOPP code (`sbsp+0x1e0`), from
+/// `mopp::build_structure`: the block's bytes, one byte per element. It
+/// keys structure surfaces by a 16-bit index, so a structure with more
+/// surfaces than that is refused rather than written with surfaces
+/// physics can't hit.
+pub fn structure_mopp(bsp: &tags::collision::Bsp) -> Result<Vec<u8>> {
+    if bsp.surfaces.len() > 0x1_0000 {
+        return Err(Error::TooManySurfaces(bsp.surfaces.len()));
+    }
+    Ok(mopp::build_structure(bsp))
 }
 
 /// Halo 1's multiplayer maps: internal name, display name, and the Halo 2
@@ -416,8 +420,7 @@ impl Prepared {
 }
 
 /// Converts `h1` onto `base`. `source_sha256` is the Halo 1 map file's
-/// hash, for the manifest's `[origin]`. Fails with
-/// [`Error::MoppNotMerged`] until the MOPP writer is merged.
+/// hash, for the manifest's `[origin]`.
 pub fn convert<R: Read + Seek>(
     h1: &H1Map,
     source_sha256: Sha256,

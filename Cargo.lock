@@ -2128,6 +2128,7 @@ dependencies = [
  "content",
  "h1map",
  "map",
+ "mopp",
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",

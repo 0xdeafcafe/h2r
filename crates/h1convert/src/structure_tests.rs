@@ -320,14 +320,15 @@ fn winding_is_turned_to_agree_with_the_normals() {
 }
 
 #[test]
-fn no_map_is_made_without_mopp_code() {
+fn the_structure_gets_valid_mopp_code_keying_every_surface() {
     let collision = crate::collision::convert(&room()).unwrap();
-    let e = structure_mopp(&collision).unwrap_err();
-    assert!(matches!(e, crate::Error::MoppNotMerged));
-    assert!(
-        e.to_string().starts_with("MOPP writer not merged yet"),
-        "{e}"
-    );
+    let code = structure_mopp(&collision).unwrap();
+    let code = mopp::code::Code::parse(&code).unwrap();
+    assert!(mopp::check::validate(&code.bytecode).is_ok());
+    let mut keys = mopp::bounds::key_bounds(&code).unwrap().into_keys().collect::<Vec<_>>();
+    keys.sort();
+    let want: Vec<u32> = (0..collision.surfaces.len() as u32).map(|i| 0x2000_0000 | i).collect();
+    assert_eq!(keys, want);
 }
 
 #[test]

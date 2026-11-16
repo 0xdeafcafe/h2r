@@ -334,9 +334,8 @@ let done = h1convert::convert::convert(&h1, source_sha256, &mut base, Sandbox::H
 hash as well as the map (the `[origin]` below needs it, and `H1Map` holds
 the inflated bytes, not the file). It is `prepare`, then the MOPP code
 from `convert::structure_mopp`, then `Prepared::build`.
-`structure_mopp` is where `mopp::build_structure(&bsp)` goes; until that
-crate is merged it returns `Error::MoppNotMerged` ("MOPP writer not
-merged yet: ..."), so **no map is written**. `Sandbox::Halo1` returns
+`structure_mopp` calls `mopp::build_structure(&bsp)`
+([mopp.md](../formats/mopp.md)). `Sandbox::Halo1` returns
 `Error::Halo1Sandbox` until phase 4.
 
 ```sh
@@ -351,8 +350,7 @@ placements and what wasn't placed, then writes the package
 `DIR/h1_<map>/`: `manifest.toml` and the variant's map at
 `<sandbox>/h1_<map>.map` (`h2/h1_beavercreek.map`). A second run with the
 other sandbox adds its variant to the same manifest. `--dry-run` does
-everything but write and prints what it would write, and that it would
-refuse while the MOPP writer is missing.
+everything but write and prints what it would write.
 
 **Package.** One package per converted map at `<data>/maps/h1_<map>/`,
 one `[[variant]]` per sandbox, each a whole map with its origin (the form
