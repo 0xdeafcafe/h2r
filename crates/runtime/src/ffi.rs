@@ -27,6 +27,7 @@ pub struct ExecCtxOpaque {
 pub(crate) fn call_native(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
     // SAFETY: native registration promises the documented ABI; these disjoint
     // exclusive borrows remain alive for exactly the synchronous call.
+    ctx.direct_clear_view();
     let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
     sync_accesses(ctx);
     result

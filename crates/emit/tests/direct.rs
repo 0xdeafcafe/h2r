@@ -312,9 +312,11 @@ enum Mode {
     Disabled,
     /// Built with direct calls and using them.
     On,
-    /// [`Mode::Off`] and [`Mode::On`] built with the handler exits from
-    /// before `h2abi_v1_exit` (`H2_EXIT_CALL=0`: a charge, then a release)
-    /// and installed as such a module is, through the v2 bridge table.
+    /// [`Mode::Off`] and [`Mode::On`] built with the handler entries and
+    /// exits from before `h2abi_v1_exit` and lent views (`H2_EXIT_CALL=0`:
+    /// a charge, then a release; `H2_DIRECT_VIEW=0`: every handler acquires
+    /// and releases its own) and installed as such a module is, through the
+    /// v2 bridge table.
     OldOff,
     OldOn,
 }
@@ -348,7 +350,7 @@ fn build(direct: bool, old: bool) -> Module {
         u8::from(direct)
     );
     if old {
-        flag += "#define H2_EXIT_CALL 0\n";
+        flag += "#define H2_EXIT_CALL 0\n#define H2_DIRECT_VIEW 0\n";
     }
     std::fs::write(&header, format!("{flag}{content}")).unwrap();
     emit::compile::install_header(&src, &common::abi_header().unwrap()).unwrap();
@@ -370,13 +372,13 @@ fn build(direct: bool, old: bool) -> Module {
             runtime::ffi::h2abi_v1_xchg as *const (),
             runtime::ffi::h2abi_v1_cmpxchg as *const (),
             runtime::ffi::h2abi_v1_profile as *const (),
-            runtime::ffi::h2abi_v1_fast_acquire as *const (),
-            runtime::ffi::h2abi_v1_fast_release as *const (),
+            acquire as *const (),
+            release as *const (),
             runtime::ffi::h2abi_v1_read_counted as *const (),
             runtime::ffi::h2abi_v1_write_counted as *const (),
-            runtime::ffi::h2abi_v1_charge as *const (),
+            charge as *const (),
             runtime::ffi::h2abi_v1_budget as *const (),
-            runtime::ffi::h2abi_v1_exit as *const (),
+            exit as *const (),
         ];
         // An old module's table ends before `exit`.
         let callbacks = &callbacks[..callbacks.len() - usize::from(old)];
@@ -398,6 +400,38 @@ fn build(direct: bool, old: bool) -> Module {
             _lib: lib,
         }
     }
+}
+
+thread_local! {
+    /// This thread's calls of the runtime's view and settling exports:
+    /// `fast_acquire`, `fast_release`, `charge`, `exit`.
+    static ABI_CALLS: std::cell::Cell<[u64; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+fn abi_call(i: usize) {
+    ABI_CALLS.with(|c| {
+        let mut v = c.get();
+        v[i] += 1;
+        c.set(v);
+    });
+}
+
+/// The bridge's callbacks: the runtime's own, counted.
+unsafe extern "C" fn acquire(c: *mut runtime::ExecCtxOpaque) -> *mut runtime::ffi::FastAccess {
+    abi_call(0);
+    unsafe { runtime::ffi::h2abi_v1_fast_acquire(c) }
+}
+unsafe extern "C" fn release(c: *mut runtime::ExecCtxOpaque) {
+    abi_call(1);
+    unsafe { runtime::ffi::h2abi_v1_fast_release(c) }
+}
+unsafe extern "C" fn charge(c: *mut runtime::ExecCtxOpaque, n: u64) {
+    abi_call(2);
+    unsafe { runtime::ffi::h2abi_v1_charge(c, n) }
+}
+unsafe extern "C" fn exit(c: *mut runtime::ExecCtxOpaque, n: u64) {
+    abi_call(3);
+    unsafe { runtime::ffi::h2abi_v1_exit(c, n) }
 }
 
 /// Every build, once per test binary: direct calls off and on, then the
@@ -874,4 +908,51 @@ fn a_register_changed_round_a_loop_reaches_the_next_direct_call() {
         out
     });
     assert_eq!(direct_count(LOOP, None), 6);
+}
+
+/// The calls a warm run of `entry` makes into the runtime: `fast_acquire`,
+/// `fast_release`, `charge`, `exit`.
+fn abi_calls(mode: Mode, entry: u32, cap: Option<u32>) -> [u64; 4] {
+    let mut m = Machine::new(mode);
+    if let Some(c) = cap {
+        m.ctx.set_direct_call_depth(c);
+    }
+    m.run(&Runner::default(), TransferAbi::jump(entry));
+    m.reset();
+    ABI_CALLS.with(|c| c.set([0; 4]));
+    m.run(&Runner::default(), TransferAbi::jump(entry));
+    ABI_CALLS.with(|c| c.get())
+}
+
+/// A directly invoked handler runs on its caller's view: no acquire on
+/// entry and, with nothing of its own to charge, no call on the way out.
+/// Everything a run ends with is the same as with the old entries and exits
+/// in every scenario above (`agree` runs `OldOff` and `OldOn` too); here,
+/// the calls saved.
+#[test]
+fn a_direct_callee_borrows_its_callers_view() {
+    if std::env::var("H2_FASTMEM").as_deref() == Ok("0") {
+        common::skip("borrowed view", "H2_FASTMEM=0 builds no view");
+        return;
+    }
+    let [off, on, old_off, old_on] = [Mode::Off, Mode::On, Mode::OldOff, Mode::OldOn].map(|m| abi_calls(m, NEST, None));
+    // Through the runner every handler acquires a view and leaves with one
+    // exit call where it used to release and charge.
+    assert_eq!(off[0], old_off[0], "{off:?} {old_off:?}");
+    assert_eq!((off[1], old_off[3]), (0, 0));
+    assert_eq!(off[3], old_off[1], "one exit per release: {off:?} {old_off:?}");
+    // Direct: A calls B three times, B calls C each time, every return
+    // inline. Each of the seven handlers used to acquire and release; now
+    // only A acquires, and B and C borrow, each still with its own
+    // accesses to charge on the way out (the exit call that is left).
+    assert_eq!((old_on[0], old_on[1], old_on[3]), (7, 7, 0), "{old_on:?}");
+    assert_eq!((on[0], on[1], on[3]), (1, 0, 7), "{on:?}");
+    // The charges before each direct call are the same.
+    assert_eq!(on[2], old_on[2] - old_on[1], "{on:?} {old_on:?}");
+    // A call that falls back to the runner lends nothing: its callee
+    // acquires, as through the runner. Past a cap of 0 that is every call,
+    // as with direct calls disabled; past a cap of 1, B's calls of C.
+    assert_eq!(abi_calls(Mode::On, NEST, Some(0)), abi_calls(Mode::Disabled, NEST, None));
+    let [on, old_on] = [Mode::On, Mode::OldOn].map(|m| abi_calls(m, NEST, Some(1)));
+    assert!(1 < on[0] && on[0] < old_on[0], "{on:?} {old_on:?}");
 }

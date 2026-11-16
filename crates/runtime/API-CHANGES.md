@@ -474,3 +474,13 @@ exported, and modules built before still call it. The boot bridge table
 gains a last slot, `exit`, installed by `h2boot_install_v3`; boot still
 installs an older module's table through its `h2boot_install_v2`, without
 the slot. No ABI version or module feature changes.
+
+## A direct callee runs on its caller's view
+
+`generated::FEATURE_DIRECT_VIEW` (4) marks a direct-call module built with
+`H2_FASTMEM` (and not `H2_DIRECT_VIEW=0`): a direct caller lends its inline
+RAM view through a new last word of the direct-call block, `view`, so the
+callee neither acquires nor releases one. The block grows by a pointer;
+modules built before ignore it, and a runtime without it refuses a module
+with the bit. The runtime clears `view` before it invokes a native handler.
+Access counts, charges and slice expiry are the same as before.

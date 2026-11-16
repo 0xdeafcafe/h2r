@@ -2,7 +2,10 @@
 //! module preprocessed with the build's own flags (synthetic code, no game
 //! data). The shared epilogue settles with the runtime in one
 //! `h2abi_v1_exit`, after the spill; `H2_EXIT_CALL=0` is the pair it
-//! replaced, a charge before the spill and a release after it.
+//! replaced, a charge before the spill and a release after it. With direct
+//! calls a handler may run on a view its direct caller lent it
+//! (`H2_DIRECT_VIEW`): it then makes the call only to charge its own count,
+//! and acquires nothing on entry.
 
 mod common;
 
@@ -14,16 +17,22 @@ use iced_x86::code_asm::*;
 
 const A: u32 = 0x0040_0000;
 
+const B: u32 = 0x0040_0100;
+
 /// One load and one store, so the handler counts accesses and can fault.
 fn source(accounting: bool) -> Option<(PathBuf, PathBuf)> {
-    let abi = common::abi_header()?;
     let f = function(A, |a| {
         a.mov(eax, dword_ptr(ecx))?;
         a.mov(dword_ptr(edx), eax)?;
         a.ret()
     });
-    let owners = emit::plan(vec![f]);
-    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("exits-{accounting}"));
+    write(vec![f], &format!("exits-{accounting}"), accounting)
+}
+
+fn write(funcs: Vec<ir::IrFunction>, name: &str, accounting: bool) -> Option<(PathBuf, PathBuf)> {
+    let abi = common::abi_header()?;
+    let owners = emit::plan(funcs);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(name);
     let src = dir.join("src");
     let _ = std::fs::remove_dir_all(&src);
     emit::write_module_with(
@@ -52,6 +61,13 @@ fn source(accounting: bool) -> Option<(PathBuf, PathBuf)> {
 
 /// The handler as the compiler sees it, whitespace collapsed.
 fn preprocess(src: &Path, c: &Path, defines: &[&str]) -> String {
+    let text = preprocess_text(src, c, defines);
+    // The handler is the last function in the file, after the headers.
+    text[text.rfind("TransferAbi h2fn_").expect("handler")..].to_string()
+}
+
+/// The whole file as the compiler sees it, whitespace collapsed.
+fn preprocess_text(src: &Path, c: &Path, defines: &[&str]) -> String {
     let cc = emit::compile::compiler().unwrap();
     let mut cmd = Command::new(cc);
     cmd.args(["-E", "-P"])
@@ -68,9 +84,7 @@ fn preprocess(src: &Path, c: &Path, defines: &[&str]) -> String {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = String::from_utf8(out.stdout).unwrap();
-    // The handler is the last function in the file, after the headers.
-    let body = &text[text.rfind("TransferAbi h2_").expect("handler")..];
-    body.split_whitespace().collect::<Vec<_>>().join(" ")
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// From the epilogue's label to its return.
@@ -91,12 +105,13 @@ fn a_handler_leaves_through_one_exit_call() {
             common::skip("exits", "needs h2abi.h (H2ABI_HEADER)");
             return;
         };
-        for fastmem in [false, true] {
+        for (fastmem, view) in [(false, false), (true, false), (true, true)] {
             let fm = format!("H2_FASTMEM={}", u8::from(fastmem));
-            let new = preprocess(&src, &c, &[&fm]);
-            let old = preprocess(&src, &c, &[&fm, "H2_EXIT_CALL=0"]);
+            let lend = format!("H2_DIRECT_VIEW={}", u8::from(view));
+            let new = preprocess(&src, &c, &[&fm, &lend]);
+            let old = preprocess(&src, &c, &[&fm, "H2_EXIT_CALL=0", "H2_DIRECT_VIEW=0"]);
             let (n, o) = (epilogue(&new), epilogue(&old));
-            let case = format!("accounting {accounting}, fastmem {fastmem}");
+            let case = format!("accounting {accounting}, fastmem {fastmem}, lent views {view}");
             // Entry: one acquire with the view, either way.
             assert_eq!(
                 calls(&new, "h2abi_v1_fast_acquire"),
@@ -133,17 +148,31 @@ fn a_handler_leaves_through_one_exit_call() {
             );
             // The exit call is the last thing before the transfer, after the
             // spill and the EIP store, and passes the handler's count.
+            // A handler on a lent view makes it only to charge its count.
             if fastmem {
                 let count = if accounting { "h2acc" } else { "0u" };
-                let call = format!("h2abi_v1_exit(ctx, {count});");
+                let mut call = format!("h2abi_v1_exit(ctx, {count});");
+                if view {
+                    call = format!("if (!(h2_lent_ != 0) || {count}) {call} }} while (0);");
+                }
                 let at = n.find(&call).unwrap_or_else(|| panic!("{case}: {n}"));
                 assert!(n.find("cpu->eip = x_eip;").unwrap() < at, "{case}: {n}");
                 // Only the (off) perf flush follows it.
                 assert_eq!(n[at + call.len()..].trim(), "((void)0);", "{case}: {n}");
             }
-            // Nothing else in the handler changed.
-            let strip = |s: &str| s.replace(n, "").replace(o, "");
-            assert_eq!(strip(&new), strip(&old), "{case}");
+            // Nothing else in the handler changed, but for the entry that
+            // takes a lent view before it acquires one.
+            if view {
+                assert_eq!(calls(&new, "h2_view_borrow"), 1, "{case}: {new}");
+                assert!(
+                    new.contains("h2_lent_ ? h2_lent_ : h2abi_v1_fast_acquire(ctx)"),
+                    "{case}: {new}"
+                );
+            } else {
+                let strip = |s: &str| s.replace(n, "").replace(o, "");
+                assert_eq!(strip(&new), strip(&old), "{case}");
+                assert_eq!(calls(&new, "h2_view_borrow"), 0, "{case}");
+            }
             // Snapshot of the new epilogue's shape, the spill elided.
             let shape = |e: &str| {
                 let calls: Vec<&str> = e
@@ -157,19 +186,95 @@ fn a_handler_leaves_through_one_exit_call() {
                     .collect();
                 calls.join("; ")
             };
-            let expect = match (accounting, fastmem) {
-                (false, false) => "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip",
-                (false, true) => {
+            let expect = match (accounting, fastmem, view) {
+                (false, false, _) => "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip",
+                (false, true, false) => {
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; h2abi_v1_exit(ctx, 0u)"
                 }
-                (true, false) => {
+                (false, true, true) => {
+                    "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (!(h2_lent_ != 0) || 0u) h2abi_v1_exit(ctx, 0u)"
+                }
+                (true, false, _) => {
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (h2acc) { h2_gate_drop(h2_mem_, &h2g_); h2abi_v1_charge(ctx, h2acc)"
                 }
-                (true, true) => {
+                (true, true, false) => {
                     "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; h2abi_v1_exit(ctx, h2acc)"
+                }
+                (true, true, true) => {
+                    "h2_exit: h2_gate_drop(h2_mem_, &h2g_); cpu->eip = x_eip; do { if (!(h2_lent_ != 0) || h2acc) h2abi_v1_exit(ctx, h2acc)"
                 }
             };
             assert_eq!(shape(n), expect, "{case}: {n}");
         }
     }
+}
+
+/// A direct call lends the caller's view just before it invokes the
+/// callee, and a hand-up from a handler on a lent view releases nothing.
+/// Without direct calls, or with `H2_DIRECT_VIEW=0`, nothing is lent.
+#[test]
+fn a_direct_call_lends_the_callers_view() {
+    let caller = function(A, |a| {
+        a.mov(dword_ptr(edx), eax)?;
+        a.call(B as u64)?;
+        a.mov(dword_ptr(edx), eax)?;
+        a.ret()
+    });
+    let callee = function(B, |a| {
+        a.mov(eax, dword_ptr(ecx))?;
+        a.ret()
+    });
+    let Some((src, c)) = write(vec![caller, callee], "exits-direct", true) else {
+        common::skip("lent view", "needs h2abi.h (H2ABI_HEADER)");
+        return;
+    };
+    let text = |defines: &[&str]| preprocess_all(&src, &c, defines);
+    let lend = "((d_)->view = h2_mem_); TransferAbi r_ = (";
+    let on = text(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1"]);
+    assert_eq!(on.matches(lend).count(), 1, "{on}");
+    assert_eq!(
+        on.matches(
+            "do { if (!(h2_lent_ != 0)) h2abi_v1_fast_release(ctx); } while (0); return (r_);"
+        )
+        .count(),
+        1,
+        "{on}"
+    );
+    // Both handlers take a lent view before they would acquire.
+    assert_eq!(calls(&on, "h2_view_borrow"), 2, "{on}");
+    for off in [
+        text(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", "H2_DIRECT_VIEW=0"]),
+        text(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=0"]),
+        text(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1"]),
+    ] {
+        assert!(
+            !off.contains("view = h2_mem_") && !off.contains("h2_lent_"),
+            "{off}"
+        );
+    }
+    // The module declares the lent view to the runtime only when it lends.
+    let registry = src.join("h2gen_registry.c");
+    let features = |defines: &[&str]| {
+        let t = preprocess_text(&src, &registry, defines);
+        let at = t.find("h2gen_module = {").expect("module table");
+        t[at..].split(',').nth(3).unwrap().trim().to_string()
+    };
+    assert_eq!(
+        features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1"]),
+        "1u | (2u | 4u)"
+    );
+    assert_eq!(
+        features(&["H2_FASTMEM=1", "H2_DIRECT_CALLS=1", "H2_DIRECT_VIEW=0"]),
+        "1u | (2u | 0u)"
+    );
+    assert_eq!(
+        features(&["H2_FASTMEM=0", "H2_DIRECT_CALLS=1"]),
+        "1u | (2u | 0u)"
+    );
+}
+
+/// Every handler in the file, whitespace collapsed.
+fn preprocess_all(src: &Path, c: &Path, defines: &[&str]) -> String {
+    let full = preprocess_text(src, c, defines);
+    full[full.find("TransferAbi h2fn_").expect("handler")..].to_string()
 }

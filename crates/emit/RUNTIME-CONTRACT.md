@@ -365,7 +365,8 @@ typedef struct H2GenModule {
   points"), with `start` = the header.
 - `features` is a bit set of optional schemes the module's handlers use:
   `H2GEN_FEATURE_ACCOUNTING` (1, §1.1), `H2GEN_FEATURE_DIRECT_CALLS` (2,
-  §4 "Direct calls"), or 0. It was `reserved`, always 0.
+  §4 "Direct calls"), `H2GEN_FEATURE_DIRECT_VIEW` (4, a lent view, same
+  section), or 0. It was `reserved`, always 0.
 
 ## 3. Registration adapter (**new**)
 
@@ -520,6 +521,19 @@ Its semantics:
     (kind, target, continuation, ESP) at `frames[depth]`, spills its state
     to `CpuAbi` (x87 pointers too), sets `eip` = target and calls the
     callee's handler with start = target.
+  - With `H2_FASTMEM` (and unless `H2_DIRECT_VIEW=0`; module feature 4)
+    the caller first lends the callee its inline RAM view: it stores it in
+    the block's last word, `view`, which every handler's entry takes and
+    clears. A handler with a lent view does not call
+    `h2abi_v1_fast_acquire`, and on its way out (epilogue or hand-up)
+    calls `h2abi_v1_exit` only to charge a count of its own, never just to
+    release. The caller charged its count just before, so the view holds
+    nothing unsettled when lent; what the callee counts in it is settled
+    by the first Rust helper that looks (they all settle first) or by the
+    outermost handler's exit, and its budget is what acquire would have
+    set again, so the slice runs out at the same access. The runtime
+    clears `view` before it invokes any native handler itself, so a
+    handler entered through the runner always acquires.
   - The callee's result continues inline only if it is `RETURN`/
     `RETURN_TARGET` to exactly the continuation, with no event, ESP above
     the return slot, and again a quiet safe point, a transfer left and an
