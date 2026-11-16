@@ -11,6 +11,7 @@
 //! directory, which should be under `$TMPDIR` or `target/`.
 
 pub mod community_variants;
+pub mod controls_text;
 pub mod custom_games;
 pub mod d3d_diag;
 pub mod d3d_glue;
@@ -21,6 +22,7 @@ pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
+pub mod retail_rows;
 pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;
@@ -35,6 +37,7 @@ pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
 pub mod skulls_menu;
+pub mod skulls_screen;
 pub mod speaker_setting;
 pub mod ui;
 pub mod video_screen;

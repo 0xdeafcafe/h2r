@@ -267,6 +267,22 @@ points! { ALL;
     RENDER_SCENE_PASSES @ 0x0002_bcd0: [opaque]; "docs/e3-lighting.md";
     /// `render_light_passes`: draws one dynamic light's passes.
     RENDER_LIGHT_PASSES @ 0x0003_1170: [opaque]; "docs/e3-lighting.md";
+    /// The top-level Settings list's row text (thiscall on the list, the
+    /// item and a word).
+    SETTINGS_ROW_TEXT @ 0x002b_1d6e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The top-level Settings list's row chosen (thiscall on the list, the
+    /// player chain and a pointer to the row).
+    SETTINGS_ROW_CHOSEN @ 0x002b_1da9: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The Controls list's row text: the label and value of rows 0 to 5.
+    CONTROLS_ROW_TEXT @ 0x002c_8548: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The Controls list's row chosen (rows past 4 open the vibration
+    /// dialog).
+    CONTROLS_ROW_CHOSEN @ 0x002c_8719: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/settings-menu.md";
+    /// The campaign difficulty list's row text.
+    DIFFICULTY_ROW_TEXT @ 0x002c_9ce7: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/skulls.md";
+    /// The campaign difficulty list's row chosen: clamps the row to 0..3,
+    /// stores the difficulty and starts the campaign.
+    DIFFICULTY_ROW_CHOSEN @ 0x002c_9d38: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
     /// Open a screen: build a 0x20-byte request for the player mask and
     /// call `loader` with it (stdcall).
     OPEN_SCREEN @ 0x0014_9f1e: [fn(mask: stack 0, loader: stack 1) ret 8]; "docs/ui.md";
