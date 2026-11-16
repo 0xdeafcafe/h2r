@@ -17,6 +17,7 @@ pub mod shell;
 pub mod source;
 pub mod tool;
 pub mod undo;
+pub mod variants;
 
 pub use source::{Disc, MapSource};
 pub use tool::{Tool, ToolContext, ToolError};

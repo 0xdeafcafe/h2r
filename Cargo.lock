@@ -1398,6 +1398,8 @@ dependencies = [
  "scenario-edit",
  "tags",
  "thiserror 2.0.21",
+ "variants",
+ "xbe",
  "xiso",
 ]
 
@@ -5721,6 +5723,21 @@ dependencies = [
  "js-sys",
  "serde_core",
  "wasm-bindgen",
+]
+
+[[package]]
+name = "variants"
+version = "0.1.0"
+dependencies = [
+ "egui",
+ "iced-x86",
+ "map",
+ "serde",
+ "serde_json",
+ "tags",
+ "thiserror 2.0.21",
+ "xbe",
+ "xiso",
 ]
 
 [[package]]

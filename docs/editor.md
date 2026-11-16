@@ -11,8 +11,11 @@ spirit of the original tools' Sapien. It hosts tools:
   `crates/editor/src/scenario.rs`. Picking a map in the sidebar opens it,
   unless the open map has unsaved edits. Save always asks for a new path:
   the source map is never overwritten.
-- **Game variants** (`crates/variants`): a separate crate, wired in the
-  same way once it lands.
+- **Game variants**: the game variant editor (`crates/variants`,
+  [variants.md](variants.md)), wired in by `crates/editor/src/variants.rs`.
+  Settings come from the disc's `mainmenu` map, save names from the XBE
+  (`H2_XBE`, else `default.xbe` beside the disc). Saves go to the
+  runtime's save storage, so there is no Save As; use Export to share.
 
 Nothing in the editor contains game data. Map names and everything else
 it shows come from your own disc at run time.
