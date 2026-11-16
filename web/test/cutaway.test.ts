@@ -95,7 +95,8 @@ describe("the see-through", () => {
       const out = patchSeeThrough(lib.vertexShader, lib.fragmentShader)!;
       expect(out).not.toBeNull();
       expect(out.vertex).toContain("vSeeWorld = (modelMatrix");
-      expect(out.fragment).toContain("uniform float uSeeRadius;");
+      expect(out.fragment).toContain("uniform vec4 uSeeTargets[");
+      expect(out.fragment).toContain("uniform int uSeeCount;");
       expect(out.fragment.indexOf("#include <clipping_planes_fragment>")).toBeLessThan(out.fragment.indexOf("discard;"));
       expect(out.vertex.indexOf("#include <project_vertex>")).toBeLessThan(out.vertex.indexOf("vSeeWorld = "));
     }

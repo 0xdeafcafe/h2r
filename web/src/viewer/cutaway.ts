@@ -13,7 +13,8 @@ import type { Vec3 } from "../map/views";
  *  can be seen into from outside. `machine`: placed device machines under a
  *  `machines` node; ordinary outward-facing models, left as the glb has
  *  them. `hidden`: collision geometry, never drawn. Both kinds that are
- *  drawn take the height cut and the see-through. */
+ *  drawn take the height cut; only the level takes the see-through
+ *  (machines, like players and vehicles, are always drawn whole). */
 export type MeshRole = "level" | "machine" | "hidden";
 
 /** A mesh's role from its own and its ancestors' names, outermost first. */
@@ -88,6 +89,35 @@ export function seeThroughHides(p: Vec3, s: SeeThrough, rim = 1): boolean {
   return d < s.radius * (t / len) * (0.8 + 0.2 * rim);
 }
 
+/** At most this many players are seen through at once. */
+export const SEE_MAX = 8;
+
+/** Who the see-through cuts towards: nobody (`off`); the player in focus,
+ *  else every player (`auto`); every player and the one in focus
+ *  (`always`). */
+export type SeeMode = "off" | "auto" | "always";
+
+/** The players (by index) to cut towards, at most [`SEE_MAX`], the one in
+ *  focus first. `players` are the alive ones in view, nearest the camera
+ *  first. */
+export function seeTargets(mode: SeeMode, focus: number | null, players: readonly number[]): number[] {
+  if (mode === "off") return [];
+  if (mode === "auto" && focus !== null) return [focus];
+  const out = focus !== null ? [focus] : [];
+  for (const p of players) if (out.length < SEE_MAX && !out.includes(p)) out.push(p);
+  return out;
+}
+
+/** The mode the toolbar's key goes to next: off, auto, always, off. */
+export function nextSee(m: SeeMode): SeeMode {
+  return m === "off" ? "auto" : m === "auto" ? "always" : "off";
+}
+
+/** Whether any of several see-throughs removes a point. */
+export function seeThroughHidesAny(p: Vec3, list: readonly SeeThrough[], rim = 1): boolean {
+  return list.some((s) => seeThroughHides(p, s, rim));
+}
+
 export const SEE_VERTEX_HEAD = /* glsl */ `varying vec3 vSeeWorld;\n`;
 /** After `project_vertex`, where `transformed` is final. */
 export const SEE_VERTEX_BODY = /* glsl */ `
@@ -95,24 +125,28 @@ vSeeWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
 `;
 export const SEE_FRAGMENT_HEAD = /* glsl */ `
 varying vec3 vSeeWorld;
-uniform vec3 uSeeTarget;
-uniform float uSeeRadius;
-uniform float uSeeFloor;
+uniform vec4 uSeeTargets[${SEE_MAX}];
+uniform float uSeeFloors[${SEE_MAX}];
+uniform int uSeeCount;
 `;
-/** After `clipping_planes_fragment`. */
+/** After `clipping_planes_fragment`: [`seeThroughHides`] for each target
+ *  (xyz the point kept in view, w the clear radius). */
 export const SEE_FRAGMENT_BODY = /* glsl */ `
-if (uSeeRadius > 0.0 && vSeeWorld.y > uSeeFloor) {
-  vec3 seeAxis = uSeeTarget - cameraPosition;
-  float seeLen = length(seeAxis);
-  if (seeLen > 1e-4) {
+if (uSeeCount > 0) {
+  float seeRim = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+  for (int seeI = 0; seeI < ${SEE_MAX}; seeI++) {
+    if (seeI >= uSeeCount) break;
+    vec4 seeTarget = uSeeTargets[seeI];
+    if (seeTarget.w <= 0.0 || vSeeWorld.y <= uSeeFloors[seeI]) continue;
+    vec3 seeAxis = seeTarget.xyz - cameraPosition;
+    float seeLen = length(seeAxis);
+    if (seeLen <= 1e-4) continue;
     vec3 seeDir = seeAxis / seeLen;
     vec3 seeRel = vSeeWorld - cameraPosition;
     float seeT = dot(seeRel, seeDir);
-    if (seeT > 0.0 && seeT < seeLen - uSeeRadius * 0.5) {
-      float seeD = length(seeRel - seeDir * seeT);
-      float seeRim = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
-      if (seeD < uSeeRadius * (seeT / seeLen) * (0.8 + 0.2 * seeRim)) discard;
-    }
+    if (seeT <= 0.0 || seeT >= seeLen - seeTarget.w * 0.5) continue;
+    float seeD = length(seeRel - seeDir * seeT);
+    if (seeD < seeTarget.w * (seeT / seeLen) * (0.8 + 0.2 * seeRim)) discard;
   }
 }
 `;

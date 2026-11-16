@@ -6,7 +6,9 @@ import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
 import { onAnimationFrame } from "../map/scheduler";
 import { gameArt } from "../state/gameart";
-import { clampCut, stepCut } from "./cutaway";
+import { clampCut, nextSee, stepCut, type SeeMode } from "./cutaway";
+import type { LevelInfo } from "./level3d";
+import { zoneInPlay, type ZonePick } from "./zones";
 import { ViewerScene, hasWebGl, type ViewMode } from "./scene";
 import "./viewer.css";
 
@@ -22,10 +24,10 @@ export interface Viewer3DProps {
   mode?: ViewMode;
   follow?: number | null;
   ao?: boolean;
-  /** Open with the height cut on, at this height (game z); and whether
-   *  the see-through starts on (it does unless this is false). */
+  /** Open with the height cut on, at this height (game z); and how the
+   *  see-through starts (`auto` unless false or another mode is given). */
   cut?: number | null;
-  seeThrough?: boolean;
+  seeThrough?: boolean | SeeMode;
 }
 
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -42,12 +44,13 @@ export default function Viewer3D(props: Viewer3DProps) {
   const [cut, setCut] = createSignal(props.cut != null);
   const [cutAt, setCutAt] = createSignal<number | null>(props.cut ?? null);
   const [range, setRange] = createSignal<[number, number]>([0, 1]);
-  const [see, setSee] = createSignal(props.seeThrough !== false);
+  const [see, setSee] = createSignal<SeeMode>(props.seeThrough === false ? "off" : typeof props.seeThrough === "string" ? props.seeThrough : "auto");
   const cutValue = () => clampCut(cutAt() ?? (range()[0] + range()[1]) / 2, range());
   const applyCut = () => scene?.setCut(cut(), cutValue());
   const toggleCut = () => { if (scene) setRange(scene.cutRange()); setCut(!cut()); applyCut(); };
   const moveCut = (h: number) => { setCutAt(clampCut(h, range())); if (!cut()) setCut(true); applyCut(); };
-  const toggleSee = () => { setSee(!see()); scene?.setSeeThrough(see()); };
+  const pickSee = (m: SeeMode) => { setSee(m); scene?.setSeeMode(m); };
+  const toggleSee = () => pickSee(nextSee(see()));
   const onKey = (e: KeyboardEvent) => {
     if (e.ctrlKey || e.metaKey || e.altKey || (e.target as HTMLElement).closest("input, select, textarea")) return;
     if (e.key === "c") toggleCut();
@@ -60,10 +63,29 @@ export default function Viewer3D(props: Viewer3DProps) {
   const [hasActors, setHasActors] = createSignal(false);
   const [actorNames, setActorNames] = createSignal(false);
   // A campaign level comes in zones, and may have far scenery around it:
-  // the loaded zone is shown, the scenery isn't, unless asked.
-  const [zones, setZones] = createSignal({ zones: 0, backdrop: false });
-  const [allZones, setAllZones] = createSignal(false);
-  const [backdrop, setBackdrop] = createSignal(false);
+  // the zone in play is shown (or one picked, or all), the scenery isn't,
+  // unless asked; decals, effects, the sky and its fog are, unless not.
+  const [level, setLevel] = createSignal<LevelInfo | null>(null);
+  const [zonePick, setZonePick] = createSignal<ZonePick>("auto");
+  const [show, setShow] = createSignal({ cinematic: false, backdrop: false, decals: true, effects: true, sky: true, fog: true });
+  const flip = (k: keyof ReturnType<typeof show>) => {
+    const on = !show()[k];
+    setShow({ ...show(), [k]: on });
+    if (!scene) return;
+    if (k === "cinematic") scene.setCinematic(on);
+    else if (k === "backdrop") scene.setBackdrop(on);
+    else if (k === "decals") scene.setDecals(on);
+    else if (k === "effects") scene.setEffects(on);
+    else if (k === "sky") scene.setSky(on);
+    else scene.setFog(on);
+    setLevel(scene.levelInfo());
+  };
+  const applyLevel = (s: ViewerScene) => {
+    const o = show();
+    s.setCinematic(o.cinematic); s.setBackdrop(o.backdrop); s.setDecals(o.decals); s.setEffects(o.effects); s.setSky(o.sky); s.setFog(o.fog);
+    s.setZonePick(zonePick());
+    setLevel(s.levelInfo());
+  };
   // Teleporters, their links and lifts, when the level's glb lists any.
   const [hasFeatures, setHasFeatures] = createSignal(false);
   const [features, setFeatures] = createSignal(true);
@@ -93,7 +115,7 @@ export default function Viewer3D(props: Viewer3DProps) {
     const s = scene;
     s.onAoDropped = () => setAo(false);
     if (ao()) setAo(s.setAo(true));
-    s.setSeeThrough(see());
+    s.setSeeMode(see());
     setRange(s.cutRange());
     applyCut();
     const resize = () => { const r = host.getBoundingClientRect(); s.resize(Math.round(r.width), Math.round(r.height)); };
@@ -111,6 +133,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen);
       seen = sought;
       if (!!frame.actors?.length !== hasActors()) setHasActors(!!frame.actors?.length);
+      if ((frame.bsp ?? null) !== (level()?.active ?? null)) setLevel(s.levelInfo());
       // The opening camera, once there are players to follow.
       if (!started && frame.players.length) { started = true; if (mode() !== "orbit") pick(mode(), follow()); }
     });
@@ -133,7 +156,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       if (props.glb() !== url) return;
       setMapState(ok ? "map" : "grid");
       // The map's own heights are the cut's range now.
-      if (scene) { setRange(scene.cutRange()); applyCut(); setZones(scene.zoneInfo()); scene.setAllZones(allZones()); scene.setBackdrop(backdrop()); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }
+      if (scene) { setRange(scene.cutRange()); applyCut(); setZonePick("auto"); applyLevel(scene); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }
     });
   }));
 
@@ -155,16 +178,56 @@ export default function Viewer3D(props: Viewer3DProps) {
           </select>
           <button onClick={() => scene?.reset()} title="Back to the whole map">Reset</button>
           <button classList={{ on: ao() }} aria-pressed={ao()} onClick={() => setAo(scene?.setAo(!ao()) ?? false)} title="Ambient occlusion: soft shading in corners (costs frame rate)">AO</button>
-          <button classList={{ on: see() }} aria-pressed={see()} onClick={toggleSee} title="See-through: walls between the camera and the player you follow (or point at in the scoreboard) are cut away. Key: x">See-through</button>
+          <select
+            classList={{ on: see() !== "off" }}
+            aria-label="See-through"
+            value={see()}
+            onChange={(e) => pickSee(e.currentTarget.value as SeeMode)}
+            title="See-through: walls, roofs and floors between the camera and players are cut away. In focus: the player you follow or point at in the scoreboard, else everyone. Key: x"
+          >
+            <option value="off">See-through off</option>
+            <option value="auto">See-through: in focus</option>
+            <option value="always">See-through: everyone</option>
+          </select>
           <button classList={{ on: cut() }} aria-pressed={cut()} onClick={toggleCut} title="Height cut: hide the level above a height, to look into rooms from above. Following a player, it stays just over their head. Keys: c, [ and ]">Cut</button>
           <Show when={hasActors()}>
             <button classList={{ on: actorNames() }} aria-pressed={actorNames()} onClick={() => { setActorNames(!actorNames()); scene?.setActorNames(actorNames()); }} title="Name the AI by what they are">AI names</button>
           </Show>
-          <Show when={zones().zones > 1}>
-            <button classList={{ on: allZones() }} aria-pressed={allZones()} onClick={() => { setAllZones(!allZones()); scene?.setAllZones(allZones()); }} title="This level is in zones and the game loads one at a time: show them all, instead of the one in play">All zones</button>
+          <Show when={(level()?.zoneCount ?? 0) > 1}>
+            <select
+              classList={{ on: zonePick() !== "auto" }}
+              aria-label="Zone"
+              value={String(zonePick())}
+              onChange={(e) => { const v = e.currentTarget.value; const p: ZonePick = v === "auto" || v === "all" ? v : +v; setZonePick(p); scene?.setZonePick(p); }}
+              title="This level is in zones and the game loads one at a time: follow the one in play, or pick one, or show them all"
+            >
+              <option value="auto">{zoneInPlay(level())}</option>
+              <option value="all">All zones</option>
+              <For each={level()?.zones ?? []}>{(z) => <option value={z.bsp}>{z.label}{z.cinematic ? " (cutscene)" : ""}</option>}</For>
+            </select>
           </Show>
-          <Show when={zones().backdrop}>
-            <button classList={{ on: backdrop() }} aria-pressed={backdrop()} onClick={() => { setBackdrop(!backdrop()); scene?.setBackdrop(backdrop()); }} title="The far scenery around the playable space">Backdrop</button>
+          <Show when={level()}>
+            <details class="v3-menu">
+              <summary title="What of the level to draw">Show</summary>
+              <div class="v3-menu-list">
+                <Show when={level()!.cinematicCount > 0}>
+                  <label title="Zones only the game's cutscenes use: list them, and show them with all zones"><input type="checkbox" checked={show().cinematic} onChange={() => flip("cinematic")} /> Cutscene zones</label>
+                </Show>
+                <Show when={level()!.backdrop}>
+                  <label title="The far scenery around the playable space"><input type="checkbox" checked={show().backdrop} onChange={() => flip("backdrop")} /> Backdrop</label>
+                </Show>
+                <Show when={level()!.decals}>
+                  <label title="Marks, stains, signs and painted letters on the level's surfaces"><input type="checkbox" checked={show().decals} onChange={() => flip("decals")} /> Decals</label>
+                </Show>
+                <Show when={level()!.effects}>
+                  <label title="Glows, light shafts, fire, waterfalls and other effects drawn into the air"><input type="checkbox" checked={show().effects} onChange={() => flip("effects")} /> Effects</label>
+                </Show>
+                <Show when={level()!.sky}>
+                  <label title="The level's sky, drawn around the camera"><input type="checkbox" checked={show().sky} onChange={() => flip("sky")} /> Sky</label>
+                </Show>
+                <label title="Fog: the level's own, measured from what the camera looks at"><input type="checkbox" checked={show().fog} onChange={() => flip("fog")} /> Fog</label>
+              </div>
+            </details>
           </Show>
           <Show when={hasFeatures()}>
             <button classList={{ on: features() }} aria-pressed={features()} onClick={() => { setFeatures(!features()); scene?.setFeatures(features()); }} title="Teleporters with their links, and gravity lifts">Lifts &amp; teleporters</button>
