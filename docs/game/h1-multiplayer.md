@@ -154,6 +154,19 @@ either placed or one of the known gaps (health packs, ammo,
    blocks the engine needs to load a level (portals, the Havok MOPP for
    physics objects, sound environments, pathfinding); read the engine's
    BSP load path first.
+   What the disc shows so far (`structure_bsp_root_blocks_on_the_disc`,
+   all 12 multiplayer maps; element sizes are upper bounds from block
+   spacing, not yet engine-backed): every map uses the root blocks at
+   `+0x0c` (collision materials, 20), `+0x14` (collision BSP), `+0x2c`
+   (8 bytes, **one per collision leaf** on every map: V), `+0x4c` (8),
+   `+0x54` (1), `+0x5c`, `+0x94` (36), `+0x9c` (clusters, `0xb0`),
+   `+0xa4` (materials, 32), `+0xac` (2), `+0xd4` (100), `+0xdc` (72),
+   `+0x138`/`+0x140` (instanced geometry, `0xc8`/`0x58`), `+0x148`,
+   `+0x150`, `+0x1d0` (one element), `+0x1e0` (bytes, up to 160 KB: a
+   likely Havok MOPP code block), `+0x21c`, `+0x224`, `+0x234` (one
+   element each). The rest are used by some maps only. Each of these needs
+   a meaning, or an engine reading that shows it can be empty, before a
+   converted `sbsp` can be written.
 3. **Sky** onto the base's sky.
 4. **`h2 h1 convert <iso|map> --out DIR [--sandbox h2|h1] [--base MAP]`**
    writing both variants and a manifest; then load-testing with
