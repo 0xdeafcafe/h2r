@@ -92,6 +92,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [lighting.md](formats/lighting.md): level lighting, lightmaps and atmosphere
 - [localization.md](formats/localization.md): string IDs and localized text
 - [objects.md](formats/objects.md): object tags (`obje` family, `hlmt`, `itmc`, `vehc`; `h2 object`)
+- [pathfinding.md](formats/pathfinding.md): AI pathfinding data in structure BSPs, and generating it from collision (`crates/pathfind`)
 - [shader-instances.md](formats/shader-instances.md): shader instance, template and pass tags (`shad`, `stem`, `spas`)
 - [sound.md](formats/sound.md): sound tags (`snd!`, `ugh!`) and `h2 sound`
 - [structure-bsp.md](formats/structure-bsp.md): render model and structure BSP geometry, lightmaps, and the viewer

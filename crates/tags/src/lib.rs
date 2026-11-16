@@ -59,6 +59,10 @@ pub mod structure;
 #[cfg(test)]
 mod structure_tests;
 // ---- end geometry sections -------------------------------------------------
+// AI pathfinding data in structure BSPs: docs/formats/pathfinding.md.
+pub mod pathfinding;
+#[cfg(test)]
+mod pathfinding_tests;
 
 /// A malformed or unsupported record, with context added at field boundaries.
 #[derive(Debug, thiserror::Error)]

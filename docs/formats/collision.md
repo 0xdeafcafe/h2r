@@ -221,4 +221,7 @@ Capsules are built along their end-point axis, not a fixed one.
   (no disc instance); the type-6 shape; rigid-body bytes `+0x18..+0x38` and
   `+0x80..+0x90`; whether the stored rotations act on rows or columns (the OBJ
   export assumes `R * v`); the mass-distribution table.
-- Structure-BSP (`sbsp`) collision is separate and not shared with this code.
+- Structure-BSP (`sbsp`) collision: the BSP at `sbsp+14` has the same eight
+  blocks without the leading word (element `0x40`) and decodes with
+  `Bsp::decode_structure`; see [pathfinding.md](pathfinding.md). Its other
+  `sbsp` neighbours are not decoded here.
