@@ -13,7 +13,7 @@
 //!   account stream, which [`Admins`] projects in memory (and replays at
 //!   startup, so grants survive a restart).
 //!
-//! The embedded server `h2 play --live` starts also makes the account it is
+//! The embedded server `h2 play --live-local` starts also makes the account it is
 //! about to play as an admin for its lifetime ([`Admins::grant_runtime`]):
 //! it is the owner's own machine.
 //!
@@ -156,7 +156,7 @@ impl Admins {
 
     /// Makes `xuid` an admin until the process stops, without an event:
     /// the embedded server's playing account, which is re-granted on every
-    /// `h2 play --live` (docs/live/live-admin.md).
+    /// `h2 play --live-local` (docs/live/live-admin.md).
     pub fn grant_runtime(&self, xuid: Xuid, tag: &str) {
         self.granted
             .write()

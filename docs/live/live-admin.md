@@ -13,7 +13,7 @@ key can. Admins come from two places:
 
 - **Configuration, read once at startup.** `h2 live serve` takes
   `--admin <gamertag>` (repeatable), and both it and the embedded server
-  `h2 play --live` starts read `H2_LIVE_ADMINS`: a comma-separated list of
+  `h2 play --live-local` starts read `H2_LIVE_ADMINS`: a comma-separated list of
   gamertags, trimmed and compared case-insensitively, merged with the
   flags. There are no built-in admin names — no gamertag is an admin unless
   someone configured or granted it. An invalid gamertag in either place is
@@ -34,7 +34,7 @@ key can. Admins come from two places:
   memory and replays it at startup, so grants survive a restart. Granting
   twice, revoking what was never granted, or touching a configured admin is
   a 409; an unknown gamertag a 404.
-- The embedded server of `h2 play --live` also makes the account it is
+- The embedded server of `h2 play --live-local` also makes the account it is
   about to play as an admin for its lifetime, on the owner's own machine:
   an in-memory grant, re-made every run, never written to the log.
 
@@ -96,7 +96,7 @@ admin API accept them meanwhile.
 
 ### The default MOTD and keeping what you publish
 
-`h2 play --live` without Postgres keeps its log in the live data directory
+`h2 play --live-local` without Postgres keeps its log in the live data directory
 (`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`;
 `crates/live-server/src/filestore.rs`), so accounts, friends, games and
 published title files survive a restart. Before this, that case used the
@@ -257,7 +257,7 @@ signs its requests, and sends it as a bearer header.
 
 ### The catalog
 
-`h2 live assets extract` (and `h2 play --live`, which runs it) writes
+`h2 live assets extract` (and `h2 play --live-local`, which runs it) writes
 `catalog.json` beside the art manifest, from the owner's own disc; it is
 served the same way, `GET /art/game/catalog.json`, to this machine only
 unless `--share-game-art`. Nothing of it is in the repo. Its `version` (1)
@@ -339,12 +339,13 @@ the source entry, not the preset).
 
 The browser can only sign *up* (a new key, a new account); the owner's
 admin account was made by the CLI, whose key the browser never saw. There
-are two bridges: a link `h2 play --live` prints, for the browser on the
+are two bridges: a link `h2 play --live-local` prints, for the browser on the
 same machine, and an export, for anything else.
 
-### The `h2 play --live` link
+### The `h2 play --live-local` link
 
-When `h2 play --live` runs the embedded server (not with `--live-server`)
+When `h2 play --live-local` runs the embedded server (not with `--live` or
+`--live-server`)
 and has the web app, it prints, next to the web app's address:
 
 ```
@@ -384,7 +385,7 @@ What is left: the link is a bearer secret for its ten minutes. Anything
 that can read the terminal (scrollback, a shared screen, a recorded
 session) or any local process that can reach the loopback port in that
 window can redeem it first; after that it is dead, and the page says to
-run `h2 play --live` again. Once redeemed, the private key is in this
+run `h2 play --live-local` again. Once redeemed, the private key is in this
 browser's storage exactly as after sign-up or an import: anyone with the
 browser profile can read it.
 
@@ -535,7 +536,7 @@ live invite list` and `h2 live invite revoke <jti> --as GAMERTAG`.
   gamertags are unique per server, so they name exactly one account.
 - The exported account file is a private key on disk, mode 0600; treat it
   like `accounts.json`.
-- The `h2 play --live` sign-in link (§4) is a ten-minute, one-use bearer
+- The `h2 play --live-local` sign-in link (§4) is a ten-minute, one-use bearer
   secret for that account, honoured only from this machine; treat the
   terminal it is printed in accordingly.
 

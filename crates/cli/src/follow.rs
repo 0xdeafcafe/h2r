@@ -1123,7 +1123,7 @@ impl GitCargoBuilder {
         step.run("cargo", &mut cargo)?;
         let built = target.join("release/h2");
 
-        // The web app `h2 play --live` serves from this checkout. A failure
+        // The web app `h2 play --live-local` serves from this checkout. A failure
         // is logged and the game still runs, without it.
         let web = checkout.join("web");
         if web.join("package.json").is_file() {

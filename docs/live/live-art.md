@@ -1,6 +1,6 @@
 # Map geometry and pre-drawn views
 
-`h2 live assets extract` (and `h2 play --live`, once per disc) writes each
+`h2 live assets extract` (and `h2 play --live-local`, once per disc) writes each
 multiplayer and campaign level's geometry and five pre-drawn pictures of it next to
 the rest of the game art ([live.md](live.md#game-art)). The stats site's
 tactical map plots players on the pictures; the 3D game viewer loads the
@@ -281,7 +281,7 @@ with its map id. They are found in two places (`live_mappack`):
   map and its version 2 `patch.lvl` (name at `+0x114`, 32 UTF-16 units;
   description at `+0x354`, 128; map id at `+0x10c`). `h2 live assets
   extract` reads the default data root unless `--installed <data>` names
-  another; `h2 play --live` reads the default one.
+  another; `h2 play --live-local` reads the default one.
 
 Each map opens with the retail disc's shared maps, like a disc map. A map
 whose stem the disc (or an earlier source) already has is not added
@@ -644,7 +644,7 @@ Art from an older extractor (the manifest's `extractor` below the running
 players couldn't animate. `h2 live serve` prints a warning naming the
 command to extract again, `h2 live assets check [--out DIR]` exits 1 for
 missing or stale art (deploy/live/setup.sh extracts again then), `h2 play
---live` extracts again by itself (the extractor version is part of the
+--live-local` extracts again by itself (the extractor version is part of the
 cache key), and the viewer says so when the models it is given can't
 animate. The server sends the art with `Cache-Control: no-cache` and the
 viewer asks for each model with the manifest's `source` as a query, so a

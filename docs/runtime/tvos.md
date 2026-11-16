@@ -154,6 +154,13 @@ keyboard still cancels. Not yet tried on the Apple TV.
 - Saves and settings live in Caches and can be purged by tvOS.
 - Audio uses the default output through cpal; if it fails to open, the game
   runs silent (the log says so).
-- No Xbox Live (`--live`), no controller speaker, no `--level`.
+- Xbox Live is on by default, against `https://live.forbes.red`;
+  `live.toml` in the data root (`enabled = false`, or `server = "URL"`)
+  or `H2_LIVE_SERVER` in the scheme changes that ([live.md](../live/live.md)
+  "Playing on Live"). Signing in needs an account in the data root's
+  `live/accounts.json` until the in-game account setup has a screen; with
+  one, saves are synced ([live-cloud-saves.md](../live/live-cloud-saves.md)).
+  The data root is in Caches here, so tvOS may purge the account key too.
+- No controller speaker, no `--level`.
 - The app must be rebuilt (with `build.sh`) for every generator change; the
   module is about 345 MB and the bundle 1.2 GB, so installs are slow.

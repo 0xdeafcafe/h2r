@@ -875,8 +875,8 @@ It exits 0 when every common tick agrees.
 ### 9.3 Running it
 
 You need an `h2` built from this branch and one disc image. System Link
-in `h2 play` runs on the Live HLE, which is on only with `--live` or
-`--live-server`, so both instances talk to one Live server (it carries
+in `h2 play` runs on the Live HLE, which is on only with `--live`,
+`--live-server` or `--live-local`, so both instances talk to one Live server (it carries
 no game traffic; the instances find each other by System Link broadcast).
 
 **Two instances on one Mac.** Two windows, two data directories, two XNet

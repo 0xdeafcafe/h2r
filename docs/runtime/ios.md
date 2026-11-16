@@ -126,5 +126,11 @@ Management).
 - Speed is unmeasured. Older devices (A12 and earlier) will be slow.
 - The app may need the increased memory limit entitlement on devices with
   little RAM; it does not ask for it yet.
-- No Xbox Live, no controller speaker, no `--level`.
+- Xbox Live is on by default, against `https://live.forbes.red`;
+  `live.toml` in the data root (`enabled = false`, or `server = "URL"`)
+  or `H2_LIVE_SERVER` in the scheme changes that ([live.md](../live/live.md)
+  "Playing on Live"). Signing in needs an account in the data root's
+  `live/accounts.json` until the in-game account setup has a screen; with
+  one, saves are synced ([live-cloud-saves.md](../live/live-cloud-saves.md)).
+- No controller speaker, no `--level`.
 - No touch aiming or gyro: the right stick is the overlay's thumbstick.

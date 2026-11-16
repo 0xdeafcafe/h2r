@@ -1,4 +1,4 @@
-// The `/signin#once=…` link `h2 play --live` prints: one use, this machine
+// The `/signin#once=…` link `h2 play --live-local` prints: one use, this machine
 // only (docs/live/live-admin.md §4). The token rides in the fragment so it never
 // reaches a server log or a Referer; the page takes it out of the address
 // bar first, then trades it at `POST /v1/local/signin` for the browser's
@@ -28,7 +28,7 @@ export type RedeemResult =
   | { ok: false; kind: "gone" | "failed"; error: string };
 
 export const GONE =
-  "This sign-in link has been used or has expired (each link works once, for ten minutes, on this machine only). Run h2 play --live again for a new link.";
+  "This sign-in link has been used or has expired (each link works once, for ten minutes, on this machine only). Run h2 play --live-local again for a new link.";
 
 interface KeyEntry {
   kid: string;
