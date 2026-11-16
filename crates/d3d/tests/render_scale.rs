@@ -1928,3 +1928,84 @@ fn e3_shadow_maps_survive_halos_render_target_pool() {
         );
     }
 }
+
+// --- The lighting A/B: retail and E3 from one run -------------------------
+
+fn lighting_ab(ctx: &GfxContext, scale: u32) -> d3d::LightingAb {
+    d3d::lighting_ab(
+        GfxBackend::new(share(ctx)),
+        GfxBackend::new(share(ctx)),
+        GfxBackend::new(share(ctx)),
+        scale,
+    )
+    .unwrap()
+}
+
+/// One run through [`d3d::LightingAb`] (Halo's pool order, three frames)
+/// gives retail's image and E3's from the same calls: each is what a run
+/// in that mode alone draws, byte for byte; they differ near the shadow's
+/// edges and nowhere else; and the 1x reference and what the guest reads
+/// are the plain backend's.
+#[test]
+fn the_lighting_ab_draws_retail_and_e3_from_one_run() {
+    let Some(ctx) = context() else { return };
+    if !ctx.caps.depth32_stencil8 {
+        eprintln!("skipping: depth levels are not sampled in place");
+        return;
+    }
+    const FRAMES: u32 = 3;
+    let (mut plain, mut pm) = pool_scene(GfxBackend::new(share(&ctx)), FRAMES);
+    let bb = plain.back_buffer().unwrap();
+    let (plain_px, _) = pixels(&mut plain.backend, bb);
+    let plain_answers = shadow_answers(&mut plain, &mut pm);
+    assert!(d3d::lighting_ab(GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), GfxBackend::new(share(&ctx)), 1).is_err());
+    for scale in [2, 4] {
+        let (mut r, _) = pool_scene(scaled(&ctx, scale), FRAMES);
+        let (want_retail, _) = view_shadows(&mut r, scale);
+        let (mut e, _) = pool_scene(e3(&ctx, scale), FRAMES);
+        let (want_e3, _) = view_shadows(&mut e, scale);
+
+        let (mut d, mut m) = pool_scene(lighting_ab(&ctx, scale), FRAMES);
+        let bb = d.back_buffer().unwrap();
+        let v = d.backend.view_surface(&bb).expect("the E3 view");
+        let (e3_px, size) = pixels(d.backend.view_mut(), v);
+        assert_eq!(size, (W * scale, H * scale));
+        let s = d.backend.stats();
+        assert_eq!(
+            (s.shadow_draws, s.shadow_textures, s.shadow_refills, s.view_errors),
+            (FRAMES as u64, FRAMES as u64, 0, 0),
+            "{scale}x E3 view: {s:?}"
+        );
+        let inner = d.backend.reference_mut();
+        let rv = inner.view_surface(&bb.reference).expect("the retail view");
+        let (retail_px, _) = pixels(inner.view_mut(), rv);
+        let s = inner.stats();
+        assert_eq!(
+            (s.shadow_draws, s.shadow_textures, s.view_errors, s.fallback_frames),
+            (0, 0, 0, 0),
+            "{scale}x retail view: {s:?}"
+        );
+        let (ref_px, _) = pixels(inner.reference_mut(), bb.reference.reference);
+        assert!(ref_px == plain_px, "{scale}x: the 1x reference");
+        assert!(retail_px == want_retail, "{scale}x: the retail image is a retail run's");
+        assert!(e3_px == want_e3, "{scale}x: the E3 image is an E3 run's");
+        let w = W * scale;
+        let mut differ = 0;
+        for (i, (a, b)) in e3_px.chunks(4).zip(retail_px.chunks(4)).enumerate() {
+            if a != b {
+                let (x, y) = (i as u32 % w, i as u32 / w);
+                assert!(
+                    near_outline(x, y, scale),
+                    "{scale}x: ({x}, {y}) differs away from the shadow's edges"
+                );
+                differ += 1;
+            }
+        }
+        assert!(differ > 0, "{scale}x: retail and E3 differ at the edges");
+        assert_eq!(
+            shadow_answers(&mut d, &mut m),
+            plain_answers,
+            "{scale}x: what the guest reads"
+        );
+    }
+}

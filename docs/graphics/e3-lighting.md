@@ -614,6 +614,23 @@ opening cinematic, under which the game still draws its lights' shadow
 passes (21 of them sampled the 2x copy). So `H2_BOOT_GFX_SHADOWS` now skips
 all-black frames and keeps looking.
 
+Run to present 8000, the lit frames differed between retail and E3, and
+between two retail runs just as much, 1x frames included: this deep, two
+headless runs are not the same run. Polled visibility tests answer
+"incomplete" depending on host timing (d3d.md, "Visibility tests"; the
+runs' `visibility_incomplete` counts differ), and the scheduler's slices
+and preemptions differ too. So the comparison is made inside one run:
+`H2_BOOT_GFX_LIGHTING_AB=1` (`d3d::LightingAb`) puts a second view over the
+scaled backend, using it as its reference. The inner backend answers the
+guest from its 1x reference and draws the retail view; the outer view draws
+the same calls at the same scale with E3. Each captured frame is written as
+`frame-N-retail.png` and `frame-N-e3.png`.
+`the_lighting_ab_draws_retail_and_e3_from_one_run` (render_scale.rs) runs
+the pool order through it at 2x and 4x. Each image is byte for byte what
+a run in that mode alone draws, the two differ only within two map texels
+of the caster's outline, and the 1x reference and the guest's bytes are
+the plain backend's.
+
 Not done: a separate factor; float depth levels (`F24S8`, `F16`) and `D16`
 maps stay 1x (their texture comes through guest memory); per-axis scale.
 
