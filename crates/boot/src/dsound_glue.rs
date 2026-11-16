@@ -178,7 +178,11 @@ pub fn install_with_sinks(
             move || BoxedSink(open()),
             dsound::OutputConfig {
                 period: std::time::Duration::from_millis(5),
-                pacing: dsound::Pacing::Logical { origin: k.clock().counter(), max_queued: std::time::Duration::from_millis(250) },
+                pacing: dsound::Pacing::Logical {
+                    origin: k.clock().counter(),
+                    max_queued: std::time::Duration::from_millis(250),
+                    playout: Some(playout_from_env()),
+                },
                 halt_when: None,
                 side,
             },
@@ -186,6 +190,25 @@ pub fn install_with_sinks(
         .map_err(|e| anyhow::anyhow!("dsound output: {e:?}"))?;
     let _pad_index = config.zip(setting).and_then(|(c, s)| crate::pad_speaker::install(k, &c, s));
     Ok(Audio { hle, output, mixer, _pad_index })
+}
+
+/// The jitter buffer a device plays through: `dsound::Playout::default()`,
+/// with `H2_AUDIO_LATENCY_MS` (10..=500) as the starting target.
+pub fn playout_from_env() -> dsound::Playout {
+    playout_from(std::env::var("H2_AUDIO_LATENCY_MS").ok().as_deref())
+}
+
+fn playout_from(latency_ms: Option<&str>) -> dsound::Playout {
+    let mut p = dsound::Playout::default();
+    match latency_ms.map(|v| v.trim().parse::<u32>()) {
+        None => {}
+        Some(Ok(ms)) if (10..=500).contains(&ms) => {
+            p.target_ms = ms;
+            p.max_target_ms = p.max_target_ms.max(ms + 2 * p.step_ms);
+        }
+        Some(_) => eprintln!("audio: H2_AUDIO_LATENCY_MS wants 10..=500; using {} ms", p.target_ms),
+    }
+    p
 }
 
 /// Bring audio time up to the kernel's logical time. Between slices, with
@@ -207,6 +230,17 @@ pub fn describe(a: &Audio) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn latency_override_sets_the_target_and_room_to_grow() {
+        let d = dsound::Playout::default();
+        assert_eq!(super::playout_from(None), d);
+        let p = super::playout_from(Some("200"));
+        assert_eq!(p.target_ms, 200);
+        assert!(p.max_target_ms > 200);
+        assert_eq!(super::playout_from(Some("5")), d, "out of range");
+        assert_eq!(super::playout_from(Some("x")), d);
+    }
+
     #[test]
     fn one_quantum_tick_step_makes_a_quantum_due() {
         // dsound's due_frames: floor(ticks * rate / 1e7).

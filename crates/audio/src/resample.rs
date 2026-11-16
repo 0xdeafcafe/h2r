@@ -57,6 +57,19 @@ impl LinearResampler {
         Self { channels, step: from as f64 / to as f64, pos: 0.0, carry: Vec::new() }
     }
 
+    /// Input frames per output frame (`from / to` at construction).
+    pub fn step(&self) -> f64 {
+        self.step
+    }
+
+    /// Changes the conversion ratio (input frames per output frame) from the
+    /// next output frame on, keeping the position: for a consumer that trims
+    /// the rate a fraction of a percent to hold a buffer level.
+    pub fn set_step(&mut self, step: f64) {
+        assert!(step.is_finite() && step > 0.0);
+        self.step = step;
+    }
+
     /// Appends converted output for `input` to `out`. Output frames are only
     /// produced once the interpolation has both neighbours, so the last input
     /// frame is held back until the next call.
@@ -127,5 +140,23 @@ mod tests {
         for (a, b) in out.iter().zip(&whole) {
             assert!((a - b).abs() < 1e-4, "{a} vs {b}");
         }
+    }
+
+    #[test]
+    fn set_step_changes_the_ratio_without_a_jump() {
+        let mut r = LinearResampler::new(1, 1, 1);
+        let mut out = Vec::new();
+        r.process(&ramp(100), &mut out);
+        let before = out.len();
+        r.set_step(1.01);
+        r.process(&(100..1100).map(|i| i as f32).collect::<Vec<_>>(), &mut out);
+        // A ramp stays a ramp: steps of 1, then 1.01, never a jump.
+        for w in out.windows(2) {
+            let d = w[1] - w[0];
+            assert!((0.99..=1.02).contains(&d), "{d}");
+        }
+        // 1% faster: 1% fewer output frames for the next thousand.
+        assert_eq!(before, 99, "the last frame is held back");
+        assert_eq!(out.len() - before, 991);
     }
 }
