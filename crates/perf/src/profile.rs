@@ -505,6 +505,9 @@ impl Session {
             report.files.push(path.clone());
         }
         if let (Some(raw), Some(dir)) = (raw, &self.config.profile) {
+            // Resolving a long run's samples takes a while; say so, so the
+            // user doesn't interrupt it.
+            eprintln!("perf: resolving samples and writing {} (can take a minute; don't interrupt)", dir.display());
             let p = resolve(raw, &mut Symbolizer::new());
             report.files.extend(p.write(dir, &self.config.render)?);
             report.profile = Some(p);
