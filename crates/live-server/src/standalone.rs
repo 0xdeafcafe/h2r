@@ -15,10 +15,22 @@ use crate::art::GameArt;
 use crate::{Config, Policy, http, identity, public};
 
 pub const USAGE: &str = "usage: h2-live-server --data DIR [options]
+       h2-live-server store copy --from DB --to DB [--from-blobs LOC --to-blobs LOC]
 
   --data DIR              the server's key and id (fixed on first start);
                           $H2_LIVE_DATA if not given
-  --db URL                Postgres; else $H2_LIVE_DB, else postgres://localhost/h2live
+  --db URL                the event log: sqlite://PATH or postgres://...; else
+                          $H2_LIVE_DB, else sqlite://DIR/live.db (or, for a
+                          server that has no live.db yet but a log in
+                          postgres://localhost/h2live, that, with a notice)
+  --blobs LOC             content and cloud saves: DIR (the data directory by
+                          default) or s3://BUCKET[/PREFIX] (R2: endpoint and
+                          keys from $H2_LIVE_S3_ENDPOINT, $H2_LIVE_S3_ACCESS_KEY_ID,
+                          $H2_LIVE_S3_SECRET_ACCESS_KEY); $H2_LIVE_BLOBS
+  --public-blobs LOC      a second, public bucket for shared game art, which
+  --public-blobs-url URL  is then redirected to at URL (the bucket's custom
+                          domain or r2.dev address); $H2_LIVE_PUBLIC_BLOBS,
+                          $H2_LIVE_PUBLIC_BLOBS_URL
   --listen ADDR           default 127.0.0.1:8074; a non-loopback address
                           needs --tls-cert/--tls-key or --insecure-http
   --id HOST               the server id on first start
@@ -61,10 +73,13 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
         .or_else(|| env("H2_LIVE_DATA"))
         .with_context(|| format!("--data DIR is needed\n\n{USAGE}"))?
         .into();
-    let db = args
-        .take("--db")?
-        .or_else(|| env("H2_LIVE_DB"))
-        .unwrap_or_else(|| crate::DEFAULT_DB.into());
+    let db = args.take("--db")?.or_else(|| env("H2_LIVE_DB"));
+    let blobs = crate::BlobFlags {
+        private: args.take("--blobs")?,
+        public: args.take("--public-blobs")?,
+        public_url: args.take("--public-blobs-url")?,
+    }
+    .or_env(&env);
     let listen: SocketAddr = args
         .take("--listen")?
         .unwrap_or_else(|| crate::DEFAULT_LISTEN.into())
@@ -132,6 +147,7 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     Ok(Standalone {
         config: Config {
             db,
+            blobs,
             listen,
             data_dir,
             id,
@@ -144,10 +160,10 @@ pub fn parse(args: Vec<String>, env: impl Fn(&str) -> Option<String>) -> Result<
     })
 }
 
-struct Args(Vec<String>);
+pub(crate) struct Args(pub(crate) Vec<String>);
 
 impl Args {
-    fn take(&mut self, name: &str) -> Result<Option<String>> {
+    pub(crate) fn take(&mut self, name: &str) -> Result<Option<String>> {
         let Some(i) = self.0.iter().position(|a| a == name) else {
             return Ok(None);
         };
@@ -159,7 +175,7 @@ impl Args {
         Ok(Some(value))
     }
 
-    fn flag(&mut self, name: &str) -> bool {
+    pub(crate) fn flag(&mut self, name: &str) -> bool {
         let found = self.0.iter().position(|a| a == name);
         found.map(|i| self.0.remove(i)).is_some()
     }
@@ -221,7 +237,8 @@ mod tests {
         )
         .unwrap();
         let c = &s.config;
-        assert_eq!(c.db, "postgres://h2live:pw@db/h2live");
+        assert_eq!(c.db.as_deref(), Some("postgres://h2live:pw@db/h2live"));
+        assert_eq!(c.blobs, crate::BlobFlags::default());
         assert!(
             c.listen.ip().is_loopback(),
             "the tunnel shares the namespace"
@@ -277,9 +294,38 @@ mod tests {
             Some(("https://live.example.net".to_string(), false))
         );
         assert!(s.notices.is_empty());
-        assert_eq!(s.config.db, crate::DEFAULT_DB);
+        assert_eq!(s.config.db, None, "resolve_db picks at startup");
         assert_eq!(s.config.site.web, None, "no $H2_LIVE_WEB");
         assert_eq!(s.config.site.game_art, None, "nothing extracted");
+    }
+
+    /// The free-hosting command line: SQLite, R2 for blobs, a public bucket
+    /// for the art.
+    #[test]
+    fn sqlite_and_r2_flags() {
+        let s = run(
+            &[
+                "--data",
+                "/srv/live",
+                "--db",
+                "sqlite:///srv/live/live.db",
+                "--blobs",
+                "s3://h2live",
+                "--public-blobs-url",
+                "https://art.example.net",
+            ],
+            &[("H2_LIVE_PUBLIC_BLOBS", "s3://h2live-public")],
+        )
+        .unwrap();
+        assert_eq!(s.config.db.as_deref(), Some("sqlite:///srv/live/live.db"));
+        assert_eq!(
+            s.config.blobs,
+            crate::BlobFlags {
+                private: Some("s3://h2live".into()),
+                public: Some("s3://h2live-public".into()),
+                public_url: Some("https://art.example.net".into()),
+            }
+        );
     }
 
     #[test]

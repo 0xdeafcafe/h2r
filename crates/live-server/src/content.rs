@@ -2,8 +2,11 @@
 //! docs/live/live-api.md "Custom maps", docs/live/live-admin.md "Custom content").
 //!
 //! - **Blobs** (patches, packs, user-made maps, preview images) are kept by
-//!   SHA-256 under `<data>/content/<aa>/<sha256>`: checked on upload,
-//!   stored once, never changed. `PUT /v1/content/{sha256}` is the
+//!   SHA-256 as `content/<aa>/<sha256>` in the server's private blob store
+//!   ([`crate::blobs`]: `<data>/content/...`, or a bucket): checked on
+//!   upload, stored once, never changed. They are served through the
+//!   server, never by redirect: the game's client follows no redirects,
+//!   and moderation must be able to take a blob down at once. `PUT /v1/content/{sha256}` is the
 //!   author's, with a per-account rate limit, a size cap (larger for whole
 //!   maps) and a per-account quota.
 //! - **Packages**: `PUT /v1/maps` takes a manifest signed by its author
@@ -260,7 +263,12 @@ impl CatalogState {
             CONTENT_MODERATED => {
                 if let Ok(d) = serde_json::from_value::<Moderated>(b.data.clone()) {
                     let key = (d.target, d.id.clone());
-                    let next = self.standings.get(&key).copied().unwrap_or_default().after(d.action);
+                    let next = self
+                        .standings
+                        .get(&key)
+                        .copied()
+                        .unwrap_or_default()
+                        .after(d.action);
                     if next == Standing::Ok {
                         self.standings.remove(&key);
                     } else {
@@ -381,6 +389,13 @@ pub fn blob_path(root: &Path, h: &Sha256) -> PathBuf {
     root.join(&hex[..2]).join(hex)
 }
 
+/// `content/<aa>/<sha256>`, the blob's key in the blob store (in the data
+/// directory, [`blob_path`] under it).
+pub fn blob_key(h: &Sha256) -> String {
+    let hex = h.to_string();
+    format!("{CONTENT_DIR}/{}/{hex}", &hex[..2])
+}
+
 /// What an upload turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Stored {
@@ -395,12 +410,7 @@ pub struct Stored {
 /// Reads a request body into a temporary file, hashing as it goes, and
 /// stops at the cap: `layer` bytes, or `map` bytes when it starts as a
 /// whole map does.
-async fn receive(
-    body: Body,
-    tmp: &Path,
-    layer: u64,
-    map: u64,
-) -> ApiResult<(Sha256, u64, bool)> {
+async fn receive(body: Body, tmp: &Path, layer: u64, map: u64) -> ApiResult<(Sha256, u64, bool)> {
     let mut body = body;
     let mut file = std::fs::File::create(tmp).map_err(|e| {
         eprintln!("live: content: {}: {e}", tmp.display());
@@ -443,9 +453,9 @@ async fn receive(
 }
 
 impl Live {
-    pub(crate) fn content_root(&self) -> ApiResult<PathBuf> {
-        self.data_dir()
-            .map(|d| d.join(CONTENT_DIR))
+    pub(crate) fn content_store(&self) -> ApiResult<crate::blobs::BlobStore> {
+        self.blobs()
+            .map(|b| b.private.clone())
             .ok_or_else(|| unavailable("this server keeps no custom content (no data directory)"))
     }
 
@@ -460,7 +470,9 @@ impl Live {
             return Err(forbidden("content is uploaded by an account"));
         };
         if self.catalog.read().uploads_off.contains(&xuid) {
-            return Err(forbidden("an admin has switched off uploads for this account"));
+            return Err(forbidden(
+                "an admin has switched off uploads for this account",
+            ));
         }
         if !self.uploads.allow(&author.to_string()) {
             return Err(ApiError::new(ErrorCode::RateLimited, "slow down"));
@@ -480,7 +492,7 @@ impl Live {
         let h: Sha256 = sha256
             .parse()
             .map_err(|_| invalid("the path is a SHA-256 in hex"))?;
-        let root = self.content_root()?;
+        let store = self.content_store()?;
         let limits = self.policy().content.clone();
         let known = |s: &CatalogState| -> ApiResult<Option<Stored>> {
             match s.blob_standing(&h) {
@@ -524,12 +536,14 @@ impl Live {
             }
             quota(n)?;
         }
-        let tmp_dir = root.join("tmp");
-        std::fs::create_dir_all(&tmp_dir).map_err(|e| {
+        let tmp = self.upload_file().ok_or_else(|| {
+            unavailable("this server keeps no custom content (no data directory)")
+        })?;
+        let tmp_dir = tmp.parent().expect("in a directory");
+        std::fs::create_dir_all(tmp_dir).map_err(|e| {
             eprintln!("live: content: {}: {e}", tmp_dir.display());
             unavailable("the content store cannot write")
         })?;
-        let tmp = tmp_dir.join(live_proto::sign::random_id());
         let got = receive(body, &tmp, limits.layer_bytes, limits.map_bytes).await;
         let result = async {
             let (actual, size, whole) = got?;
@@ -546,13 +560,15 @@ impl Live {
             if let Some(have) = known(&self.catalog.read())? {
                 return Ok((StatusCode::OK, have));
             }
-            let path = blob_path(&root, &h);
-            std::fs::create_dir_all(path.parent().expect("has a parent"))
-                .and_then(|_| std::fs::rename(&tmp, &path))
-                .map_err(|e| {
-                    eprintln!("live: content: {}: {e}", path.display());
-                    unavailable("the content store cannot write")
-                })?;
+            let key = blob_key(&h);
+            let meta = crate::blobs::Meta {
+                content_type: Some("application/octet-stream".into()),
+                ..Default::default()
+            };
+            store.put_file(&key, &tmp, &meta).await.map_err(|e| {
+                eprintln!("live: content: {key}: {e}");
+                unavailable("the content store cannot write")
+            })?;
             let data = ContentStored {
                 sha256: h,
                 size,
@@ -582,9 +598,7 @@ impl Live {
 
     /// `GET /v1/content/{sha256}`.
     pub async fn content(&self, sha256: &str) -> ApiResult<(Sha256, Vec<u8>)> {
-        let h: Sha256 = sha256
-            .parse()
-            .map_err(|_| not_found("no such content"))?;
+        let h: Sha256 = sha256.parse().map_err(|_| not_found("no such content"))?;
         {
             let s = self.catalog.read();
             match s.blob_standing(&h) {
@@ -598,14 +612,12 @@ impl Live {
                 return Err(not_found("no such content"));
             }
         }
-        let path = blob_path(&self.content_root()?, &h);
-        match tokio::fs::read(&path).await {
-            Ok(bytes) => Ok((h, bytes)),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(not_found("no such content"))
-            }
+        let key = blob_key(&h);
+        match self.content_store()?.get(&key).await {
+            Ok(Some(bytes)) => Ok((h, bytes.to_vec())),
+            Ok(None) => Err(not_found("no such content")),
             Err(e) => {
-                eprintln!("live: content: {}: {e}", path.display());
+                eprintln!("live: content: {key}: {e}");
                 Err(unavailable("the content store cannot read"))
             }
         }
@@ -657,7 +669,11 @@ impl Live {
 
     /// `PUT /v1/maps`: a `MapPublished` event signed by the package's
     /// author.
-    pub async fn publish_map(&self, bearer: Option<&str>, jws: &str) -> ApiResult<(StatusCode, MapAnswer)> {
+    pub async fn publish_map(
+        &self,
+        bearer: Option<&str>,
+        jws: &str,
+    ) -> ApiResult<(StatusCode, MapAnswer)> {
         let (author, xuid) = self.uploader(bearer)?;
         let event = SignedEvent::open(jws).map_err(sign_error)?;
         let body = &event.body;
@@ -757,20 +773,22 @@ impl Live {
             }
         }
         if let Some(img) = &doc.image {
-            let path = blob_path(&self.content_root()?, img);
-            let mut head = [0u8; 8];
-            let n = std::fs::File::open(&path)
-                .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
-                .map_err(|_| unavailable("the content store cannot read"))?;
-            if !maps::is_image(&head[..n]) {
+            let head = self
+                .content_store()?
+                .get_prefix(&blob_key(img), 8)
+                .await
+                .ok()
+                .flatten()
+                .ok_or_else(|| unavailable("the content store cannot read"))?;
+            if !maps::is_image(&head) {
                 return Err(invalid("the image is not a PNG or JPEG"));
             }
         }
-        if !self
-            .model
-            .nonces
-            .insert_new(nonce_key(&body.author, &body.nonce), at + MAX_EVENT_SKEW_S, clock)
-        {
+        if !self.model.nonces.insert_new(
+            nonce_key(&body.author, &body.nonce),
+            at + MAX_EVENT_SKEW_S,
+            clock,
+        ) {
             return Err(conflict("nonce already used"));
         }
         let new = NewEvent {
@@ -859,7 +877,10 @@ impl Live {
             .then(|| all.last().map(|(_, p)| p.position.to_string()))
             .flatten();
         Page {
-            items: all.iter().map(|(id, p)| self.map_summary(&s, id, p)).collect(),
+            items: all
+                .iter()
+                .map(|(id, p)| self.map_summary(&s, id, p))
+                .collect(),
             next,
             position,
         }
@@ -948,13 +969,17 @@ impl Live {
             let s = self.catalog.read();
             match target {
                 Target::Map => {
-                    let id: MapId = id.parse().map_err(|_| invalid("a MapId is 64 hex digits"))?;
+                    let id: MapId = id
+                        .parse()
+                        .map_err(|_| invalid("a MapId is 64 hex digits"))?;
                     let known = s.maps.contains_key(&id)
                         || s.standings.contains_key(&(Target::Map, id.to_string()));
                     (maps::package_stream(&id), id.to_string(), known)
                 }
                 Target::Content => {
-                    let h: Sha256 = id.parse().map_err(|_| invalid("a SHA-256 is 64 hex digits"))?;
+                    let h: Sha256 = id
+                        .parse()
+                        .map_err(|_| invalid("a SHA-256 is 64 hex digits"))?;
                     let known = s.blobs.contains_key(&h)
                         || s.standings.contains_key(&(Target::Content, h.to_string()));
                     (maps::content_stream(&h), h.to_string(), known)
@@ -968,8 +993,8 @@ impl Live {
         }
         if target == Target::Content && matches!(action, Action::Delete | Action::Block) {
             let h: Sha256 = id.parse().expect("checked");
-            if let Ok(root) = self.content_root() {
-                let _ = std::fs::remove_file(blob_path(&root, &h));
+            if let Ok(store) = self.content_store() {
+                let _ = store.delete(&blob_key(&h)).await;
             }
         }
         let data = Moderated {
@@ -1358,7 +1383,9 @@ pub(crate) async fn put_uploads(
     let bytes = body_text(body)?;
     let b: UploadsBody =
         serde_json::from_slice(&bytes).map_err(|e| invalid(format!("uploads: {e}")))?;
-    Ok(ok(live.set_uploads(bearer(&headers), &tag, b.allowed).await?))
+    Ok(ok(live
+        .set_uploads(bearer(&headers), &tag, b.allowed)
+        .await?))
 }
 
 pub(crate) async fn get_pins(State(live): Shared, headers: HeaderMap) -> ApiResult<Response> {
@@ -1396,7 +1423,9 @@ pub(crate) async fn put_pins(
         .map_err(|_| invalid("a hopper id is a number"))?;
     let bytes = body_text(body)?;
     let b: PinsBody = serde_json::from_slice(&bytes).map_err(|e| invalid(format!("pins: {e}")))?;
-    Ok(ok(live.set_pins(bearer(&headers), hopper, b.map_ids).await?))
+    Ok(ok(live
+        .set_pins(bearer(&headers), hopper, b.map_ids)
+        .await?))
 }
 
 #[cfg(test)]
@@ -1416,7 +1445,10 @@ mod tests {
         let ha: Sha256 = a.parse().unwrap();
         let hb: Sha256 = b.parse().unwrap();
         assert!(r.ids.contains(&MapId::retail("lockout", ha)));
-        assert!(r.ids.contains(&MapId::retail("midship", hb)), "names match any case");
+        assert!(
+            r.ids.contains(&MapId::retail("midship", hb)),
+            "names match any case"
+        );
         assert_eq!(r.ids.len(), 2, "a bare hash names no map");
         assert_eq!(Retail::parse(""), Retail::default());
     }

@@ -143,7 +143,9 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
     options.mode(0o600);
-    let mut f = options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+    let mut f = options
+        .open(&tmp)
+        .with_context(|| format!("writing {}", tmp.display()))?;
     #[cfg(unix)]
     f.set_permissions(fs::Permissions::from_mode(0o600))?;
     f.write_all(bytes)?;

@@ -1,6 +1,6 @@
 [package]
 name = "live-server"
-description = "The Xbox Live replacement service: signed events on Postgres behind axum (docs/live/live.md, docs/live/live-api.md)"
+description = "The Xbox Live replacement service: signed events on SQLite or Postgres behind axum (docs/live/live.md, docs/live/live-api.md)"
 edition.workspace = true
 version.workspace = true
 license.workspace = true
@@ -14,12 +14,23 @@ anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["fs"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 async-trait = "0.1"
 axum = { version = "0.8", features = ["ws"] }
 axum-server = { version = "0.7", features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "json", "macros"] }
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "sqlite", "runtime-tokio", "json", "macros"] }
+# Blobs (content, cloud saves, game art) on the local disk or an S3-compatible
+# bucket such as Cloudflare R2 (docs/live/live-hosting.md, "Free hosting").
+# `aws-base` + `ring` rather than `aws`: the S3 client signs with ring and
+# speaks TLS through rustls on ring, as the rest of the server does, so
+# aws-lc (a large C build) stays out of the image.
+object_store = { version = "0.14", default-features = false, features = ["fs", "aws-base", "reqwest", "ring"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+bytes = "1"
+futures-util = "0.3"
+mime_guess = "2"
+percent-encoding = "2"
 sha2 = "0.10"
 getrandom = "0.3"
 time = "0.3"
@@ -31,7 +42,6 @@ coop = { path = "../coop" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.26"
-futures-util = "0.3"
 base64 = "0.22"
 # examples/fake_game.rs
 ureq = { version = "2", default-features = false, features = ["json"] }

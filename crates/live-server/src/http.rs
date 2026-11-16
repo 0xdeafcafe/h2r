@@ -313,6 +313,7 @@ pub fn router_with_web(live: Arc<Live>, dir: Option<&std::path::Path>) -> Router
 /// The API plus everything in `site`. `/art/game/*` answers a JSON 404
 /// when there is no game art.
 pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
+    let published = live.published_art().cloned();
     let mut api = api_router(
         live,
         crate::status::SiteFacts {
@@ -320,7 +321,7 @@ pub fn router_with_site(live: Arc<Live>, site: &Site) -> Router {
         },
     );
     api = match &site.game_art {
-        Some(art) => api.merge(crate::art::routes(art)),
+        Some(art) => api.merge(crate::art::routes(art, published)),
         None => api.route(
             &format!("{}/{{*rest}}", crate::art::PREFIX),
             get(|| async { not_found("no game art on this server") }),
