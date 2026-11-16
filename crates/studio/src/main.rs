@@ -19,7 +19,11 @@ const USAGE: &str = "usage: h2-editor [--disc <iso> | --map <file.map> | --folde
 [--halo1 <iso|maps dir>] [--data <dir>] [--package <dir>[#H1|#H2]] [--halo1-map <map> [--convert h2|h1]] [--overlay on|off] [--tool scenario|variants|playlists] [--pick <map>] [--select <block>:<index>] [--hopper <file.dat>|default] \
 [--variant <built-in index>] [--copy-variant <name>] [--playlist <1..16>] [--preset <n>] \
 [--focus] [--camera <yaw>,<pitch>,<distance>] [--dialog unsaved|package] \
-[--screenshot <out.png> [--size <w>x<h>] [--scale <s>]]";
+[--no-disc] [--nudge <x>,<y>,<z>] [--page <variant settings page>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--do <steps>] \
+[--crop <target>]... [--pad <points>] [--crop-height <points>] [--callout <target>=<badge>]...]
+--do steps (separated by ;): hover|click|rclick|dclick|move <target>, down, up, \
+type <text>, key <name>[*n], wait <frames>, sleep <ms>, wheel <dy>. A target: x,y | win:<name> | \
+[<window>>]<label>[#n], each optionally @dx,dy from its top left (see studio::script).";
 
 struct Args {
     source: Option<PathBuf>,
@@ -45,6 +49,17 @@ struct Args {
     /// Yaw and pitch in degrees, distance in world units.
     camera: Option<[f32; 3]>,
     dialog: Option<String>,
+    /// Open no disc and no Halo 1 source (the first run).
+    no_disc: bool,
+    /// Move the selection by this much, as an edit.
+    nudge: Option<[f32; 3]>,
+    /// The variant settings page to show alone.
+    page: Option<String>,
+    steps: Vec<studio::script::Step>,
+    crop: Vec<String>,
+    pad: f32,
+    crop_height: Option<f32>,
+    callouts: Vec<(String, String)>,
 }
 
 fn args() -> Result<Args> {
@@ -70,6 +85,14 @@ fn args() -> Result<Args> {
         focus: false,
         camera: None,
         dialog: None,
+        no_disc: false,
+        nudge: None,
+        page: None,
+        steps: Vec::new(),
+        crop: Vec::new(),
+        pad: 8.0,
+        crop_height: None,
+        callouts: Vec::new(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -127,6 +150,31 @@ fn args() -> Result<Args> {
                 a.camera = Some([yaw, pitch, distance]);
             }
             "--dialog" => a.dialog = Some(value()?),
+            "--no-disc" => a.no_disc = true,
+            "--page" => a.page = Some(value()?),
+            "--nudge" => {
+                let v = value()?;
+                let n: Vec<f32> = v
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| anyhow!("--nudge wants <x>,<y>,<z>"))?;
+                let [x, y, z] = n[..] else {
+                    bail!("--nudge wants <x>,<y>,<z>");
+                };
+                a.nudge = Some([x, y, z]);
+            }
+            "--do" => a.steps.extend(studio::script::parse(&value()?)?),
+            "--crop" => a.crop.push(value()?),
+            "--pad" => a.pad = value()?.parse()?,
+            "--crop-height" => a.crop_height = Some(value()?.parse()?),
+            "--callout" => {
+                let v = value()?;
+                let (target, badge) = v
+                    .rsplit_once('=')
+                    .ok_or_else(|| anyhow!("--callout wants <target>=<badge>"))?;
+                a.callouts.push((target.to_owned(), badge.to_owned()));
+            }
             "--scale" => a.scale = value()?.parse()?,
             "--size" => {
                 let v = value()?;
@@ -160,8 +208,8 @@ fn parse_selection(v: &str) -> Result<(scenario_edit::BlockKind, usize)> {
     Ok((kind, index.parse()?))
 }
 
-/// Moves the selected placement half a unit along x, as an edit.
-fn nudge_selection(app: &mut App) {
+/// Moves the selected placement by `d`, as an edit.
+fn nudge_selection(app: &mut App, d: [f32; 3]) {
     let (Some((kind, index)), Some(t)) = (app.session.selected(), app.session.selected_transform())
     else {
         return;
@@ -171,7 +219,7 @@ fn nudge_selection(app: &mut App) {
         kind,
         index,
         "position",
-        scenario_edit::Value::Vec3([x + 0.5, y, z]),
+        scenario_edit::Value::Vec3([x + d[0], y + d[1], z + d[2]]),
     );
     if let Err(e) = app.session.apply(edit) {
         app.error(e.to_string());
@@ -194,7 +242,8 @@ fn main() -> Result<()> {
         app.set_data_root(d.clone());
     }
     app.refresh_packages();
-    if let Some(src) = editor_core::default_disc(args.source.clone()) {
+    let disc = editor_core::default_disc(args.source.clone()).filter(|_| !args.no_disc);
+    if let Some(src) = disc {
         app.dispatch(Action::OpenSource(src));
     }
     // Halo 1 maps: --halo1, else $H1_ISO, $H1_MAP_DIR or disc/halo1.iso.
@@ -202,6 +251,7 @@ fn main() -> Result<()> {
         .halo1
         .clone()
         .or_else(editor_core::halo1::default_source)
+        .filter(|_| !args.no_disc)
     {
         app.dispatch(Action::OpenSource(src));
     }
@@ -253,20 +303,38 @@ fn main() -> Result<()> {
         c.pitch = pitch.to_radians();
         c.distance = distance;
     }
+    if let Some(d) = args.nudge {
+        nudge_selection(&mut app, d);
+    }
     match args.dialog.as_deref() {
         None => {}
         Some("package") => app.open_package_form(),
         // An unsaved edit (the selection nudged, or a variant copy) and
         // Quit: the unsaved-changes prompt.
         Some("unsaved") => {
-            nudge_selection(&mut app);
+            nudge_selection(&mut app, [0.5, 0.0, 0.0]);
             app.dispatch(Action::Quit);
         }
         Some(d) => bail!("unknown dialog {d}\n{USAGE}"),
     }
     if let Some(out) = &args.screenshot {
         let mut h = studio::headless::Headless::new(args.size, args.scale)?;
-        h.screenshot(&mut app, 6, out)?;
+        studio::probe::want(studio::script::labels(
+            studio::script::targets(&args.steps)
+                .chain(args.crop.iter().map(String::as_str))
+                .chain(args.callouts.iter().map(|(t, _)| t.as_str())),
+        ));
+        h.callouts = args.callouts.clone();
+        h.studio.variants.only_page = args.page.clone();
+        h.scripted(
+            &mut app,
+            6,
+            &args.steps,
+            &args.crop,
+            args.pad,
+            args.crop_height,
+            out,
+        )?;
         println!("wrote {}", out.display());
         return Ok(());
     }

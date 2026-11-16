@@ -12,7 +12,8 @@ name = "h2-editor"
 path = "src/main.rs"
 
 [dependencies]
-dear-imgui-rs = "0.22"
+# test-engine: the item hooks the headless screenshots aim input with.
+dear-imgui-rs = { version = "0.22", features = ["test-engine"] }
 dear-imgui-wgpu = "0.22"
 dear-imgui-winit = "0.22"
 dear-imguizmo = { version = "0.22", default-features = false }

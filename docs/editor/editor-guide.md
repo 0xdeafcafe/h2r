@@ -14,7 +14,9 @@ see [editor.md](editor.md), [scenario-editor.md](scenario-editor.md) and
 [variants.md](variants.md).
 
 The screenshots were taken from a retail Halo 2 disc. Your window shows
-whatever is on your own disc.
+whatever is on your own disc. Whole-window pictures are JPEGs; close-ups
+of a single panel, menu or tooltip are cropped from the same window at
+full resolution so their text reads. Section 10 says how they are made.
 
 ## Contents
 
@@ -72,9 +74,19 @@ use `--data` with either, they already agree.
 With no disc found, the editor still starts: use **File > Open disc or
 map...**, or drop a disc image, `.map` file or folder onto the window.
 
+![The editor with no disc: the Maps list says Open a disc image, a .map file or a folder of maps, the outliner says No map open, and the viewport is empty](../images/editor/first-run.jpg)
+
+*The first run with no disc found: every panel is there, waiting for a disc.*
+
+![The Tools panel with a disc open: the three tools, the Open... and Folder... buttons, the disc's path and its maps from 00a_introduction down](../images/editor/maps-list.png)
+
+*With a disc open, its maps are listed under Maps, by their file names.*
+
 ## 3. The window
 
-![The editor window: Tools and Maps at the top left, the Outliner below them, the 3D Viewport in the middle, the Inspector on the right, the Log under the viewport and the status bar at the bottom](../images/editor/window.jpg)
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 Tools, 3 Outliner, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+
+*The window's regions: (1) the menu bar, (2) Tools and Maps, (3) the Outliner, (4) the Viewport, (5) the Inspector, (6) the Log and (7) the status bar.*
 
 The window is made of panels that dock together:
 
@@ -102,11 +114,35 @@ The menus at the top: **File** (open, save, packages, quit), **Edit**
 blocks**) and **View** (**Frame map**, **Focus selection**, the gizmo
 mode, **Reset layout**).
 
+![The File menu open: Open disc or map..., Open maps folder..., Save map as..., Save as package... (highlighted), Open package... and Quit, with their shortcuts](../images/editor/menu-file.png)
+
+***File**, in the Scenario tool. The Game variants and Playlists tools add their own items here.*
+
+![The Edit menu open with Undo, Redo, Duplicate, Delete and Allow growing full blocks, and the tooltip under it: the block is full: growing it needs more tag memory](../images/editor/menu-edit.png)
+
+***Edit**: hovering **Allow growing full blocks** explains what it does.*
+
+![The View menu open: Frame map, Focus selection, Move gizmo (ticked), Rotate gizmo (highlighted), Gizmo in local axes, Halo 1 overlay and Reset layout](../images/editor/menu-view.png)
+
+***View**: framing, the gizmo's mode and axes, the Halo 1 overlay and **Reset layout**.*
+
 **Docking.** Drag a panel by its tab to move it: drop it on the arrows
 that appear to dock it beside or inside another panel, or anywhere else
 to float it. Drag the borders between panels to resize them. Your layout
 is remembered between runs; **View > Reset layout** puts the default
 back.
+
+![The Inspector's tab being dragged over the Outliner: the outliner is tinted blue and the docking targets show in its middle and along its edges](../images/editor/layout-drag.jpg)
+
+*Dragging the **Inspector** tab over the outliner: the blue targets show where it can dock.*
+
+![The Inspector docked as a second tab beside the Outliner in the left column; the viewport now fills the right of the window](../images/editor/layout-docked.jpg)
+
+*Dropped on the middle target, the inspector becomes a tab beside the outliner.*
+
+![The rearranged window with the View menu open and Reset layout highlighted](../images/editor/layout-reset.jpg)
+
+***View > Reset layout** puts every panel back where it started.*
 
 Keyboard shortcuts (Cmd on macOS, Ctrl elsewhere):
 
@@ -135,6 +171,10 @@ Click a map in the **Maps** list. The status bar says `opened <map>`,
 with how many triangles and placements it has and how much of its art
 could be drawn.
 
+![Ascension open with nothing selected: its groups in the outliner, the level framed in the viewport, and the opened message in the log and status bar](../images/editor/window.jpg)
+
+*Ascension just opened: the outliner lists its groups, the viewport frames the level, and the log says what was read.*
+
 ![Coagulation open with the battle rifle spawn on a base selected: the outliner, the lit, textured level in the viewport with the move gizmo, and the spawn's fields in the inspector](../images/editor/scenario-weapon.jpg)
 
 - **Outliner**: a **Filter placements** box, **Duplicate** and
@@ -150,6 +190,15 @@ could be drawn.
   can't change are greyed out. Hover over a field's name for its offset
   and where its meaning comes from.
 
+
+![The Outliner with Netgame equipment (33) expanded: entries 0: battle_rifle, 1: battle_rifle, 2: magnum, 3: needler and on down](../images/editor/outliner-open.png)
+
+*Click a group to expand it. Each entry is numbered and named by what it places.*
+
+![The Inspector for Ascension's battle rifle spawn with a tooltip over respawn time reading 0xe E: 0x0015ac6d, 0 = collection default](../images/editor/inspector-field-help.png)
+
+*Hovering a field's name shows its offset in the entry and the evidence for what it means.*
+
 Moving around the viewport:
 
 | Input | Action |
@@ -162,7 +211,58 @@ Moving around the viewport:
 | Left-click | Select the placement under the pointer |
 | Drag the gizmo | Move or rotate the selection |
 
+
+![Close up on Ascension: a battle rifle spawn selected with the move gizmo, red, green and blue arrows](../images/editor/gizmo-move.jpg)
+
+***Move (W)**: drag an arrow to move along one axis.*
+
+![The same spawn with the rotate gizmo, a ring around the selection, and Rotate (E) lit in the toolbar](../images/editor/gizmo-rotate.jpg)
+
+***Rotate (E)**: drag a ring to turn the selection.*
+
 ![Lockout: a battle rifle spawn selected among the towers, flags and spawn points marked around it](../images/editor/scenario-lockout.jpg)
+
+*Lockout, a battle rifle spawn selected.*
+
+![Zanzibar open in the editor: the beach, the wheel and the sea wall from above, with placement markers](../images/editor/scenario-zanzibar.jpg)
+
+*Zanzibar.*
+
+![Headlong open in the editor: the city blocks from above with their spawn and item markers](../images/editor/scenario-headlong.jpg)
+
+*Headlong.*
+
+![Beaver Creek open in the editor: the creek between its two bases, with weapon and spawn markers](../images/editor/scenario-beavercreek.jpg)
+
+*Beaver Creek.*
+
+![Midship open in the editor: the Covenant ship's hull floating in the sky, with a netgame flag selected](../images/editor/scenario-midship.jpg)
+
+*Midship, seen from outside its hull.*
+
+### What the inspector shows
+
+Each kind of placement has its own fields. Some examples:
+
+![Inspector for a netgame equipment entry, 0: battle_rifle: flags, respawn time 60, abandon limit, respawn mode, type, position, orientation and item itmc: battle_rifle](../images/editor/inspector-equipment.png)
+
+*Netgame equipment (a respawning weapon): respawn time, position, orientation and the **item** it spawns.*
+
+![Inspector for a vehicle on Old Mombasa, 0: cov_guntower_turret: palette index, name index, placement flags, position, rotation and scale, and a warning that it is named by 1 scenario object name](../images/editor/inspector-vehicle.png)
+
+*A placed vehicle (here from the campaign's Old Mombasa): its palette entry, position, rotation and scale. The orange line warns that a script names it.*
+
+![Inspector for a player starting location: position, facing, team and player type](../images/editor/inspector-spawn.png)
+
+*A player starting location: position, facing, team and player type.*
+
+![Inspector for a netgame flag: position, facing, type and team](../images/editor/inspector-flag.png)
+
+*A netgame flag (CTF flags, hills, bomb spots): position, facing, type and team.*
+
+![Inspector for a scenery entry, 0: flag_base: palette index, name index, placement flags, position, rotation and scale](../images/editor/inspector-scenery.png)
+
+*Scenery: a palette entry with a position, rotation and scale.*
 
 ### Move a weapon spawn and play it
 
@@ -171,11 +271,19 @@ Moving around the viewport:
    that respawn in multiplayer) or **Weapons** (weapons placed once), and
    click the weapon, or click its marker in the viewport. Type part of its
    name into **Filter placements** to find it.
+
+   ![The Outliner with sniper typed into Filter placements: Netgame equipment shows only 10: sniper_rifle and 11: sniper_rifle](../images/editor/outliner-filter.png)
+   
+   *Filtering for `sniper` leaves only the sniper rifle spawns.*
 3. Move it: drag one of the gizmo's arrows in the viewport, or type new
    numbers into its **position** in the inspector (x, y and z; drag a
    number left or right to nudge it). Press **E** (or click **Rotate
    (E)**) for the rotate gizmo, or change **rotation**, **orientation** or
    **facing** in the inspector, depending on the kind of object.
+
+   ![The battle rifle spawn from the gizmo picture above, now two units to the side of where it was](../images/editor/move-after.jpg)
+   
+   *The spawn in the gizmo picture above, two units along x later.*
 4. To swap what spawns there, pick another item from the list on the
    **item** field (netgame equipment) or the palette field (placed
    objects such as weapons and vehicles).
@@ -195,6 +303,19 @@ gets a `*`, and the status bar says `unsaved`.
 - **Add new**: right-click a group's name (or an entry) and choose **Add
   new at the camera focus**.
 
+
+![The outliner's context menu on an entry under Netgame equipment: Duplicate, Delete and Add new at the camera focus](../images/editor/outliner-menu.png)
+
+*Right-click an entry for **Duplicate**, **Delete** and **Add new at the camera focus**.*
+
+![The context menu on the Netgame equipment group's name, with only Add new at the camera focus](../images/editor/outliner-add.png)
+
+*On a group's name, the menu has only **Add new at the camera focus**.*
+
+![The Delete button greyed out with nothing selected, and its tooltip: select a placement](../images/editor/delete-refused.png)
+
+*With nothing selected, **Duplicate** and **Delete** are greyed out; hovering says why.*
+
 A button or menu item that is greyed out says why when you hover over it.
 The usual reason for **Duplicate** and **Add new** is that the group is
 full: a map has room for the entries it shipped with. Delete an entry from
@@ -213,7 +334,9 @@ are never changed.
 
 **As a map package (recommended).** Choose **File > Save as package...**.
 
-![The Save as package window over Ascension: Name, Author, Description, Image, Directory and the active-package checkbox](../images/editor/scenario-package.jpg)
+![The Save as package window: in data/maps, Name ascension edit, Author, Description, Image (PNG/JPEG) optional at most 512 KB, Directory ascension-edit, Make it the active package for this map, Save package and Cancel](../images/editor/package-form.png)
+
+***Save as package**, filled in for Ascension.*
 
 - **Name**: what the package is called (required).
 - **Author**, **Description**: optional.
@@ -237,9 +360,15 @@ Open package...** and click **Open** next to it. Saving again with the
 same **Directory** updates that package (the window says `Replaces this
 package's patch.`).
 
+
+![The Open package window listing one package, ascension edit in ascension-edit, with an Open button and Close](../images/editor/package-open.png)
+
+***Open package** lists this map's packages.*
+
 **As a whole `.map` file.** Choose **File > Save map as...** (Cmd+S) and
 pick where to write it. The editor refuses to overwrite the map it read
-from.
+from. (Where to write it is chosen in your system's own save window, so
+it isn't pictured here.)
 
 ### Playing your edited map
 
@@ -273,6 +402,11 @@ its map from your disc and the package over it, ready to edit. **File >
 Save as package...** then offers the same **Directory**, so saving updates
 that package. (The disc that has the package's map must be open.)
 
+
+![The bottom of the Maps list: the disc's last maps, then Packages with ascension edit, then Halo 1 with the Halo 1 disc's path, marked read only, and its maps from a10 to wizard, each with an eye](../images/editor/maps-groups.png)
+
+*Below the disc's maps: **Packages**, then **Halo 1** with the maps of an open Halo 1 disc.*
+
 ### Halo 1 maps
 
 The editor can show Halo 1 maps too.
@@ -295,6 +429,11 @@ you can check that everything lines up. Click it again to hide it. The
 editor checks that the file is the very one the map was converted from;
 if it isn't, the inspector says `No Halo 1 overlay` (hover for why).
 
+
+![The top of the Inspector for a converted map: Converted from Halo 1's bloodgulch, H2 sandbox, and Halo 1 overlay: View > Halo 1 overlay](../images/editor/halo1-compare.png)
+
+*A converted map's inspector says where it came from and how to show the original.*
+
 **Looking at Halo 1 maps.** Open your Halo 1 disc image or a folder of
 Halo 1 maps with **Open...** (or start with `--halo1`), and its maps are
 listed under **Halo 1** with an eye. Click one to look at it: its level
@@ -303,6 +442,11 @@ spawn points, flags, weapon spawns and vehicles, which you can select to
 see their details. These maps are read only (the outliner says `Halo 1:
 read only`): nothing can be moved or saved.
 
+
+![The Outliner for Halo 1's Blood Gulch: Halo 1: read only, then Player starting locations (71), Netgame flags (191), Netgame equipment (35) and Vehicles (8)](../images/editor/halo1-banner.png)
+
+*A Halo 1 map's outliner: read only, grouped by kind.*
+
 **Converting a Halo 1 map.** With a Halo 1 map on show and your Halo 2
 disc open, the inspector's **Convert to Halo 2** section turns it into a
 Halo 2 map:
@@ -310,7 +454,7 @@ Halo 2 map:
 1. Pick the **Sandbox**: **Halo 2** (Halo 2's nearest weapons and
    vehicles) or **Halo 1** (its own; not built yet, so it says so).
 2. The line under it says which Halo 2 map the conversion starts from
-   (`Onto beavercreek, from your Halo 2 disc`): it gives the sky, the
+   (`Onto coagulation, from your Halo 2 disc`): it gives the sky, the
    weapons and vehicles and everything else a Halo 2 level needs. The
    editor picks it; your Halo 2 disc must be open.
 3. Click **Convert to Halo 2**. It runs in the background
@@ -319,11 +463,26 @@ Halo 2 map:
    When it is done, the map appears under **Halo 1** in **Maps** (for
    example **Blood Gulch (H2 sandbox)**) and opens, ready to edit.
 
+
+![The Inspector for Halo 1's bloodgulch: the read-only banner, then Convert to Halo 2 with the Sandbox choice (Halo 2 selected), Onto coagulation, from your Halo 2 disc, and the Convert to Halo 2 button](../images/editor/convert-controls.png)
+
+*The **Convert to Halo 2** section, before converting.*
+
+![The same section while converting: Converting bloodgulch (h2 sandbox)... 0 s under the greyed-out button](../images/editor/convert-running.png)
+
+*While it converts, the button is greyed out and the line under it counts the seconds.*
+
 If it can't convert, the inspector says `Not converted` and why, and the
 log says the same: for example `This level has 70,000 surfaces; Halo 2
 holds at most 65,536, so it can't be converted.`
 
+![The Convert to Halo 2 section with the Halo 1 sandbox picked, and under the button: Not converted. The Halo 1 sandbox isn't built yet: convert with the Halo 2 sandbox.](../images/editor/convert-error.png)
+
+*Picking the **Halo 1** sandbox, which isn't built yet, ends in `Not converted` and the reason.*
+
 ![Halo 1's Blood Gulch, read only: the textured, lit canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
+
+*Halo 1's Blood Gulch, read only, a spawn point selected.*
 
 ## 5. Game variants
 
@@ -336,9 +495,17 @@ own. Click **Game variants** in **Tools**.
 
 - **Variants** (left): a game type list with **New**, then your **Saved**
   variants and the **Built-in** ones, each with its game type.
+
+  ![The Variants panel: a game type list set to Slayer with New, No saved variants under Saved, and the Built-in variants from Slayer and Team Slayer down, Swords highlighted](../images/editor/variants-list.png)
+  
+  *The variant list: none saved yet, and the disc's built-ins.*
 - **Settings** (middle): the variant's name, then its settings grouped as
   the game groups them. Settings changed from the game type's defaults are
   in bold. Hover over a setting for its help text and its default.
+
+  ![Match options with a tooltip over Score to Win Round: Points are earned in Slayer for killing other players. This setting determines how many points are needed to win a round. Default: 25](../images/editor/variants-help.png)
+  
+  *Hovering a setting shows the game's help text and the default.*
 - **Inspector** (right): **Save**, **Revert** (back to the variant as
   last saved), **Delete**, **Export...** and **Import...**; whether the
   game accepts the variant; and **Changes from the ... defaults**, the
@@ -355,11 +522,28 @@ From a built-in variant:
 
 1. Click a variant under **Built-in**. Built-ins can't be changed: the
    settings say **Built-in variant: copy it to edit.**, with a name box.
-2. Type a name and click **Copy**. You now have an unsaved copy.
+
+   ![The top of the Settings panel for the built-in Swords: Built-in variant: copy it to edit., a name box holding Swords copy, and the Copy button](../images/editor/variants-copy.png)
+   
+   *A built-in, with the name its copy will get.*
+2. Type a name and click **Copy**. You now have an unsaved copy. You can
+   still rename it in its **Name** box.
+
+   ![The Settings panel of the copy, its Name box now reading Lockout Swords, marked unsaved](../images/editor/variants-rename.png)
+   
+   *The copy, renamed.*
 3. Change its settings. Each change shows under **Changes from the ...
    defaults**.
+
+   ![The Inspector for the copy: Save, Revert, Delete, Export..., Import..., The game accepts this variant., and Changes from the Slayer defaults (10), starting Score to Win Round: 25 -> 5 and Respawn Time: 5 Seconds -> 3 Seconds](../images/editor/variants-changes.png)
+   
+   *Two settings changed on the copy, at the top of the changes list (the rest are Swords' own).*
 4. Click **Save** (or press Cmd+S). The log says `saved as "..."`, and the
    variant appears under **Saved**.
+
+   ![The Variants panel with Swords Night (Slayer) listed and selected under Saved, above the built-ins](../images/editor/variants-saved.png)
+   
+   *Saved: the variant is listed under **Saved**.*
 
 ![An editable copy of Swords, named Swords Night, unsaved](../images/editor/variants-edit.jpg)
 
@@ -371,6 +555,64 @@ To change a saved variant later, click it under **Saved**, edit it and
 
 Variants are saved into the game's own storage, not to a file you choose
 (use **Export...** for a file).
+
+
+### The settings pages
+
+The settings are grouped in pages, as the game groups them. Click a
+page's title to fold it. Every variant has the common pages (**Match
+options**, **Player options**, **Weapon options**, **Vehicle options**,
+and **Team options** for team games), plus one for its game type. Your
+disc's settings data also has a page it titles `Page 31`; it is shown as
+it is.
+
+![Match options: Number of Rounds 1 Round, Score to Win Round 25, Round Time Limit None, Rounds Reset Map On, Resolve Ties On](../images/editor/variants-page-match.png)
+
+***Match options**: rounds, score to win and time limit.*
+
+![Player options: Max Active Players 16, Lives Per Round Unlimited, Respawn Time 5 Seconds, Suicide Penalty 5 Seconds, Shield Type Normal Shields, Motion Sensor On, Active Camo Off, Extra Damage Off, Damage Resistance Off](../images/editor/variants-page-player.png)
+
+***Player options**: lives, respawning, shields, sensors and damage.*
+
+![Weapon options for Swords: Starting Weapon Energy Sword and Weapons on Map None in bold, as changed from the defaults](../images/editor/variants-page-weapons.png)
+
+***Weapon options**. Bold settings differ from the game type's defaults.*
+
+![Vehicle options: Vehicle Respawn Time, then the primary and secondary light and heavy vehicles and the Banshee](../images/editor/variants-page-vehicles.png)
+
+***Vehicle options**.*
+
+![Team options: Team Play, Team Scoring, Team Changing, Friendly Fire and the rest](../images/editor/variants-page-teams.png)
+
+***Team options**.*
+
+![Slayer options: Bonus Points, Suicide Point Loss, Death Point Loss](../images/editor/variants-page-slayer.png)
+
+***Slayer options**.*
+
+![Capture the Flag options for CTF Classic: Flag Type, Sudden Death, Flag At Home To Score, Flag Touch Return, Flag Reset Time, Slow With Flag, Flag Hit Damage, Damage Resistance](../images/editor/variants-page-ctf.png)
+
+***Capture the Flag options**.*
+
+![Assault options for Multi Bomb: Bomb Type, Enemy Bomb Indicator, Sudden Death, Bomb Touch Return, Bomb Reset Time, Bomb Arm Time, Sticky Arming, Slow With Bomb](../images/editor/variants-page-assault.png)
+
+***Assault options**.*
+
+![Oddball options: Ball Count, Ball Hit Damage and the rest](../images/editor/variants-page-oddball.png)
+
+***Oddball options**.*
+
+![King of the Hill options: Uncontested Hill, Moving Hill and the rest](../images/editor/variants-page-king.png)
+
+***King of the Hill options**.*
+
+![Juggernaut options for 2 on 1: Betrayal Point Loss and the rest](../images/editor/variants-page-juggernaut.png)
+
+***Juggernaut options**.*
+
+![Territories options for 3 Plots: Territory Count 3 Territories](../images/editor/variants-page-territories.png)
+
+***Territories options**.*
 
 ### Use it in game
 
@@ -386,6 +628,15 @@ To use one you were given, click **Import...** and pick the file, or
 paste its text under **Paste a portable variant** and click **Import the
 pasted text**. It opens as a new, unsaved variant; click **Save** to keep
 it.
+
+
+![The Inspector's buttons with a tooltip under Export...: Write it as a portable .h2variant file to share](../images/editor/variants-export.png)
+
+***Export...** writes a `.h2variant` file. (The file itself is picked in your system's save window, not pictured.)*
+
+![The Inspector with Paste a portable variant opened: a text box and Import the pasted text](../images/editor/variants-import.png)
+
+***Paste a portable variant** takes a shared variant as text.*
 
 ## 6. Playlists (hoppers)
 
@@ -414,15 +665,27 @@ serves before anything is published.
   **Save** and **Save as...**, the file's path and form, then the 16
   playlists. Hover over one for its type and number of entries; one that
   wouldn't save has a warning mark.
+
+  ![The Playlists panel: New, Default lineup, Open..., Save, Save as..., not saved yet (download envelope), then playlists 1 Rumble Pit, 2 Team Slayer (selected), 3 Team Skirmish and on to 16 (untitled)](../images/editor/hopper-list.png)
+  
+  *The default lineup's 16 playlists, Team Slayer selected.*
 - **Entries** (middle): the playlist's **Title** (at most 15 characters)
   and **Description** (at most 127), then one row per entry: its **Map**,
   its **Game variant**, an **Edit** button, its **Weight** and the
   resulting **Chance**, then buttons to move it up or down, duplicate it
   and remove it. **Add an entry** adds a copy of the last.
+
+  ![The Entries panel for Playlist 2, Team Slayer: eight entries from Lockout to Zanzibar, each Team Slayer - Slayer - teams, with Edit, Weight, Chance and the row buttons](../images/editor/hopper-entries.png)
+  
+  *Team Slayer's entries: map, game variant, weight and chance.*
 - **Inspector** (right): **Start from a preset**, **Variants for the
   entries** (more variants to pick from, below) and **Advanced: raw
   fields** (every raw number of the playlist and its entries; leave these
   alone unless you know what they mean).
+
+  ![The Inspector with Advanced: raw fields open: the playlist's name, type, status and other numbers, then a table of each entry's raw values](../images/editor/hopper-raw.png)
+  
+  ***Advanced: raw fields**, opened.*
 
 Map names come from your disc. Without a disc, maps show as numbers
 (`map id 3`) and presets can't be used.
@@ -434,12 +697,24 @@ Map names come from your disc. Without a disc, maps show as numbers
 3. For each entry, pick the **Map** from its list, and set its **Weight**
    (1 to 1000). An entry's chance of coming up is its weight divided by
    the playlist's total, shown under **Chance**.
+
+   ![The second entry's Map list open over the table: Ascension, Beaver Creek, Burial Mounds, Coagulation, Colossus, Ivory Tower, Foundation, Headlong](../images/editor/hopper-map-picker.png)
+   
+   *An entry's **Map** list, open.*
 4. Reorder entries with the arrows, copy one, or remove one. A playlist
    has between 1 and 100 entries.
 5. Click **Save** (Cmd+S), or **Save as...** for a new file.
 
+   ![The File menu in the Playlists tool: New playlist file, New from the default lineup, Open playlist file..., Save playlist file, Save playlist file as..., with the scenario items greyed out](../images/editor/hopper-file-menu.png)
+   
+   *In the Playlists tool, **File** has the playlist file's commands too. The file's name and place are picked in your system's save window, not pictured.*
+
 If something isn't valid (an empty title, say), it's listed in red under
 the entries, and saving is refused until it's fixed.
+
+![The Entries panel with the Title box emptied, and in red under the table: Playlist 2: the playlist needs a title](../images/editor/hopper-error.png)
+
+*An empty title, reported under the entries.*
 
 **Start from a preset** offers lineups from Halo 2's Live years. Pick one
 in **Choose a historical playlist...**: the inspector lists the games it
@@ -448,6 +723,12 @@ Click **Fill playlist N with M entries** to replace the open playlist's
 entries with them.
 
 ![A preset resolved against the disc: the Rumble Pit lineup with the games it would add](../images/editor/hopper-preset.jpg)
+
+*A preset picked for playlist 1.*
+
+![The Inspector with the Rumble Pit (launch) - 2004 launch preset: its description, the games it adds such as Slayer on Lockout and Oddball on Midship, two marked unavailable, and the Fill playlist 1 with 11 entries button](../images/editor/hopper-preset-panel.png)
+
+*Close up: the preset's games, two of them unavailable, and the **Fill playlist 1 with 11 entries** button.*
 
 ### Give an entry another game variant
 
@@ -463,10 +744,20 @@ Click the entry's **Game variant**. The list has three groups:
 Pick one, and the entry shows it with `(picked)` after it. A variant the
 game would refuse is greyed out; hover over it to see why.
 
+![The first entry's Game variant list open: under Built-in, Slayer - Slayer, Team Slayer - Slayer - teams, Rockets - Slayer, Swords - Slayer and more](../images/editor/hopper-variant-picker.png)
+
+*An entry's **Game variant** list, open at **Built-in**.*
+
+
 To change an entry's variant a little, click **Edit** on its row. The Game
 variants tool opens with a copy of it. Change it and **Save** there, go
 back to **Playlists**, click **Refresh saved**, and pick your variant
 from **Saved**.
+
+![The Game variants tool after Edit on a playlist entry: an unsaved copy of the entry's Team Slayer variant open in Settings](../images/editor/hopper-edit.jpg)
+
+*After **Edit** on an entry: the Game variants tool, with a copy of that entry's variant.*
+
 
 ### Publish it
 
@@ -489,6 +780,15 @@ Cmd+Z, Cmd+Shift+Z) act on the tool you're in.
   undoing back to the saved state clears them.
 - In Game variants, **Revert** goes back to the variant as last saved
   (and can itself be undone). Typing a name is one step.
+
+
+![The Edit menu after a move, with Undo highlighted and enabled](../images/editor/undo-menu.png)
+
+*After an edit, **Edit > Undo** is enabled.*
+
+![The Log after an undo: opened disc/halo2.iso, opened ascension, then undid set position](../images/editor/undo-log.png)
+
+*The log records each undo (`undid set position`).*
 
 ## 8. Where files go
 
@@ -522,8 +822,8 @@ about each in turn.
 package...** won't replace a map with unsaved changes. Save it (as a
 package or a file), or undo the changes.
 
-**Duplicate or Add new is greyed out.** Hover over it for the reason.
-Usually the group is full. Delete an entry from the same group first, or
+**Duplicate or Add new is greyed out.** Hover over it for the reason
+(section 4 shows one). Usually the group is full. Delete an entry from the same group first, or
 turn on **Edit > Allow growing full blocks**.
 
 **"refusing to overwrite the source map".** Save to a new file name. For
@@ -582,12 +882,16 @@ editor's data folder: check `--data`. A folder without a readable
 **"... edits <map>: open a disc that has that map first".** A package of
 an edited disc map is opened over that map: open your Halo 2 disc first.
 
+**Not converted.** The inspector says why under the **Convert to Halo 2**
+button (section 4 shows one).
+
 **No Halo 1 overlay.** Hover over `No Halo 1 overlay` in the inspector.
 Open your Halo 1 disc (or set `H1_MAP_DIR`) before opening the converted
 map; "has another SHA-256" means the Halo 1 map you have is not the file
 the map was converted from.
 
-**The panels are in a mess.** **View > Reset layout**.
+**The panels are in a mess.** **View > Reset layout** (pictured in
+section 3).
 
 **The editor won't start: `h2-editor: ...`.** It couldn't start its
 renderer. Check that your GPU driver supports Metal (macOS), Vulkan or
@@ -604,6 +908,14 @@ scripts/editor-screenshots.sh --disc <iso> --only scenario-weapon
 ```
 
 It builds `h2-editor`, renders each shot with its `--screenshot` flags at
-1600x1000 points at scale 2, and writes 1600-pixel-wide JPEGs to
-`docs/images/editor/` (macOS `sips` does the scaling). Each shot's flags
-(map, selection, camera, dialog) are in the script.
+1600x1000 points at scale 2, and writes them to `docs/images/editor/`:
+whole windows and 3D views as JPEGs at most 1600 pixels wide (macOS
+`sips` does the scaling), close-ups of panels, menus and tooltips as PNGs
+at full resolution. Each shot's flags are in the script: the map,
+selection and camera, then scripted input (`--do`: clicks, hovers,
+drags, typing), a crop (`--crop`) and numbered boxes (`--callout`).
+[editor.md](editor.md) lists the flags.
+
+Not everything can be pictured this way: your system's own open and save
+windows (**Open...**, **Save map as...**, **Export...**, **Save as...**)
+are outside the editor, so the guide describes them in words.

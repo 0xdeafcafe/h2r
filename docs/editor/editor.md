@@ -52,6 +52,12 @@ layout restores the default).
 
 ## The window
 
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 Tools, 3 Outliner, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+
+*The panels: (1) main menu bar, (2) Tools, (3) outliner, (4) the centre
+window (the viewport here), (5) inspector, (6) log, (7) status bar. The
+boxes and numbers are drawn by the headless renderer's `--callout`.*
+
 - **Main menu**: File (open a disc or map, open a folder of maps, save the
   map as a new `.map`, save as or open a package, the variant and
   playlist tools' file commands, quit), Edit (undo, redo, duplicate,
@@ -458,6 +464,43 @@ last. The flags that set the scene up:
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |
 | `--preset <n>` | pick historical preset `n` for that playlist |
 | `--dialog package\|unsaved` | open the Save as package window, or nudge the selection and ask to quit (the unsaved-changes window) |
+| `--nudge <x>,<y>,<z>` | move the selection by that much, as an edit |
+| `--page <title>` | in the variant tool, open only the settings pages whose title contains it |
+| `--no-disc` | open no disc and no Halo 1 source (the first run) |
+
+Then, to show a state the flags can't set up, scripted input runs over
+the settled frames, and the written frame can be cropped and annotated:
+
+| Flag | Effect |
+| --- | --- |
+| `--do '<step>; <step>...'` | `hover`, `click`, `rclick`, `dclick` or `move` a target; `down`, `up` (the left button, for drags); `type <text>`; `key <name>[*n]`; `wait <frames>`; `sleep <ms>` (wall time, for background work such as a conversion); `wheel <dy>` |
+| `--crop <target>` (repeatable) | write only the union of these targets' rectangles |
+| `--pad <points>` | grow the crop by this much (default 8) |
+| `--crop-height <points>` | make the crop this tall from its top |
+| `--callout <target>=<badge>` (repeatable) | draw an orange box round the target with the badge (a number) on it |
+
+A target (`studio::script`) is a point `x,y`, a window `win:<name>`
+(`win:###inspector`, `win:##Menu`, `win:##Tooltip`, `win:##Combo`,
+`win:##Popup`), or a widget by label, `[<window>>]<label>[#n]` (`View`,
+`Rotate (E)`, `##setting-2`, `###viewport>Edit#0`), each optionally
+`@dx,dy` from its top left rather than its centre. Widgets are found by
+label through Dear ImGui's test-engine hooks (`studio::probe`; the
+`test-engine` feature of `dear-imgui-rs`): `ItemAdd` gives each item's
+rectangle and window, `ItemInfo` its label. Combos never report a label,
+so the labels a script names are also hashed on each item's window ID
+stack and matched by ID. The hooks only record in headless renders. Set
+`H2_EDITOR_PROBE=1` to print every window and widget the last frame drew,
+to write a script against.
+
+```
+h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \
+  --do 'click View; hover Rotate gizmo' --crop View --crop 'win:##Menu' --screenshot menu-view.png
+```
+
+![The View menu open with Rotate gizmo highlighted, cropped to the menu](../images/editor/menu-view.png)
+
+*What that command writes: the View menu opened and an item hovered by
+the script, cropped to the menu.*
 
 `scripts/editor-screenshots.sh` renders the user guide's pictures this way
 from your disc, into `docs/images/editor/` (editor-guide.md §10).

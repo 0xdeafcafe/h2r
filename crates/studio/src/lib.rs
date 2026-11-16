@@ -8,12 +8,15 @@
 //!   status bar, modals).
 //! - [`viewport`]: the 3D view with picking and the ImGuizmo gizmo.
 //! - [`theme`]: the dark theme, bundled fonts and icons.
-//! - [`headless`]: renders real frames offscreen to PNG (screenshots).
+//! - [`headless`]: renders real frames offscreen to PNG (screenshots),
+//!   with [`script`]ed input aimed at widgets that [`probe`] finds.
 //!
 //! Nothing here contains game data: maps come from the user's own disc.
 
 pub mod app;
 pub mod headless;
+pub mod probe;
+pub mod script;
 pub mod theme;
 pub mod ui;
 pub mod viewport;
