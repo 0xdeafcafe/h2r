@@ -83,6 +83,10 @@ The run prints a report when it ends. It covers:
 `kernel-trace.tsv` has one row per kernel import call: seq, thread, ordinal,
 name, return address, args, EAX and decoded detail (object names for the
 file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
+It is written through a 64 KiB buffer, flushed at the end of the run
+(`trace::flush`), so a crash can lose the last rows; the report's last 40
+calls come from memory and are complete. (One `write` per call was 2.8% of
+an Old Mombasa frame in `h2 run`.)
 
 ## Hosted runs
 
