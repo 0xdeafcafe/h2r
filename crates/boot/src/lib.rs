@@ -25,6 +25,7 @@ pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
 pub mod lockstep_glue;
+pub mod map_override;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
@@ -529,10 +530,10 @@ pub fn run_hosted_with_live(
     let icons = icon_options
         .map(|o| Arc::new(icons::Icons::new(o, host.keyboard.as_ref())))
         .filter(|i| i.enabled());
-    let mounted = match &icons {
-        Some(i) => vfs::Vfs::with_disc_rewrite(cfg.clone(), &opts.disc, i.font_rewrite()),
-        None => vfs::Vfs::with_disc(cfg.clone(), &opts.disc),
-    };
+    // Edited maps from H2_MAP_DIR in place of the disc's (docs/storage.md
+    // "Map overrides"); unset, the disc is mounted as it always was.
+    let maps = map_override::dir();
+    let mounted = map_override::mount(cfg.clone(), &opts.disc, icons.as_ref().map(|i| i.font_rewrite()), maps.as_deref());
     if let Some(i) = &icons {
         icons::install(&loaded.runtime, Arc::clone(i))?;
     }
