@@ -137,21 +137,28 @@ impl DepthBits {
         let device = &ctx.device;
         let (w, h) = (size.0.max(1), size.1.max(1));
         let row_bytes = (w * 4).next_multiple_of(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT);
-        let words = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gfx depth bits words"),
-            size: (row_bytes * h) as u64,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
-            mapped_at_creation: false,
-        });
+        let words = crate::churn::create_buffer(
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("gfx depth bits words"),
+                size: (row_bytes * h) as u64,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+                mapped_at_creation: false,
+            },
+        );
         let has_stencil = depth.format().has_stencil_aspect();
         let params: [u32; 4] = [w, h, row_bytes / 4, has_stencil as u32];
-        let uniform = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gfx depth bits params"),
-            size: 16,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let uniform = crate::churn::create_buffer(
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some("gfx depth bits params"),
+                size: 16,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        );
         let bytes: Vec<u8> = params.iter().flat_map(|v| v.to_le_bytes()).collect();
+        crate::churn::queue_write();
         ctx.queue.write_buffer(&uniform, 0, &bytes);
         let depth_view = depth.create_view(&wgpu::TextureViewDescriptor {
             aspect: wgpu::TextureAspect::DepthOnly,

@@ -67,12 +67,15 @@ impl UploadRing {
         usage: wgpu::BufferUsages,
         size: u64,
     ) -> wgpu::Buffer {
-        device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some(label),
-            size,
-            usage: usage | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        })
+        crate::churn::create_buffer(
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some(label),
+                size,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            },
+        )
     }
 
     /// Writes `bytes` at the next offset aligned to `align` (a power of
@@ -126,6 +129,7 @@ impl UploadRing {
             // next one, queued after it) and open one from here.
             self.view = None;
             let size = CHUNK.max(padded).min(self.capacity - offset);
+            crate::churn::queue_write();
             let view = queue
                 .write_buffer_with(
                     &self.buffer,
