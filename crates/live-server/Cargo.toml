@@ -24,6 +24,8 @@ time = "0.3"
 tower-http = { version = "0.6", features = ["fs"] }
 
 [dev-dependencies]
+# tests/relay.rs: two co-op peers through the relay.
+coop = { path = "../coop" }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 tokio-tungstenite = "0.26"

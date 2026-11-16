@@ -29,6 +29,7 @@ mod mailbox;
 pub mod model;
 pub mod pg;
 pub mod public;
+pub mod relay;
 mod sessions;
 pub mod store;
 mod teams;

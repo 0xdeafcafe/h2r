@@ -626,6 +626,10 @@ The four transport channels are:
 | Additional game data | 1005 | VDP / UDP | 3079 |
 | Additional game data | 1006 | VDP / UDP | 3080 |
 
+Base+2 (3076) is the HLE QoS responder. Base+4 (3078) is the co-op channel
+([live-coop.md](live-coop.md), section 8): the co-op transport binds it on
+the host itself, and no guest socket maps to it.
+
 The option wrapper maps the game's options to SO_REUSEADDR (`4`), SO_LINGER
 (`0x80`), SO_BROADCAST (`0x20`), SO_SNDBUF (`0x1001`), SO_RCVBUF (`0x1002`) and
 Xbox's security option `0x4001`. Linger is a pair of guest 16-bit values,

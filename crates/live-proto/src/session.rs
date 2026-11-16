@@ -192,7 +192,7 @@ impl NewSession {
         if self.port == 0
             || self.host_address.len() != 36
             || !self.slots.validate()
-            || !matches!(self.flags.as_str(), "custom" | "hopper" | "ranked")
+            || !matches!(self.flags.as_str(), "custom" | "hopper" | "ranked" | "coop")
         {
             return Err("invalid session address, slots or flags".into());
         }

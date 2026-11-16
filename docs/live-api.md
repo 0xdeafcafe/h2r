@@ -321,7 +321,7 @@ public API. HLE keys stay local while sockets use unencrypted host traffic.
 Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
 `slots` (`public_filled`, `public_open`, `private_filled`, `private_open`),
 `attributes` (an object keyed by decimal attribute ID), `flags` (default
-`custom`, also `hopper` or `ranked`), and optional `hopper_id`, `map`, `name`,
+`custom`, also `hopper`, `ranked` or `coop`), and optional `hopper_id`, `map`, `name`,
 `language`. Attribute values are `{type: "integer", value: <u64>}`,
 `{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
 `{type: "null"}`, and optional `visibility` (`public`, the default and
@@ -381,6 +381,34 @@ is the previous `next` string. Ordering is by session ID. CLI queries are
 The HTTP service advertises endpoints; it does not relay game packets, create
 a ranked match or traverse NAT. Direct internet play requires reachable UDP
 base through base+6. A Cloudflare HTTP tunnel alone provides no gameplay path.
+
+## Co-op relay
+
+**`GET /v1/sessions/{id}/relay`** is a WebSocket that hands each binary
+message from one member of a co-op session to the other
+([live-coop.md](live-coop.md), section 8). It exists for two machines that
+cannot reach each other directly; the direct path is UDP on the XNet base
+port + 4.
+
+- The first message is `{ "kind": "auth", "token": "<jwt>" }` with
+  `lxm: sessions.relay`. A missing, wrong or expired token closes the
+  socket with 4401, as on the other sockets. Sending a fresh `auth`
+  message later extends the socket; it must be the same account's.
+- The session must be open and created with `flags: "coop"`. The account
+  must be its host, or one whose invitation to this session was answered
+  `accept`. Otherwise the socket closes with 4403. Membership is checked
+  again every few seconds, so a closed session ends its relay.
+- A room has two members. The same account connecting again replaces its
+  older socket (which closes with 4409); a third account gets 4409.
+- Each member receives `{ "kind": "peer", "present": true|false }` when
+  the other arrives or leaves.
+- A binary message is at most 1200 bytes (close 4413). A socket may send
+  240 messages a second with a burst of 480 (`Policy::relay_rate`; close
+  4429).
+- The server does not read, store or log message contents, and it does
+  not queue for an absent member: a message with nobody to take it, or
+  with more than 256 waiting for a slow member, is dropped. The co-op
+  protocol repeats what was lost. Nothing is appended to the event log.
 
 ## Game-invite mailboxes
 
