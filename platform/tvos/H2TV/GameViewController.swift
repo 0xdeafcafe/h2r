@@ -11,9 +11,12 @@ final class MetalView: UIView {
 /// Hosts the game full screen. A GCEventViewController with controller
 /// interaction off sends every controller and remote button to the game,
 /// so Back on the remote (and B or Menu on a pad) is the game's B and does
-/// not leave the app. The TV/Home button still does.
+/// not leave the app. The TV/Home button still does. While the game's
+/// virtual keyboard has a field open, the system keyboard takes over the
+/// remote instead (GameKeyInput).
 final class GameViewController: GCEventViewController {
     private let metalView = MetalView()
+    private let keyInput = GameKeyInput()
     private var tv: OpaquePointer?
     private var link: CADisplayLink?
     private var drawableSize = CGSize.zero
@@ -27,6 +30,11 @@ final class GameViewController: GCEventViewController {
         super.viewDidLoad()
         controllerUserInteractionEnabled = false
         view.backgroundColor = .black
+        view.addSubview(keyInput)
+        keyInput.onFieldChange = { [weak self] open in
+            // The tvOS keyboard is driven with the remote through UIKit.
+            self?.controllerUserInteractionEnabled = open
+        }
         label.textColor = .white
         label.numberOfLines = 0
         label.font = .systemFont(ofSize: 28)
@@ -51,7 +59,7 @@ final class GameViewController: GCEventViewController {
         metalView.contentScaleFactor = scale
         metalView.metalLayer.drawableSize = size
         if let tv {
-            h2tv_resize(tv, UInt32(size.width), UInt32(size.height))
+            h2host_resize(tv, UInt32(size.width), UInt32(size.height))
         } else {
             start(size)
         }
@@ -61,7 +69,9 @@ final class GameViewController: GCEventViewController {
         let bundle = Bundle.main.bundlePath
         let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].path
         let layer = Unmanaged.passUnretained(metalView.metalLayer).toOpaque()
-        tv = h2tv_start(layer, UInt32(size.width), UInt32(size.height), bundle, caches)
+        // No Documents on tvOS: saves stay in Caches.
+        tv = h2host_start(layer, UInt32(size.width), UInt32(size.height), bundle, caches, nil)
+        keyInput.host = tv
         let link = CADisplayLink(target: self, selector: #selector(frame))
         link.preferredFramesPerSecond = 30
         link.add(to: .main, forMode: .common)
@@ -70,20 +80,21 @@ final class GameViewController: GCEventViewController {
 
     @objc private func frame() {
         guard let tv else { return }
-        if h2tv_status(tv) != 0 {
+        if h2host_status(tv) != 0 {
             link?.invalidate()
             link = nil
-            label.text = "Halo 2 stopped.\n\n" + String(cString: h2tv_message(tv))
+            label.text = "Halo 2 stopped.\n\n" + String(cString: h2host_message(tv))
             return
         }
-        h2tv_redraw(tv)
+        h2host_redraw(tv)
+        keyInput.follow()
     }
 
     @objc private func pause() {
-        if let tv { h2tv_set_paused(tv, true) }
+        if let tv { h2host_set_paused(tv, true) }
     }
 
     @objc private func resume() {
-        if let tv { h2tv_set_paused(tv, false) }
+        if let tv { h2host_set_paused(tv, false) }
     }
 }

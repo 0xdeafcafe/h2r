@@ -29,7 +29,7 @@ fn rejected(options: &[&str], message: &str) {
 
 #[test]
 fn unknown_architecture_fails_before_parsing_the_image() {
-    rejected(&["--arch", "mips"], "expected host, all, arm64, x86_64 or tvos");
+    rejected(&["--arch", "mips"], "expected host, all, arm64, x86_64, tvos or ios");
 }
 
 #[test]

@@ -93,7 +93,7 @@ impl WindowSurface {
     }
 
     /// Waits for the display's vblank (`true`) or not, from the next frame.
-    #[cfg_attr(target_os = "tvos", allow(dead_code))]
+    #[cfg_attr(any(target_os = "tvos", target_os = "ios"), allow(dead_code))]
     pub(crate) fn set_vsync(&mut self, vsync: bool) {
         self.config.present_mode = if vsync {
             wgpu::PresentMode::AutoVsync

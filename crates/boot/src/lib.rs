@@ -120,12 +120,14 @@ fn stamp_with(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String]) -
 }
 
 /// The stamp for a module compiled for `target`. A macOS stamp is the same
-/// as before targets existed; a tvOS one names its triple, so a module
-/// cross-built on a Mac with `H2_EMIT_TARGET=tvos` matches what the app
-/// computes on the Apple TV (where the host is tvOS) and nothing else.
+/// as before targets existed; a tvOS or iOS one names its triple, so a module
+/// cross-built on a Mac with `H2_EMIT_TARGET=tvos` (or `ios`) matches what the app
+/// computes on the device (where the host is tvOS or iOS) and nothing else.
 fn stamp_for(xbe_bytes: &[u8], passes: &str, codegen: &str, flags: &[String], target: emit::compile::Arch) -> String {
     let target = match target {
-        emit::compile::Arch::Arm64Tvos => format!(" target {}", target.triple()),
+        emit::compile::Arch::Arm64Tvos | emit::compile::Arch::Arm64Ios => {
+            format!(" target {}", target.triple())
+        }
         _ => String::new(),
     };
     format!(
@@ -1231,7 +1233,7 @@ mod tests {
     }
 
     #[test]
-    fn a_tvos_stamp_names_its_target_and_a_macos_one_is_unchanged() {
+    fn device_stamps_name_their_target_and_a_macos_one_is_unchanged() {
         use emit::compile::Arch;
         let flags = vec!["-O1".to_owned()];
         let mac = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64);
@@ -1240,6 +1242,10 @@ mod tests {
         let tv = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Tvos);
         assert_ne!(mac, tv);
         assert!(tv.trim_end().ends_with(" target arm64-apple-tvos17.0"), "{tv}");
+        let ios = stamp_for(b"synthetic", "all", "c", &flags, Arch::Arm64Ios);
+        assert_ne!(ios, mac);
+        assert_ne!(ios, tv);
+        assert!(ios.trim_end().ends_with(" target arm64-apple-ios17.0"), "{ios}");
     }
 
     #[test]

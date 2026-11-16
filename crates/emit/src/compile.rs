@@ -116,11 +116,18 @@ pub enum Arch {
     /// tvOS on an Apple TV (docs/tvos.md). Cross-compiled on a Mac against
     /// the appletvos SDK; never the host there.
     Arm64Tvos,
+    /// iOS and iPadOS on an iPhone or iPad (docs/ios.md). Cross-compiled on
+    /// a Mac against the iphoneos SDK; never the host there.
+    Arm64Ios,
 }
 
 /// The oldest tvOS the generated module (and the app around it) supports.
 /// The Rust side's `TVOS_DEPLOYMENT_TARGET` must match (platform/tvos).
 pub const TVOS_DEPLOYMENT_TARGET: &str = "17.0";
+
+/// The oldest iOS the generated module (and the app around it) supports.
+/// The Rust side's `IPHONEOS_DEPLOYMENT_TARGET` must match (platform/ios).
+pub const IOS_DEPLOYMENT_TARGET: &str = "17.0";
 
 impl Arch {
     /// The macOS release targets (`--arch all`).
@@ -131,6 +138,7 @@ impl Arch {
             Arch::Arm64 => "arm64",
             Arch::X86_64 => "x86_64",
             Arch::Arm64Tvos => "arm64-tvos",
+            Arch::Arm64Ios => "arm64-ios",
         }
     }
 
@@ -140,6 +148,8 @@ impl Arch {
             Arch::X86_64 => "x86_64-apple-macos11",
             // Keep in step with TVOS_DEPLOYMENT_TARGET.
             Arch::Arm64Tvos => "arm64-apple-tvos17.0",
+            // Keep in step with IOS_DEPLOYMENT_TARGET.
+            Arch::Arm64Ios => "arm64-apple-ios17.0",
         }
     }
 
@@ -148,6 +158,7 @@ impl Arch {
     pub fn sdk(self) -> Option<&'static str> {
         match self {
             Arch::Arm64Tvos => Some("appletvos"),
+            Arch::Arm64Ios => Some("iphoneos"),
             Arch::Arm64 | Arch::X86_64 => None,
         }
     }
@@ -167,6 +178,8 @@ impl Arch {
     pub fn host() -> Arch {
         if cfg!(target_os = "tvos") {
             Arch::Arm64Tvos
+        } else if cfg!(target_os = "ios") {
+            Arch::Arm64Ios
         } else if cfg!(target_arch = "x86_64") {
             Arch::X86_64
         } else {
@@ -175,30 +188,37 @@ impl Arch {
     }
 
     /// What `h2 build` (`boot::build`) compiles for: `H2_EMIT_TARGET`
-    /// (`tvos`, or `host`/`macos`/unset for the host), see [`Arch::target_from`].
+    /// (`tvos`, `ios`, or `host`/`macos`/unset for the host), see [`Arch::target_from`].
     pub fn target() -> Result<Arch, Error> {
         Arch::target_from(std::env::var("H2_EMIT_TARGET").ok().as_deref())
     }
 
     /// [`Arch::target`] for a given `H2_EMIT_TARGET` value. `macos` on a
-    /// tvOS host is refused: nothing builds there.
+    /// tvOS or iOS host is refused: nothing builds there.
     pub fn target_from(value: Option<&str>) -> Result<Arch, Error> {
         match value.unwrap_or("") {
             "" | "host" => Ok(Arch::host()),
             "tvos" => Ok(Arch::Arm64Tvos),
-            "macos" if Arch::host() != Arch::Arm64Tvos => Ok(Arch::host()),
-            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos or tvos"))),
+            "ios" => Ok(Arch::Arm64Ios),
+            "macos" if Arch::host().is_macos() => Ok(Arch::host()),
+            v => Err(err(format!("H2_EMIT_TARGET={v}: expected host, macos, tvos or ios"))),
         }
     }
 
     /// The `-install_name` of the linked module: its own path for macOS
     /// (loaded by path from the output directory), and the framework the
-    /// tvOS app embeds it in (platform/tvos), which it is loaded from.
+    /// tvOS and iOS apps embed it in (platform/tvos, platform/ios), which
+    /// it is loaded from.
     pub fn install_name(self, out: &Path) -> OsString {
         match self {
-            Arch::Arm64Tvos => "@rpath/h2game.framework/h2game".into(),
+            Arch::Arm64Tvos | Arch::Arm64Ios => "@rpath/h2game.framework/h2game".into(),
             Arch::Arm64 | Arch::X86_64 => out.as_os_str().to_owned(),
         }
+    }
+
+    /// A macOS target (the ones `h2 build` runs on).
+    pub fn is_macos(self) -> bool {
+        matches!(self, Arch::Arm64 | Arch::X86_64)
     }
 }
 
@@ -233,7 +253,8 @@ pub fn architectures(selection: Option<&str>) -> Result<Vec<Arch>, Error> {
         "arm64" => Ok(vec![Arch::Arm64]),
         "x86_64" => Ok(vec![Arch::X86_64]),
         "tvos" => Ok(vec![Arch::Arm64Tvos]),
-        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64 or tvos"))),
+        "ios" => Ok(vec![Arch::Arm64Ios]),
+        value => Err(err(format!("--arch {value}: expected host, all, arm64, x86_64, tvos or ios"))),
     }
 }
 
@@ -845,15 +866,21 @@ mod tests {
     }
 
     #[test]
-    fn the_emit_target_is_the_host_unless_tvos_is_asked_for() {
+    fn the_emit_target_is_the_host_unless_tvos_or_ios_is_asked_for() {
         assert_eq!(Arch::target_from(None).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("")).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("host")).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("macos")).unwrap(), Arch::host());
         assert_eq!(Arch::target_from(Some("tvos")).unwrap(), Arch::Arm64Tvos);
-        assert!(Arch::target_from(Some("ios")).is_err());
+        assert_eq!(Arch::target_from(Some("ios")).unwrap(), Arch::Arm64Ios);
+        assert!(Arch::target_from(Some("iphoneos")).is_err());
         assert_eq!(architectures(Some("tvos")).unwrap(), vec![Arch::Arm64Tvos]);
-        assert!(!Arch::ALL.contains(&Arch::Arm64Tvos), "--arch all stays the macOS release pair");
+        assert_eq!(architectures(Some("ios")).unwrap(), vec![Arch::Arm64Ios]);
+        for a in [Arch::Arm64Tvos, Arch::Arm64Ios] {
+            assert!(!Arch::ALL.contains(&a), "--arch all stays the macOS release pair");
+            assert!(!a.is_macos());
+        }
+        assert!(Arch::Arm64.is_macos() && Arch::X86_64.is_macos());
     }
 
     #[test]
@@ -869,21 +896,35 @@ mod tests {
         assert_eq!(Arch::Arm64Tvos.install_name(out), "@rpath/h2game.framework/h2game");
     }
 
-    /// The tvOS arguments compile and link a dylib whose load commands say
-    /// tvOS, with the SDK's headers (generated code includes math.h).
     #[test]
-    fn tvos_target_args_build_a_tvos_dylib() {
-        let Ok(args) = Arch::Arm64Tvos.target_args() else {
-            eprintln!("SKIPPED tvos_target_args_build_a_tvos_dylib: no appletvos SDK");
+    fn ios_objects_are_named_and_keyed_apart_from_macos_and_tvos() {
+        assert_eq!(Arch::Arm64Ios.triple(), format!("arm64-apple-ios{IOS_DEPLOYMENT_TARGET}"));
+        let names = [Arch::Arm64, Arch::X86_64, Arch::Arm64Tvos, Arch::Arm64Ios].map(Arch::name);
+        for (i, a) in names.iter().enumerate() {
+            assert!(!names[i + 1..].contains(a), "object and pin names: {names:?}");
+        }
+        let key = |a| common_key(b"h2gen", b"h2abi", a, &[], "toolchain");
+        assert_ne!(key(Arch::Arm64Ios), key(Arch::Arm64));
+        assert_ne!(key(Arch::Arm64Ios), key(Arch::Arm64Tvos));
+        assert_eq!(Arch::Arm64Ios.sdk(), Some("iphoneos"));
+        assert_eq!(Arch::Arm64Ios.install_name(Path::new("/o/x.dylib")), "@rpath/h2game.framework/h2game");
+    }
+
+    /// The tvOS and iOS arguments compile and link a dylib whose load
+    /// commands name that platform, with the SDK's headers (generated code
+    /// includes math.h).
+    fn device_target_args_build_a_dylib(arch: Arch, sysroot: &str, platform: &str) {
+        let Ok(args) = arch.target_args() else {
+            eprintln!("SKIPPED {arch:?} dylib: no {:?} SDK", arch.sdk());
             return;
         };
-        assert_eq!(&args[..3], ["-target", Arch::Arm64Tvos.triple(), "-isysroot"]);
-        assert!(args[3].contains("AppleTVOS"), "{args:?}");
+        assert_eq!(&args[..3], ["-target", arch.triple(), "-isysroot"]);
+        assert!(args[3].contains(sysroot), "{args:?}");
         let Ok(cc) = compiler() else {
-            eprintln!("SKIPPED tvos_target_args_build_a_tvos_dylib: no clang");
+            eprintln!("SKIPPED {arch:?} dylib: no clang");
             return;
         };
-        let dir = std::env::temp_dir().join(format!("h2-emit-tvos-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("h2-emit-{}-{}", arch.name(), std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("t.c");
         std::fs::write(&src, "#include <math.h>\n#include <string.h>\ndouble h2_t(double x) { return sqrt(x) + (double)strlen(\"ab\"); }\n").unwrap();
@@ -891,7 +932,7 @@ mod tests {
         let o = Command::new(&cc)
             .args(&args)
             .args(["-dynamiclib", "-Xlinker", "-install_name", "-Xlinker"])
-            .arg(Arch::Arm64Tvos.install_name(&lib))
+            .arg(arch.install_name(&lib))
             .arg(&src)
             .arg("-o")
             .arg(&lib)
@@ -900,9 +941,19 @@ mod tests {
         assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
         let show = Command::new("xcrun").args(["vtool", "-show-build"]).arg(&lib).output().unwrap();
         let text = String::from_utf8_lossy(&show.stdout);
-        assert!(text.contains("TVOS"), "{text}");
+        assert!(text.lines().any(|l| l.split_whitespace().eq(["platform", platform])), "{text}");
         assert!(!text.contains("MACOS"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tvos_target_args_build_a_tvos_dylib() {
+        device_target_args_build_a_dylib(Arch::Arm64Tvos, "AppleTVOS", "TVOS");
+    }
+
+    #[test]
+    fn ios_target_args_build_an_ios_dylib() {
+        device_target_args_build_a_dylib(Arch::Arm64Ios, "iPhoneOS", "IOS");
     }
 
     #[test]

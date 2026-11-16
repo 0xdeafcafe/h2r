@@ -1,0 +1,14 @@
+// Signing and identity for the iOS app (docs/ios.md). Put your own
+// values in Local.xcconfig next to this file (not committed), e.g.
+//
+//   DEVELOPMENT_TEAM = ABCDE12345
+//   PRODUCT_BUNDLE_IDENTIFIER = com.example.h2recomp
+//
+// or pass them to xcodebuild on the command line.
+PRODUCT_BUNDLE_IDENTIFIER = red.forbes.h2recomp.ios
+PRODUCT_NAME = H2iOS
+DEVELOPMENT_TEAM =
+CODE_SIGN_STYLE = Automatic
+CODE_SIGN_IDENTITY = Apple Development
+
+#include? "Local.xcconfig"

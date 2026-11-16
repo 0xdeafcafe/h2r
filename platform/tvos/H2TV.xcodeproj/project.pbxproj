@@ -13,17 +13,18 @@
 		1C8CCE1D980514B8C1EFF0E3 /* libc++.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 03B7CC1D051124FCFC02426C /* libc++.tbd */; };
 		1CD761A997FE2AD6717BAAA7 /* GameViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B8E0881C89ADC475164346A /* GameViewController.swift */; };
 		35667F1C0C1A724120B62FDC /* bootcache in Resources */ = {isa = PBXBuildFile; fileRef = 9D00F6A2EDB26D0D1FBDC699 /* bootcache */; };
-		4C38978A8D1502D3DF7BF7D5 /* libtvos.a in Frameworks */ = {isa = PBXBuildFile; fileRef = C80F608251E861A54A18F6F4 /* libtvos.a */; };
 		7237EB887706E3D0E29C6ACD /* Security.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 11106874C268866FF344B5F3 /* Security.framework */; };
 		8A0595BD5AF60E5C3F7E8615 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A8379CCB6C23C76887CBBFB /* AppDelegate.swift */; };
 		9A67A1391FF52B6F78A47F7A /* CoreGraphics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BF2298D9123AD6FA3B7467BB /* CoreGraphics.framework */; };
 		9A819CEAD05D34B26741B14A /* QuartzCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 984C524D29A7B223DBFACB6C /* QuartzCore.framework */; };
 		BF96072C16D9A03697CA427E /* SystemConfiguration.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 2B795F84DC317780BCBCF850 /* SystemConfiguration.framework */; };
+		C8387781A99A37362B574239 /* GameKeyInput.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87169118516833B0FDE9D944 /* GameKeyInput.swift */; };
 		D70EB3C8A52BD46C77C1B6DE /* CoreHaptics.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 313B30411AC33541818B8D3C /* CoreHaptics.framework */; };
 		D8D7064FDA00AE7596D615FF /* Metal.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = E2A398C830D5A46FFF82EE99 /* Metal.framework */; };
 		E80866BDA9820599F646B344 /* h2game.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 03A74420D24FA5F1F648DA92 /* h2game.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		EF99853681BA9C635F190AB6 /* disc in Resources */ = {isa = PBXBuildFile; fileRef = B883F7A9947CB59E96981223 /* disc */; };
 		F72629466236F1F26ECB4A64 /* GameController.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A7012F3342DFE261BDF12096 /* GameController.framework */; };
+		FA78679CDF9BD88E1C3729F4 /* libh2host.a in Frameworks */ = {isa = PBXBuildFile; fileRef = 90BCE7FA3CE134E5072F18F2 /* libh2host.a */; };
 		FD1AD76E9BA601E9D5CFF24D /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EA48CAE70220FF3D55F4F74F /* AVFoundation.framework */; };
 /* End PBXBuildFile section */
 
@@ -44,19 +45,20 @@
 /* Begin PBXFileReference section */
 		03A74420D24FA5F1F648DA92 /* h2game.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = h2game.framework; path = build/h2game.framework; sourceTree = "<group>"; };
 		03B7CC1D051124FCFC02426C /* libc++.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = "libc++.tbd"; path = "usr/lib/libc++.tbd"; sourceTree = SDKROOT; };
+		04B502B1D8FECCC12DC6AB23 /* h2host.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h2host.h; sourceTree = "<group>"; };
 		05C6EA07EA72C42445C35018 /* H2TV.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = H2TV.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		11106874C268866FF344B5F3 /* Security.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Security.framework; path = System/Library/Frameworks/Security.framework; sourceTree = SDKROOT; };
-		134B0B00EB6160B1AFCB1444 /* h2tv.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = h2tv.h; sourceTree = "<group>"; };
 		1B8E0881C89ADC475164346A /* GameViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameViewController.swift; sourceTree = "<group>"; };
 		2B795F84DC317780BCBCF850 /* SystemConfiguration.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SystemConfiguration.framework; path = System/Library/Frameworks/SystemConfiguration.framework; sourceTree = SDKROOT; };
 		313B30411AC33541818B8D3C /* CoreHaptics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreHaptics.framework; path = System/Library/Frameworks/CoreHaptics.framework; sourceTree = SDKROOT; };
 		6A8379CCB6C23C76887CBBFB /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		87169118516833B0FDE9D944 /* GameKeyInput.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameKeyInput.swift; sourceTree = "<group>"; };
+		90BCE7FA3CE134E5072F18F2 /* libh2host.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libh2host.a; path = build/libh2host.a; sourceTree = "<group>"; };
 		984C524D29A7B223DBFACB6C /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		9D00F6A2EDB26D0D1FBDC699 /* bootcache */ = {isa = PBXFileReference; lastKnownFileType = folder; name = bootcache; path = build/bootcache; sourceTree = SOURCE_ROOT; };
 		A7012F3342DFE261BDF12096 /* GameController.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = GameController.framework; path = System/Library/Frameworks/GameController.framework; sourceTree = SDKROOT; };
 		B883F7A9947CB59E96981223 /* disc */ = {isa = PBXFileReference; lastKnownFileType = folder; name = disc; path = build/disc; sourceTree = SOURCE_ROOT; };
 		BF2298D9123AD6FA3B7467BB /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
-		C80F608251E861A54A18F6F4 /* libtvos.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; name = libtvos.a; path = build/libtvos.a; sourceTree = "<group>"; };
 		CA37FB88B627ED25DC7D6076 /* AudioToolbox.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AudioToolbox.framework; path = System/Library/Frameworks/AudioToolbox.framework; sourceTree = SDKROOT; };
 		D0AA260DC8286CF45DCFB135 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		D7348BF418FD0EFE3016852B /* CoreAudio.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreAudio.framework; path = System/Library/Frameworks/CoreAudio.framework; sourceTree = SDKROOT; };
@@ -64,7 +66,7 @@
 		E2A398C830D5A46FFF82EE99 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
 		E30BF22BB91AB619A77E059B /* H2TV-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "H2TV-Bridging-Header.h"; sourceTree = "<group>"; };
 		EA48CAE70220FF3D55F4F74F /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
-		"TEMP_7A2917F3-FB27-4160-BAC9-8991DECDF39F" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
+		"TEMP_2F092955-A80E-400D-8393-981D70672FAC" /* Config.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; path = Config.xcconfig; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -72,7 +74,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				4C38978A8D1502D3DF7BF7D5 /* libtvos.a in Frameworks */,
+				FA78679CDF9BD88E1C3729F4 /* libh2host.a in Frameworks */,
 				D8D7064FDA00AE7596D615FF /* Metal.framework in Frameworks */,
 				9A819CEAD05D34B26741B14A /* QuartzCore.framework in Frameworks */,
 				9A67A1391FF52B6F78A47F7A /* CoreGraphics.framework in Frameworks */,
@@ -91,6 +93,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		2BA30781830E21E7690E65A6 /* platform */ = {
+			isa = PBXGroup;
+			children = (
+				978FC4389AC6D1D82A1CDF54 /* apple */,
+			);
+			name = platform;
+			path = ..;
+			sourceTree = "<group>";
+		};
 		6C59C2F75B86644FE73DCEFA /* build */ = {
 			isa = PBXGroup;
 			children = (
@@ -100,23 +111,24 @@
 			path = build;
 			sourceTree = "<group>";
 		};
-		877BE490119C067F09C9A1AC /* include */ = {
-			isa = PBXGroup;
-			children = (
-				134B0B00EB6160B1AFCB1444 /* h2tv.h */,
-			);
-			path = include;
-			sourceTree = "<group>";
-		};
 		89FDF0E46418EE8642E0AA40 = {
 			isa = PBXGroup;
 			children = (
 				6C59C2F75B86644FE73DCEFA /* build */,
 				B3841DAC4D89056127150CC9 /* H2TV */,
-				877BE490119C067F09C9A1AC /* include */,
+				2BA30781830E21E7690E65A6 /* platform */,
 				AC79D9137FE35E49BBC8112C /* Frameworks */,
 				D8B3A92434A6BEE83645A132 /* Products */,
 			);
+			sourceTree = "<group>";
+		};
+		978FC4389AC6D1D82A1CDF54 /* apple */ = {
+			isa = PBXGroup;
+			children = (
+				87169118516833B0FDE9D944 /* GameKeyInput.swift */,
+				04B502B1D8FECCC12DC6AB23 /* h2host.h */,
+			);
+			path = apple;
 			sourceTree = "<group>";
 		};
 		AC79D9137FE35E49BBC8112C /* Frameworks */ = {
@@ -130,8 +142,8 @@
 				A7012F3342DFE261BDF12096 /* GameController.framework */,
 				03A74420D24FA5F1F648DA92 /* h2game.framework */,
 				03B7CC1D051124FCFC02426C /* libc++.tbd */,
+				90BCE7FA3CE134E5072F18F2 /* libh2host.a */,
 				E0AD50C8519767CA3DB8815C /* libiconv.tbd */,
-				C80F608251E861A54A18F6F4 /* libtvos.a */,
 				E2A398C830D5A46FFF82EE99 /* Metal.framework */,
 				984C524D29A7B223DBFACB6C /* QuartzCore.framework */,
 				11106874C268866FF344B5F3 /* Security.framework */,
@@ -159,10 +171,10 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
-		"TEMP_7F8ABF2D-E02C-4F81-AB27-1A0B01C61C88" /* tvos */ = {
+		"TEMP_E7905C97-F9E0-4838-BF9C-79487FB3CD07" /* tvos */ = {
 			isa = PBXGroup;
 			children = (
-				"TEMP_7A2917F3-FB27-4160-BAC9-8991DECDF39F" /* Config.xcconfig */,
+				"TEMP_2F092955-A80E-400D-8393-981D70672FAC" /* Config.xcconfig */,
 			);
 			path = tvos;
 			sourceTree = "<group>";
@@ -242,6 +254,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				8A0595BD5AF60E5C3F7E8615 /* AppDelegate.swift in Sources */,
+				C8387781A99A37362B574239 /* GameKeyInput.swift in Sources */,
 				1CD761A997FE2AD6717BAAA7 /* GameViewController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -251,7 +264,7 @@
 /* Begin XCBuildConfiguration section */
 		5028BB857C6DB5E9AF2BDEB8 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_7A2917F3-FB27-4160-BAC9-8991DECDF39F" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_2F092955-A80E-400D-8393-981D70672FAC" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -366,7 +379,7 @@
 		};
 		D06BD3EBD7AE992202566974 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = "TEMP_7A2917F3-FB27-4160-BAC9-8991DECDF39F" /* Config.xcconfig */;
+			baseConfigurationReference = "TEMP_2F092955-A80E-400D-8393-981D70672FAC" /* Config.xcconfig */;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
 				CLANG_ANALYZER_NONNULL = YES;

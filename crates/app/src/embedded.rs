@@ -1,13 +1,16 @@
 //! The shell for a native host that owns the window and the run loop
-//! (the tvOS app, platform/tvos; docs/tvos.md), in place of winit's.
+//! (the tvOS and iOS apps, platform/tvos and platform/ios; docs/tvos.md,
+//! docs/ios.md), in place of winit's.
 //!
 //! The host hands over a `CAMetalLayer` and calls [`Embedded::redraw`] from
 //! its display link on the main thread; everything else is the windowed
 //! shell's: the same [`GuestHost`] on a guest thread, the same frame
-//! handoff, compositor and pacing. Input is GameController: pads and the
-//! Apple TV remote, behind the shell's usual player-one pad (no keyboard
-//! or mouse events ever arrive; the pad only tracks the device last used,
-//! for the button icons).
+//! handoff, compositor and pacing. Input is GameController: pads, the
+//! Apple TV remote and iOS's on-screen controls, behind the shell's usual
+//! player-one pad (no key or mouse events arrive; the pad tracks the
+//! device last used, for the button icons). Text typed into the game's
+//! virtual keyboard comes from the host's system keyboard through
+//! [`Embedded::keyboard`] (docs/host-keyboard.md).
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,6 +38,7 @@ pub struct Embedded {
     pace_stats: Arc<Mutex<PaceStats>>,
     _audio: AudioOut,
     exit: Option<GuestExit>,
+    keyboard: Option<input::backend::keyboard::KeyboardMouse>,
 }
 
 impl Embedded {
@@ -71,6 +75,7 @@ impl Embedded {
         // the shell's mixer only needs consuming.
         let audio = AudioOut::silent(FALLBACK_RATE, Some(life.clone()));
         let (input, keyboard) = crate::build_input(&config);
+        let kept_keyboard = keyboard.clone();
         let pace_stats = Arc::default();
         let host = GuestHost {
             gfx: crate::share_context(&ctx),
@@ -98,6 +103,7 @@ impl Embedded {
             pace_stats,
             _audio: audio,
             exit: None,
+            keyboard: kept_keyboard,
         })
     }
 
@@ -140,6 +146,16 @@ impl Embedded {
         self.ctx.queue.present(target);
     }
 
+    /// The player-one pad's handle: whether the game's virtual keyboard has
+    /// a field open ([`KeyboardMouse::text_active`]) and where the host's
+    /// committed text goes ([`KeyboardMouse::commit_text`]).
+    ///
+    /// [`KeyboardMouse::text_active`]: input::backend::keyboard::KeyboardMouse::text_active
+    /// [`KeyboardMouse::commit_text`]: input::backend::keyboard::KeyboardMouse::commit_text
+    pub fn keyboard(&self) -> Option<&input::backend::keyboard::KeyboardMouse> {
+        self.keyboard.as_ref()
+    }
+
     /// The layer's drawable size changed (pixels).
     pub fn resize(&mut self, size: (u32, u32)) {
         self.surface.resize(size);
@@ -174,11 +190,12 @@ impl Embedded {
     }
 }
 
-/// The shell settings a tvOS host starts from: full screen with the 4:3
-/// guest picture fitted, pads and the remote on, no mouse, and `h2 play`'s
-/// shutdown grace. `keyboard` stays on for the player-one pad that merges
-/// the devices and records the one last used (no key ever arrives).
-pub fn tv_config() -> AppConfig {
+/// The shell settings a tvOS or iOS host starts from: full screen with the
+/// 4:3 guest picture fitted, pads (the remote, the on-screen controls) on,
+/// no mouse, and `h2 play`'s shutdown grace. `keyboard` stays on for the
+/// player-one pad that merges the devices and records the one last used,
+/// and for the host's text in the game's virtual keyboard.
+pub fn device_config() -> AppConfig {
     AppConfig {
         title: "Halo 2".into(),
         fullscreen: true,
@@ -196,8 +213,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tv_config_keeps_pads_and_the_player_one_pad() {
-        let c = tv_config();
+    fn device_config_keeps_pads_and_the_player_one_pad() {
+        let c = device_config();
         assert!(c.keyboard && !c.mouse_capture && c.gamepads && c.fullscreen);
         // The player-one pad tracks the last-used device for the icons.
         let (_, keyboard) = crate::build_input(&AppConfig {
@@ -215,7 +232,7 @@ mod tests {
         // SAFETY: null is checked first and nothing else is touched.
         let r = unsafe {
             Embedded::start(
-                tv_config(),
+                device_config(),
                 std::ptr::null_mut(),
                 (1920, 1080),
                 Box::new(|_| Ok(())),
