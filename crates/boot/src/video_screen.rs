@@ -463,7 +463,7 @@ mod tests {
         let m = all();
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1x"));
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
         assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "On"));
         assert_eq!(drawn(&m, LIST, 4), None);
         assert_eq!(drawn(&m, LIST, -1), None);
@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "75"));
         assert_eq!(fov.get(), 75, "applies at once");
         press(&m, LIST, 2);
-        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "2x (restart)"));
+        assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1280x960 (restart)"));
         assert_eq!(press(&m, List::Settings, 2), Chosen::Open(SCREEN));
         assert_eq!(
             drawn(&m, List::Controls, 6),
@@ -558,8 +558,8 @@ mod tests {
             "Video",
             "Uncapped",
             "60 (restart)",
-            "6x",
-            "6x (restart)",
+            "3840x2880",
+            "3840x2880 (restart)",
             "150",
             "30",
             "",

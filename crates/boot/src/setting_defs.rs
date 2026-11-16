@@ -74,15 +74,24 @@ pub static FPS: Def = Def {
     }),
 };
 
+/// The guest's back buffer: always 640x480. Halo 2's 480p mode is an
+/// upscale and its widescreen is anamorphic 640x480 (docs/high-resolution.md
+/// "Terms" and "Prior art"), so no video mode changes it.
+pub const GUEST_FRAME: (u32, u32) = (640, 480);
+
 pub static RENDER_SCALE: Def = Def {
     key: "graphics.render_scale",
     label: "Resolution",
-    help: "Internal resolution as a multiple of 640x480. The row steps 1x to 4x; \
-           the file and H2_RENDER_SCALE take up to 6x.",
+    help: "Internal resolution as a multiple of the game's 640x480; the row shows the \
+           size it renders at (1280x960 for 2). The row steps 1 to 4; the file and \
+           H2_RENDER_SCALE take up to 6.",
     kind: Kind::Int {
         valid: 1..=d3d::scaled::MAX_SCALE as i64,
         steps: &[1, 2, 3, 4],
-        unit: Unit::Times,
+        unit: Unit::Pixels {
+            width: GUEST_FRAME.0,
+            height: GUEST_FRAME.1,
+        },
     },
     default: Value::Int(1),
     env: Some("H2_RENDER_SCALE"),
