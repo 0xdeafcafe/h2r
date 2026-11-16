@@ -1,0 +1,14 @@
+[package]
+name = "mopp"
+description = "Havok MOPP code for Halo 2 structure BSPs: the engine's interpreter semantics as a query model, and an offline compiler over collision surfaces"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+tags.workspace = true
+
+[dev-dependencies]
+map.workspace = true
+xiso.workspace = true
+anyhow.workspace = true
