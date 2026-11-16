@@ -61,6 +61,20 @@ pub trait GuestMemory {
         self.read(addr, &mut v)?;
         Ok(v)
     }
+    /// Appends the `len` bytes at `addr` to `out` (same limits as
+    /// [`read_vec`](Self::read_vec)); `out` is unchanged on an error. The
+    /// default reads into zeroed space; an implementation that can copy
+    /// straight from its memory skips the zeroing.
+    fn read_append(&self, addr: u32, len: usize, out: &mut Vec<u8>) -> Result<(), GuestError> {
+        check_range(addr, len)?;
+        let start = out.len();
+        out.resize(start + len, 0);
+        let r = self.read(addr, &mut out[start..]);
+        if r.is_err() {
+            out.truncate(start);
+        }
+        r
+    }
     /// Reads `n` consecutive `u32`s (same limits as [`read_vec`](Self::read_vec)).
     fn read_words(&self, addr: u32, n: usize) -> Result<Vec<u32>, GuestError> {
         let len = n.checked_mul(4).ok_or(GuestError {
@@ -169,6 +183,19 @@ impl GuestMemory for SparseMemory {
         self.walk(addr, out.len(), |page, off, done, n| {
             out[done..done + n].copy_from_slice(&page[off..off + n])
         })
+    }
+
+    fn read_append(&self, addr: u32, len: usize, out: &mut Vec<u8>) -> Result<(), GuestError> {
+        check_range(addr, len)?;
+        let start = out.len();
+        out.reserve(len);
+        let r = self.walk(addr, len, |page, off, _, n| {
+            out.extend_from_slice(&page[off..off + n])
+        });
+        if r.is_err() {
+            out.truncate(start);
+        }
+        r
     }
 
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestError> {

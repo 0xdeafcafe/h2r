@@ -863,6 +863,28 @@ impl Guest {
         }
         Ok(())
     }
+    /// [`read_bytes`](Self::read_bytes) of `len` bytes appended to `out`,
+    /// without zeroing them first. `out` is unchanged on a fault.
+    pub fn read_append(
+        &self,
+        addr: u32,
+        len: usize,
+        out: &mut Vec<u8>,
+        alignment: u32,
+    ) -> Result<(), GuestFault> {
+        let Some(mut index) = self.checked_start(addr, len, Access::Read, alignment)? else {
+            return Ok(());
+        };
+        out.reserve(len);
+        let (mut cursor, end) = (addr as u64, addr as u64 + len as u64);
+        while cursor < end {
+            let span = self.span(index, cursor, end);
+            cursor += span.len() as u64;
+            out.extend_from_slice(&self.ram[span]);
+            index += 1;
+        }
+        Ok(())
+    }
     /// No bytes change unless every mapping in the access is writable.
     pub fn write_bytes(
         &mut self,
