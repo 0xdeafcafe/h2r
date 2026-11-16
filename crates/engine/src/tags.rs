@@ -14,10 +14,10 @@ use crate::memory::{GuestMemory, MemFault};
 type R<T> = Result<T, MemFault>;
 
 /// Global holding the guest address of the tag-index header.
-pub const TAG_INDEX_GLOBAL: u32 = 0x0054_7f00;
+pub const TAG_INDEX_GLOBAL: u32 = crate::points::TAG_INDEX.base;
 /// Global holding the guest address of the 16-byte tag-entry table. The
 /// checked lookup uses this, not the index header's own `+8` pointer.
-pub const TAG_ENTRIES_GLOBAL: u32 = 0x004e_3b44;
+pub const TAG_ENTRIES_GLOBAL: u32 = crate::points::TAG_ENTRIES.base;
 
 /// Tag-index header fields read here (`docs/map-format.md`).
 pub mod index_layout {
@@ -25,6 +25,8 @@ pub mod index_layout {
     pub const GROUPS: u32 = 0x00;
     /// `i32` group record count.
     pub const GROUP_COUNT: u32 = 0x04;
+    /// The loaded scenario's tag datum (the cache loader reads it there).
+    pub const SCENARIO: u32 = 0x0c;
     /// `i32` tag slot count. The lookup's bound.
     pub const TAG_COUNT: u32 = 0x18;
 }

@@ -141,6 +141,11 @@ impl DatumArray {
         m.set_i32(self.f(off), v)
     }
 
+    /// One `i32` header field (`layout::*`), as the guest reads it.
+    pub fn header_field(&self, m: &dyn GuestMemory, off: u32) -> R<i32> {
+        self.get(m, off)
+    }
+
     pub fn header(&self, m: &dyn GuestMemory) -> R<Header> {
         let mut name = [0; 32];
         m.read(self.addr, &mut name)?;
