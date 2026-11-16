@@ -88,6 +88,40 @@ pub const OBJECT_BODY: u32 = 0x8;
 pub const BODY_PARENT: u32 = 0x14;
 pub const BODY_POSITION: u32 = 0x64;
 pub const BODY_FORWARD: u32 = 0x70;
+/// Object body `+0`: the definition tag's full salted datum.
+pub const BODY_DEFINITION: u32 = 0x0;
+pub const OBJECT_TYPE_WEAPON: u8 = 2;
+
+// Tag index (docs/engine/tag_get_checked.md). The cache loader `0x00122a52`
+// publishes the index header and reads the scenario datum from `+0x0c`
+// (`0x00122ad8`); the map file's own index carries the same datums, which is
+// how a host-side name table is checked against the loaded map.
+pub const TAG_INDEX_PTR: u32 = 0x0054_7f00;
+pub const TAG_INDEX_SCENARIO: u32 = 0xc;
+
+// Unit body, players frame fields (docs/live-gamestate.md, "Unit aim and held
+// weapon"). Layout confirmed: `unit_new` (`0x000c4410`) sets the four weapon
+// datums at `+0x218` and the two current-weapon indices at `+0x212`/`+0x213`
+// to none, and initialises five vectors from the object forward vector
+// (`+0x150`, `+0x15c`, `+0x168`, `+0x180`, `+0x18c`). Readers: `0x000c85c0`
+// and `0x000cf3d0` index `+0x218` by the `i8` at `+0x212`.
+pub const UNIT_WEAPON_INDEX: u32 = 0x212; // i8; -1 none
+pub const UNIT_WEAPONS: u32 = 0x218; // u32[4] weapon object datums
+pub const UNIT_WEAPON_SLOTS: i8 = 4;
+/// likely: the aiming vector. `0x000cf3d0` casts the held weapon's
+/// targeting ray from the unit origin along it (scaled by the weapon's
+/// range), so it is world space; whether it is the smoothed vector or the
+/// desired one (`+0x15c`, the one networked by `0x0009d450`) is not
+/// established. Readers drop it unless finite and near unit length.
+pub const UNIT_AIM: u32 = 0x168;
+
+/// Weapon barrel fire, `0x00104150`: stdcall (weapon object datum, `i16`
+/// barrel index), `ret 8`. Its one caller, `0x000fd980`, runs it for each
+/// barrel whose pending-fire flag (bit 1 of the barrel state byte, weapon
+/// body `+0x1a8 + 0x34 * barrel`) is set and then clears the flag. One call
+/// is one shot (likely: a shotgun's pellets are one call; a battle rifle's
+/// burst is three).
+pub const WEAPON_FIRE: u32 = 0x0010_4150;
 
 /// Fields whose names or semantics are only "likely" in the research document.
 /// They are not needed for the initial event contract. Runtime validation can
@@ -107,6 +141,8 @@ pub const LIKELY_FIELDS: &[(&str, u32)] = &[
     ("profile.appearance.colors", 0x118),
     ("profile.appearance.emblem_foreground", 0x11d),
     ("profile.appearance.emblem_background", 0x11e),
+    ("unit.aiming_vector", UNIT_AIM),
+    ("weapon_fire.one_call_per_shot", WEAPON_FIRE),
 ];
 
 pub const fn variant_name(index: i32) -> Option<&'static str> {

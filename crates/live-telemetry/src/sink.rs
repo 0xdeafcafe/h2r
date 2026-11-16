@@ -67,6 +67,15 @@ impl Sink for JsonlSink {
     }
 }
 
+/// Keeps only the newer of two queued frames, carrying the older one's
+/// shots into it (same game only).
+fn coalesce(older: Option<Frame>, mut newer: Frame) -> Frame {
+    if let Some(older) = older.filter(|f| f.game_id == newer.game_id) {
+        newer.add_shots(older.shots().collect::<Vec<_>>());
+    }
+    newer
+}
+
 pub struct QueuedSink {
     events: std::sync::mpsc::SyncSender<GameEvent>,
     frames: std::sync::mpsc::SyncSender<Frame>,
@@ -120,7 +129,7 @@ impl QueuedSink {
                         }
                         let mut latest = None;
                         while let Ok(frame) = frame_rx.try_recv() {
-                            latest = Some(frame);
+                            latest = Some(coalesce(latest, frame));
                         }
                         if let Some(frame) = latest
                             && let Err(e) = sink.frame(frame)
@@ -138,7 +147,7 @@ impl QueuedSink {
                     }
                     let mut latest = None;
                     while let Ok(frame) = frame_rx.try_recv() {
-                        latest = Some(frame);
+                        latest = Some(coalesce(latest, frame));
                     }
                     if let Some(frame) = latest {
                         let _ = sink.frame(frame);
@@ -261,7 +270,7 @@ mod tests {
                 alive: false,
                 pos: [0.0; 3],
                 yaw: 0.0,
-                vehicle: None,
+                ..Default::default()
             }],
         })
         .unwrap();

@@ -2185,6 +2185,7 @@ name = "live-telemetry"
 version = "0.1.0"
 dependencies = [
  "live-proto",
+ "map",
  "runtime",
  "runtime-test-probe",
  "rustls",

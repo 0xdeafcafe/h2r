@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use live_proto::game::{Frame, PlayerScore, TeamScore, Winner};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -78,11 +80,25 @@ impl PlayerState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ObjectState {
     pub pos: [f64; 3],
     pub forward: [f64; 3],
     pub vehicle: Option<u32>,
+    /// The unit's own definition tag datum (the biped's, also in a vehicle).
+    pub definition: Option<u32>,
+    /// The unit's aiming vector, unit length; `None` when the read value is
+    /// not a finite, near-unit vector.
+    pub aim: Option<[f64; 3]>,
+    /// The weapon the unit holds.
+    pub weapon: Option<Weapon>,
+}
+
+/// A held weapon: its object datum and its definition tag datum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Weapon {
+    pub datum: u32,
+    pub definition: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +126,9 @@ pub struct Snapshot {
     pub players: Vec<PlayerState>,
     pub teams: Vec<TeamScore>,
     pub objects: Vec<Option<ObjectState>>,
+    /// Shots fired since the previous snapshot, by weapon object datum
+    /// (from the weapon-fire hook; empty when it is not installed).
+    pub shots: BTreeMap<u32, u32>,
 }
 
 impl Snapshot {

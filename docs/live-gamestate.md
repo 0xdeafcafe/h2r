@@ -308,6 +308,28 @@ For an unparented unit, marker position is `body+0x64`, and heading is `atan2(fo
 3. Use the vehicle body's `+0x64` origin and `+0x70` forward, and optionally the unit's `+0x1fc` seat.
 4. If drawing a parented biped rather than its vehicle, compose the full object matrix instead of assuming `+0x64` is world-space.
 
+### Unit aim, held weapon, species and shots
+
+Added 2026-11-16 for the viewer's player models, from static reading of the
+XBE with an iced-x86 disassembly (no game run). Offsets are into the unit
+body (`H` lookup above); `W` is a weapon object body.
+
+| Field | Offset | Type | Confidence | Evidence |
+|---|---:|---|---|---|
+| current weapon index | unit `+0x212` | `i8` | confirmed | `unit_new` `0x000c4410` sets it to `-1`; `0x000c58f0`, `0x000c85c0` and `0x000cf3d0` sign-extend it and index `+0x218` with it |
+| second weapon index | unit `+0x213` | `i8` | confirmed layout; likely dual-wield | Set to `-1` with `+0x212`; `0x000c85c0` loops over both bytes |
+| weapon object datums | unit `+0x218` | `u32[4]` | confirmed | `unit_new` sets all four to none; network-state builder `0x0009d450` walks the four slots and reads each weapon's magazines |
+| aiming vector | unit `+0x168` | `f32[3]` | likely | Layout confirmed: `unit_new` copies the object forward (`+0x70`) into `+0x150`, `+0x15c`, `+0x168`, `+0x180`, `+0x18c`. `0x000cf3d0` casts the held weapon's targeting ray (collision test `0x001697c0`) from the unit origin `+0x64` along `+0x168` times the weapon definition's range (`+0x1b8`), so it is the world-space aim. Whether it is the smoothed or the desired vector is open: `0x0009d450` networks `+0x15c` instead |
+| weapon owner | `W+0x14` | `u32` | confirmed | The ordinary parent datum; `0x00101fb0` finds a weapon's owning unit through it (unit mask `3` at `0x000badc0`) |
+| magazine state | `W+0x228 + 0x10*i` | 16 bytes | confirmed layout | `0x00101a10` sets reserve `+0x22a` and loaded `+0x22c` (`i16`) from the definition's magazine block (`weap+0x2c0` count, `+0x2c4` pointer, stride `0x5c`); `0x00101740` moves ammunition between weapons. Not used: plasma weapons have no magazine |
+| barrel state | `W+0x1a4 + 0x34*i` | `0x34` bytes | confirmed layout | Byte `+4` bit 1 (`W+0x1a8`) is a pending-fire flag: `0x000fd980` fires each flagged barrel and clears the flag |
+
+**Held weapon:** `index = (i8) unit[+0x212]`; for `0..3`, `weapon = unit[+0x218 + 4*index]`. Check the weapon datum like a unit (salt, high-water, non-null body), require concrete type `2`, and require `W+0x14 == unit datum`. The weapon's definition tag datum is `W+0`.
+
+**Species and weapon names:** an object's definition tag datum (`body+0`) is the full salted datum of its tag-index entry. Tag *names* are, likely, not in guest memory: the cache loader's read (`0x00122a52` calling `0x00122d60`) is sized from the header's index/metadata fields (`0x00547710..0x0054771c`), and no instruction references the header's tag-name fields (`0x005479c0..0x005479cc`) by absolute address. The map file on disc has the same index, so the host reads the names there; a name table is trusted only when the file's scenario datum equals the guest's, read from the tag-index header at `[0x00547f00]+0x0c` (the loader reads it at `0x00122ad8` and publishes that tag's metadata pointer at `0x004e0350`). Multiplayer bipeds are named like `objects\characters\masterchief\masterchief_mp` and `objects\characters\elite\elite_mp`.
+
+**Shots:** `0x00104150` is the barrel fire: stdcall `(weapon object datum, i16 barrel index)`, `ret 8`, with a `0x1e98`-byte frame. Its only direct caller is the pending-fire loop `0x000fd980` (reached from `0x000a2df5` and `0x000fd95e`). It resolves the owner through `0x00101fb0`, reports the shot to the game engine (`0x0015cca0` with the owner's player datum), and creates the projectiles of every firing marker of the barrel through `object_new` (`0x000b7b40`). One call per shot is **likely** (a shotgun's pellets are created inside one call; a battle-rifle burst should be three calls). A hook on it counts shots for every weapon type, including those without magazines, which a rounds-loaded delta (`W+0x22c`) would miss; the delta would also need reload and pickup filtering.
+
 ## 7. Kill/death and damage hooks
 
 ### Best player-facing event: `0x0015ce70`
@@ -458,6 +480,7 @@ Consistency rules:
 - PGCR's detailed output structure was not mapped; only its construction hook is included.
 - A direct causative weapon tag is not available at `0x0015ce70`. Correlate `0x000d9640`'s `jpt!` damage datum if damage-effect identity is sufficient.
 - Options types other than `1`, `2`, and `3`, the ninth stat counter, and exact original names for game-engine state values remain unresolved and are not needed for the initial scoreboard.
+- Unit aim and shots are static-analysis-only: check that `+0x168` follows the reticle (not lagging it, which would point at `+0x15c`) and that one `0x00104150` call is one shot for automatic, burst, spread and plasma weapons.
 - The appearance path above is static-analysis-only: validate the local player-slot/profile offsets against the profile editor, and find where remote players' appearance lives in the `0x21c` record (candidate: the `+0x84..+0xc0` configuration gap). Rank is Xbox Live state and is not recoverable from guest memory.
 
 ## References
