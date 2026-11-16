@@ -1,6 +1,7 @@
 //! Our "Video" screen: a "Video" row on Halo 2's Settings, Controls screen
 //! that opens a second Controls screen holding our video rows (Field of
-//! View, Frame Rate, Resolution) instead of the retail six. See
+//! View, Frame Rate, Resolution, Mute Button: every setting whose `Def`
+//! names this screen, through the `ui` model) instead of the retail six. See
 //! docs/settings-menu.md "Video screen" for the trace.
 //!
 //! **Opening it.** The Settings screen opens Controls by building a
