@@ -927,6 +927,7 @@ dependencies = [
  "emit",
  "font",
  "gltf",
+ "h1map",
  "hs",
  "iced-x86",
  "image",

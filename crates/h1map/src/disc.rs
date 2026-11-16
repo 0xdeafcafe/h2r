@@ -137,20 +137,47 @@ pub fn map_stem(e: &Entry) -> &str {
         .map_or(n, |i| &n[..i])
 }
 
+/// A writer that hashes what passes through it.
+pub struct HashingWriter<W> {
+    inner: W,
+    hash: Sha256,
+    len: u64,
+}
+
+impl<W: Write> HashingWriter<W> {
+    /// Wraps `inner`.
+    pub fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hash: Sha256::new(),
+            len: 0,
+        }
+    }
+
+    /// The byte count and the SHA-256 of everything written.
+    pub fn finish(self) -> (u64, [u8; 32]) {
+        (self.len, self.hash.finalize().into())
+    }
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let n = self.inner.write(buf)?;
+        self.hash.update(&buf[..n]);
+        self.len += n as u64;
+        Ok(n)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// Copies `r` to `w`, returning the byte count and the SHA-256 of the bytes.
 pub fn copy_hashed(r: &mut impl Read, w: &mut impl Write) -> std::io::Result<(u64, [u8; 32])> {
-    let mut hash = Sha256::new();
-    let mut buf = vec![0u8; 1 << 20];
-    let mut n = 0u64;
-    loop {
-        let got = r.read(&mut buf)?;
-        if got == 0 {
-            return Ok((n, hash.finalize().into()));
-        }
-        hash.update(&buf[..got]);
-        w.write_all(&buf[..got])?;
-        n += got as u64;
-    }
+    let mut h = HashingWriter::new(w);
+    std::io::copy(r, &mut h)?;
+    Ok(h.finish())
 }
 
 /// One copied file, for the manifest.

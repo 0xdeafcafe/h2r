@@ -2,203 +2,11 @@
 //! at the end read the owner's disc from `$H1_ISO` (default
 //! `disc/halo1.iso` in the main checkout).
 
-use std::io::{Cursor, Write};
-
-use flate2::Compression;
-use flate2::write::ZlibEncoder;
+use std::io::Cursor;
 
 use crate::disc::{self, Disc};
+use crate::testing::*;
 use crate::*;
-
-const BASE: u32 = XBOX_METADATA_BASE;
-const SCNR_ID: u32 = 0xe174_0000;
-
-/// One invented tag: group, parents, name, data (None = external).
-struct Spec {
-    group: &'static [u8; 4],
-    parent: Option<&'static [u8; 4]>,
-    name: &'static str,
-    data: Option<Vec<u8>>,
-}
-
-/// Knobs for breaking an invented map.
-#[derive(Default, Clone)]
-struct Opts {
-    /// Close the index header at 0x24 (PC layout) instead of 0x20.
-    pc_index: bool,
-    /// Store this ID for tag 1 instead of the right one.
-    bad_id: Option<u32>,
-}
-
-struct Built {
-    /// The decompressed file.
-    file: Vec<u8>,
-    /// File offsets of each tag's data.
-    data_at: Vec<Option<usize>>,
-    /// The two BSP regions: (file offset, len).
-    bsps: Vec<(usize, usize)>,
-}
-
-fn put(b: &mut [u8], at: usize, v: u32) {
-    b[at..at + 4].copy_from_slice(&v.to_le_bytes());
-}
-
-fn group(code: &[u8; 4]) -> u32 {
-    u32::from_be_bytes(*code)
-}
-
-/// A scenario with a two-element structure BSP block (filled in by
-/// `build`), two BSP tags, a shader, an external bitmap and an `hmt ` tag.
-fn specs() -> Vec<Spec> {
-    vec![
-        Spec {
-            group: b"scnr",
-            parent: None,
-            name: "levels\\test\\tiny\\tiny",
-            data: Some(vec![0x5c; 0x600]),
-        },
-        Spec {
-            group: b"sbsp",
-            parent: None,
-            name: "levels\\test\\tiny\\tiny_a",
-            data: Some(vec![1; 0x10]),
-        },
-        Spec {
-            group: b"sbsp",
-            parent: None,
-            name: "levels\\test\\tiny\\tiny_b",
-            data: Some(vec![2; 0x10]),
-        },
-        Spec {
-            group: b"senv",
-            parent: Some(b"shdr"),
-            name: "levels\\test\\tiny\\shaders\\floor",
-            data: Some(vec![3; 0x44]),
-        },
-        Spec {
-            group: b"bitm",
-            parent: None,
-            name: "levels\\test\\tiny\\bitmaps\\floor",
-            data: None,
-        },
-        Spec {
-            group: b"hmt ",
-            parent: None,
-            name: "ui\\test\\hud",
-            data: Some(vec![4; 0x8]),
-        },
-    ]
-}
-
-fn build(opts: &Opts) -> Built {
-    let tags = specs();
-    let index_len = if opts.pc_index { 0x28 } else { 0x24 };
-    let index_at = HEADER_LEN;
-    // Metadata: index header, tag array, names, then each tag's data, then
-    // the scenario's BSP block elements.
-    let mut meta = vec![0u8; index_len];
-    let array_at = meta.len();
-    meta.resize(array_at + tags.len() * TAG_ENTRY_LEN, 0);
-    let addr = |off: usize| BASE + off as u32;
-    let mut name_addrs = Vec::new();
-    for t in &tags {
-        name_addrs.push(addr(meta.len()));
-        meta.extend(t.name.as_bytes());
-        meta.push(0);
-    }
-    let mut data_offs = Vec::new();
-    for t in &tags {
-        while !meta.len().is_multiple_of(4) {
-            meta.push(0);
-        }
-        data_offs.push(t.data.as_ref().map(|d| {
-            let at = meta.len();
-            meta.extend(d);
-            at
-        }));
-    }
-    let elems_at = meta.len();
-    meta.resize(elems_at + 2 * SCNR_BSP_LEN, 0);
-    let meta_len = meta.len();
-
-    // The BSP regions sit after the tag data, each at a stated offset.
-    let bsp_a = (index_at + meta_len + 0x40, 0x30);
-    let bsp_b = (bsp_a.0 + bsp_a.1 + 0x10, 0x20);
-    let file_len = bsp_b.0 + bsp_b.1 + 0x8;
-
-    // Scenario BSP block and its elements.
-    let scnr = data_offs[0].unwrap();
-    put(&mut meta, scnr + SCNR_STRUCTURE_BSPS, 2);
-    put(&mut meta, scnr + SCNR_STRUCTURE_BSPS + 4, addr(elems_at));
-    for (i, (off, len)) in [bsp_a, bsp_b].into_iter().enumerate() {
-        let e = elems_at + i * SCNR_BSP_LEN;
-        put(&mut meta, e, off as u32);
-        put(&mut meta, e + 4, len as u32);
-        put(&mut meta, e + 8, 0x8100_0000);
-        put(&mut meta, e + 0x10, group(b"sbsp"));
-        put(&mut meta, e + 0x14, name_addrs[1 + i]);
-        put(&mut meta, e + 0x18, tags[1 + i].name.len() as u32);
-        put(&mut meta, e + 0x1c, SCNR_ID + 1 + i as u32);
-    }
-
-    // Index header.
-    put(&mut meta, 0x00, addr(array_at));
-    put(&mut meta, 0x04, SCNR_ID);
-    put(&mut meta, 0x08, 0x1234_5678);
-    put(&mut meta, 0x0c, tags.len() as u32);
-    put(&mut meta, 0x10, 7);
-    put(&mut meta, 0x14, 0x8800_0000);
-    put(&mut meta, 0x18, 7);
-    put(&mut meta, 0x1c, 0x8900_0000);
-    put(&mut meta, index_len - 4, TAGS);
-
-    // Tag array.
-    for (i, t) in tags.iter().enumerate() {
-        let e = array_at + i * TAG_ENTRY_LEN;
-        put(&mut meta, e, group(t.group));
-        put(&mut meta, e + 4, t.parent.map_or(u32::MAX, group));
-        put(&mut meta, e + 8, u32::MAX);
-        let id = if i == 1 {
-            opts.bad_id.unwrap_or(SCNR_ID + 1)
-        } else {
-            SCNR_ID + i as u32
-        };
-        put(&mut meta, e + 0xc, id);
-        put(&mut meta, e + 0x10, name_addrs[i]);
-        put(&mut meta, e + 0x14, data_offs[i].map_or(9, addr));
-        put(&mut meta, e + 0x18, u32::from(t.data.is_none()));
-    }
-
-    let mut file = vec![0u8; file_len];
-    put(&mut file, 0, HEAD);
-    put(&mut file, 4, VERSION);
-    put(&mut file, 8, file_len as u32);
-    put(&mut file, 0x10, index_at as u32);
-    put(&mut file, 0x14, meta_len as u32);
-    file[0x20..0x24].copy_from_slice(b"tiny");
-    file[0x40..0x4d].copy_from_slice(b"01.10.12.2276");
-    file[0x60] = 0; // campaign
-    put(&mut file, 0x64, 0xcafe_f00d);
-    put(&mut file, FOOT_OFFSET, FOOT);
-    file[index_at..index_at + meta_len].copy_from_slice(&meta);
-    for (i, &(off, len)) in [bsp_a, bsp_b].iter().enumerate() {
-        file[off..off + len].fill(0xb0 + i as u8);
-    }
-    Built {
-        file,
-        data_at: data_offs.iter().map(|o| o.map(|o| index_at + o)).collect(),
-        bsps: vec![bsp_a, bsp_b],
-    }
-}
-
-/// The file as a disc stores it: the header, then the zlib stream.
-fn compress(file: &[u8]) -> Vec<u8> {
-    let mut out = file[..HEADER_LEN].to_vec();
-    let mut z = ZlibEncoder::new(Vec::new(), Compression::fast());
-    z.write_all(&file[HEADER_LEN..]).unwrap();
-    out.extend(z.finish().unwrap());
-    out
-}
 
 fn open(b: &Built) -> H1Map {
     H1Map::from_reader(Cursor::new(compress(&b.file))).unwrap()
@@ -478,100 +286,29 @@ fn groups_parse_and_print() {
 // ---------------------------------------------------------------------------
 // The disc.
 
-const SECTOR: usize = 2048;
-
-/// One directory table, entries chained down the right-hand side.
-fn table(items: &[(&str, u32, u32, bool)]) -> Vec<u8> {
-    let mut out = Vec::new();
-    let mut offs = Vec::new();
-    for &(name, sector, size, dir) in items {
-        offs.push(out.len());
-        let mut v = vec![0u8; 4];
-        v.extend(sector.to_le_bytes());
-        v.extend(size.to_le_bytes());
-        v.push(if dir { 0x10 } else { 0 });
-        v.push(name.len() as u8);
-        v.extend(name.as_bytes());
-        while !v.len().is_multiple_of(4) {
-            v.push(0xff);
-        }
-        out.extend(v);
-    }
-    for i in 0..offs.len().saturating_sub(1) {
-        let right = (offs[i + 1] / 4) as u16;
-        out[offs[i] + 2..offs[i] + 4].copy_from_slice(&right.to_le_bytes());
-    }
-    out.resize(SECTOR, 0xff);
-    out
-}
-
-/// A synthetic XBE: just enough header for `xbe::Xbe::parse`.
-fn xbe(title: u32) -> Vec<u8> {
-    let base = 0x10000u32;
-    let mut d = vec![0u8; 0x1000];
-    d[0..4].copy_from_slice(b"XBEH");
-    put(&mut d, 0x104, base);
-    put(&mut d, 0x108, 0x1000);
-    put(&mut d, 0x10c, 0x1000);
-    put(&mut d, 0x118, base + 0x200); // certificate
-    put(&mut d, 0x11c, 1); // one executable section over the headers
-    put(&mut d, 0x120, base + 0x300);
-    put(&mut d, 0x300, 0x04);
-    put(&mut d, 0x304, base);
-    put(&mut d, 0x308, 0x1000);
-    put(&mut d, 0x314, base + 0x380);
-    d[0x380] = b'x';
-    put(&mut d, 0x128, 0xA8FC_57AB ^ (base + 0x400)); // entry (retail key)
-    put(&mut d, 0x158, 0x5B6D_40B6 ^ (base + 0x400)); // thunk (retail key)
-    put(&mut d, 0x200, 0x1d0);
-    put(&mut d, 0x208, title);
-    put(&mut d, 0x200 + 0xac, 0x0000_0101);
-    d
-}
-
-/// A disc with default.xbe and `/maps/` holding `maps` (each 16 bytes of
-/// its index) and a non-map file.
-fn disc_image(title: u32, maps: &[&str]) -> Vec<u8> {
-    let mut img = vec![0u8; 200 * SECTOR];
-    let vd = 32 * SECTOR;
-    img[vd..vd + 20].copy_from_slice(b"MICROSOFT*XBOX*MEDIA");
-    img[vd + 20..vd + 24].copy_from_slice(&33u32.to_le_bytes());
-    img[vd + 24..vd + 28].copy_from_slice(&(SECTOR as u32).to_le_bytes());
-    let x = xbe(title);
-    let root = table(&[
-        ("default.xbe", 40, x.len() as u32, false),
-        ("maps", 34, SECTOR as u32, true),
-    ]);
-    img[33 * SECTOR..34 * SECTOR].copy_from_slice(&root);
-    img[40 * SECTOR..40 * SECTOR + x.len()].copy_from_slice(&x);
-    let mut items: Vec<(String, u32, u32, bool)> = maps
-        .iter()
-        .enumerate()
-        .map(|(i, m)| (m.to_string(), 50 + i as u32, 16, false))
-        .collect();
-    items.push(("readme.txt".into(), 49, 4, false));
-    let refs: Vec<(&str, u32, u32, bool)> = items
-        .iter()
-        .map(|(n, s, z, d)| (n.as_str(), *s, *z, *d))
-        .collect();
-    img[34 * SECTOR..35 * SECTOR].copy_from_slice(&table(&refs));
-    for (i, _) in maps.iter().enumerate() {
-        let at = (50 + i) * SECTOR;
-        img[at..at + 16].fill(i as u8 + 1);
-    }
-    img
-}
-
 const ALL_LEVELS: [&str; 10] = [
     "a10.map", "A30.map", "a50.map", "b30.map", "b40.map", "c10.map", "c20.map", "c40.map",
     "d20.map", "d40.map",
 ];
 
+/// Each name with 16 bytes of its own.
+fn files<'a>(names: &[&'a str]) -> Vec<(&'a str, Vec<u8>)> {
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (*n, vec![i as u8 + 1; 16]))
+        .collect()
+}
+
 #[test]
 fn recognises_the_disc_and_picks_the_campaign_maps() {
     let mut names = ALL_LEVELS.to_vec();
     names.extend(["ui.map", "bloodgulch.map"]);
-    let mut iso = xiso::Xiso::open(Cursor::new(disc_image(disc::HALO1_TITLE_ID, &names))).unwrap();
+    let mut iso = xiso::Xiso::open(Cursor::new(disc_image(
+        disc::HALO1_TITLE_ID,
+        &files(&names),
+    )))
+    .unwrap();
     let d = Disc::open(&mut iso).unwrap();
     assert_eq!(d.title_id, 0x4d53_0004);
     assert_eq!(d.version, 0x101);
@@ -596,7 +333,7 @@ fn recognises_the_disc_and_picks_the_campaign_maps() {
 fn a_disc_missing_a_level_or_another_title_is_refused() {
     let mut iso = xiso::Xiso::open(Cursor::new(disc_image(
         disc::HALO1_TITLE_ID,
-        &ALL_LEVELS[1..],
+        &files(&ALL_LEVELS[1..]),
     )))
     .unwrap();
     let err = Disc::open(&mut iso).unwrap().campaign_maps().unwrap_err();
@@ -604,7 +341,8 @@ fn a_disc_missing_a_level_or_another_title_is_refused() {
         err.to_string().contains("missing campaign maps: a10"),
         "{err}"
     );
-    let mut iso = xiso::Xiso::open(Cursor::new(disc_image(0x4d53_0064, &ALL_LEVELS))).unwrap();
+    let mut iso =
+        xiso::Xiso::open(Cursor::new(disc_image(0x4d53_0064, &files(&ALL_LEVELS)))).unwrap();
     let err = Disc::open(&mut iso).unwrap_err();
     assert!(err.to_string().contains("4D530064"), "{err}");
 }
@@ -722,3 +460,15 @@ fn real_disc_every_map_reads() {
 }
 
 const CAMPAIGN_LEVELS_LEN: usize = disc::CAMPAIGN_LEVELS.len();
+
+#[test]
+fn the_invented_campaign_disc_reads_end_to_end() {
+    let mut iso = xiso::Xiso::open(Cursor::new(campaign_disc())).unwrap();
+    let d = Disc::open(&mut iso).unwrap();
+    let picked: Vec<_> = d.campaign_maps().unwrap().into_iter().cloned().collect();
+    assert_eq!(picked.len(), 11);
+    for e in &picked {
+        let m = H1Map::from_reader(Cursor::new(iso.read(e).unwrap())).unwrap();
+        assert_eq!(m.structure_bsps().unwrap().len(), 2);
+    }
+}

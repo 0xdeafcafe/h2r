@@ -20,6 +20,8 @@
 pub mod disc;
 mod format;
 mod reader;
+#[doc(hidden)]
+pub mod testing;
 
 pub use format::*;
 pub use reader::{H1Map, parse_header};
