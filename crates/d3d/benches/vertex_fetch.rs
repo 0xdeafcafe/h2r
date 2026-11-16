@@ -172,7 +172,7 @@ fn make_draw(rng: &mut Rng, shape: &[Stream]) -> ResolvedDraw {
                 }
             }
             StreamBytes {
-                data,
+                data: data.into(),
                 stride: s.stride,
             }
         })

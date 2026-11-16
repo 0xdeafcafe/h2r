@@ -252,7 +252,7 @@ impl Gpu {
             primitive: PrimitiveType::TriangleList,
             vertex_count: 3,
             streams: vec![StreamBytes {
-                data,
+                data: data.into(),
                 stride: s.stride,
             }],
             layout: layout.clone(),

@@ -185,6 +185,12 @@ pub struct BatchStats {
 }
 
 impl GfxBackend {
+    /// Counters of the GPU buffers kept for vertex cache snapshots
+    /// ([`crate::vertex_cache`]).
+    pub fn persistent_vertex_stats(&self) -> gfx::persistent::PersistentStats {
+        self.renderer.persistent_stats()
+    }
+
     /// Where vertex formats are converted for program draws (default
     /// [`gfx::repack::FetchMode::from_env`]: the vertex shader, unless
     /// `H2_VERTEX_FETCH=cpu`). For tests and benches comparing the paths.
@@ -927,6 +933,8 @@ impl Backend for GfxBackend {
                 stride: s.stride,
             })
             .collect();
+        // Vertex cache snapshots keep their GPU buffers across frames.
+        let stream_ids: Vec<Option<u64>> = d.streams.iter().map(|s| s.data.cache_id()).collect();
         // Window-coordinate geometry: the clip rectangle only scissors.
         let pieces: Vec<Option<ScissorRect>> = d
             .clip_rects
@@ -978,6 +986,7 @@ impl Backend for GfxBackend {
                 indices,
                 count_samples,
                 window,
+                stream_ids: &stream_ids,
                 ..Draw::new(
                     SHADER_XYZRHW_DIFFUSE,
                     &d.layout,
@@ -1020,6 +1029,7 @@ impl Backend for GfxBackend {
             indices,
             count_samples,
             vertex_fetch: self.renderer.vertex_fetch(),
+            stream_ids: &stream_ids,
             ..Draw::new(
                 prepared.id,
                 &d.layout,

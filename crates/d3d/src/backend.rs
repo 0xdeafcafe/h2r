@@ -52,9 +52,114 @@ pub struct TextureInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StreamBytes {
     /// Bytes, first vertex first.
-    pub data: Vec<u8>,
+    pub data: StreamData,
     /// Stride in bytes.
     pub stride: u32,
+}
+
+/// A stream's bytes: a copy made for this draw, or a shared snapshot from
+/// the device's vertex cache (`docs/d3d.md`, "Vertex cache"). Both read as
+/// `[u8]`, and compare by their bytes.
+#[derive(Clone)]
+pub enum StreamData {
+    /// Copied for this draw (the buffer goes back to the device's pool).
+    Owned(Vec<u8>),
+    /// Guest bytes no store has touched since they were read: the same
+    /// snapshot for every draw of the range until it is written.
+    Cached(CachedBytes),
+}
+
+/// A vertex cache snapshot. `id` names these exact bytes: a refill of the
+/// same guest range gets a new one, so a backend may keep a host copy (a
+/// GPU buffer) per id and never check it again.
+#[derive(Clone, Debug)]
+pub struct CachedBytes {
+    /// Unique per snapshot, never reused.
+    pub id: u64,
+    /// The bytes.
+    pub bytes: std::sync::Arc<[u8]>,
+}
+
+impl StreamData {
+    /// The cache snapshot's id, if this is one.
+    pub fn cache_id(&self) -> Option<u64> {
+        match self {
+            Self::Owned(_) => None,
+            Self::Cached(c) => Some(c.id),
+        }
+    }
+
+    /// Heap capacity a pool would keep (`0` for a shared snapshot).
+    pub fn capacity(&self) -> usize {
+        match self {
+            Self::Owned(v) => v.capacity(),
+            Self::Cached(_) => 0,
+        }
+    }
+
+    /// The copied buffer back, for reuse; `None` for a shared snapshot.
+    pub fn into_owned_buffer(self) -> Option<Vec<u8>> {
+        match self {
+            Self::Owned(v) => Some(v),
+            Self::Cached(_) => None,
+        }
+    }
+}
+
+impl Default for StreamData {
+    fn default() -> Self {
+        Self::Owned(Vec::new())
+    }
+}
+
+impl std::ops::Deref for StreamData {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Owned(v) => v,
+            Self::Cached(c) => &c.bytes,
+        }
+    }
+}
+
+impl AsRef<[u8]> for StreamData {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+impl From<Vec<u8>> for StreamData {
+    fn from(v: Vec<u8>) -> Self {
+        Self::Owned(v)
+    }
+}
+
+impl PartialEq for StreamData {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for StreamData {}
+
+impl PartialEq<Vec<u8>> for StreamData {
+    fn eq(&self, other: &Vec<u8>) -> bool {
+        **self == **other
+    }
+}
+
+impl PartialEq<[u8]> for StreamData {
+    fn eq(&self, other: &[u8]) -> bool {
+        **self == *other
+    }
+}
+
+impl std::fmt::Debug for StreamData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Same output either way, so dumps of a draw do not depend on
+        // whether its bytes came from the cache.
+        std::fmt::Debug::fmt(&**self, f)
+    }
 }
 
 /// `D3DVIEWPORT8`.

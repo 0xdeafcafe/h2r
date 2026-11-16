@@ -33,6 +33,7 @@
 //! [`MAX_SPAN`]) before anything is read.
 
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
 use gfx::texture::{DecodeOptions, TextureDesc, decode_texture};
 use gfx::vertex::{
@@ -42,7 +43,7 @@ use gfx::xdk::RenderStateTable;
 use gfx::{Clear, D3DFormat};
 
 use crate::backend::{
-    Backend, DrawOutcome, ResolvedDraw, StreamBytes, TargetInfo, TextureInfo, Viewport,
+    Backend, DrawOutcome, ResolvedDraw, StreamBytes, StreamData, TargetInfo, TextureInfo, Viewport,
 };
 use crate::dirty::{UploadPolicy, WriteTracker, hash_bytes};
 use crate::events::{D3dError, Event, HleStop};
@@ -56,6 +57,7 @@ use crate::resource::{
 };
 use crate::shader::{CONSTANTS, PROGRAM_SLOTS, ShaderInputs, VertexProcessing};
 use crate::state::{DrawState, StateWords, Translator, slot};
+use crate::vertex_cache::{Probe, VertexCache};
 
 mod display;
 mod fragments;
@@ -371,6 +373,15 @@ pub struct Stats {
     pub mirror_loads: u64,
     /// Mirror bytes flushed to guest memory (one read-back each).
     pub mirror_flushes: u64,
+    /// Vertex-stream bytes copied out of guest memory for draws (vertex
+    /// cache fills included).
+    pub vertex_bytes_copied: u64,
+    /// Vertex streams drawn from a vertex cache snapshot, without a copy.
+    pub vertex_cache_hits: u64,
+    /// Bytes those streams held.
+    pub vertex_bytes_reused: u64,
+    /// Vertex cache snapshots taken.
+    pub vertex_cache_fills: u64,
 }
 
 /// What made the device write a render-to-texture level back to guest
@@ -652,6 +663,10 @@ pub struct Device<B: Backend> {
     stream_pool: Vec<Vec<u8>>,
     stream_pool_bytes: usize,
     stream_scratch: Vec<StreamBytes>,
+    /// Snapshots of vertex windows the guest has not written since
+    /// (`docs/d3d.md`, "Vertex cache"); `None` with `H2_VERTEX_CACHE=0`
+    /// ([`Device::set_vertex_cache`]).
+    vertex_cache: Option<VertexCache>,
     /// Data words of the push-buffer command being executed, reused.
     push_words: Vec<u32>,
     program: Box<[u32; PROGRAM_SLOTS * 4]>,
@@ -811,6 +826,9 @@ impl<B: Backend> Device<B> {
             stream_pool: Vec::new(),
             stream_pool_bytes: 0,
             stream_scratch: Vec::new(),
+            vertex_cache: std::env::var_os("H2_VERTEX_CACHE")
+                .is_none_or(|v| v != "0")
+                .then(|| VertexCache::new(VertexCache::budget_from_env())),
             push_words: Vec::new(),
             program: Box::new([0; PROGRAM_SLOTS * 4]),
             program_start: 0,
@@ -1211,6 +1229,9 @@ impl<B: Backend> Device<B> {
         self.swap_count = 0;
         self.fence = 0;
         self.cache.clear();
+        if let Some(c) = &mut self.vertex_cache {
+            c.clear();
+        }
         self.depth_copy = None;
         self.depth_read_generation = None;
         self.depth_alias.clear();
@@ -3039,6 +3060,9 @@ impl<B: Backend> Device<B> {
         timeline::frame();
         self.display.swapped = true;
         self.swap_count = self.swap_count.wrapping_add(1);
+        if let Some(c) = &mut self.vertex_cache {
+            c.end_frame();
+        }
         mem.write_u32(self.cfg.layout.device + field::SWAP_COUNT, self.swap_count)?;
         self.sync_registers(mem)?;
         self.vblanks_after_swap(mem)
@@ -3415,7 +3439,76 @@ impl<B: Backend> Device<B> {
             s.offset as u64 + first as u64 * s.stride as u64,
         )?;
         at(va, len as u64)?;
-        self.copy_stream(mem, va, len, s.stride)
+        self.cached_stream(mem, s.buffer, va, len, s.stride)
+    }
+
+    /// [`copy_stream`](Self::copy_stream) through the vertex cache: a
+    /// window whose pages are unwritten since it was last read comes back
+    /// as the same shared snapshot. `header` names the vertex buffer in a
+    /// [`Event::MissedInvalidation`].
+    fn cached_stream(
+        &mut self,
+        mem: &dyn GuestMemory,
+        header: u32,
+        va: u32,
+        len: usize,
+        stride: u32,
+    ) -> Result<StreamBytes, D3dError> {
+        let policy = self.cfg.upload;
+        let Some(cache) = self
+            .vertex_cache
+            .as_mut()
+            .filter(|_| policy != UploadPolicy::Always)
+        else {
+            return self.copy_stream(mem, va, len, stride);
+        };
+        crate::guest::check_range(va, len)?;
+        let len32 = len as u32;
+        match cache.probe(va, len32, &self.tracker) {
+            Probe::Hit(snapshot) => {
+                if policy == UploadPolicy::Verify {
+                    let copy = self.copy_stream(mem, va, len, stride)?;
+                    if *copy.data != *snapshot.bytes {
+                        self.events.push(Event::MissedInvalidation {
+                            header,
+                            addr: va,
+                            len: len32,
+                        });
+                        let generation = self.tracker.generation();
+                        if let Some(c) = &mut self.vertex_cache {
+                            c.invalidate(va, len32, generation);
+                        }
+                        return Ok(copy);
+                    }
+                    self.recycle_stream(copy.data);
+                }
+                self.stats.vertex_cache_hits += 1;
+                self.stats.vertex_bytes_reused += len as u64;
+                count_vertex_bytes(timeline::phase::Counter::VertexReused, len);
+                Ok(StreamBytes {
+                    data: StreamData::Cached(snapshot),
+                    stride,
+                })
+            }
+            Probe::Fill => {
+                let copy = self.copy_stream(mem, va, len, stride)?;
+                let bytes: Arc<[u8]> = Arc::from(&*copy.data);
+                self.recycle_stream(copy.data);
+                self.tracker.watch(va, len32);
+                let generation = self.tracker.generation();
+                let cache = self.vertex_cache.as_mut().expect("probed above");
+                let snapshot = cache.fill(va, len32, bytes, generation);
+                self.stats.vertex_cache_fills += 1;
+                Ok(StreamBytes {
+                    data: StreamData::Cached(snapshot),
+                    stride,
+                })
+            }
+            Probe::Copy => {
+                self.tracker.watch(va, len32);
+                self.copy_stream(mem, va, len, stride)
+            }
+        }
     }
 
     fn copy_stream(
@@ -3428,10 +3521,26 @@ impl<B: Backend> Device<B> {
         crate::guest::check_range(va, len)?;
         let mut data = self.stream_buffer(len);
         if let Err(e) = mem.read_append(va, len, &mut data) {
-            self.recycle_stream(data);
+            self.recycle_stream(data.into());
             return Err(e.into());
         }
-        Ok(StreamBytes { data, stride })
+        self.stats.vertex_bytes_copied += len as u64;
+        count_vertex_bytes(timeline::phase::Counter::VertexCopied, len);
+        Ok(StreamBytes {
+            data: data.into(),
+            stride,
+        })
+    }
+
+    /// Turns the vertex cache on (with `budget` bytes of snapshots) or off
+    /// (every draw copies its streams: `H2_VERTEX_CACHE=0`). Starts empty.
+    pub fn set_vertex_cache(&mut self, budget: Option<usize>) {
+        self.vertex_cache = budget.map(VertexCache::new);
+    }
+
+    /// Bytes the vertex cache holds in snapshots (0 when it is off).
+    pub fn vertex_cache_bytes(&self) -> usize {
+        self.vertex_cache.as_ref().map_or(0, VertexCache::bytes)
     }
 
     /// An empty pooled buffer with room for `len` bytes: the smallest that
@@ -3452,10 +3561,14 @@ impl<B: Backend> Device<B> {
         Vec::with_capacity(len)
     }
 
-    fn recycle_stream(&mut self, data: Vec<u8>) {
+    fn recycle_stream(&mut self, data: StreamData) {
         // Retain ordinary draws without keeping an exceptional 64 MiB span.
         const MAX_POOL_BYTES: usize = 16 << 20;
         const MAX_POOL_BUFFERS: usize = 64;
+        // A cache snapshot is shared, not the device's to refill.
+        let Some(data) = data.into_owned_buffer() else {
+            return;
+        };
         let c = data.capacity();
         if c > 0
             && self.stream_pool.len() < MAX_POOL_BUFFERS
@@ -3953,7 +4066,7 @@ impl<B: Backend> Device<B> {
                 }
             }
             streams.push(StreamBytes {
-                data,
+                data: data.into(),
                 stride: s.stride,
             });
         }
@@ -4055,7 +4168,10 @@ impl<B: Backend> Device<B> {
                 vertex_count: count,
                 layout,
                 vertex,
-                streams: vec![StreamBytes { data, stride: size }],
+                streams: vec![StreamBytes {
+                    data: data.into(),
+                    stride: size,
+                }],
                 indices: None,
                 words,
             },
@@ -4214,6 +4330,11 @@ pub(crate) fn sampled_stages(
         on &= state.stages[n].color_op != gfx::state::TextureOp::Disable;
         on
     })
+}
+
+/// Adds `len` to a frame-stats byte counter (when frame stats are on).
+fn count_vertex_bytes(counter: timeline::phase::Counter, len: usize) {
+    timeline::phase::count(counter, len as u64);
 }
 
 #[cfg(test)]

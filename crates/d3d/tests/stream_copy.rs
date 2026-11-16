@@ -166,6 +166,9 @@ fn run<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory) -> Vec<Vec<(Vec<u8>,
             for s in 0..3 {
                 let bytes = rng.bytes(VERTS * STRIDES[s as usize]);
                 m.write(0x8000_0000 | vb_data(set, s), &bytes).unwrap();
+                // Reported, as the runtime's write barrier does: the
+                // vertex cache keeps what was not written.
+                d.note_write(0x8000_0000 | vb_data(set, s), bytes.len() as u32);
             }
         }
         let set = round % 2;
@@ -207,11 +210,11 @@ fn check(draws: Vec<ResolvedDraw>, want: Vec<Vec<(Vec<u8>, u32)>>) {
         let got: Vec<(Vec<u8>, u32)> = draw
             .streams
             .iter()
-            .map(|s| (s.data.clone(), s.stride))
+            .map(|s| (s.data.to_vec(), s.stride))
             .collect();
         let want = if want.is_empty() {
             // Immediate quads: the same bytes as the first one.
-            quad.iter().map(|s| (s.data.clone(), s.stride)).collect()
+            quad.iter().map(|s| (s.data.to_vec(), s.stride)).collect()
         } else {
             want.clone()
         };

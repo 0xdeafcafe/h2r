@@ -375,7 +375,10 @@ impl Gpu {
             primitive: PrimitiveType::TriangleList,
             vertex_count: 3,
             layout,
-            streams: vec![StreamBytes { data, stride }],
+            streams: vec![StreamBytes {
+                data: data.into(),
+                stride,
+            }],
             indices: None,
             state: words.translate(&RenderStateTable::default()),
             extras: words.stage_extras(),

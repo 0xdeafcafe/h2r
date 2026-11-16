@@ -84,7 +84,7 @@ fn draw(microcode: Vec<u32>, reads: u16, psdef: [u32; 60]) -> ResolvedDraw {
         vertex_count: 3,
         layout,
         streams: vec![StreamBytes {
-            data: vec![0; 3 * stride as usize],
+            data: vec![0; 3 * stride as usize].into(),
             stride,
         }],
         indices: None,

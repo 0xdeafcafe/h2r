@@ -31,6 +31,7 @@ use crate::clear::{Clearer, MaskedClear};
 use crate::compile::{Compiler, Pending, PendingPipeline, Priority};
 use crate::context::GfxContext;
 use crate::occlusion::{COUNT_FORMAT, COUNT_FRAGMENT_WGSL, PixelCounter};
+use crate::persistent::{PersistentStats, PersistentVertices};
 use crate::pipeline::{
     PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline,
 };
@@ -311,6 +312,12 @@ pub struct Draw<'a> {
     /// says (`shaders::vsh::VertexOptions::input_fetch`); [`Draw::new`]
     /// picks [`FetchMode::Cpu`], where every attribute is a float format.
     pub vertex_fetch: FetchMode,
+    /// Per stream (by position; missing entries are `None`), an id under
+    /// which its bytes never change: the stream's host buffer is kept
+    /// across submissions and bound again by later draws of the id instead
+    /// of being staged in the upload ring ([`crate::persistent`]). Empty
+    /// (the default) stages every stream.
+    pub stream_ids: &'a [Option<u64>],
 }
 
 impl<'a> Draw<'a> {
@@ -337,6 +344,7 @@ impl<'a> Draw<'a> {
             count_samples: false,
             window: None,
             vertex_fetch: FetchMode::Cpu,
+            stream_ids: &[],
         }
     }
 }
@@ -415,6 +423,8 @@ pub struct Renderer {
     vertex_fetch: FetchMode,
     /// Reused buffer for streams that are realigned or converted.
     scratch: Vec<u8>,
+    /// Host buffers of streams with an id ([`Draw::stream_ids`]).
+    persistent: PersistentVertices,
 }
 
 /// One draw, validated, with its pipeline built and its bytes staged in the
@@ -623,6 +633,7 @@ impl Renderer {
             count_fragment: None,
             vertex_fetch: FetchMode::from_env(),
             scratch: Vec::new(),
+            persistent: PersistentVertices::new(PersistentVertices::budget_from_env()),
         }
     }
 
@@ -902,11 +913,17 @@ impl Renderer {
         // vertices otherwise. An empty stream takes 4 bytes: slices are
         // never empty.
         let scratch = &mut self.scratch;
+        let persistent = &mut self.persistent;
         let vertex_buffers = plan
             .streams
             .iter()
             .zip(d.streams)
-            .map(|(sp, vs)| {
+            .enumerate()
+            .map(|(i, (sp, vs))| {
+                if let Some(&Some(id)) = d.stream_ids.get(i) {
+                    let (buf, len) = persistent.get(ctx, id, sp, vs.data, d.vertex_count, scratch);
+                    return (buf, 0, len);
+                }
                 let len = sp.host_bytes(d.vertex_count);
                 let (buf, off) = self
                     .vertices
@@ -974,6 +991,11 @@ impl Renderer {
     pub fn flush_uploads(&mut self, queue: &wgpu::Queue) {
         self.vertices.flush(queue);
         self.uniforms.flush(queue);
+    }
+
+    /// Counters of the persistent vertex buffers ([`Draw::stream_ids`]).
+    pub fn persistent_stats(&self) -> PersistentStats {
+        self.persistent.stats()
     }
 
     /// Lets the upload rings reuse their space: call after submitting every

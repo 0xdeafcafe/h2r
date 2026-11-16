@@ -288,7 +288,11 @@ impl<B: Backend> Worker<B> {
                     self.shared.latch(e);
                 }
                 let DrawCmd { draw, .. } = *d;
-                self.spent.push(draw.streams);
+                let mut streams = draw.streams;
+                // Vertex cache snapshots are released here; only copies
+                // go back to be refilled.
+                streams.retain(|s| s.data.cache_id().is_none());
+                self.spent.push(streams);
             }
         }
     }

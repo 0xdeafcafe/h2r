@@ -46,10 +46,11 @@ pub mod shader;
 pub mod state;
 pub mod threaded;
 pub mod vblank;
+pub mod vertex_cache;
 
 pub use backend::{
     Backend, ChannelMask, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
-    RectClear, ResolvedDraw, StreamBytes, Viewport,
+    RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, Viewport,
 };
 pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
