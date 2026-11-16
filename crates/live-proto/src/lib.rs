@@ -11,6 +11,7 @@ pub mod hopper;
 pub mod jcs;
 pub mod motd;
 pub mod sign;
+pub mod session;
 pub mod team;
 pub mod title_file;
 
@@ -269,6 +270,7 @@ pub mod lxm {
     pub const EVENTS_WRITE: &str = "events.write";
     /// Game events, `POST /v1/games`, the ingest socket, map outlines.
     pub const GAMES_WRITE: &str = "games.write";
+    pub const SESSIONS_WRITE: &str = "sessions.write";
     pub const TITLES_WRITE: &str = "titles.write";
     pub const INVITES_WRITE: &str = "invites.write";
     /// Every read on a `--private` server, the stream included.

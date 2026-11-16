@@ -28,6 +28,8 @@ const USAGE: &str = "usage: h2 live q <what> [--server URL] [--json|--jsonl]
                           type, at, data, author, kid, jws, jws_index?, hash}];
                           --follow then streams new ones as JSON lines
   keys <gamertag>         {keys: [{kid, jwk, valid_from, valid_to}], position}
+  sessions                open session advertisements
+  session <id>            one advertisement
   teams [gamertag]       open teams, or one account's teams and pending recruits
   team <id>              one team with members, properties and permissions
   friends <gamertag>      one account's friends, with presence, and pending
@@ -126,6 +128,29 @@ pub fn run(mut args: Args) -> Result<()> {
             let tag = one(args, "keys takes a gamertag")?;
             let keys: Value = client.get(&format!("/accounts/{}/keys", path_part(&tag)), &[])?;
             emit(&mut out, format, Output::One(keys), &[])
+        }
+        "sessions" => {
+            let state = args.take("--state")?;
+            let hopper = args.take("--hopper")?;
+            let map = args.take("--map")?;
+            let host = args.take("--host")?;
+            no_more(args)?;
+            let mut query = Vec::new();
+            query.extend(state.map(|v| ("state", v)));
+            query.extend(hopper.map(|v| ("hopper", v)));
+            query.extend(map.map(|v| ("map", v)));
+            query.extend(host.map(|v| ("host", v)));
+            emit(
+                &mut out,
+                format,
+                Output::List(pages(&client, "/sessions", &query)?),
+                SESSIONS,
+            )
+        }
+        "session" => {
+            let id = one(args, "session takes an id")?;
+            let value: Value = client.get(&format!("/sessions/{}", path_part(&id)), &[])?;
+            emit(&mut out, format, Output::One(value), &[])
         }
         "teams" => {
             let args = args.positional()?;
@@ -393,6 +418,14 @@ const FRAMES: Columns = &[
     ("players", "/players"),
     ("source", "/source"),
 ];
+const SESSIONS: Columns = &[
+    ("id", "/session_id"),
+    ("host", "/host_gamertag"),
+    ("state", "/state"),
+    ("address", "/endpoint/addr"),
+    ("port", "/endpoint/port"),
+    ("open", "/advertisement/slots/public_open"),
+];
 const TEAMS: Columns = &[
     ("id", "/id"),
     ("name", "/properties/name"),
@@ -525,6 +558,74 @@ fn fields(v: &Value) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn sessions_query_follows_cursor_and_renders_endpoint_and_slots() {
+        use live_proto::{lxm, sign::issue_token};
+        let dir = std::env::temp_dir().join(format!(
+            "h2-live-session-query-{}",
+            live_proto::sign::random_id()
+        ));
+        let server = live_server::start_embedded(
+            live_server::MEMORY_DB,
+            "127.0.0.1:0".parse().unwrap(),
+            &dir,
+            Default::default(),
+        )
+        .unwrap();
+        let client = Client::at(&server.url).unwrap();
+        let (account, key) = client.create_account("Host", None).unwrap();
+        for port in [31000, 32000] {
+            let token = issue_token(
+                &key,
+                &account.id,
+                &client.discovery.id,
+                lxm::SESSIONS_WRITE,
+                crate::live_cmd::now(),
+            );
+            let req = client
+                .authorized(
+                    client
+                        .agent
+                        .post(&client.url("/sessions"))
+                        .set("content-type", "application/json"),
+                    token,
+                )
+                .unwrap();
+            let data = json!({"addr":"127.0.0.1","port":port,"host_address":vec![0;36],"slots":{"public_filled":1,"public_open":7,"private_filled":0,"private_open":0},"attributes":{}});
+            call(req, Some(serde_json::to_string(&data).unwrap().as_bytes())).unwrap();
+        }
+        let all = pages(&client, "/sessions", &[("limit", "1".into())]).unwrap();
+        assert_eq!(all.len(), 2);
+        let mut output = Vec::new();
+        emit(
+            &mut output,
+            Format::Table,
+            Output::List(all.clone()),
+            SESSIONS,
+        )
+        .unwrap();
+        let table = String::from_utf8(output).unwrap();
+        assert!(
+            table.contains("Host")
+                && table.contains("127.0.0.1")
+                && table.contains("31000")
+                && table.contains("32000")
+        );
+        let mut output = Vec::new();
+        emit(
+            &mut output,
+            Format::Json,
+            Output::List(all.clone()),
+            SESSIONS,
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output).unwrap(),
+            Value::Array(all)
+        );
+        drop(server);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn teams_query_pages_and_table_include_the_published_clan() {
         use live_proto::{

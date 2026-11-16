@@ -30,6 +30,7 @@ pub mod pg;
 pub mod public;
 pub mod store;
 mod teams;
+mod sessions;
 pub mod title_headers;
 
 use std::net::SocketAddr;

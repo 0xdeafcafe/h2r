@@ -57,6 +57,7 @@ pub(crate) enum Reply {
     File(File),
     Done,
     Teams(Vec<live_proto::team::Team>),
+    Matches(Vec<live_proto::session::Session>),
 }
 #[derive(Clone)]
 pub(crate) struct Pending(Arc<Mutex<Option<Result<Reply, u32>>>>);
@@ -114,12 +115,27 @@ pub(crate) enum TeamRequest {
     Team(Xuid),
     Change(live_proto::team::Action),
 }
+#[derive(Clone)]
+pub(crate) enum MatchRequest {
+    Create(live_proto::session::NewSession),
+    Update {
+        id: String,
+        update: live_proto::session::Update,
+    },
+    Delete(String),
+    Search {
+        limit: u32,
+        attributes: BTreeMap<u32, live_proto::session::AttributeValue>,
+    },
+    Find(String),
+}
 enum Work {
     Logon(Vec<Account>),
     Change(Vec<Account>),
     Presence { user: u64, value: Presence },
     File(&'static str, u32),
     Teams { user: u64, request: TeamRequest },
+    Match(MatchRequest),
     Wake,
 }
 struct Command {
@@ -215,6 +231,9 @@ impl Service {
     pub fn teams(&self, s: &Session, user: u64, request: TeamRequest) -> Result<Pending, u32> {
         self.submit(s, Work::Teams { user, request })
     }
+    pub fn match_request(&self, s: &Session, request: MatchRequest) -> Result<Pending, u32> {
+        self.submit(s, Work::Match(request))
+    }
     pub fn cancel(&self, s: &Session) {
         s.cancel();
         let _ = self.submit(s, Work::Wake);
@@ -239,6 +258,7 @@ struct Active {
     session: Session,
     users: BTreeMap<u64, Identity>,
     presence: BTreeMap<u64, Presence>,
+    matches: BTreeMap<String, u64>,
 }
 struct Worker {
     base: String,
@@ -533,6 +553,128 @@ impl Worker {
         }
         Ok(vec![reply.team])
     }
+    fn matches_request(
+        &self,
+        user: &Identity,
+        request: MatchRequest,
+    ) -> Result<Vec<live_proto::session::Session>, Error> {
+        use live_proto::session;
+        let items = match request {
+            MatchRequest::Create(new) => {
+                #[derive(serde::Deserialize)]
+                struct Created {
+                    session: session::Session,
+                }
+                let bytes = self.response(
+                    self.request("POST", "/sessions", user, lxm::SESSIONS_WRITE)
+                        .set("content-type", "application/json"),
+                    Some(&serde_json::to_string(&new).map_err(|_| Error::Protocol)?),
+                    MAX_FILE,
+                )?;
+                vec![
+                    serde_json::from_slice::<Created>(&bytes)
+                        .map_err(|_| Error::Protocol)?
+                        .session,
+                ]
+            }
+            MatchRequest::Update { id, update } => {
+                self.match_event(
+                    user,
+                    &id,
+                    session::UPDATED,
+                    serde_json::to_value(update).map_err(|_| Error::Protocol)?,
+                )?;
+                self.fetch_match(user, &id)?
+            }
+            MatchRequest::Delete(id) => {
+                self.match_event(user, &id, session::DELETED, json!({"reason":"closed"}))?;
+                Vec::new()
+            }
+            MatchRequest::Find(id) => match self.fetch_match(user, &id) {
+                Err(Error::Status(404)) => Vec::new(),
+                other => other?,
+            },
+            MatchRequest::Search { limit, attributes } => {
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query.append_pair(
+                    "attributes",
+                    &serde_json::to_string(&attributes).map_err(|_| Error::Protocol)?,
+                );
+                let filter = query.finish();
+                let page: live_proto::Page<session::Session> = self.team_json(
+                    user,
+                    &format!("/sessions?state=open&limit={}&{filter}", limit.max(1)),
+                )?;
+                if page.items.len() > limit as usize && limit != 0 {
+                    return Err(Error::Protocol);
+                }
+                if limit == 0 { Vec::new() } else { page.items }
+            }
+        };
+        for item in &items {
+            item.advertisement.validate().map_err(|_| Error::Protocol)?;
+            if !session::valid_id(&item.session_id)
+                || item.xnkid != item.session_id
+                || item.endpoint.port == 0
+                || item.endpoint.port > 65529
+                || item.endpoint.addr.is_unspecified()
+                || item.endpoint.addr.is_multicast()
+                || item.endpoint.addr.is_broadcast()
+            {
+                return Err(Error::Protocol);
+            }
+        }
+        Ok(items)
+    }
+    fn fetch_match(
+        &self,
+        user: &Identity,
+        id: &str,
+    ) -> Result<Vec<live_proto::session::Session>, Error> {
+        #[derive(serde::Deserialize)]
+        struct Detail {
+            session: live_proto::session::Session,
+        }
+        let detail: Detail = self.team_json(user, &format!("/sessions/{id}"))?;
+        if detail.session.session_id != id {
+            return Err(Error::Protocol);
+        }
+        Ok(if detail.session.state == "open" {
+            vec![detail.session]
+        } else {
+            Vec::new()
+        })
+    }
+    fn match_event(
+        &self,
+        user: &Identity,
+        id: &str,
+        kind: &str,
+        data: serde_json::Value,
+    ) -> Result<(), Error> {
+        let body = EventBody::new(
+            &user.key,
+            &self.author(user),
+            &live_proto::session::stream(id),
+            kind,
+            data,
+            time::OffsetDateTime::now_utc(),
+        );
+        let jws = live_proto::sign::sign_batch(&user.key, &[body]);
+        self.response(
+            self.request(
+                "POST",
+                &format!("/sessions/{id}/events"),
+                user,
+                lxm::SESSIONS_WRITE,
+            )
+            .set("content-type", "application/jose"),
+            Some(&jws),
+            MAX_FILE,
+        )?;
+        Ok(())
+    }
+
     fn run(&mut self, c: &Command) -> Result<Reply, u32> {
         if matches!(c.work, Work::Wake) {
             self.cancelled();
@@ -569,6 +711,7 @@ impl Worker {
                     session: c.session.clone(),
                     presence: users.keys().map(|u| (*u, Presence::default())).collect(),
                     users,
+                    matches: BTreeMap::new(),
                 });
                 c.session.status.store(CONNECTED, Ordering::Release);
                 Ok(Reply::Logon)
@@ -605,6 +748,25 @@ impl Worker {
                         signed.push(user);
                     }
                     for user in &removed {
+                        let ids: Vec<_> = self
+                            .active
+                            .as_ref()
+                            .unwrap()
+                            .matches
+                            .iter()
+                            .filter(|(_, uid)| **uid == user.xuid)
+                            .map(|(id, _)| id.clone())
+                            .collect();
+                        for id in ids {
+                            self.match_event(
+                                user,
+                                &id,
+                                live_proto::session::DELETED,
+                                json!({"reason":"host_left"}),
+                            )
+                            .map_err(Error::result)?;
+                            self.active.as_mut().unwrap().matches.remove(&id);
+                        }
                         if c.session.cancelled() {
                             return Err(NO_SESSION);
                         }
@@ -667,6 +829,34 @@ impl Worker {
                         _ => e.result(),
                     })
             }
+            Work::Match(request) => {
+                let active = self
+                    .active
+                    .as_ref()
+                    .filter(|a| a.session.id == c.session.id)
+                    .ok_or(NO_SESSION)?;
+                let user = active.users.values().next().ok_or(NO_USER)?.clone();
+                let rows = self
+                    .matches_request(&user, request.clone())
+                    .map_err(|e| match e {
+                        Error::Status(404 | 409) => MATCH_INVALID_SESSION,
+                        Error::Status(400 | 413 | 422) => INVALID_ARGUMENT,
+                        _ => e.result(),
+                    })?;
+                let active = self.active.as_mut().unwrap();
+                match request {
+                    MatchRequest::Create(_) => {
+                        if let Some(row) = rows.first() {
+                            active.matches.insert(row.session_id.clone(), user.xuid);
+                        }
+                    }
+                    MatchRequest::Delete(id) => {
+                        active.matches.remove(id);
+                    }
+                    _ => {}
+                }
+                Ok(Reply::Matches(rows))
+            }
             Work::Teams { user, request } => {
                 let active = self
                     .active
@@ -688,6 +878,16 @@ impl Worker {
     }
     fn sign_out(&mut self) {
         if let Some(active) = self.active.take() {
+            for (id, uid) in &active.matches {
+                if let Some(user) = active.users.get(uid) {
+                    let _ = self.match_event(
+                        user,
+                        id,
+                        live_proto::session::DELETED,
+                        json!({"reason":"host_left"}),
+                    );
+                }
+            }
             for user in active.users.values() {
                 let _ = self.event(user, types::SIGNED_OUT, &Presence::default());
             }

@@ -194,6 +194,12 @@ fn api_router(live: Arc<Live>) -> Router {
         .route("/v1/invites", post(create_invite))
         .route("/v1/events", get(list_events).post(post_event))
         .route("/v1/stream", get(stream))
+        .route(
+            "/v1/sessions",
+            get(crate::sessions::list).post(crate::sessions::create),
+        )
+        .route("/v1/sessions/{id}", get(crate::sessions::detail))
+        .route("/v1/sessions/{id}/events", post(crate::sessions::append))
         .route("/v1/games", get(list_games).post(start_game))
         .route("/v1/games/{id}", get(game))
         .route("/v1/games/{id}/frames", get(game_frames))

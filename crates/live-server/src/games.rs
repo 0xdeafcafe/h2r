@@ -410,6 +410,7 @@ impl Live {
     /// restart (rebuilt from the events' `at`).
     pub async fn sweep(&self) {
         let now = now();
+        self.sweep_sessions(now).await;
         let policy = self.policy();
         let (expired, idle): (Vec<_>, Vec<_>) = {
             let s = self.model.read();

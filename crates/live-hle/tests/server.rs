@@ -166,6 +166,9 @@ impl World {
         )
     }
     fn raw(url: &str, accounts: Value, heartbeat: Duration) -> Self {
+        Self::raw_network(url, accounts, heartbeat, 31000)
+    }
+    fn raw_network(url: &str, accounts: Value, heartbeat: Duration, port: u16) -> Self {
         let path = std::env::temp_dir().join(format!("h2-hle-accounts-{}.json", sign::random_id()));
         std::fs::write(&path, serde_json::to_vec(&accounts).unwrap()).unwrap();
         let hle = Hle::with_server_options(
@@ -174,7 +177,7 @@ impl World {
                 accounts_path: Some(path.clone()),
                 server_url: Some(url.into()),
             },
-            NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 31000)),
+            NetworkConfig::new(SocketAddrV4::new(Ipv4Addr::LOCALHOST, port)),
             ServerOptions {
                 request_timeout: Duration::from_secs(2),
                 heartbeat_interval: heartbeat,
@@ -1445,4 +1448,258 @@ fn teams_server_failure_finishes_a_task_without_mutating_the_local_cache() {
     );
     assert_eq!(w.wait(w.u32(OUT)), CANNOT_ACCESS_SERVICE);
     assert!(w.hle.local_teams().teams.is_empty());
+}
+
+// The same nine match entry points the retail wrappers drive, over two separate
+// guest memories and the actual HTTP worker. Values and frames are synthetic.
+const MATCH_ATTR: u32 = DATA + 0x5000;
+const MATCH_ID: u32 = DATA + 0x5800;
+const MATCH_KEY: u32 = DATA + 0x5820;
+const MATCH_SPEC: u32 = DATA + 0x5900;
+fn attr(w: &World, at: u32, id: u32, value: u64) {
+    w.word(at, id);
+    w.word(at + 4, 1);
+    w.put(at + 8, &value.to_le_bytes());
+}
+fn match_search(w: &mut World, procedure: u32, params: u32, cap: u32) -> (u32, u32, u32) {
+    assert_eq!(
+        w.call(
+            "XOnlineMatchSearch",
+            &[procedure, 50, params, MATCH_ATTR, cap, 0, OUT]
+        ),
+        0
+    );
+    let task = w.u32(OUT);
+    assert_eq!(w.wait(task), TASK_SUCCESS);
+    assert_eq!(
+        w.call("XOnlineMatchSearchGetResults", &[task, OUT, OUT + 4]),
+        0
+    );
+    (task, w.u32(OUT), w.u32(OUT + 4))
+}
+#[test]
+fn sessions_two_guests_publish_find_parse_update_and_delete() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Joiner");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut peer = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    host.logon();
+    peer.logon();
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert!(
+        host.hle.local_sessions().is_empty(),
+        "not cached until the guest polls completion"
+    );
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[create, MATCH_ID, MATCH_KEY]),
+        0
+    );
+    let id = host.bytes(MATCH_ID, 8);
+    let key = host.bytes(MATCH_KEY, 16);
+    assert_eq!(id[0] & 0xf0, 0x80);
+    assert_ne!(key, vec![0; 16]);
+    let lo = host.u32(MATCH_ID);
+    let hi = host.u32(MATCH_ID + 4);
+    assert_eq!(host.hle.local_sessions()[0].id.to_vec(), id);
+    let rows: Page<live_proto::session::Session> = s.get("/v1/sessions");
+    assert_eq!(rows.items.len(), 1);
+    assert_eq!(rows.items[0].xnkid, sign::hex(&id));
+    assert_eq!(rows.items[0].endpoint.port, 31000);
+    let wire_id = rows.items[0].session_id.clone();
+    let cap = peer.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (search, table, count) = match_search(&mut peer, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row = peer.u32(table);
+    assert_eq!(peer.bytes(row + 4, 8), id);
+    assert_eq!(peer.bytes(row + 12, 4), Ipv4Addr::LOCALHOST.octets());
+    assert_eq!(peer.bytes(row + 20, 2), 31000u16.to_be_bytes());
+    assert_eq!(
+        peer.bytes(row + 0x30, 16),
+        vec![0; 16],
+        "exchange key never published"
+    );
+    assert_eq!(peer.u32(row + 0x40), 7);
+    assert_eq!(peer.u32(row + 0x48), 1);
+    assert_eq!(peer.u32(row + 0x50), 7);
+    peer.put(BUFFER, &[0xcc; 64]);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchParse", &[row, 7, MATCH_SPEC, BUFFER]),
+        0
+    );
+    let values: Vec<u8> = [1, 2, 3, 5, 6, 7, 8]
+        .into_iter()
+        .flat_map(|id| (100u64 + id).to_le_bytes())
+        .collect();
+    assert_eq!(peer.bytes(BUFFER, 56), values);
+    assert_eq!(peer.bytes(BUFFER + 56, 8), vec![0xcc; 8]);
+    assert_eq!(
+        peer.call("XOnlineMatchSessionFindFromID", &[lo, hi, 0, OUT]),
+        0
+    );
+    let find = peer.u32(OUT);
+    assert_eq!(peer.wait(find), TASK_SUCCESS);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchGetResults", &[find, OUT, OUT + 4]),
+        0
+    );
+    assert_eq!(peer.u32(OUT + 4), 1);
+    attr(&host, MATCH_ATTR, 3, 333);
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 2, 6, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let update = host.u32(OUT);
+    assert_eq!(host.wait(update), TASK_SUCCESS);
+    assert_eq!(
+        host.call("XOnlineMatchSessionGetInfo", &[update, MATCH_ID, MATCH_KEY]),
+        0
+    );
+    assert_eq!(host.bytes(MATCH_ID, 8), id);
+    assert_eq!(host.bytes(MATCH_KEY, 16), key);
+    assert_eq!(host.u32(MATCH_ATTR + 4), 0);
+    let (_, table2, count) = match_search(&mut peer, 1, 0, cap);
+    assert_eq!(count, 1);
+    let row2 = peer.u32(table2);
+    assert_eq!(peer.u32(row2 + 0x40), 6);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchParse", &[row2, 7, MATCH_SPEC, BUFFER]),
+        0
+    );
+    assert_eq!(peer.rt.memory().u64(BUFFER + 16).unwrap(), 333);
+    // Completed searches retain their original task-owned snapshot.
+    assert_eq!(peer.u32(row + 0x40), 7);
+    attr(&peer, MATCH_ATTR, 3, 333);
+    assert_eq!(match_search(&mut peer, 42, 1, cap).2, 1);
+    attr(&peer, MATCH_ATTR, 3, 334);
+    assert_eq!(match_search(&mut peer, 42, 1, cap).2, 0);
+    assert_eq!(
+        peer.call("XOnlineMatchSearch", &[1, 50, 0, 0, 0x5c, 0, OUT]),
+        0
+    );
+    let small = peer.u32(OUT);
+    assert_eq!(peer.wait(small), BUFFER_TOO_SMALL);
+    peer.word(OUT, 0xdeadbeef);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchGetResults", &[small, OUT, OUT + 4]),
+        BUFFER_TOO_SMALL
+    );
+    assert_eq!(peer.u32(OUT), 0xdeadbeef);
+    assert_eq!(host.call("XOnlineMatchSessionDelete", &[lo, hi, 0, OUT]), 0);
+    let delete = host.u32(OUT);
+    assert_eq!(host.wait(delete), TASK_SUCCESS);
+    assert!(host.hle.local_sessions().is_empty());
+    assert_eq!(match_search(&mut peer, 1, 0, cap).2, 0);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchGetResults", &[search, OUT, OUT + 4]),
+        0
+    );
+    assert_eq!(peer.u32(OUT + 4), 1);
+    assert_eq!(peer.call("XOnlineTaskClose", &[search]), 0);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchGetResults", &[search, OUT, OUT + 4]),
+        INVALID_ARGUMENT
+    );
+    let kinds: Vec<_> = s
+        .events()
+        .into_iter()
+        .filter(|e| e.stream == format!("session-{wire_id}"))
+        .map(|e| e.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["SessionCreated", "SessionUpdated", "SessionDeleted"]
+    );
+}
+#[test]
+fn sessions_typed_results_are_owned_bounded_and_signout_closes_advertisement() {
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Peer");
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut peer = World::new(&s.embedded.url, &[&b]);
+    let logon = host.logon();
+    peer.logon();
+    host.put(
+        BUFFER,
+        &"Héllo"
+            .encode_utf16()
+            .chain([0])
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>(),
+    );
+    attr(&host, MATCH_ATTR, 0x100001, u64::from(BUFFER));
+    host.put(BUFFER + 100, &[10, 20, 30]);
+    attr(
+        &host,
+        MATCH_ATTR + 16,
+        0x200002,
+        (3u64 << 32) | u64::from(BUFFER + 100),
+    );
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 2, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let task = host.u32(OUT);
+    assert_eq!(host.wait(task), TASK_SUCCESS);
+    host.put(BUFFER, &[0xff; 120]); // No guest pointers escape into the worker.
+    let (_, table, n) = match_search(&mut peer, 42, 0, 0x2000);
+    assert_eq!(n, 1);
+    let row = peer.u32(table);
+    peer.word(MATCH_SPEC, 0x100000);
+    peer.word(MATCH_SPEC + 4, 20);
+    peer.word(MATCH_SPEC + 8, 0x200000);
+    peer.word(MATCH_SPEC + 12, 8);
+    peer.put(BUFFER, &[0xcc; 40]);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchParse", &[row, 2, MATCH_SPEC, BUFFER]),
+        0
+    );
+    let expected: Vec<_> = "Héllo"
+        .encode_utf16()
+        .chain([0])
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    assert_eq!(peer.bytes(BUFFER, expected.len()), expected);
+    assert_eq!(
+        peer.bytes(BUFFER + 20, 10),
+        vec![3, 0, 10, 20, 30, 0, 0, 0, 0, 0]
+    );
+    assert_eq!(peer.bytes(BUFFER + 30, 10), vec![0xcc; 10]);
+    peer.word(MATCH_SPEC + 4, 2);
+    peer.put(BUFFER, &[0xcc; 40]);
+    assert_eq!(
+        peer.call("XOnlineMatchSearchParse", &[row, 2, MATCH_SPEC, BUFFER]),
+        BUFFER_TOO_SMALL
+    );
+    assert_eq!(peer.bytes(BUFFER, 40), vec![0xcc; 40]);
+    assert_eq!(host.call("XOnlineTaskClose", &[logon]), 0);
+    s.until(|| {
+        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items
+            .is_empty()
+    });
+    assert!(s.events().iter().any(|e| e.kind == "SessionDeleted"));
 }

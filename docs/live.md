@@ -1101,78 +1101,73 @@ all property types, packed XUID/member layouts, successful tasks, copied
 ownership, validation/fault atomicity, destruction, cleanup and bounded journals.
 They use no XBE and do not run the title.
 
-## Client HLE: local sessions and empty searches
+## Client HLE: sessions and server discovery
 
-This implements the local host/search half of
-[live-matchmaking.md](live-matchmaking.md) sections 1.1, 1.2 and 4. It does not
-implement the proposed server session API, shared discovery, joins or a matcher.
-The observed playlist host stop was `0x003a06a8`, called by `0x0008fcc0` from
-`0x00072e40`. All nine Match boundary entries now return checked local results.
+The host/search APIs in [live-matchmaking.md](live-matchmaking.md) sections
+1.1, 1.2 and 4 use the background HTTP worker when `LiveConfig.server_url` is
+configured. Without a server they retain the local host/empty-search behavior.
+These APIs advertise and discover lobbies. They do not implement a matchmaker,
+ranked arbitration, invitation delivery or NAT traversal.
 
-SessionCreate accepts the four slot counts and owns the supplied attribute
-values in `sessions.rs`. XONLINE_ATTRIBUTE is 16 bytes: ID, changed BOOL, then an
-eight-byte union. Its ID datatype bits select a 64-bit integer, a UTF-16 string
-pointer, a blob pointer/length, or NULL. Strings are bounded to 400 UTF-16 units
-and blobs to 800 bytes. The local backend supports 64 attributes per session and
-32 simultaneous advertisements. Nested buffers are copied during the call;
-invalid data or pointer faults cannot partially advertise or update a session.
-Create consumes all attributes; Update consumes only changed attributes. On
-success both clear the supplied changed flags, matching the retail request
-serializer at `0x003b396e`. NULL clears the corresponding value. Updates replace
-slot counts and merge changed values; no-op updates leave the revision alone.
+Create copies the four slot counts and the attribute list before returning a
+task. Update consumes only dirty attributes and replaces the slot counts;
+NULL removes a value. The 16-byte XONLINE_ATTRIBUTE is ID, changed BOOL and an
+eight-byte union: integer, UTF-16 string pointer, blob pointer/length, or NULL.
+Limits remain 64 attributes, 400 UTF-16 units per string, 800 bytes per blob and
+32 advertisements. Server-backed lobbies have at most 16 slots. Invalid guest
+ranges leave outputs and dirty flags untouched. A request that was accepted by
+the worker consumes the dirty flags even if the later network operation fails.
 
-Creation owns a new random eight-byte session ID and sixteen-byte exchange key.
-The ID has the Live online-peer prefix (`0x80` in its upper nibble). Repeated
-SessionGetInfo calls on its task return that same pair; updates preserve it.
-The retail GetInfo wrapper `0x0008fd90` retrieves the ID/key, then calls
-XNetGetTitleXnAddr for the separate host address. On host completion the call at
-`0x00072f39` passes the pair through key-registration wrapper `0x0007a920` before
-QoS listening. XNetCreateKey's separate local/System Link path is not a source
-of the Live session pair. The HLE therefore does not pre-register or replace an
-existing XNet key. The returned pair works with the existing XNetRegisterKey and
-address conversion APIs.
+The worker creates a server session, signs subsequent update/delete batches,
+and caches the accepted advertisement when the game pumps its task. Continue
+returns running until HTTP completion, then XONLINETASK_S_SUCCESS or an error.
+GetInfo returns the same eight-byte XNKID/session ID and locally generated
+16-byte exchange key for create/update tasks. Closing the task keeps the lobby;
+Delete removes it. Sign-out and controller removal attempt a signed delete;
+server expiry handles unreachable clients. Presence pings refresh the host's
+advertisements without writing events. No-op updates add no events.
 
-Create, Update and Delete return tasks whose Continue result is
-XONLINETASK_S_SUCCESS (`0x001500f0`). Closing a create/update task leaves its
-advertisement alive; Delete removes it and completes independently. Unknown IDs
-return MATCH_INVALID_SESSION_ID (`0x80155100`). Sign-out/cleanup removes all
-advertisements and invalidates their tasks. `Hle::local_sessions()` exposes owned
-snapshots containing users, address, slots, attributes and revision, with no
-exchange key. `H2_BOOT_VERBOSE=1` logs changes/deletes. The exchange key is never
-included in these debug records.
+The exchange key stays in the host HLE. Public session responses and events
+contain the XNKID and host XNADDR, never the exchange key. Search records use a
+zero exchange key because the current HLE sockets have no encryption. The
+retail host wrapper at `0x0008fd90` gets the ID/key and then reads its XNADDR;
+`0x00072f39` registers the returned pair before QoS listening. The separate
+XNetCreateKey/System Link path does not supply this pair.
 
-SearchResultsLen follows the retail capacity formula at `0x003b32f9`: 92 bytes
-plus the requested row count times an 84-byte row header and each column's
-eight-byte overhead/value capacity. Integer capacity is eight bytes; strings use
-twice the declared character capacity plus two; blobs use their declared byte
-capacity plus two. Invalid or excessive capacities return zero in this DWORD
-slot instead of a large error value. The local limits are 1000 rows, 64 columns
-and 16 MiB. The title's procedure-1 wrapper at `0x0008fa80` requests up to 50
-rows, builds positional integer/NULL query parameters, and sizes seven result
-columns before Search.
+Search and FindFromID fetch open sessions and own their completed snapshots
+until TaskClose. SearchGetResults returns an array of guest pointers. Each
+84-byte header contains the ID at +4, XNADDR at +0x0c, zero key at +0x30, open
+public/private counts at +0x40/+0x44, filled counts at +0x48/+0x4c, and column
+count at +0x50. An offset directory follows. SearchParse decodes integer,
+UTF-8 wire string to UTF-16 guest string, blob, and NULL columns into the
+caller's specifications, checking all bounds before writing the output.
+Result storage is reusable when a search task closes; handles remain monotonic.
 
-Search validates and copies the query during the call, without consuming its
-changed flags. It completes successfully with no rows. SearchGetResults checks
-both output words, then writes a null array pointer and count zero. FindFromID
-uses the same successful empty view, including for locally advertised IDs; local
-advertisements are not exposed as discoverable peers in this milestone. Thus
-`0x0008fb30` skips the parse/candidate loop and the game's empty-search path can
-choose to host. SearchParse matches the retail early return for an empty
-84-byte record (zero attribute count), leaving the destination untouched. No
-result record is issued here. A nonempty foreign record returns
-MATCH_INVALID_RESULT_COL rather than interpreting unverified columns.
+The title's procedure 1 returns seven integer columns for attribute IDs
+1, 2, 3, 5, 6, 7 and 8 (`0x000b4b80`, `0x000b4a40`). Missing values default to
+zero. Its twelve positional integer/NULL query parameters are not yet fully
+identified: this procedure currently searches all open sessions, without
+inventing filters for anonymous ID-zero parameters. Other procedures accept
+named attribute equality filters and return the stored columns in ID order.
+FindFromID uses the seven-column title projection. SearchResultsLen retains
+the retail capacity formula at `0x003b32f9`: 92 bytes plus the requested row
+count times an 84-byte header and each column's eight-byte overhead/value
+capacity. Limits are 1000 rows, 64 columns and 16 MiB; the mapped result pool
+also has a finite allocation budget and reports OUT_OF_MEMORY when exhausted.
 
-The sessions module is the seam for later background server operations. Its
-owned session/attribute types are independent of guest pointers, and complete
-search tasks are separate from advertisements. This milestone performs no
-network discovery or server writes. It lets the host/search API path complete;
-it does not prove a playlist starts a match or bypass ranked arbitration. The
-remaining optional menu/arbitration stops are still listed above.
+The host address is the configured XNet LAN/public IPv4 and base port. Set
+`H2_XNET_ADDR` to an address peers can reach, with distinct ports for two local
+instances as described above. The server's HTTP tunnel does not forward game
+UDP. Internet peers need reachable UDP base through base+6; this slice adds no
+relay or hole punching. Server clients that omit their declared IPv4 use the
+trusted public-URL source-IP policy ([live-api.md](live-api.md#sessions)).
 
-Synthetic guest-stack tests cover all nine APIs, exact stack cleanup, typed
-attributes and dirty flags, stable IDs/keys, XNet key registration, full lifecycle,
-empty search/find results, capacity math, pointer-fault atomicity, cleanup and
-advertisement limits. The tests do not load an XBE or run the game.
+Synthetic tests cover the nine entries and their stack cleanup, local fallback,
+typed values, dirty flags, stable IDs/keys, task lifetimes and capacity errors.
+The server tests exercise authorization, signed batches, projection/replay,
+filters, expiry and tunnel source trust. Two synthetic guests publish/search
+through an embedded memory-backed server and read the rows and parsed values
+that the retail wrappers consume. No test runs the game.
 
 ## Client HLE: Teams
 

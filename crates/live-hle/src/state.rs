@@ -456,13 +456,18 @@ impl State {
             if op.starts_task() && !self.connected() {
                 return Ok(NO_SESSION);
             }
+            let session = self.session();
             return self.sessions.invoke(
                 op,
                 a,
                 m,
-                &mut self.storage,
-                crate::network::xnaddr(self.address),
-                &self.user_ids,
+                crate::sessions::Context {
+                    storage: &mut self.storage,
+                    host: crate::network::xnaddr(self.address),
+                    users: &self.user_ids,
+                    service: self.service.as_ref(),
+                    session: session.as_ref(),
+                },
             );
         }
         if let Outbox(op) = op {
@@ -725,7 +730,7 @@ impl State {
                 if let Some(status) = self.teams.poll(a[0]) {
                     return Ok(status);
                 }
-                if let Some(status) = self.sessions.poll(a[0]) {
+                if let Some(status) = self.sessions.poll(a[0], m, &mut self.storage)? {
                     return Ok(status);
                 }
                 if let Some(status) = self.outbox.poll(a[0]) {

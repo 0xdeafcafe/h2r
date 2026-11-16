@@ -101,6 +101,8 @@ pub struct Policy {
     pub presence_ttl_s: i64,
     /// A live game with no event or frame for this long is ended as lost.
     pub game_idle_s: i64,
+    /// Idle advertisements expire; presence pings refresh their host deadline.
+    pub session_idle_s: i64,
     /// How often the presence and game managers look.
     pub sweep_every: Duration,
     /// Admin gamertags from --admin/H2_LIVE_ADMINS (docs/live-admin.md).
@@ -119,6 +121,7 @@ impl Default for Policy {
             create_rate: (1.0, 10),
             presence_ttl_s: 90,
             game_idle_s: 300,
+            session_idle_s: 300,
             sweep_every: Duration::from_secs(5),
             admins: Vec::new(),
             public: Default::default(),
@@ -140,6 +143,7 @@ pub struct Live {
     writes: RateLimiter,
     creates: RateLimiter,
     team_writes: tokio::sync::Mutex<()>,
+    pub(crate) session_writes: tokio::sync::Mutex<()>,
     pub(crate) local_signin: crate::local_signin::Offers,
     dispatcher: tokio::task::AbortHandle,
 }
@@ -177,6 +181,9 @@ fn parse_data<'a, T: Deserialize<'a>>(data: &'a Value) -> Result<T, ApiError> {
 /// writes through its own endpoints, and the friend events, which are the
 /// accounts' own. Games come with the game endpoints.
 fn may_write(author: &Author, stream: &str, kind: &str) -> bool {
+    if stream.starts_with("session-") {
+        return false;
+    }
     if live_proto::team::Action::is_kind(kind) {
         return matches!(author, Author::Account { .. }) && stream.starts_with("team-");
     }
@@ -366,6 +373,7 @@ impl Live {
             writes: RateLimiter::new(policy.write_rate.0, policy.write_rate.1),
             creates: RateLimiter::new(policy.create_rate.0, policy.create_rate.1),
             team_writes: Default::default(),
+            session_writes: Default::default(),
             local_signin: Default::default(),
             policy,
             dispatcher: task.abort_handle(),
@@ -752,6 +760,7 @@ impl Live {
         if !self.model.touch_presence(*xuid, now()) {
             return Err(not_found("not signed in: append SignedIn first"));
         }
+        self.model.touch_host_sessions(*xuid, now());
         Ok(self.policy.presence_ttl_s)
     }
 

@@ -1,7 +1,7 @@
-//! Local session backend and the public match ABI. The owned session/attribute
-//! types are the seam for a future HTTP worker; no server request happens here.
-//! Searches (including FindFromID) deliberately return an empty discovery view.
+//! Public match ABI over local advertisements or asynchronous server discovery.
+//! Exchange keys remain local; remote search records carry a zero HLE key.
 use crate::{
+    client::{MatchRequest, Pending, Reply, Service, Session},
     state::{Error, Storage},
     status::*,
 };
@@ -17,33 +17,18 @@ const STRING: u32 = 0x00100000;
 const BLOB: u32 = 0x00200000;
 const NULL: u32 = 0x00f00000;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SessionAttributeValue {
-    Integer(u64),
-    String(String),
-    Blob(Vec<u8>),
-    Null,
-}
+pub use live_proto::session::{AttributeValue as SessionAttributeValue, Slots as SessionSlots};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionAttribute {
     pub id: u32,
     pub value: SessionAttributeValue,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SessionSlots {
-    pub public_filled: u32,
-    pub public_open: u32,
-    pub private_filled: u32,
-    pub private_open: u32,
-}
-impl SessionSlots {
-    fn from_args(a: &[u32]) -> Self {
-        Self {
-            public_filled: a[0],
-            public_open: a[1],
-            private_filled: a[2],
-            private_open: a[3],
-        }
+fn slots(a: &[u32]) -> SessionSlots {
+    SessionSlots {
+        public_filled: a[0],
+        public_open: a[1],
+        private_filled: a[2],
+        private_open: a[3],
     }
 }
 /// Snapshot of an advertised local session. Exchange keys stay private to the
@@ -65,6 +50,28 @@ enum Task {
     Session { id: [u8; 8], key: [u8; 16] },
     Done,
     EmptySearch,
+    Search { array: u32, count: u32 },
+    Pending { request: Pending, intent: Intent },
+    Failed(u32),
+}
+enum Intent {
+    Put {
+        session: LocalSession,
+        key: [u8; 16],
+    },
+    Delete([u8; 8]),
+    Search {
+        limit: u32,
+        bytes: u32,
+        retail: bool,
+    },
+}
+pub(crate) struct Context<'a> {
+    pub storage: &'a mut Storage,
+    pub host: [u8; 36],
+    pub users: &'a [u64; 4],
+    pub service: Option<&'a Service>,
+    pub session: Option<&'a Session>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Op {
@@ -89,6 +96,7 @@ impl Op {
 #[derive(Default)]
 pub(crate) struct Sessions {
     records: BTreeMap<[u8; 8], Record>,
+    results: crate::qos_memory::QosMemory,
     tasks: BTreeMap<u32, Task>,
 }
 enum Failure {
@@ -111,37 +119,81 @@ impl Sessions {
     pub fn clear(&mut self) {
         self.records.clear();
         self.tasks.clear();
+        self.results.clear();
     }
-    pub fn poll(&self, h: u32) -> Option<u32> {
-        self.tasks.contains_key(&h).then_some(TASK_SUCCESS)
+    pub fn poll(
+        &mut self,
+        h: u32,
+        m: &mut Guest,
+        _storage: &mut Storage,
+    ) -> std::result::Result<Option<u32>, GuestFault> {
+        let Some(task) = self.tasks.remove(&h) else {
+            return Ok(None);
+        };
+        let task = if let Task::Pending { request, intent } = task {
+            match request.take() {
+                None => Task::Pending { request, intent },
+                Some(Err(e)) => Task::Failed(e),
+                Some(Ok(Reply::Matches(rows))) => match self.complete(m, intent, rows) {
+                    Ok(v) => v,
+                    Err(Failure::Hr(e)) => Task::Failed(e),
+                    Err(Failure::Fault(f)) => return Err(f),
+                },
+                _ => Task::Failed(INVALID_ARGUMENT),
+            }
+        } else {
+            task
+        };
+        let status = match task {
+            Task::Pending { .. } => 0,
+            Task::Failed(e) => e,
+            _ => TASK_SUCCESS,
+        };
+        self.tasks.insert(h, task);
+        Ok(Some(status))
     }
     pub fn close(&mut self, h: u32) -> bool {
-        self.tasks.remove(&h).is_some()
+        match self.tasks.remove(&h) {
+            Some(Task::Search { array, .. }) => {
+                self.results.release(array);
+                true
+            }
+            Some(_) => true,
+            None => false,
+        }
     }
     pub fn invoke(
         &mut self,
         op: Op,
         a: &[u32],
         m: &mut Guest,
-        storage: &mut Storage,
-        host: [u8; 36],
-        users: &[u64; 4],
+        ctx: Context<'_>,
     ) -> std::result::Result<u32, Error> {
-        match self.checked(op, a, m, storage, host, users) {
+        match self.checked(op, a, m, ctx) {
             Ok(v) => Ok(v),
             Err(Failure::Hr(v)) => Ok(v),
             Err(Failure::Fault(f)) => Err(Error::Fault(f)),
         }
     }
-    fn checked(
-        &mut self,
-        op: Op,
-        a: &[u32],
-        m: &mut Guest,
-        storage: &mut Storage,
-        host: [u8; 36],
-        users: &[u64; 4],
-    ) -> Result<u32> {
+    fn checked(&mut self, op: Op, a: &[u32], m: &mut Guest, ctx: Context<'_>) -> Result<u32> {
+        let Context {
+            storage,
+            host,
+            users,
+            service,
+            session: connection,
+        } = ctx;
+        if matches!(op, Op::Info | Op::Results) {
+            let status = self
+                .poll(a[0], m, storage)?
+                .ok_or(Failure::Hr(INVALID_ARGUMENT))?;
+            if status == 0 {
+                return hr(TASK_BUSY);
+            }
+            if status & 0x80000000 != 0 {
+                return hr(status);
+            }
+        }
         match op {
             Op::Create | Op::Update => {
                 let offset = usize::from(op == Op::Update) * 2;
@@ -153,7 +205,7 @@ impl Sessions {
                 for i in 0..p[4] {
                     m.check(p[5] + i * 16 + 4, 4, Access::Write, 1)?;
                 }
-                let slots = SessionSlots::from_args(p);
+                let slots = slots(p);
                 let (id, key, mut session) = if op == Op::Create {
                     if self.records.len() >= MAX_SESSIONS {
                         return hr(OUT_OF_MEMORY);
@@ -200,16 +252,43 @@ impl Sessions {
                     session.revision = session.revision.saturating_add(1);
                 }
                 let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
-                // Retail consumes dirty flags after serializing the request.
+                if let (Some(service), Some(connection)) = (service, connection) {
+                    let data = advertisement(&session);
+                    let request = if op == Op::Create {
+                        MatchRequest::Create(data)
+                    } else {
+                        MatchRequest::Update {
+                            id: live_proto::sign::hex(&id),
+                            update: live_proto::session::Update {
+                                slots: Some(data.slots),
+                                attributes: Some(data.attributes),
+                                ..Default::default()
+                            },
+                        }
+                    };
+                    let pending = service
+                        .match_request(connection, request)
+                        .map_err(Failure::Hr)?;
+                    self.tasks.insert(
+                        h,
+                        Task::Pending {
+                            request: pending,
+                            intent: Intent::Put { session, key },
+                        },
+                    );
+                } else {
+                    if changed {
+                        debug("advertise", &session);
+                    }
+                    self.records.insert(id, Record { session, key });
+                    self.tasks.insert(h, Task::Session { id, key });
+                }
+                // All guest ranges were checked before submitting. Queue
+                // failures leave output and dirty flags untouched.
                 for i in 0..p[4] {
                     m.set_u32(p[5] + i * 16 + 4, 0)?;
                 }
                 m.set_u32(p[7], h)?;
-                if changed {
-                    debug("advertise", &session);
-                }
-                self.records.insert(id, Record { session, key });
-                self.tasks.insert(h, Task::Session { id, key });
                 Ok(0)
             }
             Op::Info => {
@@ -230,10 +309,23 @@ impl Sessions {
                     return hr(MATCH_INVALID_SESSION);
                 }
                 let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+                if let (Some(service), Some(connection)) = (service, connection) {
+                    let pending = service
+                        .match_request(connection, MatchRequest::Delete(live_proto::sign::hex(&id)))
+                        .map_err(Failure::Hr)?;
+                    self.tasks.insert(
+                        h,
+                        Task::Pending {
+                            request: pending,
+                            intent: Intent::Delete(id),
+                        },
+                    );
+                } else {
+                    let record = self.records.remove(&id).unwrap();
+                    debug("delete", &record.session);
+                    self.tasks.insert(h, Task::Done);
+                }
                 m.set_u32(a[3], h)?;
-                let record = self.records.remove(&id).unwrap();
-                debug("delete", &record.session);
-                self.tasks.insert(h, Task::Done);
                 Ok(0)
             }
             Op::Search => {
@@ -245,40 +337,169 @@ impl Sessions {
                 let params = attributes(m, a[3], a[2], true)?;
                 if std::env::var_os("H2_BOOT_VERBOSE").is_some() {
                     eprintln!(
-                        "live match search debug: procedure={} limit={} params={params:?}; local discovery is empty",
+                        "live match search debug: procedure={} limit={} params={params:?}",
                         a[0], a[1]
                     );
                 }
-                self.empty_search(m, storage, a[6])
+                if let (Some(service), Some(connection)) = (service, connection) {
+                    // Procedure 1 is the retail stored procedure: anonymous
+                    // parameters are positional, not attribute IDs. Its return
+                    // projection is the seven public title attributes. Until
+                    // their filter meanings are pinned, do not invent equality
+                    // tests for anonymous params. Named API filters round-trip.
+                    let filters = if a[0] == 1 {
+                        BTreeMap::new()
+                    } else {
+                        params
+                            .into_iter()
+                            .filter(|v| v.value != SessionAttributeValue::Null)
+                            .map(|v| (v.id, v.value))
+                            .collect()
+                    };
+                    self.remote_search(
+                        m,
+                        storage,
+                        service,
+                        connection,
+                        MatchRequest::Search {
+                            limit: a[1],
+                            attributes: filters,
+                        },
+                        (
+                            a[6],
+                            Intent::Search {
+                                limit: a[1],
+                                bytes: a[4],
+                                retail: a[0] == 1,
+                            },
+                        ),
+                    )
+                } else {
+                    self.empty_search(m, storage, a[6])
+                }
             }
             Op::Find => {
                 work_event(a[2])?;
                 m.check(a[3], 4, Access::Write, 1)?;
-                self.empty_search(m, storage, a[3])
+                if let (Some(service), Some(connection)) = (service, connection) {
+                    self.remote_search(
+                        m,
+                        storage,
+                        service,
+                        connection,
+                        MatchRequest::Find(live_proto::sign::hex(&id(a[0], a[1]))),
+                        (
+                            a[3],
+                            Intent::Search {
+                                limit: 1,
+                                bytes: MAX_RESULTS_BYTES,
+                                retail: true,
+                            },
+                        ),
+                    )
+                } else {
+                    self.empty_search(m, storage, a[3])
+                }
             }
             Op::Results => {
-                if !matches!(self.tasks.get(&a[0]), Some(Task::EmptySearch)) {
-                    return hr(INVALID_ARGUMENT);
-                }
+                let (array, count) = match self.tasks.get(&a[0]) {
+                    Some(Task::EmptySearch) => (0, 0),
+                    Some(Task::Search { array, count }) => (*array, *count),
+                    _ => return hr(INVALID_ARGUMENT),
+                };
                 m.check(a[1], 4, Access::Write, 1)?;
                 m.check(a[2], 4, Access::Write, 1)?;
-                m.set_u32(a[1], 0)?;
-                m.set_u32(a[2], 0)?;
+                m.set_u32(a[1], array)?;
+                m.set_u32(a[2], count)?;
                 Ok(0)
             }
             Op::ResultsLen => results_len(m, a),
-            Op::Parse => {
-                if a[0] == 0 {
-                    return hr(INVALID_ARGUMENT);
+            Op::Parse => parse_result(m, a),
+        }
+    }
+    fn remote_search(
+        &mut self,
+        m: &mut Guest,
+        storage: &mut Storage,
+        service: &Service,
+        connection: &Session,
+        request: MatchRequest,
+        (out, intent): (u32, Intent),
+    ) -> Result<u32> {
+        let h = storage.alloc(m, 8).ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+        let pending = service
+            .match_request(connection, request)
+            .map_err(Failure::Hr)?;
+        m.set_u32(out, h)?;
+        self.tasks.insert(
+            h,
+            Task::Pending {
+                request: pending,
+                intent,
+            },
+        );
+        Ok(0)
+    }
+    fn complete(
+        &mut self,
+        m: &mut Guest,
+        intent: Intent,
+        rows: Vec<live_proto::session::Session>,
+    ) -> Result<Task> {
+        match intent {
+            Intent::Put { mut session, key } => {
+                let row = rows
+                    .into_iter()
+                    .next()
+                    .ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
+                let id = wire_id(&row.session_id).ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
+                session.id = id;
+                session.slots = row.advertisement.slots;
+                session.attributes = row.advertisement.attributes;
+                debug("server advertise", &session);
+                self.records.insert(id, Record { session, key });
+                Ok(Task::Session { id, key })
+            }
+            Intent::Delete(id) => {
+                self.records.remove(&id);
+                Ok(Task::Done)
+            }
+            Intent::Search {
+                limit,
+                bytes,
+                retail,
+            } => {
+                let rows: Vec<_> = rows
+                    .into_iter()
+                    .filter(|v| v.state == "open")
+                    .take(limit as usize)
+                    .collect();
+                if rows.is_empty() {
+                    return Ok(Task::EmptySearch);
                 }
-                m.check(a[0], 0x54, Access::Read, 1)?;
-                if m.u32(a[0] + 0x50)? != 0 {
-                    return hr(MATCH_INVALID_RESULT_COLUMN);
+                let encoded: Vec<_> = rows
+                    .iter()
+                    .map(|v| encode_result(v, retail))
+                    .collect::<Result<_>>()?;
+                let data_len: usize = encoded.iter().map(Vec::len).sum();
+                if data_len + 0x5c > bytes as usize {
+                    return hr(BUFFER_TOO_SMALL);
                 }
-                // The retail parser returns immediately for an empty record,
-                // without touching the specs or destination. Searches issue no
-                // records, so the title normally never calls this path at all.
-                Ok(0)
+                let total = data_len + rows.len() * 4;
+                let array = self
+                    .results
+                    .alloc(m, total as u32)
+                    .ok_or(Failure::Hr(OUT_OF_MEMORY))?;
+                let mut ptr = array + rows.len() as u32 * 4;
+                for (i, row) in encoded.iter().enumerate() {
+                    m.write_bytes(ptr, row, 1)?;
+                    m.set_u32(array + i as u32 * 4, ptr)?;
+                    ptr += row.len() as u32;
+                }
+                Ok(Task::Search {
+                    array,
+                    count: rows.len() as u32,
+                })
             }
         }
     }
@@ -383,4 +604,187 @@ fn results_len(m: &Guest, a: &[u32]) -> Result<u32> {
     } else {
         total as u32
     })
+}
+
+fn advertisement(s: &LocalSession) -> live_proto::session::NewSession {
+    live_proto::session::NewSession {
+        addr: Some(std::net::Ipv4Addr::new(
+            s.host_address[0],
+            s.host_address[1],
+            s.host_address[2],
+            s.host_address[3],
+        )),
+        port: u16::from_be_bytes([s.host_address[8], s.host_address[9]]),
+        host_address: s.host_address.to_vec(),
+        slots: s.slots,
+        attributes: s.attributes.clone(),
+        flags: "custom".into(),
+        hopper_id: None,
+        map: None,
+        name: None,
+        language: None,
+    }
+}
+fn wire_id(s: &str) -> Option<[u8; 8]> {
+    if !live_proto::session::valid_id(s) {
+        return None;
+    }
+    Some(u64::from_str_radix(s, 16).ok()?.to_be_bytes())
+}
+fn encode_result(s: &live_proto::session::Session, retail: bool) -> Result<Vec<u8>> {
+    let id = wire_id(&s.session_id).ok_or(Failure::Hr(MATCH_INVALID_SESSION))?;
+    let values: Vec<_> = if retail {
+        // The title's procedure 1 projects IDs 1,2,3,5,6,7,8, in that order
+        // (0xb4b80 / 0xb4a40). The other attributes are search-only flags.
+        [1, 2, 3, 5, 6, 7, 8]
+            .into_iter()
+            .map(|id| {
+                s.advertisement
+                    .attributes
+                    .get(&id)
+                    .cloned()
+                    .unwrap_or(SessionAttributeValue::Integer(0))
+            })
+            .collect()
+    } else {
+        s.advertisement.attributes.values().cloned().collect()
+    };
+    let mut bytes = vec![0; 0x54 + values.len() * 4];
+    bytes[4..12].copy_from_slice(&id);
+    if s.advertisement.host_address.len() != 36 {
+        return hr(MATCH_INVALID_SESSION);
+    }
+    bytes[12..48].copy_from_slice(&s.advertisement.host_address);
+    bytes[12..16].copy_from_slice(&s.endpoint.addr.octets());
+    bytes[16..20].copy_from_slice(&s.endpoint.addr.octets());
+    bytes[20..22].copy_from_slice(&s.endpoint.port.to_be_bytes());
+    // XNKEY +0x30 stays zero. HLE sockets use no encryption; the host key
+    // never appears in a public event or read response.
+    let slots = s.advertisement.slots;
+    for (offset, v) in [
+        (0x40, slots.public_open),
+        (0x44, slots.private_open),
+        (0x48, slots.public_filled),
+        (0x4c, slots.private_filled),
+        (0x50, values.len() as u32),
+    ] {
+        bytes[offset..offset + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    for (i, value) in values.into_iter().enumerate() {
+        let offset = bytes.len() as u32;
+        bytes[0x54 + i * 4..0x58 + i * 4].copy_from_slice(&offset.to_le_bytes());
+        match value {
+            SessionAttributeValue::Integer(n) => {
+                bytes.extend_from_slice(&0u32.to_le_bytes());
+                bytes.extend_from_slice(&n.to_le_bytes());
+            }
+            SessionAttributeValue::String(s) => {
+                let mut utf8 = s.into_bytes();
+                utf8.push(0);
+                bytes.extend_from_slice(&STRING.to_le_bytes());
+                bytes.extend_from_slice(&(utf8.len() as u16).to_le_bytes());
+                bytes.extend(utf8);
+            }
+            SessionAttributeValue::Blob(b) => {
+                bytes.extend_from_slice(&BLOB.to_le_bytes());
+                bytes.extend_from_slice(&(b.len() as u16).to_le_bytes());
+                bytes.extend(b);
+            }
+            SessionAttributeValue::Null => bytes.extend_from_slice(&NULL.to_le_bytes()),
+        }
+    }
+    let size = bytes.len() as u32;
+    bytes[..4].copy_from_slice(&size.to_le_bytes());
+    Ok(bytes)
+}
+fn parse_result(m: &mut Guest, a: &[u32]) -> Result<u32> {
+    if a[0] == 0 {
+        return hr(INVALID_ARGUMENT);
+    }
+    m.check(a[0], 0x54, Access::Read, 1)?;
+    let count = m.u32(a[0] + 0x50)?;
+    if count == 0 {
+        return Ok(0);
+    }
+    if count > MAX_ATTRIBUTES || count > a[1] {
+        return hr(MATCH_INVALID_RESULT_COLUMN);
+    }
+    let size = m.u32(a[0])?;
+    if size < 0x54 + count * 4 || size > MAX_RESULTS_BYTES {
+        return hr(MATCH_INVALID_RESULT_COLUMN);
+    }
+    m.check(a[0], size as usize, Access::Read, 1)?;
+    m.check(a[2], count as usize * 8, Access::Read, 1)?;
+    let mut output = Vec::new();
+    for i in 0..count {
+        let offset = m.u32(a[0] + 0x54 + i * 4)?;
+        if offset < 0x54 + count * 4 || offset.checked_add(4).is_none_or(|v| v > size) {
+            return hr(MATCH_INVALID_RESULT_COLUMN);
+        }
+        let at = a[0] + offset;
+        let ty = m.u32(at)?;
+        let spec = m.u32(a[2] + i * 8)?;
+        let cap = m.u32(a[2] + i * 8 + 4)?;
+        if ty != spec && ty != NULL {
+            return hr(MATCH_INVALID_DATA_TYPE);
+        }
+        match spec {
+            0 => {
+                if ty == NULL {
+                    output.extend_from_slice(&0u64.to_le_bytes());
+                } else {
+                    if offset + 12 > size {
+                        return hr(MATCH_INVALID_RESULT_COLUMN);
+                    }
+                    output.extend_from_slice(&m.u64(at + 4)?.to_le_bytes());
+                }
+            }
+            STRING | BLOB => {
+                if cap > 800 {
+                    return hr(BUFFER_TOO_SMALL);
+                }
+                let data = if ty == NULL {
+                    Vec::new()
+                } else {
+                    if offset + 6 > size {
+                        return hr(MATCH_INVALID_RESULT_COLUMN);
+                    }
+                    let len = u32::from(m.u16(at + 4)?);
+                    if offset + 6 + len > size {
+                        return hr(MATCH_INVALID_RESULT_COLUMN);
+                    }
+                    let mut data = vec![0; len as usize];
+                    m.read_bytes(at + 6, &mut data, 1)?;
+                    data
+                };
+                if spec == BLOB {
+                    if data.len() > cap as usize {
+                        return hr(BUFFER_TOO_SMALL);
+                    }
+                    output.extend_from_slice(&(data.len() as u16).to_le_bytes());
+                    let start = output.len();
+                    output.resize(start + cap as usize, 0);
+                    output[start..start + data.len()].copy_from_slice(&data);
+                } else {
+                    let text = std::str::from_utf8(&data)
+                        .map_err(|_| Failure::Hr(MATCH_INVALID_STRING))?;
+                    let text = text.trim_end_matches('\0');
+                    let encoded: Vec<_> = text
+                        .encode_utf16()
+                        .chain([0])
+                        .flat_map(u16::to_le_bytes)
+                        .collect();
+                    if encoded.len() > cap as usize {
+                        return hr(BUFFER_TOO_SMALL);
+                    }
+                    let start = output.len();
+                    output.resize(start + cap as usize, 0);
+                    output[start..start + encoded.len()].copy_from_slice(&encoded);
+                }
+            }
+            _ => return hr(MATCH_INVALID_DATA_TYPE),
+        }
+    }
+    m.write_bytes(a[3], &output, 1)?;
+    Ok(0)
 }

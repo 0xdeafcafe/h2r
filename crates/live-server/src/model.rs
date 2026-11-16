@@ -132,6 +132,7 @@ pub struct State {
     /// accounts that ever sent or received a request have an entry.
     pub friends: HashMap<Xuid, Relations>,
     pub teams: live_proto::team::Store,
+    pub sessions: BTreeMap<String, live_proto::session::Session>,
     pub games: HashMap<String, Game>,
     /// Start position -> game id, oldest first.
     games_by_position: BTreeMap<u64, String>,
@@ -284,6 +285,14 @@ impl Model {
             .is_some()
     }
 
+    pub fn touch_host_sessions(&self, xuid: Xuid, now: i64) {
+        for item in self.state.write().unwrap().sessions.values_mut() {
+            if item.host_xuid == xuid && item.state == "open" {
+                item.last_activity = item.last_activity.max(now);
+            }
+        }
+    }
+
     /// A frame arrived for a live game.
     pub fn touch_game(&self, id: &str, now: i64) {
         if let Some(g) = self.state.write().unwrap().games.get_mut(id) {
@@ -387,6 +396,10 @@ impl Model {
         self.nonces
             .insert_new(nonce_key(&b.author, &b.nonce), at + MAX_EVENT_SKEW_S, now);
         let mut s = self.state.write().unwrap();
+        if b.stream.starts_with("session-") {
+            crate::sessions::project(&mut s, e, at);
+            return;
+        }
         if b.stream.starts_with("game-") {
             Self::apply_game(&mut s, e, at);
             return;

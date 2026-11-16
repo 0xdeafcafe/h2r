@@ -242,6 +242,73 @@ CLI commands take `--server <base-url>` and `--as <local-gamertag>`:
 `remove <id> <gamertag>` and `leave <id>`. Masks accept decimal or `0x` hex.
 `h2 live q teams [gamertag]` and `h2 live q team <id>` read the same views.
 
+## Sessions
+
+Session advertisements are separate from recorded games. The stream is
+`session-<id>`; the server chooses a random eight-byte online-peer XNKID and
+uses its 16 lowercase hex digits as the id. There is no exchange key in the
+public API. HLE keys stay local while sockets use unencrypted host traffic.
+
+| endpoint | authentication | result |
+|---|---|---|
+| `POST /v1/sessions` | account token, `lxm: sessions.write` | 201 `{session_id, session, position}` |
+| `POST /v1/sessions/{id}/events` | host token, `lxm: sessions.write`; batch JWS | 201 `{position}` |
+| `GET /v1/sessions` | public, or `read` on a private server | `{items, next, position}` |
+| `GET /v1/sessions/{id}` | same read rule | `{session, position}`; 404 if unknown |
+
+Create takes `addr` (IPv4 or null), `port`, `host_address` (36 XNADDR bytes),
+`slots` (`public_filled`, `public_open`, `private_filled`, `private_open`),
+`attributes` (an object keyed by decimal attribute ID), `flags` (default
+`custom`, also `hopper` or `ranked`), and optional `hopper_id`, `map`, `name`,
+`language`. Attribute values are `{type: "integer", value: <u64>}`,
+`{type: "string", value: "..."}`, `{type: "blob", value: [bytes]}` or
+`{type: "null"}`. The ID's datatype bits must agree. Limits are 16 total slots,
+64 attributes, 400 UTF-16 units per string, 800 bytes per blob, 256 bytes per
+metadata string and 32 open advertisements per host. Unknown input fields are
+rejected; addresses must be unicast IPv4 and ports 1..65529.
+
+The server writes a server-signed `SessionCreated` with the full session. Its
+`host`, `host_xuid` and `host_gamertag` come from the authenticated account;
+`endpoint` contains `{addr, port, source}`. An explicit address has source
+`declared`. When `addr` is null, the observed address comes from
+`policy.public.client_ip`: `CF-Connecting-IP` is trusted only with a configured
+Cloudflare tunnel and a loopback peer, otherwise the TCP peer wins. Unknown
+or IPv6-only observations require an explicit IPv4 address. XNADDR bytes are
+retained; the HLE result encoder substitutes this endpoint in its address/port
+fields.
+
+Only the authenticated host may append events, signed with its registered key:
+
+- `SessionUpdated`: optional slots, attributes (full replacement), name or map.
+- `PlayerJoined`: `{xuid, slot?}`; the account must exist and not be in the
+  roster, which is bounded to 16. Slot is an optional display string.
+- `PlayerLeft`: `{xuid}`; the account must be in the roster.
+- `SessionDeleted`: `{reason: "closed" | "host_left"}`; must be last in a batch.
+
+Batches are validated in order before any append. Stream, author, signature,
+key, five-minute timestamp window, nonce replay and payload checks apply.
+Closed sessions reject writes with 409. Unchanged updates are successful but
+add no event. These streams are reserved: `POST /v1/events` cannot bypass their
+host checks or forge creation/expiry. `PlayerJoined/Left` are available to the
+host API; this HLE slice does not infer those events from UDP traffic.
+
+Presence pings refresh the host's open advertisements in memory. Five minutes
+without a ping or changed session event produces a server-signed
+`SessionExpired`. Pings are not persisted; after restart the deadline comes
+from the last recorded event. Deleted/expired sessions remain readable by ID
+and replay from the log, but are absent from the default list.
+
+Lists accept `state` (default `open`), `hopper` (numeric ID), `map`, `host`
+(author or canonical gamertag), and `attributes` (URL-encoded JSON with exact
+value comparisons). Filters combine. `limit` is 1..1000, default 100; `cursor`
+is the previous `next` string. Ordering is by session ID. CLI queries are
+`h2 live q sessions [--state open|deleted|expired] [--hopper ID] [--map NAME]
+[--host GAMERTAG]` and `h2 live q session ID`, with the usual JSON formats.
+
+The HTTP service advertises endpoints; it does not relay game packets, create
+a ranked match or traverse NAT. Direct internet play requires reachable UDP
+base through base+6. A Cloudflare HTTP tunnel alone provides no gameplay path.
+
 ## Streams (WebSocket)
 
 **`GET /v1/stream?from=<position>`** for readers. The server first replays
