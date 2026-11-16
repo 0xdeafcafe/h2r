@@ -7,6 +7,7 @@
 //!   [`patch::Overlay`]s laid over the base as it streams.
 //! - [`Library`]: the packages under `<data>/maps/`, and the resolver that
 //!   turns a map name into the bytes to serve.
+//! - [`store`]: writing packages and `active.toml` (the editor's side).
 //!
 //! Nothing here holds game data: packages name the user's disc maps by name
 //! and hash, and the tests use synthetic maps.
@@ -16,6 +17,7 @@ mod id;
 pub mod manifest;
 pub mod patch;
 mod resolve;
+pub mod store;
 
 pub use canonical::{NotInteger, canonicalize};
 pub use hash::{BadHex, Hasher, Sha256};

@@ -202,9 +202,7 @@ impl Manifest {
                 return Err(bad(format!("{len} bytes, over {MAX_IMAGE_BYTES}")));
             }
             let bytes = std::fs::read(&path).map_err(|e| bad(e.to_string()))?;
-            let png = bytes.starts_with(b"\x89PNG\r\n\x1a\n");
-            let jpeg = bytes.starts_with(&[0xff, 0xd8, 0xff]);
-            if !png && !jpeg {
+            if image_signature(&bytes).is_none() {
                 return Err(bad("not a PNG or JPEG file".into()));
             }
         }
@@ -214,6 +212,17 @@ impl Manifest {
     /// This manifest's identity.
     pub fn map_id(&self) -> MapId {
         MapId::of(self)
+    }
+}
+
+/// `"png"` or `"jpg"` when `bytes` start with that format's signature.
+pub fn image_signature(bytes: &[u8]) -> Option<&'static str> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some("png")
+    } else if bytes.starts_with(&[0xff, 0xd8, 0xff]) {
+        Some("jpg")
+    } else {
+        None
     }
 }
 

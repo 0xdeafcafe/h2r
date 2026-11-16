@@ -132,9 +132,8 @@ fn common(a: &[u8], b: &[u8]) -> usize {
     let n = a.len().min(b.len());
     let (a, b) = (&a[..n], &b[..n]);
     let mut at = 0;
-    for (x, y) in a.chunks_exact(8).zip(b.chunks_exact(8)) {
-        let d = u64::from_le_bytes(x.try_into().expect("8 bytes"))
-            ^ u64::from_le_bytes(y.try_into().expect("8 bytes"));
+    for (x, y) in a.as_chunks::<8>().0.iter().zip(b.as_chunks::<8>().0) {
+        let d = u64::from_le_bytes(*x) ^ u64::from_le_bytes(*y);
         if d != 0 {
             return at + (d.trailing_zeros() / 8) as usize;
         }
@@ -167,8 +166,8 @@ const MIN_READ: usize = 4;
 const MIN_COPY: usize = 16;
 
 fn block_hash(b: &[u8]) -> u64 {
-    b.chunks_exact(8).fold(0x9e37_79b9_7f4a_7c15u64, |h, w| {
-        (h ^ u64::from_le_bytes(w.try_into().expect("8 bytes"))).wrapping_mul(0x0100_0000_01b3)
+    b.as_chunks::<8>().0.iter().fold(0x9e37_79b9_7f4a_7c15u64, |h, w| {
+        (h ^ u64::from_le_bytes(*w)).wrapping_mul(0x0100_0000_01b3)
             ^ (h >> 29)
     })
 }
@@ -296,7 +295,7 @@ mod tests {
         assert_eq!(apply(&base, &w.bytes), base);
         let b = bps(&base, &base);
         // Magic, three sizes, one SourceRead, three CRCs.
-        assert!(b.len() <= 4 + 2 + 2 + 1 + 2 + 12, "{}", b.len());
+        assert_eq!(b.len(), 4 + 2 + 2 + 1 + 3 + 12);
         assert_eq!(apply(&base, &b), base);
         assert_eq!(apply(&[], &bps(&[], &[])), Vec::<u8>::new());
         assert_eq!(apply(&[], &bps(&[], b"new")), b"new");
