@@ -16,8 +16,8 @@ without building or running the game. No leaked build, game file or archive
 was downloaded or examined, and none may be for this work.
 
 The setting is `lighting = "retail" | "e3"` in the settings design
-(`docs/game/settings-menu.md`, in progress on another branch). This page proposes
-`H2_LIGHTING` as the developer flag.
+([settings-menu.md](../game/settings-menu.md)), which has no lighting control
+yet. This page proposes `H2_LIGHTING` as the developer flag.
 
 ## Evidence labels
 

@@ -45,7 +45,7 @@ h2 profile budget $R/trace.json            # and --json for every frame
 
 Three views of the same run:
 
-- **Frame stats** (`H2_FRAME_STATS`, new on this branch; docs/runtime/app.md
+- **Frame stats** (`H2_FRAME_STATS`, added by this work and now on master; docs/runtime/app.md
   "Frame stats") split every frame into phases on the game thread and
   count what happened in it. This is the tool for users: `h2 play
   --frame-stats` shows the same split live.

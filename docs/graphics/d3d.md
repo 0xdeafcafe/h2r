@@ -1149,7 +1149,8 @@ let runtime = runtime::Runtime::new(guest, dispatch);
    kernel, `Device::set_vblanks_per_swap(n)` and/or the inline frame wait.
 5. **Present.** `GfxBackend::on_present` receives the surface on every
    `Swap`, after the pending pass has been submitted.
-   With `d3d::ThreadedBackend` (opt-in) every backend call, the hook
+   With `d3d::ThreadedBackend` (on by default in `h2 run` and `h2 play`;
+   `H2_RENDER_THREAD=0` turns it off) every backend call, the hook
    included, runs on a render thread; see [render-thread.md](render-thread.md). Blit it with
    `gfx::surface::present_surface`.
 6. **Shaders.** `GfxBackend::new` installs `Nv2aShaders`; replace it with
@@ -1726,7 +1727,7 @@ checks these branches.
   render thread, waiting and polling), `tests/round7.rs` (device and
   runner) and `gfx`'s
   `pixel_counter_*` tests (within-draw depth and stencil at 1x and 4x, a
-  replaced shader, a depth that cannot be copied). The ignored `visibility_conventions`
+  replaced shader, a depth that cannot be copied). The ignored `visibility_conventions_in_the_image`
   checks the call sites and conventions in the image.
 
 ### Lens flares
@@ -1802,7 +1803,7 @@ code at `0x13d24` (in `0x13cd0`) and teardown at `0x3fc611`, release device
 - Tests: `tests/round7.rs` (a runner with a stand-in at `0x3fb520` that
   waits through `BlockOnResource` as the original does) and
   `round6.rs`/`recheck_fixes.rs` (teardown and unbind destroys). The
-  ignored `destroy_resource_conventions` checks that `EDI` is the
+  ignored `destroy_resource_conventions_in_the_image` checks that `EDI` is the
   resource, the callees, that only `0x3fb4d0` names `0x408644`, and that
   `+0x7A0` is only stored as 0.
 
@@ -1815,7 +1816,7 @@ blue) into the miniport. `EAX` = the miniport (device `+0x1C28`) and
 ramp (`Device::gamma_ramp`). Each `Swap` passes the current ramp to the
 frame handoff, which applies it per RGB channel when copying the presented
 surface. The unmodified surface remains available for guest reads. The
-ignored `gamma_ramp_conventions` checks the convention.
+ignored `gamma_ramp_conventions_in_the_image` checks the convention.
 
 ## gfx changes this wants
 

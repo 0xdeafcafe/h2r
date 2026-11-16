@@ -8,9 +8,10 @@ part of phase 2 ("Phase 2 as built"); the rest is design. It was written from th
 building or running the game. Every number under "Cost" is arithmetic or a
 figure quoted from another doc, not a new measurement.
 
-The setting is `render_scale` in the settings design
-(`docs/game/settings-menu.md`, in progress on another branch). This page proposes
-`H2_RENDER_SCALE` as the developer flag, and a per-axis form for widescreen.
+The setting is `[graphics] render_scale`, the Resolution row on the Video
+screen ([settings-menu.md](../game/settings-menu.md), "Video screen").
+`H2_RENDER_SCALE` is the developer flag and locks the scale when set. This
+page also proposes a per-axis form for widescreen.
 
 ## Summary
 

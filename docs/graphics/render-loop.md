@@ -92,6 +92,10 @@ done for `render_views`.
   `impl.render=on`). Off by default. The driver makes each call with
   `call_guest` and resumes the port in the continuation, so a callee that
   blocks unwinds to the scheduler as usual.
+- The layer draw `0x00044550` and its entry loop `0x0003bc30`
+  (`engine::render_loop::layer`, `impl.render.layer_draw` and
+  `impl.render.layer_entries`, off by default): see
+  [layer-draw.md](layer-draw.md).
 - The one guest-visible difference: callees see the continuation token
   as their return address, not `0x0002b6b9` etc., as with every chain that
   runs something after a body.

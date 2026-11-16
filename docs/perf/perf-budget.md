@@ -13,8 +13,12 @@ The in-level budget and its worst frames are in
 Since then master has landed plan items 1 and 2 (draws batched per
 target into one submission, upload rings and cached texture bind groups,
 592686a) and item 4 (deferred VFS write metadata, 6eb79b6). Those target
-rows 2, 3, 4 and 6 of the budget. The main menu now runs at about 5-6 fps
-on an unloaded M-series Mac. Re-measure before acting on any row.
+rows 2, 3, 4 and 6 of the budget. Items 3 (the inline RAM path,
+`H2_FASTMEM`) and 5 (native x87, `H2_X87_NATIVE`) have landed too and are
+on by default. The flyover section below is the latest menu measurement
+(about 11-16 fps on a quiet machine, with the render thread); the budget
+and plan after it are the original 4620ba0 numbers. Re-measure before
+acting on any row.
 
 ## The city flyover at menu start (re-measured)
 
@@ -87,7 +91,8 @@ things to `boot::run`:
 - A `boot: input + audio pump` span around the runner's per-slice
   `xapi::service_input` and `dsound_glue::advance`.
 
-Neither is on master yet (docs/perf/perf.md, "Boot hook").
+`H2_PERF_FROM` has since landed on master (docs/perf/perf.md, "Boot
+hook"); the pump span has not.
 
 | run | what | window mean / median ms | load avg |
 |---|---|---|---|

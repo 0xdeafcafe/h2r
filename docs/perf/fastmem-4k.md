@@ -1,8 +1,13 @@
 # Opt-in 4 KiB translation experiment
 
-This extends phase 1, on master c00124d, without changing the default memory
-path or the guest's logical accounting. `H2_FASTMEM=2` and the boot flags in
-BOOT.md select the experiment. No Mach protection is enabled by this change.
+Status: not on master. The experiment is on the `fastmem-4k` branch
+(`894f2a3` over master `c00124d`); on master `H2_FASTMEM` takes only `0` or
+`1`, and phase 1 (the inline RAM path) is on by default
+([performance.md](performance.md), "Inline RAM path").
+
+This extends phase 1 without changing the default memory path or the
+guest's logical accounting. On the branch, `H2_FASTMEM=2` and the boot flags
+in BOOT.md select the experiment. No Mach protection is enabled by this change.
 
 ## Translation and lease
 
@@ -178,7 +183,7 @@ budgets below are requirements, not newly measured allocations.
 
 | Owner | Next evidence/change needed |
 | --- | --- |
-| Runtime/emit | Retain phase 1 as the faster opt-in path. Profile the additional lease/mode checks before changing them, then compare specialized translated code under matching load. Fit memory work within about 20 ms; high eligibility alone has not achieved this. |
+| Runtime/emit | Retain phase 1 as the faster path (it has since become the default). Profile the additional lease/mode checks before changing them, then compare specialized translated code under matching load. Fit memory work within about 20 ms; high eligibility alone has not achieved this. |
 | IR / codegen-opt | Measure the landed local access accumulator jointly with memory paths; it was disabled in this isolation experiment. Accounting stays tied to logical guest ticks, not presentation frequency. Continue IR work independently. |
 | wgpu / gfx-perf | Merged passes were enabled on both sides. Measure remaining submission/upload CPU and GPU critical-path time; this experiment does not isolate them. |
 | D3D parsing | Measure remaining parser time with the selected memory path. Software bits add no page-granularity dirty amplification; actual upload bytes were not measured. |
