@@ -1,5 +1,6 @@
 //! Builds and reads Halo 2's `multiplayer_hopper.dat`, the playlist file
-//! (docs/live-motd.md §5). The download envelope is the MOTD's:
+//! (docs/live-motd.md §5, docs/live-matchmaking.md §6). The download
+//! envelope is the MOTD's:
 //!
 //! ```text
 //! +0x00  16 bytes   header: CRC, version 4, size ([`crate::title_file`])
@@ -11,29 +12,45 @@
 //! checksum:
 //!
 //! ```text
-//! +0x000000  16 x 0x614     hopper descriptor entries
-//! +0x006140  16 x 0x15cb8   per-hopper data blocks
+//! +0x000000  16 x 0x614     hopper descriptors
+//! +0x006140  16 x 0x15cb8   per-hopper data blocks: a 0x44-byte unused
+//!                           header, the entry count at +0x44, 100 entry
+//!                           slots of 0x37c
 //! ```
 //!
-//! A descriptor entry (0x614 bytes): `+0x00` type (1..5), `+0x04` status
-//! (0 = not loaded, 1 = ok, 2 = error), `+0x08` record count (1..100,
-//! validator `0x00193560`), `+0x51b` the ASCII name, `+0x5a0` a dword array,
-//! `+0x5e4` a dword, `+0x5ec/+0x5f0/+0x5f4` range fields (the party size
-//! limits the session setup reads). A data block (0x15cb8 bytes): a 0x44-byte
-//! header, a dword record count at `+0x44`, then 100 record slots of 0x37c.
-//! A record: `+0x04` id (must resolve to a `matchmaking_hopper_descriptions`
-//! tag record), `+0x24c` an ASCII string, `+0x294` flags, and single dwords
-//! at `+0x248` and `+0x2a4`.
+//! Every field is decoded from the game's own readers in [`layout`]
+//! ([`Descriptor`], [`Entry`], the validator port [`check_descriptor`]);
+//! [`variant`] is the game variant an entry carries, and [`defaults`] the
+//! playlists a server offers when nothing was published
+//! ([`HopperFile::default_set`]).
 //!
-//! Only those fields are modelled; everything else in the image is unknown
-//! and kept byte for byte, so reading a file and rebuilding it (or editing
-//! the known fields) never disturbs what the game expects and we cannot
-//! read. The image is little-endian throughout (the big-endian dword is the
-//! download envelope's alone).
+//! The field API below ([`Hopper`], [`Record`]) is the older, partial view
+//! the editors still use. Two of its fields are not game fields: `name`
+//! reads the bytes from `+0x51b`, which are the last byte of the ninth
+//! description and the skill ceiling table (writing a name breaks the
+//! validator), and `Record::string` reads the start of the entry's game
+//! variant. `Record::id` is the map id, `Record::dwords` the weight and the
+//! variant's setting 14, `Record::flags` the variant's flags. The record
+//! count is the data block's (`+0x44`); the descriptor's `+0x08` is the
+//! playlist id ([`Descriptor::playlist_id`]).
 //!
-//! Game data never goes in the repo: tests build synthetic images, and real
-//! base images come from the owner's own console cache through
-//! `h2 live hopper import` (docs/live-admin.md).
+//! Writes touch only the fields they name; every other byte is kept, so a
+//! file read and rebuilt (or edited) keeps whatever the game expects. The
+//! image is little-endian throughout (the big-endian dword is the download
+//! envelope's alone).
+//!
+//! Game data never goes in the repo: tests build synthetic images, the
+//! default set is built from numbers in [`defaults`], and real images come
+//! from the owner's own console cache through `h2 live hopper import`
+//! (docs/live-admin.md).
+
+pub mod defaults;
+pub mod layout;
+pub mod variant;
+
+pub use layout::{
+    Descriptor, Entry, HopperType, Problem, Rules, check_descriptor, set_slot_entry, slot_entry,
+};
 
 use std::io::{Read, Write};
 
@@ -52,13 +69,14 @@ pub const MAX_FILE: usize = 0x20000;
 pub const VERSION: u32 = 4;
 /// Hopper descriptor entries, then per-hopper data blocks.
 pub const HOPPERS: usize = 16;
-/// The game's record-count validator allows 1..=100, and the block holds
-/// exactly 100 slots.
+/// A data block holds exactly 100 entry slots.
 pub const MAX_RECORDS: usize = 100;
 
-/// Longest hopper name: the 0x85-byte field at +0x51b minus its NUL.
+/// Longest [`Hopper::name`]: the 0x85 bytes from +0x51b minus a NUL (not a
+/// game field; module notes).
 pub const MAX_NAME: usize = 0x84;
-/// Longest record string: the 0x48-byte field at +0x24c minus its NUL.
+/// Longest [`Record::string`]: 0x48 bytes from +0x24c minus a NUL (the start
+/// of the game variant; module notes).
 pub const MAX_STRING: usize = 0x47;
 
 pub const DESCRIPTOR: usize = 0x614;
@@ -66,15 +84,15 @@ pub const BLOCK: usize = 0x15cb8;
 pub const RECORD: usize = 0x37c;
 
 const PREFIX: usize = 16;
-const BLOCKS_AT: usize = HOPPERS * DESCRIPTOR;
-// Descriptor fields (docs/live-motd.md §5.2).
+pub(crate) const BLOCKS_AT: usize = HOPPERS * DESCRIPTOR;
+// The older view's descriptor fields ([`layout`] has them all).
 const D_TYPE: usize = 0x00;
 const D_STATUS: usize = 0x04;
-const D_COUNT: usize = 0x08;
 const D_NAME: usize = 0x51b;
 const D_NAME_LEN: usize = 0x85;
 const D_DWORDS: usize = 0x5a0;
-/// 17 dwords at +0x5a0 plus the one at +0x5e4.
+/// The base wait at +0x5a0, the 16 start waits, and the minimum rank at
+/// +0x5e4.
 pub const DWORDS: usize = 18;
 const D_RANGES: usize = 0x5ec;
 /// Per-language title and description slots (nine languages, UTF-8,
@@ -89,7 +107,7 @@ const D_DESC_LEN: usize = 0x80;
 pub const MAX_TITLE: usize = D_TITLE_LEN - 1;
 pub const MAX_DESCRIPTION: usize = D_DESC_LEN - 1;
 // Data-block fields.
-const B_COUNT: usize = 0x44;
+use layout::B_COUNT;
 const B_RECORDS: usize = 0x48;
 // Record fields.
 const R_ID: usize = 0x04;
@@ -140,38 +158,42 @@ pub enum HopperError {
     Header(#[from] crate::title_file::HeaderError),
 }
 
-/// The editable fields of one hopper descriptor. Everything else in the
-/// 0x614 bytes (the per-player data and strings, the type-name region) is
-/// unknown and preserved in the image.
+/// The older field view of one hopper (module notes): the type, status,
+/// the data block's record count, the `+0x51b` bytes, the first three type
+/// parameters and the dwords from `+0x5a0`. [`Descriptor`] has every
+/// field.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hopper {
     /// 1 to 5; the playlist UI shows hoppers of types {2, 4, 5}.
     pub hopper_type: u32,
     /// 0 = not loaded, 1 = ok, 2 = error.
     pub status: u32,
-    /// 1 to 100; the game's validator (`0x00193560`) enforces this.
+    /// The data block's entry count (`+0x44`), 1 to 100.
     pub record_count: u32,
-    /// The playlist's name, ASCII.
+    /// The bytes from `+0x51b` as ASCII. Not a game field: the last byte
+    /// of the ninth description, then the skill ceiling table, which the
+    /// validator holds to `i <= table[i]`; leave it as read.
     pub name: String,
-    /// The range fields at +0x5ec/+0x5f0/+0x5f4 (party size limits).
+    /// The first three type parameters (`+0x5ec`, [`Rules`]).
     pub ranges: [u32; 3],
-    /// The dword array at +0x5a0 (17 dwords) plus the dword at +0x5e4.
+    /// `+0x5a0` (the base wait), the 16 start waits at `+0x5a4`, and the
+    /// minimum rank at `+0x5e4`.
     pub dwords: Vec<u32>,
 }
 
-/// The editable fields of one record slot. The 0x40-byte template blob at
-/// +0x08, the 0x200-byte copy at +0x48 and the remaining bytes are unknown
-/// and preserved; move them with [`HopperFile::set_slot`].
+/// The older field view of one entry slot (module notes); [`Entry`] has
+/// every field. Move whole slots with [`HopperFile::set_slot`].
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Record {
-    /// Must resolve to a `matchmaking_hopper_descriptions` tag record, or
-    /// the game marks the slot as an error (status 2).
+    /// The map id (`+0x04`); one the game cannot find marks the hopper as
+    /// an error (status 2).
     pub id: u32,
-    /// The ASCII string at +0x24c.
+    /// The bytes at `+0x24c` as ASCII: the start of the game variant (its
+    /// header and name), not a string of its own.
     pub string: String,
-    /// The flags dword at +0x294.
+    /// The game variant's flags (`+0x294`, variant `+0x48`).
     pub flags: u32,
-    /// The dwords at +0x248 and +0x2a4.
+    /// The weight (`+0x248`) and the variant's setting 14 (`+0x2a4`).
     pub dwords: [u32; 2],
 }
 
@@ -341,11 +363,12 @@ impl HopperFile {
     /// Hopper `i`'s editable descriptor fields.
     pub fn hopper(&self, i: usize) -> Result<Hopper, HopperError> {
         let at = self.descriptor_at(i)?;
+        let block = self.block_at(i)?;
         let image = &self.image;
         Ok(Hopper {
             hopper_type: le32(image, at + D_TYPE),
             status: le32(image, at + D_STATUS),
-            record_count: le32(image, at + D_COUNT),
+            record_count: le32(image, block + B_COUNT),
             name: get_ascii(&image[at + D_NAME..][..D_NAME_LEN]),
             ranges: [
                 le32(image, at + D_RANGES),
@@ -358,9 +381,9 @@ impl HopperFile {
         })
     }
 
-    /// Writes hopper `i`'s editable descriptor fields, validating what the
-    /// game validates. The record count is written to the descriptor only;
-    /// [`HopperFile::set_record_count`] keeps the data block's copy in step.
+    /// Writes hopper `i`'s fields, with the record count going to the data
+    /// block. The playlist id (`+0x08`) is kept; if it is not one the
+    /// validator takes (a blank image), it becomes `i + 1`.
     pub fn set_hopper(&mut self, i: usize, h: &Hopper) -> Result<(), HopperError> {
         let at = self.descriptor_at(i)?;
         if !(1..=5).contains(&h.hopper_type) {
@@ -387,7 +410,11 @@ impl HopperFile {
         }
         put_le32(&mut self.image, at + D_TYPE, h.hopper_type);
         put_le32(&mut self.image, at + D_STATUS, h.status);
-        put_le32(&mut self.image, at + D_COUNT, h.record_count);
+        if !layout::PLAYLIST_IDS.contains(&le32(&self.image, at + layout::D_PLAYLIST_ID)) {
+            put_le32(&mut self.image, at + layout::D_PLAYLIST_ID, i as u32 + 1);
+        }
+        let block = self.block_at(i)?;
+        put_le32(&mut self.image, block + B_COUNT, h.record_count);
         for n in 0..DWORDS {
             put_le32(&mut self.image, at + D_DWORDS + n * 4, h.dwords[n]);
         }
@@ -397,22 +424,19 @@ impl HopperFile {
         Ok(())
     }
 
-    /// The record count in hopper `i`'s data block (kept equal to the
-    /// descriptor's by [`HopperFile::set_record_count`]).
+    /// The record count in hopper `i`'s data block (the same as
+    /// [`Hopper::record_count`] and [`HopperFile::entry_count`]).
     pub fn block_record_count(&self, i: usize) -> Result<u32, HopperError> {
         let at = self.block_at(i)?;
         Ok(le32(&self.image, at + B_COUNT))
     }
 
-    /// Sets the record count in both places (descriptor `+0x08` and block
-    /// `+0x44`), as the game's own writer does.
+    /// Sets the record count (data block `+0x44`).
     pub fn set_record_count(&mut self, i: usize, count: u32) -> Result<(), HopperError> {
         if !(1..=MAX_RECORDS as u32).contains(&count) {
             return Err(HopperError::Count(count));
         }
-        let at = self.descriptor_at(i)?;
         let block = self.block_at(i)?;
-        put_le32(&mut self.image, at + D_COUNT, count);
         put_le32(&mut self.image, block + B_COUNT, count);
         Ok(())
     }
@@ -617,6 +641,32 @@ mod tests {
         assert_eq!(file.variant(0, 0).unwrap().engine, 2);
         assert_eq!(file.variant(0, 0).unwrap().name, "S");
         assert_eq!(file.record(0, 0).unwrap().dwords[0], 5);
+    }
+
+    #[test]
+    fn the_record_count_is_the_blocks_and_the_playlist_id_is_kept() {
+        let mut file = HopperFile::blank();
+        file.set_hopper(3, &hopper("x")).unwrap();
+        // A blank slot gets a playlist id the validator takes.
+        assert_eq!(file.descriptor(3).unwrap().playlist_id, 4);
+        assert_eq!(file.block_record_count(3).unwrap(), 2);
+        assert_eq!(file.entry_count(3).unwrap(), 2);
+        // An existing id survives count changes and rewrites.
+        let mut d = file.descriptor(3).unwrap();
+        d.playlist_id = 77;
+        file.set_descriptor(3, &d).unwrap();
+        file.set_record_count(3, 9).unwrap();
+        file.set_hopper(
+            3,
+            &Hopper {
+                record_count: 5,
+                ..hopper("x")
+            },
+        )
+        .unwrap();
+        assert_eq!(file.descriptor(3).unwrap().playlist_id, 77);
+        assert_eq!(file.hopper(3).unwrap().record_count, 5);
+        assert_eq!(file.records(3).unwrap().len(), 5);
     }
 
     #[test]

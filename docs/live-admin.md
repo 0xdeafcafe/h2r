@@ -127,16 +127,23 @@ within the hopper, the first `record_count` of them):
   }, … ], "position": 1042 }
 ```
 
-404 until a base image is imported. What the fields are
-([live-motd.md §5.2](live-motd.md), corrected in §5.2.1 there):
+For Halo 2, a server with nothing published serves the built-in lineup
+([live-matchmaking.md §6.8](live-matchmaking.md)) here and from the file
+endpoint; other titles 404 until a file is imported. What the fields are
+(the full layout is [live-matchmaking.md §6](live-matchmaking.md)):
 
 - `title` / `description`: what the playlist list shows, the English one
   of nine per-language UTF-8 slots (`+0x0c`, 16 bytes each; `+0x9c`, 128
   bytes each). A write puts the text in all nine. At most 15 and 127 bytes.
-- `type` 1..5, `status`, the three `ranges` (for the free-for-all default
-  the first two are the minimum and maximum players, 4 and 8; for the clan
-  defaults they are 2, 3, 4 and ?, 6, 8 — the third's meaning, and the
-  type's, are unconfirmed), the descriptor's dword array.
+- `type` 1..5: 1 free for all, 2 ranked free for all, 3 unranked teams,
+  4 ranked teams, 5 clan match. `status` 0..3 (0 lets the game check the
+  maps itself; 1 ok, 2 error, 3 none). The three `ranges` are the first
+  three type parameters (`+0x5ec`): fewest and most players for types 1
+  and 2; teams, fewest and most a team for 3..5. The descriptor's dword
+  array carries the rest (§6.2 there).
+- `record_count` is the data block's entry count (`+0x44`). The
+  descriptor's `+0x08` is the playlist's stats id, which the server keeps
+  as it is.
 - `name`: the raw ASCII field at `+0x51b`. It overlaps a 128-byte table at
   `+0x51c` that the game validates (`0x00193560`: each byte `i..=0x7f`), so
   it normally reads empty and must not be changed; the server writes it
@@ -155,7 +162,9 @@ within the hopper, the first `record_count` of them):
   the server writes `string` only when it changes, so a round trip keeps
   the variant whole.
 
-Every other byte of the file is unknown to us and preserved.
+Every byte the JSON does not name is preserved; `live_proto::hopper`
+(`Descriptor`, `Rules`, `Entry`, `VariantRecord`) reads and writes all of
+them.
 
 ### `PUT /v1/titles/{title}/hopper`
 
@@ -195,7 +204,16 @@ h2 live hopper import <path> [--title 4D530064] [--server URL] [--data DIR]
 `path` is the owner's own `n:\multiplayer_hopper.dat` (the raw image the
 game caches) or a download envelope; the command shows the 16 playlists it
 found and publishes the file. Game data never goes in the repo — only to
-the owner's server. Until one is imported, the hopper endpoints 404.
+the owner's server. Until one is imported or edited, Halo 2's hopper
+endpoints serve the built-in lineup.
+
+```
+h2 live hopper defaults --out FILE [--raw] [--force]
+```
+
+writes that built-in lineup (eight playlists on retail maps, built from
+the format alone) as a download envelope, or with `--raw` as the raw image
+the game caches, to edit offline or import elsewhere.
 
 ## 3. The web admin area
 
