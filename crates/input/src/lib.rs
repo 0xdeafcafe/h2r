@@ -15,6 +15,10 @@
 //!   speaker path (`docs/audio/playstation-audio.md`).
 //! * [`pad_hid`]: the DualSense opened over raw HID next to the gamepad
 //!   backends, sending those reports (IOKit on macOS).
+//! * [`steam`], [`steam_pad`], [`trackpad`], [`haptics`]: Steam Controllers
+//!   over raw HID as pads of their own, the right trackpad aiming through
+//!   [`look`] (the mouse-look path), and the trackpad actuators as rumble
+//!   and a speaker (`docs/steam-controller.md`).
 //!
 //! See `docs/input/input.md`.
 
@@ -24,10 +28,14 @@ pub mod bindings;
 pub mod device;
 pub mod dualsense;
 pub mod gamepad;
+pub mod haptics;
 pub mod host;
 pub mod layouts;
+pub mod look;
 pub mod pad_hid;
 pub mod steam;
+pub mod steam_pad;
+pub mod trackpad;
 
 pub use backend::HostBackend;
 pub use device::{InputManager, PortIndex};

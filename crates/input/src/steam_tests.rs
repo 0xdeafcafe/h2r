@@ -365,6 +365,7 @@ fn haptic_pulse_and_rumble_encoding() {
         "right pad is 0 on the wire"
     );
     assert_eq!(haptic_pulse(Model::Original, Side::Left, t).data[3], 1);
+    assert_eq!(haptic_pulse(Model::Original, Side::Both, t).data[3], 2);
     let w = haptic_pulse(Model::Triton, Side::Left, t);
     assert!(!w.feature);
     assert_eq!(w.data, [0x81, 1, 0x90, 0x01, 0x4d, 0x01, 0x2d, 0x00]);

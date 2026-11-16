@@ -758,16 +758,19 @@ pub fn lizard_on(model: Model) -> Vec<HidWrite> {
 pub enum Side {
     Left,
     Right,
+    /// Both actuators in one report (Linux's `STEAM_PAD_BOTH`).
+    Both,
 }
 
 impl Side {
     /// The pad number on the wire. Linux's `steam_haptic_pulse`: left and
     /// right are swapped on this report for legacy reasons, so right is 0
-    /// and left 1, on both controllers.
+    /// and left 1, on both controllers; both is 2.
     fn wire(self) -> u8 {
         match self {
             Side::Right => 0,
             Side::Left => 1,
+            Side::Both => 2,
         }
     }
 }

@@ -28,18 +28,15 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use crate::backend::HostBackend;
 use crate::bindings::{Bindings, Control, Input, MouseButton, canonical_key};
 use crate::gamepad::Rumble;
 use crate::host::{HostButton, HostPad, HostPadId, HostPadState};
 
-/// The read interval at which `delta * sensitivity` is the deflection.
-pub const LOOK_FRAME: Duration = Duration::from_nanos(1_000_000_000 / 60);
-
-/// Mouse motion older than this, with no guest read in between, is dropped.
-pub const STALE_MOTION: Duration = Duration::from_secs(1);
+use crate::look::LookMotion;
+pub use crate::look::{LOOK_FRAME, STALE_MOTION};
 
 /// Where the pad gets the time (wall clock by default; tests inject one).
 pub type Clock = Arc<dyn Fn() -> Instant + Send + Sync>;
@@ -102,13 +99,8 @@ struct Inner {
     activity: u64,
     keys: HashSet<String>,
     mouse: HashSet<MouseButton>,
-    /// Mouse motion the guest has not read yet.
-    delta: (f64, f64),
-    /// The part of `delta` in the newest reported state.
-    sampled: (f64, f64),
-    /// When the current read interval began: the last guest read, or the
-    /// first motion after none was pending.
-    since: Option<Instant>,
+    /// Mouse motion the guest has not read yet (`crate::look`).
+    look: LookMotion,
     enabled: bool,
     rumble_supported: bool,
     rumble: Rumble,
@@ -125,9 +117,7 @@ impl Inner {
     }
 
     fn drop_motion(&mut self) {
-        self.delta = (0.0, 0.0);
-        self.sampled = (0.0, 0.0);
-        self.since = None;
+        self.look.clear();
     }
 
     fn held(&self, c: Control) -> bool {
@@ -152,9 +142,7 @@ impl KeyboardMouse {
                 activity: 0,
                 keys: HashSet::new(),
                 mouse: HashSet::new(),
-                delta: (0.0, 0.0),
-                sampled: (0.0, 0.0),
-                since: None,
+                look: LookMotion::default(),
                 enabled: true,
                 rumble_supported: false,
                 rumble: Rumble::default(),
@@ -343,12 +331,6 @@ impl KeyboardMouse {
         if dx.is_finite() && dy.is_finite() {
             let now = (self.clock)();
             let mut i = self.lock();
-            if i.since
-                .is_none_or(|t| now.saturating_duration_since(t) > STALE_MOTION)
-            {
-                i.drop_motion();
-                i.since = Some(now);
-            }
             if i.enabled
                 && i.bindings.mouse.look
                 && i.bindings.mouse.sensitivity > 0.0
@@ -357,8 +339,7 @@ impl KeyboardMouse {
                 i.activity = i.activity.wrapping_add(1);
                 self.active.set(crate::active::DeviceKind::Keyboard);
             }
-            i.delta.0 += dx;
-            i.delta.1 += dy;
+            i.look.add(now, dx, dy);
         }
     }
 
@@ -406,19 +387,13 @@ impl KeyboardMouse {
             axis(i.held(RightStickDown), i.held(RightStickUp)),
         );
         let m = i.bindings.mouse;
-        if m.look && i.delta != (0.0, 0.0) {
-            let sign = if m.invert_y { 1.0 } else { -1.0 }; // mouse up (dy < 0) looks up
-            let interval = i
-                .since
-                .map_or(LOOK_FRAME, |t| now.saturating_duration_since(t))
-                .max(LOOK_FRAME);
-            let k = f64::from(m.sensitivity) * LOOK_FRAME.as_secs_f64() / interval.as_secs_f64();
-            // Unclamped here: the vector is scaled back to the unit circle
-            // below, which keeps the direction of a fast flick.
-            s.right_stick.0 = (f64::from(s.right_stick.0) + i.delta.0 * k) as f32;
-            s.right_stick.1 = (f64::from(s.right_stick.1) + sign * i.delta.1 * k) as f32;
+        // Mouse up (dy < 0) looks up. Unclamped here: the vector is scaled
+        // back to the unit circle below, which keeps a fast flick's direction.
+        let (lx, ly) = i.look.stick(now, f64::from(m.sensitivity), m.invert_y);
+        if m.look {
+            s.right_stick.0 = (f64::from(s.right_stick.0) + lx) as f32;
+            s.right_stick.1 = (f64::from(s.right_stick.1) + ly) as f32;
         }
-        i.sampled = i.delta;
         // Synthesised directions have no physical gate. Normalise here so
         // calibrated hardware and scripted reports can retain independent axes.
         for stick in [&mut s.left_stick, &mut s.right_stick] {
@@ -454,11 +429,7 @@ impl HostBackend for KeyboardMouse {
     /// the next read interval.
     fn state_read(&mut self, _id: HostPadId) {
         let now = (self.clock)();
-        let mut i = self.lock();
-        i.delta.0 -= i.sampled.0;
-        i.delta.1 -= i.sampled.1;
-        i.sampled = (0.0, 0.0);
-        i.since = Some(now);
+        self.lock().look.read(now);
     }
 
     fn set_rumble(&mut self, _id: HostPadId, rumble: Rumble) {
