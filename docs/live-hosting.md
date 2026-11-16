@@ -96,6 +96,185 @@ Behind a reverse proxy you run yourself, `--public-url https://...` only
 sets the URL shown in discovery and the startup lines. It does not trust
 any proxy header.
 
+`--public-url https://HOST --behind-cloudflared` says the proxy is a
+cloudflared you run yourself (a system service, or the Docker setup below)
+that reaches the server on loopback. The server then treats it like its
+own named tunnel: `CF-Connecting-IP` names the client on requests from
+loopback, the dashboard shows a named tunnel, and on a first start with no
+`--id` the server id becomes `HOST` (not for a `*.trycloudflare.com` URL,
+an `http://` URL or one with a port). It does not go with `--tunnel`. Only
+use it when cloudflared is the one thing that can reach the port: anything
+else on this machine could send its own `CF-Connecting-IP`.
+
+## Docker with a named tunnel
+
+`deploy/live/` runs the server, its Postgres and cloudflared with Docker
+Compose: the API, the web dashboard and the stats site at one lasting
+address (here `https://live.forbes.red`), with the game art shared. The
+image has no disc and no art in it; you extract the art once on a machine
+with the disc and the containers read it from there.
+
+- `deploy/live/Dockerfile`: builds the web app with bun and
+  `h2-live-server` (`crates/live-server/src/bin`, `standalone.rs`: the
+  server and its `serve` flags without the rest of `h2`, so it builds on
+  Linux in a few minutes), into a distroless image that runs as a non-root
+  user. The web app is at `/srv/web` (`H2_LIVE_WEB`); `/data` is the
+  server's key and id, `/art` the art.
+- `deploy/live/compose.yaml`: three services.
+  - `cloudflared` runs `tunnel run` with the token in `TUNNEL_TOKEN`.
+  - `server` runs in cloudflared's network namespace
+    (`network_mode: service:cloudflared`) and listens on `127.0.0.1:8074`
+    with `--share-game-art --public-url https://live.forbes.red
+    --behind-cloudflared --invite-only`; admins come from
+    `H2_LIVE_ADMINS`. Its root filesystem is read-only and it has no
+    capabilities.
+  - `db` is Postgres 17, on a named volume, reachable only on the compose
+    network.
+  All three restart unless stopped.
+- `deploy/live/.env.example`: the settings; copy it to `.env`, which git
+  ignores along with `data/` and `art/`.
+
+Why the server shares cloudflared's namespace instead of listening on
+`0.0.0.0`: on the compose network every container, and Docker's own
+gateway, could reach it, and a request from one of them is not from
+loopback, so the server could not tell "this machine" from a neighbour.
+`0.0.0.0` also needs TLS or `--insecure-http` (security §6). In a shared
+namespace the server keeps loopback and plain HTTP, nothing is published on
+the host, cloudflared is the one thing that can reach port 8074, and every
+request it delivers carries Cloudflare's headers, so local sign-in and
+other this-machine-only routes refuse it exactly as they do behind
+`h2 live serve --tunnel`. The server joins cloudflared's namespace rather
+than the other way round because the server is the one more likely to
+restart (Postgres not up yet, a new image); a restarted server rejoins the
+namespace, while a container joined to a restarted one is left with a dead
+namespace. If cloudflared itself is recreated, Compose restarts the server
+with it (`depends_on: restart: true`).
+
+### One-time Cloudflare setup
+
+The domain (`forbes.red`) must be on your Cloudflare account.
+
+1. In the Cloudflare dashboard, Zero Trust → Networks → Tunnels → Create a
+   tunnel. Choose **Cloudflared**, name it (`h2live`), save.
+2. On the install page, copy the token: the long `eyJ...` string after
+   `--token` in any of the install commands. Do not run the install
+   command; Docker runs cloudflared. Put the token in `.env` as
+   `TUNNEL_TOKEN`. It is a secret: anyone with it can serve your tunnel.
+3. Add a public hostname: subdomain `live`, domain `forbes.red`, service
+   type **HTTP**, URL `127.0.0.1:8074` (not `localhost`, which may resolve
+   to `::1`; the server binds IPv4 loopback). Cloudflare makes the DNS
+   record. WebSockets need nothing: they are on by default.
+
+### Game art
+
+On the Mac with the disc and a built `h2`, from the repository root:
+
+```
+h2 live assets extract --disc /path/to/halo2.iso --out deploy/live/art
+```
+
+(`--disc` defaults to `$H2_DISC`, else the ISO in `disc/`.) It writes PNGs,
+the map models and views and `manifest.json` ([live.md](live.md#game-art),
+[live-art.md](live-art.md)). Compose mounts the directory read-only at
+`/art`; the server will not start if `--game-art` has no `manifest.json`.
+With `--share-game-art` anyone can download these files: you are
+redistributing your copy of the game's art, so decide that knowingly. Run
+the command again after updating `h2` if the extractor changed; the server
+reads the files as they are.
+
+### Start it
+
+```
+cd deploy/live
+cp .env.example .env          # TUNNEL_TOKEN, POSTGRES_PASSWORD (openssl rand -hex 24), H2_LIVE_ADMINS
+mkdir -p data
+docker compose up -d --build
+docker compose logs -f server
+```
+
+Make `data/` before the first start: if Docker creates it, it may be owned
+by root and the server, which runs as uid 65532, cannot write to it. On
+Linux set `H2_LIVE_UID`/`H2_LIVE_GID` in `.env` to your own ids so the
+files stay yours (Docker Desktop on macOS maps ownership for you).
+
+The first start creates `data/server.key` and `data/server.json` with the
+id `live.forbes.red`, from `--public-url` (`--behind-cloudflared`, above).
+Among the first lines of the log:
+
+```
+h2 live: public at https://live.forbes.red (through cloudflared)
+h2 live: live.forbes.red on http://127.0.0.1:8074, log at position 0 (postgres://db:5432/h2live, public reads)
+h2 live: web app from /srv/web
+h2 live: serving game art from /art to everyone: ...
+```
+
+The id never changes after this. If the first start had the wrong
+`H2_LIVE_PUBLIC_URL`, stop it, delete `data/` and the `pg` volume
+(`docker compose down -v`), and start again before anyone signs up.
+
+### The first admin account
+
+The server is invite-only, so the first account needs an invite. The
+operator commands sign with the key in `data/` and work against the public
+URL from the machine that has it:
+
+```
+h2 live invite create --server https://live.forbes.red --data deploy/live/data
+h2 live account create afr --server https://live.forbes.red --invite <code>
+```
+
+or sign up in the web app at `https://live.forbes.red` with the invite.
+If `afr` is in `H2_LIVE_ADMINS`, that account is an admin as soon as it
+exists; until it does, whoever registers the name first would be, which is
+why the server warns about unclaimed admin names (with `--invite-only`
+only someone holding an invite can). Otherwise grant it:
+
+```
+h2 live admin grant afr --server https://live.forbes.red --data deploy/live/data
+```
+
+Admins then make further invites in the dashboard (Settings → Server →
+Invites, [live-admin.md](live-admin.md) §5). To drop `--invite-only` or add
+`--private`, edit the server's `command` in `compose.yaml`.
+
+### Backups
+
+Two things hold the server's state, and you need both:
+
+- `data/`: the server key and id. Lose it and every token and author id
+  the server has issued is orphaned. Copy it somewhere private (it holds a
+  secret key): `tar czf h2live-data.tar.gz -C deploy/live data`.
+- Postgres: the event log (accounts, friends, games, title files).
+  `docker compose exec -T db pg_dump -U h2live h2live > h2live.sql`
+  while it runs. Restore into a fresh volume with
+  `docker compose up -d db` then
+  `docker compose exec -T db psql -U h2live h2live < h2live.sql`, then
+  start the rest.
+
+The art can always be extracted again.
+
+### Updating
+
+```
+git pull
+cd deploy/live
+docker compose up -d --build
+docker image prune -f
+```
+
+The server rebuilds and restarts; the data, the database and the id are
+kept. `docker compose pull` updates cloudflared and Postgres (stay on major
+version 17 unless you dump and restore). If a server restart ever leaves
+the site down while cloudflared is up, `docker compose restart cloudflared
+server` puts both back in one namespace.
+
+### What Docker does not change
+
+Only the service goes through the tunnel. Game traffic is UDP straight
+between players' machines ([below](#what-the-tunnel-does-not-carry)), not
+through this server, so hosting a game still needs UDP 3074-3080 reachable
+on the host player's side.
+
 ## cloudflared not found, or failing
 
 cloudflared is looked up as `$H2_CLOUDFLARED`, else `cloudflared` on
@@ -134,7 +313,8 @@ The server is on the internet now. What protects it:
 - **The client's address**, for code that needs it (the session endpoint's
   observed-source fallback, [live-matchmaking.md](live-matchmaking.md)
   §3.6): `PublicUrl::client_ip` reads `CF-Connecting-IP` only while a
-  Cloudflare tunnel is configured and the request came from loopback;
+  Cloudflare tunnel is configured (`--tunnel`, `--tunnel-name`, or
+  `--behind-cloudflared`) and the request came from loopback;
   otherwise the header is ignored, since anyone can send it.
 
 What you should decide:
@@ -170,6 +350,13 @@ UDP 3074-3080 reachable for internet play.
   cloudflared: discovery shows the URL, the game and sign-in link stay on
   loopback, a tunnelled redeem is refused, cloudflared stops with the
   session.
+- `crates/live-server/src/standalone.rs`: `h2-live-server`'s flags,
+  including the command line `deploy/live/compose.yaml` runs (loopback,
+  the id from `--public-url` on a first start only, `CF-Connecting-IP`
+  trusted, the art shared, the web app from `H2_LIVE_WEB`); `public.rs`,
+  `identity.rs`, `art.rs`: the lasting host, the first-start id and
+  `--game-art` checks both binaries share; `crates/cli/src/live_cmd.rs`:
+  `serve --behind-cloudflared` names a new server only.
 - `crates/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
   `public.rs`: proxy and CF headers refused for game art and local
   sign-in through the router; discovery's `url`; `CF-Connecting-IP` only

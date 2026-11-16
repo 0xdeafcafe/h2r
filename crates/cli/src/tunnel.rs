@@ -556,15 +556,7 @@ pub fn notices(url: Option<&str>, mode: &Mode, invite_only: bool, private: bool)
                 .into(),
         );
     }
-    if !invite_only {
-        out.push(
-            "anyone with the URL can create an account; --invite-only limits that to invite codes"
-                .into(),
-        );
-    }
-    if !private {
-        out.push("reads are public (games, accounts, the log); --private needs a token".into());
-    }
+    out.extend(live_server::public::exposure_notices(invite_only, private));
     out
 }
 

@@ -1,0 +1,84 @@
+# The Live server behind a named Cloudflare tunnel (docs/live-hosting.md,
+# "Docker with a named tunnel"). From this directory:
+#
+#   cp .env.example .env      # then fill in TUNNEL_TOKEN and POSTGRES_PASSWORD
+#   docker compose up -d
+#
+# Three services. cloudflared owns the network namespace; the server joins
+# it (network_mode: service:cloudflared) and binds 127.0.0.1, so the only
+# way in is the tunnel, nothing is published on the host, and the server
+# sees the same thing it sees behind `h2 live serve --tunnel`: requests from
+# loopback carrying Cloudflare's headers, which its this-machine-only routes
+# refuse. Postgres is on the compose network, reachable as `db`.
+
+name: h2live
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:${CLOUDFLARED_VERSION:-latest}
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      # Read by `cloudflared tunnel run`; kept out of the command line.
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN in .env (the tunnel's token from the Cloudflare dashboard)}
+    restart: unless-stopped
+
+  server:
+    build:
+      context: ../..
+      dockerfile: deploy/live/Dockerfile
+    image: h2live:local
+    network_mode: service:cloudflared
+    depends_on:
+      cloudflared:
+        condition: service_started
+        # A recreated cloudflared is a new namespace; follow it.
+        restart: true
+      db:
+        condition: service_healthy
+    command:
+      - --listen
+      - 127.0.0.1:8074
+      - --data
+      - /data
+      - --game-art
+      - /art
+      - --share-game-art
+      - --public-url
+      - ${H2_LIVE_PUBLIC_URL:-https://live.forbes.red}
+      - --behind-cloudflared
+      - --invite-only
+    environment:
+      H2_LIVE_DB: postgres://h2live:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/h2live
+      H2_LIVE_ADMINS: ${H2_LIVE_ADMINS:-}
+    volumes:
+      - ${H2_LIVE_DATA_DIR:-./data}:/data
+      - ${H2_LIVE_ART_DIR:-./art}:/art:ro
+    # On Linux, set these to your own uid/gid so ./data stays yours (the
+    # host's `h2 live invite create --data ./data` reads the key in it).
+    user: "${H2_LIVE_UID:-65532}:${H2_LIVE_GID:-65532}"
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: h2live
+      POSTGRES_DB: h2live
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "h2live", "-d", "h2live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  pg:

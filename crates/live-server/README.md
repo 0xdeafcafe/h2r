@@ -23,6 +23,13 @@ h2 play disc.iso --live                         # an embedded server, signed in
 h2 live serve --tunnel                          # public via cloudflared (docs/live-hosting.md)
 ```
 
+`h2-live-server` (`src/bin`, flags in `standalone.rs`) is the same server
+without the rest of `h2`, for the Docker image in `deploy/live/`
+([live-hosting.md](../../docs/live-hosting.md#docker-with-a-named-tunnel)):
+`--data` (or `H2_LIVE_DATA`), the web app from `H2_LIVE_WEB`, and no
+tunnel of its own; `--public-url https://HOST --behind-cloudflared` says a
+cloudflared beside it delivers the requests.
+
 `h2 live serve` also serves the web app from `web/dist` (`H2_LIVE_WEB`
 overrides) at `/`, falling back to `index.html` for client routes.
 `start_embedded` is the same server on a background runtime for `h2 play

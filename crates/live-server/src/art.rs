@@ -36,6 +36,26 @@ impl GameArt {
             share,
         })
     }
+
+    /// The art to serve: `flag` (`--game-art DIR`), which must hold a
+    /// manifest, else `default` if art was extracted there, else none.
+    pub fn from_flag(
+        flag: Option<PathBuf>,
+        default: &Path,
+        share: bool,
+    ) -> anyhow::Result<Option<Self>> {
+        match flag {
+            Some(dir) => match Self::found(&dir, share) {
+                Some(art) => Ok(Some(art)),
+                None => anyhow::bail!(
+                    "{} has no {MANIFEST}; extract the art into it with \
+                     `h2 live assets extract --out DIR` (docs/live-art.md)",
+                    dir.display()
+                ),
+            },
+            None => Ok(Self::found(default, share)),
+        }
+    }
 }
 
 /// Whether a request may have the art: always when shared; otherwise only
@@ -110,6 +130,38 @@ mod tests {
         }
         assert!(allowed(true, Some(lan), &proxied));
         assert!(allowed(true, None, &none));
+    }
+
+    #[test]
+    fn a_named_art_dir_needs_a_manifest() {
+        let dir = std::env::temp_dir().join(format!("h2-art-flag-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let given = dir.join("given");
+        let default = dir.join("default");
+        std::fs::create_dir_all(&given).unwrap();
+        let err = GameArt::from_flag(Some(given.clone()), &default, true).unwrap_err();
+        assert!(err.to_string().contains("no manifest.json"), "{err}");
+        assert_eq!(GameArt::from_flag(None, &default, true).unwrap(), None);
+        std::fs::write(given.join(MANIFEST), "{}").unwrap();
+        let art = GameArt::from_flag(Some(given.clone()), &default, true).unwrap();
+        assert_eq!(
+            art,
+            Some(GameArt {
+                dir: given,
+                share: true
+            })
+        );
+        std::fs::create_dir_all(&default).unwrap();
+        std::fs::write(default.join(MANIFEST), "{}").unwrap();
+        let art = GameArt::from_flag(None, &default, false).unwrap();
+        assert_eq!(
+            art,
+            Some(GameArt {
+                dir: default,
+                share: false
+            })
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Map geometry (docs/live-art.md) goes out with glTF and JSON types.

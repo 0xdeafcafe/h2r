@@ -34,7 +34,8 @@ const USAGE: &str = "usage: h2 live <command> [options]
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
-        [--tunnel | --tunnel-name NAME [--hostname HOST] | --public-url URL]
+        [--tunnel | --tunnel-name NAME [--hostname HOST]
+         | --public-url URL [--behind-cloudflared]]
                           run the service. --db defaults to $H2_LIVE_DB or
                           postgres://localhost/h2live, --listen to
                           127.0.0.1:8074; a non-loopback address needs TLS or
@@ -47,7 +48,10 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           https://*.trycloudflare.com URL each run);
                           --tunnel-name runs a named tunnel at https://HOST
                           (docs/live-hosting.md). --public-url names the URL
-                          a proxy of your own serves it at
+                          a proxy of your own serves it at; with
+                          --behind-cloudflared that proxy is a cloudflared
+                          you run (CF-Connecting-IP trusted from loopback,
+                          the URL's host the id on first start)
   account create <gamertag> [--server URL] [--invite CODE]
                           make a key, register it, keep both in accounts.json
   account import <file> [--server URL]
@@ -222,10 +226,15 @@ fn serve(mut args: Args) -> Result<()> {
         args.take("--hostname")?,
     )?;
     let public_url = args.take("--public-url")?;
+    let behind_cloudflared = args.flag("--behind-cloudflared");
     if !args.positional()?.is_empty() {
         bail!("serve takes no positional arguments\n\n{USAGE}");
     }
-    let id = serve_id(id, tunnel.as_ref(), &data_dir);
+    if behind_cloudflared && public_url.is_none() {
+        bail!("--behind-cloudflared needs --public-url https://HOST (the tunnel's host name)");
+    }
+    let cloudflared_url = public_url.as_deref().filter(|_| behind_cloudflared);
+    let id = serve_id(id, tunnel.as_ref(), cloudflared_url, &data_dir);
     let origin = match &tunnel {
         Some(_) if tls.is_some() => {
             bail!(
@@ -235,16 +244,24 @@ fn serve(mut args: Args) -> Result<()> {
         Some(_) if public_url.is_some() => {
             bail!("--public-url is for your own proxy, not a tunnel")
         }
+        Some(_) if behind_cloudflared => {
+            bail!("--behind-cloudflared is for a cloudflared you run; --tunnel runs its own")
+        }
         Some(_) => Some(crate::tunnel::origin(listen)?),
         None => None,
     };
     if let Some(url) = &public_url {
-        if !url.starts_with("https://") && !url.starts_with("http://") {
-            bail!("--public-url {url:?} wants a URL like https://live.example.net");
-        }
-        policy.public.set(url, false);
+        live_server::public::check_public_url(url)?;
+        policy.public.set(url, behind_cloudflared);
     }
-    let game_art = game_art(art_dir, &data_dir, share_art)?;
+    if let Some(url) = cloudflared_url {
+        println!("h2 live: public at {url} (through your cloudflared)");
+        for line in live_server::public::exposure_notices(policy.invite_only, policy.private) {
+            println!("h2 live: {line}");
+        }
+    }
+    let game_art =
+        live_server::art::GameArt::from_flag(art_dir, &game_art_dir(&data_dir), share_art)?;
     // Up before the server, so its URL is in discovery from the first
     // request; stopped (dropped) when the server stops.
     let _tunnel = match (tunnel, origin) {
@@ -285,48 +302,25 @@ fn serve(mut args: Args) -> Result<()> {
     rt.block_on(live_server::serve(config))
 }
 
-/// The `--id` to start with: as given; else, on a first start behind a
-/// named tunnel with a host name, that host name (an id lasts for good,
-/// and a lasting address is the natural one). A quick tunnel's URL is
-/// never an id: it changes every run.
+/// The `--id` to start with: as given; else, on a first start, the host
+/// name of a lasting public address: a named tunnel's `--hostname`, or the
+/// `--public-url` of a cloudflared you run (`--behind-cloudflared`). An id
+/// lasts for good, and a lasting address is the natural one. A quick
+/// tunnel's URL is never an id: it changes every run.
 fn serve_id(
     id: Option<String>,
     tunnel: Option<&crate::tunnel::Mode>,
+    cloudflared_url: Option<&str>,
     data_dir: &Path,
 ) -> Option<String> {
-    if id.is_some() || data_dir.join("server.key").exists() {
-        return id;
-    }
-    match tunnel {
+    let lasting = match tunnel {
         Some(crate::tunnel::Mode::Named {
             hostname: Some(h), ..
         }) => Some(h.to_ascii_lowercase()),
-        _ => None,
-    }
-}
-
-/// The game art to serve: `--game-art DIR` (which must hold a manifest),
-/// else `game-art/` in the server directory if it was extracted there.
-fn game_art(
-    flag: Option<PathBuf>,
-    data_dir: &Path,
-    share: bool,
-) -> Result<Option<live_server::art::GameArt>> {
-    match flag {
-        Some(dir) => live_server::art::GameArt::found(&dir, share)
-            .map(Some)
-            .with_context(|| {
-                format!(
-                    "{} has no manifest.json; run `h2 live assets extract --out {}`",
-                    dir.display(),
-                    dir.display()
-                )
-            }),
-        None => Ok(live_server::art::GameArt::found(
-            &game_art_dir(data_dir),
-            share,
-        )),
-    }
+        Some(_) => None,
+        None => cloudflared_url.and_then(live_server::public::lasting_host),
+    };
+    live_server::identity::first_start_id(id, lasting, data_dir)
 }
 
 /// Where extracted art goes by default: `game-art/` in the server directory.
@@ -1183,21 +1177,34 @@ mod tests {
             hostname: Some("Live.Example.net".into()),
         };
         assert_eq!(
-            serve_id(None, Some(&named), &dir).as_deref(),
+            serve_id(None, Some(&named), None, &dir).as_deref(),
             Some("live.example.net")
         );
         assert_eq!(
-            serve_id(None, Some(&Mode::Quick), &dir),
+            serve_id(None, Some(&Mode::Quick), None, &dir),
             None,
             "a quick URL is never an id"
         );
         assert_eq!(
-            serve_id(Some("mine".into()), Some(&named), &dir).as_deref(),
+            serve_id(Some("mine".into()), Some(&named), None, &dir).as_deref(),
             Some("mine")
+        );
+        // A cloudflared run elsewhere (Docker): its lasting host name.
+        assert_eq!(
+            serve_id(None, None, Some("https://Live.Forbes.Red"), &dir).as_deref(),
+            Some("live.forbes.red")
+        );
+        assert_eq!(
+            serve_id(None, None, Some("https://x.trycloudflare.com"), &dir),
+            None
         );
         // An existing server keeps its id, whatever the tunnel.
         ServerIdentity::open(&dir, None).unwrap();
-        assert_eq!(serve_id(None, Some(&named), &dir), None);
+        assert_eq!(serve_id(None, Some(&named), None, &dir), None);
+        assert_eq!(
+            serve_id(None, None, Some("https://live.forbes.red"), &dir),
+            None
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
