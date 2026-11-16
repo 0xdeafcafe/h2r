@@ -220,7 +220,8 @@ mopp::build_structure(bsp: &tags::collision::Bsp) -> Vec<u8>
 ```
 
 Keys every collision surface as structure key `0x20000000 | index`, so a
-BSP over 65,536 surfaces cannot be keyed (the engine masks 16 bits). Write
+BSP over 65,536 surfaces cannot be keyed (the engine masks 16 bits;
+`h1convert::structure_mopp` refuses one). Write
 the bytes as the block's elements and the length as its count; nothing
 else in the `sbsp` refers to the program. `mopp::build` takes any keyed
 polygons, for callers that need more.

@@ -193,7 +193,7 @@ build's own flags and `-target arm64-apple-macos11`.
 
 | Profile, ten-shard sample | clang user time | vs `-O2` |
 |---|---:|---:|
-| `-O2 -gline-tables-only` (`H2_OPT=2`, what we run) | 56.8 s | 1.00 |
+| `-O2 -gline-tables-only` (`H2_OPT=2`, what the author's builds set; the built-in default is `-O1`) | 56.8 s | 1.00 |
 | `-O2`, no debug info | 53.5 s | 0.94 |
 | `-O1 -gline-tables-only` (the default) | 47.5 s | 0.84 |
 | `-O0`, no debug info | 7.4 s | 0.13 |

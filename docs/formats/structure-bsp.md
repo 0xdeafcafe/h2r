@@ -287,6 +287,18 @@ bucket. Every cluster-reference offset lies inside its bucket.
   (at most 2 allowed) and does not check their per-cluster tables.
 - Part kinds seen: 2, 3, 4, 5. Only "0 and 5 are not drawn" is engine-backed.
 
+## Writing
+
+`h1convert::structure` writes a structure BSP and lightmap in this layout
+from a Halo 1 level, as built block trees for `map::build`
+([map-builder.md](map-builder.md)): what each field holds and which are
+left empty is in [h1-multiplayer.md](../game/h1-multiplayer.md), "The
+converted structure BSP". Its collision BSP comes from the Halo 1 source
+([collision.md](collision.md), `Bsp::encode_blocks`), its Havok MOPP code
+from [mopp.md](mopp.md), and AI pathfinding can be generated from the
+collision ([pathfinding.md](pathfinding.md)). The converted lightmap has one
+group and no bitmap yet ([h1-bitmaps.md](h1-bitmaps.md)).
+
 ## Use
 
 ```sh

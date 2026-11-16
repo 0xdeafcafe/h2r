@@ -887,8 +887,8 @@ base ports at least seven apart, and the Mac's LAN address, not
 [live.md](live.md), "Client HLE: sockets and System Link").
 
 ```sh
-# Terminal 1: a Live server for both (file store, no Postgres needed).
-h2 live serve --db file --listen 127.0.0.1:8074
+# Terminal 1: a Live server for both (SQLite, no database server).
+h2 live serve --listen 127.0.0.1:8074
 
 # Your LAN address, used below.
 IP=$(ipconfig getifaddr en0)
@@ -915,8 +915,9 @@ it too. `--no-audio` on one of them keeps the sound from doubling.
 **Two Macs.** The same, without `H2_XNET_LOOPBACK_PEERS` (System Link
 broadcasts on the LAN), with each Mac's own LAN address and the same base
 port on both: `H2_XNET_ADDR=<this Mac's IP>:3074`. Both point
-`--live-server` at the one server, e.g. `http://<server Mac's IP>:8074`
-with `h2 live serve --db file --listen 0.0.0.0:8074` on it. Both Macs
+`--live-server` at the one server over HTTPS (a client sends tokens over
+plain HTTP only to loopback), e.g. `h2 live serve --tunnel` on one Mac
+([live-hosting.md](live-hosting.md)). Both Macs
 need UDP 3074 to 3080 open to each other (the macOS firewall asks the
 first time). Use the same `h2` build on both, and start with two Macs of
 the same architecture (section 6, item 6).
@@ -1140,33 +1141,34 @@ Same build on both; nothing here needs a build of ours beyond your usual
 `h2`. One Live server for both. Make the two accounts friends.
 
 ```sh
-# Terminal 1: a server for both.
-h2 live serve --db file --listen 0.0.0.0:8074
-IP=$(ipconfig getifaddr en0)
-h2 live account create Alpha --server http://$IP:8074
-h2 live account create Bravo --server http://$IP:8074
-h2 live friend add Bravo --as Alpha --server http://$IP:8074
-h2 live friend accept Alpha --as Bravo --server http://$IP:8074
+# Terminal 1: a server for both (loopback: clients send tokens over
+# plain HTTP only to loopback).
+h2 live serve
+IP=$(ipconfig getifaddr en0)      # the XNet address below, not the server's
+h2 live account create Alpha
+h2 live account create Bravo
+h2 live friend add Bravo --as Alpha
+h2 live friend accept Alpha --as Bravo
 
 # Terminal 2: the host.
 H2_XNET_ADDR=$IP:31000 H2_XNET_LOOPBACK_PEERS=$IP:31010 \
-h2 play disc/halo2.iso --data ~/h2-coop/host --live-server http://$IP:8074 \
+h2 play disc/halo2.iso --data ~/h2-coop/host --live-server http://127.0.0.1:8074 \
   --gamertag Alpha 2> >(tee ~/h2-coop/host.log)
 
 # Terminal 3, once the host is up: the guest.
 H2_XNET_ADDR=$IP:31010 H2_XNET_LOOPBACK_PEERS=$IP:31000 \
-h2 play disc/halo2.iso --data ~/h2-coop/guest --live-server http://$IP:8074 \
+h2 play disc/halo2.iso --data ~/h2-coop/guest --live-server http://127.0.0.1:8074 \
   --gamertag Bravo --no-audio 2> >(tee ~/h2-coop/guest.log)
 ```
 
 On two Macs: drop `H2_XNET_LOOPBACK_PEERS`, use each Mac's own address with
-port 3074 (`H2_XNET_ADDR=<this Mac's IP>:3074`), point both at the server
-Mac (`--live-server http://<server IP>:8074`), and open UDP 3074 to 3080.
+port 3074 (`H2_XNET_ADDR=<this Mac's IP>:3074`), and open UDP 3074 to 3080.
+The server must be reachable over HTTPS, since a client will not send a
+token over plain HTTP to a LAN address: `h2 live serve --tunnel`
+(or `h2 play --live-tunnel` on the host), and `--live-server
+https://<that URL>` on both ([live-hosting.md](live-hosting.md)).
 `h2 play --live` (the default service) works the same way when both
-accounts are on it and friends there; `--live-local` runs a server inside
-one instance, which the other cannot reach unless it listens
-(`--live-listen 0.0.0.0:8074` on the host, `--live-server
-http://<host IP>:8074` on the guest).
+accounts are on it and friends there.
 
 Checklist (stderr lines in brackets):
 

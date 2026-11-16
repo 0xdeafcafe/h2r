@@ -6,52 +6,66 @@ emitted as C11 and built by clang into a dylib. `crates/runtime` runs that
 dylib against high-level replacements for the Xbox kernel, xapi, Direct3D
 and DirectSound, rendering through wgpu on Metal.
 
-You need your own legally obtained copy of the disc. No game data, extracted
-assets or screenshots live in this repo.
+You need your own legally obtained copy of the disc. No game data or extracted
+assets live in this repo. The only screenshots are the docs' own, rendered by
+scripts and stored in Git LFS (see CONTRIBUTING.md).
 
 Public repo: <https://github.com/0xdeafcafe/h2r>.
 
-## Status
+## Where it is
 
-What works today:
+The recompiled game boots to the main menu and runs campaign levels and
+multiplayer maps, starting any of them directly, on macOS, Apple TV and
+iPhone/iPad. Around it are an Xbox Live replacement with a web app, a map and variant editor, and
+tools to convert Halo 1's maps into Halo 2's engine.
 
-- **Analysis and lifting.** The retail XBE is analysed (about 18,700
-  functions and 504 jump tables), lifted to IR and emitted as C11, which clang
-  builds into a dylib.
-- **Boot to the main menu.** The recompiled game boots through the HLE
-  kernel, xapi, D3D (replaced at the API level, push buffer included, on
-  wgpu/Metal) and DirectSound with a WMA decoder, to the real main menu
-  with its 3D scene and blue tint.
-- **Into the campaign.** Scripted input clicks through the menus into the
-  first level, The Heretic (`00a_introduction`). It renders past 8,000
-  frames, with shadow maps: one run there took 50,207 shadow-map samples
-  and skipped none.
-- **Windowed player.** `h2 play` runs with keyboard, gamepad and sound.
-- **Tooling.** Deterministic logical-time scheduling, checkpoints, a sampling
-  profiler and a benchmark tool.
+Speed is the big gap: about 11-16 fps in the main menu and about 15 in The
+Heretic on an M-series Mac, against a target of 30
+([perf-budget.md](docs/perf/perf-budget.md),
+[frame-budget.md](docs/perf/frame-budget.md)). Much of the newer work is
+built and proven by tests but not yet confirmed in the game; the table says
+which.
 
-Speed is the big gap. On current master the main menu runs at about 11-16
-fps on a quiet M-series Mac ([docs/perf/perf-budget.md](docs/perf/perf-budget.md));
-the in-level budget is in [docs/perf/frame-budget.md](docs/perf/frame-budget.md).
-The target is 30 fps. Three speedups are on by
-default for `h2 build`, `h2 run` and `h2 play`: the inline RAM path
-(`H2_FASTMEM`, [docs/perf/performance.md](docs/perf/performance.md)), which cuts the
-menu's CPU time per frame by about 35%; native binary64 x87
-(`H2_X87_NATIVE`, [docs/lifter/x87-native.md](docs/lifter/x87-native.md)); and
-register-local access accounting (`H2_ACCESS_COUNT`). Set any of them to `0`
-to build without it.
+## Features
 
-### What is on master
+**Built**: works in the game or the tools. **Tests**: built and proven by
+tests, not yet confirmed in the game. **Design**: written up, not built.
 
-Master has the analyser, lifter, emitter (`h2 emit`), runtime, kernel,
-xapi, D3D and DirectSound crates, the tag and map readers, the boot runner
-(`h2 build`, `h2 run`), the windowed player (`h2 play`, below),
-logical-time scheduling, checkpoints, and the profiler and benchmarks
-(`h2 profile`, `h2 bench`).
-
-In progress for 30 fps: the rest of fast guest memory access and the
-gameplay frame ([docs/perf/architecture-review.md](docs/perf/architecture-review.md)).
-Merged render passes and native x87 are on by default.
+| Area | Feature | State | Docs |
+| --- | --- | --- | --- |
+| Recompiler | XBE analysis (about 18,700 functions), x86 to IR to C11, clang build with source and object caches | Built | [LIFTER](docs/lifter/LIFTER.md), [cache](docs/lifter/BUILD-CACHE.md) |
+| | Native x87 and SSE fast paths, inline guest RAM, direct calls (all on by default) | Built | [x87](docs/lifter/x87-native.md), [memory](docs/perf/performance.md) |
+| Runtime | Xbox kernel, XAPI, saves and storage replaced in Rust, on a deterministic logical clock with checkpoints | Built | [BOOT](docs/runtime/BOOT.md), [storage](docs/runtime/storage.md) |
+| | Direct3D 8 on wgpu (push buffer, NV2A shaders to WGSL), render thread, merged passes | Built | [d3d](docs/graphics/d3d.md), [graphics](docs/graphics/graphics.md) |
+| | DirectSound mixer, native WMA, Bink replacement (cutscenes skipped; optional MP4 conversion) | Built | [audio](docs/audio/audio.md), [movies](docs/audio/movies.md) |
+| Player | `h2 play`: window, sound, keyboard, mouse, pads; any level or map from the command line; `--follow` rebuilds as master moves | Built | [app](docs/runtime/app.md), [levels](docs/runtime/level-boot.md) |
+| Platforms | macOS (Metal) | Built | [building](docs/runtime/building.md) |
+| | Apple TV and iPhone/iPad apps, with touch controls on iOS | Built | [tvOS](docs/runtime/tvos.md), [iOS](docs/runtime/ios.md) |
+| | Windows: the runtime and game module cross-build from a Mac; not run yet, no host app | Built | [windows](docs/runtime/windows.md) |
+| | Xbox in Developer Mode (UWP app) | Design | [windows](docs/runtime/windows.md) |
+| Graphics | Render scale up to 4K and beyond (Resolution row) | Built | [high-res](docs/graphics/high-resolution.md) |
+| | E3 2003-style lighting, phase 1: sharper shadow maps (Lighting row) | Built | [E3 lighting](docs/graphics/e3-lighting.md) |
+| | 60 and 120 fps over the 30 Hz tick (determinism harness built) | Design | [high-framerate](docs/game/high-framerate.md) |
+| Game | Expanded settings screens: Video, Controls, FOV | Built | [settings](docs/game/settings-menu.md) |
+| | Campaign skulls per profile, a Skulls page, our own skulls | Built | [skulls](docs/game/skulls.md) |
+| | Twelve community game variants (Zombies, SWAT and more) as built-ins | Built | [variants](docs/game/community-gametypes.md) |
+| | Aim assist strength setting | Tests | [aim assist](docs/game/aim-assist.md) |
+| | Multiplayer Map Pack installed from your own disc | Tests | [map pack](docs/game/map-pack.md) |
+| | New, edited and patched maps as packages | Tests | [maps](docs/game/maps.md) |
+| | More than one campaign: picker and per-campaign progress | Tests | [campaigns](docs/game/multiple-campaigns.md) |
+| | Halo 1 health model and meter | Tests | [health](docs/game/health.md) |
+| | Forge, saved films and theater | Design | [forge](docs/game/forge.md), [theater](docs/game/theater.md) |
+| Halo 1 | All 13 Halo 1 multiplayer maps convert to Halo 2 maps (collision, BSP, MOPP, objects, shaders) | Tests | [h1 multiplayer](docs/game/h1-multiplayer.md) |
+| | Halo 1 maps, bitmaps, models and animations read and converted to Halo 2 tags | Built | [h1 format](docs/formats/h1-map-format.md), [models](docs/formats/h1-models.md) |
+| Input | Remappable bindings, input timelines, typing into the game's keyboard | Built | [input](docs/input/input.md) |
+| | Button icons that follow the pad (Xbox, PlayStation, keyboard); extra button layouts | Built | [icons](docs/input/button-icons.md), [layouts](docs/input/controller-layouts.md) |
+| | Steam Controller; DualSense speaker and mute | Tests | [Steam](docs/input/steam-controller.md), [PlayStation](docs/audio/playstation-audio.md) |
+| Live | Service: accounts, friends, teams, invites, stats, title files, cloud saves, custom maps, a relay | Built | [live](docs/live/live.md), [API](docs/live/live-api.md) |
+| | In the game: sign-in, matchmaking, custom games browser, co-op campaign | Tests | [matchmaking](docs/live/live-matchmaking.md), [co-op](docs/live/live-coop.md) |
+| | Web app: dashboard, stats, live top-down map, replays, admin | Built | [web](web/README.md), [art](docs/live/live-art.md) |
+| | Hosting for friends: Docker, Cloudflare Tunnel, SQLite and R2, a menu bar app | Built | [hosting](docs/live/live-hosting.md) |
+| Editor | `h2-editor`: 3D viewport, placements, game variants, playlists, Halo 1 maps | Built | [guide](docs/editor/editor-guide.md) |
+| Tools | Tag decoders (`h2 bitmap`, `sound`, `ui`, `hs`, ...), map builder, profiler, benchmarks | Built | [formats](docs/README.md), [perf](docs/perf/perf.md) |
 
 ## Proof
 
@@ -64,26 +78,13 @@ Screenshots are kept in issue threads, not in the repo:
 
 In priority order:
 
-1. Fidelity gaps, such as point sprites and the open items in
-   [docs/runtime/BOOT.md](docs/runtime/BOOT.md) and [docs/graphics/shaders.md](docs/graphics/shaders.md)
-   ("Gaps").
-2. 30 fps. The levers, measured in
-   [docs/perf/perf-budget.md](docs/perf/perf-budget.md): faster guest memory access
-   (the first step is in, on by default), merged render passes (on by
-   default), native x87 (on by default) and
-   push-buffer decode cost. Draw batching, upload rings, IR optimisation and
-   sampling render-to-texture levels in place have landed. See
-   [docs/perf/perf.md](docs/perf/perf.md) for the tools.
-3. More campaign levels.
-4. Opt-in enhancements, off by default and later exposed in an expanded
-   in-game settings menu ([docs/game/settings-menu.md](docs/game/settings-menu.md)):
-   - 60 and 120 fps, decoupling rendering from the game's 30 Hz tick.
-   - 4K and other high-resolution rendering
-     ([docs/graphics/high-resolution.md](docs/graphics/high-resolution.md)).
-   - Recovering the E3 2003 stencil-shadow lighting engine
-     ([docs/graphics/e3-lighting.md](docs/graphics/e3-lighting.md)).
-5. Later: a map editing kit, and TV targets (see
-   [docs/runtime/app.md](docs/runtime/app.md)).
+1. 30 fps: the rest of fast guest memory access and the gameplay frame
+   ([architecture-review.md](docs/perf/architecture-review.md)).
+2. Fidelity gaps, such as point sprites and the open items in
+   [BOOT.md](docs/runtime/BOOT.md) and [shaders.md](docs/graphics/shaders.md).
+3. Confirm the **Tests** rows above in the game.
+4. 60 and 120 fps, and the rest of E3 lighting.
+5. Later: Forge, theater, and a Windows and Xbox host app.
 
 ## Requirements
 
@@ -119,6 +120,7 @@ just mac-play        # build and play on this Mac
 just tvos            # the Apple TV app's inputs; then just tvos-install
 just ios maps=all    # the iPhone/iPad app with every map and the map pack
 just windows-dll     # the game module cross-built for Windows
+just check           # fmt, clippy and tests, as before a push (scripts/check.sh)
 ```
 
 It uses `disc/halo2.iso` and, when present, `disc/mappack.iso` (or `iso=`,
@@ -139,6 +141,7 @@ cargo h2 extract                 # copy the disc's files to disc/extracted/
 cargo h2 analyze                 # function discovery and coverage
 cargo h2 lift --stats            # lowering coverage
 cargo h2 emit --out $TMPDIR/h2gen   # generate C and build the host library
+cargo h2 h1 info disc/halo1.iso  # Halo 1 map headers (your own Halo 1 disc)
 ```
 
 `emit` is slow and writes a lot of output (about 1 GB), so point `--out`
@@ -191,6 +194,16 @@ background under `~/Library/Caches/h2recomp/follow`; your checkout is never
 touched. A banner in the window shows progress. Press F5 on "Update ready"
 to restart into the new build, or F6 to hide the banner. See
 [docs/runtime/app.md](docs/runtime/app.md) for every flag.
+
+## Editor
+
+```sh
+cargo run --release -p studio -- --disc disc/halo2.iso
+```
+
+`h2-editor` opens a map from your disc, shows it in 3D and edits its
+placements, your game variants and the matchmaking playlists file. Start with
+[docs/editor/editor-guide.md](docs/editor/editor-guide.md).
 
 ## Ghidra
 

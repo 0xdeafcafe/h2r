@@ -99,11 +99,10 @@ admin API accept them meanwhile.
 `h2 play --live-local` without Postgres keeps its log in the live data directory
 (`server/log`: `events.jsonl`, `blobs/`, `checkpoints.json`;
 `crates/live-server/src/filestore.rs`), so accounts, friends, games and
-published title files survive a restart. Before this, that case used the
-in-memory store and lost every publish on exit, and since the game reads
-the MOTD only at sign-in, a MOTD published mid-session could never be seen.
-Only if that directory is held by another running server does it fall
-back to memory (with a warning).
+published title files survive a restart; the game reads the MOTD only at
+sign-in, so a publish needs to outlive the session. Only if that directory
+is held by another running server does it fall back to memory (with a
+warning).
 
 When no MOTD has ever been published, the embedded server (on Postgres or
 the file store) publishes a default one at start

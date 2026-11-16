@@ -3,6 +3,7 @@
 Havok MOPP code for Halo 2 structure BSPs (`sbsp+0x1e0`): the engine's
 interpreter semantics as a query model, a validator, and an offline
 compiler. Format, opcodes and proof: [docs/formats/mopp.md](../../docs/formats/mopp.md).
+`h1convert` uses `build_structure` to give converted Halo 1 levels their MOPP code.
 
 | module | what |
 |---|---|

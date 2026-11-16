@@ -7,9 +7,9 @@
 //! build invented records and files.
 //!
 //! - **The disc**: every `/demos/dlc/<package>/` directory's `.map` files,
-//!   named by the package's `patch_v3.lvl` records (docs/map-pack.md 1).
+//!   named by the package's `patch_v3.lvl` records (docs/game/map-pack.md 1).
 //! - **Installed**: `<data>/disk/Partition1/TDATA/4D530064/$c/<offer>/`,
-//!   one map and its version 2 `patch.lvl` per package (docs/map-pack.md 5).
+//!   one map and its version 2 `patch.lvl` per package (docs/game/map-pack.md 5).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};

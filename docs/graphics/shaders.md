@@ -835,7 +835,11 @@ An adapter implementing gfx's `ShaderProgram` needs very little:
   PCF weights, and wrap, mirror and clamp addressing. NEVER and ALWAYS
   must not sample. The expected values come from the ordering alone, and
   both the interpreter and the GPU must match them exactly (461 fragments
-  on the GPU).
+  on the GPU). The hard (one-tap) option has its own tests there: golden
+  WGSL for retail and for E3 (`tests/golden/shadow_retail.wgsl`,
+  `shadow_e3.wgsl`; retail's text must not change), one tap on the
+  interpreter and the GPU, and stages of one map comparing at their mean
+  coordinate.
 - `tests/render.rs` draws through a linked module with a real texture and
   checks the pixels.
 - The GPU tests pass trivially when no adapter is present. Set

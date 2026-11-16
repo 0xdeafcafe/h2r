@@ -8,9 +8,10 @@ the checksum. Proven by synthetic tests and by retail round trips on all
 
 `MapEditor` ([map-format.md](map-format.md), "Lossless writing") patches
 an existing map in place. The builder in `crates/map/src/build.rs` writes
-a whole v8 cache from a `TagSet` instead. The Halo 1 campaign converter
-([campaigns.md](../game/campaigns.md) on the `campaigns` branch) and maps
-made from scratch ([maps.md](../game/maps.md) §4) both need it.
+a whole v8 cache from a `TagSet` instead. The Halo 1 converter
+(`crates/h1convert`, [h1-multiplayer.md](../game/h1-multiplayer.md)) uses it to
+write a converted structure BSP and lightmap into a base map, and maps made
+from scratch ([maps.md](../game/maps.md) §4) need it too.
 
 Evidence labels are those of [map-format.md](map-format.md): **V** checked
 on the owner's disc, **Design** an implementation choice.
@@ -255,8 +256,7 @@ fresh variant is written.
 
 Salts are **not** tested: pinned tags hold datums in bytes nobody has
 described, so renumbering them needs full relocation of every group. The
-salt risk stays open until a map built entirely from built tags (the
-Halo 1 converter's first level) loads.
+salt risk stays open until a map built entirely from built tags loads.
 
 Run each one (Lockout is multiplayer, so this starts a local Slayer game,
 [level-boot.md](../runtime/level-boot.md)):
@@ -320,5 +320,6 @@ missing or garbled surfaces), no crash walking round the map.
   lighting decoder found sky children aliasing other sky payloads) breaks
   silently. Only bitmaps move today, and nothing is known to alias them.
 - Layouts beyond bitmaps: every other group stays pinned until its whole
-  layout is known. The Halo 1 converter builds tags from scratch, so it
-  writes every field itself and does not depend on this.
+  layout is known. The Halo 1 converter builds only the structure BSP and
+  lightmap from scratch (writing every field itself); the scenario and
+  other tags are the base map's, patched in place as pinned bytes.

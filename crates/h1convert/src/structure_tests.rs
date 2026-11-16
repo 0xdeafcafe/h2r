@@ -40,6 +40,7 @@ fn meshes() -> Vec<Mesh> {
     vec![
         Mesh {
             shader: "a".into(),
+            page: None,
             vertices: [
                 [0.0, 0.0, 0.0],
                 [1.0, 0.0, 0.0],
@@ -52,6 +53,7 @@ fn meshes() -> Vec<Mesh> {
         },
         Mesh {
             shader: "b".into(),
+            page: None,
             vertices: [[0.0, 0.0, 1.0], [1.0, 0.0, 1.0], [0.0, 1.0, 1.0]]
                 .map(vertex)
                 .to_vec(),
@@ -93,6 +95,11 @@ struct Built {
 }
 
 fn build(sections: &[Section]) -> Built {
+    build_lit(sections, false)
+}
+
+/// [`build`], with a lightmap bitmap tag the lightmap names when `lit`.
+fn build_lit(sections: &[Section], lit: bool) -> Built {
     let mut set = TagSet::new(CacheType::Multiplayer, "t", "invented\\t");
     for g in [b"matg", b"scnr", b"sbsp", b"ltmp"] {
         set.add_group(FourCC(*g), None, None);
@@ -114,6 +121,17 @@ fn build(sections: &[Section]) -> Built {
     let ltmp = set
         .add_tag(FourCC(*b"ltmp"), "invented\\t", TagPayload::Empty)
         .unwrap();
+    let lightmap_bitmap = if lit {
+        set.add_group(FourCC(*b"bitm"), None, None);
+        set.add_tag(
+            FourCC(*b"bitm"),
+            "invented\\lightmap",
+            TagPayload::Built(Block::zeroed(0x4c)),
+        )
+        .unwrap()
+    } else {
+        TagId::NULL
+    };
     let collision = crate::collision::convert(&room()).unwrap();
     let t = templates();
     let mopp = stand_in_mopp();
@@ -126,6 +144,7 @@ fn build(sections: &[Section]) -> Built {
         mopp: &mopp,
         checksum: 0x1234_5678,
         templates: &t,
+        lightmap_bitmap,
     };
     let section = s.write(&mut set, sbsp, ltmp).unwrap();
     let mut descriptor = Block::zeroed(0x44);
@@ -263,6 +282,7 @@ fn large_geometry_splits_into_clusters_that_see_each_other() {
     }
     let mesh = Mesh {
         shader: "a".into(),
+        page: None,
         vertices,
         triangles,
     };
@@ -381,4 +401,44 @@ fn trigger_volumes_are_parked_out_of_the_level() {
     assert!(park_trigger_volumes(&mut scnr, address).is_err());
     scnr[0x108..0x10c].copy_from_slice(&0u32.to_le_bytes());
     assert_eq!(park_trigger_volumes(&mut scnr, address).unwrap(), 0);
+}
+
+#[test]
+fn each_lightmap_page_gets_its_own_cluster_and_render_info() {
+    // Mesh "a" on page 1, "b" on page 0, and an unlit copy of "b".
+    let mut m = meshes();
+    m[0].page = Some(1);
+    m[1].page = Some(0);
+    let mut unlit = m[1].clone();
+    unlit.page = None;
+    m.push(unlit);
+    let sections = pack(&m, &[0, 1, 1]);
+    let pages: Vec<_> = sections.iter().map(|s| s.page).collect();
+    assert_eq!(pages, [Some(0), Some(1), None], "page order, unlit last");
+    assert_eq!(sections[1].indices.len(), 6, "mesh a");
+
+    let b = build_lit(&sections, true);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let light = Lightmap::read(&mut map, b.ltmp).unwrap();
+    let g = &light.groups[0];
+    let bitmap = map
+        .tags()
+        .iter()
+        .find(|t| t.group == FourCC(*b"bitm"))
+        .unwrap()
+        .id;
+    assert_eq!(g.bitmap, Some(bitmap));
+    let info: Vec<_> = g
+        .cluster_render_info
+        .iter()
+        .map(|r| (r.bitmap_index, r.palette_index))
+        .collect();
+    assert_eq!(info, [(0, -1), (1, -1), (-1, -1)]);
+
+    // Without a bitmap every cluster is unlit, whatever its page.
+    let b = build(&sections);
+    let mut map = Map::from_reader(Cursor::new(b.bytes.clone())).unwrap();
+    let g = &Lightmap::read(&mut map, b.ltmp).unwrap().groups[0];
+    assert_eq!(g.bitmap, None);
+    assert!(g.cluster_render_info.iter().all(|r| r.bitmap_index == -1));
 }

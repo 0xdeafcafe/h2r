@@ -31,8 +31,10 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 - **Linker**: `lld-link` from lld@22 (`CARGO_TARGET_..._LINKER`, plus
   `-Lnative` paths into the splat). It is only needed for a real
   `cargo build`, not for `check`.
-- `CARGO_TARGET_DIR` is `target/windows-cross`, so the bootstrap flags never
-  invalidate the host build.
+- `CARGO_TARGET_DIR` is `target/windows-cross` (or `H2_WINDOWS_TARGET_DIR`),
+  so the bootstrap flags never invalidate the host build.
+- `just check-windows` and `just windows-dll` wrap these steps
+  ([building.md](building.md)).
 
 ## The generated module
 
@@ -57,7 +59,7 @@ cargo check -Zbuild-std --target x86_64-pc-windows-msvc --workspace
 The retail image has about 18,700 handlers, and they are reached through the
 `h2gen_module` table anyway. `h2abi.h` defines
 `H2_EXPORT` as `__declspec(dllexport)` on `_WIN32` and as nothing elsewhere.
-It marks `h2gen_module`, `h2gen_module_abi_version`, `h2boot_install_v2`,
+It marks `h2gen_module`, `h2gen_module_abi_version`, `h2boot_install_v3`,
 `h2x87bridge_install` and the test bridge's `h2bridge_*`. Mac objects come
 out the same as before.
 
@@ -112,7 +114,7 @@ process therefore has one CRT. UWP needs the app-container flavour
 
 ## Next: the UWP app on Xbox (not started)
 
-1. **Host crate** (`crates/uwp`, like `crates/tvos`). It is a `cdylib` or
+1. **Host crate** (`crates/uwp`, like `crates/apple-host`). It is a `cdylib` or
    `staticlib` for `x86_64-uwp-windows-msvc`, a tier 3 Rust target built
    with `-Zbuild-std`. It exports `h2uwp_start(panel, w, h)` and
    `h2uwp_redraw()` around `app::embedded::Embedded`, plus suspend and

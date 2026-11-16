@@ -284,7 +284,7 @@ fn a_plan_replaces_the_base_scenarios_spawns_flags_and_items() {
         ],
         dropped: vec![],
     };
-    let done = apply(&mut s, &plan, &tags).unwrap();
+    let done = apply(&mut s, &plan, &tags, &mut vec![]).unwrap();
     assert_eq!(done.counts, [5, 1, 1]);
     assert_eq!(done.unresolved.len(), 1);
     assert_eq!(done.removed, 3, "two weapons and a scenery");
@@ -308,4 +308,130 @@ fn a_plan_replaces_the_base_scenarios_spawns_flags_and_items() {
     assert!(back.block(BlockKind::Weapons).is_empty());
     assert_eq!(back.get(e, 0, "respawn time").unwrap(), Value::Int(15));
     assert_eq!(back.get(e, 0, "position").unwrap(), Value::Vec3([4.0; 3]));
+}
+
+#[test]
+fn the_rocket_warthog_becomes_the_gauss_warthog() {
+    use crate::sandbox::{netgame_type, vehicle_class};
+    assert_eq!(
+        h2_equivalent("vehicles\\rwarthog\\rwarthog"),
+        Some(H2Item::Vehicle("warthog_gauss"))
+    );
+    assert_eq!(
+        h2_equivalent("vehicles\\warthog\\mp_warthog"),
+        Some(H2Item::Vehicle("warthog"))
+    );
+    let gauss = vehicle_class("warthog_gauss").unwrap();
+    assert_eq!((gauss.vehicle, gauss.variant), ("warthog", Some("gauss")));
+    // Netgame types as retail maps hold them.
+    assert_eq!(netgame_type(H2Item::Weapon("smg")), 0);
+    assert_eq!(netgame_type(H2Item::Equipment("frag_grenade")), 8);
+    assert_eq!(netgame_type(H2Item::Equipment("super_shield")), 9);
+    assert_eq!(netgame_type(H2Item::Vehicle("warthog")), 1);
+    assert_eq!(netgame_type(H2Item::Vehicle("warthog_gauss")), 1);
+    assert_eq!(netgame_type(H2Item::Vehicle("ghost")), 2);
+    assert_eq!(netgame_type(H2Item::Vehicle("banshee")), 4);
+    assert_eq!(netgame_type(H2Item::Vehicle("scorpion")), 3);
+}
+
+#[test]
+fn vehicles_without_a_collection_name_a_new_one_for_the_bases_vehicle() {
+    use crate::apply::{NewCollection, apply};
+    use crate::placements::*;
+    use map::{FourCC, TagId};
+    use scenario_edit::{BlockKind, Scenario, TagRef, Value};
+    use std::io::Cursor;
+    let mut base =
+        map::Map::from_reader(Cursor::new(scenario_edit::fixture::fixture_at_end())).unwrap();
+    let mut s = Scenario::read(&mut base).unwrap();
+    let mut tags: Vec<_> = base
+        .tags()
+        .iter()
+        .map(|t| (t.group, t.id, t.name.clone().unwrap_or_default()))
+        .collect();
+    // Vehicle tags but no collections, as Beaver Creek or (for the
+    // scorpion) Coagulation.
+    let scorpion = TagId(0xabcd_0101);
+    let warthog = TagId(0xabcd_0102);
+    tags.push((
+        FourCC(*b"vehi"),
+        scorpion,
+        "objects\\vehicles\\scorpion\\scorpion".into(),
+    ));
+    tags.push((
+        FourCC(*b"vehi"),
+        warthog,
+        "objects\\vehicles\\warthog\\warthog".into(),
+    ));
+    let at = |x: f32, item| ItemSpawn {
+        position: [x, 0.0, 0.0],
+        facing: 0.0,
+        item,
+        respawn: 0,
+    };
+    let plan = Plan {
+        spawns: vec![],
+        flags: vec![],
+        items: vec![
+            at(1.0, H2Item::Vehicle("scorpion")),
+            at(2.0, H2Item::Vehicle("warthog_gauss")),
+            at(3.0, H2Item::Vehicle("scorpion")),
+            at(4.0, H2Item::Vehicle("ghost")),
+        ],
+        dropped: vec![],
+    };
+    // Two slots of tags the conversion frees; one is left over.
+    let (a, b) = (TagId(0xe000_0011), TagId(0xe001_0012));
+    let mut spare = vec![a, b, TagId(0xe002_0013)];
+    let done = apply(&mut s, &plan, &tags, &mut spare).unwrap();
+    assert_eq!(spare, [TagId(0xe002_0013)]);
+    assert_eq!(done.counts[2], 3);
+    assert_eq!(done.vehicles, 3);
+    assert_eq!(done.unresolved.len(), 1, "no ghost vehicle tag");
+    assert_eq!(
+        done.collections,
+        [
+            NewCollection {
+                name: "multiplayer\\single_vehicles\\scorpion".into(),
+                id: a,
+                vehicle: scorpion,
+                variant: Some("multiplayer"),
+                replaces: String::new(),
+            },
+            NewCollection {
+                name: "multiplayer\\single_vehicles\\warthog_gauss".into(),
+                id: b,
+                vehicle: warthog,
+                variant: Some("gauss"),
+                replaces: String::new(),
+            },
+        ]
+    );
+    let mut out = Cursor::new(Vec::new());
+    scenario_edit::save::write_patched(&mut base, &s, &mut out).unwrap();
+    let mut m = map::Map::from_reader(Cursor::new(out.into_inner())).unwrap();
+    let back = Scenario::read(&mut m).unwrap();
+    let e = BlockKind::NetgameEquipment;
+    let items: Vec<_> = (0..3)
+        .map(|i| {
+            (
+                back.get(e, i, "item").unwrap(),
+                back.get(e, i, "type").unwrap(),
+            )
+        })
+        .collect();
+    let vehc = |id| {
+        Value::Tag(TagRef {
+            group: FourCC(*b"vehc"),
+            id,
+        })
+    };
+    assert_eq!(
+        items,
+        [
+            (vehc(a), Value::Int(3)),
+            (vehc(b), Value::Int(1)),
+            (vehc(a), Value::Int(3)),
+        ]
+    );
 }

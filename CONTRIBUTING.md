@@ -17,6 +17,13 @@ images, extracted files, XBE or map files, Ghidra projects and exports, and
 any output produced from them, even small snippets. If you are unsure whether
 something is derived from the disc, leave it out.
 
+The one exception is documentation screenshots, such as the editor guide's.
+They are rendered by a script in `scripts/` (for example
+`scripts/editor-screenshots.sh`), live under `docs/images/`, and are stored in
+Git LFS (`.gitattributes` covers `docs/images/**`; run `git lfs install` once).
+Don't commit one-off screenshots, debug frames or captures from test or agent
+runs, anywhere in the repo.
+
 ## Checks
 
 Run `scripts/check.sh` before you push. It runs `cargo fmt --check`, `cargo
@@ -25,6 +32,7 @@ stops at the first failure.
 
 - `scripts/check.sh --fix` applies `cargo fmt` and `cargo clippy --fix` first.
 - `scripts/check.sh --crate <name>` limits the checks to one package.
+- `just check` runs the same script; `just test` runs the workspace tests.
 
 Tests that need the disc are skipped by default. To run them, put the disc in
 place and run:

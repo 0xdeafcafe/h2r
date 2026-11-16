@@ -2170,7 +2170,9 @@ version = "0.1.0"
 dependencies = [
  "assets",
  "content",
+ "h1bitmaps",
  "h1map",
+ "h1models",
  "map",
  "mopp",
  "scenario-edit",

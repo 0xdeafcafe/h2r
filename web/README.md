@@ -31,7 +31,7 @@ Vite proxies `/v1` (including the WebSockets), `/healthz` and
 Mock knobs: `H2_MOCK_HISTORY_MIN` (minutes of simulated history at boot,
 default 20), `H2_MOCK_TAMPER=<n>` (corrupt every nth event's data so the
 "bad signature" state shows up), `H2_MOCK_STATIC=<dir>` (also serve a built
-app with SPA fallback, the way the Rust server will:
+app with SPA fallback, as `h2 live serve` does:
 `bun run build && H2_MOCK_STATIC=$PWD/dist bun run mock`),
 `H2_MOCK_GAME_ART=1` (serve a stand-in `/art/game` manifest so the game-art
 path runs; see "Game art" below). Without it `/art/game` has no pictures,
@@ -77,9 +77,16 @@ The choice and recent servers are kept in localStorage.
 ## Two sides
 
 **The dashboard** (`/`, `/dash/:section`, `/dash/players/:tag`, `src/dash/`) is the "live" side:
-a glowing orb, a wireframe tunnel and an arc of menu bars (live now,
-friends, players, game history, sign up / profile, server), each opening a
-bezelled list panel. Keyboard: arrows move, Enter (or `a`) selects,
+a glowing orb, a wireframe tunnel and an arc of menu bars, each opening a
+bezelled list panel (`dash/menu.ts`). Signed out the menu leads with sign
+in, create and recover, then live now, game history, find a game, players
+and settings (the ones that need an account show greyed with a hint).
+Signed in it is live now, find a game, friends, players, game history,
+account (recovery code, authenticator, devices, sign out) and settings;
+profile and the server (`/dash/server`: service admin) sit under settings.
+The Halo admin area (MOTD, playlists, custom content) is on the stats site
+at `/stats/admin` ([docs/live/live-admin.md](../docs/live/live-admin.md)).
+Keyboard: arrows move, Enter (or `a`) selects,
 Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 
 **The stats site** (`/stats/...`, `src/stats/`) is the record, laid out like
@@ -266,8 +273,9 @@ lays players over the picture using the view's `world_to_pixel` matrix
 and pan and zoom; without them it is the fitted grid as before. The "3D view"
 button opens the level in a window (`src/viewer/`): three.js, loaded as its
 own chunk only then, with a sun and soft shadows, ambient occlusion (turned
-off by itself on a machine that can't keep up), orbit, top-down and
-follow-a-player cameras, and a grid floor when the map has no geometry. The
+off by itself on a machine that can't keep up), orbit, top-down,
+follow-a-player and free-fly cameras (F; WASD, drag to look, wheel for
+speed, or a gamepad: `viewer/flycam.ts`), and a grid floor when the map has no geometry. The
 window can be dragged, resized, maximised, or popped out to
 `/stats/games/:id/3d`. The 2D map, the scrubber and the 3D window read one
 replay session (`src/viewer/session.ts`), and a popped-out window keeps in

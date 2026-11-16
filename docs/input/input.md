@@ -115,7 +115,7 @@ emulated USB poll interval) before running the guest.
 
 ## Host backends
 
-`backend/`. The trait is `HostBackend { poll() -> Vec<HostPad>, state_read(), set_rumble() }`;
+`backend/`. The trait is `HostBackend { name(), poll() -> Vec<HostPad>, state_read(), set_rumble() }`;
 `state_read` and `set_rumble` default to doing nothing.
 Backends are platform-separated modules; a tvOS or Xbox build swaps them.
 
@@ -180,10 +180,13 @@ and connect notifications have not been checked on hardware.
 Connect/disconnect discovery requires the main run loop; windowed app hosts
 already run it. Headless physical-input hosts must call
 `game_controller::service_main_loop` regularly on the main thread. Scripts
-have no run-loop dependency. Controllers without an extended profile (Siri
-Remote and other micro gamepads) are skipped. tvOS uses the same framework; `apple.rs` is cfg'd to
-macOS only and would need a `target_vendor = "apple"` widening plus the
-`objc2-core-haptics` target dependency, untested.
+have no run-loop dependency. Controllers without an extended profile are
+skipped, except the Apple TV remote (a `GCMicroGamepad`), which
+`game_controller/remote.rs` (`RemoteNav`) turns into a menu pad: a click near
+the clickpad's edge is a d-pad direction, a click in the middle is A, a swipe
+steps the d-pad, Back is B and Play/Pause is Start (docs/runtime/tvos.md).
+`apple.rs` and the framework dependencies build on every Apple platform
+(`target_vendor = "apple"`), so iOS and tvOS use this backend too.
 
 Do not attach both this backend and gilrs on macOS: they see the same pads and
 each would take a port. The `pads` example picks GameController on macOS and
@@ -351,6 +354,12 @@ gilrs on macOS rejects it as unsupported).
 
 ## Campaign host configuration
 
+`h2 play` takes `--bindings FILE` (a table like the one above, replacing the
+play defaults, which are the Halo defaults plus Enter for A and Backspace for
+B) and `--input-timeline FILE` (a timeline, below, played on guest time
+instead of live input; `--no-gamepads` and a timeline both keep Steam
+Controllers out).
+
 [`input-default.toml`](input-default.toml) is a complete, tested binding
 config. Load it with `Bindings::from_toml(&std::fs::read_to_string(path)?)`
 and assign `AppConfig::bindings`; the shell demo accepts `--input-config PATH`.
@@ -369,7 +378,8 @@ can only control player two. The same primary pad is retained until unplugged.
 
 The combined pad also records which half the player used last
 (`input::active::ActiveDevice`, from `KeyboardMouse::active_device`): the
-keyboard and mouse, an Xbox-style pad or a PlayStation pad (by its name).
+keyboard and mouse, an Xbox-style pad, a PlayStation pad, the Apple TV remote or
+a Steam Controller (by the pad's name).
 Fresh presses and motion select the device; held buttons, key autorepeat and
 small pad jitter do not take the selection back. Slow mouse look counts too. The
 runner uses it to pick the button icons ([button-icons.md](button-icons.md)).

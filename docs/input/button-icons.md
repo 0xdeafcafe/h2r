@@ -226,14 +226,15 @@ motion below a controller's drift threshold. A new pad button press, pressure
 increase or deliberate stick deflection selects the pad. Held controls,
 key autorepeat, releases and small stick jitter do not steal the selection.
 If both devices produce new input in one poll, keyboard input wins. A pad whose name says
-Sony, DualShock, DualSense or PlayStation is a PlayStation pad; any other pad
-gets the 360 set.
+Sony, DualShock, DualSense, PlayStation, PS4 or PS5 is a PlayStation pad; the
+Apple TV remote and a Steam Controller (by their names) get their own sets;
+any other pad gets the 360 set.
 
 | `icons` | Shows |
 |---|---|
 | `auto` | the last-used device's set. The first poll identifies an attached pad; otherwise keyboard. Before discovery it prefers an available keyboard. Disconnecting the pad returns to keyboard. |
 | `xbox` | retail; nothing is installed |
-| `xbox360`, `playstation`, `keyboard` | that set, always |
+| `xbox360`, `playstation`, `keyboard`, `remote`, `steam` | that set, always |
 
 ## Limits and open questions
 

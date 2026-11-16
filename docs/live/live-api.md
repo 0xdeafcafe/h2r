@@ -1,8 +1,10 @@
 # Live service API
 
-Status: contract, being implemented. The service is `crates/live-server`
+Status: contract, implemented apart from what the sections mark as not
+built (federation among them). The service is `crates/live-server`
 ([live.md](live.md)). Everything here is JSON over HTTP on one port
-(default `127.0.0.1:8074`), plus two WebSockets. Identity, signing, tokens
+(default `127.0.0.1:8074`), plus three WebSockets (stream, ingest and the
+co-op relay). Identity, signing, tokens
 and discovery are in [live-security.md](live-security.md); this page refers
 to it as §n. Every client is given a base URL and finds the rest from
 `GET /.well-known/h2live.json`.
@@ -863,7 +865,7 @@ Settled after the first client was built against this page.
    everywhere. `next` is opaque; pass it back as `?cursor=`. For
    `/v1/events` it happens to be the next `from`.
 4. **Errors** are exactly `{ "error": "<code>", "message": "..." }` with the
-   codes in Conventions (plus `unauthorized`, `forbidden`, `rate_limited`,
+   codes in Conventions (plus `unauthorized`, `forbidden`, `gone` (410), `rate_limited`,
    `too_large`, `unimplemented`).
 5. **Presence states** are `online`, `away` and `playing` (`game_id` set);
    `SignedOut` and `PresenceExpired` mean offline.

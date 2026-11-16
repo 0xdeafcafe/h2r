@@ -18,7 +18,7 @@ export interface MapGeometry {
 }
 
 // Every file carries the art's version stamp, so the server can let the
-// browser keep it (docs/live-art.md, "Caching").
+// browser keep it (docs/live/live-art.md, "Caching").
 const url = (root: string, file: string, stamp?: string) => modelUrl(root, file, stamp);
 
 const viewsCache = new Map<string, Promise<MapViews | null>>();

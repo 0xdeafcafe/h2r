@@ -1,16 +1,27 @@
-# Expanded settings menu (design)
+# Expanded settings menu
 
-Status: design, with these exceptions built: the controller speaker's
-on/off is a row on the game's own Controls screen (approach B below; see
-[playstation-audio.md](../audio/playstation-audio.md) "In-game setting"); a
-"Video" row on the top-level Settings list opens our Video screen with the
-field of view, the frame rate, the resolution and the mute button ("Video
-screen" and "Field of view (built)" below); and the button layouts are rows on its Button Layout
-screen ([controller-layouts.md](../input/controller-layouts.md)). The rest says how
-an in-game menu for our opt-in enhancements should work, what we know
-about Halo 2's own settings screens, and in which order to build it.
+Status: built as native game screens (approach B below), not as the host
+overlay (approach C) this page first recommended. Nothing has been built of
+C: there is no egui overlay, hotkey or pad chord, and "Opening the menu",
+"Testing" and "Phased plan" are the original design, kept for the
+reasoning. What exists:
 
-The menu will hold, in the order the README lists them:
+- a "Video" row on the top-level Settings list opens our Video screen with
+  the field of view, the frame rate, the resolution, the lighting, the mute
+  button and aim assist ("Video screen" and "Field of view (built)" below);
+- the Controls screen gains rows for the controller speaker, the Steam
+  Controller (speaker, trackpad aim, left trackpad) and, on iOS, the touch
+  controls ([playstation-audio.md](../audio/playstation-audio.md) "In-game
+  setting", [ios.md](../runtime/ios.md#controls));
+- the button layouts are rows on its Button Layout screen
+  ([controller-layouts.md](../input/controller-layouts.md));
+- every setting is a `settings::Def` in `boot::setting_defs`, and
+  `h2 settings` lists, gets and sets them ("Settings as a schema").
+
+The rest says what we know about Halo 2's own settings screens and why the
+menu is built this way.
+
+The menu was meant to hold, in the order the README lists them:
 
 - resolution scale and 4K;
 - 60 and 120 fps;
@@ -248,7 +259,9 @@ A host-side file, not the guest profile.
 - A per-profile override can be added later, keyed by a host-chosen name rather
   than the guest gamertag.
 
-Sketch (invented, not a committed schema):
+Sketch (the original idea, not the schema: the built keys are `graphics.fov`,
+`graphics.fps`, `graphics.render_scale`, `graphics.lighting` and the rest in
+`boot::setting_defs`):
 
 ```toml
 [display]
@@ -260,12 +273,12 @@ filter = "linear"     # as --nearest
 render_scale = 1.0    # 1.0 = native 640x480; 2.0, 3.0 ... up to 4K
 
 [timing]
-fps = 30              # 30, 60, 120 (future)
+fps = 30              # 30, 60, 120 (built as [graphics] fps)
 
 [graphics]
 merge_passes = true
 lighting = "retail"   # "retail" or "e3" (built: the Video screen's Lighting row)
-fov = 0               # 0 = the game's value; otherwise degrees (future)
+fov = 0               # 0 = the game's value; otherwise degrees (built as [graphics] fov)
 
 [input]
 bindings = "bindings.toml"
@@ -298,6 +311,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | lighting | **Built (phase 1):** a "Lighting" row on the Video screen (Retail, E3), saved as `[graphics] lighting` (`"retail"` or `"e3"`). E3 draws the game's shadow maps at the render scale (at least 2x) in the shown image only and compares them with one tap; the guest sees retail. `H2_LIGHTING` locks it when set ([e3-lighting.md](../graphics/e3-lighting.md), "Phase 1 as built") | live (the next frame) |
 | aim assist | **Built:** an "Aim Assist" row on the Video screen (Auto, Default, Strong, Very Strong), saved as `[controls] aim_assist`. Auto is Strong while the iOS touch controls show; in multiplayer only the touch player gets it, per player, and the weapon tags stay retail. `H2_AIM_ASSIST` locks it when set ([aim-assist.md](aim-assist.md)) | next map load |
 | touch controls (iOS) | **Built:** five rows on Controls on iOS, in place of the Steam Controller's: "Touch Look Speed" (1 to 10, `[touch] look`, `H2_TOUCH_LOOK`), "Touch Crouch" (Toggle, Hold; `[touch] crouch`, `H2_TOUCH_CROUCH`), "Gyro Aim" (0 off to 10; `[touch] gyro`, `H2_TOUCH_GYRO`), "Look Acceleration" (0 to 10; `[touch] look_accel`, `H2_TOUCH_LOOK_ACCEL`) and "Touch Auto Fire" (Off, On; `[touch] auto_fire`, `H2_TOUCH_AUTO_FIRE`). `H2_NO_TOUCH_ROWS=1` removes them ([ios.md](../runtime/ios.md#controls)) | live |
+| Steam Controller | **Built:** three rows on Controls with a Steam Controller: "Steam Pad Speaker" (`[steam_pad] speaker`, `H2_STEAM_SPEAKER`), "Trackpad Aim" (1 to 10, default 5; `[steam_pad] sensitivity`, `H2_STEAM_SENSITIVITY`) and "Left Trackpad" (D-Pad, Stick; `[steam_pad] left_pad`, `H2_STEAM_LEFT_PAD`) | live (`boot::setting_defs::steam_tuning`) |
 | controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](../audio/playstation-audio.md)) locks it when set | live (sent to the HID thread) |
 | Live game visibility | **Built:** `live.visibility` (`public`, `friends`, `invite`; `H2_LIVE_VISIBILITY`). No row of ours: the title's own party privacy screen sets it, and the HLE updates an open lobby ([live-custom-games.md](../live/live-custom-games.md)) | at once |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](../input/input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |

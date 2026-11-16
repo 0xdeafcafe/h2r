@@ -1,6 +1,6 @@
 # Live service: identity, signing and federation
 
-Status: design, being implemented. Applies to [live.md](live.md) and the
+Status: built except §5 (federation). Applies to [live.md](live.md) and the
 contract in [live-api.md](live-api.md).
 
 Goals:
@@ -19,7 +19,7 @@ All signatures are Ed25519 (fast to sign and verify, small keys, available
 in Rust through `ed25519-dalek` and in browsers through WebCrypto).
 
 - **Server key.** Each server has a long-lived signing key, generated on
-  first start and kept in its data directory (mode 0600), never in Postgres.
+  first start and kept in its data directory (mode 0600), never in the database.
   The public half is published (§4). It signs events the server writes
   itself (expiry, process managers) and the tokens it issues.
 - **Account key.** Each account has its own key, generated on the user's
@@ -46,7 +46,7 @@ shown `123-456`), the same scheme authenticator apps use.
 - **Showing a code.** Any signed-in device of the account reads the secret
   and current code with `GET /v1/accounts/by-xuid/{xuid}/recovery` and a
   `recovery.read` token (the web dashboard's recovery screen, `h2 live
-  account code`, the game's account screen). Enrolling an authenticator
+  account code`, and the game's sign-in prompt when it makes an account). Enrolling an authenticator
   app (the secret as base32, or the URI as a QR code) means a code is at
   hand with no device left. `POST` on the same path (`recovery.write`)
   makes a new secret: set up on an account from before recovery, or reset
@@ -72,7 +72,7 @@ shown `123-456`), the same scheme authenticator apps use.
 - **Sealing.** Secrets are sealed with XChaCha20-Poly1305 (a random
   24-byte nonce per value, stored as base64url of nonce and ciphertext with
   its tag) under a key derived from the server key with HKDF-SHA256 (info
-  `h2live-recovery-seal-v1`). The log (Postgres or files) holds only that.
+  `h2live-recovery-seal-v1`). The log (SQLite, Postgres or files) holds only that.
   The server key never leaves the data directory. Invite codes use another
   key from the same derivation (info `h2live-invite-code-v1`).
 

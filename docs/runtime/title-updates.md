@@ -562,6 +562,10 @@ Some of this pays for itself even without update files:
 
 ### 3.6 CLI and UX
 
+Design only: `h2 image`, `h2 play --image`, `H2_IMAGE` and `H2_XBE_UPDATE`
+(the last as a test input, section 5) are not in the code. The only update
+handling today is `h2 import-mappack` copying the update aside.
+
 - **Where files live**: `<data>/updates/4D530064/<certificate version>/default.xbe`,
   which is where `h2 import-mappack` puts the Map Pack disc's update. Also
   accept `disc/updates/` (already ignored through `/disc/`), where the user

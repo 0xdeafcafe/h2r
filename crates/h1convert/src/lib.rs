@@ -9,6 +9,7 @@
 //! - [`apply`]: a plan written into a base map's scenario.
 //! - [`structure`]: the converted structure BSP and lightmap.
 //! - [`shaders`]: the base shader each Halo 1 shader draws with.
+//! - [`slots`]: tag-index slots a conversion may reuse for new tags.
 //! - [`convert`]: a whole map, onto a base, with its package manifest.
 //!
 //! No game data is in this crate or its tests. Tests build invented BSPs;
@@ -22,6 +23,7 @@ pub mod placements;
 pub mod query;
 pub mod sandbox;
 pub mod shaders;
+pub mod slots;
 pub mod structure;
 
 /// Why a conversion was refused.
@@ -58,6 +60,12 @@ pub enum Error {
     /// The placements couldn't be written.
     #[error(transparent)]
     Apply(#[from] apply::ApplyError),
+    /// The lightmap bitmap couldn't be converted.
+    #[error("lightmap bitmap: {0}")]
+    Bitmap(#[from] h1bitmaps::Error),
+    /// A converted tag couldn't be installed.
+    #[error("installing a converted tag: {0}")]
+    Install(#[from] h1models::Error),
 }
 
 /// Result alias for this crate.

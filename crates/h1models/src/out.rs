@@ -43,6 +43,33 @@ impl Converted {
     }
 }
 
+impl Converted {
+    /// Like [`Self::install`], but into the existing tag `id`'s slot: the
+    /// tag keeps its datum and takes this group, name and tree. For maps
+    /// whose tag index can't grow (`TagSet::from_map`), in the slot of a
+    /// tag the map no longer uses.
+    pub fn install_at(mut self, set: &mut TagSet, id: TagId, name: &str) -> Result<TagId> {
+        if set.tag(id).is_none() {
+            return Err(crate::Error::Invalid(format!(
+                "no tag {:#x} to replace",
+                id.0
+            )));
+        }
+        let ids: Vec<RawId> = self
+            .raw
+            .drain(..)
+            .map(|(bytes, align)| set.add_raw(bytes, align))
+            .collect();
+        rewrite(&mut self.root, &ids, id);
+        set.add_group(self.group, None, None);
+        set.slots[id.index()].name = Some(name.to_owned());
+        let tag = set.tag_mut(id).expect("checked");
+        tag.group = self.group;
+        tag.payload = TagPayload::Built(self.root);
+        Ok(id)
+    }
+}
+
 fn rewrite(b: &mut Block, raw: &[RawId], id: TagId) {
     for f in &mut b.fixups {
         match &mut f.kind {

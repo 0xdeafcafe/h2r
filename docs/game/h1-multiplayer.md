@@ -38,7 +38,7 @@ disc/halo1.iso ─▶ <mp map>.map (cache v5, zlib)
    retail Halo 2 MP map (the base) + converted sbsp/ltmp, sky, placements
                     │  map::build (TagSet from the base)
                     ▼
-   <data>/maps/<h1 map>/{h2,h1}/<map>.map + manifest ─▶ content package
+   <data>/maps/h1_<map>/{h2,h1}/h1_<map>.map + manifest.toml ─▶ content package
 ```
 
 **The base.** Each converted map starts from a retail Halo 2 multiplayer
@@ -108,8 +108,9 @@ item is found in the base map by the words in its tag name.
 | Shotgun | Shotgun | |
 | Flamethrower | Shotgun | Close-range role; Halo 2 has none |
 | Frag grenade, plasma grenade | Same | |
-| Overshield, active camouflage | Same (`powerup_super_shield`, `powerup_invisibility`) | Dropped with a report when the base has no such collection (H2's beavercreek has no camouflage) |
-| Warthog, Ghost, Scorpion, Banshee | Same | |
+| Overshield, active camouflage | Same (`powerup_super_shield`, `powerup_invisibility`) | Dropped with a report when the base has no collection for it (Beaver Creek and Coagulation have no camouflage collection) |
+| Warthog, Ghost, Scorpion, Banshee | Same | A collection is built when the base lacks one ([Vehicles](#vehicles)) |
+| Rocket warthog | Gauss warthog | The user's decision |
 | Health pack | Dropped | Halo 2 has no health |
 | Ammo pickups | Dropped | Halo 2 has no ammo pickups |
 | Double speed, full-spectrum vision | Dropped | Unused on Xbox maps |
@@ -200,9 +201,11 @@ The base's old BSP region stays in the file, unused.
   coordinates, which both games store alike) and its triangles from the
   render surfaces. Triangles are turned to Halo 2's winding, decided once
   per level by majority against the packed normals: Halo 1's beavercreek
-  needed flipping. Meshes are packed into sections of at most 65535
-  vertices and indices (the section's `u16` counts), so a large level
-  becomes several clusters; parts never span sections. Streams written:
+  needed flipping. Meshes are packed into sections by lightmap page (a
+  cluster has one page, its render info's; unlit meshes last), each of
+  at most 65535 vertices and indices (the section's `u16` counts), so a
+  level becomes one cluster or more per page (Beaver Creek 14, Blood
+  Gulch 16); parts never span sections. Streams written:
   `01` position, `18` texture coordinate, `1b` frame, `1f` lightmap
   coordinate. Part kind 2 (a drawn kind; which drawn kind means what is
   unknown), triangle-list flag, one subpart per part.
@@ -239,12 +242,29 @@ The base's old BSP region stays in the file, unused.
   Waterworks (snow, and a wraith) would suit Sidewinder and Ice Fields,
   but Sidewinder's placements grow Waterworks' metadata past the engine's
   tag memory, so they take Coagulation too.
-- **Lightmap.** One group, the structure checksum (FNV-1a of the
-  positions), no bitmap, a render info entry `{-1, -1}` per cluster.
-  Levels render unlit (the default texture path) until Halo 1's lightmap
-  pages are converted. The pages now convert (`h1bitmaps::lightmap_pages`
-  and `convert_bitmap`, byte-identical on a30); what this writer must add
-  to use them is in [h1-bitmaps.md](../formats/h1-bitmaps.md#lightmaps-for-the-structure-writer).
+- **Lightmap** (Halo 1's own). One group, the structure checksum (FNV-1a
+  of the positions), the bitmap reference `+0x18` naming Halo 1's
+  lightmap bitmap converted (`h1bitmaps::convert_bitmap`: one R5G6B5
+  image per page, Halo 1's bytes unchanged), and per cluster a render
+  info `{page, -1}` (`{-1, -1}` for unlit clusters). The bitmap takes the
+  slot of the base's own lightmap bitmap, which nothing else names
+  ([Freed slots](#vehicles)), through `h1models::Converted::install_at`.
+  The lightmap coordinates (stream `1f`, in every cluster section as on
+  retail maps) are page-relative, in [0, 1]. Retail lightmaps also carry
+  per-vertex lighting buckets (`+0x40`, streams `30` and `2f`); clusters
+  read none (`+0x60` empty, as on Coagulation).
+
+  **Colour pages with no palette (E).** Retail pages are P8 with a
+  palette per cluster; Halo 1's are R5G6B5. Nothing in the engine needs
+  P8: the structure renderer stores the cluster's page whatever its
+  palette, and binds a palette at stage 3 only when one is named (E
+  `0x0004d3ff`..`0x0004d420`: `cmp edx, -1` skips the bind, the page goes
+  to `[0x485a60]` either way), and the texture sampler returns a colour
+  for both. The CPU lightmap query that lights objects (E `0x000d2f90`)
+  samples the page through the general pixel reader (`0x001362b0`) and
+  looks the value up in a palette only when the image's format is P8
+  (`cmp word [esi+0Ch], 12h` at `0x000d309a`); otherwise the sample is the
+  colour. So the pages stay as Halo 1 stored them: no quantizing.
 
 **Proof (tests).** `structure_tests.rs` writes an invented two-mesh level
 and a 30,000-triangle one into an invented map and reads them back with
@@ -417,18 +437,70 @@ in `content::resolve::load`, through a `Library` option that
 
 ## Vehicles
 
-Halo 2 spawns multiplayer vehicles from netgame equipment naming a
-vehicle collection (`vehc`, `multiplayer\single_vehicles\<name>`), not
-from the scenario's vehicle block, so converted vehicles go there and the
-Vehicles block stays empty, as on retail maps. Only some bases have the
-collections: Coagulation (warthog, ghost, banshee), Headlong, Zanzibar,
-Burial Mounds, Waterworks (also a wraith); Beaver Creek and Lockout have
-none. Halo 1's maps with vehicles therefore use Coagulation as their base.
-Warthog, rocket warthog (no closer Halo 2 vehicle: the gauss warthog's
-turret is a different weapon), ghost and banshee map to the same names;
-the name match prefers an exact collection name, so `warthog` never
-lands on `warthog_gauss`. **No Halo 2 multiplayer map has a scorpion
-collection**, so Halo 1's scorpions are not placed.
+Halo 2 spawns multiplayer vehicles from netgame equipment, not from the
+scenario's vehicle block (which is empty on every retail map but
+Headlong's seven placements with no palette). An entry names a vehicle
+collection (`vehc`, `multiplayer\single_vehicles\<role>`: one entry, the
+`vehi` and its model variant) and carries a type, the vehicle's class
+(V, every retail and Map Pack map): 1 warthog and gauss warthog, 2 ghost,
+3 wraith and scorpion, 4 banshee, 6 and 7 turrets. The spawner hands the
+type to the game variant's vehicle options (`+0x209 + type - 1`, E
+`0x0015a4d0`), which keep the vehicle, swap it for another of its class
+or remove it; types 3 and 5 go to the heavy chooser (E `0x0015a250`:
+wraith or scorpion, variant `multiplayer`). Retail maps also hold typed
+entries **with no item**: a variant's vehicle option fills them. That is
+how Coagulation gets a scorpion: it has the scorpion `vehi` and two empty
+type-3 entries, but no scorpion collection.
+
+**Every retail multiplayer map holds every vehicle tag** (banshee, ghost,
+scorpion, spectre, warthog, wraith, both turrets). Only the collections
+differ:
+
+| Map | Vehicle collections |
+|---|---|
+| Coagulation | warthog, ghost, banshee |
+| Waterworks | banshee, ghost, warthog, wraith, h_turret_ap |
+| Headlong | warthog, warthog_gauss, ghost, h_turret_ap, banshee |
+| Zanzibar | warthog_gauss, warthog, ghost, h_turret_ap |
+| Burial Mounds | h_turret_ap, warthog, ghost |
+| Ascension | banshee |
+| Foundation | h_turret_ap |
+| Beaver Creek, Lockout, Colossus, Ivory Tower (cyclotron), Midship | none |
+| Map Pack: Containment | h_turret_ap, warthog_gauss, scorpion, banshee |
+| Map Pack: Relic (dune) | warthog, ghost, h_turret_ap |
+| Map Pack: Terminal (triplicate) | h_turret_ap, ghost, wraith, warthog_gauss |
+| Map Pack: Sanctuary (deltatap) | h_turret_ap |
+| Map Pack: Turf | warthog |
+| Map Pack: Backwash, Elongation, Gemini, Warlock | none |
+
+The Map Pack maps read with the same tools (`xiso` entries under
+`/demos/dlc/0000000N/`); `h2 tags <map> vehi --disc` looks in `/maps`,
+which the Map Pack disc doesn't have. Containment (snow, and the only map
+with a scorpion collection) would suit Sidewinder or Ice Fields, but a
+base must be on the player's disc, so the bases stay retail.
+
+So a converted vehicle's collection is the base's when it has one, and
+**otherwise a built one** for the base's own `vehi`, in the slot of a tag
+the conversion frees (below): weight 1, the `vehi`, the variant
+(`gauss` for the gauss warthog, `multiplayer` for the scorpion and wraith,
+as retail collections name them; none otherwise), and the `+0x8` word of
+one of the base's collections. Every netgame equipment entry now gets
+its class's type (weapons 0, grenades 8, powerups 9, vehicles above);
+before, every entry kept the base's first entry's type. The rocket
+warthog becomes the gauss warthog (the user's decision). Blood Gulch and
+Sidewinder place all 8 of their vehicles (2 warthogs, 4 ghosts, 2
+scorpions; the Xbox maps have no rocket warthog).
+
+**Freed slots** (`h1convert::slots`). A map rebuilt from a retail one
+can't grow its tag index (uninterpreted bytes follow it), so new tags
+take the slot of tags only the base's structure BSP and lightmap named,
+which the conversion replaces: their own shaders, lightmap bitmap and so
+on. "Only named" means the tag's datum appears as a word in no metadata
+tag but itself, a test that can only err towards keeping a tag. The
+shaders the converted structure still uses and the base's lightmap
+bitmap (kept for the converted lightmap) are never taken. On Coagulation
+the scorpion collection takes the slot of `coag_panel_i`, a structure
+shader the conversion doesn't use; `h2 h1 convert` names each one.
 
 ## What isn't placed, and why
 
@@ -438,21 +510,30 @@ convert` lists each with its position (`not placed: ...`):
 | Left out | Why |
 |---|---|
 | Race flags (`RaceTrack`, `RaceVehicle`) | Halo 2 has no race game type |
-| Health packs | Halo 2's sandbox has no health; they return with the Halo 1 sandbox (health, phase 4) |
-| Active camouflage | The base has no `invisibility` collection (Beaver Creek and Coagulation have none) |
-| Overshield | The base has no `super_shield` collection (Coagulation has none) |
-| Scorpion | No Halo 2 multiplayer base has one (above) |
+| Health packs | Halo 2's sandbox has no health pickup; they return with the Halo 1 sandbox (health, phase 4) |
+| Active camouflage | The base has no collection for it (`invisibility`; Beaver Creek and Coagulation have none). A built `itmc` would do, as for vehicles |
+| Overshield | The base has no collection for it (`super_shield`; Coagulation has none) |
 
 All 13 multiplayer maps on the Halo 1 disc convert
 (`tests/disc_maps.rs`, `H1_ISO` and `H2_DISC`; 5 minutes in a debug
 build), each map reads back with a valid checksum, and its bitmaps are
-the base's, pixel for pixel. Per map (placed / Halo 1; items include
+the base's, pixel for pixel, but for the lightmap. The test also checks,
+on every map: each drawn part's material names the shader `shaders::pick`
+chose, none of those shaders' bitmaps is an `unwrapped` one, the texture
+and lightmap coordinates read back as written; the lightmap names the
+converted bitmap, every lit cluster's page is one of its images, and each
+page decodes (Halo 2's decoder, the converted map's own raw data) to the
+Halo 1 page's pixels. Lightmap pages (clusters): beavercreek 13 (14),
+bloodgulch 15 (16), boardingaction 25 (26), carousel 28 (29), chillout 9
+(10), damnation 10 (11), hangemhigh 2 (3), longest 1 (2), prisoner 2 (3),
+putput 9 (10), ratrace 11 (12), sidewinder 23 (24), wizard 11 (12); the
+extra cluster holds the unlit surfaces. Per map (placed / Halo 1; items include
 vehicles, which Halo 2 places as items):
 
 | Map | Base | Triangles | Spawns | Flags | Items | Vehicles | Left out |
 |---|---|---|---|---|---|---|---|
 | beavercreek | beavercreek | 3317 | 70/70 | 88/97 | 28/35 | 0/0 | 11 race, 4 health, 3 camo |
-| bloodgulch | coagulation | 5503 | 71/71 | 172/191 | 37/43 | 6/8 | 21 race, 2 health, 1 camo, 1 overshield, 2 scorpion |
+| bloodgulch | coagulation | 5503 | 71/71 | 172/191 | 39/43 | 8/8 | 21 race, 2 health, 1 camo, 1 overshield |
 | boardingaction | beavercreek | 7142 | 73/73 | 66/77 | 43/52 | 0/0 | 13 race, 7 health, 2 camo |
 | carousel | beavercreek | 2940 | 63/63 | 71/79 | 33/37 | 0/0 | 10 race, 1 health, 3 camo |
 | chillout | beavercreek | 3108 | 58/58 | 39/49 | 27/33 | 0/0 | 12 race, 4 health, 2 camo |
@@ -462,7 +543,7 @@ vehicles, which Halo 2 places as items):
 | prisoner | beavercreek | 5234 | 58/58 | 40/47 | 45/51 | 0/0 | 9 race, 5 health, 1 camo |
 | putput | beavercreek | 10494 | 59/59 | 127/134 | 26/40 | 0/0 | 9 race, 13 health, 1 camo |
 | ratrace | beavercreek | 2692 | 48/48 | 41/43 | 27/30 | 0/0 | 4 race, 2 health, 1 camo |
-| sidewinder | coagulation | 10036 | 76/76 | 147/166 | 48/55 | 6/8 | 21 race, 2 health, 1 camo, 2 overshield, 2 scorpion |
+| sidewinder | coagulation | 10036 | 76/76 | 147/166 | 50/55 | 8/8 | 21 race, 2 health, 1 camo, 2 overshield |
 | wizard | beavercreek | 2972 | 48/48 | 57/59 | 36/44 | 0/0 | 4 race, 4 health, 4 camo |
 
 Flag counts don't add up one for one: a Halo 1 flag can become several
@@ -475,9 +556,9 @@ disc.
 1. ~~**MOPP writer**~~: done, `mopp::build_structure`
    ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
 2. **Decals, lights, decorators** of the base (above).
-3. **Lightmaps** from Halo 1's lightmap pages, then **Halo 1's own
-   textures** on per-shader Halo 2 shaders (base shaders are chosen by
-   name until then).
+3. ~~**Lightmaps**~~: done (above). Next, **Halo 1's own textures** on
+   per-shader Halo 2 shaders (base shaders are chosen by name until then;
+   `h2 h1 convert` marks each as the base's stand-in).
    What the disc shows (`structure_bsp_root_blocks_on_the_disc`,
    all 12 multiplayer maps; element sizes are upper bounds from block
    spacing, not yet engine-backed): every map uses the root blocks at

@@ -52,6 +52,12 @@ layout restores the default).
 
 ## The window
 
+![The editor window over Ascension with seven regions boxed and numbered in orange: 1 the menu bar, 2 Tools, 3 Outliner, 4 Viewport, 5 Inspector, 6 Log, 7 the status bar](../images/editor/layout-regions.jpg)
+
+*The panels: (1) main menu bar, (2) Tools, (3) outliner, (4) the centre
+window (the viewport here), (5) inspector, (6) log, (7) status bar. The
+boxes and numbers are drawn by the headless renderer's `--callout`.*
+
 - **Main menu**: File (open a disc or map, open a folder of maps, save the
   map as a new `.map`, save as or open a package, the variant and
   playlist tools' file commands, quit), Edit (undo, redo, duplicate,
@@ -92,7 +98,7 @@ layout restores the default).
 Shortcuts: Cmd/Ctrl+O open, Cmd/Ctrl+S save (the map as a new file, the
 variant, the playlist file), Cmd/Ctrl+Z undo and Shift+Cmd/Ctrl+Z or
 Cmd/Ctrl+Y redo (in the active tool), and in the scenario tool
-Cmd/Ctrl+D duplicate, Delete delete, F focus, Home frame all, W/E gizmo
+Cmd/Ctrl+D duplicate, Delete or Backspace delete, F focus, Home frame all, W/E gizmo
 mode; Cmd/Ctrl+Q quit. Dropping a disc image, map or folder on the window
 opens it.
 
@@ -226,7 +232,12 @@ build), and keeps the last four maps' scenes so reopening one is instant.
   part's shader (`sbsp +0xa4`) gives its base map, the first bitmap of the
   compiled postprocess whose name reads as diffuse (the Live site's rule,
   docs/live/live-art.md). Bitmaps are decoded once by
-  `assets::decode_image`, shrunk to 512 a side, given a mip chain and
+  `assets::decode_image` (`scene::resource_files` gives it the map's own
+  file for local raw pointers: a map held in memory, a package or a
+  converted map, is read from its bytes, never from the disc map its
+  source names; a converted map's source names `shared`, whose bytes
+  drew as noise, `app::tests::disc_converted_textures_decode_as_their_bases`),
+  shrunk to 512 a side, given a mip chain and
   lifted when very dark (the game draws them under detail maps and
   lightmaps) where no lightmap lights them.
 - **Lightmaps.** Each cluster's and instance's lightmap page (its `ltmp`
@@ -427,12 +438,16 @@ studio crate only draws them and turns input into actions.
   - `ui.rs`: the ImGui shell and the scenario tool's windows; it only
     turns input into `Action`s and draws `App`. `ui/variants.rs` and
     `ui/playlists.rs` draw the other two tools.
+  - `app/convert.rs`: Convert to Halo 2 (the background conversion and
+    its plain-words errors).
   - `viewport.rs`: the viewport texture (`register_external_texture`),
     camera input, picking and the gizmo.
   - `theme.rs`: colours, spacing, fonts (Inter 15 pt with a Lucide icon
     subset merged in; Dear ImGui 1.92 rasterises at the framebuffer scale,
     so text is crisp on HiDPI).
   - `headless.rs`: renders real frames of the UI offscreen and writes PNGs.
+  - `script.rs`, `probe.rs`: the `--do` steps and the widget lookup behind
+    them (below).
 
 ## Headless screenshots
 
@@ -449,15 +464,54 @@ last. The flags that set the scene up:
 | `--halo1 <iso\|dir>` | open a Halo 1 source (else `$H1_ISO`, `$H1_MAP_DIR`, `disc/halo1.iso`) |
 | `--halo1-map <map>` | show a map of it, read-only |
 | `--package <dir>[#H1\|#H2]` | open a package from the Maps list (a converted map's variant by its sandbox) |
+| `--convert h2\|h1` | with `--halo1-map`, run Convert to Halo 2 with that sandbox, wait for it and open the result (writes under `--data`) |
+| `--overlay on\|off` | switch the Halo 1 overlay |
 | `--select <block>:<index>` | select a placement (`vehicles:0`, `netgameequipment:3`) |
 | `--focus` | focus the camera on the selection |
 | `--camera <yaw>,<pitch>,<distance>` | orbit the camera (degrees, world units), after `--focus` |
-| `--tool variants\|playlists` | show that tool |
+| `--tool scenario\|variants\|playlists` | show that tool |
 | `--variant <n>` | open built-in variant `n` |
 | `--copy-variant <name>` | copy it to an editable variant named `<name>` |
 | `--hopper <file>\|default --playlist <1..16>` | open a playlist file (or the default lineup) at a playlist |
 | `--preset <n>` | pick historical preset `n` for that playlist |
 | `--dialog package\|unsaved` | open the Save as package window, or nudge the selection and ask to quit (the unsaved-changes window) |
+| `--nudge <x>,<y>,<z>` | move the selection by that much, as an edit |
+| `--page <title>` | in the variant tool, open only the settings pages whose title contains it |
+| `--no-disc` | open no disc and no Halo 1 source (the first run) |
+
+Then, to show a state the flags can't set up, scripted input runs over
+the settled frames, and the written frame can be cropped and annotated:
+
+| Flag | Effect |
+| --- | --- |
+| `--do '<step>; <step>...'` | `hover`, `click`, `rclick`, `dclick` or `move` a target; `down`, `up` (the left button, for drags); `type <text>`; `key <name>[*n]`; `wait <frames>`; `sleep <ms>` (wall time, for background work such as a conversion); `wheel <dy>` |
+| `--crop <target>` (repeatable) | write only the union of these targets' rectangles |
+| `--pad <points>` | grow the crop by this much (default 8) |
+| `--crop-height <points>` | make the crop this tall from its top |
+| `--callout <target>=<badge>` (repeatable) | draw an orange box round the target with the badge (a number) on it |
+
+A target (`studio::script`) is a point `x,y`, a window `win:<name>`
+(`win:###inspector`, `win:##Menu`, `win:##Tooltip`, `win:##Combo`,
+`win:##Popup`), or a widget by label, `[<window>>]<label>[#n]` (`View`,
+`Rotate (E)`, `##setting-2`, `###viewport>Edit#0`), each optionally
+`@dx,dy` from its top left rather than its centre. Widgets are found by
+label through Dear ImGui's test-engine hooks (`studio::probe`; the
+`test-engine` feature of `dear-imgui-rs`): `ItemAdd` gives each item's
+rectangle and window, `ItemInfo` its label. Combos never report a label,
+so the labels a script names are also hashed on each item's window ID
+stack and matched by ID. The hooks only record in headless renders. Set
+`H2_EDITOR_PROBE=1` to print every window and widget the last frame drew,
+to write a script against.
+
+```
+h2-editor --disc disc/halo2.iso --pick ascension --select netgameequipment:0 \
+  --do 'click View; hover Rotate gizmo' --crop View --crop 'win:##Menu' --screenshot menu-view.png
+```
+
+![The View menu open with Rotate gizmo highlighted, cropped to the menu](../images/editor/menu-view.png)
+
+*What that command writes: the View menu opened and an item hovered by
+the script, cropped to the menu.*
 
 `scripts/editor-screenshots.sh` renders the user guide's pictures this way
 from your disc, into `docs/images/editor/` (editor-guide.md §10).

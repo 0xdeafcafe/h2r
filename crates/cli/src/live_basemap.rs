@@ -4,7 +4,7 @@
 //! Bitmap tag names only hint at a bitmap's role, and on the disc they lie:
 //! a bump map named `..._bmp` reads as a picture by its name, and terrain
 //! blend shaders list a bump map, a colour overlay and up to four detail
-//! maps. The resolved material (`tags::material`, docs/shader-instances.md)
+//! maps. The resolved material (`tags::material`, docs/formats/shader-instances.md)
 //! says what each pass samples on which texture stage. The base map is what
 //! a pass samples on stage 0: a single-pass template (`tex_bump`,
 //! `tex_bump_env`) draws base, detail, bump and lightmap on stages 0 to 3;

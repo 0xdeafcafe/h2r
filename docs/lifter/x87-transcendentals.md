@@ -109,7 +109,10 @@ The following accounting applies to p=128 and p=512:
   suffices to bound the relative term below 2^-641. Recurrence errors
   are below `2^11*u` per term, and accumulated additions, argument error
   and the tail keep the total below `2^20*u`. No subtraction from a
-  rounded exp(z) occurs, even for tiny a.
+  rounded exp(z) occurs, even for tiny a. This is the accounting for the
+  512-bit pass and for the 128-bit pass's `j = 0` case; the 128-bit pass
+  is table-driven otherwise (below) and is held to the same 2^-96 budget
+  by `unrounded_errors_stay_within_the_documented_budgets`.
 
 In each series the omitted tail is less than twice the first omitted
 term, itself below 2^(-p-8) of the sum. All intermediate exponents use
@@ -126,6 +129,24 @@ The triangle inequality therefore bounds the first-pass value's relative
 difference from the **unrounded reference helper** by less than 2^-95.
 This statement does not assume that the reference is globally correctly
 rounded. Its existing `TRANSCENDENTAL_IS_CORRECTLY_ROUNDED=false` remains.
+
+## Table-driven first pass
+
+The 128-bit pass does not run the full series for every operand.
+FYL2X reduces the significand to `1 + j/64` and takes `log2` of that
+point from `LOG2_J64` (`src/log2_j64.in`), leaving a short series in the
+remainder. F2XM1 writes `a = j/64 + r` with `|r| <= 1/128` and
+`2^a - 1 = d + e + d*e`, where `d = 2^(j/64) - 1` comes from `EXP2M1_J64`
+(`src/exp2m1_j64.in`, 128 entries of `floor(|d| * 2^128)`) and
+`e = expm1(r ln 2)` needs about 13 series terms instead of about 30.
+`j = 0` keeps the plain series. Tests check each table against the
+768-bit reference (`log2_table_matches_the_768_bit_reference`,
+`exp2_table_matches_the_768_bit_reference`) and compare accepted results
+with the 512-bit helper near every table point and midpoint
+(`x2m1_matches_the_reference_across_the_exp2_table`; 300k cases in its
+ignored extended run). The table-driven F2XM1 took the first pass from
+about 1030 to about 525 ns per call (release); the benchmark below
+predates it, so its F2XM1 row is the earlier series figure.
 
 ## Guard and precision control
 
@@ -362,7 +383,7 @@ The sweeps print their acceptance counts with `-- --nocapture ACCEPT`.
 Unoptimised test builds run an eighth of each new sweep. The rates above
 are from release.
 
-Final checks: 22 passing library tests (4 ignored) in `x87` with the
+Final checks: the `x87` library tests pass with the
 feature on and off, plus the ABI, spec and oracle integration tests.
 Strict clippy for `x87` passes with the feature on and off, and so does
 formatting of the touched files. The MPFR fixture generator reproduces the committed synthetic

@@ -233,7 +233,9 @@ Management).
 
 - The touch layout is not adjustable yet (positions, sizes, opacity).
 - The same trimmed disc as tvOS: only the menu, The Heretic and Zanzibar.
-  Choosing another level or map fails to load it.
+  Choosing another level or map fails to load it. `just ios maps=all`
+  bundles the whole disc and the map pack instead (7 GB or more, and in
+  Documents, so it counts towards backups; [building.md](building.md)).
 - Speed is unmeasured. Older devices (A12 and earlier) will be slow.
 - The app may need the increased memory limit entitlement on devices with
   little RAM; it does not ask for it yet.
