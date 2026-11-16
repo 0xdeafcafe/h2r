@@ -1,6 +1,6 @@
-//! Multiplayer level geometry for the stats site: `map/<stem>/map.glb`, the
-//! pre-drawn views in `map/<stem>/views/` and `views.json` (docs/live-art.md,
-//! the map geometry contract).
+//! Level geometry (multiplayer and campaign) for the stats site:
+//! `map/<stem>/map.glb`, the pre-drawn views in `map/<stem>/views/` and
+//! `views.json` (docs/live-art.md, the map geometry contract).
 //!
 //! Runs inside the art extraction (`live_art::extract`), from the owner's own
 //! disc, once per disc. The level is the structure BSP's render geometry as
@@ -39,6 +39,7 @@ pub const GEOMETRY_VERSION: u32 = 1;
 pub const GENERATOR: &str = "h2 live art";
 
 const SHAD: FourCC = FourCC(*b"shad");
+const MACH: FourCC = FourCC(*b"mach");
 
 /// A surface class: the glTF material and the colour it is drawn in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -366,6 +367,10 @@ pub struct Primitive {
 pub struct LevelMesh {
     pub primitives: Vec<(Class, Primitive)>,
     pub bounds: Bounds,
+    /// Placed objects (machines), a primitive per class: drawn in the views
+    /// and casting shadows, but never cut away by the top view's cutaway
+    /// and not part of `bounds`, the frame or the counts.
+    pub objects: Vec<(Class, Primitive)>,
 }
 
 impl LevelMesh {
@@ -471,6 +476,7 @@ pub fn build_mesh(tris: &[Tri]) -> LevelMesh {
             .map(|(c, b)| (c, b.prim))
             .collect(),
         bounds,
+        objects: Vec::new(),
     }
 }
 
@@ -607,87 +613,220 @@ pub fn to_gltf(p: [f32; 3]) -> [f32; 3] {
     [p[0], p[2], -p[1]]
 }
 
-/// `map.glb`: one node and mesh named `structure`, a primitive per class
-/// (POSITION, NORMAL, u32 indices), a material per class. `asset.extras`
-/// carries the bounds and the views' [`frame`] (game coordinates).
+/// Most vertices one primitive may have, so its indices fit in u16.
+pub const MAX_PRIMITIVE_VERTICES: usize = 1 << 16;
+
+/// A primitive cut into pieces of at most [`MAX_PRIMITIVE_VERTICES`]
+/// vertices each, triangles in order (a small one is returned whole).
+pub fn split_u16(p: &Primitive) -> Vec<Primitive> {
+    if p.positions.len() <= MAX_PRIMITIVE_VERTICES {
+        return vec![p.clone()];
+    }
+    let mut out = Vec::new();
+    let mut cur = Primitive::default();
+    let mut remap: HashMap<u32, u32> = HashMap::new();
+    for t in p.indices.as_chunks::<3>().0 {
+        let new = t.iter().filter(|i| !remap.contains_key(i)).count();
+        if cur.positions.len() + new > MAX_PRIMITIVE_VERTICES {
+            out.push(std::mem::take(&mut cur));
+            remap.clear();
+        }
+        for &i in t {
+            let j = *remap.entry(i).or_insert_with(|| {
+                cur.positions.push(p.positions[i as usize]);
+                cur.normals.push(p.normals[i as usize]);
+                (cur.positions.len() - 1) as u32
+            });
+            cur.indices.push(j);
+        }
+    }
+    if !cur.indices.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+/// One node of `map.glb`: an optional mesh (its primitives, game
+/// coordinates), `extras`, and child nodes. Nodes carry no transforms.
+pub struct GlbNode<'a> {
+    pub name: String,
+    /// Its mesh; a mesh given to several nodes (the same slice) is written
+    /// once, named by the first node that has it.
+    pub mesh: Option<&'a [(Class, Primitive)]>,
+    /// Column-major glTF transform (placed objects only).
+    pub matrix: Option<[f32; 16]>,
+    pub extras: Option<serde_json::Value>,
+    pub children: Vec<GlbNode<'a>>,
+}
+
+impl<'a> GlbNode<'a> {
+    pub fn mesh(name: impl Into<String>, mesh: &'a LevelMesh) -> Self {
+        GlbNode {
+            name: name.into(),
+            mesh: Some(&mesh.primitives),
+            matrix: None,
+            extras: None,
+            children: Vec::new(),
+        }
+    }
+
+    pub fn named(self, name: String) -> Self {
+        GlbNode { name, ..self }
+    }
+}
+
+/// `map.glb` of a single mesh: one node and mesh named `structure` (the
+/// multiplayer contract), its bounds and [`frame`].
+#[cfg(test)]
 pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
+    write_nodes(
+        &[GlbNode::mesh("structure", mesh)],
+        mesh.bounds,
+        frame(mesh),
+    )
+}
+
+/// `map.glb` from nodes: a mesh per node that has triangles, named like
+/// its node, with a primitive per class (POSITION, NORMAL, u16 indices; a
+/// class over [`MAX_PRIMITIVE_VERTICES`] vertices gets several) and
+/// one material per class shared by every mesh. `asset.extras` carries
+/// `bounds` and the views' `frame` (game coordinates).
+pub fn write_nodes(roots: &[GlbNode], bounds: Bounds, frame: Bounds) -> Vec<u8> {
     use serde_json::{Value, json};
-    let frame = frame(mesh);
-    let mut bin: Vec<u8> = Vec::new();
-    let mut views: Vec<Value> = Vec::new();
-    let mut accessors: Vec<Value> = Vec::new();
-    let mut materials: Vec<Value> = Vec::new();
-    let mut prims: Vec<Value> = Vec::new();
-    let mut view = |bin: &mut Vec<u8>, bytes: &[u8], target: u32| -> usize {
-        while !bin.len().is_multiple_of(4) {
-            bin.push(0);
-        }
-        views.push(json!({
-            "buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len(), "target": target
-        }));
-        bin.extend_from_slice(bytes);
-        views.len() - 1
-    };
-    for (class, p) in &mesh.primitives {
-        let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
-        let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
-        let mut lo = [f32::INFINITY; 3];
-        let mut hi = [f32::NEG_INFINITY; 3];
-        for v in &pos {
-            for k in 0..3 {
-                lo[k] = lo[k].min(v[k]);
-                hi[k] = hi[k].max(v[k]);
+    struct Out {
+        bin: Vec<u8>,
+        views: Vec<Value>,
+        accessors: Vec<Value>,
+        materials: Vec<Value>,
+        material_of: BTreeMap<Class, usize>,
+        meshes: Vec<Value>,
+        mesh_of: HashMap<*const (Class, Primitive), usize>,
+        nodes: Vec<Value>,
+    }
+    impl Out {
+        fn view(&mut self, bytes: &[u8], target: u32) -> usize {
+            while !self.bin.len().is_multiple_of(4) {
+                self.bin.push(0);
             }
+            self.views.push(json!({
+                "buffer": 0, "byteOffset": self.bin.len(), "byteLength": bytes.len(), "target": target
+            }));
+            self.bin.extend_from_slice(bytes);
+            self.views.len() - 1
         }
-        let floats = |v: &[[f32; 3]]| -> Vec<u8> {
-            v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
-        };
-        let pv = view(&mut bin, &floats(&pos), 34962);
-        let nv = view(&mut bin, &floats(&nrm), 34962);
-        let iv = view(
-            &mut bin,
-            &p.indices
+        fn material(&mut self, class: Class) -> usize {
+            if let Some(&m) = self.material_of.get(&class) {
+                return m;
+            }
+            let [r, g, b] = class.linear();
+            let (metallic, roughness) = class.metallic_roughness();
+            let mut m = json!({
+                "name": class.name(),
+                "pbrMetallicRoughness": {
+                    "baseColorFactor": [r, g, b, class.alpha()],
+                    "metallicFactor": metallic,
+                    "roughnessFactor": roughness
+                }
+            });
+            if class.transparent() {
+                m["alphaMode"] = json!("BLEND");
+            }
+            self.materials.push(m);
+            self.material_of.insert(class, self.materials.len() - 1);
+            self.materials.len() - 1
+        }
+        fn primitive(&mut self, class: Class, p: &Primitive) -> Value {
+            let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
+            let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
+            let mut lo = [f32::INFINITY; 3];
+            let mut hi = [f32::NEG_INFINITY; 3];
+            for v in &pos {
+                for k in 0..3 {
+                    lo[k] = lo[k].min(v[k]);
+                    hi[k] = hi[k].max(v[k]);
+                }
+            }
+            let floats = |v: &[[f32; 3]]| -> Vec<u8> {
+                v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
+            };
+            let pv = self.view(&floats(&pos), 34962);
+            let nv = self.view(&floats(&nrm), 34962);
+            let indices: Vec<u8> = p
+                .indices
                 .iter()
-                .flat_map(|i| i.to_le_bytes())
-                .collect::<Vec<_>>(),
-            34963,
-        );
-        let base = accessors.len();
-        accessors.push(json!({
-            "bufferView": pv, "componentType": 5126, "count": pos.len(), "type": "VEC3",
-            "min": lo, "max": hi
-        }));
-        accessors.push(json!({
-            "bufferView": nv, "componentType": 5126, "count": nrm.len(), "type": "VEC3"
-        }));
-        accessors.push(json!({
-            "bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"
-        }));
-        let [r, g, b] = class.linear();
-        let (metallic, roughness) = class.metallic_roughness();
-        let mut m = json!({
-            "name": class.name(),
-            "pbrMetallicRoughness": {
-                "baseColorFactor": [r, g, b, class.alpha()],
-                "metallicFactor": metallic,
-                "roughnessFactor": roughness
-            }
-        });
-        if class.transparent() {
-            m["alphaMode"] = json!("BLEND");
+                .flat_map(|&i| (i as u16).to_le_bytes())
+                .collect();
+            let iv = self.view(&indices, 34963);
+            let base = self.accessors.len();
+            self.accessors.push(json!({
+                "bufferView": pv, "componentType": 5126, "count": pos.len(), "type": "VEC3",
+                "min": lo, "max": hi
+            }));
+            self.accessors.push(json!({
+                "bufferView": nv, "componentType": 5126, "count": nrm.len(), "type": "VEC3"
+            }));
+            self.accessors.push(json!({
+                "bufferView": iv, "componentType": 5123, "count": p.indices.len(), "type": "SCALAR"
+            }));
+            json!({
+                "attributes": {"POSITION": base, "NORMAL": base + 1},
+                "indices": base + 2,
+                "material": self.material(class),
+                "mode": 4
+            })
         }
-        materials.push(m);
-        prims.push(json!({
-            "attributes": {"POSITION": base, "NORMAL": base + 1},
-            "indices": base + 2,
-            "material": materials.len() - 1,
-            "mode": 4
-        }));
+        /// Adds a node and its children; returns its index.
+        fn node(&mut self, n: &GlbNode) -> usize {
+            let at = self.nodes.len();
+            self.nodes.push(json!({"name": n.name}));
+            let src = n.mesh.unwrap_or(&[]);
+            let mesh = match self.mesh_of.get(&src.as_ptr()) {
+                Some(&m) if !src.is_empty() => Some(m),
+                _ => {
+                    let prims: Vec<Value> = src
+                        .iter()
+                        .filter(|(_, p)| !p.indices.is_empty())
+                        .flat_map(|(c, p)| split_u16(p).into_iter().map(|p| (*c, p)))
+                        .map(|(c, p)| self.primitive(c, &p))
+                        .collect();
+                    (!prims.is_empty()).then(|| {
+                        self.meshes
+                            .push(json!({"name": n.name, "primitives": prims}));
+                        self.mesh_of.insert(src.as_ptr(), self.meshes.len() - 1);
+                        self.meshes.len() - 1
+                    })
+                }
+            };
+            if let Some(m) = mesh {
+                self.nodes[at]["mesh"] = json!(m);
+            }
+            if let Some(m) = n.matrix {
+                self.nodes[at]["matrix"] = json!(m);
+            }
+            if let Some(e) = &n.extras {
+                self.nodes[at]["extras"] = e.clone();
+            }
+            if !n.children.is_empty() {
+                let kids: Vec<usize> = n.children.iter().map(|c| self.node(c)).collect();
+                self.nodes[at]["children"] = json!(kids);
+            }
+            at
+        }
     }
-    while !bin.len().is_multiple_of(4) {
-        bin.push(0);
+    let mut o = Out {
+        bin: Vec::new(),
+        views: Vec::new(),
+        accessors: Vec::new(),
+        materials: Vec::new(),
+        material_of: BTreeMap::new(),
+        meshes: Vec::new(),
+        mesh_of: HashMap::new(),
+        nodes: Vec::new(),
+    };
+    let top: Vec<usize> = roots.iter().map(|n| o.node(n)).collect();
+    while !o.bin.len().is_multiple_of(4) {
+        o.bin.push(0);
     }
-    let bounds = json!({"min": mesh.bounds.min, "max": mesh.bounds.max});
     let mut doc = json!({
         "asset": {
             "version": "2.0",
@@ -695,29 +834,25 @@ pub fn write_glb(mesh: &LevelMesh) -> Vec<u8> {
             "extras": {
                 "generator": GENERATOR,
                 "geometry_version": GEOMETRY_VERSION,
-                "bounds": bounds,
+                "bounds": {"min": bounds.min, "max": bounds.max},
                 "frame": {"min": frame.min, "max": frame.max}
             }
         },
         "scene": 0,
-        "scenes": [{"nodes": [0]}],
-        "nodes": [{"name": "structure", "mesh": 0}],
-        "meshes": [{"name": "structure", "primitives": prims}],
-        "materials": materials,
-        "accessors": accessors,
-        "bufferViews": views,
-        "buffers": [{"byteLength": bin.len()}]
+        "scenes": [{"nodes": top}],
+        "nodes": o.nodes,
     });
-    if mesh.primitives.is_empty() {
-        // A valid file with no geometry: no mesh, no buffer.
-        doc = json!({
-            "asset": doc["asset"].clone(),
-            "scene": 0,
-            "scenes": [{"nodes": [0]}],
-            "nodes": [{"name": "structure"}]
-        });
-        bin.clear();
+    // A file with no geometry has no meshes and no buffer.
+    if !o.meshes.is_empty() {
+        doc["meshes"] = json!(o.meshes);
+        doc["materials"] = json!(o.materials);
+        doc["accessors"] = json!(o.accessors);
+        doc["bufferViews"] = json!(o.views);
+        doc["buffers"] = json!([{"byteLength": o.bin.len()}]);
+    } else {
+        o.bin.clear();
     }
+    let bin = o.bin;
     let mut json = serde_json::to_vec(&doc).expect("glTF JSON");
     while !json.len().is_multiple_of(4) {
         json.push(b' ');
@@ -780,19 +915,40 @@ pub struct ViewsFile {
     pub views: Vec<ViewEntry>,
 }
 
-/// The manifest's entry for one map (contract: `geometry` and `views`).
+/// Which kind of level a map is (manifest `kind`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MapKind {
+    Campaign,
+    Multiplayer,
+}
+
+/// The manifest's entry for one map (contract: `geometry`, `views`, `kind`
+/// and `bsps`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub geometry: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub views: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<MapKind>,
+    /// Structure BSPs in `map.glb` (one node each).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bsps: Option<usize>,
 }
 
 /// Counts and timings for one map.
 #[derive(Clone, Debug, Default)]
 pub struct MapStats {
     pub stem: String,
+    pub kind: Option<MapKind>,
+    /// BSPs in the scenario, and how many made it into `map.glb`.
+    pub scenario_bsps: usize,
+    pub bsps: usize,
+    /// Machines placed, and their triangles (not in `triangles`).
+    pub machines: usize,
+    pub machine_triangles: usize,
     pub source_triangles: usize,
     pub triangles: usize,
     pub vertices: usize,
@@ -881,46 +1037,567 @@ fn material_surfaces(map: &mut MapReader, bsp: TagId) -> (Vec<Surface>, usize) {
     }
 }
 
+// ---- Machines ------------------------------------------------------------
+
+/// Scenario machine placements (`scnr+0xa8`, stride 0x48) and their palette
+/// (`scnr+0xb0`, stride 0x28, tag reference first): the object type table's
+/// `mach` entry (docs/objects.md).
+const MACHINES: usize = 0xa8;
+const MACHINE_STRIDE: usize = 0x48;
+const MACHINE_PALETTE: usize = 0xb0;
+const PALETTE_STRIDE: usize = 0x28;
+
+/// Where a scenario object sits: the common head of every placement record
+/// (palette index at +0, position at +8, yaw/pitch/roll in radians at
+/// +0x14, scale at +0x20). The rotation order and the scale-zero-is-one rule
+/// follow the public scenario object definition; the disc check confirms
+/// that the records read this way land on the level.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Placement {
+    pub palette: i16,
+    pub position: [f32; 3],
+    /// Yaw about +z, then pitch (positive tips forward up), then roll about
+    /// the forward axis.
+    pub rotation: [f32; 3],
+    pub scale: f32,
+}
+
+impl Placement {
+    pub fn parse(b: &[u8]) -> Option<Placement> {
+        let f = |o: usize| Some(f32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?));
+        Some(Placement {
+            palette: i16::from_le_bytes(b.get(0..2)?.try_into().ok()?),
+            position: [f(8)?, f(0xc)?, f(0x10)?],
+            rotation: [f(0x14)?, f(0x18)?, f(0x1c)?],
+            scale: f(0x20)?,
+        })
+    }
+
+    /// The object's forward, left and up axes in the world:
+    /// `Rz(yaw) · Ry(−pitch) · Rx(roll)` applied to +x, +y and +z.
+    pub fn axes(&self) -> [[f32; 3]; 3] {
+        let [yaw, pitch, roll] = self.rotation;
+        let (sy, cy) = yaw.sin_cos();
+        let (sp, cp) = pitch.sin_cos();
+        let (sr, cr) = roll.sin_cos();
+        let rot = |v: [f32; 3]| {
+            // Roll about x.
+            let v = [v[0], cr * v[1] - sr * v[2], sr * v[1] + cr * v[2]];
+            // Pitch: +x tips towards +z.
+            let v = [cp * v[0] - sp * v[2], v[1], sp * v[0] + cp * v[2]];
+            // Yaw about z.
+            [cy * v[0] - sy * v[1], sy * v[0] + cy * v[1], v[2]]
+        };
+        [
+            rot([1.0, 0.0, 0.0]),
+            rot([0.0, 1.0, 0.0]),
+            rot([0.0, 0.0, 1.0]),
+        ]
+    }
+
+    /// A scale of zero (or less, or not a number) means 1.
+    pub fn scale(&self) -> f32 {
+        if self.scale > 0.0 { self.scale } else { 1.0 }
+    }
+
+    /// A model-space point in the world.
+    pub fn transform(&self, p: [f32; 3]) -> [f32; 3] {
+        let [f, l, u] = self.axes();
+        let s = self.scale();
+        std::array::from_fn(|k| self.position[k] + s * (p[0] * f[k] + p[1] * l[k] + p[2] * u[k]))
+    }
+
+    /// The placement as a column-major glTF node matrix, for a mesh whose
+    /// points are glTF `(x, z, -y)` of model space: columns
+    /// `C(s·forward)`, `C(s·up)`, `C(−s·left)` and `C(position)`, where
+    /// `C` is [`to_gltf`].
+    pub fn gltf_matrix(&self) -> [f32; 16] {
+        let [f, l, u] = self.axes();
+        let s = self.scale();
+        let c0 = to_gltf(f.map(|v| s * v));
+        let c1 = to_gltf(u.map(|v| s * v));
+        let c2 = to_gltf(l.map(|v| -s * v));
+        let t = to_gltf(self.position);
+        [
+            c0[0], c0[1], c0[2], 0.0, c1[0], c1[1], c1[2], 0.0, c2[0], c2[1], c2[2], 0.0, t[0],
+            t[1], t[2], 1.0,
+        ]
+    }
+
+    /// A model-space direction in the world (unscaled).
+    pub fn rotate(&self, n: [f32; 3]) -> [f32; 3] {
+        let [f, l, u] = self.axes();
+        std::array::from_fn(|k| n[0] * f[k] + n[1] * l[k] + n[2] * u[k])
+    }
+}
+
+/// A machine's model, model space, ready to place.
+#[derive(Clone, Debug)]
+pub struct MachineModel {
+    /// The last path component of the `mach` tag's name.
+    pub stem: String,
+    /// Model space, welded; see [`object_mesh`].
+    pub mesh: LevelMesh,
+}
+
+/// A placed object's mesh: welded like the level, but every surface is
+/// `metal` unless its shader names it glass, water or foliage (facing does
+/// not make an object's top a floor).
+pub fn object_mesh(tris: &[Tri]) -> LevelMesh {
+    let mesh = build_mesh(tris);
+    let bounds = mesh.bounds;
+    let mut by: BTreeMap<Class, Vec<LevelMesh>> = BTreeMap::new();
+    for (c, p) in mesh.primitives {
+        let c = match c {
+            Class::Glass | Class::Water | Class::Foliage => c,
+            _ => Class::Metal,
+        };
+        by.entry(c).or_default().push(LevelMesh {
+            primitives: vec![(c, p)],
+            bounds,
+            objects: Vec::new(),
+        });
+    }
+    LevelMesh {
+        primitives: by.values().flat_map(|m| merge(m).primitives).collect(),
+        bounds,
+        objects: Vec::new(),
+    }
+}
+
+/// A mesh's primitives moved from model space to where `at` puts them.
+pub fn place_mesh(mesh: &LevelMesh, at: &Placement) -> Vec<(Class, Primitive)> {
+    mesh.primitives
+        .iter()
+        .map(|(c, p)| {
+            (
+                *c,
+                Primitive {
+                    positions: p.positions.iter().map(|&v| at.transform(v)).collect(),
+                    normals: p.normals.iter().map(|&n| at.rotate(n)).collect(),
+                    indices: p.indices.clone(),
+                },
+            )
+        })
+        .collect()
+}
+
+/// One machine placement: its node name (`<tag stem>_<placement index>`),
+/// which of the level's machine models it shows, and where.
+#[derive(Clone, Debug)]
+pub struct PlacedMachine {
+    pub name: String,
+    pub model: usize,
+    pub at: Placement,
+}
+
+/// What a machine's shader name says: as for the level, except an
+/// unnamed surface is metal.
+fn machine_surface(name: Option<&str>) -> Surface {
+    match name.map_or(Surface::Unknown, surface_from_name) {
+        Surface::Unknown => Surface::Class(Class::Metal),
+        s => s,
+    }
+}
+
+/// Highest detail level drawn for a placed object (0 lowest, 5 highest):
+/// high enough to read as the object, low enough to keep a level's
+/// `map.glb` small.
+pub const OBJECT_LOD: usize = 3;
+
+/// Each region's first permutation at the highest detail level up to
+/// [`OBJECT_LOD`] it has (or its lowest above that), without repeats.
+pub fn object_sections(model: &tags::model::RenderModelGeometry) -> Vec<usize> {
+    let mut out = Vec::new();
+    for r in &model.regions {
+        let Some(p) = r.permutations.first() else {
+            continue;
+        };
+        let pick = p.lod_sections[..=OBJECT_LOD]
+            .iter()
+            .rev()
+            .chain(&p.lod_sections[OBJECT_LOD + 1..])
+            .flatten()
+            .next();
+        if let Some(&s) = pick
+            && !out.contains(&s)
+        {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// The drawn triangles of a render model's [`object_sections`], in model
+/// space.
+pub fn model_triangles(model: &tags::model::RenderModelGeometry, surfaces: &[Surface]) -> Vec<Tri> {
+    let mut out = Vec::new();
+    for si in object_sections(model) {
+        let Some(s) = model.sections.get(si) else {
+            continue;
+        };
+        let v = &s.vertices;
+        for part in s.geometry.parts.iter().filter(|p| p.is_drawn()) {
+            let surface = surfaces
+                .get(usize::from(part.material))
+                .copied()
+                .unwrap_or(Surface::Class(Class::Metal));
+            if surface == Surface::Sky {
+                continue;
+            }
+            for t in s.geometry.part_triangles(part) {
+                let i = t.map(usize::from);
+                let Some(p) = i
+                    .iter()
+                    .map(|&i| v.positions.get(i).copied())
+                    .collect::<Option<Vec<_>>>()
+                else {
+                    continue;
+                };
+                out.push(Tri {
+                    p: [p[0], p[1], p[2]],
+                    n: i.map(|i| v.normals.get(i).copied().unwrap_or([0.0; 3])),
+                    surface,
+                });
+            }
+        }
+    }
+    out
+}
+
+/// A `mach` tag's model: object `model` (`hlmt`) -> `render_model`
+/// (`mode`), through the typed object decoder.
+/// `Ok(None)` for a machine with no model (nothing to draw).
+fn machine_model(
+    map: &mut MapReader,
+    ctx: &tags::object::Context,
+    files: &mut ResourceFiles,
+    mach: TagId,
+) -> Result<Option<MachineModel>> {
+    let tag = ctx.decode(mach)?;
+    if tag.group != MACH {
+        return Err(anyhow!("palette entry is not a machine"));
+    }
+    let obje = tag.layer("obje").context("no object header")?;
+    let header = tags::object::ObjectHeader::from_record(obje)?;
+    if header.model.id == TagId::NULL {
+        return Ok(None);
+    }
+    let name = tag.name.clone().unwrap_or_default();
+    let hlmt = ctx
+        .decode(header.model.id)
+        .with_context(|| format!("{name}: object model"))?;
+    let mode = hlmt
+        .layer("hlmt")
+        .and_then(|r| r.tag_ref("render_model"))
+        .filter(|r| r.id != TagId::NULL)
+        .context("no render model")?;
+    let model = tags::model::RenderModelGeometry::read(map, mode.id, &mut Raw(files))
+        .with_context(|| format!("{name}: render model"))?;
+    let surfaces: Vec<Surface> = model
+        .materials
+        .iter()
+        .map(|m| {
+            let name = map.tag(m.shader.id).ok().and_then(|t| t.name.clone());
+            machine_surface(name.as_deref())
+        })
+        .collect();
+    let stem = name.rsplit(['\\', '/']).next().unwrap_or(&name).to_string();
+    let tris = model_triangles(&model, &surfaces);
+    if tris.is_empty() {
+        return Err(anyhow!(
+            "{name}: no drawn triangles in {} sections ({} regions)",
+            model.sections.len(),
+            model.regions.len()
+        ));
+    }
+    Ok(Some(MachineModel {
+        stem,
+        mesh: object_mesh(&tris),
+    }))
+}
+
+/// The scenario's machine models (each read once) and placements. A
+/// placement that cannot be read goes to `skipped` under
+/// `map/<stem>/machine_<index>`; one whose machine has no model is not
+/// drawn.
+fn load_machines(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    stem: &str,
+    skipped: &mut BTreeMap<String, String>,
+) -> Result<(Vec<MachineModel>, Vec<PlacedMachine>)> {
+    let scenario = map.scenario().context("no scenario")?.clone();
+    let location = scenario.location.context("scenario has no payload")?;
+    let bytes = map.read_tag_bytes(scenario.id)?;
+    let view = TagView::new(&bytes, location.address);
+    let root = view.at(0, MACHINE_PALETTE + 8)?;
+    let placements = view.block(root, MACHINES, MACHINE_STRIDE)?;
+    if placements.is_empty() {
+        return Ok(Default::default());
+    }
+    let palette: Vec<TagId> = view
+        .block(root, MACHINE_PALETTE, PALETTE_STRIDE)?
+        .into_iter()
+        .map(|e| TagId(u32::from_le_bytes([e[4], e[5], e[6], e[7]])))
+        .collect();
+    let ctx = tags::object::Context::read(map)?;
+    // Palette index -> index into `models`, or why not.
+    let mut loaded: HashMap<i16, Result<Option<usize>, String>> = HashMap::new();
+    let mut models = Vec::new();
+    let mut out = Vec::new();
+    for (i, rec) in placements.into_iter().enumerate() {
+        let key = format!("map/{stem}/machine_{i}");
+        let Some(at) = Placement::parse(rec) else {
+            skipped.insert(key, "short placement record".into());
+            continue;
+        };
+        let Some(&id) = usize::try_from(at.palette)
+            .ok()
+            .and_then(|p| palette.get(p))
+        else {
+            // No palette entry: nothing is placed (the engine skips these).
+            continue;
+        };
+        if id == TagId::NULL {
+            continue;
+        }
+        if !at
+            .position
+            .iter()
+            .chain(&at.rotation)
+            .all(|v| v.is_finite())
+        {
+            skipped.insert(key, "placement is not finite".into());
+            continue;
+        }
+        let model =
+            loaded
+                .entry(at.palette)
+                .or_insert_with(|| match machine_model(map, &ctx, files, id) {
+                    Ok(Some(m)) => {
+                        models.push(m);
+                        Ok(Some(models.len() - 1))
+                    }
+                    Ok(None) => Ok(None),
+                    Err(e) => Err(format!("{e:#}")),
+                });
+        match model {
+            Ok(None) => {}
+            Ok(Some(m)) => out.push(PlacedMachine {
+                name: format!("{}_{i}", models[*m].stem),
+                model: *m,
+                at,
+            }),
+            Err(why) => {
+                skipped.insert(key, why.clone());
+            }
+        }
+    }
+    Ok((models, out))
+}
+
 /// A loaded map, ready to draw.
 pub struct Level {
     pub stem: String,
+    pub kind: MapKind,
+    /// How many structure BSPs the scenario lists.
+    pub bsp_count: usize,
+    /// Every BSP that loaded: its index in the scenario and its mesh.
+    pub bsps: Vec<(usize, LevelMesh)>,
+    /// The scenario's machine models (model space) and placements.
+    pub machine_models: Vec<MachineModel>,
+    pub machines: Vec<PlacedMachine>,
+    /// All BSPs together, with the machines as `objects`, for the views.
     pub mesh: LevelMesh,
     pub frame: Bounds,
     pub shadow: ShadowMap,
+    /// What was left out of this level, by manifest `skipped` key.
+    pub skipped: BTreeMap<String, String>,
 }
 
-/// Opens one multiplayer map and builds its level.
-fn load_level(disc: &Disc, m: &MapFile, stats: &mut MapStats) -> Result<Level> {
+impl Level {
+    /// The level from its BSP meshes (scenario index, mesh or why it failed).
+    /// Fails only when no BSP has drawn geometry.
+    pub fn build(
+        stem: &str,
+        kind: MapKind,
+        bsps: Vec<(usize, Result<LevelMesh>)>,
+    ) -> Result<Level> {
+        let bsp_count = bsps.len();
+        let mut skipped = BTreeMap::new();
+        let mut kept = Vec::new();
+        for (i, m) in bsps {
+            match m {
+                Ok(m) if !m.primitives.is_empty() => kept.push((i, m)),
+                Ok(_) => {
+                    skipped.insert(
+                        format!("map/{stem}/bsp_{i}"),
+                        "no drawn level geometry".into(),
+                    );
+                }
+                Err(e) => {
+                    skipped.insert(format!("map/{stem}/bsp_{i}"), format!("{e:#}"));
+                }
+            }
+        }
+        if kept.is_empty() {
+            return Err(match skipped.into_values().next() {
+                Some(why) if bsp_count == 1 => anyhow!(why),
+                _ => anyhow!("no drawn level geometry"),
+            });
+        }
+        let mesh = merge(kept.iter().map(|(_, m)| m));
+        let frame = frame(&mesh);
+        let shadow = live_render::shadow_map(&mesh, &frame);
+        Ok(Level {
+            stem: stem.to_string(),
+            kind,
+            bsp_count,
+            bsps: kept,
+            machine_models: Vec::new(),
+            machines: Vec::new(),
+            mesh,
+            frame,
+            shadow,
+            skipped,
+        })
+    }
+
+    /// Adds placed machines: kept for `map.glb` and drawn in the views.
+    pub fn with_machines(mut self, models: Vec<MachineModel>, placed: Vec<PlacedMachine>) -> Level {
+        let world: Vec<LevelMesh> = placed
+            .iter()
+            .map(|m| LevelMesh {
+                primitives: place_mesh(&models[m.model].mesh, &m.at),
+                bounds: Bounds::EMPTY,
+                objects: Vec::new(),
+            })
+            .collect();
+        self.mesh.objects = merge(&world).primitives;
+        self.shadow = live_render::shadow_map(&self.mesh, &self.frame);
+        self.machine_models = models;
+        self.machines = placed;
+        self
+    }
+
+    /// The `map.glb` nodes: `structure` when the scenario has one BSP,
+    /// else `bsp_<index>` per BSP (scenario index) with `extras.bsp`; then,
+    /// when there are any, a `machines` node with a child per placed
+    /// machine.
+    pub fn nodes(&self) -> Vec<GlbNode<'_>> {
+        let mut nodes: Vec<GlbNode<'_>> = self
+            .bsps
+            .iter()
+            .map(|(i, m)| {
+                if self.bsp_count == 1 {
+                    GlbNode::mesh("structure", m)
+                } else {
+                    GlbNode {
+                        extras: Some(serde_json::json!({ "bsp": i })),
+                        ..GlbNode::mesh(format!("bsp_{i}"), m)
+                    }
+                }
+            })
+            .collect();
+        if !self.machines.is_empty() {
+            nodes.push(GlbNode {
+                name: "machines".into(),
+                mesh: None,
+                extras: None,
+                matrix: None,
+                children: self
+                    .machines
+                    .iter()
+                    .map(|m| {
+                        let model = &self.machine_models[m.model];
+                        GlbNode {
+                            matrix: Some(m.at.gltf_matrix()),
+                            ..GlbNode::mesh(model.stem.clone(), &model.mesh)
+                        }
+                        .named(m.name.clone())
+                    })
+                    .collect(),
+            });
+        }
+        nodes
+    }
+
+    pub fn glb(&self) -> Vec<u8> {
+        write_nodes(&self.nodes(), self.mesh.bounds, self.frame)
+    }
+}
+
+/// Meshes concatenated, a primitive per class.
+pub fn merge<'a>(meshes: impl IntoIterator<Item = &'a LevelMesh>) -> LevelMesh {
+    let mut by: BTreeMap<Class, Primitive> = BTreeMap::new();
+    let mut bounds = Bounds::EMPTY;
+    for m in meshes {
+        for k in [m.bounds.min, m.bounds.max] {
+            bounds.add(k);
+        }
+        for (c, p) in &m.primitives {
+            let out = by.entry(*c).or_default();
+            let base = out.positions.len() as u32;
+            out.positions.extend(&p.positions);
+            out.normals.extend(&p.normals);
+            out.indices.extend(p.indices.iter().map(|i| i + base));
+        }
+    }
+    LevelMesh {
+        primitives: by.into_iter().collect(),
+        bounds,
+        objects: Vec::new(),
+    }
+}
+
+/// Opens one map and builds its level, one mesh per scenario BSP. A BSP
+/// that cannot be read is left out (and listed in `Level::skipped`).
+fn load_level(disc: &Disc, m: &MapFile, kind: MapKind, stats: &mut MapStats) -> Result<Level> {
     let (mut map, mut files) = disc.open(m)?;
-    let mut tris = Vec::new();
-    for bsp_id in scenario_bsps(&mut map)? {
-        let (surfaces, named) = material_surfaces(&mut map, bsp_id);
-        stats.shaders_named += named;
-        stats.materials += surfaces.len();
-        let bsp = StructureRender::read(&mut map, bsp_id)
-            .with_context(|| format!("reading BSP {bsp_id}"))?;
-        let (t, failed) = bsp_triangles(&bsp, &mut Raw(&mut files), &surfaces);
-        stats.failed_sections += failed;
-        tris.extend(t);
+    let mut bsps = Vec::new();
+    for (i, bsp_id) in scenario_bsps(&mut map)?.into_iter().enumerate() {
+        let mesh = (|| {
+            if bsp_id == TagId::NULL {
+                return Err(anyhow!("no BSP tag"));
+            }
+            let (surfaces, named) = material_surfaces(&mut map, bsp_id);
+            stats.shaders_named += named;
+            stats.materials += surfaces.len();
+            let bsp = StructureRender::read(&mut map, bsp_id)
+                .with_context(|| format!("reading BSP {bsp_id}"))?;
+            let (t, failed) = bsp_triangles(&bsp, &mut Raw(&mut files), &surfaces);
+            stats.failed_sections += failed;
+            stats.source_triangles += t.len();
+            Ok(build_mesh(&t))
+        })();
+        bsps.push((i, mesh));
     }
-    stats.source_triangles = tris.len();
-    let mesh = build_mesh(&tris);
-    if mesh.primitives.is_empty() {
-        return Err(anyhow!("no drawn level geometry"));
+    let mut level = Level::build(m.name(), kind, bsps)?;
+    let mut skipped = BTreeMap::new();
+    match load_machines(&mut map, &mut files, m.name(), &mut skipped) {
+        Ok((models, placed)) => {
+            stats.machines = placed.len();
+            stats.machine_triangles = placed
+                .iter()
+                .map(|p| models[p.model].mesh.triangles())
+                .sum();
+            level = level.with_machines(models, placed);
+        }
+        Err(e) => {
+            skipped.insert(format!("map/{}/machines", m.name()), format!("{e:#}"));
+        }
     }
-    stats.triangles = mesh.triangles();
-    stats.vertices = mesh.vertices();
-    for (c, p) in &mesh.primitives {
+    level.skipped.extend(skipped);
+    stats.kind = Some(kind);
+    stats.scenario_bsps = level.bsp_count;
+    stats.bsps = level.bsps.len();
+    stats.triangles = level.mesh.triangles();
+    stats.vertices = level.mesh.vertices();
+    for (c, p) in &level.mesh.primitives {
         stats.classes.insert(c.name(), p.indices.len() / 3);
     }
-    let frame = frame(&mesh);
-    let shadow = live_render::shadow_map(&mesh, &frame);
-    Ok(Level {
-        stem: m.name().to_string(),
-        mesh,
-        frame,
-        shadow,
-    })
+    Ok(level)
 }
 
 /// The view entries and cameras for a level.
@@ -953,7 +1630,14 @@ pub fn cameras(mesh: &LevelMesh, level_frame: &Bounds) -> Vec<(ViewEntry, Camera
 /// (`map/<stem>/...`). Maps load in parallel, then every view of every map
 /// is drawn in parallel.
 pub fn extract(disc: &Disc, out: &Path) -> Extracted {
-    let maps: Vec<&MapFile> = disc.maps_of(CacheType::Multiplayer).collect();
+    let maps: Vec<(&MapFile, MapKind)> = disc
+        .maps_of(CacheType::Multiplayer)
+        .map(|m| (m, MapKind::Multiplayer))
+        .chain(
+            disc.maps_of(CacheType::Campaign)
+                .map(|m| (m, MapKind::Campaign)),
+        )
+        .collect();
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get());
     let mut result = Extracted::default();
 
@@ -964,15 +1648,15 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
     std::thread::scope(|s| {
         for _ in 0..workers.min(maps.len()) {
             s.spawn(|| {
-                while let Some(m) = maps.get(next.fetch_add(1, Ordering::Relaxed)) {
+                while let Some(&(m, kind)) = maps.get(next.fetch_add(1, Ordering::Relaxed)) {
                     let started = Instant::now();
                     let mut stats = MapStats {
                         stem: m.name().to_string(),
                         ..Default::default()
                     };
                     let key = format!("map/{}/geometry", m.name());
-                    let done = load_level(disc, m, &mut stats).and_then(|level| {
-                        let glb = write_glb(&level.mesh);
+                    let done = load_level(disc, m, kind, &mut stats).and_then(|level| {
+                        let glb = level.glb();
                         stats.glb_bytes = glb.len();
                         let dir = out.join("map").join(&level.stem);
                         fs::create_dir_all(dir.join("views"))?;
@@ -1044,9 +1728,12 @@ pub fn extract(disc: &Disc, out: &Path) -> Extracted {
     let times = times.into_inner().unwrap();
     for (i, ((level, mut stats), plan)) in loaded.into_iter().zip(plans).enumerate() {
         stats.render = times[i];
+        result.skipped.extend(level.skipped.clone());
         let mut entry = MapEntry {
             geometry: Some(format!("map/{}/map.glb", level.stem)),
             views: None,
+            kind: Some(level.kind),
+            bsps: Some(level.bsps.len()),
         };
         let views: Vec<ViewEntry> = plan
             .into_iter()

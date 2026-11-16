@@ -94,7 +94,7 @@ impl Appearance {
 }
 
 /// `POST /v1/games`: `GameStarted` data without `game_id` (or `host`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct NewGame {
     #[serde(default)]
     pub console: Option<String>,
@@ -110,6 +110,39 @@ pub struct NewGame {
     #[serde(default)]
     pub tick: Option<u64>,
     pub players: Vec<Player>,
+    /// `custom`, `matchmaking` or `campaign`; old senders leave it out and
+    /// [`NewGame::kind`] infers it from `mode`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Matchmaking only: the playlist (hopper) name and id the game came
+    /// from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
+    /// Campaign only: `easy`, `normal`, `heroic` or `legendary`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<String>,
+    /// Campaign only: the co-op partners are on other machines (Live co-op).
+    /// Local split-screen co-op is more than one player without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
+}
+
+/// The game kinds `NewGame.kind` may name.
+pub const GAME_KINDS: [&str; 3] = ["custom", "matchmaking", "campaign"];
+/// The campaign difficulties `NewGame.difficulty` may name, easiest first.
+pub const DIFFICULTIES: [&str; 4] = ["easy", "normal", "heroic", "legendary"];
+
+impl NewGame {
+    /// `kind`, or for old senders `campaign` when `mode` is, else `custom`.
+    pub fn kind(&self) -> &str {
+        match &self.kind {
+            Some(kind) => kind,
+            None if self.mode == "campaign" => "campaign",
+            None => "custom",
+        }
+    }
 }
 
 /// `GameStarted` data, written by the server: the request plus the id it
@@ -231,11 +264,70 @@ pub fn valid_model_id(s: &str) -> bool {
 }
 
 /// One telemetry frame (`tick` is the game tick, 30 per second).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Frame {
     pub game_id: String,
     pub tick: u64,
     pub players: Vec<FramePlayer>,
+    /// Vehicles with someone in them (players or AI). `FramePlayer.vehicle`
+    /// and `FrameActor.vehicle` hold the matching `id`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vehicles: Vec<FrameVehicle>,
+    /// AI-controlled bipeds, alive ones only, at most [`MAX_FRAME_ACTORS`]
+    /// (nearest to any player first).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actors: Vec<FrameActor>,
+}
+
+/// An occupied vehicle.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameVehicle {
+    /// The vehicle's object datum in hex, as `FramePlayer.vehicle`.
+    pub id: String,
+    /// The `vehi` tag file stem (`warthog`, `ghost`, `banshee`, ...), or
+    /// `unknown` when the name is not known.
+    pub kind: String,
+    pub pos: [f64; 3],
+    /// Unit length, game coordinates (z up).
+    pub forward: [f64; 3],
+    /// Unit length; banshees roll and pitch.
+    pub up: [f64; 3],
+}
+
+/// An AI-controlled biped.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct FrameActor {
+    /// The biped's object datum in hex.
+    pub id: String,
+    /// The directory of its biped tag (`grunt`, `jackal`, `elite`, `marine`,
+    /// ...), or `unknown` when the name is not known.
+    pub species: String,
+    pub pos: [f64; 3],
+    pub yaw: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aim: Option<[f64; 3]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weapon: Option<String>,
+    #[serde(default, skip_serializing_if = "no_shots")]
+    pub shots: Option<u32>,
+    /// `covenant`, `human`, `flood`, `sentinel`, `prophet`, `player`, ... or
+    /// the raw team index as text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle: Option<String>,
+}
+
+/// Most actors one frame may carry.
+pub const MAX_FRAME_ACTORS: usize = 128;
+/// Most vehicles one frame may carry.
+pub const MAX_FRAME_VEHICLES: usize = 64;
+
+/// Who fired, for carrying shots between frames.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shooter {
+    Player(u32),
+    Actor(String),
 }
 
 /// A map outline (`PUT /v1/maps/{map}/outline`).
@@ -264,8 +356,19 @@ pub struct GameSummary {
     pub game_id: String,
     pub map: String,
     pub mode: String,
+    /// Always set: the game's `kind`, or the one inferred from `mode`.
+    #[serde(default)]
+    pub kind: String,
     #[serde(default)]
     pub variant: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub playlist_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub difficulty: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub online: Option<bool>,
     pub team_play: bool,
     /// `live` or `ended`.
     pub state: String,
@@ -387,6 +490,39 @@ pub fn validate_new(game: &NewGame) -> Result<(), String> {
     if game.players.iter().any(|p| p.name.chars().count() > 32) {
         return Err("player names are at most 32 characters".into());
     }
+    if let Some(kind) = &game.kind {
+        if !GAME_KINDS.contains(&kind.as_str()) {
+            return Err("kind must be custom, matchmaking or campaign".into());
+        }
+        if (kind == "campaign") != (game.mode == "campaign") {
+            return Err("kind campaign goes with mode campaign, and only with it".into());
+        }
+    }
+    let kind = game.kind();
+    if (game.playlist.is_some() || game.playlist_id.is_some()) && kind != "matchmaking" {
+        return Err("playlist is for matchmaking games".into());
+    }
+    if let Some(name) = &game.playlist
+        && (name.is_empty() || name.chars().count() > 32 || name.chars().any(char::is_control))
+    {
+        return Err("playlist is 1 to 32 characters, no control characters".into());
+    }
+    if let Some(id) = &game.playlist_id
+        && !valid_id(id)
+    {
+        return Err("playlist_id must be [A-Za-z0-9_-]{1,64}".into());
+    }
+    if let Some(difficulty) = &game.difficulty {
+        if kind != "campaign" {
+            return Err("difficulty is for campaign games".into());
+        }
+        if !DIFFICULTIES.contains(&difficulty.as_str()) {
+            return Err("difficulty must be easy, normal, heroic or legendary".into());
+        }
+    }
+    if game.online.is_some() && kind != "campaign" {
+        return Err("online is for campaign games".into());
+    }
     Ok(())
 }
 
@@ -412,6 +548,45 @@ pub fn validate_frame(frame: &Frame) -> Result<(), String> {
         if p.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
             return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
         }
+        if p.vehicle.as_deref().is_some_and(|id| !valid_model_id(id)) {
+            return Err("vehicle ids must be [a-z0-9_]{1,32}".into());
+        }
+    }
+    if frame.vehicles.len() > MAX_FRAME_VEHICLES {
+        return Err(format!("at most {MAX_FRAME_VEHICLES} vehicles"));
+    }
+    if frame.actors.len() > MAX_FRAME_ACTORS {
+        return Err(format!("at most {MAX_FRAME_ACTORS} actors"));
+    }
+    let direction = |v: [f64; 3]| v.iter().all(|c| c.is_finite()) && length(v) >= 1e-6;
+    for v in &frame.vehicles {
+        if !valid_model_id(&v.id) || !valid_model_id(&v.kind) {
+            return Err("vehicle id and kind must be [a-z0-9_]{1,32}".into());
+        }
+        if !v.pos.iter().all(|c| c.is_finite()) || !direction(v.forward) || !direction(v.up) {
+            return Err("vehicle pos must be finite, forward and up finite and non-zero".into());
+        }
+    }
+    for a in &frame.actors {
+        let ids = [
+            Some(&a.id),
+            Some(&a.species),
+            a.weapon.as_ref(),
+            a.team.as_ref(),
+            a.vehicle.as_ref(),
+        ];
+        if ids.into_iter().flatten().any(|id| !valid_model_id(id)) {
+            return Err("actor ids must be [a-z0-9_]{1,32}".into());
+        }
+        if !a.pos.iter().all(|c| c.is_finite()) || !a.yaw.is_finite() {
+            return Err("actor positions must be finite".into());
+        }
+        if a.aim.is_some_and(|aim| !direction(aim)) {
+            return Err("aim must be a finite, non-zero vector".into());
+        }
+        if a.shots.is_some_and(|n| n > MAX_FRAME_SHOTS) {
+            return Err(format!("at most {MAX_FRAME_SHOTS} shots a frame"));
+        }
     }
     Ok(())
 }
@@ -421,23 +596,41 @@ fn length(v: [f64; 3]) -> f64 {
 }
 
 impl Frame {
-    /// Each player's shot count, for carrying into a later frame when this
-    /// one is not delivered.
-    pub fn shots(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
-        self.players
+    /// Each player's and actor's shot count, for carrying into a later
+    /// frame when this one is not delivered.
+    pub fn shots(&self) -> impl Iterator<Item = (Shooter, u32)> + '_ {
+        let players = self
+            .players
             .iter()
-            .filter_map(|p| Some((p.index, p.shots.filter(|n| *n > 0)?)))
+            .filter_map(|p| Some((Shooter::Player(p.index), p.shots.filter(|n| *n > 0)?)));
+        let actors = self
+            .actors
+            .iter()
+            .filter_map(|a| Some((Shooter::Actor(a.id.clone()), a.shots.filter(|n| *n > 0)?)));
+        players.chain(actors)
     }
 
     /// Adds shots from frames that were dropped (coalesced or throttled) to
     /// this one, so `shots` stays "since the previous delivered frame".
-    /// Players not in this frame lose theirs; counts cap at
+    /// Shooters not in this frame lose theirs; counts cap at
     /// [`MAX_FRAME_SHOTS`].
-    pub fn add_shots(&mut self, shots: impl IntoIterator<Item = (u32, u32)>) {
-        for (index, n) in shots {
-            if let Some(p) = self.players.iter_mut().find(|p| p.index == index) {
-                let total = p.shots.unwrap_or(0).saturating_add(n).min(MAX_FRAME_SHOTS);
-                p.shots = (total > 0).then_some(total);
+    pub fn add_shots(&mut self, shots: impl IntoIterator<Item = (Shooter, u32)>) {
+        fn add(slot: &mut Option<u32>, n: u32) {
+            let total = slot.unwrap_or(0).saturating_add(n).min(MAX_FRAME_SHOTS);
+            *slot = (total > 0).then_some(total);
+        }
+        for (shooter, n) in shots {
+            match shooter {
+                Shooter::Player(index) => {
+                    if let Some(p) = self.players.iter_mut().find(|p| p.index == index) {
+                        add(&mut p.shots, n);
+                    }
+                }
+                Shooter::Actor(id) => {
+                    if let Some(a) = self.actors.iter_mut().find(|a| a.id == id) {
+                        add(&mut a.shots, n);
+                    }
+                }
             }
         }
     }
@@ -446,6 +639,24 @@ impl Frame {
 /// Puts a validated frame in its stored form: every `aim` unit length and a
 /// zero `shots` absent.
 pub fn normalize_frame(frame: &mut Frame) {
+    fn unit(v: &mut [f64; 3]) {
+        let len = length(*v);
+        if len > 0.0 {
+            v.iter_mut().for_each(|c| *c /= len);
+        }
+    }
+    for v in &mut frame.vehicles {
+        unit(&mut v.forward);
+        unit(&mut v.up);
+    }
+    for a in &mut frame.actors {
+        if let Some(aim) = &mut a.aim {
+            unit(aim);
+        }
+        if a.shots == Some(0) {
+            a.shots = None;
+        }
+    }
     for p in &mut frame.players {
         if let Some(aim) = &mut p.aim {
             let len = length(*aim);
@@ -578,6 +789,9 @@ mod tests {
             .is_err()
         );
 
+        assert_eq!(g.kind(), "custom", "inferred for old senders");
+        assert_eq!(serde_json::to_value(&g).unwrap().get("kind"), None);
+
         let started = GameStarted {
             game_id: "g1".into(),
             host: "acct:x@h".into(),
@@ -625,6 +839,91 @@ mod tests {
         assert!(serde_json::to_value(&quiet).unwrap().get("shots").is_none());
     }
 
+    fn campaign_frame() -> Value {
+        json!({"game_id": "g1", "tick": 30,
+        "players": [{"index": 0, "alive": true, "pos": [1.0, 2.0, 3.0], "yaw": 0.5,
+                     "vehicle": "90040004"}],
+        "vehicles": [{"id": "90040004", "kind": "warthog", "pos": [1.0, 2.0, 3.0],
+                      "forward": [1.0, 0.0, 0.0], "up": [0.0, 0.0, 1.0]}],
+        "actors": [
+            {"id": "90070007", "species": "grunt", "pos": [5.0, 6.0, 7.0], "yaw": 1.0,
+             "aim": [0.0, 1.0, 0.0], "weapon": "plasma_pistol", "shots": 2,
+             "team": "covenant"},
+            {"id": "90080008", "species": "marine", "pos": [1.0, 2.0, 3.0], "yaw": 0.0,
+             "team": "human", "vehicle": "90040004"}
+        ]})
+    }
+
+    #[test]
+    fn frames_carry_vehicles_and_actors() {
+        let wire = campaign_frame();
+        let frame: Frame = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(frame.vehicles[0].kind, "warthog");
+        assert_eq!(frame.actors[0].team.as_deref(), Some("covenant"));
+        assert_eq!(frame.actors[1].vehicle.as_deref(), Some("90040004"));
+        assert_eq!(validate_frame(&frame), Ok(()));
+        assert_eq!(serde_json::to_value(&frame).unwrap(), wire);
+        // Old frames have neither, and they are not sent empty.
+        let old: Frame =
+            serde_json::from_value(json!({"game_id": "g1", "tick": 2, "players": []})).unwrap();
+        assert!(old.vehicles.is_empty() && old.actors.is_empty());
+        let sent = serde_json::to_value(&old).unwrap();
+        assert!(sent.get("vehicles").is_none() && sent.get("actors").is_none());
+    }
+
+    #[test]
+    fn vehicle_and_actor_validation() {
+        let good: Frame = serde_json::from_value(campaign_frame()).unwrap();
+        let mut bad = Vec::new();
+        let mut f = good.clone();
+        f.vehicles[0].up = [0.0; 3];
+        bad.push(f);
+        let mut f = good.clone();
+        f.vehicles[0].forward[0] = f64::NAN;
+        bad.push(f);
+        let mut f = good.clone();
+        f.vehicles[0].kind = "Warthog".into();
+        bad.push(f);
+        let mut f = good.clone();
+        f.vehicles[0].pos[2] = f64::INFINITY;
+        bad.push(f);
+        let mut f = good.clone();
+        f.vehicles = vec![good.vehicles[0].clone(); MAX_FRAME_VEHICLES + 1];
+        bad.push(f);
+        let mut f = good.clone();
+        f.actors[0].species = String::new();
+        bad.push(f);
+        let mut f = good.clone();
+        f.actors[0].team = Some("-1".into());
+        bad.push(f);
+        let mut f = good.clone();
+        f.actors[0].aim = Some([f64::NAN, 0.0, 0.0]);
+        bad.push(f);
+        let mut f = good.clone();
+        f.actors[0].yaw = f64::NAN;
+        bad.push(f);
+        let mut f = good.clone();
+        f.actors[0].shots = Some(MAX_FRAME_SHOTS + 1);
+        bad.push(f);
+        let mut f = good.clone();
+        f.actors = vec![good.actors[1].clone(); MAX_FRAME_ACTORS + 1];
+        bad.push(f);
+        let mut f = good.clone();
+        f.players[0].vehicle = Some("not hex!".into());
+        bad.push(f);
+        for f in bad {
+            assert!(validate_frame(&f).is_err(), "{f:?}");
+        }
+        let mut f = good;
+        f.vehicles[0].up = [0.0, 0.0, 2.0];
+        f.actors[0].aim = Some([0.0, 3.0, 4.0]);
+        f.actors[0].shots = Some(0);
+        normalize_frame(&mut f);
+        assert_eq!(f.vehicles[0].up, [0.0, 0.0, 1.0]);
+        assert_eq!(f.actors[0].aim, Some([0.0, 0.6, 0.8]));
+        assert_eq!(f.actors[0].shots, None);
+    }
+
     #[test]
     fn dropped_frames_carry_their_shots_forward() {
         let player = |index, shots| FramePlayer {
@@ -632,10 +931,18 @@ mod tests {
             shots,
             ..FramePlayer::default()
         };
+        let actor = |id: &str, shots| FrameActor {
+            id: id.into(),
+            species: "grunt".into(),
+            shots,
+            ..FrameActor::default()
+        };
         let dropped = Frame {
             game_id: "g1".into(),
             tick: 2,
             players: vec![player(0, Some(2)), player(1, None), player(3, Some(5))],
+            actors: vec![actor("9001000a", Some(4)), actor("9002000b", Some(1))],
+            ..Frame::default()
         };
         let mut next = Frame {
             game_id: "g1".into(),
@@ -645,15 +952,26 @@ mod tests {
                 player(1, None),
                 player(2, Some(MAX_FRAME_SHOTS)),
             ],
+            actors: vec![actor("9001000a", None)],
+            ..Frame::default()
         };
-        assert_eq!(dropped.shots().collect::<Vec<_>>(), [(0, 2), (3, 5)]);
+        assert_eq!(
+            dropped.shots().collect::<Vec<_>>(),
+            [
+                (Shooter::Player(0), 2),
+                (Shooter::Player(3), 5),
+                (Shooter::Actor("9001000a".into()), 4),
+                (Shooter::Actor("9002000b".into()), 1),
+            ]
+        );
         next.add_shots(dropped.shots().collect::<Vec<_>>());
-        next.add_shots([(2, 9)]);
+        next.add_shots([(Shooter::Player(2), 9)]);
         assert_eq!(
             next.players.iter().map(|p| p.shots).collect::<Vec<_>>(),
             [Some(3), None, Some(MAX_FRAME_SHOTS)],
             "player 3 left; counts cap"
         );
+        assert_eq!(next.actors[0].shots, Some(4), "actor 9002000b is gone");
     }
 
     #[test]
@@ -662,6 +980,7 @@ mod tests {
             game_id: "g1".into(),
             tick: 2,
             players: vec![p],
+            ..Frame::default()
         };
         let ok = FramePlayer {
             species: Some("spartan".into()),
@@ -728,5 +1047,98 @@ mod tests {
             serde_json::from_value::<Winner>(json!({"player": 3})).unwrap(),
             Winner::Player { player: 3 }
         );
+    }
+
+    #[test]
+    fn game_kinds_playlists_and_difficulty() {
+        let campaign = NewGame {
+            map: "03a_oldmombasa".into(),
+            mode: "campaign".into(),
+            ..NewGame::default()
+        };
+        let custom = NewGame {
+            map: "lockout".into(),
+            mode: "multiplayer".into(),
+            ..NewGame::default()
+        };
+        assert_eq!(campaign.kind(), "campaign");
+        let ok = [
+            NewGame {
+                kind: Some("campaign".into()),
+                difficulty: Some("legendary".into()),
+                online: Some(false),
+                ..campaign.clone()
+            },
+            NewGame {
+                difficulty: Some("easy".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                kind: Some("custom".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist: Some("Team Slayer".into()),
+                playlist_id: Some("3".into()),
+                ..custom.clone()
+            },
+        ];
+        for g in &ok {
+            assert_eq!(validate_new(g), Ok(()), "{g:?}");
+        }
+        let v = serde_json::to_value(&ok[3]).unwrap();
+        assert_eq!(v["kind"], "matchmaking");
+        assert_eq!(v["playlist"], "Team Slayer");
+        assert_eq!(serde_json::from_value::<NewGame>(v).unwrap(), ok[3]);
+
+        let bad = [
+            NewGame {
+                kind: Some("firefight".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("campaign".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("custom".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                playlist: Some("Rumble Pit".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist: Some("x".repeat(33)),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist: Some("Team\nSlayer".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                kind: Some("matchmaking".into()),
+                playlist_id: Some("a b".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                difficulty: Some("normal".into()),
+                ..custom.clone()
+            },
+            NewGame {
+                difficulty: Some("mythic".into()),
+                ..campaign.clone()
+            },
+            NewGame {
+                online: Some(true),
+                ..custom.clone()
+            },
+        ];
+        for g in &bad {
+            assert!(validate_new(g).is_err(), "{g:?}");
+        }
     }
 }

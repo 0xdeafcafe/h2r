@@ -222,20 +222,57 @@ fn glb_round_trips_with_converted_axes() {
             // Game up (+z) is glTF up (+y).
             assert_eq!(&nf[..3], &[0.0, 1.0, 0.0]);
         }
-        let (idx, ni) = accessor(&doc, &bin, prim["indices"].as_u64().unwrap());
+        let ia = prim["indices"].as_u64().unwrap();
+        assert_eq!(doc["accessors"][ia as usize]["componentType"], 5123, "u16");
+        let (idx, ni) = accessor(&doc, &bin, ia);
         assert_eq!(ni % 3, 0);
+        assert_eq!(idx.len(), 2 * ni);
         triangles += ni / 3;
         assert!(
-            idx.as_chunks::<4>()
+            idx.as_chunks::<2>()
                 .0
                 .iter()
-                .all(|b| (u32::from_le_bytes(*b) as usize) < n)
+                .all(|b| (u16::from_le_bytes(*b) as usize) < n)
         );
     }
     assert_eq!(triangles, 12);
     // Accessor min/max in glTF axes.
     let first = &doc["accessors"][0];
     assert!(first["min"].is_array() && first["max"].is_array());
+}
+
+#[test]
+fn big_primitives_split_so_indices_fit_in_u16() {
+    // A strip of triangles over more vertices than u16 can index.
+    let n = MAX_PRIMITIVE_VERTICES + 10;
+    let p = Primitive {
+        positions: (0..n).map(|i| [i as f32, (i % 2) as f32, 0.0]).collect(),
+        normals: vec![[0.0, 0.0, 1.0]; n],
+        indices: (0..n as u32 - 2).flat_map(|i| [i, i + 1, i + 2]).collect(),
+    };
+    let parts = split_u16(&p);
+    assert_eq!(parts.len(), 2);
+    let mut tris = Vec::new();
+    for q in &parts {
+        assert!(q.positions.len() <= MAX_PRIMITIVE_VERTICES);
+        for t in q.indices.as_chunks::<3>().0 {
+            tris.push(t.map(|i| q.positions[i as usize]));
+        }
+    }
+    let want: Vec<[[f32; 3]; 3]> = p
+        .indices
+        .as_chunks::<3>()
+        .0
+        .iter()
+        .map(|t| t.map(|i| p.positions[i as usize]))
+        .collect();
+    assert_eq!(tris, want, "every triangle once, in order");
+    // A small one is untouched.
+    let small = build_mesh(&cuboid([0.0; 3], [1.0; 3]));
+    assert_eq!(
+        split_u16(&small.primitives[0].1)[0].indices,
+        small.primitives[0].1.indices
+    );
 }
 
 #[test]
@@ -435,6 +472,108 @@ fn a_broken_section_is_counted_not_fatal() {
     let (tris, failed) = bsp_triangles(&bsp, &mut empty, &[]);
     assert!(tris.is_empty());
     assert_eq!(failed, 2, "the cluster and the definition");
+}
+
+// ---- Levels with several BSPs (campaign) ----------------------------------
+
+fn node_names(doc: &Value) -> Vec<&str> {
+    doc["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| n["name"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_multi_bsp_level_has_a_node_per_bsp_and_skips_a_broken_one() {
+    let (bsp, mut raw) = synthetic_bsp(2);
+    let (placed, failed) = bsp_triangles(&bsp, &mut raw, &[]);
+    assert_eq!(failed, 0);
+    let bsps = vec![
+        (0, Ok(build_mesh(&cuboid([0.0; 3], [10.0, 10.0, 3.0])))),
+        (1, Err(anyhow!("reading BSP 1: broken"))),
+        (2, Ok(build_mesh(&placed))),
+        (3, Ok(build_mesh(&[]))),
+    ];
+    let level = Level::build("lvl", MapKind::Campaign, bsps).unwrap();
+    assert_eq!(level.bsp_count, 4);
+    assert_eq!(
+        level.bsps.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
+        [0, 2]
+    );
+    assert_eq!(
+        level.skipped.keys().collect::<Vec<_>>(),
+        ["map/lvl/bsp_1", "map/lvl/bsp_3"]
+    );
+    assert!(level.skipped["map/lvl/bsp_1"].contains("broken"));
+    assert_eq!(level.mesh.triangles(), 12 + 2, "the views draw every BSP");
+    assert_eq!(level.mesh.bounds.max, [10.0, 22.0, 30.0]);
+
+    let glb = level.glb();
+    let parsed = gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    assert_eq!(parsed.meshes().count(), 2);
+    let (doc, _) = parse_glb(&glb);
+    assert_eq!(node_names(&doc), ["bsp_0", "bsp_2"]);
+    assert_eq!(doc["scenes"][0]["nodes"], serde_json::json!([0, 1]));
+    assert_eq!(doc["nodes"][1]["extras"]["bsp"], 2);
+    assert_eq!(doc["meshes"][1]["name"], "bsp_2");
+    assert!(doc["nodes"][0].get("matrix").is_none());
+    // One material per class, shared by both meshes.
+    let names: Vec<&str> = doc["materials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    let unique: HashSet<&str> = names.iter().copied().collect();
+    assert_eq!(names.len(), unique.len());
+    let triangles: u64 = doc["meshes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|m| m["primitives"].as_array().unwrap())
+        .map(|p| {
+            doc["accessors"][p["indices"].as_u64().unwrap() as usize]["count"]
+                .as_u64()
+                .unwrap()
+                / 3
+        })
+        .sum();
+    assert_eq!(triangles, 14);
+    assert_eq!(
+        doc["asset"]["extras"]["bounds"]["max"],
+        serde_json::json!([10.0, 22.0, 30.0])
+    );
+}
+
+#[test]
+fn a_single_bsp_keeps_the_structure_node_and_no_bsp_is_an_error() {
+    let one = Level::build(
+        "mp",
+        MapKind::Multiplayer,
+        vec![(0, Ok(build_mesh(&cuboid([0.0; 3], [1.0; 3]))))],
+    )
+    .unwrap();
+    let (doc, _) = parse_glb(&one.glb());
+    assert_eq!(node_names(&doc), ["structure"]);
+    assert!(doc["nodes"][0].get("extras").is_none());
+    assert_eq!(doc["meshes"][0]["name"], "structure");
+    // Same bytes as the single-mesh writer the multiplayer contract uses.
+    assert_eq!(one.glb(), write_glb(&one.mesh));
+
+    let none = Level::build(
+        "lvl",
+        MapKind::Campaign,
+        vec![(0, Err(anyhow!("a"))), (1, Ok(build_mesh(&[])))],
+    );
+    assert!(none.is_err());
+    let lone = Level::build(
+        "mp",
+        MapKind::Multiplayer,
+        vec![(0, Err(anyhow!("bad tag")))],
+    );
+    assert!(format!("{:#}", lone.err().unwrap()).contains("bad tag"));
 }
 
 // ---- Views ---------------------------------------------------------------
@@ -762,23 +901,45 @@ fn views_json_and_manifest_entries_follow_the_contract() {
         MapEntry {
             geometry: Some("map/stem/map.glb".into()),
             views: Some("map/stem/views.json".into()),
+            kind: Some(MapKind::Campaign),
+            bsps: Some(3),
         },
     );
     let j = serde_json::to_value(&manifest).unwrap();
     assert_eq!(
         j["maps"]["stem"],
-        serde_json::json!({"geometry": "map/stem/map.glb", "views": "map/stem/views.json"})
+        serde_json::json!({"geometry": "map/stem/map.glb", "views": "map/stem/views.json",
+                           "kind": "campaign", "bsps": 3})
     );
     let back: crate::live_art::Manifest = serde_json::from_value(j).unwrap();
     assert_eq!(back, manifest);
-    // An older manifest without maps still reads.
+    // An older manifest without maps still reads, and so does an entry
+    // without a kind.
     let old: crate::live_art::Manifest = serde_json::from_value(none).unwrap();
     assert!(old.maps.is_empty());
+    let older: MapEntry =
+        serde_json::from_value(serde_json::json!({"geometry": "map/s/map.glb"})).unwrap();
+    assert_eq!((older.kind, older.bsps), (None, None));
+    let mp: MapEntry = serde_json::from_value(serde_json::json!({"kind": "multiplayer"})).unwrap();
+    assert_eq!(mp.kind, Some(MapKind::Multiplayer));
 }
 
 // ---- The owner's disc ----------------------------------------------------
 
-const CHECK_DIR: &str = "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/geometry-check";
+/// Where the disc check writes: `$H2_GEOMETRY_CHECK`, else this default
+/// (outside the repository either way).
+const CHECK_DIR: &str = "/Users/afr/.config/rush/keep/h2recomp-b5afe71a/bed6c8dc/campaign-geometry";
+
+/// Every level the extractor reads, with its kind.
+fn levels(disc: &Disc) -> Vec<(&MapFile, MapKind)> {
+    disc.maps_of(CacheType::Multiplayer)
+        .map(|m| (m, MapKind::Multiplayer))
+        .chain(
+            disc.maps_of(CacheType::Campaign)
+                .map(|m| (m, MapKind::Campaign)),
+        )
+        .collect()
+}
 
 /// Box-downscale an RGBA image by an integer factor, over a dark backdrop.
 fn thumb(rgba: &[u8], w: usize, h: usize, f: usize, bg: [u8; 3]) -> (usize, usize, Vec<u8>) {
@@ -815,7 +976,8 @@ fn geometry_from_the_disc() {
     let disc_path = std::env::var("H2_DISC").unwrap_or_else(|_| {
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../../../../disc/halo2.iso").into()
     });
-    let check = Path::new(CHECK_DIR);
+    let keep = std::env::var("H2_GEOMETRY_CHECK").unwrap_or_else(|_| CHECK_DIR.into());
+    let check = Path::new(&keep);
     let out = check.join("art");
     let _ = fs::remove_dir_all(&out);
     fs::create_dir_all(&out).unwrap();
@@ -831,8 +993,13 @@ fn geometry_from_the_disc() {
     );
     for s in &x.stats {
         report += &format!(
-            "{:<16} src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
+            "{:<20} {:<11} bsps {}/{} machines {:>3} ({:>6} tris) src {:>7} tris {:>7} verts {:>7} glb {:>5} KiB failed {} shaders {}/{} load {:>6.0?} render {:>6.0?} {:?}\n",
             s.stem,
+            format!("{:?}", s.kind.unwrap()),
+            s.bsps,
+            s.scenario_bsps,
+            s.machines,
+            s.machine_triangles,
             s.source_triangles,
             s.triangles,
             s.vertices,
@@ -860,9 +1027,12 @@ fn geometry_from_the_disc() {
     // The shader names behind the classes, for review only (outside the
     // repository).
     let mut names = String::new();
-    for m in disc.maps_of(CacheType::Multiplayer) {
+    for (m, _) in levels(&disc) {
         let (mut map, _) = disc.open(m).unwrap();
         for bsp in scenario_bsps(&mut map).unwrap() {
+            if bsp == TagId::NULL {
+                continue;
+            }
             for (i, n) in material_shaders(&mut map, bsp)
                 .unwrap()
                 .unwrap_or_default()
@@ -886,14 +1056,27 @@ fn geometry_from_the_disc() {
         assert_eq!(views.views.len(), 5, "{stem}");
     }
 
+    // The machine levels' top and one iso view, for review.
+    let shots = check.join("machines");
+    let _ = fs::remove_dir_all(&shots);
+    fs::create_dir_all(&shots).unwrap();
+    for stem in ["zanzibar", "ascension"] {
+        for view in ["top", "iso-ne"] {
+            let from = out.join("map").join(stem).join(format!("views/{view}.png"));
+            if from.exists() {
+                fs::copy(&from, shots.join(format!("{stem}-{view}.png"))).unwrap();
+            }
+        }
+    }
+
     // The top view without the cutaway, side by side with it, at half
     // size, for review.
     let pairs = check.join("cutaway");
     let _ = fs::remove_dir_all(&pairs);
     fs::create_dir_all(&pairs).unwrap();
-    for m in disc.maps_of(CacheType::Multiplayer) {
+    for (m, kind) in levels(&disc) {
         let mut stats = MapStats::default();
-        let Ok(level) = load_level(&disc, m, &mut stats) else {
+        let Ok(level) = load_level(&disc, m, kind, &mut stats) else {
             continue;
         };
         let (entry, cam) = cameras(&level.mesh, &level.frame).remove(0);
@@ -955,4 +1138,204 @@ fn image_rgba(path: &Path) -> Result<Vec<u8>> {
     let info = reader.next_frame(&mut buf)?;
     buf.truncate(info.buffer_size());
     Ok(buf)
+}
+
+// ---- Machines --------------------------------------------------------------
+
+/// An invented placement record: palette index, position, yaw/pitch/roll,
+/// scale.
+fn placement_record(palette: i16, pos: [f32; 3], rot: [f32; 3], scale: f32) -> Vec<u8> {
+    let mut b = vec![0xaau8; 0x48];
+    b[0..2].copy_from_slice(&palette.to_le_bytes());
+    for (k, v) in pos.iter().chain(&rot).chain([&scale]).enumerate() {
+        put32(&mut b, 8 + 4 * k, v.to_bits());
+    }
+    b
+}
+
+fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+    a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5)
+}
+
+#[test]
+fn placements_read_yaw_then_pitch_then_roll_and_scale() {
+    use std::f32::consts::FRAC_PI_2 as Q;
+    let at =
+        Placement::parse(&placement_record(3, [10.0, 20.0, 30.0], [Q, 0.0, 0.0], 2.0)).unwrap();
+    assert_eq!(at.palette, 3);
+    assert_eq!(at.position, [10.0, 20.0, 30.0]);
+    // Yaw turns forward (+x) to +y, about +z.
+    assert!(close(at.axes()[0], [0.0, 1.0, 0.0]));
+    assert!(
+        close(at.transform([1.0, 0.0, 0.0]), [10.0, 22.0, 30.0]),
+        "scaled by 2"
+    );
+    assert!(
+        close(at.rotate([1.0, 0.0, 0.0]), [0.0, 1.0, 0.0]),
+        "directions unscaled"
+    );
+    // Pitch tips forward up.
+    let pitch = Placement {
+        rotation: [0.0, Q, 0.0],
+        ..at
+    };
+    assert!(close(pitch.axes()[0], [0.0, 0.0, 1.0]));
+    // Roll turns left (+y) up, about forward.
+    let roll = Placement {
+        rotation: [0.0, 0.0, Q],
+        ..at
+    };
+    assert!(close(roll.axes()[1], [0.0, 0.0, 1.0]));
+    assert!(close(roll.axes()[0], [1.0, 0.0, 0.0]));
+    // Order: roll, then pitch, then yaw (outermost). With yaw and pitch
+    // both 90°, up ends at −y; pitching after the yaw would leave it at −x.
+    let both = Placement {
+        rotation: [Q, Q, 0.0],
+        ..at
+    };
+    let [f, l, u] = both.axes();
+    assert!(close(f, [0.0, 0.0, 1.0]));
+    assert!(close(l, [-1.0, 0.0, 0.0]));
+    assert!(close(u, [0.0, -1.0, 0.0]));
+    // Scale zero (and below) means one.
+    let unit = Placement { scale: 0.0, ..at };
+    assert_eq!(unit.scale(), 1.0);
+    assert!(close(unit.transform([1.0, 0.0, 0.0]), [10.0, 21.0, 30.0]));
+    assert!(Placement::parse(&[0u8; 0x20]).is_none(), "short record");
+}
+
+#[test]
+fn the_glb_matrix_is_the_placement_in_gltf_axes() {
+    let at = Placement {
+        palette: 0,
+        position: [3.0, -4.0, 5.0],
+        rotation: [0.7, -0.3, 1.1],
+        scale: 1.5,
+    };
+    let m = at.gltf_matrix();
+    for p in [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [2.0, -3.0, 0.5],
+    ] {
+        let g = to_gltf(p);
+        let out: [f32; 3] =
+            std::array::from_fn(|r| m[r] * g[0] + m[4 + r] * g[1] + m[8 + r] * g[2] + m[12 + r]);
+        assert!(close(out, to_gltf(at.transform(p))), "{p:?}");
+    }
+    assert_eq!(&m[3..4], &[0.0]);
+    assert_eq!(m[15], 1.0);
+}
+
+#[test]
+fn machines_are_metal_shared_meshes_under_a_machines_node() {
+    // A model: a box (unnamed shader -> metal, even its top) and a glass
+    // pane.
+    let mut tris: Vec<Tri> = cuboid([-1.0, -1.0, 0.0], [1.0, 1.0, 2.0])
+        .into_iter()
+        .map(|t| Tri {
+            surface: machine_surface(None),
+            ..t
+        })
+        .collect();
+    tris.extend(flat(-1.0, -1.0, 1.0, 1.0, 3.0, true).map(|t| Tri {
+        surface: machine_surface(Some("objects\\thing\\shaders\\glass_pane")),
+        ..t
+    }));
+    let model = MachineModel {
+        stem: "wheel".into(),
+        mesh: object_mesh(&tris),
+    };
+    let classes: Vec<Class> = model.mesh.primitives.iter().map(|(c, _)| *c).collect();
+    assert_eq!(classes, [Class::Metal, Class::Glass]);
+    assert_eq!(model.mesh.triangles(), 14);
+
+    let ground = build_mesh(&flat(-20.0, -20.0, 20.0, 20.0, 0.0, true));
+    let level = Level::build("lvl", MapKind::Multiplayer, vec![(0, Ok(ground))]).unwrap();
+    let at = |i: usize, x: f32| PlacedMachine {
+        name: format!("wheel_{i}"),
+        model: 0,
+        at: Placement {
+            palette: 0,
+            position: [x, 0.0, 0.0],
+            rotation: [0.0; 3],
+            scale: 1.0,
+        },
+    };
+    let level = level.with_machines(vec![model], vec![at(0, -5.0), at(2, 5.0)]);
+    // The views draw both copies, placed; the level's counts and bounds are
+    // the BSP's.
+    let placed: usize = level
+        .mesh
+        .objects
+        .iter()
+        .map(|(_, p)| p.indices.len() / 3)
+        .sum();
+    assert_eq!(placed, 28);
+    assert_eq!(level.mesh.triangles(), 2);
+    assert_eq!(level.mesh.bounds.max[2], 0.0);
+    assert!(
+        level.mesh.objects[0]
+            .1
+            .positions
+            .iter()
+            .any(|p| close(*p, [6.0, 1.0, 2.0]))
+    );
+
+    let glb = level.glb();
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    assert_eq!(
+        node_names(&doc),
+        ["structure", "machines", "wheel_0", "wheel_2"]
+    );
+    assert_eq!(doc["scenes"][0]["nodes"], serde_json::json!([0, 1]));
+    let machines = &doc["nodes"][1];
+    assert!(machines.get("mesh").is_none());
+    assert_eq!(machines["children"], serde_json::json!([2, 3]));
+    assert!(
+        doc["nodes"][0].get("matrix").is_none(),
+        "the level is world space"
+    );
+    // One mesh for both placements, each with its own matrix.
+    assert_eq!(doc["meshes"].as_array().unwrap().len(), 2);
+    assert_eq!(doc["nodes"][2]["mesh"], doc["nodes"][3]["mesh"]);
+    let tx = |n: usize| doc["nodes"][n]["matrix"][12].as_f64().unwrap();
+    assert_eq!((tx(2), tx(3)), (-5.0, 5.0));
+    let names: Vec<&str> = doc["materials"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["floor", "metal", "glass"]);
+}
+
+#[test]
+fn the_cutaway_never_erases_a_machine() {
+    // A box hovering over the ground: its underside is a ceiling with a top
+    // above it and floor below, so as level geometry the top view cuts it.
+    let ground = flat(0.0, 0.0, 40.0, 40.0, 0.0, true).to_vec();
+    let hover = cuboid([10.0, 10.0, 2.0], [30.0, 30.0, 6.0]);
+    let (w, h) = (200usize, 200usize);
+    let top_at_centre = |mesh: &LevelMesh| {
+        let frame = mesh.bounds;
+        let clip = crate::live_render::clip_box(&frame);
+        let cam = fit_box(basis(None), &frame, w as f32, h as f32, 0.0);
+        let cut = crate::live_render::Cutaway::new(mesh, &cam, &clip, w, h);
+        let (d, _) = crate::live_render::gbuffer(mesh, &cam, &clip, Some(&cut), 1, w, h);
+        let q = apply(&cam.world_to_pixel(), [20.0, 20.0, 0.0]);
+        -d[q[1] as usize * w + q[0] as usize]
+    };
+    let as_level = build_mesh(&[ground.clone(), hover.clone()].concat());
+    assert_eq!(top_at_centre(&as_level), 0.0, "level geometry is cut");
+    let mut with_object = build_mesh(&[ground, hover.clone()].concat());
+    with_object.primitives = build_mesh(&flat(0.0, 0.0, 40.0, 40.0, 0.0, true)).primitives;
+    with_object.objects = object_mesh(&hover).primitives;
+    assert_eq!(
+        top_at_centre(&with_object),
+        6.0,
+        "the machine keeps its top"
+    );
 }

@@ -12,6 +12,7 @@ const catalog: Catalog = parseCatalog({
     { id: 10, name: "Alpha Yard", description: "" },
     { id: 20, name: "Beta Deck", description: "", key: "beta" },
     { id: "bad", name: "Broken" },
+    { id: 5, name: "Gamma Level", description: "", key: "01x_gamma", kind: "campaign" },
   ],
   playlists: [{ key: "solo", title: "Solo Pit", description: "Alone." }],
   variants: [{ name: "Team Fight", game_type: "slayer", engine: 2 }],
@@ -56,6 +57,12 @@ describe("the catalog", () => {
     expect(parseCatalog({ version: 2, maps: [] })).toBeNull();
     expect(parseCatalog(null)).toBeNull();
     expect(findMap(catalog, "ALPHA-yard")?.id).toBe(10);
+  });
+
+  test("campaign levels are kept apart from playlist maps", () => {
+    expect(catalog.maps.map((m) => m.id)).toEqual([10, 20]);
+    expect(catalog.campaign).toEqual([{ id: 5, name: "Gamma Level", description: "", key: "01x_gamma" }]);
+    expect(findMap(catalog, "Gamma Level")).toBeNull();
   });
 });
 
@@ -124,22 +131,5 @@ describe("presets", () => {
   test("clip cuts on characters within the byte budget", () => {
     expect(clip("Big Team Battle!", 15)).toBe("Big Team Battle");
     expect(clip("ééééééééé", 15)).toBe("ééééééé");
-  });
-});
-
-describe("catalog campaign levels", () => {
-  test("campaign entries are names only, never maps a playlist can name", () => {
-    const c = parseCatalog({
-      version: 1,
-      maps: [
-        { id: 10, name: "Alpha Yard", description: "", key: "alpha" },
-        { id: 10, name: "Long Dock", description: "First level", key: "01b_dock", kind: "campaign" },
-        { name: "No Key", kind: "campaign" },
-      ],
-      playlists: [], variants: [], skipped: {},
-    })!;
-    expect(c.maps.map((m) => m.name)).toEqual(["Alpha Yard"]);
-    expect(c.levels).toEqual([{ key: "01b_dock", name: "Long Dock", description: "First level" }]);
-    expect(findMap(c, "Long Dock")).toBeNull();
   });
 });

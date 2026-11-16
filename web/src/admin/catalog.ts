@@ -30,17 +30,14 @@ export interface CatalogVariant {
   engine: number;
 }
 
-/** A campaign level's friendly name, by map file stem. Not a map a
- *  playlist can name. */
-export interface CatalogLevel { key: string; name: string; description: string }
-
 export interface Catalog {
   version: number;
   source?: string;
-  /** Multiplayer maps only: what a playlist record can name. */
+  /** Multiplayer maps: the playlist builder's choices. */
   maps: CatalogMap[];
-  /** Campaign levels (`"kind": "campaign"` entries), for their names. */
-  levels: CatalogLevel[];
+  /** Campaign levels (`kind: "campaign"`): names and keys only, never
+   *  offered in playlists (their ids are map ids, not hopper records). */
+  campaign: CatalogMap[];
   playlists: CatalogPlaylist[];
   variants: CatalogVariant[];
   skipped: Record<string, string>;
@@ -75,17 +72,13 @@ export function parseCatalog(raw: unknown): Catalog | null {
   const list = (v: unknown): Record<string, unknown>[] =>
     Array.isArray(v) ? v.filter((e): e is Record<string, unknown> => !!e && typeof e === "object") : [];
   const maps: CatalogMap[] = [];
-  const levels: CatalogLevel[] = [];
+  const campaign: CatalogMap[] = [];
   for (const m of list(c.maps)) {
-    if (m.kind === "campaign") {
-      if (str(m.key) && str(m.name)) levels.push({ key: str(m.key), name: str(m.name), description: str(m.description) });
-      continue;
-    }
     const id = u32(m.id);
     if (id === null || !str(m.name)) continue;
     const entry: CatalogMap = { id, name: str(m.name), description: str(m.description) };
     if (str(m.key)) entry.key = str(m.key);
-    maps.push(entry);
+    (m.kind === "campaign" ? campaign : maps).push(entry);
   }
   const playlists = list(c.playlists)
     .filter((p) => str(p.key) && str(p.title))
@@ -99,7 +92,7 @@ export function parseCatalog(raw: unknown): Catalog | null {
   const skipped: Record<string, string> = {};
   if (c.skipped && typeof c.skipped === "object")
     for (const [k, v] of Object.entries(c.skipped)) if (typeof v === "string") skipped[k] = v;
-  return { version: CATALOG_VERSION, source: str(c.source) || undefined, maps, levels, playlists, variants, skipped };
+  return { version: CATALOG_VERSION, source: str(c.source) || undefined, maps, campaign, playlists, variants, skipped };
 }
 
 /** The server's catalog, or null when it has none or won't give it to this
