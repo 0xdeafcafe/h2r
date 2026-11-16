@@ -302,6 +302,12 @@ points! { ALL;
     SCREEN_SETUP_PANE @ 0x0023_047e: [fn(screen: ecx, arg: stack 0) ret 4]; "docs/ui.md";
     /// Set a text widget's string id (the widget in EDI).
     TEXT_SET @ 0x0025_3b1a: [fn(text: edi, id: stack 0) ret 4]; "docs/ui.md";
+    /// The pane builder's text step: make a text widget from a text block
+    /// definition (`0x2c` bytes), a child of the screen in EBX, and give it
+    /// the block's string; the widget in EAX, or 0.
+    PANE_TEXT_ADD @ 0x0022_f9bf: [fn(screen: ebx, index: stack 0, block: stack 1) -> eax ret 8]; "docs/ui.md";
+    /// The focused item's row handle of the list in EAX, or -1.
+    LIST_FOCUSED_ROW @ 0x0024_c447: [fn(list: eax) -> eax ret 0]; "docs/ui.md";
     /// An item widget's `index`-th text widget of kind 6 (thiscall on the
     /// item; the game pushes 0, the index, 6), or 0.
     ITEM_TEXT @ 0x0022_edb8: [fn(item: ecx, kind: stack 0, index: stack 1, zero: stack 2) -> eax ret 12]; "docs/playstation-audio.md";

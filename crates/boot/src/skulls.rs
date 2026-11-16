@@ -32,10 +32,10 @@
 //!   game options). For a campaign (`+0` = 1) the array is set to exactly
 //!   the skulls the signed-in profiles have on (their union), or
 //!   [`DEFAULT_PROFILE`]'s with no named profile, before the level loads.
-//! - **Menu**: [`screen_for`] gives the "Skulls" screen of a profile as
-//!   rows of the `ui` model, one per collected skull; [`toggle`] is a press.
-//!   `crate::skulls_menu` shows it from the difficulty screen's "Skulls"
-//!   row (docs/skulls.md "Menu").
+//! - **Menu**: [`ABOUT`] says what each skull does and where it is found;
+//!   [`state`] is a profile's Locked, On or Off for it and [`toggle`] is a
+//!   press. `crate::skulls_menu` lists all fifteen on its own screen, opened
+//!   from the difficulty screen's "Skulls" row (docs/skulls.md "Menu").
 //!
 //! The logic is over [`Gm`] and the store, so it is tested without a guest.
 
@@ -44,7 +44,6 @@ use std::sync::{Arc, Mutex};
 use settings::{Apply, Def, Kind, Menu, Scope, Store, Tier, Value};
 
 use crate::layout_glue::Gm;
-use crate::ui::{Row, Screen};
 
 /// How many skulls the engine has (the array's length and the bound both
 /// functions check).
@@ -62,7 +61,7 @@ pub const SLOT_SIGNED_IN: u32 = 0x10;
 /// `slot +` the profile's name, UTF-16, 32 units.
 pub const SLOT_NAME: u32 = 0xc1c;
 pub const NAME_UNITS: usize = 32;
-/// Our screen in the `ui` model.
+/// The menu screen the skull settings name.
 pub const SCREEN: &str = "skulls";
 /// The profile a pickup or a campaign start is kept under when no local
 /// slot has a named profile signed in (the game's slots read as empty or
@@ -112,6 +111,167 @@ pub static SKULLS: [Def; COUNT] = [
     skull("skulls.angry", "Angry", 13),
     skull("skulls.bandana", "Bandana", 14),
 ];
+
+/// What a skull is, for the menu: its name, what it does, where it is
+/// found and whether only a Legendary game places it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct About {
+    /// The game's own name (shared.map's English strings
+    /// `unlocked_extra_1` to `unlocked_extra_14`, the names the pickup's HUD
+    /// message shows); index 14 has none there, and Bandana is the
+    /// community's name for it.
+    pub name: &'static str,
+    /// What it does, in our own words.
+    pub effect: &'static str,
+    /// The campaign level whose script stocks it.
+    pub level: &'static str,
+    /// Only a Legendary game places it: the level script that creates the
+    /// skull (or the one that wakes that script) tests
+    /// `(difficulty_legendary)` first.
+    pub legendary: bool,
+    /// Anything else the script asks, for the description.
+    pub note: Option<&'static str>,
+}
+
+const fn about(
+    name: &'static str,
+    effect: &'static str,
+    level: &'static str,
+    legendary: bool,
+) -> About {
+    About {
+        name,
+        effect,
+        level,
+        legendary,
+        note: None,
+    }
+}
+
+/// [`SKULLS`]' skulls, in the same order. Levels and the Legendary test are
+/// read from each level's scripts (`h2 hs <map>`, docs/skulls.md "Where each
+/// skull is"): every skull but Blind is placed on Legendary only.
+pub static ABOUT: [About; COUNT] = [
+    about(
+        "Envy",
+        "Your flashlight is swapped for active camouflage.",
+        "Delta Halo",
+        true,
+    ),
+    about(
+        "Grunt Birthday Party",
+        "A headshot on a Grunt bursts into confetti and cheering.",
+        "The Arbiter",
+        true,
+    ),
+    about(
+        "Assassins",
+        "Every enemy wears active camouflage.",
+        "Regret",
+        true,
+    ),
+    about(
+        "Thunderstorm",
+        "Enemies are promoted to their higher ranks.",
+        "Cairo Station",
+        true,
+    ),
+    about(
+        "Famine",
+        "Weapons dropped by enemies hold far less ammo.",
+        "The Oracle",
+        true,
+    ),
+    About {
+        note: Some("solo only; one try in seven"),
+        ..about(
+            "I Would Have Been Your Daddy",
+            "Rare combat lines play far more often.",
+            "Outskirts",
+            true,
+        )
+    },
+    about(
+        "Blind",
+        "Your HUD and first-person weapon are hidden.",
+        "Outskirts",
+        false,
+    ),
+    about(
+        "Ghost",
+        "Enemies no longer flinch when you hit them.",
+        "Uprising",
+        true,
+    ),
+    about(
+        "Black Eye",
+        "Your shields recharge only when you land a melee hit.",
+        "The Great Journey",
+        true,
+    ),
+    about(
+        "Catch",
+        "Enemies throw grenades much more often.",
+        "Metropolis",
+        true,
+    ),
+    about(
+        "Sputnik",
+        "Explosions and melee hits send bodies and objects flying.",
+        "Quarantine Zone",
+        true,
+    ),
+    about(
+        "Iron",
+        "A death sends you back to the last checkpoint.",
+        "High Charity",
+        true,
+    ),
+    about(
+        "Mythic",
+        "Enemies have twice the health.",
+        "Sacred Icon",
+        true,
+    ),
+    about(
+        "Angry",
+        "Enemies fire their weapons faster.",
+        "Gravemind",
+        true,
+    ),
+    About {
+        note: Some("it appears once you keep Johnson waiting at the lift"),
+        ..about(
+            "Bandana",
+            "Unlimited ammo and grenades.",
+            "The Armory",
+            true,
+        )
+    },
+];
+
+/// A skull on a profile's menu.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// Not collected on this profile: shown, never toggled.
+    Locked,
+    /// Collected and turned on at the next campaign start.
+    On,
+    /// Collected and left off.
+    Off,
+}
+
+/// Skull `index`'s state on `profile`: Locked until collected.
+pub fn state(store: &Store, profile: &str, index: usize) -> Option<State> {
+    let def = SKULLS.get(index)?;
+    Some(
+        match store.profile_get(profile, def.key).and_then(Value::as_bool) {
+            None => State::Locked,
+            Some(true) => State::On,
+            Some(false) => State::Off,
+        },
+    )
+}
 
 /// The skull of a setting key.
 pub fn index_of(key: &str) -> Option<usize> {
@@ -261,17 +421,6 @@ pub fn selection(store: &Store, profiles: &[String]) -> Option<Set> {
         }
     }
     Some(on)
-}
-
-/// `profile`'s Skulls screen in the `ui` model: one row per collected skull,
-/// in engine order. No rows when it has none (the model then leaves out any
-/// row that opens it).
-pub fn screen_for(store: &Store, profile: &str) -> Screen {
-    collected(store, profile)
-        .into_iter()
-        .fold(Screen::new(SCREEN).title("Skulls"), |s, (i, _)| {
-            s.row(Row::setting(SKULLS[i].key))
-        })
 }
 
 /// A press on `profile`'s row of `key`: flip it. Only a collected skull can
@@ -804,23 +953,18 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_has_rows_for_collected_skulls_only() {
+    fn a_skull_is_locked_until_collected_and_only_then_toggles() {
         let s = store();
-        assert!(screen_for(&s, "Chief").rows().is_empty());
+        assert!((0..COUNT).all(|i| state(&s, "Chief", i) == Some(State::Locked)));
+        assert_eq!(state(&s, "Chief", COUNT), None);
         record_pickup(&s, &names(&["Chief"]), 12);
         record_pickup(&s, &names(&["Chief"]), 1);
-        let screen = screen_for(&s, "Chief");
-        assert_eq!(screen.title, "Skulls");
-        let keys: Vec<_> = screen.rows().iter().map(|r| r.kind.clone()).collect();
+        assert_eq!(state(&s, "Chief", 12), Some(State::On));
+        assert_eq!(state(&s, "Chief", 1), Some(State::On));
+        assert_eq!(state(&s, "Chief", 11), Some(State::Locked));
         assert_eq!(
-            keys,
-            [
-                crate::ui::RowKind::Setting("skulls.grunt_birthday_party"),
-                crate::ui::RowKind::Setting("skulls.mythic")
-            ]
-        );
-        assert!(
-            screen_for(&s, "Arbiter").rows().is_empty(),
+            state(&s, "Arbiter", 12),
+            Some(State::Locked),
             "another profile has none"
         );
         // A press flips a collected skull; an uncollected one is refused.
@@ -828,13 +972,65 @@ mod tests {
             toggle(&s, "Chief", "skulls.mythic").unwrap(),
             "skulls: Mythic off for Chief"
         );
+        assert_eq!(state(&s, "Chief", 12), Some(State::Off));
         assert_eq!(collected(&s, "Chief"), [(1, true), (12, false)]);
         assert!(toggle(&s, "Chief", "skulls.iron").is_err());
+        assert_eq!(state(&s, "Chief", 11), Some(State::Locked));
         assert!(toggle(&s, "Chief", "graphics.fov").is_err());
+    }
+
+    /// Where each skull is and whether it needs Legendary, as the level
+    /// scripts say (docs/skulls.md "Where each skull is").
+    #[test]
+    fn the_catalogue_follows_the_level_scripts() {
+        let names: Vec<_> = ABOUT.iter().map(|a| a.name).collect();
         assert_eq!(
-            screen_for(&s, "Chief").rows().len(),
-            2,
-            "off rows stay listed"
+            names,
+            [
+                "Envy",
+                "Grunt Birthday Party",
+                "Assassins",
+                "Thunderstorm",
+                "Famine",
+                "I Would Have Been Your Daddy",
+                "Blind",
+                "Ghost",
+                "Black Eye",
+                "Catch",
+                "Sputnik",
+                "Iron",
+                "Mythic",
+                "Angry",
+                "Bandana",
+            ]
+        );
+        // The settings' labels are the same names (IWHBYD shortened).
+        for (d, a) in SKULLS.iter().zip(&ABOUT) {
+            if d.label != "IWHBYD" {
+                assert_eq!(d.label, a.name);
+            }
+        }
+        let anywhere: Vec<_> = ABOUT
+            .iter()
+            .filter(|a| !a.legendary)
+            .map(|a| a.name)
+            .collect();
+        assert_eq!(
+            anywhere,
+            ["Blind"],
+            "only Outskirts' Blind skull has no Legendary test"
+        );
+        assert_eq!(ABOUT[7].level, "Uprising", "08a_deltacliffs stocks 7");
+        assert_eq!(
+            ABOUT[11].level, "High Charity",
+            "07b_forerunnership stocks 11"
+        );
+        assert_eq!(ABOUT[3].level, "Cairo Station");
+        assert_eq!(ABOUT[14].level, "The Armory");
+        assert!(
+            ABOUT
+                .iter()
+                .all(|a| !a.effect.is_empty() && a.effect.ends_with('.'))
         );
     }
 

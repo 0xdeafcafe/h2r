@@ -11,10 +11,12 @@
 //!   adopts the screen: our vtables, our row chosen in the press record, and
 //!   the rows trimmed to the model's.
 //! - **row text** (list slot 20): the model's label and value for the item's
-//!   row.
+//!   row, and, for a class with a description, the focused row's
+//!   description when the focus moved.
 //! - **row chosen** (the press record's function): the model's press.
 //! - **set up pane** (screen slot 18): the retail one, then our title on the
-//!   header text widget.
+//!   header text widget and, for a class with a description, its text widget
+//!   (made by the pane builder's own text step from a block of ours).
 //! - **loader slot** (screen slot 26): our loader, so the screen manager
 //!   re-opens it as ours.
 //!
@@ -66,6 +68,101 @@ pub trait Rows: Send + Sync {
     fn texts(&self, row: i16) -> Vec<(u32, u32)>;
     /// A press on row `row`.
     fn press(&self, row: i16) -> Chosen;
+    /// The description's string id for row `row`, for a class with a
+    /// description text ([`ListClass::description`]).
+    fn description(&self, _row: i16) -> Option<u32> {
+        None
+    }
+}
+
+/// A description text of ours on the screen: a text block definition
+/// (docs/ui.md "Text block") the pane builder's text step makes a widget
+/// from. Its string starts empty; row text sets the focused row's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TextBlock {
+    /// Top, left, bottom, right (Y up, origin at the screen centre).
+    pub rect: [i16; 4],
+    pub font: i16,
+    /// Red, green, blue.
+    pub colour: [f32; 3],
+}
+
+/// A text block definition's size.
+pub const TEXT_BLOCK_SIZE: u32 = 0x2c;
+
+impl TextBlock {
+    /// The block's bytes: left-justified (flags bit 0), the larger text
+    /// widget (bit 4 clear), no animation, the null string id.
+    pub fn bytes(&self) -> [u8; TEXT_BLOCK_SIZE as usize] {
+        let mut b = [0u8; TEXT_BLOCK_SIZE as usize];
+        b[0..4].copy_from_slice(&1u32.to_le_bytes());
+        b[0xa..0xc].copy_from_slice(&self.font.to_le_bytes());
+        for (i, c) in self.colour.iter().enumerate() {
+            b[0x10 + 4 * i..0x14 + 4 * i].copy_from_slice(&c.to_le_bytes());
+        }
+        for (i, v) in self.rect.iter().enumerate() {
+            b[0x1c + 2 * i..0x1e + 2 * i].copy_from_slice(&v.to_le_bytes());
+        }
+        b
+    }
+}
+
+/// The description widget of each open screen of a class and the row it
+/// shows, so row text sets it only when the focus moved.
+#[derive(Default)]
+pub struct Shown(Mutex<Vec<ShownEntry>>);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ShownEntry {
+    screen: u32,
+    widget: u32,
+    row: Option<i16>,
+}
+
+/// Screens remembered at once; a screen is set up again before it draws, so
+/// an older entry is never needed.
+const SHOWN_KEPT: usize = 8;
+
+impl Shown {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<ShownEntry>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Screen `screen`'s description widget is `widget`, showing nothing.
+    pub fn set_widget(&self, screen: u32, widget: u32) {
+        let mut v = self.lock();
+        v.retain(|e| e.screen != screen);
+        v.push(ShownEntry {
+            screen,
+            widget,
+            row: None,
+        });
+        if v.len() > SHOWN_KEPT {
+            v.remove(0);
+        }
+    }
+    /// Row `row` is focused on `screen`: its description widget when that is
+    /// another row than it shows (it shows `row` from now), else `None`.
+    pub fn focus(&self, screen: u32, row: Option<i16>) -> Option<u32> {
+        let mut v = self.lock();
+        let e = v.iter_mut().find(|e| e.screen == screen)?;
+        if e.row == row {
+            return None;
+        }
+        e.row = row;
+        Some(e.widget)
+    }
+}
+
+/// Where the description's text block goes in the class's table page.
+const DESCRIPTION_BLOCK: u32 = 0x100;
+
+/// Where a class's description block goes, the block, and where to keep
+/// each screen's widget.
+#[derive(Clone)]
+pub struct Description {
+    pub at: u32,
+    pub block: TextBlock,
+    pub shown: Arc<Shown>,
 }
 
 /// A screen of the `ui` model.
@@ -147,6 +244,7 @@ pub struct ListClass {
     /// The screen id an `Open` row names.
     pub screen: &'static str,
     rows: Arc<dyn Rows>,
+    description: Option<TextBlock>,
     loader: Arc<AtomicU32>,
 }
 
@@ -161,8 +259,14 @@ impl ListClass {
             id,
             screen,
             rows,
+            description: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
+    }
+    /// With a description text: the focused row's [`Rows::description`].
+    pub fn description(mut self, block: TextBlock) -> Self {
+        self.description = Some(block);
+        self
     }
     /// The loader address to open it with (`0x149f1e(mask, loader)`), once
     /// built; 0 before.
@@ -367,14 +471,41 @@ pub async fn open(cx: &Cx, chain: u32, screen: &str) -> Result<(), EntryError> {
     Ok(())
 }
 
-/// Row text (list slot 20): thiscall, the item and a word, `ret 8`. Each of
-/// the row's texts goes to the item's text widget of that index.
-pub async fn row_text(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> {
+/// Row text (list slot 20): thiscall on the list, the item and a word,
+/// `ret 8`. Each of the row's texts goes to the item's text widget of that
+/// index. With `shown` (a class with a description), the focused row's
+/// description goes to the screen's description widget when the focus has
+/// moved since the last draw.
+pub async fn row_text(
+    cx: Cx,
+    rows: Arc<dyn Rows>,
+    shown: Option<Arc<Shown>>,
+) -> Result<Ret, EntryError> {
     let item = cx.arg(0)?;
     let row = cx.read(|m| item_row(m, item))?;
     // The rows read the settings store; no guest memory is held here.
     let texts = row.map(|r| rows.texts(r)).unwrap_or_default();
     draw_texts(&cx, item, texts).await?;
+    if let Some(shown) = shown {
+        let list = cx.entry().ecx;
+        let screen = list.wrapping_sub(ui::LIST);
+        let focused = cx
+            .call(GuestCall::new(points::LIST_FOCUSED_ROW.base).eax(list))
+            .await?
+            .eax;
+        let focused = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
+        if let Some(widget) = shown.focus(screen, focused)
+            && let Some(id) = focused.and_then(|r| rows.description(r))
+        {
+            cx.call(
+                GuestCall::new(points::TEXT_SET.base)
+                    .edi(widget)
+                    .esi(screen)
+                    .args([id]),
+            )
+            .await?;
+        }
+    }
     Ok(Ret::new(0, 8))
 }
 
@@ -393,9 +524,16 @@ pub async fn row_chosen(cx: Cx, rows: Arc<dyn Rows>) -> Result<Ret, EntryError> 
     Ok(Ret::new(0, 8))
 }
 
-/// Screen slot 18: the retail pane set-up, then our title on the header.
-/// Thiscall, one argument, `ret 4`; its EAX is the retail one's.
-pub async fn setup_pane(cx: Cx, title: u32) -> Result<Ret, EntryError> {
+/// Screen slot 18: the retail pane set-up, then our title on the header,
+/// then our description text widget (written at `description.at`, made by
+/// the pane builder's text step). Thiscall, one argument, `ret 4`; its EAX
+/// is the retail one's.
+pub async fn setup_pane(
+    cx: Cx,
+    title: u32,
+    description: Option<Description>,
+    name: &'static str,
+) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let arg = cx.arg(0)?;
     let r = cx
@@ -412,6 +550,22 @@ pub async fn setup_pane(cx: Cx, title: u32) -> Result<Ret, EntryError> {
             .args([title]),
     )
     .await?;
+    if let Some(d) = description {
+        cx.write(|m| m.write(d.at, &d.block.bytes()))?;
+        let widget = cx
+            .call(
+                GuestCall::new(points::PANE_TEXT_ADD.base)
+                    .ebx(screen)
+                    .args([0, d.at]),
+            )
+            .await?
+            .eax;
+        if widget == 0 {
+            eprintln!("{name}: no description text (no memory for the widget)");
+        } else {
+            d.shown.set_widget(screen, widget);
+        }
+    }
     Ok(Ret::new(r.eax, 4))
 }
 
@@ -425,6 +579,7 @@ impl feature::Feature for ListClass {
         let title = rows.title();
         let tables = b.guest_alloc(0x1000, Permissions::RW)?;
         let name = self.id;
+        let shown = self.description.map(|_| Arc::new(Shown::default()));
         // The loader needs every address, so the entries are made first and
         // the loader reads them from a cell filled at the end.
         let cell = Arc::new(std::sync::OnceLock::<Entries>::new());
@@ -437,11 +592,11 @@ impl feature::Feature for ListClass {
             })?
         };
         let row_text_at = {
-            let rows = Arc::clone(&rows);
+            let (rows, shown) = (Arc::clone(&rows), shown.clone());
             let seen = Arc::new(AtomicBool::new(false));
             b.entry("row text", move |cx| -> EntryFuture {
                 once(&seen, &format!("{name}: row text"));
-                Box::pin(row_text(cx, Arc::clone(&rows)))
+                Box::pin(row_text(cx, Arc::clone(&rows), shown.clone()))
             })?
         };
         let row_chosen_at = {
@@ -450,8 +605,16 @@ impl feature::Feature for ListClass {
                 Box::pin(row_chosen(cx, Arc::clone(&rows)))
             })?
         };
+        let description = self
+            .description
+            .zip(shown)
+            .map(|(block, shown)| Description {
+                at: tables + DESCRIPTION_BLOCK,
+                block,
+                shown,
+            });
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
-            Box::pin(setup_pane(cx, title))
+            Box::pin(setup_pane(cx, title, description.clone(), name))
         })?;
         let loader_slot = b.entry("loader slot", move |_| -> EntryFuture {
             Box::pin(async move { Ok(Ret::new(loader, 0)) })
@@ -838,6 +1001,7 @@ mod tests {
                         model: Arc::clone(&m),
                         screen: video_screen::SCREEN,
                     }),
+                    None,
                 ))
             }
         };
@@ -904,7 +1068,7 @@ mod tests {
     fn the_pane_set_up_runs_the_retail_one_then_sets_our_title() {
         let mut g = guest();
         g.put_u32(STACK + 4, 0x55);
-        let f = |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x20ff_f077)) };
+        let f = |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x20ff_f077, None, "test")) };
         let regs = Regs {
             esp: STACK,
             ecx: SCREEN,
@@ -952,5 +1116,205 @@ mod tests {
         ] {
             assert!(text.contains(&format!("entry video-screen:{l}")), "{text}");
         }
+    }
+
+    /// Rows with a description each, for the description tests.
+    struct Described;
+    impl Rows for Described {
+        fn title(&self) -> u32 {
+            0x77
+        }
+        fn count(&self) -> usize {
+            15
+        }
+        fn texts(&self, row: i16) -> Vec<(u32, u32)> {
+            if (0..15).contains(&row) {
+                vec![(0, 0x100 + row as u32)]
+            } else {
+                Vec::new()
+            }
+        }
+        fn press(&self, _row: i16) -> Chosen {
+            Chosen::Nothing
+        }
+        fn description(&self, row: i16) -> Option<u32> {
+            (0..15).contains(&row).then_some(0x200 + row as u32)
+        }
+    }
+
+    #[test]
+    fn a_text_block_is_laid_out_as_the_pane_builder_reads_it() {
+        let b = TextBlock {
+            rect: [200, 80, 140, 310],
+            font: 1,
+            colour: [0.5, 0.25, 1.0],
+        }
+        .bytes();
+        assert_eq!(b.len(), 0x2c);
+        assert_eq!(
+            &b[0..4],
+            &1u32.to_le_bytes(),
+            "left justified, larger widget"
+        );
+        assert_eq!(&b[4..6], &[0, 0], "no animation");
+        assert_eq!(&b[0xa..0xc], &1i16.to_le_bytes());
+        assert_eq!(&b[0x10..0x14], &0.5f32.to_le_bytes());
+        assert_eq!(&b[0x18..0x1c], &1.0f32.to_le_bytes());
+        assert_eq!(&b[0x1c..0x1e], &200i16.to_le_bytes());
+        assert_eq!(&b[0x22..0x24], &310i16.to_le_bytes());
+        assert_eq!(
+            &b[0x24..0x28],
+            &[0; 4],
+            "the null string until a row is focused"
+        );
+    }
+
+    #[test]
+    fn the_description_is_set_only_when_the_focus_moves() {
+        let s = Shown::default();
+        assert_eq!(s.focus(SCREEN, Some(0)), None, "no widget yet");
+        s.set_widget(SCREEN, 0x9000);
+        assert_eq!(s.focus(SCREEN, Some(0)), Some(0x9000));
+        assert_eq!(s.focus(SCREEN, Some(0)), None);
+        assert_eq!(s.focus(SCREEN, Some(3)), Some(0x9000));
+        assert_eq!(s.focus(SCREEN, None), Some(0x9000));
+        assert_eq!(s.focus(SCREEN + 0x1000, Some(3)), None, "another screen");
+        // Set up again (a new screen at the same address): shows nothing.
+        s.set_widget(SCREEN, 0x9100);
+        assert_eq!(s.focus(SCREEN, Some(3)), Some(0x9100));
+        for i in 0..20 {
+            s.set_widget(0x10 * i, 1);
+        }
+        assert_eq!(s.lock().len(), SHOWN_KEPT);
+    }
+
+    /// The pane set-up with a description: retail set-up, title, the block
+    /// written, then the pane builder's text step on it.
+    #[test]
+    fn the_pane_set_up_adds_the_description_widget() {
+        let mut g = guest();
+        g.put_u32(STACK + 4, 0x55);
+        let block = TextBlock {
+            rect: [1, 2, 3, 4],
+            font: 1,
+            colour: [1.0; 3],
+        };
+        let shown = Arc::new(Shown::default());
+        let d = Description {
+            at: TABLES + DESCRIPTION_BLOCK,
+            block,
+            shown: Arc::clone(&shown),
+        };
+        let f =
+            move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: if c.target == points::PANE_TEXT_ADD.base {
+                0x9000
+            } else {
+                0
+            },
+            ..Default::default()
+        });
+        assert_eq!(
+            run.calls,
+            [
+                Gc::new(points::SCREEN_SETUP_PANE.base)
+                    .ecx(SCREEN)
+                    .args([0x55]),
+                Gc::new(points::TEXT_SET.base)
+                    .edi(SCREEN + 0x80)
+                    .esi(SCREEN)
+                    .args([0x77]),
+                Gc::new(points::PANE_TEXT_ADD.base)
+                    .ebx(SCREEN)
+                    .args([0, TABLES + DESCRIPTION_BLOCK]),
+            ]
+        );
+        assert_eq!(
+            run.guest.bytes(TABLES + DESCRIPTION_BLOCK, 0x2c).unwrap(),
+            block.bytes()
+        );
+        assert_eq!(shown.focus(SCREEN, Some(2)), Some(0x9000));
+    }
+
+    /// Row text on a class with a description: the row's texts, then the
+    /// focused row; its description only when the focus moved.
+    #[test]
+    fn row_text_sets_the_focused_rows_description_once() {
+        const ITEM: u32 = 0x0060_0000;
+        let list = SCREEN + ui::LIST;
+        let shown = Arc::new(Shown::default());
+        shown.set_widget(SCREEN, 0x9000);
+        let rows: Arc<dyn Rows> = Arc::new(Described);
+        let draw = |focused: u32| {
+            let mut g = guest();
+            g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
+            g.map(ITEM, Item::SIZE);
+            Item::at(ITEM)
+                .set_row(&mut g, Some(DatumHandle::new(0x8001, 9)))
+                .unwrap();
+            let f = {
+                let (s, shown) = (Arc::clone(&rows), Arc::clone(&shown));
+                move |cx| -> EntryFuture {
+                    Box::pin(row_text(cx, Arc::clone(&s), Some(Arc::clone(&shown))))
+                }
+            };
+            let regs = Regs {
+                esp: STACK,
+                ecx: list,
+                ..Default::default()
+            };
+            testing::run(&f, g, regs, move |c, _| Regs {
+                eax: match c.target {
+                    t if t == points::ITEM_TEXT.base => 0x7000,
+                    t if t == points::LIST_FOCUSED_ROW.base => focused,
+                    _ => 0,
+                },
+                ..Default::default()
+            })
+        };
+        let item_calls = [
+            Gc::new(points::ITEM_TEXT.base).ecx(ITEM).args([6, 0, 0]),
+            Gc::new(points::TEXT_SET.base)
+                .edi(0x7000)
+                .esi(ITEM)
+                .args([0x109]),
+            Gc::new(points::LIST_FOCUSED_ROW.base).eax(list),
+        ];
+        let run = draw(DatumHandle::new(0x8001, 3).raw());
+        assert_eq!(run.result, Ok(Ret::new(0, 8)));
+        let mut want = item_calls.to_vec();
+        want.push(
+            Gc::new(points::TEXT_SET.base)
+                .edi(0x9000)
+                .esi(SCREEN)
+                .args([0x203]),
+        );
+        assert_eq!(run.calls, want);
+        // The same focus on the next draw: no description call.
+        assert_eq!(draw(DatumHandle::new(0x8001, 3).raw()).calls, item_calls);
+        // Nothing focused: nothing set; focus back on row 3 sets it again.
+        assert_eq!(draw(u32::MAX).calls, item_calls);
+        assert_eq!(draw(DatumHandle::new(0x8001, 3).raw()).calls.len(), 4);
+    }
+
+    #[test]
+    fn a_class_with_a_description_places_the_same_entries() {
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        let class = ListClass::with_rows("described", "described", Arc::new(Described))
+            .description(TextBlock {
+                rect: [1, 2, 3, 4],
+                font: 1,
+                colour: [1.0; 3],
+            });
+        r.add(&class).unwrap();
+        let plan = r.build(&feature::Base).unwrap();
+        assert_eq!(plan.entries.len(), 5);
+        assert_eq!(class.loader(), plan.entries[0].addr);
     }
 }

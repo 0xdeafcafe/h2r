@@ -1,9 +1,10 @@
 # Campaign skulls per profile
 
-Status: built, not yet seen running: pickup tracking, per-profile storage
-and the campaign-start apply (`boot::skulls`, the settings store's
-per-profile values), and the in-game "Skulls" menu on the difficulty
-screen (`boot::skulls_menu`, "Menu" below).
+Status: built. Pickup tracking, per-profile storage and the
+campaign-start apply (`boot::skulls`, the settings store's per-profile
+values) and the "Skulls" row on the difficulty screen have been seen
+working. The Skulls screen that row opens (`boot::skulls_menu`, our own
+list class, "Menu" below) is built and not yet seen running.
 
 The ask: a skull a player has picked up is remembered on their profile, and
 when they start a new campaign (alone or in co-op) they can pick which of
@@ -41,30 +42,38 @@ sees every pickup.
 ### The skulls by index (confirmed unless noted)
 
 The index is what the scripts stock. The names are the game's own HUD names
-for each index (`unlocked_extra_1` ... in the shared strings, through the
-table at `0x445514`); index 14 has no entry there (the table holds 0).
+for each index (`unlocked_extra_1` ... `unlocked_extra_14` in shared.map's
+English strings, `h2 strings shared`, through the table at `0x445514`);
+index 14 has no entry there (the table holds 0). The level is the one whose
+script runs `(ice_cream_flavor_stock n)`; "Legendary" says whether that
+script, or the one that wakes it, tests `(difficulty_legendary)` (each map
+defines it as `(= (game_difficulty_get) legendary)`) before it creates the
+skull. All read with `h2 hs <map>` on the 14 campaign maps.
 
-| n | Name | Level whose script stocks it |
-|---|---|---|
-| 0 | Envy | Delta Halo |
-| 1 | Grunt Birthday Party | The Arbiter |
-| 2 | Assassins | Regret |
-| 3 | Thunderstorm | Cairo Station (Legendary only) |
-| 4 | Famine | The Oracle |
-| 5 | I Would Have Been Your Daddy | Outskirts |
-| 6 | Blind | Outskirts |
-| 7 | Ghost | High Charity |
-| 8 | Black Eye | The Great Journey |
-| 9 | Catch | Metropolis |
-| 10 | Sputnik | Quarantine Zone |
-| 11 | Iron | Uprising |
-| 12 | Mythic | Sacred Icon |
-| 13 | Angry | Gravemind |
-| 14 | Bandana (community name; no HUD name) | The Armory |
+| n | Name | Level (map) | Legendary only | The test |
+|---|---|---|---|---|
+| 0 | Envy | Delta Halo (`05a_deltaapproach`) | yes | the waker: `(if (difficulty_legendary) (wake arbiter_envy))` |
+| 1 | Grunt Birthday Party | The Arbiter (`04a_gasgiant`) | yes | the waker: `dogfight_firsttime_start` wakes `grunt_birthday_party` only on Legendary |
+| 2 | Assassins | Regret (`05b_deltatowers`) | yes | the waker wakes `assassin_ice_cream` only on Legendary |
+| 3 | Thunderstorm | Cairo Station (`01b_spacestation`) | yes | `ice_cream_check` sleeps forever unless Legendary |
+| 4 | Famine | The Oracle (`04b_floodlab`) | yes | the waker wakes `famine_flavor` only on Legendary |
+| 5 | I Would Have Been Your Daddy | Outskirts (`03a_oldmombasa`) | yes | `e5b_main` sleeps forever in co-op, off Legendary, or unless `(random_range 0 7)` is 0: solo only, one start in seven |
+| 6 | Blind | Outskirts (`03a_oldmombasa`) | **no** | `e1_key` is woken by `e1_main` from `mission_start` with no difficulty test: the one skull on any difficulty |
+| 7 | Ghost | Uprising (`08a_deltacliffs`) | yes | `e10_key` sleeps forever unless Legendary |
+| 8 | Black Eye | The Great Journey (`08b_deltacontrol`) | yes | `e11_key` sleeps forever unless Legendary |
+| 9 | Catch | Metropolis (`03b_newmombasa`) | yes | `e18_key` sleeps forever unless Legendary |
+| 10 | Sputnik | Quarantine Zone (`06b_floodzone`) | yes | the waker wakes `ice_cream_superman` only on Legendary |
+| 11 | Iron | High Charity (`07b_forerunnership`) | yes | `e10_key` sleeps forever unless Legendary |
+| 12 | Mythic | Sacred Icon (`06a_sentinelwalls`) | yes | the waker wakes `ice_cream_mythic` only on Legendary |
+| 13 | Angry | Gravemind (`07a_highcharity`) | yes | the waker wakes `ice_cream_angry` only on Legendary |
+| 14 | Bandana (community name; no HUD name) | The Armory (`01a_tutorial`) | yes | `icecream` waits for `(and mark_ice_cream (difficulty_legendary))`; `mark_ice_cream` is set once Johnson has asked the player onto the lift several times |
 
-Level names follow the map file names (`01b_spacestation` is Cairo
-Station and so on). Where community lists put a skull on another level,
-trust the index: it is what the engine stores.
+Level names are the shipped titles of the map files. An earlier version of
+this table had 7 and 11 the wrong way round (Ghost is Uprising's, Iron is
+High Charity's); the scripts above are the evidence. Where community lists
+put a skull on another level, trust the index: it is what the engine stores.
+The menu's copy of this is `skulls::ABOUT`; its effect lines are our own
+words, not the game's (the game has no description text for skulls).
 
 ### Who is playing
 
@@ -150,66 +159,88 @@ Each pickup:
   flags 0x.. name "..", ...); using profile "default"`.
 
 Each campaign start: `skulls: campaign start for <profiles>: <skulls on>`.
-Each time the difficulty list is built: `skulls menu: difficulty list for
-<profiles>: Skulls row shown` or `...: no Skulls row, no skull collected`.
+Each time the difficulty list is built: `skulls menu: difficulty list:
+Skulls row shown; <profile> <n> of 15 collected, ...`.
 The plan's own `feature: SKULL_STOCK before skulls:note the skull active`
 lines say each hook ran the first time.
 
 ## Menu (built)
 
-A "Skulls" row on the difficulty list, the screen both new
-campaign and co-op campaign reach before the level loads, opening a screen
-of the pressing player's profile's collected skulls, each On or Off.
+A "Skulls" row on the difficulty list, the screen both new campaign and
+co-op campaign reach before the level loads, opens the Skulls screen: all
+fifteen skulls in the engine's order, each with its name and the pressing
+player's profile's state (the game's own On or Off for a collected skull,
+our "Locked" for one not collected), and a description text with the
+focused skull's effect, its level and whether it needs Legendary. A on a
+collected skull flips it; A on a locked one does nothing (and says why on
+stderr). B returns to the difficulty list, the cursor still on Skulls.
 
-`skulls::screen_for(store, profile)` builds that screen as a `ui` model
-screen (one `Row::setting` per collected skull, none when nothing is
-collected) and `skulls::toggle` is a press. The guest side is
-`boot::skulls_menu` (logic) and its hooks in `layout_glue::install`:
+The parts:
+
+- **The model** (`boot::skulls`): `ABOUT` (name, effect in our words,
+  level, Legendary, a note; the table above), `state` (Locked until the
+  profile has a value for the skull, then On or Off) and `toggle` (refuses
+  a skull not collected). The store is the same per-profile `skulls.*`
+  values the pickup writes and the campaign start reads (`selection`), so
+  what the screen leaves is what the next start turns on.
+- **The screen** (`boot::skulls_menu::SkullsScreen`, its class in
+  `boot::skulls_screen`): `list_class::Rows` of fifteen rows for the profile the row's press set
+  (`open`). It is our own list class, feature `skulls-screen`
+  (`boot::list_class`, docs/feature-engine.md "UI step b"), as the Video
+  screen is: built by the Controls constructor (so the Controls tag's
+  layout: label on the left, value on the right), our vtable copies, our
+  row text, row chosen, pane set-up (title "Skulls") and loader. No retail
+  function is patched for it.
+- **Fifteen rows on six item widgets.** While the class's loader runs the
+  Controls constructor, the Controls list hook (`layout_glue`, the
+  `0x1a480d` hook) builds the array with `list_class::array_count`'s count
+  (15) instead of six; the list scrolls, as the difficulty list does over
+  our fifth row.
+- **The description** is a text widget of ours: at pane set-up the class
+  hands a text block of its own (font 1, the difficulty description's,
+  left-justified) to the pane builder's text step `0x22f9bf`, which makes
+  the widget a child of the screen (docs/ui.md "A text of our own on a
+  screen"). Row text asks the list for its focused row (`0x24c447`) and,
+  when that changed, sets the widget to the row's description. The
+  Controls list spans the screen's width, so the text sits right of the
+  title, above the list (`[222 80 150 312]`, top, left, bottom, right);
+  `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
+- **The row** (`boot::skulls_screen::DifficultyRow`, the count in `layout_glue`'s list hook, logic in `skulls_menu`):
 
 | Address | What | Confidence |
 |---|---|---|
 | `0x2bb3ed`, `0x2bb432` | the difficulty screen's two loaders (`+0x8b4` = 0 or 1), screen id 12 (`ui\screens\game_shell\difficulty\difficulty`), constructor `0x2bb477`, vtable `0x45c588` | confirmed |
-| `0x2c9c12` | its list handler constructor (at `screen + 0x614`): vtable `0x45d688`, datum array named `0x45d6e0` ("difficulty list") with 4 rows, row-chosen callback `0x2c9d38` | confirmed |
+| `0x2c9c12` | its list handler constructor (at `screen + 0x614`), called only by `0x2bb477`: vtable `0x45d688`, datum array named `0x45d6e0` ("difficulty list") with 4 rows, row-chosen callback `0x2c9d38` | confirmed |
 | `0x2c9ce7` | row text (vtable slot 20, `ret 8`, item at `[esp+4]`, row at `item+0x70`): rows 0 to 3 to the difficulty names, anything else the null id | confirmed |
 | `0x2c9d38` | row chosen (thiscall, row pointer at `[esp+8]`, `ret 8`): clamps the row to 0..3, stores the difficulty and starts the campaign | confirmed |
 | `0x230427` | pane for a row (`screen + 0x5f3` base + row, no bounds check here); the difficulty screen has one pane per row (4) | confirmed |
-| `0x230616` | the Campaign Options dialog loader (screen 218), list "campaign options list" (`0x45af70`), row kinds 0 to 4, row chosen `0x2b166d` | confirmed |
 
-What the hooks do:
-
-- **The row.** The list constructor hook (`0x1a480d`) grows "difficulty
-  list" from 4 to 5 when any signed-in named profile has a collected skull.
-  `0x2c9ce7` draws row 4 as "Skulls"; rows 0 to 3 go to the original. The
-  pane hook (`0x230427`) returns at once (`ret 4`) for row 4 on screen 12,
-  so the previous difficulty's pane stays up. The list has four item
-  widgets, so it scrolls to the fifth row (likely; unseen). The Live menu
-  instead adds a fifth item widget ([live-custom-games.md](live-custom-games.md)
-  §5), which this list could do the same way.
-- **The press.** `0x2c9d38` for row 4 never runs the original (it would
-  clamp the row to Legendary and start the campaign). The player is the
-  callback's `[[esp+4]]+4`, as for the Controls and Live menu lists; the
-  profile is the name on that player's slot, so in co-op each player sees
-  and edits their own skulls (with no named profile there, the `default`
-  profile's). With no skull collected, it logs why and stays put. Otherwise it opens the
-  Skulls screen: `0x149f1e(1 << player, loader)` with our list class's
-  loader. The row's text and press are `before` hooks on the plan
-  (`boot::skulls_screen::DifficultyRow`).
-- **The screen** is our own list class (`boot::skulls_screen`, docs/ui.md
-  "Screen and list classes"): built by the Controls constructor, then
-  pointed at our vtables. Its rows are the profile's skulls with the
-  skull's name and the game's own On or Off (`0x02000181`, `0x03000182`,
-  the vibration row's); a press flips it in the store (written at once);
-  its title is "Skulls". No retail function is patched for it. The
-  rows' array is built at the profile's skull count (the class's loader
-  sets it for the datum array hook while the constructor runs), and past
-  six the list scrolls, as the old path did. B returns to the difficulty
-  screen.
-- **Strings** are served by the locale hook from ids `0x21fff000` up (the
-  15 names and the title): `is_ours` reads only the middle
-  bytes, so they are clear of the `0x20fff0xx` ids the other rows and the
-  `ui` model take.
+  The list constructor hook grows "difficulty list" from 4 to 5 rows
+  whenever the menu is on (every skull is listed, collected or not, so
+  the row is useful with none). `0x2c9ce7` draws row 4 as "Skulls"; rows
+  0 to 3 go to the original. The pane hook returns at once (`ret 4`) for
+  row 4 on screen 12, so the previous difficulty's pane stays up. A press
+  on row 4 never runs the original (it would clamp the row to Legendary
+  and start the campaign): the player is the callback's `[[esp+4]]+4`;
+  the profile is the name on that player's slot (in co-op each player
+  sees and edits their own; with no named profile there, `default`'s);
+  the screen is opened with `0x149f1e(1 << player, loader)`. The row's
+  text and press are `before` hooks on the plan
+  (`boot::skulls_screen::DifficultyRow`); the Live menu instead adds a
+  fifth item widget ([live-custom-games.md](live-custom-games.md) §5),
+  which this list could do the same way.
+- **Strings** are served by the locale hook from ids `0x21fff000` up (15
+  names, the title, "Locked", 15 descriptions): `is_ours` reads only the
+  middle bytes, so they are clear of the `0x20fff0xx` ids the other rows
+  and the `ui` model take. The row names are the game's (IWHBYD shortened;
+  its description gives the full name).
 - `H2_NO_SKULLS_MENU=1` (or `H2_NO_SKULLS=1`) leaves the difficulty screen
-  as retail.
+  as retail; `H2_FEATURES=skulls-screen=off` keeps the row but opens
+  nothing (it says so).
+- **Co-op.** The difficulty list's handler is built only by the screen-12
+  constructor. The game also has `difficulty_lobby` (screen id 1, another
+  list); if co-op reaches that one, it has no Skulls row (not checked in
+  game).
 
 ## To check in game
 
@@ -235,30 +266,40 @@ What the hooks do:
 
 The menu:
 
-7. With a profile that has a skull: Campaign, a new campaign, the
-   difficulty screen lists Easy, Normal, Heroic, Legendary, Skulls (the
-   list scrolls by one to show it). stderr: `skulls menu: difficulty row
-   text active` (and `layouts: list 0x45d6e0 grows from 4 to 5 rows`
-   when it is the first list the run grows). Moving
-   onto Skulls keeps the Legendary pane up and does not crash.
-8. A on Skulls: a screen titled "Skulls" with one row per collected skull,
-   each On. stderr: `skulls menu: opening with N rows`, `skulls menu: list
-   built with N rows`, `skulls menu: header active`, `skulls menu: row text
-   active`. If the title still reads Controls, or the screen shows the
-   retail Controls rows, report the stderr lines.
-9. A on a row flips On/Off (stderr `skulls: Mythic off for <profile>`) and
-   `settings.toml` follows. The row's text should update at once (as the
-   Video screen's do); if it only updates on reopening, say so.
-10. More than six skulls: the list scrolls.
-11. B returns to the difficulty screen with the cursor on Skulls; choosing
-    a difficulty starts the campaign with exactly the On skulls (step 2's
+7. Campaign, a new campaign: the difficulty list is Easy, Normal, Heroic,
+   Legendary, Skulls (scrolled by one), with or without skulls collected.
+   stderr: `skulls menu: difficulty list: Skulls row shown; <profile> <n>
+   of 15 collected`, and `skulls menu: difficulty row text`. Moving
+   onto Skulls keeps the Legendary pane up.
+8. A on Skulls: a screen titled "Skulls". stderr, in order:
+   `skulls menu: difficulty row chosen`,
+   `skulls menu: opening the Skulls screen for <profile> (player 0)`,
+   `layouts: list 0x45d298 grows from 6 to 15 rows` (the Controls list;
+   only when no Controls list grew earlier in the run, since that line is
+   said once),
+   `skulls-screen: opened with 15 rows (our list class)`,
+   `skulls-screen: row text`. If it says fewer than 15 rows, the list
+   hook did not see the build: report it. If it says `no description
+   text`, the widget could not be made.
+9. The rows: Envy, Grunt Birthday Party, Assassins, Thunderstorm, Famine,
+   IWHBYD, Blind, Ghost, Black Eye, Catch, Sputnik, Iron, Mythic, Angry,
+   Bandana; each value On, Off or Locked. Scroll to the end and back: all
+   fifteen are reachable.
+10. The description: right of the title, the focused skull's effect and
+    "Found on <level>, Legendary only" (Blind: "any difficulty"); it
+    changes as the cursor moves. If it is missing, clipped or over the
+    list, say where it sits; `H2_SKULLS_TEXT_RECT=top,left,bottom,right`
+    (screen centre origin, Y up, 640x480) moves it to try another place.
+11. A on a collected skull flips On and Off at once (stderr `skulls: Mythic
+    off for <profile>`), and `settings.toml` follows. A on a locked skull
+    changes nothing: `skulls menu: Iron is locked for <profile>: not
+    collected yet (found on High Charity, Legendary only)`.
+12. B returns to the difficulty list with the cursor on Skulls; choosing a
+    difficulty starts the campaign with exactly the On skulls (step 2's
     stderr line).
-12. Co-op (two named profiles signed in): the row shows if either has a
-    skull; each player's A opens their own profile's skulls; a player with
-    none gets `skulls menu: <profile> has no skulls yet; not opened`. Also
-    check the co-op path reaches this same difficulty screen (if co-op uses
-    another screen, note its title: it would need its own row).
-13. A profile with no skulls: no Skulls row; the difficulty screen is
-    retail. Same with `H2_NO_SKULLS_MENU=1`.
+13. Co-op (two named profiles): each player's A opens their own profile's
+    screen (`... for <profile> (player 1)`). Note which difficulty screen
+    co-op shows; if it has no Skulls row, it is the lobby one (screen 1).
 14. Select Level's difficulty choice (the second loader, `0x2bb432`): the
     row appears there too.
+15. `H2_NO_SKULLS_MENU=1`: the difficulty screen is retail.

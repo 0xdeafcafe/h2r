@@ -596,14 +596,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     ctx.runtime().memory().set_u8(cpu.esi + video_screen::SETTINGS_THIRD_ITEM, 1)?;
                 }
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
-                // The difficulty list gets the Skulls row when a signed-in
-                // profile (else the default one) has a skull. The store is
-                // read with guest memory released.
+                // The difficulty list gets the Skulls row; the line says what
+                // each signed-in profile (else the default one) has. The
+                // store is read with guest memory released.
                 let n = if with_skulls && name == skulls_menu::DIFFICULTY_LIST_NAME {
                     let profiles = skulls::profiles_or_default(&*ctx.runtime().memory());
-                    let (row, line) = skulls_menu::difficulty_row(model.store(), &profiles);
-                    eprintln!("{line}");
-                    skulls_menu::difficulty_count(name, n, row)
+                    eprintln!("{}", skulls_menu::difficulty_line(model.store(), &profiles));
+                    skulls_menu::difficulty_count(name, n)
                 } else {
                     n
                 };
@@ -1059,14 +1058,18 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
     // The Skulls screen: our own list class, opened by its row on the
     // difficulty list (plan hooks).
     if with_skulls {
-        let store = Arc::clone(model.store());
-        match registry.add(&crate::skulls_screen::class(Arc::clone(&store))) {
+        let screen = Arc::new(skulls_menu::SkullsScreen::new(Arc::clone(model.store())));
+        let (block, line) = skulls_menu::description_block(std::env::var("H2_SKULLS_TEXT_RECT").ok().as_deref());
+        if let Some(line) = line {
+            eprintln!("{line}");
+        }
+        match registry.add(&crate::skulls_screen::class(Arc::clone(&screen), block)) {
             Ok(true) => {}
             Ok(false) => eprintln!("skulls menu: features.skulls-screen is off"),
             Err(e) => eprintln!("skulls menu: {e}"),
         }
         registry
-            .add(&crate::skulls_screen::DifficultyRow(store))
+            .add(&crate::skulls_screen::DifficultyRow(screen))
             .map_err(|e| anyhow::anyhow!("skulls row: {e}"))?;
     }
     // The Controls list's row text and row chosen, on the plan: our rows

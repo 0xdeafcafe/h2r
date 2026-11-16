@@ -1586,6 +1586,12 @@ Tests only; nothing here was run in the game.
   (`0x2b7563` → `0x2376c8` → `0x1474e8` → `0x22e34b`) never free
   `list + 0x70`, so nothing would own a replaced array's lifetime. Past
   six rows the list scrolls, as the old Skulls path did.
+- **A description text on a class** (`ListClass::description`,
+  `Rows::description`): at pane set-up the class hands a text block of its
+  own to the pane builder's text step (`0x22f9bf`), and row text sets that
+  widget to the focused row's description (`0x24c447`) when the focus
+  moves (docs/ui.md "A text of our own on a screen"). The Skulls screen
+  uses it for each skull's effect, level and Legendary requirement.
 - **Open rows** open another screen of ours: classes register their loader
   by screen id (`list_class::loader_of`), and a press on an `Open` row
   calls `0x149f1e(1 << player, loader)` for the pressing player.
