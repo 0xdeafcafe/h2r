@@ -124,6 +124,7 @@ fn first_pipeline_cost() {
             &VertexOptions {
                 provided_inputs: reads,
                 flat_shading: false,
+                ..Default::default()
             },
         )
         .unwrap();

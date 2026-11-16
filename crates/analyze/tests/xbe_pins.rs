@@ -92,3 +92,47 @@ fn crt_copy_routines_resolve_every_jump_table() {
         }
     }
 }
+
+#[test]
+#[ignore = "needs the retail default.xbe in $H2_XBE"]
+fn unguarded_tables_hold_every_case_the_boot_fallback_would_find() {
+    let Some(path) = std::env::var_os("H2_XBE") else {
+        panic!("set H2_XBE to a retail default.xbe");
+    };
+    let data = std::fs::read(path).unwrap();
+    let x = Xbe::parse(&data).unwrap();
+    let a = analyze::analyze(&x).unwrap();
+    // The boot fallback's run-time rule (`boot::fallback::unread_targets`):
+    // read an unguarded `jmp [r*4+table]` table skipping every null, to the
+    // first word outside the jump's section, up to 256 entries. Every
+    // target it finds must already be a case, so no generated switch
+    // stops on one. 0x336f0 and 0x33980 (runs of five and seven nulls)
+    // and 0x22dcd9 (eight) once read short.
+    let mut short = Vec::new();
+    for (&site, jt) in &a.jump_tables {
+        if jt.kind != analyze::SwitchKind::Unbounded {
+            continue;
+        }
+        let (Some(sec), Ok(code)) = (x.section_containing(site), x.bytes_at(site, 7)) else { continue };
+        if !(code[0] == 0xff && code[1] == 0x24 && code[2] & 0xc7 == 0x85) {
+            continue;
+        }
+        let table = u32::from_le_bytes(code[3..7].try_into().unwrap());
+        for k in 0..256u32 {
+            let Ok(v) = x.read_u32(table.wrapping_add(4 * k)) else { break };
+            if v == 0 {
+                continue;
+            }
+            if !sec.contains(v) {
+                break;
+            }
+            if !jt.targets.contains(&v) {
+                short.push((site, k, v));
+            }
+        }
+    }
+    assert_eq!(short, [], "(site, index, target) the analyzer has no case for");
+    for (site, count) in [(0x336f0u32, 43u32), (0x33980, 42)] {
+        assert!(a.jump_tables[&site].count >= count, "{site:#x}: {:?}", a.jump_tables[&site]);
+    }
+}

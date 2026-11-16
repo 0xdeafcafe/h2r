@@ -300,20 +300,32 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         }
         let res: Vec<(u32, u32, u32)> = resumes.iter().map(|r| (r.pc, r.owner, r.start)).collect();
         let conflicts = fallback::init(xbe_bytes, &rows, &res).map_err(anyhow::Error::msg)?;
-        if conflicts != 0 {
-            eprintln!("warning: {conflicts} selectors map to more than one handler");
+        // Each row is registered as itself, and the runtime hands its STOPs
+        // to the fallback (fallback.rs). H2_BOOT_TRAMPOLINE=1 routes every
+        // row through the old trampoline instead, for comparison: that also
+        // turns the module's direct calls off in effect, since a direct call
+        // needs the registered handler to be the callee's own.
+        let trampoline = std::env::var("H2_BOOT_TRAMPOLINE").as_deref() == Ok("1");
+        if trampoline {
+            eprintln!("boot: H2_BOOT_TRAMPOLINE=1: every entry through the fallback trampoline");
+            // The trampoline finds a resume's handler by selector alone.
+            if conflicts != 0 {
+                eprintln!("warning: {conflicts} selectors map to more than one handler");
+            }
         }
-        // Every row goes through the fallback trampoline (fallback.rs).
         rt.edit_dispatch(|d| -> Result<()> {
-            for &(addr, _) in &rows {
-                d.register_generated(addr, runtime::cpu::ABI_VERSION, fallback::trampoline)
-                    .with_context(|| format!("entry {addr:#x}"))?;
+            for &(addr, f) in &rows {
+                let f = if trampoline { fallback::trampoline as runtime::GuestFn } else { f };
+                d.register_generated(addr, runtime::cpu::ABI_VERSION, f).with_context(|| format!("entry {addr:#x}"))?;
             }
             for r in resumes {
                 d.register_resume(r.pc, r.owner, r.start).with_context(|| format!("resume {:#x}", r.pc))?;
             }
             Ok(())
         })?;
+        if !trampoline {
+            fallback::install_stop_recovery(rt);
+        }
         Ok(Module { _lib: lib, entries: entries.len(), resumes: resumes.len() })
     }
 }
@@ -854,9 +866,14 @@ pub fn run_hosted_with_live(
         eprintln!("{}", d3d_glue::describe(i));
     }
     if let Some(s) = fallback::STATS.lock().unwrap().as_ref() {
+        let first: Vec<String> = s.first.iter().map(|f| format!("{:#x}", f.0)).collect();
         eprintln!(
-            "fallback: {} entries, {} instructions interpreted, {} x87 emulated; x87 mix {:?}",
-            s.fallbacks, s.interpreted, s.x87, s.x87_mnemonics
+            "fallback: {} entries, {} instructions interpreted, {} x87 emulated; x87 mix {:?}; from [{}]",
+            s.fallbacks,
+            s.interpreted,
+            s.x87,
+            s.x87_mnemonics,
+            first.join(" ")
         );
     }
     {
@@ -1049,7 +1066,7 @@ mod tests {
         for name in ["H2_FASTMEM", "H2_X87_NATIVE", "H2_SSE_NATIVE", "H2_DIRECT_CALLS"] {
             assert_eq!(stamp.contains(&format!("\"-D{name}=1\"")), on(name), "{name}: {stamp}");
         }
-        let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT") });
+        let accounting = format!("{:?}", emit::Codegen { accounting: on("H2_ACCESS_COUNT"), reg_homes: on("H2_REG_HOMES") });
         assert!(stamp.contains(&format!("codegen {accounting} ")), "{stamp}");
     }
 
@@ -1057,9 +1074,11 @@ mod tests {
     fn passes_and_codegen_are_part_of_the_dylib_stamp() {
         let flags = vec!["-O1".to_owned()];
         let off = format!("{:?}", emit::Codegen::default());
-        let on = format!("{:?}", emit::Codegen { accounting: true });
+        let on = format!("{:?}", emit::Codegen { accounting: true, ..emit::Codegen::default() });
+        let all_locals = format!("{:?}", emit::Codegen { reg_homes: false, ..emit::Codegen::default() });
         let base = stamp_with(b"synthetic", "all", &off, &flags);
         assert_ne!(base, stamp_with(b"synthetic", "all", &on, &flags), "H2_ACCESS_COUNT");
+        assert_ne!(base, stamp_with(b"synthetic", "all", &all_locals, &flags), "H2_REG_HOMES");
         assert_ne!(base, stamp_with(b"synthetic", "none", &off, &flags), "H2_PASSES");
         assert_eq!(base, stamp_with(b"synthetic", "all", &off, &flags));
     }

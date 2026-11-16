@@ -318,12 +318,56 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_PERF_FLUSH() ((void)0)
 #endif
 
-#define H2_LOCALS()                                                             \
-    uint32_t eax = cpu->eax, ecx = cpu->ecx, edx = cpu->edx, ebx = cpu->ebx;    \
-    uint32_t esp = cpu->esp, ebp = cpu->ebp, esi = cpu->esi, edi = cpu->edi;    \
-    uint32_t fl = cpu->eflags, fd = cpu->eflags_defined;                       \
+/* Register homes. Bit i of `m` (0-7: EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI)
+ * set: the handler keeps that register in a local, loaded on entry, spilled
+ * at every exit and before a direct call or atomic, reloaded after them.
+ * Bit 8 is EFLAGS with its defined mask. A clear bit is a register the
+ * handler never writes: the emitter reads it from CpuAbi where it is used,
+ * and nothing here loads, spills or reloads it, so CpuAbi holds its value
+ * throughout (a direct callee or an atomic updates it there). The unused
+ * local is a constant 0 that clang deletes. */
+#define H2_HOME_ALL 0x1ffu
+#define H2_HOMED(bit) ((h2_home_ >> (bit)) & 1u)
+#define H2_LOCALS_HOMED(m)                                                      \
+    enum { h2_home_ = (m) };                                                    \
+    uint32_t eax = H2_HOMED(0) ? cpu->eax : 0u, ecx = H2_HOMED(1) ? cpu->ecx : 0u; \
+    uint32_t edx = H2_HOMED(2) ? cpu->edx : 0u, ebx = H2_HOMED(3) ? cpu->ebx : 0u; \
+    uint32_t esp = H2_HOMED(4) ? cpu->esp : 0u, ebp = H2_HOMED(5) ? cpu->ebp : 0u; \
+    uint32_t esi = H2_HOMED(6) ? cpu->esi : 0u, edi = H2_HOMED(7) ? cpu->edi : 0u; \
+    uint32_t fl = H2_HOMED(8) ? cpu->eflags : 0u;                               \
+    uint32_t fd = H2_HOMED(8) ? cpu->eflags_defined : 0u;                       \
     uint32_t x_kind, x_route, x_target, x_resume, x_event, x_eip;               \
     H2_PERF_LOCALS(); H2_FAST_LOCALS(); H2_ACC_LOCALS(); (void)ctx
+/* Every register in a local. */
+#define H2_LOCALS() H2_LOCALS_HOMED(H2_HOME_ALL)
+/* The homed locals to CpuAbi (EFLAGS with bit 1 set), and back. */
+#define H2_SPILL_HOMED_() H2_SPILL_DIRTY_(H2_HOME_ALL)
+/* Only the homed locals in `m` (a constant): the emitter has shown the
+ * others still equal their CpuAbi fields (emit::c::dirty_at_exits). */
+#define H2_SPILL_DIRTY_(m)                                                      \
+    do {                                                                        \
+        if (H2_HOMED(0) && ((m) & 0x1u)) cpu->eax = eax;                        \
+        if (H2_HOMED(1) && ((m) & 0x2u)) cpu->ecx = ecx;                        \
+        if (H2_HOMED(2) && ((m) & 0x4u)) cpu->edx = edx;                        \
+        if (H2_HOMED(3) && ((m) & 0x8u)) cpu->ebx = ebx;                        \
+        if (H2_HOMED(4) && ((m) & 0x10u)) cpu->esp = esp;                       \
+        if (H2_HOMED(5) && ((m) & 0x20u)) cpu->ebp = ebp;                       \
+        if (H2_HOMED(6) && ((m) & 0x40u)) cpu->esi = esi;                       \
+        if (H2_HOMED(7) && ((m) & 0x80u)) cpu->edi = edi;                       \
+        if (H2_HOMED(8) && ((m) & 0x100u)) { cpu->eflags = fl | 2u; cpu->eflags_defined = fd; } \
+    } while (0)
+#define H2_RELOAD_HOMED_()                                                      \
+    do {                                                                        \
+        if (H2_HOMED(0)) eax = cpu->eax;                                        \
+        if (H2_HOMED(1)) ecx = cpu->ecx;                                        \
+        if (H2_HOMED(2)) edx = cpu->edx;                                        \
+        if (H2_HOMED(3)) ebx = cpu->ebx;                                        \
+        if (H2_HOMED(4)) esp = cpu->esp;                                        \
+        if (H2_HOMED(5)) ebp = cpu->ebp;                                        \
+        if (H2_HOMED(6)) esi = cpu->esi;                                        \
+        if (H2_HOMED(7)) edi = cpu->edi;                                        \
+        if (H2_HOMED(8)) { fl = cpu->eflags; fd = cpu->eflags_defined; }        \
+    } while (0)
 
 /* The handler's hold on the inline RAM gate (h2fastmem.h): dropped before
  * anything that takes the context, and on every way out. Helpers that get
@@ -340,9 +384,10 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_EPILOGUE_BODY()                                                      \
     H2_GATE_DROP();                                                             \
     H2_ACC_FLUSH();                                                             \
-    cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;             \
-    cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;             \
-    cpu->eflags = fl | 2u; cpu->eflags_defined = fd; cpu->eip = x_eip;          \
+    H2_SPILL_HOMED_();                                                          \
+    /* Canonical EFLAGS has bit 1 set even where the handler left it alone. */ \
+    if (!H2_HOMED(8)) cpu->eflags |= 2u;                                        \
+    cpu->eip = x_eip;                                                           \
     H2_FAST_RELEASE(); H2_PERF_FLUSH();                                                         \
     return h2_transfer(x_kind, x_route, x_target, x_resume, x_event)
 
@@ -365,18 +410,31 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 #define H2_FAULT_EVENT(pc, st) H2_EXIT_(H2_FAULT, H2_ENTRY, 0u, 0u, (st), (pc))
 #define H2_STOP_EVENT(pc, st) H2_EXIT_(H2_STOP, H2_ENTRY, 0u, 0u, (st), (pc))
 
+/* A load or store: under the held gate the inline path (h2fastmem.h,
+ * H2_HELD_TRY) gives a host address and the access is one memcpy of the
+ * constant width, a single load or store. Otherwise one cold call
+ * (h2_access_cold) takes the gate and accesses, or drops it and runs the
+ * ordinary helper staged through b_; the handler adopts the gate state it
+ * leaves, and a failure leaves through the fault exit. Either way the
+ * handler's count (H2_ACC_ONE) takes the attempt. */
 #define H2_LD_(T, n, dst, pc, addr, restore)                                    \
     T dst = 0;                                                                  \
     do {                                                                        \
-        uint8_t b_[16];                                                         \
+        __label__ slow_, done_;                                                 \
         uint32_t a_ = (addr);                                                   \
+        uint8_t *p_, b_[16];                                                    \
+        H2FastPage pg_;                                                         \
+        H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
-        if (!h2_held_read(h2_mem_, &h2g_, a_, (n), b_)) {                       \
-            H2_GATE_DROP();                                                     \
-            uint32_t st_ = H2_MEM_READ_SLOW(ctx, (pc), a_, (n), 1u, b_);        \
-            if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                      \
-        }                                                                       \
+        H2_HELD_TRY(h2_mem_, h2g_, a_, (n), 0, pg_, p_, slow_);                 \
+        memcpy(&dst, p_, (n));                                                  \
+        goto done_;                                                             \
+    slow_:                                                                      \
+        c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 0, b_);     \
+        h2_gate_adopt(&h2g_, c_.held);                                          \
+        if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
         memcpy(&dst, b_, (n));                                                  \
+    done_:;                                                                     \
     } while (0)
 #define H2_LD(T, n, dst, pc, addr) H2_LD_(T, n, dst, pc, addr, (void)0)
 /* Inside a REP body: a fault reports the EFLAGS the instruction began with
@@ -399,34 +457,31 @@ static inline uint32_t h2i_sse_cvttps2pi(CpuAbi *cpu, uint64_t a, uint64_t *out)
 
 #define H2_ST_(T, n, pc, addr, value, restore)                                  \
     do {                                                                        \
+        __label__ slow_, done_;                                                 \
         T v_ = (value);                                                         \
-        uint8_t b_[16];                                                         \
         uint32_t a_ = (addr);                                                   \
-        memcpy(b_, &v_, (n));                                                   \
+        uint8_t *p_, b_[16];                                                    \
+        H2FastPage pg_;                                                         \
+        H2Cold c_;                                                              \
         H2_ACC_ONE();                                                           \
-        if (!h2_held_write(h2_mem_, &h2g_, a_, (n), b_)) {                      \
-            H2_GATE_DROP();                                                     \
-            uint32_t st_ = H2_MEM_WRITE_SLOW(ctx, (pc), a_, (n), 1u, b_);       \
-            if (st_) { restore; H2_FAULT_EVENT(pc, st_); }                      \
-        }                                                                       \
+        H2_HELD_TRY(h2_mem_, h2g_, a_, (n), 1, pg_, p_, slow_);                 \
+        memcpy(p_, &v_, (n));                                                   \
+        goto done_;                                                             \
+    slow_:                                                                      \
+        memcpy(b_, &v_, (n));                                                   \
+        c_ = h2_access_cold(ctx, h2_mem_, h2g_.held, (pc), a_, (n), 1, b_);     \
+        h2_gate_adopt(&h2g_, c_.held);                                          \
+        if (c_.status) { restore; H2_FAULT_EVENT(pc, c_.status); }              \
+    done_:;                                                                     \
     } while (0)
 #define H2_ST(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (void)0)
 #define H2_STR(T, n, pc, addr, value) H2_ST_(T, n, pc, addr, value, (fl = rfl_, fd = rfd_))
 
 /* Locals to CpuAbi and back, around a runtime call that reads and writes
- * architectural state (the atomics). */
-#define H2_SYNC_OUT()                                                           \
-    do {                                                                        \
-        cpu->eax = eax; cpu->ecx = ecx; cpu->edx = edx; cpu->ebx = ebx;         \
-        cpu->esp = esp; cpu->ebp = ebp; cpu->esi = esi; cpu->edi = edi;         \
-        cpu->eflags = fl | 2u; cpu->eflags_defined = fd;                        \
-    } while (0)
-#define H2_SYNC_IN()                                                            \
-    do {                                                                        \
-        eax = cpu->eax; ecx = cpu->ecx; edx = cpu->edx; ebx = cpu->ebx;         \
-        esp = cpu->esp; ebp = cpu->ebp; esi = cpu->esi; edi = cpu->edi;         \
-        fl = cpu->eflags; fd = cpu->eflags_defined;                             \
-    } while (0)
+ * architectural state (the atomics, a direct call). Only the homed
+ * registers: CpuAbi already holds the others. */
+#define H2_SYNC_OUT() H2_SPILL_HOMED_()
+#define H2_SYNC_IN() H2_RELOAD_HOMED_()
 
 /* One atomic instruction as one runtime operation: `call` is an
  * h2abi_v1_atomic_rmw/xchg/cmpxchg call writing the old memory value to
@@ -715,16 +770,17 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
 #if H2_DIRECT_CALLS
 /* `fn` is the target's handler; `label` the continuation's; `spill` and
  * `reload` the x87 pointer locals' (or (void)0); `refresh` re-reads the
- * accounting budget in a handler that polls (or (void)0). Lazy flags are
- * settled before it, as at any exit. */
-#define H2_DCALL(fn, target, cont, label, spill, reload, refresh)              \
+ * accounting budget in a handler that polls (or (void)0); `dirty` the
+ * homed locals that may differ from CpuAbi here, which are all it spills
+ * before the callee. Lazy flags are settled before it, as at any exit. */
+#define H2_DCALL(fn, target, cont, label, spill, reload, refresh, dirty)       \
     do {                                                                        \
         H2_GATE_DROP();                                                         \
         H2_ACC_FLUSH();                                                         \
         H2Direct *d_ = h2_direct(ctx);                                          \
         uint32_t my_ = 0;                                                       \
         if (h2_direct_enter(d_, ctx, h2_mem_, (fn), H2_CALL, (target), (cont), esp, &my_)) { \
-            H2_SYNC_OUT();                                                      \
+            H2_SPILL_DIRTY_(dirty);                                             \
             spill;                                                              \
             cpu->eip = (target);                                                \
             TransferAbi r_ = (fn)(cpu, ctx, (target));                          \
@@ -739,14 +795,14 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
         H2_XFER(H2_CALL, H2_ENTRY, (target), (cont));                           \
     } while (0)
 /* A tail jump: the target's transfer is this handler's. */
-#define H2_DJUMP(fn, target, spill)                                             \
+#define H2_DJUMP(fn, target, spill, dirty)                                      \
     do {                                                                        \
         H2_GATE_DROP();                                                         \
         H2_ACC_FLUSH();                                                         \
         H2Direct *d_ = h2_direct(ctx);                                          \
         uint32_t my_ = 0;                                                       \
         if (h2_direct_enter(d_, ctx, h2_mem_, (fn), H2_JUMP, (target), 0u, esp, &my_)) { \
-            H2_SYNC_OUT();                                                      \
+            H2_SPILL_DIRTY_(dirty);                                             \
             spill;                                                              \
             cpu->eip = (target);                                                \
             TransferAbi r_ = (fn)(cpu, ctx, (target));                          \
@@ -756,8 +812,8 @@ static inline int h2_direct_back(H2Direct *d, ExecCtxOpaque *ctx, H2FastAccess *
         H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u);                               \
     } while (0)
 #else
-#define H2_DCALL(fn, target, cont, label, spill, reload, refresh) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
-#define H2_DJUMP(fn, target, spill) H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u)
+#define H2_DCALL(fn, target, cont, label, spill, reload, refresh, dirty) H2_XFER(H2_CALL, H2_ENTRY, (target), (cont))
+#define H2_DJUMP(fn, target, spill, dirty) H2_XFER(H2_JUMP, H2_ENTRY, (target), 0u)
 #endif
 
 #endif

@@ -47,9 +47,25 @@ The emitted ordinary-access helpers try the shared atomic gate with acquire
 ordering. While holding it they validate the one-page span, access permission
 and physical RAM bounds, then copy bytes. Stores mark physical dirty bits.
 
-A handler keeps the gate across consecutive accesses (`H2Gate`,
-`h2_held_read`/`h2_held_write`) with the page table, RAM pointer and watch
-flag it read when it took it; none of them can change while it is held. It
+A handler keeps the gate across consecutive accesses (`H2Gate`) with the
+view (`H2MemoryData`: page table, RAM pointer, watch flag) it took it with;
+none of it can change while the gate is held. An emitted load or store is
+inline (`H2_HELD_TRY` in `h2fastmem.h`): with the gate held, a span inside
+one page, the page's permission bit and a physical page inside RAM, it is
+one load or store of the constant width at the host address, with no call.
+Anything else (gate not held, a crossing span, no permission, MMIO or
+unmapped) is one call to the cold `h2_access_cold`, which takes the gate
+and retries the inline check, or drops the gate and runs the ordinary
+helper exactly as before; a failure leaves through the fault exit. So the
+fast and helper paths decide nothing differently: fault order, whole-span
+failure, MMIO diagnostics and the access count are the helper's, and the
+count is one per attempted access either way (`H2_ACC_ONE`, or the inline
+charge without accounting). An inline store marks its physical page dirty
+when a watch is active, under the gate, before storing; a hold remembers
+the page it marked last (`H2Gate.dirtied`) and skips re-marking it, which
+is sound because Rust drains dirty bits only under the gate, and every
+new hold forgets it. These are generated-code internals: the runtime ABI
+and the `h2fastmem.h` layouts asserted in Rust are unchanged. It
 drops the gate (`H2_GATE_DROP`) before every call that takes the context
 (the slow accessors, atomics, `h2shim_v1_*`, `h2abi_v1_charge`), on every
 way out, after `H2_GATE_TRIPS` (32) loop headers or REP trips, and at the
@@ -103,15 +119,16 @@ anything open. The generated sequence for one instruction is:
 
 1. Compute the address and the operand in locals (pure code, no guest
    access).
-2. Store the eight GPR locals, EFLAGS (`| 2`) and the defined mask into
-   `CpuAbi` (`H2_SYNC_OUT`).
+2. Store the GPR locals, EFLAGS (`| 2`) and the defined mask into
+   `CpuAbi` (`H2_SYNC_OUT`). A register the handler never writes has no
+   local (its value is in `CpuAbi` already; §4, "Register homes").
 3. Call the accessor with `out` pointing at a local `uint32_t` (never into
    `CpuAbi`, and never into the context).
 4. If the status is non-zero, return `FAULT` with that event id and `eip` =
    the instruction's PC. The epilogue stores the locals again. They are
    unchanged, so `CpuAbi` is what it was before the call.
-5. Otherwise reload the GPRs, EFLAGS and the defined mask from `CpuAbi`
-   (`H2_SYNC_IN`). For `xadd` and `xchg`, merge `out` into the source
+5. Otherwise reload the GPR locals, EFLAGS and the defined mask from
+   `CpuAbi` (`H2_SYNC_IN`). For `xadd` and `xchg`, merge `out` into the source
    register's slice (AL..BH/AX../EAX..).
 
 What the runtime must provide (all of it is in `h2abi.h` and `atomic.rs`
@@ -375,10 +392,23 @@ Its semantics:
 
 - **Entry.** `handler(cpu, ctx, start)`, where `start` is an entry address
   (dispatch) or a resume's `start` (return). Any other selector gives a
-  `BAD_ENTRY` stop. The handler loads GPRs and EFLAGS from `CpuAbi` on
-  entry. It does not trust `cpu->eip`.
+  `BAD_ENTRY` stop. The handler loads the GPRs and EFLAGS it keeps in
+  locals from `CpuAbi` on entry. It does not trust `cpu->eip`.
+- **Register homes.** A handler keeps in C locals only the registers it
+  can write (`emit::c::homes`; EFLAGS with its defined mask counts as one,
+  kept when any flag is read or written). Every other register is read
+  from `CpuAbi` where it is used and is never loaded, spilled or reloaded:
+  nothing in the handler assigns it, so `CpuAbi` holds its value at every
+  point, including after a direct callee or an atomic changes it there. A
+  direct call or tail jump spills only the locals that may differ from
+  `CpuAbi` at that point (`emit::c::dirty_at_exits`: assigned since entry,
+  the last inline return or the last atomic). Nothing outside the handler
+  sees a difference: at every exit `CpuAbi` is as below. `H2_REG_HOMES=0`
+  (a `Codegen` choice, in the emit cache key and dylib stamp) keeps every
+  register in a local, the older shape.
 - **Exit.** Every return leaves `CpuAbi` canonical: GPRs, `eflags | 2`, the
-  defined mask, and `eip` = the transfer target (or the faulting PC).
+  defined mask, and `eip` = the transfer target (or the faulting PC). A
+  handler that never touches EFLAGS still sets its bit 1.
   Transfers:
   - `CALL`/`ENTRY`: target = callee, `resume_pc` = continuation. The return
     address is already pushed.
@@ -497,6 +527,11 @@ Its semantics:
     pending, the budget spent) is returned unchanged as this handler's own
     transfer, without running the epilogue: `CpuAbi` is as the callee left
     it. The runner then handles it at its safe point as it would have.
+    A host that recovers from STOPs therefore does it in the runner, not by
+    wrapping handlers: a wrapper is not the callee's handler, so no direct
+    call would match it. `Dispatch::set_stop_recovery` installs a hook the
+    runner calls with every STOP a generated handler returns, handed up or
+    not, and the CPU as it is; the runner carries on with what it returns.
   - After every invocation the runner takes back the budget left (direct
     transfers count in `transfers` and `direct_transfers`) and replays the
     frames still recorded into the shadow stack as it would have recorded

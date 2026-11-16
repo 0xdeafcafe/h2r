@@ -38,6 +38,7 @@ copies. Nothing is ever written next to it.
 | `H2_PERF=1` | compile generated loop/x87 counters; forwarded by boot's versioned bridge to contexts with profiling enabled. Part of the dylib stamp. |
 | `H2_X87_NATIVE=0` | **On by default.** Generated code runs range-guarded x87 arithmetic in native binary64 (see [x87-native.md](x87-native.md)). `0` keeps every operation on the `h2x87_v1_*` helpers. A compiler flag: part of the dylib stamp and object cache keys, so set it for both build and run. |
 | `H2_ACCESS_COUNT=0` | **On by default.** Generated handlers count their own guest memory accesses and charge them in bulk (see crates/emit/RUNTIME-CONTRACT.md). `0` lets the runtime charge each accessor call. It changes the C: part of the dylib stamp and the emit cache key, as `H2_PASSES` is. |
+| `H2_BOOT_TRAMPOLINE=1` | register every generated entry through the old fallback trampoline instead of as itself; this also keeps every direct call from matching, as before 2026-11. For A/B comparisons |
 | `H2_BOOT_VERBOSE=1` | log every boot note (stopgap decisions, fallback entries) |
 | `H2_BOOT_MAPS=1` | dump the guest memory map in the report |
 | `H2_BOOT_OLD_GLUE=1` | re-enable the boot glue master now covers (the wrappers for alertable/root -3, EEPROM, mutants, MEM_TOP_DOWN, allocation, full attributes and MEM_RELEASE; the 0x55810 voice-off) |
@@ -78,12 +79,16 @@ The run prints a report when it ends. It covers:
 - every thread's registers, EBP chain and raw stack;
 - the stopgaps that fired, with counts;
 - D3D, DSound and XAPI registration and their stats;
-- fallback interpreter stats;
+- fallback interpreter stats, and the first 40 addresses it began interpreting at;
 - the last 40 kernel calls, decoded.
 
 `kernel-trace.tsv` has one row per kernel import call: seq, thread, ordinal,
 name, return address, args, EAX and decoded detail (object names for the
 file APIs). Use it to diff against a golden trace (docs/golden-trace.md).
+It is written through a 64 KiB buffer, flushed at the end of the run
+(`trace::flush`), so a crash can lose the last rows; the report's last 40
+calls come from memory and are complete. (One `write` per call was 2.8% of
+an Old Mombasa frame in `h2 run`.)
 
 ## Hosted runs
 
@@ -114,14 +119,20 @@ fed on the guest's clock, the callback count, a monotonic clock and
     with `c/boot_bridge.c` into `libh2game.dylib`.
   - The bridge forwards the `h2abi_v1_*` imports to `runtime::ffi`. Rust
     implements the `h2shim_*` imports in `shim.rs`.
-  - `run` reads the module's `h2gen_module` tables. Every generated entry
-    and resume is registered with one trampoline (`fallback.rs`).
+  - `run` reads the module's `h2gen_module` tables and registers every
+    generated entry and resume as itself, so the module's direct calls
+    (`H2_DIRECT_CALLS`) match. Until 2026-11 every entry went through one
+    trampoline in `fallback.rs`, which no direct call matched, so every
+    call between generated functions went through the runner;
+    `H2_BOOT_TRAMPOLINE=1` still registers that way, for A/B runs.
 - **`fallback.rs`, `x87.rs`, `sse.rs`**: mixed-mode fallback. `x87.rs`
   does all of its arithmetic, conversions and transcendentals in
   crates/x87 (exact ext80).
   - When generated code stops on an instruction the lifter doesn't lower,
-    the trampoline interprets from there with `ir::interp`. This is a
-    stopgap like the others: `--no-stopgaps` turns it off.
+    the runtime hands the STOP to `fallback::recover`
+    (`Dispatch::set_stop_recovery`, also for a STOP handed up through
+    direct calls), which interprets from there with `ir::interp`. This is
+    a stopgap like the others: `--no-stopgaps` turns it off.
   - x87 and leftover SSE instructions go to the emulators in `x87.rs`
     (a decoder over crates/x87's `abi` state machine, so stack faults,
     source-format exceptions and condition codes match what generated
@@ -327,7 +338,7 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 
 | # | Blocker | Owner | What's needed | Size |
 | --- | --- | --- | --- | --- |
-| 1 | **Holed jump tables** | analyze | The CRT copy's masked and negative-index tables are read on master (bceed11), and the boot no longer scans them. Still unread: tables with zero entries for impossible cases, where an unguarded read stops (`0x336f0`, caller-checked index; `0x33980`; `0x22dcd9`: 65 site/target pairs on master). The boot reads these from the image and interprets from their targets meanwhile. | S |
+| 1 | ~~Holed jump tables~~ | analyze | Read on master. The CRT copy's masked and negative-index tables since bceed11; the unguarded enum tables with long runs of nulls (`0x336f0`, five in a row; `0x33980`, seven; `0x22dcd9`, eight) since an unguarded table placed after its own code may skip up to 16 nulls. `xbe_pins::unguarded_tables_hold_every_case_the_boot_fallback_would_find` pins that the boot's run-time read finds no target the analyzer lacks. | done |
 | 2 | **Fog and sky on the title scene** | gfx / shaders | Seen at fd3e969: brown fog over everything, no sky colour, 8x8 blocky patterns. Fog has followed the NV2A fog unit since 5c2845d and 5b8ec7d; recheck before working on it. | ? |
 | 3 | **RTT write-back replayed as a CPU write** | d3d (runtime_glue) or runtime | The barrier reports the device's own write-back pages at the next entry, so an unchanged render texture uploads again. Boot cannot tell them apart from other contexts' stores during the call: d3d's handlers would need to run under `Guest::writes_unreported(id)` for the boot's watch, or the device would need to report its own write ranges. Performance only. | S |
 | 4 | ~~x87 not lowered~~ | lift / emit | Lowered on master (e5c4251). The boot dylib links emit's x87 bridge, and the fallback's x87 runs on the same crates/x87 abi helpers. | done |
@@ -337,8 +348,8 @@ Sizes are S (under a day), M (a few days) or L (a week or more).
 | Stopgap | Where | Retire when |
 | --- | --- | --- |
 | Back/depth surface backing at CreateDevice, `0xf0000000` write-combined alias | d3d_glue.rs `install_back_surfaces`, lib.rs | d3d / runtime |
-| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1) |
-| Interpreting past instructions the lifter doesn't lower | fallback.rs `trampoline`, `set_recovery` | lift |
+| Fallback from unread jump-table targets (every unguarded switch's, read from the image), and the unknown-switch stops they cause, allowed only for the site's own table. On the retail image it finds nothing analyze has not read (blocker 1); kept as a net for a table read short | fallback.rs `unread_targets`, `install_unread_targets` | analyze (#1): remove |
+| Interpreting past instructions the lifter doesn't lower | fallback.rs `recover` (the runtime's stop-recovery hook), `set_recovery` | lift |
 | `--no-xapi` only: XMountUtilityDrive `0x2d5b77` | xapi_glue.rs | n/a |
 
 ### Retired

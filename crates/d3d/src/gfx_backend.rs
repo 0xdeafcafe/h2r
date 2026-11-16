@@ -185,6 +185,13 @@ pub struct BatchStats {
 }
 
 impl GfxBackend {
+    /// Where vertex formats are converted for program draws (default
+    /// [`gfx::repack::FetchMode::from_env`]: the vertex shader, unless
+    /// `H2_VERTEX_FETCH=cpu`). For tests and benches comparing the paths.
+    pub fn set_vertex_fetch(&mut self, mode: gfx::repack::FetchMode) {
+        self.renderer.set_vertex_fetch(mode);
+    }
+
     /// A backend on `ctx`, translating shaders with [`Nv2aShaders`].
     pub fn new(ctx: GfxContext) -> Self {
         let store = SurfaceStore::new(ctx.caps);
@@ -1012,6 +1019,7 @@ impl Backend for GfxBackend {
             scissor,
             indices,
             count_samples,
+            vertex_fetch: self.renderer.vertex_fetch(),
             ..Draw::new(
                 prepared.id,
                 &d.layout,

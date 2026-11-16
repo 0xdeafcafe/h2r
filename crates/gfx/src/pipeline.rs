@@ -61,10 +61,22 @@ impl PipelineKey {
         targets: TargetFormats,
         caps: Capabilities,
     ) -> Self {
-        let vertex_buffers = RepackPlan::new(layout, strides).buffer_layouts();
+        Self::from_plan(shader, &RepackPlan::new(layout, strides), primitive, rs, targets, caps)
+    }
+
+    /// [`new`](Self::new) with the vertex buffers of `plan` (which may use
+    /// [`FetchMode::Gpu`](crate::repack::FetchMode::Gpu)).
+    pub fn from_plan(
+        shader: ShaderId,
+        plan: &RepackPlan,
+        primitive: PrimitiveType,
+        rs: &RenderState,
+        targets: TargetFormats,
+        caps: Capabilities,
+    ) -> Self {
         Self {
             shader,
-            vertex_buffers,
+            vertex_buffers: plan.buffer_layouts(),
             primitive: translate::primitive_state(rs, primitive.host_topology(), caps),
             depth_stencil: translate::depth_stencil_state(rs, targets.depth, primitive.host_topology()),
             color_target: wgpu::ColorTargetState {

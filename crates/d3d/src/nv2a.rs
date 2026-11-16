@@ -77,7 +77,10 @@ use shaders::psh::{
     self, AlphaFunc, PixelOptions, PixelShaderDef, PixelUniforms, TextureDim, argb,
 };
 use shaders::vsh::encode::{Inst, Operand, program};
-use shaders::vsh::{self, IluOp, MacOp, OutReg, ProgramKind, VertexOptions, VertexUniforms};
+use gfx::repack::{AttributeFetch, FetchMode, RepackPlan};
+use shaders::vsh::{
+    self, IluOp, InputFetch, MacOp, OutReg, ProgramKind, VertexOptions, VertexUniforms,
+};
 
 use crate::backend::ResolvedDraw;
 use crate::pipeline_store::{PipelineStore, StoredPipeline, program_id};
@@ -839,7 +842,7 @@ impl ShaderProvider for Nv2aShaders {
             signs,
             border,
             bound,
-        } = program_key(&self.table, ctx.caps, draw, present)?;
+        } = program_key(&self.table, ctx.caps, draw, present, renderer.vertex_fetch())?;
         if def.explicit_final && def.final_inputs_abcd == 0 && def.final_inputs_efg == 0 {
             self.stats.zero_final_draws += 1;
         }
@@ -1059,7 +1062,9 @@ pub struct Nv2aJudge {
 
 impl crate::shader::ShaderJudge for Nv2aJudge {
     fn check(&mut self, draw: &ResolvedDraw, present: [bool; 4]) -> Result<(), String> {
-        let key = program_key(&self.table, self.caps, draw, present)?.key;
+        // Fetch only changes the entry point's parameter types, never
+        // whether translation succeeds.
+        let key = program_key(&self.table, self.caps, draw, present, FetchMode::Cpu)?.key;
         if let Some(v) = self.programs.get(&key) {
             return v.clone();
         }
@@ -1067,6 +1072,26 @@ impl crate::shader::ShaderJudge for Nv2aJudge {
         self.programs.insert(key, v.clone());
         v
     }
+}
+
+/// How the vertex program reads each register for `draw` in `mode`: the
+/// renderer's plan for the same layout and strides (`gfx::repack`), so the
+/// entry point's parameter types match the pipeline's vertex formats.
+pub(crate) fn input_fetch(draw: &ResolvedDraw, mode: FetchMode) -> [InputFetch; 16] {
+    if mode == FetchMode::Cpu {
+        return [InputFetch::Float; 16];
+    }
+    let strides: Vec<u32> = draw.streams.iter().map(|s| s.stride).collect();
+    RepackPlan::with_mode(&draw.layout, &strides, mode)
+        .input_fetch()
+        .map(|f| match f {
+            AttributeFetch::Float => InputFetch::Float,
+            AttributeFetch::Xyz1 => InputFetch::Xyz1,
+            AttributeFetch::Int => InputFetch::Int,
+            AttributeFetch::IntXyz1 => InputFetch::IntXyz1,
+            AttributeFetch::NormPacked3 => InputFetch::NormPacked3,
+            AttributeFetch::Float2H => InputFetch::Float2H,
+        })
 }
 
 /// What [`program_key`] derives from a draw.
@@ -1087,6 +1112,7 @@ fn program_key(
     caps: gfx::translate::Capabilities,
     draw: &ResolvedDraw,
     present: [bool; 4],
+    fetch: FetchMode,
 ) -> Result<KeyParts, String> {
         let render = &draw.state.render;
         let flat = render.shade_mode == ShadeMode::Flat;
@@ -1156,6 +1182,7 @@ fn program_key(
         let vertex_options = VertexOptions {
             provided_inputs: draw.shader.provided_inputs,
             flat_shading: flat,
+            input_fetch: input_fetch(draw, fetch),
         };
         let signs: [u8; 4] = std::array::from_fn(|n| color_sign(draw.extras[n].color_sign));
         let border: [u8; 4] = std::array::from_fn(|n| {

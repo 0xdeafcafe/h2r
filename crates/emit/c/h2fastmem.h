@@ -45,24 +45,36 @@ _Static_assert(offsetof(H2MemoryShared, data) == 8 && sizeof(H2FastAccess) == 32
 #define H2_GATE_WANTED 2u
 #define H2_GATE_RELEASE(m) ((void)__atomic_fetch_and(&(m)->gate, ~H2_GATE_HELD, __ATOMIC_RELEASE))
 /* A handler's hold on the gate, kept across consecutive inline accesses
- * (h2_held_read/h2_held_write) instead of taking and releasing it for each.
- * `held` is 0 when the gate is not held, else 1 plus the loop headers passed
- * since it was taken. `pages`, `ram` and `watching` are the view read when
- * it was taken: they cannot change while it is held, and are never used
- * after it is dropped. The handler drops it (H2_GATE_DROP in h2gen.h)
- * before every call that takes the context, on every way out, and after
- * H2_GATE_TRIPS loop headers or as soon as a Rust guard wants it. */
+ * (H2_HELD_TRY) instead of taking and releasing it for each. `held` is 0
+ * when the gate is not held, else 1 plus the loop headers passed since it
+ * was taken. `data` is the view it was taken with: its page table, RAM
+ * pointer and watch flag cannot change while the gate is held, and none of
+ * it is used after the gate is dropped. The handler drops it (H2_GATE_DROP
+ * in h2gen.h) before every call that takes the context, on every way out,
+ * and after H2_GATE_TRIPS loop headers or as soon as a Rust guard wants it.
+ * `dirtied` is the physical page this hold last marked dirty (all ones:
+ * none): Rust drains dirty bits only under the gate, so while it is held a
+ * mark stays set and another store to that page need not repeat it. */
 typedef struct H2Gate {
-    uint32_t held, watching;
-    const H2FastPage *pages;
-    uint8_t *ram;
+    uint32_t held, dirtied;
+    H2MemoryData *data;
 } H2Gate;
 #define H2_GATE_TRIPS 32u
+#define H2_ALWAYS_INLINE inline __attribute__((always_inline))
+#define H2_COLD __attribute__((noinline, cold, unused))
+#define H2_LIKELY(x) __builtin_expect(!!(x), 1)
+/* Out-of-line helpers called from every access site keep the caller's
+ * registers, so the site spills nothing around the call. */
+#if defined(__aarch64__) || defined(__x86_64__)
+#define H2_PRESERVE __attribute__((preserve_most))
+#else
+#define H2_PRESERVE
+#endif
 #if H2_FASTMEM
-#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {0, 0, NULL, NULL}; (void)h2_mem_
+#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = h2abi_v1_fast_acquire(ctx); H2Gate h2g_ = {0, UINT32_MAX, NULL}; (void)h2_mem_
 #define H2_FAST_RELEASE() h2abi_v1_fast_release(ctx)
 #else
-#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {0, 0, NULL, NULL}; (void)h2_mem_
+#define H2_FAST_LOCALS() H2FastAccess *h2_mem_ = NULL; H2Gate h2g_ = {0, UINT32_MAX, NULL}; (void)h2_mem_
 #define H2_FAST_RELEASE() ((void)0)
 #endif
 
@@ -166,72 +178,125 @@ static inline uint32_t h2_fast_movs(H2FastAccess *f, uint32_t src, uint32_t dst,
     return 0;
 #endif
 }
-/* ---- Accesses under a held gate. A zero return means nothing was accessed
- * and the caller must drop the gate (it may or may not be held) and take
- * the ordinary helper, which keeps fault order and whole-span failure. */
-static inline int h2_gate_take(H2FastAccess *f, H2Gate *g) {
+/* ---- Accesses under a held gate. ---------------------------------------
+ * Take a clear gate: the view, or NULL. Once per hold, not per access. */
+static inline H2MemoryData *h2_gate_try(H2FastAccess *f) {
     H2MemoryShared *m = f->memory;
     uint32_t unlocked = 0;
-    if (!__atomic_compare_exchange_n(&m->gate, &unlocked, H2_GATE_HELD, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return 0;
+    if (!__atomic_compare_exchange_n(&m->gate, &unlocked, H2_GATE_HELD, 0, __ATOMIC_ACQUIRE, __ATOMIC_RELAXED)) return NULL;
     if (!m->data.pages) {
         H2_GATE_RELEASE(m);
-        return 0;
+        return NULL;
     }
-    g->pages = m->data.pages;
-    g->ram = m->data.ram;
-    g->watching = m->data.watching;
-    g->held = 1u;
-    return 1;
+    return &m->data;
 }
-static inline void h2_gate_drop(H2FastAccess *f, H2Gate *g) {
+/* Record a hold taken with view `d`, or none (NULL; `data` is then stale
+ * and unused until the next hold). */
+static H2_ALWAYS_INLINE void h2_gate_adopt(H2Gate *g, H2MemoryData *d) {
+    if (d) {
+        g->data = d;
+        g->dirtied = UINT32_MAX;
+        g->held = 1u;
+    } else {
+        g->held = 0u;
+    }
+}
+static H2_ALWAYS_INLINE void h2_gate_drop(H2FastAccess *f, H2Gate *g) {
     if (g->held) {
         H2_GATE_RELEASE(f->memory);
         g->held = 0u;
     }
 }
 /* At a loop header: bound the hold, and give way to a waiting Rust guard. */
-static inline void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
+static H2_ALWAYS_INLINE void h2_gate_tick(H2FastAccess *f, H2Gate *g) {
     if (g->held && (++g->held > H2_GATE_TRIPS
                     || (__atomic_load_n(&f->memory->gate, __ATOMIC_RELAXED) & H2_GATE_WANTED))) {
         H2_GATE_RELEASE(f->memory);
         g->held = 0u;
     }
 }
-#define H2_FAST_WIDTH_OK(width) ((width) == 1u || (width) == 2u || (width) == 4u || (width) == 8u || (width) == 10u || (width) == 16u)
-static inline int h2_held_read(H2FastAccess *f, H2Gate *g, uint32_t addr, uint32_t width, uint8_t *out) {
-#if H2_FASTMEM
-    if (!f || !H2_FAST_WIDTH_OK(width) || (addr & 4095u) > 4096u - width) return 0;
-    if (!g->held && !h2_gate_take(f, g)) return 0;
-    H2FastPage page = g->pages[addr >> 12];
-    if (!(page.permissions & 1u) || page.physical > 0x04000000u - 4096u) return 0;
-    memcpy(out, g->ram + page.physical + (addr & 4095u), width);
-    H2_FAST_CHARGE(f);
-    return 1;
-#else
-    (void)f; (void)g; (void)addr; (void)width; (void)out;
-    return 0;
-#endif
+/* Mark a physical page dirty for the Rust side's drain. Out of line and
+ * register-preserving: a site calls it only for a store to a page other
+ * than the one this hold marked last (H2Gate.dirtied). */
+static H2_COLD H2_PRESERVE void h2_mark_dirty(H2MemoryData *d, uint32_t physical) {
+    uint32_t p = physical >> 12, word = p >> 6;
+    d->dirty[word] |= UINT64_C(1) << (p & 63u);
+    if (word < d->dirty_lo) d->dirty_lo = word;
+    if (word + 1u > d->dirty_hi) d->dirty_hi = word + 1u;
 }
-static inline int h2_held_write(H2FastAccess *f, H2Gate *g, uint32_t addr, uint32_t width, const uint8_t *value) {
+/* The inline access path. Under the held gate `g` (an H2Gate lvalue), may
+ * `width` bytes at guest `addr` be read (write = 0) or written (write = 1)
+ * in place? If so `host` is set to their host address (`page`, a caller's
+ * H2FastPage, is scratch); a writable span's physical page has been marked
+ * dirty when a watch is active, and the access charged (unless the handler
+ * counts accesses itself), all under the gate before the caller accesses,
+ * so no Rust guard sees one without the other. If not, it jumps to `slow` having accessed nothing: gate not
+ * held, a span crossing its page, no permission, or not RAM.
+ *
+ * Every emitted site passes a constant width, so the crossing test is one
+ * compare and the caller's memcpy of `width` bytes at `host` is a single
+ * load or store: no call, no libc, no staging buffer. The tests are plain
+ * branches to one label, and the caller declares every local in the
+ * label's scope, so that -O1 too compiles each test to a compare and a
+ * branch (a jump out of a scope with locals goes through a clang cleanup
+ * switch that -O1 leaves in). Everything else is one call to
+ * h2_access_cold. */
+#define H2_FAST_WIDTH_OK(width) ((width) == 1u || (width) == 2u || (width) == 4u || (width) == 8u || (width) == 10u || (width) == 16u)
 #if H2_FASTMEM
-    if (!f || !H2_FAST_WIDTH_OK(width) || (addr & 4095u) > 4096u - width) return 0;
-    if (!g->held && !h2_gate_take(f, g)) return 0;
-    H2FastPage page = g->pages[addr >> 12];
-    if (!(page.permissions & 2u) || page.physical > 0x04000000u - 4096u) return 0;
-    memcpy(g->ram + page.physical + (addr & 4095u), value, width);
-    if (g->watching) {
-        H2MemoryData *d = &f->memory->data;
-        uint32_t p = page.physical >> 12, word = p >> 6;
-        d->dirty[word] |= UINT64_C(1) << (p & 63u);
-        if (word < d->dirty_lo) d->dirty_lo = word;
-        if (word + 1u > d->dirty_hi) d->dirty_hi = word + 1u;
-    }
-    H2_FAST_CHARGE(f);
-    return 1;
+#define H2_HELD_TRY(f, g, addr, width, write, page, host, slow)                 \
+    do {                                                                        \
+        if (!(g).held || !H2_FAST_WIDTH_OK(width) || ((addr) & 4095u) > 4096u - (width)) goto slow; \
+        (page) = (g).data->pages[(addr) >> 12];                                 \
+        if (!((page).permissions & ((write) ? 2u : 1u))) goto slow;             \
+        if ((page).physical > 0x04000000u - 4096u) goto slow;                   \
+        if ((write) && (g).data->watching && (page).physical != (g).dirtied) {  \
+            h2_mark_dirty((g).data, (page).physical);                           \
+            (g).dirtied = (page).physical;                                      \
+        }                                                                       \
+        H2_FAST_CHARGE(f);                                                      \
+        (host) = (g).data->ram + (page).physical + ((addr) & 4095u);            \
+    } while (0)
 #else
-    (void)f; (void)g; (void)addr; (void)width; (void)value;
-    return 0;
+#define H2_HELD_TRY(f, g, addr, width, write, page, host, slow) do { (void)(g); (void)(page); (host) = NULL; goto slow; } while (0)
 #endif
+/* What h2_access_cold leaves: the view if the handler now holds the gate
+ * (else NULL), and the ordinary helper's status (0: it accessed). */
+typedef struct H2Cold {
+    H2MemoryData *held;
+    uint32_t status;
+} H2Cold;
+/* Everything an inline access does not do, out of line, cold and
+ * register-preserving, so a site is the inline path plus one call. With the
+ * gate held (`held`), the inline check failed: drop the gate and take the
+ * ordinary helper. Without it, take the gate and retry the inline check,
+ * accessing `buf` under it and keeping the gate for the accesses after;
+ * failing that, drop it and take the helper. The helper path is exactly
+ * the old slow access: fault order, MMIO and whole-span failure are the
+ * helper's. A load's bytes land in `buf`; a store's come from it. */
+static H2_COLD H2_PRESERVE H2Cold h2_access_cold(ExecCtxOpaque *ctx, H2FastAccess *f, uint32_t held, uint32_t pc,
+                                                 uint32_t addr, uint32_t width, int write, uint8_t *buf) {
+    H2Cold r = {NULL, 0u};
+#if H2_FASTMEM
+    if (f && held) {
+        H2_GATE_RELEASE(f->memory);
+    } else if (f) {
+        H2Gate g = {0, UINT32_MAX, NULL};
+        h2_gate_adopt(&g, h2_gate_try(f));
+        H2FastPage page;
+        uint8_t *host;
+        H2_HELD_TRY(f, g, addr, width, write, page, host, helper);
+        if (write) memcpy(host, buf, width);
+        else memcpy(buf, host, width);
+        r.held = g.data;
+        return r;
+    helper:
+        h2_gate_drop(f, &g);
+    }
+#else
+    (void)f; (void)held;
+#endif
+    r.status = write ? H2_MEM_WRITE_SLOW(ctx, pc, addr, width, 1u, buf) : H2_MEM_READ_SLOW(ctx, pc, addr, width, 1u, buf);
+    return r;
 }
 static inline uint32_t h2_mem_read(H2FastAccess *f, ExecCtxOpaque *ctx, uint32_t pc,
                                  uint32_t addr, uint32_t width, uint32_t alignment, uint8_t *out) {

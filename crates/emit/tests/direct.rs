@@ -42,6 +42,12 @@ const O: u32 = CODE + 0xa80;
 const ISR: u32 = CODE + 0xb00;
 const LOW: u32 = CODE + 0xc00;
 const DUP: u32 = CODE + 0xc80;
+const STOPS_CALLER: u32 = CODE + 0xd00;
+const STOPS: u32 = CODE + 0xd80;
+const HOME: u32 = CODE + 0xe00;
+const HOME_B: u32 = CODE + 0xe80;
+const LOOP: u32 = CODE + 0xf00;
+const LOOP_B: u32 = CODE + 0xf80;
 
 /// One function at `base`, lifted as the image's are (perf.rs does the same).
 fn function(
@@ -230,6 +236,66 @@ fn funcs() -> Vec<IrFunction> {
             a.push(dword_ptr(esp))?;
             a.ret()
         }),
+        // Register homes (emit::c::homes): the caller writes only EDX and
+        // ESP, so it reads EBX and ESI from CpuAbi and never spills,
+        // reloads or stores them, EDI or EFLAGS. The callee writes all of
+        // those; the caller must see its values after each return, and
+        // they must survive to the caller's own return. No flag access in
+        // the caller (its log does not `add`).
+        function(HOME, |a| {
+            for _ in 0..2 {
+                a.call(HOME_B as u64)?;
+                a.mov(edx, dword_ptr(DATA))?;
+                a.mov(dword_ptr(edx), ebx)?;
+                a.mov(dword_ptr(edx + 4), esi)?;
+                a.lea(edx, ptr(edx + 8))?;
+                a.mov(dword_ptr(DATA), edx)?;
+            }
+            a.ret()
+        }),
+        function(HOME_B, |a| {
+            a.add(ebx, 0x1111)?;
+            a.lea(esi, ptr(ebx + 0x10))?;
+            a.mov(edi, esi)?;
+            a.stc()?;
+            a.ret()
+        }),
+        // A direct call spills only the locals changed since the last
+        // sync: ESI changes after the call, on the way back round the
+        // loop, so the next call must spill it for the callee to see.
+        function(LOOP, |a| {
+            let mut top = a.create_label();
+            a.mov(ecx, 3)?;
+            a.set_label(&mut top)?;
+            a.call(LOOP_B as u64)?;
+            a.lea(esi, ptr(ecx + 0x100))?;
+            a.dec(ecx)?;
+            a.jnz(top)?;
+            a.ret()
+        }),
+        function(LOOP_B, |a| {
+            a.mov(edx, dword_ptr(DATA))?;
+            a.mov(dword_ptr(edx), esi)?;
+            a.lea(edx, ptr(edx + 4))?;
+            a.mov(dword_ptr(DATA), edx)?;
+            a.ret()
+        }),
+        // A callee that stops on an instruction the lifter does not lower
+        // (`fnstenv` with a 16-bit operand size), as the boot's fallback
+        // interpreter recovers from.
+        function(STOPS_CALLER, |a| {
+            log(a, 30)?;
+            a.call(STOPS as u64)?;
+            log(a, 31)?;
+            a.ret()
+        }),
+        function(STOPS, |a| {
+            log(a, 32)?;
+            a.mov(ebx, 0x5150)?;
+            a.mov(eax, DATA + 0x80)?;
+            a.db(&[0x66, 0xD9, 0x30])?;
+            a.ret()
+        }),
         // An interrupt callback.
         function(ISR, |a| {
             log(a, 18)?;
@@ -259,7 +325,7 @@ fn build(direct: bool) -> Module {
     let owners = emit::plan_with(funcs(), emit::opt::Passes::from_env().unwrap());
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("direct-{direct}"));
     let src = dir.join("src");
-    emit::write_module_with(&owners, &src, emit::Codegen { accounting: true }).unwrap();
+    emit::write_module_with(&owners, &src, emit::Codegen { accounting: true, ..emit::Codegen::default() }).unwrap();
     // The flag as `h2 emit` passes it, whatever the environment says.
     let header = src.join("h2gen.h");
     let content = std::fs::read_to_string(&header).unwrap();
@@ -554,6 +620,49 @@ fn an_override_registered_on_the_callee_between_runs() {
     assert_eq!(calls.load(Ordering::Relaxed), 4 * MODES.len() as u32);
 }
 
+#[test]
+fn a_callee_that_stops_reaches_the_stop_recovery_hook() {
+    // The boot's fallback recovers a generated STOP from a runtime hook
+    // instead of wrapping every handler: a STOP in a directly invoked
+    // callee is handed up to the runner, so the hook sees it with the
+    // callee's CPU whether the call was direct or not.
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    agree("stop recovery", |m| {
+        let s = seen.clone();
+        m.ctx.runtime().edit_dispatch(|d| {
+            d.set_stop_recovery(move |cpu: &mut CpuAbi, ctx: &mut ExecCtx, t: TransferAbi| {
+                s.lock().unwrap().push((cpu.eip, cpu.ebx, t.kind));
+                // What interpreting the rest of the callee does: return.
+                ctx.memory().ret(cpu, 0).unwrap()
+            })
+        });
+        let out = run_twice(STOPS_CALLER)(m);
+        for o in &out {
+            assert_eq!(
+                o.events.last().map(|e| e.contains("HarnessExit")),
+                Some(true),
+                "{:?}",
+                o.events
+            );
+            let log: Vec<u32> = o.memory[0x100..0x100 + 12]
+                .chunks(4)
+                .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            assert_eq!(log, [30, 32, 31]);
+        }
+        out
+    });
+    let stop_pc = STOPS + 29;
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 2 * MODES.len(), "{seen:x?}");
+    assert!(
+        seen.iter().all(|&s| s == (stop_pc, 0x5150, abi::STOP)),
+        "{seen:x?}"
+    );
+    // On the second run the call into the stopping callee was direct.
+    assert!(direct_count(STOPS_CALLER, None) > 0);
+}
+
 /// Every transfer limit, so the run stops at each direct call and return.
 #[test]
 fn every_transfer_limit() {
@@ -684,4 +793,43 @@ fn an_interrupt_raised_inside_the_loop_is_delivered_at_the_next_safe_point() {
         out.push(m.run(&Runner::default(), TransferAbi::jump(OVR)));
         out
     });
+}
+
+/// Registers a caller only reads, or never touches, live in CpuAbi: a
+/// directly invoked callee's writes to them reach the caller and its exit
+/// in every mode.
+#[test]
+fn a_callee_writes_registers_its_caller_only_reads() {
+    let caller = funcs().into_iter().find(|f| f.entry == HOME).unwrap();
+    // EDX and ESP only: EBX and ESI are read from CpuAbi, EDI and EFLAGS
+    // are not touched at all.
+    assert_eq!(emit::c::homes(&caller), 1 << 2 | 1 << 4);
+    agree("homes", |m| {
+        let out = run_twice(HOME)(m);
+        for o in &out {
+            assert_eq!(o.cpu.eip, runtime::exec::HARNESS_EXIT, "{:x?}", o.transfer);
+            assert_eq!((o.cpu.ebx, o.cpu.esi, o.cpu.edi), (0x2222, 0x2232, 0x2232));
+            assert_eq!(o.cpu.eflags & 1, 1, "CF from the callee: {:#x}", o.cpu.eflags);
+            let log = |i: usize| u32::from_le_bytes(o.memory[0x100 + 4 * i..][..4].try_into().unwrap());
+            assert_eq!([log(0), log(1), log(2), log(3)], [0x1111, 0x1121, 0x2222, 0x2232]);
+        }
+        out
+    });
+    // Both calls and both returns are direct on the second run.
+    assert_eq!(direct_count(HOME, None), 4);
+}
+
+/// A local changed after a direct call returns, on the way back round a
+/// loop, is spilled at the next call: the callee reads it from CpuAbi.
+#[test]
+fn a_register_changed_round_a_loop_reaches_the_next_direct_call() {
+    agree("homes loop", |m| {
+        let out = run_twice(LOOP)(m);
+        for o in &out {
+            let log = |i: usize| u32::from_le_bytes(o.memory[0x100 + 4 * i..][..4].try_into().unwrap());
+            assert_eq!([log(0), log(1), log(2)], [0, 0x103, 0x102]);
+        }
+        out
+    });
+    assert_eq!(direct_count(LOOP, None), 6);
 }
