@@ -318,7 +318,11 @@ and stages its vertices, indices and built-in uniforms in upload rings
 (`ring::UploadRing`: one buffer per ring, written through a few 2 MB
 `queue.write_buffer_with` staging views, so vertex bytes are copied once,
 straight into wgpu's staging memory; a ring that fills doubles, up to
-64 MB) and returns a `RecordedDraw`.
+64 MB) and returns a `RecordedDraw`. A stream or index list the caller
+marks with an id (`Draw::stream_ids`, `Draw::index_id`: the d3d vertex
+cache's snapshots) is not staged: `persistent::PersistentVertices` writes
+it once into a buffer of its own and binds that buffer for every later
+draw of the id, LRU-bounded by `H2_VERTEX_CACHE_MB`.
 `Renderer::encode_pass(ctx, encoder, target, clear, draws, counter)` encodes
 them into one render pass, or a new one at each draw marked with
 `RecordedDraw::start_pass` and at each counted draw (see `occlusion.rs`),

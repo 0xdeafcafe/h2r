@@ -192,7 +192,8 @@ Against the requirements:
   render thread takes the `ResolvedDraw` (streams, indices, state, shader
   inputs) without a copy and frees it there. The draw's stream buffers
   come back through a bounded pool (256 draws, 16 MiB) for the device to
-  refill. Wrappers forward it (`DiagBackend`, `Headless`); one that does
+  refill; vertex cache snapshots (`docs/d3d.md`, "Vertex cache") are
+  shared, not copied, and are released on the render thread instead. Wrappers forward it (`DiagBackend`, `Headless`); one that does
   not falls back to `draw`, which copies.
   `cargo bench -p d3d --bench pushbuf` times the guest's side through
   `ThreadedBackend<NullBackend>`: 4.0-4.5 us a draw before (one boxed

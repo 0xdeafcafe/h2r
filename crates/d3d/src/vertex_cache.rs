@@ -24,9 +24,15 @@
 //! back already scanned and rebased onto its vertex window.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::backend::{CachedBytes, CachedIndices};
 use crate::dirty::WriteTracker;
+
+/// Snapshot ids, unique in the process: a backend may outlive a cache
+/// ([`crate::Device::set_vertex_cache`] makes new ones) and keeps host
+/// copies by id, so an id must never name two snapshots.
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// What a [`RangeCache`] keeps per range.
 pub trait Snapshot: Clone {
@@ -90,7 +96,6 @@ pub struct RangeCache<T> {
     budget: usize,
     tick: u64,
     frame: u64,
-    next_id: u64,
 }
 
 impl<T: Snapshot> RangeCache<T> {
@@ -102,7 +107,6 @@ impl<T: Snapshot> RangeCache<T> {
             budget,
             tick: 0,
             frame: 0,
-            next_id: 1,
         }
     }
 
@@ -158,8 +162,7 @@ impl<T: Snapshot> RangeCache<T> {
     /// `[va, va + len)` as read at tracker generation `generation`, after a
     /// [`Probe::Fill`]; returns it.
     pub fn fill(&mut self, va: u32, len: u32, generation: u64, make: impl FnOnce(u64) -> T) -> T {
-        let snapshot = make(self.next_id);
-        self.next_id += 1;
+        let snapshot = make(NEXT_ID.fetch_add(1, Ordering::Relaxed));
         self.tick += 1;
         let e = self.entries.entry((va, len)).or_insert(Entry {
             generation,

@@ -413,6 +413,10 @@ set when an SSE op runs.
 
 ### 5. D3D draw path
 
+Status (2026-11-16): persistent vertex and index buffers keyed by write
+generation have landed (`docs/d3d.md`, "Vertex cache"); borrowed guest
+slices, resolving only what changed and pooled state words are not done.
+
 After the in-flight fixes the game thread still spends about 15% in D3D
 entries and write-barrier shadows (8.5 ms). The structural part:
 
