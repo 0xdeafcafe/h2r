@@ -1221,6 +1221,8 @@ fn program_key(
                 && uses_depth(render),
             // Depends on the target's scale: set by `Nv2aShaders::prepare`.
             glyph: 0,
+            // E3 lighting, on the view only: set by `Nv2aShaders::prepare`.
+            hard_shadow: [0; 4],
         };
         let key = ProgramKey {
             vertex,

@@ -110,6 +110,16 @@ pub struct PixelOptions {
     /// default) leaves the program as it was, byte for byte.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub glyph: u8,
+    /// Hard shadows (E3 lighting, docs/graphics/e3-lighting.md phase 1):
+    /// per shadow stage, the stages that sample the same shadow map, as a
+    /// mask (bit `n` for stage `n`). A shadow stage with a non-zero mask
+    /// compares once, at the nearest texel, at the mean of those stages'
+    /// coordinates: no percentage-closer filter, and taps spread over
+    /// stages of one map fall on one point ([`super::shadow`]). Only the
+    /// render-scale view sets it. All zero (the default) is retail's
+    /// lookup, byte for byte, and is left out of persisted keys.
+    #[serde(default, skip_serializing_if = "no_hard_shadow")]
+    pub hard_shadow: [u8; 4],
 }
 
 /// The fragment entry a W-buffered program ([`PixelOptions::w_buffer`])
@@ -120,6 +130,10 @@ pub const COUNT_DEPTH_ENTRY: &str = "fs_count_depth";
 
 fn is_zero(v: &u8) -> bool {
     *v == 0
+}
+
+fn no_hard_shadow(v: &[u8; 4]) -> bool {
+    *v == [0; 4]
 }
 
 /// The glyph filter for [`PixelOptions::glyph`].
@@ -628,6 +642,7 @@ pub fn translate(def: &PixelShaderDef, options: &PixelOptions) -> PixelShader {
                     i,
                     &options.shadow[i].unwrap(),
                     mode == TexMode::Project3d,
+                    options.hard_shadow[i],
                 )
             }
             TexMode::Project2d | TexMode::Project3d | TexMode::Cubemap => {
