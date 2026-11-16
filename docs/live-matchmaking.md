@@ -191,7 +191,7 @@ To confirm in the retail code, with addresses:
 | Whether match results carry a TSADDR, or only query results do | `0x000b3a70` and its callers |
 | Order of key create/register versus session create; when QoS listening starts | `0x0007a8a0`, `0x0007a920`, `0x000731d0`, the `0x0005fb57`/`0x0005fb7c` sites |
 | Optional invite voice/text playback and full retail UI handoff (accepted-record layout confirmed) | `0x0008f7e0`, `0x0008eda0` tag table (`0x0008ee44`), `0x0006d210` |
-| Hopper types 1–5 and the meaning of the descriptor ranges | `0x00065530` (playlist UI filter), `0x00192eb0` (session setup states 6/7/8), `0x00231066` (matchmaking start) |
+| ~~Hopper types 1–5 and the meaning of the descriptor ranges~~ answered in §6 | `0x00065530`, `0x00192eb0`, `0x00231066` |
 
 ## 2. How hoppers drive matchmaking
 
@@ -221,8 +221,8 @@ What matters for matchmaking:
   the 1.46 MB inflated payload). The server can parse the same bytes it
   publishes to learn the hopper list — it is the source of the file, so it
   never needs to reverse the retail defaults; it only needs to *author* a
-  valid file, whose record templates (`0x00444fc0`..`0x00445258` shapes)
-  are the remaining format work.
+  valid file, which it now does (§6.8: the format, field by field, and the
+  built-in lineup served when nothing is published).
 - The attribute-type vocabulary beside the hopper descriptor
   (`none`...`axes`, including `secure-address`, at `0x0046dd80`) is the
   title's online-attribute schema; matchmaking attributes and the stats
@@ -443,10 +443,179 @@ app.
 - The complete retail invite UI/confirmation transition remains untested.
   Session records, seven-column parsing and accepted-invite packing are checked;
   procedure-1 positional filter meanings still need identification.
-- The hopper record-template contents (§2) — the last format work before
-  the server can author its own playlist file.
+- ~~The hopper record-template contents (§2)~~: decoded (§6); the server
+  authors its own file (§6.8).
 - Whether the 30 s presence ping is the right session heartbeat, or
   sessions need their own ping (the games slice uses ingest traffic;
   lobbies have none until the game starts).
 - Carrying the base port in the secure address (§3.5) — needed before two
   consoles behind one NAT can both play with a third.
+
+## 6. The hopper file, field by field
+
+`multiplayer_hopper.dat` is now decoded whole, from the retail game's own
+readers and its compiled-in defaults (read statically from the 5849 XBE;
+nothing was run). The code is `crates/live-proto/src/hopper/`:
+`layout.rs` (every field, the validator port, the accessor ports),
+`variant.rs` (the game variant an entry carries) and `defaults.rs` (the
+lineup a server offers with no file). The envelope is unchanged
+([live-motd.md](live-motd.md) §5.1). Evidence: **confirmed** means a reader
+was seen using the field that way; **likely** means a reader was seen but
+the meaning is inferred from how it is used; **unused** means only the
+game's defaults write it and no reader was found, so we write 0.
+
+### 6.1 Image
+
+```
++0x000000  16 x 0x614     descriptors (copied to 0x00551ae8 by 0x00193ff0)
++0x006140  16 x 0x15cb8   data blocks (read one at a time by 0x001943d0)
+```
+
+A descriptor that fails the validator (`0x00193560` and the per-type
+check behind `0x001934f0`) is no hopper to the game: every reader goes
+through `0x001934f0` first (`0x00192db0`, `0x00192df0`, `0x00192e60`,
+`0x001943d0`, `0x001945c0`, `0x00194610`). An all-zero slot is therefore
+simply absent.
+
+### 6.2 Descriptor (0x614 bytes)
+
+| Offset | Type | Field | Readers | Evidence |
+|---|---|---|---|---|
+| `+0x000` | i32 | hopper type 1..5 (§6.3) | validator; `0x00193470`/`90`/`b0`; every per-type accessor | confirmed |
+| `+0x004` | i32 | status: 0 not checked yet, 1 ok, 2 error, 3 no hopper; validator 0..3 | `0x00192df0` (0 → `0x00194660` checks the entries' maps and writes 1 or 2), `0x00065530` wants 1 | confirmed |
+| `+0x008` | i32 | playlist id, validator 1..=100; unique per playlist (the game's defaults use 1, 2, 3, 4, 25, 26, 5) | `0x000741f0` reads it with `+0x20` and `+0x40` beside it as stats ids | range confirmed, meaning likely |
+| `+0x00c` | 9 x 16 B | title per language, UTF-8, NUL-terminated | `0x001944c0`; written by `0x001936e0` | confirmed |
+| `+0x09c` | 9 x 128 B | description per language (the ninth ends at `+0x51b`) | `0x00194540` | confirmed |
+| `+0x51c` | 128 x i8 | skill ceiling: entry `i` is the highest skill matched with skill `i`; validator `i <= entry <= 0x7f` | `0x001931a0` walks it down for the lowest skill matched (used by `0x00073530` for the session's skill range) | range confirmed, meaning likely |
+| `+0x59c` | u32 | search timeout, ms: a team arrangement older than this is dropped | `0x00071c7a` (elapsed + it vs now) | likely |
+| `+0x5a0` | u32 | base wait, ms: the defaults' input to the start-wait table | none (`0x001931d0` indexes from `+0x5a4`) | unused |
+| `+0x5a4` | 16 x u32 | start wait for 1..16 players, ms; `0x7fffffff` never | `0x001931d0` (answers never outside the type's player range, 0 at the most players, else the table); `0x000719f5` compares it with time searched and shows seconds left (/1000) | confirmed |
+| `+0x5e4` | i32 | minimum rank: a party member below it cannot search | `0x00066150` (per-player signed byte, error 0xf); `0x002b2090` (a profile dword at `0x0054eae4 + 0xc70 n`) | reader confirmed, meaning likely |
+| `+0x5e8` | u8 | list the hopper whatever the rank | `0x002b2070` | likely |
+| `+0x5e9` | 3 B | | none | unused |
+| `+0x5ec` | 10 x u32 | type parameters (§6.4) | validator, accessors `0x001931d0`..`0x001934d0`, `0x0006620d` | confirmed |
+
+The older notes' "ASCII name at `+0x51b`" and "record count at `+0x08`"
+were wrong: there is no name (the bytes are the last description byte and
+the skill table), and the record count is the data block's own.
+
+### 6.3 Hopper types
+
+| Type | Meaning | Party limit (`0x00193250`) | Smallest party (`0x0006620d`) |
+|---|---|---|---|
+| 1 | free for all, unranked | most players | 1 |
+| 2 | free for all, ranked | 1 (alone) | 1 |
+| 3 | teams, unranked | teams x most per team | 1 |
+| 4 | teams, ranked | `[5]` | `[4]` |
+| 5 | clan match: a party is a team | most per team | fewest per team |
+
+Ranked is {2, 4, 5} (`0x00193470`), unranked {1, 3} (`0x00193490`),
+teams {3, 4, 5} (`0x001934b0`). The playlist screen's pass at
+`0x00065530` (the "types {2, 4, 5}" filter of §1.5) walks the ranked
+hoppers to find a player's best skill. A party outside the limits gets
+error 6 (too small) or 7 (too big) from `0x00066050`.
+
+### 6.4 Type parameters (`+0x5ec`, ten dwords)
+
+| Type | `[0]` | `[1]` | `[2]` | `[3]` | `[4]`/`[5]` | `[6]` | `[7]`/`[8]` | `[9]` |
+|---|---|---|---|---|---|---|---|---|
+| 1, 2 | fewest players | most players | | | | | | |
+| 3 | teams | fewest a team | most a team | u8: uneven teams allowed | | | | |
+| 4 | teams | fewest a team | most a team | largest size difference | party size | u8: keep parties together | party sizes kept as one team | unused |
+| 5 | teams | fewest a team | most a team | largest size difference | | | | |
+
+Validator rules (`0x00193610`, `0x00193630`, `0x001936a0`), signed:
+
+- 1, 2: `1 <= [0] <= [1] <= 16`.
+- 3, 5: `2 <= [0] <= 16`, `1 <= [1] <= [2] <= 16 / [0]`.
+- 4: `2 <= [0] <= 16`, `2 <= [1] <= [2] <= 16 / [0]`,
+  `1 <= [4] <= [5] <= [2]`, `0 <= [3] <= [2] - [1]`.
+
+Readers: fewest/most players `0x001932c0`/`0x00193300` (teams: `[0]`
+times the team size), team size `0x00193340`/`0x00193370`, teams
+`0x00193440`, size difference `0x00193400` (type 3 reads `[3]` as a byte
+and answers 0 or 1), party-as-team `0x001934d0` with
+`0x001933d0`/`0x001933a0` (type 5 always, with the team size; type 4 when
+`[6]`, with `[7]`/`[8]`). These feed team assembly (`0x00071730` →
+`0x00091fc0`). The game's defaults write `[9] = 2` on one hopper; nothing
+reads it.
+
+### 6.5 Data block (0x15cb8 bytes) and entry (0x37c bytes)
+
+| Offset | Type | Field | Readers | Evidence |
+|---|---|---|---|---|
+| block `+0x00` | 0x44 B | | none | unused |
+| block `+0x44` | i32 | entry count; 0 leaves nothing to pick, the game has no upper check but the block holds 100 | `0x00194660`, `0x00192eb0` | confirmed |
+| block `+0x48` | 100 x 0x37c | entries | | |
+| entry `+0x000` | u32 | | none | unused |
+| entry `+0x004` | u32 | map id: a level in the globals tag's multiplayer list (`0x0019c5f0`); an unknown one marks the whole hopper status 2 | `0x00194660`, `0x00192eb0` | confirmed |
+| entry `+0x008` | 9 x 32 u16 | map name per language (the defaults copy a compiled-in English name into all nine) | none | unused |
+| entry `+0x248` | i32 | weight: session setup picks an entry at random by weight, each clamped to 1..=1000 (0 when the map is unknown) | `0x00192f12` | confirmed |
+| entry `+0x24c` | 0x130 B | game variant, the saved-variant record ([variants.md](variants.md)); copied out whole with the map id for the entry picked | `0x00192fc0` | confirmed |
+
+Matchmaking start (`0x00231066`) and the custom-game list
+(`0x002b20a4`, `0x002b2198`) read a block only to see that it loads.
+
+The game's default entries build each variant from a stock record per
+game type (`0x0019d220`) plus a few changes per built-in matchmaking
+variant (`0x00212f40`, 28 of them), then clear settings 12..14
+(`0x00193010`). `variant.rs` ports the stock record and the clean-up
+limits (`0x0019d650`) a variant is held to.
+
+### 6.6 The game's own defaults
+
+With no file, `0x001940d0` builds seven hoppers (`0x00193c70`): free for
+all (type 2, 4..8 players), small team (type 4, 2 x 3..4, parties 1..4
+kept together at 3..4), head to head (type 2, 2..2), big team (type 4,
+2 x 5..8, parties 1..5), two clan matches (type 5, 2 x 3..4 and 2 x 6..8)
+and small team unranked (type 3, 2 x 2..4, uneven teams). Waits are 30 s
+base with a 150 s timeout (120 s for head to head and the clan matches),
+45 s and 300 s for big team. Titles come from the
+`matchmaking_hopper_descriptions` strings (`ffa_title` ...
+`small_team_unranked_description`, string ids `0x7a4`..`0x7b1`).
+
+### 6.7 What a session advertises as its hopper
+
+The **descriptor index** (0..15). The matchmaking state keeps the
+selected hopper as an index (`[state + 0x49c8]`), passes it straight to
+`0x00192e60` (which indexes the 16 descriptors), and writes it into the
+session description at `+0x70` (`0x00073530`). The playlist id (`+0x08`)
+is separate and goes to stats; an entry's "record id" is a map id. So
+`hopper_id` in sessions and pins (`PUT /v1/hoppers/{hopper_id}/pins`,
+[maps.md](maps.md)) is the index, which is what the web builder's pins use
+(`HopperPins` with `h().index`).
+
+### 6.8 The default set
+
+`HopperFile::default_set()` builds a complete file from nothing: eight
+playlists in hoppers 0..7, playlist ids 1..8, status 0, the game's skill
+ceiling and wait/timeout values, the start-wait table computed as the game
+computes it, only retail maps (map pack maps are left out: an unknown map
+errors the whole hopper and the format has no "only when installed" flag),
+and variants from the stock records.
+
+| # | Title | Type | Size | Entries |
+|---|---|---|---|---|
+| 0 | Rumble Pit | 2 | 4..8 players, alone | Rumble Slayer, Oddball, King of the Hill |
+| 1 | Team Slayer | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Team Slayer |
+| 2 | Team Skirmish | 4 | 2 x 2, parties 1..2 (2 kept as a team) | Team Slayer, Teamball |
+| 3 | Team Snipers | 4 | 2 x 3..4, parties 1..4 | Team Snipers |
+| 4 | Big Team Battle | 4 | 2 x 5..8, parties 1..5 | Team Slayer, Classic CTF, Assault, Territories |
+| 5 | Team Objective | 4 | 2 x 3..4, parties 1..4 (3..4 kept as a team) | Classic CTF, Assault, Territories, Team King, Teamball |
+| 6 | Free for All | 1 | 2..8, parties welcome | Rumble Slayer, Oddball, King of the Hill |
+| 7 | Unranked Teams | 3 | 2 x 2..4, uneven allowed | Team Slayer, Classic CTF, Team King, Teamball |
+
+Tests check it against the validator port, the per-entry checks
+(`HopperFile::problems`: retail map ids, weights, the variant clean-up),
+a byte-exact build → parse → build, and that every field reads back from
+its offset. The server serves it while no file is published (§6.9);
+`h2 live hopper defaults --out FILE [--raw]` writes it.
+
+### 6.9 Serving
+
+`Live::file` answers Halo 2's `multiplayer_hopper.dat` with the default
+set while none is published (`crates/live-server/src/default_hopper.rs`),
+so the game's title-storage download, `GET /v1/titles/{title}/hopper` and
+the builder's `PUT` (which then publishes the edited default) all work on
+a fresh server. Nothing is written to the log until someone publishes;
+`h2 live hopper import` still replaces it with the owner's own file.
