@@ -20,6 +20,7 @@ use crate::safe_out::OutDir;
 const H1_USAGE: &str = "usage: h2 h1 info <iso|map> [map]
        h2 h1 tags <iso|map> [map] [--group G]
        h2 h1 bitmap <iso|map> [map] <tag> --out DIR [--mips] [--force]
+       h2 h1 sound <iso|map> [map] <tag> --out DIR [--force]
        h2 h1 convert <iso|map> [map] --out DIR [--sandbox h2|h1] [--base MAP]
                      [--disc halo2.iso] [--dry-run] [--force]
 
@@ -32,6 +33,11 @@ bitmap: one bitm tag (its path, as `h2 h1 tags --group bitm` prints it):
 each image's format, type and size, decoded to PNGs in DIR (one per image,
 cube face and volume slice; every mip level with --mips). See
 docs/formats/h1-bitmaps.md.
+
+sound: one snd! tag (its path, as `h2 h1 tags --group snd!` prints it): its
+class, rate, channels and codec, and each playable permutation decoded to a
+16-bit PCM WAV in DIR, named <tag>.r<range>p<permutation>.wav. See
+docs/formats/h1-sounds.md.
 
 convert: a Halo 1 multiplayer map (a .map file, or a disc and a map name such
 as beavercreek) onto a Halo 2 base map from the Halo 2 disc (--disc, else
@@ -62,6 +68,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         "info" => info(rest),
         "tags" => tags(rest),
         "bitmap" => bitmap(rest),
+        "sound" => sound(rest),
         "convert" => convert(rest),
         "-h" | "--help" => {
             println!("{H1_USAGE}");
@@ -372,6 +379,56 @@ fn bitmap(args: &[String]) -> Result<()> {
                 println!("     {}", p.display());
             }
         }
+    }
+    Ok(())
+}
+
+/// The arguments of `h1 sound`: those of `h1 bitmap`, without `--mips`.
+pub fn parse_sound(args: &[String]) -> Result<BitmapArgs, String> {
+    if args.iter().any(|a| a == "--mips") {
+        return Err("unknown option --mips".into());
+    }
+    parse_bitmap(args).map_err(|e| e.replace("bitmap", "sound"))
+}
+
+fn sound(args: &[String]) -> Result<()> {
+    use h1sounds::h1::{SND, Sound};
+    let a = parse_sound(args).map_err(|e| anyhow::anyhow!("{e}\n\n{H1_USAGE}"))?;
+    let m = match open_source(&a.path, a.map.as_deref())? {
+        Source::Map(_, m) => m,
+        Source::Disc(..) => bail!("name a map on the disc, then the sound"),
+    };
+    let tag = m
+        .find(SND, &a.tag)
+        .with_context(|| format!("no snd! {} (see h2 h1 tags --group snd!)", a.tag))?;
+    let s = Sound::read(&m, tag)?;
+    let out = OutDir::new_strict(&a.out, a.force)?.protecting(&a.path);
+    let stem = h1models::short_name(&tag.name).replace(' ', "_");
+    let class = h1sounds::class::H1_NAMES
+        .get(usize::from(s.class))
+        .copied()
+        .flatten()
+        .unwrap_or("?");
+    println!(
+        "{}: class {} ({}), {} Hz, {} channel(s), {:?}, {} pitch range(s)",
+        tag.name,
+        s.class,
+        class,
+        s.hz()?,
+        s.channels()?,
+        s.compression,
+        s.pitch_ranges.len()
+    );
+    for (r, p, pcm) in h1sounds::decode_all(&s, m.bytes())? {
+        let range = &s.pitch_ranges[r];
+        let path = out.write(&[format!("{stem}.r{r}p{p}.wav")], &pcm.wav())?;
+        println!(
+            "  {}/{}: {:.3} s -> {}",
+            range.name,
+            range.permutations[p].name,
+            pcm.seconds(),
+            path.display()
+        );
     }
     Ok(())
 }
@@ -799,6 +856,21 @@ mod tests {
         );
         assert!(parse_bitmap(&s(&["a", "b", "c", "d", "--out", "o"])).is_err());
         assert!(parse_bitmap(&s(&["a", "b", "--out", "o", "--bogus"])).is_err());
+    }
+
+    #[test]
+    fn parses_sound_arguments() {
+        let a = parse_sound(&s(&["h1.iso", "a30", "sound\\x", "--out", "o"])).unwrap();
+        assert_eq!(
+            (a.map.as_deref(), a.tag.as_str()),
+            (Some("a30"), "sound\\x")
+        );
+        assert!(parse_sound(&s(&["x.map", "t", "--out", "o", "--mips"])).is_err());
+        assert!(
+            parse_sound(&s(&["x.map", "--out", "o"]))
+                .unwrap_err()
+                .contains("sound")
+        );
     }
 
     #[test]
