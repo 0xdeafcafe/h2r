@@ -239,6 +239,8 @@ points! { ALL;
     /// `locale_string_id_find`: the string for the packed id in EDI, its
     /// address in EAX.
     LOCALE_FIND @ 0x001a_02d0: [fn(id: edi) -> eax ret 0], Hot; "docs/engine/locale_string_id_find.md";
+    /// `locale_string_id_exists`: whether the packed id has a string (AL).
+    LOCALE_EXISTS @ 0x001a_0310: [opaque]; "docs/engine/locale_string_id_find.md";
 }
 
 globals! { GLOBALS;
