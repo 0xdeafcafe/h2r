@@ -33,11 +33,66 @@ pub(super) fn yl2x(y: F80, x: F80) -> Option<(F80, Flags)> {
     if fx.neg || !(-1074..=1023).contains(&fy.top()) {
         return None;
     }
-    let (lg, exact) = log2_wf::<2>(wf(fx));
+    let (lg, exact) = log2_fast(wf(fx));
     if exact {
         return None;
     }
     certify(wf::<2>(fy).mul(lg))
+}
+
+/// The first and last `j` of [`LOG2_J64`]: `1 + j/64` spans the reduced
+/// significand's range `[sqrt(2)/2, sqrt(2)]`.
+const LOG2_J_MIN: i64 = -19;
+const LOG2_J_MAX: i64 = 27;
+
+/// `floor(|log2(1 + j/64)| * 2^128)` for `j` in `LOG2_J_MIN..=LOG2_J_MAX`,
+/// from the 768-bit reference (`tests::log2_table_matches_the_768_bit_reference`).
+const LOG2_J64: [[u64; 2]; 47] = include!("log2_j64.in");
+
+/// `floor(log2(e) * 2^127)`, the leading bit `2^0`
+/// (`tests::log2_e_matches_the_768_bit_reference`).
+const LOG2_E: [u64; 2] = [0xb8aa_3b29_5c17_f0bb, 0xbe87_fed0_691d_3e88];
+
+fn log2_e() -> Fast {
+    Fast::from_be_limbs(&LOG2_E, 0)
+}
+
+/// log2 for the fast path: as [`log2_wf`], with the reduced significand
+/// `m` split as `c * (m / c)`, `c = 1 + j/64` the nearest table point. The
+/// series then runs on `s = (m - c) / (m + c)`, `|s| < 2^-7` instead of
+/// `2^-2.5`: 9 terms rather than about 25 for the same 128 bits. Within the
+/// same error budget (`tests::unrounded_errors_stay_within_the_documented_budgets`),
+/// so [`certify`] accepts and rejects as before and an accepted result is
+/// still the 512-bit reference's.
+fn log2_fast(u: Fast) -> (Fast, bool) {
+    let mut e = u.top();
+    let mut m = u.scale(-e);
+    let sqrt2 = Fast::from_parts(false, 0xb504_f333_f9de_6484, -63);
+    if m.cmp_abs(&sqrt2) == Ordering::Greater {
+        m = m.scale(-1);
+        e += 1;
+    }
+    let one = Fast::one();
+    if m.sub(one).is_zero() {
+        return (Fast::from_i64(e as i64), true);
+    }
+    // m in [2^-0.5, 2^0.5]: its top bit is 2^-1 or 2^0. j = round(64(m - 1)).
+    let sig = ((m.m[1] as u128) << 64) | m.m[0] as u128;
+    let q126 = sig >> (-(m.exp + 126)) as u32; // m * 2^126
+    let j = (((q126 + (1 << 119)) >> 120) as i64 - 64).clamp(LOG2_J_MIN, LOG2_J_MAX);
+    let c = Fast::from_i64(64 + j).scale(-6);
+    let num = m.sub(c);
+    let ln_r = if num.is_zero() {
+        Fast::ZERO
+    } else {
+        atanh_series(num.div(m.add(c))).0.scale(1)
+    };
+    let mut lg = ln_r.mul(log2_e());
+    if j != 0 {
+        let t = Fast::from_be_limbs(&LOG2_J64[(j - LOG2_J_MIN) as usize], -1);
+        lg = lg.add(if j < 0 { t.neg() } else { t });
+    }
+    (lg.add(Fast::from_i64(e as i64)), false)
 }
 
 pub(super) fn x2m1(a: F80) -> Option<(F80, Flags)> {
@@ -344,6 +399,111 @@ mod tests {
         [(m >> 64) as u64, m as u64]
     }
 
+    /// floor(|log2(1 + j/64)| * 2^128) from the 768-bit reference.
+    fn log2_fixed(j: i64) -> [u64; 2] {
+        let v = log2_wf::<12>(Wf::from_i64(64 + j).scale(-6)).0;
+        let top = narrow(v);
+        let m = ((top.m[1] as u128) << 64 | top.m[0] as u128) >> (-1 - v.top());
+        [(m >> 64) as u64, m as u64]
+    }
+
+    /// The table-driven log2 across every table point and both ends of the
+    /// reduced range, against the 512-bit reference.
+    #[test]
+    fn yl2x_matches_the_reference_across_the_log2_table() {
+        extended_yl2x(0x5f1e_77c3_a90d_2b64, 3000);
+    }
+
+    #[test]
+    #[ignore = "slow; the default run covers a sample"]
+    fn yl2x_matches_the_reference_across_the_log2_table_extended() {
+        extended_yl2x(0x0b3d_91c4_e562_7a18, 300_000);
+    }
+
+    fn extended_yl2x(seed: u64, iters: usize) {
+        let mut rng = Rng(seed);
+        let mut hits = 0;
+        for i in 0..iters {
+            let y = if i % 3 == 0 {
+                F80::LN2
+            } else {
+                rng.f80(-60, 60)
+            };
+            // Significands near each table point 1 + j/64, near the
+            // rounding midpoints between them, and anywhere.
+            // A significand in [0.5, 2) as a Q1.63 fixed-point number.
+            let at = |q: u64| {
+                if q >> 63 == 1 {
+                    F80::new(16383, q)
+                } else {
+                    F80::new(16382, q << 1)
+                }
+            };
+            // Near each table point 1 + j/64, near the rounding midpoints
+            // between them, and anywhere.
+            let j = (i / 4) as i64 % 47 + LOG2_J_MIN;
+            let jitter = rng.next() >> (rng.next() % 60 + 4);
+            let x = match i % 4 {
+                0 => {
+                    let point = ((64 + j) as u64) << 57;
+                    at(if rng.next() & 1 == 0 {
+                        point + jitter
+                    } else {
+                        point - jitter
+                    })
+                }
+                1 => {
+                    let mid = ((128 + 2 * j - 1) as u64) << 56;
+                    at(if rng.next() & 1 == 0 {
+                        mid + jitter
+                    } else {
+                        mid - jitter
+                    })
+                }
+                _ => rng.f80(-200, 200).abs(),
+            };
+            let reference = yl2x_n::<8>(y, x);
+            if let Some(fast) = yl2x(y, x) {
+                assert_eq!(fast, reference, "y={y:x?} x={x:x?}");
+                hits += 1;
+            }
+        }
+        assert!(hits > iters * 9 / 10, "{hits}");
+    }
+
+    #[test]
+    fn log2_e_matches_the_768_bit_reference() {
+        let v = narrow(Wf::<12>::one().div(ln2::<12>()));
+        assert_eq!(v.top(), 0);
+        assert_eq!(
+            LOG2_E,
+            [v.m[1], v.m[0]],
+            "{:#018x} {:#018x}",
+            v.m[1],
+            v.m[0]
+        );
+    }
+
+    #[test]
+    fn log2_table_matches_the_768_bit_reference() {
+        for (i, entry) in LOG2_J64.iter().enumerate() {
+            let j = i as i64 + LOG2_J_MIN;
+            let want = if j == 0 { [0, 0] } else { log2_fixed(j) };
+            assert_eq!(*entry, want, "j={j}");
+        }
+    }
+
+    #[test]
+    #[ignore = "prints LOG2_J64 (src/log2_j64.in)"]
+    fn print_log2_table() {
+        std::println!("[");
+        for j in LOG2_J_MIN..=LOG2_J_MAX {
+            let [hi, lo] = if j == 0 { [0, 0] } else { log2_fixed(j) };
+            std::println!("    [{hi:#018x}, {lo:#018x}], // j = {j}");
+        }
+        std::println!("]");
+    }
+
     #[test]
     fn atan_table_matches_the_768_bit_reference() {
         assert_eq!(ATAN_J64[0], [0, 0]);
@@ -418,7 +578,7 @@ mod tests {
                 operand(rng.f80(-1074, 1023).abs()).unwrap()
             };
             check(
-                wf::<2>(y).mul(log2_wf::<2>(wf(x)).0),
+                wf::<2>(y).mul(log2_fast(wf(x)).0),
                 wf::<12>(y).mul(log2_wf::<12>(wf(x)).0),
                 96,
             );
