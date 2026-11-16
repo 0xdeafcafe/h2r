@@ -10,6 +10,7 @@ use editor::hopper::HopperTool;
 use editor::scenario::ScenarioTool;
 use editor::shell::Shell;
 use editor::source::default_disc;
+use editor::variants::VariantTool;
 
 const USAGE: &str =
     "usage: h2-editor [--disc <iso> | --map <file.map>] [--hopper <multiplayer_hopper.dat>]";
@@ -51,6 +52,7 @@ fn main() -> Result<()> {
     }
     shell.add_tool(Box::new(hoppers));
     shell.add_tool(Box::new(ScenarioTool::new()));
+    shell.add_tool(Box::new(VariantTool::new()));
     if let Some(p) = default_disc(source) {
         shell.open_source(p);
     }
