@@ -24,8 +24,8 @@ pub use hash::{BadHex, Hasher, Sha256};
 pub use id::MapId;
 pub use manifest::{Manifest, ManifestError};
 pub use resolve::{
-    ACTIVE_FILE, BaseRef, CACHE_DIR, DEFAULT_CACHE_CAP, Data, Library, Package, ResolveError,
-    Resolved, repair_checksum,
+    ACTIVE_FILE, BaseRef, CACHE_DIR, DEFAULT_CACHE_CAP, Data, DiscHashes, Library, Package,
+    ResolveError, Resolved, repair_checksum,
 };
 
 #[cfg(test)]

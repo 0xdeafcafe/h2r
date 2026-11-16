@@ -41,6 +41,7 @@ use std::{
     fs::File,
     io::{self, Write},
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::SystemTime,
 };
 
@@ -161,6 +162,30 @@ enum Active {
     Package(String),
 }
 
+/// SHA-256 of the disc's own maps, by lowercase map name, shared between
+/// whoever hashes them: the resolver records each disc base it reads in
+/// full while checking a package, and live-hle's `Bases` (the boot's
+/// `DiscBases`) asks before reading the map again. Clones share one table.
+#[derive(Debug, Clone, Default)]
+pub struct DiscHashes(Arc<Mutex<HashMap<String, Sha256>>>);
+
+impl DiscHashes {
+    /// The recorded hash of the disc's `map`, if any.
+    pub fn get(&self, map: &str) -> Option<Sha256> {
+        self.lock().get(&map.to_ascii_lowercase()).copied()
+    }
+    pub fn insert(&self, map: &str, hash: Sha256) {
+        self.lock().insert(map.to_ascii_lowercase(), hash);
+    }
+    /// Every recorded hash, by lowercase name.
+    pub fn snapshot(&self) -> HashMap<String, Sha256> {
+        self.lock().clone()
+    }
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, Sha256>> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
 /// The packages under one maps directory.
 #[derive(Debug)]
 pub struct Library {
@@ -169,6 +194,7 @@ pub struct Library {
     active: HashMap<String, Active>,
     cache_cap: u64,
     notices: Vec<String>,
+    disc_hashes: Option<DiscHashes>,
 }
 
 impl Library {
@@ -183,6 +209,7 @@ impl Library {
             active: HashMap::new(),
             cache_cap: DEFAULT_CACHE_CAP,
             notices: Vec::new(),
+            disc_hashes: None,
         };
         let Ok(entries) = std::fs::read_dir(root) else {
             return lib;
@@ -252,6 +279,21 @@ impl Library {
     pub fn with_cache_cap(mut self, cap: u64) -> Self {
         self.cache_cap = cap;
         self
+    }
+
+    /// Record the hash of each disc base read in full while resolving
+    /// (the overlay's one pass, a materialisation) in `hashes`.
+    pub fn with_disc_hashes(mut self, hashes: DiscHashes) -> Self {
+        self.disc_hashes = Some(hashes);
+        self
+    }
+
+    /// Scan the same directory again, keeping the cache cap and the shared
+    /// disc hashes: what the folder holds now.
+    pub fn reopen(&self) -> Self {
+        let mut lib = Self::open(&self.root).with_cache_cap(self.cache_cap);
+        lib.disc_hashes = self.disc_hashes.clone();
+        lib
     }
 
     pub fn root(&self) -> &Path {
@@ -329,7 +371,7 @@ impl Library {
         let Some(package) = self.choose(map).cloned() else {
             return Ok(None);
         };
-        resolve_package(&package, disc, &cache, cap).map(Some)
+        resolve_package(&package, disc, &cache, cap, self.disc_hashes.as_ref()).map(Some)
     }
 
     /// Resolve one package of this library, whatever the choice rule picks
@@ -339,7 +381,13 @@ impl Library {
         package: &Package,
         disc: &mut dyn Source,
     ) -> Result<Resolved, ResolveError> {
-        resolve_package(package, disc, &self.root.join(CACHE_DIR), self.cache_cap)
+        resolve_package(
+            package,
+            disc,
+            &self.root.join(CACHE_DIR),
+            self.cache_cap,
+            self.disc_hashes.as_ref(),
+        )
     }
 }
 
@@ -469,6 +517,7 @@ fn resolve_package(
     disc: &mut dyn Source,
     cache: &Path,
     cap: u64,
+    hashes: Option<&DiscHashes>,
 ) -> Result<Resolved, ResolveError> {
     let m = &package.manifest;
     let mut layers = Vec::new();
@@ -542,7 +591,13 @@ fn resolve_package(
             });
         }
         let bytes = base_src.read_all()?;
-        if Sha256::of(&bytes) != want {
+        let hash = Sha256::of(&bytes);
+        if start.is_none()
+            && let Some(h) = hashes
+        {
+            h.insert(&m.base.map, hash);
+        }
+        if hash != want {
             return Err(ResolveError::Base { what });
         }
         let mut bytes = materialise(bytes, &patches)?;
@@ -594,7 +649,13 @@ fn resolve_package(
         sum.update(&buf[skip..n]);
         at += n as u64;
     }
-    if tee.finish()? != want {
+    let hash = tee.finish()?;
+    if start.is_none()
+        && let Some(h) = hashes
+    {
+        h.insert(&m.base.map, hash);
+    }
+    if hash != want {
         return Err(ResolveError::Base { what });
     }
     if overlay.len() >= HEADER_LEN && &head == b"daeh" {
@@ -691,7 +752,7 @@ fn evict(cache: &Path, keep: &Path, cap: u64) -> io::Result<()> {
 pub(crate) mod tests {
     use super::*;
     use crate::manifest::Layer;
-    use crate::patch::{bps, ips, ppf};
+    use crate::patch::{bps, ips, ppf, write};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     pub(crate) struct Temp(pub PathBuf);
@@ -851,6 +912,33 @@ pub(crate) mod tests {
         assert_eq!(r.len(), disc.len() as u64);
         assert!(lib.resolve("midship", &mut &disc[..]).unwrap().is_none());
         assert!(!t.0.join(CACHE_DIR).exists(), "offset patches never copy");
+    }
+
+    #[test]
+    fn resolving_over_the_disc_records_the_disc_maps_hash() {
+        let t = Temp::new();
+        let disc = synthetic_map(&payload(0x3000, 7));
+        let ips = ips::tests::build(&[ips::tests::Rec::Data(0x900, b"z")], None);
+        package(&t.0, "p", "Lockout", Some(&disc), &[("a.ips", &ips)]);
+        let bps = write::bps(&disc, &[&disc[..], b"grown"].concat());
+        package(&t.0, "q", "midship", Some(&disc), &[("a.bps", &bps)]);
+        let hashes = DiscHashes::default();
+        let mut lib = Library::open(&t.0).with_disc_hashes(hashes.clone());
+        assert_eq!(hashes.get("lockout"), None);
+        lib.resolve("lockout", &mut &disc[..]).unwrap().unwrap();
+        assert_eq!(hashes.get("LOCKOUT"), Some(Sha256::of(&disc)));
+        // A materialised map's base too; and a base that does not match
+        // still records what the disc holds.
+        let mut other = disc.clone();
+        other[0x1000] ^= 1;
+        assert!(lib.resolve("midship", &mut &other[..]).is_err());
+        assert_eq!(hashes.get("midship"), Some(Sha256::of(&other)));
+        // Reopening keeps the table and sees new packages.
+        package(&t.0, "r", "ascension", Some(&disc), &[("a.ips", &ips)]);
+        let mut again = lib.reopen();
+        assert_eq!(again.packages().len(), 3);
+        again.resolve("ascension", &mut &disc[..]).unwrap().unwrap();
+        assert_eq!(hashes.get("ascension"), Some(Sha256::of(&disc)));
     }
 
     #[test]

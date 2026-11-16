@@ -153,10 +153,15 @@ pub enum Need {
     },
 }
 
+/// Told the package directory after [`MapGate::prepare`] wrote or chose a
+/// package (see [`MapGate::on_installed`]).
+pub type Installed = Box<dyn Fn(&Path) + Send + Sync>;
+
 /// The join-time map check and download, for one maps directory.
 pub struct MapGate {
     maps_dir: PathBuf,
     bases: Arc<dyn Bases>,
+    installed: Mutex<Option<Installed>>,
 }
 
 impl std::fmt::Debug for MapGate {
@@ -183,6 +188,21 @@ impl MapGate {
         MapGate {
             maps_dir: maps_dir.into(),
             bases,
+            installed: Mutex::new(None),
+        }
+    }
+
+    /// Call `f` after each [`prepare`](Self::prepare) that wrote a package
+    /// or named one in `active.toml`: the boot rescans the VFS's packages
+    /// (`vfs::Vfs::rescan_maps`), so the map is served at its next open.
+    /// Replaces any earlier callback.
+    pub fn on_installed(&self, f: Installed) {
+        *self.installed.lock().unwrap_or_else(|e| e.into_inner()) = Some(f);
+    }
+
+    fn installed(&self, dir: &Path) {
+        if let Some(f) = &*self.installed.lock().unwrap_or_else(|e| e.into_inner()) {
+            f(dir);
         }
     }
 
@@ -287,6 +307,7 @@ impl MapGate {
             Need::Nothing => return Ok(None),
             Need::Local(dir) => {
                 self.activate(&dir, ad)?;
+                self.installed(&dir);
                 return Ok(Some(dir));
             }
             Need::Download { answer, bytes } => (answer, bytes),
@@ -337,6 +358,7 @@ impl MapGate {
             )));
         }
         self.activate(&dir, ad)?;
+        self.installed(&dir);
         Ok(Some(dir))
     }
 
@@ -518,6 +540,7 @@ mod tests {
         assert_eq!(g.check(&s, &ad("custom", None)).unwrap(), Need::Nothing);
         let retail = MapId::retail("lockout", BASE);
         assert_eq!(g.check(&s, &ad("ranked", Some(retail))).unwrap(), Need::Nothing);
+        g.on_installed(Box::new(|_| panic!("nothing was installed")));
         assert_eq!(g.prepare(&s, &ad("custom", Some(retail))).unwrap(), None);
         std::fs::remove_dir_all(&maps).unwrap();
     }
@@ -530,12 +553,17 @@ mod tests {
         let id = MapId::of(&m);
         let s = server_with(&m, patch);
         let g = gate(&maps, true);
+        let told: Arc<Mutex<Vec<PathBuf>>> = Arc::default();
+        let sink = Arc::clone(&told);
+        g.on_installed(Box::new(move |d| sink.lock().unwrap().push(d.to_owned())));
         match g.check(&s, &ad("custom", Some(id))).unwrap() {
             Need::Download { bytes, .. } => assert_eq!(bytes, patch.len() as u64),
             other => panic!("{other:?}"),
         }
+        assert!(told.lock().unwrap().is_empty(), "a check installs nothing");
         let dir = g.prepare(&s, &ad("custom", Some(id))).unwrap().unwrap();
         assert_eq!(dir, maps.join(format!("live-{}", &id.to_string()[..16])));
+        assert_eq!(*told.lock().unwrap(), std::slice::from_ref(&dir), "the boot is told");
         assert_eq!(std::fs::read(dir.join("patches/snipers.ips")).unwrap(), patch);
         let lib = Library::open(&maps);
         assert_eq!(lib.packages()[0].id, id);

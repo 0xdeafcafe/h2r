@@ -17,7 +17,11 @@ fn disabled_live_leaves_console_dispatch_and_guest_mappings_unchanged() {
         accounts_path: Some("/nonexistent/live.json".into()),
         server_url: None,
     };
-    assert!(live_glue::install(&rt, &k, &config).unwrap().is_none());
+    assert!(
+        live_glue::install(&rt, &k, &config, None)
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(k.console_config(), console);
     assert_eq!(rt.memory().mappings(), before);
     rt.edit_dispatch(|d| {
@@ -37,7 +41,7 @@ fn enabled_live_registers_boundary_sets_existing_phy_config_and_stores_url() {
         accounts_path: None,
         server_url: Some("https://live.example/base".into()),
     };
-    let hle = live_glue::install(&rt, &k, &config).unwrap().unwrap();
+    let hle = live_glue::install(&rt, &k, &config, None).unwrap().unwrap();
     assert_eq!(hle.config(), &config);
     assert_eq!(k.console_config().phy_link, 0x0d);
     assert_eq!(k.console_config().language, 3);
@@ -58,7 +62,7 @@ fn invalid_account_configuration_does_not_enable_phy_or_register_partial_boundar
         accounts_path: Some("/nonexistent/live.json".into()),
         server_url: None,
     };
-    assert!(live_glue::install(&rt, &k, &config).is_err());
+    assert!(live_glue::install(&rt, &k, &config, None).is_err());
     assert_eq!(k.console_config().phy_link, 0);
     rt.edit_dispatch(|d| assert!(d.override_name(0x3a0641).is_none()));
 }
@@ -77,7 +81,8 @@ fn registration_conflict_leaves_console_unchanged() {
             &LiveConfig {
                 enabled: true,
                 ..LiveConfig::default()
-            }
+            },
+            None,
         )
         .is_err()
     );
@@ -96,6 +101,7 @@ fn enabled_live_reaches_the_kernel_phy_boundary() {
             enabled: true,
             ..LiveConfig::default()
         },
+        None,
     )
     .unwrap();
     rt.memory()
@@ -131,7 +137,7 @@ fn explicit_network_settings_reach_hle_without_changing_live_config_contract() {
         Some("192.168.1.50:31010"),
     )
     .unwrap();
-    let hle = live_glue::install_with_network(&rt, &k, &config, network.clone())
+    let hle = live_glue::install_with_network(&rt, &k, &config, network.clone(), None)
         .unwrap()
         .unwrap();
     assert_eq!(hle.network_config(), &network);
@@ -148,7 +154,7 @@ fn invalid_network_configuration_leaves_phy_and_dispatch_unchanged() {
         ..LiveConfig::default()
     };
     let network = live_hle::NetworkConfig::new("0.0.0.0:0".parse().unwrap());
-    assert!(live_glue::install_with_network(&rt, &k, &config, network).is_err());
+    assert!(live_glue::install_with_network(&rt, &k, &config, network, None).is_err());
     assert_eq!(k.console_config().phy_link, 0);
     rt.edit_dispatch(|d| assert!(d.override_name(0x3cd188).is_none()));
 }
@@ -163,7 +169,7 @@ fn disabled_explicit_network_install_ignores_invalid_network_and_accounts() {
     };
     let network = live_hle::NetworkConfig::new("0.0.0.0:0".parse().unwrap());
     assert!(
-        live_glue::install_with_network(&rt, &k, &config, network)
+        live_glue::install_with_network(&rt, &k, &config, network, None)
             .unwrap()
             .is_none()
     );

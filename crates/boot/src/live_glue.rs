@@ -1,20 +1,24 @@
 //! Live public-boundary registration and the existing console PHY switch.
 use anyhow::Context;
-use live_hle::{Hle, LiveConfig};
+use live_hle::{Hle, LiveConfig, ServerOptions, maps::MapGate};
 use std::sync::Arc;
 
 /// Install before guest execution, after attaching the kernel. Disabled is a
 /// complete no-op, including account I/O, guest allocation and console settings.
+/// `maps` is the join-time map gate (docs/maps.md §5; the boot builds it with
+/// `map_bases::gate` over the disc and `<data>/maps`); None takes sessions
+/// as they come.
 pub fn install(
     rt: &runtime::Runtime,
     k: &kernel::Kernel,
     config: &LiveConfig,
+    maps: Option<Arc<MapGate>>,
 ) -> anyhow::Result<Option<Arc<Hle>>> {
     if !config.enabled {
         return Ok(None);
     }
     let network = live_hle::NetworkConfig::from_env().map_err(anyhow::Error::msg)?;
-    install_with_network(rt, k, config, network)
+    install_with_network(rt, k, config, network, maps)
 }
 
 /// Explicit network settings for embedding/tests; install() reads the host env.
@@ -23,11 +27,17 @@ pub fn install_with_network(
     k: &kernel::Kernel,
     config: &LiveConfig,
     network: live_hle::NetworkConfig,
+    maps: Option<Arc<MapGate>>,
 ) -> anyhow::Result<Option<Arc<Hle>>> {
     if !config.enabled {
         return Ok(None);
     }
-    let hle = Hle::with_network(config.clone(), network).context("configuring Live client")?;
+    let options = ServerOptions {
+        maps,
+        ..ServerOptions::default()
+    };
+    let hle = Hle::with_server_options(config.clone(), network, options)
+        .context("configuring Live client")?;
     rt.edit_dispatch(|d| live_hle::register(d, &hle))
         .context("registering Live boundary")?;
     let mut console = k.console_config();

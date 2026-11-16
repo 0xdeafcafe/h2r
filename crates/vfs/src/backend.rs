@@ -25,6 +25,26 @@ pub trait Backend: Send {
     fn map_id(&mut self, _path: &str) -> Option<content::MapId> {
         None
     }
+    /// A file object was opened on `path` (after a successful open, files
+    /// only). Paired with [`closed`](Self::closed) when its last handle
+    /// closes. Backends whose contents can change while the game runs
+    /// (map packages) use the pair to keep an open file's contents fixed.
+    fn opened(&mut self, _path: &str) {}
+    /// The last handle of a file object opened on `path` closed.
+    fn closed(&mut self, _path: &str) {}
+    /// Look again at host-side contents that can change while the game
+    /// runs (map packages installed or edited); what changed takes effect
+    /// at the next open of each path. Wrappers forward it.
+    fn rescan(&mut self) {}
+    /// Whether the map at `path` would now be served from another package
+    /// (or none, or one where there was none) than when it was last
+    /// opened. False for a path never opened, open now, or not a map. The
+    /// game's map cache reuses a slot by its path alone
+    /// (docs/cache-slots.md, "Changed maps"), so the boot uses this to
+    /// invalidate a slot holding an outdated copy.
+    fn map_changed(&mut self, _path: &str) -> bool {
+        false
+    }
     fn create(&mut self, _path: &str, _directory: bool, _attributes: u32) -> Result<()> {
         Err(Error::MediaWriteProtected)
     }
