@@ -468,3 +468,149 @@ impl CollisionBsp {
         bad
     }
 }
+
+/// Bytes per lightmap element in the root's lightmaps block.
+pub const LIGHTMAP_LEN: usize = 0x20;
+/// Bytes per lightmap material.
+pub const MATERIAL_ELEM_LEN: usize = 0x100;
+/// Bytes per render surface (three `u16` vertex indices).
+pub const RENDER_SURFACE_LEN: usize = 6;
+/// Bytes per compressed rendered vertex.
+pub const RENDER_VERTEX_LEN: usize = 32;
+/// Bytes per compressed lightmap vertex.
+pub const LIGHTMAP_VERTEX_LEN: usize = 8;
+/// Root offset of the render surfaces block.
+pub const RENDER_SURFACES: usize = 0xf8;
+
+/// A unit vector packed as signed 11:11:10 (x bits 0-10, y 11-21, z
+/// 22-31), each over its field's largest magnitude.
+pub fn unpack_normal(v: u32) -> [f32; 3] {
+    let field = |shift: u32, bits: u32| {
+        let raw = (v >> shift) & ((1 << bits) - 1);
+        // Sign-extend.
+        let s = ((raw << (32 - bits)) as i32) >> (32 - bits);
+        s as f32 / ((1 << (bits - 1)) - 1) as f32
+    };
+    [field(0, 11), field(11, 11), field(22, 10)]
+}
+
+/// A rendered vertex (32 bytes compressed).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderVertex {
+    /// Position.
+    pub position: [f32; 3],
+    /// Normal, binormal and tangent, packed 11:11:10 (see [`unpack_normal`]).
+    pub frame: [u32; 3],
+    /// Texture coordinate.
+    pub texcoord: [f32; 2],
+}
+
+/// A lightmap vertex (8 bytes compressed).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightmapVertex {
+    /// Incident light direction, packed 11:11:10.
+    pub normal: u32,
+    /// Lightmap texture coordinate, `i16 / 32767`.
+    pub texcoord: [f32; 2],
+}
+
+/// One lightmap material: a shader and the triangles drawn with it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Material {
+    /// The shader.
+    pub shader: TagRef,
+    /// First render surface (triangle).
+    pub first_surface: u32,
+    /// Triangle count.
+    pub surface_count: u32,
+    /// Vertices; triangles index into these.
+    pub vertices: Vec<RenderVertex>,
+    /// Lightmap vertices, one per vertex; empty when the lightmap has no
+    /// bitmap.
+    pub lightmap_vertices: Vec<LightmapVertex>,
+}
+
+/// One lightmap: an index into the lightmap bitmap's images, and its
+/// materials.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Lightmap {
+    /// Image in the lightmap bitmap, `-1` none (unlit surfaces).
+    pub bitmap: i16,
+    /// Materials.
+    pub materials: Vec<Material>,
+}
+
+impl<'a> StructureBsp<'a> {
+    /// The render surfaces: three vertex indices into their material's
+    /// vertices.
+    pub fn render_surfaces(&self) -> Result<Vec<[u16; 3]>> {
+        Ok(self
+            .space
+            .block_at(self.root, RENDER_SURFACES, RENDER_SURFACE_LEN)?
+            .into_iter()
+            .map(|c| std::array::from_fn(|i| u16_at(c, 2 * i).unwrap()))
+            .collect())
+    }
+
+    /// The lightmaps and their materials, with each material's vertices.
+    pub fn lightmaps(&self) -> Result<Vec<Lightmap>> {
+        let mut out = Vec::new();
+        for l in self
+            .space
+            .block_at(self.root, root::LIGHTMAPS, LIGHTMAP_LEN)?
+        {
+            let mut materials = Vec::new();
+            for m in self.space.block_at(l, 0x14, MATERIAL_ELEM_LEN)? {
+                materials.push(self.material(m)?);
+            }
+            out.push(Lightmap {
+                bitmap: u16_at(l, 0).unwrap() as i16,
+                materials,
+            });
+        }
+        Ok(out)
+    }
+
+    fn material(&self, m: &[u8]) -> Result<Material> {
+        let u = |at| u32_at(m, at).unwrap();
+        let count = u(0xb4) as usize;
+        // The compressed vertices: a data reference at 0xec (size, flags,
+        // file offset, address): rendered vertices, then lightmap vertices
+        // when the size has room for them.
+        let (size, address) = (u(0xec) as usize, u(0xf8));
+        let lit = count * (RENDER_VERTEX_LEN + LIGHTMAP_VERTEX_LEN);
+        if size != lit && size != count * RENDER_VERTEX_LEN {
+            return Err(Error::Invalid(format!(
+                "material vertex data is {size:#x} bytes for {count} vertices"
+            )));
+        }
+        let data = self.space.at(address, size)?;
+        let (rendered, lightmap) = data.split_at(count * RENDER_VERTEX_LEN);
+        Ok(Material {
+            shader: TagRef::read(m, 0).unwrap(),
+            first_surface: u(0x14),
+            surface_count: u(0x18),
+            vertices: rendered
+                .as_chunks::<RENDER_VERTEX_LEN>()
+                .0
+                .iter()
+                .map(|c| RenderVertex {
+                    position: vec3(c, 0),
+                    frame: std::array::from_fn(|i| u32_at(c, 12 + 4 * i).unwrap()),
+                    texcoord: [f32_at(c, 24), f32_at(c, 28)],
+                })
+                .collect(),
+            lightmap_vertices: lightmap
+                .as_chunks::<LIGHTMAP_VERTEX_LEN>()
+                .0
+                .iter()
+                .map(|c| LightmapVertex {
+                    normal: u32_at(c, 0).unwrap(),
+                    texcoord: std::array::from_fn(|i| {
+                        u16_at(c, 4 + 2 * i).unwrap() as i16 as f32 / 32767.0
+                    }),
+                })
+                .collect(),
+        })
+    }
+}

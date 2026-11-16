@@ -203,8 +203,44 @@ equals the gap to the next block); "V" here means both maps agree.
 | `214` | Sound PAS data (data reference) | | shape only |
 | `24c`, `258` | Detail objects, runtime decals | | count only |
 
-Render geometry (lightmap materials and their vertex buffers) is the next
-step; not read yet.
+### Render geometry
+
+Read by `StructureBsp::lightmaps` and `render_surfaces`. **V** on both
+maps: the materials' surface runs tile the render surfaces in order, every
+index is below its material's vertex count, every vertex is inside the world
+bounds, every packed normal is unit length (±0.02), and lightmap texture
+coordinates are in [0, 1].
+
+Render surface (`sbsp+f8`, 6 bytes): three `u16` vertex indices into the
+material that owns the surface.
+
+Lightmap (`sbsp+104`, `0x20` bytes): `i16` image index in the lightmap
+bitmap at `00` (`-1`: no lightmap; its materials have no lightmap
+vertices), materials block at `14`.
+
+Material (`0x100` bytes):
+
+| Offset | Field | Evidence |
+|---|---|---|
+| `00` | Shader reference (a `shdr` child: `senv`, `sgla`, ...) | V |
+| `14`, `18` | `i32` first render surface, surface count | V: tiling |
+| `28`.. | Ambient colour, distant lights, reflection tint, shadow vector and colour (Halo 1 lighting scalars) | S: values look like colours and unit directions; not used yet |
+| `b0`, `b4` | `u16` rendered vertex type (1), `u32` vertex count | V for the count |
+| `c0` | Address of the material's Xbox vertex buffer resource (12 bytes) in the region header's first array | V: in the array |
+| `c4`, `c8` | `u16` lightmap vertex type (3), `u32` count (= vertex count) | V |
+| `d4` | Address of the lightmap vertex buffer resource, in the second array | V |
+| `ec` | Data reference (size, flags, file offset, address, unused) to the compressed vertices | V: size is `32 × count`, plus `8 × count` when lit |
+
+The region header's two arrays (`04`, `0c`) hold one 12-byte Xbox vertex
+buffer resource per material, `0x41` of them on beavercreek, matching its
+65 materials (V for the count; the resource layout isn't read).
+
+Compressed rendered vertex (32 bytes): position (3 × `f32`), normal,
+binormal, tangent (each a `u32` packed signed 11:11:10: x in bits 0–10, y
+11–21, z 22–31, each over its field's largest magnitude), texture
+coordinate (2 × `f32`). Compressed lightmap vertex (8 bytes): packed
+incident direction, lightmap coordinate (2 × `i16` over 32767). All rendered
+vertices come first, then all lightmap vertices.
 
 ### Collision BSP (`0x60`)
 

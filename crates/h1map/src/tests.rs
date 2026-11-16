@@ -712,6 +712,52 @@ fn real_maps_read_and_their_multiplayer_parts_and_collision_check_out() {
                 let g = m.tag(r.id).unwrap();
                 assert!(g.parent == Group::new(b"shdr") || g.group == Group::new(b"shdr"));
             }
+            // Render geometry: the materials' triangles tile the surfaces,
+            // index their own vertices, and every vertex is inside the bounds.
+            let tris = s.render_surfaces().unwrap();
+            let lightmaps = s.lightmaps().unwrap();
+            let mut next = 0;
+            let (mut verts, mut lit) = (0, 0);
+            for l in &lightmaps {
+                for mat in &l.materials {
+                    assert_eq!(
+                        mat.first_surface, next,
+                        "{name}: materials tile the surfaces"
+                    );
+                    next += mat.surface_count;
+                    let range = mat.first_surface as usize..next as usize;
+                    for t in &tris[range] {
+                        assert!(t.iter().all(|&i| (i as usize) < mat.vertices.len()));
+                    }
+                    for v in &mat.vertices {
+                        let [x, y, z] = v.position;
+                        let inside = |a: f32, lo: f32, hi: f32| a >= lo - 0.01 && a <= hi + 0.01;
+                        assert!(inside(x, bounds[0], bounds[1]) && inside(y, bounds[2], bounds[3]));
+                        assert!(inside(z, bounds[4], bounds[5]), "{name}: {:?}", v.position);
+                        let n = bsp::unpack_normal(v.frame[0]);
+                        let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                        assert!((len - 1.0).abs() < 0.02, "{name}: normal {n:?}");
+                    }
+                    assert!(
+                        mat.lightmap_vertices.is_empty()
+                            || mat.lightmap_vertices.len() == mat.vertices.len()
+                    );
+                    assert_eq!(mat.lightmap_vertices.is_empty(), l.bitmap < 0);
+                    for lv in &mat.lightmap_vertices {
+                        assert!(lv.texcoord.iter().all(|c| (0.0..=1.0).contains(c)));
+                    }
+                    verts += mat.vertices.len();
+                    lit += mat.lightmap_vertices.len();
+                    let shader = m.tag(mat.shader.id).unwrap();
+                    assert_eq!(shader.parent, Group::new(b"shdr"), "{}", shader.group);
+                }
+            }
+            assert_eq!(next as usize, tris.len());
+            eprintln!(
+                "  render: {} triangles, {verts} vertices ({lit} lightmapped), {} materials",
+                tris.len(),
+                lightmaps.iter().map(|l| l.materials.len()).sum::<usize>()
+            );
             let colls = s.collision_bsps().unwrap();
             assert_eq!(colls.len(), 1);
             let c = &colls[0];
@@ -733,4 +779,15 @@ fn real_maps_read_and_their_multiplayer_parts_and_collision_check_out() {
             assert_eq!(ground, mp.starting_locations.len());
         }
     }
+}
+
+#[test]
+fn packed_normals_unpack_as_signed_11_11_10() {
+    let pack = |x: i32, y: i32, z: i32| {
+        (x as u32 & 0x7ff) | (y as u32 & 0x7ff) << 11 | (z as u32 & 0x3ff) << 22
+    };
+    assert_eq!(bsp::unpack_normal(pack(1023, 0, 0)), [1.0, 0.0, 0.0]);
+    assert_eq!(bsp::unpack_normal(pack(0, -1023, 0)), [0.0, -1.0, 0.0]);
+    assert_eq!(bsp::unpack_normal(pack(0, 0, 511)), [0.0, 0.0, 1.0]);
+    assert_eq!(bsp::unpack_normal(pack(0, 0, -511)), [0.0, 0.0, -1.0]);
 }
