@@ -30,6 +30,34 @@ pub fn pick_controller<S: AsRef<str>>(names: &[S], pattern: &str) -> Option<usiz
     }
 }
 
+/// Where the controller-speaker sounds go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Speaker {
+    /// The output device at this index (a DualSense or DualShock 4's audio).
+    Device(usize),
+    /// A Steam Controller's trackpad actuators (`docs/steam-controller.md`):
+    /// no audio device, a haptic rendition of the sound.
+    Haptics,
+}
+
+/// The device setting that asks for the Steam Controller's haptics.
+pub const HAPTICS: &str = "haptics";
+
+/// Chooses the controller speaker. `haptics` says the Steam Controller
+/// side is running. With `auto`, a PlayStation controller's audio device
+/// wins (a real speaker), then the haptics; `haptics` asks for those alone;
+/// any other pattern is a device name only.
+pub fn pick_speaker<S: AsRef<str>>(names: &[S], pattern: &str, haptics: bool) -> Option<Speaker> {
+    let p = pattern.trim();
+    if p.eq_ignore_ascii_case(HAPTICS) || p.eq_ignore_ascii_case("steam") {
+        return haptics.then_some(Speaker::Haptics);
+    }
+    if let Some(i) = pick_controller(names, p) {
+        return Some(Speaker::Device(i));
+    }
+    (p.eq_ignore_ascii_case("auto") && haptics).then_some(Speaker::Haptics)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +84,26 @@ mod tests {
         assert_eq!(pick_controller(&HOST[..2], "Auto"), Some(1));
         assert_eq!(pick_controller(&HOST[..1], "auto"), None);
         assert_eq!(pick_controller(HOST, "speakers"), Some(0));
+    }
+
+    #[test]
+    fn the_speaker_for_each_device() {
+        // A DualSense attached: its speaker, haptics or not.
+        assert_eq!(pick_speaker(HOST, "auto", true), Some(Speaker::Device(2)));
+        assert_eq!(pick_speaker(HOST, "auto", false), Some(Speaker::Device(2)));
+        // No PlayStation audio: the Steam Controller's haptics if running.
+        let mac = &HOST[..1];
+        assert_eq!(pick_speaker(mac, "auto", true), Some(Speaker::Haptics));
+        assert_eq!(pick_speaker(mac, "auto", false), None);
+        // Asked for by name.
+        assert_eq!(pick_speaker(HOST, "haptics", true), Some(Speaker::Haptics));
+        assert_eq!(pick_speaker(HOST, " Steam ", true), Some(Speaker::Haptics));
+        assert_eq!(pick_speaker(HOST, "haptics", false), None);
+        // A named device never falls back to the haptics.
+        assert_eq!(pick_speaker(mac, "DualSense", true), None);
+        assert_eq!(
+            pick_speaker(HOST, "speakers", true),
+            Some(Speaker::Device(0))
+        );
     }
 }
