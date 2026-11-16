@@ -746,6 +746,42 @@ measures nothing and says so once.
 - Interrupt service routines delivered inside the owner's slice are still
   charged to it; they are short.
 
+**The `d3d` phase and the scene-pass calls.**
+
+- Every D3D API entry (our `d3d` layer's HLE overrides) on the game thread
+  is now its own phase, `d3d` (`d3d_us` in the CSV), minus `decode` and
+  `render-wait` inside it. It used to be inside `cpu` or `render`. With
+  render-timing on, `render` is guest code only and the overlay shows
+  `cpu X ren Y d3d Z`; with it off the overlay's `cpu` still includes
+  `d3d`. Guest-thread work is `cpu + render + d3d`.
+- The `render-timing:` line now reads `render R d3d D = <stages>`: `R`
+  and `D` are the guest code and the D3D entries called from inside the
+  render front-end, and each stage figure is both together. Ending
+  `foreign N` counts calls a frame to the scene callees from anywhere
+  other than the scene passes (see overhead).
+- Under it, the 15 most expensive calls in `render_scene_passes`, one
+  per line, by ms/frame, then the scene passes' own code:
+
+  ```text
+  render-timing:   site 0x0002c06a -> 0x0002c370 3.21 ms (guest 2.90 d3d 0.31) 1.0 calls
+  ```
+
+  `site` is the address of the `call` instruction in
+  `render_scene_passes`, `->` the function it calls. The time is
+  exclusive like the stages: everything from that call until the next
+  call of the sequence, except a nested stage (the per-light passes in
+  `0x00031c80`'s call are `light_passes`, not that site's). It also holds
+  the few instructions of the scene passes between that call and the
+  next. The sites add up, with `scene_passes own code`, to the
+  `scene_passes` figure. `calls` is per frame: a site runs once per
+  view, so 1.0 in one view, 4.0 in four-player split screen.
+- The sites come from observers before the 37 callees, which see every
+  call to them; only the ones returning into `render_scene_passes`
+  count. The others (`foreign`) still pay an observer and leave the
+  direct-call path; they are charged to whatever site or stage contains
+  them. Before-only observers need no shadow call, so each costs tens of
+  nanoseconds: 10,000 foreign calls a frame would be a fraction of a ms.
+
 **Overhead.** Twelve observer calls per frame plus two per view and per
 light, each a mutex and a clock read, a few microseconds a frame; plus
 the hooked functions leaving the direct-call path. The split is valid to
