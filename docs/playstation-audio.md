@@ -192,7 +192,7 @@ default; unknown keys are errors). `dsound::padroute::PadSpeakerConfig`:
 | `H2_PAD_SPEAKER` | `0` off, `1` on with defaults, otherwise a TOML file of the keys below (on unless it says `enabled = false`). Set, it locks the in-game row (below) | unset: the in-game row decides, on until turned off |
 | `H2_PAD_SPEAKER_DEVICE` | Output device name (substring, case-insensitive); `auto` tries DualSense, then a DS4 | `auto` |
 | `H2_PAD_SPEAKER_EXCLUSIVE` | `1` plays routed sounds only on the controller, `0` on both | `1` |
-| `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone | `1` (acts once a DualSense is found) |
+| `H2_PAD_MUTE` | `1` the mute button toggles mute and its LED, `0` leaves the button alone. Set, it locks the Video screen's Mute Button row (`[pad] mute_button`, read at launch) | `1` (acts once a DualSense is found) |
 
 ```toml
 # H2_PAD_SPEAKER=~/pad-speaker.toml
@@ -312,8 +312,10 @@ is pressed. Code: `crates/boot/src/speaker_row.rs` (logic over the `Gm`
 trait), registered by `layout_glue::install` because both features share
 those entries.
 
-What a toggle does (`boot::speaker_setting::SpeakerSetting`, one switch shared
-by the row, the sound index thread and the output thread):
+What a toggle does (`boot::speaker_setting::SpeakerSetting` over the
+`pad_speaker.enabled` setting in `settings::Store`, one switch shared by the
+row, the sound index thread and the output thread; the row steps the store
+and the store's change callback applies it):
 
 - **Off:** `DirectSound::set_pad_router(None)`, so no voice is labelled for
   the controller and every new sound plays on the main output, and the HID
@@ -443,7 +445,7 @@ who owns the voice transport. This document owns the device and capture side.
   index, gestalt and sample bytes) indexed from whole files, from regions
   of an image, with a chunk in the shared map, with the shared map missing,
   and through a VFS open.
-- `cargo test -p boot --lib speaker_setting speaker_row layout_glue`: on by
+- `cargo test -p boot --lib speaker_setting speaker_row layout_glue video_screen`: on by
   default, a router installed once it arrives, toggling off, on, off live
   (router removed and restored, HID path off and on), routers held back while
   off, toggling with no controller, the file round trip across "runs",

@@ -227,9 +227,8 @@ A host-side file, not the guest profile.
 - Path: `settings.toml` in the data root the run uses (`h2 play --data`,
   default `$TMPDIR/h2boot-data`; `vfs::Config::for_title` would give
   `~/Library/Application Support/h2recomp`, [storage.md](storage.md)). It is
-  not under `disk/`, which is the guest's. The controller speaker's row
-  already writes its `[pad_speaker]` table there
-  (`boot::speaker_setting`), keeping other keys.
+  not under `disk/`, which is the guest's. Every setting below is written
+  there by one writer, `settings::Store` (below), keeping other keys.
 - Reasons: the guest profile is signed and sized by the game, and writes to it
   go through retail code we should not perturb. Enhancements are per install,
   not per gamertag. A host file is easy to edit, diff, delete and share, and it
@@ -296,7 +295,7 @@ Not every flag belongs in a menu. They fall in four groups.
 | field of view | **Built:** a "Field of View" row on the Video screen, saved as `[graphics] fov` in `settings.toml`. `H2_FOV` (degrees, or `0` for retail) locks it when set; `H2_NO_FOV_ROW=1` removes the row and the camera hook | live (the camera hook reads the setting every frame) |
 | frame rate | **Built:** a "Frame Rate" row on the Video screen (30, 60, 120, Uncapped), saved as `[graphics] fps` (`30`, `60`, `120` or `"uncapped"`). `--fps` or `H2_FPS` locks it when set ([high-framerate.md](high-framerate.md)); above 30 it only redraws the newest frame until high-fps phase 2 | next launch: the row says "(restart)" until then |
 | resolution scale | **Built:** a "Resolution" row on the Video screen (1x to 4x), saved as `[graphics] render_scale` (the file may hold 1 to 6). `H2_RENDER_SCALE` locks it when set ([high-resolution.md](high-resolution.md)) | next launch, as above |
-| controller mute button | `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) | restart today; could go live through the HID thread |
+| controller mute button | **Built:** a "Mute Button" row on the Video screen, saved as `[pad] mute_button`. `H2_PAD_MUTE` (`1` default, `0` off; [playstation-audio.md](playstation-audio.md)) locks it when set | next launch (the HID thread reads it once); could go live through that thread |
 | bindings, deadzones, mouse sensitivity, invert Y | `--bindings`, [input.md](input.md) TOML | live once `Bindings` can be replaced on a running manager (not implemented) |
 
 **Graphics backend (runtime variables, read at launch).**
@@ -374,13 +373,14 @@ Notes on specific settings:
 
 Settings, a profile, Controls has a **Video** row after Controller Speaker
 (row 7; row 6 when `H2_NO_SPEAKER_ROW=1` removes the speaker row). A on it
-opens a screen titled "Video" with up to three rows:
+opens a screen titled "Video" with up to four rows:
 
 | Row | Values | Saved as | Applies | Locked by |
 |---|---|---|---|---|
 | Field of View | 70 to 120 in steps of 5 | `[graphics] fov` | at once | `H2_FOV` |
 | Frame Rate | 30, 60, 120, Uncapped | `[graphics] fps` | next launch | `--fps`, `H2_FPS` |
 | Resolution | 1x to 4x | `[graphics] render_scale` | next launch | `H2_RENDER_SCALE` |
+| Mute Button | On, Off | `[pad] mute_button` | next launch | `H2_PAD_MUTE` |
 
 A steps the row's value and saves it to `<data>/settings.toml` at once,
 keeping every other key. The frame rate and the scale are fixed for a run
@@ -395,9 +395,13 @@ the row and the screen; `H2_NO_FOV_ROW=1` removes the field of view row and
 the camera hook. Headless runs (`h2 run`) have none of it. Lighting gets a
 row once there is a lighting option to toggle.
 
-Code: `boot::video_screen` (logic over `Gm`), `boot::video_setting` (the
-two launch settings), registered by `layout_glue::install`; `h2 play`
-reads the saved frame rate and scale when no flag or variable sets them.
+Code: the rows are `Def`s in `boot::setting_defs` with a `menu` naming
+the screen; `boot::video_screen::model` builds the screen as
+`ui::Screen::new("video").rows_from_settings(..)` and the Controls rows as
+`ui::extend(List::Controls, 6)` ([Settings as a schema](#settings-as-a-schema-built));
+the hooks registered by `layout_glue::install` ask that model for counts,
+texts and presses. `h2 play` reads the saved frame rate, scale and mute
+button when no flag or variable sets them.
 
 ### How the screen is made (Local, static reading of the retail XBE)
 
@@ -496,11 +500,12 @@ and structures differ.
   label and the degrees as our own strings (English digits; ids in
   `layout_glue::is_ours`'s range); the row-chosen handler steps the value
   and returns.
-- **Setting** (`boot::fov_setting`): `[graphics] fov = <degrees>` in
+- **Setting** (`boot::setting_defs::FOV`): `[graphics] fov = <degrees>` in
   `settings.toml` in `h2 play`'s data root, next to `[pad_speaker]`,
-  written atomically and keeping every other key. 0 or 70 is retail; the
-  file may hold 0 or 30 to 150. A bad file is reported, treated as retail
-  and not overwritten. `H2_FOV=<degrees>` (30 to 150) or `H2_FOV=0` locks
+  written atomically and keeping every other key. 70 is retail (0 in the
+  file or `H2_FOV` reads as 70); the file may hold 30 to 150. A bad value
+  is reported, treated as retail and the file is not overwritten when it
+  is not TOML. `H2_FOV=<degrees>` (30 to 150) or `H2_FOV=0` locks
   the value for the run; the row shows it and pressing it does nothing. A
   bad `H2_FOV` is reported and ignored. Headless runs (`h2 run`) install
   neither the row nor the camera hook.
@@ -553,6 +558,43 @@ first-person camera changes.
 6. `H2_FOV=100 h2 play ...`: 100, and the row does not change it.
    `H2_FOV=0`: retail.
 7. Split screen: each player's view widens; vehicles keep retail's view.
+
+## Settings as a schema (built)
+
+Phase 0 of [feature-engine.md](feature-engine.md). A setting is one
+`settings::Def` (`crates/settings`): its `table.key` in `settings.toml`, its
+label and help, its kind (bool, whole number with a valid range and row
+steps, or a choice), its default, the variable and flag that override it,
+and whether a change applies at once (`Live`) or at the next launch
+(`Restart`). Ours are in `boot::setting_defs`.
+
+- **Precedence:** a flag (`--fps`, `h2 play --set key=value`), then the
+  variable, then the file, then the default. A value from a flag or the
+  variable, or one the run forces (the controller speaker with audio off),
+  is locked: its row shows it and A does nothing.
+- **Bad values** anywhere are reported once, naming the key, and the next
+  source is used. A file that is not TOML is reported and never
+  overwritten.
+- **Handles:** code reads a setting through `Setting<T>`, one atomic load,
+  so the camera hook reads the field of view with guest memory held. Row
+  presses go through the store after guest memory is dropped; a `Live`
+  setting's change callbacks (the controller speaker's router) run after
+  the store's lock is released.
+- **Rows:** `boot::ui` is the Rust model of our rows. `rows_from_settings`
+  takes every `User` setting whose `menu` names the screen, in order; the
+  model gives each text it can show a string id in our private range
+  (shared texts share an id) and refuses more texts than ids.
+- **CLI:** `h2 settings [--data DIR] list [--all] | get KEY | set KEY VALUE`
+  shows each value a play from this shell would use and where it comes
+  from, and writes the file through the same writer.
+
+A new setting with a Video row is one `Def` with
+`menu: Some(Menu { screen: "video", order })`; the Mute Button row was added
+that way. Behaviour kept from the hand-written settings: the same file keys
+and variables, `H2_FOV=0` for retail, `"uncapped"` written as a string,
+`H2_PAD_SPEAKER` naming a routes file. Changed: a bad `H2_PAD_MUTE` is now
+ignored (the file or on) where it used to turn the button off, and the log
+line after a press names the key (`graphics.fps: 60 from the next launch`).
 
 ## Opening the menu
 
