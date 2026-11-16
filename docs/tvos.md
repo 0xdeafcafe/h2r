@@ -47,9 +47,10 @@ This fills `platform/tvos/build/` (not committed):
 - `disc/` (about 920 MB) and `bootcache/` (20 MB).
 
 `build.sh --no-module` keeps an existing framework. Rebuild it whenever the
-generator or the runtime ABI changes: the app compares the module's stamp
+generator, the runtime ABI or `Cargo.lock` changes (the boot cache's analysis
+is keyed by `Cargo.lock` too): the app compares the module's stamp
 (`h2game.stamp`, which for tvOS names the `arm64-apple-tvos17.0` target) and
-refuses a stale one with a message on screen. Leave `H2_FASTMEM`,
+refuses a stale one at start-up, with a message on screen. Leave `H2_FASTMEM`,
 `H2_X87_NATIVE`, `H2_PASSES` and the other generator switches unset; the app
 computes the stamp with their defaults, and `pack` refuses to run with any set.
 

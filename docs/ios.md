@@ -79,8 +79,8 @@ platform/ios/build.sh /abs/path/to/disc/halo2.iso
 This fills `platform/ios/build/` (not committed): `libh2host.a`,
 `h2game.framework` (the full lift, emit and clang for iOS, about 15 minutes;
 the C and objects stay in `$TMPDIR/h2ios-gen`), `disc/` and `bootcache/`.
-`--no-module` keeps an existing framework; rebuild it whenever the generator or
-the runtime ABI changes (the app checks the stamp, which names
+`--no-module` keeps an existing framework; rebuild it whenever the generator,
+the runtime ABI or `Cargo.lock` changes (the app checks the stamp, which names
 `arm64-apple-ios17.0`, and refuses a stale module). If you already have the
 tvOS `build/disc`, clone it first to skip the extraction:
 `cp -cR platform/tvos/build/disc platform/ios/build/disc`.
