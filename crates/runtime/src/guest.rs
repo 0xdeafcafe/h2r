@@ -702,8 +702,11 @@ impl Guest {
         }
     }
 
-    /// Built only when a generated module requests the optional C fast path.
-    pub(crate) fn prepare_fast_pages(&mut self) {
+    /// Built when a generated module requests the optional C fast path
+    /// (or a test or bench wants the same table). Rust accesses within one
+    /// page use it too ([`read_bytes`](Self::read_bytes),
+    /// [`write_bytes`](Self::write_bytes)).
+    pub fn prepare_fast_pages(&mut self) {
         if self.fast_pages.is_some() {
             return;
         }
@@ -845,7 +848,33 @@ impl Guest {
     ) -> Result<(), GuestFault> {
         self.checked_start(addr, len, access, alignment).map(|_| ())
     }
+    /// The physical offset of `[addr, addr + len)` when it lies in one
+    /// whole page of the fast page table that allows `need` (permission
+    /// bits), is not device memory and meets `alignment`: the access
+    /// [`checked_start`](Self::checked_start) would accept, found with one
+    /// table lookup. `None` sends the access the long way, which also
+    /// reports any fault.
+    #[inline]
+    fn fast_offset(&self, addr: u32, len: usize, need: u32, alignment: u32) -> Option<usize> {
+        let pages = self.fast_pages.as_deref()?;
+        let off = (addr & (PAGE_SIZE - 1)) as usize;
+        if len == 0
+            || off + len > PAGE_SIZE as usize
+            || !alignment.is_power_of_two()
+            || !addr.is_multiple_of(alignment)
+            || ((addr as u64) < MMIO_END && addr as u64 + len as u64 > MMIO_START)
+        {
+            return None;
+        }
+        let p = pages[(addr >> 12) as usize];
+        (p.permissions & need != 0).then_some(p.physical as usize + off)
+    }
+
     pub fn read_bytes(&self, addr: u32, out: &mut [u8], alignment: u32) -> Result<(), GuestFault> {
+        if let Some(at) = self.fast_offset(addr, out.len(), 1, alignment) {
+            out.copy_from_slice(&self.ram[at..at + out.len()]);
+            return Ok(());
+        }
         let Some(mut index) = self.checked_start(addr, out.len(), Access::Read, alignment)? else {
             return Ok(());
         };
@@ -872,6 +901,10 @@ impl Guest {
         out: &mut Vec<u8>,
         alignment: u32,
     ) -> Result<(), GuestFault> {
+        if let Some(at) = self.fast_offset(addr, len, 1, alignment) {
+            out.extend_from_slice(&self.ram[at..at + len]);
+            return Ok(());
+        }
         let Some(mut index) = self.checked_start(addr, len, Access::Read, alignment)? else {
             return Ok(());
         };
@@ -892,6 +925,14 @@ impl Guest {
         value: &[u8],
         alignment: u32,
     ) -> Result<(), GuestFault> {
+        if let Some(at) = self.fast_offset(addr, value.len(), 2, alignment) {
+            self.ram[at..at + value.len()].copy_from_slice(value);
+            // The write barrier, as below.
+            if self.watch.active() {
+                self.watch.note(at, value.len());
+            }
+            return Ok(());
+        }
         let Some(mut index) = self.checked_start(addr, value.len(), Access::Write, alignment)?
         else {
             return Ok(());

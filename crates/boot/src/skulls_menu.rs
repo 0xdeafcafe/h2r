@@ -47,7 +47,7 @@ use settings::Store;
 
 use crate::layout_glue::{Gm, ID_BASE};
 use crate::list_class::{Rows, TextBlock};
-use crate::skulls::{self, ABOUT, COUNT, SKULLS, State};
+use crate::skulls::{self, ABOUT, COUNT, SKULLS, State, TOTAL};
 use crate::speaker_row;
 use crate::ui::{Chosen, LABEL_SLOT, VALUE_SLOT};
 
@@ -69,14 +69,18 @@ pub const FEATURE: &str = "skulls-screen";
 /// [`ID_BASE`] is ours too and clear of every id the model and the other
 /// rows take (`ID_BASE + 0x00..0xff`).
 pub const SKULLS_ID_BASE: u32 = ID_BASE + 0x0100_0000;
-const LABELS: Range<u32> = SKULLS_ID_BASE..SKULLS_ID_BASE + 0x10;
 pub const TITLE_ID: u32 = SKULLS_ID_BASE + 0x10;
 pub const LOCKED_ID: u32 = SKULLS_ID_BASE + 0x11;
 /// The multiplayer screen's title.
 pub const MP_TITLE_ID: u32 = SKULLS_ID_BASE + 0x12;
-const DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x20..SKULLS_ID_BASE + 0x30;
 /// One description per multiplayer row (`skulls_mp::MP`).
 const MP_DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x30..SKULLS_ID_BASE + 0x38;
+/// A label and a description per skull, ours included (room for 64).
+const LABELS: Range<u32> = SKULLS_ID_BASE + 0x40..SKULLS_ID_BASE + 0x80;
+const DESCRIPTIONS: Range<u32> = SKULLS_ID_BASE + 0x80..SKULLS_ID_BASE + 0xc0;
+/// The HUD message when one of our skulls is picked up
+/// (`crate::skulls_custom`), by skull index.
+const FOUND: Range<u32> = SKULLS_ID_BASE + 0xc0..SKULLS_ID_BASE + 0x100;
 pub const TITLE: &str = "Skulls";
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
@@ -127,6 +131,17 @@ pub fn description_id(i: usize) -> u32 {
     DESCRIPTIONS.start + i as u32
 }
 
+/// The id of the HUD message shown when skull `i` (one of ours) is found.
+pub fn found_id(i: usize) -> u32 {
+    FOUND.start + i as u32
+}
+
+/// The HUD message when skull `i` is found: our own words (retail shows
+/// the skull's name alone).
+pub fn found_text(i: usize) -> String {
+    format!("Skull found: {}", SKULLS[i].label)
+}
+
 /// Skull `i`'s description: the game's full name when the row shows a
 /// short one, what it does, where it is and whether only on Legendary.
 pub fn description(i: usize) -> String {
@@ -159,7 +174,10 @@ pub fn row_of(i: usize) -> Option<i16> {
 }
 
 static DESCRIPTION_TEXTS: LazyLock<Vec<String>> =
-    LazyLock::new(|| (0..COUNT).map(description).collect());
+    LazyLock::new(|| (0..TOTAL).map(description).collect());
+
+static FOUND_TEXTS: LazyLock<Vec<(usize, String)>> =
+    LazyLock::new(|| (COUNT..TOTAL).map(|i| (i, found_text(i))).collect());
 
 /// The description id of multiplayer row `row`.
 pub fn mp_description_id(row: usize) -> u32 {
@@ -207,6 +225,7 @@ pub fn strings() -> Vec<(u32, &'static str)> {
             .enumerate()
             .map(|(i, t)| (mp_description_id(i), t.as_str())),
     );
+    v.extend(FOUND_TEXTS.iter().map(|(i, t)| (found_id(*i), t.as_str())));
     v
 }
 
@@ -289,7 +308,7 @@ pub fn difficulty_line(store: &Store, (names, fallback): &(Vec<String>, Option<S
         .iter()
         .map(|p| {
             format!(
-                "{p} {} of {COUNT} collected",
+                "{p} {} of {TOTAL} collected",
                 skulls::collected(store, p).len()
             )
         })
@@ -412,7 +431,7 @@ impl SkullsScreen {
 impl Rows for SkullsScreen {
     fn count(&self) -> usize {
         match self.mode() {
-            Mode::Campaign => COUNT,
+            Mode::Campaign => TOTAL,
             Mode::Multiplayer => crate::skulls_mp::MP.len(),
         }
     }
@@ -476,8 +495,9 @@ impl Rows for SkullsScreen {
     }
 }
 
-const _: () = assert!(COUNT as u32 <= LABELS.end - LABELS.start);
-const _: () = assert!(COUNT as u32 <= DESCRIPTIONS.end - DESCRIPTIONS.start);
+const _: () = assert!(TOTAL as u32 <= LABELS.end - LABELS.start);
+const _: () = assert!(TOTAL as u32 <= DESCRIPTIONS.end - DESCRIPTIONS.start);
+const _: () = assert!(TOTAL as u32 <= FOUND.end - FOUND.start);
 const _: () =
     assert!(crate::skulls_mp::MP.len() as u32 <= MP_DESCRIPTIONS.end - MP_DESCRIPTIONS.start);
 
@@ -540,7 +560,7 @@ mod tests {
     fn every_skull_is_listed_gold_first() {
         let s = SkullsScreen::new(store());
         s.open("Chief".into());
-        assert_eq!(s.count(), 15);
+        assert_eq!(s.count(), TOTAL);
         let names: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
         assert_eq!(
             names,
@@ -562,9 +582,16 @@ mod tests {
                 "Ghost",
                 "Sputnik",
                 "Bandana",
+                // Ours, after retail's: gold, then silver.
+                "Fall Damage",
+                "Acrophobia",
+                "Low Gravity",
+                "Unlimited Ammo",
+                "Unlimited Grenades",
+                "Invincible",
             ]
         );
-        assert!(s.texts(15).is_empty());
+        assert!(s.texts(TOTAL as i16).is_empty());
         assert!(s.texts(-1).is_empty());
         assert_eq!(s.title(), TITLE_ID);
         assert_eq!(text(TITLE_ID), "Skulls");
@@ -629,7 +656,7 @@ mod tests {
             Some("skulls: Iron on for Chief")
         );
         assert_eq!(s.state(11), State::On);
-        assert_eq!(s.press_line(15), None);
+        assert_eq!(s.press_line(TOTAL as i16), None);
         assert_eq!(s.press_line(-1), None);
     }
 
@@ -691,7 +718,12 @@ mod tests {
             "Silver skull: I Would Have Been Your Daddy: Rare lines play far more often. \
              Found on Outskirts, Legendary only (solo; one try in seven)."
         );
-        assert_eq!(s.description(15), None);
+        assert_eq!(
+            description(crate::skulls_custom::FALL_DAMAGE),
+            "Gold skull: A hard landing hurts: past a jump's speed, a fall drains your shields, then \
+             your health. Found on Metropolis, any difficulty."
+        );
+        assert_eq!(s.description(TOTAL as i16), None);
     }
 
     #[test]
@@ -711,7 +743,7 @@ mod tests {
         skulls::record_pickup(&st, &names(&["Arbiter"]), 12);
         assert_eq!(
             difficulty_line(&st, &(names(&["Chief", "Arbiter"]), None)),
-            "skulls menu: difficulty list: Skulls row shown; Chief 0 of 15 collected, Arbiter 1 of 15 collected"
+            "skulls menu: difficulty list: Skulls row shown; Chief 0 of 21 collected, Arbiter 1 of 21 collected"
         );
     }
 
@@ -747,7 +779,7 @@ mod tests {
         let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
         let none = skulls::profiles_or_default(&Fake::default());
         let line = difficulty_line(&st, &none);
-        assert!(line.contains("default 0 of 15 collected"), "{line}");
+        assert!(line.contains("default 0 of 21 collected"), "{line}");
         assert!(line.contains("no named profile signed in"), "{line}");
         skulls::record_pickup(&st, &none.0, 12);
         let s = SkullsScreen::new(Arc::clone(&st));
@@ -783,7 +815,11 @@ mod tests {
     #[test]
     fn strings_are_ours_distinct_and_clear_of_the_models() {
         let all = strings();
-        assert_eq!(all.len(), 2 * COUNT + 3 + crate::skulls_mp::MP.len());
+        // Labels and descriptions for all, a found message for each of ours.
+        assert_eq!(
+            all.len(),
+            2 * TOTAL + 3 + crate::skulls_mp::MP.len() + crate::skulls_custom::OURS
+        );
         let mut ids: Vec<u32> = all.iter().map(|(i, _)| *i).collect();
         assert!(ids.iter().all(|i| is_ours(*i)));
         assert!(
@@ -813,15 +849,15 @@ mod tests {
         let s = SkullsScreen::multiplayer(Arc::clone(&st));
         s.open("Chief".into());
         assert_eq!(s.mode(), Mode::Multiplayer);
-        assert_eq!(s.count(), 2);
+        assert_eq!(s.count(), 3);
         assert_eq!(s.title(), MP_TITLE_ID);
         let shown: Vec<_> = drawn(&s).into_iter().map(|(n, _)| n).collect();
-        assert_eq!(shown, ["Famine", "Blind"]);
+        assert_eq!(shown, ["Famine", "Blind", "Low Gravity"]);
         assert!(
             drawn(&s).iter().all(|(_, v)| v == "Locked"),
             "nothing collected"
         );
-        assert!(s.texts(2).is_empty());
+        assert!(s.texts(3).is_empty());
         assert_eq!(s.description(1), Some(mp_description_id(1)));
         assert_eq!(
             text(mp_description_id(1)),
@@ -841,16 +877,16 @@ mod tests {
                 .unwrap()
                 .contains("Famine is locked for Chief in multiplayer")
         );
-        assert_eq!(s.press_line(2), None);
+        assert_eq!(s.press_line(3), None);
         assert_eq!(crate::skulls_mp::chosen(&st, "Chief"), vec![6]);
         // Opening it again keeps it the multiplayer screen.
         s.open("Chief".into());
-        assert_eq!(s.count(), 2);
+        assert_eq!(s.count(), crate::skulls_mp::MP.len());
         assert_eq!(s.title(), MP_TITLE_ID);
-        // The campaign screen still lists all fifteen, its own states.
+        // The campaign screen still lists all of them, its own states.
         let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
-        assert_eq!(s.count(), COUNT);
+        assert_eq!(s.count(), TOTAL);
         assert_eq!(
             s.state(6),
             State::On,
@@ -888,7 +924,7 @@ mod tests {
         );
         skulls::record_pickup(&st, &names(&["Chief"]), 6);
         assert_eq!(mp.tint(1), Some(tint(Gold, State::Off)));
-        assert_eq!(mp.tint(2), None);
+        assert_eq!(mp.tint(crate::skulls_mp::MP.len() as i16), None);
     }
 
     /// The picture sits right of the list and the description under it.

@@ -94,9 +94,11 @@ const fn mp_def(key: &'static str, label: &'static str, order: u32) -> Def {
 
 pub static MP_FAMINE: Def = mp_def("skulls.mp_famine", "Famine (multiplayer)", 104);
 pub static MP_BLIND: Def = mp_def("skulls.mp_blind", "Blind (multiplayer)", 106);
+pub static MP_LOW_GRAVITY: Def = mp_def("skulls.mp_low_gravity", "Low Gravity (multiplayer)", 116);
+
 /// The skulls offered in multiplayer, in the engine's order:
 /// `live_proto::skulls::MULTIPLAYER`.
-pub static MP: [MpSkull; 2] = [
+pub static MP: [MpSkull; 3] = [
     MpSkull {
         index: 4,
         def: &MP_FAMINE,
@@ -108,6 +110,14 @@ pub static MP: [MpSkull; 2] = [
         def: &MP_BLIND,
         reach: Reach::Local,
         effect: "Every player's HUD and first-person weapon are hidden.",
+    },
+    // Ours (crate::skulls_custom): the physics constants' gravity, which
+    // every machine simulates with, so the host's choice is everyone's.
+    MpSkull {
+        index: crate::skulls_custom::LOW_GRAVITY,
+        def: &MP_LOW_GRAVITY,
+        reach: Reach::Simulation,
+        effect: "Gravity is halved for everyone.",
     },
 ];
 
@@ -783,7 +793,20 @@ mod tests {
         assert_eq!(state(&st, "Chief", 0), Some(State::Locked));
         assert_eq!(chosen(&st, "Chief"), vec![6]);
         assert!(press(&st, "Chief", 0).unwrap().contains("is locked"));
-        assert_eq!(press(&st, "Chief", 2), None);
+        // Low Gravity, ours, is offered the same way: locked until found.
+        assert!(
+            press(&st, "Chief", 2)
+                .unwrap()
+                .contains("Low Gravity is locked")
+        );
+        skulls::record_pickup(
+            &st,
+            &names_of(&["Chief"]),
+            crate::skulls_custom::LOW_GRAVITY,
+        );
+        press(&st, "Chief", 2);
+        assert_eq!(chosen(&st, "Chief"), vec![6, 16]);
+        assert_eq!(press(&st, "Chief", 3), None);
     }
 
     fn session(peers: u32, host: bool, class: u32) -> Session {

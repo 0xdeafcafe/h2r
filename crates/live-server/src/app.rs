@@ -155,6 +155,8 @@ pub struct Live {
     pub(crate) invites: Arc<crate::invites::Invites>,
     /// Custom maps and their content (docs/maps.md §5).
     pub(crate) catalog: Arc<crate::content::Catalog>,
+    /// Server-wide stats for the stats home (`GET /v1/stats/summary`).
+    pub(crate) stats: Arc<crate::stats::Stats>,
     pub(crate) uploads: RateLimiter,
     pub(crate) content_writes: tokio::sync::Mutex<()>,
     /// Unix seconds the service started.
@@ -382,6 +384,8 @@ impl Live {
         dispatcher.subscribe(invites.clone());
         let catalog = Arc::new(crate::content::Catalog::default());
         dispatcher.subscribe(catalog.clone());
+        let stats = Arc::new(crate::stats::Stats::default());
+        dispatcher.subscribe(stats.clone());
         let mut applied = dispatcher.applied();
         let feed = dispatcher.feed();
         let wake = store.wake().await?;
@@ -405,6 +409,7 @@ impl Live {
             relays: Default::default(),
             invites,
             catalog,
+            stats,
             uploads: RateLimiter::new(policy.content.upload_rate.0, policy.content.upload_rate.1),
             content_writes: Default::default(),
             started_at: now(),
@@ -1018,7 +1023,11 @@ impl Live {
             .files
             .get(&(title, name.to_string()))
             .map(|f| f.meta.clone());
-        let meta = meta.ok_or_else(|| not_found("no such title file"))?;
+        let Some(meta) = meta else {
+            // Halo 2's playlists until one is published (default_hopper).
+            return crate::default_hopper::fallback(title, name)
+                .ok_or_else(|| not_found("no such title file"));
+        };
         let bytes = self
             .store
             .blob(&meta.sha256)

@@ -88,6 +88,8 @@
 .s-stats { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 11px; border: 1px solid #444; background: #1a1a1a; font-variant-numeric: tabular-nums; }
 .s-stats th { padding: 0 5px; font: 11px/23px var(--font-ui); color: #bbb; text-align: center; background: #000; border-bottom: 1px solid #333; white-space: nowrap; }
 .s-stats th:first-child { text-align: left; }
+/* Numeric columns read right-aligned, as the site's grid tables do. */
+.s-stats th:not(:first-child), .s-stats td:not(:first-child):not(.medals) { text-align: right; }
 .s-stats td { padding: 0 5px; line-height: 24px; height: 25px; text-align: center; color: #ddd; border-bottom: 1px solid #000; background: #1a1a1a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .s-stats tr:nth-child(2n) td { background: #252525; }
 .s-stats td:first-child { text-align: left; padding-left: 0; border-left: 3px solid var(--row, #555); }

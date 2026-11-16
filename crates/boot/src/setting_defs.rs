@@ -215,9 +215,17 @@ pub static ALL: &[&Def] = &[
     &crate::skulls::SKULLS[12],
     &crate::skulls::SKULLS[13],
     &crate::skulls::SKULLS[14],
+    // Ours, hidden in the campaign (crate::skulls_custom).
+    &crate::skulls::SKULLS[15],
+    &crate::skulls::SKULLS[16],
+    &crate::skulls::SKULLS[17],
+    &crate::skulls::SKULLS[18],
+    &crate::skulls::SKULLS[19],
+    &crate::skulls::SKULLS[20],
     // Skulls in multiplayer games (crate::skulls_mp, docs/skulls.md).
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,
+    &crate::skulls_mp::MP_LOW_GRAVITY,
 ];
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,

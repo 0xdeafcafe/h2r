@@ -1,4 +1,4 @@
-// Skull icons, one per Halo 2 skull: a shared bone-coloured skull with a
+// Skull icons, one per Halo 2 skull and one per skull of ours: a shared bone-coloured skull with a
 // small mark on the brow that tells them apart. Drawn here, no game art.
 // `SkullBadges` is the row of them a game or a list row shows.
 
@@ -23,6 +23,13 @@ const MARKS: Array<{ d: string; fill?: boolean }> = [
   { d: "M9.2 8.2V4.8l1.7 1.5L12 4.4l1.1 1.9l1.7-1.5v3.4z", fill: true }, // 12 Mythic: a crown
   { d: "M8.8 4.4l2.8 2M15.2 4.4l-2.8 2" }, // 13 Angry: slanted brows
   { d: "M10.4 5a1.3 1.3 0 1 0 0 2.6a1.3 1.3 0 1 0 0-2.6zM13.6 5a1.3 1.3 0 1 0 0 2.6a1.3 1.3 0 1 0 0-2.6z" }, // 14 Bandana: a loop, unlimited
+  // Ours.
+  { d: "M8.6 7.2q1.7-3 3.4-1q1.7-2 3.4 1" }, // 15 Acrophobia: wings
+  { d: "M12 8.4V4.4M10.4 6l1.6-1.6L13.6 6" }, // 16 Low Gravity: an arrow up
+  { d: "M12 4v3.4M10.4 5.8L12 7.4l1.6-1.6M9.4 8.4h5.2" }, // 17 Fall Damage: an arrow down to the ground
+  { d: "M9.4 4.6h1.4v3.8H9.4zM11.3 4.6h1.4v3.8h-1.4zM13.2 4.6h1.4v3.8h-1.4z" }, // 18 Unlimited Ammo: three rounds
+  { d: "M10 5.6a1.3 1.3 0 1 0 0 2.6a1.3 1.3 0 1 0 0-2.6zM14 5.6a1.3 1.3 0 1 0 0 2.6a1.3 1.3 0 1 0 0-2.6zM9.4 4.4h1.2M13.4 4.4h1.2" }, // 19 Unlimited Grenades: two grenades
+  { d: "M12 4l2.6 1v1.6c0 1-1.2 1.6-2.6 2c-1.4-.4-2.6-1-2.6-2V5z", fill: true }, // 20 Invincible: a solid shield
 ];
 
 const HEAD = "M12 2.4c-4.7 0-8 3.2-8 7.6c0 2.6 1.2 4.3 2.8 5.3V20h2.3v-2h1.4v2h3v-2h1.4v2h2.3v-4.7c1.6-1 2.8-2.7 2.8-5.3c0-4.4-3.3-7.6-8-7.6z";

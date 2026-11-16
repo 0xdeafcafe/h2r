@@ -40,6 +40,7 @@ import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
 import { Content, customFor } from "./content";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
+import { StatsFold, archive } from "./stats";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -56,6 +57,19 @@ const social = new Social(world);
 social.seed();
 world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
 // Open sessions for the dashboard's "find a game" (mock/sessions.ts).
+// The stats summary (mock/stats.ts): a made-up month before the simulated
+// history, then the log, folded as it grows.
+const stats = new StatsFold();
+let statsAt = 0;
+if (process.env.H2_MOCK_STATS_ARCHIVE !== "0") {
+  const first = Date.parse(world.log.find((e) => e.stream.startsWith("game-"))?.at ?? new Date().toISOString());
+  for (const e of archive([...world.accounts.values()], first)) stats.apply(e);
+}
+function statsSummary(window: string) {
+  for (; statsAt < world.log.length; statsAt++) stats.apply(world.log[statsAt]!);
+  return stats.summary(window, Date.now(), world.log.length);
+}
+
 const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0), customMaps ? customFor : undefined);
 sessions.seed();
 setInterval(() => sessions.step(), 2500);
@@ -204,6 +218,10 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     if (!a) return err(404, "not_found", "no such account");
     const recent = [...world.games.values()].filter((g) => g.players.some((p) => p.p.xuid === a.xuid)).slice(-20).reverse();
     return json({ ...world.publicAccount(a), ...(admin.isAdmin(a) ? { admin: true } : {}), recent_games: recent.map((g) => world.gameSummary(g)), position: world.log.length });
+  }
+  if (path === "/v1/stats/summary") {
+    const sum = statsSummary(u.searchParams.get("window") ?? "7d");
+    return sum ? json(sum) : err(400, "invalid", "window is today, 7d, 30d or all");
   }
   if (path === "/v1/presence") {
     return list([...world.accounts.values()].filter((a) => a.online).map((a) => ({

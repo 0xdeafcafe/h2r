@@ -1,5 +1,5 @@
-//! `h2 live admin grant|revoke`, `h2 live hopper import` and `h2 live
-//! account export` (docs/live-admin.md). Dispatched from `live_cmd.rs`.
+//! `h2 live admin grant|revoke`, `h2 live hopper import|defaults` and `h2
+//! live account export` (docs/live-admin.md). Dispatched from `live_cmd.rs`.
 //!
 //! The admin commands sign with the server key in `--data`, like `motd set`
 //! and `invite create`, so they run on the server's machine. `account
@@ -9,6 +9,7 @@
 //! `account import` checks in the other direction.
 
 use std::fs;
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use live_proto::hopper::{HALO_2_HOPPER_FILE, HOPPERS, HopperFile, INFLATED_SIZE};
@@ -20,6 +21,7 @@ use crate::live_cmd::{self, Args, Client};
 
 const USAGE: &str = "usage: h2 live admin grant|revoke <gamertag> [--server URL] [--data DIR]
        h2 live hopper import <file> [--title ID] [--server URL] [--data DIR]
+       h2 live hopper defaults --out FILE [--raw] [--force]
        h2 live account export <gamertag> [--file PATH] [--server URL]";
 
 /// A gamertag for a URL path segment: percent-encoded, since gamertags may
@@ -138,6 +140,63 @@ pub fn hopper_import(mut args: Args) -> Result<()> {
     }
     let built = file.build_checked().map_err(|e| anyhow::anyhow!("{e}"))?;
     publish_title_file(&built, title, HALO_2_HOPPER_FILE, server, data)
+}
+
+/// `h2 live hopper defaults --out FILE`: writes the built-in playlists
+/// (`HopperFile::default_set`, what a server serves with no file
+/// published) as the download envelope, or with `--raw` as the 0x162cc0-byte
+/// image a console caches. Offline: nothing is sent anywhere.
+pub fn hopper_defaults(mut args: Args) -> Result<()> {
+    let out = args
+        .take("--out")?
+        .ok_or_else(|| anyhow::anyhow!("hopper defaults needs --out FILE\n\n{USAGE}"))?;
+    let raw = args.flag("--raw");
+    let force = args.flag("--force");
+    let extra = args.positional_for(USAGE)?;
+    if !extra.is_empty() {
+        bail!("hopper defaults takes no other arguments\n\n{USAGE}");
+    }
+    let file = HopperFile::default_set();
+    let size = write_defaults(&file, Path::new(&out), raw, force)?;
+    for i in 0..HOPPERS {
+        let d = file.descriptor(i)?;
+        if d.hopper_type != 0 {
+            println!(
+                "  {:>2}  type {}  {:3} entries  {}",
+                i,
+                d.hopper_type,
+                file.entry_count(i)?,
+                d.titles[0]
+            );
+        }
+    }
+    println!("wrote {out} ({size} bytes)");
+    Ok(())
+}
+
+/// Writes `file` to `dest` (the envelope, or the raw image), never over a
+/// disc image and only over an existing file with `force`. Returns the size.
+fn write_defaults(file: &HopperFile, dest: &Path, raw: bool, force: bool) -> Result<usize> {
+    let bytes = if raw {
+        file.image().to_vec()
+    } else {
+        file.build_checked().map_err(|e| anyhow::anyhow!("{e}"))?
+    };
+    crate::safe_out::guard_target(dest, None)?;
+    let name = dest
+        .file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| format!("{} is not a file path", dest.display()))?
+        .to_string();
+    let parent = match dest.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    crate::safe_out::OutDir::new(parent, force)?
+        .write(&[name], &bytes)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .with_context(|| format!("writing {}", dest.display()))?;
+    Ok(bytes.len())
 }
 
 /// The shared tail of the operator file-publishing commands (`motd set`,
@@ -283,6 +342,41 @@ mod tests {
         let read = read_hopper(file.image()).unwrap();
         assert_eq!(read.image(), file.image());
         assert!(read_hopper(b"not a hopper file").is_err());
+    }
+
+    #[test]
+    fn hopper_defaults_writes_the_default_set() {
+        let dir = std::env::temp_dir().join(format!(
+            "h2-hopper-defaults-{}-{}",
+            std::process::id(),
+            live_proto::sign::random_id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let file = HopperFile::default_set();
+        let out = dir.join("multiplayer_hopper.dat");
+        let size = write_defaults(&file, &out, false, false).unwrap();
+        let written = fs::read(&out).unwrap();
+        assert_eq!(written.len(), size);
+        let parsed = HopperFile::parse(&written).unwrap();
+        assert!(parsed.image() == file.image());
+        let maps = live_proto::hopper::defaults::retail_map_ids();
+        assert_eq!(parsed.problems(&maps), vec![]);
+        // No overwrite without --force.
+        assert!(write_defaults(&file, &out, false, false).is_err());
+        // The raw image is what a console caches, and import reads it.
+        let raw = dir.join("raw.dat");
+        assert_eq!(
+            write_defaults(&file, &raw, true, false).unwrap(),
+            INFLATED_SIZE
+        );
+        assert!(read_hopper(&fs::read(&raw).unwrap()).unwrap().image() == file.image());
+        assert_eq!(
+            write_defaults(&file, &out, true, true).unwrap(),
+            INFLATED_SIZE
+        );
+        // Never a disc image.
+        assert!(write_defaults(&file, &dir.join("x.iso"), false, true).is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

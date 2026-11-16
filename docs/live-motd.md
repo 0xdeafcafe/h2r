@@ -369,6 +369,14 @@ live-tunable per-hopper parameters that reference tag records by id.
 
 #### 5.2.1 Corrections (read from the code)
 
+The whole format, field by field with the readers behind each, is now in
+[live-matchmaking.md §6](live-matchmaking.md). In short: `+0x08` is the
+playlist (stats) id, 1..100, not a record count (the count is the data
+block's `+0x44`); `+0x5a0` is a base wait only the defaults use and the 16
+dwords after it are the start-wait table; `+0x5e4` is a minimum rank; the
+"range fields" are ten per-type parameters at `+0x5ec`; a record's
+`+0x08` is nine 32-unit map names nothing reads.
+
 - Descriptor `+0x0c` and `+0x9c` are nine per-language UTF-8 titles (16
   bytes each) and descriptions (128 bytes each); the defaults
   (`0x001936e0`) fill them from the `matchmaking_hopper_descriptions`

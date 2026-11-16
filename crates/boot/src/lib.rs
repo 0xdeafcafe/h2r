@@ -40,6 +40,7 @@ pub mod shim;
 pub mod speaker_row;
 pub mod setting_defs;
 pub mod skulls;
+pub mod skulls_custom;
 pub mod skulls_menu;
 pub mod skulls_mp;
 pub mod skulls_mp_row;
@@ -703,6 +704,18 @@ pub fn run_hosted_with_live(
         _telemetry.clone(),
     )
     .context("installing the multiplayer skulls")?;
+    // Our own skulls (from 15): hidden in campaign levels, their effects
+    // ours on the tick (docs/skulls.md "Our skulls"). The skull weapon's
+    // tag comes from the loaded map's file, found through the VFS.
+    let custom_maps: Option<skulls_custom::MapLocator> = k.vfs().map(|vfs| -> skulls_custom::MapLocator {
+        Box::new(move |map| {
+            let mut v = vfs.lock().unwrap_or_else(|e| e.into_inner());
+            let file = v.host_file(&format!("\\Device\\CdRom0\\maps\\{map}.map"))?;
+            Some(telemetry::MapFile { path: file.path, offset: file.offset, len: file.len })
+        })
+    });
+    let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
+        .context("installing our skulls")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -798,6 +811,9 @@ pub fn run_hosted_with_live(
     }
     if skulls_mp_on {
         eprintln!("{}", skulls_mp::report(&plan, &installed));
+    }
+    if skulls_custom_on {
+        eprintln!("{}", skulls_custom::report(&plan, &installed));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");

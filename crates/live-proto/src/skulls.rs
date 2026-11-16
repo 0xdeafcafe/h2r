@@ -1,7 +1,7 @@
 //! Skulls on the wire (docs/skulls.md): a game's or a session's skulls are
 //! indices, sorted and once each: `0..15` are the engine's (byte `n` of the
-//! array at `0x4f55dc`, `ice_cream_flavor_stock n`); `15..LIMIT` are left
-//! for skulls of our own that later builds may add. An empty set is left
+//! array at `0x4f55dc`, `ice_cream_flavor_stock n`); from 15 are skulls of
+//! our own ([`OURS`] now, room up to [`LIMIT`] for more). An empty set is left
 //! out of every payload, so a sender that knows nothing of skulls and one
 //! with none on write the same bytes.
 
@@ -12,9 +12,14 @@ pub const COUNT: u8 = 15;
 pub const LIMIT: u8 = 64;
 
 /// The skulls our runtime makes work in a multiplayer game (docs/skulls.md
-/// "In multiplayer"): Famine (4) and Blind (6). Every other skull's code is
-/// campaign-only or needs AI, so a multiplayer game never names one.
-pub const MULTIPLAYER: [u8; 2] = [4, 6];
+/// "In multiplayer"): Famine (4), Blind (6) and our Low Gravity (16). Every
+/// other retail skull's code is campaign-only or needs AI, and our others
+/// act on the local players only, so a multiplayer game never names one.
+pub const MULTIPLAYER: [u8; 3] = [4, 6, 16];
+/// Our own skulls (docs/skulls.md "Our skulls"), from [`COUNT`]: Acrophobia,
+/// Low Gravity, Fall Damage, Unlimited Ammo, Unlimited Grenades and
+/// Invincible, in that order.
+pub const OURS: std::ops::Range<u8> = COUNT..COUNT + 6;
 
 /// Checks a set as it arrives: indices below [`LIMIT`], ascending, no
 /// repeats, and not empty (an empty set is sent as no field).
@@ -81,7 +86,18 @@ mod tests {
     fn multiplayer_names_only_the_skulls_that_work_there() {
         assert!(multiplayer_ok(&[4, 6]));
         assert!(multiplayer_ok(&[6]));
+        assert!(multiplayer_ok(&[4, 6, 16]), "our Low Gravity");
         assert!(!multiplayer_ok(&[6, 10]));
-        assert!(MULTIPLAYER.iter().all(|s| *s < COUNT));
+        assert!(!multiplayer_ok(&[15]), "Acrophobia is campaign only");
+        assert!(!multiplayer_ok(&[20]), "Invincible is campaign only");
+        assert!(MULTIPLAYER.iter().all(|s| *s < COUNT || OURS.contains(s)));
+    }
+
+    #[test]
+    fn our_skulls_sit_past_the_engines_and_inside_the_wire_limit() {
+        assert_eq!(OURS, 15..21);
+        const { assert!(OURS.end <= LIMIT) };
+        assert_eq!(validate(&[3, 15, 20]), Ok(()));
+        assert_eq!(normalize([20, 15, 3]), Some(vec![3, 15, 20]));
     }
 }

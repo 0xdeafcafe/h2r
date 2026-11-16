@@ -597,6 +597,7 @@ function emptyText(s: SectionId | null): string {
   switch (s) {
     case "live": return "no games right now";
     case "friends": return identity.me() ? "play a game to meet people" : "nobody online";
+    case "players": return "nobody here yet";
     case "history": return "no finished games yet";
     default: return "nothing here yet";
   }

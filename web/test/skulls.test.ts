@@ -4,7 +4,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  MAX_SKULL, SKULLS, countSkulls, filterBySkulls, formatSkullsParam, hasAllSkulls, normalizeSkulls, parseSkullsParam, skullEffect, skullName, skullTier, skullTitle, skullsOfTier, tierOrder, toggleSkull,
+  MAX_SKULL, RETAIL_SKULLS, SKULLS, countSkulls, isOurSkull, filterBySkulls, formatSkullsParam, hasAllSkulls, normalizeSkulls, parseSkullsParam, skullEffect, skullName, skullTier, skullTitle, skullsOfTier, tierOrder, toggleSkull,
 } from "../src/lib/skulls";
 import { applyEvents, applyGameSnapshot, initialState } from "../src/state/reducer";
 import { campaignRecord, skullsPlayedWith } from "../src/state/derive";
@@ -17,10 +17,15 @@ import { ev, resetPos } from "./helpers";
 const A = "0009000000000001";
 
 describe("skull table", () => {
-  test("fifteen skulls with the agreed names, in index order", () => {
+  test("the fifteen skulls with the agreed names, then our six, in index order", () => {
     expect(SKULLS.map((s) => s.name)).toEqual([
       "Envy", "Grunt Birthday Party", "Assassins", "Thunderstorm", "Famine", "IWHBYD", "Blind", "Ghost", "Black Eye", "Catch", "Sputnik", "Iron", "Mythic", "Angry", "Bandana",
+      "Acrophobia", "Low Gravity", "Fall Damage", "Unlimited Ammo", "Unlimited Grenades", "Invincible",
     ]);
+    expect(RETAIL_SKULLS).toBe(15);
+    expect(isOurSkull(14)).toBe(false);
+    expect(isOurSkull(15) && isOurSkull(20)).toBe(true);
+    expect(isOurSkull(21)).toBe(false);
     SKULLS.forEach((s, i) => { expect(s.index).toBe(i); expect(s.effect.length).toBeGreaterThan(10); });
   });
 
@@ -33,29 +38,40 @@ describe("skull table", () => {
     expect(skullTitle(0)).toEndWith("(Silver skull)");
   });
 
-  test("tiers: nine gold, six silver, as listed; unknown indices are silver", () => {
-    expect(SKULLS.filter((s) => s.tier === "gold").map((s) => s.index)).toEqual([2, 3, 4, 6, 8, 9, 11, 12, 13]);
-    expect(SKULLS.filter((s) => s.tier === "silver").map((s) => s.index)).toEqual([0, 1, 5, 7, 10, 14]);
-    expect(skullsOfTier("silver").map((s) => s.name)).toEqual(["Envy", "Grunt Birthday Party", "IWHBYD", "Ghost", "Sputnik", "Bandana"]);
+  test("tiers as listed, ours included; unknown indices are silver", () => {
+    expect(SKULLS.filter((s) => s.tier === "gold").map((s) => s.index)).toEqual([2, 3, 4, 6, 8, 9, 11, 12, 13, 17]);
+    expect(SKULLS.filter((s) => s.tier === "silver").map((s) => s.index)).toEqual([0, 1, 5, 7, 10, 14, 15, 16, 18, 19, 20]);
+    expect(skullsOfTier("silver").map((s) => s.name)).toEqual([
+      "Envy", "Grunt Birthday Party", "IWHBYD", "Ghost", "Sputnik", "Bandana", "Acrophobia", "Low Gravity", "Unlimited Ammo", "Unlimited Grenades", "Invincible",
+    ]);
     expect(skullTier(12)).toBe("gold");
-    expect(skullTier(17)).toBe("silver");
+    expect(skullTier(17)).toBe("gold");
+    expect(skullTier(40)).toBe("silver");
+  });
+
+  test("our skulls by name and effect", () => {
+    expect(skullName(15)).toBe("Acrophobia");
+    expect(skullName(20)).toBe("Invincible");
+    expect(skullTitle(18)).toBe("Unlimited Ammo: spare ammo never runs out, but you still reload (Silver skull)");
+    expect(skullTitle(17)).toEndWith("(Gold skull)");
   });
 
   test("display order is gold first, then silver, engine order within each", () => {
     expect(tierOrder([14, 0, 13, 2, 7, 4])).toEqual([2, 4, 13, 0, 7, 14]);
     expect(tierOrder([20, 3, 20, 17])).toEqual([3, 17, 20]);
+    expect(tierOrder([40, 3, 40, 37])).toEqual([3, 37, 40]);
     expect(tierOrder([])).toEqual([]);
   });
 
   test("unknown indices past the table are kept, up to 63", () => {
-    expect(normalizeSkulls([17, 63, 64, 14])).toEqual([14, 17, 63]);
-    expect(parseSkullsParam("17,63,64,2")).toEqual([2, 17, 63]);
+    expect(normalizeSkulls([37, 63, 64, 14])).toEqual([14, 37, 63]);
+    expect(parseSkullsParam("37,63,64,2")).toEqual([2, 37, 63]);
     expect(MAX_SKULL).toBe(63);
-    expect(skullEffect(17)).toBe("");
+    expect(skullEffect(37)).toBe("");
   });
 
-  test("only Famine and Blind are marked as working in multiplayer", () => {
-    expect(SKULLS.filter((s) => s.multiplayer).map((s) => s.index)).toEqual([4, 6]);
+  test("Famine, Blind and our Low Gravity are marked as working in multiplayer", () => {
+    expect(SKULLS.filter((s) => s.multiplayer).map((s) => s.index)).toEqual([4, 6, 16]);
   });
 });
 
@@ -158,8 +174,8 @@ describe("skulls played with", () => {
   });
 
   test("the list is gold first, then silver, and keeps unknown indices", () => {
-    const rows = [{ s: [0, 14] }, { s: [13, 17] }, { s: [2] }];
-    expect(countSkulls(rows, (r) => r.s).map((c) => c.index)).toEqual([2, 13, 0, 14, 17]);
+    const rows = [{ s: [0, 14] }, { s: [13, 37] }, { s: [2] }];
+    expect(countSkulls(rows, (r) => r.s).map((c) => c.index)).toEqual([2, 13, 0, 14, 37]);
   });
 });
 

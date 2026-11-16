@@ -45,7 +45,7 @@ export default function Players() {
   const me = () => identity.me();
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Players"]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Players"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
@@ -86,7 +86,7 @@ export default function Players() {
                 <table class="s-grid s-grid--roomy">
                   <thead><tr><th style={{ width: "34px" }}>#</th><th>Player</th><th class="hide-s">Rank</th><th class="num">{unit()} <Derived>{""}</Derived></th><th class="num">Games</th></tr></thead>
                   <tbody>
-                    <For each={ranked().slice(3)} fallback={<tr><td colspan="5" class="s-dim">{ranked().length ? "That's everyone with a multiplayer game on record." : "No multiplayer games played yet."}</td></tr>}>
+                    <For each={ranked().slice(3)} fallback={<tr><td colspan="5" class="s-dim">{ranked().length ? "That's everyone with a multiplayer game on record." : live.state.caughtUp ? "No multiplayer games played yet." : "Reading this server's games…"}</td></tr>}>
                       {(r, i) => (
                         <tr>
                           <td>{i() + 4}</td>
@@ -107,14 +107,14 @@ export default function Players() {
             <form class="s-toolbar" onSubmit={(e) => e.preventDefault()}>
               <label for="s-dir">find a gamertag</label>
               <input id="s-dir" value={search.q ?? ""} onInput={(e) => { setPage(0); setSearch({ q: e.currentTarget.value || undefined }, { replace: true }); }} />
-              <span class="s-dim" style={{ "margin-left": "auto", color: "#9d9d9d" }}>online players first</span>
+              <span class="s-toolbar-note">online players first</span>
             </form>
             <div class="s-grid-wrap">
               <div class="s-grid-pager"><Pager page={page()} pages={pages()} total={directory().length} per={PER} onPage={setPage} /></div>
               <table class="s-grid s-grid--roomy">
                 <thead><tr><th>Player</th><th class="hide-s">Rank</th><th>Status</th><th class="num">Games</th><th class="num">Kills</th><th class="num">K/D</th><th class="num hide-s" title="Campaign games">Campaign</th></tr></thead>
                 <tbody>
-                  <For each={directory().slice(page() * PER, page() * PER + PER)} fallback={<tr><td colspan="7" class="s-dim">No matching gamertags.</td></tr>}>
+                  <For each={directory().slice(page() * PER, page() * PER + PER)} fallback={<tr><td colspan="7" class="s-dim">{!live.state.caughtUp && !rows().length ? "Reading this server's players…" : search.q ? `No gamertags match “${search.q}”.` : "No accounts on this server yet."}</td></tr>}>
                     {(r) => (
                       <tr>
                         <td><span class="s-who"><Emblem seed={r.a.xuid} size={16} /><A href={playerHref(r.a.gamertag)}>{r.a.gamertag}</A></span></td>

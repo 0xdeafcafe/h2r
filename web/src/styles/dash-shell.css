@@ -45,7 +45,7 @@
 .dx-chip--me { color: var(--y-1); }
 .dx-chip--link { color: var(--g-bright); }
 .dx-chip--link::after { content: ""; width: 0; height: 0; border-left: calc(var(--u) * 5) solid currentColor; border-top: calc(var(--u) * 3.5) solid transparent; border-bottom: calc(var(--u) * 3.5) solid transparent; }
-.dx-chip--link:hover, .dx-chip--link:focus-visible { background: rgba(120, 240, 50, .22); border-color: rgba(190, 255, 120, .7); color: var(--g-pale); outline: none; }
+.dx-chip--link:hover, .dx-chip--link:focus-visible, .dx-chip--me:focus-visible { background: rgba(120, 240, 50, .22); border-color: rgba(190, 255, 120, .7); color: var(--g-pale); outline: none; }
 .dx-led { width: calc(var(--u) * 7); height: calc(var(--u) * 7); border-radius: 50%; background: #2b4a1c; }
 .dx-led--live { background: var(--g-lime); box-shadow: 0 0 calc(var(--u) * 7) var(--glow); }
 .dx-led--reconnecting, .dx-led--connecting, .dx-led--catching-up { background: #e7ff4a; animation: dx-blink 1s steps(2) infinite; }

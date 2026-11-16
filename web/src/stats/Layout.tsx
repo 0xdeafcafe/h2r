@@ -14,6 +14,7 @@ import Emblem from "../components/Emblem";
 import { VerifyMark } from "../components/bits";
 import Wordmark from "./Wordmark";
 import { adminState } from "../admin/state";
+import { DASHBOARD_EXIT, STATS_HOME, statsNav } from "./modes";
 
 const playerHref = (tag: string) => `/stats/players/${encodeURIComponent(tag)}`;
 
@@ -38,7 +39,8 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
     <div class="stats">
       <div class="s-column">
         <header class="s-top">
-          <A href="/stats" class="s-logo" aria-label="h2 live stats home"><Wordmark height={40} /></A>
+          <A href={DASHBOARD_EXIT.href} end class="s-exit" title={DASHBOARD_EXIT.title}>{DASHBOARD_EXIT.label}</A>
+          <A href={STATS_HOME} class="s-logo" aria-label="h2 live stats home"><Wordmark height={40} /></A>
           <div class="s-welcome">
             <Show
               when={identity.me()}
@@ -48,7 +50,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
                   <ul>
                     <li class="s-welcome-hi">Welcome, <b>guest</b>!</li>
                     <li class="ico ico-bolt"><A href="/stats/players">Players Online ({online()})</A></li>
-                    <li class="ico ico-mail"><A href="/stats">Games Live ({liveGames(live.state).length})</A></li>
+                    <li class="ico ico-mail"><A href="/stats/games">Games Live ({liveGames(live.state).length})</A></li>
                     <li><A href="/dash/signup">Sign Up</A><i>|</i><A href="/">Dashboard</A></li>
                   </ul>
                 </>
@@ -60,7 +62,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
                   <ul>
                     <li class="s-welcome-hi">Welcome, <b>{me().gamertag}</b>!</li>
                     <li class="ico ico-bolt"><A href="/dash/friends">Friends Online ({friendsOnline()})</A></li>
-                    <li class="ico ico-mail"><A href="/stats">Games Live ({liveGames(live.state).length})</A></li>
+                    <li class="ico ico-mail"><A href="/stats/games">Games Live ({liveGames(live.state).length})</A></li>
                     <li><A href={playerHref(me().gamertag)}>My Profile</A><i>|</i><A href={`${playerHref(me().gamertag)}/history`}>History</A><i>|</i><A href={`${playerHref(me().gamertag)}/career`}>Career</A></li>
                   </ul>
                   <button class="s-signout" onClick={() => identity.signOut()}>Sign Out</button>
@@ -70,14 +72,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
           </div>
         </header>
         <nav class="s-nav" aria-label="Stats">
-          <A href="/" end>Dashboard</A>
-          <A href={identity.me() ? playerHref(identity.me()!.gamertag) : "/dash/signup"}>My Stats</A>
-          <A href="/stats" end>h2 live Online</A>
-          <A href="/stats/players" end>Players</A>
-          <A href="/stats/clans">Clans</A>
-          <A href="/stats/events">Event Log</A>
-          <Show when={adminState.isMeAdmin() === true}><A href="/stats/admin" end>Admin</A></Show>
-          <A href="/dash/server">Server</A>
+          <For each={statsNav(identity.me() ?? null, adminState.isMeAdmin() === true)}>{(n) => <A href={n.href} end={n.end}>{n.label}</A>}</For>
           <form class="s-search" onSubmit={search} role="search">
             <label class="sr-only" for="s-q">Find a gamertag</label>
             <input id="s-q" placeholder="Enter Gamertag" value={q()} onInput={(e) => setQ(e.currentTarget.value)} />

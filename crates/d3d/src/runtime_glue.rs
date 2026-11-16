@@ -97,6 +97,12 @@ impl GuestMemory for GuestAdapter<'_> {
             .read_append(addr, len, out, 1)
             .map_err(|f| self.failed(f, addr, len))
     }
+    /// Copies straight into a fresh vector: no zeroing first.
+    fn read_vec(&self, addr: u32, len: usize) -> Result<Vec<u8>, GuestError> {
+        let mut v = Vec::new();
+        self.read_append(addr, len, &mut v)?;
+        Ok(v)
+    }
     fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), GuestError> {
         match self.guest.write_bytes(addr, data, 1) {
             Ok(()) => Ok(()),
