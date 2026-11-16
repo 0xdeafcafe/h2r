@@ -5,10 +5,11 @@
 //! the same fields, edits, validation and presets, on a local file instead
 //! of the server's copy.
 //!
-//! The editing logic is UI-free and tested in [`model`] and [`presets`];
-//! this module is the egui panel and the file handling.
+//! The editing logic is UI-free and tested in [`model`], [`presets`] and
+//! [`choices`]; this module is the egui panel and the file handling.
 
 pub mod catalog;
+pub mod choices;
 pub mod model;
 pub mod presets;
 
@@ -20,11 +21,17 @@ use live_proto::hopper::{
     MAX_STRING, MAX_TITLE,
 };
 
-use self::catalog::{Catalog, engine_name};
+use variants::GameVariant;
+use variants::save::SaveStore;
+
+use self::catalog::Catalog;
+use self::choices::{Choice, Choices, variant_label};
 use self::model::{EditHopper, EditRecord, MAX_WEIGHT};
 use self::presets::{PRESETS, Resolution};
-use crate::tool::{Tool, ToolContext, ToolError};
+use crate::dialog::{FileDialog, Filter, Picked};
+use crate::tool::{Handoff, Tool, ToolContext, ToolError};
 use crate::undo::UndoStack;
+use crate::variants::VariantTool;
 
 /// How the file was stored, so a save writes it back the same way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,12 +110,27 @@ enum CatalogState {
     Failed(PathBuf, String),
 }
 
+/// The variant picker's sources.
+struct VariantSources {
+    /// The map source they were read for; `None` when set by
+    /// [`HopperTool::set_variant_sources`] (never re-read).
+    auto_for: Option<Option<PathBuf>>,
+    store: Option<SaveStore>,
+    choices: Choices,
+}
+
 /// The hopper tool.
 pub struct HopperTool {
     doc: Option<Doc>,
     selected: usize,
     preset: Option<usize>,
     catalog: CatalogState,
+    variants: Option<VariantSources>,
+    /// The typed `.h2variant` path.
+    variant_path: String,
+    /// Browses for `.h2variant` files; without one, paths are typed.
+    dialog: Option<Box<dyn FileDialog>>,
+    handoff: Option<Handoff>,
 }
 
 impl Default for HopperTool {
@@ -124,6 +146,142 @@ impl HopperTool {
             selected: 0,
             preset: None,
             catalog: CatalogState::None,
+            variants: None,
+            variant_path: String::new(),
+            dialog: None,
+            handoff: None,
+        }
+    }
+
+    /// Browses for `.h2variant` files with `dialog` (the system's in the
+    /// app) next to the typed path.
+    pub fn set_file_dialog(&mut self, dialog: Box<dyn FileDialog>) {
+        self.dialog = Some(dialog);
+    }
+
+    /// Sets the variant picker's built-ins (from `schema`) and saves (from
+    /// `store`), instead of reading them from the opened disc and the
+    /// runtime's save storage.
+    pub fn set_variant_sources(&mut self, schema: &variants::Schema, store: Option<SaveStore>) {
+        let mut choices = Choices::new(schema, store.as_ref());
+        if let Some(old) = self.variants.take() {
+            choices.files = old.choices.files;
+        }
+        self.variants = Some(VariantSources {
+            auto_for: None,
+            store,
+            choices,
+        });
+    }
+
+    /// What the variant picker offers, once read.
+    pub fn variant_choices(&self) -> Option<&Choices> {
+        self.variants.as_ref().map(|v| &v.choices)
+    }
+
+    /// Re-reads the saved variants.
+    pub fn refresh_saved_variants(&mut self) {
+        if let Some(VariantSources {
+            store: Some(store),
+            choices,
+            ..
+        }) = &mut self.variants
+        {
+            choices.refresh_saved(store);
+        }
+    }
+
+    /// Adds a `.h2variant` file to the picker; returns its label.
+    pub fn load_variant_file(&mut self, path: &Path) -> Result<String, String> {
+        let v = self.variants.get_or_insert_with(|| VariantSources {
+            auto_for: None,
+            store: None,
+            choices: Choices::default(),
+        });
+        let c = v.choices.load_file(path)?;
+        Ok(if c.usable() {
+            c.label()
+        } else {
+            format!("{} (the game would reject it)", c.label())
+        })
+    }
+
+    /// Reads the picker's sources for the map source when it changed:
+    /// built-ins from its main menu map, saves from the runtime's storage.
+    fn refresh_variants(&mut self, cx: &ToolContext<'_>) {
+        let now = cx.source.map(|s| s.path().to_owned());
+        if let Some(v) = &self.variants
+            && v.auto_for.as_ref().is_none_or(|p| *p == now)
+        {
+            return;
+        }
+        let (schema, _) = VariantTool::schema(cx.source);
+        let names = VariantTool::names(cx.source);
+        let store = SaveStore::default_root().map(|root| SaveStore::new(root, names));
+        self.set_variant_sources(&schema, store);
+        if let Some(v) = &mut self.variants {
+            v.auto_for = Some(now);
+        }
+    }
+
+    /// The game variant entry `entry` of playlist `hopper` will carry,
+    /// decoded from its slot.
+    pub fn entry_variant(&self, hopper: usize, entry: usize) -> Option<GameVariant> {
+        let doc = self.doc.as_ref()?;
+        let r = doc.state.hoppers.get(hopper)?.records.get(entry)?;
+        model::entry_variant(&doc.state.base, r)
+    }
+
+    /// Links `v` to an entry, as one undo step; refuses a variant the game
+    /// would reject ([`model::set_variant`]).
+    pub fn set_entry_variant(
+        &mut self,
+        hopper: usize,
+        entry: usize,
+        v: &GameVariant,
+    ) -> Result<(), ToolError> {
+        let mut r = self
+            .hoppers()
+            .and_then(|h| h.get(hopper))
+            .and_then(|h| h.records.get(entry))
+            .cloned()
+            .ok_or_else(|| ToolError::Invalid("no such entry".into()))?;
+        model::set_variant(&mut r, v).map_err(|e| ToolError::Invalid(e.to_string()))?;
+        self.edit(|hs| hs[hopper].records[entry] = r);
+        Ok(())
+    }
+
+    /// Asks the shell to open entry `entry`'s variant in the variant
+    /// editor (as a new copy there).
+    pub fn edit_entry_variant(&mut self, hopper: usize, entry: usize) -> bool {
+        match self.entry_variant(hopper, entry) {
+            Some(v) => {
+                self.handoff = Some(Handoff::EditVariant(Box::new(v)));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Asks the dialog for a `.h2variant` file and loads it; `None` when
+    /// cancelled.
+    fn browse_variant_file(&mut self) -> Option<Result<String, String>> {
+        let dialog = self.dialog.as_mut()?;
+        let filters = [Filter::new(
+            "Game variant",
+            &[variants::portable::EXTENSION],
+        )];
+        let start = Path::new(&self.variant_path);
+        let start = (!self.variant_path.trim().is_empty()).then_some(start);
+        match dialog.open_file("Open a game variant", &filters, start) {
+            Picked::Path(p) => {
+                self.variant_path = p.display().to_string();
+                Some(self.load_variant_file(&p))
+            }
+            Picked::Cancelled => None,
+            Picked::Unavailable => Some(Err(
+                "no file dialog: type the .h2variant path and press Load".into(),
+            )),
         }
     }
 
@@ -310,6 +468,10 @@ impl Tool for HopperTool {
         self.doc.as_mut().is_some_and(|d| d.undo.redo(&mut d.state))
     }
 
+    fn take_handoff(&mut self) -> Option<Handoff> {
+        self.handoff.take()
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, cx: &mut ToolContext<'_>) {
         self.refresh_catalog(cx);
         if self.doc.is_none() {
@@ -335,19 +497,66 @@ impl Tool for HopperTool {
             CatalogState::Failed(_, e) => Some(format!("No map list from the disc ({e}).")),
             CatalogState::Loaded(..) => None,
         };
+        self.refresh_variants(cx);
         let mut panel = Panel {
             selected: &mut self.selected,
             preset: &mut self.preset,
             catalog: catalog.as_ref(),
             catalog_note,
+            choices: self.variants.as_ref().map(|v| &v.choices),
+            variant_path: &mut self.variant_path,
+            browse: self.dialog.is_some(),
+            action: None,
+            error: None,
         };
         let doc = self.doc.as_mut().expect("open");
         panel.show(ui, &mut doc.state);
+        let (action, error) = (panel.action.take(), panel.error.take());
         // One undo step per change; a run of edits from one focused field
         // (typing, dragging a number) is one step.
         let key = ui.ctx().memory(|m| m.focused());
         doc.undo.track(before, &doc.state, key);
+        if let Some(e) = error {
+            cx.error(e);
+        }
+        let loaded = match action {
+            None => None,
+            Some(VariantAction::Edit(hopper, entry)) => {
+                if !self.edit_entry_variant(hopper, entry) {
+                    cx.error("this entry's game variant cannot be read");
+                }
+                None
+            }
+            Some(VariantAction::Browse) => self.browse_variant_file(),
+            Some(VariantAction::Load) => {
+                let path = PathBuf::from(self.variant_path.trim());
+                Some(self.load_variant_file(&path))
+            }
+            Some(VariantAction::Refresh) => {
+                self.refresh_saved_variants();
+                None
+            }
+        };
+        match loaded {
+            Some(Ok(label)) => cx.info(format!("loaded {label}: pick it from an entry's variant")),
+            Some(Err(e)) => cx.error(e),
+            None => {}
+        }
     }
+}
+
+/// What the variant controls asked for that needs more than the working
+/// copy; done after the frame's edits are tracked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VariantAction {
+    /// Open entry (hopper, entry)'s variant in the variant editor.
+    Edit(usize, usize),
+    /// Browse for a `.h2variant` file.
+    Browse,
+    /// Load the typed `.h2variant` path.
+    Load,
+    /// Re-read the saved variants.
+    Refresh,
 }
 
 /// The panel's borrowed view of the tool.
@@ -356,6 +565,12 @@ struct Panel<'a> {
     preset: &'a mut Option<usize>,
     catalog: Option<&'a Catalog>,
     catalog_note: Option<String>,
+    choices: Option<&'a Choices>,
+    variant_path: &'a mut String,
+    /// A file dialog is available.
+    browse: bool,
+    action: Option<VariantAction>,
+    error: Option<String>,
 }
 
 const TYPES: [(u32, &str); 5] = [
@@ -375,19 +590,17 @@ enum RowOp {
     Remove(usize),
 }
 
-fn variant_label(r: &EditRecord) -> String {
-    let Some(v) = &r.variant else {
-        return "-".into();
-    };
-    let kind = engine_name(v.engine)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("engine {}", v.engine));
-    let name = if v.name.is_empty() {
-        "(unnamed)"
+/// An entry's variant as the entries table shows it, decoded from the
+/// slot it will have.
+fn entry_label(base: &HopperFile, r: &EditRecord) -> String {
+    let shown = model::entry_variant(base, r)
+        .map(|v| variant_label(&v))
+        .unwrap_or_else(|| "-".into());
+    if r.picked.is_some() {
+        format!("{shown} (picked)")
     } else {
-        &v.name
-    };
-    format!("{name} - {kind}{}", if v.team { " - teams" } else { "" })
+        shown
+    }
 }
 
 impl Panel<'_> {
@@ -403,7 +616,7 @@ impl Panel<'_> {
                 self.presets(ui, state, sel);
                 ui.separator();
                 let h = &mut state.hoppers[sel];
-                self.hopper(ui, h);
+                self.hopper(ui, h, &state.base);
                 if !errors.is_empty() {
                     ui.separator();
                     for e in &errors {
@@ -498,7 +711,7 @@ impl Panel<'_> {
         });
     }
 
-    fn hopper(&mut self, ui: &mut egui::Ui, h: &mut EditHopper) {
+    fn hopper(&mut self, ui: &mut egui::Ui, h: &mut EditHopper, base: &HopperFile) {
         ui.heading(format!("Playlist {}", h.index + 1));
         egui::Grid::new("hopper_text")
             .num_columns(2)
@@ -520,20 +733,30 @@ impl Panel<'_> {
             });
         ui.add_space(6.0);
         let mut op = None;
+        let mut pick: Option<(usize, GameVariant)> = None;
         let chances = model::chances(h);
         let n = h.records.len();
         egui::Grid::new("hopper_entries")
             .striped(true)
-            .num_columns(6)
+            .num_columns(7)
             .show(ui, |ui| {
-                for head in ["", "Map", "Game variant", "Weight", "Chance", ""] {
+                for head in ["", "Map", "Game variant", "", "Weight", "Chance", ""] {
                     ui.strong(head);
                 }
                 ui.end_row();
                 for (i, r) in h.records.iter_mut().enumerate() {
                     ui.label(format!("{}", i + 1));
                     self.map_picker(ui, i, r);
-                    ui.label(variant_label(r));
+                    if let Some(v) = self.variant_picker(ui, i, r, base) {
+                        pick = Some((i, v));
+                    }
+                    if ui
+                        .small_button("Edit")
+                        .on_hover_text("Edit in variant editor: opens a copy of this variant there")
+                        .clicked()
+                    {
+                        self.action = Some(VariantAction::Edit(h.index, i));
+                    }
                     ui.add(
                         egui::DragValue::new(&mut r.dwords[0])
                             .range(1..=MAX_WEIGHT)
@@ -556,6 +779,12 @@ impl Panel<'_> {
         {
             model::add_record(h);
         }
+        if let Some((i, v)) = pick
+            && let Err(e) = model::set_variant(&mut h.records[i], &v)
+        {
+            self.error = Some(format!("entry {}: {e}", i + 1));
+        }
+        self.variant_files(ui);
         egui::CollapsingHeader::new("Advanced: raw fields")
             .id_salt("hopper_advanced")
             .show(ui, |ui| advanced(ui, h, &mut op));
@@ -566,6 +795,75 @@ impl Panel<'_> {
                 RowOp::Copy(i) => model::duplicate_record(h, i),
                 RowOp::Remove(i) => model::remove_record(h, i),
             };
+        }
+    }
+
+    /// The entry's variant and the picker's choices; returns the one
+    /// clicked.
+    fn variant_picker(
+        &self,
+        ui: &mut egui::Ui,
+        i: usize,
+        r: &EditRecord,
+        base: &HopperFile,
+    ) -> Option<GameVariant> {
+        let current = model::entry_variant(base, r);
+        let mut picked = None;
+        egui::ComboBox::from_id_salt(("hopper_variant", i))
+            .selected_text(entry_label(base, r))
+            .width(260.0)
+            .show_ui(ui, |ui| {
+                let Some(c) = self.choices else {
+                    ui.weak("No variants read yet.");
+                    return;
+                };
+                for (title, list) in [
+                    ("Built-in", &c.builtins),
+                    ("Saved", &c.saved),
+                    ("Files", &c.files),
+                ] {
+                    if list.is_empty() {
+                        continue;
+                    }
+                    ui.strong(title);
+                    for ch in list {
+                        if let Some(v) = choice_row(ui, ch, current.as_ref()) {
+                            picked = Some(v);
+                        }
+                    }
+                }
+                if c.all().next().is_none() {
+                    ui.weak("No variants: open a disc, save some, or load a .h2variant file.");
+                }
+            });
+        picked
+    }
+
+    /// Loading `.h2variant` files and refreshing the saves.
+    fn variant_files(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Variant file (.h2variant)");
+            ui.add(egui::TextEdit::singleline(self.variant_path).desired_width(280.0));
+            if self.browse && ui.button("Browse...").clicked() {
+                self.action = Some(VariantAction::Browse);
+            }
+            if ui
+                .add_enabled(
+                    !self.variant_path.trim().is_empty(),
+                    egui::Button::new("Load"),
+                )
+                .clicked()
+            {
+                self.action = Some(VariantAction::Load);
+            }
+            if ui.button("Refresh saved variants").clicked() {
+                self.action = Some(VariantAction::Refresh);
+            }
+        });
+        if let Some(c) = self.choices {
+            for n in &c.notes {
+                ui.small(n);
+            }
         }
     }
 
@@ -588,6 +886,30 @@ impl Panel<'_> {
                 }
             });
     }
+}
+
+/// One choice in the variant menu: greyed out, with the reasons on hover,
+/// when the game would reject it. Returns the variant when clicked.
+fn choice_row(
+    ui: &mut egui::Ui,
+    ch: &Choice,
+    current: Option<&GameVariant>,
+) -> Option<GameVariant> {
+    let on = current == Some(&ch.variant);
+    let r = ui
+        .add_enabled_ui(ch.usable(), |ui| ui.selectable_label(on, ch.label()))
+        .inner;
+    let r = if ch.usable() {
+        r
+    } else {
+        let why: Vec<String> = ch
+            .problems
+            .iter()
+            .map(|p| format!("+{:#x}: {}", p.offset, p.what))
+            .collect();
+        r.on_disabled_hover_text(format!("The game would reject it:\n{}", why.join("\n")))
+    };
+    r.clicked().then(|| ch.variant.clone())
 }
 
 fn row_buttons(ui: &mut egui::Ui, i: usize, n: usize, op: &mut Option<RowOp>) {

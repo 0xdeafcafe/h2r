@@ -221,7 +221,9 @@ browser account is an admin (the `admin` field above). Three sections:
 The same playlist editing is available offline in the native editor's
 hopper tool (`h2-editor`, [editor.md](editor.md)): it opens and saves a
 `multiplayer_hopper.dat` file (raw image or envelope) with the same
-fields, validation and presets; publish the result with `h2 live hopper
+fields, validation and presets, and it can also give an entry another
+game variant (a disc built-in, a saved variant or a `.h2variant` file),
+which the web builder cannot; publish the result with `h2 live hopper
 import`.
 
 Saves are the browser's first writes: each signs a self-issued 60-second

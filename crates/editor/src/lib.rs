@@ -11,6 +11,7 @@
 //! Nothing here contains game data: map names and everything else come
 //! from the user's own disc at run time.
 
+pub mod dialog;
 pub mod hopper;
 pub mod scenario;
 pub mod shell;
@@ -20,5 +21,5 @@ pub mod undo;
 pub mod variants;
 
 pub use source::{Disc, MapSource};
-pub use tool::{Tool, ToolContext, ToolError};
+pub use tool::{Handoff, Tool, ToolContext, ToolError};
 pub use undo::UndoStack;

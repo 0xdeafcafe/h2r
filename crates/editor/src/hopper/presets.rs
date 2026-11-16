@@ -526,6 +526,7 @@ pub fn resolve(preset: &Preset, catalog: Option<&Catalog>, published: &[EditHopp
                     dwords: [g.weight.clamp(1, 1000), r.dwords[1]],
                     variant: r.variant.clone(),
                     src: Some(at),
+                    picked: r.picked.clone(),
                 }),
                 missing: None,
             });

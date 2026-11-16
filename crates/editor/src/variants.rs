@@ -12,7 +12,7 @@ use variants::save::{SaveStore, XbeNames};
 use variants::{Schema, VariantEditor};
 
 use crate::source::MapSource;
-use crate::tool::{Tool, ToolContext, ToolError};
+use crate::tool::{Handoff, Tool, ToolContext, ToolError};
 
 const LANGUAGE: tags::Language = tags::Language::English;
 
@@ -30,7 +30,7 @@ impl VariantTool {
 
     /// The schema from the source's main menu map, else the fallback.
     /// The bool says whether it came from the disc.
-    fn schema(source: Option<&MapSource>) -> (Schema, bool) {
+    pub fn schema(source: Option<&MapSource>) -> (Schema, bool) {
         let from_disc = source
             .and_then(|s| s.open_map("mainmenu").ok())
             .and_then(|mut m| Schema::from_map(&mut m, LANGUAGE).ok());
@@ -49,7 +49,7 @@ impl VariantTool {
         beside.is_file().then_some(beside)
     }
 
-    fn names(source: Option<&MapSource>) -> Option<XbeNames> {
+    pub fn names(source: Option<&MapSource>) -> Option<XbeNames> {
         let bytes = std::fs::read(Self::xbe_path(source)?).ok()?;
         let xbe = xbe::Xbe::parse(&bytes).ok()?;
         XbeNames::read(&xbe, LANGUAGE).ok()
@@ -122,6 +122,31 @@ impl Tool for VariantTool {
     fn redo(&mut self) -> bool {
         self.editor.as_mut().is_some_and(|e| e.redo())
     }
+
+    /// Opens a variant from another tool (the hopper tool's "Edit in
+    /// variant editor") as a new, unsaved variant, the way Import does.
+    /// Refused while the open variant has unsaved changes.
+    fn receive(&mut self, work: Handoff, cx: &mut ToolContext<'_>) -> Result<(), Handoff> {
+        let Handoff::EditVariant(v) = &work;
+        if self.editor.is_none() {
+            self.build(cx);
+        }
+        let e = self.editor.as_mut().expect("built");
+        if e.is_dirty() {
+            cx.error("the variant editor has unsaved changes: save or revert them first");
+            return Err(work);
+        }
+        match e.import(&variants::portable::export(v)) {
+            Ok(()) => {
+                cx.info(format!("editing a copy of {:?}", v.name()));
+                Ok(())
+            }
+            Err(err) => {
+                cx.error(format!("cannot open the variant: {err}"));
+                Err(work)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +172,33 @@ mod tests {
         assert!(!t.is_dirty());
         assert!(!t.can_undo());
         assert!(matches!(status, Some(crate::tool::Status::Info(_))));
+    }
+
+    #[test]
+    fn receives_a_variant_as_a_new_copy_unless_dirty() {
+        let mut t = VariantTool::new();
+        let mut status = None;
+        let mut cx = ToolContext {
+            source: None,
+            selected_map: None,
+            render_state: None,
+            status: &mut status,
+        };
+        let mut v = variants::GameVariant::blank(variants::GameType::Slayer);
+        v.set_name("From hopper").unwrap();
+        v.set_builtin_flag(true);
+        t.receive(Handoff::EditVariant(Box::new(v.clone())), &mut cx)
+            .unwrap();
+        let e = t.editor.as_ref().unwrap();
+        let got = e.current().unwrap();
+        assert_eq!(got.name(), "From hopper");
+        assert!(!got.builtin_flag(), "an imported copy is not a built-in");
+        assert_eq!(e.origin(), Some(&variants::panel::Origin::New));
+        // Now it has unsaved changes: a second handoff is refused, intact.
+        assert!(t.is_dirty());
+        let back = t.receive(Handoff::EditVariant(Box::new(v.clone())), &mut cx);
+        assert_eq!(back, Err(Handoff::EditVariant(Box::new(v))));
+        assert!(matches!(status, Some(crate::tool::Status::Error(_))));
     }
 
     #[test]

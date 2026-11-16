@@ -16,8 +16,9 @@ marked **confirmed** (seen in code or data) or **inferred**.
 
 The record is the active variant at `G+0x13c` (docs/live-gamestate.md §3),
 the whole payload of a saved variant, and the last 0x130 bytes of a hopper
-record slot (`crates/live-proto/src/hopper.rs`, `R_VARIANT`). A hopper tool
-links a variant by copying `GameVariant::to_bytes()` into the slot.
+record slot (`crates/live-proto/src/hopper.rs`, `VARIANT_AT`). The editor's
+hopper tool links a variant by copying `GameVariant::to_bytes()` into the
+slot, after `record::check` finds nothing (docs/editor.md).
 
 | Offset | Type | Content | |
 |---|---|---|---|
