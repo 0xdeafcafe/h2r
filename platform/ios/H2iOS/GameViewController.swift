@@ -14,8 +14,9 @@ final class MetalView: UIView {
 /// on-screen controls (GCVirtualController), which the game sees as one more
 /// extended gamepad. The overlay comes and goes as pads connect and
 /// disconnect and as the system keyboard shows and hides; the rule itself is
-/// in Rust (h2host_pad_counts, h2host_overlay_wanted). Start and Back are
-/// small buttons of our own that press the overlay's Menu and Options.
+/// in Rust (h2host_pad_counts, h2host_overlay_wanted). The overlay has no
+/// Menu or Options (GCVirtualController refuses them), so Start and Back are
+/// small buttons of our own (h2host_button).
 final class GameViewController: UIViewController {
     private let metalView = MetalView()
     private let keyInput = GameKeyInput()
@@ -26,8 +27,8 @@ final class GameViewController: UIViewController {
 
     private var overlay: GCVirtualController?
     private var keyboardShown = false
-    private let startButton = OverlayButton(title: "Start", element: GCInputButtonMenu)
-    private let backButton = OverlayButton(title: "Back", element: GCInputButtonOptions)
+    private let startButton = OverlayButton(title: "Start", button: 0)
+    private let backButton = OverlayButton(title: "Back", button: 1)
 
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
@@ -161,17 +162,10 @@ final class GameViewController: UIViewController {
                 // Shoulders are White (left) and Black (right), as on every pad.
                 GCInputLeftShoulder, GCInputRightShoulder,
                 GCInputLeftTrigger, GCInputRightTrigger,
-                GCInputDirectionPad,
-                // Pressed by our own Start and Back buttons, not drawn.
-                GCInputButtonMenu, GCInputButtonOptions,
+                // No d-pad: the touch controller refuses it alongside the
+                // left stick, and the game's menus move with the stick.
             ]
             let vc = GCVirtualController(configuration: config)
-            for element in [GCInputButtonMenu, GCInputButtonOptions] {
-                vc.updateConfiguration(forElement: element) { c in
-                    c.isHidden = true
-                    return c
-                }
-            }
             vc.connect { error in
                 if let error { NSLog("h2: on-screen controls failed to connect: \(error)") }
             }
@@ -181,20 +175,20 @@ final class GameViewController: UIViewController {
             overlay = nil
         }
         for b in [startButton, backButton] {
-            b.overlay = overlay
+            b.host = host
             b.isHidden = overlay == nil
             view.bringSubviewToFront(b)
         }
     }
 }
 
-/// A small pill that holds one of the overlay's buttons down while touched.
+/// A small pill that holds Start or Back down while touched.
 final class OverlayButton: UIButton {
-    weak var overlay: GCVirtualController?
-    private let element: String
+    var host: OpaquePointer?
+    private let button: Int32
 
-    init(title: String, element: String) {
-        self.element = element
+    init(title: String, button: Int32) {
+        self.button = button
         super.init(frame: .zero)
         var config = UIButton.Configuration.filled()
         config.title = title
@@ -209,6 +203,11 @@ final class OverlayButton: UIButton {
 
     required init?(coder: NSCoder) { nil }
 
-    @objc private func down() { overlay?.setValue(1, forButtonElement: element) }
-    @objc private func up() { overlay?.setValue(0, forButtonElement: element) }
+    @objc private func down() {
+        if let host { _ = h2host_button(host, button, true) }
+    }
+
+    @objc private func up() {
+        if let host { _ = h2host_button(host, button, false) }
+    }
 }

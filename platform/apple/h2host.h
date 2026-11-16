@@ -41,5 +41,8 @@ bool h2host_text_cancel(H2Host *host);
 // whether the overlay should be connected.
 bool h2host_pad_counts(bool is_overlay, bool extended);
 bool h2host_overlay_wanted(uint32_t physical_pads, bool keyboard_shown);
+// The host's own Start (0) and Back (1) buttons, held while `down`; the
+// on-screen controls have neither.
+bool h2host_button(H2Host *host, int32_t button, bool down);
 
 #endif

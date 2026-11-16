@@ -18,7 +18,8 @@
 //!   [`h2host_text_done`] and [`h2host_text_cancel`] for what is typed
 //!   ([`text`]);
 //! * on iOS, [`h2host_pad_counts`] and [`h2host_overlay_wanted`] to decide
-//!   when the on-screen controls show ([`overlay`]).
+//!   when the on-screen controls show ([`overlay`]), and [`h2host_button`]
+//!   for the Start and Back buttons they lack.
 //!
 //! `platform/apple/h2host.h` declares the same functions for Swift.
 #![allow(unsafe_code)]
@@ -371,6 +372,24 @@ pub unsafe extern "C" fn h2host_text_cancel(host: *mut H2Host) -> bool {
     with_keyboard(host, |k| text::apply(k, vec![TextAction::Cancel]))
 }
 
+/// The host's own Start (0) and Back (1) buttons, held while `down`: iOS's
+/// on-screen controls have neither. They press the player-one pad's bound
+/// key, so they act on port 0 with every other device. False for another
+/// number, or with no shell.
+///
+/// # Safety
+/// As [`h2host_redraw`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2host_button(host: *mut H2Host, button: i32, down: bool) -> bool {
+    use input::bindings::Control;
+    let control = match button {
+        0 => Control::Start,
+        1 => Control::Back,
+        _ => return false,
+    };
+    with_keyboard(host, |k| k.press_control(control, down))
+}
+
 /// Whether a connected controller counts as a physical pad that can play
 /// (iOS): not the on-screen controls' own controller, and with an
 /// extended gamepad profile ([`overlay::physical`]).
@@ -462,6 +481,8 @@ mod tests {
             assert!(!h2host_text_cancel(host));
             assert_eq!(h2host_text_edge(std::ptr::null_mut()), 0);
             assert!(!h2host_text_done(std::ptr::null_mut()));
+            assert!(!h2host_button(host, 0, true));
+            assert!(!h2host_button(std::ptr::null_mut(), 1, true));
             drop(Box::from_raw(host));
         }
         assert!(h2host_pad_counts(false, true));

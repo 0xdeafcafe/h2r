@@ -31,12 +31,16 @@ the Mac. The button prompts follow the pad's type (`H2_ICONS=auto`;
 docs/button-icons.md).
 
 **Touch.** With no controller connected, the app shows Apple's on-screen
-controls (`GCVirtualController`): both sticks, A, B, X, Y, the d-pad, both
-triggers, and both shoulders as White (left) and Black (right). The game sees
+controls (`GCVirtualController`): both sticks, A, B, X, Y, both triggers, and
+both shoulders as White (left) and Black (right). There is no d-pad: the
+system's touch controller refuses one alongside the left stick, and the
+game's menus move with the stick. The game sees
 them as one more gamepad, so nothing in the game's input path is
-touch-specific and the prompts show Xbox buttons. Start and Back are two small
-buttons at the top centre; they press the overlay's Menu and Options buttons
-(`GCVirtualController.setValue`, iOS 17).
+touch-specific and the prompts show Xbox buttons. The touch controller also
+refuses Menu and Options, so Start and Back are two small buttons of the
+app's own at the top centre: `h2host_button` holds the key bound to Start or
+Back on the player-one pad (`KeyboardMouse::press_control`), which shares
+port 0 with every other device.
 
 The overlay goes away when a controller connects and comes back when the last
 one disconnects. A controller counts if it has an extended gamepad profile and
@@ -116,10 +120,7 @@ Management).
 
 ## Known gaps
 
-- Not yet run on a device: everything above `h2host_start` is unverified on
-  hardware, including the on-screen controls, the Start and Back buttons
-  (which rely on `setValue` working on a visible overlay with those two
-  elements hidden), and the keyboard.
+- The touch controls have no d-pad and no stick clicks (crouch, zoom).
 - The same trimmed disc as tvOS: only the menu, The Heretic and Zanzibar.
   Choosing another level or map fails to load it.
 - Speed is unmeasured. Older devices (A12 and earlier) will be slow.
