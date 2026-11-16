@@ -160,6 +160,7 @@ fn start(
             unsafe { std::env::set_var(k, v) };
         }
     }
+    check_bundle(&layout)?;
     let (store, problems) = boot::setting_defs::load(&layout.data, &[]);
     for p in problems {
         eprintln!("h2host: {p}");
@@ -169,6 +170,34 @@ fn start(
     // SAFETY: the host passes a live CAMetalLayer it keeps for the app's
     // lifetime, on the main thread (h2host.h).
     unsafe { app::embedded::Embedded::start(config, layer, size, guest(layout, store)) }
+}
+
+/// Refuses a module built from other sources before anything slow starts.
+///
+/// The module's stamp and the boot cache's analysis are keyed by the
+/// generator and analyzer sources, `Cargo.lock` and the compiler. A device
+/// cannot rebuild either as `h2 run` does on a Mac, and the game would
+/// first spend minutes redoing the analysis with nothing on screen, then
+/// refuse the module anyway. So check the stamp here, and say so when the
+/// analysis has to be redone. Call after `H2_BOOT_CACHE` is set.
+fn check_bundle(layout: &Layout) -> Result<()> {
+    let xbe = boot::read_xbe(&layout.disc)?;
+    if !boot::dylib_current(&xbe, &layout.module) {
+        anyhow::bail!(
+            "the game module in this app was built from other sources than the app \
+             (its stamp differs). Rebuild the app's inputs with build.sh, without \
+             --no-module, after any change to the generator, the runtime or Cargo.lock."
+        );
+    }
+    match boot::analysis_cache(&xbe) {
+        Some(p) if !p.is_file() => eprintln!(
+            "h2host: no bundled analysis matches this build ({}); analysing the XBE on the \
+             device first, which takes minutes. build.sh bundles a matching one.",
+            p.display()
+        ),
+        _ => {}
+    }
+    Ok(())
 }
 
 fn path(p: *const c_char) -> Option<PathBuf> {
@@ -491,6 +520,30 @@ mod tests {
         assert!(h2host_overlay_wanted(0, false));
         assert!(!h2host_overlay_wanted(1, false));
         assert!(!h2host_overlay_wanted(0, true));
+    }
+
+    /// A bundle whose module is from other sources fails at once with a
+    /// message saying how to fix it, instead of analysing for minutes.
+    #[test]
+    fn a_module_from_other_sources_is_refused_up_front() {
+        let base = std::env::var_os("TMPDIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir)
+            .join(format!("h2-host-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let l = Layout::new(&base.join("H2.app"), &base.join("Caches"), None);
+        std::fs::create_dir_all(&l.disc).unwrap();
+        std::fs::create_dir_all(l.module.parent().unwrap()).unwrap();
+        let xbe = b"XBEH synthetic image";
+        std::fs::write(l.disc.join("default.xbe"), xbe).unwrap();
+        std::fs::write(&l.module, b"module").unwrap();
+        let stamp = l.module.with_extension("stamp");
+        std::fs::write(&stamp, "xbe 0 generator old\n").unwrap();
+        let e = check_bundle(&l).unwrap_err().to_string();
+        assert!(e.contains("other sources") && e.contains("build.sh"), "{e}");
+        std::fs::write(&stamp, boot::build_stamp(xbe)).unwrap();
+        check_bundle(&l).unwrap();
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
