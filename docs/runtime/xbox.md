@@ -25,7 +25,23 @@ of dedicated GPU memory. **Switch it to Game in Dev Home** (see
 | `h2game.dll` (+ `h2game.dll.stamp`) | the generated module, loaded with `LoadPackagedLibrary` | `boot::build` with `H2_EMIT_TARGET=windows` (`apple-host` `pack --platform xbox`) |
 | `disc/` | the disc files the app needs (`h2host::layout::DISC_FILES`), served as D: by `vfs::DirDiscBackend` | `pack` |
 | `bootcache/` | the XBE's analysis for this build, copied to LocalState on first launch | `pack` |
-| `AppxManifest.xml`, `Assets/` | the package manifest (`uwp_host::manifest`) and plain placeholder images | `uwp-host` `package` example |
+| `AppxManifest.xml`, `Assets/` | the package manifest (`uwp_host::manifest`) and the app icon's tile, logo and splash images, embedded from `platform/xbox/Assets` ([art/app-icon](../../art/app-icon/README.md)) | `uwp-host` `package` example |
+
+### The package images
+
+`platform/xbox/Assets` holds the icon art the manifest names:
+`Square150x150Logo`, `Square44x44Logo`, `Wide310x150Logo`,
+`Square310x310Logo`, `StoreLogo` (the package `Logo`) and `SplashScreen`,
+on the icon's background `#061323` for the tiles and the splash. Each is
+the art's scale-200 export under a plain name. Qualified names
+(`.scale-100`, `.scale-200`, `.targetsize-24_altform-unplated`) need a
+`resources.pri` to choose between them, and only `makepri` on Windows makes
+one; makemsix on a Mac does not. So the manifest names each file directly
+and the shell scales the 2x image down where it shows a smaller one. There
+is no `LockScreen` badge: it needs badge notifications and a background
+task, which the app does not have. `uwp_host::manifest`'s tests check that
+each image decodes at its size and that the folder holds exactly the files
+the manifest names.
 
 ### Rendering without XAML
 
@@ -259,4 +275,3 @@ loading a level.
   packages, `content`) may hit the same container refusal when used.
 - The same trimmed disc as tvOS: the menu, The Heretic and Zanzibar only.
   No Xbox Live, and no movies.
-- The package images are plain placeholders.

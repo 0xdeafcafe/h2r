@@ -14,6 +14,9 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 sha2 = "0.10"
+
+[dev-dependencies]
+# Decoding the package images (platform/xbox/Assets) in the manifest tests.
 png = "0.18"
 
 # The app itself: Windows only, so the Mac tests stay light.

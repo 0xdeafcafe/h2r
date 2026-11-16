@@ -26,14 +26,50 @@ pub const MIN_VERSION: &str = "10.0.17763.0";
 /// The newest SDK it was built against.
 pub const MAX_VERSION_TESTED: &str = "10.0.26100.0";
 
-/// The images the manifest names: (path in the package, width, height).
-pub const ASSETS: &[(&str, u32, u32)] = &[
-    ("Assets/StoreLogo.png", 50, 50),
-    ("Assets/Square44x44Logo.png", 44, 44),
-    ("Assets/Square150x150Logo.png", 150, 150),
-    ("Assets/Wide310x150Logo.png", 310, 150),
-    ("Assets/SplashScreen.png", 620, 300),
+/// One image the manifest names, as committed in platform/xbox/Assets
+/// (art/app-icon).
+#[derive(Debug, Clone, Copy)]
+pub struct Asset {
+    /// Path in the package.
+    pub path: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub png: &'static [u8],
+}
+
+macro_rules! asset {
+    ($name:literal, $w:literal x $h:literal) => {
+        Asset {
+            path: concat!("Assets/", $name),
+            width: $w,
+            height: $h,
+            png: include_bytes!(concat!("../../../platform/xbox/Assets/", $name)),
+        }
+    };
+}
+
+/// The images the manifest names: the scale-200 exports under plain names.
+/// makemsix on a Mac makes no `resources.pri`, and without one Windows
+/// cannot choose between `.scale-100`/`.scale-200`/`.targetsize-*`
+/// variants, so the manifest names each file directly; the shell scales
+/// the 2x image down where it needs less.
+pub const ASSETS: &[Asset] = &[
+    asset!("StoreLogo.png", 100 x 100),
+    asset!("Square44x44Logo.png", 88 x 88),
+    asset!("Square150x150Logo.png", 300 x 300),
+    asset!("Wide310x150Logo.png", 620 x 300),
+    asset!("Square310x310Logo.png", 620 x 620),
+    asset!("SplashScreen.png", 1240 x 600),
 ];
+
+/// The tile and splash background: the icon's space colour.
+pub const BACKGROUND: &str = "#061323";
+
+/// The package path of the asset named `name`, with Windows separators.
+fn asset_path(name: &str) -> String {
+    let a = ASSETS.iter().find(|a| a.path.ends_with(name)).expect("a known asset");
+    a.path.replace('/', "\\")
+}
 
 impl Default for Manifest {
     fn default() -> Self {
@@ -89,7 +125,6 @@ impl Manifest {
         if !self.publisher.starts_with("CN=") {
             return Err(format!("publisher {:?}: a certificate subject such as CN=h2recomp-dev", self.publisher));
         }
-        let asset = |p: &str| p.replace('/', "\\");
         Ok(format!(
             r##"<?xml version="1.0" encoding="utf-8"?>
 <Package
@@ -111,9 +146,9 @@ impl Manifest {
   </Resources>
   <Applications>
     <Application Id="{app}" Executable="{exe}" EntryPoint="h2uwp.App">
-      <uap:VisualElements DisplayName="{display}" Description="{display}" BackgroundColor="#000000" Square150x150Logo="{square150}" Square44x44Logo="{square44}">
-        <uap:DefaultTile Wide310x150Logo="{wide}" />
-        <uap:SplashScreen Image="{splash}" BackgroundColor="#000000" />
+      <uap:VisualElements DisplayName="{display}" Description="{display}" BackgroundColor="{background}" Square150x150Logo="{square150}" Square44x44Logo="{square44}">
+        <uap:DefaultTile Wide310x150Logo="{wide}" Square310x310Logo="{square310}" />
+        <uap:SplashScreen Image="{splash}" BackgroundColor="{background}" />
       </uap:VisualElements>
     </Application>
   </Applications>
@@ -127,11 +162,13 @@ impl Manifest {
             version = xml(&self.version),
             display = xml(&self.display_name),
             publisher_display = xml(&self.publisher_display_name),
-            store_logo = asset(ASSETS[0].0),
-            square44 = asset(ASSETS[1].0),
-            square150 = asset(ASSETS[2].0),
-            wide = asset(ASSETS[3].0),
-            splash = asset(ASSETS[4].0),
+            store_logo = asset_path("StoreLogo.png"),
+            square44 = asset_path("Square44x44Logo.png"),
+            square150 = asset_path("Square150x150Logo.png"),
+            wide = asset_path("Wide310x150Logo.png"),
+            square310 = asset_path("Square310x310Logo.png"),
+            splash = asset_path("SplashScreen.png"),
+            background = BACKGROUND,
             min = MIN_VERSION,
             max = MAX_VERSION_TESTED,
             app = APP_ID,
@@ -140,38 +177,15 @@ impl Manifest {
     }
 }
 
-/// A `width` x `height` PNG: black, with a centred green square (the
-/// package images; no Halo or Xbox artwork).
-pub fn placeholder_png(width: u32, height: u32) -> Vec<u8> {
-    let side = width.min(height) / 2;
-    let (x0, y0) = ((width - side) / 2, (height - side) / 2);
-    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height {
-        for x in 0..width {
-            let inside = (x0..x0 + side).contains(&x) && (y0..y0 + side).contains(&y);
-            rgba.extend_from_slice(if inside { &[0x4c, 0x8c, 0x2b, 0xff] } else { &[0, 0, 0, 0xff] });
-        }
-    }
-    let mut out = Vec::new();
-    {
-        let mut e = png::Encoder::new(&mut out, width, height);
-        e.set_color(png::ColorType::Rgba);
-        e.set_depth(png::BitDepth::Eight);
-        let mut w = e.write_header().expect("png header");
-        w.write_image_data(&rgba).expect("png data");
-    }
-    out
-}
-
 /// Writes `AppxManifest.xml` and [`ASSETS`] into the package directory.
 pub fn write(dir: &Path, manifest: &Manifest) -> anyhow::Result<()> {
     let text = manifest.xml().map_err(anyhow::Error::msg)?;
     std::fs::create_dir_all(dir)?;
     std::fs::write(dir.join("AppxManifest.xml"), text)?;
-    for (path, w, h) in ASSETS {
-        let to = dir.join(path);
+    for a in ASSETS {
+        let to = dir.join(a.path);
         std::fs::create_dir_all(to.parent().unwrap())?;
-        std::fs::write(to, placeholder_png(*w, *h))?;
+        std::fs::write(to, a.png)?;
     }
     Ok(())
 }
@@ -192,8 +206,8 @@ mod tests {
         // An app container: no full trust, no restricted capabilities.
         assert!(!x.contains("runFullTrust") && !x.contains("rescap"));
         // Every image it names is one `write` makes, with Windows separators.
-        for (path, _, _) in ASSETS {
-            assert!(x.contains(&path.replace('/', "\\")), "{path}");
+        for a in ASSETS {
+            assert!(x.contains(&a.path.replace('/', "\\")), "{}", a.path);
         }
         assert_eq!(x.matches("Assets\\").count(), ASSETS.len());
     }
@@ -228,11 +242,48 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         write(&dir, &Manifest::default()).unwrap();
         assert!(std::fs::read_to_string(dir.join("AppxManifest.xml")).unwrap().contains("Windows.Xbox"));
-        for (path, w, h) in ASSETS {
-            let d = png::Decoder::new(std::io::Cursor::new(std::fs::read(dir.join(path)).unwrap()));
-            let r = d.read_info().unwrap();
-            assert_eq!((r.info().width, r.info().height), (*w, *h), "{path}");
+        for a in ASSETS {
+            assert_eq!(std::fs::read(dir.join(a.path)).unwrap(), a.png, "{}", a.path);
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Every image is a PNG of the size the table says, the size each
+    /// slot's scale-200 image has.
+    #[test]
+    fn the_images_are_the_icon_art_at_2x() {
+        for a in ASSETS {
+            let r = png::Decoder::new(std::io::Cursor::new(a.png)).read_info().unwrap();
+            assert_eq!((r.info().width, r.info().height), (a.width, a.height), "{}", a.path);
+        }
+        let size = |n: &str| ASSETS.iter().find(|a| a.path.ends_with(n)).map(|a| (a.width, a.height));
+        assert_eq!(size("/Square150x150Logo.png"), Some((300, 300)));
+        assert_eq!(size("/Square44x44Logo.png"), Some((88, 88)));
+        assert_eq!(size("/Wide310x150Logo.png"), Some((620, 300)));
+        assert_eq!(size("/Square310x310Logo.png"), Some((620, 620)));
+        assert_eq!(size("/StoreLogo.png"), Some((100, 100)));
+        assert_eq!(size("/SplashScreen.png"), Some((1240, 600)));
+    }
+
+    /// platform/xbox/Assets holds exactly the images the manifest names.
+    #[test]
+    fn the_committed_images_are_the_ones_the_manifest_names() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../platform/xbox/Assets");
+        let mut on_disk: Vec<String> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        on_disk.sort();
+        let mut named: Vec<String> = ASSETS.iter().map(|a| a.path.trim_start_matches("Assets/").to_string()).collect();
+        named.sort();
+        assert_eq!(on_disk, named);
+    }
+
+    #[test]
+    fn tiles_and_splash_use_the_icon_background() {
+        let x = Manifest::default().xml().unwrap();
+        assert_eq!(x.matches(r##"BackgroundColor="#061323""##).count(), 2, "{x}");
+        assert!(x.contains(r#"Square310x310Logo="Assets\Square310x310Logo.png""#));
+        assert!(x.contains(r#"<Logo>Assets\StoreLogo.png</Logo>"#));
     }
 }
