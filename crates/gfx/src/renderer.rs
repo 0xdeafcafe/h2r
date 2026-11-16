@@ -1025,6 +1025,7 @@ impl Renderer {
     pub fn submitted(&mut self) {
         self.vertices.reset();
         self.uniforms.reset();
+        self.persistent.submitted();
     }
 
     /// Encodes `draws` (recorded for a target of this size and these
