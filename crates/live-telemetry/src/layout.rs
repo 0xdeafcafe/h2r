@@ -2,17 +2,15 @@
 //!
 //! Keep validation-sensitive layout changes here rather than in readers.
 
-pub const GAME_GLOBALS_PTR: u32 = 0x004e_6948;
-pub const GAME_TIME_PTR: u32 = 0x0051_0c54;
+pub const GAME_GLOBALS_PTR: u32 = engine::points::GAME_GLOBALS.base;
+pub const GAME_TIME_PTR: u32 = engine::points::GAME_TIME.base;
 pub const ENGINE_GLOBALS_PTR: u32 = 0x004e_9ae8;
 pub const PLAYERS_PTR: u32 = 0x004e_8c24;
 pub const OBJECTS_PTR: u32 = 0x004e_0300;
 pub const CACHE_MAP_NAME: u32 = 0x0054_7898;
 
-pub const MATCH_START: u32 = 0x0018_f000;
-pub const GAME_TICK: u32 = 0x0013_7fe0;
-pub const GAME_END: u32 = 0x0013_89c0;
-pub const PLAYER_KILLED: u32 = 0x0015_ce70;
+// The hooked functions (match start, tick, end, kill, weapon fire) are
+// named in `engine::points`.
 
 pub const OPTIONS: u32 = 0x8;
 pub const OPTIONS_TYPE: u32 = 0x0;
@@ -151,7 +149,7 @@ pub const UNIT_AIM: u32 = 0x168;
 /// body `+0x1a8 + 0x34 * barrel`) is set and then clears the flag. One call
 /// is one shot (likely: a shotgun's pellets are one call; a battle rifle's
 /// burst is three).
-pub const WEAPON_FIRE: u32 = 0x0010_4150;
+pub const WEAPON_FIRE: u32 = engine::points::WEAPON_FIRE.base;
 
 /// Fields whose names or semantics are only "likely" in the research document.
 /// They are not needed for the initial event contract. Runtime validation can
@@ -228,12 +226,12 @@ pub const BIPED_MODE_MELEE: u8 = 6;
 pub const WEAPON_MAGAZINE_RESERVE: u32 = 0x22a;
 pub const WEAPON_MAGAZINE_LOADED: u32 = 0x22c;
 
-/// The damage report function: custom ABI, `EDI` = the report, one stack
-/// argument (the victim object datum), `ret 4`. Called for every damage
-/// instance applied to an object (four callers: `0x0009c76e`, `0x000d8292`,
-/// `0x000d87a2`, `0x000dc211`); it adds the report's amounts to the
-/// victim's recent-damage accumulators (`+0xf8`, `+0x100`).
-pub const DAMAGE_REPORT: u32 = 0x000d_9640;
+// The damage report (`engine::points::DAMAGE_REPORT`, `0x000d9640`): custom
+// ABI, `EDI` = the report, one stack argument (the victim object datum),
+// `ret 4`. Called for every damage instance applied to an object (four
+// callers: `0x0009c76e`, `0x000d8292`, `0x000d87a2`, `0x000dc211`); it adds
+// the report's amounts to the victim's recent-damage accumulators (`+0xf8`,
+// `+0x100`). The report's fields:
 pub const REPORT_CODE: u32 = 0x0; // u8: low 6 bits damage reporting type
 pub const REPORT_EFFECT: u32 = 0x8; // jpt! tag datum
 pub const REPORT_OWNER_PLAYER: u32 = 0xc;

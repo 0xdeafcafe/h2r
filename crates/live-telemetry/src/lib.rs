@@ -17,7 +17,7 @@ pub use event::{
     ActorState, Appearance, GameEvent, GameInfo, HitRecord, MachineState, Motion, ObjectState,
     PlayerState, PlayerStats, Snapshot, VehicleState, Weapon, World,
 };
-pub use hooks::{Telemetry, install};
+pub use hooks::{Telemetry, TelemetryFeature, install};
 pub use layout::LIKELY_FIELDS;
 pub use memory::{
     active_bsp, actors, game_info, game_tick, hit, object, players, snapshot, team_scores, world,

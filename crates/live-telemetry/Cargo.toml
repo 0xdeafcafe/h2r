@@ -7,6 +7,8 @@ license.workspace = true
 
 [dependencies]
 runtime.workspace = true
+feature = { path = "../feature" }
+engine = { path = "../engine" }
 live-proto.workspace = true
 map.workspace = true
 serde.workspace = true

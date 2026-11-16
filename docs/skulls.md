@@ -1,8 +1,9 @@
 # Campaign skulls per profile
 
-Status: pickup tracking, per-profile storage and the campaign-start apply
-are built (`boot::skulls`, the settings store's per-profile values). The
-in-game "Skulls" menu is traced but not wired yet ("Menu" below).
+Status: built, not yet seen running: pickup tracking, per-profile storage
+and the campaign-start apply (`boot::skulls`, the settings store's
+per-profile values), and the in-game "Skulls" menu on the difficulty
+screen (`boot::skulls_menu`, "Menu" below).
 
 The ask: a skull a player has picked up is remembered on their profile, and
 when they start a new campaign (alone or in co-op) they can pick which of
@@ -114,16 +115,16 @@ the same path with two signed-in profiles.
   displacing it. `H2_NO_SKULLS=1` installs neither. Headless runs (no
   settings store) have neither.
 
-## Menu (traced, not wired)
+## Menu (built)
 
-The plan is a "Skulls" row on the difficulty list, the screen both new
+A "Skulls" row on the difficulty list, the screen both new
 campaign and co-op campaign reach before the level loads, opening a screen
-of the profile's collected skulls, each On or Off.
+of the pressing player's profile's collected skulls, each On or Off.
 
 `skulls::screen_for(store, profile)` builds that screen as a `ui` model
 screen (one `Row::setting` per collected skull, none when nothing is
-collected) and `skulls::toggle` is a press. What is missing is the guest
-side, which needs the shared list hooks in `layout_glue`:
+collected) and `skulls::toggle` is a press. The guest side is
+`boot::skulls_menu` (logic) and its hooks in `layout_glue::install`:
 
 | Address | What | Confidence |
 |---|---|---|
@@ -134,16 +135,37 @@ side, which needs the shared list hooks in `layout_glue`:
 | `0x230427` | pane for a row (`screen + 0x5f3` base + row, no bounds check here); the difficulty screen has one pane per row (4) | confirmed |
 | `0x230616` | the Campaign Options dialog loader (screen 218), list "campaign options list" (`0x45af70`), row kinds 0 to 4, row chosen `0x2b166d` | confirmed |
 
-Wiring steps: grow "difficulty list" from 4 to 5 when a signed-in profile
-has a collected skull (the list hook on `0x1a480d`); draw row 4 as
-"Skulls" (`0x2c9ce7`) and keep its pane (skip `0x230427` for row 4 on
-screen 12); on row 4, open a Controls-class screen as the Video screen
-does (`video_screen`, `0x149f1e(1 << player, 0x2b7714)`, the player from
-the list handler's word at `+8`) whose list is named for skulls and whose
-rows are `screen_for`'s; its row text and row chosen go through the
-Controls row hooks with the opening profile's values. A list with more
-rows than item widgets scrolls (the small Controls dialog does), so 15
-skulls fit the six visible rows; that is unverified.
+What the hooks do:
+
+- **The row.** The list constructor hook (`0x1a480d`) grows "difficulty
+  list" from 4 to 5 when any signed-in named profile has a collected skull.
+  `0x2c9ce7` draws row 4 as "Skulls"; rows 0 to 3 go to the original. The
+  pane hook (`0x230427`) returns at once (`ret 4`) for row 4 on screen 12,
+  so the previous difficulty's pane stays up. The list has four item
+  widgets, so it scrolls to the fifth row, as the Live menu's Custom Games
+  row does (likely; unseen).
+- **The press.** `0x2c9d38` for row 4 never runs the original (it would
+  clamp the row to Legendary and start the campaign). The player is the
+  callback's `[[esp+4]]+4`, as for the Controls and Live menu lists; the
+  profile is the name on that player's slot, so in co-op each player sees
+  and edits their own skulls. With no named profile there, or no skull
+  collected, it logs why and stays put. Otherwise it opens a Controls
+  screen with `0x149f1e(1 << player, 0x2b7714)`, the Video screen's call.
+- **The screen.** While that call runs, the list hook names the Controls
+  list's datum array "h2r skulls" and sizes it to the profile's skulls.
+  On a list with that name, the Controls row text hook (`0x2c8548`) draws
+  the skull's name and the game's own On or Off (`0x02000181`,
+  `0x03000182`, the vibration row's), and the row chosen hook (`0x2c8719`)
+  flips it in the store (written at once). The header hook (`0x22fda6`)
+  swaps the Controls title for "Skulls". The added-items hook leaves the
+  list its six retail item widgets, so more than six skulls scroll. B
+  returns to the difficulty screen.
+- **Strings** are served by the locale hook from ids `0x21fff000` up (the
+  15 names, the title, the list name): `is_ours` reads only the middle
+  bytes, so they are clear of the `0x20fff0xx` ids the other rows and the
+  `ui` model take.
+- `H2_NO_SKULLS_MENU=1` (or `H2_NO_SKULLS=1`) leaves the difficulty screen
+  as retail.
 
 ## To check in game
 
@@ -154,12 +176,42 @@ skulls fit the six visible rows; that is unverified.
 2. Quit, start `h2 play` again, start any campaign level with that profile:
    stderr `skulls: campaign start for <profile>: Thunderstorm`, and the
    skull's effect is on from the first encounter.
-3. Set `thunderstorm = false` in the file (the menu is not wired yet),
-   start a campaign: `... : none`, and the effect is off even after
-   picking up another skull earlier in the same boot.
+3. Set `thunderstorm = false` (in the menu, step 7, or the file), start
+   a campaign: `... : none`, and the effect is off even after picking up
+   another skull earlier in the same boot.
 4. Co-op with two named profiles: a pickup is kept for both; the start
    turns on the union.
 5. The default profile (no name) or `H2_LEVEL`: no `campaign start` line;
    skulls behave as retail.
 6. The HUD message and sound on pickup are unchanged (the game's own
    function still runs).
+
+The menu:
+
+7. With a profile that has a skull: Campaign, a new campaign, the
+   difficulty screen lists Easy, Normal, Heroic, Legendary, Skulls (the
+   list scrolls by one to show it). stderr: `skulls menu: difficulty row
+   text active` (and `layouts: list 0x45d6e0 grows from 4 to 5 rows`
+   when it is the first list the run grows). Moving
+   onto Skulls keeps the Legendary pane up and does not crash.
+8. A on Skulls: a screen titled "Skulls" with one row per collected skull,
+   each On. stderr: `skulls menu: opening with N rows`, `skulls menu: list
+   built with N rows`, `skulls menu: header active`, `skulls menu: row text
+   active`. If the title still reads Controls, or the screen shows the
+   retail Controls rows, report the stderr lines.
+9. A on a row flips On/Off (stderr `skulls: Mythic off for <profile>`) and
+   `settings.toml` follows. The row's text should update at once (as the
+   Video screen's do); if it only updates on reopening, say so.
+10. More than six skulls: the list scrolls.
+11. B returns to the difficulty screen with the cursor on Skulls; choosing
+    a difficulty starts the campaign with exactly the On skulls (step 2's
+    stderr line).
+12. Co-op (two named profiles signed in): the row shows if either has a
+    skull; each player's A opens their own profile's skulls; a player with
+    none gets `skulls menu: <profile> has no skulls yet; not opened`. Also
+    check the co-op path reaches this same difficulty screen (if co-op uses
+    another screen, note its title: it would need its own row).
+13. A profile with no skulls: no Skulls row; the difficulty screen is
+    retail. Same with `H2_NO_SKULLS_MENU=1`.
+14. Select Level's difficulty choice (the second loader, `0x2bb432`): the
+    row appears there too.
