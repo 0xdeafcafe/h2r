@@ -23,8 +23,9 @@ ask() { # ask VAR "prompt" [default]
   printf -v "$1" '%s' "${v:-${3:-}}"
 }
 
+# `type -P` looks only on PATH (`command -v` would find this function).
 h2() {
-  if command -v h2 >/dev/null 2>&1; then
+  if type -P h2 >/dev/null; then
     command h2 "$@"
   else
     (cd "$root" && cargo run -q --release -p cli --bin h2 -- "$@")
@@ -37,8 +38,16 @@ docker compose version >/dev/null 2>&1 || die "docker compose not found"
 docker info >/dev/null 2>&1 || die "Docker isn't running: start Docker Desktop and run this again"
 command -v openssl >/dev/null || die "openssl not found"
 command -v curl >/dev/null || die "curl not found"
-command -v h2 >/dev/null || command -v cargo >/dev/null \
-  || die "neither h2 nor cargo found (needed to extract art and make invites)"
+if ! type -P h2 >/dev/null; then
+  command -v cargo >/dev/null || die "neither h2 nor cargo found (needed to extract art and make invites)"
+  ask inst "h2 isn't on your PATH. Install it with cargo install now? (y/n)" y
+  if [[ $inst == [yY]* ]]; then
+    cargo install --locked --path "$root/crates/cli" --bin h2
+    hash -r
+  else
+    echo "fine: using cargo run from the repo instead"
+  fi
+fi
 echo "ok"
 
 write_env=yes
