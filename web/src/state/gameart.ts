@@ -21,10 +21,11 @@ export function mapStem(map: string | null | undefined): string {
 }
 
 /** A map's display name: the disc's own name when the server has the
- *  catalog, else the file stem title-cased. Reactive. */
+ *  catalog (multiplayer maps and campaign levels alike), else the file stem
+ *  title-cased, without a campaign level's ordering prefix ("01b_"). Reactive. */
 export function mapTitle(map: string | null | undefined): string {
   const stem = mapStem(map);
-  return mapNames().get(stem) ?? titleCase(stem);
+  return mapNames().get(stem) ?? titleCase(stem.replace(/^\d{1,2}[a-z]?_(?=.)/, ""));
 }
 
 /** Test hook: set the stem-to-name table directly. */
@@ -60,6 +61,7 @@ export function startGameArt() {
           if (live.server().base !== base || !c) return;
           const m = new Map<string, string>();
           for (const e of c.maps) if (e.key && e.name) m.set(mapStem(e.key), e.name);
+          for (const e of c.levels) m.set(mapStem(e.key), e.name);
           setMapNames(m);
         });
       });

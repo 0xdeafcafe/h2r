@@ -126,3 +126,20 @@ describe("presets", () => {
     expect(clip("ééééééééé", 15)).toBe("ééééééé");
   });
 });
+
+describe("catalog campaign levels", () => {
+  test("campaign entries are names only, never maps a playlist can name", () => {
+    const c = parseCatalog({
+      version: 1,
+      maps: [
+        { id: 10, name: "Alpha Yard", description: "", key: "alpha" },
+        { id: 10, name: "Long Dock", description: "First level", key: "01b_dock", kind: "campaign" },
+        { name: "No Key", kind: "campaign" },
+      ],
+      playlists: [], variants: [], skipped: {},
+    })!;
+    expect(c.maps.map((m) => m.name)).toEqual(["Alpha Yard"]);
+    expect(c.levels).toEqual([{ key: "01b_dock", name: "Long Dock", description: "First level" }]);
+    expect(findMap(c, "Long Dock")).toBeNull();
+  });
+});

@@ -9,6 +9,8 @@ import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { social, type WriteResult } from "../state/social";
 import { teamRecord } from "../state/social-model";
+import { OUTCOME_WORDS, campaignOutcome } from "../state/derive";
+import { gameTypeLine } from "../state/gametype";
 import {
   MEMBER, OFFICER, PRIV, ROLE_LABEL, TEAM_NAME_MAX, TEAM_TEXT_MAX, can, leaderOf, randomTeamId, roleOf, sortedMembers,
   teamPropsError, teamWrites, type Team, type TeamMember,
@@ -17,7 +19,7 @@ import { gamertagError } from "../state/account";
 import Emblem from "../components/Emblem";
 import { PresenceBadge } from "../components/bits";
 import { Crumbs, Derived, Panel, Strip, Title, playerHref } from "./Layout";
-import { PeopleFinder, Pills, gameTitle } from "./Side";
+import { PeopleFinder, Pills, fireteam, gameTitle } from "./Side";
 import { TeamEmblem } from "./teamBits";
 import { num, ratio, usDate } from "./fmt";
 import "../styles/social.css";
@@ -267,13 +269,14 @@ function TeamBody(props: { team: Team }) {
               <div><dt>Games Together</dt><dd>{num(rec().together)}</dd></div>
               <div><dt>Wins</dt><dd>{num(rec().wins)}</dd></div>
               <div><dt>Win Rate</dt><dd>{rec().together ? `${Math.round((100 * rec().wins) / rec().together)}%` : "–"}</dd></div>
+              <div><dt>Campaign Together</dt><dd>{num(rec().campaign.length)}</dd></div>
             </dl>
             <dl class="s-facts">
               <div><dt>Kills</dt><dd>{num(rec().kills)}</dd></div>
               <div><dt>Deaths</dt><dd>{num(rec().deaths)}</dd></div>
               <div><dt>K/D Ratio</dt><dd>{ratio(rec().kills, rec().deaths)}</dd></div>
             </dl>
-            <p class="s-soc-foot"><Derived note="Counted from games two or more members played together on one side, out of the games this page has loaded. The server keeps no team stats.">Derived from shared games</Derived></p>
+            <p class="s-soc-foot"><Derived note="Counted from multiplayer games two or more members played together on one side, out of the games this page has loaded; campaign games count apart. The server keeps no team stats.">Derived from shared games</Derived></p>
           </div>
           <Title class="s-title--tabs">Recent Games Together</Title>
           <div id="games" class="s-matte" style={{ padding: "8px" }}>
@@ -297,6 +300,28 @@ function TeamBody(props: { team: Team }) {
               </table>
             </div>
           </div>
+          <Show when={rec().campaign.length}>
+            <Title class="s-title--tabs">Campaign Together</Title>
+            <div class="s-matte" style={{ padding: "8px" }}>
+              <div class="s-grid-wrap">
+                <table class="s-grid s-grid--roomy">
+                  <thead><tr><th>Level</th><th class="hide-s">Date</th><th>Players</th><th>Result</th></tr></thead>
+                  <tbody>
+                    <For each={rec().campaign.slice(0, 10)}>
+                      {(g) => (
+                        <tr>
+                          <td><A href={`/stats/games/${g.game_id}`}>{mapTitle(g.map)}</A> <span class="s-dim">{gameTypeLine(g)}</span></td>
+                          <td class="hide-s">{g.status === "live" ? "playing now" : usDate(g.started_at)}</td>
+                          <td>{fireteam(g)}</td>
+                          <td>{g.status === "live" ? <span class="s-soc-live">Live</span> : OUTCOME_WORDS[campaignOutcome(g)]}</td>
+                        </tr>
+                      )}
+                    </For>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </Show>
         </div>
       </div>
     </>

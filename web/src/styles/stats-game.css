@@ -172,3 +172,8 @@
 }
 .s-thumb--top { background: radial-gradient(120% 90% at 50% 40%, #16293c 0, #0a1622 60%, #060d15 100%); }
 .s-thumb--top .map-canvas { position: absolute; inset: 0; }
+
+/* Campaign: the players beside the map and the mission report. No team colours. */
+.s-fireteam td:first-child, .s-campaign-table td:first-child { border-left-color: #555; }
+.s-campaign-table tr.s-campaign-total td { color: #fff; background: #000; font-weight: bold; }
+.s-fireteam .who, .s-campaign-table .who { display: inline-flex; align-items: center; gap: 5px; }

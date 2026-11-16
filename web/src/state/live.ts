@@ -168,7 +168,12 @@ function createLive() {
   /** Loads one game's detail into the store (deep links, profiles). */
   const loading = new Map<string, Promise<boolean>>();
   function ensureGame(id: string): Promise<boolean> {
-    if (state.games[id]?.scores && Object.keys(state.games[id]!.scores).length) return Promise.resolve(true);
+    // Known well enough: live (the stream fills it in), or ended with its end
+    // known (from GameEnded or a detail read). A game known only from a
+    // summary (`GET /v1/games`, an account's recent games) has players but no
+    // scoreboard, kills or end reason yet, so it is read in full.
+    const g = state.games[id];
+    if (g && (g.status === "live" || g.end_reason !== null)) return Promise.resolve(true);
     const key = server().api + "|" + id;
     let p = loading.get(key);
     if (!p) {
