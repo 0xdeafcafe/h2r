@@ -556,6 +556,48 @@ map being sampled; `D` above 0 with `T` at 0 means the level went through
 guest memory (written back) and the view sampled the 1x upload, still one
 tap.
 
+**In a level (2026-11-16).** The first level runs, Old Mombasa
+(`03a_oldmombasa`, to present 4087) and The Heretic, at 2x, showed every
+Old Mombasa frame byte for byte the same with and without E3. That is the
+frames, not the path:
+
+- Layers 10 and 11 are the game's only shadow-map path. Shadow generate
+  draws into the 512x512 `LIN_D24S8` level with the 128x128
+  `LIN_A8R8G8B8` target as its colour; shadow apply draws the same
+  casters' receivers into the frame and samples the map (an old draw log
+  has them in pairs of equal vertex counts). Old Mombasa: 5,217 draws into
+  128x128, 5,217 draws with a `LinD24S8` texture, 5,123 repeated into the
+  view's copy, 109 scaled textures sampled against the device's 111
+  in-place depth textures (one per shadow pass), no refill. The Heretic:
+  1,260, 1,260, 90 and 90. Every shadow pass the game made was drawn and
+  sampled at 2x with one tap.
+- The 160x120 and 320x240 targets are the colour levels of the pool over
+  the shadow map (bloom and the like), not shadows. The map goes through
+  the alias mirror between frames (438 stores, 436 loads), which marks the
+  view's copy stale; the next shadow pass clears it whole first, so it is
+  never refilled.
+- About 110 shadow passes in 2,340 frames of the level: the dynamic lights
+  of the opening cinematic. The run wrote one frame in 250, so its nine
+  in-level frames most likely held none. The outdoor shadows of Old
+  Mombasa (buildings, vehicles on the road) are in the lightmaps (layer 3,
+  "What replaced it"), which phase 1 does not touch; sun shadows from
+  objects are phase 4. The Heretic's ten differing frames differ in small
+  spots around the cinematic's lights; whether those frames held a shadow
+  pass was not recorded.
+
+`e3_shadow_maps_survive_halos_render_target_pool` (render_scale.rs) runs
+that order for three frames: shadow pass, a colour level over the map's
+bytes drawn, swap. The map goes through the mirror every frame, and the
+last frame's E3 image is the single-pass scene's exactly, at 1x, 2x and
+4x; it differs from retail's at the shadow's edges and nowhere else
+(within two map texels of the caster's outline); the guest's bytes and the
+reference's frame are the plain backend's.
+
+To catch the frames that do have shadows, the draw diagnostics list them
+(`shadow-map frames K  a-b, c, ...`, frames that drew with a depth texture
+bound) and `H2_BOOT_GFX_SHADOWS=N` writes the first N of them, the same
+frames in a retail and an E3 run.
+
 Not done: a separate factor; float depth levels (`F24S8`, `F16`) and `D16`
 maps stay 1x (their texture comes through guest memory); per-axis scale.
 
@@ -569,8 +611,9 @@ Each pair the same frame with `H2_LIGHTING=retail` and `=e3`, at
    (presents 4220 to 4520). Headless, `h2 run` with `H2_BOOT_GFX=<dir>` and
    `H2_BOOT_GFX_EVERY=30` writes `frame-NNNNN.png` (the view) and
    `frame-NNNNN-1x.png` (the reference, which must be identical between
-   the two runs). This level is known to bind and sample the 512x512 shadow
-   map every frame (d3d.md, frame-budget.md), so it is the first check.
+   the two runs). Add `H2_BOOT_GFX_SHADOWS=40` (and `H2_BOOT_GFX_EVERY=never`
+   for only those) to write the frames that sample the shadow map: most
+   frames do not.
 2. **Cairo Station** (`H2_LEVEL=01b_spacestation`), the opening corridors
    with the flashlight on, close to a Marine or a crate between the light
    and a wall: a dynamic light's shadow (S: which lights cast in which
