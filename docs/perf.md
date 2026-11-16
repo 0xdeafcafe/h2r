@@ -318,6 +318,20 @@ feature, which the CLI's `perf` feature turns on.
    h2 profile budget $R/trace.json
    ```
 
+   `H2_PERF_FROM=level` opens it at the first present after a level
+   loaded instead, so a run straight into a level profiles from its first
+   frame ([level-boot.md](level-boot.md)):
+
+   ```
+   H2_PERF_FROM=level H2_PROFILE=$R/prof H2_TIMELINE=$R/trace.json \
+   h2 play disc/halo2.iso --level 03a_oldmombasa --difficulty normal
+   ```
+
+   It prints `level boot: 03a_oldmombasa loaded at present N`, then
+   `perf: session from present N+1, the first after 03a_oldmombasa loaded`.
+   With no level requested it waits for the first game that is not the
+   main menu.
+
    The fallback interpreter is already recognised (`boot::fallback::*` is
    the `fallback` category). The kernel, runtime and d3d events come from
    the hooks above. Swap counts frames. For frame times without a trace,

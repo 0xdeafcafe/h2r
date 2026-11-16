@@ -20,6 +20,7 @@ pub mod fov_setting;
 pub mod game_glue;
 pub mod icons;
 pub mod layout_glue;
+pub mod level_boot;
 pub mod keyboard_glue;
 pub mod live_glue;
 pub mod live_notice;
@@ -424,6 +425,9 @@ pub struct Host {
     pub icons: Option<icons::IconOptions>,
     /// Keep only this many kernel calls in memory (`trace::install_bounded`).
     pub trace_limit: Option<usize>,
+    /// Start this campaign level in place of the main menu (`level_boot`,
+    /// docs/level-boot.md). `None` reads `H2_LEVEL` and `H2_DIFFICULTY`.
+    pub level: Option<level_boot::Request>,
     /// Called after every slice, input pump and audio advance, with the
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
@@ -570,6 +574,21 @@ pub fn run_hosted_with_live(
         scale: host.scale_setting.clone(),
     };
     layout_glue::install(&loaded.runtime, host.speaker_setting.clone(), video).context("installing the button layouts")?;
+    // A campaign level in place of the main menu (`h2 play --level`,
+    // H2_LEVEL) and the level-loaded mark H2_PERF_FROM=level waits on
+    // (docs/level-boot.md).
+    let level = match host.level.take() {
+        Some(l) => Some(l),
+        None => level_boot::from_env(&opts.disc).context("H2_LEVEL")?,
+    };
+    let perf_from_var = std::env::var("H2_PERF_FROM").ok();
+    let perf_from = perf_from_var.as_deref().and_then(level_boot::PerfFrom::parse);
+    if let Some(v) = perf_from_var.as_deref().filter(|_| perf_from.is_none()) {
+        eprintln!("perf: H2_PERF_FROM={v:?} is neither a present number nor `level`; ignored");
+    }
+    let level_name = level.as_ref().map(|l| l.name.clone());
+    level_boot::install(&loaded.runtime, level, perf_from == Some(level_boot::PerfFrom::Level))
+        .context("installing the level boot")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
@@ -660,10 +679,19 @@ pub fn run_hosted_with_live(
     // `h2 play --frame-stats` may have started them already.
     let frame_stats = timeline::phase::enabled() || timeline::phase::start_from_env();
     // H2_PERF_FROM=N (cli built with `--features perf`): open
-    // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N.
-    // It is finished below, before the module is dropped.
+    // `perf::Session::from_env()` (H2_PROFILE, H2_TIMELINE) at present N;
+    // H2_PERF_FROM=level at the first present after the level loaded
+    // (`level_boot::loaded_at`). It is finished below, before the module is
+    // dropped.
     #[cfg(feature = "perf")]
-    let mut perf_from: Option<u64> = std::env::var("H2_PERF_FROM").ok().and_then(|v| v.parse().ok());
+    let mut perf_from = perf_from;
+    #[cfg(not(feature = "perf"))]
+    {
+        if perf_from.is_some() {
+            eprintln!("perf: H2_PERF_FROM needs an h2 built with --features perf; no session");
+        }
+        let _ = &level_name;
+    }
     #[cfg(feature = "perf")]
     let mut perf_session: Option<perf::Session> = None;
     for slice in 0..opts.max_slices {
@@ -671,9 +699,20 @@ pub fn run_hosted_with_live(
             break;
         }
         #[cfg(feature = "perf")]
-        if perf_from.is_some_and(|n| d3d_diag::presents() >= n) {
+        if let Some(from) = perf_from
+            && from.due(d3d_diag::presents(), level_boot::loaded_at())
+        {
             perf_from = None;
-            eprintln!("perf: session from present {}", d3d_diag::presents());
+            let n = d3d_diag::presents();
+            match (from, &level_name) {
+                (level_boot::PerfFrom::Level, Some(l)) => {
+                    eprintln!("perf: session from present {n}, the first after {l} loaded")
+                }
+                (level_boot::PerfFrom::Level, None) => {
+                    eprintln!("perf: session from present {n}, the first after the level loaded")
+                }
+                _ => eprintln!("perf: session from present {n}"),
+            }
             perf_session = perf::Session::from_env();
         }
         if let Some(pad) = &pad {

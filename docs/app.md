@@ -93,7 +93,11 @@ TOML), `--icons auto|xbox|xbox360|playstation|keyboard` (button pictures in
 prompts; `auto`, the default, follows the device last used, see
 [button-icons.md](button-icons.md)), `--input-timeline FILE` (an input timeline, docs/input.md, played on
 guest time in place of live input), `--status` (frame rates once a second,
-the slice count every 1000 slices), `--frame-stats` (frame-time stats, below). The boot's environment variables still
+the slice count every 1000 slices), `--frame-stats` (frame-time stats, below),
+`--level MAP [--difficulty easy|normal|heroic|legendary]` (start that
+campaign level in place of the main menu, no title, profile or menus; a bad
+name lists the disc's levels before anything is built; `H2_LEVEL` and
+`H2_DIFFICULTY` do the same, see [level-boot.md](level-boot.md)). The boot's environment variables still
 apply; `H2_BOOT_INPUT` presses keys on the window's keyboard pad, so a
 scripted run goes through the same `KeyboardMouse`, `InputManager` and XAPI
 as a person's keys. Hold keys for one present at the menu's frame rate

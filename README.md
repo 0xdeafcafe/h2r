@@ -212,6 +212,7 @@ Running the game:
 
 - [BOOT.md](docs/BOOT.md): `h2 build` and `h2 run`, the boot runner's flags and environment, current state and blockers
 - [app.md](docs/app.md): the host shell, `h2 play` and `h2 play --follow` (`crates/app`)
+- [level-boot.md](docs/level-boot.md): `h2 play --level` / `H2_LEVEL`: start a campaign level directly, skipping the menus, and `H2_PERF_FROM=level`
 - [input.md](docs/input.md): XInput replacement, bindings and input timelines (`crates/input`); [input-default.toml](docs/input-default.toml) is the default binding file and [input-menu-example.toml](docs/input-menu-example.toml) an example timeline
 - [community-gametypes.md](docs/community-gametypes.md): community classics (Zombies, SWAT, Jousting and more) as extra built-in game variants with their own icon: how Halo 2 keeps its variants, sources, mappings and hooks
 - [settings-menu.md](docs/settings-menu.md): design for an expanded in-game settings menu for the opt-in enhancements (not built)

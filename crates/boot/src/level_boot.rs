@@ -1,0 +1,736 @@
+//! Level boot: start a campaign level directly, in place of the main menu
+//! the game loads at boot (`h2 play --level`, `H2_LEVEL`), and mark the
+//! level's first frame for `H2_PERF_FROM=level`.
+//!
+//! The research and every address are in docs/level-boot.md. In short: the
+//! main loop asks for the main menu (`0x18f1c0`) while no game runs and none
+//! is pending. That function builds game options on its stack (clear and
+//! default them, `0x138110`; mode 3, the main-menu scenario path; one
+//! default local player, `0x138640`) and queues them (`0x18e790`). The first
+//! call is answered here instead with the same three calls building campaign
+//! options (mode 1) for the requested scenario and difficulty, filled the way
+//! the main menu's own campaign start (`0x23643f`) fills them. Every later
+//! call goes to the original, so a failed load still reaches the menu.
+//!
+//! Activation (`0x18f000`) runs the original, then reads what loaded from
+//! the game globals; the present count at that point is the "loaded" mark
+//! [`loaded_at`] that `H2_PERF_FROM=level` waits on.
+//!
+//! The logic is written over [`Gm`] so it is tested without a guest. Each
+//! step says one line on stderr, prefixed `level boot:`.
+
+use std::fmt;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+use anyhow::{Context, Result, bail};
+use runtime::guest::Permissions;
+use runtime::{CpuAbi, ExecCtx, GuestFault, TransferAbi};
+
+use crate::layout_glue::Gm;
+
+// ---- guest addresses (docs/level-boot.md) ----
+
+/// `request_mainmenu(reason)`, stdcall, `ret 4`.
+pub const REQUEST_MAINMENU: u32 = 0x0018_f1c0;
+/// Clear and default a game-options block; the block in ESI.
+pub const OPTIONS_NEW: u32 = 0x0013_8110;
+/// Default local players: stdcall `(count, options)`, `ret 8`.
+pub const OPTIONS_PLAYERS: u32 = 0x0013_8640;
+/// Queue game options for the next transition; the block in EAX.
+pub const OPTIONS_QUEUE: u32 = 0x0018_e790;
+/// Game activation after the scenario's cache is loaded; options in EAX,
+/// returns AL (1 once the map and its first BSP are in).
+pub const GAME_ACTIVATE: u32 = 0x0018_f000;
+/// Pointer to the game globals: the active options at `+8`, the "map
+/// active" byte at `+0x1120` (activation sets it).
+pub const GAME_GLOBALS: u32 = 0x004e_6948;
+
+/// Game options (`0x1118` bytes).
+pub const OPTIONS_SIZE: u32 = 0x1118;
+pub const OPT_MODE: u32 = 0x0;
+pub const OPT_CAMPAIGN: u32 = 0x14;
+pub const OPT_MAP: u32 = 0x18;
+pub const OPT_PATH: u32 = 0x1c;
+pub const OPT_PATH_LEN: u32 = 0x104;
+pub const OPT_DIFFICULTY: u32 = 0x12a;
+/// More than one local player (the menu's start sets it from its count).
+pub const OPT_SPLIT: u32 = 0x12c;
+/// Its inverse, as the menu's start writes it.
+pub const OPT_SINGLE: u32 = 0x12d;
+pub const MODE_CAMPAIGN: u32 = 1;
+pub const MODE_MAINMENU: u32 = 3;
+const GLOBALS_OPTIONS: u32 = 0x8;
+const GLOBALS_ACTIVE: u32 = 0x1120;
+
+/// The globals tag's campaign level list, as `0x19c270` reads it:
+/// `matg +0x170` is a block whose element 0 starts with a `(count,
+/// address)` block of `0x108`-byte levels (`+0` campaign id, `+4` map id,
+/// `+8` scenario path, `0x100` bytes).
+const MATG_CAMPAIGN: usize = 0x170;
+const LEVEL_SIZE: usize = 0x108;
+const LEVEL_PATH: usize = 8;
+const MAX_LEVELS: u32 = 256;
+
+/// Our guest memory: the alias the activation wrapper calls, then the
+/// options we build.
+const SHADOW: u32 = 0xa2f4_0000;
+const BUFFER: u32 = 0xa2f4_1000;
+
+// ---- requests ----
+
+/// Campaign difficulty, the options' `+0x12a` word.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Difficulty {
+    Easy,
+    #[default]
+    Normal,
+    Heroic,
+    Legendary,
+}
+
+impl Difficulty {
+    pub fn parse(s: &str) -> Result<Self> {
+        Ok(match s.to_ascii_lowercase().as_str() {
+            "easy" => Self::Easy,
+            "normal" => Self::Normal,
+            "heroic" => Self::Heroic,
+            "legendary" => Self::Legendary,
+            _ => bail!("unknown difficulty {s:?} (easy, normal, heroic or legendary)"),
+        })
+    }
+    pub fn index(self) -> u16 {
+        self as u16
+    }
+}
+
+impl fmt::Display for Difficulty {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Easy => "easy",
+            Self::Normal => "normal",
+            Self::Heroic => "heroic",
+            Self::Legendary => "legendary",
+        })
+    }
+}
+
+/// A campaign map on the disc.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscLevel {
+    /// The map file's stem, `03a_oldmombasa`.
+    pub name: String,
+    /// The cache header's scenario path.
+    pub scenario: String,
+}
+
+/// What to load in place of the main menu.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub name: String,
+    pub scenario: String,
+    /// Campaign and map ids from the globals' level list, `u32::MAX` (as
+    /// the options default them) when the list does not name the scenario.
+    pub campaign: u32,
+    pub map: u32,
+    pub difficulty: Difficulty,
+}
+
+/// The level called `name` (a map file stem or a scenario path, any case),
+/// or an error listing every campaign level.
+pub fn pick<'a>(levels: &'a [DiscLevel], name: &str) -> Result<&'a DiscLevel> {
+    let n = name.trim().trim_end_matches(".map");
+    if let Some(l) = levels.iter().find(|l| l.name.eq_ignore_ascii_case(n) || l.scenario.eq_ignore_ascii_case(n)) {
+        return Ok(l);
+    }
+    let mut names: Vec<&str> = levels.iter().map(|l| l.name.as_str()).collect();
+    names.sort_unstable();
+    if names.is_empty() {
+        bail!("no campaign level {name:?}: the disc has no campaign maps");
+    }
+    bail!("no campaign level {name:?}; the disc has:\n  {}", names.join("\n  "))
+}
+
+/// `(campaign id, map id, scenario path)` for each level of a globals tag;
+/// `read` resolves a tag-memory address.
+pub fn campaign_levels(matg: &[u8], read: &mut dyn FnMut(u32, u32) -> Option<Vec<u8>>) -> Vec<(u32, u32, String)> {
+    let le = |b: &[u8], at: usize| b.get(at..at + 4).map(|s| u32::from_le_bytes(s.try_into().unwrap()));
+    let (Some(n), Some(addr)) = (le(matg, MATG_CAMPAIGN), le(matg, MATG_CAMPAIGN + 4)) else {
+        return Vec::new();
+    };
+    if n == 0 {
+        return Vec::new();
+    }
+    let Some(head) = read(addr, 8) else {
+        return Vec::new();
+    };
+    let (Some(count), Some(at)) = (le(&head, 0), le(&head, 4)) else {
+        return Vec::new();
+    };
+    if count == 0 || count > MAX_LEVELS {
+        return Vec::new();
+    }
+    let Some(all) = read(at, count * LEVEL_SIZE as u32) else {
+        return Vec::new();
+    };
+    all.as_chunks::<LEVEL_SIZE>()
+        .0
+        .iter()
+        .filter_map(|e| {
+            let p = &e[LEVEL_PATH..];
+            let p = &p[..p.iter().position(|c| *c == 0).unwrap_or(p.len())];
+            Some((le(e, 0)?, le(e, 4)?, String::from_utf8_lossy(p).into_owned()))
+        })
+        .collect()
+}
+
+/// The ids the level list gives `scenario`, if it names it.
+pub fn ids_for(levels: &[(u32, u32, String)], scenario: &str) -> Option<(u32, u32)> {
+    levels.iter().find(|(_, _, p)| p.eq_ignore_ascii_case(scenario)).map(|(c, m, _)| (*c, *m))
+}
+
+/// The disc's campaign maps.
+pub fn disc_levels(disc: &Path) -> Result<Vec<DiscLevel>> {
+    let mut out = Vec::new();
+    for_each_map(disc, |stem, map| {
+        if map.header().cache_type == map::CacheType::Campaign {
+            out.push(DiscLevel { name: stem.to_string(), scenario: map.header().scenario_path.clone() });
+        }
+        true
+    })?;
+    Ok(out)
+}
+
+type DiscMap = map::Map<std::io::BufReader<std::fs::File>>;
+
+/// Calls `f` with each `.map` on the disc that parses, until it returns false.
+fn for_each_map(disc: &Path, mut f: impl FnMut(&str, &mut DiscMap) -> bool) -> Result<()> {
+    let open = || std::fs::File::open(disc).with_context(|| format!("opening {}", disc.display()));
+    let mut iso = xiso::Xiso::open(std::io::BufReader::new(open()?)).context("reading the disc")?;
+    let base = iso.partition_offset();
+    for e in iso.entries()?.iter().filter(|e| !e.is_dir && e.path.to_ascii_lowercase().ends_with(".map")) {
+        let stem = e.path.rsplit('/').next().unwrap_or(&e.path);
+        let stem = &stem[..stem.len() - 4];
+        let at = base + u64::from(e.sector) * xiso::SECTOR;
+        let Ok(mut m) = map::Map::from_region(std::io::BufReader::new(open()?), at, e.size.into()) else {
+            continue;
+        };
+        if !f(stem, &mut m) {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// The campaign and map ids for `level`: from its own globals, else the
+/// main menu's.
+fn level_ids(disc: &Path, level: &DiscLevel) -> Option<(u32, u32)> {
+    let mut found = None;
+    let _ = for_each_map(disc, |stem, m| {
+        if !(stem.eq_ignore_ascii_case(&level.name) || stem.eq_ignore_ascii_case("mainmenu")) {
+            return true;
+        }
+        let Some(id) = m.globals().map(|t| t.id) else {
+            return true;
+        };
+        let Ok(matg) = m.read_tag_bytes(id) else {
+            return true;
+        };
+        let mut read = |addr: u32, size: u32| {
+            let off = m.file_offset(addr, size).ok()?;
+            m.read_file_range(off, size.into()).ok()
+        };
+        found = ids_for(&campaign_levels(&matg, &mut read), &level.scenario);
+        found.is_none()
+    });
+    found
+}
+
+/// Resolves `name` against the disc's campaign maps.
+pub fn resolve(disc: &Path, name: &str, difficulty: Difficulty) -> Result<Request> {
+    let levels = disc_levels(disc)?;
+    let level = pick(&levels, name)?;
+    if level.scenario.len() >= OPT_PATH_LEN as usize {
+        bail!("{}: scenario path {:?} is longer than the game options hold", level.name, level.scenario);
+    }
+    let (campaign, map) = level_ids(disc, level).unwrap_or_else(|| {
+        eprintln!(
+            "level boot: the globals' level list does not name {}; campaign and map ids left unset",
+            level.scenario
+        );
+        (u32::MAX, u32::MAX)
+    });
+    Ok(Request { name: level.name.clone(), scenario: level.scenario.clone(), campaign, map, difficulty })
+}
+
+/// `H2_LEVEL` and `H2_DIFFICULTY`, resolved against `disc`; `None` when
+/// `H2_LEVEL` is unset or empty.
+pub fn from_env(disc: &Path) -> Result<Option<Request>> {
+    from_vars(disc, std::env::var("H2_LEVEL").ok().as_deref(), std::env::var("H2_DIFFICULTY").ok().as_deref())
+}
+
+pub fn from_vars(disc: &Path, level: Option<&str>, difficulty: Option<&str>) -> Result<Option<Request>> {
+    let Some(level) = level.map(str::trim).filter(|l| !l.is_empty()) else {
+        return Ok(None);
+    };
+    let difficulty = difficulty.filter(|d| !d.is_empty()).map(Difficulty::parse).transpose()?.unwrap_or_default();
+    resolve(disc, level, difficulty).map(Some)
+}
+
+// ---- H2_PERF_FROM ----
+
+/// When `H2_PERF_FROM` opens the profiler session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PerfFrom {
+    /// At present N.
+    Present(u64),
+    /// At the first present after the level loaded ([`loaded_at`]).
+    Level,
+}
+
+impl PerfFrom {
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim();
+        if s.eq_ignore_ascii_case("level") {
+            return Some(Self::Level);
+        }
+        s.parse().ok().map(Self::Present)
+    }
+    /// Whether the session opens now, with `presents` out and the level
+    /// marked loaded at `loaded` presents.
+    pub fn due(self, presents: u64, loaded: Option<u64>) -> bool {
+        match self {
+            Self::Present(n) => presents >= n,
+            Self::Level => loaded.is_some_and(|l| presents > l),
+        }
+    }
+}
+
+static LOADED_AT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// The present count when the level activated, once it has.
+pub fn loaded_at() -> Option<u64> {
+    let v = LOADED_AT.load(Ordering::Relaxed);
+    (v != u64::MAX).then_some(v)
+}
+
+// ---- guest-side logic ----
+
+/// Writes the request into options `buf` that `OPTIONS_NEW` has cleared and
+/// defaulted, as the main menu's campaign start (`0x23643f`) fills them for
+/// one local player. A path longer than the field is refused.
+pub fn fill_options<M: Gm>(m: &mut M, buf: u32, req: &Request) -> bool {
+    let path = req.scenario.as_bytes();
+    if path.len() >= OPT_PATH_LEN as usize || path.contains(&0) {
+        return false;
+    }
+    let mut field = vec![0u8; OPT_PATH_LEN as usize];
+    field[..path.len()].copy_from_slice(path);
+    m.set_u32(buf + OPT_MODE, MODE_CAMPAIGN)
+        && m.set_u32(buf + OPT_CAMPAIGN, req.campaign)
+        && m.set_u32(buf + OPT_MAP, req.map)
+        && m.wr(buf + OPT_PATH, &field)
+        && m.set_u16(buf + OPT_DIFFICULTY, req.difficulty.index())
+        && m.wr(buf + OPT_SPLIT, &[0])
+        && m.wr(buf + OPT_SINGLE, &[1])
+}
+
+/// The active game's mode and scenario path, once activation has set the
+/// globals' active byte.
+pub fn active_game<M: Gm>(m: &M) -> Option<(u32, String)> {
+    let g = m.u32(GAME_GLOBALS).filter(|g| *g != 0)?;
+    if m.u8(g + GLOBALS_ACTIVE)? == 0 {
+        return None;
+    }
+    let o = g + GLOBALS_OPTIONS;
+    let mut p = vec![0u8; OPT_PATH_LEN as usize];
+    if !m.rd(o + OPT_PATH, &mut p) {
+        return None;
+    }
+    p.truncate(p.iter().position(|c| *c == 0).unwrap_or(p.len()));
+    Some((m.u32(o + OPT_MODE)?, String::from_utf8_lossy(&p).into_owned()))
+}
+
+/// Whether the game that activated is the level we wait for: the request's
+/// scenario, or with no request any game that is not the main menu.
+pub fn is_wanted(req: Option<&Request>, mode: u32, path: &str) -> bool {
+    match req {
+        Some(r) => path.eq_ignore_ascii_case(&r.scenario),
+        None => mode != MODE_MAINMENU,
+    }
+}
+
+/// The last part of a scenario path.
+fn short(path: &str) -> &str {
+    path.rsplit(['\\', '/']).next().unwrap_or(path)
+}
+
+// ---- hooks ----
+
+/// Installs the main-menu replacement when `req` is given, and the
+/// activation mark when `req` is given or `watch` (`H2_PERF_FROM=level`).
+pub fn install(rt: &runtime::Runtime, req: Option<Request>, watch: bool) -> Result<()> {
+    if req.is_none() && !watch {
+        return Ok(());
+    }
+    let original = |a: u32| {
+        let o = rt.resolve_original(a).map(Arc::new);
+        if o.is_none() {
+            eprintln!("level boot: no generated entry at {a:#x}; hook skipped");
+        }
+        o
+    };
+    let menu = req.as_ref().and_then(|_| original(REQUEST_MAINMENU));
+    let activate = original(GAME_ACTIVATE);
+    {
+        let mut mem = rt.memory();
+        mem.map_zeroed(SHADOW, 0x1000, Permissions::RX)?;
+        mem.map_zeroed(BUFFER, 0x2000, Permissions::RW)?;
+    }
+    let req = req.map(Arc::new);
+    rt.edit_dispatch(|d| {
+        if let (Some(o), Some(r)) = (menu, req.clone()) {
+            let taken = AtomicBool::new(false);
+            d.register_override(REQUEST_MAINMENU, "level-boot:menu", move |cpu, ctx, _| {
+                if taken.swap(true, Ordering::SeqCst) {
+                    return Ok(o.invoke(cpu, ctx, REQUEST_MAINMENU));
+                }
+                request_level(cpu, ctx, Arc::clone(&r))
+            });
+        }
+        if let Some(o) = activate {
+            d.register_override(SHADOW, "level-boot:activate-original", move |cpu, ctx, _| {
+                Ok(o.invoke(cpu, ctx, GAME_ACTIVATE))
+            });
+            d.register_override(GAME_ACTIVATE, "level-boot:activate", move |cpu, ctx, _| {
+                let req = req.clone();
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                let ret_pc = mem.u32(cpu.esp)?;
+                cpu.esp = cpu.esp.wrapping_add(4);
+                ctx.call_guest(cpu, &mut mem, SHADOW, move |cpu, ctx| {
+                    if cpu.eax & 0xff != 0 && loaded_at().is_none() {
+                        let mem = ctx.runtime().memory();
+                        match active_game(&*mem) {
+                            Some((mode, path)) if is_wanted(req.as_deref(), mode, &path) => {
+                                let n = crate::d3d_diag::presents();
+                                LOADED_AT.store(n, Ordering::Relaxed);
+                                eprintln!("level boot: {} loaded at present {n}", short(&path));
+                            }
+                            Some((mode, path)) if req.is_some() => {
+                                eprintln!(
+                                    "level boot: {} activated (mode {mode}), not the requested level",
+                                    short(&path)
+                                )
+                            }
+                            _ => {}
+                        }
+                    }
+                    Ok(TransferAbi::ret(ret_pc))
+                })
+            });
+        }
+    });
+    Ok(())
+}
+
+/// In place of the first `request_mainmenu(reason)`: clear and default
+/// options at [`BUFFER`] (`OPTIONS_NEW`, ESI), fill them, add one default
+/// local player (`OPTIONS_PLAYERS(1, options)`), queue them (`OPTIONS_QUEUE`,
+/// EAX), then return as the original does (`ret 4`, ESI preserved).
+fn request_level(cpu: &mut CpuAbi, ctx: &mut ExecCtx, req: Arc<Request>) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let ret_pc = mem.u32(cpu.esp)?;
+    let reason = mem.u32(cpu.esp.wrapping_add(4))?;
+    let entry_esp = cpu.esp;
+    let saved_esi = cpu.esi;
+    eprintln!(
+        "level boot: requesting {} {} (scenario {}, campaign {}, map {}; in place of the main menu, reason {reason})",
+        req.name, req.difficulty, req.scenario, req.campaign as i32, req.map as i32
+    );
+    cpu.esi = BUFFER;
+    ctx.call_guest(cpu, &mut mem, OPTIONS_NEW, move |cpu, ctx| {
+        let rt = Arc::clone(ctx.runtime());
+        let mut mem = rt.memory();
+        if !fill_options(&mut *mem, BUFFER, &req) {
+            // The hook is spent, so this reaches the original.
+            eprintln!("level boot: could not write the options; loading the main menu");
+            cpu.esi = saved_esi;
+            cpu.esp = entry_esp;
+            return Ok(TransferAbi::jump(REQUEST_MAINMENU));
+        }
+        cpu.esp = cpu.esp.wrapping_sub(4);
+        mem.set_u32(cpu.esp, BUFFER)?;
+        cpu.esp = cpu.esp.wrapping_sub(4);
+        mem.set_u32(cpu.esp, 1)?;
+        ctx.call_guest(cpu, &mut mem, OPTIONS_PLAYERS, move |cpu, ctx| {
+            let rt = Arc::clone(ctx.runtime());
+            let mut mem = rt.memory();
+            cpu.eax = BUFFER;
+            ctx.call_guest(cpu, &mut mem, OPTIONS_QUEUE, move |cpu, _| {
+                eprintln!("level boot: options queued");
+                cpu.esi = saved_esi;
+                cpu.esp = entry_esp.wrapping_add(8);
+                Ok(TransferAbi::ret(ret_pc))
+            })
+        })
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    /// A sparse byte map standing in for guest memory; unwritten bytes read
+    /// as absent.
+    #[derive(Default)]
+    struct Fake(BTreeMap<u32, u8>);
+    impl Gm for Fake {
+        fn rd(&self, addr: u32, out: &mut [u8]) -> bool {
+            for (i, b) in out.iter_mut().enumerate() {
+                match self.0.get(&(addr + i as u32)) {
+                    Some(v) => *b = *v,
+                    None => return false,
+                }
+            }
+            true
+        }
+        fn wr(&mut self, addr: u32, data: &[u8]) -> bool {
+            for (i, b) in data.iter().enumerate() {
+                self.0.insert(addr + i as u32, *b);
+            }
+            true
+        }
+    }
+
+    fn request(difficulty: Difficulty) -> Request {
+        Request {
+            name: "03a_oldmombasa".into(),
+            scenario: r"scenarios\solo\03a_oldmombasa\03a_oldmombasa".into(),
+            campaign: 1,
+            map: 7,
+            difficulty,
+        }
+    }
+
+    /// Options as `OPTIONS_NEW` leaves them for our purposes: every byte
+    /// present (`0xcc` stands in for its defaults), mode 1, ids -1.
+    fn defaulted(m: &mut Fake, buf: u32) {
+        m.wr(buf, &vec![0xcc; OPTIONS_SIZE as usize]);
+        m.set_u32(buf + OPT_MODE, MODE_CAMPAIGN);
+        m.set_u32(buf + OPT_CAMPAIGN, u32::MAX);
+        m.set_u32(buf + OPT_MAP, u32::MAX);
+    }
+
+    fn path_at(m: &Fake, at: u32) -> String {
+        let mut p = vec![0; OPT_PATH_LEN as usize];
+        assert!(m.rd(at, &mut p));
+        p.truncate(p.iter().position(|c| *c == 0).unwrap());
+        String::from_utf8(p).unwrap()
+    }
+
+    #[test]
+    fn difficulty_names_and_indices() {
+        for (s, d, i) in [
+            ("easy", Difficulty::Easy, 0),
+            ("Normal", Difficulty::Normal, 1),
+            ("HEROIC", Difficulty::Heroic, 2),
+            ("legendary", Difficulty::Legendary, 3),
+        ] {
+            let p = Difficulty::parse(s).unwrap();
+            assert_eq!((p, p.index()), (d, i), "{s}");
+            assert_eq!(p.to_string(), s.to_ascii_lowercase());
+        }
+        assert_eq!(Difficulty::default(), Difficulty::Normal);
+        assert!(Difficulty::parse("impossible").is_err());
+        assert!(Difficulty::parse("").is_err());
+    }
+
+    #[test]
+    fn fills_campaign_options_like_the_menu_start() {
+        let mut m = Fake::default();
+        defaulted(&mut m, BUFFER);
+        // A stale longer path must not survive past the terminator.
+        m.wr(BUFFER + OPT_PATH, &[b'x'; 0x103]);
+        let r = request(Difficulty::Legendary);
+        assert!(fill_options(&mut m, BUFFER, &r));
+        assert_eq!(m.u32(BUFFER + OPT_MODE), Some(MODE_CAMPAIGN));
+        assert_eq!(m.u32(BUFFER + OPT_CAMPAIGN), Some(1));
+        assert_eq!(m.u32(BUFFER + OPT_MAP), Some(7));
+        assert_eq!(path_at(&m, BUFFER + OPT_PATH), r.scenario);
+        assert_eq!(m.u8(BUFFER + OPT_PATH + OPT_PATH_LEN - 1), Some(0), "the whole field is written");
+        assert_eq!(m.u16(BUFFER + OPT_DIFFICULTY), Some(3));
+        assert_eq!((m.u8(BUFFER + OPT_SPLIT), m.u8(BUFFER + OPT_SINGLE)), (Some(0), Some(1)));
+        // Nothing past the fields we own: the next byte after the path
+        // field and the tick rate keep the defaults.
+        assert_eq!(m.u8(BUFFER + OPT_PATH + OPT_PATH_LEN), Some(0xcc));
+        assert_eq!(m.u16(BUFFER + 6), Some(0xcccc));
+        assert_eq!(m.u8(BUFFER + OPTIONS_SIZE - 1), Some(0xcc));
+    }
+
+    #[test]
+    fn unknown_ids_stay_unset_and_long_paths_are_refused() {
+        let mut m = Fake::default();
+        defaulted(&mut m, BUFFER);
+        let mut r = request(Difficulty::Easy);
+        (r.campaign, r.map) = (u32::MAX, u32::MAX);
+        assert!(fill_options(&mut m, BUFFER, &r));
+        assert_eq!((m.u32(BUFFER + OPT_CAMPAIGN), m.u32(BUFFER + OPT_MAP)), (Some(u32::MAX), Some(u32::MAX)));
+        assert_eq!(m.u16(BUFFER + OPT_DIFFICULTY), Some(0));
+        r.scenario = "s".repeat(OPT_PATH_LEN as usize);
+        let mut fresh = Fake::default();
+        assert!(!fill_options(&mut fresh, BUFFER, &r));
+        assert!(fresh.0.is_empty(), "nothing written");
+    }
+
+    /// Game globals at `g` whose options name `path` in `mode`.
+    fn globals(m: &mut Fake, g: u32, mode: u32, path: &str, active: bool) {
+        m.set_u32(GAME_GLOBALS, g);
+        m.wr(g, &vec![0; 0x1200]);
+        m.set_u32(g + GLOBALS_OPTIONS + OPT_MODE, mode);
+        m.wr(g + GLOBALS_OPTIONS + OPT_PATH, path.as_bytes());
+        m.wr(g + GLOBALS_ACTIVE, &[active as u8]);
+    }
+
+    #[test]
+    fn reads_the_active_game_from_the_globals() {
+        let mut m = Fake::default();
+        assert_eq!(active_game(&m), None, "no globals pointer");
+        m.set_u32(GAME_GLOBALS, 0);
+        assert_eq!(active_game(&m), None, "null globals");
+        let r = request(Difficulty::Normal);
+        globals(&mut m, 0x0060_0000, MODE_CAMPAIGN, &r.scenario, false);
+        assert_eq!(active_game(&m), None, "not active yet");
+        m.wr(0x0060_0000 + GLOBALS_ACTIVE, &[1]);
+        assert_eq!(active_game(&m), Some((MODE_CAMPAIGN, r.scenario.clone())));
+    }
+
+    #[test]
+    fn waits_for_the_requested_scenario_or_any_non_menu_game() {
+        let r = request(Difficulty::Normal);
+        let menu = r"scenarios\ui\mainmenu\mainmenu";
+        assert!(is_wanted(Some(&r), MODE_CAMPAIGN, &r.scenario));
+        assert!(is_wanted(Some(&r), MODE_CAMPAIGN, &r.scenario.to_ascii_uppercase()));
+        assert!(!is_wanted(Some(&r), MODE_MAINMENU, menu));
+        assert!(!is_wanted(Some(&r), MODE_CAMPAIGN, r"scenarios\solo\01a_tutorial\01a_tutorial"));
+        // Without a request (H2_PERF_FROM=level alone): the first game that
+        // is not the main menu.
+        assert!(!is_wanted(None, MODE_MAINMENU, menu));
+        assert!(is_wanted(None, MODE_CAMPAIGN, r"scenarios\solo\00a_introduction\00a_introduction"));
+        assert!(is_wanted(None, 2, r"scenarios\multi\example\example"));
+        assert_eq!(short(&r.scenario), "03a_oldmombasa");
+    }
+
+    #[test]
+    fn perf_from_parses_presents_and_level() {
+        assert_eq!(PerfFrom::parse("440"), Some(PerfFrom::Present(440)));
+        assert_eq!(PerfFrom::parse(" level "), Some(PerfFrom::Level));
+        assert_eq!(PerfFrom::parse("LEVEL"), Some(PerfFrom::Level));
+        assert_eq!(PerfFrom::parse("menu"), None);
+        assert_eq!(PerfFrom::parse(""), None);
+        assert!(PerfFrom::Present(10).due(10, None));
+        assert!(!PerfFrom::Present(10).due(9, Some(0)));
+        // Level: never before the mark, and only from the next present.
+        assert!(!PerfFrom::Level.due(5000, None));
+        assert!(!PerfFrom::Level.due(830, Some(830)));
+        assert!(PerfFrom::Level.due(831, Some(830)));
+    }
+
+    fn levels() -> Vec<DiscLevel> {
+        ["01a_tutorial", "03a_oldmombasa", "00a_introduction"]
+            .into_iter()
+            .map(|n| DiscLevel { name: n.into(), scenario: format!(r"scenarios\solo\{n}\{n}") })
+            .collect()
+    }
+
+    #[test]
+    fn picks_a_level_by_file_name_or_scenario_path() {
+        let l = levels();
+        assert_eq!(pick(&l, "03a_oldmombasa").unwrap().name, "03a_oldmombasa");
+        assert_eq!(pick(&l, "03A_OldMombasa.map").unwrap().name, "03a_oldmombasa");
+        assert_eq!(pick(&l, r"scenarios\solo\01a_tutorial\01a_tutorial").unwrap().name, "01a_tutorial");
+    }
+
+    #[test]
+    fn a_bad_name_lists_the_levels() {
+        let e = pick(&levels(), "03a_oldmombassa").unwrap_err().to_string();
+        assert!(e.contains("03a_oldmombassa"), "{e}");
+        let listed: Vec<&str> = e.lines().skip(1).map(str::trim).collect();
+        assert_eq!(listed, ["00a_introduction", "01a_tutorial", "03a_oldmombasa"], "sorted, one per line");
+        assert!(pick(&[], "x").unwrap_err().to_string().contains("no campaign maps"));
+    }
+
+    /// A synthetic globals tag: the campaign block at `+0x170` points at
+    /// one element whose level block holds `entries`.
+    fn matg(entries: &[(u32, u32, &str)]) -> (Vec<u8>, BTreeMap<u32, Vec<u8>>) {
+        let mut tag = vec![0u8; 0x200];
+        tag[MATG_CAMPAIGN..MATG_CAMPAIGN + 4].copy_from_slice(&1u32.to_le_bytes());
+        tag[MATG_CAMPAIGN + 4..MATG_CAMPAIGN + 8].copy_from_slice(&0x1000u32.to_le_bytes());
+        let mut head = Vec::new();
+        head.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+        head.extend_from_slice(&0x2000u32.to_le_bytes());
+        let mut all = Vec::new();
+        for (c, m, p) in entries {
+            let mut e = vec![0u8; LEVEL_SIZE];
+            e[0..4].copy_from_slice(&c.to_le_bytes());
+            e[4..8].copy_from_slice(&m.to_le_bytes());
+            e[LEVEL_PATH..LEVEL_PATH + p.len()].copy_from_slice(p.as_bytes());
+            all.extend(e);
+        }
+        (tag, BTreeMap::from([(0x1000, head), (0x2000, all)]))
+    }
+
+    #[test]
+    fn reads_campaign_and_map_ids_from_the_globals() {
+        let (tag, mem) = matg(&[
+            (1, 5, r"scenarios\solo\01a_tutorial\01a_tutorial"),
+            (1, 9, r"scenarios\solo\03a_oldmombasa\03a_oldmombasa"),
+        ]);
+        let mut read = |a: u32, n: u32| mem.get(&a).filter(|b| b.len() >= n as usize).map(|b| b[..n as usize].to_vec());
+        let all = campaign_levels(&tag, &mut read);
+        assert_eq!(all.len(), 2);
+        assert_eq!(ids_for(&all, r"SCENARIOS\solo\03a_oldmombasa\03a_oldmombasa"), Some((1, 9)));
+        assert_eq!(ids_for(&all, r"scenarios\solo\05a_deltaapproach\05a_deltaapproach"), None);
+    }
+
+    #[test]
+    fn a_missing_or_implausible_level_list_reads_as_empty() {
+        let mut none = |_: u32, _: u32| None;
+        assert!(campaign_levels(&[0; 0x10], &mut none).is_empty(), "short tag");
+        assert!(campaign_levels(&vec![0; 0x200], &mut none).is_empty(), "empty block");
+        let (tag, mut mem) = matg(&[(1, 1, "a")]);
+        mem.get_mut(&0x1000).unwrap()[0..4].copy_from_slice(&(MAX_LEVELS + 1).to_le_bytes());
+        let mut read = |a: u32, n: u32| mem.get(&a).filter(|b| b.len() >= n as usize).map(|b| b[..n as usize].to_vec());
+        assert!(campaign_levels(&tag, &mut read).is_empty());
+    }
+
+    /// Against your disc: `H2_DISC=disc/halo2.iso cargo test -p boot --lib
+    /// level_boot -- --ignored --nocapture`. Every campaign map resolves,
+    /// with ids from the level list.
+    #[test]
+    #[ignore = "reads the disc named by H2_DISC"]
+    fn every_disc_level_resolves() {
+        let disc = std::path::PathBuf::from(std::env::var("H2_DISC").expect("H2_DISC"));
+        let levels = disc_levels(&disc).unwrap();
+        assert!(!levels.is_empty());
+        for l in &levels {
+            let r = resolve(&disc, &l.name, Difficulty::Normal).unwrap();
+            eprintln!("{} {} campaign {} map {}", r.name, r.scenario, r.campaign as i32, r.map as i32);
+            assert_ne!(r.map, u32::MAX, "{} has no map id", r.name);
+        }
+    }
+
+    #[test]
+    fn no_level_variable_means_no_request() {
+        let disc = Path::new("/nonexistent/halo2.iso");
+        assert_eq!(from_vars(disc, None, Some("heroic")).unwrap(), None);
+        assert_eq!(from_vars(disc, Some("  "), None).unwrap(), None);
+        // A bad difficulty is refused before the disc is read.
+        let e = from_vars(disc, Some("03a_oldmombasa"), Some("hard")).unwrap_err().to_string();
+        assert!(e.contains("unknown difficulty"), "{e}");
+        assert!(from_vars(disc, Some("03a_oldmombasa"), None).is_err(), "no disc");
+    }
+}
