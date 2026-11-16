@@ -33,7 +33,7 @@ map/<stem>/views/<id>.png   top, iso-ne, iso-nw, iso-sw, iso-se
 Paths are relative to the manifest. A map whose geometry could not be read
 is listed under `skipped` as `map/<stem>/geometry` and has no entry.
 `GEOMETRY_VERSION` is 1; the art's `EXTRACTOR_VERSION` (part of the cache
-key) is 4, so a disc extracted by an older build is extracted again.
+key) is 5, so a disc extracted by an older build is extracted again.
 
 ### `map.glb`
 
@@ -201,3 +201,133 @@ path is `CHECK_DIR` in the test). Do not commit anything it writes.
   backdrop could be framed wider than its play space.
 - No textures, lightmaps or object geometry (scenery, crates, vehicles):
   only the BSP.
+
+# Player and weapon models
+
+The same extraction writes a posed player model per species and a model per
+multiplayer weapon, for the 3D viewer's players (the players contract,
+section 2). Like the maps, everything comes from the owner's disc at run
+time; the tests build invented models.
+
+Code: `crates/cli/src/live_models.rs`. Tests:
+`crates/cli/src/live_models_tests.rs`.
+
+## Files
+
+```
+models/biped/spartan.glb
+models/biped/elite.glb
+models/weapon/<stem>.glb      one per multiplayer weapon
+```
+
+`manifest.json` gains a `models` object (absent when nothing was
+extracted):
+
+```json
+"models": { "version": 1,
+            "bipeds":  { "spartan": { "glb": "models/biped/spartan.glb" },
+                         "elite":   { "glb": "models/biped/elite.glb" } },
+            "weapons": { "battle_rifle": { "glb": "models/weapon/battle_rifle.glb" } } }
+```
+
+A model that could not be built is listed under `skipped` as
+`models/biped/<species>` or `models/weapon/<stem>` and has no entry.
+Weapon stems are the weapon tag's file name, lower case (`battle_rifle`,
+`energy_blade`, `brute_shot`, `flag`, `ball`, `assault_bomb`, ...), and only
+stems matching `[a-z0-9_]{1,32}` are written.
+
+### glb
+
+- Axes and units as `map.glb`: game `(x, y, z)` is glTF `(x, z, -y)`, game
+  units kept.
+- Nodes: `root`, whose children are the mesh node (`body` for a biped,
+  `weapon` for a weapon) and empty nodes with `translation` and `rotation`
+  only. Bipeds have `weapon` (the right-hand marker: a weapon glb placed
+  under it sits in the hand) and `head` (the head marker); weapons have
+  `muzzle` (the `primary_trigger` marker, or the front of the model at mid
+  height when it has none).
+- One primitive per material: `POSITION`, `NORMAL`, `TEXCOORD_0` (float),
+  u32 indices. Biped primitives also have `COLOR_0` (float `VEC4`): red is
+  the primary change-colour weight, green the secondary (0..1), sampled
+  bilinearly from the material's change-colour map at the vertex. A
+  material without a change-colour map has zero weights; weapons have no
+  `COLOR_0`.
+- Materials: `baseColorTexture` (an embedded PNG, at most 512 pixels a side,
+  shared by materials with the same map) when the diffuse map decoded, else
+  a grey `baseColorFactor`. Metallic 0, roughness 0.8.
+- `asset.extras`: `generator`, `models_version` (1) and, for bipeds,
+  `height` (game units, feet to the top of the head).
+- A biped stands with its feet on the origin plane (lowest vertex at
+  glTF y = 0) and faces glTF +x (game +x, yaw 0). It holds a rifle in its
+  idle stance: the posed shape is baked into the vertices; nothing is skinned
+  or animated.
+
+On the retail disc: spartan 3,042 triangles and 0.8 MB, elite 2,744
+triangles and 0.8 MB, 22 weapons of 430 to 1,400 triangles and 60 to
+380 KB. The whole step takes about 0.1 s.
+
+## Pipeline
+
+1. **Bipeds.** On the multiplayer maps, the first `bipd` tag whose file name
+   is `masterchief_mp` (else `masterchief`) is the spartan, `elite_mp` (else
+   `elite`) the elite. Its object model (`obje +0x34`, docs/objects.md) gives
+   the render model (`hlmt +0x00`) and the animation graph (`hlmt +0x10`).
+2. **Weapons.** The `weap` tags under `objects\weapons\` of the shared map
+   and the multiplayer maps, except fixed emplacements (`\fixed\`), first
+   one per stem. Vehicle guns live elsewhere and are not included.
+3. **Geometry.** `tags::model::RenderModelGeometry`. Per region, the
+   permutation named `base` (else the first); for bipeds the highest detail
+   level whose drawn triangles fit 15,000 (the retail bipeds fit at their
+   highest), for weapons the highest. Section-local node indices go through
+   the section's node map. Parts of materials whose shader template name
+   says `emblem` (the emblem decal) are left out.
+4. **Skeleton.** Each render-model node's rest transform (translation at
+   `+0xc`, quaternion at `+0x18`, relative to its parent) composed up the
+   tree. The disc test checks the result against the inverse rest frames the
+   tag stores (`+0x2c`: three axes and a position): they agree to 4e-7 on
+   the spartan, which fixes the quaternion convention.
+5. **Pose.** In the biped's graph: mode `combat`, class `rifle` (else
+   `pistol`, `unarmed`), type `any`, action `idle`; an inherited action is
+   read from its graph. Frame 0 is sampled (`tags::anim_sample`). Graph
+   nodes are matched to model nodes by name; a channel the frame does not
+   supply keeps the rest value.
+6. **Bake.** Linear blend skinning: each vertex is moved by the weighted sum
+   of `posed_world × inverse(rest_world)` of its nodes (weights
+   renormalised), normals likewise. Then the model is lifted so its lowest
+   vertex is at height 0.
+7. **Markers.** Render-model header `+0x58` is a block of marker groups
+   (0xc bytes: string-ID name, block of markers); a marker is 0x24 bytes,
+   node index at `+2`, translation `+4`, quaternion `+0x10`, relative to its
+   node. On the retail models every name resolves and every node is in
+   range. `weapon` is the posed `right_hand` marker (`right_hand_elite` on
+   the elite; else a node named `r_hand`), `head` the `head` marker.
+8. **Textures.** The shader's bitmap parameters (`shad +0x20` postprocess,
+   `+4` block, datum first; docs/shader-instances.md). A bitmap's role comes
+   from generic words in its tag name read at run time: a name ending in
+   `_cc` or saying `change_color` is the change-colour map; the first name
+   that is not a bump, detail, reflection, cube, mask or engine map is the
+   diffuse map. Decoded with `assets::decode_image` (DXT and the other
+   formats the art already decodes).
+
+## Checking against your disc
+
+```sh
+cargo test --release -p cli --bin h2 models_from_the_disc -- --ignored --nocapture
+```
+
+writes every model, `report.txt` (sources, pose, triangle counts, sizes),
+`models.json` and `check-<species>.png` to `$RUSH_KEEP/players-models` (a
+directory outside the repository). Each picture shows the biped from the
+front, the right side and three-quarter with its diffuse texture, then the
+change-colour weights (red primary, blue secondary over grey), holding the
+battle rifle at its `weapon` node. Do not commit anything it writes.
+
+## Limits
+
+- One pose for everyone: the rifle idle, whatever the player holds. A
+  pistol or sword sits in a rifle grip.
+- Change-colour weights are per vertex, so their edges are as coarse as the
+  mesh. The diffuse texture already carries the fine detail.
+- No bump, specular, reflection or self-illumination: base colour only. The
+  visor is the diffuse map's colour.
+- Elite helmets and other permutations: only `base` (or the first).

@@ -1,0 +1,1412 @@
+//! Player and weapon models for the 3D game viewer: `models/biped/<species>.glb`
+//! and `models/weapon/<stem>.glb` (docs/live-art.md, "Player and weapon
+//! models"; the players contract, section 2).
+//!
+//! Runs inside the art extraction (`live_art::extract`) from the owner's own
+//! disc. A biped is posed once: a frame of its animation graph's rifle idle is
+//! sampled, composed up the render model's node tree and baked into the
+//! vertices by linear blend skinning against the model's rest pose. Nothing
+//! is skinned or animated in the file. The pure parts (pose, skin, change
+//! colour, glTF) take plain data so the tests can build invented models.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use tags::anim_sample::{Mat4, NodeTransform, Pose, mat_mul};
+
+use std::fs::File;
+use std::io::BufReader;
+
+use anyhow::{Context, Result, anyhow};
+use assets::ResourceFiles;
+use map::{CacheType, FourCC, Map, RawPointer, TagId};
+use tags::anim::AnimationGraph;
+use tags::geometry::{RawSource, TagView};
+use tags::model::RenderModelGeometry;
+use tags::sound::ResourceReader;
+use tags::wire::StringId;
+use tags::{DecodedTag, TagData};
+
+use crate::live_art::Disc;
+use crate::live_geometry::{GENERATOR, cross, dot, normalize, to_gltf};
+
+/// The model files' format (contract `models.version`, `models_version`).
+pub const MODELS_VERSION: u32 = 1;
+/// The largest texture side written into a glb; bigger ones are halved.
+pub const MAX_TEXTURE: u32 = 512;
+/// Base colour of a material whose diffuse map could not be decoded.
+pub const GREY: [f32; 4] = [0.5, 0.5, 0.5, 1.0];
+
+/// One file in the manifest's `models` object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GlbRef {
+    /// Relative to the manifest, `/`-separated.
+    pub glb: String,
+}
+
+/// The manifest's `models` object.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelsEntry {
+    pub version: u32,
+    /// By species: `spartan`, `elite`.
+    pub bipeds: BTreeMap<String, GlbRef>,
+    /// By weapon tag file stem (`battle_rifle`, ...).
+    pub weapons: BTreeMap<String, GlbRef>,
+}
+
+impl ModelsEntry {
+    /// `None` when nothing was extracted (the manifest then has no `models`).
+    pub fn new(bipeds: &[String], weapons: &[String]) -> Option<Self> {
+        if bipeds.is_empty() && weapons.is_empty() {
+            return None;
+        }
+        let refs = |dir: &str, names: &[String]| {
+            names
+                .iter()
+                .map(|n| {
+                    let glb = format!("models/{dir}/{n}.glb");
+                    (n.clone(), GlbRef { glb })
+                })
+                .collect()
+        };
+        Some(Self {
+            version: MODELS_VERSION,
+            bipeds: refs("biped", bipeds),
+            weapons: refs("weapon", weapons),
+        })
+    }
+}
+
+// ---- pose -----------------------------------------------------------------
+
+/// A render-model node at rest: its transform relative to its parent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Bone {
+    pub name: String,
+    pub parent: Option<usize>,
+    pub translation: [f32; 3],
+    /// Unit quaternion `[x, y, z, w]`.
+    pub rotation: [f32; 4],
+}
+
+/// A marker: a named frame attached to a node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Marker {
+    pub name: String,
+    pub node: usize,
+    pub translation: [f32; 3],
+    pub rotation: [f32; 4],
+}
+
+fn trs(translation: [f32; 3], rotation: [f32; 4], scale: f32) -> Mat4 {
+    NodeTransform {
+        rotation,
+        translation,
+        scale,
+        ..NodeTransform::default()
+    }
+    .matrix()
+}
+
+/// World matrices from local ones and parent links (any node order).
+pub fn compose(locals: &[Mat4], parents: &[Option<usize>]) -> Vec<Mat4> {
+    let mut world: Vec<Option<Mat4>> = vec![None; locals.len()];
+    fn resolve(
+        i: usize,
+        locals: &[Mat4],
+        parents: &[Option<usize>],
+        world: &mut [Option<Mat4>],
+        depth: usize,
+    ) -> Mat4 {
+        if let Some(m) = world[i] {
+            return m;
+        }
+        let m = match parents[i] {
+            Some(p) if p < locals.len() && p != i && depth < locals.len() => {
+                mat_mul(&resolve(p, locals, parents, world, depth + 1), &locals[i])
+            }
+            _ => locals[i],
+        };
+        world[i] = Some(m);
+        m
+    }
+    (0..locals.len())
+        .map(|i| resolve(i, locals, parents, &mut world, 0))
+        .collect()
+}
+
+/// The skeleton's rest pose in model space.
+pub fn rest_world(bones: &[Bone]) -> Vec<Mat4> {
+    let locals: Vec<Mat4> = bones
+        .iter()
+        .map(|b| trs(b.translation, b.rotation, 1.0))
+        .collect();
+    compose(&locals, &parents(bones))
+}
+
+fn parents(bones: &[Bone]) -> Vec<Option<usize>> {
+    bones.iter().map(|b| b.parent).collect()
+}
+
+/// The skeleton posed by an animation frame. `pose.nodes[j]` belongs to the
+/// graph node named `graph_names[j]`; a bone takes each channel the frame
+/// supplies for the node of its own name and keeps its rest value otherwise.
+pub fn posed_world(bones: &[Bone], graph_names: &[String], pose: &Pose) -> Vec<Mat4> {
+    let locals: Vec<Mat4> = bones
+        .iter()
+        .map(|b| {
+            let t = graph_names
+                .iter()
+                .position(|n| *n == b.name)
+                .and_then(|j| pose.nodes.get(j));
+            match t {
+                Some(t) => trs(
+                    if t.has_translation {
+                        t.translation
+                    } else {
+                        b.translation
+                    },
+                    if t.has_rotation {
+                        t.rotation
+                    } else {
+                        b.rotation
+                    },
+                    if t.has_scale { t.scale } else { 1.0 },
+                ),
+                None => trs(b.translation, b.rotation, 1.0),
+            }
+        })
+        .collect();
+    compose(&locals, &parents(bones))
+}
+
+/// Inverse of a rigid (rotation, translation, uniform scale) matrix.
+pub fn invert_rigid(m: &Mat4) -> Mat4 {
+    let s2 = dot([m[0][0], m[0][1], m[0][2]], [m[0][0], m[0][1], m[0][2]]);
+    let k = if s2 > 0.0 { 1.0 / s2 } else { 0.0 };
+    let mut out = [[0.0; 4]; 4];
+    for c in 0..3 {
+        for r in 0..3 {
+            out[c][r] = m[r][c] * k;
+        }
+    }
+    let t: [f32; 3] = std::array::from_fn(|r| -(0..3).map(|c| out[c][r] * m[3][c]).sum::<f32>());
+    out[3] = [t[0], t[1], t[2], 1.0];
+    out
+}
+
+pub fn transform_point(m: &Mat4, p: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| m[0][r] * p[0] + m[1][r] * p[1] + m[2][r] * p[2] + m[3][r])
+}
+
+pub fn transform_vector(m: &Mat4, v: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|r| m[0][r] * v[0] + m[1][r] * v[1] + m[2][r] * v[2])
+}
+
+/// Per-bone skinning matrices: posed world times inverse rest world.
+pub fn skin_matrices(rest: &[Mat4], posed: &[Mat4]) -> Vec<Mat4> {
+    rest.iter()
+        .zip(posed)
+        .map(|(r, p)| mat_mul(p, &invert_rigid(r)))
+        .collect()
+}
+
+/// A vertex's posed position and normal: the weighted sum of its nodes'
+/// skinning matrices (weights renormalised; no weight -> node 0).
+pub fn skin_vertex(
+    skin: &[Mat4],
+    nodes: [usize; 4],
+    weights: [f32; 4],
+    p: [f32; 3],
+    n: [f32; 3],
+) -> ([f32; 3], [f32; 3]) {
+    let total: f32 = (0..4)
+        .filter(|&k| nodes[k] < skin.len())
+        .map(|k| weights[k].max(0.0))
+        .sum();
+    if total <= 0.0 || skin.is_empty() {
+        let m = skin.first().copied().unwrap_or(IDENTITY);
+        return (transform_point(&m, p), normalize(transform_vector(&m, n)));
+    }
+    let (mut op, mut on) = ([0.0f32; 3], [0.0f32; 3]);
+    for k in 0..4 {
+        let w = weights[k].max(0.0) / total;
+        if w == 0.0 || nodes[k] >= skin.len() {
+            continue;
+        }
+        let tp = transform_point(&skin[nodes[k]], p);
+        let tn = transform_vector(&skin[nodes[k]], n);
+        for a in 0..3 {
+            op[a] += w * tp[a];
+            on[a] += w * tn[a];
+        }
+    }
+    (op, normalize(on))
+}
+
+pub const IDENTITY: Mat4 = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+/// A marker's frame in model space, given its node's world matrix.
+pub fn marker_world(node_world: &Mat4, m: &Marker) -> Mat4 {
+    mat_mul(node_world, &trs(m.translation, m.rotation, 1.0))
+}
+
+// ---- change colour and textures --------------------------------------------
+
+/// An RGBA8 picture.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Image {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+impl Image {
+    /// Bilinear sample with wrapping (`u`, `v` in texture space, origin at
+    /// the top-left), channels in 0..1.
+    pub fn sample(&self, uv: [f32; 2]) -> [f32; 4] {
+        let (w, h) = (self.width as usize, self.height as usize);
+        if w == 0 || h == 0 || self.rgba.len() < w * h * 4 {
+            return [0.0; 4];
+        }
+        let fx = uv[0] * w as f32 - 0.5;
+        let fy = uv[1] * h as f32 - 0.5;
+        if !fx.is_finite() || !fy.is_finite() {
+            return [0.0; 4];
+        }
+        let (x0, y0) = (fx.floor(), fy.floor());
+        let (tx, ty) = (fx - x0, fy - y0);
+        let wrap = |v: f32, n: usize| (v as i64).rem_euclid(n as i64) as usize;
+        let px = |x: usize, y: usize, c: usize| f32::from(self.rgba[(y * w + x) * 4 + c]) / 255.0;
+        let (xa, xb) = (wrap(x0, w), wrap(x0 + 1.0, w));
+        let (ya, yb) = (wrap(y0, h), wrap(y0 + 1.0, h));
+        std::array::from_fn(|c| {
+            let top = px(xa, ya, c) * (1.0 - tx) + px(xb, ya, c) * tx;
+            let bottom = px(xa, yb, c) * (1.0 - tx) + px(xb, yb, c) * tx;
+            top * (1.0 - ty) + bottom * ty
+        })
+    }
+
+    /// Halved (2 x 2 box filter) until neither side exceeds `max`.
+    pub fn fit(mut self, max: u32) -> Image {
+        while (self.width > max || self.height > max) && self.width > 1 && self.height > 1 {
+            let (w, h) = ((self.width / 2) as usize, (self.height / 2) as usize);
+            let sw = self.width as usize;
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    for c in 0..4 {
+                        let s: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)]
+                            .iter()
+                            .map(|(dx, dy)| {
+                                u32::from(self.rgba[((2 * y + dy) * sw + 2 * x + dx) * 4 + c])
+                            })
+                            .sum();
+                        out[(y * w + x) * 4 + c] = ((s + 2) / 4) as u8;
+                    }
+                }
+            }
+            self = Image {
+                width: w as u32,
+                height: h as u32,
+                rgba: out,
+            };
+        }
+        self
+    }
+}
+
+/// COLOR_0 at a vertex: red = primary change-colour weight, green =
+/// secondary, from the change-colour map's red and green channels.
+pub fn change_colour(map: &Image, uv: [f32; 2]) -> [f32; 4] {
+    let s = map.sample(uv);
+    [s[0], s[1], 0.0, 1.0]
+}
+
+// ---- the model and its glb ---------------------------------------------------
+
+/// A material: a diffuse texture when one was decoded, else grey.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Material {
+    pub name: String,
+    pub texture: Option<Image>,
+}
+
+/// Triangles of one material, in game coordinates.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Primitive {
+    pub material: usize,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
+    /// COLOR_0 (same length as `positions`) or empty.
+    pub colours: Vec<[f32; 4]>,
+    pub indices: Vec<u32>,
+}
+
+/// A posed (or rest) model ready to write.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Model {
+    /// Mesh node name: `body` for bipeds, `weapon` for weapons.
+    pub mesh_name: String,
+    pub primitives: Vec<Primitive>,
+    pub materials: Vec<Material>,
+    /// Empty nodes, game coordinates.
+    pub nodes: Vec<(String, Mat4)>,
+    /// Added to `asset.extras` (besides `generator` and `models_version`).
+    pub extras: serde_json::Map<String, Value>,
+}
+
+impl Model {
+    pub fn triangles(&self) -> usize {
+        self.primitives.iter().map(|p| p.indices.len() / 3).sum()
+    }
+
+    /// Lowest and highest point of the mesh, game coordinates.
+    pub fn bounds(&self) -> Option<([f32; 3], [f32; 3])> {
+        let mut it = self.primitives.iter().flat_map(|p| p.positions.iter());
+        let first = *it.next()?;
+        Some(it.fold((first, first), |(lo, hi), p| {
+            (
+                std::array::from_fn(|k| lo[k].min(p[k])),
+                std::array::from_fn(|k| hi[k].max(p[k])),
+            )
+        }))
+    }
+
+    /// Moves everything by `d` (game coordinates).
+    pub fn translate(&mut self, d: [f32; 3]) {
+        for p in &mut self.primitives {
+            for v in &mut p.positions {
+                *v = std::array::from_fn(|k| v[k] + d[k]);
+            }
+        }
+        for (_, m) in &mut self.nodes {
+            for k in 0..3 {
+                m[3][k] += d[k];
+            }
+        }
+    }
+}
+
+/// The game-to-glTF axis change as a matrix: `(x, y, z)` -> `(x, z, -y)`.
+const AXES: Mat4 = [
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, -1.0, 0.0],
+    [0.0, 1.0, 0.0, 0.0],
+    [0.0, 0.0, 0.0, 1.0],
+];
+
+/// A game-space rigid frame as glTF translation and rotation.
+pub fn gltf_trs(m: &Mat4) -> ([f32; 3], [f32; 4]) {
+    let g = mat_mul(&mat_mul(&AXES, m), &invert_rigid(&AXES));
+    // Orthonormalise the rotation part, then convert.
+    let x = normalize([g[0][0], g[0][1], g[0][2]]);
+    let y0 = [g[1][0], g[1][1], g[1][2]];
+    let z = normalize(cross(x, y0));
+    let y = cross(z, x);
+    ([g[3][0], g[3][1], g[3][2]], quat_from_axes(x, y, z))
+}
+
+/// The unit quaternion `[x, y, z, w]` of a rotation with these columns.
+pub fn quat_from_axes(x: [f32; 3], y: [f32; 3], z: [f32; 3]) -> [f32; 4] {
+    let (m00, m11, m22) = (x[0], y[1], z[2]);
+    let trace = m00 + m11 + m22;
+    let q = if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [
+            (y[2] - z[1]) / s,
+            (z[0] - x[2]) / s,
+            (x[1] - y[0]) / s,
+            0.25 * s,
+        ]
+    } else if m00 > m11 && m00 > m22 {
+        let s = (1.0 + m00 - m11 - m22).sqrt() * 2.0;
+        [
+            0.25 * s,
+            (y[0] + x[1]) / s,
+            (z[0] + x[2]) / s,
+            (y[2] - z[1]) / s,
+        ]
+    } else if m11 > m22 {
+        let s = (1.0 + m11 - m00 - m22).sqrt() * 2.0;
+        [
+            (y[0] + x[1]) / s,
+            0.25 * s,
+            (z[1] + y[2]) / s,
+            (z[0] - x[2]) / s,
+        ]
+    } else {
+        let s = (1.0 + m22 - m00 - m11).sqrt() * 2.0;
+        [
+            (z[0] + x[2]) / s,
+            (z[1] + y[2]) / s,
+            0.25 * s,
+            (x[1] - y[0]) / s,
+        ]
+    };
+    let l = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+    q.map(|v| v / l)
+}
+
+/// The glb: a root node named after the model holding the mesh node and the
+/// empty nodes; one primitive per material (POSITION, NORMAL, TEXCOORD_0,
+/// COLOR_0 when present, u32 indices); embedded PNG textures.
+pub fn write_glb(model: &Model) -> Vec<u8> {
+    let mut bin: Vec<u8> = Vec::new();
+    let mut views: Vec<Value> = Vec::new();
+    let mut accessors: Vec<Value> = Vec::new();
+    let mut view = |bin: &mut Vec<u8>, bytes: &[u8], target: Option<u32>| -> usize {
+        while !bin.len().is_multiple_of(4) {
+            bin.push(0);
+        }
+        let mut v = json!({"buffer": 0, "byteOffset": bin.len(), "byteLength": bytes.len()});
+        if let Some(t) = target {
+            v["target"] = json!(t);
+        }
+        views.push(v);
+        bin.extend_from_slice(bytes);
+        views.len() - 1
+    };
+    let floats =
+        |v: &mut dyn Iterator<Item = f32>| -> Vec<u8> { v.flat_map(f32::to_le_bytes).collect() };
+
+    let mut images = Vec::new();
+    let mut textures = Vec::new();
+    let mut materials: Vec<Value> = Vec::new();
+    for m in &model.materials {
+        let mut pbr = json!({"metallicFactor": 0.0, "roughnessFactor": 0.8});
+        // Materials sharing a shader share one image.
+        let same = m.texture.as_ref().and_then(|t| {
+            model.materials[..materials.len()]
+                .iter()
+                .position(|o| o.texture.as_ref() == Some(t))
+        });
+        match (&m.texture, same) {
+            (Some(_), Some(k)) if k < materials.len() => {
+                pbr["baseColorTexture"] =
+                    materials[k]["pbrMetallicRoughness"]["baseColorTexture"].clone();
+            }
+            (Some(t), _) => {
+                let mut png = Vec::new();
+                assets::png::write_rgba_fast(&mut png, t.width, t.height, &t.rgba)
+                    .expect("PNG into memory");
+                let bv = view(&mut bin, &png, None);
+                images.push(json!({"bufferView": bv, "mimeType": "image/png"}));
+                textures.push(json!({"sampler": 0, "source": images.len() - 1}));
+                pbr["baseColorTexture"] = json!({"index": textures.len() - 1});
+            }
+            (None, _) => pbr["baseColorFactor"] = json!(GREY),
+        }
+        materials.push(json!({"name": m.name, "pbrMetallicRoughness": pbr}));
+    }
+
+    let mut prims = Vec::new();
+    for p in model.primitives.iter().filter(|p| !p.indices.is_empty()) {
+        let pos: Vec<[f32; 3]> = p.positions.iter().map(|&v| to_gltf(v)).collect();
+        let nrm: Vec<[f32; 3]> = p.normals.iter().map(|&v| to_gltf(v)).collect();
+        let mut lo = [f32::INFINITY; 3];
+        let mut hi = [f32::NEG_INFINITY; 3];
+        for v in &pos {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v[k]);
+                hi[k] = hi[k].max(v[k]);
+            }
+        }
+        let mut attributes = serde_json::Map::new();
+        let mut add = |name: &str, bytes: Vec<u8>, ty: &str, count: usize, minmax: bool| {
+            let bv = view(&mut bin, &bytes, Some(34962));
+            let mut a =
+                json!({"bufferView": bv, "componentType": 5126, "count": count, "type": ty});
+            if minmax {
+                a["min"] = json!(lo);
+                a["max"] = json!(hi);
+            }
+            accessors.push(a);
+            attributes.insert(name.into(), json!(accessors.len() - 1));
+        };
+        add(
+            "POSITION",
+            floats(&mut pos.iter().flatten().copied()),
+            "VEC3",
+            pos.len(),
+            true,
+        );
+        if nrm.len() == pos.len() {
+            add(
+                "NORMAL",
+                floats(&mut nrm.iter().flatten().copied()),
+                "VEC3",
+                pos.len(),
+                false,
+            );
+        }
+        if p.uvs.len() == pos.len() {
+            add(
+                "TEXCOORD_0",
+                floats(&mut p.uvs.iter().flatten().copied()),
+                "VEC2",
+                pos.len(),
+                false,
+            );
+        }
+        if p.colours.len() == pos.len() {
+            add(
+                "COLOR_0",
+                floats(&mut p.colours.iter().flatten().copied()),
+                "VEC4",
+                pos.len(),
+                false,
+            );
+        }
+        let iv = view(
+            &mut bin,
+            &p.indices
+                .iter()
+                .flat_map(|i| i.to_le_bytes())
+                .collect::<Vec<_>>(),
+            Some(34963),
+        );
+        accessors.push(json!({"bufferView": iv, "componentType": 5125, "count": p.indices.len(), "type": "SCALAR"}));
+        let mut prim = json!({"attributes": attributes, "indices": accessors.len() - 1, "mode": 4});
+        if p.material < materials.len() {
+            prim["material"] = json!(p.material);
+        }
+        prims.push(prim);
+    }
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+
+    let mut extras = serde_json::Map::new();
+    extras.insert("generator".into(), json!(GENERATOR));
+    extras.insert("models_version".into(), json!(MODELS_VERSION));
+    extras.extend(model.extras.clone());
+    let mut nodes = vec![json!({"name": "root", "children": []})];
+    if !prims.is_empty() {
+        nodes.push(json!({"name": model.mesh_name, "mesh": 0}));
+    }
+    for (name, m) in &model.nodes {
+        let (t, r) = gltf_trs(m);
+        nodes.push(json!({"name": name, "translation": t, "rotation": r}));
+    }
+    nodes[0]["children"] = json!((1..nodes.len()).collect::<Vec<_>>());
+    let mut doc = json!({
+        "asset": {"version": "2.0", "generator": GENERATOR, "extras": extras},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": nodes,
+    });
+    if !prims.is_empty() {
+        doc["meshes"] = json!([{"name": model.mesh_name, "primitives": prims}]);
+        doc["accessors"] = json!(accessors);
+    }
+    if !materials.is_empty() {
+        doc["materials"] = json!(materials);
+    }
+    if !images.is_empty() {
+        doc["images"] = json!(images);
+        doc["textures"] = json!(textures);
+        // Repeat wrapping, linear filtering with mipmaps.
+        doc["samplers"] =
+            json!([{"magFilter": 9729, "minFilter": 9987, "wrapS": 10497, "wrapT": 10497}]);
+    }
+    if !bin.is_empty() {
+        doc["bufferViews"] = json!(views);
+        doc["buffers"] = json!([{"byteLength": bin.len()}]);
+    }
+    let mut json = serde_json::to_vec(&doc).expect("glTF JSON");
+    while !json.len().is_multiple_of(4) {
+        json.push(b' ');
+    }
+    let total = 12 + 8 + json.len() + if bin.is_empty() { 0 } else { 8 + bin.len() };
+    let mut out = Vec::with_capacity(total);
+    out.extend(0x4654_6c67u32.to_le_bytes()); // "glTF"
+    out.extend(2u32.to_le_bytes());
+    out.extend((total as u32).to_le_bytes());
+    out.extend((json.len() as u32).to_le_bytes());
+    out.extend(0x4e4f_534au32.to_le_bytes()); // "JSON"
+    out.extend(&json);
+    if !bin.is_empty() {
+        out.extend((bin.len() as u32).to_le_bytes());
+        out.extend(0x004e_4942u32.to_le_bytes()); // "BIN\0"
+        out.extend(&bin);
+    }
+    out
+}
+
+// ---- from model parts to a posed model ---------------------------------------
+
+/// One drawn piece of a render model: a section's triangles of one material,
+/// in model space (rest pose), with the model nodes skinning each vertex.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Piece {
+    pub material: usize,
+    pub positions: Vec<[f32; 3]>,
+    pub normals: Vec<[f32; 3]>,
+    pub uvs: Vec<[f32; 2]>,
+    /// Model node indices (not section-local).
+    pub nodes: Vec<[usize; 4]>,
+    pub weights: Vec<[f32; 4]>,
+    pub triangles: Vec<[u32; 3]>,
+}
+
+/// A render model as plain data.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Source {
+    pub bones: Vec<Bone>,
+    pub markers: Vec<Marker>,
+    pub pieces: Vec<Piece>,
+    pub materials: Vec<Material>,
+    /// Per material: its shader's change-colour map, when it has one.
+    pub change_colour: Vec<Option<Image>>,
+}
+
+impl Source {
+    pub fn marker(&self, names: &[&str]) -> Option<&Marker> {
+        names
+            .iter()
+            .find_map(|n| self.markers.iter().find(|m| m.name == *n))
+    }
+    pub fn bone(&self, names: &[&str]) -> Option<usize> {
+        names
+            .iter()
+            .find_map(|n| self.bones.iter().position(|b| b.name == *n))
+    }
+}
+
+/// The mesh with every vertex moved from the rest pose to `posed` (node
+/// world matrices); one primitive per material. COLOR_0 is written for every
+/// primitive when any material has a change-colour map (zero weights where
+/// its own has none).
+pub fn pose_mesh(src: &Source, posed: &[Mat4]) -> Vec<Primitive> {
+    let rest = rest_world(&src.bones);
+    let skin = skin_matrices(&rest, posed);
+    let any_cc = src.change_colour.iter().any(Option::is_some);
+    let mut prims: BTreeMap<usize, Primitive> = BTreeMap::new();
+    for piece in &src.pieces {
+        let prim = prims.entry(piece.material).or_insert_with(|| Primitive {
+            material: piece.material,
+            ..Primitive::default()
+        });
+        let base = prim.positions.len() as u32;
+        let cc = src
+            .change_colour
+            .get(piece.material)
+            .and_then(Option::as_ref);
+        for i in 0..piece.positions.len() {
+            let n = piece.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]);
+            let (p, n) = skin_vertex(
+                &skin,
+                piece.nodes.get(i).copied().unwrap_or([0; 4]),
+                piece
+                    .weights
+                    .get(i)
+                    .copied()
+                    .unwrap_or([1.0, 0.0, 0.0, 0.0]),
+                piece.positions[i],
+                n,
+            );
+            let uv = piece.uvs.get(i).copied().unwrap_or([0.0; 2]);
+            prim.positions.push(p);
+            prim.normals.push(n);
+            prim.uvs.push(uv);
+            if any_cc {
+                prim.colours.push(match cc {
+                    Some(map) => change_colour(map, uv),
+                    None => [0.0, 0.0, 0.0, 1.0],
+                });
+            }
+        }
+        for t in &piece.triangles {
+            if t.iter().all(|&i| (i as usize) < piece.positions.len()) {
+                prim.indices.extend(t.map(|i| base + i));
+            }
+        }
+    }
+    prims
+        .into_values()
+        .filter(|p| !p.indices.is_empty())
+        .collect()
+}
+
+/// Names a biped's empty nodes are looked up by, in order of preference.
+pub const WEAPON_MARKERS: &[&str] = &["right_hand", "right_hand_elite"];
+pub const WEAPON_BONES: &[&str] = &["r_hand", "right_hand"];
+pub const HEAD_MARKERS: &[&str] = &["head"];
+pub const HEAD_BONES: &[&str] = &["head"];
+pub const MUZZLE_MARKERS: &[&str] = &["primary_trigger", "primary trigger", "primary_muzzle"];
+
+/// A biped posed by one animation frame, standing on the origin: the mesh,
+/// and `weapon` and `head` nodes from the markers (or bones) of those names.
+pub fn biped(src: &Source, graph_names: &[String], pose: &Pose) -> Result<Model> {
+    let posed = posed_world(&src.bones, graph_names, pose);
+    let mut model = Model {
+        mesh_name: "body".into(),
+        primitives: pose_mesh(src, &posed),
+        materials: src.materials.clone(),
+        ..Model::default()
+    };
+    if model.primitives.is_empty() {
+        anyhow::bail!("no drawn triangles");
+    }
+    let frame = |markers: &[&str], bones: &[&str]| -> Option<Mat4> {
+        match src.marker(markers) {
+            Some(m) if m.node < posed.len() => Some(marker_world(&posed[m.node], m)),
+            _ => src.bone(bones).map(|b| posed[b]),
+        }
+    };
+    let weapon = frame(WEAPON_MARKERS, WEAPON_BONES)
+        .ok_or_else(|| anyhow::anyhow!("no right-hand marker or node"))?;
+    let head =
+        frame(HEAD_MARKERS, HEAD_BONES).ok_or_else(|| anyhow::anyhow!("no head marker or node"))?;
+    model.nodes.push(("weapon".into(), weapon));
+    model.nodes.push(("head".into(), head));
+    let (lo, hi) = model.bounds().expect("non-empty");
+    model.translate([0.0, 0.0, -lo[2]]);
+    model.extras.insert("height".into(), json!(hi[2] - lo[2]));
+    Ok(model)
+}
+
+/// A weapon in its rest pose and own model space, with a `muzzle` node.
+pub fn weapon(src: &Source) -> Result<Model> {
+    let rest = rest_world(&src.bones);
+    let mut model = Model {
+        mesh_name: "weapon".into(),
+        primitives: pose_mesh(src, &rest),
+        materials: src.materials.clone(),
+        ..Model::default()
+    };
+    if model.primitives.is_empty() {
+        anyhow::bail!("no drawn triangles");
+    }
+    // The weapon's colour comes from its texture; it has no team colour.
+    for p in &mut model.primitives {
+        p.colours.clear();
+    }
+    let muzzle = match src.marker(MUZZLE_MARKERS) {
+        Some(m) if m.node < rest.len() => marker_world(&rest[m.node], m),
+        _ => {
+            // No marker: the front of the model, at mid height.
+            let (lo, hi) = model.bounds().expect("non-empty");
+            let mut m = IDENTITY;
+            m[3] = [hi[0], (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0, 1.0];
+            m
+        }
+    };
+    model.nodes.push(("muzzle".into(), muzzle));
+    Ok(model)
+}
+
+// ---- files -----------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Biped,
+    Weapon,
+}
+
+impl Kind {
+    fn dir(self) -> &'static str {
+        match self {
+            Kind::Biped => "biped",
+            Kind::Weapon => "weapon",
+        }
+    }
+}
+
+/// Counts for the report.
+#[derive(Clone, Debug)]
+pub struct ModelStats {
+    pub key: String,
+    pub triangles: usize,
+    pub glb_bytes: usize,
+}
+
+/// What [`write_models`] (and [`extract`]) did.
+#[derive(Debug, Default)]
+pub struct Written {
+    pub entry: Option<ModelsEntry>,
+    pub skipped: BTreeMap<String, String>,
+    pub stats: Vec<ModelStats>,
+}
+
+/// Writes every model that was built under `dir/models/`, and lists every
+/// one that was not under `skipped` as `models/<kind>/<name>`.
+pub fn write_models(built: Vec<(Kind, String, Result<Model>)>, dir: &Path) -> Written {
+    let mut out = Written::default();
+    let (mut bipeds, mut weapons) = (Vec::new(), Vec::new());
+    for (kind, name, model) in built {
+        let key = format!("models/{}/{name}", kind.dir());
+        let model = match model {
+            Ok(m) => m,
+            Err(e) => {
+                out.skipped.insert(key, format!("{e:#}"));
+                continue;
+            }
+        };
+        let glb = write_glb(&model);
+        let path = dir.join(format!("{key}.glb"));
+        let written = path
+            .parent()
+            .map_or(Ok(()), fs::create_dir_all)
+            .and_then(|()| fs::write(&path, &glb));
+        if let Err(e) = written {
+            out.skipped.insert(key, format!("writing: {e}"));
+            continue;
+        }
+        out.stats.push(ModelStats {
+            key,
+            triangles: model.triangles(),
+            glb_bytes: glb.len(),
+        });
+        match kind {
+            Kind::Biped => bipeds.push(name),
+            Kind::Weapon => weapons.push(name),
+        }
+    }
+    out.entry = ModelsEntry::new(&bipeds, &weapons);
+    out
+}
+
+#[cfg(test)]
+#[path = "live_models_tests.rs"]
+mod tests;
+
+// ---- the disc ---------------------------------------------------------------
+
+type MapReader = Map<BufReader<File>>;
+
+/// The species written, and the biped tag file stems they come from (the
+/// multiplayer one first). Matched against tag names read at run time.
+pub const SPECIES: &[(&str, &[&str])] = &[
+    ("spartan", &["masterchief_mp", "masterchief"]),
+    ("elite", &["elite_mp", "elite"]),
+];
+/// Weapons are the `weap` tags under this folder (not vehicle guns), minus
+/// fixed emplacements.
+const WEAPON_FOLDER: &str = "objects\\weapons\\";
+const FIXED_FOLDER: &str = "\\fixed\\";
+/// The pose: mode, weapon classes in order of preference, weapon type,
+/// action, frame.
+const POSE_MODE: &str = "combat";
+const POSE_CLASSES: &[&str] = &["rifle", "pistol", "unarmed"];
+const POSE_TYPE: &str = "any";
+const POSE_ACTION: &str = "idle";
+/// Triangle budget per biped: the highest detail level under it is used.
+pub const MAX_BIPED_TRIANGLES: usize = 15_000;
+
+const BIPD: FourCC = FourCC(*b"bipd");
+const WEAP: FourCC = FourCC(*b"weap");
+
+/// Raw blocks and animation resources through the art extractor's files.
+struct Res<'a>(&'a mut ResourceFiles);
+impl Res<'_> {
+    fn read(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        self.0.read(p.file, p.offset, size).map_err(|e| match e {
+            assets::Error::Map(e) => tags::Error::Map(e),
+            assets::Error::Io(e) => tags::Error::Map(e.into()),
+            assets::Error::MissingResource(f) => tags::Error::MissingResource(f),
+            _ => tags::Error::Invalid("raw read rejected"),
+        })
+    }
+}
+impl RawSource for Res<'_> {
+    fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        self.read(p, size)
+    }
+}
+impl ResourceReader for Res<'_> {
+    fn check(&self, _: RawPointer, _: u32) -> tags::Result<()> {
+        // `read` checks bounds and the size cap itself.
+        Ok(())
+    }
+    fn read_raw(&mut self, p: RawPointer, size: u32) -> tags::Result<Vec<u8>> {
+        self.read(p, size)
+    }
+}
+
+fn u32_at(b: &[u8], o: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(b.get(o..o + 4)?.try_into().ok()?))
+}
+fn f32s<const N: usize>(b: &[u8], o: usize) -> Option<[f32; N]> {
+    let mut out = [0.0; N];
+    for (k, v) in out.iter_mut().enumerate() {
+        *v = f32::from_bits(u32_at(b, o + 4 * k)?);
+    }
+    Some(out)
+}
+
+/// An object tag's render model and animation graph: `obje +0x34` is its
+/// `hlmt` reference (docs/objects.md), whose `+0x00` is the render model and
+/// `+0x10` the animation graph (datums at +4 of each reference).
+fn object_model(map: &mut MapReader, object: TagId) -> Result<(TagId, Option<TagId>)> {
+    let b = map.read_tag_bytes(object)?;
+    let hlmt = TagId(u32_at(&b, 0x38).context("object too short")?);
+    let h = map
+        .read_tag_bytes(hlmt)
+        .context("reading the object's model")?;
+    let mode = TagId(u32_at(&h, 4).context("model too short")?);
+    let jmad = TagId(u32_at(&h, 0x14).context("model too short")?);
+    let jmad = (jmad != TagId::NULL && map.tag(jmad).is_ok()).then_some(jmad);
+    Ok((mode, jmad))
+}
+
+/// Render-model markers: header `+0x58` is a block of marker groups (0xc
+/// bytes: string-ID name, block of markers); a marker is 0x24 bytes with the
+/// node index at `+2`, translation at `+4` and rotation at `+0x10`. D: on the
+/// retail bipeds and weapons every name resolves and every node index is in
+/// range (checked on the retail disc).
+fn markers(map: &mut MapReader, mode: TagId, nodes: usize) -> Result<Vec<Marker>> {
+    let address = map.tag(mode)?.location.context("no payload")?.address;
+    let bytes = map.read_tag_bytes(mode)?;
+    let view = TagView::new(&bytes, address);
+    let strings = map.strings();
+    let mut out = Vec::new();
+    for group in view.block(&bytes[..0x84.min(bytes.len())], 0x58, 0xc)? {
+        let name = StringId(u32_at(group, 0).unwrap_or(u32::MAX))
+            .resolve(strings)?
+            .unwrap_or_default()
+            .to_owned();
+        for m in view.block(group, 4, 0x24)? {
+            let node = usize::from(m[2]);
+            if node >= nodes {
+                return Err(anyhow!("marker {name} on node {node} of {nodes}"));
+            }
+            out.push(Marker {
+                name: name.clone(),
+                node,
+                translation: f32s(m, 4).context("marker")?,
+                rotation: f32s(m, 0x10).context("marker")?,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// A shader's bitmaps: `shad +0x20` is the compiled postprocess (one
+/// element), whose `+4` block lists the bitmap parameters (0xc bytes, datum
+/// first; docs/shader-instances.md).
+fn shader_bitmaps(map: &mut MapReader, shader: TagId) -> Result<(String, Vec<TagId>)> {
+    let tag = map.tag(shader)?.clone();
+    let address = tag.location.context("no payload")?.address;
+    let bytes = map.read_tag_bytes(shader)?;
+    let view = TagView::new(&bytes, address);
+    let template = TagId(u32_at(&bytes, 4).context("shader too short")?);
+    let template = map
+        .tag(template)
+        .ok()
+        .and_then(|t| t.name.clone())
+        .unwrap_or_default();
+    let post = view.block(&bytes[..0x54.min(bytes.len())], 0x20, 0x7c)?;
+    let post = post.first().context("no compiled postprocess")?;
+    let ids = view
+        .block(post, 4, 0xc)?
+        .iter()
+        .filter_map(|b| u32_at(b, 0).map(TagId))
+        .collect();
+    Ok((template, ids))
+}
+
+fn last_component(name: &str) -> &str {
+    name.rsplit('\\').next().unwrap_or(name)
+}
+
+/// What a shader's bitmap is for, from words in its tag name read at run
+/// time: change-colour maps end in `_cc` or say `change_color`; the diffuse
+/// map is the first bitmap that is not a bump, detail, reflection,
+/// change-colour or engine map.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BitmapRole {
+    Diffuse,
+    ChangeColour,
+    Other,
+}
+
+pub fn bitmap_role(name: &str) -> BitmapRole {
+    let lower = name.to_ascii_lowercase();
+    let last = last_component(&lower);
+    if last.ends_with("_cc") || last.contains("change_color") || last.contains("change_colour") {
+        return BitmapRole::ChangeColour;
+    }
+    let folders = [
+        "detail_maps",
+        "reflection_maps",
+        "default_bitmaps",
+        "rasterizer",
+        "cube",
+    ];
+    let words = [
+        "bump",
+        "detail",
+        "reflection",
+        "cube",
+        "fade",
+        "normal",
+        "illum",
+        "self",
+        "specular",
+        "mask",
+    ];
+    if folders.iter().any(|f| lower.split('\\').any(|c| c == *f))
+        || words.iter().any(|w| last.contains(w))
+    {
+        return BitmapRole::Other;
+    }
+    BitmapRole::Diffuse
+}
+
+/// The first image of a bitmap tag, decoded to RGBA.
+fn decode_bitmap(map: &mut MapReader, files: &mut ResourceFiles, id: TagId) -> Result<Image> {
+    let bitmap = match DecodedTag::read(map, id)?.data {
+        TagData::Bitmap(b) => b,
+        _ => return Err(anyhow!("not a bitmap")),
+    };
+    let image = bitmap.images.first().context("bitmap has no images")?;
+    let decoded = assets::decode_image(image, files)?;
+    let base = decoded
+        .levels
+        .into_iter()
+        .find(|l| l.face == 0)
+        .context("no decoded level")?;
+    Ok(Image {
+        width: base.width,
+        height: base.height,
+        rgba: base.rgba,
+    })
+}
+
+/// The pieces of the chosen sections, with section-local node indices
+/// mapped to model nodes and unused vertices dropped.
+fn pieces(geo: &RenderModelGeometry, sections: &[usize], skip: &[bool]) -> Vec<Piece> {
+    let mut out = Vec::new();
+    for &si in sections {
+        let Some(section) = geo.sections.get(si) else {
+            continue;
+        };
+        let v = &section.vertices;
+        let n = v.positions.len();
+        let node = |local: u8| -> usize {
+            if section.node_map.is_empty() {
+                usize::from(local)
+            } else {
+                section
+                    .node_map
+                    .get(usize::from(local))
+                    .map_or(0, |&m| usize::from(m))
+            }
+        };
+        for part in section.geometry.parts.iter().filter(|p| p.is_drawn()) {
+            let material = usize::from(part.material);
+            if skip.get(material).copied().unwrap_or(false) {
+                continue;
+            }
+            let mut piece = Piece {
+                material,
+                ..Piece::default()
+            };
+            let mut remap: BTreeMap<u16, u32> = BTreeMap::new();
+            for t in section.geometry.part_triangles(part) {
+                if t.iter().any(|&i| usize::from(i) >= n)
+                    || t[0] == t[1]
+                    || t[1] == t[2]
+                    || t[0] == t[2]
+                {
+                    continue;
+                }
+                let tri = t.map(|i| {
+                    *remap.entry(i).or_insert_with(|| {
+                        let i = usize::from(i);
+                        piece.positions.push(v.positions[i]);
+                        piece
+                            .normals
+                            .push(v.normals.get(i).copied().unwrap_or([0.0, 0.0, 1.0]));
+                        piece
+                            .uvs
+                            .push(v.texcoords.get(i).copied().unwrap_or([0.0; 2]));
+                        piece
+                            .nodes
+                            .push(v.node_indices.get(i).map_or([0; 4], |k| k.map(node)));
+                        piece.weights.push(
+                            v.node_weights
+                                .get(i)
+                                .copied()
+                                .unwrap_or([1.0, 0.0, 0.0, 0.0]),
+                        );
+                        (piece.positions.len() - 1) as u32
+                    })
+                });
+                piece.triangles.push(tri);
+            }
+            if !piece.triangles.is_empty() {
+                out.push(piece);
+            }
+        }
+    }
+    out
+}
+
+/// Per region, the permutation named `base` (else the first) at detail
+/// level `lod` (else the nearest lower one present, else its best).
+fn chosen_sections(geo: &RenderModelGeometry, lod: usize) -> Vec<usize> {
+    let mut out = Vec::new();
+    for r in &geo.regions {
+        let perm = r
+            .permutations
+            .iter()
+            .find(|p| p.name.as_deref() == Some("base"))
+            .or_else(|| r.permutations.first());
+        let Some(perm) = perm else { continue };
+        let s = perm.lod_sections[..=lod]
+            .iter()
+            .rev()
+            .flatten()
+            .next()
+            .copied()
+            .or_else(|| perm.best_section());
+        if let Some(s) = s
+            && !out.contains(&s)
+        {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// A render model as [`Source`], at the highest detail level whose drawn
+/// triangles fit `budget`.
+fn read_source(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    mode: TagId,
+    budget: usize,
+) -> Result<Source> {
+    let geo = RenderModelGeometry::read(map, mode, &mut Res(files))
+        .context("reading the render model")?;
+    let bones: Vec<Bone> = geo
+        .nodes
+        .iter()
+        .map(|n| Bone {
+            name: n.name.clone().unwrap_or_default(),
+            parent: usize::try_from(n.wire.parent_index).ok(),
+            translation: n.wire.translation,
+            rotation: n.wire.orientation,
+        })
+        .collect();
+    let markers = markers(map, mode, bones.len())?;
+    let mut materials = Vec::new();
+    let mut change_colour = Vec::new();
+    let mut skip = Vec::new();
+    for (i, m) in geo.materials.iter().enumerate() {
+        let shader = m.shader.id;
+        let name = map
+            .tag(shader)
+            .ok()
+            .and_then(|t| t.name.clone())
+            .map_or_else(|| format!("material{i}"), |n| last_component(&n).to_owned());
+        let (template, bitmaps) = shader_bitmaps(map, shader).unwrap_or_default();
+        // Emblem decals sit on the armour and take the player's emblem.
+        skip.push(last_component(&template).contains("emblem"));
+        let (mut diffuse, mut cc) = (None, None);
+        for id in bitmaps {
+            let Some(bname) = map.tag(id).ok().and_then(|t| t.name.clone()) else {
+                continue;
+            };
+            match bitmap_role(&bname) {
+                BitmapRole::Diffuse if diffuse.is_none() => {
+                    diffuse = decode_bitmap(map, files, id).ok()
+                }
+                BitmapRole::ChangeColour if cc.is_none() => cc = decode_bitmap(map, files, id).ok(),
+                _ => {}
+            }
+        }
+        materials.push(Material {
+            name,
+            texture: diffuse.map(|d| d.fit(MAX_TEXTURE)),
+        });
+        change_colour.push(cc);
+    }
+    let mut chosen = Vec::new();
+    for lod in (0..6).rev() {
+        chosen = pieces(&geo, &chosen_sections(&geo, lod), &skip);
+        let tris: usize = chosen.iter().map(|p| p.triangles.len()).sum();
+        if tris <= budget {
+            break;
+        }
+    }
+    Ok(Source {
+        bones,
+        markers,
+        pieces: chosen,
+        materials,
+        change_colour,
+    })
+}
+
+/// The first frame of the graph's rifle idle (or the nearest stance), with
+/// the graph's node names. Returns the action's name too.
+fn idle_pose(
+    map: &mut MapReader,
+    files: &mut ResourceFiles,
+    jmad: TagId,
+) -> Result<(Vec<String>, Pose, String)> {
+    let graph = AnimationGraph::read(map, jmad).context("reading the animation graph")?;
+    let strings = map.strings().to_vec();
+    let is = |id: StringId, s: &str| id.resolve(&strings).ok().flatten() == Some(s);
+    let mode = graph
+        .modes
+        .iter()
+        .find(|m| is(m.name, POSE_MODE))
+        .context("no combat mode")?;
+    let (class, action) = POSE_CLASSES
+        .iter()
+        .find_map(|c| {
+            let class = mode.classes.iter().find(|k| is(k.name, c))?;
+            let ty = class.types.iter().find(|t| is(t.name, POSE_TYPE))?;
+            let a = ty.actions.iter().find(|a| is(a.name, POSE_ACTION))?;
+            Some((*c, *a))
+        })
+        .context("no idle action in a rifle, pistol or unarmed stance")?;
+    let target = if action.graph_index < 0 {
+        graph
+    } else {
+        let r = graph
+            .inheritance
+            .get(action.graph_index as usize)
+            .context("action graph index out of range")?;
+        AnimationGraph::read(map, r.graph.id).context("reading the inherited graph")?
+    };
+    let index = usize::try_from(action.animation_index).context("action has no animation")?;
+    let clip = target.load_clip(index, &mut Res(files))?;
+    let pose = clip.sample_frame(0)?;
+    let names = target
+        .nodes
+        .iter()
+        .map(|n| {
+            n.name
+                .resolve(&strings)
+                .ok()
+                .flatten()
+                .unwrap_or("")
+                .to_owned()
+        })
+        .collect();
+    Ok((
+        names,
+        pose,
+        format!("{POSE_MODE}:{class}:{POSE_TYPE}:{POSE_ACTION}"),
+    ))
+}
+
+/// What the disc gave for one biped, for the report and the disc test.
+#[derive(Clone, Debug)]
+pub struct BipedInfo {
+    pub species: String,
+    pub tag: String,
+    pub map: String,
+    pub animation: String,
+}
+
+fn build_biped(disc: &Disc, stems: &[&str]) -> Result<(Model, BipedInfo)> {
+    for stem in stems {
+        for m in disc.maps_of(CacheType::Multiplayer) {
+            let (mut map, mut files) = disc.open(m)?;
+            let found = map
+                .tags()
+                .iter()
+                .find(|t| {
+                    t.group == BIPD
+                        && t.location.is_some()
+                        && t.name
+                            .as_deref()
+                            .is_some_and(|n| last_component(n).eq_ignore_ascii_case(stem))
+                })
+                .map(|t| (t.id, t.name.clone().unwrap_or_default()));
+            let Some((id, tag)) = found else { continue };
+            let (mode, jmad) = object_model(&mut map, id)?;
+            let jmad = jmad.context("biped has no animation graph")?;
+            let src = read_source(&mut map, &mut files, mode, MAX_BIPED_TRIANGLES)?;
+            let (names, pose, animation) = idle_pose(&mut map, &mut files, jmad)?;
+            let model = biped(&src, &names, &pose)?;
+            let info = BipedInfo {
+                species: String::new(),
+                tag,
+                map: m.name().to_owned(),
+                animation,
+            };
+            return Ok((model, info));
+        }
+    }
+    Err(anyhow!(
+        "no biped named {} on a multiplayer map",
+        stems.join(" or ")
+    ))
+}
+
+/// Every multiplayer weapon: the `weap` tags under the weapons folder of the
+/// shared map and the multiplayer maps, by file stem, first one found.
+fn build_weapons(disc: &Disc) -> Vec<(String, Result<Model>)> {
+    let mut out: Vec<(String, Result<Model>)> = Vec::new();
+    let maps = disc
+        .maps_of(CacheType::Shared)
+        .chain(disc.maps_of(CacheType::Multiplayer));
+    for m in maps {
+        let Ok((mut map, mut files)) = disc.open(m) else {
+            continue;
+        };
+        let weapons: Vec<(TagId, String)> = map
+            .tags()
+            .iter()
+            .filter(|t| t.group == WEAP && t.location.is_some())
+            .filter_map(|t| Some((t.id, t.name.clone()?)))
+            .filter(|(_, n)| {
+                let n = n.to_ascii_lowercase();
+                n.starts_with(WEAPON_FOLDER) && !n.contains(FIXED_FOLDER)
+            })
+            .collect();
+        for (id, name) in weapons {
+            let stem = last_component(&name).to_ascii_lowercase();
+            if out.iter().any(|(s, _)| *s == stem) || !is_id(&stem) {
+                continue;
+            }
+            let model = object_model(&mut map, id)
+                .and_then(|(mode, _)| read_source(&mut map, &mut files, mode, usize::MAX))
+                .and_then(|src| weapon(&src));
+            out.push((stem, model));
+        }
+    }
+    out
+}
+
+/// The contract's id rule: `[a-z0-9_]{1,32}`.
+pub fn is_id(s: &str) -> bool {
+    (1..=32).contains(&s.len())
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+}
+
+/// Builds and writes the bipeds and weapons under `out/models/`.
+pub fn extract(disc: &Disc, out: &Path) -> (Written, Vec<BipedInfo>) {
+    let mut built = Vec::new();
+    let mut infos = Vec::new();
+    for (species, stems) in SPECIES {
+        let model = build_biped(disc, stems).map(|(m, mut info)| {
+            info.species = species.to_string();
+            infos.push(info);
+            m
+        });
+        built.push((Kind::Biped, species.to_string(), model));
+    }
+    for (stem, model) in build_weapons(disc) {
+        built.push((Kind::Weapon, stem, model));
+    }
+    (write_models(built, out), infos)
+}
