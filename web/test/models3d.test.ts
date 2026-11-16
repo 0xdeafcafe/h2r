@@ -57,6 +57,21 @@ describe("change colour per pixel", () => {
     expect(compile(plain).fragmentShader).not.toContain(ENV_FRAGMENT);
   });
 
+  test("a hull decal doubles or multiplies what is under it, drawn over the hull", () => {
+    const decal = new THREE.MeshBasicMaterial();
+    decal.userData = { h2: { blend: "double" } };
+    applyLook(decal, null);
+    expect(decal.blending).toBe(THREE.CustomBlending);
+    expect([decal.blendSrc, decal.blendDst, decal.blendEquation]).toEqual([THREE.DstColorFactor, THREE.SrcColorFactor, THREE.AddEquation]);
+    expect(decal.depthWrite).toBe(false);
+    expect(decal.toneMapped).toBe(false);
+    expect(decal.polygonOffset && decal.polygonOffsetFactor < 0).toBe(true);
+    const dark = new THREE.MeshBasicMaterial();
+    dark.userData = { h2: { blend: "multiply" } };
+    applyLook(dark, null);
+    expect([dark.blendSrc, dark.blendDst]).toEqual([THREE.ZeroFactor, THREE.SrcColorFactor]);
+  });
+
   test("glows add, glass doesn't hide what's behind, everything reflects the environment", () => {
     const env = new THREE.Texture();
     const glow = new THREE.MeshStandardMaterial();
