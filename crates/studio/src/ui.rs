@@ -111,6 +111,7 @@ impl Studio {
 
     /// Build one frame of UI and run the actions it produced.
     pub fn frame(&mut self, ui: &Ui, app: &mut App, gpu: &mut Gpu<'_>) {
+        app.poll_convert();
         let mut actions = Vec::new();
         self.shortcuts(ui, app, &mut actions);
         self.menu_bar(ui, app, &mut actions);
@@ -766,9 +767,10 @@ impl Studio {
     }
 
     fn inspector_window(&mut self, ui: &Ui, app: &mut App) {
+        let mut actions = Vec::new();
         ui.window(&self.keys.inspector).build(|| {
             if let Some(view) = app.halo1_view() {
-                self.halo1_inspector(ui, app, view);
+                self.halo1_inspector(ui, app, view, &mut actions);
                 return;
             }
             if let Some(c) = app.compare() {
@@ -845,6 +847,9 @@ impl Studio {
                 app.session.seal();
             }
         });
+        for a in actions {
+            app.dispatch(a);
+        }
     }
 
     fn log_window(&mut self, ui: &Ui, app: &App) {
@@ -1368,7 +1373,13 @@ fn compare_banner(ui: &Ui, c: &crate::app::Compare) {
 }
 
 impl Studio {
-    fn halo1_inspector(&self, ui: &Ui, app: &App, view: &editor_core::halo1::H1View) {
+    fn halo1_inspector(
+        &self,
+        ui: &Ui,
+        app: &App,
+        view: &editor_core::halo1::H1View,
+        actions: &mut Vec<Action>,
+    ) {
         ui.text_colored(
             theme::WARN,
             format!("{} Halo 1 map {}: read only", icon::EYE, view.name),
@@ -1377,13 +1388,7 @@ impl Studio {
             "Halo 1 maps are shown as they are on the disc. Edit a converted copy \
              (Maps > Halo 1) instead.",
         );
-        let d = ui.begin_disabled();
-        ui.button(format!("{} Convert to Halo 2", icon::PACKAGE));
-        d.end();
-        ui.set_item_tooltip(format!(
-            "Waiting on the converter's library entry point:\n{}",
-            editor_core::halo1::CONVERT_ENTRY_POINT
-        ));
+        convert_controls(ui, app, view, actions);
         for n in &view.notes {
             ui.text_colored(theme::ERROR, format!("{} {n}", icon::ALERT));
         }
@@ -1405,5 +1410,63 @@ impl Studio {
             ui.same_line_with_pos(130.0);
             ui.text(value);
         }
+    }
+}
+
+/// "Convert to Halo 2" for the Halo 1 map on show: the sandbox, the base
+/// map h1convert picks, the button, and the running conversion or why the
+/// last one wrote nothing.
+fn convert_controls(
+    ui: &Ui,
+    app: &App,
+    view: &editor_core::halo1::H1View,
+    actions: &mut Vec<Action>,
+) {
+    use crate::app::ConvertSandbox;
+    let base = crate::app::base_for(&view.name);
+    ui.separator_with_text("Convert to Halo 2");
+    ui.text_disabled("Sandbox");
+    for (s, label) in [
+        (
+            ConvertSandbox::Halo2,
+            "Halo 2 (nearest weapons and vehicles)",
+        ),
+        (ConvertSandbox::Halo1, "Halo 1 (its own; not built yet)"),
+    ] {
+        if ui.radio_button_bool(label, app.convert_sandbox == s) && app.convert_sandbox != s {
+            actions.push(Action::SetConvertSandbox(s));
+        }
+    }
+    let has_base = app.maps().iter().any(|m| m.eq_ignore_ascii_case(base));
+    ui.text_disabled(format!("Onto {base}, from your Halo 2 disc"));
+    let running = app.converting();
+    let d = ui.begin_disabled_with_cond(running.is_some() || !has_base);
+    if ui.button(format!("{} Convert to Halo 2", icon::PACKAGE)) {
+        actions.push(Action::ConvertHalo1(app.convert_sandbox));
+    }
+    d.end();
+    if !has_base {
+        ui.set_item_tooltip(format!(
+            "Open your Halo 2 disc: the conversion starts from {base}."
+        ));
+    } else {
+        ui.set_item_tooltip(format!(
+            "Writes <data>/maps/h1_{}/ and opens the result.",
+            view.name.to_ascii_lowercase()
+        ));
+    }
+    if let Some(r) = running {
+        ui.text_colored(
+            theme::ACCENT,
+            format!(
+                "Converting {} ({} sandbox)... {:.0} s",
+                r.h1_map,
+                r.sandbox.name(),
+                r.started.elapsed().as_secs_f32()
+            ),
+        );
+    } else if let Some(e) = app.convert_error() {
+        ui.text_colored(theme::ERROR, format!("{} Not converted", icon::ALERT));
+        ui.text_wrapped(e);
     }
 }

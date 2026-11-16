@@ -770,3 +770,167 @@ fn a_converted_map_finds_its_halo1_source_by_hash_for_the_overlay() {
     let c = app.compare().unwrap();
     assert!(c.view.as_ref().unwrap_err().contains("another SHA-256"));
 }
+
+// ---------- Convert to Halo 2 ----------
+
+/// What h1convert hands back for a variant, with the invented cache as
+/// the map: its manifest made the way `Prepared::manifest` makes it.
+fn stub_converted(sandbox: ConvertSandbox) -> h1convert::convert::Converted {
+    let bytes = fixture::fixture();
+    let s = sandbox.name();
+    let text = format!(
+        "[package]\nformat = 1\nname = \"Blood Gulch\"\n\n[base]\nmap = \"h1_bloodgulch\"\n\
+         derived = true\n\n[list]\nbase = \"beavercreek\"\n\n[[variant]]\n\
+         file = \"{s}/h1_bloodgulch.map\"\nsha256 = \"{}\"\n\
+         origin = {{ game = \"halo1\", map = \"bloodgulch\", sandbox = \"{s}\", source_sha256 = \"{}\" }}\n",
+        content::Sha256::of(&bytes),
+        content::Sha256::of(b"h1"),
+    );
+    h1convert::convert::Converted {
+        name: "h1_bloodgulch".into(),
+        bytes,
+        manifest: content::Manifest::from_toml(&text).unwrap(),
+    }
+}
+
+fn stub_ok(
+    _: &[u8],
+    _: Vec<u8>,
+    s: ConvertSandbox,
+) -> Result<h1convert::convert::Converted, h1convert::Error> {
+    Ok(stub_converted(s))
+}
+
+fn stub_mopp(
+    _: &[u8],
+    _: Vec<u8>,
+    _: ConvertSandbox,
+) -> Result<h1convert::convert::Converted, h1convert::Error> {
+    Err(h1convert::Error::MoppNotMerged)
+}
+
+/// A Halo 2 folder with `beavercreek` (the base) and a Halo 1 disc, with
+/// Blood Gulch on show.
+fn convert_ready(t: &Temp) -> App {
+    let mut app = app_with(t);
+    let h2 = t.0.join("h2maps");
+    std::fs::create_dir_all(&h2).unwrap();
+    std::fs::write(h2.join("beavercreek.map"), fixture::fixture()).unwrap();
+    app.dispatch(Action::OpenSource(h2));
+    let iso = t.0.join("halo1.iso");
+    std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
+    app.dispatch(Action::OpenSource(iso));
+    app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    assert_eq!(base_for("bloodgulch"), "beavercreek");
+    app
+}
+
+#[test]
+fn converting_writes_the_package_lists_it_and_opens_the_variant() {
+    let t = Temp::new("convert");
+    let mut app = convert_ready(&t);
+    app.set_converter(stub_ok);
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    assert!(app.converting().is_some());
+    app.wait_convert();
+    assert!(app.converting().is_none());
+    assert_eq!(app.convert_error(), None);
+    let dir = t.0.join("data/maps/h1_bloodgulch");
+    assert!(dir.join("h2/h1_bloodgulch.map").is_file());
+    assert!(labels(&app).contains(&"Blood Gulch (H2 sandbox)".to_string()));
+    assert_eq!(app.opened_package(), Some("h1_bloodgulch#H2"));
+    assert_eq!(app.loaded_map(), Some("h1_bloodgulch"));
+    assert!(app.session.is_derived());
+    // The other sandbox joins the same package; the first stays.
+    app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo1));
+    app.wait_convert();
+    let m =
+        content::Manifest::from_toml(&std::fs::read_to_string(dir.join("manifest.toml")).unwrap())
+            .unwrap();
+    let sandboxes: Vec<&str> = m
+        .variants
+        .iter()
+        .map(|v| v.origin.sandbox.as_str())
+        .collect();
+    assert_eq!(sandboxes, ["h1", "h2"]);
+    assert!(labels(&app).contains(&"Blood Gulch (H1 sandbox)".to_string()));
+    assert_eq!(app.opened_package(), Some("h1_bloodgulch#H1"));
+}
+
+#[test]
+fn a_refused_conversion_says_why_and_writes_nothing() {
+    let t = Temp::new("convertmopp");
+    let mut app = convert_ready(&t);
+    app.set_converter(stub_mopp);
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    app.wait_convert();
+    let e = app.convert_error().unwrap();
+    assert!(e.starts_with("Conversion isn't available yet"), "{e}");
+    assert!(matches!(app.status(), Some(Status::Error(m)) if m.contains("collision builder")));
+    assert!(!t.0.join("data/maps/h1_bloodgulch").exists());
+    assert_eq!(app.loaded_halo1(), Some("bloodgulch"), "still on show");
+    // The Halo 1 sandbox's refusal reads plainly too.
+    assert!(explain(&h1convert::Error::Halo1Sandbox).contains("Halo 2 sandbox"));
+}
+
+#[test]
+fn the_real_converter_refuses_an_invented_map_plainly() {
+    let t = Temp::new("convertreal");
+    let mut app = convert_ready(&t);
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    app.wait_convert();
+    let e = app
+        .convert_error()
+        .expect("the invented map has no real scenario");
+    assert!(!e.is_empty());
+    assert!(!t.0.join("data/maps/h1_bloodgulch").exists());
+}
+
+#[test]
+fn converting_needs_the_base_map_from_a_halo2_disc() {
+    let t = Temp::new("convertbase");
+    let mut app = app_with(&t);
+    let iso = t.0.join("halo1.iso");
+    std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
+    app.dispatch(Action::OpenSource(iso));
+    app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
+    app.set_converter(stub_ok);
+    app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
+    assert!(app.converting().is_none());
+    assert!(app.convert_error().unwrap().contains("beavercreek"));
+}
+
+/// Blood Gulch from the owner's Halo 1 disc onto Beaver Creek from the
+/// Halo 2 one: a map, or the refusal while the MOPP writer is missing.
+#[test]
+#[ignore = "needs disc/halo1.iso and disc/halo2.iso (or $H1_ISO, $H2_DISC)"]
+fn disc_bloodgulch_converts_or_waits_for_the_mopp_writer() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let disc = |var: &str, file: &str| {
+        std::env::var_os(var).map_or_else(|| root.join("disc").join(file), PathBuf::from)
+    };
+    let h1 = editor_core::halo1::H1Source::open(&disc("H1_ISO", "halo1.iso")).unwrap();
+    let h2 = editor_core::MapSource::open(&disc("H2_DISC", "halo2.iso")).unwrap();
+    let (path, region) = h2.location("beavercreek").unwrap();
+    let base = scenario_edit::MapSource::region(path, region)
+        .read_base()
+        .unwrap();
+    match h1convert_convert(
+        &h1.read_raw("bloodgulch").unwrap(),
+        base,
+        ConvertSandbox::Halo2,
+    ) {
+        Ok(done) => {
+            assert_eq!(done.name, "h1_bloodgulch");
+            assert_eq!(done.manifest.variants.len(), 1);
+            let t = Temp::new("convertdisc");
+            let w = crate::app::convert::write(&t.0, &done).unwrap();
+            assert_eq!(w.key, "h1_bloodgulch#H2");
+            let listed = editor_core::packages::list(&t.0);
+            assert_eq!(listed[0].label(), "Blood Gulch (H2 sandbox)");
+        }
+        Err(h1convert::Error::MoppNotMerged) => eprintln!("waiting for the MOPP writer"),
+        Err(e) => panic!("{e}"),
+    }
+}

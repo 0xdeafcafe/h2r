@@ -301,8 +301,28 @@ listed under **Halo 1** with an eye. Click one to look at it: its level
 (in plain grey: Halo 1 textures can't be shown yet) and its multiplayer
 spawn points, flags, weapon spawns and vehicles, which you can select to
 see their details. These maps are read only (the outliner says `Halo 1:
-read only`): nothing can be moved or saved. **Convert to Halo 2** in the
-inspector is greyed out until the converter can be run from the editor.
+read only`): nothing can be moved or saved.
+
+**Converting a Halo 1 map.** With a Halo 1 map on show and your Halo 2
+disc open, the inspector's **Convert to Halo 2** section turns it into a
+Halo 2 map:
+
+1. Pick the **Sandbox**: **Halo 2** (Halo 2's nearest weapons and
+   vehicles) or **Halo 1** (its own; not built yet, so it says so).
+2. The line under it says which Halo 2 map the conversion starts from
+   (`Onto beavercreek, from your Halo 2 disc`): it gives the sky, the
+   weapons and vehicles and everything else a Halo 2 level needs. The
+   editor picks it; your Halo 2 disc must be open.
+3. Click **Convert to Halo 2**. It runs in the background
+   (`Converting bloodgulch (h2 sandbox)...` with the seconds so far) and
+   writes the converted map into the data folder, as the importer does.
+   When it is done, the map appears under **Halo 1** in **Maps** (for
+   example **Blood Gulch (H2 sandbox)**) and opens, ready to edit.
+
+If it can't convert, the inspector says `Not converted` and why, and the
+log says the same. For now every conversion stops with `Conversion isn't
+available yet: the collision builder (the MOPP writer) hasn't landed, so
+no map was written.`: the part that makes the level solid isn't finished.
 
 ![Halo 1's Blood Gulch, read only: the plain grey canyon with its spawn points, flags and item spawns, a spawn point selected and the read-only banner in the inspector](../images/editor/halo1-map.jpg)
 

@@ -6,7 +6,10 @@
 //! it directly.
 use std::path::{Path, PathBuf};
 
+pub(crate) mod convert;
 mod library;
+pub use convert::{Converter, Running, Written, base_for, explain, h1convert_convert};
+pub use h1convert::convert::Sandbox as ConvertSandbox;
 pub use library::{Compare, block_of, kind_of, markers as library_markers, tris as library_tris};
 
 use editor_core::{MapSource, Status, variant_sources};
@@ -60,6 +63,10 @@ pub enum Action {
     SelectHalo1Map(String),
     /// Draw a converted map's Halo 1 source over it.
     SetOverlay(bool),
+    /// Convert the Halo 1 map on show to Halo 2, in the background.
+    ConvertHalo1(ConvertSandbox),
+    /// The sandbox "Convert to Halo 2" uses.
+    SetConvertSandbox(ConvertSandbox),
     Undo,
     Redo,
     Select(Option<(BlockKind, usize)>),
@@ -223,6 +230,13 @@ pub struct App {
     compare: Option<Compare>,
     show_overlay: bool,
     overlay_rev: u64,
+    /// The conversion running, why the last one wrote nothing, and what
+    /// runs it.
+    convert: Option<Running>,
+    convert_error: Option<String>,
+    converter: Converter,
+    /// The sandbox "Convert to Halo 2" uses.
+    pub convert_sandbox: ConvertSandbox,
 }
 
 impl Default for App {
@@ -262,6 +276,10 @@ impl App {
             compare: None,
             show_overlay: true,
             overlay_rev: 0,
+            convert: None,
+            convert_error: None,
+            converter: h1convert_convert,
+            convert_sandbox: ConvertSandbox::Halo2,
         }
     }
 
@@ -484,6 +502,11 @@ impl App {
             Action::OpenPackageEntry(key) => self.open_package_entry(&key),
             Action::SelectHalo1Map(name) => self.select_halo1_map(&name),
             Action::SetOverlay(on) => self.set_overlay(on),
+            Action::ConvertHalo1(sandbox) => self.start_convert(sandbox),
+            Action::SetConvertSandbox(sandbox) => {
+                self.convert_sandbox = sandbox;
+                self.convert_error = None;
+            }
             Action::OpenPackage(dir) => {
                 let r = self.session.open_package(&dir);
                 self.session_result(r);

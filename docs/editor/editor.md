@@ -126,11 +126,15 @@ after a save), then Halo 1:
 `editor_core::packages::halo1_origins`: an `origin` table with
 `game = "halo1"` (and `map`, `sandbox = "h1" | "h2"`, `source_sha256`),
 either at the top of the manifest or in each entry of a top-level array
-of tables (one per variant, each with its own `file`). The manifest is
-read there as plain TOML, because `content::Manifest` rejects fields it
-does not know; a variant's own `file` is read directly, anything else
-through the resolver, and a derived package the resolver refuses is read
-only when its single layer is the whole map.
+of tables (one per variant, each with its own `file`). That covers what
+`content::Manifest` writes for converted maps: `[[variant]]` entries
+with `file`, `sha256` and an `[variant.origin]` sub-table
+(`packages::tests::the_converters_serialized_manifest_lists_both_variants`
+feeds it `Manifest::to_toml`'s output). The manifest is read there as
+plain TOML so that packages from builds with other fields still list; a
+variant's own `file` is read directly, anything else through the
+resolver, and a derived package the resolver refuses is read only when
+its single layer is the whole map.
 
 A converted variant opens as a new map and saves as a **new** package
 (`<map>-edit`): the import's package holds both variants and their
@@ -147,9 +151,28 @@ vehicles), each with its fields as text. The studio shows them as a
 `scenario_edit::Reference`: the session's world and markers with no
 scenario, so the viewport, picking and framing are the same and nothing
 can be edited. The BSP is slope-shaded: `h1map` has no Halo 1 bitmap
-decoder yet. The inspector has a disabled **Convert to Halo 2**, whose
-tooltip names the entry point it waits on
-(`h1convert::convert(h1, base, sandbox) -> Converted`).
+decoder yet.
+
+**Convert to Halo 2** (`app/convert.rs`). The inspector of a Halo 1 map
+offers the sandbox (Halo 2, or Halo 1, whose `Error::Halo1Sandbox` is
+shown as it comes) and names the base: `h1convert::convert::known`'s
+default for the map (`convert::MAPS`; Beaver Creek, or Lockout for the
+snowy ones), as `h2 h1 convert` without `--base`, read from the open
+Halo 2 source; without it the button is disabled with the reason. The
+button starts a thread that reads the base's bytes and runs
+`h1convert::convert::convert(&h1, sha256 of the stored file, &mut base,
+sandbox)`, then writes the result as `h2 h1 convert` does:
+`<data>/maps/h1_<map>/<sandbox>/h1_<map>.map` and the `Converted`
+manifest, keeping the other sandbox's `[[variant]]` from a manifest
+already there (no manifest text is made here). Each frame `poll_convert`
+picks up the result: the Maps list is re-read and the new variant opened
+(`OpenPackageEntry`, guarded as usual), or the error is logged and shown
+under the button in plain words (`explain`: `MoppNotMerged` is "Conversion
+isn't available yet: the collision builder ... hasn't landed"). The
+converter is a function pointer (`App::set_converter`) so the tests run
+the whole flow with a stub; `disc_bloodgulch_converts_or_waits_for_the_mopp_writer`
+(ignored) runs the real one on the owner's discs and accepts a map or
+`MoppNotMerged`.
 
 **The Halo 1 overlay.** Opening a converted variant looks for its
 `[origin] map` in the open Halo 1 source, then `$H1_MAP_DIR`, and checks
