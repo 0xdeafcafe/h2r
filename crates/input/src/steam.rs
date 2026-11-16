@@ -12,7 +12,7 @@
 //!   Steam Machine's receiver (`0x1304`, `0x1305`).
 //!
 //! Everything here is byte-level and follows two public drivers, pinned in
-//! `docs/steam-controller.md`: SDL's `SDL_hidapi_steam.c`,
+//! `docs/input/steam-controller.md`: SDL's `SDL_hidapi_steam.c`,
 //! `SDL_hidapi_steam_triton.c` and `steam/controller_structs.h`, and the
 //! Linux kernel's `drivers/hid/hid-steam.c`. Opening the device is the host's
 //! business (`crate::steam_pad`).

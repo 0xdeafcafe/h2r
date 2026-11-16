@@ -147,6 +147,120 @@ pub static PAD_MUTE: Def = Def {
     }),
 };
 
+pub static STEAM_SPEAKER: Def = Def {
+    key: "steam_pad.speaker",
+    label: "Steam Pad Speaker",
+    help: "With no DualSense speaker, a Steam Controller's trackpads buzz the pitch \
+           and loudness of the sounds the controller-speaker routes pick, as haptics \
+           (docs/input/steam-controller.md). Controller Speaker must be on too.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_STEAM_SPEAKER"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 50,
+    }),
+};
+
+pub static STEAM_SENSITIVITY: Def = Def {
+    key: "steam_pad.sensitivity",
+    label: "Trackpad Aim",
+    help: "How far the Steam Controller's right trackpad turns you for a swipe, \
+           1 to 10; 5 is the default.",
+    kind: Kind::Int {
+        valid: 1..=10,
+        steps: &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+        unit: Unit::Plain,
+    },
+    default: Value::Int(5),
+    env: Some("H2_STEAM_SENSITIVITY"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 60,
+    }),
+};
+
+/// The values of [`STEAM_LEFT_PAD`].
+pub const LEFT_PAD_DPAD: i64 = 0;
+pub const LEFT_PAD_STICK: i64 = 1;
+
+pub static STEAM_LEFT_PAD: Def = Def {
+    key: "steam_pad.left_pad",
+    label: "Left Trackpad",
+    help: "The Steam Controller's left trackpad: the d-pad when clicked, or a \
+           second left stick (the controller's own stick still works).",
+    kind: Kind::Choice(&[
+        Choice {
+            value: LEFT_PAD_DPAD,
+            name: "dpad",
+            label: "D-Pad",
+        },
+        Choice {
+            value: LEFT_PAD_STICK,
+            name: "stick",
+            label: "Stick",
+        },
+    ]),
+    default: Value::Int(LEFT_PAD_DPAD),
+    env: Some("H2_STEAM_LEFT_PAD"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Live,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 70,
+    }),
+};
+
+/// The Steam Controller tuning the settings in `store` give, kept current
+/// as they change.
+pub fn steam_tuning(store: &Store) -> input::steam_pad::SteamTuning {
+    let tuning = input::steam_pad::SteamTuning::new(
+        left_pad_mode(store.handle::<i64>(STEAM_LEFT_PAD.key).get()),
+        store
+            .handle::<i64>(STEAM_SENSITIVITY.key)
+            .get()
+            .clamp(1, 10) as u8,
+        store.handle::<bool>(STEAM_SPEAKER.key).get(),
+    );
+    let t = tuning.clone();
+    store.on_change(STEAM_LEFT_PAD.key, move |v| {
+        t.set_left_pad(left_pad_mode(v.as_int().unwrap_or(LEFT_PAD_DPAD)))
+    });
+    let t = tuning.clone();
+    store.on_change(STEAM_SENSITIVITY.key, move |v| {
+        t.set_sensitivity(v.as_int().unwrap_or(5).clamp(1, 10) as u8)
+    });
+    let t = tuning.clone();
+    store.on_change(STEAM_SPEAKER.key, move |v| {
+        t.set_speaker(v.as_bool().unwrap_or(true))
+    });
+    tuning
+}
+
+fn left_pad_mode(v: i64) -> input::trackpad::LeftPadMode {
+    if v == LEFT_PAD_STICK {
+        input::trackpad::LeftPadMode::Stick
+    } else {
+        input::trackpad::LeftPadMode::Dpad
+    }
+}
+
 /// The values of [`LIVE_VISIBILITY`], as `live_glue` hands them to the HLE.
 pub const VISIBILITY_PUBLIC: i64 = 0;
 pub const VISIBILITY_FRIENDS: i64 = 1;
@@ -198,6 +312,9 @@ pub static ALL: &[&Def] = &[
     &RENDER_SCALE,
     &PAD_SPEAKER,
     &PAD_MUTE,
+    &STEAM_SPEAKER,
+    &STEAM_SENSITIVITY,
+    &STEAM_LEFT_PAD,
     &LIVE_VISIBILITY,
     // The campaign skulls, kept per profile (crate::skulls, docs/game/skulls.md).
     &crate::skulls::SKULLS[0],
@@ -322,9 +439,15 @@ mod tests {
                 ("H2_PAD_SPEAKER", "0"),
                 ("H2_PAD_MUTE", "0"),
                 ("H2_LIVE_VISIBILITY", "friends"),
+                ("H2_STEAM_SPEAKER", "0"),
+                ("H2_STEAM_SENSITIVITY", "8"),
+                ("H2_STEAM_LEFT_PAD", "stick"),
             ],
         );
         assert!(p.is_empty(), "{p:?}");
+        assert_eq!(s.get(STEAM_SPEAKER.key), Some(Value::Bool(false)));
+        assert_eq!(s.get(STEAM_SENSITIVITY.key), Some(Value::Int(8)));
+        assert_eq!(s.get(STEAM_LEFT_PAD.key), Some(Value::Int(LEFT_PAD_STICK)));
         assert_eq!(
             s.get(LIVE_VISIBILITY.key),
             Some(Value::Int(VISIBILITY_FRIENDS))
@@ -359,5 +482,26 @@ mod tests {
         assert_eq!(pad_speaker_env(&text), Ok(Value::Bool(false)));
         assert_eq!(pad_speaker_env("1"), Ok(Value::Bool(true)));
         assert!(pad_speaker_env(&data.join("missing.toml").display().to_string()).is_err());
+    }
+
+    #[test]
+    fn the_steam_tuning_follows_its_settings() {
+        use input::trackpad::LeftPadMode;
+        let data = tmp("steam");
+        let (s, p) = with_env(&data, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        let t = steam_tuning(&s);
+        assert_eq!(t.left_pad(), LeftPadMode::Dpad);
+        assert_eq!(t.sensitivity(), 5);
+        assert!(t.speaker());
+        s.set(STEAM_LEFT_PAD.key, Value::Int(LEFT_PAD_STICK))
+            .unwrap();
+        s.set(STEAM_SENSITIVITY.key, Value::Int(9)).unwrap();
+        s.set(STEAM_SPEAKER.key, Value::Bool(false)).unwrap();
+        assert_eq!(t.left_pad(), LeftPadMode::Stick);
+        assert_eq!(t.sensitivity(), 9);
+        assert!(!t.speaker());
+        assert!(s.set(STEAM_SENSITIVITY.key, Value::Int(11)).is_err());
+        assert_eq!(t.sensitivity(), 9);
     }
 }

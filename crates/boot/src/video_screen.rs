@@ -1,9 +1,11 @@
 //! Our "Video" screen: a "Video" row on Halo 2's top-level Settings list
 //! (after Player Profiles and Game Variants) that opens a Controls screen
 //! holding our video rows (Field of View, Frame Rate, Resolution, Mute
-//! Button: every setting whose `Def` names this screen, through the `ui`
-//! model) instead of the retail six. See docs/game/settings-menu.md "Video
-//! screen" for the trace.
+//! Button, and the Steam Controller's speaker, trackpad aim and left
+//! trackpad: every setting whose `Def` names this screen, through the `ui`
+//! model) instead of the retail six. That is seven rows, as many as the
+//! Controls list shows with our Controller Speaker row. See
+//! docs/game/settings-menu.md "Video screen" for the trace.
 //!
 //! **The row.** The Settings list (screen id 19, list handler `0x2b1cca` at
 //! `screen + 0x614`, vtable `0x45b060`) builds its datum array named
@@ -169,7 +171,9 @@ pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::setting_defs::{ALL, FPS, PAD_MUTE, RENDER_SCALE};
+    use crate::setting_defs::{
+        ALL, FPS, PAD_MUTE, RENDER_SCALE, STEAM_LEFT_PAD, STEAM_SENSITIVITY, STEAM_SPEAKER,
+    };
     use crate::ui::{Chosen, RowKind};
     use settings::Value;
     use std::collections::BTreeMap;
@@ -252,7 +256,10 @@ mod tests {
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
                 RowKind::Setting(RENDER_SCALE.key),
-                RowKind::Setting(PAD_MUTE.key)
+                RowKind::Setting(PAD_MUTE.key),
+                RowKind::Setting(STEAM_SPEAKER.key),
+                RowKind::Setting(STEAM_SENSITIVITY.key),
+                RowKind::Setting(STEAM_LEFT_PAD.key)
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -264,7 +271,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 3);
+        assert_eq!(no_fov.rows(LIST).len(), 6);
         assert_eq!(m.count(List::Settings, SETTINGS_ROWS), 3);
         assert_eq!(m.count(List::Controls, 6), 7, "the speaker row only");
         // No Video screen: no Video row on Settings either.
@@ -381,7 +388,10 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(drawn(&m, LIST, 2), s("Resolution", "640x480"));
         assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "On"));
-        assert_eq!(drawn(&m, LIST, 4), None);
+        assert_eq!(drawn(&m, LIST, 4), s("Steam Pad Speaker", "On"));
+        assert_eq!(drawn(&m, LIST, 5), s("Trackpad Aim", "5"));
+        assert_eq!(drawn(&m, LIST, 6), s("Left Trackpad", "D-Pad"));
+        assert_eq!(drawn(&m, LIST, 7), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -454,7 +464,7 @@ mod tests {
             ]
         );
         // Rows past ours, or no row, are not ours.
-        assert_eq!(press(&m, LIST, 4), Chosen::Nothing);
+        assert_eq!(press(&m, LIST, 7), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();

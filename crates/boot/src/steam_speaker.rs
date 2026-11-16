@@ -1,4 +1,4 @@
-//! The Steam Controller as the controller speaker (docs/steam-controller.md):
+//! The Steam Controller as the controller speaker (docs/input/steam-controller.md):
 //! an [`AudioSink`] that DirectSound's side output plays the routed sounds
 //! into, the same set the DualSense speaker gets. Nothing is played as
 //! audio; each [`input::haptics::FRAME`] of what is written becomes a

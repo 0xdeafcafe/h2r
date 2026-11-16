@@ -35,7 +35,7 @@ pub fn pick_controller<S: AsRef<str>>(names: &[S], pattern: &str) -> Option<usiz
 pub enum Speaker {
     /// The output device at this index (a DualSense or DualShock 4's audio).
     Device(usize),
-    /// A Steam Controller's trackpad actuators (`docs/steam-controller.md`):
+    /// A Steam Controller's trackpad actuators (`docs/input/steam-controller.md`):
     /// no audio device, a haptic rendition of the sound.
     Haptics,
 }

@@ -45,6 +45,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [host-keyboard.md](input/host-keyboard.md): host typing in the game's virtual keyboard
 - [controller-layouts.md](input/controller-layouts.md): the retail button layouts and the extra ones we add
 - [button-icons.md](input/button-icons.md): button glyphs that follow the device in use (Xbox 360, PlayStation, keyboard; `H2_ICONS`)
+- [steam-controller.md](input/steam-controller.md): Steam Controllers over raw HID, trackpad aim and haptics (`H2_STEAM_*`)
 - [keyboard-charset.md](input/keyboard-charset.md): design for extending the on-screen keyboard's characters (not built)
 
 ## Graphics (`graphics/`)

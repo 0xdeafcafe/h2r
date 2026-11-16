@@ -127,6 +127,13 @@ only the mute button and writes only the mute LED and the speaker path
 (`H2_PAD_MUTE`, `H2_PAD_SPEAKER`). See
 [playstation-audio.md](../audio/playstation-audio.md).
 
+### Steam Controllers (`steam_pad`, feature `hid`, default)
+
+A thread of its own that reads Valve's controllers over raw HID, turns their
+lizard mode off and drives their trackpad haptics; its `SteamBackend` sits
+beside the platform's pads (`backend/multi.rs`). The right trackpad aims
+through the mouse-look path. See [steam-controller.md](steam-controller.md).
+
 ### Physical pads: Apple GameController (`backend/game_controller/`, feature `game-controller`, default)
 
 The macOS pad backend. `GameControllerPads::new()` reads

@@ -18,7 +18,7 @@
 //! * [`steam`], [`steam_pad`], [`trackpad`], [`haptics`]: Steam Controllers
 //!   over raw HID as pads of their own, the right trackpad aiming through
 //!   [`look`] (the mouse-look path), and the trackpad actuators as rumble
-//!   and a speaker (`docs/steam-controller.md`).
+//!   and a speaker (`docs/input/steam-controller.md`).
 //!
 //! See `docs/input/input.md`.
 

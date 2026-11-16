@@ -12,7 +12,7 @@
 //!   thumb is), or a second movement stick ([`LeftPadMode`]), the two ways
 //!   Steam's own gamepad template offers.
 //! * Buttons, sticks and triggers map onto the standard layout in
-//!   [`to_host`]. See `docs/steam-controller.md`.
+//!   [`to_host`]. See `docs/input/steam-controller.md`.
 
 use std::time::{Duration, Instant};
 

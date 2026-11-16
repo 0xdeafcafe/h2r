@@ -1,5 +1,5 @@
 //! Steam Controllers over raw HID: a thread that owns them, and the
-//! [`HostBackend`] the game's pads come from (`docs/steam-controller.md`).
+//! [`HostBackend`] the game's pads come from (`docs/input/steam-controller.md`).
 //!
 //! No platform framework reads a Steam Controller as a gamepad
 //! (GameController.framework does not list it, and in lizard mode it is a
@@ -391,6 +391,15 @@ impl Drop for Joiner {
         if let Some(j) = lock(&self.join).take() {
             let _ = j.join();
         }
+    }
+}
+
+impl std::fmt::Debug for SteamPads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SteamPads")
+            .field("connected", &self.connected())
+            .field("tuning", &self.tuning)
+            .finish()
     }
 }
 

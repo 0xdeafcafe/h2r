@@ -8,7 +8,7 @@
 //! over the guest's read interval: `delta * k * (1/60 s) / interval`, the
 //! interval counted as at least [`LOOK_FRAME`]. Motion left unread for over
 //! [`STALE_MOTION`] is dropped rather than delivered late as a flick. See
-//! `docs/input.md`, "Keyboard and mouse".
+//! `docs/input/input.md`, "Keyboard and mouse".
 
 use std::time::{Duration, Instant};
 

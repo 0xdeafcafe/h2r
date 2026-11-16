@@ -260,7 +260,7 @@ impl PadSpeakerConfig {
 
 impl PadSpeakerConfig {
     /// The settings for a Steam Controller's haptics
-    /// (`docs/steam-controller.md`): the same routes, but every routed
+    /// (`docs/input/steam-controller.md`): the same routes, but every routed
     /// sound also stays on the main output, since the trackpads only buzz
     /// its pitch and loudness.
     pub fn for_haptics(&self) -> Self {

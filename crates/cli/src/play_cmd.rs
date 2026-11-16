@@ -152,7 +152,16 @@ type PadParts = (
 /// `H2_PAD_SPEAKER`, when set, wins) and, unless `H2_PAD_SPEAKER=0` or audio
 /// is off, the controller-speaker output (docs/audio/playstation-audio.md). A bad
 /// setting is reported and that part stays off.
-fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
+///
+/// Where no PlayStation controller's audio device is found and a Steam
+/// Controller thread runs (`steam`), the routed sounds go to its trackpad
+/// actuators instead, as haptics (`H2_PAD_SPEAKER_DEVICE=haptics` asks for
+/// that alone; docs/input/steam-controller.md). The device list is read once here.
+fn pad_speaker(
+    audio: bool,
+    store: &Arc<settings::Store>,
+    steam: Option<&input::steam_pad::SteamPads>,
+) -> PadParts {
     let env = |k: &str| std::env::var(k).ok();
     let config = dsound::padroute::PadSpeakerConfig::from_env(env)
         .map_err(|e| eprintln!("play: controller speaker off: {e}"))
@@ -196,6 +205,26 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
             "play: controller speaker off (Settings > Controls > Controller Speaker turns it on)"
         );
     }
+    let names = audio::output::DeviceSink::output_device_names();
+    let target = audio::devices::pick_speaker(&names, &config.device, steam.is_some());
+    if let (Some(audio::devices::Speaker::Haptics), Some(pads)) = (target, steam) {
+        eprintln!("play: controller speaker on the Steam Controller's trackpads, as haptics");
+        let pads = pads.clone();
+        let live = Arc::clone(&setting);
+        let side = dsound::SideOutput {
+            open: Box::new(move || {
+                Some(Box::new(boot::steam_speaker::HapticSink::over(pads))
+                    as Box<dyn audio::AudioSink>)
+            }),
+            on_live: Some(Box::new(move |on| live.side_live(on))),
+        };
+        let pad = boot::dsound_glue::PadSpeaker {
+            config: config.for_haptics(),
+            side,
+            setting: Arc::clone(&setting),
+        };
+        return (Some(pad), hid, setting);
+    }
     if let Some(switch) = hid.as_ref().map(input::pad_hid::PadHid::speaker_switch) {
         setting.attach_hid(move |on| switch.set(on));
     }
@@ -230,6 +259,24 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     (Some(pad), hid, setting)
 }
 
+/// The Steam Controller thread, when pads are wanted, the platform has raw
+/// HID and `H2_STEAM_PAD` is not `0`. Its tuning follows the Video screen's
+/// Steam rows (`steam_pad.*`).
+fn steam_pads(
+    config: &app::AppConfig,
+    store: &settings::Store,
+) -> Option<input::steam_pad::SteamPads> {
+    if !config.gamepads
+        || config.scripted_input.is_some()
+        || std::env::var("H2_STEAM_PAD").is_ok_and(|v| v == "0")
+    {
+        return None;
+    }
+    let open = input::steam_pad::platform_opener()?;
+    let tuning = boot::setting_defs::steam_tuning(store);
+    Some(input::steam_pad::spawn(open, tuning, Default::default()))
+}
+
 /// The HID thread, when it may have something to do and can run here.
 fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::pad_hid::PadHid> {
     let open = input::pad_hid::platform_opener().filter(|_| wanted)?;
@@ -240,6 +287,7 @@ fn pad_hid(config: input::pad_hid::PadHidConfig, wanted: bool) -> Option<input::
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
 /// when the window closes.
+#[allow(clippy::too_many_arguments)]
 fn hosted(
     mut host: app::GuestHost,
     audio: bool,
@@ -248,6 +296,7 @@ fn hosted(
     interrupted: Arc<AtomicBool>,
     icons: boot::icons::IconOptions,
     store: Arc<settings::Store>,
+    steam: Option<input::steam_pad::SteamPads>,
 ) -> boot::Host {
     let configure = |mut gfx: d3d::GfxBackend| {
         // As for `h2 run`: passes are merged by default (the fast rule;
@@ -290,7 +339,7 @@ fn hosted(
     });
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
-    let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store);
+    let (pad_speaker, pad_hid, _speaker_setting) = pad_speaker(audio, &store, steam.as_ref());
     let fov = store.handle::<u32>(boot::setting_defs::FOV.key).get();
     if fov != boot::setting_defs::FOV_RETAIL as u32 {
         eprintln!("play: field of view {fov} degrees");
@@ -555,6 +604,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Err(e) => eprintln!("play: frame rate: {e}"),
         }
     });
+    // Steam Controllers over raw HID (docs/input/steam-controller.md): with the
+    // pads on, no scripted input, and not H2_STEAM_PAD=0. The pads and the
+    // controller speaker share the thread.
+    let steam = steam_pads(&config, &store);
+    config.steam_pads = steam.clone();
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -650,6 +704,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             Arc::clone(&interrupted),
             icons,
             store,
+            steam,
         );
         host.level = level;
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);

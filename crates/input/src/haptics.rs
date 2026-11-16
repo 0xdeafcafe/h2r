@@ -14,7 +14,7 @@
 //! differ, and on the 2026 controller one rumble report while its motors
 //! run (SDL resends that every 40 ms, as the firmware stops after about
 //! 50 ms). Linux throttles the 2015 controller's interface to about 20
-//! reports a second per kind; see `docs/steam-controller.md`.
+//! reports a second per kind; see `docs/input/steam-controller.md`.
 
 use std::time::Duration;
 
