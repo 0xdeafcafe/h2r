@@ -153,6 +153,9 @@ export interface GameKindFields {
   difficulty?: string | null;
   /** Campaign only: co-op partners on other machines. */
   online?: boolean | null;
+  /** Skulls that were on: sorted unique indices 0..14 (lib/skulls.ts).
+   *  Absent when none were, and for older games. */
+  skulls?: number[] | null;
 }
 export interface GameStarted extends GameKindFields {
   game_id: GameId;

@@ -2,6 +2,7 @@
 
 import type { AccountKeyEntry, Frame, GameDetail, GameSummary, MapOutline, WireEvent, AccountSummary, PresenceEntry } from "./types";
 import type { ServerTarget } from "./server";
+import { formatSkullsParam } from "../lib/skulls";
 
 export class ApiError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) {
@@ -64,8 +65,9 @@ export function api(t: ServerTarget) {
     accountKeys: async (xuid: string, s?: AbortSignal) =>
       (await getJson<{ keys?: AccountKeyEntry[] }>(u("/accounts/by-xuid/" + encodeURIComponent(xuid) + "/keys"), s)).keys ?? [],
     presence: (s?: AbortSignal) => all<PresenceEntry>("/presence", {}, s),
-    games: (state: "live" | "ended", limit = 100, s?: AbortSignal) =>
-      getJson(u("/games", { state, limit }), s).then((b) => page<GameSummary>(b)),
+    /** `skulls` keeps only games that had all of those skulls on (`?skulls=10,14`). */
+    games: (state: "live" | "ended", limit = 100, s?: AbortSignal, skulls?: readonly number[]) =>
+      getJson(u("/games", { state, limit, skulls: skulls ? formatSkullsParam(skulls) : undefined }), s).then((b) => page<GameSummary>(b)),
     game: (id: string, s?: AbortSignal) => getJson<GameDetail>(u("/games/" + encodeURIComponent(id)), s),
     /** All recorded frames in a tick range, following cursors (600 per page). */
     frames: async (id: string, from_tick?: number, to_tick?: number, s?: AbortSignal) =>

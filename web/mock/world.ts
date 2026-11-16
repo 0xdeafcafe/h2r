@@ -4,7 +4,7 @@
 import type { Frame, GamePlayer, MapOutline, PlayerScore, WireEvent } from "../src/api/types";
 import { MAPS, type MockMap } from "./maps";
 import { chainHashSync, newSigningKey, signJws, type SigningKey } from "./sign";
-import { AI_WEAPONS, CAMPAIGN_SHARE, multiplayerKind, planCampaign } from "./coop";
+import { AI_WEAPONS, CAMPAIGN_SHARE, mockSkulls, multiplayerKind, planCampaign } from "./coop";
 
 export const HOST = "mock.h2live.local";
 const TICKS = 30;
@@ -56,6 +56,12 @@ interface SimPlayer {
   shotsSince: number;
   /** Aim pitch, radians. */
   pitch: number;
+}
+
+/** `{skulls}` for a game that had some on, else nothing. */
+function skullField(id: string, campaign: boolean): { skulls?: number[] } {
+  const skulls = mockSkulls(id, campaign);
+  return skulls.length ? { skulls } : {};
 }
 
 interface SimGame {
@@ -244,7 +250,7 @@ export class World {
     }
     const host = humans[0]!;
     const g: SimGame = {
-      id, mode: coop ? "campaign" : "multiplayer", kind: coop ? coop.fields : multiplayerKind(rand),
+      id, mode: coop ? "campaign" : "multiplayer", kind: { ...(coop ? coop.fields : multiplayerKind(rand)), ...skullField(id, !!coop) },
       map, team_play, variant: coop ? "" : pick(team_play ? VARIANTS_TEAM : VARIANTS_FFA),
       // A campaign level has no limits to send; time_limit_s is how long it runs here.
       score_limit: coop ? 0 : team_play ? 40 : 15, time_limit_s: coop?.seconds ?? 300, tick: 0, host, console: CONSOLES[this.games.size % CONSOLES.length]!,

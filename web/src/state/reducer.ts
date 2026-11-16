@@ -7,6 +7,7 @@ import type {
   WireEvent, Winner, Xuid, GameId,
 } from "../api/types";
 import { normalizeAppearance, type Appearance } from "../lib/gameart";
+import { normalizeSkulls } from "../lib/skulls";
 
 export interface Presence {
   state: string;
@@ -66,6 +67,8 @@ export interface GameState {
   difficulty: string | null;
   /** Campaign only: true for co-op over the network. */
   online: boolean | null;
+  /** Skulls that were on, sorted indices (none when the game said nothing). */
+  skulls: number[];
   variant: string | null;
   team_play: boolean;
   score_limit: number | null;
@@ -325,6 +328,7 @@ function kindFields(d: GameKindFields) {
     playlist_id: str(d.playlist_id),
     difficulty: str(d.difficulty)?.toLowerCase() ?? null,
     online: typeof d.online === "boolean" ? d.online : null,
+    skulls: normalizeSkulls(d.skulls),
   };
 }
 
@@ -568,6 +572,7 @@ export function applyGameSnapshot(s: LiveState, d: GameSummary | GameDetail) {
     g.map_id ??= mapId(d.map_id);
     g.kind ??= k.kind; g.playlist ??= k.playlist; g.playlist_id ??= k.playlist_id;
     g.difficulty ??= k.difficulty; g.online ??= k.online;
+    if (!g.skulls.length) g.skulls = k.skulls;
     if (det.team_play !== undefined) g.team_play = det.team_play;
     if (det.score_limit !== undefined) g.score_limit = det.score_limit ?? null;
     if (det.time_limit_s !== undefined) g.time_limit_s = det.time_limit_s ?? null;

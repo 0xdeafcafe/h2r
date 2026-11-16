@@ -15,6 +15,7 @@ import { VerifySummary } from "../components/bits";
 import { Block, Crumbs, Title } from "./Layout";
 import Carnage from "./Carnage";
 import GametypeIcon from "../components/GametypeIcon";
+import { SkullBadges } from "../components/SkullIcon";
 import { MapThumb, gameTitle, hostName } from "./Side";
 import { hms, usDateTime, agoWords } from "./fmt";
 import { teamStandings, standings } from "../state/reducer";
@@ -98,6 +99,7 @@ function Header(props: { game: GameState }) {
             <li class="styled">Difficulty - {difficultyName(g().difficulty) ?? "not reported"}</li>
           </Show>
           <CustomMapLine game={g()} />
+          <Show when={g().skulls.length}><li class="s-game-skulls"><SkullBadges skulls={g().skulls} size={22} names /></li></Show>
           <li title={g().ended_at ? `Ended ${agoWords(g().ended_at, now())}` : undefined}>{usDateTime(g().started_at)}</li>
           <li title={lengthNote(g(), now())}>Length: <span class="s-match-length">{hms(gameSeconds(g(), now()))}</span></li>
         </ul>
