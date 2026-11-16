@@ -767,6 +767,7 @@ dependencies = [
  "flate2",
  "font",
  "gltf",
+ "h1convert",
  "h1map",
  "hs",
  "iced-x86",
@@ -2122,6 +2123,7 @@ dependencies = [
 name = "h1convert"
 version = "0.1.0"
 dependencies = [
+ "content",
  "h1map",
  "map",
  "scenario-edit",

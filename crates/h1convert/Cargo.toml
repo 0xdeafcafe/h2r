@@ -5,6 +5,8 @@ version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The package manifest of a converted map.
+content.workspace = true
 h1map = { path = "../h1map" }
 map.workspace = true
 tags.workspace = true
