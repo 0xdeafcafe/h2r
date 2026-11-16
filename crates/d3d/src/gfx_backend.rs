@@ -973,6 +973,7 @@ impl Backend for GfxBackend {
         let window = (scale > 1).then_some((d.target.width, d.target.height));
         let count_samples = d.hw.zpass_count_enable && self.count_samples;
         let indices = d.indices.as_deref();
+        let index_id = d.indices.as_ref().and_then(|i| i.cache_id());
         let textured = textures.iter().any(Option::is_some);
         let builtin = match route(d, textured, self.shaders.is_some()) {
             Ok(b) => b,
@@ -987,6 +988,7 @@ impl Backend for GfxBackend {
                 count_samples,
                 window,
                 stream_ids: &stream_ids,
+                index_id,
                 ..Draw::new(
                     SHADER_XYZRHW_DIFFUSE,
                     &d.layout,
@@ -1030,6 +1032,7 @@ impl Backend for GfxBackend {
             count_samples,
             vertex_fetch: self.renderer.vertex_fetch(),
             stream_ids: &stream_ids,
+            index_id,
             ..Draw::new(
                 prepared.id,
                 &d.layout,

@@ -19,12 +19,37 @@
 //!
 //! Memory is bounded: snapshots by bytes, entries (ghosts included) by
 //! count, both least recently used first.
+//!
+//! Index lists are kept the same way ([`IndexCache`]): a clean list comes
+//! back already scanned and rebased onto its vertex window.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use crate::backend::CachedBytes;
+use crate::backend::{CachedBytes, CachedIndices};
 use crate::dirty::WriteTracker;
+
+/// What a [`RangeCache`] keeps per range.
+pub trait Snapshot: Clone {
+    /// Host bytes it holds (for the budget).
+    fn size(&self) -> usize;
+}
+
+impl Snapshot for CachedBytes {
+    fn size(&self) -> usize {
+        self.bytes.len()
+    }
+}
+
+impl Snapshot for CachedIndices {
+    fn size(&self) -> usize {
+        4 * self.rebased.len()
+    }
+}
+
+/// Vertex windows.
+pub type VertexCache = RangeCache<CachedBytes>;
+/// Index lists.
+pub type IndexCache = RangeCache<CachedIndices>;
 
 /// Times a window must be found written before it counts as dynamic.
 pub const DYNAMIC_STRIKES: u8 = 2;
@@ -37,16 +62,16 @@ pub const MAX_ENTRIES: usize = 1 << 16;
 
 /// What the device should do with a window.
 #[derive(Clone, Debug)]
-pub enum Probe {
+pub enum Probe<T> {
     /// Use this snapshot: the window's pages are clean since it was read.
-    Hit(CachedBytes),
-    /// Read the window and [`VertexCache::fill`] it.
+    Hit(T),
+    /// Read the window and [`RangeCache::fill`] it.
     Fill,
     /// Copy the window for this draw only.
     Copy,
 }
 
-struct Entry {
+struct Entry<T> {
     /// Tracker generation when the bytes were last read (or found clean).
     generation: u64,
     /// Frame the window was last found written (or first seen).
@@ -55,12 +80,12 @@ struct Entry {
     used: u64,
     /// Times found written.
     strikes: u8,
-    snapshot: Option<CachedBytes>,
+    snapshot: Option<T>,
 }
 
-/// Snapshots of guest vertex windows (see the module docs).
-pub struct VertexCache {
-    entries: HashMap<(u32, u32), Entry>,
+/// Snapshots of guest memory ranges (see the module docs).
+pub struct RangeCache<T> {
+    entries: HashMap<(u32, u32), Entry<T>>,
     bytes: usize,
     budget: usize,
     tick: u64,
@@ -68,7 +93,7 @@ pub struct VertexCache {
     next_id: u64,
 }
 
-impl VertexCache {
+impl<T: Snapshot> RangeCache<T> {
     /// An empty cache keeping at most `budget` bytes of snapshots.
     pub fn new(budget: usize) -> Self {
         Self {
@@ -92,7 +117,7 @@ impl VertexCache {
     /// Looks up `[va, va + len)`. Anything but a hit leaves the caller to
     /// read the window, and to [`WriteTracker::watch`] it so later stores
     /// are seen.
-    pub fn probe(&mut self, va: u32, len: u32, tracker: &WriteTracker) -> Probe {
+    pub fn probe(&mut self, va: u32, len: u32, tracker: &WriteTracker) -> Probe<T> {
         self.tick += 1;
         let now = tracker.generation();
         let (tick, frame) = (self.tick, self.frame);
@@ -113,7 +138,7 @@ impl VertexCache {
         e.used = tick;
         if tracker.dirty_since(va, len, e.generation) {
             if let Some(s) = e.snapshot.take() {
-                self.bytes -= s.bytes.len();
+                self.bytes -= s.size();
             }
             e.strikes = e.strikes.saturating_add(1);
             e.generation = now;
@@ -129,13 +154,11 @@ impl VertexCache {
         }
     }
 
-    /// Stores `bytes`, read from `[va, va + len)` at tracker generation
-    /// `generation`, after a [`Probe::Fill`]; returns the snapshot to draw.
-    pub fn fill(&mut self, va: u32, len: u32, bytes: Arc<[u8]>, generation: u64) -> CachedBytes {
-        let snapshot = CachedBytes {
-            id: self.next_id,
-            bytes,
-        };
+    /// Stores the snapshot `make` builds (given its unique id) from
+    /// `[va, va + len)` as read at tracker generation `generation`, after a
+    /// [`Probe::Fill`]; returns it.
+    pub fn fill(&mut self, va: u32, len: u32, generation: u64, make: impl FnOnce(u64) -> T) -> T {
+        let snapshot = make(self.next_id);
         self.next_id += 1;
         self.tick += 1;
         let e = self.entries.entry((va, len)).or_insert(Entry {
@@ -146,11 +169,11 @@ impl VertexCache {
             snapshot: None,
         });
         if let Some(old) = e.snapshot.replace(snapshot.clone()) {
-            self.bytes -= old.bytes.len();
+            self.bytes -= old.size();
         }
         e.generation = generation;
         e.used = self.tick;
-        self.bytes += snapshot.bytes.len();
+        self.bytes += snapshot.size();
         self.evict();
         snapshot
     }
@@ -161,7 +184,7 @@ impl VertexCache {
     pub fn invalidate(&mut self, va: u32, len: u32, generation: u64) {
         if let Some(e) = self.entries.get_mut(&(va, len)) {
             if let Some(s) = e.snapshot.take() {
-                self.bytes -= s.bytes.len();
+                self.bytes -= s.size();
             }
             e.strikes = e.strikes.saturating_add(1);
             e.generation = generation;
@@ -212,7 +235,7 @@ impl VertexCache {
             if let Some(e) = self.entries.remove(&k)
                 && let Some(s) = e.snapshot
             {
-                self.bytes -= s.bytes.len();
+                self.bytes -= s.size();
             }
         }
     }
@@ -221,11 +244,15 @@ impl VertexCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     const VA: u32 = 0x8010_0000;
 
     fn fill(c: &mut VertexCache, t: &WriteTracker, va: u32, len: u32) -> CachedBytes {
-        c.fill(va, len, vec![7; len as usize].into(), t.generation())
+        c.fill(va, len, t.generation(), |id| CachedBytes {
+            id,
+            bytes: Arc::from(vec![7; len as usize]),
+        })
     }
 
     #[test]

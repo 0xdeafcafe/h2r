@@ -24,8 +24,12 @@ const VA: u32 = 0x8000_0000 | DATA;
 const HEADER: u32 = MISC + 0x1100;
 /// The header a "new" buffer over the same memory gets.
 const HEADER2: u32 = MISC + 0x1140;
-const ALL_INNER: u32 = MISC + 0x8000;
-const SOME_INNER: u32 = MISC + 0x9000;
+/// Index lists, in the contiguous view the write tracker reports (pages
+/// of their own).
+const ALL_INNER: u32 = VA + 0x4000;
+const SOME_INNER: u32 = VA + 0x5000;
+/// An index list outside it: read every time.
+const ELSEWHERE: u32 = MISC + 0x9000;
 const STRIDE: u32 = 20;
 const QUADS: u32 = 128;
 const LEN: u32 = QUADS * 4 * STRIDE;
@@ -35,7 +39,7 @@ const DYN_HEADER: u32 = MISC + 0x1180;
 const DYN_DATA: u32 = DATA + 0x3000;
 const DYNAMIC_QUAD: u32 = 9;
 /// Draws a frame makes.
-const DRAWS: usize = 68;
+const DRAWS: usize = 69;
 
 /// Quads 0..64 fill the 8x8 tiles; 64..128 are 4x4 insets of them.
 fn quad_bytes(q: u32, shift: f32, salt: u32) -> Vec<u8> {
@@ -90,7 +94,7 @@ fn store<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, va: u32, bytes: &[
 fn setup<B: Backend>(backend: B, cache: bool, upload: UploadPolicy) -> (Device<B>, SparseMemory) {
     let (mut d, mut m) = create(backend, upload);
     d.set_vertex_cache(cache.then_some(1 << 20));
-    m.map(VA, 0x4000);
+    m.map(VA, 0x6000);
     set_states(&mut d, &mut m);
     m.write(VA, &all_quads(0.0, 0)).unwrap();
     header(&mut m, HEADER);
@@ -99,6 +103,7 @@ fn setup<B: Backend>(backend: B, cache: bool, upload: UploadPolicy) -> (Device<B
     header_at(&mut m, DYN_HEADER, DYN_DATA);
     m.write(ALL_INNER, &index_list(64..128)).unwrap();
     m.write(SOME_INNER, &index_list(70..73)).unwrap();
+    m.write(ELSEWHERE, &index_list(64..66)).unwrap();
     (d, m)
 }
 
@@ -110,8 +115,12 @@ fn mutate<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, f: u32) -> u32 {
             let page = all_quads(0.0, 0x00AB_CDEF)[0x2000..].to_vec();
             store(d, m, VA + 0x2000, &page);
         }
-        // Four bytes: one vertex's colour.
-        4 => store(d, m, VA + 5 * 80 + 16, &0xFF12_3456u32.to_le_bytes()),
+        // Four bytes: one vertex's colour; and an index list now names
+        // other quads.
+        4 => {
+            store(d, m, VA + 5 * 80 + 16, &0xFF12_3456u32.to_le_bytes());
+            store(d, m, SOME_INNER, &index_list(80..83));
+        }
         // The buffer is freed and its memory reused by a new one with other
         // vertices (shifted by a pixel, other colours).
         5 => {
@@ -150,6 +159,7 @@ fn draw_frame<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, vb: u32) {
     // (an overlapping, smaller window).
     d.draw_indexed_vertices(m, 5, 64 * 6, ALL_INNER).unwrap();
     d.draw_indexed_vertices(m, 5, 3 * 6, SOME_INNER).unwrap();
+    d.draw_indexed_vertices(m, 5, 2 * 6, ELSEWHERE).unwrap();
 }
 
 fn recorded_draws(calls: Vec<Recorded>) -> Vec<ResolvedDraw> {
@@ -201,6 +211,10 @@ fn the_backend_receives_the_same_draws_with_the_cache_on_and_off() {
     assert!(per_frame > LEN as u64, "{per_frame}");
     // On: frame 0 copies, frame 1 snapshots, frame 2 copies nothing.
     assert_eq!(delta(&on_stats, 2, copied), 0);
+    // Index lists: the two in the contiguous view come from the cache.
+    let index_hits = |s: &Stats| s.index_cache_hits;
+    assert_eq!(delta(&on_stats, 2, index_hits), 2);
+    assert_eq!(off_stats.last().unwrap().index_cache_hits, 0);
     assert_eq!(
         on_stats[2].vertex_cache_hits - on_stats[1].vertex_cache_hits,
         DRAWS as u64
@@ -209,9 +223,14 @@ fn the_backend_receives_the_same_draws_with_the_cache_on_and_off() {
     // indexed window (the three small insets are on page 1).
     assert_eq!(delta(&on_stats, 3, copied), 256 * STRIDE as u64);
     // Four bytes: the tracker is page-granular, so every window on page 0
-    // (quads 0 to 51) is read again; and the big window, written in frame
-    // 3 and clean since, is snapshotted again.
-    assert_eq!(delta(&on_stats, 4, copied), 52 * 80 + 256 * STRIDE as u64);
+    // (quads 0 to 51) is read again; the big window, written in frame 3
+    // and clean since, is snapshotted again; and the rewritten index list
+    // reaches a window not seen before.
+    assert_eq!(
+        delta(&on_stats, 4, copied),
+        52 * 80 + 256 * STRIDE as u64 + 3 * 80
+    );
+    assert_eq!(delta(&on_stats, 4, index_hits), 1);
     // Dynamic frames: the rewritten quad's window is copied for both its
     // draws, and after two rewrites it is no longer snapshotted; nothing
     // else is copied.
@@ -268,6 +287,21 @@ fn verify_names_an_unreported_write_and_draws_the_current_bytes() {
     assert!(!missed.is_empty());
     let draws = recorded_draws(std::mem::take(&mut d.backend.calls));
     assert_eq!(*draws[3].streams[0].data, q[..]);
+    // The same for an index list.
+    let list = index_list(90..93);
+    m.write(SOME_INNER, &list).unwrap();
+    draw_frame(&mut d, &mut m, HEADER);
+    assert!(d.take_events().iter().any(|e| matches!(
+        e,
+        Event::MissedInvalidation {
+            addr: SOME_INNER,
+            ..
+        }
+    )));
+    let draws = recorded_draws(std::mem::take(&mut d.backend.calls));
+    let window = &draws[DRAWS - 2];
+    assert_eq!(*window.streams[0].data, all_quads(0.0, 0)[90 * 80..93 * 80]);
+    assert_eq!(window.indices.as_deref().unwrap()[..6], [0, 1, 2, 2, 1, 3]);
 }
 
 #[test]
@@ -334,4 +368,7 @@ fn the_gpu_renders_the_same_pixels_with_the_cache_on_and_off() {
     // Static windows are uploaded once and bound again after that.
     assert!(on_gpu.hits > 8 * DRAWS as u64, "{on_gpu:?}");
     assert!(on_gpu.uploads < 4 * DRAWS as u64, "{on_gpu:?}");
+    // The two cached index lists likewise.
+    assert!(on_gpu.index_hits > 8 * 2, "{on_gpu:?}");
+    assert!(on_gpu.index_uploads < 4 * 2, "{on_gpu:?}");
 }

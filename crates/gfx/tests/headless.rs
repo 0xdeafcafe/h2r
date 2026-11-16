@@ -171,6 +171,7 @@ fn rejects_bad_draws() {
             window: None,
             vertex_fetch: FetchMode::Cpu,
             stream_ids: &[],
+            index_id: None,
         };
         renderer.render(&ctx, &mut enc, &target.target(), Clear::NONE, &[d])
     };

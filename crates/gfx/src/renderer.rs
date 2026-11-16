@@ -318,6 +318,10 @@ pub struct Draw<'a> {
     /// of being staged in the upload ring ([`crate::persistent`]). Empty
     /// (the default) stages every stream.
     pub stream_ids: &'a [Option<u64>],
+    /// An id under which `indices` never change: the host index list is
+    /// kept across submissions like [`stream_ids`](Self::stream_ids)'
+    /// buffers. `None` (the default) stages it.
+    pub index_id: Option<u64>,
 }
 
 impl<'a> Draw<'a> {
@@ -345,6 +349,7 @@ impl<'a> Draw<'a> {
             window: None,
             vertex_fetch: FetchMode::Cpu,
             stream_ids: &[],
+            index_id: None,
         }
     }
 }
@@ -858,18 +863,22 @@ impl Renderer {
             return Err(DrawError::CountDepthNotCopyable);
         }
         let drawn = d.indices.map_or(d.vertex_count, |i| i.len() as u32);
-        let list: Option<Vec<u32>> = match (d.primitive.to_host(drawn), d.indices) {
-            (HostPrimitive::Native(_), None) => None,
-            (HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
-            (HostPrimitive::Indexed(_, conv), None) => Some(conv),
-            (HostPrimitive::Indexed(_, conv), Some(user)) => {
+        // A kept index list (`Draw::index_id`) is bound as it is.
+        let kept_id = d.index_id.filter(|_| d.indices.is_some());
+        let kept = kept_id.and_then(|id| self.persistent.cached_indices(id, d.primitive));
+        let list: Option<Vec<u32>> = match (kept.is_some(), d.primitive.to_host(drawn), d.indices) {
+            (true, ..) => None,
+            (false, HostPrimitive::Native(_), None) => None,
+            (false, HostPrimitive::Native(_), Some(user)) => Some(user.to_vec()),
+            (false, HostPrimitive::Indexed(_, conv), None) => Some(conv),
+            (false, HostPrimitive::Indexed(_, conv), Some(user)) => {
                 Some(conv.iter().map(|&c| user[c as usize]).collect())
             }
         };
         // An indexed strip needs the index format in the pipeline (wgpu
         // validates it; restart never triggers, indices are below
         // `vertex_count`).
-        if list.is_some()
+        if (list.is_some() || kept.is_some())
             && matches!(
                 key.primitive.topology,
                 wgpu::PrimitiveTopology::TriangleStrip | wgpu::PrimitiveTopology::LineStrip
@@ -933,13 +942,25 @@ impl Renderer {
                 (buf, off, (len as u64).max(4))
             })
             .collect();
-        let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
-        let indices = list.map(|idx| {
-            let bytes: &[u8] = bytemuck::cast_slice(&idx);
-            let len = (bytes.len() as u64).max(4);
-            let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
-            (buf, off, len)
-        });
+        let (vertices, indices) = match kept {
+            Some((buf, len, count)) => (count, Some((buf, 0, len))),
+            None => {
+                let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);
+                let indices = list.map(|idx| match kept_id {
+                    Some(id) => {
+                        let (buf, len) = self.persistent.put_indices(ctx, id, d.primitive, &idx);
+                        (buf, 0, len)
+                    }
+                    None => {
+                        let bytes: &[u8] = bytemuck::cast_slice(&idx);
+                        let len = (bytes.len() as u64).max(4);
+                        let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
+                        (buf, off, len)
+                    }
+                });
+                (vertices, indices)
+            }
+        };
         let builtin = (d.shader == SHADER_XYZRHW_DIFFUSE).then(|| {
             let (ww, wh) = d.window.unwrap_or((w, h));
             let words = [

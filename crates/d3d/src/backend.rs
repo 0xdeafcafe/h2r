@@ -162,6 +162,72 @@ impl std::fmt::Debug for StreamData {
     }
 }
 
+/// A draw's index list, rebased onto its vertex window: built for this
+/// draw, or a shared snapshot from the device's index cache. Reads as
+/// `[u32]` and compares by its values.
+#[derive(Clone)]
+pub enum IndexData {
+    /// Built for this draw.
+    Owned(Vec<u32>),
+    /// A guest index list no store has touched since it was read.
+    Cached(CachedIndices),
+}
+
+/// An index cache snapshot: the list's smallest and largest index and the
+/// list rebased by the smallest. `id` names these exact values (as for
+/// [`CachedBytes`]).
+#[derive(Clone, Debug)]
+pub struct CachedIndices {
+    /// Unique per snapshot, never reused.
+    pub id: u64,
+    /// Smallest guest index.
+    pub lo: u16,
+    /// Largest guest index.
+    pub hi: u16,
+    /// Each guest index minus `lo`.
+    pub rebased: std::sync::Arc<[u32]>,
+}
+
+impl IndexData {
+    /// The cache snapshot's id, if this is one.
+    pub fn cache_id(&self) -> Option<u64> {
+        match self {
+            Self::Owned(_) => None,
+            Self::Cached(c) => Some(c.id),
+        }
+    }
+}
+
+impl std::ops::Deref for IndexData {
+    type Target = [u32];
+    fn deref(&self) -> &[u32] {
+        match self {
+            Self::Owned(v) => v,
+            Self::Cached(c) => &c.rebased,
+        }
+    }
+}
+
+impl From<Vec<u32>> for IndexData {
+    fn from(v: Vec<u32>) -> Self {
+        Self::Owned(v)
+    }
+}
+
+impl PartialEq for IndexData {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Eq for IndexData {}
+
+impl std::fmt::Debug for IndexData {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&**self, f)
+    }
+}
+
 /// `D3DVIEWPORT8`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Viewport {
@@ -277,7 +343,7 @@ pub struct ResolvedDraw {
     pub streams: Vec<StreamBytes>,
     /// Indexed draws: indices into `streams`, each below `vertex_count`, in
     /// primitive order. `None` draws the vertices in order.
-    pub indices: Option<Vec<u32>>,
+    pub indices: Option<IndexData>,
     /// Translated render and stage state.
     pub state: DrawState,
     /// The raw state words the translation came from: everything the guest

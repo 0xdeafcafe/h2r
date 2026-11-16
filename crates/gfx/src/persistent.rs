@@ -10,12 +10,18 @@
 //! budget; draws already recorded keep theirs alive (wgpu buffers are
 //! reference counted).
 //!
+//! Index lists marked with an id ([`Draw::index_id`]) are kept the same
+//! way, as the host list (Xbox-only primitives rewritten) per id and
+//! primitive type.
+//!
 //! [`Draw::stream_ids`]: crate::renderer::Draw::stream_ids
+//! [`Draw::index_id`]: crate::renderer::Draw::index_id
 
 use std::collections::HashMap;
 
 use crate::context::GfxContext;
 use crate::repack::StreamPlan;
+use crate::vertex::PrimitiveType;
 
 /// Default GPU budget (`H2_VERTEX_CACHE_MB` overrides it).
 pub const DEFAULT_BUDGET: u64 = 128 << 20;
@@ -26,6 +32,20 @@ struct Slot {
     buffer: wgpu::Buffer,
     size: u64,
     used: u64,
+}
+
+struct IndexSlot {
+    buffer: wgpu::Buffer,
+    size: u64,
+    /// Indices in the host list.
+    count: u32,
+    used: u64,
+}
+
+#[derive(Clone, Copy)]
+enum Key {
+    Vertices(u64),
+    Indices(u64, PrimitiveType),
 }
 
 /// Counters, for tests and diagnostics.
@@ -39,11 +59,16 @@ pub struct PersistentStats {
     pub uploaded_bytes: u64,
     /// Bytes held now.
     pub held_bytes: u64,
+    /// Index lists bound from an existing buffer.
+    pub index_hits: u64,
+    /// Index buffers written.
+    pub index_uploads: u64,
 }
 
 /// Persistent vertex buffers by stream id.
 pub struct PersistentVertices {
     slots: HashMap<u64, Slot>,
+    indices: HashMap<(u64, PrimitiveType), IndexSlot>,
     budget: u64,
     tick: u64,
     stats: PersistentStats,
@@ -54,6 +79,7 @@ impl PersistentVertices {
     pub fn new(budget: u64) -> Self {
         Self {
             slots: HashMap::new(),
+            indices: HashMap::new(),
             budget,
             tick: 0,
             stats: PersistentStats::default(),
@@ -124,6 +150,56 @@ impl PersistentVertices {
         (buffer, bound)
     }
 
+    /// The host index buffer kept for index list `id` drawn as `primitive`:
+    /// the buffer, the bytes it binds and the indices it holds.
+    pub fn cached_indices(
+        &mut self,
+        id: u64,
+        primitive: PrimitiveType,
+    ) -> Option<(wgpu::Buffer, u64, u32)> {
+        self.tick += 1;
+        let s = self.indices.get_mut(&(id, primitive))?;
+        s.used = self.tick;
+        self.stats.index_hits += 1;
+        Some((s.buffer.clone(), s.size, s.count))
+    }
+
+    /// Keeps `list` (the host index list of `id` drawn as `primitive`) in a
+    /// buffer of its own; returns it and the bytes it binds.
+    pub fn put_indices(
+        &mut self,
+        ctx: &GfxContext,
+        id: u64,
+        primitive: PrimitiveType,
+        list: &[u32],
+    ) -> (wgpu::Buffer, u64) {
+        self.tick += 1;
+        let bytes: &[u8] = bytemuck::cast_slice(list);
+        let size = (bytes.len() as u64).max(4);
+        let buffer = ctx.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("persistent indices"),
+            size,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        if !bytes.is_empty() {
+            ctx.queue.write_buffer(&buffer, 0, bytes);
+        }
+        self.stats.index_uploads += 1;
+        self.stats.held_bytes += size;
+        let slot = IndexSlot {
+            buffer: buffer.clone(),
+            size,
+            count: list.len() as u32,
+            used: self.tick,
+        };
+        if let Some(old) = self.indices.insert((id, primitive), slot) {
+            self.stats.held_bytes -= old.size;
+        }
+        self.evict();
+        (buffer, size)
+    }
+
     /// Counters so far.
     pub fn stats(&self) -> PersistentStats {
         self.stats
@@ -132,6 +208,7 @@ impl PersistentVertices {
     /// Drops every buffer (draws already recorded keep theirs).
     pub fn clear(&mut self) {
         self.slots.clear();
+        self.indices.clear();
         self.stats.held_bytes = 0;
     }
 
@@ -141,16 +218,28 @@ impl PersistentVertices {
         if self.stats.held_bytes <= self.budget {
             return;
         }
-        let mut order: Vec<(u64, u64)> = self.slots.iter().map(|(k, s)| (s.used, *k)).collect();
-        order.sort_unstable();
+        let mut order: Vec<(u64, Key)> = self
+            .slots
+            .iter()
+            .map(|(k, s)| (s.used, Key::Vertices(*k)))
+            .chain(
+                self.indices
+                    .iter()
+                    .map(|(&(id, p), s)| (s.used, Key::Indices(id, p))),
+            )
+            .collect();
+        // Ticks are unique: the order is total.
+        order.sort_unstable_by_key(|&(used, _)| used);
         let goal = self.budget / 4 * 3;
         for (_, k) in order {
             if self.stats.held_bytes <= goal {
                 break;
             }
-            if let Some(s) = self.slots.remove(&k) {
-                self.stats.held_bytes -= s.size;
-            }
+            let freed = match k {
+                Key::Vertices(id) => self.slots.remove(&id).map(|s| s.size),
+                Key::Indices(id, p) => self.indices.remove(&(id, p)).map(|s| s.size),
+            };
+            self.stats.held_bytes -= freed.unwrap_or(0);
         }
     }
 }

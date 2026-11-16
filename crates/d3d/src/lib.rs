@@ -50,7 +50,7 @@ pub mod vertex_cache;
 
 pub use backend::{
     Backend, ChannelMask, DrawOutcome, GuestLayoutKind, PixelRect, Recorded, RecordingBackend,
-    RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, Viewport,
+    RectClear, ResolvedDraw, StreamBytes, StreamData, CachedBytes, CachedIndices, IndexData, Viewport,
 };
 pub use device::{Device, DeviceConfig, GuestRange, PresentParameters, Stats, WritebackCause, WritebackCauses};
 pub use dirty::{UploadPolicy, WriteTracker};
