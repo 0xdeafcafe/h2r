@@ -472,3 +472,265 @@ fn the_invented_campaign_disc_reads_end_to_end() {
         assert_eq!(m.structure_bsps().unwrap().len(), 2);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Collision BSP and scenario layouts, on invented bytes.
+
+fn room() -> bsp::CollisionBsp {
+    let base = 0x8190_0000;
+    let (bytes, at) = collision_room(base);
+    let space = Space::new(&bytes, base);
+    bsp::CollisionBsp::read(&space, &bytes[at..at + bsp::COLLISION_BSP_LEN]).unwrap()
+}
+
+#[test]
+fn the_invented_collision_bsp_reads_and_validates() {
+    let c = room();
+    assert_eq!(c.nodes.len(), 6);
+    assert_eq!(c.nodes[5].front, bsp::Child::Leaf(0));
+    assert_eq!(c.nodes[0].back, bsp::Child::Solid);
+    assert_eq!(c.refs[0].node, 0x8000_0000);
+    assert_eq!(c.surfaces[0].breakable_surface, -1);
+    assert_eq!(c.edges[0].right_surface, u32::MAX);
+    assert_eq!(c.validate(), Vec::<String>::new());
+    assert_eq!(c.surface_ring(0), Some(vec![0, 1, 2, 3]));
+}
+
+#[test]
+fn points_classify_as_open_inside_the_room_and_solid_outside() {
+    let c = room();
+    assert_eq!(c.leaf_at([0.5, 0.5, 0.5]), Some(0));
+    assert_eq!(c.leaf_at([0.0, 0.0, 0.0]), Some(0), "on a plane is front");
+    for p in [
+        [-0.1, 0.5, 0.5],
+        [0.5, 1.1, 0.5],
+        [0.5, 0.5, -2.0],
+        [9.0, 9.0, 9.0],
+    ] {
+        assert_eq!(c.leaf_at(p), None, "{p:?}");
+    }
+}
+
+#[test]
+fn validation_catches_a_bad_index_and_a_vertex_off_its_plane() {
+    let mut c = room();
+    c.vertices[2].point[2] = 0.5;
+    assert!(c.validate()[0].contains("off its plane"));
+    let mut c = room();
+    c.edges[1].forward_edge = 99;
+    assert!(c.validate()[0].contains("edge 1"));
+}
+
+#[test]
+fn a_short_block_is_a_bounds_error() {
+    let base = 0x8190_0000;
+    let (mut bytes, _) = collision_room(base);
+    // Ask for more vertices than the bytes hold.
+    put(&mut bytes, 7 * 12, 1000);
+    let space = Space::new(&bytes, base);
+    assert!(matches!(
+        bsp::CollisionBsp::read(&space, &bytes[..0x60]),
+        Err(Error::Bounds { .. })
+    ));
+}
+
+#[test]
+fn the_scenario_multiplayer_blocks_read_at_their_offsets() {
+    use scenario::layout::*;
+    let base = 0x8070_0000u32;
+    let mut b = vec![0u8; 0x5b0];
+    let add = |b: &mut Vec<u8>, field: (usize, usize), elems: Vec<Vec<u8>>| {
+        let addr = base + b.len() as u32;
+        put(b, field.0, elems.len() as u32);
+        put(b, field.0 + 4, addr);
+        for e in elems {
+            assert_eq!(e.len(), field.1);
+            b.extend(e);
+        }
+    };
+    let f = |v: &[f32]| v.iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>();
+    let mut start = f(&[1.0, 2.0, 3.0, 0.5]);
+    start.extend([1, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0]);
+    start.resize(0x34, 0);
+    add(&mut b, STARTING_LOCATIONS, vec![start]);
+    let mut flag = f(&[4.0, 5.0, 6.0, 1.0]);
+    flag.extend([6, 0, 3, 0]);
+    flag.extend(group(b"itmc").to_le_bytes());
+    flag.extend([0; 8]);
+    flag.extend(u32::MAX.to_le_bytes());
+    flag.resize(0x94, 0);
+    add(&mut b, NETGAME_FLAGS, vec![flag]);
+    let mut eq = vec![0u8; 0x40];
+    eq[4] = 13;
+    eq[0xe] = 30;
+    eq.extend(f(&[7.0, 8.0, 9.0, 0.25]));
+    eq.extend(group(b"itmc").to_le_bytes());
+    eq.extend([0; 8]);
+    eq.extend(0xe1cb_0057u32.to_le_bytes());
+    eq.resize(0x90, 0);
+    add(&mut b, NETGAME_EQUIPMENT, vec![eq]);
+    let mut sky = group(b"sky ").to_le_bytes().to_vec();
+    sky.extend([0; 8]);
+    sky.extend(0xe175_0001u32.to_le_bytes());
+    add(&mut b, SKIES, vec![sky]);
+    let space = Space::new(&b, base);
+    let mp = scenario::Multiplayer::read(&space, &b[..0x5b0]).unwrap();
+    let s = &mp.starting_locations[0];
+    assert_eq!(
+        (s.position, s.facing, s.team, s.bsp),
+        ([1.0, 2.0, 3.0], 0.5, 1, 0)
+    );
+    assert_eq!(s.game_types[0], scenario::GameType::ALL);
+    let fl = &mp.flags[0];
+    assert_eq!((fl.kind, fl.team), (scenario::FlagKind::TeleportFrom, 3));
+    assert!(fl.weapon_group.id.is_none());
+    let e = &mp.equipment[0];
+    assert_eq!(
+        (e.position, e.facing, e.spawn_time),
+        ([7.0, 8.0, 9.0], 0.25, 30)
+    );
+    assert_eq!(e.game_types[0].name(), "all except ctf");
+    assert_eq!(e.item.id, TagId(0xe1cb_0057));
+    assert_eq!(mp.skies[0].group, Group::new(b"sky "));
+    assert!(mp.vehicles.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Real maps as stored on the disc, from `$H1_MAP_DIR` (every `*.map` in it).
+// Run with `H1_MAP_DIR=... cargo test -p h1map -- --ignored real_maps`.
+
+fn real_maps() -> Vec<(String, H1Map)> {
+    let dir = std::env::var("H1_MAP_DIR").expect("set H1_MAP_DIR to a folder of Halo 1 maps");
+    let mut out = Vec::new();
+    let mut paths: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|e| e == "map"))
+        .collect();
+    paths.sort();
+    for p in paths {
+        let bytes = std::fs::read(&p).unwrap();
+        let m = H1Map::from_reader(Cursor::new(&bytes))
+            .unwrap_or_else(|e| panic!("{}: {e}", p.display()));
+        out.push((p.file_stem().unwrap().to_string_lossy().into_owned(), m));
+    }
+    assert!(!out.is_empty(), "no maps in {dir}");
+    out
+}
+
+#[test]
+#[ignore = "reads Halo 1 maps from $H1_MAP_DIR"]
+fn real_maps_read_and_their_multiplayer_parts_and_collision_check_out() {
+    for (name, m) in real_maps() {
+        let h = m.header();
+        eprintln!(
+            "{name}: len {:#x} f0c {:#x} index {:#x} meta {:#x} {} {} tags {} model {:x?}",
+            h.file_length,
+            h.field_0c,
+            h.index_offset,
+            h.metadata_size,
+            h.build,
+            h.cache_type,
+            m.tags().len(),
+            m.index().model_fields
+        );
+        assert_eq!(m.metadata_base(), XBOX_METADATA_BASE, "{name}");
+        assert_eq!(h.name.to_ascii_lowercase(), name.to_ascii_lowercase());
+        assert_eq!(m.scenario().group, Group::SCENARIO);
+        assert_eq!(m.index().len, 0x24, "Xbox index header closes at 0x20");
+        for t in m.tags() {
+            assert!(!t.name.is_empty() && t.name.is_ascii(), "{name}: {}", t.id);
+        }
+        let bsps = m.structure_bsps().unwrap();
+        assert!(!bsps.is_empty());
+        let mp = m.multiplayer().unwrap();
+        eprintln!(
+            "  starts {} flags {} equipment {} vehicles {} skies {}",
+            mp.starting_locations.len(),
+            mp.flags.len(),
+            mp.equipment.len(),
+            mp.vehicles.len(),
+            mp.skies.len()
+        );
+        for s in &mp.skies {
+            assert_eq!(m.tag(s.id).unwrap().group, Group::new(b"sky "));
+        }
+        for e in &mp.equipment {
+            let ic = m.item_collection(e.item.id).unwrap();
+            for p in &ic.permutations {
+                let g = m.tag(p.item.id).unwrap().group;
+                assert!(g == Group::new(b"weap") || g == Group::new(b"eqip"), "{g}");
+                assert!(p.weight > 0.0);
+            }
+        }
+        for f in &mp.flags {
+            assert!(
+                !matches!(f.kind, scenario::FlagKind::Other(_)),
+                "{:?}",
+                f.kind
+            );
+            if f.kind == scenario::FlagKind::TeleportFrom {
+                assert!(
+                    mp.flags
+                        .iter()
+                        .any(|t| t.kind == scenario::FlagKind::TeleportTo && t.team == f.team),
+                    "{name}: teleporter channel {} has no exit",
+                    f.team
+                );
+            }
+        }
+        for s in &mp.starting_locations {
+            let pi = std::f32::consts::PI + 1e-3;
+            assert!(
+                (-pi..=pi).contains(&s.facing),
+                "{name}: facing {}",
+                s.facing
+            );
+        }
+        for v in &mp.vehicles {
+            assert!((v.palette as usize) < mp.vehicle_palette.len());
+        }
+        for p in &mp.vehicle_palette {
+            assert_eq!(m.tag(p.id).unwrap().group, Group::new(b"vehi"));
+        }
+        for b in &bsps {
+            let s = m.structure_bsp(b).unwrap();
+            let bounds = s.world_bounds();
+            eprintln!(
+                "  bsp {} @ {:#x}+{:#x}: bounds {bounds:?} clusters {} lightmaps {}",
+                b.name,
+                b.address,
+                b.size,
+                s.block_count(bsp::root::CLUSTERS),
+                s.block_count(bsp::root::LIGHTMAPS)
+            );
+            assert_eq!(
+                m.tag(s.lightmaps_bitmap().id).unwrap().group,
+                Group::new(b"bitm")
+            );
+            for r in s.collision_materials().unwrap() {
+                let g = m.tag(r.id).unwrap();
+                assert!(g.parent == Group::new(b"shdr") || g.group == Group::new(b"shdr"));
+            }
+            let colls = s.collision_bsps().unwrap();
+            assert_eq!(colls.len(), 1);
+            let c = &colls[0];
+            assert_eq!(c.validate(), Vec::<String>::new(), "{name}");
+            // Every spawn point stands in open space with solid ground under it.
+            let (mut open, mut ground) = (0, 0);
+            for sp in &mp.starting_locations {
+                let [x, y, z] = sp.position;
+                assert!(x >= bounds[0] && x <= bounds[1] && y >= bounds[2] && y <= bounds[3]);
+                open += c.leaf_at([x, y, z + 0.3]).is_some() as usize;
+                ground +=
+                    (0..20).any(|i| c.leaf_at([x, y, z - 0.05 * i as f32]).is_none()) as usize;
+            }
+            eprintln!(
+                "  spawns in open space {open}/{n}, with ground within 1 m {ground}/{n}",
+                n = mp.starting_locations.len()
+            );
+            assert_eq!(open, mp.starting_locations.len());
+            assert_eq!(ground, mp.starting_locations.len());
+        }
+    }
+}

@@ -8,8 +8,9 @@
 //! file.
 //!
 //! The reader knows the header, the tag index, the tag array and just enough
-//! of the scenario tag to list its structure BSPs. Other tag layouts belong to
-//! the converter. [`disc`] recognises the Halo 1 disc and picks its maps.
+//! of the scenario tag to list its structure BSPs. [`scenario`] reads the
+//! multiplayer placements and [`bsp`] a structure BSP's region and collision
+//! BSP, the parts the converter needs first. [`disc`] recognises the Halo 1 disc and picks its maps.
 //!
 //! No game data is in this crate or its tests: the tests build invented maps
 //! in memory. See `docs/formats/h1-map-format.md` for the format, with the
@@ -17,14 +18,18 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod bsp;
 pub mod disc;
 mod format;
 mod reader;
+pub mod scenario;
+mod space;
 #[doc(hidden)]
 pub mod testing;
 
 pub use format::*;
 pub use reader::{H1Map, parse_header};
+pub use space::Space;
 
 /// A malformed, unsupported or unreadable Halo 1 cache file.
 #[derive(Debug, thiserror::Error)]
