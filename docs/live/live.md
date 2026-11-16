@@ -603,7 +603,7 @@ list; the client does not invent an account.
 
 With `server_url = None`, sign-in keeps its local-only behavior. With a URL,
 logon authenticates against that service and publishes signed presence, as
-specified in [Client HLE: service logon and messages](#client-hle-service-logon-and-messages).
+specified in [Client HLE: service logon and title resources](#client-hle-service-logon-and-title-resources).
 
 Transport startup succeeds through XNetStartup, WSAStartup and XOnlineStartup,
 with paired reference-counted cleanup. GetUsers writes the fixed 16-record

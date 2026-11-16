@@ -289,7 +289,7 @@ scenarioObjects.restAll(): void
 
 ### Map pack
 
-The nine Multiplayer Map Pack maps ([map-pack.md](../map-pack.md)) get the
+The nine Multiplayer Map Pack maps ([map-pack.md](../game/map-pack.md)) get the
 same art as the disc's multiplayer maps (preview, `map.glb`, `sky.glb`,
 views) under their own stems (`containment`, `deltatap`, ...), and the
 playlist builder's catalog lists each under the English name and
