@@ -342,7 +342,11 @@ impl Headless {
             }
             Step::Move(t) => {
                 let (_, to) = self.scene.find(t)?;
-                let from = if self.mouse[0] < -1.0e3 { to } else { self.mouse };
+                let from = if self.mouse[0] < -1.0e3 {
+                    to
+                } else {
+                    self.mouse
+                };
                 for i in 1..=12 {
                     let k = i as f32 / 12.0;
                     let p = [

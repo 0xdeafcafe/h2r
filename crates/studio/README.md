@@ -1,5 +1,7 @@
 # studio (`h2-editor`)
 
+![h2-editor with Ascension open: Tools and the outliner on the left, the level in the 3D viewport, the selected weapon spawn's fields in the inspector](../../docs/images/editor/window.jpg)
+
 The editor suite on Dear ImGui (docking) + wgpu + winit: the shell, the
 scenario tool with a 3D viewport and gizmo, the game variant tool and the
 playlist (hopper) tool. The package is `studio`; the binary is

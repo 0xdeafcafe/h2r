@@ -811,19 +811,19 @@ fn stub_too_big(
     Err(h1convert::Error::TooManySurfaces(70_000))
 }
 
-/// A Halo 2 folder with `beavercreek` (the base) and a Halo 1 disc, with
+/// A Halo 2 folder with `coagulation` (the base) and a Halo 1 disc, with
 /// Blood Gulch on show.
 fn convert_ready(t: &Temp) -> App {
     let mut app = app_with(t);
     let h2 = t.0.join("h2maps");
     std::fs::create_dir_all(&h2).unwrap();
-    std::fs::write(h2.join("beavercreek.map"), fixture::fixture()).unwrap();
+    std::fs::write(h2.join("coagulation.map"), fixture::fixture()).unwrap();
     app.dispatch(Action::OpenSource(h2));
     let iso = t.0.join("halo1.iso");
     std::fs::write(&iso, h1map::testing::campaign_disc()).unwrap();
     app.dispatch(Action::OpenSource(iso));
     app.dispatch(Action::SelectHalo1Map("bloodgulch".into()));
-    assert_eq!(base_for("bloodgulch"), "beavercreek");
+    assert_eq!(base_for("bloodgulch"), "coagulation");
     app
 }
 
@@ -903,7 +903,7 @@ fn converting_needs_the_base_map_from_a_halo2_disc() {
     app.set_converter(stub_ok);
     app.dispatch(Action::ConvertHalo1(ConvertSandbox::Halo2));
     assert!(app.converting().is_none());
-    assert!(app.convert_error().unwrap().contains("beavercreek"));
+    assert!(app.convert_error().unwrap().contains("coagulation"));
 }
 
 /// Blood Gulch and Battle Creek from the owner's Halo 1 disc, converted

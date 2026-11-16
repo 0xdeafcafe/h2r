@@ -164,7 +164,7 @@ detail outliner-filter --pick ascension \
 detail outliner-menu --pick ascension \
   --do 'click Netgame equipment; rclick Netgame equipment@90,32' \
   --crop 'win:###outliner' --crop 'win:##Popup' --crop-height 420
-detail outliner-add --pick ascension --do 'rclick Netgame equipment; hover Add new at the camera focus' \
+detail outliner-add --pick ascension --do 'rclick Netgame equipment' \
   --crop 'win:###outliner' --crop 'win:##Popup' --crop-height 330
 # Delete with nothing selected.
 detail delete-refused --pick ascension --do 'hover Delete' \
@@ -182,18 +182,15 @@ detail inspector-field-help "${asc[@]}" --do 'hover ##NetgameEquipment-respawn t
 near=(--pick ascension --select netgameequipment:0 --focus --camera 40,30,10)
 shot gizmo-move "${near[@]}" --crop 'win:###viewport'
 shot gizmo-rotate "${near[@]}" --do 'click Rotate (E)' --crop 'win:###viewport'
-# A weapon spawn before and after a move of two units.
-shot move-before "${near[@]}" --crop 'win:###viewport'
+# The same weapon spawn after a move of two units (gizmo-move is before).
 shot move-after "${near[@]}" --nudge 2,0,0 --crop 'win:###viewport'
 # Undo in the Edit menu, then the log after it.
 detail undo-menu "${asc[@]}" --nudge 2,0,0 --do 'click Edit; hover Undo' $(menu Edit)
 detail undo-log "${asc[@]}" --nudge 2,0,0 --do 'click Edit; click Undo' \
-  --crop 'win:###log'
+  --crop 'win:###log' --crop-height 100
 # Save as package, and Open package once one is saved.
 detail package-form --pick ascension --dialog package --crop 'win:###save-package'
 detail package-open --pick ascension --do 'click File; click Open package' --crop 'win:###open-package'
-# Save as package.
-shot scenario-package --pick ascension --dialog package
 # Unsaved changes, asked on quit.
 shot unsaved-prompt "${asc[@]}" --dialog unsaved
 # A weapon spawn selected, with the move gizmo.
@@ -216,6 +213,14 @@ if [[ -f "$h1" ]]; then
   # A Halo 1 map, read-only.
   shot halo1-map --halo1 "$h1" --halo1-map bloodgulch --select startinglocations:0 --focus --camera 40,35,40
   detail halo1-banner --halo1 "$h1" --halo1-map bloodgulch --crop 'win:###outliner' --crop-height 260
+  # Blood Gulch converted to Halo 2 (written into the scratch data root),
+  # then the same view with its Halo 1 source over it.
+  shot halo1-converted --halo1 "$h1" --halo1-map bloodgulch --convert h2 --overlay off \
+    --select startinglocations:0 --focus --camera 40,35,40
+  shot halo1-overlay --halo1 "$h1" --package 'h1_bloodgulch#H2' --overlay on \
+    --select startinglocations:0 --focus --camera 40,35,40
+  detail halo1-compare --halo1 "$h1" --package 'h1_bloodgulch#H2' --select startinglocations:0 \
+    --crop 'win:###inspector' --crop-height 120
   # Convert to Halo 2: the controls, a conversion running, and a refusal.
   detail convert-controls --halo1 "$h1" --halo1-map bloodgulch --crop 'win:###inspector' --crop-height 300
   detail convert-running --halo1 "$h1" --halo1-map bloodgulch --do 'click Convert to Halo 2; move 1500,900; sleep 150' \
@@ -233,7 +238,7 @@ detail variants-copy --tool variants --variant 3 --crop 'win:###viewport' --crop
 shot variants-edit --tool variants --variant 3 --copy-variant "Swords Night"
 # Each settings page on its own.
 page() { detail "variants-page-$1" --tool variants --variant "$2" --page "$3" --crop "$3" --crop-height "$4"; }
-page match 3 'Match options' 160
+page match 3 'Match options' 172
 page slayer 3 'Slayer options' 110
 page player 3 'Player options' 300
 page weapons 3 'Weapon options' 270
@@ -242,7 +247,7 @@ page teams 3 'Team options' 260
 page oddball 9 'Oddball options' 270
 page king 14 'King of the Hill options' 220
 page juggernaut 19 'Juggernaut options' 270
-page ctf 21 'Capture the Flag options' 270
+page ctf 21 'Capture the Flag options' 255
 page assault 24 'Assault options' 290
 page territories 28 'Territories options' 170
 # A setting's help on hover.
@@ -266,7 +271,7 @@ detail variants-import --tool variants --variant 3 --do 'click Paste a portable 
 
 detail hopper-list --tool playlists --hopper default --playlist 2 --crop 'win:###outliner'
 shot hopper-playlist --hopper default --playlist 2
-detail hopper-entries --hopper default --playlist 2 --crop 'win:###viewport' --crop-height 330
+detail hopper-entries --hopper default --playlist 2 --crop 'win:###viewport' --crop-height 372
 # The map and variant pickers open.
 detail hopper-map-picker --hopper default --playlist 2 --do 'click ##map#1' \
   --crop 'win:###viewport' --crop 'win:##Combo' --crop-height 300
@@ -280,5 +285,5 @@ detail hopper-preset-panel --hopper default --playlist 1 --preset 0 --crop 'win:
 detail hopper-raw --hopper default --playlist 2 --do 'click Advanced: raw fields; move win:###inspector; wheel -20' \
   --crop 'win:###inspector'
 detail hopper-error --hopper default --playlist 2 --do 'click ##hopper-title; key end; key backspace*40' \
-  --crop 'win:###viewport' --crop-height 360
+  --crop 'win:###viewport' --crop-height 430
 detail hopper-file-menu --tool playlists --hopper default --playlist 2 --do 'click File; hover Save as' $(menu File)

@@ -151,7 +151,13 @@ impl Scene {
             let inside = || self.items.iter().filter(|i| i.window.contains(window));
             let exact = inside().any(|i| i.label == label);
             inside()
-                .filter(|i| if exact { i.label == label } else { i.label.contains(label) })
+                .filter(|i| {
+                    if exact {
+                        i.label == label
+                    } else {
+                        i.label.contains(label)
+                    }
+                })
                 .nth(n)
                 .map(|i| i.rect)
                 .ok_or_else(|| anyhow!("no widget {what:?} drawn"))?
@@ -168,7 +174,12 @@ impl Scene {
         let mut r = [f32::MAX, f32::MAX, f32::MIN, f32::MIN];
         for t in targets {
             let (b, _) = self.find(t)?;
-            r = [r[0].min(b[0]), r[1].min(b[1]), r[2].max(b[2]), r[3].max(b[3])];
+            r = [
+                r[0].min(b[0]),
+                r[1].min(b[1]),
+                r[2].max(b[2]),
+                r[3].max(b[3]),
+            ];
         }
         Ok(r)
     }
@@ -242,9 +253,7 @@ mod tests {
         assert_eq!(s.find("win:inspector").unwrap().0[2], 1400.0);
         assert_eq!(s.find("5,6").unwrap().1, [5.0, 6.0]);
         assert!(s.find("Rotate").is_err());
-        let u = s
-            .union(&["File".into(), "win:inspector".into()])
-            .unwrap();
+        let u = s.union(&["File".into(), "win:inspector".into()]).unwrap();
         assert_eq!(u, [0.0, 0.0, 1400.0, 900.0]);
     }
 

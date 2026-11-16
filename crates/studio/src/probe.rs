@@ -119,7 +119,12 @@ unsafe extern "C" fn item_add(
     });
 }
 
-unsafe extern "C" fn item_info(_ctx: *mut sys::ImGuiContext, id: u32, label: *const c_char, _: i32) {
+unsafe extern "C" fn item_info(
+    _ctx: *mut sys::ImGuiContext,
+    id: u32,
+    label: *const c_char,
+    _: i32,
+) {
     if label.is_null() {
         return;
     }
