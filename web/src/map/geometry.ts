@@ -5,6 +5,7 @@
 import { createEffect, createSignal, type Accessor } from "solid-js";
 import { gameArt } from "../state/gameart";
 import { mapStem, parseViews, viewImageFile, type MapViews } from "./views";
+import { fetchFeatures, type MapFeatures } from "./features";
 
 export interface MapGeometry {
   /** URL of the map's glb, or null when the server has none. */
@@ -46,4 +47,21 @@ export function geometryFor(map: Accessor<string | undefined>): Accessor<MapGeom
     });
   });
   return geo;
+}
+
+const featureCache = new Map<string, Promise<MapFeatures | null>>();
+
+/** A map's teleporters and lifts, read from the head of its glb; null
+ *  until known, and when it has none. */
+export function featuresFor(glb: Accessor<string | null | undefined>): Accessor<MapFeatures | null> {
+  const [features, set] = createSignal<MapFeatures | null>(null);
+  createEffect(() => {
+    const u = glb();
+    set(null);
+    if (!u) return;
+    let p = featureCache.get(u);
+    if (!p) { p = fetchFeatures(u); featureCache.set(u, p); }
+    void p.then((f) => { if (glb() === u) set(f); });
+  });
+  return features;
 }

@@ -59,6 +59,14 @@ export default function Viewer3D(props: Viewer3DProps) {
   // AI-controlled bipeds (campaign) go unnamed unless asked; the button only shows when there are some.
   const [hasActors, setHasActors] = createSignal(false);
   const [actorNames, setActorNames] = createSignal(false);
+  // A campaign level comes in zones, and may have far scenery around it:
+  // the loaded zone is shown, the scenery isn't, unless asked.
+  const [zones, setZones] = createSignal({ zones: 0, backdrop: false });
+  const [allZones, setAllZones] = createSignal(false);
+  const [backdrop, setBackdrop] = createSignal(false);
+  // Teleporters, their links and lifts, when the level's glb lists any.
+  const [hasFeatures, setHasFeatures] = createSignal(false);
+  const [features, setFeatures] = createSignal(true);
   const [mapState, setMapState] = createSignal<"loading" | "map" | "grid">("grid");
   // The server's art manifest takes a moment: only say "no geometry" once it has had one.
   const [late, setLate] = createSignal(false);
@@ -125,7 +133,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       if (props.glb() !== url) return;
       setMapState(ok ? "map" : "grid");
       // The map's own heights are the cut's range now.
-      if (scene) { setRange(scene.cutRange()); applyCut(); }
+      if (scene) { setRange(scene.cutRange()); applyCut(); setZones(scene.zoneInfo()); scene.setAllZones(allZones()); scene.setBackdrop(backdrop()); setHasFeatures(scene.hasFeatures()); scene.setFeatures(features()); }
     });
   }));
 
@@ -151,6 +159,15 @@ export default function Viewer3D(props: Viewer3DProps) {
           <button classList={{ on: cut() }} aria-pressed={cut()} onClick={toggleCut} title="Height cut: hide the level above a height, to look into rooms from above. Following a player, it stays just over their head. Keys: c, [ and ]">Cut</button>
           <Show when={hasActors()}>
             <button classList={{ on: actorNames() }} aria-pressed={actorNames()} onClick={() => { setActorNames(!actorNames()); scene?.setActorNames(actorNames()); }} title="Name the AI by what they are">AI names</button>
+          </Show>
+          <Show when={zones().zones > 1}>
+            <button classList={{ on: allZones() }} aria-pressed={allZones()} onClick={() => { setAllZones(!allZones()); scene?.setAllZones(allZones()); }} title="This level is in zones and the game loads one at a time: show them all, instead of the one in play">All zones</button>
+          </Show>
+          <Show when={zones().backdrop}>
+            <button classList={{ on: backdrop() }} aria-pressed={backdrop()} onClick={() => { setBackdrop(!backdrop()); scene?.setBackdrop(backdrop()); }} title="The far scenery around the playable space">Backdrop</button>
+          </Show>
+          <Show when={hasFeatures()}>
+            <button classList={{ on: features() }} aria-pressed={features()} onClick={() => { setFeatures(!features()); scene?.setFeatures(features()); }} title="Teleporters with their links, and gravity lifts">Lifts &amp; teleporters</button>
           </Show>
           <Show when={cut()}>
             <input

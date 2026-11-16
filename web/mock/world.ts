@@ -111,6 +111,9 @@ export class World {
   readonly files = new Map<string, { bytes: Uint8Array<ArrayBuffer>; sha256: string }>();
   readonly listeners = new Set<Listener>();
   readonly frameHooks: FrameHook[] = [];
+  /** Run on the copy of a frame recorded once a second, after `frameHooks`
+   *  ran on the live one: what a second's worth of live frames add up to. */
+  readonly recordHooks: FrameHook[] = [];
 
   constructor() {
     // Every world starts the shared random sequence afresh, so one world's
@@ -347,6 +350,7 @@ export class World {
         const { shots: _, ...rest } = p;
         return shots ? { ...rest, shots } : rest;
       }) };
+      for (const hook of this.recordHooks) hook(kept, g);
       g.frames.push(kept);
       this.append(`game-${g.id}`, [{ type: "GameFrame", data: { ...kept, source: `acct:${g.host.xuid}@${HOST}` } }], null);
     }

@@ -251,7 +251,7 @@ fn biped_source() -> Source {
 fn biped_nodes_follow_the_pose_and_the_feet_go_to_the_origin() {
     let src = biped_source();
     let (names, pose) = pose_of(&[("arm", Some(yaw(90.0)))]);
-    let model = biped(&src, &names, &pose).unwrap();
+    let model = biped(&src, &names, &pose, &[]).unwrap();
     let (lo, hi) = model.bounds().unwrap();
     assert!(lo[2].abs() < 1e-6, "feet at z = 0");
     assert!((model.extras["height"].as_f64().unwrap() as f32 - (hi[2] - lo[2])).abs() < 1e-6);
@@ -268,14 +268,14 @@ fn biped_nodes_follow_the_pose_and_the_feet_go_to_the_origin() {
     let mut no_marker = src.clone();
     no_marker.markers.retain(|m| m.name != "right_hand");
     no_marker.bones[2].name = "r_hand".into();
-    let m = biped(&no_marker, &names, &pose).unwrap();
+    let m = biped(&no_marker, &names, &pose, &[]).unwrap();
     let w = m.nodes.iter().find(|(k, _)| k == "weapon").unwrap().1;
     assert!(close(&w[3][..3], &[1.0, 1.0, 0.5]), "{:?}", w[3]);
     // A creature with no hand at all holds its weapon at the root; with no
     // head marker or node the head is the top of the mesh.
     no_marker.bones[2].name = "something".into();
     no_marker.markers.clear();
-    let m = biped(&no_marker, &names, &pose).unwrap();
+    let m = biped(&no_marker, &names, &pose, &[]).unwrap();
     let node = |n: &str| m.nodes.iter().find(|(k, _)| k == n).unwrap().1;
     assert!(
         close(&node("weapon")[3][..3], &[0.0, 0.0, 0.5]),
@@ -289,7 +289,7 @@ fn biped_nodes_follow_the_pose_and_the_feet_go_to_the_origin() {
     ));
     // A bone with `hand` in its name is the next best.
     no_marker.bones[1].name = "l_hand".into();
-    let m = biped(&no_marker, &names, &pose).unwrap();
+    let m = biped(&no_marker, &names, &pose, &[]).unwrap();
     let w = m.nodes.iter().find(|(k, _)| k == "weapon").unwrap().1;
     assert!(close(&w[3][..3], &[1.0, 0.0, 0.5]), "{:?}", w[3]);
     assert!(
@@ -299,7 +299,8 @@ fn biped_nodes_follow_the_pose_and_the_feet_go_to_the_origin() {
                 ..src
             },
             &names,
-            &pose
+            &pose,
+            &[]
         )
         .is_err()
     );
@@ -354,7 +355,7 @@ fn floats(doc: &Value, bin: &[u8], accessor: &Value) -> Vec<f32> {
 fn biped_glb_reads_back_with_nodes_colours_and_texture() {
     let src = biped_source();
     let (names, pose) = pose_of(&[("arm", Some(yaw(90.0)))]);
-    let model = biped(&src, &names, &pose).unwrap();
+    let model = biped(&src, &names, &pose, &[]).unwrap();
     let glb = write_glb(&model);
 
     let parsed = gltf::Gltf::from_slice(&glb).expect("valid glTF");
@@ -402,19 +403,23 @@ fn biped_glb_reads_back_with_nodes_colours_and_texture() {
     assert!(min_y.abs() < 1e-6);
     let colours = floats(&doc, &bin, &attrs["COLOR_0"]);
     assert!(close(&colours[..4], &[1.0, 0.0, 0.0, 1.0]));
-    // The weapon node: game (1, 1.5, 0.5) is glTF (1, 0.5, -1.5), and its
-    // 180-degree yaw is a half turn about glTF +y.
-    let weapon = doc["nodes"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|n| n["name"] == "weapon")
-        .unwrap();
-    let t: Vec<f32> = serde_json::from_value(weapon["translation"].clone()).unwrap();
-    assert!(close(&t, &[1.0, 0.5, -1.5]), "{t:?}");
-    let r: Vec<f32> = serde_json::from_value(weapon["rotation"].clone()).unwrap();
+    // The weapon node rides on the forearm (its marker's node); in the
+    // scene it is where it was: game (1, 1.5, 0.5) is glTF (1, 0.5, -1.5),
+    // and its 180-degree yaw is a half turn about glTF +y.
+    let nodes = doc["nodes"].as_array().unwrap();
+    let at = |name: &str| nodes.iter().position(|n| n["name"] == name).unwrap();
+    let forearm = &nodes[at("joint_forearm")];
     assert!(
-        close(&r, &[0.0, 1.0, 0.0, 0.0]) || close(&r, &[0.0, -1.0, 0.0, 0.0]),
+        forearm["children"]
+            .as_array()
+            .unwrap()
+            .contains(&json!(at("weapon")))
+    );
+    let drawn = read_drawn(&glb);
+    let (_, t, r) = drawn.nodes.iter().find(|n| n.0 == "weapon").unwrap();
+    assert!(close(t, &[1.0, 0.5, -1.5]), "{t:?}");
+    assert!(
+        close(r, &[0.0, 1.0, 0.0, 0.0]) || close(r, &[0.0, -1.0, 0.0, 0.0]),
         "{r:?}"
     );
 }
@@ -485,7 +490,7 @@ fn manifest_models_object_matches_the_contract() {
     assert_eq!(
         serde_json::to_value(&m).unwrap(),
         json!({
-            "version": 1,
+            "version": 2,
             "bipeds": {
                 "elite": {"glb": "models/biped/elite.glb"},
                 "spartan": {"glb": "models/biped/spartan.glb"}
@@ -500,10 +505,312 @@ fn manifest_models_object_matches_the_contract() {
         v["vehicles"],
         json!({"warthog": {"glb": "models/vehicle/warthog.glb"}})
     );
-    // An older manifest without vehicles still reads.
-    let old: ModelsEntry =
-        serde_json::from_value(json!({"version": 1, "bipeds": {}, "weapons": {}})).unwrap();
+    // An older manifest without vehicles, clips or classes still reads.
+    let old: ModelsEntry = serde_json::from_value(json!({
+        "version": 1,
+        "bipeds": {"spartan": {"glb": "models/biped/spartan.glb"}},
+        "weapons": {}
+    }))
+    .unwrap();
     assert!(old.vehicles.is_empty());
+    assert!(old.bipeds["spartan"].clips.is_empty());
+}
+
+/// The arm turned `deg` about +z, as a sampled frame.
+fn arm_frame(deg: f32) -> Pose {
+    pose_of(&[("arm", Some(yaw(deg)))]).1
+}
+
+fn run_clip(overlay: bool) -> ClipPoses {
+    ClipPoses {
+        name: "rifle:run".into(),
+        fps: ANIMATION_FPS,
+        graph_names: vec!["arm".into()],
+        poses: vec![arm_frame(0.0), arm_frame(45.0), arm_frame(90.0)],
+        overlay,
+    }
+}
+
+#[test]
+fn skinned_biped_reads_back_with_a_skin_joints_and_clips() {
+    let src = biped_source();
+    let (names, pose) = pose_of(&[("arm", Some(yaw(30.0)))]);
+    let model = biped(&src, &names, &pose, &[run_clip(false)]).unwrap();
+    let glb = write_glb(&model);
+    let g = gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let skin = g.skins().next().expect("a skin");
+    let joints: Vec<String> = skin
+        .joints()
+        .map(|j| j.name().unwrap().to_owned())
+        .collect();
+    assert_eq!(joints, ["joint_pelvis", "joint_arm", "joint_forearm"]);
+    let ibm = skin.inverse_bind_matrices().unwrap();
+    assert_eq!(ibm.count(), 3);
+    assert_eq!(ibm.data_type(), gltf::accessor::DataType::F32);
+    // The tree: forearm under arm under pelvis under the root.
+    let arm = skin.joints().nth(1).unwrap();
+    assert_eq!(
+        arm.children().map(|c| c.name().unwrap().to_owned()).next(),
+        Some("joint_forearm".to_owned())
+    );
+    let body = g.nodes().find(|n| n.name() == Some("body")).unwrap();
+    assert_eq!(body.skin().map(|s| s.index()), Some(0));
+    for prim in g.meshes().next().unwrap().primitives() {
+        let semantics: Vec<_> = prim.attributes().collect();
+        let joints0 = semantics
+            .iter()
+            .find(|(s, _)| *s == gltf::Semantic::Joints(0))
+            .expect("JOINTS_0");
+        assert_eq!(joints0.1.data_type(), gltf::accessor::DataType::U16);
+        assert!(
+            semantics
+                .iter()
+                .any(|(s, _)| *s == gltf::Semantic::Weights(0))
+        );
+    }
+    // Weights sum to one; joints are in range.
+    let (doc, bin) = parse_glb(&glb);
+    let attrs = &doc["meshes"][0]["primitives"][0]["attributes"];
+    let w = accessor_values(&doc, &bin, attrs["WEIGHTS_0"].as_u64().unwrap());
+    let j = accessor_values(&doc, &bin, attrs["JOINTS_0"].as_u64().unwrap());
+    for v in w.chunks(4) {
+        assert!((v.iter().sum::<f32>() - 1.0).abs() < 1e-5, "{v:?}");
+    }
+    assert!(j.iter().all(|&k| k < 3.0));
+    // The bind matrices undo each joint's default frame.
+    let ibm = accessor_values(
+        &doc,
+        &bin,
+        doc["skins"][0]["inverseBindMatrices"].as_u64().unwrap(),
+    );
+    let world = node_worlds(&doc, &node_locals(&doc, &bin, None));
+    for (k, jn) in doc["skins"][0]["joints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+    {
+        let m: Mat4 = std::array::from_fn(|c| std::array::from_fn(|r| ibm[k * 16 + c * 4 + r]));
+        let id = mat_mul(&world[jn.as_u64().unwrap() as usize], &m);
+        for c in 0..4 {
+            assert!(close(&id[c], &IDENTITY[c]), "{id:?}");
+        }
+    }
+    // One clip, its channels on the joints, rotations as normalised shorts.
+    let anims: Vec<_> = g.animations().collect();
+    assert_eq!(anims.len(), 1);
+    assert_eq!(anims[0].name(), Some("rifle:run"));
+    let joint_nodes: Vec<usize> = skin.joints().map(|j| j.index()).collect();
+    for c in anims[0].channels() {
+        assert!(joint_nodes.contains(&c.target().node().index()));
+        if c.target().property() == gltf::animation::Property::Rotation {
+            assert_eq!(
+                c.sampler().output().data_type(),
+                gltf::accessor::DataType::I16
+            );
+            assert!(c.sampler().output().normalized());
+        }
+    }
+    // The arm moves (three keys at 30 fps); the pelvis never does (one key).
+    let input_of = |node: &str, path: gltf::animation::Property| {
+        anims[0]
+            .channels()
+            .find(|c| c.target().node().name() == Some(node) && c.target().property() == path)
+            .unwrap()
+            .sampler()
+            .input()
+    };
+    let arm_in = input_of("joint_arm", gltf::animation::Property::Rotation);
+    assert_eq!(arm_in.count(), 3);
+    let end = arm_in.max().unwrap()[0].as_f64().unwrap() as f32;
+    assert!((end - 2.0 / 30.0).abs() < 1e-6, "{end}");
+    assert_eq!(
+        input_of("joint_pelvis", gltf::animation::Property::Rotation).count(),
+        1
+    );
+    // The manifest lists the clip.
+    let dir = std::env::temp_dir().join(format!("h2-models-anim-{}", std::process::id()));
+    let w = write_models(vec![(Kind::Biped, "spartan".into(), Ok(model))], &dir);
+    let _ = fs::remove_dir_all(&dir);
+    assert_eq!(w.entry.unwrap().bipeds["spartan"].clips, ["rifle:run"]);
+}
+
+#[test]
+fn clip_keys_are_the_sampled_frames_and_play_like_a_baked_pose() {
+    let src = biped_source();
+    let (names, pose) = pose_of(&[("arm", Some(yaw(30.0)))]);
+    let model = biped(&src, &names, &pose, &[run_clip(false)]).unwrap();
+    let glb = write_glb(&model);
+    let (doc, bin) = parse_glb(&glb);
+    let nodes = doc["nodes"].as_array().unwrap();
+    let arm = nodes.iter().position(|n| n["name"] == "joint_arm").unwrap();
+    let lift = -pose_mesh(&src, &posed_world(&src.bones, &names, &pose))
+        .iter()
+        .flat_map(|p| p.positions.iter().map(|v| v[2]))
+        .fold(f32::INFINITY, f32::min);
+    for (f, deg) in [(0, 0.0f32), (1, 45.0), (2, 90.0)] {
+        // The key, back in game axes, is the frame's rotation.
+        let locals = node_locals(&doc, &bin, Some(("rifle:run", f)));
+        let game = mat_mul(&mat_mul(&invert_rigid(&AXES), &locals[arm]), &AXES);
+        let q = quat_from_axes(
+            [game[0][0], game[0][1], game[0][2]],
+            [game[1][0], game[1][1], game[1][2]],
+            [game[2][0], game[2][1], game[2][2]],
+        );
+        let want = yaw(deg);
+        let d: f32 = (0..4).map(|k| q[k] * want[k]).sum();
+        assert!(1.0 - d.abs() < 1e-4, "frame {f}: {q:?} vs {want:?}");
+        // Skinning the stored mesh to the frame gives the mesh baked in
+        // that frame (on the default pose's floor).
+        let played = read_drawn_at(&glb, Some(("rifle:run", f)));
+        let frame = arm_frame(deg);
+        let baked = pose_mesh(&src, &posed_world(&src.bones, &["arm".into()], &frame));
+        let mut want: Vec<[f32; 3]> = baked[0]
+            .positions
+            .iter()
+            .map(|p| to_gltf([p[0], p[1], p[2] + lift]))
+            .collect();
+        let mut got: Vec<[f32; 3]> = played.tris.iter().flat_map(|t| t.map(|v| v.0)).collect();
+        // Triangles are drawn in index order; compare as sets of points.
+        let key = |p: &[f32; 3]| p.map(|c| (c * 1000.0).round() as i64);
+        want.sort_by_key(key);
+        want.dedup_by_key(|p| key(p));
+        got.sort_by_key(key);
+        got.dedup_by_key(|p| key(p));
+        assert_eq!(want.len(), got.len());
+        for (a, b) in want.iter().zip(&got) {
+            assert!(close(a, b), "frame {f}: {a:?} vs {b:?}");
+        }
+    }
+}
+
+#[test]
+fn overlays_add_their_change_and_missing_channels_keep_the_default_pose() {
+    let bones = skeleton();
+    let base = vec![
+        ([0.0, 0.0, 0.0], yaw(0.0)),
+        ([1.0, 0.0, 0.0], yaw(30.0)),
+        ([1.0, 0.0, 0.0], yaw(-20.0)),
+    ];
+    let names = vec!["arm".to_owned()];
+    // A replacement frame: the arm takes the frame's own; the forearm (not
+    // in the graph) keeps the default pose's -20, not its rest 0.
+    let l = clip_locals(&bones, &names, &arm_frame(25.0), &base, None);
+    assert!(close(
+        &l[1][0][..3],
+        &trs(base[1].0, yaw(25.0), 1.0)[0][..3]
+    ));
+    assert!(close(
+        &l[2][0][..3],
+        &trs(base[2].0, yaw(-20.0), 1.0)[0][..3]
+    ));
+    // An overlay: its change since its first frame (10 -> 25) goes on top
+    // of the default 30.
+    let first = arm_frame(10.0);
+    let l = clip_locals(&bones, &names, &arm_frame(25.0), &base, Some(&first));
+    assert!(
+        close(&l[1][0][..3], &trs(base[1].0, yaw(45.0), 1.0)[0][..3]),
+        "{:?}",
+        l[1]
+    );
+    // Translation: added likewise.
+    let mut moved = arm_frame(10.0);
+    moved.nodes[0].translation = [0.5, 0.0, 0.0];
+    moved.nodes[0].has_translation = true;
+    let mut first_t = first.clone();
+    first_t.nodes[0].translation = [0.25, 0.0, 0.0];
+    first_t.nodes[0].has_translation = true;
+    let l = clip_locals(&bones, &names, &moved, &base, Some(&first_t));
+    assert!(close(&l[1][3][..3], &[1.25, 0.0, 0.0]), "{:?}", l[1][3]);
+}
+
+#[test]
+fn clips_are_planned_from_actions_and_animation_names() {
+    let st =
+        |m: &str, c: &str, t: &str, a: &str| -> Stance { [m.into(), c.into(), t.into(), a.into()] };
+    let stances = vec![
+        st("combat", "rifle", "any", "idle"),
+        st("combat", "rifle", "any", "move_front"),
+        st("crouch", "rifle", "any", "idle"),
+        st("combat", "rifle", "pr", "idle"),
+        st("combat", "any", "any", "landing_dead"),
+        st("combat", "unarmed", "any", "idle"),
+        st("combat", "dual", "any", "idle"),
+    ];
+    let names: Vec<String> = [
+        "combat:rifle:throw_grenade:var0",
+        "combat:rifle:sg:melee_strike_1",
+        "combat:rifle:br:melee_strike_1",
+        "combat:rifle:sg:reload_1",
+        "combat:rifle:cb:reload_1",
+        "combat:rifle:br:fire_1",
+        "combat:rifle:ready",
+        "combat:rifle:aim_still_up",
+        "combat:pistol:hp:fire_1:var1",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    let plan = plan_clips(&stances, &names);
+    let got: Vec<(&str, ClipFrom)> = plan.iter().map(|(n, f)| (n.as_str(), *f)).collect();
+    assert_eq!(
+        got,
+        [
+            ("rifle:idle", ClipFrom::Action(0)),
+            ("rifle:run", ClipFrom::Action(1)),
+            ("rifle:crouch", ClipFrom::Action(2)),
+            // `:var0` counts; the battle rifle's melee beats the shotgun's;
+            // a reload only per type goes to the first type by name.
+            ("rifle:grenade", ClipFrom::Animation(0)),
+            ("rifle:melee", ClipFrom::Animation(2)),
+            ("rifle:reload", ClipFrom::Animation(4)),
+            ("rifle:fire", ClipFrom::Animation(5)),
+            ("rifle:switch", ClipFrom::Animation(6)),
+            ("rifle:die", ClipFrom::Action(4)),
+            ("pistol:fire", ClipFrom::Animation(8)),
+            ("pistol:die", ClipFrom::Action(4)),
+            ("missile:die", ClipFrom::Action(4)),
+            ("support:die", ClipFrom::Action(4)),
+            ("sword:die", ClipFrom::Action(4)),
+            ("unarmed:idle", ClipFrom::Action(5)),
+            ("unarmed:die", ClipFrom::Action(4)),
+            ("flag:die", ClipFrom::Action(4)),
+            ("ball:die", ClipFrom::Action(4)),
+        ]
+    );
+    // No dual clips.
+    assert!(plan.iter().all(|(n, _)| clip_class(n) != "dual"));
+}
+
+#[test]
+fn weapons_name_their_class_and_v1_readers_still_find_their_nodes() {
+    let src = biped_source();
+    let mut w = weapon(&src).unwrap();
+    w.class = Some("rifle".into());
+    assert!(w.skeleton.is_none());
+    let (names, pose) = pose_of(&[("arm", Some(yaw(90.0)))]);
+    let animated = biped(&src, &names, &pose, &[run_clip(false)]).unwrap();
+    let still = biped(&src, &names, &pose, &[]).unwrap();
+    // The stored mesh is the posed one whether or not it is animated, so a
+    // reader that ignores the skin draws the same model.
+    assert_eq!(
+        animated.primitives[0].positions,
+        still.primitives[0].positions
+    );
+    let a = read_drawn(&write_glb(&animated));
+    let b = read_drawn(&write_glb(&still));
+    for n in ["weapon", "head"] {
+        let find = |d: &Drawn| d.nodes.iter().find(|k| k.0 == n).unwrap().clone();
+        assert!(close(&find(&a).1, &find(&b).1), "{n}");
+    }
+    let dir = std::env::temp_dir().join(format!("h2-models-class-{}", std::process::id()));
+    let written = write_models(vec![(Kind::Weapon, "battle_rifle".into(), Ok(w))], &dir);
+    let _ = fs::remove_dir_all(&dir);
+    let entry = written.entry.unwrap();
+    assert_eq!(
+        serde_json::to_value(&entry.weapons["battle_rifle"]).unwrap(),
+        json!({"glb": "models/weapon/battle_rifle.glb", "class": "rifle"})
+    );
 }
 
 #[test]
@@ -678,7 +985,7 @@ fn write_models_skips_failures_and_lists_what_it_wrote() {
         (
             Kind::Biped,
             "spartan".to_string(),
-            biped(&src, &names, &pose),
+            biped(&src, &names, &pose, &[]),
         ),
         (
             Kind::Biped,
@@ -744,7 +1051,127 @@ fn decode_png(bytes: &[u8]) -> Option<Image> {
 }
 
 fn read_drawn(glb: &[u8]) -> Drawn {
+    read_drawn_at(glb, None)
+}
+
+fn trs_matrix(t: [f32; 3], r: [f32; 4]) -> Mat4 {
+    NodeTransform {
+        rotation: r,
+        translation: t,
+        scale: 1.0,
+        ..NodeTransform::default()
+    }
+    .matrix()
+}
+
+/// An accessor's values as floats: f32 as is, i16 normalised, u16 as
+/// integers.
+fn accessor_values(doc: &Value, bin: &[u8], index: u64) -> Vec<f32> {
+    let a = &doc["accessors"][index as usize];
+    let v = &doc["bufferViews"][a["bufferView"].as_u64().unwrap() as usize];
+    let off = v["byteOffset"].as_u64().unwrap() as usize;
+    let len = v["byteLength"].as_u64().unwrap() as usize;
+    let bytes = &bin[off..off + len];
+    match a["componentType"].as_u64().unwrap() {
+        5126 => bytes
+            .chunks(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect(),
+        5122 => bytes
+            .chunks(2)
+            .map(|c| (i16::from_le_bytes(c.try_into().unwrap()) as f32 / 32767.0).max(-1.0))
+            .collect(),
+        5123 => bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes(c.try_into().unwrap()) as f32)
+            .collect(),
+        t => panic!("component type {t}"),
+    }
+}
+
+/// Every node's local matrix, with the joints of animation `clip` set to
+/// its key `frame` (its only key for a still channel).
+fn node_locals(doc: &Value, bin: &[u8], clip: Option<(&str, usize)>) -> Vec<Mat4> {
+    let nodes = doc["nodes"].as_array().unwrap();
+    let mut trs: Vec<([f32; 3], [f32; 4])> = nodes
+        .iter()
+        .map(|n| {
+            (
+                n.get("translation")
+                    .map_or([0.0; 3], |v| serde_json::from_value(v.clone()).unwrap()),
+                n.get("rotation").map_or([0.0, 0.0, 0.0, 1.0], |v| {
+                    serde_json::from_value(v.clone()).unwrap()
+                }),
+            )
+        })
+        .collect();
+    if let Some((name, frame)) = clip {
+        let anim = doc["animations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == name)
+            .unwrap_or_else(|| panic!("no clip {name}"));
+        for ch in anim["channels"].as_array().unwrap() {
+            let sampler = &anim["samplers"][ch["sampler"].as_u64().unwrap() as usize];
+            let out = accessor_values(doc, bin, sampler["output"].as_u64().unwrap());
+            let keys = doc["accessors"][sampler["input"].as_u64().unwrap() as usize]["count"]
+                .as_u64()
+                .unwrap() as usize;
+            let k = frame.min(keys - 1);
+            let node = ch["target"]["node"].as_u64().unwrap() as usize;
+            match ch["target"]["path"].as_str().unwrap() {
+                "rotation" => {
+                    let q: [f32; 4] = out[k * 4..k * 4 + 4].try_into().unwrap();
+                    let l = q.iter().map(|v| v * v).sum::<f32>().sqrt();
+                    trs[node].1 = q.map(|v| v / l);
+                }
+                "translation" => trs[node].0 = out[k * 3..k * 3 + 3].try_into().unwrap(),
+                p => panic!("path {p}"),
+            }
+        }
+    }
+    trs.into_iter().map(|(t, r)| trs_matrix(t, r)).collect()
+}
+
+/// World matrices of every node of the scene.
+fn node_worlds(doc: &Value, locals: &[Mat4]) -> Vec<Mat4> {
+    let nodes = doc["nodes"].as_array().unwrap();
+    let mut world = vec![IDENTITY; nodes.len()];
+    let mut stack: Vec<(usize, Mat4)> = doc["scenes"][0]["nodes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| (n.as_u64().unwrap() as usize, IDENTITY))
+        .collect();
+    while let Some((i, parent)) = stack.pop() {
+        world[i] = mat_mul(&parent, &locals[i]);
+        for c in nodes[i]["children"].as_array().into_iter().flatten() {
+            stack.push((c.as_u64().unwrap() as usize, world[i]));
+        }
+    }
+    world
+}
+
+/// The glb's triangles, skinned to animation `clip` at key `frame` when
+/// given (else drawn as stored, which the default pose must equal).
+fn read_drawn_at(glb: &[u8], clip: Option<(&str, usize)>) -> Drawn {
     let (doc, bin) = parse_glb(glb);
+    let world = node_worlds(&doc, &node_locals(&doc, &bin, clip));
+    let skin: Option<Vec<Mat4>> = doc["skins"].get(0).map(|s| {
+        let ibm = accessor_values(&doc, &bin, s["inverseBindMatrices"].as_u64().unwrap());
+        s["joints"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .enumerate()
+            .map(|(k, j)| {
+                let m: Mat4 =
+                    std::array::from_fn(|c| std::array::from_fn(|r| ibm[k * 16 + c * 4 + r]));
+                mat_mul(&world[j.as_u64().unwrap() as usize], &m)
+            })
+            .collect()
+    });
     let view_bytes = |v: u64| {
         let v = &doc["bufferViews"][v as usize];
         let o = v["byteOffset"].as_u64().unwrap() as usize;
@@ -787,6 +1214,28 @@ fn read_drawn(glb: &[u8]) -> Drawn {
         let nrm = get("NORMAL").unwrap();
         let uv = get("TEXCOORD_0").unwrap_or_default();
         let col = get("COLOR_0").unwrap_or_default();
+        let (pos, nrm) = match (&skin, a.get("JOINTS_0"), a.get("WEIGHTS_0")) {
+            (Some(skin), Some(j), Some(w)) => {
+                let j = accessor_values(&doc, &bin, j.as_u64().unwrap());
+                let w = accessor_values(&doc, &bin, w.as_u64().unwrap());
+                let mut p2 = vec![0.0; pos.len()];
+                let mut n2 = vec![0.0; nrm.len()];
+                for v in 0..pos.len() / 3 {
+                    for k in 0..4 {
+                        let m = &skin[j[v * 4 + k] as usize];
+                        let wt = w[v * 4 + k];
+                        let p = transform_point(m, [pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]]);
+                        let n = transform_vector(m, [nrm[v * 3], nrm[v * 3 + 1], nrm[v * 3 + 2]]);
+                        for c in 0..3 {
+                            p2[v * 3 + c] += wt * p[c];
+                            n2[v * 3 + c] += wt * n[c];
+                        }
+                    }
+                }
+                (p2, n2)
+            }
+            _ => (pos, nrm),
+        };
         let ia = &doc["accessors"][p["indices"].as_u64().unwrap() as usize];
         let v = &doc["bufferViews"][ia["bufferView"].as_u64().unwrap() as usize];
         let o = v["byteOffset"].as_u64().unwrap() as usize;
@@ -816,12 +1265,18 @@ fn read_drawn(glb: &[u8]) -> Drawn {
                 .push(p["material"].as_u64().map(|m| m as usize));
         }
     }
-    for n in doc["nodes"].as_array().unwrap() {
-        if let (Some(t), Some(r)) = (n.get("translation"), n.get("rotation")) {
+    // Empty nodes (and joints) where they are in the scene.
+    for (n, w) in doc["nodes"].as_array().unwrap().iter().zip(&world) {
+        if n.get("mesh").is_none() && n.get("translation").is_some() {
+            let q = quat_from_axes(
+                [w[0][0], w[0][1], w[0][2]],
+                [w[1][0], w[1][1], w[1][2]],
+                [w[2][0], w[2][1], w[2][2]],
+            );
             d.nodes.push((
                 n["name"].as_str().unwrap().to_owned(),
-                serde_json::from_value(t.clone()).unwrap(),
-                serde_json::from_value(r.clone()).unwrap(),
+                [w[3][0], w[3][1], w[3][2]],
+                q,
             ));
         }
     }
@@ -1120,6 +1575,8 @@ fn models_from_the_disc() {
         }
         write_sheet(&check.join(format!("check-vehicle-{stem}.png")), &items);
     }
+    animation_checks(&disc, &out, &check, &entry, &rifle);
+
     // Every vehicle, side and three-quarter, one small picture each (for a
     // contact sheet).
     let all = check.join("vehicles");
@@ -1144,6 +1601,209 @@ fn models_from_the_disc() {
         assets::png::write_rgba(&mut png, 2 * pw as u32, ph as u32, &sheet).unwrap();
         fs::write(all.join(format!("{stem}.png")), png).unwrap();
     }
+}
+
+/// The disc test's animation part: sizes and clip sets, the spartan's
+/// default pose against its idle clip, its run clip against the sampler,
+/// and frame strips of three clips.
+fn animation_checks(
+    disc: &crate::live_art::Disc,
+    out: &Path,
+    check: &Path,
+    entry: &ModelsEntry,
+    rifle: &Drawn,
+) {
+    let mut report = String::new();
+    for (species, r) in &entry.bipeds {
+        let size = fs::metadata(out.join(&r.glb)).unwrap().len();
+        report += &format!("{species}: {} KiB, {} clips\n", size / 1024, r.clips.len());
+        assert!(size as usize <= MAX_BIPED_GLB, "{species} is {size} bytes");
+    }
+    for (stem, r) in &entry.weapons {
+        report += &format!("weapon {stem}: class {:?}\n", r.class);
+    }
+    assert_eq!(
+        entry.weapons["battle_rifle"].class.as_deref(),
+        Some("rifle")
+    );
+    assert_eq!(
+        entry.weapons["rocket_launcher"].class.as_deref(),
+        Some("missile")
+    );
+    let clips = &entry.bipeds["spartan"].clips;
+    report += &format!("spartan clips: {}\n", clips.join(" "));
+    report += &format!("elite clips: {}\n", entry.bipeds["elite"].clips.join(" "));
+    for c in [
+        "rifle:idle",
+        "rifle:run",
+        "rifle:grenade",
+        "rifle:melee",
+        "pistol:idle",
+    ] {
+        assert!(clips.iter().any(|k| k == c), "spartan lacks {c}");
+    }
+
+    // Read back by the gltf crate: one skin over every joint, bind matrices
+    // for each, and every clip's channels on joints.
+    let glb = fs::read(out.join(&entry.bipeds["spartan"].glb)).unwrap();
+    let g = gltf::Gltf::from_slice(&glb).expect("the gltf crate reads the spartan");
+    let skin = g.skins().next().expect("a skin");
+    let joints: Vec<usize> = skin.joints().map(|j| j.index()).collect();
+    assert_eq!(skin.inverse_bind_matrices().unwrap().count(), joints.len());
+    assert_eq!(g.animations().count(), clips.len());
+    for a in g.animations() {
+        for c in a.channels() {
+            assert!(joints.contains(&c.target().node().index()));
+        }
+    }
+
+    // The default pose is the rifle idle's first frame: playing that frame
+    // moves no vertex.
+    let still = read_drawn(&glb);
+    let idle = read_drawn_at(&glb, Some(("rifle:idle", 0)));
+    let mut worst = 0.0f32;
+    for (a, b) in still.tris.iter().zip(&idle.tris) {
+        for k in 0..3 {
+            for c in 0..3 {
+                worst = worst.max((a[k].0[c] - b[k].0[c]).abs());
+            }
+        }
+    }
+    report += &format!("default pose vs rifle:idle frame 0: worst {worst}\n");
+    assert!(
+        worst < 2e-3,
+        "default pose moves under its own frame: {worst}"
+    );
+
+    // rifle:run against the sampler: every joint's key, back in game axes,
+    // has the rotation (and, below the root, the translation) the clip's
+    // frame gives its node.
+    let m = disc
+        .maps_of(map::CacheType::Multiplayer)
+        .find(|m| m.name() == "ascension")
+        .unwrap();
+    let (mut map, mut files) = disc.open(m).unwrap();
+    let id = map
+        .tags()
+        .iter()
+        .find(|t| {
+            t.group == BIPD
+                && t.name
+                    .as_deref()
+                    .is_some_and(|n| last_component(n) == "masterchief_mp")
+        })
+        .unwrap()
+        .id;
+    let (_, jmad) = object_model(&mut map, id).unwrap();
+    let graph = AnimationGraph::read(&mut map, jmad.unwrap()).unwrap();
+    let strings = map.strings().to_vec();
+    let index = graph
+        .find_animation(&strings, "combat:rifle:move_front")
+        .unwrap();
+    let clip = graph.load_clip(index, &mut Res(&mut files)).unwrap();
+    let names: Vec<String> = graph
+        .nodes
+        .iter()
+        .map(|n| n.name.resolve(&strings).unwrap().unwrap_or("").to_owned())
+        .collect();
+    let (doc, bin) = parse_glb(&glb);
+    let joint_names: Vec<String> = joints
+        .iter()
+        .map(|&j| doc["nodes"][j]["name"].as_str().unwrap()["joint_".len()..].to_owned())
+        .collect();
+    let (mut rot_worst, mut pos_worst, mut compared) = (0.0f32, 0.0f32, 0);
+    for frame in [0, 7, 13, clip.frame_count() - 1] {
+        let pose = clip.sample_frame(frame).unwrap();
+        let locals = node_locals(&doc, &bin, Some(("rifle:run", frame)));
+        for (k, &j) in joints.iter().enumerate() {
+            let Some(slot) = names.iter().position(|n| *n == joint_names[k]) else {
+                continue;
+            };
+            let n = &pose.nodes[slot];
+            // Back to game axes: AXES^-1 * L * AXES.
+            let game = mat_mul(&mat_mul(&invert_rigid(&AXES), &locals[j]), &AXES);
+            if n.has_rotation {
+                let q = quat_from_axes(
+                    [game[0][0], game[0][1], game[0][2]],
+                    [game[1][0], game[1][1], game[1][2]],
+                    [game[2][0], game[2][1], game[2][2]],
+                );
+                let d: f32 = (0..4).map(|c| q[c] * n.rotation[c]).sum();
+                rot_worst = rot_worst.max(1.0 - d.abs());
+                compared += 1;
+            }
+            let root = doc["nodes"][0]["children"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c.as_u64() == Some(j as u64));
+            if n.has_translation && !root {
+                for (g, t) in game[3].iter().zip(n.translation) {
+                    pos_worst = pos_worst.max((g - t).abs());
+                }
+            }
+        }
+    }
+    report += &format!(
+        "rifle:run vs the sampler: {compared} rotations, worst 1-|dot| {rot_worst}, translations worst {pos_worst}\n"
+    );
+    assert!(compared > 0);
+    assert!(rot_worst < 1e-4, "rotations differ: {rot_worst}");
+    assert!(pos_worst < 1e-3, "translations differ: {pos_worst}");
+    print!("{report}");
+    fs::write(check.join("animation.txt"), &report).unwrap();
+
+    // Strips: six frames of each clip, three-quarter view, holding the rifle.
+    let (pw, ph, per) = (200usize, 280usize, 6usize);
+    let rows = ["rifle:run", "rifle:grenade", "rifle:melee"];
+    let mut sheet = vec![0u8; per * pw * rows.len() * ph * 4];
+    for (row, name) in rows.iter().enumerate() {
+        let n = doc["animations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|a| a["name"] == *name)
+            .map(|a| {
+                a["samplers"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|s| {
+                        doc["accessors"][s["input"].as_u64().unwrap() as usize]["count"]
+                            .as_u64()
+                            .unwrap()
+                    })
+                    .max()
+                    .unwrap() as usize
+            })
+            .unwrap();
+        for k in 0..per {
+            let frame = k * (n - 1) / (per - 1);
+            let body = read_drawn_at(&glb, Some((name, frame)));
+            let hand = body
+                .nodes
+                .iter()
+                .find(|(k, ..)| k == "weapon")
+                .map(|(_, t, q)| (*t, *q));
+            let items = [(&body, None), (rifle, hand)];
+            let p = picture(&items, 2, Paint::Texture, pw, ph);
+            for y in 0..ph {
+                let dst = ((row * ph + y) * per * pw + k * pw) * 4;
+                sheet[dst..dst + pw * 4].copy_from_slice(&p[y * pw * 4..(y + 1) * pw * 4]);
+            }
+        }
+    }
+    let mut png = Vec::new();
+    assets::png::write_rgba(
+        &mut png,
+        (per * pw) as u32,
+        (rows.len() * ph) as u32,
+        &sheet,
+    )
+    .unwrap();
+    let path = check.join("strip-spartan.png");
+    fs::write(&path, png).unwrap();
+    println!("wrote {}", path.display());
 }
 
 fn write_sheet(path: &Path, items: &[Placed<'_>]) {
@@ -1194,7 +1854,7 @@ fn the_pose_prefers_the_rifle_idle_then_any_idle() {
     assert_eq!(pick_idle(&odd[..1]), None);
     // No frame at all: the rest pose.
     let src = biped_source();
-    let rest = biped(&src, &[], &Pose { nodes: vec![] }).unwrap();
+    let rest = biped(&src, &[], &Pose { nodes: vec![] }, &[]).unwrap();
     assert_eq!(rest.primitives[0].positions.len(), 4);
 }
 

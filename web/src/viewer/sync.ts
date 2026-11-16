@@ -4,7 +4,7 @@
 // view lays over sampled player positions. Pure, so it can be tested.
 
 import type { ReplayClock } from "../state/replay";
-import { aimOf, lerpAngle, nlerpAim, SNAP_DISTANCE, TICKS_PER_SECOND, type Aim, type SampledPlayer, type SampledVehicle } from "../state/frames";
+import { aimOf, lerpAngle, nlerpAim, SNAP_DISTANCE, TICKS_PER_SECOND, type Aim, type SampledPlayer, type Stance } from "../state/frames";
 
 /** A replay clock's state at one moment, as it travels between windows. */
 export interface ClockState {
@@ -62,6 +62,9 @@ export interface SmoothPlayer {
   vehicle: string | null;
   /** Set for an AI-controlled biped: its id and side. */
   actor: { id: string; team: string | null } | null;
+  /** How they are moving and how fast, when the frame says. */
+  stance: Stance | null;
+  speed: number | null;
 }
 
 /** Eases shown players towards the sampled ones. Sampling already blends
@@ -80,7 +83,8 @@ export function smoothPlayers(
     const s = shown.get(p.index);
     const aim = aimOf(p), species = p.species ?? null, weapon = p.weapon ?? null;
     const vehicle = p.vehicle ?? null, actor = p.actor ?? null;
-    if (!s) { shown.set(p.index, { x: p.x, y: p.y, z: p.z, yaw: p.yaw, alive: p.alive, aim, species, weapon, vehicle, actor }); continue; }
+    const stance = p.stance ?? null, speed = p.speed ?? null;
+    if (!s) { shown.set(p.index, { x: p.x, y: p.y, z: p.z, yaw: p.yaw, alive: p.alive, aim, species, weapon, vehicle, actor, stance, speed }); continue; }
     const far = (p.x - s.x) ** 2 + (p.y - s.y) ** 2 + (p.z - s.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE;
     const k = far || !s.alive || !p.alive ? 1 : t;
     s.x += (p.x - s.x) * k;
@@ -93,6 +97,8 @@ export function smoothPlayers(
     s.weapon = weapon;
     s.vehicle = vehicle;
     s.actor = actor;
+    s.stance = stance;
+    s.speed = speed;
   }
   for (const index of shown.keys()) if (!seen.has(index)) shown.delete(index);
 }
@@ -100,8 +106,8 @@ export function smoothPlayers(
 /** Eases shown vehicles towards the sampled ones, the way players are:
  *  place and both axes glide, a big jump or `snap` moves at once, and a
  *  vehicle no longer sampled (everyone got out) is dropped. */
-export function smoothVehicles(
-  shown: Map<string, SampledVehicle>, sampled: readonly SampledVehicle[], dtMs: number,
+export function smoothVehicles<T extends { id: string; x: number; y: number; z: number; forward: Aim; up: Aim }>(
+  shown: Map<string, T>, sampled: readonly T[], dtMs: number,
   opts: { rate?: number; snap?: boolean } = {},
 ): void {
   const t = opts.snap ? 1 : 1 - Math.exp(-(opts.rate ?? 18) * Math.max(0, dtMs) / 1000);
@@ -115,9 +121,10 @@ export function smoothVehicles(
     s.x += (v.x - s.x) * k;
     s.y += (v.y - s.y) * k;
     s.z += (v.z - s.z) * k;
-    s.forward = k >= 1 ? v.forward : nlerpAim(s.forward, v.forward, k);
-    s.up = k >= 1 ? v.up : nlerpAim(s.up, v.up, k);
-    s.kind = v.kind;
+    const forward = k >= 1 ? v.forward : nlerpAim(s.forward, v.forward, k);
+    const up = k >= 1 ? v.up : nlerpAim(s.up, v.up, k);
+    // Everything else (its kind, whether anyone is in it) is simply the newest.
+    Object.assign(s, v, { x: s.x, y: s.y, z: s.z, forward, up });
   }
   for (const id of shown.keys()) if (!seen.has(id)) shown.delete(id);
 }

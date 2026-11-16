@@ -8,7 +8,7 @@ import { mapTitle } from "../state/gameart";
 import { For, Show, createEffect, createSignal, on, type JSX } from "solid-js";
 import { useSearchParams } from "@solidjs/router";
 import MapCanvas, { type MapFrame } from "../components/MapCanvas";
-import { geometryFor } from "../map/geometry";
+import { featuresFor, geometryFor } from "../map/geometry";
 import type { RosterEntry } from "../map/render";
 import ViewMap, { ViewPicker } from "../map/ViewMap";
 import { pickView, viewParam } from "../map/views";
@@ -44,6 +44,10 @@ export default function TacticalMap(props: {
 }) {
   const outline = outlineFor(() => props.game.map);
   const geometry = geometryFor(() => props.game.map);
+  // Teleporters and lifts, from the head of the map's glb; shown unless turned off.
+  const features = featuresFor(() => geometry()?.glb);
+  const [showFeatures, setShowFeatures] = createSignal(true);
+  const drawn = () => (showFeatures() ? features() : null);
   const [layer, setLayer] = createSignal<number | null>(null);
   const [broken, setBroken] = createSignal(false);
   const [params, setParams] = useSearchParams<{ view?: string; map?: string }>();
@@ -65,6 +69,9 @@ export default function TacticalMap(props: {
           <Show when={views()} fallback={<LayerPicker count={outline()?.layers.length ?? 0} value={layer()} onChange={setLayer} />}>
             {(v) => <ViewPicker views={v()} value={viewId()} onChange={setView} />}
           </Show>
+          <Show when={features()}>
+            <button class="s-3d-button" aria-pressed={showFeatures()} classList={{ on: showFeatures() }} onClick={() => setShowFeatures(!showFeatures())} title="Teleporters with their links, and gravity lifts">Lifts &amp; teleporters</button>
+          </Show>
           <button class="s-3d-button" aria-pressed={open()} classList={{ on: open() }} onClick={() => setOpen(!open())} title="Open the 3D view in a window">3D view</button>
         </span>
       </div>
@@ -80,7 +87,7 @@ export default function TacticalMap(props: {
           when={views()}
           fallback={
             <>
-              <MapCanvas frame={props.frame} roster={props.roster} outline={outline} layer={layer} highlight={props.highlight} label={props.label} />
+              <MapCanvas frame={props.frame} roster={props.roster} outline={outline} layer={layer} highlight={props.highlight} label={props.label} features={drawn} />
               <Show when={!outline()}><div class="s-map-note">Map outline not available; the grid is fitted to where players have been.</div></Show>
             </>
           }
@@ -88,7 +95,7 @@ export default function TacticalMap(props: {
           {(v) => (
             <ViewMap
               frame={props.frame} roster={props.roster} views={v()} view={viewId()} image={geometry()!.image}
-              highlight={props.highlight} label={props.label} onError={() => setBroken(true)}
+              highlight={props.highlight} label={props.label} onError={() => setBroken(true)} features={drawn}
             />
           )}
         </Show>

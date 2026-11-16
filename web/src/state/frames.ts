@@ -1,7 +1,7 @@
 // Frame buffering and interpolation. Frames are not reactive state: they
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
-import type { Frame, FramePlayer, FrameVehicle } from "../api/types";
+import type { Frame, FrameHit, FrameMachine, FramePlayer, FrameVehicle } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
 const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
@@ -25,6 +25,16 @@ export interface SampledPlayer {
    *  can tell a new one from the one it has already drawn. */
   shots?: number;
   shotTick?: number;
+  /** How they are moving, when the frame says. */
+  stance?: Stance;
+  /** Horizontal speed, game units a second, when the frame says. */
+  speed?: number;
+  /** One-shot actions started in the frame at or before the sampled tick,
+   *  and that frame's tick (as `shots` and `shotTick` name a burst). */
+  actions?: Action[];
+  actionTick?: number;
+  /** The grenade they hold or threw. */
+  grenade?: string;
   /** Set for an AI-controlled biped (campaign), which is sampled, eased and
    *  drawn like a player: its id and side. Its `index` is made from the id
    *  and is negative, so it never meets a player's. */
@@ -39,6 +49,49 @@ export interface SampledVehicle {
   /** Unit vectors, game coordinates. */
   forward: Aim;
   up: Aim;
+  /** False when nobody is in it (drawn dimmer). */
+  occupied: boolean;
+}
+
+/** One piece of damage, as the views draw it. */
+export interface SampledHit {
+  /** Attacker and victim as the frame names them ("p<index>", or an actor's or vehicle's id); null when unknown. */
+  from: string | null;
+  to: string | null;
+  weapon: string | null;
+  /** Where the victim was. */
+  x: number; y: number; z: number;
+  amount: number | null;
+  kind: string | null;
+}
+
+/** The damage in the frame at or before `tick`, with that frame's tick (so
+ *  a view draws each frame's hits once), or null when it has none. */
+export function sampleHits(frames: readonly Frame[], tick: number): { tick: number; hits: SampledHit[] } | null {
+  const i = findFrame(frames, tick);
+  const f = i < 0 ? undefined : frames[i];
+  if (!f?.hits?.length) return null;
+  let c = hitCache.get(f);
+  if (!c) {
+    c = [];
+    for (const h of f.hits as FrameHit[]) {
+      if (c.length >= MAX_HITS_PER_FRAME) break;
+      if (!h || !isPos(h.pos)) continue;
+      const amount = typeof h.amount === "number" && Number.isFinite(h.amount) && h.amount >= 0 ? h.amount : null;
+      c.push({ from: cleanId(h.from), to: cleanId(h.to), weapon: cleanId(h.weapon), x: h.pos[0], y: h.pos[1], z: h.pos[2], amount, kind: cleanId(h.kind) });
+    }
+    hitCache.set(f, c);
+  }
+  return c.length ? { tick: f.tick, hits: c } : null;
+}
+const hitCache = new WeakMap<Frame, SampledHit[]>();
+
+/** The structure BSP loaded at `tick` (a campaign level's zone), or null
+ *  when the frames don't say. */
+export function sampleBsp(frames: readonly Frame[], tick: number): number | null {
+  const i = findFrame(frames, tick);
+  const b = (i < 0 ? frames[0] : frames[i])?.bsp;
+  return typeof b === "number" && Number.isInteger(b) && b >= 0 ? b : null;
 }
 
 /** At most this many actors are drawn from one frame, as the contract caps them. */
@@ -52,6 +105,34 @@ export function actorIndex(id: string): number {
 }
 
 export type Aim = [number, number, number];
+
+export const STANCES = ["stand", "crouch", "airborne", "vehicle", "dead"] as const;
+export type Stance = (typeof STANCES)[number];
+export const ACTIONS = ["grenade", "melee", "reload", "jump", "switch", "pickup"] as const;
+export type Action = (typeof ACTIONS)[number];
+export const MAX_ACTIONS_PER_FRAME = 8;
+export const MAX_HITS_PER_FRAME = 64;
+export const MAX_VEHICLES = 64;
+
+export function cleanStance(v: unknown): Stance | null {
+  return typeof v === "string" && (STANCES as readonly string[]).includes(v) ? (v as Stance) : null;
+}
+
+/** A frame's actions: the known ones, in order, at most eight. */
+export function cleanActions(v: unknown): Action[] {
+  if (!Array.isArray(v)) return [];
+  const out: Action[] = [];
+  for (const a of v) {
+    if (out.length >= MAX_ACTIONS_PER_FRAME) break;
+    if (typeof a === "string" && (ACTIONS as readonly string[]).includes(a)) out.push(a as Action);
+  }
+  return out;
+}
+
+/** A speed: finite and not negative, else null. */
+export function cleanSpeed(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : null;
+}
 
 const ID = /^[a-z0-9_]{1,32}$/;
 export const MAX_SHOTS_PER_FRAME = 64;
@@ -124,6 +205,12 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
   if (aim) out.aim = aim;
   const shots = tick === undefined || !shotsFrom ? 0 : cleanShots(shotsFrom.shots);
   if (shots && shotsFrom!.alive) { out.shots = shots; out.shotTick = tick; }
+  const stance = cleanStance(p.stance), speed = cleanSpeed(p.speed), grenade = cleanId(p.grenade);
+  if (stance) out.stance = stance;
+  if (speed !== null) out.speed = speed;
+  if (grenade) out.grenade = grenade;
+  const actions = tick === undefined || !shotsFrom ? [] : cleanActions(shotsFrom.actions);
+  if (actions.length) { out.actions = actions; out.actionTick = tick; }
   return out;
 }
 
@@ -160,6 +247,8 @@ function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] |
     s.yaw = lerpAngle(pa.yaw, pb.yaw, t);
     const aa = cleanAim(pa.aim), ab = cleanAim(pb.aim);
     if (aa && ab) s.aim = nlerpAim(aa, ab, t);
+    const va = cleanSpeed(pa.speed), vb = cleanSpeed(pb.speed);
+    if (va !== null && vb !== null) s.speed = lerp(va, vb, t);
     out.push(s);
   }
   if (t >= 0.5) for (const pb of next.values()) out.push(fromFramePlayer(pb));
@@ -201,7 +290,10 @@ function actorsOf(f: Frame): { players: FramePlayer[]; info: Map<number, { id: s
     const index = actorIndex(id);
     if (info.has(index)) continue;
     info.set(index, { id, team: cleanId(a.team) });
-    players.push({ index, alive: true, pos: a.pos, yaw: a.yaw, vehicle: cleanId(a.vehicle), species: a.species, aim: a.aim, weapon: a.weapon, shots: a.shots });
+    players.push({
+      index, alive: true, pos: a.pos, yaw: a.yaw, vehicle: cleanId(a.vehicle), species: a.species, aim: a.aim, weapon: a.weapon, shots: a.shots,
+      stance: a.stance, speed: a.speed, actions: a.actions, grenade: a.grenade,
+    });
   }
   return { players, info };
 }
@@ -237,7 +329,7 @@ function fromFrameVehicle(v: FrameVehicle): SampledVehicle | null {
   const id = cleanId(v?.id), kind = cleanId(v?.kind);
   if (!id || !isPos(v.pos)) return null;
   const forward = cleanAim(v.forward) ?? [1, 0, 0];
-  return { id, kind: kind ?? "vehicle", x: v.pos[0], y: v.pos[1], z: v.pos[2], forward, up: cleanAim(v.up) ?? [0, 0, 1] };
+  return { id, kind: kind ?? "vehicle", x: v.pos[0], y: v.pos[1], z: v.pos[2], forward, up: cleanAim(v.up) ?? [0, 0, 1], occupied: v.occupied !== false };
 }
 
 /** The vehicles at a (fractional) tick. One in only the earlier frame
@@ -262,9 +354,70 @@ export function sampleVehicles(frames: readonly Frame[], tick: number): SampledV
       id: a.id, kind: t < 0.5 ? a.kind : b.kind,
       x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
       forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
+      occupied: t < 0.5 ? a.occupied : b.occupied,
     });
   }
   if (t >= 0.5) for (const b of next.values()) out.push(b);
+  return out;
+}
+
+// ---- machines ----
+
+export const MAX_MACHINES = 128;
+
+export interface SampledMachine {
+  id: string;
+  /** The map glb's `machines` child it moves, when it is one. */
+  node: string | null;
+  kind: string;
+  x: number; y: number; z: number;
+  forward: Aim;
+  up: Aim;
+  /** A device's travel, 0 to 1, when it says. */
+  position: number | null;
+}
+
+export function fromFrameMachine(m: FrameMachine): SampledMachine | null {
+  const id = cleanId(m?.id);
+  if (!id || !isPos(m.pos)) return null;
+  // A node name is a tag stem and a number; anything else can't name a glb node.
+  const node = typeof m.node === "string" && /^[a-z0-9_ .-]{1,64}$/i.test(m.node) ? m.node : null;
+  const position = typeof m.position === "number" && Number.isFinite(m.position) ? Math.min(1, Math.max(0, m.position)) : null;
+  return { id, node, kind: cleanId(m.kind) ?? "machine", x: m.pos[0], y: m.pos[1], z: m.pos[2], forward: cleanAim(m.forward) ?? [1, 0, 0], up: cleanAim(m.up) ?? [0, 0, 1], position };
+}
+
+/** How many frames back a machine's last word is looked for: recorded
+ *  frames carry every machine, live ones only those that moved. */
+const MACHINE_LOOKBACK = 4;
+
+/** The machines at a (fractional) tick: each one's latest state in the
+ *  frames at or just behind it, eased towards the next frame's when that
+ *  has it too. One that hasn't been sent lately isn't here: a live view
+ *  keeps the last it heard (FrameBuffer). */
+export function sampleMachines(frames: readonly Frame[], tick: number): SampledMachine[] {
+  const i = findFrame(frames, tick);
+  if (i < 0) return [];
+  const at = new Map<string, { m: SampledMachine; tick: number }>();
+  for (let j = i; j >= 0 && j > i - MACHINE_LOOKBACK; j--) {
+    const list = frames[j]!.machines;
+    if (!list) continue;
+    for (const raw of list.slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m && !at.has(m.id)) at.set(m.id, { m, tick: frames[j]!.tick }); }
+  }
+  const fb = frames[i + 1];
+  const next = new Map<string, SampledMachine>();
+  if (fb && fb.tick > frames[i]!.tick) for (const raw of (fb.machines ?? []).slice(0, MAX_MACHINES)) { const m = fromFrameMachine(raw); if (m) next.set(m.id, m); }
+  const out: SampledMachine[] = [];
+  for (const { m: a, tick: ta } of at.values()) {
+    const b = next.get(a.id);
+    if (!b || (b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(a); continue; }
+    // It was last heard of at `ta`, but it only started for where `b` has it after the frame behind `tick`.
+    const from = Math.max(ta, frames[i]!.tick), t = Math.min(1, Math.max(0, (tick - from) / (fb!.tick - from)));
+    out.push({
+      ...a, x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
+      forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
+      position: a.position !== null && b.position !== null ? lerp(a.position, b.position, t) : a.position,
+    });
+  }
   return out;
 }
 
@@ -280,6 +433,9 @@ export class FrameBuffer {
   private offset: number | null = null;
   readonly bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, minZ: Infinity, maxZ: -Infinity };
 
+  /** Every machine heard of, as last sent. */
+  private machines = new Map<string, SampledMachine>();
+
   constructor(readonly capacity = 48, readonly delayTicks = 5) {}
 
   get lastTick(): number {
@@ -292,10 +448,16 @@ export class FrameBuffer {
       if (frame.tick < last.tick - TICKS_PER_SECOND * 5) {
         // The game restarted its tick counter: start over.
         this.frames = [];
+        this.machines.clear();
         this.offset = null;
       } else return;
     }
     this.frames.push(frame);
+    // Machines are only sent when they move: keep the last word on each.
+    for (const raw of (frame.machines ?? []).slice(0, MAX_MACHINES)) {
+      const m = fromFrameMachine(raw);
+      if (m && (this.machines.has(m.id) || this.machines.size < MAX_MACHINES)) this.machines.set(m.id, m);
+    }
     if (this.frames.length > this.capacity) this.frames.splice(0, this.frames.length - this.capacity);
     for (const p of frame.players) {
       const [x, y, z] = p.pos;
@@ -327,6 +489,22 @@ export class FrameBuffer {
 
   sampleVehicles(now: number): SampledVehicle[] {
     return sampleVehicles(this.frames, this.renderTick(now));
+  }
+
+  sampleHits(now: number) {
+    return sampleHits(this.frames, this.renderTick(now));
+  }
+
+  sampleBsp(now: number): number | null {
+    return sampleBsp(this.frames, this.renderTick(now));
+  }
+
+  /** Every machine: the ones moving now where the render tick has them, the rest where they were last sent. */
+  sampleMachines(now: number): SampledMachine[] {
+    if (!this.machines.size) return [];
+    const out = new Map(this.machines);
+    for (const m of sampleMachines(this.frames, this.renderTick(now))) out.set(m.id, m);
+    return [...out.values()];
   }
 
   /** Records where a victim died: the kill's `pos` when given, else the
