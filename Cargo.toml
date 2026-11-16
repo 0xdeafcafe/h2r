@@ -34,6 +34,8 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "sync", "time"] }
+egui = "0.37"
+egui-wgpu = "0.37"
 
 # Dependencies keep file/line backtraces but drop full debug info, which is
 # a large share of a debug target. Workspace crates keep full debug info.
