@@ -25,6 +25,7 @@
 #![allow(unsafe_code)]
 
 pub mod layout;
+pub mod maps;
 pub mod overlay;
 pub mod text;
 
