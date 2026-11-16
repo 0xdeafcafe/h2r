@@ -195,17 +195,19 @@ pub fn sample(m: &dyn GuestMemory, object: u32) -> Result<Option<Sample>, MemFau
 /// health is undone (the health and the recharging bit as they were).
 /// `None` leaves the update's result.
 pub fn hold(model: HealthModel, before: Sample, health: f32, flags_high: u8) -> Option<(f32, u8)> {
-    (model == HealthModel::Halo1 && health > before.health).then(|| {
-        (
-            before.health,
-            (flags_high & !BODY_RECHARGING) | (before.flags_high & BODY_RECHARGING),
-        )
-    })
+    (model == HealthModel::Halo1 && health > before.health).then_some((
+        before.health,
+        (flags_high & !BODY_RECHARGING) | (before.flags_high & BODY_RECHARGING),
+    ))
 }
 
 /// [`hold`] against the body as the update left it; the health it held
 /// back from, when it did.
-pub fn apply_hold(m: &mut dyn GuestMemory, model: HealthModel, before: Sample) -> Result<Option<f32>, MemFault> {
+pub fn apply_hold(
+    m: &mut dyn GuestMemory,
+    model: HealthModel,
+    before: Sample,
+) -> Result<Option<f32>, MemFault> {
     let health = m.f32(before.body.wrapping_add(BODY_HEALTH))?;
     let flags = m.u8(before.body.wrapping_add(BODY_FLAGS_HIGH))?;
     let Some((h, f)) = hold(model, before, health, flags) else {
@@ -228,7 +230,9 @@ pub fn local_health(m: &dyn GuestMemory) -> Result<Option<f32>, MemFault> {
         // Body depleted: dead.
         return Ok(None);
     }
-    Ok(Some(m.f32(u.body.wrapping_add(BODY_HEALTH))?.clamp(0.0, 1.0)))
+    Ok(Some(
+        m.f32(u.body.wrapping_add(BODY_HEALTH))?.clamp(0.0, 1.0),
+    ))
 }
 
 /// What the meter shows now, from the model and the guest.
@@ -260,28 +264,30 @@ pub struct H1Health {
 
 impl feature::Feature for H1Health {
     fn manifest(&self) -> feature::Manifest {
-        feature::Manifest::new(FEATURE, "Halo 1's health model on Halo 1 maps").doc("docs/game/health.md")
+        feature::Manifest::new(FEATURE, "Halo 1's health model on Halo 1 maps")
+            .doc("docs/game/health.md")
     }
     fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
         use feature::points::{BODY_RESTORE, OBJECT_DAMAGE_UPDATE};
         {
             let s = Arc::clone(&self.state);
-            b.raw().before(&OBJECT_DAMAGE_UPDATE, "note a player's health", move |c| {
-                if mode() != HealthModel::Halo1 {
-                    if s.armed.swap(false, Ordering::Relaxed) {
-                        *s.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            b.raw()
+                .before(&OBJECT_DAMAGE_UPDATE, "note a player's health", move |c| {
+                    if mode() != HealthModel::Halo1 {
+                        if s.armed.swap(false, Ordering::Relaxed) {
+                            *s.pending.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                        }
+                        return Ok(feature::Flow::Continue);
                     }
-                    return Ok(feature::Flow::Continue);
-                }
-                let object = c.arg_u32("object").unwrap_or(u32::MAX);
-                let noted = {
-                    let mem = c.ctx.runtime().memory();
-                    sample(&*mem, object).ok().flatten()
-                };
-                *s.pending.lock().unwrap_or_else(|e| e.into_inner()) = noted;
-                s.armed.store(noted.is_some(), Ordering::Relaxed);
-                Ok(feature::Flow::Continue)
-            });
+                    let object = c.arg_u32("object").unwrap_or(u32::MAX);
+                    let noted = {
+                        let mem = c.ctx.runtime().memory();
+                        sample(&*mem, object).ok().flatten()
+                    };
+                    *s.pending.lock().unwrap_or_else(|e| e.into_inner()) = noted;
+                    s.armed.store(noted.is_some(), Ordering::Relaxed);
+                    Ok(feature::Flow::Continue)
+                });
         }
         {
             let s = Arc::clone(&self.state);
@@ -307,20 +313,27 @@ impl feature::Feature for H1Health {
         }
         {
             let s = Arc::clone(&self.state);
-            b.raw().observe_before(&BODY_RESTORE, "note the health pack", move |o| {
-                let object = o.cpu.eax;
-                let health = sample(&*o.guest(), object).ok().flatten().map(|x| x.health);
-                *s.restore.lock().unwrap_or_else(|e| e.into_inner()) = Some((object, health));
-            });
+            b.raw()
+                .observe_before(&BODY_RESTORE, "note the health pack", move |o| {
+                    let object = o.cpu.eax;
+                    let health = sample(&*o.guest(), object).ok().flatten().map(|x| x.health);
+                    *s.restore.lock().unwrap_or_else(|e| e.into_inner()) = Some((object, health));
+                });
         }
         {
             let s = Arc::clone(&self.state);
-            b.raw().observe_after(&BODY_RESTORE, "log the health pack", move |o| {
-                let Some((object, before)) = s.restore.lock().unwrap_or_else(|e| e.into_inner()).take() else {
-                    return;
-                };
-                eprintln!("{}", restore_line(object, before, o.cpu.eax & 0xff != 0, mode()));
-            });
+            b.raw()
+                .observe_after(&BODY_RESTORE, "log the health pack", move |o| {
+                    let Some((object, before)) =
+                        s.restore.lock().unwrap_or_else(|e| e.into_inner()).take()
+                    else {
+                        return;
+                    };
+                    eprintln!(
+                        "{}",
+                        restore_line(object, before, o.cpu.eax & 0xff != 0, mode())
+                    );
+                });
         }
         b.frame().on_tick("publish the health meter", |o| {
             let v = meter_now(&*o.guest());
@@ -330,7 +343,14 @@ impl feature::Feature for H1Health {
             let s = Arc::clone(&self.state);
             b.game().on_start("say the health model", move |_| {
                 s.said_hold.store(false, Ordering::Relaxed);
-                eprintln!("{}", start_line(mode(), forced().is_some(), HUD_HAS_METER.load(Ordering::Relaxed)));
+                eprintln!(
+                    "{}",
+                    start_line(
+                        mode(),
+                        forced().is_some(),
+                        HUD_HAS_METER.load(Ordering::Relaxed)
+                    )
+                );
             });
         }
         Ok(())
@@ -338,23 +358,43 @@ impl feature::Feature for H1Health {
 }
 
 /// The health pack's log line.
-pub fn restore_line(object: u32, before: Option<f32>, restored: bool, model: HealthModel) -> String {
-    let was = before.map_or("a non-player's body".to_string(), |h| format!("a player's body at {h:.3}"));
+pub fn restore_line(
+    object: u32,
+    before: Option<f32>,
+    restored: bool,
+    model: HealthModel,
+) -> String {
+    let was = before.map_or("a non-player's body".to_string(), |h| {
+        format!("a player's body at {h:.3}")
+    });
     if restored {
-        format!("health: health pack: object {object:#010x}, {was}, restored to full ({} model)", model.name())
+        format!(
+            "health: health pack: object {object:#010x}, {was}, restored to full ({} model)",
+            model.name()
+        )
     } else {
-        format!("health: health pack refused: object {object:#010x}, {was} (full or dead; the pack stays)")
+        format!(
+            "health: health pack refused: object {object:#010x}, {was} (full or dead; the pack stays)"
+        )
     }
 }
 
 /// The game-start line.
 pub fn start_line(model: HealthModel, forced: bool, hud_meter: bool) -> String {
-    let source = if forced { format!(" (debug override {ENV})") } else { String::new() };
+    let source = if forced {
+        format!(" (debug override {ENV})")
+    } else {
+        String::new()
+    };
     match model {
         HealthModel::Halo2 => format!("health: game start: Halo 2 model{source}"),
         HealthModel::Halo1 => format!(
             "health: game start: Halo 1 model{source}: no body regeneration; meter {}",
-            if hud_meter { "from the map's HUD" } else { "drawn by the window" }
+            if hud_meter {
+                "from the map's HUD"
+            } else {
+                "drawn by the window"
+            }
         ),
     }
 }
@@ -376,7 +416,9 @@ pub fn install(registry: &mut feature::Registry) -> anyhow::Result<bool> {
         Err(e) => eprintln!("health: {e}; ignored"),
     }
     let added = registry
-        .add(&H1Health { state: Arc::default() })
+        .add(&H1Health {
+            state: Arc::default(),
+        })
         .map_err(|e| anyhow::anyhow!("health: {e}"))?;
     if !added {
         eprintln!("health: off: switched off (H2_FEATURES); Halo 2's model on every map");

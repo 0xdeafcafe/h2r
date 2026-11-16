@@ -16,7 +16,11 @@ fn the_override_names_a_model_or_nothing() {
     assert_eq!(parse_override(Some("halo1")), Ok(Some(HealthModel::Halo1)));
     assert_eq!(parse_override(Some("Halo2")), Ok(Some(HealthModel::Halo2)));
     assert_eq!(parse_override(Some("h1")), Ok(Some(HealthModel::Halo1)));
-    assert!(parse_override(Some("ce")).unwrap_err().contains("H2_HEALTH_MODEL"));
+    assert!(
+        parse_override(Some("ce"))
+            .unwrap_err()
+            .contains("H2_HEALTH_MODEL")
+    );
 }
 
 #[test]
@@ -54,7 +58,12 @@ fn halo1_undoes_a_rise_and_keeps_every_fall() {
     );
     // Recharging was already set before: it stays set.
     assert_eq!(
-        hold(HealthModel::Halo1, sample_at(0.4, BODY_RECHARGING), 0.5, BODY_RECHARGING),
+        hold(
+            HealthModel::Halo1,
+            sample_at(0.4, BODY_RECHARGING),
+            0.5,
+            BODY_RECHARGING
+        ),
         Some((0.4, BODY_RECHARGING))
     );
     // Damage in the same update (a fall) and no change are left alone.
@@ -77,10 +86,17 @@ const UNIT: u32 = 0xe001_0000; // salt 0xe001, slot 0
 const AI: u32 = 0xe002_0001;
 const VEHICLE: u32 = 0xe003_0002;
 
-fn put_game(put32: &mut dyn FnMut(u32, u32), put16: &mut dyn FnMut(u32, u16), put8: &mut dyn FnMut(u32, u8)) {
+fn put_game(
+    put32: &mut dyn FnMut(u32, u32),
+    put16: &mut dyn FnMut(u32, u16),
+    put8: &mut dyn FnMut(u32, u8),
+) {
     put32(engine::points::PLAYERS.base, PLAYERS_H);
     put32(engine::points::OBJECTS.base, OBJECTS_H);
-    for (h, size, data, n) in [(PLAYERS_H, 0x21c, PLAYER_DATA, 1), (OBJECTS_H, 0xc, OBJECT_DATA, 3)] {
+    for (h, size, data, n) in [
+        (PLAYERS_H, 0x21c, PLAYER_DATA, 1),
+        (OBJECTS_H, 0xc, OBJECT_DATA, 3),
+    ] {
         put32(h + dl::ELEMENT_SIZE, size);
         put32(h + dl::HIGH_WATER, n);
         put32(h + dl::DATA, data);
@@ -149,12 +165,19 @@ fn only_a_players_biped_is_sampled() {
 fn apply_hold_writes_back_only_a_rise() {
     let mut g = game();
     let before = sample(&g, UNIT).unwrap().unwrap();
-    g.put_f32(BODY + BODY_HEALTH, 0.6).put_u8(BODY + BODY_FLAGS_HIGH, BODY_RECHARGING);
-    assert_eq!(apply_hold(&mut g, HealthModel::Halo1, before).unwrap(), Some(0.6));
+    g.put_f32(BODY + BODY_HEALTH, 0.6)
+        .put_u8(BODY + BODY_FLAGS_HIGH, BODY_RECHARGING);
+    assert_eq!(
+        apply_hold(&mut g, HealthModel::Halo1, before).unwrap(),
+        Some(0.6)
+    );
     assert_eq!(g.f32(BODY + BODY_HEALTH).unwrap(), 0.5);
     assert_eq!(g.u8(BODY + BODY_FLAGS_HIGH).unwrap(), 0);
     g.put_f32(BODY + BODY_HEALTH, 0.2);
-    assert_eq!(apply_hold(&mut g, HealthModel::Halo1, before).unwrap(), None);
+    assert_eq!(
+        apply_hold(&mut g, HealthModel::Halo1, before).unwrap(),
+        None
+    );
     assert_eq!(g.f32(BODY + BODY_HEALTH).unwrap(), 0.2);
 }
 
@@ -187,7 +210,10 @@ fn the_lines_say_what_happened() {
         "health: health pack: object 0xe0010000, a player's body at 0.300, restored to full (Halo 1 model)"
     );
     assert!(restore_line(UNIT, Some(1.0), false, HealthModel::Halo1).contains("refused"));
-    assert_eq!(start_line(HealthModel::Halo2, false, false), "health: game start: Halo 2 model");
+    assert_eq!(
+        start_line(HealthModel::Halo2, false, false),
+        "health: game start: Halo 2 model"
+    );
     assert_eq!(
         start_line(HealthModel::Halo1, true, false),
         "health: game start: Halo 1 model (debug override H2_HEALTH_MODEL): no body regeneration; meter drawn by the window"
@@ -218,7 +244,8 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
     }
     let mut g = Guest::new();
     g.map_zeroed(0x40_0000, 0x5000, Permissions::RX).unwrap();
-    g.map_zeroed(0x004e_0000, 0x1_0000, Permissions::RW).unwrap();
+    g.map_zeroed(0x004e_0000, 0x1_0000, Permissions::RW)
+        .unwrap();
     for a in [PLAYERS_H, OBJECTS_H, PLAYER_DATA, OBJECT_DATA, BODY] {
         g.map_zeroed(a, 0x1000, Permissions::RW).unwrap();
     }
@@ -240,20 +267,21 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
         let delta = Arc::clone(&delta);
         r.add(&feature::from_fn("stand-in", move |b| {
             let delta = Arc::clone(&delta);
-            b.raw().implement(&OBJECT_DAMAGE_UPDATE, "update", move |cpu, ctx, _| {
-                let rt = Arc::clone(ctx.runtime());
-                let mut mem = rt.memory();
-                let object = mem.u32(cpu.esp + 4)?;
-                let body = mem.u32(OBJECT_DATA + 0xc * (object & 0xffff) + 8)?;
-                let d = *delta.lock().unwrap();
-                let h = f32::from_bits(mem.u32(body + BODY_HEALTH)?);
-                mem.set_u32(body + BODY_HEALTH, (h + d).to_bits())?;
-                if d > 0.0 {
-                    mem.set_u8(body + BODY_FLAGS_HIGH, BODY_RECHARGING)?;
-                }
-                cpu.eax = 1;
-                mem.ret(cpu, 4)
-            });
+            b.raw()
+                .implement(&OBJECT_DAMAGE_UPDATE, "update", move |cpu, ctx, _| {
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    let object = mem.u32(cpu.esp + 4)?;
+                    let body = mem.u32(OBJECT_DATA + 0xc * (object & 0xffff) + 8)?;
+                    let d = *delta.lock().unwrap();
+                    let h = f32::from_bits(mem.u32(body + BODY_HEALTH)?);
+                    mem.set_u32(body + BODY_HEALTH, (h + d).to_bits())?;
+                    if d > 0.0 {
+                        mem.set_u8(body + BODY_FLAGS_HIGH, BODY_RECHARGING)?;
+                    }
+                    cpu.eax = 1;
+                    mem.ret(cpu, 4)
+                });
             b.raw().implement(&BODY_RESTORE, "restore", |cpu, ctx, _| {
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
@@ -317,7 +345,11 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
     force(None);
     set_mode(HealthModel::Halo2);
     *delta.lock().unwrap() = 0.25;
-    assert_eq!(run(UPDATE, 0, UNIT).eax & 0xff, 1, "the update's result comes back");
+    assert_eq!(
+        run(UPDATE, 0, UNIT).eax & 0xff,
+        1,
+        "the update's result comes back"
+    );
     assert_eq!(health(BODY), 0.75);
     rt.memory().set_u8(BODY + BODY_FLAGS_HIGH, 0).unwrap();
 
@@ -344,7 +376,9 @@ fn the_hooks_hold_regeneration_on_the_feature_plan() {
     // The debug override turns it on over a Halo 2 map.
     set_mode(HealthModel::Halo2);
     force(Some(HealthModel::Halo1));
-    rt.memory().set_u32(BODY + BODY_HEALTH, 0.5f32.to_bits()).unwrap();
+    rt.memory()
+        .set_u32(BODY + BODY_HEALTH, 0.5f32.to_bits())
+        .unwrap();
     *delta.lock().unwrap() = 0.25;
     run(UPDATE, 0, UNIT);
     assert_eq!(health(BODY), 0.5);

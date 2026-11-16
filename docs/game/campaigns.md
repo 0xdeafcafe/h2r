@@ -130,9 +130,11 @@ regenerates. For the Halo 1 campaign:
 - health packs (Halo 1 `eqip` with a health powerup) refill it on pickup;
 - the HUD draws a health meter under the shield meter.
 
-This is a feature-engine subsystem ([feature-engine.md](../engine/feature-engine.md)),
-on only for Halo 1 levels. Open: where Halo 2 regenerates body vitality,
-and how its equipment pickup can carry a health powerup.
+**Built** (tests only): the `h1-health` feature, on only for Halo 1
+levels through `boot::health::set_mode`. Where Halo 2 regenerates the body,
+how its own health powerup (`eqip` type 5) refills it, the HUD's body
+input, what the converter must write, and the debug switch
+`H2_HEALTH_MODEL=halo1`: [health.md](health.md).
 
 ## 7. Open questions
 

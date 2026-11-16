@@ -12,7 +12,8 @@ impl Image {
     fn load() -> Self {
         let path = std::env::var_os("H2_XBE").expect("set H2_XBE to a retail default.xbe");
         let bytes = std::fs::read(path).unwrap();
-        let loaded = runtime::load_xbe_with(&bytes, &runtime::loader::LoadOptions::halo2()).unwrap();
+        let loaded =
+            runtime::load_xbe_with(&bytes, &runtime::loader::LoadOptions::halo2()).unwrap();
         Image(loaded.runtime)
     }
     fn at(&self, addr: u32) -> Instruction {
@@ -32,11 +33,23 @@ fn mem(i: &Instruction, mnemonic: Mnemonic, base: Register, disp: u32) {
     let has = (0..i.op_count()).any(|n| i.op_kind(n) == OpKind::Memory);
     assert!(has, "{:#x}: {:?}", i.ip(), i.code());
     assert_eq!(i.memory_base(), base, "{:#x}: {:?}", i.ip(), i.code());
-    assert_eq!(i.memory_displacement32(), disp, "{:#x}: {:?}", i.ip(), i.code());
+    assert_eq!(
+        i.memory_displacement32(),
+        disp,
+        "{:#x}: {:?}",
+        i.ip(),
+        i.code()
+    );
 }
 
 fn call(i: &Instruction, target: u32) {
-    assert_eq!(i.mnemonic(), Mnemonic::Call, "{:#x}: {:?}", i.ip(), i.code());
+    assert_eq!(
+        i.mnemonic(),
+        Mnemonic::Call,
+        "{:#x}: {:?}",
+        i.ip(),
+        i.code()
+    );
     assert_eq!(i.near_branch32(), target, "{:#x}: {:?}", i.ip(), i.code());
 }
 
@@ -50,7 +63,12 @@ fn the_damage_update_and_its_regeneration() {
     assert_eq!(x.at(0x000d_5de0).code(), Code::Sub_rm32_imm8);
     for ret in [0x000d_6611, 0x000d_664c, 0x000d_6657] {
         let i = x.at(ret);
-        assert_eq!((i.mnemonic(), i.immediate16()), (Mnemonic::Ret, 4), "{ret:#x}: {:?}", i.code());
+        assert_eq!(
+            (i.mnemonic(), i.immediate16()),
+            (Mnemonic::Ret, 4),
+            "{ret:#x}: {:?}",
+            i.code()
+        );
     }
     // The regeneration: target (definition +0x38) above health, rate
     // (definition +0xd4) above 0, body stun timer +0x106 zero, then
@@ -96,7 +114,12 @@ fn health_packs_are_the_powerup_pickups_health_case() {
     mem(&x.at(0x0015_1eff), Mnemonic::Movss, Register::ESI, 0x130);
     mem(&x.at(0x0015_1f3e), Mnemonic::Mov, Register::ESI, 0x12c);
     let cmp = x.at(0x0015_1f6a);
-    assert_eq!((cmp.mnemonic(), cmp.immediate8to16()), (Mnemonic::Cmp, 5), "{:?}", cmp.code());
+    assert_eq!(
+        (cmp.mnemonic(), cmp.immediate8to16()),
+        (Mnemonic::Cmp, 5),
+        "{:?}",
+        cmp.code()
+    );
     call(&x.at(0x0015_1f73), 0x000d_6790);
     // The pickup is reached by touch (0x15102f, not grenades) and by the
     // action (0x14fbc5).

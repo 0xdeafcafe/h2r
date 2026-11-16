@@ -16,6 +16,7 @@ use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 use crate::audio_out::{AudioOut, FALLBACK_RATE};
 use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
+use crate::health_meter::HealthMeterRenderer;
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
 use crate::overlay::OverlayRenderer;
@@ -43,6 +44,7 @@ struct Gpu {
     compositor: Compositor,
     overlay: OverlayRenderer,
     watermark: WatermarkRenderer,
+    health_meter: HealthMeterRenderer,
     /// The adapter's backend, lower case (`metal`), for the watermark.
     backend: String,
     source: FrameSource,
@@ -244,6 +246,7 @@ impl Shell {
             compositor: Compositor::new(&ctx.device),
             overlay: OverlayRenderer::new(&ctx.device),
             watermark: WatermarkRenderer::new(&ctx.device),
+            health_meter: HealthMeterRenderer::new(&ctx.device),
             backend: format!("{:?}", info.backend).to_lowercase(),
             ctx,
             surface,
@@ -322,6 +325,21 @@ impl Shell {
                     viewport,
                 );
             }
+        }
+        if let Some(meter) = &self.config.health_meter
+            && let Some(v) = meter.get()
+        {
+            g.health_meter.draw(
+                &g.ctx.device,
+                &g.ctx.queue,
+                &mut enc,
+                v,
+                meter.at,
+                &view,
+                g.surface.config.format,
+                g.surface.size(),
+                viewport,
+            );
         }
         if let Some(banner) = &self.config.banner {
             self.banner_drawn = banner.generation();
