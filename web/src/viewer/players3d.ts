@@ -13,7 +13,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { clone as cloneSkinned } from "three/examples/jsm/utils/SkeletonUtils.js";
 import { AIM_SHARES, MAX_PITCH, MAX_TWIST } from "./anim";
-import { EMPTY_VEHICLE_SHADE, bodyTint, findNode, secondaryOf, tintColours, vehicleTint, type Rgb } from "./models";
+import { EMPTY_VEHICLE_SHADE, bodyTint, findNode, secondaryOf, tintColours, type Rgb } from "./models";
 
 export interface BipedTemplate {
   kind: "biped";
@@ -263,7 +263,7 @@ const meshes = (root: THREE.Object3D): THREE.Mesh[] => {
 // ---- surfaces ----
 
 /** What the extractor says about a material (glTF `extras.h2`). */
-interface H2Look { template?: string; change_colour?: number; blend?: string }
+interface H2Look { template?: string; change_colour?: number; blend?: string; env?: { perpendicular: Rgb; parallel: Rgb } }
 const lookOf = (m: THREE.Material): H2Look => ((m.userData as { h2?: H2Look }).h2 ?? {});
 
 /** How strongly the environment shows on a model: its own, brighter than the map's. */
@@ -309,25 +309,78 @@ export function applyLook(mat: THREE.Material, env: THREE.Texture | null): void 
     std.envMap = env;
     std.envMapIntensity = MODEL_ENV_INTENSITY;
   }
+  patchEnv(mat);
   mat.needsUpdate = true;
 }
+
+/** Materials whose shader already has the environment tint. */
+const envPatched = new WeakSet<THREE.Material>();
+
+/** Gives an environment-mapped look its tinted reflection (`ENV_FRAGMENT`), once. */
+function patchEnv(mat: THREE.Material): void {
+  const env = lookOf(mat).env;
+  if (!env || envPatched.has(mat) || !(mat as THREE.MeshStandardMaterial).isMeshStandardMaterial) return;
+  envPatched.add(mat);
+  addShaderPatch(mat, "h2-env", (shader) => {
+    shader.uniforms.envPerpendicular = { value: new THREE.Color(...env.perpendicular) };
+    shader.uniforms.envParallel = { value: new THREE.Color(...env.parallel) };
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\n" + ENV_UNIFORMS)
+      .replace("#include <lights_fragment_end>", ENV_FRAGMENT + "\n#include <lights_fragment_end>");
+  });
+}
+
+/** A copy of a material with its look's shader steps (a clone loses them). */
+export function cloneMaterial(src: THREE.Material): THREE.Material {
+  const out = src.clone();
+  patchEnv(out);
+  return out;
+}
+
+/** Adds a step to a material's shader compile, after any it has (a tinted
+ *  copy keeps its environment tint, and the other way round). */
+function addShaderPatch(mat: THREE.Material, key: string, patch: (shader: THREE.WebGLProgramParametersWithUniforms) => void): void {
+  const before = shaderPatches.get(mat) ?? [];
+  const patches = [...before, { key, patch }];
+  shaderPatches.set(mat, patches);
+  mat.onBeforeCompile = (shader) => { for (const p of patches) p.patch(shader); };
+  // Programs are shared by what the patches are.
+  mat.customProgramCacheKey = () => patches.map((p) => p.key).join("|");
+}
+const shaderPatches = new WeakMap<THREE.Material, { key: string; patch: (shader: THREE.WebGLProgramParametersWithUniforms) => void }[]>();
+
+/** How strongly an environment-mapped shader's tinted reflection shows. */
+export const ENV_STRENGTH = 0.35;
+export const ENV_UNIFORMS = "uniform vec3 envPerpendicular; uniform vec3 envParallel;";
+/** Halo 2's environment-mapped shaders (the Covenant's sheen): the
+ *  reflection, where the specular mask (red of the metallic-roughness
+ *  texture) allows it, tinted from the perpendicular colour facing the eye
+ *  to the parallel one at a grazing angle. Added to what is lit. */
+export const ENV_FRAGMENT = `#if defined( USE_ENVMAP ) && defined( USE_METALNESSMAP )
+{
+  float envMask = texture2D(metalnessMap, vMetalnessMapUv).r;
+  float envFacing = saturate(dot(geometryNormal, geometryViewDir));
+  vec3 envTint = mix(envParallel, envPerpendicular, envFacing);
+  // The game's cube maps are low range: a bright environment is clamped.
+  reflectedLight.indirectSpecular += min(getIBLRadiance(geometryViewDir, geometryNormal, 0.2), vec3(1.0)) * envTint * envMask * ${ENV_STRENGTH.toFixed(2)};
+}
+#endif`;
 
 /** A copy of `src` whose base colour is tinted per pixel by its change-colour
  *  map: red weighs the primary colour, green the secondary (linear light,
  *  the same sharing out as `tintAt`). */
 export function changeColourMaterial(src: THREE.Material, cc: THREE.Texture, primary: Rgb, secondary: Rgb = secondaryOf(primary)): THREE.Material {
-  const out = src.clone();
+  const out = cloneMaterial(src);
   out.userData = { ...src.userData, cc: { primary, secondary } };
   (out as THREE.MeshStandardMaterial).vertexColors = false;
-  out.onBeforeCompile = (shader) => {
+  addShaderPatch(out, "h2-change-colour", (shader) => {
     shader.uniforms.ccMap = { value: cc };
     shader.uniforms.ccPrimary = { value: new THREE.Color(...primary) };
     shader.uniforms.ccSecondary = { value: new THREE.Color(...secondary) };
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", "#include <common>\n" + CC_UNIFORMS)
       .replace("#include <map_fragment>", "#include <map_fragment>\n" + CC_FRAGMENT);
-  };
-  out.customProgramCacheKey = () => "h2-change-colour";
+  });
   return out;
 }
 
@@ -473,28 +526,24 @@ export class ModelLibrary {
     return [this.bipeds, this.weapons, this.vehicles].some((m) => m.get(url)?.state === "failed");
   }
 
-  /** A copy of a vehicle, washed lightly with its player's colour (null
-   *  for none: an AI's, or nobody's), or darkened when nobody is in it. */
-  instantiateVehicle(t: VehicleTemplate, colour: string | null, empty = false): THREE.Object3D {
+  /** A copy of a vehicle in its own colours, or darkened when nobody is in
+   *  it. Halo 2 does not repaint a vehicle for its driver's team: its
+   *  colours are the object's own, which the extractor paints into its base
+   *  maps (the Banshee's violet). `colour` (the driver's) is not used for
+   *  the paint. */
+  instantiateVehicle(t: VehicleTemplate, _colour: string | null, empty = false): THREE.Object3D {
     const object = t.root.clone(true);
-    if (!colour && !empty) return object;
-    const key = empty ? "vehicle|empty" : "vehicle|" + colour;
-    let set = this.tinted.get(key);
-    if (!set) { set = { geo: new Map(), mat: new Map() }; this.tinted.set(key, set); }
-    const k = EMPTY_VEHICLE_SHADE, c = new THREE.Color(colour ?? "#fff"), tint: Rgb = empty ? [k, k, k] : vehicleTint([c.r, c.g, c.b]), mats = set.mat;
+    if (!empty) return object;
+    let set = this.tinted.get("vehicle|empty");
+    if (!set) { set = { geo: new Map(), mat: new Map() }; this.tinted.set("vehicle|empty", set); }
+    const k = EMPTY_VEHICLE_SHADE, mats = set.mat;
     for (const m of meshes(object)) {
       m.material = mapMaterials(m.material, (mat) => {
         let out = mats.get(mat);
         if (!out) {
-          // A part the shader marks takes the player's colour as the game
-          // paints it (a banshee's plates); the rest a light wash, or the shade.
-          const cc = !empty && colour ? ccMapOf(mat) : null;
-          if (cc) out = changeColourMaterial(mat, cc, [c.r, c.g, c.b]);
-          else {
-            out = mat.clone();
-            const col = (out as THREE.MeshStandardMaterial).color;
-            if (col) col.setRGB(col.r * tint[0], col.g * tint[1], col.b * tint[2]);
-          }
+          out = cloneMaterial(mat);
+          const col = (out as THREE.MeshStandardMaterial).color;
+          if (col) col.setRGB(col.r * k, col.g * k, col.b * k);
           mats.set(mat, out);
         }
         return out;
@@ -519,7 +568,7 @@ export class ModelLibrary {
         if (!m.geometry.getAttribute("color")) continue;
         m.material = mapMaterials(m.material, (mat) => {
           let out = mats.get(mat);
-          if (!out) { out = mat.clone(); (out as THREE.MeshStandardMaterial).vertexColors = false; mats.set(mat, out); }
+          if (!out) { out = cloneMaterial(mat); (out as THREE.MeshStandardMaterial).vertexColors = false; mats.set(mat, out); }
           return out;
         });
       }
@@ -546,7 +595,7 @@ export class ModelLibrary {
           let out = set.mat.get(mat);
           if (!out) {
             // One shared copy: the weights are in the geometry, not the material.
-            out = mat.clone();
+            out = cloneMaterial(mat);
             (out as THREE.MeshStandardMaterial).vertexColors = true;
             set.mat.set(mat, out);
           }
@@ -557,7 +606,7 @@ export class ModelLibrary {
         m.material = mapMaterials(m.material, (mat) => {
           let out = set.mat.get(mat);
           if (!out) {
-            out = mat.clone();
+            out = cloneMaterial(mat);
             const col = (out as THREE.MeshStandardMaterial).color;
             if (col) col.setRGB(col.r * tint[0], col.g * tint[1], col.b * tint[2]);
             set.mat.set(mat, out);
