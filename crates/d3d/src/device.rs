@@ -2668,7 +2668,7 @@ impl<B: Backend> Device<B> {
         {
             return Ok(*s);
         }
-        let desc = TextureDesc::from_header(h.pixels.format, h.pixels.size)
+        let desc = crate::texdesc::from_header(h.pixels.format, h.pixels.size)
             .map_err(|e| D3dError::unimplemented(entry, format!("surface header: {e}")))?;
         let s = self
             .backend
@@ -2685,7 +2685,7 @@ impl<B: Backend> Device<B> {
 
     fn header_desc(&self, mem: &dyn GuestMemory, header: u32) -> Result<TextureDesc, D3dError> {
         let h = PixelContainer::read(mem, header)?;
-        TextureDesc::from_header(h.format, h.size)
+        crate::texdesc::from_header(h.format, h.size)
             .map_err(|e| D3dError::invalid("render target", e.to_string()))
     }
 
@@ -3279,10 +3279,9 @@ impl<B: Backend> Device<B> {
                 ),
             ));
         }
-        let desc = TextureDesc::from_header(pc.format, pc.size)
+        let desc = crate::texdesc::from_header(pc.format, pc.size)
             .map_err(|e| D3dError::unimplemented(entry, format!("texture {header:#010x}: {e}")))?;
-        let total = desc
-            .total_size()
+        let total = crate::texdesc::total_size(&desc)
             .map_err(|e| D3dError::unimplemented(entry, e.to_string()))?;
         if total as u64 > MAX_SPAN {
             return Err(D3dError::invalid(

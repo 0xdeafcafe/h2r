@@ -44,6 +44,7 @@ pub mod runtime_glue;
 pub mod scaled;
 pub mod shader;
 pub mod state;
+mod texdesc;
 pub mod threaded;
 pub mod vblank;
 pub mod vertex_cache;

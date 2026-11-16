@@ -308,7 +308,7 @@ impl<B: Backend> Device<B> {
             )));
         }
         let (bw, bh) = sw.size;
-        let desc = match TextureDesc::from_header(pc.format, pc.size) {
+        let desc = match crate::texdesc::from_header(pc.format, pc.size) {
             Ok(d) => d,
             Err(e) => {
                 return Ok(FrameTexture::Skip(format!(
@@ -399,11 +399,11 @@ impl<B: Backend> Device<B> {
                 "texture {header:#010x} over the depth buffer: {why}"
             )))
         };
-        let desc = match TextureDesc::from_header(pc.format, pc.size) {
+        let desc = match crate::texdesc::from_header(pc.format, pc.size) {
             Ok(d) => d,
             Err(e) => return skip(e.to_string()),
         };
-        let total = match desc.total_size() {
+        let total = match crate::texdesc::total_size(&desc) {
             Ok(l) => l as u64,
             Err(e) => return skip(e.to_string()),
         };
@@ -554,7 +554,7 @@ impl<B: Backend> Device<B> {
                 c.header
             )))
         };
-        let desc = match TextureDesc::from_header(pc.format, pc.size) {
+        let desc = match crate::texdesc::from_header(pc.format, pc.size) {
             Ok(d) => d,
             Err(e) => return skip(e.to_string()),
         };
@@ -604,7 +604,7 @@ impl<B: Backend> Device<B> {
         };
         let pitch = c.width * bpp;
         let len = pitch as u64 * c.height as u64;
-        let total = match desc.total_size() {
+        let total = match crate::texdesc::total_size(&desc) {
             Ok(l) => l as u64,
             Err(e) => return skip(e.to_string()),
         };
@@ -685,7 +685,7 @@ impl<B: Backend> Device<B> {
             self.refresh_rtt(mem, header)?;
             return Ok(t.surface);
         }
-        let desc = TextureDesc::from_header(h.pixels.format, h.pixels.size)
+        let desc = crate::texdesc::from_header(h.pixels.format, h.pixels.size)
             .map_err(|e| D3dError::unimplemented(entry, format!("surface header: {e}")))?;
         if depth != desc.format.is_depth() {
             return Err(D3dError::invalid(
@@ -936,7 +936,7 @@ impl<B: Backend> Device<B> {
         if pc.resource.kind() != ResourceType::Texture {
             return Ok(None);
         }
-        let Ok(desc) = TextureDesc::from_header(pc.format, pc.size) else {
+        let Ok(desc) = crate::texdesc::from_header(pc.format, pc.size) else {
             return Ok(None);
         };
         // Texels that read back unchanged: what the surface holds is what
@@ -1328,9 +1328,9 @@ impl<B: Backend> Device<B> {
         let len = match header.kind() {
             ResourceType::Texture | ResourceType::Surface => {
                 let pc = PixelContainer::read(mem, resource)?;
-                TextureDesc::from_header(pc.format, pc.size)
+                crate::texdesc::from_header(pc.format, pc.size)
                     .ok()
-                    .and_then(|d| d.total_size().ok())
+                    .and_then(|d| crate::texdesc::total_size(&d).ok())
                     .map_or(1, |l| l as u64)
             }
             _ => 1,
@@ -1432,7 +1432,7 @@ impl<B: Backend> Device<B> {
         if pc.resource.kind() != ResourceType::Texture {
             return Ok(None);
         }
-        let Ok(desc) = TextureDesc::from_header(pc.format, pc.size) else {
+        let Ok(desc) = crate::texdesc::from_header(pc.format, pc.size) else {
             return Ok(None);
         };
         if desc.kind != gfx::texture::TextureKind::D2
