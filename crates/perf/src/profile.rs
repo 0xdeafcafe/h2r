@@ -421,6 +421,17 @@ impl SessionConfig {
     }
 }
 
+static EXTRA_THREADS: std::sync::Mutex<Vec<ThreadTarget>> = std::sync::Mutex::new(Vec::new());
+
+/// Sample the calling thread too, as `name`, in every later
+/// [`Session::start`] (e.g. the D3D render thread).
+pub fn register_current_thread(name: &str) {
+    EXTRA_THREADS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(ThreadTarget::current(name));
+}
+
 /// A profiling and/or timeline run around some code. Start it on the
 /// thread to sample (more with [`Session::start_with`]); finish it, or
 /// drop it, *before* unloading the generated dylib: resolution needs the
@@ -443,7 +454,15 @@ pub struct Report {
 impl Session {
     /// Sample the calling thread.
     pub fn start(config: SessionConfig) -> io::Result<Session> {
-        Self::start_with(config, vec![ThreadTarget::current("main")])
+        let mut targets = vec![ThreadTarget::current("main")];
+        targets.extend(
+            EXTRA_THREADS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .cloned(),
+        );
+        Self::start_with(config, targets)
     }
 
     /// Sample `targets`.
@@ -507,7 +526,10 @@ impl Session {
         if let (Some(raw), Some(dir)) = (raw, &self.config.profile) {
             // Resolving a long run's samples takes a while; say so, so the
             // user doesn't interrupt it.
-            eprintln!("perf: resolving samples and writing {} (can take a minute; don't interrupt)", dir.display());
+            eprintln!(
+                "perf: resolving samples and writing {} (can take a minute; don't interrupt)",
+                dir.display()
+            );
             let p = resolve(raw, &mut Symbolizer::new());
             report.files.extend(p.write(dir, &self.config.render)?);
             report.profile = Some(p);

@@ -589,6 +589,9 @@ pub fn run_hosted_with_live(
     let level_name = level.as_ref().map(|l| l.name.clone());
     level_boot::install(&loaded.runtime, level, perf_from == Some(level_boot::PerfFrom::Level))
         .context("installing the level boot")?;
+    // Sample the render thread too when profiling.
+    #[cfg(feature = "perf")]
+    let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {

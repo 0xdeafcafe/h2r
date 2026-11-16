@@ -24,7 +24,7 @@ pub mod pushbuf;
 pub mod sample;
 pub mod symbolize;
 
-pub use profile::{Session, SessionConfig};
+pub use profile::{Session, SessionConfig, register_current_thread};
 
 /// Every scenario, in run order.
 pub fn scenarios(disc: Option<std::path::PathBuf>) -> Vec<Box<dyn bench::Scenario>> {
