@@ -477,3 +477,45 @@ fn new_datums_carry_slot_and_salt() {
     assert_eq!(b.salt(), a.salt() + 1);
     assert!(set.tag(TagId(b.0 ^ 0x1_0000)).is_none());
 }
+
+#[test]
+fn a_pinned_map_can_drop_its_index_tail_and_header_extras() {
+    let t = tiny();
+    let first = t.set.build().unwrap().0;
+    // Give the source map an index tail and uninterpreted header bytes.
+    let mut source = first.clone();
+    let h = read(first).header().clone();
+    let index_end = h.index_offset as usize + 0x20 + 6 * 12 + 6 * 16;
+    source[index_end..index_end + 4].copy_from_slice(b"tail");
+    source[0x144..0x148].copy_from_slice(&[1, 2, 3, 4]);
+    source[0x180..0x188].copy_from_slice(&[5; 8]);
+    source[0x154..0x160].copy_from_slice(&[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    source[0x158..0x15c].copy_from_slice(&0x800u32.to_le_bytes());
+    let mut checksum = crate::checksum::XorChecksum::default();
+    checksum.update(&source[0x800..]);
+    let value = checksum.finish();
+    source[0x2d0..0x2d4].copy_from_slice(&value.to_le_bytes());
+    let mut map = read(source.clone());
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    assert_eq!(set.build().unwrap().0, source);
+
+    let pinned = set.pinned.as_mut().unwrap();
+    assert_eq!(pinned.clear_index_tail(), 4);
+    pinned.clear_header();
+    let (bytes, _) = set.build().unwrap();
+    let mut rebuilt = read(bytes.clone());
+    rebuilt.validate_checksum().unwrap();
+    assert_eq!(&bytes[index_end..index_end + 4], &[0; 4]);
+    assert_eq!(&bytes[0x144..0x148], &[0; 4]);
+    assert_eq!(&bytes[0x180..0x188], &[0; 8]);
+    assert_eq!(rebuilt.header().low_detail_offset, 0x800);
+    assert_eq!(rebuilt.header().name, "tiny");
+    // Tags are untouched.
+    let ids: Vec<_> = map.tags().iter().map(|t| t.id).collect();
+    for id in ids {
+        assert_eq!(
+            map.read_tag_bytes(id).unwrap(),
+            rebuilt.read_tag_bytes(id).unwrap()
+        );
+    }
+}

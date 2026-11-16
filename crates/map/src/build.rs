@@ -390,6 +390,34 @@ pub struct BuildLayout {
     pub checksum: u32,
 }
 
+/// Header bytes a map built from scratch still needs from a pinned source:
+/// the low-detail bitmap count, offset and size (`+0x154..+0x160`), which
+/// pinned bitmaps index into.
+pub const LOW_DETAIL_HEADER: std::ops::Range<usize> = 0x154..0x160;
+
+impl PinnedImage {
+    /// Zero the uninterpreted index bytes after the tag entries, as a map
+    /// built from scratch has them. The index size, and so the BSP base,
+    /// stay the same. Returns how many nonzero bytes were cleared.
+    pub fn clear_index_tail(&mut self) -> usize {
+        let start = (self.index_entries_end as usize).min(self.index.len());
+        let tail = &mut self.index[start..];
+        let cleared = tail.iter().filter(|&&b| b != 0).count();
+        tail.fill(0);
+        cleared
+    }
+    /// Replace the header template with zeros, keeping only
+    /// [`LOW_DETAIL_HEADER`]: every field the builder does not write (the
+    /// `+0x144` CRC field, build and dependency identities `+0x174..+0x198`,
+    /// build date, and all other uninterpreted bytes) is left zero, as in a
+    /// map built from scratch.
+    pub fn clear_header(&mut self) {
+        let mut header = vec![0; HEADER];
+        header[LOW_DETAIL_HEADER].copy_from_slice(&self.header[LOW_DETAIL_HEADER]);
+        self.header = header;
+    }
+}
+
 impl TagSet {
     /// An empty set. Add groups, tags and strings, then build.
     pub fn new(cache_type: CacheType, name: &str, scenario_path: &str) -> Self {
@@ -1219,7 +1247,6 @@ impl<'a> Builder<'a> {
         // else follows the prefix, sector aligned.
         let place = |file: &mut Vec<u8>, slot: usize, bytes: &[u8]| -> Result<u32> {
             if let Some((at, len)) = pin.map(|p| p.tables[slot])
-                && len != 0
                 && bytes.len() <= len as usize
             {
                 let at = at as usize;

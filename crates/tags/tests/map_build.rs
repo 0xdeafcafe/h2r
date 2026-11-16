@@ -418,3 +418,66 @@ fn retail_maps_rebuild_tag_for_tag() -> Res<()> {
     }
     Ok(())
 }
+
+/// The `h2 map testbuild` variants read back through `map::Map` with the
+/// same tags; "fresh" keeps every tag's bytes and drops only what it says.
+#[test]
+#[ignore = "requires retail ISO in H2_DISC"]
+fn load_test_variants_read_back() -> Res<()> {
+    let disc = std::env::var_os("H2_DISC").ok_or("set H2_DISC to your retail ISO")?;
+    let stem = std::env::var("H2_BUILD_MAPS").unwrap_or_else(|_| "lockout".into());
+    for stem in stem.split(',').filter(|s| !s.is_empty() && *s != "all") {
+        let (mut map, original) = open_disc_map(&disc, stem)?;
+        let (moved, summary) = tags::rebuild::moved_variant(&mut map)?;
+        let mut built = Map::from_reader(Cursor::new(moved.build()?.0))?;
+        built.validate_checksum()?;
+        same_index(&map, &built);
+        let mut new_addresses = 0;
+        for t in map.tags().iter().filter(|t| t.group == FourCC(*b"bitm")) {
+            let a = t.location.map(|l| l.address);
+            if a != built.tag(t.id)?.location.map(|l| l.address) {
+                new_addresses += 1;
+            }
+        }
+        assert_eq!(new_addresses, summary.relocated);
+        println!("{stem} moved: {summary:?}");
+
+        for (keep_tail, keep_header) in [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let (fresh, cleared) = tags::rebuild::fresh_variant(&mut map, keep_tail, keep_header)?;
+            let bytes = fresh.build()?.0;
+            if keep_tail && keep_header {
+                assert_eq!(first_difference(&original, &bytes), None);
+                continue;
+            }
+            let mut built = Map::from_reader(Cursor::new(bytes.clone()))?;
+            built.validate_checksum()?;
+            same_index(&map, &built);
+            let ids: Vec<_> = map.tags().iter().map(|t| t.id).collect();
+            for id in ids {
+                if map.tag(id)?.location.is_some() {
+                    assert_eq!(map.read_tag_bytes(id)?, built.read_tag_bytes(id)?);
+                }
+            }
+            let h = built.header().clone();
+            let index = built.read_file_range(h.index_offset.into(), h.index_size.into())?;
+            let entries_end = 0x20 + 12 * map.groups().len() + 16 * map.index_slots() as usize;
+            let tail_zero = index[entries_end..].iter().all(|&b| b == 0);
+            assert_eq!(tail_zero, !keep_tail);
+            assert_eq!(cleared > 0, !keep_tail);
+            if keep_header {
+                assert_eq!(bytes[0x144..0x198], original[0x144..0x198]);
+            } else {
+                assert!(bytes[0x174..0x198].iter().all(|&b| b == 0));
+                assert!(bytes[0x144..0x148].iter().all(|&b| b == 0));
+                assert!(bytes[0x20..0x120].iter().all(|&b| b == 0));
+            }
+            assert_eq!(h.low_detail_offset, map.header().low_detail_offset);
+            println!(
+                "{stem} fresh (keep tail {keep_tail}, keep header {keep_header}): reads back, \
+                 {cleared} tail bytes cleared, every tag byte-identical"
+            );
+        }
+    }
+    Ok(())
+}

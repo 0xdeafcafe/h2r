@@ -230,6 +230,70 @@ tag a map uses has metadata in that map; shared maps are only reached
 through raw pointers); retail salts start at `0xe174` for slot 0 and grow
 with the slot but skip values (lockout slot 3 is `0xe178`).
 
+## Load tests (`h2 map testbuild`)
+
+Two maps for the game to load, through the `H2_MAP_DIR` override
+([storage.md](../runtime/storage.md), "Map overrides"). Each goes in its
+own folder under the disc's file name, so the override serves it for that
+level:
+
+```sh
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --map lockout
+```
+
+| Folder | What changed from the disc's map | Risk it tests |
+|---|---|---|
+| `moved/` | Every bitmap rebuilt as a block tree and appended after the old metadata (all at new addresses), every local LOD's pixels copied to new raw data at new file offsets. Everything else pinned. | that the engine follows fixed-up pointers to moved tags and moved raw data; alignment of moved pixel data |
+| `fresh/` | Every tag byte-identical at its address, but the index tail cleared to zero and the header rebuilt from zeros (only what the builder writes, plus the low-detail fields the bitmaps index into) | the index tail and the zeroed header fields of a map built from scratch |
+
+The command checks each map reads back with the same tags and a valid
+checksum before writing. `--force` replaces earlier output. If `fresh`
+fails, bisect with `--keep-tail` (writes `fresh-keep-tail/`: header still
+from scratch) and `--keep-header` (writes `fresh-keep-header/`: tail still
+cleared). With both, the map is the disc's byte for byte. With either flag only the
+fresh variant is written.
+
+Salts are **not** tested: pinned tags hold datums in bytes nobody has
+described, so renumbering them needs full relocation of every group. The
+salt risk stays open until a map built entirely from built tags (the
+Halo 1 converter's first level) loads.
+
+Run each one (Lockout is multiplayer, so this starts a local Slayer game,
+[level-boot.md](../runtime/level-boot.md)):
+
+```sh
+H2_MAP_DIR=~/h2-testmaps/moved cargo h2 play disc/halo2.iso --level lockout
+H2_MAP_DIR=~/h2-testmaps/fresh cargo h2 play disc/halo2.iso --level lockout
+# only if fresh fails:
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-tail
+H2_MAP_DIR=~/h2-testmaps/fresh-keep-tail cargo h2 play disc/halo2.iso --level lockout
+cargo h2 map testbuild disc/halo2.iso --out ~/h2-testmaps --keep-header
+H2_MAP_DIR=~/h2-testmaps/fresh-keep-header cargo h2 play disc/halo2.iso --level lockout
+```
+
+**Success:** the log shows `map override: maps\lockout from …/lockout.map`
+and `level boot: lockout loaded at present N`, and the level looks and
+plays like the disc's: same textures everywhere (for `moved`, no black,
+missing or garbled surfaces), no crash walking round the map.
+
+**What a failure means:**
+
+- `moved` fails to load, or textures are wrong or garbled, and `fresh`
+  is fine: the engine doesn't accept moved bitmaps or moved pixel data.
+  Garbled only at certain sizes points at raw alignment (`0x200` now).
+  A crash means something outside the bitmap points into a bitmap's old
+  bytes (aliasing), or the engine needs metadata in its original order.
+- `fresh` fails but `fresh-keep-tail` works: the engine needs the index
+  tail. Maps built from scratch must generate it; find out what it is
+  first.
+- `fresh` fails but `fresh-keep-header` works: the engine needs one of
+  the header fields we leave zero (most likely the dependency identities
+  at `+0x174..+0x198`, which the copy path compares with the shared maps).
+- Both bisect variants fail: both parts matter; try with both flags (the
+  disc's own bytes) to rule out the override itself.
+- No `map override` line: the file name or folder is wrong; the override
+  wasn't used.
+
 ## Not verified (needs a game run, or more work)
 
 - **No built map has been loaded by the game.** The round trips prove the
