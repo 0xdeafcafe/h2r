@@ -11,7 +11,8 @@
 //! - [`identity`]: the server key and id in the data directory.
 //!
 //! Signing and verification live in `live_proto::sign`, shared with the
-//! clients. Run it with `h2 live serve`.
+//! clients. Run it with `h2 live serve`, or alone with `h2-live-server`
+//! ([`standalone`], the Docker image).
 
 pub mod admin;
 pub mod app;
@@ -32,6 +33,7 @@ pub mod pg;
 pub mod public;
 pub mod relay;
 mod sessions;
+pub mod standalone;
 pub mod status;
 pub mod store;
 mod teams;
