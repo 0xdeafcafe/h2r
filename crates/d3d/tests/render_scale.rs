@@ -1130,3 +1130,163 @@ fn a_full_screen_pass_reaches_the_far_edges_at_every_scale() {
         }
     }
 }
+
+// --- The lazy reference (`ScaledBackend::set_lazy_reference`) ----------
+
+fn scaled_lazy(ctx: &GfxContext, scale: u32, lazy: bool) -> Scaled {
+    let mut b = scaled(ctx, scale);
+    b.set_lazy_reference(lazy);
+    b
+}
+
+/// The guest's answers (counts, written-back bytes, skipped draws, device
+/// memory) and the reference's frame are the same with the lazy reference
+/// on and off, and both are the plain backend's.
+#[test]
+fn the_lazy_reference_gives_the_guest_the_same_answers() {
+    let Some(ctx) = context() else { return };
+    let (mut plain, _, expect) = frame(GfxBackend::new(share(&ctx)));
+    let bb = plain.back_buffer().unwrap();
+    let (plain_px, _) = pixels(&mut plain.backend, bb);
+    for scale in [2, 4] {
+        for lazy in [false, true] {
+            let (mut d, _, got) = frame(scaled_lazy(&ctx, scale, lazy));
+            assert_eq!(got, expect, "{scale}x, lazy {lazy}");
+            let s = d.backend.stats();
+            assert_eq!((s.lazy_mismatches, s.mismatches), (0, 0), "{s:?}");
+            if lazy {
+                assert!(s.reference_deferred > 0, "not vacuous: {s:?}");
+            } else {
+                assert_eq!(s.reference_deferred, 0, "{s:?}");
+            }
+            let bb = d.back_buffer().unwrap();
+            let (ref_px, _) = pixels(d.backend.reference_mut(), bb.reference);
+            assert!(ref_px == plain_px, "{scale}x, lazy {lazy}: reference frame");
+        }
+    }
+}
+
+/// Every phase-2 scene: the reference (run when read) is the plain image
+/// and the view matches it box-filtered, with the lazy reference off and on.
+#[test]
+fn every_scene_is_the_same_with_the_lazy_reference_on_and_off() {
+    let Some(ctx) = context() else { return };
+    let scenes = [
+        Scene::FrameSizedTarget,
+        Scene::SmallTargetWritesDepth,
+        Scene::GuestDepthLevel,
+        Scene::LargerDepthLevel,
+        Scene::DepthAlias,
+        Scene::ColorOverDepth,
+    ];
+    for s in scenes {
+        for scale in [2, 4] {
+            let images: Vec<(Vec<u8>, Vec<u8>)> = [false, true]
+                .into_iter()
+                .map(|lazy| {
+                    let mut d = scene(scaled_lazy(&ctx, scale, lazy), s);
+                    let bb = d.back_buffer().unwrap();
+                    let (r, _) = pixels(d.backend.reference_mut(), bb.reference);
+                    let (v, _) = pixels(d.backend.view_mut(), bb.view.expect("scaled"));
+                    let st = d.backend.stats();
+                    assert_eq!(st.lazy_mismatches, 0, "{s:?} {scale}x: {st:?}");
+                    (r, v)
+                })
+                .collect();
+            assert!(images[0].0 == images[1].0, "{s:?} {scale}x: reference");
+            assert!(images[0].1 == images[1].1, "{s:?} {scale}x: view");
+        }
+        // The default (lazy) against the plain backend, and the view
+        // against the reference.
+        check_scene(&ctx, s, 2);
+    }
+}
+
+/// Frames that clear the back buffer and depth whole, draw, and present
+/// with nothing reading them: the reference never draws them, until a
+/// read needs the last one.
+#[test]
+fn unread_frames_are_never_drawn_by_the_reference() {
+    let Some(ctx) = context() else { return };
+    const FRAMES: u32 = 5;
+    let run = |backend: Scaled| {
+        let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+        set_states(&mut d, &mut m);
+        for f in 0..FRAMES {
+            d.clear(&mut m, 0, 0, 0xF3, 0xFF10_2030, 1.0, 0).unwrap();
+            for q in 0..4u32 {
+                let x = (q * 16) as f32;
+                flat_quad(
+                    &mut d,
+                    &mut m,
+                    (x, 4.0 * f as f32, x + 12.0, 40.0),
+                    0xFF00_0000 | (f * 40 + q * 7) << 8,
+                );
+            }
+            d.swap(&mut m, 0).unwrap();
+        }
+        let per_frame = d.backend.stats();
+        let bb = d.back_buffer().unwrap();
+        // The device flips: the frame shown last is the front buffer, the
+        // back buffer holds the one before.
+        let (px, _) = pixels(d.backend.reference_mut(), bb.reference);
+        (px, per_frame, d.backend.stats())
+    };
+    let (eager, _, _) = run(scaled_lazy(&ctx, 4, false));
+    let (lazy, before_read, after_read) = run(scaled_lazy(&ctx, 4, true));
+    assert!(lazy == eager, "the reference's image when read");
+    // Each frame: one clear and four draws.
+    assert_eq!(before_read.reference_deferred, u64::from(FRAMES) * 5);
+    // A frame's whole clear drops the work of the last frame on that
+    // buffer (the device flips between two), so only the last two
+    // frames' work is pending.
+    assert_eq!(
+        before_read.reference_dropped,
+        u64::from(FRAMES - 2) * 5,
+        "{before_read:?}"
+    );
+    assert_eq!(before_read.reference_replayed, 0, "{before_read:?}");
+    assert_eq!(after_read.reference_replayed, 2 * 5, "{after_read:?}");
+}
+
+/// A deferred draw into the back buffer samples a guest-size level in
+/// place; the level is drawn over afterwards (not deferred). The deferred
+/// draw must still see the level as it was: the write runs the queue first.
+#[test]
+fn a_deferred_draw_sees_a_level_it_samples_as_it_was() {
+    let Some(ctx) = context() else { return };
+    let run = |backend: Scaled| {
+        let (mut d, mut m) = create(backend, UploadPolicy::Tracked);
+        d.set_rtt_direct(true);
+        set_states(&mut d, &mut m);
+        level(&mut m);
+        let back = device_field(&m, d3d::layout::device_field::RENDER_TARGET);
+        d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+        set_states(&mut d, &mut m);
+        flat_quad(&mut d, &mut m, (0.0, 0.0, 32.0, 32.0), 0xFFFF_0000);
+        d.set_render_target(&mut m, back, 0).unwrap();
+        set_states(&mut d, &mut m);
+        d.clear(&mut m, 0, 0, 0xF0, 0xFF10_2030, 1.0, 0).unwrap();
+        d.set_texture(&mut m, 0, TEX_A).unwrap();
+        textured_quad(&mut d, &mut m, (0.0, 0.0, 32.0, 32.0));
+        d.set_texture(&mut m, 0, 0).unwrap();
+        // The level changes after the back buffer's draw sampled it.
+        d.set_render_target(&mut m, LEVEL_A, 0).unwrap();
+        set_states(&mut d, &mut m);
+        flat_quad(&mut d, &mut m, (0.0, 0.0, 32.0, 32.0), 0xFF00_FF00);
+        d.set_render_target(&mut m, back, 0).unwrap();
+        let stats = d.backend.stats();
+        let bb = d.back_buffer().unwrap();
+        let (px, _) = pixels(d.backend.reference_mut(), bb.reference);
+        (px, stats)
+    };
+    let (eager, _) = run(scaled_lazy(&ctx, 2, false));
+    let (lazy, stats) = run(scaled_lazy(&ctx, 2, true));
+    assert_eq!(
+        argb(&eager, 10, 10),
+        0xFFFF_0000,
+        "not vacuous: the red level"
+    );
+    assert!(lazy == eager, "{stats:?}");
+    assert!(stats.reference_deferred > 0, "{stats:?}");
+}

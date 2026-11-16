@@ -43,6 +43,12 @@
 //! A view failure never reaches the guest: it is counted and that frame is
 //! shown from the reference's image.
 //!
+//! **Lazy reference** ([`ScaledBackend::set_lazy_reference`], on by
+//! default): the reference's draws and whole clears into scaled surfaces
+//! are queued until something needs those surfaces, and a whole clear
+//! drops queued work nothing read, so a frame nobody reads back is drawn
+//! once, at scale.
+//!
 //! **Changing the scale during a run.** [`ScaledBackend::follow_scale`]
 //! gives it a source of the wanted scale (the Video screen's Resolution
 //! setting), read at every present. A change is made at that frame
@@ -131,6 +137,18 @@ pub trait ScaleView<R: Backend>: Backend {
         src: R::Surface,
         dst: Self::Surface,
     ) -> Result<bool, String>;
+    /// For the lazy reference ([`ScaledBackend::set_lazy_reference`]): a
+    /// handle keeping `reference`'s `texture` alive until a deferred draw
+    /// runs, and whether the reference's draws sample it through a view.
+    /// `None` (the default): the reference's draws are never deferred.
+    fn retain_reference_texture(&self, _texture: &R::Texture) -> Option<(R::Texture, bool)> {
+        None
+    }
+    /// Whether `reference`'s present reads the surface it presents (a
+    /// present hook): its deferred draws must run first.
+    fn reference_present_reads(&self, _reference: &R) -> bool {
+        true
+    }
     /// Ends the frame showing `reference`'s `surface` instead of one of
     /// its own (the fallback after a view failure).
     fn present_reference(
@@ -157,12 +175,16 @@ pub struct ScaledSurface<R, V> {
 
 /// A [`ScaledBackend`] texture.
 #[derive(Debug)]
-pub struct ScaledTexture<R, V> {
+pub struct ScaledTexture<R, V, R2 = ()> {
     /// The reference's texture.
     pub reference: R,
     /// What the view samples: its own (a snapshot of a scaled surface) or
     /// the reference's, shared. `None`: the view cannot sample it.
     pub view: Option<V>,
+    /// The reference surface it is a view of in place
+    /// ([`Backend::surface_texture`]): what a draw sampling it reads depends
+    /// on when the draw runs.
+    pub(crate) live: Option<R2>,
 }
 
 /// What the view did differently from the reference. None of it reaches
@@ -200,6 +222,17 @@ pub struct ScaleStats {
     pub rescales: u64,
     /// The scale in effect.
     pub scale: u32,
+    /// Reference draws and clears into scaled surfaces deferred
+    /// ([`ScaledBackend::set_lazy_reference`]).
+    pub reference_deferred: u64,
+    /// Of those, run later because something needed the reference.
+    pub reference_replayed: u64,
+    /// Of those, never run: a whole clear of their target came first and
+    /// nothing read what they drew.
+    pub reference_dropped: u64,
+    /// Deferred draws whose outcome when run differed from the judge's
+    /// answer given at the time (a judge bug; the guest saw the judge's).
+    pub lazy_mismatches: u64,
 }
 
 impl std::fmt::Display for ScaleStats {
@@ -208,7 +241,8 @@ impl std::fmt::Display for ScaleStats {
             f,
             "{} view frames, {} fallback frames, {} view errors, {} mismatches, {} depth missed, \
              {} colour resyncs, {} depth resyncs, {} depth-only proxy draws, {} scaled depth aliases, \
-             {} 1x frames, {} scale changes",
+             {} 1x frames, {} scale changes, reference work {} deferred, {} run late, {} dropped, \
+             {} lazy mismatches",
             self.view_frames,
             self.fallback_frames,
             self.view_errors,
@@ -219,7 +253,11 @@ impl std::fmt::Display for ScaleStats {
             self.proxy_depth_draws,
             self.scaled_depth_aliases,
             self.reference_frames,
-            self.rescales
+            self.rescales,
+            self.reference_deferred,
+            self.reference_replayed,
+            self.reference_dropped,
+            self.lazy_mismatches
         )
     }
 }
@@ -261,6 +299,87 @@ pub struct ScaledBackend<R: Backend, V: ScaleView<R>> {
     /// A copy of `stats` updated at every present, for a reader on another
     /// thread ([`ScaledBackend::shared_stats`]).
     shared: Option<Arc<Mutex<ScaleStats>>>,
+    /// The reference's judge while the lazy reference is on
+    /// ([`ScaledBackend::set_lazy_reference`]).
+    judge: Option<Box<dyn DrawJudge>>,
+    /// Reference work into scaled surfaces not run yet, in order.
+    deferred: Vec<Deferred<R>>,
+}
+
+/// Deferred work past this many calls runs (a bound on memory when no
+/// whole clear comes).
+const MAX_DEFERRED: usize = 16_384;
+
+/// A reference call into scaled surfaces, deferred.
+enum Deferred<R: Backend> {
+    Clear {
+        color: R::Surface,
+        depth: Option<R::Surface>,
+        clear: Clear,
+    },
+    Draw {
+        color: R::Surface,
+        depth: Option<R::Surface>,
+        draw: Box<ResolvedDraw>,
+        textures: [Option<R::Texture>; 4],
+        /// What the device was told.
+        judged: DrawOutcome,
+        /// The surfaces it samples in place.
+        live: Vec<R::Surface>,
+    },
+}
+
+impl<R: Backend> Deferred<R> {
+    fn surfaces(&self) -> (R::Surface, Option<R::Surface>) {
+        match self {
+            Deferred::Clear { color, depth, .. } | Deferred::Draw { color, depth, .. } => {
+                (*color, *depth)
+            }
+        }
+    }
+
+    /// The depth surface it may change.
+    fn writes_depth(&self) -> Option<R::Surface> {
+        match self {
+            Deferred::Clear { depth, clear, .. } => {
+                depth.filter(|_| clear.depth.is_some() || clear.stencil.is_some())
+            }
+            Deferred::Draw { depth, draw, .. } => depth.filter(|_| writes_depth_or_stencil(draw)),
+        }
+    }
+
+    fn live(&self) -> &[R::Surface] {
+        match self {
+            Deferred::Draw { live, .. } => live,
+            Deferred::Clear { .. } => &[],
+        }
+    }
+
+    /// The surfaces whose earlier contents its result depends on. A clear
+    /// overwrites what it clears (a depth clear that keeps the stencil, or
+    /// the reverse, depends on the surface); a draw depends on its colour
+    /// target, and on its depth surface when it tests or writes it.
+    fn reads(&self) -> [Option<R::Surface>; 2] {
+        match self {
+            Deferred::Clear { depth, clear, .. } => [
+                None,
+                depth.filter(|_| clear.depth.is_some() != clear.stencil.is_some()),
+            ],
+            Deferred::Draw {
+                color, depth, draw, ..
+            } => {
+                let r = &draw.state.render;
+                let uses_depth = r.depth_mode != DepthBufferMode::Disabled || r.stencil.enable;
+                [Some(*color), depth.filter(|_| uses_depth)]
+            }
+        }
+    }
+}
+
+/// `H2_LAZY_REFERENCE`: `0`, `off` or `false` turn the lazy reference off;
+/// it is on otherwise.
+pub fn lazy_reference_from(value: Option<&str>) -> bool {
+    !matches!(value, Some("0" | "off" | "false"))
 }
 
 /// A scaled surface of the view: the handle the device holds (`original`),
@@ -313,7 +432,171 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             },
             logged: 0,
             shared: None,
+            judge: None,
+            deferred: Vec::new(),
         })
+        .map(|mut b| {
+            b.set_lazy_reference(lazy_reference_from(
+                std::env::var("H2_LAZY_REFERENCE").ok().as_deref(),
+            ));
+            b
+        })
+    }
+
+    /// The lazy reference (on by default; `H2_LAZY_REFERENCE=0` turns it
+    /// off). The reference's draws and whole clears into scaled surfaces
+    /// (the frame buffers and frame-sized targets, which the view draws
+    /// itself) are queued instead of run. Every other reference call runs
+    /// the queue first, in order, so whatever the guest reads, or the
+    /// reference draws from them, is what running each at once gives. A
+    /// whole clear of a target drops the queued work that only drew into
+    /// it (when nothing queued reads it): a frame whose back buffer and
+    /// depth nobody reads is never drawn at 1x. Counted draws are never
+    /// queued. A queued draw's outcome is the reference's judge's
+    /// ([`Backend::judge`], what the render thread answers the guest with
+    /// anyway). Off without a judge, or when the view cannot keep the
+    /// reference's textures alive.
+    pub fn set_lazy_reference(&mut self, on: bool) {
+        if !on {
+            if let Err(e) = self.settle() {
+                eprintln!("d3d: render scale: deferred reference work: {e}");
+            }
+            self.judge = None;
+        } else if self.judge.is_none() {
+            self.judge = self.reference.judge();
+        }
+    }
+
+    /// Runs the deferred reference work, in order.
+    fn settle(&mut self) -> Result<(), String> {
+        if self.deferred.is_empty() {
+            return Ok(());
+        }
+        for op in std::mem::take(&mut self.deferred) {
+            self.stats.reference_replayed += 1;
+            match op {
+                Deferred::Clear {
+                    color,
+                    depth,
+                    clear,
+                } => self.reference.clear(color, depth, clear)?,
+                Deferred::Draw {
+                    color,
+                    depth,
+                    draw,
+                    textures,
+                    judged,
+                    ..
+                } => {
+                    let out = self.reference.draw(
+                        color,
+                        depth,
+                        &draw,
+                        std::array::from_fn(|i| textures[i].as_ref()),
+                    )?;
+                    if out != judged {
+                        self.stats.lazy_mismatches += 1;
+                        if self.stats.lazy_mismatches <= 10 {
+                            eprintln!(
+                                "d3d: render scale {}: deferred reference draw {out:?}, judged {judged:?}",
+                                self.scale
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs the deferred work before reference work into `color` and
+    /// `depth`, sampling surfaces `live` in place, that is not deferred, if
+    /// the two depend on each other: it draws into or with a scaled
+    /// surface, or samples one in place, or changes a surface deferred
+    /// work samples in place. Work into guest-size targets whose textures
+    /// are copies (snapshots, depth textures, uploads) touches nothing the
+    /// deferred work does, so it may run first.
+    fn settle_for(
+        &mut self,
+        color: &Surf<R, V>,
+        depth: Option<&Surf<R, V>>,
+        live: &[R::Surface],
+    ) -> Result<(), String> {
+        if self.deferred.is_empty() {
+            return Ok(());
+        }
+        let scaled = |s: &R::Surface| self.scaled.iter().any(|x| x.reference == *s);
+        let written = [Some(color.reference), depth.map(|d| d.reference)];
+        let depends = color.view.is_some()
+            || depth.is_some_and(|d| d.view.is_some())
+            || live.iter().any(scaled)
+            || self
+                .deferred
+                .iter()
+                .any(|op| op.live().iter().any(|s| written.contains(&Some(*s))));
+        if depends {
+            self.settle()?;
+        }
+        Ok(())
+    }
+
+    /// Whether reference work into `color` and `depth` may be deferred.
+    fn deferrable(&self, color: &Surf<R, V>, depth: Option<&Surf<R, V>>) -> bool {
+        self.judge.is_some()
+            && self.live(color.view).is_some()
+            && depth.is_none_or(|d| self.live(d.view).is_some())
+    }
+
+    /// Queues `op`, running the queue when it is long.
+    fn defer(&mut self, op: Deferred<R>) -> Result<(), String> {
+        self.stats.reference_deferred += 1;
+        self.deferred.push(op);
+        if self.deferred.len() > MAX_DEFERRED {
+            self.settle()?;
+        }
+        Ok(())
+    }
+
+    /// A whole clear of `color` (and `depth`) is about to be queued: drops
+    /// the queued work whose every effect it overwrites and that no work
+    /// kept after it reads.
+    fn drop_covered(&mut self, color: R::Surface, depth: Option<R::Surface>, clear: Clear) {
+        // A draw sampling a surface in place reads whatever is there when
+        // it runs: keep everything.
+        if self.deferred.iter().any(|op| !op.live().is_empty()) {
+            return;
+        }
+        let colour = clear.color.is_some();
+        let whole_depth = clear.depth.is_some() && clear.stencil.is_some();
+        let covered = |op: &Deferred<R>| {
+            let (c, _) = op.surfaces();
+            c == color
+                && colour
+                && op
+                    .writes_depth()
+                    .is_none_or(|d| Some(d) == depth && whole_depth)
+        };
+        // From the end: a covered op goes unless a kept op after it depends
+        // on what it writes.
+        let mut needed: Vec<R::Surface> = Vec::new();
+        let mut keep = vec![true; self.deferred.len()];
+        for (i, op) in self.deferred.iter().enumerate().rev() {
+            let (c, _) = op.surfaces();
+            let writes = [Some(c), op.writes_depth()];
+            if covered(op) && !writes.iter().flatten().any(|s| needed.contains(s)) {
+                keep[i] = false;
+                continue;
+            }
+            for s in op.reads().into_iter().flatten() {
+                if !needed.contains(&s) {
+                    needed.push(s);
+                }
+            }
+        }
+        let before = self.deferred.len();
+        let mut k = keep.into_iter();
+        self.deferred.retain(|_| k.next().unwrap_or(true));
+        self.stats.reference_dropped += (before - self.deferred.len()) as u64;
     }
 
     /// The scale in effect.
@@ -358,6 +641,7 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             return;
         }
         let old = self.scale;
+        self.settle_quietly();
         if let Err(e) = self.view.submit_recorded() {
             self.view_failed("submit", e);
         }
@@ -423,13 +707,17 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         )
     }
 
-    /// The reference.
+    /// The reference. Its scaled surfaces may lag the guest's calls while
+    /// work is deferred ([`ScaledBackend::set_lazy_reference`]);
+    /// [`ScaledBackend::reference_mut`] runs it first.
     pub fn reference(&self) -> &R {
         &self.reference
     }
 
-    /// The reference, mutably.
+    /// The reference, mutably, with its deferred work run (so its
+    /// surfaces hold what the guest's calls drew).
     pub fn reference_mut(&mut self) -> &mut R {
+        self.settle_quietly();
         &mut self.reference
     }
 
@@ -501,6 +789,56 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
         }
     }
 
+    /// Queues the reference's `draw` if it may be deferred; returns the
+    /// judge's outcome for it then.
+    fn defer_draw(
+        &mut self,
+        color: &Surf<R, V>,
+        depth: Option<&Surf<R, V>>,
+        draw: &ResolvedDraw,
+        textures: [Option<&Tex<R, V>>; 4],
+    ) -> Result<Option<DrawOutcome>, String> {
+        if draw.hw.zpass_count_enable || !self.deferrable(color, depth) {
+            return Ok(None);
+        }
+        let mut kept: [Option<R::Texture>; 4] = std::array::from_fn(|_| None);
+        let mut views = [None; 4];
+        let mut live = Vec::new();
+        for (i, t) in textures.iter().enumerate() {
+            let Some(t) = t else { continue };
+            let Some((k, v)) = self.view.retain_reference_texture(&t.reference) else {
+                return Ok(None);
+            };
+            kept[i] = Some(k);
+            views[i] = Some(v);
+            live.extend(t.live);
+        }
+        let judged = match self.judge.as_mut() {
+            Some(j) => j.draw(draw, views),
+            None => return Ok(None),
+        };
+        self.defer(Deferred::Draw {
+            color: color.reference,
+            depth: depth.map(|d| d.reference),
+            draw: Box::new(draw.clone()),
+            textures: kept,
+            judged: judged.clone(),
+            live,
+        })?;
+        Ok(Some(judged))
+    }
+
+    /// Runs the deferred reference work where the caller cannot return an
+    /// error (a view repair): a failure is logged.
+    fn settle_quietly(&mut self) {
+        if let Err(e) = self.settle() {
+            eprintln!(
+                "d3d: render scale {}: deferred reference work: {e}",
+                self.scale
+            );
+        }
+    }
+
     /// A scaled colour surface of guest size `size`, and its format, to
     /// clear or draw the scaled depth through.
     fn proxy_color(&self, size: (u32, u32)) -> Option<(V::Surface, D3DFormat)> {
@@ -521,7 +859,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
             return true;
         };
         // The view's recorded draws into `v` come first; the fill replaces
-        // them.
+        // them. The reference's deferred work comes first too.
+        self.settle_quietly();
         self.view_pending = false;
         match self.view.fill_from(&mut self.reference, s.reference, v) {
             Ok(true) => true,
@@ -615,7 +954,8 @@ impl<R: Backend, V: ScaleView<R>> ScaledBackend<R, V> {
 }
 
 type Surf<R, V> = ScaledSurface<<R as Backend>::Surface, <V as Backend>::Surface>;
-type Tex<R, V> = ScaledTexture<<R as Backend>::Texture, <V as Backend>::Texture>;
+type Tex<R, V> =
+    ScaledTexture<<R as Backend>::Texture, <V as Backend>::Texture, <R as Backend>::Surface>;
 
 impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     type Surface = Surf<R, V>;
@@ -667,6 +1007,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn destroy_surface(&mut self, surface: Self::Surface) -> Result<(), String> {
+        self.settle()?;
         self.before_shared_write(&surface);
         self.reference.destroy_surface(surface.reference)?;
         if let Some(v) = surface.view {
@@ -682,7 +1023,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     fn upload_texture(&mut self, texture: &DecodedTexture) -> Result<Self::Texture, String> {
         let reference = self.reference.upload_texture(texture)?;
         let view = self.share(&reference);
-        Ok(ScaledTexture { reference, view })
+        Ok(ScaledTexture {
+            reference,
+            view,
+            live: None,
+        })
     }
 
     fn bc_supported(&self) -> bool {
@@ -696,8 +1041,18 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         clear: Clear,
     ) -> Result<(), String> {
         self.before_shared_write(&color);
-        self.reference
-            .clear(color.reference, depth.map(|d| d.reference), clear)?;
+        let (rc, rd) = (color.reference, depth.map(|d| d.reference));
+        if self.deferrable(&color, depth.as_ref()) {
+            self.drop_covered(rc, rd, clear);
+            self.defer(Deferred::Clear {
+                color: rc,
+                depth: rd,
+                clear,
+            })?;
+        } else {
+            self.settle_for(&color, depth.as_ref(), &[])?;
+            self.reference.clear(rc, rd, clear)?;
+        }
         let vd = self.live(depth.and_then(|d| d.view));
         let r = match (self.live(color.view), depth) {
             (Some(vc), None) => self.view.clear(vc, None, clear),
@@ -751,12 +1106,19 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         textures: [Option<&Self::Texture>; 4],
     ) -> Result<DrawOutcome, String> {
         self.before_shared_write(&color);
-        let out = self.reference.draw(
-            color.reference,
-            depth.map(|d| d.reference),
-            draw,
-            textures.map(|t| t.map(|t| &t.reference)),
-        )?;
+        let out = match self.defer_draw(&color, depth.as_ref(), draw, textures)? {
+            Some(judged) => judged,
+            None => {
+                let live: Vec<_> = textures.iter().flatten().filter_map(|t| t.live).collect();
+                self.settle_for(&color, depth.as_ref(), &live)?;
+                self.reference.draw(
+                    color.reference,
+                    depth.map(|d| d.reference),
+                    draw,
+                    textures.map(|t| t.map(|t| &t.reference)),
+                )?
+            }
+        };
         let drawn = out == DrawOutcome::Drawn;
         let vd = self.live(depth.and_then(|d| d.view));
         let vt = textures.map(|t| t.and_then(|t| t.view.as_ref()));
@@ -819,7 +1181,10 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
         // The reference ends its frame too (its swap ring, shader upkeep);
-        // it shows nothing.
+        // it shows nothing, unless it has a present hook.
+        if self.view.reference_present_reads(&self.reference) {
+            self.settle()?;
+        }
         self.reference
             .present_with_gamma(surface.reference, flags, gamma)?;
         self.view_pending = false;
@@ -841,6 +1206,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             } else {
                 self.stats.fallback_frames += 1;
             }
+            self.settle()?;
             if let Err(e) =
                 self.view
                     .present_reference(&self.reference, surface.reference, flags, gamma)
@@ -874,6 +1240,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         depth: Option<Self::Surface>,
         clear: &RectClear,
     ) -> Result<DrawOutcome, String> {
+        self.settle_for(&color, depth.as_ref(), &[])?;
         self.before_shared_write(&color);
         let out = self
             .reference
@@ -926,6 +1293,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         height: u32,
         layout: GuestLayoutKind,
     ) -> Result<Vec<u8>, String> {
+        self.settle()?;
         self.reference
             .read_surface(surface.reference, format, width, height, layout)
     }
@@ -938,11 +1306,13 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         height: u32,
         layout: GuestLayoutKind,
     ) -> Result<Option<Vec<u8>>, String> {
+        self.settle()?;
         self.reference
             .read_depth(surface.reference, format, width, height, layout)
     }
 
     fn copy_surface(&mut self, src: Self::Surface, dst: Self::Surface) -> Result<bool, String> {
+        self.settle()?;
         self.before_shared_write(&dst);
         let copied = self.reference.copy_surface(src.reference, dst.reference)?;
         if copied && let Some(vd) = self.live(dst.view) {
@@ -968,6 +1338,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         desc: &TextureDesc,
         bytes: &[u8],
     ) -> Result<bool, String> {
+        self.settle()?;
         self.before_shared_write(&surface);
         let written = self
             .reference
@@ -983,6 +1354,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         surface: Self::Surface,
         opaque: bool,
     ) -> Result<Option<Self::Texture>, String> {
+        self.settle()?;
         let Some(reference) = self.reference.snapshot_surface(surface.reference, opaque)? else {
             return Ok(None);
         };
@@ -997,9 +1369,15 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             },
             None => self.share(&reference),
         };
-        Ok(Some(ScaledTexture { reference, view }))
+        Ok(Some(ScaledTexture {
+            reference,
+            view,
+            live: None,
+        }))
     }
 
+    // Counted draws are never deferred: the counter does not depend on
+    // the deferred work.
     fn clear_pixel_count(&mut self) -> Result<(), String> {
         self.reference.clear_pixel_count()
     }
@@ -1069,6 +1447,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn surface_texture(&mut self, surface: Self::Surface) -> Result<Option<Self::Texture>, String> {
+        self.settle()?;
         let Some(reference) = self.reference.surface_texture(surface.reference)? else {
             return Ok(None);
         };
@@ -1082,7 +1461,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             },
             None => self.share(&reference),
         };
-        Ok(Some(ScaledTexture { reference, view }))
+        Ok(Some(ScaledTexture {
+            reference,
+            view,
+            live: Some(surface.reference),
+        }))
     }
 
     fn can_sample_depth_surfaces(&self) -> bool {
@@ -1095,11 +1478,16 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     ) -> Result<Option<Self::Texture>, String> {
         // Depth levels (shadow maps) are compared texel by texel: the view
         // samples the reference's 1x bits.
+        self.settle()?;
         let Some(reference) = self.reference.depth_level_texture(surface.reference)? else {
             return Ok(None);
         };
         let view = self.share(&reference);
-        Ok(Some(ScaledTexture { reference, view }))
+        Ok(Some(ScaledTexture {
+            reference,
+            view,
+            live: None,
+        }))
     }
 
     fn judge(&self) -> Option<Box<dyn DrawJudge>> {
@@ -1123,6 +1511,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         desc: &TextureDesc,
         options: DecodeOptions,
     ) -> Result<Option<Self::Texture>, String> {
+        self.settle()?;
         let Some(reference) = self.reference.depth_alias_texture(
             depth.reference,
             format,
@@ -1184,7 +1573,11 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
             Some(v) => Some(v),
             None => self.share(&reference),
         };
-        Ok(Some(ScaledTexture { reference, view }))
+        Ok(Some(ScaledTexture {
+            reference,
+            view,
+            live: None,
+        }))
     }
 
     fn can_mirror(&self) -> bool {
@@ -1192,10 +1585,12 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn mirror_reserve(&mut self, len: u32) -> Result<(), String> {
+        self.settle()?;
         self.reference.mirror_reserve(len)
     }
 
     fn mirror_write(&mut self, offset: u32, bytes: &[u8]) -> Result<(), String> {
+        self.settle()?;
         self.reference.mirror_write(offset, bytes)
     }
 
@@ -1208,6 +1603,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         layout: GuestLayoutKind,
         offset: u32,
     ) -> Result<(), String> {
+        self.settle()?;
         self.reference
             .mirror_store(surface.reference, format, width, height, layout, offset)
     }
@@ -1221,6 +1617,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
         layout: GuestLayoutKind,
         offset: u32,
     ) -> Result<(), String> {
+        self.settle()?;
         self.before_shared_write(&surface);
         self.reference
             .mirror_load(surface.reference, format, width, height, layout, offset)?;
@@ -1229,6 +1626,7 @@ impl<R: Backend, V: ScaleView<R>> Backend for ScaledBackend<R, V> {
     }
 
     fn mirror_read(&mut self, offset: u32, len: u32) -> Result<Vec<u8>, String> {
+        self.settle()?;
         self.reference.mirror_read(offset, len)
     }
 }
@@ -1311,6 +1709,14 @@ impl ScaleView<GfxBackend> for GfxBackend {
 
     fn submit_recorded(&mut self) -> Result<(), String> {
         self.flush()
+    }
+
+    fn retain_reference_texture(&self, texture: &HostTexture) -> Option<(HostTexture, bool)> {
+        Some((texture.shared(), texture.has_view()))
+    }
+
+    fn reference_present_reads(&self, reference: &GfxBackend) -> bool {
+        reference.has_present_hook()
     }
 
     fn fill_from(

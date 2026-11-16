@@ -92,6 +92,11 @@ pub struct HostTexture {
 }
 
 impl HostTexture {
+    /// Whether the shaders sample it through a view (else a stand-in).
+    pub(crate) fn has_view(&self) -> bool {
+        self.view.is_some()
+    }
+
     /// Another handle to the same texture and view (for a backend on the
     /// same device, `crate::scaled`).
     pub fn shared(&self) -> HostTexture {
@@ -412,6 +417,11 @@ impl GfxBackend {
     pub fn without_shaders(mut self) -> Self {
         self.shaders = None;
         self
+    }
+
+    /// Whether a present hook is installed (a present reads the surface).
+    pub(crate) fn has_present_hook(&self) -> bool {
+        self.present_hook.is_some()
     }
 
     /// The surface shown by the last `Swap`.
