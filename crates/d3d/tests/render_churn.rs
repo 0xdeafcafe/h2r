@@ -362,6 +362,33 @@ fn batched_submissions_match_one_per_pass() {
     );
 }
 
+/// Clearing the visibility counter is GPU work only: it rides in the
+/// frame's submission instead of submitting the passes before it.
+#[test]
+fn a_counter_clear_does_not_submit() {
+    use d3d::Backend;
+    let Some(mut s) = scene(|_| {}) else {
+        return;
+    };
+    s.frame(0, SWAP_FINISH);
+    let before = s.d.backend.batch_stats().submits;
+    s.d.set_render_target(&mut s.m, s.rtt, 0).unwrap();
+    s.d.set_stream_source(&mut s.m, 0, VB_HEADER, STRIDE)
+        .unwrap();
+    s.tfactor(0xFF12_3456);
+    s.d.draw_vertices(&mut s.m, TRIANGLESTRIP, 4 * 16 * COPIES, 4)
+        .unwrap();
+    s.d.set_render_target(&mut s.m, s.back, 0).unwrap();
+    for _ in 0..4 {
+        s.d.backend.clear_pixel_count().unwrap();
+    }
+    assert_eq!(s.d.backend.batch_stats().submits, before);
+    s.d.block_on_resource(&mut s.m, TEX_HEADER).unwrap();
+    assert_eq!(s.d.backend.batch_stats().submits, before + 1);
+    let texel = s.m.read_u32(0x8000_0000 | TEX_DATA).unwrap();
+    assert_eq!(texel, 0xFF12_3456);
+}
+
 /// The ceilings: a regression in any of them is churn coming back.
 #[test]
 fn per_frame_churn_stays_down() {

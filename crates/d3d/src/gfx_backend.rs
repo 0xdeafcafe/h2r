@@ -456,6 +456,17 @@ impl GfxBackend {
         encoded
     }
 
+    /// The encoder kept open (a new one if there is none) and its render
+    /// passes, after encoding the pending pass into it: for GPU-only work
+    /// that may wait for the next submission. Put it back in `self.open`.
+    fn take_open(&mut self) -> Result<(wgpu::CommandEncoder, usize), String> {
+        self.encode_pending()?;
+        Ok(self
+            .open
+            .take()
+            .unwrap_or_else(|| (self.ctx.device.create_command_encoder(&Default::default()), 0)))
+    }
+
     /// Submits the passes encoded so far, if any.
     fn submit_open(&mut self) {
         if let Some((enc, _)) = self.open.take() {
@@ -1353,19 +1364,23 @@ impl Backend for GfxBackend {
 
     fn depth_level_texture(&mut self, surface: SurfaceId) -> Result<Option<HostTexture>, String> {
         let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        // After the draws into it.
-        self.flush()?;
         let s = self.store.get(surface).map_err(|e| e.to_string())?;
         let texture = s.texture().clone();
         let d = *s.desc();
         if texture.format() != wgpu::TextureFormat::Depth32FloatStencil8 || d.samples > 1 {
             return Ok(None);
         }
+        // After the draws into it, in the same submission: the pass writes
+        // only buffers and a texture of its own, so nothing else needs it
+        // on the GPU sooner (under `submit_per_pass`, submitted now).
+        let (mut enc, passes) = self.take_open()?;
         let ctx = &self.ctx;
         let bits = self.depth_bits.get_or_insert_with(|| gfx::depth_bits::DepthBits::new(ctx));
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
         let out = bits.convert(ctx, &mut enc, &texture, (d.width, d.height));
-        self.submit(enc);
+        self.open = Some((enc, passes));
+        if self.submit_per_pass {
+            self.submit_open();
+        }
         Ok(Some(self.host_texture(out, TextureKind::D2)))
     }
 
@@ -1663,13 +1678,17 @@ impl Backend for GfxBackend {
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {
-        // After the counted draws before it.
-        self.flush()?;
+        // After the counted draws before it, in the same submission (the
+        // report that reads the counter submits; under `submit_per_pass`,
+        // submitted now).
+        let (mut enc, passes) = self.take_open()?;
         let ctx = &self.ctx;
         let counter = self.counter.get_or_insert_with(|| PixelCounter::new(ctx));
-        let mut enc = ctx.device.create_command_encoder(&Default::default());
         counter.clear(&mut enc);
-        self.submit(enc);
+        self.open = Some((enc, passes));
+        if self.submit_per_pass {
+            self.submit_open();
+        }
         Ok(())
     }
 
