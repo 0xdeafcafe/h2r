@@ -13,8 +13,10 @@ import { identity } from "../state/identity";
 import { adminState } from "../admin/state";
 import { forget, recentServers } from "../api/server";
 import {
+  CUSTOM_CODE_MAX,
   INVITE_DAY_CHOICES,
   artWords,
+  customCodeError,
   createInvite,
   fetchAdminStatus,
   fetchInvites,
@@ -163,7 +165,8 @@ export interface InviteControls { create(): void; copy(): void }
 /** Making, copying and revoking invite codes (admins). */
 export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls) => void }) {
   const [days, setDays] = createSignal<number>(7);
-  const [made, setMade] = createSignal<{ invite: string; exp: number } | null>(null);
+  const [custom, setCustom] = createSignal("");
+  const [made, setMade] = createSignal<{ invite: string; exp: number; custom?: boolean } | null>(null);
   const [list, setList] = createSignal<InviteItem[]>([]);
   const [busy, setBusy] = createSignal(false);
   const [err, setErr] = createSignal<string | null>(null);
@@ -181,10 +184,14 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
   async function create() {
     const c = ctx();
     if (!c || busy()) return;
+    const want = custom().trim();
+    const bad = want ? customCodeError(want) : null;
+    if (bad) { setErr(`custom code: ${bad}`); return; }
     setBusy(true); setErr(null);
     try {
-      const r = await createInvite(c.api, c.aud, c.me, days());
+      const r = await createInvite(c.api, c.aud, c.me, days(), undefined, undefined, want || undefined);
       setMade(r);
+      setCustom("");
       setCopied(await copyText(r.invite));
       await load();
       props.info.refresh();
@@ -225,12 +232,14 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
               )}
             </For>
           </span>
+          <label for="dash-invite-custom">own code</label>
+          <input id="dash-invite-custom" value={custom()} maxLength={CUSTOM_CODE_MAX} onInput={(e) => setCustom(e.currentTarget.value)} autocomplete="off" spellcheck={false} placeholder="optional, or leave blank for a random one" />
           <button type="submit" class="dx-go" disabled={busy()}>{busy() ? "making" : "new invite"}</button>
           <Show when={made()}>
             {(m) => (
               <>
                 <label for="dash-invite-code">code</label>
-                <input id="dash-invite-code" readOnly value={m().invite} onFocus={(e) => e.currentTarget.select()} />
+                <input id="dash-invite-code" class="dx-invite-code" readOnly value={m().invite} onFocus={(e) => e.currentTarget.select()} />
                 <p class="dx-note">{copied() ? "Copied. " : ""}One sign-up, until {until(m().exp)}. Send it to one friend.</p>
               </>
             )}
@@ -245,8 +254,8 @@ export function InvitesPlate(props: { info: ServerInfo; bind: (c: InviteControls
             <For each={open()}>
               {(i) => (
                 <li>
-                  <span>open until {until(i.exp)}{i.by_gamertag ? ` · ${i.by_gamertag}` : ""}</span>
-                  <button type="button" class="dx-forget" onClick={() => void copyText(i.invite ?? "")}>copy</button>
+                  <span>{i.custom ? "custom code, " : ""}open until {until(i.exp)}{i.by_gamertag ? ` · ${i.by_gamertag}` : ""}</span>
+                  <Show when={i.invite}>{(code) => <button type="button" class="dx-forget" title={code()} onClick={() => void copyText(code())}>copy</button>}</Show>
                   <button type="button" class="dx-forget" onClick={() => void revoke(i.jti)}>revoke</button>
                 </li>
               )}

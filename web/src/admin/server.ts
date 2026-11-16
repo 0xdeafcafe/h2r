@@ -2,7 +2,11 @@
 // every visitor sees (GET /v1/server), the admin status (GET
 // /v1/admin/status, an `admin.read` token) and invites made by an admin
 // account: a signed `InviteCreated` event POSTed to /v1/invites with an
-// `invites.write` token; the server answers the code.
+// `invites.write` token; the server answers the code. The body is the
+// event's compact JWS, or JSON {event, code} when the admin chooses the
+// code. Generated codes are 25 characters in five groups
+// (XXXXX-XXXXX-XXXXX-XXXXX-XXXXX); custom ones are what the admin typed,
+// and the list never shows them again.
 //
 // Parsing is defensive: an older server answers 404 for the new
 // endpoints and the screen falls back to what discovery says.
@@ -67,8 +71,10 @@ export interface InviteItem {
   exp: number;
   state: InviteState;
   used_by_gamertag: string | null;
-  /** The code, for open invites only. */
+  /** The code, for open generated invites only (never for custom ones). */
   invite: string | null;
+  /** The admin chose the code. */
+  custom: boolean;
 }
 
 const num = (v: unknown, d = 0): number => (typeof v === "number" && Number.isFinite(v) ? v : d);
@@ -131,6 +137,7 @@ export function parseInvites(body: unknown): InviteItem[] {
     state: (["open", "used", "revoked", "expired"].includes(i.state as string) ? i.state : "open") as InviteState,
     used_by_gamertag: str(i.used_by_gamertag),
     invite: str(i.invite),
+    custom: i.custom === true,
   }));
 }
 
@@ -206,26 +213,50 @@ export async function fetchInvites(api: string, aud: string, me: LocalAccount, f
   return parseInvites(await adminGet(api, "/invites", aud, me, fetchFn));
 }
 
-async function postSigned(api: string, path: string, aud: string, me: LocalAccount, type: string, data: unknown, fetchFn: typeof fetch, nowMs: number): Promise<unknown> {
+/** A custom code's rules (the server's): 4 to 32 printable ASCII
+ *  characters. It matches ignoring case, spaces and dashes. */
+export const CUSTOM_CODE_MIN = 4;
+export const CUSTOM_CODE_MAX = 32;
+export function customCodeError(code: string): string | null {
+  if (code.length < CUSTOM_CODE_MIN || code.length > CUSTOM_CODE_MAX) return `${CUSTOM_CODE_MIN} to ${CUSTOM_CODE_MAX} characters`;
+  if (!/^[\x20-\x7e]+$/.test(code)) return "letters, digits, spaces and punctuation only";
+  return null;
+}
+
+/** The body of `POST /v1/invites`: the event alone, or with a chosen code. */
+export function inviteBody(jws: string, code?: string): { contentType: string; body: string } {
+  return code
+    ? { contentType: "application/json", body: JSON.stringify({ event: jws, code }) }
+    : { contentType: "application/jose", body: jws };
+}
+
+async function postSigned(api: string, path: string, aud: string, me: LocalAccount, type: string, data: unknown, fetchFn: typeof fetch, nowMs: number, code?: string): Promise<unknown> {
   const jws = await signEvent(me, eventBody(me, { stream: INVITE_STREAM, type, data }, nowMs));
   const token = await issueToken(me, aud, INVITES_WRITE, nowMs);
+  const b = inviteBody(jws, code);
   const r = await fetchFn(`${api}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/jose", authorization: `Bearer ${token}` },
-    body: jws,
+    headers: { "content-type": b.contentType, authorization: `Bearer ${token}` },
+    body: b.body,
   });
   if (!r.ok) return fail(r);
   return r.json();
 }
 
-/** Makes an invite lasting `days`; resolves to its code and expiry. */
+/** Makes an invite lasting `days`, with the code `code` if given (trimmed;
+ *  empty means the server makes one); resolves to its code and expiry. */
 export async function createInvite(
   api: string, aud: string, me: LocalAccount, days: number,
-  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(),
-): Promise<{ invite: string; jti: string; exp: number }> {
-  const b = obj(await postSigned(api, "/invites", aud, me, "InviteCreated", inviteData(days, nowMs), fetchFn, nowMs));
+  fetchFn: typeof fetch = fetch, nowMs: number = Date.now(), code?: string,
+): Promise<{ invite: string; jti: string; exp: number; custom: boolean }> {
+  const want = code?.trim() || undefined;
+  if (want) {
+    const bad = customCodeError(want);
+    if (bad) throw new ApiError(400, "invalid", `that code won't work: ${bad}`);
+  }
+  const b = obj(await postSigned(api, "/invites", aud, me, "InviteCreated", inviteData(days, nowMs), fetchFn, nowMs, want));
   if (typeof b.invite !== "string") throw new ApiError(500, "invalid", "the server sent no invite");
-  return { invite: b.invite, jti: String(b.jti ?? ""), exp: num(b.exp) };
+  return { invite: b.invite, jti: String(b.jti ?? ""), exp: num(b.exp), custom: b.custom === true || !!want };
 }
 
 export async function revokeInvite(api: string, aud: string, me: LocalAccount, jti: string, fetchFn: typeof fetch = fetch, nowMs: number = Date.now()): Promise<void> {

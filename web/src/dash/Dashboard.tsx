@@ -4,8 +4,8 @@
 //     turns to bring the selected one into focus;
 //   - list screens (live now, friends, players, game history): a tilted
 //     panel of rows, a preview pod and an info plate;
-//   - pod screens (settings, a player, sign up, server, invites): one big pod,
-//     four small ones around it and an info plate.
+//   - pod screens (settings, a player, sign up, recovery, server, invites):
+//     one big pod, four small ones around it and an info plate.
 // Arrow keys (or the wheel) move, Enter (or a) selects, Escape /
 // Backspace (or b) goes back; the mouse and touch work too.
 
@@ -26,7 +26,9 @@ function rowType(g: GameState): string {
 }
 import { isCampaign } from "../state/reducer";
 import { mapPicture } from "../components/MapPicture";
-import { accountsFile, createAccount, gamertagError, SignUpError } from "../state/account";
+import { accountsFile, gamertagError, signUp, SignUpError } from "../state/account";
+import { RecoverPlate, RecoveryCode, RecoveryPlate, createRecovery, keepFreshRecovery } from "./Recovery";
+import "../styles/dash-recovery.css";
 import { defaultBase, fetchWellKnown, normalizeBase, recentServers } from "../api/server";
 import { ConnectPlate, InvitesPlate, ServerPlate, createServerInfo, type InviteControls } from "./Server";
 import { serverPods } from "../admin/server";
@@ -52,7 +54,7 @@ import SessionsScreen from "./Sessions";
 import "../styles/social.css";
 
 type SectionId = "live" | "sessions" | "friends" | "clans" | "players" | "history" | "settings" | "signup" | "server";
-type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "server" | "social" | "sessions";
+type ScreenId = "menu" | "list" | "player" | "settings" | "signup" | "recovery" | "recover" | "server" | "social" | "sessions";
 
 const LABELS: Record<SectionId, () => string> = {
   live: () => "live now",
@@ -136,6 +138,10 @@ export default function Dashboard() {
     if (s === "friends" || s === "clans") return "social";
     if (s === "sessions") return "sessions";
     if (s === "settings") return "settings";
+    // /dash/signup/recover: a new device takes an account over;
+    // /dash/signup/recovery: the signed-in account's recovery code.
+    if (s === "signup" && params.tag === "recover") return "recover";
+    if (s === "signup" && params.tag === "recovery" && identity.me()) return "recovery";
     if (s === "signup") return identity.me() ? "player" : "signup";
     return viewed() ? "player" : "list";
   });
@@ -209,6 +215,7 @@ export default function Dashboard() {
   const serverSub = () => (section() === "server" ? params.tag ?? null : null);
   const serverInfo = createServerInfo(() => section() === "server");
   let inviteControls: InviteControls | null = null;
+  const recovery = createRecovery(() => screen() === "recovery");
 
   // The four small pods of a pod screen.
   const [sat, setSat] = createSignal(0);
@@ -224,7 +231,10 @@ export default function Dashboard() {
           { label: "game history", glyph: "history", act: () => go(`${playerHref(a.gamertag)}/history`, "deeper") },
         ];
         if (me && me.xuid === a.xuid) {
-          return [...base,
+          // Your own profile: game history is a step away on the service
+          // record; its place goes to recovery.
+          return [base[0]!,
+            { label: "recovery", glyph: "key", act: () => go("/dash/signup/recovery", "deeper") },
             { label: "sign out", glyph: "exit", act: () => { identity.signOut(); } },
             { label: "download for h2", glyph: "download", act: () => download(`h2live-${me.gamertag.replace(/\s+/g, "-")}.json`, accountsFile(me)) },
           ];
@@ -240,6 +250,23 @@ export default function Dashboard() {
           { label: "stats site", glyph: "record", act: () => go("/stats", "deeper") },
           { label: "event log", glyph: "history", act: () => go("/stats/events", "deeper") },
           { label: "server", glyph: "server", act: () => go("/dash/server", "deeper") },
+        ];
+      case "recovery": {
+        const ready = recovery.phase() === "ready";
+        return [
+          { label: "copy code", glyph: "sign", act: ready ? () => void recovery.copyCode() : undefined },
+          { label: recovery.showSetup() ? "hide setup" : "authenticator setup", glyph: "download", act: ready ? () => recovery.toggleSetup() : undefined },
+          {
+            label: recovery.confirming() ? "confirm reset" : ready ? "reset recovery" : "set up recovery", glyph: "gear",
+            act: recovery.phase() === "ready" || recovery.phase() === "none" ? () => recovery.setupOrReset() : undefined,
+          },
+          { label: "profile", glyph: "career", act: () => go("/dash/signup", "back") },
+        ];
+      }
+      case "recover":
+        return [
+          { label: "new key", glyph: "key" }, { label: "your code", glyph: "sign" },
+          { label: "this browser", glyph: "store" }, { label: "sign up", glyph: "career", act: () => go("/dash/signup", "back") },
         ];
       case "signup":
         return [
@@ -295,7 +322,9 @@ export default function Dashboard() {
     (document.activeElement as HTMLElement | null)?.blur();
     const s = section();
     if (screen() === "menu") return;
-    if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
+    if (screen() === "recovery" && recovery.confirming()) recovery.cancelReset();
+    else if (screen() === "recovery" || screen() === "recover") go("/dash/signup", "back");
+    else if (screen() === "player" && s !== "signup") go(`/dash/${s}`, "back");
     else if (s === "server" && params.tag) go("/dash/server", "back");
     else if (s === "signup" || s === "server") go("/dash/settings", "back");
     else if (s === "clans") go(`/dash/${menuHome("clans")}`, "back");
@@ -308,6 +337,7 @@ export default function Dashboard() {
       case "menu": go(`/dash/${items()[menu()]!}`, "deeper"); break;
       case "list": openRow(sel()); break;
       case "signup": (document.getElementById("dash-signup") as HTMLFormElement | null)?.requestSubmit(); break;
+      case "recover": (document.getElementById("dash-recover") as HTMLFormElement | null)?.requestSubmit(); break;
       default: {
         const s = sats()[sat()];
         if (s?.act) s.act();
@@ -457,7 +487,7 @@ export default function Dashboard() {
         <span class="dx-brand">h2 live</span>
         <span class="dx-chip dx-chip--server"><i class={`dx-led dx-led--${live.status()}`} />{live.wellKnown()?.id ?? new URL(live.server().base).host}</span>
         <Show when={identity.me()} fallback={<Show when={section() !== "signup"}><a class="dx-chip dx-chip--link dx-chip--join" href="/dash/signup" onClick={(e) => { e.preventDefault(); go("/dash/signup", "deeper"); }}>sign up</a></Show>}>
-          {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (section() !== "signup") go("/dash/signup", "deeper"); }}>{me().gamertag}</a>}
+          {(me) => <a class="dx-chip dx-chip--me" href="/dash/signup" onClick={(e) => { e.preventDefault(); if (screen() !== "player" || section() !== "signup") go("/dash/signup", section() === "signup" ? "back" : "deeper"); }}>{me().gamertag}</a>}
         </Show>
         <a class="dx-chip dx-chip--link" href="/stats">stats site</a>
       </header>
@@ -548,8 +578,30 @@ export default function Dashboard() {
             <div class="dx-screen dx-pods dx-pods--form dx-pages">
               <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
               <Sats sats={sats()} sel={-1} onSel={() => {}} />
-              <SignUpPlate />
+              <SignUpPlate onRecover={() => go("/dash/signup/recover", "deeper")} onRecovery={() => navigate("/dash/signup/recovery")} />
               <Prompts onA={select} onB={back} aLabel="create" />
+            </div>
+          </Match>
+
+          <Match when={screen() === "recovery"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-recovery">
+              <div class="dx-centre">
+                <BigPod wire>
+                  <Show when={recovery.phase() === "ready" && recovery.rec()} fallback={<Glyph name="key" />}><RecoveryCode state={recovery} /></Show>
+                </BigPod>
+              </div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <RecoveryPlate state={recovery} onDone={() => go("/dash/signup", "back")} />
+              <Prompts onA={select} onB={back} />
+            </div>
+          </Match>
+
+          <Match when={screen() === "recover"}>
+            <div class="dx-screen dx-pods dx-pods--form dx-pages dx-recover">
+              <div class="dx-centre"><BigPod wire><Glyph name="key" /></BigPod></div>
+              <Sats sats={sats()} sel={sat()} onSel={setSat} />
+              <RecoverPlate onDone={() => go("/dash/signup", "deeper", true)} />
+              <Prompts onA={select} onB={back} aLabel="recover" />
             </div>
           </Match>
 
@@ -750,7 +802,7 @@ function Sats(props: { sats: Sat[]; sel: number; onSel: (i: number) => void }) {
   );
 }
 
-function SignUpPlate() {
+function SignUpPlate(props: { onRecover: () => void; onRecovery: () => void }) {
   const [tag, setTag] = createSignal("");
   const [invite, setInvite] = createSignal("");
   const [busy, setBusy] = createSignal(false);
@@ -763,8 +815,10 @@ function SignUpPlate() {
     setBusy(true);
     try {
       const wk = live.wellKnown() ?? (await fetchWellKnown(live.server().base));
-      const a = await createAccount(live.server().api, live.server().base, wk.id, tag().trim(), invite().trim() || undefined);
-      await identity.add(a);
+      const { account, recovery } = await signUp(live.server().api, live.server().base, wk.id, tag().trim(), invite().trim() || undefined);
+      // The recovery setup shows once, on the next screen (an older server sends none).
+      if (recovery) { keepFreshRecovery(account.xuid, recovery); props.onRecovery(); }
+      await identity.add(account);
     } catch (x) {
       setErr(x instanceof SignUpError ? x.message : `couldn't sign up: ${(x as Error).message}`);
     } finally {
@@ -786,6 +840,7 @@ function SignUpPlate() {
           Your account key is saved in this browser for {live.wellKnown()?.id ?? "this server"}. Anyone with access to this browser profile can use it.
           After signing up, choose “download for h2” to take your account into the game.
         </p>
+        <button type="button" class="dx-forget" onClick={() => props.onRecover()}>already have an account? recover it</button>
       </form>
     </Plate>
   );

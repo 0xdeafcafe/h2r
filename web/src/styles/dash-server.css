@@ -27,3 +27,4 @@
 .dx-invite-list li > span { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dx-invite-list .dx-invite-old { color: #a9dd7c; }
 .dx-invite-list .dx-forget { font-size: calc(var(--u) * 13); }
+.dx-invites .dx-invite-code { font-size: calc(var(--u) * 15); letter-spacing: .04em; }

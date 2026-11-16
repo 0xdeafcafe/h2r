@@ -38,6 +38,7 @@ import { campaignHook } from "./campaign";
 import { actionHooks } from "./action";
 import { machineHooks } from "./fixtures";
 import { Admin } from "./admin";
+import { MockRecovery } from "./recovery";
 import { Content, customFor } from "./content";
 import { hasAllSkulls, parseSkullsParam } from "../src/lib/skulls";
 import { StatsFold, archive } from "./stats";
@@ -92,6 +93,8 @@ if (furniture) {
 world.run();
 
 const admin = new Admin(world, !!process.env.H2_MOCK_ADMIN && process.env.H2_MOCK_ADMIN !== "0");
+// Account recovery (mock/recovery.ts): TOTP codes and taking an account over.
+const recovery = new MockRecovery(world);
 const content = new Content(world, admin);
 if (admin.everyoneAdmin) console.log("[mock] H2_MOCK_ADMIN: accounts signed up in the browser are admins");
 const staticDir = process.env.H2_MOCK_STATIC;
@@ -181,6 +184,8 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     return err(400, "invalid", "expected a WebSocket upgrade");
   }
 
+  const rec = await recovery.handle(req, u);
+  if (rec) return json(rec.body, rec.status);
   const soc = await social.handle(req, u);
   if (soc) return json(soc.body, soc.status);
   const ses = sessions.handle(req, u);
@@ -203,7 +208,7 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     if (!/^[A-Za-z][A-Za-z0-9]*( [A-Za-z0-9]+)*$/.test(tag) || tag.length > 15) return err(400, "invalid", "that gamertag isn't valid");
     if (world.accountByTag(tag)) return err(409, "conflict", "gamertag taken");
     const a = world.createExternalAccount(tag, opened.jwk);
-    return json({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}` }, 201);
+    return json({ xuid: a.xuid, gamertag: a.gamertag, id: `acct:${a.xuid}@${HOST}`, recovery: await recovery.setup(a.xuid, a.gamertag) }, 201);
   }
   if ((m = path.match(/^\/v1\/accounts\/by-xuid\/([0-9a-fA-F]{16})\/keys$/))) {
     const a = world.accounts.get(m[1]!.toLowerCase());
