@@ -26,8 +26,7 @@ lift.workspace = true
 emit.workspace = true
 ir.workspace = true
 anyhow.workspace = true
-# Enable runtime-detected ARM SHA instructions for full-image cache validation.
-sha2 = { version = "0.10", features = ["asm"] }
+sha2 = "0.10"
 boot.workspace = true
 # Our settings (play --set, h2 settings).
 settings = { path = "../settings" }
@@ -68,6 +67,9 @@ png = "0.18"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+# Enable runtime-detected ARM SHA instructions for full-image cache
+# validation. sha2-asm has no MSVC build; Windows uses the portable code.
+sha2 = { version = "0.10", features = ["asm"] }
 
 [features]
 perf = ["dep:perf", "boot/perf"]

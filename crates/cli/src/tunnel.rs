@@ -387,14 +387,21 @@ pub fn find(explicit: Option<OsString>, path_env: Option<OsString>) -> Result<Pa
     path_env
         .iter()
         .flat_map(std::env::split_paths)
-        .map(|d| d.join("cloudflared"))
+        .map(|d| d.join(format!("cloudflared{}", std::env::consts::EXE_SUFFIX)))
         .find(|p| is_executable(p))
         .ok_or_else(|| anyhow::anyhow!("cloudflared was not found on PATH; {INSTALL_HINT}"))
 }
 
+#[cfg(unix)]
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// Windows has no executable bit; `cloudflared` is found as a file.
+#[cfg(not(unix))]
+fn is_executable(p: &Path) -> bool {
+    std::fs::metadata(p).is_ok_and(|m| m.is_file())
 }
 
 /// The quick tunnel's URL if `line` announces it: an

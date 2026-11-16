@@ -18,6 +18,7 @@
 //! guest-side code is the same for `h2 run --headless` and tests.
 
 pub mod audio_out;
+#[cfg(any(target_vendor = "apple", windows))]
 pub mod embedded;
 pub mod fps;
 pub mod frame;

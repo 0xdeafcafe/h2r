@@ -2,13 +2,41 @@
 //! Rescan on cache lookup so a newly added include-path shadow is noticed.
 use std::collections::HashMap;
 use std::ffi::OsString;
+#[cfg(unix)]
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
+#[cfg(not(unix))]
+use portable::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 
 use super::{Arch, Error, err};
 use crate::fnv64;
+
+/// Path bytes off Unix (Windows, which only compile-checks the emitter: the
+/// game module is built on a Mac). An `OsStr`'s bytes are its WTF-8
+/// encoding; clang's dependency rules are read back as UTF-8.
+#[cfg(not(unix))]
+mod portable {
+    use std::ffi::{OsStr, OsString};
+
+    pub trait OsStrExt {
+        fn as_bytes(&self) -> &[u8];
+    }
+    impl OsStrExt for OsStr {
+        fn as_bytes(&self) -> &[u8] {
+            self.as_encoded_bytes()
+        }
+    }
+    pub trait OsStringExt {
+        fn from_vec(bytes: Vec<u8>) -> Self;
+    }
+    impl OsStringExt for OsString {
+        fn from_vec(bytes: Vec<u8>) -> Self {
+            String::from_utf8_lossy(&bytes).into_owned().into()
+        }
+    }
+}
 
 /// One clang probe's result, shared by every translation unit that can use
 /// it. The first thread to need it runs the probe; the others wait.

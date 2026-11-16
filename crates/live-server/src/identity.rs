@@ -9,6 +9,7 @@
 
 use std::fs;
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -103,13 +104,19 @@ fn valid_id(id: &str) -> Result<()> {
 
 fn create_private_dir(dir: &Path) -> Result<()> {
     fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    #[cfg(unix)]
     fs::set_permissions(dir, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("restricting {}", dir.display()))
+        .with_context(|| format!("restricting {}", dir.display()))?;
+    Ok(())
 }
 
-/// Reads a secret file, refusing one that group or others can read.
+/// Reads a secret file, refusing one that group or others can read. On
+/// Windows there are no mode bits to check: the file is as private as the
+/// ACL it inherits from its directory (a per-user profile directory is).
 pub fn read_private(path: &Path) -> Result<Vec<u8>> {
+    #[cfg_attr(not(unix), allow(unused_variables))]
     let meta = fs::metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    #[cfg(unix)]
     if meta.permissions().mode() & 0o077 != 0 {
         bail!(
             "{} is readable by other users; chmod 600 it",
@@ -132,13 +139,12 @@ pub fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
         path.file_name().and_then(|n| n.to_str()).unwrap_or("file"),
         std::process::id()
     ));
-    let mut f = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(&tmp)
-        .with_context(|| format!("writing {}", tmp.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut f = options.open(&tmp).with_context(|| format!("writing {}", tmp.display()))?;
+    #[cfg(unix)]
     f.set_permissions(fs::Permissions::from_mode(0o600))?;
     f.write_all(bytes)?;
     f.sync_all()?;

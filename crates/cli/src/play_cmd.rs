@@ -338,10 +338,13 @@ fn hosted(
     }
 }
 
+// Windows has no signal watcher yet (Ctrl-C ends the process).
+#[cfg_attr(not(unix), allow(dead_code))]
 /// How long after the first signal the process exits regardless (the
 /// guest's report gets `shutdown_timeout`, 10 s, of this).
 const SIGNAL_DEADLINE: Duration = Duration::from_secs(20);
 
+#[cfg_attr(not(unix), allow(dead_code))]
 /// What a terminal signal does.
 #[derive(Debug, PartialEq, Eq)]
 enum OnSignal {
@@ -351,6 +354,7 @@ enum OnSignal {
     ExitNow,
 }
 
+#[cfg_attr(not(unix), allow(dead_code))]
 /// The first signal ends the run like a window close: the guest is asked to
 /// stop (waking it from a pause), and the window closes even if the guest
 /// has already exited and the window only shows its outcome. A second

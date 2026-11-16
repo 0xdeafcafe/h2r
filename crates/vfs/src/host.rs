@@ -1051,12 +1051,7 @@ impl Backend for HostBackend {
         self.store_basic(path, basic)
     }
     /// Empty the volume directory and its metadata directory, keeping both
-    /// roots. Traversal starts from the directory handles opened at
-    /// construction and never follows a symlink: entries are opened with
-    /// O_NOFOLLOW|O_DIRECTORY relative to their parent's handle and removed
-    /// with unlinkat, so a symlink is removed itself and a replaced root or
-    /// ancestor path is never consulted.
-    #[cfg(unix)]
+    /// roots ([`HostBackend::empty_roots`]).
     fn format(&mut self) -> Result<()> {
         // Queued writes land in the files about to go; their errors with them.
         self.settle_all();
@@ -1081,17 +1076,7 @@ impl Backend for HostBackend {
             }
             Ok(())
         };
-        let emptied = (|| -> Result<()> {
-            for fd in &self.anchors {
-                #[cfg(test)]
-                if let Some(error) = self.next_format_error.take() {
-                    return Err(error);
-                }
-                anchor::empty(fd, &mut before_unlink)?;
-                rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
-            }
-            Ok(())
-        })();
+        let emptied = self.empty_roots(&mut before_unlink);
         if let Err(error) = emptied {
             // Listings, usage and per-path state may describe removed
             // entries; keep only what still names a surviving file.
@@ -1122,11 +1107,6 @@ impl Backend for HostBackend {
         written.clear();
         *self.cache.borrow_mut() = Cache::default();
         Ok(())
-    }
-    #[cfg(not(unix))]
-    fn format(&mut self) -> Result<()> {
-        self.handles.clear();
-        Err(Error::NotSupported)
     }
     fn remove(&mut self, path: &str) -> Result<()> {
         self.handles.clear();
@@ -1267,6 +1247,66 @@ impl Backend for HostBackend {
         })
     }
 }
+impl HostBackend {
+    /// The emptying half of `format`. Traversal starts from the directory
+    /// handles opened at construction and never follows a symlink: entries
+    /// are opened with O_NOFOLLOW|O_DIRECTORY relative to their parent's
+    /// handle and removed with unlinkat, so a symlink is removed itself and
+    /// a replaced root or ancestor path is never consulted.
+    #[cfg(unix)]
+    fn empty_roots(&self, before_unlink: &mut impl FnMut() -> Result<()>) -> Result<()> {
+        for fd in &self.anchors {
+            #[cfg(test)]
+            if let Some(error) = self.next_format_error.take() {
+                return Err(error);
+            }
+            anchor::empty(fd, before_unlink)?;
+            rustix::fs::fsync(fd).map_err(std::io::Error::from)?;
+        }
+        Ok(())
+    }
+
+    /// The emptying half of `format` off Unix (Windows): [`empty_by_path`]
+    /// on each root. Unlike the Unix walk the roots are named by path, so
+    /// swapping a root for a link between construction and format is not
+    /// caught; the roots are the app's own private data directories.
+    #[cfg(not(unix))]
+    fn empty_roots(&self, before_unlink: &mut impl FnMut() -> Result<()>) -> Result<()> {
+        for root in [&self.root, &self.metadata_root] {
+            #[cfg(test)]
+            if let Some(error) = self.next_format_error.take() {
+                return Err(error);
+            }
+            empty_by_path(root, before_unlink)?;
+        }
+        Ok(())
+    }
+}
+
+/// Remove every entry below `root`, keeping `root`, without following any
+/// entry: `remove_dir_all` removes a symlink (or, on Windows, a junction,
+/// which it opens with `FILE_FLAG_OPEN_REPARSE_POINT`) itself, never its
+/// target. `before_unlink` runs before each top-level removal; its error
+/// stops the walk. Format's walk off Unix; compiled everywhere so the Mac
+/// tests cover it.
+#[cfg_attr(unix, allow(dead_code))]
+fn empty_by_path(root: &Path, before_unlink: &mut impl FnMut() -> Result<()>) -> Result<()> {
+    for entry in std::fs::read_dir(root)? {
+        let path = entry?.path();
+        before_unlink()?;
+        let kind = std::fs::symlink_metadata(&path)?.file_type();
+        if kind.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else if kind.is_symlink() {
+            // A Windows directory symlink or junction is removed as a directory.
+            std::fs::remove_file(&path).or_else(|_| std::fs::remove_dir(&path))?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 mod anchor {
     use crate::{Error, Result};
@@ -1369,6 +1409,40 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Format's walk off Unix (Windows): every entry goes, the root stays,
+    /// links are removed themselves and their targets survive, and a
+    /// `before_unlink` error stops the walk.
+    #[test]
+    fn path_emptying_keeps_the_root_and_never_follows_links() {
+        let temp = Temp::new();
+        let root = temp.0.join("volume");
+        let outside = temp.0.join("outside");
+        fs::create_dir_all(root.join("dir/deeper")).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("file"), b"x").unwrap();
+        fs::write(root.join("dir/deeper/file"), b"x").unwrap();
+        fs::write(outside.join("precious"), b"keep").unwrap();
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, root.join("dir-link")).unwrap();
+            std::os::unix::fs::symlink(&outside, root.join("dir/inner-link")).unwrap();
+            std::os::unix::fs::symlink(outside.join("precious"), root.join("file-link")).unwrap();
+        }
+        let mut stop = || -> Result<()> { Err(Error::IoDeviceError) };
+        assert_eq!(empty_by_path(&root, &mut stop), Err(Error::IoDeviceError));
+        assert!(fs::read_dir(&root).unwrap().next().is_some(), "an error before the first removal removes nothing");
+        let mut removals = 0;
+        empty_by_path(&root, &mut || {
+            removals += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert!(root.is_dir(), "the root itself stays");
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        assert_eq!(removals, if cfg!(unix) { 4 } else { 2 });
+        assert_eq!(fs::read(outside.join("precious")).unwrap(), b"keep", "no link was followed");
     }
 
     #[test]

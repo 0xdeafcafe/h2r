@@ -309,10 +309,21 @@ pub const TOOLCHAIN_PROBES: &[(&str, &[&str])] = &[
 /// `name` resolved on a `PATH`-style list: the first entry holding an
 /// executable file of that name, as `Command` would find it.
 pub fn resolve_on_path(name: &str, path: Option<OsString>) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    std::env::split_paths(&path?)
-        .map(|d| d.join(name))
-        .find(|p| std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0))
+    std::env::split_paths(&path?).map(|d| d.join(name)).find(|p| std::fs::metadata(p).is_ok_and(|m| executable(&m)))
+}
+
+/// Whether a file's metadata says it can be run: an executable bit on Unix.
+/// Elsewhere (Windows, where the emitter is only compile-checked) any file.
+fn executable(m: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        m.is_file() && m.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        m.is_file()
+    }
 }
 
 /// The C compiler: `clang` resolved on `PATH` once. The build invokes this

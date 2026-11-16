@@ -289,6 +289,7 @@ impl Scratch {
         let p = std::env::temp_dir().join(format!("h2-movies-{}-{t}", std::process::id()));
         // Exclusive (fails if something sits there) and private: the scratch
         // holds a whole converted movie.
+        #[cfg_attr(not(unix), allow(unused_mut))]
         let mut b = fs::DirBuilder::new();
         #[cfg(unix)]
         std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);

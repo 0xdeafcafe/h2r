@@ -1,7 +1,8 @@
 //! The shell for a native host that owns the window and the run loop
-//! (the tvOS app, platform/tvos; docs/tvos.md), in place of winit's.
+//! (the tvOS app, platform/tvos; docs/tvos.md; later the UWP app for Xbox,
+//! docs/windows.md), in place of winit's.
 //!
-//! The host hands over a `CAMetalLayer` and calls [`Embedded::redraw`] from
+//! The host hands over its surface ([`host_surface`]) and calls [`Embedded::redraw`] from
 //! its display link on the main thread; everything else is the windowed
 //! shell's: the same [`GuestHost`] on a guest thread, the same frame
 //! handoff, compositor and pacing. Input is GameController: pads and the
@@ -23,6 +24,31 @@ use crate::surface::WindowSurface;
 use crate::worker::{GuestFn, GuestWorker};
 use crate::{AppConfig, ExitReport, GuestExit, GuestHost};
 
+/// What a native host presents into, per platform: the one place
+/// [`Embedded::start`] differs between them.
+pub mod host_surface {
+    /// The surface the host passes as `layer`.
+    #[cfg(target_vendor = "apple")]
+    pub const NAME: &str = "CAMetalLayer";
+    /// The surface the host passes as `layer`: a XAML `SwapChainPanel`
+    /// (its `IInspectable*`), which wgpu's DX12 backend binds a swap chain
+    /// to through `ISwapChainPanelNative`. The UWP host (Xbox Dev Mode,
+    /// docs/windows.md) owns it; wgpu 30 has no `CoreWindow` target.
+    #[cfg(windows)]
+    pub const NAME: &str = "SwapChainPanel";
+
+    /// The wgpu target for the host's `layer`.
+    #[cfg(target_vendor = "apple")]
+    pub fn target(layer: *mut std::ffi::c_void) -> wgpu::SurfaceTargetUnsafe {
+        wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer)
+    }
+    /// The wgpu target for the host's `layer`.
+    #[cfg(windows)]
+    pub fn target(layer: *mut std::ffi::c_void) -> wgpu::SurfaceTargetUnsafe {
+        wgpu::SurfaceTargetUnsafe::SwapChainPanel(layer)
+    }
+}
+
 /// A running guest presenting into a host's layer. Main thread only.
 pub struct Embedded {
     config: AppConfig,
@@ -42,8 +68,10 @@ impl Embedded {
     /// `guest` on a guest thread with a [`GuestHost`] built from `config`.
     ///
     /// # Safety
-    /// `layer` must be a valid `CAMetalLayer*` that outlives the returned
-    /// value; this must run on the main thread.
+    /// `layer` must be a valid host surface ([`host_surface::NAME`]: a
+    /// `CAMetalLayer*` on Apple platforms, a XAML `SwapChainPanel` on
+    /// Windows) that outlives the returned value; this must run on the main
+    /// (UI) thread.
     pub unsafe fn start(
         config: AppConfig,
         layer: *mut std::ffi::c_void,
@@ -51,13 +79,11 @@ impl Embedded {
         guest: GuestFn,
     ) -> anyhow::Result<Self> {
         if layer.is_null() {
-            anyhow::bail!("no CAMetalLayer");
+            anyhow::bail!("no {}", host_surface::NAME);
         }
         let instance = wgpu::Instance::default();
         // SAFETY: the caller guarantees the layer and its lifetime.
-        let surface = unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::CoreAnimationLayer(layer))
-        }?;
+        let surface = unsafe { instance.create_surface_unsafe(host_surface::target(layer)) }?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
         let surface = WindowSurface::new(&ctx, surface, size, config.fps.vsync(config.vsync))?;
         let info = ctx.adapter.get_info();

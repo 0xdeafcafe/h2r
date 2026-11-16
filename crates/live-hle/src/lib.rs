@@ -11,6 +11,10 @@ mod messages;
 pub use client::{ServerOptions, ServerStatus};
 pub use messages::{ATTACHMENT_CAP, SUMMARY_SIZE};
 pub mod entries;
+#[cfg(unix)]
+mod host;
+#[cfg(windows)]
+#[path = "host_windows.rs"]
 mod host;
 mod network;
 mod network_config;
