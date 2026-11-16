@@ -270,8 +270,8 @@ Halo 1's render geometry, no portals, no instanced geometry.
 - Nothing builds MOPP code at run time: the XBE names `hkMoppBvTreeShape`
   but no MOPP compiler (absence of evidence, not proof).
 - Code layout (E, `0x003008d0`, `0x00301720`): `+0x00` f32×3 offset,
-  `+0x0c` f32 scale, `+0x20` u32 code size, `+0x24` runtime reference
-  count, bytecode from `+0x30`. Opcodes above `0x6b` assert; `0x00`
+  `+0x0c` f32 scale, `+0x20` u32 size including the 0x30-byte header (V),
+  `+0x24` runtime reference count, bytecode from `+0x30`. Opcodes above `0x6b` assert; `0x00`
   returns at once; terminals `0x30..0x4f` emit key `op - 0x30` plus a
   running offset; a key of type 1 (`key >> 29`) is structure collision
   surface `key & 0xffff` (E `0x001ef3e0`).
@@ -283,7 +283,8 @@ Halo 1's render geometry, no portals, no instanced geometry.
   writer, built from the interpreter's opcodes (`0x00300740`,
   `0x00301610`, `0x003027b0`), whose output is checked by running the
   engine's own interpreter semantics in a test against the collision BSP.
-  This is the next step.
+  **Done:** `mopp::build_structure(&bsp)` returns the block's bytes
+  ([mopp.md](../formats/mopp.md), proven on all 78 retail BSPs).
 - `+0x204/+0x208` (a second MOPP, breakable surfaces, Guess) is optional:
   E `jle` at `0x001c293a`. `+0x1ec..+0x200` is the world box (min, max)
   for the Havok broadphase, always read (E `0x001c2da8..0x001c2e0b`).
@@ -400,9 +401,8 @@ in `content::resolve::load`, through a `Library` option that
 
 ## Still to do, in order
 
-1. **MOPP writer** (the `mopp` lane): `mopp::build_structure`, called
-   from `convert::structure_mopp`. Then a converted map can be written
-   and played.
+1. ~~**MOPP writer**~~: done, `mopp::build_structure`
+   ([mopp.md](../formats/mopp.md)), called from `convert::structure_mopp`.
 2. **Decals, lights, decorators** of the base (above).
 3. **Shaders** per Halo 1 shader instead of one, and **lightmaps** from
    Halo 1's lightmap pages.

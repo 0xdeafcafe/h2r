@@ -3222,6 +3222,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "mopp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "map",
+ "tags",
+ "xiso",
+]
+
+[[package]]
 name = "movies"
 version = "0.1.0"
 dependencies = [
