@@ -378,6 +378,12 @@ pub struct Host {
     /// D3D renders here (present hook attached) instead of the headless
     /// backend; `H2_BOOT_GFX` is then ignored.
     pub gfx: Option<d3d::GfxBackend>,
+    /// With `gfx`: a second backend on the same device that renders the
+    /// frame buffers at this scale and presents, while `gfx` stays at the
+    /// guest's size and answers the guest (`d3d::ScaledBackend`,
+    /// `H2_RENDER_SCALE`, docs/high-resolution.md). `gfx` then has no
+    /// present hook; the view has it.
+    pub gfx_view: Option<(d3d::GfxBackend, u32)>,
     /// Run `gfx`'s work on a render thread (`d3d::ThreadedBackend`,
     /// docs/render-thread.md); off in `Host::default()`. Hosts set it from
     /// [`d3d_glue::render_thread_requested`].
@@ -549,8 +555,19 @@ pub fn run_hosted_with_live(
     layout_glue::install(&loaded.runtime, host.speaker_setting.clone(), host.fov_setting.clone()).context("installing the button layouts")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
-        (true, Some(b)) if host.render_thread => Some(d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?),
-        (true, Some(b)) => Some(d3d_glue::install_with(&loaded.runtime, b)?),
+        (true, Some(b)) => Some(match host.gfx_view.take() {
+            Some((view, scale)) => {
+                let b = d3d::ScaledBackend::new(b, view, scale).map_err(anyhow::Error::msg)?;
+                eprintln!("d3d: rendering at {scale}x (H2_RENDER_SCALE); the guest sees a 1x reference");
+                if host.render_thread {
+                    d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?
+                } else {
+                    d3d_glue::install_with(&loaded.runtime, b)?
+                }
+            }
+            None if host.render_thread => d3d_glue::install_with(&loaded.runtime, d3d::ThreadedBackend::new(b)?)?,
+            None => d3d_glue::install_with(&loaded.runtime, b)?,
+        }),
         (true, None) => Some(d3d_glue::install(&loaded.runtime)?),
     };
     // Vblanks on the 60 Hz logical clock (docs/d3d.md "Vertical blank"),

@@ -88,6 +88,17 @@ pub struct HostTexture {
     view: Option<wgpu::TextureView>,
 }
 
+impl HostTexture {
+    /// Another handle to the same texture and view (for a backend on the
+    /// same device, `crate::scaled`).
+    pub fn shared(&self) -> HostTexture {
+        HostTexture {
+            texture: self.texture.clone(),
+            view: self.view.clone(),
+        }
+    }
+}
+
 /// The render pass being recorded: its target, the clear it starts with and
 /// its draws.
 struct PendingPass {
@@ -148,6 +159,14 @@ pub struct GfxBackend {
     frame_draw: u64,
     /// The frame whose passes the merge self-check compares.
     merge_check_frame: Option<u64>,
+    /// Host pixels per guest pixel of surfaces made at a multiple of their
+    /// guest size (a view backend, `crate::scaled`); absent is 1.
+    pub(crate) scales: HashMap<SurfaceId, u32>,
+    /// Whether counted draws count (off on a view backend: the reference
+    /// answers every count).
+    pub(crate) count_samples: bool,
+    /// Fills of scaled surfaces from guest-size ones, made on first use.
+    pub(crate) blitter: Option<gfx::blit::Blitter>,
 }
 
 /// How draws were grouped into passes and submissions.
@@ -195,6 +214,9 @@ impl GfxBackend {
             frame: 1,
             frame_draw: 0,
             merge_check_frame: None,
+            scales: HashMap::new(),
+            count_samples: true,
+            blitter: None,
         }
     }
 
@@ -635,6 +657,52 @@ impl GfxBackend {
         Ok(())
     }
 
+    /// `Swap`'s work: ends the frame and shows `surface` through the present
+    /// hook, from this backend's store or, with `from`, from another
+    /// backend's on the same device.
+    pub(crate) fn present_from(
+        &mut self,
+        from: Option<&GfxBackend>,
+        surface: SurfaceId,
+        flags: u32,
+        gamma: Option<&[u8; 768]>,
+    ) -> Result<(), String> {
+        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
+        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
+        self.flush()?;
+        self.frame += 1;
+        self.frame_draw = 0;
+        let new_pipelines = self.renderer.take_new_keys();
+        if let Some(s) = self.shaders.as_mut() {
+            s.end_frame();
+            s.maintain(&self.ctx, &mut self.renderer, &new_pipelines);
+        }
+        if from.is_none() {
+            self.presented = Some(surface);
+        }
+        if let Some(hook) = self.present_hook.as_mut() {
+            match from {
+                // Another backend's surface (a view showing its reference's
+                // image, `crate::scaled`), on the same device.
+                Some(other) => hook(&other.ctx, &other.store, surface, flags, gamma),
+                None => hook(&self.ctx, &self.store, surface, flags, gamma),
+            }
+        }
+        if flags & 4 != 0 {
+            // D3DSWAP_FINISH: wait for the GPU.
+            let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
+            let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
+            let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
+        }
+        // Reports from this frame and before are read later (Halo reads a
+        // visibility test two frames after it ends): start their reads now,
+        // so the read finds the count mapped instead of waiting.
+        for r in self.reports.values() {
+            r.try_read(&self.ctx)?;
+        }
+        Ok(())
+    }
+
     /// Records `draw` into the pending pass for `color` and `depth` (after
     /// [`switch_to`](Self::switch_to)).
     /// `first` is the first scissor piece of a backend draw: unless passes
@@ -696,6 +764,20 @@ impl GfxBackend {
     }
 }
 
+/// `r` in the pixels of a surface `scale` times its guest size (exact for
+/// an integer scale: pieces that tile the guest target tile the host one).
+fn scale_rect(r: ScissorRect, scale: u32) -> ScissorRect {
+    if scale == 1 {
+        return r;
+    }
+    ScissorRect {
+        x: r.x.saturating_mul(scale),
+        y: r.y.saturating_mul(scale),
+        width: r.width.saturating_mul(scale),
+        height: r.height.saturating_mul(scale),
+    }
+}
+
 /// A level at mirror byte `offset` as the guest-word passes address it.
 fn word_layout(layout: GuestLayoutKind, offset: u32) -> Result<gfx::guest_words::WordLayout, String> {
     if !offset.is_multiple_of(4) {
@@ -732,6 +814,7 @@ impl Backend for GfxBackend {
 
     fn destroy_surface(&mut self, surface: SurfaceId) -> Result<(), String> {
         self.flush()?;
+        self.scales.remove(&surface);
         if self.store.remove(surface) {
             Ok(())
         } else {
@@ -801,6 +884,14 @@ impl Backend for GfxBackend {
         {
             self.flush()?;
         }
+        // A surface made at a multiple of its guest size (a view backend)
+        // takes guest-pixel rectangles: scissors scale, geometry does not.
+        let scale = self.scales.get(&color).copied().unwrap_or(1);
+        if depth.is_some_and(|z| self.scales.get(&z).copied().unwrap_or(1) != scale) {
+            return Ok(DrawOutcome::Skipped(
+                "colour and depth surfaces at different scales".into(),
+            ));
+        }
         self.frame_draw += 1;
         self.switch_to(color, depth)?;
         let streams: Vec<VertexStream<'_>> = d
@@ -823,24 +914,31 @@ impl Backend for GfxBackend {
                     height: c.height,
                 })
             })
+            .map(|p| p.map(|r| scale_rect(r, scale)))
             .collect();
-        let scissor = Some(match d.clip {
-            Some(c) => ScissorRect {
-                x: c.x,
-                y: c.y,
-                width: c.width,
-                height: c.height,
+        let scissor = Some(scale_rect(
+            match d.clip {
+                Some(c) => ScissorRect {
+                    x: c.x,
+                    y: c.y,
+                    width: c.width,
+                    height: c.height,
+                },
+                None => {
+                    let v = d.viewport;
+                    ScissorRect::from_edges(
+                        v.x as i64,
+                        v.y as i64,
+                        v.x as i64 + v.width as i64,
+                        v.y as i64 + v.height as i64,
+                    )
+                }
             },
-            None => {
-                let v = d.viewport;
-                ScissorRect::from_edges(
-                    v.x as i64,
-                    v.y as i64,
-                    v.x as i64 + v.width as i64,
-                    v.y as i64 + v.height as i64,
-                )
-            }
-        });
+            scale,
+        ));
+        // Pre-transformed positions stay in the guest's window.
+        let window = (scale > 1).then_some((d.target.width, d.target.height));
+        let count_samples = d.hw.zpass_count_enable && self.count_samples;
         let indices = d.indices.as_deref();
         let textured = textures.iter().any(Option::is_some);
         let builtin = match route(d, textured, self.shaders.is_some()) {
@@ -853,7 +951,8 @@ impl Backend for GfxBackend {
             let draw = Draw {
                 scissor,
                 indices,
-                count_samples: d.hw.zpass_count_enable,
+                count_samples,
+                window,
                 ..Draw::new(
                     SHADER_XYZRHW_DIFFUSE,
                     &d.layout,
@@ -869,6 +968,7 @@ impl Backend for GfxBackend {
             return Ok(DrawOutcome::Drawn);
         }
         let shaders = self.shaders.as_mut().expect("checked above");
+        shaders.set_render_scale(scale);
         // Views as the shaders sample them; a texture that cannot be bound
         // as a filterable float texture is left out (the program reads a
         // stand-in).
@@ -893,7 +993,7 @@ impl Backend for GfxBackend {
             bind_groups: &prepared.bind_groups,
             scissor,
             indices,
-            count_samples: d.hw.zpass_count_enable,
+            count_samples,
             ..Draw::new(
                 prepared.id,
                 &d.layout,
@@ -935,14 +1035,20 @@ impl Backend for GfxBackend {
             depth: c.depth,
             stencil: c.stencil,
         };
+        let scale = self.scales.get(&color).copied().unwrap_or(1);
         let rects: Vec<ScissorRect> = c
             .rects
             .iter()
-            .map(|r| ScissorRect {
-                x: r.x,
-                y: r.y,
-                width: r.width,
-                height: r.height,
+            .map(|r| {
+                scale_rect(
+                    ScissorRect {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                    },
+                    scale,
+                )
             })
             .collect();
         self.flush()?;
@@ -1382,33 +1488,7 @@ impl Backend for GfxBackend {
         flags: u32,
         gamma: Option<&[u8; 768]>,
     ) -> Result<(), String> {
-        let _p = timeline::phase::enter(timeline::phase::Phase::Encode);
-        let _t = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "present");
-        self.flush()?;
-        self.frame += 1;
-        self.frame_draw = 0;
-        let new_pipelines = self.renderer.take_new_keys();
-        if let Some(s) = self.shaders.as_mut() {
-            s.end_frame();
-            s.maintain(&self.ctx, &mut self.renderer, &new_pipelines);
-        }
-        self.presented = Some(surface);
-        if let Some(hook) = self.present_hook.as_mut() {
-            hook(&self.ctx, &self.store, surface, flags, gamma);
-        }
-        if flags & 4 != 0 {
-            // D3DSWAP_FINISH: wait for the GPU.
-            let _p = timeline::phase::enter(timeline::phase::Phase::Wait);
-            let _w = timeline::span(timeline::Cat::Gfx, timeline::Track::Host, "GPU wait");
-            let _ = self.ctx.device.poll(wgpu::PollType::wait_indefinitely());
-        }
-        // Reports from this frame and before are read later (Halo reads a
-        // visibility test two frames after it ends): start their reads now,
-        // so the read finds the count mapped instead of waiting.
-        for r in self.reports.values() {
-            r.try_read(&self.ctx)?;
-        }
-        Ok(())
+        self.present_from(None, surface, flags, gamma)
     }
 
     fn clear_pixel_count(&mut self) -> Result<(), String> {

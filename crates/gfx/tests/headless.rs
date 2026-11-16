@@ -167,6 +167,7 @@ fn rejects_bad_draws() {
             scissor: None,
             indices: None,
             count_samples: false,
+            window: None,
         };
         renderer.render(&ctx, &mut enc, &target.target(), Clear::NONE, &[d])
     };

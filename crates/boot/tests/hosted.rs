@@ -73,6 +73,7 @@ fn the_host_paces_feeds_and_stops_the_run() {
     let main_thread = std::thread::current().id();
     let host = boot::Host {
         gfx: None,
+        gfx_view: None,
         render_thread: false,
         audio_sink: Some(Box::new({
             let (opened, written) = (Arc::clone(&opened), Arc::clone(&written));

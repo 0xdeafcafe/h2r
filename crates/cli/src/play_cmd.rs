@@ -210,23 +210,46 @@ fn hosted(
     icons: boot::icons::IconOptions,
     data: &std::path::Path,
 ) -> boot::Host {
-    let mut gfx = d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook());
-    // As for `h2 run`: passes are merged by default (the fast rule;
-    // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the exact
-    // one), and H2_GFX_MERGE_PASSES=0 gives one render pass per draw
-    // (docs/BOOT.md).
-    if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
-        gfx.set_merge_passes(false);
-    }
-    // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE; docs/graphics.md).
-    if let Some(path) = d3d::pipeline_store::default_path() {
-        gfx = gfx.with_pipeline_cache(path);
-    }
+    let configure = |mut gfx: d3d::GfxBackend| {
+        // As for `h2 run`: passes are merged by default (the fast rule;
+        // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the
+        // exact one), and H2_GFX_MERGE_PASSES=0 gives one render pass per
+        // draw (docs/BOOT.md).
+        if std::env::var("H2_GFX_MERGE_PASSES").is_ok_and(|v| v == "0") {
+            gfx.set_merge_passes(false);
+        }
+        // Build last run's pipelines ahead of time (H2_PIPELINE_CACHE;
+        // docs/graphics.md).
+        match d3d::pipeline_store::default_path() {
+            Some(path) => gfx.with_pipeline_cache(path),
+            None => gfx,
+        }
+    };
+    // H2_RENDER_SCALE=N (2..6): a view backend renders the frame at N
+    // times 640x480 and presents; the backend the guest talks to stays at
+    // 1x (docs/high-resolution.md). Unset or 1: one backend, as before.
+    let scale = d3d::render_scale().unwrap_or_else(|e| {
+        eprintln!("play: {e}; rendering at 1x");
+        1
+    });
+    let view = d3d::scaled::view_for(scale, || {
+        (
+            configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
+            scale,
+        )
+    });
+    let gfx = d3d::GfxBackend::new(host.gfx_context());
+    let gfx = configure(if view.is_some() {
+        gfx
+    } else {
+        gfx.on_present(host.present_hook())
+    });
     let input = host.take_input();
     let keyboard = host.keyboard().cloned();
     let (pad_speaker, pad_hid, speaker_setting) = pad_speaker(audio, data);
     boot::Host {
         gfx: Some(gfx),
+        gfx_view: view,
         // The backend's work on a render thread unless H2_RENDER_THREAD=0, as
         // for `h2 run` (docs/render-thread.md).
         render_thread: render_thread(std::env::var("H2_RENDER_THREAD").ok().as_deref()),
