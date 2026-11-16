@@ -35,7 +35,7 @@ use crate::pipeline::{
     PipelineCache, PipelineKey, ShaderId, ShaderProgram, TargetFormats, create_render_pipeline,
 };
 use crate::presenter::RenderTarget;
-use crate::repack::{RepackError, RepackPlan};
+use crate::repack::{FetchMode, RepackError, RepackPlan};
 use crate::ring::UploadRing;
 use crate::state::{CompareFunc, RenderState};
 use crate::translate::{self, Capabilities};
@@ -305,6 +305,12 @@ pub struct Draw<'a> {
     /// blocks of host pixels, as it covers whole pixels at 1x
     /// (docs/high-resolution.md). `None` is the target's size.
     pub window: Option<(u32, u32)>,
+    /// Where vertex formats are converted. [`FetchMode::Gpu`] needs a
+    /// shader that reads each register as
+    /// [`RepackPlan::input_fetch`](crate::repack::RepackPlan::input_fetch)
+    /// says (`shaders::vsh::VertexOptions::input_fetch`); [`Draw::new`]
+    /// picks [`FetchMode::Cpu`], where every attribute is a float format.
+    pub vertex_fetch: FetchMode,
 }
 
 impl<'a> Draw<'a> {
@@ -330,6 +336,7 @@ impl<'a> Draw<'a> {
             indices: None,
             count_samples: false,
             window: None,
+            vertex_fetch: FetchMode::Cpu,
         }
     }
 }
@@ -404,6 +411,10 @@ pub struct Renderer {
     /// draw's own key.
     count_cache: PipelineCache<Arc<PendingPipeline>>,
     count_fragment: Option<wgpu::ShaderModule>,
+    /// What registered vertex programs are built for ([`Renderer::vertex_fetch`]).
+    vertex_fetch: FetchMode,
+    /// Reused buffer for streams that are realigned or converted.
+    scratch: Vec<u8>,
 }
 
 /// One draw, validated, with its pipeline built and its bytes staged in the
@@ -610,7 +621,23 @@ impl Renderer {
                 .next_power_of_two(),
             count_cache: PipelineCache::new(),
             count_fragment: None,
+            vertex_fetch: FetchMode::from_env(),
+            scratch: Vec::new(),
         }
+    }
+
+    /// The vertex fetch mode a shader provider should build programs for
+    /// and set as [`Draw::vertex_fetch`]: [`FetchMode::from_env`] unless
+    /// [`set_vertex_fetch`](Self::set_vertex_fetch) changed it. The renderer
+    /// itself follows each draw's own field.
+    pub fn vertex_fetch(&self) -> FetchMode {
+        self.vertex_fetch
+    }
+
+    /// Overrides [`vertex_fetch`](Self::vertex_fetch) (tests and benches
+    /// comparing the two paths).
+    pub fn set_vertex_fetch(&mut self, mode: FetchMode) {
+        self.vertex_fetch = mode;
     }
 
     /// Sets the range of pre-transformed (`XYZRHW`) z values for the
@@ -797,20 +824,18 @@ impl Renderer {
             });
         }
         let strides: Vec<u32> = d.streams.iter().map(|s| s.stride).collect();
-        let plan = RepackPlan::new(d.layout, &strides);
-        let mut repacked = Vec::with_capacity(d.streams.len());
+        // The built-in shader reads floats only.
+        let mode = if d.shader == SHADER_XYZRHW_DIFFUSE {
+            FetchMode::Cpu
+        } else {
+            d.vertex_fetch
+        };
+        let plan = RepackPlan::with_mode(d.layout, &strides, mode);
         for (sp, vs) in plan.streams.iter().zip(d.streams) {
-            repacked.push(sp.repack(vs.data, d.vertex_count)?);
+            sp.check(vs.data, d.vertex_count)?;
         }
-        let mut key = PipelineKey::new(
-            d.shader,
-            d.layout,
-            &strides,
-            d.primitive,
-            &d.state,
-            formats,
-            self.caps,
-        );
+        let mut key =
+            PipelineKey::from_plan(d.shader, &plan, d.primitive, &d.state, formats, self.caps);
         // Only a counted draw that writes depth or stencil copies the
         // attachment (a read-only one replays in place).
         if d.count_samples
@@ -872,13 +897,23 @@ impl Renderer {
             )
         });
 
-        let vertex_buffers = repacked
+        // Each stream is written straight into the upload ring's staging
+        // memory: guest bytes for a raw stream, realigned or converted
+        // vertices otherwise. An empty stream takes 4 bytes: slices are
+        // never empty.
+        let scratch = &mut self.scratch;
+        let vertex_buffers = plan
+            .streams
             .iter()
-            .map(|bytes| {
-                // An empty stream stages 4 zero bytes: slices are never empty.
-                let len = (bytes.len() as u64).max(4);
-                let (buf, off) = self.vertices.push(&ctx.device, &ctx.queue, bytes, 4);
-                (buf, off, len)
+            .zip(d.streams)
+            .map(|(sp, vs)| {
+                let len = sp.host_bytes(d.vertex_count);
+                let (buf, off) = self
+                    .vertices
+                    .push_with(&ctx.device, &ctx.queue, len, 4, |out| {
+                        sp.write_into(vs.data, d.vertex_count, out, scratch)
+                    });
+                (buf, off, (len as u64).max(4))
             })
             .collect();
         let vertices = list.as_ref().map_or(drawn, |l| l.len() as u32);

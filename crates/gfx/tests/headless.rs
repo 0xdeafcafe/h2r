@@ -2,6 +2,7 @@
 //! skip themselves with a message when none is available.
 
 use gfx::blit::Blitter;
+use gfx::repack::FetchMode;
 use gfx::pipeline::{ShaderId, ShaderProgram};
 use gfx::renderer::{DrawError, SHADER_XYZRHW_DIFFUSE};
 use gfx::state::{BlendFactor, CompareFunc, CullMode, RenderState};
@@ -168,6 +169,7 @@ fn rejects_bad_draws() {
             indices: None,
             count_samples: false,
             window: None,
+            vertex_fetch: FetchMode::Cpu,
         };
         renderer.render(&ctx, &mut enc, &target.target(), Clear::NONE, &[d])
     };

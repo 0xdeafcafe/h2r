@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use gfx::repack::FetchMode;
 use gfx::state::{RenderStateType, RenderState};
 use gfx::vertex::{PrimitiveType, VertexLayout, fvf};
 use gfx::renderer::SHADER_XYZRHW_DIFFUSE;
@@ -119,6 +120,7 @@ impl App {
                 state: opaque,
                 count_samples: false,
                 window: None,
+                vertex_fetch: FetchMode::Cpu,
             },
             Draw {
                 shader: SHADER_XYZRHW_DIFFUSE,
@@ -133,6 +135,7 @@ impl App {
                 state: translucent,
                 count_samples: false,
                 window: None,
+                vertex_fetch: FetchMode::Cpu,
             },
         ];
 

@@ -20,6 +20,12 @@ pub struct VertexOptions {
     pub provided_inputs: u16,
     /// Flat (`D3DSHADE_FLAT`) colour interpolation.
     pub flat_shading: bool,
+    /// How each supplied `v<n>` arrives from the vertex buffer. All
+    /// [`InputFetch::Float`] when the renderer converts every attribute to
+    /// floats on the CPU; the other kinds let it bind guest bytes as they
+    /// are (`gfx::repack`, "GPU fetch").
+    #[serde(default)]
+    pub input_fetch: [InputFetch; INPUT_COUNT],
 }
 
 impl Default for VertexOptions {
@@ -27,6 +33,55 @@ impl Default for VertexOptions {
         Self {
             provided_inputs: 0xFFFF,
             flat_shading: false,
+            input_fetch: [InputFetch::Float; INPUT_COUNT],
+        }
+    }
+}
+
+/// What a vertex input location holds and how the entry point turns it
+/// into the `vec4f` register the program reads. Missing components of a
+/// narrower vertex format already read as `(0, 0, 0, 1)`.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum InputFetch {
+    /// A float (or normalised) format, used as is.
+    #[default]
+    Float,
+    /// A four-component float format holding three: `(x, y, z, 1)`
+    /// (`NORMSHORT3` as `snorm16x4`, `PBYTE3` as `unorm8x4`).
+    Xyz1,
+    /// A signed integer format (`SHORT1/2/4`), converted to float.
+    Int,
+    /// A four-component signed integer format holding three (`SHORT3`
+    /// as `sint16x4`): `(x, y, z, 1)`.
+    IntXyz1,
+    /// `NORMPACKED3` as one `u32`: signed-normalised 11:11:10, x in the
+    /// low bits, `max(v / (2^(bits-1) - 1), -1)`, w = 1.
+    NormPacked3,
+    /// `FLOAT2H` as three floats `(x, y, w)`: `(x, y, 0, w)`.
+    Float2H,
+}
+
+impl InputFetch {
+    /// The WGSL type of the entry-point parameter.
+    fn wgsl_type(self) -> &'static str {
+        match self {
+            Self::Float | Self::Xyz1 | Self::Float2H => "vec4f",
+            Self::Int | Self::IntXyz1 => "vec4i",
+            Self::NormPacked3 => "u32",
+        }
+    }
+
+    /// The `vec4f` register value from parameter `v`.
+    fn wgsl_value(self, v: &str) -> String {
+        match self {
+            Self::Float => v.to_string(),
+            Self::Xyz1 => format!("vec4f({v}.xyz, 1.0)"),
+            Self::Int => format!("vec4f({v})"),
+            Self::IntXyz1 => format!("vec4f(vec3f({v}.xyz), 1.0)"),
+            Self::NormPacked3 => format!("xvs_normpacked3({v})"),
+            Self::Float2H => format!("vec4f({v}.xy, 0.0, {v}.z)"),
         }
     }
 }
@@ -162,6 +217,13 @@ fn xvs_neg(t: f32) -> bool { return (bitcast<u32>(t) & 0x80000000u) != 0u; }
 fn xvs_clamp_away(t: f32) -> f32 {
     let r = clamp(abs(t), 0x1p-64f, 0x1p64f);
     return select(r, -r, xvs_neg(t));
+}
+// NORMPACKED3: 11:11:10 signed fields (x lowest), each max(v / (2^(b-1) - 1), -1).
+fn xvs_normpacked3(p: u32) -> vec4f {
+    let x = f32(bitcast<i32>(p << 21u) >> 21u) / 1023.0;
+    let y = f32(bitcast<i32>(p << 10u) >> 21u) / 1023.0;
+    let z = f32(bitcast<i32>(p) >> 22u) / 511.0;
+    return vec4f(max(vec3f(x, y, z), vec3f(-1.0)), 1.0);
 }
 fn xvs_rcp(x: f32) -> vec4f { return vec4f(1.0 / x); }
 // Saturate on |x| before dividing: 1/0 = inf then clamped gives -2^-64 on
@@ -432,13 +494,18 @@ pub fn translate(
     let provided = reads & options.provided_inputs;
     let entry_params: Vec<String> = (0..16)
         .filter(|n| provided & (1 << n) != 0)
-        .map(|n| format!("@location({n}) v{n}: vec4f"))
+        .map(|n| {
+            format!(
+                "@location({n}) v{n}: {}",
+                options.input_fetch[n].wgsl_type()
+            )
+        })
         .collect();
     let args: Vec<String> = (0..16)
         .filter(|n| reads & (1 << n) != 0)
         .map(|n| {
             if provided & (1 << n) != 0 {
-                format!("v{n}")
+                options.input_fetch[n].wgsl_value(&format!("v{n}"))
             } else {
                 format!("xvs.defaults[{n}]")
             }

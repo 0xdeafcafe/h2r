@@ -445,6 +445,7 @@ fn unsupplied_inputs_come_from_defaults() {
     let opts = vsh::VertexOptions {
         provided_inputs: 1 << 0,
         flat_shading: true,
+        ..Default::default()
     };
     let t = vsh::translate(&p, &opts).unwrap();
     assert_eq!(t.locations, 1);
@@ -675,5 +676,27 @@ fn w_buffer_fixup_clips_w_to_the_clip_range() {
             let kept = p[2] >= 0.0 && p[2] <= p[3];
             assert_eq!(kept, inside, "w = {w}, z = {z}: {p:?}");
         }
+    }
+}
+
+#[test]
+fn every_input_fetch_kind_validates() {
+    use vsh::InputFetch;
+    let p = Program::parse(&transform_program()).unwrap();
+    let kinds = [
+        InputFetch::Float,
+        InputFetch::Xyz1,
+        InputFetch::Int,
+        InputFetch::IntXyz1,
+        InputFetch::NormPacked3,
+        InputFetch::Float2H,
+    ];
+    for k in kinds {
+        let opts = vsh::VertexOptions {
+            input_fetch: [k; 16],
+            ..Default::default()
+        };
+        let t = vsh::translate(&p, &opts).unwrap();
+        common::check(&t.module());
     }
 }
