@@ -1,0 +1,198 @@
+use super::infer::{MapSample, infer};
+use super::*;
+use map::build::{Block, TagPayload, TagSet};
+use map::{CacheType, FourCC, Map};
+use std::io::Cursor;
+
+const THNG: FourCC = FourCC(*b"thng");
+
+/// An invented map: globals, scenario and `n` tags of an invented group.
+/// Each `thng` root (0x30 bytes) has a block at 0x8 of `k` elements (0x14
+/// bytes, a data reference at 0x4 and a string ID at 0x10), a tag reference
+/// to the globals at 0x18, a bare datum (the scenario) at 0x24 and a float
+/// at 0x2c. With `stray`, the last tag gets an undescribed pointer at 0x28.
+fn invented(n: u32, stray: bool) -> (Map<Cursor<Vec<u8>>>, Vec<TagId>) {
+    let mut set = TagSet::new(CacheType::Multiplayer, "schema", "invented\\schema");
+    for g in [b"matg", b"scnr", b"thng"] {
+        set.add_group(FourCC(*g), None, None);
+    }
+    set.globals = set
+        .add_tag(
+            FourCC(*b"matg"),
+            "globals",
+            TagPayload::Built(Block::zeroed(0x284)),
+        )
+        .unwrap();
+    set.scenario = set
+        .add_tag(
+            FourCC(*b"scnr"),
+            "scenario",
+            TagPayload::Built(Block::zeroed(0x3e0)),
+        )
+        .unwrap();
+    let mut ids = Vec::new();
+    for t in 0..n {
+        let k = t % 3 + 1;
+        let mut elems = Block::zeroed(0x14 * k as usize);
+        for e in 0..k {
+            let mut data = Block::new(vec![t as u8; (e + 3) as usize]).aligned(1);
+            data.bytes[0] = e as u8;
+            elems
+                .put_u32((e * 0x14) as usize, 0x1234_0000 + e)
+                .data(e * 0x14 + 4, data)
+                .string_id(e * 0x14 + 0x10, if e % 2 == 0 { "alpha" } else { "beta" });
+        }
+        let mut root = Block::zeroed(0x30);
+        root.put_u32(0, t)
+            .block(8, k, elems)
+            .tag_ref(0x18, set.globals)
+            .tag_id(0x24, set.scenario)
+            .put_f32(0x2c, 1.5);
+        ids.push(
+            set.add_tag(THNG, &format!("thing{t}"), TagPayload::Built(root))
+                .unwrap(),
+        );
+    }
+    let bytes = set.build().unwrap().0;
+    let mut map = Map::from_reader(Cursor::new(bytes)).unwrap();
+    if stray {
+        // Point the last tag's 0x28 at its own first byte, in place.
+        let last = *ids.last().unwrap();
+        let loc = map.tag(last).unwrap().location.unwrap();
+        let mut set = TagSet::from_map(&mut map).unwrap();
+        if let TagPayload::Pinned { bytes, .. } = &mut set.tag_mut(last).unwrap().payload {
+            bytes[0x28..0x2c].copy_from_slice(&loc.address.to_le_bytes());
+        }
+        map = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    }
+    (map, ids)
+}
+
+fn expected() -> Struct {
+    let data = Struct {
+        size: 1,
+        align: 1,
+        fields: BTreeMap::new(),
+    };
+    let elem = Struct {
+        size: 0x14,
+        align: 4,
+        fields: BTreeMap::from([(4, Field::Block(Box::new(data))), (0x10, Field::StringId)]),
+    };
+    Struct {
+        size: 0x30,
+        align: 4,
+        fields: BTreeMap::from([
+            (8, Field::Block(Box::new(elem))),
+            (0x18, Field::TagRef),
+            (0x24, Field::TagId),
+        ]),
+    }
+}
+
+#[test]
+fn infers_blocks_data_references_tag_references_datums_and_strings() {
+    let (mut map, _) = invented(6, false);
+    let sample = MapSample::read("invented", &mut map).unwrap();
+    let schema = infer(&mut [sample]);
+    let thng = &schema.groups[&THNG];
+    // Data references are 1-byte arrays; alignment is the weakest seen.
+    assert_eq!(thng, &expected());
+}
+
+#[test]
+fn text_form_round_trips() {
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let text = schema.to_text();
+    assert!(text.starts_with(
+        "group thng 0x30 align 4\n  0x8 block 0x14 align 4\n    0x4 block 0x1 align 1\n"
+    ));
+    assert_eq!(Schema::parse(&text).unwrap(), schema);
+    assert!(Schema::parse("group thng 0x8 align 4\n  0x4 tagref\n").is_err());
+    assert!(Schema::parse("  0x4 tagref\n").is_err());
+    let odd = Schema {
+        groups: BTreeMap::from([(
+            FourCC(*b"ab c"),
+            Struct {
+                size: 4,
+                align: 4,
+                fields: BTreeMap::new(),
+            },
+        )]),
+    };
+    assert_eq!(odd.to_text(), "group 61622063 0x4 align 4\n");
+    assert_eq!(Schema::parse(&odd.to_text()).unwrap(), odd);
+}
+
+#[test]
+fn checked_in_schema_parses() {
+    let _ = Schema::builtin();
+}
+
+#[test]
+fn tags_move_and_read_back_the_same() {
+    let (mut map, ids) = invented(6, false);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let mut set = TagSet::from_map(&mut map).unwrap();
+    set.reuse_free_space = false;
+    for &id in &ids {
+        let block = to_built_with(&schema, &mut map, id).unwrap().unwrap();
+        set.tag_mut(id).unwrap().payload = TagPayload::Built(block);
+    }
+    let mut moved = Map::from_reader(Cursor::new(set.build().unwrap().0)).unwrap();
+    moved.validate_checksum().unwrap();
+    for &id in &ids {
+        let a = map.tag(id).unwrap().location.unwrap();
+        let b = moved.tag(id).unwrap().location.unwrap();
+        assert_ne!(a.address, b.address);
+        let ta = read_tree(&expected(), a.address, &Memory::of(&mut map).unwrap()).unwrap();
+        let tb = read_tree(&expected(), b.address, &Memory::of(&mut moved).unwrap()).unwrap();
+        assert_eq!(ta, tb);
+        assert!(!ta.children.is_empty());
+    }
+}
+
+#[test]
+fn an_undescribed_pointer_keeps_the_tag_pinned() {
+    let (mut map, ids) = invented(4, true);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, expected())]),
+    };
+    let last = *ids.last().unwrap();
+    assert_eq!(
+        to_built_with(&schema, &mut map, last).unwrap(),
+        Err(Refusal::UnknownPointer)
+    );
+    assert!(to_built_with(&schema, &mut map, ids[0]).unwrap().is_ok());
+    // Inference sees a pointer-like word that isn't a block (no count) and
+    // claims nothing there.
+    let sample = MapSample::read("invented", &mut map).unwrap();
+    assert!(
+        !infer(&mut [sample]).groups[&THNG]
+            .fields
+            .contains_key(&0x28)
+    );
+}
+
+#[test]
+fn a_too_small_layout_leaves_bytes_uncovered() {
+    let (mut map, ids) = invented(2, false);
+    let mut short = expected();
+    short.fields.remove(&8);
+    let schema = Schema {
+        groups: BTreeMap::from([(THNG, short)]),
+    };
+    // The block's count/address pair is now undescribed: an address.
+    assert_eq!(
+        to_built_with(&schema, &mut map, ids[0]).unwrap(),
+        Err(Refusal::UnknownPointer)
+    );
+    assert_eq!(
+        to_built_with(&Schema::default(), &mut map, ids[0]).unwrap(),
+        Err(Refusal::NoSchema)
+    );
+}

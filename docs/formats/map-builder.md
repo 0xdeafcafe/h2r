@@ -176,6 +176,10 @@ zeroed); one that grew goes after the prefix. Built tags are placed
 first-fit into metadata no pinned bytes use (ranges of tags that became
 built, padding, slack up to the old size), then after it. With
 `reuse_free_space = false` every built tag goes after the old region.
+`reverse_built = true` places built tags in reverse slot order (used to
+move retail tags away from their old addresses while reusing freed space).
+`check_tag_memory = false` skips the tag-memory bound below; only for
+offline round trips of maps already at the bound.
 
 ## What is verified
 
@@ -319,7 +323,9 @@ missing or garbled surfaces), no crash walking round the map.
 - Aliasing: a pointer from a pinned tag into a moved tag's old bytes (the
   lighting decoder found sky children aliasing other sky payloads) breaks
   silently. Only bitmaps move today, and nothing is known to alias them.
-- Layouts beyond bitmaps: every other group stays pinned until its whole
-  layout is known. The Halo 1 converter builds only the structure BSP and
-  lightmap from scratch (writing every field itself); the scenario and
-  other tags are the base map's, patched in place as pinned bytes.
+- Layouts beyond bitmaps: [tag-schema.md](tag-schema.md) infers a layout
+  for every group from all retail maps and relocates 90 % of retail tags
+  (`tags::schema::Relocator`), proven offline by a shuffle of all 39 maps.
+  Not yet loaded by the game. The Halo 1 converter builds only the structure
+  BSP and lightmap from scratch (writing every field itself); the scenario
+  and other tags are the base map's, patched in place as pinned bytes.
