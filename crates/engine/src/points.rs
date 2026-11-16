@@ -283,6 +283,18 @@ points! { ALL;
     SHADER_DRAW_BEGIN @ 0x0001_bbf0: [opaque], Hot; "docs/shader-instances.md";
     /// `submit_structure_or_model_geometry`: per draw.
     GEOMETRY_SUBMIT @ 0x0004_1040: [opaque], Hot; "docs/structure-bsp.md";
+    /// A shader parameter's value for this draw: its sources through
+    /// `[0x00485a58]`, the CRT `fmod`, then `FUNCTION_EVALUATE`.
+    SHADER_PARAMETER @ 0x0001_b230: [opaque], Hot; "docs/layer-draw.md";
+    /// A texture binding's source by type (a jump table).
+    TEXTURE_SOURCE @ 0x0001_9530: [opaque], Hot; "docs/layer-draw.md";
+    /// An animated bitmap's frame for a texture binding.
+    BITMAP_FRAME @ 0x0001_43c0: [opaque], Hot; "docs/layer-draw.md";
+    /// A tag function's value (two inputs on the stack).
+    FUNCTION_EVALUATE @ 0x0013_b390: [opaque], Hot; "docs/layer-draw.md";
+    /// The CRT's x87 `fmod` (`_CIfmod`: ST1 mod ST0), through the CRT's
+    /// transcendental dispatcher.
+    CRT_FMOD @ 0x0037_3b6a: [opaque], Hot; "docs/layer-draw.md";
     /// The top-level Settings list's row text (thiscall on the list, the
     /// item and a word).
     SETTINGS_ROW_TEXT @ 0x002b_1d6e: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/settings-menu.md";
