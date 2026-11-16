@@ -74,7 +74,9 @@ pub fn allowed(share: bool, peer: Option<SocketAddr>, headers: &HeaderMap) -> bo
 /// the same way in both cases.
 pub fn routes(art: &GameArt) -> Router {
     let share = art.share;
-    let files = tower_http::services::ServeDir::new(&art.dir);
+    // A file's `.gz` copy (the extractor writes one beside each `map.glb`)
+    // goes to a browser that takes gzip.
+    let files = tower_http::services::ServeDir::new(&art.dir).precompressed_gzip();
     Router::new()
         .nest_service(PREFIX, files)
         .layer(middleware::from_fn(
@@ -86,20 +88,41 @@ pub fn routes(art: &GameArt) -> Router {
                 if !allowed(share, peer, req.headers()) {
                     return not_found("game art is only served to this machine").into_response();
                 }
+                let stamped = versioned(req.uri().query());
                 let mut resp: Response = next.run(req).await;
                 if resp.status() == axum::http::StatusCode::NOT_FOUND {
                     return not_found("no such game art").into_response();
                 }
-                // Art changes in place when it is extracted again (new
-                // models, materials): browsers ask each time and get a 304
-                // while it is unchanged, never an old copy.
                 resp.headers_mut().insert(
                     axum::http::header::CACHE_CONTROL,
-                    axum::http::HeaderValue::from_static("no-cache"),
+                    axum::http::HeaderValue::from_static(cache_control(stamped)),
                 );
                 resp
             },
         ))
+}
+
+/// Whether a request names the art's version (`?v=<stamp>`, the
+/// manifest's `source`, which every extraction changes): the web app asks
+/// for map and model files so.
+pub fn versioned(query: Option<&str>) -> bool {
+    query.is_some_and(|q| {
+        q.split('&')
+            .any(|kv| kv.strip_prefix("v=").is_some_and(|v| !v.is_empty()))
+    })
+}
+
+/// How long a browser may keep a file. Art changes in place when it is
+/// extracted again, so an unversioned address is asked about each time (a
+/// 304 while unchanged, never an old copy). A versioned one names one
+/// extraction's file for good: the browser keeps it a year without asking
+/// (a new extraction is a new address). Private: the art is the owner's.
+pub fn cache_control(versioned: bool) -> &'static str {
+    if versioned {
+        "private, max-age=31536000, immutable"
+    } else {
+        "no-cache"
+    }
 }
 
 #[cfg(test)]
@@ -197,7 +220,64 @@ mod tests {
                 "no-cache",
                 "{path}: re-extracted art must not be served from a stale cache"
             );
+            let req = axum::http::Request::get(format!("{path}?v=0123abcd"))
+                .body(Body::empty())
+                .unwrap();
+            let r = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(r.status(), axum::http::StatusCode::OK, "{path}?v=");
+            assert_eq!(
+                r.headers()[axum::http::header::CACHE_CONTROL],
+                "private, max-age=31536000, immutable",
+                "{path}: a versioned address is one extraction's file"
+            );
         }
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A map's geometry goes out gzipped, from the extractor's copy.
+    #[tokio::test]
+    async fn geometry_goes_out_compressed_when_the_browser_takes_it() {
+        use axum::body::Body;
+        use tower::ServiceExt;
+        let dir = std::env::temp_dir().join(format!("h2-art-gz-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("map/x")).unwrap();
+        std::fs::write(dir.join(MANIFEST), "{}").unwrap();
+        std::fs::write(dir.join("map/x/map.glb"), b"glTF plain").unwrap();
+        std::fs::write(dir.join("map/x/map.glb.gz"), b"gzipped").unwrap();
+        let app = routes(&GameArt::found(&dir, true).unwrap());
+        let get = |gzip: bool| {
+            let mut req = axum::http::Request::get("/art/game/map/x/map.glb?v=s");
+            if gzip {
+                req = req.header("accept-encoding", "gzip, br");
+            }
+            app.clone().oneshot(req.body(Body::empty()).unwrap())
+        };
+        let r = get(true).await.unwrap();
+        assert_eq!(r.headers()[axum::http::header::CONTENT_ENCODING], "gzip");
+        assert_eq!(
+            r.headers()[axum::http::header::CONTENT_TYPE],
+            "model/gltf-binary"
+        );
+        let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(&body[..], b"gzipped");
+        let r = get(false).await.unwrap();
+        assert!(
+            r.headers()
+                .get(axum::http::header::CONTENT_ENCODING)
+                .is_none()
+        );
+        let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+        assert_eq!(&body[..], b"glTF plain");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn only_a_version_stamp_makes_art_immutable() {
+        assert!(versioned(Some("v=abc")));
+        assert!(versioned(Some("x=1&v=abc")));
+        assert!(!versioned(Some("v=")));
+        assert!(!versioned(Some("version=1")));
+        assert!(!versioned(None));
+        assert_eq!(cache_control(false), "no-cache");
     }
 }
