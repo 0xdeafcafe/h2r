@@ -1,14 +1,19 @@
 # Custom games browser over Live
 
 Status: the server, HLE and boot pieces are in and synthetically tested.
-Nothing was built or run in the game. The in-game list (§6) is what still
+Nothing was built or run in the game. The in-game list (§7) is what still
 needs checking.
 
 What it adds:
 
-- An Xbox Live menu row, **Custom Games**. It opens Halo 2's own System Link
-  game browser in the Live mode the title shipped with but never opened. The
-  list fills with the custom games the server lists for you.
+- An Xbox Live menu row, **Custom Game Browser**, directly above Content
+  Download. It opens Halo 2's own System Link game browser in the Live mode
+  the title shipped with but never opened. The list fills with the custom
+  games the server lists for you. The menu shows all five rows without
+  scrolling (§5).
+- **Content Download** opens a short dialog saying how to install the
+  Multiplayer Map Pack ([map-pack.md](map-pack.md) §4) instead of leaving
+  for the dashboard's download area, which does not exist here.
 - A **visibility** on every session: `public`, `friends` or `invite`. The
   host sets it with the party privacy screen the title already has.
 
@@ -101,7 +106,7 @@ needs. Phase 1 already implemented each piece it calls:
 Two things remain:
 
 1. **Reaching the screen.** The Xbox Live menu gets a fifth row that opens the
-   Live-mode loader. No new screen and no packet synthesis are needed.
+   Live-mode loader (§5). No new screen and no packet synthesis are needed.
 2. **Who sees what.** The session gets a visibility. The server filters its
    list by the reader, and the HLE already sends a signed `read` token with
    every search, so the browser shows exactly what the server lists for that
@@ -163,7 +168,7 @@ does two things with it:
   visibility cannot disagree.
 
 The host's join check (`0x62fe0`) refuses with code 2 while the privacy is
-invite only. Whether an invited joiner bypasses that was not traced; §6
+invite only. Whether an invited joiner bypasses that was not traced; §7
 checks it. Friends-only is enforced by the server's lists, not by the host.
 
 ## 4. Address restriction
@@ -186,7 +191,109 @@ endpoint. The server previously took any declared IPv4. Now:
 - The port is still the host's declaration. Direct play still needs UDP
   base..base+6 reachable on the host.
 
-## 5. Implementation map
+## 5. The Xbox Live menu
+
+Static reading of the retail XBE (`h2 disasm`) and the menu's screen tag
+(`h2 ui`); no game run. Addresses are confirmed unless marked.
+
+**Rows.** The Live menu (screen `0xba`, loader `0x2310b7`, constructor
+`0x2310f9`) keeps its list handler at `screen + 0x818` (vtable `0x458b48`,
+constructor `0x230ea2`). The handler builds the four-row array "xbox live
+menu list" and embeds four item widgets at `+0x88`. The rows are
+Quickmatch, OptiMatch, Custom Game and Content Download. Content Download
+asks to leave for the dashboard (`0x19b5af`, error `0xa3`, then
+`0x230e98`).
+
+The list hook makes it five rows, and the row hooks show them in this
+order:
+
+| Row | Shows | Text | Press | Pane |
+|---:|---|---|---|---|
+| 0–2 | Quickmatch, OptiMatch, Custom Game | retail | retail | retail 0–2 |
+| 3 | Custom Game Browser (ours) | ours | Live browser (§2) | 4 (ours) |
+| 4 | Content Download | retail id `0x10000445` | Map Pack dialog | 3 |
+
+Rows 3 and 4 never reach the retail row text or press. The retail press
+remembers rows 0 to 2 for the next visit (`[0x510a18]`, read by `0x231170`
+when it is under 4), so the cursor never returns to our rows. That is
+harmless.
+
+**The fifth item widget.** A list scrolls when it has more rows than child
+item widgets. `0x24c515` compares the row count with the children that
+`0x24c177` counts. So the fifth row needs a fifth child, made the way the
+Controls list's added rows are (`speaker_row`):
+
+- the shared "add items" method (`0x24bb60`, vtable slot 17) links the
+  handler's item widgets as children;
+- the hook runs it, then, for a handler with the Live menu's vtable, builds
+  one more 0x80-byte item in our memory: zeroed, the item constructor
+  (`0x24abae`, the same one the handler uses), the local player
+  (`0x22ee92`). It links the item after the four (`0x22eb18`);
+- one item per open screen (8 slots), rebuilt when a handler is new, and
+  moved back to the end when the original re-links the four.
+
+The tag's list already shows up to seven items (`+6` of the list block),
+so its visible count need not change. The tag copy raises it to five if
+it were lower.
+
+**Positions.** `0x24bc12` lays the children out from the list's anchor,
+each one item height below the last. The height is the item's bounding box
+(`0x2bafa4`). With the default list skin that is its text (top 28) down to
+its background bitmap (bottom −15): 43 units. The end-cap bitmap is flagged
+out of the box. In the retail tag the hint text starts 21 units below the
+fourth item, in the list's column, so a fifth item 43 units lower would
+cover it. The screen-tag hook (`0x22f871`) therefore gives the tag copies
+of its panes (`custom_games::extend_tag`):
+
+- the list's anchor moves up by 21;
+- every text and bitmap that starts below the fourth item, in the list's
+  column (less than half an item right of the anchor), moves down by 22.
+  Those are the two hint texts and the Y callout. The message panel to the
+  right and everything above stay put;
+- together that is one item height, so the five rows keep the retail
+  spacing. The gap under the last row stays 21, and the first row stays
+  36 units under the header (57 before);
+- a fifth pane is added for our row: a copy of the Custom Game pane, its
+  picture included, with our help text in place of the one text that
+  differs between panes.
+
+The copies (about 2.7 KB) live in our data page. The retail arrays are not
+written, and the copies are reused when a map load brings the tag back.
+`0x230427` (pane = base + row, no bounds check) is how the list shows a
+row's pane when its focus moves (`0x24c50a`). The pane hook hands it 4 for
+our row and 3 for Content Download, through a word of ours rather than the
+caller's. On a tag that was not extended our row keeps the shown pane.
+
+**The Map Pack dialog.** The game shows its errors in two dialog classes
+that look an error id up in the shared UI globals (`0x23661f`: ESI = a
+0x20-byte entry, the id on the stack, `ret 4`; an unknown id gets error 1's
+entry). The entry's string ids (title `+0xc`, message `+0x10`) are
+resolved by the text fill (`0x19b72a`) through the localized-string
+lookup (`0x1a0180`), which serves our ids. Content Download calls the
+one-button class (`0x19b527(1, error, 4, mask, 0, 0)`, `ret 0x18`), the
+way `0x2308ab` shows its own errors. Its button closes the dialog when
+there is no press callback (`0x19b97a`). The error id is
+`custom_games::MAPPACK_ERROR`, one the table does not have, and the lookup
+hook writes our title and message ids into its entry. The rest of the
+entry stays error 1's. The one-button dialog takes its button label from
+its own screen tag. This does not touch the Live notice
+([live.md](live.md), "Live not set up"), which wraps the fill and changes
+only error `0x23`.
+
+```text
+Multiplayer Map Pack
+
+Put mappack.iso in the same folder
+as halo2.iso, then start the game.
+The maps install on that start.
+```
+
+Each line renders under 220 units in conduit-12, inside the dialog's
+roughly 240-unit message box. "Custom Game Browser" renders 136 units wide
+(180 in conduit-16), inside the skin's 190-unit text rectangle, so the
+label is not shortened.
+
+## 6. Implementation map
 
 | Piece | Where | Tests |
 |---|---|---|
@@ -194,35 +301,54 @@ endpoint. The server previously took any declared IPv4. Now:
 | Create rule, reader-filtered list, `?visibility=` | `crates/live-server/src/sessions.rs`, `Live::read_caller` | `crates/live-server/tests/session_visibility.rs`: anonymous/stranger/friend/host lists, update, observed vs declared, loopback |
 | HLE: advertisement and change-only update carry it; `Hle::set_session_visibility`; `Hle::set_visibility_probe` | `crates/live-hle/src/sessions.rs` | `crates/live-hle/tests/server.rs`: `browser_search_rows_follow_the_hosts_visibility_setting` (procedure 1, 50 rows, seven columns, as the browser asks; friend sees it, stranger not; live switch; FindFromID still works), `the_titles_privacy_probe_decides_a_new_advertisement` |
 | `live.visibility` setting, HLE binding | `crates/boot/src/setting_defs.rs`, `live_glue::bind_visibility` | setting env and steps reach the HLE |
-| Live menu row, privacy hook and probe | `crates/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row/mask argument reads; privacy mapping and squad gates; install without a game |
+| Live menu rows, fifth item widget, tag, Map Pack dialog, privacy hook and probe | `crates/boot/src/custom_games.rs`, `layout_glue::install` | count grows only the Live list; row order, texts and panes; the fifth child item; the tag's fifth pane and moved blocks on a synthetic tag (and what is left alone); the dialog entry; row/mask argument reads; privacy mapping and squad gates; install without a game |
 | Web "Find a game" shows "open to", hides invite-only | `web/src/lib/sessions.ts`, `web/src/dash/Sessions.tsx` | `web/test/sessions.test.ts` |
 
-`H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone.
+`H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone: four rows, and
+Content Download as retail.
 
-## 6. To check in game
+## 7. To check in game
 
 Nothing here ran in the game. With two consoles (or two instances, per the
 [live.md](live.md) recipe), each signed in to the same server, make A and B
 friends. Then check:
 
-1. **The row.** Xbox Live menu: a fifth row, "Custom Games", appears.
-   - The list has four item widgets; the expectation is that it scrolls to
-     the fifth (likely).
-   - If the row is missing or cut off, the list needs the extra item widget
-     and the tag's visible count, as the Controls list got
-     (`speaker_row::grow_visible`).
-   - stderr says `custom games: row text` / `row chosen` the first time.
-2. **The browser.** Pressing it opens the System Link browser screen.
+1. **The rows.** Xbox Live menu: Quickmatch, OptiMatch, Custom Game,
+   Custom Game Browser, Content Download, all five on screen with no
+   scrolling.
+   - The five rows are evenly spaced, the first a little higher than
+     before, and the hint text and Y callout under the list sit a little
+     lower, with the same gap under the last row as before. Nothing
+     overlaps; the callout stays inside the screen's safe area.
+   - "Custom Game Browser" fits on its row without being cut off.
+   - Moving onto Custom Game Browser shows the Custom Game picture with our
+     help text ("Find custom games hosted on your Live server and join
+     one."); onto Content Download, its own picture and help.
+   - Leaving the menu and coming back (and after playing a game, which
+     reloads the main menu) still shows five rows.
+   - stderr says `custom games: xbox live menu tag has 5 panes and room for
+     5 rows`, `speaker row: add items active` and `custom games: row text`
+     the first time.
+   - If only four rows show and the list scrolls, the fifth item widget was
+     not linked (the list handler's vtable differs from `0x458b48`). If the
+     panes do not follow the rows, the list does not report focus through
+     `0x230427` (likely, not traced for this list).
+2. **Content Download.** Pressing it shows a dialog titled "Multiplayer Map
+   Pack" with three lines on `mappack.iso` and one button. The button closes
+   it and the Live menu is still there. stderr: `custom games: showing the
+   map pack dialog`. If the dialog is blank, the text lookup did not take
+   our ids (check `custom-games:dialog-text`).
+3. **The browser.** Pressing Custom Game Browser opens the System Link browser screen.
    - It should search over Live: the HLE logs a session search, and no LAN
      broadcast goes out.
    - The title may still say "System Link" in its header.
-3. **A friend's game.** A creates a party and starts a custom game lobby. On
+4. **A friend's game.** A creates a party and starts a custom game lobby. On
    B, the game appears in the browser with A's name, map and player count.
    This proves the QoS listener data is decoded.
-4. **Joining.** B joins from the browser and lands in A's lobby, then plays.
+5. **Joining.** B joins from the browser and lands in A's lobby, then plays.
    Watch for a class mismatch: the join-target class from a Live-mode entry
    was not traced (§1).
-5. **Visibility.** On A, open the party privacy screen from squad settings
+6. **Visibility.** On A, open the party privacy screen from squad settings
    (likely X) and pick Friends Only, then Invite Only.
    - stderr shows `live.visibility = ...`.
    - The web's Find a game shows "open to: friends only", then the game
@@ -230,13 +356,13 @@ friends. Then check:
    - A third, non-friend account stops seeing it in the browser at Friends
      Only. B stops seeing it at Invite Only, but an invite from A still
      works.
-6. **Across the internet.** A behind a forwarded UDP 3074–3080. The session's
+7. **Across the internet.** A behind a forwarded UDP 3074–3080. The session's
    endpoint on the web/`h2 live q session` is A's public address
    (`source: observed`), and B joins from outside.
 
-## 7. Open questions
+## 8. Open questions
 
-- Whether the four-item Live menu scrolls to a fifth row (above).
+- How the fifth row and the moved hint text look on screen (§7, 1).
 - The joiner's session class when joining from a Live-mode entry, and
   whether class-2-only paths after admission (`0x6e468`) misbehave.
 - The meanings of the browser's seven search attributes, and whether the

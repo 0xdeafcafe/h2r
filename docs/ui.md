@@ -433,6 +433,35 @@ read at each call, never cached: a handler's vtable pointer and its press
 record's function can be replaced after the constructor has run, and
 before the screen is pushed nothing has drawn or pressed it.
 
+**Item widgets, scrolling and spacing** (static, 2026-11-16; used by the
+Controls and Xbox Live menu rows). A list shows one row per child item
+widget. When it has more rows than children it scrolls: `0x24c515`
+compares the row count with `0x24c177`'s count of the handler's children.
+The handler links its embedded items as children in "add items" (slot 17,
+`0x24bb60`), so a row can be added without scrolling by linking one more
+item after that runs: a zeroed 0x80 bytes, the item constructor
+`0x24abae`, the local player (`0x22ee92`), then `0x22eb18`
+(`speaker_row`, `custom_games`). `0x24bc12` then lays the children out from
+the list's anchor, up to the list block's visible count, each one item
+height lower. The height is the item's bounding box (`0x2bafa4`, top minus
+bottom) over its children, leaving out bitmaps whose definition has flag
+bit 0 set (`0x2b0a48`; shader bitmaps have their own test, `0x2b12ba`, not
+read). For the default list skin that is 43 units.
+Anything the tag draws under a list does not move with it, so a screen
+whose hint text sits under its list needs its tag adjusted, as
+`custom_games::extend_tag` does for the Xbox Live menu.
+
+**Dialogs.** The game's error dialogs take an error id, look it up in
+the shared UI globals (`0x23661f`, the `wigl +0x88` block; an unknown id
+falls back to error 1) and show the entry's string ids through the
+localized-string lookup. `0x19b527(1, error, 4, player mask, on press, on
+update)` shows the one-button dialog (screen 8, `ret 0x18`);
+`0x19b5af(1, error, 4, mask, on first, on second, on update)` the
+two-button one (screen 7, `ret 0x1c`). A null press callback just closes
+the dialog. A dialog of ours is an error id the table lacks plus a wrapper
+on `0x23661f` that writes our string ids (title `+0xc`, message `+0x10`)
+into its entry ([live-custom-games.md](live-custom-games.md) §5).
+
 ## Aliased blocks, budget and nesting
 
 Block addresses can point into another tag's payload. Two retail screens use
