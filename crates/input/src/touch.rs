@@ -320,10 +320,10 @@ impl TouchPad {
                 .as_secs_f64();
             let gain = look_gain(mag / dt, t.look_acceleration) * t.look_sensitivity.max(0.0);
             self.look.add(now, dx * gain, dy * gain);
+            // Updates with no drag in between (the host's per-frame ones)
+            // keep this: the speed is over the time since the last drag,
+            // capped at MAX_INTERVAL, so a pause still starts slow.
             self.last_look = Some(now);
-        } else if mag == 0.0 {
-            // A still thumb: the next drag's speed starts afresh.
-            self.last_look = None;
         }
     }
 

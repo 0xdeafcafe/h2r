@@ -356,3 +356,46 @@ fn the_log_reports_button_changes_at_once_and_sticks_slowly() {
         Some("A LS RT move(+0.00,+1.00)")
     );
 }
+
+#[test]
+fn per_frame_updates_between_drags_do_not_slow_the_drag_speed() {
+    let t0 = Instant::now();
+    let ms = Duration::from_millis;
+    let tune = TouchTuning {
+        look_curve: 1.0,
+        ..TouchTuning::default()
+    };
+    // 4 points every 8 ms (500 points a second), with and without an empty
+    // per-frame update in between.
+    let run = |empty_between: bool| {
+        let mut p = TouchPad::new(tune);
+        p.update(
+            &TouchFrame {
+                look: (4.0, 0.0),
+                ..TouchFrame::default()
+            },
+            t0,
+        );
+        let _ = p.state(t0 + ms(1)); // the guest reads the first drag
+        p.read(t0 + ms(1));
+        if empty_between {
+            p.update(&TouchFrame::default(), t0 + ms(4));
+        }
+        p.update(
+            &TouchFrame {
+                look: (4.0, 0.0),
+                ..TouchFrame::default()
+            },
+            t0 + ms(8),
+        );
+        p.state(t0 + ms(8)).right_stick.0
+    };
+    assert_eq!(run(true), run(false));
+    // And the gain is the 500 points a second one.
+    let want = 4.0 * look_gain(500.0, tune.look_acceleration) * LOOK_K;
+    assert!(
+        (f64::from(run(true)) - want).abs() < 1e-4,
+        "{} {want}",
+        run(true)
+    );
+}
