@@ -668,11 +668,13 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 let n = video_screen::list_count(&model, name, n);
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
                 // The difficulty list gets the Skulls row when a signed-in
-                // profile has a skull. The store is read with guest memory
-                // released.
+                // profile (else the default one) has a skull. The store is
+                // read with guest memory released.
                 let n = if with_skulls && name == skulls_menu::DIFFICULTY_LIST_NAME {
-                    let profiles = skulls::signed_in(&*ctx.runtime().memory());
-                    skulls_menu::difficulty_count(name, n, skulls_menu::any_collected(model.store(), &profiles))
+                    let profiles = skulls::profiles_or_default(&*ctx.runtime().memory());
+                    let (row, line) = skulls_menu::difficulty_row(model.store(), &profiles);
+                    eprintln!("{line}");
+                    skulls_menu::difficulty_count(name, n, row)
                 } else {
                     n
                 };
@@ -1219,7 +1221,7 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                 // Never the original for our row: it would clamp it to
                 // Legendary and start the campaign.
                 let (Some(player), Some(profile)) = (player, profile) else {
-                    eprintln!("skulls menu: the pressing player has no named profile; not opened");
+                    eprintln!("skulls menu: the pressing player's index is unreadable; not opened");
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
                 let rows = skulls::screen_for(model.store(), &profile).rows().len() as u32;

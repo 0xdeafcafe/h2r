@@ -81,10 +81,27 @@ the same path with two signed-in profiles.
 
 ## What we do
 
-- **Pickup** (`skulls:stock` on `0x1df3e0`): read byte ESI, run the game's
-  function, and when the byte went 0 to 1 record the skull as collected and
-  on for every signed-in profile. In co-op both players get it: the script
-  does not say who held the skull, and the game turns it on for both.
+Everything below is the `skulls` feature on the feature plan
+([feature-engine.md](feature-engine.md)), on three points: `SKULL_STOCK`
+(`0x1df3e0`), `OPTIONS_QUEUE` (`0x18e790`) and the tick. Being on the plan,
+its hooks chain with any other feature's at the same address, and a clash
+refuses the plan at boot instead of one hook silently replacing another.
+
+- **Pickup** (`before` and `after` on `0x1df3e0`): before, note skull ESI
+  and its byte, and log it; the game's function runs; after, every skull
+  that came on since the last look is recorded as collected and on for
+  every signed-in profile. In co-op both players get it: the script does
+  not say who held the skull, and the game turns it on for both.
+- **Who it is for.** A signed-in slot with a name (the table above). When
+  no slot has one (the slot test fails, nobody is signed in, the name is
+  empty), the pickup is kept under the profile `default` instead of being
+  dropped, and the log line shows each slot's flags and name as read. The
+  menu uses the same fallback for a player with no named profile, so a
+  pickup kept that way still gets the Skulls row.
+- **Tick watch** (an observer after `game_tick`): only the stock function
+  and our campaign start write the array, and the start says what it
+  wrote, so any skull that comes on without passing through `0x1df3e0` is
+  still recorded (logged as `turned on without the pickup hook`).
 - **Storage**: one setting per skull (`skulls.envy` ... `skulls.bandana`,
   bool, tier Advanced, menu screen `skulls`) in the settings store, kept
   per profile:
@@ -105,15 +122,38 @@ the same path with two signed-in profiles.
   overwrites a file that is not TOML). A profile is its in-game name; a
   later Live sync can map a name to an account and merge the per-profile
   tables (collected is a set: merge by union).
-- **Campaign start** (`skulls:campaign-start` on `0x18e790`): for options
-  with mode 1 and at least one named profile signed in, write the array as
-  exactly the union of those profiles' "on" skulls, then queue the options.
-  A skull the game turned on earlier in the boot but not chosen is turned
-  off. With no named profile (a level boot, the default profile) the array
-  is left alone. Both hooks chain onto an override already on the function
-  (`Dispatch::override_handler`, as the level boot does) instead of
-  displacing it. `H2_NO_SKULLS=1` installs neither. Headless runs (no
+- **Campaign start** (`before` on `0x18e790`, ordered last so it runs next
+  to the queue): for options with mode 1, write the array as exactly the
+  union of the signed-in profiles' "on" skulls (the `default` profile's
+  with no named profile), then queue the options. A skull the game turned
+  on earlier in the boot but not chosen is turned off. `H2_NO_SKULLS=1`, or
+  `H2_FEATURES` switching `skulls` off, leaves both out. Headless runs (no
   settings store) have neither.
+
+### What it logs
+
+Every line starts `skulls:`. At boot, after the feature plan installs:
+
+- `skulls: hooks installed via feature plan at 0x1df3e0 (pickup),
+  0x18e790 (campaign start), 0x137fe0 (tick watch); saving to <path>/settings.toml`
+- or `skulls: NOT installed: <why>; pickups are not kept`, or
+  `skulls: off: <why>` (no store, `H2_NO_SKULLS`, `H2_FEATURES`).
+
+Each pickup:
+
+- `skulls: pickup call for skull 12 (Mythic), was off`
+- then `skulls: Mythic kept for <profile>, saved to <path>`, or
+  `... this run only; not saved: <why>`, or
+  `skulls: pickup of skull 12 (Mythic) not kept: <why>` (already on,
+  left off by the game, no such index, array unreadable)
+- with no named profile, first `skulls: no named profile signed in (slot 0
+  flags 0x.. name "..", ...); using profile "default"`.
+
+Each campaign start: `skulls: campaign start for <profiles>: <skulls on>`.
+Each time the difficulty list is built: `skulls menu: difficulty list for
+<profiles>: Skulls row shown` or `...: no Skulls row, no skull collected`.
+The plan's own `feature: SKULL_STOCK before skulls:note the skull active`
+lines say each hook ran the first time.
 
 ## Menu (built)
 
@@ -148,8 +188,8 @@ What the hooks do:
   clamp the row to Legendary and start the campaign). The player is the
   callback's `[[esp+4]]+4`, as for the Controls and Live menu lists; the
   profile is the name on that player's slot, so in co-op each player sees
-  and edits their own skulls. With no named profile there, or no skull
-  collected, it logs why and stays put. Otherwise it opens a Controls
+  and edits their own skulls (with no named profile there, the `default`
+  profile's). With no skull collected, it logs why and stays put. Otherwise it opens a Controls
   screen with `0x149f1e(1 << player, 0x2b7714)`, the Video screen's call.
 - **The screen.** While that call runs, the list hook names the Controls
   list's datum array "h2r skulls" and sizes it to the profile's skulls.
@@ -170,9 +210,11 @@ What the hooks do:
 ## To check in game
 
 1. `h2 play`, sign in a named profile, start Cairo Station on Legendary and
-   pick up its skull. stderr: `skulls: pickup hook active`, then
-   `skulls: Thunderstorm kept for <profile>`. `settings.toml` in the data
-   root now has `[profiles."<profile>".skulls] thunderstorm = true`.
+   pick up its skull. stderr at boot: `skulls: hooks installed via feature
+   plan at ...; saving to <path>`; on pickup: `skulls: pickup call for
+   skull 3 (Thunderstorm), was off`, then `skulls: Thunderstorm kept for
+   <profile>, saved to <path>`. That `settings.toml` now has
+   `[profiles."<profile>".skulls] thunderstorm = true`.
 2. Quit, start `h2 play` again, start any campaign level with that profile:
    stderr `skulls: campaign start for <profile>: Thunderstorm`, and the
    skull's effect is on from the first encounter.
@@ -181,8 +223,9 @@ What the hooks do:
    another skull earlier in the same boot.
 4. Co-op with two named profiles: a pickup is kept for both; the start
    turns on the union.
-5. The default profile (no name) or `H2_LEVEL`: no `campaign start` line;
-   skulls behave as retail.
+5. The default profile (no name) or `H2_LEVEL`: a pickup is kept under
+   `default` (with the `no named profile signed in (...)` line showing the
+   slots as read), and a campaign start applies `default`'s skulls.
 6. The HUD message and sound on pickup are unchanged (the game's own
    function still runs).
 
