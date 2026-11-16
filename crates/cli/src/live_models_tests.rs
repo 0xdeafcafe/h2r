@@ -142,7 +142,8 @@ fn quad_piece(material: usize, z: f32) -> Piece {
         uvs: vec![[0.25, 0.25], [0.75, 0.25], [0.75, 0.75], [0.25, 0.75]],
         nodes: vec![[2, 0, 0, 0]; 4],
         weights: vec![[1.0, 0.0, 0.0, 0.0]; 4],
-        triangles: vec![[0, 1, 2], [0, 2, 3]],
+        // Each face four times over: enough triangles to count as a vehicle.
+        triangles: [[0, 1, 2], [0, 2, 3]].repeat(4),
     }
 }
 
@@ -270,8 +271,27 @@ fn biped_nodes_follow_the_pose_and_the_feet_go_to_the_origin() {
     let m = biped(&no_marker, &names, &pose).unwrap();
     let w = m.nodes.iter().find(|(k, _)| k == "weapon").unwrap().1;
     assert!(close(&w[3][..3], &[1.0, 1.0, 0.5]), "{:?}", w[3]);
+    // A creature with no hand at all holds its weapon at the root; with no
+    // head marker or node the head is the top of the mesh.
     no_marker.bones[2].name = "something".into();
-    assert!(biped(&no_marker, &names, &pose).is_err());
+    no_marker.markers.clear();
+    let m = biped(&no_marker, &names, &pose).unwrap();
+    let node = |n: &str| m.nodes.iter().find(|(k, _)| k == n).unwrap().1;
+    assert!(
+        close(&node("weapon")[3][..3], &[0.0, 0.0, 0.5]),
+        "{:?}",
+        node("weapon")[3]
+    );
+    let (lo, hi) = m.bounds().unwrap();
+    assert!(close(
+        &node("head")[3][..3],
+        &[(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, hi[2]]
+    ));
+    // A bone with `hand` in its name is the next best.
+    no_marker.bones[1].name = "l_hand".into();
+    let m = biped(&no_marker, &names, &pose).unwrap();
+    let w = m.nodes.iter().find(|(k, _)| k == "weapon").unwrap().1;
+    assert!(close(&w[3][..3], &[1.0, 0.0, 0.5]), "{:?}", w[3]);
     assert!(
         biped(
             &Source {
@@ -455,10 +475,11 @@ fn big_textures_are_halved_to_fit() {
 
 #[test]
 fn manifest_models_object_matches_the_contract() {
-    assert_eq!(ModelsEntry::new(&[], &[]), None);
+    assert_eq!(ModelsEntry::new(&[], &[], &[]), None);
     let m = ModelsEntry::new(
         &["elite".into(), "spartan".into()],
         &["battle_rifle".into()],
+        &[],
     )
     .unwrap();
     assert_eq!(
@@ -471,6 +492,125 @@ fn manifest_models_object_matches_the_contract() {
             },
             "weapons": {"battle_rifle": {"glb": "models/weapon/battle_rifle.glb"}}
         })
+    );
+    // Vehicles appear once there are any.
+    let m = ModelsEntry::new(&[], &[], &["warthog".into()]).unwrap();
+    let v = serde_json::to_value(&m).unwrap();
+    assert_eq!(
+        v["vehicles"],
+        json!({"warthog": {"glb": "models/vehicle/warthog.glb"}})
+    );
+    // An older manifest without vehicles still reads.
+    let old: ModelsEntry =
+        serde_json::from_value(json!({"version": 1, "bipeds": {}, "weapons": {}})).unwrap();
+    assert!(old.vehicles.is_empty());
+}
+
+#[test]
+fn species_are_biped_directory_names() {
+    assert_eq!(
+        species_of("objects\\characters\\grunt\\grunt").as_deref(),
+        Some("grunt")
+    );
+    assert_eq!(
+        species_of("objects\\characters\\Flood_Combat\\x").as_deref(),
+        Some("flood_combat")
+    );
+    assert_eq!(species_of("lonely"), None);
+    assert_eq!(species_of("a b\\c"), None);
+    let tags: BTreeMap<String, usize> = [
+        ("c\\grunt\\grunt_heretic", 9),
+        ("c\\grunt\\grunt", 2),
+        ("c\\jackal\\jackal_sniper", 1),
+        ("c\\jackal\\jackal_major", 4),
+        ("c\\drone\\b", 3),
+        ("c\\drone\\a", 3),
+    ]
+    .iter()
+    .map(|(n, c)| (n.to_string(), *c))
+    .collect();
+    let chosen = choose_bipeds(&tags);
+    // Named like its directory wins; else the most common; else the first.
+    assert_eq!(chosen["grunt"], "c\\grunt\\grunt");
+    assert_eq!(chosen["jackal"], "c\\jackal\\jackal_major");
+    assert_eq!(chosen["drone"], "c\\drone\\a");
+}
+
+#[test]
+fn vehicles_keep_their_rest_pose_and_get_seat_nodes() {
+    assert_eq!(seat_node("driver").as_deref(), Some("seat_driver"));
+    assert_eq!(
+        seat_node("Gunner Seat").as_deref(),
+        Some("seat_gunner_seat")
+    );
+    assert_eq!(
+        seat_node("seat_passenger").as_deref(),
+        Some("seat_passenger")
+    );
+    assert_eq!(
+        seat_node("passenger_lb").as_deref(),
+        Some("seat_passenger_lb")
+    );
+    assert_eq!(seat_node("left_wheel"), None);
+    for not in [
+        "driver_enter",
+        "passenger_lm_enter01",
+        "target_driver",
+        "camera_gunner",
+        "gunner_left_hand",
+        "passenger_lb_camera",
+        "seat_effect",
+    ] {
+        assert_eq!(seat_node(not), None, "{not}");
+    }
+    let mut src = biped_source();
+    src.markers.push(Marker {
+        name: "driver".into(),
+        node: 1,
+        translation: [0.0, 0.25, 0.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    });
+    src.markers.push(Marker {
+        name: "driver".into(),
+        node: 0,
+        translation: [9.0, 9.0, 9.0],
+        rotation: [0.0, 0.0, 0.0, 1.0],
+    });
+    let v = vehicle(&src).unwrap();
+    assert_eq!(v.mesh_name, "vehicle");
+    // Rest pose, not moved: the mesh is where the source put it.
+    assert_eq!(v.primitives[0].positions, src.pieces[0].positions);
+    let seats: Vec<_> = v
+        .nodes
+        .iter()
+        .filter(|(n, _)| n.starts_with("seat_"))
+        .collect();
+    assert_eq!(seats.len(), 1, "one node per seat name");
+    assert!(close(&seats[0].1[3][..3], &[1.0, 0.25, 0.0]));
+    let glb = write_glb(&v);
+    gltf::Gltf::from_slice(&glb).expect("valid glTF");
+    let (doc, _) = parse_glb(&glb);
+    assert!(
+        doc["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|n| n["name"] == "seat_driver")
+    );
+    let mut tiny = src.clone();
+    tiny.pieces[0].triangles.truncate(1);
+    assert!(
+        vehicle(&tiny)
+            .unwrap_err()
+            .to_string()
+            .contains("placeholder")
+    );
+    assert!(
+        vehicle(&Source {
+            pieces: vec![],
+            ..src
+        })
+        .is_err()
     );
 }
 
@@ -493,6 +633,7 @@ fn write_models_skips_failures_and_lists_what_it_wrote() {
             Err(anyhow::anyhow!("broken")),
         ),
         (Kind::Weapon, "smg".to_string(), weapon(&src)),
+        (Kind::Vehicle, "warthog".to_string(), vehicle(&src)),
     ];
     let w = write_models(built, &dir);
     let entry = w.entry.unwrap();
@@ -502,7 +643,9 @@ fn write_models_skips_failures_and_lists_what_it_wrote() {
     assert!(dir.join("models/biped/spartan.glb").is_file());
     assert!(dir.join("models/weapon/smg.glb").is_file());
     assert!(!dir.join("models/biped/elite.glb").exists());
-    assert_eq!(w.stats.len(), 2);
+    assert_eq!(entry.vehicles.keys().collect::<Vec<_>>(), ["warthog"]);
+    assert!(dir.join("models/vehicle/warthog.glb").is_file());
+    assert_eq!(w.stats.len(), 3);
     std::fs::remove_dir_all(&dir).unwrap();
 
     // Nothing built: no models object at all.
@@ -643,20 +786,23 @@ enum Paint {
 
 /// Orthographic picture of glTF-space triangles. `view` 0: from +x (the
 /// model's front), 1: from +z (its right side), 2: three-quarter.
-fn picture(
-    items: &[Placed<'_>],
-    view: usize,
-    paint: Paint,
-    w: usize,
-    h: usize,
-    height: f32,
-) -> Vec<u8> {
+fn picture(items: &[Placed<'_>], view: usize, paint: Paint, w: usize, h: usize) -> Vec<u8> {
     let az: f32 = [0.0f32, 90.0, 40.0][view].to_radians();
     // Camera direction from the origin (glTF): (cos az, 0, sin az).
     let fwd = [-az.cos(), 0.0, -az.sin()];
     let right = cross(fwd, [0.0, 1.0, 0.0]);
-    let scale = h as f32 * 0.85 / height;
-    let (cx, cy) = (w as f32 / 2.0, h as f32 * 0.92);
+    // Fit the first item (the model) for every view: its radius about the
+    // vertical axis and its height.
+    let (mut radius, mut lo, mut hi) = (1e-3f32, f32::INFINITY, f32::NEG_INFINITY);
+    for t in &items[0].0.tris {
+        for (p, ..) in t {
+            radius = radius.max((p[0] * p[0] + p[2] * p[2]).sqrt());
+            lo = lo.min(p[1]);
+            hi = hi.max(p[1]);
+        }
+    }
+    let scale = 0.9 * (w as f32 / (2.0 * radius)).min(h as f32 / (hi - lo).max(1e-3));
+    let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0 + (lo + hi) / 2.0 * scale);
     let mut depth = vec![f32::INFINITY; w * h];
     let mut img = vec![0u8; w * h * 4];
     for px in img.chunks_mut(4) {
@@ -801,6 +947,20 @@ fn models_from_the_disc() {
     print!("{report}");
     fs::write(check.join("report.txt"), &report).unwrap();
     let entry = w.entry.expect("models were extracted");
+    let mut seats = String::new();
+    for (stem, r) in &entry.vehicles {
+        let (doc, _) = parse_glb(&fs::read(out.join(&r.glb)).unwrap());
+        let names: Vec<&str> = doc["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|n| n["name"].as_str())
+            .filter(|n| n.starts_with("seat_"))
+            .collect();
+        seats += &format!("{stem}: {}\n", names.join(" "));
+    }
+    print!("{seats}");
+    fs::write(check.join("seats.txt"), &seats).unwrap();
     fs::write(
         check.join("models.json"),
         serde_json::to_string_pretty(&entry).unwrap(),
@@ -808,6 +968,12 @@ fn models_from_the_disc() {
     .unwrap();
     assert!(entry.bipeds.contains_key("spartan") && entry.bipeds.contains_key("elite"));
     assert!(entry.weapons.contains_key("battle_rifle"));
+    for v in ["warthog", "ghost", "banshee"] {
+        assert!(entry.vehicles.contains_key(v), "{v}");
+    }
+    for b in ["grunt", "jackal", "marine"] {
+        assert!(entry.bipeds.contains_key(b), "{b}");
+    }
 
     // The rest pose agrees with the inverse rest frames the render model
     // stores (node +0x2c: three axes and a position): the quaternion
@@ -848,45 +1014,101 @@ fn models_from_the_disc() {
 
     // Check pictures: each biped from the front, the side and three-quarter,
     // textured, then tinted by its change-colour weights (red primary, blue
-    // secondary), holding the battle rifle at its `weapon` node.
+    // secondary), holding the battle rifle at its `weapon` node. Vehicles the
+    // same, with the spartan standing at `seat_driver` when there is one.
     let rifle = read_drawn(&fs::read(out.join(&entry.weapons["battle_rifle"].glb)).unwrap());
-    let (pw, ph) = (360usize, 520usize);
-    for (species, r) in &entry.bipeds {
-        let glb = fs::read(out.join(&r.glb)).unwrap();
-        let height = parse_glb(&glb).0["asset"]["extras"]["height"]
-            .as_f64()
-            .unwrap() as f32;
-        println!("{species} height {height}");
-        let body = read_drawn(&glb);
-        let (_, t, q) = body
-            .nodes
+    let spartan = read_drawn(&fs::read(out.join(&entry.bipeds["spartan"].glb)).unwrap());
+    let node = |d: &Drawn, n: &str| {
+        d.nodes
             .iter()
-            .find(|(n, ..)| n == "weapon")
-            .unwrap()
-            .clone();
-        let items = [(&body, None), (&rifle, Some((t, q)))];
-        let panels: Vec<Vec<u8>> = [
-            (0, Paint::Texture),
-            (1, Paint::Texture),
-            (2, Paint::Texture),
-            (0, Paint::ChangeColour),
-            (2, Paint::ChangeColour),
-        ]
+            .find(|(k, ..)| k == n)
+            .map(|(_, t, q)| (*t, *q))
+    };
+    let ai = [
+        "grunt",
+        "jackal",
+        "brute",
+        "hunter",
+        "marine",
+        "bugger",
+        "floodcombat_human",
+        "sentinel_aggressor",
+        "prophet",
+    ];
+    for (species, r) in entry
+        .bipeds
         .iter()
-        .map(|&(v, p)| picture(&items, v, p, pw, ph, height))
-        .collect();
-        let total_w = pw * panels.len();
-        let mut sheet = vec![0u8; total_w * ph * 4];
-        for (k, p) in panels.iter().enumerate() {
-            for y in 0..ph {
-                let dst = (y * total_w + k * pw) * 4;
-                sheet[dst..dst + pw * 4].copy_from_slice(&p[y * pw * 4..(y + 1) * pw * 4]);
-            }
-        }
-        let mut png = Vec::new();
-        assets::png::write_rgba(&mut png, total_w as u32, ph as u32, &sheet).unwrap();
-        let path = check.join(format!("check-{species}.png"));
-        fs::write(&path, png).unwrap();
-        println!("wrote {}", path.display());
+        .filter(|(k, _)| ["spartan", "elite"].contains(&k.as_str()) || ai.contains(&k.as_str()))
+    {
+        let body = read_drawn(&fs::read(out.join(&r.glb)).unwrap());
+        let items = [(&body, None), (&rifle, node(&body, "weapon"))];
+        write_sheet(&check.join(format!("check-{species}.png")), &items);
     }
+    let vehicles = [
+        "warthog", "ghost", "banshee", "scorpion", "wraith", "spectre", "pelican", "phantom",
+    ];
+    for (stem, r) in entry
+        .vehicles
+        .iter()
+        .filter(|(k, _)| vehicles.contains(&k.as_str()))
+    {
+        let body = read_drawn(&fs::read(out.join(&r.glb)).unwrap());
+        let mut items = vec![(&body, None)];
+        if let Some(seat) = node(&body, "seat_driver") {
+            items.push((&spartan, Some(seat)));
+        }
+        write_sheet(&check.join(format!("check-vehicle-{stem}.png")), &items);
+    }
+}
+
+fn write_sheet(path: &Path, items: &[Placed<'_>]) {
+    let (pw, ph) = (360usize, 520usize);
+    let panels: Vec<Vec<u8>> = [
+        (0, Paint::Texture),
+        (1, Paint::Texture),
+        (2, Paint::Texture),
+        (0, Paint::ChangeColour),
+        (2, Paint::ChangeColour),
+    ]
+    .iter()
+    .map(|&(v, p)| picture(items, v, p, pw, ph))
+    .collect();
+    let total_w = pw * panels.len();
+    let mut sheet = vec![0u8; total_w * ph * 4];
+    for (k, p) in panels.iter().enumerate() {
+        for y in 0..ph {
+            let dst = (y * total_w + k * pw) * 4;
+            sheet[dst..dst + pw * 4].copy_from_slice(&p[y * pw * 4..(y + 1) * pw * 4]);
+        }
+    }
+    let mut png = Vec::new();
+    assets::png::write_rgba(&mut png, total_w as u32, ph as u32, &sheet).unwrap();
+    fs::write(path, png).unwrap();
+    println!("wrote {}", path.display());
+}
+
+#[test]
+fn the_pose_prefers_the_rifle_idle_then_any_idle() {
+    let st = |a: &str, b: &str, c: &str, d: &str| -> Stance { [a, b, c, d].map(str::to_owned) };
+    let all = vec![
+        st("combat", "pistol", "any", "idle"),
+        st("crouch", "rifle", "any", "idle"),
+        st("combat", "rifle", "any", "move_front"),
+        st("combat", "rifle", "any", "idle"),
+    ];
+    assert_eq!(pick_idle(&all), Some(3));
+    assert_eq!(pick_idle(&all[..3]), Some(0));
+    // No combat idle: any idle.
+    assert_eq!(pick_idle(&all[1..3]), Some(0));
+    // A creature with only differently named idles.
+    let odd = vec![
+        st("any", "any", "any", "move"),
+        st("flying", "any", "any", "idle_2"),
+    ];
+    assert_eq!(pick_idle(&odd), Some(1));
+    assert_eq!(pick_idle(&odd[..1]), None);
+    // No frame at all: the rest pose.
+    let src = biped_source();
+    let rest = biped(&src, &[], &Pose { nodes: vec![] }).unwrap();
+    assert_eq!(rest.primitives[0].positions.len(), 4);
 }
