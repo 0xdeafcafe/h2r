@@ -51,13 +51,27 @@ pub const CONTROLS_ROW_CHOSEN: u32 = 0x002c_8719;
 /// B or Back and hands anything else to the children).
 pub const SCREEN_EVENT_SLOT: u32 = 10;
 /// An event's kind word (`+0`) for a button, and its button (`+8`): the
-/// generic handler takes 1 (B) and 13 (Back); 12 is Start in the same
-/// order (A, B, X, Y, black, white, triggers, d-pad, Start, Back).
+/// generic handler takes 1 (B) and 13 (Back); the squad settings screen
+/// opens a dialog on 2 (X, `0x2bbed1`); 12 is Start in the same order (A,
+/// B, X, Y, black, white, triggers, d-pad, Start, Back).
 pub const BUTTON_EVENT: u32 = 5;
+pub const X_BUTTON: u32 = 2;
 pub const START_BUTTON: u32 = 12;
+/// The buttons that run a class's action.
+pub const ACTION_BUTTONS: [u32; 2] = [X_BUTTON, START_BUTTON];
+/// Screen vtable slot 0: the destructor (thiscall, a flags word, `ret 4`),
+/// which the stack calls when a closed screen's out transition ends, just
+/// before it frees the memory (`0x235233`).
+pub const SCREEN_DESTRUCTOR_SLOT: u32 = 0;
+
+/// Told when a screen of the class is destroyed, with its address: async,
+/// as an [`Action`] is, and may call the guest (the stack is freeing the
+/// screen; its memory is still there).
+pub type OnFree = Action;
 
 /// A step of a screen's own, run on a press of a row whose press is
-/// [`Chosen::Act`] or on the Start button: async, given the screen.
+/// [`Chosen::Act`] or on X or Start ([`ACTION_BUTTONS`]): async, given the
+/// screen.
 pub type Action = Arc<
     dyn Fn(
             Cx,
@@ -78,6 +92,8 @@ pub struct Entries {
     pub loader_slot: u32,
     /// Screen slot 10 of ours (a class with an action), else 0.
     pub event: u32,
+    /// Screen slot 0 of ours (a class told of frees), else 0.
+    pub destructor: u32,
     /// Our copy of the Controls screen vtable, then of the list's.
     pub screen_vtable: u32,
     pub list_vtable: u32,
@@ -548,6 +564,7 @@ pub struct ListClass {
     picture: Option<PictureSpec>,
     layout: Option<ListLayout>,
     action: Option<Action>,
+    on_free: Option<OnFree>,
     loader: Arc<AtomicU32>,
 }
 
@@ -566,6 +583,7 @@ impl ListClass {
             picture: None,
             layout: None,
             action: None,
+            on_free: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
@@ -586,9 +604,15 @@ impl ListClass {
         self
     }
     /// With an action: what a row whose press is [`Chosen::Act`] runs, and
-    /// the Start button too.
+    /// X and Start ([`ACTION_BUTTONS`]) too.
     pub fn action(mut self, action: Action) -> Self {
         self.action = Some(action);
+        self
+    }
+    /// Told when a screen of the class is destroyed (after the Controls
+    /// destructor has run, before the stack frees it).
+    pub fn on_free(mut self, f: OnFree) -> Self {
+        self.on_free = Some(f);
         self
     }
     /// The loader address to open it with (`0x149f1e(mask, loader)`), once
@@ -622,6 +646,9 @@ pub fn write_vtables(m: &mut dyn GuestMemory, e: &Entries) -> Result<(), MemFaul
     m.set_u32(e.list_vtable + 4 * list_slot::ROW_TEXT, e.row_text)?;
     if e.event != 0 {
         m.set_u32(e.screen_vtable + 4 * SCREEN_EVENT_SLOT, e.event)?;
+    }
+    if e.destructor != 0 {
+        m.set_u32(e.screen_vtable + 4 * SCREEN_DESTRUCTOR_SLOT, e.destructor)?;
     }
     Ok(())
 }
@@ -873,21 +900,33 @@ pub async fn row_chosen(
     Ok(Ret::new(0, 8))
 }
 
-/// Screen slot 10 of a class with an action: the Start button runs the
-/// action (AL 1, handled); every other event goes to `original`, the
-/// Controls class's handler. Thiscall, the event, `ret 4`.
+/// Screen slot 10 of a class with an action: X or Start runs the action
+/// (AL 1, handled); every other event goes to `original`, the Controls
+/// class's handler. Thiscall, the event, `ret 4`.
 pub async fn event(cx: Cx, original: u32, action: Action) -> Result<Ret, EntryError> {
     let screen = cx.entry().ecx;
     let ev = cx.arg(0)?;
     let (kind, button) =
         cx.read(|m| -> Result<_, MemFault> { Ok((m.u32(ev)?, m.u32(ev + 8)?)) })?;
-    if kind == BUTTON_EVENT && button == START_BUTTON {
+    if kind == BUTTON_EVENT && ACTION_BUTTONS.contains(&button) {
         action(cx.clone(), screen).await?;
         return Ok(Ret::new(1, 4));
     }
     let r = cx
         .call(GuestCall::new(original).ecx(screen).args([ev]))
         .await?;
+    Ok(Ret::new(r.eax, 4))
+}
+
+/// Screen slot 0 of a class told of frees: the Controls destructor
+/// (`original`), then `on_free` with the screen. Thiscall, flags, `ret 4`.
+pub async fn destructor(cx: Cx, original: u32, on_free: OnFree) -> Result<Ret, EntryError> {
+    let screen = cx.entry().ecx;
+    let flags = cx.arg(0)?;
+    let r = cx
+        .call(GuestCall::new(original).ecx(screen).args([flags]))
+        .await?;
+    on_free(cx.clone(), screen).await?;
     Ok(Ret::new(r.eax, 4))
 }
 
@@ -1059,6 +1098,18 @@ impl feature::Feature for ListClass {
             })?,
             None => 0,
         };
+        let destructor_at = match self.on_free.clone() {
+            Some(on_free) => b.entry("destructor", move |cx| -> EntryFuture {
+                let on_free = Arc::clone(&on_free);
+                Box::pin(async move {
+                    let original = cx.read(|m| {
+                        ui::slot(m, CONTROLS_SCREEN_VTABLE.base, SCREEN_DESTRUCTOR_SLOT)
+                    })?;
+                    destructor(cx, original, on_free).await
+                })
+            })?,
+            None => 0,
+        };
         let description = self
             .description
             .zip(shown)
@@ -1082,6 +1133,7 @@ impl feature::Feature for ListClass {
             setup_pane: setup_pane_at,
             loader_slot,
             event: event_at,
+            destructor: destructor_at,
             screen_vtable: tables,
             list_vtable: tables + 4 * screen_slot::COUNT,
         };
@@ -1124,6 +1176,7 @@ mod tests {
             setup_pane: 0xa0f0_0030,
             loader_slot: 0xa0f0_0040,
             event: 0,
+            destructor: 0,
             screen_vtable: TABLES,
             list_vtable: TABLES + 0x70,
         }
@@ -2051,7 +2104,7 @@ mod tests {
     /// Slot 10 of a class with an action: Start runs it and is handled;
     /// anything else goes to the Controls handler.
     #[test]
-    fn the_start_button_runs_the_action_and_the_rest_go_to_the_original() {
+    fn x_and_start_run_the_action_and_the_rest_go_to_the_original() {
         const EVENT: u32 = 0x0061_0000;
         let ran = Arc::new(AtomicU32::new(0));
         let run_with = |button: u32| {
@@ -2075,10 +2128,12 @@ mod tests {
                 ..Default::default()
             })
         };
-        let run = run_with(START_BUTTON);
-        assert_eq!(run.result, Ok(Ret::new(1, 4)));
-        assert_eq!(run.calls, []);
-        assert_eq!(ran.swap(0, Ordering::SeqCst), SCREEN);
+        for button in [START_BUTTON, X_BUTTON] {
+            let run = run_with(button);
+            assert_eq!(run.result, Ok(Ret::new(1, 4)), "button {button}");
+            assert_eq!(run.calls, []);
+            assert_eq!(ran.swap(0, Ordering::SeqCst), SCREEN, "button {button}");
+        }
         let run = run_with(1);
         assert_eq!(run.calls, [Gc::new(0x2300ea).ecx(SCREEN).args([EVENT])]);
         assert_eq!(run.result, Ok(Ret::new(7, 4)));
@@ -2101,5 +2156,52 @@ mod tests {
             Ok(0x5000 + SCREEN_EVENT_SLOT),
             "no action: the Controls handler"
         );
+    }
+
+    /// Slot 0 of a class told of frees: ours, and the Controls destructor
+    /// runs first, then the class hears of it with the screen.
+    #[test]
+    fn a_class_told_of_frees_gets_our_destructor() {
+        let mut g = guest();
+        let e = Entries {
+            destructor: 0xa0f0_0060,
+            ..entries()
+        };
+        write_vtables(&mut g, &e).unwrap();
+        assert_eq!(
+            ui::slot(&g, TABLES, SCREEN_DESTRUCTOR_SLOT),
+            Ok(0xa0f0_0060)
+        );
+        let mut g = guest();
+        write_vtables(&mut g, &entries()).unwrap();
+        assert_eq!(
+            ui::slot(&g, TABLES, SCREEN_DESTRUCTOR_SLOT),
+            Ok(0x5000 + SCREEN_DESTRUCTOR_SLOT),
+            "none: the Controls destructor"
+        );
+
+        let told = Arc::new(AtomicU32::new(0));
+        let mut g = guest();
+        g.put_u32(STACK + 4, 0);
+        let on_free: OnFree = {
+            let told = Arc::clone(&told);
+            Arc::new(move |_, screen| {
+                told.store(screen, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            })
+        };
+        let f = move |cx| -> EntryFuture { Box::pin(destructor(cx, 0x1234, Arc::clone(&on_free))) };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |_, _| Regs {
+            eax: SCREEN,
+            ..Default::default()
+        });
+        assert_eq!(run.calls, [Gc::new(0x1234).ecx(SCREEN).args([0])]);
+        assert_eq!(run.result, Ok(Ret::new(SCREEN, 4)));
+        assert_eq!(told.load(Ordering::SeqCst), SCREEN);
     }
 }
