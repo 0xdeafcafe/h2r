@@ -457,7 +457,7 @@ fn randomized_native_sweep_matches_the_authority() {
         };
         let mut want = state(a, b, cw, (next(&mut r) % 8) as u16);
         want.status |= (next(&mut r) & 0x3f) as u16; // sticky flags
-        if next(&mut r) % 64 == 0 {
+        if next(&mut r).is_multiple_of(64) {
             want.tag |= 3 << (2 * want.phys(1));
         }
         let mut got = want;
@@ -467,7 +467,12 @@ fn randomized_native_sweep_matches_the_authority() {
         let (expected, actual) = match which {
             0..=4 => {
                 let kind = which as u32;
-                let op = (next(&mut r) % 6) as u32 | if next(&mut r) % 2 == 0 { 0x100 } else { 0 };
+                let op = (next(&mut r) % 6) as u32
+                    | if next(&mut r).is_multiple_of(2) {
+                        0x100
+                    } else {
+                        0
+                    };
                 let dst = if kind == 0 {
                     (next(&mut r) % 2) as u32
                 } else {
