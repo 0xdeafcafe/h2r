@@ -66,7 +66,9 @@ mod visibility;
 pub use display::{GAMMA_RAMP_BYTES, MINIPORT, VBLANK_SWAPDONE, VBlank};
 use raster::FrameTexture;
 pub use raster::{RttTarget, scissor_region};
-pub use visibility::{D3DERR_TESTINCOMPLETE, VISIBILITY_INDICES, VisibilityAnswer};
+pub use visibility::{
+    D3DERR_TESTINCOMPLETE, VISIBILITY_INDICES, VISIBILITY_PENDING_SWAPS, VisibilityAnswer,
+};
 
 /// A range of guest virtual memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,6 +351,10 @@ pub struct Stats {
     pub push_callbacks: u64,
     /// `EndVisibilityTest` calls.
     pub visibility_tests: u64,
+    /// `GetVisibilityTestResult` calls answered `D3DERR_TESTINCOMPLETE`
+    /// (the count was not back yet; see `docs/d3d.md`, "Visibility
+    /// tests"). Depends on host timing.
+    pub visibility_incomplete: u64,
     /// Resources destroyed ([`Device::destroy_resource`]).
     pub destroys: u64,
     /// Textures made on the backend from depth levels kept on the host
@@ -741,6 +747,11 @@ pub struct Device<B: Backend> {
     undelivered: Option<PushCallback>,
     /// Ended visibility tests, by index (the original's report slots).
     visibility: HashMap<u32, visibility::VisibilityTest>,
+    /// `GetVisibilityTestResult` answers `D3DERR_TESTINCOMPLETE` for a
+    /// recent test whose count is not back instead of waiting for it
+    /// ([`Device::set_visibility_poll`]; `H2_D3D_VISIBILITY_POLL=0` turns
+    /// it off).
+    visibility_poll: bool,
     /// Destroyed resources the original `D3D_DestroyResource` has yet to
     /// free ([`Device::take_pending_destroys`]).
     pending_destroys: Vec<u32>,
@@ -851,6 +862,7 @@ impl<B: Backend> Device<B> {
             active_callback: None,
             undelivered: None,
             visibility: HashMap::new(),
+            visibility_poll: std::env::var_os("H2_D3D_VISIBILITY_POLL").is_none_or(|v| v != "0"),
             pending_destroys: Vec::new(),
             torn_down: HashSet::new(),
         }

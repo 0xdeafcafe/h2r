@@ -113,7 +113,7 @@ overridden; the original runs).
 | `0x3f8320` | `D3DDevice_SetTexture` | yes | EAX = Stage, [esp+4] = pTexture; ret 4 | 2 / 2 | yes |
 | `0x3f84d0` | `D3DDevice_SetPalette` | yes | EAX = Stage, [esp+4] = pPalette; ret 4 | 7 / 4 | yes |
 | `0x3f85d0` | `D3DDevice_EndVisibilityTest` | yes | EAX = index; returns EAX = 0; ret | 1 / 1 | yes |
-| `0x3f8630` | `D3DDevice_GetVisibilityTestResult` | no | EAX = index, EDX = ULONGLONG* timestamp (optional), [esp+4] = UINT* count; returns EAX = 0; ret 4 | 2 / 2 | yes (always complete) |
+| `0x3f8630` | `D3DDevice_GetVisibilityTestResult` | no | EAX = index, EDX = ULONGLONG* timestamp (optional), [esp+4] = UINT* count; returns EAX = 0 or `D3DERR_TESTINCOMPLETE`; ret 4 | 2 / 2 | yes (incomplete only within two `Swap`s; see "Visibility tests") |
 | `0x3f8760` | `D3DDevice_SetScissors` | yes | stdcall(Count, Exclusive, pRects); ret 0xC | 3 / 3 | yes |
 | `0x3f8ad0` | `D3DDevice_PersistDisplay` | yes | no args; returns EAX = HRESULT | 1 / 1 | yes |
 | `0x3f8c70` | `D3D display/flicker filter (0x3f8c70)` | no | ESI = filter | 1 / 1 | yes |
@@ -1561,18 +1561,37 @@ It is not on the static boot path above. The port-I/O guards that stop
 Halo's one user is the lens-flare/sun visibility pass (`0x20bb0`). Per
 query it pushes `CLEAR_REPORT_VALUE` 1 and `SET_ZPASS_PIXEL_COUNT_ENABLE`
 1 inline (`0x20cec`), draws through a callback that returns the pixel
-count it expects, and calls `EndVisibilityTest` (`0x20d0f`). On a later
-frame (the index rotates through three sets, `frame % 3`) it calls
-`GetVisibilityTestResult` (`0x20cbb`, `0x20840`) and divides the count by
-the expected one, clamped to `[0, 1]` (`0x20861`). A constant answer would
-be wrong somewhere, so the counts are real.
+count it expects, and calls `EndVisibilityTest` (`0x20d0f`). The index
+rotates through three sets (`frame % 3`; object `i` of set `s` is
+`s + 3i`), and a bit per slot (`0x5233F0`, set at `0x20d51`) records that
+a test was ended there. `GetVisibilityTestResult` has two callers:
+
+- **The reader** (`0x207b0`, call at `0x20840`) reads set
+  `(frame + 1) % 3`, the tests ended two frames before, divides the count
+  by the expected one, clamps to `[0, 1]` (`0x20861`) and smooths the
+  object's visibility byte towards it. On `D3DERR_TESTINCOMPLETE` (any
+  non-zero `EAX`, `0x20847`) it skips the object, which keeps last
+  frame's value.
+- **The writer** (`0x20bb0`, call at `0x20cbb`), before reusing a slot
+  that had a test (set `frame % 3`, ended three frames before), asks for
+  its result and discards the count. On `D3DERR_TESTINCOMPLETE`
+  (`0x20cc4`) it skips the object for the frame: no new test, the old
+  one stays.
+
+Neither retries: both jump forward to the next object (`0x2096d`,
+`0x20d5e`), so an incomplete answer costs one frame of staleness for one
+flare, never a spin. A constant answer would be wrong somewhere, so the
+counts are real. The ignored `visibility_conventions_in_the_image` test
+checks these branches.
 
 - **Retail.** `EndVisibilityTest` stamps report slot `index & 0xFF` of page
   `index >> 8` (64 pages of 256 16-byte slots at device `+0x7D4`) with the
   GPU time and pushes `SET_ZPASS_PIXEL_COUNT_ENABLE` 0 and `GET_REPORT`.
   `GetVisibilityTestResult` returns `D3DERR_TESTINCOMPLETE` (`0x88760828`)
-  while the slot's status word is `0xFFFFFFFF`, and otherwise copies out
-  the count and timestamp. The pages are D3D-private: only `0x3f8570`,
+  while the slot's status word is `0xFFFFFFFF`, writing nothing, after a
+  `D3D_SetFence(0)` when the GPU time (`+0x2C`) has not moved since the
+  end (`0x3f8659..0x3f8660`); otherwise it copies out the count and
+  timestamp. The pages are D3D-private: only `0x3f8570`,
   `0x3f8630` and the teardown (`0x3fc69d`) touch `+0x7D4`. The device
   keeps the results itself, by index, and allocates no guest pages.
 - **Counting.** While `SET_ZPASS_PIXEL_COUNT_ENABLE` is on
@@ -1581,24 +1600,35 @@ be wrong somewhere, so the counts are real.
   `Backend::clear_pixel_count`, and `EndVisibilityTest` drains, takes a
   ticket from `Backend::report_pixel_count` and turns counting off. Any
   other report type stops. A backend that cannot count stops at the end.
-- **Synchronous results (the choice).** The device drains the push buffer
-  before every entry (see "GPU model"), so a test that has been ended has
-  its result. `GetVisibilityTestResult` therefore always answers: it waits
-  for the host GPU (`Backend::read_pixel_count`) the first time and keeps
-  the count, so asking again answers the same. It never returns
-  `D3DERR_TESTINCOMPLETE`. That is what the hardware answers once caught
-  up, and the game cannot tell a fast GPU from a slow one. Halo reads a
-  test two frames after it ends, so the report is long back by then: at
-  each `Swap` `GfxBackend` starts mapping every report not yet read
-  (`PixelReport::try_read`), and the read finds the count mapped. On the
-  render thread, after each present the thread moves the counts already
-  back (`Backend::try_pixel_count`) where the guest's side reads them
-  without queueing behind the frame's work (`Waits::landed_counts`); a
-  count not back yet is read as before, after everything queued. The
-  value is the same either way (the same report buffer), so this changes
-  only the wait. `D3DERR_TESTINCOMPLETE` is still never returned:
-  answering it would change what the game computes (it keeps last
-  frame's value) depending on host timing.
+- **Polled results (the default).** `GetVisibilityTestResult` asks the
+  backend without waiting (`Backend::try_pixel_count`). A count that is
+  back is answered and kept, so asking again answers the same. One that
+  is not, for a test ended at most `VISIBILITY_PENDING_SWAPS` (2) `Swap`s
+  before, answers `D3DERR_TESTINCOMPLETE` with the original's fence kick
+  (`Stats::visibility_incomplete` counts them). An older test waits for
+  its count (`Backend::read_pixel_count`), so a test is never left
+  incomplete past the point where the render thread's two-frame limit
+  guarantees it has been reached. In Halo's terms: the reader (two
+  frames) may see incomplete and keep last frame's value, the writer
+  (three frames) never does. Which calls answer incomplete depends on
+  host timing; the hardware's answers depend on the GPU's the same way.
+  Before this, the device waited for every count, and with the render
+  thread that meant waiting for everything queued: 8.3% of the game
+  thread in Old Mombasa (profile at `183781e`).
+- **Waited results** (`H2_D3D_VISIBILITY_POLL=0`,
+  `Device::set_visibility_poll(false)`): every call waits for the count
+  and `D3DERR_TESTINCOMPLETE` is never returned, so the answers are the
+  same whatever the host's timing. That is what the hardware answers once
+  caught up.
+- **The render thread** (`ThreadedBackend`) lands counts on the guest's
+  side (`Waits::landed_counts`): after each batch and each present it
+  asks the inner backend for the reports in order, up to the first not
+  back (`GfxBackend` maps a report the first time it is asked, and at
+  each `Swap`). Its `try_pixel_count` answers from those; a miss
+  (`Waits::pending_counts`) answers at once and hands the pending batch
+  over with a kick, so the count lands at that batch's end. Its
+  `read_pixel_count` answers a landed count at once and otherwise waits
+  for everything queued before it, as before.
 - An index never ended, or at or above `0x4000` (`VISIBILITY_INDICES`), is
   an invalid call. Ending an index again replaces its result. Teardown
   forgets every test. Counted in `Stats::visibility_tests`.
@@ -1618,7 +1648,12 @@ be wrong somewhere, so the counts are real.
   pass does not run the draw's own fragment program, so alpha test and
   `discard` do not reject samples there. The flare's occlusion draws do
   not depend on them.
-- Tests: `tests/round7.rs` (device and runner) and `gfx`'s
+- Tests: `tests/visibility_async.rs` (Halo's reader and writer against a
+  synchronous backend, a caught-up, a lagging and a held render thread,
+  the incomplete path through the ABI; `cargo bench -p d3d --bench
+  visibility_wait` prints the guest's time in the call with a lagging
+  render thread, waiting and polling), `tests/round7.rs` (device and
+  runner) and `gfx`'s
   `pixel_counter_*` tests (within-draw depth and stencil at 1x and 4x, a
   replaced shader, a depth that cannot be copied). The ignored `visibility_conventions`
   checks the call sites and conventions in the image.

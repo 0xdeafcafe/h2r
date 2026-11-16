@@ -91,12 +91,13 @@ fn end<B: d3d::Backend>(
     Ok(())
 }
 
-/// `GetVisibilityTestResult(index, &stamp, &count)`: the count and stamp.
-fn get<B: d3d::Backend>(
+/// `GetVisibilityTestResult(index, &stamp, &count)` once: the count and
+/// stamp, or `None` for `D3DERR_TESTINCOMPLETE`, which writes nothing.
+fn get_once<B: d3d::Backend>(
     d: &mut Device<B>,
     m: &mut SparseMemory,
     index: u32,
-) -> Result<(u32, u64), D3dError> {
+) -> Result<Option<(u32, u64)>, D3dError> {
     m.write_u32(OUT, 0xAAAA_AAAA).unwrap();
     m.write_u32(STAMP, 0xAAAA_AAAA).unwrap();
     m.write_u32(STAMP + 4, 0xAAAA_AAAA).unwrap();
@@ -106,9 +107,33 @@ fn get<B: d3d::Backend>(
         ..Regs::default()
     };
     let out = call(d, m, GET, r, &[OUT])?;
-    assert_eq!(out.eax, Some(0), "never D3DERR_TESTINCOMPLETE");
+    if out.eax == Some(d3d::device::D3DERR_TESTINCOMPLETE) {
+        for a in [OUT, STAMP, STAMP + 4] {
+            assert_eq!(
+                m.read_u32(a).unwrap(),
+                0xAAAA_AAAA,
+                "incomplete writes nothing"
+            );
+        }
+        return Ok(None);
+    }
+    assert_eq!(out.eax, Some(0));
     let stamp = m.read_u32(STAMP).unwrap() as u64 | (m.read_u32(STAMP + 4).unwrap() as u64) << 32;
-    Ok((m.read_u32(OUT).unwrap(), stamp))
+    Ok(Some((m.read_u32(OUT).unwrap(), stamp)))
+}
+
+/// [`get_once`] until it answers (a GPU or render thread may not be done).
+fn get<B: d3d::Backend>(
+    d: &mut Device<B>,
+    m: &mut SparseMemory,
+    index: u32,
+) -> Result<(u32, u64), D3dError> {
+    loop {
+        if let Some(a) = get_once(d, m, index)? {
+            return Ok(a);
+        }
+        std::thread::yield_now();
+    }
 }
 
 // Visibility tests ---------------------------------------------------------------
@@ -1060,6 +1085,41 @@ fn visibility_conventions_in_the_image() {
         at = i.next_ip() as u32;
     }
     assert!(divss);
+
+    // D3DERR_TESTINCOMPLETE is handled, not retried: right after each call
+    // a non-zero EAX jumps forward, to where the loop moves on to the next
+    // object (0x2096d, 0x20d5e), and from there to the loop's backward
+    // branch nothing calls GetVisibilityTestResult again.
+    for (ret_at, skip) in [(0x20845, 0x2096d), (0x20cc0, 0x20d5e)] {
+        let mut at = ret_at;
+        let mut target = None;
+        for _ in 0..3 {
+            let i = img.decode(at);
+            if i.mnemonic() == Mnemonic::Jne {
+                target = Some(i.near_branch32());
+                break;
+            }
+            at = i.next_ip() as u32;
+        }
+        assert_eq!(target, Some(skip), "{ret_at:#x}");
+        let mut at = skip;
+        loop {
+            let i = img.decode(at);
+            assert!(!image::calls(&i, GET), "{at:#x}");
+            if i.is_jcc_short_or_near() && i.near_branch32() < skip {
+                break;
+            }
+            at = i.next_ip() as u32;
+        }
+    }
+    // The original's incomplete path: when the GPU time (+0x2C) has not
+    // moved since the End, `D3D_SetFence` (0x3fa680) before returning.
+    let cmp = img.decode(0x3f8659);
+    assert_eq!(
+        (cmp.mnemonic(), cmp.memory_displacement32()),
+        (Mnemonic::Cmp, d3d::layout::device_field::GPU_TIME)
+    );
+    assert!(image::calls(&img.decode(0x3f8660), 0x3fa680));
 }
 
 /// `D3D_DestroyResource` runs as compiled: `EDI` = resource, plain `ret`,

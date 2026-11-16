@@ -63,6 +63,31 @@ fn textured_quad<B: Backend>(d: &mut Device<B>, m: &mut SparseMemory, rect: [f32
     d.draw_vertices(m, TRIANGLESTRIP, 0, 4).unwrap();
 }
 
+/// `GetVisibilityTestResult` asked until it answers, as a game that spins
+/// on `D3DERR_TESTINCOMPLETE` would. The answer, which must not depend on
+/// how many times it was incomplete.
+fn poll_visibility<B: Backend>(
+    d: &mut Device<B>,
+    m: &mut SparseMemory,
+    index: u32,
+) -> d3d::device::VisibilityAnswer {
+    loop {
+        if let Some(a) = d.get_visibility_test_result(m, index).unwrap() {
+            return a;
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// The device's stats without the count of incomplete visibility answers,
+/// which depends on the render thread's timing.
+fn timeless(s: d3d::Stats) -> d3d::Stats {
+    d3d::Stats {
+        visibility_incomplete: 0,
+        ..s
+    }
+}
+
 /// Render-to-texture into level A, sampled in place and through memory,
 /// a guest store into the level, waits that write it back, fences, a
 /// visibility test, a swap, and the frame drawn again. Returns the device
@@ -104,7 +129,7 @@ fn scenario<B: Backend>(backend: B) -> (Device<B>, SparseMemory, Vec<String>) {
         let fence = d.set_fence(&mut m).unwrap();
         d.block_on_time(&mut m).unwrap();
         let busy = d.resource_busy(&mut m, TEX_A).unwrap();
-        let visible = d.get_visibility_test_result(&mut m, frame).unwrap();
+        let visible = poll_visibility(&mut d, &mut m, frame);
         seen.push(format!(
             "fence {fence} completed {} busy {busy} visible {visible:?}",
             d.gpu_completed()
@@ -133,7 +158,7 @@ fn the_render_thread_makes_the_same_backend_calls() {
     a.flush_render_targets(&mut am).unwrap();
     b.flush_render_targets(&mut bm).unwrap();
     assert_eq!(a.take_events(), b.take_events());
-    assert_eq!(a.stats(), b.stats());
+    assert_eq!(timeless(a.stats()), timeless(b.stats()));
     let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
     assert!(calls.len() > 20, "{calls:?}");
     assert_eq!(a.backend.calls, calls);
@@ -172,7 +197,7 @@ fn same_pixels(direct: GfxBackend, queued: GfxBackend) {
     let (mut b, mut bm, seen_b) = scenario(ThreadedBackend::new(queued).unwrap());
     assert_eq!(seen_a, seen_b, "what the guest observed");
     assert_eq!(a.take_events(), b.take_events());
-    assert_eq!(a.stats(), b.stats());
+    assert_eq!(timeless(a.stats()), timeless(b.stats()));
     let (pa, _) = a.backend.read_color(a.back_buffer().unwrap()).unwrap();
     let back = b.back_buffer().unwrap();
     let (pb, _) = b
@@ -263,7 +288,7 @@ fn render_thread_timing_changes_nothing_the_guest_sees() {
         let (mut b, mut bm, seen_b) = scenario(t);
         b.flush_render_targets(&mut bm).unwrap();
         assert_eq!(seen_a, seen_b, "seed {seed:#x}");
-        assert_eq!(a.stats(), b.stats(), "seed {seed:#x}");
+        assert_eq!(timeless(a.stats()), timeless(b.stats()), "seed {seed:#x}");
         let calls = b.backend.with_inner(|r| r.calls.clone()).unwrap();
         assert_eq!(a.backend.calls, calls, "seed {seed:#x}");
         assert_eq!(
@@ -319,7 +344,7 @@ fn an_untranslatable_draw_is_skipped_the_same_way() {
         "{ea:?}"
     );
     assert_eq!(ea, eb);
-    assert_eq!(a.stats(), b.stats());
+    assert_eq!(timeless(a.stats()), timeless(b.stats()));
     b.backend.finish().unwrap();
     assert_eq!(b.backend.misses(), 0);
     let (pa, _) = a.backend.read_color(a.back_buffer().unwrap()).unwrap();

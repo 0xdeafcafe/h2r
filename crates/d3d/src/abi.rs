@@ -548,10 +548,12 @@ pub fn entries<B: Backend>() -> Vec<Entry<B>> {
         Entry {
             addr: 0x3f8630,
             name: "D3DDevice_GetVisibilityTestResult",
-            convention: "EAX = index, EDX = ULONGLONG* timestamp (optional), [esp+4] = UINT* count; returns EAX = 0 (never D3DERR_TESTINCOMPLETE: results are synchronous); ret 4",
+            convention: "EAX = index, EDX = ULONGLONG* timestamp (optional), [esp+4] = UINT* count; returns EAX = 0, or D3DERR_TESTINCOMPLETE writing nothing; ret 4",
             call: |d, m, r| {
                 let out = arg(m, r, 0)?;
-                let a = d.get_visibility_test_result(m, r.eax)?;
+                let Some(a) = d.get_visibility_test_result(m, r.eax)? else {
+                    return Ok(Outcome::eax(crate::device::D3DERR_TESTINCOMPLETE, 4));
+                };
                 // 0x3f866f..0x3f8683: the count first, then the timestamp
                 // when EDX is non-null.
                 m.write_u32(out, a.count)?;

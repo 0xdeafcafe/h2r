@@ -707,6 +707,9 @@ pub struct RecordingBackend {
     pub pixel_count: u64,
     /// Reports not yet read, by ticket.
     pub pixel_reports: std::collections::HashMap<u64, u64>,
+    /// `try_pixel_count` answers every report as not back yet (a GPU
+    /// still busy with them); `read_pixel_count` still reads them.
+    pub pixel_counts_pending: bool,
     next_ticket: u64,
     /// `copy_surface` answers `Ok(false)` (a backend that cannot copy).
     pub no_copies: bool,
@@ -945,6 +948,17 @@ impl Backend for RecordingBackend {
         self.pixel_reports
             .remove(&ticket)
             .ok_or_else(|| format!("pixel-count ticket {ticket} is not live"))
+    }
+    /// Back unless [`pixel_counts_pending`](Self::pixel_counts_pending); a
+    /// count handed out is recorded as a read (the ticket is spent).
+    fn try_pixel_count(&mut self, ticket: u64) -> Result<Option<u64>, String> {
+        if !self.pixel_reports.contains_key(&ticket) {
+            return Err(format!("pixel-count ticket {ticket} is not live"));
+        }
+        if self.pixel_counts_pending {
+            return Ok(None);
+        }
+        self.read_pixel_count(ticket).map(Some)
     }
     fn drop_pixel_count(&mut self, ticket: u64) {
         self.pixel_reports.remove(&ticket);
