@@ -23,10 +23,17 @@ export interface Session {
   map: string | null;
   /** The host's name for the game, usually its gametype. */
   name: string | null;
+  /** Who finds it in lists: everyone, the host's friends, or nobody
+   *  (invitations only). Older servers don't say: public. */
+  visibility: Visibility;
   slots: SessionSlots;
   /** The roster the host has reported: XUID to a display slot ("" when none). */
   players: Record<string, string>;
 }
+
+export type Visibility = "public" | "friends" | "invite";
+
+const visibility = (v: unknown): Visibility => (v === "friends" || v === "invite" ? v : "public");
 
 const count = (v: unknown): number => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
@@ -54,6 +61,7 @@ export function parseSession(raw: unknown): Session | null {
     hopper_id: typeof ad.hopper_id === "number" ? ad.hopper_id : null,
     map: text(ad.map),
     name: text(ad.name),
+    visibility: visibility(ad.visibility),
     slots: { public_filled: count(s.public_filled), public_open: count(s.public_open), private_filled: count(s.private_filled), private_open: count(s.private_open) },
     players,
   };
@@ -62,6 +70,17 @@ export function parseSession(raw: unknown): Session | null {
 /** Reads a list response's items, dropping any that can't be read. */
 export function parseSessions(items: unknown): Session[] {
   return Array.isArray(items) ? items.map(parseSession).filter((s): s is Session => s !== null) : [];
+}
+
+/** Whether a list should show it. The server already filters by who is
+ *  reading; this keeps an invite-only one out even if a server lists it. */
+export function listed(s: Pick<Session, "visibility">): boolean {
+  return s.visibility !== "invite";
+}
+
+/** Who the host lets find the game, in words. */
+export function visibilityText(s: Pick<Session, "visibility">): string {
+  return s.visibility === "friends" ? "friends only" : s.visibility === "invite" ? "invite only" : "everyone";
 }
 
 /** Players in the session and the most it holds. The slots are the host's

@@ -484,6 +484,21 @@ impl Live {
         Ok(())
     }
 
+    /// Who is reading: an account when a `read` bearer is presented (always
+    /// checked, even on a public server, so a bad token is an error rather
+    /// than a silently anonymous read), None for an anonymous public read.
+    /// Lists whose answer depends on the reader (friends-only sessions) use it.
+    pub fn read_caller(&self, bearer: Option<&str>) -> Result<Option<Xuid>, ApiError> {
+        if bearer.is_none() {
+            self.authorize_read(None)?;
+            return Ok(None);
+        }
+        Ok(match self.authenticate(bearer, lxm::READ)? {
+            Author::Account { xuid, .. } => Some(xuid),
+            Author::Server(_) => None,
+        })
+    }
+
     /// The token's expiry, for WebSockets that must close when it passes.
     pub fn authenticate_until(&self, bearer: &str, method: &str) -> Result<i64, ApiError> {
         self.authenticate(Some(bearer), method)?;
