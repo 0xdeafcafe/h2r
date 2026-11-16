@@ -28,6 +28,17 @@
 //! in the store at once ([`skulls::toggle`]); the next campaign start turns
 //! on exactly the On ones ([`skulls::selection`]). B returns to the
 //! difficulty list.
+//!
+//! **The multiplayer screen** is a second instance
+//! ([`SkullsScreen::multiplayer`]) on a class of its own (`skulls-mp-screen`),
+//! opened from the variant editor's Skulls row (`crate::skulls_mp_row`):
+//! only the skulls that work in multiplayer, each the profile's multiplayer
+//! On or Off, or Locked until the profile has collected it.
+//!
+//! **The picture.** Both screens show the difficulty screen's Legendary
+//! skull ([`PICTURE`], the game's own bitmap) right of the list, tinted
+//! gold or silver for the focused skull's tier and dimmed while it is
+//! locked ([`tint`]), with the description under it.
 
 use std::ops::Range;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -74,16 +85,41 @@ pub const TITLE: &str = "Skulls";
 pub const MP_TITLE: &str = "Multiplayer Skulls";
 pub const LOCKED: &str = "Locked";
 
-/// The description text: under the list, across its width. Above the list,
-/// beside the header, it ran over the header bar (seen in game). The list
-/// ends just below the screen's centre with six rows showing, so the block
-/// starts 25 below it. Font 1 is the difficulty screen's description font.
+/// The description text: under the picture, as wide as it. Above the list,
+/// beside the header, it ran over the header bar (seen in game). Font 1 is
+/// the difficulty screen's description font.
 /// `H2_SKULLS_TEXT_RECT=top,left,bottom,right` moves it without a rebuild.
 pub const DESCRIPTION_TEXT: TextBlock = TextBlock {
-    rect: [-25, -225, -140, 245],
+    rect: [-112, 56, -230, 312],
     font: 1,
     colour: [0.8, 0.88, 1.0],
 };
+
+/// The picture: the difficulty screen's (12) Legendary pane (3), its first
+/// bitmap, `difficulty_options` image 3 (a 256 by 256 skull), right of the
+/// list with its top-left at (56, 150); the description starts just under it.
+pub const PICTURE: crate::list_class::PictureSpec = crate::list_class::PictureSpec {
+    screen_id: DIFFICULTY_SCREEN_ID as u32,
+    pane: 3,
+    bitmap: 0,
+    image: 3,
+    at: [56, 150],
+};
+
+/// The picture's tint for a skull of tier `tier`: gold or silver, and
+/// dimmed to a third while `state` is Locked. The art is a pale silver, so
+/// silver keeps it nearly as drawn.
+pub fn tint(tier: skulls::SkullTier, state: State) -> [f32; 3] {
+    let c = match tier {
+        skulls::SkullTier::Gold => [1.0, 0.78, 0.3],
+        skulls::SkullTier::Silver => [0.86, 0.9, 1.0],
+    };
+    if state == State::Locked {
+        c.map(|v| v * 0.35)
+    } else {
+        c
+    }
+}
 
 /// The label id of skull `i`.
 pub fn label_id(i: usize) -> u32 {
@@ -308,33 +344,40 @@ pub enum Mode {
     /// All fifteen, for the next campaign start (the difficulty list's row).
     Campaign,
     /// Only those that work in multiplayer (`skulls_mp::MP`), for the games
-    /// the profile hosts (the Game Setup dialog's row).
+    /// the profile hosts (the multiplayer instance, from the variant
+    /// editor's row).
     Multiplayer,
 }
 
 /// The Skulls screen: every skull, for the profile it was last opened for;
-/// or, opened from a lobby, the multiplayer ones.
+/// or, the multiplayer instance, the multiplayer ones.
 pub struct SkullsScreen {
     store: Arc<Store>,
     open: Mutex<Option<(String, Mode)>>,
+    /// What this instance lists, whoever opens it.
+    fixed: Mode,
 }
 
 impl SkullsScreen {
+    /// The campaign screen.
     pub fn new(store: Arc<Store>) -> Self {
         SkullsScreen {
             store,
             open: Mutex::new(None),
+            fixed: Mode::Campaign,
+        }
+    }
+    /// The multiplayer screen: a screen of its own, never the campaign one.
+    pub fn multiplayer(store: Arc<Store>) -> Self {
+        SkullsScreen {
+            fixed: Mode::Multiplayer,
+            ..Self::new(store)
         }
     }
     /// The screen shows `profile`'s skulls from now (the pressing player's;
-    /// one screen is open at a time, over the difficulty screen).
+    /// one screen of each instance is open at a time).
     pub fn open(&self, profile: String) {
-        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some((profile, Mode::Campaign));
-    }
-    /// The screen shows `profile`'s multiplayer skulls from now (over the
-    /// Game Setup dialog).
-    pub fn open_mp(&self, profile: String) {
-        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some((profile, Mode::Multiplayer));
+        *self.open.lock().unwrap_or_else(|e| e.into_inner()) = Some((profile, self.fixed));
     }
     pub fn profile(&self) -> Option<String> {
         self.open
@@ -344,11 +387,7 @@ impl SkullsScreen {
             .map(|(p, _)| p.clone())
     }
     pub fn mode(&self) -> Mode {
-        self.open
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .as_ref()
-            .map_or(Mode::Campaign, |(_, m)| *m)
+        self.fixed
     }
     /// Multiplayer row `row`'s state for the open profile; Locked with none.
     pub fn mp_state(&self, row: usize) -> State {
@@ -442,6 +481,17 @@ impl Rows for SkullsScreen {
                 .map(mp_description_id);
         }
         Self::skull(row).map(description_id)
+    }
+    fn tint(&self, row: i16) -> Option<[f32; 3]> {
+        let r = usize::try_from(row).ok()?;
+        let (index, state) = match self.mode() {
+            Mode::Multiplayer => (crate::skulls_mp::MP.get(r)?.index, self.mp_state(r)),
+            Mode::Campaign => {
+                let i = Self::skull(row)?;
+                (i, self.state(i))
+            }
+        };
+        Some(tint(ABOUT.get(index)?.tier, state))
     }
 }
 
@@ -790,14 +840,14 @@ mod tests {
         assert!(all.contains(&(MP_TITLE_ID, "Multiplayer Skulls")));
     }
 
-    /// Opened from a lobby's Game Setup: only the skulls that work in
-    /// multiplayer, each the profile's multiplayer On, Off or Locked, and a
-    /// press flips the multiplayer choice, never the campaign one.
+    /// The multiplayer instance: only the skulls that work in multiplayer,
+    /// each the profile's multiplayer On, Off or Locked, and a press flips
+    /// the multiplayer choice, never the campaign one.
     #[test]
     fn the_multiplayer_mode_lists_only_multiplayer_skulls() {
         let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
-        let s = SkullsScreen::new(Arc::clone(&st));
-        s.open_mp("Chief".into());
+        let s = SkullsScreen::multiplayer(Arc::clone(&st));
+        s.open("Chief".into());
         assert_eq!(s.mode(), Mode::Multiplayer);
         assert_eq!(s.count(), 3);
         assert_eq!(s.title(), MP_TITLE_ID);
@@ -829,7 +879,12 @@ mod tests {
         );
         assert_eq!(s.press_line(3), None);
         assert_eq!(crate::skulls_mp::chosen(&st, "Chief"), vec![6]);
+        // Opening it again keeps it the multiplayer screen.
+        s.open("Chief".into());
+        assert_eq!(s.count(), crate::skulls_mp::MP.len());
+        assert_eq!(s.title(), MP_TITLE_ID);
         // The campaign screen still lists all of them, its own states.
+        let s = SkullsScreen::new(Arc::clone(&st));
         s.open("Chief".into());
         assert_eq!(s.count(), TOTAL);
         assert_eq!(
@@ -838,5 +893,49 @@ mod tests {
             "the pickup turned it on for the campaign"
         );
         assert_eq!(s.title(), TITLE_ID);
+    }
+
+    /// The picture follows the focused skull: gold or silver by tier,
+    /// dimmed while locked, on both screens.
+    #[test]
+    fn the_picture_is_gold_or_silver_and_dim_while_locked() {
+        use skulls::SkullTier::{Gold, Silver};
+        assert_eq!(tint(Gold, State::On), [1.0, 0.78, 0.3]);
+        assert_eq!(tint(Gold, State::Off), tint(Gold, State::On));
+        assert_eq!(tint(Silver, State::Off), [0.86, 0.9, 1.0]);
+        let dim = tint(Gold, State::Locked);
+        assert!(dim.iter().zip(tint(Gold, State::On)).all(|(d, c)| *d < c));
+        let st = Arc::new(Store::defaults(crate::setting_defs::ALL));
+        let s = SkullsScreen::new(Arc::clone(&st));
+        s.open("Chief".into());
+        // Row 0 is the first gold skull; the last row a silver one.
+        let last = (s.count() - 1) as i16;
+        assert_eq!(s.tint(0), Some(tint(Gold, State::Locked)));
+        assert_eq!(s.tint(last), Some(tint(Silver, State::Locked)));
+        skulls::record_pickup(&st, &names(&["Chief"]), ORDER[0]);
+        assert_eq!(s.tint(0), Some(tint(Gold, State::On)), "collected and on");
+        assert_eq!(s.tint(s.count() as i16), None);
+        let mp = SkullsScreen::multiplayer(Arc::clone(&st));
+        mp.open("Chief".into());
+        assert_eq!(
+            mp.tint(1),
+            Some(tint(Gold, State::Locked)),
+            "Blind, not collected"
+        );
+        skulls::record_pickup(&st, &names(&["Chief"]), 6);
+        assert_eq!(mp.tint(1), Some(tint(Gold, State::Off)));
+        assert_eq!(mp.tint(crate::skulls_mp::MP.len() as i16), None);
+    }
+
+    /// The picture sits right of the list and the description under it.
+    #[test]
+    fn the_description_sits_under_the_picture() {
+        let [top, left, bottom, right] = DESCRIPTION_TEXT.rect;
+        let picture_bottom = PICTURE.at[1] - 256;
+        assert!(top < picture_bottom && bottom < top, "under the picture");
+        assert_eq!(left, PICTURE.at[0]);
+        assert_eq!(right, PICTURE.at[0] + 256);
+        assert!(right <= 320 && bottom >= -240, "on screen");
+        assert_eq!((PICTURE.screen_id, PICTURE.pane, PICTURE.image), (12, 3, 3));
     }
 }

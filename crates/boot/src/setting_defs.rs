@@ -226,7 +226,6 @@ pub static ALL: &[&Def] = &[
     &crate::skulls_mp::MP_FAMINE,
     &crate::skulls_mp::MP_BLIND,
     &crate::skulls_mp::MP_LOW_GRAVITY,
-    &crate::skulls_mp::MP_REQUIRE_COLLECTED,
 ];
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,

@@ -311,17 +311,13 @@ points! { ALL;
     /// The campaign difficulty list's row chosen: clamps the row to 0..3,
     /// stores the difficulty and starts the campaign.
     DIFFICULTY_ROW_CHOSEN @ 0x002c_9d38: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
-    /// The Game Setup dialog's list handler constructor (screen 23,
-    /// `squad_settings_dialog`): ESI the handler, one stack argument. Fills
-    /// the "squad setting list" rows (action word at datum `+2`) for the
-    /// lobby's kind.
-    SQUAD_SETTINGS_LIST_CTOR @ 0x002b_b4d2: [fn(list: esi, a: stack 0) ret 4]; "docs/skulls.md";
-    /// The Game Setup list's row text: looks the row's action up in a table
-    /// of nine; an unknown action leaves the text as it was.
-    SQUAD_SETTINGS_ROW_TEXT @ 0x002b_b74f: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/skulls.md";
-    /// The Game Setup list's row chosen: jumps through a ten-entry table by
-    /// the row's action with no bounds check.
-    SQUAD_SETTINGS_ROW_CHOSEN @ 0x002b_b801: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
+    /// The variant editor's category list (screen 178,
+    /// `variant_editing_options`) row text: looks the row's word up in a
+    /// table of six; an unknown word leaves the text as it was.
+    VARIANT_OPTIONS_ROW_TEXT @ 0x002b_7581: [fn(list: ecx, item: stack 0, word: stack 1) ret 8]; "docs/skulls.md";
+    /// The variant editor's category list row chosen: words 0 to 5 open a
+    /// category's screen; any other word returns having done nothing.
+    VARIANT_OPTIONS_ROW_CHOSEN @ 0x002b_75e8: [fn(list: ecx, chain: stack 0, row: stack 1) ret 8]; "docs/skulls.md";
     /// Whether the HUD draws (AL); 0 in a campaign with Blind on.
     HUD_SHOWN @ 0x0013_939b: [fn() -> al ret 0]; "docs/skulls.md";
     /// Draws the first-person weapons of one local user (stdcall, four
@@ -354,6 +350,13 @@ points! { ALL;
     /// definition (`0x2c` bytes), a child of the screen in EBX, and give it
     /// the block's string; the widget in EAX, or 0.
     PANE_TEXT_ADD @ 0x0022_f9bf: [fn(screen: ebx, index: stack 0, block: stack 1) -> eax ret 8]; "docs/ui.md";
+    /// The pane builder's bitmap step: make a bitmap widget from a bitmap
+    /// block definition (`0x38` bytes), a child of the screen in ESI; the
+    /// widget in EAX, or 0.
+    PANE_BITMAP_ADD @ 0x0022_fa30: [fn(screen: esi, block: stack 0) -> eax ret 4]; "docs/ui.md";
+    /// The current interface's screen tag for a screen id (stdcall): the
+    /// `wgit` tag's datum handle, or -1.
+    SCREEN_TAG_BY_ID @ 0x0014_8098: [fn(id: stack 0) -> eax ret 4]; "docs/ui.md";
     /// The focused item's row handle of the list in EAX, or -1.
     LIST_FOCUSED_ROW @ 0x0024_c447: [fn(list: eax) -> eax ret 0]; "docs/ui.md";
     /// An item widget's `index`-th text widget of kind 6 (thiscall on the

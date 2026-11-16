@@ -16,7 +16,9 @@
 //! - **row chosen** (the press record's function): the model's press.
 //! - **set up pane** (screen slot 18): the retail one, then our title on the
 //!   header text widget and, for a class with a description, its text widget
-//!   (made by the pane builder's own text step from a block of ours).
+//!   (made by the pane builder's own text step from a block of ours) and,
+//!   for a class with a picture, a bitmap widget made by the pane builder's
+//!   bitmap step from a copy of a retail screen's bitmap block.
 //! - **loader slot** (screen slot 26): our loader, so the screen manager
 //!   re-opens it as ours.
 //!
@@ -73,6 +75,116 @@ pub trait Rows: Send + Sync {
     fn description(&self, _row: i16) -> Option<u32> {
         None
     }
+    /// The picture's tint (red, green, blue multipliers) for row `row`, for
+    /// a class with a picture ([`ListClass::picture`]); `None` leaves it.
+    fn tint(&self, _row: i16) -> Option<[f32; 3]> {
+        None
+    }
+}
+
+/// A picture of ours on the screen: a retail screen's bitmap block, copied
+/// (docs/ui.md "Bitmap block") and placed with its top-left at `at`. The
+/// block is found at run time through the interface's screen list, so the
+/// bitmap reference is the loaded map's own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PictureSpec {
+    /// The retail screen whose pane holds the bitmap (`wgit +4`).
+    pub screen_id: u32,
+    /// Its pane, and the bitmap's index in that pane's bitmaps.
+    pub pane: u32,
+    pub bitmap: u32,
+    /// The image index the block must show, as a check that it is the one
+    /// meant.
+    pub image: i16,
+    /// Top-left, `x, y` (Y up, origin at the screen centre).
+    pub at: [i16; 2],
+}
+
+/// A bitmap block definition's size.
+pub const BITMAP_BLOCK_SIZE: u32 = 0x38;
+/// A pane definition's size; its bitmaps block (count, address) at `+0x24`.
+const PANE_SIZE: u32 = 0x4c;
+const PANE_BITMAPS: u32 = 0x24;
+/// A `wgit`'s panes block (count, address).
+const SCREEN_PANES: u32 = 0x20;
+/// A bitmap block's animation, image index, top-left point and `bitm`
+/// reference (group, then datum handle).
+const BITMAP_ANIMATION: usize = 0x04;
+const BITMAP_IMAGE: usize = 0x0a;
+const BITMAP_POINT: usize = 0x0c;
+const BITMAP_GROUP: usize = 0x18;
+const BITMAP_HANDLE: usize = 0x1c;
+/// A widget's tint: three floats the bitmap draw (`0x2b0565`) multiplies
+/// into its colour with the alpha at `+0x64`; the widget header
+/// (`0x22e27b`) sets them to 1.
+pub const WIDGET_TINT: u32 = 0x28;
+
+/// The bitmap block `spec` names, from the screen tag whose datum handle
+/// is `handle` (`SCREEN_TAG_BY_ID`), ready for the pane builder: no
+/// animation, at `spec.at`. Says why when there is none.
+pub fn picture_block(
+    m: &dyn GuestMemory,
+    handle: u32,
+    spec: &PictureSpec,
+) -> Result<[u8; BITMAP_BLOCK_SIZE as usize], String> {
+    let fault = |e: MemFault| format!("unreadable ({e:?})");
+    if handle == u32::MAX {
+        return Err(format!(
+            "screen {} is not in this interface",
+            spec.screen_id
+        ));
+    }
+    let entries = m.u32(points::TAG_ENTRIES.base).map_err(fault)?;
+    let tag = m
+        .u32(entries.wrapping_add((handle & 0xffff) * 0x10 + 8))
+        .map_err(fault)?;
+    let (panes, pane_at) = (
+        m.u32(tag.wrapping_add(SCREEN_PANES)).map_err(fault)?,
+        m.u32(tag.wrapping_add(SCREEN_PANES + 4)).map_err(fault)?,
+    );
+    if spec.pane >= panes {
+        return Err(format!("screen {} has {panes} panes", spec.screen_id));
+    }
+    let pane = pane_at.wrapping_add(spec.pane * PANE_SIZE);
+    let (bitmaps, bitmap_at) = (
+        m.u32(pane.wrapping_add(PANE_BITMAPS)).map_err(fault)?,
+        m.u32(pane.wrapping_add(PANE_BITMAPS + 4)).map_err(fault)?,
+    );
+    if spec.bitmap >= bitmaps {
+        return Err(format!(
+            "pane {} of screen {} has {bitmaps} bitmaps",
+            spec.pane, spec.screen_id
+        ));
+    }
+    let mut b = [0u8; BITMAP_BLOCK_SIZE as usize];
+    m.read(
+        bitmap_at.wrapping_add(spec.bitmap * BITMAP_BLOCK_SIZE),
+        &mut b,
+    )
+    .map_err(fault)?;
+    let word = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    let image = i16::from_le_bytes([b[BITMAP_IMAGE], b[BITMAP_IMAGE + 1]]);
+    if word(BITMAP_GROUP) != engine::tags::GroupTag::from_chars(*b"bitm").0
+        || word(BITMAP_HANDLE) == u32::MAX
+        || image != spec.image
+    {
+        return Err(format!(
+            "bitmap {} of pane {} of screen {} is not the one meant (image {image})",
+            spec.bitmap, spec.pane, spec.screen_id
+        ));
+    }
+    b[BITMAP_ANIMATION..BITMAP_ANIMATION + 4].fill(0);
+    b[BITMAP_POINT..BITMAP_POINT + 2].copy_from_slice(&spec.at[0].to_le_bytes());
+    b[BITMAP_POINT + 2..BITMAP_POINT + 4].copy_from_slice(&spec.at[1].to_le_bytes());
+    Ok(b)
+}
+
+/// Sets widget `widget`'s tint.
+pub fn set_tint(m: &mut dyn GuestMemory, widget: u32, tint: [f32; 3]) -> Result<(), MemFault> {
+    for (i, c) in tint.iter().enumerate() {
+        m.set_u32(widget + WIDGET_TINT + 4 * i as u32, c.to_bits())?;
+    }
+    Ok(())
 }
 
 /// A description text of ours on the screen: a text block definition
@@ -116,6 +228,7 @@ pub struct Shown(Mutex<Vec<ShownEntry>>);
 struct ShownEntry {
     screen: u32,
     widget: u32,
+    picture: Option<u32>,
     row: Option<i16>,
 }
 
@@ -134,11 +247,26 @@ impl Shown {
         v.push(ShownEntry {
             screen,
             widget,
+            picture: None,
             row: None,
         });
         if v.len() > SHOWN_KEPT {
             v.remove(0);
         }
+    }
+    /// Screen `screen`'s picture widget is `widget` (after its description
+    /// widget was set).
+    pub fn set_picture(&self, screen: u32, widget: u32) {
+        if let Some(e) = self.lock().iter_mut().find(|e| e.screen == screen) {
+            e.picture = Some(widget);
+        }
+    }
+    /// Screen `screen`'s picture widget.
+    pub fn picture(&self, screen: u32) -> Option<u32> {
+        self.lock()
+            .iter()
+            .find(|e| e.screen == screen)
+            .and_then(|e| e.picture)
     }
     /// Row `row` is focused on `screen`: its description widget when that is
     /// another row than it shows (it shows `row` from now), else `None`.
@@ -155,6 +283,9 @@ impl Shown {
 
 /// Where the description's text block goes in the class's table page.
 const DESCRIPTION_BLOCK: u32 = 0x100;
+/// Where the picture's bitmap block goes, after the text block.
+const PICTURE_BLOCK: u32 = 0x140;
+const _: () = assert!(PICTURE_BLOCK >= DESCRIPTION_BLOCK + TEXT_BLOCK_SIZE);
 
 /// Where a class's description block goes, the block, and where to keep
 /// each screen's widget.
@@ -163,6 +294,9 @@ pub struct Description {
     pub at: u32,
     pub block: TextBlock,
     pub shown: Arc<Shown>,
+    /// A picture beside it, its block written at `picture_at`.
+    pub picture: Option<PictureSpec>,
+    pub picture_at: u32,
 }
 
 /// A screen of the `ui` model.
@@ -245,6 +379,7 @@ pub struct ListClass {
     pub screen: &'static str,
     rows: Arc<dyn Rows>,
     description: Option<TextBlock>,
+    picture: Option<PictureSpec>,
     loader: Arc<AtomicU32>,
 }
 
@@ -260,12 +395,19 @@ impl ListClass {
             screen,
             rows,
             description: None,
+            picture: None,
             loader: Arc::new(AtomicU32::new(0)),
         }
     }
     /// With a description text: the focused row's [`Rows::description`].
     pub fn description(mut self, block: TextBlock) -> Self {
         self.description = Some(block);
+        self
+    }
+    /// With a picture beside the description, tinted per focused row
+    /// ([`Rows::tint`]). Only a class with a description shows one.
+    pub fn picture(mut self, spec: PictureSpec) -> Self {
+        self.picture = Some(spec);
         self
     }
     /// The loader address to open it with (`0x149f1e(mask, loader)`), once
@@ -494,16 +636,21 @@ pub async fn row_text(
             .await?
             .eax;
         let focused = (focused != u32::MAX).then(|| DatumHandle(focused).index() as i16);
-        if let Some(widget) = shown.focus(screen, focused)
-            && let Some(id) = focused.and_then(|r| rows.description(r))
-        {
-            cx.call(
-                GuestCall::new(points::TEXT_SET.base)
-                    .edi(widget)
-                    .esi(screen)
-                    .args([id]),
-            )
-            .await?;
+        if let Some(widget) = shown.focus(screen, focused) {
+            if let Some(id) = focused.and_then(|r| rows.description(r)) {
+                cx.call(
+                    GuestCall::new(points::TEXT_SET.base)
+                        .edi(widget)
+                        .esi(screen)
+                        .args([id]),
+                )
+                .await?;
+            }
+            if let (Some(picture), Some(tint)) =
+                (shown.picture(screen), focused.and_then(|r| rows.tint(r)))
+            {
+                cx.write(|m| set_tint(m, picture, tint))?;
+            }
         }
     }
     Ok(Ret::new(0, 8))
@@ -564,9 +711,56 @@ pub async fn setup_pane(
             eprintln!("{name}: no description text (no memory for the widget)");
         } else {
             d.shown.set_widget(screen, widget);
+            if let Some(spec) = d.picture {
+                add_picture(&cx, screen, &spec, d.picture_at, &d.shown, name).await?;
+            }
         }
     }
     Ok(Ret::new(r.eax, 4))
+}
+
+/// Said once per run: the picture could not be made (the line says why).
+static PICTURE_MISSING: AtomicBool = AtomicBool::new(false);
+
+/// The picture: its block found through the screen list, copied to `at`,
+/// and made a bitmap widget of `screen` by the pane builder's bitmap step.
+async fn add_picture(
+    cx: &Cx,
+    screen: u32,
+    spec: &PictureSpec,
+    at: u32,
+    shown: &Shown,
+    name: &str,
+) -> Result<(), EntryError> {
+    let handle = cx
+        .call(GuestCall::new(points::SCREEN_TAG_BY_ID.base).args([spec.screen_id]))
+        .await?
+        .eax;
+    let block = match cx.read(|m| picture_block(m, handle, spec)) {
+        Ok(b) => b,
+        Err(why) => {
+            once(&PICTURE_MISSING, &format!("{name}: no picture: {why}"));
+            return Ok(());
+        }
+    };
+    cx.write(|m| m.write(at, &block))?;
+    let widget = cx
+        .call(
+            GuestCall::new(points::PANE_BITMAP_ADD.base)
+                .esi(screen)
+                .args([at]),
+        )
+        .await?
+        .eax;
+    if widget == 0 {
+        once(
+            &PICTURE_MISSING,
+            &format!("{name}: no picture (no memory for the widget)"),
+        );
+    } else {
+        shown.set_picture(screen, widget);
+    }
+    Ok(())
 }
 
 impl feature::Feature for ListClass {
@@ -612,6 +806,8 @@ impl feature::Feature for ListClass {
                 at: tables + DESCRIPTION_BLOCK,
                 block,
                 shown,
+                picture: self.picture,
+                picture_at: tables + PICTURE_BLOCK,
             });
         let setup_pane_at = b.entry("set up pane", move |cx| -> EntryFuture {
             Box::pin(setup_pane(cx, title, description.clone(), name))
@@ -1140,6 +1336,9 @@ mod tests {
         fn description(&self, row: i16) -> Option<u32> {
             (0..15).contains(&row).then_some(0x200 + row as u32)
         }
+        fn tint(&self, row: i16) -> Option<[f32; 3]> {
+            (row == 3).then_some([0.5, 0.25, 1.0])
+        }
     }
 
     #[test]
@@ -1204,6 +1403,8 @@ mod tests {
             at: TABLES + DESCRIPTION_BLOCK,
             block,
             shown: Arc::clone(&shown),
+            picture: None,
+            picture_at: 0,
         };
         let f =
             move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
@@ -1316,5 +1517,180 @@ mod tests {
         let plan = r.build(&feature::Base).unwrap();
         assert_eq!(plan.entries.len(), 5);
         assert_eq!(class.loader(), plan.entries[0].addr);
+    }
+
+    const ENTRIES: u32 = 0x0080_0000;
+    const TAG: u32 = 0x0081_0000;
+    const PANES: u32 = 0x0082_0000;
+    const BITMAPS: u32 = 0x0083_0000;
+
+    fn spec() -> PictureSpec {
+        PictureSpec {
+            screen_id: 12,
+            pane: 3,
+            bitmap: 1,
+            image: 3,
+            at: [56, 150],
+        }
+    }
+
+    /// A screen tag (datum 0x1234_0005) with four panes; pane 3 has two
+    /// bitmap blocks, the second showing image 3 of a `bitm`.
+    fn screen_tag() -> FakeGuest {
+        let mut g = guest();
+        g.map(ENTRIES, 0x100)
+            .map(TAG, 0x100)
+            .map(PANES, 0x200)
+            .map(BITMAPS, 0x100)
+            .map(points::TAG_ENTRIES.base, 4);
+        g.put_u32(points::TAG_ENTRIES.base, ENTRIES)
+            .put_u32(ENTRIES + 5 * 0x10 + 8, TAG)
+            .put_u32(TAG + 0x20, 4)
+            .put_u32(TAG + 0x24, PANES)
+            .put_u32(PANES + 3 * 0x4c + 0x24, 2)
+            .put_u32(PANES + 3 * 0x4c + 0x28, BITMAPS);
+        let b = BITMAPS + 0x38;
+        g.put_u32(b + 4, 11)
+            .put_u16(b + 0xa, 3)
+            .put_u16(b + 0xc, 44)
+            .put_u16(b + 0xe, 124)
+            .put_u32(b + 0x18, engine::tags::GroupTag::from_chars(*b"bitm").0)
+            .put_u32(b + 0x1c, 0xe588_0368)
+            .put_u16(b + 0x20, 2);
+        g
+    }
+
+    /// The block is the retail one, placed at ours with no animation; one
+    /// that is not the bitmap meant is refused, with why.
+    #[test]
+    fn the_picture_is_a_copy_of_the_retail_bitmap_block_placed_at_ours() {
+        let g = screen_tag();
+        let b = picture_block(&g, 0x1234_0005, &spec()).unwrap();
+        let word = |o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+        let half = |o: usize| i16::from_le_bytes([b[o], b[o + 1]]);
+        assert_eq!(word(4), 0, "no animation");
+        assert_eq!((half(0xc), half(0xe)), (56, 150));
+        assert_eq!(half(0xa), 3);
+        assert_eq!(word(0x1c), 0xe588_0368, "the map's own bitmap");
+        assert_eq!(half(0x20), 2, "the rest as the tag has it");
+        assert!(
+            picture_block(&g, u32::MAX, &spec())
+                .unwrap_err()
+                .contains("not in this")
+        );
+        let wrong = PictureSpec { image: 2, ..spec() };
+        assert!(
+            picture_block(&g, 0x1234_0005, &wrong)
+                .unwrap_err()
+                .contains("not the one")
+        );
+        let pane = PictureSpec { pane: 4, ..spec() };
+        assert!(
+            picture_block(&g, 0x1234_0005, &pane)
+                .unwrap_err()
+                .contains("4 panes")
+        );
+        let bitmap = PictureSpec {
+            bitmap: 2,
+            ..spec()
+        };
+        assert!(
+            picture_block(&g, 0x1234_0005, &bitmap)
+                .unwrap_err()
+                .contains("2 bitmaps")
+        );
+    }
+
+    /// The pane set-up with a picture: after the description, the screen's
+    /// tag is looked up, the block written, then the bitmap step on it.
+    #[test]
+    fn the_pane_set_up_adds_the_picture_after_the_description() {
+        let mut g = screen_tag();
+        g.put_u32(STACK + 4, 0x55);
+        let shown = Arc::new(Shown::default());
+        let d = Description {
+            at: TABLES + DESCRIPTION_BLOCK,
+            block: TextBlock {
+                rect: [1, 2, 3, 4],
+                font: 1,
+                colour: [1.0; 3],
+            },
+            shown: Arc::clone(&shown),
+            picture: Some(spec()),
+            picture_at: TABLES + PICTURE_BLOCK,
+        };
+        let f =
+            move |cx| -> EntryFuture { Box::pin(setup_pane(cx, 0x77, Some(d.clone()), "test")) };
+        let regs = Regs {
+            esp: STACK,
+            ecx: SCREEN,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: match c.target {
+                t if t == points::PANE_TEXT_ADD.base => 0x9000,
+                t if t == points::SCREEN_TAG_BY_ID.base => 0x1234_0005,
+                t if t == points::PANE_BITMAP_ADD.base => 0x9800,
+                _ => 0,
+            },
+            ..Default::default()
+        });
+        assert_eq!(
+            &run.calls[3..],
+            [
+                Gc::new(points::SCREEN_TAG_BY_ID.base).args([12]),
+                Gc::new(points::PANE_BITMAP_ADD.base)
+                    .esi(SCREEN)
+                    .args([TABLES + PICTURE_BLOCK]),
+            ]
+        );
+        let want = picture_block(&screen_tag(), 0x1234_0005, &spec()).unwrap();
+        assert_eq!(run.guest.bytes(TABLES + PICTURE_BLOCK, 0x38).unwrap(), want);
+        assert_eq!(shown.picture(SCREEN), Some(0x9800));
+    }
+
+    /// Row text tints the picture for the focused row when the focus moves.
+    #[test]
+    fn row_text_tints_the_picture_for_the_focused_row() {
+        const ITEM: u32 = 0x0060_0000;
+        const PICTURE: u32 = 0x0061_0000;
+        let list = SCREEN + ui::LIST;
+        let shown = Arc::new(Shown::default());
+        shown.set_widget(SCREEN, 0x9000);
+        shown.set_picture(SCREEN, PICTURE);
+        let mut g = guest();
+        g.put_u32(STACK + 4, ITEM).put_u32(STACK + 8, 0);
+        g.map(ITEM, Item::SIZE).map(PICTURE, 0x90);
+        Item::at(ITEM)
+            .set_row(&mut g, Some(DatumHandle::new(0x8001, 3)))
+            .unwrap();
+        let f = {
+            let shown = Arc::clone(&shown);
+            move |cx| -> EntryFuture {
+                Box::pin(row_text(cx, Arc::new(Described), Some(Arc::clone(&shown))))
+            }
+        };
+        let regs = Regs {
+            esp: STACK,
+            ecx: list,
+            ..Default::default()
+        };
+        let run = testing::run(&f, g, regs, |c, _| Regs {
+            eax: match c.target {
+                t if t == points::ITEM_TEXT.base => 0x7000,
+                t if t == points::LIST_FOCUSED_ROW.base => DatumHandle::new(0x8001, 3).raw(),
+                _ => 0,
+            },
+            ..Default::default()
+        });
+        assert_eq!(run.result, Ok(Ret::new(0, 8)));
+        let tint: Vec<f32> = (0..3)
+            .map(|i| f32::from_bits(run.guest.u32(PICTURE + WIDGET_TINT + 4 * i).unwrap()))
+            .collect();
+        assert_eq!(tint, [0.5, 0.25, 1.0]);
+        let mut m = FakeGuest::new();
+        m.map(PICTURE, 0x90);
+        set_tint(&mut m, PICTURE, [1.0, 0.78, 0.3]).unwrap();
+        assert_eq!(f32::from_bits(m.u32(PICTURE + 0x2c).unwrap()), 0.78);
     }
 }
