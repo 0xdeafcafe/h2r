@@ -67,8 +67,8 @@ resource encodings are **S**, outside this reader's implementation.
 | `008` | u32 | Declared file length | V |
 | `010` | u32 | Absolute file offset of index header (`I`) | V |
 | `014` | u32 | Bytes from index header to ordinary metadata (`D`) | V |
-| `018` | u32 | Ordinary metadata byte length | V |
-| `01c` | u32 | Total metadata memory size, including BSP space | S |
+| `018` | u32 | Ordinary metadata byte length | V, E `0x122a53` |
+| `01c` | u32 | Total metadata memory size: index, largest BSP, ordinary metadata | V, E `0x122947` |
 | `120` | char[32] | NUL-terminated build string | V |
 | `140` | u32 (engine: i16, see caveats under "Lossless writing") | 0 campaign, 1 multiplayer, 2 menu, 3 shared, 4 campaign-shared | V |
 | `144` | u32 | CRC checksum field (not the XOR field below) | S |
@@ -795,8 +795,52 @@ are handled separately. Renaming does not change a tag's datum or resource
 references. String IDs and fixed string slots are preserved exactly; changing
 StringID lengths would require repairing references in opaque tags.
 
-This minimal relocation policy deliberately does not resize metadata blocks,
-repack raw resources, compact old tables, or rewrite unknown pointer fields.
+`patch_metadata(address, bytes)` is the same fixed-size patch addressed by
+ordinary metadata virtual address instead of a tag and offset, so a caller can
+patch bytes of any tag, or between tags, in one transaction.
+
+### Growing the metadata
+
+`append_metadata(bytes, align)` appends bytes after the last tag and returns
+their virtual address; the caller then points a block at them with
+`patch_metadata`. No tag owns the new bytes, and nothing that exists moves.
+
+**V:** on every retail map on the owner's disc the ordinary metadata is the
+last thing in the file (`+0x10 + +0x14 + +0x18 == +0x8`), the index loads at
+virtual `0x80061000`, BSPs at `0x80061000 + D`, and the metadata at
+`0x80061000 + +0x1c - +0x18`, with `+0x1c = D + largest BSP + +0x18`. Every
+size is a multiple of `0x1000`.
+
+**E:** the loader `0x1228f0` allocates `+0x1c` rounded up to a page from the
+low end of the physical arena (`0x12296c` fails when that would cross the
+high cursor), reads `roundup(+0x14, 0x200)` bytes of index from `+0x10` to the
+base (`0x12299f`), and `roundup(+0x18, 0x200)` bytes of metadata from
+`+0x10 + +0x14` to `base + +0x1c - +0x18` (`0x122a52`–`0x122a87`, using the
+unrounded `+0x1c`). The read helper `0x122d60` fails on a short read. Only the
+loader reads `+0x18`; `+0x1c` is also read by three "inside the tag cache"
+range checks (`0x1d02d8`, `0x1d5059`, `0x279745`), which use the same value.
+
+So growing `+0x18` and `+0x1c` by the same amount leaves the metadata base,
+and with it every tag address, unchanged. On write the appended bytes are
+padded with zeros to a multiple of `0x1000`, and `+8`, `+0x18` and `+0x1c`
+grow by that; a renamed name table goes after them. `append_metadata` refuses
+when the metadata does not end the file, when the file has physical bytes
+past its declared length, when a BSP's address space would overlap the new
+range, when the file would pass the per-type cache size limit, and when
+`+0x1c` would pass `writer::max_metadata_size(cache_type)`.
+
+That last bound is empirical. No constant in the loader limits `+0x1c`; the
+real limit is the arena: after the load `0x12c1e0` gives every free page to
+one pool, so growth shrinks that pool, and how much the high side has used by
+then was not measured. The bound is the largest `+0x1c` of any retail map of
+the same type on the owner's disc (V): campaign `0xc24000`, multiplayer
+`0x62c000`, main menu `0x1d3000`, shared `0x445000`, campaign-shared
+`0x69e000`. [scenario-editor.md](scenario-editor.md) §6 has the details and
+the open question.
+
+This minimal relocation policy deliberately does not resize metadata blocks
+in place, repack raw resources, compact old tables, or rewrite unknown pointer
+fields; a grown block is a new copy at the end, pointed at by its caller.
 Those operations need a complete relocation schema. The tag index and all
 metadata/raw offsets remain valid because their original regions do not move.
 The renamed table is bounded to the reader's 64 MiB string-table limit.

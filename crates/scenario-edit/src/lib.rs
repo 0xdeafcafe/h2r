@@ -10,8 +10,10 @@
 //! - [`geometry`], [`render`], [`panel`]: the structure BSP and markers, an
 //!   offscreen wgpu viewport, and the egui panel [`ScenarioEditor`].
 //!
-//! Adding and removing entries needs a writer that can grow a tag; see
-//! docs/scenario-editor.md. No game data is in this crate or its tests.
+//! Entries are removed in place (swap with the last, lower the count) and
+//! added in place up to the source size; a block that grows past it is
+//! appended to the metadata through `MapEditor::append_metadata`. See
+//! docs/scenario-editor.md §6. No game data is in this crate or its tests.
 #![forbid(unsafe_code)]
 
 pub mod edit;
@@ -28,7 +30,7 @@ pub use edit::{Command, History, SetField};
 pub use layout::{BlockKind, FieldType, Role};
 pub use panel::ScenarioEditor;
 pub use save::MapSource;
-pub use scenario::{Scenario, TagRef, Value};
+pub use scenario::{Changes, Grown, Removed, Scenario, TagRef, Value};
 
 /// Why an edit, read or save was refused.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +51,8 @@ pub enum Error {
     ReadOnly(&'static str),
     #[error("{0}: {1}")]
     Value(&'static str, &'static str),
+    #[error("refused: {0}")]
+    Refused(&'static str),
     #[error("save: {0}")]
     Save(&'static str),
 }

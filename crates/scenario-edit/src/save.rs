@@ -2,9 +2,11 @@
 //! the edited scenario as a new `.map`.
 //!
 //! Saving goes through `map::writer::MapEditor`: the source streams through
-//! unchanged except for the scenario patches from [`Scenario::patches`] and
-//! the header checksum at `+0x2d0`, which the writer recomputes. With no
-//! edits the output is byte-identical to the source.
+//! unchanged except for the scenario patches from [`Scenario::changes`],
+//! blocks that outgrew their source appended to the metadata (with the
+//! header sizes that grow with it), and the header checksum at `+0x2d0`,
+//! which the writer recomputes. With no edits the output is byte-identical
+//! to the source.
 use crate::scenario::Scenario;
 use crate::{Error, Result};
 use map::Map;
@@ -87,9 +89,18 @@ pub fn write_patched<R: Read + Seek>(
     if current.id != scenario.tag || loc.address != scenario.address || loc.size != scenario.size {
         return Err(Error::Save("the scenario was read from a different map"));
     }
+    let changes = scenario.changes();
     let mut editor = map.edit();
-    for (offset, bytes) in scenario.patches() {
-        editor.patch_tag(scenario.tag, offset, &bytes)?;
+    for (address, bytes) in &changes.patches {
+        editor.patch_metadata(*address, bytes)?;
+    }
+    // A block that outgrew its source goes to the end of the metadata, and
+    // its root pair points there; the old elements stay as dead data.
+    for g in &changes.grown {
+        let at = editor.append_metadata(&g.bytes, 16)?;
+        let mut pair = g.count.to_le_bytes().to_vec();
+        pair.extend_from_slice(&at.to_le_bytes());
+        editor.patch_metadata(g.root, &pair)?;
     }
     Ok(editor.write_to(out)?)
 }

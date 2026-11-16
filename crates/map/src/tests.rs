@@ -537,3 +537,104 @@ fn engine_size_limits_apply_to_source_and_edited_output() {
     edit.rename_tag(id(0), "x").unwrap();
     assert!(edit.write_to(&mut Cursor::new(Vec::new())).is_err());
 }
+
+/// The fixture with its ordinary metadata ending the file, as in retail maps.
+fn fixture_at_end() -> Vec<u8> {
+    let mut b = fixture();
+    b.truncate(0x1800);
+    put(&mut b, 8, 0x1800);
+    b
+}
+
+#[test]
+fn appended_metadata_grows_the_region_and_moves_nothing() {
+    let bytes = fixture_at_end();
+    let mut map = parse(bytes.clone()).unwrap();
+    let mut edit = map.edit();
+    assert_eq!(edit.append_metadata(&[1; 5], 4).unwrap(), META + 0x600);
+    assert_eq!(edit.append_metadata(&[2; 3], 16).unwrap(), META + 0x610);
+    assert_eq!(edit.appended_len(), 0x13);
+    // A patch by address, inside a tag and between tags.
+    edit.patch_metadata(META + 0x20, &[9]).unwrap();
+    edit.patch_metadata(META + 0x10, &[8, 8]).unwrap();
+    edit.rename_tag(id(4), "renamed").unwrap();
+    let mut out = Cursor::new(Vec::new());
+    let n = edit.write_to(&mut out).unwrap();
+    let result = out.into_inner();
+    assert_eq!(n as usize, result.len());
+    let word = |b: &[u8], o: usize| u32::from_le_bytes(b[o..o + 4].try_into().unwrap());
+    assert_eq!(word(&result, 0x18), 0x1600);
+    assert_eq!(word(&result, 0x1c), 0x1800);
+    // The renamed tables follow the appended page.
+    assert_eq!(word(&result, 0x2c4), 0x2800);
+    assert_eq!(word(&result, 8) as usize, result.len());
+    let allowed = [
+        8..12,
+        0x18..0x20,
+        0x2c0..0x2d4,
+        0x1210..0x1212,
+        0x1220..0x1221,
+    ];
+    for i in 0..bytes.len() {
+        if !allowed.iter().any(|r| r.contains(&i)) {
+            assert_eq!(result[i], bytes[i], "offset {i:#x}");
+        }
+    }
+    assert_eq!(&result[0x1800..0x1805], &[1; 5]);
+    assert_eq!(&result[0x1805..0x1810], &[0; 11]);
+    assert_eq!(&result[0x1810..0x1813], &[2; 3]);
+    assert!(result[0x1813..0x2800].iter().all(|&b| b == 0));
+    let mut reread = parse(result).unwrap();
+    reread.validate_checksum().unwrap();
+    let space = reread.metadata_space().unwrap();
+    assert_eq!((space.virtual_base, space.size), (META, 0x1600));
+    let at = reread.file_offset(META + 0x610, 3).unwrap();
+    assert_eq!(reread.read_file_range(at, 3).unwrap(), [2; 3]);
+    assert_eq!(reread.read_tag_bytes(id(1)).unwrap()[0], 9);
+    assert_eq!(reread.tag(id(4)).unwrap().name.as_deref(), Some("renamed"));
+    // Existing tags keep their addresses.
+    for (a, b) in reread.tags().iter().zip(map.tags()) {
+        assert_eq!(a.index_address, b.index_address);
+    }
+}
+
+#[test]
+fn appending_metadata_is_refused_outside_its_bounds() {
+    // The metadata does not end the file.
+    let mut map = parse(fixture()).unwrap();
+    assert!(map.edit().append_metadata(&[1], 4).is_err());
+    // Physical bytes past the declared length.
+    let mut b = fixture_at_end();
+    b.extend([0; 512]);
+    let mut map = parse(b).unwrap();
+    assert!(map.edit().append_metadata(&[1], 4).is_err());
+    let mut map = parse(fixture_at_end()).unwrap();
+    let mut edit = map.edit();
+    assert!(edit.append_metadata(&[1], 3).is_err());
+    assert!(edit.append_metadata(&[1], 0x2000).is_err());
+    // Patches by address stay inside the source region.
+    assert!(edit.patch_metadata(META + 0x5ff, &[1, 2]).is_err());
+    assert!(edit.patch_metadata(META - 1, &[1]).is_err());
+    assert!(edit.patch_metadata(META + 0x5ff, &[1]).is_ok());
+    assert!(edit.patch_metadata(META + 0x5ff, &[1]).is_err());
+    // A BSP whose own space sits where the region would grow.
+    let mut b = fixture_at_end();
+    let bsp = META + 0x800;
+    put(&mut b, 0x1600 + 8, bsp);
+    put(&mut b, 0xa00 + 4, bsp + 16);
+    put(&mut b, 0xa00 + 8, bsp + 32);
+    let mut map = parse(b).unwrap();
+    assert!(map.edit().append_metadata(&[1], 4).is_err());
+    // The total metadata size may not pass the engine bound for the type.
+    let limit = writer::max_metadata_size(CacheType::Campaign).unwrap();
+    let mut b = fixture_at_end();
+    put(&mut b, 0x1c, limit - 0x1000);
+    let mut map = parse(b).unwrap();
+    let mut edit = map.edit();
+    assert_eq!(edit.append_metadata(&[1; 0x1000], 4).unwrap(), META + 0x600);
+    assert!(edit.append_metadata(&[1], 4).is_err());
+    assert_eq!(edit.appended_len(), 0x1000);
+    let mut out = Cursor::new(Vec::new());
+    edit.write_to(&mut out).unwrap();
+    assert_eq!(parse(out.into_inner()).unwrap().header().meta_size, limit);
+}
