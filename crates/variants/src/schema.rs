@@ -35,13 +35,14 @@ const PAGE_ID: usize = 0x0;
 const PAGE_REFS: usize = 0x8;
 const ENTRY_SIZE: usize = 0x14;
 /// `sily`: `+0` setting number, `+8` its `unic` reference (datum at
-/// `+0xc`), `+0x10` title and `+0x14` help string ids (inferred from the
-/// order; `+0x18` is a third id not used here), `+0x1c` options block of
+/// `+0xc`), `+0x10` title, `+0x14` the title in capitals (not used) and
+/// `+0x18` help string ids (checked against the retail tag's text),
+/// `+0x1c` options block of
 /// `OPTION_SIZE` bytes (`+0` default flag, `+4` value, `+8` label id).
 const SILY_SETTING: usize = 0x0;
 const SILY_UNIC: usize = 0xc;
 const SILY_TITLE: usize = 0x10;
-const SILY_HELP: usize = 0x14;
+const SILY_HELP: usize = 0x18;
 const SILY_OPTIONS: usize = 0x1c;
 const OPTION_SIZE: usize = 0xc;
 

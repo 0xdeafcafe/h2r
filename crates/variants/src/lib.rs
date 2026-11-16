@@ -4,7 +4,9 @@
 //! portable sharing format ([`portable`]) and the egui panel
 //! ([`VariantEditor`]). docs/variants.md has the format and the evidence.
 
+pub mod portable;
 pub mod record;
+pub mod save;
 pub mod schema;
 pub mod sha1;
 

@@ -395,11 +395,11 @@ impl GameVariant {
     /// copy does). Unchanged names leave the field's bytes alone.
     pub fn set_name(&mut self, name: &str) -> Result<(), RecordError> {
         let units: Vec<u16> = name.encode_utf16().collect();
-        if units.len() > MAX_NAME_UNITS {
-            return Err(RecordError::NameTooLong);
-        }
         if units == self.name_units() {
             return Ok(());
+        }
+        if units.len() > MAX_NAME_UNITS {
+            return Err(RecordError::NameTooLong);
         }
         for i in 0..NAME_UNITS {
             let u = units.get(i).copied().unwrap_or(0);
@@ -643,6 +643,11 @@ mod tests {
         for (i, x) in b.iter_mut().enumerate() {
             *x = (i as u8).wrapping_mul(37).wrapping_add(11);
         }
+        // A valid UTF-16 name of 20 units, then noise after its NUL.
+        for i in 0..20 {
+            b[NAME_AT + 2 * i..NAME_AT + 2 * i + 2].copy_from_slice(&(u16::from(b'a') + i as u16).to_le_bytes());
+        }
+        b[NAME_AT + 40..NAME_AT + 42].fill(0);
         b
     }
 
