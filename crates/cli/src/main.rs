@@ -40,6 +40,7 @@ mod object;
 #[cfg(unix)]
 mod follow;
 mod play_cmd;
+mod play_cloud;
 mod play_live;
 mod safe_out;
 mod scripts;

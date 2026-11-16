@@ -570,6 +570,45 @@ admin). Lists leave out taken-down packages.
 The client side (`h2 live maps publish DIR`, `h2 live maps list`, and the
 join-time download) is in [maps.md](../game/maps.md) §5, "As built".
 
+## Cloud saves
+
+Each account's own save storage ([live-cloud-saves.md](live-cloud-saves.md)):
+private on every server, versioned, and kept by content hash. `{xuid}` is
+the owner's; any other caller is refused.
+
+| endpoint | authentication | result |
+|---|---|---|
+| `GET /v1/accounts/{xuid}/storage` | the owner's token, `lxm: storage.read` | `{items: [item], used_bytes, quota_bytes, item_bytes}` (tombstones included) |
+| `GET /v1/accounts/{xuid}/storage/{kind}/{name}` | the owner's token, `lxm: storage.read` | the bytes; `ETag: "<version>"`, `X-H2-Version`, `X-H2-Modified`, `X-H2-SHA256`; 404 if absent or deleted |
+| `PUT /v1/accounts/{xuid}/storage/{kind}/{name}` | the owner's token, `lxm: storage.write`; `If-Match: <version>`, `X-H2-SHA256: <hex>`, `X-H2-Modified: <unix ms>` (optional); the raw bytes | 201 (new) or 200 `item`; 409 `{error: "conflict", message, current: item or null}` |
+| `DELETE /v1/accounts/{xuid}/storage/{kind}/{name}` | the owner's token, `lxm: storage.write`; `If-Match: <version>` | 200 the tombstone; 409 as for `PUT`; 404 if absent or already deleted |
+
+An item is `{kind, name, version, sha256?, size, modified, stored_at,
+deleted?}`: `version` starts at 1 and rises by one with each write or
+delete, `modified` is the writer's own time of the change (Unix
+milliseconds; the server's time when the writer gives none), `stored_at`
+the server's (RFC 3339). A tombstone has `deleted: true`, no `sha256` and
+size 0.
+
+- `kind` is `save` (U:'s files) or `settings` (one profile's settings); any
+  other is 404. `name` is 1 to 4 `/`-separated segments of printable ASCII
+  without `" * + , : ; < = > ? \ | %`, never `.` or `..`, each at most 64
+  bytes, 250 in all (400 otherwise); percent-encode it in the URL.
+- `If-Match` is required on writes: the item's current version (a
+  tombstone's too), `0` for an item that never existed, bare or quoted as an
+  ETag. Anything else is a 409 carrying the current item, checked both
+  before and after the body is read.
+- The body's SHA-256 must be `X-H2-SHA256` (400 otherwise). Bytes are kept
+  once per account by hash under `<data>/storage/<xuid>/blobs/`, and
+  removed when no item names them.
+- Caps (`Policy::storage`, `StorageLimits`): 8 MiB per item, 64 MiB per
+  account counting live items only (a replacement counts its new size), and
+  2048 items per account, tombstones included; 413 over any. Writes share the
+  per-author write rate (429). A server with no data directory keeps none
+  (503); a server older than this answers 404 for the list.
+- Responses are `Cache-Control: private, no-store`. Nothing about cloud
+  saves goes into the event log or the stream.
+
 ## Co-op relay
 
 **`GET /v1/sessions/{id}/relay`** is a WebSocket that hands each binary

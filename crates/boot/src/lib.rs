@@ -476,7 +476,14 @@ pub struct Host {
     /// kernel (for its logical clock). Returning false ends the run
     /// (outcome `HostStop`).
     pub between_slices: Option<BetweenSlices>,
+    /// Called once with the kernel's VFS when it is attached, before the
+    /// game runs: `h2 play` watches U: through it for cloud saves
+    /// (`vfs::Vfs::set_change_observer`, docs/live/live-cloud-saves.md).
+    pub on_vfs: Option<VfsReady>,
 }
+
+/// [`Host::on_vfs`].
+pub type VfsReady = Box<dyn FnOnce(&Arc<std::sync::Mutex<vfs::Vfs>>) + Send>;
 
 /// [`Host::between_slices`]: true to keep running.
 pub type BetweenSlices = Box<dyn FnMut(&kernel::Kernel) -> bool>;
@@ -596,6 +603,9 @@ pub fn run_hosted_with_live(
         }
     };
     k.set_vfs(v).context("attaching the VFS")?;
+    if let (Some(ready), Some(vfs)) = (host.on_vfs.take(), k.vfs()) {
+        ready(&vfs);
+    }
     // A package installed while the game runs (docs/game/maps.md §3): a Live
     // join tells the VFS to look again at once (it also notices by itself
     // at the map's next open), and the map-slots feature drops the game's

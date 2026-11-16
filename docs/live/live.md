@@ -144,7 +144,7 @@ h2 live maps publish|list ...
 h2 live assets extract|check
 h2 live invite create [--days N] [--server URL] [--data DIR]
 h2 live q <what> [--server URL] [--json|--jsonl]
-h2 play <disc> --live | --live-server URL [--live-listen ADDR] [--gamertag NAME]
+h2 play <disc> [--live | --live-server URL | --offline] [--live-listen ADDR] [--gamertag NAME]
 ```
 
 `h2 live serve` serves the web app from `web/dist` (or `$H2_LIVE_WEB`) at
@@ -206,12 +206,37 @@ URL, then boots with `boot::LiveConfig {
 enabled, accounts_path: play-accounts.json, server_url }`. The server stops
 when the game does.
 
+#### Playing on Live
+
+With no Live flag, `h2 play` tries the default service,
+`https://live.forbes.red` (`DEFAULT_LIVE_SERVER` in
+`crates/cli/src/play_live.rs`, the one place it is written): it fetches the
+discovery document with a 3 s timeout and, if one comes back, plays as
+`--live-server https://live.forbes.red` would, printing `live: signing in to
+https://live.forbes.red (the default; --offline plays without Live)`. If
+nothing answers, it plays offline exactly as it did before, with one line:
+`live: https://live.forbes.red did not answer (…); playing offline. --live
+runs a service on this machine, --offline skips this check`. A sign-in that
+fails there (an invite-only service, say) is a line too, `live: could not
+sign in to … (…); playing offline`, not an error.
+
+- `--offline` (or `--no-live`) skips the check: no Live, no line.
+- `$H2_LIVE_SERVER` replaces the default (tried and fallen back from the
+  same way); `H2_LIVE_SERVER=off` (or `none`, `0`) plays offline.
+- `--live`, `--live-server URL` and `--live-tunnel` are unchanged, and
+  their failures still stop `h2 play`.
+- `--gamertag NAME` picks the account on whichever service is played on;
+  it does not go with `--offline`.
+
+Signed in anywhere, the account's saves follow it
+([live-cloud-saves.md](live-cloud-saves.md)).
+
 With the embedded server it also prints a one-use link
 (`/signin#once=…`, loopback only, ten minutes) that signs this machine's
 browser in as the playing account, an admin there for the session; see
 [live-admin.md](live-admin.md) §4.
 
-Before starting, it builds the web app (`bun install --frozen-lockfile`,
+For the embedded server only, before starting, it builds the web app (`bun install --frozen-lockfile`,
 `bun run build`) when `web/dist` is missing or was built from a different
 `web/` tree (`web/dist/.h2-web-tree` records it; with uncommitted changes
 under `web/` an existing build is kept). `h2 play --follow` does the same

@@ -3,9 +3,14 @@
 //! else the file store in `server/log`) or `--live-server URL`; an account for that
 //! server is found in, or added to, the local accounts file, and the game
 //! is booted with `boot::LiveConfig` pointing at it (docs/live/live.md).
+//!
+//! With none of those flags, `h2 play` tries [`DEFAULT_LIVE_SERVER`] (or
+//! `$H2_LIVE_SERVER`) and plays offline, as before, when it does not
+//! answer ([`choose`]). `--offline` (`--no-live`) skips that.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use live_proto::Gamertag;
@@ -13,10 +18,20 @@ use live_proto::Gamertag;
 use crate::live_accounts::{self, LocalAccount};
 use crate::live_cmd::{Client, status_of};
 
+/// The Live service `h2 play` signs in to when no flag says otherwise
+/// (docs/live/live.md "Playing on Live"). The one place it is written.
+pub const DEFAULT_LIVE_SERVER: &str = "https://live.forbes.red";
+
+/// How long the default service has to answer its discovery document
+/// before `h2 play` goes on offline.
+pub const DEFAULT_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
+
 /// The `--live*` flags of `h2 play`.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct LiveOpts {
     pub enabled: bool,
+    /// `--offline` (or `--no-live`): do not try the default service.
+    pub offline: bool,
     /// `--live-server`: use this service instead of an embedded one.
     pub server: Option<String>,
     /// `--live-listen`: where the embedded server binds (default
@@ -47,6 +62,7 @@ impl LiveOpts {
     pub fn take(&mut self, flag: &str, value: &mut dyn FnMut() -> Result<String>) -> Result<bool> {
         match flag {
             "--live" => self.enabled = true,
+            "--offline" | "--no-live" => self.offline = true,
             "--live-server" => {
                 self.enabled = true;
                 self.server = Some(value()?);
@@ -81,8 +97,11 @@ impl LiveOpts {
     }
 
     pub fn check(&self) -> Result<()> {
-        if self.gamertag.is_some() && !self.enabled {
-            bail!("--gamertag goes with --live or --live-server");
+        if self.offline && (self.enabled || self.tunnel) {
+            bail!("--offline plays without Live; drop --live, --live-server or --live-tunnel");
+        }
+        if self.gamertag.is_some() && self.offline {
+            bail!("--gamertag is the Live account to play as; it does not go with --offline");
         }
         if self.server.is_some() && self.listen.is_some() {
             bail!("--live-listen is for the embedded server; --live-server uses another");
@@ -123,12 +142,80 @@ impl LiveOpts {
     }
 }
 
+/// How `h2 play` plays: what the flags, `$H2_LIVE_SERVER` and the default
+/// service's answer decided.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Choice {
+    /// Offline, as `h2 play` always played without `--live`; `why` is the
+    /// line to print, if any.
+    Offline { why: Option<String> },
+    /// `--live`, `--live-server` or `--live-tunnel`: exactly as asked.
+    Flags,
+    /// A service no flag named, which answered: `$H2_LIVE_SERVER`, else
+    /// [`DEFAULT_LIVE_SERVER`]. Played on as `--live-server url` would,
+    /// except that failing to sign in falls back to offline.
+    Server { url: String, from: &'static str },
+}
+
+/// What `h2 play` does about Live. `env` is `$H2_LIVE_SERVER` (`off`,
+/// `none` or `0` there mean offline); `default` is
+/// [`DEFAULT_LIVE_SERVER`] outside tests; `probe` fetches a service's
+/// discovery document ([`probe`] outside tests).
+pub fn choose(
+    opts: &LiveOpts,
+    env: Option<String>,
+    default: &str,
+    probe: &dyn Fn(&str) -> Result<()>,
+) -> Choice {
+    if opts.offline {
+        return Choice::Offline { why: None };
+    }
+    if opts.enabled || opts.tunnel {
+        return Choice::Flags;
+    }
+    let (url, from) = match env.as_deref().map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) if matches!(v.to_ascii_lowercase().as_str(), "off" | "none" | "0") => {
+            return Choice::Offline {
+                why: Some(format!("live: off (H2_LIVE_SERVER={v}); playing offline")),
+            };
+        }
+        Some(v) => (v.trim_end_matches('/').to_string(), "H2_LIVE_SERVER"),
+        None => (default.to_string(), "default"),
+    };
+    match probe(&url) {
+        Ok(()) => Choice::Server { url, from },
+        Err(e) => Choice::Offline {
+            why: Some(format!(
+                "live: {url} did not answer ({e:#}); playing offline. --live runs a service \
+                 on this machine, --offline skips this check"
+            )),
+        },
+    }
+}
+
+/// Fetches `url`'s discovery document (`/.well-known/h2live.json`) within
+/// `timeout`; an error if it does not answer with one.
+pub fn probe(url: &str, timeout: Duration) -> Result<()> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(timeout)
+        .timeout(timeout)
+        .build();
+    let doc = format!("{}/.well-known/h2live.json", url.trim_end_matches('/'));
+    let text = crate::live_cmd::call(agent.get(&doc), None)?;
+    serde_json::from_str::<live_proto::Discovery>(&text)
+        .with_context(|| format!("{doc} is not an h2 live discovery document"))?;
+    Ok(())
+}
+
 /// A running live session: what to boot the game with, and the embedded
 /// server (stopped on drop) if there is one.
 pub struct Session {
     pub config: boot::LiveConfig,
     pub account: LocalAccount,
     pub server: String,
+    /// The service's API base and id, from its discovery document.
+    pub api: String,
+    pub server_id: String,
     /// The embedded server's one-use, this-machine-only link signing a
     /// browser in as `account` (docs/live/live-admin.md §4).
     pub signin: Option<String>,
@@ -269,6 +356,8 @@ pub fn start(
             server_url: Some(client.base.clone()),
         },
         account,
+        api: client.api,
+        server_id: client.discovery.id,
         server: client.base,
         signin,
         tunnel,
@@ -425,7 +514,16 @@ mod tests {
             parse(&["--live-listen", "127.0.0.1:9000"]).unwrap().listen,
             Some("127.0.0.1:9000".parse().unwrap())
         );
-        assert!(parse(&["--gamertag", "Pete"]).is_err(), "needs --live");
+        // A gamertag is for whichever service is played on, the default too.
+        assert_eq!(
+            parse(&["--gamertag", "Pete"]).unwrap().gamertag.as_deref(),
+            Some("Pete")
+        );
+        assert!(parse(&["--offline", "--gamertag", "Pete"]).is_err());
+        assert!(parse(&["--offline"]).unwrap().offline);
+        assert!(parse(&["--no-live"]).unwrap().offline);
+        assert!(parse(&["--offline", "--live"]).is_err());
+        assert!(parse(&["--no-live", "--live-server", "https://h.example"]).is_err());
         assert!(
             parse(&["--live", "--gamertag", "9lives"]).is_err(),
             "bad gamertag"
@@ -438,6 +536,151 @@ mod tests {
                 .take("--out", &mut || Ok(String::new()))
                 .unwrap()
         );
+    }
+
+    /// A one-thread HTTP server answering every request with `status` and
+    /// `body`, standing in for a Live service's discovery document. Its
+    /// URL, and the paths it was asked for.
+    fn fake_service(
+        status: u16,
+        body: &'static str,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{BufRead, BufReader, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = std::sync::Arc::clone(&asked);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                log.lock()
+                    .unwrap()
+                    .push(line.split_whitespace().nth(1).unwrap_or("").to_string());
+                // The rest of the request head.
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).unwrap_or(0) <= 2 {
+                        break;
+                    }
+                }
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        (url, asked)
+    }
+
+    const DISCOVERY: &str =
+        r#"{"id":"live.test","api":"/v1","keys":[],"software":"test","federation":false}"#;
+
+    fn quick(url: &str) -> Result<()> {
+        probe(url, Duration::from_secs(2))
+    }
+
+    /// A URL nothing listens on.
+    fn closed_url() -> String {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", l.local_addr().unwrap())
+    }
+
+    #[test]
+    fn the_default_service_is_one_constant() {
+        assert_eq!(DEFAULT_LIVE_SERVER, "https://live.forbes.red");
+        assert!(DEFAULT_PROBE_TIMEOUT <= Duration::from_secs(5));
+    }
+
+    #[test]
+    fn with_no_flags_the_default_service_is_tried() {
+        let (url, asked) = fake_service(200, DISCOVERY);
+        let none = LiveOpts::default();
+        assert_eq!(
+            choose(&none, None, &url, &quick),
+            Choice::Server {
+                url: url.clone(),
+                from: "default"
+            }
+        );
+        assert_eq!(*asked.lock().unwrap(), ["/.well-known/h2live.json"]);
+        // A trailing slash on the default is not doubled.
+        assert!(matches!(
+            choose(&none, None, &format!("{url}/"), &quick),
+            Choice::Server { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unreachable_or_wrong_default_plays_offline_with_a_line() {
+        let none = LiveOpts::default();
+        let down = closed_url();
+        let Choice::Offline { why: Some(why) } = choose(&none, None, &down, &quick) else {
+            panic!("offline")
+        };
+        assert!(why.starts_with(&format!("live: {down} did not answer")), "{why}");
+        assert!(why.contains("playing offline"), "{why}");
+        // Something answers, but it is not a Live service.
+        let (html, _) = fake_service(200, "<html></html>");
+        assert!(matches!(
+            choose(&none, None, &html, &quick),
+            Choice::Offline { why: Some(_) }
+        ));
+        let (broken, _) = fake_service(500, "{}");
+        assert!(matches!(
+            choose(&none, None, &broken, &quick),
+            Choice::Offline { why: Some(_) }
+        ));
+    }
+
+    #[test]
+    fn flags_and_the_environment_decide_first() {
+        let (url, asked) = fake_service(200, DISCOVERY);
+        let never = |u: &str| -> Result<()> { panic!("probed {u}") };
+        // --offline: nothing is tried, nothing is said.
+        let offline = parse(&["--offline"]).unwrap();
+        assert_eq!(
+            choose(&offline, Some(url.clone()), &url, &never),
+            Choice::Offline { why: None }
+        );
+        // --live and --live-server are as before.
+        for flags in [&["--live"][..], &["--live-server", "https://h.example"]] {
+            assert_eq!(
+                choose(&parse(flags).unwrap(), Some(url.clone()), &url, &never),
+                Choice::Flags
+            );
+        }
+        // H2_LIVE_SERVER replaces the default...
+        let none = LiveOpts::default();
+        let down = closed_url();
+        assert_eq!(
+            choose(&none, Some(format!("{url}/")), &down, &quick),
+            Choice::Server {
+                url: url.clone(),
+                from: "H2_LIVE_SERVER"
+            }
+        );
+        assert_eq!(asked.lock().unwrap().len(), 1);
+        // ...and falls back the same way, or says off.
+        assert!(matches!(
+            choose(&none, Some(down.clone()), &url, &quick),
+            Choice::Offline { why: Some(_) }
+        ));
+        for off in ["off", "none", "0", "OFF"] {
+            let Choice::Offline { why: Some(why) } = choose(&none, Some(off.into()), &url, &never)
+            else {
+                panic!("{off}")
+            };
+            assert!(why.contains("H2_LIVE_SERVER"), "{why}");
+        }
+        // Empty is unset.
+        assert!(matches!(
+            choose(&none, Some(" ".into()), &url, &quick),
+            Choice::Server { from: "default", .. }
+        ));
     }
 
     #[test]
