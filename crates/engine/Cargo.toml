@@ -18,4 +18,4 @@ lift = { workspace = true, optional = true }
 [features]
 runtime-glue = ["dep:runtime"]
 # Seeded differential test against the lifted original (tests/differential.rs).
-differential = ["dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
+differential = ["runtime-glue", "dep:analyze", "dep:xbe", "dep:ir", "dep:lift"]
