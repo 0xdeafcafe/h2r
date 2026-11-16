@@ -38,6 +38,8 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use crate::custom_games;
 use crate::fov_row;
 use crate::setting_defs::{FOV, PAD_SPEAKER};
+use crate::skulls;
+use crate::skulls_menu;
 use crate::speaker_row;
 use crate::ui::{Chosen, List, Model, RowKind};
 use crate::video_screen;
@@ -403,6 +405,33 @@ static VIDEO_HEADER: AtomicBool = AtomicBool::new(false);
 static VIDEO_LIST_NAME: AtomicU32 = AtomicU32::new(0);
 /// The id we serve the array name under (only its address is used).
 const VIDEO_LIST_NAME_ID: u32 = ID_BASE + 0xff;
+/// Set while our Skulls row's open call runs: the next Controls list built
+/// is the Skulls list, with this many rows.
+static OPENING_SKULLS: AtomicU32 = AtomicU32::new(0);
+/// Set while a Skulls screen's header is built.
+static SKULLS_HEADER: AtomicBool = AtomicBool::new(false);
+/// The guest address of the Skulls list's array name (0: none).
+static SKULLS_LIST_NAME: AtomicU32 = AtomicU32::new(0);
+
+/// In place of the difficulty list's row-chosen call (`ret 8`) for the
+/// Skulls row: open a Controls screen for `mask` as the Video row does, with
+/// the list hook told to build the Skulls list of `rows` rows.
+fn open_skulls(cpu: &mut CpuAbi, ctx: &mut ExecCtx, mask: u32, rows: u32) -> Result<TransferAbi, GuestFault> {
+    let rt = Arc::clone(ctx.runtime());
+    let mut mem = rt.memory();
+    let ret_pc = mem.u32(cpu.esp)?;
+    cpu.esp = cpu.esp.wrapping_add(12); // return address and the two arguments
+    push(&mut mem, cpu, video_screen::CONTROLS_LOADER)?;
+    push(&mut mem, cpu, mask)?;
+    OPENING_SKULLS.store(rows, Ordering::SeqCst);
+    eprintln!("skulls menu: opening with {rows} rows");
+    ctx.call_guest(cpu, &mut mem, video_screen::OPEN_SCREEN, move |_, _| {
+        if OPENING_SKULLS.swap(0, Ordering::SeqCst) != 0 {
+            eprintln!("skulls menu: the open call built no Controls list");
+        }
+        Ok(TransferAbi::ret(ret_pc))
+    })
+}
 
 /// The text hook's call (string id at `[esp+4]`) while a Video screen's
 /// header is built: our title for the Controls tag's header id, `None` for
@@ -500,7 +529,8 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
     let with_video = video_index.is_some();
     let video_index = video_index.unwrap_or(-1);
     let with_custom_games = custom_games::row_enabled();
-    if !layouts && !with_speaker && !with_video && !with_custom_games {
+    let with_skulls = model.as_ref().is_some_and(|m| skulls_menu::enabled(m.store()));
+    if !layouts && !with_speaker && !with_video && !with_custom_games && !with_skulls {
         return Ok(());
     }
     let model = model.unwrap_or_else(|| {
@@ -526,11 +556,18 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
         if with_custom_games {
             served.push((custom_games::TEXT_ID, custom_games::TEXT));
         }
+        if with_skulls {
+            served.extend(skulls_menu::strings());
+            served.push((skulls_menu::LIST_NAME_ID, skulls_menu::LIST_NAME_TEXT));
+        }
         let (addrs, used) = write_strings(&mut *mem, DATA_BASE, &served)
             .ok_or_else(|| anyhow::anyhow!("layouts: strings"))?;
         ALLOC.store((used + 0xff) & !0xff, Ordering::SeqCst);
         if let Some((_, a)) = addrs.iter().find(|(i, _)| *i == VIDEO_LIST_NAME_ID) {
             VIDEO_LIST_NAME.store(*a, Ordering::SeqCst);
+        }
+        if let Some((_, a)) = addrs.iter().find(|(i, _)| *i == skulls_menu::LIST_NAME_ID) {
+            SKULLS_LIST_NAME.store(*a, Ordering::SeqCst);
         }
         let _ = STRING_ADDRS.set(addrs);
     }
@@ -552,6 +589,14 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
     let fov_hooks = [fov_row::PLAYER_FOV];
     let controls_hooks = [speaker_row::ADD_ITEMS];
     let custom_games_hooks = [custom_games::ROW_TEXT, custom_games::ROW_CHOSEN];
+    let skulls_hooks = [
+        skulls_menu::DIFFICULTY_ROW_TEXT,
+        skulls_menu::DIFFICULTY_ROW_CHOSEN,
+        PANE_SET,
+        speaker_row::ROW_CHOSEN,
+        video_screen::HEADER_BUILD,
+        TEXT_SET,
+    ];
     // Resolve every original first: `resolve_original` takes the dispatch read
     // lock, which `edit_dispatch` holds for writing, so doing it inside the
     // closure deadlocks.
@@ -564,6 +609,7 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
         .chain(text_hooks.into_iter().filter(|_| layouts || with_video))
         .chain(controls_hooks.into_iter().filter(|_| extra_rows > 0))
         .chain(custom_games_hooks.into_iter().filter(|_| with_custom_games))
+        .chain(skulls_hooks.into_iter().filter(|_| with_skulls))
         .collect();
     let mut originals: std::collections::HashMap<u32, Arc<OriginalHandler>> =
         wanted.into_iter().filter_map(|a| original(rt, a).map(|o| (a, o))).collect();
@@ -607,8 +653,30 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                         return Ok(o.invoke(cpu, ctx, LIST_DATA_NEW));
                     }
                 }
+                // The list our Skulls row's open call builds: our name, the
+                // profile's rows.
+                let skull_rows = OPENING_SKULLS.load(Ordering::SeqCst);
+                if let Some(count) = skulls_menu::skulls_count(name, cpu.eax, skull_rows != 0, skull_rows as usize) {
+                    OPENING_SKULLS.store(0, Ordering::SeqCst);
+                    let ours = SKULLS_LIST_NAME.load(Ordering::SeqCst);
+                    if ours != 0 {
+                        ctx.runtime().memory().set_u32(cpu.esp + 4, ours)?;
+                        eprintln!("skulls menu: list built with {count} rows");
+                        cpu.eax = count;
+                        return Ok(o.invoke(cpu, ctx, LIST_DATA_NEW));
+                    }
+                }
                 let n = video_screen::list_count(&model, name, n);
                 let n = if with_custom_games { custom_games::list_count(name, n) } else { n };
+                // The difficulty list gets the Skulls row when a signed-in
+                // profile has a skull. The store is read with guest memory
+                // released.
+                let n = if with_skulls && name == skulls_menu::DIFFICULTY_LIST_NAME {
+                    let profiles = skulls::signed_in(&*ctx.runtime().memory());
+                    skulls_menu::difficulty_count(name, n, skulls_menu::any_collected(model.store(), &profiles))
+                } else {
+                    n
+                };
                 if n != cpu.eax {
                     let flag = if name == LIST_NAME { &grew_layouts } else { &grew_controls };
                     if !flag.swap(true, Ordering::Relaxed) {
@@ -689,8 +757,14 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                 let rt = Arc::clone(ctx.runtime());
                 let mut mem = rt.memory();
                 let screen = cpu.ecx;
-                let added = mem.u16(screen + 0x70)? as i16 == SCREEN_ID
-                    && layout_of_row(mem.u16(mem.u32(cpu.esp + 4)?)? as i16).is_some();
+                let id = mem.u16(screen + 0x70)? as i16;
+                let row = mem.u16(mem.u32(cpu.esp + 4)?)? as i16;
+                // The Skulls row on the difficulty screen has no pane: keep
+                // the one shown (thiscall, `ret 4`).
+                if with_skulls && skulls_menu::skip_pane(id, row) {
+                    return mem.ret(cpu, 4);
+                }
+                let added = layouts && id == SCREEN_ID && layout_of_row(row).is_some();
                 if !added {
                     drop(mem);
                     return Ok(o.invoke(cpu, ctx, PANE_SET));
@@ -787,6 +861,12 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                         mem.set_u32(cpu.esp + 4, id)?;
                     }
                 }
+                if SKULLS_HEADER.load(Ordering::Relaxed) {
+                    let mut mem = ctx.runtime().memory();
+                    if let Some(id) = video_header_id(&*mem, cpu.esp, skulls_menu::TITLE_ID) {
+                        mem.set_u32(cpu.esp + 4, id)?;
+                    }
+                }
                 let pending = PENDING_VALUE.load(Ordering::Relaxed);
                 if pending != 0 {
                     let mut mem = ctx.runtime().memory();
@@ -821,8 +901,24 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
             let seen = AtomicBool::new(false);
             let drawn = AtomicBool::new(false);
             let video_drawn = AtomicBool::new(false);
+            let skulls_drawn = AtomicBool::new(false);
             d.register_override(CONTROLS_ROW_TEXT, "layouts:controls-row", move |cpu, ctx, _| {
                 announce(&seen, "layouts: controls row text");
+                let (is_skulls, row) = {
+                    let mem = ctx.runtime().memory();
+                    (with_skulls && skulls_menu::is_skulls_list(&*mem, cpu.ecx), video_screen::text_row(&*mem, cpu.esp))
+                };
+                if is_skulls {
+                    // The store is read with guest memory released.
+                    let texts = skulls_menu::open_profile()
+                        .zip(row)
+                        .and_then(|(p, r)| skulls_menu::row_texts(model.store(), &p, r));
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    let item = mem.u32(cpu.esp + 4)?;
+                    announce(&skulls_drawn, "skulls menu: row text");
+                    return row_texts(cpu, ctx, &mut mem, item, texts.map_or_else(Vec::new, |t| t.to_vec()));
+                }
                 let (is_video, row) = {
                     let mem = ctx.runtime().memory();
                     (with_video && video_screen::is_video_list(&*mem, cpu.ecx), video_screen::text_row(&*mem, cpu.esp))
@@ -866,6 +962,21 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
             let seen = AtomicBool::new(false);
             d.register_override(speaker_row::ROW_CHOSEN, "speaker:row-chosen", move |cpu, ctx, _| {
                 announce(&seen, "speaker row: row chosen");
+                let (row, is_skulls) = {
+                    let mem = ctx.runtime().memory();
+                    (chosen_row(&*mem, cpu.esp), with_skulls && skulls_menu::is_skulls_list(&*mem, cpu.ecx))
+                };
+                if is_skulls {
+                    // Every row of a Skulls list is ours; the store is
+                    // written with guest memory released.
+                    if let Some(msg) = skulls_menu::open_profile()
+                        .zip(row)
+                        .and_then(|(p, r)| skulls_menu::press(model.store(), &p, r))
+                    {
+                        eprintln!("{msg}");
+                    }
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
                 let (row, is_video, mask) = {
                     let mem = ctx.runtime().memory();
                     (
@@ -904,17 +1015,22 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
             let sh = alias(d, &mut next_shadow, &o, video_screen::HEADER_BUILD);
             let seen = AtomicBool::new(false);
             d.register_override(video_screen::HEADER_BUILD, "video:header", move |cpu, ctx, _| {
-                let ours = {
+                let (video, skulls) = {
                     let mem = ctx.runtime().memory();
-                    mem.u32(cpu.esp + 4).is_ok_and(|screen| video_screen::is_video_screen(&*mem, screen))
+                    let screen = mem.u32(cpu.esp + 4).ok();
+                    (
+                        screen.is_some_and(|s| with_video && video_screen::is_video_screen(&*mem, s)),
+                        screen.is_some_and(|s| with_skulls && skulls_menu::is_skulls_screen(&*mem, s)),
+                    )
                 };
-                if !ours {
+                if !video && !skulls {
                     return Ok(o.invoke(cpu, ctx, video_screen::HEADER_BUILD));
                 }
-                announce(&seen, "video screen: header");
-                VIDEO_HEADER.store(true, Ordering::Relaxed);
-                call_then(cpu, ctx, sh, |_, _| {
-                    VIDEO_HEADER.store(false, Ordering::Relaxed);
+                let flag = if skulls { &SKULLS_HEADER } else { &VIDEO_HEADER };
+                announce(&seen, if skulls { "skulls menu: header" } else { "video screen: header" });
+                flag.store(true, Ordering::Relaxed);
+                call_then(cpu, ctx, sh, move |_, _| {
+                    flag.store(false, Ordering::Relaxed);
                     Ok(())
                 })
             });
@@ -936,7 +1052,10 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                     let rt = Arc::clone(ctx.runtime());
                     let mut mem = rt.memory();
                     // The Video list keeps the six retail item widgets.
-                    if mem.u32(handler)? != speaker_row::HANDLER_VTABLE || video_screen::is_video_list(&*mem, handler) {
+                    if mem.u32(handler)? != speaker_row::HANDLER_VTABLE
+                        || video_screen::is_video_list(&*mem, handler)
+                        || skulls_menu::is_skulls_list(&*mem, handler)
+                    {
                         return Ok(TransferAbi::ret(ret_pc));
                     }
                     let slot = {
@@ -1066,6 +1185,51 @@ pub fn install(rt: &runtime::Runtime, model: Option<Arc<Model>>) -> anyhow::Resu
                     return ctx.runtime().memory().ret(cpu, 8);
                 };
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
+            });
+        }
+        // The difficulty list's "Skulls" row (crate::skulls_menu): our
+        // label on row 4, and a press on it opens the pressing player's
+        // Skulls screen. Rows 0 to 3 go to the originals.
+        if let Some(o) = originals.remove(&skulls_menu::DIFFICULTY_ROW_TEXT) {
+            let seen = AtomicBool::new(false);
+            d.register_override(skulls_menu::DIFFICULTY_ROW_TEXT, "skulls:row-text", move |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                if video_screen::text_row(&*mem, cpu.esp) != Some(skulls_menu::ROW) {
+                    drop(mem);
+                    return Ok(o.invoke(cpu, ctx, skulls_menu::DIFFICULTY_ROW_TEXT));
+                }
+                announce(&seen, "skulls menu: difficulty row text");
+                let item = mem.u32(cpu.esp + 4)?;
+                row_texts(cpu, ctx, &mut mem, item, vec![(0, skulls_menu::TITLE_ID)])
+            });
+        }
+        if let Some(o) = originals.remove(&skulls_menu::DIFFICULTY_ROW_CHOSEN) {
+            let model = Arc::clone(&model);
+            let seen = AtomicBool::new(false);
+            d.register_override(skulls_menu::DIFFICULTY_ROW_CHOSEN, "skulls:row-chosen", move |cpu, ctx, _| {
+                let (row, player, profile) = {
+                    let mem = ctx.runtime().memory();
+                    let player = skulls_menu::player_index(&*mem, cpu.esp);
+                    (chosen_row(&*mem, cpu.esp), player, player.and_then(|p| skulls_menu::profile_of(&*mem, p)))
+                };
+                if row != Some(skulls_menu::ROW) {
+                    return Ok(o.invoke(cpu, ctx, skulls_menu::DIFFICULTY_ROW_CHOSEN));
+                }
+                announce(&seen, "skulls menu: difficulty row chosen");
+                // Never the original for our row: it would clamp it to
+                // Legendary and start the campaign.
+                let (Some(player), Some(profile)) = (player, profile) else {
+                    eprintln!("skulls menu: the pressing player has no named profile; not opened");
+                    return ctx.runtime().memory().ret(cpu, 8);
+                };
+                let rows = skulls::screen_for(model.store(), &profile).rows().len() as u32;
+                if rows == 0 {
+                    eprintln!("skulls menu: {profile} has no skulls yet; not opened");
+                    return ctx.runtime().memory().ret(cpu, 8);
+                }
+                skulls_menu::set_open(Some(profile));
+                open_skulls(cpu, ctx, 1 << player, rows)
             });
         }
         // Our strings.
