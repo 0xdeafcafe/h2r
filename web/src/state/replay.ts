@@ -1,8 +1,9 @@
 // Replays of ended games: 1 Hz recorded frames plus the game's events,
 // sampled at any tick.
 
-import type { Frame, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import { sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleVehicles, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
+import type { Frame, FrameObject, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
+import { recordedFrame } from "../api/pack";
+import { sampleActors, sampleBsp, sampleFrames, sampleHits, sampleMachines, sampleObjects, sampleVehicles, type SampledMachine, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
   tick: number;
@@ -34,7 +35,8 @@ export class ReplayTimeline {
     const seen = new Set(this.frames.map((f) => f.tick));
     for (const ev of events) {
       if (ev.type === "GameFrame") {
-        const f = ev.data as Frame;
+        // Packed (`data.packed`) or, recorded by older servers, JSON.
+        const f = recordedFrame(ev.data);
         if (f && typeof f.tick === "number" && !seen.has(f.tick)) { this.frames.push(f); seen.add(f.tick); }
       }
     }
@@ -128,6 +130,11 @@ export class ReplayTimeline {
   /** Machines at `tick`. */
   sampleMachines(tick: number): SampledMachine[] {
     return sampleMachines(this.frames, this.clamp(tick));
+  }
+
+  /** Scenario objects out of place at `tick`. */
+  sampleObjects(tick: number): FrameObject[] | null {
+    return sampleObjects(this.frames, this.clamp(tick));
   }
 
   /** Kills with from < tick <= to, oldest first. */

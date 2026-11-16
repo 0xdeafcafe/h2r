@@ -1,7 +1,7 @@
 // Frame buffering and interpolation. Frames are not reactive state: they
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
-import type { Frame, FrameHit, FrameMachine, FramePlayer, FrameVehicle } from "../api/types";
+import type { Frame, FrameHit, FrameMachine, FrameObject, FramePlayer, FrameVehicle } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
 const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
@@ -421,6 +421,45 @@ export function sampleMachines(frames: readonly Frame[], tick: number): SampledM
   return out;
 }
 
+/** Most scenario objects a frame is read for. */
+export const MAX_OBJECTS = 2048;
+
+const finite3 = (v: unknown): v is [number, number, number] =>
+  Array.isArray(v) && v.length === 3 && v.every((c) => typeof c === "number" && Number.isFinite(c));
+
+/** Scenario objects not where the scenario put them at `tick`: the frame
+ *  behind it says which (moved, or gone), and a moved one eases towards
+ *  where the next frame has it. Null with no frame behind `tick`. */
+export function sampleObjects(frames: readonly Frame[], tick: number): FrameObject[] | null {
+  const i = findFrame(frames, tick);
+  if (i < 0) return null;
+  const a = frames[i]!, b = frames[i + 1];
+  const list = (a.objects ?? []).slice(0, MAX_OBJECTS);
+  const next = new Map<string, FrameObject>();
+  if (b && b.tick > a.tick) for (const o of (b.objects ?? []).slice(0, MAX_OBJECTS)) if (!o.gone) next.set(`${o.k}:${o.i}`, o);
+  const t = b && b.tick > a.tick ? Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick))) : 0;
+  const out: FrameObject[] = [];
+  for (const o of list) {
+    if (typeof o.k !== "string" || typeof o.i !== "number") continue;
+    if (o.gone) { out.push({ k: o.k, i: o.i, gone: true }); continue; }
+    if (!finite3(o.p)) continue;
+    const f = finite3(o.f) ? o.f : [1, 0, 0] as [number, number, number];
+    const u = finite3(o.u) ? o.u : [0, 0, 1] as [number, number, number];
+    const n = next.get(`${o.k}:${o.i}`);
+    if (!n || !finite3(n.p) || t === 0 || (n.p[0] - o.p[0]) ** 2 + (n.p[1] - o.p[1]) ** 2 + (n.p[2] - o.p[2]) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) {
+      out.push({ k: o.k, i: o.i, p: [o.p[0], o.p[1], o.p[2]], f, u });
+      continue;
+    }
+    out.push({
+      k: o.k, i: o.i,
+      p: [lerp(o.p[0], n.p[0], t), lerp(o.p[1], n.p[1], t), lerp(o.p[2], n.p[2], t)],
+      f: finite3(n.f) ? nlerpAim(f, n.f, t) : f,
+      u: finite3(n.u) ? nlerpAim(u, n.u, t) : u,
+    });
+  }
+  return out;
+}
+
 export interface DeathMarker { index: number; x: number; y: number; z: number; tick: number; bornAt: number }
 
 /** A live game's recent frames plus a clock mapping wall time to ticks.
@@ -505,6 +544,12 @@ export class FrameBuffer {
     const out = new Map(this.machines);
     for (const m of sampleMachines(this.frames, this.renderTick(now))) out.set(m.id, m);
     return [...out.values()];
+  }
+
+  /** Scenario objects out of place at the render tick (null before the
+   *  first frame). */
+  sampleObjects(now: number): FrameObject[] | null {
+    return sampleObjects(this.frames, this.renderTick(now));
   }
 
   /** Records where a victim died: the kill's `pos` when given, else the

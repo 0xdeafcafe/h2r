@@ -127,9 +127,9 @@ export interface Frame {
 /** A scenario placement that moved (`p`, `f`, `u`) or is gone: map.glb's
  *  `scenario` child `{kind: k, index: i}`. */
 export interface FrameObject {
-  /** "biped", "vehicle", "weapon", "equipment", "scenery", "machine",
-   *  "control", "light_fixture", "sound_scenery", "crate", "creature",
-   *  "netgame_equipment". */
+  /** The placement's kind, as map.glb's scenario extras name it: "bipd",
+   *  "vehi", "weap", "eqip", "scen", "mach", "ctrl", "lifi", "ssce", "bloc",
+   *  "crea", or "netgame" (a multiplayer spawn). */
   k: string;
   i: number;
   p?: [number, number, number];

@@ -347,33 +347,46 @@ pub struct Frame {
 }
 
 /// Which scenario block a [`FrameObject`] is placed by. The order is the
-/// packed format's kind code (docs/live-telemetry.md, Packed frames).
+/// packed format's kind code (docs/live-telemetry.md, Packed frames). Its
+/// JSON name is the placement's `kind` in map.glb's `scenario` node
+/// (docs/live-art.md): the tag group, and `netgame` for multiplayer spawns.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum ObjectKind {
     /// `scnr+0x60`.
+    #[serde(rename = "bipd")]
     Biped,
     /// `scnr+0x70`.
+    #[serde(rename = "vehi")]
     Vehicle,
     /// `scnr+0x90`.
+    #[serde(rename = "weap")]
     Weapon,
     /// `scnr+0x80`.
+    #[serde(rename = "eqip")]
     Equipment,
     /// `scnr+0x50`.
+    #[serde(rename = "scen")]
     Scenery,
     /// `scnr+0xa8`; machines also travel in [`Frame::machines`].
+    #[serde(rename = "mach")]
     Machine,
     /// `scnr+0xb8`.
+    #[serde(rename = "ctrl")]
     Control,
     /// `scnr+0xc8`.
+    #[serde(rename = "lifi")]
     LightFixture,
     /// `scnr+0xd8`.
+    #[serde(rename = "ssce")]
     SoundScenery,
     /// `scnr+0x328` (`bloc`: crates and physics props).
+    #[serde(rename = "bloc")]
     Crate,
     /// `scnr+0x368`.
+    #[serde(rename = "crea")]
     Creature,
     /// `scnr+0x120`: a multiplayer weapon or vehicle spawn.
+    #[serde(rename = "netgame")]
     NetgameEquipment,
 }
 

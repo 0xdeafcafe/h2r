@@ -21,6 +21,7 @@ describe("REST helpers", () => {
     expect(u.pathname).toBe("/v1/stream");
     expect(u.searchParams.get("from")).toBe("1042");
     expect(u.searchParams.get("exclude")).toBe("GameFrame");
+    expect(u.searchParams.get("frames")).toBe("packed");
     expect(new URL(a.streamUrl(null)).searchParams.get("from")).toBe("0");
   });
 });

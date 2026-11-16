@@ -168,6 +168,25 @@ grenades, negative or non-finite speeds and amounts, more than 8 actions,
 64 hits or 128 machines, machine nodes outside `[a-z0-9_]{1,64}` and
 positions outside 0..1.
 
+A frame may also carry `objects`, the scenario's placed objects that are
+not where the scenario put them (docs/live-telemetry.md, "Scenario
+objects"):
+
+```json
+"objects": [ { "k": "bloc", "i": 12, "p": [3.0, 4.5, 1.0],
+               "f": [0.0, 1.0, 0.0], "u": [0.0, 0.0, 1.0] },
+             { "k": "netgame", "i": 3, "gone": true } ]
+```
+
+`k` is the placement's kind as map.glb's `scenario` node names it (`bipd`,
+`vehi`, `weap`, `eqip`, `scen`, `mach`, `ctrl`, `lifi`, `ssce`, `bloc`,
+`crea`, `netgame`), `i` its index in that kind's scenario block (at most
+`0x7fff`). A moved object has `p` (finite) and non-zero `f` and `u`; a gone
+one (destroyed, or a weapon someone picked up) has `gone: true` and none of
+them. Everything not listed is at its placement. The server refuses more
+than 2048 entries, entries not in (kind, index) order or repeated, and
+entries that break those rules.
+
 Shots, actions and hits of frames that are dropped (the 15 Hz throttle, a
 full sink queue) go to the next delivered frame, and a recorded 1 Hz frame
 holds every one of them since the previous recorded frame (capped as
@@ -210,7 +229,7 @@ replays show the firing of the whole second; the same goes for `actions` and
 | `GET /v1/presence` | who is online now: `{xuid, gamertag, state, game_id?, since}` |
 | `GET /v1/games?state=live\|ended&map=&map_id=&skulls=` | game summaries: `{game_id, map, mode, kind, variant, playlist?, playlist_id?, difficulty?, online?, team_play, started_at, ended_at?, players, teams?, map_id?, skulls?}`; `map` keeps games on that base map, modded or not, `map_id` one exact map (`none`: games with no `map_id`), `skulls` (comma-separated indices, `4,6`) games that had every one of them on |
 | `GET /v1/games/{id}` | summary plus scoreboard and the last 50 kills |
-| `GET /v1/games/{id}/frames?from_tick=&to_tick=` | recorded frames, for replay |
+| `GET /v1/games/{id}/frames?from_tick=&to_tick=&format=` | recorded frames, for replay: `format=json` (the default) a page of JSON frames; `format=packed` an `application/x-h2-frames` container of packed keyframes (docs/live-telemetry.md, "Packed frames"), the next cursor in `x-next` and the head position in `x-position` |
 | `GET /v1/maps/{map}/outline` | top-down map outline (see below), 404 until a console has uploaded it |
 | `GET /v1/events?from=&type=&stream=&limit=` | raw log, oldest first |
 | `GET /v1/titles/{title}/files/{name}` | raw file bytes, `ETag` = sha256 |
@@ -592,12 +611,24 @@ as they are appended, then interleaves live frames:
 `?games=<id>,<id>` limits frames to those games (events are always sent; they
 are small). Without it, frames for every live game are sent.
 
+`?frames=packed` sends frames as binary messages instead: each a container
+of packed frame records (docs/live-telemetry.md, "Packed frames"), one
+stream per game, batched up to 100 ms. A reader that joins or falls behind
+first gets each game's frames since its last keyframe. Events and
+`caught_up` stay JSON text messages.
+
 **`GET /v1/ingest`** for the game. The first message is
 `{ "kind": "auth", "token": "<jwt>" }`. Then the client sends
 `{ "kind": "frame", "frame": {...} }` and
-`{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. The
-server fans frames out to readers, records one per second per game as a
-`GameFrame`, and appends events.
+`{ "kind": "events", "game_id": "...", "events": [{type, data}] }`. Frames
+may also come as binary messages: containers of packed frame records, one
+stream per socket. The server fans frames out to readers, records one per
+second per game as a `GameFrame`, and appends events.
+
+A `GameFrame` recorded now holds `{tick, source, packed}`: `packed` is the
+frame as one packed keyframe, base64url without padding, so the event's
+signature covers the packed bytes. Older recordings hold the JSON frame
+plus `source`; both read the same through `/frames`.
 
 ## Map outline
 

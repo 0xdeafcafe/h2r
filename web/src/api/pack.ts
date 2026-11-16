@@ -28,8 +28,8 @@ const ACTIONS = ["grenade", "melee", "reload", "jump", "switch", "pickup"];
 const GRENADES = ["frag", "plasma"];
 /** Object kinds in code order (live-proto `ObjectKind::ALL`). */
 export const OBJECT_KINDS = [
-  "biped", "vehicle", "weapon", "equipment", "scenery", "machine", "control",
-  "light_fixture", "sound_scenery", "crate", "creature", "netgame_equipment",
+  "bipd", "vehi", "weap", "eqip", "scen", "mach", "ctrl", "lifi", "ssce", "bloc",
+  "crea", "netgame",
 ] as const;
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
@@ -146,7 +146,7 @@ function readValue(r: BitReader, field: Field, prev: Val | undefined, strings: r
     case K.Bool: return r.bit();
     case K.Pos: {
       if (Array.isArray(prev) && prev.length === 3) {
-        const p = prev as readonly [number, number, number];
+        const p = prev as unknown as readonly [number, number, number];
         return [p[0] + r.seg(7), p[1] + r.seg(7), p[2] + r.seg(7)] as const;
       }
       return [r.seg(16), r.seg(16), r.seg(16)] as const;

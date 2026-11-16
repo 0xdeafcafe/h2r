@@ -39,6 +39,7 @@ import { LevelLook, type LevelInfo } from "./level3d";
 import { dressLayer } from "./layers3d";
 import { LevelAoPass } from "./aopass";
 import { machineMatrix, machineNode, placeMachine, type MachineNode } from "./machines3d";
+import { FrameObjects } from "./objects3d";
 import { buildFeatures } from "./features3d";
 import { TextureSwap, loadFlats, type TexturePair } from "./textures3d";
 import { ScenarioObjects } from "./scenario3d";
@@ -164,6 +165,8 @@ export class ViewerScene {
   /** The scenario's placed objects (scenario3d.ts): what frames move by
    *  `find(kind, index)` or `apply(objects)`. */
   readonly scenarioObjects = new ScenarioObjects(() => { this.dirty = true; });
+  /** The frames' moved and gone scenario objects, applied to those. */
+  private readonly frameObjects = new FrameObjects(this.scenarioObjects);
   private features: MapFeatures | null = null;
   private featureGroup: THREE.Group | null = null;
   private featuresOn = true;
@@ -357,6 +360,7 @@ export class ViewerScene {
       this.look.adopt(root, assetExtras, url);
       this.textures.adopt(pairs);
       this.scenarioObjects.adopt(root, this.textures);
+      this.frameObjects.reset();
       // The level's machines: each child of `machines` can be moved by the frames.
       root.traverse((o) => {
         if (o.name !== "machines") return;
@@ -1051,6 +1055,7 @@ export class ViewerScene {
     const still = this.opts.reducedMotion;
 
     this.updateMachines(frame.machines ?? [], dt, snap);
+    this.frameObjects.update(frame.objects, (frame.vehicles?.length ?? 0) > 0);
 
     // Vehicles first: whoever is in one is drawn as the vehicle.
     smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap });

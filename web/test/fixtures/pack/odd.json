@@ -69,7 +69,7 @@
     ],
     "objects": [
       {
-        "k": "biped",
+        "k": "bipd",
         "i": 0,
         "p": [
           1.0,
@@ -88,7 +88,7 @@
         ]
       },
       {
-        "k": "netgame_equipment",
+        "k": "netgame",
         "i": 32767,
         "gone": true
       }
@@ -164,12 +164,12 @@
     ],
     "objects": [
       {
-        "k": "biped",
+        "k": "bipd",
         "i": 0,
         "gone": true
       },
       {
-        "k": "netgame_equipment",
+        "k": "netgame",
         "i": 32767,
         "gone": true
       }

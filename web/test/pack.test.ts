@@ -59,7 +59,8 @@ describe("packed frames", () => {
     const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31);
     for (let i = 0; i < 2000; i++) {
       const bytes = good.slice(0, rand() % good.length);
-      if (i % 2) bytes[rand() % Math.max(1, bytes.length)] ^= 1 << (rand() % 8);
+      const at = rand() % Math.max(1, bytes.length);
+      if (i % 2 && at < bytes.length) bytes[at] = bytes[at]! ^ (1 << (rand() % 8));
       try { new FrameDecoder().decode(bytes); } catch (e) { expect(e).toBeInstanceOf(PackError); }
     }
   });

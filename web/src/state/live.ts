@@ -140,7 +140,12 @@ function createLive() {
     client = new StreamClient(
       {
         url: (from) => wsUrl(r.streamUrl(from)),
-        connect: (url) => new WebSocket(url) as unknown as import("./stream").SocketLike,
+        connect: (url) => {
+          const ws = new WebSocket(url);
+          // Frames come packed, as binary messages.
+          ws.binaryType = "arraybuffer";
+          return ws as unknown as import("./stream").SocketLike;
+        },
       },
       {
         onEvent: (ev) => {

@@ -2,6 +2,7 @@ import { gameMapTitle } from "../state/maps";
 import { For, Show, createMemo, createSignal } from "solid-js";
 import { live } from "../state/live";
 import type { WireEvent } from "../api/types";
+import { recordedFrame } from "../api/pack";
 import { VerifyMark } from "../components/bits";
 import { Crumbs, Panel, Title } from "./Layout";
 import { Pills } from "./Side";
@@ -153,7 +154,10 @@ function summary(e: WireEvent): string {
     }
     case "PlayerKilled": return `${d.killer ?? "world"} → ${d.victim} (${d.kind}${d.weapon ? ", " + d.weapon : ""})`;
     case "ScoreChanged": return `tick ${d.tick}`;
-    case "GameFrame": return `tick ${d.tick}, ${(d.players as unknown[])?.length ?? 0} players`;
+    case "GameFrame": {
+      const f = recordedFrame(d);
+      return f ? `tick ${f.tick}, ${f.players.length} players` : `tick ${d.tick}`;
+    }
     case "GameEnded": {
       const w = d.winner as { team?: number; player?: number } | null | undefined;
       const who = w ? (w.team !== undefined ? `team ${w.team} won` : `slot ${w.player} won`) : "no winner";

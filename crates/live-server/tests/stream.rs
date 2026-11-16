@@ -791,7 +791,7 @@ async fn campaign_frames_carry_vehicles_and_actors() {
     assert_eq!(recorded[0]["hits"][0]["to"], "p0");
     assert_eq!(recorded[0]["bsp"], 1);
     assert_eq!(recorded[0]["machines"][0]["node"], "scarab_0");
-    assert_eq!(recorded[0]["objects"][0]["k"], "crate");
+    assert_eq!(recorded[0]["objects"][0]["k"], "bloc");
     assert_eq!(
         recorded[0]["objects"][0]["f"],
         serde_json::json!([0.0, 1.0, 0.0])
