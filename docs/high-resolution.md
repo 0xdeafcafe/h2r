@@ -257,8 +257,9 @@ stays valid:
 - **Scissors.** `SetScissors` (`0x3f8760`) and the device's scissor region
   work in guest pixels. The view scales the result.
 - **HUD and UI.** Widget bounds are in a 640x480 frame ([ui.md](ui.md)). They
-  keep their proportions. Bitmaps and font glyphs are 480p assets and will
-  look soft or blocky when magnified; sharper text is a separate project.
+  keep their proportions. Bitmaps are 480p assets and look soft when
+  magnified. Text is redrawn sharp from the game's glyph cache (see "Text"
+  below).
 - **Loading screens and movies** draw through the same path and are upscaled.
 
 This is the main difference from Halo-2-HD, which raises the guest's own
@@ -316,6 +317,62 @@ on the view is possible but is the weaker tool:
 Supersampling through the scale handles all of those uniformly. MSAA is a
 later option for hosts that cannot afford the fill. It must never reach the
 reference, where sample counts are guest-visible.
+
+### Text
+
+All text comes from one texture, the glyph cache ([fonts.md](fonts.md),
+"Glyph cache texture"): glyphs rasterised at 640x480 sizes into a 256x256
+`LIN_A4R4G4B4` texture, with 3-bit antialiased alpha, and drawn 1:1 with
+screen-aligned quads. Magnified by the guest's filter that text is soft
+(bilinear) or stair-stepped (point), whatever the scale.
+
+The view redraws it from the same texels:
+
+- **Detection** (`d3d::glyph`, on the guest side of each draw): a stage's
+  texture is the glyph cache when it is 2D, `LIN_A4R4G4B4`, 256x256 with one
+  level, and its header is the texture the game's own glyph-cache bitmap
+  names (`[0x4B62AC] + 0x50`). The draw carries the stages as
+  `ResolvedDraw::glyph_cache`.
+- **Filter** (`shaders::psh::GLYPH_WGSL`): only where the target's scale is
+  above 1 (`Nv2aShaders::prepare` sets `PixelOptions::glyph`), so the
+  reference and a 1x run compile exactly the programs they did. The stage
+  reads the 6x6 texels around the sample and rebuilds the edge from the
+  alpha as coverage: a cubic B-spline of the alpha, thresholded at half the
+  local stroke alpha (the same spline through each texel's brightest
+  neighbour) with a ramp one host pixel wide (host pixels per texel from
+  the derivatives). Straight edges keep their position, curves come out
+  round, and thin strokes that never covered a whole texel keep their
+  weight. Where a texel covers at most 1.25 host pixels the guest's own
+  sample is used.
+- Nothing is uploaded twice or stored: the upscale is computed per
+  fragment from the texture the game already uploads, so a glyph the game
+  adds to the cache is sharp on the next draw.
+- `H2_SMOOTH_TEXT=0` (or `off`, `false`) turns it off;
+  `Device::set_glyph_smoothing` does the same in tests.
+
+Measured on a synthetic glyph cache (`crates/d3d/tests/glyph_text.rs`: a
+ring, a letter, a thick and a thin slanted stroke, a dot), drawn 1:1 on a
+64x64 target. Along the thick stroke's edge, the largest distance between
+where alpha crosses one half and the true edge, and the edge's width
+(rows between 0.1 and 0.9):
+
+| Scale | Bilinear (before) | Point (before) | Glyph filter |
+|---|---|---|---|
+| 2x | 0.28 px, 3.0 rows | 0.88 px, 1.9 rows | 0.19 px, 1.6 rows |
+| 3x | 0.49 px, 4.5 rows | 1.58 px, 2.8 rows | 0.28 px, 1.7 rows |
+| 4x | 0.65 px, 6.0 rows | 2.22 px, 3.8 rows | 0.39 px, 1.6 rows |
+
+The area drawn wrong against the true outline falls to between a quarter
+(4x) and a half (2x) of either filter's. At 1x and in the reference at every
+scale the image is byte-identical with the filter on and off.
+
+Risks: another texture with the cache's shape at the header the game's
+glyph-cache pointer names would be filtered as text; a different build of
+the game with the pointer elsewhere gets no smoothing (nothing worse).
+Text the game draws through a render-to-texture surface smaller than the
+frame stays at 1x like the rest of that surface. The view's half-pixel
+shift (above) moves the redrawn text by the same fraction of a pixel as
+everything else.
 
 ## Determinism
 
