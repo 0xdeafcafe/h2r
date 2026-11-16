@@ -22,7 +22,7 @@ const USAGE: &str = "usage:
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
           [--tunnel | --tunnel-name NAME [--hostname HOST]]
           [--icons auto|xbox|xbox360|playstation|keyboard]
-          [--level MAP [--difficulty easy|normal|heroic|legendary]]
+          [--level MAP [--difficulty easy|normal|heroic|legendary]] [--set KEY=VALUE]...
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
 
@@ -49,6 +49,9 @@ always runs at 30; docs/high-framerate.md).
 With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
 screen (Settings, Controls, Video), saved as [graphics] fps and render_scale
 in <data>/settings.toml and applied from the next launch.
+--set KEY=VALUE sets any of our settings for this run only, as its environment
+variable would: it wins over the variable and the file and locks its row
+(`h2 settings list` shows them; docs/settings-menu.md).
 --level MAP (or H2_LEVEL) starts that level instead of the main menu, with one
 default player: no title, profile or menus. MAP is a map file name from the
 disc: a campaign level (03a_oldmombasa) at --difficulty (or H2_DIFFICULTY;
@@ -454,6 +457,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
                     ..Default::default()
                 });
             }
+            "--set" => flags.push(crate::settings_cmd::set_flag(&val()?)?),
             "--level" => level_flag = Some(val()?),
             "--difficulty" => difficulty_flag = Some(val()?),
             "--follow-status" => follow_status = Some(PathBuf::from(val()?)),
