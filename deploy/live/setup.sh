@@ -10,6 +10,7 @@
 # skips the art when deploy/live/art/manifest.json is already there.
 set -euo pipefail
 
+start="$PWD"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
 cd "$here"
@@ -88,6 +89,7 @@ if [[ ! -f art/manifest.json ]]; then
   echo "The server needs art extracted from your disc once (it is never committed)."
   ask iso "Path to your Halo 2 disc image (.iso)"
   iso="${iso/#\~/$HOME}"
+  [[ $iso == /* ]] || iso="$start/$iso"   # relative to where you ran this
   [[ -f $iso ]] || die "no file at $iso"
   h2 live assets extract --disc "$iso" --out "$here/art"
   [[ -f art/manifest.json ]] || die "extraction finished without art/manifest.json"
@@ -99,7 +101,7 @@ say "Building and starting (the first build takes a while)"
 docker compose up -d --build
 
 say "Waiting for $url"
-for i in $(seq 1 60); do
+for _ in $(seq 1 60); do
   if curl -fsS -m 5 "$url/healthz" >/dev/null 2>&1; then echo "up"; up=1; break; fi
   sleep 3
 done
