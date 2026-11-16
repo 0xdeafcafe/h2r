@@ -45,6 +45,9 @@ the game. --no-mappack or H2_MAPPACK=0 skips it (docs/map-pack.md).
 game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
 newest game frame more often for now, with no smoothing (the game itself
 always runs at 30; docs/high-framerate.md).
+With neither set, the rate and H2_RENDER_SCALE's scale come from the Video
+screen (Settings, Controls, Video), saved as [graphics] fps and render_scale
+in <data>/settings.toml and applied from the next launch.
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
@@ -209,6 +212,13 @@ fn pad_hid(config: input::pad_hid::PadHidConfig, speaker: bool) -> Option<input:
 /// window's handoff, DirectSound plays on the audio device, XAPI reads the
 /// window's input, and every slice paces against the wall clock and stops
 /// when the window closes.
+/// Where the host settings live (`<data>/settings.toml`) and the display
+/// rate already read from them for the window.
+struct Saved<'a> {
+    data: &'a std::path::Path,
+    fps: Arc<boot::video_setting::LaunchSetting>,
+}
+
 fn hosted(
     mut host: app::GuestHost,
     audio: bool,
@@ -216,8 +226,9 @@ fn hosted(
     timeline: Option<ScriptedInput>,
     interrupted: Arc<AtomicBool>,
     icons: boot::icons::IconOptions,
-    data: &std::path::Path,
+    saved: Saved<'_>,
 ) -> boot::Host {
+    let Saved { data, fps: fps_setting } = saved;
     let configure = |mut gfx: d3d::GfxBackend| {
         // As for `h2 run`: passes are merged by default (the fast rule;
         // H2_GFX_MERGE_PASSES=exact, read by GfxBackend::new, gives the
@@ -235,11 +246,14 @@ fn hosted(
     };
     // H2_RENDER_SCALE=N (2..6): a view backend renders the frame at N
     // times 640x480 and presents; the backend the guest talks to stays at
-    // 1x (docs/high-resolution.md). Unset or 1: one backend, as before.
-    let scale = d3d::render_scale().unwrap_or_else(|e| {
-        eprintln!("play: {e}; rendering at 1x");
-        1
-    });
+    // 1x (docs/high-resolution.md). Unset: the Video screen's saved scale
+    // (`[graphics] render_scale`), else 1, one backend as before.
+    let scale_setting = Arc::new(boot::video_setting::LaunchSetting::from_var(
+        boot::video_setting::Kind::RenderScale,
+        std::env::var("H2_RENDER_SCALE").ok().as_deref(),
+        Some(boot::speaker_setting::settings_path(data)),
+    ));
+    let scale = scale_setting.running().clamp(1, d3d::scaled::MAX_SCALE);
     let view = d3d::scaled::view_for(scale, || {
         (
             configure(d3d::GfxBackend::new(host.gfx_context()).on_present(host.present_hook())),
@@ -265,6 +279,8 @@ fn hosted(
         pad_speaker,
         speaker_setting: Some(speaker_setting),
         fov_setting: Some(fov_setting(data)),
+        fps_setting: Some(fps_setting),
+        scale_setting: Some(scale_setting),
         trace_limit: Some(TRACE_LIMIT),
         input,
         keyboard,
@@ -388,6 +404,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
     let mut icons: Option<font::icons::IconChoice> = None;
     let mut frame_stats = timeline::phase::Config::from_env();
     let mut no_watermark = false;
+    let mut fps_flag: Option<String> = None;
     let mut live = crate::play_live::LiveOpts::default();
     let mut config = app::AppConfig {
         // boot's DirectSound output owns the device; the shell's own
@@ -434,7 +451,11 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--no-mappack" => no_mappack = true,
             "--no-gamepads" => config.gamepads = false,
             "--no-vsync" => config.vsync = false,
-            "--fps" => config.fps = app::fps::FpsTarget::parse(&val()?).map_err(anyhow::Error::msg)?,
+            "--fps" => {
+                let v = val()?;
+                config.fps = app::fps::FpsTarget::parse(&v).map_err(anyhow::Error::msg)?;
+                fps_flag = Some(v);
+            }
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
             "--no-watermark" => no_watermark = true,
@@ -475,6 +496,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
         }
     }
     live.check()?;
+    // --fps, then H2_FPS (both checked above), then the Video screen's
+    // saved rate, then 30.
+    let fps_setting = Arc::new(boot::video_setting::LaunchSetting::from_var(
+        boot::video_setting::Kind::Fps,
+        fps_flag.or_else(|| std::env::var(app::fps::ENV).ok()).as_deref(),
+        Some(boot::speaker_setting::settings_path(&data)),
+    ));
+    config.fps = app::fps::FpsTarget::parse(&fps_setting.running_name()).map_err(anyhow::Error::msg)?;
     let disc = disc
         .or_else(|| std::env::var_os("H2_DISC").map(PathBuf::from))
         .context(USAGE)?;
@@ -555,7 +584,10 @@ pub fn run(args: Vec<String>) -> Result<()> {
             timeline,
             Arc::clone(&interrupted),
             icons,
-            &opts.data_root,
+            Saved {
+                data: &opts.data_root,
+                fps: fps_setting,
+            },
         );
         let r = boot::run_hosted_with_live(&xbe, &lib, &opts, host, &live_config);
         // As `h2 run` does: the kernel's storage may outlive the run (or never

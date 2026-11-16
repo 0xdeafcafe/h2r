@@ -30,6 +30,8 @@ pub mod sha;
 pub mod shim;
 pub mod speaker_row;
 pub mod speaker_setting;
+pub mod video_screen;
+pub mod video_setting;
 pub mod sse;
 pub mod sweep_diag;
 pub mod stopgaps;
@@ -402,10 +404,16 @@ pub struct Host {
     /// "Controller Speaker" row (`speaker_row`). `None` (headless runs)
     /// leaves the Controls screen as retail.
     pub speaker_setting: Option<Arc<speaker_setting::SpeakerSetting>>,
-    /// The first-person field of view behind the Controls screen's "Field
-    /// of View" row (`fov_row`). `None` (headless runs) leaves the camera
-    /// and the screen as retail.
+    /// The first-person field of view behind the Video screen's "Field of
+    /// View" row (`fov_row`). `None` (headless runs) leaves the camera as
+    /// retail.
     pub fov_setting: Option<Arc<fov_setting::FovSetting>>,
+    /// The display rate and render scale behind the Video screen's "Frame
+    /// Rate" and "Resolution" rows (`video_setting`; read at launch, so a
+    /// press applies from the next one). With none of the three settings
+    /// the Controls screen has no Video row.
+    pub fps_setting: Option<Arc<video_setting::LaunchSetting>>,
+    pub scale_setting: Option<Arc<video_setting::LaunchSetting>>,
     /// XAPI's input manager (`xapi_glue::register_with`).
     pub input: Option<input::InputManager>,
     /// The keyboard pad `H2_BOOT_INPUT` presses, when `input` is given.
@@ -555,7 +563,13 @@ pub fn run_hosted_with_live(
     community_variants::install(&loaded.runtime).context("installing the community game variants")?;
     // Extra button layouts and the Controller Speaker row on the Controls
     // screen (docs/controller-layouts.md, docs/playstation-audio.md).
-    layout_glue::install(&loaded.runtime, host.speaker_setting.clone(), host.fov_setting.clone()).context("installing the button layouts")?;
+    // The Video row opens our Video screen (docs/settings-menu.md).
+    let video = video_screen::Settings {
+        fov: host.fov_setting.clone(),
+        fps: host.fps_setting.clone(),
+        scale: host.scale_setting.clone(),
+    };
+    layout_glue::install(&loaded.runtime, host.speaker_setting.clone(), video).context("installing the button layouts")?;
     let mut d3d_calls = match (opts.d3d, host.gfx.take()) {
         (false, _) => None,
         (true, Some(b)) => Some(match host.gfx_view.take() {
