@@ -1630,6 +1630,136 @@ fn sessions_two_guests_publish_find_parse_update_and_delete() {
         vec!["SessionCreated", "SessionUpdated", "SessionDeleted"]
     );
 }
+/// The custom games browser (docs/live-custom-games.md) is the retail
+/// System Link browser in its Live mode: its search is `0x0008fa80`'s
+/// procedure 1 with 50 results, and `0x0008fb30` keeps rows with exactly
+/// seven columns. The host's visibility setting decides who gets the row.
+#[test]
+fn browser_search_rows_follow_the_hosts_visibility_setting() {
+    use live_hle::Visibility;
+    let s = Server::new();
+    let a = s.account("Host");
+    let b = s.account("Friend");
+    let c = s.account("Stranger");
+    friend_pair(&s, &a, &b);
+    let mut host = World::new(&s.embedded.url, &[&a]);
+    let mut friend = World::raw_network(
+        &s.embedded.url,
+        json!([b.json()]),
+        Duration::from_millis(100),
+        32000,
+    );
+    let mut stranger = World::raw_network(
+        &s.embedded.url,
+        json!([c.json()]),
+        Duration::from_millis(100),
+        33000,
+    );
+    host.logon();
+    friend.logon();
+    stranger.logon();
+    assert_eq!(host.hle.session_visibility(), Visibility::Public);
+    host.hle.set_session_visibility(Visibility::Friends);
+    for (i, id) in [1, 2, 3, 5, 6, 7, 8].into_iter().enumerate() {
+        attr(&host, MATCH_ATTR + i as u32 * 16, id, 100 + u64::from(id));
+    }
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionCreate",
+            &[1, 7, 0, 0, 7, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let create = host.u32(OUT);
+    assert_eq!(host.wait(create), TASK_SUCCESS);
+    assert_eq!(host.hle.local_sessions()[0].visibility, Visibility::Friends);
+    // The advertisement says so on the server.
+    let doc: Value = s.get("/v1/sessions?state=open&visibility=friends");
+    assert_eq!(
+        doc["items"],
+        json!([]),
+        "anonymous reads never see friends-only"
+    );
+    let created = s
+        .events()
+        .into_iter()
+        .find(|e| e.kind == "SessionCreated")
+        .unwrap();
+    assert_eq!(created.data["advertisement"]["visibility"], "friends");
+    let cap = friend.call("XOnlineMatchSearchResultsLen", &[50, 7, MATCH_SPEC]);
+    let (_, table, count) = match_search(&mut friend, 1, 0, cap);
+    assert_eq!(count, 1, "the friend's browser lists it");
+    let row = friend.u32(table);
+    assert_eq!(
+        friend.u32(row + 0x50),
+        7,
+        "seven columns, as 0x0008fb30 needs"
+    );
+    assert_eq!(friend.bytes(row + 20, 2), 31000u16.to_be_bytes());
+    assert_eq!(
+        match_search(&mut stranger, 1, 0, cap).2,
+        0,
+        "a stranger's does not"
+    );
+    // Changing the setting updates the open lobby at once, with a signed event.
+    host.hle.set_session_visibility(Visibility::Public);
+    s.until(|| {
+        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items
+            .len()
+            == 1
+    });
+    assert_eq!(match_search(&mut stranger, 1, 0, cap).2, 1);
+    host.hle.set_session_visibility(Visibility::Invite);
+    s.until(|| {
+        s.get::<Page<live_proto::session::Session>>("/v1/sessions")
+            .items
+            .is_empty()
+    });
+    assert_eq!(
+        match_search(&mut friend, 1, 0, cap).2,
+        0,
+        "invite only: unlisted"
+    );
+    // The game's own updates carry the setting only when it changed.
+    attr(&host, MATCH_ATTR, 3, 333);
+    let id = host.hle.local_sessions()[0].id;
+    let (lo, hi) = (
+        u32::from_le_bytes(id[..4].try_into().unwrap()),
+        u32::from_le_bytes(id[4..].try_into().unwrap()),
+    );
+    assert_eq!(
+        host.call(
+            "XOnlineMatchSessionUpdate",
+            &[lo, hi, 2, 6, 0, 0, 1, MATCH_ATTR, 0, OUT]
+        ),
+        0
+    );
+    let update = host.u32(OUT);
+    assert_eq!(host.wait(update), TASK_SUCCESS);
+    let updates: Vec<_> = s
+        .events()
+        .into_iter()
+        .filter(|e| e.kind == "SessionUpdated")
+        .map(|e| e.data.get("visibility").cloned())
+        .collect();
+    assert_eq!(
+        updates,
+        vec![Some(json!("public")), Some(json!("invite")), None]
+    );
+    // An invitation still finds it by id.
+    assert_eq!(
+        friend.call("XOnlineMatchSessionFindFromID", &[lo, hi, 0, OUT]),
+        0
+    );
+    let find = friend.u32(OUT);
+    assert_eq!(friend.wait(find), TASK_SUCCESS);
+    assert_eq!(
+        friend.call("XOnlineMatchSearchGetResults", &[find, OUT, OUT + 4]),
+        0
+    );
+    assert_eq!(friend.u32(OUT + 4), 1);
+}
 #[test]
 fn sessions_typed_results_are_owned_bounded_and_signout_closes_advertisement() {
     let s = Server::new();

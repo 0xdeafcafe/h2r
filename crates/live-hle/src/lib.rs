@@ -21,7 +21,7 @@ pub use outbox::{
 mod qos;
 mod qos_memory;
 mod sessions;
-pub use sessions::{LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots};
+pub use sessions::{LocalSession, SessionAttribute, SessionAttributeValue, SessionSlots, Visibility};
 mod state;
 mod stats;
 pub use stats::{Stat, StatSpec, StatValue, StatWrite};
@@ -166,6 +166,22 @@ impl Hle {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .set_game_id(id)
+    }
+    /// Who may find this console's hosted sessions in the server's lists and
+    /// the custom games browser (docs/live-custom-games.md). Boot sets it from
+    /// the `live.visibility` setting; open advertisements are updated at once.
+    /// No guest memory access.
+    pub fn set_session_visibility(&self, v: Visibility) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .set_session_visibility(v)
+    }
+    pub fn session_visibility(&self) -> Visibility {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .session_visibility()
     }
     pub fn server_status(&self) -> ServerStatus {
         self.state

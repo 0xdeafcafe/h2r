@@ -122,8 +122,15 @@ async fn lists_follow_visibility_and_the_friends_graph() {
         v
     };
 
-    assert_eq!(listed(&h, None).await, [public.clone()], "anonymous");
-    assert_eq!(listed(&h, Some(&stranger)).await, [public.clone()]);
+    assert_eq!(
+        listed(&h, None).await,
+        std::slice::from_ref(&public),
+        "anonymous"
+    );
+    assert_eq!(
+        listed(&h, Some(&stranger)).await,
+        std::slice::from_ref(&public)
+    );
     assert_eq!(
         listed(&h, Some(&friend)).await,
         sorted(vec![public.clone(), friends.clone()])
