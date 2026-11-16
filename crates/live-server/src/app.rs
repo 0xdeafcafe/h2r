@@ -278,6 +278,7 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
         xuid: Xuid,
         state: Option<String>,
         game_id: Option<String>,
+        activity: Option<String>,
     }
     if live_proto::mailbox::is_kind(&body.kind) {
         return crate::mailbox::validate(state, body);
@@ -328,6 +329,14 @@ fn validate(state: &State, body: &EventBody) -> Result<(), ApiError> {
                 }
                 if (s == "playing") != d.game_id.is_some() {
                     return Err(invalid("game_id is set exactly when playing"));
+                }
+                if d.activity
+                    .as_deref()
+                    .is_some_and(|a| !live_proto::valid_activity(a))
+                {
+                    return Err(invalid(
+                        "presence activity is empty, too long or has control characters",
+                    ));
                 }
             }
         }
@@ -1031,6 +1040,7 @@ impl Live {
                     gamertag: a.gamertag.clone(),
                     state: p.state.clone(),
                     game_id: p.game_id.clone(),
+                    activity: p.activity.clone(),
                     since: p.since.clone(),
                 })
             })
@@ -1074,6 +1084,7 @@ impl Live {
                     presence: s.presence.get(xuid).map(|p| FriendPresence {
                         state: p.state.clone(),
                         game_id: p.game_id.clone(),
+                        activity: p.activity.clone(),
                         since: p.since.clone(),
                     }),
                 })

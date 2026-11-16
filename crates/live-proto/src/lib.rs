@@ -471,7 +471,22 @@ pub struct Presence {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_id: Option<String>,
+    /// What the player is doing, in words ("Co-op: Outskirts"); only some
+    /// activities say. Left out when none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     pub since: String,
+}
+
+/// The longest presence `activity`, in characters.
+pub const PRESENCE_ACTIVITY_MAX: usize = 64;
+
+/// Whether `activity` may be a presence's activity: some text, at most
+/// [`PRESENCE_ACTIVITY_MAX`] characters, no control characters.
+pub fn valid_activity(activity: &str) -> bool {
+    !activity.trim().is_empty()
+        && activity.chars().count() <= PRESENCE_ACTIVITY_MAX
+        && !activity.chars().any(char::is_control)
 }
 
 /// The data a `FriendRequested`, `FriendAccepted` or `FriendDeclined` event
@@ -499,6 +514,9 @@ pub struct FriendPresence {
     pub state: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_id: Option<String>,
+    /// As [`Presence::activity`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
     pub since: String,
 }
 
@@ -893,6 +911,7 @@ mod wire_tests {
                 presence: Some(FriendPresence {
                     state: "playing".into(),
                     game_id: Some("7f3c".into()),
+                    activity: None,
                     since: "2026-11-15T20:15:00.000Z".into(),
                 }),
             }],

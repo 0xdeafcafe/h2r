@@ -107,12 +107,15 @@ impl Session {
 pub(crate) struct Presence {
     pub state: &'static str,
     pub game_id: Option<String>,
+    /// What the player is doing, in words ("Co-op: Outskirts").
+    pub activity: Option<String>,
 }
 impl Default for Presence {
     fn default() -> Self {
         Self {
             state: "online",
             game_id: None,
+            activity: None,
         }
     }
 }
@@ -167,12 +170,13 @@ struct Command {
 pub(crate) struct Service {
     sender: SyncSender<Command>,
     metrics: Arc<Metrics>,
-    /// Every session the worker has read, by id: the skulls its host
-    /// advertised (docs/game/skulls.md "In multiplayer").
+    /// Every session the worker has read, by id: what its host advertised
+    /// (the skulls, docs/game/skulls.md "In multiplayer"; a co-op
+    /// campaign, docs/live/live-coop.md) and who is in it.
     pub seen: Seen,
 }
-/// Sessions' advertised skulls by session id, as last read from the server.
-pub(crate) type Seen = Arc<Mutex<BTreeMap<String, Option<Vec<u8>>>>>;
+/// Sessions by session id, as last read from the server.
+pub(crate) type Seen = Arc<Mutex<BTreeMap<String, live_proto::session::Session>>>;
 impl Service {
     pub fn start(base: String, options: ServerOptions) -> std::io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<Command>(64);
@@ -459,7 +463,7 @@ impl Worker {
             &self.author(user),
             &streams::presence(Xuid(user.xuid)),
             kind,
-            json!({"xuid":Xuid(user.xuid),"state":presence.state,"game_id":presence.game_id}),
+            presence_data(Xuid(user.xuid), presence),
             time::OffsetDateTime::now_utc(),
         )
         .sign(&user.key);
@@ -681,11 +685,12 @@ impl Worker {
         self.saw(&items);
         Ok(items)
     }
-    /// Keeps each session's advertised skulls for a guest's game start.
+    /// Keeps each session read, for a guest's game start (the host's
+    /// skulls) and its co-op join screen (the campaign, the host).
     fn saw(&self, sessions: &[live_proto::session::Session]) {
         let mut seen = self.seen.lock().unwrap_or_else(|e| e.into_inner());
         for s in sessions {
-            seen.insert(s.session_id.clone(), s.advertisement.skulls.clone());
+            seen.insert(s.session_id.clone(), s.clone());
         }
     }
     /// Whether a session's map can be had (docs/game/maps.md §5): checked for a
@@ -1165,4 +1170,14 @@ fn path_part(s: &str) -> String {
         }
     }
     out
+}
+
+/// A presence event's data. `activity` is left out when there is none, so a
+/// server that predates it reads the same bytes.
+pub(crate) fn presence_data(xuid: Xuid, presence: &Presence) -> serde_json::Value {
+    let mut data = json!({"xuid": xuid, "state": presence.state, "game_id": presence.game_id});
+    if let Some(a) = &presence.activity {
+        data["activity"] = json!(a);
+    }
+    data
 }

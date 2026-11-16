@@ -12,6 +12,8 @@ import { normalizeSkulls } from "../lib/skulls";
 export interface Presence {
   state: string;
   game_id: GameId | null;
+  /** What the player is doing ("Co-op: Outskirts"), when the game said. */
+  activity: string | null;
   since: string;
 }
 
@@ -208,6 +210,7 @@ export function applyEvent(s: LiveState, ev: WireEvent): boolean {
       a.presence = {
         state: d.state ?? "online",
         game_id: d.game_id ?? null,
+        activity: d.activity ?? null,
         since: ev.type === "SignedIn" || !wasOnline ? ev.at : a.presence!.since,
       };
       a.last_seen = ev.at;
@@ -528,7 +531,7 @@ export function applyPresenceSnapshot(s: LiveState, entries: PresenceEntry[]) {
     const a = ensureAccount(s, e.xuid, e.since);
     if (a.gamertag === a.xuid && e.gamertag) a.gamertag = e.gamertag;
     a.online = true;
-    a.presence = { state: e.state, game_id: e.game_id ?? null, since: e.since };
+    a.presence = { state: e.state, game_id: e.game_id ?? null, activity: e.activity ?? null, since: e.since };
     a.last_seen = e.since;
   }
 }

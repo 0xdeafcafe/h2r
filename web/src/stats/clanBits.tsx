@@ -28,18 +28,20 @@ export function ClanEmblem(props: { team: Team; size: number; class?: string }) 
 
 /** A friend's presence: the live account state when the stream knows it,
  *  else what the friends document said. */
-export function friendPresence(f: Pick<FriendEntry, "xuid" | "presence">): { kind: PresenceKind; game_id: string | null; account: AccountState | undefined } {
+export function friendPresence(f: Pick<FriendEntry, "xuid" | "presence">): { kind: PresenceKind; game_id: string | null; activity: string | null; account: AccountState | undefined } {
   const a = live.state.accounts[f.xuid];
-  if (a) return { kind: presenceKind(a), game_id: a.online ? a.presence?.game_id ?? null : null, account: a };
-  if (!f.presence) return { kind: "offline", game_id: null, account: undefined };
-  return { kind: f.presence.game_id ? "playing" : "online", game_id: f.presence.game_id, account: undefined };
+  if (a) return { kind: presenceKind(a), game_id: a.online ? a.presence?.game_id ?? null : null, activity: a.online ? a.presence?.activity ?? null : null, account: a };
+  if (!f.presence) return { kind: "offline", game_id: null, activity: null, account: undefined };
+  return { kind: f.presence.game_id ? "playing" : "online", game_id: f.presence.game_id, activity: f.presence.activity ?? null, account: undefined };
 }
 
 export const PRESENCE_WORDS: Record<PresenceKind, string> = { playing: "in a game", online: "online", away: "away", offline: "offline" };
 
-/** "playing Lockout" when the game is known, else the plain word. */
+/** The activity the game reported ("Co-op: Outskirts"), else "playing Lockout"
+ *  when the game is known, else the plain word. */
 export function presenceLine(f: Pick<FriendEntry, "xuid" | "presence">): string {
   const p = friendPresence(f);
+  if (p.kind !== "offline" && p.activity) return p.activity;
   if (p.kind === "playing" && p.game_id) {
     const g = live.state.games[p.game_id];
     if (g) return `playing ${gameMapTitle(g)}`;

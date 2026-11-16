@@ -250,6 +250,22 @@ impl Live {
         }
     }
 }
+/// A finished co-op campaign game, derived from its session's events: a
+/// `coop` session that closed after at least one guest joined.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoopGame {
+    pub session_id: String,
+    pub host_xuid: live_proto::Xuid,
+    pub campaign: session::Campaign,
+    /// Every guest that ever joined, in join order.
+    pub guests: Vec<live_proto::Xuid>,
+    /// The first guest's join time.
+    pub started: String,
+    pub ended: String,
+    /// `closed`, `host_left` or `expired`.
+    pub end_reason: String,
+}
+
 pub(crate) fn project(s: &mut State, e: &RecordedEvent, at: i64) {
     let b = &e.body;
     let Some(id) = b.stream.strip_prefix("session-") else {
@@ -260,7 +276,47 @@ pub(crate) fn project(s: &mut State, e: &RecordedEvent, at: i64) {
             s.sessions.insert(id.into(), item);
         }
     } else if let Some(item) = s.sessions.get_mut(id) {
-        let _ = item.apply(&b.kind, &b.data, &b.at, at);
+        let open = item.state == "open";
+        if item.apply(&b.kind, &b.data, &b.at, at).is_err() || !open {
+            return;
+        }
+        let coop = item.advertisement.flags == session::COOP;
+        if coop {
+            let joined = s.coop_joined.entry(id.into()).or_default();
+            for xuid in item.players.keys() {
+                if !joined.iter().any(|(x, _)| x == xuid) {
+                    joined.push((*xuid, b.at.clone()));
+                }
+            }
+        }
+        if item.state != "open" {
+            let joined = s.coop_joined.remove(id).unwrap_or_default();
+            let (Some(campaign), Some((_, started))) =
+                (item.advertisement.campaign.clone(), joined.first().cloned())
+            else {
+                return;
+            };
+            if !coop {
+                return;
+            }
+            let end_reason = if b.kind == session::EXPIRED {
+                "expired".to_string()
+            } else {
+                b.data["reason"].as_str().unwrap_or("closed").to_string()
+            };
+            s.coop_games.insert(
+                e.position,
+                CoopGame {
+                    session_id: id.into(),
+                    host_xuid: item.host_xuid,
+                    campaign,
+                    guests: joined.into_iter().map(|(x, _)| x).collect(),
+                    started,
+                    ended: b.at.clone(),
+                    end_reason,
+                },
+            );
+        }
     }
 }
 pub(crate) async fn create(HttpState(live): Shared, req: Request) -> Result<Response, ApiError> {
@@ -361,6 +417,7 @@ pub(crate) async fn list(
                     a.iter()
                         .all(|(k, v)| s.advertisement.attributes.get(k) == Some(v))
                 })
+                && q.get("flags").is_none_or(|v| *v == s.advertisement.flags)
                 && q.get("visibility")
                     .is_none_or(|v| v == s.advertisement.visibility.as_str())
                 && s.listed_for(viewer, |a, b| state.is_friends(a, b))
@@ -380,6 +437,98 @@ pub(crate) async fn list(
             items,
             next,
             position: live.position(),
+        },
+    ))
+}
+/// `GET /v1/coop/games`: finished co-op campaign games, newest first. The
+/// cursor is the log position of the closing event; `?player=` narrows to
+/// games a XUID or gamertag hosted or joined.
+pub(crate) async fn coop_games(
+    HttpState(live): Shared,
+    headers: HeaderMap,
+    Query(q): Query<BTreeMap<String, String>>,
+) -> Result<Response, ApiError> {
+    live.authorize_read(crate::http::bearer(&headers))?;
+    let limit = q
+        .get("limit")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse::<usize>())
+        .transpose()
+        .map_err(|_| invalid("invalid limit"))?
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    let before = q
+        .get("cursor")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.parse::<u64>())
+        .transpose()
+        .map_err(|_| invalid("bad cursor"))?;
+    let position = live.position();
+    let s = live.model.read();
+    let player = match q.get("player").filter(|v| !v.is_empty()) {
+        None => None,
+        Some(v) => Some(match live_proto::Xuid::parse(v) {
+            Ok(x) => x,
+            Err(_) => {
+                let tag = live_proto::Gamertag::new(v).map_err(|_| invalid("invalid player"))?;
+                match s.account_by_tag(&tag) {
+                    Some(a) => a.xuid,
+                    // An unknown gamertag has played nothing.
+                    None => {
+                        return Ok(crate::http::json(
+                            StatusCode::OK,
+                            &Page::<serde_json::Value> {
+                                items: vec![],
+                                next: None,
+                                position,
+                            },
+                        ));
+                    }
+                }
+            }
+        }),
+    };
+    let who = |x: &live_proto::Xuid| {
+        json!({
+            "xuid": x,
+            "gamertag": s.accounts.get(x).map(|a| a.gamertag.to_string()),
+        })
+    };
+    let rows: Vec<_> = s
+        .coop_games
+        .iter()
+        .rev()
+        .filter(|(p, _)| before.is_none_or(|b| **p < b))
+        .filter(|(_, g)| player.is_none_or(|x| g.host_xuid == x || g.guests.contains(&x)))
+        .take(limit)
+        .collect();
+    let next = (rows.len() == limit)
+        .then(|| rows.last().map(|(p, _)| p.to_string()))
+        .flatten();
+    let items = rows
+        .iter()
+        .map(|(_, g)| {
+            let players: Vec<_> = std::iter::once(&g.host_xuid)
+                .chain(&g.guests)
+                .map(&who)
+                .collect();
+            json!({
+                "session_id": g.session_id,
+                "host": who(&g.host_xuid),
+                "players": players,
+                "campaign": g.campaign,
+                "started": g.started,
+                "ended": g.ended,
+                "end_reason": g.end_reason,
+            })
+        })
+        .collect();
+    Ok(crate::http::json(
+        StatusCode::OK,
+        &Page {
+            items,
+            next,
+            position,
         },
     ))
 }
