@@ -1,8 +1,14 @@
 //! The Dear ImGui shell: main menu bar, a dockspace with the default
 //! layout (tools and maps left over the outliner, the viewport in the
 //! middle, the inspector right, the log at the bottom), a status bar, and
-//! the modals (unsaved changes, packages). Everything it does goes back to
-//! [`App`] as [`Action`]s.
+//! the modals (unsaved changes, packages). The outliner, centre and
+//! inspector windows show the active tool: the scenario's placements, 3D
+//! viewport and fields here; the game variant and playlist tools' in
+//! [`variants`] and [`playlists`]. Everything goes back to [`App`] as
+//! [`Action`]s.
+
+mod playlists;
+mod variants;
 use std::path::PathBuf;
 
 use dear_imgui_rs::{
@@ -81,6 +87,8 @@ pub struct Studio {
     log_seen: usize,
     /// Native file dialogs. Off in headless renders and tests.
     pub dialogs: bool,
+    pub variants: variants::VariantsUi,
+    playlists: playlists::PlaylistsUi,
 }
 
 impl Studio {
@@ -96,6 +104,8 @@ impl Studio {
             reset_layout: false,
             log_seen: 0,
             dialogs: true,
+            variants: variants::VariantsUi::default(),
+            playlists: playlists::PlaylistsUi::default(),
         }
     }
 
@@ -106,9 +116,15 @@ impl Studio {
         self.menu_bar(ui, app, &mut actions);
         self.dockspace(ui);
         self.tools_window(ui, app, &mut actions);
-        self.outliner_window(ui, app, &mut actions);
-        self.viewport_window(ui, app, gpu, &mut actions);
-        self.inspector_window(ui, app);
+        match app.tool {
+            ToolKind::Scenario => {
+                self.outliner_window(ui, app, &mut actions);
+                self.viewport_window(ui, app, gpu, &mut actions);
+                self.inspector_window(ui, app);
+            }
+            ToolKind::Variants => self.variant_windows(ui, app, &mut actions),
+            ToolKind::Playlists => self.playlist_windows(ui, app, &mut actions),
+        }
         self.log_window(ui, app);
         self.status_bar(ui, app);
         self.modals(ui, app, &mut actions);
@@ -134,13 +150,23 @@ impl Studio {
             self.open_source_dialog(actions);
         }
         if cmd && ui.is_key_pressed(Key::S) {
-            self.save_map_dialog(app, actions);
-        }
-        if cmd && ui.is_key_pressed(Key::D) {
-            actions.push(Action::Duplicate);
+            match app.tool {
+                ToolKind::Scenario => self.save_map_dialog(app, actions),
+                ToolKind::Variants => actions.push(Action::SaveVariant),
+                ToolKind::Playlists if app.hoppers.is_open() => {
+                    playlists::save(app, self.dialogs, actions)
+                }
+                ToolKind::Playlists => {}
+            }
         }
         if cmd && ui.is_key_pressed(Key::Q) {
             actions.push(Action::Quit);
+        }
+        if app.tool != ToolKind::Scenario {
+            return;
+        }
+        if cmd && ui.is_key_pressed(Key::D) {
+            actions.push(Action::Duplicate);
         }
         if (ui.is_key_pressed(Key::Delete) || ui.is_key_pressed(Key::Backspace))
             && !cmd
@@ -226,9 +252,15 @@ impl Studio {
                 self.open_folder_dialog(actions);
             }
             ui.separator();
+            self.tool_file_menu(ui, app, actions);
+            ui.separator();
             if ui.menu_item_enabled_selected_with_shortcut(
                 format!("{} Save map as...", icon::SAVE),
-                "Cmd+S",
+                if app.tool == ToolKind::Scenario {
+                    "Cmd+S"
+                } else {
+                    ""
+                },
                 false,
                 open,
             ) {
@@ -258,7 +290,7 @@ impl Studio {
                 format!("{} Undo", icon::UNDO),
                 "Cmd+Z",
                 false,
-                app.session.can_undo(),
+                app.can_undo(),
             ) {
                 actions.push(Action::Undo);
             }
@@ -266,12 +298,12 @@ impl Studio {
                 format!("{} Redo", icon::REDO),
                 "Shift+Cmd+Z",
                 false,
-                app.session.can_redo(),
+                app.can_redo(),
             ) {
                 actions.push(Action::Redo);
             }
             ui.separator();
-            let sel = app.session.selected().is_some();
+            let sel = app.tool == ToolKind::Scenario && app.session.selected().is_some();
             if ui.menu_item_enabled_selected_with_shortcut(
                 format!("{} Duplicate", icon::COPY),
                 "Cmd+D",
@@ -393,6 +425,98 @@ impl Studio {
         }
     }
 
+    /// The File menu's items for the variant and playlist tools.
+    fn tool_file_menu(&mut self, ui: &Ui, app: &App, actions: &mut Vec<Action>) {
+        match app.tool {
+            ToolKind::Scenario => {}
+            ToolKind::Variants => {
+                let e = app.variants.as_ref();
+                let can_save = e.is_some_and(|e| e.is_dirty() && !e.is_read_only());
+                if ui.menu_item_enabled_selected_with_shortcut(
+                    format!("{} Save variant", icon::SAVE),
+                    "Cmd+S",
+                    false,
+                    can_save,
+                ) {
+                    actions.push(Action::SaveVariant);
+                }
+                if ui.menu_item(format!("{} Import variant...", icon::PACKAGE_OPEN))
+                    && let Some(p) = variants::import_dialog(self.dialogs)
+                {
+                    actions.push(Action::ImportVariantFile(p));
+                }
+            }
+            ToolKind::Playlists => {
+                if ui.menu_item(format!("{} New playlist file", icon::PLUS)) {
+                    actions.push(Action::NewHopper);
+                }
+                if ui.menu_item("New from the default lineup") {
+                    actions.push(Action::NewDefaultHopper);
+                }
+                if ui.menu_item(format!("{} Open playlist file...", icon::FOLDER_OPEN))
+                    && let Some(p) = playlists::open_dialog(self.dialogs)
+                {
+                    actions.push(Action::OpenHopper(p));
+                }
+                let open = app.hoppers.is_open();
+                if ui.menu_item_enabled_selected_with_shortcut(
+                    format!("{} Save playlist file", icon::SAVE),
+                    "Cmd+S",
+                    false,
+                    open,
+                ) {
+                    playlists::save(app, self.dialogs, actions);
+                }
+                if ui.menu_item_enabled_selected_no_shortcut(
+                    "Save playlist file as...",
+                    false,
+                    open,
+                ) && let Some(p) = playlists::save_dialog(self.dialogs, app)
+                {
+                    actions.push(Action::SaveHopperAs(p));
+                }
+            }
+        }
+    }
+
+    /// The variant tool in the outliner, centre and inspector windows.
+    fn variant_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+        let fonts = &self.fonts;
+        let st = &mut self.variants;
+        ui.window(self.keys.outliner.label(format!("{} Variants", icon::TREE)))
+            .build(|| variants::list(ui, app, st, fonts, actions));
+        ui.window(
+            self.keys
+                .viewport
+                .label(format!("{} Settings", icon::SLIDERS)),
+        )
+        .build(|| variants::settings(ui, app, st, fonts, actions));
+        let dialogs = self.dialogs;
+        ui.window(&self.keys.inspector)
+            .build(|| variants::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
+    /// The playlist tool in the outliner, centre and inspector windows.
+    fn playlist_windows(&mut self, ui: &Ui, app: &mut App, actions: &mut Vec<Action>) {
+        let fonts = &self.fonts;
+        let dialogs = self.dialogs;
+        ui.window(
+            self.keys
+                .outliner
+                .label(format!("{} Playlists", icon::TREE)),
+        )
+        .build(|| playlists::list(ui, app, fonts, dialogs, actions));
+        ui.window(
+            self.keys
+                .viewport
+                .label(format!("{} Entries", icon::LAYERS)),
+        )
+        .build(|| playlists::entries(ui, app, fonts, actions));
+        let st = &mut self.playlists;
+        ui.window(&self.keys.inspector)
+            .build(|| playlists::inspector(ui, app, st, fonts, dialogs, actions));
+    }
+
     fn heading(&self, ui: &Ui, text: &str) {
         let f = ui.push_font(self.fonts.bold);
         ui.text(text);
@@ -404,17 +528,14 @@ impl Studio {
             self.heading(ui, "Tools");
             for tool in ToolKind::ALL {
                 let label = format!("{}  {}", tool_icon(tool), tool.title());
-                let disabled = ui.begin_disabled_with_cond(!tool.available());
+                let dirty = if app.tool_dirty(tool) { "  *" } else { "" };
                 if ui
-                    .selectable_config(&label)
+                    .selectable_config(format!("{label}{dirty}"))
                     .selected(app.tool == tool)
                     .build()
+                    && app.tool != tool
                 {
-                    app.tool = tool;
-                }
-                disabled.end();
-                if !tool.available() {
-                    ui.set_item_tooltip("Arrives in phase 2; h2-editor has it meanwhile.");
+                    actions.push(Action::SetTool(tool));
                 }
             }
             ui.spacing();
@@ -689,7 +810,18 @@ impl Studio {
                     None => ui.text_disabled("Ready"),
                 }
                 let mut right = String::new();
-                if let Some(name) = app.loaded_map() {
+                if app.tool == ToolKind::Playlists {
+                    right = playlists::summary(app);
+                } else if app.tool == ToolKind::Variants {
+                    if let Some(e) = &app.variants {
+                        right = format!(
+                            "{} {} saved   {} built-in",
+                            icon::SLIDERS,
+                            e.saved().len(),
+                            e.builtins().len()
+                        );
+                    }
+                } else if let Some(name) = app.loaded_map() {
                     let (tris, failed) = app.session.world();
                     right = format!(
                         "{} {name}   {} tris{}   {} placements",
@@ -731,20 +863,51 @@ impl Studio {
             let what = match app.pending() {
                 Some(Action::Quit) => "quitting",
                 Some(Action::SelectMap(_)) => "opening another map",
-                _ => "opening another source",
+                Some(Action::OpenSource(_)) => "opening another source",
+                Some(Action::OpenHopper(_)) => "opening another playlist file",
+                Some(Action::NewHopper | Action::NewDefaultHopper) => {
+                    "starting a new playlist file"
+                }
+                Some(Action::EditEntryVariant(..)) => "opening the entry's variant",
+                _ => "opening another variant",
             };
-            ui.text(format!(
-                "{} {} has unsaved edits.",
-                icon::ALERT,
-                app.loaded_map().unwrap_or("The map")
-            ));
+            let tool = app.pending_tool().unwrap_or(ToolKind::Scenario);
+            let who = match tool {
+                ToolKind::Scenario => app.loaded_map().unwrap_or("The map").to_owned(),
+                ToolKind::Variants => "The open game variant".to_owned(),
+                ToolKind::Playlists => "The playlist file".to_owned(),
+            };
+            ui.text(format!("{} {who} has unsaved edits.", icon::ALERT));
             ui.text_disabled(format!("Save them before {what}?"));
             ui.spacing();
             let mut answer = None;
-            if ui.button(format!("{} Save as...", icon::SAVE))
-                && let Some(p) = self.save_path_dialog(app)
-            {
-                answer = Some(Answer::SaveAs(p));
+            match tool {
+                ToolKind::Scenario => {
+                    if ui.button(format!("{} Save as...", icon::SAVE))
+                        && let Some(p) = self.save_path_dialog(app)
+                    {
+                        answer = Some(Answer::SaveAs(p));
+                    }
+                }
+                ToolKind::Variants => {
+                    let can = app.variants.as_ref().is_some_and(|e| !e.is_read_only());
+                    let d = ui.begin_disabled_with_cond(!can);
+                    if ui.button(format!("{} Save", icon::SAVE)) {
+                        answer = Some(Answer::Save);
+                    }
+                    d.end();
+                }
+                ToolKind::Playlists => {
+                    if app.hoppers.path().is_some() {
+                        if ui.button(format!("{} Save", icon::SAVE)) {
+                            answer = Some(Answer::Save);
+                        }
+                    } else if ui.button(format!("{} Save as...", icon::SAVE))
+                        && let Some(p) = playlists::save_dialog(self.dialogs, app)
+                    {
+                        answer = Some(Answer::SaveAs(p));
+                    }
+                }
             }
             ui.same_line();
             if ui.button("Discard") {

@@ -277,6 +277,13 @@ impl HopperSession {
         self.adopt(HopperFile::blank(), Format::Envelope, None);
     }
 
+    /// Starts from the Live server's built-in lineup (what a server serves
+    /// before any file is published; `HopperFile::default_set`), saved as
+    /// an envelope.
+    pub fn new_default_set(&mut self) {
+        self.adopt(HopperFile::default_set(), Format::Envelope, None);
+    }
+
     /// Closes the file, dropping unsaved edits.
     pub fn close(&mut self) {
         self.doc = None;

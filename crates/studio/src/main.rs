@@ -6,7 +6,7 @@ use anyhow::{Result, anyhow, bail};
 use dear_imgui_rs::Context;
 use dear_imgui_wgpu::{FramebufferExtent, GammaMode, WgpuInitInfo, WgpuRenderer};
 use dear_imgui_winit::{HiDpiMode, WinitPlatform};
-use studio::app::{Action, App};
+use studio::app::{Action, App, ToolKind};
 use studio::ui::Studio;
 use studio::viewport::Gpu;
 use winit::application::ApplicationHandler;
@@ -16,7 +16,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 const USAGE: &str = "usage: h2-studio [--disc <iso> | --map <file.map> | --folder <maps dir>] \
-[--data <dir>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>] [--pick <map>]]";
+[--data <dir>] [--tool scenario|variants|playlists] [--pick <map>] [--hopper <file.dat>|default] \
+[--variant <built-in index>] [--playlist <1..16>] [--screenshot <out.png> [--size <w>x<h>] [--scale <s>]]";
 
 struct Args {
     source: Option<PathBuf>,
@@ -25,6 +26,10 @@ struct Args {
     size: [f32; 2],
     scale: f32,
     pick: Option<String>,
+    tool: Option<ToolKind>,
+    hopper: Option<String>,
+    variant: Option<usize>,
+    playlist: Option<usize>,
 }
 
 fn args() -> Result<Args> {
@@ -35,6 +40,10 @@ fn args() -> Result<Args> {
         size: [1600.0, 1000.0],
         scale: 2.0,
         pick: None,
+        tool: None,
+        hopper: None,
+        variant: None,
+        playlist: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -47,6 +56,17 @@ fn args() -> Result<Args> {
             "--data" => a.data = Some(value()?.into()),
             "--screenshot" => a.screenshot = Some(value()?.into()),
             "--pick" => a.pick = Some(value()?),
+            "--tool" => {
+                a.tool = Some(match value()?.as_str() {
+                    "scenario" => ToolKind::Scenario,
+                    "variants" => ToolKind::Variants,
+                    "playlists" => ToolKind::Playlists,
+                    t => bail!("unknown tool {t}\n{USAGE}"),
+                })
+            }
+            "--hopper" => a.hopper = Some(value()?),
+            "--variant" => a.variant = Some(value()?.parse()?),
+            "--playlist" => a.playlist = Some(value()?.parse::<usize>()?.clamp(1, 16) - 1),
             "--scale" => a.scale = value()?.parse()?,
             "--size" => {
                 let v = value()?;
@@ -85,6 +105,20 @@ fn main() -> Result<()> {
     }
     if let Some(name) = &args.pick {
         app.dispatch(Action::SelectMap(name.clone()));
+    }
+    match args.hopper.as_deref() {
+        Some("default") => app.dispatch(Action::NewDefaultHopper),
+        Some(path) => app.dispatch(Action::OpenHopper(path.into())),
+        None => {}
+    }
+    if let Some(tool) = args.tool {
+        app.dispatch(Action::SetTool(tool));
+    }
+    if let Some(i) = args.variant {
+        app.dispatch(Action::OpenVariant(variants::panel::Origin::Builtin(i)));
+    }
+    if let Some(i) = args.playlist {
+        app.hopper_selected = i;
     }
     if let Some(out) = &args.screenshot {
         let mut h = studio::headless::Headless::new(args.size, args.scale)?;

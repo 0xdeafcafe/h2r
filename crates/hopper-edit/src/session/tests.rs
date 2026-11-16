@@ -124,3 +124,20 @@ fn without_a_disc_there_is_a_catalog_note_and_the_fallback_schema() {
     s.refresh_variants(None);
     assert!(s.variant_choices().is_some());
 }
+
+#[test]
+fn the_default_lineup_starts_clean_and_valid() {
+    let mut s = HopperSession::new();
+    s.new_default_set();
+    assert!(!s.is_dirty() && s.path().is_none());
+    assert_eq!(s.format(), Some(Format::Envelope));
+    let used = s
+        .hoppers()
+        .unwrap()
+        .iter()
+        .filter(|h| !h.records.is_empty())
+        .count();
+    assert!(used > 0);
+    assert!(s.errors().is_empty());
+    assert!(s.build().is_ok());
+}

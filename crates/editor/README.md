@@ -3,9 +3,10 @@
 A native editor suite for h2recomp: an eframe app on the wgpu renderer.
 The shell has a sidebar of tools and the maps of the opened disc, a top
 bar (Open, Save, Save As, Undo, Redo, Open disc or map), a status line, and
-prompts before unsaved changes are lost. The hopper (playlist) tool ships
-in this crate; the scenario and game variant editors live in their own
-crates and plug in through adapters. See [docs/editor/editor.md](../../docs/editor/editor.md).
+prompts before unsaved changes are lost. The hopper (playlist) tool's
+panel ships in this crate over `crates/hopper-edit`'s UI-free session; the
+scenario and game variant editors live in their own crates and plug in
+through adapters. See [docs/editor/editor.md](../../docs/editor/editor.md).
 
 ```
 cargo run --release -p editor -- [--disc <iso> | --map <file.map>] [--hopper <multiplayer_hopper.dat>]
@@ -60,10 +61,13 @@ folds a run of edits from one focused widget into one.
 - `editor::source` and `editor::undo` are `crates/editor-core`'s, shared
   with `h2-studio`: the disc image / loose map / maps folder source (the
   viewer's disc reader, copied) and the undo stack.
-- `src/hopper/`: the hopper tool. `model.rs` (working copy, edits,
-  validation, writing back) and `presets.rs` are UI-free and tested with
-  synthetic images; `catalog.rs` reads map names from the disc; `mod.rs`
-  is the panel and file handling.
+- `src/hopper/`: the hopper tool's egui panel, file dialog and hand-off to
+  the variant tool, over `hopper_edit::HopperSession` (it derefs to it).
+  The working copy, validation, writing back, presets, the map catalog
+  and the variant picker's sources live in `crates/hopper-edit`, shared
+  with `h2-studio` and tested there with synthetic images.
+- `src/variants.rs`: the variant tool adapter; where its schema, save
+  names and storage come from is `editor_core::variant_sources`.
 
 Tests: `cargo test -p editor`. They are headless (egui frames run with no
 window or GPU) and use synthetic bytes only; the one disc test is
