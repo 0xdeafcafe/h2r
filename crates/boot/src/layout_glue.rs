@@ -543,6 +543,9 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
         custom_games::ROW_TEXT,
         custom_games::ROW_CHOSEN,
         custom_games::ERROR_LOOKUP,
+        custom_games::BROWSER_EVENT,
+        custom_games::BROWSER_BACK_LOADER,
+        custom_games::LIVE_MENU_LOADER,
         speaker_row::ADD_ITEMS,
         PANE_SET,
     ];
@@ -1015,7 +1018,45 @@ pub fn install(rt: &runtime::Runtime, registry: &mut feature::Registry, model: O
                     eprintln!("custom games: showing the map pack dialog");
                     return open_dialog(cpu, ctx, mask, custom_games::MAPPACK_ERROR);
                 }
+                if !custom_games::remember_row(&mut *ctx.runtime().memory()) {
+                    eprintln!("custom games: the live menu's cursor row could not be set");
+                }
                 open_screen(cpu, ctx, mask, custom_games::LIVE_BROWSER_LOADER, "custom games: opening the browser")
+            });
+        }
+        // Back from the Live browser: its event handler always opens the
+        // System Link screen (`0x252433`) with a back request. While a
+        // Live-mode browser handles an event, that loader call goes to the
+        // Live menu's instead. A LAN browser never sets the flag.
+        if let (Some(event), Some(syslink), Some(live_menu)) = (
+            originals.remove(&custom_games::BROWSER_EVENT),
+            originals.remove(&custom_games::BROWSER_BACK_LOADER),
+            originals.remove(&custom_games::LIVE_MENU_LOADER),
+        ) {
+            static LIVE_BACK: AtomicBool = AtomicBool::new(false);
+            let sh = alias(d, &mut next_shadow, &event, custom_games::BROWSER_EVENT);
+            d.register_override(custom_games::BROWSER_EVENT, "custom-games:browser-event", move |cpu, ctx, _| {
+                if !custom_games::browser_is_live(&*ctx.runtime().memory(), cpu.ecx) {
+                    return Ok(event.invoke(cpu, ctx, custom_games::BROWSER_EVENT));
+                }
+                LIVE_BACK.store(true, Ordering::SeqCst);
+                call_then(cpu, ctx, sh, |_, _| {
+                    LIVE_BACK.store(false, Ordering::SeqCst);
+                    Ok(())
+                })
+            });
+            d.register_override(custom_games::BROWSER_BACK_LOADER, "custom-games:browser-back", move |cpu, ctx, _| {
+                let redirect = LIVE_BACK.swap(false, Ordering::SeqCst) && {
+                    let rt = Arc::clone(ctx.runtime());
+                    let mut mem = rt.memory();
+                    let request = mem.u32(cpu.esp + 4)?;
+                    custom_games::back_loader(&mut *mem, request).is_some()
+                };
+                if !redirect {
+                    return Ok(syslink.invoke(cpu, ctx, custom_games::BROWSER_BACK_LOADER));
+                }
+                eprintln!("custom games: back from the live browser to the xbox live menu");
+                Ok(live_menu.invoke(cpu, ctx, custom_games::LIVE_MENU_LOADER))
             });
         }
         // The dialog error lookup: our Map Pack dialog's title and message.
