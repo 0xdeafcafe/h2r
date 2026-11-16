@@ -415,6 +415,75 @@ status).
   **Stop Everything and Quit**: stops the tunnel and the server, then quits.
   Agents left to run at login start again at the next login.
 
+### Updates
+
+Opt-in: the menu bar can follow a branch of a git clone, rebuild what
+changed and install it, so the server tracks master without you running
+builds. Use a clone of its own, never the checkout you work in: updates
+stop the moment a checkout has uncommitted changes, sits on another
+branch, or has commits the remote lacks, and they never reset or stash
+anything. The web app's dashboard art is in Git LFS, so install
+`git-lfs` (`brew install git-lfs && git lfs install`) before cloning.
+
+```
+git clone git@github.com:0xdeafcafe/h2r.git ~/Library/Application\ Support/h2recomp/live/src
+h2 live menubar --update-repo ~/Library/Application\ Support/h2recomp/live/src
+h2 live menubar --update-disc /path/to/halo2.iso    # optional: re-extract art when the extractor changes
+h2 live menubar --update-now                        # first build and install, in this terminal
+~/Library/Application\ Support/h2recomp/live/bin/h2 live menubar --install
+```
+
+The last line makes the login item run the installed `h2`, so the menu
+bar restarts itself on the new one when an update replaces it. The
+server agent should run `bin/h2-live-server` from the install dir, with
+`H2_LIVE_WEB` pointing at its `web/` (as the red.forbes.h2live.server
+agent does).
+
+`[update]` in `menubar.toml`:
+
+| Key | Default | |
+| --- | --- | --- |
+| `repo` | none (off) | the clone to follow |
+| `branch`, `remote` | `master`, `origin` | what to follow |
+| `interval_minutes` | 10 | how often to check |
+| `install_dir` | `live/` | holds `bin/` (h2-live-server, h2), `web/` and the build's `target/` |
+| `disc`, `mappack` | none | re-extract game art from these when needed |
+| `cargo`, `bun` | found on PATH, `~/.cargo/bin`, `~/.bun/bin` | the tools, if elsewhere |
+
+Each check (on the timer, or Update Now):
+
+1. `git fetch`; when `<remote>/<branch>` moved and fast-forwards,
+   `git merge --ff-only`. A dirty, diverged or off-branch checkout is
+   reported in the menu and left alone.
+2. The files changed since the installed revision (kept in
+   `update-state.json`) pick the builds: live-server and its path
+   dependencies (from `cargo metadata`) build `h2-live-server`; the CLI's
+   crates build `h2`; `web/` runs `bun install --frozen-lockfile` and
+   `bun run build`. The workspace's `Cargo.toml`, `Cargo.lock`,
+   `rust-toolchain.toml` and `.cargo/` rebuild both binaries. Nothing
+   installed yet builds all three.
+3. Builds run under `nice -n 10`, one at a time, into `install_dir/target`,
+   with their output in `logs/update.log`. Each binary is copied in as
+   `.new` and renamed over the old one; the web build is synced into
+   `web/` (`rsync -a --delete`).
+4. When `EXTRACTOR_VERSION` in `crates/cli/src/live_art.rs` changed, the
+   new `h2 live assets check` decides whether the art is stale; with a
+   `disc` it re-extracts, without one the menu says the art needs
+   re-extracting.
+5. The server agent, if loaded, is restarted (`kickstart -k`) when its
+   binary, the web app or the art changed. A stopped server stays
+   stopped. When `h2` changed and the menu bar is that `h2`, it re-executes
+   itself.
+
+A revision whose build failed is not retried on the timer, only by Update
+Now (fix it upstream and the next revision builds as usual).
+
+The menu shows "Updates: up to date (abc1234, 5 min ago)", what is
+building, or why updates are blocked; the last error; **Update Now**; and
+**Pause Updates** (kept in `update-state.json`; Update Now still works
+while paused). `h2 live menubar --update-now` runs one check in a terminal,
+and `--update-repo none` turns updates off.
+
 The menu bar is `crates/live-menubar` (tray-icon and muda on a winit event
 loop). macOS is complete; elsewhere the tray runs but launchd's items fail
 with a message.
@@ -523,6 +592,18 @@ UDP 3074-3080 reachable for internet play.
   busy, not installed, started elsewhere); every item's action; the icon's
   states; `--adopt-existing`, `--install`, `--install-server`,
   `--install-tunnel`.
+- `crates/live-menubar/src/update.rs`: against a fake git and builder,
+  a first run builds and installs everything and restarts a loaded server
+  (a stopped one stays stopped); then web-only, CLI-only, shared-crate,
+  lockfile and docs-only changes build just what they need across one or
+  several commits; dirty, off-branch and diverged checkouts are left
+  alone (no fetch, merge or build); a failed build is retried only by
+  Update Now; pause; an extractor version change checks the art and
+  re-extracts from the configured disc; a rewritten history builds
+  everything. The real git runs against scratch repositories with a local
+  bare remote (fetch, ancestry, fast-forward, diff, show, dirty).
+  `cargo metadata` path closures, atomic installs, the update menu lines,
+  `[update]` config, and `--update-repo`/`--update-disc`/`--update-now`.
 - `crates/live-server/tests/tunnel.rs`, `art.rs`, `local_signin.rs`,
   `public.rs`: proxy and CF headers refused for game art and local
   sign-in through the router; discovery's `url`; `CF-Connecting-IP` only

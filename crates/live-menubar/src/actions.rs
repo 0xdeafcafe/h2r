@@ -183,6 +183,12 @@ impl Ctx<'_> {
                 }
                 .and(done)
             }
+            // Status lines, and the update thread's own items.
+            ItemId::UpdateStatus
+            | ItemId::UpdateError
+            | ItemId::ArtStale
+            | ItemId::UpdateNow
+            | ItemId::PauseUpdates => done,
             ItemId::Quit => Ok(Outcome::Quit),
             ItemId::StopAllAndQuit => {
                 if let Some(t) = &self.cfg.tunnel {

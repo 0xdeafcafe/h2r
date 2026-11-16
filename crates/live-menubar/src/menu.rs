@@ -4,6 +4,7 @@
 use crate::config::Config;
 use crate::launchd::ServiceState;
 use crate::status::{Health, Snapshot, format_uptime};
+use crate::update::{Outcome, UpdateView};
 
 /// Every item, by what it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -28,6 +29,12 @@ pub enum ItemId {
     MenubarAtLogin,
     Quit,
     StopAllAndQuit,
+    // Updates (only with `[update]`).
+    UpdateStatus,
+    UpdateError,
+    ArtStale,
+    UpdateNow,
+    PauseUpdates,
 }
 
 impl ItemId {
@@ -52,10 +59,15 @@ impl ItemId {
             ItemId::MenubarAtLogin => "menubar-at-login",
             ItemId::Quit => "quit",
             ItemId::StopAllAndQuit => "stop-all-and-quit",
+            ItemId::UpdateStatus => "update-status",
+            ItemId::UpdateError => "update-error",
+            ItemId::ArtStale => "art-stale",
+            ItemId::UpdateNow => "update-now",
+            ItemId::PauseUpdates => "pause-updates",
         }
     }
 
-    pub const ALL: [ItemId; 18] = [
+    pub const ALL: [ItemId; 23] = [
         ItemId::Server,
         ItemId::Numbers,
         ItemId::Tunnel,
@@ -74,7 +86,17 @@ impl ItemId {
         ItemId::MenubarAtLogin,
         ItemId::Quit,
         ItemId::StopAllAndQuit,
+        ItemId::UpdateStatus,
+        ItemId::UpdateError,
+        ItemId::ArtStale,
+        ItemId::UpdateNow,
+        ItemId::PauseUpdates,
     ];
+
+    /// Items the update thread handles, not the action worker.
+    pub fn is_update(self) -> bool {
+        matches!(self, ItemId::UpdateNow | ItemId::PauseUpdates)
+    }
 
     pub fn from_key(key: &str) -> Option<ItemId> {
         Self::ALL.into_iter().find(|i| i.key() == key)
@@ -175,6 +197,40 @@ fn tunnel_line(s: &Snapshot, cfg: &Config) -> String {
     }
 }
 
+/// `just now`, `5 min ago`, `3 h ago`, `2 d ago`.
+pub fn format_ago(seconds: i64) -> String {
+    let s = seconds.max(0);
+    if s < 60 {
+        "just now".into()
+    } else if s < 3600 {
+        format!("{} min ago", s / 60)
+    } else if s < 86_400 {
+        format!("{} h ago", s / 3600)
+    } else {
+        format!("{} d ago", s / 86_400)
+    }
+}
+
+fn update_line(v: &UpdateView, now: i64) -> String {
+    let head = v.head.as_deref().unwrap_or("nothing installed");
+    let when = |what: &str| match v.last_check {
+        Some(t) => format!("Updates: {what} ({head}, {})", format_ago(now - t)),
+        None => format!("Updates: {what} ({head})"),
+    };
+    if let Some(w) = &v.working {
+        return format!("Updates: {w}…");
+    }
+    if v.paused {
+        return format!("Updates: paused ({head})");
+    }
+    match &v.outcome {
+        Some(Outcome::Blocked(why)) => format!("Updates: blocked, {why}"),
+        Some(Outcome::Failed(_)) => when("failed"),
+        None if v.last_check.is_none() => "Updates: not checked yet".into(),
+        _ => when("up to date"),
+    }
+}
+
 /// The menu for `s`.
 pub fn model(s: &Snapshot, cfg: &Config) -> Vec<Entry> {
     let idle = s.busy.is_none();
@@ -253,6 +309,25 @@ pub fn model(s: &Snapshot, cfg: &Config) -> Vec<Entry> {
         Entry::Separator,
         action(ItemId::OpenLogs, "Open Logs Folder", true),
         action(ItemId::ViewServerLog, "View Server Log", true),
+    ]);
+    if let Some(v) = &s.update {
+        m.push(Entry::Separator);
+        m.push(info(ItemId::UpdateStatus, update_line(v, s.now)));
+        if let Some(Outcome::Failed(e)) = &v.outcome
+            && v.working.is_none()
+        {
+            m.push(info(ItemId::UpdateError, format!("Update error: {e}")));
+        }
+        if v.art_stale {
+            m.push(info(
+                ItemId::ArtStale,
+                "Game art needs re-extracting (h2 live assets extract)".into(),
+            ));
+        }
+        m.push(action(ItemId::UpdateNow, "Update Now", v.working.is_none()));
+        m.push(check(ItemId::PauseUpdates, "Pause Updates", true, v.paused));
+    }
+    m.extend([
         Entry::Separator,
         check(
             ItemId::ServerAtLogin,
@@ -311,6 +386,8 @@ mod tests {
             menubar_at_login: false,
             busy: None,
             message: None,
+            update: None,
+            now: 0,
         }
     }
 
@@ -485,5 +562,98 @@ mod tests {
             assert_eq!(ItemId::from_key(id.key()), Some(id));
         }
         assert_eq!(ItemId::from_key("nope"), None);
+    }
+
+    #[test]
+    fn the_update_items() {
+        let mut s = snap(ServiceState::Running { pid: Some(9) }, up());
+        assert!(
+            !shape(&model(&s, &cfg())).contains(&Some(ItemId::UpdateNow)),
+            "off by default"
+        );
+
+        let mut v = UpdateView {
+            working: None,
+            head: Some("abc1234".into()),
+            last_check: Some(1000),
+            outcome: Some(Outcome::UpToDate),
+            paused: false,
+            art_stale: false,
+        };
+        s.now = 1000 + 5 * 60 + 10;
+        s.update = Some(v.clone());
+        let m = model(&s, &cfg());
+        assert_eq!(
+            get(&m, ItemId::UpdateStatus).label,
+            "Updates: up to date (abc1234, 5 min ago)"
+        );
+        assert!(get(&m, ItemId::UpdateNow).enabled);
+        assert_eq!(get(&m, ItemId::PauseUpdates).checked, Some(false));
+        assert!(!shape(&m).contains(&Some(ItemId::UpdateError)));
+        assert!(!shape(&m).contains(&Some(ItemId::ArtStale)));
+
+        v.working = Some("building the server".into());
+        s.update = Some(v.clone());
+        let m = model(&s, &cfg());
+        assert_eq!(
+            get(&m, ItemId::UpdateStatus).label,
+            "Updates: building the server…"
+        );
+        assert!(!get(&m, ItemId::UpdateNow).enabled, "one at a time");
+
+        v.working = None;
+        v.outcome = Some(Outcome::Failed("cargo build exited 101".into()));
+        v.art_stale = true;
+        s.update = Some(v.clone());
+        let m = model(&s, &cfg());
+        assert_eq!(
+            get(&m, ItemId::UpdateStatus).label,
+            "Updates: failed (abc1234, 5 min ago)"
+        );
+        assert_eq!(
+            get(&m, ItemId::UpdateError).label,
+            "Update error: cargo build exited 101"
+        );
+        assert!(
+            get(&m, ItemId::ArtStale)
+                .label
+                .starts_with("Game art needs re-extracting")
+        );
+
+        v.outcome = Some(Outcome::Blocked(
+            "checkout has uncommitted changes (2 files)".into(),
+        ));
+        s.update = Some(v.clone());
+        assert_eq!(
+            get(&model(&s, &cfg()), ItemId::UpdateStatus).label,
+            "Updates: blocked, checkout has uncommitted changes (2 files)"
+        );
+
+        v.paused = true;
+        s.update = Some(v.clone());
+        let m = model(&s, &cfg());
+        assert_eq!(
+            get(&m, ItemId::UpdateStatus).label,
+            "Updates: paused (abc1234)"
+        );
+        assert_eq!(get(&m, ItemId::PauseUpdates).checked, Some(true));
+
+        v = UpdateView {
+            head: None,
+            last_check: None,
+            outcome: None,
+            paused: false,
+            ..v
+        };
+        s.update = Some(v);
+        assert_eq!(
+            get(&model(&s, &cfg()), ItemId::UpdateStatus).label,
+            "Updates: not checked yet"
+        );
+
+        assert_eq!(format_ago(30), "just now");
+        assert_eq!(format_ago(7200), "2 h ago");
+        assert_eq!(format_ago(3 * 86_400), "3 d ago");
+        assert!(ItemId::UpdateNow.is_update() && !ItemId::Quit.is_update());
     }
 }
