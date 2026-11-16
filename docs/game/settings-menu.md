@@ -321,10 +321,11 @@ Not every flag belongs in a menu. They fall in four groups.
 input and the rest of the boot runner's variables. They are for reproduction
 and measurement. The settings file has no keys for them.
 
-**New settings with no existing flag.** Resolution scale, 60 and 120 fps and
-E3 lighting have no control today (FOV is built, below). Each needs its own design before the
-menu can switch it on (see phases). Until then the menu shows them greyed out
-with a one-line reason, so the list is honest about what exists.
+**New settings with no existing flag.** E3 lighting has no control today
+(FOV, frame rate and resolution scale are built, above). It needs its own
+design before the menu can switch it on (see phases). Until then the menu
+shows it greyed out with a one-line reason, so the list is honest about what
+exists.
 
 Notes on specific settings:
 

@@ -81,10 +81,10 @@ All **Code**.
 calling-convention adapter each, and a differential test against the
 lifted original that found zero disagreements over 7.66 M interpreted
 instructions ([engine/README.md](README.md)). `crates/hs` has a
-native HaloScript VM. Neither is wired into boot:
-`engine::runtime_glue::register_all` has no caller, and the differential
-feature does not build since `ir` and `lift` moved (the TODO in
-`crates/engine/Cargo.toml`). The SDK libraries (D3D, DirectSound, XAPI,
+native HaloScript VM, not wired into the game. The leaves are wired
+through the `engine-leaves` feature (`crates/feature/src/leaves.rs`); only
+its locale group is on by default, and `engine::runtime_glue::register_all`
+has no caller. The SDK libraries (D3D, DirectSound, XAPI,
 Bink, Live) are the other precedent: whole subsystems replaced in Rust at
 their API boundary, which is why 4K, the render thread and our Live
 service were possible at all.

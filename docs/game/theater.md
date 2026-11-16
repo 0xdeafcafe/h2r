@@ -5,8 +5,8 @@ as a film, then watch it again with pause, fast forward, rewind, a free
 camera, another player's view, clips and screenshots. It also covers the
 "event" side: watching a game live as a spectator, with a player list and
 scoreboard. **Nothing here is built.** It depends on the determinism
-harness that the high-frame-rate work is building now
-([high-framerate.md](high-framerate.md), phase 1; branch `high-fps`) and on
+harness from the high-frame-rate work
+([high-framerate.md](high-framerate.md), phase 1, built) and on
 levels running at a steady 30 fps ([frame-budget.md](../perf/frame-budget.md)).
 
 In short:
@@ -15,7 +15,7 @@ In short:
   The recompiled game already runs on a logical clock, so its schedule
   depends only on its own work and its inputs. Record the inputs (pad
   reads, network receives, host randomness, the boot conditions) and the
-  same build replays the session exactly. The harness on `high-fps`
+  same build replays the session exactly. The harness (`crates/lockstep`)
   already records and replays pad reads by read index.
 - **That exact replay is the first slice**: record a game, watch it back
   from the start with pause, fast forward and slow motion, and export
@@ -219,7 +219,7 @@ anything.
 
 | source | boundary | today |
 |---|---|---|
-| pad reads | `XInputGetState` result and status (22-byte `XINPUT_STATE`) | `xapi::tap::Recorder` on `high-fps` |
+| pad reads | `XInputGetState` result and status (22-byte `XINPUT_STATE`) | `xapi::tap::Recorder` |
 | device arrival, capabilities | `XGetDeviceChanges`, capabilities | not tapped (the harness replays with the same kind of pad); a film should record them |
 | network receives | `recv`/`recvfrom` results (payload, source address, error), `select` and FIONREAD results, `XNetGetConnectStatus`, QoS results | not tapped; live.md "Client HLE" lists the entries |
 | host randomness | `XNetRandom`, `XNetCreateKey` (host OS randomness, live.md) | not tapped |
@@ -517,7 +517,7 @@ local view, not a spectator mode. [local: engine-map.md, "likely"]
 
 ### Prerequisites
 
-1. **Determinism harness** (high-framerate.md phase 1, on `high-fps`):
+1. **Determinism harness** (high-framerate.md phase 1, built):
    per-tick RAM hash, tick-keyed pad recording, run comparison. Theater
    reuses it directly. One naming note: that crate is called `lockstep`,
    which is easy to confuse with network lockstep in this document.
