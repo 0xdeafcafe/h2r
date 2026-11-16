@@ -2,9 +2,10 @@
 
 A design for an opt-in lighting mode in the spirit of the Halo 2 E3 2003 demo:
 hard-edged shadows from every direct light, cast by and onto everything, and
-per-pixel lighting with normal maps. Phase 0 (research) and phase 1
-(harder, sharper retail shadows in the view: "Phase 1 as built") are done;
-the rest is design.
+per-pixel lighting with normal maps. Phase 0 (research), phase 1
+(harder, sharper retail shadows in the view: "Phase 1 as built") and phase 3
+(the shadowlab comparison, decided for shadow maps) are done; the rest is
+design. [pstencil.md](pstencil.md) adds the Digsite E3 tag set's lights.
 
 The short version: **the evidence says there is nothing of the cut renderer to
 switch back on in the retail game.** What retail kept is the vocabulary (a
@@ -410,7 +411,10 @@ map):
 
 Most lights have shadows switched off by bit 3, which agrees with the
 community claim about the E3 level's light objects (C above), but the disc
-cannot say which lights those are and we did not try.
+cannot say which lights those are and we did not try. The same bit is the
+no-shadow bit in the Digsite E3 tag set's paired light tags
+([pstencil.md](pstencil.md)). `h2 lights <map>` prints each light's shape and
+this bit, with its placements, attachments and effect parts.
 
 ### Pass taxonomy: the layers
 
@@ -455,8 +459,12 @@ sky, transparents, fog and the rest. The view can tag every draw with
 - What reads the stencil marks of modes 1 and 2, and whether modes 3 to 6 are
   reached at all (indirect calls were not searched).
 - Layers 14 and 20, and the per-light flag bits 3 to 5 at `0x004ba014`.
-- Light kind (definition `+0x04`, `+0x14`), cone, range and gel: which
-  definition fields the light passes' vertex constants come from. These are
+- Which definition fields the light passes' vertex constants come from.
+  The fields themselves are named since: kind at `+0x04` (0 sphere, 2
+  frustum), sphere radius `+0x18`, cone width, stretch, angle, falloff and
+  cutoff `+0x20` to `+0x30`, colours `+0x40` to `+0x6f`, brightness `+0x70`
+  ([effects.md](../formats/effects.md) "ligh"). `+0x14` was not confirmed as
+  anything; it is zero on the study tags. These are
   in `0x00031170`'s callees (`0x0004a1e0` takes 1024.0 and the light, S: the
   scissor) and the engine vector inputs ([shader-instances.md](../formats/shader-instances.md)).
 - The candidate list at `0x00547f98` and the cluster test (`0x000c17f0`).
@@ -675,7 +683,7 @@ at the moment the guest reaches them.
 | Which material and pass each draw belongs to | `0x0001bbf0` begins a shader draw and passes (shader, LOD, layer, pass) to `0x00016b90` ([shader-instances.md](../formats/shader-instances.md)) | Decoded |
 | Which geometry each draw belongs to | `0x00041040` branches between structure clusters and render models ([engine-map.md](../engine/engine-map.md)) | Located, marked "likely" |
 | The sun's direction and colour | `sky` lights ([lighting.md](../formats/lighting.md)) | Angles decoded; colour and the rest not |
-| Dynamic lights: position, direction, cone, colour, range | the light datum array at `[0x004e030c]`, read at the per-light pass `0x00031170` ("Phase 0 findings") | Located: frame, colours, intensity, bounds, shadow decision. Cone, range and falloff not traced |
+| Dynamic lights: position, direction, cone, colour, range | the light datum array at `[0x004e030c]`, read at the per-light pass `0x00031170` ("Phase 0 findings"); the record's `ligh` datum gives the definition | Located: frame, colours, intensity, bounds, shadow decision. The definition's shape, cone, range, falloff, colours and brightness are decoded (`tags::effects::light`, [effects.md](../formats/effects.md) "ligh"); which of them feed the light passes' constants is not traced |
 | Object poses and skinning matrices for shadow casters | the guest's object and render-cache data ([objects.md](../formats/objects.md), `0x0003d270`) | Not decoded for this use |
 | Level and model geometry, including what the camera cannot see | tags: `tags::structure`, `tags::geometry`, `tags::model`; collision in [collision.md](../formats/collision.md) | Decoders exist |
 | Which bitmap parameter of a material is its normal map | template and pass bindings ([shader-instances.md](../formats/shader-instances.md)) | Bindings decoded; meanings not named |
@@ -816,7 +824,7 @@ here to show relative size.
 |---|---|---|---|
 | 0 | **Done 2026-11-16** ("Phase 0 findings"). Static research, no runtime change: trace the stencil call sites and name each use; find the light creation and render path from the `ligh` part case (`0x0017ab2e`); read the light flags off engine code; find who draws the shadow depth levels; name the layers in the scene-pass dispatch. Deliverables are docs, decoders and invented-data tests. | 2-4 weeks | Nothing |
 | 1 | **Built 2026-11-16** ("Phase 1 as built"). Harder retail shadows in the view: scaled shadow buffers, one-tap comparison; the Lighting row. | 1-2 weeks | high-resolution.md phases 1-2, and in-place depth sampling (all were on master) |
-| 2 | Observers and the scene description: camera, draw tagging, lights, object poses. Uncharged reads. Tests on invented guest memory. | 3-5 weeks | Phase 0 |
+| 2 | Observers and the scene description: camera, draw tagging, lights, object poses. Uncharged reads. Tests on invented guest memory. The light definitions are ready: `tags::effects::light` reads shape, cone, range, colour and the no-shadow flag, and `h2 lights <map>` lists a map's lights and where they come from (2026-11-16). | 3-5 weeks | Phase 0 |
 | 3 | Viewer prototype: volumes against shadow maps on tag geometry, with timings. Decide. | 2-3 weeks | Nothing; can run beside phase 2 |
 | 4 | Sun shadows from objects in the view, composited as a mask. | 6-10 weeks | Phases 2, 3 |
 | 5 | Per-pixel dynamic lights with normal maps and specular, replacing the guest's light passes in the view. | 8-12 weeks or more | Phase 4, the pass taxonomy |
@@ -914,45 +922,47 @@ invented geometry only.
 
 ### Results
 
-To fill in from a run against the disc. Record the command, the adapter and
-the clock the report names.
+One run, 2026-11-16: `--model` Master Chief, Elite, Ghost and Banshee on
+Zanzibar's BSP 0, level not casting, default sun and point light, 640x480
+times 1, 2 and 4. Apple M1 Max (Metal), GPU timestamps, median of 30 frames.
+The images and `report.md` stay outside the repository.
 
-| Scene | Map, BSP, casters, level casts |
-|---|---|
-| | |
-
-Geometry (from `report.md`, "Geometry"):
+Geometry (welded by position):
 
 | Mesh | Triangles | Open edges | Non-manifold | Closed pieces | Closed triangles |
 |---|---:|---:|---:|---:|---:|
-| Level clusters | | | | | |
-| Level instance definitions | | | | | |
-| Caster, each level of detail | | | | | |
+| Level clusters | 12,462 | 146 | 1,114 | 0 of 28 | 0% |
+| Level instance definitions | 3,727 | 35 | 624 | 55 of 145 | 64% |
+| All casters, every level of detail | 8,690 | 308 | 170 | 16 of 93 | 37% |
 
-Volumes (CPU build ms is the per-light silhouette cost):
+Per caster the share of closed triangles runs from 0% (Master Chief's lowest
+level of detail, Elite's two highest) to 100% (Master Chief level 1); the
+Banshee has 204 open edges at every level.
+
+Volumes:
 
 | Light | Silhouette edges | Side quads | Of which open | Volume triangles | CPU build ms |
 |---|---:|---:|---:|---:|---:|
-| Sun | | | | | |
-| Point | | | | | |
+| Sun | 2,487 | 2,511 | 238 | 14,596 | 0.25 |
+| Point | 2,407 | 2,430 | 229 | 14,228 | 0.27 |
 
-GPU ms, total per technique (passes in `report.md`):
+GPU ms, total per technique:
 
 | Light | Scale | none | volume | map-hard | map-pcf |
 |---|---:|---:|---:|---:|---:|
-| Sun | 1x | | | | |
-| Sun | 2x | | | | |
-| Sun | 4x | | | | |
-| Point | 1x | | | | |
-| Point | 2x | | | | |
-| Point | 4x | | | | |
+| Sun | 1x | 0.11 | 0.71 | 0.25 | 0.37 |
+| Sun | 2x | 0.16 | 1.19 | 0.78 | 1.65 |
+| Sun | 4x | 0.16 | 1.11 | 1.13 | 2.67 |
+| Point | 1x | 0.10 | 1.12 | 0.76 | 0.60 |
+| Point | 2x | 0.16 | 3.26 | 2.66 | 4.60 |
+| Point | 4x | 0.13 | 3.33 | 2.93 | 6.26 |
 
-Agreement and look:
+Agreement, as a share of pixels facing the light:
 
-| Light | Volume vs map-hard | Volume vs map-pcf | Notes from the images |
+| Light | Volume vs map-hard | Volume vs map-pcf | Notes |
 |---|---:|---:|---|
-| Sun | | | |
-| Point | | | |
+| Sun | 0.28%, 0.15%, 0.08% at 1x, 2x, 4x | 0.26%, 0.14%, 0.08% | more pixels shadowed only by the volume than only by the map at every scale |
+| Point | 0.09%, 0.05%, 0.03% | 0.09%, 0.05%, 0.03% | as above |
 
 ### Deciding
 
@@ -967,6 +977,15 @@ Agreement and look:
 - **Not covered yet.** Alpha-tested casters (grates, foliage) are drawn
   solid by both techniques: the prototype does not read materials. Poses: models are
   drawn unposed, as the model viewer draws them. Cascades: one sun map only.
+
+**Decided: shadow maps, one tap.** Volumes cost as much as a one-tap map or
+more at every scale measured, Halo 2's casters are mostly open meshes (37% of
+caster triangles closed, the level's clusters none), and the two agree on all
+but a fraction of a percent of lit pixels. A study note that recommended
+depth-fail volumes, and why it is not followed, is in
+[pstencil.md](pstencil.md) ("The technique: why shadow maps"). Volumes for
+closed object casters stay the fallback if phase 4's pictures show a case a
+map cannot meet.
 
 ## Sources
 

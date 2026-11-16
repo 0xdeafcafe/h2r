@@ -17,6 +17,7 @@ mod extract_shaders;
 mod fonts;
 mod h1_cmd;
 mod lighting;
+mod lights;
 mod live_accounts;
 mod live_art;
 mod live_basemap;
@@ -108,6 +109,9 @@ const USAGE: &str = "usage: h2 <command> [disc]
                           convert the Bink movies to MP4 with your own ffmpeg
                           (optional; exit 3 if ffmpeg is missing, 4 if unusable)
   effect <map> <tag>      print an effects-family tag (effe tree); --all <map|all> validates the family
+                          (option --disc <iso>)
+  lights <map>            the ligh tags a map defines (shape, colour, shadow flag)
+                          and where each comes from; --all <map|all> checks the layout
                           (option --disc <iso>)
   shader <map> <tag>      print the material a shad resolves to (passes, textures,
                           constants, render state); --all <map|all> validates
@@ -257,6 +261,9 @@ fn main() -> Result<()> {
     }
     if cmd == "bitmap" {
         return bitmap::run(args.collect());
+    }
+    if cmd == "lights" {
+        return lights::run(args.collect());
     }
     if cmd == "effect" {
         return effects::run(args.collect());
