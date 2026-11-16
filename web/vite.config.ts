@@ -18,5 +18,11 @@ export default defineConfig({
       "/art/game": { target: process.env.H2_GAME_ART_URL ?? mock },
     },
   },
-  build: { outDir: "dist", target: "es2022" },
+  build: {
+    outDir: "dist",
+    target: "es2022",
+    // The 3D viewer's chunk (mostly three.js, ~730 kB) is lazy: it loads only
+    // when a 3D view opens, never on first paint. Warn above that, not 500 kB.
+    chunkSizeWarningLimit: 800,
+  },
 });
