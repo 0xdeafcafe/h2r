@@ -115,16 +115,6 @@ export function actorColour(team: string | null | undefined): string {
 /** How dark a vehicle nobody is in is drawn, beside one in use. */
 export const EMPTY_VEHICLE_SHADE = 0.5;
 
-/** How much of an occupant's colour a vehicle takes: a light wash, so it
- *  still reads as the vehicle it is. */
-export const VEHICLE_TINT = 0.3;
-
-/** The multiplier for a vehicle driven by a player of this colour. */
-export function vehicleTint(primary: Rgb): Rgb {
-  const k = VEHICLE_TINT;
-  return [1 - k + primary[0] * k, 1 - k + primary[1] * k, 1 - k + primary[2] * k];
-}
-
 /** A vehicle's box when there is no model of it: [length, width, height]
  *  in game units, by kind, so a tank isn't drawn the size of a bike. */
 export function vehicleBox(kind: string): [number, number, number] {
