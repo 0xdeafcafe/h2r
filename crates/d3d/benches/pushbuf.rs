@@ -449,6 +449,22 @@ fn guest_memory_bench(fast: bool) {
             sink = sink.wrapping_add(v[17] as u64);
         }
     });
+    // The write barrier's drain before each D3D entry: the guest has
+    // dirtied some pages since the last one (a run of 48 and a few strays).
+    // (`mem` is not used past here, which ends its borrow of `g`.)
+    time("take_dirty after 64 pages", 20_000, &mut || {
+        for i in 0..20_000u32 {
+            let base = 0x0100_0000 + 2 * SPAN * (i % (MAPS - 2));
+            for p in 0..48 {
+                g.set_u8(base + (p % 16) * PAGE_SIZE + 2 * SPAN * (p / 16), 1)
+                    .unwrap();
+            }
+            for p in 0..16 {
+                g.set_u8(addrs[((i * 16 + p) % 4096) as usize], 1).unwrap();
+            }
+            sink = sink.wrapping_add(g.take_dirty(id).unwrap().len() as u64);
+        }
+    });
     std::hint::black_box(sink);
 }
 
