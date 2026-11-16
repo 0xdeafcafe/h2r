@@ -396,6 +396,67 @@ mod tests {
         assert!(!memory.allows_execute(0x1000));
     }
 
+    /// `h2abi_v1_exit(n)` leaves a context exactly as the pair it replaces
+    /// did at a handler's exit, `h2abi_v1_charge(n)` (only when n is not 0)
+    /// then `h2abi_v1_fast_release`: for every slice (none, host requests
+    /// only, about to run out, run out), count the inline view holds and
+    /// count the handler settles, the same charged and inline totals, slice
+    /// spent, left and expiry, preempt word and view budget and count.
+    #[test]
+    fn exit_settles_as_charge_then_release() {
+        let rt = Runtime::new(Guest::new(), Dispatch::default());
+        let context = |slice: Option<u64>, held: u64| {
+            let mut ctx = ExecCtx::new(rt.clone(), 0);
+            ctx.enable_profiling(true);
+            if let Some(n) = slice {
+                ctx.arm_preemption(n);
+            }
+            // As h2abi_v1_fast_acquire configures it (no RAM: count only).
+            let budget = if ctx.slice.armed && ctx.slice.left != 0 { ctx.slice.left } else { u64::MAX };
+            ctx.fast_memory = Some(OwnedFastAccess::new(FastAccess {
+                memory: std::ptr::null(),
+                accesses: held,
+                budget,
+                preempt: ctx.preempt_ptr(),
+            }));
+            ctx
+        };
+        let state = |ctx: &mut ExecCtx| {
+            let view = ctx.fast_memory.as_ref().unwrap().as_ptr();
+            // SAFETY: the view is the context's own, not in use elsewhere.
+            let (accesses, budget) = unsafe { ((*view).accesses, (*view).budget) };
+            let p = ctx.take_profile().unwrap();
+            (
+                (p.memory_accessors, p.fast_memory_accesses),
+                (ctx.slice.armed, ctx.slice.left, ctx.slice.expired, ctx.slice.spent),
+                ctx.preempt_pending(),
+                (accesses, budget),
+            )
+        };
+        let mut cases = 0;
+        for slice in [None, Some(0), Some(1), Some(2), Some(3), Some(5), Some(8)] {
+            for held in 0..6u64 {
+                for n in 0..6u64 {
+                    let mut pair = context(slice, held);
+                    let mut exit = context(slice, held);
+                    let p = (&mut pair as *mut ExecCtx).cast();
+                    let e = (&mut exit as *mut ExecCtx).cast();
+                    // SAFETY: each context is live and used by nothing else.
+                    unsafe {
+                        if n != 0 {
+                            crate::ffi::h2abi_v1_charge(p, n);
+                        }
+                        h2abi_v1_fast_release(p);
+                        crate::ffi::h2abi_v1_exit(e, n);
+                    }
+                    assert_eq!(state(&mut exit), state(&mut pair), "slice {slice:?}, view {held}, handler {n}");
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, 7 * 6 * 6);
+    }
+
     /// Rust-only model of a native handler retaining its actual runtime view
     /// across real slow callbacks. Does not load C, so it also runs under Miri.
     #[test]

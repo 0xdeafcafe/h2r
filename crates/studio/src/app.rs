@@ -317,10 +317,10 @@ impl App {
         };
         match what {
             Some(name) => format!(
-                "{name}{} - h2-studio",
+                "{name}{} - h2-editor",
                 if self.tool_dirty(self.tool) { " *" } else { "" }
             ),
-            None => "h2-studio".to_owned(),
+            None => "h2-editor".to_owned(),
         }
     }
 

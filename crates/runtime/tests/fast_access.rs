@@ -136,6 +136,6 @@ fn compare(seed: u64, steps: usize) {
 #[test]
 fn fast_page_accesses_match_the_mapping_walk() {
     for seed in 1..=8u64 {
-        compare(seed * 0x9E37_79B9_7F4A_7C15, 20_000);
+        compare(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 20_000);
     }
 }

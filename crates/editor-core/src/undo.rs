@@ -11,7 +11,7 @@
 //! way).
 
 /// Undo/redo of a `T` by snapshots. Coalescing keys are plain `u64`s (an
-/// egui `Id::value()`, an ImGui item ID, a hash): any stable per-widget
+/// ImGui item ID, a hash of a field): any stable per-widget
 /// number works.
 #[derive(Debug, Clone)]
 pub struct UndoStack<T> {

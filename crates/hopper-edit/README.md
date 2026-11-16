@@ -1,7 +1,7 @@
 # hopper-edit
 
 The playlist (`multiplayer_hopper.dat`) editor's logic with no UI, shared
-by `h2-editor`'s egui hopper tool and `h2-studio`'s playlist tool:
+by `h2-editor`'s playlist tool (`crates/studio`):
 
 - `model`: the working copy of the 16 playlists, edits, validation (the
   Live server's rules) and writing back byte-exact.

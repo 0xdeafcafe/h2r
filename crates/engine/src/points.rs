@@ -239,6 +239,15 @@ points! { ALL;
     /// A damage report is applied to its victim: the report in EDI, the
     /// victim object datum on the stack. Called once per damage instance.
     DAMAGE_REPORT @ 0x000d_9640: [fn(report: edi, victim: stack 0) ret 4], Optional; "docs/live/live-gamestate.md";
+    /// An object's damage update: stdcall `(object datum)`, AL whether
+    /// anything changed. Called once per object per tick by
+    /// `object_update` (`0xbc470`, its only caller): stun timers, shield
+    /// recharge, and the body's regeneration (`0xd63de`..`0xd64b5`).
+    OBJECT_DAMAGE_UPDATE @ 0x000d_5de0: [fn(object: stack 0) -> al ret 4]; "docs/game/health.md";
+    /// Restore an object's body to full (EAX the object datum), AL 1 when
+    /// it did (refused when full or depleted). Its only caller is the
+    /// powerup pickup's health case (`0x151f73`).
+    BODY_RESTORE @ 0x000d_6790: [fn(object: eax) -> al ret 0]; "docs/game/health.md";
     /// `locale_string_id_find`: the string for the packed id in EDI, its
     /// address in EAX.
     LOCALE_FIND @ 0x001a_02d0: [fn(id: edi) -> eax ret 0], Hot; "docs/engine/locale_string_id_find.md";

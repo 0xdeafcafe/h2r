@@ -113,6 +113,7 @@ goals, the two-stage plan, the crate table and milestones.
 - [community-gametypes.md](game/community-gametypes.md): community classics (Zombies, SWAT and more) as extra built-in game variants
 - [maps.md](game/maps.md): new, edited, patched and shared maps: packages, patches, `MapId`; foundation built
 - [campaigns.md](game/campaigns.md): design for more than one campaign, starting with Halo 1's levels converted to run in the Halo 2 engine
+- [health.md](game/health.md): Halo 1's health model on Halo 2's engine: no body regeneration, health packs, a health meter, and the switch for Halo 1 maps
 - [map-pack.md](game/map-pack.md): the Multiplayer Map Pack disc, `h2 import-mappack` and how 1.0 lists its maps
 - [high-framerate.md](game/high-framerate.md): 60 and 120 fps keeping the 30 Hz tick exact (`H2_FPS`); the determinism harness is built
 - [theater.md](game/theater.md): design for saved films, free camera and spectating (not built)
@@ -138,7 +139,6 @@ goals, the two-stage plan, the crate table and milestones.
 ## Editor (`editor/`)
 
 - [editor-guide.md](editor/editor-guide.md) (**start here**): user guide to `h2-editor`: map objects, game variants and playlists, with screenshots
-- [editor.md](editor/editor.md): the editor for developers: the shell, the `Tool` trait, the hopper tool, screenshots
-- [studio.md](editor/studio.md): `h2-studio`, the Dear ImGui successor to `h2-editor`: phases, window, code, headless screenshots, viewport gaps
+- [editor.md](editor/editor.md): the editor for developers (`crates/studio`, Dear ImGui + wgpu): window, the three tools, the playlist format rules, code layout, headless screenshots, viewport gaps
 - [scenario-editor.md](editor/scenario-editor.md): the scenario placement editor (`crates/scenario-edit`): blocks, fields, save rules, packages
 - [variants.md](editor/variants.md): the game variant record, its schema and saved files (`crates/variants`)

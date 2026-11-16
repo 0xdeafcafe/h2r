@@ -21,6 +21,7 @@ pub mod dsound_glue;
 pub mod fallback;
 pub mod fov_row;
 pub mod game_glue;
+pub mod health;
 pub mod icons;
 pub mod layout_glue;
 pub mod list_class;
@@ -306,6 +307,31 @@ pub struct Module {
     pub resumes: usize,
 }
 
+/// Install `bridge` into a generated dylib's boot bridge: the whole table
+/// where it has `h2boot_install_v3`, else (a module built before
+/// `h2abi_v1_exit`) the v2 prefix, whose `charge` and `fast_release` its
+/// handlers still call. Returns the version installed.
+///
+/// # Safety
+/// `lib` must be a dylib built with [`BRIDGE`] (any version) for this host.
+pub unsafe fn install_bridge(lib: &libloading::Library, bridge: &shim::Bridge) -> Result<u32> {
+    type Install = unsafe extern "C" fn(*const shim::Bridge, usize) -> u32;
+    let (version, size, install) = unsafe {
+        if let Ok(f) = lib.get::<Install>(b"h2boot_install_v3") {
+            (3, std::mem::size_of::<shim::Bridge>(), *f)
+        } else {
+            let f = lib
+                .get::<Install>(b"h2boot_install_v2")
+                .context("boot bridge predates optional callbacks; rebuild the generated module")?;
+            (2, shim::Bridge::V2_SIZE, *f)
+        }
+    };
+    if unsafe { install(bridge, size) } != 1 {
+        bail!("boot bridge layout mismatch; rebuild the generated module");
+    }
+    Ok(version)
+}
+
 /// Load the generated dylib, install the bridge, and register every entry
 /// and resume with the runtime's dispatch (RUNTIME-CONTRACT.md §3).
 ///
@@ -318,11 +344,7 @@ pub unsafe fn load_module(path: &Path, rt: &runtime::Runtime, xbe_bytes: &[u8]) 
         if version() != runtime::cpu::ABI_VERSION {
             bail!("module ABI {} != runtime {}", version(), runtime::cpu::ABI_VERSION);
         }
-        let install: libloading::Symbol<unsafe extern "C" fn(*const shim::Bridge, usize) -> u32> =
-            lib.get(b"h2boot_install_v2").context("boot bridge predates optional callbacks; rebuild the generated module")?;
-        if install(&shim::bridge(), std::mem::size_of::<shim::Bridge>()) != 1 {
-            bail!("boot bridge layout mismatch; rebuild the generated module");
-        }
+        install_bridge(&lib, &shim::bridge())?;
         let install_x87: libloading::Symbol<unsafe extern "C" fn(*const *const std::ffi::c_void, u32)> =
             lib.get(b"h2x87bridge_install")?;
         let fns = shim::x87_helpers();
@@ -732,6 +754,10 @@ pub fn run_hosted_with_live(
     });
     let skulls_custom_on = skulls_custom::install(&mut features, host.settings.clone(), _telemetry.clone(), custom_maps)
         .context("installing our skulls")?;
+    // Halo 1's health model on Halo 1 maps (docs/game/health.md): no body
+    // regeneration, health packs, a health meter. Off (Halo 2's) until the
+    // map's identity or the H2_HEALTH_MODEL debug override says Halo 1.
+    let health_on = health::install(&mut features).context("installing the health model")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -835,6 +861,9 @@ pub fn run_hosted_with_live(
     }
     if skulls_custom_on {
         eprintln!("{}", skulls_custom::report(&plan, &installed));
+    }
+    if health_on {
+        eprintln!("{}", health::report(&plan, &installed));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");

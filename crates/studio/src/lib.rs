@@ -1,8 +1,7 @@
-//! h2-studio: the editor suite on Dear ImGui (docking branch, through
-//! `dear-imgui-rs`), rendered with wgpu and windowed with winit. It is the
-//! successor to the egui `h2-editor` (`crates/editor`); both share the
+//! h2-editor: the editor suite on Dear ImGui (docking branch, through
+//! `dear-imgui-rs`), rendered with wgpu and windowed with winit, over the
 //! UI-free crates (`editor-core`, `scenario-edit`'s `Session`, `variants`,
-//! `live-proto::hopper`).
+//! `hopper-edit`).
 //!
 //! - [`app`]: the state and commands, testable without a window.
 //! - [`ui`]: the shell (menus, dockspace, tools, outliner, inspector, log,

@@ -6,14 +6,7 @@ version.workspace = true
 license.workspace = true
 publish = false
 
-[features]
-# The egui panel (`VariantEditor::ui`), for h2-editor. h2-studio builds
-# without it.
-default = ["egui"]
-egui = ["dep:egui"]
-
 [dependencies]
-egui = { workspace = true, optional = true }
 map.workspace = true
 tags.workspace = true
 xbe.workspace = true

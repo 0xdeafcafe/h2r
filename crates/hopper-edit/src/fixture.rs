@@ -1,5 +1,5 @@
-//! Invented test data for the hopper tools (this crate's tests, h2-editor's
-//! and h2-studio's): a salted synthetic `multiplayer_hopper.dat` image and
+//! Invented test data for the hopper tools (this crate's tests and
+//! h2-editor's): a salted synthetic `multiplayer_hopper.dat` image and
 //! made-up variants and schemas. No game data.
 
 use live_proto::hopper::{HOPPERS, Hopper, HopperFile, HopperText, MAX_RECORDS, RECORD};

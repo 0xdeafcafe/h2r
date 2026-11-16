@@ -1,7 +1,7 @@
 //! The scenario editor's state and commands without any UI: the open map,
 //! its edit history, the selection, the camera, the markers, viewport
-//! drags and gizmo gestures, packages. The egui panel ([`crate::panel`])
-//! and `h2-studio`'s Dear ImGui tool both drive a [`Session`].
+//! drags and gizmo gestures, packages. `h2-editor`'s scenario tool
+//! (`crates/studio`) drives a [`Session`].
 use crate::edit::{Command, History};
 use crate::geometry::{self, Bounds, Camera, Marker, Ray, Tri, Vec3};
 use crate::layout::{BlockKind, Role};
@@ -37,7 +37,7 @@ struct Doc {
 /// package, reuses its art). A few levels are tens of MB each.
 const SCENE_CACHE: usize = 4;
 
-/// A drag of the selected placement on a plane (the egui viewport's
+/// A drag of the selected placement on a plane (a viewport's
 /// primary-button drag).
 #[derive(Clone, Copy, Debug)]
 pub struct Drag {

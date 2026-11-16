@@ -6,11 +6,17 @@
 //! [`Snapshot`] every few seconds and runs the actions the menu asks for,
 //! one at a time, then polls again at once. It sends snapshots to the UI
 //! through the event loop; the UI only redraws.
+//!
+//! With `[update]`, a second thread runs update checks
+//! ([`crate::update`]), one at a time, on its timer or Update Now; the
+//! poller shows its progress, and it asks the UI to re-execute the menu
+//! bar when it replaced the `h2` this is.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::PathBuf;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use tray_icon::menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
@@ -24,7 +30,8 @@ use crate::actions::{Ctx, Desktop, Outcome, busy_label};
 use crate::config::Config;
 use crate::launchd::Services;
 use crate::menu::{Entry, ItemId, Overall, model, overall, shape};
-use crate::status::{Backend, Snapshot, collect};
+use crate::status::{Backend, Snapshot, collect, unix_now};
+use crate::update::{self, State, UpdateView, Updater};
 
 pub const POLL: Duration = Duration::from_secs(4);
 
@@ -33,6 +40,15 @@ enum UserEvent {
     Snapshot(Box<Snapshot>),
     Menu(ItemId),
     Exit,
+    /// `h2` was replaced: run the new one.
+    Reexec,
+}
+
+/// What the menu asks of the update thread.
+#[derive(Debug)]
+enum UpdateCmd {
+    Now,
+    TogglePause,
 }
 
 /// The menu's toolkit items, by id, for updates in place.
@@ -53,6 +69,7 @@ struct App {
     tray: Option<Tray>,
     snapshot: Snapshot,
     actions: mpsc::Sender<ItemId>,
+    updates: Option<mpsc::Sender<UpdateCmd>>,
 }
 
 fn icon(state: Overall) -> Result<Icon> {
@@ -189,14 +206,125 @@ impl ApplicationHandler<UserEvent> for App {
                 // The checkbox flips itself on click; put it back until the
                 // worker says what launchd did.
                 let _ = self.redraw();
-                let _ = self.actions.send(id);
+                if id.is_update() {
+                    if let Some(tx) = &self.updates {
+                        let _ = tx.send(match id {
+                            ItemId::UpdateNow => UpdateCmd::Now,
+                            _ => UpdateCmd::TogglePause,
+                        });
+                    }
+                } else {
+                    let _ = self.actions.send(id);
+                }
             }
             UserEvent::Exit => el.exit(),
+            UserEvent::Reexec => reexec(el),
         }
     }
 }
 
+/// Replaces this process with the (new) program at the same path.
+fn reexec(el: &ActiveEventLoop) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        if let Ok(exe) = std::env::current_exe() {
+            let err = std::process::Command::new(exe)
+                .args(std::env::args_os().skip(1))
+                .exec();
+            eprintln!("h2 live menubar: re-executing: {err}");
+        }
+    }
+    // Could not: quit, and launchd or the user starts the new one.
+    el.exit();
+}
+
+/// Whether `a` and `b` are the same file.
+fn same_file(a: &std::path::Path, b: &std::path::Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// The update thread: a check now, then one every interval or on Update
+/// Now; never two at once.
+fn updater(
+    cfg: Config,
+    services: Arc<dyn Services>,
+    view: Arc<Mutex<UpdateView>>,
+    commands: mpsc::Receiver<UpdateCmd>,
+    ui: EventLoopProxy<UserEvent>,
+) {
+    let Some(ucfg) = cfg.update.clone() else {
+        return;
+    };
+    let log = cfg.logs_dir.join("update.log");
+    let git = update::SystemGit {
+        repo: ucfg.repo.clone(),
+        log: log.clone(),
+    };
+    let builder = update::SystemBuilder {
+        repo: ucfg.repo.clone(),
+        target_dir: ucfg.target_dir(),
+        log: log.clone(),
+        cargo: ucfg.cargo.clone(),
+        bun: ucfg.bun.clone(),
+    };
+    let interval = Duration::from_secs(ucfg.interval_minutes.max(1) * 60);
+    let me: Option<PathBuf> = std::env::current_exe().ok();
+    let mut next = Instant::now();
+    loop {
+        let wait = next.saturating_duration_since(Instant::now());
+        let force = match commands.recv_timeout(wait) {
+            Ok(UpdateCmd::Now) => true,
+            Ok(UpdateCmd::TogglePause) => {
+                let path = ucfg.state_file();
+                let mut state = State::load(&path);
+                state.paused = !state.paused;
+                let _ = state.save(&path);
+                view.lock().unwrap().paused = state.paused;
+                continue;
+            }
+            Err(RecvTimeoutError::Timeout) => false,
+            Err(RecvTimeoutError::Disconnected) => return,
+        };
+        update::log_line(
+            &log,
+            &format!("== check at {} (force: {force})", unix_now()),
+        );
+        let progress = |what: &str| {
+            view.lock().unwrap().working = Some(what.into());
+            update::log_line(&log, &format!("-- {what}"));
+        };
+        let report = Updater {
+            cfg: &ucfg,
+            git: &git,
+            builder: &builder,
+            services: services.as_ref(),
+            server: &cfg.server,
+            data_dir: &cfg.data_dir,
+            progress: &progress,
+            now: unix_now(),
+        }
+        .check(force);
+        update::log_line(&log, &format!("== {:?}", report.outcome));
+        {
+            let state = State::load(&ucfg.state_file());
+            let mut v = view.lock().unwrap();
+            *v = UpdateView::from_state(&state);
+            v.outcome = Some(report.outcome);
+        }
+        let installed_h2 = ucfg.bin_dir().join("h2");
+        if report.h2_changed && me.as_deref().is_some_and(|me| same_file(me, &installed_h2)) {
+            let _ = ui.send_event(UserEvent::Reexec);
+        }
+        next = Instant::now() + interval;
+    }
+}
+
 /// The worker: polls, and runs actions between polls.
+#[allow(clippy::too_many_arguments)]
 fn worker(
     cfg: Config,
     services: Arc<dyn Services>,
@@ -205,12 +333,14 @@ fn worker(
     exe: std::path::PathBuf,
     actions: mpsc::Receiver<ItemId>,
     ui: EventLoopProxy<UserEvent>,
+    updates: Option<Arc<Mutex<UpdateView>>>,
 ) {
     let mut message: Option<String> = None;
     let send = |s: Snapshot| ui.send_event(UserEvent::Snapshot(Box::new(s))).is_ok();
     loop {
         let mut snap = collect(&cfg, services.as_ref(), backend.as_ref());
         snap.message = message.clone();
+        snap.update = updates.as_ref().map(|v| v.lock().unwrap().clone());
         if !send(snap.clone()) {
             return;
         }
@@ -273,11 +403,29 @@ pub fn run(
 
     let (tx, rx) = mpsc::channel();
     let exe = std::env::current_exe().context("finding this program")?;
+
+    let mut update_tx = None;
+    let view = cfg.update.as_ref().map(|u| {
+        Arc::new(Mutex::new(UpdateView::from_state(&State::load(
+            &u.state_file(),
+        ))))
+    });
+    if let Some(view) = &view {
+        let (utx, urx) = mpsc::channel();
+        update_tx = Some(utx);
+        let (cfg, services, view) = (cfg.clone(), services.clone(), view.clone());
+        let proxy = event_loop.create_proxy();
+        std::thread::Builder::new()
+            .name("menubar-update".into())
+            .spawn(move || updater(cfg, services, view, urx, proxy))
+            .context("starting the updater")?;
+    }
+
     let proxy = event_loop.create_proxy();
     let worker_cfg = cfg.clone();
     std::thread::Builder::new()
         .name("menubar-poll".into())
-        .spawn(move || worker(worker_cfg, services, backend, desktop, exe, rx, proxy))
+        .spawn(move || worker(worker_cfg, services, backend, desktop, exe, rx, proxy, view))
         .context("starting the poller")?;
 
     let mut app = App {
@@ -285,6 +433,7 @@ pub fn run(
         tray: None,
         snapshot: Snapshot::initial(),
         actions: tx,
+        updates: update_tx,
     };
     event_loop
         .run_app(&mut app)

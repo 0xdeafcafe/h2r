@@ -56,6 +56,68 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Where the agents write their logs.
     pub logs_dir: PathBuf,
+    /// Opt-in updates from a git checkout (`[update]`); none is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub update: Option<UpdateConfig>,
+}
+
+pub const DEFAULT_UPDATE_INTERVAL_MINUTES: u64 = 10;
+
+/// `[update]`: follow a branch of a dedicated clone, rebuild what changed
+/// and install it (docs/live/live-hosting.md "Updates").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateConfig {
+    /// The checkout to fast-forward and build. A clone of its own, not a
+    /// working checkout: it is never touched while dirty.
+    pub repo: PathBuf,
+    pub branch: String,
+    pub remote: String,
+    pub interval_minutes: u64,
+    /// Holds `bin/` (h2-live-server, h2), `web/` and the build's
+    /// `target/`.
+    pub install_dir: PathBuf,
+    /// The disc to re-extract game art from when the extractor changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disc: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mappack: Option<PathBuf>,
+    /// cargo and bun, when not on PATH, ~/.cargo/bin or ~/.bun/bin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cargo: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bun: Option<PathBuf>,
+}
+
+impl UpdateConfig {
+    pub fn bin_dir(&self) -> PathBuf {
+        self.install_dir.join("bin")
+    }
+
+    pub fn web_dir(&self) -> PathBuf {
+        self.install_dir.join("web")
+    }
+
+    pub fn target_dir(&self) -> PathBuf {
+        self.install_dir.join("target")
+    }
+
+    pub fn state_file(&self) -> PathBuf {
+        self.install_dir.join("update-state.json")
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PartialUpdate {
+    repo: Option<PathBuf>,
+    branch: Option<String>,
+    remote: Option<String>,
+    interval_minutes: Option<u64>,
+    install_dir: Option<PathBuf>,
+    disc: Option<PathBuf>,
+    mappack: Option<PathBuf>,
+    cargo: Option<PathBuf>,
+    bun: Option<PathBuf>,
 }
 
 /// The directories defaults hang off, so tests pass temp dirs.
@@ -95,6 +157,7 @@ impl Config {
             public_url: None,
             data_dir: paths.live_dir.join("server"),
             logs_dir: paths.live_dir.join("logs"),
+            update: None,
         }
     }
 
@@ -126,6 +189,32 @@ impl Config {
             public_url: partial.public_url.filter(|u| !u.is_empty()),
             data_dir: partial.data_dir.unwrap_or(d.data_dir),
             logs_dir: partial.logs_dir.unwrap_or(d.logs_dir),
+            update: match partial.update {
+                Some(PartialUpdate {
+                    repo: Some(repo),
+                    branch,
+                    remote,
+                    interval_minutes,
+                    install_dir,
+                    disc,
+                    mappack,
+                    cargo,
+                    bun,
+                }) if !repo.as_os_str().is_empty() => Some(UpdateConfig {
+                    repo,
+                    branch: branch.unwrap_or_else(|| "master".into()),
+                    remote: remote.unwrap_or_else(|| "origin".into()),
+                    interval_minutes: interval_minutes
+                        .unwrap_or(DEFAULT_UPDATE_INTERVAL_MINUTES)
+                        .max(1),
+                    install_dir: install_dir.unwrap_or_else(|| paths.live_dir.clone()),
+                    disc,
+                    mappack,
+                    cargo,
+                    bun,
+                }),
+                _ => None,
+            },
         })
     }
 
@@ -193,6 +282,7 @@ struct Partial {
     public_url: Option<String>,
     data_dir: Option<PathBuf>,
     logs_dir: Option<PathBuf>,
+    update: Option<PartialUpdate>,
 }
 
 #[cfg(test)]
@@ -276,6 +366,35 @@ mod tests {
         assert_eq!(Config::load(&p.config_file(), &p).unwrap(), none);
 
         assert!(Config::parse("bogus = 1\n", &p).is_err());
+        assert_eq!(Config::defaults(&p).update, None);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_update_section() {
+        let root = temp("cfg-update");
+        let p = paths(&root);
+        // Off unless a repo is named.
+        let c = Config::parse("[update]\nbranch = \"main\"\n", &p).unwrap();
+        assert_eq!(c.update, None);
+        let c = Config::parse("[update]\nrepo = \"/src/h2\"\n", &p).unwrap();
+        let u = c.update.clone().unwrap();
+        assert_eq!(u.repo, PathBuf::from("/src/h2"));
+        assert_eq!(u.branch, "master");
+        assert_eq!(u.remote, "origin");
+        assert_eq!(u.interval_minutes, DEFAULT_UPDATE_INTERVAL_MINUTES);
+        assert_eq!(u.install_dir, root.join("live"));
+        assert_eq!(u.bin_dir(), root.join("live/bin"));
+        assert_eq!(u.web_dir(), root.join("live/web"));
+        assert_eq!(u.disc, None);
+
+        let mut c = c;
+        let u = c.update.as_mut().unwrap();
+        u.disc = Some("/discs/h2.iso".into());
+        u.interval_minutes = 30;
+        c.save(&p.config_file()).unwrap();
+        assert_eq!(Config::load(&p.config_file(), &p).unwrap(), c);
+        assert!(Config::parse("[update]\nrepo = \"/x\"\nbogus = 1\n", &p).is_err());
         fs::remove_dir_all(&root).unwrap();
     }
 }

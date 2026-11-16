@@ -1,7 +1,7 @@
 //! The playlist (hopper) editor's state and commands with no UI: the open
 //! `multiplayer_hopper.dat` and its working copy, undo, the map list and
 //! the variant picker's sources, reading and writing both forms of the
-//! file. h2-editor's egui tool and h2-studio's Dear ImGui tool draw it.
+//! file. h2-editor's playlist tool draws it.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

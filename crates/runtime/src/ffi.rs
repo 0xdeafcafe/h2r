@@ -27,6 +27,7 @@ pub struct ExecCtxOpaque {
 pub(crate) fn call_native(f: GuestFn, cpu: &mut CpuAbi, ctx: &mut ExecCtx, pc: u32) -> TransferAbi {
     // SAFETY: native registration promises the documented ABI; these disjoint
     // exclusive borrows remain alive for exactly the synchronous call.
+    ctx.direct_clear_view();
     let result = unsafe { f(cpu, (ctx as *mut ExecCtx).cast(), pc) };
     sync_accesses(ctx);
     result
@@ -215,6 +216,25 @@ pub unsafe extern "C" fn h2abi_v1_charge(exec: *mut ExecCtxOpaque, accesses: u64
     // Anything the inline RAM view charged itself comes first.
     sync_accesses(ctx);
     ctx.spend_accesses(accesses);
+}
+
+/// A handler's way out: settle the inline RAM view's count, then spend the
+/// handler's own `accesses` (none when 0). One call doing what
+/// `h2abi_v1_charge(accesses)` (only when non-zero) followed by
+/// `h2abi_v1_fast_release` did: the charge settles the view first, and the
+/// release then finds nothing left to settle. Modules from before it still
+/// call those two, which stay exported.
+///
+/// # Safety
+/// `exec` is the current exclusive handle, with no C gate held.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn h2abi_v1_exit(exec: *mut ExecCtxOpaque, accesses: u64) {
+    // SAFETY: invocation-scoped exclusive handle, as required by the ABI.
+    let ctx = unsafe { &mut *exec.cast::<ExecCtx>() };
+    sync_accesses(ctx);
+    if accesses != 0 {
+        ctx.spend_accesses(accesses);
+    }
 }
 
 /// How many accesses the context may make before its slice expires

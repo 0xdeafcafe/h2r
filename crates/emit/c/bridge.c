@@ -20,29 +20,47 @@ typedef struct H2Bridge {
     uint32_t (*write_counted)(ExecCtxOpaque *, uint32_t, uint32_t, uint32_t, uint32_t, const uint8_t *);
     void (*charge)(ExecCtxOpaque *, uint64_t);
     uint64_t (*budget)(ExecCtxOpaque *);
+    void (*exit)(ExecCtxOpaque *, uint64_t);
 } H2Bridge;
 
 static H2Bridge bridge;
 
 /* Version the install symbol and check size before reading the table: a
  * prefix layout check cannot distinguish an old size from a new offset. */
-H2_EXPORT uint32_t h2bridge_install_v2(const H2Bridge *b, size_t size) {
+H2_EXPORT uint32_t h2bridge_install_v3(const H2Bridge *b, size_t size) {
     if (size != sizeof bridge) return 0;
     bridge = *b;
     return 1;
 }
 
 /* The table's layout, so a Rust copy can check it before installing:
- * slots 0-14 give each callback's offset in declaration order, 15 the size. */
-H2_EXPORT size_t h2bridge_layout_v2(uint32_t slot) {
+ * slots 0-15 give each callback's offset in declaration order, 16 the size. */
+H2_EXPORT size_t h2bridge_layout_v3(uint32_t slot) {
     static const size_t layout[] = {
         offsetof(H2Bridge, read),  offsetof(H2Bridge, write), offsetof(H2Bridge, event),
         offsetof(H2Bridge, unsupported), offsetof(H2Bridge, rdtsc), offsetof(H2Bridge, rmw),
         offsetof(H2Bridge, xchg),  offsetof(H2Bridge, cmpxchg), offsetof(H2Bridge, profile), offsetof(H2Bridge, fast_acquire), offsetof(H2Bridge, fast_release),
         offsetof(H2Bridge, read_counted), offsetof(H2Bridge, write_counted), offsetof(H2Bridge, charge),
-        offsetof(H2Bridge, budget), sizeof(H2Bridge),
+        offsetof(H2Bridge, budget), offsetof(H2Bridge, exit), sizeof(H2Bridge),
     };
     return slot < sizeof layout / sizeof layout[0] ? layout[slot] : 0;
+}
+
+/* A table without the exit slot (v2, or the eight-callback one below) gets
+ * the pair h2abi_v1_exit replaces, through the installer's own callbacks. */
+static void pair_exit(ExecCtxOpaque *c, uint64_t n) {
+    if (n) bridge.charge(c, n);
+    bridge.fast_release(c);
+}
+/* The v2 table is the v3 one without its last slot. */
+H2_EXPORT uint32_t h2bridge_install_v2(const H2Bridge *b, size_t size) {
+    if (size != offsetof(H2Bridge, exit)) return 0;
+    memcpy(&bridge, b, offsetof(H2Bridge, exit));
+    bridge.exit = pair_exit;
+    return 1;
+}
+H2_EXPORT size_t h2bridge_layout_v2(uint32_t slot) {
+    return slot < 15 ? h2bridge_layout_v3(slot) : slot == 15 ? offsetof(H2Bridge, exit) : 0;
 }
 
 /* Original eight-callback clients remain usable, but cannot opt into the
@@ -71,6 +89,7 @@ H2_EXPORT void h2bridge_install(const void *b) {
     bridge.write_counted = legacy_write_counted;
     bridge.charge = legacy_charge;
     bridge.budget = legacy_budget;
+    bridge.exit = pair_exit;
 }
 H2_EXPORT size_t h2bridge_layout(uint32_t slot) {
     return slot < 8 ? h2bridge_layout_v2(slot) : slot == 8 ? offsetof(H2Bridge, profile) : 0;
@@ -131,3 +150,4 @@ void h2abi_v1_profile(ExecCtxOpaque *c, uint64_t loops, uint64_t x87) { bridge.p
 
 H2FastAccess *h2abi_v1_fast_acquire(ExecCtxOpaque *c) { return bridge.fast_acquire(c); }
 void h2abi_v1_fast_release(ExecCtxOpaque *c) { bridge.fast_release(c); }
+void h2abi_v1_exit(ExecCtxOpaque *c, uint64_t accesses) { bridge.exit(c, accesses); }
