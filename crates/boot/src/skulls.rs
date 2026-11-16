@@ -11,24 +11,27 @@
 //! and `ice_cream_flavor_available` reads it only while the active game
 //! options are a campaign (mode 1).
 //!
-//! What we add:
+//! What we add, as the `skulls` feature on the feature plan ([`Skulls`]):
 //!
-//! - **Pickup**: a hook on `0x1df3e0` that runs the game's own function and,
-//!   when byte `n` went from 0 to 1, records skull `n` as collected (and on)
-//!   for every signed-in local profile. A profile is its name: the 32
-//!   UTF-16 units at `slot + 0xc1c` of the local player slots at `0x54e8e0`
-//!   (stride `0xc70`, signed in when `slot + 0` has bit 4), which is what
-//!   `0x1902c1` returns and what campaign start copies into each player.
+//! - **Pickup**: hooks on `0x1df3e0` around the game's own function: before,
+//!   note skull ESI and its byte; after, record every skull that came on
+//!   since the last look as collected (and on) for every signed-in local
+//!   profile. A profile is its name: the 32 UTF-16 units at `slot + 0xc1c`
+//!   of the local player slots at `0x54e8e0` (stride `0xc70`, signed in when
+//!   `slot + 0` has bit 4), which is what `0x1902c1` returns and what
+//!   campaign start copies into each player. With no named profile, the
+//!   pickup is kept under [`DEFAULT_PROFILE`] and the log shows the slots as
+//!   read. A watch after each tick ([`Tracker`]) records a skull that came
+//!   on without passing through `0x1df3e0`.
 //! - **Storage**: one [`Def`] per skull (`skulls.<name>`, bool) in the
 //!   settings [`Store`], kept per profile ([`Store::profile_set`]): no value
 //!   means not collected; `true` or `false` means collected and on or off.
 //!   The profile values live in `settings.toml` under
 //!   `[profiles."<name>".skulls]`, never in the signed Xbox profile.
-//! - **Start**: a hook on the options queue `0x18e790` (EAX = the new game
-//!   options). For a campaign (`+0` = 1) with at least one named profile
-//!   signed in, the array is set to exactly the skulls those profiles have
-//!   on (their union), before the level loads. With no named profile it is
-//!   left as the game has it.
+//! - **Start**: a hook before the options queue `0x18e790` (EAX = the new
+//!   game options). For a campaign (`+0` = 1) the array is set to exactly
+//!   the skulls the signed-in profiles have on (their union), or
+//!   [`DEFAULT_PROFILE`]'s with no named profile, before the level loads.
 //! - **Menu**: [`screen_for`] gives the "Skulls" screen of a profile as
 //!   rows of the `ui` model, one per collected skull; [`toggle`] is a press.
 //!   `crate::skulls_menu` shows it from the difficulty screen's "Skulls"
@@ -36,13 +39,8 @@
 //!
 //! The logic is over [`Gm`] and the store, so it is tested without a guest.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
-use runtime::TransferAbi;
-use runtime::dispatch::Dispatch;
-use runtime::exec::OriginalHandler;
-use runtime::guest::Permissions;
 use settings::{Apply, Def, Kind, Menu, Scope, Store, Tier, Value};
 
 use crate::layout_glue::Gm;
@@ -53,10 +51,6 @@ use crate::ui::{Row, Screen};
 pub const COUNT: usize = 15;
 /// The skull-on array: one byte per skull.
 pub const FLAGS: u32 = 0x004f_55dc;
-/// Turn skull ESI on (plain `ret`): `ice_cream_flavor_stock`'s worker.
-pub const STOCK: u32 = 0x001d_f3e0;
-/// Queue new game options (EAX = the options, plain `ret`).
-pub const OPTIONS_QUEUE: u32 = 0x0018_e790;
 /// The game options' mode word: 1 campaign, 2 multiplayer, 3 main menu.
 pub const MODE_CAMPAIGN: u32 = 1;
 /// Local player slots.
@@ -70,8 +64,10 @@ pub const SLOT_NAME: u32 = 0xc1c;
 pub const NAME_UNITS: usize = 32;
 /// Our screen in the `ui` model.
 pub const SCREEN: &str = "skulls";
-/// Our guest memory: the hooks' aliases (RX).
-const SHADOW_BASE: u32 = 0xa2f6_0000;
+/// The profile a pickup or a campaign start is kept under when no local
+/// slot has a named profile signed in (the game's slots read as empty or
+/// signed out), so a pickup is never dropped. The menu uses it the same way.
+pub const DEFAULT_PROFILE: &str = "default";
 
 const fn skull(key: &'static str, label: &'static str, order: u32) -> Def {
     Def {
@@ -200,26 +196,40 @@ pub fn options_mode<M: Gm>(m: &M, options: u32) -> Option<u32> {
 // ---- the store ----
 
 /// Records skull `index` as collected and on for each of `profiles`.
-/// Returns what to log.
+/// Returns what to log: one line per profile, with the file written or why
+/// nothing was.
 pub fn record_pickup(store: &Store, profiles: &[String], index: usize) -> Vec<String> {
     let Some(def) = SKULLS.get(index) else {
         return Vec::new();
     };
     if profiles.is_empty() {
         return vec![format!(
-            "skulls: {} picked up with no profile signed in; not kept",
+            "skulls: {} picked up with no profile to keep it for; not kept",
             def.label
         )];
     }
     profiles
         .iter()
-        .map(|p| match store.profile_set(p, def.key, Value::Bool(true)) {
-            Ok(None) => format!("skulls: {} kept for {p}", def.label),
-            Ok(Some(why)) => format!(
-                "skulls: {} for {p} this run only; not saved: {why}",
-                def.label
-            ),
-            Err(e) => format!("skulls: {} for {p}: {e}", def.label),
+        .map(|p| {
+            match (
+                store.profile_set(p, def.key, Value::Bool(true)),
+                store.file(),
+            ) {
+                (Ok(None), Some(path)) => format!(
+                    "skulls: {} kept for {p}, saved to {}",
+                    def.label,
+                    path.display()
+                ),
+                (Ok(None), None) => format!(
+                    "skulls: {} for {p} this run only; not saved: the settings store has no file",
+                    def.label
+                ),
+                (Ok(Some(why)), _) => format!(
+                    "skulls: {} for {p} this run only; not saved: {why}",
+                    def.label
+                ),
+                (Err(e), _) => format!("skulls: {} for {p} not kept: {e}", def.label),
+            }
         })
         .collect()
 }
@@ -290,144 +300,373 @@ pub fn toggle(store: &Store, profile: &str, key: &str) -> Result<String, String>
 
 // ---- hooks ----
 
-/// The override already at `at` (another feature's), else the generated
-/// original: what a hook runs underneath itself, so it chains rather than
-/// displaces (as `level_boot::install_activate` does).
-fn below(d: &Dispatch, at: u32, original: Arc<OriginalHandler>) -> Arc<OriginalHandler> {
-    if let Some(n) = d.override_name(at) {
-        eprintln!("skulls: chained after {n:?} on {at:#x}");
-    }
-    d.override_handler(at).map_or(original, Arc::new)
-}
+/// What has been seen of the skull array: a pickup is a skull that is on
+/// now and was not at the last look. Only the game's stock function and our
+/// campaign start write the array, and the start tells the tracker what it
+/// wrote, so any other change is a pickup, however it got there.
+pub struct Tracker(Mutex<Set>);
 
-fn announce(seen: &AtomicBool, what: &str) {
-    if !seen.swap(true, Ordering::Relaxed) {
-        eprintln!("skulls: {what} active");
+impl Default for Tracker {
+    /// The array as the game boots: every skull off.
+    fn default() -> Self {
+        Tracker(Mutex::new([false; COUNT]))
     }
 }
 
-/// The pickup hook's body after the game's function ran: skull `index`
-/// was `before`; record it when it went on. Takes the store's lock: never
-/// call it with guest memory held.
-fn after_stock(
+impl Tracker {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Set> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+    /// Whether `now` differs from the last look.
+    pub fn changed(&self, now: &Set) -> bool {
+        *self.lock() != *now
+    }
+    /// The skulls on in `now` that were off at the last look; `now` becomes
+    /// the last look.
+    pub fn sweep(&self, now: Set) -> Vec<usize> {
+        let mut last = self.lock();
+        let new = (0..COUNT).filter(|i| now[*i] && !last[*i]).collect();
+        *last = now;
+        new
+    }
+    /// The array was set to `now` by us: not a pickup.
+    pub fn reset(&self, now: Set) {
+        *self.lock() = now;
+    }
+}
+
+/// What a pickup or a campaign start is for: every signed-in named profile,
+/// else [`DEFAULT_PROFILE`] with why (the slots as read, for the log).
+pub fn profiles_or_default<M: Gm>(m: &M) -> (Vec<String>, Option<String>) {
+    let named = signed_in(m);
+    if !named.is_empty() {
+        return (named, None);
+    }
+    (
+        vec![DEFAULT_PROFILE.to_owned()],
+        Some(format!(
+            "no named profile signed in ({}); using profile \"{DEFAULT_PROFILE}\"",
+            slot_report(m)
+        )),
+    )
+}
+
+/// The profile of local slot `slot`: its name, else [`DEFAULT_PROFILE`].
+pub fn profile_or_default<M: Gm>(m: &M, slot: u32) -> String {
+    slot_name(m, slot).unwrap_or_else(|| DEFAULT_PROFILE.to_owned())
+}
+
+/// The local slots as read, for a log line: each slot's flags word and
+/// name, whether or not it counts as signed in.
+pub fn slot_report<M: Gm>(m: &M) -> String {
+    (0..LOCAL_PLAYERS)
+        .map(|slot| {
+            let base = SLOTS + slot * SLOT_STRIDE;
+            let Some(flags) = m.u32(base) else {
+                return format!("slot {slot} unreadable");
+            };
+            let mut raw = [0u8; NAME_UNITS * 2];
+            let name = if m.rd(base + SLOT_NAME, &mut raw) {
+                let units: Vec<u16> = raw
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|c| u16::from_le_bytes(*c))
+                    .take_while(|u| *u != 0)
+                    .collect();
+                format!("{:?}", String::from_utf16_lossy(&units))
+            } else {
+                "unreadable".into()
+            };
+            format!("slot {slot} flags {flags:#x} name {name}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The pickup hook's verdict after the game's stock function ran for skull
+/// `index` (ESI at entry), which was `before`: records every skull that
+/// came on since the last look for `profiles` and says why when `index`
+/// itself was not kept. Takes the store's lock: never call it with guest
+/// memory held.
+pub fn after_stock(
     store: &Store,
+    tracker: &Tracker,
     index: u32,
     before: Option<bool>,
-    after: Option<bool>,
-    profiles: Vec<String>,
-) {
-    if picked_up(index, before, after) {
-        for line in record_pickup(store, &profiles, index as usize) {
-            eprintln!("{line}");
-        }
-    }
-}
-
-/// Install the pickup and campaign-start hooks over `store`.
-/// `H2_NO_SKULLS=1` skips both. A missing original skips its hook and says
-/// so.
-pub fn install(rt: &runtime::Runtime, store: Arc<Store>) -> anyhow::Result<()> {
-    if std::env::var_os("H2_NO_SKULLS").is_some() {
-        return Ok(());
-    }
-    let stock = rt.resolve_original(STOCK).map(Arc::new);
-    let queue = rt.resolve_original(OPTIONS_QUEUE).map(Arc::new);
-    if stock.is_none() || queue.is_none() {
-        eprintln!(
-            "skulls: no generated entry for the pickup or the campaign start; skulls not kept"
-        );
-        return Ok(());
-    }
-    rt.memory()
-        .map_zeroed(SHADOW_BASE, 0x1000, Permissions::RX)?;
-    rt.edit_dispatch(|d| {
-        if let Some(o) = stock {
-            install_stock(d, STOCK, SHADOW_BASE, o, Arc::clone(&store));
-        }
-        if let Some(o) = queue {
-            install_queue(d, OPTIONS_QUEUE, o, Arc::clone(&store));
-        }
-    });
-    Ok(())
-}
-
-/// The pickup hook on `at`: note skull ESI's byte, run what was there
-/// (through `shadow`), then record a pickup.
-pub(crate) fn install_stock(
-    d: &mut Dispatch,
-    at: u32,
-    shadow: u32,
-    original: Arc<OriginalHandler>,
-    store: Arc<Store>,
-) {
-    let below = below(d, at, original);
-    d.register_override(shadow, "skulls:stock-below", move |cpu, ctx, _| {
-        Ok(below.invoke(cpu, ctx, at))
-    });
-    let seen = AtomicBool::new(false);
-    d.register_override(at, "skulls:stock", move |cpu, ctx, _| {
-        announce(&seen, "pickup hook");
-        let index = cpu.esi;
-        let store = Arc::clone(&store);
-        let rt = Arc::clone(ctx.runtime());
-        let mut mem = rt.memory();
-        let before = flag(&*mem, index);
-        let ret_pc = mem.u32(cpu.esp)?;
-        cpu.esp = cpu.esp.wrapping_add(4);
-        ctx.call_guest(cpu, &mut mem, shadow, move |_, ctx| {
-            let (after, profiles) = {
-                let mem = ctx.runtime().memory();
-                (flag(&*mem, index), signed_in(&*mem))
-            };
-            after_stock(&store, index, before, after, profiles);
-            Ok(TransferAbi::ret(ret_pc))
-        })
-    });
-}
-
-/// The campaign-start hook on `at`: for campaign options (EAX), set the
-/// array to the signed-in profiles' skulls, then run what was there.
-pub(crate) fn install_queue(
-    d: &mut Dispatch,
-    at: u32,
-    original: Arc<OriginalHandler>,
-    store: Arc<Store>,
-) {
-    let below = below(d, at, original);
-    let seen = AtomicBool::new(false);
-    d.register_override(at, "skulls:campaign-start", move |cpu, ctx, _| {
-        announce(&seen, "campaign start hook");
-        let (mode, profiles) = {
-            let mem = ctx.runtime().memory();
-            (options_mode(&*mem, cpu.eax), signed_in(&*mem))
+    now: Option<Set>,
+    profiles: &(Vec<String>, Option<String>),
+) -> Vec<String> {
+    let label = SKULLS
+        .get(index as usize)
+        .map_or("(no such skull)", |d| d.label);
+    let Some(now) = now else {
+        return vec![format!(
+            "skulls: pickup of skull {index} ({label}) not kept: the skull array at {FLAGS:#x} is unreadable"
+        )];
+    };
+    let new = tracker.sweep(now);
+    let mut out = Vec::new();
+    if !new.contains(&(index as usize)) {
+        let why = if index as usize >= COUNT {
+            "the game ignores that index".to_string()
+        } else if before == Some(true) {
+            "it was already on (stocked again)".to_string()
+        } else if !now[index as usize] {
+            "the game's function left it off".to_string()
+        } else {
+            "it was already on at the last look".to_string()
         };
-        if mode == Some(MODE_CAMPAIGN)
-            && let Some(on) = selection(&store, &profiles)
+        out.push(format!(
+            "skulls: pickup of skull {index} ({label}) not kept: {why}"
+        ));
+    }
+    out.extend(record(store, &new, profiles));
+    out
+}
+
+/// A look at the array outside the pickup hook (each tick): records any
+/// skull that came on without passing through it.
+pub fn after_tick(
+    store: &Store,
+    tracker: &Tracker,
+    now: Set,
+    profiles: &(Vec<String>, Option<String>),
+) -> Vec<String> {
+    let new = tracker.sweep(now);
+    if new.is_empty() {
+        return Vec::new();
+    }
+    let names: Vec<&str> = new.iter().map(|i| SKULLS[*i].label).collect();
+    let mut out = vec![format!(
+        "skulls: {} turned on without the pickup hook (seen after a tick)",
+        names.join(", ")
+    )];
+    out.extend(record(store, &new, profiles));
+    out
+}
+
+fn record(
+    store: &Store,
+    new: &[usize],
+    (names, fallback): &(Vec<String>, Option<String>),
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if !new.is_empty()
+        && let Some(why) = fallback
+    {
+        out.push(format!("skulls: {why}"));
+    }
+    for i in new {
+        out.extend(record_pickup(store, names, *i));
+    }
+    out
+}
+
+/// The campaign-start hook's work for options of mode `mode`: for a
+/// campaign, the array to write (the profiles' selection) and what to log.
+pub fn at_start(
+    store: &Store,
+    mode: Option<u32>,
+    profiles: &(Vec<String>, Option<String>),
+) -> Option<(Set, String)> {
+    if mode != Some(MODE_CAMPAIGN) {
+        return None;
+    }
+    let (names, fallback) = profiles;
+    let on = selection(store, names)?;
+    let labels: Vec<&str> = SKULLS
+        .iter()
+        .zip(on)
+        .filter(|(_, o)| *o)
+        .map(|(d, _)| d.label)
+        .collect();
+    Some((
+        on,
+        format!(
+            "skulls: campaign start for {}: {}{}",
+            names.join(", "),
+            if labels.is_empty() {
+                "none on".to_string()
+            } else {
+                labels.join(", ")
+            },
+            fallback
+                .as_ref()
+                .map_or(String::new(), |w| format!(" ({w})"))
+        ),
+    ))
+}
+
+/// A pickup call in progress: skull ESI and its byte before.
+type Pending = (u32, Option<bool>);
+
+/// The feature id in the plan and `H2_FEATURES`.
+pub const FEATURE: &str = "skulls";
+
+/// The skulls feature: hooks on the feature plan, so they chain with every
+/// other feature's at the same points and a clash refuses the plan rather
+/// than dropping one silently.
+///
+/// - [`SKULL_STOCK`](feature::points::SKULL_STOCK): `before` notes skull ESI
+///   and its byte; `after` (the game's function has run) records it.
+/// - [`OPTIONS_QUEUE`](feature::points::OPTIONS_QUEUE): `before` writes the
+///   selection for a campaign start.
+/// - the tick (`frame` bridge): records any skull that came on without the
+///   pickup hook.
+pub struct Skulls {
+    pub store: Arc<Store>,
+    pub tracker: Arc<Tracker>,
+}
+
+impl feature::Feature for Skulls {
+    fn manifest(&self) -> feature::Manifest {
+        feature::Manifest::new(FEATURE, "Campaign skulls kept per profile").doc("docs/skulls.md")
+    }
+    fn build(&self, b: &mut feature::Builder) -> Result<(), feature::BuildError> {
+        use feature::points::{OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
+        // The pickup in progress: (index, byte before). A stack, in case
+        // the function is ever re-entered.
+        let pending: Arc<Mutex<Vec<Pending>>> = Arc::default();
         {
-            let ok = apply(&mut *ctx.runtime().memory(), &on);
-            let names: Vec<&str> = SKULLS
-                .iter()
-                .zip(on)
-                .filter(|(_, o)| *o)
-                .map(|(d, _)| d.label)
-                .collect();
-            eprintln!(
-                "skulls: campaign start for {}: {}{}",
-                profiles.join(", "),
-                if names.is_empty() {
-                    "none".to_string()
-                } else {
-                    names.join(", ")
-                },
-                if ok {
-                    ""
-                } else {
-                    " (could not write the skulls)"
-                }
-            );
+            let pending = Arc::clone(&pending);
+            b.raw().before(&SKULL_STOCK, "note the skull", move |c| {
+                let index = c.cpu.esi;
+                let before = flag(&*c.ctx.runtime().memory(), index);
+                let label = SKULLS
+                    .get(index as usize)
+                    .map_or("(no such skull)", |d| d.label);
+                let was = match before {
+                    Some(true) => "on",
+                    Some(false) => "off",
+                    None => "unreadable",
+                };
+                eprintln!("skulls: pickup call for skull {index} ({label}), was {was}");
+                pending
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push((index, before));
+                Ok(feature::Flow::Continue)
+            });
         }
-        Ok(below.invoke(cpu, ctx, at))
-    });
+        {
+            let (store, tracker) = (Arc::clone(&self.store), Arc::clone(&self.tracker));
+            b.raw().after(&SKULL_STOCK, "record the pickup", move |c| {
+                let Some((index, before)) = pending.lock().unwrap_or_else(|e| e.into_inner()).pop()
+                else {
+                    return Ok(());
+                };
+                let (now, profiles) = {
+                    let mem = c.ctx.runtime().memory();
+                    (flags(&*mem), profiles_or_default(&*mem))
+                };
+                for line in after_stock(&store, &tracker, index, before, now, &profiles) {
+                    eprintln!("{line}");
+                }
+                Ok(())
+            });
+        }
+        {
+            let (store, tracker) = (Arc::clone(&self.store), Arc::clone(&self.tracker));
+            b.raw()
+                .before(&QUEUE, "apply the selection", move |c| {
+                    let rt = Arc::clone(c.ctx.runtime());
+                    let (mode, profiles) = {
+                        let mem = rt.memory();
+                        (options_mode(&*mem, c.cpu.eax), profiles_or_default(&*mem))
+                    };
+                    if let Some((on, line)) = at_start(&store, mode, &profiles) {
+                        if apply(&mut *rt.memory(), &on) {
+                            tracker.reset(on);
+                            eprintln!("{line}");
+                        } else {
+                            eprintln!("{line} (could not write the skulls)");
+                        }
+                    }
+                    Ok(feature::Flow::Continue)
+                })
+                // Next to the queue: whatever else runs before it has run, so
+                // the array is what the level loads with.
+                .last();
+        }
+        let (store, tracker) = (Arc::clone(&self.store), Arc::clone(&self.tracker));
+        b.frame().on_tick("watch the skulls", move |o| {
+            let (now, profiles) = {
+                let mem = o.guest();
+                let Some(now) = flags(&*mem) else { return };
+                if !tracker.changed(&now) {
+                    return;
+                }
+                (now, profiles_or_default(&*mem))
+            };
+            for line in after_tick(&store, &tracker, now, &profiles) {
+                eprintln!("{line}");
+            }
+        });
+        Ok(())
+    }
+}
+
+/// Adds the skulls feature to `registry` over `store`. Says why when it is
+/// left out: no store (a headless run), `H2_NO_SKULLS`, or switched off.
+/// Returns whether it was added; then call [`report`] after the plan is
+/// installed.
+pub fn install(
+    registry: &mut feature::Registry,
+    store: Option<Arc<Store>>,
+) -> anyhow::Result<bool> {
+    let Some(store) = store else {
+        eprintln!("skulls: off: no settings store (a headless run); pickups are not kept");
+        return Ok(false);
+    };
+    if std::env::var_os("H2_NO_SKULLS").is_some() {
+        eprintln!("skulls: off: H2_NO_SKULLS is set");
+        return Ok(false);
+    }
+    let added = registry
+        .add(&Skulls {
+            store,
+            tracker: Arc::default(),
+        })
+        .map_err(|e| anyhow::anyhow!("skulls: {e}"))?;
+    if !added {
+        eprintln!("skulls: off: switched off (H2_FEATURES)");
+    }
+    Ok(added)
+}
+
+/// The install line, once `plan` is in: where the hooks went (the image's
+/// addresses) and where pickups are saved, or why they are not.
+pub fn report(plan: &feature::Plan, installed: &feature::Installed, store: &Store) -> String {
+    use feature::points::{GAME_TICK, OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
+    if let Some(why) = installed.off_reason(FEATURE) {
+        return format!("skulls: NOT installed: {why}; pickups are not kept");
+    }
+    if !plan.is_on(FEATURE) {
+        return "skulls: NOT installed: not in the feature plan; pickups are not kept".into();
+    }
+    let at = |p: &feature::points::Point, what: &str| {
+        let chain = plan
+            .chains
+            .values()
+            .find(|c| std::ptr::eq(c.point, p) && c.hooks().any(|h| h.feature == FEATURE));
+        match chain {
+            Some(c) if installed.placed.contains(&c.addr) => format!("{:#x} ({what})", c.addr),
+            Some(c) => format!("{:#x} ({what}, NOT placed)", c.addr),
+            None => format!("{} ({what}, NOT in the plan)", p.name),
+        }
+    };
+    format!(
+        "skulls: hooks installed via feature plan at {}, {}, {}; saving to {}",
+        at(&SKULL_STOCK, "pickup"),
+        at(&QUEUE, "campaign start"),
+        at(&GAME_TICK, "tick watch"),
+        store
+            .file()
+            .map_or("nowhere (the store has no file)".into(), |p| p
+                .display()
+                .to_string())
+    )
 }
 
 #[cfg(test)]
@@ -553,8 +792,8 @@ mod tests {
         assert_eq!(
             log,
             [
-                "skulls: Iron kept for Chief",
-                "skulls: Iron kept for Arbiter"
+                "skulls: Iron for Chief this run only; not saved: the settings store has no file",
+                "skulls: Iron for Arbiter this run only; not saved: the settings store has no file"
             ]
         );
         assert_eq!(collected(&s, "Chief"), [(11, true)]);
@@ -653,18 +892,204 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The hooks chain onto whatever is on the function already and run it:
-    /// synthetic, with the fixture module's leaf (`eax = 41; ret`) as the
-    /// function and an earlier override standing in for the game's stock
-    /// (it sets the byte, as `0x1df3e0` does).
+    fn tmp_store(name: &str) -> (Store, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("h2-skulls-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = settings::path_in(&dir);
+        let (s, p) = Store::load(&defs(), Some(&path), &|_| None, &[]);
+        assert!(p.is_empty(), "{p:?}");
+        (s, dir)
+    }
+
+    fn on(indexes: &[usize]) -> Set {
+        let mut s = [false; COUNT];
+        for i in indexes {
+            s[*i] = true;
+        }
+        s
+    }
+
     #[test]
-    fn the_pickup_hook_runs_the_function_and_records_a_new_skull() {
-        use runtime::{Event, Guest, Runner, Runtime, exec::HARNESS_EXIT};
+    fn the_tracker_sees_each_skull_come_on_once_and_not_what_we_wrote() {
+        let t = Tracker::default();
+        assert!(!t.changed(&[false; COUNT]), "the game boots with none on");
+        assert_eq!(t.sweep(on(&[12])), [12]);
+        assert!(t.sweep(on(&[12])).is_empty(), "seen already");
+        // A campaign start wrote 3 and 12: not pickups.
+        t.reset(on(&[3, 12]));
+        assert!(!t.changed(&on(&[3, 12])));
+        assert_eq!(t.sweep(on(&[3, 7, 12])), [7]);
+        // A skull going off is never a pickup; on again, it is.
+        assert!(t.sweep(on(&[3])).is_empty());
+        assert_eq!(t.sweep(on(&[3, 12])), [12]);
+    }
+
+    /// Case: no named profile signed in (the slot test fails, or the game
+    /// signs in no profile). Kept under the default profile, with the slots
+    /// as read in the log.
+    #[test]
+    fn a_pickup_with_no_named_profile_is_kept_under_the_default_profile() {
+        let (s, dir) = tmp_store("nobody");
+        let g = guest(&[]);
+        let profiles = profiles_or_default(&g);
+        assert_eq!(profiles.0, names(&[DEFAULT_PROFILE]));
+        let t = Tracker::default();
+        let log = after_stock(&s, &t, 12, Some(false), Some(on(&[12])), &profiles);
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert_eq!(
+            log[0],
+            "skulls: no named profile signed in (slot 0 flags 0x3 name \"\", slot 1 flags 0x3 name \"\", \
+             slot 2 flags 0x3 name \"\", slot 3 flags 0x3 name \"\"); using profile \"default\""
+        );
+        let path = settings::path_in(&dir);
+        assert_eq!(
+            log[1],
+            format!(
+                "skulls: Mythic kept for default, saved to {}",
+                path.display()
+            )
+        );
+        assert_eq!(collected(&s, DEFAULT_PROFILE), [(12, true)]);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[profiles.default.skulls]") && text.contains("mythic = true"),
+            "{text}"
+        );
+        // Signed in but the name empty, or unreadable slots: the same.
+        assert_eq!(
+            profiles_or_default(&guest(&[""])).0,
+            names(&[DEFAULT_PROFILE])
+        );
+        let (_, why) = profiles_or_default(&Fake::default());
+        assert!(why.unwrap().contains("slot 0 unreadable"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Case: a named profile (what the slot holds, a Live gamertag or not)
+    /// is kept by that name, and the line names the file.
+    #[test]
+    fn a_pickup_is_kept_by_the_slots_name_with_the_file_in_the_log() {
+        let (s, dir) = tmp_store("named");
+        let profiles = profiles_or_default(&guest(&["Chief", "Arbiter"]));
+        assert_eq!(profiles, (names(&["Chief", "Arbiter"]), None));
+        let log = after_stock(
+            &s,
+            &Tracker::default(),
+            11,
+            Some(false),
+            Some(on(&[11])),
+            &profiles,
+        );
+        let path = settings::path_in(&dir);
+        assert_eq!(
+            log,
+            [
+                format!("skulls: Iron kept for Chief, saved to {}", path.display()),
+                format!("skulls: Iron kept for Arbiter, saved to {}", path.display()),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Case: no settings file (a store without a path): kept for the run,
+    /// and the line says it was not saved.
+    #[test]
+    fn a_store_without_a_file_says_the_pickup_is_not_saved() {
+        let s = store();
+        let log = record_pickup(&s, &names(&["Chief"]), 11);
+        assert_eq!(
+            log,
+            ["skulls: Iron for Chief this run only; not saved: the settings store has no file"]
+        );
+        assert_eq!(collected(&s, "Chief"), [(11, true)]);
+    }
+
+    /// Case: a stock call that keeps nothing says why.
+    #[test]
+    fn a_pickup_that_keeps_nothing_says_why() {
+        let s = store();
+        let p = (names(&["Chief"]), None);
+        let t = Tracker::default();
+        t.reset(on(&[12]));
+        let why = |log: Vec<String>| log.join("\n");
+        assert_eq!(
+            why(after_stock(&s, &t, 12, Some(true), Some(on(&[12])), &p)),
+            "skulls: pickup of skull 12 (Mythic) not kept: it was already on (stocked again)"
+        );
+        assert_eq!(
+            why(after_stock(&s, &t, 3, Some(false), Some(on(&[12])), &p)),
+            "skulls: pickup of skull 3 (Thunderstorm) not kept: the game's function left it off"
+        );
+        assert_eq!(
+            why(after_stock(&s, &t, 15, None, Some(on(&[12])), &p)),
+            "skulls: pickup of skull 15 ((no such skull)) not kept: the game ignores that index"
+        );
+        assert_eq!(
+            why(after_stock(&s, &t, 3, None, None, &p)),
+            "skulls: pickup of skull 3 (Thunderstorm) not kept: the skull array at 0x4f55dc is unreadable"
+        );
+        assert!(collected(&s, "Chief").is_empty());
+    }
+
+    /// Case: a skull that comes on without passing through `0x1df3e0` is
+    /// still kept, from the watch after each tick.
+    #[test]
+    fn a_skull_that_skips_the_pickup_hook_is_kept_from_the_tick() {
+        let s = store();
+        let p = (names(&["Chief"]), None);
+        let t = Tracker::default();
+        assert!(after_tick(&s, &t, [false; COUNT], &p).is_empty());
+        let log = after_tick(&s, &t, on(&[0, 14]), &p);
+        assert_eq!(
+            log[0],
+            "skulls: Envy, Bandana turned on without the pickup hook (seen after a tick)"
+        );
+        assert_eq!(collected(&s, "Chief"), [(0, true), (14, true)]);
+        assert!(after_tick(&s, &t, on(&[0, 14]), &p).is_empty(), "once");
+        // After the pickup hook saw it, the tick does not record it again.
+        after_stock(&s, &t, 5, Some(false), Some(on(&[0, 5, 14])), &p);
+        assert!(after_tick(&s, &t, on(&[0, 5, 14]), &p).is_empty());
+    }
+
+    #[test]
+    fn a_campaign_start_with_no_named_profile_uses_the_default_profiles_skulls() {
+        let s = store();
+        record_pickup(&s, &names(&[DEFAULT_PROFILE]), 12);
+        let p = profiles_or_default(&guest(&[]));
+        let (set, line) = at_start(&s, Some(MODE_CAMPAIGN), &p).unwrap();
+        assert_eq!(set, on(&[12]));
+        assert!(
+            line.starts_with("skulls: campaign start for default: Mythic (no named profile"),
+            "{line}"
+        );
+        assert!(at_start(&s, Some(2), &p).is_none(), "multiplayer");
+        assert!(at_start(&s, None, &p).is_none(), "unreadable options");
+        let (none, line) = at_start(&s, Some(MODE_CAMPAIGN), &(names(&["Chief"]), None)).unwrap();
+        assert_eq!(none, [false; COUNT]);
+        assert_eq!(line, "skulls: campaign start for Chief: none on");
+    }
+
+    /// The skulls feature on the plan, with another feature's hook on the
+    /// options queue (as anything else at `0x18e790` would be) and a
+    /// stand-in for the game's stock function: all three hooks run through
+    /// the real runner, chained, and the install line names them.
+    /// Synthetic: the fixture module's leaf (`eax = 41; ret`) is the stock
+    /// function, its `ret` (`0x404000`) the options queue, its `eax = 1;
+    /// ret` (`0x403005`) the tick.
+    #[test]
+    fn the_hooks_run_on_the_feature_plan_alongside_others() {
+        use feature::points::{GAME_TICK, OPTIONS_QUEUE as QUEUE, SKULL_STOCK};
+        use runtime::guest::Permissions;
+        use runtime::{Dispatch, Event, Guest, Runner, Runtime, exec::HARNESS_EXIT};
+        use std::sync::atomic::{AtomicU32, Ordering};
         const LEAF: u32 = 0x40_2000;
-        const SHADOW_AT: u32 = 0x40_5000;
+        const RET: u32 = 0x40_4000;
+        const TICK: u32 = 0x40_3005;
         const FRAME: u32 = 0x60_0e00;
+        const OPTIONS: u32 = 0x60_0100;
 
         let mut d = Dispatch::default();
+        // SAFETY: the fixture's tables, handlers and probes follow its ABI.
         unsafe {
             d.register_generated_module(
                 &runtime_test_probe::h2gen_fixture_module,
@@ -675,7 +1100,6 @@ mod tests {
         let mut g = Guest::new();
         g.map_zeroed(0x60_0000, 0x1000, Permissions::RW).unwrap();
         g.map_zeroed(0x40_0000, 0x5000, Permissions::RX).unwrap();
-        g.map_zeroed(SHADOW_AT, 0x1000, Permissions::RX).unwrap();
         g.map_zeroed(FLAGS & !0xfff, 0x1000, Permissions::RW)
             .unwrap();
         g.map_zeroed(SLOTS & !0xfff, 0x4000, Permissions::RW)
@@ -689,47 +1113,117 @@ mod tests {
             }
             mem.set_u32(SLOTS, SLOT_SIGNED_IN).unwrap();
             mem.write_bytes(SLOTS + SLOT_NAME, &name, 1).unwrap();
+            mem.set_u32(OPTIONS, MODE_CAMPAIGN).unwrap();
         }
-        let original = Arc::new(rt.resolve_original(LEAF).expect("the fixture leaf"));
-        let store = Arc::new(store());
-        let o = Arc::clone(&original);
-        rt.edit_dispatch(|d| {
-            d.register_override(LEAF, "stand-in stock", move |cpu, ctx, sel| {
-                let i = cpu.esi;
-                ctx.runtime().memory().set_u8(FLAGS + i, 1)?;
-                Ok(o.invoke(cpu, ctx, sel))
+        let (s, dir) = tmp_store("plan");
+        let store = Arc::new(s);
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        // The game's stock: sets byte ESI, then `eax = 41; ret`.
+        r.add(&feature::from_fn("stand-in", |b| {
+            b.raw().implement(&SKULL_STOCK, "stock", |cpu, ctx, _| {
+                let rt = Arc::clone(ctx.runtime());
+                let mut mem = rt.memory();
+                if cpu.esi < COUNT as u32 {
+                    mem.set_u8(FLAGS + cpu.esi, 1)?;
+                }
+                cpu.eax = 41;
+                mem.ret(cpu, 0)
             });
-            install_stock(
-                d,
-                LEAF,
-                SHADOW_AT,
-                Arc::clone(&original),
-                Arc::clone(&store),
-            );
-        });
-        let run = |esi: u32| {
+            Ok(())
+        }))
+        .unwrap();
+        let other = Arc::new(AtomicU32::new(0));
+        let o = Arc::clone(&other);
+        r.add(&feature::from_fn("other", move |b| {
+            let o = Arc::clone(&o);
+            b.raw().before(&QUEUE, "count", move |_| {
+                o.fetch_add(1, Ordering::Relaxed);
+                Ok(feature::Flow::Continue)
+            });
+            Ok(())
+        }))
+        .unwrap();
+        assert!(install(&mut r, Some(Arc::clone(&store))).unwrap());
+        let plan = r
+            .build(&feature::Remap::new(&[
+                (&SKULL_STOCK, LEAF),
+                (&QUEUE, RET),
+                (&GAME_TICK, TICK),
+            ]))
+            .unwrap();
+        let text = plan.text();
+        assert!(text.contains("feature skulls: on"), "{text}");
+        assert!(
+            text.contains(
+                "SKULL_STOCK: before [skulls:note the skull] -> implement stand-in:stock -> after [skulls:record the pickup]"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("OPTIONS_QUEUE: before [other:count, skulls:apply the selection]"),
+            "{text}"
+        );
+        let installed = plan.install(&rt).unwrap();
+        let line = report(&plan, &installed, &store);
+        assert!(
+            line.starts_with("skulls: hooks installed via feature plan at 0x402000 (pickup), 0x404000 (campaign start), 0x403005 (tick watch); saving to "),
+            "{line}"
+        );
+        let run = |at: u32, esi: u32, eax: u32| {
             rt.memory().set_u32(FRAME, HARNESS_EXIT).unwrap();
             let mut cpu = runtime::CpuAbi {
                 esp: FRAME,
                 esi,
+                eax,
                 ..Default::default()
             };
             let mut ctx = runtime::ExecCtx::new(rt.clone(), 1);
-            let t = Runner::default().run(&mut cpu, &mut ctx, LEAF);
+            let t = Runner::default().run(&mut cpu, &mut ctx, at);
             assert!(
                 matches!(ctx.event(t.event_id), Some(Event::HarnessExit)),
                 "{:?}",
                 ctx.event(t.event_id)
             );
-            assert_eq!(cpu.eax, 41, "what was there ran and its result came back");
             assert_eq!(cpu.esp, FRAME + 4);
+            cpu
         };
-        run(12);
+        // The pickup: the stand-in ran (its result came back) and Mythic is kept.
+        assert_eq!(run(LEAF, 12, 0).eax, 41);
         assert_eq!(collected(&store, "Chief"), [(12, true)]);
-        // The player turns it off in the menu; stocked again while already
-        // on (a reload of the level script), nothing changes.
-        toggle(&store, "Chief", "skulls.mythic").unwrap();
-        run(12);
-        assert_eq!(collected(&store, "Chief"), [(12, false)]);
+        // A skull set some other way is kept from the tick.
+        rt.memory().set_u8(FLAGS + 9, 1).unwrap();
+        run(TICK, 0, 0);
+        assert_eq!(collected(&store, "Chief"), [(9, true), (12, true)]);
+        // Turned off in the menu; the campaign start writes the selection,
+        // and the other feature's hook ran too.
+        toggle(&store, "Chief", "skulls.catch").unwrap();
+        run(RET, 0, OPTIONS);
+        assert_eq!(other.load(Ordering::Relaxed), 1);
+        assert_eq!(flags(&*rt.memory()), Some(on(&[12])));
+        // What the start wrote is not a pickup.
+        run(TICK, 0, 0);
+        assert_eq!(collected(&store, "Chief"), [(9, false), (12, true)]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_install_line_says_when_the_feature_is_off() {
+        let empty = feature::Registry::new(feature::Switches::defaults())
+            .build(&feature::Base)
+            .unwrap();
+        assert_eq!(
+            report(&empty, &feature::Installed::default(), &store()),
+            "skulls: NOT installed: not in the feature plan; pickups are not kept"
+        );
+        let mut installed = feature::Installed::default();
+        installed
+            .off
+            .push((FEATURE, "SKULL_STOCK has no generated original".into()));
+        assert_eq!(
+            report(&empty, &installed, &store()),
+            "skulls: NOT installed: SKULL_STOCK has no generated original; pickups are not kept"
+        );
+        let mut r = feature::Registry::new(feature::Switches::defaults());
+        assert!(!install(&mut r, None).unwrap(), "no store");
     }
 }

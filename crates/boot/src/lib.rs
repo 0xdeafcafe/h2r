@@ -616,10 +616,9 @@ pub fn run_hosted_with_live(
         .context("installing the level boot")?;
     // Campaign skulls kept per profile: a pickup is remembered and a
     // campaign start turns on the profile's chosen skulls (docs/skulls.md).
-    // Headless runs (no settings store) leave skulls as retail.
-    if let Some(store) = host.settings.clone() {
-        skulls::install(&loaded.runtime, store).context("installing the skulls")?;
-    }
+    // Headless runs (no settings store) leave skulls as retail. Hooks on
+    // the feature plan; the line after the plan installs says where.
+    let skulls_on = skulls::install(&mut features, host.settings.clone()).context("installing the skulls")?;
     // Sample the render thread too when profiling.
     #[cfg(feature = "perf")]
     let _ = d3d::RENDER_THREAD_START.set(|| perf::register_current_thread("render"));
@@ -692,6 +691,9 @@ pub fn run_hosted_with_live(
     let installed = plan.install(&loaded.runtime).context("installing the feature plan")?;
     for n in &installed.notes {
         eprintln!("feature plan: {n}");
+    }
+    if let Some(store) = host.settings.as_ref().filter(|_| skulls_on) {
+        eprintln!("{}", skulls::report(&plan, &installed, store));
     }
     if let (Some(h), Some(why)) = (harness.as_mut(), installed.off_reason("lockstep")) {
         eprintln!("lockstep: hashing presents only: {why}");
