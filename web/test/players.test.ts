@@ -193,6 +193,7 @@ describe("the manifest's models", () => {
     expect(parseModels(raw)).toEqual({
       bipeds: { spartan: "models/biped/spartan.glb", elite: "models/biped/elite.glb" },
       weapons: { battle_rifle: "models/weapon/battle_rifle.glb" },
+      vehicles: {},
     });
     expect(parseManifest({ version: 1, images: {}, models: raw })!.models).toEqual(parseModels(raw));
     expect(parseManifest({ version: 1, images: {} })!.models).toBeNull();
@@ -215,8 +216,8 @@ describe("the manifest's models", () => {
     expect(bipedFile(m, null)).toBe("models/biped/spartan.glb");
     // No models, or no spartan to fall back on: the capsule.
     expect(bipedFile(null, "elite")).toBeNull();
-    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {} }, "brute")).toBeNull();
-    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {} }, "elite")).toBe("e.glb");
+    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {} }, "brute")).toBeNull();
+    expect(bipedFile({ bipeds: { elite: "e.glb" }, weapons: {}, vehicles: {} }, "elite")).toBe("e.glb");
     expect(weaponFile(m, "battle_rifle")).toBe("models/weapon/battle_rifle.glb");
     expect(weaponFile(m, "smg")).toBeNull();
     expect(weaponFile(m, null)).toBeNull();

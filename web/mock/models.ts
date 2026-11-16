@@ -185,9 +185,44 @@ export const MOCK_WEAPONS: Record<string, () => ModelSpec> = {
   plasma_rifle: () => gun(0.3, 0.07),
 };
 
+/** A boxy vehicle `len` long facing +X, its origin on the ground under its
+ *  middle, with seat nodes. */
+function car(len: number, wid: number, tall: number, seats: Record<string, [number, number, number]>): ModelSpec {
+  const wheel = tall * 0.45;
+  const boxes: ModelBox[] = [
+    { min: [-len / 2, -wid / 2, wheel * 0.6], max: [len / 2, wid / 2, tall * 0.75], material: 0 },
+    { min: [-len * 0.15, -wid * 0.4, tall * 0.75], max: [len * 0.2, wid * 0.4, tall], material: 1 },
+  ];
+  for (const fx of [-0.32, 0.32]) for (const fy of [-0.5, 0.5]) {
+    boxes.push({ min: [fx * len - wheel / 2, fy * wid - wheel * 0.2, 0], max: [fx * len + wheel / 2, fy * wid + wheel * 0.2, wheel], material: 2 });
+  }
+  return {
+    boxes, colours: false,
+    materials: [
+      { name: "hull", colour: [0.55, 0.58, 0.5], metallic: 0.3, roughness: 0.6 },
+      { name: "cab", colour: [0.2, 0.22, 0.24], metallic: 0.5, roughness: 0.4 },
+      { name: "wheel", colour: [0.06, 0.06, 0.06], metallic: 0, roughness: 0.9 },
+    ],
+    nodes: Object.fromEntries(Object.entries(seats).map(([k, v]) => ["seat_" + k, v])),
+    extras: {},
+  };
+}
+
+/** The stand-in vehicles. */
+export const MOCK_VEHICLES: Record<string, () => ModelSpec> = {
+  warthog: () => car(2.3, 1.3, 0.9, { driver: [0.1, 0.3, 0.6], passenger: [0.1, -0.3, 0.6], gunner: [-0.7, 0, 0.9] }),
+};
+
+/** Stand-in AI bipeds: a short one and a plain one. The other species the
+ *  mock's campaign sends have none, so the fallbacks run. */
+export const MOCK_ACTOR_BIPEDS: Record<string, () => ModelSpec> = {
+  grunt: () => figure(0.5, 1, false),
+  marine: () => figure(0.68, 0, false),
+};
+
 export interface MockModels {
   /** The manifest's `models` table. */
-  models: { version: 1; bipeds: Record<string, { glb: string }>; weapons: Record<string, { glb: string }> };
+  models: { version: 1; bipeds: Record<string, { glb: string }>; weapons: Record<string, { glb: string }>; vehicles: Record<string, { glb: string }> };
   file(name: string): { bytes: Uint8Array; type: string } | null;
 }
 
@@ -195,10 +230,11 @@ export function mockModels(): MockModels {
   const table = (dir: string, set: Record<string, unknown>) => Object.fromEntries(Object.keys(set).map((k) => [k, { glb: `models/${dir}/${k}.glb` }]));
   const done = new Map<string, Uint8Array>();
   return {
-    models: { version: 1, bipeds: table("biped", MOCK_BIPEDS), weapons: table("weapon", MOCK_WEAPONS) },
+    models: { version: 1, bipeds: table("biped", { ...MOCK_BIPEDS, ...MOCK_ACTOR_BIPEDS }), weapons: table("weapon", MOCK_WEAPONS), vehicles: table("vehicle", MOCK_VEHICLES) },
     file(name) {
-      const m = /^models\/(biped|weapon)\/([a-z0-9_]+)\.glb$/.exec(name);
-      const make = m ? (m[1] === "biped" ? MOCK_BIPEDS : MOCK_WEAPONS)[m[2]!] : undefined;
+      const m = /^models\/(biped|weapon|vehicle)\/([a-z0-9_]+)\.glb$/.exec(name);
+      const sets: Record<string, Record<string, () => ModelSpec>> = { biped: { ...MOCK_BIPEDS, ...MOCK_ACTOR_BIPEDS }, weapon: MOCK_WEAPONS, vehicle: MOCK_VEHICLES };
+      const make = m ? sets[m[1]!]![m[2]!] : undefined;
       if (!make) return null;
       let bytes = done.get(name);
       if (!bytes) { bytes = encodeModelGlb(make()); done.set(name, bytes); }

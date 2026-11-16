@@ -39,7 +39,10 @@ like a server with no game art. The mock's own map geometry (below) is served
 either way; `H2_MOCK_MAP_GEOMETRY=0` turns that off too, and then `/art/game`
 answers 404. `H2_MOCK_SESSIONS=<n>` sets how many open sessions the mock keeps
 for the dashboard's "find a game" (default 5; 0 shows its empty state).
-`H2_MOCK_INDOOR=1` shuts each arena's glb inside a busy building (an
+`H2_MOCK_ACTORS=1` puts the mock campaign's AI and vehicles
+(`mock/campaign.ts`: about thirty actors and two vehicles, added by a frame
+hook) into every game's frames; without it only games whose mode is
+`campaign` get them. `H2_MOCK_INDOOR=1` shuts each arena's glb inside a busy building (an
 inward-facing shell, partition walls, an upper floor, pillars and two
 "machines", over `bsp_<n>` and `machines` nodes), for trying the 3D view's
 cutaways. `H2_MOCK_MODELS=1` adds stand-in player and weapon models (block figures,
@@ -198,6 +201,22 @@ and `?map=iso-ne` picks a view, so both can be linked to. The mock builds
 two arenas of its own from its invented floor plans (`mock/arena.ts`:
 slabs, ramps, pillars and cone trees, with a small rasteriser for the
 pictures); its third map has none, so the fallbacks run too.
+
+**Vehicles and AI.** A frame may list `vehicles` (those with someone in
+them: kind, position, forward and up) and `actors` (living AI-controlled
+bipeds, campaign), both optional. A vehicle is drawn as its glb from the
+manifest's `models.vehicles`, turned by its forward and up, or as a box of
+about its kind's size; a player's vehicle takes a light wash of their
+colour. Whoever is in one is not drawn themselves: the vehicle stands for
+them and carries their label (seat nodes are not used yet). Actors are
+sampled, eased and drawn through the same path as players (an index made
+from their id, negative so it never meets a player's): their species' glb
+in its own colours, else the spartan's untinted, else a small capsule, with
+a ring in their side's colour (covenant purple, human green, flood tan,
+sentinel grey). They have no name label unless "AI names" is on (the button
+shows when a game has actors) and no aim ray; their shots draw like
+players'. At most 128 are drawn from a frame. On the 2D maps actors are
+small squares and vehicles an outline under their riders.
 
 **Seeing into a level.** A level's structure is single-sided and faces
 into the playable space, so the 3D view culls its back faces whatever the

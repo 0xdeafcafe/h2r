@@ -14,6 +14,8 @@ export interface PlayerModels {
   bipeds: Record<string, string>;
   /** glb file by weapon stem, relative to the manifest. */
   weapons: Record<string, string>;
+  /** glb file by vehicle stem, relative to the manifest. */
+  vehicles: Record<string, string>;
 }
 
 export const MODELS_VERSION = 1;
@@ -37,10 +39,10 @@ function table(raw: unknown): Record<string, string> {
  *  read (then every player is a capsule). */
 export function parseModels(raw: unknown): PlayerModels | null {
   if (!raw || typeof raw !== "object") return null;
-  const r = raw as { version?: unknown; bipeds?: unknown; weapons?: unknown };
+  const r = raw as { version?: unknown; bipeds?: unknown; weapons?: unknown; vehicles?: unknown };
   if (r.version !== MODELS_VERSION) return null;
-  const bipeds = table(r.bipeds), weapons = table(r.weapons);
-  return Object.keys(bipeds).length || Object.keys(weapons).length ? { bipeds, weapons } : null;
+  const bipeds = table(r.bipeds), weapons = table(r.weapons), vehicles = table(r.vehicles);
+  return Object.keys(bipeds).length || Object.keys(weapons).length || Object.keys(vehicles).length ? { bipeds, weapons, vehicles } : null;
 }
 
 /** The glb to draw a player with: their species', else the spartan's.
@@ -54,6 +56,60 @@ export function bipedFile(models: PlayerModels | null | undefined, species: stri
  *  (the player is then drawn empty-handed, the weapon still named). */
 export function weaponFile(models: PlayerModels | null | undefined, weapon: string | null | undefined): string | null {
   return (models && weapon ? models.weapons[weapon] : undefined) ?? null;
+}
+
+/** The glb of a vehicle, or null when the server has no model of it (a
+ *  box is drawn then). */
+export function vehicleFile(models: PlayerModels | null | undefined, kind: string | null | undefined): string | null {
+  return (models && kind ? models.vehicles[kind] : undefined) ?? null;
+}
+
+// ---- actors ----
+
+/** The ring colour of an AI-controlled biped, by the side telemetry says
+ *  it is on. An unknown side (a raw team index) is a neutral grey-blue. */
+export function actorColour(team: string | null | undefined): string {
+  switch (team) {
+    case "covenant": case "prophet": return "#a66be0";
+    case "human": case "player": return "#58b368";
+    case "flood": return "#c9a66b";
+    case "sentinel": return "#9aa3ab";
+    default: return "#7f8fa3";
+  }
+}
+
+/** How much of an occupant's colour a vehicle takes: a light wash, so it
+ *  still reads as the vehicle it is. */
+export const VEHICLE_TINT = 0.3;
+
+/** The multiplier for a vehicle driven by a player of this colour. */
+export function vehicleTint(primary: Rgb): Rgb {
+  const k = VEHICLE_TINT;
+  return [1 - k + primary[0] * k, 1 - k + primary[1] * k, 1 - k + primary[2] * k];
+}
+
+/** A vehicle's box when there is no model of it: [length, width, height]
+ *  in game units, by kind, so a tank isn't drawn the size of a bike. */
+export function vehicleBox(kind: string): [number, number, number] {
+  if (/scorpion|wraith|tank/.test(kind)) return [3.2, 2.2, 1.1];
+  if (/ghost|mongoose|bike/.test(kind)) return [1.5, 0.8, 0.5];
+  if (/banshee|hornet|phantom|pelican/.test(kind)) return [2.2, 2.6, 0.6];
+  return [2.2, 1.3, 0.8];
+}
+
+/** A vehicle's turn as three unit axes in the glTF frame the scene uses,
+ *  from the frame's forward and up (game coordinates): x is forward, y up,
+ *  z right. The up is squared off against the forward, so a pair that isn't
+ *  quite perpendicular still makes a clean turn; one that is parallel falls
+ *  back to the world's up. */
+export function vehicleBasis(forward: Rgb, up: Rgb): { x: Rgb; y: Rgb; z: Rgb } {
+  const gl = (v: Rgb): Rgb => [v[0], v[2], -v[1]];
+  const unit = (v: Rgb): Rgb | null => { const l = Math.hypot(v[0], v[1], v[2]); return l > 1e-6 ? [v[0] / l, v[1] / l, v[2] / l] : null; };
+  const cross = (a: Rgb, b: Rgb): Rgb => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  const x = unit(gl(forward)) ?? [1, 0, 0];
+  let z = unit(cross(x, gl(up))) ?? unit(cross(x, [0, 1, 0])) ?? unit(cross(x, [1, 0, 0]))!;
+  const y = cross(z, x);
+  return { x, y, z };
 }
 
 /** A model file's address under the art root. */

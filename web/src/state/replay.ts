@@ -2,7 +2,7 @@
 // sampled at any tick.
 
 import type { Frame, PlayerKilled, PlayerScore, ScoreChanged, WireEvent } from "../api/types";
-import { sampleFrames, type SampledPlayer, TICKS_PER_SECOND } from "./frames";
+import { sampleActors, sampleFrames, sampleVehicles, type SampledPlayer, type SampledVehicle, TICKS_PER_SECOND } from "./frames";
 
 export interface ReplayKill {
   tick: number;
@@ -103,6 +103,16 @@ export class ReplayTimeline {
       if (p) p.alive = false;
     }
     return players;
+  }
+
+  /** AI-controlled bipeds at `tick` (campaign), sampled like players. */
+  sampleActors(tick: number): SampledPlayer[] {
+    return sampleActors(this.frames, this.clamp(tick));
+  }
+
+  /** Vehicles with someone in them at `tick`. */
+  sampleVehicles(tick: number): SampledVehicle[] {
+    return sampleVehicles(this.frames, this.clamp(tick));
   }
 
   /** Kills with from < tick <= to, oldest first. */

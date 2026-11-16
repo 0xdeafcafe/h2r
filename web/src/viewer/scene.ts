@@ -21,9 +21,10 @@ import type { MapFrame } from "../components/MapCanvas";
 import type { RosterEntry } from "../map/render";
 import { gameToGl, yawToGl } from "../map/views";
 import { FLASH_MS, ShotQueue, flashAlpha } from "../map/shots";
-import { bipedFile, modelScale, modelUrl, weaponFile, weaponLabel, type PlayerModels } from "./models";
+import { actorColour, bipedFile, modelScale, modelUrl, vehicleBasis, vehicleBox, vehicleFile, weaponFile, weaponLabel, type PlayerModels } from "./models";
+import type { SampledVehicle } from "../state/frames";
 import { ModelLibrary, type BipedInstance, type WeaponInstance } from "./players3d";
-import { smoothPlayers, type SmoothPlayer } from "./sync";
+import { smoothPlayers, smoothVehicles, type SmoothPlayer } from "./sync";
 import { cameraFit, markerScale, type Box3 } from "./camera";
 import { SEE_RADIUS, cutHeight, cutRange, meshRole, patchSeeThrough } from "./cutaway";
 
@@ -62,6 +63,20 @@ interface PlayerObj {
   weapon: WeaponInstance | null;
   weaponUrl: string | null;
   weaponName: string | null;
+  /** An AI-controlled biped: no name label or aim ray unless asked for, and its model keeps its own colours. */
+  actor: boolean;
+}
+
+/** A vehicle with someone in it: its model, or a box of about its size. */
+interface VehicleObj {
+  group: THREE.Group;
+  box: THREE.Mesh;
+  boxMat: THREE.MeshStandardMaterial;
+  model: THREE.Object3D | null;
+  /** What `model` was made from: the glb and the colour washed over it. */
+  key: string;
+  height: number;
+  kind: string;
 }
 
 /** One shot on screen: a tracer and its muzzle flash. */
@@ -90,6 +105,11 @@ export class ViewerScene {
   private gridKey = "";
   private players = new Map<number, PlayerObj>();
   private shown = new Map<number, SmoothPlayer>();
+  private vehicles = new Map<string, VehicleObj>();
+  private shownVehicles = new Map<string, SampledVehicle>();
+  private actorNames = false;
+  private m4 = new THREE.Matrix4();
+  private geoBox = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
   private marks: MarkObj[] = [];
   private library: ModelLibrary;
   private models: { root: string; table: PlayerModels } | null = null;
@@ -108,6 +128,7 @@ export class ViewerScene {
   private patched = new WeakSet<THREE.Material>();
   private v0 = new THREE.Vector3();
   private v1 = new THREE.Vector3();
+  private v2 = new THREE.Vector3();
   private bounds: Box3 | null = null;
   private hasMap = false;
   private scale = 1;
@@ -474,7 +495,49 @@ export class ViewerScene {
     disposeMaterials(p.group);
   }
 
-  private player(index: number, info: RosterEntry | undefined): PlayerObj {
+  /** Whether AI-controlled bipeds get name labels (their species). */
+  setActorNames(on: boolean) {
+    this.actorNames = on;
+    this.dirty = true;
+  }
+
+  /** A vehicle's object, made (or remade) for its kind and its player's colour. */
+  private vehicle(v: SampledVehicle, colour: string | null): VehicleObj {
+    let o = this.vehicles.get(v.id);
+    if (!o) {
+      const boxMat = new THREE.MeshStandardMaterial({ color: 0x8a9199, roughness: 0.6, metalness: 0.3 });
+      const box = new THREE.Mesh(this.geoBox, boxMat);
+      box.castShadow = true;
+      const group = new THREE.Group();
+      group.add(box);
+      this.scene.add(group);
+      o = { group, box, boxMat, model: null, key: "", height: 1, kind: "" };
+      this.vehicles.set(v.id, o);
+    }
+    const m = this.models;
+    const file = m ? vehicleFile(m.table, v.kind) : null;
+    const url = m && file ? modelUrl(m.root, file) : null;
+    const template = url ? this.library.vehicle(url) : null;
+    const key = (template ? url : "box:" + v.kind) + "|" + (colour ?? "");
+    if (key !== o.key) {
+      if (o.model) o.group.remove(o.model);
+      o.model = template ? this.library.instantiateVehicle(template, colour) : null;
+      if (o.model) o.group.add(o.model);
+      o.box.visible = !o.model;
+      const [len, wid, tall] = vehicleBox(v.kind);
+      o.box.scale.set(len, tall, wid);
+      // A box takes a little more of the colour than a model: it has nothing else to say.
+      o.boxMat.color.set(0x8a9199);
+      if (colour) o.boxMat.color.lerp(new THREE.Color(colour), 0.45);
+      o.height = template ? template.height : tall;
+      o.key = key;
+      o.kind = v.kind;
+      this.dirty = true;
+    }
+    return o;
+  }
+
+  private player(index: number, info: RosterEntry | undefined, actor = false): PlayerObj {
     let p = this.players.get(index);
     const colour = info?.colour ?? "#999", name = info?.name ?? `Player ${index + 1}`;
     if (p && p.colour === colour && p.name === name) return p;
@@ -496,7 +559,7 @@ export class ViewerScene {
     pip.style.background = colour;
     const gun = document.createElement("small");
     el.append(pip, document.createTextNode(name), gun);
-    el.addEventListener("pointerdown", (e) => { e.stopPropagation(); this.opts.onPick?.(index); });
+    if (!actor) el.addEventListener("pointerdown", (e) => { e.stopPropagation(); this.opts.onPick?.(index); });
     const label = new CSS2DObject(el);
     label.center.set(0.5, 1);
     const turn = new THREE.Group();
@@ -504,7 +567,8 @@ export class ViewerScene {
     const group = new THREE.Group();
     group.add(turn, ring, ray, label);
     this.scene.add(group);
-    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null };
+    if (actor) el.classList.add("v3-label--ai");
+    p = { group, turn, body, arrow, ring, ray, rayMat, label, el, gun, colour, name, biped: null, bipedUrl: null, weapon: null, weaponUrl: null, weaponName: null, actor };
     this.players.set(index, p);
     return p;
   }
@@ -519,7 +583,7 @@ export class ViewerScene {
     const have = template ? url : null;
     if (have !== p.bipedUrl) {
       if (p.biped) p.turn.remove(p.biped.object);
-      p.biped = template ? this.library.instantiateBiped(template, p.colour) : null;
+      p.biped = template ? this.library.instantiateBiped(template, p.actor ? null : p.colour) : null;
       p.bipedUrl = have;
       p.weapon = null;
       p.weaponUrl = null;
@@ -633,12 +697,58 @@ export class ViewerScene {
     for (const p of frame.players) if (p.alive && p.z < this.lowZ) this.lowZ = p.z;
     this.fitGrid(frame.seen);
 
-    smoothPlayers(this.shown, frame.players, dt, { snap: seeking || this.opts.reducedMotion });
+    const snap = seeking || this.opts.reducedMotion;
+    smoothPlayers(this.shown, frame.actors?.length ? [...frame.players, ...frame.actors] : frame.players, dt, { snap });
     this.shots.observe(frame.players, now, { quiet: seeking });
+    if (frame.actors?.length) this.shots.observe(frame.actors, now, { quiet: seeking });
     const S = this.scale;
     const still = this.opts.reducedMotion;
+
+    // Vehicles first: whoever is in one is drawn as the vehicle.
+    smoothVehicles(this.shownVehicles, frame.vehicles ?? [], dt, { snap });
+    for (const [id, v] of this.shownVehicles) {
+      let colour: string | null = null;
+      for (const [index, s] of this.shown) if (s.vehicle === id && !s.actor && s.alive) { colour = roster.get(index)?.colour ?? null; break; }
+      const o = this.vehicle(v, colour);
+      const [x, y, z] = gameToGl(v.x, v.y, v.z);
+      const k = o.model ? modelScale(this.camera.position.distanceTo(this.v0.set(x, y, z)), o.height, S) : S;
+      const b = vehicleBasis(v.forward, v.up);
+      this.m4.makeBasis(this.v0.set(...b.x), this.v1.set(...b.y), this.v2.set(...b.z));
+      const g = o.group, q = g.quaternion, qx = q.x, qy = q.y, qz = q.z;
+      q.setFromRotationMatrix(this.m4);
+      if (g.position.x !== x || g.position.y !== y || g.position.z !== z || g.scale.x !== k || q.x !== qx || q.y !== qy || q.z !== qz) this.dirty = true;
+      g.position.set(x, y, z);
+      g.scale.setScalar(k);
+    }
+    for (const [id, o] of this.vehicles) {
+      if (this.shownVehicles.has(id)) continue;
+      this.scene.remove(o.group);
+      o.boxMat.dispose();
+      this.vehicles.delete(id);
+      this.dirty = true;
+    }
+
     for (const [index, s] of this.shown) {
-      const p = this.player(index, roster.get(index));
+      const info = s.actor ? { name: weaponLabel(s.species) || "AI", colour: actorColour(s.actor.team) } : roster.get(index);
+      const p = this.player(index, info, !!s.actor);
+      const ride = s.vehicle ? this.vehicles.get(s.vehicle) : undefined;
+      if (ride && s.alive) {
+        // In a vehicle: the vehicle stands for them, and carries their label.
+        const g = p.group;
+        if (p.turn.visible || !g.visible || !g.position.equals(ride.group.position)) this.dirty = true;
+        g.visible = true;
+        g.position.copy(ride.group.position);
+        p.turn.visible = p.ring.visible = p.ray.visible = false;
+        p.turn.rotation.y = yawToGl(s.yaw);
+        p.turn.scale.setScalar(ride.group.scale.x);
+        p.label.visible = !p.actor || this.actorNames;
+        p.label.position.y = ride.height * ride.group.scale.x + 0.25 * S;
+        p.el.classList.toggle("on", highlight === index || this.followIndex === index);
+        if (s.weapon !== p.weaponName) { p.weaponName = s.weapon; p.gun.textContent = weaponLabel(s.weapon); }
+        continue;
+      }
+      p.turn.visible = p.ring.visible = true;
+      p.ray.visible = !p.actor;
       this.dress(p, s);
       const [x, y, z] = gameToGl(s.x, s.y, s.z);
       const g = p.group, turn = p.turn;
@@ -648,11 +758,11 @@ export class ViewerScene {
       // up to the same limit, so it never shrinks to a speck on a big map.
       const k = p.biped
         ? modelScale(this.camera.position.distanceTo(this.v0.set(x, y, z)), p.biped.height, S)
-        : S * (big ? 1.25 : 1);
+        : S * (big ? 1.25 : 1) * (p.actor ? 0.8 : 1);
       const yaw = yawToGl(s.yaw);
       if (g.visible !== s.alive || g.position.x !== x || g.position.y !== y || g.position.z !== z || turn.scale.x !== k || turn.rotation.y !== yaw) this.dirty = true;
       g.visible = s.alive;
-      p.label.visible = s.alive;
+      p.label.visible = s.alive && (!p.actor || this.actorNames);
       g.position.set(x, y, z);
       turn.rotation.y = yaw;
       turn.scale.setScalar(k);
@@ -660,7 +770,7 @@ export class ViewerScene {
       p.ring.scale.setScalar(p.biped ? k * p.biped.height * 1.25 * (big ? 1.25 : 1) : k);
       p.label.position.y = p.biped ? p.biped.height * k * 1.08 + 0.12 * S : 1.15 * k;
       p.el.classList.toggle("on", big);
-      if (!s.alive) continue;
+      if (!s.alive || p.actor) continue;
       // The aim ray: from the eye point, along the eased aim. Reduced motion
       // has no flashes; the ray itself says "firing" for a moment instead.
       g.updateWorldMatrix(false, true);
@@ -800,6 +910,9 @@ export class ViewerScene {
     this.controls.dispose();
     for (const p of this.players.values()) this.removePlayer(p);
     this.players.clear();
+    for (const o of this.vehicles.values()) { if (o.model) o.group.remove(o.model); o.boxMat.dispose(); }
+    this.vehicles.clear();
+    this.geoBox.dispose();
     this.library.dispose();
     disposeTree(this.scene);
     this.scene.environment?.dispose();

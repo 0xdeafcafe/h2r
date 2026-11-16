@@ -56,6 +56,9 @@ export default function Viewer3D(props: Viewer3DProps) {
     else return;
     e.preventDefault();
   };
+  // AI-controlled bipeds (campaign) go unnamed unless asked; the button only shows when there are some.
+  const [hasActors, setHasActors] = createSignal(false);
+  const [actorNames, setActorNames] = createSignal(false);
   const [mapState, setMapState] = createSignal<"loading" | "map" | "grid">("grid");
   // The server's art manifest takes a moment: only say "no geometry" once it has had one.
   const [late, setLate] = createSignal(false);
@@ -99,6 +102,7 @@ export default function Viewer3D(props: Viewer3DProps) {
       const frame = props.frame(now);
       s.update(now, frame, props.roster(), props.highlight?.() ?? null, sought !== seen);
       seen = sought;
+      if (!!frame.actors?.length !== hasActors()) setHasActors(!!frame.actors?.length);
       // The opening camera, once there are players to follow.
       if (!started && frame.players.length) { started = true; if (mode() !== "orbit") pick(mode(), follow()); }
     });
@@ -145,6 +149,9 @@ export default function Viewer3D(props: Viewer3DProps) {
           <button classList={{ on: ao() }} aria-pressed={ao()} onClick={() => setAo(scene?.setAo(!ao()) ?? false)} title="Ambient occlusion: soft shading in corners (costs frame rate)">AO</button>
           <button classList={{ on: see() }} aria-pressed={see()} onClick={toggleSee} title="See-through: walls between the camera and the player you follow (or point at in the scoreboard) are cut away. Key: x">See-through</button>
           <button classList={{ on: cut() }} aria-pressed={cut()} onClick={toggleCut} title="Height cut: hide the level above a height, to look into rooms from above. Following a player, it stays just over their head. Keys: c, [ and ]">Cut</button>
+          <Show when={hasActors()}>
+            <button classList={{ on: actorNames() }} aria-pressed={actorNames()} onClick={() => { setActorNames(!actorNames()); scene?.setActorNames(actorNames()); }} title="Name the AI by what they are">AI names</button>
+          </Show>
           <Show when={cut()}>
             <input
               class="v3-cut" type="range" aria-label="Cut height" title={mode() === "follow" ? "Following the player's height" : "Cut height"}

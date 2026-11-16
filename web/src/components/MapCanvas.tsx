@@ -1,6 +1,6 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 import type { MapOutline } from "../api/types";
-import type { SampledPlayer } from "../state/frames";
+import type { SampledPlayer, SampledVehicle } from "../state/frames";
 import { onAnimationFrame } from "../map/scheduler";
 import { draw, fitView, newView, sceneBounds, type Bounds, type Marker, type RosterEntry } from "../map/render";
 import { readPalette, type MapPalette } from "../map/palette";
@@ -11,6 +11,9 @@ export interface MapFrame {
   /** Death markers with their colour and age-based alpha already worked out. */
   markers: Marker[];
   seen: Bounds | null;
+  /** AI-controlled bipeds (campaign) and vehicles in use, when the frames have them. */
+  actors?: SampledPlayer[];
+  vehicles?: SampledVehicle[];
 }
 
 export default function MapCanvas(props: {
@@ -95,11 +98,13 @@ export default function MapCanvas(props: {
         hover = found;
         canvas.style.cursor = found === null ? "default" : "pointer";
       }
-      if (!props.mini) shots.observe(f.players, now);
+      if (!props.mini) { shots.observe(f.players, now); if (f.actors?.length) shots.observe(f.actors, now); }
       const scene = {
         shots: props.mini || still ? undefined : shots.live(now),
         firing: props.mini || !still ? undefined : shots.firingNow(now),
         players: f.players,
+        actors: f.actors,
+        vehicles: f.vehicles,
         markers: f.markers,
         roster: props.roster(),
         outline: props.outline(),

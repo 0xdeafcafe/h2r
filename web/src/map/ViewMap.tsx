@@ -8,7 +8,8 @@ import { For, Show, createEffect, on, onCleanup, onMount } from "solid-js";
 import type { MapFrame } from "../components/MapCanvas";
 import { onAnimationFrame } from "./scheduler";
 import { readPalette, type MapPalette } from "./palette";
-import { strokeAim, strokeTracer, type RosterEntry } from "./render";
+import { drawActor, drawVehicle, strokeAim, strokeTracer, vehicleColour, type RosterEntry } from "./render";
+import { actorColour, vehicleBox } from "../viewer/models";
 import { ShotQueue } from "./shots";
 import {
   clampPan, depthOf, easePanZoom, fitPicture, viewAxis, viewLabel, worldToPixel, yawOnView, zoomAbout,
@@ -215,6 +216,7 @@ export default function ViewMap(props: {
       let firing: ReadonlySet<number> | null = null;
       if (!props.mini) {
         shots.observe(f.players, now);
+        if (f.actors?.length) shots.observe(f.actors, now);
         if (still) firing = shots.firingNow(now);
         else for (const shot of shots.live(now)) {
           const [ax, ay, az] = shot.aim;
@@ -224,6 +226,17 @@ export default function ViewMap(props: {
           const k = Math.max(1, 46 / len);
           strokeTracer(ctx, x0 + (dx / len) * r, y0 + (dy / len) * r, x0 + dx * k, y0 + dy * k, shot.alpha);
         }
+      }
+      // Vehicles in use, then the AI (small squares, never named), under the players.
+      if (!props.mini) for (const veh of f.vehicles ?? []) {
+        const [px, py] = worldToPixel(m, veh.x, veh.y, veh.z), [fx, fy] = worldToPixel(m, veh.x + veh.forward[0], veh.y + veh.forward[1], veh.z + veh.forward[2]);
+        const [len, wid] = vehicleBox(veh.kind), unit = Math.hypot(m[0][0], m[0][1], m[0][2]) * cur.k, k = Math.max(unit, 9 / wid);
+        drawVehicle(ctx, sx(px), sy(py), Math.atan2(fy - py, fx - px), len * k, wid * k, vehicleColour(veh.id, f.players, f.actors, roster));
+      }
+      for (const a of f.actors ?? []) {
+        if (!a.alive || a.vehicle) continue;
+        const [px, py] = worldToPixel(m, a.x, a.y, a.z);
+        drawActor(ctx, sx(px), sy(py), props.mini ? 1.5 : 2.5, actorColour(a.actor?.team));
       }
       for (const q of placed) {
         const info = roster.get(q.p.index);

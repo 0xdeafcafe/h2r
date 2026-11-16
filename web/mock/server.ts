@@ -10,6 +10,8 @@
 // H2_MOCK_MAP_GEOMETRY=0 turns it off, and then /art/game answers 404.
 // H2_MOCK_MODELS=1 adds stand-in player and weapon models (mock/models.ts:
 // block figures) to the manifest; without it players are capsules.
+// H2_MOCK_ACTORS=1 puts the campaign's AI and vehicles (mock/campaign.ts)
+// into every game's frames, not only games whose mode is "campaign".
 // H2_MOCK_INDOOR=1 shuts each arena's glb inside a busy building (walls, a
 // ceiling, an upper floor, pillars, machines), for the 3D view's cutaways.
 
@@ -23,6 +25,7 @@ import { Social } from "./social";
 import { Sessions } from "./sessions";
 import { mockMapGeometry } from "./arena";
 import { mockModels } from "./models";
+import { campaignHook } from "./campaign";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -39,6 +42,9 @@ world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") socia
 const sessions = new Sessions(world, Math.max(0, Number(process.env.H2_MOCK_SESSIONS ?? 5) || 0));
 sessions.seed();
 setInterval(() => sessions.step(), 2500);
+// AI and vehicles in the frames of campaign games; H2_MOCK_ACTORS=1 puts them in every game.
+const actorsEverywhere = !!process.env.H2_MOCK_ACTORS && process.env.H2_MOCK_ACTORS !== "0";
+world.frameHooks.push(campaignHook(actorsEverywhere ? () => true : undefined));
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;

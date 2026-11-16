@@ -45,10 +45,38 @@ export interface FramePlayer {
   shots?: number | null;
 }
 
+/** A vehicle with someone in it. A player's or actor's `vehicle` is its `id`. */
+export interface FrameVehicle {
+  id: string;
+  /** The vehicle tag's stem: "warthog", "ghost". */
+  kind: string;
+  pos: [number, number, number];
+  /** Unit vectors, game coordinates (z up). */
+  forward: [number, number, number];
+  up: [number, number, number];
+}
+
+/** An AI-controlled biped (campaign); only living ones are sent. */
+export interface FrameActor {
+  id: string;
+  /** The biped tag's stem: "grunt", "marine", "elite". */
+  species: string;
+  pos: [number, number, number];
+  yaw: number;
+  aim?: [number, number, number] | null;
+  weapon?: string | null;
+  shots?: number | null;
+  /** "covenant", "human", "flood", "sentinel", "prophet", "player", or a team index as text. */
+  team?: string | null;
+  vehicle?: string | null;
+}
+
 export interface Frame {
   game_id: GameId;
   tick: number;
   players: FramePlayer[];
+  vehicles?: FrameVehicle[];
+  actors?: FrameActor[];
 }
 
 export interface PlayerScore {

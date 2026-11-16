@@ -10,7 +10,7 @@
 
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { bodyTint, findNode, secondaryOf, tintColours, type Rgb } from "./models";
+import { bodyTint, findNode, secondaryOf, tintColours, vehicleTint, type Rgb } from "./models";
 
 export interface BipedTemplate {
   kind: "biped";
@@ -24,6 +24,13 @@ export interface BipedTemplate {
 export interface WeaponTemplate {
   kind: "weapon";
   root: THREE.Object3D;
+}
+
+export interface VehicleTemplate {
+  kind: "vehicle";
+  root: THREE.Object3D;
+  /** Its top above its origin, game units: where a label clears it. */
+  height: number;
 }
 
 export interface BipedInstance {
@@ -90,6 +97,15 @@ export function prepareWeapon(g: Loaded): WeaponTemplate | null {
   return { kind: "weapon", root: g.scene };
 }
 
+export function prepareVehicle(g: Loaded): VehicleTemplate | null {
+  const all = meshes(g.scene);
+  if (!all.length) return null;
+  for (const m of all) { m.castShadow = true; m.receiveShadow = true; }
+  g.scene.updateWorldMatrix(true, true);
+  const box = new THREE.Box3().setFromObject(g.scene);
+  return box.isEmpty() ? null : { kind: "vehicle", root: g.scene, height: Math.max(0.1, box.max.y) };
+}
+
 type Entry<T> = { state: "loading" } | { state: "ready"; template: T } | { state: "failed" };
 
 /** The glbs loaded so far, by address, and the coloured parts made from
@@ -97,6 +113,7 @@ type Entry<T> = { state: "loading" } | { state: "ready"; template: T } | { state
 export class ModelLibrary {
   private bipeds = new Map<string, Entry<BipedTemplate>>();
   private weapons = new Map<string, Entry<WeaponTemplate>>();
+  private vehicles = new Map<string, Entry<VehicleTemplate>>();
   /** Coloured geometry and materials, by colour then by what they were made from. */
   private tinted = new Map<string, { geo: Map<THREE.BufferGeometry, THREE.BufferGeometry>; mat: Map<THREE.Material, THREE.Material> }>();
   private disposed = false;
@@ -120,16 +137,57 @@ export class ModelLibrary {
    *  the one fetch. */
   biped(url: string): BipedTemplate | null { return this.get(this.bipeds, url, prepareBiped); }
   weapon(url: string): WeaponTemplate | null { return this.get(this.weapons, url, prepareWeapon); }
+  vehicle(url: string): VehicleTemplate | null { return this.get(this.vehicles, url, prepareVehicle); }
 
   /** Whether `url` was tried and can't be used. */
   failed(url: string): boolean {
-    return this.bipeds.get(url)?.state === "failed" || this.weapons.get(url)?.state === "failed";
+    return [this.bipeds, this.weapons, this.vehicles].some((m) => m.get(url)?.state === "failed");
   }
 
-  /** A copy of a biped in a player's colour. It shares the template's
-   *  geometry and textures; nothing in it needs disposing. */
-  instantiateBiped(t: BipedTemplate, colour: string): BipedInstance {
+  /** A copy of a vehicle, washed lightly with its player's colour (null
+   *  for none: an AI's, or nobody's). */
+  instantiateVehicle(t: VehicleTemplate, colour: string | null): THREE.Object3D {
     const object = t.root.clone(true);
+    if (!colour) return object;
+    const key = "vehicle|" + colour;
+    let set = this.tinted.get(key);
+    if (!set) { set = { geo: new Map(), mat: new Map() }; this.tinted.set(key, set); }
+    const c = new THREE.Color(colour), tint = vehicleTint([c.r, c.g, c.b]), mats = set.mat;
+    for (const m of meshes(object)) {
+      m.material = mapMaterials(m.material, (mat) => {
+        let out = mats.get(mat);
+        if (!out) {
+          out = mat.clone();
+          const col = (out as THREE.MeshStandardMaterial).color;
+          if (col) col.setRGB(col.r * tint[0], col.g * tint[1], col.b * tint[2]);
+          mats.set(mat, out);
+        }
+        return out;
+      });
+    }
+    return object;
+  }
+
+  /** A copy of a biped in a player's colour, or as it comes (null: an AI,
+   *  which wears its own colours). It shares the template's geometry and
+   *  textures; nothing in it needs disposing. */
+  instantiateBiped(t: BipedTemplate, colour: string | null): BipedInstance {
+    const object = t.root.clone(true);
+    if (colour === null) {
+      // The loader multiplies by COLOR_0 as if it were a colour; here it holds weights.
+      let plain = this.tinted.get("");
+      if (!plain) { plain = { geo: new Map(), mat: new Map() }; this.tinted.set("", plain); }
+      const mats = plain.mat;
+      for (const m of meshes(object)) {
+        if (!m.geometry.getAttribute("color")) continue;
+        m.material = mapMaterials(m.material, (mat) => {
+          let out = mats.get(mat);
+          if (!out) { out = mat.clone(); (out as THREE.MeshStandardMaterial).vertexColors = false; mats.set(mat, out); }
+          return out;
+        });
+      }
+      return { object, head: findNode(object, "head")!, hand: findNode(object, "weapon")!, height: t.height };
+    }
     let set = this.tinted.get(colour);
     if (!set) { set = { geo: new Map(), mat: new Map() }; this.tinted.set(colour, set); }
     const c = new THREE.Color(colour);
@@ -179,7 +237,7 @@ export class ModelLibrary {
       for (const m of set.mat.values()) m.dispose();
     }
     this.tinted.clear();
-    for (const map of [this.bipeds, this.weapons] as Map<string, Entry<{ root: THREE.Object3D }>>[]) {
+    for (const map of [this.bipeds, this.weapons, this.vehicles] as Map<string, Entry<{ root: THREE.Object3D }>>[]) {
       for (const e of map.values()) {
         if (e.state !== "ready") continue;
         for (const m of meshes(e.template.root)) {

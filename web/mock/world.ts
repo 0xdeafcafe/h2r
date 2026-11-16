@@ -80,6 +80,10 @@ interface SimGame {
 
 export type Listener = { onEvent(ev: WireEvent): void; onFrame(f: Frame): void };
 
+/** Something that adds to a game's frame before it is sent and recorded
+ *  (mock/campaign.ts puts AI and vehicles in). */
+export type FrameHook = (frame: Frame, game: { id: string; map: MockMap; tick: number; mode?: string }) => void;
+
 let rngState = 0x2f6e2b1;
 export function rand(): number {
   // mulberry32, deterministic per run so screenshots are comparable.
@@ -100,6 +104,7 @@ export class World {
   readonly outlines = new Map<string, MapOutline>();
   readonly files = new Map<string, { bytes: Uint8Array<ArrayBuffer>; sha256: string }>();
   readonly listeners = new Set<Listener>();
+  readonly frameHooks: FrameHook[] = [];
   /** Virtual clock in ms; real time once caught up. */
   now = Date.now();
   live = false;
@@ -306,6 +311,7 @@ export class World {
         return p;
       }),
     };
+    for (const hook of this.frameHooks) hook(frame, g);
     if (this.live) for (const l of this.listeners) l.onFrame(frame);
     if (g.tick % TICKS === 0) {
       // The recorded frame is one a second: it carries the second's shots (at

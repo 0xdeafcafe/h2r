@@ -2,7 +2,8 @@
 // is up (so canvas y is flipped), z is height.
 
 import type { MapOutline } from "../api/types";
-import type { SampledPlayer } from "../state/frames";
+import type { SampledPlayer, SampledVehicle } from "../state/frames";
+import { actorColour, vehicleBox } from "../viewer/models";
 import type { MapPalette } from "./palette";
 import type { LiveShot } from "./shots";
 
@@ -28,6 +29,10 @@ export interface Scene {
   flat?: boolean;
   /** Player index under the pointer, when the canvas is tracking one. */
   hover?: number | null;
+  /** AI-controlled bipeds (campaign): small squares in their side's colour, never named. */
+  actors?: SampledPlayer[];
+  /** Vehicles in use: an outline of about their size under whoever is in them. */
+  vehicles?: SampledVehicle[];
   /** Shots on screen now: a fading line from the player along their aim. */
   shots?: LiveShot[];
   /** Players to show as firing with a steady, brighter aim line (reduced
@@ -57,6 +62,47 @@ export function strokeTracer(ctx: CanvasRenderingContext2D, x0: number, y0: numb
     ctx.stroke();
   }
   ctx.globalAlpha = 1;
+}
+
+/** A vehicle seen from above: a rounded outline `len` by `wid` pixels,
+ *  turned to `angle` (canvas radians), with a notch of a nose. */
+export function drawVehicle(ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, len: number, wid: number, colour: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  ctx.beginPath();
+  ctx.roundRect(-len / 2, -wid / 2, len, wid, Math.min(len, wid) * 0.25);
+  ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+  ctx.fill();
+  ctx.lineWidth = 3.5;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.75)";
+  ctx.stroke();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = colour;
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(len / 2, -wid * 0.3); ctx.lineTo(len / 2 + wid * 0.35, 0); ctx.lineTo(len / 2, wid * 0.3);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** An AI-controlled biped: a small square, so it is never taken for a player's dot. */
+export function drawActor(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, colour: string) {
+  ctx.fillStyle = colour;
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.85)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.rect(x - r, y - r, r * 2, r * 2);
+  ctx.fill();
+  ctx.stroke();
+}
+
+/** The colour a vehicle's outline takes: its first player's, else its first actor's side, else grey. */
+export function vehicleColour(id: string, players: readonly SampledPlayer[], actors: readonly SampledPlayer[] | undefined, roster: Map<number, RosterEntry>): string {
+  const p = players.find((q) => q.alive && q.vehicle === id);
+  if (p) return roster.get(p.index)?.colour ?? "#999";
+  const a = actors?.find((q) => q.vehicle === id);
+  return a ? actorColour(a.actor?.team) : "#9aa3ab";
 }
 
 /** A short line from a dot the way its player is looking. */
@@ -182,6 +228,19 @@ export function draw(ctx: CanvasRenderingContext2D, w: number, h: number, s: Sce
       const x = sx(shot.x), y = sy(shot.y);
       strokeTracer(ctx, x + (ax / flatLen) * r, y - (ay / flatLen) * r, x + (ax / flatLen) * (r + len), y - (ay / flatLen) * (r + len), shot.alpha);
     }
+  }
+
+  // Vehicles, then the AI, under the players.
+  if (!s.mini) {
+    for (const veh of s.vehicles ?? []) {
+      const [len, wid] = vehicleBox(veh.kind);
+      const k = Math.max(v.scale, 9 / wid);
+      drawVehicle(ctx, sx(veh.x), sy(veh.y), Math.atan2(-veh.forward[1], veh.forward[0]), len * k, wid * k, vehicleColour(veh.id, s.players, s.actors, s.roster));
+    }
+  }
+  for (const a of s.actors ?? []) {
+    if (!a.alive || a.vehicle) continue;
+    drawActor(ctx, sx(a.x), sy(a.y), s.mini ? 1.5 : 2.5, actorColour(a.actor?.team));
   }
 
   // Players.

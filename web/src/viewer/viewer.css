@@ -27,6 +27,7 @@
 .v3-label i { width: 7px; height: 7px; border: 1px solid rgba(0, 0, 0, .8); border-radius: 50%; }
 .v3-label small { font-weight: 400; font-size: 10px; color: #b9c6d2; }
 .v3-label small:empty { display: none; }
+.v3-label--ai { font-weight: 400; font-size: 10px; line-height: 13px; padding: 0 4px 0 3px; background: rgba(0, 0, 0, .45); cursor: default; }
 .v3-label:hover, .v3-label.on { background: rgba(0, 0, 0, .88); border-color: #fff; z-index: 5 !important; }
 .v3-tools { position: absolute; top: 6px; left: 6px; right: 6px; display: flex; flex-wrap: wrap; gap: 3px; pointer-events: none; }
 .v3-tools > * { pointer-events: auto; height: 21px; padding: 0 8px; font: 10px/19px var(--font-ui, system-ui, sans-serif); color: #fff; cursor: pointer; background: rgba(0, 0, 0, .66); border: 1px solid #6c6c6c; border-radius: 0; }

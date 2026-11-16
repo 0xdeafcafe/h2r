@@ -1,7 +1,7 @@
 // Frame buffering and interpolation. Frames are not reactive state: they
 // arrive at up to 15 Hz per game and are read directly by the canvas loop.
 
-import type { Frame, FramePlayer } from "../api/types";
+import type { Frame, FramePlayer, FrameVehicle } from "../api/types";
 
 export const TICKS_PER_SECOND = 30;
 const MS_PER_TICK = 1000 / TICKS_PER_SECOND;
@@ -25,6 +25,30 @@ export interface SampledPlayer {
    *  can tell a new one from the one it has already drawn. */
   shots?: number;
   shotTick?: number;
+  /** Set for an AI-controlled biped (campaign), which is sampled, eased and
+   *  drawn like a player: its id and side. Its `index` is made from the id
+   *  and is negative, so it never meets a player's. */
+  actor?: { id: string; team: string | null };
+}
+
+/** A vehicle with someone in it, at one moment. */
+export interface SampledVehicle {
+  id: string;
+  kind: string;
+  x: number; y: number; z: number;
+  /** Unit vectors, game coordinates. */
+  forward: Aim;
+  up: Aim;
+}
+
+/** At most this many actors are drawn from one frame, as the contract caps them. */
+export const MAX_ACTORS = 128;
+
+/** An actor's `index`: negative, and the same for the same id in every frame. */
+export function actorIndex(id: string): number {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (Math.imul(h, 31) + id.charCodeAt(i)) | 0;
+  return -1 - (h >>> 0);
 }
 
 export type Aim = [number, number, number];
@@ -106,7 +130,13 @@ export function fromFramePlayer(p: FramePlayer, tick?: number, shotsFrom: FrameP
 /** Blends two frames at `tick`. Players missing from `b` hold their
  *  position from `a`; players only in `b` appear when t >= 0.5. */
 export function interpolateFrames(a: Frame, b: Frame | undefined, tick: number): SampledPlayer[] {
-  if (!b || b.tick <= a.tick) return a.players.map((p) => fromFramePlayer(p, a.tick));
+  return blendPlayers(a.players, b && b.tick > a.tick ? b.players : undefined, a.tick, b?.tick ?? a.tick, tick);
+}
+
+function blendPlayers(from: readonly FramePlayer[], to: readonly FramePlayer[] | undefined, tickA: number, tickB: number, tick: number): SampledPlayer[] {
+  const a = { tick: tickA, players: from };
+  if (!to) return a.players.map((p) => fromFramePlayer(p, a.tick));
+  const b = { tick: tickB, players: to };
   const t = Math.min(1, Math.max(0, (tick - a.tick) / (b.tick - a.tick)));
   const next = new Map<number, FramePlayer>();
   for (const p of b.players) next.set(p.index, p);
@@ -152,6 +182,90 @@ export function sampleFrames(frames: readonly Frame[], tick: number): SampledPla
   const i = findFrame(frames, tick);
   if (i < 0) return frames[0]!.players.map((p) => fromFramePlayer(p));
   return interpolateFrames(frames[i]!, frames[i + 1], tick);
+}
+
+// ---- actors and vehicles ----
+
+const isPos = (v: unknown): v is [number, number, number] =>
+  Array.isArray(v) && v.length === 3 && v.every((n) => typeof n === "number" && Number.isFinite(n));
+
+/** A frame's actors as players are sampled (so one blend serves both),
+ *  with what makes them actors beside them. Anything off the contract is
+ *  left out; no more than the cap are kept. */
+function actorsOf(f: Frame): { players: FramePlayer[]; info: Map<number, { id: string; team: string | null }> } {
+  const players: FramePlayer[] = [], info = new Map<number, { id: string; team: string | null }>();
+  for (const a of f.actors ?? []) {
+    if (players.length >= MAX_ACTORS) break;
+    const id = cleanId(a?.id);
+    if (!id || !isPos(a.pos) || typeof a.yaw !== "number" || !Number.isFinite(a.yaw)) continue;
+    const index = actorIndex(id);
+    if (info.has(index)) continue;
+    info.set(index, { id, team: cleanId(a.team) });
+    players.push({ index, alive: true, pos: a.pos, yaw: a.yaw, vehicle: cleanId(a.vehicle), species: a.species, aim: a.aim, weapon: a.weapon, shots: a.shots });
+  }
+  return { players, info };
+}
+
+const actorCache = new WeakMap<Frame, ReturnType<typeof actorsOf>>();
+function actorsCached(f: Frame) {
+  let c = actorCache.get(f);
+  if (!c) { c = actorsOf(f); actorCache.set(f, c); }
+  return c;
+}
+
+/** The actors at a (fractional) tick, blended between frames like players.
+ *  Only the living are sent, so one missing from the later frame is gone
+ *  once that frame is the nearer. */
+export function sampleActors(frames: readonly Frame[], tick: number): SampledPlayer[] {
+  const i = findFrame(frames, tick);
+  if (i < 0) return [];
+  const fa = frames[i]!, fb = frames[i + 1];
+  if (!fa.actors?.length && !fb?.actors?.length) return [];
+  const a = actorsCached(fa), b = fb && fb.tick > fa.tick ? actorsCached(fb) : undefined;
+  const late = !!fb && !!b && (tick - fa.tick) / (fb.tick - fa.tick) >= 0.5;
+  const out: SampledPlayer[] = [];
+  for (const p of blendPlayers(a.players, b?.players, fa.tick, fb?.tick ?? fa.tick, tick)) {
+    const info = b?.info.get(p.index) ?? a.info.get(p.index);
+    if (!info || (late && !b!.info.has(p.index))) continue;
+    p.actor = info;
+    out.push(p);
+  }
+  return out;
+}
+
+function fromFrameVehicle(v: FrameVehicle): SampledVehicle | null {
+  const id = cleanId(v?.id), kind = cleanId(v?.kind);
+  if (!id || !isPos(v.pos)) return null;
+  const forward = cleanAim(v.forward) ?? [1, 0, 0];
+  return { id, kind: kind ?? "vehicle", x: v.pos[0], y: v.pos[1], z: v.pos[2], forward, up: cleanAim(v.up) ?? [0, 0, 1] };
+}
+
+/** The vehicles at a (fractional) tick. One in only the earlier frame
+ *  stays until the later frame is the nearer; one only in the later
+ *  appears then. A big jump snaps. */
+export function sampleVehicles(frames: readonly Frame[], tick: number): SampledVehicle[] {
+  const i = findFrame(frames, tick);
+  if (i < 0) return [];
+  const fa = frames[i]!, fb = frames[i + 1];
+  const from = (fa.vehicles ?? []).map(fromFrameVehicle).filter((v): v is SampledVehicle => !!v);
+  if (!fb || fb.tick <= fa.tick) return from;
+  const t = Math.min(1, Math.max(0, (tick - fa.tick) / (fb.tick - fa.tick)));
+  const next = new Map<string, SampledVehicle>();
+  for (const raw of fb.vehicles ?? []) { const v = fromFrameVehicle(raw); if (v) next.set(v.id, v); }
+  const out: SampledVehicle[] = [];
+  for (const a of from) {
+    const b = next.get(a.id);
+    next.delete(a.id);
+    if (!b) { if (t < 0.5) out.push(a); continue; }
+    if ((b.x - a.x) ** 2 + (b.y - a.y) ** 2 + (b.z - a.z) ** 2 > SNAP_DISTANCE * SNAP_DISTANCE) { out.push(t < 0.5 ? a : b); continue; }
+    out.push({
+      id: a.id, kind: t < 0.5 ? a.kind : b.kind,
+      x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t),
+      forward: nlerpAim(a.forward, b.forward, t), up: nlerpAim(a.up, b.up, t),
+    });
+  }
+  if (t >= 0.5) for (const b of next.values()) out.push(b);
+  return out;
 }
 
 export interface DeathMarker { index: number; x: number; y: number; z: number; tick: number; bornAt: number }
@@ -205,6 +319,14 @@ export class FrameBuffer {
 
   sample(now: number): SampledPlayer[] {
     return sampleFrames(this.frames, this.renderTick(now));
+  }
+
+  sampleActors(now: number): SampledPlayer[] {
+    return sampleActors(this.frames, this.renderTick(now));
+  }
+
+  sampleVehicles(now: number): SampledVehicle[] {
+    return sampleVehicles(this.frames, this.renderTick(now));
   }
 
   /** Records where a victim died: the kill's `pos` when given, else the
