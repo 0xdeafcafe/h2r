@@ -190,19 +190,22 @@ What the hooks do:
   callback's `[[esp+4]]+4`, as for the Controls and Live menu lists; the
   profile is the name on that player's slot, so in co-op each player sees
   and edits their own skulls (with no named profile there, the `default`
-  profile's). With no skull collected, it logs why and stays put. Otherwise it opens a Controls
-  screen with `0x149f1e(1 << player, 0x2b7714)`, the Video screen's call.
-- **The screen.** While that call runs, the list hook names the Controls
-  list's datum array "h2r skulls" and sizes it to the profile's skulls.
-  On a list with that name, the Controls row text hook (`0x2c8548`) draws
-  the skull's name and the game's own On or Off (`0x02000181`,
-  `0x03000182`, the vibration row's), and the row chosen hook (`0x2c8719`)
-  flips it in the store (written at once). The header hook (`0x22fda6`)
-  swaps the Controls title for "Skulls". The added-items hook leaves the
-  list its six retail item widgets, so more than six skulls scroll. B
-  returns to the difficulty screen.
+  profile's). With no skull collected, it logs why and stays put. Otherwise it opens the
+  Skulls screen: `0x149f1e(1 << player, loader)` with our list class's
+  loader. The row's text and press are `before` hooks on the plan
+  (`boot::skulls_screen::DifficultyRow`).
+- **The screen** is our own list class (`boot::skulls_screen`, docs/ui.md
+  "Screen and list classes"): built by the Controls constructor, then
+  pointed at our vtables. Its rows are the profile's skulls with the
+  skull's name and the game's own On or Off (`0x02000181`, `0x03000182`,
+  the vibration row's); a press flips it in the store (written at once);
+  its title is "Skulls". No retail function is patched for it. **Limit:**
+  the constructor's array holds six rows (seven with the speaker row's
+  list hook); a profile with more skulls shows the first seven. The old
+  path sized the array to the profile and scrolled through all of them.
+  B returns to the difficulty screen.
 - **Strings** are served by the locale hook from ids `0x21fff000` up (the
-  15 names, the title, the list name): `is_ours` reads only the middle
+  15 names and the title): `is_ours` reads only the middle
   bytes, so they are clear of the `0x20fff0xx` ids the other rows and the
   `ui` model take.
 - `H2_NO_SKULLS_MENU=1` (or `H2_NO_SKULLS=1`) leaves the difficulty screen

@@ -1,4 +1,4 @@
-# Feature engine (design; Phases 0 to 3 built)
+# Feature engine (design; Phases 0 to 3 built, Phase 4 in part)
 
 Status: design, except Phase 0, the [first slice](#the-first-slice),
 Phase 1, the registry, Phase 2 (the differential harness, the leaves,
@@ -1561,8 +1561,46 @@ the game exercises is the Video screen, so it is the one to play-test.
   logs). Nothing has measured the entries' cost; they run only on menu
   draws and presses.
 
-Then (phase 4): the retail Controls and Button Layout handlers in Rust,
-with the Skulls screen moved to the class first.
+#### Phase 4 (in part)
+
+Tests only; nothing here was run in the game.
+
+- **Rows on retail lists are data on the plan** (`boot::retail_rows`).
+  `Extension` answers a retail list's extension rows from the `ui` model
+  with `before` hooks at the list's row text and row chosen (a retail row
+  goes on to the original): the Settings list (the Video row) and the
+  Controls list (the speaker row). `OpenRow` is one row that opens a
+  retail screen: the Xbox Live menu's Custom Games. The layouts' value text
+  on Controls is a `before`/`after` pair inside the speaker row's hook at
+  the same point. A `before` hook answers with an async body through
+  `Call::answer_async`.
+- **The Skulls screen** is our list class (`boot::skulls_screen`); its row
+  on the difficulty list is two plan hooks. Gone from `layout_glue`: the
+  Skulls open flag, its array-name test, the header hook (`0x22fda6`) and
+  the text hook's title swap, the Skulls branches in the Controls hooks.
+  **Limit (a regression):** at most seven rows (the constructor's array),
+  where the old path scrolled through all of a profile's skulls. The fix
+  is to build the rows' array ourselves with the count we want; it needs
+  the list base destructor (`0x2376c8`) read first, to free the one the
+  constructor made.
+- **Open rows** open another screen of ours: classes register their loader
+  by screen id (`list_class::loader_of`), and a press on an `Open` row
+  calls `0x149f1e(1 << player, loader)` for the pressing player.
+- **`layout_glue.rs`** is down from 1,818 to about 1,550 lines; what is
+  left is the layouts, the shared list hooks (the datum array constructor,
+  the pane, the screen tag, the text set), the smaller Controls screen's
+  speaker row, the added item widgets and the camera's field of view (it
+  needs EAX from entry after the original, which an `after` hook does not
+  see).
+- **Not done: the retail handlers ported (step c proper).** The Controls
+  row text (`0x2c8548`) is a switch over the row that picks one of about
+  25 retail string ids by setting; a Rust port would carry those ids as a
+  table, which the public repo does not take (copied lookup tables). Two
+  ways to do it: read each id from its instruction in the loaded image at
+  run time (named research points, no copied data), or keep the retail
+  rows' original and port only the control flow around it. Needs a
+  decision before porting, and call captures from a play session for the
+  differential tests.
 
 Why this first:
 
