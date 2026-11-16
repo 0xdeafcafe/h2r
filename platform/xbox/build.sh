@@ -82,7 +82,8 @@ echo "build.sh: app-container API check"
 (cd "$root" && env -u RUSTC_BOOTSTRAP CARGO_TARGET_DIR="$host_target" \
   cargo run -q --release -p uwp-host --example apicheck -- \
   "$H2_XWIN/sdk/lib/um/x86_64/OneCoreUAP.Lib" -- "$stage/h2uwp.exe" "$stage/h2game.dll") ||
-  { [ "${H2_XBOX_API_STRICT:-0}" = 1 ] && exit 1; echo "build.sh: warning: imports outside OneCoreUAP (above) may not exist on the console"; }
+  { echo "build.sh: imports outside OneCoreUAP (above) may not exist on the console, and then the app cannot start; H2_XBOX_API_CHECK=warn to package anyway" >&2
+    [ "${H2_XBOX_API_CHECK:-fail}" = warn ] || exit 1; }
 
 if [ ! -f "$keys/h2recomp.pfx" ]; then
   echo "build.sh: making the signing certificate in $keys ($publisher)"

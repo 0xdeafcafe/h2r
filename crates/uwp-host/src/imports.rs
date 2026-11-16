@@ -35,6 +35,12 @@ pub fn parse_readobj(listing: &str) -> Vec<Import> {
     out
 }
 
+/// Imports outside `OneCoreUAP.lib` that the console is known to have:
+/// Rust std's (x86_64-pc-windows-msvc) random source and its ntdll file
+/// calls. `h2uwp.exe` importing all five launched on an Xbox Series X in
+/// Dev Mode on 2026-11-16 (docs/runtime/xbox.md).
+pub const PROVEN_ON_CONSOLE: &[&str] = &["ProcessPrng", "NtOpenFile", "NtReadFile", "NtWriteFile", "RtlNtStatusToDosError"];
+
 /// The function names an import library exports, from
 /// `llvm-nm --just-symbol-name` over it: each `__imp_<name>` gives `<name>`.
 pub fn parse_nm(listing: &str) -> BTreeSet<String> {
@@ -88,6 +94,12 @@ DelayImport {
                 ("USER32.dll".into(), "MessageBoxW".into()),
             ]
         );
+    }
+
+    #[test]
+    fn the_console_proven_imports_are_only_stds() {
+        assert_eq!(PROVEN_ON_CONSOLE.len(), 5);
+        assert!(!PROVEN_ON_CONSOLE.iter().any(|f| f.starts_with("wgl") || f.contains("PixelFormat")));
     }
 
     #[test]

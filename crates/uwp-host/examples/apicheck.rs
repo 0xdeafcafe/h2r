@@ -1,5 +1,6 @@
 //! Lists the functions the given binaries import that the app-container
-//! umbrella libraries do not export (`uwp_host::imports`;
+//! umbrella libraries do not export and the console is not known to have
+//! (`uwp_host::imports`, `PROVEN_ON_CONSOLE`;
 //! platform/xbox/build.sh):
 //!
 //!     cargo run -p uwp-host --example apicheck -- <OneCoreUAP.lib>... -- <h2uwp.exe> <h2game.dll>...
@@ -30,7 +31,7 @@ fn main() -> Result<()> {
     let args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     let split = args.iter().position(|a| a.as_os_str() == "--").context("usage: apicheck <lib>... -- <binary>...")?;
     let (libs, bins) = (&args[..split], &args[split + 1..]);
-    let mut allowed = BTreeSet::new();
+    let mut allowed: BTreeSet<String> = imports::PROVEN_ON_CONSOLE.iter().map(|s| s.to_string()).collect();
     for lib in libs {
         allowed.extend(imports::parse_nm(&run("llvm-nm", &["--just-symbol-name"], lib)?));
     }

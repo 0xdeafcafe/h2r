@@ -7,9 +7,15 @@ generated module, cross-compiled for `x86_64-pc-windows-msvc`. Like the
 tvOS and iOS apps ([tvos.md](tvos.md), [ios.md](ios.md)), it carries a
 trimmed disc and only the menu, The Heretic and Zanzibar are playable.
 
-**Status:** the package builds, signs and passes every check that can run on a
-Mac. Nothing has run on a console yet. The first launch on hardware is the test.
-"Known gaps" lists what could go wrong there.
+**Status (2026-11-16):** it runs on an Xbox Series X in Dev Mode, in App
+mode (not yet switched to Game). It finds the console's GPU (`SraKmd_arden`,
+DX12, 1920x1080 Bgra8, BC textures), loads the module through
+`LoadPackagedLibrary`, mounts the disc and the hard disk, opens audio
+(WASAPI, 48 kHz) and presents frames at 5 to 8 fps while the title boots.
+Pads and levels are not checked yet. In App mode the process has about
+1.7 GB of memory, and only about 130 MB was free once booted, with 512 MB
+of dedicated GPU memory. **Switch it to Game in Dev Home** (see
+"Installing and launching") before loading a level.
 
 ## How it is put together
 
@@ -38,6 +44,11 @@ platform seam, unchanged.
 
 ### The app's life
 
+- `main` joins the multithreaded apartment (`RoInitialize`) before
+  `CoreApplication::Run`, as C++/WinRT's `init_apartment` does. Without it,
+  `Run` fails, the view never starts, and the console reports the launch as
+  timed out (`0x8027025B`). A probe package found this: it reached `main`
+  under both Rust targets but never reached the view.
 - `IFrameworkView::Run` is the render loop on the UI thread. It processes
   window events, then redraws. The present waits for vblank, so it paces
   itself. While the window is hidden it blocks on events instead.
@@ -49,6 +60,13 @@ platform seam, unchanged.
 - **Bounds:** `ApplicationViewBoundsMode::UseCoreWindow`, so the game gets the
   whole screen and not the Xbox's TV-safe area. The 4:3 picture is fitted
   (`device_config`).
+- **Files:** the app container refuses `std::fs::canonicalize` and
+  `File::open` on a directory, even inside the app's own LocalState
+  (ERROR_ACCESS_DENIED). On Windows the hard disk (`vfs::HostBackend`)
+  therefore uses absolute paths as they are and skips directory syncs.
+  File syncs open the file for writing, because `FlushFileBuffers` needs
+  write access. If the game cannot start, the log lists each file-system
+  step with its OS error (`h2uwp: check ...`).
 - **Logs:** a UWP process has no console. stderr and stdout are pointed at
   `LocalState\h2uwp.log` (`SetStdHandle`). Read it in the Device Portal's
   File explorer (LocalAppData, the package, LocalState).
@@ -105,8 +123,7 @@ cross-checks it. `build.sh` checks the result directly: the **API check**
 binary imports that `OneCoreUAP.lib` does not export. `OneCoreUAP.lib` is the
 SDK's umbrella library for APIs present on every Windows 10 device family,
 the Xbox included. An import outside it may not exist on the console, and
-then the app fails to start with no log. By default the check warns;
-`H2_XBOX_API_STRICT=1` makes it fail the build.
+then the app fails to start with no log. The check fails the build.
 
 What the check found, and what was done:
 
@@ -116,12 +133,11 @@ What the check found, and what was done:
   delay-loads both DLLs (`/DELAYLOAD`, `delayimp.lib`), so the loader
   never looks for them. The check skips delay-loaded imports.
 - Five imports remain outside `OneCoreUAP.lib`, all from Rust's std for
-  the msvc target: `bcryptprimitives!ProcessPrng` (random numbers), and
-  `ntdll!NtOpenFile`, `NtReadFile`, `NtWriteFile` and
-  `RtlNtStatusToDosError` (file and pipe paths). Both DLLs are part of every
-  Windows 10 system, so these are expected to resolve on the console, but
-  that is unverified. If they do not, the next step is the
-  `x86_64-uwp-windows-msvc` target, whose std avoids them.
+  the msvc target: `bcryptprimitives!ProcessPrng`, and `ntdll!NtOpenFile`,
+  `NtReadFile`, `NtWriteFile` and `RtlNtStatusToDosError`. The app imports
+  them and launches on the console, so they are allowed
+  (`uwp_host::imports::PROVEN_ON_CONSOLE`). Anything else outside the
+  library fails the build. `H2_XBOX_API_CHECK=warn` packages anyway.
 - `h2game.dll` imports only `KERNEL32.dll`, and all of it is inside the
   library.
 
@@ -217,24 +233,30 @@ hand once per install: in Dev Home, select the app, then View details, then
 change App type to **Game**. Without it the game may run out of memory
 loading a level.
 
+## Debugging on the console
+
+- `deploy.sh --launch-only` relaunches what is installed.
+- The log is `LocalState\h2uwp.log`:
+  `GET /api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=<full>&filename=h2uwp.log&path=%5CLocalState`.
+- Memory and GPU use: `GET /api/resourcemanager/processes` and
+  `/api/resourcemanager/systemperf`.
+- A launch error of `0x8027025B` ("didn't start in the required time") with
+  an empty LocalState means the process died or hung before the view ran.
+  Bisect with a tiny exe in its own package that only writes a file to
+  LocalState; a package can list several `Application`s, one per exe.
+
 ## Known gaps
 
-- **Never run on a console.** The first launch will show what is wrong. Look
-  in `LocalState\h2uwp.log` first. If the app exits before it writes a log
-  line, a missing import is the likely cause; see the API check's output
-  from the build.
-- **No message on screen.** The tvOS app prints why the game stopped. This
-  app only logs it.
-- **Pads via gilrs WGI:** unverified inside the app container (see "Input and
-  audio"). There is no rumble path to Windows.Gaming.Input beyond what gilrs
-  does.
-- **Audio** may be silent if cpal's WASAPI device enumeration is refused in
-  the container. The fix would be a WASAPI sink through
-  `ActivateAudioInterfaceAsync`.
-- **Suspend** pauses the guest but does not call `IDXGIDevice3::Trim`, and
-  it does not save the game.
-- **App type** must be set to Game by hand in Dev Home after each fresh
-  install.
-- The same **trimmed disc** as tvOS: only the menu, The Heretic and Zanzibar.
-- No Xbox Live (`--live`) and no movies (Bink is compiled out on Windows).
-- The package images are plain placeholders, with no Halo or Xbox artwork.
+- Pads (gilrs' WGI backend in the app container) are unverified. With no pad
+  the log shows nothing, and with a failed backend it shows
+  `app: gamepads unavailable`.
+- App mode memory: switch to Game in Dev Home. Levels are untested.
+- Speed: 5 to 8 fps while booting in App mode, where the CPU share is small.
+  Game mode is the first thing to measure.
+- If the game stops, the reason goes to the log only, not the screen.
+- Suspend does not trim GPU memory or save the game.
+- Other `canonicalize` users (`vfs::map_override` for `H2_MAP_DIR` and map
+  packages, `content`) may hit the same container refusal when used.
+- The same trimmed disc as tvOS: the menu, The Heretic and Zanzibar only.
+  No Xbox Live, and no movies.
+- The package images are plain placeholders.
