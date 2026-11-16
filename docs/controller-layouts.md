@@ -275,7 +275,7 @@ retail panes byte for byte, and ignores other screens and odd tags; panes
 move only on a tag with 14 panes, and every pane handed out exists; the row
 hooks act only on rows the list's datum array has (a four-row list leaves
 4 to 6 alone); the action table is left alone for a player past 3; choosing
-the speaker and Field of View rows saves both to `<data>/settings.toml`; and
+the speaker row and the Video screen's rows saves them all to `<data>/settings.toml`; and
 `install` returns on a synthetic runtime (`resolve_original` must run before
 `edit_dispatch`, which holds the dispatch lock).
 
@@ -299,7 +299,7 @@ the speaker and Field of View rows saves both to `<data>/settings.toml`; and
 7. Retail rows 0 to 3 still behave as before. `H2_NO_LAYOUTS=1` turns the
    layouts off (the Controller Speaker row on the Controls screen has its own
    switch, `H2_NO_SPEAKER_ROW=1`; docs/playstation-audio.md, and so has the
-   Field of View row after it, `H2_NO_FOV_ROW=1`; docs/settings-menu.md).
+   Video row after it, `H2_NO_VIDEO_SCREEN=1`; docs/settings-menu.md).
 8. The hooks install with no stall at boot.
 
 ## Known gaps
