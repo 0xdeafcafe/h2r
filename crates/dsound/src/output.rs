@@ -66,7 +66,74 @@ pub enum Pacing {
     /// bound. If logical time runs slower than real time the device
     /// underruns. Audio time stands still while the runner does not call
     /// `advance_to`.
-    Logical { origin: u64, max_queued: Duration },
+    ///
+    /// `playout` is how the thread plays it: `None` writes everything to the
+    /// sink as soon as it is rendered (exact samples, for tests); a
+    /// [`Playout`] keeps a jitter buffer, which a real device needs.
+    Logical {
+        origin: u64,
+        max_queued: Duration,
+        playout: Option<Playout>,
+    },
+}
+
+/// The jitter buffer between logical audio time and a device.
+///
+/// A runner renders in bursts at its scheduler points, a game frame apart
+/// (16.7 ms in menus, 33.3 ms in a level), and logical time trails wall time
+/// by however long the frame's work took. The device pulls at its own steady
+/// rate. Played the moment it is rendered, the queue sits at roughly zero
+/// between bursts and every late frame is a dropout. So the thread:
+///
+/// - holds playback until `target_ms` of audio (sink plus queue) is waiting,
+///   at the start and again whenever the device ran dry, so a dropout is one
+///   clean gap rather than a run of clicks;
+/// - after a dropout, raises the target by `step_ms` (up to `max_target_ms`),
+///   and lets it fall back by 1 ms a second after `relax_after` of clean
+///   play;
+/// - trims the playback rate by at most [`MAX_RATE_TRIM`] (0.5%) to hold the
+///   average fill at the target, which absorbs the device's clock drift and
+///   bleeds off the extra latency a hitch leaves behind.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Playout {
+    pub target_ms: u32,
+    pub max_target_ms: u32,
+    pub step_ms: u32,
+    pub relax_after: Duration,
+}
+
+impl Default for Playout {
+    /// 50 ms, growing to at most 150 ms.
+    fn default() -> Self {
+        Self {
+            target_ms: 50,
+            max_target_ms: 150,
+            step_ms: 25,
+            relax_after: Duration::from_secs(30),
+        }
+    }
+}
+
+/// The most [`Playout`] speeds up or slows down playback: 0.5%, about 9
+/// cents, below what is heard on game audio.
+pub const MAX_RATE_TRIM: f64 = 0.005;
+
+/// What the jitter buffer is doing ([`OutputStats::playout`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PlayoutStats {
+    /// Audio waiting (sink plus queue) at the last wake, ms.
+    pub fill_ms: f64,
+    /// Lowest and highest fill seen since the last [`Output::take_window`].
+    pub min_fill_ms: f64,
+    pub max_fill_ms: f64,
+    /// The current target, ms.
+    pub target_ms: f64,
+    /// Playing (false while it waits for the target).
+    pub primed: bool,
+    /// Times the device ran dry while playing.
+    pub starves: u64,
+    /// The playback-rate trim in use, parts per million (+ is faster).
+    pub trim_ppm: i32,
 }
 
 /// Settings for [`Hle::spawn_output`].
@@ -129,7 +196,7 @@ pub struct SideStats {
 }
 
 /// Counters of a running [`Output`].
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct OutputStats {
     /// Frames rendered from the mixer: the audio clock.
     pub rendered_frames: u64,
@@ -148,7 +215,18 @@ pub struct OutputStats {
     pub sink: SinkStats,
     /// The controller speaker, when [`OutputConfig::side`] asked for one.
     pub side: Option<SideStats>,
+    /// The jitter buffer (logical pacing with a [`Playout`]).
+    pub playout: Option<PlayoutStats>,
+    /// Wakes that came more than [`LATE_WAKE`] after the one before: the
+    /// thread was held up (a device probe, the host).
+    pub late_wakes: u64,
+    /// The longest time between two wakes since the last
+    /// [`Output::take_window`], µs.
+    pub max_wake_gap_us: u64,
 }
+
+/// A wake gap over the period plus this is a late wake.
+pub const LATE_WAKE: Duration = Duration::from_millis(10);
 
 /// Held across every guest-memory step; `halted` once halted.
 struct Gate {
@@ -186,6 +264,9 @@ struct Shared {
     side_dropped: AtomicU64,
     side_rate: AtomicU32,
     side_sink: Mutex<SinkStats>,
+    playout: Mutex<Option<PlayoutStats>>,
+    late_wakes: AtomicU64,
+    max_wake_gap_us: AtomicU64,
 }
 
 impl Shared {
@@ -245,7 +326,23 @@ impl Output {
                 sample_rate: s.side_rate.load(Ordering::Acquire),
                 sink: *s.side_sink.lock().unwrap_or_else(|e| e.into_inner()),
             }),
+            playout: *s.playout.lock().unwrap_or_else(|e| e.into_inner()),
+            late_wakes: s.late_wakes.load(Ordering::Acquire),
+            max_wake_gap_us: s.max_wake_gap_us.load(Ordering::Acquire),
         }
+    }
+
+    /// [`stats`](Self::stats), then starts a new window for the windowed
+    /// fields (the fill range, the longest wake gap): for a periodic report.
+    pub fn take_window(&self) -> OutputStats {
+        let stats = self.stats();
+        let s = &self.shared;
+        s.max_wake_gap_us.store(0, Ordering::Release);
+        if let Some(p) = s.playout.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            p.min_fill_ms = p.fill_ms;
+            p.max_fill_ms = p.fill_ms;
+        }
+        stats
     }
 
     /// The thread has exited (dropped, halted, or it hit a stop: see
@@ -295,13 +392,8 @@ impl Output {
             g.done += QUANTUM;
             rendered += QUANTUM;
             self.shared.rendered.fetch_add(QUANTUM, Ordering::AcqRel);
-            let mut q = self.shared.queue.lock().unwrap_or_else(|e| e.into_inner());
-            q.extend(block.iter().map(|v| v.clamp(-1.0, 1.0)));
-            let over = (q.len() / 2).saturating_sub(g.max_queued);
-            if over > 0 {
-                q.drain(..2 * over);
-                self.shared.dropped.fetch_add(over as u64, Ordering::AcqRel);
-            }
+            let over = push_queue(&self.shared.queue, &block, g.max_queued);
+            self.shared.dropped.fetch_add(over, Ordering::AcqRel);
         }
         Ok(rendered)
     }
@@ -389,13 +481,20 @@ impl Hle {
             side_dropped: AtomicU64::new(0),
             side_rate: AtomicU32::new(0),
             side_sink: Mutex::new(SinkStats::default()),
+            playout: Mutex::new(None),
+            late_wakes: AtomicU64::new(0),
+            max_wake_gap_us: AtomicU64::new(0),
         });
         let (mode, grid) = match pacing {
             Pacing::Device { target_latency_ms } => (Mode::Device(target_latency_ms), None),
-            Pacing::Logical { origin, max_queued } => {
+            Pacing::Logical {
+                origin,
+                max_queued,
+                playout,
+            } => {
                 let max_queued = (max_queued.as_secs_f64() * f64::from(mixer_rate)) as usize;
                 (
-                    Mode::Logical(mixer_rate),
+                    Mode::Logical(mixer_rate, playout),
                     Some(Mutex::new(Grid {
                         origin,
                         done: 0,
@@ -412,10 +511,16 @@ impl Hle {
             .name("dsound-output".into())
             .spawn(move || {
                 let sink = open();
-                let side = side.map(|s| Side::open(s, Arc::clone(&sh)));
+                let playout = match mode {
+                    Mode::Logical(_, p) => p,
+                    Mode::Device(_) => None,
+                };
+                let side = side.map(|s| Side::open(s, Arc::clone(&sh), playout));
                 match mode {
                     Mode::Device(ms) => run_device(hle, rt, sink, side, period, ms, sh),
-                    Mode::Logical(rate) => run_logical(sink, side, period, rate, sh),
+                    Mode::Logical(rate, playout) => {
+                        run_logical(sink, side, period, rate, playout, sh)
+                    }
                 }
             })
             .expect("spawning the dsound output thread");
@@ -433,7 +538,7 @@ impl Hle {
 enum Mode {
     Device(u32),
     /// The grid's (the mixer's) rate.
-    Logical(u32),
+    Logical(u32, Option<Playout>),
 }
 
 fn publish_sink<S: AudioSink>(shared: &Shared, sink: &S) {
@@ -502,17 +607,39 @@ fn run_logical<S: AudioSink>(
     mut side: Option<Side>,
     period: Duration,
     rate: u32,
+    playout: Option<Playout>,
     shared: Arc<Shared>,
 ) {
-    let mut feed = Feed::default();
+    let mut feed = Feed::new(playout);
+    let mut last = std::time::Instant::now();
     while !shared.stop.load(Ordering::Acquire) {
         std::thread::sleep(period);
+        let now = std::time::Instant::now();
+        let gap = now.duration_since(last);
+        last = now;
+        if gap > period + LATE_WAKE {
+            shared.late_wakes.fetch_add(1, Ordering::AcqRel);
+        }
+        shared
+            .max_wake_gap_us
+            .fetch_max(gap.as_micros() as u64, Ordering::AcqRel);
         if !shared.gate().open() {
             return;
         }
         sink.maintain();
         let short = feed.play(&mut sink, &shared.queue, rate);
         shared.dropped.fetch_add(short, Ordering::AcqRel);
+        if let Some(p) = feed.stats() {
+            let mut slot = shared.playout.lock().unwrap_or_else(|e| e.into_inner());
+            *slot = Some(match *slot {
+                Some(old) => PlayoutStats {
+                    min_fill_ms: old.min_fill_ms.min(p.fill_ms),
+                    max_fill_ms: old.max_fill_ms.max(p.fill_ms),
+                    ..p
+                },
+                None => p,
+            });
+        }
         if let Some(s) = side.as_mut() {
             s.maintain();
             s.play(rate);
@@ -522,48 +649,143 @@ fn run_logical<S: AudioSink>(
     }
 }
 
-/// Moves queued interleaved stereo at one rate into a sink at its own.
+/// Moves queued interleaved stereo at one rate into a sink at its own,
+/// through a jitter buffer when it has a [`Playout`].
 #[derive(Default)]
 struct Feed {
     resampler: Option<(u32, LinearResampler)>,
     out: Vec<f32>,
+    input: Vec<f32>,
+    playout: Option<Playout>,
+    jitter: Jitter,
+}
+
+/// [`Playout`]'s state.
+#[derive(Default)]
+struct Jitter {
+    primed: bool,
+    /// The sink's underrun count when last looked at.
+    underruns: u64,
+    target_ms: f64,
+    /// Smoothed fill, ms.
+    mean_ms: f64,
+    fill_ms: f64,
+    trim: f64,
+    starves: u64,
+    /// Device frames played at the last starve or relax step.
+    calm_since: u64,
 }
 
 impl Feed {
+    fn new(playout: Option<Playout>) -> Self {
+        Self {
+            playout,
+            jitter: Jitter {
+                target_ms: playout.map_or(0.0, |p| f64::from(p.target_ms)),
+                ..Jitter::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    fn stats(&self) -> Option<PlayoutStats> {
+        let j = &self.jitter;
+        self.playout.map(|_| PlayoutStats {
+            fill_ms: j.fill_ms,
+            min_fill_ms: j.fill_ms,
+            max_fill_ms: j.fill_ms,
+            target_ms: j.target_ms,
+            primed: j.primed,
+            starves: j.starves,
+            trim_ppm: (j.trim * 1e6).round() as i32,
+        })
+    }
+
     /// Plays as much of `queue` (frames at `rate`) as fits the sink's free
-    /// space; returns the frames the sink refused.
+    /// space, or with a [`Playout`] as much as it allows; returns the frames
+    /// the sink refused.
     fn play(&mut self, sink: &mut dyn AudioSink, queue: &Mutex<VecDeque<f32>>, rate: u32) -> u64 {
-        let to = sink.sample_rate();
+        let to = sink.sample_rate().max(1);
+        let rate = rate.max(1);
+        let nominal = f64::from(rate) / f64::from(to);
+        let mut step = nominal;
+        if let Some(p) = self.playout {
+            let queued = queue.lock().unwrap_or_else(|e| e.into_inner()).len() / 2;
+            let fill_ms = sink.queued_frames() as f64 * 1000.0 / f64::from(to)
+                + queued as f64 * 1000.0 / f64::from(rate);
+            let stats = sink.stats();
+            let j = &mut self.jitter;
+            j.fill_ms = fill_ms;
+            if stats.underruns > j.underruns {
+                if j.primed {
+                    // Ran dry while playing: start over with more margin.
+                    j.primed = false;
+                    j.starves += 1;
+                    j.target_ms =
+                        (j.target_ms + f64::from(p.step_ms)).min(f64::from(p.max_target_ms));
+                    j.calm_since = stats.played_frames;
+                }
+                j.underruns = stats.underruns;
+            }
+            // Clean play for `relax_after`: the target comes back down 1 ms
+            // per second of it.
+            let relax = (p.relax_after.as_secs_f64() * f64::from(to)) as u64;
+            let second = u64::from(to);
+            if j.primed && stats.played_frames >= j.calm_since + relax + second {
+                j.target_ms = (j.target_ms - 1.0).max(f64::from(p.target_ms));
+                j.calm_since += second;
+            }
+            if !j.primed {
+                if fill_ms < j.target_ms {
+                    return 0;
+                }
+                j.primed = true;
+                j.mean_ms = fill_ms;
+                j.trim = 0.0;
+                if j.calm_since == 0 {
+                    j.calm_since = stats.played_frames;
+                }
+            }
+            // Hold the average at the target: a little faster when above it.
+            j.mean_ms += (fill_ms - j.mean_ms) * 0.02;
+            let err = (j.mean_ms - j.target_ms) / j.target_ms.max(1.0);
+            j.trim = (err * 0.02).clamp(-MAX_RATE_TRIM, MAX_RATE_TRIM);
+            step = nominal * (1.0 + j.trim);
+        }
         let free = sink.free_frames();
         // Source frames that fit the sink's free space at its rate (u128:
-        // an unbounded sink reports usize::MAX free frames).
-        let take = if to == rate {
+        // an unbounded sink reports usize::MAX free frames), less one for
+        // the frame the resampler holds back.
+        let take = if step == 1.0 {
             free
         } else {
-            let frames = free as u128 * u128::from(rate) / u128::from(to.max(1));
-            usize::try_from(frames).unwrap_or(usize::MAX)
+            let frames = free as f64 * step;
+            if frames >= usize::MAX as f64 {
+                usize::MAX
+            } else {
+                (frames as usize).saturating_sub(1)
+            }
         };
-        let input: Vec<f32> = {
+        self.input.clear();
+        {
             let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
             let n = take.min(q.len() / 2);
-            q.drain(..2 * n).collect()
-        };
-        if input.is_empty() {
+            self.input.extend(q.drain(..2 * n));
+        }
+        if self.input.is_empty() {
             return 0;
         }
         self.out.clear();
-        let samples: &[f32] = if to == rate {
+        let samples: &[f32] = if step == 1.0 && self.playout.is_none() {
             self.resampler = None;
-            &input
+            &self.input
         } else {
             if self.resampler.as_ref().is_none_or(|(r, _)| *r != to) {
                 self.resampler = Some((to, LinearResampler::new(2, rate, to)));
             }
-            self.resampler
-                .as_mut()
-                .unwrap()
-                .1
-                .process(&input, &mut self.out);
+            let r = &mut self.resampler.as_mut().unwrap().1;
+            r.set_step(step);
+            r.process(&self.input, &mut self.out);
             &self.out
         };
         let taken = sink.write(samples);
@@ -581,12 +803,12 @@ struct Side {
 }
 
 impl Side {
-    fn open(config: SideOutput, shared: Arc<Shared>) -> Self {
+    fn open(config: SideOutput, shared: Arc<Shared>, playout: Option<Playout>) -> Self {
         let mut side = Side {
             sink: (config.open)(),
             on_live: config.on_live,
             live: false,
-            feed: Feed::default(),
+            feed: Feed::new(playout),
             shared,
         };
         side.maintain();
@@ -647,7 +869,307 @@ impl Drop for Side {
     }
 }
 
+/// Queues rendered interleaved stereo (clamped), keeping at most `max`
+/// frames; returns the oldest frames dropped to make room.
+fn push_queue(queue: &Mutex<VecDeque<f32>>, block: &[f32], max: usize) -> u64 {
+    let mut q = queue.lock().unwrap_or_else(|e| e.into_inner());
+    q.extend(block.iter().map(|v| v.clamp(-1.0, 1.0)));
+    let over = (q.len() / 2).saturating_sub(max);
+    if over > 0 {
+        q.drain(..2 * over);
+    }
+    over as u64
+}
+
 /// Frames due `ticks` (100 ns) after the grid's origin, at `rate`.
 fn due_frames(ticks: u64, rate: u32) -> u64 {
     (u128::from(ticks) * u128::from(rate) / 10_000_000) as u64
+}
+
+/// A real-time simulation of logical pacing on a virtual clock: a guest that
+/// renders in bursts at its frame boundaries (held to wall time the way
+/// `h2 play`'s pacer holds it), the output thread's wakes, and a device that
+/// pulls fixed callbacks at its own rate. Deterministic: no threads, no
+/// sleeps.
+#[cfg(test)]
+mod sim {
+    use super::*;
+    use audio::sink::{Consumer, Producer, ring};
+
+    /// The mixer's (logical) rate, as `boot::dsound_glue` uses.
+    const MIX: u32 = 48_000;
+
+    struct SimSink {
+        rate: u32,
+        prod: Producer,
+        cons: Consumer,
+        /// Left channel of everything played, silence included.
+        played: Vec<f32>,
+    }
+
+    impl SimSink {
+        fn new(rate: u32) -> Self {
+            let (prod, cons) = ring(16_384);
+            Self {
+                rate,
+                prod,
+                cons,
+                played: Vec::new(),
+            }
+        }
+        fn callback(&mut self, frames: usize) {
+            let mut buf = vec![0.0; frames * 2];
+            self.cons.read(&mut buf);
+            self.played.extend(buf.iter().step_by(2));
+        }
+    }
+
+    impl AudioSink for SimSink {
+        fn sample_rate(&self) -> u32 {
+            self.rate
+        }
+        fn queued_frames(&self) -> usize {
+            self.prod.queued_frames()
+        }
+        fn free_frames(&self) -> usize {
+            self.prod.free_frames()
+        }
+        fn write(&mut self, samples: &[f32]) -> usize {
+            self.prod.write(samples)
+        }
+        fn stats(&self) -> SinkStats {
+            self.prod.stats()
+        }
+    }
+
+    /// A tiny deterministic generator for jitter.
+    struct Lcg(u64);
+    impl Lcg {
+        fn below(&mut self, n: u64) -> u64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) % n.max(1)
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct Scenario {
+        /// Guest frame period, µs (16_667 at 60 Hz, 33_333 at 30 Hz).
+        frame_us: u64,
+        /// Guest work per frame, µs: wall time during which logical time
+        /// stands still (CPU work, a blocking present).
+        work_us: (u64, u64),
+        /// Every this often, one frame takes `hitch_us` more.
+        hitch: Option<(u64, u64)>,
+        /// Output thread wake period and jitter, µs.
+        wake_us: (u64, u64),
+        /// Every this often a wake stalls this long (a device probe).
+        stall: Option<(u64, u64)>,
+        device_rate: u32,
+        callback_frames: usize,
+        seconds: u64,
+    }
+
+    impl Scenario {
+        fn menu() -> Self {
+            Self {
+                frame_us: 16_667,
+                work_us: (3_000, 15_000),
+                hitch: None,
+                wake_us: (5_000, 1_500),
+                stall: Some((500_000, 15_000)),
+                device_rate: 48_000,
+                callback_frames: 512,
+                seconds: 20,
+            }
+        }
+        fn level() -> Self {
+            Self {
+                frame_us: 33_333,
+                work_us: (8_000, 31_000),
+                ..Self::menu()
+            }
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct Outcome {
+        underruns: u64,
+        underrun_frames: u64,
+        /// Times the jitter buffer ran dry while playing (one gap each).
+        starves: u64,
+        /// Sample-to-sample jumps in the played signal after it started.
+        discontinuities: u64,
+        dropped: u64,
+        /// Frames the guest rendered and frames of it the device played.
+        produced: u64,
+        played_signal: u64,
+        /// Mean ring + queue fill at the device rate, ms.
+        mean_fill_ms: f64,
+    }
+
+    /// The test signal: smooth, never exactly zero, so silence and jumps show.
+    fn signal(n: u64) -> f32 {
+        0.3 + 0.2 * (n as f64 * 2.0 * std::f64::consts::PI * 220.0 / f64::from(MIX)).sin() as f32
+    }
+
+    fn run(s: Scenario, mut feed: Feed) -> Outcome {
+        let mut rng = Lcg(0x5eed);
+        let queue = Mutex::new(VecDeque::new());
+        let max_queued = (MIX / 4) as usize;
+        let mut sink = SimSink::new(s.device_rate);
+        let end = s.seconds * 1_000_000;
+        // Guest: logical time `l` (µs since origin), the pacer's origin
+        // (logical, wall), when the frame in progress finishes.
+        let mut l = 0u64;
+        let mut origin = (0u64, 0u64);
+        let mut produced = 0u64;
+        let mut busy_until = 0u64;
+        let mut next_hitch = s.hitch.map(|(every, _)| every);
+        let mut next_produce = 0u64;
+        let mut next_wake = s.wake_us.0;
+        let mut next_stall = s.stall.map(|(every, _)| every);
+        let mut callbacks = 0u64;
+        let cb_at = |n: u64| n * s.callback_frames as u64 * 1_000_000 / u64::from(s.device_rate);
+        let mut out = Outcome::default();
+        let (mut fill_sum, mut fill_n) = (0f64, 0u64);
+        loop {
+            let next_cb = cb_at(callbacks + 1);
+            let t = next_produce.min(next_wake).min(next_cb);
+            if t >= end {
+                break;
+            }
+            if t == next_cb {
+                sink.callback(s.callback_frames);
+                callbacks += 1;
+                let q = queue.lock().unwrap().len() / 2;
+                let fill = sink.queued_frames() as f64
+                    + q as f64 * f64::from(s.device_rate) / f64::from(MIX);
+                fill_sum += fill * 1000.0 / f64::from(s.device_rate);
+                fill_n += 1;
+            } else if t == next_produce {
+                // `advance_to(l)`: every whole quantum due, into the queue.
+                let due = l * u64::from(MIX) / 1_000_000 / QUANTUM * QUANTUM;
+                let mut block = Vec::new();
+                while produced < due {
+                    block.push(signal(produced));
+                    block.push(signal(produced));
+                    produced += 1;
+                }
+                out.dropped += push_queue(&queue, &block, max_queued);
+                // The frame's work, then the idle advance to the next
+                // vblank; the pacer sleeps until wall time reaches it (less
+                // the 2 ms lead), and forgives a lag over 100 ms.
+                let mut work = s.work_us.0 + rng.below(s.work_us.1 - s.work_us.0);
+                if let (Some(at), Some((every, len))) = (next_hitch, s.hitch)
+                    && t >= at
+                {
+                    work += len;
+                    next_hitch = Some(at + every);
+                }
+                busy_until = t + work;
+                l += s.frame_us;
+                let wall_of = |l: u64, o: (u64, u64)| o.1 + (l - o.0);
+                if busy_until > wall_of(l, origin) + 100_000 {
+                    origin = (l, busy_until);
+                }
+                next_produce = busy_until.max(wall_of(l, origin).saturating_sub(2_000));
+            } else {
+                let _ = busy_until;
+                let short = feed.play(&mut sink, &queue, MIX);
+                out.dropped += short;
+                let mut gap = s.wake_us.0 + rng.below(s.wake_us.1);
+                if let (Some(at), Some((every, len))) = (next_stall, s.stall)
+                    && t >= at
+                {
+                    gap += len;
+                    next_stall = Some(at + every);
+                }
+                next_wake = t + gap;
+            }
+        }
+        let st = sink.stats();
+        out.underruns = st.underruns;
+        out.underrun_frames = st.underrun_frames;
+        out.produced = produced;
+        out.starves = feed.jitter.starves;
+        out.mean_fill_ms = fill_sum / fill_n.max(1) as f64;
+        let start = sink.played.iter().position(|&v| v != 0.0).unwrap_or(0);
+        let played = &sink.played[start..];
+        out.played_signal = played.iter().filter(|&&v| v != 0.0).count() as u64;
+        out.discontinuities = played
+            .windows(2)
+            .filter(|w| (w[1] - w[0]).abs() > 0.02)
+            .count() as u64;
+        out
+    }
+
+    #[test]
+    fn immediate_playout_underruns_under_ordinary_frame_jitter() {
+        for s in [Scenario::menu(), Scenario::level()] {
+            let o = run(s, Feed::new(None));
+            eprintln!("immediate: {o:?}");
+            assert!(o.underruns > 0, "{o:?}");
+        }
+    }
+
+    /// Playback started; nothing lost, nothing out of place.
+    fn assert_clean(o: &Outcome, max_fill_ms: f64) {
+        assert_eq!(o.underruns, 0, "{o:?}");
+        assert_eq!(o.discontinuities, 0, "{o:?}");
+        assert_eq!(o.dropped, 0, "{o:?}");
+        // Everything rendered was played, but for what is still buffered.
+        let behind = o.produced - o.played_signal;
+        assert!(
+            (behind as f64) < max_fill_ms * f64::from(MIX) / 1000.0,
+            "{o:?}"
+        );
+        assert!(o.mean_fill_ms < max_fill_ms, "{o:?}");
+    }
+
+    #[test]
+    fn the_jitter_buffer_plays_menus_and_levels_without_a_dropout() {
+        for s in [Scenario::menu(), Scenario::level()] {
+            let o = run(s, Feed::new(Some(Playout::default())));
+            eprintln!("buffered: {o:?}");
+            assert_clean(&o, 80.0);
+        }
+    }
+
+    #[test]
+    fn the_jitter_buffer_resamples_to_a_44k_device_cleanly() {
+        let s = Scenario {
+            device_rate: 44_100,
+            ..Scenario::level()
+        };
+        let o = run(s, Feed::new(Some(Playout::default())));
+        eprintln!("44.1k: {o:?}");
+        assert_eq!(
+            (o.underruns, o.discontinuities, o.dropped),
+            (0, 0, 0),
+            "{o:?}"
+        );
+        assert!(o.mean_fill_ms < 80.0, "{o:?}");
+    }
+
+    #[test]
+    fn a_hitch_costs_a_clean_gap_until_the_buffer_has_grown_for_it() {
+        // A 100 ms hitch every 4 s, at 30 Hz.
+        let s = Scenario {
+            hitch: Some((4_000_000, 100_000)),
+            seconds: 30,
+            ..Scenario::level()
+        };
+        let o = run(s, Feed::new(Some(Playout::default())));
+        eprintln!("hitch: {o:?}");
+        // The first hitches find the buffer short; the target grows by a
+        // step each time, so after two none of the 7 does.
+        assert!((1..=2).contains(&o.starves), "{o:?}");
+        // A dropout is one gap: in and out, not a run of clicks.
+        assert!(o.discontinuities <= 2 * o.starves, "{o:?}");
+        assert_eq!(o.dropped, 0, "{o:?}");
+        assert!(o.mean_fill_ms < 160.0, "{o:?}");
+    }
 }
