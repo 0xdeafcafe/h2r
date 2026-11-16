@@ -183,6 +183,10 @@ fn log_to(local: &Path) {
 
 fn run() -> Result<()> {
     let window = CoreWindow::GetForCurrentThread()?;
+    // The view's Activated event (which activates the window and takes
+    // down the splash screen) arrives through the dispatcher: let it, before
+    // the slow start (the stamp check, the boot cache, the device).
+    window.Dispatcher()?.ProcessEvents(CoreProcessEventsOption::ProcessAllIfPresent)?;
     let package = hstring_path(Package::Current()?.InstalledLocation()?.Path()?);
     let local = hstring_path(ApplicationData::Current()?.LocalFolder()?.Path()?);
     log_to(&local);
