@@ -161,9 +161,11 @@ fn pad_speaker(audio: bool, store: &Arc<settings::Store>) -> PadParts {
     // The output is opened whenever the variable allows it, so the row can
     // turn the speaker on during the run; the setting decides what reaches it.
     let config = config.filter(|c| c.enabled && audio);
-    let hid_config = input::pad_hid::PadHidConfig::from_env(env)
-        .map_err(|e| eprintln!("play: {e}"))
-        .unwrap_or(input::pad_hid::PadHidConfig { mute: false });
+    // The mute button: `pad.mute_button` (H2_PAD_MUTE, the Video screen's
+    // Mute Button row), read once here, so a row press applies from the
+    // next launch.
+    let mute = store.handle::<bool>(boot::setting_defs::PAD_MUTE.key).get();
+    let hid_config = input::pad_hid::PadHidConfig { mute };
     let hid = pad_hid(hid_config, config.is_some());
     let Some(config) = config else {
         return (None, hid, setting);

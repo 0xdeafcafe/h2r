@@ -167,7 +167,7 @@ pub fn text_row<M: Gm>(m: &M, esp: u32) -> Option<i16> {
 mod tests {
     use super::*;
     use crate::layout_glue::{chosen_row, is_ours};
-    use crate::setting_defs::{ALL, FPS, RENDER_SCALE};
+    use crate::setting_defs::{ALL, FPS, PAD_MUTE, RENDER_SCALE};
     use crate::ui::{Chosen, RowKind};
     use settings::Value;
     use std::collections::BTreeMap;
@@ -260,7 +260,8 @@ mod tests {
             [
                 RowKind::Setting(FOV.key),
                 RowKind::Setting(FPS.key),
-                RowKind::Setting(RENDER_SCALE.key)
+                RowKind::Setting(RENDER_SCALE.key),
+                RowKind::Setting(PAD_MUTE.key)
             ]
         );
         let store = || Arc::new(Store::defaults(ALL));
@@ -272,7 +273,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(no_fov.rows(LIST).len(), 2);
+        assert_eq!(no_fov.rows(LIST).len(), 3);
         // No Video screen: no Video row on Controls either.
         let none = model(
             store(),
@@ -384,7 +385,8 @@ mod tests {
         assert_eq!(drawn(&m, LIST, 0), s("Field of View", "70"));
         assert_eq!(drawn(&m, LIST, 1), s("Frame Rate", "30"));
         assert_eq!(drawn(&m, LIST, 2), s("Resolution", "1x"));
-        assert_eq!(drawn(&m, LIST, 3), None);
+        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "On"));
+        assert_eq!(drawn(&m, LIST, 4), None);
         assert_eq!(drawn(&m, LIST, -1), None);
     }
 
@@ -432,8 +434,18 @@ mod tests {
             drawn(&m, List::Controls, 6),
             s("Controller Speaker", "0x2000181")
         );
+        // The mute button is read at launch: saved for the next one.
+        assert_eq!(
+            press(&m, LIST, 3),
+            Chosen::Stepped("pad.mute_button: false from the next launch".into())
+        );
+        assert_eq!(drawn(&m, LIST, 3), s("Mute Button", "Off (restart)"));
+        assert!(
+            store.handle::<bool>(PAD_MUTE.key).get(),
+            "this run keeps it"
+        );
         // Rows past ours, or no row, are not ours.
-        assert_eq!(press(&m, LIST, 3), Chosen::Nothing);
+        assert_eq!(press(&m, LIST, 4), Chosen::Nothing);
         assert_eq!(press(&m, List::Controls, 5), Chosen::Nothing);
         // Saved as the old code saved them; other keys kept.
         let t: toml::Table = std::fs::read_to_string(&path).unwrap().parse().unwrap();
@@ -441,6 +453,7 @@ mod tests {
         assert_eq!(t["graphics"]["fps"].as_integer(), Some(30));
         assert_eq!(t["graphics"]["render_scale"].as_integer(), Some(2));
         assert_eq!(t["pad_speaker"]["enabled"].as_bool(), Some(true));
+        assert_eq!(t["pad"]["mute_button"].as_bool(), Some(false));
         let next = Store::load(ALL, Some(&path), &|_| None, &[]).0;
         assert_eq!(next.get(RENDER_SCALE.key), Some(Value::Int(2)));
     }

@@ -117,8 +117,28 @@ pub static PAD_SPEAKER: Def = Def {
     menu: None,
 };
 
+pub static PAD_MUTE: Def = Def {
+    key: "pad.mute_button",
+    label: "Mute Button",
+    help: "A DualSense's mute button mutes the microphone and its LED shows it. \
+           Read when the controller thread starts, so a change applies from the next launch.",
+    kind: Kind::Bool,
+    default: Value::Bool(true),
+    env: Some("H2_PAD_MUTE"),
+    flag: None,
+    aliases: &[],
+    parse_env: None,
+    apply: Apply::Restart,
+    scope: Scope::Host,
+    tier: Tier::User,
+    menu: Some(Menu {
+        screen: "video",
+        order: 40,
+    }),
+};
+
 /// Every setting, in the order `h2 settings list` shows them.
-pub static ALL: &[&Def] = &[&FOV, &FPS, &RENDER_SCALE, &PAD_SPEAKER];
+pub static ALL: &[&Def] = &[&FOV, &FPS, &RENDER_SCALE, &PAD_SPEAKER, &PAD_MUTE];
 
 /// `H2_PAD_SPEAKER` as the controller-speaker settings read it: `0`, `1`,
 /// or a routes file whose `enabled` decides.
@@ -195,6 +215,7 @@ mod tests {
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(2)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
+        assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(true)));
         // `fov = 0` was retail.
         std::fs::write(settings::path_in(&data), "[graphics]\nfov = 0\n").unwrap();
         assert_eq!(with_env(&data, &[]).0.get(FOV.key), Some(Value::Int(70)));
@@ -210,6 +231,7 @@ mod tests {
                 ("H2_FPS", "Uncapped"),
                 ("H2_RENDER_SCALE", "6"),
                 ("H2_PAD_SPEAKER", "0"),
+                ("H2_PAD_MUTE", "0"),
             ],
         );
         assert!(p.is_empty(), "{p:?}");
@@ -217,6 +239,7 @@ mod tests {
         assert_eq!(s.get(FPS.key), Some(Value::Int(0)));
         assert_eq!(s.get(RENDER_SCALE.key), Some(Value::Int(6)));
         assert_eq!(s.get(PAD_SPEAKER.key), Some(Value::Bool(false)));
+        assert_eq!(s.get(PAD_MUTE.key), Some(Value::Bool(false)));
         assert!(ALL.iter().all(|d| s.state(d.key).unwrap().locked));
         // Bad ones are reported and ignored.
         let (s, p) = with_env(
@@ -225,9 +248,10 @@ mod tests {
                 ("H2_FOV", "20"),
                 ("H2_FPS", "45"),
                 ("H2_RENDER_SCALE", "2x"),
+                ("H2_PAD_MUTE", "maybe"),
             ],
         );
-        assert_eq!(p.len(), 3, "{p:?}");
+        assert_eq!(p.len(), 4, "{p:?}");
         assert!(p[1].message.contains("H2_FPS=\"45\""), "{}", p[1]);
         assert!(ALL.iter().all(|d| !s.state(d.key).unwrap().locked));
         // H2_PAD_SPEAKER may name a routes file.
