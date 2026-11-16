@@ -14,6 +14,7 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Fullscreen, Window, WindowId};
 
 use crate::audio_out::{AudioOut, FALLBACK_RATE};
+use crate::fps::DisplaySchedule;
 use crate::frame::{self, Compositor, FrameSource, FrameStats};
 use crate::keymap::{self, Shortcut};
 use crate::lifecycle::Lifecycle;
@@ -167,12 +168,15 @@ struct Shell {
     banner_drawn: u64,
     restart_requested: bool,
     watermark_text: Option<WatermarkText>,
+    /// The window's own redraw clock above 30 fps (`AppConfig::fps`).
+    display: DisplaySchedule,
 }
 
 pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitReport> {
     let event_loop = EventLoop::<UserEvent>::with_user_event().build()?;
     event_loop.set_control_flow(ControlFlow::Wait);
     let now = Instant::now();
+    let config_fps = config.fps;
     let mut shell = Shell {
         proxy: event_loop.create_proxy(),
         config,
@@ -201,6 +205,7 @@ pub(crate) fn run(config: AppConfig, guest: GuestFn) -> anyhow::Result<ExitRepor
         banner_drawn: 0,
         restart_requested: false,
         watermark_text: None,
+        display: DisplaySchedule::new(config_fps),
     };
     if let Some(c) = &shell.config.closer {
         let proxy = shell.proxy.clone();
@@ -242,8 +247,12 @@ impl Shell {
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(Arc::clone(&window))?;
         let ctx = pollster::block_on(GfxContext::new(instance, Some(&surface)))?;
-        let surface =
-            WindowSurface::new(&ctx, surface, (size.width, size.height), self.config.vsync)?;
+        let surface = WindowSurface::new(
+            &ctx,
+            surface,
+            (size.width, size.height),
+            self.config.fps.vsync(self.config.vsync),
+        )?;
         let info = ctx.adapter.get_info();
         eprintln!(
             "app: {} ({:?}), surface {:?}",
@@ -700,10 +709,23 @@ impl ApplicationHandler<UserEvent> for Shell {
         {
             g.window.request_redraw();
         }
+        // Above 30 fps the window also redraws on its own clock; between
+        // guest presents that shows the newest guest frame again (no
+        // interpolation before phase 2, docs/high-framerate.md). At 30 the
+        // schedule is never due and this changes nothing.
+        let mut wake = self.status.last + Duration::from_secs(1);
+        if let Some(g) = &self.gpu
+            && !self.closing
+        {
+            if self.display.due(self.status.epoch.elapsed()) {
+                g.window.request_redraw();
+            }
+            if let Some(next) = self.display.next_due() {
+                wake = wake.min(self.status.epoch + next);
+            }
+        }
         if !self.closing {
-            event_loop.set_control_flow(ControlFlow::WaitUntil(
-                self.status.last + Duration::from_secs(1),
-            ));
+            event_loop.set_control_flow(ControlFlow::WaitUntil(wake));
         }
     }
 

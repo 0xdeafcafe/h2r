@@ -244,10 +244,16 @@ impl<StorageBackend: Storage> Xapi<StorageBackend> {
         if let Ok(state) = result {
             opened.last_state = state;
         }
-        memory.write(out, &opened.last_state.to_bytes())?;
-        result
-            .map(|_| ())
-            .map_err(|error| Error::Win32(error.win32()))
+        let mut packet = opened.last_state.to_bytes();
+        let mut status = result.err().map_or(0, |error| error.win32());
+        if let Some(tap) = self.input_tap.as_mut() {
+            tap.read(handle, &mut status, &mut packet);
+        }
+        memory.write(out, &packet)?;
+        match status {
+            0 => Ok(()),
+            code => Err(Error::Win32(code)),
+        }
     }
 
     pub fn input_get_capabilities(

@@ -20,6 +20,7 @@ pub mod icons;
 pub mod layout_glue;
 pub mod live_glue;
 pub mod live_notice;
+pub mod lockstep_glue;
 pub mod pad_speaker;
 pub use live_telemetry as telemetry;
 pub mod sha;
@@ -461,7 +462,8 @@ pub fn run_hosted_with_live(
     }
     let t = Instant::now();
     // Shadow pages: trace 0xa0ff0000, wrappers 0xa0ff1000, d3d 0xa0ff2000,
-    // barrier 0xa0ff4000, live telemetry 0xa0ff5000, live notice 0xa0ff6000.
+    // barrier 0xa0ff4000, live telemetry 0xa0ff5000, live notice 0xa0ff6000,
+    // lockstep tick observer 0xa0ff9000.
     // SAFETY: the dylib is ours and stays loaded until the end of this fn.
     let module = unsafe { load_module(dylib, &loaded.runtime, xbe_bytes)? };
     // Interpreting past unsupported instructions is a stopgap too.
@@ -570,6 +572,17 @@ pub fn run_hosted_with_live(
         }
     };
     let script = xapi_glue::InputScript::from_env();
+    // H2_LOCKSTEP / H2_INPUT_RECORD / H2_INPUT_REPLAY (lockstep_glue.rs).
+    let lockstep_config = lockstep_glue::Config::from_env();
+    let harness = if lockstep_config.enabled() {
+        let h = lockstep_glue::Lockstep::install(&loaded.runtime, lockstep_config, lockstep::TickHook::HALO2, xa.as_deref())?;
+        if let Some(n) = &h.tick_note {
+            eprintln!("lockstep: hashing presents only: {n}");
+        }
+        Some(h)
+    } else {
+        None
+    };
     if opts.bink {
         let hle = bink_hle::BinkHle::new(None);
         loaded.runtime.edit_dispatch(|d| bink_hle::register(d, &hle));
@@ -650,6 +663,9 @@ pub fn run_hosted_with_live(
         {
             input_errors += 1;
         }
+        if let Some(h) = &harness {
+            h.after_slice(&loaded.runtime, d3d_diag::presents());
+        }
         if let Some(a) = &ds
             && let Err(e) = dsound_glue::advance(a, &k)
             && audio_errors.len() < 8
@@ -665,6 +681,12 @@ pub fn run_hosted_with_live(
     }
     if let Some(a) = &ds {
         a.output.halt();
+    }
+    if let Some(h) = &harness {
+        match h.finish() {
+            Ok(line) => eprintln!("{line}"),
+            Err(e) => eprintln!("lockstep: {e:#}"),
+        }
     }
     let secs = t.elapsed().as_secs_f64();
     #[cfg(feature = "perf")]

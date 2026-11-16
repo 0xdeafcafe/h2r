@@ -1,0 +1,13 @@
+[package]
+name = "lockstep"
+description = "Determinism harness: per-tick guest-RAM hashes, run traces and their comparison (docs/high-framerate.md)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+runtime.workspace = true
+
+[dev-dependencies]
+xapi = { path = "../xapi" }
+input = { path = "../input", default-features = false }

@@ -21,6 +21,7 @@ mod live_catalog;
 mod live_admin;
 mod live_cmd;
 mod live_query;
+mod lockstep_cmd;
 mod mappack_cmd;
 mod maps;
 mod movies_cmd;
@@ -44,6 +45,8 @@ const USAGE: &str = "usage: h2 <command> [disc]
   play <disc>             build if needed, then play it in a window (docs/app.md)
   play --follow <disc>    play, rebuilding each new commit of master in the
                           background; F5 restarts into it (docs/app.md)
+  lockstep <a> <b>        compare two H2_LOCKSTEP traces; exit 1 if they differ
+                          (docs/high-framerate.md)
   play <disc> --live      play signed in to Xbox Live, on a service started in
                           the process (or --live-server URL; docs/live.md)
   info                    title, sections, libraries
@@ -195,6 +198,9 @@ fn main() -> Result<()> {
     }
     if cmd == "live" {
         return live_cmd::run(args.collect());
+    }
+    if cmd == "lockstep" {
+        std::process::exit(lockstep_cmd::run(args.collect())?);
     }
     if matches!(cmd.as_str(), "build" | "run") {
         return boot_cmd::run(&cmd, args.collect());

@@ -188,6 +188,12 @@ impl Guest {
     pub fn mappings(&self) -> &[Mapping] {
         &self.mappings
     }
+    /// All of physical RAM, read-only, for whole-machine observers such as
+    /// the lockstep per-tick hash (docs/high-framerate.md). Reading it is
+    /// uncharged and changes no guest-visible state.
+    pub fn physical_ram(&self) -> &[u8] {
+        &self.ram
+    }
     pub fn physical_reservations(&self) -> &[PhysicalReservation] {
         &self.reservations
     }

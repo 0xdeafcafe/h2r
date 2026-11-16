@@ -18,7 +18,7 @@ const USAGE: &str = "usage:
   h2 play <disc.iso> [--out DIR] [--data DIR] [--transfers N] [--slices N]
           [--aspect 4:3|16:9] [--scaling fit|integer|stretch] [--nearest] [--fullscreen]
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
-          [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
+          [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
           [--icons auto|xbox|xbox360|playstation|keyboard]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
@@ -40,6 +40,10 @@ input crate timeline (docs/input.md) on guest time instead of live input.
 A mappack.iso next to the disc (or another .iso there with the map pack's
 layout) is installed into --data on the way in, once: a warning never stops
 the game. --no-mappack or H2_MAPPACK=0 skips it (docs/map-pack.md).
+--fps (or H2_FPS) sets how often the window presents: 30, the default, is the
+game's own rate and today's behaviour; 60, 120 and uncapped only redraw the
+newest game frame more often for now, with no smoothing (the game itself
+always runs at 30; docs/high-framerate.md).
 --follow keeps the game running while it builds each new commit of the
 branch, then offers a restart (`h2 play --follow --help`).
 
@@ -351,6 +355,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
         bindings: play_bindings(),
         // The run prints its report before the guest thread returns.
         shutdown_timeout: Duration::from_secs(10),
+        fps: app::fps::FpsTarget::from_env().map_err(anyhow::Error::msg)?,
         ..app::AppConfig::default()
     };
     let mut it = args.into_iter();
@@ -386,6 +391,7 @@ pub fn run(args: Vec<String>) -> Result<()> {
             "--no-mappack" => no_mappack = true,
             "--no-gamepads" => config.gamepads = false,
             "--no-vsync" => config.vsync = false,
+            "--fps" => config.fps = app::fps::FpsTarget::parse(&val()?).map_err(anyhow::Error::msg)?,
             "--unpaced" => config.pacing = app::PacePolicy::Unpaced,
             "--status" => config.log_status = true,
             "--no-watermark" => no_watermark = true,
