@@ -79,6 +79,9 @@ Each step is proven with tests; the user plays the result.
 
 1. **Import and read.** Recognise the Halo 1 disc (title ID `4D530004`),
    pull out its maps, decompress them, list their tags.
+   **Built:** `crates/h1map`, `h2 h1 info|tags`, `h2 import halo1`;
+   format in [h1-map-format.md](../formats/h1-map-format.md). Not yet
+   checked against a real disc.
 2. **Map builder.** Write a whole v8 map. Proof: read a retail Halo 2 map
    into a tag set, build it again, and check the result reads the same, tag
    by tag.
