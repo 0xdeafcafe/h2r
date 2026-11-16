@@ -69,10 +69,13 @@ export function fogRange(fog: SkyFog, focus: number, reach = 0): { near: number;
   return { near, far: reach > near ? Math.max(far, near + (reach - near) / density) : far };
 }
 
-/** The sky glb's address beside the map's. */
+/** The sky glb's address beside the map's, with the map's query (the
+ *  art's version stamp). */
 export function skyUrl(mapUrl: string, glb: string): string {
-  const cut = mapUrl.lastIndexOf("/");
-  return (cut >= 0 ? mapUrl.slice(0, cut + 1) : "") + glb;
+  const q = mapUrl.indexOf("?");
+  const path = q >= 0 ? mapUrl.slice(0, q) : mapUrl;
+  const cut = path.lastIndexOf("/");
+  return (cut >= 0 ? path.slice(0, cut + 1) : "") + glb + (q >= 0 ? mapUrl.slice(q) : "");
 }
 
 /** The sky model, drawn first and around the camera. */

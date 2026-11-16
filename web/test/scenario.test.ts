@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { KIND_LABELS, ScenarioObjects, objectKinds, objectOf } from "../src/viewer/scenario3d";
-import { TEXTURES_KEY, TextureSwap, flatOf, loadFlats, savePref, texturesPref } from "../src/viewer/textures3d";
+import { TEXTURES_KEY, TextureSwap, deferTextures, flatOf, loadFlats, pictureReady, pictureUrl, savePref, streamTextures, texturesPref, texturesSharing, type PendingTexture } from "../src/viewer/textures3d";
 import { meshRole } from "../src/viewer/cutaway";
 
 class MemoryStore {
@@ -217,9 +217,92 @@ describe("textures", () => {
   });
 });
 
+describe("pictures beside the glb", () => {
+  test("a picture's file is beside the glb and carries its version stamp", () => {
+    expect(pictureUrl("/art/game/map/lockout/map.glb?v=abc", "tex/0000002a.jpg")).toBe("/art/game/map/lockout/tex/0000002a.jpg?v=abc");
+    expect(pictureUrl("map.glb", "tex/1.png")).toBe("tex/1.png");
+    expect(pictureUrl("/a/map.glb", "https://x/y.jpg")).toBe("https://x/y.jpg");
+  });
+
+  test("the glb loads without its pictures, which are listed with their tiling", async () => {
+    const loader = new GLTFLoader();
+    const pending = deferTextures(loader, "/art/game/map/x/map.glb?v=s1");
+    const gltf = await loader.parseAsync(texturedGlb({ uri: "tex/0000002a.jpg", scale: [4, 2] }), "/art/game/map/x/");
+    expect(pending.map((p) => p.url)).toEqual(["/art/game/map/x/tex/0000002a.jpg?v=s1"]);
+    const meshes: THREE.Mesh[] = [];
+    gltf.scene.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh); });
+    const look = meshes.map((m) => m.material as THREE.MeshStandardMaterial).find((m) => m.name === "wall_plate")!;
+    expect(look.map).not.toBeNull();
+    expect(look.map!.image).toBeNull();
+    expect(pictureReady(look)).toBe(false);
+    // The shader's tiling is a transformed copy sharing the image.
+    expect([look.map!.repeat.x, look.map!.repeat.y]).toEqual([4, 2]);
+    expect(look.map!.colorSpace).toBe(THREE.SRGBColorSpace);
+    expect(look.map!.flipY).toBe(false);
+    expect(look.map!.wrapS).toBe(THREE.RepeatWrapping);
+    const sharing = texturesSharing(pending[0]!.texture, [look]);
+    expect(sharing).toContain(look.map!);
+    expect(sharing).toContain(pending[0]!.texture);
+    const picture = { width: 2, height: 2 } as unknown as ImageBitmap;
+    for (const t of sharing) t.image = picture;
+    expect(pictureReady(look)).toBe(true);
+  });
+
+  test("a mesh is drawn flat until its picture arrives", () => {
+    const geo = new THREE.BufferGeometry();
+    const texture = new THREE.Texture();
+    const textured = new THREE.MeshStandardMaterial({ map: texture });
+    const flat = new THREE.MeshStandardMaterial();
+    const plain = new THREE.MeshStandardMaterial();
+    const a = new THREE.Mesh(geo, textured), b = new THREE.Mesh(geo, plain);
+    const swap = new TextureSwap();
+    swap.adopt([{ mesh: a, textured, flat }, { mesh: b, textured: plain, flat }]);
+    expect(a.material).toBe(flat);
+    expect(b.material).toBe(plain);
+    expect(swap.refresh()).toBe(false);
+    texture.image = { width: 1, height: 1 };
+    swap.set(false);
+    expect(swap.refresh()).toBe(false);
+    expect(a.material).toBe(flat);
+    swap.set(true);
+    expect(a.material).toBe(textured);
+    swap.set(false);
+    swap.set(true);
+    const later = new THREE.Mesh(geo, flat);
+    const t2 = new THREE.Texture();
+    const m2 = new THREE.MeshStandardMaterial({ map: t2 });
+    swap.add(later, m2, flat);
+    expect(later.material).toBe(flat);
+    t2.image = { width: 1, height: 1 };
+    expect(swap.refresh()).toBe(true);
+    expect(later.material).toBe(m2);
+  });
+
+  test("pictures stream a few at a time, skip failures and stop when told", async () => {
+    const pending: PendingTexture[] = Array.from({ length: 9 }, (_, i) => ({ url: `t${i}`, texture: new THREE.Texture() }));
+    let inFlight = 0, most = 0;
+    const got: string[] = [];
+    const load = async (url: string) => {
+      inFlight++; most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return url === "t4" ? null : ({ width: 1, height: 1 } as unknown as ImageBitmap);
+    };
+    const n = await streamTextures(pending, (p) => got.push(p.url), { concurrency: 3, load });
+    expect(n).toBe(8);
+    expect(most).toBe(3);
+    expect(got.sort()).toEqual(["t0", "t1", "t2", "t3", "t5", "t6", "t7", "t8"]);
+    let stop = false;
+    const some: string[] = [];
+    const m = await streamTextures(pending, (p) => { some.push(p.url); if (some.length === 2) stop = true; }, { concurrency: 1, load, stopped: () => stop });
+    expect(m).toBe(2);
+    expect(some).toEqual(["t0", "t1"]);
+  });
+});
+
 /** A glb of two triangles: one with the textured look (its material
  *  `wall_plate`, extras naming class material 0), one plain `wall`. */
-function texturedGlb(): ArrayBuffer {
+function texturedGlb(picture?: { uri: string; scale?: [number, number] }): ArrayBuffer {
   const pos = new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0]);
   const nrm = new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]);
   const uv = new Float32Array([0, 0, 1, 0, 0, 1]);
@@ -239,8 +322,16 @@ function texturedGlb(): ArrayBuffer {
     ] }],
     materials: [
       { name: "wall", pbrMetallicRoughness: { baseColorFactor: [0.5, 0.5, 0.5, 1] } },
-      { name: "wall_plate", pbrMetallicRoughness: { metallicFactor: 0 }, extras: { look: true } },
+      picture
+        ? { name: "wall_plate", pbrMetallicRoughness: { metallicFactor: 0, baseColorTexture: { index: 0, ...(picture.scale ? { extensions: { KHR_texture_transform: { scale: picture.scale } } } : {}) } }, extras: { look: true } }
+        : { name: "wall_plate", pbrMetallicRoughness: { metallicFactor: 0 }, extras: { look: true } },
     ],
+    ...(picture ? {
+      images: [{ uri: picture.uri, mimeType: "image/jpeg" }],
+      textures: [{ sampler: 0, source: 0 }],
+      samplers: [{ magFilter: 9729, minFilter: 9987, wrapS: 10497, wrapT: 10497 }],
+      ...(picture.scale ? { extensionsUsed: ["KHR_texture_transform"] } : {}),
+    } : {}),
     accessors: [
       { bufferView: 0, componentType: 5126, count: 3, type: "VEC3", min: [0, 0, 0], max: [1, 1, 0] },
       { bufferView: 1, componentType: 5126, count: 3, type: "VEC3" },
