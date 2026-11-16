@@ -122,7 +122,8 @@ impl<F: ?Sized> Link<F> {
         })
     }
     fn announce(&self) {
-        if !self.seen.swap(true, Ordering::Relaxed) {
+        // A load first: the swap is a write, and hot points run this often.
+        if !self.seen.load(Ordering::Relaxed) && !self.seen.swap(true, Ordering::Relaxed) {
             eprintln!("feature: {} active", self.name);
         }
     }
