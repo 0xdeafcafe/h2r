@@ -1,4 +1,4 @@
-// Stats home ("h2 live Online"): the featured live map, the games spotlight
+// The games page (/stats/games): the featured live map, the games spotlight
 // with its tabs, and the menu column with the finder and server reports.
 
 import { gameMapTitle } from "../state/maps";
@@ -26,7 +26,7 @@ import { agoWords, dotDate, num, usDate } from "./fmt";
 
 type Tab = SpotlightTab;
 
-function ScoreLine(props: { game: GameState }) {
+export function ScoreLine(props: { game: GameState }) {
   return (
     <span class="s-scoreline">
       <Show
@@ -226,7 +226,6 @@ export default function Games() {
     }
     return { kills, games: n, campaign };
   });
-  const list = createMemo(() => filterBySkulls(unfiltered(), wanted(), (g) => g.skulls));
   const unfiltered = createMemo(() => {
     switch (active()) {
       // Live games first; recent ones fill the rest of the page.
@@ -237,6 +236,8 @@ export default function Games() {
       default: return ended();
     }
   });
+  // After `unfiltered`: a memo runs as it is made.
+  const list = createMemo(() => filterBySkulls(unfiltered(), wanted(), (g) => g.skulls));
   const pages = () => Math.max(1, Math.ceil(list().length / PER));
   const pg = () => Math.min(page(), pages() - 1);
   const me = () => identity.me();
@@ -244,12 +245,12 @@ export default function Games() {
   const tips = createMemo(() => motdMessages(motd()));
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online"]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Games"]]} />
       <Strip kind="home" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
-          <Title>h2 live Online</Title>
-          <Pills label="h2 live Online" items={[
+          <Title>Games</Title>
+          <Pills label="Games" items={[
             { label: `Live Games (${games().length})`, href: "#spotlight" },
             { label: "Players & Leaderboards", href: "/stats/players" },
             me() ? { label: "My Service Record", href: playerHref(me()!.gamertag) } : { label: "Sign Up for h2 live", href: "/dash/signup" },

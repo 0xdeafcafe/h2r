@@ -50,7 +50,7 @@ export default function Clans() {
   const mine = () => (me() ? social.teamsOf(me()!.xuid) : []);
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Clans"]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Clans"]]} />
       <Strip kind="players" />
       <div class="s-cols s-cols--over">
         <aside class="s-left">
@@ -173,7 +173,7 @@ export function ClanPage() {
   return (
     <Show when={team()} fallback={
       <>
-        <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Clans", "/stats/clans"], [id()]]} />
+        <Crumbs trail={[["Home", "/stats"], ["Clans", "/stats/clans"], [id()]]} />
         <Show when={social.teamsLoaded()} fallback={<div class="s-loading">Loading team…</div>}>
           <div class="s-full">
             <Title class="s-title--bar">Clan Not Found</Title>
@@ -198,7 +198,7 @@ function TeamBody(props: { team: Team }) {
   const lead = () => leaderOf(t());
   return (
     <>
-      <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Clans", "/stats/clans"], [t().properties.name]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Clans", "/stats/clans"], [t().properties.name]]} />
       <div class="s-id s-team-id">
         <span class="s-id-emblem s-team-emblem"><ClanEmblem team={t()} size={68} /></span>
         <div class="s-id-name s-team-name">

@@ -108,10 +108,10 @@ export function PlayerFrame(props: { which: Which; children: (a: () => AccountSt
   const rec = createMemo(() => (acct() ? serviceRecord(live.state, acct()!.xuid) : null));
   const hist = createMemo(() => (acct() ? gameHistory(live.state, acct()!.xuid) : []));
   return (
-    <Show when={acct()} fallback={<><Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], ["Players", "/stats/players"], [tag()]]} /><NotFound tag={tag()} /></>}>
+    <Show when={acct()} fallback={<><Crumbs trail={[["Home", "/stats"], ["Players", "/stats/players"], [tag()]]} /><NotFound tag={tag()} /></>}>
       {(a) => (
         <>
-          <Crumbs trail={[["Home", "/"], ["h2 live Online", "/stats"], [`h2 live ${TITLES[props.which]}`]]} />
+          <Crumbs trail={[["Home", "/stats"], [`h2 live ${TITLES[props.which]}`]]} />
           <PlayerStrip account={a()} rec={rec()!} />
           {untrack(() => props.children(a, () => rec()!, hist))}
         </>

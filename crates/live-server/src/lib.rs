@@ -35,6 +35,7 @@ pub mod public;
 pub mod relay;
 mod sessions;
 pub mod standalone;
+pub mod stats;
 pub mod status;
 pub mod store;
 mod teams;

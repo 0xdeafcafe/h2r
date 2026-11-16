@@ -31,3 +31,26 @@ export function recordHref(gamertag: string, mode: GameMode): string {
 /** A clan's page. Clans are the protocol's teams (Xbox Live Teams); the
  *  site says clan, and /stats/teams/:id redirects here. */
 export const clanHref = (id: string) => `/stats/clans/${encodeURIComponent(id)}`;
+
+/** The stats site's home: "h2 live Online" in the nav, "Home" in the crumbs. */
+export const STATS_HOME = "/stats";
+export const HOME_CRUMB: [string, string] = ["Home", STATS_HOME];
+
+/** The way back to the dashboard: kept out of the nav tabs, in the header's corner. */
+export const DASHBOARD_EXIT = { label: "‹ Dashboard", href: "/", title: "Leave the stats site for the dashboard" } as const;
+
+export interface NavItem { label: string; href: string; end?: boolean }
+
+/** The nav strip's tabs, home first. The dashboard is not one of them. */
+export function statsNav(me: { gamertag: string } | null, admin: boolean): NavItem[] {
+  return [
+    { label: "h2 live Online", href: STATS_HOME, end: true },
+    { label: "My Stats", href: me ? `/stats/players/${encodeURIComponent(me.gamertag)}` : "/dash/signup" },
+    { label: "Games", href: "/stats/games" },
+    { label: "Players", href: "/stats/players", end: true },
+    { label: "Clans", href: "/stats/clans" },
+    { label: "Event Log", href: "/stats/events" },
+    ...(admin ? [{ label: "Admin", href: "/stats/admin", end: true }] : []),
+    { label: "Server", href: "/dash/server" },
+  ];
+}

@@ -82,8 +82,18 @@ Escape / Backspace / ArrowLeft (or `b`) goes back; the mouse works too.
 a mid-2000s game stats site: a fixed 902px column on a navy page, a header
 with the Welcome box, a black nav strip, breadcrumbs, a banner strip, then a
 290px menu column (pill menu, People Finder, reports, Recent Games) beside
-the content. Pages: "h2 live Online" (`/stats`: the featured live map and
-the games spotlight), game details (`/stats/games/:id`: overview, the Game
+the content. The nav's tabs start with the home, "h2 live Online"; the
+way back to the dashboard is the small "‹ Dashboard" chip in the header's
+corner, not a tab, and every page's breadcrumbs start at "Home" (`/stats`).
+Pages: the home (`/stats`, `stats/Home.tsx`: live now with the live games,
+players online and open games; the last 24 hours and all-time totals;
+leaderboards for today, this week, this month or all time (`?window=`):
+most kills, best K/D with 3+ games, most wins, longest killing spree,
+Legendary levels and time played; most played maps, most used weapons, an
+activity heatmap by day and hour in your time, game types and playlists,
+skull use, medals from loaded games (derived), the weapon and map of the
+week, clan standings and recent games), games (`/stats/games`: the featured
+live map and the games spotlight), game details (`/stats/games/:id`: overview, the Game
 Viewer with the live tactical map or the replay, and the post game carnage
 report with Overview / Carnage / Medals / Weapons tabs), players and
 leaderboards (`/stats/players`), a player's service record, game history
@@ -134,6 +144,17 @@ its game's page. The mock (`mock/content.ts`) serves three invented
 packages (one with a picture, one with changed geometry, one blocked) and
 puts about a third of its sessions and multiplayer games on them or on an
 id it doesn't know; `H2_MOCK_CUSTOM_MAPS=0` turns that off.
+
+**Server stats.** The home's windowed numbers come from the server's
+summary (`GET /v1/stats/summary?window=`, docs/live-api.md "Stats
+summary"), a projection the server keeps in day and hour buckets; the page
+asks again every 30 seconds (`src/state/statsSummary.ts`) and draws its
+boards, picks and heatmap with the pure helpers in `src/lib/statsHome.ts`.
+A server without it (404) gets a note, and the live parts still show. The
+mock (`mock/stats.ts`) counts its log the same way and folds in a made-up
+month of games before the simulated history so the home has weeks to show;
+`H2_MOCK_STATS_ARCHIVE=0` leaves that out. The events carry no headshots,
+so there are none.
 
 **Derived stats.** Medals, sprees, places, the weapon breakdown ("Tool of
 Destruction"), EXP and rank are computed in the browser from the games'

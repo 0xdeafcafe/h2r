@@ -29,7 +29,7 @@ export default function Admin() {
   const admin = adminState.isMeAdmin;
   return (
     <div class="s-full">
-      <Crumbs trail={[["h2 live Online", "/stats"], ["Admin"]]} />
+      <Crumbs trail={[["Home", "/stats"], ["Admin"]]} />
       <Title class="s-title--bar" right={<A href="/stats">Back to the stats</A>}>
         Admin
       </Title>

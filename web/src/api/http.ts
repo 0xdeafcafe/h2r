@@ -143,6 +143,8 @@ export function api(t: ServerTarget) {
     sessions: (s?: AbortSignal) => all<unknown>("/sessions", { limit: 100 }, s, 10),
     /** One session by id, open or not. */
     session: (id: string, s?: AbortSignal) => getJson<{ session: unknown; position?: number }>(u("/sessions/" + encodeURIComponent(id)), s),
+    /** Server-wide stats over a window (docs/live-api.md "Stats summary"); the raw body. */
+    statsSummary: (window: string, s?: AbortSignal) => getJson<unknown>(u("/stats/summary", { window }), s),
     /** One page of the log; `from` is exclusive. */
     events: async (q: { from?: number; type?: string; stream?: string; limit?: number; cursor?: string }, s?: AbortSignal) =>
       page<WireEvent>(await getJson(u("/events", q), s)),
