@@ -336,6 +336,12 @@ label is not shortened.
 `H2_NO_CUSTOM_GAMES_ROW=1` leaves the Live menu alone: four rows, and
 Content Download as retail.
 
+With Live on, a sixth row, **Co-op Campaign**, sits between Custom Game
+Browser and Content Download, with its own pane (the Custom Game pane with
+its help text); the list keeps five item widgets, so Content Download
+scrolls into view ([live-coop.md](live-coop.md) section 10).
+`H2_NO_COOP_ROW=1` takes it out (five rows, as above).
+
 ## 7. To check in game
 
 Nothing here ran in the game. With two consoles (or two instances, per the

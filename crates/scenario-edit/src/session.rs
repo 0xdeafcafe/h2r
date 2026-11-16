@@ -38,11 +38,13 @@ struct Doc {
 
 /// A map shown read-only: triangles and markers with no scenario to edit
 /// (a Halo 1 map, read through `h1map`).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Reference {
     pub name: String,
     pub world: Vec<Tri>,
     pub markers: Vec<Marker>,
+    /// Its art, when the caller built one ([`crate::scene::reference_scene`]).
+    pub scene: Option<Arc<Scene>>,
 }
 
 /// Scenes kept for maps opened before (reopening one, or opening its
@@ -316,8 +318,14 @@ impl Session {
         self.drag = None;
         self.gesture = None;
         self.camera = Camera::frame(&frame_bounds(&reference.world, &reference.markers));
+        let art = reference.scene.as_ref().map_or(String::new(), |s| {
+            format!(
+                ", {} of {} shaders textured, {} lightmap pages",
+                s.stats.textured, s.stats.shaders, s.stats.lightmap_pages
+            )
+        });
         self.status = format!(
-            "{} triangles, {} placements (read only)",
+            "{} triangles, {} placements{art} (read only)",
             reference.world.len(),
             reference.markers.len()
         );
@@ -432,7 +440,11 @@ impl Session {
     }
     /// The open map's textured world and object models, if built.
     pub fn scene(&self) -> Option<&Arc<Scene>> {
-        self.doc.as_ref().and_then(|d| d.scene.as_ref())
+        match (&self.doc, &self.reference) {
+            (Some(d), _) => d.scene.as_ref(),
+            (None, Some(r)) => r.scene.as_ref(),
+            (None, None) => None,
+        }
     }
 
     /// The cached scene of a map, else a new one (cached).

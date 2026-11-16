@@ -12,8 +12,8 @@ export function spotlightTab(asked: string | null | undefined, anyLive: boolean)
   return SPOTLIGHT.includes(asked as SpotlightTab) ? (asked as SpotlightTab) : anyLive ? "live" : "recent";
 }
 
-export type HistoryTab = "all" | "team" | "ffa" | "campaign";
-const HISTORY: HistoryTab[] = ["all", "team", "ffa", "campaign"];
+export type HistoryTab = "all" | "team" | "ffa" | "campaign" | "coop";
+const HISTORY: HistoryTab[] = ["all", "team", "ffa", "campaign", "coop"];
 
 /** A player's game history tab; multiplayer ("all") by default. */
 export function historyTab(asked: string | null | undefined): HistoryTab {
