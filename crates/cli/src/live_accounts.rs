@@ -267,6 +267,7 @@ mod tests {
             keys: Vec::new(),
             software: "test".into(),
             federation: false,
+            url: None,
         }
     }
 

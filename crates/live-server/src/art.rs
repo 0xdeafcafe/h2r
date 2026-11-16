@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 use axum::Router;
 use axum::extract::{ConnectInfo, Request};
-use axum::http::{HeaderMap, header};
+use axum::http::HeaderMap;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 
@@ -39,15 +39,14 @@ impl GameArt {
 }
 
 /// Whether a request may have the art: always when shared; otherwise only
-/// from a loopback peer that is not a proxy forwarding someone else. A
-/// request whose peer is unknown is refused.
+/// from a loopback peer that is not a proxy or tunnel forwarding someone
+/// else (any proxy header, [`crate::public::forwarded`]). A request whose
+/// peer is unknown is refused.
 pub fn allowed(share: bool, peer: Option<SocketAddr>, headers: &HeaderMap) -> bool {
     if share {
         return true;
     }
-    let forwarded =
-        headers.contains_key(header::FORWARDED) || headers.contains_key("x-forwarded-for");
-    peer.is_some_and(|p| p.ip().is_loopback()) && !forwarded
+    peer.is_some_and(|p| p.ip().is_loopback()) && !crate::public::forwarded(headers)
 }
 
 /// The art routes: files from `art.dir` under [`PREFIX`], a JSON 404 for
@@ -96,6 +95,19 @@ mod tests {
             !allowed(false, Some(lo), &proxied),
             "a local proxy forwarding a stranger"
         );
+        for (name, value) in [
+            ("forwarded", "for=203.0.113.9"),
+            ("cf-connecting-ip", "203.0.113.9"),
+            ("cf-ray", "8f1e2d3c4b5a6978-LHR"),
+            ("x-forwarded-proto", "https"),
+        ] {
+            let mut tunnelled = HeaderMap::new();
+            tunnelled.insert(name, value.parse().unwrap());
+            assert!(
+                !allowed(false, Some(lo), &tunnelled),
+                "cloudflared on loopback delivering {name}"
+            );
+        }
         assert!(allowed(true, Some(lan), &proxied));
         assert!(allowed(true, None, &none));
     }

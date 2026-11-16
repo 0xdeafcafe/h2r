@@ -27,6 +27,7 @@ pub mod ingest;
 pub mod local_signin;
 pub mod model;
 pub mod pg;
+pub mod public;
 pub mod store;
 mod teams;
 pub mod title_headers;
@@ -141,6 +142,12 @@ pub async fn serve(config: Config) -> Result<()> {
     let admins = live.admins.configured();
     if !admins.is_empty() {
         println!("h2 live: admins configured: {}", admins.join(", "));
+    }
+    if let Some(url) = live.policy().public.get() {
+        println!("h2 live: public base URL {url}");
+        if let Some(warn) = public::unclaimed_admins_notice(&live.unclaimed_admins()) {
+            println!("h2 live: warning: {warn}");
+        }
     }
     match &config.site.web {
         Some(dir) => println!("h2 live: web app from {}", dir.display()),

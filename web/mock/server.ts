@@ -11,6 +11,7 @@ import { World, HOST } from "./world";
 import { createHash } from "node:crypto";
 import { openAccountRequest } from "./account";
 import { mockGameArt } from "./gameart";
+import { Social } from "./social";
 
 const port = Number(process.env.H2_MOCK_PORT ?? 8075);
 const world = new World();
@@ -19,6 +20,10 @@ const historyMin = Number(process.env.H2_MOCK_HISTORY_MIN ?? 20);
 const t0 = performance.now();
 world.seed(historyMin * 60_000);
 console.log(`[mock] seeded ${world.log.length} events (${historyMin} min of history) in ${Math.round(performance.now() - t0)} ms`);
+// Friends and teams (mock/social.ts): seeded before the world goes live.
+const social = new Social(world);
+social.seed();
+world.listeners.add({ onEvent: (ev) => { if (ev.type === "AccountCreated") social.welcome((ev.data as { xuid: string }).xuid); }, onFrame: () => {} });
 world.run();
 
 const staticDir = process.env.H2_MOCK_STATIC;
@@ -104,6 +109,9 @@ async function handle(req: Request, server: Bun.Server<WsData>): Promise<Respons
     if (server.upgrade(req, { data: { kind: "ingest", authed: false } satisfies IngestData })) return undefined;
     return err(400, "invalid", "expected a WebSocket upgrade");
   }
+
+  const soc = await social.handle(req, u);
+  if (soc) return json(soc.body, soc.status);
 
   let m: RegExpMatchArray | null;
   if (path === "/v1/accounts" && req.method === "GET") {

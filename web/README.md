@@ -94,8 +94,20 @@ minutes off its clock, and so does the mock (`mock/account.ts`). The private
 key is kept as a JWK (its `d`) in this browser's IndexedDB (`h2live` /
 `accounts`), so anyone with access to the browser profile can read it; the
 UI says so. "Download for h2" saves an `accounts.json`-style file for
-`h2 live account import <file>`. "Friends" are the people you have played
-with.
+`h2 live account import <file>`.
+
+**Friends and teams** come from the server (docs/live-api.md "Friends" and
+"Teams"). The dashboard's friends and teams screens (`src/dash/Social.tsx`),
+the stats site's team directory and team pages (`/stats/teams`,
+`/stats/teams/:id`) and the Teams and Friends boxes on service records all
+read them and follow the stream, so they change as events arrive
+(`src/state/social.ts`). Writes are signed `h2live-event` JWS bodies sent to
+`POST /v1/events` with an `events.write` token, the same way `h2 live friend`
+and `h2 live team` send them (`src/state/sign.ts`). A team's combined stats
+are derived from games where two or more members played on the same side.
+The mock (`mock/social.ts`) seeds three teams and some friendships. A new web
+account gets a friend request and a team invitation a few seconds after
+signing up, and seeded players accept whatever you send them.
 
 **Fonts.** All bundled fonts are under the SIL Open Font Licence, each with
 its licence file beside it: Michroma (`src/assets/fonts`, the "h2 live" name

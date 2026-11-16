@@ -34,6 +34,7 @@ const USAGE: &str = "usage: h2 live <command> [options]
   serve [--db URL] [--listen ADDR] [--data DIR] [--id HOST]
         [--private] [--invite-only] [--admin GAMERTAG]... [--game-art DIR] [--share-game-art]
         [--tls-cert PEM --tls-key PEM | --insecure-http]
+        [--tunnel | --tunnel-name NAME [--hostname HOST] | --public-url URL]
                           run the service. --db defaults to $H2_LIVE_DB or
                           postgres://localhost/h2live, --listen to
                           127.0.0.1:8074; a non-loopback address needs TLS or
@@ -41,7 +42,12 @@ const USAGE: &str = "usage: h2 live <command> [options]
                           the server in tokens and author ids. Game art
                           (--game-art, default --data's game-art/ if
                           extracted) is served at /art/game/ to this machine
-                          only, unless --share-game-art
+                          only, unless --share-game-art. --tunnel publishes
+                          the server through a cloudflared quick tunnel (a new
+                          https://*.trycloudflare.com URL each run);
+                          --tunnel-name runs a named tunnel at https://HOST
+                          (docs/live-hosting.md). --public-url names the URL
+                          a proxy of your own serves it at
   account create <gamertag> [--server URL] [--invite CODE]
                           make a key, register it, keep both in accounts.json
   account import <file> [--server URL]
@@ -210,10 +216,55 @@ fn serve(mut args: Args) -> Result<()> {
     let insecure_http = args.flag("--insecure-http");
     let art_dir = args.take("--game-art")?.map(PathBuf::from);
     let share_art = args.flag("--share-game-art");
+    let tunnel = crate::tunnel::Mode::from_flags(
+        args.flag("--tunnel"),
+        args.take("--tunnel-name")?,
+        args.take("--hostname")?,
+    )?;
+    let public_url = args.take("--public-url")?;
     if !args.positional()?.is_empty() {
         bail!("serve takes no positional arguments\n\n{USAGE}");
     }
+    let id = serve_id(id, tunnel.as_ref(), &data_dir);
+    let origin = match &tunnel {
+        Some(_) if tls.is_some() => {
+            bail!(
+                "--tunnel serves plain HTTP on loopback to cloudflared; drop --tls-cert/--tls-key"
+            )
+        }
+        Some(_) if public_url.is_some() => {
+            bail!("--public-url is for your own proxy, not a tunnel")
+        }
+        Some(_) => Some(crate::tunnel::origin(listen)?),
+        None => None,
+    };
+    if let Some(url) = &public_url {
+        if !url.starts_with("https://") && !url.starts_with("http://") {
+            bail!("--public-url {url:?} wants a URL like https://live.example.net");
+        }
+        policy.public.set(url, false);
+    }
     let game_art = game_art(art_dir, &data_dir, share_art)?;
+    // Up before the server, so its URL is in discovery from the first
+    // request; stopped (dropped) when the server stops.
+    let _tunnel = match (tunnel, origin) {
+        (Some(mode), Some(origin)) => {
+            let t = crate::tunnel::open(
+                None,
+                mode.clone(),
+                &origin,
+                policy.public.clone(),
+                "h2 live",
+            )?;
+            for line in
+                crate::tunnel::notices(t.url.as_deref(), &mode, policy.invite_only, policy.private)
+            {
+                println!("h2 live: {line}");
+            }
+            Some(t)
+        }
+        _ => None,
+    };
     let config = live_server::Config {
         db,
         listen,
@@ -232,6 +283,26 @@ fn serve(mut args: Args) -> Result<()> {
         .build()
         .context("starting tokio")?;
     rt.block_on(live_server::serve(config))
+}
+
+/// The `--id` to start with: as given; else, on a first start behind a
+/// named tunnel with a host name, that host name (an id lasts for good,
+/// and a lasting address is the natural one). A quick tunnel's URL is
+/// never an id: it changes every run.
+fn serve_id(
+    id: Option<String>,
+    tunnel: Option<&crate::tunnel::Mode>,
+    data_dir: &Path,
+) -> Option<String> {
+    if id.is_some() || data_dir.join("server.key").exists() {
+        return id;
+    }
+    match tunnel {
+        Some(crate::tunnel::Mode::Named {
+            hostname: Some(h), ..
+        }) => Some(h.to_ascii_lowercase()),
+        _ => None,
+    }
 }
 
 /// The game art to serve: `--game-art DIR` (which must hold a manifest),
@@ -1100,6 +1171,34 @@ mod tests {
         assert_eq!(a.positional().unwrap(), ["Hello", "World"]);
         assert!(args(&["--header"]).take("--header").is_err());
         assert!(args(&["x", "--bogus"]).positional().is_err());
+    }
+
+    #[test]
+    fn a_named_tunnel_names_a_new_server_only() {
+        use crate::tunnel::Mode;
+        let dir = std::env::temp_dir().join(format!("h2-live-serve-id-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let named = Mode::Named {
+            name: "h2live".into(),
+            hostname: Some("Live.Example.net".into()),
+        };
+        assert_eq!(
+            serve_id(None, Some(&named), &dir).as_deref(),
+            Some("live.example.net")
+        );
+        assert_eq!(
+            serve_id(None, Some(&Mode::Quick), &dir),
+            None,
+            "a quick URL is never an id"
+        );
+        assert_eq!(
+            serve_id(Some("mine".into()), Some(&named), &dir).as_deref(),
+            Some("mine")
+        );
+        // An existing server keeps its id, whatever the tunnel.
+        ServerIdentity::open(&dir, None).unwrap();
+        assert_eq!(serve_id(None, Some(&named), &dir), None);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

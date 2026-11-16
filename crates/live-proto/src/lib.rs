@@ -345,6 +345,11 @@ pub struct Discovery {
     pub keys: Vec<sign::Jwk>,
     pub software: String,
     pub federation: bool,
+    /// The server's public base URL when it knows one (a tunnel or proxy,
+    /// docs/live-hosting.md). Informational: clients keep the base URL they
+    /// were given, and `api` stays relative to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// `POST /v1/accounts` reply.

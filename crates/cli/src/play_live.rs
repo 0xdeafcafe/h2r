@@ -24,6 +24,15 @@ pub struct LiveOpts {
     pub listen: Option<SocketAddr>,
     /// `--gamertag`: the account to play as (made if missing).
     pub gamertag: Option<String>,
+    /// `--tunnel` / `--tunnel-name NAME` (with `--hostname HOST`): publish
+    /// the embedded server through cloudflared so friends can join it
+    /// (docs/live-hosting.md).
+    pub tunnel: bool,
+    pub tunnel_name: Option<String>,
+    pub hostname: Option<String>,
+    /// The cloudflared to run; `None`: `$H2_CLOUDFLARED`, else PATH (tests
+    /// set a fake).
+    pub cloudflared: Option<PathBuf>,
 }
 
 impl LiveOpts {
@@ -43,6 +52,9 @@ impl LiveOpts {
                         .with_context(|| format!("bad --live-listen {v:?} (want ip:port)"))?,
                 );
             }
+            "--tunnel" => self.tunnel = true,
+            "--tunnel-name" => self.tunnel_name = Some(value()?),
+            "--hostname" => self.hostname = Some(value()?),
             "--gamertag" => {
                 let v = value()?;
                 Gamertag::new(&v).map_err(|e| anyhow::anyhow!("--gamertag {v:?}: {e}"))?;
@@ -60,7 +72,28 @@ impl LiveOpts {
         if self.server.is_some() && self.listen.is_some() {
             bail!("--live-listen is for the embedded server; --live-server uses another");
         }
+        if self.tunnel_mode()?.is_some() {
+            if !self.enabled || self.server.is_some() {
+                bail!(
+                    "--tunnel publishes the embedded server: it goes with --live, not --live-server"
+                );
+            }
+            if let Some(listen) = self.listen.filter(|l| !l.ip().is_loopback()) {
+                bail!(
+                    "--tunnel keeps the embedded server on loopback; drop --live-listen {listen}"
+                );
+            }
+        }
         Ok(())
+    }
+
+    /// The tunnel the flags ask for, if any.
+    pub fn tunnel_mode(&self) -> Result<Option<crate::tunnel::Mode>> {
+        crate::tunnel::Mode::from_flags(
+            self.tunnel,
+            self.tunnel_name.clone(),
+            self.hostname.clone(),
+        )
     }
 }
 
@@ -73,12 +106,21 @@ pub struct Session {
     /// The embedded server's one-use, this-machine-only link signing a
     /// browser in as `account` (docs/live-admin.md §4).
     pub signin: Option<String>,
+    /// `--tunnel`: cloudflared publishing the embedded server (stopped on
+    /// drop), and the lines to print about it.
+    tunnel: Option<crate::tunnel::Tunnel>,
+    pub tunnel_notices: Vec<String>,
     embedded: Option<live_server::Embedded>,
 }
 
 impl Session {
     pub fn store(&self) -> Option<&'static str> {
         self.embedded.as_ref().map(|e| e.store)
+    }
+
+    /// The tunnel's public URL when it started (`--tunnel`).
+    pub fn public_url(&self) -> Option<&str> {
+        self.tunnel.as_ref()?.url.as_deref()
     }
 }
 
@@ -162,6 +204,32 @@ pub fn start(
             .offer_local_signin(entry, live_server::local_signin::OFFER_TTL);
         signin = Some(format!("{}/signin#once={token}", client.base));
     }
+    // The game and the sign-in link keep the loopback URL; friends use the
+    // tunnel's.
+    let (mut tunnel, mut tunnel_notices) = (None, Vec::new());
+    if let (Some(mode), Some(server)) = (opts.tunnel_mode()?, embedded.as_ref()) {
+        let public = server.live.policy().public.clone();
+        let t = crate::tunnel::open(
+            opts.cloudflared.clone(),
+            mode.clone(),
+            &server.url,
+            public,
+            "live",
+        )?;
+        let policy = server.live.policy();
+        tunnel_notices =
+            crate::tunnel::notices(t.url.as_deref(), &mode, policy.invite_only, policy.private);
+        if let Some(url) = &t.url {
+            tunnel_notices.insert(
+                1,
+                format!("friends join with: h2 play <disc> --live-server {url}"),
+            );
+        }
+        tunnel_notices.extend(live_server::public::unclaimed_admins_notice(
+            &server.live.unclaimed_admins(),
+        ));
+        tunnel = Some(t);
+    }
     live_accounts::save(&places.session_accounts, std::slice::from_ref(&account))?;
     Ok(Session {
         config: boot::LiveConfig {
@@ -172,6 +240,8 @@ pub fn start(
         account,
         server: client.base,
         signin,
+        tunnel,
+        tunnel_notices,
         embedded,
     })
 }
@@ -462,6 +532,124 @@ mod tests {
             other => panic!("a second use: {other:?}"),
         }
         drop(session);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn tunnel_flags() {
+        let o = parse(&["--live", "--tunnel"]).unwrap();
+        assert_eq!(o.tunnel_mode().unwrap(), Some(crate::tunnel::Mode::Quick));
+        let o = parse(&[
+            "--live",
+            "--tunnel-name",
+            "h2",
+            "--hostname",
+            "live.example.net",
+        ])
+        .unwrap();
+        assert_eq!(
+            o.tunnel_mode().unwrap().unwrap().fixed_url().as_deref(),
+            Some("https://live.example.net")
+        );
+        assert!(parse(&["--tunnel"]).is_err(), "needs --live");
+        assert!(
+            parse(&["--live-server", "https://h.example", "--tunnel"]).is_err(),
+            "only the embedded server is tunnelled"
+        );
+        assert!(parse(&["--live", "--live-listen", "0.0.0.0:9000", "--tunnel"]).is_err());
+        assert!(parse(&["--live", "--tunnel", "--tunnel-name", "h2"]).is_err());
+        assert!(parse(&["--live", "--hostname", "a.example"]).is_err());
+    }
+
+    /// A test-only cloudflared: prints a quick tunnel URL, records its
+    /// arguments and pid, then waits to be stopped.
+    fn fake_cloudflared(dir: &Path) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = dir.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let p = bin.join("cloudflared");
+        std::fs::write(
+            &p,
+            format!(
+                "#!/bin/sh\necho \"$@\" > {d}/argv\necho $$ > {d}/pid\n\
+                 echo '2025-03-04T10:15:03Z INF |  https://friendly-test-host.trycloudflare.com  |' >&2\n\
+                 exec sleep 30\n",
+                d = dir.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p
+    }
+
+    #[test]
+    fn a_tunnelled_session_publishes_the_url_and_keeps_signin_local() {
+        let dir = temp("tunnel");
+        let places = Places::under(&dir);
+        let opts = LiveOpts {
+            enabled: true,
+            tunnel: true,
+            cloudflared: Some(fake_cloudflared(&dir)),
+            ..LiveOpts::default()
+        };
+        let session = start(
+            &opts,
+            live_server::MEMORY_DB,
+            &places,
+            Default::default(),
+            "test.user",
+        )
+        .unwrap();
+        let public = "https://friendly-test-host.trycloudflare.com";
+        assert_eq!(session.public_url(), Some(public));
+        // cloudflared forwards to the embedded server on loopback.
+        let argv = std::fs::read_to_string(dir.join("argv")).unwrap();
+        assert_eq!(
+            argv.trim(),
+            format!(
+                "tunnel --no-autoupdate --grace-period 1s --url {}",
+                session.server
+            )
+        );
+        assert!(session.server.starts_with("http://127.0.0.1:"));
+        // Discovery names the public URL; the game and the link stay local.
+        let client = Client::at(&session.server).unwrap();
+        assert_eq!(client.discovery.url.as_deref(), Some(public));
+        assert_eq!(client.discovery.api, "/v1");
+        assert_eq!(
+            session.config.server_url.as_deref(),
+            Some(session.server.as_str())
+        );
+        let link = session.signin.clone().unwrap();
+        assert!(link.starts_with(&format!("{}/signin#once=", session.server)));
+        assert!(
+            session
+                .tunnel_notices
+                .iter()
+                .any(|l| l.contains(&format!("--live-server {public}")))
+        );
+        // What cloudflared delivers (from loopback, with its headers) does
+        // not get the link's entry.
+        let token = link.rsplit_once("#once=").unwrap().1.to_string();
+        let tunnelled = ureq::post(&format!("{}/v1/local/signin", session.server))
+            .set("content-type", "application/json")
+            .set("cf-connecting-ip", "203.0.113.9")
+            .set("x-forwarded-for", "203.0.113.9")
+            .send_string(&serde_json::json!({ "once": token }).to_string());
+        match tunnelled {
+            Err(ureq::Error::Status(404, _)) => {}
+            other => panic!("a tunnelled redeem: {other:?}"),
+        }
+        // Stopping the session stops cloudflared.
+        let pid = std::fs::read_to_string(dir.join("pid")).unwrap();
+        drop(session);
+        let alive = std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "cloudflared outlived the session");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

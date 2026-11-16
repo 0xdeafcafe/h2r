@@ -8,7 +8,8 @@ import { A, useNavigate } from "@solidjs/router";
 import { live } from "../state/live";
 import { identity } from "../state/identity";
 import { accountByGamertag, liveGames } from "../state/reducer";
-import { playedWith } from "../state/derive";
+import { social } from "../state/social";
+import { friendPresence } from "./teamBits";
 import Emblem from "../components/Emblem";
 import { VerifyMark } from "../components/bits";
 import Wordmark from "./Wordmark";
@@ -23,7 +24,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
   const friendsOnline = createMemo(() => {
     const me = identity.me();
     if (!me) return 0;
-    return playedWith(live.state, me.xuid).filter((f) => live.state.accounts[f.xuid]?.online).length;
+    return (social.mine()?.friends ?? []).filter((f) => friendPresence(f).kind !== "offline").length;
   });
   function search(e: Event) {
     e.preventDefault();
@@ -73,6 +74,7 @@ export default function StatsLayout(props: { children?: JSX.Element }) {
           <A href={identity.me() ? playerHref(identity.me()!.gamertag) : "/dash/signup"}>My Stats</A>
           <A href="/stats" end>h2 live Online</A>
           <A href="/stats/players" end>Players</A>
+          <A href="/stats/teams">Teams</A>
           <A href="/stats/events">Event Log</A>
           <Show when={adminState.isMeAdmin() === true}><A href="/stats/admin" end>Admin</A></Show>
           <A href="/dash/server">Server</A>

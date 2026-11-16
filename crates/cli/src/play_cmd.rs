@@ -20,6 +20,7 @@ const USAGE: &str = "usage:
           [--no-audio] [--no-gamepads] [--no-vsync] [--unpaced] [--bindings FILE] [--status]
           [--fps 30|60|120|uncapped] [--input-timeline FILE] [--frame-stats] [--no-watermark] [--no-mappack]
           [--live | --live-server URL] [--live-listen ADDR] [--gamertag NAME]
+          [--tunnel | --tunnel-name NAME [--hostname HOST]]
           [--icons auto|xbox|xbox360|playstation|keyboard]
   h2 play --follow [--repo PATH] [--branch B] [--remote R] [--no-fetch] [--poll SECS]
           [--fresh-data] [--cache DIR] <the arguments above>
@@ -54,6 +55,9 @@ friends, games and the MOTD are kept) on 127.0.0.1 and a free port, or
 --live-listen ADDR, serving the web app from web/dist ($H2_LIVE_WEB). --live-server URL uses a
 running service instead. The account is --gamertag NAME, or one named after
 your user; either is made on the server and kept in accounts.json if needed.
+--tunnel (with --live) publishes the embedded server through a cloudflared
+quick tunnel so friends can join with --live-server <its URL>; --tunnel-name
+runs a named tunnel at https://HOST instead (docs/live-hosting.md).
 
 Keys: Escape START, Space or Enter A, V or Backspace B, E X, Q Y, Tab BACK,
 arrows d-pad, WASD left stick, mouse look (click to capture). Cmd+Q quits,
@@ -633,13 +637,16 @@ fn start_live(
     let site = live_server::http::Site { web, game_art };
     let session = crate::play_live::start(live, &db, &places, site, &crate::play_live::os_user())?;
     eprintln!(
-        "live: playing as {} ({}) on {}{}",
+        "live: playing as {} ({}) on {}{}{}",
         session.account.gamertag,
         session.account.xuid,
         session.server,
         session
             .store()
-            .map_or(String::new(), |s| format!(" (embedded, {s} store)"))
+            .map_or(String::new(), |s| format!(" (embedded, {s} store)")),
+        session
+            .public_url()
+            .map_or(String::new(), |u| format!(", public at {u}"))
     );
     match (session.store(), has_web) {
         (Some(_), true) => {
@@ -653,6 +660,9 @@ fn start_live(
         }
         (Some(_), false) => eprintln!("live: no web app; build it with `cd web && bun run build`"),
         (None, _) => {}
+    }
+    for line in &session.tunnel_notices {
+        eprintln!("live: {line}");
     }
     Ok(session)
 }
